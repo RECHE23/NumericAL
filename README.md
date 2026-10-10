@@ -81,12 +81,16 @@ sdist, and publishes to PyPI via Trusted Publishing (OIDC, no stored secret).
 
 One-time PyPI setup (before the first release): create a
 [Trusted Publisher](https://docs.pypi.org/trusted-publishers/) for the project
-`numerical` — owner `RECHE23`, repository `numerical`, workflow `release.yml`,
+`numeric-al` — owner `RECHE23`, repository `NumericAL`, workflow `release.yml`,
 environment `pypi` — and create the matching GitHub Environment named `pypi`.
 Until that exists the build/sdist jobs still run, but the publish step fails;
 the pushed tag remains a valid versioned snapshot regardless.
 
 ## Python binding
+
+```sh
+pip install numeric-al        # the distribution is numeric-al; the module is numerical
+```
 
 A CPython binding (stable ABI, one `cp310` abi3 wheel serves 3.10+) exposes the
 unifying object `numerical.Tensor` (rank-1 a vector, rank-2 a matrix, rank-0 a

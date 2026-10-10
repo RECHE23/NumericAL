@@ -7,7 +7,7 @@ requires = ["setuptools>=68", "sciforge-build>=2026.6.16"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "numerical"
+name = "numeric-al"
 version = "2026.6.15"
 description = "NumericAL — a generic, header-only numerical library: tensors and Einstein summation"
 readme = "README.md"
