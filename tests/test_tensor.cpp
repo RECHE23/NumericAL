@@ -328,3 +328,15 @@ TEST(einsum_refuses_a_loop_count_that_overflows)
                              std::vector<double>(std::size_t {1} << 16, 1.0)};
   EXPECT_THROWS(einsum("i,j,k,l,m->", ones, ones, ones, ones, ones), numerical::dimension_error);
 }
+
+// The operands may be counted at run time, as an interpreter holds them: the same contraction, and a
+// count that disagrees with the spec, none included, is an einsum_error.
+TEST(einsum_takes_operands_counted_at_run_time)
+{
+  const tensor<double>                     a    {matrix<double> {{1.0, 2.0}, {3.0, 4.0}}};
+  const tensor<double>                     b    {matrix<double> {{0.0, 1.0}, {1.0, 0.0}}};
+  const std::vector<const tensor<double>*> both {&a, &b};
+  EXPECT(numerical::einsum("ij,jk->ik", both).data() == einsum("ij,jk->ik", a, b).data());
+  EXPECT_THROWS(numerical::einsum("ij,jk->ik", std::vector<const tensor<double>*> {&a}), numerical::einsum_error);
+  EXPECT_THROWS(numerical::einsum("->", std::vector<const tensor<double>*> {}), numerical::einsum_error);
+}

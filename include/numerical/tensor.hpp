@@ -497,6 +497,22 @@ namespace numerical {
     const std::vector<const tensor<T>*> operands {&first, (&rest)...};
     return detail::einsum_impl<T>(spec, operands);
   }
+
+  /*!
+   * \brief Einstein summation over operands counted at run time: \ref einsum for a caller that holds
+   *        them in a container (an interpreter evaluating `einsum("ij,jk->ik", a, b)` from a parse).
+   * \param[in] spec     The einsum specification.
+   * \param[in] operands The operands, in the spec's order (none null).
+   * \return The resulting tensor.
+   * \throws einsum_error    As \ref einsum, and if \p operands is empty.
+   * \throws dimension_error As \ref einsum.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> einsum(const std::string&                   spec,
+                                 const std::vector<const tensor<T>*>& operands)
+  {
+    return detail::einsum_impl<T>(spec, operands);
+  }
 } // namespace numerical
 
 #endif // NUMERICAL_TENSOR_HPP

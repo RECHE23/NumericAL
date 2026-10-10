@@ -7,6 +7,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Added
+- **`einsum(spec, operands)` over a `std::vector` of operands** counted at run time, for a caller that
+  holds them in a container (SciLang's interpreter called `detail::einsum_impl` for this).
 - **`slogdet`, `pinv` and `matrix_rank`**, as `numpy.linalg` gives them (C++: `lu_decomposition::
   log_determinant`, `pinv`, `matrix_rank`). `determinant` of `1e-2·I` of order 200 underflows to 0.0;
   its `slogdet` is `(1.0, -921.03)`.
