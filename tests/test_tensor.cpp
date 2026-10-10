@@ -341,6 +341,8 @@ TEST(einsum_contracts_many_operands_pairwise)
   EXPECT(einsum("ij,jk,kl->li", a, b, c).data() == einsum("il->li", einsum("ij,jk,kl->il", a, b, c)).data());
   // i is in the first and the third operand: the intermediate keeps it.
   EXPECT(einsum("ij,jk,ik->i", a, b, c).data() == (std::vector<int> {4, 13})); // Σⱼₖ aᵢⱼ bⱼₖ cᵢₖ
+  // A diagonal whose label the others carry too: aᵢᵢ Σⱼ aᵢⱼ vⱼ.
+  EXPECT(einsum("ii,ij,j->i", a, a, tensor<int> {vector<int> {1, 2}}).data() == (std::vector<int> {5, 44}));
   EXPECT(einsum("ii,j,j->", a, tensor<int> {vector<int> {1, 2}}, tensor<int> {vector<int> {3, 4}}).data()
          == std::vector<int> {(1 + 4) * ((1 * 3) + (2 * 4))});
 }
