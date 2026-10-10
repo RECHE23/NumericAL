@@ -107,6 +107,31 @@ class Solve(unittest.TestCase):
             numerical.solve(a, numerical.Tensor([1, 2]))
 
 
+class NonFinite(unittest.TestCase):
+    """Every decomposition refuses an infinite or NaN entry where it starts, rather than stop at once
+    and return plausible values (eigh of [[1, nan], [nan, 2]] used to read as 1 and 2)."""
+
+    def test_every_decomposition_refuses_a_non_finite_entry(self):
+        rhs = numerical.Tensor([1.0, 1.0], [2])
+        calls = {
+            "eigh": lambda m: numerical.eigh(m),
+            "svd": lambda m: numerical.svd(m),
+            "qr": lambda m: numerical.qr(m),
+            "cholesky": lambda m: numerical.cholesky(m),
+            "inverse": lambda m: numerical.inverse(m),
+            "determinant": lambda m: numerical.determinant(m),
+            "solve": lambda m: numerical.solve(m, rhs),
+            "lstsq": lambda m: numerical.lstsq(m, rhs),
+        }
+        for bad in (float("inf"), float("-inf"), float("nan")):
+            for data in ([1.0, bad, bad, 2.0], [bad, 0.0, 0.0, 1.0]):
+                for name, call in calls.items():
+                    with self.subTest(name=name, data=data):
+                        with self.assertRaises(numerical.error) as caught:
+                            call(numerical.Tensor(data, [2, 2]))
+                        self.assertIn("infinite or NaN", str(caught.exception))
+
+
 class ArrayInterface(unittest.TestCase):
     def test_dict_describes_the_buffer(self):
         t = numerical.Tensor([1, 2, 3, 4], shape=(2, 2))

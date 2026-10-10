@@ -277,16 +277,33 @@ TEST(decompositions_of_a_zero_or_non_finite_matrix_keep_their_scale_at_one)
   EXPECT(approx_equal(e.values(), vector<double> {0.0, 0.0}));
   const svd_decomposition d  {matrix<double> {{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}}};
   EXPECT(approx_equal(d.singular_values(), vector<double> {0.0, 0.0}));
-  const double inf           {std::numeric_limits<double>::infinity()};
-  EXPECT(std::isinf(symmetric_eigen {matrix<double> {{inf, 0.0}, {0.0, 1.0}}}.values()[1]));
-  EXPECT(std::isinf(svd_decomposition {matrix<double> {{inf, 0.0}, {0.0, 1.0}}}.singular_values()[0]));
   EXPECT_THROWS(qr(matrix<double> {{0.0, 1.0}, {0.0, 2.0}}), numerical::singular_matrix_error);
+}
+
+// One non-finite policy for every decomposition, checked where it starts: an infinite or NaN entry is a
+// non_finite_error. The iterative ones would otherwise stop at once on a NaN off the diagonal and return
+// plausible values (eigh of [[1, nan], [nan, 2]] read as 1 and 2).
+TEST(every_decomposition_refuses_a_non_finite_entry)
+{
+  const double inf {std::numeric_limits<double>::infinity()};
+  const double nan {std::numeric_limits<double>::quiet_NaN()};
+  for (const double bad : {inf, -inf, nan}) {
+    const matrix<double> off_diagonal {{1.0, bad}, {bad, 2.0}};
+    const matrix<double> on_diagonal  {{bad, 0.0}, {0.0, 1.0}};
+    for (const matrix<double>& m : {off_diagonal, on_diagonal}) {
+      EXPECT_THROWS(symmetric_eigen {m}, numerical::non_finite_error);
+      EXPECT_THROWS(svd_decomposition {m}, numerical::non_finite_error);
+      EXPECT_THROWS(qr(m), numerical::non_finite_error);
+      EXPECT_THROWS(lu_decomposition<double> {m}, numerical::non_finite_error);
+      EXPECT_THROWS(cholesky_decomposition<double> {m}, numerical::non_finite_error);
+    }
+  }
   bool named {false};
   try {
-    static_cast<void>(qr(matrix<double> {{inf, 0.0}, {0.0, 1.0}}));
+    static_cast<void>(symmetric_eigen {matrix<double> {{1.0, nan}, {nan, 2.0}}});
   }
-  catch (const numerical::singular_matrix_error& error) {
-    named = std::string {error.what()}.find("infinite or NaN") != std::string::npos; // not "dependent"
+  catch (const numerical::non_finite_error& error) {
+    named = std::string {error.what()}.find("infinite or NaN") != std::string::npos;
   }
   EXPECT(named);
 }

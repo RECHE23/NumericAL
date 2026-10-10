@@ -150,8 +150,9 @@ format-check:
 	uncrustify -c $(SCIFORGE_LINT)/uncrustify.cfg --check $(FORMAT_FILES)
 
 # Python binding (CPython Limited API, abi3 — built in place for development).
+# --force: build_ext tracks the .cpp, not the headers it includes, and would relink a stale object.
 python:
-	SCIFORGE_INCLUDE=$(SCIFORGE_INCLUDE) $(PYTHON) setup.py -q build_ext --inplace
+	SCIFORGE_INCLUDE=$(SCIFORGE_INCLUDE) $(PYTHON) setup.py -q build_ext --inplace --force
 
 python-test: python
 	$(PYRUN) -m unittest discover -s python/tests

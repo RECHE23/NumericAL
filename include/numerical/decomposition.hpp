@@ -14,6 +14,10 @@
  * `std::complex<double>`, … — and the partial pivoting is numerically stable for
  * well-conditioned systems. A singular matrix has a zero determinant; asking it
  * to solve or invert throws \ref numerical::singular_matrix_error.
+ *
+ * Every factorisation here refuses an infinite or NaN entry where it starts, with
+ * \ref numerical::non_finite_error: none of them means anything on one, and the
+ * iterative ones would stop at once and return plausible values.
  */
 #ifndef NUMERICAL_DECOMPOSITION_HPP
 #define NUMERICAL_DECOMPOSITION_HPP
@@ -99,6 +103,50 @@ namespace numerical {
     {}
   };
 
+  //! \brief Thrown when a decomposition's input holds an infinite or NaN entry: no factorisation of it means
+  //!        anything, and the iterative ones (eigh, SVD) would stop at once and return plausible values.
+  class non_finite_error : public std::domain_error
+  {
+  public:
+
+    //! \brief Builds the error. \param[in] message Human-readable cause.
+    explicit non_finite_error(const std::string& message)
+      : std::domain_error(message)
+    {}
+  };
+
+  namespace detail {
+
+    //! \brief Whether \p x is finite: both parts, for a complex scalar. \param[in] x The entry.
+    template <typename T>
+    [[nodiscard]] bool is_finite_entry(const T& x)
+    {
+      if constexpr (requires { x.real(); x.imag(); }) {
+        return std::isfinite(x.real()) && std::isfinite(x.imag());
+      }
+      else {
+        return std::isfinite(x);
+      }
+    }
+
+    //! \brief The one non-finite policy, checked where every decomposition starts.
+    //! \param[in] a    The input.
+    //! \param[in] what The decomposition, for the message.
+    //! \throws non_finite_error If an entry is infinite or NaN.
+    template <typename T>
+    void require_finite(const matrix<T>& a,
+                        const char*      what)
+    {
+      for (std::size_t i {0}; i < a.rows(); ++i) {
+        for (std::size_t j {0}; j < a.cols(); ++j) {
+          if (!is_finite_entry(a(i, j))) {
+            throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
+          }
+        }
+      }
+    }
+  } // namespace detail
+
   /*!
    * \brief An LU factorisation with partial pivoting of a square matrix.
    * \tparam T The scalar element type (a field: `double`, `std::complex<double>`, …).
@@ -123,6 +171,7 @@ namespace numerical {
       if (a.cols() != n_) {
         throw dimension_error("LU decomposition requires a square matrix");
       }
+      detail::require_finite(a, "LU decomposition");
       lu_.resize(n_ * n_);
       for (std::size_t i {0}; i < n_; ++i) {
         for (std::size_t j {0}; j < n_; ++j) {
@@ -318,6 +367,7 @@ namespace numerical {
       if (a.cols() != n_) {
         throw dimension_error("Cholesky decomposition requires a square matrix");
       }
+      detail::require_finite(a, "Cholesky decomposition");
       lower_.assign(n_ * n_, T {}); // lower-triangular; the upper triangle stays zero
       for (std::size_t i {0}; i < n_; ++i) {
         for (std::size_t j {0}; j <= i; ++j) {
@@ -425,6 +475,7 @@ namespace numerical {
       if (rows_ < cols_) {
         throw dimension_error("QR decomposition requires rows >= columns");
       }
+      detail::require_finite(a, "QR decomposition");
       q_.assign(rows_ * cols_, T {});
       r_.assign(cols_ * cols_, T {});
       for (std::size_t j {0}; j < cols_; ++j) {
@@ -433,9 +484,6 @@ namespace numerical {
           v[i] = a(i, j);
         }
         const double original {detail::scaled_norm(v)};
-        if (!std::isfinite(original)) {
-          throw singular_matrix_error("QR: a column holds an infinite or NaN entry");
-        }
         for (std::size_t i {0}; i < j; ++i) { // subtract the projections onto q_0…q_{j-1}
           T projection {};
           for (std::size_t k {0}; k < rows_; ++k) {
@@ -542,6 +590,7 @@ namespace numerical {
       if (input.cols() != n_) {
         throw dimension_error("symmetric eigendecomposition requires a square matrix");
       }
+      detail::require_finite(input, "symmetric eigendecomposition");
       std::vector<double> a(n_ * n_);
       std::vector<double> v(n_ * n_, 0.0);
       // Work on the matrix divided by its largest entry: a sum of squares of entries near 1e170
@@ -553,7 +602,7 @@ namespace numerical {
           scale = std::max(scale, std::abs(input(i, j)));
         }
       }
-      if (scale == 0.0 || !std::isfinite(scale)) {
+      if (scale == 0.0) {
         scale = 1.0;
       }
       double frobenius_squared {0.0};
@@ -698,6 +747,7 @@ namespace numerical {
       if (rows_ < cols_) {
         throw dimension_error("SVD requires rows >= columns");
       }
+      detail::require_finite(a, "SVD");
       // Decompose A divided by its largest entry: AᵀA squares the entries, which overflows near 1e155
       // and underflows near 1e-155. The singular values are scaled back; the vectors do not change.
       double scale {0.0};
@@ -706,7 +756,7 @@ namespace numerical {
           scale = std::max(scale, std::abs(a(i, j)));
         }
       }
-      if (scale == 0.0 || !std::isfinite(scale)) {
+      if (scale == 0.0) {
         scale = 1.0;
       }
       std::vector<double> entries(rows_ * cols_);
