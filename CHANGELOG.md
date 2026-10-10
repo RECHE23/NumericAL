@@ -18,6 +18,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   its `slogdet` is `(1.0, -921.03)`.
 
 ### Changed
+- **SciForge v2026.10.2**: CI pins and the `sciforge-build` floor (was 2026.6.x), so an isolated wheel
+  build compiles against the hardened binding headers.
 - **`svd` returns `(U, S, Vh)`, as NumPy's `svd(a, full_matrices=False)` does** (Python; C++ adds
   `svd_decomposition::vh()`). The third factor was `V`, so NumPy's idiom `(U * S) @ Vh` reconstructed a
   wrong matrix without an error. Code that transposed the third factor itself must stop doing so.
