@@ -21,6 +21,65 @@
 
 namespace numerical::detail {
 
+  //! \brief A chunk of a parallel_for, type-erased: runs `body(i)` for `i` in `[begin, end)`.
+  using chunk_runner = void (*)(const void* body, std::size_t begin, std::size_t end);
+
+  /*!
+   * \brief The part of \ref parallel_for that does not depend on the body: runs \p chunks chunks of
+   *        \p chunk indices up to \p count, one thread each, keeps the exception of each, joins them all,
+   *        and rethrows the first in index order.
+   * \param[in] run    The chunk runner.
+   * \param[in] body   The body it is handed.
+   * \param[in] count  The number of iterations.
+   * \param[in] chunk  Indices per chunk.
+   * \param[in] chunks Chunks.
+   */
+  inline void run_chunks(chunk_runner run,
+                         const void*  body,
+                         std::size_t  count,
+                         std::size_t  chunk,
+                         std::size_t  chunks)
+  {
+    std::vector<std::exception_ptr> failed(chunks);
+    // Joined on every way out, a worker the system refuses to start (std::system_error) included: a
+    // joinable thread destroyed unjoined would call std::terminate.
+    struct joined_pool
+    {
+      std::vector<std::thread> workers;
+
+      joined_pool()                              = default;
+      joined_pool(const joined_pool&)            = delete;
+      joined_pool& operator=(const joined_pool&) = delete;
+      joined_pool(joined_pool&&)                 = delete;
+      joined_pool& operator=(joined_pool&&)      = delete;
+      ~joined_pool()
+      {
+        for (std::thread& worker : workers) {
+          worker.join();
+        }
+      }
+    };
+    {
+      joined_pool pool;
+      pool.workers.reserve(chunks);
+      for (std::size_t c {0}; c < chunks; ++c) {
+        pool.workers.emplace_back([run, body, &failed, c, chunk, count]() noexcept {
+                                    try {
+                                      run(body, c * chunk, std::min(count, (c + 1) * chunk));
+                                    }
+                                    catch (...) {
+                                      failed[c] = std::current_exception();
+                                    }
+                                  });
+      }
+    }
+    for (const std::exception_ptr& error : failed) {
+      if (error) {
+        std::rethrow_exception(error);
+      }
+    }
+  }
+
   /*!
    * \brief Runs `body(i)` for every `i` in `[0, count)`.
    *
@@ -49,51 +108,15 @@ namespace numerical::detail {
       }
       return;
     }
-    const std::size_t               threads {std::max<std::size_t>(2, std::thread::hardware_concurrency())};
-    const std::size_t               chunk   {((count + threads) - 1) / threads};
-    const std::size_t               chunks  {((count + chunk) - 1) / chunk};
-    std::vector<std::exception_ptr> failed(chunks);
-    const auto                      run     {[&body, &failed, chunk, count](std::size_t c) noexcept {
-                                               try {
-                                                 const std::size_t end {std::min(count, (c + 1) * chunk)};
-                                                 for (std::size_t i {c * chunk}; i < end; ++i) {
-                                                   body(i);
-                                                 }
-                                               }
-                                               catch (...) {
-                                                 failed[c] = std::current_exception();
-                                               }
-                                             }};
-    // Joined on every way out, a worker the system refuses to start (std::system_error) included: a
-    // joinable thread destroyed unjoined would call std::terminate.
-    struct joined_pool
-    {
-      std::vector<std::thread> workers;
-
-      joined_pool()                              = default;
-      joined_pool(const joined_pool&)            = delete;
-      joined_pool& operator=(const joined_pool&) = delete;
-      joined_pool(joined_pool&&)                 = delete;
-      joined_pool& operator=(joined_pool&&)      = delete;
-      ~joined_pool()
-      {
-        for (std::thread& worker : workers) {
-          worker.join();
-        }
-      }
-    };
-    {
-      joined_pool pool;
-      pool.workers.reserve(chunks);
-      for (std::size_t c {0}; c < chunks; ++c) {
-        pool.workers.emplace_back(run, c);
-      }
-    }
-    for (const std::exception_ptr& error : failed) {
-      if (error) {
-        std::rethrow_exception(error);
-      }
-    }
+    const std::size_t threads {std::max<std::size_t>(2, std::thread::hardware_concurrency())};
+    const std::size_t chunk   {((count + threads) - 1) / threads};
+    run_chunks([](const void* erased, std::size_t begin, std::size_t end) {
+                 const Body& work {*static_cast<const Body*>(erased)};
+                 for (std::size_t i {begin}; i < end; ++i) {
+                   work(i);
+                 }
+               },
+               &body, count, chunk, ((count + chunk) - 1) / chunk);
   }
 } // namespace numerical::detail
 
