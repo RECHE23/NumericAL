@@ -263,6 +263,18 @@ TEST(symmetric_eigen_handles_negative_rotations_and_zero_off_diagonals)
   EXPECT(approx_equal(reconstruct(e), a));
 }
 
+// eigh reads the lower triangle, as numpy.linalg.eigh does by default: an upper triangle that does not
+// mirror it changes nothing. Its sweeps are bounded: one sweep does not diagonalise a dense 3 × 3.
+TEST(symmetric_eigen_reads_the_lower_triangle_and_bounds_its_sweeps)
+{
+  const matrix<double>  lower_only {{2.0, 99.0, -7.0}, {1.0, 3.0, 50.0}, {0.5, -1.0, 4.0}};
+  const matrix<double>  mirrored   {{2.0, 1.0, 0.5}, {1.0, 3.0, -1.0}, {0.5, -1.0, 4.0}};
+  const symmetric_eigen e          {lower_only};
+  EXPECT(approx_equal(e.values(), symmetric_eigen {mirrored}.values()));
+  EXPECT(approx_equal(reconstruct(e), mirrored));
+  EXPECT_THROWS(symmetric_eigen(mirrored, 1), numerical::convergence_error);
+}
+
 TEST(symmetric_eigen_rejects_non_square)
 {
   const matrix<double> non_square {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};

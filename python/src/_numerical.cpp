@@ -980,7 +980,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe minimum-norm least-squares solution of a @ x ≈ b, as numpy.linalg.lstsq (SVD; a rank-2, b rank-1).");
     m.def<&cholesky>("cholesky", "cholesky(a) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite).");
     m.def<&qr>("qr", "qr(a) -> (Q, R)\nThe QR factorisation of an m×n matrix (m ≥ n).");
-    m.def<&eigh>("eigh", "eigh(a) -> (values, vectors)\nEigenpairs of a real symmetric matrix (ascending values).");
+    m.def<&eigh>("eigh", "eigh(a) -> (values, vectors)\nEigenpairs of a real symmetric matrix (ascending values); its lower triangle is read, as numpy.linalg.eigh reads it.");
     m.def<&svd>("svd", "svd(a) -> (U, S, Vh)\nThe singular value decomposition a = U @ diag(S) @ Vh of an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).");
     // The 3 that stay manual: determinant (dtype-dependent scalar), einsum (variadic),
     // asarray (returns the same object when the dtype matches — Py_NewRef identity).

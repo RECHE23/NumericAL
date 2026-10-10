@@ -658,6 +658,24 @@ namespace numerical {
     return qr_decomposition<T> {a};
   }
 
+  //! \brief Thrown when an iterative algorithm has not converged within its bound of sweeps.
+  class convergence_error : public std::runtime_error
+  {
+  public:
+
+    //! \brief Builds the error. \param[in] message Human-readable cause.
+    explicit convergence_error(const std::string& message)
+      : std::runtime_error(message)
+    {}
+  };
+
+  namespace detail {
+
+    //! \brief The sweeps a Jacobi method may take: it converges quadratically, in under 15 on every
+    //!        matrix measured; the bound turns a non-convergence into an error instead of a hang.
+    inline constexpr std::size_t jacobi_sweeps {60};
+  } // namespace detail
+
   /*!
    * \brief The eigenvalues and eigenvectors of a real symmetric matrix.
    *
@@ -666,18 +684,22 @@ namespace numerical {
    * eigenvectors orthonormal. The eigenvalues are returned in ascending order,
    * with \ref vectors `j`-th column the eigenvector of \ref values `[j]`
    * (`A = V Λ Vᵀ`). Real symmetric only — the complex Hermitian case (complex
-   * rotations) is a deliberate future addition; only the lower/upper symmetry of
-   * the input is assumed (it is read in full).
+   * rotations) is a deliberate future addition. Only the lower triangle is read, as
+   * `numpy.linalg.eigh` reads it by default: the upper one is taken to mirror it.
    */
   class symmetric_eigen
   {
   public:
 
     /*!
-     * \brief Diagonalises \p input. \param[in] input A real symmetric matrix.
-     * \throws dimension_error If \p input is not square.
+     * \brief Diagonalises \p input.
+     * \param[in] input      A real symmetric matrix (its lower triangle is read).
+     * \param[in] max_sweeps The bound of Jacobi sweeps.
+     * \throws dimension_error   If \p input is not square.
+     * \throws convergence_error If the off-diagonal is not negligible after \p max_sweeps sweeps.
      */
-    explicit symmetric_eigen(const matrix<double>& input)
+    explicit symmetric_eigen(const matrix<double>& input,
+                             std::size_t           max_sweeps = detail::jacobi_sweeps)
       : n_(input.rows())
     {
       if (input.cols() != n_) {
@@ -691,7 +713,7 @@ namespace numerical {
       // single rotation. The eigenvalues are scaled back; the eigenvectors do not depend on it.
       double scale {0.0};
       for (std::size_t i {0}; i < n_; ++i) {
-        for (std::size_t j {0}; j < n_; ++j) {
+        for (std::size_t j {0}; j <= i; ++j) {
           scale = std::max(scale, std::abs(input(i, j)));
         }
       }
@@ -702,14 +724,17 @@ namespace numerical {
       for (std::size_t i {0}; i < n_; ++i) {
         v[(i * n_) + i] = 1.0;
         for (std::size_t j {0}; j < n_; ++j) {
-          a[(i * n_) + j]    = input(i, j) / scale;
+          a[(i * n_) + j]    = input(std::max(i, j), std::min(i, j)) / scale; // the lower triangle, mirrored
           frobenius_squared += a[(i * n_) + j] * a[(i * n_) + j];
         }
       }
       // The off-diagonal norm strictly decreases each rotation and converges to 0,
       // so this terminates; the threshold is relative to the matrix scale.
       const double threshold {1e-12 * std::sqrt(frobenius_squared)};
-      while (off_diagonal(a) > threshold) {
+      for (std::size_t sweeps {0}; off_diagonal(a) > threshold; ++sweeps) {
+        if (sweeps == max_sweeps) {
+          throw convergence_error("symmetric eigendecomposition: Jacobi did not converge within its sweeps");
+        }
         for (std::size_t p {0}; p < n_; ++p) {
           for (std::size_t q {p + 1}; q < n_; ++q) {
             sweep(a, v, p, q);
@@ -815,22 +840,7 @@ namespace numerical {
     matrix<double> vectors_; //!< Eigenvectors as columns.
   };
 
-  //! \brief Thrown when an iterative algorithm has not converged within its bound of sweeps.
-  class convergence_error : public std::runtime_error
-  {
-  public:
-
-    //! \brief Builds the error. \param[in] message Human-readable cause.
-    explicit convergence_error(const std::string& message)
-      : std::runtime_error(message)
-    {}
-  };
-
   namespace detail {
-
-    //! \brief The sweeps one-sided Jacobi may take: it converges quadratically, in under 15 on every
-    //!        matrix measured; the bound turns a non-convergence into an error instead of a hang.
-    inline constexpr std::size_t jacobi_sweeps {60};
 
     /*!
      * \brief One-sided (Hestenes) Jacobi on the columns of the `n × n` row-major \p w: plane rotations,

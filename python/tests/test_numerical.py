@@ -365,6 +365,11 @@ class LinalgVsNumpy(unittest.TestCase):
         self.assertTrue(np.allclose(np.sort(v), np.linalg.eigvalsh(a)))
         self.assertTrue(np.allclose(matrix @ np.diag(v) @ matrix.T, a))
 
+    def test_eigh_reads_the_lower_triangle_as_numpy(self):
+        a = np.array([[2.0, 99.0, -7.0], [1.0, 3.0, 50.0], [0.5, -1.0, 4.0]])
+        values, _ = numerical.eigh(numerical.asarray(a))
+        self.assertTrue(np.allclose(np.asarray(values), np.linalg.eigvalsh(a)))
+
     def test_svd_reconstructs(self):
         a = np.array([[1.0, 1.0], [1.0, 2.0], [1.0, 3.0]])
         u, s, vh = numerical.svd(numerical.asarray(a))
