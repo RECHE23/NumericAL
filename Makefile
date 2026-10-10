@@ -219,20 +219,38 @@ uninstall:
 # tag matches the version, builds the wheels and sdist, and publishes to PyPI via
 # Trusted Publishing (OIDC) — once the one-time Trusted Publisher is configured
 # (see README). The pushed tag is the single thing that triggers a publish.
+#
+# The CHANGELOG's Unreleased section becomes the version's, and the body of an ANNOTATED tag
+# (--cleanup=verbatim keeps its "## " headings, which git would drop as comments); release.yml publishes
+# that body as the GitHub release notes. An empty Unreleased section refuses the release. DRY_RUN=1 runs
+# the computation and that guard with no commit, tag or push.
 release:
 	@test "$$(git symbolic-ref --short HEAD)" = main || { echo "release from main only"; exit 1; }
 	@test -z "$$(git status --porcelain)" || { echo "working tree not clean"; exit 1; }
 	@git fetch --tags --quiet origin
-	@year=$$(date -u +%Y); month=$$(date -u +%m | sed 's/^0//'); \
+	@year=$$(date -u +%Y); month=$$(date -u +%m | sed 's/^0//'); today=$$(date -u +%Y-%m-%d); \
 	 patch=$$(git tag -l "v$$year.$$month.*" | wc -l | tr -d ' '); \
 	 version="$$year.$$month.$$patch"; \
-	 echo "Releasing v$$version" && \
-	 sed -i.bak -E "s/^version = \".*\"/version = \"$$version\"/" pyproject.toml && rm -f pyproject.toml.bak && \
-	 sed -i.bak -E "s/^__version__ = \".*\"/__version__ = \"$$version\"/" python/numerical/__init__.py && rm -f python/numerical/__init__.py.bak && \
-	 git add pyproject.toml python/numerical/__init__.py && \
-	 git commit -m "release: v$$version" && \
-	 git tag "v$$version" && \
-	 git push origin HEAD "v$$version"
+	 echo "Releasing v$$version ($$today)$${DRY_RUN:+  [DRY_RUN — no commit/tag/push]}"; \
+	 awk '/^## Unreleased$$/{f=1;next} f&&/^## /{exit 1} f&&NF{found=1;exit 0} END{if(!found)exit 1}' CHANGELOG.md \
+	   || { echo "release: '## Unreleased' is empty — add a CHANGELOG line (even 'maintenance release') first"; exit 1; }; \
+	 tb=$$(mktemp); \
+	 awk -v v="$$version" -v d="$$today" '/^## Unreleased$$/{print; print ""; print "## " v " — " d; next} {print}' CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md; \
+	 awk -v h="## $$version " 'index($$0,h)==1{f=1;print;next} f&&/^## /{exit} f{print}' CHANGELOG.md > $$tb; \
+	 sed -i.bak -E "s/^version = \".*\"/version = \"$$version\"/" pyproject.toml && rm -f pyproject.toml.bak; \
+	 sed -i.bak -E "s/^__version__ = \".*\"/__version__ = \"$$version\"/" python/numerical/__init__.py && rm -f python/numerical/__init__.py.bak; \
+	 if [ -n "$$DRY_RUN" ]; then \
+	   echo "would commit 'release: v$$version' (pyproject, __init__, CHANGELOG); annotated tag v$$version, body:"; \
+	   sed 's/^/    | /' $$tb; \
+	   echo "would run: git push origin HEAD v$$version"; \
+	   git checkout -- pyproject.toml python/numerical/__init__.py CHANGELOG.md; \
+	 else \
+	   git add pyproject.toml python/numerical/__init__.py CHANGELOG.md; \
+	   git commit -m "release: v$$version"; \
+	   git tag -a --cleanup=verbatim "v$$version" -F $$tb; \
+	   git push origin HEAD "v$$version"; \
+	 fi; \
+	 rm -f $$tb
 
 clean:
 	rm -rf $(BUILD) build dist ./*.egg-info python/numerical/*.so

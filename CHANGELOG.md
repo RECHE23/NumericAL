@@ -1,0 +1,52 @@
+# Changelog
+
+All notable changes to NumericAL. Versions are calendar-based (`YYYY.M.PATCH`, the patch resetting each
+month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 100%-4D coverage of
+`include/`, clang and GCC, sanitizers, MISRA, and a NumPy differential.
+
+## Unreleased
+
+### Changed
+- **`svd` returns `(U, S, Vh)`, as NumPy's `svd(a, full_matrices=False)` does** (Python; C++ adds
+  `svd_decomposition::vh()`). The third factor was `V`, so NumPy's idiom `(U * S) @ Vh` reconstructed a
+  wrong matrix without an error. Code that transposed the third factor itself must stop doing so.
+- **The SVD takes any shape and a complex matrix, and keeps its small singular values.** It was
+  the eigendecomposition of `Aᵀ A`, which squares the condition number: true singular values
+  `[1, 1e-4, 1e-8, 1e-12]` came back as `[…, 9.7e-9, 0]`, and `U` lost its orthonormality where
+  `A` was rank-deficient. It is now a Householder QR then one-sided Jacobi on `R`, which gives each
+  singular value to high relative accuracy; `U` (`m × k`) and `V` (`n × k`), `k = min(m, n)`, stay
+  orthonormal at any rank. `svd_decomposition` is a class template (`svd_decomposition<T>`, deduced
+  from its argument).
+- **QR is computed by Householder reflections.** Modified Gram–Schmidt lost orthogonality on an
+  ill-conditioned matrix (Hilbert-10: `|QᵀQ − I|` 2.2e-4) and refused Hilbert-12 as "linearly
+  dependent", which now factorises with `|QᵀQ − I|` 1.8e-15. A rank-deficient matrix factorises too
+  (with a zero on `R`'s diagonal); `qr(a).solve(b)` refuses it, and `lstsq` solves it.
+- **`lstsq` gives NumPy's minimum-norm least-squares solution, for any shape and rank**, from the
+  SVD. Through QR it lost accuracy on a polynomial fit (Vandermonde of degree 11: a coefficient off
+  by 0.60; the test's degree-11 fit now recovers each within 1e-9) and refused a rank-deficient or
+  wide system.
+- **`eigh` reads the lower triangle, as `numpy.linalg.eigh` does by default**; it read the upper one
+  of a matrix that is not symmetric.
+- **A large computation releases the GIL** (from 64 × 64 elements): `solve`, `inverse`, `lstsq`,
+  `cholesky`, `qr`, `eigh`, `svd`, `determinant` and `einsum` run in parallel from several Python
+  threads.
+- **A parallel loop starts as many threads as its work pays for.** It started one per hardware thread
+  as soon as it had 16 or 64 indices, whatever their work: a 16 × 16 `inverse` took 177 µs instead of
+  8, a 64 × 64 matrix product 95 µs instead of 35.
+
+### Fixed
+- **Every decomposition refuses an infinite or NaN entry** (`non_finite_error`), named after the
+  decomposition asked for. `eigh` of `[[1, nan], [nan, 2]]` returned `[1, 2]`.
+- **An exception in a parallel worker reaches the caller** once every worker has joined; it called
+  `std::terminate`.
+- **`asarray` refuses an `__array_interface__` whose data address is null** while the shape has
+  elements, and one whose `data` tuple is empty; both crashed the interpreter.
+- **`einsum` refuses a loop count that overflows** (`dimension_error`): five summed labels of 65 536
+  wrapped the count of terms to 0 and returned 0.0.
+- **The Jacobi methods bound their sweeps** (`convergence_error`) instead of looping without end.
+
+## 2026.10.0 — 2026-10-10
+
+First release under the name NumericAL (formerly SciNum): dense vectors, matrices and tensors with
+`einsum`, LU, Cholesky, QR, symmetric eigen and SVD decompositions, and a zero-copy Python binding
+(`pip install numeric-al`, `import numerical`).

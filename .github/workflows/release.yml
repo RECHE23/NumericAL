@@ -70,3 +70,34 @@ jobs:
           path: dist
           merge-multiple: true
       - uses: pypa/gh-action-pypi-publish@v1.14.0
+
+  # The GitHub /releases page for the tag: its notes are the annotated tag's message, which make release
+  # writes from the CHANGELOG's section (a lightweight tag falls back to GitHub's generated notes), and
+  # the wheels and sdist are attached. Runs after publish, so a Release only appears for a version that
+  # shipped to PyPI.
+  github-release:
+    needs: [publish]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    timeout-minutes: 15
+    permissions:
+      contents: write   # create the Release for the tag
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          fetch-depth: 0   # fetch the annotated-tag object so its message can be read below
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Create the GitHub Release (annotated-tag notes + wheels, sdist)
+        run: |
+          notes="$(git for-each-ref "refs/tags/${GITHUB_REF_NAME}" --format='%(contents)')"
+          if [ -n "$(printf '%s' "$notes" | tr -d '[:space:]')" ]; then
+            printf '%s\n' "$notes" > "${RUNNER_TEMP}/notes.md"
+            gh release create "${GITHUB_REF_NAME}" --notes-file "${RUNNER_TEMP}/notes.md" --verify-tag dist/*
+          else
+            gh release create "${GITHUB_REF_NAME}" --generate-notes --verify-tag dist/*
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
