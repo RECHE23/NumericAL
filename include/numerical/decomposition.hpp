@@ -80,7 +80,7 @@ namespace numerical {
       for (const T& element : x) {
         largest = std::max(largest, static_cast<double>(std::abs(element)));
       }
-      if (largest == 0.0 || !std::isfinite(largest)) {
+      if (largest == 0.0) { // the entries are finite: require_finite runs where every caller starts
         return largest;
       }
       double sum {0.0};

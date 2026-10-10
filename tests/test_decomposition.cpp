@@ -309,7 +309,20 @@ TEST(every_decomposition_refuses_a_non_finite_entry)
       EXPECT(refuses([&] { static_cast<void>(cholesky_decomposition<double> {m}); }, "Cholesky"));
     }
   }
-  bool named {false};
+  // A complex entry is finite only when both of its parts are.
+  using complex = std::complex<double>;
+  const complex zero {0.0, 0.0};
+  const complex one  {1.0, 0.0};
+  const complex two  {2.0, 0.0};
+  for (const complex bad : {complex {inf, 0.0}, complex {0.0, nan}}) {
+    const matrix<complex> m {{one, bad}, {bad, two}};
+    EXPECT_THROWS(lu_decomposition<complex> {m}, numerical::non_finite_error);
+    EXPECT_THROWS(qr(m), numerical::non_finite_error);
+  }
+  // A zero column is dependent, complex as real.
+  const matrix<complex> zero_column {{zero, one}, {zero, two}};
+  EXPECT_THROWS(qr(zero_column), numerical::singular_matrix_error);
+  bool named                        {false};
   try {
     static_cast<void>(symmetric_eigen {matrix<double> {{1.0, nan}, {nan, 2.0}}});
   }
