@@ -1,0 +1,64 @@
+name: CI
+
+# Actions-minute economy (this is a private repo, so minutes are billed, and
+# macOS runners bill 10x): macOS is the maintainer's local development platform —
+# every gate runs there via `make full-local-gate` on each slice — so CI
+# deliberately omits macOS and covers the *non-local* platforms instead: Linux
+# (clang + g++-14), Windows/MSVC and ARM. Run on main only (plus PRs); a manual
+# workflow_dispatch is available for ad-hoc validation. Doc-only pushes are skipped.
+#
+# Self-hosted routing: the maintainer's own pushes (and manual dispatches) run on
+# the local Proxmox self-hosted runners (labels self-hosted-linux / self-hosted-windows)
+# to spend zero billed minutes; pull requests and any other contributor stay on
+# GitHub-hosted runners exactly as before. ARM has no self-hosted equivalent and
+# always stays hosted. The `route` job computes the target labels once; toolchain
+# bootstrap steps that only make sense on disposable hosted runners are skipped on
+# self-hosted (where the toolchain is pre-provisioned).
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ['**.md', 'docs/**']
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  # Lint (format + MISRA) via SciForge's reusable spine: pins clang-tidy-18, routes to
+  # self-hosted on the maintainer's pushes, runs this repo's make format-check / misra
+  # against the shared lint/ config. NumericAL is a leaf — no dependency siblings.
+  lint:
+    uses: RECHE23/sciforge/.github/workflows/lint-cpp.yml@v2026.10.1
+    with:
+      deps: '[]'
+      sciforge-ref: v2026.10.1
+      runner-mode: routed
+
+  # POSIX + CMake build via SciForge's reusable build spine: the Makefile under
+  # g++-14 + clang++ with sanitizers (Linux baseline), and CMake configure/build/
+  # test/install + find_package smoke across linux-x64, Windows/MSVC and native ARM
+  # — matching NumericAL's prior coverage exactly (macOS is the local gate, off in CI).
+  # NumericAL is a leaf (no dependency siblings, so no ci-pat).
+  build:
+    uses: RECHE23/sciforge/.github/workflows/build-cpp.yml@v2026.10.1
+    with:
+      deps: '[]'
+      sciforge-ref: v2026.10.1
+      runner-mode: routed
+      enable-windows-msvc: true
+      enable-arm: true
+
+  # The abi3 binding + the zero-copy interop round-trips against NumPy, via SciForge's
+  # reusable spine. NumericAL is a leaf (deps='[]'); its exact prior coverage is
+  # {linux, Windows} x {3.10, 3.14} (macOS off — the local gate). NumPy is
+  # pre-installed for the interop round-trips. runner-mode: routed -> on the
+  # maintainer's pushes Windows runs on the self-hosted runner, where python-cpp uses
+  # the pre-installed-interpreter venv path (setup-python needs HKLM there).
+  python:
+    uses: RECHE23/sciforge/.github/workflows/python-cpp.yml@v2026.10.1
+    with:
+      python-versions: '["3.10","3.14"]'
+      sciforge-ref: v2026.10.1
+      deps: '[]'
+      runner-mode: routed
+      enable-windows: true
+      pre-install: numpy

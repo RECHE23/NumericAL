@@ -1,0 +1,51 @@
+# Python distribution for NumericAL. Built from the repository root so the sdist is
+# self-contained: it carries the C++ headers in include/ alongside the binding in
+# python/. The C++ library itself is header-only and needs none of this — see the
+# Makefile and CMakeLists.txt for the C++ workflows.
+[build-system]
+requires = ["setuptools>=68", "sciforge-build>=2026.6.16"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "numerical"
+version = "2026.6.15"
+description = "NumericAL — a generic, header-only numerical library: tensors and Einstein summation"
+readme = "README.md"
+requires-python = ">=3.10"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "René Chenard", email = "rene.chenard.1@ulaval.ca" }]
+keywords = ["tensor", "einsum", "linear-algebra", "numerical", "dlpack", "array-interface"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: C++",
+    "Topic :: Scientific/Engineering :: Mathematics",
+    "Topic :: Software Development :: Libraries",
+    "Operating System :: OS Independent",
+]
+
+[project.urls]
+Repository = "https://github.com/RECHE23/NumericAL"
+Issues = "https://github.com/RECHE23/NumericAL/issues"
+
+# The `numerical` package lives under python/; the C++ binding source under
+# python/src; the headers it compiles against under include/ (root).
+[tool.setuptools]
+package-dir = { "" = "python" }
+packages = ["numerical"]
+
+[tool.setuptools.package-data]
+numerical = ["*.so", "*.pyd"]
+
+# Build one abi3 wheel per platform (cp310 → works on CPython 3.10+).
+[tool.cibuildwheel]
+build = "cp310-*"
+build-frontend = "build"
+test-command = "python -m unittest discover -s {project}/python/tests"
+
+[tool.cibuildwheel.macos]
+environment = { MACOSX_DEPLOYMENT_TARGET = "11.0" }

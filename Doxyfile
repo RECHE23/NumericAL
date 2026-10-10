@@ -1,0 +1,57 @@
+# Doxygen configuration for NumericAL — API reference generation (`make doc`).
+# Style mirrors REAL: banner-block comments whose first sentence is the brief
+# (no autobrief), in-place attribute docs (`//!<`), exhaustive extraction.
+
+PROJECT_NAME           = "NumericAL"
+PROJECT_BRIEF          = "A header-only C++20 lexer built on REAL"
+OUTPUT_DIRECTORY       = build/doc
+OUTPUT_LANGUAGE        = English
+
+# --- what to document ------------------------------------------------------
+INPUT                  = include/numerical README.md BENCHMARKS.md docs/
+FILE_PATTERNS          = *.hpp *.dox
+RECURSIVE              = YES
+USE_MDFILE_AS_MAINPAGE = README.md
+EXTRACT_ALL            = YES
+EXTRACT_PRIVATE        = YES
+EXTRACT_STATIC         = YES
+EXTRACT_ANON_NSPACES   = YES
+INTERNAL_DOCS          = YES
+
+# --- comment interpretation ------------------------------------------------
+JAVADOC_AUTOBRIEF      = NO
+QT_AUTOBRIEF           = NO
+MULTILINE_CPP_IS_BRIEF = NO
+OPTIMIZE_OUTPUT_FOR_C  = NO
+
+# --- diagnostics: keep the doc honest (warn on undocumented members) -------
+QUIET                  = YES
+WARNINGS               = YES
+WARN_IF_UNDOCUMENTED   = YES
+WARN_IF_DOC_ERROR      = YES
+WARN_NO_PARAMDOC       = YES
+# Fail the build on any warning (after listing them all), so the doc gate enforces
+# the zero-warning discipline rather than printing warnings that slip through.
+WARN_AS_ERROR          = FAIL_ON_WARNINGS
+
+# --- output ----------------------------------------------------------------
+USE_MATHJAX            = YES
+GENERATE_HTML          = YES
+GENERATE_LATEX         = NO
+HTML_OUTPUT            = html
+SOURCE_BROWSER         = YES
+ALPHABETICAL_INDEX     = YES
+
+# --- graphs (require Graphviz `dot`) ---------------------------------------
+HAVE_DOT               = YES
+DOT_IMAGE_FORMAT       = svg
+INTERACTIVE_SVG        = YES
+INCLUDE_GRAPH          = YES
+INCLUDED_BY_GRAPH      = NO
+CALL_GRAPH             = NO
+CALLER_GRAPH           = NO
+
+# --- preprocessing ---------------------------------------------------------
+ENABLE_PREPROCESSING   = YES
+MACRO_EXPANSION        = YES
+EXPAND_ONLY_PREDEF     = NO

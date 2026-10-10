@@ -1,0 +1,10 @@
+@PACKAGE_INIT@
+
+include(CMakeFindDependencyMacro)
+# NumericAL uses std::thread (parallel.hpp), so it carries the threads dependency;
+# a downstream consumer must resolve it before the imported target is usable.
+find_dependency(Threads)
+
+include("${CMAKE_CURRENT_LIST_DIR}/numericalTargets.cmake")
+
+check_required_components(numerical)
