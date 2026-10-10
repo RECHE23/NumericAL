@@ -364,6 +364,47 @@ TEST(one_sided_jacobi_converges_in_few_sweeps)
   numerical::detail::one_sided_jacobi(w, v, n, 10);
 }
 
+// slogdet, matrix_rank and pinv as numpy.linalg gives them: a determinant whose product underflows keeps
+// its logarithm, a rank-deficient matrix its rank, and the pseudo-inverse satisfies A A⁺ A = A.
+TEST(log_determinant_rank_and_pseudo_inverse)
+{
+  const std::size_t   n {200};
+  std::vector<double> scaled(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    scaled[(i * n) + i] = 1e-2;
+  }
+  const matrix<double> small {n, n, scaled};
+  EXPECT(determinant(small) == 0.0); // 1e-400 underflows
+  const auto [sign, logarithm] {lu_decomposition<double> {small}.log_determinant()};
+  EXPECT(sign == 1.0 && std::abs(logarithm - (200.0 * std::log(1e-2))) < 1e-9);
+  const auto [negative, log_two] {lu_decomposition<double> {matrix<double> {{0.0, 2.0}, {1.0, 0.0}}}.log_determinant()};
+  EXPECT(negative == -1.0 && std::abs(log_two - std::log(2.0)) < 1e-15);
+  const auto [zero, minus_infinity] {lu_decomposition<double> {matrix<double> {{1.0, 2.0}, {2.0, 4.0}}}.log_determinant()};
+  EXPECT(zero == 0.0 && minus_infinity == -std::numeric_limits<double>::infinity());
+  using c = std::complex<double>;
+  const auto [phase, log_magnitude] {lu_decomposition<c> {matrix<c> {{c {0.0, 2.0}}}}.log_determinant()};
+  EXPECT(std::abs(phase - c {0.0, 1.0}) < 1e-15 && std::abs(log_magnitude - std::log(2.0)) < 1e-15);
+
+  const matrix<double> rank_one {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}};
+  EXPECT_EQ(numerical::matrix_rank(rank_one), 1U);
+  EXPECT_EQ(numerical::matrix_rank(hilbert(8)), 8U);
+  EXPECT_EQ(numerical::matrix_rank(matrix<double> {{0.0, 0.0}, {0.0, 0.0}}), 0U);
+  for (const matrix<double>& a : {rank_one, hilbert(6), matrix<double> {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}}}) {
+    const matrix<double> plus {numerical::pinv(a)};
+    EXPECT(plus.rows() == a.cols() && plus.cols() == a.rows());
+    EXPECT(approx_equal(a * plus * a, a, 1e-9));
+    double largest {0.0}; // A⁺ of an ill-conditioned A is large: its rounding scales with it
+    for (std::size_t i {0}; i < plus.rows(); ++i) {
+      for (std::size_t j {0}; j < plus.cols(); ++j) {
+        largest = std::max(largest, std::abs(plus(i, j)));
+      }
+    }
+    EXPECT(approx_equal(plus * a * plus, plus, 1e-9 * largest));
+  }
+  const matrix<c> z {{c {1.0, 1.0}, c {0.0, 2.0}}, {c {2.0, 0.0}, c {1.0, -1.0}}};
+  EXPECT(approx_equal(numerical::pinv(z), numerical::inverse(z)));
+}
+
 // lstsq is NumPy's: the least-squares solution of a full-rank tall system, accurate on a Vandermonde
 // fit (modified Gram–Schmidt left a coefficient error of 0.6 at degree 11), and the minimum-norm one
 // of a rank-deficient or wide system.

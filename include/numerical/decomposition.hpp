@@ -72,6 +72,14 @@ namespace numerical {
       return x.real();
     }
 
+    //! \brief The unit-modulus factor of \p x: `x / |x|` (its sign, for a real scalar), and 1 at 0.
+    template <typename T>
+    [[nodiscard]] T phase_of(const T& x)
+    {
+      const double magnitude {static_cast<double>(std::abs(x))};
+      return magnitude == 0.0 ? T {1} : x / static_cast<T>(magnitude);
+    }
+
     //! \brief The Euclidean norm of \p x, summed at the scale of its largest magnitude: a plain sum of
     //!        squares overflows near 1e155 and underflows to 0 near 1e-155.
     template <typename T>
@@ -229,6 +237,28 @@ namespace numerical {
         value *= lu_[(i * n_) + i];
       }
       return value;
+    }
+
+    /*!
+     * \brief The determinant as its unit-modulus sign and the natural logarithm of its magnitude, as
+     *        `numpy.linalg.slogdet` gives them: a sum of logarithms does not underflow or overflow where
+     *        the product does (`det(1e-2·I)` of order 200 is 0.0; its logarithm is −921.0).
+     * \return The sign (`+1` or `−1` for a real matrix, a unit complex number for a complex one) and the
+     *         logarithm; a singular matrix gives a sign of 0 and a logarithm of −∞.
+     */
+    [[nodiscard]] std::pair<T, double> log_determinant() const
+    {
+      if (singular_) {
+        return {T {0}, -std::numeric_limits<double>::infinity()};
+      }
+      T      sign      {static_cast<T>(sign_)};
+      double logarithm {0.0};
+      for (std::size_t i {0}; i < n_; ++i) {
+        const T pivot {lu_[(i * n_) + i]};
+        sign      *= detail::phase_of(pivot);
+        logarithm += std::log(static_cast<double>(std::abs(pivot)));
+      }
+      return {sign, logarithm};
     }
 
     /*!
@@ -452,14 +482,6 @@ namespace numerical {
   }
 
   namespace detail {
-
-    //! \brief The unit-modulus factor of \p x: `x / |x|` (its sign, for a real scalar), and 1 at 0.
-    template <typename T>
-    [[nodiscard]] T phase_of(const T& x)
-    {
-      const double magnitude {static_cast<double>(std::abs(x))};
-      return magnitude == 0.0 ? T {1} : x / static_cast<T>(magnitude);
-    }
 
     //! \brief A thin QR factorisation, row-major: `q` is `rows × cols` with orthonormal columns, `r` is
     //!        `cols × cols` upper triangular with a real, non-negative diagonal.
@@ -1082,6 +1104,27 @@ namespace numerical {
     matrix<T>      v_;               //!< n×k right singular vectors.
   };
 
+  namespace detail {
+
+    //! \brief How many of the singular values \p sigma of an `rows × cols` matrix exceed \ref rank_tolerance
+    //!        of the largest: its numerical rank (the first that many, \p sigma being descending).
+    [[nodiscard]] inline std::size_t numerical_rank(const vector<double>& sigma,
+                                                    std::size_t           rows,
+                                                    std::size_t           cols)
+    {
+      double largest {0.0};
+      for (std::size_t d {0}; d < sigma.size(); ++d) {
+        largest = std::max(largest, sigma[d]);
+      }
+      const double tolerance {rank_tolerance(largest, rows, cols)};
+      std::size_t  rank      {0};
+      for (std::size_t d {0}; d < sigma.size(); ++d) {
+        rank += static_cast<std::size_t>(sigma[d] > tolerance);
+      }
+      return rank;
+    }
+  } // namespace detail
+
   /*!
    * \brief The minimum-norm least-squares solution of `A x ≈ b`, as NumPy's `lstsq` gives it.
    * \tparam T The scalar element type (`double` or `std::complex<double>`).
@@ -1103,16 +1146,11 @@ namespace numerical {
       throw dimension_error("lstsq: right-hand side size differs from the matrix");
     }
     detail::require_finite(a, "lstsq");
-    const svd_decomposition<T> s       {a};
-    const vector<double>&      sigma   {s.singular_values()};
-    const std::size_t          k       {sigma.size()};
-    double                     largest {0.0};
-    for (const double value : sigma) {
-      largest = std::max(largest, value);
-    }
-    const double               tolerance     {detail::rank_tolerance(largest, a.rows(), a.cols())};
+    const svd_decomposition<T> s             {a};
+    const vector<double>&      sigma         {s.singular_values()};
+    const std::size_t          rank          {detail::numerical_rank(sigma, a.rows(), a.cols())};
     std::vector<T>             x(a.cols(), T {});
-    for (std::size_t d {0}; d < k && sigma[d] > tolerance; ++d) {
+    for (std::size_t d {0}; d < rank; ++d) {
       T coefficient {}; // (u_dᴴ b) / σ_d
       for (std::size_t i {0}; i < a.rows(); ++i) {
         coefficient += detail::conj_of(s.u()(i, d)) * b[i];
@@ -1123,6 +1161,42 @@ namespace numerical {
       }
     }
     return vector<T> {std::move(x)};
+  }
+
+  /*!
+   * \brief The numerical rank of \p a, as `numpy.linalg.matrix_rank` counts it: its singular values above
+   *        \ref detail::rank_tolerance of the largest.
+   * \throws non_finite_error If an entry of \p a is infinite or NaN.
+   */
+  template <typename T>
+  [[nodiscard]] std::size_t matrix_rank(const matrix<T>& a)
+  {
+    detail::require_finite(a, "matrix_rank");
+    return detail::numerical_rank(svd_decomposition<T> {a}.singular_values(), a.rows(), a.cols());
+  }
+
+  /*!
+   * \brief The Moore–Penrose pseudo-inverse of the `m × n` \p a (`n × m`), as `numpy.linalg.pinv` gives it:
+   *        `V Σ⁺ Uᴴ`, a singular value under \ref detail::rank_tolerance of the largest counting as zero.
+   * \throws non_finite_error If an entry of \p a is infinite or NaN.
+   */
+  template <typename T>
+  [[nodiscard]] matrix<T> pinv(const matrix<T>& a)
+  {
+    detail::require_finite(a, "pinv");
+    const svd_decomposition<T> s                          {a};
+    const std::size_t          rank                       {detail::numerical_rank(s.singular_values(), a.rows(), a.cols())};
+    std::vector<T>             out(a.cols() * a.rows(), T {});
+    for (std::size_t d {0}; d < rank; ++d) {
+      const auto inverse {static_cast<T>(1.0 / s.singular_values()[d])};
+      for (std::size_t i {0}; i < a.cols(); ++i) {
+        const T left {s.v()(i, d) * inverse};
+        for (std::size_t j {0}; j < a.rows(); ++j) {
+          out[(i * a.rows()) + j] += left * detail::conj_of(s.u()(j, d));
+        }
+      }
+    }
+    return matrix<T> {a.cols(), a.rows(), std::move(out)};
   }
 } // namespace numerical
 

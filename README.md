@@ -37,7 +37,9 @@ Small and complete, grown measured, honest about what is not yet here:
   ones too. `singular_values()` (descending), `u()` (`m × k`), `v()` (`n × k`) and
   `vh()`, with `k = min(m, n)`; `U` and `V` stay orthonormal for a rank-deficient `A`.
 - `numerical::lstsq(a, b)` — the minimum-norm least-squares solution of `A x ≈ b`,
-  as NumPy's `lstsq` gives it, for any shape and rank (from the SVD).
+  as NumPy's `lstsq` gives it, for any shape and rank (from the SVD); `pinv(a)` and
+  `matrix_rank(a)` from the same SVD, and `lu_decomposition::log_determinant()` —
+  NumPy's `slogdet`, which does not underflow where the determinant does.
 - `numerical::tensor<T>` — a dense, row-major, N-dimensional tensor (rank-1 is a
   vector, rank-2 a matrix, rank-0 a scalar; built directly or from a `vector` /
   `matrix`), with **`einsum`** — Einstein-summation index notation for
@@ -111,7 +113,8 @@ numerical.solve(a, numerical.Tensor([1.0, 1.0]))   # a @ x = b
 ```
 
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
-`determinant(a)`, `inverse(a)`, `lstsq(a, b)`, `cholesky(a)`, `qr(a)` → `(Q, R)`,
+`determinant(a)`, `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)`, `pinv(a)`,
+`matrix_rank(a)`, `lstsq(a, b)`, `cholesky(a)`, `qr(a)` → `(Q, R)`,
 `eigh(a)` → `(values, vectors)`, `svd(a)` → `(U, S, Vh)` — NumPy's
 `svd(a, full_matrices=False)`, so `(U * S) @ Vh` is `a`. Every one accepts `float64`
 and `complex128` but `eigh`, which is `float64` only (matching the C++ layer).

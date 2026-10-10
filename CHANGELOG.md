@@ -6,6 +6,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Added
+- **`slogdet`, `pinv` and `matrix_rank`**, as `numpy.linalg` gives them (C++: `lu_decomposition::
+  log_determinant`, `pinv`, `matrix_rank`). `determinant` of `1e-2·I` of order 200 underflows to 0.0;
+  its `slogdet` is `(1.0, -921.03)`.
+
 ### Changed
 - **`svd` returns `(U, S, Vh)`, as NumPy's `svd(a, full_matrices=False)` does** (Python; C++ adds
   `svd_decomposition::vh()`). The third factor was `V`, so NumPy's idiom `(U * S) @ Vh` reconstructed a

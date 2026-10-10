@@ -365,6 +365,19 @@ class LinalgVsNumpy(unittest.TestCase):
         self.assertTrue(np.allclose(np.sort(v), np.linalg.eigvalsh(a)))
         self.assertTrue(np.allclose(matrix @ np.diag(v) @ matrix.T, a))
 
+    def test_slogdet_matrix_rank_and_pinv_as_numpy(self):
+        rng = np.random.default_rng(11)
+        for a in (np.eye(200) * 1e-2, np.array([[0.0, 2.0], [1.0, 0.0]]), np.array([[1.0, 2.0], [2.0, 4.0]]),
+                  rng.standard_normal((4, 4)) + 1j * rng.standard_normal((4, 4))):
+            sign, logabsdet = numerical.slogdet(numerical.asarray(a))
+            want_sign, want_log = np.linalg.slogdet(a)
+            self.assertAlmostEqual(sign, want_sign)
+            self.assertTrue(np.isclose(logabsdet, want_log) or logabsdet == want_log == -np.inf)
+        for a in (np.array([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]]), rng.standard_normal((5, 3)),
+                  rng.standard_normal((3, 5)), rng.standard_normal((4, 3)) + 1j * rng.standard_normal((4, 3))):
+            self.assertEqual(numerical.matrix_rank(numerical.asarray(a)), np.linalg.matrix_rank(a))
+            self.assertTrue(np.allclose(np.asarray(numerical.pinv(numerical.asarray(a))), np.linalg.pinv(a)))
+
     def test_eigh_reads_the_lower_triangle_as_numpy(self):
         a = np.array([[2.0, 99.0, -7.0], [1.0, 3.0, 50.0], [0.5, -1.0, 4.0]])
         values, _ = numerical.eigh(numerical.asarray(a))

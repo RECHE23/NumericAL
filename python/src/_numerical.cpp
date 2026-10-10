@@ -634,6 +634,86 @@ PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// slogdet(a) -> (sign, logabsdet), as numpy.linalg.slogdet: the sign a float or complex like determinant.
+PyObject* module_slogdet(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* obj = nullptr;
+    if (PyArg_ParseTuple(args, "O", &obj) == 0) {
+        return nullptr;
+    }
+    const any_tensor* h = as_tensor(obj);
+    if (h == nullptr) {
+        return nullptr;
+    }
+    if (shape_of(*h).size() != 2) {
+        PyErr_SetString(sciforge_module_error(), "slogdet expects a matrix (rank-2 tensor)");
+        return nullptr;
+    }
+    try {
+        if (is_complex(*h)) {
+            const cplx_tensor&                       a {std::get<cplx_tensor>(*h)};
+            std::pair<std::complex<double>, double> value;
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+                value = numerical::lu_decomposition<std::complex<double>> {matrix_from(a)}.log_determinant();
+            }
+            PyObject* sign {PyComplex_FromDoubles(value.first.real(), value.first.imag())}; // new ref
+            if (sign == nullptr) {
+                return nullptr;
+            }
+            return Py_BuildValue("(Nd)", sign, value.second); // N: the tuple takes the reference
+        }
+        const real_tensor&         a {std::get<real_tensor>(*h)};
+        std::pair<double, double> value;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+            value = numerical::lu_decomposition<double> {matrix_from(a)}.log_determinant();
+        }
+        return Py_BuildValue("(dd)", value.first, value.second);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+template <typename T>
+std::size_t do_matrix_rank(const numerical::tensor<T>& a)
+{
+    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+    return numerical::matrix_rank(matrix_from(a));
+}
+
+// matrix_rank(a) -> int, as numpy.linalg.matrix_rank.
+std::size_t matrix_rank(const any_tensor& v)
+{
+    if (shape_of(v).size() != 2) {
+        throw std::runtime_error("matrix_rank expects a matrix (rank-2 tensor)");
+    }
+    if (is_complex(v)) {
+        return do_matrix_rank<std::complex<double>>(std::get<cplx_tensor>(v));
+    }
+    return do_matrix_rank<double>(std::get<real_tensor>(v));
+}
+
+template <typename T>
+any_tensor do_pinv(const numerical::tensor<T>& a)
+{
+    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+    return any_tensor {numerical::tensor<T> {numerical::pinv(matrix_from(a))}};
+}
+
+// pinv(a) -> Tensor, as numpy.linalg.pinv.
+any_tensor pinv(const any_tensor& v)
+{
+    if (shape_of(v).size() != 2) {
+        throw std::runtime_error("pinv expects a matrix (rank-2 tensor)");
+    }
+    if (is_complex(v)) {
+        return do_pinv<std::complex<double>>(std::get<cplx_tensor>(v));
+    }
+    return do_pinv<double>(std::get<real_tensor>(v));
+}
+
 template <typename T>
 any_tensor do_inverse(const numerical::tensor<T>& a)
 {
@@ -981,11 +1061,16 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&cholesky>("cholesky", "cholesky(a) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite).");
     m.def<&qr>("qr", "qr(a) -> (Q, R)\nThe QR factorisation of an m×n matrix (m ≥ n).");
     m.def<&eigh>("eigh", "eigh(a) -> (values, vectors)\nEigenpairs of a real symmetric matrix (ascending values); its lower triangle is read, as numpy.linalg.eigh reads it.");
+    m.def<&matrix_rank>("matrix_rank", "matrix_rank(a) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank.");
+    m.def<&pinv>("pinv", "pinv(a) -> Tensor\nThe Moore–Penrose pseudo-inverse of an m×n matrix, as numpy.linalg.pinv.");
     m.def<&svd>("svd", "svd(a) -> (U, S, Vh)\nThe singular value decomposition a = U @ diag(S) @ Vh of an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).");
     // The 3 that stay manual: determinant (dtype-dependent scalar), einsum (variadic),
     // asarray (returns the same object when the dtype matches — Py_NewRef identity).
     m.raw("determinant", module_determinant, METH_VARARGS,
           "determinant(a) -> number\nThe determinant of a square matrix (float or complex).");
+    m.raw("slogdet", module_slogdet, METH_VARARGS,
+          "slogdet(a) -> (sign, logabsdet)\nThe sign and the natural log of |det(a)|, as numpy.linalg.slogdet; it\n"
+          "does not underflow or overflow where determinant(a) does.");
     m.raw("einsum", module_einsum, METH_VARARGS,
           "einsum(spec, *operands) -> Tensor\n"
           "Einstein summation, e.g. 'ij,jk->ik' (matmul), 'i,i->' (dot), 'ij->ji'.");

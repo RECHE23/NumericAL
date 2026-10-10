@@ -34,14 +34,17 @@ from numerical._numerical import (
     error,
     inverse,
     lstsq,
+    matrix_rank,
+    pinv,
     qr,
+    slogdet,
     solve,
     svd,
 )
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error",
-    "determinant", "inverse", "lstsq", "cholesky", "qr", "eigh", "svd",
+    "determinant", "slogdet", "inverse", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh", "svd",
     "get_include", "get_config",
 ]
 
