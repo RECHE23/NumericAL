@@ -231,9 +231,7 @@ namespace numerical {
       // Each row-block owns disjoint rows of C, so the blocks run in parallel
       // without locks and the result is identical to a sequential run.
       const std::size_t row_blocks {((rows + tile) - 1) / tile};
-      // Parallelise only from a few blocks up: below that, thread-spawn overhead
-      // outweighs the gain (a small matmul is already at or above NumPy here).
-      parallel_for(row_blocks, 3, [&](std::size_t block) {
+      parallel_for(row_blocks, tile * inner * cols / vector_speedup, [&](std::size_t block) {
                      const std::size_t mm {block * tile};
                      const std::size_t m_end {std::min(mm + tile, rows)};
                      for (std::size_t kk {0}; kk < inner; kk += tile) {

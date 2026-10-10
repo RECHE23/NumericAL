@@ -244,7 +244,7 @@ namespace numerical {
       std::vector<T> data(n_ * n_);
       // Each column of the inverse is an independent solve against a unit vector,
       // writing a disjoint column of `data` — so the columns run in parallel.
-      detail::parallel_for(n_, 16, [this, &data](std::size_t col) {
+      detail::parallel_for(n_, n_ * n_, [this, &data](std::size_t col) { // a solve: n² multiply-adds
                              std::vector<T> unit(n_, T {});
                              unit[col] = T {1};
                              const vector<T> column {solve(vector<T> {std::move(unit)})};

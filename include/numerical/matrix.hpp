@@ -202,7 +202,7 @@ namespace numerical {
     // at 2048²; see BENCHMARKS.md and `make bench-gemm`). The `+=` relies on `out`
     // being value-initialised to zero, which std::vector(n) guarantees.
     std::vector<T> out(detail::checked_mul(a.rows(), b.cols())); // guard the cross-product alloc
-    detail::parallel_for(a.rows(), 64, [&](std::size_t i) {
+    detail::parallel_for(a.rows(), a.cols() * b.cols() / detail::vector_speedup, [&](std::size_t i) {
                            const std::size_t row {i * b.cols()};
                            for (std::size_t k {0}; k < a.cols(); ++k) {
                              const T aik {a(i, k)};

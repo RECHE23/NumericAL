@@ -98,10 +98,12 @@ The embarrassingly-parallel kernels run on `std::thread` (the only portable,
 dependency-free standard parallelism — no TBB, no execution policies): each
 parallelised index writes a **disjoint** slice of the output, so there are no
 locks and the result is **identical to the sequential run** (deterministic).
-Below a per-kernel threshold the work stays sequential (thread-spawn overhead
-would otherwise dominate). Parallelised so far: the tiled **GEMM** (row-blocks),
-the **matrix·matrix product** (output rows), `inverse` (column solves), and the
-**SVD's** left singular vectors (columns).
+Each kernel states the work of one index, and a range runs on one thread per
+2¹⁶ multiply-adds of it (a quarter of that for a vectorised inner loop), up to the
+hardware's count, sequentially below two: a thread costs about 10 µs to start, and
+counting indices instead of work started eight of them for a 16 × 16 `inverse`
+(177 µs instead of 8). Parallelised so far: the tiled **GEMM** (row-blocks), the
+**matrix·matrix product** (output rows) and `inverse` (column solves).
 
 On an 8-core machine the effect is stark where the work is genuinely parallel and
 compute-bound: **matmul 256×256 went 0.89× → 2.76×** (~3× faster than NumPy),
