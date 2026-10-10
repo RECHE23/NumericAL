@@ -15,6 +15,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <exception>
 #include <thread>
 #include <vector>
 
@@ -28,11 +29,10 @@ namespace numerical::detail {
    * be safe to invoke concurrently for distinct `i` (it is when each call
    * touches a disjoint part of the output).
    *
-   * \warning \p body must **not throw**: an exception escaping a worker thread calls
-   *          `std::terminate` (undefined behaviour). This is an internal `detail`
-   *          helper, used only with the non-throwing numeric kernels, so it does not
-   *          pay for per-thread exception capture — the precondition holds by
-   *          construction at every call site.
+   * An exception \p body throws in a worker is kept and rethrown here once every
+   * worker has joined (the first chunk's, in index order): one escaping a worker
+   * thread would call `std::terminate`. A worker the system cannot start is a
+   * `std::system_error`, thrown once the others have joined.
    *
    * \param[in] count     The number of iterations.
    * \param[in] threshold The smallest \p count worth parallelising.
@@ -49,20 +49,50 @@ namespace numerical::detail {
       }
       return;
     }
-    const std::size_t        threads {std::max<std::size_t>(2, std::thread::hardware_concurrency())};
-    const std::size_t        chunk   {((count + threads) - 1) / threads};
-    std::vector<std::thread> pool;
-    pool.reserve(threads);
-    for (std::size_t begin {0}; begin < count; begin += chunk) {
-      const std::size_t end {std::min(count, begin + chunk)};
-      pool.emplace_back([&body, begin, end] {
-                          for (std::size_t i {begin}; i < end; ++i) {
-                            body(i);
-                          }
-                        });
+    const std::size_t               threads {std::max<std::size_t>(2, std::thread::hardware_concurrency())};
+    const std::size_t               chunk   {((count + threads) - 1) / threads};
+    const std::size_t               chunks  {((count + chunk) - 1) / chunk};
+    std::vector<std::exception_ptr> failed(chunks);
+    const auto                      run     {[&body, &failed, chunk, count](std::size_t c) noexcept {
+                                               try {
+                                                 const std::size_t end {std::min(count, (c + 1) * chunk)};
+                                                 for (std::size_t i {c * chunk}; i < end; ++i) {
+                                                   body(i);
+                                                 }
+                                               }
+                                               catch (...) {
+                                                 failed[c] = std::current_exception();
+                                               }
+                                             }};
+    // Joined on every way out, a worker the system refuses to start (std::system_error) included: a
+    // joinable thread destroyed unjoined would call std::terminate.
+    struct joined_pool
+    {
+      std::vector<std::thread> workers;
+
+      joined_pool()                              = default;
+      joined_pool(const joined_pool&)            = delete;
+      joined_pool& operator=(const joined_pool&) = delete;
+      joined_pool(joined_pool&&)                 = delete;
+      joined_pool& operator=(joined_pool&&)      = delete;
+      ~joined_pool()
+      {
+        for (std::thread& worker : workers) {
+          worker.join();
+        }
+      }
+    };
+    {
+      joined_pool pool;
+      pool.workers.reserve(chunks);
+      for (std::size_t c {0}; c < chunks; ++c) {
+        pool.workers.emplace_back(run, c);
+      }
     }
-    for (std::thread& worker : pool) {
-      worker.join();
+    for (const std::exception_ptr& error : failed) {
+      if (error) {
+        std::rethrow_exception(error);
+      }
     }
   }
 } // namespace numerical::detail
