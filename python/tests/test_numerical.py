@@ -212,6 +212,55 @@ class ArrayInterface(unittest.TestCase):
         with self.assertRaises(numerical.error):
             numerical.asarray(Raw("<f8", (), 1))
 
+    def test_asarray_reads_nested_lists_and_numbers(self):
+        self.assertEqual(numerical.asarray([[1, 2], [3, 4]]).shape, (2, 2))
+        self.assertEqual(numerical.asarray([[1, 2], [3, 4]]).tolist(), [[1.0, 2.0], [3.0, 4.0]])
+        self.assertEqual(numerical.asarray((True, 2.5)).tolist(), [1.0, 2.5])
+        self.assertEqual(numerical.asarray([1 + 2j, 3]).tolist(), [1 + 2j, 3 + 0j])
+        self.assertEqual(numerical.asarray([1, 2], dtype="complex128").tolist(), [1 + 0j, 2 + 0j])
+        scalar = numerical.asarray(5)
+        self.assertEqual((scalar.shape, scalar.tolist()), ((), 5.0))
+        self.assertEqual(numerical.asarray([]).shape, (0,))
+        with self.assertRaises(ValueError):
+            numerical.asarray([[1, 2], [3]])
+        with self.assertRaises(TypeError):
+            numerical.asarray([1, "2"])
+        with self.assertRaises(numerical.error):
+            numerical.asarray([1j], dtype="float64")
+
+    def test_asarray_reads_every_numeric_typestr_at_any_stride(self):
+        # Without NumPy: an __array_interface__ over a packed buffer of each element type, read through
+        # strides that walk it backwards.
+        import ctypes
+        import struct
+
+        class Interface:
+            def __init__(self, typestr, raw, shape, strides=None):
+                self.buffer = ctypes.create_string_buffer(raw, len(raw))
+                address = ctypes.addressof(self.buffer)
+                offset = 0 if strides is None or strides[0] > 0 else len(raw) + strides[0]
+                self.__array_interface__ = {"version": 3, "typestr": typestr, "shape": shape,
+                                            "strides": strides, "data": (address + offset, True)}
+
+        for typestr, fmt in (("|b1", "?"), ("|i1", "b"), ("<i2", "h"), ("<i4", "i"), ("<i8", "q"),
+                             ("|u1", "B"), ("<u2", "H"), ("<u4", "I"), ("<u8", "Q"), ("<f4", "f"),
+                             (">i4", "i"), (">f8", "d")):
+            order = ">" if typestr[0] == ">" else "<"
+            raw = struct.pack(order + "3" + fmt, *([1, 0, 1] if fmt == "?" else [1, 2, 3]))
+            want = [1.0, 0.0, 1.0] if fmt == "?" else [1.0, 2.0, 3.0]
+            with self.subTest(typestr=typestr):
+                self.assertEqual(numerical.asarray(Interface(typestr, raw, (3,))).tolist(), want)
+                size = struct.calcsize(fmt)
+                self.assertEqual(numerical.asarray(Interface(typestr, raw, (3,), (-size,))).tolist(), want[::-1])
+        pairs = struct.pack(">4f", 1.0, -2.0, 0.5, 3.0)
+        self.assertEqual(numerical.asarray(Interface(">c8", pairs, (2,))).tolist(), [1 - 2j, 0.5 + 3j])
+        for bad in ("<f2", "|f8", "<U4", "<i3", "xf8", "<f"):
+            with self.subTest(bad=bad):
+                with self.assertRaises(numerical.error):
+                    numerical.asarray(Interface(bad, b"\0" * 8, (1,)))
+        with self.assertRaises(numerical.error):
+            numerical.asarray(Interface("<f8", b"\0" * 16, (2,), (8, 8)))  # strides of another rank
+
     def test_asarray_rejects_unknown_dtype(self):
         with self.assertRaises(numerical.error):
             numerical.asarray(numerical.Tensor([1.0]), dtype="float32")
@@ -382,6 +431,15 @@ class LinalgVsNumpy(unittest.TestCase):
         a = np.array([[2.0, 99.0, -7.0], [1.0, 3.0, 50.0], [0.5, -1.0, 4.0]])
         values, _ = numerical.eigh(numerical.asarray(a))
         self.assertTrue(np.allclose(np.asarray(values), np.linalg.eigvalsh(a)))
+
+    def test_asarray_takes_numpy_dtypes_and_layouts(self):
+        a = np.arange(12, dtype=np.int64).reshape(3, 4)
+        for view in (a, a.T, a[::-1, ::2], np.asfortranarray(a)):
+            self.assertEqual(numerical.asarray(view).tolist(), view.astype(float).tolist())
+        for dtype in (np.float32, np.int8, np.uint32, np.bool_, np.complex64):
+            values = np.array([1, 0, 2], dtype=dtype)
+            got = np.asarray(numerical.asarray(values))
+            self.assertTrue(np.array_equal(got, values.astype(np.complex128 if dtype == np.complex64 else float)))
 
     def test_svd_reconstructs(self):
         a = np.array([[1.0, 1.0], [1.0, 2.0], [1.0, 3.0]])

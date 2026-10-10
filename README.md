@@ -126,8 +126,12 @@ import numpy as np, torch
 np.asarray(t)          # via __array_interface__ (a read-only view)
 np.from_dlpack(t)      # via __dlpack__
 torch.from_dlpack(t)   # the same DLPack capsule — JAX / CuPy consume it too
-numerical.asarray(np.eye(3))   # the other direction (a contiguous-array copy)
+numerical.asarray(np.eye(3))   # the other direction (a copy)
 ```
+
+`asarray` copies any NumPy array — bool, integer, float32/64 or complex64/128 elements, in either
+byte order, at any strides (a transposed, sliced or reversed view) — as well as a nested list or
+tuple of numbers and a plain number (rank 0), into float64, or complex128 for complex input.
 
 `numerical.get_include()` returns the header directory, so the C++ library can be
 located through its Python install. `make python` builds the extension in place;

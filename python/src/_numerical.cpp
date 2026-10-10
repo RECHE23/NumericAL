@@ -131,15 +131,6 @@ char byte_order()
     return (*reinterpret_cast<const char*>(&one) == 1) ? '<' : '>';
 }
 
-// Reverses the bytes of each of the \p count doubles at \p bytes: a source in the other byte order.
-void swap_doubles(unsigned char* bytes,
-                  std::size_t    count)
-{
-    for (std::size_t i = 0; i < count; ++i) {
-        std::reverse(bytes + (i * sizeof(double)), bytes + ((i + 1) * sizeof(double)));
-    }
-}
-
 std::string typestr_of(const any_tensor& v)
 {
     std::string out(1, byte_order());
@@ -860,6 +851,80 @@ any_tensor promote_to_complex(std::vector<std::size_t> shape, const double* src,
 // (a C-contiguous float64/complex128 array). dtype, when given, is honoured:
 // real→complex128 widens with a zero imaginary part; complex128→float64 is refused
 // (it would discard the imaginary part).
+// An element type asarray reads from an __array_interface__ typestr: a byte order ('<', '>', '=' native,
+// or '|' where order does not apply), a kind (b bool, i signed, u unsigned, f float, c complex) and a size.
+struct element_type
+{
+    char        kind;    // b, i, u, f or c
+    std::size_t size;    // bytes per element
+    bool        swapped; // stored in the other byte order than this machine's
+};
+
+std::optional<element_type> parse_typestr(const std::string& typestr)
+{
+    if (typestr.size() < 3 || typestr.find_first_not_of("0123456789", 2) != std::string::npos) {
+        return std::nullopt;
+    }
+    const char        order {typestr[0]};
+    const char        kind {typestr[1]};
+    const std::size_t size {static_cast<std::size_t>(std::stoul(typestr.substr(2)))};
+    const bool        known_size {(kind == 'b' && size == 1)
+                                  || ((kind == 'i' || kind == 'u') && (size == 1 || size == 2 || size == 4 || size == 8))
+                                  || (kind == 'f' && (size == 4 || size == 8))
+                                  || (kind == 'c' && (size == 8 || size == 16))};
+    const bool        known_order {order == '<' || order == '>' || order == '=' || (order == '|' && size == 1)};
+    if (!known_size || !known_order) {
+        return std::nullopt;
+    }
+    return element_type {kind, size, size > 1 && (order == '<' || order == '>') && order != byte_order()};
+}
+
+// Reads the scalar of type `bytes`'s element as `T` (a native copy, so any alignment reads).
+template <typename T>
+T read_scalar(const unsigned char* bytes)
+{
+    T value {};
+    std::memcpy(&value, bytes, sizeof(T));
+    return value;
+}
+
+// The element at `at`, as a complex number (a zero imaginary part for a real kind).
+std::complex<double> read_element(const unsigned char* at, const element_type& type)
+{
+    unsigned char bytes[16];
+    std::memcpy(bytes, at, type.size);
+    if (type.swapped) { // each component in turn: a complex is two floats
+        const std::size_t part {type.kind == 'c' ? type.size / 2 : type.size};
+        for (std::size_t start = 0; start < type.size; start += part) {
+            std::reverse(bytes + start, bytes + start + part);
+        }
+    }
+    switch (type.kind) {
+        case 'b': return {bytes[0] != 0 ? 1.0 : 0.0, 0.0};
+        case 'i':
+            switch (type.size) {
+                case 1:  return {static_cast<double>(read_scalar<std::int8_t>(bytes)), 0.0};
+                case 2:  return {static_cast<double>(read_scalar<std::int16_t>(bytes)), 0.0};
+                case 4:  return {static_cast<double>(read_scalar<std::int32_t>(bytes)), 0.0};
+                default: return {static_cast<double>(read_scalar<std::int64_t>(bytes)), 0.0};
+            }
+        case 'u':
+            switch (type.size) {
+                case 1:  return {static_cast<double>(read_scalar<std::uint8_t>(bytes)), 0.0};
+                case 2:  return {static_cast<double>(read_scalar<std::uint16_t>(bytes)), 0.0};
+                case 4:  return {static_cast<double>(read_scalar<std::uint32_t>(bytes)), 0.0};
+                default: return {static_cast<double>(read_scalar<std::uint64_t>(bytes)), 0.0};
+            }
+        case 'f':
+            return {type.size == 4 ? static_cast<double>(read_scalar<float>(bytes)) : read_scalar<double>(bytes), 0.0};
+        default: // 'c'
+            if (type.size == 8) {
+                return {static_cast<double>(read_scalar<float>(bytes)), static_cast<double>(read_scalar<float>(bytes + 4))};
+            }
+            return {read_scalar<double>(bytes), read_scalar<double>(bytes + 8)};
+    }
+}
+
 PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
 {
     static const char* keywords[] = {"obj", "dtype", nullptr};
@@ -922,15 +987,10 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
         return nullptr;
     }
 
-    PyObject* strides = PyDict_GetItemString(ai, "strides"); // borrowed
-    if (strides != nullptr && strides != Py_None) {
-        Py_DECREF(ai);
-        PyErr_SetString(sciforge_module_error(), "asarray: only C-contiguous arrays are supported");
-        return nullptr;
-    }
-    PyObject* typestr_obj = PyDict_GetItemString(ai, "typestr"); // borrowed
-    PyObject* shape_obj   = PyDict_GetItemString(ai, "shape");   // borrowed
-    PyObject* data_obj    = PyDict_GetItemString(ai, "data");    // borrowed
+    PyObject* strides_obj = PyDict_GetItemString(ai, "strides"); // borrowed
+    PyObject* typestr_obj = PyDict_GetItemString(ai, "typestr");  // borrowed
+    PyObject* shape_obj   = PyDict_GetItemString(ai, "shape");    // borrowed
+    PyObject* data_obj    = PyDict_GetItemString(ai, "data");     // borrowed
     if (typestr_obj == nullptr || shape_obj == nullptr || data_obj == nullptr
         || PyTuple_Check(data_obj) == 0 || PyTuple_Size(data_obj) < 1) {
         Py_DECREF(ai);
@@ -947,23 +1007,20 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
     const std::string typestr {typestr_chars != nullptr ? typestr_chars : ""};
     Py_DECREF(typestr_bytes);
 
-    // A typestr is a byte order then a kind and size: `<f8`, `>c16`. Any other byte order than '<',
-    // '>' or '=' (native), and any other kind, is refused rather than read as native float64.
-    const char order        = typestr.empty() ? '\0' : typestr[0];
-    const bool want_complex = typestr.size() == 4 && typestr.substr(1) == "c16";
-    const bool want_real    = typestr.size() == 3 && typestr.substr(1) == "f8";
-    const bool swapped      = order != '=' && order != byte_order();
-    if ((order != '<' && order != '>' && order != '=') || (!want_complex && !want_real)) {
+    const std::optional<element_type> element {parse_typestr(typestr)};
+    if (!element) {
         Py_DECREF(ai);
-        PyErr_SetString(sciforge_module_error(), "asarray: only float64 and complex128 are supported");
+        PyErr_SetString(sciforge_module_error(),
+                        "asarray: unsupported typestr (bool, integers, float32/64 and complex64/128 are read)");
         return nullptr;
     }
-    // The output dtype is the requested one, or the source dtype when none is given.
+    const bool want_complex = element->kind == 'c';
+    // The output dtype is the requested one, else complex128 for a complex source and float64 otherwise.
     const bool out_complex = dtype_given ? want_complex_out : want_complex;
     if (want_complex && !out_complex) {
         Py_DECREF(ai);
         PyErr_SetString(sciforge_module_error(),
-                        "asarray: refusing to cast complex128 to float64 (discards the imaginary part)");
+                        "asarray: refusing to cast a complex array to float64 (discards the imaginary part)");
         return nullptr;
     }
 
@@ -982,6 +1039,32 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
         total *= extent;
     }
 
+    // Byte strides: the array's own (a transposed, sliced or reversed view has them), else C order.
+    std::vector<Py_ssize_t> strides(shape.size());
+    if (strides_obj != nullptr && strides_obj != Py_None) {
+        if (PySequence_Size(strides_obj) != static_cast<Py_ssize_t>(shape.size())) {
+            Py_DECREF(ai);
+            PyErr_SetString(sciforge_module_error(), "asarray: strides and shape differ in length");
+            return nullptr;
+        }
+        for (std::size_t axis = 0; axis < shape.size(); ++axis) {
+            PyObject* item = PySequence_GetItem(strides_obj, static_cast<Py_ssize_t>(axis)); // new ref
+            strides[axis]  = item != nullptr ? PyLong_AsSsize_t(item) : -1;
+            Py_XDECREF(item);
+            if (PyErr_Occurred() != nullptr) {
+                Py_DECREF(ai);
+                return nullptr;
+            }
+        }
+    }
+    else {
+        auto step = static_cast<Py_ssize_t>(element->size);
+        for (std::size_t axis = shape.size(); axis-- > 0;) {
+            strides[axis] = step;
+            step         *= static_cast<Py_ssize_t>(shape[axis]);
+        }
+    }
+
     void* address = PyLong_AsVoidPtr(PyTuple_GetItem(data_obj, 0));
     if (PyErr_Occurred() != nullptr) {
         Py_DECREF(ai);
@@ -997,26 +1080,34 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
 
     PyObject* result = nullptr;
     try {
-        if (want_complex) { // complex source; narrowing to float64 was refused above
-            std::vector<std::complex<double>> buffer(total);
-            if (total > 0) {
-                std::memcpy(buffer.data(), address, total * sizeof(std::complex<double>));
+        // Walk the elements in C order, each at the sum of its index times the byte strides.
+        std::vector<std::complex<double>> values;
+        values.reserve(total);
+        std::vector<std::size_t> index(shape.size(), 0);
+        const auto*              base {static_cast<const unsigned char*>(address)};
+        for (std::size_t n = 0; n < total; ++n) {
+            Py_ssize_t offset = 0;
+            for (std::size_t axis = 0; axis < shape.size(); ++axis) {
+                offset += static_cast<Py_ssize_t>(index[axis]) * strides[axis];
             }
-            if (swapped) {
-                swap_doubles(reinterpret_cast<unsigned char*>(buffer.data()), 2 * total);
+            values.push_back(read_element(base + offset, *element));
+            for (std::size_t axis = shape.size(); axis-- > 0;) {
+                if (++index[axis] < shape[axis]) {
+                    break;
+                }
+                index[axis] = 0;
             }
-            result = wrap(any_tensor {cplx_tensor {shape, std::move(buffer)}});
         }
-        else { // real source: keep as float64, or widen to complex128 if requested
-            std::vector<double> buffer(total);
-            if (total > 0) {
-                std::memcpy(buffer.data(), address, total * sizeof(double));
+        if (out_complex) {
+            result = wrap(any_tensor {cplx_tensor {shape, std::move(values)}});
+        }
+        else {
+            std::vector<double> reals;
+            reals.reserve(total);
+            for (const std::complex<double>& value : values) {
+                reals.push_back(value.real());
             }
-            if (swapped) {
-                swap_doubles(reinterpret_cast<unsigned char*>(buffer.data()), total);
-            }
-            result = out_complex ? wrap(promote_to_complex(shape, buffer.data(), total))
-                                 : wrap(any_tensor {real_tensor {shape, std::move(buffer)}});
+            result = wrap(any_tensor {real_tensor {shape, std::move(reals)}});
         }
     }
     catch (...) {

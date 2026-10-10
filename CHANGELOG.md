@@ -7,6 +7,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Added
+- **`asarray` reads what NumPy users pass it**: bool, integer, float32 and complex64 arrays (as
+  float64 or complex128), in either byte order, at any strides (`a.T`, `a[::-1, ::2]`, Fortran order),
+  nested lists and tuples of numbers, and plain numbers. It refused everything but C-contiguous float64
+  and complex128.
 - **`einsum(spec, operands)` over a `std::vector` of operands** counted at run time, for a caller that
   holds them in a container (SciLang's interpreter called `detail::einsum_impl` for this).
 - **`slogdet`, `pinv` and `matrix_rank`**, as `numpy.linalg` gives them (C++: `lu_decomposition::
