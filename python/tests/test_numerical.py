@@ -270,15 +270,18 @@ class LinalgSurface(unittest.TestCase):
         sym = numerical.Tensor([2, 1, 1, 2], shape=(2, 2))
         values, vectors = numerical.eigh(sym)
         self.assertEqual((values.shape, vectors.shape), ((2,), (2, 2)))
-        u, s, v = numerical.svd(a)
-        self.assertEqual((u.shape, s.shape, v.shape), ((3, 2), (2,), (2, 2)))
+        u, s, vh = numerical.svd(a)
+        self.assertEqual((u.shape, s.shape, vh.shape), ((3, 2), (2,), (2, 2)))
+        wide = numerical.Tensor([1, 2, 3, 4, 5, 6], shape=(2, 3))
+        u, s, vh = numerical.svd(wide)
+        self.assertEqual((u.shape, s.shape, vh.shape), ((2, 2), (2,), (2, 3)))
 
-    def test_eigh_and_svd_reject_complex(self):
+    def test_eigh_rejects_complex_and_svd_rejects_a_vector(self):
         c = numerical.Tensor([1, 0, 0, 1], shape=(2, 2), dtype="complex128")
         with self.assertRaises(numerical.error):
             numerical.eigh(c)
         with self.assertRaises(numerical.error):
-            numerical.svd(c)
+            numerical.svd(numerical.Tensor([1, 2, 3], shape=(3,)))
 
     def test_inverse_rejects_singular(self):
         with self.assertRaises(numerical.error):
@@ -322,10 +325,34 @@ class LinalgVsNumpy(unittest.TestCase):
 
     def test_svd_reconstructs(self):
         a = np.array([[1.0, 1.0], [1.0, 2.0], [1.0, 3.0]])
-        u, s, v = numerical.svd(numerical.asarray(a))
-        reconstructed = np.asarray(u) @ np.diag(np.asarray(s)) @ np.asarray(v).T
+        u, s, vh = numerical.svd(numerical.asarray(a))
+        reconstructed = np.asarray(u) @ np.diag(np.asarray(s)) @ np.asarray(vh)
         self.assertTrue(np.allclose(reconstructed, a))
         self.assertTrue(np.allclose(np.asarray(s), np.linalg.svd(a, compute_uv=False)))
+
+    def test_svd_third_factor_is_vh_as_numpy_returns_it(self):
+        # numpy's idiom (U * S) @ Vh reconstructs a, wide or tall, real or complex.
+        rng = np.random.default_rng(7)
+        for a in (rng.standard_normal((4, 3)), rng.standard_normal((3, 5)),
+                  rng.standard_normal((4, 3)) + 1j * rng.standard_normal((4, 3))):
+            u, s, vh = (np.asarray(f) for f in numerical.svd(numerical.asarray(a)))
+            self.assertTrue(np.allclose((u * s) @ vh, a))
+            self.assertTrue(np.allclose(s, np.linalg.svd(a, compute_uv=False)))
+
+    def test_svd_keeps_small_singular_values(self):
+        # sigma down to 1e-12 under random rotations, against numpy (which uses LAPACK's gesdd).
+        rng = np.random.default_rng(3)
+        q1, _ = np.linalg.qr(rng.standard_normal((6, 4)))
+        q2, _ = np.linalg.qr(rng.standard_normal((4, 4)))
+        a = q1 @ np.diag([1.0, 1e-4, 1e-8, 1e-12]) @ q2.T
+        s = np.asarray(numerical.svd(numerical.asarray(a))[1])
+        self.assertTrue(np.allclose(s, np.linalg.svd(a, compute_uv=False), rtol=1e-3, atol=0))
+
+    def test_lstsq_rank_deficient_and_wide_give_numpys_minimum_norm(self):
+        for a, b in ((np.array([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]]), np.array([1.0, 2.0, 4.0])),
+                     (np.array([[1.0, 1.0, 1.0], [0.0, 1.0, 2.0]]), np.array([3.0, 1.0]))):
+            got = np.asarray(numerical.lstsq(numerical.asarray(a), numerical.asarray(b)))
+            self.assertTrue(np.allclose(got, np.linalg.lstsq(a, b, rcond=None)[0]))
 
 
 if __name__ == "__main__":

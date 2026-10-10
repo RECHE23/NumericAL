@@ -1,6 +1,7 @@
 // LU factorisation and what it powers: reusing one factorisation for several
 // right-hand sides, the determinant (incl. a singular matrix), the inverse
 // (checked by A·A⁻¹ ≈ I), and the rejections (singular, non-square).
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -45,10 +46,45 @@ namespace {
     return e.vectors() * diagonal_matrix(e.values()) * transpose(e.vectors());
   }
 
-  // Reconstruct a matrix from its SVD: U Σ Vᵀ.
-  matrix<double> reconstruct(const svd_decomposition& s)
+  // Reconstruct a matrix from its SVD: U Σ Vᴴ.
+  template <typename T>
+  matrix<T> reconstruct(const svd_decomposition<T>& s)
   {
-    return s.u() * diagonal_matrix(s.singular_values()) * transpose(s.v());
+    const std::size_t k              {s.singular_values().size()};
+    std::vector<T>    sigma(k * k, T {});
+    for (std::size_t i {0}; i < k; ++i) {
+      sigma[(i * k) + i] = T {s.singular_values()[i]};
+    }
+    return s.u() * matrix<T> {k, k, sigma} *s.vh();
+  }
+
+  //! \brief The largest entry of |Mᴴ M − I|: how far \p m's columns are from orthonormal.
+  template <typename T>
+  double orthonormality_error(const matrix<T>& m)
+  {
+    double worst {0.0};
+    for (std::size_t i {0}; i < m.cols(); ++i) {
+      for (std::size_t j {0}; j < m.cols(); ++j) {
+        std::complex<double> dot {};
+        for (std::size_t r {0}; r < m.rows(); ++r) {
+          dot += std::conj(std::complex<double> {m(r, i)}) * std::complex<double> {m(r, j)};
+        }
+        worst = std::max(worst, std::abs(dot - std::complex<double> {i == j ? 1.0 : 0.0}));
+      }
+    }
+    return worst;
+  }
+
+  //! \brief The `n × n` Hilbert matrix, whose condition number grows like e^{3.5 n}.
+  matrix<double> hilbert(std::size_t n)
+  {
+    std::vector<double> entries(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        entries[(i * n) + j] = 1.0 / static_cast<double>(i + j + 1);
+      }
+    }
+    return matrix<double> {n, n, entries};
   }
 } // namespace
 
@@ -160,12 +196,16 @@ TEST(qr_solve_is_the_least_squares_solution)
   EXPECT(approx_equal(from_qr, from_normal));
 }
 
-TEST(qr_rejects_wide_rank_deficient_and_ill_sized)
+TEST(qr_rejects_wide_and_ill_sized_and_solves_only_full_rank)
 {
   const matrix<double> wide      {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};                    // 2×3, rows < columns
   EXPECT_THROWS(qr(wide), numerical::dimension_error);
+  // A rank-deficient matrix factorises (a zero on R's diagonal); its least squares are lstsq's.
   const matrix<double> dependent {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}};                  // column 2 = 2 × column 1
-  EXPECT_THROWS(qr(dependent), numerical::singular_matrix_error);
+  const auto           factored  {qr(dependent)};
+  EXPECT(approx_equal(factored.q() * factored.r(), dependent));
+  EXPECT(std::abs(factored.r()(1, 1)) < 1e-12);
+         EXPECT_THROWS(factored.solve(vector<double> {1.0, 2.0, 3.0}), numerical::singular_matrix_error);
   const matrix<double> tall      {{1.0, 1.0}, {1.0, 2.0}, {1.0, 3.0}};
   EXPECT_THROWS(qr(tall).solve(vector<double> {1.0, 2.0}), numerical::dimension_error); // wrong RHS size
 }
@@ -178,6 +218,25 @@ TEST(qr_is_generic_over_a_complex_scalar)
   const auto      factored {qr(a)};
   EXPECT(approx_equal(factored.q() * factored.r(), a));     // Q R == A
   EXPECT(approx_equal(factored.solve(b), solve(a, b)));     // square ⇒ matches the LU solve
+}
+
+// Householder reflections keep Q orthonormal to rounding however ill-conditioned A is: Hilbert-12
+// (condition ~1e16) factorises with |QᵀQ − I| near the machine epsilon, and R's diagonal is real and
+// non-negative, for a complex matrix too.
+TEST(qr_stays_orthonormal_on_an_ill_conditioned_matrix)
+{
+  for (const std::size_t n : {std::size_t {10}, std::size_t {12}, std::size_t {14}}) {
+    const auto factored {qr(hilbert(n))};
+    EXPECT(orthonormality_error(factored.q()) < 1e-14);
+    EXPECT(approx_equal(factored.q() * factored.r(), hilbert(n), 1e-14));
+  }
+  using c = std::complex<double>;
+  const matrix<c> a        {{c {0.0, 2.0}, c {1.0, 0.0}}, {c {-1.0, 0.0}, c {0.0, 1.0}}, {c {0.0, 0.0}, c {2.0, -1.0}}};
+  const auto      factored {qr(a)};
+  for (std::size_t i {0}; i < 2; ++i) {
+    EXPECT(factored.r()(i, i).imag() == 0.0 && factored.r()(i, i).real() > 0.0);
+  }
+  EXPECT(orthonormality_error(factored.q()) < 1e-14);
 }
 
 TEST(symmetric_eigen_of_a_diagonal_matrix)
@@ -214,6 +273,7 @@ TEST(svd_reconstructs_with_orthonormal_factors)
 {
   const matrix<double>    a        {{1.0, 1.0}, {1.0, 2.0}, {1.0, 3.0}}; // 3×2, full column rank
   const svd_decomposition s        {a};
+  EXPECT(approx_equal(s.vh(), transpose(s.v())));                        // Vᴴ is Vᵀ for a real A
   const matrix<double>    identity {{1.0, 0.0}, {0.0, 1.0}};
   EXPECT(approx_equal(reconstruct(s), a));                               // U Σ Vᵀ == A
   EXPECT(approx_equal(transpose(s.v()) * s.v(), identity));              // Vᵀ V == I
@@ -227,6 +287,92 @@ TEST(svd_handles_a_rank_deficient_matrix)
   const svd_decomposition s {a};
   EXPECT(approx_equal(reconstruct(s), a));                        // reconstruction holds despite a zero σ
   EXPECT(std::abs(s.singular_values()[1]) < 1e-9);                // the second singular value is ~0
+  EXPECT(orthonormality_error(s.u()) < 1e-14);                    // and U is still orthonormal
+  // An exactly zero σ leaves no column of AV to normalise: U is completed to an orthonormal basis.
+  const svd_decomposition z {matrix<double> {{1.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}}};
+  EXPECT(approx_equal(z.singular_values(), vector<double> {1.0, 0.0, 0.0}));
+  EXPECT(orthonormality_error(z.u()) < 1e-14);
+  EXPECT(orthonormality_error(z.v()) < 1e-14);
+}
+
+// One-sided Jacobi on R gives each singular value to high relative accuracy, the small ones too: a
+// diagonal with σ from 1 down to 1e-12, its rows and columns permuted, comes back exactly. A
+// decomposition of AᵀA squared the condition and returned 9.7e-9 and 0 for the last two.
+TEST(svd_keeps_small_singular_values)
+{
+  const matrix<double>      a    {{0.0, 0.0, 1e-8, 0.0}, {1.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 1e-12}, {0.0, 1e-4, 0.0, 0.0}};
+  const svd_decomposition   s    {a};
+  const std::vector<double> want {1.0, 1e-4, 1e-8, 1e-12};
+  for (std::size_t i {0}; i < want.size(); ++i) {
+    EXPECT(std::abs((s.singular_values()[i] / want[i]) - 1.0) < 1e-14);
+  }
+  const svd_decomposition h {hilbert(12)};
+  EXPECT(orthonormality_error(h.u()) < 1e-13);
+  EXPECT(orthonormality_error(h.v()) < 1e-13);
+  EXPECT(approx_equal(reconstruct(h), hilbert(12), 1e-14));
+}
+
+// A wide or complex matrix decomposes too: U is m × k and V n × k with k = min(m, n), and A = U Σ Vᴴ.
+TEST(svd_of_a_wide_and_of_a_complex_matrix)
+{
+  const matrix<double>    wide {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};
+  const svd_decomposition w    {wide};
+  EXPECT(w.u().rows() == 2 && w.u().cols() == 2 && w.v().rows() == 3 && w.v().cols() == 2);
+  EXPECT(approx_equal(reconstruct(w), wide));
+  using c = std::complex<double>;
+  const matrix<c>         z {{c {1.0, 1.0}, c {2.0, 0.0}, c {0.0, 1.0}}, {c {0.0, -1.0}, c {1.0, 0.0}, c {3.0, 2.0}},
+    {c {2.0, 0.0}, c {0.0, -2.0}, c {1.0, 1.0}}, {c {1.0, 0.0}, c {1.0, 0.0}, c {1.0, 0.0}}};
+  const svd_decomposition s {z};
+  EXPECT(approx_equal(reconstruct(s), z, 1e-13));
+  EXPECT(orthonormality_error(s.u()) < 1e-14);
+  EXPECT(orthonormality_error(s.v()) < 1e-14);
+}
+
+// Jacobi's sweeps are bounded: one sweep does not orthogonalise a dense 3 × 3, which is then an error.
+TEST(one_sided_jacobi_reports_a_sweep_bound_reached)
+{
+  std::vector<double> w {4.0, 1.0, 2.0, 1.0, 3.0, 0.5, 2.0, 0.5, 5.0};
+  std::vector<double> v {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+  EXPECT_THROWS(numerical::detail::one_sided_jacobi(w, v, 3, 1), numerical::convergence_error);
+}
+
+// lstsq is NumPy's: the least-squares solution of a full-rank tall system, accurate on a Vandermonde
+// fit (modified Gram–Schmidt left a coefficient error of 0.6 at degree 11), and the minimum-norm one
+// of a rank-deficient or wide system.
+TEST(lstsq_is_the_minimum_norm_least_squares_solution)
+{
+  const std::size_t   rows   {50};
+  const std::size_t   degree {11};
+  std::vector<double> entries(rows * (degree + 1));
+  std::vector<double> coefficients(degree + 1);
+  std::vector<double> b(rows, 0.0);
+  for (std::size_t k {0}; k <= degree; ++k) {
+    coefficients[k] = static_cast<double>(k % 3) - 1.0 + (0.1 * static_cast<double>(k));
+  }
+  for (std::size_t i {0}; i < rows; ++i) {
+    const double x     {-1.0 + (2.0 * static_cast<double>(i) / static_cast<double>(rows - 1))};
+    double       power {1.0};
+    for (std::size_t k {0}; k <= degree; ++k) {
+      entries[(i * (degree + 1)) + k] = power;
+      b[i]                           += coefficients[k] * power;
+      power                          *= x;
+    }
+  }
+  const vector<double> fit {numerical::lstsq(matrix<double> {rows, degree + 1, entries}, vector<double> {b})};
+  for (std::size_t k {0}; k <= degree; ++k) {
+    EXPECT(std::abs(fit[k] - coefficients[k]) < 1e-9);
+  }
+  // Rank 1: every x with x₀ + 2 x₁ = 1 fits exactly; the smallest is (1, 2) / 5.
+  EXPECT(approx_equal(numerical::lstsq(matrix<double> {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}}, vector<double> {1.0, 2.0, 3.0}),
+                      vector<double> {0.2, 0.4}));
+  // Wide: one equation x₀ + x₁ + x₂ = 3, smallest solution (1, 1, 1).
+  EXPECT(approx_equal(numerical::lstsq(matrix<double> {{1.0, 1.0, 1.0}}, vector<double> {3.0}), vector<double> {1.0, 1.0, 1.0}));
+  using c = std::complex<double>;
+  const matrix<c> square {{c {1.0, 1.0}, c {2.0, 0.0}}, {c {0.0, 1.0}, c {1.0, 0.0}}};
+  const vector<c> rhs    {c {1.0, 0.0}, c {0.0, 1.0}};
+  EXPECT(approx_equal(numerical::lstsq(square, rhs), solve(square, rhs)));
+  EXPECT_THROWS(numerical::lstsq(square, vector<c> {c {1.0, 0.0}}), numerical::dimension_error);
+  EXPECT_THROWS(numerical::lstsq(matrix<double> {{1.0}}, vector<double> {1.0, 2.0}), numerical::dimension_error);
 }
 
 TEST(svd_of_a_tall_matrix)
@@ -242,12 +388,6 @@ TEST(svd_of_a_tall_matrix)
   const matrix<double>    a {rows, cols, data};
   const svd_decomposition s {a};
   EXPECT(approx_equal(reconstruct(s), a, 1e-7));
-}
-
-TEST(svd_rejects_wide_matrices)
-{
-  const matrix<double> wide {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};
-  EXPECT_THROWS(svd_decomposition {wide}, numerical::dimension_error);
 }
 
 TEST(eigen_qr_and_svd_do_not_depend_on_the_matrix_scale)
@@ -278,7 +418,8 @@ TEST(decompositions_of_a_zero_or_non_finite_matrix_keep_their_scale_at_one)
   EXPECT(approx_equal(e.values(), vector<double> {0.0, 0.0}));
   const svd_decomposition d  {matrix<double> {{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}}};
   EXPECT(approx_equal(d.singular_values(), vector<double> {0.0, 0.0}));
-  EXPECT_THROWS(qr(matrix<double> {{0.0, 1.0}, {0.0, 2.0}}), numerical::singular_matrix_error);
+  EXPECT_THROWS(qr(matrix<double> {{0.0, 1.0}, {0.0, 2.0}}).solve(vector<double> {1.0, 2.0}),
+                numerical::singular_matrix_error);
 }
 
 // One non-finite policy for every decomposition, checked where it starts: an infinite or NaN entry is a
@@ -292,7 +433,7 @@ TEST(every_decomposition_refuses_a_non_finite_entry)
     const matrix<double> off_diagonal {{1.0, bad}, {bad, 2.0}};
     const matrix<double> on_diagonal  {{bad, 0.0}, {0.0, 1.0}};
     for (const matrix<double>& m : {off_diagonal, on_diagonal}) {
-      // Each refusal names the decomposition asked for, not one it builds on (SVD runs an eigensolver).
+      // Each refusal names the decomposition asked for, not one it builds on (lstsq runs an SVD, the SVD a QR).
       const auto refuses {[](auto&& decompose, std::string_view name) {
                             try {
                               decompose();
@@ -307,6 +448,7 @@ TEST(every_decomposition_refuses_a_non_finite_entry)
       EXPECT(refuses([&] { static_cast<void>(qr(m)); }, "QR"));
       EXPECT(refuses([&] { static_cast<void>(lu_decomposition<double> {m}); }, "LU"));
       EXPECT(refuses([&] { static_cast<void>(cholesky_decomposition<double> {m}); }, "Cholesky"));
+      EXPECT(refuses([&] { static_cast<void>(numerical::lstsq(m, vector<double> {1.0, 2.0})); }, "lstsq"));
     }
   }
   // A complex entry is finite only when both of its parts are.
@@ -319,9 +461,9 @@ TEST(every_decomposition_refuses_a_non_finite_entry)
     EXPECT_THROWS(lu_decomposition<complex> {m}, numerical::non_finite_error);
     EXPECT_THROWS(qr(m), numerical::non_finite_error);
   }
-  // A zero column is dependent, complex as real.
+  // A zero column is dependent, complex as real: it factorises, and its solve refuses.
   const matrix<complex> zero_column {{zero, one}, {zero, two}};
-  EXPECT_THROWS(qr(zero_column), numerical::singular_matrix_error);
+  EXPECT_THROWS(qr(zero_column).solve(numerical::vector<complex> {one, two}), numerical::singular_matrix_error);
   bool named                        {false};
   try {
     static_cast<void>(symmetric_eigen {matrix<double> {{1.0, nan}, {nan, 2.0}}});

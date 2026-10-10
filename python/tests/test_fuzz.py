@@ -95,8 +95,8 @@ class LinalgFuzz(unittest.TestCase):
             tall = rng.standard_normal((rows, cols))
             q, r = numerical.qr(numerical.asarray(tall))
             self.assertTrue(np.allclose(np.asarray(q) @ np.asarray(r), tall, rtol=1e-7, atol=1e-9))
-            u, s, vt = numerical.svd(numerical.asarray(tall))
-            reconstructed = np.asarray(u) @ np.diag(np.asarray(s)) @ np.asarray(vt).T
+            u, s, vh = numerical.svd(numerical.asarray(tall))
+            reconstructed = np.asarray(u) @ np.diag(np.asarray(s)) @ np.asarray(vh)
             self.assertTrue(np.allclose(reconstructed, tall, rtol=1e-7, atol=1e-9))
             self.assertTrue(np.allclose(np.asarray(s),
                                         np.linalg.svd(tall, compute_uv=False), rtol=1e-7, atol=1e-9))

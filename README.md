@@ -25,14 +25,19 @@ Small and complete, grown measured, honest about what is not yet here:
 - `numerical::cholesky_decomposition<T>` — `A = L Lᴴ` for a Hermitian
   positive-definite matrix (about twice as cheap as LU): the factor `lower()`,
   `solve`, and `determinant`; throws `not_positive_definite_error` otherwise.
-- `numerical::qr_decomposition<T>` — `A = Q R` (modified Gram–Schmidt) for an
-  `m × n` matrix with `m ≥ n`: the factors `q()` / `r()` and a least-squares
-  `solve` of `A x ≈ b`; throws `singular_matrix_error` if the columns are dependent.
+- `numerical::qr_decomposition<T>` — `A = Q R` (Householder reflections, so `Q` stays
+  orthonormal to rounding however ill-conditioned `A` is) for an `m × n` matrix with
+  `m ≥ n`: the factors `q()` / `r()` and a least-squares `solve` of `A x ≈ b`, which
+  throws `singular_matrix_error` when `A` is rank-deficient.
 - `numerical::symmetric_eigen` — eigenvalues (ascending) and eigenvectors of a real
   symmetric matrix by cyclic Jacobi rotations (`A = V Λ Vᵀ`).
-- `numerical::svd_decomposition` — the singular value decomposition `A = U Σ Vᵀ`
-  of a real `m × n` matrix (`m ≥ n`), via the eigendecomposition of `Aᵀ A`:
-  `singular_values()` (descending), `u()`, `v()`.
+- `numerical::svd_decomposition<T>` — the singular value decomposition `A = U Σ Vᴴ`
+  of a real or complex `m × n` matrix, any shape: a Householder QR, then one-sided
+  Jacobi on `R`, so every singular value comes to high relative accuracy, the small
+  ones too. `singular_values()` (descending), `u()` (`m × k`), `v()` (`n × k`) and
+  `vh()`, with `k = min(m, n)`; `U` and `V` stay orthonormal for a rank-deficient `A`.
+- `numerical::lstsq(a, b)` — the minimum-norm least-squares solution of `A x ≈ b`,
+  as NumPy's `lstsq` gives it, for any shape and rank (from the SVD).
 - `numerical::tensor<T>` — a dense, row-major, N-dimensional tensor (rank-1 is a
   vector, rank-2 a matrix, rank-0 a scalar; built directly or from a `vector` /
   `matrix`), with **`einsum`** — Einstein-summation index notation for
@@ -44,7 +49,7 @@ Small and complete, grown measured, honest about what is not yet here:
   order.
 
 **Grows in as measured:** sparse storage, complex
-Hermitian eigen/SVD, non-symmetric eigenvalues, FFT, numeric autodiff, iterative
+Hermitian eigen, non-symmetric eigenvalues, FFT, numeric autodiff, iterative
 solvers, numerical integration, arbitrary precision.
 
 ## Build
@@ -107,9 +112,9 @@ numerical.solve(a, numerical.Tensor([1.0, 1.0]))   # a @ x = b
 
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)`, `inverse(a)`, `lstsq(a, b)`, `cholesky(a)`, `qr(a)` → `(Q, R)`,
-`eigh(a)` → `(values, vectors)`, `svd(a)` → `(U, S, V)`. `determinant` / `inverse`
-/ `lstsq` / `cholesky` / `qr` accept `float64` and `complex128`; `eigh` / `svd`
-are `float64` only (matching the C++ layer).
+`eigh(a)` → `(values, vectors)`, `svd(a)` → `(U, S, Vh)` — NumPy's
+`svd(a, full_matrices=False)`, so `(U * S) @ Vh` is `a`. Every one accepts `float64`
+and `complex128` but `eigh`, which is `float64` only (matching the C++ layer).
 
 A `Tensor` is a citizen of the scientific Python stack, **zero-copy**:
 

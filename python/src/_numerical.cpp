@@ -622,7 +622,7 @@ any_tensor inverse(const any_tensor& v)
 template <typename T>
 any_tensor do_lstsq(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
-    const numerical::vector<T> answer {numerical::qr(matrix_from(a)).solve(numerical::vector<T> {b.data()})};
+    const numerical::vector<T> answer {numerical::lstsq(matrix_from(a), numerical::vector<T> {b.data()})};
     std::vector<T>          out;
     out.reserve(answer.size());
     for (std::size_t i = 0; i < answer.size(); ++i) {
@@ -631,7 +631,7 @@ any_tensor do_lstsq(const numerical::tensor<T>& a, const numerical::tensor<T>& b
     return any_tensor {numerical::tensor<T> {{answer.size()}, std::move(out)}};
 }
 
-// lstsq(a, b) -> Tensor (least-squares solution of a x ≈ b via QR).
+// lstsq(a, b) -> Tensor (the minimum-norm least-squares solution of a x ≈ b, from the SVD).
 any_tensor lstsq(const any_tensor& a, const any_tensor& b)
 {
     if (shape_of(a).size() != 2 || shape_of(b).size() != 1) {
@@ -683,7 +683,7 @@ std::tuple<any_tensor, any_tensor> qr(const any_tensor& v)
     return do_qr<double>(std::get<real_tensor>(v));
 }
 
-// The real float64 matrix of a Tensor, or throws (eigh/svd are real-only).
+// The real float64 matrix of a Tensor, or throws (eigh is real-only).
 const real_tensor& real_matrix(const any_tensor& v, const char* name)
 {
     if (shape_of(v).size() != 2) {
@@ -704,14 +704,25 @@ std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v)
             any_tensor {real_tensor {decomposition.vectors()}}};
 }
 
-// svd(a) -> (U, singular_values, V) for a real m×n matrix (m ≥ n).
+template <typename T>
+std::tuple<any_tensor, any_tensor, any_tensor> do_svd(const numerical::tensor<T>& a)
+{
+    const numerical::svd_decomposition<T> decomposition {matrix_from(a)};
+    return {any_tensor {numerical::tensor<T> {decomposition.u()}},
+            any_tensor {real_tensor {decomposition.singular_values()}},
+            any_tensor {numerical::tensor<T> {decomposition.vh()}}};
+}
+
+// svd(a) -> (U, singular_values, Vh) for an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).
 std::tuple<any_tensor, any_tensor, any_tensor> svd(const any_tensor& v)
 {
-    const real_tensor&              a = real_matrix(v, "svd supports float64 matrices only");
-    const numerical::svd_decomposition decomposition {matrix_from(a)};
-    return {any_tensor {real_tensor {decomposition.u()}},
-            any_tensor {real_tensor {decomposition.singular_values()}},
-            any_tensor {real_tensor {decomposition.v()}}};
+    if (shape_of(v).size() != 2) {
+        throw std::runtime_error("svd expects a matrix (rank-2 tensor)");
+    }
+    if (is_complex(v)) {
+        return do_svd<std::complex<double>>(std::get<cplx_tensor>(v));
+    }
+    return do_svd<double>(std::get<real_tensor>(v));
 }
 
 // Widen a contiguous real buffer to a complex tensor (zero imaginary part) — used
@@ -916,11 +927,11 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     // The 7 linear-algebra functions whose args/return are caster-able -> m.def.
     m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2, b rank-1).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
-    m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe least-squares solution of a @ x ≈ b (QR; a rank-2, b rank-1).");
+    m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe minimum-norm least-squares solution of a @ x ≈ b, as numpy.linalg.lstsq (SVD; a rank-2, b rank-1).");
     m.def<&cholesky>("cholesky", "cholesky(a) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite).");
     m.def<&qr>("qr", "qr(a) -> (Q, R)\nThe QR factorisation of an m×n matrix (m ≥ n).");
     m.def<&eigh>("eigh", "eigh(a) -> (values, vectors)\nEigenpairs of a real symmetric matrix (ascending values).");
-    m.def<&svd>("svd", "svd(a) -> (U, S, V)\nThe singular value decomposition of a real m×n matrix (m ≥ n).");
+    m.def<&svd>("svd", "svd(a) -> (U, S, Vh)\nThe singular value decomposition a = U @ diag(S) @ Vh of an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).");
     // The 3 that stay manual: determinant (dtype-dependent scalar), einsum (variadic),
     // asarray (returns the same object when the dtype matches — Py_NewRef identity).
     m.raw("determinant", module_determinant, METH_VARARGS,

@@ -26,6 +26,7 @@
 #include <cmath>
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
 #include <cstddef>
+#include <limits>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -117,16 +118,18 @@ namespace numerical {
 
   namespace detail {
 
-    //! \brief Whether \p x is finite: both parts, for a complex scalar. \param[in] x The entry.
+    //! \brief Whether \p x is finite. \param[in] x The entry.
     template <typename T>
     [[nodiscard]] bool is_finite_entry(const T& x)
     {
-      if constexpr (requires { x.real(); x.imag(); }) {
-        return std::isfinite(x.real()) && std::isfinite(x.imag());
-      }
-      else {
-        return std::isfinite(x);
-      }
+      return std::isfinite(x);
+    }
+
+    //! \brief Whether \p x is finite: both of its parts. \param[in] x The entry.
+    template <typename U>
+    [[nodiscard]] bool is_finite_entry(const std::complex<U>& x)
+    {
+      return std::isfinite(x.real()) && std::isfinite(x.imag());
     }
 
     //! \brief The one non-finite policy, checked where every decomposition starts.
@@ -448,16 +451,118 @@ namespace numerical {
     return cholesky_decomposition<T> {a};
   }
 
+  namespace detail {
+
+    //! \brief The unit-modulus factor of \p x: `x / |x|` (its sign, for a real scalar), and 1 at 0.
+    template <typename T>
+    [[nodiscard]] T phase_of(const T& x)
+    {
+      const double magnitude {static_cast<double>(std::abs(x))};
+      return magnitude == 0.0 ? T {1} : x / static_cast<T>(magnitude);
+    }
+
+    //! \brief A thin QR factorisation, row-major: `q` is `rows × cols` with orthonormal columns, `r` is
+    //!        `cols × cols` upper triangular with a real, non-negative diagonal.
+    template <typename T>
+    struct thin_qr
+    {
+      std::vector<T> q; //!< The orthonormal factor.
+      std::vector<T> r; //!< The triangular factor.
+    };
+
+    /*!
+     * \brief Factorises the `rows × cols` row-major \p a (`rows ≥ cols`) by Householder reflections: each
+     *        column below the diagonal is reflected onto it, so `Q` is orthonormal to rounding whatever the
+     *        conditioning of `A`, and a column dependent on the earlier ones leaves a zero on `R`'s diagonal.
+     * \param[in] a    The matrix, row-major.
+     * \param[in] rows Its row count.
+     * \param[in] cols Its column count.
+     * \return `Q` and `R`.
+     */
+    template <typename T>
+    [[nodiscard]] thin_qr<T> householder_qr(std::vector<T> a,
+                                            std::size_t    rows,
+                                            std::size_t    cols)
+    {
+      std::vector<std::vector<T>> reflectors(cols); // v_k on rows k…m-1; empty where the column was zero
+      for (std::size_t k {0}; k < cols; ++k) {
+        std::vector<T> v(rows - k);
+        for (std::size_t i {k}; i < rows; ++i) {
+          v[i - k] = a[(i * cols) + k];
+        }
+        const double norm {scaled_norm(v)};
+        if (norm == 0.0) {
+          continue; // nothing to reflect: the column is already zero below and on the diagonal
+        }
+        v[0] += phase_of(v[0]) * static_cast<T>(norm); // x − α e₁ with α = −phase(x₀)‖x‖: no cancellation
+        const auto length {static_cast<T>(scaled_norm(v))};
+        for (T& element : v) {
+          element /= length;
+        }
+        for (std::size_t j {k}; j < cols; ++j) { // A ← (I − 2 v vᴴ) A on rows k…m-1
+          T projection {};
+          for (std::size_t i {k}; i < rows; ++i) {
+            projection += conj_of(v[i - k]) * a[(i * cols) + j];
+          }
+          for (std::size_t i {k}; i < rows; ++i) {
+            a[(i * cols) + j] -= static_cast<T>(2) * v[i - k] * projection;
+          }
+        }
+        reflectors[k] = std::move(v);
+      }
+      thin_qr<T> out {.q = std::vector<T>(rows * cols, T {}), .r = std::vector<T>(cols * cols, T {})};
+      for (std::size_t i {0}; i < cols; ++i) {
+        out.q[(i * cols) + i] = T {1};
+        for (std::size_t j {i}; j < cols; ++j) {
+          out.r[(i * cols) + j] = a[(i * cols) + j];
+        }
+      }
+      for (std::size_t k {cols}; k-- > 0;) { // Q = H₀ H₁ … applied to the first columns of I
+        const std::vector<T>& v {reflectors[k]};
+        if (v.empty()) {
+          continue;
+        }
+        for (std::size_t j {0}; j < cols; ++j) {
+          T projection {};
+          for (std::size_t i {k}; i < rows; ++i) {
+            projection += conj_of(v[i - k]) * out.q[(i * cols) + j];
+          }
+          for (std::size_t i {k}; i < rows; ++i) {
+            out.q[(i * cols) + j] -= static_cast<T>(2) * v[i - k] * projection;
+          }
+        }
+      }
+      for (std::size_t k {0}; k < cols; ++k) { // R's diagonal real and non-negative: rotate row k, column k
+        const T phase {phase_of(out.r[(k * cols) + k])};
+        for (std::size_t j {k}; j < cols; ++j) {
+          out.r[(k * cols) + j] *= conj_of(phase);
+        }
+        for (std::size_t i {0}; i < rows; ++i) {
+          out.q[(i * cols) + k] *= phase;
+        }
+      }
+      return out;
+    }
+
+    //! \brief The magnitude under which a diagonal entry of `R` or a singular value counts as zero, as
+    //!        NumPy draws it: the largest times the machine epsilon times the larger dimension.
+    [[nodiscard]] inline double rank_tolerance(double      largest,
+                                               std::size_t rows,
+                                               std::size_t cols)
+    {
+      return largest * std::numeric_limits<double>::epsilon() * static_cast<double>(std::max(rows, cols));
+    }
+  } // namespace detail
+
   /*!
    * \brief A QR factorisation `A = Q R` of an `m × n` matrix with `m ≥ n`.
    * \tparam T The scalar element type (a field: `double`, `std::complex<double>`, …).
    *
-   * `Q` is `m × n` with orthonormal columns (`Qᴴ Q = I`) and `R` is `n × n` upper
-   * triangular with a real, positive diagonal. Computed by modified Gram–Schmidt
-   * — simple and naturally generic over a real or complex scalar; for a difficult
-   * (nearly rank-deficient) matrix, Householder reflections would be more stable
-   * (a deliberate future refinement). \ref solve returns the least-squares
-   * solution of `A x ≈ b`. Linearly dependent columns throw \ref singular_matrix_error.
+   * `Q` is `m × n` with orthonormal columns (`Qᴴ Q = I`) and `R` is `n × n` upper triangular with a real,
+   * non-negative diagonal. Computed by Householder reflections, so `Q` stays orthonormal to rounding
+   * however ill-conditioned `A` is, and a rank-deficient `A` factorises too (with zeros on `R`'s
+   * diagonal). \ref solve returns the least-squares solution of `A x ≈ b` for a full-rank `A`; for a
+   * rank-deficient one, \ref numerical::lstsq gives the minimum-norm solution.
    */
   template <typename T>
   class qr_decomposition
@@ -467,7 +572,6 @@ namespace numerical {
     /*!
      * \brief Factorises \p a. \param[in] a The matrix (rows ≥ columns).
      * \throws dimension_error If \p a has fewer rows than columns.
-     * \throws singular_matrix_error If \p a's columns are linearly dependent.
      */
     explicit qr_decomposition(const matrix<T>& a)
       : rows_(a.rows()), cols_(a.cols())
@@ -476,36 +580,15 @@ namespace numerical {
         throw dimension_error("QR decomposition requires rows >= columns");
       }
       detail::require_finite(a, "QR decomposition");
-      q_.assign(rows_ * cols_, T {});
-      r_.assign(cols_ * cols_, T {});
-      for (std::size_t j {0}; j < cols_; ++j) {
-        std::vector<T> v(rows_);
-        for (std::size_t i {0}; i < rows_; ++i) {
-          v[i] = a(i, j);
-        }
-        const double original {detail::scaled_norm(v)};
-        for (std::size_t i {0}; i < j; ++i) { // subtract the projections onto q_0…q_{j-1}
-          T projection {};
-          for (std::size_t k {0}; k < rows_; ++k) {
-            projection += detail::conj_of(q_[(k * cols_) + i]) * v[k];
-          }
-          r_[(i * cols_) + j] = projection;
-          for (std::size_t k {0}; k < rows_; ++k) {
-            v[k] -= projection * q_[(k * cols_) + i];
-          }
-        }
-        const double norm {detail::scaled_norm(v)};
-        // A column whose residual is negligible against its original magnitude is
-        // (numerically) dependent on the earlier ones. The relative test is
-        // scale-invariant and portable, unlike an exact comparison to zero.
-        if (norm <= 1e-12 * original) {
-          throw singular_matrix_error("QR: the columns are linearly dependent");
-        }
-        r_[(j * cols_) + j] = static_cast<T>(norm);
-        for (std::size_t k {0}; k < rows_; ++k) {
-          q_[(k * cols_) + j] = v[k] / static_cast<T>(norm);
+      std::vector<T> entries(rows_ * cols_);
+      for (std::size_t i {0}; i < rows_; ++i) {
+        for (std::size_t j {0}; j < cols_; ++j) {
+          entries[(i * cols_) + j] = a(i, j);
         }
       }
+      detail::thin_qr<T> factors {detail::householder_qr(std::move(entries), rows_, cols_)};
+      q_ = std::move(factors.q);
+      r_ = std::move(factors.r);
     }
 
     //! \brief The `m × n` factor `Q` (orthonormal columns).
@@ -521,18 +604,28 @@ namespace numerical {
     }
 
     /*!
-     * \brief The least-squares solution of `A x ≈ b` (`x = R⁻¹ Qᴴ b`).
+     * \brief The least-squares solution of `A x ≈ b` (`x = R⁻¹ Qᴴ b`) for a full-rank `A`.
      * \param[in] b The right-hand side (size `m`).
      * \return The solution `x` (size `n`).
      * \throws dimension_error If `b`'s size differs from the row count.
+     * \throws singular_matrix_error If `A` is rank-deficient: a diagonal entry of `R` is under
+     *         \ref detail::rank_tolerance (\ref numerical::lstsq solves such a system).
      */
     [[nodiscard]] vector<T> solve(const vector<T>& b) const
     {
       if (b.size() != rows_) {
         throw dimension_error("solve: right-hand side size differs from the matrix");
       }
+      double largest {0.0};
+      for (std::size_t i {0}; i < cols_; ++i) {
+        largest = std::max(largest, detail::real_part(r_[(i * cols_) + i]));
+      }
+      const double   tolerance {detail::rank_tolerance(largest, rows_, cols_)};
       std::vector<T> y(cols_); // y = Qᴴ b
       for (std::size_t i {0}; i < cols_; ++i) {
+        if (detail::real_part(r_[(i * cols_) + i]) <= tolerance) {
+          throw singular_matrix_error("QR solve: the matrix is rank-deficient (lstsq gives its minimum-norm solution)");
+        }
         T sum {};
         for (std::size_t k {0}; k < rows_; ++k) {
           sum += detail::conj_of(q_[(k * cols_) + i]) * b[k];
@@ -722,83 +815,128 @@ namespace numerical {
     matrix<double> vectors_; //!< Eigenvectors as columns.
   };
 
+  //! \brief Thrown when an iterative algorithm has not converged within its bound of sweeps.
+  class convergence_error : public std::runtime_error
+  {
+  public:
+
+    //! \brief Builds the error. \param[in] message Human-readable cause.
+    explicit convergence_error(const std::string& message)
+      : std::runtime_error(message)
+    {}
+  };
+
+  namespace detail {
+
+    //! \brief The sweeps one-sided Jacobi may take: it converges quadratically, in under 15 on every
+    //!        matrix measured; the bound turns a non-convergence into an error instead of a hang.
+    inline constexpr std::size_t jacobi_sweeps {60};
+
+    /*!
+     * \brief One-sided (Hestenes) Jacobi on the columns of the `n × n` row-major \p w: plane rotations,
+     *        accumulated into \p v, until every pair of columns is orthogonal to rounding. The column
+     *        norms are then the singular values of the input, each to high relative accuracy.
+     * \param[in,out] w          The matrix whose columns are orthogonalised.
+     * \param[in,out] v          The rotations, accumulated (start from the identity).
+     * \param[in]     n          The order.
+     * \param[in]     max_sweeps The bound of sweeps.
+     * \throws convergence_error If a sweep still rotated at the bound.
+     */
+    template <typename T>
+    void one_sided_jacobi(std::vector<T>& w,
+                          std::vector<T>& v,
+                          std::size_t     n,
+                          std::size_t     max_sweeps)
+    {
+      const double epsilon {std::numeric_limits<double>::epsilon()};
+      for (std::size_t sweep {1};; ++sweep) {
+        bool rotated {false};
+        for (std::size_t p {0}; p < n; ++p) {
+          for (std::size_t q {p + 1}; q < n; ++q) {
+            double alpha {0.0};
+            double beta  {0.0};
+            T      gamma {};
+            for (std::size_t i {0}; i < n; ++i) {
+              alpha += std::norm(w[(i * n) + p]);
+              beta  += std::norm(w[(i * n) + q]);
+              gamma += conj_of(w[(i * n) + p]) * w[(i * n) + q];
+            }
+            const double magnitude {static_cast<double>(std::abs(gamma))};
+            if (magnitude <= epsilon * std::sqrt(alpha) * std::sqrt(beta)) {
+              continue; // already orthogonal to rounding (or a zero column)
+            }
+            rotated = true;
+            // Turn column q by the phase of γ so that the pair's inner product is real, then rotate.
+            const T      turn {conj_of(gamma) / static_cast<T>(magnitude)};
+            const double zeta {(beta - alpha) / (2.0 * magnitude)};
+            const double t    {(zeta >= 0.0 ? 1.0 : -1.0) / (std::abs(zeta) + std::sqrt(1.0 + (zeta * zeta)))};
+            const double c    {1.0 / std::sqrt(1.0 + (t * t))};
+            const double s    {c * t};
+            for (std::vector<T>* side : {&w, &v}) {
+              std::vector<T>& m {*side};
+              for (std::size_t i {0}; i < n; ++i) {
+                const T left  {m[(i * n) + p]};
+                const T right {turn * m[(i * n) + q]};
+                m[(i * n) + p] = (static_cast<T>(c) * left) - (static_cast<T>(s) * right);
+                m[(i * n) + q] = (static_cast<T>(s) * left) + (static_cast<T>(c) * right);
+              }
+            }
+          }
+        }
+        if (!rotated) {
+          return;
+        }
+        if (sweep == max_sweeps) {
+          throw convergence_error("SVD: one-sided Jacobi did not converge within its sweeps");
+        }
+      }
+    }
+
+    //! \brief The conjugate transpose of \p a.
+    template <typename T>
+    [[nodiscard]] matrix<T> adjoint(const matrix<T>& a)
+    {
+      std::vector<T> entries(a.rows() * a.cols());
+      for (std::size_t i {0}; i < a.rows(); ++i) {
+        for (std::size_t j {0}; j < a.cols(); ++j) {
+          entries[(j * a.rows()) + i] = conj_of(a(i, j));
+        }
+      }
+      return matrix<T> {a.cols(), a.rows(), std::move(entries)};
+    }
+  } // namespace detail
+
   /*!
-   * \brief The singular value decomposition `A = U Σ Vᵀ` of a real `m × n` matrix.
+   * \brief The singular value decomposition `A = U Σ Vᴴ` of an `m × n` matrix.
+   * \tparam T The scalar element type (`double` or `std::complex<double>`).
    *
-   * Computed from the symmetric eigendecomposition of `Aᵀ A`: its eigenvalues are
-   * the squared singular values and its eigenvectors are the right singular
-   * vectors `V` (`m ≥ n`). The singular values are returned in descending order;
-   * `U` is `m × n`, `V` is `n × n`. Forming `Aᵀ A` squares the condition number,
-   * so the smallest singular values are less accurate than a one-sided Jacobi or
-   * Golub–Kahan SVD would give — a documented trade for a simple, reference
-   * implementation. Real only.
+   * With `k = min(m, n)`: the `k` singular values, descending; `U` (`m × k`) and `V` (`n × k`) with
+   * orthonormal columns, also where `A` is rank-deficient (the columns for a zero singular value
+   * complete the basis). Computed as NumPy's reference LAPACK routes recommend for accuracy: a
+   * Householder QR of `A` (of `Aᴴ` when `m < n`), then one-sided Jacobi on `R`, which gives every
+   * singular value to high relative accuracy — the small ones too, which a decomposition of `Aᴴ A`
+   * loses. \ref vh is `Vᴴ`, the third factor NumPy's `svd` returns.
    */
+  template <typename T>
   class svd_decomposition
   {
   public:
 
     /*!
-     * \brief Decomposes \p a. \param[in] a The matrix (rows ≥ columns).
-     * \throws dimension_error If \p a has fewer rows than columns.
+     * \brief Decomposes \p a. \param[in] a The matrix.
+     * \throws non_finite_error If an entry is infinite or NaN.
+     * \throws convergence_error If the Jacobi sweeps do not converge (not observed).
      */
-    explicit svd_decomposition(const matrix<double>& a)
-      : rows_(a.rows()), cols_(a.cols())
+    explicit svd_decomposition(const matrix<T>& a)
     {
-      if (rows_ < cols_) {
-        throw dimension_error("SVD requires rows >= columns");
-      }
       detail::require_finite(a, "SVD");
-      // Decompose A divided by its largest entry: AᵀA squares the entries, which overflows near 1e155
-      // and underflows near 1e-155. The singular values are scaled back; the vectors do not change.
-      double scale {0.0};
-      for (std::size_t i {0}; i < rows_; ++i) {
-        for (std::size_t j {0}; j < cols_; ++j) {
-          scale = std::max(scale, std::abs(a(i, j)));
-        }
+      if (a.rows() >= a.cols()) {
+        factor(a);
       }
-      if (scale == 0.0) {
-        scale = 1.0;
+      else { // A = (Aᴴ)ᴴ = (U' Σ V'ᴴ)ᴴ = V' Σ U'ᴴ
+        factor(detail::adjoint(a));
+        std::swap(u_, v_);
       }
-      std::vector<double> entries(rows_ * cols_);
-      for (std::size_t i {0}; i < rows_; ++i) {
-        for (std::size_t j {0}; j < cols_; ++j) {
-          entries[(i * cols_) + j] = a(i, j) / scale;
-        }
-      }
-      const matrix<double>  scaled {rows_, cols_, std::move(entries)};
-      const symmetric_eigen normal {transpose(scaled) * scaled}; // eigenpairs of (A/s)ᵀ(A/s)
-
-      std::vector<double> values(cols_);
-      std::vector<double> right(cols_ * cols_);
-      for (std::size_t d {0}; d < cols_; ++d) {
-        const std::size_t source {cols_ - 1 - d}; // ascending eigenvalues → descending singular values
-        values[d] = std::sqrt(std::max(normal.values()[source], 0.0));
-        for (std::size_t row {0}; row < cols_; ++row) {
-          right[(row * cols_) + d] = normal.vectors()(row, source);
-        }
-      }
-
-      std::vector<double> left(rows_ * cols_, 0.0);
-      // Each left singular vector u_d = A v_d / σ_d is independent and writes a
-      // disjoint column, so the columns run in parallel above a threshold.
-      detail::parallel_for(cols_, 16, [&](std::size_t d) {
-                             if (values[d] > 1e-12 * values[0]) { // null space stays zero
-                               for (std::size_t i {0}; i < rows_; ++i) {
-                                 double sum {0.0};
-                                 for (std::size_t k {0}; k < cols_; ++k) {
-                                   sum += scaled(i, k) * right[(k * cols_) + d];
-                                 }
-                                 left[(i * cols_) + d] = sum / values[d];
-                               }
-                             }
-                           });
-
-      for (double& value : values) {
-        value *= scale;
-      }
-      singular_values_ = vector<double> {std::move(values)};
-      u_               = matrix<double> {rows_, cols_, std::move(left)};
-      v_               = matrix<double> {cols_, cols_, std::move(right)};
     }
 
     //! \brief The singular values, descending.
@@ -807,26 +945,175 @@ namespace numerical {
       return singular_values_;
     }
 
-    //! \brief The `m × n` left singular vectors `U` (columns).
-    [[nodiscard]] const matrix<double>& u() const noexcept
+    //! \brief The `m × k` left singular vectors `U` (columns).
+    [[nodiscard]] const matrix<T>& u() const noexcept
     {
       return u_;
     }
 
-    //! \brief The `n × n` right singular vectors `V` (columns).
-    [[nodiscard]] const matrix<double>& v() const noexcept
+    //! \brief The `n × k` right singular vectors `V` (columns).
+    [[nodiscard]] const matrix<T>& v() const noexcept
     {
       return v_;
     }
 
+    //! \brief `Vᴴ` (`k × n`), so that `A = U Σ Vᴴ` reads `u() * diag(singular_values()) * vh()`.
+    [[nodiscard]] matrix<T> vh() const
+    {
+      return detail::adjoint(v_);
+    }
+
   private:
 
-    std::size_t    rows_;            //!< The number of rows (m).
-    std::size_t    cols_;            //!< The number of columns (n).
+    //! \brief Decomposes an `m × n` \p a with `m ≥ n` into \ref u_, \ref singular_values_ and \ref v_.
+    void factor(const matrix<T>& a)
+    {
+      const std::size_t rows {a.rows()};
+      const std::size_t cols {a.cols()};
+      // Work on A divided by its largest magnitude: the sums of squares in the sweeps overflow near
+      // 1e155 and underflow near 1e-155. The singular values are scaled back; the vectors do not change.
+      double scale {0.0};
+      for (std::size_t i {0}; i < rows; ++i) {
+        for (std::size_t j {0}; j < cols; ++j) {
+          scale = std::max(scale, static_cast<double>(std::abs(a(i, j))));
+        }
+      }
+      if (scale == 0.0) {
+        scale = 1.0;
+      }
+      std::vector<T> entries(rows * cols);
+      for (std::size_t i {0}; i < rows; ++i) {
+        for (std::size_t j {0}; j < cols; ++j) {
+          entries[(i * cols) + j] = a(i, j) / static_cast<T>(scale);
+        }
+      }
+      detail::thin_qr<T> factors              {detail::householder_qr(std::move(entries), rows, cols)};
+      std::vector<T>     w                    {std::move(factors.r)}; // A = Q R, and R V = W with orthogonal columns
+      std::vector<T>     right(cols * cols, T {});
+      for (std::size_t i {0}; i < cols; ++i) {
+        right[(i * cols) + i] = T {1};
+      }
+      detail::one_sided_jacobi(w, right, cols, detail::jacobi_sweeps);
+
+      std::vector<double> norms(cols);
+      for (std::size_t j {0}; j < cols; ++j) {
+        std::vector<T> column(cols);
+        for (std::size_t i {0}; i < cols; ++i) {
+          column[i] = w[(i * cols) + j];
+        }
+        norms[j] = detail::scaled_norm(column);
+      }
+      std::vector<std::size_t> order(cols);
+      for (std::size_t j {0}; j < cols; ++j) {
+        order[j] = j;
+      }
+      std::stable_sort(order.begin(), order.end(), [&norms](std::size_t x, std::size_t y) { return norms[x] > norms[y]; });
+
+      // The left vectors of R: each nonzero column of W over its norm; a zero one has none, and takes
+      // the unit vector that leaves the largest residual against the columns already set, made
+      // orthogonal to them.
+      std::vector<T>      left(cols * cols, T {});
+      std::vector<T>      sorted_right(cols * cols);
+      std::vector<double> values(cols);
+      for (std::size_t d {0}; d < cols; ++d) {
+        const std::size_t j {order[d]};
+        values[d] = norms[j] * scale;
+        for (std::size_t i {0}; i < cols; ++i) {
+          sorted_right[(i * cols) + d] = right[(i * cols) + j];
+        }
+        if (norms[j] > 0.0) {
+          for (std::size_t i {0}; i < cols; ++i) {
+            left[(i * cols) + d] = w[(i * cols) + j] / static_cast<T>(norms[j]);
+          }
+          continue;
+        }
+        std::vector<T> best;
+        double         best_norm {-1.0};
+        for (std::size_t k {0}; k < cols; ++k) {
+          std::vector<T> candidate(cols, T {});
+          candidate[k] = T {1};
+          orthogonalise(candidate, left, cols, d);
+          const double norm {detail::scaled_norm(candidate)};
+          if (norm > best_norm) {
+            best      = std::move(candidate);
+            best_norm = norm;
+          }
+        }
+        orthogonalise(best, left, cols, d); // a second pass restores orthogonality lost to rounding
+        const double norm {detail::scaled_norm(best)};
+        for (std::size_t i {0}; i < cols; ++i) {
+          left[(i * cols) + d] = best[i] / static_cast<T>(norm);
+        }
+      }
+      singular_values_ = vector<double> {std::move(values)};
+      u_               = matrix<T> {rows, cols, std::move(factors.q)} *matrix<T> {cols, cols, std::move(left)};
+      v_               = matrix<T> {cols, cols, std::move(sorted_right)};
+    }
+
+    //! \brief Removes from \p x its components along the first \p count columns of the `n × n` \p basis.
+    static void orthogonalise(std::vector<T>&       x,
+                              const std::vector<T>& basis,
+                              std::size_t           n,
+                              std::size_t           count)
+    {
+      for (std::size_t c {0}; c < count; ++c) {
+        T projection {};
+        for (std::size_t i {0}; i < n; ++i) {
+          projection += detail::conj_of(basis[(i * n) + c]) * x[i];
+        }
+        for (std::size_t i {0}; i < n; ++i) {
+          x[i] -= projection * basis[(i * n) + c];
+        }
+      }
+    }
+
     vector<double> singular_values_; //!< Singular values, descending.
-    matrix<double> u_;               //!< m×n left singular vectors.
-    matrix<double> v_;               //!< n×n right singular vectors.
+    matrix<T>      u_;               //!< m×k left singular vectors.
+    matrix<T>      v_;               //!< n×k right singular vectors.
   };
+
+  /*!
+   * \brief The minimum-norm least-squares solution of `A x ≈ b`, as NumPy's `lstsq` gives it.
+   * \tparam T The scalar element type (`double` or `std::complex<double>`).
+   *
+   * From the SVD of `A`: `x = V Σ⁺ Uᴴ b`, where a singular value under \ref detail::rank_tolerance of the
+   * largest counts as zero. Any shape, any rank: an overdetermined full-rank system gives its least-squares
+   * solution, an underdetermined or rank-deficient one the solution of smallest norm.
+   * \param[in] a The `m × n` matrix.
+   * \param[in] b The right-hand side (size `m`).
+   * \return `x` (size `n`).
+   * \throws dimension_error If `b`'s size differs from the row count.
+   * \throws non_finite_error If an entry of \p a is infinite or NaN.
+   */
+  template <typename T>
+  [[nodiscard]] vector<T> lstsq(const matrix<T>& a,
+                                const vector<T>& b)
+  {
+    if (b.size() != a.rows()) {
+      throw dimension_error("lstsq: right-hand side size differs from the matrix");
+    }
+    detail::require_finite(a, "lstsq");
+    const svd_decomposition<T> s       {a};
+    const vector<double>&      sigma   {s.singular_values()};
+    const std::size_t          k       {sigma.size()};
+    double                     largest {0.0};
+    for (const double value : sigma) {
+      largest = std::max(largest, value);
+    }
+    const double               tolerance     {detail::rank_tolerance(largest, a.rows(), a.cols())};
+    std::vector<T>             x(a.cols(), T {});
+    for (std::size_t d {0}; d < k && sigma[d] > tolerance; ++d) {
+      T coefficient {}; // (u_dᴴ b) / σ_d
+      for (std::size_t i {0}; i < a.rows(); ++i) {
+        coefficient += detail::conj_of(s.u()(i, d)) * b[i];
+      }
+      coefficient /= static_cast<T>(sigma[d]);
+      for (std::size_t j {0}; j < a.cols(); ++j) {
+        x[j] += coefficient * s.v()(j, d);
+      }
+    }
+    return vector<T> {std::move(x)};
+  }
 } // namespace numerical
 
 #endif // NUMERICAL_DECOMPOSITION_HPP
