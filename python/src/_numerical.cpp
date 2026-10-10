@@ -813,7 +813,7 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
     PyObject* shape_obj   = PyDict_GetItemString(ai, "shape");   // borrowed
     PyObject* data_obj    = PyDict_GetItemString(ai, "data");    // borrowed
     if (typestr_obj == nullptr || shape_obj == nullptr || data_obj == nullptr
-        || PyTuple_Check(data_obj) == 0) {
+        || PyTuple_Check(data_obj) == 0 || PyTuple_Size(data_obj) < 1) {
         Py_DECREF(ai);
         PyErr_SetString(sciforge_module_error(), "asarray: malformed __array_interface__");
         return nullptr;
@@ -868,12 +868,21 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
         Py_DECREF(ai);
         return nullptr;
     }
+    // A null address holds no element: reading `total` of them from it would crash. An empty array's
+    // address is never read.
+    if (address == nullptr && total > 0) {
+        Py_DECREF(ai);
+        PyErr_SetString(sciforge_module_error(), "asarray: __array_interface__ gives a null data address");
+        return nullptr;
+    }
 
     PyObject* result = nullptr;
     try {
         if (want_complex) { // complex source; narrowing to float64 was refused above
             std::vector<std::complex<double>> buffer(total);
-            std::memcpy(buffer.data(), address, total * sizeof(std::complex<double>));
+            if (total > 0) {
+                std::memcpy(buffer.data(), address, total * sizeof(std::complex<double>));
+            }
             if (swapped) {
                 swap_doubles(reinterpret_cast<unsigned char*>(buffer.data()), 2 * total);
             }
@@ -881,7 +890,9 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
         }
         else { // real source: keep as float64, or widen to complex128 if requested
             std::vector<double> buffer(total);
-            std::memcpy(buffer.data(), address, total * sizeof(double));
+            if (total > 0) {
+                std::memcpy(buffer.data(), address, total * sizeof(double));
+            }
             if (swapped) {
                 swap_doubles(reinterpret_cast<unsigned char*>(buffer.data()), total);
             }

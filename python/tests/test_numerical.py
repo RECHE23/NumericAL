@@ -198,6 +198,20 @@ class ArrayInterface(unittest.TestCase):
         with self.assertRaises(numerical.error):
             numerical.asarray(Interface("|f8", struct.pack("<d", 1.0), 1))
 
+    def test_asarray_refuses_a_null_address_and_an_empty_data_tuple(self):
+        # A null data address with elements to read crashed the interpreter; an empty array may have one.
+        class Raw:
+            def __init__(self, typestr, data, count):
+                self.__array_interface__ = {"version": 3, "typestr": typestr, "shape": (count,), "data": data}
+
+        for typestr in ("<f8", "<c16"):
+            with self.subTest(typestr=typestr):
+                with self.assertRaises(numerical.error):
+                    numerical.asarray(Raw(typestr, (0, True), 4))
+                self.assertEqual(numerical.asarray(Raw(typestr, (0, True), 0)).tolist(), [])
+        with self.assertRaises(numerical.error):
+            numerical.asarray(Raw("<f8", (), 1))
+
     def test_asarray_rejects_unknown_dtype(self):
         with self.assertRaises(numerical.error):
             numerical.asarray(numerical.Tensor([1.0]), dtype="float32")
