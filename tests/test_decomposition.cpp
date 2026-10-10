@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <limits>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -291,11 +292,21 @@ TEST(every_decomposition_refuses_a_non_finite_entry)
     const matrix<double> off_diagonal {{1.0, bad}, {bad, 2.0}};
     const matrix<double> on_diagonal  {{bad, 0.0}, {0.0, 1.0}};
     for (const matrix<double>& m : {off_diagonal, on_diagonal}) {
-      EXPECT_THROWS(symmetric_eigen {m}, numerical::non_finite_error);
-      EXPECT_THROWS(svd_decomposition {m}, numerical::non_finite_error);
-      EXPECT_THROWS(qr(m), numerical::non_finite_error);
-      EXPECT_THROWS(lu_decomposition<double> {m}, numerical::non_finite_error);
-      EXPECT_THROWS(cholesky_decomposition<double> {m}, numerical::non_finite_error);
+      // Each refusal names the decomposition asked for, not one it builds on (SVD runs an eigensolver).
+      const auto refuses {[](auto&& decompose, std::string_view name) {
+                            try {
+                              decompose();
+                            }
+                            catch (const numerical::non_finite_error& error) {
+                              return std::string_view {error.what()}.starts_with(name);
+                            }
+                            return false;
+                          }};
+      EXPECT(refuses([&] { static_cast<void>(symmetric_eigen {m}); }, "symmetric eigendecomposition"));
+      EXPECT(refuses([&] { static_cast<void>(svd_decomposition {m}); }, "SVD"));
+      EXPECT(refuses([&] { static_cast<void>(qr(m)); }, "QR"));
+      EXPECT(refuses([&] { static_cast<void>(lu_decomposition<double> {m}); }, "LU"));
+      EXPECT(refuses([&] { static_cast<void>(cholesky_decomposition<double> {m}); }, "Cholesky"));
     }
   }
   bool named {false};
