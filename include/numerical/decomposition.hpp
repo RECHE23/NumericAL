@@ -15,8 +15,8 @@
  * well-conditioned systems. A singular matrix has a zero determinant; asking it
  * to solve or invert throws \ref numerical::singular_matrix_error.
  *
- * Every factorisation here refuses an infinite or NaN entry where it starts, with
- * \ref numerical::non_finite_error: none of them means anything on one, and the
+ * Every factorisation here refuses an infinite or NaN entry where it starts, with a
+ * \ref numerical::non_finite_error, since none of them means anything on one and the
  * iterative ones would stop at once and return plausible values.
  */
 #ifndef NUMERICAL_DECOMPOSITION_HPP
