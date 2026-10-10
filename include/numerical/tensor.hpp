@@ -325,6 +325,50 @@ namespace numerical {
         }
       }
 
+      // Three operands or more: first sum each one over the labels no other operand and not the output
+      // carries, then contract them two at a time, left to right, each intermediate keeping only the
+      // labels still to come. One loop over every label of `ij,jk,kl->il` runs n⁴ terms; this runs 2·n³,
+      // and `i,j,k,l,m->` over 65 536 ones each runs five sums of 65 536 instead of 2⁸⁰ terms.
+      if (operands.size() > 2) {
+        std::vector<tensor<T>>   reduced;
+        std::vector<std::string> kept;
+        reduced.reserve(operands.size());
+        for (std::size_t i {0}; i < operands.size(); ++i) {
+          std::string elsewhere {output};
+          for (std::size_t j {0}; j < operands.size(); ++j) {
+            elsewhere += j == i ? std::string {} : inputs[j];
+          }
+          std::string keep;
+          for (const char label : inputs[i]) {
+            if (elsewhere.find(label) != std::string::npos && keep.find(label) == std::string::npos) {
+              keep.push_back(label);
+            }
+          }
+          const std::vector<const tensor<T>*> alone {operands[i]};
+          reduced.push_back(einsum_impl<T>(inputs[i] + "->" + keep, alone));
+          kept.push_back(std::move(keep));
+        }
+        tensor<T>   accumulated {std::move(reduced.front())};
+        std::string labels      {kept.front()};
+        for (std::size_t i {1}; i < reduced.size(); ++i) {
+          std::string later {output};
+          for (std::size_t j {i + 1}; j < kept.size(); ++j) {
+            later += kept[j];
+          }
+          std::string keep;
+          for (const char label : labels + kept[i]) {
+            if (later.find(label) != std::string::npos && keep.find(label) == std::string::npos) {
+              keep.push_back(label);
+            }
+          }
+          const std::vector<const tensor<T>*> pair {&accumulated, &reduced[i]};
+          tensor<T>                           next {einsum_impl<T>(labels + "," + kept[i] + "->" + (i + 1 == reduced.size() ? output : keep), pair)};
+          accumulated = std::move(next);
+          labels      = std::move(keep);
+        }
+        return accumulated;
+      }
+
       // Fast path: a plain two-operand single contraction in canonical layout —
       // `A` ending with the contracted label, `B` starting with it, and the
       // output being A's leading free labels then B's trailing ones — is exactly

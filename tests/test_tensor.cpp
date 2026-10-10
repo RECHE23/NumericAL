@@ -8,6 +8,7 @@
 // inside a macro is wrapped in an extra pair of parentheses. einsum(...) calls
 // inside EXPECT macros are safe as-is (their commas sit inside their own parens
 // or a string literal).
+#include <cmath>
 #include <complex>
 #include <cstddef>
 #include <limits>
@@ -320,13 +321,28 @@ TEST(einsum_rejects_inconsistent_extents)
   EXPECT_THROWS(einsum("ij,jk->ik", tp, tq), numerical::dimension_error);
 }
 
-// Five summed labels of 65 536 make 2⁸⁰ terms: the count of the outer four wraps to 0 in a size_t, and the
-// sum came back 0.0 having summed nothing. The count is checked, as the result's element count is.
-TEST(einsum_refuses_a_loop_count_that_overflows)
+// Five summed labels of 65 536 make 2⁸⁰ terms in one loop (whose count wrapped to 0 in a size_t, and the sum
+// came back 0.0). Each operand is summed alone first, so the product is exact: 65 536⁵ = 2⁸⁰.
+TEST(einsum_sums_each_operand_over_its_own_labels_first)
 {
   const tensor<double> ones {std::vector<std::size_t> {std::size_t {1} << 16},
                              std::vector<double>(std::size_t {1} << 16, 1.0)};
-  EXPECT_THROWS(einsum("i,j,k,l,m->", ones, ones, ones, ones, ones), numerical::dimension_error);
+  EXPECT(einsum("i,j,k,l,m->", ones, ones, ones, ones, ones).data().front() == std::ldexp(1.0, 80));
+}
+
+// Three operands or more are contracted two at a time: a chain of products, a shared label kept for a later
+// operand, a diagonal and an output in another order give what the products written out give.
+TEST(einsum_contracts_many_operands_pairwise)
+{
+  const tensor<int> a {matrix<int> {{1, 2}, {3, 4}}};
+  const tensor<int> b {matrix<int> {{0, 1}, {1, 0}}};
+  const tensor<int> c {matrix<int> {{2, 0}, {1, 3}}};
+  EXPECT(einsum("ij,jk,kl->il", a, b, c).data() == einsum("ik,kl->il", einsum("ij,jk->ik", a, b), c).data());
+  EXPECT(einsum("ij,jk,kl->li", a, b, c).data() == einsum("il->li", einsum("ij,jk,kl->il", a, b, c)).data());
+  // i is in the first and the third operand: the intermediate keeps it.
+  EXPECT(einsum("ij,jk,ik->i", a, b, c).data() == (std::vector<int> {4, 13})); // Σⱼₖ aᵢⱼ bⱼₖ cᵢₖ
+  EXPECT(einsum("ii,j,j->", a, tensor<int> {vector<int> {1, 2}}, tensor<int> {vector<int> {3, 4}}).data()
+         == std::vector<int> {(1 + 4) * ((1 * 3) + (2 * 4))});
 }
 
 // The operands may be counted at run time, as an interpreter holds them: the same contraction, and a

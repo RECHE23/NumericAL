@@ -41,6 +41,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **A large computation releases the GIL** (from 64 × 64 elements): `solve`, `inverse`, `lstsq`,
   `cholesky`, `qr`, `eigh`, `svd`, `determinant` and `einsum` run in parallel from several Python
   threads.
+- **`einsum` over three operands or more contracts them two at a time**, after summing each over the
+  labels only it carries: `ij,jk,kl->il` of order 60 takes 0.11 ms instead of 29 (arm64, Apple clang 16,
+  `-O3`), as it ran one loop over every label. `i,j,k,l,m->` over five vectors of 65 536 ones gives 2⁸⁰
+  exactly, where it raised a loop-count overflow.
 - **A parallel loop starts as many threads as its work pays for.** It started one per hardware thread
   as soon as it had 16 or 64 indices, whatever their work: a 16 × 16 `inverse` took 177 µs instead of
   8, a 64 × 64 matrix product 95 µs instead of 35.
@@ -52,8 +56,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   `std::terminate`.
 - **`asarray` refuses an `__array_interface__` whose data address is null** while the shape has
   elements, and one whose `data` tuple is empty; both crashed the interpreter.
-- **`einsum` refuses a loop count that overflows** (`dimension_error`): five summed labels of 65 536
-  wrapped the count of terms to 0 and returned 0.0.
+- **`einsum` no longer wraps its count of terms**: five summed labels of 65 536 wrapped it to 0 and
+  returned 0.0 (the count is checked, and such a spec now sums each operand alone first).
 - **The Jacobi methods bound their sweeps** (`convergence_error`) instead of looping without end.
 
 ## 2026.10.0 — 2026-10-10
