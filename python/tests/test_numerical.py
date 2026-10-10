@@ -217,6 +217,34 @@ class ArrayInterface(unittest.TestCase):
             numerical.asarray(numerical.Tensor([1.0]), dtype="float32")
 
 
+class GilRelease(unittest.TestCase):
+    def test_a_large_decomposition_lets_another_thread_run(self):
+        # Another thread wakes 1 ms after the call starts. Holding the GIL, the call keeps it from running
+        # until it returns; releasing it, the thread runs while the SVD (about 100 ms) still computes.
+        import threading
+        import time
+
+        n = 200
+        a = numerical.Tensor([float((i * 7 + j * 13) % 17) + (n if i == j else 0) for i in range(n) for j in range(n)],
+                             shape=(n, n))
+        started = threading.Event()
+        woke = []
+
+        def other():
+            started.wait()
+            time.sleep(0.001)
+            woke.append(time.perf_counter())
+
+        thread = threading.Thread(target=other)
+        thread.start()
+        begin = time.perf_counter()
+        started.set()
+        numerical.svd(a)
+        end = time.perf_counter()
+        thread.join()
+        self.assertLess(woke[0] - begin, (end - begin) / 2)
+
+
 class DLPack(unittest.TestCase):
     def test_capsule_and_device(self):
         t = numerical.Tensor([1, 2, 3])

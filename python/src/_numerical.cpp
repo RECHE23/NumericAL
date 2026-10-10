@@ -22,6 +22,7 @@
 #include <sciforge/binding/convert.hpp>
 #include <sciforge/binding/dispatch.hpp>
 #include <sciforge/binding/error.hpp>
+#include <sciforge/binding/gil.hpp>
 #include <sciforge/binding/module.hpp>
 
 #include <algorithm>
@@ -475,6 +476,15 @@ PyObject* tensor_tolist(PyObject* self, PyObject* /*ignored*/)
 }
 
 // --- module functions ------------------------------------------------------
+// Whether a computation over this many elements releases the GIL. Re-acquiring it may wait out another
+// thread's switch interval (5 ms by default), which a small matrix would pay many times over; from 64 × 64
+// up, the computation dominates. The operands stay readable meanwhile: a Tensor never changes once built,
+// and the call holds a reference to each.
+bool releases_gil(std::size_t elements)
+{
+    return elements >= std::size_t {4096};
+}
+
 // einsum(spec, *operands): all operands must share a dtype.
 PyObject* module_einsum(PyObject* /*self*/, PyObject* args)
 {
@@ -514,21 +524,32 @@ PyObject* module_einsum(PyObject* /*self*/, PyObject* args)
         }
     }
 
+    std::size_t elements {0};
+    for (const any_tensor* h : holders) {
+        elements += any_complex ? std::get<cplx_tensor>(*h).data().size() : std::get<real_tensor>(*h).data().size();
+    }
     try {
-        if (any_complex) {
-            std::vector<const cplx_tensor*> operands;
-            operands.reserve(holders.size());
-            for (const any_tensor* h : holders) {
-                operands.push_back(&std::get<cplx_tensor>(*h));
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(elements)};
+            if (any_complex) {
+                std::vector<const cplx_tensor*> operands;
+                operands.reserve(holders.size());
+                for (const any_tensor* h : holders) {
+                    operands.push_back(&std::get<cplx_tensor>(*h));
+                }
+                result.emplace(numerical::detail::einsum_impl<std::complex<double>>(spec, operands));
             }
-            return wrap(any_tensor {numerical::detail::einsum_impl<std::complex<double>>(spec, operands)});
+            else {
+                std::vector<const real_tensor*> operands;
+                operands.reserve(holders.size());
+                for (const any_tensor* h : holders) {
+                    operands.push_back(&std::get<real_tensor>(*h));
+                }
+                result.emplace(numerical::detail::einsum_impl<double>(spec, operands));
+            }
         }
-        std::vector<const real_tensor*> operands;
-        operands.reserve(holders.size());
-        for (const any_tensor* h : holders) {
-            operands.push_back(&std::get<real_tensor>(*h));
-        }
-        return wrap(any_tensor {numerical::detail::einsum_impl<double>(spec, operands)});
+        return wrap(std::move(*result));
     }
     catch (...) {
         return set_cpp_error();
@@ -547,9 +568,10 @@ numerical::matrix<T> matrix_from(const numerical::tensor<T>& t)
 template <typename T>
 any_tensor do_solve(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
-    numerical::matrix<T> coeff {a.shape()[0], a.shape()[1], a.data()};
-    numerical::vector<T> rhs {b.data()};
-    numerical::vector<T> answer {numerical::solve(coeff, rhs)};
+    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+    numerical::matrix<T>         coeff {a.shape()[0], a.shape()[1], a.data()};
+    numerical::vector<T>         rhs {b.data()};
+    numerical::vector<T>         answer {numerical::solve(coeff, rhs)};
     std::vector<T>    out;
     out.reserve(answer.size());
     for (std::size_t i = 0; i < answer.size(); ++i) {
@@ -591,10 +613,21 @@ PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
     }
     try {
         if (is_complex(*h)) {
-            const std::complex<double> value {numerical::determinant(matrix_from(std::get<cplx_tensor>(*h)))};
+            const cplx_tensor&   a     {std::get<cplx_tensor>(*h)};
+            std::complex<double> value;
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+                value = numerical::determinant(matrix_from(a));
+            }
             return PyComplex_FromDoubles(value.real(), value.imag());
         }
-        return PyFloat_FromDouble(numerical::determinant(matrix_from(std::get<real_tensor>(*h))));
+        const real_tensor& a {std::get<real_tensor>(*h)};
+        double             value {};
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+            value = numerical::determinant(matrix_from(a));
+        }
+        return PyFloat_FromDouble(value);
     }
     catch (...) {
         return set_cpp_error();
@@ -604,6 +637,7 @@ PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
 template <typename T>
 any_tensor do_inverse(const numerical::tensor<T>& a)
 {
+    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
     return any_tensor {numerical::tensor<T> {numerical::inverse(matrix_from(a))}};
 }
 
@@ -622,7 +656,8 @@ any_tensor inverse(const any_tensor& v)
 template <typename T>
 any_tensor do_lstsq(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
-    const numerical::vector<T> answer {numerical::lstsq(matrix_from(a), numerical::vector<T> {b.data()})};
+    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+    const numerical::vector<T>   answer {numerical::lstsq(matrix_from(a), numerical::vector<T> {b.data()})};
     std::vector<T>          out;
     out.reserve(answer.size());
     for (std::size_t i = 0; i < answer.size(); ++i) {
@@ -649,6 +684,7 @@ any_tensor lstsq(const any_tensor& a, const any_tensor& b)
 template <typename T>
 any_tensor do_cholesky(const numerical::tensor<T>& a)
 {
+    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
     return any_tensor {numerical::tensor<T> {numerical::cholesky_decomposition<T> {matrix_from(a)}.lower()}};
 }
 
@@ -667,6 +703,7 @@ any_tensor cholesky(const any_tensor& v)
 template <typename T>
 std::tuple<any_tensor, any_tensor> do_qr(const numerical::tensor<T>& a)
 {
+    const sb::scoped_gil_release         unlocked {releases_gil(a.data().size())};
     const numerical::qr_decomposition<T> factored {matrix_from(a)};
     return {any_tensor {numerical::tensor<T> {factored.q()}}, any_tensor {numerical::tensor<T> {factored.r()}}};
 }
@@ -699,6 +736,7 @@ const real_tensor& real_matrix(const any_tensor& v, const char* name)
 std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v)
 {
     const real_tensor&            a = real_matrix(v, "eigh supports float64 matrices only");
+    const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
     const numerical::symmetric_eigen decomposition {matrix_from(a)};
     return {any_tensor {real_tensor {decomposition.values()}},
             any_tensor {real_tensor {decomposition.vectors()}}};
@@ -707,6 +745,7 @@ std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v)
 template <typename T>
 std::tuple<any_tensor, any_tensor, any_tensor> do_svd(const numerical::tensor<T>& a)
 {
+    const sb::scoped_gil_release          unlocked {releases_gil(a.data().size())};
     const numerical::svd_decomposition<T> decomposition {matrix_from(a)};
     return {any_tensor {numerical::tensor<T> {decomposition.u()}},
             any_tensor {real_tensor {decomposition.singular_values()}},
