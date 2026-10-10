@@ -319,3 +319,12 @@ TEST(einsum_rejects_inconsistent_extents)
   const tensor<int> tq {q};
   EXPECT_THROWS(einsum("ij,jk->ik", tp, tq), numerical::dimension_error);
 }
+
+// Five summed labels of 65 536 make 2⁸⁰ terms: the count of the outer four wraps to 0 in a size_t, and the
+// sum came back 0.0 having summed nothing. The count is checked, as the result's element count is.
+TEST(einsum_refuses_a_loop_count_that_overflows)
+{
+  const tensor<double> ones {std::vector<std::size_t> {std::size_t {1} << 16},
+                             std::vector<double>(std::size_t {1} << 16, 1.0)};
+  EXPECT_THROWS(einsum("i,j,k,l,m->", ones, ones, ones, ones, ones), numerical::dimension_error);
+}

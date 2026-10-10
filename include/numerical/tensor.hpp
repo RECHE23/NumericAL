@@ -420,7 +420,7 @@ namespace numerical {
       }
       std::size_t sum_outer {1};
       for (std::size_t k {n_free}; k < sum_outer_end; ++k) {
-        sum_outer *= extent[k];
+        sum_outer = detail::checked_mul(sum_outer, extent[k]); // a wrapped count would sum nothing, silently
       }
       std::vector<std::size_t> out_shape(extent.begin(),
                                          extent.begin() + static_cast<std::ptrdiff_t>(n_free));
