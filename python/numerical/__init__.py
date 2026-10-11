@@ -51,7 +51,7 @@ __all__ = [
     "get_include", "get_config",
 ]
 
-__version__ = "2026.10.0"
+__version__ = "2026.10.1"
 
 
 def get_include():

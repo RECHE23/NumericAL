@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.1 — 2026-10-11
+
 ### Added
 - **`asarray` reads what NumPy users pass it**: bool, integer, float32 and complex64 arrays (as
   float64 or complex128), in either byte order, at any strides (`a.T`, `a[::-1, ::2]`, Fortran order),
