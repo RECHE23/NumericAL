@@ -110,7 +110,7 @@ int main()
                             const std::string name = "N=" + std::to_string(N) + " " + variant;
                             cases.push_back(sciforge::bench::emit_case(
                                               name, "s", samples,
-                                              {{"n", sciforge::bench::json_number(static_cast<double>(N))},
+                                              {{"n", sciforge::bench::json_integer(N)},
                                                {"variant", sciforge::bench::json_string(variant)}},
                                               ok ? "true" : "false")); // result = a raw JSON boolean
                           };

@@ -12,6 +12,7 @@ jobs:
   # Guard: the tag must match the version declared in pyproject.toml.
   check-version:
     runs-on: ubuntu-latest
+    timeout-minutes: 5
     steps:
       - uses: actions/checkout@v6
       - name: Tag matches pyproject version
@@ -33,10 +34,11 @@ jobs:
           - os: macos-latest       # universal: x86_64 + arm64
           - os: windows-latest     # amd64
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v6
       - name: Build wheels (cibuildwheel, abi3 cp310)
-        run: pipx run cibuildwheel --output-dir wheelhouse
+        run: pipx run cibuildwheel==4.3.1 --output-dir wheelhouse
         env:
           CIBW_ARCHS_MACOS: "x86_64 arm64"
       - uses: actions/upload-artifact@v7
@@ -47,10 +49,11 @@ jobs:
   sdist:
     needs: check-version
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v6
       - name: Build sdist
-        run: pipx run build --sdist
+        run: pipx run build==1.6.1 --sdist
       - uses: actions/upload-artifact@v7
         with:
           name: sdist
@@ -59,6 +62,7 @@ jobs:
   publish:
     needs: [wheels, sdist]
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     # Only publish on an actual tag push, not manual dry-runs.
     if: startsWith(github.ref, 'refs/tags/v')
     environment: pypi
