@@ -106,12 +106,14 @@ std::size_t count_of(const any_tensor& v)
                           : std::get<cplx_tensor>(v).size();
 }
 
+// An empty tensor's buffer has no address; the exchange protocols get one that is never read: NumPy 2.2
+// refuses a null data pointer and falls back to the sequence protocol, which an empty tensor cannot serve.
 const void* data_of(const any_tensor& v)
 {
-    if (v.index() == 0) {
-        return std::get<real_tensor>(v).data().data();
-    }
-    return std::get<cplx_tensor>(v).data().data();
+    static constexpr std::complex<double> placeholder {};
+    const void* data = v.index() == 0 ? static_cast<const void*>(std::get<real_tensor>(v).data().data())
+                                      : static_cast<const void*>(std::get<cplx_tensor>(v).data().data());
+    return data != nullptr ? data : &placeholder;
 }
 
 bool is_complex(const any_tensor& v)

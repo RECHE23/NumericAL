@@ -404,6 +404,13 @@ class TensorProtocol(unittest.TestCase):
         with self.assertRaises(IndexError):  # a direct call outside the resolved bounds is refused, not read
             numerical._numerical._take(t, [0, 5], [1, 1], [1, 1], [1, 1])
 
+    def test_an_empty_slice_exports_a_non_null_address(self):
+        empty = numerical.asarray([[1.0, 2.0], [3.0, 4.0]])[1:1]
+        self.assertEqual(empty.shape, (0, 2))
+        self.assertNotEqual(empty.__array_interface__["data"][0], 0)  # NumPy 2.2 refuses a null one
+        if np is not None:
+            self.assertEqual(np.asarray(empty).shape, (0, 2))
+
     def test_len_iter_transpose_and_matmul(self):
         t = numerical.asarray([[1.0, 2.0], [3.0, 4.0]])
         self.assertEqual(len(t), 2)
