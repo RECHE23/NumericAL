@@ -173,11 +173,9 @@ namespace numerical {
       }
       T best {first[0]};
       for (std::size_t i {1}; i < count; ++i) {
-        // A NaN wins, as in NumPy: every comparison with it is false, so it is tested apart.
+        // A NaN wins, as in NumPy: every comparison with it is false, so a NaN candidate is taken apart, and
+        // once taken nothing compares larger than it.
         const T& candidate {first[i * stride]};
-        if (is_nan(best)) {
-          break;
-        }
         if (is_nan(candidate) || larger(candidate, best)) {
           best = candidate;
         }
