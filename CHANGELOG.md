@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.2 — 2026-10-11
+
 ### Fixed
 - **An object that only claims to be a `Tensor` no longer crashes the interpreter.** `determinant`,
   `slogdet` and `asarray` trusted `isinstance`, which a mock with `spec=Tensor` passes, and read a tensor

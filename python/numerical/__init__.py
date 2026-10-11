@@ -48,7 +48,7 @@ class LinAlgError(error, ValueError):
     :class:`numerical.error`, so code catching that keeps working."""
 
 
-__version__ = "2026.10.1"
+__version__ = "2026.10.2"
 
 
 def get_include():
