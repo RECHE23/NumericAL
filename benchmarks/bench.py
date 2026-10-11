@@ -113,8 +113,8 @@ def svd_case(name, a):
     t = numerical.asarray(a)
 
     def verify(numerical_result, _numpy_result):
-        u, s, v = numerical_result
-        return np.allclose(np.asarray(u) @ np.diag(np.asarray(s)) @ np.asarray(v).T,
+        u, s, vh = numerical_result  # Vh, as numpy.linalg.svd returns it
+        return np.allclose(np.asarray(u) @ np.diag(np.asarray(s)) @ np.asarray(vh),
                            a, rtol=RTOL, atol=ATOL)
 
     return (name, lambda: numerical.svd(t), lambda: np.linalg.svd(a, full_matrices=False), verify)

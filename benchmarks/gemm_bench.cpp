@@ -6,12 +6,11 @@
 //                 down a column (stride = b.cols()), so every step is a fresh
 //                 cache line. This is what operator* used to do; it is the
 //                 baseline the speed-up column is measured against.
-//   * operator* : the shipping product (matrix.hpp), now i-k-j: b's row k and the
-//                 output row are swept in storage order — unit-stride inner loop.
-//   * blocked   : a k/j-tiled i-k-j variant. Kept to show that blocking does NOT
-//                 beat the plain reorder here (the row-parallel scheme already
-//                 streams b sequentially; tiling only adds loop overhead), which
-//                 is why operator* ships the simple reorder, not a tiled kernel.
+//   * operator* : the shipping product (matrix.hpp → gemm.hpp): packed panels and
+//                 a register tile, every element summed in ascending order.
+//   * ikj       : the i-k-j loop operator* ran before the packed kernel
+//                 (detail::gemm_rows): the same sums in the same order, without
+//                 packing or a register tile — the speed-up the kernel buys.
 //
 // All three share the same numerical::detail::parallel_for, so the comparison
 // isolates the inner loop order. The shipping operator* is also compared against
@@ -62,24 +61,12 @@ std::vector<double> gemm_ijk(const matrix<double>& a, const matrix<double>& b)
   return out;
 }
 
-// A k/j-tiled i-k-j variant (tile bs×bs) — the "tiled ideal" the data rejected.
-std::vector<double> gemm_blocked(const matrix<double>& a, const matrix<double>& b, std::size_t bs = 128)
+// The i-k-j loop operator* ran before the packed kernel, parallel over the rows of C: the same sum, in
+// the same order, without packing or a register tile.
+std::vector<double> gemm_ikj(const matrix<double>& a, const matrix<double>& b)
 {
-  const std::size_t   n {a.rows()}, m {b.cols()}, p {a.cols()};
-  std::vector<double> out(n * m, 0.0);
-  numerical::detail::parallel_for(n, 64, [&](std::size_t i) {
-                                 const std::size_t row {i * m};
-                                 for (std::size_t kk {0}; kk < p; kk += bs) {
-                                   const std::size_t kend {std::min(p, kk + bs)};
-                                   for (std::size_t jj {0}; jj < m; jj += bs) {
-                                     const std::size_t jend {std::min(m, jj + bs)};
-                                     for (std::size_t k {kk}; k < kend; ++k) {
-                                       const double aik {a(i, k)};
-                                       for (std::size_t j {jj}; j < jend; ++j) { out[row + j] += aik * b(k, j); }
-                                     }
-                                   }
-                                 }
-                               });
+  std::vector<double> out(a.rows() * b.cols(), 0.0);
+  numerical::detail::gemm_rows(a.rows(), b.cols(), a.cols(), &*a.begin(), &*b.begin(), out.data());
   return out;
 }
 
@@ -134,8 +121,8 @@ int main()
              true); // operator* IS the reference product
     add_case("einsum", [&] { return sum_vec(einsum("ij,jk->ik", ta, tb).data()); },
              matches(shipped, einsum("ij,jk->ik", ta, tb).data()));
-    add_case("blocked", [&] { return sum_vec(gemm_blocked(a, b)); },
-             matches(shipped, gemm_blocked(a, b)));
+    add_case("ikj", [&] { return sum_vec(gemm_ikj(a, b)); },
+             matches(shipped, gemm_ikj(a, b)));
   }
 
   const std::string meta = sciforge::bench::json_object(

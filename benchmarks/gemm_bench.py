@@ -20,7 +20,7 @@ import sys
 
 from sciforge.bench import run_from_json
 
-VARIANTS = ["naive-ijk", "operator*", "einsum", "blocked"]
+VARIANTS = ["naive-ijk", "ikj", "operator*", "einsum"]
 
 
 def load(args):
@@ -47,8 +47,8 @@ def main():
 
     compiler = run.meta.get("compiler", "?")
     print(f"NumericAL GEMM (N×N double, best-of-N min ms, raw samples → sciforge.bench; {compiler}):")
-    print(f"  {'N':>6} {'naive ijk':>11} {'operator*':>11} {'einsum':>11} {'blocked':>11} "
-          f"{'op*/naive':>11} {'op*/einsum':>11}")
+    print(f"  {'N':>6} {'naive ijk':>11} {'ikj':>11} {'operator*':>11} {'einsum':>11} "
+          f"{'op*/naive':>11} {'op*/ikj':>11} {'GFLOP/s':>9}")
 
     mismatched = False
     for n in sorted(by_n, key=int):
@@ -62,9 +62,9 @@ def main():
         row_mismatch = any(variants[name].result is False for name in VARIANTS)
         mismatched = mismatched or row_mismatch
         flag = "  [MISMATCH!]" if row_mismatch else ""
-        print(f"  {int(n):>6} {t['naive-ijk']:>11.2f} {t['operator*']:>11.2f} {t['einsum']:>11.2f} "
-              f"{t['blocked']:>11.2f} {t['naive-ijk'] / t['operator*']:>10.2f}x "
-              f"{t['einsum'] / t['operator*']:>10.2f}x{flag}")
+        gflops = 2 * int(n) ** 3 / (t["operator*"] * 1e-3) / 1e9
+        print(f"  {int(n):>6} {t['naive-ijk']:>11.2f} {t['ikj']:>11.2f} {t['operator*']:>11.2f} {t['einsum']:>11.2f} "
+              f"{t['naive-ijk'] / t['operator*']:>10.2f}x {t['ikj'] / t['operator*']:>10.2f}x {gflops:>9.1f}{flag}")
 
     return 1 if mismatched else 0
 

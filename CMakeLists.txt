@@ -128,6 +128,12 @@ if(MSVC)
     target_compile_options(numerical_tests_bin PRIVATE /W4 /WX /Zc:__cplusplus /EHsc /utf-8)
 else()
     target_compile_options(numerical_tests_bin PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    # test_gemm.cpp asserts the product sums in the order of its reference loop, to the bit. Fusing a
+    # multiply-add is the compiler's choice per expression (GCC in gnu++ mode fuses at will), so it can
+    # differ between two loops that sum in the same order. It is held off for the whole target: the
+    # library's templates are instantiated in every test file and the linker keeps one copy, so a
+    # per-file flag would not reach the copy that runs. MSVC does not fuse under its default /fp:precise.
+    target_compile_options(numerical_tests_bin PRIVATE -ffp-contract=off)
 endif()
 
 if(NUMERICAL_SANITIZE)

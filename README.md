@@ -160,10 +160,10 @@ results and methodology, with an honest reading of the gap, are in
 [BENCHMARKS.md](BENCHMARKS.md): NumericAL is a portable, dependency-free reference
 implementation: correct within tolerance, and competitive with NumPy's own
 `einsum`/`linalg` (it beats `np.einsum`'s non-BLAS path and the decompositions
-land within ~1–4×). Against hand-tuned BLAS (`np.matmul`) its cache-blocked,
-`std::thread`-parallel GEMM is ~10× slower but steady (no cache cliff) — that gap
-is BLAS's per-architecture SIMD micro-kernel, which a header-only library does not
-chase. See [BENCHMARKS.md](BENCHMARKS.md) for the honest details.
+land within ~1–4×). Against hand-tuned BLAS (`np.matmul`) its packed,
+register-tiled, `std::thread`-parallel GEMM is ~3× slower and steady from n = 256 to
+2048 — what remains is per-architecture assembly, which a header-only library does
+not carry. See [BENCHMARKS.md](BENCHMARKS.md) for the honest details.
 
 ## Numerical discipline
 

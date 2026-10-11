@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include "gemm.hpp"
 #include "matrix.hpp"
 #include "parallel.hpp"
 #include "vector.hpp"
@@ -209,14 +210,11 @@ namespace numerical {
     }
 
     /*!
-     * \brief Cache-blocked matrix product `C(M×N) = A(M×K) · B(K×N)`, row-major.
+     * \brief Matrix product `C(M×N) = A(M×K) · B(K×N)`, row-major.
      *
-     * The fast path for a plain two-operand single-contraction einsum (matmul,
-     * matrix–vector, dot). Iterating in m-k-n order accumulating into `C` keeps
-     * every access unit-stride and reads each operand block while it is cache
-     * resident; the contraction is summed in ascending order, so the result is
-     * bit-identical to the general engine (no tolerance change). The innermost
-     * `n` loop is a contiguous multiply-accumulate the compiler auto-vectorises.
+     * The fast path for a plain two-operand single-contraction einsum (matmul, matrix–vector, dot), by
+     * \ref detail::gemm. Every element of C is summed in ascending order of the contraction, the
+     * general engine's order, so no tolerance changes.
      */
     template <typename T>
     [[nodiscard]] tensor<T> tile_gemm(const std::vector<T>&    a,
@@ -226,29 +224,10 @@ namespace numerical {
                                       std::size_t              cols,
                                       std::vector<std::size_t> out_shape)
     {
-      constexpr std::size_t tile             {32};
-      std::vector<T>        c(rows * cols, T {});
-      // Each row-block owns disjoint rows of C, so the blocks run in parallel
-      // without locks and the result is identical to a sequential run.
-      const std::size_t row_blocks {((rows + tile) - 1) / tile};
-      parallel_for(row_blocks, tile * inner * cols / vector_speedup, [&](std::size_t block) {
-                     const std::size_t mm {block * tile};
-                     const std::size_t m_end {std::min(mm + tile, rows)};
-                     for (std::size_t kk {0}; kk < inner; kk += tile) {
-                       for (std::size_t nn {0}; nn < cols; nn += tile) {
-                         const std::size_t k_end {std::min(kk + tile, inner)};
-                         const std::size_t n_end {std::min(nn + tile, cols)};
-                         for (std::size_t m {mm}; m < m_end; ++m) {
-                           for (std::size_t k {kk}; k < k_end; ++k) {
-                             const T scale {a[(m * inner) + k]};
-                             for (std::size_t n {nn}; n < n_end; ++n) {
-                               c[(m * cols) + n] += scale * b[(k * cols) + n];
-                             }
-                           }
-                         }
-                       }
-                     }
-                   });
+      std::vector<T> c(rows * cols, T {}); // the caller routes only an output of two elements or more here
+      if (inner != 0) {
+        gemm(rows, cols, inner, a.data(), b.data(), c.data());
+      }
       return tensor<T> {std::move(out_shape), std::move(c)};
     }
 
@@ -372,7 +351,7 @@ namespace numerical {
       // Fast path: a plain two-operand single contraction in canonical layout —
       // `A` ending with the contracted label, `B` starting with it, and the
       // output being A's leading free labels then B's trailing ones — is exactly
-      // a matrix product, routed to the cache-blocked kernel. (Any stray copy of
+      // a matrix product, routed to the packed kernel (gemm.hpp). (Any stray copy of
       // the contracted label leaves it in a "free" part, so the output would
       // carry a summed label and this equality fails — correctly declining it.)
       if (operands.size() == 2 && summed.size() == 1) {

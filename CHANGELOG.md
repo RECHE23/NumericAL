@@ -32,6 +32,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   `numpy.linalg.LinAlgError` is, and a `numerical.error`, so existing `except numerical.error` keeps working.
 
 ### Changed
+- **The matrix product is 1.3 to 3.2 times faster** (`a * b`, `einsum("ij,jk->ik", …)`, and the Python `@`
+  and `einsum` over them): a packed, register-tiled kernel in the loop structure of BLIS (`gemm.hpp`), the tile
+  held in native vectors for `float` and `double` under GCC and Clang. `double`, best of N: arm64 with 8 cores,
+  Apple clang 16, `-O2`, 1.3× at 128 to 3.2× at 2048 (121 ms, 142 GFLOP/s); x86-64 AVX2 with 2 cores, GCC 14
+  `-O2` without `-march`, 1.7× at 128 to 3.0× at 2048. Against BLAS (`np.matmul`) the gap goes from about 10×
+  to about 3×. Every element is still summed in ascending order of the inner index, the order of the loop it
+  replaces, on any number of threads; `a * b` and `einsum` now run the same code and agree to the bit. Products below
+  8³ multiply-adds or shallower than 8 keep the plain loop.
 - **`svd` is 48 times faster** (512 × 512: 11.2 → 0.24 s; 256 × 256: 1.0 → 0.031 s; arm64, Apple clang 16,
   `-O2`): after the Householder QR, `R` is reduced to bidiagonal form and diagonalised by implicit-shift QR,
   the method of LAPACK's `dgesvd`; the reconstruction error of a 512 × 512 falls from 6e-13 to 5e-14. One-sided

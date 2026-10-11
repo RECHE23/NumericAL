@@ -20,6 +20,7 @@
 #include <utility>
 #include <vector>
 
+#include "gemm.hpp"
 #include "parallel.hpp"
 #include "vector.hpp"
 
@@ -191,26 +192,12 @@ namespace numerical {
     if (a.cols() != b.rows()) {
       throw dimension_error("matrix–matrix product: inner dimensions differ");
     }
-    // Each output row is independent: rows run in parallel above a threshold,
-    // writing disjoint slices, so the result is identical to a sequential run.
-    //
-    // The inner loops run in i-k-j order: each result row is accumulated as
-    // Σ_k a(i,k)·(row k of b), so b's row and the output row are both swept in
-    // storage (row-major) order — every inner-loop access is unit-stride. The
-    // textbook i-j-k order instead reads b(k,j) down a column (a fresh cache line
-    // each step), which thrashes the cache on large matrices (measured ~26× slower
-    // at 2048²; see BENCHMARKS.md and `make bench-gemm`). The `+=` relies on `out`
-    // being value-initialised to zero, which std::vector(n) guarantees.
+    // detail::gemm sums every element in ascending order of the inner index, whatever the blocking and
+    // the number of threads (see gemm.hpp); `out` starts at zero, as std::vector(n) guarantees.
     std::vector<T> out(detail::checked_mul(a.rows(), b.cols())); // guard the cross-product alloc
-    detail::parallel_for(a.rows(), a.cols() * b.cols() / detail::vector_speedup, [&](std::size_t i) {
-                           const std::size_t row {i * b.cols()};
-                           for (std::size_t k {0}; k < a.cols(); ++k) {
-                             const T aik {a(i, k)};
-                             for (std::size_t j {0}; j < b.cols(); ++j) {
-                               out[row + j] += aik * b(k, j);
-                             }
-                           }
-                         });
+    if (!out.empty() && a.cols() != 0) {
+      detail::gemm(a.rows(), b.cols(), a.cols(), &*a.begin(), &*b.begin(), out.data());
+    }
     return matrix<T> {a.rows(), b.cols(), std::move(out)};
   }
 
