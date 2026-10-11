@@ -54,8 +54,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   with it `determinant`, `slogdet`, `solve` and `inverse`: blocked as LAPACK's `dgetrf`, panels of 64 columns
   factorised in a column-major copy and the trailing block updated by the matrix product kernel. It regroups
   the unblocked algorithm's updates without reordering any, so without multiply-add fusion the factors are the
-  same to the bit. Against
-  LAPACK the gap goes from 6–13× to 2.4–3.5× (arm64 with 8 cores, Apple clang 16, `-O2`).
+  same to the bit. Against LAPACK the gap goes from 6–13× to 2.4–3.5× (arm64 with 8 cores, Apple clang 16,
+  `-O2`).
 - **`inverse` is 5.2 times faster at order 1024** (241 → 46 ms; 3.3× at 512), and `solve` with a matrix
   right-hand side with it: every column is solved at once on the factors, block of rows by block of rows,
   through the matrix product kernel. A column agrees with the vector `solve` to rounding (the backward pass
