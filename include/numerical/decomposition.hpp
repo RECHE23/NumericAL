@@ -279,23 +279,118 @@ namespace numerical {
       if (singular_) {
         throw singular_matrix_error("inverse: matrix is singular");
       }
-      std::vector<T> data(n_ * n_);
-      // Each column of the inverse is an independent solve against a unit vector,
-      // writing a disjoint column of `data` — so the columns run in parallel.
-      detail::parallel_for(n_, n_ * n_, [this, &data](std::size_t col) { // a solve: n² multiply-adds
-                             std::vector<T> unit(n_, T {});
-                             unit[col] = T {1};
-                             const vector<T> column {solve(vector<T> {std::move(unit)})};
-                             for (std::size_t row {0}; row < n_; ++row) {
-                               data[(row * n_) + col] = column[row];
-                             }
-                           });
-      return matrix<T> {n_, n_, std::move(data)};
+      std::vector<T> rows(n_ * n_, T {}); // P·I: row i of the identity's row pivots_[i]
+      for (std::size_t i {0}; i < n_; ++i) {
+        rows[(i * n_) + pivots_[i]] = T {1};
+      }
+      solve_rows(rows, n_);
+      return matrix<T> {n_, n_, std::move(rows)};
+    }
+
+    /*!
+     * \brief Solves `A X = B` for every column of \p b at once.
+     *
+     * By blocks of rows, the products of a block's solution into the rows still to solve go through the
+     * matrix product kernel. The forward substitution is the vector \ref solve's, term for term; the backward
+     * one gives each row the farther blocks' terms first, so a column agrees with the vector solve to rounding.
+     * \param[in] b The right-hand sides (`n × k`).
+     * \return `X` (`n × k`).
+     * \throws dimension_error If `b`'s row count differs from the matrix.
+     * \throws singular_matrix_error If the matrix is singular.
+     */
+    [[nodiscard]] matrix<T> solve(const matrix<T>& b) const
+    {
+      if (b.rows() != n_) {
+        throw dimension_error("solve: right-hand side row count differs from the matrix");
+      }
+      if (singular_) {
+        throw singular_matrix_error("solve: matrix is singular");
+      }
+      const std::size_t cols {b.cols()};
+      std::vector<T>    rows(n_ * cols);
+      for (std::size_t i {0}; i < n_; ++i) {
+        for (std::size_t c {0}; c < cols; ++c) {
+          rows[(i * cols) + c] = b(pivots_[i], c);
+        }
+      }
+      solve_rows(rows, cols);
+      return matrix<T> {n_, cols, std::move(rows)};
     }
 
   private:
 
     //! \brief Performs the pivoted elimination, filling \ref lu_ and \ref pivots_.
+    /*!
+     * \brief `L U X = Y` in place, \p y being `n × cols`, row-major, already permuted. Within a block the
+     *        rows are solved one after another, in parallel chunks of columns; across blocks, through the
+     *        matrix product kernel.
+     */
+    void solve_rows(std::vector<T>& y,
+                    std::size_t     cols) const
+    {
+      constexpr std::size_t width  {64};
+      const std::size_t     chunks {(cols + width - 1) / width};
+      for (std::size_t k0 {0}; k0 < n_; k0 += detail::lu_block) { // forward: unit-lower L
+        const std::size_t end {std::min(k0 + detail::lu_block, n_)};
+        detail::parallel_for(chunks, (end - k0) * (end - k0) * width / 2, [&](std::size_t chunk) {
+                               const std::size_t first {chunk * width};
+                               const std::size_t last {std::min(first + width, cols)};
+                               for (std::size_t i {k0 + 1}; i < end; ++i) {
+                                 for (std::size_t j {k0}; j < i; ++j) {
+                                   const T factor {lu_[(i * n_) + j]};
+                                   for (std::size_t c {first}; c < last; ++c) {
+                                     y[(i * cols) + c] -= factor * y[(j * cols) + c];
+                                   }
+                                 }
+                               }
+                             });
+        if (end < n_) {
+          const std::vector<T> minus {negated_block(end, n_, k0, end)};
+          detail::gemm(n_ - end, cols, end - k0, minus.data(), end - k0, y.data() + (k0 * cols), cols,
+                       y.data() + (end * cols), cols);
+        }
+      }
+      for (std::size_t k1 {n_}; k1 > 0;) { // backward: upper U, the blocks of the forward pass, last first
+        const std::size_t k0 {(k1 - 1) / detail::lu_block * detail::lu_block};
+        detail::parallel_for(chunks, (k1 - k0) * (k1 - k0) * width / 2, [&](std::size_t chunk) {
+                               const std::size_t first {chunk * width};
+                               const std::size_t last {std::min(first + width, cols)};
+                               for (std::size_t i {k1}; i-- > k0;) {
+                                 for (std::size_t j {i + 1}; j < k1; ++j) {
+                                   const T factor {lu_[(i * n_) + j]};
+                                   for (std::size_t c {first}; c < last; ++c) {
+                                     y[(i * cols) + c] -= factor * y[(j * cols) + c];
+                                   }
+                                 }
+                                 const T pivot {lu_[(i * n_) + i]};
+                                 for (std::size_t c {first}; c < last; ++c) {
+                                   y[(i * cols) + c] = y[(i * cols) + c] / pivot;
+                                 }
+                               }
+                             });
+        if (k0 > 0) {
+          const std::vector<T> minus {negated_block(0, k0, k0, k1)};
+          detail::gemm(k0, cols, k1 - k0, minus.data(), k1 - k0, y.data() + (k0 * cols), cols, y.data(), cols);
+        }
+        k1 = k0;
+      }
+    }
+
+    //! \brief The rows `[r0, r1)` and columns `[c0, c1)` of the factor, negated, row-major and contiguous.
+    [[nodiscard]] std::vector<T> negated_block(std::size_t r0,
+                                               std::size_t r1,
+                                               std::size_t c0,
+                                               std::size_t c1) const
+    {
+      std::vector<T> out((r1 - r0) * (c1 - c0));
+      for (std::size_t r {r0}; r < r1; ++r) {
+        for (std::size_t c {c0}; c < c1; ++c) {
+          out[((r - r0) * (c1 - c0)) + (c - c0)] = -lu_[(r * n_) + c];
+        }
+      }
+      return out;
+    }
+
     // Right-looking, by panels of detail::lu_block columns, as LAPACK's dgetrf: each panel is factorised
     // with partial pivoting (whole rows swapped), its rows of U to the right are solved against the panel's
     // unit-lower L, and the trailing block takes the product of the two through detail::gemm, where the
@@ -461,22 +556,7 @@ namespace numerical {
   [[nodiscard]] matrix<T> solve(const matrix<T>& a,
                                 const matrix<T>& b)
   {
-    const lu_decomposition<T> factors {a};
-    if (b.rows() != a.rows()) {
-      throw dimension_error("solve: right-hand side row count differs from the matrix");
-    }
-    std::vector<T> x(b.rows() * b.cols());
-    for (std::size_t c {0}; c < b.cols(); ++c) {
-      std::vector<T> column(b.rows());
-      for (std::size_t i {0}; i < b.rows(); ++i) {
-        column[i] = b(i, c);
-      }
-      const vector<T> answer {factors.solve(vector<T> {std::move(column)})};
-      for (std::size_t i {0}; i < b.rows(); ++i) {
-        x[(i * b.cols()) + c] = answer[i];
-      }
-    }
-    return matrix<T> {b.rows(), b.cols(), std::move(x)};
+    return lu_decomposition<T> {a}.solve(b);
   }
 
   //! \brief The determinant of a square matrix. \throws dimension_error If not square.

@@ -6,6 +6,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <string_view>
@@ -838,16 +839,25 @@ namespace {
     return {determinant, x};
   }
 
-  // Not diagonally dominant, so partial pivoting brings rows from far below, across panels.
+  // Uniform in [-1, 1) from a fixed linear congruential sequence: well conditioned (a random matrix of
+  // order n has a condition number of order n) and not diagonally dominant, so partial pivoting brings rows
+  // from far below, across panels.
+  inline double next_uniform(std::uint64_t& state)
+  {
+    state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+    return (static_cast<double>(state >> 11U) / 4503599627370496.0) - 1.0; // 2^52: [0, 2) shifted to [-1, 1)
+  }
+
   template <typename T>
   std::vector<T> pivoting_entries(std::size_t n);
 
   template <>
   std::vector<double> pivoting_entries<double>(std::size_t n)
   {
+    std::uint64_t       state {12345};
     std::vector<double> entries(n * n);
-    for (std::size_t i {0}; i < entries.size(); ++i) {
-      entries[i] = std::sin(static_cast<double>((i * 7) + 3));
+    for (double& x : entries) {
+      x = next_uniform(state);
     }
     return entries;
   }
@@ -855,9 +865,11 @@ namespace {
   template <>
   std::vector<std::complex<double>> pivoting_entries<std::complex<double>>(std::size_t n)
   {
+    std::uint64_t                     state {54321};
     std::vector<std::complex<double>> entries(n * n);
-    for (std::size_t i {0}; i < entries.size(); ++i) {
-      entries[i] = {std::sin(static_cast<double>((i * 7) + 3)), std::cos(static_cast<double>((i * 5) + 1))};
+    for (std::complex<double>& x : entries) {
+      const double re {next_uniform(state)};
+      x = {re, next_uniform(state)};
     }
     return entries;
   }
@@ -973,4 +985,58 @@ TEST(blocked_cholesky_refuses_a_later_panel_that_is_not_positive_definite)
   }
   entries[((numerical::detail::cholesky_block + 36) * n) + numerical::detail::cholesky_block + 36] = -1.0;
   EXPECT_THROWS((void)numerical::cholesky(matrix<double> {n, n, entries}), numerical::not_positive_definite_error);
+}
+
+namespace {
+
+  // The blocked solve for many right-hand sides against the vector solve, column by column, past one block of
+  // rows and one chunk of columns: the backward pass orders each row's terms differently, so they agree to
+  // rounding, relative to the solution's size.
+  template <typename T>
+  bool matrix_solve_agrees_with_column_solves(std::size_t n,
+                                              std::size_t k)
+  {
+    const matrix<T>                      a     {n, n, pivoting_entries<T>(n)};
+    const std::vector<T>                 rhs   {pivoting_entries<T>(n)};
+    const matrix<T>                      b     {n, k, std::vector<T>(rhs.begin(), rhs.begin() + static_cast<std::ptrdiff_t>(n * k))};
+    const numerical::lu_decomposition<T> lu    {a};
+    const matrix<T>                      x     {lu.solve(b)};
+    bool                                 close {true};
+    for (std::size_t c {0}; c < k; ++c) {
+      std::vector<T> column(n);
+      for (std::size_t i {0}; i < n; ++i) {
+        column[i] = b(i, c);
+      }
+      const vector<T> expected {lu.solve(vector<T> {column})};
+      double          scale    {0.0};
+      for (std::size_t i {0}; i < n; ++i) {
+        scale = std::max(scale, std::abs(expected[i]));
+      }
+      for (std::size_t i {0}; i < n; ++i) {
+        close = close && std::abs(x(i, c) - expected[i]) <= 1e-12 * scale;
+      }
+    }
+    return close;
+  }
+} // namespace
+
+TEST(blocked_matrix_solve_agrees_with_column_solves)
+{
+  EXPECT(matrix_solve_agrees_with_column_solves<double>((2 * numerical::detail::lu_block) + 22, 70));
+  EXPECT(matrix_solve_agrees_with_column_solves<std::complex<double>>(numerical::detail::lu_block + 40, 3));
+  const numerical::lu_decomposition<double> singular    {matrix<double> {{1.0, 2.0}, {2.0, 4.0}}};
+  const matrix<double>                      two_columns {{1.0, 0.0}, {0.0, 1.0}};
+  EXPECT_THROWS((void)singular.solve(two_columns), numerical::singular_matrix_error);
+  EXPECT_THROWS((void)singular.solve(matrix<double> {{1.0, 0.0}}), numerical::dimension_error);
+}
+
+TEST(blocked_inverse_times_the_matrix_is_the_identity)
+{
+  const std::size_t    n {(2 * numerical::detail::lu_block) + 22};
+  const matrix<double> a {n, n, pivoting_entries<double>(n)};
+  std::vector<double>  unit(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    unit[(i * n) + i] = 1.0;
+  }
+  EXPECT(approx_equal(a * inverse(a), matrix<double> {n, n, unit}, 1e-10));
 }

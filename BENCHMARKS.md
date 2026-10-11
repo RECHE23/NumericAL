@@ -105,6 +105,17 @@ reordering any, so without multiply-add fusion the factors are the same to the b
 
 (2026-10-11, arm64 with 8 cores, Apple clang 16, `-O2`; NumPy through Apple's Accelerate.)
 
+`inverse`, and `solve` with a matrix right-hand side, solve every column at once on the
+factors: within a block of rows one row after another (in parallel chunks of columns),
+across blocks through the product kernel. `inverse` of the same matrices, best of N:
+
+| n    | NumPy (LAPACK) | column by column (before) | blocked | NumericAL slower by |
+| ---: | -------------: | ------------------------: | ------: | ------------------: |
+|  256 |        0.61 ms |                   3.96 ms | 2.01 ms |               ~3.3× |
+|  512 |        3.67 ms |                   31.5 ms | 9.66 ms |               ~2.6× |
+| 1024 |        20.9 ms |                    241 ms | 46.2 ms |               ~2.2× |
+| 2048 |         168 ms |                         — |  286 ms |               ~1.7× |
+
 `cholesky` is blocked the same way: each panel's diagonal block row by row, the rows
 below it in parallel, and the trailing lower part updated through the product kernel,
 every element again receiving its terms in the unblocked order. `M Mᵀ + n·I`, best of N:
