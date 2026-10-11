@@ -33,15 +33,15 @@ namespace {
   template <typename T>
   using real_t = real_of<T>::type;
 
-  constexpr std::size_t side {12};
+  constexpr std::size_t matrix_order {12};
 
-  //! \brief The bound on a residual: a small multiple of the matrix side times the coarser of T's and double's epsilon.
+  //! \brief The bound on a residual: a small multiple of the matrix order times the coarser of T's and double's epsilon.
   template <typename T>
-  double tolerance()
+  double residual_bound()
   {
     const double epsilon {std::max(static_cast<double>(std::numeric_limits<real_t<T>>::epsilon()),
                                    std::numeric_limits<double>::epsilon())};
-    return 64.0 * static_cast<double>(side) * epsilon;
+    return 64.0 * static_cast<double>(matrix_order) * epsilon;
   }
 
   //! \brief A deterministic entry with a nonzero imaginary part when T is complex.
@@ -77,28 +77,28 @@ namespace {
     std::vector<T> data(rows * cols);
     for (std::size_t i {0}; i < rows; ++i) {
       for (std::size_t j {0}; j < cols; ++j) {
-        data[(i * cols) + j] = entry<T>(i, j) + (i == j ? T(real_t<T>(4 * side)) : T {});
+        data[(i * cols) + j] = entry<T>(i, j) + (i == j ? T(real_t<T>(4 * matrix_order)) : T {});
       }
     }
     return matrix<T> {rows, cols, std::move(data)};
   }
 
-  //! \brief A Hermitian positive-definite matrix: `G Gᴴ` plus its side on the diagonal.
+  //! \brief A Hermitian positive-definite matrix: `G Gᴴ` plus its order on the diagonal.
   template <typename T>
   matrix<T> hermitian_positive()
   {
-    const matrix<T> g {general<T>(side, side)};
-    std::vector<T>  data(side * side);
-    for (std::size_t i {0}; i < side; ++i) {
-      for (std::size_t j {0}; j < side; ++j) {
+    const matrix<T> g {general<T>(matrix_order, matrix_order)};
+    std::vector<T>  data(matrix_order * matrix_order);
+    for (std::size_t i {0}; i < matrix_order; ++i) {
+      for (std::size_t j {0}; j < matrix_order; ++j) {
         T sum {};
-        for (std::size_t k {0}; k < side; ++k) {
+        for (std::size_t k {0}; k < matrix_order; ++k) {
           sum += g(i, k) * conjugate(g(j, k));
         }
-        data[(i * side) + j] = sum + (i == j ? T(real_t<T>(side)) : T {});
+        data[(i * matrix_order) + j] = sum + (i == j ? T(real_t<T>(matrix_order)) : T {});
       }
     }
-    return matrix<T> {side, side, std::move(data)};
+    return matrix<T> {matrix_order, matrix_order, std::move(data)};
   }
 
   template <typename T>
@@ -153,50 +153,50 @@ namespace {
   template <typename T>
   bool lu_answers()
   {
-    const matrix<T>                      a     {general<T>(side, side)};
-    const vector<T>                      b     {right_hand_side<T>(side)};
+    const matrix<T>                      a     {general<T>(matrix_order, matrix_order)};
+    const vector<T>                      b     {right_hand_side<T>(matrix_order)};
     const numerical::lu_decomposition<T> lu    {a};
     const vector<T>                      x     {lu.solve(b)};
     const matrix<T>                      inv   {numerical::inverse(a)};
     const matrix<T>                      many  {numerical::solve(a, a)};
     const T                              det   {numerical::determinant(a)};
-    return relative_gap(a * x, b) < tolerance<T>() && relative_gap(a * inv, identity<T>(side)) < tolerance<T>()
-           && relative_gap(many, identity<T>(side)) < tolerance<T>() && std::abs(det) > real_t<T>(0)
-           && relative_gap(numerical::solve(a, b), x) < tolerance<T>();
+    return relative_gap(a * x, b) < residual_bound<T>() && relative_gap(a * inv, identity<T>(matrix_order)) < residual_bound<T>()
+           && relative_gap(many, identity<T>(matrix_order)) < residual_bound<T>() && std::abs(det) > real_t<T>(0)
+           && relative_gap(numerical::solve(a, b), x) < residual_bound<T>();
   }
 
   template <typename T>
   bool cholesky_answers()
   {
     const matrix<T> a {hermitian_positive<T>()};
-    const vector<T> b {right_hand_side<T>(side)};
+    const vector<T> b {right_hand_side<T>(matrix_order)};
     const auto      c {numerical::cholesky(a)};
     const matrix<T> l {c.lower()};
-    std::vector<T>  lh(side * side);
-    for (std::size_t i {0}; i < side; ++i) {
-      for (std::size_t j {0}; j < side; ++j) {
-        lh[(i * side) + j] = conjugate(l(j, i));
+    std::vector<T>  lh(matrix_order * matrix_order);
+    for (std::size_t i {0}; i < matrix_order; ++i) {
+      for (std::size_t j {0}; j < matrix_order; ++j) {
+        lh[(i * matrix_order) + j] = conjugate(l(j, i));
       }
     }
-    return relative_gap(l * matrix<T> {side, side, std::move(lh)}, a) < tolerance<T>()
-           && relative_gap(a * c.solve(b), b) < tolerance<T>();
+    return relative_gap(l * matrix<T> {matrix_order, matrix_order, std::move(lh)}, a) < residual_bound<T>()
+           && relative_gap(a * c.solve(b), b) < residual_bound<T>();
   }
 
   template <typename T>
   bool qr_answers()
   {
-    const matrix<T> a      {general<T>(side + 3, side)};
+    const matrix<T> a      {general<T>(matrix_order + 3, matrix_order)};
     const auto      f      {numerical::qr(a)};
-    const matrix<T> square {general<T>(side, side)};
-    const vector<T> b      {right_hand_side<T>(side)};
-    return relative_gap(f.q() * f.r(), a) < tolerance<T>()
-           && relative_gap(square * numerical::qr(square).solve(b), b) < tolerance<T>();
+    const matrix<T> square {general<T>(matrix_order, matrix_order)};
+    const vector<T> b      {right_hand_side<T>(matrix_order)};
+    return relative_gap(f.q() * f.r(), a) < residual_bound<T>()
+           && relative_gap(square * numerical::qr(square).solve(b), b) < residual_bound<T>();
   }
 
   template <typename T>
   bool svd_answers()
   {
-    const matrix<T>                       a {general<T>(side + 2, side)};
+    const matrix<T>                       a {general<T>(matrix_order + 2, matrix_order)};
     const numerical::svd_decomposition<T> d {a};
     const std::size_t                     k {d.singular_values().size()};
     std::vector<T>                        us(d.u().rows() * k);
@@ -206,11 +206,11 @@ namespace {
       }
     }
     const matrix<T> rebuilt {matrix<T> {d.u().rows(), k, std::move(us)} *d.vh()};
-    const vector<T> b       {right_hand_side<T>(side + 2)};
+    const vector<T> b       {right_hand_side<T>(matrix_order + 2)};
     const vector<T> x       {numerical::lstsq(a, b)};
     const matrix<T> p       {numerical::pinv(a)};
-    return relative_gap(rebuilt, a) < tolerance<T>() && numerical::matrix_rank(a) == side
-           && relative_gap(p * b, x) < tolerance<T>() && relative_gap(p * a, identity<T>(side)) < tolerance<T>();
+    return relative_gap(rebuilt, a) < residual_bound<T>() && numerical::matrix_rank(a) == matrix_order
+           && relative_gap(p * b, x) < residual_bound<T>() && relative_gap(p * a, identity<T>(matrix_order)) < residual_bound<T>();
   }
 
   template <typename T>
