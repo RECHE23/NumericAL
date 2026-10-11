@@ -66,7 +66,7 @@ std::vector<double> gemm_ijk(const matrix<double>& a, const matrix<double>& b)
 std::vector<double> gemm_ikj(const matrix<double>& a, const matrix<double>& b)
 {
   std::vector<double> out(a.rows() * b.cols(), 0.0);
-  numerical::detail::gemm_rows(a.rows(), b.cols(), a.cols(), &*a.begin(), &*b.begin(), out.data());
+  numerical::detail::gemm_rows(a.rows(), b.cols(), a.cols(), &*a.begin(), a.cols(), &*b.begin(), b.cols(), out.data(), b.cols());
   return out;
 }
 

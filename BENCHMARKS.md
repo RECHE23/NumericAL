@@ -88,6 +88,23 @@ the laggard. `lstsq` actually **beats** NumPy here — `numpy.linalg.lstsq` uses
 full SVD (`gelsd`), heavier than our Gram–Schmidt QR for a small overdetermined
 system.
 
+At larger orders the LU behind `determinant`, `slogdet`, `solve` and `inverse` is
+blocked, as LAPACK's `dgetrf`: panels of 64 columns are factorised with partial
+pivoting in a column-major copy, and the trailing block takes its update from the
+matrix product kernel below. It regroups the unblocked algorithm's updates without
+reordering any, so without multiply-add fusion the factors are the same to the bit
+(`tests/test_decomposition.cpp`).
+`slogdet` of a diagonally dominant `double` matrix, best of N:
+
+| n    | NumPy (LAPACK) | unblocked (before) | blocked | NumericAL slower by |
+| ---: | -------------: | -----------------: | ------: | ------------------: |
+|  256 |        0.20 ms |            1.24 ms | 0.69 ms |               ~3.5× |
+|  512 |        1.15 ms |            10.5 ms | 3.47 ms |               ~3.0× |
+| 1024 |        5.03 ms |            80.8 ms | 16.6 ms |               ~3.3× |
+| 2048 |        38.3 ms |                  — | 93.8 ms |               ~2.4× |
+
+(2026-10-11, arm64 with 8 cores, Apple clang 16, `-O2`; NumPy through Apple's Accelerate.)
+
 All timed cases (array ops and decompositions) matched NumPy within tolerance.
 Geometric-mean ratio over the whole suite ≈ **0.38×** (NumericAL ~2.6× slower on
 average), pulled down mostly by the memory-bound data-movement cases above.
@@ -148,6 +165,9 @@ in the same binary):
 (2026-10-11. arm64: Apple clang 16, `-O2`; x86-64: GCC 14.2, `-O2` without `-march`, the
 build of the Python wheels.) On one x86-64 core (GCC 13, `-O2`) the kernel does 11.9 GFLOP/s
 against 3.3 for the i-k-j loop; with `-march=native` (AVX2 and FMA) 37 against 5.
+
+Under MSVC (`/O2`), where the tile is a plain array, the kernel against the i-k-j loop:
+2.3× at 64, 2.6× at 128, 3.6× at 256, 4.0× at 512, 4.3× at 1024 (a Windows virtual machine).
 
 Two things the kernel needs from GCC, each measured on that core: its loops are unrolled
 explicitly (GCC at `-O2` does not, and then keeps the tile in memory: 4.8 GFLOP/s), and the

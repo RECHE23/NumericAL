@@ -211,23 +211,26 @@ namespace numerical::detail {
 
   /*!
    * \brief `C += A·B` by the plain i-k-j loop, parallel over the rows of C.
-   * \param[in]     m,n,k The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major and contiguous.
-   * \param[in]     a,b   The operands.
-   * \param[in,out] c     The result.
+   * \param[in]     m,n,k       The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major.
+   * \param[in]     a,lda,b,ldb The operands and the distance between their rows.
+   * \param[in,out] c,ldc       The result and the distance between its rows.
    */
   template <typename T>
   void gemm_rows(std::size_t m,
                  std::size_t n,
                  std::size_t k,
                  const T*    a,
+                 std::size_t lda,
                  const T*    b,
-                 T*          c)
+                 std::size_t ldb,
+                 T*          c,
+                 std::size_t ldc)
   {
     parallel_for(m, k * n / vector_speedup, [&](std::size_t i) {
                    for (std::size_t p {0}; p < k; ++p) {
-                     const T aip {a[(i * k) + p]};
+                     const T aip {a[(i * lda) + p]};
                      for (std::size_t j {0}; j < n; ++j) {
-                       c[(i * n) + j] += aip * b[(p * n) + j];
+                       c[(i * ldc) + j] += aip * b[(p * ldb) + j];
                      }
                    }
                  });
@@ -242,9 +245,10 @@ namespace numerical::detail {
    * packed once, then tasks of \ref gemm_mc rows by \ref gemm_slivers_per_task slivers of columns run
    * in parallel, each writing a disjoint block of C.
    *
-   * \param[in]     m,n,k The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major and contiguous.
-   * \param[in]     a,b   The operands.
-   * \param[in,out] c     The result.
+   * \param[in]     m,n,k       The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major.
+   * \param[in]     a,lda,b,ldb The operands and the distance between their rows.
+   * \param[in,out] c,ldc       The result and the distance between its rows (C may be a block of a
+   *                             larger matrix that A and B do not overlap).
    * \pre `m`, `n` and `k` are not zero.
    */
   template <typename T>
@@ -252,11 +256,14 @@ namespace numerical::detail {
             std::size_t n,
             std::size_t k,
             const T*    a,
+            std::size_t lda,
             const T*    b,
-            T*          c)
+            std::size_t ldb,
+            T*          c,
+            std::size_t ldc)
   {
     if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
-      gemm_rows(m, n, k, a, b, c);
+      gemm_rows(m, n, k, a, lda, b, ldb, c, ldc);
       return;
     }
     constexpr std::size_t nr     {gemm_nr<T>};
@@ -269,8 +276,8 @@ namespace numerical::detail {
       const std::size_t slivers {((nc + nr) - 1) / nr};
       for (std::size_t pc {0}; pc < k; pc += gemm_kc) {
         const std::size_t kc {std::min(gemm_kc, k - pc)};
-        gemm_pack_b(b + (pc * n) + jc, n, kc, nc, b_packed.data());
-        gemm_pack_a(a + pc, k, m, kc, a_packed.data());
+        gemm_pack_b(b + (pc * ldb) + jc, ldb, kc, nc, b_packed.data());
+        gemm_pack_a(a + pc, lda, m, kc, a_packed.data());
         const std::size_t row_blocks {((m + gemm_mc) - 1) / gemm_mc};
         const std::size_t groups     {((slivers + gemm_slivers_per_task) - 1) / gemm_slivers_per_task};
         parallel_for(row_blocks * groups, gemm_mc * gemm_slivers_per_task * nr * kc / gemm_kernel_speedup, [&](std::size_t task) {
@@ -284,14 +291,14 @@ namespace numerical::detail {
                          const std::size_t width {std::min(nr, nc - jr)};
                          for (std::size_t ir {ic}; ir < ic_end; ir += gemm_mr) {
                            const std::size_t mr {std::min(gemm_mr, m - ir)};
-                           T*                block {c + (ir * n) + jc + jr};
+                           T*                block {c + (ir * ldc) + jc + jr};
                            tile.fill(T {});
                            for (std::size_t i {0}; i < mr; ++i) {
-                             std::copy_n(block + (i * n), width, tile.data() + (i * nr));
+                             std::copy_n(block + (i * ldc), width, tile.data() + (i * nr));
                            }
                            gemm_kernel(kc, a_packed.data() + (ir * kc), b_packed.data() + (jr * kc), tile);
                            for (std::size_t i {0}; i < mr; ++i) {
-                             std::copy_n(tile.data() + (i * nr), width, block + (i * n));
+                             std::copy_n(tile.data() + (i * nr), width, block + (i * ldc));
                            }
                          }
                        }

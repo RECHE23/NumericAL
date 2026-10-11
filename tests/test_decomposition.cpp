@@ -783,3 +783,127 @@ TEST(every_decomposition_refuses_a_non_finite_entry)
   }
   EXPECT(named);
 }
+
+namespace {
+
+  // The unblocked algorithm the blocked one regroups: partial pivoting, whole-row swaps, each update
+  // applied at its step. Returns the determinant and the solution of `A x = b`.
+  template <typename T>
+  std::pair<T, std::vector<T>> unblocked_lu_solve(std::size_t    n,
+                                                  std::vector<T> a,
+                                                  std::vector<T> b)
+  {
+    T sign {1.0};
+    for (std::size_t k {0}; k < n; ++k) {
+      std::size_t pivot {k};
+      for (std::size_t r {k + 1}; r < n; ++r) {
+        if (std::abs(a[(r * n) + k]) > std::abs(a[(pivot * n) + k])) {
+          pivot = r;
+        }
+      }
+      if (pivot != k) {
+        for (std::size_t c {0}; c < n; ++c) {
+          std::swap(a[(k * n) + c], a[(pivot * n) + c]);
+        }
+        std::swap(b[k], b[pivot]);
+        sign = -sign;
+      }
+      for (std::size_t r {k + 1}; r < n; ++r) {
+        const T factor {a[(r * n) + k] / a[(k * n) + k]};
+        a[(r * n) + k] = factor;
+        for (std::size_t c {k + 1}; c < n; ++c) {
+          a[(r * n) + c] -= factor * a[(k * n) + c];
+        }
+      }
+    }
+    T determinant {sign};
+    for (std::size_t i {0}; i < n; ++i) {
+      determinant *= a[(i * n) + i];
+    }
+    std::vector<T> x(n);
+    for (std::size_t i {0}; i < n; ++i) {
+      T sum {b[i]};
+      for (std::size_t j {0}; j < i; ++j) {
+        sum -= a[(i * n) + j] * x[j];
+      }
+      x[i] = sum;
+    }
+    for (std::size_t i {n}; i-- > 0;) {
+      T sum {x[i]};
+      for (std::size_t j {i + 1}; j < n; ++j) {
+        sum -= a[(i * n) + j] * x[j];
+      }
+      x[i] = sum / a[(i * n) + i];
+    }
+    return {determinant, x};
+  }
+
+  // Not diagonally dominant, so partial pivoting brings rows from far below, across panels.
+  template <typename T>
+  std::vector<T> pivoting_entries(std::size_t n);
+
+  template <>
+  std::vector<double> pivoting_entries<double>(std::size_t n)
+  {
+    std::vector<double> entries(n * n);
+    for (std::size_t i {0}; i < entries.size(); ++i) {
+      entries[i] = std::sin(static_cast<double>((i * 7) + 3));
+    }
+    return entries;
+  }
+
+  template <>
+  std::vector<std::complex<double>> pivoting_entries<std::complex<double>>(std::size_t n)
+  {
+    std::vector<std::complex<double>> entries(n * n);
+    for (std::size_t i {0}; i < entries.size(); ++i) {
+      entries[i] = {std::sin(static_cast<double>((i * 7) + 3)), std::cos(static_cast<double>((i * 5) + 1))};
+    }
+    return entries;
+  }
+
+  // The blocked factorisation regroups the unblocked one's updates without reordering any: each element
+  // receives its updates in ascending order of the pivot, and adding the product of a negated multiplier
+  // is subtracting the product. So the two agree to the bit (the test target builds without multiply-add
+  // fusion, which a compiler may apply to one loop and not the other).
+  template <typename T>
+  bool blocked_lu_equals_unblocked(std::size_t n)
+  {
+    const std::vector<T>   entries            {pivoting_entries<T>(n)};
+    const std::vector<T>   rhs(n, T           {1.0});
+    const auto             [determinant, solution] {unblocked_lu_solve(n, entries, rhs)};
+    const numerical::lu_decomposition<T> lu   {matrix<T> {n, n, entries}};
+    const vector<T>                      x    {lu.solve(vector<T> {rhs})};
+    bool                                 same {lu.determinant() == determinant};
+    for (std::size_t i {0}; i < n; ++i) {
+      same = same && x[i] == solution[i];
+    }
+    return same;
+  }
+} // namespace
+
+// Past one panel: three panels, the last partial.
+TEST(blocked_lu_equals_the_unblocked_algorithm_to_the_bit)
+{
+  const std::size_t n {(2 * numerical::detail::lu_block) + 22};
+  EXPECT(blocked_lu_equals_unblocked<double>(n));
+  EXPECT(blocked_lu_equals_unblocked<std::complex<double>>(numerical::detail::lu_block + 40));
+}
+
+// A zero column in a later panel makes the matrix singular there, and the panels after it still run.
+TEST(blocked_lu_meets_a_zero_column_in_a_later_panel)
+{
+  const std::size_t   n {(2 * numerical::detail::lu_block) + 22};
+  std::vector<double> entries(n * n, 0.25);
+  for (std::size_t i {0}; i < n; ++i) {
+    entries[(i * n) + i] = static_cast<double>(n);
+  }
+  const std::size_t zero {numerical::detail::lu_block + 36};
+  for (std::size_t i {0}; i < n; ++i) {
+    entries[(i * n) + zero] = 0.0;
+  }
+  const numerical::lu_decomposition<double> lu {matrix<double> {n, n, entries}};
+  EXPECT(lu.determinant() == 0.0);
+  const vector<double> b                       {std::vector<double>(n, 1.0)};
+  EXPECT_THROWS((void)lu.solve(b), numerical::singular_matrix_error);
+}

@@ -40,6 +40,11 @@ namespace numerical {
 
   namespace detail {
 
+    //! \brief The columns of one panel of the blocked LU: the trailing update, a product of this depth, is
+    //!        deep enough for the packed kernel while the unblocked panel stays a small part of the work.
+    inline constexpr std::size_t lu_block {64};
+
+
     // conj_of / real_part are written as overloads (not `if constexpr`) so each
     // is a single, fully-covered expression: a complex scalar selects the
     // std::complex overload, any other scalar the primary template.
@@ -288,13 +293,49 @@ namespace numerical {
   private:
 
     //! \brief Performs the pivoted elimination, filling \ref lu_ and \ref pivots_.
+    // Right-looking, by panels of detail::lu_block columns, as LAPACK's dgetrf: each panel is factorised
+    // with partial pivoting (whole rows swapped), its rows of U to the right are solved against the panel's
+    // unit-lower L, and the trailing block takes the product of the two through detail::gemm, where the
+    // work of a large factorisation is. Each element still receives its updates in ascending order of the
+    // pivot, so without multiply-add fusion the factors are the unblocked algorithm's to the bit; an order
+    // up to one panel is that algorithm.
     void factorize()
     {
-      for (std::size_t k {0}; k < n_; ++k) {
-        std::size_t pivot {k};
-        double      best  {std::abs(lu_[(k * n_) + k])};
-        for (std::size_t r {k + 1}; r < n_; ++r) {
-          const double mag {std::abs(lu_[(r * n_) + k])};
+      for (std::size_t k0 {0}; k0 < n_; k0 += detail::lu_block) {
+        const std::size_t end {std::min(k0 + detail::lu_block, n_)};
+        factorize_panel(k0, end);
+        if (end < n_) {
+          solve_panel_rows(k0, end);
+          update_trailing(k0, end);
+        }
+      }
+    }
+
+    /*!
+     * \brief Unblocked LU with partial pivoting of the columns `[k0, end)`, every row below `k0`.
+     *
+     * The panel is factorised in a column-major copy, where a pivot search and every update run along a
+     * column at unit stride (row-major, each reads one element per row: four times slower at order 2048);
+     * a pivot's row swap reaches the columns outside the panel in place. The arithmetic is the in-place
+     * algorithm's, step for step.
+     */
+    void factorize_panel(std::size_t k0,
+                         std::size_t end)
+    {
+      const std::size_t rows  {n_ - k0};
+      const std::size_t width {end - k0};
+      std::vector<T>    panel(rows * width); // column j of the panel at panel[j * rows]
+      for (std::size_t r {0}; r < rows; ++r) {
+        for (std::size_t j {0}; j < width; ++j) {
+          panel[(j * rows) + r] = lu_[((k0 + r) * n_) + k0 + j];
+        }
+      }
+      for (std::size_t j {0}; j < width; ++j) {
+        T*          column {panel.data() + (j * rows)};
+        std::size_t pivot  {j};
+        double      best   {std::abs(column[j])};
+        for (std::size_t r {j + 1}; r < rows; ++r) {
+          const double mag {std::abs(column[r])};
           if (mag > best) {
             best  = mag;
             pivot = r;
@@ -304,21 +345,82 @@ namespace numerical {
           singular_ = true;
           continue; // a zero pivot column: leave it, the determinant becomes 0
         }
-        if (pivot != k) {
-          for (std::size_t c {0}; c < n_; ++c) {
-            std::swap(lu_[(k * n_) + c], lu_[(pivot * n_) + c]);
+        if (pivot != j) {
+          for (std::size_t c {0}; c < width; ++c) {
+            std::swap(panel[(c * rows) + j], panel[(c * rows) + pivot]);
           }
-          std::swap(pivots_[k], pivots_[pivot]);
+          swap_rows_outside(k0 + j, k0 + pivot, k0, end);
+          std::swap(pivots_[k0 + j], pivots_[k0 + pivot]);
           sign_ = -sign_;
         }
-        for (std::size_t r {k + 1}; r < n_; ++r) {
-          const T factor {lu_[(r * n_) + k] / lu_[(k * n_) + k]};
-          lu_[(r * n_) + k] = factor; // store the multiplier in L's slot
-          for (std::size_t c {k + 1}; c < n_; ++c) {
-            lu_[(r * n_) + c] -= factor * lu_[(k * n_) + c];
+        for (std::size_t r {j + 1}; r < rows; ++r) {
+          column[r] = column[r] / column[j]; // the multiplier, in L's slot
+        }
+        for (std::size_t c {j + 1}; c < width; ++c) {
+          T*      target {panel.data() + (c * rows)};
+          const T u      {target[j]};
+          for (std::size_t r {j + 1}; r < rows; ++r) {
+            target[r] -= column[r] * u;
           }
         }
       }
+      for (std::size_t r {0}; r < rows; ++r) {
+        for (std::size_t j {0}; j < width; ++j) {
+          lu_[((k0 + r) * n_) + k0 + j] = panel[(j * rows) + r];
+        }
+      }
+    }
+
+    //! \brief Swaps rows \p a and \p b of the factor outside the panel's columns `[k0, end)`.
+    void swap_rows_outside(std::size_t a,
+                           std::size_t b,
+                           std::size_t k0,
+                           std::size_t end)
+    {
+      for (std::size_t c {0}; c < k0; ++c) {
+        std::swap(lu_[(a * n_) + c], lu_[(b * n_) + c]);
+      }
+      for (std::size_t c {end}; c < n_; ++c) {
+        std::swap(lu_[(a * n_) + c], lu_[(b * n_) + c]);
+      }
+    }
+
+    //! \brief `U₁₂ = L₁₁⁻¹ A₁₂`: the panel's rows right of it, by forward substitution with its unit-lower L.
+    //!        Each block of columns is independent, so blocks run in parallel, each in the sequential order.
+    void solve_panel_rows(std::size_t k0,
+                          std::size_t end)
+    {
+      constexpr std::size_t width  {64};
+      const std::size_t     blocks {((n_ - end) + width - 1) / width};
+      const std::size_t     depth  {end - k0};
+      detail::parallel_for(blocks, depth * depth * width / 2, [&](std::size_t block) {
+                             const std::size_t first {end + (block * width)};
+                             const std::size_t last {std::min(first + width, n_)};
+                             for (std::size_t i {k0 + 1}; i < end; ++i) {
+                               for (std::size_t p {k0}; p < i; ++p) {
+                                 const T factor {lu_[(i * n_) + p]};
+                                 for (std::size_t c {first}; c < last; ++c) {
+                                   lu_[(i * n_) + c] -= factor * lu_[(p * n_) + c];
+                                 }
+                               }
+                             }
+                           });
+    }
+
+    //! \brief `A₂₂ −= L₂₁ U₁₂`, as `A₂₂ += (−L₂₁) U₁₂` through the matrix product kernel.
+    void update_trailing(std::size_t k0,
+                         std::size_t end)
+    {
+      const std::size_t rows  {n_ - end};
+      const std::size_t depth {end - k0};
+      std::vector<T>    minus_l(rows * depth);
+      for (std::size_t r {0}; r < rows; ++r) {
+        for (std::size_t p {0}; p < depth; ++p) {
+          minus_l[(r * depth) + p] = -lu_[((end + r) * n_) + k0 + p];
+        }
+      }
+      detail::gemm(rows, rows, depth, minus_l.data(), depth, lu_.data() + (k0 * n_) + end, n_,
+                   lu_.data() + (end * n_) + end, n_);
     }
 
     std::size_t              n_;                //!< The matrix order.

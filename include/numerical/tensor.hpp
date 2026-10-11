@@ -226,7 +226,7 @@ namespace numerical {
     {
       std::vector<T> c(rows * cols, T {}); // the caller routes only an output of two elements or more here
       if (inner != 0) {
-        gemm(rows, cols, inner, a.data(), b.data(), c.data());
+        gemm(rows, cols, inner, a.data(), inner, b.data(), cols, c.data(), cols);
       }
       return tensor<T> {std::move(out_shape), std::move(c)};
     }

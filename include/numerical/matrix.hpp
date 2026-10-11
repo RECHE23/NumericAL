@@ -196,7 +196,7 @@ namespace numerical {
     // the number of threads (see gemm.hpp); `out` starts at zero, as std::vector(n) guarantees.
     std::vector<T> out(detail::checked_mul(a.rows(), b.cols())); // guard the cross-product alloc
     if (!out.empty() && a.cols() != 0) {
-      detail::gemm(a.rows(), b.cols(), a.cols(), &*a.begin(), &*b.begin(), out.data());
+      detail::gemm(a.rows(), b.cols(), a.cols(), &*a.begin(), a.cols(), &*b.begin(), b.cols(), out.data(), b.cols());
     }
     return matrix<T> {a.rows(), b.cols(), std::move(out)};
   }
