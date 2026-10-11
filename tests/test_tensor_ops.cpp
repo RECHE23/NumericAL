@@ -143,3 +143,12 @@ TEST(creation_routines)
   EXPECT(numerical::linspace(2.0, 3.0, 1) == (tensor<double> {{1}, {2.0}}));
   EXPECT(numerical::linspace(2.0, 3.0, 0).size() == 0U);
 }
+
+TEST(map_and_pow)
+{
+  const tensor<double> t               {{3}, {1.0, 4.0, 9.0}};
+  EXPECT(numerical::map(t, [](double x) { return std::sqrt(x); }) == (tensor<double> {{3}, {1.0, 2.0, 3.0}}));
+  const tensor<std::complex<double>> z {{2}, {{3.0, 4.0}, {0.0, -2.0}}};
+  EXPECT(numerical::map(z, [](const std::complex<double>& x) { return std::abs(x); }) == (tensor<double> {{2}, {5.0, 2.0}}));
+  EXPECT(numerical::pow(t, tensor<double> {{}, {2.0}}) == (tensor<double> {{3}, {1.0, 16.0, 81.0}}));
+}

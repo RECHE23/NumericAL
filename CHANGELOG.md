@@ -18,6 +18,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   `t.reshape(…)` with one `-1`, and `numerical.zeros`, `ones`, `full`, `eye`, `arange`, `linspace`. Real
   results equal NumPy's to the bit (sums by NumPy's pairwise blocks); a complex product or quotient agrees to a
   few units in the last place. `max` and `min` refuse complex128. C++: `tensor_ops.hpp`.
+- **Element-wise functions**: `exp`, `log`, `sqrt`, `sin`, `cos`, `tan`, `tanh`, `absolute` (`abs(t)`, float64 for
+  either dtype), and `power` (`t ** p`, `p ** t`), as NumPy's to a few units in the last place. C++:
+  `numerical::map` and `numerical::pow`.
 - **Every function takes array-likes, as NumPy's do**: a NumPy array, a nested list or a number goes through
   `asarray` (zero-copy where it can); `nm.solve(np_array, [1.0, 2.0])` raised `TypeError: expected a
   numerical.Tensor`.

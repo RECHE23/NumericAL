@@ -26,6 +26,7 @@
 #include <sciforge/binding/module.hpp>
 
 #include <algorithm>
+#include <cmath>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
@@ -781,11 +782,13 @@ PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::ten
         case '+': return wrap(any_tensor {a + b});
         case '-': return wrap(any_tensor {a - b});
         case '*': return wrap(any_tensor {a * b});
+        case '^': return wrap(any_tensor {numerical::pow(a, b)});
         default: return wrap(any_tensor {a / b});
     }
 }
 
-// _binary(op, a, b) -> Tensor: a op b element by element, broadcast as NumPy's; op one of "+-*/".
+// _binary(op, a, b) -> Tensor: a op b element by element, broadcast as NumPy's; op one of "+-*/", or "^"
+// for a ** b.
 PyObject* module_binary(PyObject* /*self*/, PyObject* args)
 {
     const char* op = nullptr;
@@ -794,8 +797,8 @@ PyObject* module_binary(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
         return nullptr;
     }
-    if (std::string_view {op}.size() != 1 || std::string_view {"+-*/"}.find(op[0]) == std::string_view::npos) {
-        PyErr_SetString(PyExc_ValueError, "_binary: op is one of + - * /");
+    if (std::string_view {op}.size() != 1 || std::string_view {"+-*/^"}.find(op[0]) == std::string_view::npos) {
+        PyErr_SetString(PyExc_ValueError, "_binary: op is one of + - * / ^ (power)");
         return nullptr;
     }
     const any_tensor* a = nullptr;
@@ -829,6 +832,56 @@ PyObject* module_negate(PyObject* /*self*/, PyObject* args)
         return wrap(any_tensor {-std::get<cplx_tensor>(*a)});
     }
     return wrap(any_tensor {-std::get<real_tensor>(*a)});
+}
+
+template <typename T>
+PyObject* unary_on(std::string_view name, const numerical::tensor<T>& t)
+{
+    using numerical::map;
+    if (name == "exp") {
+        return wrap(any_tensor {map(t, [](const T& x) { return std::exp(x); })});
+    }
+    if (name == "log") {
+        return wrap(any_tensor {map(t, [](const T& x) { return std::log(x); })});
+    }
+    if (name == "sqrt") {
+        return wrap(any_tensor {map(t, [](const T& x) { return std::sqrt(x); })});
+    }
+    if (name == "sin") {
+        return wrap(any_tensor {map(t, [](const T& x) { return std::sin(x); })});
+    }
+    if (name == "cos") {
+        return wrap(any_tensor {map(t, [](const T& x) { return std::cos(x); })});
+    }
+    if (name == "tan") {
+        return wrap(any_tensor {map(t, [](const T& x) { return std::tan(x); })});
+    }
+    if (name == "tanh") {
+        return wrap(any_tensor {map(t, [](const T& x) { return std::tanh(x); })});
+    }
+    if (name == "abs") { // a real result for either dtype, as NumPy's absolute
+        return wrap(any_tensor {map(t, [](const T& x) { return static_cast<double>(std::abs(x)); })});
+    }
+    PyErr_SetString(PyExc_ValueError, "_unary: name is exp, log, sqrt, sin, cos, tan, tanh or abs");
+    return nullptr;
+}
+
+// _unary(name, a) -> Tensor: the function `name` of every element.
+PyObject* module_unary(PyObject* /*self*/, PyObject* args)
+{
+    const char* name = nullptr;
+    PyObject*   x    = nullptr;
+    if (PyArg_ParseTuple(args, "sO", &name, &x) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    if (is_complex(*a)) {
+        return unary_on(name, std::get<cplx_tensor>(*a));
+    }
+    return unary_on(name, std::get<real_tensor>(*a));
 }
 
 template <typename T>
@@ -1530,6 +1583,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_binary", module_binary, METH_VARARGS,
           "_binary(op, a, b) -> Tensor\nElement-wise a op b (op one of + - * /), broadcast; one dtype.");
     m.raw("_negate", module_negate, METH_VARARGS, "_negate(a) -> Tensor\nElement-wise negation.");
+    m.raw("_unary", module_unary, METH_VARARGS,
+          "_unary(name, a) -> Tensor\nexp, log, sqrt, sin, cos, tan, tanh or abs of every element.");
     m.raw("_reduce", module_reduce, METH_VARARGS,
           "_reduce(op, a, axis) -> number or Tensor\nsum, mean, max or min of every element (axis -1) or along an axis.");
     m.raw("_reshape", module_reshape, METH_VARARGS, "_reshape(a, shape) -> Tensor\nThe elements under another shape.");

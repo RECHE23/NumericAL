@@ -134,5 +134,36 @@ class ShapesAndCreation(unittest.TestCase):
                 call()
 
 
+@unittest.skipIf(np is None, "NumPy not installed")
+class ElementwiseFunctions(unittest.TestCase):
+    """The C++ library's functions against NumPy's own implementations: equal to a few units in the last
+    place, not to the bit (NumPy computes some of them with its own vector code)."""
+
+    def test_functions_and_power_as_numpy(self):
+        rng = np.random.default_rng(11)
+        real = rng.uniform(0.1, 3.0, (4, 5))
+        cplx = real + 1j * rng.uniform(-2.0, 2.0, (4, 5))
+        for a in (real, cplx):
+            t = numerical.asarray(a)
+            for name, reference in [("exp", np.exp), ("log", np.log), ("sqrt", np.sqrt), ("sin", np.sin),
+                                    ("cos", np.cos), ("tan", np.tan), ("tanh", np.tanh),
+                                    ("absolute", np.abs)]:
+                with self.subTest(function=name, dtype=a.dtype):
+                    got = getattr(numerical, name)(t)
+                    want = reference(a)
+                    self.assertEqual(got.dtype, str(want.dtype))
+                    np.testing.assert_allclose(np.asarray(got), want, rtol=1e-14, atol=1e-15)
+            with self.subTest(power=a.dtype):
+                np.testing.assert_allclose(np.asarray(t ** 2.5), a ** 2.5, rtol=1e-14)
+                np.testing.assert_allclose(np.asarray(1.5 ** t), 1.5 ** a, rtol=1e-14)
+                np.testing.assert_allclose(np.asarray(numerical.power(t, t)), np.power(a, a), rtol=1e-14)
+                np.testing.assert_allclose(np.asarray(abs(t)), np.abs(a), rtol=1e-15)
+
+    def test_outside_the_real_domain_is_nan_as_numpy(self):
+        t = numerical.asarray([-1.0, 0.0])
+        self.assertTrue(math.isnan(numerical.sqrt(t)[0]) and math.isnan(numerical.log(t)[0]))
+        self.assertEqual(numerical.log(t)[1], -math.inf)
+
+
 if __name__ == "__main__":
     unittest.main()

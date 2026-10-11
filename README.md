@@ -132,6 +132,7 @@ t = numerical.arange(6).reshape(2, 3)
 (t + 1) * [10, 0, 1] / 2      # element-wise, broadcast as NumPy's
 t.sum(), t.mean(axis=0), t.max(axis=-1)
 numerical.zeros((2, 2)), numerical.eye(3), numerical.linspace(0, 1, 5)
+numerical.exp(t), numerical.sqrt(t), abs(t), t ** 2
 ```
 
 Shapes that do not broadcast raise a `ValueError` worded as NumPy's. `max` and `min` take

@@ -270,7 +270,7 @@ def _same_dtype(a, b):
 
 
 def _arithmetic(op, reflected=False):
-    """The Tensor method for `op` ("+", "-", "*" or "/"), element-wise and broadcast as NumPy's; a reflected
+    """The Tensor method for `op` ("+", "-", "*", "/", or "^" for ``**``), element-wise and broadcast as NumPy's; a reflected
     one (``2 - t``) puts the other operand first. Anything :func:`asarray` cannot read is NotImplemented."""
 
     def method(self, other):
@@ -293,6 +293,9 @@ Tensor.__mul__ = _arithmetic("*")
 Tensor.__rmul__ = _arithmetic("*", reflected=True)
 Tensor.__truediv__ = _arithmetic("/")
 Tensor.__rtruediv__ = _arithmetic("/", reflected=True)
+Tensor.__pow__ = _arithmetic("^")
+Tensor.__rpow__ = _arithmetic("^", reflected=True)
+Tensor.__abs__ = lambda self: absolute(self)
 Tensor.__neg__ = lambda self: _numerical._negate(self)
 Tensor.__pos__ = lambda self: self
 
@@ -400,4 +403,31 @@ def linspace(start, stop, num=50):
     return _native(_numerical._linspace, float(start), float(stop), _operator.index(num))
 
 
-__all__ += ["sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "eye", "arange", "linspace"]
+def _elementwise(name, doc):
+    def function(a):
+        return _numerical._unary(name, a if isinstance(a, Tensor) else asarray(a))
+
+    function.__name__ = name
+    function.__doc__ = doc
+    return function
+
+
+exp = _elementwise("exp", "e to the power of every element, as ``numpy.exp``.")
+log = _elementwise("log", "The natural logarithm of every element, as ``numpy.log`` (NaN below 0 for float64).")
+sqrt = _elementwise("sqrt", "The square root of every element, as ``numpy.sqrt`` (NaN below 0 for float64).")
+sin = _elementwise("sin", "The sine of every element, as ``numpy.sin``.")
+cos = _elementwise("cos", "The cosine of every element, as ``numpy.cos``.")
+tan = _elementwise("tan", "The tangent of every element, as ``numpy.tan``.")
+tanh = _elementwise("tanh", "The hyperbolic tangent of every element, as ``numpy.tanh``.")
+absolute = _elementwise("abs", "The magnitude of every element, float64 for either dtype, as ``numpy.abs``.")
+absolute.__name__ = "absolute"
+
+
+def power(a, b):
+    """`a` to the power `b` element by element, broadcast, as ``numpy.power``."""
+    a, b = _same_dtype(a, b)
+    return _native(_numerical._binary, "^", a, b)
+
+
+__all__ += ["sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "eye", "arange", "linspace",
+            "exp", "log", "sqrt", "sin", "cos", "tan", "tanh", "absolute", "power"]

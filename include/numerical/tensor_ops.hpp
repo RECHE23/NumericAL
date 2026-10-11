@@ -18,6 +18,7 @@
 #include <cstddef>
 #include <functional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -288,6 +289,26 @@ namespace numerical {
     std::vector<T> out(a.size());
     std::transform(a.data().begin(), a.data().end(), out.begin(), std::negate<T> {});
     return tensor<T> {a.shape(), std::move(out)};
+  }
+
+  //! \brief `f(x)` for every element, in a tensor of the same shape and of `f`'s result type.
+  template <typename T,
+            typename F>
+  [[nodiscard]] auto map(const tensor<T>& t,
+                         const F&         f) -> tensor<std::decay_t<decltype(f(std::declval<const T&>()))>>
+  {
+    using R = std::decay_t<decltype(f(std::declval<const T&>()))>;
+    std::vector<R> out(t.size());
+    std::transform(t.data().begin(), t.data().end(), out.begin(), f);
+    return tensor<R> {t.shape(), std::move(out)};
+  }
+
+  //! \brief `a` to the power `b` element by element, broadcast, as `std::pow`.
+  template <typename T>
+  [[nodiscard]] tensor<T> pow(const tensor<T>& a,
+                              const tensor<T>& b)
+  {
+    return broadcast_apply(a, b, [](const T& x, const T& y) { return static_cast<T>(std::pow(x, y)); });
   }
 
   //! \brief The sum of every element, by pairwise halving (0 for an empty tensor).
