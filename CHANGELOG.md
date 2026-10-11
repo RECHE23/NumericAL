@@ -6,6 +6,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **QR is 9 to 14 times faster** (512 × 512: 630 → 44 ms; 256 × 256: 48 → 5.6 ms; arm64, Apple clang 16, `-O2`):
+  each Householder reflection walked the row-major matrix column by column; it now walks it row by row, on
+  contiguous memory. `qr`, `lstsq`, `pinv`, `matrix_rank` and `svd` (which starts with a QR) all use it.
+
 ## 2026.10.1 — 2026-10-11
 
 ### Added

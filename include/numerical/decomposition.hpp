@@ -493,6 +493,42 @@ namespace numerical {
     };
 
     /*!
+     * \brief Applies `I − 2 v vᴴ` from the left to the rows `first…first+|v|-1` of a row-major array, on its
+     *        columns `from…cols-1`.
+     *
+     * Row by row: the projection `w = vᴴ A` accumulates one contiguous row at a time, then each row takes
+     * `−2 vᵢ w`. A column-by-column walk strides by `cols` on every access and runs several times slower.
+     * \param[in,out] a     The array, `cols` entries per row.
+     * \param[in]     cols  Its row length.
+     * \param[in]     v     The unit reflector.
+     * \param[in]     first The first row it acts on.
+     * \param[in]     from  The first column it acts on.
+     */
+    template <typename T>
+    void reflect_rows(std::vector<T>&       a,
+                      std::size_t           cols,
+                      const std::vector<T>& v,
+                      std::size_t           first,
+                      std::size_t           from)
+    {
+      std::vector<T> w(cols - from, T {});
+      for (std::size_t i {0}; i < v.size(); ++i) {
+        const T  weight {conj_of(v[i])};
+        const T* row    {a.data() + ((first + i) * cols) + from};
+        for (std::size_t j {0}; j < w.size(); ++j) {
+          w[j] += weight * row[j];
+        }
+      }
+      for (std::size_t i {0}; i < v.size(); ++i) {
+        const T scale {static_cast<T>(2) * v[i]};
+        T*      row   {a.data() + ((first + i) * cols) + from};
+        for (std::size_t j {0}; j < w.size(); ++j) {
+          row[j] -= scale * w[j];
+        }
+      }
+    }
+
+    /*!
      * \brief Factorises the `rows × cols` row-major \p a (`rows ≥ cols`) by Householder reflections: each
      *        column below the diagonal is reflected onto it, so `Q` is orthonormal to rounding whatever the
      *        conditioning of `A`, and a column dependent on the earlier ones leaves a zero on `R`'s diagonal.
@@ -521,15 +557,7 @@ namespace numerical {
         for (T& element : v) {
           element /= length;
         }
-        for (std::size_t j {k}; j < cols; ++j) { // A ← (I − 2 v vᴴ) A on rows k…m-1
-          T projection {};
-          for (std::size_t i {k}; i < rows; ++i) {
-            projection += conj_of(v[i - k]) * a[(i * cols) + j];
-          }
-          for (std::size_t i {k}; i < rows; ++i) {
-            a[(i * cols) + j] -= static_cast<T>(2) * v[i - k] * projection;
-          }
-        }
+        reflect_rows(a, cols, v, k, k); // A ← (I − 2 v vᴴ) A on rows k…m-1, columns k…n-1
         reflectors[k] = std::move(v);
       }
       thin_qr<T> out {.q = std::vector<T>(rows * cols, T {}), .r = std::vector<T>(cols * cols, T {})};
@@ -544,15 +572,7 @@ namespace numerical {
         if (v.empty()) {
           continue;
         }
-        for (std::size_t j {0}; j < cols; ++j) {
-          T projection {};
-          for (std::size_t i {k}; i < rows; ++i) {
-            projection += conj_of(v[i - k]) * out.q[(i * cols) + j];
-          }
-          for (std::size_t i {k}; i < rows; ++i) {
-            out.q[(i * cols) + j] -= static_cast<T>(2) * v[i - k] * projection;
-          }
-        }
+        reflect_rows(out.q, cols, v, k, 0);
       }
       for (std::size_t k {0}; k < cols; ++k) { // R's diagonal real and non-negative: rotate row k, column k
         const T phase {phase_of(out.r[(k * cols) + k])};
