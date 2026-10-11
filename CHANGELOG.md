@@ -16,8 +16,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   lists and the reflected forms too; a real operand meeting a complex one is widened), `-t`, `t.sum()`,
   `t.mean()`, `t.max()`, `t.min()` of every element or along an `axis` (also as module functions),
   `t.reshape(…)` with one `-1`, and `numerical.zeros`, `ones`, `full`, `eye`, `arange`, `linspace`. Real
-  results equal NumPy's to the bit (sums by NumPy's pairwise blocks); a complex product or quotient agrees to a
-  few units in the last place. `max` and `min` refuse complex128. C++: `tensor_ops.hpp`.
+  arithmetic and creation equal NumPy's to the bit; sums follow NumPy's pairwise algorithm (its vector builds
+  group terms their own way, so a long sum can differ in the last bits); a complex product or quotient agrees to
+  a few units in the last place. `max` and `min` refuse complex128. C++: `tensor_ops.hpp`.
 - **Element-wise functions**: `exp`, `log`, `sqrt`, `sin`, `cos`, `tan`, `tanh`, `absolute` (`abs(t)`, float64 for
   either dtype), and `power` (`t ** p`, `p ** t`), as NumPy's to a few units in the last place. C++:
   `numerical::map` and `numerical::pow`.

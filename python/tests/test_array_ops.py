@@ -86,8 +86,13 @@ class Reductions(unittest.TestCase):
                             np.testing.assert_array_equal(np.asarray(method), np.asarray(got))
 
     def test_a_long_sum_is_pairwise(self):
+        # A million times 0.1 (the double nearest 0.1): summed in order the error is about 1e-6; pairwise it
+        # stays within a few units of 1e-11, as NumPy's. (NumPy's vector builds group the terms their own way,
+        # so the last bits are not portable: equal on one platform, a few ulp apart on another.)
+        exact = 100000.0000000000055511151231257827
         tenths = numerical.full(10 ** 6, 0.1)
-        self.assertEqual(numerical.sum(tenths), np.sum(np.full(10 ** 6, 0.1)))
+        self.assertLess(abs(numerical.sum(tenths) - exact), 1e-9)
+        self.assertLess(abs(numerical.sum(tenths) - np.sum(np.full(10 ** 6, 0.1))), 1e-9)
 
     def test_nan_wins_and_empty_extremes_are_refused(self):
         t = numerical.asarray([1.0, float("nan"), 3.0])

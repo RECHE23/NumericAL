@@ -4,8 +4,8 @@
  *
  * Two shapes broadcast as NumPy's do: aligned on their last axes, each pair of extents equal or one of them
  * 1 (a missing leading axis counts as 1), the result taking the larger. A sum adds by pairwise halving, as
- * NumPy's does (the same blocks, so a sum of contiguous elements is NumPy's to the bit): its rounding error
- * grows with the logarithm of the count instead of the count. A maximum or
+ * NumPy's reference algorithm does (NumPy's vector builds group the terms their own way, so the last bits
+ * can differ by platform): its rounding error grows with the logarithm of the count instead of the count. A maximum or
  * a minimum is defined for an ordered scalar only, and an empty reduction without an identity throws.
  */
 #ifndef NUMERICAL_TENSOR_OPS_HPP
