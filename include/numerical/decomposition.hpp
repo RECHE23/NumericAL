@@ -90,7 +90,7 @@ namespace numerical {
     template <typename U>
     [[nodiscard]] double real_part(const std::complex<U>& x)
     {
-      return x.real();
+      return static_cast<double>(x.real());
     }
 
     //! \brief The unit-modulus factor of \p x: `x / |x|` (its sign, for a real scalar), and 1 at 0.
@@ -253,7 +253,7 @@ namespace numerical {
     //! \brief The determinant (the pivot sign times the product of U's diagonal; 0 if singular).
     [[nodiscard]] T determinant() const
     {
-      T value {static_cast<T>(sign_)};
+      T value {detail::from_double<T>(sign_)};
       for (std::size_t i {0}; i < n_; ++i) {
         value *= lu_[(i * n_) + i];
       }
@@ -1754,8 +1754,8 @@ namespace numerical {
             double   beta  {0.0};
             T        gamma {};
             for (std::size_t i {0}; i < n; ++i) {
-              alpha += std::norm(wp[i]);
-              beta  += std::norm(wq[i]);
+              alpha += static_cast<double>(std::norm(wp[i]));
+              beta  += static_cast<double>(std::norm(wq[i]));
               gamma += conj_of(wp[i]) * wq[i];
             }
             const double magnitude {static_cast<double>(std::abs(gamma))};
@@ -1843,7 +1843,7 @@ namespace numerical {
         for (std::size_t j {k}; j < n; ++j) {
           b[(k * n) + j] *= left_phase[k];
         }
-        d[k] = std::abs(b[(k * n) + k]);
+        d[k] = static_cast<double>(std::abs(b[(k * n) + k]));
         if (k + 1 == n) {
           break;
         }
@@ -1870,7 +1870,7 @@ namespace numerical {
         for (std::size_t i {k}; i < n; ++i) {
           b[(i * n) + k + 1] *= right_phase[k];
         }
-        e[k] = std::abs(b[(k * n) + k + 1]);
+        e[k] = static_cast<double>(std::abs(b[(k * n) + k + 1]));
       }
       if (n > 0) {
         e[n - 1] = 0.0;
