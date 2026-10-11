@@ -35,6 +35,7 @@
 #include <new>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <tuple>
 #include <utility>
 #include <variant>
@@ -754,6 +755,251 @@ PyObject* module_take(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// --- element-wise arithmetic, reductions, reshaping and creation (tensor_ops.hpp) ----------------------
+// The Python side promotes the operands to one dtype and resolves negative axes and a -1 extent; these take
+// what it hands over and refuse anything else.
+
+// Two tensors of one dtype, or an error set and nullptr.
+bool same_dtype_pair(PyObject* x, PyObject* y, const any_tensor*& a, const any_tensor*& b)
+{
+    a = as_tensor(x);
+    b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return false;
+    }
+    if (is_complex(*a) != is_complex(*b)) {
+        PyErr_SetString(sciforge_module_error(), "element-wise operands must share one dtype");
+        return false;
+    }
+    return true;
+}
+
+template <typename T>
+PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+{
+    switch (op) {
+        case '+': return wrap(any_tensor {a + b});
+        case '-': return wrap(any_tensor {a - b});
+        case '*': return wrap(any_tensor {a * b});
+        default: return wrap(any_tensor {a / b});
+    }
+}
+
+// _binary(op, a, b) -> Tensor: a op b element by element, broadcast as NumPy's; op one of "+-*/".
+PyObject* module_binary(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    PyObject*   y  = nullptr;
+    if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
+        return nullptr;
+    }
+    if (std::string_view {op}.size() != 1 || std::string_view {"+-*/"}.find(op[0]) == std::string_view::npos) {
+        PyErr_SetString(PyExc_ValueError, "_binary: op is one of + - * /");
+        return nullptr;
+    }
+    const any_tensor* a = nullptr;
+    const any_tensor* b = nullptr;
+    if (!same_dtype_pair(x, y, a, b)) {
+        return nullptr;
+    }
+    try {
+        if (is_complex(*a)) {
+            return binary_on(op[0], std::get<cplx_tensor>(*a), std::get<cplx_tensor>(*b));
+        }
+        return binary_on(op[0], std::get<real_tensor>(*a), std::get<real_tensor>(*b));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _negate(a) -> Tensor.
+PyObject* module_negate(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x = nullptr;
+    if (PyArg_ParseTuple(args, "O", &x) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    if (is_complex(*a)) {
+        return wrap(any_tensor {-std::get<cplx_tensor>(*a)});
+    }
+    return wrap(any_tensor {-std::get<real_tensor>(*a)});
+}
+
+template <typename T>
+PyObject* sum_or_mean(bool mean, const numerical::tensor<T>& t, Py_ssize_t axis)
+{
+    if (axis < 0) {
+        return from_scalar<T>(mean ? numerical::mean(t) : numerical::sum(t));
+    }
+    const auto a {static_cast<std::size_t>(axis)};
+    return wrap(any_tensor {mean ? numerical::mean(t, a) : numerical::sum(t, a)});
+}
+
+PyObject* extreme_of(bool largest, const real_tensor& t, Py_ssize_t axis)
+{
+    if (axis < 0) {
+        return from_scalar<double>(largest ? numerical::max(t) : numerical::min(t));
+    }
+    const auto a {static_cast<std::size_t>(axis)};
+    return wrap(any_tensor {largest ? numerical::max(t, a) : numerical::min(t, a)});
+}
+
+// _reduce(op, a, axis) -> number or Tensor: op one of "sum", "mean", "max", "min"; axis -1 for every
+// element (a number), else a non-negative axis (a Tensor without it). max and min take float64 only.
+PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
+{
+    const char* op   = nullptr;
+    PyObject*   x    = nullptr;
+    Py_ssize_t  axis = -1;
+    if (PyArg_ParseTuple(args, "sOn", &op, &x, &axis) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    const std::string_view name {op};
+    try {
+        if (name == "sum" || name == "mean") {
+            if (is_complex(*a)) {
+                return sum_or_mean(name == "mean", std::get<cplx_tensor>(*a), axis);
+            }
+            return sum_or_mean(name == "mean", std::get<real_tensor>(*a), axis);
+        }
+        if (name == "max" || name == "min") {
+            if (is_complex(*a)) {
+                PyErr_SetString(PyExc_TypeError, "max and min take a float64 tensor: complex128 has no order");
+                return nullptr;
+            }
+            return extreme_of(name == "max", std::get<real_tensor>(*a), axis);
+        }
+        PyErr_SetString(PyExc_ValueError, "_reduce: op is sum, mean, max or min");
+        return nullptr;
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _reshape(a, shape) -> Tensor.
+PyObject* module_reshape(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x   = nullptr;
+    PyObject* seq = nullptr;
+    if (PyArg_ParseTuple(args, "OO", &x, &seq) == 0) {
+        return nullptr;
+    }
+    const any_tensor*        a = as_tensor(x);
+    std::vector<std::size_t> shape;
+    if (a == nullptr || !read_shape(seq, shape)) {
+        return nullptr;
+    }
+    try {
+        if (is_complex(*a)) {
+            return wrap(any_tensor {numerical::reshape(std::get<cplx_tensor>(*a), std::move(shape))});
+        }
+        return wrap(any_tensor {numerical::reshape(std::get<real_tensor>(*a), std::move(shape))});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _full(shape, value, complex) -> Tensor: float64, or complex128 when complex is true.
+PyObject* module_full(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* seq        = nullptr;
+    PyObject* value      = nullptr;
+    int       as_complex = 0;
+    if (PyArg_ParseTuple(args, "OOp", &seq, &value, &as_complex) == 0) {
+        return nullptr;
+    }
+    std::vector<std::size_t> shape;
+    if (!read_shape(seq, shape)) {
+        return nullptr;
+    }
+    try {
+        if (as_complex != 0) {
+            const double re = PyComplex_RealAsDouble(value); // the Limited API has no Py_complex accessor
+            const double im = PyComplex_ImagAsDouble(value);
+            if (PyErr_Occurred() != nullptr) {
+                return nullptr;
+            }
+            return wrap(any_tensor {numerical::full(std::move(shape), std::complex<double> {re, im})});
+        }
+        const double v = PyFloat_AsDouble(value);
+        if (v == -1.0 && PyErr_Occurred() != nullptr) {
+            return nullptr;
+        }
+        return wrap(any_tensor {numerical::full(std::move(shape), v)});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _eye(n, complex) -> Tensor.
+PyObject* module_eye(PyObject* /*self*/, PyObject* args)
+{
+    Py_ssize_t n          = 0;
+    int        as_complex = 0;
+    if (PyArg_ParseTuple(args, "np", &n, &as_complex) == 0) {
+        return nullptr;
+    }
+    if (n < 0) {
+        PyErr_SetString(PyExc_ValueError, "negative dimensions are not allowed");
+        return nullptr;
+    }
+    try {
+        if (as_complex != 0) {
+            return wrap(any_tensor {numerical::eye<std::complex<double>>(static_cast<std::size_t>(n))});
+        }
+        return wrap(any_tensor {numerical::eye<double>(static_cast<std::size_t>(n))});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _arange(start, stop, step) -> Tensor (float64).
+PyObject* module_arange(PyObject* /*self*/, PyObject* args)
+{
+    double start = 0.0;
+    double stop  = 0.0;
+    double step  = 1.0;
+    if (PyArg_ParseTuple(args, "ddd", &start, &stop, &step) == 0) {
+        return nullptr;
+    }
+    try {
+        return wrap(any_tensor {numerical::arange(start, stop, step)});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _linspace(start, stop, num) -> Tensor (float64).
+PyObject* module_linspace(PyObject* /*self*/, PyObject* args)
+{
+    double     start = 0.0;
+    double     stop  = 0.0;
+    Py_ssize_t num   = 0;
+    if (PyArg_ParseTuple(args, "ddn", &start, &stop, &num) == 0) {
+        return nullptr;
+    }
+    if (num < 0) {
+        PyErr_SetString(PyExc_ValueError, "linspace: the number of samples must be non-negative");
+        return nullptr;
+    }
+    return wrap(any_tensor {numerical::linspace(start, stop, static_cast<std::size_t>(num))});
+}
+
 // slogdet(a) -> (sign, logabsdet), as numpy.linalg.slogdet: the sign a float or complex like determinant.
 PyObject* module_slogdet(PyObject* /*self*/, PyObject* args)
 {
@@ -1281,6 +1527,17 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "determinant(a) -> number\nThe determinant of a square matrix (float or complex).");
     m.raw("_take", module_take, METH_VARARGS,
           "_take(t, starts, steps, counts, keep) -> Tensor or number\nThe strided copy behind Tensor.__getitem__.");
+    m.raw("_binary", module_binary, METH_VARARGS,
+          "_binary(op, a, b) -> Tensor\nElement-wise a op b (op one of + - * /), broadcast; one dtype.");
+    m.raw("_negate", module_negate, METH_VARARGS, "_negate(a) -> Tensor\nElement-wise negation.");
+    m.raw("_reduce", module_reduce, METH_VARARGS,
+          "_reduce(op, a, axis) -> number or Tensor\nsum, mean, max or min of every element (axis -1) or along an axis.");
+    m.raw("_reshape", module_reshape, METH_VARARGS, "_reshape(a, shape) -> Tensor\nThe elements under another shape.");
+    m.raw("_full", module_full, METH_VARARGS, "_full(shape, value, complex) -> Tensor\nA tensor of one value.");
+    m.raw("_eye", module_eye, METH_VARARGS, "_eye(n, complex) -> Tensor\nThe n×n identity.");
+    m.raw("_arange", module_arange, METH_VARARGS, "_arange(start, stop, step) -> Tensor\nAs numpy.arange (float64).");
+    m.raw("_linspace", module_linspace, METH_VARARGS,
+          "_linspace(start, stop, num) -> Tensor\nAs numpy.linspace with the end point (float64).");
     m.raw("slogdet", module_slogdet, METH_VARARGS,
           "slogdet(a) -> (sign, logabsdet)\nThe sign and the natural log of |det(a)|, as numpy.linalg.slogdet; it\n"
           "does not underflow or overflow where determinant(a) does.");

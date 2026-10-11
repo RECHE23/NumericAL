@@ -56,6 +56,10 @@ Small and complete, grown measured, honest about what is not yet here:
   `"i,j->ij"` the outer product, `"ij->i"` a row reduction. It takes one or more
   operands and sums over every label absent from the output, in a deterministic
   order.
+- Arithmetic on tensors (`tensor_ops.hpp`): `+ - * /` element by element with
+  NumPy's broadcasting, `sum`, `mean`, `max`, `min` of every element or along an
+  axis (sums by NumPy's pairwise blocks), `reshape`, and `zeros`, `ones`, `full`,
+  `eye`, `arange`, `linspace`.
 
 **Grows in as measured:** sparse storage, complex
 Hermitian eigen, non-symmetric eigenvalues, FFT, numeric autodiff, iterative
@@ -121,7 +125,17 @@ numerical.solve(a, [1.0, 1.0])                         # a @ x = b
 
 A failure is a `numerical.LinAlgError`: a `ValueError`, as `numpy.linalg.LinAlgError` is,
 and a `numerical.error`. A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`), iterates, transposes
-(`t.T`) and multiplies (`a @ b`) as a NumPy array of rank 1 or 2 does.
+(`t.T`) and multiplies (`a @ b`) as a NumPy array of rank 1 or 2 does, and computes as one:
+
+```python
+t = numerical.arange(6).reshape(2, 3)
+(t + 1) * [10, 0, 1] / 2      # element-wise, broadcast as NumPy's
+t.sum(), t.mean(axis=0), t.max(axis=-1)
+numerical.zeros((2, 2)), numerical.eye(3), numerical.linspace(0, 1, 5)
+```
+
+Shapes that do not broadcast raise a `ValueError` worded as NumPy's. `max` and `min` take
+`float64` only (NumPy orders complex numbers lexicographically; NumericAL does not order them).
 
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)`, `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)`, `pinv(a)`,

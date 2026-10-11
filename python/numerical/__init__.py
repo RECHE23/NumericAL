@@ -244,3 +244,160 @@ def asarray(obj, dtype=None):
         obj = _NestedBuffer(values, shape)
     return _asarray(obj, dtype) if dtype is not None else _asarray(obj)
 
+
+
+class _ShapeError(error, ValueError):
+    """An array operation's operands do not fit (shapes that do not broadcast, a reshape to another size, an
+    axis out of range, an empty maximum): a ``ValueError`` as NumPy raises, and a :class:`numerical.error`."""
+
+
+def _native(call, *args):
+    """`call(*args)`, its :class:`numerical.error` re-raised as a ``ValueError`` (a :class:`_ShapeError`)."""
+    try:
+        return call(*args)
+    except error as caught:
+        raise _ShapeError(*caught.args) from None
+
+
+def _same_dtype(a, b):
+    """`a` and `b` as Tensors of one dtype: array-likes through :func:`asarray`, a real one widened to
+    complex128 when the other is complex, as NumPy promotes them."""
+    a = a if isinstance(a, Tensor) else asarray(a)
+    b = b if isinstance(b, Tensor) else asarray(b)
+    if a.dtype != b.dtype:
+        a, b = asarray(a, "complex128"), asarray(b, "complex128")
+    return a, b
+
+
+def _arithmetic(op, reflected=False):
+    """The Tensor method for `op` ("+", "-", "*" or "/"), element-wise and broadcast as NumPy's; a reflected
+    one (``2 - t``) puts the other operand first. Anything :func:`asarray` cannot read is NotImplemented."""
+
+    def method(self, other):
+        try:
+            a, b = _same_dtype(self, other)
+        except (TypeError, error):  # asarray cannot read it: let the other operand try
+            return NotImplemented
+        if reflected:
+            a, b = b, a
+        return _native(_numerical._binary, op, a, b)
+
+    return method
+
+
+Tensor.__add__ = _arithmetic("+")
+Tensor.__radd__ = _arithmetic("+", reflected=True)
+Tensor.__sub__ = _arithmetic("-")
+Tensor.__rsub__ = _arithmetic("-", reflected=True)
+Tensor.__mul__ = _arithmetic("*")
+Tensor.__rmul__ = _arithmetic("*", reflected=True)
+Tensor.__truediv__ = _arithmetic("/")
+Tensor.__rtruediv__ = _arithmetic("/", reflected=True)
+Tensor.__neg__ = lambda self: _numerical._negate(self)
+Tensor.__pos__ = lambda self: self
+
+
+def _axis(t, axis):
+    """`axis` as the native side takes it: -1 for every element, else a non-negative axis of `t`."""
+    if axis is None:
+        return -1
+    axis = _operator.index(axis)
+    rank = len(t.shape)
+    if not -rank <= axis < rank:
+        raise _ShapeError(f"axis {axis} is out of bounds for a tensor of rank {rank}")
+    return axis + rank if axis < 0 else axis
+
+
+def _reduction(op, doc):
+    def reduce(a, axis=None):
+        a = a if isinstance(a, Tensor) else asarray(a)
+        return _native(_numerical._reduce, op, a, _axis(a, axis))
+
+    reduce.__name__ = op
+    reduce.__doc__ = doc
+    return reduce
+
+
+sum = _reduction("sum", """The sum of every element (a number), or the sums along `axis` (a Tensor without it),
+as ``numpy.sum``; added by pairwise halving, as NumPy adds.""")
+mean = _reduction("mean", """The mean of every element, or the means along `axis`, as ``numpy.mean``.""")
+max = _reduction("max", """The largest element, or the largest along `axis`, as ``numpy.max``; a NaN wins. float64
+only (complex128 has no order).""")
+min = _reduction("min", """The smallest element, or the smallest along `axis`, as ``numpy.min``; a NaN wins.
+float64 only.""")
+Tensor.sum = lambda self, axis=None: sum(self, axis)
+Tensor.mean = lambda self, axis=None: mean(self, axis)
+Tensor.max = lambda self, axis=None: max(self, axis)
+Tensor.min = lambda self, axis=None: min(self, axis)
+
+
+def _shape(shape):
+    """A shape argument as a tuple: an integer is a rank-1 shape, as NumPy reads it."""
+    if isinstance(shape, _numbers.Integral):
+        return (_operator.index(shape),)
+    return tuple(_operator.index(extent) for extent in shape)
+
+
+def reshape(a, shape):
+    """The elements of `a` in the same order under `shape`, as ``numpy.reshape``; one extent may be -1, the
+    one the others leave."""
+    a = a if isinstance(a, Tensor) else asarray(a)
+    shape = _shape(shape)
+    unknown = [axis for axis, extent in enumerate(shape) if extent == -1]
+    if len(unknown) > 1:
+        raise _ShapeError("can only specify one unknown dimension")
+    if unknown:
+        known = 1
+        for extent in shape:
+            known *= extent if extent != -1 else 1
+        if known == 0 or a.size % known != 0:
+            raise _ShapeError(f"cannot reshape a tensor of size {a.size} into shape {shape}")
+        shape = tuple(a.size // known if extent == -1 else extent for extent in shape)
+    return _native(_numerical._reshape, a, shape)
+
+
+Tensor.reshape = lambda self, *shape: reshape(self, shape[0] if len(shape) == 1 else shape)
+
+
+def _is_complex_dtype(dtype, value=0.0):
+    if dtype is None:
+        return isinstance(value, complex)
+    if dtype not in ("float64", "complex128"):
+        raise ValueError("dtype must be 'float64' or 'complex128'")
+    return dtype == "complex128"
+
+
+def full(shape, value, dtype=None):
+    """A Tensor of `shape` whose every element is `value`, as ``numpy.full``; complex128 for a complex value
+    unless `dtype` says otherwise."""
+    return _native(_numerical._full, _shape(shape), value, _is_complex_dtype(dtype, value))
+
+
+def zeros(shape, dtype="float64"):
+    """A Tensor of `shape` full of zeros, as ``numpy.zeros``."""
+    return _native(_numerical._full, _shape(shape), 0.0, _is_complex_dtype(dtype))
+
+
+def ones(shape, dtype="float64"):
+    """A Tensor of `shape` full of ones, as ``numpy.ones``."""
+    return _native(_numerical._full, _shape(shape), 1.0, _is_complex_dtype(dtype))
+
+
+def eye(n, dtype="float64"):
+    """The `n × n` identity, as ``numpy.eye(n)``."""
+    return _native(_numerical._eye, _operator.index(n), _is_complex_dtype(dtype))
+
+
+def arange(start, stop=None, step=1.0):
+    """``start, start + step, …`` short of `stop`, as ``numpy.arange``: ``arange(stop)`` starts at 0. float64."""
+    if stop is None:
+        start, stop = 0.0, start
+    return _native(_numerical._arange, float(start), float(stop), float(step))
+
+
+def linspace(start, stop, num=50):
+    """`num` values evenly spaced from `start` to `stop`, both included, as ``numpy.linspace``. float64."""
+    return _native(_numerical._linspace, float(start), float(stop), _operator.index(num))
+
+
+__all__ += ["sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "eye", "arange", "linspace"]

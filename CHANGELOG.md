@@ -12,6 +12,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   out of it (a segmentation fault). The object's real type is checked now; the impostor is refused.
 
 ### Added
+- **A `Tensor` computes as a NumPy array**: `+ - * /` element by element with NumPy's broadcasting (numbers,
+  lists and the reflected forms too; a real operand meeting a complex one is widened), `-t`, `t.sum()`,
+  `t.mean()`, `t.max()`, `t.min()` of every element or along an `axis` (also as module functions),
+  `t.reshape(…)` with one `-1`, and `numerical.zeros`, `ones`, `full`, `eye`, `arange`, `linspace`. Real
+  results equal NumPy's to the bit (sums by NumPy's pairwise blocks); a complex product or quotient agrees to a
+  few units in the last place. `max` and `min` refuse complex128. C++: `tensor_ops.hpp`.
 - **Every function takes array-likes, as NumPy's do**: a NumPy array, a nested list or a number goes through
   `asarray` (zero-copy where it can); `nm.solve(np_array, [1.0, 2.0])` raised `TypeError: expected a
   numerical.Tensor`.

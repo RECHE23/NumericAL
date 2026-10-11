@@ -16,6 +16,7 @@
 #include "decomposition.hpp"
 #include "matrix.hpp"
 #include "tensor.hpp"
+#include "tensor_ops.hpp"
 #include "vector.hpp"
 
 /*!
