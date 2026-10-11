@@ -716,18 +716,272 @@ namespace numerical {
     //! \brief The sweeps a Jacobi method may take: it converges quadratically, in under 15 on every
     //!        matrix measured; the bound turns a non-convergence into an error instead of a hang.
     inline constexpr std::size_t jacobi_sweeps {60};
+
+    //! \brief The implicit QL steps the tridiagonal eigensolver may take per eigenvalue, as LAPACK's
+    //!        `dsteqr` bounds them (30 n in all): it converges cubically, in two or three per eigenvalue.
+    inline constexpr std::size_t ql_steps_per_value {30};
+
+    /*!
+     * \brief Reduces the symmetric `n × n` row-major \p a (both triangles filled) to tridiagonal form by
+     *        Householder reflections, `A = Q T Qᵀ`.
+     *
+     * Each reflection zeroes one column below the subdiagonal and updates the trailing block by the rank-2
+     * `B − v wᵀ − w vᵀ`, row by row on contiguous memory.
+     * \param[in,out] a The matrix; destroyed.
+     * \param[in]     n Its order (at least 1).
+     * \param[out]    d The diagonal of `T` (size \p n).
+     * \param[out]    e The subdiagonal of `T` in `e[0…n-2]`, and `e[n-1] = 0` (size \p n).
+     * \return `Qᵀ`, row-major: its rows are the columns of `Q`.
+     */
+    inline std::vector<double> tridiagonalize(std::vector<double>& a,
+                                              std::size_t          n,
+                                              std::vector<double>& d,
+                                              std::vector<double>& e)
+    {
+      std::vector<std::vector<double>> reflectors(n);
+      for (std::size_t k {0}; k + 1 < n; ++k) {
+        const std::size_t   m {n - k - 1};
+        std::vector<double> v(a.begin() + static_cast<std::ptrdiff_t>((k * n) + k + 1),
+                              a.begin() + static_cast<std::ptrdiff_t>((k + 1) * n)); // column k below the diagonal
+        const double        below {m > 1 ? scaled_norm(std::vector<double>(v.begin() + 1, v.end())) : 0.0};
+        if (below == 0.0) {
+          e[k] = v[0]; // already tridiagonal in this column: nothing to reflect
+          continue;
+        }
+        const double alpha {(v[0] >= 0.0 ? -1.0 : 1.0) * scaled_norm(v)}; // the sign that avoids cancellation
+        e[k]  = alpha;
+        v[0] -= alpha;
+        const double length {scaled_norm(v)};
+        for (double& element : v) {
+          element /= length;
+        }
+        double*             block {a.data() + ((k + 1) * n) + k + 1}; // the trailing block, row stride n
+        std::vector<double> w(m, 0.0);
+        for (std::size_t i {0}; i < m; ++i) { // w = B v
+          const double* row {block + (i * n)};
+          double        sum {0.0};
+          for (std::size_t j {0}; j < m; ++j) {
+            sum += row[j] * v[j];
+          }
+          w[i] = sum;
+        }
+        double c {0.0};
+        for (std::size_t i {0}; i < m; ++i) {
+          c += v[i] * w[i];
+        }
+        for (std::size_t i {0}; i < m; ++i) { // w = 2 B v − 2 (vᵀ B v) v, so H B H = B − v wᵀ − w vᵀ
+          w[i] = (2.0 * w[i]) - (2.0 * c * v[i]);
+        }
+        for (std::size_t i {0}; i < m; ++i) {
+          double* row {block + (i * n)};
+          for (std::size_t j {0}; j < m; ++j) {
+            row[j] -= (v[i] * w[j]) + (w[i] * v[j]);
+          }
+        }
+        reflectors[k] = std::move(v);
+      }
+      for (std::size_t i {0}; i < n; ++i) {
+        d[i] = a[(i * n) + i];
+      }
+      e[n - 1] = 0.0;
+      std::vector<double> q(n * n, 0.0); // Q = H₀ H₁ …, built from the last reflection back
+      for (std::size_t i {0}; i < n; ++i) {
+        q[(i * n) + i] = 1.0;
+      }
+      for (std::size_t k {n}; k-- > 0;) {
+        if (!reflectors[k].empty()) {
+          reflect_rows(q, n, reflectors[k], k + 1, 0);
+        }
+      }
+      std::vector<double> qt(n * n);
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          qt[(j * n) + i] = q[(i * n) + j];
+        }
+      }
+      return qt;
+    }
+
+    /*!
+     * \brief The eigenvalues of the symmetric tridiagonal (\p d, \p e) by implicit QL with Wilkinson-type
+     *        shifts (EISPACK's `tql2`), the rotations accumulated into the rows of \p zt.
+     * \param[in,out] d         The diagonal; on return, the eigenvalues (unsorted).
+     * \param[in,out] e         The subdiagonal in `e[0…n-2]`, `e[n-1] = 0`; destroyed.
+     * \param[in,out] zt        Row-major `n × n` whose rows are rotated together (`Qᵀ` from
+     *                          \ref tridiagonalize); on return, row `j` is the eigenvector of `d[j]`.
+     * \param[in]     n         The order.
+     * \param[in]     max_steps The bound of QL steps in all.
+     * \throws convergence_error If a subdiagonal entry is not negligible after \p max_steps steps.
+     */
+    inline void tridiagonal_ql(std::vector<double>& d,
+                               std::vector<double>& e,
+                               std::vector<double>& zt,
+                               std::size_t          n,
+                               std::size_t          max_steps)
+    {
+      const double epsilon {std::numeric_limits<double>::epsilon()};
+      double       shift   {0.0};
+      double       largest {0.0};
+      std::size_t  steps   {0};
+      for (std::size_t l {0}; l < n; ++l) {
+        largest = std::max(largest, std::abs(d[l]) + std::abs(e[l]));
+        std::size_t m {l};
+        while (std::abs(e[m]) > epsilon * largest) { // e[n-1] = 0 stops it
+          ++m;
+        }
+        while (m > l && std::abs(e[l]) > epsilon * largest) {
+          if (steps == max_steps) {
+            throw convergence_error("symmetric eigendecomposition: QL did not converge within its steps");
+          }
+          ++steps;
+          const double g0   {d[l]};
+          double       p    {(d[l + 1] - g0) / (2.0 * e[l])};
+          double       r    {std::hypot(p, 1.0)};
+          r                  = p < 0.0 ? -r : r;
+          d[l]               = e[l] / (p + r);
+          d[l + 1]           = e[l] * (p + r);
+          const double dl1  {d[l + 1]};
+          const double h0   {g0 - d[l]};
+          for (std::size_t i {l + 2}; i < n; ++i) {
+            d[i] -= h0;
+          }
+          shift             += h0;
+          p                  = d[m];
+          double       c    {1.0};
+          double       c2   {1.0};
+          double       c3   {1.0};
+          const double el1  {e[l + 1]};
+          double       s    {0.0};
+          double       s2   {0.0};
+          for (std::size_t i {m}; i-- > l;) {
+            c3       = c2;
+            c2       = c;
+            s2       = s;
+            const double g {c * e[i]};
+            const double h {c * p};
+            r        = std::hypot(p, e[i]);
+            e[i + 1] = s * r;
+            s        = e[i] / r;
+            c        = p / r;
+            p        = (c * d[i]) - (s * g);
+            d[i + 1] = h + (s * ((c * g) + (s * d[i])));
+            double* upper {zt.data() + (i * n)};
+            double* lower {zt.data() + ((i + 1) * n)};
+            for (std::size_t k {0}; k < n; ++k) { // two contiguous rows: columns i and i+1 of Z
+              const double zk1 {lower[k]};
+              lower[k] = (s * upper[k]) + (c * zk1);
+              upper[k] = (c * upper[k]) - (s * zk1);
+            }
+          }
+          p    = -s * s2 * c3 * el1 * e[l] / dl1;
+          e[l] = s * p;
+          d[l] = c * p;
+        }
+        d[l] += shift;
+        e[l]  = 0.0;
+      }
+    }
+
+    //! \brief The Frobenius norm of the strict off-diagonal of the `n × n` \p a.
+    [[nodiscard]] inline double jacobi_off_diagonal(const std::vector<double>& a,
+                                                    std::size_t                n)
+    {
+      double sum {0.0};
+      for (std::size_t p {0}; p < n; ++p) {
+        for (std::size_t q {p + 1}; q < n; ++q) {
+          sum += a[(p * n) + q] * a[(p * n) + q];
+        }
+      }
+      return std::sqrt(2.0 * sum);
+    }
+
+    //! \brief One Jacobi rotation of the `n × n` \p a zeroing `a[p][q]`, accumulated into \p v.
+    inline void jacobi_rotate(std::vector<double>& a,
+                              std::vector<double>& v,
+                              std::size_t          n,
+                              std::size_t          p,
+                              std::size_t          q)
+    {
+      const double apq {a[(p * n) + q]};
+      if (apq == 0.0) {
+        return; // already zero — nothing to rotate
+      }
+      const double app   {a[(p * n) + p]};
+      const double aqq   {a[(q * n) + q]};
+      const double theta {(aqq - app) / (2.0 * apq)};
+      const double t     {(theta >= 0.0 ? 1.0 : -1.0) / (std::abs(theta) + std::sqrt((theta * theta) + 1.0))};
+      const double c     {1.0 / std::sqrt((t * t) + 1.0)};
+      const double s     {t * c};
+      a[(p * n) + p] = (c * c * app) - (2.0 * s * c * apq) + (s * s * aqq);
+      a[(q * n) + q] = (s * s * app) + (2.0 * s * c * apq) + (c * c * aqq);
+      a[(p * n) + q] = 0.0;
+      a[(q * n) + p] = 0.0;
+      for (std::size_t i {0}; i < n; ++i) {
+        if (i != p && i != q) {
+          const double aip {a[(i * n) + p]};
+          const double aiq {a[(i * n) + q]};
+          a[(i * n) + p] = (c * aip) - (s * aiq);
+          a[(p * n) + i] = a[(i * n) + p];
+          a[(i * n) + q] = (s * aip) + (c * aiq);
+          a[(q * n) + i] = a[(i * n) + q];
+        }
+      }
+      for (std::size_t i {0}; i < n; ++i) {
+        const double vip {v[(i * n) + p]};
+        const double viq {v[(i * n) + q]};
+        v[(i * n) + p] = (c * vip) - (s * viq);
+        v[(i * n) + q] = (s * vip) + (c * viq);
+      }
+    }
+
+    /*!
+     * \brief Cyclic Jacobi on the full symmetric \p a, the rotations accumulated into \p v.
+     * \param[in,out] a          The matrix; on return, diagonal to rounding.
+     * \param[in,out] v          The rotations (start from the identity).
+     * \param[in]     n          The order.
+     * \param[in]     frobenius  The Frobenius norm of \p a, the scale of the stopping threshold.
+     * \param[in]     max_sweeps The bound of sweeps.
+     * \throws convergence_error If the off-diagonal is not negligible after \p max_sweeps sweeps.
+     */
+    inline void cyclic_jacobi(std::vector<double>& a,
+                              std::vector<double>& v,
+                              std::size_t          n,
+                              double               frobenius,
+                              std::size_t          max_sweeps)
+    {
+      // The off-diagonal norm strictly decreases each rotation and converges to 0,
+      // so this terminates; the threshold is relative to the matrix scale.
+      const double threshold {1e-12 * frobenius};
+      for (std::size_t sweeps {0}; jacobi_off_diagonal(a, n) > threshold; ++sweeps) {
+        if (sweeps == max_sweeps) {
+          throw convergence_error("symmetric eigendecomposition: Jacobi did not converge within its sweeps");
+        }
+        for (std::size_t p {0}; p < n; ++p) {
+          for (std::size_t q {p + 1}; q < n; ++q) {
+            jacobi_rotate(a, v, n, p, q);
+          }
+        }
+      }
+    }
   } // namespace detail
+
+  //! \brief How \ref symmetric_eigen diagonalises.
+  enum class eigen_method
+  {
+    tridiagonal_ql, //!< Householder tridiagonalisation then implicit QL, as LAPACK's `dsyev`: O(n³), the default.
+    jacobi          //!< Cyclic Jacobi rotations: several times slower, kept as an independent second method.
+  };
 
   /*!
    * \brief The eigenvalues and eigenvectors of a real symmetric matrix.
    *
-   * Computed by the cyclic Jacobi algorithm: orthogonal plane rotations drive the
-   * off-diagonal entries to zero, so the eigenvalues are real and the
-   * eigenvectors orthonormal. The eigenvalues are returned in ascending order,
-   * with \ref vectors `j`-th column the eigenvector of \ref values `[j]`
-   * (`A = V Λ Vᵀ`). Real symmetric only — the complex Hermitian case (complex
-   * rotations) is a deliberate future addition. Only the lower triangle is read, as
-   * `numpy.linalg.eigh` reads it by default: the upper one is taken to mirror it.
+   * By default the matrix is reduced to tridiagonal form by Householder reflections and the tridiagonal is
+   * diagonalised by implicit QL (\ref eigen_method::tridiagonal_ql), the method of LAPACK's `dsyev`; cyclic
+   * Jacobi rotations are the alternative (\ref eigen_method::jacobi). Either way the eigenvalues are real
+   * and the eigenvectors orthonormal. The eigenvalues are returned in ascending order, with \ref vectors
+   * `j`-th column the eigenvector of \ref values `[j]` (`A = V Λ Vᵀ`). Real symmetric only — the complex
+   * Hermitian case is a deliberate future addition. Only the lower triangle is read, as `numpy.linalg.eigh`
+   * reads it by default: the upper one is taken to mirror it.
    */
   class symmetric_eigen
   {
@@ -735,13 +989,13 @@ namespace numerical {
 
     /*!
      * \brief Diagonalises \p input.
-     * \param[in] input      A real symmetric matrix (its lower triangle is read).
-     * \param[in] max_sweeps The bound of Jacobi sweeps.
+     * \param[in] input  A real symmetric matrix (its lower triangle is read).
+     * \param[in] method The algorithm.
      * \throws dimension_error   If \p input is not square.
-     * \throws convergence_error If the off-diagonal is not negligible after \p max_sweeps sweeps.
+     * \throws convergence_error If the method did not converge within its bound.
      */
     explicit symmetric_eigen(const matrix<double>& input,
-                             std::size_t           max_sweeps = detail::jacobi_sweeps)
+                             eigen_method          method = eigen_method::tridiagonal_ql)
       : n_(input.rows())
     {
       if (input.cols() != n_) {
@@ -770,23 +1024,27 @@ namespace numerical {
           frobenius_squared += a[(i * n_) + j] * a[(i * n_) + j];
         }
       }
-      // The off-diagonal norm strictly decreases each rotation and converges to 0,
-      // so this terminates; the threshold is relative to the matrix scale.
-      const double threshold {1e-12 * std::sqrt(frobenius_squared)};
-      for (std::size_t sweeps {0}; off_diagonal(a) > threshold; ++sweeps) {
-        if (sweeps == max_sweeps) {
-          throw convergence_error("symmetric eigendecomposition: Jacobi did not converge within its sweeps");
+      std::vector<double> diagonal(n_);
+      if (method == eigen_method::jacobi) {
+        detail::cyclic_jacobi(a, v, n_, std::sqrt(frobenius_squared), detail::jacobi_sweeps);
+        for (std::size_t i {0}; i < n_; ++i) {
+          diagonal[i] = a[(i * n_) + i];
         }
-        for (std::size_t p {0}; p < n_; ++p) {
-          for (std::size_t q {p + 1}; q < n_; ++q) {
-            sweep(a, v, p, q);
+      }
+      else if (n_ > 0) {
+        std::vector<double> off(n_);
+        std::vector<double> zt {detail::tridiagonalize(a, n_, diagonal, off)};
+        detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
+        for (std::size_t i {0}; i < n_; ++i) { // the rows of zt are the eigenvectors: make them columns
+          for (std::size_t j {0}; j < n_; ++j) {
+            v[(j * n_) + i] = zt[(i * n_) + j];
           }
         }
       }
-      for (std::size_t i {0}; i < n_; ++i) {
-        a[(i * n_) + i] *= scale;
+      for (double& value : diagonal) {
+        value *= scale;
       }
-      extract_sorted(a, v);
+      extract_sorted(diagonal, v);
     }
 
     //! \brief The eigenvalues, ascending.
@@ -803,58 +1061,8 @@ namespace numerical {
 
   private:
 
-    //! \brief The Frobenius norm of the strict off-diagonal of \p a.
-    [[nodiscard]] double off_diagonal(const std::vector<double>& a) const
-    {
-      double sum {0.0};
-      for (std::size_t p {0}; p < n_; ++p) {
-        for (std::size_t q {p + 1}; q < n_; ++q) {
-          sum += a[(p * n_) + q] * a[(p * n_) + q];
-        }
-      }
-      return std::sqrt(2.0 * sum);
-    }
-
-    //! \brief One Jacobi rotation zeroing `a[p][q]`, accumulated into \p v.
-    void sweep(std::vector<double>& a,
-               std::vector<double>& v,
-               std::size_t          p,
-               std::size_t          q) const
-    {
-      const double apq {a[(p * n_) + q]};
-      if (apq == 0.0) {
-        return; // already zero — nothing to rotate
-      }
-      const double app {a[(p * n_) + p]};
-      const double aqq {a[(q * n_) + q]};
-      const double theta {(aqq - app) / (2.0 * apq)};
-      const double t {(theta >= 0.0 ? 1.0 : -1.0) / (std::abs(theta) + std::sqrt((theta * theta) + 1.0))};
-      const double c {1.0 / std::sqrt((t * t) + 1.0)};
-      const double s {t * c};
-      a[(p * n_) + p] = (c * c * app) - (2.0 * s * c * apq) + (s * s * aqq);
-      a[(q * n_) + q] = (s * s * app) + (2.0 * s * c * apq) + (c * c * aqq);
-      a[(p * n_) + q] = 0.0;
-      a[(q * n_) + p] = 0.0;
-      for (std::size_t i {0}; i < n_; ++i) {
-        if (i != p && i != q) {
-          const double aip {a[(i * n_) + p]};
-          const double aiq {a[(i * n_) + q]};
-          a[(i * n_) + p] = (c * aip) - (s * aiq);
-          a[(p * n_) + i] = a[(i * n_) + p];
-          a[(i * n_) + q] = (s * aip) + (c * aiq);
-          a[(q * n_) + i] = a[(i * n_) + q];
-        }
-      }
-      for (std::size_t i {0}; i < n_; ++i) {
-        const double vip {v[(i * n_) + p]};
-        const double viq {v[(i * n_) + q]};
-        v[(i * n_) + p] = (c * vip) - (s * viq);
-        v[(i * n_) + q] = (s * vip) + (c * viq);
-      }
-    }
-
-    //! \brief Sorts eigenvalues ascending and reorders \p v's columns to match.
-    void extract_sorted(const std::vector<double>& a,
+    //! \brief Sorts the eigenvalues \p diagonal ascending and reorders \p v's columns to match.
+    void extract_sorted(const std::vector<double>& diagonal,
                         const std::vector<double>& v)
     {
       std::vector<std::size_t> order(n_);
@@ -862,13 +1070,13 @@ namespace numerical {
         order[i] = i;
       }
       std::sort(order.begin(), order.end(),
-                [&a, this](std::size_t x, std::size_t y) {
-                  return a[(x * n_) + x] < a[(y * n_) + y];
+                [&diagonal](std::size_t x, std::size_t y) {
+                  return diagonal[x] < diagonal[y];
                 });
       std::vector<double> values(n_);
       std::vector<double> vectors(n_ * n_);
       for (std::size_t col {0}; col < n_; ++col) {
-        values[col] = a[(order[col] * n_) + order[col]];
+        values[col] = diagonal[order[col]];
         for (std::size_t row {0}; row < n_; ++row) {
           vectors[(row * n_) + col] = v[(row * n_) + order[col]];
         }

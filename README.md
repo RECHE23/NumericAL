@@ -30,7 +30,8 @@ Small and complete, grown measured, honest about what is not yet here:
   `m ≥ n`: the factors `q()` / `r()` and a least-squares `solve` of `A x ≈ b`, which
   throws `singular_matrix_error` when `A` is rank-deficient.
 - `numerical::symmetric_eigen` — eigenvalues (ascending) and eigenvectors of a real
-  symmetric matrix by cyclic Jacobi rotations (`A = V Λ Vᵀ`).
+  symmetric matrix (`A = V Λ Vᵀ`): Householder tridiagonalisation then implicit QL, as LAPACK's
+  `dsyev`; cyclic Jacobi rotations on request (`eigen_method::jacobi`).
 - `numerical::svd_decomposition<T>` — the singular value decomposition `A = U Σ Vᴴ`
   of a real or complex `m × n` matrix, any shape: a Householder QR, then one-sided
   Jacobi on `R`, so every singular value comes to high relative accuracy, the small

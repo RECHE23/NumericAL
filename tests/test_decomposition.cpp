@@ -2,6 +2,7 @@
 // right-hand sides, the determinant (incl. a singular matrix), the inverse
 // (checked by A·A⁻¹ ≈ I), and the rejections (singular, non-square).
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -239,40 +240,84 @@ TEST(qr_stays_orthonormal_on_an_ill_conditioned_matrix)
   EXPECT(orthonormality_error(factored.q()) < 1e-14);
 }
 
+namespace {
+
+  constexpr std::array<numerical::eigen_method, 2> eigen_methods {numerical::eigen_method::tridiagonal_ql,
+                                                                  numerical::eigen_method::jacobi};
+}
+
 TEST(symmetric_eigen_of_a_diagonal_matrix)
 {
-  const matrix<double>  a {{5.0, 0.0, 0.0}, {0.0, 2.0, 0.0}, {0.0, 0.0, 8.0}};
-  const symmetric_eigen e {a};
-  EXPECT(approx_equal(e.values(), vector<double> {2.0, 5.0, 8.0})); // ascending
-  EXPECT(approx_equal(reconstruct(e), a));
+  const matrix<double> a {{5.0, 0.0, 0.0}, {0.0, 2.0, 0.0}, {0.0, 0.0, 8.0}};
+  for (const numerical::eigen_method method : eigen_methods) {
+    const symmetric_eigen e {a, method};
+    EXPECT(approx_equal(e.values(), vector<double> {2.0, 5.0, 8.0})); // ascending
+    EXPECT(approx_equal(reconstruct(e), a));
+  }
 }
 
 TEST(symmetric_eigen_of_a_dense_matrix)
 {
-  const matrix<double>  a {{2.0, 1.0}, {1.0, 2.0}};
-  const symmetric_eigen e {a};
-  EXPECT(approx_equal(e.values(), vector<double> {1.0, 3.0}));
-  EXPECT(approx_equal(reconstruct(e), a));
+  const matrix<double> a {{2.0, 1.0}, {1.0, 2.0}};
+  for (const numerical::eigen_method method : eigen_methods) {
+    const symmetric_eigen e {a, method};
+    EXPECT(approx_equal(e.values(), vector<double> {1.0, 3.0}));
+    EXPECT(approx_equal(reconstruct(e), a));
+  }
 }
 
 TEST(symmetric_eigen_handles_negative_rotations_and_zero_off_diagonals)
 {
-  // (0,1) gives a negative rotation angle; (0,2) and (1,2) are structurally zero.
-  const matrix<double>  a {{5.0, 2.0, 0.0}, {2.0, 1.0, 0.0}, {0.0, 0.0, 3.0}};
-  const symmetric_eigen e {a};
-  EXPECT(approx_equal(reconstruct(e), a));
+  // (0,1) gives a negative rotation angle; (0,2) and (1,2) are structurally zero, a column the tridiagonal
+  // reduction leaves unreflected.
+  const matrix<double> a {{5.0, 2.0, 0.0}, {2.0, 1.0, 0.0}, {0.0, 0.0, 3.0}};
+  for (const numerical::eigen_method method : eigen_methods) {
+    const symmetric_eigen e {a, method};
+    EXPECT(approx_equal(reconstruct(e), a));
+  }
 }
 
 // eigh reads the lower triangle, as numpy.linalg.eigh does by default: an upper triangle that does not
-// mirror it changes nothing. Its sweeps are bounded: one sweep does not diagonalise a dense 3 × 3.
-TEST(symmetric_eigen_reads_the_lower_triangle_and_bounds_its_sweeps)
+// mirror it changes nothing, under either method. Both are bounded: one Jacobi sweep does not diagonalise a
+// dense 3 × 3, nor does one QL step its tridiagonal.
+TEST(symmetric_eigen_reads_the_lower_triangle_and_bounds_its_iterations)
 {
-  const matrix<double>  lower_only {{2.0, 99.0, -7.0}, {1.0, 3.0, 50.0}, {0.5, -1.0, 4.0}};
-  const matrix<double>  mirrored   {{2.0, 1.0, 0.5}, {1.0, 3.0, -1.0}, {0.5, -1.0, 4.0}};
-  const symmetric_eigen e          {lower_only};
-  EXPECT(approx_equal(e.values(), symmetric_eigen {mirrored}.values()));
-  EXPECT(approx_equal(reconstruct(e), mirrored));
-  EXPECT_THROWS(symmetric_eigen(mirrored, 1), numerical::convergence_error);
+  const matrix<double> lower_only {{2.0, 99.0, -7.0}, {1.0, 3.0, 50.0}, {0.5, -1.0, 4.0}};
+  const matrix<double> mirrored   {{2.0, 1.0, 0.5}, {1.0, 3.0, -1.0}, {0.5, -1.0, 4.0}};
+  for (const numerical::eigen_method method : eigen_methods) {
+    const symmetric_eigen e {lower_only, method};
+    EXPECT(approx_equal(e.values(), symmetric_eigen {mirrored, method}.values()));
+    EXPECT(approx_equal(reconstruct(e), mirrored));
+  }
+  std::vector<double> a {2.0, 1.0, 0.5, 1.0, 3.0, -1.0, 0.5, -1.0, 4.0};
+  std::vector<double> v {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+  EXPECT_THROWS(numerical::detail::cyclic_jacobi(a, v, 3, 1.0, 1), numerical::convergence_error);
+  std::vector<double> d {2.0, 3.0, 4.0};
+  std::vector<double> e {1.0, -1.0, 0.0};
+  EXPECT_THROWS(numerical::detail::tridiagonal_ql(d, e, v, 3, 1), numerical::convergence_error);
+}
+
+// The two methods agree, and the default reaches rounding: a 40 × 40 Hilbert matrix (eigenvalues down to
+// 1e-18 of the largest) with half its diagonal shifted keeps orthonormal vectors and residuals near machine
+// precision.
+TEST(symmetric_eigen_methods_agree_and_reach_rounding)
+{
+  const std::size_t   n {40};
+  std::vector<double> entries(n * n);
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {0}; j < n; ++j) {
+      entries[(i * n) + j] = 1.0 / static_cast<double>(1 + i + j); // Hilbert
+    }
+  }
+  for (std::size_t i {0}; i < n / 2; ++i) {
+    entries[(i * n) + i] += 2.0; // half the spectrum shifted away from the other half
+  }
+  const matrix<double>  a      {n, n, std::move(entries)};
+  const symmetric_eigen ql     {a};
+  const symmetric_eigen jacobi {a, numerical::eigen_method::jacobi};
+  EXPECT(approx_equal(ql.values(), jacobi.values(), 1e-10));
+  EXPECT(orthonormality_error(ql.vectors()) < 1e-13);
+  EXPECT(approx_equal(reconstruct(ql), a, 1e-13));
 }
 
 TEST(symmetric_eigen_rejects_non_square)
