@@ -197,10 +197,17 @@ TEST(qr_solve_is_the_least_squares_solution)
   EXPECT(approx_equal(from_qr, from_normal));
 }
 
-TEST(qr_rejects_wide_and_ill_sized_and_solves_only_full_rank)
+// A wide matrix factorises as NumPy's reduced qr does — Q m × m, R m × n upper trapezoidal — but its system
+// is underdetermined, which solve leaves to lstsq.
+TEST(qr_factorises_any_shape_and_solves_only_full_column_rank)
 {
   const matrix<double> wide      {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};                    // 2×3, rows < columns
-  EXPECT_THROWS(qr(wide), numerical::dimension_error);
+  const auto           short_qr  {qr(wide)};
+  EXPECT(short_qr.q().rows() == 2 && short_qr.q().cols() == 2 && short_qr.r().rows() == 2 && short_qr.r().cols() == 3);
+  EXPECT(approx_equal(short_qr.q() * short_qr.r(), wide));
+  EXPECT(orthonormality_error(short_qr.q()) < 1e-14);
+  EXPECT(short_qr.r()(1, 0) == 0.0);
+         EXPECT_THROWS(short_qr.solve(vector<double> {1.0, 2.0}), numerical::dimension_error);
   // A rank-deficient matrix factorises (a zero on R's diagonal); its least squares are lstsq's.
   const matrix<double> dependent {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}};                  // column 2 = 2 × column 1
   const auto           factored  {qr(dependent)};
@@ -569,6 +576,24 @@ TEST(log_determinant_rank_and_pseudo_inverse)
 // lstsq is NumPy's: the least-squares solution of a full-rank tall system, accurate on a Vandermonde
 // fit (modified Gram–Schmidt left a coefficient error of 0.6 at degree 11), and the minimum-norm one
 // of a rank-deficient or wide system.
+// A matrix right-hand side is one system per column, from one factorisation: each column of the answer is the
+// vector solve of that column.
+TEST(solve_and_lstsq_take_one_right_hand_side_per_column)
+{
+  const matrix<double> a   {{3.0, 1.0}, {1.0, 2.0}};
+  const matrix<double> rhs {{9.0, 1.0}, {8.0, 0.0}};
+  const matrix<double> x   {numerical::solve(a, rhs)};
+  EXPECT(approx_equal(a * x, rhs));
+  EXPECT(approx_equal(vector<double> {x(0, 1), x(1, 1)}, numerical::solve(a, vector<double> {1.0, 0.0})));
+  EXPECT_THROWS(numerical::solve(a, matrix<double> {{1.0}, {2.0}, {3.0}}), numerical::dimension_error);
+  const matrix<double> wide {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};
+  const matrix<double> y    {numerical::lstsq(wide, rhs)};
+  EXPECT(y.rows() == 3 && y.cols() == 2);
+  EXPECT(approx_equal(wide * y, rhs));
+  EXPECT(approx_equal(vector<double> {y(0, 0), y(1, 0), y(2, 0)}, numerical::lstsq(wide, vector<double> {9.0, 8.0})));
+  EXPECT_THROWS(numerical::lstsq(wide, matrix<double> {{1.0}, {2.0}, {3.0}}), numerical::dimension_error);
+}
+
 TEST(lstsq_is_the_minimum_norm_least_squares_solution)
 {
   const std::size_t   rows   {50};

@@ -556,26 +556,31 @@ numerical::matrix<T> matrix_from(const numerical::tensor<T>& t)
     return numerical::matrix<T> {t.shape()[0], t.shape()[1], t.data()};
 }
 
+// The answer of a solver for a rank-1 b (a vector) or a rank-2 b (one right-hand side per column).
+template <typename T, typename VectorSolver, typename MatrixSolver>
+any_tensor solve_for(const numerical::tensor<T>& b, VectorSolver by_vector, MatrixSolver by_matrix)
+{
+    if (b.shape().size() == 2) {
+        return any_tensor {numerical::tensor<T> {by_matrix(matrix_from(b))}};
+    }
+    const numerical::vector<T> answer {by_vector(numerical::vector<T> {b.data()})};
+    return any_tensor {numerical::tensor<T> {{answer.size()}, std::vector<T>(answer.begin(), answer.end())}};
+}
+
 template <typename T>
 any_tensor do_solve(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-    numerical::matrix<T>         coeff {a.shape()[0], a.shape()[1], a.data()};
-    numerical::vector<T>         rhs {b.data()};
-    numerical::vector<T>         answer {numerical::solve(coeff, rhs)};
-    std::vector<T>    out;
-    out.reserve(answer.size());
-    for (std::size_t i = 0; i < answer.size(); ++i) {
-        out.push_back(answer[i]);
-    }
-    return any_tensor {numerical::tensor<T> {{answer.size()}, std::move(out)}};
+    const numerical::matrix<T>   coeff {matrix_from(a)};
+    return solve_for(b, [&coeff](const numerical::vector<T>& rhs) { return numerical::solve(coeff, rhs); },
+                     [&coeff](const numerical::matrix<T>& rhs) { return numerical::solve(coeff, rhs); });
 }
 
-// solve(a, b): a a rank-2 tensor, b a rank-1 tensor, sharing a dtype.
+// solve(a, b): a a rank-2 tensor, b a rank-1 or rank-2 tensor, sharing a dtype.
 any_tensor solve(const any_tensor& a, const any_tensor& b)
 {
-    if (shape_of(a).size() != 2 || shape_of(b).size() != 1) {
-        throw std::runtime_error("solve(a, b) needs a rank-2 a and a rank-1 b");
+    if (shape_of(a).size() != 2 || (shape_of(b).size() != 1 && shape_of(b).size() != 2)) {
+        throw std::runtime_error("solve(a, b) needs a rank-2 a and a rank-1 or rank-2 b");
     }
     if (is_complex(a) != is_complex(b)) {
         throw std::runtime_error("solve operands must share one dtype");
@@ -728,20 +733,16 @@ template <typename T>
 any_tensor do_lstsq(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-    const numerical::vector<T>   answer {numerical::lstsq(matrix_from(a), numerical::vector<T> {b.data()})};
-    std::vector<T>          out;
-    out.reserve(answer.size());
-    for (std::size_t i = 0; i < answer.size(); ++i) {
-        out.push_back(answer[i]);
-    }
-    return any_tensor {numerical::tensor<T> {{answer.size()}, std::move(out)}};
+    const numerical::matrix<T>   coeff {matrix_from(a)};
+    return solve_for(b, [&coeff](const numerical::vector<T>& rhs) { return numerical::lstsq(coeff, rhs); },
+                     [&coeff](const numerical::matrix<T>& rhs) { return numerical::lstsq(coeff, rhs); });
 }
 
 // lstsq(a, b) -> Tensor (the minimum-norm least-squares solution of a x ≈ b, from the SVD).
 any_tensor lstsq(const any_tensor& a, const any_tensor& b)
 {
-    if (shape_of(a).size() != 2 || shape_of(b).size() != 1) {
-        throw std::runtime_error("lstsq(a, b) needs a rank-2 a and a rank-1 b");
+    if (shape_of(a).size() != 2 || (shape_of(b).size() != 1 && shape_of(b).size() != 2)) {
+        throw std::runtime_error("lstsq(a, b) needs a rank-2 a and a rank-1 or rank-2 b");
     }
     if (is_complex(a) != is_complex(b)) {
         throw std::runtime_error("lstsq operands must share one dtype");
@@ -1146,11 +1147,11 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     .def_prop_ro<&get_array_interface>("__array_interface__",
                                        "NumPy array-interface (v3) describing the shared, read-only buffer.");
     // The 7 linear-algebra functions whose args/return are caster-able -> m.def.
-    m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2, b rank-1).");
+    m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
-    m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe minimum-norm least-squares solution of a @ x ≈ b, as numpy.linalg.lstsq (SVD; a rank-2, b rank-1).");
+    m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe minimum-norm least-squares solution of a @ x ≈ b, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&cholesky>("cholesky", "cholesky(a) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite).");
-    m.def<&qr>("qr", "qr(a) -> (Q, R)\nThe QR factorisation of an m×n matrix (m ≥ n).");
+    m.def<&qr>("qr", "qr(a) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr (reduced): Q is m×k, R k×n, k = min(m, n).");
     m.def<&eigh>("eigh", "eigh(a) -> (values, vectors)\nEigenpairs of a real symmetric matrix (ascending values); its lower triangle is read, as numpy.linalg.eigh reads it.");
     m.def<&matrix_rank>("matrix_rank", "matrix_rank(a) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank.");
     m.def<&pinv>("pinv", "pinv(a) -> Tensor\nThe Moore–Penrose pseudo-inverse of an m×n matrix, as numpy.linalg.pinv.");

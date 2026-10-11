@@ -119,11 +119,15 @@ def _nested(obj):
 
 def _linalg(native):
     """`native` taking array-likes: every argument that is not a :class:`Tensor` or a string goes through
-    :func:`asarray` (a NumPy array, a nested list, a number), and its failures are :class:`LinAlgError`."""
+    :func:`asarray` (a NumPy array, a nested list, a number); when one operand is complex the real ones are
+    widened to complex128, as NumPy promotes them; and its failures are :class:`LinAlgError`."""
 
     @_functools.wraps(native)
     def call(*args):
         operands = [arg if isinstance(arg, (Tensor, str)) else asarray(arg) for arg in args]
+        if any(isinstance(operand, Tensor) and operand.dtype == "complex128" for operand in operands):
+            operands = [asarray(operand, "complex128") if isinstance(operand, Tensor) else operand
+                        for operand in operands]
         try:
             return native(*operands)
         except error as caught:

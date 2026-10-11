@@ -26,9 +26,10 @@ Small and complete, grown measured, honest about what is not yet here:
   positive-definite matrix (about twice as cheap as LU): the factor `lower()`,
   `solve`, and `determinant`; throws `not_positive_definite_error` otherwise.
 - `numerical::qr_decomposition<T>` — `A = Q R` (Householder reflections, so `Q` stays
-  orthonormal to rounding however ill-conditioned `A` is) for an `m × n` matrix with
-  `m ≥ n`: the factors `q()` / `r()` and a least-squares `solve` of `A x ≈ b`, which
-  throws `singular_matrix_error` when `A` is rank-deficient.
+  orthonormal to rounding however ill-conditioned `A` is) for an `m × n` matrix of any
+  shape, as NumPy's reduced `qr`: the factors `q()` (`m × k`) / `r()` (`k × n`), `k = min(m, n)`,
+  and for `m ≥ n` a least-squares `solve` of `A x ≈ b`, which throws `singular_matrix_error`
+  when `A` is rank-deficient.
 - `numerical::symmetric_eigen` — eigenvalues (ascending) and eigenvectors of a real
   symmetric matrix (`A = V Λ Vᵀ`): Householder tridiagonalisation then implicit QL, as LAPACK's
   `dsyev`; cyclic Jacobi rotations on request (`eigen_method::jacobi`).
@@ -39,7 +40,8 @@ Small and complete, grown measured, honest about what is not yet here:
   relative accuracy. `singular_values()` (descending), `u()` (`m × k`), `v()` (`n × k`) and
   `vh()`, with `k = min(m, n)`; `U` and `V` stay orthonormal for a rank-deficient `A`.
 - `numerical::lstsq(a, b)` — the minimum-norm least-squares solution of `A x ≈ b`,
-  as NumPy's `lstsq` gives it, for any shape and rank (from the SVD); `pinv(a)` and
+  as NumPy's `lstsq` gives it, for any shape and rank (from the SVD), `b` a vector or a
+  matrix of right-hand sides (as `solve(a, b)` takes too); `pinv(a)` and
   `matrix_rank(a)` from the same SVD, and `lu_decomposition::log_determinant()` —
   NumPy's `slogdet`, which does not underflow where the determinant does.
 - `numerical::tensor<T>` — a dense, row-major, N-dimensional tensor (rank-1 is a

@@ -10,6 +10,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **Every function takes array-likes, as NumPy's do**: a NumPy array, a nested list or a number goes through
   `asarray` (zero-copy where it can); `nm.solve(np_array, [1.0, 2.0])` raised `TypeError: expected a
   numerical.Tensor`.
+- **A matrix right-hand side for `solve` and `lstsq`** (`b` of shape `n × k`, one system per column), as
+  NumPy's: one factorisation, then every column. C++: `solve(matrix, matrix)` and `lstsq(matrix, matrix)`.
+- **`qr` of a wide matrix** (`m < n`), as NumPy's reduced `qr`: `Q` is `m × m`, `R` is `m × n` upper
+  trapezoidal; `solve` of a wide `qr_decomposition` refuses its underdetermined system (`lstsq` solves it).
+- **A real operand meets a complex one**: the real ones are widened to `complex128`, as NumPy promotes them
+  (`einsum`, `solve` and `lstsq` refused operands of two dtypes).
 - **`LinAlgError`**, raised by every linear-algebra function where it cannot compute its answer (singular, not
   positive definite, non-finite, no convergence, wrong shape). It is a `ValueError`, as
   `numpy.linalg.LinAlgError` is, and a `numerical.error`, so existing `except numerical.error` keeps working.

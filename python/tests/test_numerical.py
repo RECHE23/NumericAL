@@ -79,10 +79,10 @@ class Einsum(unittest.TestCase):
         with self.assertRaises(numerical.error):
             numerical.einsum("i->i")
 
-    def test_mixed_dtype_raises(self):
-        with self.assertRaises(numerical.error):
-            numerical.einsum("i,i->", numerical.Tensor([1.0]),
-                          numerical.Tensor([1j], dtype="complex128"))
+    def test_mixed_dtype_promotes_to_complex(self):
+        out = numerical.einsum("i,i->", numerical.Tensor([2.0]), numerical.Tensor([1j], dtype="complex128"))
+        self.assertEqual(out.dtype, "complex128")
+        self.assertEqual(out.tolist(), 2j)
 
     def test_bad_spec_raises(self):
         with self.assertRaises(numerical.error):
@@ -364,6 +364,8 @@ class LinalgSurface(unittest.TestCase):
         u, s, vh = numerical.svd(a)
         self.assertEqual((u.shape, s.shape, vh.shape), ((3, 2), (2,), (2, 2)))
         wide = numerical.Tensor([1, 2, 3, 4, 5, 6], shape=(2, 3))
+        q, r = numerical.qr(wide)  # NumPy's reduced QR: Q m×k, R k×n
+        self.assertEqual((q.shape, r.shape), ((2, 2), (2, 3)))
         u, s, vh = numerical.svd(wide)
         self.assertEqual((u.shape, s.shape, vh.shape), ((2, 2), (2,), (2, 3)))
 
@@ -396,6 +398,29 @@ class ArrayLikeArguments(unittest.TestCase):
         self.assertEqual(len(numerical.svd(a)), 3)
         self.assertEqual(numerical.lstsq(a, [2.0, 1.0]).shape, (2,))
         self.assertEqual(numerical.einsum("ij,j->i", a, [1.0, 0.0]).tolist(), [4.0, 2.0])
+
+    def test_a_matrix_right_hand_side_solves_every_column(self):
+        a = [[3.0, 1.0], [1.0, 2.0]]
+        x = numerical.solve(a, [[9.0, 1.0], [8.0, 0.0]])
+        self.assertEqual(x.shape, (2, 2))
+        for column, rhs in ((0, [9.0, 8.0]), (1, [1.0, 0.0])):
+            single = numerical.solve(a, rhs).tolist()
+            for row in range(2):
+                self.assertAlmostEqual(x.tolist()[row][column], single[row])
+        wide = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
+        y = numerical.lstsq(wide, [[1.0, 0.0], [0.0, 1.0]])
+        self.assertEqual(y.shape, (3, 2))
+        for column, rhs in ((0, [1.0, 0.0]), (1, [0.0, 1.0])):
+            single = numerical.lstsq(wide, rhs).tolist()
+            for row in range(3):
+                self.assertAlmostEqual(y.tolist()[row][column], single[row])
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.solve(a, [[[1.0]]])  # rank 3
+
+    def test_a_real_operand_is_widened_to_meet_a_complex_one(self):
+        x = numerical.solve([[2.0, 0.0], [0.0, 1.0]], [2j, 1.0])
+        self.assertEqual(x.dtype, "complex128")
+        self.assertEqual(x.tolist(), [1j, 1.0])
 
     def test_a_tensor_argument_is_passed_as_it_is(self):
         a = numerical.Tensor([4, 2, 2, 3], shape=(2, 2))

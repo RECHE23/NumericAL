@@ -343,6 +343,37 @@ namespace numerical {
     return lu_decomposition<T> {a}.solve(b);
   }
 
+  /*!
+   * \brief Solves `A X = B` for a square `A` and every column of `B` at once, as `numpy.linalg.solve` with a
+   *        matrix right-hand side: one factorisation of `A`, then one substitution per column.
+   * \param[in] a The square coefficient matrix (`n × n`).
+   * \param[in] b The right-hand sides (`n × k`).
+   * \return `X` (`n × k`).
+   * \throws dimension_error If `a` is not square or `b`'s row count differs from it.
+   * \throws singular_matrix_error If `a` is singular.
+   */
+  template <typename T>
+  [[nodiscard]] matrix<T> solve(const matrix<T>& a,
+                                const matrix<T>& b)
+  {
+    const lu_decomposition<T> factors {a};
+    if (b.rows() != a.rows()) {
+      throw dimension_error("solve: right-hand side row count differs from the matrix");
+    }
+    std::vector<T> x(b.rows() * b.cols());
+    for (std::size_t c {0}; c < b.cols(); ++c) {
+      std::vector<T> column(b.rows());
+      for (std::size_t i {0}; i < b.rows(); ++i) {
+        column[i] = b(i, c);
+      }
+      const vector<T> answer {factors.solve(vector<T> {std::move(column)})};
+      for (std::size_t i {0}; i < b.rows(); ++i) {
+        x[(i * b.cols()) + c] = answer[i];
+      }
+    }
+    return matrix<T> {b.rows(), b.cols(), std::move(x)};
+  }
+
   //! \brief The determinant of a square matrix. \throws dimension_error If not square.
   template <typename T>
   [[nodiscard]] T determinant(const matrix<T>& a)
@@ -529,9 +560,11 @@ namespace numerical {
     }
 
     /*!
-     * \brief Factorises the `rows × cols` row-major \p a (`rows ≥ cols`) by Householder reflections: each
-     *        column below the diagonal is reflected onto it, so `Q` is orthonormal to rounding whatever the
-     *        conditioning of `A`, and a column dependent on the earlier ones leaves a zero on `R`'s diagonal.
+     * \brief Factorises the `rows × cols` row-major \p a by Householder reflections, `A = Q R` with
+     *        `k = min(rows, cols)`: `Q` is `rows × k` with orthonormal columns and `R` `k × cols` upper
+     *        trapezoidal. Each column below the diagonal is reflected onto it, so `Q` is orthonormal to
+     *        rounding whatever the conditioning of `A`, and a column dependent on the earlier ones leaves a
+     *        zero on `R`'s diagonal.
      * \param[in] a    The matrix, row-major.
      * \param[in] rows Its row count.
      * \param[in] cols Its column count.
@@ -542,8 +575,9 @@ namespace numerical {
                                             std::size_t    rows,
                                             std::size_t    cols)
     {
-      std::vector<std::vector<T>> reflectors(cols); // v_k on rows k…m-1; empty where the column was zero
-      for (std::size_t k {0}; k < cols; ++k) {
+      const std::size_t           depth {std::min(rows, cols)};
+      std::vector<std::vector<T>> reflectors(depth); // v_k on rows k…m-1; empty where the column was zero
+      for (std::size_t k {0}; k < depth; ++k) {
         std::vector<T> v(rows - k);
         for (std::size_t i {k}; i < rows; ++i) {
           v[i - k] = a[(i * cols) + k];
@@ -560,27 +594,27 @@ namespace numerical {
         reflect_rows(a, cols, v, k, k); // A ← (I − 2 v vᴴ) A on rows k…m-1, columns k…n-1
         reflectors[k] = std::move(v);
       }
-      thin_qr<T> out {.q = std::vector<T>(rows * cols, T {}), .r = std::vector<T>(cols * cols, T {})};
-      for (std::size_t i {0}; i < cols; ++i) {
-        out.q[(i * cols) + i] = T {1};
+      thin_qr<T> out {.q = std::vector<T>(rows * depth, T {}), .r = std::vector<T>(depth * cols, T {})};
+      for (std::size_t i {0}; i < depth; ++i) {
+        out.q[(i * depth) + i] = T {1};
         for (std::size_t j {i}; j < cols; ++j) {
           out.r[(i * cols) + j] = a[(i * cols) + j];
         }
       }
-      for (std::size_t k {cols}; k-- > 0;) { // Q = H₀ H₁ … applied to the first columns of I
+      for (std::size_t k {depth}; k-- > 0;) { // Q = H₀ H₁ … applied to the first columns of I
         const std::vector<T>& v {reflectors[k]};
         if (v.empty()) {
           continue;
         }
-        reflect_rows(out.q, cols, v, k, 0);
+        reflect_rows(out.q, depth, v, k, 0);
       }
-      for (std::size_t k {0}; k < cols; ++k) { // R's diagonal real and non-negative: rotate row k, column k
+      for (std::size_t k {0}; k < depth; ++k) { // R's diagonal real and non-negative: rotate row k, column k
         const T phase {phase_of(out.r[(k * cols) + k])};
         for (std::size_t j {k}; j < cols; ++j) {
           out.r[(k * cols) + j] *= conj_of(phase);
         }
         for (std::size_t i {0}; i < rows; ++i) {
-          out.q[(i * cols) + k] *= phase;
+          out.q[(i * depth) + k] *= phase;
         }
       }
       return out;
@@ -597,14 +631,15 @@ namespace numerical {
   } // namespace detail
 
   /*!
-   * \brief A QR factorisation `A = Q R` of an `m × n` matrix with `m ≥ n`.
+   * \brief A QR factorisation `A = Q R` of an `m × n` matrix, as NumPy's reduced `qr`.
    * \tparam T The scalar element type (a field: `double`, `std::complex<double>`, …).
    *
-   * `Q` is `m × n` with orthonormal columns (`Qᴴ Q = I`) and `R` is `n × n` upper triangular with a real,
-   * non-negative diagonal. Computed by Householder reflections, so `Q` stays orthonormal to rounding
-   * however ill-conditioned `A` is, and a rank-deficient `A` factorises too (with zeros on `R`'s
-   * diagonal). \ref solve returns the least-squares solution of `A x ≈ b` for a full-rank `A`; for a
-   * rank-deficient one, \ref numerical::lstsq gives the minimum-norm solution.
+   * With `k = min(m, n)`, `Q` is `m × k` with orthonormal columns (`Qᴴ Q = I`) and `R` is `k × n` upper
+   * trapezoidal (triangular when `m ≥ n`) with a real, non-negative diagonal. Computed by Householder
+   * reflections, so `Q` stays orthonormal to rounding however ill-conditioned `A` is, and a rank-deficient
+   * `A` factorises too (with zeros on `R`'s diagonal). \ref solve returns the least-squares solution of
+   * `A x ≈ b` for a full-column-rank `A` (`m ≥ n`); for a rank-deficient or wide one, \ref numerical::lstsq
+   * gives the minimum-norm solution.
    */
   template <typename T>
   class qr_decomposition
@@ -612,15 +647,12 @@ namespace numerical {
   public:
 
     /*!
-     * \brief Factorises \p a. \param[in] a The matrix (rows ≥ columns).
-     * \throws dimension_error If \p a has fewer rows than columns.
+     * \brief Factorises \p a. \param[in] a The matrix, any shape.
+     * \throws non_finite_error If an entry is infinite or NaN.
      */
     explicit qr_decomposition(const matrix<T>& a)
-      : rows_(a.rows()), cols_(a.cols())
+      : rows_(a.rows()), cols_(a.cols()), depth_(std::min(rows_, cols_))
     {
-      if (rows_ < cols_) {
-        throw dimension_error("QR decomposition requires rows >= columns");
-      }
       detail::require_finite(a, "QR decomposition");
       std::vector<T> entries(rows_ * cols_);
       for (std::size_t i {0}; i < rows_; ++i) {
@@ -633,23 +665,24 @@ namespace numerical {
       r_ = std::move(factors.r);
     }
 
-    //! \brief The `m × n` factor `Q` (orthonormal columns).
+    //! \brief The `m × k` factor `Q` (orthonormal columns), `k = min(m, n)`.
     [[nodiscard]] matrix<T> q() const
     {
-      return matrix<T> {rows_, cols_, q_};
+      return matrix<T> {rows_, depth_, q_};
     }
 
-    //! \brief The `n × n` upper-triangular factor `R`.
+    //! \brief The `k × n` upper-trapezoidal factor `R`, `k = min(m, n)`.
     [[nodiscard]] matrix<T> r() const
     {
-      return matrix<T> {cols_, cols_, r_};
+      return matrix<T> {depth_, cols_, r_};
     }
 
     /*!
      * \brief The least-squares solution of `A x ≈ b` (`x = R⁻¹ Qᴴ b`) for a full-rank `A`.
      * \param[in] b The right-hand side (size `m`).
      * \return The solution `x` (size `n`).
-     * \throws dimension_error If `b`'s size differs from the row count.
+     * \throws dimension_error If `b`'s size differs from the row count, or `A` is wide (`m < n`: its system is
+     *         underdetermined, and \ref numerical::lstsq gives its minimum-norm solution).
      * \throws singular_matrix_error If `A` is rank-deficient: a diagonal entry of `R` is under
      *         \ref detail::rank_tolerance (\ref numerical::lstsq solves such a system).
      */
@@ -657,6 +690,9 @@ namespace numerical {
     {
       if (b.size() != rows_) {
         throw dimension_error("solve: right-hand side size differs from the matrix");
+      }
+      if (rows_ < cols_) {
+        throw dimension_error("QR solve: the system is underdetermined (lstsq gives its minimum-norm solution)");
       }
       double largest {0.0};
       for (std::size_t i {0}; i < cols_; ++i) {
@@ -670,7 +706,7 @@ namespace numerical {
         }
         T sum {};
         for (std::size_t k {0}; k < rows_; ++k) {
-          sum += detail::conj_of(q_[(k * cols_) + i]) * b[k];
+          sum += detail::conj_of(q_[(k * depth_) + i]) * b[k];
         }
         y[i] = sum;
       }
@@ -687,13 +723,14 @@ namespace numerical {
 
   private:
 
-    std::size_t    rows_; //!< The number of rows (m).
-    std::size_t    cols_; //!< The number of columns (n).
-    std::vector<T> q_;    //!< The m×n factor Q, row-major.
-    std::vector<T> r_;    //!< The n×n upper-triangular factor R, row-major.
+    std::size_t    rows_;  //!< The number of rows (m).
+    std::size_t    cols_;  //!< The number of columns (n).
+    std::size_t    depth_; //!< min(m, n).
+    std::vector<T> q_;     //!< The m×k factor Q, row-major.
+    std::vector<T> r_;     //!< The k×n upper-trapezoidal factor R, row-major.
   };
 
-  //! \brief QR-factorises an `m × n` matrix (`m ≥ n`). \see qr_decomposition
+  //! \brief QR-factorises an `m × n` matrix. \see qr_decomposition
   template <typename T>
   [[nodiscard]] qr_decomposition<T> qr(const matrix<T>& a)
   {
@@ -1702,25 +1739,45 @@ namespace numerical {
   [[nodiscard]] vector<T> lstsq(const matrix<T>& a,
                                 const vector<T>& b)
   {
-    if (b.size() != a.rows()) {
+    const matrix<T> column {lstsq(a, matrix<T> {b.size(), 1, std::vector<T>(b.begin(), b.end())})};
+    return vector<T> {std::vector<T>(column.begin(), column.end())};
+  }
+
+  /*!
+   * \brief The minimum-norm least-squares solution of `A X ≈ B` for every column of `B` at once, as
+   *        `numpy.linalg.lstsq` with a matrix right-hand side: one SVD of `A`, `X = V Σ⁺ Uᴴ B`.
+   * \tparam T The scalar element type (`double` or `std::complex<double>`).
+   * \param[in] a The `m × n` matrix.
+   * \param[in] b The right-hand sides (`m × k`).
+   * \return `X` (`n × k`).
+   * \throws dimension_error If `b`'s row count differs from `a`'s.
+   * \throws non_finite_error If an entry of \p a is infinite or NaN.
+   */
+  template <typename T>
+  [[nodiscard]] matrix<T> lstsq(const matrix<T>& a,
+                                const matrix<T>& b)
+  {
+    if (b.rows() != a.rows()) {
       throw dimension_error("lstsq: right-hand side size differs from the matrix");
     }
     detail::require_finite(a, "lstsq");
-    const svd_decomposition<T> s             {a};
-    const vector<double>&      sigma         {s.singular_values()};
-    const std::size_t          rank          {detail::numerical_rank(sigma, a.rows(), a.cols())};
-    std::vector<T>             x(a.cols(), T {});
-    for (std::size_t d {0}; d < rank; ++d) {
-      T coefficient {}; // (u_dᴴ b) / σ_d
-      for (std::size_t i {0}; i < a.rows(); ++i) {
-        coefficient += detail::conj_of(s.u()(i, d)) * b[i];
-      }
-      coefficient /= static_cast<T>(sigma[d]);
-      for (std::size_t j {0}; j < a.cols(); ++j) {
-        x[j] += coefficient * s.v()(j, d);
+    const svd_decomposition<T> s                        {a};
+    const vector<double>&      sigma                    {s.singular_values()};
+    const std::size_t          rank                     {detail::numerical_rank(sigma, a.rows(), a.cols())};
+    std::vector<T>             x(a.cols() * b.cols(), T {});
+    for (std::size_t c {0}; c < b.cols(); ++c) {
+      for (std::size_t d {0}; d < rank; ++d) {
+        T coefficient {}; // (u_dᴴ b_c) / σ_d
+        for (std::size_t i {0}; i < a.rows(); ++i) {
+          coefficient += detail::conj_of(s.u()(i, d)) * b(i, c);
+        }
+        coefficient /= static_cast<T>(sigma[d]);
+        for (std::size_t j {0}; j < a.cols(); ++j) {
+          x[(j * b.cols()) + c] += coefficient * s.v()(j, d);
+        }
       }
     }
-    return vector<T> {std::move(x)};
+    return matrix<T> {a.cols(), b.cols(), std::move(x)};
   }
 
   /*!
