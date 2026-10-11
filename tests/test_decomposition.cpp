@@ -907,3 +907,70 @@ TEST(blocked_lu_meets_a_zero_column_in_a_later_panel)
   const vector<double> b                       {std::vector<double>(n, 1.0)};
   EXPECT_THROWS((void)lu.solve(b), numerical::singular_matrix_error);
 }
+
+namespace {
+
+  // The unblocked Cholesky the blocked one regroups, row by row:
+  // L[i][j] = (A[i][j] − Σₖ L[i][k]·conj(L[j][k])) / L[j][j], k ascending.
+  template <typename T>
+  std::vector<T> unblocked_cholesky(std::size_t           n,
+                                    const std::vector<T>& a)
+  {
+    std::vector<T> l(n * n, T {});
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j <= i; ++j) {
+        T sum {a[(i * n) + j]};
+        for (std::size_t k {0}; k < j; ++k) {
+          sum -= l[(i * n) + k] * numerical::detail::conj_of(l[(j * n) + k]);
+        }
+        l[(i * n) + j] = i == j ? T {std::sqrt(numerical::detail::real_part(sum))} : sum / l[(j * n) + j];
+      }
+    }
+    return l;
+  }
+
+  // M Mᴴ + n·I: Hermitian positive definite, with no structure the panels could lean on.
+  template <typename T>
+  std::vector<T> hermitian_positive_definite(std::size_t n)
+  {
+    const std::vector<T> m          {pivoting_entries<T>(n)};
+    std::vector<T>       a(n * n, T {});
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        T sum {i == j ? T {static_cast<double>(n)} : T {}};
+        for (std::size_t k {0}; k < n; ++k) {
+          sum += m[(i * n) + k] * numerical::detail::conj_of(m[(j * n) + k]);
+        }
+        a[(i * n) + j] = sum;
+      }
+    }
+    return a;
+  }
+
+  template <typename T>
+  bool blocked_cholesky_equals_unblocked(std::size_t n)
+  {
+    const std::vector<T> a     {hermitian_positive_definite<T>(n)};
+    const matrix<T>      lower {numerical::cholesky(matrix<T> {n, n, a}).lower()};
+    return lower == matrix<T> {n, n, unblocked_cholesky(n, a)};
+  }
+} // namespace
+
+// Past one panel: the diagonal blocks, the rows below them in parallel, and the trailing products.
+TEST(blocked_cholesky_equals_the_unblocked_algorithm_to_the_bit)
+{
+  EXPECT(blocked_cholesky_equals_unblocked<double>((2 * numerical::detail::cholesky_block) + 22));
+  EXPECT(blocked_cholesky_equals_unblocked<std::complex<double>>(numerical::detail::cholesky_block + 40));
+}
+
+// A diagonal that turns non-positive in a later panel is refused there.
+TEST(blocked_cholesky_refuses_a_later_panel_that_is_not_positive_definite)
+{
+  const std::size_t   n {(2 * numerical::detail::cholesky_block) + 22};
+  std::vector<double> entries(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    entries[(i * n) + i] = 2.0;
+  }
+  entries[((numerical::detail::cholesky_block + 36) * n) + numerical::detail::cholesky_block + 36] = -1.0;
+  EXPECT_THROWS((void)numerical::cholesky(matrix<double> {n, n, entries}), numerical::not_positive_definite_error);
+}

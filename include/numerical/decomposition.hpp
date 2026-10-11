@@ -44,6 +44,9 @@ namespace numerical {
     //!        deep enough for the packed kernel while the unblocked panel stays a small part of the work.
     inline constexpr std::size_t lu_block {64};
 
+    //! \brief The columns of one panel of the blocked Cholesky factorisation (as \ref lu_block).
+    inline constexpr std::size_t cholesky_block {64};
+
 
     // conj_of / real_part are written as overloads (not `if constexpr`) so each
     // is a single, fully-covered expression: a complex scalar selects the
@@ -534,25 +537,13 @@ namespace numerical {
         throw dimension_error("Cholesky decomposition requires a square matrix");
       }
       detail::require_finite(a, "Cholesky decomposition");
-      lower_.assign(n_ * n_, T {}); // lower-triangular; the upper triangle stays zero
+      lower_.assign(n_ * n_, T {}); // lower-triangular; the upper triangle is zero once factorised
       for (std::size_t i {0}; i < n_; ++i) {
         for (std::size_t j {0}; j <= i; ++j) {
-          T sum {a(i, j)};
-          for (std::size_t k {0}; k < j; ++k) {
-            sum -= lower_[(i * n_) + k] * detail::conj_of(lower_[(j * n_) + k]);
-          }
-          if (i == j) {
-            const double diagonal {detail::real_part(sum)};
-            if (diagonal <= 0.0) {
-              throw not_positive_definite_error("Cholesky: matrix is not positive-definite");
-            }
-            lower_[(i * n_) + i] = static_cast<T>(std::sqrt(diagonal));
-          }
-          else {
-            lower_[(i * n_) + j] = sum / lower_[(j * n_) + j];
-          }
+          lower_[(i * n_) + j] = a(i, j);
         }
       }
+      factorize();
     }
 
     //! \brief The lower-triangular factor `L` (with `L Lᴴ == A`).
@@ -602,6 +593,78 @@ namespace numerical {
     }
 
   private:
+
+    // By panels of detail::cholesky_block columns: the panel's diagonal block row by row, the rows below it
+    // in parallel (each depends only on the diagonal block), then the lower part of the trailing block takes
+    // A22 += (-L21) L21ᴴ from the matrix product kernel. Every element still receives its terms in ascending
+    // order, so without multiply-add fusion the factor is the unblocked algorithm's to the bit.
+    void factorize()
+    {
+      for (std::size_t k0 {0}; k0 < n_; k0 += detail::cholesky_block) {
+        const std::size_t end {std::min(k0 + detail::cholesky_block, n_)};
+        for (std::size_t i {k0}; i < end; ++i) {
+          factor_row(i, k0, std::min(i + 1, end));
+        }
+        if (end < n_) {
+          detail::parallel_for(n_ - end, (end - k0) * (end - k0) / 2,
+                               [&](std::size_t r) { factor_row(end + r, k0, end); });
+          update_trailing(k0, end);
+        }
+      }
+      for (std::size_t i {0}; i < n_; ++i) {
+        std::fill(lower_.begin() + static_cast<std::ptrdiff_t>((i * n_) + i + 1),
+                  lower_.begin() + static_cast<std::ptrdiff_t>((i + 1) * n_), T {});
+      }
+    }
+
+    /*!
+     * \brief Row \p i of L in the columns `[k0, last)`, the earlier panels' terms already subtracted: the
+     *        unblocked step, `L[i][j] = (A[i][j] − Σₖ L[i][k]·conj(L[j][k])) / L[j][j]` over `k ∈ [k0, j)`.
+     * \throws not_positive_definite_error At a diagonal that is not positive.
+     */
+    void factor_row(std::size_t i,
+                    std::size_t k0,
+                    std::size_t last)
+    {
+      for (std::size_t j {k0}; j < last; ++j) {
+        T sum {lower_[(i * n_) + j]};
+        for (std::size_t k {k0}; k < j; ++k) {
+          sum -= lower_[(i * n_) + k] * detail::conj_of(lower_[(j * n_) + k]);
+        }
+        if (i == j) {
+          const double diagonal {detail::real_part(sum)};
+          if (diagonal <= 0.0) {
+            throw not_positive_definite_error("Cholesky: matrix is not positive-definite");
+          }
+          lower_[(i * n_) + i] = static_cast<T>(std::sqrt(diagonal));
+        }
+        else {
+          lower_[(i * n_) + j] = sum / lower_[(j * n_) + j];
+        }
+      }
+    }
+
+    //! \brief `A22 += (−L21) L21ᴴ`, block column by block column, on and below the diagonal blocks.
+    void update_trailing(std::size_t k0,
+                         std::size_t end)
+    {
+      const std::size_t rows  {n_ - end};
+      const std::size_t depth {end - k0};
+      std::vector<T>    minus_l(rows * depth);
+      std::vector<T>    l_adjoint(depth * rows);
+      for (std::size_t r {0}; r < rows; ++r) {
+        for (std::size_t p {0}; p < depth; ++p) {
+          const T value {lower_[((end + r) * n_) + k0 + p]};
+          minus_l[(r * depth) + p]  = -value;
+          l_adjoint[(p * rows) + r] = detail::conj_of(value);
+        }
+      }
+      for (std::size_t jb {0}; jb < rows; jb += detail::cholesky_block) {
+        const std::size_t width {std::min(detail::cholesky_block, rows - jb)};
+        detail::gemm(rows - jb, width, depth, minus_l.data() + (jb * depth), depth, l_adjoint.data() + jb, rows,
+                     lower_.data() + ((end + jb) * n_) + end + jb, n_);
+      }
+    }
 
     std::size_t    n_;     //!< The matrix order.
     std::vector<T> lower_; //!< The lower-triangular factor L, row-major (upper triangle zero).

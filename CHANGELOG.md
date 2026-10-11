@@ -46,6 +46,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   the unblocked algorithm's updates without reordering any, so without multiply-add fusion the factors are the
   same to the bit. Against
   LAPACK the gap goes from 6–13× to 2.4–3.5× (arm64 with 8 cores, Apple clang 16, `-O2`).
+- **`cholesky` is 6.2 times faster at order 1024** (139 → 22.5 ms; 1.9× at 256, 3.5× at 512): blocked on the
+  same kernel, each panel's rows below its diagonal block in parallel; without multiply-add fusion the factor is
+  the unblocked one to the bit. Against LAPACK the gap goes from about 12× to 1.8× at 1024.
 - **`svd` is 48 times faster** (512 × 512: 11.2 → 0.24 s; 256 × 256: 1.0 → 0.031 s; arm64, Apple clang 16,
   `-O2`): after the Householder QR, `R` is reduced to bidiagonal form and diagonalised by implicit-shift QR,
   the method of LAPACK's `dgesvd`; the reconstruction error of a 512 × 512 falls from 6e-13 to 5e-14. One-sided

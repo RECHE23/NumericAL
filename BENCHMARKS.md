@@ -105,6 +105,17 @@ reordering any, so without multiply-add fusion the factors are the same to the b
 
 (2026-10-11, arm64 with 8 cores, Apple clang 16, `-O2`; NumPy through Apple's Accelerate.)
 
+`cholesky` is blocked the same way: each panel's diagonal block row by row, the rows
+below it in parallel, and the trailing lower part updated through the product kernel,
+every element again receiving its terms in the unblocked order. `M Mᵀ + n·I`, best of N:
+
+| n    | NumPy (LAPACK) | unblocked (before) | blocked | NumericAL slower by |
+| ---: | -------------: | -----------------: | ------: | ------------------: |
+|  256 |        0.27 ms |            1.58 ms | 0.82 ms |               ~3.0× |
+|  512 |        1.71 ms |            15.2 ms | 4.30 ms |               ~2.5× |
+| 1024 |        12.2 ms |             139 ms | 22.5 ms |               ~1.8× |
+| 2048 |        73.6 ms |                  — |  142 ms |               ~1.9× |
+
 All timed cases (array ops and decompositions) matched NumPy within tolerance.
 Geometric-mean ratio over the whole suite ≈ **0.38×** (NumericAL ~2.6× slower on
 average), pulled down mostly by the memory-bound data-movement cases above.
