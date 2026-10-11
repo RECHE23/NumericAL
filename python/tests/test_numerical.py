@@ -269,11 +269,12 @@ class ArrayInterface(unittest.TestCase):
 class GilRelease(unittest.TestCase):
     def test_a_large_decomposition_lets_another_thread_run(self):
         # Another thread wakes 1 ms after the call starts. Holding the GIL, the call keeps it from running
-        # until it returns; releasing it, the thread runs while the SVD (about 100 ms) still computes.
+        # until it returns; releasing it, the thread runs while the SVD still computes. The SVD must outlast
+        # the sleep by far: a 1 ms sleep takes up to 16 ms on Windows, and order 600 takes about 300 ms.
         import threading
         import time
 
-        n = 200
+        n = 600
         a = numerical.Tensor([float((i * 7 + j * 13) % 17) + (n if i == j else 0) for i in range(n) for j in range(n)],
                              shape=(n, n))
         started = threading.Event()
