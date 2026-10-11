@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.3 — 2026-10-11
+
 ### Fixed
 - **The sdist builds.** It carried no `include/` (no `MANIFEST.in`), so `pip install` on a platform without a
   wheel (free-threaded CPython, ppc64le, s390x, BSD…) failed on a missing header. CI now builds the sdist,
