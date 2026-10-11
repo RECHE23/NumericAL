@@ -7,9 +7,13 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
-- **`svd` is 5 to 7 times faster** (512 × 512: 11.2 → 1.7 s; 256 × 256: 1.0 → 0.18 s; arm64, Apple clang 16,
-  `-O2`), with the same singular values to the last bit: the one-sided Jacobi sweeps rotate columns, and now
-  rotate them as contiguous rows of the transposed arrays. `lstsq`, `pinv` and `matrix_rank` go through it.
+- **`svd` is 48 times faster** (512 × 512: 11.2 → 0.24 s; 256 × 256: 1.0 → 0.031 s; arm64, Apple clang 16,
+  `-O2`): after the Householder QR, `R` is reduced to bidiagonal form and diagonalised by implicit-shift QR,
+  the method of LAPACK's `dgesvd`; the reconstruction error of a 512 × 512 falls from 6e-13 to 5e-14. One-sided
+  Jacobi, which gives every singular value to high relative accuracy, stays on request and is itself 6.6 times
+  faster (its sweeps rotate contiguous rows). C++: `svd_decomposition` takes the method as a second parameter
+  (`svd_method::bidiagonal_qr`, the default, or `svd_method::jacobi`). `lstsq`, `pinv` and `matrix_rank` go
+  through the default.
 - **`eigh` is 100 times faster and more accurate** (512 × 512: 14.6 s → 0.12 s; 256 × 256: 785 → 14 ms; arm64,
   Apple clang 16, `-O2`): the matrix is reduced to tridiagonal form by Householder reflections, then diagonalised
   by implicit QL, the method of LAPACK's `dsyev`. Cyclic Jacobi took O(n³) per sweep and stopped at 1e-12 of the

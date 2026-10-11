@@ -33,9 +33,10 @@ Small and complete, grown measured, honest about what is not yet here:
   symmetric matrix (`A = V Λ Vᵀ`): Householder tridiagonalisation then implicit QL, as LAPACK's
   `dsyev`; cyclic Jacobi rotations on request (`eigen_method::jacobi`).
 - `numerical::svd_decomposition<T>` — the singular value decomposition `A = U Σ Vᴴ`
-  of a real or complex `m × n` matrix, any shape: a Householder QR, then one-sided
-  Jacobi on `R`, so every singular value comes to high relative accuracy, the small
-  ones too. `singular_values()` (descending), `u()` (`m × k`), `v()` (`n × k`) and
+  of a real or complex `m × n` matrix, any shape: a Householder QR, then Golub–Kahan
+  bidiagonalisation of `R` and implicit-shift QR, as LAPACK's `dgesvd`; one-sided Jacobi
+  on `R` on request (`svd_method::jacobi`), which gives every singular value to high
+  relative accuracy. `singular_values()` (descending), `u()` (`m × k`), `v()` (`n × k`) and
   `vh()`, with `k = min(m, n)`; `U` and `V` stay orthonormal for a rank-deficient `A`.
 - `numerical::lstsq(a, b)` — the minimum-norm least-squares solution of `A x ≈ b`,
   as NumPy's `lstsq` gives it, for any shape and rank (from the SVD); `pinv(a)` and

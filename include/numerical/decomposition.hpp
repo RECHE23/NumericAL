@@ -1168,6 +1168,287 @@ namespace numerical {
       }
     }
 
+    //! \brief The QR steps the bidiagonal singular value iteration may take per value: it converges in two
+    //!        or three; the bound turns a non-convergence into an error instead of a hang.
+    inline constexpr std::size_t svd_qr_steps_per_value {30};
+
+    /*!
+     * \brief Reduces the square `n × n` row-major \p b to real upper-bidiagonal form, `B = U_b D V_bᴴ` with
+     *        `D` real, by Householder reflections alternately from the left and the right (Golub–Kahan).
+     *
+     * A complex entry left on the bidiagonal is turned real by a unit phase on its row or column, as LAPACK
+     * does, so the iteration that follows needs only real rotations.
+     * \param[in,out] b  The matrix; destroyed.
+     * \param[in]     n  Its order.
+     * \param[out]    d  The diagonal (size \p n).
+     * \param[out]    e  The superdiagonal in `e[0…n-2]`, and `e[n-1] = 0` (size \p n).
+     * \param[out]    ut `U_bᵀ`, row-major: its rows are the columns of `U_b`.
+     * \param[out]    vt `V_bᵀ`, row-major: its rows are the columns of `V_b`.
+     */
+    template <typename T>
+    void bidiagonalize(std::vector<T>&      b,
+                       std::size_t          n,
+                       std::vector<double>& d,
+                       std::vector<double>& e,
+                       std::vector<T>&      ut,
+                       std::vector<T>&      vt)
+    {
+      std::vector<std::vector<T>> left(n);  // the left reflector of step k, empty where none was needed
+      std::vector<std::vector<T>> right(n); // the right reflector acting on columns k+1…, likewise
+      std::vector<T>              left_phase(n, T {1});
+      std::vector<T>              right_phase(n, T {1});
+      const auto                  reflector {[](std::vector<T>& v) { // unit v with (I − 2 v vᴴ) x ∥ e₁
+                                               const double norm {scaled_norm(v)};
+                                               v[0] += phase_of(v[0]) * static_cast<T>(norm);
+                                               const auto length {static_cast<T>(scaled_norm(v))};
+                                               for (T & element : v) {
+                                                 element /= length;
+                                               }
+                                             }};
+      for (std::size_t k {0}; k < n; ++k) {
+        std::vector<T> x(n - k); // column k from the diagonal down
+        for (std::size_t i {k}; i < n; ++i) {
+          x[i - k] = b[(i * n) + k];
+        }
+        if (scaled_norm(std::vector<T>(x.begin() + 1, x.end())) > 0.0) {
+          reflector(x);
+          reflect_rows(b, n, x, k, k);
+          left[k] = std::move(x);
+        }
+        left_phase[k] = conj_of(phase_of(b[(k * n) + k])); // row k times it puts |b_kk| on the diagonal
+        for (std::size_t j {k}; j < n; ++j) {
+          b[(k * n) + j] *= left_phase[k];
+        }
+        d[k] = std::abs(b[(k * n) + k]);
+        if (k + 1 == n) {
+          break;
+        }
+        std::vector<T> y(n - k - 1); // row k right of the diagonal, conjugated: B ← B H with H yᴴ ∥ e₁
+        for (std::size_t j {k + 1}; j < n; ++j) {
+          y[j - k - 1] = conj_of(b[(k * n) + j]);
+        }
+        if (y.size() > 1 && scaled_norm(std::vector<T>(y.begin() + 1, y.end())) > 0.0) {
+          reflector(y);
+          for (std::size_t i {k}; i < n; ++i) { // row ← row (I − 2 y yᴴ), rows above k are zero there
+            T* row {b.data() + (i * n) + k + 1};
+            T  dot {};
+            for (std::size_t j {0}; j < y.size(); ++j) {
+              dot += row[j] * y[j];
+            }
+            const T scale {static_cast<T>(2) * dot};
+            for (std::size_t j {0}; j < y.size(); ++j) {
+              row[j] -= scale * conj_of(y[j]);
+            }
+          }
+          right[k] = std::move(y);
+        }
+        right_phase[k] = conj_of(phase_of(b[(k * n) + k + 1])); // column k+1 times it: |b_k,k+1| above
+        for (std::size_t i {k}; i < n; ++i) {
+          b[(i * n) + k + 1] *= right_phase[k];
+        }
+        e[k] = std::abs(b[(k * n) + k + 1]);
+      }
+      if (n > 0) {
+        e[n - 1] = 0.0;
+      }
+      // U_b = L₀ᴴ L₁ᴴ … with L_k = diag(phase at k) H_k, and V_b = R₀ R₁ … with R_k = H'_k diag(phase at
+      // k+1): each built on the identity from the last factor back, row by row.
+      std::vector<T> u(n * n, T {});
+      std::vector<T> v(n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) {
+        u[(i * n) + i] = T {1};
+        v[(i * n) + i] = T {1};
+      }
+      for (std::size_t k {n}; k-- > 0;) {
+        for (std::size_t j {0}; j < n; ++j) {
+          u[(k * n) + j] *= conj_of(left_phase[k]);
+        }
+        if (!left[k].empty()) {
+          reflect_rows(u, n, left[k], k, 0);
+        }
+        if (k + 1 < n) {
+          for (std::size_t j {0}; j < n; ++j) {
+            v[((k + 1) * n) + j] *= right_phase[k];
+          }
+          if (!right[k].empty()) {
+            reflect_rows(v, n, right[k], k + 1, 0);
+          }
+        }
+      }
+      ut.assign(n * n, T {});
+      vt.assign(n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          ut[(j * n) + i] = u[(i * n) + j];
+          vt[(j * n) + i] = v[(i * n) + j];
+        }
+      }
+    }
+
+    /*!
+     * \brief Rotates rows \p i and \p j of the row-major \p m (`n` per row) by the plane rotation
+     *        `(c, s)`: `row_i ← c row_i + s row_j`, `row_j ← −s row_i + c row_j`.
+     */
+    template <typename T>
+    void rotate_rows(std::vector<T>& m,
+                     std::size_t     n,
+                     std::size_t     i,
+                     std::size_t     j,
+                     double          c,
+                     double          s)
+    {
+      T* first  {m.data() + (i * n)};
+      T* second {m.data() + (j * n)};
+      for (std::size_t k {0}; k < n; ++k) {
+        const T a {first[k]};
+        const T b {second[k]};
+        first[k]  = (static_cast<T>(c) * a) + (static_cast<T>(s) * b);
+        second[k] = (static_cast<T>(c) * b) - (static_cast<T>(s) * a);
+      }
+    }
+
+    /*!
+     * \brief The singular values of the real upper bidiagonal (\p d, \p e) by implicit-shift QR with
+     *        deflation (LINPACK's `dsvdc`, the Golub–Kahan–Reinsch iteration), the rotations accumulated
+     *        into the rows of \p ut and \p vt.
+     * \param[in,out] d         The diagonal; on return, the singular values, descending and non-negative.
+     * \param[in,out] e         The superdiagonal in `e[0…n-2]`, `e[n-1] = 0`; destroyed.
+     * \param[in,out] ut        Row-major `n × n`; on return, row `j` is the left vector of `d[j]`.
+     * \param[in,out] vt        Row-major `n × n`; on return, row `j` is the right vector of `d[j]`.
+     * \param[in]     n         The order.
+     * \param[in]     max_steps The bound of QR steps in all.
+     * \throws convergence_error If the iteration has not converged after \p max_steps steps.
+     */
+    template <typename T>
+    void bidiagonal_qr(std::vector<double>& d,
+                       std::vector<double>& e,
+                       std::vector<T>&      ut,
+                       std::vector<T>&      vt,
+                       std::size_t          n,
+                       std::size_t          max_steps)
+    {
+      const double          epsilon {std::numeric_limits<double>::epsilon()};
+      const double          tiny    {std::numeric_limits<double>::min() / epsilon};
+      constexpr std::size_t none    {std::numeric_limits<std::size_t>::max()};
+      std::size_t           p       {n};
+      std::size_t           steps   {0};
+      while (p > 0) {
+        // The largest k < p−1 with a negligible e[k] (none: the loop ran out and wrapped).
+        std::size_t k {p - 1};
+        while (k-- > 0) {
+          if (std::abs(e[k]) <= tiny + (epsilon * (std::abs(d[k]) + std::abs(d[k + 1])))) {
+            e[k] = 0.0;
+            break;
+          }
+        }
+        const std::size_t top {k == none ? 0 : k + 1}; // the unreduced block is top…p−1
+        if (top == p - 1) { // d[p−1] has converged: make it non-negative, sort it into place
+          if (d[top] < 0.0) {
+            d[top] = -d[top];
+            for (std::size_t i {0}; i < n; ++i) {
+              vt[(top * n) + i] = -vt[(top * n) + i];
+            }
+          }
+          for (std::size_t j {top}; j + 1 < n && d[j] < d[j + 1]; ++j) {
+            std::swap(d[j], d[j + 1]);
+            std::swap_ranges(vt.begin() + static_cast<std::ptrdiff_t>(j * n),
+                             vt.begin() + static_cast<std::ptrdiff_t>((j + 1) * n),
+                             vt.begin() + static_cast<std::ptrdiff_t>((j + 1) * n));
+            std::swap_ranges(ut.begin() + static_cast<std::ptrdiff_t>(j * n),
+                             ut.begin() + static_cast<std::ptrdiff_t>((j + 1) * n),
+                             ut.begin() + static_cast<std::ptrdiff_t>((j + 1) * n));
+          }
+          --p;
+          continue;
+        }
+        // The last negligible d[zero] in the block (none: there is none).
+        std::size_t zero {none};
+        for (std::size_t ks {p}; ks-- > top;) {
+          const double around {std::abs(e[ks]) + (ks != top ? std::abs(e[ks - 1]) : 0.0)};
+          if (std::abs(d[ks]) <= tiny + (epsilon * around)) {
+            d[ks] = 0.0;
+            zero  = ks;
+            break;
+          }
+        }
+        if (zero == p - 1) { // chase e[p−2] up the block with rotations on the right
+          double f {e[p - 2]};
+          e[p - 2] = 0.0;
+          for (std::size_t j {p - 1}; j-- > top;) {
+            const double t  {std::hypot(d[j], f)};
+            const double cs {d[j] / t};
+            const double sn {f / t};
+            d[j] = t;
+            if (j != top) {
+              f        = -sn * e[j - 1];
+              e[j - 1] = cs * e[j - 1];
+            }
+            rotate_rows(vt, n, j, p - 1, cs, sn);
+          }
+          continue;
+        }
+        if (zero != none) { // split at d[zero] = 0: chase e[zero] along the row with rotations on the left
+          double f {e[zero]};
+          e[zero] = 0.0;
+          for (std::size_t j {zero + 1}; j < p; ++j) {
+            const double t  {std::hypot(d[j], f)};
+            const double cs {d[j] / t};
+            const double sn {f / t};
+            d[j] = t;
+            f    = -sn * e[j];
+            e[j] = cs * e[j];
+            rotate_rows(ut, n, j, zero, cs, sn);
+          }
+          continue;
+        }
+        if (steps == max_steps) {
+          throw convergence_error("SVD: the bidiagonal QR iteration did not converge within its steps");
+        }
+        ++steps;
+        // One implicit QR step on top…p−1, shifted by the eigenvalue of the trailing 2 × 2 of BᵀB nearer
+        // its last diagonal entry.
+        const double scale {std::max({std::abs(d[p - 1]), std::abs(d[p - 2]), std::abs(e[p - 2]), std::abs(d[top]),
+                                      std::abs(e[top])})};
+        const double sp    {d[p - 1] / scale};
+        const double spm1  {d[p - 2] / scale};
+        const double epm1  {e[p - 2] / scale};
+        const double sk    {d[top] / scale};
+        const double ek    {e[top] / scale};
+        const double bb    {(((spm1 + sp) * (spm1 - sp)) + (epm1 * epm1)) / 2.0};
+        const double cc    {(sp * epm1) * (sp * epm1)};
+        double       shift {0.0};
+        if (bb != 0.0 || cc != 0.0) {
+          shift = std::sqrt((bb * bb) + cc);
+          shift = cc / (bb < 0.0 ? bb - shift : bb + shift);
+        }
+        double f {((sk + sp) * (sk - sp)) + shift};
+        double g {sk * ek};
+        for (std::size_t j {top}; j + 1 < p; ++j) {
+          double t  {std::hypot(f, g)};
+          double cs {f / t};
+          double sn {g / t};
+          if (j != top) {
+            e[j - 1] = t;
+          }
+          f        = (cs * d[j]) + (sn * e[j]);
+          e[j]     = (cs * e[j]) - (sn * d[j]);
+          g        = sn * d[j + 1];
+          d[j + 1] = cs * d[j + 1];
+          rotate_rows(vt, n, j, j + 1, cs, sn);
+          t        = std::hypot(f, g);
+          cs       = f / t;
+          sn       = g / t;
+          d[j]     = t;
+          f        = (cs * e[j]) + (sn * d[j + 1]);
+          d[j + 1] = (cs * d[j + 1]) - (sn * e[j]);
+          g        = sn * e[j + 1];
+          e[j + 1] = cs * e[j + 1];
+          rotate_rows(ut, n, j, j + 1, cs, sn);
+        }
+        e[p - 2] = f;
+      }
+    }
+
     //! \brief The conjugate transpose of \p a.
     template <typename T>
     [[nodiscard]] matrix<T> adjoint(const matrix<T>& a)
@@ -1182,16 +1463,24 @@ namespace numerical {
     }
   } // namespace detail
 
+  //! \brief How \ref svd_decomposition computes the decomposition of `R`, after a Householder QR.
+  enum class svd_method
+  {
+    bidiagonal_qr, //!< Golub–Kahan bidiagonalisation then implicit-shift QR, as LAPACK's `dgesvd`: the default.
+    jacobi         //!< One-sided Jacobi: several times slower, each singular value to high relative accuracy.
+  };
+
   /*!
    * \brief The singular value decomposition `A = U Σ Vᴴ` of an `m × n` matrix.
    * \tparam T The scalar element type (`double` or `std::complex<double>`).
    *
    * With `k = min(m, n)`: the `k` singular values, descending; `U` (`m × k`) and `V` (`n × k`) with
-   * orthonormal columns, also where `A` is rank-deficient (the columns for a zero singular value
-   * complete the basis). Computed as NumPy's reference LAPACK routes recommend for accuracy: a
-   * Householder QR of `A` (of `Aᴴ` when `m < n`), then one-sided Jacobi on `R`, which gives every
-   * singular value to high relative accuracy — the small ones too, which a decomposition of `Aᴴ A`
-   * loses. \ref vh is `Vᴴ`, the third factor NumPy's `svd` returns.
+   * orthonormal columns, also where `A` is rank-deficient. Computed after a Householder QR of `A` (of `Aᴴ`
+   * when `m < n`): by default `R` is reduced to bidiagonal form and the bidiagonal diagonalised by
+   * implicit-shift QR (\ref svd_method::bidiagonal_qr), the method of LAPACK's `dgesvd`, each singular value
+   * to an absolute accuracy of the largest times the machine epsilon. One-sided Jacobi on `R`
+   * (\ref svd_method::jacobi) gives every singular value to high relative accuracy — the small ones of a
+   * graded matrix too — at several times the cost. \ref vh is `Vᴴ`, the third factor NumPy's `svd` returns.
    */
   template <typename T>
   class svd_decomposition
@@ -1199,18 +1488,21 @@ namespace numerical {
   public:
 
     /*!
-     * \brief Decomposes \p a. \param[in] a The matrix.
+     * \brief Decomposes \p a.
+     * \param[in] a      The matrix.
+     * \param[in] method The algorithm for `R`.
      * \throws non_finite_error If an entry is infinite or NaN.
-     * \throws convergence_error If the Jacobi sweeps do not converge (not observed).
+     * \throws convergence_error If the iteration does not converge within its bound (not observed).
      */
-    explicit svd_decomposition(const matrix<T>& a)
+    explicit svd_decomposition(const matrix<T>& a,
+                               svd_method       method = svd_method::bidiagonal_qr)
     {
       detail::require_finite(a, "SVD");
       if (a.rows() >= a.cols()) {
-        factor(a);
+        factor(a, method);
       }
       else { // A = (Aᴴ)ᴴ = (U' Σ V'ᴴ)ᴴ = V' Σ U'ᴴ
-        factor(detail::adjoint(a));
+        factor(detail::adjoint(a), method);
         std::swap(u_, v_);
       }
     }
@@ -1242,7 +1534,8 @@ namespace numerical {
   private:
 
     //! \brief Decomposes an `m × n` \p a with `m ≥ n` into \ref u_, \ref singular_values_ and \ref v_.
-    void factor(const matrix<T>& a)
+    void factor(const matrix<T>& a,
+                svd_method       method)
     {
       const std::size_t rows {a.rows()};
       const std::size_t cols {a.cols()};
@@ -1263,7 +1556,30 @@ namespace numerical {
           entries[(i * cols) + j] = a(i, j) / static_cast<T>(scale);
         }
       }
-      detail::thin_qr<T> factors              {detail::householder_qr(std::move(entries), rows, cols)};
+      detail::thin_qr<T> factors {detail::householder_qr(std::move(entries), rows, cols)};
+      if (method == svd_method::bidiagonal_qr) {
+        std::vector<double> d(cols);
+        std::vector<double> e(cols);
+        std::vector<T>      ut;
+        std::vector<T>      vt;
+        detail::bidiagonalize(factors.r, cols, d, e, ut, vt);
+        detail::bidiagonal_qr(d, e, ut, vt, cols, detail::svd_qr_steps_per_value * cols);
+        std::vector<T> left(cols * cols);
+        std::vector<T> right(cols * cols);
+        for (std::size_t i {0}; i < cols; ++i) { // rows of ut and vt are the vectors: make them columns
+          for (std::size_t j {0}; j < cols; ++j) {
+            left[(i * cols) + j]  = ut[(j * cols) + i];
+            right[(i * cols) + j] = vt[(j * cols) + i];
+          }
+        }
+        for (double& value : d) {
+          value *= scale;
+        }
+        singular_values_ = vector<double> {std::move(d)};
+        u_               = matrix<T> {rows, cols, std::move(factors.q)} *matrix<T> {cols, cols, std::move(left)};
+        v_               = matrix<T> {cols, cols, std::move(right)};
+        return;
+      }
       std::vector<T>     w                    {std::move(factors.r)}; // A = Q R, and R V = W with orthogonal columns
       std::vector<T>     right(cols * cols, T {});
       for (std::size_t i {0}; i < cols; ++i) {

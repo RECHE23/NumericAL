@@ -244,6 +244,8 @@ namespace {
 
   constexpr std::array<numerical::eigen_method, 2> eigen_methods {numerical::eigen_method::tridiagonal_ql,
                                                                   numerical::eigen_method::jacobi};
+  constexpr std::array<numerical::svd_method, 2>   svd_methods   {numerical::svd_method::bidiagonal_qr,
+                                                                  numerical::svd_method::jacobi};
 }
 
 TEST(symmetric_eigen_of_a_diagonal_matrix)
@@ -328,61 +330,175 @@ TEST(symmetric_eigen_rejects_non_square)
 
 TEST(svd_reconstructs_with_orthonormal_factors)
 {
-  const matrix<double>    a        {{1.0, 1.0}, {1.0, 2.0}, {1.0, 3.0}}; // 3×2, full column rank
-  const svd_decomposition s        {a};
-  EXPECT(approx_equal(s.vh(), transpose(s.v())));                        // Vᴴ is Vᵀ for a real A
-  const matrix<double>    identity {{1.0, 0.0}, {0.0, 1.0}};
-  EXPECT(approx_equal(reconstruct(s), a));                               // U Σ Vᵀ == A
-  EXPECT(approx_equal(transpose(s.v()) * s.v(), identity));              // Vᵀ V == I
-  EXPECT(approx_equal(transpose(s.u()) * s.u(), identity));              // Uᵀ U == I (full rank)
-  EXPECT(s.singular_values()[0] >= s.singular_values()[1]);              // descending
+  const matrix<double> a        {{1.0, 1.0}, {1.0, 2.0}, {1.0, 3.0}}; // 3×2, full column rank
+  const matrix<double> identity {{1.0, 0.0}, {0.0, 1.0}};
+  for (const numerical::svd_method method : svd_methods) {
+    const svd_decomposition s {a, method};
+    EXPECT(approx_equal(s.vh(), transpose(s.v())));           // Vᴴ is Vᵀ for a real A
+    EXPECT(approx_equal(reconstruct(s), a));                  // U Σ Vᵀ == A
+    EXPECT(approx_equal(transpose(s.v()) * s.v(), identity)); // Vᵀ V == I
+    EXPECT(approx_equal(transpose(s.u()) * s.u(), identity)); // Uᵀ U == I (full rank)
+    EXPECT(s.singular_values()[0] >= s.singular_values()[1]); // descending
+  }
 }
 
 TEST(svd_handles_a_rank_deficient_matrix)
 {
-  const matrix<double>    a {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}}; // column 2 = 2 × column 1, rank 1
-  const svd_decomposition s {a};
-  EXPECT(approx_equal(reconstruct(s), a));                        // reconstruction holds despite a zero σ
-  EXPECT(std::abs(s.singular_values()[1]) < 1e-9);                // the second singular value is ~0
-  EXPECT(orthonormality_error(s.u()) < 1e-14);                    // and U is still orthonormal
-  // An exactly zero σ leaves no column of AV to normalise: U is completed to an orthonormal basis.
-  const svd_decomposition z {matrix<double> {{1.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}}};
-  EXPECT(approx_equal(z.singular_values(), vector<double> {1.0, 0.0, 0.0}));
-  EXPECT(orthonormality_error(z.u()) < 1e-14);
-  EXPECT(orthonormality_error(z.v()) < 1e-14);
+  const matrix<double> a   {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}}; // column 2 = 2 × column 1, rank 1
+  const matrix<double> one {{1.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}};
+  for (const numerical::svd_method method : svd_methods) {
+    const svd_decomposition s {a, method};
+    EXPECT(approx_equal(reconstruct(s), a));         // reconstruction holds despite a zero σ
+    EXPECT(std::abs(s.singular_values()[1]) < 1e-9); // the second singular value is ~0
+    EXPECT(orthonormality_error(s.u()) < 1e-14);     // and U is still orthonormal
+    // An exactly zero σ leaves no column of AV to normalise: U is completed to an orthonormal basis.
+    const svd_decomposition z {one, method};
+    EXPECT(approx_equal(z.singular_values(), vector<double> {1.0, 0.0, 0.0}));
+    EXPECT(orthonormality_error(z.u()) < 1e-14);
+    EXPECT(orthonormality_error(z.v()) < 1e-14);
+  }
 }
 
-// One-sided Jacobi on R gives each singular value to high relative accuracy, the small ones too: a
-// diagonal with σ from 1 down to 1e-12, its rows and columns permuted, comes back exactly. A
-// decomposition of AᵀA squared the condition and returned 9.7e-9 and 0 for the last two.
+// Neither method squares the condition, as a decomposition of AᵀA did (it returned 9.7e-9 and 0 for the
+// last two): a diagonal with σ from 1 down to 1e-12, its rows and columns permuted, comes back exactly.
 TEST(svd_keeps_small_singular_values)
 {
   const matrix<double>      a    {{0.0, 0.0, 1e-8, 0.0}, {1.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 1e-12}, {0.0, 1e-4, 0.0, 0.0}};
-  const svd_decomposition   s    {a};
   const std::vector<double> want {1.0, 1e-4, 1e-8, 1e-12};
-  for (std::size_t i {0}; i < want.size(); ++i) {
-    EXPECT(std::abs((s.singular_values()[i] / want[i]) - 1.0) < 1e-14);
+  for (const numerical::svd_method method : svd_methods) {
+    const svd_decomposition s {a, method};
+    for (std::size_t i {0}; i < want.size(); ++i) {
+      EXPECT(std::abs((s.singular_values()[i] / want[i]) - 1.0) < 1e-14);
+    }
+    const svd_decomposition h {hilbert(12), method};
+    EXPECT(orthonormality_error(h.u()) < 1e-13);
+    EXPECT(orthonormality_error(h.v()) < 1e-13);
+    EXPECT(approx_equal(reconstruct(h), hilbert(12), 1e-14));
   }
-  const svd_decomposition h {hilbert(12)};
-  EXPECT(orthonormality_error(h.u()) < 1e-13);
-  EXPECT(orthonormality_error(h.v()) < 1e-13);
-  EXPECT(approx_equal(reconstruct(h), hilbert(12), 1e-14));
 }
 
 // A wide or complex matrix decomposes too: U is m × k and V n × k with k = min(m, n), and A = U Σ Vᴴ.
 TEST(svd_of_a_wide_and_of_a_complex_matrix)
 {
-  const matrix<double>    wide {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};
-  const svd_decomposition w    {wide};
-  EXPECT(w.u().rows() == 2 && w.u().cols() == 2 && w.v().rows() == 3 && w.v().cols() == 2);
-  EXPECT(approx_equal(reconstruct(w), wide));
+  const matrix<double> wide {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};
   using c = std::complex<double>;
-  const matrix<c>         z {{c {1.0, 1.0}, c {2.0, 0.0}, c {0.0, 1.0}}, {c {0.0, -1.0}, c {1.0, 0.0}, c {3.0, 2.0}},
+  const matrix<c> z         {{c {1.0, 1.0}, c {2.0, 0.0}, c {0.0, 1.0}}, {c {0.0, -1.0}, c {1.0, 0.0}, c {3.0, 2.0}},
     {c {2.0, 0.0}, c {0.0, -2.0}, c {1.0, 1.0}}, {c {1.0, 0.0}, c {1.0, 0.0}, c {1.0, 0.0}}};
-  const svd_decomposition s {z};
-  EXPECT(approx_equal(reconstruct(s), z, 1e-13));
-  EXPECT(orthonormality_error(s.u()) < 1e-14);
-  EXPECT(orthonormality_error(s.v()) < 1e-14);
+  for (const numerical::svd_method method : svd_methods) {
+    const svd_decomposition w {wide, method};
+    EXPECT(w.u().rows() == 2 && w.u().cols() == 2 && w.v().rows() == 3 && w.v().cols() == 2);
+    EXPECT(approx_equal(reconstruct(w), wide));
+    const svd_decomposition s {z, method};
+    EXPECT(approx_equal(reconstruct(s), z, 1e-13));
+    EXPECT(orthonormality_error(s.u()) < 1e-14);
+    EXPECT(orthonormality_error(s.v()) < 1e-14);
+  }
+}
+
+namespace {
+
+  //! \brief Runs the bidiagonal QR on (d, e) of order n and checks B = U Σ Vᵀ, Σ descending and non-negative.
+  bool bidiagonal_qr_reconstructs(std::vector<double> d,
+                                  std::vector<double> e)
+  {
+    const std::size_t   n {d.size()};
+    std::vector<double> b(n * n, 0.0);
+    for (std::size_t i {0}; i < n; ++i) {
+      b[(i * n) + i] = d[i];
+      if (i + 1 < n) {
+        b[(i * n) + i + 1] = e[i];
+      }
+    }
+    std::vector<double> ut(n * n, 0.0);
+    std::vector<double> vt(n * n, 0.0);
+    for (std::size_t i {0}; i < n; ++i) {
+      ut[(i * n) + i] = 1.0;
+      vt[(i * n) + i] = 1.0;
+    }
+    numerical::detail::bidiagonal_qr(d, e, ut, vt, n, 30 * n);
+    bool ok {true};
+    for (std::size_t i {0}; i < n; ++i) {
+      ok = ok && d[i] >= 0.0 && (i == 0 || d[i - 1] >= d[i]);
+      for (std::size_t j {0}; j < n; ++j) {
+        double sum {0.0};
+        for (std::size_t k {0}; k < n; ++k) {
+          sum += ut[(k * n) + i] * d[k] * vt[(k * n) + j];
+        }
+        ok = ok && std::abs(sum - b[(i * n) + j]) < 1e-14;
+      }
+    }
+    return ok;
+  }
+} // namespace
+
+// The shift is what makes the iteration converge in about two steps per singular value: twenty bidiagonals
+// of order 20 take 840 steps in all. A shift half as large takes 999, none 1070; the bound of 900 keeps the
+// shift honest, which the answers alone cannot (every shift converges to the same values).
+TEST(bidiagonal_qr_converges_in_about_two_steps_per_value)
+{
+  const auto least_steps = [](const std::vector<double>& d0, const std::vector<double>& e0) {
+                             const std::size_t n {d0.size()};
+                             for (std::size_t bound {0};; ++bound) {
+                               std::vector<double> d {d0};
+                               std::vector<double> e {e0};
+                               std::vector<double> ut(n * n, 0.0);
+                               std::vector<double> vt(n * n, 0.0);
+                               try {
+                                 numerical::detail::bidiagonal_qr(d, e, ut, vt, n, bound);
+                                 return bound;
+                               }
+                               catch (const numerical::convergence_error&) { // the bound was short: one more step
+                               }
+                             }
+                           };
+  std::size_t total {0};
+  for (std::size_t t {0}; t < 20; ++t) {
+    std::vector<double> d(20);
+    std::vector<double> e(20, 0.0);
+    for (std::size_t i {0}; i < 20; ++i) {
+      d[i] = std::sin(1.0 + static_cast<double>(i) + (31.0 * static_cast<double>(t)));
+      if (i + 1 < 20) {
+        e[i] = std::cos(2.0 + (3.0 * static_cast<double>(i)) + (17.0 * static_cast<double>(t)));
+      }
+    }
+    total += least_steps(d, e);
+  }
+  EXPECT(total <= 900U);
+}
+
+// The deflations of the bidiagonal iteration each have a bidiagonal that reaches them: a zero at the end of
+// the block (chased up from two rows away), a zero inside it (the block splits), a negative entry (its sign
+// moves into V), an order to restore, and the two ways the shift's `b` vanishes. A matrix with no column
+// has no singular value, by either method.
+TEST(bidiagonal_qr_deflates_and_bounds_its_steps)
+{
+  EXPECT(bidiagonal_qr_reconstructs({-3.0}, {0.0}));
+  EXPECT(bidiagonal_qr_reconstructs({1.0, 2.0, 0.0}, {1.0, 1.0, 0.0}));
+  EXPECT(bidiagonal_qr_reconstructs({1.0, 0.0, 2.0}, {1.0, 1.0, 0.0}));
+  EXPECT(bidiagonal_qr_reconstructs({1.0, 3.0, -2.0, 4.0}, {0.0, 0.0, 0.0, 0.0}));
+  {
+    // A chain falling by 1e-8 per entry: no link is negligible next to its neighbours, yet at its tail the
+    // shift's terms underflow to zero together.
+    std::vector<double> chain_d(13);
+    std::vector<double> chain_e(13, 0.0);
+    for (std::size_t i {0}; i < 13; ++i) {
+      chain_d[i] = std::pow(1e-8, static_cast<double>(2 * i));
+      if (i + 1 < 13) {
+        chain_e[i] = std::pow(1e-8, static_cast<double>((2 * i) + 1));
+      }
+    }
+    EXPECT(bidiagonal_qr_reconstructs(chain_d, chain_e));
+  }
+  EXPECT(bidiagonal_qr_reconstructs({8.0, 3.0, 5.0}, {1.0, 4.0, 0.0}));          // b = 0 exactly, c is not
+  std::vector<double> d {2.0, 3.0, 4.0};
+  std::vector<double> e {1.0, -1.0, 0.0};
+  std::vector<double> ut(9, 0.0);
+  std::vector<double> vt(9, 0.0);
+  EXPECT_THROWS(numerical::detail::bidiagonal_qr(d, e, ut, vt, 3, 0), numerical::convergence_error);
+  for (const numerical::svd_method method : svd_methods) {
+    const svd_decomposition none {matrix<double> {3, 0, {}}, method};
+    EXPECT(none.singular_values().size() == 0 && none.u().rows() == 3 && none.u().cols() == 0);
+  }
 }
 
 // Jacobi's sweeps are bounded: one sweep does not orthogonalise a dense 3 × 3, which is then an error.
@@ -499,9 +615,11 @@ TEST(svd_of_a_tall_matrix)
   for (std::size_t i {0}; i < data.size(); ++i) {
     data[i] = std::sin(0.1 * static_cast<double>(i)) + 0.5;
   }
-  const matrix<double>    a {rows, cols, data};
-  const svd_decomposition s {a};
-  EXPECT(approx_equal(reconstruct(s), a, 1e-7));
+  const matrix<double> a {rows, cols, data};
+  for (const numerical::svd_method method : svd_methods) {
+    const svd_decomposition s {a, method};
+    EXPECT(approx_equal(reconstruct(s), a, 1e-7));
+  }
 }
 
 TEST(eigen_qr_and_svd_do_not_depend_on_the_matrix_scale)
