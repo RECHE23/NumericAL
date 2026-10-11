@@ -103,16 +103,19 @@ pip install numeric-al        # the distribution is numeric-al; the module is nu
 
 A CPython binding (stable ABI, one `cp310` abi3 wheel serves 3.10+) exposes the
 unifying object `numerical.Tensor` (rank-1 a vector, rank-2 a matrix, rank-0 a
-scalar; `float64` or `complex128`) and the algebra over it:
+scalar; `float64` or `complex128`) and the algebra over it. Every function takes a
+`Tensor` or anything `asarray` reads — a NumPy array, a nested list, a number:
 
 ```python
 import numerical
-a = numerical.Tensor([1, 2, 3, 4], shape=(2, 2))
-b = numerical.Tensor([5, 6, 7, 8], shape=(2, 2))
-numerical.einsum("ij,jk->ik", a, b)             # matrix product
-numerical.einsum("i,i->", numerical.Tensor([1, 2, 3]), numerical.Tensor([1, 2, 3]))  # dot
-numerical.solve(a, numerical.Tensor([1.0, 1.0]))   # a @ x = b
+a = [[1, 2], [3, 4]]
+numerical.einsum("ij,jk->ik", a, [[5, 6], [7, 8]])   # matrix product
+numerical.einsum("i,i->", [1, 2, 3], [1, 2, 3])       # dot
+numerical.solve(a, [1.0, 1.0])                         # a @ x = b
 ```
+
+A failure is a `numerical.LinAlgError`: a `ValueError`, as `numpy.linalg.LinAlgError` is,
+and a `numerical.error`.
 
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)`, `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)`, `pinv(a)`,

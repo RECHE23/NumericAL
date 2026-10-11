@@ -2,14 +2,16 @@ r"""NumericAL — a generic, header-only numerical library, exposed to Python.
 
 The one object is :class:`Tensor` — an N-dimensional, row-major array of
 ``float64`` or ``complex128`` (rank-1 is a vector, rank-2 a matrix, rank-0 a
-scalar). The algebra over it is reached through module functions:
+scalar). The algebra over it is reached through module functions, which take a
+Tensor or anything :func:`asarray` reads (a NumPy array, a nested list, a number):
 
     import numerical
-    a = numerical.Tensor([1, 2, 3, 4], shape=(2, 2))
-    b = numerical.Tensor([5, 6, 7, 8], shape=(2, 2))
-    numerical.einsum("ij,jk->ik", a, b)        # matrix product
-    numerical.einsum("i,i->", numerical.Tensor([1, 2, 3]), numerical.Tensor([1, 2, 3]))  # dot
-    numerical.solve(a, numerical.Tensor([1.0, 1.0]))  # a @ x = b
+    a = [[1, 2], [3, 4]]
+    numerical.einsum("ij,jk->ik", a, [[5, 6], [7, 8]])  # matrix product
+    numerical.einsum("i,i->", [1, 2, 3], [1, 2, 3])      # dot
+    numerical.solve(a, [1.0, 1.0])                        # a @ x = b
+
+A failure is a :class:`LinAlgError`, a ``ValueError`` as NumPy's is.
 
 A :class:`Tensor` interoperates zero-copy with the scientific Python stack:
 
@@ -23,33 +25,27 @@ PETSc (petsc4py) has no such protocol; bridging it would require an explicit
 copy into a PETSc object.
 """
 import array as _array
+import functools as _functools
 import numbers as _numbers
 import os
 import sys as _sys
 
-from numerical._numerical import (
-    Tensor,
-    asarray as _asarray,
-    cholesky,
-    determinant,
-    eigh,
-    einsum,
-    error,
-    inverse,
-    lstsq,
-    matrix_rank,
-    pinv,
-    qr,
-    slogdet,
-    solve,
-    svd,
-)
+from numerical import _numerical
+from numerical._numerical import Tensor, asarray as _asarray, error
 
 __all__ = [
-    "Tensor", "einsum", "solve", "asarray", "error",
+    "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "slogdet", "inverse", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh", "svd",
     "get_include", "get_config",
 ]
+
+
+class LinAlgError(error, ValueError):
+    """Raised by the linear-algebra functions when they cannot compute their answer: a singular matrix, one
+    not positive definite, an infinite or NaN entry, an iteration that did not converge, or an operand of the
+    wrong shape. As ``numpy.linalg.LinAlgError`` it is a :class:`ValueError`; it is also a
+    :class:`numerical.error`, so code catching that keeps working."""
+
 
 __version__ = "2026.10.1"
 
@@ -119,6 +115,35 @@ def _nested(obj):
     if isinstance(obj, _numbers.Number):
         return [obj], ()
     raise TypeError(f"asarray: a nested list holds numbers, not {type(obj).__name__}")
+
+
+def _linalg(native):
+    """`native` taking array-likes: every argument that is not a :class:`Tensor` or a string goes through
+    :func:`asarray` (a NumPy array, a nested list, a number), and its failures are :class:`LinAlgError`."""
+
+    @_functools.wraps(native)
+    def call(*args):
+        operands = [arg if isinstance(arg, (Tensor, str)) else asarray(arg) for arg in args]
+        try:
+            return native(*operands)
+        except error as caught:
+            raise LinAlgError(*caught.args) from None
+
+    return call
+
+
+cholesky = _linalg(_numerical.cholesky)
+determinant = _linalg(_numerical.determinant)
+eigh = _linalg(_numerical.eigh)
+einsum = _linalg(_numerical.einsum)
+inverse = _linalg(_numerical.inverse)
+lstsq = _linalg(_numerical.lstsq)
+matrix_rank = _linalg(_numerical.matrix_rank)
+pinv = _linalg(_numerical.pinv)
+qr = _linalg(_numerical.qr)
+slogdet = _linalg(_numerical.slogdet)
+solve = _linalg(_numerical.solve)
+svd = _linalg(_numerical.svd)
 
 
 def asarray(obj, dtype=None):

@@ -6,6 +6,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Added
+- **Every function takes array-likes, as NumPy's do**: a NumPy array, a nested list or a number goes through
+  `asarray` (zero-copy where it can); `nm.solve(np_array, [1.0, 2.0])` raised `TypeError: expected a
+  numerical.Tensor`.
+- **`LinAlgError`**, raised by every linear-algebra function where it cannot compute its answer (singular, not
+  positive definite, non-finite, no convergence, wrong shape). It is a `ValueError`, as
+  `numpy.linalg.LinAlgError` is, and a `numerical.error`, so existing `except numerical.error` keeps working.
+
 ### Changed
 - **`svd` is 48 times faster** (512 × 512: 11.2 → 0.24 s; 256 × 256: 1.0 → 0.031 s; arm64, Apple clang 16,
   `-O2`): after the Householder QR, `R` is reduced to bidiagonal form and diagonalised by implicit-shift QR,

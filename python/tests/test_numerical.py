@@ -379,6 +379,50 @@ class LinalgSurface(unittest.TestCase):
             numerical.inverse(numerical.Tensor([1, 2, 2, 4], shape=(2, 2)))
 
 
+class ArrayLikeArguments(unittest.TestCase):
+    """Every function takes what NumPy's take: nested lists and numbers too, not only Tensors; and its failures
+    are LinAlgError, a ValueError as numpy.linalg.LinAlgError is, and still a numerical.error."""
+
+    def test_nested_lists_are_accepted_everywhere(self):
+        a = [[4.0, 2.0], [2.0, 3.0]]
+        self.assertAlmostEqual(numerical.determinant(a), 8.0)
+        self.assertAlmostEqual(numerical.slogdet(a)[1], numerical.slogdet(numerical.asarray(a))[1])
+        self.assertEqual(numerical.solve(a, [2.0, 1.0]).tolist(), numerical.solve(numerical.asarray(a), numerical.asarray([2.0, 1.0])).tolist())
+        for function in (numerical.inverse, numerical.cholesky, numerical.pinv):
+            self.assertEqual(function(a).shape, (2, 2))
+        self.assertEqual(numerical.matrix_rank(a), 2)
+        self.assertEqual(len(numerical.qr(a)), 2)
+        self.assertEqual(len(numerical.eigh(a)), 2)
+        self.assertEqual(len(numerical.svd(a)), 3)
+        self.assertEqual(numerical.lstsq(a, [2.0, 1.0]).shape, (2,))
+        self.assertEqual(numerical.einsum("ij,j->i", a, [1.0, 0.0]).tolist(), [4.0, 2.0])
+
+    def test_a_tensor_argument_is_passed_as_it_is(self):
+        a = numerical.Tensor([4, 2, 2, 3], shape=(2, 2))
+        self.assertAlmostEqual(numerical.determinant(a), 8.0)
+
+    def test_failures_are_linalg_errors(self):
+        self.assertTrue(issubclass(numerical.LinAlgError, ValueError))
+        self.assertTrue(issubclass(numerical.LinAlgError, numerical.error))
+        with self.assertRaises(numerical.LinAlgError) as caught:
+            numerical.inverse([[1.0, 2.0], [2.0, 4.0]])
+        self.assertIn("singular", str(caught.exception))
+        with self.assertRaises(ValueError):
+            numerical.cholesky([[1.0, 2.0], [2.0, 1.0]])
+        with self.assertRaises(TypeError):  # not an array-like at all: asarray's own error, unchanged
+            numerical.inverse([["a"]])
+
+    def test_the_wrappers_keep_their_names_and_documentation(self):
+        self.assertEqual(numerical.solve.__name__, "solve")
+        self.assertTrue(numerical.solve.__doc__.startswith("solve(a, b)"))
+
+    @unittest.skipIf(np is None, "NumPy not installed")
+    def test_numpy_arrays_are_accepted(self):
+        a = np.array([[4.0, 2.0], [2.0, 3.0]])
+        np.testing.assert_allclose(np.asarray(numerical.inverse(a)), np.linalg.inv(a))
+        np.testing.assert_allclose(np.asarray(numerical.solve(a, np.array([2.0, 1.0]))), np.linalg.solve(a, [2.0, 1.0]))
+
+
 @unittest.skipIf(np is None, "NumPy not installed")
 class LinalgVsNumpy(unittest.TestCase):
     """Validate the decomposition layer against numpy.linalg."""
