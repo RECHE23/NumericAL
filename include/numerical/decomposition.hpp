@@ -1108,18 +1108,31 @@ namespace numerical {
                           std::size_t     n,
                           std::size_t     max_sweeps)
     {
+      // The sweeps rotate columns: work on the transposes, where each column is a contiguous row. A walk
+      // down the columns of the row-major arrays strides by n on every access and runs several times slower.
+      const auto transpose_square {[n](std::vector<T>& m) {
+                                     for (std::size_t i {0}; i < n; ++i) {
+                                       for (std::size_t j {i + 1}; j < n; ++j) {
+                                         std::swap(m[(i * n) + j], m[(j * n) + i]);
+                                       }
+                                     }
+                                   }};
+      transpose_square(w);
+      transpose_square(v);
       const double epsilon {std::numeric_limits<double>::epsilon()};
       for (std::size_t sweep {1};; ++sweep) {
         bool rotated {false};
         for (std::size_t p {0}; p < n; ++p) {
           for (std::size_t q {p + 1}; q < n; ++q) {
-            double alpha {0.0};
-            double beta  {0.0};
-            T      gamma {};
+            const T* wp    {w.data() + (p * n)};
+            const T* wq    {w.data() + (q * n)};
+            double   alpha {0.0};
+            double   beta  {0.0};
+            T        gamma {};
             for (std::size_t i {0}; i < n; ++i) {
-              alpha += std::norm(w[(i * n) + p]);
-              beta  += std::norm(w[(i * n) + q]);
-              gamma += conj_of(w[(i * n) + p]) * w[(i * n) + q];
+              alpha += std::norm(wp[i]);
+              beta  += std::norm(wq[i]);
+              gamma += conj_of(wp[i]) * wq[i];
             }
             const double magnitude {static_cast<double>(std::abs(gamma))};
             if (magnitude <= epsilon * std::sqrt(alpha) * std::sqrt(beta)) {
@@ -1133,17 +1146,20 @@ namespace numerical {
             const double c    {1.0 / std::sqrt(1.0 + (t * t))};
             const double s    {c * t};
             for (std::vector<T>* side : {&w, &v}) {
-              std::vector<T>& m {*side};
+              T* mp {side->data() + (p * n)};
+              T* mq {side->data() + (q * n)};
               for (std::size_t i {0}; i < n; ++i) {
-                const T left  {m[(i * n) + p]};
-                const T right {turn * m[(i * n) + q]};
-                m[(i * n) + p] = (static_cast<T>(c) * left) - (static_cast<T>(s) * right);
-                m[(i * n) + q] = (static_cast<T>(s) * left) + (static_cast<T>(c) * right);
+                const T left  {mp[i]};
+                const T right {turn * mq[i]};
+                mp[i] = (static_cast<T>(c) * left) - (static_cast<T>(s) * right);
+                mq[i] = (static_cast<T>(s) * left) + (static_cast<T>(c) * right);
               }
             }
           }
         }
         if (!rotated) {
+          transpose_square(w);
+          transpose_square(v);
           return;
         }
         if (sweep == max_sweeps) {

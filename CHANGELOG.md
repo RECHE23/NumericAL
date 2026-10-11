@@ -7,6 +7,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **`svd` is 5 to 7 times faster** (512 × 512: 11.2 → 1.7 s; 256 × 256: 1.0 → 0.18 s; arm64, Apple clang 16,
+  `-O2`), with the same singular values to the last bit: the one-sided Jacobi sweeps rotate columns, and now
+  rotate them as contiguous rows of the transposed arrays. `lstsq`, `pinv` and `matrix_rank` go through it.
 - **`eigh` is 100 times faster and more accurate** (512 × 512: 14.6 s → 0.12 s; 256 × 256: 785 → 14 ms; arm64,
   Apple clang 16, `-O2`): the matrix is reduced to tridiagonal form by Householder reflections, then diagonalised
   by implicit QL, the method of LAPACK's `dsyev`. Cyclic Jacobi took O(n³) per sweep and stopped at 1e-12 of the
