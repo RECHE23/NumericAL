@@ -140,6 +140,54 @@ class ShapesAndCreation(unittest.TestCase):
 
 
 @unittest.skipIf(np is None, "NumPy not installed")
+class PythonProtocol(unittest.TestCase):
+    """What a ported NumPy script asks of an array without naming a function: its truth value, a scalar
+    conversion, an index. Each answers as NumPy's or raises where NumPy raises; none answers otherwise."""
+
+    def test_truth_value_as_numpy(self):
+        for values in [[0.0], [2.0], [[0.0]], [0j], [1j]]:
+            with self.subTest(values=values):
+                self.assertEqual(bool(numerical.asarray(values)), bool(np.asarray(values)))
+        for shape in [(0,), (3,), (2, 2)]:
+            with self.subTest(shape=shape):
+                with self.assertRaises(ValueError):
+                    bool(np.zeros(shape))
+                with self.assertRaises(ValueError):
+                    bool(numerical.zeros(shape))
+
+    def test_only_rank_zero_converts_to_a_scalar(self):
+        self.assertEqual(float(numerical.asarray(2.5)), 2.5)
+        self.assertEqual(int(numerical.asarray(3.9)), 3)
+        self.assertEqual(complex(numerical.asarray(1 + 2j)), 1 + 2j)
+        self.assertEqual(float(numerical.sum(numerical.ones((2, 2)), 0)[0]), 2.0)
+        for convert in (float, int, complex):
+            with self.subTest(convert=convert.__name__), self.assertRaisesRegex(TypeError, "rank-0"):
+                convert(numerical.ones(1))
+
+    def test_a_boolean_is_not_an_index(self):
+        t = numerical.asarray([[1.0, 2.0], [3.0, 4.0]])
+        for key in (True, False, np.True_, (0, True)):
+            with self.subTest(key=key), self.assertRaises((IndexError, TypeError)):
+                t[key]
+
+    def test_comparison_raises_until_it_is_element_wise(self):
+        t = numerical.ones(2)
+        for compare in (operator.eq, operator.ne, operator.lt, operator.le, operator.gt, operator.ge):
+            with self.subTest(compare=compare.__name__), self.assertRaises(TypeError):
+                compare(t, t)
+        with self.assertRaises(TypeError):
+            hash(t)
+
+    def test_array_equal_as_numpy(self):
+        a = [[1.0, 2.0], [3.0, 4.0]]
+        nan = [1.0, float("nan")]
+        for x, y in [(a, a), (a, [[1, 2], [3, 4]]), (a, [[1.0, 2.0]]), ([1.0, 2.0], [1.0, 2.5]), (nan, nan),
+                     ([1j], [1j]), ([], [])]:
+            with self.subTest(x=x, y=y):
+                self.assertEqual(numerical.array_equal(numerical.asarray(x), y), np.array_equal(x, y))
+
+
+@unittest.skipIf(np is None, "NumPy not installed")
 class ElementwiseFunctions(unittest.TestCase):
     """The C++ library's functions against NumPy's own implementations: equal to a few units in the last
     place, not to the bit (NumPy computes some of them with its own vector code)."""

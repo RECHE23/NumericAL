@@ -67,6 +67,10 @@ namespace numerical {
       return std::conj(x);
     }
 
+    //! \brief The type `std::abs` gives for a `T`: the real type of a complex one, `T` itself otherwise.
+    template <typename T>
+    using magnitude_t = decltype(std::abs(std::declval<const T&>()));
+
     //! \brief The real part of a real (or general) scalar as a `double`.
     template <typename T>
     [[nodiscard]] double real_part(const T& x)
@@ -430,17 +434,17 @@ namespace numerical {
         }
       }
       for (std::size_t j {0}; j < width; ++j) {
-        T*          column {panel.data() + (j * rows)};
-        std::size_t pivot  {j};
-        double      best   {std::abs(column[j])};
+        T           *          column {panel.data() + (j * rows)};
+        std::size_t            pivot  {j};
+        detail::magnitude_t<T> best   {std::abs(column[j])};
         for (std::size_t r {j + 1}; r < rows; ++r) {
-          const double mag {std::abs(column[r])};
+          const detail::magnitude_t<T> mag {std::abs(column[r])};
           if (mag > best) {
             best  = mag;
             pivot = r;
           }
         }
-        if (best == 0.0) {
+        if (best == detail::magnitude_t<T> {}) {
           singular_ = true;
           continue; // a zero pivot column: leave it, the determinant becomes 0
         }
@@ -1503,8 +1507,8 @@ namespace numerical {
    * diagonalised by implicit QL (\ref eigen_method::tridiagonal_ql), the method of LAPACK's `dsyev`; cyclic
    * Jacobi rotations are the alternative (\ref eigen_method::jacobi). Either way the eigenvalues are real
    * and the eigenvectors orthonormal. The eigenvalues are returned in ascending order, with \ref vectors
-   * `j`-th column the eigenvector of \ref values `[j]` (`A = V Λ Vᵀ`). Real symmetric only — the complex
-   * Hermitian case is a deliberate future addition. Only the lower triangle is read, as `numpy.linalg.eigh`
+   * `j`-th column the eigenvector of \ref values `[j]` (`A = V Λ Vᵀ`). Real symmetric only (the complex
+   * Hermitian case is \ref hermitian_eigen). Only the lower triangle is read, as `numpy.linalg.eigh`
    * reads it by default: the upper one is taken to mirror it.
    */
   class symmetric_eigen

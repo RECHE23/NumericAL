@@ -288,14 +288,6 @@ any_tensor tensor_factory(PyObject*                 data,
     throw std::runtime_error("dtype must be 'float64' or 'complex128'");
 }
 
-// __repr__ via def_repr (the tp_repr slot): a free function returning the repr string.
-std::string tensor_repr(const any_tensor& v)
-{
-    return "numerical.Tensor(ndim=" + std::to_string(shape_of(v).size())
-           + ", size=" + std::to_string(count_of(v))
-           + ", dtype=" + dtype_name(v) + ")";
-}
-
 PyObject* shape_tuple(const any_tensor& v)
 {
     const std::vector<std::size_t>& shape = shape_of(v);
@@ -1543,14 +1535,13 @@ SCIFORGE_WRAPPED(any_tensor)
 
 SCIFORGE_MODULE(_numerical, "numerical.error", m)
 {
-    // The Tensor type: a def_init constructor, the DLPack/list/repr methods, and the
+    // The Tensor type: a def_init constructor, the DLPack/list methods, and the
     // introspection properties (shape/__array_interface__ are computed PyObject* getters).
     // init_once: np.asarray, __array_interface__ and __dlpack__ view the held buffer in place, so a
     // second __init__ would free what those views read.
     m.type<any_tensor>("numerical.Tensor")
     .init_once()
     .def_init<&tensor_factory>(sb::arg("data"), sb::arg("shape") = sb::none, sb::arg("dtype") = "float64")
-    .def_repr<&tensor_repr>()
     .def<&tensor_dlpack_device>("__dlpack_device__",
                                 "__dlpack_device__() -> (device_type, device_id)\nThe DLPack device (always CPU).")
     .raw("__dlpack__", reinterpret_cast<PyCFunction>(reinterpret_cast<void*>(tensor_dlpack)),

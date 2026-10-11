@@ -61,8 +61,7 @@ Small and complete, grown measured, honest about what is not yet here:
   axis (sums by NumPy's pairwise blocks), `reshape`, and `zeros`, `ones`, `full`,
   `eye`, `arange`, `linspace`.
 
-**Grows in as measured:** sparse storage, complex
-Hermitian eigen, non-symmetric eigenvalues, FFT, numeric autodiff, iterative
+**Grows in as measured:** sparse storage, non-symmetric eigenvalues, FFT, numeric autodiff, iterative
 solvers, numerical integration, arbitrary precision.
 
 ## Build

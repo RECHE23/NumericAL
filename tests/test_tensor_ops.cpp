@@ -131,6 +131,19 @@ TEST(creation_routines)
   EXPECT(numerical::eye<double>(2) == (tensor<double> {{2, 2}, {1.0, 0.0, 0.0, 1.0}}));
   EXPECT(numerical::arange(0.0, 1.0, 0.25) == (tensor<double> {{4}, {0.0, 0.25, 0.5, 0.75}}));
   EXPECT(numerical::arange(3.0, 0.0, -1.0) == (tensor<double> {{3}, {3.0, 2.0, 1.0}}));
+  // The step is the one the first two elements hold, (start + step) − start, and each element is rounded
+  // once: 0.3 from −3.5 differs from i·0.3 + (−3.5) rounded twice at several elements.
+  const tensor<double> stepped {numerical::arange(-3.5, 7.2, 0.3)};
+  const double         delta   {(-3.5 + 0.3) - -3.5};
+  bool                 fused   {stepped.size() == 36U && stepped.data()[1] == -3.5 + 0.3};
+  bool                 twice   {true};
+  for (std::size_t i {2}; i < stepped.size(); ++i) {
+    fused = fused && stepped.data()[i] == std::fma(static_cast<double>(i), delta, -3.5);
+    const double product {static_cast<double>(i) * 0.3};
+    twice = twice && stepped.data()[i] == -3.5 + product;
+  }
+  EXPECT(fused);
+  EXPECT(!twice); // the case tells the two roundings apart
   EXPECT(numerical::arange(1.0, 1.0, 1.0).size() == 0U);
   EXPECT(numerical::arange(2.0, 1.0, 1.0).size() == 0U);
   EXPECT_THROWS((void)numerical::arange(0.0, 1.0, 0.0), numerical::dimension_error);

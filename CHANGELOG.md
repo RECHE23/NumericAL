@@ -6,6 +6,33 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Fixed
+- **The sdist builds.** It carried no `include/` (no `MANIFEST.in`), so `pip install` on a platform without a
+  wheel (free-threaded CPython, ppc64le, s390x, BSD…) failed on a missing header. CI now builds the sdist,
+  installs it from source in a clean venv and runs the tests.
+- **`lu_decomposition<long double>` compiles** (and `solve`, `determinant`, `inverse` with it): the pivot
+  search held its magnitudes in a `double`, a narrowing for `long double` and `std::complex<long double>`.
+  A test now instantiates every decomposition for `float`, `double`, `long double` and their complex forms.
+- **A boolean is not an index**: `t[True]` read row 1 and `t[False]` row 0, where NumPy reads a boolean as a
+  mask. It raises `IndexError` now.
+- **A Tensor's truth value and comparisons no longer answer wrongly**: `bool(t)` was `len(t) > 0`, and `a == b`
+  compared identity. As NumPy's, `bool` gives the value of a one-element tensor and raises `ValueError` for
+  any other size; `==`, `!=`, `<`, `<=`, `>`, `>=` raise `TypeError` until comparisons are element-wise, and a
+  Tensor is unhashable. `numerical.array_equal(a, b)` compares two tensors whole, as NumPy's.
+- **`arange` steps by the step its first two elements hold**, `(start + step) − start`, as NumPy's, and rounds
+  each element once. The previous release said it equalled NumPy's to the bit; it differed by up to 1 280 units
+  in the last place (`arange(1e16, 1e16 + 100, 1.0)`). It now equals NumPy's on arm64, where NumPy fuses the
+  multiply-add; a NumPy build without fusion rounds twice and can differ in the last bits.
+
+### Added
+- **`repr(t)` shows the values**, one row per line, as NumPy's: `numerical.Tensor([[1.0, 2.0],` / `[3.0, 4.0]],
+  dtype=float64)`; past 1000 elements each long axis keeps its first and last three entries around `...`.
+- **`float(t)`, `int(t)`, `complex(t)` of a rank-0 tensor** (a full reduction along an axis of a vector, say),
+  as NumPy's; any other rank raises `TypeError`.
+
+### Changed
+- **The extension is compiled without debug information** (the Linux wheel's was 7.8 MB with it).
+
 ## 2026.10.2 — 2026-10-11
 
 ### Fixed

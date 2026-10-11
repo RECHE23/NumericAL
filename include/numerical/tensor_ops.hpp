@@ -439,7 +439,10 @@ namespace numerical {
 
   /*!
    * \brief `start, start + step, …` below \p stop (above it for a negative step), as NumPy's `arange`: its
-   *        length is `ceil((stop − start) / step)`, element `i` is `start + i·step`.
+   *        length is `ceil((stop − start) / step)` and element `i` is `start + i·delta` with
+   *        `delta = (start + step) − start`, the step as the first two elements hold it,
+   *        rounded once (a fused multiply-add, as NumPy's arm64 builds compute it; one without fusion rounds
+   *        the product first and can differ in the last bits).
    * \throws dimension_error If \p step is zero or not finite.
    */
   [[nodiscard]] inline tensor<double> arange(double start,
@@ -452,11 +455,9 @@ namespace numerical {
     const double        length {std::ceil((stop - start) / step)};
     const std::size_t   count  {length > 0.0 ? static_cast<std::size_t>(length) : 0};
     std::vector<double> out(count);
+    const double        delta  {(start + step) - start};
     for (std::size_t i {0}; i < count; ++i) {
-      // Two statements: the product is rounded before the sum, as NumPy computes it (a compiler may fuse
-      // the two into one multiply-add within an expression).
-      const double offset {static_cast<double>(i) * step};
-      out[i] = start + offset;
+      out[i] = std::fma(static_cast<double>(i), delta, start);
     }
     return tensor<double> {{count}, std::move(out)};
   }
@@ -473,7 +474,7 @@ namespace numerical {
     std::vector<double> out(count);
     const double        step {count > 1 ? (stop - start) / static_cast<double>(count - 1) : 0.0};
     for (std::size_t i {0}; i < count; ++i) {
-      const double offset {static_cast<double>(i) * step}; // rounded before the sum, as in arange
+      const double offset {static_cast<double>(i) * step}; // rounded before the sum, as NumPy's linspace
       out[i] = start + offset;
     }
     if (count > 1) {

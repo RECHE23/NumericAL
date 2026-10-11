@@ -37,6 +37,7 @@ from numerical._numerical import Tensor, asarray as _asarray, error
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "slogdet", "inverse", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh", "svd",
+    "array_equal",
     "get_include", "get_config",
 ]
 
@@ -157,6 +158,9 @@ def _getitem(self, key):
             counts.append(len(span))
             keep.append(1)
             continue
+        if isinstance(index, bool):
+            # operator.index(True) is 1, but NumPy reads a boolean as a mask, which a Tensor does not take.
+            raise IndexError("boolean indexing is not supported: index with integers or slices")
         position = _operator.index(index)
         if position < 0:
             position += extent
@@ -206,12 +210,91 @@ def _rmatmul(self, other):
     return _matmul(asarray(other), self)
 
 
+def _flat(nested):
+    """The numbers of a nested list (as ``tolist`` gives it) in C order."""
+    if not isinstance(nested, list):
+        return [nested]
+    return [value for item in nested for value in _flat(item)]
+
+
+def _bool(self):
+    """The truth value of a one-element tensor, as NumPy's; any other size is ambiguous and raises."""
+    if self.size != 1:
+        kind = "an empty tensor" if self.size == 0 else "a tensor with more than one element"
+        raise ValueError(f"the truth value of {kind} is ambiguous: test .size, or compare whole with "
+                         "numerical.array_equal")
+    return bool(_flat(self.tolist())[0])
+
+
+def _scalar(convert):
+    def method(self):
+        if self.shape:
+            raise TypeError("only rank-0 tensors can be converted to Python scalars")
+        return convert(self.tolist())
+    return method
+
+
+def _uncomparable(self, other):
+    raise TypeError("tensors have no element-wise comparison yet: numerical.array_equal(a, b) compares two "
+                    "tensors whole")
+
+
+_REPR_EDGE = 3        # elements kept at each end of a summarised axis
+_REPR_THRESHOLD = 1000  # a larger tensor is summarised, as NumPy's default
+
+
+def _summary(t, prefix, shape):
+    """A nested list of t's elements with every long axis cut to its ends around an ``...``."""
+    if not shape:
+        return t[prefix] if prefix else t[()]
+    extent = shape[0]
+    if extent > 2 * _REPR_EDGE:
+        indices = list(range(_REPR_EDGE)) + [None] + list(range(extent - _REPR_EDGE, extent))
+    else:
+        indices = list(range(extent))
+    return [Ellipsis if i is None else _summary(t, prefix + (i,), shape[1:]) for i in indices]
+
+
+def _format(nested, indent):
+    if not isinstance(nested, list):
+        return "..." if nested is Ellipsis else repr(nested)
+    if not any(isinstance(item, list) for item in nested):
+        return "[" + ", ".join(_format(item, indent) for item in nested) + "]"
+    return "[" + (",\n" + " " * (indent + 1)).join(_format(item, indent + 1) for item in nested) + "]"
+
+
+def _repr(self):
+    """``numerical.Tensor([[1.0, 2.0], [3.0, 4.0]], dtype=float64)``, one row per line; past 1000 elements
+    each long axis shows its first and last three entries around ``...``, as NumPy's repr."""
+    head = "numerical.Tensor("
+    values = self.tolist() if self.size <= _REPR_THRESHOLD else _summary(self, (), self.shape)
+    return f"{head}{_format(values, len(head))}, dtype={self.dtype})"
+
+
+def array_equal(a, b):
+    """``True`` when `a` and `b` (Tensors or array-likes) have the same shape and equal elements, as
+    ``numpy.array_equal``: a NaN equals nothing, itself included."""
+    a = a if isinstance(a, Tensor) else asarray(a)
+    b = b if isinstance(b, Tensor) else asarray(b)
+    if a.shape != b.shape:
+        return False
+    return all(x == y for x, y in zip(_flat(a.tolist()), _flat(b.tolist())))
+
+
 Tensor.__getitem__ = _getitem
 Tensor.__len__ = _len
 Tensor.__iter__ = _iter
 Tensor.T = property(_transpose)
 Tensor.__matmul__ = _matmul
 Tensor.__rmatmul__ = _rmatmul
+Tensor.__bool__ = _bool
+Tensor.__float__ = _scalar(float)
+Tensor.__complex__ = _scalar(complex)
+Tensor.__int__ = _scalar(int)
+Tensor.__repr__ = _repr
+for _name in ("__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"):
+    setattr(Tensor, _name, _uncomparable)
+Tensor.__hash__ = None  # unhashable, as a NumPy array: equality will be element-wise
 
 cholesky = _linalg(_numerical.cholesky)
 determinant = _linalg(_numerical.determinant)

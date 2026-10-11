@@ -63,7 +63,8 @@ if sys.platform == "win32":
     compile_args = ["/std:c++20", "/O2", "/EHsc", "/Zc:__cplusplus"]
     link_args = []
 else:
-    compile_args = ["-std=c++20", "-O2", "-fvisibility=hidden", "-pthread"]
+    # -g0 after the interpreter's own -g: a wheel carries no debug information.
+    compile_args = ["-std=c++20", "-O2", "-g0", "-fvisibility=hidden", "-pthread"]
     link_args = ["-pthread"]  # parallel.hpp uses std::thread
 
 setup(

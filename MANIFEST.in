@@ -1,0 +1,9 @@
+# The sdist is built on any platform without a wheel: it carries every file the build
+# reads (the headers the binding compiles against) and the tests that check it, never a
+# compiled extension left in the tree.
+graft include
+recursive-include python/src *.cpp
+recursive-include python/tests *.py
+include README.md LICENSE CHANGELOG.md
+global-exclude *.so *.pyd *.pyc
+prune python/tests/__pycache__
