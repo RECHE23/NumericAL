@@ -71,6 +71,14 @@ namespace numerical {
     template <typename T>
     using magnitude_t = decltype(std::abs(std::declval<const T&>()));
 
+    //! \brief \p x, a magnitude carried in `double`, as the scalar `T`: converted to `T`'s real type first, so a
+    //!        `std::complex<float>` is built from a `float` (a `double` argument narrows inside its constructor).
+    template <typename T>
+    [[nodiscard]] T from_double(double x)
+    {
+      return static_cast<T>(static_cast<magnitude_t<T>>(x));
+    }
+
     //! \brief The real part of a real (or general) scalar as a `double`.
     template <typename T>
     [[nodiscard]] double real_part(const T& x)
@@ -90,7 +98,7 @@ namespace numerical {
     [[nodiscard]] T phase_of(const T& x)
     {
       const double magnitude {static_cast<double>(std::abs(x))};
-      return magnitude == 0.0 ? T {1} : x / static_cast<T>(magnitude);
+      return magnitude == 0.0 ? T {1} : x / detail::from_double<T>(magnitude);
     }
 
     //! \brief The Euclidean norm of \p x, summed at the scale of its largest magnitude: a plain sum of
@@ -721,7 +729,7 @@ namespace numerical {
           if (diagonal <= 0.0) {
             throw not_positive_definite_error("Cholesky: matrix is not positive-definite");
           }
-          lower_[(i * n_) + i] = static_cast<T>(std::sqrt(diagonal));
+          lower_[(i * n_) + i] = detail::from_double<T>(std::sqrt(diagonal));
         }
         else {
           lower_[(i * n_) + j] = sum / lower_[(j * n_) + j];
@@ -982,8 +990,8 @@ namespace numerical {
           if (norm == 0.0) {
             continue; // nothing to reflect: the column is already zero below and on the diagonal
           }
-          v[0] += phase_of(v[0]) * static_cast<T>(norm); // x − α e₁ with α = −phase(x₀)‖x‖: no cancellation
-          const auto length {static_cast<T>(scaled_norm(v))};
+          v[0] += phase_of(v[0]) * detail::from_double<T>(norm); // x − α e₁ with α = −phase(x₀)‖x‖: no cancellation
+          const auto length {detail::from_double<T>(scaled_norm(v))};
           for (T& element : v) {
             element /= length;
           }
@@ -1309,8 +1317,8 @@ namespace numerical {
                        T* other {m.data() + (op.j * n)};
                        // The kind is tested outside the column loop, which then vectorises.
                        if (op.what == row_operation::kind::rotate) {
-                         const T c {static_cast<T>(op.c)};
-                         const T s {static_cast<T>(op.s)};
+                         const T c {detail::from_double<T>(op.c)};
+                         const T s {detail::from_double<T>(op.s)};
                          for (std::size_t k {first}; k < last; ++k) {
                            const T a {row[k]};
                            const T b {other[k]};
@@ -1756,7 +1764,7 @@ namespace numerical {
             }
             rotated = true;
             // Turn column q by the phase of γ so that the pair's inner product is real, then rotate.
-            const T      turn {conj_of(gamma) / static_cast<T>(magnitude)};
+            const T      turn {conj_of(gamma) / detail::from_double<T>(magnitude)};
             const double zeta {(beta - alpha) / (2.0 * magnitude)};
             const double t    {(zeta >= 0.0 ? 1.0 : -1.0) / (std::abs(zeta) + std::sqrt(1.0 + (zeta * zeta)))};
             const double c    {1.0 / std::sqrt(1.0 + (t * t))};
@@ -1767,8 +1775,8 @@ namespace numerical {
               for (std::size_t i {0}; i < n; ++i) {
                 const T left  {mp[i]};
                 const T right {turn * mq[i]};
-                mp[i] = (static_cast<T>(c) * left) - (static_cast<T>(s) * right);
-                mq[i] = (static_cast<T>(s) * left) + (static_cast<T>(c) * right);
+                mp[i] = (detail::from_double<T>(c) * left) - (detail::from_double<T>(s) * right);
+                mq[i] = (detail::from_double<T>(s) * left) + (detail::from_double<T>(c) * right);
               }
             }
           }
@@ -1815,8 +1823,8 @@ namespace numerical {
       std::vector<T>              right_phase(n, T {1});
       const auto                  reflector {[](std::vector<T>& v) { // unit v with (I − 2 v vᴴ) x ∥ e₁
                                                const double norm {scaled_norm(v)};
-                                               v[0] += phase_of(v[0]) * static_cast<T>(norm);
-                                               const auto length {static_cast<T>(scaled_norm(v))};
+                                               v[0] += phase_of(v[0]) * detail::from_double<T>(norm);
+                                               const auto length {detail::from_double<T>(scaled_norm(v))};
                                                for (T & element : v) {
                                                  element /= length;
                                                }
@@ -2143,7 +2151,7 @@ namespace numerical {
       std::vector<T> entries(rows * cols);
       for (std::size_t i {0}; i < rows; ++i) {
         for (std::size_t j {0}; j < cols; ++j) {
-          entries[(i * cols) + j] = a(i, j) / static_cast<T>(scale);
+          entries[(i * cols) + j] = a(i, j) / detail::from_double<T>(scale);
         }
       }
       detail::thin_qr<T> factors {detail::householder_qr(std::move(entries), rows, cols)};
@@ -2205,7 +2213,7 @@ namespace numerical {
         }
         if (norms[j] > 0.0) {
           for (std::size_t i {0}; i < cols; ++i) {
-            left[(i * cols) + d] = w[(i * cols) + j] / static_cast<T>(norms[j]);
+            left[(i * cols) + d] = w[(i * cols) + j] / detail::from_double<T>(norms[j]);
           }
           continue;
         }
@@ -2224,7 +2232,7 @@ namespace numerical {
         orthogonalise(best, left, cols, d); // a second pass restores orthogonality lost to rounding
         const double norm {detail::scaled_norm(best)};
         for (std::size_t i {0}; i < cols; ++i) {
-          left[(i * cols) + d] = best[i] / static_cast<T>(norm);
+          left[(i * cols) + d] = best[i] / detail::from_double<T>(norm);
         }
       }
       singular_values_ = vector<double> {std::move(values)};
@@ -2324,7 +2332,7 @@ namespace numerical {
         for (std::size_t i {0}; i < a.rows(); ++i) {
           coefficient += detail::conj_of(s.u()(i, d)) * b(i, c);
         }
-        coefficient /= static_cast<T>(sigma[d]);
+        coefficient /= detail::from_double<T>(sigma[d]);
         for (std::size_t j {0}; j < a.cols(); ++j) {
           x[(j * b.cols()) + c] += coefficient * s.v()(j, d);
         }
@@ -2358,7 +2366,7 @@ namespace numerical {
     const std::size_t          rank                       {detail::numerical_rank(s.singular_values(), a.rows(), a.cols())};
     std::vector<T>             out(a.cols() * a.rows(), T {});
     for (std::size_t d {0}; d < rank; ++d) {
-      const auto inverse {static_cast<T>(1.0 / s.singular_values()[d])};
+      const auto inverse {detail::from_double<T>(1.0 / s.singular_values()[d])};
       for (std::size_t i {0}; i < a.cols(); ++i) {
         const T left {s.v()(i, d) * inverse};
         for (std::size_t j {0}; j < a.rows(); ++j) {

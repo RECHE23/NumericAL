@@ -158,8 +158,9 @@ def _getitem(self, key):
             counts.append(len(span))
             keep.append(1)
             continue
-        if isinstance(index, bool):
-            # operator.index(True) is 1, but NumPy reads a boolean as a mask, which a Tensor does not take.
+        if isinstance(index, bool) or (type(index).__module__ == "numpy" and type(index).__name__ in ("bool", "bool_")):
+            # operator.index(True) is 1 (and numpy.True_ is 1 before NumPy 2.5), but NumPy reads a boolean as a
+            # mask, which a Tensor does not take.
             raise IndexError("boolean indexing is not supported: index with integers or slices")
         position = _operator.index(index)
         if position < 0:
