@@ -12,9 +12,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   installs it from source in a clean venv and runs the tests.
 - **`lu_decomposition<long double>` compiles** (and `solve`, `determinant`, `inverse` with it): the pivot
   search held its magnitudes in a `double`, a narrowing for `long double` and `std::complex<long double>`.
-  A test now instantiates every decomposition for `float`, `double`, `long double` and their complex forms.
-- **A boolean is not an index**: `t[True]` read row 1 and `t[False]` row 0, where NumPy reads a boolean as a
-  mask. It raises `IndexError` now.
+  A test now instantiates every decomposition for `float`, `double`, `long double` and their complex forms,
+  which compile cleanly under MSVC `/WX` and on x86-64, where `long double` is wider: every magnitude the
+  library carries in `double` is converted to it explicitly, and a `complex<float>` is built from a `float`.
+- **A boolean is not an index**: `t[True]` read row 1 and `t[False]` row 0 (`numpy.True_` too, before NumPy
+  2.5), where NumPy reads a boolean as a mask. It raises `IndexError` now.
 - **A Tensor's truth value and comparisons no longer answer wrongly**: `bool(t)` was `len(t) > 0`, and `a == b`
   compared identity. As NumPy's, `bool` gives the value of a one-element tensor and raises `ValueError` for
   any other size; `==`, `!=`, `<`, `<=`, `>`, `>=` raise `TypeError` until comparisons are element-wise, and a
