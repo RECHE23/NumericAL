@@ -815,29 +815,180 @@ namespace numerical {
      * \param[in] cols Its column count.
      * \return `Q` and `R`.
      */
+    //! \brief The reflectors of one panel of the blocked QR, `I − V T Vᴴ` as LAPACK's `dlarft` forms it.
+    template <typename T>
+    struct reflector_block
+    {
+      std::size_t    first;  //!< The first row the block acts on.
+      std::size_t    height; //!< The rows it acts on, `first…first+height-1`.
+      std::size_t    width;  //!< Its reflector count.
+      std::vector<T> v;      //!< `V`, `height × width` row-major, reflector j from row j (zeros above).
+      std::vector<T> t;      //!< `T`, `width × width` upper triangular.
+    };
+
+    /*!
+     * \brief Gathers the unit reflectors `reflectors[k0…k1-1]` (each `I − 2 v vᴴ`, an empty one the
+     *        identity) into `I − V T Vᴴ = H_{k0} H_{k0+1} … H_{k1-1}`.
+     */
+    template <typename T>
+    [[nodiscard]] reflector_block<T> gather_reflectors(const std::vector<std::vector<T>>& reflectors,
+                                                       std::size_t                        k0,
+                                                       std::size_t                        k1,
+                                                       std::size_t                        rows)
+    {
+      reflector_block<T> block {.first = k0, .height = rows - k0, .width = k1 - k0, .v = {}, .t = {}};
+      const std::size_t  b     {block.width};
+      block.v.assign(block.height * b, T {});
+      block.t.assign(b * b, T {});
+      for (std::size_t j {0}; j < b; ++j) {
+        const std::vector<T>& v {reflectors[k0 + j]};
+        for (std::size_t r {0}; r < v.size(); ++r) {
+          block.v[((j + r) * b) + j] = v[r];
+        }
+      }
+      for (std::size_t j {0}; j < b; ++j) {
+        if (reflectors[k0 + j].empty()) {
+          continue; // the identity: a zero column of T
+        }
+        std::vector<T> z(j, T {}); // z = V(:, 0…j-1)ᴴ v_j
+        for (std::size_t r {j}; r < block.height; ++r) {
+          const T vj {block.v[(r * b) + j]};
+          for (std::size_t i {0}; i < j; ++i) {
+            z[i] += conj_of(block.v[(r * b) + i]) * vj;
+          }
+        }
+        for (std::size_t i {0}; i < j; ++i) { // T(0…j-1, j) = −2 T(0…j-1, 0…j-1) z
+          T sum {};
+          for (std::size_t p {i}; p < j; ++p) {
+            sum += block.t[(i * b) + p] * z[p];
+          }
+          block.t[(i * b) + j] = static_cast<T>(-2) * sum;
+        }
+        block.t[(j * b) + j] = static_cast<T>(2);
+      }
+      return block;
+    }
+
+    /*!
+     * \brief Applies `I − V T Vᴴ` (or its adjoint `I − V Tᴴ Vᴴ`) from the left to the block's rows of a
+     *        row-major array, on its columns `from…to-1`: `W = Vᴴ A`, then `W ← T W` or `Tᴴ W`, then
+     *        `A −= V W`, the two outer products through the matrix product kernel.
+     */
+    template <typename T>
+    void apply_reflector_block(const reflector_block<T>& block,
+                               bool                      adjoint,
+                               std::vector<T>&           a,
+                               std::size_t               cols,
+                               std::size_t               from,
+                               std::size_t               to)
+    {
+      const std::size_t b {block.width};
+      const std::size_t h {block.height};
+      const std::size_t w {to - from};
+      std::vector<T>    v_adjoint(b * h);
+      std::vector<T>    minus_v(h * b);
+      for (std::size_t r {0}; r < h; ++r) {
+        for (std::size_t j {0}; j < b; ++j) {
+          v_adjoint[(j * h) + r]  = conj_of(block.v[(r * b) + j]);
+          minus_v[(r * b) + j]    = -block.v[(r * b) + j];
+        }
+      }
+      T*             top                 {a.data() + (block.first * cols) + from};
+      std::vector<T> projection(b * w, T {});
+      gemm(b, w, h, v_adjoint.data(), h, top, cols, projection.data(), w);
+      std::vector<T> scaled(b * w, T     {});
+      for (std::size_t i {0}; i < b; ++i) {
+        for (std::size_t p {0}; p < b; ++p) {
+          const T factor {adjoint ? conj_of(block.t[(p * b) + i]) : block.t[(i * b) + p]};
+          if (factor == T {}) {
+            continue; // T is triangular: half of these are zero
+          }
+          for (std::size_t c {0}; c < w; ++c) {
+            scaled[(i * w) + c] += factor * projection[(p * w) + c];
+          }
+        }
+      }
+      gemm(h, w, b, minus_v.data(), b, scaled.data(), w, top, cols);
+    }
+
+    /*!
+     * \brief Applies `I − 2 v vᴴ` from the left to the rows `first…first+|v|-1`, on the columns `from…to-1`
+     *        only: \ref reflect_rows confined to one panel.
+     */
+    template <typename T>
+    void reflect_panel(std::vector<T>&       a,
+                       std::size_t           cols,
+                       const std::vector<T>& v,
+                       std::size_t           first,
+                       std::size_t           from,
+                       std::size_t           to)
+    {
+      std::vector<T> w(to - from, T {});
+      for (std::size_t i {0}; i < v.size(); ++i) {
+        const T  weight {conj_of(v[i])};
+        const T* row    {a.data() + ((first + i) * cols) + from};
+        for (std::size_t j {0}; j < w.size(); ++j) {
+          w[j] += weight * row[j];
+        }
+      }
+      for (std::size_t i {0}; i < v.size(); ++i) {
+        const T scale {static_cast<T>(2) * v[i]};
+        T*      row   {a.data() + ((first + i) * cols) + from};
+        for (std::size_t j {0}; j < w.size(); ++j) {
+          row[j] -= scale * w[j];
+        }
+      }
+    }
+
+    //! \brief The reflectors of one panel of the blocked QR.
+    inline constexpr std::size_t qr_block {32};
+
+    /*!
+     * \brief Factorises the `rows × cols` row-major \p a by Householder reflections, `A = Q R` with
+     *        `k = min(rows, cols)`: `Q` is `rows × k` with orthonormal columns and `R` `k × cols` upper
+     *        trapezoidal. Each column below the diagonal is reflected onto it, so `Q` is orthonormal to
+     *        rounding whatever the conditioning of `A`, and a column dependent on the earlier ones leaves a
+     *        zero on `R`'s diagonal.
+     *
+     * Blocked as LAPACK's `dgeqrf`: the reflectors of a panel of \ref qr_block columns act on the panel
+     * one by one, then on the columns right of it at once, as `I − V T Vᴴ` through the matrix product
+     * kernel; `Q` is formed block by block the same way.
+     * \param[in] a    The matrix, row-major.
+     * \param[in] rows Its row count.
+     * \param[in] cols Its column count.
+     * \return `Q` and `R`.
+     */
     template <typename T>
     [[nodiscard]] thin_qr<T> householder_qr(std::vector<T> a,
                                             std::size_t    rows,
                                             std::size_t    cols)
     {
-      const std::size_t           depth {std::min(rows, cols)};
-      std::vector<std::vector<T>> reflectors(depth); // v_k on rows k…m-1; empty where the column was zero
-      for (std::size_t k {0}; k < depth; ++k) {
-        std::vector<T> v(rows - k);
-        for (std::size_t i {k}; i < rows; ++i) {
-          v[i - k] = a[(i * cols) + k];
+      const std::size_t               depth {std::min(rows, cols)};
+      std::vector<std::vector<T>>     reflectors(depth); // v_k on rows k…m-1; empty where the column was zero
+      std::vector<reflector_block<T>> blocks;
+      for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
+        const std::size_t k1 {std::min(k0 + qr_block, depth)};
+        for (std::size_t k {k0}; k < k1; ++k) {
+          std::vector<T> v(rows - k);
+          for (std::size_t i {k}; i < rows; ++i) {
+            v[i - k] = a[(i * cols) + k];
+          }
+          const double norm {scaled_norm(v)};
+          if (norm == 0.0) {
+            continue; // nothing to reflect: the column is already zero below and on the diagonal
+          }
+          v[0] += phase_of(v[0]) * static_cast<T>(norm); // x − α e₁ with α = −phase(x₀)‖x‖: no cancellation
+          const auto length {static_cast<T>(scaled_norm(v))};
+          for (T& element : v) {
+            element /= length;
+          }
+          reflect_panel(a, cols, v, k, k, k1); // the panel: A ← (I − 2 v vᴴ) A, columns k…k1-1
+          reflectors[k] = std::move(v);
         }
-        const double norm {scaled_norm(v)};
-        if (norm == 0.0) {
-          continue; // nothing to reflect: the column is already zero below and on the diagonal
+        blocks.push_back(gather_reflectors(reflectors, k0, k1, rows));
+        if (k1 < cols) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A
+          apply_reflector_block(blocks.back(), true, a, cols, k1, cols);
         }
-        v[0] += phase_of(v[0]) * static_cast<T>(norm); // x − α e₁ with α = −phase(x₀)‖x‖: no cancellation
-        const auto length {static_cast<T>(scaled_norm(v))};
-        for (T& element : v) {
-          element /= length;
-        }
-        reflect_rows(a, cols, v, k, k); // A ← (I − 2 v vᴴ) A on rows k…m-1, columns k…n-1
-        reflectors[k] = std::move(v);
       }
       thin_qr<T> out {.q = std::vector<T>(rows * depth, T {}), .r = std::vector<T>(depth * cols, T {})};
       for (std::size_t i {0}; i < depth; ++i) {
@@ -846,14 +997,10 @@ namespace numerical {
           out.r[(i * cols) + j] = a[(i * cols) + j];
         }
       }
-      for (std::size_t k {depth}; k-- > 0;) { // Q = H₀ H₁ … applied to the first columns of I
-        const std::vector<T>& v {reflectors[k]};
-        if (v.empty()) {
-          continue;
-        }
-        reflect_rows(out.q, depth, v, k, 0);
+      for (std::size_t b {blocks.size()}; b-- > 0;) { // Q = H₀ H₁ … applied to the first columns of I
+        apply_reflector_block(blocks[b], false, out.q, depth, blocks[b].first, depth);
       }
-      for (std::size_t k {0}; k < depth; ++k) { // R's diagonal real and non-negative: rotate row k, column k
+      for (std::size_t k {0}; k < depth; ++k) {       // R's diagonal real and non-negative: rotate row k, column k
         const T phase {phase_of(out.r[(k * cols) + k])};
         for (std::size_t j {k}; j < cols; ++j) {
           out.r[(k * cols) + j] *= conj_of(phase);

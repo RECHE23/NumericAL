@@ -116,6 +116,16 @@ across blocks through the product kernel. `inverse` of the same matrices, best o
 | 1024 |        20.9 ms |                    241 ms | 46.2 ms |               ~2.2× |
 | 2048 |         168 ms |                         — |  286 ms |               ~1.7× |
 
+`qr` is blocked as LAPACK's `dgeqrf`: the 32 reflectors of a panel act on it one by
+one, then on the columns right of it at once as `I − V T Vᴴ` through the product
+kernel, and `Q` is formed block by block. Square matrices of the same kind, best of N:
+
+| n    | NumPy (LAPACK) | unblocked (before) | blocked | NumericAL slower by |
+| ---: | -------------: | -----------------: | ------: | ------------------: |
+|  256 |        1.81 ms |            6.03 ms | 3.41 ms |               ~1.9× |
+|  512 |        10.2 ms |            47.4 ms | 17.6 ms |               ~1.7× |
+| 1024 |        60.6 ms |             393 ms |  101 ms |               ~1.7× |
+
 `cholesky` is blocked the same way: each panel's diagonal block row by row, the rows
 below it in parallel, and the trailing lower part updated through the product kernel,
 every element again receiving its terms in the unblocked order. `M Mᵀ + n·I`, best of N:

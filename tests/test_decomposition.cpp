@@ -1040,3 +1040,48 @@ TEST(blocked_inverse_times_the_matrix_is_the_identity)
   }
   EXPECT(approx_equal(a * inverse(a), matrix<double> {n, n, unit}, 1e-10));
 }
+
+namespace {
+
+  // Past one panel of reflectors: Q orthonormal, Q R = A, R upper trapezoidal with a non-negative diagonal,
+  // real to rounding; every entry of Q R within rounding of A's scale.
+  template <typename T>
+  bool blocked_qr_holds(std::size_t rows,
+                        std::size_t cols,
+                        std::size_t zero_column)
+  {
+    std::vector<T> entries {pivoting_entries<T>(std::max(rows, cols))};
+    entries.resize(rows * cols);
+    for (std::size_t i {0}; i < rows && zero_column < cols; ++i) {
+      entries[(i * cols) + zero_column] = T {};
+    }
+    const matrix<T>                      a        {rows, cols, entries};
+    const numerical::qr_decomposition<T> factored {a};
+    const matrix<T>                      q        {factored.q()};
+    const matrix<T>                      r        {factored.r()};
+    bool                                 holds    {orthonormality_error(q) < 1e-13};
+    const matrix<T>                      product  {q * r};
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        holds = holds && std::abs(product(i, j) - a(i, j)) < 1e-12;
+      }
+    }
+    for (std::size_t i {0}; i < r.rows(); ++i) {
+      // Real to rounding: the phase that makes it real is itself rounded.
+      holds = holds && std::abs(std::imag(std::complex<double> {r(i, i)})) < 1e-13 && std::real(std::complex<double> {r(i, i)}) >= 0.0;
+      for (std::size_t j {0}; j < i && j < r.cols(); ++j) {
+        holds = holds && r(i, j) == T {};
+      }
+    }
+    return holds;
+  }
+} // namespace
+
+TEST(blocked_qr_across_panels_any_shape)
+{
+  const std::size_t past {(2 * numerical::detail::qr_block) + 13};
+  EXPECT(blocked_qr_holds<double>(past + 40, past, past));                       // tall
+  EXPECT(blocked_qr_holds<double>(past - 20, past + 30, past + 30));             // wide: k = rows
+  EXPECT(blocked_qr_holds<double>(past, past, numerical::detail::qr_block + 5)); // a zero column, later panel
+  EXPECT(blocked_qr_holds<std::complex<double>>(past + 7, past, past));
+}

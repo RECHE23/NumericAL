@@ -51,6 +51,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   through the matrix product kernel. A column agrees with the vector `solve` to rounding (the backward pass
   takes the farther blocks' terms first). Against LAPACK the gap goes from 11× to 2.2×. C++:
   `lu_decomposition::solve(matrix)`.
+- **`qr` is 3.9 times faster at order 1024** (393 → 101 ms; 2.7× at 512): blocked as LAPACK's `dgeqrf`, the
+  reflectors of a panel of 32 columns applied to the rest at once as `I − V T Vᴴ` through the matrix product
+  kernel, and `Q` formed the same way. Against LAPACK the gap goes from 6.3× to 1.7×.
 - **`cholesky` is 6.2 times faster at order 1024** (139 → 22.5 ms; 1.9× at 256, 3.5× at 512): blocked on the
   same kernel, each panel's rows below its diagonal block in parallel; without multiply-add fusion the factor is
   the unblocked one to the bit. Against LAPACK the gap goes from about 12× to 1.8× at 1024.
