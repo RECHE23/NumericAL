@@ -26,6 +26,7 @@
 #include <cmath>
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <stdexcept>
 #include <string>
@@ -1267,6 +1268,64 @@ namespace numerical {
       return mt;
     }
 
+    //! \brief One operation of \ref tridiagonal_ql or \ref bidiagonal_qr on the rows of a vector matrix,
+    //!        recorded to be applied later.
+    struct row_operation
+    {
+      enum class kind : std::uint8_t
+      {
+        rotate, //!< `row_i ← c row_i + s row_j`, `row_j ← c row_j − s row_i`
+        negate, //!< row `i` ← −row `i`
+        swap,   //!< rows `i` and `j` exchanged
+      };
+
+      kind        what; //!< The operation.
+      std::size_t i;    //!< The first row.
+      std::size_t j;    //!< The second row (unused by `negate`).
+      double      c;    //!< The cosine of a rotation.
+      double      s;    //!< The sine of a rotation.
+    };
+
+    /*!
+     * \brief Applies the recorded operations, in order, to the row-major \p m (`n` per row). Each column takes
+     *        them independently of the others, so chunks of columns run in parallel, every element receiving
+     *        the same operations in the same order as applying each in place would give it.
+     */
+    template <typename T>
+    void apply_row_operations(std::vector<T>&                   m,
+                              std::size_t                       n,
+                              const std::vector<row_operation>& operations)
+    {
+      constexpr std::size_t width {64};
+      parallel_for((n + width - 1) / width, operations.size() * width, [&](std::size_t chunk) {
+                     const std::size_t first {chunk * width};
+                     const std::size_t last {std::min(first + width, n)};
+                     for (const row_operation& op : operations) {
+                       T* row   {m.data() + (op.i * n)};
+                       T* other {m.data() + (op.j * n)};
+                       // The kind is tested outside the column loop, which then vectorises.
+                       if (op.what == row_operation::kind::rotate) {
+                         const T c {static_cast<T>(op.c)};
+                         const T s {static_cast<T>(op.s)};
+                         for (std::size_t k {first}; k < last; ++k) {
+                           const T a {row[k]};
+                           const T b {other[k]};
+                           row[k]   = (c * a) + (s * b);
+                           other[k] = (c * b) - (s * a);
+                         }
+                       }
+                       else if (op.what == row_operation::kind::negate) {
+                         for (std::size_t k {first}; k < last; ++k) {
+                           row[k] = -row[k];
+                         }
+                       }
+                       else {
+                         std::swap_ranges(row + first, row + last, other + first);
+                       }
+                     }
+                   });
+    }
+
     /*!
      * \brief The eigenvalues of the symmetric tridiagonal (\p d, \p e) by implicit QL with Wilkinson-type
      *        shifts (EISPACK's `tql2`), the rotations accumulated into the rows of \p zt.
@@ -1289,6 +1348,9 @@ namespace numerical {
       double       shift   {0.0};
       double       largest {0.0};
       std::size_t  steps   {0};
+      // The iteration reads only d and e: its rotations of zt's rows are recorded and applied once at the
+      // end, in parallel by columns.
+      std::vector<row_operation> on_zt;
       for (std::size_t l {0}; l < n; ++l) {
         largest = std::max(largest, std::abs(d[l]) + std::abs(e[l]));
         std::size_t m {l};
@@ -1331,13 +1393,8 @@ namespace numerical {
             c        = p / r;
             p        = (c * d[i]) - (s * g);
             d[i + 1] = h + (s * ((c * g) + (s * d[i])));
-            T* upper {zt.data() + (i * n)};
-            T* lower {zt.data() + ((i + 1) * n)};
-            for (std::size_t k {0}; k < n; ++k) { // two contiguous rows: columns i and i+1 of Z
-              const T zk1 {lower[k]};
-              lower[k] = (s * upper[k]) + (c * zk1);
-              upper[k] = (c * upper[k]) - (s * zk1);
-            }
+            // rows i and i+1 (columns i and i+1 of Z): upper ← c upper − s lower, lower ← c lower + s upper
+            on_zt.push_back({row_operation::kind::rotate, i, i + 1, c, -s});
           }
           p    = -s * s2 * c3 * el1 * e[l] / dl1;
           e[l] = s * p;
@@ -1346,6 +1403,7 @@ namespace numerical {
         d[l] += shift;
         e[l]  = 0.0;
       }
+      apply_row_operations(zt, n, on_zt);
     }
 
     //! \brief The Frobenius norm of the strict off-diagonal of the `n × n` \p a.
@@ -1805,29 +1863,25 @@ namespace numerical {
       if (n > 0) {
         e[n - 1] = 0.0;
       }
-      // U_b = L₀ᴴ L₁ᴴ … with L_k = diag(phase at k) H_k, and V_b = R₀ R₁ … with R_k = H'_k diag(phase at
-      // k+1): each built on the identity from the last factor back, row by row.
+      // U_b = L₀ᴴ L₁ᴴ … with L_kᴴ = H_k diag(conj phase at k), and V_b = R₀ R₁ … with R_k = H'_k diag(phase
+      // at k+1). A phase on row k commutes with every later reflector, which acts on rows past it, so
+      // U_b = (H₀ H₁ …) diag(conj phases) and V_b = (H'₀ H'₁ …) diag(phases): the reflectors are applied to the
+      // diagonal by blocks, through the matrix product kernel, as QR's Q is formed.
       std::vector<T> u(n * n, T {});
       std::vector<T> v(n * n, T {});
-      for (std::size_t i {0}; i < n; ++i) {
-        u[(i * n) + i] = T {1};
-        v[(i * n) + i] = T {1};
+      for (std::size_t k {0}; k < n; ++k) {
+        u[(k * n) + k] = conj_of(left_phase[k]);
+        v[(k * n) + k] = k == 0 ? T {1} : right_phase[k - 1];
       }
-      for (std::size_t k {n}; k-- > 0;) {
-        for (std::size_t j {0}; j < n; ++j) {
-          u[(k * n) + j] *= conj_of(left_phase[k]);
-        }
-        if (!left[k].empty()) {
-          reflect_rows(u, n, left[k], k, 0);
-        }
-        if (k + 1 < n) {
-          for (std::size_t j {0}; j < n; ++j) {
-            v[((k + 1) * n) + j] *= right_phase[k];
-          }
-          if (!right[k].empty()) {
-            reflect_rows(v, n, right[k], k + 1, 0);
-          }
-        }
+      std::vector<std::vector<T>> shifted(n); // right[k] acts from row k+1: as reflector k+1 of a QR
+      for (std::size_t k {0}; k + 1 < n; ++k) {
+        shifted[k + 1] = std::move(right[k]);
+      }
+      for (std::size_t k1 {n}; k1 > 0;) { // blocks of qr_block reflectors, the last first
+        const std::size_t k0 {(k1 - 1) / qr_block * qr_block};
+        apply_reflector_block(gather_reflectors(left, k0, k1, n), false, u, n, k0, n);
+        apply_reflector_block(gather_reflectors(shifted, k0, k1, n), false, v, n, k0, n);
+        k1 = k0;
       }
       ut.assign(n * n, T {});
       vt.assign(n * n, T {});
@@ -1836,28 +1890,6 @@ namespace numerical {
           ut[(j * n) + i] = u[(i * n) + j];
           vt[(j * n) + i] = v[(i * n) + j];
         }
-      }
-    }
-
-    /*!
-     * \brief Rotates rows \p i and \p j of the row-major \p m (`n` per row) by the plane rotation
-     *        `(c, s)`: `row_i ← c row_i + s row_j`, `row_j ← −s row_i + c row_j`.
-     */
-    template <typename T>
-    void rotate_rows(std::vector<T>& m,
-                     std::size_t     n,
-                     std::size_t     i,
-                     std::size_t     j,
-                     double          c,
-                     double          s)
-    {
-      T* first  {m.data() + (i * n)};
-      T* second {m.data() + (j * n)};
-      for (std::size_t k {0}; k < n; ++k) {
-        const T a {first[k]};
-        const T b {second[k]};
-        first[k]  = (static_cast<T>(c) * a) + (static_cast<T>(s) * b);
-        second[k] = (static_cast<T>(c) * b) - (static_cast<T>(s) * a);
       }
     }
 
@@ -1881,11 +1913,15 @@ namespace numerical {
                        std::size_t          n,
                        std::size_t          max_steps)
     {
-      const double          epsilon {std::numeric_limits<double>::epsilon()};
-      const double          tiny    {std::numeric_limits<double>::min() / epsilon};
-      constexpr std::size_t none    {std::numeric_limits<std::size_t>::max()};
-      std::size_t           p       {n};
-      std::size_t           steps   {0};
+      // The iteration reads only d and e: what it does to the rows of vt and ut is recorded and applied once
+      // at the end, in parallel by columns.
+      std::vector<row_operation> on_vt;
+      std::vector<row_operation> on_ut;
+      const double               epsilon {std::numeric_limits<double>::epsilon()};
+      const double               tiny    {std::numeric_limits<double>::min() / epsilon};
+      constexpr std::size_t      none    {std::numeric_limits<std::size_t>::max()};
+      std::size_t                p       {n};
+      std::size_t                steps   {0};
       while (p > 0) {
         // The largest k < p−1 with a negligible e[k] (none: the loop ran out and wrapped).
         std::size_t k {p - 1};
@@ -1899,18 +1935,12 @@ namespace numerical {
         if (top == p - 1) { // d[p−1] has converged: make it non-negative, sort it into place
           if (d[top] < 0.0) {
             d[top] = -d[top];
-            for (std::size_t i {0}; i < n; ++i) {
-              vt[(top * n) + i] = -vt[(top * n) + i];
-            }
+            on_vt.push_back({row_operation::kind::negate, top, top, 0.0, 0.0});
           }
           for (std::size_t j {top}; j + 1 < n && d[j] < d[j + 1]; ++j) {
             std::swap(d[j], d[j + 1]);
-            std::swap_ranges(vt.begin() + static_cast<std::ptrdiff_t>(j * n),
-                             vt.begin() + static_cast<std::ptrdiff_t>((j + 1) * n),
-                             vt.begin() + static_cast<std::ptrdiff_t>((j + 1) * n));
-            std::swap_ranges(ut.begin() + static_cast<std::ptrdiff_t>(j * n),
-                             ut.begin() + static_cast<std::ptrdiff_t>((j + 1) * n),
-                             ut.begin() + static_cast<std::ptrdiff_t>((j + 1) * n));
+            on_vt.push_back({row_operation::kind::swap, j, j + 1, 0.0, 0.0});
+            on_ut.push_back({row_operation::kind::swap, j, j + 1, 0.0, 0.0});
           }
           --p;
           continue;
@@ -1937,7 +1967,7 @@ namespace numerical {
               f        = -sn * e[j - 1];
               e[j - 1] = cs * e[j - 1];
             }
-            rotate_rows(vt, n, j, p - 1, cs, sn);
+            on_vt.push_back({row_operation::kind::rotate, j, p - 1, cs, sn});
           }
           continue;
         }
@@ -1951,7 +1981,7 @@ namespace numerical {
             d[j] = t;
             f    = -sn * e[j];
             e[j] = cs * e[j];
-            rotate_rows(ut, n, j, zero, cs, sn);
+            on_ut.push_back({row_operation::kind::rotate, j, zero, cs, sn});
           }
           continue;
         }
@@ -1988,7 +2018,7 @@ namespace numerical {
           e[j]     = (cs * e[j]) - (sn * d[j]);
           g        = sn * d[j + 1];
           d[j + 1] = cs * d[j + 1];
-          rotate_rows(vt, n, j, j + 1, cs, sn);
+          on_vt.push_back({row_operation::kind::rotate, j, j + 1, cs, sn});
           t        = std::hypot(f, g);
           cs       = f / t;
           sn       = g / t;
@@ -1997,10 +2027,12 @@ namespace numerical {
           d[j + 1] = (cs * d[j + 1]) - (sn * e[j]);
           g        = sn * e[j + 1];
           e[j + 1] = cs * e[j + 1];
-          rotate_rows(ut, n, j, j + 1, cs, sn);
+          on_ut.push_back({row_operation::kind::rotate, j, j + 1, cs, sn});
         }
         e[p - 2] = f;
       }
+      apply_row_operations(vt, n, on_vt);
+      apply_row_operations(ut, n, on_ut);
     }
 
     //! \brief The conjugate transpose of \p a.

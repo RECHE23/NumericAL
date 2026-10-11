@@ -51,6 +51,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   through the matrix product kernel. A column agrees with the vector `solve` to rounding (the backward pass
   takes the farther blocks' terms first). Against LAPACK the gap goes from 11× to 2.2×. C++:
   `lu_decomposition::solve(matrix)`.
+- **`svd` is 1.7 times faster again at order 1024** (1.67 → 1.01 s) and **`eigh` 1.2 times** (0.98 → 0.80 s):
+  the singular vectors are formed from the bidiagonal reduction's reflectors by blocks through the matrix product
+  kernel, and the rotations of the QR and QL iterations are recorded and applied once, in parallel by columns,
+  each element receiving them in the same order. What remains of the gap to LAPACK (about 4× for both) is the
+  unblocked bidiagonal and tridiagonal reductions.
 - **`qr` is 3.9 times faster at order 1024** (393 → 101 ms; 2.7× at 512): blocked as LAPACK's `dgeqrf`, the
   reflectors of a panel of 32 columns applied to the rest at once as `I − V T Vᴴ` through the matrix product
   kernel, and `Q` formed the same way. Against LAPACK the gap goes from 6.3× to 1.7×.
