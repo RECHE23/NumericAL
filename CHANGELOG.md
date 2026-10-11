@@ -21,6 +21,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   trapezoidal; `solve` of a wide `qr_decomposition` refuses its underdetermined system (`lstsq` solves it).
 - **A real operand meets a complex one**: the real ones are widened to `complex128`, as NumPy promotes them
   (`einsum`, `solve` and `lstsq` refused operands of two dtypes).
+- **A `Tensor` indexes, iterates, transposes and multiplies as a NumPy array**: `t[i]`, `t[i, j]`,
+  `t[1:5:2, ::-1]` (basic indexing, negative indices and steps; all integers give a number), `len(t)`,
+  `for row in t`, `t.T`, `a @ b` for vectors and matrices (two vectors give a number), `t[()]` for a rank-0
+  tensor's number. A Tensor is never written through, so its indexed copies read as NumPy's views.
 - **`eigh` of a complex Hermitian matrix**, as `numpy.linalg.eigh` takes it: real eigenvalues, complex
   eigenvectors (C++: `hermitian_eigen`). It refused anything but `float64`.
 - **`LinAlgError`**, raised by every linear-algebra function where it cannot compute its answer (singular, not

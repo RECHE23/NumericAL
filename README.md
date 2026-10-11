@@ -120,7 +120,8 @@ numerical.solve(a, [1.0, 1.0])                         # a @ x = b
 ```
 
 A failure is a `numerical.LinAlgError`: a `ValueError`, as `numpy.linalg.LinAlgError` is,
-and a `numerical.error`.
+and a `numerical.error`. A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`), iterates, transposes
+(`t.T`) and multiplies (`a @ b`) as a NumPy array of rank 1 or 2 does.
 
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)`, `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)`, `pinv(a)`,

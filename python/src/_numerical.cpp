@@ -628,6 +628,130 @@ PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// The integers of a sequence (a list from the Python indexing code), or false with an error set.
+bool read_integers(PyObject* seq, std::vector<Py_ssize_t>& out)
+{
+    const Py_ssize_t n = PySequence_Size(seq); // the Limited API has no PySequence_Fast accessors
+    if (n < 0) {
+        return false;
+    }
+    out.resize(static_cast<std::size_t>(n));
+    for (Py_ssize_t i = 0; i < n; ++i) {
+        PyObject* item = PySequence_GetItem(seq, i);
+        if (item == nullptr) {
+            return false;
+        }
+        const Py_ssize_t value = PyNumber_AsSsize_t(item, PyExc_OverflowError);
+        Py_DECREF(item);
+        if (value == -1 && PyErr_Occurred() != nullptr) {
+            return false;
+        }
+        out[static_cast<std::size_t>(i)] = value;
+    }
+    return true;
+}
+
+// The elements `starts[a] + k·steps[a]`, `k < counts[a]`, on every axis `a` of `t`, in row-major order: the
+// axes with `keep[a]` are the result's, the others are indexed by one integer and dropped.
+template <typename T>
+PyObject* take_from(const numerical::tensor<T>& t, const std::vector<std::size_t>& starts,
+                    const std::vector<std::ptrdiff_t>& steps, const std::vector<std::size_t>& counts,
+                    const std::vector<std::size_t>& keep)
+{
+    const std::vector<std::size_t>& shape {t.shape()};
+    const std::size_t               rank  {shape.size()};
+    std::vector<std::size_t>        strides(rank, 1);
+    for (std::size_t a = rank; a-- > 1;) {
+        strides[a - 1] = strides[a] * shape[a];
+    }
+    std::vector<std::size_t> out_shape;
+    std::size_t              total {1};
+    for (std::size_t a = 0; a < rank; ++a) {
+        total *= counts[a];
+        if (keep[a] != 0) {
+            out_shape.push_back(counts[a]);
+        }
+    }
+    std::vector<T>           out;
+    out.reserve(total);
+    std::vector<std::size_t> k(rank, 0);
+    for (std::size_t n = 0; n < total; ++n) {
+        std::size_t offset {0};
+        for (std::size_t a = 0; a < rank; ++a) {
+            offset += static_cast<std::size_t>(static_cast<std::ptrdiff_t>(starts[a])
+                                               + (static_cast<std::ptrdiff_t>(k[a]) * steps[a])) * strides[a];
+        }
+        out.push_back(t.data()[offset]);
+        for (std::size_t a = rank; a-- > 0;) { // the next multi-index, last axis fastest
+            if (++k[a] < counts[a]) {
+                break;
+            }
+            k[a] = 0;
+        }
+    }
+    if (out_shape.empty()) {
+        return from_scalar<T>(out.front());
+    }
+    return wrap(any_tensor {numerical::tensor<T> {std::move(out_shape), std::move(out)}});
+}
+
+// _take(t, starts, steps, counts, keep) -> Tensor or number: the indexing behind Tensor.__getitem__, whose
+// Python side resolves every key to these per-axis ranges (the bounds are its job; the copy is this one's).
+PyObject* module_take(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* obj    = nullptr;
+    PyObject* starts = nullptr;
+    PyObject* steps  = nullptr;
+    PyObject* counts = nullptr;
+    PyObject* keep   = nullptr;
+    if (PyArg_ParseTuple(args, "OOOOO", &obj, &starts, &steps, &counts, &keep) == 0) {
+        return nullptr;
+    }
+    const any_tensor* h = as_tensor(obj);
+    if (h == nullptr) {
+        return nullptr;
+    }
+    std::vector<Py_ssize_t> start_raw;
+    std::vector<Py_ssize_t> step_raw;
+    std::vector<Py_ssize_t> count_raw;
+    std::vector<Py_ssize_t> keep_raw;
+    if (!read_integers(starts, start_raw) || !read_integers(steps, step_raw) || !read_integers(counts, count_raw)
+        || !read_integers(keep, keep_raw)) {
+        return nullptr;
+    }
+    const std::size_t rank {shape_of(*h).size()};
+    if (start_raw.size() != rank || step_raw.size() != rank || count_raw.size() != rank || keep_raw.size() != rank) {
+        PyErr_SetString(sciforge_module_error(), "_take: one range per axis");
+        return nullptr;
+    }
+    std::vector<std::size_t>    start_v(rank);
+    std::vector<std::ptrdiff_t> step_v(rank);
+    std::vector<std::size_t>    count_v(rank);
+    std::vector<std::size_t>    keep_v(rank);
+    for (std::size_t a = 0; a < rank; ++a) {
+        const Py_ssize_t dim {static_cast<Py_ssize_t>(shape_of(*h)[a])};
+        const Py_ssize_t last {start_raw[a] + ((count_raw[a] - 1) * step_raw[a])};
+        // The Python side resolves every key in bounds; a direct call that did not is refused, not read.
+        if (count_raw[a] < 0 || (count_raw[a] > 0 && (start_raw[a] < 0 || start_raw[a] >= dim || last < 0 || last >= dim))) {
+            PyErr_SetString(PyExc_IndexError, "_take: a range leaves its axis");
+            return nullptr;
+        }
+        start_v[a] = static_cast<std::size_t>(start_raw[a]);
+        step_v[a]  = static_cast<std::ptrdiff_t>(step_raw[a]);
+        count_v[a] = static_cast<std::size_t>(count_raw[a]);
+        keep_v[a]  = keep_raw[a] != 0 ? 1U : 0U;
+    }
+    try {
+        if (is_complex(*h)) {
+            return take_from(std::get<cplx_tensor>(*h), start_v, step_v, count_v, keep_v);
+        }
+        return take_from(std::get<real_tensor>(*h), start_v, step_v, count_v, keep_v);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // slogdet(a) -> (sign, logabsdet), as numpy.linalg.slogdet: the sign a float or complex like determinant.
 PyObject* module_slogdet(PyObject* /*self*/, PyObject* args)
 {
@@ -1153,6 +1277,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     // asarray (returns the same object when the dtype matches — Py_NewRef identity).
     m.raw("determinant", module_determinant, METH_VARARGS,
           "determinant(a) -> number\nThe determinant of a square matrix (float or complex).");
+    m.raw("_take", module_take, METH_VARARGS,
+          "_take(t, starts, steps, counts, keep) -> Tensor or number\nThe strided copy behind Tensor.__getitem__.");
     m.raw("slogdet", module_slogdet, METH_VARARGS,
           "slogdet(a) -> (sign, logabsdet)\nThe sign and the natural log of |det(a)|, as numpy.linalg.slogdet; it\n"
           "does not underflow or overflow where determinant(a) does.");

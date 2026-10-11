@@ -383,6 +383,62 @@ class LinalgSurface(unittest.TestCase):
             numerical.inverse(numerical.Tensor([1, 2, 2, 4], shape=(2, 2)))
 
 
+class TensorProtocol(unittest.TestCase):
+    """A Tensor indexes, iterates, transposes and multiplies as a NumPy array of rank 0 to 3 does."""
+
+    def test_errors_name_the_problem(self):
+        t = numerical.asarray([[1.0, 2.0], [3.0, 4.0]])
+        with self.assertRaises(IndexError):
+            t[2]
+        with self.assertRaises(IndexError):
+            t[0, 0, 0]
+        with self.assertRaises(TypeError):
+            t[0.5]
+        scalar = numerical.asarray(3.0)
+        with self.assertRaises(TypeError):
+            len(scalar)
+        with self.assertRaises(TypeError):
+            iter(scalar)
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.asarray([[[1.0]]]) @ t
+        with self.assertRaises(IndexError):  # a direct call outside the resolved bounds is refused, not read
+            numerical._numerical._take(t, [0, 5], [1, 1], [1, 1], [1, 1])
+
+    def test_len_iter_transpose_and_matmul(self):
+        t = numerical.asarray([[1.0, 2.0], [3.0, 4.0]])
+        self.assertEqual(len(t), 2)
+        self.assertEqual([row.tolist() for row in t], [[1.0, 2.0], [3.0, 4.0]])
+        self.assertEqual(list(numerical.asarray([5.0, 6.0])), [5.0, 6.0])
+        self.assertEqual(t.T.tolist(), [[1.0, 3.0], [2.0, 4.0]])
+        self.assertEqual((t @ t).tolist(), [[7.0, 10.0], [15.0, 22.0]])
+        self.assertEqual((t @ [1.0, 1.0]).tolist(), [3.0, 7.0])
+        self.assertEqual(([1.0, 0.0] @ t).tolist(), [1.0, 2.0])
+        self.assertEqual(numerical.asarray([1.0, 2.0]) @ [3.0, 4.0], 11.0)
+        self.assertEqual(numerical.asarray(2.5)[()], 2.5)  # a rank-0 tensor's number, as NumPy's a[()]
+
+    @unittest.skipIf(np is None, "NumPy not installed")
+    def test_indexing_as_numpy(self):
+        rng = np.random.default_rng(3)
+        for shape in ((5,), (4, 6), (3, 4, 5)):
+            for cplx in (False, True):
+                a = rng.standard_normal(shape) + (1j * rng.standard_normal(shape) if cplx else 0)
+                t = numerical.asarray(a)
+                for _ in range(200):
+                    key = []
+                    for extent in shape[:rng.integers(1, len(shape) + 1)]:
+                        if rng.integers(0, 2):
+                            key.append(int(rng.integers(-extent, extent)))
+                        else:
+                            bound = lambda: None if rng.integers(0, 3) == 0 else int(rng.integers(-extent - 2, extent + 2))
+                            step = [None, 1, 2, -1, -3][rng.integers(0, 5)]
+                            key.append(slice(bound(), bound(), step))
+                    key = tuple(key)
+                    got, want = t[key], a[key]
+                    got = np.asarray(got) if isinstance(got, numerical.Tensor) else got
+                    self.assertTrue(np.array_equal(got, want), msg=f"{shape} {key}")
+                self.assertTrue(np.array_equal(np.asarray(t.T), a.T))
+
+
 class ImpostorTensors(unittest.TestCase):
     """An object that claims to be a Tensor through its __class__ holds none: it is refused, never read
     (a mock with spec=Tensor crashed the interpreter in determinant, slogdet and asarray)."""

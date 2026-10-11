@@ -27,6 +27,7 @@ copy into a PETSc object.
 import array as _array
 import functools as _functools
 import numbers as _numbers
+import operator as _operator
 import os
 import sys as _sys
 
@@ -135,6 +136,82 @@ def _linalg(native):
 
     return call
 
+
+def _getitem(self, key):
+    """``t[i]``, ``t[i, j]``, ``t[1:5:2, ::-1]``: integers drop an axis, slices keep one, missing trailing
+    indices take a whole axis, as NumPy's basic indexing; a negative index counts from the end. All integers
+    give a number, anything else a Tensor (a copy: a Tensor is never written through, so it reads as NumPy's
+    view would)."""
+    if not isinstance(key, tuple):
+        key = (key,)
+    shape = self.shape
+    if len(key) > len(shape):
+        raise IndexError(f"too many indices for a tensor of rank {len(shape)}: {len(key)} were given")
+    starts, steps, counts, keep = [], [], [], []
+    for axis, extent in enumerate(shape):
+        index = key[axis] if axis < len(key) else slice(None)
+        if isinstance(index, slice):
+            span = range(*index.indices(extent))
+            starts.append(span.start if len(span) else 0)
+            steps.append(span.step)
+            counts.append(len(span))
+            keep.append(1)
+            continue
+        position = _operator.index(index)
+        if position < 0:
+            position += extent
+        if not 0 <= position < extent:
+            raise IndexError(f"index {index} is out of bounds for axis {axis} with size {extent}")
+        starts.append(position)
+        steps.append(1)
+        counts.append(1)
+        keep.append(0)
+    return _numerical._take(self, starts, steps, counts, keep)
+
+
+def _len(self):
+    """The extent of the first axis, as ``len`` of a NumPy array; a rank-0 tensor has none."""
+    if not self.shape:
+        raise TypeError("len() of a rank-0 tensor")
+    return self.shape[0]
+
+
+def _iter(self):
+    """The tensor's slices along its first axis (numbers for a vector), as iterating a NumPy array."""
+    if not self.shape:
+        raise TypeError("iteration over a rank-0 tensor")
+    return (self[i] for i in range(self.shape[0]))
+
+
+def _transpose(self):
+    """The tensor with its axes reversed: a matrix's transpose, as NumPy's ``.T``."""
+    letters = "abcdefghijklmnopqrstuvwxyz"[:len(self.shape)]
+    return einsum(f"{letters}->{letters[::-1]}", self)
+
+
+_MATMUL = {(1, 1): "i,i->", (2, 1): "ij,j->i", (1, 2): "i,ij->j", (2, 2): "ij,jk->ik"}
+
+
+def _matmul(self, other):
+    """``a @ b`` for vectors and matrices, as NumPy's matmul of rank 1 and 2 (a number for two vectors)."""
+    other = other if isinstance(other, Tensor) else asarray(other)
+    spec = _MATMUL.get((len(self.shape), len(other.shape)))
+    if spec is None:
+        raise LinAlgError(f"@ takes vectors and matrices, not ranks {len(self.shape)} and {len(other.shape)}")
+    product = einsum(spec, self, other)
+    return product[()] if not product.shape else product  # two vectors give a number, as NumPy's
+
+
+def _rmatmul(self, other):
+    return _matmul(asarray(other), self)
+
+
+Tensor.__getitem__ = _getitem
+Tensor.__len__ = _len
+Tensor.__iter__ = _iter
+Tensor.T = property(_transpose)
+Tensor.__matmul__ = _matmul
+Tensor.__rmatmul__ = _rmatmul
 
 cholesky = _linalg(_numerical.cholesky)
 determinant = _linalg(_numerical.determinant)
