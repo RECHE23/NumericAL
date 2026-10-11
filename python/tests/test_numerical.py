@@ -369,10 +369,12 @@ class LinalgSurface(unittest.TestCase):
         u, s, vh = numerical.svd(wide)
         self.assertEqual((u.shape, s.shape, vh.shape), ((2, 2), (2,), (2, 3)))
 
-    def test_eigh_rejects_complex_and_svd_rejects_a_vector(self):
-        c = numerical.Tensor([1, 0, 0, 1], shape=(2, 2), dtype="complex128")
-        with self.assertRaises(numerical.error):
-            numerical.eigh(c)
+    def test_eigh_takes_a_hermitian_matrix_and_svd_rejects_a_vector(self):
+        h = numerical.Tensor([2, 1 - 1j, 1 + 1j, 3], shape=(2, 2), dtype="complex128")
+        values, vectors = numerical.eigh(h)
+        self.assertEqual((values.dtype, vectors.dtype), ("float64", "complex128"))
+        self.assertAlmostEqual(values.tolist()[0], 1.0)
+        self.assertAlmostEqual(values.tolist()[1], 4.0)
         with self.assertRaises(numerical.error):
             numerical.svd(numerical.Tensor([1, 2, 3], shape=(3,)))
 
@@ -500,6 +502,17 @@ class LinalgVsNumpy(unittest.TestCase):
         a = np.array([[2.0, 99.0, -7.0], [1.0, 3.0, 50.0], [0.5, -1.0, 4.0]])
         values, _ = numerical.eigh(numerical.asarray(a))
         self.assertTrue(np.allclose(np.asarray(values), np.linalg.eigvalsh(a)))
+
+    def test_eigh_of_a_hermitian_matrix_as_numpy(self):
+        rng = np.random.default_rng(5)
+        m = rng.standard_normal((12, 12)) + 1j * rng.standard_normal((12, 12))
+        h = m + m.conj().T
+        values, vectors = (np.asarray(t) for t in numerical.eigh(h))
+        self.assertTrue(np.allclose(values, np.linalg.eigvalsh(h)))
+        self.assertTrue(np.allclose(vectors @ np.diag(values) @ vectors.conj().T, h))
+        self.assertTrue(np.allclose(vectors.conj().T @ vectors, np.eye(12)))
+        upper_ignored = np.tril(h) + np.triu(np.full((12, 12), 9 + 9j), 1)  # lower triangle read, as NumPy's
+        self.assertTrue(np.allclose(np.asarray(numerical.eigh(upper_ignored)[0]), np.linalg.eigvalsh(upper_ignored)))
 
     def test_asarray_takes_numpy_dtypes_and_layouts(self):
         a = np.arange(12, dtype=np.int64).reshape(3, 4)

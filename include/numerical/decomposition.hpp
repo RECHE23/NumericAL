@@ -759,84 +759,120 @@ namespace numerical {
     inline constexpr std::size_t ql_steps_per_value {30};
 
     /*!
-     * \brief Reduces the symmetric `n × n` row-major \p a (both triangles filled) to tridiagonal form by
-     *        Householder reflections, `A = Q T Qᵀ`.
+     * \brief A real subdiagonal entry of the tridiagonal: kept with its sign (the rotations take any sign).
+     * \param[in] t The entry. \return \p t.
+     */
+    inline double real_subdiagonal(double t,
+                                   double /*delta*/,
+                                   double& /*next*/)
+    {
+      return t;
+    }
+
+    /*!
+     * \brief A complex subdiagonal entry made real by the next row's unit phase: `next = delta · conj(phase(t))`.
+     * \param[in]  t     The entry.
+     * \param[in]  delta The phase of the row above.
+     * \param[out] next  The phase of the row below.
+     * \return `|t|`.
+     */
+    inline double real_subdiagonal(std::complex<double>  t,
+                                   std::complex<double>  delta,
+                                   std::complex<double>& next)
+    {
+      next = delta * std::conj(phase_of(t));
+      return std::abs(t);
+    }
+
+    /*!
+     * \brief Reduces the Hermitian (real: symmetric) `n × n` row-major \p a, both triangles filled, to a real
+     *        symmetric tridiagonal by Householder reflections, `A = M T Mᴴ` with `M` unitary.
      *
      * Each reflection zeroes one column below the subdiagonal and updates the trailing block by the rank-2
-     * `B − v wᵀ − w vᵀ`, row by row on contiguous memory.
+     * `B − v wᴴ − w vᴴ`, row by row on contiguous memory. A complex subdiagonal entry is then made real by a
+     * unit phase per row, as LAPACK's `zhetrd` leaves it for a real iteration; a real one keeps its sign.
      * \param[in,out] a The matrix; destroyed.
      * \param[in]     n Its order (at least 1).
      * \param[out]    d The diagonal of `T` (size \p n).
      * \param[out]    e The subdiagonal of `T` in `e[0…n-2]`, and `e[n-1] = 0` (size \p n).
-     * \return `Qᵀ`, row-major: its rows are the columns of `Q`.
+     * \return `Mᵀ`, row-major: its rows are the columns of `M`.
      */
-    inline std::vector<double> tridiagonalize(std::vector<double>& a,
-                                              std::size_t          n,
-                                              std::vector<double>& d,
-                                              std::vector<double>& e)
+    template <typename T>
+    std::vector<T> tridiagonalize(std::vector<T>&      a,
+                                  std::size_t          n,
+                                  std::vector<double>& d,
+                                  std::vector<double>& e)
     {
-      std::vector<std::vector<double>> reflectors(n);
+      std::vector<std::vector<T>> reflectors(n);
+      std::vector<T>              sub(n, T {}); // T's subdiagonal before the phases
       for (std::size_t k {0}; k + 1 < n; ++k) {
-        const std::size_t   m {n - k - 1};
-        std::vector<double> v(a.begin() + static_cast<std::ptrdiff_t>((k * n) + k + 1),
-                              a.begin() + static_cast<std::ptrdiff_t>((k + 1) * n)); // column k below the diagonal
-        const double        below {m > 1 ? scaled_norm(std::vector<double>(v.begin() + 1, v.end())) : 0.0};
+        const std::size_t m {n - k - 1};
+        std::vector<T>    v(m); // column k below the diagonal: the conjugate of row k right of it
+        for (std::size_t i {0}; i < m; ++i) {
+          v[i] = conj_of(a[(k * n) + k + 1 + i]);
+        }
+        const double below {m > 1 ? scaled_norm(std::vector<T>(v.begin() + 1, v.end())) : 0.0};
         if (below == 0.0) {
-          e[k] = v[0]; // already tridiagonal in this column: nothing to reflect
+          sub[k] = v[0]; // already tridiagonal in this column: nothing to reflect
           continue;
         }
-        const double alpha {(v[0] >= 0.0 ? -1.0 : 1.0) * scaled_norm(v)}; // the sign that avoids cancellation
-        e[k]  = alpha;
-        v[0] -= alpha;
-        const double length {scaled_norm(v)};
-        for (double& element : v) {
+        const T alpha {-phase_of(v[0]) * static_cast<T>(scaled_norm(v))}; // the sign that avoids cancellation
+        sub[k]  = alpha;
+        v[0]   -= alpha;
+        const auto length {static_cast<T>(scaled_norm(v))};
+        for (T& element : v) {
           element /= length;
         }
-        double*             block {a.data() + ((k + 1) * n) + k + 1}; // the trailing block, row stride n
-        std::vector<double> w(m, 0.0);
+        T*             block  {a.data() + ((k + 1) * n) + k + 1}; // the trailing block, row stride n
+        std::vector<T> w(m, T {});
         for (std::size_t i {0}; i < m; ++i) { // w = B v
-          const double* row {block + (i * n)};
-          double        sum {0.0};
+          const T* row {block + (i * n)};
+          T        sum {};
           for (std::size_t j {0}; j < m; ++j) {
             sum += row[j] * v[j];
           }
           w[i] = sum;
         }
-        double c {0.0};
+        T c {};
         for (std::size_t i {0}; i < m; ++i) {
-          c += v[i] * w[i];
+          c += conj_of(v[i]) * w[i];
         }
-        for (std::size_t i {0}; i < m; ++i) { // w = 2 B v − 2 (vᵀ B v) v, so H B H = B − v wᵀ − w vᵀ
-          w[i] = (2.0 * w[i]) - (2.0 * c * v[i]);
+        for (std::size_t i {0}; i < m; ++i) { // w = 2 B v − 2 (vᴴ B v) v, so H B H = B − v wᴴ − w vᴴ
+          w[i] = (static_cast<T>(2) * w[i]) - (static_cast<T>(2) * c * v[i]);
         }
         for (std::size_t i {0}; i < m; ++i) {
-          double* row {block + (i * n)};
+          T* row {block + (i * n)};
           for (std::size_t j {0}; j < m; ++j) {
-            row[j] -= (v[i] * w[j]) + (w[i] * v[j]);
+            row[j] -= (v[i] * conj_of(w[j])) + (w[i] * conj_of(v[j]));
           }
         }
         reflectors[k] = std::move(v);
       }
       for (std::size_t i {0}; i < n; ++i) {
-        d[i] = a[(i * n) + i];
+        d[i] = real_part(a[(i * n) + i]);
       }
       e[n - 1] = 0.0;
-      std::vector<double> q(n * n, 0.0); // Q = H₀ H₁ …, built from the last reflection back
+      std::vector<T> q(n * n, T {}); // Q = H₀ H₁ …, built from the last reflection back
       for (std::size_t i {0}; i < n; ++i) {
-        q[(i * n) + i] = 1.0;
+        q[(i * n) + i] = T {1};
       }
       for (std::size_t k {n}; k-- > 0;) {
         if (!reflectors[k].empty()) {
           reflect_rows(q, n, reflectors[k], k + 1, 0);
         }
       }
-      std::vector<double> qt(n * n);
+      // D T Dᴴ is real with D = diag(δ): δ₀ = 1, δ_{k+1} = δ_k · conj(phase(t_k)); then M = Q Dᴴ.
+      std::vector<T> delta(n, T {1});
+      for (std::size_t k {0}; k + 1 < n; ++k) {
+        e[k] = real_subdiagonal(sub[k], delta[k], delta[k + 1]);
+      }
+      std::vector<T> mt(n * n);
       for (std::size_t i {0}; i < n; ++i) {
         for (std::size_t j {0}; j < n; ++j) {
-          qt[(j * n) + i] = q[(i * n) + j];
+          mt[(j * n) + i] = q[(i * n) + j] * conj_of(delta[j]);
         }
       }
-      return qt;
+      return mt;
     }
 
     /*!
@@ -850,11 +886,12 @@ namespace numerical {
      * \param[in]     max_steps The bound of QL steps in all.
      * \throws convergence_error If a subdiagonal entry is not negligible after \p max_steps steps.
      */
-    inline void tridiagonal_ql(std::vector<double>& d,
-                               std::vector<double>& e,
-                               std::vector<double>& zt,
-                               std::size_t          n,
-                               std::size_t          max_steps)
+    template <typename T>
+    void tridiagonal_ql(std::vector<double>& d,
+                        std::vector<double>& e,
+                        std::vector<T>&      zt,
+                        std::size_t          n,
+                        std::size_t          max_steps)
     {
       const double epsilon {std::numeric_limits<double>::epsilon()};
       double       shift   {0.0};
@@ -902,10 +939,10 @@ namespace numerical {
             c        = p / r;
             p        = (c * d[i]) - (s * g);
             d[i + 1] = h + (s * ((c * g) + (s * d[i])));
-            double* upper {zt.data() + (i * n)};
-            double* lower {zt.data() + ((i + 1) * n)};
+            T* upper {zt.data() + (i * n)};
+            T* lower {zt.data() + ((i + 1) * n)};
             for (std::size_t k {0}; k < n; ++k) { // two contiguous rows: columns i and i+1 of Z
-              const double zk1 {lower[k]};
+              const T zk1 {lower[k]};
               lower[k] = (s * upper[k]) + (c * zk1);
               upper[k] = (c * upper[k]) - (s * zk1);
             }
@@ -1125,6 +1162,94 @@ namespace numerical {
     std::size_t    n_;       //!< The matrix order.
     vector<double> values_;  //!< Eigenvalues, ascending.
     matrix<double> vectors_; //!< Eigenvectors as columns.
+  };
+
+  /*!
+   * \brief The eigenvalues and eigenvectors of a complex Hermitian matrix.
+   *
+   * The matrix is reduced to a real symmetric tridiagonal by Householder reflections and unit phases (the
+   * method of LAPACK's `zheev`), which the implicit QL of \ref symmetric_eigen diagonalises. The eigenvalues
+   * are real and returned in ascending order, with \ref vectors `j`-th column the eigenvector of
+   * \ref values `[j]` (`A = V Λ Vᴴ`, `V` unitary). Only the lower triangle is read and the imaginary part of
+   * the diagonal is ignored, as `numpy.linalg.eigh` reads a matrix by default.
+   */
+  class hermitian_eigen
+  {
+  public:
+
+    /*!
+     * \brief Diagonalises \p input.
+     * \param[in] input A complex Hermitian matrix (its lower triangle is read).
+     * \throws dimension_error   If \p input is not square.
+     * \throws non_finite_error  If an entry is infinite or NaN.
+     * \throws convergence_error If QL did not converge within its bound (not observed).
+     */
+    explicit hermitian_eigen(const matrix<std::complex<double>>& input)
+      : n_(input.rows())
+    {
+      if (input.cols() != n_) {
+        throw dimension_error("Hermitian eigendecomposition requires a square matrix");
+      }
+      detail::require_finite(input, "Hermitian eigendecomposition");
+      // Work on the matrix divided by its largest entry, as symmetric_eigen does; the vectors do not depend
+      // on it.
+      double scale {0.0};
+      for (std::size_t i {0}; i < n_; ++i) {
+        for (std::size_t j {0}; j <= i; ++j) {
+          scale = std::max(scale, std::abs(input(i, j)));
+        }
+      }
+      if (scale == 0.0) {
+        scale = 1.0;
+      }
+      std::vector<std::complex<double>> a(n_ * n_);
+      for (std::size_t i {0}; i < n_; ++i) {
+        for (std::size_t j {0}; j < n_; ++j) {
+          const std::complex<double> lower {i >= j ? input(i, j) : std::conj(input(j, i))};
+          a[(i * n_) + j] = (i == j ? std::complex<double> {lower.real(), 0.0} : lower) / scale;
+        }
+      }
+      std::vector<double>               diagonal(n_);
+      std::vector<std::complex<double>> zt;
+      if (n_ > 0) {
+        std::vector<double> off(n_);
+        zt = detail::tridiagonalize(a, n_, diagonal, off);
+        detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
+      }
+      std::vector<std::size_t> order(n_);
+      for (std::size_t i {0}; i < n_; ++i) {
+        order[i] = i;
+      }
+      std::sort(order.begin(), order.end(), [&diagonal](std::size_t x, std::size_t y) { return diagonal[x] < diagonal[y]; });
+      std::vector<double>               values(n_);
+      std::vector<std::complex<double>> vectors(n_ * n_);
+      for (std::size_t col {0}; col < n_; ++col) {
+        values[col] = diagonal[order[col]] * scale;
+        for (std::size_t row {0}; row < n_; ++row) {
+          vectors[(row * n_) + col] = zt[(order[col] * n_) + row]; // row `order[col]` of zt is that vector
+        }
+      }
+      values_  = vector<double> {std::move(values)};
+      vectors_ = matrix<std::complex<double>> {n_, n_, std::move(vectors)};
+    }
+
+    //! \brief The eigenvalues, ascending.
+    [[nodiscard]] const vector<double>& values() const noexcept
+    {
+      return values_;
+    }
+
+    //! \brief The eigenvectors as columns, ordered to match \ref values.
+    [[nodiscard]] const matrix<std::complex<double>>& vectors() const noexcept
+    {
+      return vectors_;
+    }
+
+  private:
+
+    std::size_t                  n_;       //!< The matrix order.
+    vector<double>               values_;  //!< Eigenvalues, ascending.
+    matrix<std::complex<double>> vectors_; //!< Eigenvectors as columns.
   };
 
   namespace detail {

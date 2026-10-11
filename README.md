@@ -30,6 +30,9 @@ Small and complete, grown measured, honest about what is not yet here:
   shape, as NumPy's reduced `qr`: the factors `q()` (`m × k`) / `r()` (`k × n`), `k = min(m, n)`,
   and for `m ≥ n` a least-squares `solve` of `A x ≈ b`, which throws `singular_matrix_error`
   when `A` is rank-deficient.
+- `numerical::hermitian_eigen` — the same for a complex Hermitian matrix (real eigenvalues,
+  a unitary `V`), reduced to a real tridiagonal by Householder reflections and unit phases as
+  LAPACK's `zheev` does.
 - `numerical::symmetric_eigen` — eigenvalues (ascending) and eigenvectors of a real
   symmetric matrix (`A = V Λ Vᵀ`): Householder tridiagonalisation then implicit QL, as LAPACK's
   `dsyev`; cyclic Jacobi rotations on request (`eigen_method::jacobi`).
@@ -124,7 +127,7 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `matrix_rank(a)`, `lstsq(a, b)`, `cholesky(a)`, `qr(a)` → `(Q, R)`,
 `eigh(a)` → `(values, vectors)`, `svd(a)` → `(U, S, Vh)` — NumPy's
 `svd(a, full_matrices=False)`, so `(U * S) @ Vh` is `a`. Every one accepts `float64`
-and `complex128` but `eigh`, which is `float64` only (matching the C++ layer).
+and `complex128`; `eigh` of a complex Hermitian matrix gives real values and complex vectors.
 
 A `Tensor` is a citizen of the scientific Python stack, **zero-copy**:
 

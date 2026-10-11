@@ -793,21 +793,20 @@ std::tuple<any_tensor, any_tensor> qr(const any_tensor& v)
 }
 
 // The real float64 matrix of a Tensor, or throws (eigh is real-only).
-const real_tensor& real_matrix(const any_tensor& v, const char* name)
-{
-    if (shape_of(v).size() != 2) {
-        throw std::runtime_error("expected a matrix (rank-2 tensor)");
-    }
-    if (is_complex(v)) {
-        throw std::runtime_error(name);
-    }
-    return std::get<real_tensor>(v);
-}
-
-// eigh(a) -> (eigenvalues, eigenvectors) for a real symmetric matrix.
+// eigh(a) -> (eigenvalues, eigenvectors) for a real symmetric or a complex Hermitian matrix: the values are real.
 std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v)
 {
-    const real_tensor&            a = real_matrix(v, "eigh supports float64 matrices only");
+    if (shape_of(v).size() != 2) {
+        throw std::runtime_error("eigh expects a matrix (rank-2 tensor)");
+    }
+    if (is_complex(v)) {
+        const cplx_tensor&               a = std::get<cplx_tensor>(v);
+        const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
+        const numerical::hermitian_eigen decomposition {matrix_from(a)};
+        return {any_tensor {real_tensor {decomposition.values()}},
+                any_tensor {cplx_tensor {decomposition.vectors()}}};
+    }
+    const real_tensor&               a = std::get<real_tensor>(v);
     const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
     const numerical::symmetric_eigen decomposition {matrix_from(a)};
     return {any_tensor {real_tensor {decomposition.values()}},
@@ -1152,7 +1151,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe minimum-norm least-squares solution of a @ x ≈ b, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&cholesky>("cholesky", "cholesky(a) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite).");
     m.def<&qr>("qr", "qr(a) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr (reduced): Q is m×k, R k×n, k = min(m, n).");
-    m.def<&eigh>("eigh", "eigh(a) -> (values, vectors)\nEigenpairs of a real symmetric matrix (ascending values); its lower triangle is read, as numpy.linalg.eigh reads it.");
+    m.def<&eigh>("eigh", "eigh(a) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, as numpy.linalg.eigh reads it.");
     m.def<&matrix_rank>("matrix_rank", "matrix_rank(a) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank.");
     m.def<&pinv>("pinv", "pinv(a) -> Tensor\nThe Moore–Penrose pseudo-inverse of an m×n matrix, as numpy.linalg.pinv.");
     m.def<&svd>("svd", "svd(a) -> (U, S, Vh)\nThe singular value decomposition a = U @ diag(S) @ Vh of an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).");

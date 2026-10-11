@@ -329,6 +329,59 @@ TEST(symmetric_eigen_methods_agree_and_reach_rounding)
   EXPECT(approx_equal(reconstruct(ql), a, 1e-13));
 }
 
+// A complex Hermitian matrix: real eigenvalues, a unitary V with A = V Λ Vᴴ. [[2, 1−i], [1+i, 3]] has
+// eigenvalues 1 and 4. The lower triangle is read and the diagonal's imaginary part ignored, as NumPy reads
+// it; a real symmetric matrix gives symmetric_eigen's values.
+TEST(hermitian_eigen_reconstructs_with_a_unitary_basis)
+{
+  using c = std::complex<double>;
+  const numerical::hermitian_eigen two {matrix<c> {{c {2.0, 0.0}, c {1.0, -1.0}}, {c {1.0, 1.0}, c {3.0, 0.0}}}};
+  EXPECT(approx_equal(two.values(), vector<double> {1.0, 4.0}, 1e-14));
+  const std::size_t n                  {30};
+  std::vector<c>    entries(n * n);
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {0}; j <= i; ++j) {
+      const c z {std::sin(1.0 + static_cast<double>((i * n) + j)), i == j ? 0.0 : std::cos(static_cast<double>(i + (3 * j)))};
+      entries[(i * n) + j] = z;
+      entries[(j * n) + i] = std::conj(z);
+    }
+  }
+  const matrix<c>                  a {n, n, entries};
+  const numerical::hermitian_eigen e {a};
+  const matrix<c>&                 v {e.vectors()};
+  EXPECT(orthonormality_error(v) < 1e-13);
+  double residual                    {0.0};
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {0}; j < n; ++j) {
+      c sum {};
+      for (std::size_t k {0}; k < n; ++k) {
+        sum += v(i, k) * e.values()[k] * std::conj(v(j, k));
+      }
+      residual = std::max(residual, std::abs(sum - a(i, j)));
+    }
+  }
+  EXPECT(residual < 1e-13);
+  for (std::size_t k {1}; k < n; ++k) {
+    EXPECT(e.values()[k - 1] <= e.values()[k]);
+  }
+  // The upper triangle and the diagonal's imaginary part are not read.
+  const numerical::hermitian_eigen lower       {matrix<c> {{c {2.0, 7.0}, c {99.0, 99.0}}, {c {1.0, 1.0}, c {3.0, -5.0}}}};
+  EXPECT(approx_equal(lower.values(), two.values(), 1e-14));
+  // Of order 3, so a reflection updates the diagonal: an imaginary part left there would move the values.
+  const matrix<c> clean {{c {2.0}, c {1.0, -1.0}, c {0.5, 2.0}}, {c {1.0, 1.0}, c {3.0}, c {-1.0, 0.5}},
+    {c {0.5, -2.0}, c {-1.0, -0.5}, c {4.0}}};
+  const matrix<c> noisy {{c {2.0, 3.0}, c {1.0, -1.0}, c {0.5, 2.0}}, {c {1.0, 1.0}, c {3.0, -4.0}, c {-1.0, 0.5}},
+    {c {0.5, -2.0}, c {-1.0, -0.5}, c {4.0, 5.0}}};
+  EXPECT(approx_equal(numerical::hermitian_eigen {noisy}.values(), numerical::hermitian_eigen {clean}.values(), 1e-13));
+  const matrix<double>             real_matrix {{2.0, 1.0, 0.5}, {1.0, 3.0, -1.0}, {0.5, -1.0, 4.0}};
+  const numerical::hermitian_eigen as_complex  {matrix<c> {{c {2.0}, c {1.0}, c {0.5}}, {c {1.0}, c {3.0}, c {-1.0}}, {c {0.5}, c {-1.0}, c {4.0}}}};
+  EXPECT(approx_equal(as_complex.values(), symmetric_eigen {real_matrix}.values(), 1e-13));
+  EXPECT_THROWS(numerical::hermitian_eigen {(matrix<c> {{c {1.0}, c {2.0}}})}, numerical::dimension_error);
+  EXPECT((numerical::hermitian_eigen {matrix<c> {0, 0, {}}}.values().size() == 0));
+  EXPECT((numerical::hermitian_eigen {matrix<c> {{c {0.0}, c {0.0}}, {c {0.0}, c {0.0}}}}.values()[1] == 0.0));
+  EXPECT_THROWS(numerical::hermitian_eigen {(matrix<c> {{c {std::numeric_limits<double>::quiet_NaN()}}})}, numerical::non_finite_error);
+}
+
 TEST(symmetric_eigen_rejects_non_square)
 {
   const matrix<double> non_square {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};

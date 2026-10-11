@@ -16,6 +16,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   trapezoidal; `solve` of a wide `qr_decomposition` refuses its underdetermined system (`lstsq` solves it).
 - **A real operand meets a complex one**: the real ones are widened to `complex128`, as NumPy promotes them
   (`einsum`, `solve` and `lstsq` refused operands of two dtypes).
+- **`eigh` of a complex Hermitian matrix**, as `numpy.linalg.eigh` takes it: real eigenvalues, complex
+  eigenvectors (C++: `hermitian_eigen`). It refused anything but `float64`.
 - **`LinAlgError`**, raised by every linear-algebra function where it cannot compute its answer (singular, not
   positive definite, non-finite, no convergence, wrong shape). It is a `ValueError`, as
   `numpy.linalg.LinAlgError` is, and a `numerical.error`, so existing `except numerical.error` keeps working.
