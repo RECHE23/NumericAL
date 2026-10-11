@@ -6,6 +6,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Fixed
+- **An object that only claims to be a `Tensor` no longer crashes the interpreter.** `determinant`,
+  `slogdet` and `asarray` trusted `isinstance`, which a mock with `spec=Tensor` passes, and read a tensor
+  out of it (a segmentation fault). The object's real type is checked now; the impostor is refused.
+
 ### Added
 - **Every function takes array-likes, as NumPy's do**: a NumPy array, a nested list or a number goes through
   `asarray` (zero-copy where it can); `nm.solve(np_array, [1.0, 2.0])` raised `TypeError: expected a

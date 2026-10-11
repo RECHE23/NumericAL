@@ -141,13 +141,11 @@ std::string typestr_of(const any_tensor& v)
 // The wrapped any_tensor of a Tensor argument, or nullptr (with numerical.error set) — the
 // manual unwrap for the .raw functions (the m.def functions use caster<any_tensor> instead,
 // which raises TypeError on a non-Tensor; the .raw path keeps the historical numerical.error).
+// The object's real type is checked, never its `__class__`: a mock that claims to be a Tensor holds
+// no any_tensor, and reading one out of it crashed the interpreter.
 any_tensor* as_tensor(PyObject* obj)
 {
-    const int ok = PyObject_IsInstance(obj, sb::class_type<any_tensor>());
-    if (ok < 0) {
-        return nullptr;
-    }
-    if (ok == 0) {
+    if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) == 0) {
         PyErr_SetString(sciforge_module_error(), "expected a numerical.Tensor");
         return nullptr;
     }
@@ -951,11 +949,7 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
         }
     }
 
-    const int already = PyObject_IsInstance(obj, sb::class_type<any_tensor>());
-    if (already < 0) {
-        return nullptr;
-    }
-    if (already == 1) {
+    if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
         const any_tensor* const h = as_tensor(obj);
         if (h == nullptr) {
             return nullptr;

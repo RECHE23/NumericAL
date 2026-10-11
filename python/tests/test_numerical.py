@@ -383,6 +383,21 @@ class LinalgSurface(unittest.TestCase):
             numerical.inverse(numerical.Tensor([1, 2, 2, 4], shape=(2, 2)))
 
 
+class ImpostorTensors(unittest.TestCase):
+    """An object that claims to be a Tensor through its __class__ holds none: it is refused, never read
+    (a mock with spec=Tensor crashed the interpreter in determinant, slogdet and asarray)."""
+
+    def test_a_mock_tensor_is_refused(self):
+        import unittest.mock as mock
+        impostor = mock.MagicMock(spec=numerical.Tensor)
+        self.assertIsInstance(impostor, numerical.Tensor)  # what the check must not trust
+        for function in (numerical.determinant, numerical.slogdet, numerical.inverse):
+            with self.assertRaises((numerical.error, TypeError)):
+                function(impostor)
+        with self.assertRaises((numerical.error, TypeError, ValueError)):
+            numerical.asarray(impostor)
+
+
 class ArrayLikeArguments(unittest.TestCase):
     """Every function takes what NumPy's take: nested lists and numbers too, not only Tensors; and its failures
     are LinAlgError, a ValueError as numpy.linalg.LinAlgError is, and still a numerical.error."""
