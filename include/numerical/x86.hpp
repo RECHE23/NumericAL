@@ -226,6 +226,76 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the tile may be SSE alone
   }
 
+  /*!
+   * \brief `Σ row[i] · v[i]`, and `out[i] += row[i] · f`, for \p count elements in one pass over \p row (see
+   *        \ref symmetric_row): four accumulators of eight `double`, each a chain of fused multiply-adds, summed
+   *        in a fixed order, as is the remainder.
+   */
+  NUMERICAL_TARGET("avx512f") inline double avx512_symmetric_row(const double* row,
+                                                                 const double* v,
+                                                                 double        f,
+                                                                 double*       out,
+                                                                 std::size_t   count) noexcept
+  {
+    constexpr std::size_t           width {8};
+    constexpr std::size_t           lanes {4};
+    const __m512d                   splat {_mm512_set1_pd(f)};
+    std::array<zmm_register, lanes> sum   {};
+    const std::size_t               done  {count - (count % (width * lanes))};
+    for (std::size_t i {0}; i < done; i += width * lanes) {
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t l {0}; l < lanes; ++l) {
+        const __m512d r {_mm512_loadu_pd(row + i + (l * width))};
+        sum[l].v = _mm512_fmadd_pd(r, _mm512_loadu_pd(v + i + (l * width)), sum[l].v);
+        _mm512_storeu_pd(out + i + (l * width), _mm512_fmadd_pd(r, splat, _mm512_loadu_pd(out + i + (l * width))));
+      }
+    }
+    double total {0.0};
+    for (std::size_t l {0}; l < lanes; ++l) {
+      total += _mm512_reduce_add_pd(sum[l].v);
+    }
+    for (std::size_t i {done}; i < count; ++i) {
+      total  += row[i] * v[i];
+      out[i] += row[i] * f;
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return total;
+  }
+
+  //! \brief \ref avx512_symmetric_row with four accumulators of four `double` (AVX2 with FMA).
+  NUMERICAL_TARGET("avx2,fma") inline double avx2_symmetric_row(const double* row,
+                                                                const double* v,
+                                                                double        f,
+                                                                double*       out,
+                                                                std::size_t   count) noexcept
+  {
+    constexpr std::size_t           width {4};
+    constexpr std::size_t           lanes {4};
+    const __m256d                   splat {_mm256_set1_pd(f)};
+    std::array<ymm_register, lanes> sum   {};
+    const std::size_t               done  {count - (count % (width * lanes))};
+    for (std::size_t i {0}; i < done; i += width * lanes) {
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t l {0}; l < lanes; ++l) {
+        const __m256d r {_mm256_loadu_pd(row + i + (l * width))};
+        sum[l].v = _mm256_fmadd_pd(r, _mm256_loadu_pd(v + i + (l * width)), sum[l].v);
+        _mm256_storeu_pd(out + i + (l * width), _mm256_fmadd_pd(r, splat, _mm256_loadu_pd(out + i + (l * width))));
+      }
+    }
+    double total {0.0};
+    for (std::size_t l {0}; l < lanes; ++l) {
+      std::array<double, width> part {};
+      _mm256_storeu_pd(part.data(), sum[l].v);
+      total += (part[0] + part[1]) + (part[2] + part[3]);
+    }
+    for (std::size_t i {done}; i < count; ++i) {
+      total  += row[i] * v[i];
+      out[i] += row[i] * f;
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return total;
+  }
+
 #endif
 } // namespace numerical::detail
 

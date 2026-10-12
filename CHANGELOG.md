@@ -6,6 +6,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **`eigh` reduces to tridiagonal form faster**: each row of the trailing block is read once for both halves of
+  its symmetric product (as `dsymv` reads it), on AVX-512 or AVX2 with FMA where the matrix product's kernel
+  runs there (`gemm_path`), and the trailing update after each panel touches the lower triangle alone, the only
+  one the reduction reads (as `dsyr2k`), in one product of twice the depth. Each step's partial sums no longer
+  map their buffer anew. i9-10900X (AVX-512), order 1024: the reduction 243 → 170 ms on one thread, 153 → 125
+  ms on twenty; `eigh` 275 → 237 ms. M1 Pro: the reduction 125 → 100 ms on one core.
+
 ## 2026.10.4 — 2026-10-12
 
 ### Changed

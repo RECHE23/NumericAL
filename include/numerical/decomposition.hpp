@@ -1354,41 +1354,98 @@ namespace numerical {
       return total;
     }
 
+    //! \brief A kernel of \ref symmetric_row's form: \ref symmetric_row itself, or an x86-64 one.
+    using symmetric_row_kernel = double (*)(const double*, const double*, double, double*, std::size_t);
+
+    /*!
+     * \brief Row \p i's terms of a Hermitian product from the lower triangle: `out[j] += conj(row[j]) v[i]` for
+     *        `j < i`, and the return `Σⱼ≤ᵢ row[j] v[j]`, for a complex `T`.
+     */
+    template <typename T>
+    [[nodiscard]] T hermitian_row(symmetric_row_kernel /*kernel*/,
+                                  const T*             row,
+                                  const T*             v,
+                                  T*                   out,
+                                  std::size_t          i)
+    {
+      add_conjugate_product(out, row, v[i], i);
+      return dot_product(row, v, i + 1);
+    }
+
+    //! \brief The same for a real row, in one pass through \p kernel.
+    [[nodiscard]] inline double hermitian_row(symmetric_row_kernel kernel,
+                                              const double*        row,
+                                              const double*        v,
+                                              double*              out,
+                                              std::size_t          i)
+    {
+      return kernel(row, v, v[i], out, i) + (row[i] * v[i]);
+    }
+
     /*!
      * \brief `w = B v` for the Hermitian `m × m` \p block (row stride \p n) from its lower triangle alone, as LAPACK's
      *        `dsymv`: each row's lower part is read once and serves twice, `w[i] += Σⱼ≤ᵢ B[i][j] v[j]` and
      *        `w[j] += conj(B[i][j]) v[i]` for `j < i`, so a reduction step reads half the block it would read whole.
      *        Rows go by tasks of fixed size, each into its own partial `w`, summed in a fixed order: the result does
-     *        not depend on the number of threads.
+     *        not depend on the number of threads. A real row is read once for both (\ref symmetric_row), on the
+     *        widest x86-64 units the matrix product's kernel may use (\ref gemm_path_current).
+     * \param[in]     block   The block's first element; its rows \p n apart.
+     * \param[in]     n       The row stride.
+     * \param[in]     m       The block's order.
+     * \param[in]     v       The vector (\p m elements).
+     * \param[out]    w       `B v` (\p m elements).
+     * \param[in,out] scratch The partials, kept by the caller from one step of a reduction to the next: a fresh
+     *        buffer of their size each step is mapped anew, page by page.
      */
     template <typename T>
-    void hermitian_product(const T*    block,
-                           std::size_t n,
-                           std::size_t m,
-                           const T*    v,
-                           T*          w)
+    void hermitian_product(const T*        block,
+                           std::size_t     n,
+                           std::size_t     m,
+                           const T*        v,
+                           T*              w,
+                           std::vector<T>& scratch)
     {
-      constexpr std::size_t rows_per_task        {32};
-      const std::size_t     tasks                {(m + rows_per_task - 1) / rows_per_task};
-      std::vector<T>        partial(tasks * m, T {});
+      constexpr std::size_t rows_per_task {32};
+      const std::size_t     tasks         {(m + rows_per_task - 1) / rows_per_task};
+      if (scratch.size() < tasks * m) {
+        scratch.resize(tasks * m);
+      }
+      symmetric_row_kernel kernel {[](const double* row, const double* x, double f, double* out, std::size_t count) {
+                                     return symmetric_row(row, x, f, out, count);
+                                   }};
+#ifdef NUMERICAL_X86_COMPILED
+      if constexpr (std::is_same_v<T, double>) {
+        const gemm_path path {gemm_path_current()};
+        if (path == gemm_path::avx512) {
+          kernel = &avx512_symmetric_row;
+        }
+        else if (path == gemm_path::avx2) {
+          kernel = &avx2_symmetric_row;
+        }
+      }
+#endif
       parallel_for(tasks, rows_per_task * m, [&](std::size_t task) {
                      const std::size_t first {task * rows_per_task};
                      const std::size_t last {std::min(first + rows_per_task, m)};
-                     T*                own {partial.data() + (task * m)};
+                     T*                own {scratch.data() + (task * m)};
+                     std::fill(own, own + last, T {}); // a task's rows reach w[0…last) alone
                      for (std::size_t i {first}; i < last; ++i) {
-                       const T* row {block + (i * n)};
-                       own[i] += dot_product(row, v, i + 1);
-                       add_conjugate_product(own, row, v[i], i);
+                       own[i] += hermitian_row(kernel, block + (i * n), v, own, i);
                      }
                    });
-      std::copy(partial.begin(), partial.begin() + static_cast<std::ptrdiff_t>(m), w);
-      for (std::size_t task {1}; task < tasks; ++task) { // the partials in order, each a contiguous update
-        add_product(w, T {1}, partial.data() + (task * m), m);
+      std::fill(w, w + m, T {});
+      for (std::size_t task {0}; task < tasks; ++task) { // the partials in order, each a contiguous update
+        add_product(w, T {1}, scratch.data() + (task * m), std::min((task + 1) * rows_per_task, m));
       }
     }
 
     //! \brief The reflections of one panel of the blocked tridiagonal reduction.
     inline constexpr std::size_t tridiagonal_block {32};
+
+    //! \brief The rows of each band of the tridiagonal reduction's trailing update: a band reaches its diagonal,
+    //!        so a wider one computes more of the upper triangle the reduction never reads, a narrower one runs
+    //!        the product kernel on smaller products.
+    inline constexpr std::size_t tridiagonal_band {512};
 
     //! \brief The implicit QL steps the tridiagonal eigensolver may take per eigenvalue, as LAPACK's
     //!        `dsteqr` bounds them (30 n in all): it converges cubically, in two or three per eigenvalue.
@@ -1441,6 +1498,7 @@ namespace numerical {
                                   std::vector<double>& e)
     {
       std::vector<std::vector<T>> reflectors(n); // reflectors[k + 1] zeroes column k, acting on rows k + 1…
+      std::vector<T>              symv_scratch;  // hermitian_product's partials, kept from step to step
       std::vector<T>              sub(n, T {});  // T's subdiagonal before the phases
       for (std::size_t k0 {0}; k0 + 1 < n; k0 += tridiagonal_block) {
         // A panel of reflections, as LAPACK's dlatrd: the matrix the panel's later steps see is
@@ -1478,9 +1536,9 @@ namespace numerical {
           for (T& element : v) {
             element /= length;
           }
-          const T*       block  {a.data() + ((k + 1) * n) + k + 1}; // the trailing block, row stride n
+          const T*       block  {a.data() + ((k + 1) * n) + k + 1};         // the trailing block, row stride n
           std::vector<T> w(m, T {});
-          hermitian_product(block, n, m, v.data(), w.data());       // w = A v on the trailing block
+          hermitian_product(block, n, m, v.data(), w.data(), symv_scratch); // w = A v on the trailing block
           for (std::size_t p {0}; p < j; ++p) {                                           // w = (A − V Wᴴ − W Vᴴ) v
             const T by_w {conjugate_dot(by_row_w.data() + (p * n) + k + 1, v.data(), m)}; // (Wᴴ v)ₚ
             const T by_v {conjugate_dot(by_row_v.data() + (p * n) + k + 1, v.data(), m)}; // (Vᴴ v)ₚ
@@ -1495,23 +1553,26 @@ namespace numerical {
           }
           reflectors[k + 1] = std::move(v); // acting from row k + 1, as householder_qr's from row k
         }
-        // The trailing block from row and column k1: A −= V Wᴴ + W Vᴴ.
-        const std::size_t rest {n - k1};
-        std::vector<T>    minus_v(rest * width);
-        std::vector<T>    minus_w(rest * width);
-        std::vector<T>    v_adjoint(width * rest);
-        std::vector<T>    w_adjoint(width * rest);
+        // The trailing block from row and column k1: A −= V Wᴴ + W Vᴴ, one product of depth 2 · width,
+        // [−V −W] [Wᴴ; Vᴴ], on the lower triangle alone, as LAPACK's dsyr2k: the reduction reads nothing above the
+        // diagonal. By bands of rows, each to the diagonal: about half the full block's operations.
+        const std::size_t rest  {n - k1};
+        const std::size_t depth {2 * width};
+        std::vector<T>    left(rest * depth);  // row i: −V's row i, then −W's
+        std::vector<T>    right(depth * rest); // Wᴴ's rows, then Vᴴ's
         for (std::size_t p {0}; p < width; ++p) {
           for (std::size_t i {0}; i < rest; ++i) {
-            minus_v[(i * width) + p]  = -by_row_v[(p * n) + k1 + i];
-            minus_w[(i * width) + p]  = -by_row_w[(p * n) + k1 + i];
-            v_adjoint[(p * rest) + i] = conj_of(by_row_v[(p * n) + k1 + i]);
-            w_adjoint[(p * rest) + i] = conj_of(by_row_w[(p * n) + k1 + i]);
+            left[(i * depth) + p]                = -by_row_v[(p * n) + k1 + i];
+            left[(i * depth) + width + p]        = -by_row_w[(p * n) + k1 + i];
+            right[(p * rest) + i]                = conj_of(by_row_w[(p * n) + k1 + i]);
+            right[((width + p) * rest) + i]      = conj_of(by_row_v[(p * n) + k1 + i]);
           }
         }
         T* trailing {a.data() + (k1 * n) + k1};
-        gemm(rest, rest, width, minus_v.data(), width, w_adjoint.data(), rest, trailing, n);
-        gemm(rest, rest, width, minus_w.data(), width, v_adjoint.data(), rest, trailing, n);
+        for (std::size_t r0 {0}; r0 < rest; r0 += tridiagonal_band) {
+          const std::size_t rows {std::min(tridiagonal_band, rest - r0)};
+          gemm(rows, r0 + rows, depth, left.data() + (r0 * depth), depth, right.data(), rest, trailing + (r0 * n), n);
+        }
       }
       for (std::size_t i {0}; i < n; ++i) {
         d[i] = real_part(a[(i * n) + i]);

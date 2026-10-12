@@ -80,6 +80,52 @@ namespace numerical::detail {
     return total;
   }
 
+  /*!
+   * \brief `Σ row[i] · v[i]`, and `out[i] += row[i] · f`, for \p count elements, in one pass over \p row: a
+   *        symmetric matrix-vector product takes both from each row of its lower triangle, which two passes
+   *        would read twice. The sum is accumulated as \ref dot_product accumulates it.
+   */
+  template <native_scalar T>
+  [[nodiscard]] T symmetric_row(const T*    row,
+                                const T*    v,
+                                const T&    f,
+                                T*          out,
+                                std::size_t count)
+  {
+    using lane = typename native_vector<T>::type;
+    constexpr std::size_t   width                  {native_vector_bytes / sizeof(T)};
+    constexpr std::size_t   lanes                  {4};
+    const T                 factor                 {f}; // read once: it may be an element of v
+    const lane              splat  = factor - lane {};  // factor in every lane
+    std::array<lane, lanes> sum                    {};
+    const std::size_t       done                   {count - (count % (width * lanes))};
+    for (std::size_t i {0}; i < done; i += width * lanes) {
+#  pragma GCC unroll 4 // the sums in registers: GCC keeps a rolled array of vectors in memory
+      for (std::size_t l {0}; l < lanes; ++l) {
+        lane rv;
+        lane vv;
+        lane ov;
+        std::memcpy(&rv, row + i + (l * width), sizeof(lane));
+        std::memcpy(&vv, v + i + (l * width), sizeof(lane));
+        std::memcpy(&ov, out + i + (l * width), sizeof(lane));
+        sum[l] += rv * vv;
+        ov     += rv * splat;
+        std::memcpy(out + i + (l * width), &ov, sizeof(lane));
+      }
+    }
+    T total {};
+    for (std::size_t l {0}; l < lanes; ++l) {
+      for (std::size_t k {0}; k < width; ++k) {
+        total += sum[l][k];
+      }
+    }
+    for (std::size_t i {done}; i < count; ++i) {
+      total  += row[i] * v[i];
+      out[i] += row[i] * factor;
+    }
+    return total;
+  }
+
 #endif
 
 #if defined(__GNUC__) && !defined(__clang__)
@@ -146,6 +192,23 @@ namespace numerical::detail {
                                  std::size_t /*count*/)
   {
     return 0;
+  }
+
+  //! \brief `Σ row[i] · v[i]` and `out[i] += row[i] · f`, in order, for a type no native vector holds.
+  template <typename T>
+  [[nodiscard]] T symmetric_row(const T*    row,
+                                const T*    v,
+                                const T&    f,
+                                T*          out,
+                                std::size_t count)
+  {
+    const T factor {f}; // read once: it may be an element of v
+    T       total  {};
+    for (std::size_t i {0}; i < count; ++i) {
+      total  += row[i] * v[i];
+      out[i] += row[i] * factor;
+    }
+    return total;
   }
 
   //! \brief `Σ x[i] · y[i]`, in order, for a type no native vector holds.

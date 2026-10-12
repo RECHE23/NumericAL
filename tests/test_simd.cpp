@@ -79,6 +79,49 @@ TEST(dot_product_sums_every_term)
   }
 }
 
+// A symmetric product's row: the sum of every term and the scaled row added to out, in one pass, on every
+// kernel this processor runs. Small integers: every order sums them exactly.
+TEST(symmetric_row_sums_every_term_and_adds_the_scaled_row)
+{
+  using kernel = double (*)(const double*, const double*, double, double*, std::size_t);
+  std::vector<kernel> kernels {[](const double* row, const double* v, double f, double* out, std::size_t count) {
+                                 return numerical::detail::symmetric_row(row, v, f, out, count);
+                               }};
+#ifdef NUMERICAL_X86_COMPILED
+  if (numerical::detail::cpu_features().avx2_fma) {
+    kernels.push_back(&numerical::detail::avx2_symmetric_row);
+  }
+  if (numerical::detail::cpu_features().avx512f) {
+    kernels.push_back(&numerical::detail::avx512_symmetric_row);
+  }
+#endif
+  for (const kernel run : kernels) {
+    for (const std::size_t count : {std::size_t {0}, std::size_t {3}, std::size_t {64}, std::size_t {77}, std::size_t {130}}) {
+      std::vector<double> row(count);
+      std::vector<double> v(count);
+      std::vector<double> out(count);
+      double              want {0.0};
+      for (std::size_t i {0}; i < count; ++i) {
+        row[i]  = static_cast<double>(i % 7) - 3.0;
+        v[i]    = static_cast<double>(i % 5) + 1.0;
+        out[i]  = static_cast<double>(i % 3);
+        want   += row[i] * v[i];
+      }
+      EXPECT(run(row.data(), v.data(), 2.0, out.data(), count) == want);
+      bool added {true};
+      for (std::size_t i {0}; i < count; ++i) {
+        added = added && out[i] == static_cast<double>(i % 3) + (2.0 * row[i]);
+      }
+      EXPECT(added);
+    }
+  }
+  std::vector<std::complex<double>> z {{1.0, 2.0}, {3.0, -1.0}};
+  std::vector<std::complex<double>> zout(2);
+  EXPECT(numerical::detail::symmetric_row(z.data(), z.data(), std::complex<double> {2.0, 0.0}, zout.data(), 2)
+         == (z[0] * z[0]) + (z[1] * z[1]));
+  EXPECT(zout[1] == z[1] * 2.0);
+}
+
 namespace {
 
   using numerical::detail::row_operation;
