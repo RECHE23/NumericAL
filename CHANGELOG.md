@@ -40,9 +40,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   rows is solved by leaves of 16, from a leaf to the rest of its block by a product. x86-64 (twenty threads,
   float64): order 128 1.1 → 0.55 ms, 192 2.7 → 1.6, 384 13 → 8.5, 512 20 → 16; arm64 unchanged.
 
-- **LU factorisation solves its rows of U by leaves**, a product between them, and its panel's column updates
-  run over native vectors under GCC. float64 `solve`: x86-64 (twenty threads) order 192 0.96 → 0.59 ms, 384
-  5.1 → 3.7, 512 8.2 → 5.7–6.7; M1 Pro order 128–512 5–14 % faster. The factors are unchanged where no product
+- **LU factorisation solves its rows of U by leaves**, a product between them, factorises a tall panel
+  recursively as LAPACK's dgetrf2 (its bottom updated by products, in parallel), and its panel's column updates
+  run over native vectors under GCC. float64 `solve`: x86-64 (twenty threads) order 192 0.96 → 0.43 ms, 256
+  1.85 → 1.03, 512 8.2 → 4.3–5.4; M1 Pro order 128–1024 5–15 % faster. The factors are unchanged where no product
   is fused.
 
 ### Added

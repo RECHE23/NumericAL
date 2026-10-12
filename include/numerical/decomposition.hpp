@@ -46,7 +46,8 @@ namespace numerical {
     //!        deep enough for the packed kernel while the unblocked panel stays a small part of the work.
     inline constexpr std::size_t lu_block {64};
 
-    //! \brief The rows of one leaf of the triangular solves against many right-hand sides (\ref lu_block's).
+    //! \brief The rows of one leaf of the triangular solves against many right-hand sides (\ref lu_block's), and
+    //!        the columns of one leaf of the recursive LU panel.
     inline constexpr std::size_t solve_leaf {16};
 
     //! \brief The columns of one panel of the blocked Cholesky factorisation (as \ref lu_block).
@@ -458,42 +459,86 @@ namespace numerical {
           panel[(j * rows) + r] = lu_[((k0 + r) * n_) + k0 + j];
         }
       }
-      for (std::size_t j {0}; j < width; ++j) {
-        T           *          column {panel.data() + (j * rows)};
-        std::size_t            pivot  {j};
-        detail::magnitude_t<T> best   {std::abs(column[j])};
-        for (std::size_t r {j + 1}; r < rows; ++r) {
-          const detail::magnitude_t<T> mag {std::abs(column[r])};
-          if (mag > best) {
-            best  = mag;
-            pivot = r;
-          }
-        }
-        if (best == detail::magnitude_t<T> {}) {
-          singular_ = true;
-          continue; // a zero pivot column: leave it, the determinant becomes 0
-        }
-        if (pivot != j) {
-          for (std::size_t c {0}; c < width; ++c) {
-            std::swap(panel[(c * rows) + j], panel[(c * rows) + pivot]);
-          }
-          swap_rows_outside(k0 + j, k0 + pivot, k0, end);
-          std::swap(pivots_[k0 + j], pivots_[k0 + pivot]);
-          sign_ = -sign_;
-        }
-        for (std::size_t r {j + 1}; r < rows; ++r) {
-          column[r] = column[r] / column[j]; // the multiplier, in L's slot
-        }
-        for (std::size_t c {j + 1}; c < width; ++c) {
-          T*      target {panel.data() + (c * rows)};
-          detail::subtract_product(target + j + 1, column + j + 1, target[j], rows - (j + 1));
-        }
-      }
+      factorize_columns(panel, rows, 0, width, k0, end);
       for (std::size_t r {0}; r < rows; ++r) {
         for (std::size_t j {0}; j < width; ++j) {
           lu_[((k0 + r) * n_) + k0 + j] = panel[(j * rows) + r];
         }
       }
+    }
+
+    /*!
+     * \brief Factorises the columns `[first, last)` of the panel (column-major, \p rows rows), every row from
+     *        `first` down, each pivot's row swap applied to the whole panel and outside it.
+     *
+     * Recursively, as LAPACK's dgetrf2: the left half is factorised, the top of the right half solved against its
+     * unit-lower L, the bottom updated by a product through the matrix product kernel (in parallel, where the
+     * work is), then the right half factorised; a leaf of \ref detail::solve_leaf columns, unblocked. Each element
+     * still receives its updates in ascending order of the pivot.
+     */
+    void factorize_columns(std::vector<T>& panel,
+                           std::size_t     rows,
+                           std::size_t     first,
+                           std::size_t     last,
+                           std::size_t     k0,
+                           std::size_t     end)
+    {
+      // A leaf, or a panel too short for its products to pay for packing (order 64 on arm64: 30 µs unblocked,
+      // 37 recursive).
+      if (last - first <= detail::solve_leaf || rows - first < 2 * detail::lu_block) {
+        for (std::size_t j {first}; j < last; ++j) {
+          T           *          column {panel.data() + (j * rows)};
+          std::size_t            pivot  {j};
+          detail::magnitude_t<T> best   {std::abs(column[j])};
+          for (std::size_t r {j + 1}; r < rows; ++r) {
+            const detail::magnitude_t<T> mag {std::abs(column[r])};
+            if (mag > best) {
+              best  = mag;
+              pivot = r;
+            }
+          }
+          if (best == detail::magnitude_t<T> {}) {
+            singular_ = true;
+            continue; // a zero pivot column: leave it, the determinant becomes 0
+          }
+          if (pivot != j) {
+            for (std::size_t c {0}; c < end - k0; ++c) { // the whole panel row
+              std::swap(panel[(c * rows) + j], panel[(c * rows) + pivot]);
+            }
+            swap_rows_outside(k0 + j, k0 + pivot, k0, end);
+            std::swap(pivots_[k0 + j], pivots_[k0 + pivot]);
+            sign_ = -sign_;
+          }
+          for (std::size_t r {j + 1}; r < rows; ++r) {
+            column[r] = column[r] / column[j]; // the multiplier, in L's slot
+          }
+          for (std::size_t c {j + 1}; c < last; ++c) {
+            T*      target {panel.data() + (c * rows)};
+            detail::subtract_product(target + j + 1, column + j + 1, target[j], rows - (j + 1));
+          }
+        }
+        return;
+      }
+      const std::size_t mid {first + ((last - first) / 2)};
+      factorize_columns(panel, rows, first, mid, k0, end);
+      for (std::size_t c {mid}; c < last; ++c) { // the top of the right half: rows [first, mid)
+        T* target {panel.data() + (c * rows)};
+        for (std::size_t j {first}; j < mid; ++j) {
+          detail::subtract_product(target + j + 1, panel.data() + (j * rows) + j + 1, target[j], mid - (j + 1));
+        }
+      }
+      // The bottom, rows [mid, rows): A₂₂ −= L₂₁ U₁₂, column-major, so as its transpose, row-major:
+      // A₂₂ᵀ += (−U₁₂ᵀ) L₂₁ᵀ.
+      const std::size_t depth {mid - first};
+      std::vector<T>    minus_u((last - mid) * depth);
+      for (std::size_t c {mid}; c < last; ++c) {
+        for (std::size_t j {first}; j < mid; ++j) {
+          minus_u[((c - mid) * depth) + (j - first)] = -panel[(c * rows) + j];
+        }
+      }
+      detail::gemm(last - mid, rows - mid, depth, minus_u.data(), depth, panel.data() + (first * rows) + mid, rows,
+                   panel.data() + (mid * rows) + mid, rows);
+      factorize_columns(panel, rows, mid, last, k0, end);
     }
 
     //! \brief Swaps rows \p a and \p b of the factor outside the panel's columns `[k0, end)`.
