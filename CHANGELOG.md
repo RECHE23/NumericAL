@@ -6,6 +6,13 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+Faster dense linear algebra throughout (see BENCHMARKS.md for the tables against NumPy's BLAS/LAPACK).
+Results that differ from 2026.10.4 in the last bits, each still the same on any number of threads: on x86-64
+with AVX2 or AVX-512, the decompositions' row updates (now fused multiply-adds), real and complex; the
+inverse and `solve` (a block's terms in ascending order); `lstsq` (a QR where the rank is surely full); and
+complex products and decompositions past the portable path. `limit_gemm_path("portable")` keeps the classical
+sums of the matrix product and of the row updates.
+
 ### Changed
 - **`eigh` reduces to tridiagonal form faster**: each row of the trailing block is read once for both halves of
   its symmetric product (as `dsymv` reads it), on AVX-512 or AVX2 with FMA where the matrix product's kernel
@@ -84,6 +91,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **`eigh` no longer zeroes buffers it writes whole** (each join's root gaps and eigenvector weights, megabytes
   at the top join; the panel's and the reflector blocks' copies): 3.4 % fewer instructions at order 512
   (callgrind), the same results to the bit.
+
+### Fixed
+- `make bench-linalg` without `SIZES` measured order 64 alone: the default list's commas split the arguments of
+  the `$(or …)` it sat in.
+
 
 ## 2026.10.4 — 2026-10-12
 
