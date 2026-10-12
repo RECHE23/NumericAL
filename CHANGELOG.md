@@ -26,8 +26,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   153 → 178 GFLOPS, 1024 195 → 207 (one core: 41, about 80 % of its vector peak).
 
 ### Added
-- **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses: order 1024
-  356 GFLOPS against Accelerate's 384 (was 207 on the vector units; M1 Pro, 8 threads), one core 181 (was 41).
+- **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses. M1 Pro,
+  8 threads, GFLOPS against Accelerate's: order 2048 423 (383), 1024 395 (388), 512 277 (431), 256 209 (282);
+  the vector units gave 204, 207, 178 and 145. One core: 160–180 (was 41).
   Apple documents no instruction for it, so the path is guarded: compiled only for arm64 macOS (not at all under
   `NUMERICAL_NO_AMX`), used only on a CPU family of the M1 to M4 line, and only once a product computed on it
   equals, to the bit, the same product by `std::fma` in ascending order. `numerical.set_amx(False)` /
