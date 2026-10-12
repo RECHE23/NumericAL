@@ -920,14 +920,15 @@ namespace {
 } // namespace
 
 // Past one panel: three panels, the last partial. On the portable path: on a fused one the trailing products fuse
-// their multiply-adds and the panels do not, which a later test bounds instead.
+// their multiply-adds and the panels do not, which a later test bounds instead, and complex products sum the real
+// and imaginary parts apart.
 TEST(blocked_lu_equals_the_unblocked_algorithm_to_the_bit)
 {
   const std::size_t n   {(2 * numerical::detail::lu_block) + 22};
   (void)numerical::limit_gemm_path(numerical::gemm_path::portable);
   EXPECT(blocked_lu_equals_unblocked<double>(n));
-  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
   EXPECT(blocked_lu_equals_unblocked<std::complex<double>>(numerical::detail::lu_block + 40));
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
 
 // A zero column in a later panel makes the matrix singular there, and the panels after it still run.
@@ -1003,8 +1004,8 @@ TEST(blocked_cholesky_equals_the_unblocked_algorithm_to_the_bit)
   (void)numerical::limit_gemm_path(numerical::gemm_path::portable);
   EXPECT(blocked_cholesky_equals_unblocked<double>((2 * numerical::detail::cholesky_block) + 22));
   EXPECT(blocked_cholesky_equals_unblocked<double>((9 * numerical::detail::cholesky_block) + 5));
-  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
   EXPECT(blocked_cholesky_equals_unblocked<std::complex<double>>(numerical::detail::cholesky_block + 40));
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
 
 // A diagonal that turns non-positive in a later panel is refused there.

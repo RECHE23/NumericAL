@@ -105,8 +105,56 @@ TEST(packed_product_equals_the_ascending_sum_to_the_bit)
   EXPECT(on_every_path([&] { return product_is_exact<double>(129, 101, k); }));
   EXPECT(on_every_path([&] { return product_is_exact<double>(31, 15, k); })); // one partial AMX tile
   EXPECT(product_is_exact<float>(67, 75, k));
+  (void)numerical::limit_gemm_path(numerical::gemm_path::portable);           // complex: past it, through the real kernel
   EXPECT(product_is_exact<std::complex<double>>(37, 29, k));
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
   EXPECT(product_is_exact<int>(70, 50, k));
+}
+
+namespace {
+  // A complex product past the portable path, which sums the real and imaginary parts of A apart, on small
+  // multiples of an eighth: every product and partial sum is exact, so it must equal the ascending sum, on one
+  // thread as on all of them.
+  template <typename Z>
+  bool split_product_is_exact(std::size_t m,
+                              std::size_t n,
+                              std::size_t k)
+  {
+    using R = Z::value_type;
+    std::vector<Z> a(m * k);
+    std::vector<Z> b(k * n);
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = Z {static_cast<R>(i % 7) - R {3}, static_cast<R>(i % 5) / R {4}};
+    }
+    for (std::size_t i {0}; i < b.size(); ++i) {
+      b[i] = Z {static_cast<R>(i % 3) / R {2}, R {1} - static_cast<R>(i % 11)};
+    }
+    std::vector<Z> wanted(m * n, Z {R {1}, R {-2}});
+    std::vector<Z> all             {wanted};
+    std::vector<Z> alone           {wanted};
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t p {0}; p < k; ++p) {
+        for (std::size_t j {0}; j < n; ++j) {
+          wanted[(i * n) + j] += a[(i * k) + p] * b[(p * n) + j];
+        }
+      }
+    }
+    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, all.data(), n);
+    numerical::set_max_threads(1);
+    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, alone.data(), n);
+    numerical::set_max_threads(0);
+    return all == wanted && alone == wanted;
+  }
+} // namespace
+
+// Complex products past the portable path: several column blocks and depth blocks of the real products, each
+// partial.
+TEST(complex_products_run_through_the_real_kernel)
+{
+  const std::size_t n {numerical::detail::split_columns + 37};
+  const std::size_t k {numerical::detail::split_depth + 19};
+  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<double>>(45, n, k); }));
+  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>>(21, 70, k); }));
 }
 
 // More columns than one packed block of B holds: the column blocks are summed independently.

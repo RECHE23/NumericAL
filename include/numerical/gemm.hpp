@@ -22,6 +22,7 @@
 #include <array>
 #include <bit>
 #include <atomic>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -690,6 +691,128 @@ namespace numerical::detail {
     return false;
   }
 
+  template <typename T>
+  void gemm(std::size_t m,
+            std::size_t n,
+            std::size_t k,
+            const T*    a,
+            std::size_t lda,
+            const T*    b,
+            std::size_t ldb,
+            T*          c,
+            std::size_t ldc);
+
+  //! \brief The complex numbers `gemm_split` multiplies through the real kernel.
+  template <typename T>
+  concept split_complex = std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>;
+
+  //! \brief The columns of B and C, and the depth, of one real product of `gemm_split`: its real operands
+  //!         stay a few megabytes whatever the shapes.
+  inline constexpr std::size_t split_columns {512};
+
+  //! \brief The depth of one real product of `gemm_split` (\ref split_columns).
+  inline constexpr std::size_t split_depth {256};
+
+  /*!
+   * \brief `C += A·B` for complex numbers through the real kernel, by blocks of \ref split_columns columns and
+   *        \ref split_depth of depth: each block is one real product, `[Re C | Im C] += [Re A | −Im A] ·
+   *        [[Re B, Im B], [Im B, −Re B]]`, of the multiply-adds the complex product has, on the real path's
+   *        units and threads (a scalar complex tile has none). Within a block, each element of C takes the
+   *        products of the real parts of A in ascending order of the depth, then those of the imaginary parts.
+   */
+  template <split_complex Z>
+  void gemm_split(std::size_t m,
+                  std::size_t n,
+                  std::size_t k,
+                  const Z*    a,
+                  std::size_t lda,
+                  const Z*    b,
+                  std::size_t ldb,
+                  Z*          c,
+                  std::size_t ldc)
+  {
+    using R = typename Z::value_type;
+    const std::size_t           widest  {std::min(n, split_columns)};
+    const std::size_t           deepest {std::min(k, split_depth)};
+    const std::unique_ptr<R[]>  ar      {std::make_unique_for_overwrite<R[]>(m * 2 * deepest)};
+    const std::unique_ptr<R[]>  br      {std::make_unique_for_overwrite<R[]>(4 * deepest * widest)};
+    const std::unique_ptr<R[]>  cr      {std::make_unique_for_overwrite<R[]>(m * 2 * widest)};
+    for (std::size_t jc {0}; jc < n; jc += split_columns) {
+      const std::size_t nb {std::min(split_columns, n - jc)};
+      parallel_for(m, nb, [&](std::size_t i) {
+                     for (std::size_t j {0}; j < nb; ++j) {
+                       cr[(i * 2 * nb) + j]      = c[(i * ldc) + jc + j].real();
+                       cr[(i * 2 * nb) + nb + j] = c[(i * ldc) + jc + j].imag();
+                     }
+                   });
+      for (std::size_t pc {0}; pc < k; pc += split_depth) {
+        const std::size_t kb {std::min(split_depth, k - pc)};
+        parallel_for(m, kb, [&](std::size_t i) {
+                       for (std::size_t p {0}; p < kb; ++p) {
+                         ar[(i * 2 * kb) + p]      = a[(i * lda) + pc + p].real();
+                         ar[(i * 2 * kb) + kb + p] = -a[(i * lda) + pc + p].imag();
+                       }
+                     });
+        parallel_for(kb, 2 * nb, [&](std::size_t p) {
+                       R* const top {br.get() + (p * 2 * nb)};
+                       R* const bottom {br.get() + ((kb + p) * 2 * nb)};
+                       for (std::size_t j {0}; j < nb; ++j) {
+                         const Z value {b[((pc + p) * ldb) + jc + j]};
+                         top[j]         = value.real();
+                         top[nb + j]    = value.imag();
+                         bottom[j]      = value.imag();
+                         bottom[nb + j] = -value.real();
+                       }
+                     });
+        gemm(m, 2 * nb, 2 * kb, ar.get(), 2 * kb, br.get(), 2 * nb, cr.get(), 2 * nb);
+      }
+      parallel_for(m, nb, [&](std::size_t i) {
+                     for (std::size_t j {0}; j < nb; ++j) {
+                       c[(i * ldc) + jc + j] = Z {cr[(i * 2 * nb) + j], cr[(i * 2 * nb) + nb + j]};
+                     }
+                   });
+    }
+  }
+
+  //! \brief A product past the plain loop: on the AMX or x86-64 tiles where \ref gemm_elsewhere takes it, else on
+  //!        the vector tile.
+  template <typename T>
+  void gemm_large(std::size_t m,
+                  std::size_t n,
+                  std::size_t k,
+                  const T*    a,
+                  std::size_t lda,
+                  const T*    b,
+                  std::size_t ldb,
+                  T*          c,
+                  std::size_t ldc)
+  {
+    if (!gemm_elsewhere(m, n, k, a, lda, b, ldb, c, ldc)) {
+      gemm_packed<vector_tile_kernel<T>>(m, n, k, a, lda, b, ldb, c, ldc);
+    }
+  }
+
+  //! \brief A complex product past the plain loop: through the real kernel (`gemm_split`) past the portable
+  //!        path, else on the vector tile, whole complex products summed in order.
+  template <split_complex T>
+  void gemm_large(std::size_t m,
+                  std::size_t n,
+                  std::size_t k,
+                  const T*    a,
+                  std::size_t lda,
+                  const T*    b,
+                  std::size_t ldb,
+                  T*          c,
+                  std::size_t ldc)
+  {
+    if (gemm_path_current() == gemm_path::portable) {
+      gemm_packed<vector_tile_kernel<T>>(m, n, k, a, lda, b, ldb, c, ldc);
+    }
+    else {
+      gemm_split(m, n, k, a, lda, b, ldb, c, ldc);
+    }
+  }
+
   /*!
    * \brief `C += A·B`, every element of C summed in ascending order of the depth.
    *
@@ -698,7 +821,9 @@ namespace numerical::detail {
    * element a chain of fused multiply-adds), else on the vector tile, which rounds `c + a·b` as the compiler
    * does: each product before its sum with contraction off (GCC's default in ISO C++ mode), fused where it
    * contracts (Clang's default). Either way the plain loop and the packed one agree to the bit, and every
-   * element is summed in ascending order of the depth on any number of threads.
+   * element is summed in ascending order of the depth on any number of threads. Complex `float` and `double`
+   * past the portable path (\ref gemm_path_current) run through the real kernel instead (`gemm_split`),
+   * the same on any number of threads too, but no longer the plain loop's to the bit.
    *
    * \param[in]     m,n,k       The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major.
    * \param[in]     a,lda,b,ldb The operands and the distance between their rows.
@@ -721,9 +846,7 @@ namespace numerical::detail {
       gemm_rows(m, n, k, a, lda, b, ldb, c, ldc);
       return;
     }
-    if (!gemm_elsewhere(m, n, k, a, lda, b, ldb, c, ldc)) {
-      gemm_packed<vector_tile_kernel<T>>(m, n, k, a, lda, b, ldb, c, ldc);
-    }
+    gemm_large(m, n, k, a, lda, b, ldb, c, ldc);
   }
 } // namespace numerical::detail
 

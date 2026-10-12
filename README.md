@@ -176,7 +176,7 @@ caps the threads a kernel uses, the caller's included, as `OMP_NUM_THREADS` caps
 started. A process forked while the pool exists runs its kernels alone. Each library that embeds NumericAL's
 headers has a pool and a cap of its own.
 
-`float64` matrix products, and the decompositions through them, run on a kernel chosen at run time, which
+`float64` and `complex128` matrix products, and the decompositions through them, run on a kernel chosen at run time, which
 `numerical.gemm_path()` (C++: `gemm_path_in_use`) reports:
 
 - `"portable"` — the compiler's own vectors, on any processor;
@@ -191,7 +191,10 @@ headers has a pool and a cap of its own.
 `name` or a more portable one. Every element of a product is summed in ascending order of the depth on any
 number of threads, so a result is the same, to the bit, whatever the thread count; across kernels it differs in
 the last bits, since the AVX and AMX kernels fuse each multiply-add and the portable one rounds as the compiler
-does.
+does. Past the portable kernel, a complex product runs as one real product of twice the order, `[Re A | −Im A]`
+times `[[Re B, Im B], [Im B, −Re B]]` (by blocks), on that kernel and its threads: each element then sums the
+products of A's real parts, then those of its imaginary parts, where the portable kernel sums whole complex
+products in order.
 
 ## Benchmarks
 

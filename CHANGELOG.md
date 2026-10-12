@@ -30,6 +30,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   then one fused multiply-add, so LU, Cholesky, QR, the inverse, `eigh` and `svd` differ in the last bits from
   2026.10.4 on such processors. i9-10900X (a shared machine): `solve` of order 1024 about 30 → 25 ms, the
   inverse 63 → 57 ms, `svd` of order 512 about 165 → 134 ms; `eigh` 3–5 % faster.
+- **Complex products run on the real kernel** past the portable path (AVX2, AVX-512, AMX): one real product
+  of twice the order, `[Re A | −Im A]·[[Re B, Im B], [Im B, −Re B]]`, by blocks of 512 columns and 256 of depth,
+  where the complex tile was scalar and single-threaded in effect. Each element sums the products of A's real
+  parts, then of its imaginary parts, in a fixed order on any number of threads: complex products, and the
+  complex decompositions through them, differ in the last bits; `limit_gemm_path("portable")` keeps the classical
+  sums. M1 Pro, `complex128`: a product of order 1024 188 → 23 ms (Accelerate: 30), the inverse 260 → 117 ms,
+  `eigh` 642 → 418 ms. i9-10900X: the product 118 → 25–34 ms (OpenBLAS: 18), the inverse of order 512 84 → 49
+  ms, `eigh` 298 → 170 ms.
 - **Every matrix product and parallel loop asks the system for its thread count once**: glibc reads a file
   for it on each call, three system calls per product, which a container's file system (LXC's lxcfs) serves
   slowly. i5-8500 (six AVX2 cores) in a container: a product of order 128 by 64 290 → 52 µs, the inverse of
