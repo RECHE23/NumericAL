@@ -31,6 +31,7 @@
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <tuple>
@@ -3780,6 +3781,126 @@ namespace numerical {
       }
       return rank;
     }
+
+    //! \brief How far under the reciprocal of \ref rank_tolerance a bound on the condition number must stay for
+    //!        \ref lstsq_by_qr to answer: nearer, the singular value decomposition decides the rank.
+    inline constexpr double qr_rank_margin {100.0};
+
+    //! \brief \p x times two to the \p exponent, exactly where the result is a normal number (no power of two is
+    //!        formed, so none overflows).
+    template <typename T>
+    [[nodiscard]] T scaled_by_two(const T& x,
+                                  int      exponent)
+    {
+      return std::scalbn(x, exponent);
+    }
+
+    //! \brief \ref scaled_by_two for a complex number, part by part.
+    template <typename U>
+    [[nodiscard]] std::complex<U> scaled_by_two(const std::complex<U>& x,
+                                                int                    exponent)
+    {
+      return std::complex<U> {std::scalbn(x.real(), exponent), std::scalbn(x.imag(), exponent)};
+    }
+
+    /*!
+     * \brief `R⁻¹`, upper triangular, of the `n × n` upper-triangular \p r (row-major): back substitution against
+     *        the identity in parallel chunks of columns, each row's terms in registers (\ref subtract_products). A
+     *        chunk's rows past its last column stay zero; a zero on the diagonal leaves infinities or NaN.
+     */
+    template <typename T>
+    [[nodiscard]] std::vector<T> upper_inverse(const std::vector<T>& r,
+                                               std::size_t           n)
+    {
+      constexpr std::size_t width      {64};
+      std::vector<T>        x(n * n, T {});
+      parallel_for((n + width - 1) / width, n * n * width / 2, [&](std::size_t chunk) {
+                     const std::size_t first {chunk * width};
+                     const std::size_t last {std::min(first + width, n)};
+                     for (std::size_t i {last}; i-- > 0;) {
+                       T* const row {x.data() + (i * n) + first};
+                       if (i >= first) {
+                         row[i - first] = T {1};
+                       }
+                       subtract_products(row, r.data() + (i * n) + i + 1, x.data() + ((i + 1) * n) + first, n, last - (i + 1), last - first);
+                       for (std::size_t c {0}; c < last - first; ++c) {
+                         row[c] = row[c] / r[(i * n) + i];
+                       }
+                     }
+                   });
+      return x;
+    }
+
+    /*!
+     * \brief The least-squares solution of `A X ≈ B` by a QR factorisation, of `A`, or of `Aᴴ` for a wide `A` (the
+     *        minimum-norm solution), where it is the one the singular value decomposition gives: with `A` divided by
+     *        a power of two near its largest magnitude, `κ₂(R) ≤ ‖R‖_F ‖R⁻¹‖_F` must stay \ref qr_rank_margin times
+     *        under the reciprocal of \ref rank_tolerance, so that every singular value is far above it and the rank
+     *        full (a zero on `R`'s diagonal makes the bound infinite or NaN, which fails). Else nothing. A fraction
+     *        of the decomposition's work, the rest in matrix products.
+     */
+    template <typename T>
+    [[nodiscard]] std::optional<matrix<T>> lstsq_by_qr(const matrix<T>& a,
+                                                       const matrix<T>& b)
+    {
+      const std::size_t m       {a.rows()};
+      const std::size_t n       {a.cols()};
+      const bool        wide    {m < n};
+      const std::size_t rows    {wide ? n : m}; // of the matrix factorised
+      const std::size_t cols    {wide ? m : n};
+      double            largest {0.0};
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          largest = std::max(largest, static_cast<double>(std::abs(a(i, j))));
+        }
+      }
+      if (largest == 0.0) {
+        return std::nullopt;
+      }
+      const int      exponent {std::ilogb(largest)};
+      std::vector<T> entries(rows * cols);
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          if (wide) {
+            entries[(j * cols) + i] = scaled_by_two(conj_of(a(i, j)), -exponent);
+          }
+          else {
+            entries[(i * cols) + j] = scaled_by_two(a(i, j), -exponent);
+          }
+        }
+      }
+      const thin_qr<T>     factors         {householder_qr(std::move(entries), rows, cols)};
+      const std::vector<T> inverse         {upper_inverse(factors.r, cols)};
+      double               r_squares       {0.0};
+      double               inverse_squares {0.0};
+      for (std::size_t e {0}; e < cols * cols; ++e) {
+        r_squares       += static_cast<double>(std::norm(factors.r[e]));
+        inverse_squares += static_cast<double>(std::norm(inverse[e]));
+      }
+      const double condition {std::sqrt(r_squares) * std::sqrt(inverse_squares)};
+      if (!(condition * rank_tolerance(1.0, m, n) * qr_rank_margin < 1.0)) {
+        return std::nullopt;
+      }
+      const std::size_t k             {b.cols()};
+      std::vector<T>    y(cols * k, T {});
+      std::vector<T>    x(n * k, T    {});
+      if (wide) { // x = Q R⁻ᴴ B
+        const matrix<T>      inverse_adjoint {adjoint(matrix<T> {cols, cols, inverse})};
+        const std::vector<T> right(b.begin(), b.end());
+        gemm(cols, k, cols, &*inverse_adjoint.begin(), cols, right.data(), k, y.data(), k);
+        gemm(n, k, cols, factors.q.data(), cols, y.data(), k, x.data(), k);
+      }
+      else { // x = R⁻¹ Qᴴ B
+        const matrix<T>      q_adjoint {adjoint(matrix<T> {rows, cols, factors.q})};
+        const std::vector<T> right(b.begin(), b.end());
+        gemm(cols, k, rows, &*q_adjoint.begin(), rows, right.data(), k, y.data(), k);
+        gemm(n, k, cols, inverse.data(), cols, y.data(), k, x.data(), k);
+      }
+      for (T& value : x) {
+        value = scaled_by_two(value, -exponent);
+      }
+      return matrix<T> {n, k, std::move(x)};
+    }
   } // namespace detail
 
   /*!
@@ -3805,7 +3926,9 @@ namespace numerical {
 
   /*!
    * \brief The minimum-norm least-squares solution of `A X ≈ B` for every column of `B` at once, as
-   *        `numpy.linalg.lstsq` with a matrix right-hand side: one SVD of `A`, `X = V Σ⁺ Uᴴ B`.
+   *        `numpy.linalg.lstsq` with a matrix right-hand side: one SVD of `A`, `X = V Σ⁺ Uᴴ B`; or, where a bound
+   *        on the condition number shows the rank full with room to spare, the same solution to rounding by one
+   *        QR factorisation (\ref detail::lstsq_by_qr).
    * \tparam T The scalar element type (`double` or `std::complex<double>`).
    * \param[in] a The `m × n` matrix.
    * \param[in] b The right-hand sides (`m × k`).
@@ -3821,6 +3944,9 @@ namespace numerical {
       throw dimension_error("lstsq: right-hand side size differs from the matrix");
     }
     detail::require_finite(a, "lstsq");
+    if (std::optional<matrix<T>> fast {detail::lstsq_by_qr(a, b)}) {
+      return *std::move(fast);
+    }
     const svd_decomposition<T> s                        {a};
     const vector<double>&      sigma                    {s.singular_values()};
     const std::size_t          rank                     {detail::numerical_rank(sigma, a.rows(), a.cols())};

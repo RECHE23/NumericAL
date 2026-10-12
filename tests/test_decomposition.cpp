@@ -709,6 +709,70 @@ TEST(lstsq_is_the_minimum_norm_least_squares_solution)
   EXPECT_THROWS(numerical::lstsq(matrix<double> {{1.0}}, vector<double> {1.0, 2.0}), numerical::dimension_error);
 }
 
+namespace {
+  // A deterministic matrix of the given shape, far from rank-deficient.
+  template <typename T>
+  matrix<T> spread(std::size_t rows,
+                   std::size_t cols)
+  {
+    std::vector<T> entries(rows * cols);
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        const double angle {static_cast<double>((i * 7) + (j * 13) + ((i * j) % 11))};
+        if constexpr (std::is_same_v<T, double>) {
+          entries[(i * cols) + j] = std::sin(angle) + (i == j ? 3.0 : 0.0);
+        }
+        else {
+          entries[(i * cols) + j] = T {std::sin(angle) + (i == j ? 3.0 : 0.0), std::cos(angle * 0.5)};
+        }
+      }
+    }
+    return matrix<T> {rows, cols, std::move(entries)};
+  }
+
+  // lstsq against the pseudo-inverse (from the SVD): the same solution, to rounding.
+  template <typename T>
+  bool lstsq_is_pinv_times(const matrix<T>& a)
+  {
+    std::vector<T> b(a.rows());
+    for (std::size_t i {0}; i < a.rows(); ++i) {
+      b[i] = T {std::cos(static_cast<double>(i))};
+    }
+    const vector<T> got  {numerical::lstsq(a, vector<T> {b})};
+    const matrix<T> want {numerical::pinv(a) * matrix<T> {a.rows(), 1, b}};
+    bool            same {got.size() == a.cols()};
+    for (std::size_t j {0}; j < a.cols(); ++j) {
+      same = same && std::abs(got[j] - want(j, 0)) < 1e-10;
+    }
+    return same;
+  }
+} // namespace
+
+// Where a bound on the condition number shows the rank full with room to spare, lstsq answers by one QR (of A, or
+// of Aᴴ for a wide A); elsewhere by the SVD: a zero matrix, a scale past a power of two's range, a zero on R's
+// diagonal, a bound too near NumPy's rank tolerance.
+TEST(lstsq_takes_a_qr_where_the_rank_is_surely_full)
+{
+  using c = std::complex<double>;
+  EXPECT(lstsq_is_pinv_times(spread<double>(150, 100))); // R⁻¹ in two chunks of columns
+  EXPECT(lstsq_is_pinv_times(spread<c>(40, 30)));
+  EXPECT(lstsq_is_pinv_times(spread<c>(30, 40)));
+  EXPECT(lstsq_is_pinv_times(spread<double>(20, 90)));
+  EXPECT(approx_equal(numerical::lstsq(matrix<double> {3, 2, std::vector<double>(6, 0.0)}, vector<double> {1.0, 2.0, 3.0}),
+                      vector<double> {0.0, 0.0}));
+  EXPECT(approx_equal(numerical::lstsq(matrix<double> {{1e-310, 0.0}, {0.0, 2e-310}}, vector<double> {1e-310, 2e-310}),
+                      vector<double> {1.0, 1.0}));
+  EXPECT(approx_equal(numerical::lstsq(matrix<double> {{1e305, 0.0}, {0.0, 2e305}}, vector<double> {1e305, 2e305}),
+                      vector<double> {1.0, 1.0}));
+  EXPECT(approx_equal(numerical::lstsq(matrix<double> {{1.0, 0.0}, {0.0, 0.0}, {2.0, 0.0}}, vector<double> {1.0, 1.0, 2.0}),
+                      vector<double> {1.0, 0.0}));
+  // κ about 4e14: full rank for NumPy, too near its tolerance for the bound; the residual stays small.
+  const matrix<double> near {{1.0, 1.0}, {1.0, 1.0 + 1e-14}, {0.0, 0.0}};
+  const vector<double> rhs  {2.0, 2.0 + 1e-14, 0.0};
+  const vector<double> x    {numerical::lstsq(near, rhs)};
+  EXPECT(std::abs((x[0] + x[1]) - 2.0) < 1e-6);
+}
+
 TEST(svd_of_a_tall_matrix)
 {
   // Enough columns that the left singular vectors are computed in parallel;
