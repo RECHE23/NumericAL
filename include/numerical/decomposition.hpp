@@ -30,6 +30,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -1251,6 +1252,32 @@ namespace numerical {
     //!        matrix measured; the bound turns a non-convergence into an error instead of a hang.
     inline constexpr std::size_t jacobi_sweeps {60};
 
+    //! \brief `y[i] += conj(x[i]) · f` for a real `T`, where the conjugate is the value: \ref add_product.
+    template <typename T>
+    requires std::is_floating_point_v<T>
+    void add_conjugate_product(T*          y,
+                               const T*    x,
+                               const T&    f,
+                               std::size_t count)
+    {
+      add_product(y, f, x, count);
+    }
+
+    //! \brief `y[i] += conj(x[i]) · f`.
+    template <typename T>
+    void add_conjugate_product(T*          y,
+                               const T*    x,
+                               const T&    f,
+                               std::size_t count)
+    {
+      for (std::size_t i {0}; i < count; ++i) {
+        y[i] += conj_of(x[i]) * f;
+      }
+    }
+
+    //! \brief The reflections of one panel of the blocked tridiagonal reduction.
+    inline constexpr std::size_t tridiagonal_block {32};
+
     //! \brief The implicit QL steps the tridiagonal eigensolver may take per eigenvalue, as LAPACK's
     //!        `dsteqr` bounds them (30 n in all): it converges cubically, in two or three per eigenvalue.
     inline constexpr std::size_t ql_steps_per_value {30};
@@ -1285,9 +1312,9 @@ namespace numerical {
      * \brief Reduces the Hermitian (real: symmetric) `n × n` row-major \p a, both triangles filled, to a real
      *        symmetric tridiagonal by Householder reflections, `A = M T Mᴴ` with `M` unitary.
      *
-     * Each reflection zeroes one column below the subdiagonal and updates the trailing block by the rank-2
-     * `B − v wᴴ − w vᴴ`, rows in parallel on contiguous memory, each row's arithmetic in its own order; `M` is
-     * then formed by blocks of reflections through the matrix product kernel, as LAPACK's `dorgtr`. A complex subdiagonal entry is then made real by a
+     * Each reflection zeroes one column below the subdiagonal; the trailing block takes the rank-2 updates
+     * `B − v wᴴ − w vᴴ` of a panel of \ref tridiagonal_block reflections at once, through the matrix product
+     * kernel, as LAPACK's `dsytrd`; `M` is then formed by blocks of reflections the same way, as `dorgtr`. A complex subdiagonal entry is then made real by a
      * unit phase per row, as LAPACK's `zhetrd` leaves it for a real iteration; a real one keeps its sign.
      * \param[in,out] a The matrix; destroyed.
      * \param[in]     n Its order (at least 1).
@@ -1303,48 +1330,93 @@ namespace numerical {
     {
       std::vector<std::vector<T>> reflectors(n); // reflectors[k + 1] zeroes column k, acting on rows k + 1…
       std::vector<T>              sub(n, T {});  // T's subdiagonal before the phases
-      for (std::size_t k {0}; k + 1 < n; ++k) {
-        const std::size_t m {n - k - 1};
-        std::vector<T>    v(m); // column k below the diagonal: the conjugate of row k right of it
-        for (std::size_t i {0}; i < m; ++i) {
-          v[i] = conj_of(a[(k * n) + k + 1 + i]);
+      for (std::size_t k0 {0}; k0 + 1 < n; k0 += tridiagonal_block) {
+        // A panel of reflections, as LAPACK's dlatrd: the matrix the panel's later steps see is
+        // A − V Wᴴ − W Vᴴ, applied to the one column and the one product each step needs; the whole trailing
+        // block takes it after the panel, through the matrix product kernel.
+        const std::size_t k1                 {std::min(k0 + tridiagonal_block, n - 1)};
+        const std::size_t width              {k1 - k0};
+        std::vector<T>    big_v(n * width, T {}); // V: row i, column p is v of step k0 + p at row i (zero above)
+        std::vector<T>    big_w(n * width, T {}); // W, likewise
+        for (std::size_t k {k0}; k < k1; ++k) {
+          const std::size_t j {k - k0};
+          const std::size_t m {n - k - 1};
+          std::vector<T>    column(m + 1); // column k from the diagonal down, the panel's earlier steps applied
+          for (std::size_t i {k}; i < n; ++i) {
+            T value {a[(i * n) + k]};
+            for (std::size_t p {0}; p < j; ++p) {
+              value -= (big_v[(i * width) + p] * conj_of(big_w[(k * width) + p]))
+                       + (big_w[(i * width) + p] * conj_of(big_v[(k * width) + p]));
+            }
+            column[i - k] = value;
+          }
+          a[(k * n) + k] = column[0];
+          std::vector<T> v(column.begin() + 1, column.end()); // column k below the diagonal
+          const double   below {m > 1 ? scaled_norm(std::vector<T>(v.begin() + 1, v.end())) : 0.0};
+          if (below == 0.0) {
+            sub[k] = v[0]; // already tridiagonal in this column: nothing to reflect
+            continue;
+          }
+          const T alpha {-phase_of(v[0]) * static_cast<T>(scaled_norm(v))}; // the sign that avoids cancellation
+          sub[k]  = alpha;
+          v[0]   -= alpha;
+          const auto length {static_cast<T>(scaled_norm(v))};
+          for (T& element : v) {
+            element /= length;
+          }
+          const T       *       block       {a.data() + ((k + 1) * n) + k + 1}; // the trailing block, row stride n
+          std::vector<T>        w(m, T      {});
+          constexpr std::size_t chunk_width {64};
+          // w = A v on the trailing block, as Σₗ conj(row l) vₗ (A is Hermitian): contiguous updates rather than
+          // a dependent sum per row, in parallel by chunks of w.
+          parallel_for((m + chunk_width - 1) / chunk_width, m * chunk_width, [&](std::size_t chunk) {
+                         const std::size_t first {chunk * chunk_width};
+                         const std::size_t count {std::min(chunk_width, m - first)};
+                         for (std::size_t l {0}; l < m; ++l) {
+                           add_conjugate_product(w.data() + first, block + (l * n) + first, v[l], count);
+                         }
+                       });
+          std::vector<T> by_w(j, T {}); // Wᴴ v and Vᴴ v over the earlier steps
+          std::vector<T> by_v(j, T {});
+          for (std::size_t l {0}; l < m; ++l) {
+            for (std::size_t p {0}; p < j; ++p) {
+              by_w[p] += conj_of(big_w[((k + 1 + l) * width) + p]) * v[l];
+              by_v[p] += conj_of(big_v[((k + 1 + l) * width) + p]) * v[l];
+            }
+          }
+          for (std::size_t i {0}; i < m; ++i) { // w = (A − V Wᴴ − W Vᴴ) v
+            for (std::size_t p {0}; p < j; ++p) {
+              w[i] -= (big_v[((k + 1 + i) * width) + p] * by_w[p]) + (big_w[((k + 1 + i) * width) + p] * by_v[p]);
+            }
+          }
+          T c {};
+          for (std::size_t i {0}; i < m; ++i) {
+            c += conj_of(v[i]) * w[i];
+          }
+          for (std::size_t i {0}; i < m; ++i) { // w = 2 B v − 2 (vᴴ B v) v, so H B H = B − v wᴴ − w vᴴ
+            w[i]                             = (static_cast<T>(2) * w[i]) - (static_cast<T>(2) * c * v[i]);
+            big_v[((k + 1 + i) * width) + j] = v[i];
+            big_w[((k + 1 + i) * width) + j] = w[i];
+          }
+          reflectors[k + 1] = std::move(v); // acting from row k + 1, as householder_qr's from row k
         }
-        const double below {m > 1 ? scaled_norm(std::vector<T>(v.begin() + 1, v.end())) : 0.0};
-        if (below == 0.0) {
-          sub[k] = v[0]; // already tridiagonal in this column: nothing to reflect
-          continue;
+        // The trailing block from row and column k1: A −= V Wᴴ + W Vᴴ.
+        const std::size_t rest {n - k1};
+        std::vector<T>    minus_v(rest * width);
+        std::vector<T>    minus_w(rest * width);
+        std::vector<T>    v_adjoint(width * rest);
+        std::vector<T>    w_adjoint(width * rest);
+        for (std::size_t i {0}; i < rest; ++i) {
+          for (std::size_t p {0}; p < width; ++p) {
+            minus_v[(i * width) + p]  = -big_v[((k1 + i) * width) + p];
+            minus_w[(i * width) + p]  = -big_w[((k1 + i) * width) + p];
+            v_adjoint[(p * rest) + i] = conj_of(big_v[((k1 + i) * width) + p]);
+            w_adjoint[(p * rest) + i] = conj_of(big_w[((k1 + i) * width) + p]);
+          }
         }
-        const T alpha {-phase_of(v[0]) * static_cast<T>(scaled_norm(v))}; // the sign that avoids cancellation
-        sub[k]  = alpha;
-        v[0]   -= alpha;
-        const auto length {static_cast<T>(scaled_norm(v))};
-        for (T& element : v) {
-          element /= length;
-        }
-        T*             block  {a.data() + ((k + 1) * n) + k + 1}; // the trailing block, row stride n
-        std::vector<T> w(m, T {});
-        parallel_for(m, m, [&](std::size_t i) { // w = B v, each row's sum in its own order
-                       const T* row {block + (i * n)};
-                       T        sum {};
-                       for (std::size_t j {0}; j < m; ++j) {
-                         sum += row[j] * v[j];
-                       }
-                       w[i] = sum;
-                     });
-        T c {};
-        for (std::size_t i {0}; i < m; ++i) {
-          c += conj_of(v[i]) * w[i];
-        }
-        for (std::size_t i {0}; i < m; ++i) { // w = 2 B v − 2 (vᴴ B v) v, so H B H = B − v wᴴ − w vᴴ
-          w[i] = (static_cast<T>(2) * w[i]) - (static_cast<T>(2) * c * v[i]);
-        }
-        parallel_for(m, m, [&](std::size_t i) {
-                       T* row {block + (i * n)};
-                       for (std::size_t j {0}; j < m; ++j) {
-                         row[j] -= (v[i] * conj_of(w[j])) + (w[i] * conj_of(v[j]));
-                       }
-                     });
-        reflectors[k + 1] = std::move(v); // acting from row k + 1, as householder_qr's from row k
+        T* trailing {a.data() + (k1 * n) + k1};
+        gemm(rest, rest, width, minus_v.data(), width, w_adjoint.data(), rest, trailing, n);
+        gemm(rest, rest, width, minus_w.data(), width, v_adjoint.data(), rest, trailing, n);
       }
       for (std::size_t i {0}; i < n; ++i) {
         d[i] = real_part(a[(i * n) + i]);

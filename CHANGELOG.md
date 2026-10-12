@@ -50,10 +50,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   earlier columns. x86-64 float64 (twenty threads): order 128 0.25 → 0.16 ms, 256 0.93 → 0.72, 384 3.3 → 2.8;
   arm64 and orders of 512 and more unchanged. The factor is unchanged where no product is fused.
 
-- **`eigh` reduces to tridiagonal form on every core and forms its vectors by blocks**: the trailing
-  updates of the reduction run rows in parallel, and the accumulated reflections go through the matrix product
-  kernel by blocks of 32, as LAPACK's `dorgtr`. M1 Pro, float64: order 256 13.8 → 11.6 ms, 512 107 → 73
-  (Accelerate 25).
+- **`eigh` reduces to tridiagonal form by blocks and forms its vectors by blocks**, as LAPACK's `dsytrd`
+  and `dorgtr`: each panel of 32 reflections updates the trailing block at once through the matrix product
+  kernel, the product `A v` of each reflection runs as contiguous updates on every core, and the accumulated
+  reflections go through the kernel by blocks. M1 Pro, float64: order 256 13.8 → 9.3 ms, 512 107 → 58
+  (Accelerate 26).
 
 - **`svd` bidiagonalises on every core**: each reflection's columns (from the left) or rows (from the right)
   run in parallel, each element's arithmetic in the same order. M1 Pro, float64, order 512: 146 → 125 ms.
