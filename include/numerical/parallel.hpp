@@ -45,10 +45,13 @@ namespace numerical::detail {
 #endif
   }
 
-  //! \brief The hardware threads, the caller's included (at least 1), known without starting the pool.
+  //! \brief The hardware threads, the caller's included (at least 1), known without starting the pool. Asked once,
+  //!        as the pool's workers are started once: glibc reads a file for it on every call (three system calls per
+  //!        matrix product, where a container's file system serves that file, 0.25 ms on six x86-64 cores).
   [[nodiscard]] inline std::size_t hardware_threads() noexcept
   {
-    return std::max<std::size_t>(1, std::thread::hardware_concurrency());
+    static const std::size_t threads {std::max<std::size_t>(1, std::thread::hardware_concurrency())};
+    return threads;
   }
 
   //! \brief How long a thread polls before it sleeps: kernels run in quick succession (a matrix product packs, then
@@ -207,8 +210,7 @@ namespace numerical::detail {
     //! \brief Starts a worker per hardware thread beside the caller's (after construction: each worker uses the pool).
     void start()
     {
-      const std::size_t hardware {std::thread::hardware_concurrency()};
-      for (std::size_t w {1}; w < hardware; ++w) {
+      for (std::size_t w {1}; w < hardware_threads(); ++w) {
         std::thread {[this] { serve(); }}.detach();
         ++workers_;
       }

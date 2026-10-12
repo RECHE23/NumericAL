@@ -30,6 +30,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   then one fused multiply-add, so LU, Cholesky, QR, the inverse, `eigh` and `svd` differ in the last bits from
   2026.10.4 on such processors. i9-10900X (a shared machine): `solve` of order 1024 about 30 → 25 ms, the
   inverse 63 → 57 ms, `svd` of order 512 about 165 → 134 ms; `eigh` 3–5 % faster.
+- **Every matrix product and parallel loop asks the system for its thread count once**: glibc reads a file
+  for it on each call, three system calls per product, which a container's file system (LXC's lxcfs) serves
+  slowly. i5-8500 (six AVX2 cores) in a container: a product of order 128 by 64 290 → 52 µs, the inverse of
+  order 128 1.8 → 0.41 ms and of order 1024 64 → 33 ms. Outside one, i9-10900X: the inverse of order 64 0.12 →
+  0.06 ms.
 - **The inverse, `solve` and LU solve their triangles a block at a time, in parallel**: within each block of
   64 rows, every chunk of columns runs the whole block's substitution at once (its columns depend on no other's),
   each row taking all its terms in registers on AVX-512 or AVX2 (a call per term, and a 16-row leaf through the
