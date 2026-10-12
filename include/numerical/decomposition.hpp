@@ -34,6 +34,7 @@
 #include <vector>
 
 #include "matrix.hpp"
+#include "simd.hpp"
 #include "parallel.hpp"
 #include "vector.hpp"
 
@@ -350,10 +351,8 @@ namespace numerical {
                                const std::size_t last {std::min(first + width, cols)};
                                for (std::size_t i {k0 + 1}; i < end; ++i) {
                                  for (std::size_t j {k0}; j < i; ++j) {
-                                   const T factor {lu_[(i * n_) + j]};
-                                   for (std::size_t c {first}; c < last; ++c) {
-                                     y[(i * cols) + c] -= factor * y[(j * cols) + c];
-                                   }
+                                   detail::subtract_scaled(y.data() + (i * cols) + first, y.data() + (j * cols) + first,
+                                                           lu_[(i * n_) + j], last - first);
                                  }
                                }
                              });
@@ -370,10 +369,8 @@ namespace numerical {
                                const std::size_t last {std::min(first + width, cols)};
                                for (std::size_t i {k1}; i-- > k0;) {
                                  for (std::size_t j {i + 1}; j < k1; ++j) {
-                                   const T factor {lu_[(i * n_) + j]};
-                                   for (std::size_t c {first}; c < last; ++c) {
-                                     y[(i * cols) + c] -= factor * y[(j * cols) + c];
-                                   }
+                                   detail::subtract_scaled(y.data() + (i * cols) + first, y.data() + (j * cols) + first,
+                                                           lu_[(i * n_) + j], last - first);
                                  }
                                  const T pivot {lu_[(i * n_) + i]};
                                  for (std::size_t c {first}; c < last; ++c) {
@@ -509,10 +506,8 @@ namespace numerical {
                              const std::size_t last {std::min(first + width, n_)};
                              for (std::size_t i {k0 + 1}; i < end; ++i) {
                                for (std::size_t p {k0}; p < i; ++p) {
-                                 const T factor {lu_[(i * n_) + p]};
-                                 for (std::size_t c {first}; c < last; ++c) {
-                                   lu_[(i * n_) + c] -= factor * lu_[(p * n_) + c];
-                                 }
+                                 detail::subtract_scaled(lu_.data() + (i * n_) + first, lu_.data() + (p * n_) + first,
+                                                         lu_[(i * n_) + p], last - first);
                                }
                              }
                            });
@@ -804,16 +799,12 @@ namespace numerical {
       for (std::size_t i {0}; i < v.size(); ++i) {
         const T  weight {conj_of(v[i])};
         const T* row    {a.data() + ((first + i) * cols) + from};
-        for (std::size_t j {0}; j < w.size(); ++j) {
-          w[j] += weight * row[j];
-        }
+        add_scaled(w.data(), row, weight, w.size());
       }
       for (std::size_t i {0}; i < v.size(); ++i) {
         const T scale {static_cast<T>(2) * v[i]};
         T*      row   {a.data() + ((first + i) * cols) + from};
-        for (std::size_t j {0}; j < w.size(); ++j) {
-          row[j] -= scale * w[j];
-        }
+        subtract_scaled(row, w.data(), scale, w.size());
       }
     }
 
@@ -916,9 +907,7 @@ namespace numerical {
           if (factor == T {}) {
             continue; // T is triangular: half of these are zero
           }
-          for (std::size_t c {0}; c < w; ++c) {
-            scaled[(i * w) + c] += factor * projection[(p * w) + c];
-          }
+          add_scaled(scaled.data() + (i * w), projection.data() + (p * w), factor, w);
         }
       }
       gemm(h, w, b, minus_v.data(), b, scaled.data(), w, top, cols);
@@ -940,16 +929,12 @@ namespace numerical {
       for (std::size_t i {0}; i < v.size(); ++i) {
         const T  weight {conj_of(v[i])};
         const T* row    {a.data() + ((first + i) * cols) + from};
-        for (std::size_t j {0}; j < w.size(); ++j) {
-          w[j] += weight * row[j];
-        }
+        add_scaled(w.data(), row, weight, w.size());
       }
       for (std::size_t i {0}; i < v.size(); ++i) {
         const T scale {static_cast<T>(2) * v[i]};
         T*      row   {a.data() + ((first + i) * cols) + from};
-        for (std::size_t j {0}; j < w.size(); ++j) {
-          row[j] -= scale * w[j];
-        }
+        subtract_scaled(row, w.data(), scale, w.size());
       }
     }
 

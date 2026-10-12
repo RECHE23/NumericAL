@@ -31,6 +31,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   float64: order 192 131 → 107 µs, 256 279 → 105, 384 490 → 349. M1 Pro: order 128 47 → 28 µs, 256 124 → 96;
   inverse, Cholesky and QR of order 128–384 5–17 % faster.
 
+- **LU solves, inverses and QR faster when built by GCC** (the Linux wheels): the row updates of the
+  factorisation, of the triangular solves and of the Householder reflections run over native vectors, where
+  GCC's `-O2` left them scalar (Clang vectorises them itself, and keeps its loops). Each element is computed as
+  before. x86-64, float64: `solve` of order 128–512 1.2–1.4× faster, `inverse` of order 256–512 1.2–1.3×.
+
 ### Added
 - **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses. M1 Pro,
   8 threads, GFLOPS against Accelerate's: order 2048 423 (383), 1024 395 (388), 512 277 (431), 256 209 (282);
