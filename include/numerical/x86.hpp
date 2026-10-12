@@ -282,7 +282,7 @@ namespace numerical::detail {
     }
     double total {0.0};
     for (std::size_t l {0}; l < lanes; ++l) {
-      std::array<double, width> part {};
+      alignas(32) std::array<double, width> part {}; // a register stored whole: some compilers store it aligned
       _mm256_storeu_pd(part.data(), sum[l].v);
       total += (part[0] + part[1]) + (part[2] + part[3]);
     }
@@ -550,8 +550,9 @@ namespace numerical::detail {
       across = _mm512_fmadd_pd(s, x, across);
       _mm512_storeu_pd(out + (2 * j), o);
     }
-    std::array<double, 8> lanes_same   {};
-    std::array<double, 8> lanes_across {};
+    // Registers stored whole: GCC 14 stores the second aligned (in C++20, under the address sanitizer), so both are.
+    alignas(64) std::array<double, 8> lanes_same   {};
+    alignas(64) std::array<double, 8> lanes_across {};
     _mm512_storeu_pd(lanes_same.data(), same);
     _mm512_storeu_pd(lanes_across.data(), across);
     double re {0.0};
@@ -596,8 +597,8 @@ namespace numerical::detail {
       across = _mm256_fmadd_pd(s, x, across);
       _mm256_storeu_pd(out + (2 * j), o);
     }
-    std::array<double, 4> lanes_same   {};
-    std::array<double, 4> lanes_across {};
+    alignas(32) std::array<double, 4> lanes_same   {}; // registers stored whole, aligned (as above)
+    alignas(32) std::array<double, 4> lanes_across {};
     _mm256_storeu_pd(lanes_same.data(), same);
     _mm256_storeu_pd(lanes_across.data(), across);
     double re {(lanes_same[0] - lanes_same[1]) + (lanes_same[2] - lanes_same[3])};
@@ -675,7 +676,7 @@ namespace numerical::detail {
     }
     double total {0.0};
     for (std::size_t l {0}; l < lanes; ++l) {
-      std::array<double, width> part {};
+      alignas(32) std::array<double, width> part {}; // a register stored whole: some compilers store it aligned
       _mm256_storeu_pd(part.data(), sum[l].v);
       total += (part[0] + part[1]) + (part[2] + part[3]);
     }

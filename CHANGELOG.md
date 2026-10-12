@@ -6,6 +6,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Fixed
+- **The x86-64 kernels align the buffers they store whole registers into.** GCC 14, in C++20 under the address
+  sanitizer, stored a register into an 8-byte-aligned buffer as if 64-byte-aligned: complex `eigh` crashed on an
+  AVX-512 processor in such a build. Builds without the sanitizer, the published wheels among them, placed the
+  buffer aligned and were not affected.
+
 ## 2026.10.5 — 2026-10-12
 
 Faster dense linear algebra throughout (see BENCHMARKS.md for the tables against NumPy's BLAS/LAPACK).
