@@ -21,6 +21,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   while the pool is busy runs on its caller, and results are the same to the bit for any thread count. Matrix
   product of order 128–256: 5.4–6.1× → 4.2–5.0× and 3.0× → 2.4× NumPy's time (arm64, Apple clang 16, `-O2`).
 
+- **Matrix products use more of the cores**: both operands are packed in parallel (one thread packed them
+  while the others waited) into buffers no longer zeroed first. M1 Pro, 8 threads, float64: order 512
+  153 → 178 GFLOPS, 1024 195 → 207 (one core: 41, about 80 % of its vector peak).
+
 ### Added
 - **`numerical.set_num_threads(n)` and `get_num_threads()`** (C++: `numerical::set_max_threads`,
   `max_threads`), and `NUMERICAL_NUM_THREADS` read at import, as `OMP_NUM_THREADS` caps BLAS: a process per core
