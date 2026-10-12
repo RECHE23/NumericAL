@@ -357,8 +357,7 @@ namespace numerical {
                                  const std::size_t last {std::min(first + width, cols)};
                                  for (std::size_t i {s0 + 1}; i < s1; ++i) {
                                    for (std::size_t j {s0}; j < i; ++j) {
-                                     detail::subtract_scaled(y.data() + (i * cols) + first, y.data() + (j * cols) + first,
-                                                             lu_[(i * n_) + j], last - first);
+                                     detail::subtract_product(y.data() + (i * cols) + first, lu_[(i * n_) + j], y.data() + (j * cols) + first, last - first);
                                    }
                                  }
                                });
@@ -375,8 +374,7 @@ namespace numerical {
                                  const std::size_t last {std::min(first + width, cols)};
                                  for (std::size_t i {s1}; i-- > s0;) {
                                    for (std::size_t j {i + 1}; j < s1; ++j) {
-                                     detail::subtract_scaled(y.data() + (i * cols) + first, y.data() + (j * cols) + first,
-                                                             lu_[(i * n_) + j], last - first);
+                                     detail::subtract_product(y.data() + (i * cols) + first, lu_[(i * n_) + j], y.data() + (j * cols) + first, last - first);
                                    }
                                    const T pivot {lu_[(i * n_) + i]};
                                    for (std::size_t c {first}; c < last; ++c) {
@@ -488,10 +486,7 @@ namespace numerical {
         }
         for (std::size_t c {j + 1}; c < width; ++c) {
           T*      target {panel.data() + (c * rows)};
-          const T u      {target[j]};
-          for (std::size_t r {j + 1}; r < rows; ++r) {
-            target[r] -= column[r] * u;
-          }
+          detail::subtract_product(target + j + 1, column + j + 1, target[j], rows - (j + 1));
         }
       }
       for (std::size_t r {0}; r < rows; ++r) {
@@ -515,24 +510,32 @@ namespace numerical {
       }
     }
 
-    //! \brief `U₁₂ = L₁₁⁻¹ A₁₂`: the panel's rows right of it, by forward substitution with its unit-lower L.
-    //!        Each block of columns is independent, so blocks run in parallel, each in the sequential order.
+    //! \brief `U₁₂ = L₁₁⁻¹ A₁₂`: the panel's rows right of it, by forward substitution with its unit-lower L, by
+    //!        leaves of \ref detail::solve_leaf rows. Within a leaf, each block of columns is independent, so blocks
+    //!        run in parallel, each in the sequential order; from a leaf to the panel's rows below it, through the
+    //!        matrix product kernel. Each element still takes its terms in ascending order of the pivot.
     void solve_panel_rows(std::size_t k0,
                           std::size_t end)
     {
       constexpr std::size_t width  {64};
       const std::size_t     blocks {((n_ - end) + width - 1) / width};
-      const std::size_t     depth  {end - k0};
-      detail::parallel_for(blocks, depth * depth * width / 2, [&](std::size_t block) {
-                             const std::size_t first {end + (block * width)};
-                             const std::size_t last {std::min(first + width, n_)};
-                             for (std::size_t i {k0 + 1}; i < end; ++i) {
-                               for (std::size_t p {k0}; p < i; ++p) {
-                                 detail::subtract_scaled(lu_.data() + (i * n_) + first, lu_.data() + (p * n_) + first,
-                                                         lu_[(i * n_) + p], last - first);
+      for (std::size_t s0 {k0}; s0 < end; s0 += detail::solve_leaf) {
+        const std::size_t s1 {std::min(s0 + detail::solve_leaf, end)};
+        detail::parallel_for(blocks, (s1 - s0) * (s1 - s0) * width / 2, [&](std::size_t block) {
+                               const std::size_t first {end + (block * width)};
+                               const std::size_t last {std::min(first + width, n_)};
+                               for (std::size_t i {s0 + 1}; i < s1; ++i) {
+                                 for (std::size_t p {s0}; p < i; ++p) {
+                                   detail::subtract_product(lu_.data() + (i * n_) + first, lu_[(i * n_) + p], lu_.data() + (p * n_) + first, last - first);
+                                 }
                                }
-                             }
-                           });
+                             });
+        if (s1 < end) {
+          const std::vector<T> minus {negated_block(s1, end, s0, s1)};
+          detail::gemm(end - s1, n_ - end, s1 - s0, minus.data(), s1 - s0, lu_.data() + (s0 * n_) + end, n_,
+                       lu_.data() + (s1 * n_) + end, n_);
+        }
+      }
     }
 
     //! \brief `A₂₂ −= L₂₁ U₁₂`, as `A₂₂ += (−L₂₁) U₁₂` through the matrix product kernel.
@@ -821,12 +824,12 @@ namespace numerical {
       for (std::size_t i {0}; i < v.size(); ++i) {
         const T  weight {conj_of(v[i])};
         const T* row    {a.data() + ((first + i) * cols) + from};
-        add_scaled(w.data(), row, weight, w.size());
+        add_product(w.data(), weight, row, w.size());
       }
       for (std::size_t i {0}; i < v.size(); ++i) {
         const T scale {static_cast<T>(2) * v[i]};
         T*      row   {a.data() + ((first + i) * cols) + from};
-        subtract_scaled(row, w.data(), scale, w.size());
+        subtract_product(row, scale, w.data(), w.size());
       }
     }
 
@@ -929,7 +932,7 @@ namespace numerical {
           if (factor == T {}) {
             continue; // T is triangular: half of these are zero
           }
-          add_scaled(scaled.data() + (i * w), projection.data() + (p * w), factor, w);
+          add_product(scaled.data() + (i * w), factor, projection.data() + (p * w), w);
         }
       }
       gemm(h, w, b, minus_v.data(), b, scaled.data(), w, top, cols);
@@ -951,12 +954,12 @@ namespace numerical {
       for (std::size_t i {0}; i < v.size(); ++i) {
         const T  weight {conj_of(v[i])};
         const T* row    {a.data() + ((first + i) * cols) + from};
-        add_scaled(w.data(), row, weight, w.size());
+        add_product(w.data(), weight, row, w.size());
       }
       for (std::size_t i {0}; i < v.size(); ++i) {
         const T scale {static_cast<T>(2) * v[i]};
         T*      row   {a.data() + ((first + i) * cols) + from};
-        subtract_scaled(row, w.data(), scale, w.size());
+        subtract_product(row, scale, w.data(), w.size());
       }
     }
 

@@ -40,6 +40,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   rows is solved by leaves of 16, from a leaf to the rest of its block by a product. x86-64 (twenty threads,
   float64): order 128 1.1 → 0.55 ms, 192 2.7 → 1.6, 384 13 → 8.5, 512 20 → 16; arm64 unchanged.
 
+- **LU factorisation solves its rows of U by leaves**, a product between them, and its panel's column updates
+  run over native vectors under GCC. float64 `solve`: x86-64 (twenty threads) order 192 0.96 → 0.59 ms, 384
+  5.1 → 3.7, 512 8.2 → 5.7–6.7; M1 Pro order 128–512 5–14 % faster. The factors are unchanged where no product
+  is fused.
+
 ### Added
 - **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses. M1 Pro,
   8 threads, GFLOPS against Accelerate's: order 2048 423 (383), 1024 395 (388), 512 277 (431), 256 209 (282);

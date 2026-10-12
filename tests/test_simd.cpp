@@ -25,19 +25,23 @@ namespace {
   template <typename T>
   bool updates_match_the_scalar_statements(std::size_t count)
   {
-    const std::vector<T> x           {values<T>(count, 3.0)};
-    const T              f           {T(1.0 / 7.0)};
-    std::vector<T>       down        {values<T>(count, 5.0)};
-    std::vector<T>       up          {down};
-    std::vector<T>       down_wanted {down};
-    std::vector<T>       up_wanted   {down};
+    const std::vector<T> x            {values<T>(count, 3.0)};
+    const T              f            {T(1.0 / 7.0)};
+    std::vector<T>       down         {values<T>(count, 5.0)};
+    std::vector<T>       up           {down};
+    std::vector<T>       down_wanted  {down};
+    std::vector<T>       up_wanted    {down};
+    std::vector<T>       right        {down};
+    std::vector<T>       right_wanted {down};
     for (std::size_t i {0}; i < count; ++i) {
-      down_wanted[i] -= f * x[i];
-      up_wanted[i]   += f * x[i];
+      down_wanted[i]  -= f * x[i];
+      up_wanted[i]    += f * x[i];
+      right_wanted[i] -= x[i] * f;
     }
-    numerical::detail::subtract_scaled(down.data(), x.data(), f, count);
-    numerical::detail::add_scaled(up.data(), x.data(), f, count);
-    return down == down_wanted && up == up_wanted;
+    numerical::detail::subtract_product(down.data(), f, x.data(), count);
+    numerical::detail::add_product(up.data(), f, x.data(), count);
+    numerical::detail::subtract_product(right.data(), x.data(), f, count);
+    return down == down_wanted && up == up_wanted && right == right_wanted;
   }
 } // namespace
 

@@ -111,32 +111,48 @@ namespace numerical::detail {
 
   /*!
    * \brief `y[i] -= f · x[i]` for \p count elements of \p y and \p x, which do not overlap. Each element is
-   *        computed exactly as the scalar statement computes it (its product rounded before its difference, or
-   *        fused with it where the compiler contracts that statement). Under GCC, over native vectors where `T` has
-   *        them: at `-O2` GCC leaves the scalar loop scalar, unable to rule out an overlap without a check it will
-   *        not add. Clang vectorises the scalar loop itself, with that check, and better than these vectors
-   *        (an LU solve of order 128 on arm64 took 19 % longer through them).
+   *        computed exactly as that scalar statement computes it (its product rounded before its difference, or
+   *        fused with it where the compiler contracts the statement); the arguments follow the expression, since
+   *        a compiler may contract `f · x` and `x · f` of complex numbers differently. Under GCC, over native
+   *        vectors where `T` has them: at `-O2` GCC leaves the scalar loop scalar, unable to rule out an overlap
+   *        without a check it will not add. Clang vectorises the scalar loop itself, with that check, and better
+   *        than these vectors (an LU solve of order 128 on arm64 took 19 % longer through them).
    */
   template <typename T>
-  void subtract_scaled(T*          y,
-                       const T*    x,
-                       const T&    f,
-                       std::size_t count)
+  void subtract_product(T*          y,
+                        const T&    f,
+                        const T*    x,
+                        std::size_t count)
   {
-    for (std::size_t i {subtract_scaled_vectors(y, x, f, count)}; i < count; ++i) {
-      y[i] -= f * x[i];
+    const T factor {f}; // read once, as a scalar loop would: it may be an element of y's array
+    for (std::size_t i {subtract_scaled_vectors(y, x, factor, count)}; i < count; ++i) {
+      y[i] -= factor * x[i];
     }
   }
 
-  //! \brief `y[i] += f · x[i]` for \p count elements of \p y and \p x, which do not overlap, as \ref subtract_scaled.
+  //! \brief `y[i] -= x[i] · f`, as the other \ref subtract_product (a real product is the same either way round).
   template <typename T>
-  void add_scaled(T*          y,
-                  const T*    x,
-                  const T&    f,
-                  std::size_t count)
+  void subtract_product(T*          y,
+                        const T*    x,
+                        const T&    f,
+                        std::size_t count)
   {
-    for (std::size_t i {add_scaled_vectors(y, x, f, count)}; i < count; ++i) {
-      y[i] += f * x[i];
+    const T factor {f}; // read once, as a scalar loop would: it may be an element of y's array
+    for (std::size_t i {subtract_scaled_vectors(y, x, factor, count)}; i < count; ++i) {
+      y[i] -= x[i] * factor;
+    }
+  }
+
+  //! \brief `y[i] += f · x[i]`, as \ref subtract_product.
+  template <typename T>
+  void add_product(T*          y,
+                   const T&    f,
+                   const T*    x,
+                   std::size_t count)
+  {
+    const T factor {f}; // read once, as a scalar loop would: it may be an element of y's array
+    for (std::size_t i {add_scaled_vectors(y, x, factor, count)}; i < count; ++i) {
+      y[i] += factor * x[i];
     }
   }
 } // namespace numerical::detail
