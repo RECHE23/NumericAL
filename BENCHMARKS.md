@@ -62,18 +62,19 @@ reproducibly):
 | lstsq | 0.278 ms (**0.24×**) | 1.47 ms (**0.28×**) | 7.01 ms (**0.41×**) | 39.8 ms (**0.51×**) | 181 ms (**0.63×**) |
 
 **Intel i9-9900K** (8 cores, AVX2; NumPy 2.5.4 on OpenBLAS 0.3.34; NumericAL 00be478 built locally by GCC 15.3;
-the AVX2 path), same day, also shared:
+the AVX2 path), same day, also shared (measured idle: under another user's load, `solve` of order 1024 took
+25 ms):
 
 | operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| matmul | 0.0231 ms (**0.90×**) | 0.165 ms (5.09×) | 0.305 ms (2.32×) | 1.27 ms (1.46×) | 7.65 ms (1.05×) |
-| solve | 0.052 ms (**0.74×**) | 0.258 ms (1.27×) | 1.24 ms (1.68×) | 4.93 ms (1.66×) | 25.4 ms (1.95×) |
-| inverse | 0.0777 ms (**0.94×**) | 0.555 ms (1.96×) | 2.55 ms (2.14×) | 10.9 ms (1.93×) | 41.1 ms (1.13×) |
-| cholesky | 0.0463 ms (2.18×) | 0.189 ms (1.41×) | 0.866 ms (1.58×) | 4.21 ms (2.04×) | 22.7 ms (2.02×) |
-| qr | 0.177 ms (1.50×) | 0.717 ms (**0.46×**) | 3.85 ms (**0.94×**) | 19.2 ms (1.32×) | 80.1 ms (1.25×) |
-| eigh | 0.559 ms (1.04×) | 2.23 ms (1.23×) | 9.08 ms (1.34×) | 45.9 ms (2.01×) | 186 ms (1.84×) |
-| svd | 1.29 ms (1.47×) | 5.01 ms (1.32×) | 24.5 ms (1.52×) | 130 ms (1.82×) | 520 ms (1.62×) |
-| lstsq | 0.342 ms (**0.30×**) | 1.62 ms (**0.32×**) | 8.51 ms (**0.47×**) | 39.5 ms (**0.53×**) | 157 ms (**0.57×**) |
+| matmul | 0.0231 ms (1.40×) | 0.166 ms (5.07×) | 0.302 ms (2.30×) | 1.26 ms (1.44×) | 7.67 ms (1.08×) |
+| solve | 0.0519 ms (1.26×) | 0.234 ms (1.16×) | 1.24 ms (1.71×) | 4.95 ms (1.76×) | 18.5 ms (1.22×) |
+| inverse | 0.0776 ms (**0.97×**) | 0.568 ms (2.03×) | 2.55 ms (2.11×) | 10.9 ms (1.93×) | 41.2 ms (1.14×) |
+| cholesky | 0.0465 ms (2.15×) | 0.137 ms (1.03×) | 0.876 ms (1.59×) | 4.23 ms (2.04×) | 23 ms (2.06×) |
+| qr | 0.176 ms (1.10×) | 0.531 ms (**0.35×**) | 3.87 ms (**0.95×**) | 19.3 ms (1.35×) | 79.7 ms (1.25×) |
+| eigh | 0.561 ms (1.05×) | 1.9 ms (1.06×) | 9.13 ms (1.35×) | 45.9 ms (2.18×) | 187 ms (1.83×) |
+| svd | 1.29 ms (1.47×) | 4.77 ms (1.27×) | 24.6 ms (1.51×) | 130 ms (1.82×) | 523 ms (1.60×) |
+| lstsq | 0.343 ms (**0.30×**) | 1.63 ms (**0.32×**) | 8.58 ms (**0.48×**) | 38.2 ms (**0.51×**) | 153 ms (**0.56×**) |
 
 Where the gaps are, and what closes them:
 
@@ -89,10 +90,9 @@ Where the gaps are, and what closes them:
   next step to try.
 - **`eigh`, `svd` and `cholesky` on x86-64** (1.3–2.2× from n = 512): the tridiagonal and bidiagonal reductions
   keep their matrix-vector passes, and the Cholesky panel is sequential.
-- **Large allocations on Linux**: a call allocates its result and its working copy afresh, and glibc serves them
-  from new pages or from reused ones by the heap's history: a solve of order 1024 took 18 ms or 25 in one process
-  (4,000 page faults a call against 950). NumPy asks for transparent huge pages on its large arrays; NumericAL's
-  storage does not yet.
+- **Shared machines**: both x86-64 hosts serve other users, whose load moves single figures by 30 % or more
+  (`solve` of order 1024: 18.5 ms idle, 25 ms loaded). A figure that departs from its row is re-measured alone
+  before it is read as a regression.
 
 ## History
 
