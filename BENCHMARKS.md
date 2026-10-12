@@ -5,7 +5,8 @@ within a documented floating-point tolerance) and **performance** (a measured,
 reproducible gap). Reproduce with:
 
 ```bash
-make bench-python      # differential validation + timing (this file's table)
+make bench-linalg      # dense linear algebra against BLAS/LAPACK, each library alone (the first tables)
+make bench-python      # differential validation + timing, one process (the history's tables)
 make python-test       # the parity suite alone (also runs in CI)
 ```
 
@@ -13,22 +14,81 @@ Correctness is gated automatically: `python/tests/test_numpy_parity.py` checks a
 broad corpus of einsum specifications and linear solves (real and complex)
 against NumPy within `rtol=1e-9`, and runs in CI (the Python job installs NumPy).
 
-## How to read the numbers
+## Dense linear algebra against BLAS/LAPACK
 
-`make bench-python` builds each input once (outside the timed region), checks
-NumericAL's result equals NumPy's within tolerance, then times the operation. The
-reported `ratio` is `numpy_time / numerical_time`, so **`ratio < 1` means NumericAL is
-slower**.
+NumericAL aims to match and then beat the BLAS/LAPACK NumPy ships, in portable C++ with no dependency. `make
+bench-linalg` measures where it stands: each library in its own process with all its threads (a BLAS whose
+threads still spin after a call would otherwise slow the next library's), every NumericAL answer checked against
+its defining property before it is timed, the median of 15 calls per process (5 at order 1024) and the median of
+5 processes per library. The ratio is NumericAL's time over NumPy's: **below 1, NumericAL is faster**. Correctness
+on adversarial matrices is checked separately, by `make fuzz-linalg` (every decomposition against NumPy, on every
+matrix-product path).
 
-**NumericAL is, and is expected to be, slower than NumPy** — this is not a fair
-fight and is not meant to be one. NumPy dispatches linear algebra to
-**BLAS/LAPACK**: decades of blocked, hand-vectorised kernels. NumericAL is a
-portable, header-only, **dependency-free reference** implementation: a naive
-index-walking `einsum` and an unblocked LU. Its value is correctness, genericity
-over the scalar type, determinism, zero dependencies, and the symbolic↔numeric
-bridge into SciLang — not raw throughput. The benchmark exists to **prove the
-results are right** and to **quantify the gap** (a regression guard and an
-optimisation compass), not to claim a win.
+```bash
+make bench-linalg                      # SIZES=64,128,256,512,1024 ROUNDS=3; JSON in build/bench-linalg.json
+make fuzz-linalg CASES=1000 SEED=2     # the decompositions on adversarial matrices, every GEMM path
+```
+
+**Apple M1 Pro** (8 cores; NumPy 2.4.2 on Accelerate; NumericAL 1c8805a, the AMX path), 2026-10-12:
+
+| operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| matmul | 0.0075 ms (2.38×) | 0.0505 ms (3.31×) | 0.15 ms (1.46×) | 0.79 ms (1.36×) | 5.14 ms (**0.94×**) |
+| solve | 0.047 ms (1.87×) | 0.162 ms (2.21×) | 0.701 ms (2.43×) | 3.27 ms (1.80×) | 15.6 ms (**0.94×**) |
+| inverse | 0.0597 ms (1.79×) | 0.255 ms (2.11×) | 1.36 ms (1.79×) | 6.92 ms (1.47×) | 34.8 ms (**0.95×**) |
+| cholesky | 0.0309 ms (2.26×) | 0.11 ms (2.51×) | 0.446 ms (1.48×) | 2.85 ms (1.57×) | 13.9 ms (1.15×) |
+| qr | 0.102 ms (1.29×) | 0.391 ms (1.07×) | 2.16 ms (1.10×) | 12.6 ms (1.21×) | 66.6 ms (1.04×) |
+| eigh | 0.342 ms (1.11×) | 1.46 ms (1.55×) | 7.03 ms (1.53×) | 37.4 ms (1.42×) | 193 ms (1.06×) |
+| svd | 0.673 ms (1.79×) | 2.89 ms (1.95×) | 13.6 ms (1.45×) | 71.7 ms (1.43×) | 393 ms (1.39×) |
+| lstsq | 0.805 ms (1.70×) | 3.58 ms (1.55×) | 17.3 ms (1.60×) | 87.2 ms (1.62×) | 503 ms (1.28×) |
+
+**Intel i9-10900X** (10 cores, AVX-512; NumPy 2.5.4 on OpenBLAS 0.3.34; GCC 15 wheel, the AVX-512 path), same
+code and day. A shared machine: figures move by some 10 %, and OpenBLAS's product of order 256 on its twenty
+threads takes ten times its order-512 rate in every process (its own, reproducibly):
+
+| operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| matmul | 0.0165 ms (2.15×) | 0.115 ms (4.04×) | 0.298 ms (**0.10×**) | 1.34 ms (2.49×) | 6.75 ms (1.77×) |
+| solve | 0.0684 ms (1.95×) | 0.241 ms (**0.42×**) | 1.14 ms (**0.77×**) | 4.74 ms (1.16×) | 26.4 ms (1.89×) |
+| inverse | 0.0949 ms (1.06×) | 0.422 ms (**0.63×**) | 2.54 ms (1.41×) | 12 ms (1.74×) | 51.3 ms (1.66×) |
+| cholesky | 0.0436 ms (2.10×) | 0.174 ms (1.00×) | 0.757 ms (1.25×) | 3.92 ms (1.37×) | 21.5 ms (1.25×) |
+| qr | 0.152 ms (1.10×) | 0.636 ms (**0.39×**) | 3.73 ms (**0.94×**) | 21.2 ms (1.32×) | 91.2 ms (1.36×) |
+| eigh | 0.525 ms (**0.93×**) | 2.54 ms (1.41×) | 11.1 ms (1.64×) | 62.1 ms (2.79×) | 253 ms (2.61×) |
+| svd | 1.16 ms (1.26×) | 4.91 ms (1.33×) | 23.6 ms (1.64×) | 125 ms (1.50×) | 535 ms (1.49×) |
+| lstsq | 1.32 ms (1.16×) | 5.69 ms (1.10×) | 30 ms (1.72×) | 155 ms (1.81×) | 640 ms (2.07×) |
+
+**Intel i9-9900K** (8 cores, AVX2; NumPy 2.5.4 on OpenBLAS 0.3.34; GCC 15 wheel, the AVX2 path), same code and
+day:
+
+| operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| matmul | 0.0234 ms (1.44×) | 0.124 ms (3.81×) | 0.24 ms (1.84×) | 1.21 ms (1.39×) | 7.99 ms (1.11×) |
+| solve | 0.0662 ms (1.62×) | 0.306 ms (1.52×) | 1.18 ms (1.61×) | 4.73 ms (1.67×) | 19.7 ms (1.61×) |
+| inverse | 0.109 ms (1.37×) | 0.522 ms (1.80×) | 2.72 ms (2.29×) | 12.8 ms (2.31×) | 54.5 ms (1.49×) |
+| cholesky | 0.0472 ms (2.22×) | 0.192 ms (1.41×) | 0.866 ms (1.53×) | 4.29 ms (2.16×) | 22.2 ms (1.98×) |
+| qr | 0.182 ms (1.14×) | 0.792 ms (**0.52×**) | 4.26 ms (1.04×) | 19.4 ms (1.34×) | 80.6 ms (1.25×) |
+| eigh | 0.587 ms (1.11×) | 2.56 ms (1.40×) | 12 ms (1.74×) | 62 ms (2.89×) | 265 ms (2.62×) |
+| svd | 1.32 ms (1.51×) | 5.3 ms (1.40×) | 25.8 ms (1.61×) | 125 ms (1.76×) | 531 ms (1.67×) |
+| lstsq | 1.56 ms (1.38×) | 6.44 ms (1.26×) | 33 ms (1.84×) | 151 ms (2.04×) | 633 ms (2.28×) |
+
+Where the gaps are, and what closes them:
+
+- **Small matrix products** (n ≤ 256): two to four times NumPy's time. A product of a few microseconds waits on its
+  threads; the cut-off that decides how many to start is one weight for every product shape, and lowering it
+  slowed QR down on both architectures. It wants a criterion by shape.
+- **One x86-64 core** runs the product at about 0.7 of OpenBLAS's rate: the tile reaches 103–119 GFLOP/s in the
+  L1 cache, the whole product about 80, stalled on the B operand from L3. Large products on every core inherit it.
+- **`eigh` on x86-64** (2.6–2.9× at n ≥ 512): the tridiagonal reduction's matrix-vector products run on SSE2, the
+  baseline the wheels are built for (AVX2 gives 21 % on that step), and its parallel steps do not pay below order
+  1024. On arm64, Accelerate's lead is 1.1–1.5×.
+- **`svd` and `lstsq`** carry the bidiagonal reduction's two matrix-vector passes per step, which the panels do not
+  remove (LAPACK's `dgebrd` keeps them too); 1.3–2.3× throughout.
+
+## History
+
+The sections below record how each kernel got where it is, with the figures of their day. Their tables come from
+`make bench-python`, which times NumericAL against NumPy in one process and writes the opposite ratio,
+`numpy_time / numerical_time`: there, **below 1 means NumericAL is slower**.
 
 ## Indicative results
 

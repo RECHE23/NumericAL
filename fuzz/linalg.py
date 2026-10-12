@@ -14,8 +14,6 @@ the seed and the case, which reproduce it alone:
 """
 import argparse
 import itertools
-import math
-import os
 import sys
 import time
 
