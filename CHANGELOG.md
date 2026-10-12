@@ -68,6 +68,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   `symmetric_eigen` (`eigen_method::divide_and_conquer`; implicit QL stays as `tridiagonal_ql`) and for
   `hermitian_eigen`; up to order 32, QL alone, as before. M1 Pro, float64, order 512: 54 → 40 ms (Accelerate
   26), the tridiagonal step 30 → 7.5 ms.
+- **`svd` reduces a real matrix to bidiagonal form by panels**, as LAPACK's `dgebrd`: each panel of 32
+  reflections from each side updates the trailing block at once through the matrix product kernel, and the
+  block reflectors' Gram matrix (QR, `eigh` and `svd` form their bases from it) is one product too. M1 Pro,
+  float64, order 512: `svd` 88 → 67 ms (Accelerate 49), `eigh` 40 → 37.
 - **`svd` decomposes the bidiagonal by divide and conquer**, as LAPACK's `dgesdd`: a bidiagonal splits at a
   row into two with an extra column each side, whose null vectors rotate into one, and the arrow left in the
   middle is decomposed through its secular equation (solved in the squares from the nearer pole, so that both

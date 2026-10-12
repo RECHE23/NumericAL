@@ -1322,4 +1322,10 @@ TEST(svd_divide_and_conquer_merges_and_deflates)
     z[i] = c {std::sin(static_cast<double>(i)), std::cos(static_cast<double>(3 * i))};
   }
   EXPECT(svd_divide_and_conquer_agrees(matrix<c> {m, m + 7, z}));
+  // Complex, already bidiagonal (no reflection needed on either side), and with no columns at all.
+  const matrix<c>            bidiagonal {{c {1.0, 1.0}, c {0.0, 2.0}, c {}}, {c {}, c {3.0, 0.0}, c {1.0, -1.0}}, {c {}, c {}, c {0.0, -2.0}}};
+  const svd_decomposition<c> two_sided  {bidiagonal};
+  EXPECT(approx_equal(reconstruct(two_sided), bidiagonal, 1e-14));
+  const svd_decomposition<c> none       {matrix<c> {3, 0, {}}};
+  EXPECT(none.singular_values().size() == 0 && none.u().rows() == 3 && none.u().cols() == 0);
 }

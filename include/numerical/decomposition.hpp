@@ -960,21 +960,23 @@ namespace numerical {
           block.v[((j + r) * b) + j] = v[r];
         }
       }
+      // Vᴴ V once, through the matrix product kernel: its column j above the diagonal is V(:, 0…j-1)ᴴ v_j.
+      std::vector<T> v_adjoint(b * block.height);
+      for (std::size_t r {0}; r < block.height; ++r) {
+        for (std::size_t j {0}; j < b; ++j) {
+          v_adjoint[(j * block.height) + r] = conj_of(block.v[(r * b) + j]);
+        }
+      }
+      std::vector<T> gram(b * b, T {});
+      gemm(b, b, block.height, v_adjoint.data(), block.height, block.v.data(), b, gram.data(), b);
       for (std::size_t j {0}; j < b; ++j) {
         if (reflectors[k0 + j].empty()) {
-          continue; // the identity: a zero column of T
+          continue;                           // the identity: a zero column of T
         }
-        std::vector<T> z(j, T {}); // z = V(:, 0…j-1)ᴴ v_j
-        for (std::size_t r {j}; r < block.height; ++r) {
-          const T vj {block.v[(r * b) + j]};
-          for (std::size_t i {0}; i < j; ++i) {
-            z[i] += conj_of(block.v[(r * b) + i]) * vj;
-          }
-        }
-        for (std::size_t i {0}; i < j; ++i) { // T(0…j-1, j) = −2 T(0…j-1, 0…j-1) z
+        for (std::size_t i {0}; i < j; ++i) { // T(0…j-1, j) = −2 T(0…j-1, 0…j-1) z, z = V(:, 0…j-1)ᴴ v_j
           T sum {};
           for (std::size_t p {i}; p < j; ++p) {
-            sum += block.t[(i * b) + p] * z[p];
+            sum += block.t[(i * b) + p] * gram[(p * b) + j];
           }
           block.t[(i * b) + j] = static_cast<T>(-2) * sum;
         }
@@ -2449,6 +2451,217 @@ namespace numerical {
     inline constexpr std::size_t svd_qr_steps_per_value {30};
 
     /*!
+     * \brief The bases of a bidiagonal reduction from its reflectors: `U_b = (H₀ H₁ …) diag(conj left phases)` and
+     *        `V_b = (H'₀ H'₁ …) diag(right phases)`, each formed by blocks of reflectors through the matrix product
+     *        kernel, as QR's `Q` is.
+     * \param[in]  left        The left reflector of each step (acting from its row), empty where none.
+     * \param[in]  right       The right reflector of each step (acting from the column past it), likewise.
+     * \param[in]  left_phase  The unit phase each row took.
+     * \param[in]  right_phase The unit phase each column past the diagonal took.
+     * \param[in]  n           The order.
+     * \param[out] ut          `U_bᵀ`, row-major: its rows are the columns of `U_b`.
+     * \param[out] vt          `V_bᵀ`, likewise.
+     */
+    template <typename T>
+    void form_bidiagonal_bases(const std::vector<std::vector<T>>& left,
+                               std::vector<std::vector<T>>        right,
+                               const std::vector<T>&              left_phase,
+                               const std::vector<T>&              right_phase,
+                               std::size_t                        n,
+                               std::vector<T>&                    ut,
+                               std::vector<T>&                    vt)
+    {
+      // U_b = L₀ᴴ L₁ᴴ … with L_kᴴ = H_k diag(conj phase at k), and V_b = R₀ R₁ … with R_k = H'_k diag(phase
+      // at k+1). A phase on row k commutes with every later reflector, which acts on rows past it, so
+      // U_b = (H₀ H₁ …) diag(conj phases) and V_b = (H'₀ H'₁ …) diag(phases): the reflectors are applied to the
+      // diagonal by blocks, through the matrix product kernel, as QR's Q is formed.
+      std::vector<T> u(n * n, T {});
+      std::vector<T> v(n * n, T {});
+      for (std::size_t k {0}; k < n; ++k) {
+        u[(k * n) + k] = conj_of(left_phase[k]);
+        v[(k * n) + k] = k == 0 ? T {1} : right_phase[k - 1];
+      }
+      std::vector<std::vector<T>> shifted(n); // right[k] acts from row k+1: as reflector k+1 of a QR
+      for (std::size_t k {0}; k + 1 < n; ++k) {
+        shifted[k + 1] = std::move(right[k]);
+      }
+      for (std::size_t k1 {n}; k1 > 0;) { // blocks of qr_block reflectors, the last first
+        const std::size_t k0 {(k1 - 1) / qr_block * qr_block};
+        apply_reflector_block(gather_reflectors(left, k0, k1, n), false, u, n, k0, n);
+        apply_reflector_block(gather_reflectors(shifted, k0, k1, n), false, v, n, k0, n);
+        k1 = k0;
+      }
+      ut.assign(n * n, T {});
+      vt.assign(n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          ut[(j * n) + i] = u[(i * n) + j];
+          vt[(j * n) + i] = v[(i * n) + j];
+        }
+      }
+    }
+
+    //! \brief The reflections from each side in one panel of the blocked bidiagonal reduction.
+    inline constexpr std::size_t bidiagonal_block {32};
+
+    /*!
+     * \brief The unit Householder vector `v` with `(I − 2 v vᵀ) x = β e₁`, in place of \p x, for a real `x`.
+     * \return `β = −sign(x₀) ‖x‖`.
+     */
+    template <typename T>
+    [[nodiscard]] T householder_in_place(std::vector<T>& x)
+    {
+      const auto norm   {static_cast<T>(scaled_norm(x))};
+      const T    beta   {-phase_of(x[0]) * norm};
+      x[0] -= beta;
+      const auto length {static_cast<T>(scaled_norm(x))};
+      for (T& element : x) {
+        element /= length;
+      }
+      return beta;
+    }
+
+    /*!
+     * \brief Reduces the real square `n × n` row-major \p b to upper-bidiagonal form, `B = U_b D V_bᵀ`, by panels
+     *        of \ref bidiagonal_block reflections from each side, as LAPACK's `dgebrd` and `dlabrd`: the matrix
+     *        a panel's later steps see is `B − V Yᵀ − X Uᵀ` (`V`, `U` the reflectors, `Y`, `X` what they move),
+     *        applied to the one column and the one row each step needs; the trailing block takes it after the
+     *        panel, through the matrix product kernel. The bidiagonal keeps its signs, which the iterations that
+     *        follow take.
+     * \param[in,out] b  The matrix; destroyed.
+     * \param[in]     n  Its order.
+     * \param[out]    d  The diagonal (size \p n).
+     * \param[out]    e  The superdiagonal in `e[0…n-2]`, and `e[n-1] = 0` (size \p n).
+     * \param[out]    ut `U_bᵀ`, row-major: its rows are the columns of `U_b`.
+     * \param[out]    vt `V_bᵀ`, row-major: its rows are the columns of `V_b`.
+     */
+    template <typename T>
+    requires std::is_floating_point_v<T>
+    void bidiagonalize(std::vector<T>&      b,
+                       std::size_t          n,
+                       std::vector<double>& d,
+                       std::vector<double>& e,
+                       std::vector<T>&      ut,
+                       std::vector<T>&      vt)
+    {
+      std::vector<std::vector<T>> left(n);  // the left reflector of step k, on rows k…, empty where none was needed
+      std::vector<std::vector<T>> right(n); // the right reflector of step k, on columns k+1…, likewise
+      for (std::size_t k0 {0}; k0 < n; k0 += bidiagonal_block) {
+        const std::size_t k1    {std::min(k0 + bidiagonal_block, n)};
+        const std::size_t width {k1 - k0};
+        // By reflector: row p of each holds step k0 + p's vector over the rows (v, x) or the columns (u, y), so every
+        // term of the panel is a contiguous update.
+        std::vector<T> by_row_v(width * n, T {}); // the left reflectors, at their rows
+        std::vector<T> by_row_y(width * n, T {}); // what they move, 2 Bᵀ v, at the columns
+        std::vector<T> by_row_u(width * n, T {}); // the right reflectors, at their columns
+        std::vector<T> by_row_x(width * n, T {}); // what they move, 2 B u, at the rows
+        const auto     row_of {[n](std::vector<T>& rows, std::size_t p, std::size_t from) { return rows.data() + (p * n) + from; }};
+        for (std::size_t k {k0}; k < k1; ++k) {
+          const std::size_t i {k - k0};
+          std::vector<T>    x(n - k); // column k from the diagonal down, the panel's earlier steps applied
+          for (std::size_t r {k}; r < n; ++r) {
+            x[r - k] = b[(r * n) + k];
+          }
+          for (std::size_t p {0}; p < i; ++p) {
+            subtract_product(x.data(), by_row_y[(p * n) + k], row_of(by_row_v, p, k), n - k);
+            subtract_product(x.data(), by_row_u[(p * n) + k], row_of(by_row_x, p, k), n - k);
+          }
+          if (scaled_norm(std::vector<T>(x.begin() + 1, x.end())) > 0.0) {
+            d[k] = static_cast<double>(householder_in_place(x));
+            // y = 2 (B − V Yᵀ − X Uᵀ)ᵀ v on the columns past k: Bᵀ v by contiguous rows, then the panel's terms.
+            std::vector<T> by_v(i, T {}); // Vᵀ v and Xᵀ v over the earlier steps
+            std::vector<T> by_x(i, T {});
+            for (std::size_t p {0}; p < i; ++p) {
+              by_v[p] = dot_product(row_of(by_row_v, p, k), x.data(), n - k);
+              by_x[p] = dot_product(row_of(by_row_x, p, k), x.data(), n - k);
+            }
+            const std::size_t     span        {n - k - 1};
+            constexpr std::size_t chunk_width {64};
+            parallel_for((span + chunk_width - 1) / chunk_width, (n - k) * chunk_width, [&](std::size_t chunk) {
+                           const std::size_t first {k + 1 + (chunk * chunk_width)};
+                           const std::size_t count {std::min(chunk_width, n - first)};
+                           std::vector<T>    sum(count, T {});
+                           for (std::size_t r {k}; r < n; ++r) {
+                             add_product(sum.data(), x[r - k], b.data() + (r * n) + first, count);
+                           }
+                           for (std::size_t p {0}; p < i; ++p) {
+                             subtract_product(sum.data(), by_v[p], row_of(by_row_y, p, first), count);
+                             subtract_product(sum.data(), by_x[p], row_of(by_row_u, p, first), count);
+                           }
+                           for (std::size_t c {0}; c < count; ++c) {
+                             by_row_y[(i * n) + first + c] = static_cast<T>(2) * sum[c];
+                           }
+                         });
+            std::copy(x.begin(), x.end(), row_of(by_row_v, i, k));
+            left[k] = std::move(x);
+          }
+          else {
+            d[k] = static_cast<double>(x[0]);
+          }
+          if (k + 1 == n) {
+            break;
+          }
+          std::vector<T> y(b.begin() + static_cast<std::ptrdiff_t>((k * n) + k + 1), // row k past the diagonal, the left
+                           b.begin() + static_cast<std::ptrdiff_t>((k + 1) * n));    // reflection included
+          for (std::size_t p {0}; p <= i; ++p) {
+            subtract_product(y.data(), by_row_v[(p * n) + k], row_of(by_row_y, p, k + 1), n - k - 1);
+          }
+          for (std::size_t p {0}; p < i; ++p) {
+            subtract_product(y.data(), by_row_x[(p * n) + k], row_of(by_row_u, p, k + 1), n - k - 1);
+          }
+          if (y.size() > 1 && scaled_norm(std::vector<T>(y.begin() + 1, y.end())) > 0.0) {
+            e[k] = static_cast<double>(householder_in_place(y));
+            // x = 2 (B − V Yᵀ − X Uᵀ) u on the rows past k: B u by rows, then the panel's terms.
+            std::vector<T> by_y(i + 1, T {}); // Yᵀ u over this and the earlier steps, Uᵀ u over the earlier
+            std::vector<T> by_u(i, T     {});
+            for (std::size_t p {0}; p <= i; ++p) {
+              by_y[p] = dot_product(row_of(by_row_y, p, k + 1), y.data(), y.size());
+            }
+            for (std::size_t p {0}; p < i; ++p) {
+              by_u[p] = dot_product(row_of(by_row_u, p, k + 1), y.data(), y.size());
+            }
+            std::vector<T> moved(n - k - 1);
+            parallel_for(n - k - 1, 2 * (n - k), [&](std::size_t row) {
+                           moved[row] = dot_product(b.data() + ((k + 1 + row) * n) + k + 1, y.data(), y.size());
+                         });
+            for (std::size_t p {0}; p <= i; ++p) {
+              subtract_product(moved.data(), by_y[p], row_of(by_row_v, p, k + 1), n - k - 1);
+            }
+            for (std::size_t p {0}; p < i; ++p) {
+              subtract_product(moved.data(), by_u[p], row_of(by_row_x, p, k + 1), n - k - 1);
+            }
+            for (std::size_t r {0}; r < n - k - 1; ++r) {
+              by_row_x[(i * n) + k + 1 + r] = static_cast<T>(2) * moved[r];
+            }
+            std::copy(y.begin(), y.end(), row_of(by_row_u, i, k + 1));
+            right[k] = std::move(y);
+          }
+          else {
+            e[k] = static_cast<double>(y[0]);
+          }
+        }
+        if (k1 < n) { // the trailing block from row and column k1: B −= V Yᵀ + X Uᵀ
+          const std::size_t rest {n - k1};
+          std::vector<T>    minus_v(rest * width);
+          std::vector<T>    minus_x(rest * width);
+          for (std::size_t r {0}; r < rest; ++r) {
+            for (std::size_t p {0}; p < width; ++p) {
+              minus_v[(r * width) + p] = -by_row_v[(p * n) + k1 + r];
+              minus_x[(r * width) + p] = -by_row_x[(p * n) + k1 + r];
+            }
+          }
+          T* trailing {b.data() + (k1 * n) + k1};
+          gemm(rest, rest, width, minus_v.data(), width, by_row_y.data() + k1, n, trailing, n);
+          gemm(rest, rest, width, minus_x.data(), width, by_row_u.data() + k1, n, trailing, n);
+        }
+      }
+      if (n > 0) {
+        e[n - 1] = 0.0;
+      }
+      form_bidiagonal_bases(left, std::move(right), std::vector<T>(n, T {1}), std::vector<T>(n, T {1}), n, ut, vt);
+    }
+
+    /*!
      * \brief Reduces the square `n × n` row-major \p b to real upper-bidiagonal form, `B = U_b D V_bᴴ` with
      *        `D` real, by Householder reflections alternately from the left and the right (Golub–Kahan).
      *
@@ -2523,34 +2736,7 @@ namespace numerical {
       if (n > 0) {
         e[n - 1] = 0.0;
       }
-      // U_b = L₀ᴴ L₁ᴴ … with L_kᴴ = H_k diag(conj phase at k), and V_b = R₀ R₁ … with R_k = H'_k diag(phase
-      // at k+1). A phase on row k commutes with every later reflector, which acts on rows past it, so
-      // U_b = (H₀ H₁ …) diag(conj phases) and V_b = (H'₀ H'₁ …) diag(phases): the reflectors are applied to the
-      // diagonal by blocks, through the matrix product kernel, as QR's Q is formed.
-      std::vector<T> u(n * n, T {});
-      std::vector<T> v(n * n, T {});
-      for (std::size_t k {0}; k < n; ++k) {
-        u[(k * n) + k] = conj_of(left_phase[k]);
-        v[(k * n) + k] = k == 0 ? T {1} : right_phase[k - 1];
-      }
-      std::vector<std::vector<T>> shifted(n); // right[k] acts from row k+1: as reflector k+1 of a QR
-      for (std::size_t k {0}; k + 1 < n; ++k) {
-        shifted[k + 1] = std::move(right[k]);
-      }
-      for (std::size_t k1 {n}; k1 > 0;) { // blocks of qr_block reflectors, the last first
-        const std::size_t k0 {(k1 - 1) / qr_block * qr_block};
-        apply_reflector_block(gather_reflectors(left, k0, k1, n), false, u, n, k0, n);
-        apply_reflector_block(gather_reflectors(shifted, k0, k1, n), false, v, n, k0, n);
-        k1 = k0;
-      }
-      ut.assign(n * n, T {});
-      vt.assign(n * n, T {});
-      for (std::size_t i {0}; i < n; ++i) {
-        for (std::size_t j {0}; j < n; ++j) {
-          ut[(j * n) + i] = u[(i * n) + j];
-          vt[(j * n) + i] = v[(i * n) + j];
-        }
-      }
+      form_bidiagonal_bases(left, std::move(right), left_phase, right_phase, n, ut, vt);
     }
 
     /*!
