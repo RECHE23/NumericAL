@@ -1,6 +1,7 @@
 // detail::parallel_for: every index runs once, sequentially when its work pays for fewer than two threads
 // and across threads above, and an exception a worker throws comes back to the caller once every worker
 // has joined -- one escaping a thread would call std::terminate.
+#include <array>
 #include <atomic>
 #include <cstdlib>
 #include <cstddef>
@@ -18,6 +19,29 @@
 #if !defined(_WIN32)
 #  include <sys/wait.h>
 #  include <unistd.h>
+
+#  if defined(__SANITIZE_ADDRESS__)
+#    define NUMERICAL_TEST_ADDRESS_SANITIZER 1
+#  elif defined(__has_feature)
+#    if __has_feature(address_sanitizer)
+#      define NUMERICAL_TEST_ADDRESS_SANITIZER 1
+#    endif
+#  endif
+
+namespace {
+
+  // Ends a forked child with its verdict. The parent's other threads do not exist in the child, so what their stacks
+  // held looks leaked to LeakSanitizer, whose check std::exit runs: under the address sanitizer the child leaves by
+  // _exit. Elsewhere std::exit, so that a coverage build writes the child's profile.
+  [[noreturn]] void end_child(int code)
+  {
+#  if defined(NUMERICAL_TEST_ADDRESS_SANITIZER)
+    _exit(code);
+#  else
+    std::exit(code); // NOLINT(concurrency-mt-unsafe): a forked child has this one thread
+#  endif
+  }
+} // namespace
 #endif
 
 TEST(parallel_for_runs_every_index_once)
@@ -199,16 +223,17 @@ TEST(a_forked_child_runs_its_kernels_alone)
       // The parent's pool does not serve the child: it declines, and the run happens on the caller.
       const auto nothing {[](const void*, std::size_t, std::size_t) {}};
       if (numerical::detail::thread_pool::shared().try_run(nothing, nullptr, 1, 1, 1, 1)) {
-        std::exit(2); // NOLINT(concurrency-mt-unsafe): a forked child has this one thread
+        end_child(2);
       }
-      std::vector<std::atomic<int>> hits(512);
+      // On the stack: an allocator need not be safe to call in a child forked among threads (the address
+      // sanitizer's is not), and the kernel itself allocates nothing here.
+      std::array<std::atomic<int>, 512> hits {};
       numerical::detail::parallel_for(hits.size(), std::size_t {1} << 20, [&hits](std::size_t i) { ++hits[i]; });
-      int total {0};
+      int total                              {0};
       for (const std::atomic<int>& hit : hits) {
         total += hit.load();
       }
-      // exit, not _exit, so that a coverage build writes the child's profile
-      std::exit(total == 512 ? 0 : 1); // NOLINT(concurrency-mt-unsafe): a forked child has this one thread
+      end_child(total == 512 ? 0 : 1);
     }
     int status {0};
     (void)waitpid(child, &status, 0);
