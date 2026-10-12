@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.5 — 2026-10-12
+
 Faster dense linear algebra throughout (see BENCHMARKS.md for the tables against NumPy's BLAS/LAPACK).
 Results that differ from 2026.10.4 in the last bits, each still the same on any number of threads: on x86-64
 with AVX2 or AVX-512, the decompositions' row updates (now fused multiply-adds), real and complex; the
