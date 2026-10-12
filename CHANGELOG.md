@@ -46,6 +46,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   1.85 → 1.03, 512 8.2 → 4.3–5.4; M1 Pro order 128–1024 5–15 % faster. The factors are unchanged where no product
   is fused.
 
+- **Cholesky solves the rows below each panel by leaves**, a product for each leaf's terms from the panel's
+  earlier columns. x86-64 float64 (twenty threads): order 128 0.25 → 0.16 ms, 256 0.93 → 0.72, 384 3.3 → 2.8;
+  arm64 and orders of 512 and more unchanged. The factor is unchanged where no product is fused.
+
 ### Added
 - **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses. M1 Pro,
   8 threads, GFLOPS against Accelerate's: order 2048 423 (383), 1024 395 (388), 512 277 (431), 256 209 (282);

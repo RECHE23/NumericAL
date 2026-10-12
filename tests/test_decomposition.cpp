@@ -971,11 +971,13 @@ namespace {
   }
 } // namespace
 
-// Past one panel: the diagonal blocks, the rows below them in parallel, and the trailing products.
+// Past one panel: the diagonal blocks, the rows below them by leaves (or, under many rows, as one leaf), and
+// the trailing products.
 TEST(blocked_cholesky_equals_the_unblocked_algorithm_to_the_bit)
 {
   (void)numerical::limit_gemm_path(numerical::gemm_path::portable);
   EXPECT(blocked_cholesky_equals_unblocked<double>((2 * numerical::detail::cholesky_block) + 22));
+  EXPECT(blocked_cholesky_equals_unblocked<double>((9 * numerical::detail::cholesky_block) + 5));
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
   EXPECT(blocked_cholesky_equals_unblocked<std::complex<double>>(numerical::detail::cholesky_block + 40));
 }

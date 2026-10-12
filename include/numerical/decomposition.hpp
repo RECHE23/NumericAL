@@ -753,7 +753,7 @@ namespace numerical {
   private:
 
     // By panels of detail::cholesky_block columns: the panel's diagonal block row by row, the rows below it
-    // in parallel (each depends only on the diagonal block), then the lower part of the trailing block takes
+    // by leaves (each depends only on the diagonal block; factor_rows_below), then the lower part of the trailing block takes
     // A22 += (-L21) L21ᴴ from the matrix product kernel. Every element still receives its terms in ascending
     // order, so without multiply-add fusion the factor is the unblocked algorithm's to the bit.
     void factorize()
@@ -764,8 +764,7 @@ namespace numerical {
           factor_row(i, k0, std::min(i + 1, end));
         }
         if (end < n_) {
-          detail::parallel_for(n_ - end, (end - k0) * (end - k0) / 2,
-                               [&](std::size_t r) { factor_row(end + r, k0, end); });
+          factor_rows_below(k0, end);
           update_trailing(k0, end);
         }
       }
@@ -776,7 +775,7 @@ namespace numerical {
     }
 
     /*!
-     * \brief Row \p i of L in the columns `[k0, last)`, the earlier panels' terms already subtracted: the
+     * \brief Row \p i of L in the columns `[k0, last)`, the terms of the columns before \p k0 already subtracted: the
      *        unblocked step, `L[i][j] = (A[i][j] − Σₖ L[i][k]·conj(L[j][k])) / L[j][j]` over `k ∈ [k0, j)`.
      * \throws not_positive_definite_error At a diagonal that is not positive.
      */
@@ -799,6 +798,37 @@ namespace numerical {
         else {
           lower_[(i * n_) + j] = sum / lower_[(j * n_) + j];
         }
+      }
+    }
+
+    /*!
+     * \brief The rows below the panel `[k0, end)`, by leaves of \ref detail::solve_leaf columns (fewer than eight
+     *        blocks of rows) or of the whole panel: a leaf's
+     *        terms from the panel's earlier columns, `L[i][j] −= Σₖ L[i][k]·conj(L[j][k])`, through the matrix
+     *        product kernel, then the leaf row by row in parallel (\ref factor_row). Each element still takes its
+     *        terms in ascending order.
+     */
+    void factor_rows_below(std::size_t k0,
+                           std::size_t end)
+    {
+      const std::size_t rows {n_ - end};
+      // Under many rows the leaves' products stream the panel again and again, which the row-by-row step does not
+      // (order 1024 on arm64: 13.4 ms row by row, 15.1 by leaves); there, one leaf of the whole panel.
+      const std::size_t leaf {rows < 8 * detail::cholesky_block ? detail::solve_leaf : end - k0};
+      for (std::size_t s0 {k0}; s0 < end; s0 += leaf) {
+        const std::size_t s1 {std::min(s0 + leaf, end)};
+        if (s0 > k0) {
+          const std::size_t depth {s0 - k0};
+          std::vector<T>    minus_adjoint(depth * (s1 - s0)); // −conj(L[j][k]), k by row, j by column
+          for (std::size_t k {0}; k < depth; ++k) {
+            for (std::size_t j {s0}; j < s1; ++j) {
+              minus_adjoint[(k * (s1 - s0)) + (j - s0)] = -detail::conj_of(lower_[(j * n_) + k0 + k]);
+            }
+          }
+          detail::gemm(rows, s1 - s0, depth, lower_.data() + (end * n_) + k0, n_, minus_adjoint.data(), s1 - s0,
+                       lower_.data() + (end * n_) + s0, n_);
+        }
+        detail::parallel_for(rows, (s1 - s0) * (s1 - s0) / 2, [&](std::size_t r) { factor_row(end + r, s0, s1); });
       }
     }
 
