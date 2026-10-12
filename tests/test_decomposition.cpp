@@ -1336,3 +1336,99 @@ TEST(svd_divide_and_conquer_merges_and_deflates)
   const svd_decomposition<c> none       {matrix<c> {3, 0, {}}};
   EXPECT(none.singular_values().size() == 0 && none.u().rows() == 3 && none.u().cols() == 0);
 }
+
+// Subnormal entries: a Householder vector or a phase computed among subnormal numbers is off unit length by the
+// coarse grid's error, which no input scaling removes when one column alone is tiny. Every reflector and phase is
+// scaled up first, exactly: the bases stay orthonormal.
+TEST(subnormal_columns_keep_the_bases_orthonormal)
+{
+  using c = std::complex<double>;
+  const std::size_t   n {40};
+  std::vector<double> sym(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    sym[(i * n) + i] = 1.0 + (0.01 * static_cast<double>(i));
+  }
+  for (std::size_t i {1}; i < n; ++i) {
+    sym[i * n] = sym[i] = 1e-320 * static_cast<double>((i % 7) + 1);
+  }
+  const symmetric_eigen tiny_column {matrix<double> {n, n, sym}};
+  EXPECT(orthonormality_error(tiny_column.vectors()) < 1e-13);
+  EXPECT(approx_equal(reconstruct(tiny_column), matrix<double> {n, n, sym}, 1e-13));
+  std::vector<double> small(36);
+  for (std::size_t i {0}; i < small.size(); ++i) {
+    small[i] = 1e-318 * std::sin(static_cast<double>(i + 1));
+  }
+  const auto factored {numerical::qr(matrix<double> {6, 6, small})};
+  EXPECT(orthonormality_error(factored.q()) < 1e-14);
+  std::vector<double> bidiagonal(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    bidiagonal[(i * n) + i] = 1.0 + (0.01 * static_cast<double>(i));
+    if (i > 0) {
+      bidiagonal[i * n] = 1e-320 * static_cast<double>(i);
+    }
+  }
+  const svd_decomposition<double> tiny_rows {matrix<double> {n, n, bidiagonal}};
+  EXPECT(orthonormality_error(tiny_rows.u()) < 1e-13 && orthonormality_error(tiny_rows.v()) < 1e-13);
+  std::vector<c> hermitian(n * n);
+  for (std::size_t i {0}; i < n; ++i) {
+    hermitian[(i * n) + i] = c {1.0 + (0.01 * static_cast<double>(i)), 0.0};
+    if (i + 1 < n) {
+      hermitian[((i + 1) * n) + i] = c {1e-321, 1e-321} *static_cast<double>((i % 3) + 1);
+      hermitian[(i * n) + i + 1]   = std::conj(hermitian[((i + 1) * n) + i]);
+    }
+  }
+  const numerical::hermitian_eigen tiny_phases {matrix<c> {n, n, hermitian}};
+  EXPECT(orthonormality_error(tiny_phases.vectors()) < 1e-13);
+  std::vector<c> upper(n * n);
+  for (std::size_t i {0}; i < n; ++i) {
+    upper[(i * n) + i] = c {1.0 + (0.01 * static_cast<double>(i)), 0.0};
+    if (i + 1 < n) {
+      upper[(i * n) + i + 1] = c {1e-321, 1e-321};
+    }
+  }
+  const svd_decomposition<c> complex_tiny {matrix<c> {n, n, upper}};
+  EXPECT(orthonormality_error(complex_tiny.v()) < 1e-13 && orthonormality_error(complex_tiny.u()) < 1e-13);
+}
+
+// eigh reads the lower triangle and the diagonal's real part, as numpy.linalg.eigh does: what lies elsewhere may
+// be anything, a NaN included; a non-finite entry it reads is refused.
+TEST(eigh_checks_only_what_it_reads)
+{
+  using c        = std::complex<double>;
+  const double         nan       {std::numeric_limits<double>::quiet_NaN()};
+  const matrix<double> upper_nan {{1.0, nan}, {2.0, 1.0}};
+  EXPECT(approx_equal(symmetric_eigen {upper_nan}.values(), vector<double> {-1.0, 3.0}, 1e-14));
+  EXPECT_THROWS(symmetric_eigen(matrix<double> {{1.0, 0.0}, {nan, 1.0}}), numerical::non_finite_error);
+  EXPECT_THROWS(symmetric_eigen(matrix<double> {{1.0, 0.0}, {0.0, nan}}), numerical::non_finite_error);
+  const matrix<c> imaginary_nan {{c {1.0, nan}, c {nan, nan}}, {c {2.0, 0.0}, c {1.0, 0.0}}};
+  EXPECT(approx_equal(numerical::hermitian_eigen {imaginary_nan}.values(), vector<double> {-1.0, 3.0}, 1e-14));
+  EXPECT_THROWS(numerical::hermitian_eigen(matrix<c> {{c {1.0, 0.0}, c {}}, {c {nan, 0.0}, c {1.0, 0.0}}}),
+                numerical::non_finite_error);
+}
+
+// Divide and conquer called on a tridiagonal far from unit size: it works on the tridiagonal scaled to it, by an
+// exact power of two, so its deflation tolerance stays relative.
+TEST(divide_and_conquer_is_relative_to_the_tridiagonal_size)
+{
+  for (const double size : {1e-15, 1e15}) {
+    const std::size_t   n {80};
+    std::vector<double> d(n);
+    std::vector<double> e(n);
+    for (std::size_t i {0}; i < n; ++i) {
+      d[i] = size * std::cos(static_cast<double>(i));
+      e[i] = size * (i + 1 < n ? 1.0 / static_cast<double>(i + 2) : 0.0);
+    }
+    std::vector<double> values {d};
+    std::vector<double> q;
+    numerical::detail::divide_and_conquer(values.data(), e.data(), n, q);
+    double worst {0.0}; // ‖T q − λ q‖ over ‖T‖
+    for (std::size_t j {0}; j < n; ++j) {
+      for (std::size_t i {0}; i < n; ++i) {
+        const double tq {(d[i] * q[(i * n) + j]) + (i > 0 ? e[i - 1] * q[((i - 1) * n) + j] : 0.0)
+                         + (i + 1 < n ? e[i] * q[((i + 1) * n) + j] : 0.0)};
+        worst = std::max(worst, std::abs(tq - (values[j] * q[(i * n) + j])) / size);
+      }
+    }
+    EXPECT(worst < 1e-13);
+  }
+}

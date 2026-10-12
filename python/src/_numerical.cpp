@@ -1277,7 +1277,9 @@ struct element_type
 
 std::optional<element_type> parse_typestr(const std::string& typestr)
 {
-    if (typestr.size() < 3 || typestr.find_first_not_of("0123456789", 2) != std::string::npos) {
+    // At most two digits of size (16 is the largest supported): a longer one is no type this reads, and would
+    // overflow the conversion.
+    if (typestr.size() < 3 || typestr.size() > 4 || typestr.find_first_not_of("0123456789", 2) != std::string::npos) {
         return std::nullopt;
     }
     const char        order {typestr[0]};
@@ -1354,6 +1356,9 @@ void gather_typed(const unsigned char*           base,
         return;
     }
     const std::size_t        inner  {shape[rank - 1]};
+    if (inner == 0) {
+        return; // nothing to read, and the address may be null
+    }
     const Py_ssize_t         step   {strides[rank - 1]};
     std::vector<std::size_t> index(rank - 1, 0);
     std::size_t              rows   {1};

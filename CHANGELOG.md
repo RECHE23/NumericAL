@@ -104,6 +104,16 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   can keep the kernels to one thread each.
 
 ### Fixed
+- **Subnormal entries no longer cost the bases their orthogonality** (in 2026.10.3 too): a Householder vector or a
+  phase computed among subnormal numbers missed unit length by the coarse grid's error, which the input scaling
+  does not remove when one column alone is tiny (`eigh` of a matrix with a column of 1e-320: ‖VᵀV − I‖ 1e-3;
+  `qr` of a 1e-318 matrix: 6e-6; a Hermitian tridiagonal with 1e-321 couplings: 0.3). Each is now scaled up by an
+  exact power of two first, as LAPACK's `dlarfg` rescales; nothing changes for normal numbers.
+- **`asarray` of an `__array_interface__` whose type names an absurd size aborted the interpreter** (since
+  2026.10.1); it is refused as an unknown type. A source with rows of no elements at a null address no longer
+  reaches `memcpy` with it.
+- **`eigh` reads only what it uses**: the lower triangle and the diagonal's real part, as `numpy.linalg.eigh`. A
+  NaN in the upper triangle (or in the diagonal's imaginary part) raised; the lower triangle's are refused as before.
 - **`svd` of a zero matrix past order 32 raised a convergence error** (the divide and conquer, not yet
   released): a zero arrow has no weight on its zero pole, so its secular equation has no root. It is now its own
   decomposition. Found by the new `make fuzz-linalg`: every decomposition against NumPy on adversarial matrices

@@ -206,6 +206,9 @@ class ArrayInterface(unittest.TestCase):
         self.assertEqual(numerical.asarray(Interface(">c16", pairs, 2)).tolist(), [1 - 2j, 0.5 + 3j])
         with self.assertRaises(numerical.error):
             numerical.asarray(Interface("|f8", struct.pack("<d", 1.0), 1))
+        # A size too large to convert (it aborted the interpreter) is no known type either.
+        with self.assertRaises(numerical.error):
+            numerical.asarray(Interface("<f99999999999999999999999", struct.pack("<d", 1.0), 1))
 
     def test_asarray_refuses_a_null_address_and_an_empty_data_tuple(self):
         # A null data address with elements to read crashed the interpreter; an empty array may have one.
@@ -220,6 +223,10 @@ class ArrayInterface(unittest.TestCase):
                 self.assertEqual(numerical.asarray(Raw(typestr, (0, True), 0)).tolist(), [])
         with self.assertRaises(numerical.error):
             numerical.asarray(Raw("<f8", (), 1))
+        # Rows of no elements at a null address: nothing is read.
+        empty_rows = Raw("<f8", (0, True), 3)
+        empty_rows.__array_interface__["shape"] = (3, 0)
+        self.assertEqual(numerical.asarray(empty_rows).shape, (3, 0))
 
     def test_asarray_reads_nested_lists_and_numbers(self):
         self.assertEqual(numerical.asarray([[1, 2], [3, 4]]).shape, (2, 2))

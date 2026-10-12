@@ -603,7 +603,7 @@ namespace numerical::detail {
    * \param[in]     a,lda,b,ldb The operands and the distance between their rows.
    * \param[in,out] c,ldc       The result and the distance between its rows (C may be a block of a
    *                             larger matrix that A and B do not overlap).
-   * \pre `m`, `n` and `k` are not zero.
+   * A zero `m`, `n` or `k` leaves C as it is.
    */
   template <typename T>
   void gemm(std::size_t m,

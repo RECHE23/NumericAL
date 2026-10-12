@@ -101,12 +101,43 @@ namespace numerical {
       return static_cast<double>(x.real());
     }
 
-    //! \brief The unit-modulus factor of \p x: `x / |x|` (its sign, for a real scalar), and 1 at 0.
+    //! \brief The exact power of two that brings a magnitude below 2⁻⁵⁰⁰ up among normal numbers, as LAPACK's dlarfg
+    //!        rescales; 1 for any larger magnitude.
+    [[nodiscard]] inline double rescue_factor(double largest)
+    {
+      return largest < 0x1p-500 ? std::ldexp(1.0, -std::ilogb(std::max(largest, std::numeric_limits<double>::min()))) : 1.0;
+    }
+
+    /*!
+     * \brief The unit-modulus factor of \p x: `x / |x|` (its sign, for a real scalar), and 1 at 0. A subnormal `x` is
+     *        scaled up first, exactly: its modulus would round to the coarse subnormal grid, and `x / |x|` miss unit
+     *        modulus by as much.
+     */
     template <typename T>
     [[nodiscard]] T phase_of(const T& x)
     {
-      const double magnitude {static_cast<double>(std::abs(x))};
-      return magnitude == 0.0 ? T {1} : x / detail::from_double<T>(magnitude);
+      const T      scaled    {x * detail::from_double<T>(rescue_factor(static_cast<double>(std::abs(x))))};
+      const double magnitude {static_cast<double>(std::abs(scaled))};
+      return magnitude == 0.0 ? T {1} : scaled / detail::from_double<T>(magnitude);
+    }
+
+    /*!
+     * \brief Scales \p x by \ref rescue_factor of its largest magnitude, exactly, so that a Householder vector built
+     *        from it is computed among normal numbers: a subnormal norm rounds to the coarse subnormal grid, and the
+     *        reflector is then not orthogonal. \return The factor (1 unless the entries are all below 2⁻⁵⁰⁰).
+     */
+    template <typename T>
+    double rescale_tiny(std::vector<T>& x)
+    {
+      double largest {0.0};
+      for (const T& element : x) {
+        largest = std::max(largest, static_cast<double>(std::abs(element)));
+      }
+      const double factor {rescue_factor(largest)};
+      for (T& element : x) {
+        element *= detail::from_double<T>(factor);
+      }
+      return factor;
     }
 
     //! \brief The Euclidean norm of \p x, summed at the scale of its largest magnitude: a plain sum of
@@ -182,6 +213,26 @@ namespace numerical {
           if (!is_finite_entry(a(i, j))) {
             throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
           }
+        }
+      }
+    }
+
+    //! \brief \ref require_finite over what a Hermitian eigensolver reads: the lower triangle, and the diagonal's real
+    //!        part (as `numpy.linalg.eigh` reads them, whatever the rest holds).
+    //! \param[in] a    The square input.
+    //! \param[in] what The decomposition, for the message.
+    //! \throws non_finite_error If an entry read is infinite or NaN.
+    template <typename T>
+    void require_finite_lower(const matrix<T>& a,
+                              const char*      what)
+    {
+      for (std::size_t i {0}; i < a.rows(); ++i) {
+        bool finite {std::isfinite(real_part(a(i, i)))};
+        for (std::size_t j {0}; j < i; ++j) {
+          finite = finite && is_finite_entry(a(i, j));
+        }
+        if (!finite) {
+          throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
         }
       }
     }
@@ -1083,6 +1134,7 @@ namespace numerical {
           for (std::size_t i {k}; i < rows; ++i) {
             v[i - k] = a[(i * cols) + k];
           }
+          (void)rescale_tiny(v); // the reflector is the same at any scale
           const double norm {scaled_norm(v)};
           if (norm == 0.0) {
             continue; // nothing to reflect: the column is already zero below and on the diagonal
@@ -1418,8 +1470,9 @@ namespace numerical {
             sub[k] = v[0]; // already tridiagonal in this column: nothing to reflect
             continue;
           }
-          const T alpha {-phase_of(v[0]) * static_cast<T>(scaled_norm(v))}; // the sign that avoids cancellation
-          sub[k]  = alpha;
+          const double up    {rescale_tiny(v)};                                  // the reflector is the same at any scale; α is scaled back
+          const T      alpha {-phase_of(v[0]) * static_cast<T>(scaled_norm(v))}; // the sign that avoids cancellation
+          sub[k]  = alpha / static_cast<T>(up);
           v[0]   -= alpha;
           const auto length {static_cast<T>(scaled_norm(v))};
           for (T& element : v) {
@@ -1986,6 +2039,27 @@ namespace numerical {
                                    std::size_t          n,
                                    std::vector<double>& q)
     {
+      // Work near unit size, scaled by a power of two (exactly): the deflation tolerance is relative to the weights,
+      // which have unit norm, so it is relative to the tridiagonal only at that size.
+      double largest {0.0};
+      for (std::size_t i {0}; i < n; ++i) {
+        largest = std::max({largest, std::abs(d[i]), i + 1 < n ? std::abs(e[i]) : 0.0});
+      }
+      int exponent {0};
+      (void)std::frexp(largest, &exponent);
+      if (exponent != 0) {
+        std::vector<double> scaled_d(n);
+        std::vector<double> scaled_e(n, 0.0);
+        for (std::size_t i {0}; i < n; ++i) {
+          scaled_d[i] = std::ldexp(d[i], -exponent);
+          scaled_e[i] = i + 1 < n ? std::ldexp(e[i], -exponent) : 0.0;
+        }
+        divide_and_conquer(scaled_d.data(), scaled_e.data(), n, q);
+        for (std::size_t i {0}; i < n; ++i) {
+          d[i] = std::ldexp(scaled_d[i], exponent);
+        }
+        return;
+      }
       q.assign(n * n, 0.0);
       if (n <= divide_leaf) {
         std::vector<double> diagonal(d, d + n);
@@ -2194,9 +2268,9 @@ namespace numerical {
   //! \brief How \ref symmetric_eigen diagonalises.
   enum class eigen_method
   {
-    divide_and_conquer, //!< Householder tridiagonalisation then divide and conquer, as LAPACK's `dsyevd`: the default.
-    tridiagonal_ql,     //!< Householder tridiagonalisation then implicit QL, as LAPACK's `dsyev`: the vectors by rotations.
-    jacobi              //!< Cyclic Jacobi rotations: several times slower, kept as an independent second method.
+    tridiagonal_ql,    //!< Householder tridiagonalisation then implicit QL, as LAPACK's `dsyev`: the vectors by rotations.
+    jacobi,            //!< Cyclic Jacobi rotations: several times slower, kept as an independent second method.
+    divide_and_conquer //!< Householder tridiagonalisation then divide and conquer, as LAPACK's `dsyevd`: the default.
   };
 
   /*!
@@ -2229,7 +2303,7 @@ namespace numerical {
       if (input.cols() != n_) {
         throw dimension_error("symmetric eigendecomposition requires a square matrix");
       }
-      detail::require_finite(input, "symmetric eigendecomposition");
+      detail::require_finite_lower(input, "symmetric eigendecomposition");
       std::vector<double> a(n_ * n_);
       std::vector<double> v(n_ * n_, 0.0);
       // Work on the matrix divided by its largest entry: a sum of squares of entries near 1e170
@@ -2349,7 +2423,7 @@ namespace numerical {
       if (input.cols() != n_) {
         throw dimension_error("Hermitian eigendecomposition requires a square matrix");
       }
-      detail::require_finite(input, "Hermitian eigendecomposition");
+      detail::require_finite_lower(input, "Hermitian eigendecomposition");
       // Work on the matrix divided by its largest entry, as symmetric_eigen does; the vectors do not depend
       // on it.
       double scale {0.0};
@@ -2554,14 +2628,15 @@ namespace numerical {
     template <typename T>
     [[nodiscard]] T householder_in_place(std::vector<T>& x)
     {
-      const auto norm   {static_cast<T>(scaled_norm(x))};
-      const T    beta   {-phase_of(x[0]) * norm};
+      const double up     {rescale_tiny(x)}; // the reflector is the same at any scale; β is scaled back
+      const auto   norm   {static_cast<T>(scaled_norm(x))};
+      const T      beta   {-phase_of(x[0]) * norm};
       x[0] -= beta;
-      const auto length {static_cast<T>(scaled_norm(x))};
+      const auto length   {static_cast<T>(scaled_norm(x))};
       for (T& element : x) {
         element /= length;
       }
-      return beta;
+      return beta / static_cast<T>(up);
     }
 
     /*!
@@ -2730,7 +2805,8 @@ namespace numerical {
       std::vector<std::vector<T>> right(n); // the right reflector acting on columns k+1…, likewise
       std::vector<T>              left_phase(n, T {1});
       std::vector<T>              right_phase(n, T {1});
-      const auto                  reflector {[](std::vector<T>& v) { // unit v with (I − 2 v vᴴ) x ∥ e₁
+      const auto                  reflector {[](std::vector<T>& v) {  // unit v with (I − 2 v vᴴ) x ∥ e₁
+                                               (void)rescale_tiny(v); // the same reflector at any scale
                                                const double norm {scaled_norm(v)};
                                                v[0] += phase_of(v[0]) * detail::from_double<T>(norm);
                                                const auto length {detail::from_double<T>(scaled_norm(v))};
@@ -3345,9 +3421,9 @@ namespace numerical {
   //! \brief How \ref svd_decomposition computes the decomposition of `R`, after a Householder QR.
   enum class svd_method
   {
-    divide_and_conquer, //!< Golub–Kahan bidiagonalisation then divide and conquer, as LAPACK's `dgesdd`: the default.
-    bidiagonal_qr,      //!< Golub–Kahan bidiagonalisation then implicit-shift QR, as LAPACK's `dgesvd`.
-    jacobi              //!< One-sided Jacobi: several times slower, each singular value to high relative accuracy.
+    bidiagonal_qr,     //!< Golub–Kahan bidiagonalisation then implicit-shift QR, as LAPACK's `dgesvd`.
+    jacobi,            //!< One-sided Jacobi: several times slower, each singular value to high relative accuracy.
+    divide_and_conquer //!< Golub–Kahan bidiagonalisation then divide and conquer, as LAPACK's `dgesdd`: the default.
   };
 
   /*!

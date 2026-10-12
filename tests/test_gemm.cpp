@@ -152,3 +152,16 @@ TEST(the_calling_thread_keeps_its_packing_storage_within_the_limit)
   EXPECT(product_is_exact<double>(64, 64, 64));
   EXPECT(!storage::kept().empty());
 }
+
+// A zero dimension leaves C as it is, whichever it is (the decompositions call it so when nothing is left).
+TEST(an_empty_dimension_leaves_c_unchanged)
+{
+  const std::vector<double> a(64, 1.0);
+  const std::vector<double> b(64, 1.0);
+  std::vector<double>       c(64, 7.0);
+  numerical::detail::gemm(0, 8, 8, a.data(), 8, b.data(), 8, c.data(), 8);
+  numerical::detail::gemm(8, 0, 8, a.data(), 8, b.data(), 8, c.data(), 8);
+  numerical::detail::gemm(8, 8, 0, a.data(), 8, b.data(), 8, c.data(), 8);
+  numerical::detail::gemm(64, 64, 0, a.data(), 1, b.data(), 1, c.data(), 1);
+  EXPECT(std::ranges::all_of(c, [](double value) { return value == 7.0; }));
+}
