@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <condition_variable>
 #include <cstddef>
 #include <exception>
@@ -27,6 +28,20 @@
 
 namespace numerical::detail {
 
+  //! \brief How long a thread polls before it sleeps: kernels run in quick succession (a matrix product packs, then
+  //!        computes, panel after panel), and a thread woken from sleep starts tens of microseconds late.
+  inline constexpr std::chrono::microseconds spin_time {100};
+
+  //! \brief Polls \p ready, yielding the core between polls, until it holds or \ref spin_time has passed.
+  template <typename Ready>
+  void spin_until(const Ready& ready)
+  {
+    const std::chrono::steady_clock::time_point until {std::chrono::steady_clock::now() + spin_time};
+    while (!ready() && std::chrono::steady_clock::now() < until) {
+      std::this_thread::yield();
+    }
+  }
+
   //! \brief A chunk of a parallel_for, type-erased: runs `body(i)` for `i` in `[begin, end)`.
   using chunk_runner = void (*)(const void* body, std::size_t begin, std::size_t end);
 
@@ -36,16 +51,16 @@ namespace numerical::detail {
    */
   struct pool_job
   {
-    chunk_runner                    run    {};  //!< The chunk runner.
-    const void*                     body   {};  //!< The body it is handed.
-    std::size_t                     count  {};  //!< The number of iterations.
-    std::size_t                     chunk  {};  //!< Indices per chunk.
-    std::size_t                     chunks {};  //!< Chunks.
-    std::atomic<std::size_t>        next   {0}; //!< The next chunk to take.
-    std::mutex                      lock;       //!< Guards finished.
-    std::condition_variable         done;       //!< Signalled when the last chunk finishes.
-    std::size_t                     finished {0};
-    std::vector<std::exception_ptr> failed;     //!< The exception of each chunk, if it threw.
+    chunk_runner                    run      {};  //!< The chunk runner.
+    const void*                     body     {};  //!< The body it is handed.
+    std::size_t                     count    {};  //!< The number of iterations.
+    std::size_t                     chunk    {};  //!< Indices per chunk.
+    std::size_t                     chunks   {};  //!< Chunks.
+    std::atomic<std::size_t>        next     {0}; //!< The next chunk to take.
+    std::atomic<std::size_t>        finished {0}; //!< The chunks done.
+    std::mutex                      lock;         //!< Orders the last chunk's signal against the caller's sleep.
+    std::condition_variable         done;         //!< Signalled when the last chunk finishes.
+    std::vector<std::exception_ptr> failed;       //!< The exception of each chunk, if it threw.
 
     //! \brief Takes chunks until none is left, keeping the exception each throws.
     void work() noexcept
@@ -57,8 +72,8 @@ namespace numerical::detail {
         catch (...) {
           failed[c] = std::current_exception();
         }
-        const std::lock_guard<std::mutex> held {lock};
-        if (++finished == chunks) {
+        if (finished.fetch_add(1) + 1 == chunks) {
+          const std::lock_guard<std::mutex> held {lock};
           done.notify_all();
         }
       }
@@ -144,13 +159,15 @@ namespace numerical::detail {
       {
         const std::lock_guard<std::mutex> held {lock_};
         current_ = job;
-        ++generation_;
+        generation_.fetch_add(1);
       }
       wake_.notify_all();
       job->work();
+      const auto all_done {[&job] { return job->finished.load() == job->chunks; }};
+      spin_until(all_done);
       {
         std::unique_lock<std::mutex> held {job->lock};
-        job->done.wait(held, [&job] { return job->finished == job->chunks; });
+        job->done.wait(held, all_done);
       }
       for (const std::exception_ptr& error : job->failed) {
         if (error) {
@@ -174,16 +191,18 @@ namespace numerical::detail {
       }
     }
 
-    //! \brief A worker: waits for a run, works on it, waits for the next.
+    //! \brief A worker: waits for a run (polling a while, then asleep), works on it, waits for the next.
     [[noreturn]] void serve()
     {
       std::size_t seen {0};
       for (;;) {
+        const auto started {[this, &seen] { return generation_.load() != seen; }};
+        spin_until(started);
         std::shared_ptr<pool_job> job;
         {
           std::unique_lock<std::mutex> held {lock_};
-          wake_.wait(held, [this, seen] { return generation_ != seen; });
-          seen = generation_;
+          wake_.wait(held, started);
+          seen = generation_.load();
           job  = current_;
         }
         job->work();
@@ -193,7 +212,7 @@ namespace numerical::detail {
     std::mutex                lock_;               //!< Guards current_ and generation_.
     std::condition_variable   wake_;               //!< Signalled when a run starts.
     std::shared_ptr<pool_job> current_;            //!< The latest run.
-    std::size_t               generation_ {0};     //!< Counts the runs.
+    std::atomic<std::size_t>  generation_ {0};     //!< Counts the runs (polled without the lock).
     std::atomic<bool>         busy_       {false}; //!< Whether a run holds the pool.
     std::size_t               workers_    {0};     //!< The threads started.
   };

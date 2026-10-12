@@ -107,6 +107,10 @@ namespace numerical::detail {
   //! \brief The B slivers of one task.
   inline constexpr std::size_t gemm_slivers_per_task {4};
 
+  //! \brief The tasks a product's compute pass hands each thread at least, while its rows allow: a slower core
+  //!        then holds back no one.
+  inline constexpr std::size_t tasks_per_thread {4};
+
   //! \brief The multiply-adds the register tile does in the time of one in \ref work_per_thread's dependent
   //!        chain (about 20 G/s on one arm64 or x86-64 AVX2 core): a task weighs its work by it, so a product
   //!        of 0.1 ms does not start eight threads.
@@ -461,11 +465,17 @@ namespace numerical::detail {
                          gemm_pack_a<mr>(a + (ic * lda) + pc, lda, std::min(Kernel::block_rows, m - ic), kc, packed.a() + (ic * kc));
                        }
                      });
-        parallel_for(row_blocks * groups, Kernel::block_rows * gemm_slivers_per_task * nr * kc / gemm_kernel_speedup, [&](std::size_t task) {
-                       const std::size_t                   ic     {(task / groups) * Kernel::block_rows};
+        // A task covers task_rows rows: a whole block, or fewer whole tiles when blocks would leave a thread fewer
+        // than tasks_per_thread tasks (order 256 on twenty x86-64 threads: twelve tasks took 116 µs, 44 took 104).
+        const std::size_t tiles      {((m + mr) - 1) / mr};
+        const std::size_t row_tasks  {(((tasks_per_thread * max_threads()) + groups) - 1) / groups};
+        const std::size_t task_rows  {std::clamp(((tiles + row_tasks) - 1) / row_tasks, std::size_t {1}, Kernel::block_rows / mr) * mr};
+        const std::size_t task_count {((m + task_rows) - 1) / task_rows};
+        parallel_for(task_count * groups, task_rows * gemm_slivers_per_task * nr * kc / gemm_kernel_speedup, [&](std::size_t task) {
+                       const std::size_t                   ic     {(task / groups) * task_rows};
                        const std::size_t                   first  {(task % groups) * gemm_slivers_per_task};
                        const std::size_t                   last   {std::min(first + gemm_slivers_per_task, slivers)};
-                       const std::size_t                   ic_end {std::min(ic + Kernel::block_rows, m)};
+                       const std::size_t                   ic_end {std::min(ic + task_rows, m)};
                        [[maybe_unused]] const typename Kernel::session on {};
                        for (std::size_t s {first}; s < last; ++s) {
                          const std::size_t jr {s * nr};

@@ -25,6 +25,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   while the others waited) into buffers no longer zeroed first. M1 Pro, 8 threads, float64: order 512
   153 → 178 GFLOPS, 1024 195 → 207 (one core: 41, about 80 % of its vector peak).
 
+- **Medium matrix products wait less for their threads**: an idle thread polls for 0.1 ms before it sleeps, so
+  the passes of a product (packing, then computing, panel after panel) find it awake, and a product too small
+  to give each thread four tasks of whole blocks is cut into tasks of fewer whole tiles. Twenty x86-64 threads,
+  float64: order 192 131 → 107 µs, 256 279 → 105, 384 490 → 349. M1 Pro: order 128 47 → 28 µs, 256 124 → 96;
+  inverse, Cholesky and QR of order 128–384 5–17 % faster.
+
 ### Added
 - **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses. M1 Pro,
   8 threads, GFLOPS against Accelerate's: order 2048 423 (383), 1024 395 (388), 512 277 (431), 256 209 (282);
