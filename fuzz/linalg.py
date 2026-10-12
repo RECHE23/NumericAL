@@ -216,13 +216,29 @@ def run_cholesky(a):
 
 
 def run_lstsq(a, rng):
+    """Any shape, any rank. Where NumPy's rank is plain (every singular value a thousand times past its tolerance,
+    one way or the other), the same minimum-norm solution to within the conditioning of the kept values; between,
+    where the two may draw the rank differently, a finite answer."""
     m, n = a.shape
-    if m < n or not well_conditioned(a, 1e8):
+    if a.size == 0:
         return
     b = rng.standard_normal(m) + (1j * rng.standard_normal(m) if np.iscomplexobj(a) else 0)
     x = as_np(numerical.lstsq(numerical.asarray(a), numerical.asarray(b)))
     want = np.linalg.lstsq(a, b, rcond=None)[0]
-    check(norm(x - want) <= 1e-6 * max(norm(want), 1e-300) + bound(m, 1.0), "lstsq differs from NumPy's")
+    if not np.isfinite(want).all():
+        return  # NumPy's own answer overflowed: nothing to compare
+    sigma = np.linalg.svd(a, compute_uv=False)
+    if not np.isfinite(sigma).all() or sigma[0] == 0:
+        check(np.allclose(x, want), "lstsq of a zero matrix differs from NumPy's")
+        return
+    tolerance = sigma[0] * EPS * max(m, n)
+    if np.any((sigma > tolerance / 1e3) & (sigma < tolerance * 1e3)):
+        check(np.isfinite(x).all(), "lstsq near NumPy's rank tolerance is not finite")
+        return
+    kept = sigma[sigma > tolerance]
+    condition = kept[0] / kept[-1]
+    check(norm(x - want) <= 50 * max(m, n) * EPS * condition * max(norm(want), 1e-300) + bound(max(m, n), 1e-300),
+          f"lstsq differs from NumPy's ({norm(x - want):.3g} for |x| {norm(want):.3g}, kept κ {condition:.3g})")
 
 
 def case(seed, index, largest):
