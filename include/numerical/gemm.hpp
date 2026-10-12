@@ -127,6 +127,29 @@ namespace numerical::detail {
     subtract_product(y, f, x, count);
   }
 
+  //! \brief `y[i] -= Σₜ f[t] · x[(t · ldx) + i]` for `double`, the units chosen as \ref subtract_product chooses them,
+  //!        the elements held in registers through the terms there.
+  inline void subtract_products(double*       y,
+                                const double* f,
+                                const double* x,
+                                std::size_t   ldx,
+                                std::size_t   terms,
+                                std::size_t   count)
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::avx512) {
+      avx512_subtract_products(y, f, x, ldx, terms, count);
+      return;
+    }
+    if (path == gemm_path::avx2) {
+      avx2_subtract_products(y, f, x, ldx, terms, count);
+      return;
+    }
+#endif
+    subtract_products<double>(y, f, x, ldx, terms, count);
+  }
+
   //! \brief `y[i] += f · x[i]` for `double`, as \ref subtract_product.
   inline void add_product(double*       y,
                           const double& f,

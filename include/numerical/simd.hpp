@@ -174,6 +174,39 @@ namespace numerical::detail {
 
 #endif
 
+  /*!
+   * \brief One tile of a matrix product kernel, \p rows × \p cols of C (at most \p Rows × \p Cols, leading dimension
+   *        \p ldc), through \p full, which computes a whole tile in place given its first element and leading
+   *        dimension: a whole tile in C itself, a partial one in a copy whose outside is zero. Only that copy is
+   *        zeroed: zeroing it for every tile, whole ones included, took a twelfth of an x86-64 product's time.
+   */
+  template <std::size_t Rows,
+            std::size_t Cols,
+            typename Full>
+  void through_edge(double*     c,
+                    std::size_t ldc,
+                    std::size_t rows,
+                    std::size_t cols,
+                    Full        full) noexcept
+  {
+    if (rows == Rows && cols == Cols) {
+      full(c, ldc);
+      return;
+    }
+    std::array<double, Rows * Cols> edge {};
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        edge[(i * Cols) + j] = c[(i * ldc) + j];
+      }
+    }
+    full(edge.data(), Cols);
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        c[(i * ldc) + j] = edge[(i * Cols) + j];
+      }
+    }
+  }
+
   //! \brief No leading elements in vectors, for a type no native vector holds.
   template <typename T>
   std::size_t subtract_scaled_vectors(T* /*y*/,
@@ -243,6 +276,24 @@ namespace numerical::detail {
     const T factor {f}; // read once, as a scalar loop would: it may be an element of y's array
     for (std::size_t i {subtract_scaled_vectors(y, x, factor, count)}; i < count; ++i) {
       y[i] -= factor * x[i];
+    }
+  }
+
+  /*!
+   * \brief `y[i] -= Σₜ f[t] · x[(t · ldx) + i]` for \p count elements of \p y, \p terms rows of \p x apart by \p ldx:
+   *        \ref subtract_product for each term in ascending order, so each element is computed as that sequence of
+   *        calls computes it. For `double`, gemm.hpp's overload holds the elements in registers through the terms.
+   */
+  template <typename T>
+  void subtract_products(T*          y,
+                         const T*    f,
+                         const T*    x,
+                         std::size_t ldx,
+                         std::size_t terms,
+                         std::size_t count)
+  {
+    for (std::size_t t {0}; t < terms; ++t) {
+      subtract_product(y, f[t], x + (t * ldx), count);
     }
   }
 

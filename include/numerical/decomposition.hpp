@@ -51,8 +51,7 @@ namespace numerical {
     //!        deep enough for the packed kernel while the unblocked panel stays a small part of the work.
     inline constexpr std::size_t lu_block {64};
 
-    //! \brief The rows of one leaf of the triangular solves against many right-hand sides (\ref lu_block's), and
-    //!        the columns of one leaf of the recursive LU panel.
+    //! \brief The columns of one leaf of the recursive LU panel, and of the Cholesky panel's rows below it.
     inline constexpr std::size_t solve_leaf {16};
 
     //! \brief The columns of one panel of the blocked Cholesky factorisation (as \ref lu_block).
@@ -344,7 +343,10 @@ namespace numerical {
     }
 
     /*!
-     * \brief The inverse, solved against the identity by blocks of rows, through the matrix product kernel.
+     * \brief The inverse, `U⁻¹ L⁻¹ P`, by blocks of rows through the matrix product kernel: `L⁻¹` from the identity,
+     *        whose row `i` stays zero past column `i` in the forward pass, so that pass reads only the triangle it
+     *        fills (a third of the products of a full one, as LAPACK's `dgetri` spares them); then `U⁻¹` on it, and
+     *        `P` as a permutation of the columns. The terms left out are products with zeros.
      * \return The inverse matrix.
      * \throws singular_matrix_error If the matrix is singular.
      */
@@ -353,12 +355,18 @@ namespace numerical {
       if (singular_) {
         throw singular_matrix_error("inverse: matrix is singular");
       }
-      std::vector<T> rows(n_ * n_, T {}); // P·I: row i of the identity's row pivots_[i]
+      std::vector<T> rows(n_ * n_, T {});
       for (std::size_t i {0}; i < n_; ++i) {
-        rows[(i * n_) + pivots_[i]] = T {1};
+        rows[(i * n_) + i] = T {1};
       }
-      solve_rows(rows, n_);
-      return matrix<T> {n_, n_, std::move(rows)};
+      solve_rows(rows, n_, true);
+      std::vector<T> inverted(n_ * n_);
+      detail::parallel_for(n_, n_, [&](std::size_t r) { // column pivots_[i] of A⁻¹ is column i of U⁻¹ L⁻¹
+                             for (std::size_t i {0}; i < n_; ++i) {
+                               inverted[(r * n_) + pivots_[i]] = rows[(r * n_) + i];
+                             }
+                           });
+      return matrix<T> {n_, n_, std::move(inverted)};
     }
 
     /*!
@@ -396,70 +404,61 @@ namespace numerical {
     //! \brief Performs the pivoted elimination, filling \ref lu_ and \ref pivots_.
     /*!
      * \brief `L U X = Y` in place, \p y being `n × cols`, row-major, already permuted. The rows go by blocks of
-     *        \ref detail::lu_block, the blocks by leaves of \ref detail::solve_leaf rows. Within a leaf the rows are
-     *        solved one after another, in parallel chunks of columns; from a leaf to the rest of its block, and
-     *        from a block to the rows beyond it, through the matrix product kernel.
+     *        \ref detail::lu_block rows: within a block the rows are solved one after another, in parallel chunks of
+     *        columns (each chunk's columns depend on no other's); from a block to the rows beyond it, through the
+     *        matrix product kernel. When \p lower, row `i` of \p y is zero past column `i` (the identity's rows):
+     *        the forward pass then works on those columns alone.
      */
     void solve_rows(std::vector<T>& y,
-                    std::size_t     cols) const
+                    std::size_t     cols,
+                    bool            lower = false) const
     {
       constexpr std::size_t width  {64};
       const std::size_t     chunks {(cols + width - 1) / width};
       for (std::size_t k0 {0}; k0 < n_; k0 += detail::lu_block) { // forward: unit-lower L
-        const std::size_t end {std::min(k0 + detail::lu_block, n_)};
-        for (std::size_t s0 {k0}; s0 < end; s0 += detail::solve_leaf) {
-          const std::size_t s1 {std::min(s0 + detail::solve_leaf, end)};
-          detail::parallel_for(chunks, (s1 - s0) * (s1 - s0) * width / 2, [&](std::size_t chunk) {
-                                 const std::size_t first {chunk * width};
-                                 const std::size_t last {std::min(first + width, cols)};
-                                 for (std::size_t i {s0 + 1}; i < s1; ++i) {
-                                   for (std::size_t j {s0}; j < i; ++j) {
-                                     detail::subtract_product(y.data() + (i * cols) + first, lu_[(i * n_) + j], y.data() + (j * cols) + first, last - first);
-                                   }
-                                 }
-                               });
-          subtract_block(y, cols, s1, end, s0, s1);
-        }
-        subtract_block(y, cols, end, n_, k0, end);
+        const std::size_t end   {std::min(k0 + detail::lu_block, n_)};
+        const std::size_t reach {lower ? end : cols};             // the block's rows' columns that can be nonzero
+        detail::parallel_for((reach + width - 1) / width, (end - k0) * (end - k0) * width / 2, [&](std::size_t chunk) {
+                               const std::size_t first {chunk * width};
+                               const std::size_t last {std::min(first + width, reach)};
+                               for (std::size_t i {k0 + 1}; i < end; ++i) {
+                                 detail::subtract_products(y.data() + (i * cols) + first, lu_.data() + (i * n_) + k0, y.data() + (k0 * cols) + first, cols, i - k0, last - first);
+                               }
+                             });
+        subtract_block(y, cols, end, n_, k0, end, reach);
       }
-      for (std::size_t k1 {n_}; k1 > 0;) { // backward: upper U, the blocks and leaves of the forward pass, last first
+      for (std::size_t k1 {n_}; k1 > 0;) { // backward: upper U, the blocks of the forward pass, last first
         const std::size_t k0 {(k1 - 1) / detail::lu_block * detail::lu_block};
-        for (std::size_t s1 {k1}; s1 > k0;) {
-          const std::size_t s0 {k0 + ((s1 - 1 - k0) / detail::solve_leaf * detail::solve_leaf)};
-          detail::parallel_for(chunks, (s1 - s0) * (s1 - s0) * width / 2, [&](std::size_t chunk) {
-                                 const std::size_t first {chunk * width};
-                                 const std::size_t last {std::min(first + width, cols)};
-                                 for (std::size_t i {s1}; i-- > s0;) {
-                                   for (std::size_t j {i + 1}; j < s1; ++j) {
-                                     detail::subtract_product(y.data() + (i * cols) + first, lu_[(i * n_) + j], y.data() + (j * cols) + first, last - first);
-                                   }
-                                   const T pivot {lu_[(i * n_) + i]};
-                                   for (std::size_t c {first}; c < last; ++c) {
-                                     y[(i * cols) + c] = y[(i * cols) + c] / pivot;
-                                   }
+        detail::parallel_for(chunks, (k1 - k0) * (k1 - k0) * width / 2, [&](std::size_t chunk) {
+                               const std::size_t first {chunk * width};
+                               const std::size_t last {std::min(first + width, cols)};
+                               for (std::size_t i {k1}; i-- > k0;) {
+                                 detail::subtract_products(y.data() + (i * cols) + first, lu_.data() + (i * n_) + i + 1, y.data() + ((i + 1) * cols) + first, cols, k1 - (i + 1), last - first);
+                                 const T pivot {lu_[(i * n_) + i]};
+                                 for (std::size_t c {first}; c < last; ++c) {
+                                   y[(i * cols) + c] = y[(i * cols) + c] / pivot;
                                  }
-                               });
-          subtract_block(y, cols, k0, s0, s0, s1);
-          s1 = s0;
-        }
+                               }
+                             });
         subtract_block(y, cols, 0, k0, k0, k1);
         k1 = k0;
       }
     }
 
     //! \brief `Y[r0, r1) −= F[r0, r1) × [c0, c1) · Y[c0, c1)`, F the factor, through the matrix product kernel (nothing
-    //!        when the rows are empty).
+    //!        when the rows are empty), on the columns of `Y` before \p reach (all of them by default).
     void subtract_block(std::vector<T>& y,
                         std::size_t     cols,
                         std::size_t     r0,
                         std::size_t     r1,
                         std::size_t     c0,
-                        std::size_t     c1) const
+                        std::size_t     c1,
+                        std::size_t     reach = std::numeric_limits<std::size_t>::max()) const
     {
       if (r0 < r1) {
         const std::vector<T> minus {negated_block(r0, r1, c0, c1)};
-        detail::gemm(r1 - r0, cols, c1 - c0, minus.data(), c1 - c0, y.data() + (c0 * cols), cols, y.data() + (r0 * cols),
-                     cols);
+        detail::gemm(r1 - r0, std::min(reach, cols), c1 - c0, minus.data(), c1 - c0, y.data() + (c0 * cols), cols,
+                     y.data() + (r0 * cols), cols);
       }
     }
 
@@ -611,32 +610,21 @@ namespace numerical {
       }
     }
 
-    //! \brief `U₁₂ = L₁₁⁻¹ A₁₂`: the panel's rows right of it, by forward substitution with its unit-lower L, by
-    //!        leaves of \ref detail::solve_leaf rows. Within a leaf, each block of columns is independent, so blocks
-    //!        run in parallel, each in the sequential order; from a leaf to the panel's rows below it, through the
-    //!        matrix product kernel. Each element still takes its terms in ascending order of the pivot.
+    //! \brief `U₁₂ = L₁₁⁻¹ A₁₂`: the panel's rows right of it, by forward substitution with its unit-lower L. Each
+    //!        block of columns is independent, so blocks run in parallel, each in the sequential order: each element
+    //!        still takes its terms in ascending order of the pivot.
     void solve_panel_rows(std::size_t k0,
                           std::size_t end)
     {
       constexpr std::size_t width  {64};
       const std::size_t     blocks {((n_ - end) + width - 1) / width};
-      for (std::size_t s0 {k0}; s0 < end; s0 += detail::solve_leaf) {
-        const std::size_t s1 {std::min(s0 + detail::solve_leaf, end)};
-        detail::parallel_for(blocks, (s1 - s0) * (s1 - s0) * width / 2, [&](std::size_t block) {
-                               const std::size_t first {end + (block * width)};
-                               const std::size_t last {std::min(first + width, n_)};
-                               for (std::size_t i {s0 + 1}; i < s1; ++i) {
-                                 for (std::size_t p {s0}; p < i; ++p) {
-                                   detail::subtract_product(lu_.data() + (i * n_) + first, lu_[(i * n_) + p], lu_.data() + (p * n_) + first, last - first);
-                                 }
-                               }
-                             });
-        if (s1 < end) {
-          const std::vector<T> minus {negated_block(s1, end, s0, s1)};
-          detail::gemm(end - s1, n_ - end, s1 - s0, minus.data(), s1 - s0, lu_.data() + (s0 * n_) + end, n_,
-                       lu_.data() + (s1 * n_) + end, n_);
-        }
-      }
+      detail::parallel_for(blocks, (end - k0) * (end - k0) * width / 2, [&](std::size_t block) {
+                             const std::size_t first {end + (block * width)};
+                             const std::size_t last {std::min(first + width, n_)};
+                             for (std::size_t i {k0 + 1}; i < end; ++i) {
+                               detail::subtract_products(lu_.data() + (i * n_) + first, lu_.data() + (i * n_) + k0, lu_.data() + (k0 * n_) + first, n_, i - k0, last - first);
+                             }
+                           });
     }
 
     //! \brief `A₂₂ −= L₂₁ U₁₂`, as `A₂₂ += (−L₂₁) U₁₂` through the matrix product kernel.

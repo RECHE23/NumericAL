@@ -30,6 +30,18 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   then one fused multiply-add, so LU, Cholesky, QR, the inverse, `eigh` and `svd` differ in the last bits from
   2026.10.4 on such processors. i9-10900X (a shared machine): `solve` of order 1024 about 30 → 25 ms, the
   inverse 63 → 57 ms, `svd` of order 512 about 165 → 134 ms; `eigh` 3–5 % faster.
+- **The inverse, `solve` and LU solve their triangles a block at a time, in parallel**: within each block of
+  64 rows, every chunk of columns runs the whole block's substitution at once (its columns depend on no other's),
+  each row taking all its terms in registers on AVX-512 or AVX2 (a call per term, and a 16-row leaf through the
+  matrix product, before). The inverse also leaves out the products with the zeros of `L⁻¹`'s upper triangle
+  (as `dgetri`), and permutes its columns at the end. Each element still takes its terms in a fixed order, the
+  same on any number of threads; the backward pass takes a block's in ascending order, so the inverse and `solve`
+  differ in the last bits. i9-10900X (a shared machine), twenty threads: the inverse of order 1024 54 → 41 ms,
+  of order 2048 235 → 180 ms (NumPy with OpenBLAS: 31, 219 ms); `solve` with 1024 right-hand sides 48 → 33 ms,
+  with 16 of order 128 0.46 → 0.24 ms. M1 Pro: the inverse of order 2048 165 → 128 ms.
+- **The matrix product zeroes no tile it computes in place**: a partial tile still goes through a zeroed copy,
+  but whole tiles (nearly all of a large product) took the zeroing too, 1.5 KiB per AVX-512 tile (4 KiB on the
+  AMX), a twelfth of an x86-64 inverse's samples. The same results to the bit.
 - **`eigh` no longer zeroes buffers it writes whole** (each join's root gaps and eigenvector weights, megabytes
   at the top join; the panel's and the reflector blocks' copies): 3.4 % fewer instructions at order 512
   (callgrind), the same results to the bit.

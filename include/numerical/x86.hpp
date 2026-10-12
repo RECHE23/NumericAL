@@ -16,6 +16,8 @@
 #include <cstddef>
 #include <cstdint>
 
+#include "simd.hpp"
+
 #if defined(__x86_64__) || defined(_M_X64)
 #  define NUMERICAL_X86_COMPILED // the x86-64 tiles are compiled in (tested with #ifdef only)
 #  include <immintrin.h>
@@ -125,27 +127,16 @@ namespace numerical::detail {
   inline constexpr std::size_t avx2_nr {8};
 
   /*!
-   * \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols, at most \ref avx512_mr × \ref avx512_nr) over a
+   * \brief `C += Aₚ·Bₚ` for one whole tile of C (\ref avx512_mr × \ref avx512_nr) over a
    *        panel of depth \p kc: 24 accumulators of eight `double`, each step one fused multiply-add per
-   *        accumulator. A partial tile goes through a full one, its outside left at zero.
+   *        accumulator.
    */
-  NUMERICAL_TARGET("avx512f") inline void avx512_tile_f64(std::size_t   kc,
-                                                          const double* ap,
-                                                          const double* bp,
-                                                          double*       c,
-                                                          std::size_t   ldc,
-                                                          std::size_t   rows,
-                                                          std::size_t   cols) noexcept
+  NUMERICAL_TARGET("avx512f") inline void avx512_full_tile_f64(std::size_t   kc,
+                                                               const double* ap,
+                                                               const double* bp,
+                                                               double*       tile,
+                                                               std::size_t   ld) noexcept
   {
-    std::array<double, avx512_mr * avx512_nr> edge {};
-    const bool                                full {rows == avx512_mr && cols == avx512_nr};
-    double* const                             tile {full ? c : edge.data()};
-    const std::size_t                         ld   {full ? ldc : avx512_nr};
-    for (std::size_t i {0}; !full && i < rows; ++i) {
-      for (std::size_t j {0}; j < cols; ++j) {
-        edge[(i * avx512_nr) + j] = c[(i * ldc) + j];
-      }
-    }
     std::array<zmm_register, avx512_mr * 2> acc {};
     NUMERICAL_UNROLL_TILE
     for (std::size_t i {0}; i < avx512_mr; ++i) {
@@ -168,35 +159,32 @@ namespace numerical::detail {
       _mm512_storeu_pd(tile + (i * ld), acc[2 * i].v);
       _mm512_storeu_pd(tile + (i * ld) + 8, acc[(2 * i) + 1].v);
     }
-    for (std::size_t i {0}; !full && i < rows; ++i) {
-      for (std::size_t j {0}; j < cols; ++j) {
-        c[(i * ldc) + j] = edge[(i * avx512_nr) + j];
-      }
-    }
     _mm256_zeroupper(); // the upper halves cleared: code past the tile may be SSE alone
   }
 
+  //! \brief \ref avx512_full_tile_f64 for a tile of \p rows × \p cols (at most \ref avx512_mr × \ref avx512_nr), a partial
+  //!        one through a whole one whose outside is zero (\ref through_edge).
+  inline void avx512_tile_f64(std::size_t   kc,
+                              const double* ap,
+                              const double* bp,
+                              double*       c,
+                              std::size_t   ldc,
+                              std::size_t   rows,
+                              std::size_t   cols) noexcept
+  {
+    through_edge<avx512_mr, avx512_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { avx512_full_tile_f64(kc, ap, bp, tile, ld); });
+  }
+
   /*!
-   * \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols, at most \ref avx2_mr × \ref avx2_nr) over a panel of
+   * \brief `C += Aₚ·Bₚ` for one whole tile of C (\ref avx2_mr × \ref avx2_nr) over a panel of
    *        depth \p kc: 12 accumulators of four `double`, each step one fused multiply-add per accumulator.
    */
-  NUMERICAL_TARGET("avx2,fma") inline void avx2_tile_f64(std::size_t   kc,
-                                                         const double* ap,
-                                                         const double* bp,
-                                                         double*       c,
-                                                         std::size_t   ldc,
-                                                         std::size_t   rows,
-                                                         std::size_t   cols) noexcept
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_full_tile_f64(std::size_t   kc,
+                                                              const double* ap,
+                                                              const double* bp,
+                                                              double*       tile,
+                                                              std::size_t   ld) noexcept
   {
-    std::array<double, avx2_mr * avx2_nr> edge {};
-    const bool                            full {rows == avx2_mr && cols == avx2_nr};
-    double* const                         tile {full ? c : edge.data()};
-    const std::size_t                     ld   {full ? ldc : avx2_nr};
-    for (std::size_t i {0}; !full && i < rows; ++i) {
-      for (std::size_t j {0}; j < cols; ++j) {
-        edge[(i * avx2_nr) + j] = c[(i * ldc) + j];
-      }
-    }
     std::array<ymm_register, avx2_mr * 2> acc {};
     NUMERICAL_UNROLL_TILE
     for (std::size_t i {0}; i < avx2_mr; ++i) {
@@ -219,12 +207,20 @@ namespace numerical::detail {
       _mm256_storeu_pd(tile + (i * ld), acc[2 * i].v);
       _mm256_storeu_pd(tile + (i * ld) + 4, acc[(2 * i) + 1].v);
     }
-    for (std::size_t i {0}; !full && i < rows; ++i) {
-      for (std::size_t j {0}; j < cols; ++j) {
-        c[(i * ldc) + j] = edge[(i * avx2_nr) + j];
-      }
-    }
     _mm256_zeroupper(); // the upper halves cleared: code past the tile may be SSE alone
+  }
+
+  //! \brief \ref avx2_full_tile_f64 for a tile of \p rows × \p cols (at most \ref avx2_mr × \ref avx2_nr), a partial
+  //!        one through a whole one whose outside is zero (\ref through_edge).
+  inline void avx2_tile_f64(std::size_t   kc,
+                            const double* ap,
+                            const double* bp,
+                            double*       c,
+                            std::size_t   ldc,
+                            std::size_t   rows,
+                            std::size_t   cols) noexcept
+  {
+    through_edge<avx2_mr, avx2_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { avx2_full_tile_f64(kc, ap, bp, tile, ld); });
   }
 
   /*!
@@ -311,6 +307,94 @@ namespace numerical::detail {
     }
     for (std::size_t i {done}; i < count; ++i) {
       y[i] = std::fma(f, x[i], y[i]);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  /*!
+   * \brief `y[i] -= Σₜ f[t] · x[(t · ldx) + i]` for \p count elements, the terms in ascending order, each one fused
+   *        multiply-add (as \ref avx512_scaled_add with `−f[t]`, term after term): four registers of `y` held through
+   *        the terms, then one, then the remainder.
+   */
+  NUMERICAL_TARGET("avx512f") inline void avx512_subtract_products(double*       y,
+                                                                   const double* f,
+                                                                   const double* x,
+                                                                   std::size_t   ldx,
+                                                                   std::size_t   terms,
+                                                                   std::size_t   count) noexcept
+  {
+    std::size_t i {0};
+    for (; i + 32 <= count; i += 32) {
+      __m512d y0 {_mm512_loadu_pd(y + i)};
+      __m512d y1 {_mm512_loadu_pd(y + i + 8)};
+      __m512d y2 {_mm512_loadu_pd(y + i + 16)};
+      __m512d y3 {_mm512_loadu_pd(y + i + 24)};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const __m512d       minus {_mm512_set1_pd(-f[t])};
+        const double* const row   {x + (t * ldx) + i};
+        y0 = _mm512_fmadd_pd(minus, _mm512_loadu_pd(row), y0);
+        y1 = _mm512_fmadd_pd(minus, _mm512_loadu_pd(row + 8), y1);
+        y2 = _mm512_fmadd_pd(minus, _mm512_loadu_pd(row + 16), y2);
+        y3 = _mm512_fmadd_pd(minus, _mm512_loadu_pd(row + 24), y3);
+      }
+      _mm512_storeu_pd(y + i, y0);
+      _mm512_storeu_pd(y + i + 8, y1);
+      _mm512_storeu_pd(y + i + 16, y2);
+      _mm512_storeu_pd(y + i + 24, y3);
+    }
+    for (; i + 8 <= count; i += 8) {
+      __m512d sum {_mm512_loadu_pd(y + i)};
+      for (std::size_t t {0}; t < terms; ++t) {
+        sum = _mm512_fmadd_pd(_mm512_set1_pd(-f[t]), _mm512_loadu_pd(x + (t * ldx) + i), sum);
+      }
+      _mm512_storeu_pd(y + i, sum);
+    }
+    for (; i < count; ++i) {
+      for (std::size_t t {0}; t < terms; ++t) {
+        y[i] = std::fma(-f[t], x[(t * ldx) + i], y[i]);
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief \ref avx512_subtract_products on AVX2 with FMA: four registers of four `double`, then one.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_subtract_products(double*       y,
+                                                                  const double* f,
+                                                                  const double* x,
+                                                                  std::size_t   ldx,
+                                                                  std::size_t   terms,
+                                                                  std::size_t   count) noexcept
+  {
+    std::size_t i {0};
+    for (; i + 16 <= count; i += 16) {
+      __m256d y0 {_mm256_loadu_pd(y + i)};
+      __m256d y1 {_mm256_loadu_pd(y + i + 4)};
+      __m256d y2 {_mm256_loadu_pd(y + i + 8)};
+      __m256d y3 {_mm256_loadu_pd(y + i + 12)};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const __m256d       minus {_mm256_set1_pd(-f[t])};
+        const double* const row   {x + (t * ldx) + i};
+        y0 = _mm256_fmadd_pd(minus, _mm256_loadu_pd(row), y0);
+        y1 = _mm256_fmadd_pd(minus, _mm256_loadu_pd(row + 4), y1);
+        y2 = _mm256_fmadd_pd(minus, _mm256_loadu_pd(row + 8), y2);
+        y3 = _mm256_fmadd_pd(minus, _mm256_loadu_pd(row + 12), y3);
+      }
+      _mm256_storeu_pd(y + i, y0);
+      _mm256_storeu_pd(y + i + 4, y1);
+      _mm256_storeu_pd(y + i + 8, y2);
+      _mm256_storeu_pd(y + i + 12, y3);
+    }
+    for (; i + 4 <= count; i += 4) {
+      __m256d sum {_mm256_loadu_pd(y + i)};
+      for (std::size_t t {0}; t < terms; ++t) {
+        sum = _mm256_fmadd_pd(_mm256_set1_pd(-f[t]), _mm256_loadu_pd(x + (t * ldx) + i), sum);
+      }
+      _mm256_storeu_pd(y + i, sum);
+    }
+    for (; i < count; ++i) {
+      for (std::size_t t {0}; t < terms; ++t) {
+        y[i] = std::fma(-f[t], x[(t * ldx) + i], y[i]);
+      }
     }
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }

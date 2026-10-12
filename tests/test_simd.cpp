@@ -95,6 +95,49 @@ TEST(double_row_updates_follow_the_kernel_path)
   }
 }
 
+// Several terms into one row, held in registers on x86-64: each element as the term-by-term calls compute it, on
+// every path, across every remainder of the vector loops (32, 8 and 16, 4 elements at a time).
+TEST(row_combinations_match_their_terms_one_by_one)
+{
+  for (const std::size_t count : {std::size_t {0}, std::size_t {3}, std::size_t {8}, std::size_t {13}, std::size_t {32}, std::size_t {45}, std::size_t {70}}) {
+    for (const std::size_t terms : {std::size_t {0}, std::size_t {1}, std::size_t {5}}) {
+      const std::size_t   ldx {count + 3};
+      std::vector<double> x   {values<double>((terms * ldx) + 1, 3.0)};
+      std::vector<double> f(terms);
+      for (std::size_t t {0}; t < terms; ++t) {
+        f[t] = 1.0 / static_cast<double>(t + 7);
+      }
+      for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512}) {
+        if (numerical::limit_gemm_path(path) == path) { // on every path this processor runs
+          std::vector<double> held   {values<double>(count, 5.0)};
+          std::vector<double> wanted {held};
+          for (std::size_t t {0}; t < terms; ++t) {
+            numerical::detail::subtract_product(wanted.data(), f[t], x.data() + (t * ldx), count);
+          }
+          numerical::detail::subtract_products(held.data(), f.data(), x.data(), ldx, terms, count);
+          EXPECT(held == wanted);
+        }
+      }
+      (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+      std::vector<float> narrow(count, 2.0F);
+      std::vector<float> narrow_wanted {narrow};
+      std::vector<float> fx(x.size());
+      std::vector<float> ff(terms);
+      for (std::size_t i {0}; i < x.size(); ++i) {
+        fx[i] = static_cast<float>(x[i]);
+      }
+      for (std::size_t t {0}; t < terms; ++t) {
+        ff[t] = static_cast<float>(f[t]);
+      }
+      for (std::size_t t {0}; t < terms; ++t) {
+        numerical::detail::subtract_product(narrow_wanted.data(), ff[t], fx.data() + (t * ldx), count);
+      }
+      numerical::detail::subtract_products(narrow.data(), ff.data(), fx.data(), ldx, terms, count);
+      EXPECT(narrow == narrow_wanted);
+    }
+  }
+}
+
 // Whole numbers small enough that every partial sum is exact: any order of summation gives the exact dot
 // product, so the vector form (four accumulators, then the lanes, then the remainder) must equal it.
 TEST(dot_product_sums_every_term)

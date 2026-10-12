@@ -29,6 +29,8 @@
 #include <cstdint>
 #include <initializer_list>
 
+#include "simd.hpp"
+
 #if defined(__APPLE__)
 #  include <TargetConditionals.h>
 #endif
@@ -112,8 +114,8 @@ namespace numerical::detail {
   inline constexpr std::size_t amx_nr {16};
 
   /*!
-   * \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols, at most \ref amx_mr × \ref amx_nr) over a panel of
-   *        depth \p kc, on the AMX of the calling thread (inside an \ref amx_session).
+   * \brief `C += Aₚ·Bₚ` for one whole tile of C (\ref amx_mr × \ref amx_nr) over a panel of depth \p kc,
+   *        on the AMX of the calling thread (inside an \ref amx_session).
    *
    * The eight 8×8 accumulators of the Z registers hold the tile: accumulator `2·ya + xb` holds rows
    * `8·ya …` and columns `8·xb …`, its row `j` in Z row `8·j + 2·ya + xb`. Each step of the depth loads A's
@@ -121,31 +123,15 @@ namespace numerical::detail {
    * \param[in]     kc   The panel depth.
    * \param[in]     ap   The A sliver: \p kc columns of \ref amx_mr elements.
    * \param[in]     bp   The B sliver: \p kc rows of \ref amx_nr elements.
-   * \param[in,out] c    The tile's first element, in a row-major C.
-   * \param[in]     ldc  The distance between C's rows.
-   * \param[in]     rows The tile's rows (the sliver beyond them is zero).
-   * \param[in]     cols The tile's columns (likewise).
+   * \param[in,out] tile The tile's first element, in a row-major C.
+   * \param[in]     ld   The distance between C's rows.
    */
-  inline void amx_tile_f64(std::size_t   kc,
-                           const double* ap,
-                           const double* bp,
-                           double*       c,
-                           std::size_t   ldc,
-                           std::size_t   rows,
-                           std::size_t   cols) noexcept
+  inline void amx_full_tile_f64(std::size_t   kc,
+                                const double* ap,
+                                const double* bp,
+                                double*       tile,
+                                std::size_t   ld) noexcept
   {
-    // A partial tile goes through a full one, its outside left at zero; a full one is read and written in place.
-    std::array<double, amx_mr * amx_nr> edge                  {};
-    const bool                          full                  {rows == amx_mr && cols == amx_nr};
-    double* const                       tile                  {full ? c : edge.data()};
-    const std::size_t                   ld                    {full ? ldc : amx_nr};
-    if (!full) {
-      for (std::size_t i {0}; i < rows; ++i) {
-        for (std::size_t j {0}; j < cols; ++j) {
-          edge[(i * amx_nr) + j] = c[(i * ldc) + j];
-        }
-      }
-    }
     for (std::uint64_t ya {0}; ya < 4; ++ya) {
       for (std::uint64_t xb {0}; xb < 2; ++xb) {
         for (std::uint64_t j {0}; j < 8; ++j) {
@@ -175,13 +161,21 @@ namespace numerical::detail {
         }
       }
     }
-    if (!full) {
-      for (std::size_t i {0}; i < rows; ++i) {
-        for (std::size_t j {0}; j < cols; ++j) {
-          c[(i * ldc) + j] = edge[(i * amx_nr) + j];
-        }
-      }
-    }
+  }
+
+  /*!
+   * \brief \ref amx_full_tile_f64 for a tile of \p rows × \p cols (at most \ref amx_mr × \ref amx_nr), a partial
+   *        one through a whole one whose outside is zero (\ref through_edge); the slivers beyond it are zero.
+   */
+  inline void amx_tile_f64(std::size_t   kc,
+                           const double* ap,
+                           const double* bp,
+                           double*       c,
+                           std::size_t   ldc,
+                           std::size_t   rows,
+                           std::size_t   cols) noexcept
+  {
+    through_edge<amx_mr, amx_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { amx_full_tile_f64(kc, ap, bp, tile, ld); });
   }
 
   //! \brief Whether \p family (Apple's CPUFAMILY_ARM_* values) is one of the M1 to M4 families.
