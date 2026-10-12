@@ -13,6 +13,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   one the reduction reads (as `dsyr2k`), in one product of twice the depth. Each step's partial sums no longer
   map their buffer anew. i9-10900X (AVX-512), order 1024: the reduction 243 → 170 ms on one thread, 153 → 125
   ms on twenty; `eigh` 275 → 237 ms. M1 Pro: the reduction 125 → 100 ms on one core.
+- **`eigh`'s divide and conquer joins its halves on every core**: Löwner's weights and the eigenvectors'
+  lengths are computed per pole and per vector in parallel, and the eigenvectors are put in ascending order row
+  by row (they were gathered and written column by column, a stride of the whole order each). The same
+  operations in the same order: the results are the same to the bit. Order 1024: i9-10900X 88 → 62 ms (137 →
+  113 on one thread), M1 Pro 64 → 42 ms.
 
 ## 2026.10.4 — 2026-10-12
 

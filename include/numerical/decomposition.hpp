@@ -2031,50 +2031,50 @@ namespace numerical {
                      roots[i] = secular_root(poles, weights, scaled_rho, i, secular_iterations, gaps.data() + (i * k));
                    });
       std::vector<double> u(k * k); // column i: the eigenvector of roots[i] in the kept columns' basis
-      for (std::size_t j {0}; j < k; ++j) {
-        double product {gaps[(j * k) + j]}; // Löwner: ẑⱼ² = −Πᵢ (dⱼ − λᵢ) / Πᵢ≠ⱼ (dⱼ − dᵢ), each pole paired with its root
+      // Each pole's row of u on its own (the products of a row do not depend on another's), then each column's
+      // length on its own: the same operations in the same order on any number of threads.
+      parallel_for(k, 4 * k, [&](std::size_t j) {
+                     double product {gaps[(j * k) + j]}; // Löwner: ẑⱼ² = −Πᵢ (dⱼ − λᵢ) / Πᵢ≠ⱼ (dⱼ − dᵢ), each pole paired with its root
+                     for (std::size_t i {0}; i < k; ++i) {
+                       if (i != j) {
+                         product *= gaps[(i * k) + j] / (poles[j] - poles[i]);
+                       }
+                     }
+                     const double weight {std::copysign(std::sqrt(-product), weights[j])};
+                     for (std::size_t i {0}; i < k; ++i) {
+                       u[(j * k) + i] = weight / gaps[(i * k) + j];
+                     }
+                   });
+      std::vector<double> length(k, 0.0);
+      for (std::size_t j {0}; j < k; ++j) { // by rows of u, each a contiguous update of every column's sum
         for (std::size_t i {0}; i < k; ++i) {
-          if (i != j) {
-            product *= gaps[(i * k) + j] / (poles[j] - poles[i]);
-          }
-        }
-        const double weight {std::copysign(std::sqrt(-product), weights[j])};
-        for (std::size_t i {0}; i < k; ++i) {
-          u[(j * k) + i] = weight / gaps[(i * k) + j];
+          length[i] += u[(j * k) + i] * u[(j * k) + i];
         }
       }
-      for (std::size_t i {0}; i < k; ++i) {
-        double sum {0.0};
-        for (std::size_t j {0}; j < k; ++j) {
-          sum += u[(j * k) + i] * u[(j * k) + i];
-        }
-        const double length {std::sqrt(sum)};
-        for (std::size_t j {0}; j < k; ++j) {
-          u[(j * k) + i] /= length;
-        }
+      for (double& l : length) {
+        l = std::sqrt(l);
       }
+      parallel_for(k, k, [&](std::size_t j) {
+                     for (std::size_t i {0}; i < k; ++i) {
+                       u[(j * k) + i] /= length[i];
+                     }
+                   });
       std::vector<double> kept_columns(n * k);
-      for (std::size_t r {0}; r < n; ++r) {
-        for (std::size_t i {0}; i < k; ++i) {
-          kept_columns[(r * k) + i] = q[(r * n) + kept[i]];
-        }
-      }
+      parallel_for(n, k, [&](std::size_t r) {
+                     for (std::size_t i {0}; i < k; ++i) {
+                       kept_columns[(r * k) + i] = q[(r * n) + kept[i]];
+                     }
+                   });
       std::vector<double> updated(n * k, 0.0);
       gemm(n, k, k, kept_columns.data(), k, u.data(), k, updated.data(), k);
-      // Every eigenpair, then by ascending eigenvalue.
+      // Every eigenpair, then by ascending eigenvalue: column j of the result is column source[j] of the
+      // updated ones (below k) or deflated column source[j] − k of q, written row by row.
       std::vector<double> values(n);
-      std::vector<double> vectors(n * n);
       for (std::size_t i {0}; i < k; ++i) {
         values[i] = roots[i];
-        for (std::size_t r {0}; r < n; ++r) {
-          vectors[(r * n) + i] = updated[(r * k) + i];
-        }
       }
       for (std::size_t i {0}; i < deflated.size(); ++i) {
         values[k + i] = d[deflated[i]];
-        for (std::size_t r {0}; r < n; ++r) {
-          vectors[(r * n) + k + i] = q[(r * n) + deflated[i]];
-        }
       }
       for (std::size_t j {0}; j < n; ++j) {
         order[j] = j;
@@ -2082,10 +2082,15 @@ namespace numerical {
       std::sort(order.begin(), order.end(), [&values](std::size_t x, std::size_t y) { return values[x] < values[y]; });
       for (std::size_t j {0}; j < n; ++j) {
         d[j] = values[order[j]];
-        for (std::size_t r {0}; r < n; ++r) {
-          q[(r * n) + j] = vectors[(r * n) + order[j]];
-        }
       }
+      parallel_for(n, n, [&](std::size_t r) {
+                     std::vector<double> before(q.begin() + static_cast<std::ptrdiff_t>(r * n),
+                                                q.begin() + static_cast<std::ptrdiff_t>((r + 1) * n));
+                     for (std::size_t j {0}; j < n; ++j) {
+                       const std::size_t source {order[j]};
+                       q[(r * n) + j] = source < k ? updated[(r * k) + source] : before[deflated[source - k]];
+                     }
+                   });
     }
 
     /*!
