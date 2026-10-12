@@ -138,6 +138,95 @@ TEST(row_combinations_match_their_terms_one_by_one)
   }
 }
 
+// Complex terms into one row: past the portable path, each part of each term one fused multiply-add (Re f · x, then
+// Im f times the swapped parts); on it, the template's whole complex products. Every remainder of the vector loops.
+TEST(complex_row_combinations_take_each_part_in_order)
+{
+  using c = std::complex<double>;
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue;
+    }
+    for (const std::size_t count : {std::size_t {0}, std::size_t {1}, std::size_t {3}, std::size_t {7}, std::size_t {16}, std::size_t {21}, std::size_t {37}}) {
+      for (const std::size_t terms : {std::size_t {0}, std::size_t {1}, std::size_t {4}}) {
+        const std::size_t ldx {count + 2};
+        std::vector<c>    x((terms * ldx) + 1);
+        std::vector<c>    f(terms);
+        for (std::size_t k {0}; k < x.size(); ++k) {
+          x[k] = c {std::sin(static_cast<double>(k)), std::cos(static_cast<double>(k) * 0.3)};
+        }
+        for (std::size_t t {0}; t < terms; ++t) {
+          f[t] = c {1.0 / static_cast<double>(t + 3), -1.0 / static_cast<double>(t + 5)};
+        }
+        std::vector<c> held(count, c {0.5, -0.25});
+        std::vector<c> wanted        {held};
+        if (path == numerical::gemm_path::portable) {
+          for (std::size_t t {0}; t < terms; ++t) {
+            numerical::detail::subtract_product(wanted.data(), f[t], x.data() + (t * ldx), count);
+          }
+        }
+        else {
+          for (std::size_t i {0}; i < count; ++i) {
+            double real {wanted[i].real()};
+            double imag {wanted[i].imag()};
+            for (std::size_t t {0}; t < terms; ++t) {
+              const c value {x[(t * ldx) + i]};
+              real = std::fma(-f[t].real(), value.real(), real);
+              imag = std::fma(-f[t].real(), value.imag(), imag);
+              real = std::fma(f[t].imag(), value.imag(), real);
+              imag = std::fma(-f[t].imag(), value.real(), imag);
+            }
+            wanted[i] = c {real, imag};
+          }
+        }
+        numerical::detail::subtract_products(held.data(), f.data(), x.data(), ldx, terms, count);
+        EXPECT(held == wanted);
+      }
+    }
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
+
+// A complex row of a Hermitian product: out[j] += conj(row[j]) · v[i] for j < i, each part two fused multiply-adds
+// past the portable path (the template's complex products on it), and Σⱼ≤ᵢ row[j] v[j], exact here in any order
+// (multiples of a quarter). Every remainder of the vector loops.
+TEST(complex_hermitian_rows_take_each_part_in_order)
+{
+  using c = std::complex<double>;
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue;
+    }
+    for (const std::size_t i : {std::size_t {0}, std::size_t {1}, std::size_t {3}, std::size_t {4}, std::size_t {9}, std::size_t {17}}) {
+      std::vector<c> row(i + 1);
+      std::vector<c> v(i + 1);
+      for (std::size_t j {0}; j <= i; ++j) {
+        row[j] = c {static_cast<double>(j % 5) - 2.0, static_cast<double>(j % 3) / 4.0};
+        v[j]   = c {static_cast<double>(j % 7) / 2.0, 1.0 - static_cast<double>(j % 4)};
+      }
+      std::vector<c> out(i + 1, c {0.25, -0.5});
+      std::vector<c> wanted       {out};
+      c              sum          {};
+      for (std::size_t j {0}; j < i; ++j) {
+        if (path == numerical::gemm_path::portable) {
+          wanted[j] += std::conj(row[j]) * v[i];
+        }
+        else {
+          wanted[j] = c {std::fma(v[i].imag(), row[j].imag(), std::fma(v[i].real(), row[j].real(), wanted[j].real())),
+                         std::fma(v[i].imag(), row[j].real(), std::fma(-v[i].real(), row[j].imag(), wanted[j].imag()))};
+        }
+      }
+      for (std::size_t j {0}; j <= i; ++j) {
+        sum += row[j] * v[j];
+      }
+      const c got {numerical::detail::hermitian_row(nullptr, row.data(), v.data(), out.data(), i)};
+      EXPECT(got == sum);
+      EXPECT(out == wanted);
+    }
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
+
 // Whole numbers small enough that every partial sum is exact: any order of summation gives the exact dot
 // product, so the vector form (four accumulators, then the lanes, then the remainder) must equal it.
 TEST(dot_product_sums_every_term)

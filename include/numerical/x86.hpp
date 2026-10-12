@@ -13,6 +13,7 @@
 
 #include <array>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 
@@ -397,6 +398,220 @@ namespace numerical::detail {
       }
     }
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  /*!
+   * \brief `y[i] -= Σₜ f[t] · x[(t · ldx) + i]` for \p count complex numbers (each its real then imaginary part), the
+   *        terms in ascending order: per term, `y −= Re f · x` then `y −= (−Im f, Im f) · x'`, `x'` each number's
+   *        parts swapped, each one fused multiply-add per part. Four registers of `y` held through the terms, then
+   *        one, then the remainder, the same operations one number at a time.
+   */
+  NUMERICAL_TARGET("avx512f") inline void avx512_subtract_complex_products(double*       y,
+                                                                           const double* f,
+                                                                           const double* x,
+                                                                           std::size_t   ldx,
+                                                                           std::size_t   terms,
+                                                                           std::size_t   count) noexcept
+  {
+    const __m512d sign {_mm512_set_pd(1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0)}; // (−, +) for each number
+    std::size_t   i    {0};
+    for (; i + 16 <= count; i += 16) {
+      std::array<zmm_register, 4> acc {};
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t r {0}; r < 4; ++r) {
+        acc[r].v = _mm512_loadu_pd(y + (2 * i) + (8 * r));
+      }
+      for (std::size_t t {0}; t < terms; ++t) {
+        const __m512d       real   {_mm512_set1_pd(f[2 * t])};
+        const __m512d       imag   {_mm512_mul_pd(_mm512_set1_pd(f[(2 * t) + 1]), sign)};
+        const double* const row    {x + (2 * ((t * ldx) + i))};
+        NUMERICAL_UNROLL_TILE
+        for (std::size_t r {0}; r < 4; ++r) {
+          const __m512d value {_mm512_loadu_pd(row + (8 * r))};
+          acc[r].v = _mm512_fnmadd_pd(real, value, acc[r].v);
+          acc[r].v = _mm512_fnmadd_pd(imag, _mm512_permute_pd(value, 0x55), acc[r].v);
+        }
+      }
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t r {0}; r < 4; ++r) {
+        _mm512_storeu_pd(y + (2 * i) + (8 * r), acc[r].v);
+      }
+    }
+    for (; i + 4 <= count; i += 4) {
+      __m512d sum {_mm512_loadu_pd(y + (2 * i))};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const __m512d value {_mm512_loadu_pd(x + (2 * ((t * ldx) + i)))};
+        sum = _mm512_fnmadd_pd(_mm512_set1_pd(f[2 * t]), value, sum);
+        sum = _mm512_fnmadd_pd(_mm512_mul_pd(_mm512_set1_pd(f[(2 * t) + 1]), sign), _mm512_permute_pd(value, 0x55), sum);
+      }
+      _mm512_storeu_pd(y + (2 * i), sum);
+    }
+    for (; i < count; ++i) {
+      double real {y[2 * i]};
+      double imag {y[(2 * i) + 1]};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const double xr {x[2 * ((t * ldx) + i)]};
+        const double xi {x[(2 * ((t * ldx) + i)) + 1]};
+        real = std::fma(-f[2 * t], xr, real);
+        imag = std::fma(-f[2 * t], xi, imag);
+        real = std::fma(f[(2 * t) + 1], xi, real);
+        imag = std::fma(-f[(2 * t) + 1], xr, imag);
+      }
+      y[2 * i]       = real;
+      y[(2 * i) + 1] = imag;
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief \ref avx512_subtract_complex_products on AVX2 with FMA: four registers of two complex numbers, then one.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_subtract_complex_products(double*       y,
+                                                                          const double* f,
+                                                                          const double* x,
+                                                                          std::size_t   ldx,
+                                                                          std::size_t   terms,
+                                                                          std::size_t   count) noexcept
+  {
+    const __m256d sign {_mm256_set_pd(1.0, -1.0, 1.0, -1.0)};
+    std::size_t   i    {0};
+    for (; i + 8 <= count; i += 8) {
+      std::array<ymm_register, 4> acc {};
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t r {0}; r < 4; ++r) {
+        acc[r].v = _mm256_loadu_pd(y + (2 * i) + (4 * r));
+      }
+      for (std::size_t t {0}; t < terms; ++t) {
+        const __m256d       real {_mm256_set1_pd(f[2 * t])};
+        const __m256d       imag {_mm256_mul_pd(_mm256_set1_pd(f[(2 * t) + 1]), sign)};
+        const double* const row  {x + (2 * ((t * ldx) + i))};
+        NUMERICAL_UNROLL_TILE
+        for (std::size_t r {0}; r < 4; ++r) {
+          const __m256d value {_mm256_loadu_pd(row + (4 * r))};
+          acc[r].v = _mm256_fnmadd_pd(real, value, acc[r].v);
+          acc[r].v = _mm256_fnmadd_pd(imag, _mm256_permute_pd(value, 0x5), acc[r].v);
+        }
+      }
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t r {0}; r < 4; ++r) {
+        _mm256_storeu_pd(y + (2 * i) + (4 * r), acc[r].v);
+      }
+    }
+    for (; i + 2 <= count; i += 2) {
+      __m256d sum {_mm256_loadu_pd(y + (2 * i))};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const __m256d value {_mm256_loadu_pd(x + (2 * ((t * ldx) + i)))};
+        sum = _mm256_fnmadd_pd(_mm256_set1_pd(f[2 * t]), value, sum);
+        sum = _mm256_fnmadd_pd(_mm256_mul_pd(_mm256_set1_pd(f[(2 * t) + 1]), sign), _mm256_permute_pd(value, 0x5), sum);
+      }
+      _mm256_storeu_pd(y + (2 * i), sum);
+    }
+    for (; i < count; ++i) {
+      double real {y[2 * i]};
+      double imag {y[(2 * i) + 1]};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const double xr {x[2 * ((t * ldx) + i)]};
+        const double xi {x[(2 * ((t * ldx) + i)) + 1]};
+        real = std::fma(-f[2 * t], xr, real);
+        imag = std::fma(-f[2 * t], xi, imag);
+        real = std::fma(f[(2 * t) + 1], xi, real);
+        imag = std::fma(-f[(2 * t) + 1], xr, imag);
+      }
+      y[2 * i]       = real;
+      y[(2 * i) + 1] = imag;
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  /*!
+   * \brief A complex row of a Hermitian product in one pass (as \ref avx512_symmetric_row for a real one):
+   *        `out[j] += conj(row[j]) · (vr + i vi)` for \p count numbers, each part two fused multiply-adds, and the
+   *        return `Σ row[j] · v[j]`, its products' parts summed in two registers (`rr·vr, ri·vi` and `rr·vi, ri·vr`)
+   *        then their lanes, and the remainder, in a fixed order. Numbers are their real then imaginary parts.
+   */
+  NUMERICAL_TARGET("avx512f") inline std::complex<double> avx512_hermitian_row(const double* row,
+                                                                               const double* v,
+                                                                               double        vr,
+                                                                               double        vi,
+                                                                               double*       out,
+                                                                               std::size_t   count) noexcept
+  {
+    const __m512d real   {_mm512_set_pd(-vr, vr, -vr, vr, -vr, vr, -vr, vr)}; // (vr, −vr) for each number
+    const __m512d imag   {_mm512_set1_pd(vi)};
+    __m512d       same   {_mm512_setzero_pd()};                               // rr·vr, ri·vi
+    __m512d       across {_mm512_setzero_pd()};                               // rr·vi, ri·vr
+    std::size_t   j      {0};
+    for (; j + 4 <= count; j += 4) {
+      const __m512d r {_mm512_loadu_pd(row + (2 * j))};
+      const __m512d x {_mm512_loadu_pd(v + (2 * j))};
+      const __m512d s {_mm512_permute_pd(r, 0x55)};
+      __m512d       o {_mm512_loadu_pd(out + (2 * j))};
+      o      = _mm512_fmadd_pd(real, r, o);
+      o      = _mm512_fmadd_pd(imag, s, o);
+      same   = _mm512_fmadd_pd(r, x, same);
+      across = _mm512_fmadd_pd(s, x, across);
+      _mm512_storeu_pd(out + (2 * j), o);
+    }
+    std::array<double, 8> lanes_same   {};
+    std::array<double, 8> lanes_across {};
+    _mm512_storeu_pd(lanes_same.data(), same);
+    _mm512_storeu_pd(lanes_across.data(), across);
+    double re {0.0};
+    double im {0.0};
+    for (std::size_t l {0}; l < 8; l += 2) {
+      re += lanes_same[l] - lanes_same[l + 1];
+      im += lanes_across[l] + lanes_across[l + 1];
+    }
+    for (; j < count; ++j) {
+      const double rr {row[2 * j]};
+      const double ri {row[(2 * j) + 1]};
+      out[2 * j]       = std::fma(vi, ri, std::fma(vr, rr, out[2 * j]));
+      out[(2 * j) + 1] = std::fma(vi, rr, std::fma(-vr, ri, out[(2 * j) + 1]));
+      re              += (rr * v[2 * j]) - (ri * v[(2 * j) + 1]);
+      im              += (ri * v[2 * j]) + (rr * v[(2 * j) + 1]);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return std::complex<double> {re, im};
+  }
+
+  //! \brief \ref avx512_hermitian_row on AVX2 with FMA: two numbers a register.
+  NUMERICAL_TARGET("avx2,fma") inline std::complex<double> avx2_hermitian_row(const double* row,
+                                                                              const double* v,
+                                                                              double        vr,
+                                                                              double        vi,
+                                                                              double*       out,
+                                                                              std::size_t   count) noexcept
+  {
+    const __m256d real   {_mm256_set_pd(-vr, vr, -vr, vr)};
+    const __m256d imag   {_mm256_set1_pd(vi)};
+    __m256d       same   {_mm256_setzero_pd()};
+    __m256d       across {_mm256_setzero_pd()};
+    std::size_t   j      {0};
+    for (; j + 2 <= count; j += 2) {
+      const __m256d r {_mm256_loadu_pd(row + (2 * j))};
+      const __m256d x {_mm256_loadu_pd(v + (2 * j))};
+      const __m256d s {_mm256_permute_pd(r, 0x5)};
+      __m256d       o {_mm256_loadu_pd(out + (2 * j))};
+      o      = _mm256_fmadd_pd(real, r, o);
+      o      = _mm256_fmadd_pd(imag, s, o);
+      same   = _mm256_fmadd_pd(r, x, same);
+      across = _mm256_fmadd_pd(s, x, across);
+      _mm256_storeu_pd(out + (2 * j), o);
+    }
+    std::array<double, 4> lanes_same   {};
+    std::array<double, 4> lanes_across {};
+    _mm256_storeu_pd(lanes_same.data(), same);
+    _mm256_storeu_pd(lanes_across.data(), across);
+    double re {(lanes_same[0] - lanes_same[1]) + (lanes_same[2] - lanes_same[3])};
+    double im {(lanes_across[0] + lanes_across[1]) + (lanes_across[2] + lanes_across[3])};
+    for (; j < count; ++j) {
+      const double rr {row[2 * j]};
+      const double ri {row[(2 * j) + 1]};
+      out[2 * j]       = std::fma(vi, ri, std::fma(vr, rr, out[2 * j]));
+      out[(2 * j) + 1] = std::fma(vi, rr, std::fma(-vr, ri, out[(2 * j) + 1]));
+      re              += (rr * v[2 * j]) - (ri * v[(2 * j) + 1]);
+      im              += (ri * v[2 * j]) + (rr * v[(2 * j) + 1]);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return std::complex<double> {re, im};
   }
 
   //! \brief \ref avx512_scaled_add on AVX2 with FMA.

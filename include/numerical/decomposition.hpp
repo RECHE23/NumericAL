@@ -1481,6 +1481,32 @@ namespace numerical {
       return dot_product(row, v, i + 1);
     }
 
+    /*!
+     * \brief The same for a `std::complex<double>` row: in one pass on AVX-512 or AVX2 with FMA where the matrix
+     *        product's kernel runs there (`avx512_hermitian_row`), else as the template.
+     */
+    [[nodiscard]] inline std::complex<double> hermitian_row(symmetric_row_kernel        kernel,
+                                                            const std::complex<double>* row,
+                                                            const std::complex<double>* v,
+                                                            std::complex<double>*       out,
+                                                            std::size_t                 i)
+    {
+#ifdef NUMERICAL_X86_COMPILED
+      // A complex number's parts are an array of two (the standard's layout guarantee): addressed as doubles.
+      const gemm_path path {gemm_path_current()};
+      if (path == gemm_path::avx512 || path == gemm_path::avx2) {
+        const auto* const          values {reinterpret_cast<const double*>(v)};   // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+        const auto* const          parts  {reinterpret_cast<const double*>(row)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+        auto* const                into   {reinterpret_cast<double*>(out)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+        const std::complex<double> lower  {path == gemm_path::avx512
+                                          ? avx512_hermitian_row(parts, values, v[i].real(), v[i].imag(), into, i)
+                                          : avx2_hermitian_row(parts, values, v[i].real(), v[i].imag(), into, i)};
+        return lower + (row[i] * v[i]);
+      }
+#endif
+      return hermitian_row<std::complex<double>>(kernel, row, v, out, i);
+    }
+
     //! \brief The same for a real row, in one pass through \p kernel.
     [[nodiscard]] inline double hermitian_row(symmetric_row_kernel kernel,
                                               const double*        row,

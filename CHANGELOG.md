@@ -30,6 +30,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   then one fused multiply-add, so LU, Cholesky, QR, the inverse, `eigh` and `svd` differ in the last bits from
   2026.10.4 on such processors. i9-10900X (a shared machine): `solve` of order 1024 about 30 → 25 ms, the
   inverse 63 → 57 ms, `svd` of order 512 about 165 → 134 ms; `eigh` 3–5 % faster.
+- **Complex row updates run on AVX-512 or AVX2 with FMA** on x86-64, where the matrix product's kernel runs
+  there: the triangular solves' row updates (`y −= Σ f·x`, each term `Re f · x` then `Im f` times the swapped
+  parts, a fused multiply-add per part, the row held in registers through the terms), the single-term updates of
+  the decompositions, and each row of `eigh`'s Hermitian product in one pass (`out += conj(row) · vᵢ` and
+  `Σ row · v`). Complex results there differ in the last bits; the portable path and arm64 keep the template's
+  complex products. i9-10900X, `complex128`: the inverse of order 256 13 → 6.8 ms (NumPy with OpenBLAS: 2.1),
+  of order 1024 202 → 154 ms (64); `eigh` of order 512 145–188 → 112–125 ms (63), of order 1024 756–947 → 510 ms
+  (335).
 - **The matrix product keeps each A sliver in the L1 cache across its task's B slivers**, as BLIS orders its
   loops (the B sliver, 32 KiB on AVX-512, filled the L1 when it was the outer one). The same results to the bit.
   One core: i9-10900X (AVX-512) 72 → 77 GFLOP/s at order 2048, i5-8500 (AVX2) 47 → 49, M1 Pro (AMX) 205 → 214;

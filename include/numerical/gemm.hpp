@@ -151,6 +151,73 @@ namespace numerical::detail {
     subtract_products<double>(y, f, x, ldx, terms, count);
   }
 
+  /*!
+   * \brief \ref subtract_products for `std::complex<double>`: on AVX-512 or AVX2 with FMA where the matrix product's
+   *        kernel runs there, each part of each term one fused multiply-add (`Re f · x`, then `Im f` times the
+   *        swapped parts), the elements in registers through the terms; elsewhere the template, whole complex
+   *        products as the compiler rounds them.
+   */
+  inline void subtract_products(std::complex<double>*       y,
+                                const std::complex<double>* f,
+                                const std::complex<double>* x,
+                                std::size_t                 ldx,
+                                std::size_t                 terms,
+                                std::size_t                 count)
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    // A complex number's parts are an array of two (the standard's layout guarantee): addressed as doubles.
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::avx512 || path == gemm_path::avx2) {
+      auto* const       into   {reinterpret_cast<double*>(y)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+      const auto* const scales {reinterpret_cast<const double*>(f)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+      const auto* const rows   {reinterpret_cast<const double*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+      if (path == gemm_path::avx512) {
+        avx512_subtract_complex_products(into, scales, rows, ldx, terms, count);
+      }
+      else {
+        avx2_subtract_complex_products(into, scales, rows, ldx, terms, count);
+      }
+      return;
+    }
+#endif
+    subtract_products<std::complex<double>>(y, f, x, ldx, terms, count);
+  }
+
+  //! \brief `y[i] −= f · x[i]` for `std::complex<double>`: one term of \ref subtract_products on AVX-512 or AVX2
+  //!        where the matrix product's kernel runs there, else the template.
+  inline void subtract_product(std::complex<double>*       y,
+                               const std::complex<double>& f,
+                               const std::complex<double>* x,
+                               std::size_t                 count)
+  {
+    const std::complex<double> factor {f}; // read once: it may be an element of y's array
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path              {gemm_path_current()};
+    if (path == gemm_path::avx512 || path == gemm_path::avx2) {
+      subtract_products(y, &factor, x, 0, 1, count);
+      return;
+    }
+#endif
+    subtract_product<std::complex<double>>(y, factor, x, count);
+  }
+
+  //! \brief `y[i] −= x[i] · f` for `std::complex<double>`, as the other (the template keeps the expression's order).
+  inline void subtract_product(std::complex<double>*       y,
+                               const std::complex<double>* x,
+                               const std::complex<double>& f,
+                               std::size_t                 count)
+  {
+    const std::complex<double> factor {f}; // read once: it may be an element of y's array
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path              {gemm_path_current()};
+    if (path == gemm_path::avx512 || path == gemm_path::avx2) {
+      subtract_products(y, &factor, x, 0, 1, count);
+      return;
+    }
+#endif
+    subtract_product<std::complex<double>>(y, x, factor, count);
+  }
+
   //! \brief `y[i] += f · x[i]` for `double`, as \ref subtract_product.
   inline void add_product(double*       y,
                           const double& f,
