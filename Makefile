@@ -213,8 +213,12 @@ full-local-gate:
 bench-python: python
 	$(PYRUN) benchmarks/bench.py
 
+# The default sizes in a variable: inside $(or …) its commas would split the arguments, leaving 64 alone.
+SIZES  ?= 64,128,256,512,1024
+ROUNDS ?= 3
+
 bench-linalg: python
-	$(PYRUN) benchmarks/linalg_bench.py --sizes $(or $(SIZES),64,128,256,512,1024) --rounds $(or $(ROUNDS),3) \
+	$(PYRUN) benchmarks/linalg_bench.py --sizes $(SIZES) --rounds $(ROUNDS) \
 	    --json $(BUILD)/bench-linalg.json
 
 # Standalone C++ GEMM micro-benchmark: the shipping operator* against a naive
