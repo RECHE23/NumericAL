@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numbers>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -1660,6 +1661,357 @@ namespace numerical {
       apply_row_operations(zt, n, on_zt);
     }
 
+    //! \brief The order up to which \ref tridiagonal_divide_and_conquer diagonalises by implicit QL.
+    inline constexpr std::size_t divide_leaf {32};
+
+    //! \brief The iterations one root of the secular equation may take: it converges in a few; the bound turns
+    //!        a non-convergence into an error instead of a hang.
+    inline constexpr std::size_t secular_iterations {100};
+
+    /*!
+     * \brief Root \p i of the secular equation `1/ρ + Σⱼ zⱼ²/(dⱼ − λ) = 0` (`d` strictly ascending, `‖z‖ = 1`,
+     *        no `zⱼ` zero, `ρ > 0`), the `i`-th eigenvalue of `diag(d) + ρ z zᵀ`, as LAPACK's `dlaed4`.
+     *
+     * The root lies in `(dᵢ, dᵢ₊₁)`, or in `(d_{k-1}, d_{k-1} + ρ]` for the last. It is sought as `λ = d_o + τ`
+     * from the nearer end `d_o`, so that every `dⱼ − λ = (dⱼ − d_o) − τ` is computed with a small relative
+     * error, which keeps the eigenvectors orthogonal. Each step fits the equation with its two nearest poles
+     * (Gragg's) and falls back to bisection when the fit leaves the bracket, which shrinks at every step.
+     * \param[in]  d              The poles.
+     * \param[in]  z              The weights.
+     * \param[in]  rho            `ρ`.
+     * \param[in]  i              The root.
+     * \param[in]  max_iterations The bound on the steps.
+     * \param[out] delta          `dⱼ − λ` for every `j` (size `d.size()`).
+     * \return `λ`.
+     * \throws convergence_error If the root is not reached within \p max_iterations steps.
+     */
+    [[nodiscard]] inline double secular_root(const std::vector<double>& d,
+                                             const std::vector<double>& z,
+                                             double                     rho,
+                                             std::size_t                i,
+                                             std::size_t                max_iterations,
+                                             double*                    delta)
+    {
+      const std::size_t k      {d.size()};
+      const double      rhoinv {1.0 / rho};
+      const bool        last   {i + 1 == k};
+      std::size_t       origin {i};
+      double            lower  {0.0};
+      double            upper  {2.0 * rho}; // the last root is at most ρ past its pole: the equation is positive here
+      if (!last) {
+        const double gap {d[i + 1] - d[i]};
+        double       f   {rhoinv};
+        for (std::size_t j {0}; j < k; ++j) {
+          f += z[j] * z[j] / ((d[j] - d[i]) - (gap / 2.0));
+        }
+        upper = gap / 2.0;
+        if (f < 0.0) { // the root is nearer d[i + 1]
+          origin = i + 1;
+          lower  = -gap / 2.0;
+          upper  = 0.0;
+        }
+      }
+      double tau {(lower + upper) / 2.0};
+      for (std::size_t iteration {0}; iteration < max_iterations; ++iteration) {
+        double psi  {0.0}; // the terms of the poles up to i, and their derivative
+        double dpsi {0.0};
+        double phi  {0.0}; // those of the poles past i
+        double dphi {0.0};
+        for (std::size_t j {0}; j < k; ++j) {
+          delta[j] = (d[j] - d[origin]) - tau;
+          const double t {z[j] / delta[j]};
+          (j <= i ? psi : phi)   += z[j] * t;
+          (j <= i ? dpsi : dphi) += t * t;
+        }
+        const double w {rhoinv + psi + phi};
+        if (std::abs(w) <= std::numeric_limits<double>::epsilon()
+            * ((8.0 * (phi - psi + rhoinv)) + (3.0 * std::abs(tau) * (dpsi + dphi)))) {
+          return d[origin] + tau;
+        }
+        (w < 0.0 ? lower : upper) = tau; // the equation increases with λ
+        // The fit c + s₁/(δᵢ − η) + s₂/(δᵢ₊₁ − η) matching the value and the slope of each side: C η² − A η + B = 0
+        // (the last root has no pole to its right: its δᵢ₊₁ term is absent, A = δᵢ w − δᵢ² ψ' over C = w − δᵢ ψ').
+        const double a1   {delta[i]};
+        const double a2   {last ? 0.0 : delta[i + 1]};
+        const double c    {w - (a1 * dpsi) - (a2 * dphi)};
+        const double a    {last ? (a1 * c) + (a1 * a1 * dpsi) : ((a1 + a2) * w) - (a1 * a2 * (dpsi + dphi))};
+        const double b    {last ? 0.0 : a1 * a2 * w};
+        const double root {std::sqrt(std::abs((a * a) - (4.0 * b * c)))};
+        // The smaller root of the quadratic, in the form that does not cancel.
+        const double eta  {last ? a / c : (a <= 0.0 ? (a - root) / (2.0 * c) : (2.0 * b) / (a + root))};
+        const double next {tau + eta};
+        // A step out of the bracket (or not a number): bisect. The test above stops within a few units in the
+        // last place of the root, before the bracket runs out of points.
+        tau = next > lower && next < upper ? next : (lower + upper) / 2.0;
+      }
+      throw convergence_error("eigendecomposition: the secular equation did not converge");
+    }
+
+    /*!
+     * \brief The eigenvalues of `diag(d) + ρ z zᵀ`, ascending, into \p d, and its eigenvectors times \p q (the
+     *        row-major `n × n` whose columns span the halves) into \p q, as LAPACK's `dlaed1`.
+     *
+     * Deflation first (`dlaed2`): a negligible `zⱼ` leaves `dⱼ` and its column as they are, and two nearly equal
+     * poles are rotated so that one of them does. The remaining `k` roots are found by \ref secular_root, in
+     * parallel; `z` is then recomputed from them (Löwner's formula, Gu and Eisenstat), so that the eigenvectors
+     * `(dⱼ − λᵢ)⁻¹ ẑⱼ` are orthogonal to working precision, and they reach `q` by one matrix product.
+     */
+    inline void merge_rank_one(std::vector<double>& d,
+                               std::vector<double>  z,
+                               double               rho,
+                               std::vector<double>& q,
+                               std::size_t          n)
+    {
+      for (double& element : z) { // ‖z‖ = √2: the rows of two orthogonal matrices
+        element /= std::numbers::sqrt2;
+      }
+      rho *= 2.0;
+      std::vector<std::size_t> order(n);
+      for (std::size_t j {0}; j < n; ++j) {
+        order[j] = j;
+      }
+      std::sort(order.begin(), order.end(), [&d](std::size_t x, std::size_t y) { return d[x] < d[y]; });
+      double largest_d {0.0};
+      double largest_z {0.0};
+      for (std::size_t j {0}; j < n; ++j) {
+        largest_d = std::max(largest_d, std::abs(d[j]));
+        largest_z = std::max(largest_z, std::abs(z[j]));
+      }
+      const double             tolerance {8.0 * std::numeric_limits<double>::epsilon() * std::max(largest_d, largest_z)};
+      std::vector<std::size_t> kept;        // the columns the secular equation updates, by ascending d
+      std::vector<std::size_t> deflated;    // the columns that keep their eigenvalue
+      std::size_t              pending {n}; // the last column kept so far, still open to a rotation with the next
+      for (const std::size_t j : order) {
+        if (rho * std::abs(z[j]) <= tolerance) {
+          deflated.push_back(j);
+          continue;
+        }
+        if (pending == n) {
+          pending = j;
+          continue;
+        }
+        const double length {std::hypot(z[j], z[pending])};
+        const double c      {z[j] / length};
+        const double s      {-z[pending] / length};
+        if (std::abs((d[j] - d[pending]) * c * s) <= tolerance) {
+          // Close poles: a rotation of the two columns zeroes the pending one's weight, which then deflates.
+          z[j]       = length;
+          z[pending] = 0.0;
+          for (std::size_t r {0}; r < n; ++r) {
+            const double x {q[(r * n) + pending]};
+            const double y {q[(r * n) + j]};
+            q[(r * n) + pending] = (c * x) + (s * y);
+            q[(r * n) + j]       = (c * y) - (s * x);
+          }
+          const double rotated {(d[pending] * c * c) + (d[j] * s * s)};
+          d[j]       = (d[pending] * s * s) + (d[j] * c * c);
+          d[pending] = rotated;
+          deflated.push_back(pending);
+        }
+        else {
+          kept.push_back(pending);
+        }
+        pending = j;
+      }
+      if (pending != n) {
+        kept.push_back(pending);
+      }
+      const std::size_t   k {kept.size()};
+      std::vector<double> poles(k);
+      std::vector<double> weights(k);
+      double              norm {0.0};
+      for (std::size_t i {0}; i < k; ++i) {
+        poles[i]    = d[kept[i]];
+        weights[i]  = z[kept[i]];
+        norm       += weights[i] * weights[i];
+      }
+      norm = std::sqrt(norm);
+      for (double& weight : weights) {
+        weight /= norm;
+      }
+      const double        scaled_rho {rho * norm * norm};
+      std::vector<double> roots(k);
+      std::vector<double> gaps(k * k); // gaps[i * k + j] = poles[j] − roots[i]
+      parallel_for(k, 8 * k, [&](std::size_t i) {
+                     roots[i] = secular_root(poles, weights, scaled_rho, i, secular_iterations, gaps.data() + (i * k));
+                   });
+      std::vector<double> u(k * k); // column i: the eigenvector of roots[i] in the kept columns' basis
+      for (std::size_t j {0}; j < k; ++j) {
+        double product {gaps[(j * k) + j]}; // Löwner: ẑⱼ² = −Πᵢ (dⱼ − λᵢ) / Πᵢ≠ⱼ (dⱼ − dᵢ), each pole paired with its root
+        for (std::size_t i {0}; i < k; ++i) {
+          if (i != j) {
+            product *= gaps[(i * k) + j] / (poles[j] - poles[i]);
+          }
+        }
+        const double weight {std::copysign(std::sqrt(-product), weights[j])};
+        for (std::size_t i {0}; i < k; ++i) {
+          u[(j * k) + i] = weight / gaps[(i * k) + j];
+        }
+      }
+      for (std::size_t i {0}; i < k; ++i) {
+        double sum {0.0};
+        for (std::size_t j {0}; j < k; ++j) {
+          sum += u[(j * k) + i] * u[(j * k) + i];
+        }
+        const double length {std::sqrt(sum)};
+        for (std::size_t j {0}; j < k; ++j) {
+          u[(j * k) + i] /= length;
+        }
+      }
+      std::vector<double> kept_columns(n * k);
+      for (std::size_t r {0}; r < n; ++r) {
+        for (std::size_t i {0}; i < k; ++i) {
+          kept_columns[(r * k) + i] = q[(r * n) + kept[i]];
+        }
+      }
+      std::vector<double> updated(n * k, 0.0);
+      gemm(n, k, k, kept_columns.data(), k, u.data(), k, updated.data(), k);
+      // Every eigenpair, then by ascending eigenvalue.
+      std::vector<double> values(n);
+      std::vector<double> vectors(n * n);
+      for (std::size_t i {0}; i < k; ++i) {
+        values[i] = roots[i];
+        for (std::size_t r {0}; r < n; ++r) {
+          vectors[(r * n) + i] = updated[(r * k) + i];
+        }
+      }
+      for (std::size_t i {0}; i < deflated.size(); ++i) {
+        values[k + i] = d[deflated[i]];
+        for (std::size_t r {0}; r < n; ++r) {
+          vectors[(r * n) + k + i] = q[(r * n) + deflated[i]];
+        }
+      }
+      for (std::size_t j {0}; j < n; ++j) {
+        order[j] = j;
+      }
+      std::sort(order.begin(), order.end(), [&values](std::size_t x, std::size_t y) { return values[x] < values[y]; });
+      for (std::size_t j {0}; j < n; ++j) {
+        d[j] = values[order[j]];
+        for (std::size_t r {0}; r < n; ++r) {
+          q[(r * n) + j] = vectors[(r * n) + order[j]];
+        }
+      }
+    }
+
+    /*!
+     * \brief The eigenvalues, ascending, of the symmetric tridiagonal with diagonal `d[0…n-1]` and subdiagonal
+     *        `e[0…n-2]` into \p d, and its eigenvectors as the columns of the row-major \p q (`n × n`), by
+     *        Cuppen's divide and conquer: the tridiagonal is two halves plus a rank-one coupling, each half is
+     *        diagonalised the same way (by implicit QL up to \ref divide_leaf), and \ref merge_rank_one joins
+     *        them.
+     */
+    inline void divide_and_conquer(double*              d,
+                                   const double*        e,
+                                   std::size_t          n,
+                                   std::vector<double>& q)
+    {
+      q.assign(n * n, 0.0);
+      if (n <= divide_leaf) {
+        std::vector<double> diagonal(d, d + n);
+        std::vector<double> sub(n, 0.0);
+        std::copy(e, e + (n - 1), sub.begin());
+        std::vector<double> zt(n * n, 0.0);
+        for (std::size_t i {0}; i < n; ++i) {
+          zt[(i * n) + i] = 1.0;
+        }
+        tridiagonal_ql(diagonal, sub, zt, n, ql_steps_per_value * n);
+        std::vector<std::size_t> order(n);
+        for (std::size_t i {0}; i < n; ++i) {
+          order[i] = i;
+        }
+        std::sort(order.begin(), order.end(), [&diagonal](std::size_t x, std::size_t y) { return diagonal[x] < diagonal[y]; });
+        for (std::size_t j {0}; j < n; ++j) {
+          d[j] = diagonal[order[j]];
+          for (std::size_t r {0}; r < n; ++r) {
+            q[(r * n) + j] = zt[(order[j] * n) + r];
+          }
+        }
+        return;
+      }
+      // T = diag(T₁ − ρ e_a e_aᵀ, T₂ − ρ e_b e_bᵀ) + ρ u uᵀ, u = e_a + sign(β) e_b, ρ = |β|, β the coupling.
+      const std::size_t n1   {n / 2};
+      const std::size_t n2   {n - n1};
+      const double      beta {e[n1 - 1]};
+      const double      rho  {std::abs(beta)};
+      d[n1 - 1] -= rho;
+      d[n1]     -= rho;
+      std::vector<double> q1;
+      std::vector<double> q2;
+      divide_and_conquer(d, e, n1, q1);
+      divide_and_conquer(d + n1, e + n1, n2, q2);
+      std::vector<double> z(n);
+      for (std::size_t i {0}; i < n1; ++i) {
+        z[i] = q1[((n1 - 1) * n1) + i];
+        for (std::size_t r {0}; r < n1; ++r) {
+          q[(r * n) + i] = q1[(r * n1) + i];
+        }
+      }
+      for (std::size_t i {0}; i < n2; ++i) {
+        z[n1 + i] = std::copysign(1.0, beta) * q2[i];
+        for (std::size_t r {0}; r < n2; ++r) {
+          q[((n1 + r) * n) + n1 + i] = q2[(r * n2) + i];
+        }
+      }
+      std::vector<double> values(d, d + n);
+      merge_rank_one(values, std::move(z), rho, q, n);
+      std::copy(values.begin(), values.end(), d);
+    }
+
+    //! \brief \p zt ← \p left · \p zt, `n × n`, row-major, for a real left factor.
+    inline void multiply_real_left(const std::vector<double>& left,
+                                   std::vector<double>&       zt,
+                                   std::size_t                n)
+    {
+      std::vector<double> product(n * n, 0.0);
+      gemm(n, n, n, left.data(), n, zt.data(), n, product.data(), n);
+      zt = std::move(product);
+    }
+
+    //! \brief \p zt ← \p left · \p zt for a complex \p zt: the real and imaginary parts by a real product each.
+    inline void multiply_real_left(const std::vector<double>&         left,
+                                   std::vector<std::complex<double>>& zt,
+                                   std::size_t                        n)
+    {
+      std::vector<double> re(n * n);
+      std::vector<double> im(n * n);
+      for (std::size_t i {0}; i < n * n; ++i) {
+        re[i] = zt[i].real();
+        im[i] = zt[i].imag();
+      }
+      multiply_real_left(left, re, n);
+      multiply_real_left(left, im, n);
+      for (std::size_t i {0}; i < n * n; ++i) {
+        zt[i] = {re[i], im[i]};
+      }
+    }
+
+    /*!
+     * \brief The eigenvalues of the symmetric tridiagonal (\p d, \p e) into \p d, the eigenvectors accumulated
+     *        into the rows of \p zt as \ref tridiagonal_ql accumulates them, by divide and conquer (LAPACK's
+     *        `dstedc`): most of the work in matrix products. Up to \ref divide_leaf, \ref tridiagonal_ql itself.
+     * \throws convergence_error If an iteration did not converge within its bound.
+     */
+    template <typename T>
+    void tridiagonal_divide_and_conquer(std::vector<double>& d,
+                                        std::vector<double>& e,
+                                        std::vector<T>&      zt,
+                                        std::size_t          n)
+    {
+      if (n <= divide_leaf) {
+        tridiagonal_ql(d, e, zt, n, ql_steps_per_value * n);
+        return;
+      }
+      std::vector<double> q;
+      divide_and_conquer(d.data(), e.data(), n, q);
+      std::vector<double> qt(n * n); // row j: the eigenvector of d[j] in the tridiagonal's basis
+      for (std::size_t r {0}; r < n; ++r) {
+        for (std::size_t j {0}; j < n; ++j) {
+          qt[(j * n) + r] = q[(r * n) + j];
+        }
+      }
+      multiply_real_left(qt, zt, n);
+    }
+
     //! \brief The Frobenius norm of the strict off-diagonal of the `n × n` \p a.
     [[nodiscard]] inline double jacobi_off_diagonal(const std::vector<double>& a,
                                                     std::size_t                n)
@@ -1746,16 +2098,18 @@ namespace numerical {
   //! \brief How \ref symmetric_eigen diagonalises.
   enum class eigen_method
   {
-    tridiagonal_ql, //!< Householder tridiagonalisation then implicit QL, as LAPACK's `dsyev`: O(n³), the default.
-    jacobi          //!< Cyclic Jacobi rotations: several times slower, kept as an independent second method.
+    divide_and_conquer, //!< Householder tridiagonalisation then divide and conquer, as LAPACK's `dsyevd`: the default.
+    tridiagonal_ql,     //!< Householder tridiagonalisation then implicit QL, as LAPACK's `dsyev`: the vectors by rotations.
+    jacobi              //!< Cyclic Jacobi rotations: several times slower, kept as an independent second method.
   };
 
   /*!
    * \brief The eigenvalues and eigenvectors of a real symmetric matrix.
    *
    * By default the matrix is reduced to tridiagonal form by Householder reflections and the tridiagonal is
-   * diagonalised by implicit QL (\ref eigen_method::tridiagonal_ql), the method of LAPACK's `dsyev`; cyclic
-   * Jacobi rotations are the alternative (\ref eigen_method::jacobi). Either way the eigenvalues are real
+   * diagonalised by divide and conquer (\ref eigen_method::divide_and_conquer), the method of LAPACK's
+   * `dsyevd`, most of its work in matrix products; implicit QL (\ref eigen_method::tridiagonal_ql, `dsyev`'s)
+   * and cyclic Jacobi rotations (\ref eigen_method::jacobi) are the alternatives. Either way the eigenvalues are real
    * and the eigenvectors orthonormal. The eigenvalues are returned in ascending order, with \ref vectors
    * `j`-th column the eigenvector of \ref values `[j]` (`A = V Λ Vᵀ`). Real symmetric only (the complex
    * Hermitian case is \ref hermitian_eigen). Only the lower triangle is read, as `numpy.linalg.eigh`
@@ -1773,7 +2127,7 @@ namespace numerical {
      * \throws convergence_error If the method did not converge within its bound.
      */
     explicit symmetric_eigen(const matrix<double>& input,
-                             eigen_method          method = eigen_method::tridiagonal_ql)
+                             eigen_method          method = eigen_method::divide_and_conquer)
       : n_(input.rows())
     {
       if (input.cols() != n_) {
@@ -1812,7 +2166,12 @@ namespace numerical {
       else if (n_ > 0) {
         std::vector<double> off(n_);
         std::vector<double> zt {detail::tridiagonalize(a, n_, diagonal, off)};
-        detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
+        if (method == eigen_method::tridiagonal_ql) {
+          detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
+        }
+        else {
+          detail::tridiagonal_divide_and_conquer(diagonal, off, zt, n_);
+        }
         for (std::size_t i {0}; i < n_; ++i) { // the rows of zt are the eigenvectors: make them columns
           for (std::size_t j {0}; j < n_; ++j) {
             v[(j * n_) + i] = zt[(i * n_) + j];
@@ -1872,7 +2231,7 @@ namespace numerical {
    * \brief The eigenvalues and eigenvectors of a complex Hermitian matrix.
    *
    * The matrix is reduced to a real symmetric tridiagonal by Householder reflections and unit phases (the
-   * method of LAPACK's `zheev`), which the implicit QL of \ref symmetric_eigen diagonalises. The eigenvalues
+   * method of LAPACK's `zheevd`), which the divide and conquer of \ref symmetric_eigen diagonalises. The eigenvalues
    * are real and returned in ascending order, with \ref vectors `j`-th column the eigenvector of
    * \ref values `[j]` (`A = V Λ Vᴴ`, `V` unitary). Only the lower triangle is read and the imaginary part of
    * the diagonal is ignored, as `numpy.linalg.eigh` reads a matrix by default.
@@ -1918,7 +2277,7 @@ namespace numerical {
       if (n_ > 0) {
         std::vector<double> off(n_);
         zt = detail::tridiagonalize(a, n_, diagonal, off);
-        detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
+        detail::tridiagonal_divide_and_conquer(diagonal, off, zt, n_);
       }
       std::vector<std::size_t> order(n_);
       for (std::size_t i {0}; i < n_; ++i) {

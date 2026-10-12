@@ -62,6 +62,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   18.3 ms, 512 146 → 114 (Accelerate 49).
 
 ### Added
+- **`eigh` diagonalises the tridiagonal by divide and conquer**, as LAPACK's `dsyevd` and `zheevd`: the
+  halves are joined by a rank-one update (Gu and Eisenstat's deflation, the secular equation solved from its
+  nearer pole, Löwner's formula for orthogonal vectors), most of the work in matrix products. The default for
+  `symmetric_eigen` (`eigen_method::divide_and_conquer`; implicit QL stays as `tridiagonal_ql`) and for
+  `hermitian_eigen`; up to order 32, QL alone, as before. M1 Pro, float64, order 512: 54 → 40 ms (Accelerate
+  26), the tridiagonal step 30 → 7.5 ms.
 - **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses. M1 Pro,
   8 threads, GFLOPS against Accelerate's: order 2048 423 (383), 1024 395 (388), 512 277 (431), 256 209 (282);
   the vector units gave 204, 207, 178 and 145. One core: 160–180 (was 41).

@@ -250,7 +250,8 @@ TEST(qr_stays_orthonormal_on_an_ill_conditioned_matrix)
 
 namespace {
 
-  constexpr std::array<numerical::eigen_method, 2> eigen_methods {numerical::eigen_method::tridiagonal_ql,
+  constexpr std::array<numerical::eigen_method, 3> eigen_methods {numerical::eigen_method::divide_and_conquer,
+                                                                  numerical::eigen_method::tridiagonal_ql,
                                                                   numerical::eigen_method::jacobi};
   constexpr std::array<numerical::svd_method, 2>   svd_methods   {numerical::svd_method::bidiagonal_qr,
                                                                   numerical::svd_method::jacobi};
@@ -1129,4 +1130,112 @@ TEST(blocked_factorisations_solve_accurately_on_every_path)
     EXPECT(gap < 1e-12);
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
+
+namespace {
+
+  // Divide and conquer against implicit QL on one matrix: the same eigenvalues, orthonormal vectors, and the
+  // matrix rebuilt, each to a few rounding errors of its order.
+  bool divide_and_conquer_agrees(const matrix<double>& a)
+  {
+    const double          tolerance {1e-12};
+    const symmetric_eigen fast      {a, numerical::eigen_method::divide_and_conquer};
+    const symmetric_eigen ql        {a, numerical::eigen_method::tridiagonal_ql};
+    return approx_equal(fast.values(), ql.values(), tolerance) && orthonormality_error(fast.vectors()) < tolerance
+           && approx_equal(reconstruct(fast), a, tolerance);
+  }
+} // namespace
+
+// Past the order QL handles alone, so the halves merge: a dense matrix; Wilkinson's W⁺₂₀₁, whose eigenvalues
+// come in pairs closer than rounding (poles rotated together, then deflated); two blocks with no coupling
+// (every weight negligible); and three values repeated many times under a rank-one coupling (equal poles).
+TEST(divide_and_conquer_merges_and_deflates)
+{
+  const std::size_t   n {201};
+  std::vector<double> dense(n * n);
+  std::vector<double> wilkinson(n * n, 0.0);
+  std::vector<double> blocks(n * n, 0.0);
+  std::vector<double> repeated(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {0}; j < n; ++j) {
+      dense[(i * n) + j] = std::sin(static_cast<double>((i + 1) * (j + 1))) + (i == j ? 3.0 : 0.0);
+    }
+    wilkinson[(i * n) + i] = std::abs(static_cast<double>(i) - 100.0);
+    if (i + 1 < n) {
+      wilkinson[(i * n) + i + 1]   = 1.0;
+      wilkinson[((i + 1) * n) + i] = 1.0;
+    }
+    blocks[(i * n) + i]   = static_cast<double>(i % 7);
+    repeated[(i * n) + i] = static_cast<double>(i % 3);
+  }
+  for (std::size_t i {0}; i < n; ++i) { // the blocks: [0, 100) and [100, 201), coupled within only
+    for (std::size_t j {0}; j < n; ++j) {
+      if (i != j && (i < 100) == (j < 100)) {
+        blocks[(i * n) + j] = 1.0 / static_cast<double>(2 + i + j);
+      }
+    }
+  }
+  for (std::size_t i {0}; i < n; ++i) { // three values, each many times, plus a rank-one coupling of them all
+    for (std::size_t j {0}; j < n; ++j) {
+      repeated[(i * n) + j] += 1e-3;
+    }
+  }
+  EXPECT(divide_and_conquer_agrees(matrix<double> {n, n, dense}));
+  EXPECT(divide_and_conquer_agrees(matrix<double> {n, n, wilkinson}));
+  EXPECT(divide_and_conquer_agrees(matrix<double> {n, n, blocks}));
+  EXPECT(divide_and_conquer_agrees(matrix<double> {n, n, repeated}));
+  using c = std::complex<double>;
+  const std::size_t m {70};
+  std::vector<c>    entries(m * m);
+  for (std::size_t i {0}; i < m; ++i) {
+    for (std::size_t j {0}; j <= i; ++j) {
+      entries[(i * m) + j] = i == j ? c {static_cast<double>(i % 5), 0.0}
+                                    : c {std::cos(static_cast<double>(i + (2 * j))), std::sin(static_cast<double>(i * j))};
+      entries[(j * m) + i] = std::conj(entries[(i * m) + j]);
+    }
+  }
+  const matrix<c>                  h       {m, m, entries};
+  const numerical::hermitian_eigen e       {h};
+  matrix<c>                        rebuilt {m, m, std::vector<c>(m * m)};
+  double                           worst   {0.0};
+  for (std::size_t i {0}; i < m; ++i) {
+    for (std::size_t j {0}; j < m; ++j) {
+      c sum {};
+      for (std::size_t k {0}; k < m; ++k) {
+        sum += e.vectors()(i, k) * e.values()[k] * std::conj(e.vectors()(j, k));
+      }
+      worst = std::max(worst, std::abs(sum - h(i, j)));
+    }
+  }
+  EXPECT(worst < 1e-12);
+}
+
+// Roots of the secular equation against references computed to 80 digits: one 5e-30 past a pole of 8e-13
+// (found as its distance from the pole, which the eigenvector needs, not as a sum that rounds it away), and one
+// whose fit takes the quadratic's other form.
+TEST(the_secular_equation_finds_its_roots_from_the_nearer_pole)
+{
+  const std::vector<double> d {-8.122808264515302e-13, 6.04530122336367e-12, 5.219248898251512e-06};
+  const std::vector<double> z {4.2711462701151146e-10, 0.48318236791802455, 0.8755197309787659};
+  std::vector<double>       delta(3);
+  (void)numerical::detail::secular_root(d, z, 283.3625584139991, 0, numerical::detail::secular_iterations, delta.data());
+  EXPECT(std::abs(delta[0] - -5.3584091596269844e-30) < 1e-14 * 5.4e-30);
+  EXPECT(std::abs(delta[1] - 6.8575820498152e-12) < 1e-14 * 6.9e-12);
+  const std::vector<double> d6 {-0.8949247533967253, -0.16141637105958684, -0.0008046271488207429,
+                                -1.6560228279009447e-08, -6.869457203538978e-09, 0.9963928059764295};
+  const std::vector<double> z6 {-0.005944540988224872, -0.589814085218663, -0.016380413260955785,
+                                0.45405424328337657, 0.6675689734376589, -0.0014488724105117632};
+  std::vector<double>       delta6(6);
+  const double              root {numerical::detail::secular_root(d6, z6, 1.0448293818862207, 4, numerical::detail::secular_iterations,
+                                                                  delta6.data())};
+  EXPECT(std::abs(root - 0.9932959321048296) < 1e-14); // to a few rounding errors of the equation's terms
+}
+
+// The secular equation's iterations are bounded: one step does not reach a root.
+TEST(the_secular_equation_bounds_its_iterations)
+{
+  const std::vector<double> d {0.0, 1.0, 2.0};
+  const std::vector<double> z {0.6, 0.48, 0.64};
+  std::vector<double>       delta(3);
+  EXPECT_THROWS((void)numerical::detail::secular_root(d, z, 1.0, 0, 1, delta.data()), numerical::convergence_error);
 }
