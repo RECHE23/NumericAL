@@ -960,17 +960,6 @@ namespace numerical {
                    });
     }
 
-    /*!
-     * \brief Factorises the `rows × cols` row-major \p a by Householder reflections, `A = Q R` with
-     *        `k = min(rows, cols)`: `Q` is `rows × k` with orthonormal columns and `R` `k × cols` upper
-     *        trapezoidal. Each column below the diagonal is reflected onto it, so `Q` is orthonormal to
-     *        rounding whatever the conditioning of `A`, and a column dependent on the earlier ones leaves a
-     *        zero on `R`'s diagonal.
-     * \param[in] a    The matrix, row-major.
-     * \param[in] rows Its row count.
-     * \param[in] cols Its column count.
-     * \return `Q` and `R`.
-     */
     //! \brief The reflectors of one panel of the blocked QR, `I − V T Vᴴ` as LAPACK's `dlarft` forms it.
     template <typename T>
     struct reflector_block
@@ -1106,33 +1095,97 @@ namespace numerical {
       gemm(r, h, b, scaled.data(), b, minus_v_t.get(), h, left, cols);
     }
 
+    //! \brief `Σ conj(x[i]) · y[i]` for a real `T`, where the conjugate is the value: \ref dot_product.
+    template <typename T>
+    requires std::is_floating_point_v<T>
+    [[nodiscard]] T conjugate_dot(const T*    x,
+                                  const T*    y,
+                                  std::size_t count)
+    {
+      return dot_product(x, y, count);
+    }
+
+    //! \brief `Σ conj(x[i]) · y[i]`, in order.
+    template <typename T>
+    [[nodiscard]] T conjugate_dot(const T*    x,
+                                  const T*    y,
+                                  std::size_t count)
+    {
+      T total {};
+      for (std::size_t i {0}; i < count; ++i) {
+        total += conj_of(x[i]) * y[i];
+      }
+      return total;
+    }
+
     /*!
-     * \brief Applies `I − 2 v vᴴ` from the left to the rows `first…first+|v|-1`, on the columns `from…to-1`
-     *        only: \ref reflect_rows confined to one panel.
+     * \brief Applies `I − 2 v vᴴ` from the left to the columns `from…to-1` of a column-major panel of \p height rows,
+     *        on its rows `first…first+|v|-1`: each column a dot product with `v`, then `v` scaled out of it, both
+     *        along the column at unit stride.
      */
     template <typename T>
-    void reflect_panel(std::vector<T>&       a,
-                       std::size_t           cols,
-                       const std::vector<T>& v,
-                       std::size_t           first,
-                       std::size_t           from,
-                       std::size_t           to)
+    void reflect_columns(std::vector<T>&       panel,
+                         std::size_t           height,
+                         const std::vector<T>& v,
+                         std::size_t           first,
+                         std::size_t           from,
+                         std::size_t           to)
     {
-      std::vector<T> w(to - from, T {});
-      for (std::size_t i {0}; i < v.size(); ++i) {
-        const T  weight {conj_of(v[i])};
-        const T* row    {a.data() + ((first + i) * cols) + from};
-        add_product(w.data(), weight, row, w.size());
-      }
-      for (std::size_t i {0}; i < v.size(); ++i) {
-        const T scale {static_cast<T>(2) * v[i]};
-        T*      row   {a.data() + ((first + i) * cols) + from};
-        subtract_product(row, scale, w.data(), w.size());
+      for (std::size_t j {from}; j < to; ++j) {
+        T* const column {panel.data() + (j * height) + first};
+        const T  twice  {static_cast<T>(2) * conjugate_dot(v.data(), column, v.size())};
+        subtract_product(column, twice, v.data(), v.size());
       }
     }
 
     //! \brief The reflectors of one panel of the blocked QR.
     inline constexpr std::size_t qr_block {32};
+
+    /*!
+     * \brief Householder reflections of the panel's columns `k0…k1-1` of the row-major \p a, rows from `k0`, one by
+     *        one, into `reflectors[k0…k1-1]`: in a column-major copy, where a reflector meets each column at unit
+     *        stride (row by row, each row's part of the panel was a call of a few elements). Recursive halves, the
+     *        left's reflectors applied to the right at once, took longer at these widths (32 columns).
+     */
+    template <typename T>
+    void factor_qr_panel(std::vector<T>&              a,
+                         std::size_t                  rows,
+                         std::size_t                  cols,
+                         std::vector<std::vector<T>>& reflectors,
+                         std::size_t                  k0,
+                         std::size_t                  k1)
+    {
+      const std::size_t height {rows - k0};
+      const std::size_t width  {k1 - k0};
+      std::vector<T>    panel(height * width);
+      for (std::size_t i {0}; i < height; ++i) {
+        for (std::size_t j {0}; j < width; ++j) {
+          panel[(j * height) + i] = a[((k0 + i) * cols) + k0 + j];
+        }
+      }
+      for (std::size_t k {k0}; k < k1; ++k) {
+        const std::size_t c {k - k0};
+        std::vector<T>    v(panel.begin() + static_cast<std::ptrdiff_t>((c * height) + c),
+                            panel.begin() + static_cast<std::ptrdiff_t>((c + 1) * height));
+        (void)rescale_tiny(v); // the reflector is the same at any scale
+        const double norm {scaled_norm(v)};
+        if (norm == 0.0) {
+          continue; // nothing to reflect: the column is already zero below and on the diagonal
+        }
+        v[0] += phase_of(v[0]) * detail::from_double<T>(norm); // x − α e₁ with α = −phase(x₀)‖x‖: no cancellation
+        const auto length {detail::from_double<T>(scaled_norm(v))};
+        for (T& element : v) {
+          element /= length;
+        }
+        reflect_columns(panel, height, v, c, c, width); // the panel: A ← (I − 2 v vᴴ) A, columns k…k1-1
+        reflectors[k] = std::move(v);
+      }
+      for (std::size_t i {0}; i < height; ++i) {
+        for (std::size_t j {0}; j < width; ++j) {
+          a[((k0 + i) * cols) + k0 + j] = panel[(j * height) + i];
+        }
+      }
+    }
 
     /*!
      * \brief Factorises the `rows × cols` row-major \p a by Householder reflections, `A = Q R` with
@@ -1159,24 +1212,7 @@ namespace numerical {
       std::vector<reflector_block<T>> blocks;
       for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
         const std::size_t k1 {std::min(k0 + qr_block, depth)};
-        for (std::size_t k {k0}; k < k1; ++k) {
-          std::vector<T> v(rows - k);
-          for (std::size_t i {k}; i < rows; ++i) {
-            v[i - k] = a[(i * cols) + k];
-          }
-          (void)rescale_tiny(v); // the reflector is the same at any scale
-          const double norm {scaled_norm(v)};
-          if (norm == 0.0) {
-            continue; // nothing to reflect: the column is already zero below and on the diagonal
-          }
-          v[0] += phase_of(v[0]) * detail::from_double<T>(norm); // x − α e₁ with α = −phase(x₀)‖x‖: no cancellation
-          const auto length {detail::from_double<T>(scaled_norm(v))};
-          for (T& element : v) {
-            element /= length;
-          }
-          reflect_panel(a, cols, v, k, k, k1); // the panel: A ← (I − 2 v vᴴ) A, columns k…k1-1
-          reflectors[k] = std::move(v);
-        }
+        factor_qr_panel(a, rows, cols, reflectors, k0, k1);
         blocks.push_back(gather_reflectors(reflectors, k0, k1, rows));
         if (k1 < cols) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A
           apply_reflector_block(blocks.back(), true, a, cols, k1, cols);
@@ -1359,29 +1395,6 @@ namespace numerical {
       for (std::size_t i {0}; i < count; ++i) {
         y[i] += conj_of(x[i]) * f;
       }
-    }
-
-    //! \brief `Σ conj(x[i]) · y[i]` for a real `T`, where the conjugate is the value: \ref dot_product.
-    template <typename T>
-    requires std::is_floating_point_v<T>
-    [[nodiscard]] T conjugate_dot(const T*    x,
-                                  const T*    y,
-                                  std::size_t count)
-    {
-      return dot_product(x, y, count);
-    }
-
-    //! \brief `Σ conj(x[i]) · y[i]`, in order.
-    template <typename T>
-    [[nodiscard]] T conjugate_dot(const T*    x,
-                                  const T*    y,
-                                  std::size_t count)
-    {
-      T total {};
-      for (std::size_t i {0}; i < count; ++i) {
-        total += conj_of(x[i]) * y[i];
-      }
-      return total;
     }
 
     //! \brief A kernel of \ref symmetric_row's form: \ref symmetric_row itself, or an x86-64 one.
