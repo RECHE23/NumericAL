@@ -33,8 +33,10 @@
 #include <cstdlib>
 #include <cstring>
 #include <exception>
+#include <initializer_list>
 #include <new>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <tuple>
@@ -1207,47 +1209,67 @@ std::tuple<any_tensor, any_tensor> qr(const any_tensor& v)
     return do_qr<double>(std::get<real_tensor>(v));
 }
 
-// The real float64 matrix of a Tensor, or throws (eigh is real-only).
-// eigh(a) -> (eigenvalues, eigenvectors) for a real symmetric or a complex Hermitian matrix: the values are real.
-std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v)
+// An eigen_method or svd_method by its enumerator's name.
+template <typename Method>
+Method method_named(std::string_view name, std::initializer_list<std::pair<std::string_view, Method>> methods)
 {
+    for (const auto& [known, method] : methods) {
+        if (name == known) {
+            return method;
+        }
+    }
+    throw std::invalid_argument("unknown method '" + std::string {name} + "'");
+}
+
+// eigh(a, method) -> (eigenvalues, eigenvectors) for a real symmetric or a complex Hermitian matrix: the values
+// are real.
+std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& name)
+{
+    using numerical::eigen_method;
+    const eigen_method method {method_named<eigen_method>(name, {{"divide_and_conquer", eigen_method::divide_and_conquer},
+                                                                 {"tridiagonal_ql", eigen_method::tridiagonal_ql},
+                                                                 {"jacobi", eigen_method::jacobi}})};
     if (shape_of(v).size() != 2) {
         throw std::runtime_error("eigh expects a matrix (rank-2 tensor)");
     }
     if (is_complex(v)) {
         const cplx_tensor&               a = std::get<cplx_tensor>(v);
         const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
-        const numerical::hermitian_eigen decomposition {matrix_from(a)};
+        const numerical::hermitian_eigen decomposition {matrix_from(a), method};
         return {any_tensor {real_tensor {decomposition.values()}},
                 any_tensor {cplx_tensor {decomposition.vectors()}}};
     }
     const real_tensor&               a = std::get<real_tensor>(v);
     const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
-    const numerical::symmetric_eigen decomposition {matrix_from(a)};
+    const numerical::symmetric_eigen decomposition {matrix_from(a), method};
     return {any_tensor {real_tensor {decomposition.values()}},
             any_tensor {real_tensor {decomposition.vectors()}}};
 }
 
 template <typename T>
-std::tuple<any_tensor, any_tensor, any_tensor> do_svd(const numerical::tensor<T>& a)
+std::tuple<any_tensor, any_tensor, any_tensor> do_svd(const numerical::tensor<T>& a, numerical::svd_method method)
 {
     const sb::scoped_gil_release          unlocked {releases_gil(a.data().size())};
-    const numerical::svd_decomposition<T> decomposition {matrix_from(a)};
+    const numerical::svd_decomposition<T> decomposition {matrix_from(a), method};
     return {any_tensor {numerical::tensor<T> {decomposition.u()}},
             any_tensor {real_tensor {decomposition.singular_values()}},
             any_tensor {numerical::tensor<T> {decomposition.vh()}}};
 }
 
-// svd(a) -> (U, singular_values, Vh) for an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).
-std::tuple<any_tensor, any_tensor, any_tensor> svd(const any_tensor& v)
+// svd(a, method) -> (U, singular_values, Vh) for an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).
+std::tuple<any_tensor, any_tensor, any_tensor> svd(const any_tensor& v, const std::string& name)
 {
+    using numerical::svd_method;
+    const svd_method method {method_named<svd_method>(name, {{"divide_and_conquer", svd_method::divide_and_conquer},
+                                                             {"bidiagonal_qr", svd_method::bidiagonal_qr},
+                                                             {"jacobi", svd_method::jacobi}})};
     if (shape_of(v).size() != 2) {
         throw std::runtime_error("svd expects a matrix (rank-2 tensor)");
     }
     if (is_complex(v)) {
-        return do_svd<std::complex<double>>(std::get<cplx_tensor>(v));
+        return do_svd<std::complex<double>>(std::get<cplx_tensor>(v), method);
     }
-    return do_svd<double>(std::get<real_tensor>(v));
+    return do_svd<double>(std::get<real_tensor>(v), method);
 }
 
 // Widen a contiguous real buffer to a complex tensor (zero imaginary part) — used
@@ -1726,10 +1748,10 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe minimum-norm least-squares solution of a @ x ≈ b, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&cholesky>("cholesky", "cholesky(a) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite).");
     m.def<&qr>("qr", "qr(a) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr (reduced): Q is m×k, R k×n, k = min(m, n).");
-    m.def<&eigh>("eigh", "eigh(a) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, as numpy.linalg.eigh reads it.");
+    m.def<&eigh>("eigh", "eigh(a, method) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, as numpy.linalg.eigh reads it.");
     m.def<&matrix_rank>("matrix_rank", "matrix_rank(a) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank.");
     m.def<&pinv>("pinv", "pinv(a) -> Tensor\nThe Moore–Penrose pseudo-inverse of an m×n matrix, as numpy.linalg.pinv.");
-    m.def<&svd>("svd", "svd(a) -> (U, S, Vh)\nThe singular value decomposition a = U @ diag(S) @ Vh of an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).");
+    m.def<&svd>("svd", "svd(a, method) -> (U, S, Vh)\nThe singular value decomposition a = U @ diag(S) @ Vh of an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).");
     // The 3 that stay manual: determinant (dtype-dependent scalar), einsum (variadic),
     // asarray (returns the same object when the dtype matches — Py_NewRef identity).
     m.raw("determinant", module_determinant, METH_VARARGS,

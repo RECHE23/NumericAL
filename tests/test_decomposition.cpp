@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -330,6 +331,28 @@ TEST(symmetric_eigen_methods_agree_and_reach_rounding)
   EXPECT(approx_equal(ql.values(), jacobi.values(), 1e-10));
   EXPECT(orthonormality_error(ql.vectors()) < 1e-13);
   EXPECT(approx_equal(reconstruct(ql), a, 1e-13));
+}
+
+// Implicit QL on request gives the divide and conquer's eigenvalues, past the order where the divide and conquer
+// splits (QL alone below it); the Jacobi method has no complex form and is refused.
+TEST(hermitian_eigen_by_implicit_ql_on_request)
+{
+  using c = std::complex<double>;
+  const std::size_t n {70};
+  std::vector<c>    entries(n * n);
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {0}; j <= i; ++j) {
+      const c z {std::sin(2.0 + static_cast<double>((i * n) + j)), i == j ? 0.0 : std::cos(static_cast<double>((2 * i) + j))};
+      entries[(i * n) + j] = z;
+      entries[(j * n) + i] = std::conj(z);
+    }
+  }
+  const matrix<c>                  a  {n, n, entries};
+  const numerical::hermitian_eigen ql {a, numerical::eigen_method::tridiagonal_ql};
+  const numerical::hermitian_eigen dc {a};
+  EXPECT(orthonormality_error(ql.vectors()) < 1e-13);
+  EXPECT(approx_equal(ql.values(), dc.values(), 1e-12));
+  EXPECT_THROWS(numerical::hermitian_eigen(a, numerical::eigen_method::jacobi), std::invalid_argument);
 }
 
 // A complex Hermitian matrix: real eigenvalues, a unitary V with A = V Λ Vᴴ. [[2, 1−i], [1+i, 3]] has

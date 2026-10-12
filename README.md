@@ -144,6 +144,8 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `eigh(a)` → `(values, vectors)`, `svd(a)` → `(U, S, Vh)` — NumPy's
 `svd(a, full_matrices=False)`, so `(U * S) @ Vh` is `a`. Every one accepts `float64`
 and `complex128`; `eigh` of a complex Hermitian matrix gives real values and complex vectors.
+`eigh(a, method)` and `svd(a, method)` choose the algorithm: divide and conquer by default (LAPACK's
+`dsyevd`/`zheevd`, `dgesdd`), `"tridiagonal_ql"` or `"bidiagonal_qr"` (`dsyev`'s, `dgesvd`'s), or `"jacobi"`.
 
 A `Tensor` is a citizen of the scientific Python stack, **zero-copy**:
 

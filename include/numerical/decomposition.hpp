@@ -2401,7 +2401,8 @@ namespace numerical {
    * \brief The eigenvalues and eigenvectors of a complex Hermitian matrix.
    *
    * The matrix is reduced to a real symmetric tridiagonal by Householder reflections and unit phases (the
-   * method of LAPACK's `zheevd`), which the divide and conquer of \ref symmetric_eigen diagonalises. The eigenvalues
+   * method of LAPACK's `zheevd`), which the divide and conquer of \ref symmetric_eigen diagonalises (implicit QL,
+   * `zheev`'s, on request). The eigenvalues
    * are real and returned in ascending order, with \ref vectors `j`-th column the eigenvector of
    * \ref values `[j]` (`A = V Λ Vᴴ`, `V` unitary). Only the lower triangle is read and the imaginary part of
    * the diagonal is ignored, as `numpy.linalg.eigh` reads a matrix by default.
@@ -2412,15 +2413,22 @@ namespace numerical {
 
     /*!
      * \brief Diagonalises \p input.
-     * \param[in] input A complex Hermitian matrix (its lower triangle is read).
+     * \param[in] input  A complex Hermitian matrix (its lower triangle is read).
+     * \param[in] method The algorithm for the tridiagonal: \ref eigen_method::divide_and_conquer or
+     *                   \ref eigen_method::tridiagonal_ql.
+     * \throws std::invalid_argument If \p method is \ref eigen_method::jacobi, which has no complex form here.
      * \throws dimension_error   If \p input is not square.
      * \throws non_finite_error  If an entry is infinite or NaN.
      * \throws convergence_error If an iteration (implicit QL or the secular equation) did not converge within its
      *         bound (not observed).
      */
-    explicit hermitian_eigen(const matrix<std::complex<double>>& input)
+    explicit hermitian_eigen(const matrix<std::complex<double>>& input,
+                             eigen_method                        method = eigen_method::divide_and_conquer)
       : n_(input.rows())
     {
+      if (method == eigen_method::jacobi) {
+        throw std::invalid_argument("Hermitian eigendecomposition: the Jacobi method is for real symmetric matrices");
+      }
       if (input.cols() != n_) {
         throw dimension_error("Hermitian eigendecomposition requires a square matrix");
       }
@@ -2448,7 +2456,12 @@ namespace numerical {
       if (n_ > 0) {
         std::vector<double> off(n_);
         zt = detail::tridiagonalize(a, n_, diagonal, off);
-        detail::tridiagonal_divide_and_conquer(diagonal, off, zt, n_);
+        if (method == eigen_method::tridiagonal_ql) {
+          detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
+        }
+        else {
+          detail::tridiagonal_divide_and_conquer(diagonal, off, zt, n_);
+        }
       }
       std::vector<std::size_t> order(n_);
       for (std::size_t i {0}; i < n_; ++i) {

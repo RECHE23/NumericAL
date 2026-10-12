@@ -78,10 +78,14 @@ class SquareProperties(unittest.TestCase):
                 self.assertTrue(np.isclose(logabsdet, want_log, rtol=1e-10, atol=1e-10))
 
     def test_eigh_is_orthonormal_and_reconstructs(self):
-        for name, n, a in self.cases():
+        for (name, n, a), method in itertools.product(self.cases(), ("divide_and_conquer", "tridiagonal_ql", "jacobi")):
             h = (a + a.conj().T) / 2
-            with self.subTest(name):
-                values, vectors = (np.asarray(t) for t in numerical.eigh(h))
+            with self.subTest(name, method=method):
+                if method == "jacobi" and np.iscomplexobj(h):
+                    with self.assertRaises(numerical.LinAlgError):
+                        numerical.eigh(h, method)
+                    continue
+                values, vectors = (np.asarray(t) for t in numerical.eigh(h, method))
                 scale = max(1.0, np.max(np.abs(np.linalg.eigvalsh(h))))
                 self.assertLess(np.max(np.abs(values - np.linalg.eigvalsh(h))), 1e3 * EPS * n * scale)
                 self.assertLess(np.linalg.norm(vectors.conj().T @ vectors - np.eye(n)), 1e3 * EPS * n)
@@ -96,6 +100,21 @@ class SquareProperties(unittest.TestCase):
                 lower = np.asarray(numerical.cholesky(spd))
                 self.assertEqual(np.linalg.norm(np.triu(lower, 1)), 0.0)
                 self.assertLess(np.linalg.norm(lower @ lower.conj().T - spd) / np.linalg.norm(spd), 1e2 * EPS * n)
+
+
+class MethodNames(unittest.TestCase):
+    def test_an_unknown_method_is_a_value_error(self):
+        with self.assertRaises(ValueError):
+            numerical.eigh([[1.0]], "qr")
+        with self.assertRaises(ValueError):
+            numerical.svd([[1.0]], "tridiagonal_ql")
+
+    def test_the_extension_refuses_an_unknown_method_too(self):
+        one = numerical.asarray([[1.0]])
+        with self.assertRaises(numerical.error):
+            numerical._numerical.eigh(one, "qr")
+        with self.assertRaises(numerical.error):
+            numerical._numerical.svd(one, "qr")
 
 
 @unittest.skipIf(np is None, "NumPy not installed")
@@ -114,10 +133,10 @@ class RectangularProperties(unittest.TestCase):
             yield f"graded {n}", n, n, family(self.rng, n, "graded")
 
     def test_svd_is_orthonormal_reconstructs_and_matches_numpy(self):
-        for name, m, n, a in self.cases():
+        for (name, m, n, a), method in itertools.product(self.cases(), ("divide_and_conquer", "bidiagonal_qr", "jacobi")):
             k = min(m, n)
-            with self.subTest(name):
-                u, s, vh = (np.asarray(t) for t in numerical.svd(a))
+            with self.subTest(name, method=method):
+                u, s, vh = (np.asarray(t) for t in numerical.svd(a, method))
                 self.assertEqual((u.shape, s.shape, vh.shape), ((m, k), (k,), (k, n)))
                 want = np.linalg.svd(a, compute_uv=False)
                 self.assertLess(np.max(np.abs(s - want)), 1e2 * EPS * max(m, n) * want[0])

@@ -372,7 +372,6 @@ Tensor.__hash__ = None  # unhashable, as a NumPy array: equality will be element
 
 cholesky = _linalg(_numerical.cholesky)
 determinant = _linalg(_numerical.determinant)
-eigh = _linalg(_numerical.eigh)
 einsum = _linalg(_numerical.einsum)
 inverse = _linalg(_numerical.inverse)
 lstsq = _linalg(_numerical.lstsq)
@@ -381,7 +380,30 @@ pinv = _linalg(_numerical.pinv)
 qr = _linalg(_numerical.qr)
 slogdet = _linalg(_numerical.slogdet)
 solve = _linalg(_numerical.solve)
-svd = _linalg(_numerical.svd)
+_eigh = _linalg(_numerical.eigh)
+_svd = _linalg(_numerical.svd)
+_EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
+_SVD_METHODS = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
+
+
+def eigh(a, method="divide_and_conquer"):
+    """The eigenvalues (real, ascending) and eigenvectors (columns) of a real symmetric or complex Hermitian
+    matrix, as ``numpy.linalg.eigh``: its lower triangle is read. `method` diagonalises the tridiagonal form:
+    ``"divide_and_conquer"`` (LAPACK's ``dsyevd``/``zheevd``), ``"tridiagonal_ql"`` (implicit QL, ``dsyev``'s,
+    the default before 2026.10.4) or ``"jacobi"`` (cyclic Jacobi rotations, real matrices only)."""
+    if method not in _EIGH_METHODS:
+        raise ValueError(f"eigh: method {method!r} is none of {_EIGH_METHODS}")
+    return _eigh(a, method)
+
+
+def svd(a, method="divide_and_conquer"):
+    """``(U, S, Vh)`` with ``a = U @ diag(S) @ Vh``, the singular values descending, as
+    ``numpy.linalg.svd(a, full_matrices=False)``. `method` decomposes the bidiagonal form: ``"divide_and_conquer"``
+    (LAPACK's ``dgesdd``), ``"bidiagonal_qr"`` (implicit-shift QR, ``dgesvd``'s, the default before 2026.10.4) or
+    ``"jacobi"`` (one-sided Jacobi, each singular value to high relative accuracy)."""
+    if method not in _SVD_METHODS:
+        raise ValueError(f"svd: method {method!r} is none of {_SVD_METHODS}")
+    return _svd(a, method)
 
 
 def asarray(obj, dtype=None):

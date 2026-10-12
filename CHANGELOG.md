@@ -11,8 +11,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   matrix products run on a kernel chosen at run time (AVX-512, AVX2 or the Apple AMX, each element a chain of
   fused multiply-adds). Results differ from 2026.10.3 in the last bits, and within a repeated eigenvalue or
   singular value the basis may differ (both are orthonormal to working precision); `lstsq`, `pinv` and
-  `matrix_rank` go through `svd`. The previous methods remain in C++: `eigen_method::tridiagonal_ql`,
-  `svd_method::bidiagonal_qr`; the new enumerators come last, so existing values keep their meaning.
+  `matrix_rank` go through `svd`. The previous methods remain: `eigh(a, "tridiagonal_ql")` and
+  `svd(a, "bidiagonal_qr")` (C++: `eigen_method::tridiagonal_ql`, `svd_method::bidiagonal_qr`); the new
+  enumerators come last, so existing values keep their meaning.
   `limit_gemm_path("portable")` (or `NUMERICAL_GEMM=portable`) keeps products off the run-time kernels.
 - **A matrix product no longer maps its packing storage anew each time**: the calling thread keeps it for the
   next product (up to 32 MiB). Fresh megabytes were faulted in page by page on every product: order 512 on 20
@@ -113,6 +114,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   times it through Python, with its conversions: BENCHMARKS.md):
   i9-10900X (AVX-512, 10 cores), order 1024 540 (720), 2048 420 (590); one core 66–79 (82–99), was 11.
   i9-9900K (AVX2, 8 cores), order 1024 271 (353), 2048 213 (304); one core 54–58 (69).
+- **`eigh(a, method)` and `svd(a, method)`** choose the algorithm, as the C++ classes did: `"divide_and_conquer"`
+  (the default), `"tridiagonal_ql"` or `"jacobi"` for `eigh`, `"bidiagonal_qr"` or `"jacobi"` for `svd`; a name
+  neither knows is a `ValueError`. `hermitian_eigen` takes an `eigen_method` too (divide and conquer or implicit
+  QL; the Jacobi method, real only, is refused with `std::invalid_argument`).
 - **`numerical.gemm_path()` and `limit_gemm_path(name)`** (C++: `numerical::gemm_path_in_use`,
   `limit_gemm_path`) report and cap the kernel float64 products run on, `"portable"`, `"avx2"`, `"avx512"` or
   `"amx"`: a cap takes the most capable path at or below it that runs here; `"portable"` is the vectors the
