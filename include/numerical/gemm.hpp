@@ -22,6 +22,7 @@
 #include <array>
 #include <cstddef>
 #include <cstring>
+#include <memory>
 #include <type_traits>
 #include <vector>
 
@@ -244,18 +245,29 @@ namespace numerical::detail {
     }
     constexpr std::size_t nr     {gemm_nr<T>};
     const std::size_t     a_rows {((m + gemm_mr) - 1) / gemm_mr * gemm_mr};
-    std::vector<T>        a_packed(a_rows * std::min(gemm_kc, k));
-    const std::size_t     b_cols {((std::min(gemm_nc<T>, n) + nr) - 1) / nr * nr};
-    std::vector<T>        b_packed(b_cols * std::min(gemm_kc, k));
+    // Left unset: packing writes every element before the kernel reads it (zeroing megabytes per call cost a
+    // tenth of a product of order 512).
+    const std::unique_ptr<T[]> a_packed {std::make_unique_for_overwrite<T[]>(a_rows * std::min(gemm_kc, k))};
+    const std::size_t          b_cols   {((std::min(gemm_nc<T>, n) + nr) - 1) / nr * nr};
+    const std::unique_ptr<T[]> b_packed {std::make_unique_for_overwrite<T[]>(b_cols * std::min(gemm_kc, k))};
     for (std::size_t jc {0}; jc < n; jc += gemm_nc<T>) {
       const std::size_t nc      {std::min(gemm_nc<T>, n - jc)};
       const std::size_t slivers {((nc + nr) - 1) / nr};
       for (std::size_t pc {0}; pc < k; pc += gemm_kc) {
-        const std::size_t kc {std::min(gemm_kc, k - pc)};
-        gemm_pack_b(b + (pc * ldb) + jc, ldb, kc, nc, b_packed.data());
-        gemm_pack_a(a + pc, lda, m, kc, a_packed.data());
+        const std::size_t kc         {std::min(gemm_kc, k - pc)};
         const std::size_t row_blocks {((m + gemm_mc) - 1) / gemm_mc};
         const std::size_t groups     {((slivers + gemm_slivers_per_task) - 1) / gemm_slivers_per_task};
+        // Both operands packed in parallel too, by the same blocks the product takes: one thread packing them
+        // while the others wait held the product at half the cores' peak.
+        parallel_for(groups, gemm_slivers_per_task * nr * kc, [&](std::size_t group) {
+                       const std::size_t jr    {group * gemm_slivers_per_task * nr};
+                       const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
+                       gemm_pack_b(b + (pc * ldb) + jc + jr, ldb, kc, width, b_packed.get() + (jr * kc));
+                     });
+        parallel_for(row_blocks, gemm_mc * kc, [&](std::size_t block) {
+                       const std::size_t ic {block * gemm_mc};
+                       gemm_pack_a(a + (ic * lda) + pc, lda, std::min(gemm_mc, m - ic), kc, a_packed.get() + (ic * kc));
+                     });
         parallel_for(row_blocks * groups, gemm_mc * gemm_slivers_per_task * nr * kc / gemm_kernel_speedup, [&](std::size_t task) {
                        const std::size_t ic {(task / groups) * gemm_mc};
                        const std::size_t first {(task % groups) * gemm_slivers_per_task};
@@ -272,7 +284,7 @@ namespace numerical::detail {
                            for (std::size_t i {0}; i < mr; ++i) {
                              std::copy_n(block + (i * ldc), width, tile.data() + (i * nr));
                            }
-                           gemm_kernel(kc, a_packed.data() + (ir * kc), b_packed.data() + (jr * kc), tile);
+                           gemm_kernel(kc, a_packed.get() + (ir * kc), b_packed.get() + (jr * kc), tile);
                            for (std::size_t i {0}; i < mr; ++i) {
                              std::copy_n(tile.data() + (i * nr), width, block + (i * ldc));
                            }
