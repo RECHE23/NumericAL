@@ -50,6 +50,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   earlier columns. x86-64 float64 (twenty threads): order 128 0.25 → 0.16 ms, 256 0.93 → 0.72, 384 3.3 → 2.8;
   arm64 and orders of 512 and more unchanged. The factor is unchanged where no product is fused.
 
+- **`eigh` reduces to tridiagonal form on every core and forms its vectors by blocks**: the trailing
+  updates of the reduction run rows in parallel, and the accumulated reflections go through the matrix product
+  kernel by blocks of 32, as LAPACK's `dorgtr`. M1 Pro, float64: order 256 13.8 → 11.6 ms, 512 107 → 73
+  (Accelerate 25).
+
 ### Added
 - **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses. M1 Pro,
   8 threads, GFLOPS against Accelerate's: order 2048 423 (383), 1024 395 (388), 512 277 (431), 256 209 (282);

@@ -174,7 +174,7 @@ namespace numerical::detail {
     // The tile moves in and out one vector at a time: a single copy of the whole array would leave it in
     // memory under GCC, which then keeps no accumulator in a register (7.4 GFLOP/s instead of 11.8 on one
     // x86-64 core).
-    std::array<lane, gemm_mr * lanes> acc;
+    std::array<lane, gemm_mr * lanes> acc {};
 #  pragma GCC unroll 32
     for (std::size_t q {0}; q < acc.size(); ++q) {
       lane v;
@@ -184,7 +184,7 @@ namespace numerical::detail {
     // Unrolled, so that every accumulator has a fixed index and stays in a register: GCC at -O2 does not
     // unroll on its own, and then reads and writes the tile through memory.
     for (std::size_t p {0}; p < kc; ++p) {
-      std::array<lane, lanes> b;
+      std::array<lane, lanes> b {};
       std::memcpy(b.data(), bp + (p * nr), sizeof(b));
 #  pragma GCC unroll 8
       for (std::size_t i {0}; i < gemm_mr; ++i) {

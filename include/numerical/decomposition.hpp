@@ -1279,7 +1279,8 @@ namespace numerical {
      *        symmetric tridiagonal by Householder reflections, `A = M T Mᴴ` with `M` unitary.
      *
      * Each reflection zeroes one column below the subdiagonal and updates the trailing block by the rank-2
-     * `B − v wᴴ − w vᴴ`, row by row on contiguous memory. A complex subdiagonal entry is then made real by a
+     * `B − v wᴴ − w vᴴ`, rows in parallel on contiguous memory, each row's arithmetic in its own order; `M` is
+     * then formed by blocks of reflections through the matrix product kernel, as LAPACK's `dorgtr`. A complex subdiagonal entry is then made real by a
      * unit phase per row, as LAPACK's `zhetrd` leaves it for a real iteration; a real one keeps its sign.
      * \param[in,out] a The matrix; destroyed.
      * \param[in]     n Its order (at least 1).
@@ -1293,8 +1294,8 @@ namespace numerical {
                                   std::vector<double>& d,
                                   std::vector<double>& e)
     {
-      std::vector<std::vector<T>> reflectors(n);
-      std::vector<T>              sub(n, T {}); // T's subdiagonal before the phases
+      std::vector<std::vector<T>> reflectors(n); // reflectors[k + 1] zeroes column k, acting on rows k + 1…
+      std::vector<T>              sub(n, T {});  // T's subdiagonal before the phases
       for (std::size_t k {0}; k + 1 < n; ++k) {
         const std::size_t m {n - k - 1};
         std::vector<T>    v(m); // column k below the diagonal: the conjugate of row k right of it
@@ -1315,14 +1316,14 @@ namespace numerical {
         }
         T*             block  {a.data() + ((k + 1) * n) + k + 1}; // the trailing block, row stride n
         std::vector<T> w(m, T {});
-        for (std::size_t i {0}; i < m; ++i) { // w = B v
-          const T* row {block + (i * n)};
-          T        sum {};
-          for (std::size_t j {0}; j < m; ++j) {
-            sum += row[j] * v[j];
-          }
-          w[i] = sum;
-        }
+        parallel_for(m, m, [&](std::size_t i) { // w = B v, each row's sum in its own order
+                       const T* row {block + (i * n)};
+                       T        sum {};
+                       for (std::size_t j {0}; j < m; ++j) {
+                         sum += row[j] * v[j];
+                       }
+                       w[i] = sum;
+                     });
         T c {};
         for (std::size_t i {0}; i < m; ++i) {
           c += conj_of(v[i]) * w[i];
@@ -1330,26 +1331,26 @@ namespace numerical {
         for (std::size_t i {0}; i < m; ++i) { // w = 2 B v − 2 (vᴴ B v) v, so H B H = B − v wᴴ − w vᴴ
           w[i] = (static_cast<T>(2) * w[i]) - (static_cast<T>(2) * c * v[i]);
         }
-        for (std::size_t i {0}; i < m; ++i) {
-          T* row {block + (i * n)};
-          for (std::size_t j {0}; j < m; ++j) {
-            row[j] -= (v[i] * conj_of(w[j])) + (w[i] * conj_of(v[j]));
-          }
-        }
-        reflectors[k] = std::move(v);
+        parallel_for(m, m, [&](std::size_t i) {
+                       T* row {block + (i * n)};
+                       for (std::size_t j {0}; j < m; ++j) {
+                         row[j] -= (v[i] * conj_of(w[j])) + (w[i] * conj_of(v[j]));
+                       }
+                     });
+        reflectors[k + 1] = std::move(v); // acting from row k + 1, as householder_qr's from row k
       }
       for (std::size_t i {0}; i < n; ++i) {
         d[i] = real_part(a[(i * n) + i]);
       }
       e[n - 1] = 0.0;
-      std::vector<T> q(n * n, T {}); // Q = H₀ H₁ …, built from the last reflection back
+      std::vector<T> q(n * n, T {}); // Q = H₁ H₂ …, by blocks of reflectors from the last back, as dorgtr
       for (std::size_t i {0}; i < n; ++i) {
         q[(i * n) + i] = T {1};
       }
-      for (std::size_t k {n}; k-- > 0;) {
-        if (!reflectors[k].empty()) {
-          reflect_rows(q, n, reflectors[k], k + 1, 0);
-        }
+      for (std::size_t k1 {n}; k1 > 1;) {
+        const std::size_t k0 {k1 - std::min(k1 - 1, qr_block)};
+        apply_reflector_block(gather_reflectors(reflectors, k0, k1, n), false, q, n, k0, n);
+        k1 = k0;
       }
       // D T Dᴴ is real with D = diag(δ): δ₀ = 1, δ_{k+1} = δ_k · conj(phase(t_k)); then M = Q Dᴴ.
       std::vector<T> delta(n, T {1});
