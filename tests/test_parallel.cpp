@@ -76,6 +76,68 @@ TEST(parallel_for_returns_a_worker_exception_after_the_join)
   EXPECT(ran.load() >= 1U); // the other chunks ran, and every worker joined before the rethrow
 }
 
+namespace {
+  // Every index's hits, and the task's, of runs beside a loop.
+  struct beside_counts
+  {
+    std::vector<std::atomic<int>> hits;
+    std::atomic<int>              side {0};
+  };
+
+  // One body type and one task type for every way a run goes (threaded, capped, sequential, nested in a busy pool),
+  // so that one instantiation meets them all.
+  void run_beside(beside_counts& counts,
+                  std::size_t    work)
+  {
+    numerical::detail::parallel_for_beside(counts.hits.size(), work, [&counts](std::size_t i) { ++counts.hits[i]; },
+                                           [&counts] { ++counts.side; });
+  }
+
+  // Whether every index ran \p times and the task \p sides times.
+  bool every_index(const beside_counts& counts,
+                   int                  times,
+                   int                  sides)
+  {
+    bool all {counts.side.load() == sides};
+    for (const std::atomic<int>& hit : counts.hits) {
+      all = all && hit.load() == times;
+    }
+    return all;
+  }
+} // namespace
+
+// A task beside a loop: the caller runs it while the workers take chunks, then joins them; every index once and the
+// task once, threaded, capped to one thread, with too little work for two, and nested in a busy pool. Its exception
+// comes back after the loop's chunks have run.
+TEST(parallel_for_beside_runs_the_task_and_every_index_once)
+{
+  beside_counts threaded {.hits = std::vector<std::atomic<int>>(257)};
+  run_beside(threaded, std::size_t {1} << 20);
+  EXPECT(every_index(threaded, 1, 1));
+  beside_counts capped {.hits = std::vector<std::atomic<int>>(257)};
+  numerical::set_max_threads(1);
+  run_beside(capped, std::size_t {1} << 20);
+  numerical::set_max_threads(0);
+  EXPECT(every_index(capped, 1, 1));
+  beside_counts light {.hits = std::vector<std::atomic<int>>(257)};
+  run_beside(light, 1);
+  EXPECT(every_index(light, 1, 1));
+  beside_counts nested {.hits = std::vector<std::atomic<int>>(64)};
+  numerical::detail::parallel_for(8, std::size_t {1} << 20, [&nested](std::size_t) { run_beside(nested, std::size_t {1} << 20); });
+  EXPECT(every_index(nested, 8, 8));
+  std::atomic<std::size_t> ran    {0};
+  bool                     caught {false};
+  try {
+    numerical::detail::parallel_for_beside(1000, std::size_t {1} << 20, [&ran](std::size_t) { ++ran; },
+                                           [] { throw std::runtime_error("beside"); });
+  }
+  catch (const std::runtime_error& error) {
+    caught = std::string_view {error.what()} == "beside";
+  }
+  EXPECT(caught);
+  EXPECT(ran.load() == 1000U);
+}
+
 // A thread is started for each share of work that pays for it (detail::work_per_thread), at most one per
 // index and per hardware thread: an inverse of order 16 (16 solves of 256) starts none, where it started
 // one per hardware thread and took 177 µs instead of 8.

@@ -1061,6 +1061,36 @@ namespace {
   }
 } // namespace
 
+// Past numerical::detail::lu_lookahead_columns: the first steps update the trailing block as one product, the last
+// ones factorise the next panel beside the update of the rest. The same factors on one thread as on all of them,
+// and a solve to rounding.
+TEST(lu_looks_ahead_one_panel_with_the_same_factors)
+{
+  const std::size_t   n     {numerical::detail::lu_lookahead_columns + (2 * numerical::detail::lu_block) + 5};
+  std::vector<double> entries(n * n);
+  std::uint64_t       state {12345};
+  for (std::size_t i {0}; i < n * n; ++i) { // pseudo-random in [-1, 1), a diagonal of 40 on top: well-conditioned
+    state      = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+    entries[i] = (static_cast<double>(state >> 11U) * 0x1.0p-52) - 1.0 + (i % (n + 1) == 0 ? 40.0 : 0.0);
+  }
+  const matrix<double> a   {n, n, entries};
+  const vector<double> b   {std::vector<double>(n, 1.0)};
+  const vector<double> all {numerical::lu_decomposition<double> {a}.solve(b)};
+  numerical::set_max_threads(1);
+  const vector<double> one {numerical::lu_decomposition<double> {a}.solve(b)};
+  numerical::set_max_threads(0);
+  EXPECT(all == one);
+  double residual {0.0};
+  for (std::size_t i {0}; i < n; ++i) {
+    double sum {0.0};
+    for (std::size_t j {0}; j < n; ++j) {
+      sum += a(i, j) * all[j];
+    }
+    residual = std::max(residual, std::abs(sum - 1.0));
+  }
+  EXPECT(residual < 1e-8);
+}
+
 // Past one panel: the diagonal blocks, the rows below them by leaves (or, under many rows, as one leaf), and
 // the trailing products.
 TEST(blocked_cholesky_equals_the_unblocked_algorithm_to_the_bit)

@@ -52,6 +52,11 @@ namespace numerical {
     //!        deep enough for the packed kernel while the unblocked panel stays a small part of the work.
     inline constexpr std::size_t lu_block {64};
 
+    //! \brief The trailing columns at most past which the LU factorises its next panel beside the update of the rest
+    //!        (a look-ahead): a wider update runs well as one product, and cut in blocks beside the panel it ran
+    //!        longer (order 2048 on six x86-64 cores, 9 %); a narrower one leaves threads idle while the panel runs.
+    inline constexpr std::size_t lu_lookahead_columns {1024};
+
     //! \brief The columns of one leaf of the recursive LU panel, and of the Cholesky panel's rows below it.
     inline constexpr std::size_t solve_leaf {16};
 
@@ -484,15 +489,48 @@ namespace numerical {
     // work of a large factorisation is. Each element still receives its updates in ascending order of the
     // pivot, so without multiply-add fusion the factors are the unblocked algorithm's to the bit; an order
     // up to one panel is that algorithm.
+    //
+    // With a look-ahead of one panel: the trailing update reaches the next panel's columns first, then the
+    // next panel is factorised on the calling thread while the workers update the columns right of it (the
+    // panel, a column at a time, would otherwise hold every other thread idle). Its row swaps reach those
+    // columns once both are done: an update reads its rows of L from a copy and writes row by row, so a swap
+    // after it is the swap before it, and the factors stay the ones above, to the bit.
     void factorize()
     {
-      for (std::size_t k0 {0}; k0 < n_; k0 += detail::lu_block) {
-        const std::size_t end {std::min(k0 + detail::lu_block, n_)};
-        factorize_panel(k0, end);
-        if (end < n_) {
-          solve_panel_rows(k0, end);
-          update_trailing(k0, end);
+      std::size_t end {std::min(detail::lu_block, n_)};
+      factorize_panel(0, end);
+      for (std::size_t k0 {0}; end < n_;) {
+        const std::size_t next       {std::min(end + detail::lu_block, n_)};
+        solve_panel_rows(k0, end);
+        const std::vector<T> minus_l {negated_block(end, n_, k0, end)};
+        update_columns(minus_l, k0, end, end, next);
+        const std::size_t right      {n_ - next};
+        if (right > detail::lu_lookahead_columns) { // one product of the whole trailing block, then the panel
+          update_columns(minus_l, k0, end, next, n_);
+          factorize_panel(end, next);
+          k0  = end;
+          end = next;
+          continue;
         }
+        // About two blocks of columns a thread: each block's product packs L₂₁ again.
+        const std::size_t width  {std::max(detail::lu_block, (right + (2 * max_threads()) - 1) / (2 * max_threads()))};
+        const std::size_t blocks {(right + width - 1) / width};
+        swap_limit_ = next;
+        detail::parallel_for_beside(blocks, (n_ - end) * width * (end - k0) / detail::gemm_kernel_speedup,
+                                    [&](std::size_t block) {
+                                      const std::size_t first {next + (block * width)};
+                                      update_columns(minus_l, k0, end, first, std::min(first + width, n_));
+                                    },
+                                    [&] { factorize_panel(end, next); });
+        swap_limit_ = n_;
+        for (const auto& [a, b] : deferred_swaps_) {
+          for (std::size_t c {next}; c < n_; ++c) {
+            std::swap(lu_[(a * n_) + c], lu_[(b * n_) + c]);
+          }
+        }
+        deferred_swaps_.clear();
+        k0  = end;
+        end = next;
       }
     }
 
@@ -597,7 +635,8 @@ namespace numerical {
       factorize_columns(panel, rows, mid, last, k0, end);
     }
 
-    //! \brief Swaps rows \p a and \p b of the factor outside the panel's columns `[k0, end)`.
+    //! \brief Swaps rows \p a and \p b of the factor outside the panel's columns `[k0, end)`: right of the panel up
+    //!        to \ref swap_limit_, the rest left in \ref deferred_swaps_ (columns another thread is updating).
     void swap_rows_outside(std::size_t a,
                            std::size_t b,
                            std::size_t k0,
@@ -606,8 +645,11 @@ namespace numerical {
       for (std::size_t c {0}; c < k0; ++c) {
         std::swap(lu_[(a * n_) + c], lu_[(b * n_) + c]);
       }
-      for (std::size_t c {end}; c < n_; ++c) {
+      for (std::size_t c {end}; c < swap_limit_; ++c) {
         std::swap(lu_[(a * n_) + c], lu_[(b * n_) + c]);
+      }
+      if (swap_limit_ < n_) {
+        deferred_swaps_.emplace_back(a, b);
       }
     }
 
@@ -628,27 +670,25 @@ namespace numerical {
                            });
     }
 
-    //! \brief `A₂₂ −= L₂₁ U₁₂`, as `A₂₂ += (−L₂₁) U₁₂` through the matrix product kernel.
-    void update_trailing(std::size_t k0,
-                         std::size_t end)
+    //! \brief `A₂₂ −= L₂₁ U₁₂` on the trailing columns `[c0, c1)`, as `A₂₂ += (−L₂₁) U₁₂` through the matrix product
+    //!        kernel, \p minus_l being `−L₂₁` (the rows below the panel `[k0, end)`).
+    void update_columns(const std::vector<T>& minus_l,
+                        std::size_t           k0,
+                        std::size_t           end,
+                        std::size_t           c0,
+                        std::size_t           c1)
     {
-      const std::size_t rows  {n_ - end};
-      const std::size_t depth {end - k0};
-      std::vector<T>    minus_l(rows * depth);
-      for (std::size_t r {0}; r < rows; ++r) {
-        for (std::size_t p {0}; p < depth; ++p) {
-          minus_l[(r * depth) + p] = -lu_[((end + r) * n_) + k0 + p];
-        }
-      }
-      detail::gemm(rows, rows, depth, minus_l.data(), depth, lu_.data() + (k0 * n_) + end, n_,
-                   lu_.data() + (end * n_) + end, n_);
+      detail::gemm(n_ - end, c1 - c0, end - k0, minus_l.data(), end - k0, lu_.data() + (k0 * n_) + c0, n_,
+                   lu_.data() + (end * n_) + c0, n_);
     }
 
-    std::size_t              n_;                //!< The matrix order.
-    std::vector<T>           lu_;               //!< Combined L (below diag, unit) and U (on/above), row-major.
-    std::vector<std::size_t> pivots_;           //!< Row permutation: row now at i came from pivots_[i].
-    int                      sign_     {1};     //!< Permutation sign, for the determinant.
-    bool                     singular_ {false}; //!< Set if a zero pivot was met.
+    std::size_t                                      n_;                  //!< The matrix order.
+    std::vector<T>                                   lu_;                 //!< Combined L (below diag, unit) and U (on/above), row-major.
+    std::vector<std::size_t>                         pivots_;             //!< Row permutation: row now at i came from pivots_[i].
+    int                                              sign_       {1};     //!< Permutation sign, for the determinant.
+    bool                                             singular_   {false}; //!< Set if a zero pivot was met.
+    std::size_t                                      swap_limit_ {n_};    //!< The columns a panel's row swaps reach now.
+    std::vector<std::pair<std::size_t, std::size_t>> deferred_swaps_;     //!< Swaps left for the columns past it.
   };
 
   /*!

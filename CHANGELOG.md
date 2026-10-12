@@ -30,6 +30,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   then one fused multiply-add, so LU, Cholesky, QR, the inverse, `eigh` and `svd` differ in the last bits from
   2026.10.4 on such processors. i9-10900X (a shared machine): `solve` of order 1024 about 30 → 25 ms, the
   inverse 63 → 57 ms, `svd` of order 512 about 165 → 134 ms; `eigh` 3–5 % faster.
+- **LU looks one panel ahead** where the trailing block is at most 1024 columns wide: the next panel's columns
+  are updated first, then the panel is factorised on the calling thread while the workers update the rest; its row
+  swaps reach those columns once both are done. The same arithmetic in the same order: the factors are the same
+  to the bit. M1 Pro: LU of order 512 2.33 → 2.05 ms, 1024 10.4 → 8.6 ms; x86-64 within noise.
 - **`lstsq` answers by one QR factorisation where the rank is surely full**: `R⁻¹` gives a bound on the
   condition number, `‖R‖_F ‖R⁻¹‖_F`, and where it stays a hundred times under the reciprocal of NumPy's rank
   tolerance, `X = R⁻¹ Qᴴ B` (or `Q R⁻ᴴ B`, from a QR of `Aᴴ`, for a wide `A`) is the singular value

@@ -71,6 +71,9 @@ namespace numerical::detail {
   //! \brief A chunk of a parallel_for, type-erased: runs `body(i)` for `i` in `[begin, end)`.
   using chunk_runner = void (*)(const void* body, std::size_t begin, std::size_t end);
 
+  //! \brief A task the caller of a run does before it takes chunks (\ref parallel_for_beside), type-erased.
+  using side_runner = void (*)(const void* side);
+
   /*!
    * \brief One parallel_for handed to the pool: its chunks, the next one to take, and how many are done. Each
    *        run has its own, so a worker still leaving one run never touches the next.
@@ -144,14 +147,17 @@ namespace numerical::detail {
     /*!
      * \brief Runs \p chunks chunks of \p chunk indices up to \p count on the caller and at most \p helpers workers,
      *        then rethrows the first exception in index order. \return false, having run nothing, when the pool is
-     *        busy or belongs to the parent of a forked process.
+     *        busy or belongs to the parent of a forked process. With \p side, the caller runs it first, while the
+     *        workers take chunks, and its exception comes back before theirs.
      */
     bool try_run(chunk_runner run,
                  const void*  body,
                  std::size_t  count,
                  std::size_t  chunk,
                  std::size_t  chunks,
-                 std::size_t  helpers)
+                 std::size_t  helpers,
+                 side_runner  side      = nullptr,
+                 const void*  side_body = nullptr)
     {
       bool idle {false};
       // A forked child has none of the parent's workers, and their locks may be held for good: it runs alone.
@@ -188,12 +194,24 @@ namespace numerical::detail {
         generation_.fetch_add(1);
       }
       wake_.notify_all();
+      std::exception_ptr side_failed;
+      if (side != nullptr) {
+        try {
+          side(side_body);
+        }
+        catch (...) {
+          side_failed = std::current_exception();
+        }
+      }
       job->work();
       const auto all_done {[&job] { return job->finished.load() == job->chunks; }};
       spin_until(all_done);
       {
         std::unique_lock<std::mutex> held {job->lock};
         job->done.wait(held, all_done);
+      }
+      if (side_failed) {
+        std::rethrow_exception(side_failed);
       }
       for (const std::exception_ptr& error : job->failed) {
         if (error) {
@@ -318,6 +336,45 @@ namespace numerical::detail {
     if (!thread_pool::shared().try_run(runner, &body, count, chunk, chunks, threads - 1)) {
       runner(&body, 0, count);
     }
+  }
+
+  /*!
+   * \brief Runs \p side on the caller while the pool's workers run `body(i)` for every `i` in `[0, count)`, then lets
+   *        the caller take the chunks left: one task beside a parallel loop, each touching what the other does not
+   *        (a factorisation's next panel beside its trailing update). \p side's own parallel loops find the pool
+   *        busy and run in its thread. Where the work pays for fewer than two threads, or the pool is busy, \p side
+   *        runs, then the loop, on the caller. An exception of \p side comes back after the loop's chunks have
+   *        joined, before theirs.
+   * \param[in] count          The number of iterations.
+   * \param[in] work_per_index The work of one iteration, in multiply-adds.
+   * \param[in] body           The per-index work (`void(std::size_t)`).
+   * \param[in] side           The caller's task (`void()`).
+   */
+  template <typename Body,
+            typename Side>
+  void parallel_for_beside(std::size_t count,
+                           std::size_t work_per_index,
+                           const Body& body,
+                           const Side& side)
+  {
+    const std::size_t cap     {thread_cap().load()};
+    const std::size_t threads {threads_for(count, work_per_index, cap == 0 ? hardware_threads() : std::min(cap, hardware_threads()))};
+    const auto        runner  {[](const void* erased, std::size_t begin, std::size_t end) {
+                                 const Body& work {*static_cast<const Body*>(erased)};
+                                 for (std::size_t i {begin}; i < end; ++i) {
+                                   work(i);
+                                 }
+                               }};
+    const auto beside {[](const void* erased) { (*static_cast<const Side*>(erased))(); }};
+    if (threads >= 2) {
+      const std::size_t chunks {std::max<std::size_t>(1, std::min(count, threads * 4))};
+      const std::size_t chunk  {((count + chunks) - 1) / chunks};
+      if (thread_pool::shared().try_run(runner, &body, count, chunk, chunks, threads - 1, beside, &side)) {
+        return;
+      }
+    }
+    side();
+    runner(&body, 0, count);
   }
 } // namespace numerical::detail
 
