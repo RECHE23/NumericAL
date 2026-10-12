@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.4 — 2026-10-12
+
 ### Changed
 - **`eigh` and `svd` default to divide and conquer** (see Added), as LAPACK's `dsyevd`/`zheevd` and `dgesdd`, and
   matrix products run on a kernel chosen at run time (AVX-512, AVX2 or the Apple AMX, each element a chain of
