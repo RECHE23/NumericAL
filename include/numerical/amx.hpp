@@ -12,7 +12,7 @@
  *   instruction it lacks;
  * - on first use a product computed through it must equal, to the bit, the same product computed by
  *   `std::fma` in ascending order of the depth; else the path stays off for the process;
- * - \ref numerical::set_amx turns it off (or back on) at run time, and the Python package reads
+ * - \ref numerical::limit_gemm_path keeps products off it at run time, and the Python package reads
  *   `NUMERICAL_AMX=0`.
  *
  * Every element of C is a chain of fused multiply-adds in ascending order of the depth, so a product through
@@ -23,7 +23,6 @@
 #define NUMERICAL_AMX_HPP
 
 #include <array>
-#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -254,13 +253,6 @@ namespace numerical::detail {
 
 #endif
 
-  //! \brief Whether the matrix product of `double` runs on the AMX: -1 not yet decided, 0 no, 1 yes.
-  [[nodiscard]] inline std::atomic<int>& amx_state() noexcept
-  {
-    static std::atomic<int> state {-1};
-    return state;
-  }
-
   //! \brief Whether this chip's AMX can be used: known family and a passing self-test, decided once.
   [[nodiscard]] inline bool amx_usable() noexcept
   {
@@ -271,38 +263,6 @@ namespace numerical::detail {
     return false;
 #endif
   }
-
-  //! \brief Whether the next `double` product runs on the AMX (on by default where usable).
-  [[nodiscard]] inline bool amx_active() noexcept
-  {
-    int state {amx_state().load(std::memory_order_relaxed)};
-    if (state < 0) {
-      state = static_cast<int>(amx_usable());
-      amx_state().store(state, std::memory_order_relaxed);
-    }
-    return state == 1;
-  }
 } // namespace numerical::detail
-
-namespace numerical {
-
-  /*!
-   * \brief Turns the Apple AMX path of the `double` matrix product on or off for the process.
-   * \param[in] on Whether to use it.
-   * \return Whether it is now in use: false whenever the chip's AMX cannot be used, whatever \p on.
-   */
-  inline bool set_amx(bool on) noexcept
-  {
-    const bool active {on ? detail::amx_usable() : false};
-    detail::amx_state().store(active ? 1 : 0, std::memory_order_relaxed);
-    return active;
-  }
-
-  //! \brief Whether the `double` matrix product runs on the Apple AMX.
-  [[nodiscard]] inline bool amx_enabled() noexcept
-  {
-    return detail::amx_active();
-  }
-} // namespace numerical
 
 #endif // NUMERICAL_AMX_HPP

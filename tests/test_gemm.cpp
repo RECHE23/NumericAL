@@ -31,8 +31,8 @@ namespace {
   }
 
   // The definition the kernel must reproduce: C starts at zero and adds a(i,p)·b(p,j) for p ascending, each
-  // product rounded before its sum, or fused with it where the product runs on the AMX (a double product large
-  // enough to be packed, while the AMX is in use; a small one runs the plain loop on any chip).
+  // product rounded before its sum, or fused with it where the product runs on a fused path (AVX2, AVX-512 or the
+  // AMX: a double product large enough to be packed; a small one runs the plain loop on any chip).
   template <typename T>
   std::vector<T> reference(std::size_t           m,
                            std::size_t           n,
@@ -42,7 +42,7 @@ namespace {
   {
     const bool packed         {k >= numerical::detail::gemm_min_depth
                                && m * n >= ((numerical::detail::gemm_packed_threshold + k) - 1) / k};
-    const bool     fused      {std::is_same_v<T, double> && packed && numerical::amx_enabled()};
+    const bool     fused      {std::is_same_v<T, double> && packed && numerical::gemm_path_in_use() != numerical::gemm_path::portable};
     std::vector<T> c(m * n, T {});
     for (std::size_t i {0}; i < m; ++i) {
       for (std::size_t p {0}; p < k; ++p) {
@@ -60,16 +60,19 @@ namespace {
     return c;
   }
 
-  // Each check once on the vector path and once on the AMX where the chip has one (set_amx answers whether it
-  // took).
+  // Each check once on every path this processor can run (limit_gemm_path answers which one it took), then the
+  // best path again.
   template <typename Check>
   bool on_every_path(const Check& check)
   {
-    numerical::set_amx(false);
-    bool ok {check()};
-    if (numerical::set_amx(true)) {
-      ok = ok && check();
+    bool ok {true};
+    for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2,
+                                            numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+      if (numerical::limit_gemm_path(path) == path) {
+        ok = ok && check();
+      }
     }
+    (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
     return ok;
   }
 
@@ -134,4 +137,18 @@ TEST(product_over_an_empty_dimension)
   EXPECT_THROWS(wide * four, numerical::dimension_error); // the shape check precedes the empty cases
   EXPECT(numerical::einsum("ij,jk->ik", tensor<double> {{2, 0}, {}}, tensor<double> {{0, 3}, {}}) ==
          (tensor<double> {{2, 3}, std::vector<double>(6, 0.0)}));
+}
+
+// The packing storage stays with the calling thread for the next product, unless it outgrew the limit.
+TEST(the_calling_thread_keeps_its_packing_storage_within_the_limit)
+{
+  using storage = numerical::detail::packing_storage<double>;
+  EXPECT(product_is_exact<double>(64, 64, 64));
+  EXPECT(!storage::kept().empty());
+  // A tall product packs more of A than the limit: correct, then nothing kept.
+  const std::size_t rows {(storage::kept_limit / numerical::detail::gemm_kc) + 64};
+  EXPECT(product_is_exact<double>(rows, 3, numerical::detail::gemm_kc));
+  EXPECT(storage::kept().empty());
+  EXPECT(product_is_exact<double>(64, 64, 64));
+  EXPECT(!storage::kept().empty());
 }

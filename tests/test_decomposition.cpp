@@ -894,15 +894,14 @@ namespace {
   }
 } // namespace
 
-// Past one panel: three panels, the last partial. On the vector path: on the AMX the trailing products fuse
-// their multiply-adds and the panels do not, which the next test bounds instead.
+// Past one panel: three panels, the last partial. On the portable path: on a fused one the trailing products fuse
+// their multiply-adds and the panels do not, which a later test bounds instead.
 TEST(blocked_lu_equals_the_unblocked_algorithm_to_the_bit)
 {
-  const bool        amx {numerical::amx_enabled()};
   const std::size_t n   {(2 * numerical::detail::lu_block) + 22};
-  numerical::set_amx(false);
+  (void)numerical::limit_gemm_path(numerical::gemm_path::portable);
   EXPECT(blocked_lu_equals_unblocked<double>(n));
-  numerical::set_amx(amx);
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
   EXPECT(blocked_lu_equals_unblocked<std::complex<double>>(numerical::detail::lu_block + 40));
 }
 
@@ -975,10 +974,9 @@ namespace {
 // Past one panel: the diagonal blocks, the rows below them in parallel, and the trailing products.
 TEST(blocked_cholesky_equals_the_unblocked_algorithm_to_the_bit)
 {
-  const bool amx {numerical::amx_enabled()};
-  numerical::set_amx(false);
+  (void)numerical::limit_gemm_path(numerical::gemm_path::portable);
   EXPECT(blocked_cholesky_equals_unblocked<double>((2 * numerical::detail::cholesky_block) + 22));
-  numerical::set_amx(amx);
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
   EXPECT(blocked_cholesky_equals_unblocked<std::complex<double>>(numerical::detail::cholesky_block + 40));
 }
 
@@ -1093,13 +1091,16 @@ TEST(blocked_qr_across_panels_any_shape)
   EXPECT(blocked_qr_holds<std::complex<double>>(past + 7, past, past));
 }
 
-// On either path (the AMX's fused trailing products where the chip has one) the blocked factorisations solve to
+// On every path this processor runs (fused trailing products on the AVX and AMX ones) the blocked factorisations solve to
 // within a small multiple of the rounding: the bound the bit-identity above gives on the vector path alone.
 TEST(blocked_factorisations_solve_accurately_on_every_path)
 {
   const std::size_t n {(2 * numerical::detail::lu_block) + 22};
-  for (const bool amx : {false, true}) {
-    numerical::set_amx(amx);
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue;
+    }
     std::vector<double> entries(n * n);
     for (std::size_t i {0}; i < n * n; ++i) {
       entries[i] = std::sin(static_cast<double>(i) * 0.37) + (i % (n + 1) == 0 ? static_cast<double>(n) : 0.0);
@@ -1125,5 +1126,5 @@ TEST(blocked_factorisations_solve_accurately_on_every_path)
     }
     EXPECT(gap < 1e-12);
   }
-  numerical::set_amx(true);
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }

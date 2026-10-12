@@ -674,24 +674,29 @@ class Threads(unittest.TestCase):
             numerical.set_num_threads(0)
         self.assertGreaterEqual(numerical.get_num_threads(), 1)
 
-    def test_amx_turns_off_and_back_without_changing_more_than_rounding(self):
+    def test_every_gemm_path_agrees_to_rounding(self):
         a = numerical.asarray([[((i * 7 + j * 3) % 11) / 3.0 - 1.5 for j in range(200)] for i in range(200)])
-        usable = numerical.set_amx(True)
-        fused = (a @ a).tolist()
-        self.assertFalse(numerical.set_amx(False))
-        self.assertFalse(numerical.amx_enabled())
+        self.assertEqual(numerical.limit_gemm_path("portable"), "portable")
         plain = (a @ a).tolist()
-        numerical.set_amx(usable)
-        worst = max(abs(x - y) for row_f, row_p in zip(fused, plain) for x, y in zip(row_f, row_p))
-        self.assertLess(worst, 1e-11)
-        self.assertEqual(numerical.get_config()["amx"], numerical.amx_enabled())
+        for path in ("avx2", "avx512", "amx"):
+            got = numerical.limit_gemm_path(path)
+            self.assertIn(got, ("portable", "avx2", "avx512", "amx"))
+            worst = max(abs(x - y) for row_f, row_p in zip((a @ a).tolist(), plain) for x, y in zip(row_f, row_p))
+            self.assertLess(worst, 1e-11)
+        self.assertEqual(numerical.get_config()["gemm_path"], numerical.gemm_path())
+        with self.assertRaises(ValueError):
+            numerical.limit_gemm_path("sse9")
 
-    def test_the_environment_turns_amx_off_at_import(self):
+    def test_the_environment_limits_the_gemm_path_at_import(self):
         import subprocess
-        env = dict(os.environ, NUMERICAL_AMX="0")
-        out = subprocess.run([sys.executable, "-c", "import numerical; print(numerical.amx_enabled())"],
-                             env=env, capture_output=True, text=True, check=True)
-        self.assertEqual(out.stdout.strip(), "False")
+        for env, want in ((dict(os.environ, NUMERICAL_GEMM="portable"), "portable"),
+                          (dict(os.environ, NUMERICAL_AMX="0"), None)):
+            out = subprocess.run([sys.executable, "-c", "import numerical; print(numerical.gemm_path())"],
+                                 env=env, capture_output=True, text=True, check=True)
+            if want is None:
+                self.assertNotEqual(out.stdout.strip(), "amx")
+            else:
+                self.assertEqual(out.stdout.strip(), want)
 
     def test_the_environment_sets_the_cap_at_import(self):
         import subprocess

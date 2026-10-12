@@ -31,16 +31,30 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   the vector units gave 204, 207, 178 and 145. One core: 160–180 (was 41).
   Apple documents no instruction for it, so the path is guarded: compiled only for arm64 macOS (not at all under
   `NUMERICAL_NO_AMX`), used only on a CPU family of the M1 to M4 line, and only once a product computed on it
-  equals, to the bit, the same product by `std::fma` in ascending order. `numerical.set_amx(False)` /
-  `NUMERICAL_AMX=0` (C++: `numerical::set_amx`) keep products on the vector units; `amx_enabled()` and
-  `get_config()["amx"]` report it. On the AMX each element of a product is a chain of fused multiply-adds in
-  ascending order of the depth, the same on any number of threads; it differs from the vector path in the last
-  bits, as any fused product does. LU, Cholesky, QR and the inverse take it through their trailing products.
+  equals, to the bit, the same product by `std::fma` in ascending order. On the AMX each element of a product
+  is a chain of fused multiply-adds in ascending order of the depth, the same on any number of threads; it
+  differs from the vector path in the last bits, as any fused product does. LU, Cholesky, QR and the inverse take it through their trailing products.
+- **`float64` matrix products on AVX-512 and AVX2 with FMA** (x86-64), chosen at run time: a wheel built for
+  the baseline x86-64 compiles each tile for its instruction set and uses it only once `cpuid` reports the
+  instructions and `xgetbv` the system saving their registers. Each element is a chain of fused multiply-adds
+  in ascending order of the depth, the same on any number of threads. GFLOPS against OpenBLAS 0.3.34's
+  (NumPy's), float64, each library alone in its process:
+  i9-10900X (AVX-512, 10 cores), order 1024 540 (720), 2048 420 (590); one core 66–79 (82–99), was 11.
+  i9-9900K (AVX2, 8 cores), order 1024 271 (353), 2048 213 (304); one core 54–58 (69).
+- **`numerical.gemm_path()` and `limit_gemm_path(name)`** (C++: `numerical::gemm_path_in_use`,
+  `limit_gemm_path`) report and cap the kernel float64 products run on, `"portable"`, `"avx2"`, `"avx512"` or
+  `"amx"`: a cap takes the most capable path at or below it that runs here, and `"portable"` keeps each
+  product rounded before its sum. `NUMERICAL_GEMM` sets the cap at import, `NUMERICAL_AMX=0` keeps products
+  off the AMX alone, and `get_config()["gemm_path"]` reports it.
 - **`numerical.set_num_threads(n)` and `get_num_threads()`** (C++: `numerical::set_max_threads`,
   `max_threads`), and `NUMERICAL_NUM_THREADS` read at import, as `OMP_NUM_THREADS` caps BLAS: a process per core
   can keep the kernels to one thread each.
 
 ### Fixed
+- **A matrix product no longer maps its packing storage anew each time**: the calling thread keeps it for the
+  next product (up to 32 MiB). Fresh megabytes were faulted in page by page on every product: order 512 on 20
+  x86-64 threads took 2.9 ms instead of 0.89. The packed operands start a cache line, so no vector load of
+  them straddles two.
 - **`max`/`min` along an empty axis raise**, as NumPy's, even when the result would be empty too
   (`min(zeros((3, 0, 0)), axis=1)` returned an empty tensor).
 

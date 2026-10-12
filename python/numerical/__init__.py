@@ -32,12 +32,13 @@ import os
 import sys as _sys
 
 from numerical import _numerical
-from numerical._numerical import Tensor, amx_enabled, asarray as _asarray, error, get_num_threads, set_amx, set_num_threads
+from numerical._numerical import Tensor, asarray as _asarray, error, get_num_threads, set_num_threads
+from numerical._numerical import _gemm_path, _limit_gemm_path
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "slogdet", "inverse", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh", "svd",
-    "array_equal", "set_num_threads", "get_num_threads", "set_amx", "amx_enabled",
+    "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config",
 ]
 
@@ -56,10 +57,31 @@ __version__ = "2026.10.3"
 if os.environ.get("NUMERICAL_NUM_THREADS", "").strip().isdigit():
     set_num_threads(int(os.environ["NUMERICAL_NUM_THREADS"]))
 
-# NUMERICAL_AMX=0 keeps float64 matrix products off the Apple AMX (an undocumented coprocessor, used only on a
-# known M-series chip that passes a self-test; see numerical/amx.hpp).
-if os.environ.get("NUMERICAL_AMX", "").strip() == "0":
-    set_amx(False)
+_GEMM_PATHS = ("portable", "avx2", "avx512", "amx")
+
+
+def gemm_path():
+    """The kernel float64 matrix products run on: ``"portable"`` (the compiler's vectors), ``"avx2"``,
+    ``"avx512"`` (x86-64, chosen at run time from cpuid) or ``"amx"`` (Apple M1 to M4, an undocumented
+    coprocessor, used only on a known chip that passes a self-test; see numerical/amx.hpp)."""
+    return _GEMM_PATHS[_gemm_path()]
+
+
+def limit_gemm_path(most):
+    """Keep float64 matrix products on `most` or a more portable path (one of :func:`gemm_path`'s names): the most
+    capable path at or below it that runs on this processor. ``"amx"`` restores the best; ``"portable"`` keeps
+    products on the compiler's vectors, each product rounded before its sum. Returns the path now in use."""
+    if most not in _GEMM_PATHS:
+        raise ValueError(f"limit_gemm_path: {most!r} is none of {_GEMM_PATHS}")
+    return _GEMM_PATHS[_limit_gemm_path(_GEMM_PATHS.index(most))]
+
+
+# NUMERICAL_GEMM caps the path from the start (portable, avx2, avx512, amx); NUMERICAL_AMX=0 keeps products off
+# the Apple AMX alone.
+if os.environ.get("NUMERICAL_GEMM", "").strip() in _GEMM_PATHS:
+    limit_gemm_path(os.environ["NUMERICAL_GEMM"].strip())
+elif os.environ.get("NUMERICAL_AMX", "").strip() == "0":
+    limit_gemm_path("avx512")
 
 
 def get_include():
@@ -85,13 +107,13 @@ def get_config():
 
     Returns:
         dict: ``version`` (str), ``include`` (str, see :func:`get_include`), ``cxx_standard`` (str),
-        ``amx`` (bool, whether float64 products run on the Apple AMX) and ``threads`` (int).
+        ``gemm_path`` (str, the kernel float64 matrix products run on, see :func:`gemm_path`) and ``threads`` (int).
     """
     return {
         "version": __version__,
         "include": get_include(),
         "cxx_standard": "c++20",
-        "amx": amx_enabled(),
+        "gemm_path": gemm_path(),
         "threads": get_num_threads(),
     }
 

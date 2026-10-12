@@ -1,21 +1,25 @@
-// The AMX path's guards (amx.hpp): it is used only on a known M-series family and after its self-test, and
-// set_amx turns it on only where it can run; on any other target it is absent and set_amx reports so.
+// The GEMM paths' guards: limit_gemm_path never selects a path this processor cannot run; the AMX (amx.hpp) is
+// used only on a known M-series family and after its self-test; the AVX paths only where cpuid reports them.
+#include <array>
 #include <cstdint>
 
 #include <sciforge/test/framework.hpp>
 #include "numerical/numerical.hpp"
 
-TEST(set_amx_turns_the_path_on_only_where_it_can_run)
+TEST(limit_gemm_path_takes_the_most_capable_path_that_runs_here)
 {
-  const bool before {numerical::amx_enabled()};
-  EXPECT(!numerical::set_amx(false));
-  EXPECT(!numerical::amx_enabled());
-  const bool usable {numerical::detail::amx_usable()};
-  EXPECT(numerical::set_amx(true) == usable);
-  EXPECT(numerical::amx_enabled() == usable);
-  (void)numerical::set_amx(before);
+  // The portable path always runs; every other one where the processor has it; a limit above what runs falls to
+  // the most capable below it, and the highest limit restores the best.
+  EXPECT(numerical::limit_gemm_path(numerical::gemm_path::portable) == numerical::gemm_path::portable);
+  EXPECT(numerical::gemm_path_in_use() == numerical::gemm_path::portable);
+  for (const numerical::gemm_path path : {numerical::gemm_path::avx2, numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    const bool                 usable {numerical::detail::gemm_path_usable(path)};
+    const numerical::gemm_path got    {numerical::limit_gemm_path(path)};
+    EXPECT(usable ? got == path : got < path);
+  }
+  EXPECT(numerical::gemm_path_in_use() == numerical::detail::best_gemm_path(numerical::gemm_path::amx));
 #ifndef NUMERICAL_AMX_COMPILED
-  EXPECT(!usable); // compiled out: never in use
+  EXPECT(!numerical::detail::amx_usable()); // compiled out: never in use
 #endif
 }
 
@@ -38,5 +42,23 @@ TEST(this_chip_is_known_and_its_amx_passes_the_self_test)
   EXPECT(numerical::detail::amx_family_known(numerical::detail::cpu_family()));
   EXPECT(numerical::detail::amx_self_test());
   EXPECT(numerical::detail::amx_usable());
+}
+#endif
+
+#ifdef NUMERICAL_X86_COMPILED
+TEST(the_avx_paths_need_the_instructions_and_the_saved_registers)
+{
+  using numerical::detail::decode_features;
+  constexpr std::uint32_t fma     {1U << 12U};
+  constexpr std::uint32_t osxsave {1U << 27U};
+  constexpr std::uint32_t avx2    {1U << 5U};
+  constexpr std::uint32_t avx512f {1U << 16U};
+  EXPECT(decode_features(fma | osxsave, avx2 | avx512f, 0xe6U).avx2_fma);
+  EXPECT(decode_features(fma | osxsave, avx2 | avx512f, 0xe6U).avx512f);
+  EXPECT(!decode_features(fma | osxsave, avx2 | avx512f, 0x6U).avx512f); // the system saves no 512-bit state
+  EXPECT(!decode_features(fma | osxsave, avx2, 0x2U).avx2_fma);          // nor the 256-bit one
+  EXPECT(!decode_features(osxsave, avx2, 0x6U).avx2_fma);                // no FMA
+  EXPECT(!decode_features(fma | osxsave, 0U, 0xe6U).avx2_fma);           // no AVX2
+  EXPECT(numerical::detail::saved_state(0U) == 0U);                      // no OSXSAVE: no xgetbv
 }
 #endif

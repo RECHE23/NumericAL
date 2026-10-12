@@ -1660,14 +1660,16 @@ std::size_t get_num_threads()
     return numerical::max_threads();
 }
 
-bool set_amx(bool on)
+// The GEMM path as its code (numerical::gemm_path's value); a code past the last is the last.
+int limit_gemm_path_code(int code)
 {
-    return numerical::set_amx(on);
+    const int most {code < 0 ? 0 : (code > 3 ? 3 : code)};
+    return static_cast<int>(numerical::limit_gemm_path(static_cast<numerical::gemm_path>(most)));
 }
 
-bool amx_enabled()
+int gemm_path_code()
 {
-    return numerical::amx_enabled();
+    return static_cast<int>(numerical::gemm_path_in_use());
 }
 
 } // namespace
@@ -1701,8 +1703,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&set_num_threads>("set_num_threads",
                             "set_num_threads(n)\nCap the threads a kernel uses at n, the caller's included (0 lifts the cap).");
     m.def<&get_num_threads>("get_num_threads", "get_num_threads() -> int\nThe threads a kernel may use.");
-    m.def<&set_amx>("set_amx", "set_amx(on) -> bool\nTurn the Apple AMX path of float64 matrix products on or off; return whether it is now in use (never where the chip cannot run it).");
-    m.def<&amx_enabled>("amx_enabled", "amx_enabled() -> bool\nWhether float64 matrix products run on the Apple AMX.");
+    m.def<&limit_gemm_path_code>("_limit_gemm_path", "_limit_gemm_path(code) -> int\nThe path code now in use (see numerical.limit_gemm_path).");
+    m.def<&gemm_path_code>("_gemm_path", "_gemm_path() -> int\nThe path code float64 matrix products take.");
     m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
     m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe minimum-norm least-squares solution of a @ x ≈ b, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");

@@ -20,17 +20,75 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
+#include <atomic>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <memory>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include "parallel.hpp"
 #include "amx.hpp"
 #include "simd.hpp"
+#include "x86.hpp"
+
+namespace numerical {
+
+  /*!
+   * \brief The kernels a `double` matrix product can run on, from the most portable. Each is used only where the
+   *        processor has it: the AVX ones where `cpuid` reports them, the Apple AMX on an M1 to M4 chip whose
+   *        self-test passes (see x86.hpp and amx.hpp).
+   */
+  enum class gemm_path : std::uint8_t
+  {
+    portable = 0, //!< The compiler's vectors (16 bytes on x86-64 wheels), each product rounded before its sum.
+    avx2     = 1, //!< AVX2 with fused multiply-adds.
+    avx512   = 2, //!< AVX-512 with fused multiply-adds.
+    amx      = 3, //!< The Apple AMX coprocessor, fused multiply-adds.
+  };
+} // namespace numerical
 
 namespace numerical::detail {
+
+  //! \brief Whether \p path can run here.
+  [[nodiscard]] inline bool gemm_path_usable(gemm_path path) noexcept
+  {
+    switch (path) {
+#ifdef NUMERICAL_X86_COMPILED
+      case gemm_path::avx2:   return cpu_features().avx2_fma;
+      case gemm_path::avx512: return cpu_features().avx512f;
+#endif
+      case gemm_path::amx:    return amx_usable();
+      default:                return path == gemm_path::portable;
+    }
+  }
+
+  //! \brief The most capable path that can run here, \p most at the highest.
+  [[nodiscard]] inline gemm_path best_gemm_path(gemm_path most) noexcept
+  {
+    for (auto p {static_cast<int>(most)}; p > 0; --p) {
+      if (gemm_path_usable(static_cast<gemm_path>(p))) {
+        return static_cast<gemm_path>(p);
+      }
+    }
+    return gemm_path::portable;
+  }
+
+  //! \brief The path products take: the best one, until \ref numerical::limit_gemm_path sets another.
+  [[nodiscard]] inline std::atomic<gemm_path>& gemm_path_state() noexcept
+  {
+    static std::atomic<gemm_path> state {best_gemm_path(gemm_path::amx)};
+    return state;
+  }
+
+  //! \brief The path the next `double` product takes.
+  [[nodiscard]] inline gemm_path gemm_path_current() noexcept
+  {
+    return gemm_path_state().load(std::memory_order_relaxed);
+  }
 
   //! \brief The rows of C one register tile covers.
   inline constexpr std::size_t gemm_mr {4};
@@ -195,9 +253,10 @@ namespace numerical::detail {
   template <typename T>
   struct vector_tile_kernel
   {
-    static constexpr std::size_t mr    {gemm_mr};    //!< The tile's rows.
-    static constexpr std::size_t nr    {gemm_nr<T>}; //!< The tile's columns.
-    static constexpr std::size_t depth {gemm_kc};    //!< The panel depth.
+    static constexpr std::size_t mr         {gemm_mr};    //!< The tile's rows.
+    static constexpr std::size_t nr         {gemm_nr<T>}; //!< The tile's columns.
+    static constexpr std::size_t depth      {gemm_kc};    //!< The panel depth.
+    static constexpr std::size_t block_rows {gemm_mc};    //!< The rows of one task, a whole number of tiles.
 
     //! \brief Nothing to turn on around a task.
     struct session
@@ -233,8 +292,9 @@ namespace numerical::detail {
     static constexpr std::size_t nr {amx_nr}; //!< The tile's columns.
     //! \brief The panel depth: the AMX reads its operands from the L2 cache, where a deeper panel still fits, and
     //!        each panel loads and stores its tiles of C once.
-    static constexpr std::size_t depth {512};
-    using session = amx_session;              //!< The AMX on for a task.
+    static constexpr std::size_t depth      {512};
+    static constexpr std::size_t block_rows {gemm_mc}; //!< The rows of one task, a whole number of tiles.
+    using session = amx_session;                       //!< The AMX on for a task.
 
     //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc.
     static void tile(std::size_t   kc,
@@ -278,6 +338,87 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief The storage of a product's packed operands, kept by the calling thread from one product to the next.
+   *
+   * A fresh allocation of megabytes is mapped anew and faulted in page by page on every product (at order 512 on
+   * twenty x86-64 threads, a product took 3.6 times as long). Each operand starts a cache line, so a vector load
+   * of a packed row never straddles two (one in two did, which cost an AVX-512 product a fifth of its speed).
+   * The storage leaves the thread's keeping while a product uses it: a product nested in another on the same
+   * thread (a scalar whose arithmetic multiplies matrices) finds none kept and takes its own. Storage past
+   * \ref kept_limit is released, so one huge product holds no memory afterwards.
+   */
+  template <typename T>
+  class packing_storage
+  {
+  public:
+
+    //! \brief The most elements a thread keeps between products (32 MiB).
+    static constexpr std::size_t kept_limit {(std::size_t {32} << 20U) / sizeof(T)};
+
+    //! \brief Room for \p a_count packed elements of A and \p b_count of B.
+    packing_storage(std::size_t a_count,
+                    std::size_t b_count)
+      : storage_ {grown(std::exchange(kept(), std::vector<T> {}), a_count + padding + b_count + padding)},
+        a_ {aligned(storage_.data())},
+        b_ {aligned(storage_.data() + a_count + padding)}
+    {}
+
+    packing_storage(const packing_storage&)            = delete;
+    packing_storage& operator=(const packing_storage&) = delete;
+    packing_storage(packing_storage&&)                 = delete;
+    packing_storage& operator=(packing_storage&&)      = delete;
+
+    ~packing_storage()
+    {
+      kept() = storage_.size() <= kept_limit ? std::move(storage_) : std::vector<T> {};
+    }
+
+    //! \brief A's packed elements.
+    [[nodiscard]] T* a() const noexcept
+    {
+      return a_;
+    }
+
+    //! \brief B's packed elements.
+    [[nodiscard]] T* b() const noexcept
+    {
+      return b_;
+    }
+
+    //! \brief The storage this thread keeps between products.
+    [[nodiscard]] static std::vector<T>& kept() noexcept
+    {
+      thread_local std::vector<T> storage;
+      return storage;
+    }
+
+  private:
+
+    static constexpr std::size_t cache_line {64};
+    static constexpr std::size_t padding    {(cache_line / sizeof(T)) + 1}; //!< Elements enough to reach a line.
+
+    //! \brief \p storage with at least \p count elements (it only grows, so a reuse writes nothing).
+    [[nodiscard]] static std::vector<T> grown(std::vector<T> storage,
+                                              std::size_t    count)
+    {
+      storage.resize(std::max(storage.size(), count));
+      return storage;
+    }
+
+    //! \brief The first element of \p at's run that starts a cache line (or \p at's nearest element towards one,
+    //!        for an element whose size does not divide the allocator's alignment).
+    [[nodiscard]] static T* aligned(T* at) noexcept
+    {
+      const std::size_t miss {static_cast<std::size_t>(std::bit_cast<std::uintptr_t>(at) % cache_line)};
+      return at + (((cache_line - miss) % cache_line) / sizeof(T));
+    }
+
+    std::vector<T> storage_;
+    T*             a_;
+    T*             b_;
+  };
+
+  /*!
    * \brief The packed product with the tile \p Kernel computes: for each block of B's columns and each panel of
    *        the depth, both operands are packed (in parallel, by the blocks the product takes), then tasks of
    *        \ref gemm_mc rows by \ref gemm_slivers_per_task slivers of columns run in parallel, each writing a
@@ -295,44 +436,41 @@ namespace numerical::detail {
                    T*          c,
                    std::size_t ldc)
   {
-    constexpr std::size_t mr     {Kernel::mr};
-    constexpr std::size_t nr     {Kernel::nr};
-    constexpr std::size_t nc_max {nr * 128};
-    const std::size_t     a_rows {((m + mr) - 1) / mr * mr};
-    const std::size_t     b_cols {((std::min(nc_max, n) + nr) - 1) / nr * nr};
-    // Left unset: packing writes every element before a tile reads it (zeroing megabytes per call cost a
-    // tenth of a product of order 512).
-    const std::unique_ptr<T[]> a_packed {std::make_unique_for_overwrite<T[]>(a_rows * std::min(Kernel::depth, k))};
-    const std::unique_ptr<T[]> b_packed {std::make_unique_for_overwrite<T[]>(b_cols * std::min(Kernel::depth, k))};
+    constexpr std::size_t    mr     {Kernel::mr};
+    constexpr std::size_t    nr     {Kernel::nr};
+    constexpr std::size_t    nc_max {nr * 128};
+    const std::size_t        a_rows {((m + mr) - 1) / mr * mr};
+    const std::size_t        b_cols {((std::min(nc_max, n) + nr) - 1) / nr * nr};
+    const packing_storage<T> packed {a_rows * std::min(Kernel::depth, k), b_cols * std::min(Kernel::depth, k)};
     for (std::size_t jc {0}; jc < n; jc += nc_max) {
       const std::size_t nc      {std::min(nc_max, n - jc)};
       const std::size_t slivers {((nc + nr) - 1) / nr};
       for (std::size_t pc {0}; pc < k; pc += Kernel::depth) {
         const std::size_t kc         {std::min(Kernel::depth, k - pc)};
-        const std::size_t row_blocks {((m + gemm_mc) - 1) / gemm_mc};
+        const std::size_t row_blocks {((m + Kernel::block_rows) - 1) / Kernel::block_rows};
         const std::size_t groups     {((slivers + gemm_slivers_per_task) - 1) / gemm_slivers_per_task};
         // One pass packs both: B's groups of slivers first, then A's row blocks.
-        parallel_for(groups + row_blocks, gemm_mc * kc, [&](std::size_t piece) {
+        parallel_for(groups + row_blocks, Kernel::block_rows * kc, [&](std::size_t piece) {
                        if (piece < groups) {
                          const std::size_t jr    {piece * gemm_slivers_per_task * nr};
                          const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
-                         gemm_pack_b<nr>(b + (pc * ldb) + jc + jr, ldb, kc, width, b_packed.get() + (jr * kc));
+                         gemm_pack_b<nr>(b + (pc * ldb) + jc + jr, ldb, kc, width, packed.b() + (jr * kc));
                        }
                        else {
-                         const std::size_t ic {(piece - groups) * gemm_mc};
-                         gemm_pack_a<mr>(a + (ic * lda) + pc, lda, std::min(gemm_mc, m - ic), kc, a_packed.get() + (ic * kc));
+                         const std::size_t ic {(piece - groups) * Kernel::block_rows};
+                         gemm_pack_a<mr>(a + (ic * lda) + pc, lda, std::min(Kernel::block_rows, m - ic), kc, packed.a() + (ic * kc));
                        }
                      });
-        parallel_for(row_blocks * groups, gemm_mc * gemm_slivers_per_task * nr * kc / gemm_kernel_speedup, [&](std::size_t task) {
-                       const std::size_t                   ic     {(task / groups) * gemm_mc};
+        parallel_for(row_blocks * groups, Kernel::block_rows * gemm_slivers_per_task * nr * kc / gemm_kernel_speedup, [&](std::size_t task) {
+                       const std::size_t                   ic     {(task / groups) * Kernel::block_rows};
                        const std::size_t                   first  {(task % groups) * gemm_slivers_per_task};
                        const std::size_t                   last   {std::min(first + gemm_slivers_per_task, slivers)};
-                       const std::size_t                   ic_end {std::min(ic + gemm_mc, m)};
+                       const std::size_t                   ic_end {std::min(ic + Kernel::block_rows, m)};
                        [[maybe_unused]] const typename Kernel::session on {};
                        for (std::size_t s {first}; s < last; ++s) {
                          const std::size_t jr {s * nr};
                          for (std::size_t ir {ic}; ir < ic_end; ir += mr) {
-                           Kernel::tile(kc, a_packed.get() + (ir * kc), b_packed.get() + (jr * kc), c + (ir * ldc) + jc + jr, ldc,
+                           Kernel::tile(kc, packed.a() + (ir * kc), packed.b() + (jr * kc), c + (ir * ldc) + jc + jr, ldc,
                                         std::min(mr, m - ir), std::min(nr, nc - jr));
                          }
                        }
@@ -340,6 +478,58 @@ namespace numerical::detail {
       }
     }
   }
+
+#ifdef NUMERICAL_X86_COMPILED
+  //! \brief The AVX-512 tile (\ref avx512_tile_f64): \ref avx512_mr × \ref avx512_nr elements of C in 24 registers.
+  struct avx512_tile_kernel
+  {
+    static constexpr std::size_t mr         {avx512_mr}; //!< The tile's rows.
+    static constexpr std::size_t nr         {avx512_nr}; //!< The tile's columns.
+    static constexpr std::size_t depth      {gemm_kc};   //!< The panel depth.
+    static constexpr std::size_t block_rows {96};        //!< The rows of one task, a whole number of tiles.
+
+    //! \brief Nothing to turn on around a task.
+    struct session
+    {};
+
+    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc.
+    static void tile(std::size_t   kc,
+                     const double* ap,
+                     const double* bp,
+                     double*       c,
+                     std::size_t   ldc,
+                     std::size_t   rows,
+                     std::size_t   cols) noexcept
+    {
+      avx512_tile_f64(kc, ap, bp, c, ldc, rows, cols);
+    }
+  };
+
+  //! \brief The AVX2 tile (\ref avx2_tile_f64): \ref avx2_mr × \ref avx2_nr elements of C in 12 registers.
+  struct avx2_tile_kernel
+  {
+    static constexpr std::size_t mr         {avx2_mr}; //!< The tile's rows.
+    static constexpr std::size_t nr         {avx2_nr}; //!< The tile's columns.
+    static constexpr std::size_t depth      {gemm_kc}; //!< The panel depth.
+    static constexpr std::size_t block_rows {72};      //!< The rows of one task, a whole number of tiles.
+
+    //! \brief Nothing to turn on around a task.
+    struct session
+    {};
+
+    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc.
+    static void tile(std::size_t   kc,
+                     const double* ap,
+                     const double* bp,
+                     double*       c,
+                     std::size_t   ldc,
+                     std::size_t   rows,
+                     std::size_t   cols) noexcept
+    {
+      avx2_tile_f64(kc, ap, bp, c, ldc, rows, cols);
+    }
+  };
+#endif
 
   //! \brief A product a faster path than the vector one takes, if any: none for this scalar.
   template <typename T>
@@ -357,7 +547,8 @@ namespace numerical::detail {
     return false;
   }
 
-  //! \brief A `double` product on the AMX, where it is in use (\ref amx_active). \return Whether it ran there.
+  //! \brief A `double` product on the path in use (\ref numerical::gemm_path_in_use), unless it is the portable one.
+  //!        \return Whether it ran there.
   [[nodiscard]] inline bool gemm_elsewhere(std::size_t   m,
                                            std::size_t   n,
                                            std::size_t   k,
@@ -368,12 +559,24 @@ namespace numerical::detail {
                                            double*       c,
                                            std::size_t   ldc)
   {
+    const gemm_path path {gemm_path_current()};
 #ifdef NUMERICAL_AMX_COMPILED
-    if (amx_active()) {
+    if (path == gemm_path::amx) {
       gemm_packed<amx_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
       return true;
     }
 #endif
+#ifdef NUMERICAL_X86_COMPILED
+    if (path == gemm_path::avx512) {
+      gemm_packed<avx512_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+    if (path == gemm_path::avx2) {
+      gemm_packed<avx2_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+#endif
+    (void)path;
     (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc;
     return false;
   }
@@ -412,5 +615,27 @@ namespace numerical::detail {
     }
   }
 } // namespace numerical::detail
+
+namespace numerical {
+
+  /*!
+   * \brief Keeps `double` matrix products on \p most or a more portable path: the most capable path at or below
+   *        it that can run here. `gemm_path::amx` restores the best one; `gemm_path::portable` keeps them on the
+   *        compiler's vectors, each product rounded before its sum.
+   * \return The path now in use.
+   */
+  inline gemm_path limit_gemm_path(gemm_path most) noexcept
+  {
+    const gemm_path path {detail::best_gemm_path(most)};
+    detail::gemm_path_state().store(path, std::memory_order_relaxed);
+    return path;
+  }
+
+  //! \brief The path `double` matrix products take.
+  [[nodiscard]] inline gemm_path gemm_path_in_use() noexcept
+  {
+    return detail::gemm_path_current();
+  }
+} // namespace numerical
 
 #endif // NUMERICAL_GEMM_HPP
