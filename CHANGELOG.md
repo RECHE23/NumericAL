@@ -17,7 +17,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   lengths are computed per pole and per vector in parallel, and the eigenvectors are put in ascending order row
   by row (they were gathered and written column by column, a stride of the whole order each). The same
   operations in the same order: the results are the same to the bit. Order 1024: i9-10900X 88 → 62 ms (137 →
-  113 on one thread), M1 Pro 64 → 42 ms.
+  113 on one thread), M1 Pro 64 → 42 ms. Each join's matrix product then skips the zeros of the halves'
+  block-diagonal eigenvectors, a product per half on the columns that reach it, as `dlaed3` multiplies them:
+  i9-10900X 123 → 105 ms on one thread.
 - **`eigh` and `svd` form their bases transposed**, as they return them: each block of reflectors is applied
   from the right to `Qᵀ` (or `Uᵀ`, `Vᵀ`), so that all three of its products have as many rows as the basis,
   where the block's few rows (32) made the first a product the kernel runs poorly; and no transposition is

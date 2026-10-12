@@ -32,6 +32,7 @@
 #include <numbers>
 #include <stdexcept>
 #include <string>
+#include <tuple>
 #include <type_traits>
 #include <utility>
 #include <vector>
@@ -1983,14 +1984,22 @@ namespace numerical {
      * Deflation first (`dlaed2`): a negligible `zⱼ` leaves `dⱼ` and its column as they are, and two nearly equal
      * poles are rotated so that one of them does. The remaining `k` roots are found by \ref secular_root, in
      * parallel; `z` is then recomputed from them (Löwner's formula, Gu and Eisenstat), so that the eigenvectors
-     * `(dⱼ − λᵢ)⁻¹ ẑⱼ` are orthogonal to working precision, and they reach `q` by one matrix product.
+     * `(dⱼ − λᵢ)⁻¹ ẑⱼ` are orthogonal to working precision, and they reach `q` by a matrix product per half:
+     * \p q is block diagonal, its first \p split columns zero below row \p split and the others above it, and
+     * only a deflating rotation mixes a column of each (`dlaed3` multiplies the halves apart the same way).
      */
     inline void merge_rank_one(std::vector<double>& d,
                                std::vector<double>  z,
                                double               rho,
                                std::vector<double>& q,
-                               std::size_t          n)
+                               std::size_t          n,
+                               std::size_t          split)
     {
+      // Which halves of the rows each column reaches: 1 the upper, 2 the lower.
+      std::vector<unsigned> reach(n);
+      for (std::size_t j {0}; j < n; ++j) {
+        reach[j] = j < split ? 1U : 2U;
+      }
       for (double& element : z) { // ‖z‖ = √2: the rows of two orthogonal matrices
         element /= std::numbers::sqrt2;
       }
@@ -2032,6 +2041,7 @@ namespace numerical {
             q[(r * n) + pending] = (c * x) + (s * y);
             q[(r * n) + j]       = (c * y) - (s * x);
           }
+          reach[j] = reach[pending] = reach[j] | reach[pending];
           const double rotated {(d[pending] * c * c) + (d[j] * s * s)};
           d[j]       = (d[pending] * s * s) + (d[j] * c * c);
           d[pending] = rotated;
@@ -2093,14 +2103,29 @@ namespace numerical {
                        u[(j * k) + i] /= length[i];
                      }
                    });
-      std::vector<double> kept_columns(n * k);
-      parallel_for(n, k, [&](std::size_t r) {
-                     for (std::size_t i {0}; i < k; ++i) {
-                       kept_columns[(r * k) + i] = q[(r * n) + kept[i]];
-                     }
-                   });
+      // updated = q(:, kept) · u, by halves of the rows: a half's rows take the kept columns that reach it, and
+      // u's rows for those, the others being zero there.
       std::vector<double> updated(n * k, 0.0);
-      gemm(n, k, k, kept_columns.data(), k, u.data(), k, updated.data(), k);
+      for (const auto& [half, first, rows] : {std::tuple {1U, std::size_t {0}, split}, std::tuple {2U, split, n - split}}) {
+        std::vector<std::size_t> reaching;
+        for (std::size_t i {0}; i < k; ++i) {
+          if ((reach[kept[i]] & half) != 0U) {
+            reaching.push_back(i);
+          }
+        }
+        const std::size_t   width {reaching.size()};
+        std::vector<double> columns(rows * width);
+        std::vector<double> factor(width * k);
+        parallel_for(rows, width, [&](std::size_t r) {
+                       for (std::size_t c {0}; c < width; ++c) {
+                         columns[(r * width) + c] = q[((first + r) * n) + kept[reaching[c]]];
+                       }
+                     });
+        for (std::size_t c {0}; c < width; ++c) {
+          std::copy_n(u.begin() + static_cast<std::ptrdiff_t>(reaching[c] * k), k, factor.begin() + static_cast<std::ptrdiff_t>(c * k));
+        }
+        gemm(rows, k, width, columns.data(), width, factor.data(), k, updated.data() + (first * k), k);
+      }
       // Every eigenpair, then by ascending eigenvalue: column j of the result is column source[j] of the
       // updated ones (below k) or deflated column source[j] − k of q, written row by row.
       std::vector<double> values(n);
@@ -2208,7 +2233,7 @@ namespace numerical {
         }
       }
       std::vector<double> values(d, d + n);
-      merge_rank_one(values, std::move(z), rho, q, n);
+      merge_rank_one(values, std::move(z), rho, q, n, n1);
       std::copy(values.begin(), values.end(), d);
     }
 
