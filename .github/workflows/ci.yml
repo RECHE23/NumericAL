@@ -115,3 +115,28 @@ jobs:
           test "$path" = avx512 || { echo "::error::the emulated processor runs the $path kernel, not avx512"; exit 1; }
           $sde build/numerical_tests_bin
           $sde python fuzz/linalg.py --cases 60
+
+  # The Python suite on arm64 Linux, built by GCC as the aarch64 wheels are. GCC fuses a multiply and an add
+  # wherever a fused multiply-add exists, across statements: a result held to NumPy's to the bit (linspace)
+  # differed there alone, which no x86-64 or Clang leg can see.
+  python-arm:
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: RECHE23/sciforge
+          ref: v2026.10.3
+          path: sciforge
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      - name: Build the extension with GCC
+        run: |
+          python -m pip install numpy setuptools wheel
+          CC=gcc CXX=g++ SCIFORGE_INCLUDE="$PWD/sciforge/include" python setup.py -q build_ext --inplace --force
+      - name: The Python suite against NumPy
+        env:
+          PYTHONPATH: python
+        run: python -m unittest discover -s python/tests

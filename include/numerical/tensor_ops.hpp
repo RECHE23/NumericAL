@@ -682,7 +682,11 @@ namespace numerical {
     std::vector<double> out(count);
     const double        step {count > 1 ? (stop - start) / static_cast<double>(count - 1) : 0.0};
     for (std::size_t i {0}; i < count; ++i) {
-      const double offset {static_cast<double>(i) * step}; // rounded before the sum, as NumPy's linspace
+      // The product rounded before the sum, as NumPy's linspace computes it in two operations. A compiler
+      // may fuse `i * step` into the addition after it (GCC does, across statements, wherever there is a
+      // fused multiply-add); a product computed by fma, `i * step - 0`, is exactly the rounded one, signed
+      // zero included, and no multiplication is left to fuse.
+      const double offset {std::fma(static_cast<double>(i), step, -0.0)};
       out[i] = start + offset;
     }
     if (count > 1) {

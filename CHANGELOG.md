@@ -128,6 +128,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   can keep the kernels to one thread each.
 
 ### Fixed
+- **`linspace` equals NumPy's to the bit on arm64 Linux too.** The aarch64 wheel (GCC) fused each `i · step`
+  into the addition after it, as GCC does across statements wherever a fused multiply-add exists: 19 of
+  `linspace(-2, 5)`'s 50 values differed in the last bit. The product is now computed rounded, by
+  `fma(i, step, -0)`, which no compiler can fuse. A CI leg runs the Python suite on arm64 Linux, built by GCC
+  as the wheels are.
 - **The thread cap holds**: under `set_num_threads(n)` (`set_max_threads`) a run takes the caller and at most
   `n − 1` workers (every worker joined every run, whatever the cap); at 1, and to answer `get_num_threads`, no
   thread is started. A process forked while the pool exists runs its kernels alone, rather than on workers it
