@@ -1870,6 +1870,22 @@ namespace numerical {
     };
 
     /*!
+     * \brief The smaller root `η` of `C η² − A η + B = 0`, in the form that does not cancel: a step of
+     *        \ref solve_secular's fit (shared by its instantiations, whose data reach one form or the other).
+     * \param[in] a `A`.
+     * \param[in] b `B`.
+     * \param[in] c `C`.
+     * \return `η`.
+     */
+    [[nodiscard]] inline double quadratic_step(double a,
+                                               double b,
+                                               double c)
+    {
+      const double root {std::sqrt(std::abs((a * a) - (4.0 * b * c)))};
+      return a <= 0.0 ? (a - root) / (2.0 * c) : (2.0 * b) / (a + root);
+    }
+
+    /*!
      * \brief Root \p i of `1/ρ + Σⱼ zⱼ²/(Pⱼ − x) = 0`, poles `P` strictly ascending, no `zⱼ` zero, `ρ > 0`, as
      *        LAPACK's `dlaed4` and `dlasd4` find it. The poles are given only as their offsets from one another,
      *        `offset(o, j) = Pⱼ − P_o`, which the caller computes accurately.
@@ -1943,10 +1959,7 @@ namespace numerical {
         const double c    {w - (a1 * dpsi) - (a2 * dphi)};
         const double a    {last ? (a1 * c) + (a1 * a1 * dpsi) : ((a1 + a2) * w) - (a1 * a2 * (dpsi + dphi))};
         const double b    {last ? 0.0 : a1 * a2 * w};
-        const double root {std::sqrt(std::abs((a * a) - (4.0 * b * c)))};
-        // The smaller root of the quadratic, in the form that does not cancel.
-        const double eta  {last ? a / c : (a <= 0.0 ? (a - root) / (2.0 * c) : (2.0 * b) / (a + root))};
-        const double next {tau + eta};
+        const double next {tau + (last ? a / c : quadratic_step(a, b, c))};
         // A step out of the bracket (or not a number): bisect. The test above stops within a few units in the
         // last place of the root, before the bracket runs out of points.
         tau = next > lower && next < upper ? next : (lower + upper) / 2.0;
