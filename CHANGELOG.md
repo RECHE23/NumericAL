@@ -33,10 +33,13 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **`lstsq` answers by one QR factorisation where the rank is surely full**: `R⁻¹` gives a bound on the
   condition number, `‖R‖_F ‖R⁻¹‖_F`, and where it stays a hundred times under the reciprocal of NumPy's rank
   tolerance, `X = R⁻¹ Qᴴ B` (or `Q R⁻ᴴ B`, from a QR of `Aᴴ`, for a wide `A`) is the singular value
-  decomposition's solution to rounding; elsewhere the decomposition decides, as before. The solution differs
-  from 2026.10.4 in the last bits. M1 Pro: 256 × 256 12.7 → 2.9 ms (NumPy with Accelerate: 7.1), 2000 × 1000
-  353 → 127 ms (208), 500 × 1000 87 → 28 ms (42). i9-10900X: 2000 × 1000 667 → 274 ms (NumPy with OpenBLAS:
-  239), 500 × 1000 121 → 53 ms (68); 4000 × 200 69 → 64 ms (33: the QR of a tall, narrow matrix is slow).
+  decomposition's solution to rounding; elsewhere the decomposition decides, as before. `Q` is never formed: its
+  blocks of reflectors are applied to `B`. The solution differs from 2026.10.4 in the last bits. M1 Pro:
+  256 × 256 12.7 → 2.0 ms (NumPy with Accelerate: 7.1), 2000 × 1000 353 → 87 ms (208), 500 × 1000 87 → 20 ms
+  (42), 4000 × 200 48 → 27 ms (23). i9-10900X: 256 × 256 21 → 4.8 ms (NumPy with OpenBLAS: 11.6), 2000 × 1000
+  667 → 167 ms (239), 500 × 1000 121 → 31 ms (68), 4000 × 200 69 → 38 ms (33).
+- **QR reflects each panel in a column-major copy**, where a reflector meets each column at unit stride (row by
+  row, each row's part of the 32-column panel was a call of its own): QR 8–12 % faster on M1 Pro.
 - **Complex products run on the real kernel** past the portable path (AVX2, AVX-512, AMX): one real product
   of twice the order, `[Re A | −Im A]·[[Re B, Im B], [Im B, −Re B]]`, by blocks of 512 columns and 256 of depth,
   where the complex tile was scalar and single-threaded in effect. Each element sums the products of A's real

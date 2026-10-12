@@ -1187,6 +1187,44 @@ namespace numerical {
       }
     }
 
+    //! \brief The reflections of a Householder QR, `Q` left as its blocks of reflectors.
+    template <typename T>
+    struct qr_reflections
+    {
+      std::vector<T>                  r;      //!< `R`, `k × cols` upper trapezoidal, its diagonal as it comes.
+      std::vector<reflector_block<T>> blocks; //!< `Q = H₀ H₁ …`, block by block of \ref qr_block reflectors.
+    };
+
+    /*!
+     * \brief The reflections of \ref householder_qr, without forming `Q`: `A = Q R` with `Q` the product of the
+     *        blocks' reflectors applied to the first `k = min(rows, cols)` columns of the identity, `R`'s diagonal
+     *        not yet made real (a product with `Qᴴ`, or with `Q` of a block padded with zeros, applies the blocks
+     *        instead).
+     */
+    template <typename T>
+    [[nodiscard]] qr_reflections<T> householder_reflect(std::vector<T> a,
+                                                        std::size_t    rows,
+                                                        std::size_t    cols)
+    {
+      const std::size_t           depth {std::min(rows, cols)};
+      std::vector<std::vector<T>> reflectors(depth); // v_k on rows k…m-1; empty where the column was zero
+      qr_reflections<T>           out   {.r = std::vector<T>(depth * cols, T {}), .blocks = {}};
+      for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
+        const std::size_t k1 {std::min(k0 + qr_block, depth)};
+        factor_qr_panel(a, rows, cols, reflectors, k0, k1);
+        out.blocks.push_back(gather_reflectors(reflectors, k0, k1, rows));
+        if (k1 < cols) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A
+          apply_reflector_block(out.blocks.back(), true, a, cols, k1, cols);
+        }
+      }
+      for (std::size_t i {0}; i < depth; ++i) {
+        for (std::size_t j {i}; j < cols; ++j) {
+          out.r[(i * cols) + j] = a[(i * cols) + j];
+        }
+      }
+      return out;
+    }
+
     /*!
      * \brief Factorises the `rows × cols` row-major \p a by Householder reflections, `A = Q R` with
      *        `k = min(rows, cols)`: `Q` is `rows × k` with orthonormal columns and `R` `k × cols` upper
@@ -1207,28 +1245,16 @@ namespace numerical {
                                             std::size_t    rows,
                                             std::size_t    cols)
     {
-      const std::size_t               depth {std::min(rows, cols)};
-      std::vector<std::vector<T>>     reflectors(depth); // v_k on rows k…m-1; empty where the column was zero
-      std::vector<reflector_block<T>> blocks;
-      for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
-        const std::size_t k1 {std::min(k0 + qr_block, depth)};
-        factor_qr_panel(a, rows, cols, reflectors, k0, k1);
-        blocks.push_back(gather_reflectors(reflectors, k0, k1, rows));
-        if (k1 < cols) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A
-          apply_reflector_block(blocks.back(), true, a, cols, k1, cols);
-        }
-      }
-      thin_qr<T> out {.q = std::vector<T>(rows * depth, T {}), .r = std::vector<T>(depth * cols, T {})};
+      const std::size_t depth   {std::min(rows, cols)};
+      qr_reflections<T> factors {householder_reflect(std::move(a), rows, cols)};
+      thin_qr<T>        out     {.q = std::vector<T>(rows * depth, T {}), .r = std::move(factors.r)};
       for (std::size_t i {0}; i < depth; ++i) {
         out.q[(i * depth) + i] = T {1};
-        for (std::size_t j {i}; j < cols; ++j) {
-          out.r[(i * cols) + j] = a[(i * cols) + j];
-        }
       }
-      for (std::size_t b {blocks.size()}; b-- > 0;) { // Q = H₀ H₁ … applied to the first columns of I
-        apply_reflector_block(blocks[b], false, out.q, depth, blocks[b].first, depth);
+      for (std::size_t b {factors.blocks.size()}; b-- > 0;) { // Q = H₀ H₁ … applied to the first columns of I
+        apply_reflector_block(factors.blocks[b], false, out.q, depth, factors.blocks[b].first, depth);
       }
-      for (std::size_t k {0}; k < depth; ++k) {       // R's diagonal real and non-negative: rotate row k, column k
+      for (std::size_t k {0}; k < depth; ++k) {               // R's diagonal real and non-negative: rotate row k, column k
         const T phase {phase_of(out.r[(k * cols) + k])};
         for (std::size_t j {k}; j < cols; ++j) {
           out.r[(k * cols) + j] *= conj_of(phase);
@@ -3882,10 +3908,10 @@ namespace numerical {
           }
         }
       }
-      const thin_qr<T>     factors         {householder_qr(std::move(entries), rows, cols)};
-      const std::vector<T> inverse         {upper_inverse(factors.r, cols)};
-      double               r_squares       {0.0};
-      double               inverse_squares {0.0};
+      const qr_reflections<T> factors         {householder_reflect(std::move(entries), rows, cols)};
+      const std::vector<T>    inverse         {upper_inverse(factors.r, cols)};
+      double                  r_squares       {0.0};
+      double                  inverse_squares {0.0};
       for (std::size_t e {0}; e < cols * cols; ++e) {
         r_squares       += static_cast<double>(std::norm(factors.r[e]));
         inverse_squares += static_cast<double>(std::norm(inverse[e]));
@@ -3894,19 +3920,21 @@ namespace numerical {
       if (!(condition * rank_tolerance(1.0, m, n) * qr_rank_margin < 1.0)) {
         return std::nullopt;
       }
-      const std::size_t k             {b.cols()};
-      std::vector<T>    y(cols * k, T {});
-      std::vector<T>    x(n * k, T    {});
-      if (wide) { // x = Q R⁻ᴴ B
+      const std::size_t k          {b.cols()};
+      std::vector<T>    x(n * k, T {});
+      if (wide) { // x = Q [R⁻ᴴ B; 0]: the blocks applied last first
         const matrix<T>      inverse_adjoint {adjoint(matrix<T> {cols, cols, inverse})};
         const std::vector<T> right(b.begin(), b.end());
-        gemm(cols, k, cols, &*inverse_adjoint.begin(), cols, right.data(), k, y.data(), k);
-        gemm(n, k, cols, factors.q.data(), cols, y.data(), k, x.data(), k);
+        gemm(cols, k, cols, &*inverse_adjoint.begin(), cols, right.data(), k, x.data(), k);
+        for (std::size_t block {factors.blocks.size()}; block-- > 0;) {
+          apply_reflector_block(factors.blocks[block], false, x, k, 0, k);
+        }
       }
-      else { // x = R⁻¹ Qᴴ B
-        const matrix<T>      q_adjoint {adjoint(matrix<T> {rows, cols, factors.q})};
-        const std::vector<T> right(b.begin(), b.end());
-        gemm(cols, k, rows, &*q_adjoint.begin(), rows, right.data(), k, y.data(), k);
+      else { // x = R⁻¹ times the first rows of Qᴴ B: the blocks' adjoints applied first first
+        std::vector<T> y(b.begin(), b.end());
+        for (const reflector_block<T>& block : factors.blocks) {
+          apply_reflector_block(block, true, y, k, 0, k);
+        }
         gemm(n, k, cols, inverse.data(), cols, y.data(), k, x.data(), k);
       }
       for (T& value : x) {
