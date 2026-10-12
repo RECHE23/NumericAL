@@ -6,6 +6,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **A dot product (`einsum("i,i->")`) runs on vectors and every core**: chunks of 16 384 elements in parallel,
+  each by several vector accumulators (AVX-512 or AVX2 for `float64` on x86-64), their sums added in the chunks'
+  order: the same on any number of threads, no longer the ascending sum in the last bits. M1 Pro, from Python
+  on Tensors: 100 000 elements 168 → 20 µs (NumPy's `dot`: 20, `einsum`: 63), 1 000 000 elements 1.68 ms →
+  65 µs (NumPy's `dot`: 244). NumPy arrays passed in are copied into Tensors first (some 0.5 ms a million
+  elements), as before.
+
 ### Fixed
 - **The x86-64 kernels align the buffers they store whole registers into.** GCC 14, in C++20 under the address
   sanitizer, stored a register into an 8-byte-aligned buffer as if 64-byte-aligned: complex `eigh` crashed on an

@@ -150,6 +150,34 @@ TEST(einsum_dot_product_yields_a_scalar)
   EXPECT_EQ(r.data()[0], 14); // 1 + 4 + 9
 }
 
+// A dot product of several chunks of numerical::detail::dot_chunk elements: whole numbers keep every partial sum
+// exact, so any order gives the ascending sum; values that round give the same bits on one thread as on all of them.
+TEST(einsum_dot_product_sums_by_fixed_chunks)
+{
+  const std::size_t   n {(3 * numerical::detail::dot_chunk) + 77};
+  std::vector<double> whole(n);
+  std::vector<double> other(n);
+  std::vector<double> rough(n);
+  double              exact {0.0};
+  for (std::size_t i {0}; i < n; ++i) {
+    whole[i]  = static_cast<double>(i % 7) - 3.0;
+    other[i]  = static_cast<double>((i % 5) + 1);
+    rough[i]  = 1.0 / static_cast<double>(i + 3);
+    exact    += whole[i] * other[i];
+  }
+  const tensor<double> tw {{n}, whole};
+  const tensor<double> to {{n}, other};
+  const tensor<double> tr {{n}, rough};
+  EXPECT(einsum("i,i->", tw, to).data()[0] == exact);
+  const double all        {einsum("i,i->", tr, to).data()[0]};
+  numerical::set_max_threads(1);
+  const double one        {einsum("i,i->", tr, to).data()[0]};
+  numerical::set_max_threads(0);
+  EXPECT(all == one);
+  const tensor<double> empty {{std::size_t {0}}, std::vector<double> {}};
+  EXPECT(einsum("i,i->", empty, empty).data()[0] == 0.0);
+}
+
 TEST(einsum_transpose_and_mixed_case_labels)
 {
   const matrix<int> m        {{1, 2, 3}, {4, 5, 6}};

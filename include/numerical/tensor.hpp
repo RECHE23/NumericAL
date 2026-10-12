@@ -14,7 +14,8 @@
  * operands. Each single letter is an index label; a label shared by several axes
  * ties them together; a label absent from the output is summed over. Labels are
  * ASCII letters. Summation runs in a deterministic order (labels sorted
- * ascending), so results are reproducible.
+ * ascending), so results are reproducible; a plain dot product (`"i,i->"`) sums in a fixed vectorised order
+ * instead, the same on any number of threads (`detail::chunked_dot`).
  */
 #ifndef NUMERICAL_TENSOR_HPP
 #define NUMERICAL_TENSOR_HPP
@@ -231,6 +232,36 @@ namespace numerical {
       return tensor<T> {std::move(out_shape), std::move(c)};
     }
 
+    //! \brief The elements of one partial sum of `chunked_dot`: fixed, so the sum does not depend on the threads.
+    inline constexpr std::size_t dot_chunk {std::size_t {1} << 14U};
+
+    /*!
+     * \brief `Σ a[i] · b[i]` for a plain dot product: chunks of \ref dot_chunk elements in parallel, each by
+     *        \ref dot_product (several vector accumulators, on the widest x86-64 units for `double`), their sums
+     *        added in the chunks' order. The same on any number of threads; in the last bits, not the ascending
+     *        sum, which waits on each addition before the next (ten times slower at 100 000 elements).
+     */
+    template <typename T>
+    [[nodiscard]] T chunked_dot(const T*    a,
+                                const T*    b,
+                                std::size_t count)
+    {
+      const std::size_t chunks {(count + dot_chunk - 1) / dot_chunk};
+      if (chunks <= 1) {
+        return dot_product(a, b, count);
+      }
+      std::vector<T> partial(chunks);
+      parallel_for(chunks, dot_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * dot_chunk};
+                     partial[c] = dot_product(a + first, b + first, std::min(dot_chunk, count - first));
+                   });
+      T total {};
+      for (const T& sum : partial) {
+        total += sum;
+      }
+      return total;
+    }
+
     //! \brief Evaluates a parsed einsum over its operands. \see numerical::einsum
     //!
     //! After parsing and the consistency checks, the contraction runs over a
@@ -372,12 +403,11 @@ namespace numerical {
             cols *= sizes.at(s1[k]);
             out_shape.push_back(sizes.at(s1[k]));
           }
-          // Tiling pays off only when there is an output to amortise it over; a
-          // 1×1 result (a plain dot) is left to the general engine's tight loop.
           if (rows * cols > 1) {
             return tile_gemm<T>(operands[0]->data(), operands[1]->data(),
                                 rows, inner, cols, std::move(out_shape));
           }
+          return tensor<T> {std::move(out_shape), std::vector<T> {chunked_dot(operands[0]->data().data(), operands[1]->data().data(), inner)}};
         }
       }
 
