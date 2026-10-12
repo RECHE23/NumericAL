@@ -253,7 +253,8 @@ namespace {
   constexpr std::array<numerical::eigen_method, 3> eigen_methods {numerical::eigen_method::divide_and_conquer,
                                                                   numerical::eigen_method::tridiagonal_ql,
                                                                   numerical::eigen_method::jacobi};
-  constexpr std::array<numerical::svd_method, 2>   svd_methods   {numerical::svd_method::bidiagonal_qr,
+  constexpr std::array<numerical::svd_method, 3>   svd_methods   {numerical::svd_method::divide_and_conquer,
+                                                                  numerical::svd_method::bidiagonal_qr,
                                                                   numerical::svd_method::jacobi};
 }
 
@@ -1238,4 +1239,87 @@ TEST(the_secular_equation_bounds_its_iterations)
   const std::vector<double> z {0.6, 0.48, 0.64};
   std::vector<double>       delta(3);
   EXPECT_THROWS((void)numerical::detail::secular_root(d, z, 1.0, 0, 1, delta.data()), numerical::convergence_error);
+}
+
+namespace {
+
+  // Divide and conquer against implicit-shift QR on one matrix: the same singular values, orthonormal vectors,
+  // and the matrix rebuilt, each to a few rounding errors of its order.
+  template <typename T>
+  bool svd_divide_and_conquer_agrees(const matrix<T>& a)
+  {
+    const double                tolerance {1e-12};
+    const svd_decomposition<T>  fast      {a, numerical::svd_method::divide_and_conquer};
+    const svd_decomposition<T>  qr        {a, numerical::svd_method::bidiagonal_qr};
+    return approx_equal(fast.singular_values(), qr.singular_values(), tolerance) && orthonormality_error(fast.u()) < tolerance
+           && orthonormality_error(fast.v()) < tolerance && approx_equal(reconstruct(fast), a, tolerance);
+  }
+} // namespace
+
+// Past the order QR handles alone, so the halves merge (and a half with an extra column is squared by
+// rotations first): a dense matrix; one whose bidiagonal has zeros on its diagonal (values near the zero pole,
+// rotated into it); repeated singular values under a small coupling (close values rotated together); a
+// rank-deficient one (negligible weights); and a complex one.
+TEST(svd_divide_and_conquer_merges_and_deflates)
+{
+  const std::size_t   n {150};
+  std::vector<double> dense(n * n);
+  std::vector<double> repeated(n * n, 0.0);
+  std::vector<double> deficient(n * n);
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {0}; j < n; ++j) {
+      dense[(i * n) + j]     = std::sin(static_cast<double>((i + 1) * (j + 2)));
+      deficient[(i * n) + j] = (std::cos(static_cast<double>(i)) * std::sin(static_cast<double>(j)))
+                               + (std::sin(static_cast<double>(2 * i)) * std::cos(static_cast<double>(3 * j)));
+      repeated[(i * n) + j]  = (i == j ? static_cast<double>(1 + (i % 3)) : 0.0) + 1e-4;
+    }
+  }
+  EXPECT(svd_divide_and_conquer_agrees(matrix<double> {n, n, dense}));
+  EXPECT(svd_divide_and_conquer_agrees(matrix<double> {n, n, repeated}));
+  EXPECT(svd_divide_and_conquer_agrees(matrix<double> {n, n, deficient}));
+  std::vector<double> d(n);
+  std::vector<double> e(n);
+  for (std::size_t i {0}; i < n; ++i) {
+    d[i] = i % 5 == 2 ? 0.0 : std::cos(static_cast<double>(i));
+    e[i] = i + 1 < n ? 1.0 / static_cast<double>(i + 2) : 0.0;
+  }
+  std::vector<double> sigma;
+  std::vector<double> u;
+  std::vector<double> v;
+  numerical::detail::bidiagonal_divide(d.data(), e.data(), n, 0, sigma, u, v);
+  double worst {0.0}; // B v_j − σ_j u_j
+  for (std::size_t j {0}; j < n; ++j) {
+    for (std::size_t i {0}; i < n; ++i) {
+      const double product {(d[i] * v[(i * n) + j]) + (i + 1 < n ? e[i] * v[((i + 1) * n) + j] : 0.0)};
+      worst = std::max(worst, std::abs(product - (sigma[j] * u[(i * n) + j])));
+    }
+  }
+  EXPECT(worst < 1e-13);
+  EXPECT(std::ranges::is_sorted(sigma));
+  // A row with neither entry at a split of a half with an extra column (no weight on either null vector), and a
+  // leaf whose extra column and last diagonal entry are both zero (nothing to rotate).
+  const std::size_t   r {70};
+  std::vector<double> rd(r);
+  std::vector<double> re(r);
+  for (std::size_t i {0}; i < r; ++i) {
+    rd[i] = i == 16 || i == 17 ? 0.0 : std::cos(static_cast<double>(i));
+    re[i] = i == 16 || i == 17 || i + 1 == r ? 0.0 : 1.0 / static_cast<double>(i + 2);
+  }
+  numerical::detail::bidiagonal_divide(rd.data(), re.data(), r, 0, sigma, u, v);
+  worst = 0.0;
+  for (std::size_t j {0}; j < r; ++j) {
+    for (std::size_t i {0}; i < r; ++i) {
+      const double product {(rd[i] * v[(i * r) + j]) + (i + 1 < r ? re[i] * v[((i + 1) * r) + j] : 0.0)};
+      worst = std::max(worst, std::abs(product - (sigma[j] * u[(i * r) + j])));
+    }
+  }
+  EXPECT(worst < 1e-13);
+  EXPECT(orthonormality_error(matrix<double> {r, r, u}) < 1e-13 && orthonormality_error(matrix<double> {r, r, v}) < 1e-13);
+  using c = std::complex<double>;
+  const std::size_t m {60};
+  std::vector<c>    z(m * (m + 7));
+  for (std::size_t i {0}; i < z.size(); ++i) {
+    z[i] = c {std::sin(static_cast<double>(i)), std::cos(static_cast<double>(3 * i))};
+  }
+  EXPECT(svd_divide_and_conquer_agrees(matrix<c> {m, m + 7, z}));
 }

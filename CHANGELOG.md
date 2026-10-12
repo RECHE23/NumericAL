@@ -68,6 +68,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   `symmetric_eigen` (`eigen_method::divide_and_conquer`; implicit QL stays as `tridiagonal_ql`) and for
   `hermitian_eigen`; up to order 32, QL alone, as before. M1 Pro, float64, order 512: 54 → 40 ms (Accelerate
   26), the tridiagonal step 30 → 7.5 ms.
+- **`svd` decomposes the bidiagonal by divide and conquer**, as LAPACK's `dgesdd`: a bidiagonal splits at a
+  row into two with an extra column each side, whose null vectors rotate into one, and the arrow left in the
+  middle is decomposed through its secular equation (solved in the squares from the nearer pole, so that both
+  `d − σ` and `d + σ` are accurate) and Löwner's formula. The default (`svd_method::divide_and_conquer`;
+  implicit-shift QR stays as `bidiagonal_qr`). M1 Pro, float64, order 512: 108 → 88 ms (Accelerate 49), the
+  bidiagonal step 45 → 9.
 - **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses. M1 Pro,
   8 threads, GFLOPS against Accelerate's: order 2048 423 (383), 1024 395 (388), 512 277 (431), 256 209 (282);
   the vector units gave 204, 207, 178 and 145. One core: 160–180 (was 41).

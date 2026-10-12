@@ -1668,44 +1668,57 @@ namespace numerical {
     //!        a non-convergence into an error instead of a hang.
     inline constexpr std::size_t secular_iterations {100};
 
+    //! \brief A root of a secular equation: the pole it was sought from, and its offset from that pole.
+    struct secular_solution
+    {
+      std::size_t origin; //!< The pole.
+      double      offset; //!< The root minus the pole.
+    };
+
     /*!
-     * \brief Root \p i of the secular equation `1/ρ + Σⱼ zⱼ²/(dⱼ − λ) = 0` (`d` strictly ascending, `‖z‖ = 1`,
-     *        no `zⱼ` zero, `ρ > 0`), the `i`-th eigenvalue of `diag(d) + ρ z zᵀ`, as LAPACK's `dlaed4`.
+     * \brief Root \p i of `1/ρ + Σⱼ zⱼ²/(Pⱼ − x) = 0`, poles `P` strictly ascending, no `zⱼ` zero, `ρ > 0`, as
+     *        LAPACK's `dlaed4` and `dlasd4` find it. The poles are given only as their offsets from one another,
+     *        `offset(o, j) = Pⱼ − P_o`, which the caller computes accurately.
      *
-     * The root lies in `(dᵢ, dᵢ₊₁)`, or in `(d_{k-1}, d_{k-1} + ρ]` for the last. It is sought as `λ = d_o + τ`
-     * from the nearer end `d_o`, so that every `dⱼ − λ = (dⱼ − d_o) − τ` is computed with a small relative
-     * error, which keeps the eigenvectors orthogonal. Each step fits the equation with its two nearest poles
+     * The root lies in `(Pᵢ, Pᵢ₊₁)`, or for the last within `2ρ‖z‖²` past its pole. It is sought as an offset `τ`
+     * from the nearer end `P_o`, so that every `Pⱼ − x = offset(o, j) − τ` is computed with a small relative error,
+     * which keeps the vectors built from them orthogonal. Each step fits the equation with its two nearest poles
      * (Gragg's) and falls back to bisection when the fit leaves the bracket, which shrinks at every step.
-     * \param[in]  d              The poles.
      * \param[in]  z              The weights.
      * \param[in]  rho            `ρ`.
      * \param[in]  i              The root.
      * \param[in]  max_iterations The bound on the steps.
-     * \param[out] delta          `dⱼ − λ` for every `j` (size `d.size()`).
-     * \return `λ`.
+     * \param[out] delta          `Pⱼ − x` for every `j` (size `z.size()`).
+     * \param[in]  offset         The pole offsets.
+     * \return The pole and the root's offset from it.
      * \throws convergence_error If the root is not reached within \p max_iterations steps.
      */
-    [[nodiscard]] inline double secular_root(const std::vector<double>& d,
-                                             const std::vector<double>& z,
-                                             double                     rho,
-                                             std::size_t                i,
-                                             std::size_t                max_iterations,
-                                             double*                    delta)
+    template <typename Offset>
+    [[nodiscard]] secular_solution solve_secular(const std::vector<double>& z,
+                                                 double                     rho,
+                                                 std::size_t                i,
+                                                 std::size_t                max_iterations,
+                                                 double*                    delta,
+                                                 const Offset&              offset)
     {
-      const std::size_t k      {d.size()};
+      const std::size_t k      {z.size()};
       const double      rhoinv {1.0 / rho};
       const bool        last   {i + 1 == k};
-      std::size_t       origin {i};
-      double            lower  {0.0};
-      double            upper  {2.0 * rho}; // the last root is at most ρ past its pole: the equation is positive here
+      double            weight {0.0};
+      for (const double element : z) {
+        weight += element * element;
+      }
+      std::size_t origin {i};
+      double      lower  {0.0};
+      double      upper  {2.0 * rho * weight}; // the last root is at most ρ‖z‖² past its pole: the equation is positive here
       if (!last) {
-        const double gap {d[i + 1] - d[i]};
+        const double gap {offset(i, i + 1)};
         double       f   {rhoinv};
         for (std::size_t j {0}; j < k; ++j) {
-          f += z[j] * z[j] / ((d[j] - d[i]) - (gap / 2.0));
+          f += z[j] * z[j] / (offset(i, j) - (gap / 2.0));
         }
         upper = gap / 2.0;
-        if (f < 0.0) { // the root is nearer d[i + 1]
+        if (f < 0.0) { // the root is nearer the pole past it
           origin = i + 1;
           lower  = -gap / 2.0;
           upper  = 0.0;
@@ -1718,7 +1731,7 @@ namespace numerical {
         double phi  {0.0}; // those of the poles past i
         double dphi {0.0};
         for (std::size_t j {0}; j < k; ++j) {
-          delta[j] = (d[j] - d[origin]) - tau;
+          delta[j] = offset(origin, j) - tau;
           const double t {z[j] / delta[j]};
           (j <= i ? psi : phi)   += z[j] * t;
           (j <= i ? dpsi : dphi) += t * t;
@@ -1726,9 +1739,9 @@ namespace numerical {
         const double w {rhoinv + psi + phi};
         if (std::abs(w) <= std::numeric_limits<double>::epsilon()
             * ((8.0 * (phi - psi + rhoinv)) + (3.0 * std::abs(tau) * (dpsi + dphi)))) {
-          return d[origin] + tau;
+          return {.origin = origin, .offset = tau};
         }
-        (w < 0.0 ? lower : upper) = tau; // the equation increases with λ
+        (w < 0.0 ? lower : upper) = tau; // the equation increases with x
         // The fit c + s₁/(δᵢ − η) + s₂/(δᵢ₊₁ − η) matching the value and the slope of each side: C η² − A η + B = 0
         // (the last root has no pole to its right: its δᵢ₊₁ term is absent, A = δᵢ w − δᵢ² ψ' over C = w − δᵢ ψ').
         const double a1   {delta[i]};
@@ -1744,7 +1757,30 @@ namespace numerical {
         // last place of the root, before the bracket runs out of points.
         tau = next > lower && next < upper ? next : (lower + upper) / 2.0;
       }
-      throw convergence_error("eigendecomposition: the secular equation did not converge");
+      throw convergence_error("the secular equation did not converge");
+    }
+
+    /*!
+     * \brief Root \p i of `1/ρ + Σⱼ zⱼ²/(dⱼ − λ) = 0` (`d` strictly ascending, `‖z‖ = 1`), the `i`-th eigenvalue
+     *        of `diag(d) + ρ z zᵀ`, by \ref solve_secular.
+     * \param[in]  d              The poles.
+     * \param[in]  z              The weights.
+     * \param[in]  rho            `ρ`.
+     * \param[in]  i              The root.
+     * \param[in]  max_iterations The bound on the steps.
+     * \param[out] delta          `dⱼ − λ` for every `j`.
+     * \return `λ`.
+     */
+    [[nodiscard]] inline double secular_root(const std::vector<double>& d,
+                                             const std::vector<double>& z,
+                                             double                     rho,
+                                             std::size_t                i,
+                                             std::size_t                max_iterations,
+                                             double*                    delta)
+    {
+      const secular_solution root {solve_secular(z, rho, i, max_iterations, delta,
+                                                 [&d](std::size_t o, std::size_t j) { return d[j] - d[o]; })};
+      return d[root.origin] + root.offset;
     }
 
     /*!
@@ -1955,6 +1991,21 @@ namespace numerical {
       std::vector<double> values(d, d + n);
       merge_rank_one(values, std::move(z), rho, q, n);
       std::copy(values.begin(), values.end(), d);
+    }
+
+    //! \brief \p zt ← \p left · \p zt, `n × n`, row-major, for any other element type: the real factor converted.
+    template <typename T>
+    void multiply_real_left(const std::vector<double>& left,
+                            std::vector<T>&            zt,
+                            std::size_t                n)
+    {
+      std::vector<T> converted(n * n);
+      for (std::size_t i {0}; i < n * n; ++i) {
+        converted[i] = from_double<T>(left[i]);
+      }
+      std::vector<T> product(n * n, T {});
+      gemm(n, n, n, converted.data(), n, zt.data(), n, product.data(), n);
+      zt = std::move(product);
     }
 
     //! \brief \p zt ← \p left · \p zt, `n × n`, row-major, for a real left factor.
@@ -2656,13 +2707,414 @@ namespace numerical {
       }
       return matrix<T> {a.cols(), a.rows(), std::move(entries)};
     }
+
+    /*!
+     * \brief Singular value \p i of the arrow `M` whose first row is `z` and whose diagonal is `d` (`d₀ = 0`, `d`
+     *        strictly ascending): root `σ` of `1 + Σⱼ zⱼ²/(dⱼ² − σ²) = 0`, as LAPACK's `dlasd4`.
+     *
+     * Solved by \ref solve_secular in `μ = σ² − d_o²`, the poles' offsets `(dⱼ − d_o)(dⱼ + d_o)` computed from their
+     * two accurate factors, so that both `dⱼ − σ` and `dⱼ + σ` come out with small relative errors.
+     * \param[in]  d              The diagonal (the poles).
+     * \param[in]  z              The first row (the weights).
+     * \param[in]  i              The singular value.
+     * \param[in]  max_iterations The bound on the steps.
+     * \param[out] below          `dⱼ − σ` for every `j`.
+     * \param[out] above          `dⱼ + σ` for every `j`.
+     * \return `σ`.
+     */
+    [[nodiscard]] inline double singular_secular_root(const std::vector<double>& d,
+                                                      const std::vector<double>& z,
+                                                      std::size_t                i,
+                                                      std::size_t                max_iterations,
+                                                      double*                    below,
+                                                      double*                    above)
+    {
+      std::vector<double>    delta(d.size());
+      const secular_solution root  {solve_secular(z, 1.0, i, max_iterations, delta.data(), [&d](std::size_t o, std::size_t j) {
+                                                    return (d[j] - d[o]) * (d[j] + d[o]);
+                                                  })};
+      const double           pole  {d[root.origin]};
+      const double           shift {root.offset / (pole + std::sqrt((pole * pole) + root.offset))}; // σ − d_o from σ² − d_o²
+      for (std::size_t j {0}; j < d.size(); ++j) {
+        below[j] = (d[j] - pole) - shift;
+        above[j] = (d[j] + pole) + shift;
+      }
+      return pole + shift;
+    }
+
+    //! \brief Columns \p a and \p b of the row-major \p m (\p cols per row) rotated: `a ← c a + s b`, `b ← c b − s a`.
+    inline void rotate_columns(std::vector<double>& m,
+                               std::size_t          cols,
+                               std::size_t          a,
+                               std::size_t          b,
+                               double               c,
+                               double               s)
+    {
+      for (std::size_t r {0}; r < m.size() / cols; ++r) {
+        const double x {m[(r * cols) + a]};
+        const double y {m[(r * cols) + b]};
+        m[(r * cols) + a] = (c * x) + (s * y);
+        m[(r * cols) + b] = (c * y) - (s * x);
+      }
+    }
+
+    /*!
+     * \brief The singular value decomposition of the arrow `M` (first row `z`, diagonal `d`, `d₀ = 0`), carried into
+     *        the bases \p u (`n × n`) and \p v (`m × m`, its first `n` columns the arrow's; a last, null column
+     *        when `m = n + 1`), as LAPACK's `dlasd1`–`dlasd3`: on return \p d holds the singular values ascending
+     *        and \p u, \p v the singular vectors, \p v's null column last.
+     *
+     * Deflation first (`dlasd2`): a negligible `zⱼ` leaves `dⱼ` and its vectors as they are, a `dⱼ` near zero is
+     * rotated into the zero pole, and two nearly equal `dⱼ` are rotated together so that one of them deflates.
+     * The remaining roots are found by \ref singular_secular_root, in parallel; `z` is recomputed from them
+     * (Löwner's formula), so that the vectors are orthogonal to working precision, and they reach \p u and \p v by
+     * a matrix product each.
+     * \param[in,out] d          The diagonal; on return, the singular values.
+     * \param[in]     z          The first row.
+     * \param[in]     alpha,beta The entries the arrow was built from: they set the deflation tolerance.
+     * \param[in,out] u          The left basis; on return, the left singular vectors.
+     * \param[in,out] v          The right basis; on return, the right singular vectors.
+     * \param[in]     n          The arrow's order.
+     * \param[in]     m          The right basis's order (`n`, or `n + 1` with a null column).
+     */
+    inline void merge_arrow(std::vector<double>& d,
+                            std::vector<double>  z,
+                            double               alpha,
+                            double               beta,
+                            std::vector<double>& u,
+                            std::vector<double>& v,
+                            std::size_t          n,
+                            std::size_t          m)
+    {
+      std::vector<std::size_t> order(n - 1);
+      for (std::size_t j {1}; j < n; ++j) {
+        order[j - 1] = j;
+      }
+      std::sort(order.begin(), order.end(), [&d](std::size_t x, std::size_t y) { return d[x] < d[y]; });
+      double largest {std::max(std::abs(alpha), std::abs(beta))};
+      for (const double value : d) {
+        largest = std::max(largest, value);
+      }
+      const double tolerance {8.0 * std::numeric_limits<double>::epsilon() * largest};
+      if (std::abs(z[0]) <= tolerance) {
+        z[0] = tolerance; // the zero pole keeps a weight: the arrow moves by no more than the tolerance
+      }
+      std::vector<std::size_t> kept    {0}; // by ascending d, the zero pole first
+      std::vector<std::size_t> deflated;    // the columns that keep their singular value
+      std::size_t              pending {n}; // the last column kept so far, still open to a rotation with the next
+      for (const std::size_t j : order) {
+        if (std::abs(z[j]) <= tolerance) {
+          deflated.push_back(j);
+          continue;
+        }
+        if (d[j] <= tolerance) {
+          // Nearly the zero pole: its weight joins the zero pole's, and dⱼ deflates.
+          const double length {std::hypot(z[0], z[j])};
+          rotate_columns(v, m, 0, j, z[0] / length, z[j] / length);
+          z[0] = length;
+          z[j] = 0.0;
+          deflated.push_back(j);
+          continue;
+        }
+        if (pending != n && d[j] - d[pending] <= tolerance) {
+          // Close values: one rotation of both rows and columns zeroes the pending one's weight.
+          const double length {std::hypot(z[j], z[pending])};
+          const double c      {z[j] / length};
+          const double s      {z[pending] / length};
+          rotate_columns(v, m, j, pending, c, s);
+          rotate_columns(u, n, j, pending, c, s);
+          z[j]       = length;
+          z[pending] = 0.0;
+          deflated.push_back(pending);
+        }
+        else if (pending != n) {
+          kept.push_back(pending);
+        }
+        pending = j;
+      }
+      if (pending != n) {
+        kept.push_back(pending);
+      }
+      const std::size_t   k {kept.size()};
+      std::vector<double> poles(k);
+      std::vector<double> weights(k);
+      for (std::size_t i {0}; i < k; ++i) {
+        poles[i]   = d[kept[i]];
+        weights[i] = z[kept[i]];
+      }
+      std::vector<double> roots(k);
+      std::vector<double> below(k * k); // below[i * k + j] = poles[j] − roots[i]
+      std::vector<double> above(k * k); // above[i * k + j] = poles[j] + roots[i]
+      parallel_for(k, 8 * k, [&](std::size_t i) {
+                     roots[i] = singular_secular_root(poles, weights, i, secular_iterations, below.data() + (i * k),
+                                                      above.data() + (i * k));
+                   });
+      std::vector<double> left(k * k);  // column i: the left vector of roots[i], in the kept columns' basis
+      std::vector<double> right(k * k); // and the right one
+      for (std::size_t j {0}; j < k; ++j) {
+        // Löwner: ẑⱼ² = Πᵢ (σᵢ² − dⱼ²) / Πᵢ≠ⱼ (dᵢ² − dⱼ²), each pole paired with its root.
+        double product {-below[(j * k) + j] * above[(j * k) + j]};
+        for (std::size_t i {0}; i < k; ++i) {
+          if (i != j) {
+            product *= (-below[(i * k) + j] * above[(i * k) + j]) / ((poles[i] - poles[j]) * (poles[i] + poles[j]));
+          }
+        }
+        const double weight {std::copysign(std::sqrt(product), weights[j])};
+        for (std::size_t i {0}; i < k; ++i) {
+          const double ratio {weight / (below[(i * k) + j] * above[(i * k) + j])}; // ẑⱼ / (dⱼ² − σᵢ²)
+          right[(j * k) + i] = ratio;
+          left[(j * k) + i]  = j == 0 ? -1.0 : poles[j] * ratio;
+        }
+      }
+      for (std::vector<double>* vectors : {&left, &right}) {
+        for (std::size_t i {0}; i < k; ++i) {
+          double sum {0.0};
+          for (std::size_t j {0}; j < k; ++j) {
+            sum += (*vectors)[(j * k) + i] * (*vectors)[(j * k) + i];
+          }
+          const double length {std::sqrt(sum)};
+          for (std::size_t j {0}; j < k; ++j) {
+            (*vectors)[(j * k) + i] /= length;
+          }
+        }
+      }
+      // The kept columns times the arrow's vectors; the deflated columns as they are; then by ascending value.
+      const auto carried {[&](const std::vector<double>& basis, std::size_t rows, const std::vector<double>& small) {
+                            std::vector<double> columns(rows * k);
+                            for (std::size_t r {0}; r < rows; ++r) {
+                              for (std::size_t i {0}; i < k; ++i) {
+                                columns[(r * k) + i] = basis[(r * rows) + kept[i]];
+                              }
+                            }
+                            std::vector<double> product(rows * k, 0.0);
+                            gemm(rows, k, k, columns.data(), k, small.data(), k, product.data(), k);
+                            return product;
+                          }};
+      const std::vector<double> new_u {carried(u, n, left)};
+      const std::vector<double> new_v {carried(v, m, right)};
+      std::vector<double>       values(n);
+      std::vector<std::size_t>  from(n); // where each value's vectors are: a kept root (< k) or a deflated column
+      for (std::size_t i {0}; i < k; ++i) {
+        values[i] = roots[i];
+        from[i]   = i;
+      }
+      for (std::size_t i {0}; i < deflated.size(); ++i) {
+        values[k + i] = d[deflated[i]];
+        from[k + i]   = k + i;
+      }
+      std::vector<std::size_t> rank(n);
+      for (std::size_t j {0}; j < n; ++j) {
+        rank[j] = j;
+      }
+      std::sort(rank.begin(), rank.end(), [&values](std::size_t x, std::size_t y) { return values[x] < values[y]; });
+      std::vector<double> sorted_u(n * n);
+      std::vector<double> sorted_v(v); // the null column, if any, stays last
+      for (std::size_t c {0}; c < n; ++c) {
+        const std::size_t source {from[rank[c]]};
+        d[c] = values[rank[c]];
+        for (std::size_t r {0}; r < n; ++r) {
+          sorted_u[(r * n) + c] = source < k ? new_u[(r * k) + source] : u[(r * n) + deflated[source - k]];
+        }
+        for (std::size_t r {0}; r < m; ++r) {
+          sorted_v[(r * m) + c] = source < k ? new_v[(r * k) + source] : v[(r * m) + deflated[source - k]];
+        }
+      }
+      u = std::move(sorted_u);
+      v = std::move(sorted_v);
+    }
+
+    //! \brief The order up to which \ref bidiagonal_divide decomposes by implicit-shift QR.
+    inline constexpr std::size_t bidiagonal_leaf {32};
+
+    /*!
+     * \brief The singular value decomposition of the upper bidiagonal `n × (n + extra)` (`extra` 0 or 1) with
+     *        diagonal `d[0…n-1]` and superdiagonal `e[0…n+extra-2]` (`e[n-1]` the last column's entry when `extra`
+     *        is 1), by divide and conquer, as LAPACK's `dbdsdc`: \p sigma ascending, \p u (`n × n`) and \p v
+     *        (`m × m`, `m = n + extra`, the null vector last) row-major, their columns the singular vectors.
+     *
+     * The rows split at a middle row `k`: above it an `k × (k + 1)` bidiagonal, below it an `(n − k − 1) × (…)` one,
+     * each decomposed the same way (by implicit-shift QR up to \ref bidiagonal_leaf); row `k`'s two entries, in
+     * their right bases, with the two null vectors rotated into one, make an arrow, which \ref merge_arrow
+     * decomposes.
+     */
+    inline void bidiagonal_divide(const double*        d,
+                                  const double*        e,
+                                  std::size_t          n,
+                                  std::size_t          extra,
+                                  std::vector<double>& sigma,
+                                  std::vector<double>& u,
+                                  std::vector<double>& v)
+    {
+      // Work near unit size, scaled by a power of two (exactly): the secular equation works on squares, which
+      // overflow past 1e154.
+      double largest {0.0};
+      for (std::size_t i {0}; i < n; ++i) {
+        largest = std::max({largest, std::abs(d[i]), i + 1 < n + extra ? std::abs(e[i]) : 0.0});
+      }
+      int exponent {0};
+      (void)std::frexp(largest, &exponent);
+      if (exponent != 0) {
+        std::vector<double> scaled_d(n);
+        std::vector<double> scaled_e(n, 0.0);
+        for (std::size_t i {0}; i < n; ++i) {
+          scaled_d[i] = std::ldexp(d[i], -exponent);
+          scaled_e[i] = i + 1 < n + extra ? std::ldexp(e[i], -exponent) : 0.0;
+        }
+        bidiagonal_divide(scaled_d.data(), scaled_e.data(), n, extra, sigma, u, v);
+        for (double& value : sigma) {
+          value = std::ldexp(value, exponent);
+        }
+        return;
+      }
+      const std::size_t m {n + extra};
+      sigma.assign(n, 0.0);
+      u.assign(n * n, 0.0);
+      v.assign(m * m, 0.0);
+      for (std::size_t i {0}; i < m; ++i) {
+        v[(i * m) + i] = 1.0;
+      }
+      if (n <= bidiagonal_leaf) {
+        std::vector<double> diagonal(d, d + n);
+        std::vector<double> super(n, 0.0);
+        std::copy_n(e, n - std::min<std::size_t>(n, 1), super.begin());
+        // An extra column first: rotations of it against each column, from the last row up, chase its one entry
+        // out (B G = [B' 0]), so the square B' remains.
+        double fill {extra == 1 ? e[n - 1] : 0.0};
+        for (std::size_t j {n}; extra == 1 && j-- > 0;) {
+          const double length {std::hypot(diagonal[j], fill)};
+          const double c      {length == 0.0 ? 1.0 : diagonal[j] / length};
+          const double s      {length == 0.0 ? 0.0 : fill / length};
+          diagonal[j] = length;
+          rotate_columns(v, m, j, n, c, s);
+          if (j > 0) {
+            fill         = -s * super[j - 1];
+            super[j - 1] = c * super[j - 1];
+          }
+        }
+        std::vector<double> ut(n * n, 0.0);
+        std::vector<double> vt(n * n, 0.0);
+        for (std::size_t i {0}; i < n; ++i) {
+          ut[(i * n) + i] = 1.0;
+          vt[(i * n) + i] = 1.0;
+        }
+        bidiagonal_qr(diagonal, super, ut, vt, n, svd_qr_steps_per_value * n); // descending
+        std::vector<double> rotated(v);
+        for (std::size_t c {0}; c < n; ++c) {
+          const std::size_t source {n - 1 - c};
+          sigma[c] = diagonal[source];
+          for (std::size_t r {0}; r < n; ++r) {
+            u[(r * n) + c] = ut[(source * n) + r];
+          }
+          for (std::size_t r {0}; r < m; ++r) { // G times B''s right vector
+            double sum {0.0};
+            for (std::size_t t {0}; t < n; ++t) {
+              sum += rotated[(r * m) + t] * vt[(source * n) + t];
+            }
+            v[(r * m) + c] = sum;
+          }
+        }
+        return;
+      }
+      const std::size_t   k     {n / 2};
+      const std::size_t   lower {n - k - 1};
+      const double        alpha {d[k]};
+      const double        beta  {e[k]};
+      std::vector<double> sigma1;
+      std::vector<double> u1;
+      std::vector<double> v1;
+      std::vector<double> sigma2;
+      std::vector<double> u2;
+      std::vector<double> v2;
+      bidiagonal_divide(d, e, k, 1, sigma1, u1, v1);
+      bidiagonal_divide(d + k + 1, e + k + 1, lower, extra, sigma2, u2, v2);
+      const std::size_t   m1 {k + 1};
+      const std::size_t   m2 {lower + extra};
+      std::vector<double> arrow(n, 0.0);
+      std::vector<double> z(n, 0.0);
+      // The bases: row k is the arrow's first row; the arrow's columns are the null vector, then the halves'.
+      u[k * n] = 1.0;
+      for (std::size_t c {0}; c < k; ++c) {
+        arrow[1 + c] = sigma1[c];
+        z[1 + c]     = alpha * v1[(k * m1) + c];
+        for (std::size_t r {0}; r < k; ++r) {
+          u[(r * n) + 1 + c] = u1[(r * k) + c];
+        }
+      }
+      for (std::size_t c {0}; c < lower; ++c) {
+        arrow[k + 1 + c] = sigma2[c];
+        z[k + 1 + c]     = beta * v2[c];
+        for (std::size_t r {0}; r < lower; ++r) {
+          u[((k + 1 + r) * n) + k + 1 + c] = u2[(r * lower) + c];
+        }
+      }
+      std::fill(v.begin(), v.end(), 0.0);
+      for (std::size_t r {0}; r < m1; ++r) {
+        v[(r * m) + 0] = v1[(r * m1) + k];
+        for (std::size_t c {0}; c < k; ++c) {
+          v[(r * m) + 1 + c] = v1[(r * m1) + c];
+        }
+      }
+      for (std::size_t r {0}; r < m2; ++r) {
+        for (std::size_t c {0}; c < lower; ++c) {
+          v[((m1 + r) * m) + k + 1 + c] = v2[(r * m2) + c];
+        }
+      }
+      z[0] = alpha * v1[(k * m1) + k];
+      if (extra == 1) { // the two null vectors: one joins the arrow, the other is the whole's
+        for (std::size_t r {0}; r < m2; ++r) {
+          v[((m1 + r) * m) + n] = v2[(r * m2) + lower];
+        }
+        const double other  {beta * v2[lower]};
+        const double length {std::hypot(z[0], other)};
+        const double c      {length == 0.0 ? 1.0 : z[0] / length};
+        const double s      {length == 0.0 ? 0.0 : other / length};
+        rotate_columns(v, m, 0, n, c, s);
+        z[0] = length;
+      }
+      merge_arrow(arrow, std::move(z), alpha, beta, u, v, n, m);
+      sigma = std::move(arrow);
+    }
+
+    /*!
+     * \brief The singular values of the upper bidiagonal (\p d, \p e) into \p d, descending, the singular vectors
+     *        accumulated into the rows of \p ut and \p vt as \ref bidiagonal_qr accumulates them, by divide and
+     *        conquer (\ref bidiagonal_divide): most of the work in matrix products.
+     * \throws convergence_error If an iteration did not converge within its bound.
+     */
+    template <typename T>
+    void bidiagonal_divide_and_conquer(std::vector<double>& d,
+                                       std::vector<double>& e,
+                                       std::vector<T>&      ut,
+                                       std::vector<T>&      vt,
+                                       std::size_t          n)
+    {
+      if (n == 0) {
+        return;
+      }
+      std::vector<double> sigma;
+      std::vector<double> u;
+      std::vector<double> v;
+      bidiagonal_divide(d.data(), e.data(), n, 0, sigma, u, v);
+      std::vector<double> left(n * n); // row c: the vectors of the c-th largest value
+      std::vector<double> right(n * n);
+      for (std::size_t c {0}; c < n; ++c) {
+        d[c] = sigma[n - 1 - c];
+        for (std::size_t r {0}; r < n; ++r) {
+          left[(c * n) + r]  = u[(r * n) + (n - 1 - c)];
+          right[(c * n) + r] = v[(r * n) + (n - 1 - c)];
+        }
+      }
+      multiply_real_left(left, ut, n);
+      multiply_real_left(right, vt, n);
+    }
   } // namespace detail
 
   //! \brief How \ref svd_decomposition computes the decomposition of `R`, after a Householder QR.
   enum class svd_method
   {
-    bidiagonal_qr, //!< Golub–Kahan bidiagonalisation then implicit-shift QR, as LAPACK's `dgesvd`: the default.
-    jacobi         //!< One-sided Jacobi: several times slower, each singular value to high relative accuracy.
+    divide_and_conquer, //!< Golub–Kahan bidiagonalisation then divide and conquer, as LAPACK's `dgesdd`: the default.
+    bidiagonal_qr,      //!< Golub–Kahan bidiagonalisation then implicit-shift QR, as LAPACK's `dgesvd`.
+    jacobi              //!< One-sided Jacobi: several times slower, each singular value to high relative accuracy.
   };
 
   /*!
@@ -2671,9 +3123,10 @@ namespace numerical {
    *
    * With `k = min(m, n)`: the `k` singular values, descending; `U` (`m × k`) and `V` (`n × k`) with
    * orthonormal columns, also where `A` is rank-deficient. Computed after a Householder QR of `A` (of `Aᴴ`
-   * when `m < n`): by default `R` is reduced to bidiagonal form and the bidiagonal diagonalised by
-   * implicit-shift QR (\ref svd_method::bidiagonal_qr), the method of LAPACK's `dgesvd`, each singular value
-   * to an absolute accuracy of the largest times the machine epsilon. One-sided Jacobi on `R`
+   * when `m < n`): by default `R` is reduced to bidiagonal form and the bidiagonal decomposed by divide and
+   * conquer (\ref svd_method::divide_and_conquer), the method of LAPACK's `dgesdd`, most of its work in matrix
+   * products, or by implicit-shift QR (\ref svd_method::bidiagonal_qr, `dgesvd`'s); either way each singular
+   * value to an absolute accuracy of the largest times the machine epsilon. One-sided Jacobi on `R`
    * (\ref svd_method::jacobi) gives every singular value to high relative accuracy — the small ones of a
    * graded matrix too — at several times the cost. \ref vh is `Vᴴ`, the third factor NumPy's `svd` returns.
    */
@@ -2690,7 +3143,7 @@ namespace numerical {
      * \throws convergence_error If the iteration does not converge within its bound (not observed).
      */
     explicit svd_decomposition(const matrix<T>& a,
-                               svd_method       method = svd_method::bidiagonal_qr)
+                               svd_method       method = svd_method::divide_and_conquer)
     {
       detail::require_finite(a, "SVD");
       if (a.rows() >= a.cols()) {
@@ -2752,13 +3205,18 @@ namespace numerical {
         }
       }
       detail::thin_qr<T> factors {detail::householder_qr(std::move(entries), rows, cols)};
-      if (method == svd_method::bidiagonal_qr) {
+      if (method != svd_method::jacobi) {
         std::vector<double> d(cols);
         std::vector<double> e(cols);
         std::vector<T>      ut;
         std::vector<T>      vt;
         detail::bidiagonalize(factors.r, cols, d, e, ut, vt);
-        detail::bidiagonal_qr(d, e, ut, vt, cols, detail::svd_qr_steps_per_value * cols);
+        if (method == svd_method::bidiagonal_qr) {
+          detail::bidiagonal_qr(d, e, ut, vt, cols, detail::svd_qr_steps_per_value * cols);
+        }
+        else {
+          detail::bidiagonal_divide_and_conquer(d, e, ut, vt, cols);
+        }
         std::vector<T> left(cols * cols);
         std::vector<T> right(cols * cols);
         for (std::size_t i {0}; i < cols; ++i) { // rows of ut and vt are the vectors: make them columns
