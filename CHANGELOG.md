@@ -7,6 +7,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **`einsum` of three operands or more contracts them in the cheapest order** (as `opt_einsum` chooses it):
+  every order up to four operands, the cheapest in multiply-adds and then the smaller largest intermediate; past
+  four, the cheapest pair sharing a label at each step. Each pair runs as the matrix products below, and an operand
+  with nothing of its own to sum is no longer copied first. The order depends on the shapes alone, so a result is
+  the same on any number of threads; it differs from the left-to-right order in the last bits where the order
+  changes. M1 Pro: `"ij,jk,kl->il"` (200 × 10, 10 × 200, 200 × 200) 0.30 → 0.047 ms (NumPy's
+  `einsum(optimize=True)`: 0.037), `"i,ij,j->"` (500) 0.85 → 0.10 ms (0.08), five 30 × 30 matrices 0.018 ms
+  (0.050).
 - **Every two-operand `einsum` contraction runs as matrix products** (as `opt_einsum` maps a pair to BLAS):
   each operand's axes are regrouped, labels shared with the output as batches, labels of one operand and the
   output as rows or columns, summed labels in ascending order as the depth, and the result laid out in the

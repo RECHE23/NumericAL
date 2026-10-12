@@ -25,6 +25,7 @@
 #include <cmath>
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
 #include <cstddef>
+#include <deque>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -318,6 +319,11 @@ namespace numerical {
         const bool in_b {sb.find(label) != std::string::npos};
         (in_a && in_b ? batch : (in_a ? free_a : free_b)).push_back(label);
       }
+      if (batch + free_a + free_b != output && batch + free_b + free_a == output) {
+        // The other operand first lays the result out in the output's order: the same terms in the same order
+        // (each a product of the same two numbers), with no permutation of the result.
+        return contract_pair(sb, b, sa, a, output, summed, sizes);
+      }
       std::size_t inner {1};
       for (const char label : summed) {
         if (sa.find(label) == std::string::npos || sb.find(label) == std::string::npos) {
@@ -359,6 +365,158 @@ namespace numerical {
       }
       const std::string order {batch + free_a + free_b};
       return tensor<T> {std::move(shape), order == output ? std::move(c) : permuted(c, order, output, sizes)};
+    }
+
+    //! \brief The operands at most whose contraction order \ref contraction_path searches exhaustively; more take
+    //!        the cheapest pair at each step.
+    inline constexpr std::size_t exhaustive_path_operands {4};
+
+    //! \brief One step of a contraction path: the operands at \p first and \p second of the current list, whose
+    //!        result goes to the list's end.
+    struct contraction_step
+    {
+      std::size_t first;  //!< The first operand's position.
+      std::size_t second; //!< The second's, past the first.
+    };
+
+    //! \brief The labels of \p labels[\p i] and \p labels[\p j] that the output or another operand carries, in their
+    //!        order of appearance, once each: what their contraction keeps.
+    [[nodiscard]] inline std::string pair_keeps(const std::vector<std::string>& labels,
+                                                std::size_t                     i,
+                                                std::size_t                     j,
+                                                const std::string&              output)
+    {
+      std::string elsewhere {output};
+      for (std::size_t k {0}; k < labels.size(); ++k) {
+        elsewhere += k == i || k == j ? std::string {} : labels[k];
+      }
+      std::string keep;
+      for (const char label : labels[i] + labels[j]) {
+        if (elsewhere.find(label) != std::string::npos && keep.find(label) == std::string::npos) {
+          keep.push_back(label);
+        }
+      }
+      return keep;
+    }
+
+    //! \brief The product of the extents of \p labels' distinct labels, as a `double` (a cost: it may pass `size_t`).
+    [[nodiscard]] inline double extent_product(const std::string&                 labels,
+                                               const std::map<char, std::size_t>& sizes)
+    {
+      double      product {1.0};
+      std::string seen;
+      for (const char label : labels) {
+        if (seen.find(label) == std::string::npos) {
+          seen.push_back(label);
+          product *= static_cast<double>(sizes.at(label));
+        }
+      }
+      return product;
+    }
+
+    //! \brief The list after a contraction step: the two operands' labels removed, their result's appended.
+    [[nodiscard]] inline std::vector<std::string> after_step(const std::vector<std::string>& labels,
+                                                             contraction_step                step,
+                                                             const std::string&              output)
+    {
+      std::vector<std::string> next;
+      for (std::size_t k {0}; k < labels.size(); ++k) {
+        if (k != step.first && k != step.second) {
+          next.push_back(labels[k]);
+        }
+      }
+      next.push_back(pair_keeps(labels, step.first, step.second, output));
+      return next;
+    }
+
+    //! \brief The cheapest order of contraction from \p labels, and its cost and largest intermediate: every order
+    //!        tried, the first found kept among equals.
+    inline void cheapest_path(const std::vector<std::string>&    labels,
+                              const std::string&                 output,
+                              const std::map<char, std::size_t>& sizes,
+                              std::vector<contraction_step>&     path,
+                              double&                            cost,
+                              double&                            largest)
+    {
+      if (labels.size() < 2) {
+        path.clear();
+        cost    = 0.0;
+        largest = 0.0;
+        return;
+      }
+      bool found {false};
+      for (std::size_t i {0}; i < labels.size(); ++i) {
+        for (std::size_t j {i + 1}; j < labels.size(); ++j) {
+          const contraction_step        step         {.first = i, .second = j};
+          std::vector<contraction_step> rest;
+          double                        rest_cost    {0.0};
+          double                        rest_largest {0.0};
+          cheapest_path(after_step(labels, step, output), output, sizes, rest, rest_cost, rest_largest);
+          const double here                          {extent_product(labels[i] + labels[j], sizes)};
+          const double size                          {extent_product(pair_keeps(labels, i, j, output), sizes)};
+          const double total                         {here + rest_cost};
+          const double peak                          {std::max(size, rest_largest)};
+          if (!found || total < cost || (total == cost && peak < largest)) {
+            found   = true;
+            cost    = total;
+            largest = peak;
+            path.assign(1, step);
+            path.insert(path.end(), rest.begin(), rest.end());
+          }
+        }
+      }
+    }
+
+    /*!
+     * \brief The order in which to contract operands labelled \p labels into \p output, as `opt_einsum` chooses it:
+     *        the cheapest in multiply-adds (the product of the extents a pair's labels span), the smaller largest
+     *        intermediate among equals, over every order up to \ref exhaustive_path_operands operands; past it, the
+     *        cheapest pair at each step among those sharing a label (an outer product, cheap in itself, would leave
+     *        its labels to every later step), the smaller result, then the first pair, among equals. It depends on
+     *        the shapes alone, so a result is the same on any number of threads.
+     */
+    [[nodiscard]] inline std::vector<contraction_step> contraction_path(std::vector<std::string>           labels,
+                                                                        const std::string&                 output,
+                                                                        const std::map<char, std::size_t>& sizes)
+    {
+      std::vector<contraction_step> path;
+      if (labels.size() <= exhaustive_path_operands) {
+        double cost    {0.0};
+        double largest {0.0};
+        cheapest_path(labels, output, sizes, path, cost, largest);
+        return path;
+      }
+      const auto shares {[&labels](std::size_t i, std::size_t j) {
+                           return labels[i].find_first_of(labels[j]) != std::string::npos;
+                         }};
+      while (labels.size() > 1) {
+        contraction_step best      {.first = 0, .second = 1};
+        double           best_cost {-1.0};
+        double           best_size {0.0};
+        bool             connected {false}; // a pair sharing a label exists: an outer product waits
+        for (std::size_t i {0}; i < labels.size(); ++i) {
+          for (std::size_t j {i + 1}; j < labels.size(); ++j) {
+            connected = connected || shares(i, j);
+          }
+        }
+        for (std::size_t i {0}; i < labels.size(); ++i) {
+          for (std::size_t j {i + 1}; j < labels.size(); ++j) {
+            if (connected && !shares(i, j)) {
+              continue;
+            }
+            const double here {extent_product(labels[i] + labels[j], sizes)};
+            const double size {extent_product(pair_keeps(labels, i, j, output), sizes)};
+            if (best_cost < 0.0 || here < best_cost || (here == best_cost && size < best_size)) {
+              best      = {.first = i, .second = j};
+              best_cost = here;
+              best_size = size;
+            }
+          }
+        }
+        path.push_back(best);
+        labels = after_step(labels, best, output);
+      }
+      return path;
     }
 
     //! \brief The elements of one partial sum of `chunked_dot`: fixed, so the sum does not depend on the threads.
@@ -465,13 +623,13 @@ namespace numerical {
       }
 
       // Three operands or more: first sum each one over the labels no other operand and not the output
-      // carries, then contract them two at a time, left to right, each intermediate keeping only the
-      // labels still to come. One loop over every label of `ij,jk,kl->il` runs n⁴ terms; this runs 2·n³,
-      // and `i,j,k,l,m->` over 65 536 ones each runs five sums of 65 536 instead of 2⁸⁰ terms.
+      // carries, then contract them two at a time in the cheapest order (\ref contraction_path), each
+      // intermediate keeping only the labels still to come. One loop over every label of `ij,jk,kl->il` runs n⁴
+      // terms; pairs run 2·n³, and `i,j,k,l,m->` over 65 536 ones each runs five sums of 65 536 instead of 2⁸⁰.
       if (operands.size() > 2) {
-        std::vector<tensor<T>>   reduced;
-        std::vector<std::string> kept;
-        reduced.reserve(operands.size());
+        std::deque<tensor<T>>         owned; // the reductions and intermediates (a deque keeps their addresses)
+        std::vector<const tensor<T>*> current;
+        std::vector<std::string>      kept;
         for (std::size_t i {0}; i < operands.size(); ++i) {
           std::string elsewhere {output};
           for (std::size_t j {0}; j < operands.size(); ++j) {
@@ -483,29 +641,28 @@ namespace numerical {
               keep.push_back(label);
             }
           }
-          const std::vector<const tensor<T>*> alone {operands[i]};
-          reduced.push_back(einsum_impl<T>(inputs[i] + "->" + keep, alone));
+          if (keep == inputs[i]) { // nothing of its own to sum: the operand itself
+            current.push_back(operands[i]);
+          }
+          else {
+            const std::vector<const tensor<T>*> alone {operands[i]};
+            owned.push_back(einsum_impl<T>(inputs[i] + "->" + keep, alone));
+            current.push_back(&owned.back());
+          }
           kept.push_back(std::move(keep));
         }
-        tensor<T>   accumulated {std::move(reduced.front())};
-        std::string labels      {kept.front()};
-        for (std::size_t i {1}; i < reduced.size(); ++i) {
-          std::string later {output};
-          for (std::size_t j {i + 1}; j < kept.size(); ++j) {
-            later += kept[j];
-          }
-          std::string keep;
-          for (const char label : labels + kept[i]) {
-            if (later.find(label) != std::string::npos && keep.find(label) == std::string::npos) {
-              keep.push_back(label);
-            }
-          }
-          const std::vector<const tensor<T>*> pair {&accumulated, &reduced[i]};
-          tensor<T>                           next {einsum_impl<T>(labels + "," + kept[i] + "->" + (i + 1 == reduced.size() ? output : keep), pair)};
-          accumulated = std::move(next);
-          labels      = std::move(keep);
+        for (const contraction_step step : contraction_path(kept, output, sizes)) {
+          const std::string                   keep {kept.size() == 2 ? output : pair_keeps(kept, step.first, step.second, output)};
+          const std::vector<const tensor<T>*> pair {current[step.first], current[step.second]};
+          owned.push_back(einsum_impl<T>(kept[step.first] + "," + kept[step.second] + "->" + keep, pair));
+          current.erase(current.begin() + static_cast<std::ptrdiff_t>(step.second));
+          current.erase(current.begin() + static_cast<std::ptrdiff_t>(step.first));
+          kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(step.second));
+          kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(step.first));
+          current.push_back(&owned.back());
+          kept.push_back(keep);
         }
-        return accumulated;
+        return std::move(owned.back()); // the last contraction's, the output
       }
 
       // Fast path: a plain two-operand single contraction in canonical layout —

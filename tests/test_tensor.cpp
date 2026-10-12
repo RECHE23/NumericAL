@@ -12,6 +12,8 @@
 #include <complex>
 #include <cstddef>
 #include <limits>
+#include <map>
+#include <utility>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -343,6 +345,9 @@ TEST(einsum_regrouped_pairs_keep_the_canonical_sums)
   EXPECT(einsum("ij,kj->ik", a, transposed(b)) == einsum("ij,jk->ik", a, b));
   EXPECT(einsum("ji,jk->ik", transposed(a), b) == einsum("ij,jk->ik", a, b));
   EXPECT(einsum("ij,jk->ki", a, b) == transposed(einsum("ij,jk->ik", a, b)));
+  EXPECT(!(einsum("ij,jk->ki", a, b) == einsum("ij,jk->ik", a, b)));                     // another shape
+  EXPECT(!(einsum("ij,jk->ik", a, b) == einsum("ij,jk->ik", a, rounding(29, 41, 6.0)))); // other values
+  EXPECT_THROWS(tensor<double>({2}, {1.0, 2.0, 3.0}), numerical::dimension_error);
   // Three batches, stacked: each slice the canonical product of its slices.
   std::vector<double> left;
   std::vector<double> right;
@@ -357,6 +362,9 @@ TEST(einsum_regrouped_pairs_keep_the_canonical_sums)
   }
   const tensor<double> stacked {einsum("bij,bjk->bik", tensor<double> {{3, 5, 6}, left}, tensor<double> {{3, 6, 4}, right})};
   EXPECT(stacked == tensor<double> ({3, 5, 4}, wanted));
+  // The batch label inside the output: the stacked result laid out anew.
+  EXPECT(einsum("bij,bjk->ibk", tensor<double> {{3, 5, 6}, left}, tensor<double> {{3, 6, 4}, right}) ==
+         einsum("bik->ibk", stacked));
   // Two summed labels, in ascending order; an outer product; a dot product per batch; an empty extent.
   const tensor<double> cube {{2, 3, 4}, std::vector<double>(24, 0.5)};
   EXPECT(einsum("ijk,jkl->il", cube, tensor<double> {{3, 4, 2}, std::vector<double>(24, 2.0)}) ==
@@ -440,6 +448,44 @@ TEST(einsum_contracts_many_operands_pairwise)
   EXPECT(einsum("ii,ij,j->i", a, a, tensor<int> {vector<int> {1, 2}}).data() == (std::vector<int> {5, 44}));
   EXPECT(einsum("ii,j,j->", a, tensor<int> {vector<int> {1, 2}}, tensor<int> {vector<int> {3, 4}}).data()
          == std::vector<int> {(1 + 4) * ((1 * 3) + (2 * 4))});
+}
+
+// The contraction order is the cheapest: in `ij,jk,kl` with a narrow j, the last two first (0.8 million multiply-adds
+// against 8.4); past four operands, the cheapest pair at each step. The result is the same in any order here (whole
+// numbers), as many operands as there are.
+TEST(einsum_contracts_in_the_cheapest_order)
+{
+  using numerical::detail::contraction_path;
+  const std::map<char, std::size_t> narrow {{'i', 200}, {'j', 10}, {'k', 200}, {'l', 200}};
+  const auto                        path   {contraction_path({"ij", "jk", "kl"}, "il", narrow)};
+  EXPECT(path.size() == 2U && path[0].first == 1U && path[0].second == 2U && path[1].first == 0U && path[1].second == 1U);
+  // Five operands, a wide middle: the narrow ends first, each step the cheapest pair.
+  const std::map<char, std::size_t> wide   {{'a', 2}, {'b', 3}, {'c', 50}, {'d', 50}, {'e', 3}, {'f', 2}};
+  const auto                        steps {[](const std::vector<numerical::detail::contraction_step>& path) {
+                                             std::vector<std::pair<std::size_t, std::size_t>> pairs;
+                                             pairs.reserve(path.size());
+                                             for (const numerical::detail::contraction_step step : path) {
+                                               pairs.emplace_back(step.first, step.second);
+                                             }
+                                             return pairs;
+                                           }};
+  using pairs = std::vector<std::pair<std::size_t, std::size_t>>;
+  EXPECT(steps(contraction_path({"ab", "bc", "cd", "de", "ef"}, "af", wide)) == (pairs {{0, 1}, {1, 2}, {0, 1}, {0, 1}}));
+  // Equal costs: the smaller intermediate decides, over whole paths and pair by pair.
+  const std::map<char, std::size_t> even  {{'a', 1}, {'b', 2}, {'c', 3}, {'d', 1}, {'e', 1}};
+  EXPECT(steps(contraction_path({"ab", "bc", "cd", "de"}, "ae", even)) == (pairs {{1, 2}, {0, 2}, {0, 1}}));
+  const std::map<char, std::size_t> level {{'a', 1}, {'b', 1}, {'c', 1}, {'d', 3}, {'e', 2}, {'f', 1}};
+  EXPECT(steps(contraction_path({"ab", "bc", "cd", "de", "ef"}, "af", level)) == (pairs {{0, 1}, {0, 3}, {0, 2}, {0, 1}}));
+  // No pair sharing a label: outer products, cheapest first.
+  const std::map<char, std::size_t> apart {{'a', 4}, {'b', 1}, {'c', 2}, {'d', 3}, {'e', 5}};
+  EXPECT(steps(contraction_path({"a", "b", "c", "d", "e"}, "abcde", apart)) == (pairs {{1, 2}, {1, 3}, {0, 1}, {0, 1}}));
+  std::vector<tensor<int>> chain;
+  chain.reserve(5);
+  for (int p {0}; p < 5; ++p) {
+    chain.emplace_back(matrix<int> {{1 + p, 2}, {0, 1 - p}});
+  }
+  const tensor<int> pairwise {einsum("ab,bc->ac", einsum("ab,bc->ac", einsum("ab,bc->ac", einsum("ab,bc->ac", chain[0], chain[1]), chain[2]), chain[3]), chain[4])};
+  EXPECT(einsum("ab,bc,cd,de,ef->af", chain[0], chain[1], chain[2], chain[3], chain[4]) == pairwise);
 }
 
 // The operands may be counted at run time, as an interpreter holds them: the same contraction, and a
