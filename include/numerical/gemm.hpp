@@ -26,6 +26,7 @@
 #include <vector>
 
 #include "parallel.hpp"
+#include "simd.hpp"
 
 namespace numerical::detail {
 
@@ -92,31 +93,6 @@ namespace numerical::detail {
   }
 
 #if defined(__GNUC__)
-  //! \brief The native vector width, in bytes.
-#  if defined(__AVX__)
-  inline constexpr std::size_t gemm_vector_bytes {32};
-#  else
-  inline constexpr std::size_t gemm_vector_bytes {16};
-#  endif
-
-  //! \brief A native vector of `T`, for the types \ref gemm_kernel holds in vectors.
-  template <typename T>
-  struct gemm_vector;
-
-  //! \brief A native vector of `float`.
-  template <>
-  struct gemm_vector<float>
-  {
-    using type = float __attribute__((vector_size(gemm_vector_bytes))); //!< The vector.
-  };
-
-  //! \brief A native vector of `double`.
-  template <>
-  struct gemm_vector<double>
-  {
-    using type = double __attribute__((vector_size(gemm_vector_bytes))); //!< The vector.
-  };
-
   /*!
    * \brief \ref gemm_kernel for `float` and `double`, the tile held in native vectors. Each lane sums
    *        its element in the same order as the scalar kernel.
@@ -128,9 +104,9 @@ namespace numerical::detail {
                    const T*      bp,
                    gemm_tile<T>& tile)
   {
-    using lane                 = typename gemm_vector<T>::type;
+    using lane                 = typename native_vector<T>::type;
     constexpr std::size_t             nr    {gemm_nr<T>};
-    constexpr std::size_t             lanes {nr * sizeof(T) / gemm_vector_bytes};
+    constexpr std::size_t             lanes {nr * sizeof(T) / native_vector_bytes};
     // The tile moves in and out one vector at a time: a single copy of the whole array would leave it in
     // memory under GCC, which then keeps no accumulator in a register (7.4 GFLOP/s instead of 11.8 on one
     // x86-64 core).
@@ -138,7 +114,7 @@ namespace numerical::detail {
 #  pragma GCC unroll 32
     for (std::size_t q {0}; q < acc.size(); ++q) {
       lane v;
-      std::memcpy(&v, tile.data() + (q * (gemm_vector_bytes / sizeof(T))), sizeof(v));
+      std::memcpy(&v, tile.data() + (q * (native_vector_bytes / sizeof(T))), sizeof(v));
       acc[q] = v;
     }
     // Unrolled, so that every accumulator has a fixed index and stays in a register: GCC at -O2 does not
@@ -158,7 +134,7 @@ namespace numerical::detail {
 #  pragma GCC unroll 32
     for (std::size_t q {0}; q < acc.size(); ++q) {
       const lane v {acc[q]};
-      std::memcpy(tile.data() + (q * (gemm_vector_bytes / sizeof(T))), &v, sizeof(v));
+      std::memcpy(tile.data() + (q * (native_vector_bytes / sizeof(T))), &v, sizeof(v));
     }
   }
 

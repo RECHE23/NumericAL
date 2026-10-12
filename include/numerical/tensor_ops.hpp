@@ -13,15 +13,20 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
+#include <complex>
 #include <concepts>
 #include <cstddef>
+#include <cstring>
 #include <functional>
+#include <limits>
 #include <string>
 #include <type_traits>
 #include <utility>
 #include <vector>
 
+#include "simd.hpp"
 #include "tensor.hpp"
 
 namespace numerical {
@@ -148,6 +153,21 @@ namespace numerical {
       return tensor<T> {without_axis(t.shape(), axis), std::move(out)};
     }
 
+    //! \brief `x · x`.
+    template <typename T>
+    [[nodiscard]] T square(const T& x)
+    {
+      return static_cast<T>(x * x);
+    }
+
+    //! \brief NumPy's complex square, (re·re − im·im) + (re·im + im·re)i, without the infinity handling of a
+    //!        general product (C Annex G), which costs a call per element.
+    template <typename U>
+    [[nodiscard]] std::complex<U> square(const std::complex<U>& x)
+    {
+      return {(x.real() * x.real()) - (x.imag() * x.imag()), (x.real() * x.imag()) + (x.imag() * x.real())};
+    }
+
     //! \brief A NaN? Never for a scalar without one.
     template <typename T>
     [[nodiscard]] bool is_nan(const T& /*x*/)
@@ -161,6 +181,98 @@ namespace numerical {
       return std::isnan(x);
     }
 
+#if defined(__GNUC__)
+    //! \brief The lanes where \p x is greater than \p best (all ones there, zeros elsewhere).
+    template <typename V,
+              typename T>
+    [[nodiscard]] auto better(const V& x,
+                              const V& best,
+                              const std::greater<T>& /*larger*/)
+    {
+      return x > best;
+    }
+
+    //! \brief The lanes where \p x is less than \p best.
+    template <typename V,
+              typename T>
+    [[nodiscard]] auto better(const V& x,
+                              const V& best,
+                              const std::less<T>& /*smaller*/)
+    {
+      return x < best;
+    }
+
+    //! \brief A lane differs from another only when unordered: \p a against itself flags the NaN lanes.
+    template <typename V>
+    [[nodiscard]] auto unordered(const V& a,
+                                 const V& b)
+    {
+      return a != b;
+    }
+
+#endif
+
+    /*!
+     * \brief The largest (\p larger is `std::greater`) or smallest of \p count contiguous elements, or a NaN if
+     *        one is among them, as NumPy's: the comparisons run without a branch over native vectors (or eight
+     *        scalar lanes), each lane its own running best, and the NaN is tracked apart.
+     */
+    template <typename T,
+              typename Order>
+    [[nodiscard]] T contiguous_extreme(const T*     first,
+                                       std::size_t  count,
+                                       const Order& larger)
+    {
+      T              result   {first[0]};
+      bool           nan      {false};
+      std::size_t    done     {0};
+#if defined(__GNUC__)
+      using lane = typename native_vector<T>::type;
+      constexpr std::size_t width {native_vector_bytes / sizeof(T)};
+      constexpr std::size_t lanes {4}; // independent vectors, so no comparison waits on the one before it
+      if (count >= width * lanes) {
+        using mask = decltype(lane {} > lane {}); // all ones in a lane where a comparison holds
+        std::array<lane, lanes> best {};
+        std::array<mask, lanes> nans {};
+        for (std::size_t l {0}; l < lanes; ++l) {
+          std::memcpy(&best[l], first + (l * width), sizeof(lane));
+        }
+        done = count - (count % (width * lanes));
+        for (std::size_t i {0}; i < done; i += width * lanes) {
+#  pragma GCC unroll 4 // the lanes in registers: GCC keeps a rolled array of vectors in memory
+          for (std::size_t l {0}; l < lanes; ++l) {
+            lane x;
+            std::memcpy(&x, first + i + (l * width), sizeof(lane));
+            // Blended through the comparison's all-ones / all-zeros mask: both compilers keep it in vector
+            // registers (GCC's `?:` on vectors does not).
+            const mask take {better(x, best[l], larger)};
+            best[l]  = std::bit_cast<lane>((std::bit_cast<mask>(x) & take) | (std::bit_cast<mask>(best[l]) & ~take));
+            nans[l] |= unordered(x, x);
+          }
+        }
+        for (std::size_t l {0}; l < lanes; ++l) {
+          for (std::size_t k {0}; k < width; ++k) {
+            nan    = nan || nans[l][k] != 0;
+            result = larger(best[l][k], result) ? best[l][k] : result;
+          }
+        }
+      }
+#endif
+      std::array<T, 8>        best {};
+      std::array<unsigned, 8> nans {};
+      best.fill(result);
+      for (std::size_t i {done}; i < count; ++i) {
+        const T x {first[i]};
+        nans[i % 8] |= static_cast<unsigned>(std::isnan(x));
+        best[i % 8]  = larger(x, best[i % 8]) ? x : best[i % 8];
+      }
+      for (std::size_t l {0}; l < 8; ++l) {
+        nan    = nan || nans[l] != 0U;
+        result = larger(best[l], result) ? best[l] : result;
+      }
+      return nan ? std::numeric_limits<T>::quiet_NaN() : result;
+    }
+
     //! \brief The largest (\p larger is `std::greater`) or smallest element of a line.
     template <typename T,
               typename Order>
@@ -172,6 +284,13 @@ namespace numerical {
       if (count == 0) {
         throw dimension_error("a zero-size reduction to a maximum or a minimum has no identity");
       }
+      if constexpr (std::is_floating_point_v<T>) {
+        if (stride == 1) {
+          // A contiguous line: the comparison without a branch (so it vectorises) and the NaN tracked apart,
+          // a NaN anywhere is the answer, as NumPy's.
+          return contiguous_extreme(first, count, larger);
+        }
+      }
       T best {first[0]};
       for (std::size_t i {1}; i < count; ++i) {
         // A NaN wins, as in NumPy: every comparison with it is false, so a NaN candidate is taken apart, and
@@ -182,6 +301,51 @@ namespace numerical {
         }
       }
       return best;
+    }
+
+    /*!
+     * \brief The largest (\p larger is `std::greater`) or smallest elements along \p axis. Along an inner axis
+     *        each line is contiguous (\ref extreme); along an outer one the slabs are compared element by element,
+     *        so the loop runs over contiguous memory rather than down a column.
+     */
+    template <typename T,
+              typename Order>
+    [[nodiscard]] tensor<T> extremes_along(const tensor<T>& t,
+                                           std::size_t      axis,
+                                           const Order&     larger)
+    {
+      const axis_walk walk {walk_along(t.shape(), axis)};
+      // An empty axis has no maximum even when the result is empty too (NumPy refuses both).
+      if (walk.extent == 0) {
+        throw dimension_error("a zero-size reduction to a maximum or a minimum has no identity");
+      }
+      if (!std::is_floating_point_v<T> || walk.inner == 1) {
+        return reduce_along(t, axis, [&larger](const T* first, std::size_t count, std::size_t stride) {
+                              return extreme(first, count, stride, larger);
+                            });
+      }
+      std::vector<T>        out(walk.outer * walk.inner);
+      std::vector<unsigned> nan(walk.inner);
+      for (std::size_t o {0}; o < walk.outer; ++o) {
+        const T* const slab {t.data().data() + (o * walk.extent * walk.inner)};
+        T* const       best {out.data() + (o * walk.inner)};
+        std::copy(slab, slab + walk.inner, best);
+        std::fill(nan.begin(), nan.end(), 0U);
+        for (std::size_t e {0}; e < walk.extent; ++e) {
+          const T* const row {slab + (e * walk.inner)};
+          for (std::size_t i {0}; i < walk.inner; ++i) {
+            const T x {row[i]};
+            nan[i]  |= static_cast<unsigned>(std::isnan(x));
+            best[i]  = larger(x, best[i]) ? x : best[i];
+          }
+        }
+        for (std::size_t i {0}; i < walk.inner; ++i) {
+          if (nan[i] != 0U) {
+            best[i] = std::numeric_limits<T>::quiet_NaN();
+          }
+        }
+      }
+      return tensor<T> {without_axis(t.shape(), axis), std::move(out)};
     }
   } // namespace detail
 
@@ -229,13 +393,43 @@ namespace numerical {
     for (const std::size_t extent : shape) {
       count *= extent;
     }
-    std::vector<T>           out(count);
+    std::vector<T> out(count);
+    if (count == 0) {
+      return tensor<T> {std::move(shape), std::move(out)};
+    }
+    // The innermost axis runs as one loop, each operand stepping 1 or 0 (a broadcast one) along it, so a
+    // scalar or a row against a matrix is a plain vector loop; the odometer turns only between rows.
+    const std::size_t        inner  {shape[rank - 1]};
+    const std::size_t        step_a {sa[rank - 1]};
+    const std::size_t        step_b {sb[rank - 1]};
     std::vector<std::size_t> index(rank, 0);
-    std::size_t              ia {0};
-    std::size_t              ib {0};
-    for (std::size_t k {0}; k < count; ++k) {
-      out[k] = op(a.data()[ia], b.data()[ib]);
-      for (std::size_t axis {rank}; axis-- > 0;) { // odometer: carry into the next axis on wrap
+    std::size_t              ia     {0};
+    std::size_t              ib     {0};
+    for (std::size_t k {0}; k < count; k += inner) {
+      const T* const pa {a.data().data() + ia};
+      const T* const pb {b.data().data() + ib};
+      T* const       po {out.data() + k};
+      if (step_a == 1 && step_b == 1) {
+        for (std::size_t i {0}; i < inner; ++i) {
+          po[i] = op(pa[i], pb[i]);
+        }
+      }
+      else if (step_a == 1) {
+        const T y {pb[0]};
+        for (std::size_t i {0}; i < inner; ++i) {
+          po[i] = op(pa[i], y);
+        }
+      }
+      else if (step_b == 1) {
+        const T x {pa[0]};
+        for (std::size_t i {0}; i < inner; ++i) {
+          po[i] = op(x, pb[i]);
+        }
+      }
+      else {
+        std::fill(po, po + inner, op(pa[0], pb[0]));
+      }
+      for (std::size_t axis {rank - 1}; axis-- > 0;) { // odometer over the outer axes: carry on wrap
         ++index[axis];
         ia += sa[axis];
         ib += sb[axis];
@@ -303,11 +497,29 @@ namespace numerical {
     return tensor<R> {t.shape(), std::move(out)};
   }
 
-  //! \brief `a` to the power `b` element by element, broadcast, as `std::pow`.
+  /*!
+   * \brief `a` to the power `b` element by element, broadcast, as `std::pow`; a single exponent of 2, 0.5 or
+   *        -1 is computed as NumPy computes it, `x·x`, `sqrt(x)` or `1/x` (exact where `pow` rounds: a complex
+   *        square has no stray real part).
+   */
   template <typename T>
   [[nodiscard]] tensor<T> pow(const tensor<T>& a,
                               const tensor<T>& b)
   {
+    if constexpr (!std::is_integral_v<T>) {
+      if (b.size() == 1 && b.shape().size() <= a.shape().size()) {
+        const T y {b.data()[0]};
+        if (y == T(2)) {
+          return map(a, [](const T& x) { return detail::square(x); });
+        }
+        if (y == T(0.5)) {
+          return map(a, [](const T& x) { return static_cast<T>(std::sqrt(x)); });
+        }
+        if (y == T(-1)) {
+          return map(a, [](const T& x) { return static_cast<T>(T(1) / x); });
+        }
+      }
+    }
     return broadcast_apply(a, b, [](const T& x, const T& y) { return static_cast<T>(std::pow(x, y)); });
   }
 
@@ -366,9 +578,7 @@ namespace numerical {
   [[nodiscard]] tensor<T> max(const tensor<T>& t,
                               std::size_t      axis)
   {
-    return detail::reduce_along(t, axis, [](const T* first, std::size_t count, std::size_t stride) {
-                                  return detail::extreme(first, count, stride, std::greater<T> {});
-                                });
+    return detail::extremes_along(t, axis, std::greater<T> {});
   }
 
   //! \brief The smallest elements along \p axis. \throws dimension_error If \p axis is not an axis or is empty.
@@ -376,9 +586,7 @@ namespace numerical {
   [[nodiscard]] tensor<T> min(const tensor<T>& t,
                               std::size_t      axis)
   {
-    return detail::reduce_along(t, axis, [](const T* first, std::size_t count, std::size_t stride) {
-                                  return detail::extreme(first, count, stride, std::less<T> {});
-                                });
+    return detail::extremes_along(t, axis, std::less<T> {});
   }
 
   /*!

@@ -6,6 +6,20 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **`asarray` is 10–20× faster** on a NumPy array (1e6 float64: 11 → 0.8 ms; arm64, Apple clang 16, `-O2`): the
+  element type is resolved once per copy rather than per element, the innermost axis is one strided loop (a
+  contiguous run of the output's type one `memcpy`), and the GIL is released during the copy.
+- **Element-wise arithmetic, powers and extremes at NumPy's pace** (1e6 float64, NumPy's time in brackets):
+  `x * 2.0` 3.4 → 0.80 ms (0.63), `M + row` 3.4 → 0.84 (0.80), `x ** 2` 18 → 0.80 (0.69), `z ** 2` (complex)
+  80 → 0.68 (0.52), `max` 2.5 → 0.24 (0.14), `min` along axis 0 2.4 → 0.34 (0.23). Broadcasting runs the
+  innermost axis as one loop; a single exponent of 2, 0.5 or −1 is `x·x`, `sqrt(x)` or `1/x`, as NumPy computes
+  them (so `(1+1j) ** 2` is exactly `2j`); `max`/`min` compare over native vectors.
+
+### Fixed
+- **`max`/`min` along an empty axis raise**, as NumPy's, even when the result would be empty too
+  (`min(zeros((3, 0, 0)), axis=1)` returned an empty tensor).
+
 ## 2026.10.3 — 2026-10-11
 
 ### Fixed

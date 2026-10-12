@@ -1,5 +1,7 @@
 // Element-wise arithmetic with broadcasting, reductions, reshaping and creation of tensors, each against
 // NumPy's definition of it.
+#include <algorithm>
+#include <functional>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -164,4 +166,118 @@ TEST(map_and_pow)
   const tensor<std::complex<double>> z {{2}, {{3.0, 4.0}, {0.0, -2.0}}};
   EXPECT(numerical::map(z, [](const std::complex<double>& x) { return std::abs(x); }) == (tensor<double> {{2}, {5.0, 2.0}}));
   EXPECT(numerical::pow(t, tensor<double> {{}, {2.0}}) == (tensor<double> {{3}, {1.0, 16.0, 81.0}}));
+}
+
+namespace {
+  // A thousand values (vector lanes then a scalar tail on every build), the best and a NaN placed in turn at
+  // the start, inside the vector region and in the tail, against a plain scan.
+  template <typename T>
+  bool contiguous_extremes_hold()
+  {
+    const T nan {std::numeric_limits<T>::quiet_NaN()};
+    const T far {std::numeric_limits<T>::max() / T(2)};
+    bool    ok  {true};
+    for (const std::size_t count : {1U, 7U, 31U, 33U, 1000U, 1003U}) {
+      std::vector<T> values(count);
+      for (std::size_t i {0}; i < count; ++i) {
+        values[i] = static_cast<T>(std::sin(static_cast<double>(i) * 1.7) * 10.0);
+      }
+      const tensor<T> plain {{count}, values};
+      ok = ok && numerical::max(plain) == *std::ranges::max_element(values);
+      ok = ok && numerical::min(plain) == *std::ranges::min_element(values);
+      for (const std::size_t at : {std::size_t {0}, count / 2, count - 1}) {
+        std::vector<T> peak {values};
+        peak[at] = far;
+        ok       = ok && numerical::max(tensor<T> {{count}, peak}) == far;
+        peak[at] = -far;
+        ok       = ok && numerical::min(tensor<T> {{count}, peak}) == -far;
+        peak[at] = nan;
+        ok       = ok && std::isnan(numerical::max(tensor<T> {{count}, peak}));
+        ok       = ok && std::isnan(numerical::min(tensor<T> {{count}, peak}));
+      }
+    }
+    return ok;
+  }
+} // namespace
+
+TEST(a_contiguous_extreme_finds_nan_and_the_best_in_every_lane_and_the_tail)
+{
+  EXPECT(contiguous_extremes_hold<double>());
+  EXPECT(contiguous_extremes_hold<float>());
+}
+
+TEST(extremes_along_an_outer_axis_compare_slab_by_slab)
+{
+  // (3, 4, 5) along each axis against the line-by-line reduction, a NaN in one line only.
+  std::vector<double> values(60);
+  for (std::size_t i {0}; i < values.size(); ++i) {
+    values[i] = std::cos(static_cast<double>(i) * 0.9);
+  }
+  values[23] = std::numeric_limits<double>::quiet_NaN(); // index (1, 0, 3)
+  const tensor<double> cube {{3, 4, 5}, values};
+  for (std::size_t axis {0}; axis < 3; ++axis) {
+    const tensor<double> got  {numerical::max(cube, axis)};
+    const tensor<double> want {numerical::detail::reduce_along(cube, axis, [](const double* first, std::size_t count, std::size_t stride) {
+                                                                 return numerical::detail::extreme(first, count, stride, std::greater<double> {});
+                                                               })};
+    bool same                 {got.shape() == want.shape()};
+    for (std::size_t i {0}; same && i < got.size(); ++i) {
+      same = (got.data()[i] == want.data()[i]) || (std::isnan(got.data()[i]) && std::isnan(want.data()[i]));
+    }
+    EXPECT(same);
+  }
+  EXPECT(std::isnan(numerical::min(cube, 0)(std::vector<std::size_t> {0, 3})));
+  EXPECT(!std::isnan(numerical::min(cube, 0)(std::vector<std::size_t> {0, 2})));
+  EXPECT_THROWS((void)numerical::max(numerical::zeros<double>({0, 3}), 0), numerical::dimension_error);
+  // An empty axis is refused even when the result would be empty too, as NumPy refuses it.
+  EXPECT_THROWS((void)numerical::min(numerical::zeros<double>({3, 0, 0}), 1), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::max(numerical::zeros<double>({0, 0}), 0), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::max(numerical::zeros<int>({2, 0}), 1), numerical::dimension_error);
+}
+
+TEST(a_scalar_exponent_of_two_a_half_or_minus_one_is_computed_as_numpy_does)
+{
+  const tensor<double> x   {{4}, {0.3, 2.0, 7.25, 1e-3}};
+  const tensor<double> two {{}, {2.0}};
+  bool                 ok  {true};
+  for (std::size_t i {0}; i < x.size(); ++i) {
+    const double v {x.data()[i]};
+    ok = ok && numerical::pow(x, two).data()[i] == v * v;
+    ok = ok && numerical::pow(x, tensor<double> {{}, {0.5}}).data()[i] == std::sqrt(v);
+    ok = ok && numerical::pow(x, tensor<double> {{}, {-1.0}}).data()[i] == 1.0 / v;
+    ok = ok && numerical::pow(x, tensor<double> {{}, {3.0}}).data()[i] == std::pow(v, 3.0);
+  }
+  EXPECT(ok);
+  using cplx = std::complex<double>;
+  const tensor<cplx> z {{2}, {cplx {1.0, 1.0}, cplx {3.0, -2.0}}};
+  EXPECT(numerical::pow(z, tensor<cplx> {{}, {cplx {2.0, 0.0}}}) == (tensor<cplx> {{2}, {cplx {0.0, 2.0}, cplx {5.0, -12.0}}}));
+  // An exponent per element is a power per element.
+  EXPECT(numerical::pow(x, tensor<double> {{4}, {2.0, 2.0, 0.5, -1.0}})
+         == (tensor<double> {{4}, {std::pow(0.3, 2.0), std::pow(2.0, 2.0), std::pow(7.25, 0.5), std::pow(1e-3, -1.0)}}));
+  // An exponent of higher rank broadcasts the result to it: not the element-wise shortcut.
+  EXPECT(numerical::pow(x, tensor<double> {{1, 1}, {2.0}}).shape() == (shape {1, 4}));
+  const tensor<int> n {{2}, {3, 4}};
+  EXPECT(numerical::pow(n, tensor<int> {{}, {0}}) == (tensor<int> {{2}, {1, 1}})); // an integer power keeps pow
+}
+
+TEST(broadcasting_steps_each_operand_or_holds_it_along_the_inner_axis)
+{
+  // Every way through the inner loop with one operator (coverage counts each operator's instantiation apart):
+  // both stepping, the right held, the left held, both held, an empty result.
+  const tensor<double> row4 {counting({4})};
+  EXPECT((counting({2, 4}) + row4) == (tensor<double> {{2, 4}, {0.0, 2.0, 4.0, 6.0, 4.0, 6.0, 8.0, 10.0}}));
+  EXPECT((counting({2, 1}) + row4) == (tensor<double> {{2, 4}, {0.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 4.0}}));
+  EXPECT((row4 + counting({2, 1})) == (tensor<double> {{2, 4}, {0.0, 1.0, 2.0, 3.0, 1.0, 2.0, 3.0, 4.0}}));
+  EXPECT((counting({2, 1}) + counting({1, 1})) == (tensor<double> {{2, 1}, {0.0, 1.0}}));
+  EXPECT((numerical::zeros<double>({0, 4}) + row4).size() == 0U);
+  const tensor<double> column {{3, 1}, {1.0, 2.0, 3.0}};
+  const tensor<double> one    {{1, 1}, {10.0}};
+  EXPECT((column + one) == (tensor<double> {{3, 1}, {11.0, 12.0, 13.0}}));           // both held: a filled run
+  EXPECT((one - counting({4})) == (tensor<double> {{1, 4}, {10.0, 9.0, 8.0, 7.0}})); // the left held
+  EXPECT((counting({2, 3}) * tensor<double> {{3}, {1.0, 0.0, 2.0}})
+         == (tensor<double> {{2, 3}, {0.0, 0.0, 4.0, 3.0, 0.0, 10.0}}));             // both stepping
+  const tensor<double> cube {numerical::zeros<double>({2, 1, 1}) + counting({1, 3, 1})};
+  EXPECT(cube.shape() == (shape {2, 3, 1}));
+  EXPECT(cube(std::vector<std::size_t> {1, 2, 0}) == 2.0);
+  EXPECT((numerical::zeros<double>({0, 3}) + counting({3})).size() == 0U);         // an empty result
 }
