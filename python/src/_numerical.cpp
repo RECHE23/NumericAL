@@ -1649,6 +1649,17 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
     return result;
 }
 
+// set_num_threads(n): numerical::set_max_threads; a negative count is refused by the size_t conversion.
+void set_num_threads(std::size_t threads)
+{
+    numerical::set_max_threads(threads);
+}
+
+std::size_t get_num_threads()
+{
+    return numerical::max_threads();
+}
+
 } // namespace
 
 // caster<any_tensor> <-> the numerical.Tensor heap type (replaces the hand-rolled as_holder/wrap).
@@ -1677,6 +1688,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     .def_prop_ro<&get_array_interface>("__array_interface__",
                                        "NumPy array-interface (v3) describing the shared, read-only buffer.");
     // The 7 linear-algebra functions whose args/return are caster-able -> m.def.
+    m.def<&set_num_threads>("set_num_threads",
+                            "set_num_threads(n)\nCap the threads a kernel uses at n, the caller's included (0 lifts the cap).");
+    m.def<&get_num_threads>("get_num_threads", "get_num_threads() -> int\nThe threads a kernel may use.");
     m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
     m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe minimum-norm least-squares solution of a @ x ≈ b, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");

@@ -32,12 +32,12 @@ import os
 import sys as _sys
 
 from numerical import _numerical
-from numerical._numerical import Tensor, asarray as _asarray, error
+from numerical._numerical import Tensor, asarray as _asarray, error, get_num_threads, set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "slogdet", "inverse", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh", "svd",
-    "array_equal",
+    "array_equal", "set_num_threads", "get_num_threads",
     "get_include", "get_config",
 ]
 
@@ -50,6 +50,11 @@ class LinAlgError(error, ValueError):
 
 
 __version__ = "2026.10.3"
+
+# NUMERICAL_NUM_THREADS caps the kernels' threads from the start, as OMP_NUM_THREADS does for BLAS (a process
+# per core, say, wants one each).
+if os.environ.get("NUMERICAL_NUM_THREADS", "").strip().isdigit():
+    set_num_threads(int(os.environ["NUMERICAL_NUM_THREADS"]))
 
 
 def get_include():

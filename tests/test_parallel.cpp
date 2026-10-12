@@ -6,6 +6,7 @@
 #include <limits>
 #include <stdexcept>
 #include <string_view>
+#include <thread>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -57,4 +58,99 @@ TEST(threads_for_pays_a_thread_for_each_share_of_work)
   EXPECT_EQ(threads_for(most, most, 8), 8U);                                   // a product past size_t saturates
   EXPECT_EQ(threads_for(std::size_t {1} << 20, std::size_t {1} << 20, 0), 1U); // an unknown hardware: one
   EXPECT_EQ(threads_for(5, 0, 8), 0U);                                         // no work, no thread
+}
+
+// A parallel_for nested in a body finds the pool busy and runs its chunks in the calling worker: every index of
+// both levels once, no wait on itself.
+TEST(a_parallel_for_nested_in_a_body_runs_in_its_thread)
+{
+  std::vector<std::atomic<int>> hits(std::size_t {64} *64);
+  numerical::detail::parallel_for(64, std::size_t {1} << 20, [&hits](std::size_t i) {
+                                    numerical::detail::parallel_for(64, std::size_t {1} << 20, [&hits, i](std::size_t j) {
+                                                                      ++hits[(i * 64) + j];
+                                                                    });
+                                  });
+  bool once {true};
+  for (const std::atomic<int>& hit : hits) {
+    once = once && hit.load() == 1;
+  }
+  EXPECT(once);
+}
+
+// Two threads at once: one holds the pool, the other runs its chunks itself; both cover every index once.
+TEST(parallel_fors_from_two_threads_both_complete)
+{
+  std::vector<std::atomic<int>> first(4096);
+  std::vector<std::atomic<int>> second(4096);
+  std::thread                   other {[&second] {
+                                         for (int round {0}; round < 50; ++round) {
+                                           numerical::detail::parallel_for(second.size(), std::size_t {1} << 16,
+                                                                           [&second](std::size_t i) { ++second[i]; });
+                                         }
+                                       }};
+  for (int round {0}; round < 50; ++round) {
+    numerical::detail::parallel_for(first.size(), std::size_t {1} << 16, [&first](std::size_t i) { ++first[i]; });
+  }
+  other.join();
+  bool fifty {true};
+  for (std::size_t i {0}; i < first.size(); ++i) {
+    fifty = fifty && first[i].load() == 50 && second[i].load() == 50;
+  }
+  EXPECT(fifty);
+}
+
+// A cap of one runs every index on the caller; the cap lifted, the hardware threads come back.
+TEST(set_max_threads_caps_the_threads_a_kernel_uses)
+{
+  const std::size_t hardware {numerical::max_threads()};
+  numerical::set_max_threads(1);
+  EXPECT_EQ(numerical::max_threads(), 1U);
+  const std::thread::id         caller    {std::this_thread::get_id()};
+  std::atomic<bool>             elsewhere {false};
+  numerical::detail::parallel_for(1024, std::size_t {1} << 20, [&elsewhere, caller](std::size_t) {
+                                    if (std::this_thread::get_id() != caller) {
+                                      elsewhere = true;
+                                    }
+                                  });
+  EXPECT(!elsewhere.load());
+  numerical::set_max_threads(0);
+  EXPECT_EQ(numerical::max_threads(), hardware);
+  EXPECT(hardware >= 1U);
+}
+
+namespace {
+  // One body type through every way parallel_for runs: sequential, on the pool, capped to the caller, and
+  // nested in itself (the pool busy). Coverage counts each body type's instantiation apart.
+  struct nested_counter
+  {
+    std::vector<std::atomic<int>>* hits;
+    std::size_t                    width;
+    bool                           nest;
+
+    void operator()(std::size_t i) const
+    {
+      if (nest) {
+        numerical::detail::parallel_for(width, std::size_t {1} << 20, nested_counter {.hits = hits, .width = width, .nest = false});
+      }
+      ++(*hits)[nest ? 0 : i];
+    }
+  };
+} // namespace
+
+TEST(one_body_type_runs_sequentially_on_the_pool_capped_and_nested)
+{
+  std::vector<std::atomic<int>> hits(64);
+  numerical::detail::parallel_for(64, 1, nested_counter {.hits                     = &hits, .width = 64, .nest = false}); // too little work
+  numerical::detail::parallel_for(64, std::size_t {1} << 20, nested_counter {.hits = &hits, .width = 64, .nest = false}); // the pool
+  numerical::set_max_threads(1);
+  numerical::detail::parallel_for(64, std::size_t {1} << 20, nested_counter {.hits = &hits, .width = 64, .nest = false}); // capped
+  numerical::set_max_threads(2);
+  numerical::detail::parallel_for(64, std::size_t {1} << 20, nested_counter {.hits = &hits, .width = 64, .nest = false}); // a cap below the pool
+  numerical::set_max_threads(0);
+  numerical::detail::parallel_for(8, std::size_t {1} << 20, nested_counter {.hits = &hits, .width = 64, .nest = true});   // nested: busy
+  bool right {hits[0].load() == 4 + 8 + 8};                                                                               // four flat runs, eight nested inner runs, eight outer bodies
+  for (std::size_t i {1}; i < hits.size(); ++i) {
+    right = right && hits[i].load() == 4 + 8;
+  }
+  EXPECT(right);
 }

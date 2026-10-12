@@ -4,6 +4,8 @@ The NumPy / DLPack interop is verified twice: once with pure-Python checks that
 need nothing installed (the __array_interface__ dict, the DLPack capsule and
 device), and once against NumPy proper when it happens to be importable.
 """
+import os
+import sys
 import unittest
 
 import numerical
@@ -657,6 +659,27 @@ class LinalgVsNumpy(unittest.TestCase):
             got = np.asarray(numerical.lstsq(numerical.asarray(a), numerical.asarray(b)))
             self.assertTrue(np.allclose(got, np.linalg.lstsq(a, b, rcond=None)[0]))
 
+
+
+
+class Threads(unittest.TestCase):
+    def test_a_cap_changes_the_threads_not_the_bits(self):
+        a = numerical.asarray([[float((i * 7 + j * 3) % 11) - 5.0 for j in range(300)] for i in range(300)])
+        default = (a @ a).tolist()
+        numerical.set_num_threads(1)
+        try:
+            self.assertEqual(numerical.get_num_threads(), 1)
+            self.assertEqual((a @ a).tolist(), default)
+        finally:
+            numerical.set_num_threads(0)
+        self.assertGreaterEqual(numerical.get_num_threads(), 1)
+
+    def test_the_environment_sets_the_cap_at_import(self):
+        import subprocess
+        env = dict(os.environ, NUMERICAL_NUM_THREADS="1")
+        out = subprocess.run([sys.executable, "-c", "import numerical; print(numerical.get_num_threads())"],
+                             env=env, capture_output=True, text=True, check=True)
+        self.assertEqual(out.stdout.strip(), "1")
 
 if __name__ == "__main__":
     unittest.main()

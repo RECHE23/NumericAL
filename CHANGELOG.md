@@ -16,6 +16,16 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   innermost axis as one loop; a single exponent of 2, 0.5 or −1 is `x·x`, `sqrt(x)` or `1/x`, as NumPy computes
   them (so `(1+1j) ** 2` is exactly `2j`); `max`/`min` compare over native vectors.
 
+- **The kernels share a pool of threads started once**, rather than starting threads on every call: each
+  run hands its chunks out as threads free up (a slower core takes fewer), a run nested in another or started
+  while the pool is busy runs on its caller, and results are the same to the bit for any thread count. Matrix
+  product of order 128–256: 5.4–6.1× → 4.2–5.0× and 3.0× → 2.4× NumPy's time (arm64, Apple clang 16, `-O2`).
+
+### Added
+- **`numerical.set_num_threads(n)` and `get_num_threads()`** (C++: `numerical::set_max_threads`,
+  `max_threads`), and `NUMERICAL_NUM_THREADS` read at import, as `OMP_NUM_THREADS` caps BLAS: a process per core
+  can keep the kernels to one thread each.
+
 ### Fixed
 - **`max`/`min` along an empty axis raise**, as NumPy's, even when the result would be empty too
   (`min(zeros((3, 0, 0)), axis=1)` returned an empty tensor).
