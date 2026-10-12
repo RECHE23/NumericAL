@@ -894,11 +894,15 @@ namespace {
   }
 } // namespace
 
-// Past one panel: three panels, the last partial.
+// Past one panel: three panels, the last partial. On the vector path: on the AMX the trailing products fuse
+// their multiply-adds and the panels do not, which the next test bounds instead.
 TEST(blocked_lu_equals_the_unblocked_algorithm_to_the_bit)
 {
-  const std::size_t n {(2 * numerical::detail::lu_block) + 22};
+  const bool        amx {numerical::amx_enabled()};
+  const std::size_t n   {(2 * numerical::detail::lu_block) + 22};
+  numerical::set_amx(false);
   EXPECT(blocked_lu_equals_unblocked<double>(n));
+  numerical::set_amx(amx);
   EXPECT(blocked_lu_equals_unblocked<std::complex<double>>(numerical::detail::lu_block + 40));
 }
 
@@ -971,7 +975,10 @@ namespace {
 // Past one panel: the diagonal blocks, the rows below them in parallel, and the trailing products.
 TEST(blocked_cholesky_equals_the_unblocked_algorithm_to_the_bit)
 {
+  const bool amx {numerical::amx_enabled()};
+  numerical::set_amx(false);
   EXPECT(blocked_cholesky_equals_unblocked<double>((2 * numerical::detail::cholesky_block) + 22));
+  numerical::set_amx(amx);
   EXPECT(blocked_cholesky_equals_unblocked<std::complex<double>>(numerical::detail::cholesky_block + 40));
 }
 
@@ -1084,4 +1091,39 @@ TEST(blocked_qr_across_panels_any_shape)
   EXPECT(blocked_qr_holds<double>(past - 20, past + 30, past + 30));             // wide: k = rows
   EXPECT(blocked_qr_holds<double>(past, past, numerical::detail::qr_block + 5)); // a zero column, later panel
   EXPECT(blocked_qr_holds<std::complex<double>>(past + 7, past, past));
+}
+
+// On either path (the AMX's fused trailing products where the chip has one) the blocked factorisations solve to
+// within a small multiple of the rounding: the bound the bit-identity above gives on the vector path alone.
+TEST(blocked_factorisations_solve_accurately_on_every_path)
+{
+  const std::size_t n {(2 * numerical::detail::lu_block) + 22};
+  for (const bool amx : {false, true}) {
+    numerical::set_amx(amx);
+    std::vector<double> entries(n * n);
+    for (std::size_t i {0}; i < n * n; ++i) {
+      entries[i] = std::sin(static_cast<double>(i) * 0.37) + (i % (n + 1) == 0 ? static_cast<double>(n) : 0.0);
+    }
+    const matrix<double> a     {n, n, entries};
+    const vector<double> b     {std::vector<double>(n, 1.0)};
+    const vector<double> x     {numerical::solve(a, b)};
+    const vector<double> r     {a * x};
+    double               worst {0.0};
+    for (std::size_t i {0}; i < n; ++i) {
+      worst = std::max(worst, std::abs(r[i] - 1.0));
+    }
+    EXPECT(worst < 1e-12);
+    const std::vector<double> spd {hermitian_positive_definite<double>(n)};
+    const matrix<double>      lower {numerical::cholesky(matrix<double> {n, n, spd}).lower()};
+    const matrix<double>      back {lower * numerical::transpose(lower)};
+    double                    gap {0.0};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        const double want {spd[(i * n) + j]};
+        gap = std::max(gap, std::abs(back(i, j) - want) / std::max(1.0, std::abs(want)));
+      }
+    }
+    EXPECT(gap < 1e-12);
+  }
+  numerical::set_amx(true);
 }

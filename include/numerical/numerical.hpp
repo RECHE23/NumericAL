@@ -13,6 +13,7 @@
 #ifndef NUMERICAL_NUMERICAL_HPP
 #define NUMERICAL_NUMERICAL_HPP
 
+#include "amx.hpp"
 #include "decomposition.hpp"
 #include "matrix.hpp"
 #include "tensor.hpp"

@@ -2,8 +2,11 @@
 // index, so the packed kernel equals the plain i-k-j loop to the bit, across several depth panels,
 // several column blocks, partial register tiles, every scalar it is instantiated for, and any number of
 // threads. Exact equality is the property; a tolerance would hide a reordered sum.
+#include <algorithm>
+#include <cmath>
 #include <complex>
 #include <cstddef>
+#include <type_traits>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -27,7 +30,9 @@ namespace {
     return static_cast<int>(i % 11) - 5;
   }
 
-  // The definition the kernel must reproduce: C starts at zero and adds a(i,p)·b(p,j) for p ascending.
+  // The definition the kernel must reproduce: C starts at zero and adds a(i,p)·b(p,j) for p ascending, each
+  // product rounded before its sum, or fused with it where the product runs on the AMX (a double product large
+  // enough to be packed, while the AMX is in use; a small one runs the plain loop on any chip).
   template <typename T>
   std::vector<T> reference(std::size_t           m,
                            std::size_t           n,
@@ -35,16 +40,37 @@ namespace {
                            const std::vector<T>& a,
                            const std::vector<T>& b)
   {
+    const bool packed         {k >= numerical::detail::gemm_min_depth
+                               && m * n >= ((numerical::detail::gemm_packed_threshold + k) - 1) / k};
+    const bool     fused      {std::is_same_v<T, double> && packed && numerical::amx_enabled()};
     std::vector<T> c(m * n, T {});
     for (std::size_t i {0}; i < m; ++i) {
       for (std::size_t p {0}; p < k; ++p) {
         const T aip {a[(i * k) + p]};
         for (std::size_t j {0}; j < n; ++j) {
-          c[(i * n) + j] += aip * b[(p * n) + j];
+          if constexpr (std::is_floating_point_v<T>) {
+            c[(i * n) + j] = fused ? std::fma(aip, b[(p * n) + j], c[(i * n) + j]) : c[(i * n) + j] + (aip * b[(p * n) + j]);
+          }
+          else {
+            c[(i * n) + j] += aip * b[(p * n) + j];
+          }
         }
       }
     }
     return c;
+  }
+
+  // Each check once on the vector path and once on the AMX where the chip has one (set_amx answers whether it
+  // took).
+  template <typename Check>
+  bool on_every_path(const Check& check)
+  {
+    numerical::set_amx(false);
+    bool ok {check()};
+    if (numerical::set_amx(true)) {
+      ok = ok && check();
+    }
+    return ok;
   }
 
   template <typename T>
@@ -73,7 +99,8 @@ namespace {
 TEST(packed_product_equals_the_ascending_sum_to_the_bit)
 {
   const std::size_t k {(numerical::detail::gemm_kc * 2) + 17};
-  EXPECT(product_is_exact<double>(129, 101, k));
+  EXPECT(on_every_path([&] { return product_is_exact<double>(129, 101, k); }));
+  EXPECT(on_every_path([&] { return product_is_exact<double>(31, 15, k); })); // one partial AMX tile
   EXPECT(product_is_exact<float>(67, 75, k));
   EXPECT(product_is_exact<std::complex<double>>(37, 29, k));
   EXPECT(product_is_exact<int>(70, 50, k));
@@ -82,17 +109,17 @@ TEST(packed_product_equals_the_ascending_sum_to_the_bit)
 // More columns than one packed block of B holds: the column blocks are summed independently.
 TEST(packed_product_spans_several_column_blocks)
 {
-  const std::size_t n {numerical::detail::gemm_nc<double> + 13};
-  EXPECT(product_is_exact<double>(9, n, 40));
+  const std::size_t n {std::max(numerical::detail::gemm_nc<double>, std::size_t {16} *128) + 13};
+  EXPECT(on_every_path([&] { return product_is_exact<double>(9, n, 40); }));
 }
 
 // A small or a shallow product takes the plain loop, in the same order.
 TEST(small_or_shallow_product_takes_the_plain_loop_and_the_same_order)
 {
   EXPECT(std::size_t {3} *5 * 9 < numerical::detail::gemm_packed_threshold);
-  EXPECT(product_is_exact<double>(3, 5, 9));
+  EXPECT(on_every_path([] { return product_is_exact<double>(3, 5, 9); }));
   EXPECT(std::size_t {5} < numerical::detail::gemm_min_depth);
-  EXPECT(product_is_exact<double>(70, 60, 5));
+  EXPECT(on_every_path([] { return product_is_exact<double>(70, 60, 5); }));
 }
 
 // An empty inner dimension leaves C at zero; an empty outer one leaves it empty.

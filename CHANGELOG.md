@@ -26,6 +26,15 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   153 → 178 GFLOPS, 1024 195 → 207 (one core: 41, about 80 % of its vector peak).
 
 ### Added
+- **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses: order 1024
+  356 GFLOPS against Accelerate's 384 (was 207 on the vector units; M1 Pro, 8 threads), one core 181 (was 41).
+  Apple documents no instruction for it, so the path is guarded: compiled only for arm64 macOS (not at all under
+  `NUMERICAL_NO_AMX`), used only on a CPU family of the M1 to M4 line, and only once a product computed on it
+  equals, to the bit, the same product by `std::fma` in ascending order. `numerical.set_amx(False)` /
+  `NUMERICAL_AMX=0` (C++: `numerical::set_amx`) keep products on the vector units; `amx_enabled()` and
+  `get_config()["amx"]` report it. On the AMX each element of a product is a chain of fused multiply-adds in
+  ascending order of the depth, the same on any number of threads; it differs from the vector path in the last
+  bits, as any fused product does. LU, Cholesky, QR and the inverse take it through their trailing products.
 - **`numerical.set_num_threads(n)` and `get_num_threads()`** (C++: `numerical::set_max_threads`,
   `max_threads`), and `NUMERICAL_NUM_THREADS` read at import, as `OMP_NUM_THREADS` caps BLAS: a process per core
   can keep the kernels to one thread each.

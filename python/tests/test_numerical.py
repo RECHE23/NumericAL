@@ -674,6 +674,25 @@ class Threads(unittest.TestCase):
             numerical.set_num_threads(0)
         self.assertGreaterEqual(numerical.get_num_threads(), 1)
 
+    def test_amx_turns_off_and_back_without_changing_more_than_rounding(self):
+        a = numerical.asarray([[((i * 7 + j * 3) % 11) / 3.0 - 1.5 for j in range(200)] for i in range(200)])
+        usable = numerical.set_amx(True)
+        fused = (a @ a).tolist()
+        self.assertFalse(numerical.set_amx(False))
+        self.assertFalse(numerical.amx_enabled())
+        plain = (a @ a).tolist()
+        numerical.set_amx(usable)
+        worst = max(abs(x - y) for row_f, row_p in zip(fused, plain) for x, y in zip(row_f, row_p))
+        self.assertLess(worst, 1e-11)
+        self.assertEqual(numerical.get_config()["amx"], numerical.amx_enabled())
+
+    def test_the_environment_turns_amx_off_at_import(self):
+        import subprocess
+        env = dict(os.environ, NUMERICAL_AMX="0")
+        out = subprocess.run([sys.executable, "-c", "import numerical; print(numerical.amx_enabled())"],
+                             env=env, capture_output=True, text=True, check=True)
+        self.assertEqual(out.stdout.strip(), "False")
+
     def test_the_environment_sets_the_cap_at_import(self):
         import subprocess
         env = dict(os.environ, NUMERICAL_NUM_THREADS="1")

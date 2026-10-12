@@ -32,12 +32,12 @@ import os
 import sys as _sys
 
 from numerical import _numerical
-from numerical._numerical import Tensor, asarray as _asarray, error, get_num_threads, set_num_threads
+from numerical._numerical import Tensor, amx_enabled, asarray as _asarray, error, get_num_threads, set_amx, set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "slogdet", "inverse", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh", "svd",
-    "array_equal", "set_num_threads", "get_num_threads",
+    "array_equal", "set_num_threads", "get_num_threads", "set_amx", "amx_enabled",
     "get_include", "get_config",
 ]
 
@@ -55,6 +55,11 @@ __version__ = "2026.10.3"
 # per core, say, wants one each).
 if os.environ.get("NUMERICAL_NUM_THREADS", "").strip().isdigit():
     set_num_threads(int(os.environ["NUMERICAL_NUM_THREADS"]))
+
+# NUMERICAL_AMX=0 keeps float64 matrix products off the Apple AMX (an undocumented coprocessor, used only on a
+# known M-series chip that passes a self-test; see numerical/amx.hpp).
+if os.environ.get("NUMERICAL_AMX", "").strip() == "0":
+    set_amx(False)
 
 
 def get_include():
@@ -79,13 +84,15 @@ def get_config():
     """Return metadata for embedding the C++ library.
 
     Returns:
-        dict: ``version`` (str), ``include`` (str, see :func:`get_include`), and
-        ``cxx_standard`` (str).
+        dict: ``version`` (str), ``include`` (str, see :func:`get_include`), ``cxx_standard`` (str),
+        ``amx`` (bool, whether float64 products run on the Apple AMX) and ``threads`` (int).
     """
     return {
         "version": __version__,
         "include": get_include(),
         "cxx_standard": "c++20",
+        "amx": amx_enabled(),
+        "threads": get_num_threads(),
     }
 
 
