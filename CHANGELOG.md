@@ -53,8 +53,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **`eigh` reduces to tridiagonal form by blocks and forms its vectors by blocks**, as LAPACK's `dsytrd`
   and `dorgtr`: each panel of 32 reflections updates the trailing block at once through the matrix product
   kernel, the product `A v` of each reflection runs as contiguous updates on every core, and the accumulated
-  reflections go through the kernel by blocks. M1 Pro, float64: order 256 13.8 → 9.3 ms, 512 107 → 58
-  (Accelerate 26).
+  reflections go through the kernel by blocks. The rotations of a QL or QR sweep reach the vectors as
+  LAPACK's `dlasr` applies them, each row read and written once per sweep. M1 Pro, float64: order 256
+  13.8 → 9.1 ms, 512 107 → 54 (Accelerate 26).
 
 - **`svd` bidiagonalises on every core**: each reflection's columns (from the left) or rows (from the right)
   run in parallel, and a right reflection's products sum over native vectors. M1 Pro, float64, order 256 21.7 →

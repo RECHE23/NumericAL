@@ -23,6 +23,7 @@
 #define NUMERICAL_DECOMPOSITION_HPP
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
 #include <cstddef>
@@ -1463,41 +1464,117 @@ namespace numerical {
       double      s;    //!< The sine of a rotation.
     };
 
+    //! \brief A run of recorded rotations in which each shares a row with the next, as a sweep of the QL or QR
+    //!        iteration gives them: rows `(i, i+1)` for `i` going down (`down`), or going up.
+    struct rotation_run
+    {
+      std::size_t first; //!< Its first operation.
+      std::size_t count; //!< Its operations (one for an operation outside any run).
+      bool        down;  //!< Whether each next rotation's second row is this one's first.
+    };
+
+    //! \brief The operations split into runs of chained rotations, every other operation a run of one.
+    [[nodiscard]] inline std::vector<rotation_run> rotation_runs(const std::vector<row_operation>& operations)
+    {
+      std::vector<rotation_run> runs;
+      for (std::size_t t {0}; t < operations.size();) {
+        const row_operation& op    {operations[t]};
+        std::size_t          count {1};
+        bool                 down  {false};
+        if (op.what == row_operation::kind::rotate && t + 1 < operations.size()
+            && operations[t + 1].what == row_operation::kind::rotate) {
+          down = operations[t + 1].j == op.i;
+          for (; t + count < operations.size(); ++count) {
+            const row_operation& previous {operations[t + count - 1]};
+            const row_operation& next     {operations[t + count]};
+            const bool           chained  {down ? next.j == previous.i : next.i == previous.j};
+            if (next.what != row_operation::kind::rotate || !chained) {
+              break;
+            }
+          }
+        }
+        runs.push_back({.first = t, .count = count, .down = down});
+        t                     += count;
+      }
+      return runs;
+    }
+
     /*!
      * \brief Applies the recorded operations, in order, to the row-major \p m (`n` per row). Each column takes
      *        them independently of the others, so chunks of columns run in parallel, every element receiving
      *        the same operations in the same order as applying each in place would give it.
+     *
+     * A run of chained rotations goes as LAPACK's `dlasr`: the row each rotation hands the next stays in a
+     * buffer the size of the chunk, so every row of the run is read and written once rather than twice per
+     * rotation.
      */
     template <typename T>
     void apply_row_operations(std::vector<T>&                   m,
                               std::size_t                       n,
                               const std::vector<row_operation>& operations)
     {
-      constexpr std::size_t width {64};
+      constexpr std::size_t           width {64};
+      const std::vector<rotation_run> runs  {rotation_runs(operations)};
       parallel_for((n + width - 1) / width, operations.size() * width, [&](std::size_t chunk) {
-                     const std::size_t first {chunk * width};
-                     const std::size_t last {std::min(first + width, n)};
-                     for (const row_operation& op : operations) {
-                       T* row   {m.data() + (op.i * n)};
-                       T* other {m.data() + (op.j * n)};
+                     const std::size_t     first {chunk * width};
+                     const std::size_t     count {std::min(first + width, n) - first};
+                     std::array<T, width>  carry {};
+                     for (const rotation_run& run : runs) {
+                       const row_operation& start {operations[run.first]};
+                       if (run.count > 1) {
+                         // Down: rotation u's first row is rotation u+1's second; up: its second is the next's first.
+                         const T* source {m.data() + ((run.down ? start.j : start.i) * n) + first};
+                         std::copy(source, source + count, carry.begin());
+                         for (std::size_t u {run.first}; u < run.first + run.count; ++u) {
+                           const row_operation& op {operations[u]};
+                           const T              c  {detail::from_double<T>(op.c)};
+                           const T              s  {detail::from_double<T>(op.s)};
+                           if (run.down) { // the carried row is op.j: op.i is read, op.j written
+                             const T* row   {m.data() + (op.i * n) + first};
+                             T*       other {m.data() + (op.j * n) + first};
+                             for (std::size_t k {0}; k < count; ++k) {
+                               const T a {row[k]};
+                               const T b {carry[k]};
+                               other[k] = (c * b) - (s * a);
+                               carry[k] = (c * a) + (s * b);
+                             }
+                           }
+                           else { // the carried row is op.i: op.j is read, op.i written
+                             T*       row   {m.data() + (op.i * n) + first};
+                             const T* other {m.data() + (op.j * n) + first};
+                             for (std::size_t k {0}; k < count; ++k) {
+                               const T a {carry[k]};
+                               const T b {other[k]};
+                               row[k]   = (c * a) + (s * b);
+                               carry[k] = (c * b) - (s * a);
+                             }
+                           }
+                         }
+                         const row_operation& end    {operations[run.first + run.count - 1]};
+                         T*                   target {m.data() + ((run.down ? end.i : end.j) * n) + first};
+                         std::copy(carry.begin(), carry.begin() + static_cast<std::ptrdiff_t>(count), target);
+                         continue;
+                       }
+                       T* row   {m.data() + (start.i * n) + first};
+                       T* other {m.data() + (start.j * n) + first};
                        // The kind is tested outside the column loop, which then vectorises.
-                       if (op.what == row_operation::kind::rotate) {
-                         const T c {detail::from_double<T>(op.c)};
-                         const T s {detail::from_double<T>(op.s)};
-                         for (std::size_t k {first}; k < last; ++k) {
+                       if (start.what == row_operation::kind::rotate) {
+                         const T c {detail::from_double<T>(start.c)};
+                         const T s {detail::from_double<T>(start.s)};
+                         for (std::size_t k {0}; k < count; ++k) {
                            const T a {row[k]};
                            const T b {other[k]};
                            row[k]   = (c * a) + (s * b);
                            other[k] = (c * b) - (s * a);
                          }
                        }
-                       else if (op.what == row_operation::kind::negate) {
-                         for (std::size_t k {first}; k < last; ++k) {
+                       else if (start.what == row_operation::kind::negate) {
+                         for (std::size_t k {0}; k < count; ++k) {
                            row[k] = -row[k];
                          }
                        }
                        else {
-                         std::swap_ranges(row + first, row + last, other + first);
+                         std::swap_ranges(row, row + count, other);
                        }
                      }
                    });
