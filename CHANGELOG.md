@@ -30,6 +30,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   then one fused multiply-add, so LU, Cholesky, QR, the inverse, `eigh` and `svd` differ in the last bits from
   2026.10.4 on such processors. i9-10900X (a shared machine): `solve` of order 1024 about 30 → 25 ms, the
   inverse 63 → 57 ms, `svd` of order 512 about 165 → 134 ms; `eigh` 3–5 % faster.
+- **The matrix product keeps each A sliver in the L1 cache across its task's B slivers**, as BLIS orders its
+  loops (the B sliver, 32 KiB on AVX-512, filled the L1 when it was the outer one). The same results to the bit.
+  One core: i9-10900X (AVX-512) 72 → 77 GFLOP/s at order 2048, i5-8500 (AVX2) 47 → 49, M1 Pro (AMX) 205 → 214;
+  all cores: i5-8500 207 → 222, M1 Pro 510 → 570 at order 1024.
 - **LU looks one panel ahead** where the trailing block is at most 1024 columns wide: the next panel's columns
   are updated first, then the panel is factorised on the calling thread while the workers update the rest; its row
   swaps reach those columns once both are done. The same arithmetic in the same order: the factors are the same
