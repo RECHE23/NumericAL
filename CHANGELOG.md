@@ -30,6 +30,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   then one fused multiply-add, so LU, Cholesky, QR, the inverse, `eigh` and `svd` differ in the last bits from
   2026.10.4 on such processors. i9-10900X (a shared machine): `solve` of order 1024 about 30 → 25 ms, the
   inverse 63 → 57 ms, `svd` of order 512 about 165 → 134 ms; `eigh` 3–5 % faster.
+- **`eigh` no longer zeroes buffers it writes whole** (each join's root gaps and eigenvector weights, megabytes
+  at the top join; the panel's and the reflector blocks' copies): 3.4 % fewer instructions at order 512
+  (callgrind), the same results to the bit.
 
 ## 2026.10.4 — 2026-10-12
 

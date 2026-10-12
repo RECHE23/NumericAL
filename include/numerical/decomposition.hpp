@@ -29,6 +29,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <memory>
 #include <numbers>
 #include <stdexcept>
 #include <string>
@@ -1091,12 +1092,12 @@ namespace numerical {
                                           std::size_t               from,
                                           std::size_t               to)
     {
-      const std::size_t b {block.width};
-      const std::size_t h {block.height};
-      const std::size_t r {to - from};
-      std::vector<T>    v_conjugate(h * b);   // conj(V), h × b
-      std::vector<T>    minus_v_t(b * h);     // −Vᵀ, b × h
-      std::vector<T>    t_transposed(b * b);  // Tᵀ
+      const std::size_t b            {block.width};
+      const std::size_t h            {block.height};
+      const std::size_t r            {to - from};
+      const auto        v_conjugate  {std::make_unique_for_overwrite<T[]>(h * b)}; // conj(V), h × b, written whole
+      const auto        minus_v_t    {std::make_unique_for_overwrite<T[]>(b * h)}; // −Vᵀ, b × h
+      const auto        t_transposed {std::make_unique_for_overwrite<T[]>(b * b)}; // Tᵀ
       for (std::size_t row {0}; row < h; ++row) {
         for (std::size_t j {0}; j < b; ++j) {
           v_conjugate[(row * b) + j] = conj_of(block.v[(row * b) + j]);
@@ -1110,10 +1111,10 @@ namespace numerical {
       }
       T*             left                {at.data() + (from * cols) + block.first};
       std::vector<T> projection(r * b, T {});
-      gemm(r, b, h, left, cols, v_conjugate.data(), b, projection.data(), b);
+      gemm(r, b, h, left, cols, v_conjugate.get(), b, projection.data(), b);
       std::vector<T> scaled(r * b, T     {});
-      gemm(r, b, b, projection.data(), b, t_transposed.data(), b, scaled.data(), b);
-      gemm(r, h, b, scaled.data(), b, minus_v_t.data(), h, left, cols);
+      gemm(r, b, b, projection.data(), b, t_transposed.get(), b, scaled.data(), b);
+      gemm(r, h, b, scaled.data(), b, minus_v_t.get(), h, left, cols);
     }
 
     /*!
@@ -1598,8 +1599,8 @@ namespace numerical {
         // diagonal. By bands of rows, each to the diagonal: about half the full block's operations.
         const std::size_t rest  {n - k1};
         const std::size_t depth {2 * width};
-        std::vector<T>    left(rest * depth);  // row i: −V's row i, then −W's
-        std::vector<T>    right(depth * rest); // Wᴴ's rows, then Vᴴ's
+        const auto        left  {std::make_unique_for_overwrite<T[]>(rest * depth)}; // row i: −V's then −W's, written whole
+        const auto        right {std::make_unique_for_overwrite<T[]>(depth * rest)}; // Wᴴ's rows, then Vᴴ's
         for (std::size_t p {0}; p < width; ++p) {
           for (std::size_t i {0}; i < rest; ++i) {
             left[(i * depth) + p]                = -by_row_v[(p * n) + k1 + i];
@@ -1611,7 +1612,7 @@ namespace numerical {
         T* trailing {a.data() + (k1 * n) + k1};
         for (std::size_t r0 {0}; r0 < rest; r0 += tridiagonal_band) {
           const std::size_t rows {std::min(tridiagonal_band, rest - r0)};
-          gemm(rows, r0 + rows, depth, left.data() + (r0 * depth), depth, right.data(), rest, trailing + (r0 * n), n);
+          gemm(rows, r0 + rows, depth, left.get() + (r0 * depth), depth, right.get(), rest, trailing + (r0 * n), n);
         }
       }
       for (std::size_t i {0}; i < n; ++i) {
@@ -2083,11 +2084,13 @@ namespace numerical {
       }
       const double        scaled_rho {rho * norm * norm};
       std::vector<double> roots(k);
-      std::vector<double> gaps(k * k); // gaps[i * k + j] = poles[j] − roots[i]
+      // gaps[i * k + j] = poles[j] − roots[i], every element written by its root's solve: left unset till then,
+      // as u and the copies below, which are written whole (zeroing them was a pass over megabytes per join).
+      const auto gaps {std::make_unique_for_overwrite<double[]>(k * k)};
       parallel_for(k, 8 * k, [&](std::size_t i) {
-                     roots[i] = secular_root(poles, weights, scaled_rho, i, secular_iterations, gaps.data() + (i * k));
+                     roots[i] = secular_root(poles, weights, scaled_rho, i, secular_iterations, gaps.get() + (i * k));
                    });
-      std::vector<double> u(k * k); // column i: the eigenvector of roots[i] in the kept columns' basis
+      const auto u {std::make_unique_for_overwrite<double[]>(k * k)}; // column i: roots[i]'s eigenvector, kept basis
       // Each pole's row of u on its own (the products of a row do not depend on another's), then each column's
       // length on its own: the same operations in the same order on any number of threads.
       parallel_for(k, 4 * k, [&](std::size_t j) {
@@ -2126,18 +2129,18 @@ namespace numerical {
             reaching.push_back(i);
           }
         }
-        const std::size_t   width {reaching.size()};
-        std::vector<double> columns(rows * width);
-        std::vector<double> factor(width * k);
+        const std::size_t   width   {reaching.size()};
+        const auto          columns {std::make_unique_for_overwrite<double[]>(rows * width)};
+        const auto          factor  {std::make_unique_for_overwrite<double[]>(width * k)};
         parallel_for(rows, width, [&](std::size_t r) {
                        for (std::size_t c {0}; c < width; ++c) {
                          columns[(r * width) + c] = q[((first + r) * n) + kept[reaching[c]]];
                        }
                      });
         for (std::size_t c {0}; c < width; ++c) {
-          std::copy_n(u.begin() + static_cast<std::ptrdiff_t>(reaching[c] * k), k, factor.begin() + static_cast<std::ptrdiff_t>(c * k));
+          std::copy_n(u.get() + (reaching[c] * k), k, factor.get() + (c * k));
         }
-        gemm(rows, k, width, columns.data(), width, factor.data(), k, updated.data() + (first * k), k);
+        gemm(rows, k, width, columns.get(), width, factor.get(), k, updated.data() + (first * k), k);
       }
       // Every eigenpair, then by ascending eigenvalue: column j of the result is column source[j] of the
       // updated ones (below k) or deflated column source[j] − k of q, written row by row.
