@@ -231,7 +231,8 @@ namespace numerical::detail {
    *        a compiler may contract `f · x` and `x · f` of complex numbers differently. Under GCC, over native
    *        vectors where `T` has them: at `-O2` GCC leaves the scalar loop scalar, unable to rule out an overlap
    *        without a check it will not add. Clang vectorises the scalar loop itself, with that check, and better
-   *        than these vectors (an LU solve of order 128 on arm64 took 19 % longer through them).
+   *        than these vectors (an LU solve of order 128 on arm64 took 19 % longer through them). For `double`,
+   *        gemm.hpp's overload chooses the x86-64 units at run time, a fused multiply-add per element there.
    */
   template <typename T>
   void subtract_product(T*          y,

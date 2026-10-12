@@ -92,6 +92,80 @@ namespace numerical::detail {
     return best_gemm_path(gemm_path_cap().load(std::memory_order_relaxed));
   }
 
+  /*!
+   * \brief `y[i] −= f · x[i]` for `double` on the widest x86-64 units the matrix product's kernel may use
+   *        (\ref gemm_path_current), each element one fused multiply-add there; elsewhere \ref subtract_product's
+   *        template. The decompositions' row updates take it: a wheel built for the baseline x86-64 holds two
+   *        `double` per vector and fuses none.
+   */
+  inline void subtract_product(double*       y,
+                               const double& f,
+                               const double* x,
+                               std::size_t   count)
+  {
+    const double factor  {f}; // read once: it may be an element of y's array
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::avx512) {
+      avx512_scaled_add(y, x, -factor, count);
+      return;
+    }
+    if (path == gemm_path::avx2) {
+      avx2_scaled_add(y, x, -factor, count);
+      return;
+    }
+#endif
+    subtract_product<double>(y, factor, x, count);
+  }
+
+  //! \brief `y[i] −= x[i] · f` for `double`, as the other (a real product is the same either way round).
+  inline void subtract_product(double*       y,
+                               const double* x,
+                               const double& f,
+                               std::size_t   count)
+  {
+    subtract_product(y, f, x, count);
+  }
+
+  //! \brief `y[i] += f · x[i]` for `double`, as \ref subtract_product.
+  inline void add_product(double*       y,
+                          const double& f,
+                          const double* x,
+                          std::size_t   count)
+  {
+    const double factor  {f}; // read once: it may be an element of y's array
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::avx512) {
+      avx512_scaled_add(y, x, factor, count);
+      return;
+    }
+    if (path == gemm_path::avx2) {
+      avx2_scaled_add(y, x, factor, count);
+      return;
+    }
+#endif
+    add_product<double>(y, factor, x, count);
+  }
+
+  //! \brief `Σ x[i] · y[i]` for `double`, as \ref subtract_product chooses its units (in another order of
+  //!        summation there, as fixed).
+  [[nodiscard]] inline double dot_product(const double* x,
+                                          const double* y,
+                                          std::size_t   count)
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::avx512) {
+      return avx512_dot(x, y, count);
+    }
+    if (path == gemm_path::avx2) {
+      return avx2_dot(x, y, count);
+    }
+#endif
+    return dot_product<double>(x, y, count);
+  }
+
   //! \brief The rows of C one register tile covers.
   inline constexpr std::size_t gemm_mr {4};
 

@@ -12,6 +12,7 @@
 #define NUMERICAL_X86_HPP
 
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 
@@ -291,6 +292,96 @@ namespace numerical::detail {
     for (std::size_t i {done}; i < count; ++i) {
       total  += row[i] * v[i];
       out[i] += row[i] * f;
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return total;
+  }
+
+  //! \brief `y[i] += f · x[i]` for \p count elements, each one fused multiply-add (a subtraction passes `−f`,
+  //!        whose negation is exact).
+  NUMERICAL_TARGET("avx512f") inline void avx512_scaled_add(double*       y,
+                                                            const double* x,
+                                                            double        f,
+                                                            std::size_t   count) noexcept
+  {
+    const __m512d     splat {_mm512_set1_pd(f)};
+    const std::size_t done  {count - (count % 8)};
+    for (std::size_t i {0}; i < done; i += 8) {
+      _mm512_storeu_pd(y + i, _mm512_fmadd_pd(splat, _mm512_loadu_pd(x + i), _mm512_loadu_pd(y + i)));
+    }
+    for (std::size_t i {done}; i < count; ++i) {
+      y[i] = std::fma(f, x[i], y[i]);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief \ref avx512_scaled_add on AVX2 with FMA.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_scaled_add(double*       y,
+                                                           const double* x,
+                                                           double        f,
+                                                           std::size_t   count) noexcept
+  {
+    const __m256d     splat {_mm256_set1_pd(f)};
+    const std::size_t done  {count - (count % 4)};
+    for (std::size_t i {0}; i < done; i += 4) {
+      _mm256_storeu_pd(y + i, _mm256_fmadd_pd(splat, _mm256_loadu_pd(x + i), _mm256_loadu_pd(y + i)));
+    }
+    for (std::size_t i {done}; i < count; ++i) {
+      y[i] = std::fma(f, x[i], y[i]);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief `Σ x[i] · y[i]`: four accumulators of eight `double`, chains of fused multiply-adds summed in a fixed
+  //!        order, then the remainder.
+  NUMERICAL_TARGET("avx512f") inline double avx512_dot(const double* x,
+                                                       const double* y,
+                                                       std::size_t   count) noexcept
+  {
+    constexpr std::size_t           width {8};
+    constexpr std::size_t           lanes {4};
+    std::array<zmm_register, lanes> sum   {};
+    const std::size_t               done  {count - (count % (width * lanes))};
+    for (std::size_t i {0}; i < done; i += width * lanes) {
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t l {0}; l < lanes; ++l) {
+        sum[l].v = _mm512_fmadd_pd(_mm512_loadu_pd(x + i + (l * width)), _mm512_loadu_pd(y + i + (l * width)), sum[l].v);
+      }
+    }
+    double total {0.0};
+    for (std::size_t l {0}; l < lanes; ++l) {
+      total += _mm512_reduce_add_pd(sum[l].v);
+    }
+    for (std::size_t i {done}; i < count; ++i) {
+      total += x[i] * y[i];
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return total;
+  }
+
+  //! \brief \ref avx512_dot with four accumulators of four `double` (AVX2 with FMA).
+  NUMERICAL_TARGET("avx2,fma") inline double avx2_dot(const double* x,
+                                                      const double* y,
+                                                      std::size_t   count) noexcept
+  {
+    constexpr std::size_t           width {4};
+    constexpr std::size_t           lanes {4};
+    std::array<ymm_register, lanes> sum   {};
+    const std::size_t               done  {count - (count % (width * lanes))};
+    for (std::size_t i {0}; i < done; i += width * lanes) {
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t l {0}; l < lanes; ++l) {
+        sum[l].v = _mm256_fmadd_pd(_mm256_loadu_pd(x + i + (l * width)), _mm256_loadu_pd(y + i + (l * width)), sum[l].v);
+      }
+    }
+    double total {0.0};
+    for (std::size_t l {0}; l < lanes; ++l) {
+      std::array<double, width> part {};
+      _mm256_storeu_pd(part.data(), sum[l].v);
+      total += (part[0] + part[1]) + (part[2] + part[3]);
+    }
+    for (std::size_t i {done}; i < count; ++i) {
+      total += x[i] * y[i];
     }
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
     return total;

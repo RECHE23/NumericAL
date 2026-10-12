@@ -41,9 +41,9 @@ namespace {
       up_wanted[i]    += f * x[i];
       right_wanted[i] -= x[i] * f;
     }
-    numerical::detail::subtract_product(down.data(), f, x.data(), count);
-    numerical::detail::add_product(up.data(), f, x.data(), count);
-    numerical::detail::subtract_product(right.data(), x.data(), f, count);
+    numerical::detail::subtract_product<T>(down.data(), f, x.data(), count); // the templates: double's overloads
+    numerical::detail::add_product<T>(up.data(), f, x.data(), count);        // choose their units (the test below)
+    numerical::detail::subtract_product<T>(right.data(), x.data(), f, count);
     return down == down_wanted && up == up_wanted && right == right_wanted;
   }
 } // namespace
@@ -54,6 +54,44 @@ TEST(scaled_row_updates_equal_the_scalar_statements_to_the_bit)
     EXPECT(updates_match_the_scalar_statements<double>(count));
     EXPECT(updates_match_the_scalar_statements<float>(count));
     EXPECT(updates_match_the_scalar_statements<std::complex<double>>(count));
+  }
+}
+
+// double's row updates on the units the matrix product's kernel takes: one fused multiply-add per element on
+// AVX2 or AVX-512, the scalar statement elsewhere; and its dot product sums every term.
+TEST(double_row_updates_follow_the_kernel_path)
+{
+  for (const std::size_t count : {std::size_t {0}, std::size_t {5}, std::size_t {37}, std::size_t {70}}) {
+    const std::vector<double> x           {values<double>(count, 3.0)};
+    const double              f           {1.0 / 7.0};
+    std::vector<double>       down        {values<double>(count, 5.0)};
+    std::vector<double>       up          {down};
+    std::vector<double>       right       {down};
+    std::vector<double>       down_wanted {down};
+    std::vector<double>       up_wanted   {down};
+    const bool                fused       {numerical::detail::gemm_path_current() == numerical::gemm_path::avx2
+                                           || numerical::detail::gemm_path_current() == numerical::gemm_path::avx512};
+    for (std::size_t i {0}; i < count; ++i) {
+      down_wanted[i] = fused ? std::fma(-f, x[i], down_wanted[i]) : down_wanted[i] - (f * x[i]);
+      up_wanted[i]   = fused ? std::fma(f, x[i], up_wanted[i]) : up_wanted[i] + (f * x[i]);
+    }
+    numerical::detail::subtract_product(down.data(), f, x.data(), count);
+    numerical::detail::add_product(up.data(), f, x.data(), count);
+    numerical::detail::subtract_product(right.data(), x.data(), f, count);
+    EXPECT(down == down_wanted);
+    EXPECT(up == up_wanted);
+    EXPECT(right == down_wanted);
+    std::vector<double> whole(count);
+    double              want {0.0};
+    for (std::size_t i {0}; i < count; ++i) {
+      whole[i]  = static_cast<double>(i % 7) - 3.0;
+      want     += whole[i] * static_cast<double>((i % 5) + 1);
+    }
+    std::vector<double> other(count);
+    for (std::size_t i {0}; i < count; ++i) {
+      other[i] = static_cast<double>((i % 5) + 1);
+    }
+    EXPECT(numerical::detail::dot_product(whole.data(), other.data(), count) == want);
   }
 }
 

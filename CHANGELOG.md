@@ -24,6 +24,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   from the right to `Qᵀ` (or `Uᵀ`, `Vᵀ`), so that all three of its products have as many rows as the basis,
   where the block's few rows (32) made the first a product the kernel runs poorly; and no transposition is
   left at the end. i9-10900X, order 1024: the tridiagonal reduction 128 → 120 ms.
+- **The decompositions' row updates and dot products run on AVX-512 or AVX2 with FMA** on x86-64, where
+  the matrix product's kernel runs there (`gemm_path`; `limit_gemm_path("portable")` keeps them portable): a
+  wheel is built for the baseline x86-64, two `double` per vector and no fused multiply-add. Each element is
+  then one fused multiply-add, so LU, Cholesky, QR, the inverse, `eigh` and `svd` differ in the last bits from
+  2026.10.4 on such processors. i9-10900X (a shared machine): `solve` of order 1024 about 30 → 25 ms, the
+  inverse 63 → 57 ms, `svd` of order 512 about 165 → 134 ms; `eigh` 3–5 % faster.
 
 ## 2026.10.4 — 2026-10-12
 
