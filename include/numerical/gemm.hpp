@@ -197,6 +197,7 @@ namespace numerical::detail {
   {
     static constexpr std::size_t mr {gemm_mr};    //!< The tile's rows.
     static constexpr std::size_t nr {gemm_nr<T>}; //!< The tile's columns.
+    static constexpr std::size_t kc {gemm_kc};    //!< The panel depth.
 
     //! \brief Nothing to turn on around a task.
     struct session
@@ -230,6 +231,9 @@ namespace numerical::detail {
   {
     static constexpr std::size_t mr {amx_mr}; //!< The tile's rows.
     static constexpr std::size_t nr {amx_nr}; //!< The tile's columns.
+    //! \brief The panel depth: the AMX reads its operands from the L2 cache, where a deeper panel still fits, and
+    //!        each panel loads and stores its tiles of C once.
+    static constexpr std::size_t kc {512};
     using session = amx_session;              //!< The AMX on for a task.
 
     //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc.
@@ -298,23 +302,26 @@ namespace numerical::detail {
     const std::size_t     b_cols {((std::min(nc_max, n) + nr) - 1) / nr * nr};
     // Left unset: packing writes every element before a tile reads it (zeroing megabytes per call cost a
     // tenth of a product of order 512).
-    const std::unique_ptr<T[]> a_packed {std::make_unique_for_overwrite<T[]>(a_rows * std::min(gemm_kc, k))};
-    const std::unique_ptr<T[]> b_packed {std::make_unique_for_overwrite<T[]>(b_cols * std::min(gemm_kc, k))};
+    const std::unique_ptr<T[]> a_packed {std::make_unique_for_overwrite<T[]>(a_rows * std::min(Kernel::kc, k))};
+    const std::unique_ptr<T[]> b_packed {std::make_unique_for_overwrite<T[]>(b_cols * std::min(Kernel::kc, k))};
     for (std::size_t jc {0}; jc < n; jc += nc_max) {
       const std::size_t nc      {std::min(nc_max, n - jc)};
       const std::size_t slivers {((nc + nr) - 1) / nr};
-      for (std::size_t pc {0}; pc < k; pc += gemm_kc) {
-        const std::size_t kc         {std::min(gemm_kc, k - pc)};
+      for (std::size_t pc {0}; pc < k; pc += Kernel::kc) {
+        const std::size_t kc         {std::min(Kernel::kc, k - pc)};
         const std::size_t row_blocks {((m + gemm_mc) - 1) / gemm_mc};
         const std::size_t groups     {((slivers + gemm_slivers_per_task) - 1) / gemm_slivers_per_task};
-        parallel_for(groups, gemm_slivers_per_task * nr * kc, [&](std::size_t group) {
-                       const std::size_t jr    {group * gemm_slivers_per_task * nr};
-                       const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
-                       gemm_pack_b<nr>(b + (pc * ldb) + jc + jr, ldb, kc, width, b_packed.get() + (jr * kc));
-                     });
-        parallel_for(row_blocks, gemm_mc * kc, [&](std::size_t block) {
-                       const std::size_t ic {block * gemm_mc};
-                       gemm_pack_a<mr>(a + (ic * lda) + pc, lda, std::min(gemm_mc, m - ic), kc, a_packed.get() + (ic * kc));
+        // One pass packs both: B's groups of slivers first, then A's row blocks.
+        parallel_for(groups + row_blocks, gemm_mc * kc, [&](std::size_t piece) {
+                       if (piece < groups) {
+                         const std::size_t jr    {piece * gemm_slivers_per_task * nr};
+                         const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
+                         gemm_pack_b<nr>(b + (pc * ldb) + jc + jr, ldb, kc, width, b_packed.get() + (jr * kc));
+                       }
+                       else {
+                         const std::size_t ic {(piece - groups) * gemm_mc};
+                         gemm_pack_a<mr>(a + (ic * lda) + pc, lda, std::min(gemm_mc, m - ic), kc, a_packed.get() + (ic * kc));
+                       }
                      });
         parallel_for(row_blocks * groups, gemm_mc * gemm_slivers_per_task * nr * kc / gemm_kernel_speedup, [&](std::size_t task) {
                        const std::size_t                   ic     {(task / groups) * gemm_mc};
