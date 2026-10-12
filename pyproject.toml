@@ -9,13 +9,13 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "numeric-al"
 version = "2026.10.3"
-description = "NumericAL — a generic, header-only numerical library: tensors and Einstein summation"
+description = "NumericAL — a generic, header-only numerical library: tensors, Einstein summation and dense linear algebra without BLAS"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "René Chenard", email = "rene.chenard.1@ulaval.ca" }]
-keywords = ["tensor", "einsum", "linear-algebra", "numerical", "dlpack", "array-interface"]
+keywords = ["tensor", "einsum", "linear-algebra", "numerical", "blas", "lapack", "gemm", "eigenvalues", "svd", "dlpack", "array-interface"]
 classifiers = [
     "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",

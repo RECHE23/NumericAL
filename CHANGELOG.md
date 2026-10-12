@@ -7,6 +7,17 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **`eigh` and `svd` default to divide and conquer** (see Added), as LAPACK's `dsyevd`/`zheevd` and `dgesdd`, and
+  matrix products run on a kernel chosen at run time (AVX-512, AVX2 or the Apple AMX, each element a chain of
+  fused multiply-adds). Results differ from 2026.10.3 in the last bits, and within a repeated eigenvalue or
+  singular value the basis may differ (both are orthonormal to working precision); `lstsq`, `pinv` and
+  `matrix_rank` go through `svd`. The previous methods remain in C++: `eigen_method::tridiagonal_ql`,
+  `svd_method::bidiagonal_qr`; the new enumerators come last, so existing values keep their meaning.
+  `limit_gemm_path("portable")` (or `NUMERICAL_GEMM=portable`) keeps products off the run-time kernels.
+- **A matrix product no longer maps its packing storage anew each time**: the calling thread keeps it for the
+  next product (up to 32 MiB). Fresh megabytes were faulted in page by page on every product: order 512 on 20
+  x86-64 threads took 2.9 ms instead of 0.89. The packed operands start a cache line, so no vector load of
+  them straddles two.
 - **`asarray` is 10–20× faster** on a NumPy array (1e6 float64: 11 → 0.8 ms; arm64, Apple clang 16, `-O2`): the
   element type is resolved once per copy rather than per element, the innermost axis is one strided loop (a
   contiguous run of the output's type one `memcpy`), and the GIL is released during the copy.
@@ -78,27 +89,35 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   middle is decomposed through its secular equation (solved in the squares from the nearer pole, so that both
   `d − σ` and `d + σ` are accurate) and Löwner's formula. The default (`svd_method::divide_and_conquer`;
   implicit-shift QR stays as `bidiagonal_qr`). M1 Pro, float64, order 512: 108 → 88 ms (Accelerate 49), the
-  bidiagonal step 45 → 9.
+  bidiagonal step 45 → 9. A zero arrow, which has no weight on its zero pole and so no root, is its own
+  decomposition.
+- **`make fuzz-linalg`**: every decomposition against NumPy on adversarial matrices (clustered, repeated and
+  graded spectra, decoupled blocks, rank deficiency, extreme scales, complex) past the block and leaf
+  boundaries, on every matrix-product kernel the processor runs, each answer held to a backward-error bound; a
+  short fixed campaign runs with the Python tests. **`make bench-linalg`**: NumericAL against NumPy's
+  BLAS/LAPACK, each library alone in its process (the tables in BENCHMARKS.md).
 - **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses. M1 Pro,
-  8 threads, GFLOPS against Accelerate's: order 2048 423 (383), 1024 395 (388), 512 277 (431), 256 209 (282);
-  the vector units gave 204, 207, 178 and 145. One core: 160–180 (was 41).
-  Apple documents no instruction for it, so the path is guarded: compiled only for arm64 macOS (not at all under
-  `NUMERICAL_NO_AMX`), used only on a CPU family of the M1 to M4 line, and only once a product computed on it
-  equals, to the bit, the same product by `std::fma` in ascending order. On the AMX each element of a product
-  is a chain of fused multiply-adds in ascending order of the depth, the same on any number of threads; it
-  differs from the vector path in the last bits, as any fused product does. LU, Cholesky, QR and the inverse take it through their trailing products.
+  8 threads, GFLOPS against Accelerate's, the product alone timed in C++: order 2048 423 (383), 1024 395
+  (388), 512 277 (431), 256 209 (282); the vector units gave 204, 207, 178 and 145. One core: 160–180 (was
+  41). Apple documents no instruction for it, so the path is guarded: compiled only for arm64 macOS (not at
+  all under `NUMERICAL_NO_AMX`), used only on a CPU family of the M1 to M4 line, and only once a product
+  computed on it equals, to the bit, the same product by `std::fma` in ascending order. On the AMX each element
+  of a product is a chain of fused multiply-adds in ascending order of the depth, the same on any number of
+  threads; it differs from the vector path in the last bits, as any fused product does. LU, Cholesky, QR, the
+  inverse, `eigh` and `svd` take it through their matrix products.
 - **`float64` matrix products on AVX-512 and AVX2 with FMA** (x86-64), chosen at run time: a wheel built for
   the baseline x86-64 compiles each tile for its instruction set and uses it only once `cpuid` reports the
   instructions and `xgetbv` the system saving their registers. Each element is a chain of fused multiply-adds
   in ascending order of the depth, the same on any number of threads. GFLOPS against OpenBLAS 0.3.34's
-  (NumPy's), float64, each library alone in its process:
+  (NumPy's), float64, the product alone timed in C++, each library alone in its process (`make bench-linalg`
+  times it through Python, with its conversions: BENCHMARKS.md):
   i9-10900X (AVX-512, 10 cores), order 1024 540 (720), 2048 420 (590); one core 66–79 (82–99), was 11.
   i9-9900K (AVX2, 8 cores), order 1024 271 (353), 2048 213 (304); one core 54–58 (69).
 - **`numerical.gemm_path()` and `limit_gemm_path(name)`** (C++: `numerical::gemm_path_in_use`,
   `limit_gemm_path`) report and cap the kernel float64 products run on, `"portable"`, `"avx2"`, `"avx512"` or
-  `"amx"`: a cap takes the most capable path at or below it that runs here, and `"portable"` keeps each
-  product rounded before its sum. `NUMERICAL_GEMM` sets the cap at import, `NUMERICAL_AMX=0` keeps products
-  off the AMX alone, and `get_config()["gemm_path"]` reports it.
+  `"amx"`: a cap takes the most capable path at or below it that runs here; `"portable"` is the vectors the
+  compiler makes of `c + a·b`, fused or not as it compiles them. `NUMERICAL_GEMM` sets the cap at import,
+  `NUMERICAL_AMX=0` keeps products off the AMX alone, and `get_config()["gemm_path"]` reports it.
 - **`numerical.set_num_threads(n)` and `get_num_threads()`** (C++: `numerical::set_max_threads`,
   `max_threads`), and `NUMERICAL_NUM_THREADS` read at import, as `OMP_NUM_THREADS` caps BLAS: a process per core
   can keep the kernels to one thread each.
@@ -124,16 +143,6 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   reaches `memcpy` with it.
 - **`eigh` reads only what it uses**: the lower triangle and the diagonal's real part, as `numpy.linalg.eigh`. A
   NaN in the upper triangle (or in the diagonal's imaginary part) raised; the lower triangle's are refused as before.
-- **`svd` of a zero matrix past order 32 raised a convergence error** (the divide and conquer, not yet
-  released): a zero arrow has no weight on its zero pole, so its secular equation has no root. It is now its own
-  decomposition. Found by the new `make fuzz-linalg`: every decomposition against NumPy on adversarial matrices
-  (clustered, repeated and graded spectra, decoupled blocks, rank deficiency, extreme scales, complex) past the
-  block and leaf boundaries, on every matrix-product path the processor runs; a short fixed campaign runs with
-  the Python tests.
-- **A matrix product no longer maps its packing storage anew each time**: the calling thread keeps it for the
-  next product (up to 32 MiB). Fresh megabytes were faulted in page by page on every product: order 512 on 20
-  x86-64 threads took 2.9 ms instead of 0.89. The packed operands start a cache line, so no vector load of
-  them straddles two.
 - **`max`/`min` along an empty axis raise**, as NumPy's, even when the result would be empty too
   (`min(zeros((3, 0, 0)), axis=1)` returned an empty tensor).
 

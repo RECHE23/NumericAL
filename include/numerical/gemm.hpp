@@ -44,7 +44,7 @@ namespace numerical {
    */
   enum class gemm_path : std::uint8_t
   {
-    portable = 0, //!< The compiler's vectors (16 bytes on x86-64 wheels), each product rounded before its sum.
+    portable = 0, //!< The compiler's vectors (16 bytes on x86-64 wheels), as the compiler rounds `c + a·b` (see gemm).
     avx2     = 1, //!< AVX2 with fused multiply-adds.
     avx512   = 2, //!< AVX-512 with fused multiply-adds.
     amx      = 3, //!< The Apple AMX coprocessor, fused multiply-adds.
@@ -254,7 +254,7 @@ namespace numerical::detail {
 
   /*!
    * \brief The vector path's tile: \ref gemm_mr × \ref gemm_nr elements of C in registers (\ref gemm_kernel),
-   *        each product rounded before its sum.
+   *        each product rounded before its sum unless the compiler contracts `c + a·b` into a fused multiply-add.
    */
   template <typename T>
   struct vector_tile_kernel
@@ -598,8 +598,10 @@ namespace numerical::detail {
    *
    * Products of fewer than \ref gemm_packed_threshold multiply-adds, or shallower than \ref gemm_min_depth, run
    * \ref gemm_rows. The rest run packed (\ref gemm_packed): on the AMX for `double` where it is in use (each
-   * element a chain of fused multiply-adds), else on the vector tile (each product rounded before its sum, so
-   * the plain loop and the packed one agree to the bit with the compiler's contraction off).
+   * element a chain of fused multiply-adds), else on the vector tile, which rounds `c + a·b` as the compiler
+   * does: each product before its sum with contraction off (GCC's default in ISO C++ mode), fused where it
+   * contracts (Clang's default). Either way the plain loop and the packed one agree to the bit, and every
+   * element is summed in ascending order of the depth on any number of threads.
    *
    * \param[in]     m,n,k       The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major.
    * \param[in]     a,lda,b,ldb The operands and the distance between their rows.
@@ -633,7 +635,7 @@ namespace numerical {
   /*!
    * \brief Keeps `double` matrix products on \p most or a more portable path: the most capable path at or below
    *        it that can run here. `gemm_path::amx` restores the best one; `gemm_path::portable` keeps them on the
-   *        compiler's vectors, each product rounded before its sum.
+   *        compiler's own vectors, with no instruction chosen at run time. Paths below the cap are not probed.
    * \return The path now in use.
    */
   inline gemm_path limit_gemm_path(gemm_path most) noexcept

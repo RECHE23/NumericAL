@@ -4,10 +4,11 @@
 Each library runs in a process of its own, with all of its threads, and the other library absent from the timing:
 a BLAS whose threads still spin after a call would otherwise slow the next library's. In NumericAL's process
 NumPy is held to one thread and used only to check each answer before its timing (a fast wrong answer is not a
-result). Every figure is the median of `--reps` calls after a warm-up, and the table takes the median over
-`--rounds` processes per library, so one noisy process does not decide it.
+result). Every figure is the median of `--reps` calls after a warm-up (a third of them, at least 3, from order
+512), and the table takes the median over `--rounds` processes per library, so one noisy process does not decide
+it.
 
-Run from the repository root: make bench-linalg (SIZES=64,256,1024 ROUNDS=3).
+Run from the repository root: make bench-linalg (SIZES=64,128,256,512,1024 ROUNDS=3 by default).
 """
 import argparse
 import json

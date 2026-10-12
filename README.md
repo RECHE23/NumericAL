@@ -31,16 +31,17 @@ Small and complete, grown measured, honest about what is not yet here:
   and for `m ≥ n` a least-squares `solve` of `A x ≈ b`, which throws `singular_matrix_error`
   when `A` is rank-deficient.
 - `numerical::hermitian_eigen` — the same for a complex Hermitian matrix (real eigenvalues,
-  a unitary `V`), reduced to a real tridiagonal by Householder reflections and unit phases as
-  LAPACK's `zheev` does.
+  a unitary `V`), reduced to a real tridiagonal by Householder reflections and unit phases, then
+  diagonalised by divide and conquer, as LAPACK's `zheevd` does.
 - `numerical::symmetric_eigen` — eigenvalues (ascending) and eigenvectors of a real
-  symmetric matrix (`A = V Λ Vᵀ`): Householder tridiagonalisation then implicit QL, as LAPACK's
-  `dsyev`; cyclic Jacobi rotations on request (`eigen_method::jacobi`).
+  symmetric matrix (`A = V Λ Vᵀ`): Householder tridiagonalisation by panels then divide and conquer,
+  as LAPACK's `dsyevd` (most of the work in matrix products); implicit QL (`eigen_method::tridiagonal_ql`,
+  `dsyev`'s) or cyclic Jacobi rotations (`eigen_method::jacobi`) on request.
 - `numerical::svd_decomposition<T>` — the singular value decomposition `A = U Σ Vᴴ`
   of a real or complex `m × n` matrix, any shape: a Householder QR, then Golub–Kahan
-  bidiagonalisation of `R` and implicit-shift QR, as LAPACK's `dgesvd`; one-sided Jacobi
-  on `R` on request (`svd_method::jacobi`), which gives every singular value to high
-  relative accuracy. `singular_values()` (descending), `u()` (`m × k`), `v()` (`n × k`) and
+  bidiagonalisation of `R` (by panels, for a real one) and divide and conquer, as LAPACK's `dgesdd`;
+  implicit-shift QR (`svd_method::bidiagonal_qr`, `dgesvd`'s) or one-sided Jacobi on `R`
+  (`svd_method::jacobi`, which gives every singular value to high relative accuracy) on request. `singular_values()` (descending), `u()` (`m × k`), `v()` (`n × k`) and
   `vh()`, with `k = min(m, n)`; `U` and `V` stay orthonormal for a rank-deficient `A`.
 - `numerical::lstsq(a, b)` — the minimum-norm least-squares solution of `A x ≈ b`,
   as NumPy's `lstsq` gives it, for any shape and rank (from the SVD), `b` a vector or a
@@ -165,27 +166,48 @@ fuzzer** that checks hundreds of random einsum specifications and linear-algebra
 problems against NumPy within tolerance (when NumPy is importable, as in CI). PETSc (petsc4py) has no such exchange protocol — bridging it
 would require an explicit copy into a PETSc object.
 
+## Threads and kernels
+
+The kernels share a pool of threads, started the first time a kernel's work pays for more than one.
+`numerical.set_num_threads(n)` (C++: `numerical::set_max_threads`), or `NUMERICAL_NUM_THREADS` read at import,
+caps the threads a kernel uses, the caller's included, as `OMP_NUM_THREADS` caps BLAS; at 1 no thread is
+started. A process forked while the pool exists runs its kernels alone. Each library that embeds NumericAL's
+headers has a pool and a cap of its own.
+
+`float64` matrix products, and the decompositions through them, run on a kernel chosen at run time, which
+`numerical.gemm_path()` (C++: `gemm_path_in_use`) reports:
+
+- `"portable"` — the compiler's own vectors, on any processor;
+- `"avx2"`, `"avx512"` — on x86-64, where `cpuid` reports the instructions and the system saves their registers
+  (the wheels are built for the baseline x86-64 and carry these tiles beside it);
+- `"amx"` — on Apple M1 to M4, the matrix coprocessor Apple's Accelerate uses, which Apple does not document.
+  It is used only on a known chip family, outside a virtual machine, and once a product computed on it equals
+  `std::fma` in order to the bit; `NUMERICAL_AMX=0` keeps it off (its self-test included), and compiling with
+  `NUMERICAL_NO_AMX` removes it.
+
+`numerical.limit_gemm_path(name)` (C++: `limit_gemm_path`), or `NUMERICAL_GEMM` at import, caps the kernel at
+`name` or a more portable one. Every element of a product is summed in ascending order of the depth on any
+number of threads, so a result is the same, to the bit, whatever the thread count; across kernels it differs in
+the last bits, since the AVX and AMX kernels fuse each multiply-add and the portable one rounds as the compiler
+does.
+
 ## Benchmarks
 
-NumericAL is validated against **NumPy** for both result and speed — `make
-bench-python` checks every operation matches NumPy within a tolerance, then times
-it; `make python-test` runs the correctness parity suite alone (also in CI). The
-results and methodology, with an honest reading of the gap, are in
-[BENCHMARKS.md](BENCHMARKS.md): NumericAL is a portable, dependency-free reference
-implementation: correct within tolerance, and competitive with NumPy's own
-`einsum`/`linalg` (it beats `np.einsum`'s non-BLAS path and the decompositions
-land within ~1–4×). Against hand-tuned BLAS (`np.matmul`) its packed,
-register-tiled, `std::thread`-parallel GEMM is ~3× slower and steady from n = 256 to
-2048 — what remains is per-architecture assembly, which a header-only library does
-not carry. See [BENCHMARKS.md](BENCHMARKS.md) for the honest details.
+`make bench-linalg` times NumericAL against the BLAS/LAPACK NumPy ships, each library alone in its process,
+every answer checked first; `make fuzz-linalg` checks every decomposition against NumPy on adversarial matrices,
+on every kernel. On an M1 Pro against Accelerate, at order 1024, matrix products, `solve` and `inverse` are as
+fast or faster (0.94×), Cholesky, QR and `eigh` within 1.0–1.2×, `svd` and `lstsq` 1.3–1.4×; small problems
+(order 64–256) take 1.5–3× Accelerate's time. Against OpenBLAS on x86-64 (i9-10900X, i9-9900K) large problems
+(order 512 and 1024) take 1.1–2.5×, `eigh` 2.6–2.9×. The tables, the method and where the gaps are:
+[BENCHMARKS.md](https://github.com/RECHE23/NumericAL/blob/main/BENCHMARKS.md).
 
 ## Numerical discipline
 
-Floating-point accuracy is documented, never claimed exact where it cannot be;
-results are deterministic given inputs and any tolerance/seed; differential
-tests compare against references **within a documented tolerance**. Same gate
-bar as the rest of the ecosystem: 100% coverage, clang **and** g++-14, lint,
-format, and sanitizers green.
+Floating-point accuracy is documented, never claimed exact where it cannot be: every decomposition is backward
+stable, checked against its defining property and against NumPy within bounds of the order times the machine
+epsilon. A result is the same, to the bit, on any number of threads; between kernels and processors it may
+differ in the last bits (see Threads and kernels). Same gate bar as the rest of the ecosystem: 100% coverage,
+clang **and** g++-14, lint, format, MISRA-oriented analysis and sanitizers green.
 
 ## License
 

@@ -342,7 +342,7 @@ namespace numerical {
     }
 
     /*!
-     * \brief The inverse, solved column by column against the identity.
+     * \brief The inverse, solved against the identity by blocks of rows, through the matrix product kernel.
      * \return The inverse matrix.
      * \throws singular_matrix_error If the matrix is singular.
      */
@@ -1421,8 +1421,8 @@ namespace numerical {
     }
 
     /*!
-     * \brief Reduces the Hermitian (real: symmetric) `n × n` row-major \p a, both triangles filled, to a real
-     *        symmetric tridiagonal by Householder reflections, `A = M T Mᴴ` with `M` unitary.
+     * \brief Reduces the Hermitian (real: symmetric) `n × n` row-major \p a, of which the lower triangle is read, to
+     *        a real symmetric tridiagonal by Householder reflections, `A = M T Mᴴ` with `M` unitary.
      *
      * Each reflection zeroes one column below the subdiagonal; the trailing block takes the rank-2 updates
      * `B − v wᴴ − w vᴴ` of a panel of \ref tridiagonal_block reflections at once, through the matrix product
@@ -2279,7 +2279,7 @@ namespace numerical {
    * By default the matrix is reduced to tridiagonal form by Householder reflections and the tridiagonal is
    * diagonalised by divide and conquer (\ref eigen_method::divide_and_conquer), the method of LAPACK's
    * `dsyevd`, most of its work in matrix products; implicit QL (\ref eigen_method::tridiagonal_ql, `dsyev`'s)
-   * and cyclic Jacobi rotations (\ref eigen_method::jacobi) are the alternatives. Either way the eigenvalues are real
+   * and cyclic Jacobi rotations (\ref eigen_method::jacobi) are the alternatives. Whichever, the eigenvalues are real
    * and the eigenvectors orthonormal. The eigenvalues are returned in ascending order, with \ref vectors
    * `j`-th column the eigenvector of \ref values `[j]` (`A = V Λ Vᵀ`). Real symmetric only (the complex
    * Hermitian case is \ref hermitian_eigen). Only the lower triangle is read, as `numpy.linalg.eigh`
@@ -2415,7 +2415,8 @@ namespace numerical {
      * \param[in] input A complex Hermitian matrix (its lower triangle is read).
      * \throws dimension_error   If \p input is not square.
      * \throws non_finite_error  If an entry is infinite or NaN.
-     * \throws convergence_error If QL did not converge within its bound (not observed).
+     * \throws convergence_error If an iteration (implicit QL or the secular equation) did not converge within its
+     *         bound (not observed).
      */
     explicit hermitian_eigen(const matrix<std::complex<double>>& input)
       : n_(input.rows())

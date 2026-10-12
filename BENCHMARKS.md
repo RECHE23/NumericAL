@@ -17,19 +17,22 @@ against NumPy within `rtol=1e-9`, and runs in CI (the Python job installs NumPy)
 ## Dense linear algebra against BLAS/LAPACK
 
 NumericAL aims to match and then beat the BLAS/LAPACK NumPy ships, in portable C++ with no dependency. `make
-bench-linalg` measures where it stands: each library in its own process with all its threads (a BLAS whose
-threads still spin after a call would otherwise slow the next library's), every NumericAL answer checked against
-its defining property before it is timed, the median of 15 calls per process (5 at order 1024) and the median of
-5 processes per library. The ratio is NumericAL's time over NumPy's: **below 1, NumericAL is faster**. Correctness
-on adversarial matrices is checked separately, by `make fuzz-linalg` (every decomposition against NumPy, on every
-matrix-product path).
+bench-linalg` measures where it stands: each library in its own process with all its threads (a BLAS whose threads
+still spin after a call would otherwise slow the next library's), every NumericAL answer checked before it is timed
+(against its defining property to a backward-error bound; `lstsq` against NumPy's solution), the median of 15 calls
+per process (5 from order 512) and, in the tables below, the median of 5 processes per library (`ROUNDS=5`; the
+default is 3). `solve` takes 4 right-hand sides, `lstsq` a 2n × n matrix and one, `svd` the thin factors; every
+operand is float64. Accelerate and OpenBLAS run on their default threads. The ratio is NumericAL's time over
+NumPy's: **below 1, NumericAL is faster**. Correctness on adversarial matrices is checked separately, by `make
+fuzz-linalg` (every decomposition against NumPy, on every matrix-product path).
 
 ```bash
 make bench-linalg                      # SIZES=64,128,256,512,1024 ROUNDS=3; JSON in build/bench-linalg.json
 make fuzz-linalg CASES=1000 SEED=2     # the decompositions on adversarial matrices, every GEMM path
 ```
 
-**Apple M1 Pro** (8 cores; NumPy 2.4.2 on Accelerate; NumericAL 1c8805a, the AMX path), 2026-10-12:
+**Apple M1 Pro** (8 cores; NumPy 2.4.2 on Accelerate; NumericAL 1c8805a built locally by Apple clang 16, the
+AMX path), 2026-10-12:
 
 | operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -42,13 +45,14 @@ make fuzz-linalg CASES=1000 SEED=2     # the decompositions on adversarial matri
 | svd | 0.673 ms (1.79×) | 2.89 ms (1.95×) | 13.6 ms (1.45×) | 71.7 ms (1.43×) | 393 ms (1.39×) |
 | lstsq | 0.805 ms (1.70×) | 3.58 ms (1.55×) | 17.3 ms (1.60×) | 87.2 ms (1.62×) | 503 ms (1.28×) |
 
-**Intel i9-10900X** (10 cores, AVX-512; NumPy 2.5.4 on OpenBLAS 0.3.34; GCC 15 wheel, the AVX-512 path), same
-code and day. A shared machine: figures move by some 10 %, and OpenBLAS's product of order 256 on its twenty
-threads takes ten times its order-512 rate in every process (its own, reproducibly):
+**Intel i9-10900X** (10 cores, AVX-512; NumPy 2.5.4 on OpenBLAS 0.3.34; NumericAL built locally by GCC 15, not the
+PyPI wheel; the AVX-512 path), same code and day. A shared machine: figures move by some 10 %, and OpenBLAS's
+product of order 256 on its twenty threads takes ten times its order-512 rate in every process (its own,
+reproducibly):
 
 | operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| matmul | 0.0165 ms (2.15×) | 0.115 ms (4.04×) | 0.298 ms (**0.10×**) | 1.34 ms (2.49×) | 6.75 ms (1.77×) |
+| matmul | 0.0165 ms (2.15×) | 0.115 ms (4.04×) | 0.298 ms (0.10×) | 1.34 ms (2.49×) | 6.75 ms (1.77×) |
 | solve | 0.0684 ms (1.95×) | 0.241 ms (**0.42×**) | 1.14 ms (**0.77×**) | 4.74 ms (1.16×) | 26.4 ms (1.89×) |
 | inverse | 0.0949 ms (1.06×) | 0.422 ms (**0.63×**) | 2.54 ms (1.41×) | 12 ms (1.74×) | 51.3 ms (1.66×) |
 | cholesky | 0.0436 ms (2.10×) | 0.174 ms (1.00×) | 0.757 ms (1.25×) | 3.92 ms (1.37×) | 21.5 ms (1.25×) |
@@ -57,8 +61,8 @@ threads takes ten times its order-512 rate in every process (its own, reproducib
 | svd | 1.16 ms (1.26×) | 4.91 ms (1.33×) | 23.6 ms (1.64×) | 125 ms (1.50×) | 535 ms (1.49×) |
 | lstsq | 1.32 ms (1.16×) | 5.69 ms (1.10×) | 30 ms (1.72×) | 155 ms (1.81×) | 640 ms (2.07×) |
 
-**Intel i9-9900K** (8 cores, AVX2; NumPy 2.5.4 on OpenBLAS 0.3.34; GCC 15 wheel, the AVX2 path), same code and
-day:
+**Intel i9-9900K** (8 cores, AVX2; NumPy 2.5.4 on OpenBLAS 0.3.34; NumericAL built locally by GCC 15; the AVX2
+path), same code and day:
 
 | operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -90,7 +94,7 @@ The sections below record how each kernel got where it is, with the figures of t
 `make bench-python`, which times NumericAL against NumPy in one process and writes the opposite ratio,
 `numpy_time / numerical_time`: there, **below 1 means NumericAL is slower**.
 
-## Indicative results
+### Indicative results
 
 Apple Silicon (arm64, macOS), CPython 3.14, NumPy 2.4 — single run, per-call
 medians. Absolute figures vary by machine; the **shape** of the gap is the point.
@@ -123,9 +127,10 @@ reference (see the evolution below).
 > **3× slower**: 113–151 GFLOP/s from n = 256 to 2048 against 330–490. It was 10×
 > (33 GFLOP/s) before the packed kernel of the next sections; what remains is the
 > per-architecture assembly, and here a matrix coprocessor, that a portable,
-> header-only library does not use.
+> header-only library did not use then (the AMX path and the x86-64 kernels chosen at
+> run time came later: see the first section).
 
-## Decompositions (vs `numpy.linalg`)
+### Decompositions (vs `numpy.linalg`)
 
 The decomposition layer — LU (`determinant`, `inverse`), Cholesky, QR, symmetric
 eigen, and SVD — measured the same way (result checked, then timed; the
@@ -201,7 +206,7 @@ All timed cases (array ops and decompositions) matched NumPy within tolerance.
 Geometric-mean ratio over the whole suite ≈ **0.38×** (NumericAL ~2.6× slower on
 average), pulled down mostly by the memory-bound data-movement cases above.
 
-## Multithreading
+### Multithreading
 
 The embarrassingly-parallel kernels run on `std::thread` (the only portable,
 dependency-free standard parallelism — no TBB, no execution policies): each
@@ -211,7 +216,7 @@ Each kernel states the work of one index, and a range runs on one thread per
 2¹⁶ multiply-adds of it (a quarter of that for a vectorised inner loop), up to the
 hardware's count, sequentially below two: a thread costs about 10 µs to start, and
 counting indices instead of work started eight of them for a 16 × 16 `inverse`
-(177 µs instead of 8). Parallelised so far: the **matrix product** (blocks of rows
+(177 µs instead of 8). Parallelised at the time: the **matrix product** (blocks of rows
 by columns of the result, below) and `inverse` (column solves).
 
 On an 8-core machine the effect is stark where the work is genuinely parallel and
@@ -220,12 +225,12 @@ small matmul stays ≥ parity. The decompositions gain less: their cores —
 LU/Cholesky/QR factorisation and the Jacobi eigen sweeps — are **inherently
 sequential** (each step depends on the previous), so only the independent parts
 (`inverse`'s solves, the SVD's U columns) parallelise; full parallelism there
-would need blocked (Level-3) algorithms — a larger step, not taken yet. This is the
+would need blocked (Level-3) algorithms — the step taken since (the first section). This is the
 one BLAS technique a header-only leaf can adopt portably; the hand-tuned
 per-architecture assembly microkernels behind most of BLAS's remaining edge are
 not.
 
-## The matrix product kernel
+### The matrix product kernel
 
 `a * b` and a canonical `einsum("ij,jk->ik", …)` run one kernel, `include/numerical/gemm.hpp`,
 in the loop structure of BLIS: the inner dimension is cut into panels of 256, both operands'
@@ -266,13 +271,13 @@ explicitly (GCC at `-O2` does not, and then keeps the tile in memory: 4.8 GFLOP/
 tile moves into and out of the vectors one vector at a time (a single copy of the whole array
 also kept it in memory: 7.4 GFLOP/s).
 
-### Python binding glue copies (measured, documented)
+#### Python binding glue copies (measured, documented)
 
 The Python paths (`do_solve`, `matrix_from`, `do_lstsq`) each do:
 
     numerical::matrix<T> m {r, c, a.data()};
 
-The by-value constructor copies (O(n²)). Measured this session (copy vs solve time):
+The by-value constructor copies (O(n²)). Measured (copy against solve time):
 
 - 32   : 0.08 µs / 3.58 µs   → 2.3 %
 - 64   : 0.54 µs / 20.2 µs   → 2.7 %
@@ -280,16 +285,13 @@ The by-value constructor copies (O(n²)). Measured this session (copy vs solve t
 - 256  : 8.25 µs / 1253 µs   → 0.7 %
 - 512  : 154 µs / 10305 µs   → 1.5 %
 
-Decision (supervisor, consistent with the measurement + grown-measured rule):
-**document only**. No const-ref ctor and no borrowing view is added. A non-owning
+Conclusion: **document only**. No const-ref ctor and no borrowing view is added. A non-owning
 view would add API surface and dilute the deliberate value-semantics of
 `matrix`/`vector` (a noted library strength). The solve paths already copy the
 data internally (LU/QR etc.), so this is one extra O(n²) on top of an
 unavoidable O(n²)+O(n³). <3 % on a non-bottleneck → documented, not "fixed".
 
-See also the earlier session measurement that reached the same conclusion.
-
-## The einsum engine, in three steps
+### The einsum engine, in three steps
 
 1. **Incremental odometer.** The first cut allocated a fresh index vector and did
    `std::map<char,std::size_t>` lookups **per output element**. It was replaced by
@@ -323,9 +325,9 @@ standard library offers no numeric SIMD primitive (unlike `memmem` /
 `boyer_moore_searcher` for strings); the wins are algorithmic, and the resulting
 clean loops are what the compiler auto-vectorises.
 
-## What this tells us
+### What this told us (2026-10-11)
 
-- **`matmul` and `solve` are now at NumPy's level** without BLAS: a packed GEMM and
+- **`matmul` and `solve` were at the level of NumPy's own loops** without BLAS: a packed GEMM and
   an unblocked LU capture most of the kernel-level advantage at these sizes.
 - **Pure data-movement stays the outlier** — `transpose` (~300×), and the
   reductions and `outer` (~8–10×). These are memory-bound: a transpose reads

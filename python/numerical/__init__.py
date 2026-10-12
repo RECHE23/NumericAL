@@ -91,7 +91,8 @@ def gemm_path():
 def limit_gemm_path(most):
     """Keep float64 matrix products on `most` or a more portable path (one of :func:`gemm_path`'s names): the most
     capable path at or below it that runs on this processor. ``"amx"`` restores the best; ``"portable"`` keeps
-    products on the compiler's vectors, each product rounded before its sum. Returns the path now in use."""
+    products on the compiler's own vectors. Paths below the cap are not probed (under ``"avx512"`` or below, the
+    Apple AMX's self-test never runs). Returns the path now in use."""
     if most not in _GEMM_PATHS:
         raise ValueError(f"limit_gemm_path: {most!r} is none of {_GEMM_PATHS}")
     return _GEMM_PATHS[_limit_gemm_path(_GEMM_PATHS.index(most))]

@@ -179,11 +179,6 @@ version-check:
 	 if ! grep -q 'file(READ.*pyproject\.toml' CMakeLists.txt; then echo "version-check: CMakeLists.txt must derive its version from pyproject.toml"; exit 1; fi; \
 	 echo "version-check: $$py (pyproject = __init__ = CMake-derived)"
 
-# The complete local quality gate in one command — the canonical pre-push check
-# and, since CI no longer runs macOS (see .github/workflows/ci.yml), the macOS gate
-# of record. Runs every check this machine owns and fails on any issue, including a
-# lint warning or any coverage dimension below 100%. If an incremental coverage build
-# is ever suspect, `rm -rf $(COV_DIR)` first to force a clean re-measure.
 # Pin-drift lint: fail if this repo pins more than one SciForge version or a sciforge-build floor above the
 # pin (SciForge's tools/check-pins.sh). Skipped with a warning when the sibling tool is absent.
 SCIFORGE_TOOLS ?= ../sciforge/tools
@@ -191,6 +186,11 @@ check-pins:
 	@if test -x $(SCIFORGE_TOOLS)/check-pins.sh; then $(SCIFORGE_TOOLS)/check-pins.sh .; \
 	 else echo "check-pins: WARN — $(SCIFORGE_TOOLS)/check-pins.sh absent, skipped"; fi
 
+# The complete local quality gate in one command — the canonical pre-push check
+# and, since CI no longer runs macOS (see .github/workflows/ci.yml), the macOS gate
+# of record. Runs every check this machine owns and fails on any issue, including a
+# lint warning or any coverage dimension below 100%. If an incremental coverage build
+# is ever suspect, `rm -rf $(COV_DIR)` first to force a clean re-measure.
 full-local-gate:
 	@$(MAKE) format-check
 	@$(MAKE) version-check
