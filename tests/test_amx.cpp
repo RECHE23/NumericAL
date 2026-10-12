@@ -32,8 +32,14 @@ TEST(only_the_m1_to_m4_families_are_known)
   // An iPhone family, an older Mac family and no answer at all are not.
   for (const std::uint32_t family : {0x8765edeaU, 0x462504d2U, 0U}) {
     EXPECT(!numerical::detail::amx_family_known(family));
-    EXPECT(!numerical::detail::amx_usable_on(family)); // and its self-test, which could fault, never runs
+    EXPECT(!numerical::detail::amx_usable_on(family, false)); // and its self-test, which could fault, never runs
   }
+}
+
+TEST(a_virtual_machine_does_not_use_the_amx)
+{
+  // Its host decides what the guest's processor offers: even a known family is not used there.
+  EXPECT(!numerical::detail::amx_usable_on(0x1b588bb3U, true));
 }
 
 TEST(this_chip_is_known_and_its_amx_passes_the_self_test)
@@ -49,16 +55,18 @@ TEST(this_chip_is_known_and_its_amx_passes_the_self_test)
 TEST(the_avx_paths_need_the_instructions_and_the_saved_registers)
 {
   using numerical::detail::decode_features;
-  constexpr std::uint32_t fma     {1U << 12U};
+  constexpr std::uint32_t fma     {(1U << 12U) | (1U << 28U)}; // FMA, with the AVX bit
   constexpr std::uint32_t osxsave {1U << 27U};
   constexpr std::uint32_t avx2    {1U << 5U};
   constexpr std::uint32_t avx512f {1U << 16U};
   EXPECT(decode_features(fma | osxsave, avx2 | avx512f, 0xe6U).avx2_fma);
   EXPECT(decode_features(fma | osxsave, avx2 | avx512f, 0xe6U).avx512f);
-  EXPECT(!decode_features(fma | osxsave, avx2 | avx512f, 0x6U).avx512f); // the system saves no 512-bit state
-  EXPECT(!decode_features(fma | osxsave, avx2, 0x2U).avx2_fma);          // nor the 256-bit one
-  EXPECT(!decode_features(osxsave, avx2, 0x6U).avx2_fma);                // no FMA
-  EXPECT(!decode_features(fma | osxsave, 0U, 0xe6U).avx2_fma);           // no AVX2
-  EXPECT(numerical::detail::saved_state(0U) == 0U);                      // no OSXSAVE: no xgetbv
+  EXPECT(!decode_features(fma | osxsave, avx2 | avx512f, 0x6U).avx512f);           // the system saves no 512-bit state
+  EXPECT(!decode_features(fma | osxsave, avx2, 0x2U).avx2_fma);                    // nor the 256-bit one
+  EXPECT(!decode_features(osxsave | (1U << 28U), avx2, 0x6U).avx2_fma);            // no FMA
+  EXPECT(!decode_features((1U << 12U) | osxsave, avx2 | avx512f, 0xe6U).avx2_fma); // no AVX instructions
+  EXPECT(!decode_features((1U << 12U) | osxsave, avx2 | avx512f, 0xe6U).avx512f);
+  EXPECT(!decode_features(fma | osxsave, 0U, 0xe6U).avx2_fma);                     // no AVX2
+  EXPECT(numerical::detail::saved_state(0U) == 0U);                                // no OSXSAVE: no xgetbv
 }
 #endif

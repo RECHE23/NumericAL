@@ -8,12 +8,12 @@
  *
  * Because the instructions are not documented, the path is used only where it is known to work:
  * - it is compiled only for arm64 macOS, and not at all under `NUMERICAL_NO_AMX`;
- * - it is used only on a chip whose CPU family is one of the M1 to M4 families, so no other chip can meet an
- *   instruction it lacks;
+ * - it is used only on a chip whose CPU family is one of the M1 to M4 families (which the A14 and A15 share), so
+ *   no other chip can meet an instruction it lacks, and not in a virtual machine;
  * - on first use a product computed through it must equal, to the bit, the same product computed by
  *   `std::fma` in ascending order of the depth; else the path stays off for the process;
  * - \ref numerical::limit_gemm_path keeps products off it at run time, and the Python package reads
- *   `NUMERICAL_AMX=0`.
+ *   `NUMERICAL_AMX=0`: under such a cap, not even the self-test runs.
  *
  * Every element of C is a chain of fused multiply-adds in ascending order of the depth, so a product through
  * the AMX is the same on any number of threads; it differs from the vector path's separately rounded products
@@ -23,12 +23,16 @@
 #define NUMERICAL_AMX_HPP
 
 #include <array>
+#include <atomic>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <initializer_list>
 
-#if defined(__APPLE__) && defined(__aarch64__) && !defined(NUMERICAL_NO_AMX)
+#if defined(__APPLE__)
+#  include <TargetConditionals.h>
+#endif
+#if defined(__APPLE__) && defined(__aarch64__) && TARGET_OS_OSX && !defined(NUMERICAL_NO_AMX)
 #  define NUMERICAL_AMX_COMPILED // the AMX path is compiled in (tested with #ifdef only)
 #  include <sys/sysctl.h>
 #endif
@@ -244,11 +248,32 @@ namespace numerical::detail {
     return c == want;
   }
 
-  //! \brief Whether the AMX of a chip of \p family can be used: a known family, then a passing self-test (never
-  //!        run on another family, which may lack the instructions).
-  [[nodiscard]] inline bool amx_usable_on(std::uint32_t family) noexcept
+  //! \brief Whether this system runs in a virtual machine, whose host decides what the guest's processor offers.
+  [[nodiscard]] inline bool running_virtualised() noexcept
   {
-    return amx_family_known(family) ? amx_self_test() : false;
+    int         present {0};
+    std::size_t size    {sizeof present};
+    (void)sysctlbyname("kern.hv_vmm_present", &present, &size, nullptr, 0); // on failure present stays 0
+    return present != 0;
+  }
+
+  //! \brief Whether the AMX's self-test has run in this process: a cap below the AMX keeps it from running.
+  [[nodiscard]] inline std::atomic<bool>& amx_probed() noexcept
+  {
+    static std::atomic<bool> probed {false};
+    return probed;
+  }
+
+  //! \brief Whether the AMX of a chip of \p family can be used: a known family, outside a virtual machine, then a
+  //!        passing self-test (never run elsewhere: another chip, or a host, may not provide the instructions).
+  [[nodiscard]] inline bool amx_usable_on(std::uint32_t family,
+                                          bool          virtualised) noexcept
+  {
+    if (!amx_family_known(family) || virtualised) {
+      return false;
+    }
+    amx_probed().store(true);
+    return amx_self_test();
   }
 
 #endif
@@ -257,7 +282,7 @@ namespace numerical::detail {
   [[nodiscard]] inline bool amx_usable() noexcept
   {
 #ifdef NUMERICAL_AMX_COMPILED
-    static const bool usable {amx_usable_on(cpu_family())};
+    static const bool usable {amx_usable_on(cpu_family(), running_virtualised())};
     return usable;
 #else
     return false;

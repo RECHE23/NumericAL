@@ -2,7 +2,10 @@
 // and across threads above, and an exception a worker throws comes back to the caller once every worker
 // has joined -- one escaping a thread would call std::terminate.
 #include <atomic>
+#include <cstdlib>
 #include <cstddef>
+#include <mutex>
+#include <set>
 #include <limits>
 #include <stdexcept>
 #include <string_view>
@@ -11,6 +14,11 @@
 
 #include <sciforge/test/framework.hpp>
 #include "numerical/parallel.hpp"
+
+#if !defined(_WIN32)
+#  include <sys/wait.h>
+#  include <unistd.h>
+#endif
 
 TEST(parallel_for_runs_every_index_once)
 {
@@ -154,3 +162,60 @@ TEST(one_body_type_runs_sequentially_on_the_pool_capped_and_nested)
   }
   EXPECT(right);
 }
+
+// A cap above one holds too: no more threads than it take part in a run, the caller's included (every worker
+// used to join every run, whatever the cap).
+TEST(a_cap_above_one_bounds_the_threads_of_a_run)
+{
+  std::mutex                guard;
+  std::set<std::thread::id> seen;
+  numerical::set_max_threads(2);
+  numerical::detail::parallel_for(256, std::size_t {1} << 20, [&guard, &seen](std::size_t) {
+                                    const std::scoped_lock held {guard};
+                                    seen.insert(std::this_thread::get_id());
+                                    std::this_thread::yield();
+                                  });
+  numerical::set_max_threads(0);
+  EXPECT(!seen.empty() && seen.size() <= 2U);
+}
+
+#if !defined(_WIN32)
+// A child forked while the pool runs has none of its workers, and their locks may be held: it runs its kernels
+// alone, to the end. The child exits 0 when its run completed and its sum is right; an alarm ends a hung one.
+TEST(a_forked_child_runs_its_kernels_alone)
+{
+  std::atomic<bool> stop {false};
+  std::thread       busy {[&stop] {
+                            while (!stop.load()) {
+                              std::vector<std::atomic<int>> hits(512);
+                              numerical::detail::parallel_for(hits.size(), std::size_t {1} << 20, [&hits](std::size_t i) { ++hits[i]; });
+                            }
+                          }};
+  bool              every_child_completed {true};
+  for (int fork_round {0}; fork_round < 40; ++fork_round) {
+    const pid_t child {fork()};
+    if (child == 0) {
+      (void)alarm(10);
+      // The parent's pool does not serve the child: it declines, and the run happens on the caller.
+      const auto nothing {[](const void*, std::size_t, std::size_t) {}};
+      if (numerical::detail::thread_pool::shared().try_run(nothing, nullptr, 1, 1, 1, 1)) {
+        std::exit(2); // NOLINT(concurrency-mt-unsafe): a forked child has this one thread
+      }
+      std::vector<std::atomic<int>> hits(512);
+      numerical::detail::parallel_for(hits.size(), std::size_t {1} << 20, [&hits](std::size_t i) { ++hits[i]; });
+      int total {0};
+      for (const std::atomic<int>& hit : hits) {
+        total += hit.load();
+      }
+      // exit, not _exit, so that a coverage build writes the child's profile
+      std::exit(total == 512 ? 0 : 1); // NOLINT(concurrency-mt-unsafe): a forked child has this one thread
+    }
+    int status {0};
+    (void)waitpid(child, &status, 0);
+    every_child_completed = every_child_completed && WIFEXITED(status) && WEXITSTATUS(status) == 0;
+  }
+  stop = true;
+  busy.join();
+  EXPECT(every_child_completed);
+}
+#endif

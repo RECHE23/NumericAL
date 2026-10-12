@@ -77,17 +77,19 @@ namespace numerical::detail {
     return gemm_path::portable;
   }
 
-  //! \brief The path products take: the best one, until \ref numerical::limit_gemm_path sets another.
-  [[nodiscard]] inline std::atomic<gemm_path>& gemm_path_state() noexcept
+  //! \brief The most capable path products may take, as \ref numerical::limit_gemm_path set it: none is probed until a
+  //!        product (or a question) reaches it, so a cap below the AMX keeps its instructions from ever running.
+  [[nodiscard]] inline std::atomic<gemm_path>& gemm_path_cap() noexcept
   {
-    static std::atomic<gemm_path> state {best_gemm_path(gemm_path::amx)};
-    return state;
+    static std::atomic<gemm_path> cap {gemm_path::amx};
+    return cap;
   }
 
-  //! \brief The path the next `double` product takes.
+  //! \brief The path the next `double` product takes: the most capable one under the cap that runs here (each
+  //!        path's probe is made once).
   [[nodiscard]] inline gemm_path gemm_path_current() noexcept
   {
-    return gemm_path_state().load(std::memory_order_relaxed);
+    return best_gemm_path(gemm_path_cap().load(std::memory_order_relaxed));
   }
 
   //! \brief The rows of C one register tile covers.
@@ -636,9 +638,8 @@ namespace numerical {
    */
   inline gemm_path limit_gemm_path(gemm_path most) noexcept
   {
-    const gemm_path path {detail::best_gemm_path(most)};
-    detail::gemm_path_state().store(path, std::memory_order_relaxed);
-    return path;
+    detail::gemm_path_cap().store(most, std::memory_order_relaxed);
+    return detail::best_gemm_path(most); // probes only the paths at or below the cap
   }
 
   //! \brief The path `double` matrix products take.

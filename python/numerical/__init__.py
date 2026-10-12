@@ -30,10 +30,11 @@ import numbers as _numbers
 import operator as _operator
 import os
 import sys as _sys
+import warnings as _warnings
 
 from numerical import _numerical
-from numerical._numerical import Tensor, asarray as _asarray, error, get_num_threads, set_num_threads
-from numerical._numerical import _gemm_path, _limit_gemm_path
+from numerical._numerical import Tensor, asarray as _asarray, error, get_num_threads
+from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
@@ -52,10 +53,30 @@ class LinAlgError(error, ValueError):
 
 __version__ = "2026.10.3"
 
-# NUMERICAL_NUM_THREADS caps the kernels' threads from the start, as OMP_NUM_THREADS does for BLAS (a process
-# per core, say, wants one each).
-if os.environ.get("NUMERICAL_NUM_THREADS", "").strip().isdigit():
-    set_num_threads(int(os.environ["NUMERICAL_NUM_THREADS"]))
+def set_num_threads(n):
+    """Cap the threads a kernel uses at `n`, the caller's included; ``0`` lifts the cap. At ``1`` no thread is
+    started. For a process per core, say, so that together they do not ask for more threads than the machine
+    has, as ``OMP_NUM_THREADS`` caps BLAS."""
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        raise ValueError(f"set_num_threads: a count of threads is a non-negative integer, not {n!r}")
+    _set_num_threads(n if n < 2**31 else 2**31)  # not min(): this module defines its own, a reduction
+
+
+def _environment_threads():
+    """NUMERICAL_NUM_THREADS, read once at import: a count of threads, or None (with a warning if it is not one)."""
+    value = os.environ.get("NUMERICAL_NUM_THREADS", "").strip()
+    if not value:
+        return None
+    if value.isascii() and value.isdigit():
+        return int(value)
+    _warnings.warn(f"NUMERICAL_NUM_THREADS={value!r} is not a count of threads; ignored", RuntimeWarning, stacklevel=2)
+    return None
+
+
+_threads = _environment_threads()
+if _threads is not None:
+    set_num_threads(_threads)
+del _threads
 
 _GEMM_PATHS = ("portable", "avx2", "avx512", "amx")
 
@@ -76,12 +97,29 @@ def limit_gemm_path(most):
     return _GEMM_PATHS[_limit_gemm_path(_GEMM_PATHS.index(most))]
 
 
-# NUMERICAL_GEMM caps the path from the start (portable, avx2, avx512, amx); NUMERICAL_AMX=0 keeps products off
-# the Apple AMX alone.
-if os.environ.get("NUMERICAL_GEMM", "").strip() in _GEMM_PATHS:
-    limit_gemm_path(os.environ["NUMERICAL_GEMM"].strip())
-elif os.environ.get("NUMERICAL_AMX", "").strip() == "0":
-    limit_gemm_path("avx512")
+def _environment_gemm_cap():
+    """The cap NUMERICAL_GEMM and NUMERICAL_AMX set, the more portable of the two: NUMERICAL_GEMM names a path
+    (portable, avx2, avx512, amx); NUMERICAL_AMX set to 0, false, no or off keeps products off the Apple AMX, its
+    self-test included. A value neither reads is ignored, with a warning."""
+    cap = len(_GEMM_PATHS) - 1
+    amx = os.environ.get("NUMERICAL_AMX", "").strip().lower()
+    if amx in ("0", "false", "no", "off"):
+        cap = _GEMM_PATHS.index("avx512")
+    elif amx not in ("", "1", "true", "yes", "on"):
+        _warnings.warn(f"NUMERICAL_AMX={amx!r} is neither on nor off; ignored", RuntimeWarning, stacklevel=2)
+    gemm = os.environ.get("NUMERICAL_GEMM", "").strip().lower()
+    if gemm in _GEMM_PATHS:
+        cap = cap if cap < _GEMM_PATHS.index(gemm) else _GEMM_PATHS.index(gemm)
+    elif gemm:
+        _warnings.warn(f"NUMERICAL_GEMM={gemm!r} is none of {_GEMM_PATHS}; ignored", RuntimeWarning, stacklevel=2)
+    return _GEMM_PATHS[cap]
+
+
+# Applied only when it caps: the default probes nothing until a product needs it.
+_cap = _environment_gemm_cap()
+if _cap != _GEMM_PATHS[-1]:
+    limit_gemm_path(_cap)
+del _cap
 
 
 def get_include():

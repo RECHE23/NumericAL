@@ -26,7 +26,30 @@
 #include <thread>
 #include <vector>
 
+#if defined(_WIN32)
+#  include <process.h>
+#else
+#  include <unistd.h>
+#endif
+
 namespace numerical::detail {
+
+  //! \brief This process's identifier: a pool started before a `fork` belongs to the parent, whose threads the
+  //!        child does not have.
+  [[nodiscard]] inline long current_process() noexcept
+  {
+#if defined(_WIN32)
+    return static_cast<long>(_getpid());
+#else
+    return static_cast<long>(getpid());
+#endif
+  }
+
+  //! \brief The hardware threads, the caller's included (at least 1), known without starting the pool.
+  [[nodiscard]] inline std::size_t hardware_threads() noexcept
+  {
+    return std::max<std::size_t>(1, std::thread::hardware_concurrency());
+  }
 
   //! \brief How long a thread polls before it sleeps: kernels run in quick succession (a matrix product packs, then
   //!        computes, panel after panel), and a thread woken from sleep starts tens of microseconds late.
@@ -56,6 +79,8 @@ namespace numerical::detail {
     std::size_t                     count    {};  //!< The number of iterations.
     std::size_t                     chunk    {};  //!< Indices per chunk.
     std::size_t                     chunks   {};  //!< Chunks.
+    std::size_t                     helpers  {};  //!< The workers that may join it beside the caller.
+    std::atomic<std::size_t>        joined   {0}; //!< The workers that asked to.
     std::atomic<std::size_t>        next     {0}; //!< The next chunk to take.
     std::atomic<std::size_t>        finished {0}; //!< The chunks done.
     std::mutex                      lock;         //!< Orders the last chunk's signal against the caller's sleep.
@@ -113,24 +138,21 @@ namespace numerical::detail {
       return *pool;
     }
 
-    //! \brief The threads a run can use, the caller's included.
-    [[nodiscard]] std::size_t threads() const noexcept
-    {
-      return workers_ + 1;
-    }
-
     /*!
-     * \brief Runs \p chunks chunks of \p chunk indices up to \p count on the pool and the caller, then rethrows
-     *        the first exception in index order. \return false, having run nothing, when the pool is busy.
+     * \brief Runs \p chunks chunks of \p chunk indices up to \p count on the caller and at most \p helpers workers,
+     *        then rethrows the first exception in index order. \return false, having run nothing, when the pool is
+     *        busy or belongs to the parent of a forked process.
      */
     bool try_run(chunk_runner run,
                  const void*  body,
                  std::size_t  count,
                  std::size_t  chunk,
-                 std::size_t  chunks)
+                 std::size_t  chunks,
+                 std::size_t  helpers)
     {
       bool idle {false};
-      if (!busy_.compare_exchange_strong(idle, true)) {
+      // A forked child has none of the parent's workers, and their locks may be held for good: it runs alone.
+      if (owner_ != current_process() || !busy_.compare_exchange_strong(idle, true)) {
         return false;
       }
       struct release
@@ -150,11 +172,12 @@ namespace numerical::detail {
         }
       } const freed  {busy_};
       const auto job {std::make_shared<pool_job>()};
-      job->run    = run;
-      job->body   = body;
-      job->count  = count;
-      job->chunk  = chunk;
-      job->chunks = chunks;
+      job->run     = run;
+      job->body    = body;
+      job->count   = count;
+      job->chunk   = chunk;
+      job->chunks  = chunks;
+      job->helpers = helpers;
       job->failed.resize(chunks);
       {
         const std::lock_guard<std::mutex> held {lock_};
@@ -205,16 +228,19 @@ namespace numerical::detail {
           seen = generation_.load();
           job  = current_;
         }
-        job->work();
+        if (job->joined.fetch_add(1) < job->helpers) { // as many workers as the run's threads, the caller aside
+          job->work();
+        }
       }
     }
 
-    std::mutex                lock_;               //!< Guards current_ and generation_.
-    std::condition_variable   wake_;               //!< Signalled when a run starts.
-    std::shared_ptr<pool_job> current_;            //!< The latest run.
-    std::atomic<std::size_t>  generation_ {0};     //!< Counts the runs (polled without the lock).
-    std::atomic<bool>         busy_       {false}; //!< Whether a run holds the pool.
-    std::size_t               workers_    {0};     //!< The threads started.
+    std::mutex                lock_;                           //!< Guards current_ and generation_.
+    std::condition_variable   wake_;                           //!< Signalled when a run starts.
+    std::shared_ptr<pool_job> current_;                        //!< The latest run.
+    std::atomic<std::size_t>  generation_ {0};                 //!< Counts the runs (polled without the lock).
+    std::atomic<bool>         busy_       {false};             //!< Whether a run holds the pool.
+    std::size_t               workers_    {0};                 //!< The threads started.
+    long                      owner_      {current_process()}; //!< The process whose threads they are.
   };
 
   //! \brief The most threads a parallel_for uses (0: as many as the pool has), set by \ref numerical::set_max_threads.
@@ -273,8 +299,7 @@ namespace numerical::detail {
                     const Body& body)
   {
     const std::size_t cap     {thread_cap().load()};
-    const std::size_t threads {threads_for(count, work_per_index, cap == 0 ? thread_pool::shared().threads()
-                                                                         : std::min(cap, thread_pool::shared().threads()))};
+    const std::size_t threads {threads_for(count, work_per_index, cap == 0 ? hardware_threads() : std::min(cap, hardware_threads()))};
     const auto        runner  {[](const void* erased, std::size_t begin, std::size_t end) {
                                  const Body& work {*static_cast<const Body*>(erased)};
                                  for (std::size_t i {begin}; i < end; ++i) {
@@ -288,7 +313,7 @@ namespace numerical::detail {
     // Up to four chunks a thread, taken as threads free up, so a slower core holds back no one.
     const std::size_t chunks {std::max<std::size_t>(1, std::min(count, threads * 4))};
     const std::size_t chunk  {((count + chunks) - 1) / chunks}; // a last chunk past the count runs nothing
-    if (!thread_pool::shared().try_run(runner, &body, count, chunk, chunks)) {
+    if (!thread_pool::shared().try_run(runner, &body, count, chunk, chunks, threads - 1)) {
       runner(&body, 0, count);
     }
   }
@@ -297,8 +322,8 @@ namespace numerical::detail {
 namespace numerical {
 
   /*!
-   * \brief Caps the threads a kernel uses at \p threads, the caller's included (1: none beside it); 0 lifts the
-   *        cap. For a process that runs several kernels side by side (one per worker process, say), so that
+   * \brief Caps the threads a kernel uses at \p threads, the caller's included (1: none beside it, and no thread is
+   *        started); 0 lifts the cap. For a process that runs several kernels side by side (one per worker process, say), so that
    *        together they do not ask for more threads than the machine has.
    */
   inline void set_max_threads(std::size_t threads) noexcept
@@ -306,12 +331,12 @@ namespace numerical {
     detail::thread_cap().store(threads);
   }
 
-  //! \brief The threads a kernel may use: the cap if one is set, else the hardware threads.
+  //! \brief The threads a kernel may use: the cap if one is set, else the hardware threads (starting none).
   [[nodiscard]] inline std::size_t max_threads()
   {
-    const std::size_t cap  {detail::thread_cap().load()};
-    const std::size_t pool {detail::thread_pool::shared().threads()};
-    return cap == 0 ? pool : std::min(cap, pool);
+    const std::size_t cap      {detail::thread_cap().load()};
+    const std::size_t hardware {detail::hardware_threads()};
+    return cap == 0 ? hardware : std::min(cap, hardware);
   }
 } // namespace numerical
 

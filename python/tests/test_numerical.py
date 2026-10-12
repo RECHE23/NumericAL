@@ -696,14 +696,38 @@ class Threads(unittest.TestCase):
 
     def test_the_environment_limits_the_gemm_path_at_import(self):
         import subprocess
-        for env, want in ((dict(os.environ, NUMERICAL_GEMM="portable"), "portable"),
-                          (dict(os.environ, NUMERICAL_AMX="0"), None)):
-            out = subprocess.run([sys.executable, "-c", "import numerical; print(numerical.gemm_path())"],
-                                 env=env, capture_output=True, text=True, check=True)
-            if want is None:
-                self.assertNotEqual(out.stdout.strip(), "amx")
-            else:
-                self.assertEqual(out.stdout.strip(), want)
+
+        def run(env, code="import numerical; print(numerical.gemm_path())"):
+            out = subprocess.run([sys.executable, "-W", "always", "-c", code], env=dict(os.environ, **env),
+                                 capture_output=True, text=True, check=True)
+            return out.stdout.strip(), out.stderr
+
+        self.assertEqual(run({"NUMERICAL_GEMM": "portable"})[0], "portable")
+        self.assertEqual(run({"NUMERICAL_GEMM": "PORTABLE"})[0], "portable")
+        self.assertNotEqual(run({"NUMERICAL_AMX": "0"})[0], "amx")
+        self.assertNotEqual(run({"NUMERICAL_AMX": "off", "NUMERICAL_GEMM": "amx"})[0], "amx")  # the more portable wins
+        stdout, stderr = run({"NUMERICAL_GEMM": "fastest"})
+        self.assertIn("NUMERICAL_GEMM", stderr)
+        self.assertIn("NUMERICAL_AMX", run({"NUMERICAL_AMX": "maybe"})[1])
+        # Under NUMERICAL_AMX=0 the AMX's self-test never runs, a product and the path's report included.
+        probe = ("import numerical, numerical._numerical as m; a = numerical.asarray([[1.0] * 64] * 64); a @ a; "
+                 "numerical.gemm_path(); numerical.get_config(); print(m._amx_probed())")
+        self.assertEqual(run({"NUMERICAL_AMX": "0"}, probe)[0], "False")
+        self.assertEqual(run({"NUMERICAL_GEMM": "portable"}, probe)[0], "False")
+
+    def test_thread_counts_are_validated(self):
+        import subprocess
+
+        for bad in (-1, True, 2.0, "2"):
+            with self.assertRaises(ValueError):
+                numerical.set_num_threads(bad)
+        out = subprocess.run([sys.executable, "-W", "always", "-c", "import numerical; print(numerical.get_num_threads())"],
+                             env=dict(os.environ, NUMERICAL_NUM_THREADS="\u00b2"), capture_output=True, text=True,
+                             check=True)
+        self.assertIn("NUMERICAL_NUM_THREADS", out.stderr)
+        out = subprocess.run([sys.executable, "-c", "import numerical; print(numerical.get_num_threads())"],
+                             env=dict(os.environ, NUMERICAL_NUM_THREADS="1"), capture_output=True, text=True, check=True)
+        self.assertEqual(out.stdout.strip(), "1")
 
     def test_the_environment_sets_the_cap_at_import(self):
         import subprocess

@@ -1677,6 +1677,16 @@ int gemm_path_code()
     return static_cast<int>(numerical::gemm_path_in_use());
 }
 
+// Whether the AMX's self-test has run in this process (always false where the AMX path is not compiled).
+bool amx_probed()
+{
+#ifdef NUMERICAL_AMX_COMPILED
+    return numerical::detail::amx_probed().load();
+#else
+    return false;
+#endif
+}
+
 } // namespace
 
 // caster<any_tensor> <-> the numerical.Tensor heap type (replaces the hand-rolled as_holder/wrap).
@@ -1705,11 +1715,12 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     .def_prop_ro<&get_array_interface>("__array_interface__",
                                        "NumPy array-interface (v3) describing the shared, read-only buffer.");
     // The 7 linear-algebra functions whose args/return are caster-able -> m.def.
-    m.def<&set_num_threads>("set_num_threads",
-                            "set_num_threads(n)\nCap the threads a kernel uses at n, the caller's included (0 lifts the cap).");
+    m.def<&set_num_threads>("_set_num_threads",
+                            "_set_num_threads(n)\nCap the threads a kernel uses at n (see numerical.set_num_threads).");
     m.def<&get_num_threads>("get_num_threads", "get_num_threads() -> int\nThe threads a kernel may use.");
     m.def<&limit_gemm_path_code>("_limit_gemm_path", "_limit_gemm_path(code) -> int\nThe path code now in use (see numerical.limit_gemm_path).");
     m.def<&gemm_path_code>("_gemm_path", "_gemm_path() -> int\nThe path code float64 matrix products take.");
+    m.def<&amx_probed>("_amx_probed", "_amx_probed() -> bool\nWhether the AMX's self-test has run in this process.");
     m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
     m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe minimum-norm least-squares solution of a @ x ≈ b, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");

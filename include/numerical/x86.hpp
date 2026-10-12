@@ -75,8 +75,9 @@ namespace numerical::detail {
                                                        std::uint32_t leaf7_ebx,
                                                        std::uint64_t state) noexcept
   {
-    const bool ymm     {(state & 0x6U) == 0x6U};   // SSE and AVX state
-    const bool zmm     {(state & 0xe6U) == 0xe6U}; // and the opmask and both halves of the 512-bit registers
+    const bool avx     {(leaf1_ecx & (1U << 28U)) != 0U};
+    const bool ymm     {avx && (state & 0x6U) == 0x6U};   // the AVX instructions, and SSE and AVX state
+    const bool zmm     {avx && (state & 0xe6U) == 0xe6U}; // and the opmask and both halves of the 512-bit registers
     const bool fma     {(leaf1_ecx & (1U << 12U)) != 0U};
     const bool avx2    {(leaf7_ebx & (1U << 5U)) != 0U};
     const bool avx512f {(leaf7_ebx & (1U << 16U)) != 0U};
@@ -88,7 +89,10 @@ namespace numerical::detail {
   {
     static const x86_features features {[] {
                                           const std::array<std::uint32_t, 4> leaf1 {cpuid(1, 0)};
-                                          const std::array<std::uint32_t, 4> leaf7 {cpuid(7, 0)};
+                                          // Leaf 7 only where the processor has it: past its last leaf, cpuid repeats
+                                          // another leaf's words.
+                                          const std::array<std::uint32_t, 4> leaf7 {cpuid(0, 0)[0] >= 7U ? cpuid(7, 0)
+                                                                                    : std::array<std::uint32_t, 4> {}};
                                           return decode_features(leaf1[2], leaf7[1], saved_state(leaf1[2]));
                                         }()};
     return features;
@@ -168,6 +172,7 @@ namespace numerical::detail {
         c[(i * ldc) + j] = edge[(i * avx512_nr) + j];
       }
     }
+    _mm256_zeroupper(); // the upper halves cleared: code past the tile may be SSE alone
   }
 
   /*!
@@ -218,6 +223,7 @@ namespace numerical::detail {
         c[(i * ldc) + j] = edge[(i * avx2_nr) + j];
       }
     }
+    _mm256_zeroupper(); // the upper halves cleared: code past the tile may be SSE alone
   }
 
 #endif

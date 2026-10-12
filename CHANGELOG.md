@@ -104,6 +104,16 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   can keep the kernels to one thread each.
 
 ### Fixed
+- **The thread cap holds**: under `set_num_threads(n)` (`set_max_threads`) a run takes the caller and at most
+  `n − 1` workers (every worker joined every run, whatever the cap); at 1, and to answer `get_num_threads`, no
+  thread is started. A process forked while the pool exists runs its kernels alone, rather than on workers it
+  does not have (a child could hang on the parent's lock).
+- **Below the AMX, the AMX is never probed**: `limit_gemm_path` under it, `NUMERICAL_AMX=0` or
+  `NUMERICAL_GEMM=portable` keep even its self-test from running (a cap probed it first), and it is not used in a
+  virtual machine, whose host decides what the processor offers. `NUMERICAL_AMX` also reads false, no and off, the
+  more portable of it and `NUMERICAL_GEMM` wins, and a value neither reads, like an invalid
+  `NUMERICAL_NUM_THREADS`, is ignored with a warning; `set_num_threads` refuses a negative count or a boolean
+  with `ValueError`.
 - **Subnormal entries no longer cost the bases their orthogonality** (in 2026.10.3 too): a Householder vector or a
   phase computed among subnormal numbers missed unit length by the coarse grid's error, which the input scaling
   does not remove when one column alone is tiny (`eigh` of a matrix with a column of 1e-320: ‖VᵀV − I‖ 1e-3;

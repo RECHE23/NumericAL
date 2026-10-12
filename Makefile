@@ -99,8 +99,10 @@ COV_DIR  := $(BUILD)/coverage
 coverage-build:
 	$(CMAKE) -S . -B $(COV_DIR) -DNUMERICAL_COVERAGE=ON -DCMAKE_CXX_COMPILER=$(COV_CXX)
 	$(CMAKE) --build $(COV_DIR) --parallel $(JOBS)
-	LLVM_PROFILE_FILE=$(COV_DIR)/tests.profraw $(COV_DIR)/numerical_tests_bin
-	$(PROFDATA) merge -sparse $(COV_DIR)/tests.profraw -o $(COV_DIR)/tests.profdata
+	rm -f $(COV_DIR)/tests-*.profraw
+	# One profile per process: a test's forked child counts too, and writes no file over the parent's.
+	LLVM_PROFILE_FILE=$(COV_DIR)/tests-%p.profraw $(COV_DIR)/numerical_tests_bin
+	$(PROFDATA) merge -sparse $(COV_DIR)/tests-*.profraw -o $(COV_DIR)/tests.profdata
 
 coverage: coverage-build
 	$(LLVM_COV) report $(COV_DIR)/numerical_tests_bin -instr-profile=$(COV_DIR)/tests.profdata \
