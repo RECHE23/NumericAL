@@ -18,6 +18,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   by row (they were gathered and written column by column, a stride of the whole order each). The same
   operations in the same order: the results are the same to the bit. Order 1024: i9-10900X 88 → 62 ms (137 →
   113 on one thread), M1 Pro 64 → 42 ms.
+- **`eigh` and `svd` form their bases transposed**, as they return them: each block of reflectors is applied
+  from the right to `Qᵀ` (or `Uᵀ`, `Vᵀ`), so that all three of its products have as many rows as the basis,
+  where the block's few rows (32) made the first a product the kernel runs poorly; and no transposition is
+  left at the end. i9-10900X, order 1024: the tridiagonal reduction 128 → 120 ms.
 
 ## 2026.10.4 — 2026-10-12
 

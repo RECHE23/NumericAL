@@ -1077,6 +1077,45 @@ namespace numerical {
     }
 
     /*!
+     * \brief \ref apply_reflector_block to `A` held transposed: \p at is `Aᵀ` (row-major, \p cols columns), and
+     *        `A ← (I − V T Vᴴ) A` on `A`'s rows `first…` and columns `from…to-1` is `Aᵀ ← Aᵀ (I − conj(V) Tᵀ Vᵀ)`
+     *        on `Aᵀ`'s columns `first…` and rows `from…to-1`. Its three products have `to − from` rows, which the
+     *        matrix product kernel runs well and on every core; \ref apply_reflector_block's first has the
+     *        block's few (a reflector block's 32 rows by 1000 deep: 54 GFLOP/s on twenty x86-64 threads).
+     */
+    template <typename T>
+    void apply_transposed_reflector_block(const reflector_block<T>& block,
+                                          std::vector<T>&           at,
+                                          std::size_t               cols,
+                                          std::size_t               from,
+                                          std::size_t               to)
+    {
+      const std::size_t b {block.width};
+      const std::size_t h {block.height};
+      const std::size_t r {to - from};
+      std::vector<T>    v_conjugate(h * b);   // conj(V), h × b
+      std::vector<T>    minus_v_t(b * h);     // −Vᵀ, b × h
+      std::vector<T>    t_transposed(b * b);  // Tᵀ
+      for (std::size_t row {0}; row < h; ++row) {
+        for (std::size_t j {0}; j < b; ++j) {
+          v_conjugate[(row * b) + j] = conj_of(block.v[(row * b) + j]);
+          minus_v_t[(j * h) + row]   = -block.v[(row * b) + j];
+        }
+      }
+      for (std::size_t i {0}; i < b; ++i) {
+        for (std::size_t p {0}; p < b; ++p) {
+          t_transposed[(p * b) + i] = block.t[(i * b) + p];
+        }
+      }
+      T*             left                {at.data() + (from * cols) + block.first};
+      std::vector<T> projection(r * b, T {});
+      gemm(r, b, h, left, cols, v_conjugate.data(), b, projection.data(), b);
+      std::vector<T> scaled(r * b, T     {});
+      gemm(r, b, b, projection.data(), b, t_transposed.data(), b, scaled.data(), b);
+      gemm(r, h, b, scaled.data(), b, minus_v_t.data(), h, left, cols);
+    }
+
+    /*!
      * \brief Applies `I − 2 v vᴴ` from the left to the rows `first…first+|v|-1`, on the columns `from…to-1`
      *        only: \ref reflect_rows confined to one panel.
      */
@@ -1578,13 +1617,13 @@ namespace numerical {
         d[i] = real_part(a[(i * n) + i]);
       }
       e[n - 1] = 0.0;
-      std::vector<T> q(n * n, T {}); // Q = H₁ H₂ …, by blocks of reflectors from the last back, as dorgtr
+      std::vector<T> mt(n * n, T {}); // Qᵀ, Q = H₁ H₂ …, by blocks of reflectors from the last back, as dorgtr
       for (std::size_t i {0}; i < n; ++i) {
-        q[(i * n) + i] = T {1};
+        mt[(i * n) + i] = T {1};
       }
       for (std::size_t k1 {n}; k1 > 1;) {
         const std::size_t k0 {k1 - std::min(k1 - 1, qr_block)};
-        apply_reflector_block(gather_reflectors(reflectors, k0, k1, n), false, q, n, k0, n);
+        apply_transposed_reflector_block(gather_reflectors(reflectors, k0, k1, n), mt, n, k0, n);
         k1 = k0;
       }
       // D T Dᴴ is real with D = diag(δ): δ₀ = 1, δ_{k+1} = δ_k · conj(phase(t_k)); then M = Q Dᴴ.
@@ -1592,15 +1631,10 @@ namespace numerical {
       for (std::size_t k {0}; k + 1 < n; ++k) {
         e[k] = real_subdiagonal(sub[k], delta[k], delta[k + 1]);
       }
-      std::vector<T>        mt(n * n);
-      constexpr std::size_t tile {32}; // by tiles, so that neither side strides through the whole matrix
-      for (std::size_t i0 {0}; i0 < n; i0 += tile) {
-        for (std::size_t j0 {0}; j0 < n; j0 += tile) {
-          for (std::size_t i {i0}; i < std::min(i0 + tile, n); ++i) {
-            for (std::size_t j {j0}; j < std::min(j0 + tile, n); ++j) {
-              mt[(j * n) + i] = q[(i * n) + j] * conj_of(delta[j]);
-            }
-          }
+      for (std::size_t j {0}; j < n; ++j) { // row j of Mᵀ = Dᴴ Qᵀ: row j of Qᵀ times conj(δⱼ)
+        const T factor {conj_of(delta[j])};
+        for (std::size_t i {0}; i < n; ++i) {
+          mt[(j * n) + i] *= factor;
         }
       }
       return mt;
@@ -2672,11 +2706,11 @@ namespace numerical {
       // at k+1). A phase on row k commutes with every later reflector, which acts on rows past it, so
       // U_b = (H₀ H₁ …) diag(conj phases) and V_b = (H'₀ H'₁ …) diag(phases): the reflectors are applied to the
       // diagonal by blocks, through the matrix product kernel, as QR's Q is formed.
-      std::vector<T> u(n * n, T {});
-      std::vector<T> v(n * n, T {});
+      ut.assign(n * n, T {}); // Uᵀ and Vᵀ, formed transposed: diagonal to start, the blocks applied to them
+      vt.assign(n * n, T {});
       for (std::size_t k {0}; k < n; ++k) {
-        u[(k * n) + k] = conj_of(left_phase[k]);
-        v[(k * n) + k] = k == 0 ? T {1} : right_phase[k - 1];
+        ut[(k * n) + k] = conj_of(left_phase[k]);
+        vt[(k * n) + k] = k == 0 ? T {1} : right_phase[k - 1];
       }
       std::vector<std::vector<T>> shifted(n); // right[k] acts from row k+1: as reflector k+1 of a QR
       for (std::size_t k {0}; k + 1 < n; ++k) {
@@ -2684,17 +2718,9 @@ namespace numerical {
       }
       for (std::size_t k1 {n}; k1 > 0;) { // blocks of qr_block reflectors, the last first
         const std::size_t k0 {(k1 - 1) / qr_block * qr_block};
-        apply_reflector_block(gather_reflectors(left, k0, k1, n), false, u, n, k0, n);
-        apply_reflector_block(gather_reflectors(shifted, k0, k1, n), false, v, n, k0, n);
+        apply_transposed_reflector_block(gather_reflectors(left, k0, k1, n), ut, n, k0, n);
+        apply_transposed_reflector_block(gather_reflectors(shifted, k0, k1, n), vt, n, k0, n);
         k1 = k0;
-      }
-      ut.assign(n * n, T {});
-      vt.assign(n * n, T {});
-      for (std::size_t i {0}; i < n; ++i) {
-        for (std::size_t j {0}; j < n; ++j) {
-          ut[(j * n) + i] = u[(i * n) + j];
-          vt[(j * n) + i] = v[(i * n) + j];
-        }
       }
     }
 
