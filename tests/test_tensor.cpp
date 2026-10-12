@@ -290,10 +290,9 @@ TEST(einsum_matmul_uses_the_tiled_gemm_across_tiles)
   EXPECT(einsum("ij,jk->ik", ta, tb) == expected);
 }
 
-TEST(einsum_falls_back_for_non_canonical_contractions)
+TEST(einsum_regroups_non_canonical_contractions)
 {
-  // None of these match the canonical GEMM layout, so they take the general
-  // engine; the results confirm that fall-back path stays correct.
+  // None of these match the canonical GEMM layout: their operands and result are regrouped around a product.
   const tensor<int> a             {{2, 2}, {1, 2, 3, 4}};
   const tensor<int> b             {{2, 2}, {5, 6, 7, 8}};
   const tensor<int> a_transpose_b {{2, 2}, {26, 30, 38, 44}}; // "ji,jk->ik": op0 not ending in the contracted label
@@ -303,7 +302,7 @@ TEST(einsum_falls_back_for_non_canonical_contractions)
   EXPECT(einsum("ij,kj->ik", a, b) == a_b_transpose);
   EXPECT(einsum("ij,jk->ki", a, b) == swapped_out);
 
-  // A rank-0 operand cannot carry the contracted label, so neither is a GEMM.
+  // A label summed by one operand alone leaves the pair to the general engine.
   const tensor<int> v      {{3}, {1, 2, 3}};
   const tensor<int> scalar {std::vector<std::size_t> {}, std::vector<int> {10}};
   const tensor<int> left   {einsum("i,->", v, scalar)}; // op1 is rank-0
@@ -311,6 +310,74 @@ TEST(einsum_falls_back_for_non_canonical_contractions)
   EXPECT_EQ(left.rank(), 0U);
   EXPECT_EQ(left.data()[0], 60);                        // (1 + 2 + 3) * 10
   EXPECT_EQ(right.data()[0], 60);
+}
+
+namespace {
+  // A matrix of doubles that round, its element (i, j) from i and j alone.
+  numerical::tensor<double> rounding(std::size_t rows,
+                                     std::size_t cols,
+                                     double      seed)
+  {
+    std::vector<double> values(rows * cols);
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        values[(i * cols) + j] = 1.0 / (seed + static_cast<double>((i * 7) + (j * 3)));
+      }
+    }
+    return numerical::tensor<double> {{rows, cols}, std::move(values)};
+  }
+
+  // The transpose, by an einsum the general engine takes.
+  numerical::tensor<double> transposed(const numerical::tensor<double>& t)
+  {
+    return einsum("ij->ji", t);
+  }
+} // namespace
+
+// A pair regrouped around a product takes each element's terms in the order the canonical layout does: the same bits
+// as the canonical product of the operands transposed by hand, batch by batch, with the output laid out last.
+TEST(einsum_regrouped_pairs_keep_the_canonical_sums)
+{
+  const tensor<double> a {rounding(37, 29, 3.0)};
+  const tensor<double> b {rounding(29, 41, 5.0)};
+  EXPECT(einsum("ij,kj->ik", a, transposed(b)) == einsum("ij,jk->ik", a, b));
+  EXPECT(einsum("ji,jk->ik", transposed(a), b) == einsum("ij,jk->ik", a, b));
+  EXPECT(einsum("ij,jk->ki", a, b) == transposed(einsum("ij,jk->ik", a, b)));
+  // Three batches, stacked: each slice the canonical product of its slices.
+  std::vector<double> left;
+  std::vector<double> right;
+  std::vector<double> wanted;
+  for (std::size_t p {0}; p < 3; ++p) {
+    const tensor<double> x {rounding(5, 6, 2.0 + static_cast<double>(p))};
+    const tensor<double> y {rounding(6, 4, 7.0 + static_cast<double>(p))};
+    const tensor<double> z {einsum("ij,jk->ik", x, y)};
+    left.insert(left.end(), x.data().begin(), x.data().end());
+    right.insert(right.end(), y.data().begin(), y.data().end());
+    wanted.insert(wanted.end(), z.data().begin(), z.data().end());
+  }
+  const tensor<double> stacked {einsum("bij,bjk->bik", tensor<double> {{3, 5, 6}, left}, tensor<double> {{3, 6, 4}, right})};
+  EXPECT(stacked == tensor<double> ({3, 5, 4}, wanted));
+  // Two summed labels, in ascending order; an outer product; a dot product per batch; an empty extent.
+  const tensor<double> cube {{2, 3, 4}, std::vector<double>(24, 0.5)};
+  EXPECT(einsum("ijk,jkl->il", cube, tensor<double> {{3, 4, 2}, std::vector<double>(24, 2.0)}) ==
+         tensor<double>({2, 2}, std::vector<double>(4, 12.0)));
+  EXPECT(einsum("i,j->ij", tensor<double> {{2}, {2.0, 3.0}}, tensor<double> {{3}, {1.0, 4.0, 5.0}}) ==
+         tensor<double>({2, 3}, {2.0, 8.0, 10.0, 3.0, 12.0, 15.0}));
+  EXPECT(einsum("bi,bi->b", tensor<double> {{2, 3}, {1, 2, 3, 4, 5, 6}}, tensor<double> {{2, 3}, {1, 1, 1, 2, 2, 2}}) ==
+         tensor<double>({2}, {6.0, 30.0}));
+  EXPECT(einsum("ij,kj->ik", tensor<double> {{0, 3}, std::vector<double> {}}, tensor<double> {{2, 3}, std::vector<double>(6, 1.0)}).data().empty());
+  EXPECT(einsum("ij,kj->ik", tensor<double> {{2, 3}, std::vector<double>(6, 1.0)}, tensor<double> {{0, 3}, std::vector<double> {}}).data().empty());
+  // A label summed by one operand alone, or twice in one operand (a diagonal), leaves the pair to the general engine.
+  EXPECT(einsum("ij,j->", tensor<double> {{2, 2}, {1, 2, 3, 4}}, tensor<double> {{2}, {10, 100}}) ==
+         tensor<double>(std::vector<std::size_t> {}, {640.0}));
+  EXPECT(einsum("j,ij->", tensor<double> {{2}, {10, 100}}, tensor<double> {{2, 2}, {1, 2, 3, 4}}) ==
+         tensor<double>(std::vector<std::size_t> {}, {640.0}));
+  EXPECT(einsum("i,ii->i", tensor<double> {{2}, {10, 100}}, tensor<double> {{2, 2}, {1, 2, 3, 4}}) ==
+         tensor<double>({2}, {10.0, 400.0}));
+  EXPECT(einsum("j,kj->k", tensor<double> {{2}, {1, 2}}, tensor<double> {{3, 2}, {1, 2, 3, 4, 5, 6}}) ==
+         tensor<double>({3}, {5.0, 11.0, 17.0}));
+  EXPECT(einsum("ii,i->i", tensor<double> {{2, 2}, {1, 2, 3, 4}}, tensor<double> {{2}, {10, 100}}) ==
+         tensor<double>({2}, {10.0, 400.0}));
 }
 
 TEST(einsum_is_generic_over_a_complex_scalar)

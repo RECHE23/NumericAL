@@ -26,6 +26,7 @@
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
 #include <cstddef>
 #include <map>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <utility>
@@ -232,6 +233,134 @@ namespace numerical {
       return tensor<T> {std::move(out_shape), std::move(c)};
     }
 
+    /*!
+     * \brief The elements of \p data, whose axes carry the labels \p from (extents in \p sizes), laid out row-major
+     *        along the labels \p to, a permutation of \p from that differs from it (so at least one label): an
+     *        odometer over \p to's outer labels, a strided sweep of its last.
+     */
+    template <typename T>
+    [[nodiscard]] std::vector<T> permuted(const std::vector<T>&              data,
+                                          const std::string&                 from,
+                                          const std::string&                 to,
+                                          const std::map<char, std::size_t>& sizes)
+    {
+      std::vector<T> out(data.size());
+      if (data.empty()) {
+        return out;
+      }
+      const std::size_t           rank {to.size()};
+      std::map<char, std::size_t> source; // each label's stride in data
+      std::size_t                 step {1};
+      for (std::size_t axis {from.size()}; axis-- > 0;) {
+        source[from[axis]]  = step;
+        step               *= sizes.at(from[axis]);
+      }
+      std::vector<std::size_t> stride(rank);
+      std::vector<std::size_t> extent(rank);
+      for (std::size_t axis {0}; axis < rank; ++axis) {
+        stride[axis] = source.at(to[axis]);
+        extent[axis] = sizes.at(to[axis]);
+      }
+      const std::size_t        inner  {extent[rank - 1]};
+      const std::size_t        sweep  {stride[rank - 1]};
+      std::vector<std::size_t> index(rank - 1, 0);
+      std::size_t              offset {0};
+      for (std::size_t row {0}; row < data.size() / inner; ++row) {
+        for (std::size_t i {0}; i < inner; ++i) {
+          out[(row * inner) + i] = data[offset + (i * sweep)];
+        }
+        for (std::size_t axis {rank - 1}; axis-- > 0;) {
+          offset += stride[axis];
+          if (++index[axis] < extent[axis]) {
+            break;
+          }
+          offset      -= stride[axis] * extent[axis];
+          index[axis]  = 0;
+        }
+      }
+      return out;
+    }
+
+    /*!
+     * \brief A two-operand contraction as matrix products: the labels both operands and the output carry (batch),
+     *        those one operand and the output carry (free), and those both operands carry alone (summed, in
+     *        ascending order, the order the general loop sums them in, so each element takes the same terms in the
+     *        same order) regroup each operand as a stack of matrices, `A` as `batch × free_a × summed` and `B` as
+     *        `batch × summed × free_b`, multiplied batch by batch through the packed kernel, batches in parallel;
+     *        the result is laid out in the output's order; a dot product per batch by \ref dot_product. Nothing for a
+     *        label repeated within an operand or summed by one operand alone (the general loop takes those).
+     */
+    template <typename T>
+    [[nodiscard]] std::optional<tensor<T>> contract_pair(const std::string&                 sa,
+                                                         const tensor<T>&                   a,
+                                                         const std::string&                 sb,
+                                                         const tensor<T>&                   b,
+                                                         const std::string&                 output,
+                                                         const std::string&                 summed,
+                                                         const std::map<char, std::size_t>& sizes)
+    {
+      const auto repeats {[](const std::string& labels) {
+                            for (std::size_t i {0}; i < labels.size(); ++i) {
+                              if (labels.find(labels[i], i + 1) != std::string::npos) {
+                                return true;
+                              }
+                            }
+                            return false;
+                          }};
+      if (repeats(sa) || repeats(sb)) {
+        return std::nullopt;
+      }
+      std::string batch;
+      std::string free_a;
+      std::string free_b;
+      for (const char label : output) {
+        const bool in_a {sa.find(label) != std::string::npos};
+        const bool in_b {sb.find(label) != std::string::npos};
+        (in_a && in_b ? batch : (in_a ? free_a : free_b)).push_back(label);
+      }
+      std::size_t inner {1};
+      for (const char label : summed) {
+        if (sa.find(label) == std::string::npos || sb.find(label) == std::string::npos) {
+          return std::nullopt;
+        }
+        inner *= sizes.at(label);
+      }
+      const auto extent_of {[&sizes](const std::string& labels) {
+                              std::size_t product {1};
+                              for (const char label : labels) {
+                                product = checked_mul(product, sizes.at(label));
+                              }
+                              return product;
+                            }};
+      const std::size_t    batches                                            {extent_of(batch)};
+      const std::size_t    rows                                               {extent_of(free_a)};
+      const std::size_t    cols                                               {extent_of(free_b)};
+      const std::string    left_order                                         {batch + free_a + summed};
+      const std::string    right_order                                        {batch + summed + free_b};
+      const std::vector<T> left                                               {sa == left_order ? std::vector<T> {} : permuted(a.data(), sa, left_order, sizes)};
+      const std::vector<T> right                                              {sb == right_order ? std::vector<T> {} : permuted(b.data(), sb, right_order, sizes)};
+      const T* const       left_data                                          {sa == left_order ? a.data().data() : left.data()};
+      const T* const       right_data                                         {sb == right_order ? b.data().data() : right.data()};
+      std::vector<T>       c(checked_mul(batches, checked_mul(rows, cols)), T {});
+      if (rows == 1 && cols == 1) { // a dot product per batch, as `chunked_dot` sums each chunk
+        parallel_for(batches, inner, [&](std::size_t p) {
+                       c[p] = dot_product(left_data + (p * inner), right_data + (p * inner), inner);
+                     });
+      }
+      else {
+        parallel_for(batches, rows * cols * inner / gemm_kernel_speedup, [&](std::size_t p) {
+                       gemm(rows, cols, inner, left_data + (p * rows * inner), inner, right_data + (p * inner * cols), cols,
+                            c.data() + (p * rows * cols), cols);
+                     });
+      }
+      std::vector<std::size_t> shape;
+      for (const char label : output) {
+        shape.push_back(sizes.at(label));
+      }
+      const std::string order {batch + free_a + free_b};
+      return tensor<T> {std::move(shape), order == output ? std::move(c) : permuted(c, order, output, sizes)};
+    }
+
     //! \brief The elements of one partial sum of `chunked_dot`: fixed, so the sum does not depend on the threads.
     inline constexpr std::size_t dot_chunk {std::size_t {1} << 14U};
 
@@ -408,6 +537,11 @@ namespace numerical {
                                 rows, inner, cols, std::move(out_shape));
           }
           return tensor<T> {std::move(out_shape), std::vector<T> {chunked_dot(operands[0]->data().data(), operands[1]->data().data(), inner)}};
+        }
+      }
+      if (operands.size() == 2) {
+        if (std::optional<tensor<T>> paired {contract_pair<T>(inputs[0], *operands[0], inputs[1], *operands[1], output, summed, sizes)}) {
+          return *std::move(paired);
         }
       }
 

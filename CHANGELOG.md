@@ -7,6 +7,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **Every two-operand `einsum` contraction runs as matrix products** (as `opt_einsum` maps a pair to BLAS):
+  each operand's axes are regrouped, labels shared with the output as batches, labels of one operand and the
+  output as rows or columns, summed labels in ascending order as the depth, and the result laid out in the
+  output's order. Each element takes the same terms in the same order as the canonical layout, so the bits are
+  those of the canonical product; a dot product per batch sums as `"i,i->"` does. Only a label summed by one
+  operand alone, or repeated within one, keeps the general loop. M1 Pro, 256 × 256: `"ij,kj->ik"` 29 → 0.18 ms
+  (NumPy's `einsum(optimize=True)`: 0.12), `"ji,jk->ik"` 34 → 0.19 ms; `"bij,bjk->bik"` (32 × 64²) 15 → 0.08 ms
+  (0.08); `"ijk,jkl->il"` (40³) 4.5 → 0.13 ms; `"bi,bi->b"` (1000 × 100) 0.34 → 0.021 ms (0.024).
 - **A dot product (`einsum("i,i->")`) runs on vectors and every core**: chunks of 16 384 elements in parallel,
   each by several vector accumulators (AVX-512 or AVX2 for `float64` on x86-64), their sums added in the chunks'
   order: the same on any number of threads, no longer the ascending sum in the last bits. M1 Pro, from Python
