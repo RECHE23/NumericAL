@@ -103,6 +103,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   can keep the kernels to one thread each.
 
 ### Fixed
+- **`svd` of a zero matrix past order 32 raised a convergence error** (the divide and conquer, not yet
+  released): a zero arrow has no weight on its zero pole, so its secular equation has no root. It is now its own
+  decomposition. Found by the new `make fuzz-linalg`: every decomposition against NumPy on adversarial matrices
+  (clustered, repeated and graded spectra, decoupled blocks, rank deficiency, extreme scales, complex) past the
+  block and leaf boundaries, on every matrix-product path the processor runs; a short fixed campaign runs with
+  the Python tests.
 - **A matrix product no longer maps its packing storage anew each time**: the calling thread keeps it for the
   next product (up to 32 MiB). Fresh megabytes were faulted in page by page on every product: order 512 on 20
   x86-64 threads took 2.9 ms instead of 0.89. The packed operands start a cache line, so no vector load of

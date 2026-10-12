@@ -38,7 +38,7 @@ FORMAT_FILES := $(shell find include tests -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: check-pins all build test sanitize coverage coverage-build coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate \
-        python python-test bench-python bench-gemm version-check install uninstall release clean help
+        python python-test fuzz-linalg bench-linalg bench-python bench-gemm version-check install uninstall release clean help
 
 .DEFAULT_GOAL := help
 
@@ -57,9 +57,11 @@ help:
 	@echo "  make format-check  Uncrustify, dry-run, exits non-zero on diff"
 	@echo "  make python     Build the Python extension in place (abi3)"
 	@echo "  make python-test  Run the Python binding test suite"
+	@echo "  make fuzz-linalg  Decompositions vs NumPy on adversarial matrices, every GEMM path (CASES=, SEED=)"
 	@echo "  make version-check  Assert pyproject = __init__ = CMake-derived version"
 	@echo "  make full-local-gate  Every gate in one command (the macOS gate of record)"
 	@echo "  make bench-python Differential validation + perf vs NumPy"
+	@echo "  make bench-linalg Dense linear algebra vs NumPy's BLAS/LAPACK, each alone in its process (SIZES=, ROUNDS=)"
 	@echo "  make bench-gemm   GEMM loop-order micro-benchmark (C++, vs naive baseline)"
 	@echo "  make release    Cut a calendar-versioned release (tag + push)"
 	@echo "  make clean      Remove build artifacts"
@@ -157,6 +159,10 @@ python:
 python-test: python
 	$(PYRUN) -m unittest discover -s python/tests
 
+# A campaign: CASES matrices per path (default 500), from SEED (default: the clock, printed for reproduction).
+fuzz-linalg: python
+	$(PYRUN) fuzz/linalg.py --cases $(or $(CASES),500) $(if $(SEED),--seed $(SEED),)
+
 # Version-consistency gate: pyproject.toml is the single source of truth — `make
 # release` bumps __init__.py from it, CMakeLists.txt derives it. Asserts the three
 # agree and that CMake still DERIVES (no hardcoded literal that could drift; the
@@ -204,6 +210,10 @@ full-local-gate:
 # Differential validation + performance versus NumPy (needs numpy installed).
 bench-python: python
 	$(PYRUN) benchmarks/bench.py
+
+bench-linalg: python
+	$(PYRUN) benchmarks/linalg_bench.py --sizes $(or $(SIZES),64,128,256,512,1024) --rounds $(or $(ROUNDS),3) \
+	    --json $(BUILD)/bench-linalg.json
 
 # Standalone C++ GEMM micro-benchmark: the shipping operator* against a naive
 # column-strided ijk baseline and a blocked variant (see BENCHMARKS.md). Built

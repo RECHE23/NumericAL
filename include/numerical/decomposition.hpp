@@ -2982,6 +2982,9 @@ namespace numerical {
       for (const double value : d) {
         largest = std::max(largest, value);
       }
+      if (largest == 0.0) {
+        return; // a zero arrow: its singular values are zeros, its vectors the bases as they are
+      }
       const double tolerance {8.0 * std::numeric_limits<double>::epsilon() * largest};
       if (std::abs(z[0]) <= tolerance) {
         z[0] = tolerance; // the zero pole keeps a weight: the arrow moves by no more than the tolerance

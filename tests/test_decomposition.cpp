@@ -1232,13 +1232,15 @@ TEST(the_secular_equation_finds_its_roots_from_the_nearer_pole)
   EXPECT(std::abs(root - 0.9932959321048296) < 1e-14); // to a few rounding errors of the equation's terms
 }
 
-// The secular equation's iterations are bounded: one step does not reach a root.
+// The secular equations' iterations are bounded: one step does not reach a root.
 TEST(the_secular_equation_bounds_its_iterations)
 {
   const std::vector<double> d {0.0, 1.0, 2.0};
   const std::vector<double> z {0.6, 0.48, 0.64};
   std::vector<double>       delta(3);
   EXPECT_THROWS((void)numerical::detail::secular_root(d, z, 1.0, 0, 1, delta.data()), numerical::convergence_error);
+  std::vector<double> above(3); // the singular values' equation likewise
+  EXPECT_THROWS((void)numerical::detail::singular_secular_root(d, z, 0, 1, delta.data(), above.data()), numerical::convergence_error);
 }
 
 namespace {
@@ -1322,6 +1324,11 @@ TEST(svd_divide_and_conquer_merges_and_deflates)
     z[i] = c {std::sin(static_cast<double>(i)), std::cos(static_cast<double>(3 * i))};
   }
   EXPECT(svd_divide_and_conquer_agrees(matrix<c> {m, m + 7, z}));
+  // A zero matrix past the leaves: every arrow is zero (no weight anywhere, nothing to solve), its singular
+  // values zeros and its vectors orthonormal.
+  const svd_decomposition<double> zero {matrix<double> {70, 70, std::vector<double>(4900, 0.0)}};
+  EXPECT(std::ranges::all_of(zero.singular_values(), [](double value) { return value == 0.0; }));
+  EXPECT(orthonormality_error(zero.u()) < 1e-15 && orthonormality_error(zero.v()) < 1e-15);
   // Complex, already bidiagonal (no reflection needed on either side), and with no columns at all.
   const matrix<c>            bidiagonal {{c {1.0, 1.0}, c {0.0, 2.0}, c {}}, {c {}, c {3.0, 0.0}, c {1.0, -1.0}}, {c {}, c {}, c {0.0, -2.0}}};
   const svd_decomposition<c> two_sided  {bidiagonal};
