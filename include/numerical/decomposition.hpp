@@ -2546,6 +2546,7 @@ namespace numerical {
     {
       std::vector<std::vector<T>> left(n);  // the left reflector of step k, on rows k…, empty where none was needed
       std::vector<std::vector<T>> right(n); // the right reflector of step k, on columns k+1…, likewise
+      const auto                  nonzero {[](const T& value) { return value != T {}; }};
       for (std::size_t k0 {0}; k0 < n; k0 += bidiagonal_block) {
         const std::size_t k1    {std::min(k0 + bidiagonal_block, n)};
         const std::size_t width {k1 - k0};
@@ -2566,10 +2567,10 @@ namespace numerical {
             subtract_product(x.data(), by_row_y[(p * n) + k], row_of(by_row_v, p, k), n - k);
             subtract_product(x.data(), by_row_u[(p * n) + k], row_of(by_row_x, p, k), n - k);
           }
-          if (scaled_norm(std::vector<T>(x.begin() + 1, x.end())) > 0.0) {
+          if (std::any_of(x.begin() + 1, x.end(), nonzero)) { // something below the diagonal to reflect
             d[k] = static_cast<double>(householder_in_place(x));
             // y = 2 (B − V Yᵀ − X Uᵀ)ᵀ v on the columns past k: Bᵀ v by contiguous rows, then the panel's terms.
-            std::vector<T> by_v(i, T {}); // Vᵀ v and Xᵀ v over the earlier steps
+            std::vector<T> by_v(i, T {});                     // Vᵀ v and Xᵀ v over the earlier steps
             std::vector<T> by_x(i, T {});
             for (std::size_t p {0}; p < i; ++p) {
               by_v[p] = dot_product(row_of(by_row_v, p, k), x.data(), n - k);
@@ -2609,10 +2610,10 @@ namespace numerical {
           for (std::size_t p {0}; p < i; ++p) {
             subtract_product(y.data(), by_row_x[(p * n) + k], row_of(by_row_u, p, k + 1), n - k - 1);
           }
-          if (y.size() > 1 && scaled_norm(std::vector<T>(y.begin() + 1, y.end())) > 0.0) {
+          if (std::any_of(y.begin() + 1, y.end(), nonzero)) { // something past the superdiagonal to reflect
             e[k] = static_cast<double>(householder_in_place(y));
             // x = 2 (B − V Yᵀ − X Uᵀ) u on the rows past k: B u by rows, then the panel's terms.
-            std::vector<T> by_y(i + 1, T {}); // Yᵀ u over this and the earlier steps, Uᵀ u over the earlier
+            std::vector<T> by_y(i + 1, T {});                 // Yᵀ u over this and the earlier steps, Uᵀ u over the earlier
             std::vector<T> by_u(i, T     {});
             for (std::size_t p {0}; p <= i; ++p) {
               by_y[p] = dot_product(row_of(by_row_y, p, k + 1), y.data(), y.size());
