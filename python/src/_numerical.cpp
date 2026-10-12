@@ -1340,6 +1340,106 @@ std::complex<double> read_element(const unsigned char* at, const element_type& t
     }
 }
 
+// Copies the elements at `base` (byte `strides` per axis) into `out` in C order, each converted from `Src`
+// to `Out`: the type is resolved once for the whole copy, and the innermost axis runs as one strided loop.
+template <typename Src, typename Out>
+void gather_typed(const unsigned char*           base,
+                  const std::vector<std::size_t>& shape,
+                  const std::vector<Py_ssize_t>&  strides,
+                  Out*                            out)
+{
+    const std::size_t rank {shape.size()};
+    if (rank == 0) {
+        *out = static_cast<Out>(read_scalar<Src>(base));
+        return;
+    }
+    const std::size_t        inner  {shape[rank - 1]};
+    const Py_ssize_t         step   {strides[rank - 1]};
+    std::vector<std::size_t> index(rank - 1, 0);
+    std::size_t              rows   {1};
+    for (std::size_t axis = 0; axis + 1 < rank; ++axis) {
+        rows *= shape[axis];
+    }
+    for (std::size_t row = 0; row < rows; ++row) {
+        Py_ssize_t offset {0};
+        for (std::size_t axis = 0; axis + 1 < rank; ++axis) {
+            offset += static_cast<Py_ssize_t>(index[axis]) * strides[axis];
+        }
+        const unsigned char* at {base + offset};
+        if (step == static_cast<Py_ssize_t>(sizeof(Src)) && std::is_same_v<Src, Out>) {
+            std::memcpy(out, at, inner * sizeof(Src)); // a contiguous run of the output's own type
+        }
+        else {
+            for (std::size_t i = 0; i < inner; ++i) {
+                if constexpr (std::is_same_v<Src, bool>) {
+                    out[i] = static_cast<Out>(at[static_cast<Py_ssize_t>(i) * step] != 0 ? 1.0 : 0.0);
+                }
+                else {
+                    out[i] = static_cast<Out>(read_scalar<Src>(at + (static_cast<Py_ssize_t>(i) * step)));
+                }
+            }
+        }
+        out += inner;
+        for (std::size_t axis = rank - 1; axis-- > 0;) {
+            if (++index[axis] < shape[axis]) {
+                break;
+            }
+            index[axis] = 0;
+        }
+    }
+}
+
+// gather_typed for the element type `type` names; false for a byte-swapped one, which takes read_element.
+template <typename Out>
+bool gather(const unsigned char*           base,
+            const std::vector<std::size_t>& shape,
+            const std::vector<Py_ssize_t>&  strides,
+            const element_type&             type,
+            Out*                            out)
+{
+    if (type.swapped) {
+        return false;
+    }
+    switch (type.kind) {
+        case 'b': gather_typed<bool>(base, shape, strides, out); return true;
+        case 'i':
+            switch (type.size) {
+                case 1:  gather_typed<std::int8_t>(base, shape, strides, out); return true;
+                case 2:  gather_typed<std::int16_t>(base, shape, strides, out); return true;
+                case 4:  gather_typed<std::int32_t>(base, shape, strides, out); return true;
+                default: gather_typed<std::int64_t>(base, shape, strides, out); return true;
+            }
+        case 'u':
+            switch (type.size) {
+                case 1:  gather_typed<std::uint8_t>(base, shape, strides, out); return true;
+                case 2:  gather_typed<std::uint16_t>(base, shape, strides, out); return true;
+                case 4:  gather_typed<std::uint32_t>(base, shape, strides, out); return true;
+                default: gather_typed<std::uint64_t>(base, shape, strides, out); return true;
+            }
+        case 'f':
+            if (type.size == 4) {
+                gather_typed<float>(base, shape, strides, out);
+            }
+            else {
+                gather_typed<double>(base, shape, strides, out);
+            }
+            return true;
+        default: // 'c': only into a complex output (a complex source never reaches a real one)
+            if constexpr (std::is_same_v<Out, std::complex<double>>) {
+                if (type.size == 8) {
+                    gather_typed<std::complex<float>>(base, shape, strides, out);
+                }
+                else {
+                    gather_typed<std::complex<double>>(base, shape, strides, out);
+                }
+                return true;
+            }
+            else {
+                return false;
+            }
+    }
+}
+
 PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
 {
     static const char* keywords[] = {"obj", "dtype", nullptr};
@@ -1491,11 +1591,32 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
 
     PyObject* result = nullptr;
     try {
-        // Walk the elements in C order, each at the sum of its index times the byte strides.
+        const auto* base {static_cast<const unsigned char*>(address)};
+        if (!element->swapped && (out_complex || element->kind != 'c')) {
+            // The common case: the conversion picked once, the copy without the GIL (it reads only the buffer).
+            if (out_complex) {
+                std::vector<std::complex<double>> values(total);
+                {
+                    const sb::scoped_gil_release unlocked {releases_gil(total)};
+                    gather(base, shape, strides, *element, values.data());
+                }
+                result = wrap(any_tensor {cplx_tensor {shape, std::move(values)}});
+            }
+            else {
+                std::vector<double> values(total);
+                {
+                    const sb::scoped_gil_release unlocked {releases_gil(total)};
+                    gather(base, shape, strides, *element, values.data());
+                }
+                result = wrap(any_tensor {real_tensor {shape, std::move(values)}});
+            }
+            Py_DECREF(ai);
+            return result;
+        }
+        // A byte-swapped element: each read through read_element, in C order.
         std::vector<std::complex<double>> values;
         values.reserve(total);
         std::vector<std::size_t> index(shape.size(), 0);
-        const auto*              base {static_cast<const unsigned char*>(address)};
         for (std::size_t n = 0; n < total; ++n) {
             Py_ssize_t offset = 0;
             for (std::size_t axis = 0; axis < shape.size(); ++axis) {

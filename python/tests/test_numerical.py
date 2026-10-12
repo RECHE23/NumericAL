@@ -609,6 +609,23 @@ class LinalgVsNumpy(unittest.TestCase):
             got = np.asarray(numerical.asarray(values))
             self.assertTrue(np.array_equal(got, values.astype(np.complex128 if dtype == np.complex64 else float)))
 
+    def test_asarray_copies_every_dtype_and_layout_as_numpy_reads_it(self):
+        # Every element type into float64 and complex128, through every layout the copy treats apart: a
+        # contiguous run (copied whole when the type is the output's), strided rows, a reversed axis, column
+        # order, and rank 0.
+        base = np.arange(24).reshape(2, 3, 4) - 7
+        for dtype in (np.float64, np.float32, np.int64, np.int32, np.int16, np.int8, np.uint64, np.uint16,
+                      np.uint8, np.bool_, np.complex128, np.complex64):
+            values = base.astype(dtype)
+            for view in (values, values[:, ::2, :], values[::-1, :, ::-1], np.asfortranarray(values),
+                         values[1, 2, 3]):
+                for out in ("float64", "complex128"):
+                    if out == "float64" and np.dtype(dtype).kind == "c":
+                        continue
+                    with self.subTest(dtype=np.dtype(dtype).name, shape=np.shape(view), out=out):
+                        got = np.asarray(numerical.asarray(np.asarray(view), out))
+                        self.assertTrue(np.array_equal(got, np.asarray(view).astype(out)))
+
     def test_svd_reconstructs(self):
         a = np.array([[1.0, 1.0], [1.0, 2.0], [1.0, 3.0]])
         u, s, vh = numerical.svd(numerical.asarray(a))
