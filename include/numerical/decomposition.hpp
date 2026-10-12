@@ -2019,12 +2019,8 @@ namespace numerical {
         if (y.size() > 1 && scaled_norm(std::vector<T>(y.begin() + 1, y.end())) > 0.0) {
           reflector(y);
           parallel_for(n - k, 2 * y.size(), [&](std::size_t r) { // row ← row (I − 2 y yᴴ); rows above k are zero there
-                         T* row {b.data() + ((k + r) * n) + k + 1};
-                         T  dot {};
-                         for (std::size_t j {0}; j < y.size(); ++j) {
-                           dot += row[j] * y[j];
-                         }
-                         const T scale {static_cast<T>(2) * dot};
+                         T*      row   {b.data() + ((k + r) * n) + k + 1};
+                         const T scale {static_cast<T>(2) * dot_product(row, y.data(), y.size())};
                          for (std::size_t j {0}; j < y.size(); ++j) {
                            row[j] -= scale * conj_of(y[j]);
                          }

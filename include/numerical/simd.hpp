@@ -6,6 +6,7 @@
 #ifndef NUMERICAL_SIMD_HPP
 #define NUMERICAL_SIMD_HPP
 
+#include <array>
 #include <cstddef>
 #include <cstring>
 #include <type_traits>
@@ -38,12 +39,50 @@ namespace numerical::detail {
     using type = double __attribute__((vector_size(native_vector_bytes))); //!< The vector.
   };
 
-#endif
-
-#if defined(__GNUC__) && !defined(__clang__)
   //! \brief Whether `T` is held in \ref native_vector.
   template <typename T>
   concept native_scalar = std::is_same_v<T, float> || std::is_same_v<T, double>;
+
+  /*!
+   * \brief `Σ x[i] · y[i]` over native vectors: four of them accumulate independently, lane by lane, then
+   *        their lanes and the remainder are summed in a fixed order. A single running sum waits on each
+   *        addition before the next; this sum is as deterministic, in another order.
+   */
+  template <native_scalar T>
+  [[nodiscard]] T dot_product(const T*    x,
+                              const T*    y,
+                              std::size_t count)
+  {
+    using lane = typename native_vector<T>::type;
+    constexpr std::size_t   width {native_vector_bytes / sizeof(T)};
+    constexpr std::size_t   lanes {4};
+    std::array<lane, lanes> sum   {};
+    const std::size_t       done  {count - (count % (width * lanes))};
+    for (std::size_t i {0}; i < done; i += width * lanes) {
+#  pragma GCC unroll 4 // the sums in registers: GCC keeps a rolled array of vectors in memory
+      for (std::size_t l {0}; l < lanes; ++l) {
+        lane xv;
+        lane yv;
+        std::memcpy(&xv, x + i + (l * width), sizeof(lane));
+        std::memcpy(&yv, y + i + (l * width), sizeof(lane));
+        sum[l] += xv * yv;
+      }
+    }
+    T total {};
+    for (std::size_t l {0}; l < lanes; ++l) {
+      for (std::size_t k {0}; k < width; ++k) {
+        total += sum[l][k];
+      }
+    }
+    for (std::size_t i {done}; i < count; ++i) {
+      total += x[i] * y[i];
+    }
+    return total;
+  }
+
+#endif
+
+#if defined(__GNUC__) && !defined(__clang__)
 
   //! \brief The leading elements of `y[i] -= f · x[i]`, a whole number of native vectors: how many it did.
   template <native_scalar T>
@@ -107,6 +146,19 @@ namespace numerical::detail {
                                  std::size_t /*count*/)
   {
     return 0;
+  }
+
+  //! \brief `Σ x[i] · y[i]`, in order, for a type no native vector holds.
+  template <typename T>
+  [[nodiscard]] T dot_product(const T*    x,
+                              const T*    y,
+                              std::size_t count)
+  {
+    T total {};
+    for (std::size_t i {0}; i < count; ++i) {
+      total += x[i] * y[i];
+    }
+    return total;
   }
 
   /*!

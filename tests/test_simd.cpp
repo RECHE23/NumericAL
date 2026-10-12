@@ -53,3 +53,25 @@ TEST(scaled_row_updates_equal_the_scalar_statements_to_the_bit)
     EXPECT(updates_match_the_scalar_statements<std::complex<double>>(count));
   }
 }
+
+// Whole numbers small enough that every partial sum is exact: any order of summation gives the exact dot
+// product, so the vector form (four accumulators, then the lanes, then the remainder) must equal it.
+TEST(dot_product_sums_every_term)
+{
+  for (const std::size_t count : {std::size_t {0}, std::size_t {3}, std::size_t {64}, std::size_t {77}}) {
+    std::vector<double>               x(count);
+    std::vector<double>               y(count);
+    std::vector<std::complex<double>> zx(count);
+    std::vector<std::complex<double>> zy(count);
+    double                            want {0.0};
+    for (std::size_t i {0}; i < count; ++i) {
+      x[i]   = static_cast<double>(i % 7) - 3.0;
+      y[i]   = static_cast<double>(i % 5) + 1.0;
+      zx[i]  = {x[i], 1.0};
+      zy[i]  = {y[i], 0.0};
+      want  += x[i] * y[i];
+    }
+    EXPECT(numerical::detail::dot_product(x.data(), y.data(), count) == want);
+    EXPECT(numerical::detail::dot_product(zx.data(), zy.data(), count).real() == want);
+  }
+}
