@@ -50,12 +50,13 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   earlier columns. x86-64 float64 (twenty threads): order 128 0.25 → 0.16 ms, 256 0.93 → 0.72, 384 3.3 → 2.8;
   arm64 and orders of 512 and more unchanged. The factor is unchanged where no product is fused.
 
-- **`eigh` reduces to tridiagonal form by blocks and forms its vectors by blocks**, as LAPACK's `dsytrd`
-  and `dorgtr`: each panel of 32 reflections updates the trailing block at once through the matrix product
-  kernel, the product `A v` of each reflection runs as contiguous updates on every core, and the accumulated
-  reflections go through the kernel by blocks. The rotations of a QL or QR sweep reach the vectors as
-  LAPACK's `dlasr` applies them, each row read and written once per sweep. M1 Pro, float64: order 256
-  13.8 → 9.1 ms, 512 107 → 54 (Accelerate 26).
+- **`eigh` reduces to tridiagonal form by blocks and forms its vectors by blocks**, as LAPACK's `dsytrd` and
+  `dorgtr`: each panel of 32 reflections updates the trailing block at once through the matrix product kernel,
+  the product `A v` of each reflection reads the lower triangle alone, each row once for its two uses (as
+  `dsymv`), on every core, and the accumulated reflections go through the kernel by blocks. The rotations of a QL
+  or QR sweep reach the vectors as LAPACK's `dlasr` applies them, each row read and written once per sweep. M1
+  Pro, float64: order 256 13.8 → 9.1 ms, 512 107 → 54 (Accelerate 26); the reduction alone at order 1024 on
+  twenty x86-64 threads 218 → 123 ms.
 
 - **`svd` bidiagonalises on every core**: each reflection's columns (from the left) or rows (from the right)
   run in parallel, and a right reflection's products sum over native vectors. M1 Pro, float64, order 256 21.7 →

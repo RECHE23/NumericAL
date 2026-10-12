@@ -1279,6 +1279,62 @@ namespace numerical {
       }
     }
 
+    //! \brief `Σ conj(x[i]) · y[i]` for a real `T`, where the conjugate is the value: \ref dot_product.
+    template <typename T>
+    requires std::is_floating_point_v<T>
+    [[nodiscard]] T conjugate_dot(const T*    x,
+                                  const T*    y,
+                                  std::size_t count)
+    {
+      return dot_product(x, y, count);
+    }
+
+    //! \brief `Σ conj(x[i]) · y[i]`, in order.
+    template <typename T>
+    [[nodiscard]] T conjugate_dot(const T*    x,
+                                  const T*    y,
+                                  std::size_t count)
+    {
+      T total {};
+      for (std::size_t i {0}; i < count; ++i) {
+        total += conj_of(x[i]) * y[i];
+      }
+      return total;
+    }
+
+    /*!
+     * \brief `w = B v` for the Hermitian `m × m` \p block (row stride \p n) from its lower triangle alone, as LAPACK's
+     *        `dsymv`: each row's lower part is read once and serves twice, `w[i] += Σⱼ≤ᵢ B[i][j] v[j]` and
+     *        `w[j] += conj(B[i][j]) v[i]` for `j < i`, so a reduction step reads half the block it would read whole.
+     *        Rows go by tasks of fixed size, each into its own partial `w`, summed in a fixed order: the result does
+     *        not depend on the number of threads.
+     */
+    template <typename T>
+    void hermitian_product(const T*    block,
+                           std::size_t n,
+                           std::size_t m,
+                           const T*    v,
+                           T*          w)
+    {
+      constexpr std::size_t rows_per_task        {32};
+      const std::size_t     tasks                {(m + rows_per_task - 1) / rows_per_task};
+      std::vector<T>        partial(tasks * m, T {});
+      parallel_for(tasks, rows_per_task * m, [&](std::size_t task) {
+                     const std::size_t first {task * rows_per_task};
+                     const std::size_t last {std::min(first + rows_per_task, m)};
+                     T*                own {partial.data() + (task * m)};
+                     for (std::size_t i {first}; i < last; ++i) {
+                       const T* row {block + (i * n)};
+                       own[i] += dot_product(row, v, i + 1);
+                       add_conjugate_product(own, row, v[i], i);
+                     }
+                   });
+      std::copy(partial.begin(), partial.begin() + static_cast<std::ptrdiff_t>(m), w);
+      for (std::size_t task {1}; task < tasks; ++task) { // the partials in order, each a contiguous update
+        add_product(w, T {1}, partial.data() + (task * m), m);
+      }
+    }
+
     //! \brief The reflections of one panel of the blocked tridiagonal reduction.
     inline constexpr std::size_t tridiagonal_block {32};
 
@@ -1340,19 +1396,20 @@ namespace numerical {
         // block takes it after the panel, through the matrix product kernel.
         const std::size_t k1                 {std::min(k0 + tridiagonal_block, n - 1)};
         const std::size_t width              {k1 - k0};
-        std::vector<T>    big_v(n * width, T {}); // V: row i, column p is v of step k0 + p at row i (zero above)
-        std::vector<T>    big_w(n * width, T {}); // W, likewise
+        // By reflection: row p of each holds step k0 + p's vector over the rows (zero above), so every term of the
+        // panel is a contiguous update.
+        std::vector<T> by_row_v(width * n, T {});
+        std::vector<T> by_row_w(width * n, T {});
         for (std::size_t k {k0}; k < k1; ++k) {
           const std::size_t j {k - k0};
           const std::size_t m {n - k - 1};
           std::vector<T>    column(m + 1); // column k from the diagonal down, the panel's earlier steps applied
           for (std::size_t i {k}; i < n; ++i) {
-            T value {a[(i * n) + k]};
-            for (std::size_t p {0}; p < j; ++p) {
-              value -= (big_v[(i * width) + p] * conj_of(big_w[(k * width) + p]))
-                       + (big_w[(i * width) + p] * conj_of(big_v[(k * width) + p]));
-            }
-            column[i - k] = value;
+            column[i - k] = a[(i * n) + k];
+          }
+          for (std::size_t p {0}; p < j; ++p) {
+            subtract_product(column.data(), by_row_v.data() + (p * n) + k, conj_of(by_row_w[(p * n) + k]), m + 1);
+            subtract_product(column.data(), by_row_w.data() + (p * n) + k, conj_of(by_row_v[(p * n) + k]), m + 1);
           }
           a[(k * n) + k] = column[0];
           std::vector<T> v(column.begin() + 1, column.end()); // column k below the diagonal
@@ -1368,39 +1425,20 @@ namespace numerical {
           for (T& element : v) {
             element /= length;
           }
-          const T       *       block       {a.data() + ((k + 1) * n) + k + 1}; // the trailing block, row stride n
-          std::vector<T>        w(m, T      {});
-          constexpr std::size_t chunk_width {64};
-          // w = A v on the trailing block, as Σₗ conj(row l) vₗ (A is Hermitian): contiguous updates rather than
-          // a dependent sum per row, in parallel by chunks of w.
-          parallel_for((m + chunk_width - 1) / chunk_width, m * chunk_width, [&](std::size_t chunk) {
-                         const std::size_t first {chunk * chunk_width};
-                         const std::size_t count {std::min(chunk_width, m - first)};
-                         for (std::size_t l {0}; l < m; ++l) {
-                           add_conjugate_product(w.data() + first, block + (l * n) + first, v[l], count);
-                         }
-                       });
-          std::vector<T> by_w(j, T {}); // Wᴴ v and Vᴴ v over the earlier steps
-          std::vector<T> by_v(j, T {});
-          for (std::size_t l {0}; l < m; ++l) {
-            for (std::size_t p {0}; p < j; ++p) {
-              by_w[p] += conj_of(big_w[((k + 1 + l) * width) + p]) * v[l];
-              by_v[p] += conj_of(big_v[((k + 1 + l) * width) + p]) * v[l];
-            }
+          const T*       block  {a.data() + ((k + 1) * n) + k + 1}; // the trailing block, row stride n
+          std::vector<T> w(m, T {});
+          hermitian_product(block, n, m, v.data(), w.data());       // w = A v on the trailing block
+          for (std::size_t p {0}; p < j; ++p) {                                           // w = (A − V Wᴴ − W Vᴴ) v
+            const T by_w {conjugate_dot(by_row_w.data() + (p * n) + k + 1, v.data(), m)}; // (Wᴴ v)ₚ
+            const T by_v {conjugate_dot(by_row_v.data() + (p * n) + k + 1, v.data(), m)}; // (Vᴴ v)ₚ
+            subtract_product(w.data(), by_row_v.data() + (p * n) + k + 1, by_w, m);
+            subtract_product(w.data(), by_row_w.data() + (p * n) + k + 1, by_v, m);
           }
-          for (std::size_t i {0}; i < m; ++i) { // w = (A − V Wᴴ − W Vᴴ) v
-            for (std::size_t p {0}; p < j; ++p) {
-              w[i] -= (big_v[((k + 1 + i) * width) + p] * by_w[p]) + (big_w[((k + 1 + i) * width) + p] * by_v[p]);
-            }
-          }
-          T c {};
-          for (std::size_t i {0}; i < m; ++i) {
-            c += conj_of(v[i]) * w[i];
-          }
+          const T c {conjugate_dot(v.data(), w.data(), m)};
           for (std::size_t i {0}; i < m; ++i) { // w = 2 B v − 2 (vᴴ B v) v, so H B H = B − v wᴴ − w vᴴ
-            w[i]                             = (static_cast<T>(2) * w[i]) - (static_cast<T>(2) * c * v[i]);
-            big_v[((k + 1 + i) * width) + j] = v[i];
-            big_w[((k + 1 + i) * width) + j] = w[i];
+            w[i]                                = (static_cast<T>(2) * w[i]) - (static_cast<T>(2) * c * v[i]);
+            by_row_v[(j * n) + k + 1 + i]       = v[i];
+            by_row_w[(j * n) + k + 1 + i]       = w[i];
           }
           reflectors[k + 1] = std::move(v); // acting from row k + 1, as householder_qr's from row k
         }
@@ -1410,12 +1448,12 @@ namespace numerical {
         std::vector<T>    minus_w(rest * width);
         std::vector<T>    v_adjoint(width * rest);
         std::vector<T>    w_adjoint(width * rest);
-        for (std::size_t i {0}; i < rest; ++i) {
-          for (std::size_t p {0}; p < width; ++p) {
-            minus_v[(i * width) + p]  = -big_v[((k1 + i) * width) + p];
-            minus_w[(i * width) + p]  = -big_w[((k1 + i) * width) + p];
-            v_adjoint[(p * rest) + i] = conj_of(big_v[((k1 + i) * width) + p]);
-            w_adjoint[(p * rest) + i] = conj_of(big_w[((k1 + i) * width) + p]);
+        for (std::size_t p {0}; p < width; ++p) {
+          for (std::size_t i {0}; i < rest; ++i) {
+            minus_v[(i * width) + p]  = -by_row_v[(p * n) + k1 + i];
+            minus_w[(i * width) + p]  = -by_row_w[(p * n) + k1 + i];
+            v_adjoint[(p * rest) + i] = conj_of(by_row_v[(p * n) + k1 + i]);
+            w_adjoint[(p * rest) + i] = conj_of(by_row_w[(p * n) + k1 + i]);
           }
         }
         T* trailing {a.data() + (k1 * n) + k1};
@@ -1440,10 +1478,15 @@ namespace numerical {
       for (std::size_t k {0}; k + 1 < n; ++k) {
         e[k] = real_subdiagonal(sub[k], delta[k], delta[k + 1]);
       }
-      std::vector<T> mt(n * n);
-      for (std::size_t i {0}; i < n; ++i) {
-        for (std::size_t j {0}; j < n; ++j) {
-          mt[(j * n) + i] = q[(i * n) + j] * conj_of(delta[j]);
+      std::vector<T>        mt(n * n);
+      constexpr std::size_t tile {32}; // by tiles, so that neither side strides through the whole matrix
+      for (std::size_t i0 {0}; i0 < n; i0 += tile) {
+        for (std::size_t j0 {0}; j0 < n; j0 += tile) {
+          for (std::size_t i {i0}; i < std::min(i0 + tile, n); ++i) {
+            for (std::size_t j {j0}; j < std::min(j0 + tile, n); ++j) {
+              mt[(j * n) + i] = q[(i * n) + j] * conj_of(delta[j]);
+            }
+          }
         }
       }
       return mt;
