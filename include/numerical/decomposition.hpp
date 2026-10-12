@@ -881,7 +881,8 @@ namespace numerical {
      *        columns `from…cols-1`.
      *
      * Row by row: the projection `w = vᴴ A` accumulates one contiguous row at a time, then each row takes
-     * `−2 vᵢ w`. A column-by-column walk strides by `cols` on every access and runs several times slower.
+     * `−2 vᵢ w`. A column-by-column walk strides by `cols` on every access and runs several times slower. The
+     * columns are independent, so chunks of them run in parallel, each element's arithmetic in the same order.
      * \param[in,out] a     The array, `cols` entries per row.
      * \param[in]     cols  Its row length.
      * \param[in]     v     The unit reflector.
@@ -895,17 +896,23 @@ namespace numerical {
                       std::size_t           first,
                       std::size_t           from)
     {
-      std::vector<T> w(cols - from, T {});
-      for (std::size_t i {0}; i < v.size(); ++i) {
-        const T  weight {conj_of(v[i])};
-        const T* row    {a.data() + ((first + i) * cols) + from};
-        add_product(w.data(), weight, row, w.size());
-      }
-      for (std::size_t i {0}; i < v.size(); ++i) {
-        const T scale {static_cast<T>(2) * v[i]};
-        T*      row   {a.data() + ((first + i) * cols) + from};
-        subtract_product(row, scale, w.data(), w.size());
-      }
+      constexpr std::size_t width {64};
+      const std::size_t     span  {cols - from};
+      parallel_for((span + width - 1) / width, 2 * v.size() * width, [&](std::size_t chunk) {
+                     const std::size_t start {from + (chunk * width)};
+                     const std::size_t count {std::min(width, cols - start)};
+                     std::vector<T>    w(count, T {});
+                     for (std::size_t i {0}; i < v.size(); ++i) {
+                       const T  weight {conj_of(v[i])};
+                       const T* row    {a.data() + ((first + i) * cols) + start};
+                       add_product(w.data(), weight, row, count);
+                     }
+                     for (std::size_t i {0}; i < v.size(); ++i) {
+                       const T scale {static_cast<T>(2) * v[i]};
+                       T*      row   {a.data() + ((first + i) * cols) + start};
+                       subtract_product(row, scale, w.data(), count);
+                     }
+                   });
     }
 
     /*!
@@ -1939,17 +1946,17 @@ namespace numerical {
         }
         if (y.size() > 1 && scaled_norm(std::vector<T>(y.begin() + 1, y.end())) > 0.0) {
           reflector(y);
-          for (std::size_t i {k}; i < n; ++i) { // row ← row (I − 2 y yᴴ), rows above k are zero there
-            T* row {b.data() + (i * n) + k + 1};
-            T  dot {};
-            for (std::size_t j {0}; j < y.size(); ++j) {
-              dot += row[j] * y[j];
-            }
-            const T scale {static_cast<T>(2) * dot};
-            for (std::size_t j {0}; j < y.size(); ++j) {
-              row[j] -= scale * conj_of(y[j]);
-            }
-          }
+          parallel_for(n - k, 2 * y.size(), [&](std::size_t r) { // row ← row (I − 2 y yᴴ); rows above k are zero there
+                         T* row {b.data() + ((k + r) * n) + k + 1};
+                         T  dot {};
+                         for (std::size_t j {0}; j < y.size(); ++j) {
+                           dot += row[j] * y[j];
+                         }
+                         const T scale {static_cast<T>(2) * dot};
+                         for (std::size_t j {0}; j < y.size(); ++j) {
+                           row[j] -= scale * conj_of(y[j]);
+                         }
+                       });
           right[k] = std::move(y);
         }
         right_phase[k] = conj_of(phase_of(b[(k * n) + k + 1])); // column k+1 times it: |b_k,k+1| above

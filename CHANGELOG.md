@@ -55,6 +55,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   kernel by blocks of 32, as LAPACK's `dorgtr`. M1 Pro, float64: order 256 13.8 → 11.6 ms, 512 107 → 73
   (Accelerate 25).
 
+- **`svd` bidiagonalises on every core**: each reflection's columns (from the left) or rows (from the right)
+  run in parallel, each element's arithmetic in the same order. M1 Pro, float64, order 512: 146 → 125 ms.
+
 ### Added
 - **`float64` matrix products on the Apple AMX** (M1 to M4), the matrix coprocessor Accelerate uses. M1 Pro,
   8 threads, GFLOPS against Accelerate's: order 2048 423 (383), 1024 395 (388), 512 277 (431), 256 209 (282);
