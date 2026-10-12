@@ -45,6 +45,8 @@ numerical = ["*.so", "*.pyd"]
 [tool.cibuildwheel]
 build = "cp310-*"
 build-frontend = "build"
+# NumPy is the oracle of the property, parity and fuzz tests, which skip without it.
+test-requires = ["numpy"]
 test-command = "python -m unittest discover -s {project}/python/tests"
 
 [tool.cibuildwheel.macos]
