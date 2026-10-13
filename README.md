@@ -170,7 +170,9 @@ would require an explicit copy into a PETSc object.
 
 ## Threads and kernels
 
-The kernels share a pool of threads, started the first time a kernel's work pays for more than one.
+The kernels share a pool of threads, started the first time a kernel's work pays for more than one: one per
+physical core the process may run on, where the system tells them (Linux, macOS; elsewhere one per hardware
+thread), since two threads on one core's hyperthreads share its multiply-add units.
 `numerical.set_num_threads(n)` (C++: `numerical::set_max_threads`), or `NUMERICAL_NUM_THREADS` read at import,
 caps the threads a kernel uses, the caller's included, as `OMP_NUM_THREADS` caps BLAS; at 1 no thread is
 started. A process forked while the pool exists runs its kernels alone. Each library that embeds NumericAL's

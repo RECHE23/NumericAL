@@ -7,6 +7,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **The thread pool runs one thread per physical core** where the system tells them (Linux: the distinct cores of
+  the processors in the process's affinity, so `taskset` and cgroups count; macOS: `hw.physicalcpu`), not one per
+  hyperthread: two threads on one core's hyperthreads share its multiply-add units. i9-9900K (eight cores, sixteen
+  hyperthreads): a product of order 128 140 → 71 µs, of order 256 193 → 137 µs (NumPy with OpenBLAS: 130), the
+  same at order 2048; from Python at order 1024, QR 80 → 66 ms (NumPy: 66), `eigh` 185 → 150 ms, `svd` 534 →
+  426 ms, `lstsq` 173 → 145 ms, `solve` 26 → 21 ms. `get_num_threads()` reports the physical cores.
 - **`einsum` of three operands or more contracts them in the cheapest order** (as `opt_einsum` chooses it):
   every order up to four operands, the cheapest in multiply-adds and then the smaller largest intermediate; past
   four, the cheapest pair sharing a label at each step. Each pair runs as the matrix products below, and an operand

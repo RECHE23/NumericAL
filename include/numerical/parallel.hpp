@@ -31,6 +31,15 @@
 #else
 #  include <unistd.h>
 #endif
+#if defined(__linux__)
+#  include <fstream>
+#  include <set>
+#  include <string>
+#  include <utility>
+#  include <sched.h>
+#elif defined(__APPLE__)
+#  include <sys/sysctl.h>
+#endif
 
 namespace numerical::detail {
 
@@ -45,12 +54,68 @@ namespace numerical::detail {
 #endif
   }
 
-  //! \brief The hardware threads, the caller's included (at least 1), known without starting the pool. Asked once,
-  //!        as the pool's workers are started once: glibc reads a file for it on every call (three system calls per
-  //!        matrix product, where a container's file system serves that file, 0.25 ms on six x86-64 cores).
+  /*!
+   * \brief The physical cores this process may run on, or 0 where the system does not say. Linux: the distinct
+   *        (package, core) pairs of the processors in the process's affinity, from `/sys`; macOS: `hw.physicalcpu`.
+   */
+  [[nodiscard]] inline std::size_t physical_cores() noexcept
+  {
+#if defined(__linux__)
+    try {
+      cpu_set_t allowed;
+      CPU_ZERO(&allowed); // NOLINT(hicpp-signed-bitwise): the system's macro
+      if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
+        return 0;
+      }
+      std::set<std::pair<long, long>> cores;
+      for (int cpu {0}; cpu < CPU_SETSIZE; ++cpu) {
+        if (CPU_ISSET(cpu, &allowed) == 0) { // NOLINT(hicpp-signed-bitwise): the system's macro
+          continue;
+        }
+        const std::string topology     {"/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/"};
+        std::ifstream     core_file    {topology + "core_id"};
+        std::ifstream     package_file {topology + "physical_package_id"};
+        long              core         {0};
+        long              package      {0};
+        if (!(core_file >> core) || !(package_file >> package)) {
+          return 0; // the topology unknown here: no claim
+        }
+        cores.emplace(package, core);
+      }
+      return cores.size();
+    }
+    catch (...) {
+      return 0;
+    }
+#elif defined(__APPLE__)
+    int         cores {0};
+    std::size_t size  {sizeof(cores)};
+    (void)sysctlbyname("hw.physicalcpu", &cores, &size, nullptr, 0); // on failure cores stays 0
+    return static_cast<std::size_t>(std::max(cores, 0));
+#else
+    return 0;
+#endif
+  }
+
+  //! \brief The pool's threads from the \p logical hardware threads and the \p physical cores (0: unknown): the
+  //!        cores where known, at least 1.
+  [[nodiscard]] constexpr std::size_t pool_threads(std::size_t logical,
+                                                   std::size_t physical) noexcept
+  {
+    const std::size_t hardware {std::max<std::size_t>(1, logical)};
+    return physical == 0 ? hardware : std::min(physical, hardware);
+  }
+
+  /*!
+   * \brief The threads the pool runs, the caller's included (at least 1), known without starting the pool: one per
+   *        physical core where the system tells them (else one per hardware thread). Two threads on one core's
+   *        hyperthreads share its multiply-add units: a product of order 128 on eight AVX2 cores with sixteen
+   *        hyperthreads took 140 µs on sixteen threads, 71 on eight; order 2048, the same either way. Asked once,
+   *        as the pool's workers are started once (glibc reads a file for the hardware threads on every call).
+   */
   [[nodiscard]] inline std::size_t hardware_threads() noexcept
   {
-    static const std::size_t threads {std::max<std::size_t>(1, std::thread::hardware_concurrency())};
+    static const std::size_t threads {pool_threads(std::thread::hardware_concurrency(), physical_cores())};
     return threads;
   }
 

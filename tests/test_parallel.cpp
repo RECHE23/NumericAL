@@ -194,6 +194,17 @@ TEST(parallel_fors_from_two_threads_both_complete)
 }
 
 // A cap of one runs every index on the caller; the cap lifted, the hardware threads come back.
+// One pool thread per physical core where the system tells them, else per hardware thread, at least one.
+TEST(the_pool_runs_one_thread_per_physical_core)
+{
+  using numerical::detail::pool_threads;
+  EXPECT_EQ(pool_threads(16, 8), 8U);  // hyperthreads: the cores
+  EXPECT_EQ(pool_threads(16, 0), 16U); // the cores unknown: the hardware threads
+  EXPECT_EQ(pool_threads(4, 8), 4U);   // never more than the hardware threads
+  EXPECT_EQ(pool_threads(0, 0), 1U);   // an unknown hardware: one
+  EXPECT(numerical::detail::hardware_threads() >= 1U);
+}
+
 TEST(set_max_threads_caps_the_threads_a_kernel_uses)
 {
   const std::size_t hardware {numerical::max_threads()};
