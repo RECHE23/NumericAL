@@ -28,6 +28,7 @@
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <memory>
 #include <numbers>
@@ -325,6 +326,41 @@ namespace numerical {
             throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
           }
         }
+      }
+    }
+
+    //! \brief Whether the \p count values at \p x are all finite: a NaN or an infinity has every exponent bit set. One
+    //!        pass with no early exit, an integer OR the compilers vectorise (a check per element and an exit at the
+    //!        first was a tenth of an LU of order 128).
+    [[nodiscard]] inline bool all_finite(const double* x,
+                                         std::size_t   count) noexcept
+    {
+      constexpr std::uint64_t exponent {0x7FF0000000000000ULL};
+      std::uint64_t           flagged  {0};
+      for (std::size_t i {0}; i < count; ++i) {
+        std::uint64_t bits {};
+        std::memcpy(&bits, x + i, sizeof(bits));
+        flagged |= static_cast<std::uint64_t>((bits & exponent) == exponent);
+      }
+      return flagged == 0;
+    }
+
+    //! \brief \ref require_finite for `double`, its elements contiguous: \ref all_finite.
+    inline void require_finite(const matrix<double>& a,
+                               const char*           what)
+    {
+      if (!all_finite(std::to_address(a.begin()), a.rows() * a.cols())) {
+        throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
+      }
+    }
+
+    //! \brief The same for `std::complex<double>`, whose array holds its parts in order ([complex.numbers]).
+    inline void require_finite(const matrix<std::complex<double>>& a,
+                               const char*                         what)
+    {
+      const auto* const parts {reinterpret_cast<const double*>(std::to_address(a.begin()))}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+      if (!all_finite(parts, 2 * a.rows() * a.cols())) {
+        throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
       }
     }
 

@@ -406,6 +406,10 @@ TEST(hermitian_eigen_reconstructs_with_a_unitary_basis)
   EXPECT((numerical::hermitian_eigen {matrix<c> {0, 0, {}}}.values().size() == 0));
   EXPECT((numerical::hermitian_eigen {matrix<c> {{c {0.0}, c {0.0}}, {c {0.0}, c {0.0}}}}.values()[1] == 0.0));
   EXPECT_THROWS(numerical::hermitian_eigen {(matrix<c> {{c {std::numeric_limits<double>::quiet_NaN()}}})}, numerical::non_finite_error);
+  EXPECT_THROWS(numerical::hermitian_eigen {(matrix<c> {{c {1.0}, c {}}, {c {std::numeric_limits<double>::infinity()}, c {1.0}}})},
+                numerical::non_finite_error); // a lower entry's real part
+  EXPECT_THROWS(numerical::hermitian_eigen {(matrix<c> {{c {1.0}, c {}}, {c {0.0, std::numeric_limits<double>::quiet_NaN()}, c {1.0}}})},
+                numerical::non_finite_error); // and its imaginary part
 }
 
 TEST(symmetric_eigen_rejects_non_square)
@@ -894,6 +898,10 @@ TEST(every_decomposition_refuses_a_non_finite_entry)
     EXPECT_THROWS(lu_decomposition<complex> {m}, numerical::non_finite_error);
     EXPECT_THROWS(qr(m), numerical::non_finite_error);
   }
+  // Another scalar, checked entry by entry: a long double LU refuses an infinity as a double one does.
+  using wide = long double;
+  EXPECT_THROWS((lu_decomposition<wide> {matrix<wide> {{1.0L, std::numeric_limits<wide>::infinity()}, {0.0L, 1.0L}}}),
+                numerical::non_finite_error);
   // A zero column is dependent, complex as real: it factorises, and its solve refuses.
   const matrix<complex> zero_column {{zero, one}, {zero, two}};
   EXPECT_THROWS(qr(zero_column).solve(numerical::vector<complex> {one, two}), numerical::singular_matrix_error);

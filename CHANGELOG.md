@@ -7,6 +7,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **Every decomposition checks a `double` or complex input for infinities and NaNs in one vectorised pass** over
+  the exponent bits, where it tested each entry and stopped at the first: a tenth of an LU of order 128. M1 Pro,
+  orders 64 to 256: LU −3 to −5 %, Cholesky −5 to −9 %, `solve` −3 to −8 %.
 - **On the AMX path, A's packed slivers are written past the core's L1** (non-temporal pair stores) once a block
   holds 2 048 elements: the AMX reads its operands from the L2, and the lines ordinary stores left dirty in the L1
   held each product's first tiles back while they were written back. M1 Pro, all cores, `matmul` of order 64,
