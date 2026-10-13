@@ -12,6 +12,7 @@ TEST(limit_gemm_path_takes_the_most_capable_path_that_runs_here)
   // the most capable below it, and the highest limit restores the best.
   EXPECT(numerical::limit_gemm_path(numerical::gemm_path::portable) == numerical::gemm_path::portable);
   EXPECT(numerical::gemm_path_in_use() == numerical::gemm_path::portable);
+  EXPECT(numerical::detail::gemm_path_usable(numerical::gemm_path::portable));
   for (const numerical::gemm_path path : {numerical::gemm_path::avx2, numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
     const bool                 usable {numerical::detail::gemm_path_usable(path)};
     const numerical::gemm_path got    {numerical::limit_gemm_path(path)};

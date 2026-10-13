@@ -81,33 +81,34 @@ namespace numerical::detail {
   }
 
 #if defined(__linux__)
+  //! \brief The whole first line of \p path, or nothing where it cannot be read.
+  [[nodiscard]] inline std::string first_line(const std::string& path)
+  {
+    std::ifstream file {path};
+    std::string   line;
+    std::getline(file, line);
+    return line;
+  }
+
   /*!
-   * \brief The processors of each physical core this process may run on, one set per distinct (package, core) pair
-   *        of its affinity, in the order of the affinity's first processor of each, from `/sys`; none where the
-   *        topology is unknown.
+   * \brief The processors of each physical core among \p allowed, one set per distinct (package, core) pair, in the
+   *        order of each one's first processor, from the topology under \p cpu_root (`/sys/devices/system/cpu/` on
+   *        Linux); none where a processor's topology is missing or not a number (\c std::stol throws) or memory
+   *        runs out: no claim.
    */
-  [[nodiscard]] inline std::vector<cpu_set_t> core_sets() noexcept
+  [[nodiscard]] inline std::vector<cpu_set_t> core_sets_from(const cpu_set_t&   allowed,
+                                                             const std::string& cpu_root) noexcept
   {
     try {
-      cpu_set_t allowed;
-      CPU_ZERO(&allowed); // NOLINT(hicpp-signed-bitwise): the system's macro
-      if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
-        return {};
-      }
       std::map<std::pair<long, long>, std::size_t> index; // (package, core) → its set
       std::vector<cpu_set_t>                       sets;
       for (int cpu {0}; cpu < CPU_SETSIZE; ++cpu) {
         if (CPU_ISSET(cpu, &allowed) == 0) { // NOLINT(hicpp-signed-bitwise): the system's macro
           continue;
         }
-        const std::string topology     {"/sys/devices/system/cpu/cpu" + std::to_string(cpu) + "/topology/"};
-        std::ifstream     core_file    {topology + "core_id"};
-        std::ifstream     package_file {topology + "physical_package_id"};
-        long              core         {0};
-        long              package      {0};
-        if (!(core_file >> core) || !(package_file >> package)) {
-          return {}; // the topology unknown here: no claim
-        }
+        const std::string topology {cpu_root + "cpu" + std::to_string(cpu) + "/topology/"};
+        const long        core     {std::stol(first_line(topology + "core_id"))};
+        const long        package  {std::stol(first_line(topology + "physical_package_id"))};
         const auto [where, added] {index.try_emplace({package, core}, sets.size())};
         if (added) {
           sets.emplace_back();
@@ -120,6 +121,18 @@ namespace numerical::detail {
     catch (...) {
       return {};
     }
+  }
+
+  /*!
+   * \brief The processors of each physical core this process may run on (\ref core_sets_from over its affinity and
+   *        `/sys`); none where the topology is unknown. An affinity the system does not give stays empty: no core.
+   */
+  [[nodiscard]] inline std::vector<cpu_set_t> core_sets() noexcept
+  {
+    cpu_set_t allowed;
+    CPU_ZERO(&allowed);                                                 // NOLINT(hicpp-signed-bitwise): the system's macro
+    static_cast<void>(sched_getaffinity(0, sizeof(allowed), &allowed)); // on failure the set stays empty
+    return core_sets_from(allowed, "/sys/devices/system/cpu/");
   }
 
   //! \brief The core index of each processor of \p cores (\ref no_core for the others), by processor number.

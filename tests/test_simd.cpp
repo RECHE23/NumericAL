@@ -57,42 +57,46 @@ TEST(scaled_row_updates_equal_the_scalar_statements_to_the_bit)
   }
 }
 
-// double's row updates on the units the matrix product's kernel takes: one fused multiply-add per element on
-// AVX2 or AVX-512, the scalar statement elsewhere; and its dot product sums every term.
+// double's row updates on the units the matrix product's kernel takes, on every path this processor runs: one fused
+// multiply-add per element on AVX2 or AVX-512, the scalar statement elsewhere; and its dot product sums every term.
 TEST(double_row_updates_follow_the_kernel_path)
 {
-  for (const std::size_t count : {std::size_t {0}, std::size_t {5}, std::size_t {37}, std::size_t {70}}) {
-    const std::vector<double> x           {values<double>(count, 3.0)};
-    const double              f           {1.0 / 7.0};
-    std::vector<double>       down        {values<double>(count, 5.0)};
-    std::vector<double>       up          {down};
-    std::vector<double>       right       {down};
-    std::vector<double>       down_wanted {down};
-    std::vector<double>       up_wanted   {down};
-    const bool                fused       {numerical::detail::gemm_path_current() == numerical::gemm_path::avx2
-                                           || numerical::detail::gemm_path_current() == numerical::gemm_path::avx512};
-    for (std::size_t i {0}; i < count; ++i) {
-      down_wanted[i] = fused ? std::fma(-f, x[i], down_wanted[i]) : down_wanted[i] - (f * x[i]);
-      up_wanted[i]   = fused ? std::fma(f, x[i], up_wanted[i]) : up_wanted[i] + (f * x[i]);
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512,
+                                          numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue;
     }
-    numerical::detail::subtract_product(down.data(), f, x.data(), count);
-    numerical::detail::add_product(up.data(), f, x.data(), count);
-    numerical::detail::subtract_product(right.data(), x.data(), f, count);
-    EXPECT(down == down_wanted);
-    EXPECT(up == up_wanted);
-    EXPECT(right == down_wanted);
-    std::vector<double> whole(count);
-    double              want {0.0};
-    for (std::size_t i {0}; i < count; ++i) {
-      whole[i]  = static_cast<double>(i % 7) - 3.0;
-      want     += whole[i] * static_cast<double>((i % 5) + 1);
+    for (const std::size_t count : {std::size_t {0}, std::size_t {5}, std::size_t {37}, std::size_t {70}}) {
+      const std::vector<double> x           {values<double>(count, 3.0)};
+      const double              f           {1.0 / 7.0};
+      std::vector<double>       down        {values<double>(count, 5.0)};
+      std::vector<double>       up          {down};
+      std::vector<double>       right       {down};
+      std::vector<double>       down_wanted {down};
+      std::vector<double>       up_wanted   {down};
+      const bool                fused       {path == numerical::gemm_path::avx2 || path == numerical::gemm_path::avx512};
+      for (std::size_t i {0}; i < count; ++i) {
+        down_wanted[i] = fused ? std::fma(-f, x[i], down_wanted[i]) : down_wanted[i] - (f * x[i]);
+        up_wanted[i]   = fused ? std::fma(f, x[i], up_wanted[i]) : up_wanted[i] + (f * x[i]);
+      }
+      numerical::detail::subtract_product(down.data(), f, x.data(), count);
+      numerical::detail::add_product(up.data(), f, x.data(), count);
+      numerical::detail::subtract_product(right.data(), x.data(), f, count);
+      EXPECT(down == down_wanted);
+      EXPECT(up == up_wanted);
+      EXPECT(right == down_wanted);
+      std::vector<double> whole(count);
+      std::vector<double> other(count);
+      double              want {0.0};
+      for (std::size_t i {0}; i < count; ++i) {
+        whole[i]  = static_cast<double>(i % 7) - 3.0;
+        other[i]  = static_cast<double>((i % 5) + 1);
+        want     += whole[i] * other[i];
+      }
+      EXPECT(numerical::detail::dot_product(whole.data(), other.data(), count) == want);
     }
-    std::vector<double> other(count);
-    for (std::size_t i {0}; i < count; ++i) {
-      other[i] = static_cast<double>((i % 5) + 1);
-    }
-    EXPECT(numerical::detail::dot_product(whole.data(), other.data(), count) == want);
   }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
 
 // Several terms into one row, held in registers on x86-64: each element as the term-by-term calls compute it, on
@@ -181,6 +185,13 @@ TEST(complex_row_combinations_take_each_part_in_order)
         }
         numerical::detail::subtract_products(held.data(), f.data(), x.data(), ldx, terms, count);
         EXPECT(held == wanted);
+        if (terms == 1) { // a single term either way round is one term of the combination
+          std::vector<c> left(count, c {0.5, -0.25});
+          std::vector<c> right         {left};
+          numerical::detail::subtract_product(left.data(), f[0], x.data(), count);
+          numerical::detail::subtract_product(right.data(), x.data(), f[0], count);
+          EXPECT(left == held && right == held);
+        }
       }
     }
   }

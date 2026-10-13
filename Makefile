@@ -36,7 +36,7 @@ SCIFORGE_INCLUDE ?= ../sciforge/include
 SCIFORGE_LINT ?= ../sciforge/lint
 FORMAT_FILES := $(shell find include tests -name '*.hpp' -o -name '*.cpp')
 
-.PHONY: check-pins all build test sanitize coverage coverage-build coverage-html \
+.PHONY: check-pins all build test sanitize coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate \
         python python-test fuzz-linalg bench-linalg bench-python bench-gemm version-check install uninstall release clean help
 
@@ -96,12 +96,16 @@ LLVM_COV ?= llvm-cov
 endif
 COV_DIR  := $(BUILD)/coverage
 
+# COV_RUN prefixes the test run (an emulator: see coverage-x86).
+COV_RUN ?=
+
 coverage-build:
-	$(CMAKE) -S . -B $(COV_DIR) -DNUMERICAL_COVERAGE=ON -DCMAKE_CXX_COMPILER=$(COV_CXX)
+	$(CMAKE) -S . -B $(COV_DIR) -DNUMERICAL_COVERAGE=ON -DCMAKE_CXX_COMPILER=$(COV_CXX) \
+	    -DSCIFORGE_INCLUDE_DIR=$(abspath $(SCIFORGE_INCLUDE))
 	$(CMAKE) --build $(COV_DIR) --parallel $(JOBS)
 	rm -f $(COV_DIR)/tests-*.profraw
 	# One profile per process: a test's forked child counts too, and writes no file over the parent's.
-	LLVM_PROFILE_FILE=$(COV_DIR)/tests-%p.profraw $(COV_DIR)/numerical_tests_bin
+	LLVM_PROFILE_FILE=$(COV_DIR)/tests-%p.profraw $(COV_RUN) $(COV_DIR)/numerical_tests_bin
 	$(PROFDATA) merge -sparse $(COV_DIR)/tests-*.profraw -o $(COV_DIR)/tests.profdata
 
 coverage: coverage-build
@@ -112,6 +116,14 @@ coverage: coverage-build
 	@grep -q "NumericAL dark-coverage theme" $(COV_DIR)/html/style.css 2>/dev/null || \
 	    cat docs/coverage-style.css >> $(COV_DIR)/html/style.css
 	@echo "HTML coverage report: $(COV_DIR)/html/index.html"
+
+# The x86-64 kernels (x86.hpp), which the macOS gate does not compile, every line and function run: on an x86-64
+# processor with AVX-512, or under COV_RUN (CI: Intel's emulator as a Skylake server), the tests take every path.
+coverage-x86: coverage-build
+	@$(LLVM_COV) report $(COV_DIR)/numerical_tests_bin -instr-profile=$(COV_DIR)/tests.profdata \
+	    $(CURDIR)/include/numerical/x86.hpp | tee $(COV_DIR)/x86.txt
+	@awk '/^TOTAL/ { found = 1; if ($$6 != 0 || $$9 != 0) { print "coverage-x86: a line or function of x86.hpp never ran"; \
+	    exit 1 } } END { if (!found) { print "coverage-x86: no report for x86.hpp"; exit 1 } }' $(COV_DIR)/x86.txt
 
 coverage-html:
 	@mkdir -p $(COV_DIR)

@@ -6,10 +6,14 @@
 #include <atomic>
 #include <cstdlib>
 #include <cstddef>
+#include <filesystem>
+#include <fstream>
+#include <initializer_list>
 #include <mutex>
 #include <set>
 #include <limits>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 #include <thread>
 #include <vector>
@@ -222,6 +226,83 @@ TEST(the_pool_starts_a_worker_per_core_and_leaves_the_callers_out)
 }
 
 #if defined(__linux__)
+namespace {
+  // A topology tree under a fresh directory: processor p's core and package as given, or a file left out or not a
+  // number where a test says.
+  struct fake_topology
+  {
+    std::filesystem::path root;
+
+    explicit fake_topology(const std::string& name)
+      : root(std::filesystem::temp_directory_path() / ("numerical-topology-" + name + "-" + std::to_string(getpid())))
+    {
+      std::filesystem::remove_all(root);
+    }
+
+    ~fake_topology()
+    {
+      std::error_code ignored;
+      std::filesystem::remove_all(root, ignored);
+    }
+
+    fake_topology(const fake_topology&)            = delete;
+    fake_topology& operator=(const fake_topology&) = delete;
+
+    void processor(int                cpu,
+                   const std::string& core,
+                   const std::string& package) const
+    {
+      const std::filesystem::path dir {root / ("cpu" + std::to_string(cpu)) / "topology"};
+      std::filesystem::create_directories(dir);
+      std::ofstream {dir / "core_id"} << core << "\n";
+      if (!package.empty()) {
+        std::ofstream {dir / "physical_package_id"} << package << "\n";
+      }
+    }
+
+    [[nodiscard]] std::vector<cpu_set_t> sets(std::initializer_list<int> allowed) const
+    {
+      cpu_set_t set;
+      CPU_ZERO(&set); // NOLINT(hicpp-signed-bitwise): the system's macro
+      for (const int cpu : allowed) {
+        CPU_SET(cpu, &set); // NOLINT(hicpp-signed-bitwise): the system's macro
+      }
+      return numerical::detail::core_sets_from(set, root.string() + "/");
+    }
+  };
+
+  [[nodiscard]] bool holds(const cpu_set_t&           set,
+                           std::initializer_list<int> cpus)
+  {
+    int count {0};
+    for (const int cpu : cpus) {
+      count += CPU_ISSET(cpu, &set) != 0 ? 1 : 0; // NOLINT(hicpp-signed-bitwise): the system's macro
+    }
+    return count == static_cast<int>(cpus.size()) && CPU_COUNT(&set) == count; // NOLINT(hicpp-signed-bitwise)
+  }
+} // namespace
+
+// A core's hyperthreads share a set, cores by their first processor, packages apart; a processor outside the
+// affinity is not read; a topology missing or not a number makes no claim.
+TEST(core_sets_read_the_topology_of_the_allowed_processors)
+{
+  const fake_topology tree {"sets"};
+  tree.processor(0, "0", "0");
+  tree.processor(1, "1", "0");
+  tree.processor(2, "0", "0"); // processor 0's sibling
+  tree.processor(3, "0", "1"); // core 0 of another package
+  const std::vector<cpu_set_t> sets {tree.sets({0, 1, 2, 3})};
+  EXPECT(sets.size() == 3 && holds(sets[0], {0, 2}) && holds(sets[1], {1}) && holds(sets[2], {3}));
+  EXPECT(tree.sets({1}).size() == 1);
+  EXPECT(tree.sets({}).empty());
+  EXPECT(tree.sets({0, 5}).empty()); // processor 5 has no topology
+  const fake_topology odd {"odd"};
+  odd.processor(0, "zero", "0");
+  odd.processor(1, "1", "");
+  EXPECT(odd.sets({0}).empty()); // not a number
+  EXPECT(odd.sets({1}).empty()); // no package
+}
+
 // Each core's processors once, the cores as many as physical_cores counts; a thread pinned to a core runs there
 // alone, an index past the cores leaves it as it was, and every worker that takes a chunk is on one core.
 TEST(the_pool_pins_each_worker_to_a_core_of_its_own)

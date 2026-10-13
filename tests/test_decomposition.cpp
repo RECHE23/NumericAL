@@ -1190,32 +1190,37 @@ TEST(blocked_matrix_solve_agrees_with_column_solves)
   EXPECT_THROWS((void)singular.solve(matrix<double> {{1.0, 0.0}}), numerical::dimension_error);
 }
 
-// A few right-hand sides go row by row up to narrow_solve_order (everywhere off the x86-64 units), each row's terms
-// in the blocked passes' order: on the portable path, whose products fuse nothing, the solution of the first sixteen
-// columns is the blocked solve's of seventeen to the bit, past one block of rows; past that order both are blocked.
+// A few right-hand sides go row by row, each row's terms in the blocked passes' order: the solution of the first
+// sixteen columns is the blocked solve's of seventeen to the bit, past one block of rows, on every path whose
+// products fuse as the rows do (the portable path, fusing neither; AVX2 and AVX-512, both, where the rows go so at
+// any order); off the x86-64 units the rows go so up to narrow_solve_order, past it both are blocked.
 TEST(narrow_solve_equals_the_blocked_solve_to_the_bit)
 {
-  (void)numerical::limit_gemm_path(numerical::gemm_path::portable);
-  for (const std::size_t n : {numerical::detail::narrow_solve_order, numerical::detail::narrow_solve_order + 8}) {
-    const std::size_t                         wide {numerical::detail::narrow_solve + 1};
-    const numerical::lu_decomposition<double> lu   {matrix<double> {n, n, pivoting_entries<double>(n)}};
-    const std::vector<double>                 rhs  {pivoting_entries<double>(n)};
-    const matrix<double>                      b    {n, wide, std::vector<double>(rhs.begin(), rhs.begin() + static_cast<std::ptrdiff_t>(n * wide))};
-    std::vector<double>                       first(n * numerical::detail::narrow_solve);
-    for (std::size_t i {0}; i < n; ++i) {
-      for (std::size_t c {0}; c < numerical::detail::narrow_solve; ++c) {
-        first[(i * numerical::detail::narrow_solve) + c] = b(i, c);
-      }
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue;
     }
-    const matrix<double> blocked {lu.solve(b)};
-    const matrix<double> narrow  {lu.solve(matrix<double> {n, numerical::detail::narrow_solve, first})};
-    bool                 same    {true};
-    for (std::size_t i {0}; i < n; ++i) {
-      for (std::size_t c {0}; c < numerical::detail::narrow_solve; ++c) {
-        same = same && narrow(i, c) == blocked(i, c);
+    for (const std::size_t n : {numerical::detail::narrow_solve_order, numerical::detail::narrow_solve_order + 8}) {
+      const std::size_t                         wide {numerical::detail::narrow_solve + 1};
+      const numerical::lu_decomposition<double> lu   {matrix<double> {n, n, pivoting_entries<double>(n)}};
+      const std::vector<double>                 rhs  {pivoting_entries<double>(n)};
+      const matrix<double>                      b    {n, wide, std::vector<double>(rhs.begin(), rhs.begin() + static_cast<std::ptrdiff_t>(n * wide))};
+      std::vector<double>                       first(n * numerical::detail::narrow_solve);
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t c {0}; c < numerical::detail::narrow_solve; ++c) {
+          first[(i * numerical::detail::narrow_solve) + c] = b(i, c);
+        }
       }
+      const matrix<double> blocked {lu.solve(b)};
+      const matrix<double> narrow  {lu.solve(matrix<double> {n, numerical::detail::narrow_solve, first})};
+      bool                 same    {true};
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t c {0}; c < numerical::detail::narrow_solve; ++c) {
+          same = same && narrow(i, c) == blocked(i, c);
+        }
+      }
+      EXPECT(same);
     }
-    EXPECT(same);
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
@@ -1636,4 +1641,37 @@ TEST(divide_and_conquer_is_relative_to_the_tridiagonal_size)
     }
     EXPECT(worst < 1e-13);
   }
+}
+
+// The symmetric product of the tridiagonal reduction on every path this processor runs (its row kernel there, the
+// portable one's weight off it): the same decomposition to rounding, A V = V Λ.
+TEST(eigh_runs_every_kernel_path)
+{
+  const std::size_t   n {48};
+  std::vector<double> entries(n * n);
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {0}; j <= i; ++j) {
+      entries[(i * n) + j] = entries[(j * n) + i] = std::sin(static_cast<double>((i * 31) + (j * 17)));
+    }
+  }
+  const matrix<double> a {n, n, entries};
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512,
+                                          numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue;
+    }
+    const numerical::symmetric_eigen eigen {a};
+    double                           worst {0.0};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        double av {0.0};
+        for (std::size_t k {0}; k < n; ++k) {
+          av += a(i, k) * eigen.vectors()(k, j);
+        }
+        worst = std::max(worst, std::abs(av - (eigen.vectors()(i, j) * eigen.values()[j])));
+      }
+    }
+    EXPECT(worst < 1e-12 * static_cast<double>(n));
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
