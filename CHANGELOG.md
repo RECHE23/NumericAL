@@ -6,6 +6,21 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Fixed
+- **Built by GCC on arm64 (the Linux aarch64 wheels), 2026.10.7's LU and inverse ran up to 70 % longer than
+  2026.10.6's**: the row combinations it moved them to (an LU solve's rows, the panel's rows of U) hold eight
+  elements through their terms, which GCC at `-O2` left unvectorised. Under GCC they now go by blocks of native
+  vectors, each element the same statement in the same order, so the same value. GCC 14, arm64, all cores,
+  orders 64, 128 and 512: `inverse` 135 → 43 µs, 522 → 176 µs, 8.1 → 5.2 ms (2026.10.6: 78 µs, 305 µs,
+  5.2 ms); the LU factorisation 35 → 23 µs, 157 → 92 µs, 2.9 → 2.1 ms; `solve` 196 → 130 µs at 128,
+  3.4 → 2.5 ms at 512. Clang, which vectorised them, is unchanged.
+
+### Changed
+- **The x86-64 wheels are built at `-O3`**: GCC's unrolling and vectorising take 7–18 % off the decompositions
+  of order 64 to 512 (six x86-64 cores, GCC 13, the baseline x86-64 build: `cholesky` −12 to −18 %, `qr`
+  −9 to −14 %, `solve` −9 to −13 %, `eigh` −6 to −16 %, `inverse` −8 to −13 %). On arm64 it moved some
+  operations up and some down, so `-O2` stays there.
+
 ## 2026.10.7 — 2026-10-13
 
 ### Changed

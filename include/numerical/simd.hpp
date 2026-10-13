@@ -224,6 +224,47 @@ namespace numerical::detail {
     return done;
   }
 
+  /*!
+   * \brief The leading elements of `y[i] -= Σₜ f[t] · x[(t · ldx) + i]`, a whole number of blocks of four native
+   *        vectors held through the terms: how many it did. Each element takes the scalar statement's arithmetic, a
+   *        term at a time in ascending order. GCC leaves the scalar block of \ref subtract_products unvectorised;
+   *        each lane moves in and out alone, as \ref gemm_kernel's do.
+   */
+  template <native_scalar T>
+  std::size_t subtract_combined_vectors(T*          y,
+                                        const T*    f,
+                                        const T*    x,
+                                        std::size_t ldx,
+                                        std::size_t terms,
+                                        std::size_t count)
+  {
+    using lane = typename native_vector<T>::type;
+    constexpr std::size_t lanes {4};
+    constexpr std::size_t width {native_vector_bytes / sizeof(T)};
+    const std::size_t     done  {count - (count % (lanes * width))};
+    for (std::size_t i {0}; i < done; i += lanes * width) {
+      std::array<lane, lanes> held {};
+#  pragma GCC unroll 4
+      for (std::size_t u {0}; u < lanes; ++u) {
+        std::memcpy(&held[u], y + i + (u * width), sizeof(lane));
+      }
+      for (std::size_t t {0}; t < terms; ++t) {
+        const T factor {f[t]};
+#  pragma GCC unroll 4
+        for (std::size_t u {0}; u < lanes; ++u) {
+          lane row;
+          std::memcpy(&row, x + (t * ldx) + i + (u * width), sizeof(lane));
+          held[u] -= factor * row;
+        }
+      }
+#  pragma GCC unroll 4
+      for (std::size_t u {0}; u < lanes; ++u) {
+        std::memcpy(y + i + (u * width), &held[u], sizeof(lane));
+      }
+    }
+    return done;
+  }
+
   //! \brief The leading elements of `y[i] += f · x[i]`, a whole number of native vectors: how many it did.
   template <native_scalar T>
   std::size_t add_scaled_vectors(T*          y,
@@ -286,6 +327,19 @@ namespace numerical::detail {
                                       const T* /*x*/,
                                       const T& /*f*/,
                                       std::size_t /*count*/)
+  {
+    return 0;
+  }
+
+  //! \brief No leading blocks in vectors, for a type no native vector holds or a compiler that vectorises the
+  //!        scalar block itself (Clang).
+  template <typename T>
+  std::size_t subtract_combined_vectors(T* /*y*/,
+                                        const T* /*f*/,
+                                        const T* /*x*/,
+                                        std::size_t /*ldx*/,
+                                        std::size_t /*terms*/,
+                                        std::size_t /*count*/)
   {
     return 0;
   }
@@ -397,7 +451,7 @@ namespace numerical::detail {
                          std::size_t count)
   {
     constexpr std::size_t width {8};
-    std::size_t           i     {0};
+    std::size_t           i     {subtract_combined_vectors(y, f, x, ldx, terms, count)};
     for (; i + width <= count; i += width) {
       std::array<T, width> held {};
       std::copy_n(y + i, width, held.begin());

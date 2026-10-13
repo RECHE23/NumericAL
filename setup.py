@@ -3,6 +3,7 @@
 # NumericAL is header-only (headers in include/) and a leaf — it depends on nothing
 # beyond the C++ standard library.
 import os
+import platform
 import shutil
 import sys
 
@@ -63,8 +64,11 @@ if sys.platform == "win32":
     compile_args = ["/std:c++20", "/O2", "/EHsc", "/Zc:__cplusplus"]
     link_args = []
 else:
-    # -g0 after the interpreter's own -g: a wheel carries no debug information.
-    compile_args = ["-std=c++20", "-O2", "-g0", "-fvisibility=hidden", "-pthread"]
+    # -g0 after the interpreter's own -g: a wheel carries no debug information. -O3 on x86-64, where GCC's
+    # unrolling and vectorising took 7-18 % off the decompositions of order 64 to 512 (solve, inverse,
+    # cholesky, qr, eigh, svd); on arm64 it moved some up and some down, so -O2 stays there.
+    level = "-O3" if platform.machine().lower() in ("x86_64", "amd64") else "-O2"
+    compile_args = ["-std=c++20", level, "-g0", "-fvisibility=hidden", "-pthread"]
     link_args = ["-pthread"]  # parallel.hpp uses std::thread
 
 setup(
