@@ -452,6 +452,16 @@ namespace numerical::detail {
       return false;
     }
 
+    //! \brief A's slivers for this tile (\ref gemm_pack_a).
+    static void pack_a(const T*    a,
+                       std::size_t lda,
+                       std::size_t rows,
+                       std::size_t kc,
+                       T*          out)
+    {
+      gemm_pack_a<mr>(a, lda, rows, kc, out);
+    }
+
     //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
     static void tile(std::size_t kc,
                      const T*    ap,
@@ -497,6 +507,16 @@ namespace numerical::detail {
     static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
     {
       return ldb <= amx_in_place_stride;
+    }
+
+    //! \brief A's slivers for this tile, written past the L1 (\ref amx_pack_a).
+    static void pack_a(const double* a,
+                       std::size_t   lda,
+                       std::size_t   rows,
+                       std::size_t   kc,
+                       double*       out) noexcept
+    {
+      amx_pack_a(a, lda, rows, kc, out);
     }
 
     //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
@@ -678,7 +698,7 @@ namespace numerical::detail {
                        }
                        else {
                          const std::size_t ic {(piece - groups) * Kernel::block_rows};
-                         gemm_pack_a<mr>(a + (ic * lda) + pc, lda, std::min(Kernel::block_rows, m - ic), kc, packed.a() + (ic * kc));
+                         Kernel::pack_a(a + (ic * lda) + pc, lda, std::min(Kernel::block_rows, m - ic), kc, packed.a() + (ic * kc));
                        }
                      });
         // A task covers task_rows rows: a whole block, or fewer whole tiles when blocks would leave a thread fewer
@@ -732,6 +752,16 @@ namespace numerical::detail {
       return false;
     }
 
+    //! \brief A's slivers for this tile (\ref gemm_pack_a).
+    static void pack_a(const double* a,
+                       std::size_t   lda,
+                       std::size_t   rows,
+                       std::size_t   kc,
+                       double*       out)
+    {
+      gemm_pack_a<mr>(a, lda, rows, kc, out);
+    }
+
     //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
     static void tile(std::size_t   kc,
                      const double* ap,
@@ -766,6 +796,16 @@ namespace numerical::detail {
     static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
     {
       return false;
+    }
+
+    //! \brief A's slivers for this tile (\ref gemm_pack_a).
+    static void pack_a(const double* a,
+                       std::size_t   lda,
+                       std::size_t   rows,
+                       std::size_t   kc,
+                       double*       out)
+    {
+      gemm_pack_a<mr>(a, lda, rows, kc, out);
     }
 
     //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.

@@ -186,6 +186,57 @@ namespace numerical::detail {
     through_edge<amx_mr, amx_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { amx_full_tile_f64(kc, ap, bp, ldb, tile, ld); });
   }
 
+  //! \brief The fewest elements of A one packing writes past the L1 (\ref amx_pack_a): below, a block of a few
+  //!        kilobytes, the round trip to beyond the L2 costs more than the dirty lines it spares (M1 Pro, a product of
+  //!        64 × 16 by 16 × 64: +17 % streamed; 64 × 32 by 32 × 64: −21 %).
+  inline constexpr std::size_t amx_stream_least {2048};
+
+  /*!
+   * \brief A's slivers for \ref amx_full_tile_f64 (\ref amx_mr rows each, stored column by column). From
+   *        \ref amx_stream_least elements, the whole slivers are written by non-temporal pair stores: the AMX reads
+   *        its operands from the L2 cache, and A's lines left dirty in the core's L1 by ordinary stores held each
+   *        product's first tiles back while they were written back (M1 Pro, a product of order 64: 3.78 → 2.88 µs).
+   *        A smaller block's slivers, and a last partial one, are written by ordinary stores, the partial one padded
+   *        with zeros.
+   */
+  inline void amx_pack_a(const double* a,
+                         std::size_t   lda,
+                         std::size_t   rows,
+                         std::size_t   kc,
+                         double*       out) noexcept
+  {
+    std::size_t ir {0};
+    for (; rows * kc >= amx_stream_least && ir + amx_mr <= rows; ir += amx_mr) {
+      double* const sliver {out + (ir * kc)};
+      for (std::size_t p {0}; p < kc; ++p) {
+        for (std::size_t i {0}; i < amx_mr; i += 2) {
+          const double first  {a[((ir + i) * lda) + p]};
+          const double second {a[((ir + i + 1) * lda) + p]};
+          __asm__ volatile ("stnp %d0, %d1, [%2]" // NOLINT(hicpp-no-assembler): no builtin emits a pair past the L1 under both compilers
+                            :
+                            : "w" (first), "w" (second), "r" (sliver + (p * amx_mr) + i)
+                            : "memory");
+        }
+      }
+    }
+    for (; ir + amx_mr <= rows; ir += amx_mr) { // whole slivers below the threshold, the loop free of the padding's test
+      double* const sliver {out + (ir * kc)};
+      for (std::size_t p {0}; p < kc; ++p) {
+        for (std::size_t i {0}; i < amx_mr; ++i) {
+          sliver[(p * amx_mr) + i] = a[((ir + i) * lda) + p];
+        }
+      }
+    }
+    if (ir < rows) {
+      double* const sliver {out + (ir * kc)};
+      for (std::size_t p {0}; p < kc; ++p) {
+        for (std::size_t i {0}; i < amx_mr; ++i) {
+          sliver[(p * amx_mr) + i] = ir + i < rows ? a[((ir + i) * lda) + p] : 0.0;
+        }
+      }
+    }
+  }
+
   //! \brief Whether \p family (Apple's CPUFAMILY_ARM_* values) is one of the M1 to M4 families.
   [[nodiscard]] constexpr bool amx_family_known(std::uint32_t family) noexcept
   {

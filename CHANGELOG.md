@@ -7,6 +7,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **On the AMX path, A's packed slivers are written past the core's L1** (non-temporal pair stores) once a block
+  holds 2 048 elements: the AMX reads its operands from the L2, and the lines ordinary stores left dirty in the L1
+  held each product's first tiles back while they were written back. M1 Pro, all cores, `matmul` of order 64,
+  128 and 256: −22 %, −10 % and −11 % (3.98 → 3.1 µs at 64); a smaller block keeps ordinary stores, which a
+  product as shallow as Cholesky's small panels wants (64 × 16 by 16 × 64: +17 % streamed). The products are the
+  same to the bit.
 - **The product packs a whole sliver of A without testing each element for padding**: Clang vectorises the copy
   then. M1 Pro, all cores, `matmul` of order 32 to 512: −5 to −8 % (order 64: 4.32 → 3.98 µs). x86-64 and GCC on
   arm64 move within ±3 %.
