@@ -6,6 +6,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **The product packs a whole sliver of A without testing each element for padding**: Clang vectorises the copy
+  then. M1 Pro, all cores, `matmul` of order 32 to 512: −5 to −8 % (order 64: 4.32 → 3.98 µs). x86-64 and GCC on
+  arm64 move within ±3 %.
+
 ## 2026.10.8 — 2026-10-13
 
 ### Fixed
