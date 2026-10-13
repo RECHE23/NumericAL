@@ -112,6 +112,15 @@ namespace numerical {
       return data_.end();
     }
 
+    //! \brief The elements, row-major, handed over by a matrix about to expire, which is left `0 × 0`: a large result
+    //!        moves on without a copy (each copy of a fresh buffer faults its pages in one by one).
+    [[nodiscard]] std::vector<T> elements() &&
+    {
+      rows_ = 0;
+      cols_ = 0;
+      return std::move(data_);
+    }
+
   private:
 
     std::size_t    rows_ {0}; //!< The number of rows.

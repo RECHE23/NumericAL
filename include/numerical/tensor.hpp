@@ -84,16 +84,17 @@ namespace numerical {
       finalize();
     }
 
+    //! \brief A rank-2 tensor taking over an expiring matrix's elements, without a copy. \param[in] m The matrix.
+    explicit tensor(matrix<T>&& m)
+      : shape_ {m.rows(), m.cols()}, data_ {std::move(m).elements()}
+    {
+      finalize();
+    }
+
     //! \brief A rank-2 tensor from a matrix. \param[in] m The matrix.
     explicit tensor(const matrix<T>& m)
-      : shape_ {m.rows(), m.cols()}
+      : shape_ {m.rows(), m.cols()}, data_(m.begin(), m.end())
     {
-      data_.reserve(m.rows() * m.cols());
-      for (std::size_t i {0}; i < m.rows(); ++i) {
-        for (std::size_t j {0}; j < m.cols(); ++j) {
-          data_.push_back(m(i, j));
-        }
-      }
       finalize();
     }
 

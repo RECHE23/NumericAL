@@ -773,6 +773,39 @@ TEST(lstsq_takes_a_qr_where_the_rank_is_surely_full)
   EXPECT(std::abs((x[0] + x[1]) - 2.0) < 1e-6);
 }
 
+// An expiring matrix or decomposition hands its storage over: the same factors as by copy, the source left empty.
+TEST(decompositions_take_and_give_their_storage_without_copies)
+{
+  const matrix<double>      spd   {{4.0, 2.0, 0.0}, {2.0, 5.0, 1.0}, {0.0, 1.0, 3.0}};
+  matrix<double>            spare {spd};
+  const std::vector<double> taken {std::move(spare).elements()};
+  EXPECT(taken == std::vector<double>(spd.begin(), spd.end()));
+  EXPECT(spare.rows() == 0U && spare.cols() == 0U); // NOLINT(bugprone-use-after-move,hicpp-invalid-access-moved): the state a move leaves is the point
+  const numerical::tensor<double> moved {matrix<double> {spd}};
+  EXPECT(moved == numerical::tensor<double> {spd});
+  EXPECT(numerical::cholesky_decomposition<double> {matrix<double> {spd}}.lower() == numerical::cholesky_decomposition<double> {spd}.lower());
+  EXPECT(numerical::cholesky(matrix<double> {spd}).lower() == numerical::cholesky(spd).lower());
+  EXPECT(numerical::lu_decomposition<double> {matrix<double> {spd}}.inverse() == numerical::inverse(spd));
+  EXPECT(numerical::determinant(matrix<double> {spd}) == numerical::determinant(spd));
+  EXPECT(numerical::solve(matrix<double> {spd}, vector<double> {1.0, 2.0, 3.0}) == numerical::solve(spd, vector<double> {1.0, 2.0, 3.0}));
+  numerical::qr_decomposition<double> qr     {matrix<double> {spd}};
+  const matrix<double>                q_copy {qr.q()};
+  const matrix<double>                r_copy {qr.r()};
+  EXPECT(std::move(qr).q() == q_copy);
+  EXPECT(std::move(qr).r() == r_copy); // NOLINT(bugprone-use-after-move,hicpp-invalid-access-moved): q() && leaves R
+  numerical::symmetric_eigen eigen   {spd};
+  const matrix<double>       vectors {eigen.vectors()};
+  EXPECT(std::move(eigen).vectors() == vectors);
+  using c = std::complex<double>;
+  numerical::hermitian_eigen complex_eigen   {matrix<c> {{c {2.0, 0.0}, c {0.0, 1.0}}, {c {0.0, -1.0}, c {3.0, 0.0}}}};
+  const matrix<c>            complex_vectors {complex_eigen.vectors()};
+  EXPECT(std::move(complex_eigen).vectors() == complex_vectors);
+  numerical::svd_decomposition<double> svd   {spd};
+  const matrix<double>                 u     {svd.u()};
+  EXPECT(std::move(svd).u() == u);
+  EXPECT(svd.v().rows() == 3U); // NOLINT(bugprone-use-after-move,hicpp-invalid-access-moved): u() && leaves V
+}
+
 TEST(svd_of_a_tall_matrix)
 {
   // Enough columns that the left singular vectors are computed in parallel;

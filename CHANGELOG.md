@@ -7,6 +7,13 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **Decompositions take over an expiring matrix and hand their factors over without copies**: `matrix::elements()
+  &&`, `tensor(matrix&&)`, constructors of LU, Cholesky and QR from a `matrix&&`, and `lower()`, `q()`, `r()`,
+  `vectors()`, `u()` on an expiring decomposition move their storage; `solve`, `inverse`, `determinant` and
+  `cholesky` take their matrix by value. The Python package copies each operand once and each result not at all,
+  where it copied each of them twice or thrice (each copy a fresh buffer of 8 MB at order 1024, its pages faulted
+  in). i9-9900K, from Python at order 1024: the inverse 32.5 → 22.1 ms (NumPy with OpenBLAS: 35.6), `solve` 20.7 →
+  13.6 ms, Cholesky 15.6 → 12.3 ms, QR 57.7 → 50.2 ms, `svd` 394 → 380 ms.
 - **The AVX2 tile pays for more threads**: each kernel weighs its work by a speedup of its own, a quarter of the
   others' for AVX2 (on physical cores, threads pay sooner; on the AMX, fewer threads stayed faster). i9-9900K: a
   product of order 128 73 → 39 µs, of order 192 107 → 90 µs; from Python at order 1024, Cholesky 20 → 16 ms,

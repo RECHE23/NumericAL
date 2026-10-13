@@ -567,9 +567,9 @@ template <typename T>
 any_tensor do_solve(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-    const numerical::matrix<T>   coeff {matrix_from(a)};
-    return solve_for(b, [&coeff](const numerical::vector<T>& rhs) { return numerical::solve(coeff, rhs); },
-                     [&coeff](const numerical::matrix<T>& rhs) { return numerical::solve(coeff, rhs); });
+    const numerical::lu_decomposition<T> factored {matrix_from(a)}; // the copy of a factorised in place
+    return solve_for(b, [&factored](const numerical::vector<T>& rhs) { return factored.solve(rhs); },
+                     [&factored](const numerical::matrix<T>& rhs) { return factored.solve(rhs); });
 }
 
 // solve(a, b): a a rank-2 tensor, b a rank-1 or rank-2 tensor, sharing a dtype.
@@ -1193,8 +1193,8 @@ template <typename T>
 std::tuple<any_tensor, any_tensor> do_qr(const numerical::tensor<T>& a)
 {
     const sb::scoped_gil_release         unlocked {releases_gil(a.data().size())};
-    const numerical::qr_decomposition<T> factored {matrix_from(a)};
-    return {any_tensor {numerical::tensor<T> {factored.q()}}, any_tensor {numerical::tensor<T> {factored.r()}}};
+    numerical::qr_decomposition<T> factored {matrix_from(a)};
+    return {any_tensor {numerical::tensor<T> {std::move(factored).q()}}, any_tensor {numerical::tensor<T> {std::move(factored).r()}}};
 }
 
 // qr(a) -> (Q, R), through the tuple-caster.
@@ -1235,23 +1235,23 @@ std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& 
     if (is_complex(v)) {
         const cplx_tensor&               a = std::get<cplx_tensor>(v);
         const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
-        const numerical::hermitian_eigen decomposition {matrix_from(a), method};
+        numerical::hermitian_eigen   decomposition {matrix_from(a), method};
         return {any_tensor {real_tensor {decomposition.values()}},
-                any_tensor {cplx_tensor {decomposition.vectors()}}};
+                any_tensor {cplx_tensor {std::move(decomposition).vectors()}}};
     }
     const real_tensor&               a = std::get<real_tensor>(v);
     const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
-    const numerical::symmetric_eigen decomposition {matrix_from(a), method};
+    numerical::symmetric_eigen   decomposition {matrix_from(a), method};
     return {any_tensor {real_tensor {decomposition.values()}},
-            any_tensor {real_tensor {decomposition.vectors()}}};
+            any_tensor {real_tensor {std::move(decomposition).vectors()}}};
 }
 
 template <typename T>
 std::tuple<any_tensor, any_tensor, any_tensor> do_svd(const numerical::tensor<T>& a, numerical::svd_method method)
 {
     const sb::scoped_gil_release          unlocked {releases_gil(a.data().size())};
-    const numerical::svd_decomposition<T> decomposition {matrix_from(a), method};
-    return {any_tensor {numerical::tensor<T> {decomposition.u()}},
+    numerical::svd_decomposition<T>       decomposition {matrix_from(a), method};
+    return {any_tensor {numerical::tensor<T> {std::move(decomposition).u()}},
             any_tensor {real_tensor {decomposition.singular_values()}},
             any_tensor {numerical::tensor<T> {decomposition.vh()}}};
 }

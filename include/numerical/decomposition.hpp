@@ -264,18 +264,22 @@ namespace numerical {
      * \throws dimension_error If \p a is not square.
      */
     explicit lu_decomposition(const matrix<T>& a)
+      : lu_decomposition(matrix<T> {a})
+    {}
+
+    /*!
+     * \brief Factorises \p a in its own storage, an expiring matrix's elements taken over: no copy of them.
+     * \param[in] a The square matrix to factorise.
+     * \throws dimension_error If \p a is not square.
+     */
+    explicit lu_decomposition(matrix<T>&& a)
       : n_(a.rows())
     {
       if (a.cols() != n_) {
         throw dimension_error("LU decomposition requires a square matrix");
       }
       detail::require_finite(a, "LU decomposition");
-      lu_.resize(n_ * n_);
-      for (std::size_t i {0}; i < n_; ++i) {
-        for (std::size_t j {0}; j < n_; ++j) {
-          lu_[(i * n_) + j] = a(i, j);
-        }
-      }
+      lu_ = std::move(a).elements();
       pivots_.resize(n_);
       for (std::size_t i {0}; i < n_; ++i) {
         pivots_[i] = i;
@@ -700,10 +704,10 @@ namespace numerical {
    * \throws singular_matrix_error If `a` is singular.
    */
   template <typename T>
-  [[nodiscard]] vector<T> solve(const matrix<T>& a,
+  [[nodiscard]] vector<T> solve(matrix<T>        a,
                                 const vector<T>& b)
   {
-    return lu_decomposition<T> {a}.solve(b);
+    return lu_decomposition<T> {std::move(a)}.solve(b);
   }
 
   /*!
@@ -716,17 +720,17 @@ namespace numerical {
    * \throws singular_matrix_error If `a` is singular.
    */
   template <typename T>
-  [[nodiscard]] matrix<T> solve(const matrix<T>& a,
+  [[nodiscard]] matrix<T> solve(matrix<T>        a,
                                 const matrix<T>& b)
   {
-    return lu_decomposition<T> {a}.solve(b);
+    return lu_decomposition<T> {std::move(a)}.solve(b);
   }
 
   //! \brief The determinant of a square matrix. \throws dimension_error If not square.
   template <typename T>
-  [[nodiscard]] T determinant(const matrix<T>& a)
+  [[nodiscard]] T determinant(matrix<T> a)
   {
-    return lu_decomposition<T> {a}.determinant();
+    return lu_decomposition<T> {std::move(a)}.determinant();
   }
 
   /*!
@@ -737,9 +741,9 @@ namespace numerical {
    * \throws singular_matrix_error If `a` is singular.
    */
   template <typename T>
-  [[nodiscard]] matrix<T> inverse(const matrix<T>& a)
+  [[nodiscard]] matrix<T> inverse(matrix<T> a)
   {
-    return lu_decomposition<T> {a}.inverse();
+    return lu_decomposition<T> {std::move(a)}.inverse();
   }
 
   //! \brief Thrown when a Cholesky factorisation finds the matrix not positive-definite.
@@ -774,25 +778,36 @@ namespace numerical {
      * \throws not_positive_definite_error If \p a is not positive-definite.
      */
     explicit cholesky_decomposition(const matrix<T>& a)
+      : cholesky_decomposition(matrix<T> {a})
+    {}
+
+    /*!
+     * \brief Factorises \p a in its own storage, an expiring matrix's elements taken over: no copy of them.
+     * \param[in] a The Hermitian positive-definite matrix.
+     * \throws dimension_error If \p a is not square.
+     * \throws not_positive_definite_error If \p a is not positive-definite.
+     */
+    explicit cholesky_decomposition(matrix<T>&& a)
       : n_(a.rows())
     {
       if (a.cols() != n_) {
         throw dimension_error("Cholesky decomposition requires a square matrix");
       }
       detail::require_finite(a, "Cholesky decomposition");
-      lower_.assign(n_ * n_, T {}); // lower-triangular; the upper triangle is zero once factorised
-      for (std::size_t i {0}; i < n_; ++i) {
-        for (std::size_t j {0}; j <= i; ++j) {
-          lower_[(i * n_) + j] = a(i, j);
-        }
-      }
+      lower_ = std::move(a).elements(); // the upper triangle is never read, and zeroed once factorised
       factorize();
     }
 
     //! \brief The lower-triangular factor `L` (with `L Lᴴ == A`).
-    [[nodiscard]] matrix<T> lower() const
+    [[nodiscard]] matrix<T> lower() const&
     {
       return matrix<T> {n_, n_, lower_};
+    }
+
+    //! \brief The lower-triangular factor `L`, moved out of an expiring decomposition.
+    [[nodiscard]] matrix<T> lower() &&
+    {
+      return matrix<T> {n_, n_, std::move(lower_)};
     }
 
     /*!
@@ -945,9 +960,9 @@ namespace numerical {
 
   //! \brief Cholesky-factorises a Hermitian positive-definite matrix. \see cholesky_decomposition
   template <typename T>
-  [[nodiscard]] cholesky_decomposition<T> cholesky(const matrix<T>& a)
+  [[nodiscard]] cholesky_decomposition<T> cholesky(matrix<T> a)
   {
-    return cholesky_decomposition<T> {a};
+    return cholesky_decomposition<T> {std::move(a)};
   }
 
   namespace detail {
@@ -1337,30 +1352,45 @@ namespace numerical {
      * \throws non_finite_error If an entry is infinite or NaN.
      */
     explicit qr_decomposition(const matrix<T>& a)
+      : qr_decomposition(matrix<T> {a})
+    {}
+
+    /*!
+     * \brief Factorises \p a in its own storage, an expiring matrix's elements taken over: no copy of them.
+     * \param[in] a The matrix, any shape.
+     * \throws non_finite_error If an entry is infinite or NaN.
+     */
+    explicit qr_decomposition(matrix<T>&& a)
       : rows_(a.rows()), cols_(a.cols()), depth_(std::min(rows_, cols_))
     {
       detail::require_finite(a, "QR decomposition");
-      std::vector<T> entries(rows_ * cols_);
-      for (std::size_t i {0}; i < rows_; ++i) {
-        for (std::size_t j {0}; j < cols_; ++j) {
-          entries[(i * cols_) + j] = a(i, j);
-        }
-      }
-      detail::thin_qr<T> factors {detail::householder_qr(std::move(entries), rows_, cols_)};
+      detail::thin_qr<T> factors {detail::householder_qr(std::move(a).elements(), rows_, cols_)};
       q_ = std::move(factors.q);
       r_ = std::move(factors.r);
     }
 
     //! \brief The `m × k` factor `Q` (orthonormal columns), `k = min(m, n)`.
-    [[nodiscard]] matrix<T> q() const
+    [[nodiscard]] matrix<T> q() const&
     {
       return matrix<T> {rows_, depth_, q_};
     }
 
+    //! \brief `Q`, moved out of an expiring decomposition (\ref r stays).
+    [[nodiscard]] matrix<T> q() &&
+    {
+      return matrix<T> {rows_, depth_, std::move(q_)};
+    }
+
     //! \brief The `k × n` upper-trapezoidal factor `R`, `k = min(m, n)`.
-    [[nodiscard]] matrix<T> r() const
+    [[nodiscard]] matrix<T> r() const&
     {
       return matrix<T> {depth_, cols_, r_};
+    }
+
+    //! \brief `R`, moved out of an expiring decomposition (\ref q stays).
+    [[nodiscard]] matrix<T> r() &&
+    {
+      return matrix<T> {depth_, cols_, std::move(r_)};
     }
 
     /*!
@@ -2596,9 +2626,15 @@ namespace numerical {
     }
 
     //! \brief The eigenvectors as columns, ordered to match \ref values.
-    [[nodiscard]] const matrix<double>& vectors() const noexcept
+    [[nodiscard]] const matrix<double>& vectors() const& noexcept
     {
       return vectors_;
+    }
+
+    //! \brief The eigenvectors, moved out of an expiring decomposition.
+    [[nodiscard]] matrix<double> vectors() &&
+    {
+      return std::move(vectors_);
     }
 
   private:
@@ -2722,9 +2758,15 @@ namespace numerical {
     }
 
     //! \brief The eigenvectors as columns, ordered to match \ref values.
-    [[nodiscard]] const matrix<std::complex<double>>& vectors() const noexcept
+    [[nodiscard]] const matrix<std::complex<double>>& vectors() const& noexcept
     {
       return vectors_;
+    }
+
+    //! \brief The eigenvectors, moved out of an expiring decomposition.
+    [[nodiscard]] matrix<std::complex<double>> vectors() &&
+    {
+      return std::move(vectors_);
     }
 
   private:
@@ -3712,13 +3754,19 @@ namespace numerical {
     }
 
     //! \brief The `m × k` left singular vectors `U` (columns).
-    [[nodiscard]] const matrix<T>& u() const noexcept
+    [[nodiscard]] const matrix<T>& u() const& noexcept
     {
       return u_;
     }
 
+    //! \brief `U`, moved out of an expiring decomposition (\ref v and the singular values stay).
+    [[nodiscard]] matrix<T> u() &&
+    {
+      return std::move(u_);
+    }
+
     //! \brief The `n × k` right singular vectors `V` (columns).
-    [[nodiscard]] const matrix<T>& v() const noexcept
+    [[nodiscard]] const matrix<T>& v() const& noexcept
     {
       return v_;
     }
