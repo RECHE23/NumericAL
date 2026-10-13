@@ -10,7 +10,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **The AVX2 tile pays for more threads**: each kernel weighs its work by a speedup of its own, a quarter of the
   others' for AVX2 (on physical cores, threads pay sooner; on the AMX, fewer threads stayed faster). i9-9900K: a
   product of order 128 73 → 39 µs, of order 192 107 → 90 µs; from Python at order 1024, Cholesky 20 → 16 ms,
-  `lstsq` 148 → 131 ms, `svd` 415 → 406 ms. AVX-512 keeps its weight until measured.
+  `lstsq` 148 → 131 ms, `svd` 415 → 406 ms. Its packing is weighed the same way, so a small product packs in
+  parallel too: order 128 39 → 30 µs (NumPy with OpenBLAS: 23), 192 90 → 62 µs (67). AVX-512 keeps its weight
+  until measured.
 - **The thread pool runs one thread per physical core** where the system tells them (Linux: the distinct cores of
   the processors in the process's affinity, so `taskset` and cgroups count; macOS: `hw.physicalcpu`), not one per
   hyperthread: two threads on one core's hyperthreads share its multiply-add units. i9-9900K (eight cores, sixteen
