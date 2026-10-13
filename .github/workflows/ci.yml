@@ -120,7 +120,8 @@ jobs:
       - name: Every line of the x86-64 kernels run, under the emulator
         run: >
           make coverage-x86 COV_CXX=clang++-18 LLVM_COV=llvm-cov-18 PROFDATA=llvm-profdata-18
-          SCIFORGE_INCLUDE="$PWD/sciforge/include" COV_RUN="$RUNNER_TEMP/sde/sde64 -skx --"
+          SCIFORGE_INCLUDE="$PWD/sciforge/include" SCIFORGE_LINT="$PWD/sciforge/lint"
+          COV_RUN="$RUNNER_TEMP/sde/sde64 -skx --"
 
   # The Python suite on arm64 Linux, built by GCC as the aarch64 wheels are. GCC fuses a multiply and an add
   # wherever a fused multiply-add exists, across statements: a result held to NumPy's to the bit (linspace)
