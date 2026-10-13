@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.6 — 2026-10-13
+
 ### Changed
 - **`eigh`'s divide and conquer maps its buffers once and touches them on every core**: a page costs about a
   microsecond on Linux the first time it is written, and the joins waited on some 30 MB of them one thread at a
