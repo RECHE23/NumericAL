@@ -412,9 +412,9 @@ TEST(hermitian_eigen_reconstructs_with_a_unitary_basis)
                 numerical::non_finite_error); // and its imaginary part
   // The diagonal's imaginary part is ignored, as NumPy's eigh ignores it: a huge or infinite one changes no value.
   for (const double odd : {1e300, std::numeric_limits<double>::infinity()}) {
-    const matrix<c> plain {{c {2.0}, c {}}, {c {1.0, 1.0}, c {3.0}}};
-    const matrix<c> noisy {{c {2.0, odd}, c {}}, {c {1.0, 1.0}, c {3.0, -odd}}};
-    EXPECT(approx_equal(numerical::hermitian_eigen {noisy}.values(), numerical::hermitian_eigen {plain}.values(), 1e-14));
+    const matrix<c> real_diagonal {{c {2.0}, c {}}, {c {1.0, 1.0}, c {3.0}}};
+    const matrix<c> odd_diagonal  {{c {2.0, odd}, c {}}, {c {1.0, 1.0}, c {3.0, -odd}}};
+    EXPECT(approx_equal(numerical::hermitian_eigen {odd_diagonal}.values(), numerical::hermitian_eigen {real_diagonal}.values(), 1e-14));
   }
 }
 
