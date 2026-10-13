@@ -225,6 +225,24 @@ namespace numerical {
     {
       return scaled_norm(x.data(), x.size());
     }
+
+    /*!
+     * \brief `√(a² + b²)` for a plane rotation of the QR and QL iterations, as LAPACK's `dlartg` takes it: the plain
+     *        sum of squares where the larger magnitude is above `2^-500`, so its square does not underflow and the
+     *        smaller one's underflow is below its rounding; `std::hypot`, which scales every time, below.
+     *
+     * Both magnitudes must stay below `2^500`, so no square overflows. The iterations' callers hold them there:
+     * each divides its matrix by its largest entry, and a QL shift's ratio is at most `1/ε`.
+     */
+    [[nodiscard]] inline double rotation_length(double a,
+                                                double b) noexcept
+    {
+      constexpr double low {0x1p-500};
+      if (std::max(std::abs(a), std::abs(b)) > low) {
+        return std::sqrt((a * a) + (b * b));
+      }
+      return std::hypot(a, b);
+    }
   } // namespace detail
 
   //! \brief Thrown when a matrix has no unique solution (it is singular).
@@ -2134,7 +2152,7 @@ namespace numerical {
           ++steps;
           const double g0   {d[l]};
           double       p    {(d[l + 1] - g0) / (2.0 * e[l])};
-          double       r    {std::hypot(p, 1.0)};
+          double       r    {rotation_length(p, 1.0)};
           r                  = p < 0.0 ? -r : r;
           d[l]               = e[l] / (p + r);
           d[l + 1]           = e[l] * (p + r);
@@ -2157,7 +2175,7 @@ namespace numerical {
             s2       = s;
             const double g {c * e[i]};
             const double h {c * p};
-            r        = std::hypot(p, e[i]);
+            r        = rotation_length(p, e[i]);
             e[i + 1] = s * r;
             s        = e[i] / r;
             c        = p / r;
@@ -3174,10 +3192,20 @@ namespace numerical {
     //!        or three; the bound turns a non-convergence into an error instead of a hang.
     inline constexpr std::size_t svd_qr_steps_per_value {30};
 
+    //! \brief The order below which a real bidiagonal reduction goes a reflection at a time, as LAPACK's `dgebrd`
+    //!        falls back to `dgebd2`: the panels' products are too small to pay for packing. Order 64: 33 % shorter
+    //!        on six x86-64 cores, 7 % on arm64; order 160: 30 % longer on arm64, where x86-64 still gains 8 %.
+    inline constexpr std::size_t bidiagonal_crossover {128};
+
+    //! \brief The order below which the bases of a bidiagonal reduction are formed a reflector at a time: the blocks'
+    //!        packing and triangular factor cost more than they save. Order 32: 11 % shorter on six x86-64 cores,
+    //!        12 % on arm64; order 96: 7 % longer on both.
+    inline constexpr std::size_t bidiagonal_basis_crossover {64};
+
     /*!
      * \brief The bases of a bidiagonal reduction from its reflectors: `U_b = (H₀ H₁ …) diag(conj left phases)` and
      *        `V_b = (H'₀ H'₁ …) diag(right phases)`, each formed by blocks of reflectors through the matrix product
-     *        kernel, as QR's `Q` is.
+     *        kernel, as QR's `Q` is, or a reflector at a time below \ref bidiagonal_basis_crossover.
      * \param[in]  left        The left reflector of each step (acting from its row), empty where none.
      * \param[in]  right       The right reflector of each step (acting from the column past it), likewise.
      * \param[in]  left_phase  The unit phase each row took.
@@ -3199,7 +3227,7 @@ namespace numerical {
       // at k+1). A phase on row k commutes with every later reflector, which acts on rows past it, so
       // U_b = (H₀ H₁ …) diag(conj phases) and V_b = (H'₀ H'₁ …) diag(phases): the reflectors are applied to the
       // diagonal by blocks, through the matrix product kernel, as QR's Q is formed.
-      ut.assign(n * n, T {}); // Uᵀ and Vᵀ, formed transposed: diagonal to start, the blocks applied to them
+      ut.assign(n * n, T {}); // Uᵀ and Vᵀ, formed transposed: diagonal to start, the reflectors applied to them
       vt.assign(n * n, T {});
       for (std::size_t k {0}; k < n; ++k) {
         ut[(k * n) + k] = conj_of(left_phase[k]);
@@ -3208,6 +3236,13 @@ namespace numerical {
       std::vector<std::vector<T>> shifted(n); // right[k] acts from row k+1: as reflector k+1 of a QR
       for (std::size_t k {0}; k + 1 < n; ++k) {
         shifted[k + 1] = std::move(right[k]);
+      }
+      if (n < bidiagonal_basis_crossover) { // a reflector at a time, the last first, as LAPACK's dorg2r
+        for (std::size_t k {n}; k-- > 0;) {
+          reflect_columns(ut, n, left[k], k, k, n);
+          reflect_columns(vt, n, shifted[k], k, k, n);
+        }
+        return;
       }
       for (std::size_t k1 {n}; k1 > 0;) { // blocks of qr_block reflectors, the last first
         const std::size_t k0 {(k1 - 1) / qr_block * qr_block};
@@ -3219,11 +3254,6 @@ namespace numerical {
 
     //! \brief The reflections from each side in one panel of the blocked bidiagonal reduction.
     inline constexpr std::size_t bidiagonal_block {32};
-
-    //! \brief The order below which a real bidiagonal reduction goes a reflection at a time, as LAPACK's `dgebrd`
-    //!        falls back to `dgebd2`: the panels' products are too small to pay for packing. Order 64: 33 % shorter
-    //!        on six x86-64 cores, 7 % on arm64; order 160: 30 % longer on arm64, where x86-64 still gains 8 %.
-    inline constexpr std::size_t bidiagonal_crossover {128};
 
     template <typename T>
     void bidiagonalize_unblocked(std::vector<T>&      b,
@@ -3552,7 +3582,7 @@ namespace numerical {
           double f {e[p - 2]};
           e[p - 2] = 0.0;
           for (std::size_t j {p - 1}; j-- > top;) {
-            const double t  {std::hypot(d[j], f)};
+            const double t  {rotation_length(d[j], f)};
             const double cs {d[j] / t};
             const double sn {f / t};
             d[j] = t;
@@ -3568,7 +3598,7 @@ namespace numerical {
           double f {e[zero]};
           e[zero] = 0.0;
           for (std::size_t j {zero + 1}; j < p; ++j) {
-            const double t  {std::hypot(d[j], f)};
+            const double t  {rotation_length(d[j], f)};
             const double cs {d[j] / t};
             const double sn {f / t};
             d[j] = t;
@@ -3601,7 +3631,7 @@ namespace numerical {
         double f {((sk + sp) * (sk - sp)) + shift};
         double g {sk * ek};
         for (std::size_t j {top}; j + 1 < p; ++j) {
-          double t  {std::hypot(f, g)};
+          double t  {rotation_length(f, g)};
           double cs {f / t};
           double sn {g / t};
           if (j != top) {
@@ -3612,7 +3642,7 @@ namespace numerical {
           g        = sn * d[j + 1];
           d[j + 1] = cs * d[j + 1];
           on_vt.push_back({row_operation::kind::rotate, j, j + 1, cs, sn});
-          t        = std::hypot(f, g);
+          t        = rotation_length(f, g);
           cs       = f / t;
           sn       = g / t;
           d[j]     = t;

@@ -7,6 +7,17 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **The QR and QL iterations of `svd` and `eigh` take a rotation's length as the plain root of its sum of
+  squares**, as LAPACK's `dlartg` does, where `std::hypot` rescaled both values every time; it remains where the
+  larger is below 2⁻⁵⁰⁰, so no square underflows (the matrices are scaled to their largest entry, so none
+  overflows).
+- **Below order 64, the SVD forms its bidiagonal bases a reflector at a time**, as LAPACK's `dorgbr` falls
+  back to `dorg2r`, where blocks of 32 reflectors went through the matrix product kernel.
+  With the item above, all cores, orders 24, 32, 48, 64 and 128: `svd` on six x86-64 cores (i5-8500)
+  105 → 75 µs, 174 → 141 µs, 351 → 320 µs, 681 → 678 µs, 3.27 → 3.20 ms, and on M1 Pro 92 → 65 µs,
+  129 → 99 µs, 276 → 234 µs, 446 → 416 µs, 2.00 → 1.94 ms; `eigh` on six x86-64 cores 56 → 47 µs,
+  109 → 89 µs, 220 → 198 µs, 373 → 339 µs, 1.61 → 1.53 ms, and on M1 Pro 49 → 43 µs, 77 → 67 µs,
+  178 → 168 µs, 279 → 260 µs, 0.98 → 0.94 ms.
 - **Below order 128, the real SVD reduces to bidiagonal form one reflection at a time**, as LAPACK's `dgebrd`
   falls back to `dgebd2`: the blocked reduction's panels and trailing products cost more than they save on a
   small matrix. The bidiagonal reduction alone, orders 32, 64 and 96: six x86-64 cores (i5-8500) 116 → 63 µs,
