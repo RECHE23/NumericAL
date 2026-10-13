@@ -3220,6 +3220,19 @@ namespace numerical {
     //! \brief The reflections from each side in one panel of the blocked bidiagonal reduction.
     inline constexpr std::size_t bidiagonal_block {32};
 
+    //! \brief The order below which a real bidiagonal reduction goes a reflection at a time, as LAPACK's `dgebrd`
+    //!        falls back to `dgebd2`: the panels' products are too small to pay for packing. Order 64: 33 % shorter
+    //!        on six x86-64 cores, 7 % on arm64; order 160: 30 % longer on arm64, where x86-64 still gains 8 %.
+    inline constexpr std::size_t bidiagonal_crossover {128};
+
+    template <typename T>
+    void bidiagonalize_unblocked(std::vector<T>&      b,
+                                 std::size_t          n,
+                                 std::vector<double>& d,
+                                 std::vector<double>& e,
+                                 std::vector<T>&      ut,
+                                 std::vector<T>&      vt);
+
     /*!
      * \brief The unit Householder vector `v` with `(I − 2 v vᵀ) x = β e₁`, in place of \p x, for a real `x`.
      * \return `β = −sign(x₀) ‖x‖`.
@@ -3261,6 +3274,10 @@ namespace numerical {
                        std::vector<T>&      ut,
                        std::vector<T>&      vt)
     {
+      if (n < bidiagonal_crossover) {
+        bidiagonalize_unblocked(b, n, d, e, ut, vt);
+        return;
+      }
       std::vector<std::vector<T>> left(n);  // the left reflector of step k, on rows k…, empty where none was needed
       std::vector<std::vector<T>> right(n); // the right reflector of step k, on columns k+1…, likewise
       const auto                  nonzero {[](const T& value) { return value != T {}; }};
@@ -3373,9 +3390,7 @@ namespace numerical {
           gemm(rest, rest, width, minus_x.data(), width, by_row_u.data() + k1, n, trailing, n);
         }
       }
-      if (n > 0) {
-        e[n - 1] = 0.0;
-      }
+      e[n - 1] = 0.0;
       form_bidiagonal_bases(left, std::move(right), std::vector<T>(n, T {1}), std::vector<T>(n, T {1}), n, ut, vt);
     }
 
@@ -3393,12 +3408,12 @@ namespace numerical {
      * \param[out]    vt `V_bᵀ`, row-major: its rows are the columns of `V_b`.
      */
     template <typename T>
-    void bidiagonalize(std::vector<T>&      b,
-                       std::size_t          n,
-                       std::vector<double>& d,
-                       std::vector<double>& e,
-                       std::vector<T>&      ut,
-                       std::vector<T>&      vt)
+    void bidiagonalize_unblocked(std::vector<T>&      b,
+                                 std::size_t          n,
+                                 std::vector<double>& d,
+                                 std::vector<double>& e,
+                                 std::vector<T>&      ut,
+                                 std::vector<T>&      vt)
     {
       std::vector<std::vector<T>> left(n);  // the left reflector of step k, empty where none was needed
       std::vector<std::vector<T>> right(n); // the right reflector acting on columns k+1…, likewise
@@ -3456,6 +3471,19 @@ namespace numerical {
         e[n - 1] = 0.0;
       }
       form_bidiagonal_bases(left, std::move(right), left_phase, right_phase, n, ut, vt);
+    }
+
+    //! \brief \ref bidiagonalize_unblocked, for a complex or any other `T` the panels do not take.
+    template <typename T>
+    requires(!std::is_floating_point_v<T>)
+    void bidiagonalize(std::vector<T>&      b,
+                       std::size_t          n,
+                       std::vector<double>& d,
+                       std::vector<double>& e,
+                       std::vector<T>&      ut,
+                       std::vector<T>&      vt)
+    {
+      bidiagonalize_unblocked(b, n, d, e, ut, vt);
     }
 
     /*!

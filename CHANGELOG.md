@@ -7,6 +7,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **Below order 128, the real SVD reduces to bidiagonal form one reflection at a time**, as LAPACK's `dgebrd`
+  falls back to `dgebd2`: the blocked reduction's panels and trailing products cost more than they save on a
+  small matrix. The bidiagonal reduction alone, orders 32, 64 and 96: six x86-64 cores (i5-8500) 116 → 63 µs,
+  355 → 238 µs, 756 → 613 µs; M1 Pro 153 → 130 µs, 508 → 470 µs, 1127 → 1057 µs. From order 128 on the
+  blocked reduction stays: one reflection at a time is 30 % slower at order 160 on arm64.
 - **The SVD's divide and conquer multiplies each half of its bases apart**, as LAPACK's `dlasd3` does: the rows of
   a half take only the columns that reach them, half the operations of the whole product (the others are zeros
   there; the results are the same to the bit). Six x86-64 cores, order 1024: 314 → 306 ms.
