@@ -4118,7 +4118,11 @@ namespace numerical {
           entries[(i * cols) + j] = a(i, j) / detail::from_double<T>(scale);
         }
       }
-      detail::thin_qr<T> factors {detail::householder_qr(std::move(entries), rows, cols)};
+      // A square matrix is reduced to bidiagonal form as it is (as LAPACK's dgesdd does short of a tall one): a QR
+      // first, its Q formed and multiplied in at the end, took a third of the decomposition's time at order 1024.
+      const bool         direct  {rows == cols && method != svd_method::jacobi};
+      detail::thin_qr<T> factors {direct ? detail::thin_qr<T> {.q = {}, .r = std::move(entries)}
+                                         : detail::householder_qr(std::move(entries), rows, cols)};
       if (method != svd_method::jacobi) {
         std::vector<double> d(cols);
         std::vector<double> e(cols);
@@ -4143,7 +4147,8 @@ namespace numerical {
           value *= scale;
         }
         singular_values_ = vector<double> {std::move(d)};
-        u_               = matrix<T> {rows, cols, std::move(factors.q)} *matrix<T> {cols, cols, std::move(left)};
+        u_               = direct ? matrix<T> {cols, cols, std::move(left)}
+                                  : matrix<T> {rows, cols, std::move(factors.q)} *matrix<T> {cols, cols, std::move(left)};
         v_               = matrix<T> {cols, cols, std::move(right)};
         return;
       }

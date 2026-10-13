@@ -7,6 +7,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **The SVD of a square matrix reduces it to bidiagonal form as it is**, as LAPACK's `dgesdd` does short of a tall
+  matrix, where it first took a QR, formed its Q and multiplied it in at the end. All cores, orders 256, 512 and
+  1024: M1 Pro 11.8 → 10.0 ms, 60 → 49 ms, 300 → 265 ms; six x86-64 cores (i5-8500) 19.1 → 15.8 ms, 79 → 71 ms,
+  422 → 361 ms. A tall matrix keeps its QR first.
 - **On x86-64, an LU solve with at most 16 right-hand sides goes row by row**, each row of the solution held in
   registers through its terms, where blocks of the factor were negated, packed and multiplied for a few columns;
   each element takes its terms in the blocked passes' order, so the solution is the same to the bit. Six x86-64
