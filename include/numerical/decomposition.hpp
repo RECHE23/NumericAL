@@ -57,11 +57,14 @@ namespace numerical {
     //!        longer (order 2048 on six x86-64 cores, 9 %); a narrower one leaves threads idle while the panel runs.
     inline constexpr std::size_t lu_lookahead_columns {1024};
 
-    //! \brief The columns of one leaf of the recursive LU panel, and of the Cholesky panel's rows below it.
+    //! \brief The columns of one leaf of the recursive LU panel.
     inline constexpr std::size_t solve_leaf {16};
 
     //! \brief The columns of one panel of the blocked Cholesky factorisation (as \ref lu_block).
     inline constexpr std::size_t cholesky_block {64};
+
+    //! \brief The rows of one chunk of a Cholesky panel's rows below it, solved together along each column.
+    inline constexpr std::size_t cholesky_rows {64};
 
 
     // conj_of / real_part are written as overloads (not `if constexpr`) so each
@@ -902,34 +905,42 @@ namespace numerical {
     }
 
     /*!
-     * \brief The rows below the panel `[k0, end)`, by leaves of \ref detail::solve_leaf columns (fewer than eight
-     *        blocks of rows) or of the whole panel: a leaf's
-     *        terms from the panel's earlier columns, `L[i][j] −= Σₖ L[i][k]·conj(L[j][k])`, through the matrix
-     *        product kernel, then the leaf row by row in parallel (\ref factor_row). Each element still takes its
-     *        terms in ascending order.
+     * \brief The rows below the panel `[k0, end)`, `L₂₁ = A₂₁ L₁₁⁻ᴴ`: chunks of \ref detail::cholesky_rows rows in
+     *        parallel, each in a column-major copy where column `j` takes `L[i][j] −= L[i][k]·conj(L[j][k])` for
+     *        `k` ascending, then the division by `L[j][j]`, for every row of the chunk at once along the column
+     *        (\ref detail::subtract_product): each element the unblocked step's arithmetic, in its order; row by
+     *        row, each sum waited on its last addition.
      */
     void factor_rows_below(std::size_t k0,
                            std::size_t end)
     {
-      const std::size_t rows {n_ - end};
-      // Under many rows the leaves' products stream the panel again and again, which the row-by-row step does not
-      // (order 1024 on arm64: 13.4 ms row by row, 15.1 by leaves); there, one leaf of the whole panel.
-      const std::size_t leaf {rows < 8 * detail::cholesky_block ? detail::solve_leaf : end - k0};
-      for (std::size_t s0 {k0}; s0 < end; s0 += leaf) {
-        const std::size_t s1 {std::min(s0 + leaf, end)};
-        if (s0 > k0) {
-          const std::size_t depth {s0 - k0};
-          std::vector<T>    minus_adjoint(depth * (s1 - s0)); // −conj(L[j][k]), k by row, j by column
-          for (std::size_t k {0}; k < depth; ++k) {
-            for (std::size_t j {s0}; j < s1; ++j) {
-              minus_adjoint[(k * (s1 - s0)) + (j - s0)] = -detail::conj_of(lower_[(j * n_) + k0 + k]);
-            }
-          }
-          detail::gemm(rows, s1 - s0, depth, lower_.data() + (end * n_) + k0, n_, minus_adjoint.data(), s1 - s0,
-                       lower_.data() + (end * n_) + s0, n_);
-        }
-        detail::parallel_for(rows, (s1 - s0) * (s1 - s0) / 2, [&](std::size_t r) { factor_row(end + r, s0, s1); });
-      }
+      const std::size_t width  {end - k0};
+      const std::size_t chunks {((n_ - end) + detail::cholesky_rows - 1) / detail::cholesky_rows};
+      detail::parallel_for(chunks, detail::cholesky_rows * width * width / 2, [&](std::size_t chunk) {
+                             const std::size_t first {end + (chunk * detail::cholesky_rows)};
+                             const std::size_t height {std::min(detail::cholesky_rows, n_ - first)};
+                             std::vector<T>    panel(height * width); // column j at panel[j * height]
+                             for (std::size_t r {0}; r < height; ++r) {
+                               for (std::size_t j {0}; j < width; ++j) {
+                                 panel[(j * height) + r] = lower_[((first + r) * n_) + k0 + j];
+                               }
+                             }
+                             for (std::size_t j {0}; j < width; ++j) {
+                               T* const column {panel.data() + (j * height)};
+                               for (std::size_t k {0}; k < j; ++k) {
+                                 detail::subtract_product(column, panel.data() + (k * height), detail::conj_of(lower_[((k0 + j) * n_) + k0 + k]), height);
+                               }
+                               const T pivot {lower_[((k0 + j) * n_) + k0 + j]};
+                               for (std::size_t r {0}; r < height; ++r) {
+                                 column[r] = column[r] / pivot;
+                               }
+                             }
+                             for (std::size_t r {0}; r < height; ++r) {
+                               for (std::size_t j {0}; j < width; ++j) {
+                                 lower_[((first + r) * n_) + k0 + j] = panel[(j * height) + r];
+                               }
+                             }
+                           });
     }
 
     //! \brief `A22 += (−L21) L21ᴴ`, block column by block column, on and below the diagonal blocks.
