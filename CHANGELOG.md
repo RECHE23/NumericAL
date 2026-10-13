@@ -7,6 +7,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **On the AMX path, a product under 2²⁴ multiply-adds runs on the calling thread alone**: a cluster of cores
+  shares one AMX unit, so threads beside the caller pay only once the product spans clusters. M1 Pro, all cores,
+  `matmul` of order 128 and 192: 36 → 26 µs and 84 → 70 µs; from order 256 the threads stay and pay (149 µs on
+  one, 129 on them). The decompositions' panel products gain with it: `qr` of order 384 −17 %, `eigh` of order
+  256 and 384 −10 %, `svd` of order 128 to 512 −4 to −6 %. Cholesky and `solve` are unchanged.
 - **The QR and QL iterations of `svd` and `eigh` take a rotation's length as the plain root of its sum of
   squares**, as LAPACK's `dlartg` does, where `std::hypot` rescaled both values every time; it remains where the
   larger is below 2⁻⁵⁰⁰, so no square underflows (the matrices are scaled to their largest entry, so none

@@ -424,11 +424,12 @@ namespace numerical::detail {
   template <typename T>
   struct vector_tile_kernel
   {
-    static constexpr std::size_t mr         {gemm_mr};             //!< The tile's rows.
-    static constexpr std::size_t nr         {gemm_nr<T>};          //!< The tile's columns.
-    static constexpr std::size_t depth      {gemm_kc};             //!< The panel depth.
-    static constexpr std::size_t block_rows {gemm_mc};             //!< The rows of one task, a whole number of tiles.
-    static constexpr std::size_t speedup    {gemm_kernel_speedup}; //!< The weight of its work (\ref gemm_kernel_speedup).
+    static constexpr std::size_t mr           {gemm_mr};             //!< The tile's rows.
+    static constexpr std::size_t nr           {gemm_nr<T>};          //!< The tile's columns.
+    static constexpr std::size_t depth        {gemm_kc};             //!< The panel depth.
+    static constexpr std::size_t block_rows   {gemm_mc};             //!< The rows of one task, a whole number of tiles.
+    static constexpr std::size_t speedup      {gemm_kernel_speedup}; //!< The weight of its work (\ref gemm_kernel_speedup).
+    static constexpr std::size_t serial_below {1};                   //!< Every product with work shares it (\ref gemm_shares).
 
     //! \brief Nothing to turn on around a task.
     struct session
@@ -468,7 +469,11 @@ namespace numerical::detail {
     static constexpr std::size_t block_rows {gemm_mc};             //!< The rows of one task, a whole number of tiles.
     static constexpr std::size_t speedup    {gemm_kernel_speedup}; //!< The weight of its work (\ref gemm_kernel_speedup):
                                                                    //!< fewer threads paid AMX more (QR of order 256: 2.34 ms, 2.62 at a quarter).
-    using session = amx_session;                                   //!< The AMX on for a task.
+    //! \brief The multiply-adds below which the product runs on the caller alone: a cluster of cores shares one
+    //!        AMX, so threads beside the caller pay only when the product spans clusters (M1 Pro, order 192:
+    //!        70 µs on one thread, 84 on its threads; order 248: 151 against 174; order 256: 149 against 129).
+    static constexpr std::size_t serial_below {std::size_t {1} << 24};
+    using session = amx_session; //!< The AMX on for a task.
 
     //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc.
     static void tile(std::size_t   kc,
@@ -592,6 +597,16 @@ namespace numerical::detail {
     T*             b_;
   };
 
+  //! \brief Whether the product's threads pay: below \p Kernel's `serial_below` multiply-adds, the product runs on the
+  //!        caller alone.
+  template <typename Kernel>
+  [[nodiscard]] constexpr bool gemm_shares(std::size_t m,
+                                           std::size_t n,
+                                           std::size_t k) noexcept
+  {
+    return m * n * k >= Kernel::serial_below;
+  }
+
   /*!
    * \brief The packed product with the tile \p Kernel computes: for each block of B's columns and each panel of
    *        the depth, both operands are packed (in parallel, by the blocks the product takes), then tasks of
@@ -616,6 +631,7 @@ namespace numerical::detail {
     const std::size_t        a_rows {((m + mr) - 1) / mr * mr};
     const std::size_t        b_cols {((std::min(nc_max, n) + nr) - 1) / nr * nr};
     const packing_storage<T> packed {a_rows * std::min(Kernel::depth, k), b_cols * std::min(Kernel::depth, k)};
+    const std::size_t        shared {gemm_shares<Kernel>(m, n, k) ? 1U : 0U}; // a weight of zero starts no thread
     for (std::size_t jc {0}; jc < n; jc += nc_max) {
       const std::size_t nc      {std::min(nc_max, n - jc)};
       const std::size_t slivers {((nc + nr) - 1) / nr};
@@ -626,7 +642,7 @@ namespace numerical::detail {
         // One pass packs both: B's groups of slivers first, then A's row blocks.
         // The packing weighed as the tile's work is (\p Kernel's speedup): a small product then packs in parallel too
         // (eight AVX2 cores: order 128 40 → 30 µs, 192 92 → 62).
-        parallel_for(groups + row_blocks, Kernel::block_rows * kc * gemm_kernel_speedup / Kernel::speedup, [&](std::size_t piece) {
+        parallel_for(groups + row_blocks, shared * Kernel::block_rows * kc * gemm_kernel_speedup / Kernel::speedup, [&](std::size_t piece) {
                        if (piece < groups) {
                          const std::size_t jr    {piece * gemm_slivers_per_task * nr};
                          const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
@@ -643,7 +659,7 @@ namespace numerical::detail {
         const std::size_t row_tasks  {(((tasks_per_thread * max_threads()) + groups) - 1) / groups};
         const std::size_t task_rows  {std::clamp(((tiles + row_tasks) - 1) / row_tasks, std::size_t {1}, Kernel::block_rows / mr) * mr};
         const std::size_t task_count {((m + task_rows) - 1) / task_rows};
-        parallel_for(task_count * groups, task_rows * gemm_slivers_per_task * nr * kc / Kernel::speedup, [&](std::size_t task) {
+        parallel_for(task_count * groups, shared * task_rows * gemm_slivers_per_task * nr * kc / Kernel::speedup, [&](std::size_t task) {
                        const std::size_t                   ic     {(task / groups) * task_rows};
                        const std::size_t                   first  {(task % groups) * gemm_slivers_per_task};
                        const std::size_t                   last   {std::min(first + gemm_slivers_per_task, slivers)};
@@ -674,7 +690,8 @@ namespace numerical::detail {
     static constexpr std::size_t block_rows {96};                  //!< The rows of one task, a whole number of tiles.
     //! \brief The weight of its work, a quarter of \ref gemm_kernel_speedup, as AVX2's (ten AVX-512 cores: order 128
     //!        90 → 51 µs, 192 155 → 94, 384 580 → 450, 512 940 → 860; an eighth slowed order 64 15 → 24 µs).
-    static constexpr std::size_t speedup    {gemm_kernel_speedup / 4};
+    static constexpr std::size_t speedup      {gemm_kernel_speedup / 4};
+    static constexpr std::size_t serial_below {1}; //!< Every product with work shares it (\ref gemm_shares).
 
     //! \brief Nothing to turn on around a task.
     struct session
@@ -702,7 +719,8 @@ namespace numerical::detail {
     static constexpr std::size_t block_rows {72};      //!< The rows of one task, a whole number of tiles.
     //! \brief The weight of its work, a quarter of \ref gemm_kernel_speedup: more threads paid on physical cores (eight
     //!        AVX2 cores: order 128 73 → 39 µs, 192 107 → 90; Cholesky of order 1024 20 → 16 ms).
-    static constexpr std::size_t speedup    {gemm_kernel_speedup / 4};
+    static constexpr std::size_t speedup      {gemm_kernel_speedup / 4};
+    static constexpr std::size_t serial_below {1}; //!< Every product with work shares it (\ref gemm_shares).
 
     //! \brief Nothing to turn on around a task.
     struct session
