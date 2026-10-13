@@ -24,6 +24,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
 #include <cstddef>
@@ -60,9 +61,10 @@ namespace numerical {
     //! \brief The columns of one panel of the LU of an order up to \ref lu_small_order.
     inline constexpr std::size_t lu_small_block {32};
 
-    //! \brief The panel width of the LU of order \p n.
+    //! \brief The panel width of the LU of order \p n: a power of two, so a row's panel is a mask away, not a division.
     [[nodiscard]] constexpr std::size_t lu_block_for(std::size_t n) noexcept
     {
+      static_assert(std::has_single_bit(lu_small_block) && std::has_single_bit(lu_block), "a panel is a mask away");
       return n <= lu_small_order ? lu_small_block : lu_block;
     }
 
@@ -84,11 +86,24 @@ namespace numerical {
     //! \brief The columns of one panel of the blocked Cholesky factorisation (as \ref lu_block).
     inline constexpr std::size_t cholesky_block {64};
 
+    //! \brief The order below which the Cholesky factorisation is one panel: no trailing product, whose packing the
+    //!        few panels of a small order do not repay (order 17 on one thread: 0.8 µs whole, 1.3 µs in panels of 16).
+    //!        Panels of 16 win from order 40 on x86-64 and from 48 on arm64.
+#ifdef NUMERICAL_X86_COMPILED
+    inline constexpr std::size_t cholesky_one_panel {40};
+#else
+    inline constexpr std::size_t cholesky_one_panel {48};
+#endif
+    static_assert(cholesky_one_panel <= cholesky_block, "one panel of cholesky_block columns holds the whole matrix");
+
     //! \brief The panel width of the Cholesky factorisation of order \p n: narrower up to order 256, where the
     //!        panels, row by row on one thread, are most of the time; a power of two, which the product kernels'
     //!        tiles divide (widths of 24, 40 or 56 left the AMX's 32 × 16 tiles part empty: order 320, 20 % longer).
     [[nodiscard]] constexpr std::size_t cholesky_block_for(std::size_t n) noexcept
     {
+      if (n < cholesky_one_panel) {
+        return cholesky_block;
+      }
       if (n <= 128) {
         return cholesky_block / 4;
       }
@@ -585,7 +600,7 @@ namespace numerical {
         subtract_block(y, cols, end, n_, k0, end, reach);
       }
       for (std::size_t k1 {n_}; k1 > 0;) { // backward: upper U, the blocks of the forward pass, last first
-        const std::size_t k0 {(k1 - 1) / block_ * block_};
+        const std::size_t k0 {panel_of(k1 - 1)};
         detail::parallel_for(chunks, (k1 - k0) * (k1 - k0) * width / 2, [&](std::size_t chunk) {
                                const std::size_t first {chunk * width};
                                const std::size_t last {std::min(first + width, cols)};
@@ -628,9 +643,10 @@ namespace numerical {
       for (std::size_t i {1}; i < n_; ++i) {
         detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_), y.data(), cols, i, cols);
       }
+      const std::size_t last {panel_of(n_ - 1)};
       for (std::size_t i {n_}; i-- > 0;) {
-        const std::size_t own {i / block_ * block_};
-        for (std::size_t b0 {(n_ - 1) / block_ * block_};; b0 -= block_) {
+        const std::size_t own {panel_of(i)};
+        for (std::size_t b0 {last};; b0 -= block_) {
           const std::size_t from {std::max(b0, i + 1)};
           const std::size_t to   {std::min(b0 + block_, n_)};
           if (from < to) {
@@ -645,6 +661,12 @@ namespace numerical {
           y[(i * cols) + c] = y[(i * cols) + c] / pivot;
         }
       }
+    }
+
+    //! \brief The first row of the panel that holds row \p i.
+    [[nodiscard]] std::size_t panel_of(std::size_t i) const noexcept
+    {
+      return i & ~(block_ - 1);
     }
 
     //! \brief `Y[r0, r1) −= F[r0, r1) × [c0, c1) · Y[c0, c1)`, F the factor, through the matrix product kernel (nothing

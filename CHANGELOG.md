@@ -21,6 +21,15 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **The row-by-row LU solve's equality to the blocked solve, to the bit, was stated too broadly**: it holds where
   the blocked passes' products run the matrix kernel; a product small enough for the plain loop rounds each term
   apart on x86-64, where the rows fuse it, so a column's last bits may differ with the number of right-hand sides.
+- **Cholesky of a small order took up to 85 % longer than in 2026.10.6** (2026.10.7 and 2026.10.8): its panels of
+  16 columns, which win from order 48 on arm64 and 40 on x86-64, brought below that a trailing product whose
+  packing the few panels do not repay. Below those orders the factorisation is one panel again. One thread,
+  order 17: 1.23 → 0.80 µs on an M1 Pro (Clang), 2.45 → 1.31 µs on an i5-8500 (GCC 13 `-O3`); the factor is
+  2026.10.6's, to the bit.
+- **On x86-64, solving with a reused LU factor of a small order took up to 33 % longer than in 2026.10.6**: each
+  row found its panel by an integer division, the panel width being chosen at run time since 2026.10.7. The width
+  is a power of two, and a mask finds it. One thread, i5-8500, four right-hand sides: order 8 0.34 → 0.25 µs,
+  17 0.80 → 0.62 µs, 64 5.7 → 5.1 µs (2026.10.6: 0.25, 0.62, 5.0).
 
 ### Changed
 - **Every decomposition checks a `double` or complex input for infinities and NaNs in one vectorised pass** over
