@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.7 — 2026-10-13
+
 ### Changed
 - **The AMX path reads B's rows in place**, where it packed them, when they are at most 512 elements long: its X
   registers load a row's 16 elements as they lie, and packing them took a fifth of a small product. Partial
