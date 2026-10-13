@@ -137,6 +137,9 @@ class ShapesAndCreation(unittest.TestCase):
                      lambda: numerical.linspace(0, 1, -1), lambda: numerical.zeros(2, dtype="int32")]:
             with self.subTest(call=call), self.assertRaises(ValueError):
                 call()
+        # A count past what memory can hold is a Python exception, not an abort of the interpreter.
+        with self.assertRaises((numerical.error, MemoryError)):
+            numerical.linspace(0, 1, 2**62)
 
 
 @unittest.skipIf(np is None, "NumPy not installed")

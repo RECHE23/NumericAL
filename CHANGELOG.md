@@ -6,6 +6,22 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Fixed
+- **`eigh` of a graded matrix returned NaN, or its divide and conquer did not converge** (2026.10.7 and 2026.10.8):
+  a rotation's length was taken as the plain root of its squares at every magnitude, but a QL shift's ratio on a
+  matrix spanning 1e-200 to 1 reaches 5e199, whose square overflows. Past `2^500`, as below `2^-500`, the length is
+  `std::hypot`'s again. `[[1e-200, 1e-200], [1e-200, 1]]` gives `[1e-200, 1]`, as NumPy and 2026.10.6 do.
+- **A product whose result is empty crashed** (2026.10.6 to 2026.10.8): `a @ b` with `b` of shape `(3, 0)`, and an
+  `einsum` contraction with no output element, read past an empty operand. It is an empty tensor of its shape.
+- **`linspace` with a count past what memory holds aborted the interpreter**, and so could negation and the
+  element-wise functions on a refused allocation: each raises a Python exception.
+- **`eigh` of a Hermitian matrix scaled by the imaginary parts of its diagonal**, which it otherwise ignores (as
+  NumPy's does): an infinite one made every value NaN, a huge one wrong. The scale is the real part's.
+- **GCC 15 refused to build the tests** (`-Werror=array-bounds` on `core_of`, a subscript it read before its check).
+- **The row-by-row LU solve's equality to the blocked solve, to the bit, was stated too broadly**: it holds where
+  the blocked passes' products run the matrix kernel; a product small enough for the plain loop rounds each term
+  apart on x86-64, where the rows fuse it, so a column's last bits may differ with the number of right-hand sides.
+
 ### Changed
 - **Every decomposition checks a `double` or complex input for infinities and NaNs in one vectorised pass** over
   the exponent bits, where it tested each entry and stopped at the first: a tenth of an LU of order 128. M1 Pro,

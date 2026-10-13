@@ -410,6 +410,12 @@ TEST(hermitian_eigen_reconstructs_with_a_unitary_basis)
                 numerical::non_finite_error); // a lower entry's real part
   EXPECT_THROWS(numerical::hermitian_eigen {(matrix<c> {{c {1.0}, c {}}, {c {0.0, std::numeric_limits<double>::quiet_NaN()}, c {1.0}}})},
                 numerical::non_finite_error); // and its imaginary part
+  // The diagonal's imaginary part is ignored, as NumPy's eigh ignores it: a huge or infinite one changes no value.
+  for (const double odd : {1e300, std::numeric_limits<double>::infinity()}) {
+    const matrix<c> plain {{c {2.0}, c {}}, {c {1.0, 1.0}, c {3.0}}};
+    const matrix<c> noisy {{c {2.0, odd}, c {}}, {c {1.0, 1.0}, c {3.0, -odd}}};
+    EXPECT(approx_equal(numerical::hermitian_eigen {noisy}.values(), numerical::hermitian_eigen {plain}.values(), 1e-14));
+  }
 }
 
 TEST(symmetric_eigen_rejects_non_square)
@@ -1201,7 +1207,8 @@ TEST(blocked_matrix_solve_agrees_with_column_solves)
 // A few right-hand sides go row by row, each row's terms in the blocked passes' order: the solution of the first
 // sixteen columns is the blocked solve's of seventeen to the bit, past one block of rows, on every path whose
 // products fuse as the rows do (the portable path, fusing neither; AVX2 and AVX-512, both, where the rows go so at
-// any order); off the x86-64 units the rows go so up to narrow_solve_order, past it both are blocked.
+// any order) and at orders whose blocked products all run the matrix kernel (192 is whole blocks, 200 a last
+// block deep enough); off the x86-64 units the rows go so up to narrow_solve_order, past it both are blocked.
 TEST(narrow_solve_equals_the_blocked_solve_to_the_bit)
 {
   for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512}) {
@@ -1682,4 +1689,41 @@ TEST(eigh_runs_every_kernel_path)
     EXPECT(worst < 1e-12 * static_cast<double>(n));
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
+
+// A graded symmetric matrix, scaled to its largest entry yet spanning 1e-200 to 1: a QL shift's ratio reaches 5e199,
+// whose square overflows, so a rotation's length is taken without squaring there. Both iterations find every
+// eigenvalue, A V = V Λ to rounding of the largest.
+TEST(eigh_of_a_graded_matrix)
+{
+  const matrix<double> two {{1e-200, 1e-200}, {1e-200, 1.0}};
+  for (const numerical::eigen_method method : {numerical::eigen_method::tridiagonal_ql, numerical::eigen_method::divide_and_conquer}) {
+    const numerical::symmetric_eigen eigen {two, method};
+    EXPECT(std::abs(eigen.values()[0] - 1e-200) <= 1e-214 && std::abs(eigen.values()[1] - 1.0) <= 1e-15);
+  }
+  for (const std::size_t n : {std::size_t {5}, std::size_t {40}}) {
+    std::vector<double> entries(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j <= i; ++j) {
+        const double scale {std::pow(10.0, -200.0 * static_cast<double>(n - 1 - i) / static_cast<double>(n - 1))
+                            * std::pow(10.0, -200.0 * static_cast<double>(n - 1 - j) / static_cast<double>(n - 1))};
+        entries[(i * n) + j] = entries[(j * n) + i] = scale * (i == j ? 2.0 : std::sin(static_cast<double>((i * 7) + j)));
+      }
+    }
+    const matrix<double> a {n, n, entries};
+    for (const numerical::eigen_method method : {numerical::eigen_method::tridiagonal_ql, numerical::eigen_method::divide_and_conquer}) {
+      const numerical::symmetric_eigen eigen {a, method};
+      double                           worst {0.0};
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          double av {0.0};
+          for (std::size_t k {0}; k < n; ++k) {
+            av += a(i, k) * eigen.vectors()(k, j);
+          }
+          worst = std::max(worst, std::abs(av - (eigen.vectors()(i, j) * eigen.values()[j])));
+        }
+      }
+      EXPECT(std::isfinite(worst) && worst < 1e-12 * static_cast<double>(n));
+    }
+  }
 }

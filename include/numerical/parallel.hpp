@@ -23,6 +23,7 @@
 #include <limits>
 #include <memory>
 #include <mutex>
+#include <span>
 #include <thread>
 #include <vector>
 
@@ -154,7 +155,10 @@ namespace numerical::detail {
   [[nodiscard]] inline std::size_t core_of(const std::vector<std::size_t>& table,
                                            int                             cpu) noexcept
   {
-    return cpu >= 0 && static_cast<std::size_t>(cpu) < table.size() ? table[static_cast<std::size_t>(cpu)] : no_core;
+    // Through the subspan from `cpu`: GCC 15 at -O3 reads `table[cpu]` behind an index check (a conditional or an
+    // early return) before the check, and refuses the subscript past the end (-Werror=array-bounds).
+    const std::span<const std::size_t> rest {std::span {table}.subspan(cpu < 0 ? table.size() : std::min(table.size(), static_cast<std::size_t>(cpu)))};
+    return rest.empty() ? no_core : rest.front();
   }
 
   //! \brief Pins the calling thread to the processors of `cores[index]`, where there is one; else, or should the

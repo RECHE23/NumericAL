@@ -256,17 +256,18 @@ namespace numerical {
 
     /*!
      * \brief `√(a² + b²)` for a plane rotation of the QR and QL iterations, as LAPACK's `dlartg` takes it: the plain
-     *        sum of squares where the larger magnitude is above `2^-500`, so its square does not underflow and the
-     *        smaller one's underflow is below its rounding; `std::hypot`, which scales every time, below.
-     *
-     * Both magnitudes must stay below `2^500`, so no square overflows. The iterations' callers hold them there:
-     * each divides its matrix by its largest entry, and a QL shift's ratio is at most `1/ε`.
+     *        sum of squares where the larger magnitude lies within `2^±500`, so its square neither overflows nor
+     *        underflows and the smaller one's underflow is below its rounding; `std::hypot`, which scales every time,
+     *        outside. A graded matrix reaches both ends though scaled to its largest entry: a QL shift's ratio
+     *        `(d₁ − d₀) / 2e` came to 5e199 on `[[1e-200, 1e-200], [1e-200, 1]]`.
      */
     [[nodiscard]] inline double rotation_length(double a,
                                                 double b) noexcept
     {
-      constexpr double low {0x1p-500};
-      if (std::max(std::abs(a), std::abs(b)) > low) {
+      constexpr double low    {0x1p-500};
+      constexpr double high   {0x1p500};
+      const double     larger {std::max(std::abs(a), std::abs(b))};
+      if (larger > low && larger < high) {
         return std::sqrt((a * a) + (b * b));
       }
       return std::hypot(a, b);
@@ -614,9 +615,12 @@ namespace numerical {
 
     /*!
      * \brief \ref solve_rows for a few right-hand sides: row by row, each one's terms in the order the blocked passes
-     *        give them (forward, ascending; backward, the blocks from the last down to its own, each ascending), so
-     *        the solution is theirs to the bit, without a product that packs the factor's blocks for a few columns
-     *        (order 256 and four columns on one x86-64 core: 112 → 72 µs, the factorisation 750).
+     *        give them (forward, ascending; backward, the blocks from the last down to its own, each ascending),
+     *        without a product that packs the factor's blocks for a few columns (order 256 and four columns on one
+     *        x86-64 core: 112 → 72 µs, the factorisation 750). The solution is the blocked passes' to the bit wherever
+     *        their products run the matrix kernel; one the plain loop takes (under \ref detail::gemm_packed_threshold
+     *        multiply-adds, or shallower than \ref detail::gemm_min_depth, as a last block of a few rows) rounds each
+     *        term apart where the x86-64 rows fuse it, so there the two differ in the last bits.
      */
     void solve_narrow(std::vector<T>& y,
                       std::size_t     cols) const
@@ -3117,12 +3121,14 @@ namespace numerical {
       }
       detail::require_finite_lower(input, "Hermitian eigendecomposition");
       // Work on the matrix divided by its largest entry, as symmetric_eigen does; the vectors do not depend
-      // on it.
+      // on it. The entries read: the lower triangle, and the diagonal's real part (its imaginary part is ignored,
+      // so it scales nothing: an infinite one made every value NaN, a huge one wrong).
       double scale {0.0};
       for (std::size_t i {0}; i < n_; ++i) {
-        for (std::size_t j {0}; j <= i; ++j) {
+        for (std::size_t j {0}; j < i; ++j) {
           scale = std::max(scale, std::abs(input(i, j)));
         }
+        scale = std::max(scale, std::abs(input(i, i).real()));
       }
       if (scale == 0.0) {
         scale = 1.0;

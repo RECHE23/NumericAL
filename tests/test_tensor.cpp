@@ -132,6 +132,19 @@ TEST(einsum_matrix_product)
   EXPECT(einsum("ij,jk->ik", ta, tb) == expected);
 }
 
+// A product whose result is empty, rows or columns none, is an empty tensor of its shape: with no element it is no
+// dot product (one read past an empty operand).
+TEST(einsum_with_an_empty_result)
+{
+  const tensor<double> rows {{0, 3}, {}};
+  const tensor<double> wide {{3, 5}, std::vector<double>(15, 1.0)};
+  const tensor<double> tall {{3, 3}, std::vector<double>(9, 1.0)};
+  const tensor<double> none {{3, 0}, {}};
+  EXPECT(einsum("ij,jk->ik", rows, wide).shape() == (std::vector<std::size_t> {0, 5}));
+  EXPECT(einsum("ij,jk->ik", tall, none).shape() == (std::vector<std::size_t> {3, 0}));
+  EXPECT(einsum("a,ab->b", tensor<double> {{1}, {2.0}}, tensor<double> {{1, 0}, {}}).shape() == (std::vector<std::size_t> {0}));
+}
+
 TEST(einsum_tolerates_whitespace_in_the_spec)
 {
   // NumPy accepts spaces anywhere in the spec; einsum strips them before parsing,

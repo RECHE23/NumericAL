@@ -690,7 +690,7 @@ namespace numerical {
             cols *= sizes.at(s1[k]);
             out_shape.push_back(sizes.at(s1[k]));
           }
-          if (rows * cols > 1) {
+          if (rows * cols != 1) { // the product, an empty one included; a single element is one dot product
             return tile_gemm<T>(operands[0]->data(), operands[1]->data(),
                                 rows, inner, cols, std::move(out_shape));
           }

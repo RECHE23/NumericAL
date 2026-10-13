@@ -822,10 +822,15 @@ PyObject* module_negate(PyObject* /*self*/, PyObject* args)
     if (a == nullptr) {
         return nullptr;
     }
-    if (is_complex(*a)) {
-        return wrap(any_tensor {-std::get<cplx_tensor>(*a)});
+    try { // an allocation the system refuses is a Python exception, not an abort
+        if (is_complex(*a)) {
+            return wrap(any_tensor {-std::get<cplx_tensor>(*a)});
+        }
+        return wrap(any_tensor {-std::get<real_tensor>(*a)});
     }
-    return wrap(any_tensor {-std::get<real_tensor>(*a)});
+    catch (...) {
+        return set_cpp_error();
+    }
 }
 
 template <typename T>
@@ -872,10 +877,15 @@ PyObject* module_unary(PyObject* /*self*/, PyObject* args)
     if (a == nullptr) {
         return nullptr;
     }
-    if (is_complex(*a)) {
-        return unary_on(name, std::get<cplx_tensor>(*a));
+    try { // an allocation the system refuses is a Python exception, not an abort
+        if (is_complex(*a)) {
+            return unary_on(name, std::get<cplx_tensor>(*a));
+        }
+        return unary_on(name, std::get<real_tensor>(*a));
     }
-    return unary_on(name, std::get<real_tensor>(*a));
+    catch (...) {
+        return set_cpp_error();
+    }
 }
 
 template <typename T>
@@ -1044,7 +1054,12 @@ PyObject* module_linspace(PyObject* /*self*/, PyObject* args)
         PyErr_SetString(PyExc_ValueError, "linspace: the number of samples must be non-negative");
         return nullptr;
     }
-    return wrap(any_tensor {numerical::linspace(start, stop, static_cast<std::size_t>(num))});
+    try { // a count past what memory holds is a Python exception, not an abort
+        return wrap(any_tensor {numerical::linspace(start, stop, static_cast<std::size_t>(num))});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
 }
 
 // slogdet(a) -> (sign, logabsdet), as numpy.linalg.slogdet: the sign a float or complex like determinant.
