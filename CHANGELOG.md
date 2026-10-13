@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.8 — 2026-10-13
+
 ### Fixed
 - **Built by GCC on arm64 (the Linux aarch64 wheels), 2026.10.7's LU and inverse ran up to 70 % longer than
   2026.10.6's**: the row combinations it moved them to (an LU solve's rows, the panel's rows of U) hold eight
