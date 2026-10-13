@@ -7,6 +7,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **`eigh`'s divide and conquer maps its buffers once and touches them on every core**: a page costs about a
+  microsecond on Linux the first time it is written, and the joins waited on some 30 MB of them one thread at a
+  time. All cores, `eigh` of order 1024: i9-9900K 123 → 115 ms, i9-10900X 126 → 112 ms; M1 Pro unchanged. The
+  results are the same to the bit.
 - **On Linux, the thread pool pins a worker to each physical core, and the caller's core sits each run out**:
   free to move, two of its threads at times shared one core's hyperthreads, and a product of order 1024 on eight
   AVX2 cores took 10.4 ms in most processes, 8.1 in the others; it now takes 8.1 ms in seven of eight (NumPy with

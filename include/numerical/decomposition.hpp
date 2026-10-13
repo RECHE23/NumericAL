@@ -2267,24 +2267,46 @@ namespace numerical {
     //! \brief The poles a task of \ref merge_rank_one's Löwner products takes, and the side of its tiles of `u`.
     inline constexpr std::size_t lowner_block {32};
 
+    //! \brief One buffer of `merge_workspace`: its storage and how many elements it holds.
+    struct workspace_buffer
+    {
+      std::unique_ptr<double[]> data; //!< The elements.
+      std::size_t               size; //!< Their number.
+    };
+
     //! \brief The buffers of \ref merge_rank_one, kept from one join to the next: a fresh buffer per join is mapped
     //!        anew, page by page. Each is written before it is read (`updated` zeroed row by row by the gathers).
     struct merge_workspace
     {
-      std::vector<double> gaps;    //!< `poles[j] − roots[i]`, row by root, then the eigenvectors in its place.
-      std::vector<double> updated; //!< The kept columns of `q` times `u`.
-      std::vector<double> columns; //!< One half's rows of the kept columns that reach it.
-      std::vector<double> factor;  //!< The rows of `u` for those columns.
+      workspace_buffer gaps    {}; //!< `poles[j] − roots[i]`, row by root, then the eigenvectors in its place.
+      workspace_buffer updated {}; //!< The kept columns of `q` times `u`.
+      workspace_buffer columns {}; //!< One half's rows of the kept columns that reach it.
+      workspace_buffer factor  {}; //!< The rows of `u` for those columns.
     };
 
-    //! \brief \p buffer at least \p size elements long, its storage kept for the next join.
-    [[nodiscard]] inline double* workspace_of(std::vector<double>& buffer,
-                                              std::size_t          size)
+    //! \brief The elements a task of \ref workspace_of touches first: 64 pages of 4 KiB, so a buffer of a few
+    //!        megabytes spreads over every core.
+    inline constexpr std::size_t first_touch_chunk {std::size_t {1} << 15};
+
+    /*!
+     * \brief \p buffer at least \p size elements long, its storage kept for the next join. A larger one is mapped
+     *        fresh, and its pages are touched by every thread, chunk by chunk: on Linux a page costs about a
+     *        microsecond the first time it is written, and the join that first wrote it waited on them one thread at a
+     *        time (an `eigh` of order 1024 mapped some 30 MB of these buffers on one x86-64 core).
+     */
+    [[nodiscard]] inline double* workspace_of(workspace_buffer& buffer,
+                                              std::size_t       size)
     {
-      if (buffer.size() < size) {
-        buffer.resize(size);
+      if (buffer.size < size) {
+        buffer.data = std::make_unique_for_overwrite<double[]>(size);
+        buffer.size = size;
+        double* const elements {buffer.data.get()};
+        parallel_for((size + first_touch_chunk - 1) / first_touch_chunk, first_touch_chunk, [&](std::size_t chunk) {
+                       const std::size_t first {chunk * first_touch_chunk};
+                       std::fill(elements + first, elements + std::min(first + first_touch_chunk, size), 0.0);
+                     });
       }
-      return buffer.data();
+      return buffer.data.get();
     }
 
     /*!
