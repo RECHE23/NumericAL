@@ -149,8 +149,10 @@ if(NUMERICAL_COVERAGE)
     if(NOT CMAKE_CXX_COMPILER_ID MATCHES "Clang")
         message(FATAL_ERROR "NUMERICAL_COVERAGE requires a Clang-family compiler")
     endif()
+    # Atomic counters: the kernels count from every pool thread, and a branch's false count is derived from two
+    # counters, which lost increments drove to zero on some runs (a covered branch reported uncovered).
     target_compile_options(numerical_tests_bin PRIVATE
-        -fprofile-instr-generate -fcoverage-mapping -O0 -g)
+        -fprofile-instr-generate -fcoverage-mapping -fprofile-update=atomic -O0 -g)
     target_link_options(numerical_tests_bin PRIVATE -fprofile-instr-generate)
 endif()
 
