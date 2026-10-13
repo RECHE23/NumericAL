@@ -57,6 +57,10 @@ namespace numerical {
     //!        longer (order 2048 on six x86-64 cores, 9 %); a narrower one leaves threads idle while the panel runs.
     inline constexpr std::size_t lu_lookahead_columns {1024};
 
+    //! \brief The most right-hand sides an LU solve takes row by row on the x86-64 units rather than by blocks through
+    //!        the product kernel.
+    inline constexpr std::size_t narrow_solve {16};
+
     //! \brief The columns of one leaf of the recursive LU panel.
     inline constexpr std::size_t solve_leaf {16};
 
@@ -478,6 +482,14 @@ namespace numerical {
                     std::size_t     cols,
                     bool            lower = false) const
     {
+#ifdef NUMERICAL_X86_COMPILED
+      if constexpr (std::is_same_v<T, double>) { // there subtract_products holds its row in registers through the terms
+        if (!lower && cols <= detail::narrow_solve && detail::gemm_path_current() != gemm_path::portable) {
+          solve_narrow(y, cols);
+          return;
+        }
+      }
+#endif
       constexpr std::size_t width  {64};
       const std::size_t     chunks {(cols + width - 1) / width};
       for (std::size_t k0 {0}; k0 < n_; k0 += detail::lu_block) { // forward: unit-lower L
@@ -509,6 +521,41 @@ namespace numerical {
         k1 = k0;
       }
     }
+
+#ifdef NUMERICAL_X86_COMPILED
+    /*!
+     * \brief \ref solve_rows for a few right-hand sides: row by row, each one's terms in the order the blocked passes
+     *        give them (forward, ascending; backward, the blocks from the last down to its own, each ascending), so
+     *        the solution is theirs to the bit, without a product that packs the factor's blocks for a few columns
+     *        (order 256 and four columns on one x86-64 core: 112 → 72 µs, the factorisation 750). On the x86-64
+     *        units alone: elsewhere each term is a call, and arm64's product kernel was faster (175 → 434 µs).
+     */
+    void solve_narrow(std::vector<T>& y,
+                      std::size_t     cols) const
+    {
+      for (std::size_t i {1}; i < n_; ++i) {
+        detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_), y.data(), cols, i, cols);
+      }
+      for (std::size_t i {n_}; i-- > 0;) {
+        const std::size_t own {i / detail::lu_block * detail::lu_block};
+        for (std::size_t b0 {(n_ - 1) / detail::lu_block * detail::lu_block};; b0 -= detail::lu_block) {
+          const std::size_t from {std::max(b0, i + 1)};
+          const std::size_t to   {std::min(b0 + detail::lu_block, n_)};
+          if (from < to) {
+            detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_) + from, y.data() + (from * cols), cols, to - from, cols);
+          }
+          if (b0 == own) {
+            break;
+          }
+        }
+        const T pivot {lu_[(i * n_) + i]};
+        for (std::size_t c {0}; c < cols; ++c) {
+          y[(i * cols) + c] = y[(i * cols) + c] / pivot;
+        }
+      }
+    }
+
+#endif
 
     //! \brief `Y[r0, r1) −= F[r0, r1) × [c0, c1) · Y[c0, c1)`, F the factor, through the matrix product kernel (nothing
     //!        when the rows are empty), on the columns of `Y` before \p reach (all of them by default).

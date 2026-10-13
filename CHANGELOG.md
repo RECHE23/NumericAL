@@ -7,6 +7,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **On x86-64, an LU solve with at most 16 right-hand sides goes row by row**, each row of the solution held in
+  registers through its terms, where blocks of the factor were negated, packed and multiplied for a few columns;
+  each element takes its terms in the blocked passes' order, so the solution is the same to the bit. Six x86-64
+  cores, four right-hand sides: the solve after the factorisation 112 → 72 µs at order 256, 477 → 279 µs at 512.
+  On arm64 the product kernel stays faster (row by row there was 2.5 times as long).
 - **`eigh` copies less around its decomposition**: it copies the lower triangle alone (the reduction reads
   nothing above it), builds no identity it does not use, and lays the eigenvectors out as columns by
   ascending value in one copy by tiles on every core, where it transposed them element by element and then
