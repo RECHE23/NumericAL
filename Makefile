@@ -38,7 +38,7 @@ FORMAT_FILES := $(shell find include tests -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: check-pins all build test sanitize coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate \
-        python python-test fuzz-linalg bench-linalg bench-python bench-gemm version-check install uninstall release clean help
+        python python-test python-stubtest fuzz-linalg bench-linalg bench-python bench-gemm version-check install uninstall release clean help
 
 .DEFAULT_GOAL := help
 
@@ -173,6 +173,12 @@ python:
 python-test: python
 	$(PYRUN) -m unittest discover -s python/tests
 
+# The stubs are checked against the runtime surface (mypy.stubtest): a function or Tensor method added to the
+# binding or the package and not to numerical/__init__.pyi or _numerical.pyi fails here. MYPY_PYTHON carries mypy.
+MYPY_PYTHON ?= $(PYTHON)
+python-stubtest: python
+	PYTHONPATH=python $(MYPY_PYTHON) -m mypy.stubtest numerical
+
 # A campaign: CASES matrices per path (default 500), from SEED (default: the clock, printed for reproduction).
 fuzz-linalg: python
 	$(PYRUN) fuzz/linalg.py --cases $(or $(CASES),500) $(if $(SEED),--seed $(SEED),)
@@ -213,6 +219,7 @@ full-local-gate:
 	@$(MAKE) misra
 	@$(MAKE) doc-no-coverage
 	@$(MAKE) python-test
+	@if $(MYPY_PYTHON) -c 'import mypy' >/dev/null 2>&1; then $(MAKE) python-stubtest; else echo "full-local-gate: WARN — mypy absent from MYPY_PYTHON, python-stubtest skipped (CI runs it)"; fi
 	@$(MAKE) lint | tee $(BUILD)/lint.log; ! grep -qE 'warning:|error:' $(BUILD)/lint.log
 	@$(MAKE) coverage | tee $(BUILD)/coverage.log
 	# Gate on a flag, not a bare exit 1 in the rule: that exit is overridden by END's exit,

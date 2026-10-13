@@ -41,13 +41,15 @@ jobs:
   # The abi3 binding + the zero-copy interop round-trips against NumPy, via SciForge's
   # reusable spine. NumericAL is a leaf (deps='[]'); its exact prior coverage is
   # {linux, Windows} x {3.10, 3.14} (macOS off — the local gate). NumPy is
-  # pre-installed for the interop round-trips.
+  # pre-installed for the interop round-trips. The stubs are checked against the runtime (stubtest) before the
+  # unit tests, with mypy pinned as SciLex pins it.
   python:
     uses: RECHE23/sciforge/.github/workflows/python-cpp.yml@v2026.10.3
     with:
       python-versions: '["3.10","3.14"]'
       sciforge-ref: v2026.10.3
       deps: '[]'
+      test-cmd: 'python -m pip install mypy==2.3.0 && python -m mypy.stubtest numerical && python -m unittest discover -s python/tests'
       runner-mode: hosted
       enable-windows: true
       pre-install: numpy

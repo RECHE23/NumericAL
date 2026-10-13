@@ -28,7 +28,7 @@ import array as _array
 import functools as _functools
 import numbers as _numbers
 import operator as _operator
-import os
+import os as _os
 import sys as _sys
 import warnings as _warnings
 
@@ -64,7 +64,7 @@ def set_num_threads(n):
 
 def _environment_threads():
     """NUMERICAL_NUM_THREADS, read once at import: a count of threads, or None (with a warning if it is not one)."""
-    value = os.environ.get("NUMERICAL_NUM_THREADS", "").strip()
+    value = _os.environ.get("NUMERICAL_NUM_THREADS", "").strip()
     if not value:
         return None
     if value.isascii() and value.isdigit():
@@ -103,12 +103,12 @@ def _environment_gemm_cap():
     (portable, avx2, avx512, amx); NUMERICAL_AMX set to 0, false, no or off keeps products off the Apple AMX, its
     self-test included. A value neither reads is ignored, with a warning."""
     cap = len(_GEMM_PATHS) - 1
-    amx = os.environ.get("NUMERICAL_AMX", "").strip().lower()
+    amx = _os.environ.get("NUMERICAL_AMX", "").strip().lower()
     if amx in ("0", "false", "no", "off"):
         cap = _GEMM_PATHS.index("avx512")
     elif amx not in ("", "1", "true", "yes", "on"):
         _warnings.warn(f"NUMERICAL_AMX={amx!r} is neither on nor off; ignored", RuntimeWarning, stacklevel=2)
-    gemm = os.environ.get("NUMERICAL_GEMM", "").strip().lower()
+    gemm = _os.environ.get("NUMERICAL_GEMM", "").strip().lower()
     if gemm in _GEMM_PATHS:
         cap = cap if cap < _GEMM_PATHS.index(gemm) else _GEMM_PATHS.index(gemm)
     elif gemm:
@@ -134,11 +134,11 @@ def get_include():
     Returns:
         str: Absolute path to NumericAL's include directory.
     """
-    here = os.path.dirname(os.path.abspath(__file__))
-    packaged = os.path.join(here, "include")
-    if os.path.isdir(os.path.join(packaged, "numerical")):
+    here = _os.path.dirname(_os.path.abspath(__file__))
+    packaged = _os.path.join(here, "include")
+    if _os.path.isdir(_os.path.join(packaged, "numerical")):
         return packaged
-    return os.path.normpath(os.path.join(here, os.pardir, os.pardir, "include"))
+    return _os.path.normpath(_os.path.join(here, _os.pardir, _os.pardir, "include"))
 
 
 def get_config():
@@ -418,7 +418,7 @@ def asarray(obj, dtype=None):
 
     Raises:
         ValueError: if a nested list is not rectangular.
-        TypeError: if a nested list holds something other than numbers.
+        TypeError: if `obj` is none of these, or a nested list holds something other than numbers.
     """
     # A float, int, bool or complex, an array (its __array_struct__ or __array_interface__) and a Tensor go to C
     # as they are; a nested list, or another number (a Fraction), through its values.
@@ -426,7 +426,15 @@ def asarray(obj, dtype=None):
                                           and not hasattr(obj, "__array_interface__")):
         values, shape = _nested(obj)
         obj = _NestedBuffer(values, shape)
+    elif not (isinstance(obj, Tensor) or type(obj) in _NATIVE_NUMBERS or hasattr(obj, "__array_interface__")
+              or hasattr(obj, "__array_struct__")):
+        raise _UnreadableError(f"asarray: a {type(obj).__name__} is not a tensor, an array, a nested list of numbers "
+                               "or a number")
     return _asarray(obj, dtype) if dtype is not None else _asarray(obj)
+
+
+class _UnreadableError(error, TypeError):
+    """An object :func:`asarray` cannot read: a ``TypeError`` as NumPy raises, and a :class:`numerical.error`."""
 
 
 

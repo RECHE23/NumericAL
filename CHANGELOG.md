@@ -6,7 +6,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Added
+- **The package is typed** (PEP 561): `py.typed` and stubs for `numerical` and its extension ship in the wheel and
+  the sdist, so a type checker reads `Tensor`'s properties and operators and each function's signature. `make
+  python-stubtest` and the CI hold the stubs to the runtime (`mypy.stubtest`).
+
 ### Fixed
+- **`asarray` of an object it cannot read raised a bare `numerical.error`**: it raises a `TypeError`, as NumPy
+  does, which is still a `numerical.error`. The module no longer exports `os`.
 - **`eigh` of a graded matrix returned NaN, or its divide and conquer did not converge** (2026.10.7 and 2026.10.8):
   a rotation's length was taken as the plain root of its squares at every magnitude, but a QL shift's ratio on a
   matrix spanning 1e-200 to 1 reaches 5e199, whose square overflows. Past `2^500`, as below `2^-500`, the length is

@@ -160,8 +160,15 @@ class ArrayInterface(unittest.TestCase):
         self.assertIs(numerical.asarray(t), t)
 
     def test_asarray_rejects_plain_objects(self):
-        with self.assertRaises(numerical.error):
-            numerical.asarray(object())
+        # A TypeError, as NumPy raises for an object it cannot read, and still a numerical.error.
+        for obj in (object(), "abc", None, {"a": 1}):
+            with self.subTest(obj=obj):
+                with self.assertRaises(TypeError) as caught:
+                    numerical.asarray(obj)
+                self.assertIsInstance(caught.exception, numerical.error)
+                self.assertIn(f"a {type(obj).__name__} is not a tensor", str(caught.exception))
+        with self.assertRaises(numerical.error):  # the native reader still refuses one directly
+            numerical._numerical.asarray(object())
 
     def test_asarray_widens_real_to_complex(self):
         t = numerical.asarray(numerical.Tensor([1.0, 2.0]), dtype="complex128")

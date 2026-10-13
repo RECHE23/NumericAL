@@ -3,6 +3,7 @@
 # compiled extension left in the tree.
 graft include
 recursive-include python/src *.cpp
+include python/numerical/py.typed python/numerical/__init__.pyi python/numerical/_numerical.pyi
 recursive-include python/tests *.py
 include README.md LICENSE CHANGELOG.md
 global-exclude *.so *.pyd *.pyc
