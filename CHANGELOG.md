@@ -7,6 +7,13 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **Up to order 256, the LU takes panels of 32 columns** where it took 64: there the panels, factorised a column at
+  a time on one thread, are most of the time, and narrower ones halve their work. The factors keep their
+  bits' rule: each element receives its updates in ascending order of the pivot. All cores, `solve` with four
+  right-hand sides at orders 128, 192 and 256: six x86-64 cores (i5-8500) 182 → 136 µs, 426 → 336 µs,
+  802 → 743 µs; M1 Pro 181 → 150 µs, 722 → 611 µs at 256. `inverse` at orders 64 and 128: six x86-64 cores
+  68 → 52 µs, 501 → 363 µs; M1 Pro 58 → 50 µs, 255 → 196 µs. From order 320 the panels of 64 stay (32 was
+  7–13 % slower there on x86-64).
 - **On the AMX path, a product under 2²⁴ multiply-adds runs on the calling thread alone**: a cluster of cores
   shares one AMX unit, so threads beside the caller pay only once the product spans clusters. M1 Pro, all cores,
   `matmul` of order 128 and 192: 36 → 26 µs and 84 → 70 µs; from order 256 the threads stay and pay (149 µs on
