@@ -186,14 +186,16 @@ headers has a pool and a cap of its own.
   (the wheels are built for the baseline x86-64 and carry these tiles beside it);
 - `"amx"` — on Apple M1 to M4, the matrix coprocessor Apple's Accelerate uses, which Apple does not document.
   It is used only on a known chip family, outside a virtual machine, and once a product computed on it equals
-  `std::fma` in order to the bit; `NUMERICAL_AMX=0` keeps it off (its self-test included), and compiling with
-  `NUMERICAL_NO_AMX` removes it.
+  `std::fma` in order to the bit; `NUMERICAL_AMX=0`, read by the Python package at import, keeps it off (its
+  self-test included). C++ reads no environment: `limit_gemm_path` below `amx` before the first product does the
+  same, and compiling with `NUMERICAL_NO_AMX` removes it.
 
 `numerical.limit_gemm_path(name)` (C++: `limit_gemm_path`), or `NUMERICAL_GEMM` at import, caps the kernel at
 `name` or a more portable one. Every element of a product is summed in ascending order of the depth on any
 number of threads, so a result is the same, to the bit, whatever the thread count; across kernels it differs in
 the last bits, since the AVX and AMX kernels fuse each multiply-add and the portable one rounds as the compiler
-does. Past the portable kernel, a complex product runs as one real product of twice the order, `[Re A | −Im A]`
+does (GCC and Clang may fuse `c + a·b` there, as they do by default on arm64: the wheels keep the compilers'
+defaults, which a separate rounding of each product would cost half the speed of a product of order 512). Past the portable kernel, a complex product runs as one real product of twice the order, `[Re A | −Im A]`
 times `[[Re B, Im B], [Im B, −Re B]]` (by blocks), on that kernel and its threads: each element then sums the
 products of A's real parts, then those of its imaginary parts, where the portable kernel sums whole complex
 products in order.
