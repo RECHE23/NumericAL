@@ -70,9 +70,12 @@ namespace numerical {
     //!        longer (order 2048 on six x86-64 cores, 9 %); a narrower one leaves threads idle while the panel runs.
     inline constexpr std::size_t lu_lookahead_columns {1024};
 
-    //! \brief The most right-hand sides an LU solve takes row by row on the x86-64 units rather than by blocks through
-    //!        the product kernel.
+    //! \brief The most right-hand sides an LU solve takes row by row rather than by blocks through the product kernel.
     inline constexpr std::size_t narrow_solve {16};
+
+    //! \brief The order up to which an LU solve goes row by row off the x86-64 units: past it the blocked products win
+    //!        (arm64, four columns: order 128 49 → 37 µs, 192 93 → 86; order 256 145 → 160).
+    inline constexpr std::size_t narrow_solve_order {192};
 
     //! \brief The columns of one leaf of the recursive LU panel.
     inline constexpr std::size_t solve_leaf {16};
@@ -524,14 +527,12 @@ namespace numerical {
                     std::size_t     cols,
                     bool            lower = false) const
     {
-#ifdef NUMERICAL_X86_COMPILED
       if constexpr (std::is_same_v<T, double>) { // there subtract_products holds its row in registers through the terms
-        if (!lower && cols <= detail::narrow_solve && detail::gemm_path_current() != gemm_path::portable) {
+        if (!lower && cols <= detail::narrow_solve && narrow_pays()) {
           solve_narrow(y, cols);
           return;
         }
       }
-#endif
       constexpr std::size_t width  {64};
       const std::size_t     chunks {(cols + width - 1) / width};
       for (std::size_t k0 {0}; k0 < n_; k0 += block_) { // forward: unit-lower L
@@ -564,13 +565,22 @@ namespace numerical {
       }
     }
 
+    //! \brief Whether \ref solve_narrow beats the blocked passes here: on the x86-64 units at any order (the portable
+    //!        path's products there fuse nothing, the rows would), elsewhere up to \ref detail::narrow_solve_order.
+    [[nodiscard]] bool narrow_pays() const
+    {
 #ifdef NUMERICAL_X86_COMPILED
+      return detail::gemm_path_current() != gemm_path::portable;
+#else
+      return n_ <= detail::narrow_solve_order;
+#endif
+    }
+
     /*!
      * \brief \ref solve_rows for a few right-hand sides: row by row, each one's terms in the order the blocked passes
      *        give them (forward, ascending; backward, the blocks from the last down to its own, each ascending), so
      *        the solution is theirs to the bit, without a product that packs the factor's blocks for a few columns
-     *        (order 256 and four columns on one x86-64 core: 112 → 72 µs, the factorisation 750). On the x86-64
-     *        units alone: elsewhere each term is a call, and arm64's product kernel was faster (175 → 434 µs).
+     *        (order 256 and four columns on one x86-64 core: 112 → 72 µs, the factorisation 750).
      */
     void solve_narrow(std::vector<T>& y,
                       std::size_t     cols) const
@@ -596,8 +606,6 @@ namespace numerical {
         }
       }
     }
-
-#endif
 
     //! \brief `Y[r0, r1) −= F[r0, r1) × [c0, c1) · Y[c0, c1)`, F the factor, through the matrix product kernel (nothing
     //!        when the rows are empty), on the columns of `Y` before \p reach (all of them by default).

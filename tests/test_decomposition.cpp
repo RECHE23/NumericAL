@@ -1016,7 +1016,7 @@ namespace {
   }
 } // namespace
 
-// Past one panel: three panels, the last partial. On the portable path: on a fused one the trailing products fuse
+// Past one panel: panels of `lu_block_for(n)` columns, the last partial. On the portable path: on a fused one the trailing products fuse
 // their multiply-adds and the panels do not, which a later test bounds instead, and complex products sum the real
 // and imaginary parts apart.
 TEST(blocked_lu_equals_the_unblocked_algorithm_to_the_bit)
@@ -1188,6 +1188,36 @@ TEST(blocked_matrix_solve_agrees_with_column_solves)
   const matrix<double>                      two_columns {{1.0, 0.0}, {0.0, 1.0}};
   EXPECT_THROWS((void)singular.solve(two_columns), numerical::singular_matrix_error);
   EXPECT_THROWS((void)singular.solve(matrix<double> {{1.0, 0.0}}), numerical::dimension_error);
+}
+
+// A few right-hand sides go row by row up to narrow_solve_order (everywhere off the x86-64 units), each row's terms
+// in the blocked passes' order: on the portable path, whose products fuse nothing, the solution of the first sixteen
+// columns is the blocked solve's of seventeen to the bit, past one block of rows; past that order both are blocked.
+TEST(narrow_solve_equals_the_blocked_solve_to_the_bit)
+{
+  (void)numerical::limit_gemm_path(numerical::gemm_path::portable);
+  for (const std::size_t n : {numerical::detail::narrow_solve_order, numerical::detail::narrow_solve_order + 8}) {
+    const std::size_t                         wide {numerical::detail::narrow_solve + 1};
+    const numerical::lu_decomposition<double> lu   {matrix<double> {n, n, pivoting_entries<double>(n)}};
+    const std::vector<double>                 rhs  {pivoting_entries<double>(n)};
+    const matrix<double>                      b    {n, wide, std::vector<double>(rhs.begin(), rhs.begin() + static_cast<std::ptrdiff_t>(n * wide))};
+    std::vector<double>                       first(n * numerical::detail::narrow_solve);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t c {0}; c < numerical::detail::narrow_solve; ++c) {
+        first[(i * numerical::detail::narrow_solve) + c] = b(i, c);
+      }
+    }
+    const matrix<double> blocked {lu.solve(b)};
+    const matrix<double> narrow  {lu.solve(matrix<double> {n, numerical::detail::narrow_solve, first})};
+    bool                 same    {true};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t c {0}; c < numerical::detail::narrow_solve; ++c) {
+        same = same && narrow(i, c) == blocked(i, c);
+      }
+    }
+    EXPECT(same);
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
 
 TEST(blocked_inverse_times_the_matrix_is_the_identity)

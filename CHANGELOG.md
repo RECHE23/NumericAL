@@ -7,6 +7,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **Off the x86-64 units, an LU solve with at most 16 right-hand sides goes row by row up to order 192**, as it does
+  on x86-64 at any order, and the row combinations it is made of hold eight elements in registers through their
+  terms, where each term was a call through the whole row. The solution is the blocked solve's to the bit. M1 Pro,
+  four right-hand sides, the solve after the factorisation: 6.3 → 2.0 µs at order 32, 18 → 8.5 µs at 64,
+  49 → 37 µs at 128; the factorisations gain with the row combinations (LU of order 64 and 128 −10 % and −8 %,
+  `inverse` −17 % and −15 %). Past order 192 the blocked products stay (row by row was 10 % slower at 256).
 - **Cholesky takes panels of 16 columns up to order 128 and of 32 up to 256**, where it took 64: there the
   panels, row by row on one thread, are most of the time. The widths stay powers of two, which the product
   kernels' tiles divide (24, 40 or 56 columns left the AMX's tiles part empty: order 320 took 20 % longer).
