@@ -2758,6 +2758,46 @@ namespace numerical {
         }
       }
     }
+
+    //! \brief The indices of \p diagonal by ascending value.
+    [[nodiscard]] inline std::vector<std::size_t> ascending_order(const std::vector<double>& diagonal)
+    {
+      std::vector<std::size_t> order(diagonal.size());
+      for (std::size_t i {0}; i < order.size(); ++i) {
+        order[i] = i;
+      }
+      std::sort(order.begin(), order.end(), [&diagonal](std::size_t x, std::size_t y) { return diagonal[x] < diagonal[y]; });
+      return order;
+    }
+
+    //! \brief The side of the tiles \ref columns_by_value copies.
+    inline constexpr std::size_t transpose_tile {32};
+
+    /*!
+     * \brief The `n × n` row-major matrix whose column c is row `order[c]` of \p zt (the eigenvectors as rows):
+     *        by tiles, the rows of each on its own core. Element by element, each write was a row apart, and
+     *        the copy of order 1024 took a tenth of an `eigh` on six x86-64 cores.
+     */
+    template <typename T>
+    [[nodiscard]] std::vector<T> columns_by_value(const std::vector<T>&           zt,
+                                                  const std::vector<std::size_t>& order,
+                                                  std::size_t                     n)
+    {
+      std::vector<T> out(n * n);
+      parallel_for((n + transpose_tile - 1) / transpose_tile, transpose_tile * n, [&](std::size_t block) {
+                     const std::size_t r0 {block * transpose_tile};
+                     const std::size_t r1 {std::min(r0 + transpose_tile, n)};
+                     for (std::size_t c0 {0}; c0 < n; c0 += transpose_tile) {
+                       for (std::size_t c {c0}; c < std::min(c0 + transpose_tile, n); ++c) {
+                         const T* const source {zt.data() + (order[c] * n)};
+                         for (std::size_t r {r0}; r < r1; ++r) {
+                           out[(r * n) + c] = source[r];
+                         }
+                       }
+                     }
+                   });
+      return out;
+    }
   } // namespace detail
 
   //! \brief How \ref symmetric_eigen diagonalises.
@@ -2799,8 +2839,6 @@ namespace numerical {
         throw dimension_error("symmetric eigendecomposition requires a square matrix");
       }
       detail::require_finite_lower(input, "symmetric eigendecomposition");
-      std::vector<double> a(n_ * n_);
-      std::vector<double> v(n_ * n_, 0.0);
       // Work on the matrix divided by its largest entry: a sum of squares of entries near 1e170
       // overflows and of entries near 1e-170 underflows to 0, and either stops the sweeps before a
       // single rotation. The eigenvalues are scaled back; the eigenvectors do not depend on it.
@@ -2813,25 +2851,34 @@ namespace numerical {
       if (scale == 0.0) {
         scale = 1.0;
       }
-      double frobenius_squared {0.0};
-      for (std::size_t i {0}; i < n_; ++i) {
-        v[(i * n_) + i] = 1.0;
-        for (std::size_t j {0}; j < n_; ++j) {
-          a[(i * n_) + j]    = input(std::max(i, j), std::min(i, j)) / scale; // the lower triangle, mirrored
-          frobenius_squared += a[(i * n_) + j] * a[(i * n_) + j];
-        }
-      }
+      std::vector<double> a(n_ * n_);
       std::vector<double> diagonal(n_);
       if (method == eigen_method::jacobi) {
+        std::vector<double> v(n_ * n_, 0.0);
+        double              frobenius_squared {0.0};
+        for (std::size_t i {0}; i < n_; ++i) {
+          v[(i * n_) + i] = 1.0;
+          for (std::size_t j {0}; j < n_; ++j) {
+            a[(i * n_) + j]    = input(std::max(i, j), std::min(i, j)) / scale; // the lower triangle, mirrored
+            frobenius_squared += a[(i * n_) + j] * a[(i * n_) + j];
+          }
+        }
         detail::cyclic_jacobi(a, v, n_, std::sqrt(frobenius_squared), detail::jacobi_sweeps);
         for (std::size_t i {0}; i < n_; ++i) {
-          diagonal[i] = a[(i * n_) + i];
+          diagonal[i] = a[(i * n_) + i] * scale;
+        }
+        extract_sorted(diagonal, v);
+        return;
+      }
+      for (std::size_t i {0}; i < n_; ++i) { // the lower triangle alone: the reduction reads nothing above it
+        for (std::size_t j {0}; j <= i; ++j) {
+          a[(i * n_) + j] = input(i, j) / scale;
         }
       }
-      else if (n_ > 0) {
+      std::vector<double> zt;
+      if (n_ > 0) {
         std::vector<double>                          off(n_);
         const detail::tridiagonal_reduction<double>  reduction {detail::tridiagonalize(a, n_, diagonal, off)};
-        std::vector<double>                          zt;
         if (method == eigen_method::tridiagonal_ql) {
           zt = detail::tridiagonal_basis(reduction, n_);
           detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
@@ -2839,16 +2886,14 @@ namespace numerical {
         else {
           zt = detail::tridiagonal_divide_and_conquer(diagonal, off, reduction, n_);
         }
-        for (std::size_t i {0}; i < n_; ++i) { // the rows of zt are the eigenvectors: make them columns
-          for (std::size_t j {0}; j < n_; ++j) {
-            v[(j * n_) + i] = zt[(i * n_) + j];
-          }
-        }
       }
-      for (double& value : diagonal) {
-        value *= scale;
+      const std::vector<std::size_t> order {detail::ascending_order(diagonal)};
+      std::vector<double>            values(n_);
+      for (std::size_t c {0}; c < n_; ++c) {
+        values[c] = diagonal[order[c]] * scale;
       }
-      extract_sorted(diagonal, v);
+      values_  = vector<double> {std::move(values)};
+      vectors_ = matrix<double> {n_, n_, detail::columns_by_value(zt, order, n_)};
     }
 
     //! \brief The eigenvalues, ascending.
@@ -2948,10 +2993,9 @@ namespace numerical {
         scale = 1.0;
       }
       std::vector<std::complex<double>> a(n_ * n_);
-      for (std::size_t i {0}; i < n_; ++i) {
-        for (std::size_t j {0}; j < n_; ++j) {
-          const std::complex<double> lower {i >= j ? input(i, j) : std::conj(input(j, i))};
-          a[(i * n_) + j] = (i == j ? std::complex<double> {lower.real(), 0.0} : lower) / scale;
+      for (std::size_t i {0}; i < n_; ++i) { // the lower triangle alone, a real diagonal: the reduction reads no more
+        for (std::size_t j {0}; j <= i; ++j) {
+          a[(i * n_) + j] = (i == j ? std::complex<double> {input(i, j).real(), 0.0} : input(i, j)) / scale;
         }
       }
       std::vector<double>               diagonal(n_);
@@ -2967,21 +3011,13 @@ namespace numerical {
           zt = detail::tridiagonal_divide_and_conquer(diagonal, off, reduction, n_);
         }
       }
-      std::vector<std::size_t> order(n_);
-      for (std::size_t i {0}; i < n_; ++i) {
-        order[i] = i;
-      }
-      std::sort(order.begin(), order.end(), [&diagonal](std::size_t x, std::size_t y) { return diagonal[x] < diagonal[y]; });
-      std::vector<double>               values(n_);
-      std::vector<std::complex<double>> vectors(n_ * n_);
-      for (std::size_t col {0}; col < n_; ++col) {
-        values[col] = diagonal[order[col]] * scale;
-        for (std::size_t row {0}; row < n_; ++row) {
-          vectors[(row * n_) + col] = zt[(order[col] * n_) + row]; // row `order[col]` of zt is that vector
-        }
+      const std::vector<std::size_t> order {detail::ascending_order(diagonal)};
+      std::vector<double>            values(n_);
+      for (std::size_t c {0}; c < n_; ++c) {
+        values[c] = diagonal[order[c]] * scale;
       }
       values_  = vector<double> {std::move(values)};
-      vectors_ = matrix<std::complex<double>> {n_, n_, std::move(vectors)};
+      vectors_ = matrix<std::complex<double>> {n_, n_, detail::columns_by_value(zt, order, n_)};
     }
 
     //! \brief The eigenvalues, ascending.

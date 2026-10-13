@@ -6,6 +6,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **`eigh` copies less around its decomposition**: it copies the lower triangle alone (the reduction reads
+  nothing above it), builds no identity it does not use, and lays the eigenvectors out as columns by
+  ascending value in one copy by tiles on every core, where it transposed them element by element and then
+  permuted every column, each write a row apart. The results are the same to the bit. All cores, order 512
+  and 1024: six x86-64 cores (i5-8500) 26.5 → 23.2 ms and 121 → 102 ms; M1 Pro 22.2 → 19.5 ms and
+  105 → 91 ms.
+
 ## 2026.10.6 — 2026-10-13
 
 ### Changed
