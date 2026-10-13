@@ -3681,6 +3681,9 @@ namespace numerical {
      * \param[in,out] v          The right basis; on return, the right singular vectors.
      * \param[in]     n          The arrow's order.
      * \param[in]     m          The right basis's order (`n`, or `n + 1` with a null column).
+     * \param[in]     split      The row of \p u the arrow's first row is (its upper half above, its lower below):
+     *                           the bases are block diagonal by it, and each half's rows take only the columns
+     *                           that reach them (`dlasd3` multiplies the halves apart the same way).
      */
     inline void merge_arrow(std::vector<double>& d,
                             std::vector<double>  z,
@@ -3689,8 +3692,22 @@ namespace numerical {
                             std::vector<double>& u,
                             std::vector<double>& v,
                             std::size_t          n,
-                            std::size_t          m)
+                            std::size_t          m,
+                            std::size_t          split)
     {
+      // The rows each column reaches: 1 the upper half's, 2 u's row `split` (the arrow's first), 4 the lower half's.
+      // A rotation of two columns makes each reach the rows of both.
+      std::vector<unsigned> reach_u(n, 4U);
+      std::vector<unsigned> reach_v(m, 4U);
+      reach_u[0] = 2U;
+      reach_v[0] = m > n ? 5U : 1U; // the upper half's null vector, turned with the lower one's when there is one
+      for (std::size_t j {1}; j <= split; ++j) {
+        reach_u[j] = 1U;
+        reach_v[j] = 1U;
+      }
+      const auto turned {[](std::vector<unsigned>& reach, std::size_t a, std::size_t b) {
+                           reach[a] = reach[b] = reach[a] | reach[b];
+                         }};
       std::vector<std::size_t> order(n - 1);
       for (std::size_t j {1}; j < n; ++j) {
         order[j - 1] = j;
@@ -3719,6 +3736,7 @@ namespace numerical {
           // Nearly the zero pole: its weight joins the zero pole's, and dⱼ deflates.
           const double length {std::hypot(z[0], z[j])};
           rotate_columns(v, m, 0, j, z[0] / length, z[j] / length);
+          turned(reach_v, 0, j);
           z[0] = length;
           z[j] = 0.0;
           deflated.push_back(j);
@@ -3731,6 +3749,8 @@ namespace numerical {
           const double s      {z[pending] / length};
           rotate_columns(v, m, j, pending, c, s);
           rotate_columns(u, n, j, pending, c, s);
+          turned(reach_v, j, pending);
+          turned(reach_u, j, pending);
           z[j]       = length;
           z[pending] = 0.0;
           deflated.push_back(pending);
@@ -3805,19 +3825,37 @@ namespace numerical {
                      });
       }
       // The kept columns times the arrow's vectors; the deflated columns as they are; then by ascending value.
-      const auto carried {[&](const std::vector<double>& basis, std::size_t rows, const std::vector<double>& small) {
-                            std::vector<double> columns(rows * k);
-                            for (std::size_t r {0}; r < rows; ++r) {
+      // By segments of rows, each taking the kept columns that reach it and their rows of the arrow's vectors: the
+      // others are zero there, and an element's sum without them is the same to the bit.
+      using segment = std::tuple<std::size_t, std::size_t, unsigned>; // first row, rows, the bit of reach
+      const auto carried {[&](const std::vector<double>& basis, std::size_t rows, const std::vector<double>& small,
+                              const std::vector<unsigned>& reach, const std::vector<segment>& segments) {
+                            std::vector<double> product(rows * k);
+                            for (const auto& [first, count, bit] : segments) {
+                              std::vector<std::size_t> reaching;
                               for (std::size_t i {0}; i < k; ++i) {
-                                columns[(r * k) + i] = basis[(r * rows) + kept[i]];
+                                if ((reach[kept[i]] & bit) != 0U) {
+                                  reaching.push_back(i);
+                                }
                               }
+                              const std::size_t   width {reaching.size()};
+                              std::vector<double> columns(count * width);
+                              std::vector<double> factor(width * k);
+                              parallel_for(count, width + k, [&](std::size_t r) {
+                                             for (std::size_t c {0}; c < width; ++c) {
+                                               columns[(r * width) + c] = basis[((first + r) * rows) + kept[reaching[c]]];
+                                             }
+                                             std::fill_n(product.data() + ((first + r) * k), k, 0.0); // the product adds to it
+                                           });
+                              for (std::size_t c {0}; c < width; ++c) {
+                                std::copy_n(small.data() + (reaching[c] * k), k, factor.data() + (c * k));
+                              }
+                              gemm(count, k, width, columns.data(), width, factor.data(), k, product.data() + (first * k), k);
                             }
-                            std::vector<double> product(rows * k, 0.0);
-                            gemm(rows, k, k, columns.data(), k, small.data(), k, product.data(), k);
                             return product;
                           }};
-      const std::vector<double> new_u {carried(u, n, left)};
-      const std::vector<double> new_v {carried(v, m, right)};
+      const std::vector<double> new_u {carried(u, n, left, reach_u, {{0, split, 1U}, {split, 1, 2U}, {split + 1, n - split - 1, 4U}})};
+      const std::vector<double> new_v {carried(v, m, right, reach_v, {{0, split + 1, 1U}, {split + 1, m - split - 1, 4U}})};
       std::vector<double>       values(n);
       std::vector<std::size_t>  from(n); // where each value's vectors are: a kept root (< k) or a deflated column
       for (std::size_t i {0}; i < k; ++i) {
@@ -4001,7 +4039,7 @@ namespace numerical {
         rotate_columns(v, m, 0, n, c, s);
         z[0] = length;
       }
-      merge_arrow(arrow, std::move(z), alpha, beta, u, v, n, m);
+      merge_arrow(arrow, std::move(z), alpha, beta, u, v, n, m, k);
       sigma = std::move(arrow);
     }
 

@@ -7,6 +7,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **The SVD's divide and conquer multiplies each half of its bases apart**, as LAPACK's `dlasd3` does: the rows of
+  a half take only the columns that reach them, half the operations of the whole product (the others are zeros
+  there; the results are the same to the bit). Six x86-64 cores, order 1024: 314 → 306 ms.
 - **The SVD's divide and conquer joins its halves on every core**: the Löwner weights by blocks of poles, the
   singular vectors by rows of the poles, their lengths by rows, and the sorted vectors row by row, where a
   single core read each of them a column at a time. The results are the same to the bit. All cores, order 1024:
