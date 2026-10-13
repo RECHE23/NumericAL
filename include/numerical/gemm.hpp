@@ -672,7 +672,9 @@ namespace numerical::detail {
     static constexpr std::size_t nr         {avx512_nr};           //!< The tile's columns.
     static constexpr std::size_t depth      {gemm_kc};             //!< The panel depth.
     static constexpr std::size_t block_rows {96};                  //!< The rows of one task, a whole number of tiles.
-    static constexpr std::size_t speedup    {gemm_kernel_speedup}; //!< The weight of its work (\ref gemm_kernel_speedup).
+    //! \brief The weight of its work, a quarter of \ref gemm_kernel_speedup, as AVX2's (ten AVX-512 cores: order 128
+    //!        90 → 51 µs, 192 155 → 94, 384 580 → 450, 512 940 → 860; an eighth slowed order 64 15 → 24 µs).
+    static constexpr std::size_t speedup    {gemm_kernel_speedup / 4};
 
     //! \brief Nothing to turn on around a task.
     struct session

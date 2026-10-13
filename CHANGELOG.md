@@ -9,7 +9,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ### Changed
 - **`eigh`'s reduction to tridiagonal form uses more threads on x86-64**: its symmetric matrix-vector product,
   paced there by each core's loads, is weighed four times its multiply-adds on AVX2 and AVX-512 (arm64 keeps its
-  weight: there it gained nothing). i9-9900K, all cores, `eigh` of order 512 36 → 33 ms; 256 and 1024 unchanged.
+  weight: there it gained nothing). All cores, `eigh` of order 512: i9-9900K 36 → 33 ms, i9-10900X 43.6 → 40.6 ms;
+  256 and 1024 unchanged.
 - **Cholesky solves the rows below each panel along columns**: chunks of 64 rows in parallel, each in a
   column-major copy where every column takes its terms for all the chunk's rows at once (on AVX-512 or AVX2 one
   fused multiply-add each), where each row's sums waited on their last addition. Each element's arithmetic is the
@@ -22,12 +23,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   where it copied each of them twice or thrice (each copy a fresh buffer of 8 MB at order 1024, its pages faulted
   in). i9-9900K, from Python at order 1024: the inverse 32.5 → 22.1 ms (NumPy with OpenBLAS: 35.6), `solve` 20.7 →
   13.6 ms, Cholesky 15.6 → 12.3 ms, QR 57.7 → 50.2 ms, `svd` 394 → 380 ms.
-- **The AVX2 tile pays for more threads**: each kernel weighs its work by a speedup of its own, a quarter of the
-  others' for AVX2 (on physical cores, threads pay sooner; on the AMX, fewer threads stayed faster). i9-9900K: a
-  product of order 128 73 → 39 µs, of order 192 107 → 90 µs; from Python at order 1024, Cholesky 20 → 16 ms,
-  `lstsq` 148 → 131 ms, `svd` 415 → 406 ms. Its packing is weighed the same way, so a small product packs in
-  parallel too: order 128 39 → 30 µs (NumPy with OpenBLAS: 23), 192 90 → 62 µs (67). AVX-512 keeps its weight
-  until measured.
+- **The AVX2 and AVX-512 tiles pay for more threads**: each kernel weighs its work by a speedup of its own, a
+  quarter of the others' for AVX2 and AVX-512 (on physical cores, threads pay sooner; on the AMX, fewer threads
+  stayed faster). i9-9900K: a product of order 128 73 → 39 µs, of order 192 107 → 90 µs; from Python at order
+  1024, Cholesky 20 → 16 ms, `lstsq` 148 → 131 ms, `svd` 415 → 406 ms. Its packing is weighed the same way, so a small product packs in
+  parallel too: order 128 39 → 30 µs (NumPy with OpenBLAS: 23), 192 90 → 62 µs (67). i9-10900X (AVX-512, ten
+  cores): order 128 90 → 51 µs, 192 155 → 94 µs, 384 580 → 450 µs, 512 940 → 860 µs.
 - **The thread pool runs one thread per physical core** where the system tells them (Linux: the distinct cores of
   the processors in the process's affinity, so `taskset` and cgroups count; macOS: `hw.physicalcpu`), not one per
   hyperthread: two threads on one core's hyperthreads share its multiply-add units. i9-9900K (eight cores, sixteen
