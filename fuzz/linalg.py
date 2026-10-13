@@ -237,7 +237,12 @@ def run_lstsq(a, rng):
         return
     kept = sigma[sigma > tolerance]
     condition = kept[0] / kept[-1]
-    check(norm(x - want) <= 50 * max(m, n) * EPS * condition * max(norm(want), 1e-300) + bound(max(m, n), 1e-300),
+    # A least-squares solution's forward error has a second term, κ² ‖r‖ / ‖A‖, from the residual r: with |x| small
+    # beside |b| (a 2 × 1 system whose x cancels to 0.0027 of b), a backward-stable QR solve is off by ε ‖r‖ / ‖A‖,
+    # far more than ε |x|, and NumPy's SVD by as much on other draws.
+    residual = norm(b - (a @ want))
+    allowed = 50 * max(m, n) * EPS * (condition * max(norm(want), 1e-300) + condition**2 * residual / kept[0])
+    check(norm(x - want) <= allowed + bound(max(m, n), 1e-300),
           f"lstsq differs from NumPy's ({norm(x - want):.3g} for |x| {norm(want):.3g}, kept κ {condition:.3g})")
 
 
