@@ -1557,6 +1557,30 @@ TEST(eigh_checks_only_what_it_reads)
                 numerical::non_finite_error);
 }
 
+// A norm summed plainly where its squares neither overflow nor underflow, and at scale where they would: the same
+// norm, to rounding, from 1e-300 to 1e300, real and complex, and for a type summed at scale alone.
+TEST(scaled_norm_is_exact_to_rounding_at_every_scale)
+{
+  for (const double size : {1e-300, 1e-160, 1.0, 1e160, 1e300}) {
+    std::vector<double>               real(37);
+    std::vector<std::complex<double>> complex(37);
+    std::vector<long double>          wide(37);
+    double                            want {0.0}; // Σ (3 + i mod 5)², at unit size
+    for (std::size_t i {0}; i < real.size(); ++i) {
+      const double unit {3.0 + static_cast<double>(i % 5)};
+      real[i]     = unit * size;
+      complex[i]  = std::complex<double> {unit * 0.6, unit * 0.8} *size;
+      wide[i]     = static_cast<long double>(unit * size);
+      want       += unit * unit;
+    }
+    want = std::sqrt(want) * size;
+    EXPECT(std::abs(numerical::detail::scaled_norm(real) - want) <= 1e-14 * want);
+    EXPECT(std::abs(numerical::detail::scaled_norm(complex) - want) <= 1e-14 * want);
+    EXPECT(std::abs(numerical::detail::scaled_norm(wide) - want) <= 1e-14 * want);
+  }
+  EXPECT(numerical::detail::scaled_norm(std::vector<double>(3, 0.0)) == 0.0);
+}
+
 // Divide and conquer called on a tridiagonal far from unit size: it works on the tridiagonal scaled to it, by an
 // exact power of two, so its deflation tolerance stays relative.
 TEST(divide_and_conquer_is_relative_to_the_tridiagonal_size)

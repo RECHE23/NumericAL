@@ -7,6 +7,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **A Householder vector's norm is one vectorised pass** for `double` and `std::complex<double>`: the plain sum of
+  squares where it can neither overflow nor underflow (between 2⁻⁹⁰⁰ and 2⁹⁰⁰), summed at the scale of the largest
+  element only outside, where it took two passes and a division per element everywhere; nor is the column copied
+  for its norm. The tridiagonal reduction's trailing update packs its factors into two buffers for the whole
+  reduction, row by row. All cores, `eigh`: M1 Pro order 512 23.5 → 22.3 ms, 1024 110 → 104 ms; i9-9900K 256
+  7.9 → 7.1 ms, 1024 129 → 121 ms; i9-10900X 1024 137 → 127 ms.
 - **`eigh` applies its reduction's reflectors to the eigenvectors**, as LAPACK's `dormtr`, where it formed the
   reduction's unitary factor and multiplied by it: 2 n³ operations where there were 3⅓ n³, and two `n × n` buffers
   fewer. Divide and conquer works in one matrix, each half in its own diagonal block (as `dlaed0`), its joins'

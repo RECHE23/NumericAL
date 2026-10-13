@@ -150,24 +150,76 @@ namespace numerical {
       return factor;
     }
 
-    //! \brief The Euclidean norm of \p x, summed at the scale of its largest magnitude: a plain sum of
-    //!        squares overflows near 1e155 and underflows to 0 near 1e-155.
+    //! \brief The Euclidean norm of the \p count elements at \p x, summed at the scale of their largest magnitude:
+    //!        a plain sum of squares overflows near 1e155 and underflows to 0 near 1e-155.
     template <typename T>
-    [[nodiscard]] double scaled_norm(const std::vector<T>& x)
+    [[nodiscard]] double norm_at_scale(const T*    x,
+                                       std::size_t count)
     {
       double largest {0.0};
-      for (const T& element : x) {
-        largest = std::max(largest, static_cast<double>(std::abs(element)));
+      for (std::size_t i {0}; i < count; ++i) {
+        largest = std::max(largest, static_cast<double>(std::abs(x[i])));
       }
       if (largest == 0.0) { // the entries are finite: require_finite runs where every caller starts
         return largest;
       }
       double sum {0.0};
-      for (const T& element : x) {
-        const double ratio {static_cast<double>(std::abs(element)) / largest};
+      for (std::size_t i {0}; i < count; ++i) {
+        const double ratio {static_cast<double>(std::abs(x[i])) / largest};
         sum += ratio * ratio;
       }
       return largest * std::sqrt(sum);
+    }
+
+    //! \brief The smallest plain sum of squares \ref plain_or_at_scale keeps: a term that underflowed is below
+    //!        2⁻¹⁰²², so a sum this large loses at most `count · 2⁻¹²²` of itself to them.
+    inline constexpr double plain_squares_low {0x1p-900};
+
+    //! \brief The largest plain sum of squares \ref plain_or_at_scale keeps: no term of it overflowed.
+    inline constexpr double plain_squares_high {0x1p900};
+
+    //! \brief `√plain`, the plain sum of the squares of the \p count elements at \p x, where it neither overflowed
+    //!        nor underflowed (between \ref plain_squares_low and \ref plain_squares_high); else \ref norm_at_scale.
+    template <typename T>
+    [[nodiscard]] double plain_or_at_scale(double      plain,
+                                           const T*    x,
+                                           std::size_t count)
+    {
+      if (plain >= plain_squares_low && plain <= plain_squares_high) {
+        return std::sqrt(plain);
+      }
+      return norm_at_scale(x, count);
+    }
+
+    //! \brief The Euclidean norm of the \p count elements at \p x, by \ref norm_at_scale for this type.
+    template <typename T>
+    [[nodiscard]] double scaled_norm(const T*    x,
+                                     std::size_t count)
+    {
+      return norm_at_scale(x, count);
+    }
+
+    //! \brief The same for `double`: the plain sum of squares in one pass of \ref dot_product where it holds.
+    [[nodiscard]] inline double scaled_norm(const double* x,
+                                            std::size_t   count)
+    {
+      return plain_or_at_scale(dot_product(x, x, count), x, count);
+    }
+
+    //! \brief The same for `std::complex<double>`: \ref dot_product over the parts, which an array of them holds in
+    //!        order ([complex.numbers]).
+    [[nodiscard]] inline double scaled_norm(const std::complex<double>* x,
+                                            std::size_t                 count)
+    {
+      const auto* const parts {reinterpret_cast<const double*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+      return plain_or_at_scale(dot_product(parts, parts, 2 * count), x, count);
+    }
+
+    //! \brief \ref scaled_norm of a whole vector.
+    template <typename T>
+    [[nodiscard]] double scaled_norm(const std::vector<T>& x)
+    {
+      return scaled_norm(x.data(), x.size());
     }
   } // namespace detail
 
@@ -1718,9 +1770,12 @@ namespace numerical {
                                             std::vector<double>& d,
                                             std::vector<double>& e)
     {
-      std::vector<std::vector<T>> reflectors(n); // reflectors[k + 1] zeroes column k, acting on rows k + 1…
-      std::vector<T>              symv_scratch;  // hermitian_product's partials, kept from step to step
-      std::vector<T>              sub(n, T {});  // T's subdiagonal before the phases
+      std::vector<std::vector<T>> reflectors(n);                                                             // reflectors[k + 1] zeroes column k, acting on rows k + 1…
+      std::vector<T>              symv_scratch;                                                              // hermitian_product's partials, kept from step to step
+      std::vector<T>              sub(n, T {});                                                              // T's subdiagonal before the phases
+      // The trailing update's factors, for the first panel's size, the largest: one buffer each, mapped once.
+      const auto left                      {std::make_unique_for_overwrite<T[]>(n * 2 * tridiagonal_block)}; // row i: −V's then −W's
+      const auto right                     {std::make_unique_for_overwrite<T[]>(2 * tridiagonal_block * n)}; // Wᴴ's rows, then Vᴴ's
       for (std::size_t k0 {0}; k0 + 1 < n; k0 += tridiagonal_block) {
         // A panel of reflections, as LAPACK's dlatrd: the matrix the panel's later steps see is
         // A − V Wᴴ − W Vᴴ, applied to the one column and the one product each step needs; the whole trailing
@@ -1744,7 +1799,7 @@ namespace numerical {
           }
           a[(k * n) + k] = column[0];
           std::vector<T> v(column.begin() + 1, column.end()); // column k below the diagonal
-          const double   below {m > 1 ? scaled_norm(std::vector<T>(v.begin() + 1, v.end())) : 0.0};
+          const double   below {m > 1 ? scaled_norm(v.data() + 1, m - 1) : 0.0};
           if (below == 0.0) {
             sub[k] = v[0]; // already tridiagonal in this column: nothing to reflect
             continue;
@@ -1779,14 +1834,16 @@ namespace numerical {
         // diagonal. By bands of rows, each to the diagonal: about half the full block's operations.
         const std::size_t rest  {n - k1};
         const std::size_t depth {2 * width};
-        const auto        left  {std::make_unique_for_overwrite<T[]>(rest * depth)}; // row i: −V's then −W's, written whole
-        const auto        right {std::make_unique_for_overwrite<T[]>(depth * rest)}; // Wᴴ's rows, then Vᴴ's
+        for (std::size_t i {0}; i < rest; ++i) { // each row of left written whole, in order
+          for (std::size_t p {0}; p < width; ++p) {
+            left[(i * depth) + p]         = -by_row_v[(p * n) + k1 + i];
+            left[(i * depth) + width + p] = -by_row_w[(p * n) + k1 + i];
+          }
+        }
         for (std::size_t p {0}; p < width; ++p) {
           for (std::size_t i {0}; i < rest; ++i) {
-            left[(i * depth) + p]                = -by_row_v[(p * n) + k1 + i];
-            left[(i * depth) + width + p]        = -by_row_w[(p * n) + k1 + i];
-            right[(p * rest) + i]                = conj_of(by_row_w[(p * n) + k1 + i]);
-            right[((width + p) * rest) + i]      = conj_of(by_row_v[(p * n) + k1 + i]);
+            right[(p * rest) + i]           = conj_of(by_row_w[(p * n) + k1 + i]);
+            right[((width + p) * rest) + i] = conj_of(by_row_v[(p * n) + k1 + i]);
           }
         }
         T* trailing {a.data() + (k1 * n) + k1};
@@ -3256,7 +3313,7 @@ namespace numerical {
         for (std::size_t i {k}; i < n; ++i) {
           x[i - k] = b[(i * n) + k];
         }
-        if (scaled_norm(std::vector<T>(x.begin() + 1, x.end())) > 0.0) {
+        if (scaled_norm(x.data() + 1, x.size() - 1) > 0.0) {
           reflector(x);
           reflect_rows(b, n, x, k, k);
           left[k] = std::move(x);
@@ -3273,7 +3330,7 @@ namespace numerical {
         for (std::size_t j {k + 1}; j < n; ++j) {
           y[j - k - 1] = conj_of(b[(k * n) + j]);
         }
-        if (y.size() > 1 && scaled_norm(std::vector<T>(y.begin() + 1, y.end())) > 0.0) {
+        if (y.size() > 1 && scaled_norm(y.data() + 1, y.size() - 1) > 0.0) {
           reflector(y);
           parallel_for(n - k, 2 * y.size(), [&](std::size_t r) { // row ← row (I − 2 y yᴴ); rows above k are zero there
                          T*      row   {b.data() + ((k + r) * n) + k + 1};
