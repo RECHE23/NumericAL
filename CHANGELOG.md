@@ -7,6 +7,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **`eigh`'s reduction to tridiagonal form uses more threads on x86-64**: its symmetric matrix-vector product,
+  paced there by each core's loads, is weighed four times its multiply-adds on AVX2 and AVX-512 (arm64 keeps its
+  weight: there it gained nothing). i9-9900K, all cores, `eigh` of order 512 36 → 33 ms; 256 and 1024 unchanged.
 - **Cholesky solves the rows below each panel along columns**: chunks of 64 rows in parallel, each in a
   column-major copy where every column takes its terms for all the chunk's rows at once (on AVX-512 or AVX2 one
   fused multiply-add each), where each row's sums waited on their last addition. Each element's arithmetic is the

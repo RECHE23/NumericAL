@@ -1559,6 +1559,25 @@ namespace numerical {
     }
 
     /*!
+     * \brief The weight of a symmetric row's multiply-adds in `hermitian_product`: on the x86-64 units, where its
+     *        rows are paced by one core's loads, \ref vector_speedup, as more threads pay than their multiply-adds
+     *        alone would pay for (an i9-9900K's reduction of order 512 took 17 % less, an i9-10900X's 7 %); 1
+     *        elsewhere (arm64's, weighed so, took as long or longer).
+     */
+    template <typename T>
+    [[nodiscard]] std::size_t symmetric_row_speedup()
+    {
+#ifdef NUMERICAL_X86_COMPILED
+      if constexpr (std::is_same_v<T, double>) {
+        if (gemm_path_current() != gemm_path::portable) {
+          return vector_speedup;
+        }
+      }
+#endif
+      return 1;
+    }
+
+    /*!
      * \brief `w = B v` for the Hermitian `m × m` \p block (row stride \p n) from its lower triangle alone, as LAPACK's
      *        `dsymv`: each row's lower part is read once and serves twice, `w[i] += Σⱼ≤ᵢ B[i][j] v[j]` and
      *        `w[j] += conj(B[i][j]) v[i]` for `j < i`, so a reduction step reads half the block it would read whole.
@@ -1600,7 +1619,7 @@ namespace numerical {
         }
       }
 #endif
-      parallel_for(tasks, rows_per_task * m, [&](std::size_t task) {
+      parallel_for(tasks, rows_per_task * m * symmetric_row_speedup<T>(), [&](std::size_t task) {
                      const std::size_t first {task * rows_per_task};
                      const std::size_t last {std::min(first + rows_per_task, m)};
                      T*                own {scratch.data() + (task * m)};
