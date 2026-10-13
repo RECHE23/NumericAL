@@ -39,6 +39,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   17 0.80 → 0.62 µs, 64 5.7 → 5.1 µs (2026.10.6: 0.25, 0.62, 5.0).
 
 ### Changed
+- **`pinv` forms `V Σ⁺ Uᴴ` through the matrix product kernel**, where it summed it term by term: M1 Pro, all cores,
+  order 512 279 → 48 ms (NumPy 52 ms), 256 28 → 9.3 ms (9.2), 128 3.4 → 2.0 ms (1.5).
+- **`array_equal` compares the elements natively**, where it compared Python lists: order 1000, 269 → 0.34 ms
+  (NumPy 1.1 ms).
 - **Every decomposition checks a `double` or complex input for infinities and NaNs in one vectorised pass** over
   the exponent bits, where it tested each entry and stopped at the first: a tenth of an LU of order 128. M1 Pro,
   orders 64 to 256: LU −3 to −5 %, Cholesky −5 to −9 %, `solve` −3 to −8 %.

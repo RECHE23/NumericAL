@@ -185,9 +185,23 @@ class PythonProtocol(unittest.TestCase):
         a = [[1.0, 2.0], [3.0, 4.0]]
         nan = [1.0, float("nan")]
         for x, y in [(a, a), (a, [[1, 2], [3, 4]]), (a, [[1.0, 2.0]]), ([1.0, 2.0], [1.0, 2.5]), (nan, nan),
-                     ([1j], [1j]), ([], [])]:
+                     ([1j], [1j]), ([], []), ([1.0, 2.0], [1.0 + 0j, 2.0]), ([1.0, 2.0], [1.0 + 1j, 2.0]),
+                     ([0.0], [-0.0]), ([[1.0, 2.0]], [[1.0], [2.0]])]:
             with self.subTest(x=x, y=y):
                 self.assertEqual(numerical.array_equal(numerical.asarray(x), y), np.array_equal(x, y))
+        big = np.arange(10_000.0).reshape(100, 100)
+        changed = big.copy()
+        changed[99, 99] = -1.0
+        self.assertTrue(numerical.array_equal(big, big.copy()))
+        self.assertFalse(numerical.array_equal(big, changed))  # the last element differs
+
+    def test_the_native_comparison_refuses_tensors_of_another_dtype_or_size(self):
+        with self.assertRaises(numerical.error):
+            numerical._numerical._equal(numerical.asarray([1.0]), numerical.asarray([1j]))
+        with self.assertRaises(numerical.error):
+            numerical._numerical._equal(numerical.asarray([1.0]), numerical.asarray([1.0, 2.0]))
+        with self.assertRaises(numerical.error):
+            numerical._numerical._equal(numerical.asarray([1.0]), [1.0])
 
 
 @unittest.skipIf(np is None, "NumPy not installed")

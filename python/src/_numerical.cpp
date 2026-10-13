@@ -833,6 +833,31 @@ PyObject* module_negate(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _equal(a, b) -> bool: whether two tensors of one dtype and one size hold equal elements, in order (a NaN equals
+// nothing). The caller checks the shapes and promotes the dtypes.
+PyObject* module_equal(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x = nullptr;
+    PyObject* y = nullptr;
+    if (PyArg_ParseTuple(args, "OO", &x, &y) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    if (is_complex(*a) != is_complex(*b) || count_of(*a) != count_of(*b)) {
+        PyErr_SetString(sciforge_module_error(), "_equal: the tensors differ in dtype or size");
+        return nullptr;
+    }
+    const auto same = [&](const auto* p, const auto* q) { return std::equal(p, p + count_of(*a), q); };
+    const bool equal {is_complex(*a) ? same(static_cast<const std::complex<double>*>(data_of(*a)),
+                                            static_cast<const std::complex<double>*>(data_of(*b)))
+                                     : same(static_cast<const double*>(data_of(*a)), static_cast<const double*>(data_of(*b)))};
+    return Py_NewRef(equal ? Py_True : Py_False);
+}
+
 template <typename T>
 PyObject* unary_on(std::string_view name, const numerical::tensor<T>& t)
 {
@@ -1911,6 +1936,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_binary", module_binary, METH_VARARGS,
           "_binary(op, a, b) -> Tensor\nElement-wise a op b (op one of + - * /), broadcast; one dtype.");
     m.raw("_negate", module_negate, METH_VARARGS, "_negate(a) -> Tensor\nElement-wise negation.");
+    m.raw("_equal", module_equal, METH_VARARGS,
+          "_equal(a, b) -> bool\nWhether two tensors of one dtype and size hold equal elements (a NaN equals nothing).");
     m.raw("_unary", module_unary, METH_VARARGS,
           "_unary(name, a) -> Tensor\nexp, log, sqrt, sin, cos, tan, tanh or abs of every element.");
     m.raw("_reduce", module_reduce, METH_VARARGS,

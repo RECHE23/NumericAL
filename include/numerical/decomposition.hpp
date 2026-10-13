@@ -4679,19 +4679,26 @@ namespace numerical {
   [[nodiscard]] matrix<T> pinv(const matrix<T>& a)
   {
     detail::require_finite(a, "pinv");
-    const svd_decomposition<T> s                          {a};
-    const std::size_t          rank                       {detail::numerical_rank(s.singular_values(), a.rows(), a.cols())};
-    std::vector<T>             out(a.cols() * a.rows(), T {});
+    const svd_decomposition<T> s    {a};
+    const std::size_t          rows {a.rows()};
+    const std::size_t          cols {a.cols()};
+    const std::size_t          rank {detail::numerical_rank(s.singular_values(), rows, cols)};
+    // (V Σ⁺) · Uᴴ over the first `rank` singular triplets, through the matrix product kernel: summed term by term
+    // it ran five times as long as NumPy's at order 512.
+    std::vector<T> scaled(cols * rank);
+    std::vector<T> left_adjoint(rank * rows);
     for (std::size_t d {0}; d < rank; ++d) {
       const auto inverse {detail::from_double<T>(1.0 / s.singular_values()[d])};
-      for (std::size_t i {0}; i < a.cols(); ++i) {
-        const T left {s.v()(i, d) * inverse};
-        for (std::size_t j {0}; j < a.rows(); ++j) {
-          out[(i * a.rows()) + j] += left * detail::conj_of(s.u()(j, d));
-        }
+      for (std::size_t i {0}; i < cols; ++i) {
+        scaled[(i * rank) + d] = s.v()(i, d) * inverse;
+      }
+      for (std::size_t j {0}; j < rows; ++j) {
+        left_adjoint[(d * rows) + j] = detail::conj_of(s.u()(j, d));
       }
     }
-    return matrix<T> {a.cols(), a.rows(), std::move(out)};
+    std::vector<T> out(cols * rows, T {});
+    detail::gemm(cols, rows, rank, scaled.data(), rank, left_adjoint.data(), rows, out.data(), rows);
+    return matrix<T> {cols, rows, std::move(out)};
   }
 } // namespace numerical
 

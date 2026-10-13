@@ -348,11 +348,8 @@ def _repr(self):
 def array_equal(a, b):
     """``True`` when `a` and `b` (Tensors or array-likes) have the same shape and equal elements, as
     ``numpy.array_equal``: a NaN equals nothing, itself included."""
-    a = a if isinstance(a, Tensor) else asarray(a)
-    b = b if isinstance(b, Tensor) else asarray(b)
-    if a.shape != b.shape:
-        return False
-    return all(x == y for x, y in zip(_flat(a.tolist()), _flat(b.tolist())))
+    a, b = _same_dtype(a, b)
+    return a.shape == b.shape and _numerical._equal(a, b)
 
 
 Tensor.__getitem__ = _getitem
