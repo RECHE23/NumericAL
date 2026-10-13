@@ -1507,6 +1507,10 @@ namespace numerical {
     //! \brief A kernel of \ref symmetric_row's form: \ref symmetric_row itself, or an x86-64 one.
     using symmetric_row_kernel = double (*)(const double*, const double*, double, double*, std::size_t);
 
+    //! \brief A kernel of \ref symmetric_rows' form: \ref symmetric_rows itself, or an x86-64 one.
+    using symmetric_rows_kernel = std::array<double, symmetric_row_group> (*)(const double*, std::size_t, const double*,
+                                                                              double*, std::size_t);
+
     /*!
      * \brief Row \p i's terms of a Hermitian product from the lower triangle: `out[j] += conj(row[j]) v[i]` for
      *        `j < i`, and the return `Σⱼ≤ᵢ row[j] v[j]`, for a complex `T`.
@@ -1608,14 +1612,19 @@ namespace numerical {
       symmetric_row_kernel kernel {[](const double* row, const double* x, double f, double* out, std::size_t count) {
                                      return symmetric_row(row, x, f, out, count);
                                    }};
+      symmetric_rows_kernel group {[](const double* rows, std::size_t ld, const double* x, double* out, std::size_t i) {
+                                     return symmetric_rows(rows, ld, x, out, i);
+                                   }};
 #ifdef NUMERICAL_X86_COMPILED
       if constexpr (std::is_same_v<T, double>) {
         const gemm_path path {gemm_path_current()};
         if (path == gemm_path::avx512) {
           kernel = &avx512_symmetric_row;
+          group  = &avx512_symmetric_rows;
         }
         else if (path == gemm_path::avx2) {
           kernel = &avx2_symmetric_row;
+          group  = &avx2_symmetric_rows;
         }
       }
 #endif
@@ -1624,7 +1633,16 @@ namespace numerical {
                      const std::size_t last {std::min(first + rows_per_task, m)};
                      T*                own {scratch.data() + (task * m)};
                      std::fill(own, own + last, T {}); // a task's rows reach w[0…last) alone
-                     for (std::size_t i {first}; i < last; ++i) {
+                     std::size_t i {first};
+                     if constexpr (std::is_same_v<T, double>) { // rows by groups: v and own read once a group
+                       for (; i + symmetric_row_group <= last; i += symmetric_row_group) {
+                         const std::array<double, symmetric_row_group> sums {group(block + (i * n), n, v, own, i)};
+                         for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+                           own[i + r] += sums[r];
+                         }
+                       }
+                     }
+                     for (; i < last; ++i) {
                        own[i] += hermitian_row(kernel, block + (i * n), v, own, i);
                      }
                    });

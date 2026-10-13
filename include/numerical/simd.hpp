@@ -13,6 +13,34 @@
 
 namespace numerical::detail {
 
+  //! \brief The rows of a lower triangle \ref symmetric_rows takes at once.
+  inline constexpr std::size_t symmetric_row_group {4};
+
+  /*!
+   * \brief The columns `done…i+r` of \ref symmetric_rows, one by one: for each row `r` in order, `out[k] += row_r[k]
+   *        · v[i+r]` for `done ≤ k < i + r` and `row_r[k] · v[k]` added to `sums[r]`, its diagonal term last.
+   */
+  template <typename T>
+  [[nodiscard]] std::array<T, symmetric_row_group> symmetric_rows_tail(const T *                          rows,
+                                                                       std::size_t                        n,
+                                                                       const T *                          v,
+                                                                       T *                                out,
+                                                                       std::size_t                        i,
+                                                                       std::size_t                        done,
+                                                                       std::array<T, symmetric_row_group> sums)
+  {
+    for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+      const T*  row    {rows + (r * n)};
+      const T   factor {v[i + r]};
+      for (std::size_t k {done}; k < i + r; ++k) {
+        sums[r] += row[k] * v[k];
+        out[k]  += row[k] * factor;
+      }
+      sums[r] += row[i + r] * factor;
+    }
+    return sums;
+  }
+
 #if defined(__GNUC__)
   //! \brief The native vector width, in bytes.
 #  if defined(__AVX__)
@@ -124,6 +152,50 @@ namespace numerical::detail {
       out[i] += row[i] * factor;
     }
     return total;
+  }
+
+  /*!
+   * \brief \ref symmetric_row for the \ref symmetric_row_group rows `i…i+3` of a lower triangle at once, row `r` at
+   *        `rows + r · n`: `out[j] += row_r[j] · v[i+r]` for `j < i + r`, the rows in order, and the sums `Σⱼ≤ᵢ₊ᵣ
+   *        row_r[j] v[j]` returned. Their shared columns `j < i` go by native vectors, `v` and `out` read once for
+   *        the group where each row would read them again; the rest by \ref symmetric_rows_tail.
+   */
+  template <native_scalar T>
+  [[nodiscard]] std::array<T, symmetric_row_group> symmetric_rows(const T*    rows,
+                                                                  std::size_t n,
+                                                                  const T*    v,
+                                                                  T*          out,
+                                                                  std::size_t i)
+  {
+    using lane = typename native_vector<T>::type;
+    constexpr std::size_t                 width {native_vector_bytes / sizeof(T)};
+    std::array<lane, symmetric_row_group> sum   {};
+    std::array<lane, symmetric_row_group> splat {};
+    for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+      splat[r] = v[i + r] - lane {}; // v[i + r] in every lane
+    }
+    const std::size_t done {i - (i % width)};
+    for (std::size_t j {0}; j < done; j += width) {
+      lane vv;
+      lane ov;
+      std::memcpy(&vv, v + j, sizeof(lane));
+      std::memcpy(&ov, out + j, sizeof(lane));
+#  pragma GCC unroll 4 // the sums in registers: GCC keeps a rolled array of vectors in memory
+      for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+        lane rv;
+        std::memcpy(&rv, rows + (r * n) + j, sizeof(lane));
+        sum[r] += rv * vv;
+        ov     += rv * splat[r];
+      }
+      std::memcpy(out + j, &ov, sizeof(lane));
+    }
+    std::array<T, symmetric_row_group> sums {};
+    for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+      for (std::size_t k {0}; k < width; ++k) {
+        sums[r] += sum[r][k];
+      }
+    }
+    return symmetric_rows_tail(rows, n, v, out, i, done, sums);
   }
 
 #endif
@@ -242,6 +314,17 @@ namespace numerical::detail {
       out[i] += row[i] * factor;
     }
     return total;
+  }
+
+  //! \brief \ref symmetric_rows one column at a time, for a type no native vector holds.
+  template <typename T>
+  [[nodiscard]] std::array<T, symmetric_row_group> symmetric_rows(const T*    rows,
+                                                                  std::size_t n,
+                                                                  const T*    v,
+                                                                  T*          out,
+                                                                  std::size_t i)
+  {
+    return symmetric_rows_tail(rows, n, v, out, i, 0, {});
   }
 
   //! \brief `Σ x[i] · y[i]`, in order, for a type no native vector holds.

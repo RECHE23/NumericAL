@@ -294,6 +294,77 @@ namespace numerical::detail {
     return total;
   }
 
+  /*!
+   * \brief \ref symmetric_rows on AVX-512: the shared columns by eight, a fused multiply-add for each row's sum and
+   *        each row's term of `out`, the rows in order.
+   */
+  NUMERICAL_TARGET("avx512f") inline std::array<double, symmetric_row_group> avx512_symmetric_rows(const double* rows,
+                                                                                                   std::size_t   n,
+                                                                                                   const double* v,
+                                                                                                   double*       out,
+                                                                                                   std::size_t   i) noexcept
+  {
+    constexpr std::size_t                         width {8};
+    std::array<zmm_register, symmetric_row_group> sum   {};
+    std::array<zmm_register, symmetric_row_group> splat {};
+    for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+      splat[r].v = _mm512_set1_pd(v[i + r]);
+    }
+    const std::size_t done {i - (i % width)};
+    for (std::size_t j {0}; j < done; j += width) {
+      const __m512d vv {_mm512_loadu_pd(v + j)};
+      __m512d       ov {_mm512_loadu_pd(out + j)};
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+        const __m512d rv {_mm512_loadu_pd(rows + (r * n) + j)};
+        sum[r].v = _mm512_fmadd_pd(rv, vv, sum[r].v);
+        ov       = _mm512_fmadd_pd(rv, splat[r].v, ov);
+      }
+      _mm512_storeu_pd(out + j, ov);
+    }
+    std::array<double, symmetric_row_group> sums {};
+    for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+      sums[r] = _mm512_reduce_add_pd(sum[r].v);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: the tail may be SSE alone
+    return symmetric_rows_tail(rows, n, v, out, i, done, sums);
+  }
+
+  //! \brief \ref avx512_symmetric_rows by four columns (AVX2 with FMA).
+  NUMERICAL_TARGET("avx2,fma") inline std::array<double, symmetric_row_group> avx2_symmetric_rows(const double* rows,
+                                                                                                  std::size_t   n,
+                                                                                                  const double* v,
+                                                                                                  double*       out,
+                                                                                                  std::size_t   i) noexcept
+  {
+    constexpr std::size_t                         width {4};
+    std::array<ymm_register, symmetric_row_group> sum   {};
+    std::array<ymm_register, symmetric_row_group> splat {};
+    for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+      splat[r].v = _mm256_set1_pd(v[i + r]);
+    }
+    const std::size_t done {i - (i % width)};
+    for (std::size_t j {0}; j < done; j += width) {
+      const __m256d vv {_mm256_loadu_pd(v + j)};
+      __m256d       ov {_mm256_loadu_pd(out + j)};
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+        const __m256d rv {_mm256_loadu_pd(rows + (r * n) + j)};
+        sum[r].v = _mm256_fmadd_pd(rv, vv, sum[r].v);
+        ov       = _mm256_fmadd_pd(rv, splat[r].v, ov);
+      }
+      _mm256_storeu_pd(out + j, ov);
+    }
+    std::array<double, symmetric_row_group> sums {};
+    for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+      alignas(32) std::array<double, width> part {}; // a register stored whole: some compilers store it aligned
+      _mm256_storeu_pd(part.data(), sum[r].v);
+      sums[r] = (part[0] + part[1]) + (part[2] + part[3]);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: the tail may be SSE alone
+    return symmetric_rows_tail(rows, n, v, out, i, done, sums);
+  }
+
   //! \brief `y[i] += f · x[i]` for \p count elements, each one fused multiply-add (a subtraction passes `−f`,
   //!        whose negation is exact).
   NUMERICAL_TARGET("avx512f") inline void avx512_scaled_add(double*       y,

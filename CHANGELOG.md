@@ -7,6 +7,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **`eigh`'s symmetric matrix-vector product takes four rows at once**: the vector and the partial product are read
+  once for the four rows, where each row read them again (AVX-512, AVX2, and the compiler's vectors). One core,
+  the product of order 1024: i9-9900K 110 → 84 µs (OpenBLAS's `dsymv`: 74), M1 Pro 137 → 94 µs. All cores, `eigh`:
+  M1 Pro order 512 28.2 → 25.7 ms, 1024 141 → 125 ms; i9-9900K 512 33.5 → 32.2 ms, 1024 148 → 142 ms.
 - **`eigh`'s reduction to tridiagonal form uses more threads on x86-64**: its symmetric matrix-vector product,
   paced there by each core's loads, is weighed four times its multiply-adds on AVX2 and AVX-512 (arm64 keeps its
   weight: there it gained nothing). All cores, `eigh` of order 512: i9-9900K 36 → 33 ms, i9-10900X 43.6 → 40.6 ms;

@@ -294,6 +294,68 @@ TEST(symmetric_row_sums_every_term_and_adds_the_scaled_row)
 
 namespace {
 
+  // symmetric_rows checked against its definition, on rows of small integers every order sums exactly: each row's
+  // sum to its diagonal, and its earlier columns of out scaled by its own element of v.
+  template <typename T,
+            typename Kernel>
+  bool symmetric_rows_match(Kernel run)
+  {
+    bool matches {true};
+    for (const std::size_t i : {std::size_t {0}, std::size_t {1}, std::size_t {3}, std::size_t {8}, std::size_t {13},
+                                std::size_t {64}, std::size_t {77}}) {
+      const std::size_t n {i + numerical::detail::symmetric_row_group + 2};
+      std::vector<T>    rows(numerical::detail::symmetric_row_group * n);
+      std::vector<T>    v(n);
+      std::vector<T>    out(n);
+      for (std::size_t k {0}; k < rows.size(); ++k) {
+        rows[k] = static_cast<T>(static_cast<int>(k % 7) - 3);
+      }
+      for (std::size_t k {0}; k < n; ++k) {
+        v[k]   = static_cast<T>((k % 5) + 1);
+        out[k] = static_cast<T>(k % 3);
+      }
+      std::vector<T>                                          want_out {out};
+      std::array<T, numerical::detail::symmetric_row_group>   want     {};
+      for (std::size_t r {0}; r < numerical::detail::symmetric_row_group; ++r) {
+        for (std::size_t k {0}; k <= i + r; ++k) {
+          want[r] += rows[(r * n) + k] * v[k];
+          if (k < i + r) {
+            want_out[k] += rows[(r * n) + k] * v[i + r];
+          }
+        }
+      }
+      matches = matches && run(rows.data(), n, v.data(), out.data(), i) == want && out == want_out;
+    }
+    return matches;
+  }
+} // namespace
+
+// Four rows of a symmetric product at once, on every kernel this processor runs, and for types with native vectors
+// and without.
+TEST(symmetric_rows_sum_each_row_and_add_each_scaled_row)
+{
+  EXPECT(symmetric_rows_match<double>([](const double* rows, std::size_t n, const double* v, double* out, std::size_t i) {
+                                        return numerical::detail::symmetric_rows(rows, n, v, out, i);
+                                      }));
+  EXPECT(symmetric_rows_match<float>([](const float* rows, std::size_t n, const float* v, float* out, std::size_t i) {
+                                       return numerical::detail::symmetric_rows(rows, n, v, out, i);
+                                     }));
+  EXPECT(symmetric_rows_match<long double>(
+           [](const long double* rows, std::size_t n, const long double* v, long double* out, std::size_t i) {
+             return numerical::detail::symmetric_rows(rows, n, v, out, i);
+           }));
+#ifdef NUMERICAL_X86_COMPILED
+  if (numerical::detail::cpu_features().avx2_fma) {
+    EXPECT(symmetric_rows_match<double>(&numerical::detail::avx2_symmetric_rows));
+  }
+  if (numerical::detail::cpu_features().avx512f) {
+    EXPECT(symmetric_rows_match<double>(&numerical::detail::avx512_symmetric_rows));
+  }
+#endif
+}
+
+namespace {
+
   using numerical::detail::row_operation;
 
   row_operation rotation(std::size_t i,
