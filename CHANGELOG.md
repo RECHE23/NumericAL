@@ -7,6 +7,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **Cholesky takes panels of 16 columns up to order 128 and of 32 up to 256**, where it took 64: there the
+  panels, row by row on one thread, are most of the time. The widths stay powers of two, which the product
+  kernels' tiles divide (24, 40 or 56 columns left the AMX's tiles part empty: order 320 took 20 % longer).
+  The factor keeps its bits' rule. All cores, orders 64, 128, 192 and 256: six x86-64 cores (i5-8500)
+  30 → 20 µs, 124 → 88 µs, 289 → 231 µs, 486 → 461 µs; M1 Pro 20 → 15 µs, 78 → 66 µs, 195 → 141 µs,
+  298 → 278 µs.
 - **Up to order 256, the LU takes panels of 32 columns** where it took 64: there the panels, factorised a column at
   a time on one thread, are most of the time, and narrower ones halve their work. The factors keep their
   bits' rule: each element receives its updates in ascending order of the pivot. All cores, `solve` with four

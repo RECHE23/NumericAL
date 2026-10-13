@@ -80,6 +80,17 @@ namespace numerical {
     //! \brief The columns of one panel of the blocked Cholesky factorisation (as \ref lu_block).
     inline constexpr std::size_t cholesky_block {64};
 
+    //! \brief The panel width of the Cholesky factorisation of order \p n: narrower up to order 256, where the
+    //!        panels, row by row on one thread, are most of the time; a power of two, which the product kernels'
+    //!        tiles divide (widths of 24, 40 or 56 left the AMX's 32 × 16 tiles part empty: order 320, 20 % longer).
+    [[nodiscard]] constexpr std::size_t cholesky_block_for(std::size_t n) noexcept
+    {
+      if (n <= 128) {
+        return cholesky_block / 4;
+      }
+      return n <= 256 ? cholesky_block / 2 : cholesky_block;
+    }
+
     //! \brief The rows of one chunk of a Cholesky panel's rows below it, solved together along each column.
     inline constexpr std::size_t cholesky_rows {64};
 
@@ -986,14 +997,14 @@ namespace numerical {
 
   private:
 
-    // By panels of detail::cholesky_block columns: the panel's diagonal block row by row, the rows below it
+    // By panels of block_ columns: the panel's diagonal block row by row, the rows below it
     // by leaves (each depends only on the diagonal block; factor_rows_below), then the lower part of the trailing block takes
     // A22 += (-L21) L21ᴴ from the matrix product kernel. Every element still receives its terms in ascending
     // order, so without multiply-add fusion the factor is the unblocked algorithm's to the bit.
     void factorize()
     {
-      for (std::size_t k0 {0}; k0 < n_; k0 += detail::cholesky_block) {
-        const std::size_t end {std::min(k0 + detail::cholesky_block, n_)};
+      for (std::size_t k0 {0}; k0 < n_; k0 += block_) {
+        const std::size_t end {std::min(k0 + block_, n_)};
         for (std::size_t i {k0}; i < end; ++i) {
           factor_row(i, k0, std::min(i + 1, end));
         }
@@ -1089,15 +1100,16 @@ namespace numerical {
           l_adjoint[(p * rows) + r] = detail::conj_of(value);
         }
       }
-      for (std::size_t jb {0}; jb < rows; jb += detail::cholesky_block) {
-        const std::size_t width {std::min(detail::cholesky_block, rows - jb)};
+      for (std::size_t jb {0}; jb < rows; jb += block_) {
+        const std::size_t width {std::min(block_, rows - jb)};
         detail::gemm(rows - jb, width, depth, minus_l.data() + (jb * depth), depth, l_adjoint.data() + jb, rows,
                      lower_.data() + ((end + jb) * n_) + end + jb, n_);
       }
     }
 
-    std::size_t    n_;     //!< The matrix order.
-    std::vector<T> lower_; //!< The lower-triangular factor L, row-major (upper triangle zero).
+    std::size_t    n_;                                      //!< The matrix order.
+    std::size_t    block_ {detail::cholesky_block_for(n_)}; //!< The panel width.
+    std::vector<T> lower_;                                  //!< The lower-triangular factor L, row-major (upper triangle zero).
   };
 
   //! \brief Cholesky-factorises a Hermitian positive-definite matrix. \see cholesky_decomposition
