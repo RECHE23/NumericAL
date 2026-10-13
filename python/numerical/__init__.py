@@ -406,6 +406,9 @@ def svd(a, method="divide_and_conquer"):
     return _svd(a, method)
 
 
+_NATIVE_NUMBERS = (float, int, bool, complex)
+
+
 def asarray(obj, dtype=None):
     """A :class:`Tensor` from `obj`: a Tensor (the same object when `dtype` matches), an object with an
     ``__array_interface__`` (NumPy: bool, integer, float32/64 and complex64/128 elements, any strides),
@@ -417,8 +420,10 @@ def asarray(obj, dtype=None):
         ValueError: if a nested list is not rectangular.
         TypeError: if a nested list holds something other than numbers.
     """
-    if not hasattr(obj, "__array_interface__") and (isinstance(obj, (list, tuple))
-                                                    or isinstance(obj, _numbers.Number)):
+    # A float, int, bool or complex, an array (its __array_struct__ or __array_interface__) and a Tensor go to C
+    # as they are; a nested list, or another number (a Fraction), through its values.
+    if isinstance(obj, (list, tuple)) or (type(obj) not in _NATIVE_NUMBERS and isinstance(obj, _numbers.Number)
+                                          and not hasattr(obj, "__array_interface__")):
         values, shape = _nested(obj)
         obj = _NestedBuffer(values, shape)
     return _asarray(obj, dtype) if dtype is not None else _asarray(obj)

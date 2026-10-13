@@ -321,6 +321,29 @@ class DLPack(unittest.TestCase):
 
 @unittest.skipIf(np is None, "NumPy not installed")
 class NumpyInterop(unittest.TestCase):
+    def test_asarray_reads_numpy_arrays_of_every_dtype_in_either_byte_order(self):
+        # NumPy's arrays and scalars are read through __array_struct__: every element type, both byte orders,
+        # transposed and reversed views, and a rank-0 scalar, as NumPy holds them.
+        for kind in ("?", "i1", "i2", "i4", "i8", "u1", "u2", "u4", "u8", "f4", "f8", "c8", "c16"):
+            for order in ("<", ">"):
+                dtype = np.dtype(kind if kind in ("?", "i1", "u1") else order + kind)
+                base = (np.arange(6) % 2 == 1) if kind == "?" else np.arange(6).astype(dtype)
+                if kind.startswith("c"):
+                    base = (base + 1j * np.arange(6)).astype(dtype)
+                matrix = base.astype(dtype).reshape(2, 3)
+                for view in (matrix, matrix.T, matrix[::-1, ::-2]):
+                    with self.subTest(dtype=dtype.str, strides=view.strides):
+                        want = view.astype(complex if kind.startswith("c") else float).tolist()
+                        self.assertEqual(numerical.asarray(view).tolist(), want)
+        self.assertEqual(numerical.asarray(np.float32(1.5)).tolist(), 1.5)
+        self.assertEqual(numerical.asarray(np.arange(3.0), dtype="complex128").tolist(), [0j, 1 + 0j, 2 + 0j])
+        for bad in (np.zeros(2, np.float16), np.array(["a"])):
+            with self.subTest(dtype=bad.dtype.str):
+                with self.assertRaises(numerical.error):
+                    numerical.asarray(bad)
+        with self.assertRaises(numerical.error):
+            numerical.asarray(np.array([1j]), dtype="float64")
+
     def test_array_interface_zero_copy_view(self):
         t = numerical.Tensor([1, 2, 3, 4], shape=(2, 2))
         arr = np.asarray(t)

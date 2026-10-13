@@ -1467,6 +1467,189 @@ bool gather(const unsigned char*           base,
     }
 }
 
+// The tensor of the `total` elements of type `element` at `base` (byte `strides` per axis, C order), complex128
+// when `out_complex` asks, else float64: the conversion picked once, the copy without the GIL.
+PyObject* tensor_from_elements(const unsigned char*            base,
+                               const std::vector<std::size_t>& shape,
+                               const std::vector<Py_ssize_t>&  strides,
+                               std::size_t                     total,
+                               const element_type&             element,
+                               bool                            out_complex)
+{
+    PyObject* result = nullptr;
+    try {
+                if (!element.swapped && (out_complex || element.kind != 'c')) {
+            // The common case: the conversion picked once, the copy without the GIL (it reads only the buffer).
+            if (out_complex) {
+                std::vector<std::complex<double>> values(total);
+                {
+                    const sb::scoped_gil_release unlocked {releases_gil(total)};
+                    gather(base, shape, strides, element, values.data());
+                }
+                result = wrap(any_tensor {cplx_tensor {shape, std::move(values)}});
+            }
+            else {
+                std::vector<double> values(total);
+                {
+                    const sb::scoped_gil_release unlocked {releases_gil(total)};
+                    gather(base, shape, strides, element, values.data());
+                }
+                result = wrap(any_tensor {real_tensor {shape, std::move(values)}});
+            }
+            return result;
+        }
+        // A byte-swapped element: each read through read_element, in C order.
+        std::vector<std::complex<double>> values;
+        values.reserve(total);
+        std::vector<std::size_t> index(shape.size(), 0);
+        for (std::size_t n = 0; n < total; ++n) {
+            Py_ssize_t offset = 0;
+            for (std::size_t axis = 0; axis < shape.size(); ++axis) {
+                offset += static_cast<Py_ssize_t>(index[axis]) * strides[axis];
+            }
+            values.push_back(read_element(base + offset, element));
+            for (std::size_t axis = shape.size(); axis-- > 0;) {
+                if (++index[axis] < shape[axis]) {
+                    break;
+                }
+                index[axis] = 0;
+            }
+        }
+        if (out_complex) {
+            result = wrap(any_tensor {cplx_tensor {shape, std::move(values)}});
+        }
+        else {
+            std::vector<double> reals;
+            reals.reserve(total);
+            for (const std::complex<double>& value : values) {
+                reals.push_back(value.real());
+            }
+            result = wrap(any_tensor {real_tensor {shape, std::move(reals)}});
+        }
+    }
+    catch (...) {
+        result = set_cpp_error();
+    }
+    return result;
+}
+
+// NumPy's PyArrayInterface (numpy/ndarraytypes.h), which __array_struct__ holds in a capsule: an array's
+// elements described without the dict __array_interface__ builds on every access (most of a small asarray).
+struct array_struct
+{
+    int          two;      // 2: the version of the struct
+    int          nd;       // the rank
+    char         typekind; // b, i, u, f or c, as a typestr's kind
+    int          itemsize; // bytes per element
+    int          flags;    // NPY_ARRAY_* bits
+    Py_intptr_t* shape;    // nd extents
+    Py_intptr_t* strides;  // nd byte strides
+    void*        data;     // the first element
+    PyObject*    descr;    // unused here
+};
+
+// NPY_ARRAY_NOTSWAPPED: the elements are in this machine's byte order.
+constexpr int array_not_swapped {0x200};
+
+// The element count of `shape`, or false with an error set when it overflows a complex128 buffer.
+bool element_count(const std::vector<std::size_t>& shape, std::size_t& total)
+{
+    total = 1;
+    for (const std::size_t extent : shape) {
+        if (extent != 0 && total > SIZE_MAX / sizeof(std::complex<double>) / extent) {
+            PyErr_SetString(sciforge_module_error(), "asarray: the shape's element count overflows");
+            return false;
+        }
+        total *= extent;
+    }
+    return true;
+}
+
+// asarray's output dtype for a source of `element`: the requested one, else complex128 for a complex source and
+// float64 otherwise; false with an error set for a complex source asked as float64.
+bool output_complex(const element_type& element, bool dtype_given, bool want_complex_out, bool& out_complex)
+{
+    out_complex = dtype_given ? want_complex_out : element.kind == 'c';
+    if (element.kind == 'c' && !out_complex) {
+        PyErr_SetString(sciforge_module_error(),
+                        "asarray: refusing to cast a complex array to float64 (discards the imaginary part)");
+        return false;
+    }
+    return true;
+}
+
+// obj's elements through its __array_struct__ capsule (NumPy arrays and scalars), into `*result`; false when obj
+// has none (or not version 2), with no error set, so the caller reads __array_interface__ instead.
+bool asarray_from_struct(PyObject* obj, bool dtype_given, bool want_complex_out, PyObject** result)
+{
+    PyObject* capsule = PyObject_GetAttrString(obj, "__array_struct__"); // new ref
+    if (capsule == nullptr) {
+        PyErr_Clear();
+        return false;
+    }
+    const auto* view {static_cast<const array_struct*>(PyCapsule_GetPointer(capsule, nullptr))};
+    if (view == nullptr || view->two != 2) {
+        PyErr_Clear();
+        Py_DECREF(capsule);
+        return false;
+    }
+    const char  order {view->itemsize == 1                          ? '|'
+                       : (view->flags & array_not_swapped) != 0      ? '='
+                       : byte_order() == '<'                         ? '>'
+                                                                     : '<'};
+    const std::optional<element_type> element {parse_typestr(std::string {order, view->typekind} + std::to_string(view->itemsize))};
+    bool                              out_complex {false};
+    if (!element) {
+        Py_DECREF(capsule);
+        PyErr_SetString(sciforge_module_error(),
+                        "asarray: unsupported typestr (bool, integers, float32/64 and complex64/128 are read)");
+        *result = nullptr;
+        return true;
+    }
+    std::vector<std::size_t> shape;
+    std::vector<Py_ssize_t>  strides;
+    for (int axis = 0; axis < view->nd; ++axis) {
+        shape.push_back(static_cast<std::size_t>(view->shape[axis]));
+        strides.push_back(static_cast<Py_ssize_t>(view->strides[axis]));
+    }
+    std::size_t total {0};
+    *result = output_complex(*element, dtype_given, want_complex_out, out_complex) && element_count(shape, total)
+                  ? tensor_from_elements(static_cast<const unsigned char*>(view->data), shape, strides, total, *element, out_complex)
+                  : nullptr;
+    Py_DECREF(capsule);
+    return true;
+}
+
+// A Python float, int (bool included) or complex as a rank-0 tensor of the requested dtype, into `*result`;
+// false for anything else, with no error set.
+bool asarray_from_number(PyObject* obj, bool dtype_given, bool want_complex_out, PyObject** result)
+{
+    const bool complex_in {PyComplex_CheckExact(obj) != 0};
+    if (!complex_in && PyFloat_CheckExact(obj) == 0 && PyLong_Check(obj) == 0) {
+        return false;
+    }
+    const std::complex<double> value {complex_in ? std::complex<double> {PyComplex_RealAsDouble(obj), PyComplex_ImagAsDouble(obj)}
+                                                 : std::complex<double> {PyFloat_AsDouble(obj), 0.0}};
+    if (PyErr_Occurred() != nullptr) { // an int too large for a double
+        *result = nullptr;
+        return true;
+    }
+    const element_type element {complex_in ? 'c' : 'f', complex_in ? std::size_t {16} : std::size_t {8}, false};
+    bool               out_complex {false};
+    if (!output_complex(element, dtype_given, want_complex_out, out_complex)) {
+        *result = nullptr;
+        return true;
+    }
+    try {
+        *result = out_complex ? wrap(any_tensor {cplx_tensor {{}, std::vector<std::complex<double>> {value}}})
+                              : wrap(any_tensor {real_tensor {{}, std::vector<double> {value.real()}}});
+    }
+    catch (...) {
+        *result = set_cpp_error();
+    }
+    return true;
+}
+
 PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
 {
     static const char* keywords[] = {"obj", "dtype", nullptr};
@@ -1512,6 +1695,11 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
         catch (...) {
             return set_cpp_error();
         }
+    }
+
+    PyObject* fast {nullptr};
+    if (asarray_from_number(obj, dtype_given, want_complex_out, &fast) || asarray_from_struct(obj, dtype_given, want_complex_out, &fast)) {
+        return fast;
     }
 
     PyObject* ai = PyObject_GetAttrString(obj, "__array_interface__"); // new ref
@@ -1616,65 +1804,12 @@ PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
         return nullptr;
     }
 
-    PyObject* result = nullptr;
-    try {
-        const auto* base {static_cast<const unsigned char*>(address)};
-        if (!element->swapped && (out_complex || element->kind != 'c')) {
-            // The common case: the conversion picked once, the copy without the GIL (it reads only the buffer).
-            if (out_complex) {
-                std::vector<std::complex<double>> values(total);
-                {
-                    const sb::scoped_gil_release unlocked {releases_gil(total)};
-                    gather(base, shape, strides, *element, values.data());
-                }
-                result = wrap(any_tensor {cplx_tensor {shape, std::move(values)}});
-            }
-            else {
-                std::vector<double> values(total);
-                {
-                    const sb::scoped_gil_release unlocked {releases_gil(total)};
-                    gather(base, shape, strides, *element, values.data());
-                }
-                result = wrap(any_tensor {real_tensor {shape, std::move(values)}});
-            }
-            Py_DECREF(ai);
-            return result;
-        }
-        // A byte-swapped element: each read through read_element, in C order.
-        std::vector<std::complex<double>> values;
-        values.reserve(total);
-        std::vector<std::size_t> index(shape.size(), 0);
-        for (std::size_t n = 0; n < total; ++n) {
-            Py_ssize_t offset = 0;
-            for (std::size_t axis = 0; axis < shape.size(); ++axis) {
-                offset += static_cast<Py_ssize_t>(index[axis]) * strides[axis];
-            }
-            values.push_back(read_element(base + offset, *element));
-            for (std::size_t axis = shape.size(); axis-- > 0;) {
-                if (++index[axis] < shape[axis]) {
-                    break;
-                }
-                index[axis] = 0;
-            }
-        }
-        if (out_complex) {
-            result = wrap(any_tensor {cplx_tensor {shape, std::move(values)}});
-        }
-        else {
-            std::vector<double> reals;
-            reals.reserve(total);
-            for (const std::complex<double>& value : values) {
-                reals.push_back(value.real());
-            }
-            result = wrap(any_tensor {real_tensor {shape, std::move(reals)}});
-        }
-    }
-    catch (...) {
-        result = set_cpp_error();
-    }
+    PyObject* result {tensor_from_elements(static_cast<const unsigned char*>(address), shape, strides, total, *element,
+                                           out_complex)};
     Py_DECREF(ai);
     return result;
 }
+
 
 // set_num_threads(n): numerical::set_max_threads; a negative count is refused by the size_t conversion.
 void set_num_threads(std::size_t threads)

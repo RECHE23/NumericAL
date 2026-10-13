@@ -16,6 +16,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   3.4 → 2.5 ms at 512. Clang, which vectorised them, is unchanged.
 
 ### Changed
+- **`asarray` reads a NumPy array through its `__array_struct__`, and a Python number directly**, where it read
+  the `__array_interface__` dict NumPy builds on every access (twice) and passed a number through a nested
+  list: what every operation with a number or an array of another library pays first. M1 Pro: `asarray` of a
+  one-element array 2.0 → 0.61 µs, of `2.0` 2.1 → 0.23 µs; `x ** 2` and `x * 2.0` of one element 2.3 → 0.64
+  µs and 2.5 → 0.66 µs. An object with an `__array_interface__` alone is read as before.
 - **The x86-64 wheels are built at `-O3`**: GCC's unrolling and vectorising take 7–18 % off the decompositions
   of order 64 to 512 (six x86-64 cores, GCC 13, the baseline x86-64 build: `cholesky` −12 to −18 %, `qr`
   −9 to −14 %, `solve` −9 to −13 %, `eigh` −6 to −16 %, `inverse` −8 to −13 %). On arm64 it moved some
