@@ -7,6 +7,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **The SVD's divide and conquer joins its halves on every core**: the Löwner weights by blocks of poles, the
+  singular vectors by rows of the poles, their lengths by rows, and the sorted vectors row by row, where a
+  single core read each of them a column at a time. The results are the same to the bit. All cores, order 1024:
+  M1 Pro 268 → 240 ms, six x86-64 cores (i5-8500) 361 → 334 ms.
 - **The SVD of a square matrix reduces it to bidiagonal form as it is**, as LAPACK's `dgesdd` does short of a tall
   matrix, where it first took a QR, formed its Q and multiplied it in at the end. All cores, orders 256, 512 and
   1024: M1 Pro 11.8 → 10.0 ms, 60 → 49 ms, 300 → 265 ms; six x86-64 cores (i5-8500) 19.1 → 15.8 ms, 79 → 71 ms,

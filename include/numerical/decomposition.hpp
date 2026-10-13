@@ -3759,32 +3759,50 @@ namespace numerical {
                    });
       std::vector<double> left(k * k);  // column i: the left vector of roots[i], in the kept columns' basis
       std::vector<double> right(k * k); // and the right one
-      for (std::size_t j {0}; j < k; ++j) {
-        // Löwner: ẑⱼ² = Πᵢ (σᵢ² − dⱼ²) / Πᵢ≠ⱼ (dᵢ² − dⱼ²), each pole paired with its root.
-        double product {-below[(j * k) + j] * above[(j * k) + j]};
-        for (std::size_t i {0}; i < k; ++i) {
-          if (i != j) {
-            product *= (-below[(i * k) + j] * above[(i * k) + j]) / ((poles[i] - poles[j]) * (poles[i] + poles[j]));
-          }
-        }
-        const double weight {std::copysign(std::sqrt(product), weights[j])};
-        for (std::size_t i {0}; i < k; ++i) {
-          const double ratio {weight / (below[(i * k) + j] * above[(i * k) + j])}; // ẑⱼ / (dⱼ² − σᵢ²)
-          right[(j * k) + i] = ratio;
-          left[(j * k) + i]  = j == 0 ? -1.0 : poles[j] * ratio;
-        }
-      }
+      // Löwner: ẑⱼ² = Πᵢ (σᵢ² − dⱼ²) / Πᵢ≠ⱼ (dᵢ² − dⱼ²), each pole paired with its root, by blocks of poles on every
+      // core, each pole's product in ascending order of the roots (a row of the gaps at a time, along the block).
+      std::vector<double> signed_weights(k);
+      parallel_for((k + lowner_block - 1) / lowner_block, lowner_block * k, [&](std::size_t block) {
+                     const std::size_t                first {block * lowner_block};
+                     const std::size_t                last {std::min(first + lowner_block, k)};
+                     std::array<double, lowner_block> product {};
+                     for (std::size_t j {first}; j < last; ++j) {
+                       product[j - first] = -below[(j * k) + j] * above[(j * k) + j];
+                     }
+                     for (std::size_t i {0}; i < k; ++i) {
+                       for (std::size_t j {first}; j < last; ++j) {
+                         if (i != j) {
+                           product[j - first] *= (-below[(i * k) + j] * above[(i * k) + j]) / ((poles[i] - poles[j]) * (poles[i] + poles[j]));
+                         }
+                       }
+                     }
+                     for (std::size_t j {first}; j < last; ++j) {
+                       signed_weights[j] = std::copysign(std::sqrt(product[j - first]), weights[j]);
+                     }
+                   });
+      // The vectors by rows of poles, each on its own core: right[j][i] = ẑⱼ / (dⱼ² − σᵢ²), read a column of the gaps.
+      parallel_for(k, 4 * k, [&](std::size_t j) {
+                     for (std::size_t i {0}; i < k; ++i) {
+                       const double ratio {signed_weights[j] / (below[(i * k) + j] * above[(i * k) + j])}; // ẑⱼ / (dⱼ² − σᵢ²)
+                       right[(j * k) + i] = ratio;
+                       left[(j * k) + i]  = j == 0 ? -1.0 : poles[j] * ratio;
+                     }
+                   });
       for (std::vector<double>* vectors : {&left, &right}) {
-        for (std::size_t i {0}; i < k; ++i) {
-          double sum {0.0};
-          for (std::size_t j {0}; j < k; ++j) {
-            sum += (*vectors)[(j * k) + i] * (*vectors)[(j * k) + i];
-          }
-          const double length {std::sqrt(sum)};
-          for (std::size_t j {0}; j < k; ++j) {
-            (*vectors)[(j * k) + i] /= length;
+        std::vector<double> length(k, 0.0);
+        for (std::size_t j {0}; j < k; ++j) { // by rows, each a contiguous update of every column's sum
+          for (std::size_t i {0}; i < k; ++i) {
+            length[i] += (*vectors)[(j * k) + i] * (*vectors)[(j * k) + i];
           }
         }
+        for (double& l : length) {
+          l = std::sqrt(l);
+        }
+        parallel_for(k, k, [&](std::size_t j) {
+                       for (std::size_t i {0}; i < k; ++i) {
+                         (*vectors)[(j * k) + i] /= length[i];
+                       }
+                     });
       }
       // The kept columns times the arrow's vectors; the deflated columns as they are; then by ascending value.
       const auto carried {[&](const std::vector<double>& basis, std::size_t rows, const std::vector<double>& small) {
@@ -3815,18 +3833,22 @@ namespace numerical {
         rank[j] = j;
       }
       std::sort(rank.begin(), rank.end(), [&values](std::size_t x, std::size_t y) { return values[x] < values[y]; });
+      std::vector<std::size_t> source(n); // by sorted column: a kept root (< k) or a deflated column (k + its place)
+      for (std::size_t c {0}; c < n; ++c) {
+        source[c] = from[rank[c]];
+        d[c]      = values[rank[c]];
+      }
+      // Row by row on every core, each row written whole (by columns, each write was a row apart).
       std::vector<double> sorted_u(n * n);
       std::vector<double> sorted_v(v); // the null column, if any, stays last
-      for (std::size_t c {0}; c < n; ++c) {
-        const std::size_t source {from[rank[c]]};
-        d[c] = values[rank[c]];
-        for (std::size_t r {0}; r < n; ++r) {
-          sorted_u[(r * n) + c] = source < k ? new_u[(r * k) + source] : u[(r * n) + deflated[source - k]];
-        }
-        for (std::size_t r {0}; r < m; ++r) {
-          sorted_v[(r * m) + c] = source < k ? new_v[(r * k) + source] : v[(r * m) + deflated[source - k]];
-        }
-      }
+      parallel_for(m, n, [&](std::size_t r) { // m ≥ n: the right basis has the rows of both
+                     for (std::size_t c {0}; c < n; ++c) {
+                       if (r < n) {
+                         sorted_u[(r * n) + c] = source[c] < k ? new_u[(r * k) + source[c]] : u[(r * n) + deflated[source[c] - k]];
+                       }
+                       sorted_v[(r * m) + c] = source[c] < k ? new_v[(r * k) + source[c]] : v[(r * m) + deflated[source[c] - k]];
+                     }
+                   });
       u = std::move(sorted_u);
       v = std::move(sorted_v);
     }
