@@ -7,6 +7,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **On Linux, the thread pool pins a worker to each physical core, and the caller's core sits each run out**:
+  free to move, two of its threads at times shared one core's hyperthreads, and a product of order 1024 on eight
+  AVX2 cores took 10.4 ms in most processes, 8.1 in the others; it now takes 8.1 ms in seven of eight (NumPy with
+  OpenBLAS: 7.6). The caller's own thread is left where it runs; the worker that sits a run out sleeps rather than
+  polls beside it (polling, it slowed `eigh` of order 1024 by a fifth); a worker the system refuses to pin stays free.
 - **A Householder vector's norm is one vectorised pass** for `double` and `std::complex<double>`: the plain sum of
   squares where it can neither overflow nor underflow (between 2⁻⁹⁰⁰ and 2⁹⁰⁰), summed at the scale of the largest
   element only outside, where it took two passes and a division per element everywhere; nor is the column copied

@@ -33,7 +33,7 @@
 #endif
 #if defined(__linux__)
 #  include <fstream>
-#  include <set>
+#  include <map>
 #  include <string>
 #  include <utility>
 #  include <sched.h>
@@ -54,20 +54,48 @@ namespace numerical::detail {
 #endif
   }
 
+  //! \brief No core: a worker free to run anywhere, or a caller on a processor the pool does not know.
+  inline constexpr std::size_t no_core {std::numeric_limits<std::size_t>::max()};
+
   /*!
-   * \brief The physical cores this process may run on, or 0 where the system does not say. Linux: the distinct
-   *        (package, core) pairs of the processors in the process's affinity, from `/sys`; macOS: `hw.physicalcpu`.
+   * \brief The core of each worker the pool starts beside its callers, from the \p cores known (0: none) and its
+   *        \p threads (at least 1): one worker per core, pinned there, where the cores are known (each run then
+   *        leaves out the one on the caller's core, \ref sits_out); else `threads − 1` workers free to move.
    */
-  [[nodiscard]] inline std::size_t physical_cores() noexcept
+  [[nodiscard]] inline std::vector<std::size_t> worker_cores(std::size_t cores,
+                                                             std::size_t threads)
   {
+    std::vector<std::size_t> out(cores != 0 ? cores : threads - 1, no_core);
+    for (std::size_t c {0}; c < cores; ++c) {
+      out[c] = c;
+    }
+    return out;
+  }
+
+  //! \brief Whether the worker pinned to core \p worker sits out a run whose caller is on core \p caller: one thread
+  //!        per core, as two on one core's hyperthreads share its multiply-add units. A free worker never does.
+  [[nodiscard]] constexpr bool sits_out(std::size_t worker,
+                                        std::size_t caller) noexcept
+  {
+    return worker != no_core && worker == caller;
+  }
+
 #if defined(__linux__)
+  /*!
+   * \brief The processors of each physical core this process may run on, one set per distinct (package, core) pair
+   *        of its affinity, in the order of the affinity's first processor of each, from `/sys`; none where the
+   *        topology is unknown.
+   */
+  [[nodiscard]] inline std::vector<cpu_set_t> core_sets() noexcept
+  {
     try {
       cpu_set_t allowed;
       CPU_ZERO(&allowed); // NOLINT(hicpp-signed-bitwise): the system's macro
       if (sched_getaffinity(0, sizeof(allowed), &allowed) != 0) {
-        return 0;
+        return {};
       }
-      std::set<std::pair<long, long>> cores;
+      std::map<std::pair<long, long>, std::size_t> index; // (package, core) → its set
+      std::vector<cpu_set_t>                       sets;
       for (int cpu {0}; cpu < CPU_SETSIZE; ++cpu) {
         if (CPU_ISSET(cpu, &allowed) == 0) { // NOLINT(hicpp-signed-bitwise): the system's macro
           continue;
@@ -78,15 +106,64 @@ namespace numerical::detail {
         long              core         {0};
         long              package      {0};
         if (!(core_file >> core) || !(package_file >> package)) {
-          return 0; // the topology unknown here: no claim
+          return {}; // the topology unknown here: no claim
         }
-        cores.emplace(package, core);
+        const auto [where, added] {index.try_emplace({package, core}, sets.size())};
+        if (added) {
+          sets.emplace_back();
+          CPU_ZERO(&sets.back()); // NOLINT(hicpp-signed-bitwise): the system's macro
+        }
+        CPU_SET(cpu, &sets[where->second]); // NOLINT(hicpp-signed-bitwise): the system's macro
       }
-      return cores.size();
+      return sets;
     }
     catch (...) {
-      return 0;
+      return {};
     }
+  }
+
+  //! \brief The core index of each processor of \p cores (\ref no_core for the others), by processor number.
+  [[nodiscard]] inline std::vector<std::size_t> processor_cores(const std::vector<cpu_set_t>& cores)
+  {
+    std::vector<std::size_t> table(CPU_SETSIZE, no_core);
+    for (std::size_t c {0}; c < cores.size(); ++c) {
+      for (std::size_t cpu {0}; cpu < table.size(); ++cpu) {
+        if (CPU_ISSET(cpu, &cores[c]) != 0) { // NOLINT(hicpp-signed-bitwise): the system's macro
+          table[cpu] = c;
+        }
+      }
+    }
+    return table;
+  }
+
+  //! \brief The core of processor \p cpu in \p table (`processor_cores`), or \ref no_core: a negative \p cpu is
+  //!        `sched_getcpu`'s failure.
+  [[nodiscard]] inline std::size_t core_of(const std::vector<std::size_t>& table,
+                                           int                             cpu) noexcept
+  {
+    return cpu >= 0 && static_cast<std::size_t>(cpu) < table.size() ? table[static_cast<std::size_t>(cpu)] : no_core;
+  }
+
+  //! \brief Pins the calling thread to the processors of `cores[index]`, where there is one; else, or should the
+  //!        system refuse, leaves it where it may run.
+  inline void pin_to_core(const std::vector<cpu_set_t>& cores,
+                          std::size_t                   index) noexcept
+  {
+    if (index < cores.size()) {
+      (void)sched_setaffinity(0, sizeof(cpu_set_t), &cores[index]);
+    }
+  }
+
+#endif
+
+  /*!
+   * \brief The physical cores this process may run on, or 0 where the system does not say. Linux: `core_sets`;
+   *        macOS: `hw.physicalcpu`.
+   */
+  [[nodiscard]] inline std::size_t physical_cores() noexcept
+  {
+#if defined(__linux__)
+    return core_sets().size();
 #elif defined(__APPLE__)
     int         cores {0};
     std::size_t size  {sizeof(cores)};
@@ -145,18 +222,19 @@ namespace numerical::detail {
    */
   struct pool_job
   {
-    chunk_runner                    run      {};  //!< The chunk runner.
-    const void*                     body     {};  //!< The body it is handed.
-    std::size_t                     count    {};  //!< The number of iterations.
-    std::size_t                     chunk    {};  //!< Indices per chunk.
-    std::size_t                     chunks   {};  //!< Chunks.
-    std::size_t                     helpers  {};  //!< The workers that may join it beside the caller.
-    std::atomic<std::size_t>        joined   {0}; //!< The workers that asked to.
-    std::atomic<std::size_t>        next     {0}; //!< The next chunk to take.
-    std::atomic<std::size_t>        finished {0}; //!< The chunks done.
-    std::mutex                      lock;         //!< Orders the last chunk's signal against the caller's sleep.
-    std::condition_variable         done;         //!< Signalled when the last chunk finishes.
-    std::vector<std::exception_ptr> failed;       //!< The exception of each chunk, if it threw.
+    chunk_runner                    run      {};        //!< The chunk runner.
+    const void*                     body     {};        //!< The body it is handed.
+    std::size_t                     count    {};        //!< The number of iterations.
+    std::size_t                     chunk    {};        //!< Indices per chunk.
+    std::size_t                     chunks   {};        //!< Chunks.
+    std::size_t                     helpers  {};        //!< The workers that may join it beside the caller.
+    std::size_t                     core     {no_core}; //!< The caller's core: its worker sits it out (\ref sits_out).
+    std::atomic<std::size_t>        joined   {0};       //!< The workers that asked to.
+    std::atomic<std::size_t>        next     {0};       //!< The next chunk to take.
+    std::atomic<std::size_t>        finished {0};       //!< The chunks done.
+    std::mutex                      lock;               //!< Orders the last chunk's signal against the caller's sleep.
+    std::condition_variable         done;               //!< Signalled when the last chunk finishes.
+    std::vector<std::exception_ptr> failed;             //!< The exception of each chunk, if it threw.
 
     //! \brief Takes chunks until none is left, keeping the exception each throws.
     void work() noexcept
@@ -252,6 +330,9 @@ namespace numerical::detail {
       job->chunk   = chunk;
       job->chunks  = chunks;
       job->helpers = helpers;
+#if defined(__linux__)
+      job->core = core_of(processor_cores_, sched_getcpu());
+#endif
       job->failed.resize(chunks);
       {
         const std::lock_guard<std::mutex> held {lock_};
@@ -290,22 +371,48 @@ namespace numerical::detail {
 
     thread_pool() = default;
 
-    //! \brief Starts a worker per hardware thread beside the caller's (after construction: each worker uses the pool).
+    /*!
+     * \brief Starts the workers (after construction: each uses the pool), `worker_cores`: on Linux one per core,
+     *        pinned there. Free to move, as a caller is, two threads at times shared one core's hyperthreads (a
+     *        product of order 1024 on eight AVX2 cores took 8.1 ms, or 10.4 in most processes).
+     */
     void start()
     {
-      for (std::size_t w {1}; w < hardware_threads(); ++w) {
-        std::thread {[this] { serve(); }}.detach();
+#if defined(__linux__)
+      const std::vector<cpu_set_t> cores {core_sets()};
+      processor_cores_ = processor_cores(cores);
+      for (const std::size_t core : worker_cores(cores.size(), hardware_threads())) {
+        std::thread {[this, cores, core] {
+                       pin_to_core(cores, core);
+                       serve(core);
+                     }}.detach();
         ++workers_;
       }
+#else
+      for (const std::size_t core : worker_cores(0, hardware_threads())) {
+        std::thread {[this, core] { serve(core); }}.detach();
+        ++workers_;
+      }
+#endif
     }
 
-    //! \brief A worker: waits for a run (polling a while, then asleep), works on it, waits for the next.
-    [[noreturn]] void serve()
+    //! \brief A worker on \p core: waits for a run (polling a while, then asleep), works on it unless it sits it
+    //!        out, waits for the next.
+    [[noreturn]] void serve([[maybe_unused]] std::size_t core)
     {
       std::size_t seen {0};
+#if defined(__linux__)
+      bool spin        {true}; // the worker that sat a run out sleeps till the next: polling, it slowed its core's caller
+#endif
       for (;;) {
         const auto started {[this, &seen] { return generation_.load() != seen; }};
+#if defined(__linux__)
+        if (spin) {
+          spin_until(started);
+        }
+#else
         spin_until(started);
+#endif
         std::shared_ptr<pool_job> job;
         {
           std::unique_lock<std::mutex> held {lock_};
@@ -313,6 +420,12 @@ namespace numerical::detail {
           seen = generation_.load();
           job  = current_;
         }
+#if defined(__linux__) // elsewhere no worker is pinned, so none sits out
+        spin = !sits_out(core, job->core);
+        if (!spin) {
+          continue;
+        }
+#endif
         if (job->joined.fetch_add(1) < job->helpers) { // as many workers as the run's threads, the caller aside
           job->work();
         }
@@ -325,6 +438,9 @@ namespace numerical::detail {
     std::atomic<std::size_t>  generation_ {0};                 //!< Counts the runs (polled without the lock).
     std::atomic<bool>         busy_       {false};             //!< Whether a run holds the pool.
     std::size_t               workers_    {0};                 //!< The threads started.
+#if defined(__linux__)
+    std::vector<std::size_t> processor_cores_;                 //!< Each processor's core (`processor_cores`), set before the workers start.
+#endif
     long                      owner_      {current_process()}; //!< The process whose threads they are.
   };
 

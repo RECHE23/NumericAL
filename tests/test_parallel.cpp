@@ -1,6 +1,7 @@
 // detail::parallel_for: every index runs once, sequentially when its work pays for fewer than two threads
 // and across threads above, and an exception a worker throws comes back to the caller once every worker
 // has joined -- one escaping a thread would call std::terminate.
+#include <algorithm>
 #include <array>
 #include <atomic>
 #include <cstdlib>
@@ -204,6 +205,85 @@ TEST(the_pool_runs_one_thread_per_physical_core)
   EXPECT_EQ(pool_threads(0, 0), 1U);   // an unknown hardware: one
   EXPECT(numerical::detail::hardware_threads() >= 1U);
 }
+
+// One worker per known core, pinned there, the one on the caller's core sitting the run out; with the cores
+// unknown, a free worker per thread beside the caller, none sitting out.
+TEST(the_pool_starts_a_worker_per_core_and_leaves_the_callers_out)
+{
+  using numerical::detail::no_core;
+  using numerical::detail::sits_out;
+  using numerical::detail::worker_cores;
+  EXPECT(worker_cores(4, 4) == (std::vector<std::size_t> {0, 1, 2, 3}));
+  EXPECT(worker_cores(0, 3) == (std::vector<std::size_t> {no_core, no_core}));
+  EXPECT(worker_cores(0, 1).empty());
+  EXPECT(sits_out(2, 2));
+  EXPECT(!sits_out(2, 3));
+  EXPECT(!sits_out(no_core, no_core));
+}
+
+#if defined(__linux__)
+// Each core's processors once, the cores as many as physical_cores counts; a thread pinned to a core runs there
+// alone, an index past the cores leaves it as it was, and every worker that takes a chunk is on one core.
+TEST(the_pool_pins_each_worker_to_a_core_of_its_own)
+{
+  const std::vector<cpu_set_t> cores {numerical::detail::core_sets()};
+  EXPECT_EQ(cores.size(), numerical::detail::physical_cores());
+  cpu_set_t seen;
+  CPU_ZERO(&seen); // NOLINT(hicpp-signed-bitwise): the system's macro
+  bool disjoint {true};
+  for (cpu_set_t core : cores) {
+    cpu_set_t both;
+    CPU_AND(&both, &seen, &core);                 // NOLINT(hicpp-signed-bitwise): the system's macro
+    disjoint = disjoint && CPU_COUNT(&both) == 0; // NOLINT(hicpp-signed-bitwise): the system's macro
+    CPU_OR(&seen, &seen, &core);                  // NOLINT(hicpp-signed-bitwise): the system's macro
+  }
+  EXPECT(disjoint);
+  const std::vector<std::size_t> table  {numerical::detail::processor_cores(cores)};
+  bool                           mapped {true};
+  for (std::size_t c {0}; c < cores.size(); ++c) {
+    for (int cpu {0}; cpu < CPU_SETSIZE; ++cpu) {
+      if (CPU_ISSET(cpu, &cores[c]) != 0) { // NOLINT(hicpp-signed-bitwise): the system's macro
+        mapped = mapped && numerical::detail::core_of(table, cpu) == c;
+      }
+    }
+  }
+  EXPECT(mapped);
+  EXPECT_EQ(numerical::detail::core_of(table, -1), numerical::detail::no_core);
+  EXPECT_EQ(numerical::detail::core_of(table, CPU_SETSIZE), numerical::detail::no_core);
+  const auto affinity {[] {
+                         cpu_set_t set;
+                         CPU_ZERO(&set); // NOLINT(hicpp-signed-bitwise): the system's macro
+                         (void)sched_getaffinity(0, sizeof(set), &set);
+                         return set;
+                       }};
+  const auto one_of_the_cores {[&cores](const cpu_set_t& set) {
+                                 return std::any_of(cores.begin(), cores.end(), [&set](const cpu_set_t& core) { return CPU_EQUAL(&set, &core) != 0; }); // NOLINT(hicpp-signed-bitwise): the system's macro
+                               }};
+  const cpu_set_t before {affinity()};
+  bool            left   {false};
+  bool            pinned {false};
+  std::thread {[&] {
+                 numerical::detail::pin_to_core(cores, cores.size());
+                 const cpu_set_t after {affinity()};
+                 left = CPU_EQUAL(&before, &after) != 0; // NOLINT(hicpp-signed-bitwise): the system's macro
+                 numerical::detail::pin_to_core(cores, 0);
+                 pinned = cores.empty() || one_of_the_cores(affinity());
+               }}.join();
+  EXPECT(left);
+  EXPECT(pinned);
+  const std::thread::id  caller {std::this_thread::get_id()};
+  std::mutex             guard;
+  std::vector<cpu_set_t> workers;
+  numerical::detail::parallel_for(4096, std::size_t {1} << 20, [&](std::size_t) {
+                                    if (std::this_thread::get_id() != caller) {
+                                      const cpu_set_t                   set {affinity()};
+                                      const std::lock_guard<std::mutex> held {guard};
+                                      workers.push_back(set);
+                                    }
+                                  });
+  EXPECT(cores.empty() || std::all_of(workers.begin(), workers.end(), one_of_the_cores));
+}
+#endif
 
 TEST(set_max_threads_caps_the_threads_a_kernel_uses)
 {
