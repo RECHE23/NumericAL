@@ -1690,25 +1690,33 @@ namespace numerical {
       return std::abs(t);
     }
 
+    //! \brief The unitary `M = Q Dᴴ` of a reduction to real tridiagonal form, `A = M T Mᴴ`, kept as its factors.
+    template <typename T>
+    struct tridiagonal_reduction
+    {
+      std::vector<std::vector<T>> reflectors; //!< `Q = H₁ H₂ …`: `reflectors[k + 1]` zeroes column k, from row k + 1.
+      std::vector<T>              delta;      //!< `D = diag(δ)`, the unit phases that make `T` real.
+    };
+
     /*!
      * \brief Reduces the Hermitian (real: symmetric) `n × n` row-major \p a, of which the lower triangle is read, to
      *        a real symmetric tridiagonal by Householder reflections, `A = M T Mᴴ` with `M` unitary.
      *
      * Each reflection zeroes one column below the subdiagonal; the trailing block takes the rank-2 updates
      * `B − v wᴴ − w vᴴ` of a panel of \ref tridiagonal_block reflections at once, through the matrix product
-     * kernel, as LAPACK's `dsytrd`; `M` is then formed by blocks of reflections the same way, as `dorgtr`. A complex subdiagonal entry is then made real by a
-     * unit phase per row, as LAPACK's `zhetrd` leaves it for a real iteration; a real one keeps its sign.
+     * kernel, as LAPACK's `dsytrd`. A complex subdiagonal entry is then made real by a unit phase per row, as
+     * LAPACK's `zhetrd` leaves it for a real iteration; a real one keeps its sign.
      * \param[in,out] a The matrix; destroyed.
      * \param[in]     n Its order (at least 1).
      * \param[out]    d The diagonal of `T` (size \p n).
      * \param[out]    e The subdiagonal of `T` in `e[0…n-2]`, and `e[n-1] = 0` (size \p n).
-     * \return `Mᵀ`, row-major: its rows are the columns of `M`.
+     * \return `M`'s reflectors and phases: \ref tridiagonal_basis forms `M`, \ref to_matrix_basis applies it.
      */
     template <typename T>
-    std::vector<T> tridiagonalize(std::vector<T>&      a,
-                                  std::size_t          n,
-                                  std::vector<double>& d,
-                                  std::vector<double>& e)
+    tridiagonal_reduction<T> tridiagonalize(std::vector<T>&      a,
+                                            std::size_t          n,
+                                            std::vector<double>& d,
+                                            std::vector<double>& e)
     {
       std::vector<std::vector<T>> reflectors(n); // reflectors[k + 1] zeroes column k, acting on rows k + 1…
       std::vector<T>              symv_scratch;  // hermitian_product's partials, kept from step to step
@@ -1791,27 +1799,63 @@ namespace numerical {
         d[i] = real_part(a[(i * n) + i]);
       }
       e[n - 1] = 0.0;
-      std::vector<T> mt(n * n, T {}); // Qᵀ, Q = H₁ H₂ …, by blocks of reflectors from the last back, as dorgtr
-      for (std::size_t i {0}; i < n; ++i) {
-        mt[(i * n) + i] = T {1};
-      }
-      for (std::size_t k1 {n}; k1 > 1;) {
-        const std::size_t k0 {k1 - std::min(k1 - 1, qr_block)};
-        apply_transposed_reflector_block(gather_reflectors(reflectors, k0, k1, n), mt, n, k0, n);
-        k1 = k0;
-      }
       // D T Dᴴ is real with D = diag(δ): δ₀ = 1, δ_{k+1} = δ_k · conj(phase(t_k)); then M = Q Dᴴ.
       std::vector<T> delta(n, T {1});
       for (std::size_t k {0}; k + 1 < n; ++k) {
         e[k] = real_subdiagonal(sub[k], delta[k], delta[k + 1]);
       }
+      return {.reflectors = std::move(reflectors), .delta = std::move(delta)};
+    }
+
+    /*!
+     * \brief `Mᵀ` of a reduction, row-major (its rows are the columns of `M`): `Qᵀ` by blocks of reflectors from the
+     *        last back, as LAPACK's `dorgtr` forms `Q`, each block on the rows it reaches of the identity, then row j
+     *        times `conj(δⱼ)`.
+     */
+    template <typename T>
+    [[nodiscard]] std::vector<T> tridiagonal_basis(const tridiagonal_reduction<T>& reduction,
+                                                   std::size_t                     n)
+    {
+      std::vector<T> mt(n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) {
+        mt[(i * n) + i] = T {1};
+      }
+      for (std::size_t k1 {n}; k1 > 1;) {
+        const std::size_t k0 {k1 - std::min(k1 - 1, qr_block)};
+        apply_transposed_reflector_block(gather_reflectors(reduction.reflectors, k0, k1, n), mt, n, k0, n);
+        k1 = k0;
+      }
       for (std::size_t j {0}; j < n; ++j) { // row j of Mᵀ = Dᴴ Qᵀ: row j of Qᵀ times conj(δⱼ)
-        const T factor {conj_of(delta[j])};
+        const T factor {conj_of(reduction.delta[j])};
         for (std::size_t i {0}; i < n; ++i) {
           mt[(j * n) + i] *= factor;
         }
       }
       return mt;
+    }
+
+    /*!
+     * \brief The rows of \p at, vectors in the tridiagonal's basis, taken to the matrix's: `at ← at Mᵀ = at Dᴴ Qᵀ`,
+     *        column j times `conj(δⱼ)`, then the blocks of reflectors from the last back on every row, as LAPACK's
+     *        `dormtr`: two thirds of the operations of forming `M` (\ref tridiagonal_basis) and multiplying by it.
+     */
+    template <typename T>
+    void to_matrix_basis(const tridiagonal_reduction<T>& reduction,
+                         std::vector<T>&                 at,
+                         std::size_t                     n)
+    {
+      if constexpr (!std::is_floating_point_v<T>) { // a real reduction's phases are all 1
+        parallel_for(n, n, [&](std::size_t i) {
+                       for (std::size_t j {0}; j < n; ++j) {
+                         at[(i * n) + j] *= conj_of(reduction.delta[j]);
+                       }
+                     });
+      }
+      for (std::size_t k1 {n}; k1 > 1;) {
+        const std::size_t k0 {k1 - std::min(k1 - 1, qr_block)};
+        apply_transposed_reflector_block(gather_reflectors(reduction.reflectors, k0, k1, n), at, n, 0, n);
+        k1 = k0;
+      }
     }
 
     //! \brief One operation of \ref tridiagonal_ql or \ref bidiagonal_qr on the rows of a vector matrix,
@@ -2163,9 +2207,33 @@ namespace numerical {
       return d[root.origin] + root.offset;
     }
 
+    //! \brief The poles a task of \ref merge_rank_one's Löwner products takes, and the side of its tiles of `u`.
+    inline constexpr std::size_t lowner_block {32};
+
+    //! \brief The buffers of \ref merge_rank_one, kept from one join to the next: a fresh buffer per join is mapped
+    //!        anew, page by page. Each is written before it is read (`updated` zeroed row by row by the gathers).
+    struct merge_workspace
+    {
+      std::vector<double> gaps;    //!< `poles[j] − roots[i]`, row by root, then the eigenvectors in its place.
+      std::vector<double> updated; //!< The kept columns of `q` times `u`.
+      std::vector<double> columns; //!< One half's rows of the kept columns that reach it.
+      std::vector<double> factor;  //!< The rows of `u` for those columns.
+    };
+
+    //! \brief \p buffer at least \p size elements long, its storage kept for the next join.
+    [[nodiscard]] inline double* workspace_of(std::vector<double>& buffer,
+                                              std::size_t          size)
+    {
+      if (buffer.size() < size) {
+        buffer.resize(size);
+      }
+      return buffer.data();
+    }
+
     /*!
      * \brief The eigenvalues of `diag(d) + ρ z zᵀ`, ascending, into \p d, and its eigenvectors times \p q (the
-     *        row-major `n × n` whose columns span the halves) into \p q, as LAPACK's `dlaed1`.
+     *        row-major `n × n` block of rows \p ldq apart whose columns span the halves) into \p q, as LAPACK's
+     *        `dlaed1`.
      *
      * Deflation first (`dlaed2`): a negligible `zⱼ` leaves `dⱼ` and its column as they are, and two nearly equal
      * poles are rotated so that one of them does. The remaining `k` roots are found by \ref secular_root, in
@@ -2177,9 +2245,11 @@ namespace numerical {
     inline void merge_rank_one(std::vector<double>& d,
                                std::vector<double>  z,
                                double               rho,
-                               std::vector<double>& q,
+                               double*              q,
+                               std::size_t          ldq,
                                std::size_t          n,
-                               std::size_t          split)
+                               std::size_t          split,
+                               merge_workspace&     work)
     {
       // Which halves of the rows each column reaches: 1 the upper, 2 the lower.
       std::vector<unsigned> reach(n);
@@ -2222,10 +2292,10 @@ namespace numerical {
           z[j]       = length;
           z[pending] = 0.0;
           for (std::size_t r {0}; r < n; ++r) {
-            const double x {q[(r * n) + pending]};
-            const double y {q[(r * n) + j]};
-            q[(r * n) + pending] = (c * x) + (s * y);
-            q[(r * n) + j]       = (c * y) - (s * x);
+            const double x {q[(r * ldq) + pending]};
+            const double y {q[(r * ldq) + j]};
+            q[(r * ldq) + pending] = (c * x) + (s * y);
+            q[(r * ldq) + j]       = (c * y) - (s * x);
           }
           reach[j] = reach[pending] = reach[j] | reach[pending];
           const double rotated {(d[pending] * c * c) + (d[j] * s * s)};
@@ -2256,25 +2326,50 @@ namespace numerical {
       }
       const double        scaled_rho {rho * norm * norm};
       std::vector<double> roots(k);
-      // gaps[i * k + j] = poles[j] − roots[i], every element written by its root's solve: left unset till then,
-      // as u and the copies below, which are written whole (zeroing them was a pass over megabytes per join).
-      const auto gaps {std::make_unique_for_overwrite<double[]>(k * k)};
+      // gaps[i * k + j] = poles[j] − roots[i], every element written by its root's solve.
+      double* const gaps {workspace_of(work.gaps, k * k)};
       parallel_for(k, 8 * k, [&](std::size_t i) {
-                     roots[i] = secular_root(poles, weights, scaled_rho, i, secular_iterations, gaps.get() + (i * k));
+                     roots[i] = secular_root(poles, weights, scaled_rho, i, secular_iterations, gaps + (i * k));
                    });
-      const auto u {std::make_unique_for_overwrite<double[]>(k * k)}; // column i: roots[i]'s eigenvector, kept basis
-      // Each pole's row of u on its own (the products of a row do not depend on another's), then each column's
-      // length on its own: the same operations in the same order on any number of threads.
-      parallel_for(k, 4 * k, [&](std::size_t j) {
-                     double product {gaps[(j * k) + j]}; // Löwner: ẑⱼ² = −Πᵢ (dⱼ − λᵢ) / Πᵢ≠ⱼ (dⱼ − dᵢ), each pole paired with its root
+      // Löwner: ẑⱼ² = −Πᵢ (dⱼ − λᵢ) / Πᵢ≠ⱼ (dⱼ − dᵢ), each pole paired with its root, by blocks of poles, each pole's
+      // product in ascending order of the roots (a row of gaps at a time, along the block): the same operations in
+      // the same order on any number of threads.
+      std::vector<double> signed_weights(k);
+      parallel_for((k + lowner_block - 1) / lowner_block, lowner_block * k, [&](std::size_t block) {
+                     const std::size_t first {block * lowner_block};
+                     const std::size_t last {std::min(first + lowner_block, k)};
+                     std::array<double, lowner_block> product {};
+                     for (std::size_t j {first}; j < last; ++j) {
+                       product[j - first] = gaps[(j * k) + j];
+                     }
                      for (std::size_t i {0}; i < k; ++i) {
-                       if (i != j) {
-                         product *= gaps[(i * k) + j] / (poles[j] - poles[i]);
+                       for (std::size_t j {first}; j < last; ++j) {
+                         if (i != j) {
+                           product[j - first] *= gaps[(i * k) + j] / (poles[j] - poles[i]);
+                         }
                        }
                      }
-                     const double weight {std::copysign(std::sqrt(-product), weights[j])};
-                     for (std::size_t i {0}; i < k; ++i) {
-                       u[(j * k) + i] = weight / gaps[(i * k) + j];
+                     for (std::size_t j {first}; j < last; ++j) {
+                       signed_weights[j] = std::copysign(std::sqrt(-product[j - first]), weights[j]);
+                     }
+                   });
+      // u[j][i] = ẑⱼ / (dⱼ − λᵢ), column i roots[i]'s eigenvector in the kept basis, in gaps' place: gaps[i][j] and
+      // gaps[j][i] are read, then each written as the other's quotient, tile by tile across the diagonal.
+      double* const     u     {gaps};
+      const std::size_t tiles {(k + lowner_block - 1) / lowner_block};
+      parallel_for(tiles * tiles, lowner_block * lowner_block, [&](std::size_t tile) {
+                     const std::size_t ti {tile / tiles};
+                     const std::size_t tj {tile % tiles};
+                     if (ti > tj) {
+                       return; // the pair of tiles is (tj, ti)'s
+                     }
+                     for (std::size_t i {ti * lowner_block}; i < std::min((ti + 1) * lowner_block, k); ++i) {
+                       for (std::size_t j {std::max(tj * lowner_block, ti == tj ? i : 0)}; j < std::min((tj + 1) * lowner_block, k); ++j) {
+                         const double above {gaps[(i * k) + j]};
+                         const double below {gaps[(j * k) + i]};
+                         u[(j * k) + i] = signed_weights[j] / above;
+                         u[(i * k) + j] = signed_weights[i] / below;
+                       }
                      }
                    });
       std::vector<double> length(k, 0.0);
@@ -2293,7 +2388,7 @@ namespace numerical {
                    });
       // updated = q(:, kept) · u, by halves of the rows: a half's rows take the kept columns that reach it, and
       // u's rows for those, the others being zero there.
-      std::vector<double> updated(n * k, 0.0);
+      double* const updated {workspace_of(work.updated, n * k)};
       for (const auto& [half, first, rows] : {std::tuple {1U, std::size_t {0}, split}, std::tuple {2U, split, n - split}}) {
         std::vector<std::size_t> reaching;
         for (std::size_t i {0}; i < k; ++i) {
@@ -2301,18 +2396,17 @@ namespace numerical {
             reaching.push_back(i);
           }
         }
-        const std::size_t   width   {reaching.size()};
-        const auto          columns {std::make_unique_for_overwrite<double[]>(rows * width)};
-        const auto          factor  {std::make_unique_for_overwrite<double[]>(width * k)};
-        parallel_for(rows, width, [&](std::size_t r) {
+        const std::size_t width   {reaching.size()};
+        double* const     columns {workspace_of(work.columns, rows * width)};
+        double* const     factor  {workspace_of(work.factor, width * k)};
+        parallel_for(rows, width + k, [&](std::size_t r) {
                        for (std::size_t c {0}; c < width; ++c) {
-                         columns[(r * width) + c] = q[((first + r) * n) + kept[reaching[c]]];
+                         columns[(r * width) + c] = q[((first + r) * ldq) + kept[reaching[c]]];
                        }
+                       std::fill_n(updated + ((first + r) * k), k, 0.0); // the product adds to it
                      });
-        for (std::size_t c {0}; c < width; ++c) {
-          std::copy_n(u.get() + (reaching[c] * k), k, factor.get() + (c * k));
-        }
-        gemm(rows, k, width, columns.get(), width, factor.get(), k, updated.data() + (first * k), k);
+        parallel_for(width, k, [&](std::size_t c) { std::copy_n(u + (reaching[c] * k), k, factor + (c * k)); });
+        gemm(rows, k, width, columns, width, factor, k, updated + (first * k), k);
       }
       // Every eigenpair, then by ascending eigenvalue: column j of the result is column source[j] of the
       // updated ones (below k) or deflated column source[j] − k of q, written row by row.
@@ -2331,29 +2425,28 @@ namespace numerical {
         d[j] = values[order[j]];
       }
       parallel_for(n, n, [&](std::size_t r) {
-                     std::vector<double> before(q.begin() + static_cast<std::ptrdiff_t>(r * n),
-                                                q.begin() + static_cast<std::ptrdiff_t>((r + 1) * n));
+                     const std::vector<double> before(q + (r * ldq), q + (r * ldq) + n);
                      for (std::size_t j {0}; j < n; ++j) {
                        const std::size_t source {order[j]};
-                       q[(r * n) + j] = source < k ? updated[(r * k) + source] : before[deflated[source - k]];
+                       q[(r * ldq) + j] = source < k ? updated[(r * k) + source] : before[deflated[source - k]];
                      }
                    });
     }
 
     /*!
-     * \brief The eigenvalues, ascending, of the symmetric tridiagonal with diagonal `d[0…n-1]` and subdiagonal
-     *        `e[0…n-2]` into \p d, and its eigenvectors as the columns of the row-major \p q (`n × n`), by
-     *        Cuppen's divide and conquer: the tridiagonal is two halves plus a rank-one coupling, each half is
-     *        diagonalised the same way (by implicit QL up to \ref divide_leaf), and \ref merge_rank_one joins
-     *        them.
+     * \brief \ref divide_and_conquer into the `n × n` block \p q of rows \p ldq apart, zero on entry: each half
+     *        into its own diagonal block, as LAPACK's `dlaed0`, so the joins copy no half and leave the blocks off
+     *        the diagonal as they found them until the join of their two halves fills them.
      */
-    inline void divide_and_conquer(double*              d,
-                                   const double*        e,
-                                   std::size_t          n,
-                                   std::vector<double>& q)
+    inline void divide_block(double*          d,
+                             const double*    e,
+                             std::size_t      n,
+                             double*          q,
+                             std::size_t      ldq,
+                             merge_workspace& work)
     {
       // Work near unit size, scaled by a power of two (exactly): the deflation tolerance is relative to the weights,
-      // which have unit norm, so it is relative to the tridiagonal only at that size.
+      // which have unit norm, so it is relative to the tridiagonal only at that size; each half has its own.
       double largest {0.0};
       for (std::size_t i {0}; i < n; ++i) {
         largest = std::max({largest, std::abs(d[i]), i + 1 < n ? std::abs(e[i]) : 0.0});
@@ -2367,13 +2460,12 @@ namespace numerical {
           scaled_d[i] = std::ldexp(d[i], -exponent);
           scaled_e[i] = i + 1 < n ? std::ldexp(e[i], -exponent) : 0.0;
         }
-        divide_and_conquer(scaled_d.data(), scaled_e.data(), n, q);
+        divide_block(scaled_d.data(), scaled_e.data(), n, q, ldq, work);
         for (std::size_t i {0}; i < n; ++i) {
           d[i] = std::ldexp(scaled_d[i], exponent);
         }
         return;
       }
-      q.assign(n * n, 0.0);
       if (n <= divide_leaf) {
         std::vector<double> diagonal(d, d + n);
         std::vector<double> sub(n, 0.0);
@@ -2391,7 +2483,7 @@ namespace numerical {
         for (std::size_t j {0}; j < n; ++j) {
           d[j] = diagonal[order[j]];
           for (std::size_t r {0}; r < n; ++r) {
-            q[(r * n) + j] = zt[(order[j] * n) + r];
+            q[(r * ldq) + j] = zt[(order[j] * n) + r];
           }
         }
         return;
@@ -2403,26 +2495,35 @@ namespace numerical {
       const double      rho  {std::abs(beta)};
       d[n1 - 1] -= rho;
       d[n1]     -= rho;
-      std::vector<double> q1;
-      std::vector<double> q2;
-      divide_and_conquer(d, e, n1, q1);
-      divide_and_conquer(d + n1, e + n1, n2, q2);
+      divide_block(d, e, n1, q, ldq, work);
+      divide_block(d + n1, e + n1, n2, q + (n1 * ldq) + n1, ldq, work);
       std::vector<double> z(n);
       for (std::size_t i {0}; i < n1; ++i) {
-        z[i] = q1[((n1 - 1) * n1) + i];
-        for (std::size_t r {0}; r < n1; ++r) {
-          q[(r * n) + i] = q1[(r * n1) + i];
-        }
+        z[i] = q[((n1 - 1) * ldq) + i];
       }
       for (std::size_t i {0}; i < n2; ++i) {
-        z[n1 + i] = std::copysign(1.0, beta) * q2[i];
-        for (std::size_t r {0}; r < n2; ++r) {
-          q[((n1 + r) * n) + n1 + i] = q2[(r * n2) + i];
-        }
+        z[n1 + i] = std::copysign(1.0, beta) * q[(n1 * ldq) + n1 + i];
       }
       std::vector<double> values(d, d + n);
-      merge_rank_one(values, std::move(z), rho, q, n, n1);
+      merge_rank_one(values, std::move(z), rho, q, ldq, n, n1, work);
       std::copy(values.begin(), values.end(), d);
+    }
+
+    /*!
+     * \brief The eigenvalues, ascending, of the symmetric tridiagonal with diagonal `d[0…n-1]` and subdiagonal
+     *        `e[0…n-2]` into \p d, and its eigenvectors as the columns of the row-major \p q (`n × n`), by
+     *        Cuppen's divide and conquer: the tridiagonal is two halves plus a rank-one coupling, each half is
+     *        diagonalised the same way (by implicit QL up to \ref divide_leaf), and \ref merge_rank_one joins
+     *        them (\ref divide_block).
+     */
+    inline void divide_and_conquer(double*              d,
+                                   const double*        e,
+                                   std::size_t          n,
+                                   std::vector<double>& q)
+    {
+      q.assign(n * n, 0.0);
+      merge_workspace work;
+      divide_block(d, e, n, q.data(), n, work);
     }
 
     //! \brief \p zt ← \p left · \p zt, `n × n`, row-major, for any other element type: the real factor converted.
@@ -2469,30 +2570,32 @@ namespace numerical {
     }
 
     /*!
-     * \brief The eigenvalues of the symmetric tridiagonal (\p d, \p e) into \p d, the eigenvectors accumulated
-     *        into the rows of \p zt as \ref tridiagonal_ql accumulates them, by divide and conquer (LAPACK's
-     *        `dstedc`): most of the work in matrix products. Up to \ref divide_leaf, \ref tridiagonal_ql itself.
+     * \brief The eigenvalues of the tridiagonal (\p d, \p e) of \p reduction into \p d, and the matrix's
+     *        eigenvectors as the rows of the result, by divide and conquer (LAPACK's `dstedc`, then `dormtr`):
+     *        most of the work in matrix products. Up to \ref divide_leaf, \ref tridiagonal_ql on `Mᵀ` itself.
      * \throws convergence_error If an iteration did not converge within its bound.
      */
     template <typename T>
-    void tridiagonal_divide_and_conquer(std::vector<double>& d,
-                                        std::vector<double>& e,
-                                        std::vector<T>&      zt,
-                                        std::size_t          n)
+    [[nodiscard]] std::vector<T> tridiagonal_divide_and_conquer(std::vector<double>&            d,
+                                                                std::vector<double>&            e,
+                                                                const tridiagonal_reduction<T>& reduction,
+                                                                std::size_t                     n)
     {
       if (n <= divide_leaf) {
+        std::vector<T> zt {tridiagonal_basis(reduction, n)};
         tridiagonal_ql(d, e, zt, n, ql_steps_per_value * n);
-        return;
+        return zt;
       }
       std::vector<double> q;
       divide_and_conquer(d.data(), e.data(), n, q);
-      std::vector<double> qt(n * n); // row j: the eigenvector of d[j] in the tridiagonal's basis
-      for (std::size_t r {0}; r < n; ++r) {
-        for (std::size_t j {0}; j < n; ++j) {
-          qt[(j * n) + r] = q[(r * n) + j];
-        }
-      }
-      multiply_real_left(qt, zt, n);
+      std::vector<T> at(n * n); // row j: the eigenvector of d[j], in the tridiagonal's basis, then the matrix's
+      parallel_for(n, n, [&](std::size_t j) {
+                     for (std::size_t r {0}; r < n; ++r) {
+                       at[(j * n) + r] = from_double<T>(q[(r * n) + j]);
+                     }
+                   });
+      to_matrix_basis(reduction, at, n);
+      return at;
     }
 
     //! \brief The Frobenius norm of the strict off-diagonal of the `n × n` \p a.
@@ -2647,13 +2750,15 @@ namespace numerical {
         }
       }
       else if (n_ > 0) {
-        std::vector<double> off(n_);
-        std::vector<double> zt {detail::tridiagonalize(a, n_, diagonal, off)};
+        std::vector<double>                          off(n_);
+        const detail::tridiagonal_reduction<double>  reduction {detail::tridiagonalize(a, n_, diagonal, off)};
+        std::vector<double>                          zt;
         if (method == eigen_method::tridiagonal_ql) {
+          zt = detail::tridiagonal_basis(reduction, n_);
           detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
         }
         else {
-          detail::tridiagonal_divide_and_conquer(diagonal, off, zt, n_);
+          zt = detail::tridiagonal_divide_and_conquer(diagonal, off, reduction, n_);
         }
         for (std::size_t i {0}; i < n_; ++i) { // the rows of zt are the eigenvectors: make them columns
           for (std::size_t j {0}; j < n_; ++j) {
@@ -2773,13 +2878,14 @@ namespace numerical {
       std::vector<double>               diagonal(n_);
       std::vector<std::complex<double>> zt;
       if (n_ > 0) {
-        std::vector<double> off(n_);
-        zt = detail::tridiagonalize(a, n_, diagonal, off);
+        std::vector<double>                                        off(n_);
+        const detail::tridiagonal_reduction<std::complex<double>>  reduction {detail::tridiagonalize(a, n_, diagonal, off)};
         if (method == eigen_method::tridiagonal_ql) {
+          zt = detail::tridiagonal_basis(reduction, n_);
           detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
         }
         else {
-          detail::tridiagonal_divide_and_conquer(diagonal, off, zt, n_);
+          zt = detail::tridiagonal_divide_and_conquer(diagonal, off, reduction, n_);
         }
       }
       std::vector<std::size_t> order(n_);

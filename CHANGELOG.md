@@ -7,6 +7,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **`eigh` applies its reduction's reflectors to the eigenvectors**, as LAPACK's `dormtr`, where it formed the
+  reduction's unitary factor and multiplied by it: 2 n³ operations where there were 3⅓ n³, and two `n × n` buffers
+  fewer. Divide and conquer works in one matrix, each half in its own diagonal block (as `dlaed0`), its joins'
+  buffers kept from one to the next; the eigenvectors' Löwner weights go by blocks of poles, in place of the gaps
+  to the roots. The results of divide and conquer are the same to the bit. All cores, `eigh`: M1 Pro order 512
+  26 → 23.5 ms, 1024 126 → 112 ms; i9-9900K 512 32.2 → 28.4 ms, 1024 145 → 130 ms; i9-10900X 1024 155 → 134 ms.
 - **`eigh`'s symmetric matrix-vector product takes four rows at once**: the vector and the partial product are read
   once for the four rows, where each row read them again (AVX-512, AVX2, and the compiler's vectors). One core,
   the product of order 1024: i9-9900K 110 → 84 µs (OpenBLAS's `dsymv`: 74), M1 Pro 137 → 94 µs. All cores, `eigh`:
