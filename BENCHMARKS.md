@@ -31,70 +31,57 @@ make bench-linalg                      # SIZES=64,128,256,512,1024 ROUNDS=3; JSO
 make fuzz-linalg CASES=1000 SEED=2     # the decompositions on adversarial matrices, every GEMM path
 ```
 
-**Apple M1 Pro** (8 cores; NumPy 2.4.2 on Accelerate; NumericAL 95028d8 built locally by Apple clang 16, the
-AMX path), 2026-10-12, beside a desktop session (load 8 to 13 across the run):
+**Apple M1 Pro** (8 cores; NumPy 2.4.2 on Accelerate; NumericAL v2026.10.8 built locally by Apple clang 16, the
+AMX path), 2026-10-13, beside a desktop session (load 3 to 7 across the run):
 
 | operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| matmul | 0.00742 ms (2.34×) | 0.0359 ms (2.35×) | 0.14 ms (1.37×) | 0.764 ms (1.26×) | 4.85 ms (**0.94×**) |
-| solve | 0.0518 ms (2.03×) | 0.186 ms (2.52×) | 0.743 ms (2.58×) | 3.01 ms (1.60×) | 12.2 ms (**0.76×**) |
-| inverse | 0.0613 ms (1.80×) | 0.28 ms (2.32×) | 1.18 ms (1.66×) | 5.46 ms (1.20×) | 23.7 ms (**0.66×**) |
-| cholesky | 0.0221 ms (1.63×) | 0.0802 ms (1.84×) | 0.37 ms (1.29×) | 1.86 ms (**0.99×**) | 8.61 ms (**0.75×**) |
-| qr | 0.084 ms (1.06×) | 0.307 ms (**0.84×**) | 1.57 ms (**0.80×**) | 8.75 ms (**0.82×**) | 48.8 ms (**0.79×**) |
-| eigh | 0.303 ms (**0.98×**) | 1.12 ms (1.19×) | 5.06 ms (1.12×) | 23.3 ms (**0.91×**) | 113 ms (**0.62×**) |
-| svd | 0.622 ms (1.64×) | 2.54 ms (1.75×) | 12.1 ms (1.31×) | 60.2 ms (1.20×) | 352 ms (1.27×) |
-| lstsq | 0.197 ms (**0.41×**) | 0.804 ms (**0.35×**) | 3.82 ms (**0.36×**) | 18.4 ms (**0.34×**) | 97.4 ms (**0.26×**) |
+| matmul | 0.00617 ms (1.90×) | 0.0246 ms (1.62×) | 0.119 ms (1.16×) | 0.772 ms (1.29×) | 4.49 ms (**0.88×**) |
+| solve | 0.0347 ms (1.37×) | 0.13 ms (1.76×) | 0.547 ms (1.88×) | 2.8 ms (1.56×) | 10.9 ms (**0.69×**) |
+| inverse | 0.0406 ms (1.21×) | 0.17 ms (1.41×) | 0.929 ms (1.28×) | 5.28 ms (1.21×) | 22 ms (**0.63×**) |
+| cholesky | 0.0161 ms (1.18×) | 0.0715 ms (1.64×) | 0.297 ms (1.04×) | 1.81 ms (1.08×) | 8.52 ms (**0.75×**) |
+| qr | 0.0875 ms (1.10×) | 0.286 ms (**0.79×**) | 1.29 ms (**0.66×**) | 6.65 ms (**0.65×**) | 45.4 ms (**0.75×**) |
+| eigh | 0.271 ms (**0.88×**) | 1 ms (1.08×) | 4 ms (**0.89×**) | 19.4 ms (**0.77×**) | 92.7 ms (**0.51×**) |
+| svd | 0.433 ms (1.17×) | 1.95 ms (1.36×) | 8.97 ms (**0.99×**) | 44 ms (**0.88×**) | 272 ms (1.00×) |
+| lstsq | 0.192 ms (**0.41×**) | 0.782 ms (**0.34×**) | 3.29 ms (**0.31×**) | 16.3 ms (**0.31×**) | 84.6 ms (**0.22×**) |
 
-**Intel i9-10900X** (10 cores, AVX-512; NumPy 2.5.4 on OpenBLAS 0.3.34; NumericAL 95028d8 built locally by GCC
-15.2, not the PyPI wheel; the AVX-512 path), same day, idle. A shared machine: figures move by some 10 %, and
-OpenBLAS's product of order 256 on its twenty threads swings tenfold between runs (from 0.1 to 1 ms in three runs
-that day; 0.098 ms here):
-
-| operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
-| --- | ---: | ---: | ---: | ---: | ---: |
-| matmul | 0.0148 ms (1.96×) | 0.0796 ms (3.09×) | 0.26 ms (2.65×) | 1.36 ms (2.59×) | 6.74 ms (1.47×) |
-| solve | 0.05 ms (1.44×) | 0.207 ms (**0.36×**) | 1.15 ms (**0.77×**) | 4.68 ms (1.16×) | 13.8 ms (**0.87×**) |
-| inverse | 0.0524 ms (**0.61×**) | 0.508 ms (**0.77×**) | 1.98 ms (1.08×) | 7.4 ms (1.06×) | 23.1 ms (**0.76×**) |
-| cholesky | 0.0396 ms (1.99×) | 0.144 ms (**0.80×**) | 0.669 ms (1.15×) | 2.94 ms (**0.99×**) | 12.5 ms (**0.72×**) |
-| qr | 0.132 ms (**0.94×**) | 0.667 ms (**0.40×**) | 2.51 ms (**0.64×**) | 11.9 ms (**0.76×**) | 48.1 ms (**0.74×**) |
-| eigh | 0.48 ms (**0.80×**) | 1.95 ms (1.12×) | 7.76 ms (1.17×) | 29.9 ms (1.37×) | 114 ms (1.13×) |
-| svd | 1.13 ms (1.20×) | 4.82 ms (1.30×) | 20.8 ms (1.44×) | 94.5 ms (1.14×) | 421 ms (1.14×) |
-| lstsq | 0.272 ms (**0.24×**) | 1.87 ms (**0.36×**) | 7.72 ms (**0.45×**) | 33.8 ms (**0.39×**) | 155 ms (**0.50×**) |
-
-**Intel i9-9900K** (8 cores, AVX2; NumPy 2.5.4 on OpenBLAS 0.3.34; NumericAL 95028d8 built locally by GCC 15.3;
-the AVX2 path), same day, idle:
+**Intel i5-8500** (6 cores, AVX2, no hyperthreads, a host of its own; NumPy 2.5.4 on OpenBLAS 0.3.34; NumericAL
+v2026.10.8 built by GCC 13.3 at `-O3` for the baseline x86-64, as the wheels are, the AVX2 path chosen at run time),
+2026-10-13, idle:
 
 | operation | n = 64 | n = 128 | n = 256 | n = 512 | n = 1024 |
 | --- | ---: | ---: | ---: | ---: | ---: |
-| matmul | 0.0169 ms (1.02×) | 0.0531 ms (1.62×) | 0.17 ms (1.29×) | 1.1 ms (1.27×) | 7.8 ms (1.10×) |
-| solve | 0.0361 ms (**0.86×**) | 0.18 ms (**0.89×**) | 1 ms (1.39×) | 3.53 ms (1.19×) | 13.2 ms (1.05×) |
-| inverse | 0.0539 ms (**0.67×**) | 0.398 ms (1.41×) | 1.59 ms (1.35×) | 5.34 ms (**0.95×**) | 22.5 ms (**0.62×**) |
-| cholesky | 0.0285 ms (1.34×) | 0.122 ms (**0.92×**) | 0.623 ms (1.14×) | 2.39 ms (1.15×) | 10.9 ms (**0.98×**) |
-| qr | 0.112 ms (**0.71×**) | 0.656 ms (**0.44×**) | 2.55 ms (**0.63×**) | 10.9 ms (**0.76×**) | 51 ms (**0.79×**) |
-| eigh | 0.4 ms (**0.74×**) | 1.75 ms (**0.97×**) | 7.05 ms (1.05×) | 26.7 ms (1.23×) | 109 ms (1.07×) |
-| svd | 1.25 ms (1.41×) | 4.42 ms (1.17×) | 19.6 ms (1.21×) | 87.7 ms (1.24×) | 368 ms (1.18×) |
-| lstsq | 0.231 ms (**0.20×**) | 1.43 ms (**0.28×**) | 7.12 ms (**0.39×**) | 28.4 ms (**0.38×**) | 123 ms (**0.44×**) |
+| matmul | 0.0177 ms (1.15×) | 0.0401 ms (1.34×) | 0.165 ms (**0.57×**) | 1.24 ms (1.17×) | 10.5 ms (1.04×) |
+| solve | 0.0344 ms (**0.88×**) | 0.141 ms (1.19×) | 0.731 ms (1.60×) | 2.81 ms (1.39×) | 12.8 ms (1.16×) |
+| inverse | 0.0507 ms (**0.68×**) | 0.245 ms (1.22×) | 1.34 ms (1.41×) | 4.85 ms (1.00×) | 24.4 ms (**0.84×**) |
+| cholesky | 0.0211 ms (1.06×) | 0.0921 ms (**0.91×**) | 0.467 ms (**0.99×**) | 1.95 ms (**0.94×**) | 9.11 ms (**0.83×**) |
+| qr | 0.127 ms (**0.84×**) | 0.634 ms (**0.58×**) | 2.24 ms (**0.75×**) | 9.35 ms (**0.80×**) | 53.5 ms (**0.80×**) |
+| eigh | 0.388 ms (1.16×) | 1.54 ms (1.34×) | 5.67 ms (1.18×) | 20.6 ms (1.20×) | 99.3 ms (**0.99×**) |
+| svd | 0.756 ms (1.35×) | 3.42 ms (1.32×) | 15.3 ms (1.28×) | 63 ms (1.07×) | 322 ms (1.10×) |
+| lstsq | 0.264 ms (**0.40×**) | 1.2 ms (**0.36×**) | 6.01 ms (**0.48×**) | 26.8 ms (**0.49×**) | 123 ms (**0.43×**) |
+
+OpenBLAS's product of order 256 on six threads is slower than its neighbours on this host in every run (0.29 ms,
+where orders 128 and 512 scale as expected); NumericAL's 0.165 ms there is its own regular figure. The machines
+of the previous tables (the i9-10900X with AVX-512, the i9-9900K) are shared, and were too loaded on 2026-10-13 to be measured
+alone (load 7 to 34); their tables return with a quiet run.
 
 Where the gaps are, and what closes them:
 
 - **`lstsq` and `qr` are ahead everywhere** (0.2–0.8×): `lstsq` takes a QR where a bound on the condition number
   shows the rank full, the singular value decomposition elsewhere; NumPy's `gelsd` always takes the latter. At
-  n = 1024 the inverse is ahead on every machine, and Cholesky and `solve` on most.
-- **Small problems** (n ≤ 256): up to 2–3× NumPy's time for the product of order 128, and up to 2.6× for the
-  decompositions built on it (M1 Pro's `solve`, against Accelerate). A call of a few microseconds waits on its threads; the cut-off that decides how
-  many to start is one weight for every shape. It wants a criterion by shape that counts the bytes a thread must
-  fetch, not only the multiply-adds.
-- **One x86-64 core** runs the product at about 77–80 GFLOP/s against OpenBLAS's 82–99: the loop order now keeps
-  the A sliver in L1 (BLIS's order), and what is left is the wait on C from memory at each tile's start and the
-  packing passes (about a tenth of the time each). Fusing the packing into the first compute pass (GEMMFIP) is the
-  next step to try.
-- **`eigh` and `svd` from n = 256** (1.05–1.45×): of `eigh`'s order 1024 on the i9-9900K, the tridiagonal reduction
-  takes about 45 ms to LAPACK's 31 (its panel's matrix-vector work runs on one core), divide and conquer 36 to
-  `dstedc`'s 20, and every call maps some 60 MB of fresh pages, about a microsecond each on Linux. The bidiagonal
-  reduction of `svd` has the same panel.
-- **Shared machines**: both x86-64 hosts serve other users, whose load moves single figures by 30 % or more. A
-  figure that departs from its row is re-measured alone before it is read as a regression; `uptime` before a
-  run says whether it was alone.
+  n = 1024 the inverse, Cholesky and `eigh` are ahead on both machines, and `solve` on the M1 Pro.
+- **Small problems on the M1 Pro** (n ≤ 256): Accelerate runs its AMX with little fixed cost, and the product of
+  order 64 to 128 is 1.6–1.9× its time, `solve` up to 1.9×. The AMX path packs A for every product (the AMX loads
+  a row of each operand; a column of A is not one) and a product starts and stops the unit per task.
+- **One x86-64 core** runs the product at about 0.85–0.9× OpenBLAS's rate (49 GFLOP/s against 56 on this host):
+  the loop order keeps the A sliver in L1 (BLIS's order), and what is left is the wait on B and C from memory and
+  the packing passes. Fusing the packing into the first compute pass (GEMMFIP) is the next step to try.
+- **`eigh` and `svd` up to n = 512 on x86-64** (1.1–1.35×): the tridiagonal and bidiagonal reductions take a
+  matrix-vector product per column, too small to share among threads before order 384, and the LU's panel is
+  one thread's (`solve` 1.4–1.6× at 256–512).
+- **Shared machines**: the campus x86-64 hosts serve other users, whose load moves single figures by 30 % or
+  more; a figure that departs from its row is re-measured alone before it is read as a regression, and `uptime`
+  before a run says whether it was alone.
 
 ## History
 
