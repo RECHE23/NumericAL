@@ -135,6 +135,7 @@ namespace numerical::detail {
   NUMERICAL_TARGET("avx512f") inline void avx512_full_tile_f64(std::size_t   kc,
                                                                const double* ap,
                                                                const double* bp,
+                                                               std::size_t   ldb,
                                                                double*       tile,
                                                                std::size_t   ld) noexcept
   {
@@ -146,8 +147,8 @@ namespace numerical::detail {
     }
     NUMERICAL_UNROLL_DEPTH
     for (std::size_t p {0}; p < kc; ++p) {
-      const __m512d b0 {_mm512_loadu_pd(bp + (p * avx512_nr))};
-      const __m512d b1 {_mm512_loadu_pd(bp + (p * avx512_nr) + 8)};
+      const __m512d b0 {_mm512_loadu_pd(bp + (p * ldb))};
+      const __m512d b1 {_mm512_loadu_pd(bp + (p * ldb) + 8)};
       NUMERICAL_UNROLL_TILE
       for (std::size_t i {0}; i < avx512_mr; ++i) {
         const __m512d a {_mm512_set1_pd(ap[(p * avx512_mr) + i])};
@@ -168,12 +169,13 @@ namespace numerical::detail {
   inline void avx512_tile_f64(std::size_t   kc,
                               const double* ap,
                               const double* bp,
+                              std::size_t   ldb,
                               double*       c,
                               std::size_t   ldc,
                               std::size_t   rows,
                               std::size_t   cols) noexcept
   {
-    through_edge<avx512_mr, avx512_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { avx512_full_tile_f64(kc, ap, bp, tile, ld); });
+    through_edge<avx512_mr, avx512_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { avx512_full_tile_f64(kc, ap, bp, ldb, tile, ld); });
   }
 
   /*!
@@ -183,6 +185,7 @@ namespace numerical::detail {
   NUMERICAL_TARGET("avx2,fma") inline void avx2_full_tile_f64(std::size_t   kc,
                                                               const double* ap,
                                                               const double* bp,
+                                                              std::size_t   ldb,
                                                               double*       tile,
                                                               std::size_t   ld) noexcept
   {
@@ -194,8 +197,8 @@ namespace numerical::detail {
     }
     NUMERICAL_UNROLL_DEPTH
     for (std::size_t p {0}; p < kc; ++p) {
-      const __m256d b0 {_mm256_loadu_pd(bp + (p * avx2_nr))};
-      const __m256d b1 {_mm256_loadu_pd(bp + (p * avx2_nr) + 4)};
+      const __m256d b0 {_mm256_loadu_pd(bp + (p * ldb))};
+      const __m256d b1 {_mm256_loadu_pd(bp + (p * ldb) + 4)};
       NUMERICAL_UNROLL_TILE
       for (std::size_t i {0}; i < avx2_mr; ++i) {
         const __m256d a {_mm256_broadcast_sd(ap + (p * avx2_mr) + i)};
@@ -216,12 +219,13 @@ namespace numerical::detail {
   inline void avx2_tile_f64(std::size_t   kc,
                             const double* ap,
                             const double* bp,
+                            std::size_t   ldb,
                             double*       c,
                             std::size_t   ldc,
                             std::size_t   rows,
                             std::size_t   cols) noexcept
   {
-    through_edge<avx2_mr, avx2_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { avx2_full_tile_f64(kc, ap, bp, tile, ld); });
+    through_edge<avx2_mr, avx2_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { avx2_full_tile_f64(kc, ap, bp, ldb, tile, ld); });
   }
 
   /*!

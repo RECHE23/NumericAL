@@ -304,12 +304,14 @@ namespace numerical::detail {
    * \param[in]     kc   The panel depth.
    * \param[in]     ap   The A sliver, `kc` columns of \ref gemm_mr elements.
    * \param[in]     bp   The B sliver, `kc` rows of \ref gemm_nr elements.
+   * \param[in]     ldb  The distance between its rows.
    * \param[in,out] tile The accumulators, row-major.
    */
   template <typename T>
   void gemm_kernel(std::size_t   kc,
                    const T*      ap,
                    const T*      bp,
+                   std::size_t   ldb,
                    gemm_tile<T>& tile)
   {
     constexpr std::size_t nr {gemm_nr<T>};
@@ -317,7 +319,7 @@ namespace numerical::detail {
       for (std::size_t i {0}; i < gemm_mr; ++i) {
         const T ai {ap[(p * gemm_mr) + i]};
         for (std::size_t j {0}; j < nr; ++j) {
-          tile[(i * nr) + j] += ai * bp[(p * nr) + j];
+          tile[(i * nr) + j] += ai * bp[(p * ldb) + j];
         }
       }
     }
@@ -333,6 +335,7 @@ namespace numerical::detail {
   void gemm_kernel(std::size_t   kc,
                    const T*      ap,
                    const T*      bp,
+                   std::size_t   ldb,
                    gemm_tile<T>& tile)
   {
     using lane                 = typename native_vector<T>::type;
@@ -352,7 +355,7 @@ namespace numerical::detail {
     // unroll on its own, and then reads and writes the tile through memory.
     for (std::size_t p {0}; p < kc; ++p) {
       std::array<lane, lanes> b {};
-      std::memcpy(b.data(), bp + (p * nr), sizeof(b));
+      std::memcpy(b.data(), bp + (p * ldb), sizeof(b));
 #  pragma GCC unroll 8
       for (std::size_t i {0}; i < gemm_mr; ++i) {
         const T ai {ap[(p * gemm_mr) + i]};
@@ -435,10 +438,17 @@ namespace numerical::detail {
     struct session
     {};
 
-    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc.
+    //! \brief Whether B's rows \p ldb apart are read in place: never, its slivers are packed.
+    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    {
+      return false;
+    }
+
+    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
     static void tile(std::size_t kc,
                      const T*    ap,
                      const T*    bp,
+                     std::size_t ldb,
                      T*          c,
                      std::size_t ldc,
                      std::size_t rows,
@@ -449,7 +459,7 @@ namespace numerical::detail {
       for (std::size_t i {0}; i < rows; ++i) {
         std::copy_n(c + (i * ldc), cols, accumulators.data() + (i * nr));
       }
-      gemm_kernel(kc, ap, bp, accumulators);
+      gemm_kernel(kc, ap, bp, ldb, accumulators);
       for (std::size_t i {0}; i < rows; ++i) {
         std::copy_n(accumulators.data() + (i * nr), cols, c + (i * ldc));
       }
@@ -475,16 +485,23 @@ namespace numerical::detail {
     static constexpr std::size_t serial_below {std::size_t {1} << 24};
     using session = amx_session; //!< The AMX on for a task.
 
-    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc.
+    //! \brief Whether B's rows \p ldb apart are read in place: up to \ref amx_in_place_stride.
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
+    {
+      return ldb <= amx_in_place_stride;
+    }
+
+    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
     static void tile(std::size_t   kc,
                      const double* ap,
                      const double* bp,
+                     std::size_t   ldb,
                      double*       c,
                      std::size_t   ldc,
                      std::size_t   rows,
                      std::size_t   cols) noexcept
     {
-      amx_tile_f64(kc, ap, bp, c, ldc, rows, cols);
+      amx_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
     }
   };
 #endif
@@ -631,7 +648,8 @@ namespace numerical::detail {
     const std::size_t        a_rows {((m + mr) - 1) / mr * mr};
     const std::size_t        b_cols {((std::min(nc_max, n) + nr) - 1) / nr * nr};
     const packing_storage<T> packed {a_rows * std::min(Kernel::depth, k), b_cols * std::min(Kernel::depth, k)};
-    const std::size_t        shared {gemm_shares<Kernel>(m, n, k) ? 1U : 0U}; // a weight of zero starts no thread
+    const std::size_t        shared   {gemm_shares<Kernel>(m, n, k) ? 1U : 0U}; // a weight of zero starts no thread
+    const bool               in_place {Kernel::reads_b_in_place(ldb)};          // B's whole slivers unpacked
     for (std::size_t jc {0}; jc < n; jc += nc_max) {
       const std::size_t nc      {std::min(nc_max, n - jc)};
       const std::size_t slivers {((nc + nr) - 1) / nr};
@@ -646,7 +664,9 @@ namespace numerical::detail {
                        if (piece < groups) {
                          const std::size_t jr    {piece * gemm_slivers_per_task * nr};
                          const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
-                         gemm_pack_b<nr>(b + (pc * ldb) + jc + jr, ldb, kc, width, packed.b() + (jr * kc));
+                         if (!in_place || width % nr != 0) { // read in place, a partial sliver is still packed: its outside zero
+                           gemm_pack_b<nr>(b + (pc * ldb) + jc + jr, ldb, kc, width, packed.b() + (jr * kc));
+                         }
                        }
                        else {
                          const std::size_t ic {(piece - groups) * Kernel::block_rows};
@@ -671,8 +691,9 @@ namespace numerical::detail {
                        for (std::size_t ir {ic}; ir < ic_end; ir += mr) {
                          for (std::size_t s {first}; s < last; ++s) {
                            const std::size_t jr {s * nr};
-                           Kernel::tile(kc, packed.a() + (ir * kc), packed.b() + (jr * kc), c + (ir * ldc) + jc + jr, ldc,
-                                        std::min(mr, m - ir), std::min(nr, nc - jr));
+                           const bool direct {in_place && jr + nr <= nc};
+                           Kernel::tile(kc, packed.a() + (ir * kc), direct ? b + (pc * ldb) + jc + jr : packed.b() + (jr * kc),
+                                        direct ? ldb : nr, c + (ir * ldc) + jc + jr, ldc, std::min(mr, m - ir), std::min(nr, nc - jr));
                          }
                        }
                      });
@@ -697,16 +718,23 @@ namespace numerical::detail {
     struct session
     {};
 
-    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc.
+    //! \brief Whether B's rows \p ldb apart are read in place: never, its slivers are packed.
+    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    {
+      return false;
+    }
+
+    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
     static void tile(std::size_t   kc,
                      const double* ap,
                      const double* bp,
+                     std::size_t   ldb,
                      double*       c,
                      std::size_t   ldc,
                      std::size_t   rows,
                      std::size_t   cols) noexcept
     {
-      avx512_tile_f64(kc, ap, bp, c, ldc, rows, cols);
+      avx512_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
     }
   };
 
@@ -726,16 +754,23 @@ namespace numerical::detail {
     struct session
     {};
 
-    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc.
+    //! \brief Whether B's rows \p ldb apart are read in place: never, its slivers are packed.
+    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    {
+      return false;
+    }
+
+    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
     static void tile(std::size_t   kc,
                      const double* ap,
                      const double* bp,
+                     std::size_t   ldb,
                      double*       c,
                      std::size_t   ldc,
                      std::size_t   rows,
                      std::size_t   cols) noexcept
     {
-      avx2_tile_f64(kc, ap, bp, c, ldc, rows, cols);
+      avx2_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
     }
   };
 #endif

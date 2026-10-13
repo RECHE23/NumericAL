@@ -7,6 +7,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **The AMX path reads B's rows in place**, where it packed them, when they are at most 512 elements long: its X
+  registers load a row's 16 elements as they lie, and packing them took a fifth of a small product. Partial
+  slivers are still packed, and the products are the same to the bit. M1 Pro, all cores: `matmul` of order 64,
+  128 and 256 −23 %, −17 % and −17 % (5.5 → 4.3 µs, 26 → 22 µs, 130 → 104 µs), `qr` of order 256 and 512
+  −11 % and −13 %; rows further apart stay packed (in place, order 1024 took 8 % longer and 2048 35 %). The
+  x86-64 kernels keep packing: read in place, AVX2's product of order 256 took twice as long.
 - **Off the x86-64 units, an LU solve with at most 16 right-hand sides goes row by row up to order 192**, as it does
   on x86-64 at any order, and the row combinations it is made of hold eight elements in registers through their
   terms, where each term was a call through the whole row. The solution is the blocked solve's to the bit. M1 Pro,

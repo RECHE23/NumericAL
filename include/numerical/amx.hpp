@@ -113,6 +113,11 @@ namespace numerical::detail {
   //! \brief The columns of C one AMX tile covers: two X registers of eight `double`.
   inline constexpr std::size_t amx_nr {16};
 
+  //! \brief The longest rows of B the AMX reads in place, unpacked: X loads a row's 16 elements as they lie, and
+  //!        packing them took a fifth of a small product (M1 Pro, order 64: 5.5 → 4.3 µs, 256: 130 → 104 µs); rows
+  //!        further apart cost more in translations than packing (order 1024: +8 %, 2048: +35 %).
+  inline constexpr std::size_t amx_in_place_stride {512};
+
   /*!
    * \brief `C += Aₚ·Bₚ` for one whole tile of C (\ref amx_mr × \ref amx_nr) over a panel of depth \p kc,
    *        on the AMX of the calling thread (inside an \ref amx_session).
@@ -123,12 +128,14 @@ namespace numerical::detail {
    * \param[in]     kc   The panel depth.
    * \param[in]     ap   The A sliver: \p kc columns of \ref amx_mr elements.
    * \param[in]     bp   The B sliver: \p kc rows of \ref amx_nr elements.
+   * \param[in]     ldb  The distance between the sliver's rows: \ref amx_nr packed, B's own read in place.
    * \param[in,out] tile The tile's first element, in a row-major C.
    * \param[in]     ld   The distance between C's rows.
    */
   inline void amx_full_tile_f64(std::size_t   kc,
                                 const double* ap,
                                 const double* bp,
+                                std::size_t   ldb,
                                 double*       tile,
                                 std::size_t   ld) noexcept
   {
@@ -141,7 +148,7 @@ namespace numerical::detail {
     }
     for (std::size_t p {0}; p < kc; ++p) {
       const double* const a {ap + (p * amx_mr)};
-      const double* const b {bp + (p * amx_nr)};
+      const double* const b {bp + (p * ldb)};
       for (std::uint64_t ya {0}; ya < 4; ++ya) {
         amx<amx_op::ldy>(amx_address(a + (ya * 8), ya));
       }
@@ -170,12 +177,13 @@ namespace numerical::detail {
   inline void amx_tile_f64(std::size_t   kc,
                            const double* ap,
                            const double* bp,
+                           std::size_t   ldb,
                            double*       c,
                            std::size_t   ldc,
                            std::size_t   rows,
                            std::size_t   cols) noexcept
   {
-    through_edge<amx_mr, amx_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { amx_full_tile_f64(kc, ap, bp, tile, ld); });
+    through_edge<amx_mr, amx_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { amx_full_tile_f64(kc, ap, bp, ldb, tile, ld); });
   }
 
   //! \brief Whether \p family (Apple's CPUFAMILY_ARM_* values) is one of the M1 to M4 families.
@@ -236,7 +244,7 @@ namespace numerical::detail {
       }
       {
         const amx_session on {};
-        amx_tile_f64(depth, a.data(), b.data(), c.data(), amx_nr, rows, cols);
+        amx_tile_f64(depth, a.data(), b.data(), amx_nr, c.data(), amx_nr, rows, cols);
       }
     }
     return c == want;
