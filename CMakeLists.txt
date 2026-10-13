@@ -127,7 +127,9 @@ set_target_properties(numerical_tests_bin PROPERTIES CXX_STANDARD 20 CXX_STANDAR
 if(MSVC)
     target_compile_options(numerical_tests_bin PRIVATE /W4 /WX /Zc:__cplusplus /EHsc /utf-8)
 else()
-    target_compile_options(numerical_tests_bin PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    # -Wshadow is MSVC /W4's C4456/C4457/C4459 (a name hiding a local, a parameter or a global), which a
+    # POSIX-only local gate would otherwise first see in CI.
+    target_compile_options(numerical_tests_bin PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)
     # test_gemm.cpp asserts the product sums in the order of its reference loop, to the bit. Fusing a
     # multiply-add is the compiler's choice per expression (GCC in gnu++ mode fuses at will), so it can
     # differ between two loops that sum in the same order. It is held off for the whole target: the

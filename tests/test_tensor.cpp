@@ -474,10 +474,10 @@ TEST(einsum_contracts_in_the_cheapest_order)
   EXPECT(path.size() == 2U && path[0].first == 1U && path[0].second == 2U && path[1].first == 0U && path[1].second == 1U);
   // Five operands, a wide middle: the narrow ends first, each step the cheapest pair.
   const std::map<char, std::size_t> wide   {{'a', 2}, {'b', 3}, {'c', 50}, {'d', 50}, {'e', 3}, {'f', 2}};
-  const auto                        steps {[](const std::vector<numerical::detail::contraction_step>& path) {
+  const auto                        steps {[](const std::vector<numerical::detail::contraction_step>& order) {
                                              std::vector<std::pair<std::size_t, std::size_t>> pairs;
-                                             pairs.reserve(path.size());
-                                             for (const numerical::detail::contraction_step step : path) {
+                                             pairs.reserve(order.size());
+                                             for (const numerical::detail::contraction_step step : order) {
                                                pairs.emplace_back(step.first, step.second);
                                              }
                                              return pairs;
