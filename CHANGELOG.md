@@ -7,6 +7,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **Cholesky solves the rows below each panel along columns**: chunks of 64 rows in parallel, each in a
+  column-major copy where every column takes its terms for all the chunk's rows at once (on AVX-512 or AVX2 one
+  fused multiply-add each), where each row's sums waited on their last addition. Each element's arithmetic is the
+  unblocked step's, in its order. All cores, i9-9900K: order 256 0.70 → 0.55 ms, 512 3.2 → 2.15 ms, 1024 12.2 →
+  10.1 ms, 2048 62 → 56 ms; M1 Pro: order 256 0.42 → 0.33 ms, 512 2.03 → 1.52 ms, 2048 54 → 49.5 ms.
 - **Decompositions take over an expiring matrix and hand their factors over without copies**: `matrix::elements()
   &&`, `tensor(matrix&&)`, constructors of LU, Cholesky and QR from a `matrix&&`, and `lower()`, `q()`, `r()`,
   `vectors()`, `u()` on an expiring decomposition move their storage; `solve`, `inverse`, `determinant` and
