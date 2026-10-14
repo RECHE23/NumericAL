@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.10 — 2026-10-14
+
 2026.10.9 was tagged but never published: its 32-bit Windows wheel failed a test. This release carries all of it.
 
 ### Fixed
