@@ -248,7 +248,8 @@ namespace numerical {
                                       std::size_t              cols,
                                       std::vector<std::size_t> out_shape)
     {
-      buffer<T> c(rows * cols, T {}); // the caller routes only an output of two elements or more here
+      buffer<T> c(rows * cols);          // the caller routes only an output of two elements or more here
+      parallel_zero(c.data(), c.size()); // gemm adds to C
       if (inner != 0) {
         gemm(rows, cols, inner, a.data(), inner, b.data(), cols, c.data(), cols);
       }
@@ -269,7 +270,7 @@ namespace numerical {
                                      const std::string&                 to,
                                      const std::map<char, std::size_t>& sizes)
     {
-      buffer<T> out(data.size(), T {});
+      buffer<T> out(data.size()); // every element written below
       if (data.empty()) {
         return out;
       }
@@ -388,13 +389,14 @@ namespace numerical {
       const buffer<T>      right                                              {sb == right_order ? buffer<T> {} : permuted(b.data(), sb, right_order, sizes)};
       const T* const       left_data                                          {sa == left_order ? a.data().data() : left.data()};
       const T* const       right_data                                         {sb == right_order ? b.data().data() : right.data()};
-      buffer<T>            c(checked_mul(batches, checked_mul(rows, cols)), T {});
+      buffer<T>            c(checked_mul(batches, checked_mul(rows, cols)));
       if (rows == 1 && cols == 1) { // a dot product per batch, as `chunked_dot` sums each chunk
         parallel_for(batches, inner, [&](std::size_t p) {
                        c[p] = dot_product(left_data + (p * inner), right_data + (p * inner), inner);
                      });
       }
       else {
+        parallel_zero(c.data(), c.size()); // gemm adds to C
         parallel_for(batches, rows * cols * inner / gemm_kernel_speedup, [&](std::size_t p) {
                        gemm(rows, cols, inner, left_data + (p * rows * inner), inner, right_data + (p * inner * cols), cols,
                             c.data() + (p * rows * cols), cols);
@@ -725,7 +727,7 @@ namespace numerical {
           if (cols == 1 && rows > 1 && inner != 0) { // a matrix times a vector: each row's dot product, as "i,i->"
             const T* const matrix    {operands[0]->data().data()};
             const T* const vector    {operands[1]->data().data()};
-            buffer<T>      y(rows, T {});
+            buffer<T>      y(rows);
             matrix_times_vector(matrix, rows, inner, vector, y.data());
             return tensor<T> {std::move(out_shape), std::move(y)};
           }

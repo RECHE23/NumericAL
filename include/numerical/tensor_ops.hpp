@@ -144,7 +144,7 @@ namespace numerical {
                                          const Reduce&    reduce)
     {
       const axis_walk walk                           {walk_along(t.shape(), axis)};
-      buffer<T>       out(walk.outer * walk.inner, T {});
+      buffer<T>       out(walk.outer * walk.inner);
       for (std::size_t o {0}; o < walk.outer; ++o) {
         for (std::size_t i {0}; i < walk.inner; ++i) {
           out[(o * walk.inner) + i] = reduce(t.data().data() + (o * walk.extent * walk.inner) + i, walk.extent, walk.inner);
@@ -324,7 +324,7 @@ namespace numerical {
                               return extreme(first, count, stride, larger);
                             });
       }
-      buffer<T>             out(walk.outer * walk.inner, T {});
+      buffer<T>             out(walk.outer * walk.inner);
       std::vector<unsigned> nan(walk.inner);
       for (std::size_t o {0}; o < walk.outer; ++o) {
         const T* const slab {t.data().data() + (o * walk.extent * walk.inner)};
@@ -381,7 +381,7 @@ namespace numerical {
                                           const Op&        op)
   {
     if (a.shape() == b.shape()) {
-      buffer<T> out(a.size(), T {});
+      buffer<T> out(a.size());
       std::transform(a.data().begin(), a.data().end(), b.data().begin(), out.begin(), op);
       return tensor<T> {a.shape(), std::move(out)};
     }
@@ -393,7 +393,7 @@ namespace numerical {
     for (const std::size_t extent : shape) {
       count *= extent;
     }
-    buffer<T> out(count, T {});
+    buffer<T> out(count); // every element written below
     if (count == 0) {
       return tensor<T> {std::move(shape), std::move(out)};
     }
@@ -480,7 +480,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] tensor<T> operator-(const tensor<T>& a)
   {
-    buffer<T> out(a.size(), T {});
+    buffer<T> out(a.size());
     std::transform(a.data().begin(), a.data().end(), out.begin(), std::negate<T> {});
     return tensor<T> {a.shape(), std::move(out)};
   }
@@ -492,7 +492,7 @@ namespace numerical {
                          const F&         f) -> tensor<std::decay_t<decltype(f(std::declval<const T&>()))>>
   {
     using R = std::decay_t<decltype(f(std::declval<const T&>()))>;
-    buffer<R> out(t.size(), R {});
+    buffer<R> out(t.size());
     std::transform(t.data().begin(), t.data().end(), out.begin(), f);
     return tensor<R> {t.shape(), std::move(out)};
   }
@@ -662,7 +662,7 @@ namespace numerical {
     }
     const double        length            {std::ceil((stop - start) / step)};
     const std::size_t   count             {length > 0.0 ? static_cast<std::size_t>(length) : 0};
-    buffer<double>      out(count, double {});
+    buffer<double>      out(count);
     const double        delta             {(start + step) - start};
     for (std::size_t i {0}; i < count; ++i) {
       out[i] = std::fma(static_cast<double>(i), delta, start);
@@ -679,7 +679,7 @@ namespace numerical {
                                                double      stop,
                                                std::size_t count)
   {
-    buffer<double>      out(count, double {});
+    buffer<double>      out(count);
     const double        step              {count > 1 ? (stop - start) / static_cast<double>(count - 1) : 0.0};
     for (std::size_t i {0}; i < count; ++i) {
       // The product rounded before the sum, as NumPy's linspace computes it in two operations. A compiler

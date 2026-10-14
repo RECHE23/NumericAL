@@ -164,7 +164,7 @@ namespace numerical {
     if (a.rows() != b.rows() || a.cols() != b.cols()) {
       throw dimension_error("matrix shapes differ in '+'");
     }
-    buffer<T> out(a.rows() * a.cols(), T {});
+    buffer<T> out(a.rows() * a.cols());
     std::transform(a.begin(), a.end(), b.begin(), out.begin(), std::plus<T> {});
     return matrix<T> {a.rows(), a.cols(), std::move(out)};
   }
@@ -177,7 +177,7 @@ namespace numerical {
     if (a.rows() != b.rows() || a.cols() != b.cols()) {
       throw dimension_error("matrix shapes differ in '-'");
     }
-    buffer<T> out(a.rows() * a.cols(), T {});
+    buffer<T> out(a.rows() * a.cols());
     std::transform(a.begin(), a.end(), b.begin(), out.begin(), std::minus<T> {});
     return matrix<T> {a.rows(), a.cols(), std::move(out)};
   }
@@ -187,7 +187,7 @@ namespace numerical {
   [[nodiscard]] matrix<T> operator*(const T&         scalar,
                                     const matrix<T>& m)
   {
-    buffer<T> out(m.rows() * m.cols(), T {});
+    buffer<T> out(m.rows() * m.cols());
     std::transform(m.begin(), m.end(), out.begin(),
                    [&scalar](const T& element) { return scalar * element; });
     return matrix<T> {m.rows(), m.cols(), std::move(out)};
@@ -210,8 +210,11 @@ namespace numerical {
     if (a.cols() != v.size()) {
       throw dimension_error("matrix–vector product: inner dimensions differ");
     }
-    buffer<T> out(a.rows(), T {});
-    if (a.cols() != 0) {
+    buffer<T> out(a.rows());
+    if (a.cols() == 0) {
+      std::fill(out.begin(), out.end(), T {}); // each element an empty sum
+    }
+    else {
       detail::matrix_times_vector(&*a.begin(), a.rows(), a.cols(), &v[0], out.data());
     }
     return vector<T> {std::move(out)};
@@ -225,9 +228,10 @@ namespace numerical {
     if (a.cols() != b.rows()) {
       throw dimension_error("matrix–matrix product: inner dimensions differ");
     }
-    // detail::gemm sums every element in ascending order of the inner index, whatever the blocking and
-    // the number of threads (see gemm.hpp); `out` starts at zero, as std::vector(n) guarantees.
-    buffer<T> out(detail::checked_mul(a.rows(), b.cols()), T {}); // guard the cross-product alloc
+    // detail::gemm adds to `out`, every element in ascending order of the inner index, whatever the blocking and
+    // the number of threads (see gemm.hpp): `out` starts at zero, written by the threads that will compute it.
+    buffer<T> out(detail::checked_mul(a.rows(), b.cols())); // guard the cross-product alloc
+    detail::parallel_zero(out.data(), out.size());
     if (!out.empty() && a.cols() != 0) {
       detail::gemm(a.rows(), b.cols(), a.cols(), &*a.begin(), a.cols(), &*b.begin(), b.cols(), out.data(), b.cols());
     }

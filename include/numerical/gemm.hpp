@@ -1070,7 +1070,7 @@ namespace numerical::detail {
     if (chunks <= 1) {
       return dot_product(a, b, count);
     }
-    buffer<T> partial(chunks, T {});
+    buffer<T> partial(chunks);
     parallel_for(chunks, dot_chunk, [&](std::size_t c) {
                    const std::size_t first {c * dot_chunk};
                    partial[c] = dot_product(a + first, b + first, std::min(dot_chunk, count - first));

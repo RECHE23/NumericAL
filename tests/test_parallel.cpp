@@ -159,6 +159,21 @@ TEST(threads_for_pays_a_thread_for_each_share_of_work)
   EXPECT_EQ(threads_for(5, 0, 8), 0U);                                         // no work, no thread
 }
 
+// parallel_zero clears exactly its count, below the size that pays a second thread (one fill) and above it (chunks
+// across the threads, the last one partial), and leaves the element past it alone.
+TEST(parallel_zero_clears_its_count_and_nothing_past_it)
+{
+  using numerical::detail::parallel_zero;
+  constexpr std::size_t threshold {2 * (numerical::detail::work_per_thread / numerical::detail::zero_work)};
+  for (const std::size_t count : {std::size_t {0}, std::size_t {1000}, threshold - 1, threshold,
+                                  threshold + (numerical::detail::zero_chunk / 2) + 3}) {
+    std::vector<double> data(count + 1, 1.5);
+    parallel_zero(data.data(), count);
+    EXPECT(std::all_of(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(count), [](double x) { return x == 0.0; }));
+    EXPECT_EQ(data[count], 1.5);
+  }
+}
+
 // A parallel_for nested in a body finds the pool busy and runs its chunks in the calling worker: every index of
 // both levels once, no wait on itself.
 TEST(a_parallel_for_nested_in_a_body_runs_in_its_thread)

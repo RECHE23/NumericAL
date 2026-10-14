@@ -14,6 +14,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   `auto` is unchanged. The constructors still take a `std::vector<T>` (copied in; a `buffer<T>` moves in), and a
   braced list of elements; a `buffer<T>` compares equal to a `std::vector<T>` holding the same elements. Nothing is
   computed differently: every result is the same to the bit.
+- **A product's result is zeroed by the threads that will compute it** (`detail::parallel_zero`), where it was zeroed on
+  one before the product started: a fresh result's pages are first touched across the threads. The C++ `matrix *
+  matrix`, `A @ B` and `einsum`'s products; the element-wise operations, transposes, reductions, `arange` and
+  `linspace`, which write every element, no longer zero first. M1 Pro, eight threads, `matrix * matrix`: order 512
+  680 → 580 µs, 1024 4.46 → 4.13 ms; ten AVX-512 cores, 728 → 647 µs and 4.36 → 3.99 ms; one thread unchanged. The
+  same bits.
 - **The C++ `matrix * vector` goes the way `A @ v` goes** (`detail::matrix_times_vector`, shared by both): each element
   its row's dot product, four rows at a time, the rows on every core, where a scalar loop summed each row in order.
   M1 Pro: order 64 1.5 → 0.37 µs, 256 34.7 → 8.0, 1024 873 → 45. Its last bits can move, as `A @ v`'s did.

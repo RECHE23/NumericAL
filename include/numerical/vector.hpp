@@ -128,7 +128,7 @@ namespace numerical {
     if (a.size() != b.size()) {
       throw dimension_error("vector sizes differ in '+'");
     }
-    buffer<T> out(a.size(), T {});
+    buffer<T> out(a.size());
     std::transform(a.begin(), a.end(), b.begin(), out.begin(), std::plus<T> {});
     return vector<T> {std::move(out)};
   }
@@ -141,7 +141,7 @@ namespace numerical {
     if (a.size() != b.size()) {
       throw dimension_error("vector sizes differ in '-'");
     }
-    buffer<T> out(a.size(), T {});
+    buffer<T> out(a.size());
     std::transform(a.begin(), a.end(), b.begin(), out.begin(), std::minus<T> {});
     return vector<T> {std::move(out)};
   }
@@ -151,7 +151,7 @@ namespace numerical {
   [[nodiscard]] vector<T> operator*(const T&         scalar,
                                     const vector<T>& v)
   {
-    buffer<T> out(v.size(), T {});
+    buffer<T> out(v.size());
     std::transform(v.begin(), v.end(), out.begin(),
                    [&scalar](const T& element) { return scalar * element; });
     return vector<T> {std::move(out)};
