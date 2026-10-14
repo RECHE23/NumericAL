@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.11 — 2026-10-14
+
 ### Added
 - **`make bench-diff`**, run first by `make release`: the last release against the working tree, with each compiler
   the host has, at small orders too; a decomposition slower by 5 % in two batches stops the release. The two
