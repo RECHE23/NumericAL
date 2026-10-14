@@ -3691,6 +3691,7 @@ namespace numerical {
       // at the end, in parallel by columns.
       std::vector<row_operation> on_vt;
       std::vector<row_operation> on_ut;
+      const bool                 record  {!vt.empty()}; // the singular values alone record nothing
       const double               epsilon {std::numeric_limits<double>::epsilon()};
       const double               tiny    {std::numeric_limits<double>::min() / epsilon};
       constexpr std::size_t      none    {std::numeric_limits<std::size_t>::max()};
@@ -3709,12 +3710,16 @@ namespace numerical {
         if (top == p - 1) { // d[p−1] has converged: make it non-negative, sort it into place
           if (d[top] < 0.0) {
             d[top] = -d[top];
-            on_vt.push_back({row_operation::kind::negate, top, top, 0.0, 0.0});
+            if (record) {
+              on_vt.push_back({row_operation::kind::negate, top, top, 0.0, 0.0});
+            }
           }
           for (std::size_t j {top}; j + 1 < n && d[j] < d[j + 1]; ++j) {
             std::swap(d[j], d[j + 1]);
-            on_vt.push_back({row_operation::kind::swap, j, j + 1, 0.0, 0.0});
-            on_ut.push_back({row_operation::kind::swap, j, j + 1, 0.0, 0.0});
+            if (record) {
+              on_vt.push_back({row_operation::kind::swap, j, j + 1, 0.0, 0.0});
+              on_ut.push_back({row_operation::kind::swap, j, j + 1, 0.0, 0.0});
+            }
           }
           --p;
           continue;
@@ -3741,7 +3746,9 @@ namespace numerical {
               f        = -sn * e[j - 1];
               e[j - 1] = cs * e[j - 1];
             }
-            on_vt.push_back({row_operation::kind::rotate, j, p - 1, cs, sn});
+            if (record) {
+              on_vt.push_back({row_operation::kind::rotate, j, p - 1, cs, sn});
+            }
           }
           continue;
         }
@@ -3755,7 +3762,9 @@ namespace numerical {
             d[j] = t;
             f    = -sn * e[j];
             e[j] = cs * e[j];
-            on_ut.push_back({row_operation::kind::rotate, j, zero, cs, sn});
+            if (record) {
+              on_ut.push_back({row_operation::kind::rotate, j, zero, cs, sn});
+            }
           }
           continue;
         }
@@ -3792,7 +3801,9 @@ namespace numerical {
           e[j]     = (cs * e[j]) - (sn * d[j]);
           g        = sn * d[j + 1];
           d[j + 1] = cs * d[j + 1];
-          on_vt.push_back({row_operation::kind::rotate, j, j + 1, cs, sn});
+          if (record) {
+            on_vt.push_back({row_operation::kind::rotate, j, j + 1, cs, sn});
+          }
           t        = rotation_length(f, g);
           cs       = f / t;
           sn       = g / t;
@@ -3801,7 +3812,9 @@ namespace numerical {
           d[j + 1] = (cs * d[j + 1]) - (sn * e[j]);
           g        = sn * e[j + 1];
           e[j + 1] = cs * e[j + 1];
-          on_ut.push_back({row_operation::kind::rotate, j, j + 1, cs, sn});
+          if (record) {
+            on_ut.push_back({row_operation::kind::rotate, j, j + 1, cs, sn});
+          }
         }
         e[p - 2] = f;
       }

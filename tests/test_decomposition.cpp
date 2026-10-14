@@ -1771,6 +1771,12 @@ TEST(singular_values_alone_are_the_decompositions)
          && std::abs(complex_alone[1] - complex_full[1]) <= 1e-13 * complex_full[0]);
   const vector<double> zero {numerical::singular_values(matrix<double> {{0.0, 0.0}, {0.0, 0.0}})};
   EXPECT(zero[0] == 0.0 && zero[1] == 0.0);
+  // Already bidiagonal, a zero inside its diagonal: the iteration splits there, and with no basis records nothing.
+  const matrix<double> split       {{1.0, 1.0, 0.0}, {0.0, 0.0, 1.0}, {0.0, 0.0, 1.0}}; // σ = √2, √2, 0
+  const vector<double> split_alone {numerical::singular_values(split)};
+  EXPECT(std::abs(split_alone[0] - std::sqrt(2.0)) <= 1e-15 && std::abs(split_alone[1] - std::sqrt(2.0)) <= 1e-15
+         && std::abs(split_alone[2]) <= 1e-15);
+  EXPECT(split_alone == numerical::svd_decomposition<double> {split}.singular_values());
   const vector<double> huge {numerical::singular_values(matrix<double> {{3e200, 0.0}, {0.0, 4e200}})};
   EXPECT(std::abs(huge[0] - 4e200) <= 1e-14 * 4e200 && std::abs(huge[1] - 3e200) <= 1e-14 * 4e200);
   EXPECT_EQ(numerical::matrix_rank(matrix<double> {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}}), 1U);

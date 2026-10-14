@@ -21,6 +21,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **On x86-64, an LU's trailing update weighs its work as the AVX tiles run it**, where it counted the AMX tile's
   speed and so shared fewer threads: six cores, order 256 690 → 622 µs, 384 to 1024 4 % faster. The factors are
   unchanged to the bit.
+- **The singular values alone record no rotation**: the iteration on the bidiagonal kept every rotation for bases it
+  did not form. `lstsq` 20 % faster on x86-64 (six cores, order 256 17.6 → 13.7 ms, 512 71.6 → 58.3), 7–14 % on an
+  M1 Pro; `singular_values` and `matrix_rank` likewise. The values are unchanged to the bit.
 
 ## 2026.10.11 — 2026-10-14
 
