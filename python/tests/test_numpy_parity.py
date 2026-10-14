@@ -30,6 +30,17 @@ class EinsumParity(unittest.TestCase):
         self.assertTrue(np.allclose(got, want, rtol=RTOL, atol=ATOL),
                         msg=f"{spec}: {got} != {want}")
 
+    def test_implicit_specs(self):
+        # No '->': the output is every label that appears once, in ASCII order.
+        r = self.rng
+        self.assertEinsum("ij,jk", r.random((3, 4)), r.random((4, 2)))  # a product
+        self.assertEinsum("ii", r.random((4, 4)))                       # a trace
+        self.assertEinsum("ba", r.random((2, 3)))                       # a transpose
+        self.assertEinsum("Ba", r.random((2, 3)))                       # B before a
+        self.assertEinsum("i,j", r.random(3), r.random(4))              # an outer product
+        self.assertEinsum("ijk,jil", r.random((2, 3, 4)), r.random((3, 2, 5)))
+        self.assertEinsum("ij,jk", r.random((3, 4)) + 1j * r.random((3, 4)), r.random((4, 2)))
+
     def test_real_specs(self):
         r = self.rng
         a, b = r.random(7), r.random(7)

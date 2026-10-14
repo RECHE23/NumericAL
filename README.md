@@ -121,6 +121,7 @@ import numerical
 a = [[1, 2], [3, 4]]
 numerical.einsum("ij,jk->ik", a, [[5, 6], [7, 8]])   # matrix product
 numerical.einsum("i,i->", [1, 2, 3], [1, 2, 3])       # dot
+numerical.einsum("ij,jk", a, [[5, 6], [7, 8]])        # implicit output, as NumPy: "ij,jk->ik"
 numerical.solve(a, [1.0, 1.0])                         # a @ x = b
 ```
 

@@ -14,6 +14,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   compiler is timed by running it on an x86-64 host.
 - **`numerical::singular_values(a)`**: the singular values without the singular vectors, as
   `numpy.linalg.svd(a, compute_uv=False)` (neither basis is formed, nor rotated through the iteration).
+- **`einsum` takes a spec without `->`**, as NumPy does: the output is every label that appears once, in ASCII order
+  (`"ij,jk"` is `"ij,jk->ik"`, `"ii"` the trace, `"ba"` the transpose), in C++ and Python alike. It was refused.
 - **`numerical::least_squares(a, b)`**: `lstsq`'s solution with the residual sums of squares, the rank and the
   singular values beside it (`least_squares_solution`).
 

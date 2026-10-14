@@ -94,8 +94,9 @@ class Einsum(unittest.TestCase):
         self.assertEqual(out.tolist(), 2j)
 
     def test_bad_spec_raises(self):
-        with self.assertRaises(numerical.error):
-            numerical.einsum("ij", numerical.Tensor([1, 2, 3, 4], shape=(2, 2)))
+        for spec in ("i1", "ijk", "ij->k"):  # a digit, a rank the operand lacks, a label no input has
+            with self.subTest(spec=spec), self.assertRaises(numerical.error):
+                numerical.einsum(spec, numerical.Tensor([1, 2, 3, 4], shape=(2, 2)))
 
 
 class Solve(unittest.TestCase):

@@ -570,10 +570,23 @@ namespace numerical {
       spec.erase(std::remove_if(spec.begin(), spec.end(),
                                 [](unsigned char ch) { return std::isspace(ch) != 0; }),
                  spec.end());
-      const std::size_t arrow {spec.find("->")};
-      if (arrow == std::string::npos) {
-        throw einsum_error("einsum: spec must contain '->'");
+      if (spec.find("->") == std::string::npos) {
+        // Implicit mode, as NumPy reads it: the output is every label that appears once, in ASCII order (`"ij,jk"`
+        // is `"ij,jk->ik"`, `"ii"` the trace, `"ba"` the transpose).
+        std::map<char, std::size_t> seen;
+        for (const char label : spec) {
+          if (label != ',') {
+            ++seen[label];
+          }
+        }
+        spec += "->";
+        for (const auto& [label, count] : seen) {
+          if (count == 1) {
+            spec += label;
+          }
+        }
       }
+      const std::size_t              arrow  {spec.find("->")};
       const std::vector<std::string> inputs {split_inputs(spec.substr(0, arrow))};
       const std::string              rhs    {spec.substr(arrow + 2)};
 

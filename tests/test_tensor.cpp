@@ -122,6 +122,24 @@ TEST(approx_equal_compares_complex_tensors)
   EXPECT(!approx_equal(a, tensor<c> {{1}, {c {1.0, 1.0}}}));                      // shape mismatch
 }
 
+// Without '->' the output is every label that appears once, in ASCII order, as NumPy reads the spec.
+TEST(einsum_implicit_mode_as_numpy)
+{
+  const matrix<int> a  {{1, 2, 3}, {4, 5, 6}};
+  const matrix<int> b  {{1, 0}, {0, 1}, {2, 2}};
+  const matrix<int> sq {{1, 2}, {3, 4}};
+  const tensor<int> ta {a};
+  const tensor<int> tb {b};
+  EXPECT(einsum("ij,jk", ta, tb) == einsum("ij,jk->ik", ta, tb));        // a product
+  EXPECT(einsum("ba", ta) == einsum("ba->ab", ta));                      // a transpose
+  EXPECT(einsum("ij", ta) == ta);
+  EXPECT_EQ(einsum("ii", tensor<int> {sq}).data()[0], 5);                // a trace: i twice, no output
+  EXPECT(einsum("Ba", ta).shape() == (std::vector<std::size_t> {2, 3})); // B before a in ASCII
+  EXPECT(einsum("bA", ta).shape() == (std::vector<std::size_t> {3, 2}));
+  const tensor<int> tv {vector<int> {1, 2, 3}};
+  EXPECT_EQ(einsum("i,i", tv, tv).data()[0], 14);                        // a dot product
+}
+
 TEST(einsum_matrix_product)
 {
   const matrix<int> a        {{1, 2}, {3, 4}};
@@ -419,7 +437,7 @@ TEST(einsum_rejects_malformed_specs)
   const vector<int> v  {1, 2};
   const tensor<int> tv {v};
 
-  EXPECT_THROWS(einsum("ij", ta), numerical::einsum_error);            // no '->'
+  EXPECT_THROWS(einsum("i1", ta), numerical::einsum_error);            // bad input char, implicit output
   EXPECT_THROWS(einsum("i1->i", ta), numerical::einsum_error);         // bad input char
   EXPECT_THROWS(einsum("ij,jk->ik", ta), numerical::einsum_error);     // operand count
   EXPECT_THROWS(einsum("ij->ij", tv), numerical::einsum_error);        // operand rank
