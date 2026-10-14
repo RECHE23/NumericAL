@@ -2966,9 +2966,6 @@ namespace numerical {
       return order;
     }
 
-    //! \brief The side of the tiles \ref columns_by_value copies.
-    inline constexpr std::size_t transpose_tile {32};
-
     /*!
      * \brief The `n × n` row-major matrix whose column c is row `order[c]` of \p zt (the eigenvectors as rows):
      *        by tiles, the rows of each on its own core. Element by element, each write was a row apart, and

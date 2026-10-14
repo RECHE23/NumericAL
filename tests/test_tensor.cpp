@@ -220,6 +220,101 @@ TEST(einsum_transpose_and_mixed_case_labels)
   EXPECT(einsum("aB->Ba", tm) == expected); // uppercase labels are valid too
 }
 
+TEST(einsum_permutes_by_tiles_and_copies_an_identity)
+{
+  // Larger than a tile each way and ragged at both edges; a permutation of three axes and the identity too.
+  const std::size_t   rows {(numerical::detail::transpose_tile * 2) + 5};
+  const std::size_t   cols {numerical::detail::transpose_tile + 3};
+  std::vector<double> values(rows * cols);
+  for (std::size_t i {0}; i < values.size(); ++i) {
+    values[i] = static_cast<double>(i) * 0.5;
+  }
+  const tensor<double> t       {{rows, cols}, values};
+  const tensor<double> flipped {einsum("ij->ji", t)};
+  EXPECT(flipped.shape() == (std::vector<std::size_t> {cols, rows}));
+  bool same                    {true};
+  for (std::size_t r {0}; r < rows; ++r) {
+    for (std::size_t c {0}; c < cols; ++c) {
+      same = same && flipped.data()[(c * rows) + r] == values[(r * cols) + c];
+    }
+  }
+  EXPECT(same);
+  EXPECT(einsum("ij->ij", t) == t);
+  const tensor<double> cube {{2, 3, 4}, std::vector<double>(24, 1.0)};
+  EXPECT(einsum("abc->cab", cube).shape() == (std::vector<std::size_t> {4, 2, 3}));
+}
+
+TEST(einsum_sums_one_axis_under_several_free_ones)
+{
+  // The general loop's odometer over two outer free labels (a, b), the last free one (c) swept inside.
+  std::vector<double> values(std::size_t {120}); // 2 × 3 × 4 × 5
+  for (std::size_t i {0}; i < values.size(); ++i) {
+    values[i] = static_cast<double>(i);
+  }
+  const tensor<double> t    {{2, 3, 4, 5}, values};
+  const tensor<double> sums {einsum("abcd->abc", t)};
+  EXPECT(sums.shape() == (std::vector<std::size_t> {2, 3, 4}));
+  bool same                 {true};
+  for (std::size_t abc {0}; abc < 24; ++abc) {
+    const double first {static_cast<double>(abc * 5)};
+    same = same && sums.data()[abc] == (5.0 * first) + 10.0; // first + (first+1) + … + (first+4)
+  }
+  EXPECT(same);
+  // The same loop for integers, whose einsum the coverage counts apart.
+  const tensor<int> ints {{2, 3, 4, 5}, std::vector<int>(120, 1)};
+  EXPECT(einsum("abcd->abc", ints) == (tensor<int> {{2, 3, 4}, std::vector<int>(24, 5)}));
+}
+
+TEST(einsum_matrix_vector_rows_are_their_dot_products)
+{
+  // Each row of A·v is that row's dot product with v, four rows at a time and the rest alone; v·A sums its rows in
+  // ascending order. A row longer than a chunk takes the chunked sum, as "i,i->" does.
+  for (const auto& [rows, n] : std::vector<std::pair<std::size_t, std::size_t>> {{7, 9}, {70, 33}, {3, 130}}) {
+    std::vector<double> a(rows * n);
+    std::vector<double> v(n);
+    std::vector<double> w(rows);
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = 1.0 / static_cast<double>(i + 3);
+    }
+    for (std::size_t i {0}; i < n; ++i) {
+      v[i] = static_cast<double>(i % 5) - 1.5;
+    }
+    for (std::size_t i {0}; i < rows; ++i) {
+      w[i] = static_cast<double>(i % 3) + 0.25;
+    }
+    const tensor<double> ta   {{rows, n}, a};
+    const tensor<double> av   {einsum("ij,j->i", ta, tensor<double> {{n}, v})};
+    const tensor<double> wa   {einsum("i,ij->j", tensor<double> {{rows}, w}, ta)};
+    bool                 same {true};
+    for (std::size_t r {0}; r < rows; ++r) {
+      same = same && av.data()[r] == numerical::detail::dot_product(a.data() + (r * n), v.data(), n);
+    }
+    for (std::size_t c {0}; c < n; ++c) {
+      double sum {0.0};
+      for (std::size_t r {0}; r < rows; ++r) {
+        sum += w[r] * a[(r * n) + c];
+      }
+      same = same && std::abs(wa.data()[c] - sum) <= 1e-14 * static_cast<double>(rows);
+    }
+    EXPECT(same);
+  }
+  const std::size_t    long_row {numerical::detail::dot_chunk + 5};
+  std::vector<double>  two(2 * long_row, 1.0);
+  const tensor<double> long_av  {einsum("ij,j->i", tensor<double> {{2, long_row}, two}, tensor<double> {{long_row}, std::vector<double>(long_row, 2.0)})};
+  EXPECT(long_av.data()[0] == 2.0 * static_cast<double>(long_row) && long_av.data()[1] == long_av.data()[0]);
+  const tensor<double> none     {einsum("ij,j->i", tensor<double> {{3, 0}, std::vector<double> {}}, tensor<double> {{0}, std::vector<double> {}})};
+  EXPECT(none.data() == (std::vector<double> {0.0, 0.0, 0.0}));
+  // Integers, whose einsum the coverage counts apart: rows of A·v, one longer than a chunk, and v·A.
+  const tensor<int> im {{3, 4}, std::vector<int> {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}};
+  EXPECT(einsum("ij,j->i", im, tensor<int> {{4}, std::vector<int> {1, 0, 2, 1}}) == (tensor<int> {{3}, std::vector<int> {11, 27, 43}}));
+  EXPECT(einsum("i,ij->j", tensor<int> {{3}, std::vector<int> {1, 1, 2}}, im) == (tensor<int> {{4}, std::vector<int> {24, 28, 32, 36}}));
+  EXPECT(einsum("ij,j->i", tensor<int> {{3, 0}, std::vector<int> {}}, tensor<int> {{0}, std::vector<int> {}}) == (tensor<int> {{3}, std::vector<int>(3, 0)}));
+  EXPECT(einsum("i,ij->j", tensor<int> {{0}, std::vector<int> {}}, tensor<int> {{0, 4}, std::vector<int> {}}) == (tensor<int> {{4}, std::vector<int>(4, 0)}));
+  const std::size_t long_ints {numerical::detail::dot_chunk + 3};
+  EXPECT(einsum("ij,j->i", tensor<int> {{2, long_ints}, std::vector<int>(2 * long_ints, 1)}, tensor<int> {{long_ints}, std::vector<int>(long_ints, 3)})
+         == (tensor<int> {{2}, std::vector<int>(2, static_cast<int>(3 * long_ints))}));
+}
+
 TEST(einsum_trace_and_diagonal)
 {
   const matrix<int> m     {{1, 2}, {3, 4}};

@@ -261,10 +261,14 @@ def _iter(self):
     return (self[i] for i in range(self.shape[0]))
 
 
+_LETTERS = "abcdefghijklmnopqrstuvwxyz"
+_REVERSALS = [f"{_LETTERS[:rank]}->{_LETTERS[:rank][::-1]}" for rank in range(len(_LETTERS) + 1)]
+
+
 def _transpose(self):
-    """The tensor with its axes reversed: a matrix's transpose, as NumPy's ``.T``."""
-    letters = "abcdefghijklmnopqrstuvwxyz"[:len(self.shape)]
-    return einsum(f"{letters}->{letters[::-1]}", self)
+    """The tensor with its axes reversed: a matrix's transpose, as NumPy's ``.T``. The spec is built once per rank and
+    the extension called directly: a transposition has no error for the wrapper to translate."""
+    return _numerical.einsum(_REVERSALS[len(self.shape)], self)
 
 
 _MATMUL = {(1, 1): "i,i->", (2, 1): "ij,j->i", (1, 2): "i,ij->j", (2, 2): "ij,jk->ik"}

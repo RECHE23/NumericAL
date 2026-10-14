@@ -15,6 +15,12 @@
 
 namespace numerical::detail {
 
+  //! \brief The side of the tiles a transposing copy goes by (an `einsum` permutation of two axes, the eigenvectors'
+  //!        columns): a tile read and a tile written fit the L1 cache, where element by element each write, a row
+  //!        apart, missed it (order 1024 on arm64: 4.7 → 1.5 ms; the eigenvectors of order 1024, a tenth of an `eigh`
+  //!        on six x86-64 cores).
+  inline constexpr std::size_t transpose_tile {32};
+
   //! \brief The rows of a lower triangle \ref symmetric_rows takes at once.
   inline constexpr std::size_t symmetric_row_group {4};
 
@@ -108,6 +114,61 @@ namespace numerical::detail {
       total += x[i] * y[i];
     }
     return total;
+  }
+
+  /*!
+   * \brief \ref dot_product of each of \p rows rows of \p m (\p ld apart) with \p x, into \p out: four rows at a time,
+   *        each summed exactly as \ref dot_product sums it (its lanes, their reduction, its remainder), so each is
+   *        that dot product to the bit; the four share each load of \p x, and their sixteen chains keep the units
+   *        busy where one row's four waited on their last addition (a matrix of order 256 times a vector on one
+   *        arm64 core: 10.8 → 8.2 µs).
+   */
+  template <native_scalar T>
+  void row_dots(const T*    m,
+                std::size_t ld,
+                std::size_t rows,
+                const T*    x,
+                std::size_t count,
+                T*          out)
+  {
+    using lane = typename native_vector<T>::type;
+    constexpr std::size_t width {native_vector_bytes / sizeof(T)};
+    constexpr std::size_t lanes {4};
+    constexpr std::size_t group {4};
+    const std::size_t     done  {count - (count % (width * lanes))};
+    std::size_t           r0    {0};
+    for (; r0 + group <= rows; r0 += group) {
+      std::array<std::array<lane, lanes>, group> sum {};
+      for (std::size_t i {0}; i < done; i += width * lanes) {
+#  pragma GCC unroll 4 // the sums in registers: GCC keeps a rolled array of vectors in memory
+        for (std::size_t l {0}; l < lanes; ++l) {
+          lane xv;
+          std::memcpy(&xv, x + i + (l * width), sizeof(lane));
+#  pragma GCC unroll 4
+          for (std::size_t r {0}; r < group; ++r) {
+            lane mv;
+            std::memcpy(&mv, m + ((r0 + r) * ld) + i + (l * width), sizeof(lane));
+            sum[r][l] += mv * xv;
+          }
+        }
+      }
+      for (std::size_t r {0}; r < group; ++r) {
+        T total {};
+        for (std::size_t l {0}; l < lanes; ++l) {
+          for (std::size_t k {0}; k < width; ++k) {
+            total += sum[r][l][k];
+          }
+        }
+        const T* const row {m + ((r0 + r) * ld)};
+        for (std::size_t i {done}; i < count; ++i) {
+          total += row[i] * x[i];
+        }
+        out[r0 + r] = total;
+      }
+    }
+    for (; r0 < rows; ++r0) {
+      out[r0] = dot_product(m + (r0 * ld), x, count);
+    }
   }
 
   /*!
@@ -468,6 +529,20 @@ namespace numerical::detail {
       total += x[i] * y[i];
     }
     return total;
+  }
+
+  //! \brief \ref dot_product of each row of \p m with \p x, for a type no native vector holds.
+  template <typename T>
+  void row_dots(const T*    m,
+                std::size_t ld,
+                std::size_t rows,
+                const T*    x,
+                std::size_t count,
+                T*          out)
+  {
+    for (std::size_t r {0}; r < rows; ++r) {
+      out[r] = dot_product(m + (r * ld), x, count);
+    }
   }
 
   /*!

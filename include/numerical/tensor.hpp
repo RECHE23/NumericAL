@@ -235,6 +235,12 @@ namespace numerical {
       return tensor<T> {std::move(out_shape), std::move(c)};
     }
 
+    //! \brief The rows a thread takes of a matrix times a vector (\ref row_dots).
+    inline constexpr std::size_t row_group {64};
+
+    //! \brief The columns a thread takes of a vector times a matrix: each of its rows added to them in order.
+    inline constexpr std::size_t vector_chunk {128};
+
     /*!
      * \brief The elements of \p data, whose axes carry the labels \p from (extents in \p sizes), laid out row-major
      *        along the labels \p to, a permutation of \p from that differs from it (so at least one label): an
@@ -248,6 +254,23 @@ namespace numerical {
     {
       std::vector<T> out(data.size());
       if (data.empty()) {
+        return out;
+      }
+      if (to.size() == 2) { // the one permutation of two axes, a transpose: by tiles, each read and written in the cache
+        const std::size_t rows {sizes.at(from[0])};
+        const std::size_t cols {sizes.at(from[1])};
+        parallel_for((rows + transpose_tile - 1) / transpose_tile, transpose_tile * cols, [&](std::size_t block) {
+                       const std::size_t r0 {block * transpose_tile};
+                       const std::size_t r1 {std::min(r0 + transpose_tile, rows)};
+                       for (std::size_t c0 {0}; c0 < cols; c0 += transpose_tile) {
+                         const std::size_t c1 {std::min(c0 + transpose_tile, cols)};
+                         for (std::size_t r {r0}; r < r1; ++r) {
+                           for (std::size_t c {c0}; c < c1; ++c) {
+                             out[(c * rows) + r] = data[(r * cols) + c];
+                           }
+                         }
+                       }
+                     });
         return out;
       }
       const std::size_t           rank {to.size()};
@@ -679,6 +702,15 @@ namespace numerical {
         return std::move(owned.back()); // the last contraction's, the output
       }
 
+      // Fast path: one operand, nothing summed, each label once: a permutation of its axes (a transpose), a copy.
+      if (operands.size() == 1 && summed.empty() && inputs[0].size() == output.size()) {
+        std::vector<std::size_t> out_shape;
+        for (const char label : output) {
+          out_shape.push_back(sizes.at(label));
+        }
+        return tensor<T> {std::move(out_shape), inputs[0] == output ? operands[0]->data() : permuted(operands[0]->data(), inputs[0], output, sizes)};
+      }
+
       // Fast path: a plain two-operand single contraction in canonical layout —
       // `A` ending with the contracted label, `B` starting with it, and the
       // output being A's leading free labels then B's trailing ones — is exactly
@@ -702,6 +734,34 @@ namespace numerical {
           for (std::size_t k {1}; k < s1.size(); ++k) {
             cols *= sizes.at(s1[k]);
             out_shape.push_back(sizes.at(s1[k]));
+          }
+          if (cols == 1 && rows > 1 && inner != 0) { // a matrix times a vector: each row's dot product, as "i,i->"
+            const T* const matrix {operands[0]->data().data()};
+            const T* const vector {operands[1]->data().data()};
+            std::vector<T> y(rows);
+            if (inner > dot_chunk) { // rows longer than a chunk: chunked_dot's partial sums
+              parallel_for(rows, inner, [&](std::size_t r) { y[r] = chunked_dot(matrix + (r * inner), vector, inner); });
+            }
+            else {                   // chunked_dot is one dot_product there: by groups of rows, which share each load of the vector
+              parallel_for((rows + row_group - 1) / row_group, row_group * inner, [&](std::size_t g) {
+                             const std::size_t first {g * row_group};
+                             row_dots(matrix + (first * inner), inner, std::min(row_group, rows - first), vector, inner, y.data() + first);
+                           });
+            }
+            return tensor<T> {std::move(out_shape), std::move(y)};
+          }
+          if (rows == 1 && cols > 1 && inner != 0) { // a vector times a matrix: its rows scaled and added in order
+            const T* const vector    {operands[0]->data().data()};
+            const T* const matrix    {operands[1]->data().data()};
+            std::vector<T> y(cols, T {});
+            parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
+                           const std::size_t first {chunk * vector_chunk};
+                           const std::size_t count {std::min(vector_chunk, cols - first)};
+                           for (std::size_t k {0}; k < inner; ++k) {
+                             add_product(y.data() + first, vector[k], matrix + (k * cols) + first, count);
+                           }
+                         });
+            return tensor<T> {std::move(out_shape), std::move(y)};
           }
           if (rows * cols != 1) { // the product, an empty one included; a single element is one dot product
             return tile_gemm<T>(operands[0]->data(), operands[1]->data(),

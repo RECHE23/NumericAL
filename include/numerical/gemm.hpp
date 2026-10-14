@@ -257,6 +257,26 @@ namespace numerical::detail {
     return dot_product<double>(x, y, count);
   }
 
+  //! \brief \ref row_dots for `double`: on the x86-64 units each row by their \ref dot_product (wider than four rows
+  //!        of the portable vectors), elsewhere four rows at a time.
+  inline void row_dots(const double* m,
+                       std::size_t   ld,
+                       std::size_t   rows,
+                       const double* x,
+                       std::size_t   count,
+                       double*       out)
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    if (gemm_path_current() != gemm_path::portable) {
+      for (std::size_t r {0}; r < rows; ++r) {
+        out[r] = dot_product(m + (r * ld), x, count);
+      }
+      return;
+    }
+#endif
+    row_dots<double>(m, ld, rows, x, count, out);
+  }
+
   //! \brief The rows of C one register tile covers.
   inline constexpr std::size_t gemm_mr {4};
 

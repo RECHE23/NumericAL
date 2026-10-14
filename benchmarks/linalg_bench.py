@@ -19,28 +19,29 @@ import subprocess
 import sys
 import time
 
-OPERATIONS = ("matmul", "solve", "inverse", "cholesky", "qr", "eigh", "svd", "lstsq")
+OPERATIONS = ("matmul", "matvec", "transpose", "solve", "inverse", "cholesky", "qr", "eigh", "svd", "lstsq")
 
 
 def inputs(np, n):
     rng = np.random.default_rng(n)
     a = rng.standard_normal((n, n))
     return {"a": a, "spd": a @ a.T + n * np.eye(n), "sym": (a + a.T) / 2, "b": rng.standard_normal((n, 4)),
-            "tall": rng.standard_normal((2 * n, n)), "rhs": rng.standard_normal(2 * n)}
+            "tall": rng.standard_normal((2 * n, n)), "rhs": rng.standard_normal(2 * n), "v": rng.standard_normal(n)}
 
 
 def calls(library, np, data):
     """Each operation as a call on the library's own arrays, built outside the timing."""
     if library == "numpy":
         la = np.linalg
-        a, spd, sym, b, tall, rhs = (data[k] for k in ("a", "spd", "sym", "b", "tall", "rhs"))
-        return {"matmul": lambda: a @ a, "solve": lambda: la.solve(a, b), "inverse": lambda: la.inv(a),
+        a, spd, sym, b, tall, rhs, v = (data[k] for k in ("a", "spd", "sym", "b", "tall", "rhs", "v"))
+        # NumPy's .T is a view, free and lazy; NumericAL's is a contiguous copy, so it is timed against one.
+        return {"matmul": lambda: a @ a, "matvec": lambda: a @ v, "transpose": lambda: np.ascontiguousarray(a.T), "solve": lambda: la.solve(a, b), "inverse": lambda: la.inv(a),
                 "cholesky": lambda: la.cholesky(spd), "qr": lambda: la.qr(a), "eigh": lambda: la.eigh(sym),
                 "svd": lambda: la.svd(a, full_matrices=False), "lstsq": lambda: la.lstsq(tall, rhs, rcond=None)}
     import numerical as nl
 
-    a, spd, sym, b, tall, rhs = (nl.asarray(data[k]) for k in ("a", "spd", "sym", "b", "tall", "rhs"))
-    return {"matmul": lambda: a @ a, "solve": lambda: nl.solve(a, b), "inverse": lambda: nl.inverse(a),
+    a, spd, sym, b, tall, rhs, v = (nl.asarray(data[k]) for k in ("a", "spd", "sym", "b", "tall", "rhs", "v"))
+    return {"matmul": lambda: a @ a, "matvec": lambda: a @ v, "transpose": lambda: a.T, "solve": lambda: nl.solve(a, b), "inverse": lambda: nl.inverse(a),
             "cholesky": lambda: nl.cholesky(spd), "qr": lambda: nl.qr(a), "eigh": lambda: nl.eigh(sym),
             "svd": lambda: nl.svd(a), "lstsq": lambda: nl.lstsq(tall, rhs)}
 
@@ -52,6 +53,10 @@ def agrees(np, operation, data, got):
     norm = np.linalg.norm
     if operation == "matmul":
         return norm(np.asarray(got) - data["a"] @ data["a"]) <= tolerance * norm(data["a"]) ** 2
+    if operation == "matvec":
+        return norm(np.asarray(got) - data["a"] @ data["v"]) <= tolerance * norm(data["a"]) * norm(data["v"])
+    if operation == "transpose":
+        return np.array_equal(np.asarray(got), data["a"].T)
     if operation == "solve":
         return norm(data["a"] @ np.asarray(got) - data["b"]) <= tolerance * norm(data["a"]) * norm(np.asarray(got))
     if operation == "inverse":
@@ -76,6 +81,9 @@ def measure(library, sizes, operations, reps):
     """One process's medians, in seconds, by operation and size."""
     import numpy as np
 
+    if library == "numerical" and os.environ.get("NUMERICAL_BENCH_THREADS"):
+        import numerical
+        numerical.set_num_threads(int(os.environ["NUMERICAL_BENCH_THREADS"]))
     results = {}
     for n in sizes:
         data = inputs(np, n)
@@ -128,6 +136,8 @@ def main():
     parser.add_argument("--operations", default=",".join(OPERATIONS))
     parser.add_argument("--reps", type=int, default=15)
     parser.add_argument("--rounds", type=int, default=3)
+    parser.add_argument("--threads", type=int, help="the threads of both libraries (NumPy's BLAS, NumericAL's pool): "
+                        "on a host with hyperthreads or other users, one per core, run under taskset")
     parser.add_argument("--json", help="write the figures here too")
     parser.add_argument("--worker", choices=("numpy", "numerical"), help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -142,12 +152,16 @@ def main():
             env = dict(os.environ)
             if library == "numerical":
                 env["OPENBLAS_NUM_THREADS"] = "1"  # NumPy only checks answers here: no spinning threads
+            elif args.threads:
+                env["OPENBLAS_NUM_THREADS"] = str(args.threads)
+            if args.threads:
+                env["NUMERICAL_BENCH_THREADS"] = str(args.threads)
             out = subprocess.run([sys.executable, __file__, "--worker", library, "--sizes", args.sizes, "--operations",
                                   args.operations, "--reps", str(args.reps)], env=env, capture_output=True, text=True,
                                  check=True).stdout
             rounds[library].append(json.loads(out))
     info = machine()
-    print(f"{info['cpu']}, {info['cores']} threads; NumPy {info['numpy']} ({info['blas']}); Python {info['python']}; "
+    print(f"{info['cpu']}, {args.threads or info['cores']} threads; NumPy {info['numpy']} ({info['blas']}); Python {info['python']}; "
           f"NumericAL {info['commit']}; {info['date']}. Median of {args.rounds} processes per library; "
           "ratio = NumericAL / NumPy (below 1: NumericAL faster).\n")
     print("| operation | " + " | ".join(f"n = {n}" for n in sizes) + " |")

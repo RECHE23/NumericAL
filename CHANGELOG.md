@@ -7,6 +7,16 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **A matrix times a vector, a vector times a matrix and a transpose take paths of their own**, where `einsum` packed
+  the whole matrix for one product per element, or wrote a transpose a row apart at every element. Each row of
+  `A @ v` is its dot product with `v`, as `einsum("i,i->")` sums it (four rows at a time off the x86-64 units), so its
+  last bits can move; `v @ A` adds `A`'s rows in order, as before; a transpose copies by tiles, and `.T` calls the
+  extension directly. Against NumPy, from orders 64 to 1024: `A @ v` 3.7–7.8× → 0.96–2.0× (M1 Pro), 1.7–4.9× →
+  0.48–1.14× (six AVX2 cores), 2.6–13.4× → 0.74–2.25× (ten AVX-512 cores); the transpose, against a contiguous
+  copy of NumPy's view, 2.7–5.8× → 0.62–1.35×, 3.1–6.5× → 0.38–1.6×, 2.4–6.7× → 0.60–2.6×.
+- **The NumPy comparison (`benchmarks/linalg_bench.py`) times `A @ v` and the transpose**, and takes `--threads N`
+  for both libraries: on a host with hyperthreads or other users, one thread per core under `taskset`, where
+  OpenBLAS's threads on every hyperthread had swung its times by up to 40×.
 - **`make bench-diff` compiles both trees with every function on a 64-byte boundary**: where the linker put a kernel
   moved a product of order 24 by 8 % between 2026.10.11 and 2026.10.12, whose product code was byte for byte the
   same, and stopped the release (two batches of the same binaries confirm a placement as surely as a change).
