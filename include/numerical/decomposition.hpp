@@ -4751,7 +4751,7 @@ namespace numerical {
   {
     matrix<T>      solution;        //!< The minimum-norm `x` of `A x ≈ B` (`n × k`), \ref lstsq's.
     vector<double> residuals;       //!< Per column of `B`, `‖B − A x‖²`: for a tall `A` of full column rank, else empty.
-    std::size_t    rank;            //!< The numerical rank of `A` (\ref matrix_rank).
+    std::size_t    rank {0};        //!< The numerical rank of `A` (\ref matrix_rank).
     vector<double> singular_values; //!< The singular values of `A`, descending (\ref singular_values).
   };
 
@@ -4784,10 +4784,10 @@ namespace numerical {
         value = std::ldexp(value, r.second);
       }
     }
-    vector<double>      sigma {std::move(values)};
-    const std::size_t   rank  {detail::numerical_rank(sigma, a.rows(), a.cols())};
-    matrix<T>           x     {fast ? *std::move(fast) : detail::lstsq_from_svd(*s, rank, b)};
-    std::vector<double> residuals;
+    const vector<double> sigma {std::move(values)};
+    const std::size_t    rank  {detail::numerical_rank(sigma, a.rows(), a.cols())};
+    matrix<T>            x     {fast ? *std::move(fast) : detail::lstsq_from_svd(*s, rank, b)};
+    std::vector<double>  residuals;
     if (rank == a.cols() && a.rows() > a.cols()) {
       const matrix<T> fitted {a * x};
       residuals.assign(b.cols(), 0.0);
@@ -4800,7 +4800,7 @@ namespace numerical {
     return least_squares_solution<T> {.solution        = std::move(x),
                                       .residuals       = vector<double> {std::move(residuals)},
                                       .rank            = rank,
-                                      .singular_values = std::move(sigma)};
+                                      .singular_values = sigma};
   }
 
   /*!
