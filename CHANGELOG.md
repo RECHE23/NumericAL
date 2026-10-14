@@ -6,6 +6,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+2026.10.9 was tagged but never published: its 32-bit Windows wheel failed a test. This release carries all of it.
+
+### Fixed
+- **The test suite on a 32-bit interpreter**: a `linspace` count no index of that width holds is refused by Python
+  itself, as an `OverflowError`, before NumericAL sees it; the test now accepts that refusal as well.
+
 ## 2026.10.9 — 2026-10-14
 
 ### Added
