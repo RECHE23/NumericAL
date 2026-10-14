@@ -33,6 +33,7 @@
 
 #include "parallel.hpp"
 #include "amx.hpp"
+#include "buffer.hpp"
 #include "simd.hpp"
 #include "x86.hpp"
 
@@ -602,7 +603,7 @@ namespace numerical::detail {
     //! \brief Room for \p a_count packed elements of A and \p b_count of B.
     packing_storage(std::size_t a_count,
                     std::size_t b_count)
-      : storage_ {grown(std::exchange(kept(), std::vector<T> {}), a_count + padding + b_count + padding)},
+      : storage_ {grown(std::exchange(kept(), buffer<T> {}), a_count + padding + b_count + padding)},
         a_ {aligned(storage_.data())},
         b_ {aligned(storage_.data() + a_count + padding)}
     {}
@@ -614,7 +615,7 @@ namespace numerical::detail {
 
     ~packing_storage()
     {
-      kept() = storage_.size() <= kept_limit ? std::move(storage_) : std::vector<T> {};
+      kept() = storage_.size() <= kept_limit ? std::move(storage_) : buffer<T> {};
     }
 
     //! \brief A's packed elements.
@@ -630,9 +631,9 @@ namespace numerical::detail {
     }
 
     //! \brief The storage this thread keeps between products.
-    [[nodiscard]] static std::vector<T>& kept() noexcept
+    [[nodiscard]] static buffer<T>& kept() noexcept
     {
-      thread_local std::vector<T> storage;
+      thread_local buffer<T> storage;
       return storage;
     }
 
@@ -642,10 +643,10 @@ namespace numerical::detail {
     static constexpr std::size_t padding    {(cache_line / sizeof(T)) + 1}; //!< Elements enough to reach a line.
 
     //! \brief \p storage with at least \p count elements (it only grows, so a reuse writes nothing).
-    [[nodiscard]] static std::vector<T> grown(std::vector<T> storage,
-                                              std::size_t    count)
+    [[nodiscard]] static buffer<T> grown(buffer<T>      storage,
+                                         std::size_t    count)
     {
-      storage.resize(std::max(storage.size(), count));
+      storage.resize(std::max(storage.size(), count), T {});
       return storage;
     }
 
@@ -657,7 +658,7 @@ namespace numerical::detail {
       return at + (((cache_line - miss) % cache_line) / sizeof(T));
     }
 
-    std::vector<T> storage_;
+    buffer<T>      storage_;
     T*             a_;
     T*             b_;
   };
@@ -1069,7 +1070,7 @@ namespace numerical::detail {
     if (chunks <= 1) {
       return dot_product(a, b, count);
     }
-    std::vector<T> partial(chunks);
+    buffer<T> partial(chunks, T {});
     parallel_for(chunks, dot_chunk, [&](std::size_t c) {
                    const std::size_t first {c * dot_chunk};
                    partial[c] = dot_product(a + first, b + first, std::min(dot_chunk, count - first));

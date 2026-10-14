@@ -7,6 +7,13 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **C++: `vector`, `matrix` and `tensor` store their elements in `numerical::buffer<T>`** (`buffer.hpp`), a `std::vector`
+  whose elements constructed without a value are left uninitialised, so that a result written in full need not be
+  zeroed first, on one thread, before the threads that compute it write it (the next entries use it). `tensor::data()`
+  and `matrix::elements()` return a `buffer<T>`, and the iterators are `buffer<T>::const_iterator`; code that used
+  `auto` is unchanged. The constructors still take a `std::vector<T>` (copied in; a `buffer<T>` moves in), and a
+  braced list of elements; a `buffer<T>` compares equal to a `std::vector<T>` holding the same elements. Nothing is
+  computed differently: every result is the same to the bit.
 - **The C++ `matrix * vector` goes the way `A @ v` goes** (`detail::matrix_times_vector`, shared by both): each element
   its row's dot product, four rows at a time, the rows on every core, where a scalar loop summed each row in order.
   M1 Pro: order 64 1.5 → 0.37 µs, 256 34.7 → 8.0, 1024 873 → 45. Its last bits can move, as `A @ v`'s did.

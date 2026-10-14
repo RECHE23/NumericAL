@@ -26,6 +26,7 @@
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
 #include <cstddef>
 #include <deque>
+#include <initializer_list>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -67,11 +68,30 @@ namespace numerical {
      * \throws dimension_error If `elements.size()` is not `prod(shape)`.
      */
     tensor(std::vector<std::size_t> shape,
-           std::vector<T>           elements)
+           buffer<T>                elements)
       : shape_(std::move(shape)), data_(std::move(elements))
     {
       finalize();
     }
+
+    /*!
+     * \brief From a shape and a flat row-major std::vector, copied into the storage (a \ref buffer moves in instead).
+     * \param[in] shape    The size of each axis.
+     * \param[in] elements The `prod(shape)` elements, row-major.
+     * \throws dimension_error If `elements.size()` is not `prod(shape)`.
+     */
+    tensor(std::vector<std::size_t> shape,
+           const std::vector<T>&    elements)
+      : tensor(std::move(shape),
+               buffer<T>(elements.begin(), elements.end()))
+    {}
+
+    //! \brief From a shape and a braced list of the elements, row-major.
+    tensor(std::vector<std::size_t> shape,
+           std::initializer_list<T> elements)
+      : tensor(std::move(shape),
+               buffer<T>(elements))
+    {}
 
     //! \brief A rank-1 tensor from a vector. \param[in] v The vector.
     explicit tensor(const vector<T>& v)
@@ -117,7 +137,7 @@ namespace numerical {
     }
 
     //! \brief The elements, row-major.
-    [[nodiscard]] const std::vector<T>& data() const noexcept
+    [[nodiscard]] const buffer<T>& data() const noexcept
     {
       return data_;
     }
@@ -156,7 +176,7 @@ namespace numerical {
 
     std::vector<std::size_t> shape_;   //!< The size of each axis.
     std::vector<std::size_t> strides_; //!< Row-major strides.
-    std::vector<T>           data_;    //!< The elements, row-major.
+    buffer<T>                data_;    //!< The elements, row-major.
   };
 
   /*!
@@ -221,14 +241,14 @@ namespace numerical {
      * general engine's order, so no tolerance changes.
      */
     template <typename T>
-    [[nodiscard]] tensor<T> tile_gemm(const std::vector<T>&    a,
-                                      const std::vector<T>&    b,
+    [[nodiscard]] tensor<T> tile_gemm(const buffer<T>&         a,
+                                      const buffer<T>&         b,
                                       std::size_t              rows,
                                       std::size_t              inner,
                                       std::size_t              cols,
                                       std::vector<std::size_t> out_shape)
     {
-      std::vector<T> c(rows * cols, T {}); // the caller routes only an output of two elements or more here
+      buffer<T> c(rows * cols, T {}); // the caller routes only an output of two elements or more here
       if (inner != 0) {
         gemm(rows, cols, inner, a.data(), inner, b.data(), cols, c.data(), cols);
       }
@@ -244,12 +264,12 @@ namespace numerical {
      *        odometer over \p to's outer labels, a strided sweep of its last.
      */
     template <typename T>
-    [[nodiscard]] std::vector<T> permuted(const std::vector<T>&              data,
-                                          const std::string&                 from,
-                                          const std::string&                 to,
-                                          const std::map<char, std::size_t>& sizes)
+    [[nodiscard]] buffer<T> permuted(const buffer<T>&                   data,
+                                     const std::string&                 from,
+                                     const std::string&                 to,
+                                     const std::map<char, std::size_t>& sizes)
     {
-      std::vector<T> out(data.size());
+      buffer<T> out(data.size(), T {});
       if (data.empty()) {
         return out;
       }
@@ -364,11 +384,11 @@ namespace numerical {
       const std::size_t    cols                                               {extent_of(free_b)};
       const std::string    left_order                                         {batch + free_a + summed};
       const std::string    right_order                                        {batch + summed + free_b};
-      const std::vector<T> left                                               {sa == left_order ? std::vector<T> {} : permuted(a.data(), sa, left_order, sizes)};
-      const std::vector<T> right                                              {sb == right_order ? std::vector<T> {} : permuted(b.data(), sb, right_order, sizes)};
+      const buffer<T>      left                                               {sa == left_order ? buffer<T> {} : permuted(a.data(), sa, left_order, sizes)};
+      const buffer<T>      right                                              {sb == right_order ? buffer<T> {} : permuted(b.data(), sb, right_order, sizes)};
       const T* const       left_data                                          {sa == left_order ? a.data().data() : left.data()};
       const T* const       right_data                                         {sb == right_order ? b.data().data() : right.data()};
-      std::vector<T>       c(checked_mul(batches, checked_mul(rows, cols)), T {});
+      buffer<T>            c(checked_mul(batches, checked_mul(rows, cols)), T {});
       if (rows == 1 && cols == 1) { // a dot product per batch, as `chunked_dot` sums each chunk
         parallel_for(batches, inner, [&](std::size_t p) {
                        c[p] = dot_product(left_data + (p * inner), right_data + (p * inner), inner);
@@ -703,16 +723,16 @@ namespace numerical {
             out_shape.push_back(sizes.at(s1[k]));
           }
           if (cols == 1 && rows > 1 && inner != 0) { // a matrix times a vector: each row's dot product, as "i,i->"
-            const T* const matrix {operands[0]->data().data()};
-            const T* const vector {operands[1]->data().data()};
-            std::vector<T> y(rows);
+            const T* const matrix    {operands[0]->data().data()};
+            const T* const vector    {operands[1]->data().data()};
+            buffer<T>      y(rows, T {});
             matrix_times_vector(matrix, rows, inner, vector, y.data());
             return tensor<T> {std::move(out_shape), std::move(y)};
           }
           if (rows == 1 && cols > 1 && inner != 0) { // a vector times a matrix: its rows scaled and added in order
             const T* const vector    {operands[0]->data().data()};
             const T* const matrix    {operands[1]->data().data()};
-            std::vector<T> y(cols, T {});
+            buffer<T>      y(cols, T {});
             parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
                            const std::size_t first {chunk * vector_chunk};
                            const std::size_t count {std::min(vector_chunk, cols - first)};
@@ -726,7 +746,7 @@ namespace numerical {
             return tile_gemm<T>(operands[0]->data(), operands[1]->data(),
                                 rows, inner, cols, std::move(out_shape));
           }
-          return tensor<T> {std::move(out_shape), std::vector<T> {chunked_dot(operands[0]->data().data(), operands[1]->data().data(), inner)}};
+          return tensor<T> {std::move(out_shape), buffer<T> {chunked_dot(operands[0]->data().data(), operands[1]->data().data(), inner)}};
         }
       }
       if (operands.size() == 2) {
@@ -802,7 +822,7 @@ namespace numerical {
 
       std::vector<std::size_t> index(n_labels, 0); // value of each outer label
       std::vector<std::size_t> offset(n_ops, 0);   // each operand's flat offset (outer labels only)
-      std::vector<T>           result;
+      buffer<T>                result;
       result.reserve(out_size);
 
       for (std::size_t of {0}; of < out_outer; ++of) {

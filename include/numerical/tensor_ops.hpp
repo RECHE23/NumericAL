@@ -143,8 +143,8 @@ namespace numerical {
                                          std::size_t      axis,
                                          const Reduce&    reduce)
     {
-      const axis_walk walk {walk_along(t.shape(), axis)};
-      std::vector<T>  out(walk.outer * walk.inner);
+      const axis_walk walk                           {walk_along(t.shape(), axis)};
+      buffer<T>       out(walk.outer * walk.inner, T {});
       for (std::size_t o {0}; o < walk.outer; ++o) {
         for (std::size_t i {0}; i < walk.inner; ++i) {
           out[(o * walk.inner) + i] = reduce(t.data().data() + (o * walk.extent * walk.inner) + i, walk.extent, walk.inner);
@@ -324,7 +324,7 @@ namespace numerical {
                               return extreme(first, count, stride, larger);
                             });
       }
-      std::vector<T>        out(walk.outer * walk.inner);
+      buffer<T>             out(walk.outer * walk.inner, T {});
       std::vector<unsigned> nan(walk.inner);
       for (std::size_t o {0}; o < walk.outer; ++o) {
         const T* const slab {t.data().data() + (o * walk.extent * walk.inner)};
@@ -381,7 +381,7 @@ namespace numerical {
                                           const Op&        op)
   {
     if (a.shape() == b.shape()) {
-      std::vector<T> out(a.size());
+      buffer<T> out(a.size(), T {});
       std::transform(a.data().begin(), a.data().end(), b.data().begin(), out.begin(), op);
       return tensor<T> {a.shape(), std::move(out)};
     }
@@ -393,7 +393,7 @@ namespace numerical {
     for (const std::size_t extent : shape) {
       count *= extent;
     }
-    std::vector<T> out(count);
+    buffer<T> out(count, T {});
     if (count == 0) {
       return tensor<T> {std::move(shape), std::move(out)};
     }
@@ -480,7 +480,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] tensor<T> operator-(const tensor<T>& a)
   {
-    std::vector<T> out(a.size());
+    buffer<T> out(a.size(), T {});
     std::transform(a.data().begin(), a.data().end(), out.begin(), std::negate<T> {});
     return tensor<T> {a.shape(), std::move(out)};
   }
@@ -492,7 +492,7 @@ namespace numerical {
                          const F&         f) -> tensor<std::decay_t<decltype(f(std::declval<const T&>()))>>
   {
     using R = std::decay_t<decltype(f(std::declval<const T&>()))>;
-    std::vector<R> out(t.size());
+    buffer<R> out(t.size(), R {});
     std::transform(t.data().begin(), t.data().end(), out.begin(), f);
     return tensor<R> {t.shape(), std::move(out)};
   }
@@ -617,7 +617,7 @@ namespace numerical {
     for (const std::size_t extent : shape) {
       count = detail::checked_mul(count, extent);
     }
-    return tensor<T> {std::move(shape), std::vector<T>(count, value)};
+    return tensor<T> {std::move(shape), buffer<T>(count, value)};
   }
 
   //! \brief A tensor of \p shape full of zeros.
@@ -638,7 +638,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] tensor<T> eye(std::size_t n)
   {
-    std::vector<T> out(detail::checked_mul(n, n), T {});
+    buffer<T> out(detail::checked_mul(n, n), T {});
     for (std::size_t i {0}; i < n; ++i) {
       out[(i * n) + i] = static_cast<T>(1);
     }
@@ -660,10 +660,10 @@ namespace numerical {
     if (step == 0.0 || !std::isfinite(step) || !std::isfinite(start) || !std::isfinite(stop)) {
       throw dimension_error("arange needs finite bounds and a finite, non-zero step");
     }
-    const double        length {std::ceil((stop - start) / step)};
-    const std::size_t   count  {length > 0.0 ? static_cast<std::size_t>(length) : 0};
-    std::vector<double> out(count);
-    const double        delta  {(start + step) - start};
+    const double        length            {std::ceil((stop - start) / step)};
+    const std::size_t   count             {length > 0.0 ? static_cast<std::size_t>(length) : 0};
+    buffer<double>      out(count, double {});
+    const double        delta             {(start + step) - start};
     for (std::size_t i {0}; i < count; ++i) {
       out[i] = std::fma(static_cast<double>(i), delta, start);
     }
@@ -679,8 +679,8 @@ namespace numerical {
                                                double      stop,
                                                std::size_t count)
   {
-    std::vector<double> out(count);
-    const double        step {count > 1 ? (stop - start) / static_cast<double>(count - 1) : 0.0};
+    buffer<double>      out(count, double {});
+    const double        step              {count > 1 ? (stop - start) / static_cast<double>(count - 1) : 0.0};
     for (std::size_t i {0}; i < count; ++i) {
       // The product rounded before the sum, as NumPy's linspace computes it in two operations. A compiler
       // may fuse `i * step` into the addition after it (GCC does, across statements, wherever there is a

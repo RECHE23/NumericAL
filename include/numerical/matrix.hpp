@@ -65,15 +65,43 @@ namespace numerical {
      * \param[in] elements  The `rows*cols` elements, row-major (moved in).
      * \throws dimension_error If `elements.size()` is not `rows*cols`.
      */
-    explicit matrix(std::size_t    rows,
-                    std::size_t    cols,
-                    std::vector<T> elements)
+    explicit matrix(std::size_t rows,
+                    std::size_t cols,
+                    buffer<T>   elements)
       : rows_(rows), cols_(cols), data_(std::move(elements))
     {
       if (data_.size() != detail::checked_mul(rows_, cols_)) {
         throw dimension_error("matrix buffer size does not match dimensions");
       }
     }
+
+    /*!
+     * \brief From dimensions and a flat row-major std::vector, copied into the storage (a \ref buffer moves in instead).
+     * \param[in] rows,cols The dimensions.
+     * \param[in] elements  The `rows*cols` elements, row-major.
+     * \throws dimension_error If `elements.size()` is not `rows*cols`.
+     */
+    explicit matrix(std::size_t           rows,
+                    std::size_t           cols,
+                    const std::vector<T>& elements)
+      : matrix(rows,
+               cols,
+               buffer<T>(elements.begin(), elements.end()))
+    {}
+
+    /*!
+     * \brief From dimensions and a braced list of the elements, row-major.
+     * \param[in] rows,cols The dimensions.
+     * \param[in] elements  The `rows*cols` elements, row-major.
+     * \throws dimension_error If the list's length is not `rows*cols`.
+     */
+    explicit matrix(std::size_t              rows,
+                    std::size_t              cols,
+                    std::initializer_list<T> elements)
+      : matrix(rows,
+               cols,
+               buffer<T>(elements))
+    {}
 
     //! \brief The number of rows.
     [[nodiscard]] std::size_t rows() const noexcept
@@ -101,20 +129,20 @@ namespace numerical {
     }
 
     //! \brief Const iterator to the first element (row-major).
-    [[nodiscard]] typename std::vector<T>::const_iterator begin() const noexcept
+    [[nodiscard]] typename buffer<T>::const_iterator begin() const noexcept
     {
       return data_.begin();
     }
 
     //! \brief Const iterator past the last element.
-    [[nodiscard]] typename std::vector<T>::const_iterator end() const noexcept
+    [[nodiscard]] typename buffer<T>::const_iterator end() const noexcept
     {
       return data_.end();
     }
 
     //! \brief The elements, row-major, handed over by a matrix about to expire, which is left `0 × 0`: a large result
     //!        moves on without a copy (each copy of a fresh buffer faults its pages in one by one).
-    [[nodiscard]] std::vector<T> elements() &&
+    [[nodiscard]] buffer<T> elements() &&
     {
       rows_ = 0;
       cols_ = 0;
@@ -125,7 +153,7 @@ namespace numerical {
 
     std::size_t    rows_ {0}; //!< The number of rows.
     std::size_t    cols_ {0}; //!< The number of columns.
-    std::vector<T> data_;     //!< The elements, row-major.
+    buffer<T>      data_;     //!< The elements, row-major.
   };
 
   //! \brief Element-wise sum. \throws dimension_error If the shapes differ.
@@ -136,7 +164,7 @@ namespace numerical {
     if (a.rows() != b.rows() || a.cols() != b.cols()) {
       throw dimension_error("matrix shapes differ in '+'");
     }
-    std::vector<T> out(a.rows() * a.cols());
+    buffer<T> out(a.rows() * a.cols(), T {});
     std::transform(a.begin(), a.end(), b.begin(), out.begin(), std::plus<T> {});
     return matrix<T> {a.rows(), a.cols(), std::move(out)};
   }
@@ -149,7 +177,7 @@ namespace numerical {
     if (a.rows() != b.rows() || a.cols() != b.cols()) {
       throw dimension_error("matrix shapes differ in '-'");
     }
-    std::vector<T> out(a.rows() * a.cols());
+    buffer<T> out(a.rows() * a.cols(), T {});
     std::transform(a.begin(), a.end(), b.begin(), out.begin(), std::minus<T> {});
     return matrix<T> {a.rows(), a.cols(), std::move(out)};
   }
@@ -159,7 +187,7 @@ namespace numerical {
   [[nodiscard]] matrix<T> operator*(const T&         scalar,
                                     const matrix<T>& m)
   {
-    std::vector<T> out(m.rows() * m.cols());
+    buffer<T> out(m.rows() * m.cols(), T {});
     std::transform(m.begin(), m.end(), out.begin(),
                    [&scalar](const T& element) { return scalar * element; });
     return matrix<T> {m.rows(), m.cols(), std::move(out)};
@@ -182,7 +210,7 @@ namespace numerical {
     if (a.cols() != v.size()) {
       throw dimension_error("matrix–vector product: inner dimensions differ");
     }
-    std::vector<T> out(a.rows());
+    buffer<T> out(a.rows(), T {});
     if (a.cols() != 0) {
       detail::matrix_times_vector(&*a.begin(), a.rows(), a.cols(), &v[0], out.data());
     }
@@ -199,7 +227,7 @@ namespace numerical {
     }
     // detail::gemm sums every element in ascending order of the inner index, whatever the blocking and
     // the number of threads (see gemm.hpp); `out` starts at zero, as std::vector(n) guarantees.
-    std::vector<T> out(detail::checked_mul(a.rows(), b.cols())); // guard the cross-product alloc
+    buffer<T> out(detail::checked_mul(a.rows(), b.cols()), T {}); // guard the cross-product alloc
     if (!out.empty() && a.cols() != 0) {
       detail::gemm(a.rows(), b.cols(), a.cols(), &*a.begin(), a.cols(), &*b.begin(), b.cols(), out.data(), b.cols());
     }
@@ -210,7 +238,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] matrix<T> transpose(const matrix<T>& m)
   {
-    std::vector<T> out;
+    buffer<T> out;
     out.reserve(m.rows() * m.cols());
     for (std::size_t j {0}; j < m.cols(); ++j) {
       for (std::size_t i {0}; i < m.rows(); ++i) {

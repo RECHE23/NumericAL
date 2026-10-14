@@ -18,11 +18,15 @@
 #include <functional>
 #include <initializer_list>
 #include <limits>
+#include <memory>
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
+
+#include "buffer.hpp"
 
 namespace numerical {
 
@@ -71,8 +75,14 @@ namespace numerical {
     {}
 
     //! \brief From an existing buffer. \param[in] elements The elements (moved in).
-    explicit vector(std::vector<T> elements)
+    explicit vector(buffer<T> elements)
       : data_(std::move(elements))
+    {}
+
+    //! \brief From a std::vector, copied into the storage (a \ref buffer moves in instead). \param[in] elements The
+    //!        elements.
+    explicit vector(const std::vector<T>& elements)
+      : data_(elements.begin(), elements.end())
     {}
 
     //! \brief The number of elements.
@@ -88,13 +98,13 @@ namespace numerical {
     }
 
     //! \brief Const iterator to the first element.
-    [[nodiscard]] typename std::vector<T>::const_iterator begin() const noexcept
+    [[nodiscard]] typename buffer<T>::const_iterator begin() const noexcept
     {
       return data_.begin();
     }
 
     //! \brief Const iterator past the last element.
-    [[nodiscard]] typename std::vector<T>::const_iterator end() const noexcept
+    [[nodiscard]] typename buffer<T>::const_iterator end() const noexcept
     {
       return data_.end();
     }
@@ -107,7 +117,7 @@ namespace numerical {
 
   private:
 
-    std::vector<T> data_; //!< The elements.
+    buffer<T> data_; //!< The elements.
   };
 
   //! \brief Element-wise sum. \throws dimension_error If the sizes differ.
@@ -118,7 +128,7 @@ namespace numerical {
     if (a.size() != b.size()) {
       throw dimension_error("vector sizes differ in '+'");
     }
-    std::vector<T> out(a.size());
+    buffer<T> out(a.size(), T {});
     std::transform(a.begin(), a.end(), b.begin(), out.begin(), std::plus<T> {});
     return vector<T> {std::move(out)};
   }
@@ -131,7 +141,7 @@ namespace numerical {
     if (a.size() != b.size()) {
       throw dimension_error("vector sizes differ in '-'");
     }
-    std::vector<T> out(a.size());
+    buffer<T> out(a.size(), T {});
     std::transform(a.begin(), a.end(), b.begin(), out.begin(), std::minus<T> {});
     return vector<T> {std::move(out)};
   }
@@ -141,7 +151,7 @@ namespace numerical {
   [[nodiscard]] vector<T> operator*(const T&         scalar,
                                     const vector<T>& v)
   {
-    std::vector<T> out(v.size());
+    buffer<T> out(v.size(), T {});
     std::transform(v.begin(), v.end(), out.begin(),
                    [&scalar](const T& element) { return scalar * element; });
     return vector<T> {std::move(out)};

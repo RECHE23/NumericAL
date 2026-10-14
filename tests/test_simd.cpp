@@ -503,7 +503,7 @@ TEST(rotation_runs_apply_as_the_operations_one_by_one)
       m[i] = (1.0 / static_cast<double>(i + 3)) - 0.17;
     }
     for (const std::vector<row_operation>* operations : {&down, &up}) {
-      std::vector<double> runs {m};
+      numerical::buffer<double> runs(m.begin(), m.end());
       numerical::detail::apply_row_operations(runs, n, *operations);
       EXPECT(runs == applied_one_by_one(m, n, *operations));
     }

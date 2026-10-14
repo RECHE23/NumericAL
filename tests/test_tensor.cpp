@@ -446,7 +446,7 @@ namespace {
                                      std::size_t cols,
                                      double      seed)
   {
-    std::vector<double> values(rows * cols);
+    numerical::buffer<double> values(rows * cols, 0.0);
     for (std::size_t i {0}; i < rows; ++i) {
       for (std::size_t j {0}; j < cols; ++j) {
         values[(i * cols) + j] = 1.0 / (seed + static_cast<double>((i * 7) + (j * 3)));

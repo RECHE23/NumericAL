@@ -23,7 +23,7 @@ namespace {
     for (const std::size_t extent : s) {
       count *= extent;
     }
-    std::vector<double> values(count);
+    numerical::buffer<double> values(count, 0.0);
     for (std::size_t i {0}; i < count; ++i) {
       values[i] = static_cast<double>(i);
     }

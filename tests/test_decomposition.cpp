@@ -314,11 +314,11 @@ TEST(symmetric_eigen_reads_the_lower_triangle_and_bounds_its_iterations)
     EXPECT(approx_equal(e.values(), symmetric_eigen {mirrored, method}.values()));
     EXPECT(approx_equal(reconstruct(e), mirrored));
   }
-  std::vector<double> a {2.0, 1.0, 0.5, 1.0, 3.0, -1.0, 0.5, -1.0, 4.0};
-  std::vector<double> v {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+  numerical::buffer<double> a {2.0, 1.0, 0.5, 1.0, 3.0, -1.0, 0.5, -1.0, 4.0};
+  numerical::buffer<double> v {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
   EXPECT_THROWS(numerical::detail::cyclic_jacobi(a, v, 3, 1.0, 1), numerical::convergence_error);
-  std::vector<double> d {2.0, 3.0, 4.0};
-  std::vector<double> e {1.0, -1.0, 0.0};
+  numerical::buffer<double> d {2.0, 3.0, 4.0};
+  numerical::buffer<double> e {1.0, -1.0, 0.0};
   EXPECT_THROWS(numerical::detail::tridiagonal_ql(d, e, v, 3, 1), numerical::convergence_error);
 }
 
@@ -327,8 +327,8 @@ TEST(symmetric_eigen_reads_the_lower_triangle_and_bounds_its_iterations)
 // precision.
 TEST(symmetric_eigen_methods_agree_and_reach_rounding)
 {
-  const std::size_t   n {40};
-  std::vector<double> entries(n * n);
+  const std::size_t         n {40};
+  numerical::buffer<double> entries(n * n, 0.0);
   for (std::size_t i {0}; i < n; ++i) {
     for (std::size_t j {0}; j < n; ++j) {
       entries[(i * n) + j] = 1.0 / static_cast<double>(1 + i + j); // Hilbert
@@ -506,8 +506,8 @@ TEST(svd_of_a_wide_and_of_a_complex_matrix)
 namespace {
 
   //! \brief Runs the bidiagonal QR on (d, e) of order n and checks B = U Σ Vᵀ, Σ descending and non-negative.
-  bool bidiagonal_qr_reconstructs(std::vector<double> d,
-                                  std::vector<double> e)
+  bool bidiagonal_qr_reconstructs(numerical::buffer<double> d,
+                                  numerical::buffer<double> e)
   {
     const std::size_t   n {d.size()};
     std::vector<double> b(n * n, 0.0);
@@ -517,8 +517,8 @@ namespace {
         b[(i * n) + i + 1] = e[i];
       }
     }
-    std::vector<double> ut(n * n, 0.0);
-    std::vector<double> vt(n * n, 0.0);
+    numerical::buffer<double> ut(n * n, 0.0);
+    numerical::buffer<double> vt(n * n, 0.0);
     for (std::size_t i {0}; i < n; ++i) {
       ut[(i * n) + i] = 1.0;
       vt[(i * n) + i] = 1.0;
@@ -547,10 +547,10 @@ TEST(bidiagonal_qr_converges_in_about_two_steps_per_value)
   const auto least_steps = [](const std::vector<double>& d0, const std::vector<double>& e0) {
                              const std::size_t n {d0.size()};
                              for (std::size_t bound {0};; ++bound) {
-                               std::vector<double> d {d0};
-                               std::vector<double> e {e0};
-                               std::vector<double> ut(n * n, 0.0);
-                               std::vector<double> vt(n * n, 0.0);
+                               numerical::buffer<double> d(d0.begin(), d0.end());
+                               numerical::buffer<double> e(e0.begin(), e0.end());
+                               numerical::buffer<double> ut(n * n, 0.0);
+                               numerical::buffer<double> vt(n * n, 0.0);
                                try {
                                  numerical::detail::bidiagonal_qr(d, e, ut, vt, n, bound);
                                  return bound;
@@ -587,8 +587,8 @@ TEST(bidiagonal_qr_deflates_and_bounds_its_steps)
   {
     // A chain falling by 1e-8 per entry: no link is negligible next to its neighbours, yet at its tail the
     // shift's terms underflow to zero together.
-    std::vector<double> chain_d(13);
-    std::vector<double> chain_e(13, 0.0);
+    numerical::buffer<double> chain_d(13, 0.0);
+    numerical::buffer<double> chain_e(13, 0.0);
     for (std::size_t i {0}; i < 13; ++i) {
       chain_d[i] = std::pow(1e-8, static_cast<double>(2 * i));
       if (i + 1 < 13) {
@@ -598,10 +598,10 @@ TEST(bidiagonal_qr_deflates_and_bounds_its_steps)
     EXPECT(bidiagonal_qr_reconstructs(chain_d, chain_e));
   }
   EXPECT(bidiagonal_qr_reconstructs({8.0, 3.0, 5.0}, {1.0, 4.0, 0.0}));          // b = 0 exactly, c is not
-  std::vector<double> d {2.0, 3.0, 4.0};
-  std::vector<double> e {1.0, -1.0, 0.0};
-  std::vector<double> ut(9, 0.0);
-  std::vector<double> vt(9, 0.0);
+  numerical::buffer<double> d {2.0, 3.0, 4.0};
+  numerical::buffer<double> e {1.0, -1.0, 0.0};
+  numerical::buffer<double> ut(9, 0.0);
+  numerical::buffer<double> vt(9, 0.0);
   EXPECT_THROWS(numerical::detail::bidiagonal_qr(d, e, ut, vt, 3, 0), numerical::convergence_error);
   for (const numerical::svd_method method : svd_methods) {
     const svd_decomposition none {matrix<double> {3, 0, {}}, method};
@@ -612,8 +612,8 @@ TEST(bidiagonal_qr_deflates_and_bounds_its_steps)
 // Jacobi's sweeps are bounded: one sweep does not orthogonalise a dense 3 × 3, which is then an error.
 TEST(one_sided_jacobi_reports_a_sweep_bound_reached)
 {
-  std::vector<double> w {4.0, 1.0, 2.0, 1.0, 3.0, 0.5, 2.0, 0.5, 5.0};
-  std::vector<double> v {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
+  numerical::buffer<double> w {4.0, 1.0, 2.0, 1.0, 3.0, 0.5, 2.0, 0.5, 5.0};
+  numerical::buffer<double> v {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
   EXPECT_THROWS(numerical::detail::one_sided_jacobi(w, v, 3, 1), numerical::convergence_error);
 }
 
@@ -621,9 +621,9 @@ TEST(one_sided_jacobi_reports_a_sweep_bound_reached)
 // in 9 sweeps under clang and GCC, at -O0 and -O3, and in 11 to 16 with the larger angle.
 TEST(one_sided_jacobi_converges_in_few_sweeps)
 {
-  const std::size_t   n {8};
-  std::vector<double> w(n * n);
-  std::vector<double> v(n * n, 0.0);
+  const std::size_t         n               {8};
+  numerical::buffer<double> w(n * n, double {});
+  numerical::buffer<double> v(n * n, 0.0);
   for (std::size_t i {0}; i < n; ++i) {
     v[(i * n) + i] = 1.0;
     for (std::size_t j {0}; j < n; ++j) {
@@ -798,9 +798,9 @@ TEST(lstsq_takes_a_qr_where_the_rank_is_surely_full)
 // An expiring matrix or decomposition hands its storage over: the same factors as by copy, the source left empty.
 TEST(decompositions_take_and_give_their_storage_without_copies)
 {
-  const matrix<double>      spd   {{4.0, 2.0, 0.0}, {2.0, 5.0, 1.0}, {0.0, 1.0, 3.0}};
-  matrix<double>            spare {spd};
-  const std::vector<double> taken {std::move(spare).elements()};
+  const matrix<double>            spd   {{4.0, 2.0, 0.0}, {2.0, 5.0, 1.0}, {0.0, 1.0, 3.0}};
+  matrix<double>                  spare {spd};
+  const numerical::buffer<double> taken {std::move(spare).elements()};
   EXPECT(taken == std::vector<double>(spd.begin(), spd.end()));
   EXPECT(spare.rows() == 0U && spare.cols() == 0U); // NOLINT(bugprone-use-after-move,hicpp-invalid-access-moved): the state a move leaves is the point
   const numerical::tensor<double> moved {matrix<double> {spd}};
@@ -1429,16 +1429,16 @@ TEST(divide_and_conquer_merges_and_deflates)
 // whose fit takes the quadratic's other form.
 TEST(the_secular_equation_finds_its_roots_from_the_nearer_pole)
 {
-  const std::vector<double> d {-8.122808264515302e-13, 6.04530122336367e-12, 5.219248898251512e-06};
-  const std::vector<double> z {4.2711462701151146e-10, 0.48318236791802455, 0.8755197309787659};
-  std::vector<double>       delta(3);
+  const numerical::buffer<double> d               {-8.122808264515302e-13, 6.04530122336367e-12, 5.219248898251512e-06};
+  const numerical::buffer<double> z               {4.2711462701151146e-10, 0.48318236791802455, 0.8755197309787659};
+  numerical::buffer<double>       delta(3, double {});
   (void)numerical::detail::secular_root(d, z, 283.3625584139991, 0, numerical::detail::secular_iterations, delta.data());
   EXPECT(std::abs(delta[0] - -5.3584091596269844e-30) < 1e-14 * 5.4e-30);
   EXPECT(std::abs(delta[1] - 6.8575820498152e-12) < 1e-14 * 6.9e-12);
-  const std::vector<double> d6 {-0.8949247533967253, -0.16141637105958684, -0.0008046271488207429,
-                                -1.6560228279009447e-08, -6.869457203538978e-09, 0.9963928059764295};
-  const std::vector<double> z6 {-0.005944540988224872, -0.589814085218663, -0.016380413260955785,
-                                0.45405424328337657, 0.6675689734376589, -0.0014488724105117632};
+  const numerical::buffer<double> d6 {-0.8949247533967253, -0.16141637105958684, -0.0008046271488207429,
+                                      -1.6560228279009447e-08, -6.869457203538978e-09, 0.9963928059764295};
+  const numerical::buffer<double> z6 {-0.005944540988224872, -0.589814085218663, -0.016380413260955785,
+                                      0.45405424328337657, 0.6675689734376589, -0.0014488724105117632};
   std::vector<double>       delta6(6);
   const double              root {numerical::detail::secular_root(d6, z6, 1.0448293818862207, 4, numerical::detail::secular_iterations,
                                                                   delta6.data())};
@@ -1448,11 +1448,11 @@ TEST(the_secular_equation_finds_its_roots_from_the_nearer_pole)
 // The secular equations' iterations are bounded: one step does not reach a root.
 TEST(the_secular_equation_bounds_its_iterations)
 {
-  const std::vector<double> d {0.0, 1.0, 2.0};
-  const std::vector<double> z {0.6, 0.48, 0.64};
-  std::vector<double>       delta(3);
+  const numerical::buffer<double> d               {0.0, 1.0, 2.0};
+  const numerical::buffer<double> z               {0.6, 0.48, 0.64};
+  numerical::buffer<double>       delta(3, double {});
   EXPECT_THROWS((void)numerical::detail::secular_root(d, z, 1.0, 0, 1, delta.data()), numerical::convergence_error);
-  std::vector<double> above(3); // the singular values' equation likewise
+  numerical::buffer<double> above(3, double       {}); // the singular values' equation likewise
   EXPECT_THROWS((void)numerical::detail::singular_secular_root(d, z, 0, 1, delta.data(), above.data()), numerical::convergence_error);
 }
 
@@ -1492,15 +1492,15 @@ TEST(svd_divide_and_conquer_merges_and_deflates)
   EXPECT(svd_divide_and_conquer_agrees(matrix<double> {n, n, dense}));
   EXPECT(svd_divide_and_conquer_agrees(matrix<double> {n, n, repeated}));
   EXPECT(svd_divide_and_conquer_agrees(matrix<double> {n, n, deficient}));
-  std::vector<double> d(n);
-  std::vector<double> e(n);
+  numerical::buffer<double> d(n, 0.0);
+  numerical::buffer<double> e(n, 0.0);
   for (std::size_t i {0}; i < n; ++i) {
     d[i] = i % 5 == 2 ? 0.0 : std::cos(static_cast<double>(i));
     e[i] = i + 1 < n ? 1.0 / static_cast<double>(i + 2) : 0.0;
   }
-  std::vector<double> sigma;
-  std::vector<double> u;
-  std::vector<double> v;
+  numerical::buffer<double> sigma;
+  numerical::buffer<double> u;
+  numerical::buffer<double> v;
   numerical::detail::bidiagonal_divide(d.data(), e.data(), n, 0, sigma, u, v);
   double worst {0.0}; // B v_j − σ_j u_j
   for (std::size_t j {0}; j < n; ++j) {
@@ -1513,9 +1513,9 @@ TEST(svd_divide_and_conquer_merges_and_deflates)
   EXPECT(std::ranges::is_sorted(sigma));
   // A row with neither entry at a split of a half with an extra column (no weight on either null vector), and a
   // leaf whose extra column and last diagonal entry are both zero (nothing to rotate).
-  const std::size_t   r {70};
-  std::vector<double> rd(r);
-  std::vector<double> re(r);
+  const std::size_t         r            {70};
+  numerical::buffer<double> rd(r, double {});
+  numerical::buffer<double> re(r, double {});
   for (std::size_t i {0}; i < r; ++i) {
     rd[i] = i == 16 || i == 17 ? 0.0 : std::cos(static_cast<double>(i));
     re[i] = i == 16 || i == 17 || i + 1 == r ? 0.0 : 1.0 / static_cast<double>(i + 2);
@@ -1624,10 +1624,10 @@ TEST(eigh_checks_only_what_it_reads)
 TEST(scaled_norm_is_exact_to_rounding_at_every_scale)
 {
   for (const double size : {1e-300, 1e-160, 1.0, 1e160, 1e300}) {
-    std::vector<double>               real(37);
-    std::vector<std::complex<double>> complex(37);
-    std::vector<long double>          wide(37);
-    double                            want {0.0}; // Σ (3 + i mod 5)², at unit size
+    numerical::buffer<double>               real(37, double                  {});
+    numerical::buffer<std::complex<double>> complex(37, std::complex<double> {});
+    numerical::buffer<long double>          wide(37, 0.0L);
+    double                                  want                             {0.0}; // Σ (3 + i mod 5)², at unit size
     for (std::size_t i {0}; i < real.size(); ++i) {
       const double unit {3.0 + static_cast<double>(i % 5)};
       real[i]     = unit * size;
@@ -1640,7 +1640,7 @@ TEST(scaled_norm_is_exact_to_rounding_at_every_scale)
     EXPECT(std::abs(numerical::detail::scaled_norm(complex) - want) <= 1e-14 * want);
     EXPECT(std::abs(numerical::detail::scaled_norm(wide) - want) <= 1e-14 * want);
   }
-  EXPECT(numerical::detail::scaled_norm(std::vector<double>(3, 0.0)) == 0.0);
+  EXPECT(numerical::detail::scaled_norm(numerical::buffer<double>(3, 0.0)) == 0.0);
 }
 
 // Divide and conquer called on a tridiagonal far from unit size: it works on the tridiagonal scaled to it, by an
@@ -1648,15 +1648,15 @@ TEST(scaled_norm_is_exact_to_rounding_at_every_scale)
 TEST(divide_and_conquer_is_relative_to_the_tridiagonal_size)
 {
   for (const double size : {1e-15, 1e15}) {
-    const std::size_t   n {80};
-    std::vector<double> d(n);
-    std::vector<double> e(n);
+    const std::size_t         n {80};
+    std::vector<double>       d(n);
+    numerical::buffer<double> e(n, 0.0);
     for (std::size_t i {0}; i < n; ++i) {
       d[i] = size * std::cos(static_cast<double>(i));
       e[i] = size * (i + 1 < n ? 1.0 / static_cast<double>(i + 2) : 0.0);
     }
-    std::vector<double> values {d};
-    std::vector<double> q;
+    numerical::buffer<double> values(d.begin(), d.end());
+    numerical::buffer<double> q;
     numerical::detail::divide_and_conquer(values.data(), e.data(), n, q);
     double worst {0.0}; // ‖T q − λ q‖ over ‖T‖
     for (std::size_t j {0}; j < n; ++j) {

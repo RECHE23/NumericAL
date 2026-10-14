@@ -205,7 +205,7 @@ PyObject* from_scalar<std::complex<double>>(std::complex<double> value)
 }
 
 template <typename T>
-bool read_buffer(PyObject* sequence, std::vector<T>& out)
+bool read_buffer(PyObject* sequence, numerical::buffer<T>& out)
 {
     const Py_ssize_t size = PySequence_Size(sequence);
     if (size < 0) {
@@ -257,7 +257,7 @@ bool read_shape(PyObject* shape_obj, std::vector<std::size_t>& out)
 template <typename T>
 any_tensor build_any(PyObject* data_obj, const std::vector<std::size_t>& shape)
 {
-    std::vector<T> buffer;
+    numerical::buffer<T> buffer;
     if (!read_buffer<T>(data_obj, buffer)) {
         throw std::runtime_error("Tensor: could not read the data buffer");
     }
@@ -619,7 +619,7 @@ any_tensor solve_for(const numerical::tensor<T>& b, VectorSolver by_vector, Matr
         return any_tensor {numerical::tensor<T> {by_matrix(matrix_from(b))}};
     }
     const numerical::vector<T> answer {by_vector(numerical::vector<T> {b.data()})};
-    return any_tensor {numerical::tensor<T> {{answer.size()}, std::vector<T>(answer.begin(), answer.end())}};
+    return any_tensor {numerical::tensor<T> {{answer.size()}, numerical::buffer<T>(answer.begin(), answer.end())}};
 }
 
 template <typename T>
@@ -729,7 +729,7 @@ PyObject* take_from(const numerical::tensor<T>& t, const std::vector<std::size_t
             out_shape.push_back(counts[a]);
         }
     }
-    std::vector<T>           out;
+    numerical::buffer<T>           out;
     out.reserve(total);
     std::vector<std::size_t> k(rank, 0);
     for (std::size_t n = 0; n < total; ++n) {
@@ -1276,7 +1276,7 @@ lstsq_result do_lstsq(const numerical::tensor<T>& a, const numerical::tensor<T>&
     const numerical::matrix<T>   rhs {column ? numerical::matrix<T> {b.shape()[0], 1, b.data()} : matrix_from(b)};
     numerical::least_squares_solution<T> found {numerical::least_squares(matrix_from(a), rhs)};
     const auto as_tensor_of = [](const numerical::vector<double>& values) {
-        return any_tensor {real_tensor {{values.size()}, std::vector<double>(values.begin(), values.end())}};
+        return any_tensor {real_tensor {{values.size()}, numerical::buffer<double>(values.begin(), values.end())}};
     };
     numerical::tensor<T> x {std::move(found.solution)};
     if (column) {
@@ -1407,7 +1407,7 @@ std::tuple<any_tensor, any_tensor, any_tensor> svd(const any_tensor& v, const st
 // when dtype='complex128' is requested of real source data.
 any_tensor promote_to_complex(std::vector<std::size_t> shape, const double* src, std::size_t n)
 {
-    std::vector<std::complex<double>> buffer(n);
+    numerical::buffer<std::complex<double>> buffer(n, std::complex<double> {});
     for (std::size_t i = 0; i < n; ++i) {
         buffer[i] = src[i];
     }
@@ -1612,7 +1612,7 @@ PyObject* tensor_from_elements(const unsigned char*            base,
                 if (!element.swapped && (out_complex || element.kind != 'c')) {
             // The common case: the conversion picked once, the copy without the GIL (it reads only the buffer).
             if (out_complex) {
-                std::vector<std::complex<double>> values(total);
+                numerical::buffer<std::complex<double>> values(total, std::complex<double> {});
                 {
                     const sb::scoped_gil_release unlocked {releases_gil(total)};
                     gather(base, shape, strides, element, values.data());
@@ -1620,7 +1620,7 @@ PyObject* tensor_from_elements(const unsigned char*            base,
                 result = wrap(any_tensor {cplx_tensor {shape, std::move(values)}});
             }
             else {
-                std::vector<double> values(total);
+                numerical::buffer<double> values(total, 0.0);
                 {
                     const sb::scoped_gil_release unlocked {releases_gil(total)};
                     gather(base, shape, strides, element, values.data());
@@ -1630,7 +1630,7 @@ PyObject* tensor_from_elements(const unsigned char*            base,
             return result;
         }
         // A byte-swapped element: each read through read_element, in C order.
-        std::vector<std::complex<double>> values;
+        numerical::buffer<std::complex<double>> values;
         values.reserve(total);
         std::vector<std::size_t> index(shape.size(), 0);
         for (std::size_t n = 0; n < total; ++n) {
@@ -1650,7 +1650,7 @@ PyObject* tensor_from_elements(const unsigned char*            base,
             result = wrap(any_tensor {cplx_tensor {shape, std::move(values)}});
         }
         else {
-            std::vector<double> reals;
+            numerical::buffer<double> reals;
             reals.reserve(total);
             for (const std::complex<double>& value : values) {
                 reals.push_back(value.real());
@@ -1772,8 +1772,8 @@ bool asarray_from_number(PyObject* obj, bool dtype_given, bool want_complex_out,
         return true;
     }
     try {
-        *result = out_complex ? wrap(any_tensor {cplx_tensor {{}, std::vector<std::complex<double>> {value}}})
-                              : wrap(any_tensor {real_tensor {{}, std::vector<double> {value.real()}}});
+        *result = out_complex ? wrap(any_tensor {cplx_tensor {{}, numerical::buffer<std::complex<double>> {value}}})
+                              : wrap(any_tensor {real_tensor {{}, numerical::buffer<double> {value.real()}}});
     }
     catch (...) {
         *result = set_cpp_error();

@@ -199,7 +199,7 @@ namespace numerical {
      *        reflector is then not orthogonal. \return The factor (1 unless the entries are all below 2⁻⁵⁰⁰).
      */
     template <typename T>
-    double rescale_tiny(std::vector<T>& x)
+    double rescale_tiny(buffer<T>& x)
     {
       double largest {0.0};
       for (const T& element : x) {
@@ -279,7 +279,7 @@ namespace numerical {
 
     //! \brief \ref scaled_norm of a whole vector.
     template <typename T>
-    [[nodiscard]] double scaled_norm(const std::vector<T>& x)
+    [[nodiscard]] double scaled_norm(const buffer<T>& x)
     {
       return scaled_norm(x.data(), x.size());
     }
@@ -473,7 +473,7 @@ namespace numerical {
       if (singular_) {
         throw singular_matrix_error("solve: matrix is singular");
       }
-      std::vector<T> y(n_);
+      buffer<T> y(n_, T {});
       for (std::size_t i {0}; i < n_; ++i) { // forward substitution (unit lower L)
         T sum {b[pivots_[i]]};
         for (std::size_t j {0}; j < i; ++j) {
@@ -536,12 +536,12 @@ namespace numerical {
       if (singular_) {
         throw singular_matrix_error("inverse: matrix is singular");
       }
-      std::vector<T> rows(n_ * n_, T {});
+      buffer<T> rows(n_ * n_, T {});
       for (std::size_t i {0}; i < n_; ++i) {
         rows[(i * n_) + i] = T {1};
       }
       solve_rows(rows, n_, true);
-      std::vector<T> inverted(n_ * n_);
+      buffer<T> inverted(n_ * n_, T {});
       detail::parallel_for(n_, n_, [&](std::size_t r) { // column pivots_[i] of A⁻¹ is column i of U⁻¹ L⁻¹
                              for (std::size_t i {0}; i < n_; ++i) {
                                inverted[(r * n_) + pivots_[i]] = rows[(r * n_) + i];
@@ -569,8 +569,8 @@ namespace numerical {
       if (singular_) {
         throw singular_matrix_error("solve: matrix is singular");
       }
-      const std::size_t cols {b.cols()};
-      std::vector<T>    rows(n_ * cols);
+      const std::size_t cols              {b.cols()};
+      buffer<T>         rows(n_ * cols, T {});
       for (std::size_t i {0}; i < n_; ++i) {
         for (std::size_t c {0}; c < cols; ++c) {
           rows[(i * cols) + c] = b(pivots_[i], c);
@@ -590,7 +590,7 @@ namespace numerical {
      *        matrix product kernel. When \p lower, row `i` of \p y is zero past column `i` (the identity's rows):
      *        the forward pass then works on those columns alone.
      */
-    void solve_rows(std::vector<T>& y,
+    void solve_rows(buffer<T>&      y,
                     std::size_t     cols,
                     bool            lower = false) const
     {
@@ -652,7 +652,7 @@ namespace numerical {
      *        multiply-adds, or shallower than \ref detail::gemm_min_depth, as a last block of a few rows) rounds each
      *        term apart where the x86-64 rows fuse it, so there the two differ in the last bits.
      */
-    void solve_narrow(std::vector<T>& y,
+    void solve_narrow(buffer<T>&      y,
                       std::size_t     cols) const
     {
       for (std::size_t i {1}; i < n_; ++i) {
@@ -686,7 +686,7 @@ namespace numerical {
 
     //! \brief `Y[r0, r1) −= F[r0, r1) × [c0, c1) · Y[c0, c1)`, F the factor, through the matrix product kernel (nothing
     //!        when the rows are empty), on the columns of `Y` before \p reach (all of them by default).
-    void subtract_block(std::vector<T>& y,
+    void subtract_block(buffer<T>&      y,
                         std::size_t     cols,
                         std::size_t     r0,
                         std::size_t     r1,
@@ -695,19 +695,19 @@ namespace numerical {
                         std::size_t     reach = std::numeric_limits<std::size_t>::max()) const
     {
       if (r0 < r1) {
-        const std::vector<T> minus {negated_block(r0, r1, c0, c1)};
+        const buffer<T> minus {negated_block(r0, r1, c0, c1)};
         detail::gemm(r1 - r0, std::min(reach, cols), c1 - c0, minus.data(), c1 - c0, y.data() + (c0 * cols), cols,
                      y.data() + (r0 * cols), cols);
       }
     }
 
     //! \brief The rows `[r0, r1)` and columns `[c0, c1)` of the factor, negated, row-major and contiguous.
-    [[nodiscard]] std::vector<T> negated_block(std::size_t r0,
-                                               std::size_t r1,
-                                               std::size_t c0,
-                                               std::size_t c1) const
+    [[nodiscard]] buffer<T> negated_block(std::size_t r0,
+                                          std::size_t r1,
+                                          std::size_t c0,
+                                          std::size_t c1) const
     {
-      std::vector<T> out((r1 - r0) * (c1 - c0));
+      buffer<T> out((r1 - r0) * (c1 - c0), T {});
       for (std::size_t r {r0}; r < r1; ++r) {
         for (std::size_t c {c0}; c < c1; ++c) {
           out[((r - r0) * (c1 - c0)) + (c - c0)] = -lu_[(r * n_) + c];
@@ -735,7 +735,7 @@ namespace numerical {
       for (std::size_t k0 {0}; end < n_;) {
         const std::size_t next       {std::min(end + block_, n_)};
         solve_panel_rows(k0, end);
-        const std::vector<T> minus_l {negated_block(end, n_, k0, end)};
+        const buffer<T> minus_l      {negated_block(end, n_, k0, end)};
         update_columns(minus_l, k0, end, end, next);
         const std::size_t right      {n_ - next};
         if (right > detail::lu_lookahead_columns) { // one product of the whole trailing block, then the panel
@@ -782,9 +782,9 @@ namespace numerical {
     void factorize_panel(std::size_t k0,
                          std::size_t end)
     {
-      const std::size_t rows  {n_ - k0};
-      const std::size_t width {end - k0};
-      std::vector<T>    panel(rows * width); // column j of the panel at panel[j * rows]
+      const std::size_t rows                  {n_ - k0};
+      const std::size_t width                 {end - k0};
+      buffer<T>         panel(rows * width, T {}); // column j of the panel at panel[j * rows]
       for (std::size_t r {0}; r < rows; ++r) {
         for (std::size_t j {0}; j < width; ++j) {
           panel[(j * rows) + r] = lu_[((k0 + r) * n_) + k0 + j];
@@ -807,7 +807,7 @@ namespace numerical {
      * work is), then the right half factorised; a leaf of \ref detail::solve_leaf columns, unblocked. Each element
      * still receives its updates in ascending order of the pivot.
      */
-    void factorize_columns(std::vector<T>& panel,
+    void factorize_columns(buffer<T>&      panel,
                            std::size_t     rows,
                            std::size_t     first,
                            std::size_t     last,
@@ -861,8 +861,8 @@ namespace numerical {
       }
       // The bottom, rows [mid, rows): A₂₂ −= L₂₁ U₁₂, column-major, so as its transpose, row-major:
       // A₂₂ᵀ += (−U₁₂ᵀ) L₂₁ᵀ.
-      const std::size_t depth {mid - first};
-      std::vector<T>    minus_u((last - mid) * depth);
+      const std::size_t depth                           {mid - first};
+      buffer<T>         minus_u((last - mid) * depth, T {});
       for (std::size_t c {mid}; c < last; ++c) {
         for (std::size_t j {first}; j < mid; ++j) {
           minus_u[((c - mid) * depth) + (j - first)] = -panel[(c * rows) + j];
@@ -910,7 +910,7 @@ namespace numerical {
 
     //! \brief `A₂₂ −= L₂₁ U₁₂` on the trailing columns `[c0, c1)`, as `A₂₂ += (−L₂₁) U₁₂` through the matrix product
     //!        kernel, \p minus_l being `−L₂₁` (the rows below the panel `[k0, end)`).
-    void update_columns(const std::vector<T>& minus_l,
+    void update_columns(const buffer<T>&      minus_l,
                         std::size_t           k0,
                         std::size_t           end,
                         std::size_t           c0,
@@ -922,7 +922,7 @@ namespace numerical {
 
     std::size_t                                      n_;                                //!< The matrix order.
     std::size_t                                      block_ {detail::lu_block_for(n_)}; //!< The panel width.
-    std::vector<T>                                   lu_;                               //!< Combined L (below diag, unit) and U (on/above), row-major.
+    buffer<T>                                        lu_;                               //!< Combined L (below diag, unit) and U (on/above), row-major.
     std::vector<std::size_t>                         pivots_;                           //!< Row permutation: row now at i came from pivots_[i].
     int                                              sign_       {1};                   //!< Permutation sign, for the determinant.
     bool                                             singular_   {false};               //!< Set if a zero pivot was met.
@@ -1056,7 +1056,7 @@ namespace numerical {
       if (b.size() != n_) {
         throw dimension_error("solve: right-hand side size differs from the matrix");
       }
-      std::vector<T> y(n_);
+      buffer<T> y(n_, T {});
       for (std::size_t i {0}; i < n_; ++i) { // forward: L y = b
         T sum {b[i]};
         for (std::size_t k {0}; k < i; ++k) {
@@ -1064,7 +1064,7 @@ namespace numerical {
         }
         y[i] = sum / lower_[(i * n_) + i];
       }
-      std::vector<T> x(n_);
+      buffer<T> x(n_, T {});
       for (std::size_t i {n_}; i-- > 0;) { // back: Lᴴ x = y, (Lᴴ)[i][k] = conj(L[k][i])
         T sum {y[i]};
         for (std::size_t k {i + 1}; k < n_; ++k) {
@@ -1151,7 +1151,7 @@ namespace numerical {
       detail::parallel_for(chunks, detail::cholesky_rows * width * width / 2, [&](std::size_t chunk) {
                              const std::size_t first {end + (chunk * detail::cholesky_rows)};
                              const std::size_t height {std::min(detail::cholesky_rows, n_ - first)};
-                             std::vector<T>    panel(height * width); // column j at panel[j * height]
+                             buffer<T>    panel(height * width, T {}); // column j at panel[j * height]
                              for (std::size_t r {0}; r < height; ++r) {
                                for (std::size_t j {0}; j < width; ++j) {
                                  panel[(j * height) + r] = lower_[((first + r) * n_) + k0 + j];
@@ -1180,10 +1180,10 @@ namespace numerical {
     void update_trailing(std::size_t k0,
                          std::size_t end)
     {
-      const std::size_t rows  {n_ - end};
-      const std::size_t depth {end - k0};
-      std::vector<T>    minus_l(rows * depth);
-      std::vector<T>    l_adjoint(depth * rows);
+      const std::size_t rows                      {n_ - end};
+      const std::size_t depth                     {end - k0};
+      buffer<T>         minus_l(rows * depth, T   {});
+      buffer<T>         l_adjoint(depth * rows, T {});
       for (std::size_t r {0}; r < rows; ++r) {
         for (std::size_t p {0}; p < depth; ++p) {
           const T value {lower_[((end + r) * n_) + k0 + p]};
@@ -1201,7 +1201,7 @@ namespace numerical {
 
     std::size_t    n_;                                      //!< The matrix order.
     std::size_t    block_ {detail::cholesky_block_for(n_)}; //!< The panel width.
-    std::vector<T> lower_;                                  //!< The lower-triangular factor L, row-major (upper triangle zero).
+    buffer<T>      lower_;                                  //!< The lower-triangular factor L, row-major (upper triangle zero).
   };
 
   //! \brief Cholesky-factorises a Hermitian positive-definite matrix. \see cholesky_decomposition
@@ -1218,8 +1218,8 @@ namespace numerical {
     template <typename T>
     struct thin_qr
     {
-      std::vector<T> q; //!< The orthonormal factor.
-      std::vector<T> r; //!< The triangular factor.
+      buffer<T> q; //!< The orthonormal factor.
+      buffer<T> r; //!< The triangular factor.
     };
 
     /*!
@@ -1236,9 +1236,9 @@ namespace numerical {
      * \param[in]     from  The first column it acts on.
      */
     template <typename T>
-    void reflect_rows(std::vector<T>&       a,
+    void reflect_rows(buffer<T>&            a,
                       std::size_t           cols,
-                      const std::vector<T>& v,
+                      const buffer<T>&      v,
                       std::size_t           first,
                       std::size_t           from)
     {
@@ -1247,7 +1247,7 @@ namespace numerical {
       parallel_for((span + width - 1) / width, 2 * v.size() * width, [&](std::size_t chunk) {
                      const std::size_t start {from + (chunk * width)};
                      const std::size_t count {std::min(width, cols - start)};
-                     std::vector<T>    w(count, T {});
+                     buffer<T>    w(count, T {});
                      for (std::size_t i {0}; i < v.size(); ++i) {
                        const T  weight {conj_of(v[i])};
                        const T* row    {a.data() + ((first + i) * cols) + start};
@@ -1268,8 +1268,8 @@ namespace numerical {
       std::size_t    first;  //!< The first row the block acts on.
       std::size_t    height; //!< The rows it acts on, `first…first+height-1`.
       std::size_t    width;  //!< Its reflector count.
-      std::vector<T> v;      //!< `V`, `height × width` row-major, reflector j from row j (zeros above).
-      std::vector<T> t;      //!< `T`, `width × width` upper triangular.
+      buffer<T>      v;      //!< `V`, `height × width` row-major, reflector j from row j (zeros above).
+      buffer<T>      t;      //!< `T`, `width × width` upper triangular.
     };
 
     /*!
@@ -1277,7 +1277,7 @@ namespace numerical {
      *        identity) into `I − V T Vᴴ = H_{k0} H_{k0+1} … H_{k1-1}`.
      */
     template <typename T>
-    [[nodiscard]] reflector_block<T> gather_reflectors(const std::vector<std::vector<T>>& reflectors,
+    [[nodiscard]] reflector_block<T> gather_reflectors(const std::vector<buffer<T>>&      reflectors,
                                                        std::size_t                        k0,
                                                        std::size_t                        k1,
                                                        std::size_t                        rows)
@@ -1287,19 +1287,19 @@ namespace numerical {
       block.v.assign(block.height * b, T {});
       block.t.assign(b * b, T {});
       for (std::size_t j {0}; j < b; ++j) {
-        const std::vector<T>& v {reflectors[k0 + j]};
+        const buffer<T>& v {reflectors[k0 + j]};
         for (std::size_t r {0}; r < v.size(); ++r) {
           block.v[((j + r) * b) + j] = v[r];
         }
       }
       // Vᴴ V once, through the matrix product kernel: its column j above the diagonal is V(:, 0…j-1)ᴴ v_j.
-      std::vector<T> v_adjoint(b * block.height);
+      buffer<T> v_adjoint(b * block.height, T {});
       for (std::size_t r {0}; r < block.height; ++r) {
         for (std::size_t j {0}; j < b; ++j) {
           v_adjoint[(j * block.height) + r] = conj_of(block.v[(r * b) + j]);
         }
       }
-      std::vector<T> gram(b * b, T {});
+      buffer<T> gram(b * b, T {});
       gemm(b, b, block.height, v_adjoint.data(), block.height, block.v.data(), b, gram.data(), b);
       for (std::size_t j {0}; j < b; ++j) {
         if (reflectors[k0 + j].empty()) {
@@ -1325,16 +1325,16 @@ namespace numerical {
     template <typename T>
     void apply_reflector_block(const reflector_block<T>& block,
                                bool                      adjoint,
-                               std::vector<T>&           a,
+                               buffer<T>&                a,
                                std::size_t               cols,
                                std::size_t               from,
                                std::size_t               to)
     {
-      const std::size_t b {block.width};
-      const std::size_t h {block.height};
-      const std::size_t w {to - from};
-      std::vector<T>    v_adjoint(b * h);
-      std::vector<T>    minus_v(h * b);
+      const std::size_t b                  {block.width};
+      const std::size_t h                  {block.height};
+      const std::size_t w                  {to - from};
+      buffer<T>         v_adjoint(b * h, T {});
+      buffer<T>         minus_v(h * b, T   {});
       for (std::size_t r {0}; r < h; ++r) {
         for (std::size_t j {0}; j < b; ++j) {
           v_adjoint[(j * h) + r]  = conj_of(block.v[(r * b) + j]);
@@ -1342,9 +1342,9 @@ namespace numerical {
         }
       }
       T*             top                 {a.data() + (block.first * cols) + from};
-      std::vector<T> projection(b * w, T {});
+      buffer<T>      projection(b * w, T {});
       gemm(b, w, h, v_adjoint.data(), h, top, cols, projection.data(), w);
-      std::vector<T> scaled(b * w, T     {});
+      buffer<T> scaled(b * w, T          {});
       for (std::size_t i {0}; i < b; ++i) {
         for (std::size_t p {0}; p < b; ++p) {
           const T factor {adjoint ? conj_of(block.t[(p * b) + i]) : block.t[(i * b) + p]};
@@ -1366,7 +1366,7 @@ namespace numerical {
      */
     template <typename T>
     void apply_transposed_reflector_block(const reflector_block<T>& block,
-                                          std::vector<T>&           at,
+                                          buffer<T>&                at,
                                           std::size_t               cols,
                                           std::size_t               from,
                                           std::size_t               to)
@@ -1389,9 +1389,9 @@ namespace numerical {
         }
       }
       T*             left                {at.data() + (from * cols) + block.first};
-      std::vector<T> projection(r * b, T {});
+      buffer<T>      projection(r * b, T {});
       gemm(r, b, h, left, cols, v_conjugate.get(), b, projection.data(), b);
-      std::vector<T> scaled(r * b, T     {});
+      buffer<T> scaled(r * b, T          {});
       gemm(r, b, b, projection.data(), b, t_transposed.get(), b, scaled.data(), b);
       gemm(r, h, b, scaled.data(), b, minus_v_t.get(), h, left, cols);
     }
@@ -1425,9 +1425,9 @@ namespace numerical {
      *        along the column at unit stride.
      */
     template <typename T>
-    void reflect_columns(std::vector<T>&       panel,
+    void reflect_columns(buffer<T>&            panel,
                          std::size_t           height,
-                         const std::vector<T>& v,
+                         const buffer<T>&      v,
                          std::size_t           first,
                          std::size_t           from,
                          std::size_t           to)
@@ -1449,16 +1449,16 @@ namespace numerical {
      *        left's reflectors applied to the right at once, took longer at these widths (32 columns).
      */
     template <typename T>
-    void factor_qr_panel(std::vector<T>&              a,
+    void factor_qr_panel(buffer<T>&                   a,
                          std::size_t                  rows,
                          std::size_t                  cols,
-                         std::vector<std::vector<T>>& reflectors,
+                         std::vector<buffer<T>>&      reflectors,
                          std::size_t                  k0,
                          std::size_t                  k1)
     {
-      const std::size_t height {rows - k0};
-      const std::size_t width  {k1 - k0};
-      std::vector<T>    panel(height * width);
+      const std::size_t height                  {rows - k0};
+      const std::size_t width                   {k1 - k0};
+      buffer<T>         panel(height * width, T {});
       for (std::size_t i {0}; i < height; ++i) {
         for (std::size_t j {0}; j < width; ++j) {
           panel[(j * height) + i] = a[((k0 + i) * cols) + k0 + j];
@@ -1466,7 +1466,7 @@ namespace numerical {
       }
       for (std::size_t k {k0}; k < k1; ++k) {
         const std::size_t c {k - k0};
-        std::vector<T>    v(panel.begin() + static_cast<std::ptrdiff_t>((c * height) + c),
+        buffer<T>         v(panel.begin() + static_cast<std::ptrdiff_t>((c * height) + c),
                             panel.begin() + static_cast<std::ptrdiff_t>((c + 1) * height));
         (void)rescale_tiny(v); // the reflector is the same at any scale
         const double norm {scaled_norm(v)};
@@ -1492,7 +1492,7 @@ namespace numerical {
     template <typename T>
     struct qr_reflections
     {
-      std::vector<T>                  r;      //!< `R`, `k × cols` upper trapezoidal, its diagonal as it comes.
+      buffer<T>                       r;      //!< `R`, `k × cols` upper trapezoidal, its diagonal as it comes.
       std::vector<reflector_block<T>> blocks; //!< `Q = H₀ H₁ …`, block by block of \ref qr_block reflectors.
     };
 
@@ -1503,13 +1503,13 @@ namespace numerical {
      *        instead).
      */
     template <typename T>
-    [[nodiscard]] qr_reflections<T> householder_reflect(std::vector<T> a,
+    [[nodiscard]] qr_reflections<T> householder_reflect(buffer<T>      a,
                                                         std::size_t    rows,
                                                         std::size_t    cols)
     {
       const std::size_t           depth {std::min(rows, cols)};
-      std::vector<std::vector<T>> reflectors(depth); // v_k on rows k…m-1; empty where the column was zero
-      qr_reflections<T>           out   {.r = std::vector<T>(depth * cols, T {}), .blocks = {}};
+      std::vector<buffer<T>>      reflectors(depth); // v_k on rows k…m-1; empty where the column was zero
+      qr_reflections<T>           out   {.r = buffer<T>(depth * cols, T {}), .blocks = {}};
       for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
         const std::size_t k1 {std::min(k0 + qr_block, depth)};
         factor_qr_panel(a, rows, cols, reflectors, k0, k1);
@@ -1542,13 +1542,13 @@ namespace numerical {
      * \return `Q` and `R`.
      */
     template <typename T>
-    [[nodiscard]] thin_qr<T> householder_qr(std::vector<T> a,
+    [[nodiscard]] thin_qr<T> householder_qr(buffer<T>      a,
                                             std::size_t    rows,
                                             std::size_t    cols)
     {
       const std::size_t depth   {std::min(rows, cols)};
       qr_reflections<T> factors {householder_reflect(std::move(a), rows, cols)};
-      thin_qr<T>        out     {.q = std::vector<T>(rows * depth, T {}), .r = std::move(factors.r)};
+      thin_qr<T>        out     {.q = buffer<T>(rows * depth, T {}), .r = std::move(factors.r)};
       for (std::size_t i {0}; i < depth; ++i) {
         out.q[(i * depth) + i] = T {1};
       }
@@ -1660,8 +1660,8 @@ namespace numerical {
       for (std::size_t i {0}; i < cols_; ++i) {
         largest = std::max(largest, detail::real_part(r_[(i * cols_) + i]));
       }
-      const double   tolerance {detail::rank_tolerance(largest, rows_, cols_)};
-      std::vector<T> y(cols_); // y = Qᴴ b
+      const double   tolerance  {detail::rank_tolerance(largest, rows_, cols_)};
+      buffer<T>      y(cols_, T {}); // y = Qᴴ b
       for (std::size_t i {0}; i < cols_; ++i) {
         if (detail::real_part(r_[(i * cols_) + i]) <= tolerance) {
           throw singular_matrix_error("QR solve: the matrix is rank-deficient (lstsq gives its minimum-norm solution)");
@@ -1672,7 +1672,7 @@ namespace numerical {
         }
         y[i] = sum;
       }
-      std::vector<T> x(cols_); // back substitution R x = y
+      buffer<T> x(cols_, T {}); // back substitution R x = y
       for (std::size_t i {cols_}; i-- > 0;) {
         T sum {y[i]};
         for (std::size_t j {i + 1}; j < cols_; ++j) {
@@ -1688,8 +1688,8 @@ namespace numerical {
     std::size_t    rows_;  //!< The number of rows (m).
     std::size_t    cols_;  //!< The number of columns (n).
     std::size_t    depth_; //!< min(m, n).
-    std::vector<T> q_;     //!< The m×k factor Q, row-major.
-    std::vector<T> r_;     //!< The k×n upper-trapezoidal factor R, row-major.
+    buffer<T>      q_;     //!< The m×k factor Q, row-major.
+    buffer<T>      r_;     //!< The k×n upper-trapezoidal factor R, row-major.
   };
 
   //! \brief QR-factorises an `m × n` matrix. \see qr_decomposition
@@ -1837,12 +1837,12 @@ namespace numerical {
                            std::size_t     m,
                            const T*        v,
                            T*              w,
-                           std::vector<T>& scratch)
+                           buffer<T>&      scratch)
     {
       constexpr std::size_t rows_per_task {32};
       const std::size_t     tasks         {(m + rows_per_task - 1) / rows_per_task};
       if (scratch.size() < tasks * m) {
-        scratch.resize(tasks * m);
+        scratch.resize(tasks * m, T {});
       }
       symmetric_row_kernel kernel {[](const double* row, const double* x, double f, double* out, std::size_t count) {
                                      return symmetric_row(row, x, f, out, count);
@@ -1929,8 +1929,8 @@ namespace numerical {
     template <typename T>
     struct tridiagonal_reduction
     {
-      std::vector<std::vector<T>> reflectors; //!< `Q = H₁ H₂ …`: `reflectors[k + 1]` zeroes column k, from row k + 1.
-      std::vector<T>              delta;      //!< `D = diag(δ)`, the unit phases that make `T` real.
+      std::vector<buffer<T>> reflectors; //!< `Q = H₁ H₂ …`: `reflectors[k + 1]` zeroes column k, from row k + 1.
+      buffer<T>              delta;      //!< `D = diag(δ)`, the unit phases that make `T` real.
     };
 
     /*!
@@ -1948,14 +1948,14 @@ namespace numerical {
      * \return `M`'s reflectors and phases: \ref tridiagonal_basis forms `M`, \ref to_matrix_basis applies it.
      */
     template <typename T>
-    tridiagonal_reduction<T> tridiagonalize(std::vector<T>&      a,
+    tridiagonal_reduction<T> tridiagonalize(buffer<T>&           a,
                                             std::size_t          n,
-                                            std::vector<double>& d,
-                                            std::vector<double>& e)
+                                            buffer<double>&      d,
+                                            buffer<double>&      e)
     {
-      std::vector<std::vector<T>> reflectors(n);                                                             // reflectors[k + 1] zeroes column k, acting on rows k + 1…
-      std::vector<T>              symv_scratch;                                                              // hermitian_product's partials, kept from step to step
-      std::vector<T>              sub(n, T {});                                                              // T's subdiagonal before the phases
+      std::vector<buffer<T>> reflectors(n);                                                                  // reflectors[k + 1] zeroes column k, acting on rows k + 1…
+      buffer<T>              symv_scratch;                                                                   // hermitian_product's partials, kept from step to step
+      buffer<T>              sub(n, T      {});                                                              // T's subdiagonal before the phases
       // The trailing update's factors, for the first panel's size, the largest: one buffer each, mapped once.
       const auto left                      {std::make_unique_for_overwrite<T[]>(n * 2 * tridiagonal_block)}; // row i: −V's then −W's
       const auto right                     {std::make_unique_for_overwrite<T[]>(2 * tridiagonal_block * n)}; // Wᴴ's rows, then Vᴴ's
@@ -1967,12 +1967,12 @@ namespace numerical {
         const std::size_t width              {k1 - k0};
         // By reflection: row p of each holds step k0 + p's vector over the rows (zero above), so every term of the
         // panel is a contiguous update.
-        std::vector<T> by_row_v(width * n, T {});
-        std::vector<T> by_row_w(width * n, T {});
+        buffer<T> by_row_v(width * n, T {});
+        buffer<T> by_row_w(width * n, T {});
         for (std::size_t k {k0}; k < k1; ++k) {
-          const std::size_t j {k - k0};
-          const std::size_t m {n - k - 1};
-          std::vector<T>    column(m + 1); // column k from the diagonal down, the panel's earlier steps applied
+          const std::size_t j               {k - k0};
+          const std::size_t m               {n - k - 1};
+          buffer<T>         column(m + 1, T {}); // column k from the diagonal down, the panel's earlier steps applied
           for (std::size_t i {k}; i < n; ++i) {
             column[i - k] = a[(i * n) + k];
           }
@@ -1981,7 +1981,7 @@ namespace numerical {
             subtract_product(column.data(), by_row_w.data() + (p * n) + k, conj_of(by_row_v[(p * n) + k]), m + 1);
           }
           a[(k * n) + k] = column[0];
-          std::vector<T> v(column.begin() + 1, column.end()); // column k below the diagonal
+          buffer<T>      v(column.begin() + 1, column.end()); // column k below the diagonal
           const double   below {m > 1 ? scaled_norm(v.data() + 1, m - 1) : 0.0};
           if (below == 0.0) {
             sub[k] = v[0]; // already tridiagonal in this column: nothing to reflect
@@ -1996,7 +1996,7 @@ namespace numerical {
             element /= length;
           }
           const T*       block  {a.data() + ((k + 1) * n) + k + 1};         // the trailing block, row stride n
-          std::vector<T> w(m, T {});
+          buffer<T>      w(m, T {});
           hermitian_product(block, n, m, v.data(), w.data(), symv_scratch); // w = A v on the trailing block
           for (std::size_t p {0}; p < j; ++p) {                                           // w = (A − V Wᴴ − W Vᴴ) v
             const T by_w {conjugate_dot(by_row_w.data() + (p * n) + k + 1, v.data(), m)}; // (Wᴴ v)ₚ
@@ -2040,7 +2040,7 @@ namespace numerical {
       }
       e[n - 1] = 0.0;
       // D T Dᴴ is real with D = diag(δ): δ₀ = 1, δ_{k+1} = δ_k · conj(phase(t_k)); then M = Q Dᴴ.
-      std::vector<T> delta(n, T {1});
+      buffer<T> delta(n, T {1});
       for (std::size_t k {0}; k + 1 < n; ++k) {
         e[k] = real_subdiagonal(sub[k], delta[k], delta[k + 1]);
       }
@@ -2053,10 +2053,10 @@ namespace numerical {
      *        times `conj(δⱼ)`.
      */
     template <typename T>
-    [[nodiscard]] std::vector<T> tridiagonal_basis(const tridiagonal_reduction<T>& reduction,
-                                                   std::size_t                     n)
+    [[nodiscard]] buffer<T> tridiagonal_basis(const tridiagonal_reduction<T>& reduction,
+                                              std::size_t                     n)
     {
-      std::vector<T> mt(n * n, T {});
+      buffer<T> mt(n * n, T {});
       for (std::size_t i {0}; i < n; ++i) {
         mt[(i * n) + i] = T {1};
       }
@@ -2081,7 +2081,7 @@ namespace numerical {
      */
     template <typename T>
     void to_matrix_basis(const tridiagonal_reduction<T>& reduction,
-                         std::vector<T>&                 at,
+                         buffer<T>&                      at,
                          std::size_t                     n)
     {
       if constexpr (!std::is_floating_point_v<T>) { // a real reduction's phases are all 1
@@ -2161,7 +2161,7 @@ namespace numerical {
      * rotation.
      */
     template <typename T>
-    void apply_row_operations(std::vector<T>&                   m,
+    void apply_row_operations(buffer<T>&                        m,
                               std::size_t                       n,
                               const std::vector<row_operation>& operations)
     {
@@ -2244,9 +2244,9 @@ namespace numerical {
      * \throws convergence_error If a subdiagonal entry is not negligible after \p max_steps steps.
      */
     template <typename T>
-    void tridiagonal_ql(std::vector<double>& d,
-                        std::vector<double>& e,
-                        std::vector<T>&      zt,
+    void tridiagonal_ql(buffer<double>&      d,
+                        buffer<double>&      e,
+                        buffer<T>&           zt,
                         std::size_t          n,
                         std::size_t          max_steps)
     {
@@ -2366,7 +2366,7 @@ namespace numerical {
      * \throws convergence_error If the root is not reached within \p max_iterations steps.
      */
     template <typename Offset>
-    [[nodiscard]] secular_solution solve_secular(const std::vector<double>& z,
+    [[nodiscard]] secular_solution solve_secular(const buffer<double>&      z,
                                                  double                     rho,
                                                  std::size_t                i,
                                                  std::size_t                max_iterations,
@@ -2448,8 +2448,8 @@ namespace numerical {
      * \param[out] delta          `dⱼ − λ` for every `j`.
      * \return `λ`.
      */
-    [[nodiscard]] inline double secular_root(const std::vector<double>& d,
-                                             const std::vector<double>& z,
+    [[nodiscard]] inline double secular_root(const buffer<double>&      d,
+                                             const buffer<double>&      z,
                                              double                     rho,
                                              std::size_t                i,
                                              std::size_t                max_iterations,
@@ -2517,8 +2517,8 @@ namespace numerical {
      * \p q is block diagonal, its first \p split columns zero below row \p split and the others above it, and
      * only a deflating rotation mixes a column of each (`dlaed3` multiplies the halves apart the same way).
      */
-    inline void merge_rank_one(std::vector<double>& d,
-                               std::vector<double>  z,
+    inline void merge_rank_one(buffer<double>&      d,
+                               buffer<double>       z,
                                double               rho,
                                double*              q,
                                std::size_t          ldq,
@@ -2586,10 +2586,10 @@ namespace numerical {
       if (pending != n) {
         kept.push_back(pending);
       }
-      const std::size_t   k {kept.size()};
-      std::vector<double> poles(k);
-      std::vector<double> weights(k);
-      double              norm {0.0};
+      const std::size_t   k                 {kept.size()};
+      buffer<double>      poles(k, double   {});
+      buffer<double>      weights(k, double {});
+      double              norm              {0.0};
       for (std::size_t i {0}; i < k; ++i) {
         poles[i]    = d[kept[i]];
         weights[i]  = z[kept[i]];
@@ -2599,17 +2599,17 @@ namespace numerical {
       for (double& weight : weights) {
         weight /= norm;
       }
-      const double        scaled_rho {rho * norm * norm};
-      std::vector<double> roots(k);
+      const double        scaled_rho      {rho * norm * norm};
+      buffer<double>      roots(k, double {});
       // gaps[i * k + j] = poles[j] − roots[i], every element written by its root's solve.
-      double* const gaps {workspace_of(work.gaps, k * k)};
+      double* const gaps                  {workspace_of(work.gaps, k * k)};
       parallel_for(k, 8 * k, [&](std::size_t i) {
                      roots[i] = secular_root(poles, weights, scaled_rho, i, secular_iterations, gaps + (i * k));
                    });
       // Löwner: ẑⱼ² = −Πᵢ (dⱼ − λᵢ) / Πᵢ≠ⱼ (dⱼ − dᵢ), each pole paired with its root, by blocks of poles, each pole's
       // product in ascending order of the roots (a row of gaps at a time, along the block): the same operations in
       // the same order on any number of threads.
-      std::vector<double> signed_weights(k);
+      buffer<double> signed_weights(k, double {});
       parallel_for((k + lowner_block - 1) / lowner_block, lowner_block * k, [&](std::size_t block) {
                      const std::size_t first {block * lowner_block};
                      const std::size_t last {std::min(first + lowner_block, k)};
@@ -2647,7 +2647,7 @@ namespace numerical {
                        }
                      }
                    });
-      std::vector<double> length(k, 0.0);
+      buffer<double> length(k, 0.0);
       for (std::size_t j {0}; j < k; ++j) { // by rows of u, each a contiguous update of every column's sum
         for (std::size_t i {0}; i < k; ++i) {
           length[i] += u[(j * k) + i] * u[(j * k) + i];
@@ -2685,7 +2685,7 @@ namespace numerical {
       }
       // Every eigenpair, then by ascending eigenvalue: column j of the result is column source[j] of the
       // updated ones (below k) or deflated column source[j] − k of q, written row by row.
-      std::vector<double> values(n);
+      buffer<double> values(n, double {});
       for (std::size_t i {0}; i < k; ++i) {
         values[i] = roots[i];
       }
@@ -2700,7 +2700,7 @@ namespace numerical {
         d[j] = values[order[j]];
       }
       parallel_for(n, n, [&](std::size_t r) {
-                     const std::vector<double> before(q + (r * ldq), q + (r * ldq) + n);
+                     const buffer<double> before(q + (r * ldq), q + (r * ldq) + n);
                      for (std::size_t j {0}; j < n; ++j) {
                        const std::size_t source {order[j]};
                        q[(r * ldq) + j] = source < k ? updated[(r * k) + source] : before[deflated[source - k]];
@@ -2729,8 +2729,8 @@ namespace numerical {
       int exponent {0};
       (void)std::frexp(largest, &exponent);
       if (exponent != 0) {
-        std::vector<double> scaled_d(n);
-        std::vector<double> scaled_e(n, 0.0);
+        buffer<double> scaled_d(n, double {});
+        buffer<double> scaled_e(n, 0.0);
         for (std::size_t i {0}; i < n; ++i) {
           scaled_d[i] = std::ldexp(d[i], -exponent);
           scaled_e[i] = i + 1 < n ? std::ldexp(e[i], -exponent) : 0.0;
@@ -2742,10 +2742,10 @@ namespace numerical {
         return;
       }
       if (n <= divide_leaf) {
-        std::vector<double> diagonal(d, d + n);
-        std::vector<double> sub(n, 0.0);
+        buffer<double> diagonal(d, d + n);
+        buffer<double> sub(n, 0.0);
         std::copy(e, e + (n - 1), sub.begin());
-        std::vector<double> zt(n * n, 0.0);
+        buffer<double> zt(n * n, 0.0);
         for (std::size_t i {0}; i < n; ++i) {
           zt[(i * n) + i] = 1.0;
         }
@@ -2772,14 +2772,14 @@ namespace numerical {
       d[n1]     -= rho;
       divide_block(d, e, n1, q, ldq, work);
       divide_block(d + n1, e + n1, n2, q + (n1 * ldq) + n1, ldq, work);
-      std::vector<double> z(n);
+      buffer<double> z(n, double {});
       for (std::size_t i {0}; i < n1; ++i) {
         z[i] = q[((n1 - 1) * ldq) + i];
       }
       for (std::size_t i {0}; i < n2; ++i) {
         z[n1 + i] = std::copysign(1.0, beta) * q[(n1 * ldq) + n1 + i];
       }
-      std::vector<double> values(d, d + n);
+      buffer<double> values(d, d + n);
       merge_rank_one(values, std::move(z), rho, q, ldq, n, n1, work);
       std::copy(values.begin(), values.end(), d);
     }
@@ -2794,7 +2794,7 @@ namespace numerical {
     inline void divide_and_conquer(double*              d,
                                    const double*        e,
                                    std::size_t          n,
-                                   std::vector<double>& q)
+                                   buffer<double>&      q)
     {
       q.assign(n * n, 0.0);
       merge_workspace work;
@@ -2803,36 +2803,36 @@ namespace numerical {
 
     //! \brief \p zt ← \p left · \p zt, `n × n`, row-major, for any other element type: the real factor converted.
     template <typename T>
-    void multiply_real_left(const std::vector<double>& left,
-                            std::vector<T>&            zt,
+    void multiply_real_left(const buffer<double>&      left,
+                            buffer<T>&                 zt,
                             std::size_t                n)
     {
-      std::vector<T> converted(n * n);
+      buffer<T> converted(n * n, T {});
       for (std::size_t i {0}; i < n * n; ++i) {
         converted[i] = from_double<T>(left[i]);
       }
-      std::vector<T> product(n * n, T {});
+      buffer<T> product(n * n, T {});
       gemm(n, n, n, converted.data(), n, zt.data(), n, product.data(), n);
       zt = std::move(product);
     }
 
     //! \brief \p zt ← \p left · \p zt, `n × n`, row-major, for a real left factor.
-    inline void multiply_real_left(const std::vector<double>& left,
-                                   std::vector<double>&       zt,
+    inline void multiply_real_left(const buffer<double>&      left,
+                                   buffer<double>&            zt,
                                    std::size_t                n)
     {
-      std::vector<double> product(n * n, 0.0);
+      buffer<double> product(n * n, 0.0);
       gemm(n, n, n, left.data(), n, zt.data(), n, product.data(), n);
       zt = std::move(product);
     }
 
     //! \brief \p zt ← \p left · \p zt for a complex \p zt: the real and imaginary parts by a real product each.
-    inline void multiply_real_left(const std::vector<double>&         left,
-                                   std::vector<std::complex<double>>& zt,
+    inline void multiply_real_left(const buffer<double>&              left,
+                                   buffer<std::complex<double>>&      zt,
                                    std::size_t                        n)
     {
-      std::vector<double> re(n * n);
-      std::vector<double> im(n * n);
+      buffer<double> re(n * n, double {});
+      buffer<double> im(n * n, double {});
       for (std::size_t i {0}; i < n * n; ++i) {
         re[i] = zt[i].real();
         im[i] = zt[i].imag();
@@ -2851,19 +2851,19 @@ namespace numerical {
      * \throws convergence_error If an iteration did not converge within its bound.
      */
     template <typename T>
-    [[nodiscard]] std::vector<T> tridiagonal_divide_and_conquer(std::vector<double>&            d,
-                                                                std::vector<double>&            e,
-                                                                const tridiagonal_reduction<T>& reduction,
-                                                                std::size_t                     n)
+    [[nodiscard]] buffer<T> tridiagonal_divide_and_conquer(buffer<double>&                 d,
+                                                           buffer<double>&                 e,
+                                                           const tridiagonal_reduction<T>& reduction,
+                                                           std::size_t                     n)
     {
       if (n <= divide_leaf) {
-        std::vector<T> zt {tridiagonal_basis(reduction, n)};
+        buffer<T> zt {tridiagonal_basis(reduction, n)};
         tridiagonal_ql(d, e, zt, n, ql_steps_per_value * n);
         return zt;
       }
-      std::vector<double> q;
+      buffer<double> q;
       divide_and_conquer(d.data(), e.data(), n, q);
-      std::vector<T> at(n * n); // row j: the eigenvector of d[j], in the tridiagonal's basis, then the matrix's
+      buffer<T> at(n * n, T {}); // row j: the eigenvector of d[j], in the tridiagonal's basis, then the matrix's
       parallel_for(n, n, [&](std::size_t j) {
                      for (std::size_t r {0}; r < n; ++r) {
                        at[(j * n) + r] = from_double<T>(q[(r * n) + j]);
@@ -2874,7 +2874,7 @@ namespace numerical {
     }
 
     //! \brief The Frobenius norm of the strict off-diagonal of the `n × n` \p a.
-    [[nodiscard]] inline double jacobi_off_diagonal(const std::vector<double>& a,
+    [[nodiscard]] inline double jacobi_off_diagonal(const buffer<double>&      a,
                                                     std::size_t                n)
     {
       double sum {0.0};
@@ -2887,8 +2887,8 @@ namespace numerical {
     }
 
     //! \brief One Jacobi rotation of the `n × n` \p a zeroing `a[p][q]`, accumulated into \p v.
-    inline void jacobi_rotate(std::vector<double>& a,
-                              std::vector<double>& v,
+    inline void jacobi_rotate(buffer<double>&      a,
+                              buffer<double>&      v,
                               std::size_t          n,
                               std::size_t          p,
                               std::size_t          q)
@@ -2934,8 +2934,8 @@ namespace numerical {
      * \param[in]     max_sweeps The bound of sweeps.
      * \throws convergence_error If the off-diagonal is not negligible after \p max_sweeps sweeps.
      */
-    inline void cyclic_jacobi(std::vector<double>& a,
-                              std::vector<double>& v,
+    inline void cyclic_jacobi(buffer<double>&      a,
+                              buffer<double>&      v,
                               std::size_t          n,
                               double               frobenius,
                               std::size_t          max_sweeps)
@@ -2956,7 +2956,7 @@ namespace numerical {
     }
 
     //! \brief The indices of \p diagonal by ascending value.
-    [[nodiscard]] inline std::vector<std::size_t> ascending_order(const std::vector<double>& diagonal)
+    [[nodiscard]] inline std::vector<std::size_t> ascending_order(const buffer<double>& diagonal)
     {
       std::vector<std::size_t> order(diagonal.size());
       for (std::size_t i {0}; i < order.size(); ++i) {
@@ -2972,11 +2972,11 @@ namespace numerical {
      *        the copy of order 1024 took a tenth of an `eigh` on six x86-64 cores.
      */
     template <typename T>
-    [[nodiscard]] std::vector<T> columns_by_value(const std::vector<T>&           zt,
-                                                  const std::vector<std::size_t>& order,
-                                                  std::size_t                     n)
+    [[nodiscard]] buffer<T> columns_by_value(const buffer<T>&                zt,
+                                             const std::vector<std::size_t>& order,
+                                             std::size_t                     n)
     {
-      std::vector<T> out(n * n);
+      buffer<T> out(n * n, T {});
       parallel_for((n + transpose_tile - 1) / transpose_tile, transpose_tile * n, [&](std::size_t block) {
                      const std::size_t r0 {block * transpose_tile};
                      const std::size_t r1 {std::min(r0 + transpose_tile, n)};
@@ -3044,10 +3044,10 @@ namespace numerical {
       if (scale == 0.0) {
         scale = 1.0;
       }
-      std::vector<double> a(n_ * n_);
-      std::vector<double> diagonal(n_);
+      buffer<double> a(n_ * n_, double   {});
+      buffer<double> diagonal(n_, double {});
       if (method == eigen_method::jacobi) {
-        std::vector<double> v(n_ * n_, 0.0);
+        buffer<double>      v(n_ * n_, 0.0);
         double              frobenius_squared {0.0};
         for (std::size_t i {0}; i < n_; ++i) {
           v[(i * n_) + i] = 1.0;
@@ -3068,10 +3068,10 @@ namespace numerical {
           a[(i * n_) + j] = input(i, j) / scale;
         }
       }
-      std::vector<double> zt;
+      buffer<double> zt;
       if (n_ > 0) {
-        std::vector<double>                          off(n_);
-        const detail::tridiagonal_reduction<double>  reduction {detail::tridiagonalize(a, n_, diagonal, off)};
+        buffer<double>                               off(n_, double {});
+        const detail::tridiagonal_reduction<double>  reduction      {detail::tridiagonalize(a, n_, diagonal, off)};
         if (method == eigen_method::tridiagonal_ql) {
           zt = detail::tridiagonal_basis(reduction, n_);
           detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
@@ -3080,8 +3080,8 @@ namespace numerical {
           zt = detail::tridiagonal_divide_and_conquer(diagonal, off, reduction, n_);
         }
       }
-      const std::vector<std::size_t> order {detail::ascending_order(diagonal)};
-      std::vector<double>            values(n_);
+      const std::vector<std::size_t> order             {detail::ascending_order(diagonal)};
+      buffer<double>                 values(n_, double {});
       for (std::size_t c {0}; c < n_; ++c) {
         values[c] = diagonal[order[c]] * scale;
       }
@@ -3110,8 +3110,8 @@ namespace numerical {
   private:
 
     //! \brief Sorts the eigenvalues \p diagonal ascending and reorders \p v's columns to match.
-    void extract_sorted(const std::vector<double>& diagonal,
-                        const std::vector<double>& v)
+    void extract_sorted(const buffer<double>& diagonal,
+                        const buffer<double>& v)
     {
       std::vector<std::size_t> order(n_);
       for (std::size_t i {0}; i < n_; ++i) {
@@ -3121,8 +3121,8 @@ namespace numerical {
                 [&diagonal](std::size_t x, std::size_t y) {
                   return diagonal[x] < diagonal[y];
                 });
-      std::vector<double> values(n_);
-      std::vector<double> vectors(n_ * n_);
+      buffer<double> values(n_, double       {});
+      buffer<double> vectors(n_ * n_, double {});
       for (std::size_t col {0}; col < n_; ++col) {
         values[col] = diagonal[order[col]];
         for (std::size_t row {0}; row < n_; ++row) {
@@ -3187,17 +3187,17 @@ namespace numerical {
       if (scale == 0.0) {
         scale = 1.0;
       }
-      std::vector<std::complex<double>> a(n_ * n_);
+      buffer<std::complex<double>> a(n_ * n_, std::complex<double> {});
       for (std::size_t i {0}; i < n_; ++i) { // the lower triangle alone, a real diagonal: the reduction reads no more
         for (std::size_t j {0}; j <= i; ++j) {
           a[(i * n_) + j] = (i == j ? std::complex<double> {input(i, j).real(), 0.0} : input(i, j)) / scale;
         }
       }
-      std::vector<double>               diagonal(n_);
-      std::vector<std::complex<double>> zt;
+      buffer<double>               diagonal(n_, double {});
+      buffer<std::complex<double>> zt;
       if (n_ > 0) {
-        std::vector<double>                                        off(n_);
-        const detail::tridiagonal_reduction<std::complex<double>>  reduction {detail::tridiagonalize(a, n_, diagonal, off)};
+        buffer<double>                                             off(n_, double {});
+        const detail::tridiagonal_reduction<std::complex<double>>  reduction      {detail::tridiagonalize(a, n_, diagonal, off)};
         if (method == eigen_method::tridiagonal_ql) {
           zt = detail::tridiagonal_basis(reduction, n_);
           detail::tridiagonal_ql(diagonal, off, zt, n_, detail::ql_steps_per_value * n_);
@@ -3206,8 +3206,8 @@ namespace numerical {
           zt = detail::tridiagonal_divide_and_conquer(diagonal, off, reduction, n_);
         }
       }
-      const std::vector<std::size_t> order {detail::ascending_order(diagonal)};
-      std::vector<double>            values(n_);
+      const std::vector<std::size_t> order             {detail::ascending_order(diagonal)};
+      buffer<double>                 values(n_, double {});
       for (std::size_t c {0}; c < n_; ++c) {
         values[c] = diagonal[order[c]] * scale;
       }
@@ -3253,14 +3253,14 @@ namespace numerical {
      * \throws convergence_error If a sweep still rotated at the bound.
      */
     template <typename T>
-    void one_sided_jacobi(std::vector<T>& w,
-                          std::vector<T>& v,
+    void one_sided_jacobi(buffer<T>&      w,
+                          buffer<T>&      v,
                           std::size_t     n,
                           std::size_t     max_sweeps)
     {
       // The sweeps rotate columns: work on the transposes, where each column is a contiguous row. A walk
       // down the columns of the row-major arrays strides by n on every access and runs several times slower.
-      const auto transpose_square {[n](std::vector<T>& m) {
+      const auto transpose_square {[n](buffer<T>& m) {
                                      for (std::size_t i {0}; i < n; ++i) {
                                        for (std::size_t j {i + 1}; j < n; ++j) {
                                          std::swap(m[(i * n) + j], m[(j * n) + i]);
@@ -3295,7 +3295,7 @@ namespace numerical {
             const double t    {(zeta >= 0.0 ? 1.0 : -1.0) / (std::abs(zeta) + std::sqrt(1.0 + (zeta * zeta)))};
             const double c    {1.0 / std::sqrt(1.0 + (t * t))};
             const double s    {c * t};
-            for (std::vector<T>* side : {&w, &v}) {
+            for (buffer<T>* side : {&w, &v}) {
               T* mp {side->data() + (p * n)};
               T* mq {side->data() + (q * n)};
               for (std::size_t i {0}; i < n; ++i) {
@@ -3345,13 +3345,13 @@ namespace numerical {
      * \param[out] vt          `V_bᵀ`, likewise.
      */
     template <typename T>
-    void form_bidiagonal_bases(const std::vector<std::vector<T>>& left,
-                               std::vector<std::vector<T>>        right,
-                               const std::vector<T>&              left_phase,
-                               const std::vector<T>&              right_phase,
+    void form_bidiagonal_bases(const std::vector<buffer<T>>&      left,
+                               std::vector<buffer<T>>             right,
+                               const buffer<T>&                   left_phase,
+                               const buffer<T>&                   right_phase,
                                std::size_t                        n,
-                               std::vector<T>&                    ut,
-                               std::vector<T>&                    vt)
+                               buffer<T>&                         ut,
+                               buffer<T>&                         vt)
     {
       // U_b = L₀ᴴ L₁ᴴ … with L_kᴴ = H_k diag(conj phase at k), and V_b = R₀ R₁ … with R_k = H'_k diag(phase
       // at k+1). A phase on row k commutes with every later reflector, which acts on rows past it, so
@@ -3363,7 +3363,7 @@ namespace numerical {
         ut[(k * n) + k] = conj_of(left_phase[k]);
         vt[(k * n) + k] = k == 0 ? T {1} : right_phase[k - 1];
       }
-      std::vector<std::vector<T>> shifted(n); // right[k] acts from row k+1: as reflector k+1 of a QR
+      std::vector<buffer<T>> shifted(n); // right[k] acts from row k+1: as reflector k+1 of a QR
       for (std::size_t k {0}; k + 1 < n; ++k) {
         shifted[k + 1] = std::move(right[k]);
       }
@@ -3395,12 +3395,12 @@ namespace numerical {
 #endif
 
     template <typename T>
-    void bidiagonalize_unblocked(std::vector<T>&      b,
+    void bidiagonalize_unblocked(buffer<T>&           b,
                                  std::size_t          n,
-                                 std::vector<double>& d,
-                                 std::vector<double>& e,
-                                 std::vector<T>&      ut,
-                                 std::vector<T>&      vt,
+                                 buffer<double>&      d,
+                                 buffer<double>&      e,
+                                 buffer<T>&           ut,
+                                 buffer<T>&           vt,
                                  bool                 form = true);
 
     /*!
@@ -3408,7 +3408,7 @@ namespace numerical {
      * \return `β = −sign(x₀) ‖x‖`.
      */
     template <typename T>
-    [[nodiscard]] T householder_in_place(std::vector<T>& x)
+    [[nodiscard]] T householder_in_place(buffer<T>& x)
     {
       const double up     {rescale_tiny(x)}; // the reflector is the same at any scale; β is scaled back
       const auto   norm   {static_cast<T>(scaled_norm(x))};
@@ -3438,34 +3438,34 @@ namespace numerical {
      */
     template <typename T>
     requires std::is_floating_point_v<T>
-    void bidiagonalize(std::vector<T>&      b,
+    void bidiagonalize(buffer<T>&           b,
                        std::size_t          n,
-                       std::vector<double>& d,
-                       std::vector<double>& e,
-                       std::vector<T>&      ut,
-                       std::vector<T>&      vt,
+                       buffer<double>&      d,
+                       buffer<double>&      e,
+                       buffer<T>&           ut,
+                       buffer<T>&           vt,
                        bool                 form = true)
     {
       if (n < bidiagonal_crossover) {
         bidiagonalize_unblocked(b, n, d, e, ut, vt, form);
         return;
       }
-      std::vector<std::vector<T>> left(n);  // the left reflector of step k, on rows k…, empty where none was needed
-      std::vector<std::vector<T>> right(n); // the right reflector of step k, on columns k+1…, likewise
+      std::vector<buffer<T>>      left(n);  // the left reflector of step k, on rows k…, empty where none was needed
+      std::vector<buffer<T>>      right(n); // the right reflector of step k, on columns k+1…, likewise
       const auto                  nonzero {[](const T& value) { return value != T {}; }};
       for (std::size_t k0 {0}; k0 < n; k0 += bidiagonal_block) {
         const std::size_t k1    {std::min(k0 + bidiagonal_block, n)};
         const std::size_t width {k1 - k0};
         // By reflector: row p of each holds step k0 + p's vector over the rows (v, x) or the columns (u, y), so every
         // term of the panel is a contiguous update.
-        std::vector<T> by_row_v(width * n, T {}); // the left reflectors, at their rows
-        std::vector<T> by_row_y(width * n, T {}); // what they move, 2 Bᵀ v, at the columns
-        std::vector<T> by_row_u(width * n, T {}); // the right reflectors, at their columns
-        std::vector<T> by_row_x(width * n, T {}); // what they move, 2 B u, at the rows
-        const auto     row_of {[n](std::vector<T>& rows, std::size_t p, std::size_t from) { return rows.data() + (p * n) + from; }};
+        buffer<T>      by_row_v(width * n, T {}); // the left reflectors, at their rows
+        buffer<T>      by_row_y(width * n, T {}); // what they move, 2 Bᵀ v, at the columns
+        buffer<T>      by_row_u(width * n, T {}); // the right reflectors, at their columns
+        buffer<T>      by_row_x(width * n, T {}); // what they move, 2 B u, at the rows
+        const auto     row_of {[n](buffer<T>& rows, std::size_t p, std::size_t from) { return rows.data() + (p * n) + from; }};
         for (std::size_t k {k0}; k < k1; ++k) {
-          const std::size_t i {k - k0};
-          std::vector<T>    x(n - k); // column k from the diagonal down, the panel's earlier steps applied
+          const std::size_t i          {k - k0};
+          buffer<T>         x(n - k, T {}); // column k from the diagonal down, the panel's earlier steps applied
           for (std::size_t r {k}; r < n; ++r) {
             x[r - k] = b[(r * n) + k];
           }
@@ -3476,8 +3476,8 @@ namespace numerical {
           if (std::any_of(x.begin() + 1, x.end(), nonzero)) { // something below the diagonal to reflect
             d[k] = static_cast<double>(householder_in_place(x));
             // y = 2 (B − V Yᵀ − X Uᵀ)ᵀ v on the columns past k: Bᵀ v by contiguous rows, then the panel's terms.
-            std::vector<T> by_v(i, T {});                     // Vᵀ v and Xᵀ v over the earlier steps
-            std::vector<T> by_x(i, T {});
+            buffer<T> by_v(i, T {});                          // Vᵀ v and Xᵀ v over the earlier steps
+            buffer<T> by_x(i, T {});
             for (std::size_t p {0}; p < i; ++p) {
               by_v[p] = dot_product(row_of(by_row_v, p, k), x.data(), n - k);
               by_x[p] = dot_product(row_of(by_row_x, p, k), x.data(), n - k);
@@ -3487,12 +3487,12 @@ namespace numerical {
             // Bᵀ v as the terms −(−v)·B, the chunk held through them (negation is exact, so each column takes the same
             // additions): row by row, each term stored the chunk back (singular values of order 512 on one x86-64
             // core: 46 → 42 ms).
-            std::vector<T> minus(x.size());
+            buffer<T> minus(x.size(), T {});
             std::transform(x.begin(), x.end(), minus.begin(), std::negate<T> {});
             parallel_for((span + chunk_width - 1) / chunk_width, bidiagonal_product_weight * (n - k) * chunk_width, [&](std::size_t chunk) {
                            const std::size_t first {k + 1 + (chunk * chunk_width)};
                            const std::size_t count {std::min(chunk_width, n - first)};
-                           std::vector<T>    sum(count, T {});
+                           buffer<T>    sum(count, T {});
                            subtract_products(sum.data(), minus.data(), b.data() + (k * n) + first, n, n - k, count);
                            for (std::size_t p {0}; p < i; ++p) {
                              subtract_product(sum.data(), by_v[p], row_of(by_row_y, p, first), count);
@@ -3511,8 +3511,8 @@ namespace numerical {
           if (k + 1 == n) {
             break;
           }
-          std::vector<T> y(b.begin() + static_cast<std::ptrdiff_t>((k * n) + k + 1), // row k past the diagonal, the left
-                           b.begin() + static_cast<std::ptrdiff_t>((k + 1) * n));    // reflection included
+          buffer<T> y(b.begin() + static_cast<std::ptrdiff_t>((k * n) + k + 1), // row k past the diagonal, the left
+                      b.begin() + static_cast<std::ptrdiff_t>((k + 1) * n));    // reflection included
           for (std::size_t p {0}; p <= i; ++p) {
             subtract_product(y.data(), by_row_v[(p * n) + k], row_of(by_row_y, p, k + 1), n - k - 1);
           }
@@ -3522,15 +3522,15 @@ namespace numerical {
           if (std::any_of(y.begin() + 1, y.end(), nonzero)) { // something past the superdiagonal to reflect
             e[k] = static_cast<double>(householder_in_place(y));
             // x = 2 (B − V Yᵀ − X Uᵀ) u on the rows past k: B u by rows, then the panel's terms.
-            std::vector<T> by_y(i + 1, T {});                 // Yᵀ u over this and the earlier steps, Uᵀ u over the earlier
-            std::vector<T> by_u(i, T     {});
+            buffer<T> by_y(i + 1, T {});                      // Yᵀ u over this and the earlier steps, Uᵀ u over the earlier
+            buffer<T> by_u(i, T     {});
             for (std::size_t p {0}; p <= i; ++p) {
               by_y[p] = dot_product(row_of(by_row_y, p, k + 1), y.data(), y.size());
             }
             for (std::size_t p {0}; p < i; ++p) {
               by_u[p] = dot_product(row_of(by_row_u, p, k + 1), y.data(), y.size());
             }
-            std::vector<T> moved(n - k - 1);
+            buffer<T> moved(n - k - 1, T {});
             parallel_for(n - k - 1, bidiagonal_product_weight * 2 * (n - k), [&](std::size_t row) {
                            moved[row] = dot_product(b.data() + ((k + 1 + row) * n) + k + 1, y.data(), y.size());
                          });
@@ -3551,9 +3551,9 @@ namespace numerical {
           }
         }
         if (k1 < n) { // the trailing block from row and column k1: B −= V Yᵀ + X Uᵀ
-          const std::size_t rest {n - k1};
-          std::vector<T>    minus_v(rest * width);
-          std::vector<T>    minus_x(rest * width);
+          const std::size_t rest                    {n - k1};
+          buffer<T>         minus_v(rest * width, T {});
+          buffer<T>         minus_x(rest * width, T {});
           for (std::size_t r {0}; r < rest; ++r) {
             for (std::size_t p {0}; p < width; ++p) {
               minus_v[(r * width) + p] = -by_row_v[(p * n) + k1 + r];
@@ -3567,7 +3567,7 @@ namespace numerical {
       }
       e[n - 1] = 0.0;
       if (form) {
-        form_bidiagonal_bases(left, std::move(right), std::vector<T>(n, T {1}), std::vector<T>(n, T {1}), n, ut, vt);
+        form_bidiagonal_bases(left, std::move(right), buffer<T>(n, T {1}), buffer<T>(n, T {1}), n, ut, vt);
       }
     }
 
@@ -3586,19 +3586,19 @@ namespace numerical {
      * \param[in]     form Whether to form \p ut and \p vt.
      */
     template <typename T>
-    void bidiagonalize_unblocked(std::vector<T>&      b,
+    void bidiagonalize_unblocked(buffer<T>&           b,
                                  std::size_t          n,
-                                 std::vector<double>& d,
-                                 std::vector<double>& e,
-                                 std::vector<T>&      ut,
-                                 std::vector<T>&      vt,
+                                 buffer<double>&      d,
+                                 buffer<double>&      e,
+                                 buffer<T>&           ut,
+                                 buffer<T>&           vt,
                                  bool                 form)
     {
-      std::vector<std::vector<T>> left(n);  // the left reflector of step k, empty where none was needed
-      std::vector<std::vector<T>> right(n); // the right reflector acting on columns k+1…, likewise
-      std::vector<T>              left_phase(n, T {1});
-      std::vector<T>              right_phase(n, T {1});
-      const auto                  reflector {[](std::vector<T>& v) {  // unit v with (I − 2 v vᴴ) x ∥ e₁
+      std::vector<buffer<T>>      left(n);  // the left reflector of step k, empty where none was needed
+      std::vector<buffer<T>>      right(n); // the right reflector acting on columns k+1…, likewise
+      buffer<T>                   left_phase(n, T {1});
+      buffer<T>                   right_phase(n, T {1});
+      const auto                  reflector {[](buffer<T>& v) {       // unit v with (I − 2 v vᴴ) x ∥ e₁
                                                (void)rescale_tiny(v); // the same reflector at any scale
                                                const double norm {scaled_norm(v)};
                                                v[0] += phase_of(v[0]) * detail::from_double<T>(norm);
@@ -3608,7 +3608,7 @@ namespace numerical {
                                                }
                                              }};
       for (std::size_t k {0}; k < n; ++k) {
-        std::vector<T> x(n - k); // column k from the diagonal down
+        buffer<T> x(n - k, T {}); // column k from the diagonal down
         for (std::size_t i {k}; i < n; ++i) {
           x[i - k] = b[(i * n) + k];
         }
@@ -3625,7 +3625,7 @@ namespace numerical {
         if (k + 1 == n) {
           break;
         }
-        std::vector<T> y(n - k - 1); // row k right of the diagonal, conjugated: B ← B H with H yᴴ ∥ e₁
+        buffer<T> y(n - k - 1, T {}); // row k right of the diagonal, conjugated: B ← B H with H yᴴ ∥ e₁
         for (std::size_t j {k + 1}; j < n; ++j) {
           y[j - k - 1] = conj_of(b[(k * n) + j]);
         }
@@ -3657,12 +3657,12 @@ namespace numerical {
     //! \brief \ref bidiagonalize_unblocked, for a complex or any other `T` the panels do not take.
     template <typename T>
     requires(!std::is_floating_point_v<T>)
-    void bidiagonalize(std::vector<T>&      b,
+    void bidiagonalize(buffer<T>&           b,
                        std::size_t          n,
-                       std::vector<double>& d,
-                       std::vector<double>& e,
-                       std::vector<T>&      ut,
-                       std::vector<T>&      vt,
+                       buffer<double>&      d,
+                       buffer<double>&      e,
+                       buffer<T>&           ut,
+                       buffer<T>&           vt,
                        bool                 form = true)
     {
       bidiagonalize_unblocked(b, n, d, e, ut, vt, form);
@@ -3682,10 +3682,10 @@ namespace numerical {
      * \throws convergence_error If the iteration has not converged after \p max_steps steps.
      */
     template <typename T>
-    void bidiagonal_qr(std::vector<double>& d,
-                       std::vector<double>& e,
-                       std::vector<T>&      ut,
-                       std::vector<T>&      vt,
+    void bidiagonal_qr(buffer<double>&      d,
+                       buffer<double>&      e,
+                       buffer<T>&           ut,
+                       buffer<T>&           vt,
                        std::size_t          n,
                        std::size_t          max_steps)
     {
@@ -3830,7 +3830,7 @@ namespace numerical {
     template <typename T>
     [[nodiscard]] matrix<T> adjoint(const matrix<T>& a)
     {
-      std::vector<T> entries(a.rows() * a.cols());
+      buffer<T> entries(a.rows() * a.cols(), T {});
       for (std::size_t i {0}; i < a.rows(); ++i) {
         for (std::size_t j {0}; j < a.cols(); ++j) {
           entries[(j * a.rows()) + i] = conj_of(a(i, j));
@@ -3853,19 +3853,19 @@ namespace numerical {
      * \param[out] above          `dⱼ + σ` for every `j`.
      * \return `σ`.
      */
-    [[nodiscard]] inline double singular_secular_root(const std::vector<double>& d,
-                                                      const std::vector<double>& z,
+    [[nodiscard]] inline double singular_secular_root(const buffer<double>&      d,
+                                                      const buffer<double>&      z,
                                                       std::size_t                i,
                                                       std::size_t                max_iterations,
                                                       double*                    below,
                                                       double*                    above)
     {
-      std::vector<double>    delta(d.size());
-      const secular_solution root  {solve_secular(z, 1.0, i, max_iterations, delta.data(), [&d](std::size_t o, std::size_t j) {
-                                                    return (d[j] - d[o]) * (d[j] + d[o]);
-                                                  })};
-      const double           pole  {d[root.origin]};
-      const double           shift {root.offset / (pole + std::sqrt((pole * pole) + root.offset))}; // σ − d_o from σ² − d_o²
+      buffer<double>         delta(d.size(), double {});
+      const secular_solution root                   {solve_secular(z, 1.0, i, max_iterations, delta.data(), [&d](std::size_t o, std::size_t j) {
+                                                                     return (d[j] - d[o]) * (d[j] + d[o]);
+                                                                   })};
+      const double           pole                   {d[root.origin]};
+      const double           shift                  {root.offset / (pole + std::sqrt((pole * pole) + root.offset))}; // σ − d_o from σ² − d_o²
       for (std::size_t j {0}; j < d.size(); ++j) {
         below[j] = (d[j] - pole) - shift;
         above[j] = (d[j] + pole) + shift;
@@ -3874,7 +3874,7 @@ namespace numerical {
     }
 
     //! \brief Columns \p a and \p b of the row-major \p m (\p cols per row) rotated: `a ← c a + s b`, `b ← c b − s a`.
-    inline void rotate_columns(std::vector<double>& m,
+    inline void rotate_columns(buffer<double>&      m,
                                std::size_t          cols,
                                std::size_t          a,
                                std::size_t          b,
@@ -3911,12 +3911,12 @@ namespace numerical {
      *                           the bases are block diagonal by it, and each half's rows take only the columns
      *                           that reach them (`dlasd3` multiplies the halves apart the same way).
      */
-    inline void merge_arrow(std::vector<double>& d,
-                            std::vector<double>  z,
+    inline void merge_arrow(buffer<double>&      d,
+                            buffer<double>       z,
                             double               alpha,
                             double               beta,
-                            std::vector<double>& u,
-                            std::vector<double>& v,
+                            buffer<double>&      u,
+                            buffer<double>&      v,
                             std::size_t          n,
                             std::size_t          m,
                             std::size_t          split)
@@ -3989,25 +3989,25 @@ namespace numerical {
       if (pending != n) {
         kept.push_back(pending);
       }
-      const std::size_t   k {kept.size()};
-      std::vector<double> poles(k);
-      std::vector<double> weights(k);
+      const std::size_t   k                 {kept.size()};
+      buffer<double>      poles(k, double   {});
+      buffer<double>      weights(k, double {});
       for (std::size_t i {0}; i < k; ++i) {
         poles[i]   = d[kept[i]];
         weights[i] = z[kept[i]];
       }
-      std::vector<double> roots(k);
-      std::vector<double> below(k * k); // below[i * k + j] = poles[j] − roots[i]
-      std::vector<double> above(k * k); // above[i * k + j] = poles[j] + roots[i]
+      buffer<double> roots(k, double     {});
+      buffer<double> below(k * k, double {}); // below[i * k + j] = poles[j] − roots[i]
+      buffer<double> above(k * k, double {}); // above[i * k + j] = poles[j] + roots[i]
       parallel_for(k, 8 * k, [&](std::size_t i) {
                      roots[i] = singular_secular_root(poles, weights, i, secular_iterations, below.data() + (i * k),
                                                       above.data() + (i * k));
                    });
-      std::vector<double> left(k * k);  // column i: the left vector of roots[i], in the kept columns' basis
-      std::vector<double> right(k * k); // and the right one
+      buffer<double> left(k * k, double  {}); // column i: the left vector of roots[i], in the kept columns' basis
+      buffer<double> right(k * k, double {}); // and the right one
       // Löwner: ẑⱼ² = Πᵢ (σᵢ² − dⱼ²) / Πᵢ≠ⱼ (dᵢ² − dⱼ²), each pole paired with its root, by blocks of poles on every
       // core, each pole's product in ascending order of the roots (a row of the gaps at a time, along the block).
-      std::vector<double> signed_weights(k);
+      buffer<double> signed_weights(k, double {});
       parallel_for((k + lowner_block - 1) / lowner_block, lowner_block * k, [&](std::size_t block) {
                      const std::size_t                first {block * lowner_block};
                      const std::size_t                last {std::min(first + lowner_block, k)};
@@ -4034,8 +4034,8 @@ namespace numerical {
                        left[(j * k) + i]  = j == 0 ? -1.0 : poles[j] * ratio;
                      }
                    });
-      for (std::vector<double>* vectors : {&left, &right}) {
-        std::vector<double> length(k, 0.0);
+      for (buffer<double>* vectors : {&left, &right}) {
+        buffer<double> length(k, 0.0);
         for (std::size_t j {0}; j < k; ++j) { // by rows, each a contiguous update of every column's sum
           for (std::size_t i {0}; i < k; ++i) {
             length[i] += (*vectors)[(j * k) + i] * (*vectors)[(j * k) + i];
@@ -4054,9 +4054,9 @@ namespace numerical {
       // By segments of rows, each taking the kept columns that reach it and their rows of the arrow's vectors: the
       // others are zero there, and an element's sum without them is the same to the bit.
       using segment = std::tuple<std::size_t, std::size_t, unsigned>; // first row, rows, the bit of reach
-      const auto carried {[&](const std::vector<double>& basis, std::size_t rows, const std::vector<double>& small,
+      const auto carried {[&](const buffer<double>& basis, std::size_t rows, const buffer<double>& small,
                               const std::vector<unsigned>& reach, const std::vector<segment>& segments) {
-                            std::vector<double> product(rows * k);
+                            buffer<double> product(rows * k, double {});
                             for (const auto& [first, count, bit] : segments) {
                               std::vector<std::size_t> reaching;
                               for (std::size_t i {0}; i < k; ++i) {
@@ -4065,8 +4065,8 @@ namespace numerical {
                                 }
                               }
                               const std::size_t   width {reaching.size()};
-                              std::vector<double> columns(count * width);
-                              std::vector<double> factor(width * k);
+                              buffer<double> columns(count * width, double {});
+                              buffer<double> factor(width * k, double      {});
                               parallel_for(count, width + k, [&](std::size_t r) {
                                              for (std::size_t c {0}; c < width; ++c) {
                                                columns[(r * width) + c] = basis[((first + r) * rows) + kept[reaching[c]]];
@@ -4080,9 +4080,9 @@ namespace numerical {
                             }
                             return product;
                           }};
-      const std::vector<double> new_u {carried(u, n, left, reach_u, {{0, split, 1U}, {split, 1, 2U}, {split + 1, n - split - 1, 4U}})};
-      const std::vector<double> new_v {carried(v, m, right, reach_v, {{0, split + 1, 1U}, {split + 1, m - split - 1, 4U}})};
-      std::vector<double>       values(n);
+      const buffer<double>      new_u            {carried(u, n, left, reach_u, {{0, split, 1U}, {split, 1, 2U}, {split + 1, n - split - 1, 4U}})};
+      const buffer<double>      new_v            {carried(v, m, right, reach_v, {{0, split + 1, 1U}, {split + 1, m - split - 1, 4U}})};
+      buffer<double>            values(n, double {});
       std::vector<std::size_t>  from(n); // where each value's vectors are: a kept root (< k) or a deflated column
       for (std::size_t i {0}; i < k; ++i) {
         values[i] = roots[i];
@@ -4103,8 +4103,8 @@ namespace numerical {
         d[c]      = values[rank[c]];
       }
       // Row by row on every core, each row written whole (by columns, each write was a row apart).
-      std::vector<double> sorted_u(n * n);
-      std::vector<double> sorted_v(v); // the null column, if any, stays last
+      buffer<double> sorted_u(n * n, double {});
+      buffer<double> sorted_v(v); // the null column, if any, stays last
       parallel_for(m, n, [&](std::size_t r) { // m ≥ n: the right basis has the rows of both
                      for (std::size_t c {0}; c < n; ++c) {
                        if (r < n) {
@@ -4135,9 +4135,9 @@ namespace numerical {
                                   const double*        e,
                                   std::size_t          n,
                                   std::size_t          extra,
-                                  std::vector<double>& sigma,
-                                  std::vector<double>& u,
-                                  std::vector<double>& v)
+                                  buffer<double>&      sigma,
+                                  buffer<double>&      u,
+                                  buffer<double>&      v)
     {
       // Work near unit size, scaled by a power of two (exactly): the secular equation works on squares, which
       // overflow past 1e154.
@@ -4148,8 +4148,8 @@ namespace numerical {
       int exponent {0};
       (void)std::frexp(largest, &exponent);
       if (exponent != 0) {
-        std::vector<double> scaled_d(n);
-        std::vector<double> scaled_e(n, 0.0);
+        buffer<double> scaled_d(n, double {});
+        buffer<double> scaled_e(n, 0.0);
         for (std::size_t i {0}; i < n; ++i) {
           scaled_d[i] = std::ldexp(d[i], -exponent);
           scaled_e[i] = i + 1 < n + extra ? std::ldexp(e[i], -exponent) : 0.0;
@@ -4168,8 +4168,8 @@ namespace numerical {
         v[(i * m) + i] = 1.0;
       }
       if (n <= bidiagonal_leaf) {
-        std::vector<double> diagonal(d, d + n);
-        std::vector<double> super(n, 0.0);
+        buffer<double> diagonal(d, d + n);
+        buffer<double> super(n, 0.0);
         std::copy_n(e, n - std::min<std::size_t>(n, 1), super.begin());
         // An extra column first: rotations of it against each column, from the last row up, chase its one entry
         // out (B G = [B' 0]), so the square B' remains.
@@ -4185,14 +4185,14 @@ namespace numerical {
             super[j - 1] = c * super[j - 1];
           }
         }
-        std::vector<double> ut(n * n, 0.0);
-        std::vector<double> vt(n * n, 0.0);
+        buffer<double> ut(n * n, 0.0);
+        buffer<double> vt(n * n, 0.0);
         for (std::size_t i {0}; i < n; ++i) {
           ut[(i * n) + i] = 1.0;
           vt[(i * n) + i] = 1.0;
         }
         bidiagonal_qr(diagonal, super, ut, vt, n, svd_qr_steps_per_value * n); // descending
-        std::vector<double> rotated(v);
+        buffer<double> rotated(v);
         for (std::size_t c {0}; c < n; ++c) {
           const std::size_t source {n - 1 - c};
           sigma[c] = diagonal[source];
@@ -4213,18 +4213,18 @@ namespace numerical {
       const std::size_t   lower {n - k - 1};
       const double        alpha {d[k]};
       const double        beta  {e[k]};
-      std::vector<double> sigma1;
-      std::vector<double> u1;
-      std::vector<double> v1;
-      std::vector<double> sigma2;
-      std::vector<double> u2;
-      std::vector<double> v2;
+      buffer<double>      sigma1;
+      buffer<double>      u1;
+      buffer<double>      v1;
+      buffer<double>      sigma2;
+      buffer<double>      u2;
+      buffer<double>      v2;
       bidiagonal_divide(d, e, k, 1, sigma1, u1, v1);
       bidiagonal_divide(d + k + 1, e + k + 1, lower, extra, sigma2, u2, v2);
       const std::size_t   m1 {k + 1};
       const std::size_t   m2 {lower + extra};
-      std::vector<double> arrow(n, 0.0);
-      std::vector<double> z(n, 0.0);
+      buffer<double>      arrow(n, 0.0);
+      buffer<double>      z(n, 0.0);
       // The bases: row k is the arrow's first row; the arrow's columns are the null vector, then the halves'.
       u[k * n] = 1.0;
       for (std::size_t c {0}; c < k; ++c) {
@@ -4276,21 +4276,21 @@ namespace numerical {
      * \throws convergence_error If an iteration did not converge within its bound.
      */
     template <typename T>
-    void bidiagonal_divide_and_conquer(std::vector<double>& d,
-                                       std::vector<double>& e,
-                                       std::vector<T>&      ut,
-                                       std::vector<T>&      vt,
+    void bidiagonal_divide_and_conquer(buffer<double>&      d,
+                                       buffer<double>&      e,
+                                       buffer<T>&           ut,
+                                       buffer<T>&           vt,
                                        std::size_t          n)
     {
       if (n == 0) {
         return;
       }
-      std::vector<double> sigma;
-      std::vector<double> u;
-      std::vector<double> v;
+      buffer<double> sigma;
+      buffer<double> u;
+      buffer<double> v;
       bidiagonal_divide(d.data(), e.data(), n, 0, sigma, u, v);
-      std::vector<double> left(n * n); // row c: the vectors of the c-th largest value
-      std::vector<double> right(n * n);
+      buffer<double> left(n * n, double  {}); // row c: the vectors of the c-th largest value
+      buffer<double> right(n * n, double {});
       for (std::size_t c {0}; c < n; ++c) {
         d[c] = sigma[n - 1 - c];
         for (std::size_t r {0}; r < n; ++r) {
@@ -4398,7 +4398,7 @@ namespace numerical {
       if (scale == 0.0) {
         scale = 1.0;
       }
-      std::vector<T> entries(rows * cols);
+      buffer<T> entries(rows * cols, T {});
       for (std::size_t i {0}; i < rows; ++i) {
         for (std::size_t j {0}; j < cols; ++j) {
           entries[(i * cols) + j] = a(i, j) / detail::from_double<T>(scale);
@@ -4410,10 +4410,10 @@ namespace numerical {
       detail::thin_qr<T> factors {direct ? detail::thin_qr<T> {.q = {}, .r = std::move(entries)}
                                          : detail::householder_qr(std::move(entries), rows, cols)};
       if (method != svd_method::jacobi) {
-        std::vector<double> d(cols);
-        std::vector<double> e(cols);
-        std::vector<T>      ut;
-        std::vector<T>      vt;
+        buffer<double> d(cols, double {});
+        buffer<double> e(cols, double {});
+        buffer<T>      ut;
+        buffer<T>      vt;
         detail::bidiagonalize(factors.r, cols, d, e, ut, vt);
         if (method == svd_method::bidiagonal_qr) {
           detail::bidiagonal_qr(d, e, ut, vt, cols, detail::svd_qr_steps_per_value * cols);
@@ -4421,8 +4421,8 @@ namespace numerical {
         else {
           detail::bidiagonal_divide_and_conquer(d, e, ut, vt, cols);
         }
-        std::vector<T> left(cols * cols);
-        std::vector<T> right(cols * cols);
+        buffer<T> left(cols * cols, T  {});
+        buffer<T> right(cols * cols, T {});
         for (std::size_t i {0}; i < cols; ++i) { // rows of ut and vt are the vectors: make them columns
           for (std::size_t j {0}; j < cols; ++j) {
             left[(i * cols) + j]  = ut[(j * cols) + i];
@@ -4438,16 +4438,16 @@ namespace numerical {
         v_               = matrix<T> {cols, cols, std::move(right)};
         return;
       }
-      std::vector<T>     w                    {std::move(factors.r)}; // A = Q R, and R V = W with orthogonal columns
-      std::vector<T>     right(cols * cols, T {});
+      buffer<T>     w                    {std::move(factors.r)}; // A = Q R, and R V = W with orthogonal columns
+      buffer<T>     right(cols * cols, T {});
       for (std::size_t i {0}; i < cols; ++i) {
         right[(i * cols) + i] = T {1};
       }
       detail::one_sided_jacobi(w, right, cols, detail::jacobi_sweeps);
 
-      std::vector<double> norms(cols);
+      buffer<double> norms(cols, double {});
       for (std::size_t j {0}; j < cols; ++j) {
-        std::vector<T> column(cols);
+        buffer<T> column(cols, T {});
         for (std::size_t i {0}; i < cols; ++i) {
           column[i] = w[(i * cols) + j];
         }
@@ -4462,9 +4462,9 @@ namespace numerical {
       // The left vectors of R: each nonzero column of W over its norm; a zero one has none, and takes
       // the unit vector that leaves the largest residual against the columns already set, made
       // orthogonal to them.
-      std::vector<T>      left(cols * cols, T {});
-      std::vector<T>      sorted_right(cols * cols);
-      std::vector<double> values(cols);
+      buffer<T>      left(cols * cols, T         {});
+      buffer<T>      sorted_right(cols * cols, T {});
+      buffer<double> values(cols, double         {});
       for (std::size_t d {0}; d < cols; ++d) {
         const std::size_t j {order[d]};
         values[d] = norms[j] * scale;
@@ -4477,10 +4477,10 @@ namespace numerical {
           }
           continue;
         }
-        std::vector<T> best;
+        buffer<T>      best;
         double         best_norm {-1.0};
         for (std::size_t k {0}; k < cols; ++k) {
-          std::vector<T> candidate(cols, T {});
+          buffer<T> candidate(cols, T {});
           candidate[k] = T {1};
           orthogonalise(candidate, left, cols, d);
           const double norm {detail::scaled_norm(candidate)};
@@ -4501,8 +4501,8 @@ namespace numerical {
     }
 
     //! \brief Removes from \p x its components along the first \p count columns of the `n × n` \p basis.
-    static void orthogonalise(std::vector<T>&       x,
-                              const std::vector<T>& basis,
+    static void orthogonalise(buffer<T>&            x,
+                              const buffer<T>&      basis,
                               std::size_t           n,
                               std::size_t           count)
     {
@@ -4569,11 +4569,11 @@ namespace numerical {
      *        chunk's rows past its last column stay zero; a zero on the diagonal leaves infinities or NaN.
      */
     template <typename T>
-    [[nodiscard]] std::vector<T> upper_inverse(const std::vector<T>& r,
-                                               std::size_t           n)
+    [[nodiscard]] buffer<T> upper_inverse(const buffer<T>&      r,
+                                          std::size_t           n)
     {
       constexpr std::size_t width      {64};
-      std::vector<T>        x(n * n, T {});
+      buffer<T>             x(n * n, T {});
       parallel_for((n + width - 1) / width, n * n * width / 2, [&](std::size_t chunk) {
                      const std::size_t first {chunk * width};
                      const std::size_t last {std::min(first + width, n)};
@@ -4607,7 +4607,7 @@ namespace numerical {
     template <typename T>
     [[nodiscard]] std::optional<matrix<T>> lstsq_by_qr(const matrix<T>&                       a,
                                                        const matrix<T>&                       b,
-                                                       std::pair<std::vector<T>, int>* const  r = nullptr)
+                                                       std::pair<buffer<T>, int>* const       r = nullptr)
     {
       const std::size_t m       {a.rows()};
       const std::size_t n       {a.cols()};
@@ -4623,8 +4623,8 @@ namespace numerical {
       if (largest == 0.0) {
         return std::nullopt;
       }
-      const int      exponent {std::ilogb(largest)};
-      std::vector<T> entries(rows * cols);
+      const int      exponent               {std::ilogb(largest)};
+      buffer<T>      entries(rows * cols, T {});
       for (std::size_t i {0}; i < m; ++i) {
         for (std::size_t j {0}; j < n; ++j) {
           if (wide) {
@@ -4636,7 +4636,7 @@ namespace numerical {
         }
       }
       qr_reflections<T>       factors         {householder_reflect(std::move(entries), rows, cols)};
-      const std::vector<T>    inverse         {upper_inverse(factors.r, cols)};
+      const buffer<T>         inverse         {upper_inverse(factors.r, cols)};
       double                  r_squares       {0.0};
       double                  inverse_squares {0.0};
       for (std::size_t e {0}; e < cols * cols; ++e) {
@@ -4648,17 +4648,17 @@ namespace numerical {
         return std::nullopt;
       }
       const std::size_t k          {b.cols()};
-      std::vector<T>    x(n * k, T {});
+      buffer<T>         x(n * k, T {});
       if (wide) { // x = Q [R⁻ᴴ B; 0]: the blocks applied last first
         const matrix<T>      inverse_adjoint {adjoint(matrix<T> {cols, cols, inverse})};
-        const std::vector<T> right(b.begin(), b.end());
+        const buffer<T>      right(b.begin(), b.end());
         gemm(cols, k, cols, &*inverse_adjoint.begin(), cols, right.data(), k, x.data(), k);
         for (std::size_t block {factors.blocks.size()}; block-- > 0;) {
           apply_reflector_block(factors.blocks[block], false, x, k, 0, k);
         }
       }
       else { // x = R⁻¹ times the first rows of Qᴴ B: the blocks' adjoints applied first first
-        std::vector<T> y(b.begin(), b.end());
+        buffer<T> y(b.begin(), b.end());
         for (const reflector_block<T>& block : factors.blocks) {
           apply_reflector_block(block, true, y, k, 0, k);
         }
@@ -4679,13 +4679,13 @@ namespace numerical {
      * \throws convergence_error If the iteration does not converge within its bound (not observed).
      */
     template <typename T>
-    [[nodiscard]] std::vector<double> square_singular_values(std::vector<T> b,
-                                                             std::size_t    n)
+    [[nodiscard]] buffer<double> square_singular_values(buffer<T>      b,
+                                                        std::size_t    n)
     {
-      std::vector<double> d(n);
-      std::vector<double> e(n);
-      std::vector<T>      none;
-      std::vector<T>      none_too;
+      buffer<double> d(n, double {});
+      buffer<double> e(n, double {});
+      buffer<T>      none;
+      buffer<T>      none_too;
       bidiagonalize(b, n, d, e, none, none_too, false);
       bidiagonal_qr(d, e, none, none_too, n, svd_qr_steps_per_value * n);
       return d;
@@ -4703,7 +4703,7 @@ namespace numerical {
       const vector<double>& sigma                {s.singular_values()};
       const std::size_t     rows                 {s.u().rows()};
       const std::size_t     cols                 {s.v().rows()};
-      std::vector<T>        x(cols * b.cols(), T {});
+      buffer<T>             x(cols * b.cols(), T {});
       for (std::size_t c {0}; c < b.cols(); ++c) {
         for (std::size_t d {0}; d < rank; ++d) {
           T coefficient {}; // (u_dᴴ b_c) / σ_d
@@ -4737,8 +4737,8 @@ namespace numerical {
   [[nodiscard]] vector<T> lstsq(const matrix<T>& a,
                                 const vector<T>& b)
   {
-    const matrix<T> column {lstsq(a, matrix<T> {b.size(), 1, std::vector<T>(b.begin(), b.end())})};
-    return vector<T> {std::vector<T>(column.begin(), column.end())};
+    const matrix<T> column {lstsq(a, matrix<T> {b.size(), 1, buffer<T>(b.begin(), b.end())})};
+    return vector<T> {buffer<T>(column.begin(), column.end())};
   }
 
   /*!
@@ -4791,14 +4791,14 @@ namespace numerical {
       }
     }
     scale = scale == 0.0 ? 1.0 : scale;
-    std::vector<T> entries(rows * cols);
+    buffer<T> entries(rows * cols, T {});
     for (std::size_t i {0}; i < rows; ++i) {
       for (std::size_t j {0}; j < cols; ++j) {
         entries[(i * cols) + j] = (tall ? a(i, j) : detail::conj_of(a(j, i))) / detail::from_double<T>(scale);
       }
     }
-    std::vector<T>      r {rows == cols ? std::move(entries) : detail::householder_reflect(std::move(entries), rows, cols).r};
-    std::vector<double> d {detail::square_singular_values(std::move(r), cols)};
+    buffer<T>      r {rows == cols ? std::move(entries) : detail::householder_reflect(std::move(entries), rows, cols).r};
+    buffer<double> d {detail::square_singular_values(std::move(r), cols)};
     for (double& value : d) {
       value *= scale;
     }
@@ -4831,17 +4831,17 @@ namespace numerical {
       scale = std::max(scale, std::abs(detail::real_part(a(i, i))));
     }
     scale = scale == 0.0 ? 1.0 : scale;
-    std::vector<T> entries(n * n);
+    buffer<T> entries(n * n, T {});
     for (std::size_t i {0}; i < n; ++i) {
       for (std::size_t j {0}; j < i; ++j) {
         entries[(i * n) + j] = a(i, j) / detail::from_double<T>(scale);
       }
       entries[(i * n) + i] = detail::from_double<T>(detail::real_part(a(i, i)) / scale);
     }
-    std::vector<double> d(n);
+    buffer<double> d(n, double {});
     if (n > 0) {
-      std::vector<double> off(n);
-      std::vector<double> none;
+      buffer<double> off(n, double {});
+      buffer<double> none;
       static_cast<void>(detail::tridiagonalize(entries, n, d, off));
       detail::tridiagonal_ql(d, off, none, n, detail::ql_steps_per_value * n);
     }
@@ -4878,14 +4878,14 @@ namespace numerical {
     }
     detail::require_finite(a, "lstsq");
     // The singular values from what the solution took: the QR's R (A's over a power of two), else the decomposition.
-    std::pair<std::vector<T>, int>      r;
+    std::pair<buffer<T>, int>           r;
     std::optional<matrix<T>>            fast {detail::lstsq_by_qr(a, b, &r)};
     std::optional<svd_decomposition<T>> s;
     if (!fast) {
       s.emplace(a);
     }
-    std::vector<double> values {fast ? detail::square_singular_values(std::move(r.first), std::min(a.rows(), a.cols()))
-                                     : std::vector<double>(s->singular_values().begin(), s->singular_values().end())};
+    buffer<double> values {fast ? detail::square_singular_values(std::move(r.first), std::min(a.rows(), a.cols()))
+                                     : buffer<double>(s->singular_values().begin(), s->singular_values().end())};
     if (fast) {
       for (double& value : values) {
         value = std::ldexp(value, r.second);
@@ -4894,7 +4894,7 @@ namespace numerical {
     const vector<double> sigma {std::move(values)};
     const std::size_t    rank  {detail::numerical_rank(sigma, a.rows(), a.cols())};
     matrix<T>            x     {fast ? *std::move(fast) : detail::lstsq_from_svd(*s, rank, b)};
-    std::vector<double>  residuals;
+    buffer<double>       residuals;
     if (rank == a.cols() && a.rows() > a.cols()) {
       const matrix<T> fitted {a * x};
       residuals.assign(b.cols(), 0.0);
@@ -4936,8 +4936,8 @@ namespace numerical {
     const std::size_t          rank {detail::numerical_rank(s.singular_values(), rows, cols)};
     // (V Σ⁺) · Uᴴ over the first `rank` singular triplets, through the matrix product kernel: summed term by term
     // it ran five times as long as NumPy's at order 512.
-    std::vector<T> scaled(cols * rank);
-    std::vector<T> left_adjoint(rank * rows);
+    buffer<T> scaled(cols * rank, T       {});
+    buffer<T> left_adjoint(rank * rows, T {});
     for (std::size_t d {0}; d < rank; ++d) {
       const auto inverse {detail::from_double<T>(1.0 / s.singular_values()[d])};
       for (std::size_t i {0}; i < cols; ++i) {
@@ -4947,7 +4947,7 @@ namespace numerical {
         left_adjoint[(d * rows) + j] = detail::conj_of(s.u()(j, d));
       }
     }
-    std::vector<T> out(cols * rows, T {});
+    buffer<T> out(cols * rows, T {});
     detail::gemm(cols, rows, rank, scaled.data(), rank, left_adjoint.data(), rows, out.data(), rows);
     return matrix<T> {cols, rows, std::move(out)};
   }
