@@ -33,7 +33,10 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 ROOT = os.path.dirname(HERE)
 OPS = ["mm", "solve", "inv", "lu", "lsolve", "chol", "qr", "eigh", "svd"]
 SIZES = [8, 17, 24, 33, 48, 64, 96, 128, 192, 256, 512]
-COMMON = ["-std=c++20", "-DNDEBUG", "-fwrapv", "-g0", "-pthread"]
+# Every function at a 64-byte boundary in both builds: where the linker happened to put a kernel moved a product of
+# order 24 by 8 % between two releases whose product code was byte for byte the same, and the two batches, the same
+# binaries, confirmed it.
+COMMON = ["-std=c++20", "-DNDEBUG", "-fwrapv", "-g0", "-pthread", "-falign-functions=64"]
 
 
 def default_compilers():

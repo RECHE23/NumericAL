@@ -6,6 +6,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **`make bench-diff` compiles both trees with every function on a 64-byte boundary**: where the linker put a kernel
+  moved a product of order 24 by 8 % between 2026.10.11 and 2026.10.12, whose product code was byte for byte the
+  same, and stopped the release (two batches of the same binaries confirm a placement as surely as a change).
+  Aligned, that cell reads 0.99, and the decompositions' real gains still show.
+
 ## 2026.10.12 — 2026-10-14
 
 ### Added
