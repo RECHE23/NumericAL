@@ -471,6 +471,28 @@ class TensorProtocol(unittest.TestCase):
         self.assertEqual(numerical.asarray([1.0, 2.0]) @ [3.0, 4.0], 11.0)
         self.assertEqual(numerical.asarray(2.5)[()], 2.5)  # a rank-0 tensor's number, as NumPy's a[()]
 
+    def test_matmul_of_two_tensors_is_the_einsum_and_the_rest_converts_or_refuses(self):
+        # Two tensors of one dtype take the type's own product; any other operand goes through the conversions,
+        # with the same answers and the same refusals.
+        real = numerical.asarray([[1.0, 2.0], [3.0, 4.0]])
+        cplx = numerical.asarray([[1j, 2.0], [3.0, -1j]])
+        for m in (real, cplx):
+            v = numerical.asarray([1.0, 2.0], dtype=m.dtype)
+            self.assertEqual((m @ m).tolist(), numerical.einsum("ij,jk->ik", m, m).tolist())
+            self.assertEqual((m @ v).tolist(), numerical.einsum("ij,j->i", m, v).tolist())
+            self.assertEqual((v @ m).tolist(), numerical.einsum("i,ij->j", v, m).tolist())
+            self.assertEqual(v @ v, 5.0)
+            self.assertIsInstance(v @ v, float if m is real else complex)
+        self.assertEqual((real @ [[1.0], [1.0]]).tolist(), [[3.0], [7.0]])
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.asarray([[[1.0]]]) @ real
+        with self.assertRaises(numerical.LinAlgError):
+            real @ numerical.asarray(1.0)
+        mixed = real @ cplx  # two dtypes: promoted, as einsum promotes them
+        self.assertEqual((mixed.dtype, mixed.tolist()), ("complex128", numerical.einsum("ij,jk->ik", real, cplx).tolist()))
+        with self.assertRaises(numerical.error):
+            real @ numerical.asarray([[1.0, 2.0, 3.0]])
+
     @unittest.skipIf(np is None, "NumPy not installed")
     def test_indexing_as_numpy(self):
         rng = np.random.default_rng(3)

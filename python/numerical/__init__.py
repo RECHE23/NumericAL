@@ -356,7 +356,8 @@ Tensor.__getitem__ = _getitem
 Tensor.__len__ = _len
 Tensor.__iter__ = _iter
 Tensor.T = property(_transpose)
-Tensor.__matmul__ = _matmul
+_numerical._set_matmul_fallback(_matmul)
+Tensor.__matmul__ = Tensor._matmul  # a method of the type: no Python frame for two tensors
 Tensor.__rmatmul__ = _rmatmul
 Tensor.__bool__ = _bool
 Tensor.__float__ = _scalar(float)

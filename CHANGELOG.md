@@ -39,6 +39,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   each cut packs L₂₁ again, and a product too small to share ran one cut a thread one after another. Eight M1 Pro
   threads: order 256 329 → 311 µs, 512 1.72 → 1.64 ms, 768 3.99 → 3.79; six x86-64 threads: 256 −9 %. One thread
   is unchanged, and so are the factors.
+- **`a @ b` of two tensors runs in the extension**, with no Python frame: 2 × 2 1.29 → 0.40 µs (NumPy 0.59),
+  16 × 16 2.19 → 1.07, 64 × 64 4.76 → 3.64 (M1 Pro). Any other operand (a list, a NumPy array, a rank past 2)
+  takes the conversions and refusals it took.
 
 ## 2026.10.10 — 2026-10-14
 
