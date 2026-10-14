@@ -171,8 +171,88 @@ namespace numerical::detail {
   }
 
   /*!
-   * \brief \ref amx_full_tile_f64 for a tile of \p rows × \p cols (at most \ref amx_mr × \ref amx_nr), a partial
-   *        one through a whole one whose outside is zero (\ref through_edge); the slivers beyond it are zero.
+   * \brief \ref amx_full_tile_f64 for a partial tile of \p rows × \p cols, in C itself: each half row of eight
+   *        elements inside C is loaded and stored in place, one the last column cuts through a buffer, and those
+   *        outside are neither (their Z rows sum the zeros beyond A's and B's slivers, and are never read).
+   * \param[in]     kc   The panel depth.
+   * \param[in]     ap   The A sliver: \p kc columns of \ref amx_mr elements.
+   * \param[in]     bp   The B sliver: \p kc rows of \ref amx_nr elements.
+   * \param[in]     ldb  The distance between the sliver's rows.
+   * \param[in,out] c    The tile's first element, in a row-major C.
+   * \param[in]     ldc  The distance between C's rows.
+   * \param[in]     rows The tile's rows inside C.
+   * \param[in]     cols The tile's columns inside C.
+   */
+  inline void amx_partial_tile_f64(std::size_t   kc,
+                                   const double* ap,
+                                   const double* bp,
+                                   std::size_t   ldb,
+                                   double*       c,
+                                   std::size_t   ldc,
+                                   std::size_t   rows,
+                                   std::size_t   cols) noexcept
+  {
+    alignas(64) std::array<double, amx_mr * 8> cut {}; // the half row the last column cuts, per row
+    const std::uint64_t whole_halves {cols / 8};       // halves wholly inside C
+    const std::size_t   cut_width {cols % 8};          // the cut half's elements inside C
+    const auto          each_half = [&](auto&& at) {
+                                      for (std::uint64_t ya {0}; ya < 4; ++ya) {
+                                        for (std::uint64_t j {0}; j < 8; ++j) {
+                                          const std::size_t row {(ya * 8) + j};
+                                          if (row >= rows) {
+                                            continue;
+                                          }
+                                          for (std::uint64_t xb {0}; xb < 2; ++xb) {
+                                            if (xb < whole_halves) {
+                                              at(c + (row * ldc) + (xb * 8), (j * 8) + (ya * 2) + xb);
+                                            }
+                                            else if (xb == whole_halves && cut_width != 0) {
+                                              at(cut.data() + (row * 8), (j * 8) + (ya * 2) + xb);
+                                            }
+                                          }
+                                        }
+                                      }
+                                    };
+    if (cut_width != 0) {
+      for (std::size_t row {0}; row < rows; ++row) {
+        for (std::size_t e {0}; e < cut_width; ++e) {
+          cut[(row * 8) + e] = c[(row * ldc) + (whole_halves * 8) + e];
+        }
+      }
+    }
+    each_half([](double* half, std::uint64_t z) { amx<amx_op::ldz>(amx_address(half, z)); });
+    for (std::size_t p {0}; p < kc; ++p) {
+      const double* const a {ap + (p * amx_mr)};
+      const double* const b {bp + (p * ldb)};
+      for (std::uint64_t ya {0}; ya < 4; ++ya) {
+        amx<amx_op::ldy>(amx_address(a + (ya * 8), ya));
+      }
+      amx<amx_op::ldx>(amx_address(b, 0));
+      amx<amx_op::ldx>(amx_address(b + 8, 1));
+      for (std::uint64_t ya {0}; ya < 4; ++ya) {
+        for (std::uint64_t xb {0}; xb < 2; ++xb) {
+          amx<amx_op::fma64>((((ya * 2) + xb) << 20U) | ((xb * 64) << 10U) | (ya * 64));
+        }
+      }
+    }
+    each_half([](double* half, std::uint64_t z) { amx<amx_op::stz>(amx_address(half, z)); });
+    if (cut_width != 0) {
+      for (std::size_t row {0}; row < rows; ++row) {
+        for (std::size_t e {0}; e < cut_width; ++e) {
+          c[(row * ldc) + (whole_halves * 8) + e] = cut[(row * 8) + e];
+        }
+      }
+    }
+  }
+
+  /*!
+   * \brief \ref amx_full_tile_f64 for a tile of \p rows × \p cols (at most \ref amx_mr × \ref amx_nr); the slivers
+   *        beyond it are zero. A whole tile is computed in place; a partial one in place too (\ref amx_partial_tile_f64)
+   *        unless its last column cuts its second half row, then through a whole one whose outside is zero
+   *        (\ref through_edge). A copy of the tile, written by the core and read by the AMX, then the other way, held
+   *        each partial tile behind its lines' write-back to the L2 the AMX reads (M1 Pro, a product of order 48: 4.2
+   *        → 2.8 µs, 65: 10.3 → 7.8); a second half cut in place, its first half stored by the AMX and its second
+   *        by the core, was slower still than the copy (order 31: 2.7 → 3.2 µs).
    */
   inline void amx_tile_f64(std::size_t   kc,
                            const double* ap,
@@ -183,6 +263,10 @@ namespace numerical::detail {
                            std::size_t   rows,
                            std::size_t   cols) noexcept
   {
+    if ((rows < amx_mr || cols < amx_nr) && (cols < 8 || cols % 8 == 0)) {
+      amx_partial_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
+      return;
+    }
     through_edge<amx_mr, amx_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { amx_full_tile_f64(kc, ap, bp, ldb, tile, ld); });
   }
 

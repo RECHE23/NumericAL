@@ -28,6 +28,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   four cost or less (M1 Pro, all cores, 2n × n: 0.88–0.95× NumPy from n = 64 to 512). The C++ `lstsq` is unchanged.
 - **`matrix_rank` computes the singular values alone**, without the vectors it discarded: order 512 52 → 31 ms
   (NumPy 31 ms), 256 9.6 → 6.1 ms, 128 1.9 → 1.1 ms (M1 Pro, all cores).
+- **A product whose order is no multiple of 16, on the AMX, computes its edge tiles in C itself** where it copied each
+  one out and back: the copy, written by the core and read by the coprocessor, waited on its lines' write-back.
+  M1 Pro, one core: order 24 2.0 → 1.2 µs, 33 4.7 → 3.3, 48 4.2 → 2.8, 65 10.3 → 7.7, 100 21.5 → 17.3; a tile
+  whose last column cuts its second half row keeps the copy, which measured faster there (31, 47, 63).
 
 ## 2026.10.10 — 2026-10-14
 
