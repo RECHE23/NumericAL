@@ -1,9 +1,11 @@
 // The row kernels the decompositions share: the scaled-row updates (simd.hpp) equal, to the bit, the scalar
 // statements, over native vectors or not; the dot product sums every term; recorded row operations applied by
 // runs equal them applied one by one.
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <limits>
 #include <utility>
 #include <vector>
 
@@ -258,6 +260,85 @@ TEST(dot_product_sums_every_term)
     EXPECT(numerical::detail::dot_product(x.data(), y.data(), count) == want);
     EXPECT(numerical::detail::dot_product(zx.data(), zy.data(), count).real() == want);
   }
+}
+
+namespace {
+
+  // The pivot search the LU takes: the vectors' leading elements, then the scalar search on the rest.
+  template <typename T>
+  std::size_t first_largest(const std::vector<T>& x)
+  {
+    auto        best {std::abs(x[0])};
+    std::size_t at   {0};
+    for (std::size_t i {numerical::detail::largest_magnitude_vectors(x.data(), x.size(), best, at)}; i < x.size(); ++i) {
+      if (std::abs(x[i]) > best) {
+        best = std::abs(x[i]);
+        at   = i;
+      }
+    }
+    return at;
+  }
+
+  // The scalar search alone: the first index of the largest magnitude, a NaN never larger.
+  template <typename T>
+  std::size_t first_largest_scalar(const std::vector<T>& x)
+  {
+    auto        best {std::abs(x[0])};
+    std::size_t at   {0};
+    for (std::size_t i {1}; i < x.size(); ++i) {
+      if (std::abs(x[i]) > best) {
+        best = std::abs(x[i]);
+        at   = i;
+      }
+    }
+    return at;
+  }
+
+  // Values from a few magnitudes of both signs, zeros of both signs among them: a largest one recurs in several
+  // lanes, at indices before and after one another's; a NaN at \p nan_at when it is inside.
+  template <typename T>
+  std::vector<T> ties(std::size_t count,
+                      std::size_t seed,
+                      std::size_t nan_at)
+  {
+    constexpr std::array<double, 7> pool {-3.0, 2.0, -0.0, 3.0, 0.0, -2.0, 1.0};
+    std::vector<T>                  out(count);
+    for (std::size_t i {0}; i < count; ++i) {
+      out[i] = T(pool[((i * 5) + (seed * 3) + ((i * i) % 11)) % pool.size()]);
+    }
+    if (nan_at < count) {
+      out[nan_at] = T(std::numeric_limits<double>::quiet_NaN());
+    }
+    return out;
+  }
+
+  template <typename T>
+  bool search_matches_the_scalar_one()
+  {
+    for (std::size_t count {1}; count <= 41; ++count) {
+      for (std::size_t seed {0}; seed < 7; ++seed) {
+        for (const std::size_t nan_at : {count, std::size_t {0}, count / 2, count - 1}) {
+          const std::vector<T> x {ties<T>(count, seed, nan_at)};
+          if (first_largest(x) != first_largest_scalar(x)) {
+            return false;
+          }
+        }
+      }
+    }
+    std::vector<T> later(19, T(1.0));
+    later[13] = T(-4.0);
+    later[17] = T(4.0);
+    return first_largest(later) == 13;
+  }
+} // namespace
+
+// The pivot search over native vectors finds the scalar search's index: the first of the largest magnitudes, across
+// lanes that each hold one, a NaN never chosen (nor a NaN in x[0] ever left).
+TEST(the_largest_magnitude_is_the_scalar_searchs_first)
+{
+  EXPECT(search_matches_the_scalar_one<double>());
+  EXPECT(search_matches_the_scalar_one<float>());
+  EXPECT(search_matches_the_scalar_one<std::complex<double>>());
 }
 
 // A symmetric product's row: the sum of every term and the scaled row added to out, in one pass, on every

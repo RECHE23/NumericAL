@@ -112,6 +112,16 @@ TEST(determinant_matches_the_closed_form)
   EXPECT(std::abs(determinant(singular)) < 1e-12);        // a zero pivot ⇒ determinant 0
 }
 
+TEST(a_zero_pivot_column_gives_no_terms_not_even_a_signed_zero)
+{
+  // Column 1 is zero from its diagonal down: its terms, ±0, would turn column 2's −0 into +0. The unblocked
+  // factorisation leaves such a column out, so U's last pivot stays −0, and the determinant 1·0·(−0) with it.
+  const matrix<double> a   {{1.0, 1.0, 0.0}, {1.0, 1.0, -0.0}, {1.0, 1.0, -0.0}};
+  const double         det {lu_decomposition<double> {a}.determinant()};
+  EXPECT(det == 0.0);
+  EXPECT(std::signbit(det));
+}
+
 TEST(inverse_times_the_matrix_is_identity)
 {
   const matrix<double> a        {{4.0, 7.0}, {2.0, 6.0}};

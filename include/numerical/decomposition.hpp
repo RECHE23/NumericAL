@@ -800,15 +800,16 @@ namespace numerical {
       if (last - first <= detail::solve_leaf || rows - first < 2 * block_) {
         for (std::size_t j {first}; j < last; ++j) {
           T           *          column {panel.data() + (j * rows)};
-          std::size_t            pivot  {j};
+          std::size_t            pivot  {0}; // from row j
           detail::magnitude_t<T> best   {std::abs(column[j])};
-          for (std::size_t r {j + 1}; r < rows; ++r) {
-            const detail::magnitude_t<T> mag {std::abs(column[r])};
+          for (std::size_t r {detail::largest_magnitude_vectors(column + j, rows - j, best, pivot)}; r < rows - j; ++r) {
+            const detail::magnitude_t<T> mag {std::abs(column[j + r])};
             if (mag > best) {
               best  = mag;
               pivot = r;
             }
           }
+          pivot += j;
           if (best == detail::magnitude_t<T> {}) {
             singular_ = true;
             continue; // a zero pivot column: leave it, the determinant becomes 0
