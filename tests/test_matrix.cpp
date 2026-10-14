@@ -105,6 +105,25 @@ TEST(matrix_vector_product)
 
   const vector<int> wrong {1, 2};
   EXPECT_THROWS(a * wrong, numerical::dimension_error);
+  // No columns: each element an empty sum.
+  EXPECT(matrix<int>(2, 0, std::vector<int> {}) * vector<int>(std::vector<int> {}) == (vector<int> {0, 0}));
+  // Each element is its row's dot product, to the bit, over several groups of rows.
+  const std::size_t   rows {131};
+  const std::size_t   cols {37};
+  std::vector<double> entries(rows * cols);
+  for (std::size_t i {0}; i < entries.size(); ++i) {
+    entries[i] = 1.0 / static_cast<double>(i + 3);
+  }
+  std::vector<double> x(cols);
+  for (std::size_t j {0}; j < cols; ++j) {
+    x[j] = static_cast<double>(j % 5) - 1.5;
+  }
+  const vector<double> y    {matrix<double>(rows, cols, entries) * vector<double>(x)};
+  bool                 same {true};
+  for (std::size_t r {0}; r < rows; ++r) {
+    same = same && y[r] == numerical::detail::dot_product(entries.data() + (r * cols), x.data(), cols);
+  }
+  EXPECT(same);
 }
 
 TEST(matrix_matrix_product)

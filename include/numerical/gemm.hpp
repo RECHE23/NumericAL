@@ -1050,6 +1050,61 @@ namespace numerical::detail {
     }
     gemm_large(m, n, k, a, lda, b, ldb, c, ldc);
   }
+
+  //! \brief The elements of one partial sum of `chunked_dot`: fixed, so the sum does not depend on the threads.
+  inline constexpr std::size_t dot_chunk {std::size_t {1} << 14U};
+
+  /*!
+   * \brief `Σ a[i] · b[i]` for a plain dot product: chunks of \ref dot_chunk elements in parallel, each by
+   *        \ref dot_product (several vector accumulators, on the widest x86-64 units for `double`), their sums
+   *        added in the chunks' order. The same on any number of threads; in the last bits, not the ascending
+   *        sum, which waits on each addition before the next (ten times slower at 100 000 elements).
+   */
+  template <typename T>
+  [[nodiscard]] T chunked_dot(const T*    a,
+                              const T*    b,
+                              std::size_t count)
+  {
+    const std::size_t chunks {(count + dot_chunk - 1) / dot_chunk};
+    if (chunks <= 1) {
+      return dot_product(a, b, count);
+    }
+    std::vector<T> partial(chunks);
+    parallel_for(chunks, dot_chunk, [&](std::size_t c) {
+                   const std::size_t first {c * dot_chunk};
+                   partial[c] = dot_product(a + first, b + first, std::min(dot_chunk, count - first));
+                 });
+    T total {};
+    for (const T& sum : partial) {
+      total += sum;
+    }
+    return total;
+  }
+
+  //! \brief The rows a thread takes of a matrix times a vector (\ref matrix_times_vector).
+  inline constexpr std::size_t row_group {64};
+
+  /*!
+   * \brief `y = A x` for the row-major `rows × cols` \p a: each element the dot product of its row with \p x, as
+   *        \ref chunked_dot sums it (a row of a chunk or less is one \ref dot_product), the rows in parallel by
+   *        groups (\ref row_dots, which share each load of \p x). The same on any number of threads.
+   */
+  template <typename T>
+  void matrix_times_vector(const T*    a,
+                           std::size_t rows,
+                           std::size_t cols,
+                           const T*    x,
+                           T*          y)
+  {
+    if (cols > dot_chunk) {   // rows longer than a chunk: chunked_dot's partial sums
+      parallel_for(rows, cols, [&](std::size_t r) { y[r] = chunked_dot(a + (r * cols), x, cols); });
+      return;
+    }
+    parallel_for((rows + row_group - 1) / row_group, row_group * cols, [&](std::size_t group) {
+                   const std::size_t first {group * row_group};
+                   row_dots(a + (first * cols), cols, std::min(row_group, rows - first), x, cols, y + first);
+                 });
+  }
 } // namespace numerical::detail
 
 namespace numerical {

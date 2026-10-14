@@ -173,7 +173,8 @@ namespace numerical {
     return scalar * m;
   }
 
-  //! \brief Matrix–vector product. \throws dimension_error If shapes mismatch.
+  //! \brief Matrix–vector product: each element its row's dot product with \p v (\ref detail::matrix_times_vector).
+  //!        \throws dimension_error If shapes mismatch.
   template <typename T>
   [[nodiscard]] vector<T> operator*(const matrix<T>& a,
                                     const vector<T>& v)
@@ -181,14 +182,9 @@ namespace numerical {
     if (a.cols() != v.size()) {
       throw dimension_error("matrix–vector product: inner dimensions differ");
     }
-    std::vector<T> out;
-    out.reserve(a.rows());
-    for (std::size_t i {0}; i < a.rows(); ++i) {
-      T sum {};
-      for (std::size_t j {0}; j < a.cols(); ++j) {
-        sum += a(i, j) * v[j];
-      }
-      out.push_back(sum);
+    std::vector<T> out(a.rows());
+    if (a.cols() != 0) {
+      detail::matrix_times_vector(&*a.begin(), a.rows(), a.cols(), &v[0], out.data());
     }
     return vector<T> {std::move(out)};
   }

@@ -7,6 +7,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **The C++ `matrix * vector` goes the way `A @ v` goes** (`detail::matrix_times_vector`, shared by both): each element
+  its row's dot product, four rows at a time, the rows on every core, where a scalar loop summed each row in order.
+  M1 Pro: order 64 1.5 → 0.37 µs, 256 34.7 → 8.0, 1024 873 → 45. Its last bits can move, as `A @ v`'s did.
 - **A matrix times a vector, a vector times a matrix and a transpose take paths of their own**, where `einsum` packed
   the whole matrix for one product per element, or wrote a transpose a row apart at every element. Each row of
   `A @ v` is its dot product with `v`, as `einsum("i,i->")` sums it (four rows at a time off the x86-64 units), so its

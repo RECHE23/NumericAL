@@ -235,9 +235,6 @@ namespace numerical {
       return tensor<T> {std::move(out_shape), std::move(c)};
     }
 
-    //! \brief The rows a thread takes of a matrix times a vector (\ref row_dots).
-    inline constexpr std::size_t row_group {64};
-
     //! \brief The columns a thread takes of a vector times a matrix: each of its rows added to them in order.
     inline constexpr std::size_t vector_chunk {128};
 
@@ -543,36 +540,6 @@ namespace numerical {
       return path;
     }
 
-    //! \brief The elements of one partial sum of `chunked_dot`: fixed, so the sum does not depend on the threads.
-    inline constexpr std::size_t dot_chunk {std::size_t {1} << 14U};
-
-    /*!
-     * \brief `Σ a[i] · b[i]` for a plain dot product: chunks of \ref dot_chunk elements in parallel, each by
-     *        \ref dot_product (several vector accumulators, on the widest x86-64 units for `double`), their sums
-     *        added in the chunks' order. The same on any number of threads; in the last bits, not the ascending
-     *        sum, which waits on each addition before the next (ten times slower at 100 000 elements).
-     */
-    template <typename T>
-    [[nodiscard]] T chunked_dot(const T*    a,
-                                const T*    b,
-                                std::size_t count)
-    {
-      const std::size_t chunks {(count + dot_chunk - 1) / dot_chunk};
-      if (chunks <= 1) {
-        return dot_product(a, b, count);
-      }
-      std::vector<T> partial(chunks);
-      parallel_for(chunks, dot_chunk, [&](std::size_t c) {
-                     const std::size_t first {c * dot_chunk};
-                     partial[c] = dot_product(a + first, b + first, std::min(dot_chunk, count - first));
-                   });
-      T total {};
-      for (const T& sum : partial) {
-        total += sum;
-      }
-      return total;
-    }
-
     //! \brief Evaluates a parsed einsum over its operands. \see numerical::einsum
     //!
     //! After parsing and the consistency checks, the contraction runs over a
@@ -739,15 +706,7 @@ namespace numerical {
             const T* const matrix {operands[0]->data().data()};
             const T* const vector {operands[1]->data().data()};
             std::vector<T> y(rows);
-            if (inner > dot_chunk) { // rows longer than a chunk: chunked_dot's partial sums
-              parallel_for(rows, inner, [&](std::size_t r) { y[r] = chunked_dot(matrix + (r * inner), vector, inner); });
-            }
-            else {                   // chunked_dot is one dot_product there: by groups of rows, which share each load of the vector
-              parallel_for((rows + row_group - 1) / row_group, row_group * inner, [&](std::size_t g) {
-                             const std::size_t first {g * row_group};
-                             row_dots(matrix + (first * inner), inner, std::min(row_group, rows - first), vector, inner, y.data() + first);
-                           });
-            }
+            matrix_times_vector(matrix, rows, inner, vector, y.data());
             return tensor<T> {std::move(out_shape), std::move(y)};
           }
           if (rows == 1 && cols > 1 && inner != 0) { // a vector times a matrix: its rows scaled and added in order
