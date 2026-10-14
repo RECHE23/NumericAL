@@ -31,7 +31,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **A product whose order is no multiple of 16, on the AMX, computes its edge tiles in C itself** where it copied each
   one out and back: the copy, written by the core and read by the coprocessor, waited on its lines' write-back.
   M1 Pro, one core: order 24 2.0 → 1.2 µs, 33 4.7 → 3.3, 48 4.2 → 2.8, 65 10.3 → 7.7, 100 21.5 → 17.3; a tile
-  whose last column cuts its second half row keeps the copy, which measured faster there (31, 47, 63).
+  whose last column cuts its second half row keeps the copy, which measured faster there (31, 47, 63), and so does
+  one of eight rows or fewer, whose rows the core has just written (a QR or an SVD of order 8).
 - **The LU's pivot search goes by native vectors**, each lane keeping its first largest magnitude: the same pivot
   as the element-by-element search, so the same factors to the bit. One core, order 256: M1 Pro 341 → 306 µs
   (clang), 389 → 366 (GCC 14); order 128 83 → 74 µs (clang); x86-64 (GCC 13) 2–4 % from order 64.

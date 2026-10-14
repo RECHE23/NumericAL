@@ -258,7 +258,8 @@ namespace numerical::detail {
    *        (\ref through_edge). A copy of the tile, written by the core and read by the AMX, then the other way, held
    *        each partial tile behind its lines' write-back to the L2 the AMX reads (M1 Pro, a product of order 48: 4.2
    *        → 2.8 µs, 65: 10.3 → 7.8); a second half cut in place, its first half stored by the AMX and its second
-   *        by the core, was slower still than the copy (order 31: 2.7 → 3.2 µs).
+   *        by the core, was slower still than the copy (order 31: 2.7 → 3.2 µs); so was a tile of eight rows or fewer,
+   *        whose rows the core had just written (an SVD of order 8: 9.1 → 10.4 µs, a QR 3.6 → 4.3).
    */
   inline void amx_tile_f64(std::size_t   kc,
                            const double* ap,
@@ -269,7 +270,7 @@ namespace numerical::detail {
                            std::size_t   rows,
                            std::size_t   cols) noexcept
   {
-    if ((rows < amx_mr || cols < amx_nr) && (cols < 8 || cols % 8 == 0)) {
+    if (rows > 8 && (rows < amx_mr || cols < amx_nr) && (cols < 8 || cols % 8 == 0)) {
       amx_partial_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
       return;
     }
