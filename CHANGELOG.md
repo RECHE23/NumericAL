@@ -14,6 +14,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   `auto` is unchanged. The constructors still take a `std::vector<T>` (copied in; a `buffer<T>` moves in), and a
   braced list of elements; a `buffer<T>` compares equal to a `std::vector<T>` holding the same elements. Nothing is
   computed differently: every result is the same to the bit.
+- **An LU solve of many right-hand sides, and so the inverse, gives each thread its own columns** (slices of 64 or
+  more), each through every block of rows, where every block joined the threads for products too small to share
+  them. The same bits. Inverse, eight arm64 threads: order 256 698 → 503 µs, 512 4.26 → 2.97 ms, 768 9.75 → 6.16 ms
+  (GCC 14 without the AMX, the Linux wheels': 256 2.23 → 1.44 ms); six AVX2 cores, up to order 384 where the threads'
+  rereads of the factor still pay: 192 980 → 825 µs, 256 1.87 → 1.60 ms. `solve` with 128 right-hand sides, arm64,
+  order 512: 643 → 475 µs.
 - **A product's result is zeroed by the threads that will compute it** (`detail::parallel_zero`), where it was zeroed on
   one before the product started: a fresh result's pages are first touched across the threads. The C++ `matrix *
   matrix`, `A @ B` and `einsum`'s products; the element-wise operations, transposes, reductions, `arange` and

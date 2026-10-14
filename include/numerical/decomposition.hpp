@@ -86,6 +86,17 @@ namespace numerical {
     //! \brief The most right-hand sides an LU solve takes row by row rather than by blocks through the product kernel.
     inline constexpr std::size_t narrow_solve {16};
 
+    //! \brief The fewest columns an LU solve gives a thread of its own: a narrower slice starves the product kernel
+    //!        (arm64, order 256 and 64 right-hand sides in eight slices: 112 → 194 µs).
+    inline constexpr std::size_t slice_columns {64};
+
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief The order up to which an LU solve gives each thread its own columns on the x86-64 units: each thread
+    //!        rereads the whole factor, which the memory stops paying for past it (six AVX2 cores, an inverse of order
+    //!        768 6 % slower, 1024 17 %). On arm64 the slices win at every order measured (to 1024).
+    inline constexpr std::size_t slice_solve_order {384};
+#endif
+
     //! \brief The order up to which an LU solve goes row by row off the x86-64 units: past it the blocked products win
     //!        (arm64, four columns: order 128 49 → 37 µs, 192 93 → 86; order 256 145 → 160).
     inline constexpr std::size_t narrow_solve_order {192};
@@ -588,7 +599,9 @@ namespace numerical {
      *        `block_` rows: within a block the rows are solved one after another, in parallel chunks of
      *        columns (each chunk's columns depend on no other's); from a block to the rows beyond it, through the
      *        matrix product kernel. When \p lower, row `i` of \p y is zero past column `i` (the identity's rows):
-     *        the forward pass then works on those columns alone.
+     *        the forward pass then works on those columns alone. Many columns go to the threads by slices
+     *        (\ref column_slices), each through every block (\ref solve_columns); a column's terms come in the same
+     *        order either way.
      */
     void solve_rows(buffer<T>&      y,
                     std::size_t     cols,
@@ -600,25 +613,68 @@ namespace numerical {
           return;
         }
       }
+      const std::size_t slices {column_slices(cols)};
+      if (slices > 1) { // independent right-hand sides: each thread its own columns, all the blocks, no join per block
+        const std::size_t slice {(((cols + slices - 1) / slices) + 7) / 8 * 8};
+        detail::parallel_for((cols + slice - 1) / slice, n_ * n_ * slice / detail::gemm_kernel_speedup, [&](std::size_t s) {
+                               solve_columns(y, cols, s * slice, std::min(cols, (s + 1) * slice), lower);
+                             });
+        return;
+      }
+      solve_columns(y, cols, 0, cols, lower);
+    }
+
+    /*!
+     * \brief The column slices \ref solve_rows splits \p cols right-hand sides into, one a thread, each of
+     *        \ref detail::slice_columns or more (on the x86-64 units, to \c detail::slice_solve_order): the blocks of rows then join
+     *        the threads once, where each block joined them for products too small to share (six AVX2 cores, an
+     *        inverse of order 256: 1.87 → 1.60 ms; arm64, eight cores, 698 → 503 µs).
+     */
+    [[nodiscard]] std::size_t column_slices(std::size_t cols) const
+    {
+#ifdef NUMERICAL_X86_COMPILED
+      if (n_ > detail::slice_solve_order) {
+        return 1;
+      }
+#endif
+      if (cols < 2 * detail::slice_columns) {
+        return 1;
+      }
+      return std::min(max_threads(), cols / detail::slice_columns);
+    }
+
+    /*!
+     * \brief \ref solve_rows on the columns `[c0, c1)` of \p y (`n × cols`, row-major): the blocked passes, their
+     *        products through the matrix kernel, each element's terms in the same order whatever the slice.
+     */
+    void solve_columns(buffer<T>&      y,
+                       std::size_t     cols,
+                       std::size_t     c0,
+                       std::size_t     c1,
+                       bool            lower) const
+    {
       constexpr std::size_t width  {64};
-      const std::size_t     chunks {(cols + width - 1) / width};
-      for (std::size_t k0 {0}; k0 < n_; k0 += block_) { // forward: unit-lower L
+      const std::size_t     chunks {(c1 - c0 + width - 1) / width};
+      for (std::size_t k0 {0}; k0 < n_; k0 += block_) {           // forward: unit-lower L
         const std::size_t end   {std::min(k0 + block_, n_)};
-        const std::size_t reach {lower ? end : cols};   // the block's rows' columns that can be nonzero
-        detail::parallel_for((reach + width - 1) / width, (end - k0) * (end - k0) * width / 2, [&](std::size_t chunk) {
-                               const std::size_t first {chunk * width};
+        const std::size_t reach {lower ? std::min(end, c1) : c1}; // the block's rows' columns that can be nonzero
+        if (reach <= c0) {
+          continue; // the slice's columns are zero in these rows and every row past them
+        }
+        detail::parallel_for((reach - c0 + width - 1) / width, (end - k0) * (end - k0) * width / 2, [&](std::size_t chunk) {
+                               const std::size_t first {c0 + (chunk * width)};
                                const std::size_t last {std::min(first + width, reach)};
                                for (std::size_t i {k0 + 1}; i < end; ++i) {
                                  detail::subtract_products(y.data() + (i * cols) + first, lu_.data() + (i * n_) + k0, y.data() + (k0 * cols) + first, cols, i - k0, last - first);
                                }
                              });
-        subtract_block(y, cols, end, n_, k0, end, reach);
+        subtract_block(y, cols, end, n_, k0, end, c0, reach);
       }
       for (std::size_t k1 {n_}; k1 > 0;) { // backward: upper U, the blocks of the forward pass, last first
         const std::size_t k0 {panel_of(k1 - 1)};
         detail::parallel_for(chunks, (k1 - k0) * (k1 - k0) * width / 2, [&](std::size_t chunk) {
-                               const std::size_t first {chunk * width};
-                               const std::size_t last {std::min(first + width, cols)};
+                               const std::size_t first {c0 + (chunk * width)};
+                               const std::size_t last {std::min(first + width, c1)};
                                for (std::size_t i {k1}; i-- > k0;) {
                                  detail::subtract_products(y.data() + (i * cols) + first, lu_.data() + (i * n_) + i + 1, y.data() + ((i + 1) * cols) + first, cols, k1 - (i + 1), last - first);
                                  const T pivot {lu_[(i * n_) + i]};
@@ -627,7 +683,7 @@ namespace numerical {
                                  }
                                }
                              });
-        subtract_block(y, cols, 0, k0, k0, k1);
+        subtract_block(y, cols, 0, k0, k0, k1, c0, c1);
         k1 = k0;
       }
     }
@@ -685,19 +741,20 @@ namespace numerical {
     }
 
     //! \brief `Y[r0, r1) −= F[r0, r1) × [c0, c1) · Y[c0, c1)`, F the factor, through the matrix product kernel (nothing
-    //!        when the rows are empty), on the columns of `Y` before \p reach (all of them by default).
+    //!        when the rows are empty), on the columns `[first, last)` of `Y`, `first < last`.
     void subtract_block(buffer<T>&      y,
                         std::size_t     cols,
                         std::size_t     r0,
                         std::size_t     r1,
                         std::size_t     c0,
                         std::size_t     c1,
-                        std::size_t     reach = std::numeric_limits<std::size_t>::max()) const
+                        std::size_t     first,
+                        std::size_t     last) const
     {
       if (r0 < r1) {
         const buffer<T> minus {negated_block(r0, r1, c0, c1)};
-        detail::gemm(r1 - r0, std::min(reach, cols), c1 - c0, minus.data(), c1 - c0, y.data() + (c0 * cols), cols,
-                     y.data() + (r0 * cols), cols);
+        detail::gemm(r1 - r0, last - first, c1 - c0, minus.data(), c1 - c0, y.data() + (c0 * cols) + first, cols,
+                     y.data() + (r0 * cols) + first, cols);
       }
     }
 

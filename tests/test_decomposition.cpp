@@ -1252,6 +1252,29 @@ TEST(narrow_solve_equals_the_blocked_solve_to_the_bit)
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
 
+// Many right-hand sides go to the threads by column slices, each through every block of rows: the same bits as
+// one slice on one thread, whether the slices are capped by the threads (two) or by the columns (all threads).
+TEST(lu_solves_column_slices_to_the_same_bits)
+{
+  const std::size_t    n {300};
+  const matrix<double> a {n, n, pivoting_entries<double>(n)};
+  std::vector<double>  rhs(n * 200);
+  for (std::size_t i {0}; i < rhs.size(); ++i) {
+    rhs[i] = (static_cast<double>((i * 7919U) % 1000U) / 500.0) - 1.0;
+  }
+  const matrix<double>                       b  {n, 200, rhs};
+  const numerical::lu_decomposition<double>  lu {a};
+  numerical::set_max_threads(1);
+  const matrix<double> inverse_one              {lu.inverse()};
+  const matrix<double> solve_one                {lu.solve(b)};
+  for (const std::size_t threads : {std::size_t {2}, std::size_t {0}}) {
+    numerical::set_max_threads(threads);
+    EXPECT(lu.inverse() == inverse_one);
+    EXPECT(lu.solve(b) == solve_one);
+  }
+  numerical::set_max_threads(0);
+}
+
 TEST(blocked_inverse_times_the_matrix_is_the_identity)
 {
   const std::size_t    n {(2 * numerical::detail::lu_block) + 22};
