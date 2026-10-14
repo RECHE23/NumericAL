@@ -1784,6 +1784,10 @@ TEST(least_squares_reports_what_numpy_lstsq_reports)
     EXPECT(std::abs(found.residuals[c] - sum) <= 1e-14);
   }
   EXPECT(approx_equal(found.singular_values, numerical::singular_values(tall)));
+  // From the QR's R of A over a power of two, scaled back: a matrix far from 1 keeps its singular values.
+  const matrix<double> large {{3e10, 0.0}, {0.0, 4e10}, {0.0, 0.0}};
+  const vector<double> large_values {numerical::least_squares(large, matrix<double> {{1.0}, {1.0}, {1.0}}).singular_values};
+  EXPECT(large_values[0] == 4e10 && large_values[1] == 3e10);
   EXPECT(numerical::least_squares(matrix<double> {{2.0, 1.0}, {1.0, 3.0}}, matrix<double> {{1.0}, {2.0}}).residuals.size() == 0);
   EXPECT(numerical::least_squares(matrix<double> {{1.0, 2.0, 3.0}}, matrix<double> {{1.0}}).residuals.size() == 0);
   const numerical::least_squares_solution<double> deficient {
