@@ -51,6 +51,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   one core: order 64 13.7 → 12.7 µs, 96 31.5 → 28.8, 128 61 → 53; GCC 14 and x86-64 neutral to 9 % faster. Real
   factors are unchanged to the bit; a complex one can move in its last bits (its products round as the complex
   kernel or the plain loop does, by their shape).
+- **The row combinations of the LU's solves hold 32 elements through their terms**, where 8 held four chains of
+  multiply-adds each waiting on its last: the inverse 6–11 % faster from order 33 (M1 Pro, clang; order 128 151 →
+  137 µs), LU and `solve` up to 6 % at 512. The same arithmetic in the same order: the results are unchanged to the
+  bit. GCC takes its own vector path there and is unchanged.
 
 ## 2026.10.10 — 2026-10-14
 

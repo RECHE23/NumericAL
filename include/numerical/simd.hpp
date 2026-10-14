@@ -526,9 +526,10 @@ namespace numerical::detail {
                          std::size_t count)
   {
     std::size_t i {subtract_combined_vectors(y, f, x, ldx, terms, count)};
-    // Blocks of 8, then of 4, 2 and 1: a narrower rest still takes the terms across its elements at once, each one
-    // a chain of its own, where element by element each waited on the last term (four columns of an LU solve of
-    // order 128 on arm64: 112 → 92 µs, the factorisation 75).
+    // Blocks of 32, then of 8, 4, 2 and 1, each element a chain of its own through the terms: four multiply-adds a
+    // cycle wait on their last one, and 8 elements held four chains (arm64, an inverse of order 128: 151 → 137 µs);
+    // a narrower rest still takes the terms across its elements at once, where element by element each waited on
+    // the last term (four columns of an LU solve of order 128 on arm64: 112 → 92 µs, the factorisation 75).
     const auto blocks = [&]<std::size_t Width>(std::integral_constant<std::size_t, Width>) {
                           for (; i + Width <= count; i += Width) {
                             std::array<T, Width> held {};
@@ -543,6 +544,7 @@ namespace numerical::detail {
                             std::copy_n(held.begin(), Width, y + i);
                           }
                         };
+    blocks(std::integral_constant<std::size_t, 32> {});
     blocks(std::integral_constant<std::size_t, 8> {});
     blocks(std::integral_constant<std::size_t, 4> {});
     blocks(std::integral_constant<std::size_t, 2> {});
