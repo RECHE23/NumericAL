@@ -46,6 +46,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   own previous term, one column after another. The solution is the same to the bit. M1 Pro, one core, four
   columns: the solve from the factors 2.0–2.3× faster from order 48 to 192 (clang and GCC 14), `solve` of order
   128 112 → 92 µs.
+- **A Cholesky factorisation updates its trailing block by products at least 64 columns wide**, where each
+  panel's 16 or 32 columns packed every row below them again: on the AMX the packing outweighed the products. M1 Pro,
+  one core: order 64 13.7 → 12.7 µs, 96 31.5 → 28.8, 128 61 → 53; GCC 14 and x86-64 neutral to 9 % faster. Real
+  factors are unchanged to the bit; a complex one can move in its last bits (its products round as the complex
+  kernel or the plain loop does, by their shape).
 
 ## 2026.10.10 — 2026-10-14
 

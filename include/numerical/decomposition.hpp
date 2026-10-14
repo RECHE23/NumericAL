@@ -113,6 +113,11 @@ namespace numerical {
     //! \brief The rows of one chunk of a Cholesky panel's rows below it, solved together along each column.
     inline constexpr std::size_t cholesky_rows {64};
 
+    //! \brief The fewest columns of the trailing block one Cholesky update's product takes: each product packs every
+    //!        row below its columns again, a panel's width apart the packing outweighed the products on the AMX
+    //!        (M1 Pro, order 128: 61 → 53 µs), and the triangle a wider block computes past the diagonal is wasted.
+    inline constexpr std::size_t cholesky_update_columns {64};
+
 
     // conj_of / real_part are written as overloads (not `if constexpr`) so each
     // is a single, fully-covered expression: a complex scalar selects the
@@ -1160,7 +1165,8 @@ namespace numerical {
                            });
     }
 
-    //! \brief `A22 += (−L21) L21ᴴ`, block column by block column, on and below the diagonal blocks.
+    //! \brief `A22 += (−L21) L21ᴴ`, by blocks of \ref detail::cholesky_update_columns columns, on and below the
+    //!        diagonal blocks (the upper triangle, never read, takes what falls in a block past the diagonal).
     void update_trailing(std::size_t k0,
                          std::size_t end)
     {
@@ -1175,8 +1181,9 @@ namespace numerical {
           l_adjoint[(p * rows) + r] = detail::conj_of(value);
         }
       }
-      for (std::size_t jb {0}; jb < rows; jb += block_) {
-        const std::size_t width {std::min(block_, rows - jb)};
+      const std::size_t step {std::max(block_, detail::cholesky_update_columns)};
+      for (std::size_t jb {0}; jb < rows; jb += step) {
+        const std::size_t width {std::min(step, rows - jb)};
         detail::gemm(rows - jb, width, depth, minus_l.data() + (jb * depth), depth, l_adjoint.data() + jb, rows,
                      lower_.data() + ((end + jb) * n_) + end + jb, n_);
       }
