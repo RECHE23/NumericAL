@@ -119,6 +119,38 @@ namespace numerical::detail {
   inline constexpr std::size_t amx_in_place_stride {512};
 
   /*!
+   * \brief The depth loop of a tile: for each step, A's 32 elements into Y and B's 16 into X, and one fused outer
+   *        product per accumulator of Z (see \ref amx_full_tile_f64), the one loop of the whole and the partial
+   *        tiles. Out of line and aligned, so the loop, a few instructions past the entry, spans two fetch blocks of
+   *        64 bytes wherever the linker puts it: inline, it fell where its caller fell, three blocks in one binary.
+   * \param[in] kc  The panel depth.
+   * \param[in] ap  The A sliver: \p kc columns of \ref amx_mr elements.
+   * \param[in] bp  The B sliver: \p kc rows of \ref amx_nr elements.
+   * \param[in] ldb The distance between the sliver's rows.
+   */
+  [[gnu::noinline, gnu::aligned(64)]] inline void amx_depth_f64(std::size_t   kc,
+                                                                const double* ap,
+                                                                const double* bp,
+                                                                std::size_t   ldb) noexcept
+  {
+    for (std::size_t p {0}; p < kc; ++p) {
+      const double* const a {ap + (p * amx_mr)};
+      const double* const b {bp + (p * ldb)};
+      for (std::uint64_t ya {0}; ya < 4; ++ya) {
+        amx<amx_op::ldy>(amx_address(a + (ya * 8), ya));
+      }
+      amx<amx_op::ldx>(amx_address(b, 0));
+      amx<amx_op::ldx>(amx_address(b + 8, 1));
+      for (std::uint64_t ya {0}; ya < 4; ++ya) {
+        for (std::uint64_t xb {0}; xb < 2; ++xb) {
+          // Matrix mode: Z row (2·ya + xb), X register xb (64 bytes each), Y register ya.
+          amx<amx_op::fma64>((((ya * 2) + xb) << 20U) | ((xb * 64) << 10U) | (ya * 64));
+        }
+      }
+    }
+  }
+
+  /*!
    * \brief `C += Aₚ·Bₚ` for one whole tile of C (\ref amx_mr × \ref amx_nr) over a panel of depth \p kc,
    *        on the AMX of the calling thread (inside an \ref amx_session).
    *
@@ -146,21 +178,7 @@ namespace numerical::detail {
         }
       }
     }
-    for (std::size_t p {0}; p < kc; ++p) {
-      const double* const a {ap + (p * amx_mr)};
-      const double* const b {bp + (p * ldb)};
-      for (std::uint64_t ya {0}; ya < 4; ++ya) {
-        amx<amx_op::ldy>(amx_address(a + (ya * 8), ya));
-      }
-      amx<amx_op::ldx>(amx_address(b, 0));
-      amx<amx_op::ldx>(amx_address(b + 8, 1));
-      for (std::uint64_t ya {0}; ya < 4; ++ya) {
-        for (std::uint64_t xb {0}; xb < 2; ++xb) {
-          // Matrix mode: Z row (2·ya + xb), X register xb (64 bytes each), Y register ya.
-          amx<amx_op::fma64>((((ya * 2) + xb) << 20U) | ((xb * 64) << 10U) | (ya * 64));
-        }
-      }
-    }
+    amx_depth_f64(kc, ap, bp, ldb);
     for (std::uint64_t ya {0}; ya < 4; ++ya) {
       for (std::uint64_t xb {0}; xb < 2; ++xb) {
         for (std::uint64_t j {0}; j < 8; ++j) {
@@ -221,20 +239,7 @@ namespace numerical::detail {
       }
     }
     each_half([](double* half, std::uint64_t z) { amx<amx_op::ldz>(amx_address(half, z)); });
-    for (std::size_t p {0}; p < kc; ++p) {
-      const double* const a {ap + (p * amx_mr)};
-      const double* const b {bp + (p * ldb)};
-      for (std::uint64_t ya {0}; ya < 4; ++ya) {
-        amx<amx_op::ldy>(amx_address(a + (ya * 8), ya));
-      }
-      amx<amx_op::ldx>(amx_address(b, 0));
-      amx<amx_op::ldx>(amx_address(b + 8, 1));
-      for (std::uint64_t ya {0}; ya < 4; ++ya) {
-        for (std::uint64_t xb {0}; xb < 2; ++xb) {
-          amx<amx_op::fma64>((((ya * 2) + xb) << 20U) | ((xb * 64) << 10U) | (ya * 64));
-        }
-      }
-    }
+    amx_depth_f64(kc, ap, bp, ldb);
     each_half([](double* half, std::uint64_t z) { amx<amx_op::stz>(amx_address(half, z)); });
     if (cut_width != 0) {
       for (std::size_t row {0}; row < rows; ++row) {
