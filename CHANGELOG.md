@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.9 — 2026-10-14
+
 ### Added
 - **The package is typed** (PEP 561): `py.typed` and stubs for `numerical` and its extension ship in the wheel and
   the sdist, so a type checker reads `Tensor`'s properties and operators and each function's signature. `make
