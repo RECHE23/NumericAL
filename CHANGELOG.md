@@ -35,6 +35,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **The LU's pivot search goes by native vectors**, each lane keeping its first largest magnitude: the same pivot
   as the element-by-element search, so the same factors to the bit. One core, order 256: M1 Pro 341 → 306 µs
   (clang), 389 → 366 (GCC 14); order 128 83 → 74 µs (clang); x86-64 (GCC 13) 2–4 % from order 64.
+- **An LU's trailing update cuts its columns by the threads its work pays for**, not the threads the machine has:
+  each cut packs L₂₁ again, and a product too small to share ran one cut a thread one after another. Eight M1 Pro
+  threads: order 256 329 → 311 µs, 512 1.72 → 1.64 ms, 768 3.99 → 3.79; six x86-64 threads: 256 −9 %. One thread
+  is unchanged, and so are the factors.
 
 ## 2026.10.10 — 2026-10-14
 

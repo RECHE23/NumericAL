@@ -730,9 +730,13 @@ namespace numerical {
           end = next;
           continue;
         }
-        // About two blocks of columns a thread: each block's product packs L₂₁ again.
-        const std::size_t width  {std::max(block_, (right + (2 * max_threads()) - 1) / (2 * max_threads()))};
-        const std::size_t blocks {(right + width - 1) / width};
+        // About two blocks of columns for each thread the work pays for: each block's product packs L₂₁ again, and a
+        // product too small to share ran one block for each thread the machine has (order 256 on eight arm64
+        // threads: 329 → 311 µs); two, not one, as on x86-64 a block of half the columns stays in its cache.
+        const std::size_t work    {(n_ - end) * right * (end - k0) / detail::gemm_kernel_speedup};
+        const std::size_t helpers {std::clamp(work / detail::work_per_thread, std::size_t {1}, max_threads())};
+        const std::size_t width   {std::max(block_, (right + (2 * helpers) - 1) / (2 * helpers))};
+        const std::size_t blocks  {(right + width - 1) / width};
         swap_limit_ = next;
         detail::parallel_for_beside(blocks, (n_ - end) * width * (end - k0) / detail::gemm_kernel_speedup,
                                     [&](std::size_t block) {
