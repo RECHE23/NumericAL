@@ -18,6 +18,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **On x86-64, those two matrix-vector products are shared between threads from a quarter of the work they took**:
   six cores, singular values of order 256 8.1 → 7.3 ms, 512 35 → 30, `svd` 4–8 %. Each column and each row is still
   computed whole by one thread: unchanged to the bit. On arm64 the threshold stays (sharing them slowed order 256).
+- **On x86-64, an LU's trailing update weighs its work as the AVX tiles run it**, where it counted the AMX tile's
+  speed and so shared fewer threads: six cores, order 256 690 → 622 µs, 384 to 1024 4 % faster. The factors are
+  unchanged to the bit.
 
 ## 2026.10.11 — 2026-10-14
 
