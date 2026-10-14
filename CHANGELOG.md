@@ -55,6 +55,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   multiply-adds each waiting on its last: the inverse 6–11 % faster from order 33 (M1 Pro, clang; order 128 151 →
   137 µs), LU and `solve` up to 6 % at 512. The same arithmetic in the same order: the results are unchanged to the
   bit. GCC takes its own vector path there and is unchanged.
+- **A product on the AMX packs A's slivers two columns at a time**, each pair of a row read whole and its lanes
+  swapped, where each element was read alone: the packing took a third of a product of order 128. M1 Pro, one
+  core: order 32 1.05 → 0.92 µs, 64 3.14 → 2.76, 96 8.5 → 7.7, 128 18.4 → 16.6, 256 −4 %. The same elements in the
+  same places: the products are unchanged to the bit.
 
 ## 2026.10.10 — 2026-10-14
 

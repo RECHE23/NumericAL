@@ -23,6 +23,7 @@
 #define NUMERICAL_AMX_HPP
 
 #include <array>
+#include <cstring>
 #include <atomic>
 #include <cmath>
 #include <cstddef>
@@ -294,10 +295,32 @@ namespace numerical::detail {
                          std::size_t   kc,
                          double*       out) noexcept
   {
+    using pair = double __attribute__((vector_size(16)));
     std::size_t ir {0};
     for (; rows * kc >= amx_stream_least && ir + amx_mr <= rows; ir += amx_mr) {
       double* const sliver {out + (ir * kc)};
-      for (std::size_t p {0}; p < kc; ++p) {
+      std::size_t   p      {0};
+      for (; p + 2 <= kc; p += 2) { // two columns of four rows a step: the rows' pairs read whole, their lanes swapped
+        for (std::size_t i {0}; i < amx_mr; i += 4) {
+          std::array<pair, 4> row {};
+          for (std::size_t r {0}; r < 4; ++r) {
+            std::memcpy(&row.at(r), a + ((ir + i + r) * lda) + p, sizeof(pair));
+          }
+          const pair here_low  {__builtin_shufflevector(row[0], row[1], 0, 2)};
+          const pair here_high {__builtin_shufflevector(row[2], row[3], 0, 2)};
+          const pair next_low  {__builtin_shufflevector(row[0], row[1], 1, 3)};
+          const pair next_high {__builtin_shufflevector(row[2], row[3], 1, 3)};
+          __asm__ volatile ("stnp %q0, %q1, [%2]" // NOLINT(hicpp-no-assembler): as below, four elements at once
+                            :
+                            : "w" (here_low), "w" (here_high), "r" (sliver + (p * amx_mr) + i)
+                            : "memory");
+          __asm__ volatile ("stnp %q0, %q1, [%2]" // NOLINT(hicpp-no-assembler): as below, four elements at once
+                            :
+                            : "w" (next_low), "w" (next_high), "r" (sliver + ((p + 1) * amx_mr) + i)
+                            : "memory");
+        }
+      }
+      for (; p < kc; ++p) {
         for (std::size_t i {0}; i < amx_mr; i += 2) {
           const double first  {a[((ir + i) * lda) + p]};
           const double second {a[((ir + i + 1) * lda) + p]};
@@ -310,7 +333,20 @@ namespace numerical::detail {
     }
     for (; ir + amx_mr <= rows; ir += amx_mr) { // whole slivers below the threshold, the loop free of the padding's test
       double* const sliver {out + (ir * kc)};
-      for (std::size_t p {0}; p < kc; ++p) {
+      std::size_t   p      {0};
+      for (; p + 2 <= kc; p += 2) { // as above, by ordinary stores
+        for (std::size_t i {0}; i < amx_mr; i += 2) {
+          pair first;
+          pair second;
+          std::memcpy(&first, a + ((ir + i) * lda) + p, sizeof(pair));
+          std::memcpy(&second, a + ((ir + i + 1) * lda) + p, sizeof(pair));
+          const pair here {__builtin_shufflevector(first, second, 0, 2)};
+          const pair next {__builtin_shufflevector(first, second, 1, 3)};
+          std::memcpy(sliver + (p * amx_mr) + i, &here, sizeof(pair));
+          std::memcpy(sliver + ((p + 1) * amx_mr) + i, &next, sizeof(pair));
+        }
+      }
+      for (; p < kc; ++p) {
         for (std::size_t i {0}; i < amx_mr; ++i) {
           sliver[(p * amx_mr) + i] = a[((ir + i) * lda) + p];
         }
