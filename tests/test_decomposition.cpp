@@ -1734,6 +1734,8 @@ TEST(eigh_of_a_graded_matrix)
 // one far past the range where squares overflow; the rank follows from them.
 TEST(singular_values_alone_are_the_decompositions)
 {
+  // Fixed seed: the matrices are part of the test, so a failure names the same one every run.
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
   std::mt19937_64                  generator {7};
   std::normal_distribution<double> normal;
   for (const auto& [rows, cols] : std::vector<std::pair<std::size_t, std::size_t>> {{1, 1}, {4, 4}, {9, 4}, {4, 9},
