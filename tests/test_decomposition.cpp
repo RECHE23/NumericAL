@@ -1742,6 +1742,44 @@ TEST(eigh_of_a_graded_matrix)
 
 // The singular values without the vectors are the decomposition's, for every shape, a complex matrix, a zero one, and
 // one far past the range where squares overflow; the rank follows from them.
+TEST(symmetric_eigenvalues_alone_are_the_decompositions)
+{
+  // Fixed seed: the matrices are part of the test, so a failure names the same one every run.
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64                  generator {11};
+  std::normal_distribution<double> normal;
+  for (const std::size_t n : {std::size_t {1}, std::size_t {3}, std::size_t {40}, std::size_t {150}}) {
+    std::vector<double>               real(n * n);
+    std::vector<std::complex<double>> complex(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j <= i; ++j) {
+        real[(i * n) + j]    = normal(generator);
+        real[(j * n) + i]    = real[(i * n) + j];
+        complex[(i * n) + j] = i == j ? std::complex<double> {normal(generator), 0.0} : std::complex<double> {normal(generator), normal(generator)};
+        complex[(j * n) + i] = std::conj(complex[(i * n) + j]);
+      }
+    }
+    const matrix<double>               a(n, n, real);
+    const matrix<std::complex<double>> h(n, n, complex);
+    const vector<double>               alone           {numerical::symmetric_eigenvalues(a)};
+    const vector<double>               hermitian_alone {numerical::symmetric_eigenvalues(h)};
+    const numerical::symmetric_eigen   full            {a};
+    const numerical::hermitian_eigen   hermitian_full  {h};
+    for (std::size_t i {0}; i < n; ++i) {
+      EXPECT(std::abs(alone[i] - full.values()[i]) <= 1e-12 * static_cast<double>(n));
+      EXPECT(std::abs(hermitian_alone[i] - hermitian_full.values()[i]) <= 1e-12 * static_cast<double>(n));
+      EXPECT(i == 0 || alone[i - 1] <= alone[i]);
+    }
+  }
+  EXPECT(numerical::symmetric_eigenvalues(matrix<double>(0, 0, std::vector<double> {})).size() == 0);
+  const vector<double> scaled {numerical::symmetric_eigenvalues(matrix<double> {{2e200, 0.0}, {0.0, -3e200}})};
+  EXPECT(std::abs(scaled[0] + 3e200) <= 1e-14 * 3e200 && std::abs(scaled[1] - 2e200) <= 1e-14 * 3e200);
+  const vector<double> zero   {numerical::symmetric_eigenvalues(matrix<double> {{0.0, 0.0}, {0.0, 0.0}})};
+  EXPECT(zero[0] == 0.0 && zero[1] == 0.0);
+  EXPECT_THROWS(numerical::symmetric_eigenvalues(matrix<double> {{1.0, 2.0, 3.0}}), numerical::dimension_error);
+  EXPECT_THROWS(numerical::symmetric_eigenvalues(matrix<double> {{1.0, 0.0}, {std::nan(""), 1.0}}), numerical::non_finite_error);
+}
+
 TEST(singular_values_alone_are_the_decompositions)
 {
   // Fixed seed: the matrices are part of the test, so a failure names the same one every run.

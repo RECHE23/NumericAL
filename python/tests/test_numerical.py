@@ -662,6 +662,26 @@ class LinalgVsNumpy(unittest.TestCase):
         upper_ignored = np.tril(h) + np.triu(np.full((12, 12), 9 + 9j), 1)  # lower triangle read, as NumPy's
         self.assertTrue(np.allclose(np.asarray(numerical.eigh(upper_ignored)[0]), np.linalg.eigvalsh(upper_ignored)))
 
+    def test_eigvalsh_is_eighs_values_alone_as_numpy(self):
+        rng = np.random.default_rng(6)
+        for n in (1, 2, 9, 40, 130):
+            m = rng.standard_normal((n, n))
+            c = m + 1j * rng.standard_normal((n, n))
+            for a in (m + m.T, c + c.conj().T):
+                got = np.asarray(numerical.eigvalsh(a))
+                self.assertEqual(got.dtype, np.float64)
+                self.assertTrue(np.allclose(got, np.linalg.eigvalsh(a), rtol=0, atol=1e-12 * np.abs(a).max() * n))
+                self.assertTrue(np.allclose(got, np.asarray(numerical.eigh(a)[0]), rtol=0, atol=1e-12 * np.abs(a).max() * n))
+        upper_ignored = np.tril(m) + np.triu(np.full((130, 130), 7.0), 1)  # lower triangle read, as NumPy's
+        self.assertTrue(np.allclose(np.asarray(numerical.eigvalsh(upper_ignored)), np.linalg.eigvalsh(upper_ignored)))
+        self.assertEqual(np.asarray(numerical.eigvalsh(np.zeros((0, 0)))).shape, (0,))
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.eigvalsh(np.ones((2, 3)))
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.eigvalsh(np.ones(3))
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.eigvalsh(np.array([[1.0, 0.0], [np.nan, 1.0]]))
+
     def test_asarray_takes_numpy_dtypes_and_layouts(self):
         a = np.arange(12, dtype=np.int64).reshape(3, 4)
         for view in (a, a.T, a[::-1, ::2], np.asfortranarray(a)):

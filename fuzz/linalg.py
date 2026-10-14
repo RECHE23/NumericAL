@@ -151,6 +151,8 @@ def run_eigh(a):
     check(norm(v.conj().T @ v - np.eye(n)) <= bound(n, 1.0), f"eigh orthogonality {norm(v.conj().T @ v - np.eye(n)) / (n * EPS):.3g} n·ε")
     want = np.linalg.eigvalsh(a)
     check(np.max(np.abs(w - want), initial=0.0) <= bound(n, size_a), "eigenvalues differ from NumPy's")
+    alone = as_np(numerical.eigvalsh(numerical.asarray(a)))
+    check(np.max(np.abs(alone - want), initial=0.0) <= bound(n, size_a), "eigvalsh differs from NumPy's")
 
 
 def run_svd(a):

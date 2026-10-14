@@ -1208,6 +1208,25 @@ std::size_t matrix_rank(const any_tensor& v)
 }
 
 template <typename T>
+any_tensor do_eigvalsh(const numerical::tensor<T>& a)
+{
+    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+    return any_tensor {real_tensor {numerical::symmetric_eigenvalues(matrix_from(a))}};
+}
+
+// eigvalsh(a) -> Tensor, as numpy.linalg.eigvalsh: the eigenvalues alone, real and ascending.
+any_tensor eigvalsh(const any_tensor& v)
+{
+    if (shape_of(v).size() != 2) {
+        throw std::runtime_error("eigvalsh expects a matrix (rank-2 tensor)");
+    }
+    if (is_complex(v)) {
+        return do_eigvalsh<std::complex<double>>(std::get<cplx_tensor>(v));
+    }
+    return do_eigvalsh<double>(std::get<real_tensor>(v));
+}
+
+template <typename T>
 any_tensor do_pinv(const numerical::tensor<T>& a)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
@@ -1998,6 +2017,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&cholesky>("cholesky", "cholesky(a) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite).");
     m.def<&qr>("qr", "qr(a) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr (reduced): Q is m×k, R k×n, k = min(m, n).");
     m.def<&eigh>("eigh", "eigh(a, method) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, as numpy.linalg.eigh reads it.");
+    m.def<&eigvalsh>("eigvalsh", "eigvalsh(a) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read).");
     m.def<&matrix_rank>("matrix_rank", "matrix_rank(a) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank.");
     m.def<&pinv>("pinv", "pinv(a) -> Tensor\nThe Moore–Penrose pseudo-inverse of an m×n matrix, as numpy.linalg.pinv.");
     m.def<&svd>("svd", "svd(a, method) -> (U, S, Vh)\nThe singular value decomposition a = U @ diag(S) @ Vh of an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).");

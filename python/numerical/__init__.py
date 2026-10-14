@@ -38,7 +38,7 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "slogdet", "inverse", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh", "svd",
+    "determinant", "slogdet", "inverse", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh", "eigvalsh", "svd",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config",
 ]
@@ -373,6 +373,7 @@ determinant = _linalg(_numerical.determinant)
 einsum = _linalg(_numerical.einsum)
 inverse = _linalg(_numerical.inverse)
 lstsq = _linalg(_numerical.lstsq)
+eigvalsh = _linalg(_numerical.eigvalsh)
 matrix_rank = _linalg(_numerical.matrix_rank)
 pinv = _linalg(_numerical.pinv)
 qr = _linalg(_numerical.qr)

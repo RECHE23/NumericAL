@@ -6,6 +6,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Added
+- **`numerical.eigvalsh(a)` and `numerical::symmetric_eigenvalues(a)`**: the eigenvalues alone of a real symmetric or
+  complex Hermitian matrix, ascending, as `numpy.linalg.eigvalsh` (the lower triangle read): the tridiagonal form
+  without its basis, then the implicit QL iteration without rotations kept. M1 Pro, eight threads: 1.4–1.7× faster
+  than `eigh`'s values (order 256 2.2 ms against 3.4). In the NumPy differential beside `eigh`.
+
 ### Changed
 - **The secular equation of `eigh` and `svd` sums each side of its poles in a loop of its own**, where each term chose
   its sum by a branch: M1 Pro, one core, `eigh` 13–21 % faster from

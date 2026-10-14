@@ -2257,6 +2257,7 @@ namespace numerical {
       // The iteration reads only d and e: its rotations of zt's rows are recorded and applied once at the
       // end, in parallel by columns.
       std::vector<row_operation> on_zt;
+      const bool                 record {!zt.empty()}; // the eigenvalues alone record nothing
       for (std::size_t l {0}; l < n; ++l) {
         largest = std::max(largest, std::abs(d[l]) + std::abs(e[l]));
         std::size_t m {l};
@@ -2300,7 +2301,9 @@ namespace numerical {
             p        = (c * d[i]) - (s * g);
             d[i + 1] = h + (s * ((c * g) + (s * d[i])));
             // rows i and i+1 (columns i and i+1 of Z): upper ← c upper − s lower, lower ← c lower + s upper
-            on_zt.push_back({row_operation::kind::rotate, i, i + 1, c, -s});
+            if (record) {
+              on_zt.push_back({row_operation::kind::rotate, i, i + 1, c, -s});
+            }
           }
           p    = -s * s2 * c3 * el1 * e[l] / dl1;
           e[l] = s * p;
@@ -2309,7 +2312,9 @@ namespace numerical {
         d[l] += shift;
         e[l]  = 0.0;
       }
-      apply_row_operations(zt, n, on_zt);
+      if (record) {
+        apply_row_operations(zt, n, on_zt);
+      }
     }
 
     //! \brief The order up to which \ref tridiagonal_divide_and_conquer diagonalises by implicit QL.
@@ -4797,6 +4802,53 @@ namespace numerical {
     }
     std::vector<T>      r {rows == cols ? std::move(entries) : detail::householder_reflect(std::move(entries), rows, cols).r};
     std::vector<double> d {detail::square_singular_values(std::move(r), cols)};
+    for (double& value : d) {
+      value *= scale;
+    }
+    return vector<double> {std::move(d)};
+  }
+
+  /*!
+   * \brief The eigenvalues of the real symmetric or complex Hermitian \p a, ascending, without its eigenvectors, as
+   *        `numpy.linalg.eigvalsh`: its Householder tridiagonal (no basis formed) and the implicit QL iteration on it,
+   *        no rotation kept. Only the lower triangle is read, and of the diagonal its real part. Each value to an
+   *        absolute accuracy of the largest magnitude times the machine epsilon, as \ref symmetric_eigen's.
+   * \throws dimension_error   If \p a is not square.
+   * \throws non_finite_error  If an entry read is infinite or NaN.
+   * \throws convergence_error If the iteration does not converge within its bound (not observed).
+   */
+  template <typename T>
+  [[nodiscard]] vector<double> symmetric_eigenvalues(const matrix<T>& a)
+  {
+    const std::size_t n {a.rows()};
+    if (a.cols() != n) {
+      throw dimension_error("symmetric eigenvalues require a square matrix");
+    }
+    detail::require_finite_lower(a, "symmetric eigenvalues");
+    // Divided by its largest magnitude read, as the decompositions are: a sum of squares overflows near 1e155.
+    double scale {0.0};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < i; ++j) {
+        scale = std::max(scale, static_cast<double>(std::abs(a(i, j))));
+      }
+      scale = std::max(scale, std::abs(detail::real_part(a(i, i))));
+    }
+    scale = scale == 0.0 ? 1.0 : scale;
+    std::vector<T> entries(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < i; ++j) {
+        entries[(i * n) + j] = a(i, j) / detail::from_double<T>(scale);
+      }
+      entries[(i * n) + i] = detail::from_double<T>(detail::real_part(a(i, i)) / scale);
+    }
+    std::vector<double> d(n);
+    if (n > 0) {
+      std::vector<double> off(n);
+      std::vector<double> none;
+      static_cast<void>(detail::tridiagonalize(entries, n, d, off));
+      detail::tridiagonal_ql(d, off, none, n, detail::ql_steps_per_value * n);
+    }
+    std::sort(d.begin(), d.end());
     for (double& value : d) {
       value *= scale;
     }
