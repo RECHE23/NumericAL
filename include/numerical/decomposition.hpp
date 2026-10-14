@@ -4541,8 +4541,11 @@ namespace numerical {
      *        under the reciprocal of \ref rank_tolerance, so that every singular value is far above it and the rank
      *        full (a zero on `R`'s diagonal makes the bound infinite or NaN, which fails). Else nothing. A fraction
      *        of the decomposition's work, the rest in matrix products.
+     * \param[in]  a The `m × n` matrix `A`.
+     * \param[in]  b The right-hand sides, one per column.
      * \param[out] r Where given, the square `R` factorised, of `A` divided by `2^exponent`, and that exponent: its
      *              singular values are `A`'s over `2^exponent`.
+     * \return The solution, or nothing where the decomposition must decide the rank.
      */
     template <typename T>
     [[nodiscard]] std::optional<matrix<T>> lstsq_by_qr(const matrix<T>&                       a,
