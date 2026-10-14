@@ -12,6 +12,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   order 33 (128: 1.02 → 0.82 ms, 512: 21.1 → 17.6), `svd` 7–11 % (128: 1.87 → 1.68 ms); GCC 14 as fast as before.
   The terms round differently, so under either compiler the values and vectors can move in their last bits; the
   reconstruction and orthogonality errors are unchanged, and the NumPy differential passes (1 500 cases).
+- **The bidiagonalisation behind `svd`, `singular_values` and `lstsq` holds each chunk of `Bᵀ v` through its terms**,
+  where each row's term stored it back: singular values of order 512 on one x86-64 core 46 → 42 ms, `svd` on an M1
+  Pro 2–6 % from order 128. The same additions in the same order: unchanged to the bit.
 
 ## 2026.10.11 — 2026-10-14
 
