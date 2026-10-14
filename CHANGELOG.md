@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.12 — 2026-10-14
+
 ### Added
 - **`numerical.eigvalsh(a)` and `numerical::symmetric_eigenvalues(a)`**: the eigenvalues alone of a real symmetric or
   complex Hermitian matrix, ascending, as `numpy.linalg.eigvalsh` (the lower triangle read): the tridiagonal form
