@@ -74,6 +74,15 @@ namespace numerical {
     //!        longer (order 2048 on six x86-64 cores, 9 %); a narrower one leaves threads idle while the panel runs.
     inline constexpr std::size_t lu_lookahead_columns {1024};
 
+    //! \brief The multiply-adds of an LU's trailing update one of the tile's dependent ones stands for, as threads are
+    //!        weighed (\ref gemm_kernel_speedup): the AMX tile's, on arm64; the AVX tiles' quarter of it on x86-64,
+    //!        where the update of order 256 waited on one thread (six cores: 690 → 622 µs, 1024: 12.5 → 12.1 ms).
+#ifdef NUMERICAL_X86_COMPILED
+    inline constexpr std::size_t lu_update_speedup {gemm_kernel_speedup / 4};
+#else
+    inline constexpr std::size_t lu_update_speedup {gemm_kernel_speedup};
+#endif
+
     //! \brief The most right-hand sides an LU solve takes row by row rather than by blocks through the product kernel.
     inline constexpr std::size_t narrow_solve {16};
 
@@ -739,12 +748,12 @@ namespace numerical {
         // About two blocks of columns for each thread the work pays for: each block's product packs L₂₁ again, and a
         // product too small to share ran one block for each thread the machine has (order 256 on eight arm64
         // threads: 329 → 311 µs); two, not one, as on x86-64 a block of half the columns stays in its cache.
-        const std::size_t work    {(n_ - end) * right * (end - k0) / detail::gemm_kernel_speedup};
+        const std::size_t work    {(n_ - end) * right * (end - k0) / detail::lu_update_speedup};
         const std::size_t helpers {std::clamp(work / detail::work_per_thread, std::size_t {1}, max_threads())};
         const std::size_t width   {std::max(block_, (right + (2 * helpers) - 1) / (2 * helpers))};
         const std::size_t blocks  {(right + width - 1) / width};
         swap_limit_ = next;
-        detail::parallel_for_beside(blocks, (n_ - end) * width * (end - k0) / detail::gemm_kernel_speedup,
+        detail::parallel_for_beside(blocks, (n_ - end) * width * (end - k0) / detail::lu_update_speedup,
                                     [&](std::size_t block) {
                                       const std::size_t first {next + (block * width)};
                                       update_columns(minus_l, k0, end, first, std::min(first + width, n_));
