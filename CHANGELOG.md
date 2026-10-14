@@ -42,6 +42,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **`a @ b` of two tensors runs in the extension**, with no Python frame: 2 × 2 1.29 → 0.40 µs (NumPy 0.59),
   16 × 16 2.19 → 1.07, 64 × 64 4.76 → 3.64 (M1 Pro). Any other operand (a list, a NumPy array, a rank past 2)
   takes the conversions and refusals it took.
+- **A solve with a few right-hand sides takes their columns together**: under eight, each column waited on its
+  own previous term, one column after another. The solution is the same to the bit. M1 Pro, one core, four
+  columns: the solve from the factors 2.0–2.3× faster from order 48 to 192 (clang and GCC 14), `solve` of order
+  128 112 → 92 µs.
 
 ## 2026.10.10 — 2026-10-14
 

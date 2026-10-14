@@ -525,27 +525,28 @@ namespace numerical::detail {
                          std::size_t terms,
                          std::size_t count)
   {
-    constexpr std::size_t width {8};
-    std::size_t           i     {subtract_combined_vectors(y, f, x, ldx, terms, count)};
-    for (; i + width <= count; i += width) {
-      std::array<T, width> held {};
-      std::copy_n(y + i, width, held.begin());
-      for (std::size_t t {0}; t < terms; ++t) {
-        const T        factor {f[t]};
-        const T* const row    {x + (t * ldx) + i};
-        for (std::size_t u {0}; u < width; ++u) {
-          held[u] -= factor * row[u];
-        }
-      }
-      std::copy_n(held.begin(), width, y + i);
-    }
-    for (; i < count; ++i) {
-      T held {y[i]};
-      for (std::size_t t {0}; t < terms; ++t) {
-        held -= f[t] * x[(t * ldx) + i];
-      }
-      y[i] = held;
-    }
+    std::size_t i {subtract_combined_vectors(y, f, x, ldx, terms, count)};
+    // Blocks of 8, then of 4, 2 and 1: a narrower rest still takes the terms across its elements at once, each one
+    // a chain of its own, where element by element each waited on the last term (four columns of an LU solve of
+    // order 128 on arm64: 112 → 92 µs, the factorisation 75).
+    const auto blocks = [&]<std::size_t Width>(std::integral_constant<std::size_t, Width>) {
+                          for (; i + Width <= count; i += Width) {
+                            std::array<T, Width> held {};
+                            std::copy_n(y + i, Width, held.begin());
+                            for (std::size_t t {0}; t < terms; ++t) {
+                              const T        factor {f[t]};
+                              const T* const row    {x + (t * ldx) + i};
+                              for (std::size_t u {0}; u < Width; ++u) {
+                                held[u] -= factor * row[u];
+                              }
+                            }
+                            std::copy_n(held.begin(), Width, y + i);
+                          }
+                        };
+    blocks(std::integral_constant<std::size_t, 8> {});
+    blocks(std::integral_constant<std::size_t, 4> {});
+    blocks(std::integral_constant<std::size_t, 2> {});
+    blocks(std::integral_constant<std::size_t, 1> {});
   }
 
   //! \brief `y[i] -= x[i] · f`, as the other \ref subtract_product (a real product is the same either way round).
