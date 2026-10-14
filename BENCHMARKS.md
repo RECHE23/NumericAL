@@ -83,6 +83,17 @@ Where the gaps are, and what closes them:
   more; a figure that departs from its row is re-measured alone before it is read as a regression, and `uptime`
   before a run says whether it was alone.
 
+## Release against release: `make bench-diff`
+
+The tables above compare NumericAL with NumPy; `make bench-diff` compares NumericAL with itself, and `make release`
+runs it first. Both include trees — the last release's and the working tree's — are built with each compiler the
+wheels use (Apple clang `-O2`; GCC 14 `-O2` without the Apple AMX, as the Linux arm64 wheel; GCC `-O3` on x86-64),
+and nine operations (`benchmarks/ops_bench.cpp`) are timed on one thread at orders 8, 17, 24, 33, 48, 64 to 512,
+alternately, six rounds. A cell is suspect when both its ratio of minima and its ratio of medians pass 1.05, and a
+regression when a second batch confirms it. Replayed on 2026.10.6 against 2026.10.8, it names the Cholesky
+regression those releases shipped (orders 17 to 33, 1.2–1.65× on clang, 1.35–1.6× on GCC); a grid of powers of two
+from 32 would have seen order 33 at most.
+
 ## History
 
 The sections below record how each kernel got where it is, with the figures of their day. Their tables come from

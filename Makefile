@@ -38,7 +38,7 @@ FORMAT_FILES := $(shell find include tests -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: check-pins all build test sanitize coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate \
-        python python-test python-stubtest fuzz-linalg bench-linalg bench-python bench-gemm version-check install uninstall release clean help
+        python python-test python-stubtest fuzz-linalg bench-diff bench-linalg bench-python bench-gemm version-check install uninstall release clean help
 
 .DEFAULT_GOAL := help
 
@@ -219,6 +219,7 @@ full-local-gate:
 	@$(MAKE) misra
 	@$(MAKE) doc-no-coverage
 	@$(MAKE) python-test
+	@$(PYTHON) benchmarks/bench_diff.py --self-test
 	@if $(MYPY_PYTHON) -c 'import mypy' >/dev/null 2>&1; then $(MAKE) python-stubtest; else echo "full-local-gate: WARN — mypy absent from MYPY_PYTHON, python-stubtest skipped (CI runs it)"; fi
 	@$(MAKE) lint | tee $(BUILD)/lint.log; ! grep -qE 'warning:|error:' $(BUILD)/lint.log
 	@$(MAKE) coverage | tee $(BUILD)/coverage.log
@@ -248,6 +249,14 @@ bench-gemm:
 	$(CXX) $(CXXSTD) -O2 $(INCLUDES) -I$(SCIFORGE_INCLUDE) -pthread benchmarks/gemm_bench.cpp -o $(BUILD)/gemm_bench
 	$(PYRUN) benchmarks/gemm_bench.py $(BUILD)/gemm_bench
 
+# The decompositions of the last release against the working tree, built with each compiler the wheels use, at
+# the orders between the powers of two too, alternately; a cell slower by 5 % in two batches fails it. BASE= names
+# another release, HEAD_REF= one to stand for the working tree. `make release` runs it first (SKIP_BENCH_DIFF=1
+# skips it, knowingly).
+bench-diff:
+	$(PYTHON) benchmarks/bench_diff.py --self-test
+	$(PYTHON) benchmarks/bench_diff.py $(if $(BASE),--base $(BASE),) $(if $(HEAD_REF),--head $(HEAD_REF),)
+
 install:
 	$(PYTHON) -m pip install .
 
@@ -271,6 +280,8 @@ release:
 	@test "$$(git symbolic-ref --short HEAD)" = main || { echo "release from main only"; exit 1; }
 	@test -z "$$(git status --porcelain)" || { echo "working tree not clean"; exit 1; }
 	@git fetch --tags --quiet origin
+	@if [ -z "$$SKIP_BENCH_DIFF" ] && [ -z "$$DRY_RUN" ]; then $(MAKE) --no-print-directory bench-diff \
+	   || { echo "release: bench-diff found a regression against the last release (SKIP_BENCH_DIFF=1 to release anyway)"; exit 1; }; fi
 	@year=$$(date -u +%Y); month=$$(date -u +%m | sed 's/^0//'); today=$$(date -u +%Y-%m-%d); \
 	 patch=$$(git tag -l "v$$year.$$month.*" | wc -l | tr -d ' '); \
 	 version="$$year.$$month.$$patch"; \
