@@ -3374,6 +3374,15 @@ namespace numerical {
     //! \brief The reflections from each side in one panel of the blocked bidiagonal reduction.
     inline constexpr std::size_t bidiagonal_block {32};
 
+    //! \brief The weight of a multiply-add of the bidiagonal reduction's matrix-vector products, which read the trailing
+    //!        block once for each column: on x86-64 a thread shares them from a quarter of the work (six cores,
+    //!        singular values of order 256: 8.1 → 7.3 ms, 512: 35 → 30); on arm64 that slowed order 256 by 10 %.
+#ifdef NUMERICAL_X86_COMPILED
+    inline constexpr std::size_t bidiagonal_product_weight {4};
+#else
+    inline constexpr std::size_t bidiagonal_product_weight {1};
+#endif
+
     template <typename T>
     void bidiagonalize_unblocked(std::vector<T>&      b,
                                  std::size_t          n,
@@ -3469,7 +3478,7 @@ namespace numerical {
             // core: 46 → 42 ms).
             std::vector<T> minus(x.size());
             std::transform(x.begin(), x.end(), minus.begin(), std::negate<T> {});
-            parallel_for((span + chunk_width - 1) / chunk_width, (n - k) * chunk_width, [&](std::size_t chunk) {
+            parallel_for((span + chunk_width - 1) / chunk_width, bidiagonal_product_weight * (n - k) * chunk_width, [&](std::size_t chunk) {
                            const std::size_t first {k + 1 + (chunk * chunk_width)};
                            const std::size_t count {std::min(chunk_width, n - first)};
                            std::vector<T>    sum(count, T {});
@@ -3511,7 +3520,7 @@ namespace numerical {
               by_u[p] = dot_product(row_of(by_row_u, p, k + 1), y.data(), y.size());
             }
             std::vector<T> moved(n - k - 1);
-            parallel_for(n - k - 1, 2 * (n - k), [&](std::size_t row) {
+            parallel_for(n - k - 1, bidiagonal_product_weight * 2 * (n - k), [&](std::size_t row) {
                            moved[row] = dot_product(b.data() + ((k + 1 + row) * n) + k + 1, y.data(), y.size());
                          });
             for (std::size_t p {0}; p <= i; ++p) {

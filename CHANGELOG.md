@@ -15,6 +15,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **The bidiagonalisation behind `svd`, `singular_values` and `lstsq` holds each chunk of `Bᵀ v` through its terms**,
   where each row's term stored it back: singular values of order 512 on one x86-64 core 46 → 42 ms, `svd` on an M1
   Pro 2–6 % from order 128. The same additions in the same order: unchanged to the bit.
+- **On x86-64, those two matrix-vector products are shared between threads from a quarter of the work they took**:
+  six cores, singular values of order 256 8.1 → 7.3 ms, 512 35 → 30, `svd` 4–8 %. Each column and each row is still
+  computed whole by one thread: unchanged to the bit. On arm64 the threshold stays (sharing them slowed order 256).
 
 ## 2026.10.11 — 2026-10-14
 
