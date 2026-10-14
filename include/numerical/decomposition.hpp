@@ -2387,11 +2387,19 @@ namespace numerical {
         double dpsi {0.0};
         double phi  {0.0}; // those of the poles past i
         double dphi {0.0};
-        for (std::size_t j {0}; j < k; ++j) {
+        // The two sides apart, each in its order: a term chose its sum by a branch (an SVD of order 128 on one arm64
+        // core: 1.87 → 1.68 ms, eigh 1.02 → 0.82).
+        for (std::size_t j {0}; j <= i; ++j) {
           delta[j] = offset(origin, j) - tau;
           const double t {z[j] / delta[j]};
-          (j <= i ? psi : phi)   += z[j] * t;
-          (j <= i ? dpsi : dphi) += t * t;
+          psi  += z[j] * t;
+          dpsi += t * t;
+        }
+        for (std::size_t j {i + 1}; j < k; ++j) {
+          delta[j] = offset(origin, j) - tau;
+          const double t {z[j] / delta[j]};
+          phi  += z[j] * t;
+          dphi += t * t;
         }
         const double w {rhoinv + psi + phi};
         if (std::abs(w) <= std::numeric_limits<double>::epsilon()
