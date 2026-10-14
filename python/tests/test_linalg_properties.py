@@ -160,9 +160,14 @@ class RectangularProperties(unittest.TestCase):
                 continue  # σ_min = 1e-12: both libraries' answers carry their own 1e-5 relative error in it
             with self.subTest(name):
                 b = self.rng.standard_normal(m)
-                want = np.linalg.lstsq(a, b, rcond=None)[0]
-                got = np.asarray(numerical.lstsq(a, b))
+                want, want_residuals, want_rank, want_s = np.linalg.lstsq(a, b, rcond=None)
+                x, residuals, rank, s = numerical.lstsq(a, b)  # the four NumPy returns, unpacked as from it
+                got = np.asarray(x)
                 self.assertLess(np.linalg.norm(got - want), 1e-8 * max(1.0, np.linalg.norm(want)) * np.linalg.cond(a))
+                self.assertEqual(rank, want_rank)
+                self.assertEqual(np.asarray(residuals).shape, want_residuals.shape)
+                self.assertTrue(np.allclose(np.asarray(residuals), want_residuals, rtol=1e-8, atol=1e-10))
+                self.assertTrue(np.allclose(np.asarray(s), want_s, rtol=0, atol=1e-12 * want_s[0]))
                 self.assertTrue(np.allclose(np.asarray(numerical.pinv(a)), np.linalg.pinv(a), atol=1e-8))
                 self.assertEqual(numerical.matrix_rank(a), np.linalg.matrix_rank(a))
 

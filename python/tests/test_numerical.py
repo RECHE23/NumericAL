@@ -523,7 +523,7 @@ class ArrayLikeArguments(unittest.TestCase):
         self.assertEqual(len(numerical.qr(a)), 2)
         self.assertEqual(len(numerical.eigh(a)), 2)
         self.assertEqual(len(numerical.svd(a)), 3)
-        self.assertEqual(numerical.lstsq(a, [2.0, 1.0]).shape, (2,))
+        self.assertEqual(numerical.lstsq(a, [2.0, 1.0])[0].shape, (2,))
         self.assertEqual(numerical.einsum("ij,j->i", a, [1.0, 0.0]).tolist(), [4.0, 2.0])
 
     def test_a_matrix_right_hand_side_solves_every_column(self):
@@ -535,10 +535,10 @@ class ArrayLikeArguments(unittest.TestCase):
             for row in range(2):
                 self.assertAlmostEqual(x.tolist()[row][column], single[row])
         wide = [[1.0, 2.0, 3.0], [4.0, 5.0, 6.0]]
-        y = numerical.lstsq(wide, [[1.0, 0.0], [0.0, 1.0]])
+        y = numerical.lstsq(wide, [[1.0, 0.0], [0.0, 1.0]])[0]
         self.assertEqual(y.shape, (3, 2))
         for column, rhs in ((0, [1.0, 0.0]), (1, [0.0, 1.0])):
-            single = numerical.lstsq(wide, rhs).tolist()
+            single = numerical.lstsq(wide, rhs)[0].tolist()
             for row in range(3):
                 self.assertAlmostEqual(y.tolist()[row][column], single[row])
         with self.assertRaises(numerical.LinAlgError):
@@ -588,7 +588,7 @@ class LinalgVsNumpy(unittest.TestCase):
     def test_lstsq(self):
         a = np.array([[1.0, 1.0], [1.0, 2.0], [1.0, 3.0]])
         b = np.array([2.0, 3.0, 5.0])
-        got = np.asarray(numerical.lstsq(numerical.asarray(a), numerical.asarray(b)))
+        got = np.asarray(numerical.lstsq(numerical.asarray(a), numerical.asarray(b))[0])
         want = np.linalg.lstsq(a, b, rcond=None)[0]
         self.assertTrue(np.allclose(got, want))
 
@@ -693,7 +693,7 @@ class LinalgVsNumpy(unittest.TestCase):
     def test_lstsq_rank_deficient_and_wide_give_numpys_minimum_norm(self):
         for a, b in ((np.array([[1.0, 2.0], [2.0, 4.0], [3.0, 6.0]]), np.array([1.0, 2.0, 4.0])),
                      (np.array([[1.0, 1.0, 1.0], [0.0, 1.0, 2.0]]), np.array([3.0, 1.0]))):
-            got = np.asarray(numerical.lstsq(numerical.asarray(a), numerical.asarray(b)))
+            got = np.asarray(numerical.lstsq(numerical.asarray(a), numerical.asarray(b))[0])
             self.assertTrue(np.allclose(got, np.linalg.lstsq(a, b, rcond=None)[0]))
 
 

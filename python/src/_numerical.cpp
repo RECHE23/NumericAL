@@ -1186,17 +1186,30 @@ any_tensor inverse(const any_tensor& v)
     return do_inverse<double>(std::get<real_tensor>(v));
 }
 
+// The least-squares solution with what numpy.linalg.lstsq returns beside it: x (rank-1 for a rank-1 b), the residual
+// sums of squares (empty unless a is tall and of full column rank), the rank and the singular values.
+using lstsq_result = std::tuple<any_tensor, any_tensor, std::size_t, any_tensor>;
+
 template <typename T>
-any_tensor do_lstsq(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+lstsq_result do_lstsq(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-    const numerical::matrix<T>   coeff {matrix_from(a)};
-    return solve_for(b, [&coeff](const numerical::vector<T>& rhs) { return numerical::lstsq(coeff, rhs); },
-                     [&coeff](const numerical::matrix<T>& rhs) { return numerical::lstsq(coeff, rhs); });
+    const bool                   column {b.shape().size() == 1};
+    const numerical::matrix<T>   rhs {column ? numerical::matrix<T> {b.shape()[0], 1, b.data()} : matrix_from(b)};
+    numerical::least_squares_solution<T> found {numerical::least_squares(matrix_from(a), rhs)};
+    const auto as_tensor_of = [](const numerical::vector<double>& values) {
+        return any_tensor {real_tensor {{values.size()}, std::vector<double>(values.begin(), values.end())}};
+    };
+    numerical::tensor<T> x {std::move(found.solution)};
+    if (column) {
+        x = numerical::tensor<T> {{x.shape()[0]}, x.data()};
+    }
+    return {any_tensor {std::move(x)}, as_tensor_of(found.residuals), found.rank, as_tensor_of(found.singular_values)};
 }
 
-// lstsq(a, b) -> Tensor (the minimum-norm least-squares solution of a x ≈ b, from the SVD).
-any_tensor lstsq(const any_tensor& a, const any_tensor& b)
+// lstsq(a, b) -> (x, residuals, rank, s), as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one
+// right-hand side per column).
+lstsq_result lstsq(const any_tensor& a, const any_tensor& b)
 {
     if (shape_of(a).size() != 2 || (shape_of(b).size() != 1 && shape_of(b).size() != 2)) {
         throw std::runtime_error("lstsq(a, b) needs a rank-2 a and a rank-1 or rank-2 b");
@@ -1920,7 +1933,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&amx_probed>("_amx_probed", "_amx_probed() -> bool\nWhether the AMX's self-test has run in this process.");
     m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
-    m.def<&lstsq>("lstsq", "lstsq(a, b) -> Tensor\nThe minimum-norm least-squares solution of a @ x ≈ b, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
+    m.def<&lstsq>("lstsq", "lstsq(a, b) -> (x, residuals, rank, s)\nThe minimum-norm least-squares solution of a @ x ≈ b with its residual sums of squares, the rank and the singular values of a, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&cholesky>("cholesky", "cholesky(a) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite).");
     m.def<&qr>("qr", "qr(a) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr (reduced): Q is m×k, R k×n, k = min(m, n).");
     m.def<&eigh>("eigh", "eigh(a, method) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, as numpy.linalg.eigh reads it.");

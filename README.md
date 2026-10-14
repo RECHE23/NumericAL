@@ -45,8 +45,9 @@ Small and complete, grown measured, honest about what is not yet here:
   `vh()`, with `k = min(m, n)`; `U` and `V` stay orthonormal for a rank-deficient `A`.
 - `numerical::lstsq(a, b)` — the minimum-norm least-squares solution of `A x ≈ b`,
   as NumPy's `lstsq` gives it, for any shape and rank (from the SVD), `b` a vector or a
-  matrix of right-hand sides (as `solve(a, b)` takes too); `pinv(a)` and
-  `matrix_rank(a)` from the same SVD, and `lu_decomposition::log_determinant()` —
+  matrix of right-hand sides (as `solve(a, b)` takes too); `least_squares(a, b)` adds the residuals, the
+  rank and the singular values NumPy returns beside it; `pinv(a)` from the same SVD, `singular_values(a)`
+  without the singular vectors (and `matrix_rank(a)` from them), and `lu_decomposition::log_determinant()` —
   NumPy's `slogdet`, which does not underflow where the determinant does.
 - `numerical::tensor<T>` — a dense, row-major, N-dimensional tensor (rank-1 is a
   vector, rank-2 a matrix, rank-0 a scalar; built directly or from a `vector` /
@@ -140,7 +141,7 @@ Shapes that do not broadcast raise a `ValueError` worded as NumPy's. `max` and `
 
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)`, `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)`, `pinv(a)`,
-`matrix_rank(a)`, `lstsq(a, b)`, `cholesky(a)`, `qr(a)` → `(Q, R)`,
+`matrix_rank(a)`, `lstsq(a, b)` → `(x, residuals, rank, s)` as NumPy's, `cholesky(a)`, `qr(a)` → `(Q, R)`,
 `eigh(a)` → `(values, vectors)`, `svd(a)` → `(U, S, Vh)` — NumPy's
 `svd(a, full_matrices=False)`, so `(U * S) @ Vh` is `a`. Every one accepts `float64`
 and `complex128`; `eigh` of a complex Hermitian matrix gives real values and complex vectors.

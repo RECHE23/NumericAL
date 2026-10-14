@@ -102,7 +102,7 @@ class LinalgFuzz(unittest.TestCase):
                                         np.linalg.svd(tall, compute_uv=False), rtol=1e-7, atol=1e-9))
             target = rng.standard_normal(rows)
             self.assertTrue(np.allclose(
-                np.asarray(numerical.lstsq(numerical.asarray(tall), numerical.asarray(target))),
+                np.asarray(numerical.lstsq(numerical.asarray(tall), numerical.asarray(target))[0]),
                 np.linalg.lstsq(tall, target, rcond=None)[0], rtol=1e-6, atol=1e-8))
 
 

@@ -223,7 +223,7 @@ def run_lstsq(a, rng):
     if a.size == 0:
         return
     b = rng.standard_normal(m) + (1j * rng.standard_normal(m) if np.iscomplexobj(a) else 0)
-    x = as_np(numerical.lstsq(numerical.asarray(a), numerical.asarray(b)))
+    x = as_np(numerical.lstsq(numerical.asarray(a), numerical.asarray(b))[0])
     want = np.linalg.lstsq(a, b, rcond=None)[0]
     if not np.isfinite(want).all():
         return  # NumPy's own answer overflowed: nothing to compare

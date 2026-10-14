@@ -3359,7 +3359,8 @@ namespace numerical {
                                  std::vector<double>& d,
                                  std::vector<double>& e,
                                  std::vector<T>&      ut,
-                                 std::vector<T>&      vt);
+                                 std::vector<T>&      vt,
+                                 bool                 form = true);
 
     /*!
      * \brief The unit Householder vector `v` with `(I − 2 v vᵀ) x = β e₁`, in place of \p x, for a real `x`.
@@ -3390,8 +3391,9 @@ namespace numerical {
      * \param[in]     n  Its order.
      * \param[out]    d  The diagonal (size \p n).
      * \param[out]    e  The superdiagonal in `e[0…n-2]`, and `e[n-1] = 0` (size \p n).
-     * \param[out]    ut `U_bᵀ`, row-major: its rows are the columns of `U_b`.
-     * \param[out]    vt `V_bᵀ`, row-major: its rows are the columns of `V_b`.
+     * \param[out]    ut `U_bᵀ`, row-major: its rows are the columns of `U_b` (left as it is without \p form).
+     * \param[out]    vt `V_bᵀ`, row-major: its rows are the columns of `V_b` (likewise).
+     * \param[in]     form Whether to form \p ut and \p vt; the bidiagonal alone gives the singular values.
      */
     template <typename T>
     requires std::is_floating_point_v<T>
@@ -3400,10 +3402,11 @@ namespace numerical {
                        std::vector<double>& d,
                        std::vector<double>& e,
                        std::vector<T>&      ut,
-                       std::vector<T>&      vt)
+                       std::vector<T>&      vt,
+                       bool                 form = true)
     {
       if (n < bidiagonal_crossover) {
-        bidiagonalize_unblocked(b, n, d, e, ut, vt);
+        bidiagonalize_unblocked(b, n, d, e, ut, vt, form);
         return;
       }
       std::vector<std::vector<T>> left(n);  // the left reflector of step k, on rows k…, empty where none was needed
@@ -3519,7 +3522,9 @@ namespace numerical {
         }
       }
       e[n - 1] = 0.0;
-      form_bidiagonal_bases(left, std::move(right), std::vector<T>(n, T {1}), std::vector<T>(n, T {1}), n, ut, vt);
+      if (form) {
+        form_bidiagonal_bases(left, std::move(right), std::vector<T>(n, T {1}), std::vector<T>(n, T {1}), n, ut, vt);
+      }
     }
 
     /*!
@@ -3532,8 +3537,9 @@ namespace numerical {
      * \param[in]     n  Its order.
      * \param[out]    d  The diagonal (size \p n).
      * \param[out]    e  The superdiagonal in `e[0…n-2]`, and `e[n-1] = 0` (size \p n).
-     * \param[out]    ut `U_bᵀ`, row-major: its rows are the columns of `U_b`.
-     * \param[out]    vt `V_bᵀ`, row-major: its rows are the columns of `V_b`.
+     * \param[out]    ut `U_bᵀ`, row-major: its rows are the columns of `U_b` (left as it is without \p form).
+     * \param[out]    vt `V_bᵀ`, row-major: its rows are the columns of `V_b` (likewise).
+     * \param[in]     form Whether to form \p ut and \p vt.
      */
     template <typename T>
     void bidiagonalize_unblocked(std::vector<T>&      b,
@@ -3541,7 +3547,8 @@ namespace numerical {
                                  std::vector<double>& d,
                                  std::vector<double>& e,
                                  std::vector<T>&      ut,
-                                 std::vector<T>&      vt)
+                                 std::vector<T>&      vt,
+                                 bool                 form)
     {
       std::vector<std::vector<T>> left(n);  // the left reflector of step k, empty where none was needed
       std::vector<std::vector<T>> right(n); // the right reflector acting on columns k+1…, likewise
@@ -3598,7 +3605,9 @@ namespace numerical {
       if (n > 0) {
         e[n - 1] = 0.0;
       }
-      form_bidiagonal_bases(left, std::move(right), left_phase, right_phase, n, ut, vt);
+      if (form) {
+        form_bidiagonal_bases(left, std::move(right), left_phase, right_phase, n, ut, vt);
+      }
     }
 
     //! \brief \ref bidiagonalize_unblocked, for a complex or any other `T` the panels do not take.
@@ -3609,9 +3618,10 @@ namespace numerical {
                        std::vector<double>& d,
                        std::vector<double>& e,
                        std::vector<T>&      ut,
-                       std::vector<T>&      vt)
+                       std::vector<T>&      vt,
+                       bool                 form = true)
     {
-      bidiagonalize_unblocked(b, n, d, e, ut, vt);
+      bidiagonalize_unblocked(b, n, d, e, ut, vt, form);
     }
 
     /*!
@@ -3620,7 +3630,8 @@ namespace numerical {
      *        into the rows of \p ut and \p vt.
      * \param[in,out] d         The diagonal; on return, the singular values, descending and non-negative.
      * \param[in,out] e         The superdiagonal in `e[0…n-2]`, `e[n-1] = 0`; destroyed.
-     * \param[in,out] ut        Row-major `n × n`; on return, row `j` is the left vector of `d[j]`.
+     * \param[in,out] ut        Row-major `n × n`; on return, row `j` is the left vector of `d[j]`. Empty, with \p vt:
+     *                          the singular values alone.
      * \param[in,out] vt        Row-major `n × n`; on return, row `j` is the right vector of `d[j]`.
      * \param[in]     n         The order.
      * \param[in]     max_steps The bound of QR steps in all.
@@ -3752,8 +3763,10 @@ namespace numerical {
         }
         e[p - 2] = f;
       }
-      apply_row_operations(vt, n, on_vt);
-      apply_row_operations(ut, n, on_ut);
+      if (!vt.empty()) {
+        apply_row_operations(vt, n, on_vt);
+        apply_row_operations(ut, n, on_ut);
+      }
     }
 
     //! \brief The conjugate transpose of \p a.
@@ -4528,10 +4541,13 @@ namespace numerical {
      *        under the reciprocal of \ref rank_tolerance, so that every singular value is far above it and the rank
      *        full (a zero on `R`'s diagonal makes the bound infinite or NaN, which fails). Else nothing. A fraction
      *        of the decomposition's work, the rest in matrix products.
+     * \param[out] r Where given, the square `R` factorised, of `A` divided by `2^exponent`, and that exponent: its
+     *              singular values are `A`'s over `2^exponent`.
      */
     template <typename T>
-    [[nodiscard]] std::optional<matrix<T>> lstsq_by_qr(const matrix<T>& a,
-                                                       const matrix<T>& b)
+    [[nodiscard]] std::optional<matrix<T>> lstsq_by_qr(const matrix<T>&                       a,
+                                                       const matrix<T>&                       b,
+                                                       std::pair<std::vector<T>, int>* const  r = nullptr)
     {
       const std::size_t m       {a.rows()};
       const std::size_t n       {a.cols()};
@@ -4559,7 +4575,7 @@ namespace numerical {
           }
         }
       }
-      const qr_reflections<T> factors         {householder_reflect(std::move(entries), rows, cols)};
+      qr_reflections<T>       factors         {householder_reflect(std::move(entries), rows, cols)};
       const std::vector<T>    inverse         {upper_inverse(factors.r, cols)};
       double                  r_squares       {0.0};
       double                  inverse_squares {0.0};
@@ -4591,7 +4607,56 @@ namespace numerical {
       for (T& value : x) {
         value = scaled_by_two(value, -exponent);
       }
+      if (r != nullptr) {
+        *r = {std::move(factors.r), exponent};
+      }
       return matrix<T> {n, k, std::move(x)};
+    }
+
+    /*!
+     * \brief The singular values of the square `n × n` row-major \p b, descending, without its vectors: its Golub–Kahan
+     *        bidiagonal and the implicit-shift QR iteration on it, no basis formed nor rotated.
+     * \throws convergence_error If the iteration does not converge within its bound (not observed).
+     */
+    template <typename T>
+    [[nodiscard]] std::vector<double> square_singular_values(std::vector<T> b,
+                                                             std::size_t    n)
+    {
+      std::vector<double> d(n);
+      std::vector<double> e(n);
+      std::vector<T>      none;
+      std::vector<T>      none_too;
+      bidiagonalize(b, n, d, e, none, none_too, false);
+      bidiagonal_qr(d, e, none, none_too, n, svd_qr_steps_per_value * n);
+      return d;
+    }
+
+    /*!
+     * \brief The minimum-norm least-squares solution of `A X ≈ B` from the singular value decomposition \p s of `A`
+     *        (`m × n`), its first \p rank triplets: `X = V Σ⁺ Uᴴ B`.
+     */
+    template <typename T>
+    [[nodiscard]] matrix<T> lstsq_from_svd(const svd_decomposition<T>& s,
+                                           std::size_t                 rank,
+                                           const matrix<T>&            b)
+    {
+      const vector<double>& sigma                {s.singular_values()};
+      const std::size_t     rows                 {s.u().rows()};
+      const std::size_t     cols                 {s.v().rows()};
+      std::vector<T>        x(cols * b.cols(), T {});
+      for (std::size_t c {0}; c < b.cols(); ++c) {
+        for (std::size_t d {0}; d < rank; ++d) {
+          T coefficient {}; // (u_dᴴ b_c) / σ_d
+          for (std::size_t i {0}; i < rows; ++i) {
+            coefficient += conj_of(s.u()(i, d)) * b(i, c);
+          }
+          coefficient /= from_double<T>(sigma[d]);
+          for (std::size_t j {0}; j < cols; ++j) {
+            x[(j * b.cols()) + c] += coefficient * s.v()(j, d);
+          }
+        }
+      }
+      return matrix<T> {cols, b.cols(), std::move(x)};
     }
   } // namespace detail
 
@@ -4639,23 +4704,103 @@ namespace numerical {
     if (std::optional<matrix<T>> fast {detail::lstsq_by_qr(a, b)}) {
       return *std::move(fast);
     }
-    const svd_decomposition<T> s                        {a};
-    const vector<double>&      sigma                    {s.singular_values()};
-    const std::size_t          rank                     {detail::numerical_rank(sigma, a.rows(), a.cols())};
-    std::vector<T>             x(a.cols() * b.cols(), T {});
-    for (std::size_t c {0}; c < b.cols(); ++c) {
-      for (std::size_t d {0}; d < rank; ++d) {
-        T coefficient {}; // (u_dᴴ b_c) / σ_d
-        for (std::size_t i {0}; i < a.rows(); ++i) {
-          coefficient += detail::conj_of(s.u()(i, d)) * b(i, c);
-        }
-        coefficient /= detail::from_double<T>(sigma[d]);
-        for (std::size_t j {0}; j < a.cols(); ++j) {
-          x[(j * b.cols()) + c] += coefficient * s.v()(j, d);
+    const svd_decomposition<T> s {a};
+    return detail::lstsq_from_svd(s, detail::numerical_rank(s.singular_values(), a.rows(), a.cols()), b);
+  }
+
+  /*!
+   * \brief The singular values of \p a, descending, without its singular vectors, as
+   *        `numpy.linalg.svd(a, compute_uv=False)`: the Householder `R` of a tall `A` (of `Aᴴ` when wide), its
+   *        Golub–Kahan bidiagonal and the implicit-shift QR iteration on it, no basis formed nor rotated. Each value
+   *        to an absolute accuracy of the largest times the machine epsilon, as \ref svd_decomposition's.
+   * \throws non_finite_error If an entry of \p a is infinite or NaN.
+   * \throws convergence_error If the iteration does not converge within its bound (not observed).
+   */
+  template <typename T>
+  [[nodiscard]] vector<double> singular_values(const matrix<T>& a)
+  {
+    detail::require_finite(a, "singular values");
+    const bool        tall {a.rows() >= a.cols()};
+    const std::size_t rows {tall ? a.rows() : a.cols()};
+    const std::size_t cols {tall ? a.cols() : a.rows()};
+    // Divided by its largest magnitude, as the decomposition is: the sums of squares overflow near 1e155.
+    double scale           {0.0};
+    for (std::size_t i {0}; i < a.rows(); ++i) {
+      for (std::size_t j {0}; j < a.cols(); ++j) {
+        scale = std::max(scale, static_cast<double>(std::abs(a(i, j))));
+      }
+    }
+    scale = scale == 0.0 ? 1.0 : scale;
+    std::vector<T> entries(rows * cols);
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        entries[(i * cols) + j] = (tall ? a(i, j) : detail::conj_of(a(j, i))) / detail::from_double<T>(scale);
+      }
+    }
+    std::vector<T>      r {rows == cols ? std::move(entries) : detail::householder_reflect(std::move(entries), rows, cols).r};
+    std::vector<double> d {detail::square_singular_values(std::move(r), cols)};
+    for (double& value : d) {
+      value *= scale;
+    }
+    return vector<double> {std::move(d)};
+  }
+
+  //! \brief A least-squares solution and what `numpy.linalg.lstsq` reports beside it (\ref least_squares).
+  template <typename T>
+  struct least_squares_solution
+  {
+    matrix<T>      solution;        //!< The minimum-norm `x` of `A x ≈ B` (`n × k`), \ref lstsq's.
+    vector<double> residuals;       //!< Per column of `B`, `‖B − A x‖²`: for a tall `A` of full column rank, else empty.
+    std::size_t    rank;            //!< The numerical rank of `A` (\ref matrix_rank).
+    vector<double> singular_values; //!< The singular values of `A`, descending (\ref singular_values).
+  };
+
+  /*!
+   * \brief \ref lstsq, with the residuals, the rank and the singular values `numpy.linalg.lstsq` returns beside the
+   *        solution: the residual sums of squares are given only where the solution is unique and need not be exact,
+   *        `A` tall (`m > n`) and of full column rank, as NumPy gives them.
+   * \throws dimension_error If \p b's rows differ from \p a's.
+   * \throws non_finite_error If an entry of \p a is infinite or NaN.
+   */
+  template <typename T>
+  [[nodiscard]] least_squares_solution<T> least_squares(const matrix<T>& a,
+                                                        const matrix<T>& b)
+  {
+    if (b.rows() != a.rows()) {
+      throw dimension_error("lstsq: right-hand side size differs from the matrix");
+    }
+    detail::require_finite(a, "lstsq");
+    // The singular values from what the solution took: the QR's R (A's over a power of two), else the decomposition.
+    std::pair<std::vector<T>, int>      r;
+    std::optional<matrix<T>>            fast {detail::lstsq_by_qr(a, b, &r)};
+    std::optional<svd_decomposition<T>> s;
+    if (!fast) {
+      s.emplace(a);
+    }
+    std::vector<double> values {fast ? detail::square_singular_values(std::move(r.first), std::min(a.rows(), a.cols()))
+                                     : std::vector<double>(s->singular_values().begin(), s->singular_values().end())};
+    if (fast) {
+      for (double& value : values) {
+        value = std::ldexp(value, r.second);
+      }
+    }
+    vector<double>      sigma {std::move(values)};
+    const std::size_t   rank  {detail::numerical_rank(sigma, a.rows(), a.cols())};
+    matrix<T>           x     {fast ? *std::move(fast) : detail::lstsq_from_svd(*s, rank, b)};
+    std::vector<double> residuals;
+    if (rank == a.cols() && a.rows() > a.cols()) {
+      const matrix<T> fitted {a * x};
+      residuals.assign(b.cols(), 0.0);
+      for (std::size_t i {0}; i < b.rows(); ++i) {
+        for (std::size_t c {0}; c < b.cols(); ++c) {
+          residuals[c] += std::norm(b(i, c) - fitted(i, c)); // |·|², real or complex
         }
       }
     }
-    return matrix<T> {a.cols(), b.cols(), std::move(x)};
+    return least_squares_solution<T> {.solution        = std::move(x),
+                                      .residuals       = vector<double> {std::move(residuals)},
+                                      .rank            = rank,
+                                      .singular_values = std::move(sigma)};
   }
 
   /*!
@@ -4666,8 +4811,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] std::size_t matrix_rank(const matrix<T>& a)
   {
-    detail::require_finite(a, "matrix_rank");
-    return detail::numerical_rank(svd_decomposition<T> {a}.singular_values(), a.rows(), a.cols());
+    return detail::numerical_rank(singular_values(a), a.rows(), a.cols());
   }
 
   /*!

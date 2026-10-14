@@ -69,7 +69,7 @@ def agrees(np, operation, data, got):
         u, s, vh = (np.asarray(x) for x in got)
         return norm((u * s) @ vh - data["a"]) <= tolerance * norm(data["a"])
     want = np.linalg.lstsq(data["tall"], data["rhs"], rcond=None)[0]
-    return norm(np.asarray(got) - want) <= 1e-6 * norm(want)
+    return norm(np.asarray(got[0]) - want) <= 1e-6 * norm(want)
 
 
 def measure(library, sizes, operations, reps):

@@ -8,9 +8,11 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <random>
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <utility>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -1726,4 +1728,70 @@ TEST(eigh_of_a_graded_matrix)
       EXPECT(std::isfinite(worst) && worst < 1e-12 * static_cast<double>(n));
     }
   }
+}
+
+// The singular values without the vectors are the decomposition's, for every shape, a complex matrix, a zero one, and
+// one far past the range where squares overflow; the rank follows from them.
+TEST(singular_values_alone_are_the_decompositions)
+{
+  std::mt19937_64                  generator {7};
+  std::normal_distribution<double> normal;
+  for (const auto& [rows, cols] : std::vector<std::pair<std::size_t, std::size_t>> {{1, 1}, {4, 4}, {9, 4}, {4, 9},
+         {150, 150}, {200, 140}, {140, 200}}) {
+    std::vector<double> entries(rows * cols);
+    for (double& x : entries) {
+      x = normal(generator);
+    }
+    const matrix<double>                       a(rows, cols, entries);
+    const vector<double>                       alone         {numerical::singular_values(a)};
+    const numerical::svd_decomposition<double> decomposition {a};
+    const vector<double>&                      full          {decomposition.singular_values()};
+    EXPECT(alone.size() == std::min(rows, cols));
+    for (std::size_t i {0}; i < alone.size(); ++i) {
+      EXPECT(std::abs(alone[i] - full[i]) <= 1e-13 * full[0]);
+    }
+  }
+  const matrix<std::complex<double>>                       c                     {{{1.0, 2.0}, {0.0, -1.0}}, {{3.0, 0.5}, {2.0, 2.0}}, {{-1.0, 1.0}, {0.5, 0.0}}};
+  const vector<double>                                     complex_alone         {numerical::singular_values(c)};
+  const numerical::svd_decomposition<std::complex<double>> complex_decomposition {c};
+  const vector<double>&                                    complex_full          {complex_decomposition.singular_values()};
+  EXPECT(std::abs(complex_alone[0] - complex_full[0]) <= 1e-13 * complex_full[0]
+         && std::abs(complex_alone[1] - complex_full[1]) <= 1e-13 * complex_full[0]);
+  const vector<double> zero {numerical::singular_values(matrix<double> {{0.0, 0.0}, {0.0, 0.0}})};
+  EXPECT(zero[0] == 0.0 && zero[1] == 0.0);
+  const vector<double> huge {numerical::singular_values(matrix<double> {{3e200, 0.0}, {0.0, 4e200}})};
+  EXPECT(std::abs(huge[0] - 4e200) <= 1e-14 * 4e200 && std::abs(huge[1] - 3e200) <= 1e-14 * 4e200);
+  EXPECT_EQ(numerical::matrix_rank(matrix<double> {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}}), 1U);
+  EXPECT_THROWS((void)numerical::singular_values(matrix<double> {{1.0, std::nan("")}}), numerical::non_finite_error);
+}
+
+// least_squares adds NumPy's residuals, rank and singular values to lstsq's solution: the residual sums of squares for a
+// tall matrix of full column rank, one per right-hand side, and none for a square, wide or rank-deficient one.
+TEST(least_squares_reports_what_numpy_lstsq_reports)
+{
+  const matrix<double>                            tall  {{1.0, 0.0}, {0.0, 1.0}, {1.0, 1.0}};
+  const matrix<double>                            b     {{1.0, 2.0}, {1.0, 0.0}, {1.0, 1.0}};
+  const numerical::least_squares_solution<double> found {numerical::least_squares(tall, b)};
+  EXPECT(approx_equal(found.solution, numerical::lstsq(tall, b)));
+  EXPECT_EQ(found.rank, 2U);
+  EXPECT(found.residuals.size() == 2);
+  for (std::size_t c {0}; c < 2; ++c) { // ‖b − A x‖² per column, from the solution
+    double sum {0.0};
+    for (std::size_t i {0}; i < 3; ++i) {
+      const double r {b(i, c) - ((tall(i, 0) * found.solution(0, c)) + (tall(i, 1) * found.solution(1, c)))};
+      sum += r * r;
+    }
+    EXPECT(std::abs(found.residuals[c] - sum) <= 1e-14);
+  }
+  EXPECT(approx_equal(found.singular_values, numerical::singular_values(tall)));
+  EXPECT(numerical::least_squares(matrix<double> {{2.0, 1.0}, {1.0, 3.0}}, matrix<double> {{1.0}, {2.0}}).residuals.size() == 0);
+  EXPECT(numerical::least_squares(matrix<double> {{1.0, 2.0, 3.0}}, matrix<double> {{1.0}}).residuals.size() == 0);
+  const numerical::least_squares_solution<double> deficient {
+    numerical::least_squares(matrix<double> {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}}, matrix<double> {{1.0}, {0.0}, {1.0}})};
+  EXPECT(deficient.rank == 1 && deficient.residuals.size() == 0);
+  const matrix<std::complex<double>>                            c             {{{1.0, 1.0}}, {{0.0, 2.0}}, {{1.0, 0.0}}};
+  const numerical::least_squares_solution<std::complex<double>> complex_found {
+    numerical::least_squares(c, matrix<std::complex<double>> {{{1.0, 0.0}}, {{0.0, 0.0}}, {{0.0, 1.0}}})};
+  EXPECT(complex_found.rank == 1 && complex_found.residuals.size() == 1 && complex_found.residuals[0] > 0.0);
+  EXPECT_THROWS((void)numerical::least_squares(tall, matrix<double> {{1.0}}), numerical::dimension_error);
 }

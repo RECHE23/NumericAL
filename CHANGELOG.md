@@ -12,6 +12,20 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   regressions 2026.10.10 fixed (Cholesky of order 17 to 47, an x86-64 LU solve of order 8 to 64) each came from a
   change measured only at the orders it aimed at. On a Mac it times Apple clang and GCC 14; the x86-64 wheel's
   compiler is timed by running it on an x86-64 host.
+- **`numerical::singular_values(a)`**: the singular values without the singular vectors, as
+  `numpy.linalg.svd(a, compute_uv=False)` (neither basis is formed, nor rotated through the iteration).
+- **`numerical::least_squares(a, b)`**: `lstsq`'s solution with the residual sums of squares, the rank and the
+  singular values beside it (`least_squares_solution`).
+
+### Changed
+- **Breaking: `numerical.lstsq(a, b)` returns `(x, residuals, rank, s)`, as `numpy.linalg.lstsq` does**, where it
+  returned `x` alone. Write `x = numerical.lstsq(a, b)[0]` where only the solution is wanted. The old form was a trap
+  for code ported from NumPy: `x, residuals, rank, s = lstsq(a, b)` unpacked the solution itself when it held four
+  values, and failed otherwise. The residuals are given, as NumPy gives them, for a tall matrix of full column rank;
+  the singular values come from the QR the solution already took when it took one, so the four cost what NumPy's
+  four cost or less (M1 Pro, all cores, 2n × n: 0.88–0.95× NumPy from n = 64 to 512). The C++ `lstsq` is unchanged.
+- **`matrix_rank` computes the singular values alone**, without the vectors it discarded: order 512 52 → 31 ms
+  (NumPy 31 ms), 256 9.6 → 6.1 ms, 128 1.9 → 1.1 ms (M1 Pro, all cores).
 
 ## 2026.10.10 — 2026-10-14
 

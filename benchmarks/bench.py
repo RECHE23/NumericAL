@@ -78,7 +78,7 @@ def inverse_case(name, a):
 
 def lstsq_case(name, a, b):
     t, tb = numerical.asarray(a), numerical.asarray(b)
-    return (name, lambda: numerical.lstsq(t, tb),
+    return (name, lambda: numerical.lstsq(t, tb)[0],
             lambda: np.linalg.lstsq(a, b, rcond=None)[0], values_match)
 
 
