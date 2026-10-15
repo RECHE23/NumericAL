@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.14 — 2026-10-15
+
 ### Changed
 - **`eigh` and `svd` share their divide and conquer among the threads**: the leaves of its tree and the joins of one
   level are independent, and go to the threads together, each block depth-first on one thread below the depth that
