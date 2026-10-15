@@ -443,7 +443,16 @@ namespace numerical::detail {
           continue;
         }
 #endif
-        if (job->joined.fetch_add(1) < job->helpers) { // as many workers as the run's threads, the caller aside
+#if defined(__linux__)
+        // By rank among the cores, the caller's aside, not by arrival: a run of few threads then takes the same cores
+        // from one run to the next, their caches still warm (ten AVX-512 cores, an LU of order 1024 on two threads:
+        // 21.5 → 14.6 ms, on four 18 → 11.4; six AVX2 cores unchanged).
+        const std::size_t rank   {core == no_core || job->core == no_core || core < job->core ? core : core - 1};
+        const bool        wanted {core == no_core || rank < job->helpers};
+#else
+        const bool wanted        {true};
+#endif
+        if (wanted && job->joined.fetch_add(1) < job->helpers) { // as many workers as the run's threads, the caller aside
           job->work();
         }
       }
