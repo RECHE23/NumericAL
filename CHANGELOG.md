@@ -6,6 +6,19 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Breaking
+- **`svd(a)` returns NumPy's default, the full factors**: `svd(a, full_matrices=True, compute_uv=True)`, `U` `m × m`
+  and `Vh` `n × n`, the thin ones extended by an orthonormal basis of the complement, where it returned the thin
+  factors of `full_matrices=False`. Code that relied on `(U * S) @ Vh` being `a` passes `full_matrices=False`;
+  `compute_uv=False` returns the singular values alone. The algorithm is now `method=`, by keyword: a string in
+  second place raises `TypeError` naming it. C++: `svd_decomposition(a, method, full)`.
+
+### Added
+- **`qr(a, mode)`** takes NumPy's `"reduced"` (the default), `"complete"` (`Q` `m × m`, `R` `m × n`, the reduced
+  factors extended) and `"r"` (`R` alone); `"raw"` raises `ValueError`. C++: `qr_decomposition(a, qr_mode::complete)`.
+- The differential fuzzer holds the full factors orthonormal and the thin ones their first columns, and the
+  complete QR an extension of the reduced one, bit for bit.
+
 ### Changed
 - **`eigh` keeps the buffers of its divide and conquer from one call to the next, on each thread**, where every call
   mapped them anew, page by page; a buffer past 2 MiB (an order past about 512) is let go after the call, so a thread

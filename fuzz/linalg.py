@@ -168,6 +168,15 @@ def run_svd(a):
     check(norm(vh[:k] @ vh[:k].conj().T - np.eye(k)) <= bound(max(m, n), 1.0), "V not orthonormal")
     want = np.linalg.svd(a, compute_uv=False)
     check(np.max(np.abs(s - want), initial=0.0) <= bound(max(m, n), size_a), "singular values differ from NumPy's")
+    # NumPy's default, full_matrices=True: U m×m and Vh n×n orthonormal, the thin factors their first columns.
+    check(u.shape == (m, m) and vh.shape == (n, n), f"svd full shapes {u.shape} {vh.shape}")
+    check(norm(u.conj().T @ u - np.eye(m)) <= bound(max(m, n), 1.0), "full U not orthonormal")
+    check(norm(vh @ vh.conj().T - np.eye(n)) <= bound(max(m, n), 1.0), "full V not orthonormal")
+    tu, ts, tvh = (as_np(x) for x in numerical.svd(numerical.asarray(a), full_matrices=False))
+    check(np.array_equal(tu, u[:, :k]) and np.array_equal(ts, s) and np.array_equal(tvh, vh[:k]),
+          "thin factors are not the full ones' first columns")
+    check(np.max(np.abs(as_np(numerical.svd(numerical.asarray(a), compute_uv=False)) - want), initial=0.0)
+          <= bound(max(m, n), size_a), "compute_uv=False values differ from NumPy's")
 
 
 def run_qr(a):
@@ -178,6 +187,13 @@ def run_qr(a):
     check(norm(q @ r - a) <= bound(max(m, n), norm(a)), "QR does not reconstruct")
     check(norm(q.conj().T @ q - np.eye(k)) <= bound(max(m, n), 1.0), "Q not orthonormal")
     check(np.allclose(np.tril(r, -1), 0), "R not upper triangular")
+    # complete: Q m×m orthonormal, R m×n with zero rows past k, the reduced Q its first columns
+    qc, rc = (as_np(x) for x in numerical.qr(numerical.asarray(a), "complete"))
+    check(qc.shape == (m, m) and rc.shape == (m, n), f"complete QR shapes {qc.shape} {rc.shape}")
+    check(norm(qc @ rc - a) <= bound(max(m, n), norm(a)), "complete QR does not reconstruct")
+    check(norm(qc.conj().T @ qc - np.eye(m)) <= bound(max(m, n), 1.0), "complete Q not orthonormal")
+    check(np.array_equal(qc[:, :k], q) and not np.any(rc[k:]), "complete QR does not extend the reduced one")
+    check(np.array_equal(as_np(numerical.qr(numerical.asarray(a), "r")), r), "mode='r' differs from the reduced R")
 
 
 def well_conditioned(a, limit=1e10):

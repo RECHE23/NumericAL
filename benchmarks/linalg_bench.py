@@ -43,7 +43,7 @@ def calls(library, np, data):
     a, spd, sym, b, tall, rhs, v = (nl.asarray(data[k]) for k in ("a", "spd", "sym", "b", "tall", "rhs", "v"))
     return {"matmul": lambda: a @ a, "matvec": lambda: a @ v, "transpose": lambda: a.T, "solve": lambda: nl.solve(a, b), "inverse": lambda: nl.inverse(a),
             "cholesky": lambda: nl.cholesky(spd), "qr": lambda: nl.qr(a), "eigh": lambda: nl.eigh(sym),
-            "svd": lambda: nl.svd(a), "lstsq": lambda: nl.lstsq(tall, rhs)}
+            "svd": lambda: nl.svd(a, full_matrices=False), "lstsq": lambda: nl.lstsq(tall, rhs)}
 
 
 def agrees(np, operation, data, got):

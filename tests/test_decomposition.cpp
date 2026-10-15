@@ -1203,6 +1203,77 @@ TEST(eigh_keeps_its_buffers_and_lets_the_large_ones_go)
   EXPECT(approx_equal(reconstruct(large), symmetric(700, 11), 1e-9));
 }
 
+// Complete (NumPy's mode="complete"): Q is m × m, its columns past min(m, n) an orthonormal basis of the complement,
+// and R m × n with zero rows past min(m, n); the reduced factors are its first columns and rows, to the bit.
+TEST(qr_complete_extends_the_reduced_factors)
+{
+  for (const auto& [rows, cols] : {std::pair<std::size_t, std::size_t> {7, 3}, {3, 7}, {5, 5}, {80, 41}}) {
+    std::vector<double> entries(rows * cols);
+    std::uint64_t       state {(rows * 100) + cols};
+    for (double& x : entries) {
+      x = next_uniform(state) - 0.5;
+    }
+    const matrix<double> a        {rows, cols, entries};
+    const auto           reduced  {numerical::qr_decomposition<double> {a}};
+    const auto           complete {numerical::qr_decomposition<double> {a, numerical::qr_mode::complete}};
+    const std::size_t    k        {std::min(rows, cols)};
+    EXPECT(complete.q().rows() == rows && complete.q().cols() == rows);
+    EXPECT(complete.r().rows() == rows && complete.r().cols() == cols);
+    EXPECT(orthonormality_error(complete.q()) < 1e-13);
+    EXPECT(approx_equal(complete.q() * complete.r(), a, 1e-12));
+    bool same {true};
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t j {0}; j < k; ++j) {
+        same = same && complete.q()(i, j) == reduced.q()(i, j);
+      }
+      for (std::size_t j {0}; j < cols; ++j) {
+        same = same && complete.r()(i, j) == (i < k ? reduced.r()(i, j) : 0.0);
+      }
+    }
+    EXPECT(same);
+  }
+}
+
+// Full (NumPy's full_matrices=True): U is m × m and V n × n, orthonormal, U Σ Vᴴ = A with Σ padded to m × n; the thin
+// factors are their first columns, and the singular values the same, to the bit, by every method.
+TEST(svd_full_extends_the_thin_factors)
+{
+  for (const auto method : {numerical::svd_method::divide_and_conquer, numerical::svd_method::bidiagonal_qr,
+                            numerical::svd_method::jacobi}) {
+    for (const auto& [rows, cols] : {std::pair<std::size_t, std::size_t> {9, 4}, {4, 9}, {6, 6}, {150, 70}}) {
+      std::vector<double> entries(rows * cols);
+      std::uint64_t       state {(rows * 1000) + cols};
+      for (double& x : entries) {
+        x = next_uniform(state) - 0.5;
+      }
+      const matrix<double>                       a    {rows, cols, entries};
+      const numerical::svd_decomposition<double> thin {a, method};
+      const numerical::svd_decomposition<double> full {a, method, true};
+      const std::size_t                          k    {std::min(rows, cols)};
+      EXPECT(full.u().rows() == rows && full.u().cols() == rows);
+      EXPECT(full.v().rows() == cols && full.v().cols() == cols);
+      EXPECT(orthonormality_error(full.u()) < 1e-12 && orthonormality_error(full.v()) < 1e-12);
+      EXPECT(full.singular_values() == thin.singular_values());
+      std::vector<double> padded(rows * cols, 0.0);
+      for (std::size_t i {0}; i < k; ++i) {
+        padded[(i * cols) + i] = full.singular_values()[i];
+      }
+      const matrix<double> sigma {rows, cols, padded};
+      EXPECT(approx_equal(full.u() * sigma * full.vh(), a, 1e-11));
+      bool same                  {true};
+      for (std::size_t j {0}; j < k; ++j) {
+        for (std::size_t i {0}; i < rows; ++i) {
+          same = same && full.u()(i, j) == thin.u()(i, j);
+        }
+        for (std::size_t i {0}; i < cols; ++i) {
+          same = same && full.v()(i, j) == thin.v()(i, j);
+        }
+      }
+      EXPECT(same);
+    }
+  }
+}
+
 // Past one panel: the diagonal blocks, the rows below them by leaves (or, under many rows, as one leaf), and
 // the trailing products.
 TEST(blocked_cholesky_equals_the_unblocked_algorithm_to_the_bit)

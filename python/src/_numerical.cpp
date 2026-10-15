@@ -1320,27 +1320,7 @@ any_tensor cholesky(const any_tensor& v)
     return do_cholesky<double>(std::get<real_tensor>(v));
 }
 
-template <typename T>
-std::tuple<any_tensor, any_tensor> do_qr(const numerical::tensor<T>& a)
-{
-    const sb::scoped_gil_release         unlocked {releases_gil(a.data().size())};
-    numerical::qr_decomposition<T> factored {matrix_from(a)};
-    return {any_tensor {numerical::tensor<T> {std::move(factored).q()}}, any_tensor {numerical::tensor<T> {std::move(factored).r()}}};
-}
-
-// qr(a) -> (Q, R), through the tuple-caster.
-std::tuple<any_tensor, any_tensor> qr(const any_tensor& v)
-{
-    if (shape_of(v).size() != 2) {
-        throw std::runtime_error("qr expects a matrix (rank-2 tensor)");
-    }
-    if (is_complex(v)) {
-        return do_qr<std::complex<double>>(std::get<cplx_tensor>(v));
-    }
-    return do_qr<double>(std::get<real_tensor>(v));
-}
-
-// An eigen_method or svd_method by its enumerator's name.
+// An eigen_method, svd_method or qr_mode by its enumerator's name.
 template <typename Method>
 Method method_named(std::string_view name, std::initializer_list<std::pair<std::string_view, Method>> methods)
 {
@@ -1351,6 +1331,29 @@ Method method_named(std::string_view name, std::initializer_list<std::pair<std::
     }
     throw std::invalid_argument("unknown method '" + std::string {name} + "'");
 }
+
+template <typename T>
+std::tuple<any_tensor, any_tensor> do_qr(const numerical::tensor<T>& a, numerical::qr_mode mode)
+{
+    const sb::scoped_gil_release         unlocked {releases_gil(a.data().size())};
+    numerical::qr_decomposition<T> factored {matrix_from(a), mode};
+    return {any_tensor {numerical::tensor<T> {std::move(factored).q()}}, any_tensor {numerical::tensor<T> {std::move(factored).r()}}};
+}
+
+// qr(a, mode) -> (Q, R), mode "reduced" or "complete", through the tuple-caster.
+std::tuple<any_tensor, any_tensor> qr(const any_tensor& v, const std::string& name)
+{
+    using numerical::qr_mode;
+    const qr_mode mode {method_named<qr_mode>(name, {{"reduced", qr_mode::reduced}, {"complete", qr_mode::complete}})};
+    if (shape_of(v).size() != 2) {
+        throw std::runtime_error("qr expects a matrix (rank-2 tensor)");
+    }
+    if (is_complex(v)) {
+        return do_qr<std::complex<double>>(std::get<cplx_tensor>(v), mode);
+    }
+    return do_qr<double>(std::get<real_tensor>(v), mode);
+}
+
 
 // eigh(a, method) -> (eigenvalues, eigenvectors) for a real symmetric or a complex Hermitian matrix: the values
 // are real.
@@ -1378,17 +1381,17 @@ std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& 
 }
 
 template <typename T>
-std::tuple<any_tensor, any_tensor, any_tensor> do_svd(const numerical::tensor<T>& a, numerical::svd_method method)
+std::tuple<any_tensor, any_tensor, any_tensor> do_svd(const numerical::tensor<T>& a, numerical::svd_method method, bool full)
 {
     const sb::scoped_gil_release          unlocked {releases_gil(a.data().size())};
-    numerical::svd_decomposition<T>       decomposition {matrix_from(a), method};
+    numerical::svd_decomposition<T>       decomposition {matrix_from(a), method, full};
     return {any_tensor {numerical::tensor<T> {std::move(decomposition).u()}},
             any_tensor {real_tensor {decomposition.singular_values()}},
             any_tensor {numerical::tensor<T> {decomposition.vh()}}};
 }
 
-// svd(a, method) -> (U, singular_values, Vh) for an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).
-std::tuple<any_tensor, any_tensor, any_tensor> svd(const any_tensor& v, const std::string& name)
+// svd(a, method, full) -> (U, singular_values, Vh) for an m×n matrix, as numpy.linalg.svd(a, full_matrices=full).
+std::tuple<any_tensor, any_tensor, any_tensor> svd(const any_tensor& v, const std::string& name, bool full)
 {
     using numerical::svd_method;
     const svd_method method {method_named<svd_method>(name, {{"divide_and_conquer", svd_method::divide_and_conquer},
@@ -1398,9 +1401,25 @@ std::tuple<any_tensor, any_tensor, any_tensor> svd(const any_tensor& v, const st
         throw std::runtime_error("svd expects a matrix (rank-2 tensor)");
     }
     if (is_complex(v)) {
-        return do_svd<std::complex<double>>(std::get<cplx_tensor>(v), method);
+        return do_svd<std::complex<double>>(std::get<cplx_tensor>(v), method, full);
     }
-    return do_svd<double>(std::get<real_tensor>(v), method);
+    return do_svd<double>(std::get<real_tensor>(v), method, full);
+}
+
+// _singular_values(a) -> Tensor: the singular values alone, descending, as numpy.linalg.svd(a, compute_uv=False).
+any_tensor singular_values(const any_tensor& v)
+{
+    if (shape_of(v).size() != 2) {
+        throw std::runtime_error("svd expects a matrix (rank-2 tensor)");
+    }
+    if (is_complex(v)) {
+        const cplx_tensor&           a = std::get<cplx_tensor>(v);
+        const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+        return any_tensor {real_tensor {numerical::singular_values(matrix_from(a))}};
+    }
+    const real_tensor&           a = std::get<real_tensor>(v);
+    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+    return any_tensor {real_tensor {numerical::singular_values(matrix_from(a))}};
 }
 
 // Widen a contiguous real buffer to a complex tensor (zero imaginary part) — used
@@ -2015,12 +2034,13 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
     m.def<&lstsq>("lstsq", "lstsq(a, b) -> (x, residuals, rank, s)\nThe minimum-norm least-squares solution of a @ x ≈ b with its residual sums of squares, the rank and the singular values of a, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&cholesky>("cholesky", "cholesky(a) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite).");
-    m.def<&qr>("qr", "qr(a) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr (reduced): Q is m×k, R k×n, k = min(m, n).");
+    m.def<&qr>("qr", "qr(a, mode) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr: reduced, Q is m×k, R k×n, k = min(m, n); complete, Q is m×m, R m×n.");
     m.def<&eigh>("eigh", "eigh(a, method) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, as numpy.linalg.eigh reads it.");
     m.def<&eigvalsh>("eigvalsh", "eigvalsh(a) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read).");
     m.def<&matrix_rank>("matrix_rank", "matrix_rank(a) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank.");
     m.def<&pinv>("pinv", "pinv(a) -> Tensor\nThe Moore–Penrose pseudo-inverse of an m×n matrix, as numpy.linalg.pinv.");
-    m.def<&svd>("svd", "svd(a, method) -> (U, S, Vh)\nThe singular value decomposition a = U @ diag(S) @ Vh of an m×n matrix, as numpy.linalg.svd(a, full_matrices=False).");
+    m.def<&svd>("svd", "svd(a, method, full) -> (U, S, Vh)\nThe singular value decomposition of an m×n matrix, as numpy.linalg.svd(a, full_matrices=full).");
+    m.def<&singular_values>("_singular_values", "_singular_values(a) -> Tensor\nThe singular values alone, descending, as numpy.linalg.svd(a, compute_uv=False).");
     // The 3 that stay manual: determinant (dtype-dependent scalar), einsum (variadic),
     // asarray (returns the same object when the dtype matches — Py_NewRef identity).
     m.raw("determinant", module_determinant, METH_VARARGS,

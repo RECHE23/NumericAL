@@ -117,7 +117,7 @@ def svd_case(name, a):
         return np.allclose(np.asarray(u) @ np.diag(np.asarray(s)) @ np.asarray(vh),
                            a, rtol=RTOL, atol=ATOL)
 
-    return (name, lambda: numerical.svd(t), lambda: np.linalg.svd(a, full_matrices=False), verify)
+    return (name, lambda: numerical.svd(t, full_matrices=False), lambda: np.linalg.svd(a, full_matrices=False), verify)
 
 
 def build_cases():

@@ -107,14 +107,16 @@ class MethodNames(unittest.TestCase):
         with self.assertRaises(ValueError):
             numerical.eigh([[1.0]], "qr")
         with self.assertRaises(ValueError):
-            numerical.svd([[1.0]], "tridiagonal_ql")
+            numerical.svd([[1.0]], method="tridiagonal_ql")
+        with self.assertRaises(TypeError):  # the second argument is full_matrices, as in NumPy
+            numerical.svd([[1.0]], "jacobi")
 
     def test_the_extension_refuses_an_unknown_method_too(self):
         one = numerical.asarray([[1.0]])
         with self.assertRaises(numerical.error):
             numerical._numerical.eigh(one, "qr")
         with self.assertRaises(numerical.error):
-            numerical._numerical.svd(one, "qr")
+            numerical._numerical.svd(one, "qr", False)
 
 
 @unittest.skipIf(np is None, "NumPy not installed")
@@ -133,16 +135,18 @@ class RectangularProperties(unittest.TestCase):
             yield f"graded {n}", n, n, family(self.rng, n, "graded")
 
     def test_svd_is_orthonormal_reconstructs_and_matches_numpy(self):
-        for (name, m, n, a), method in itertools.product(self.cases(), ("divide_and_conquer", "bidiagonal_qr", "jacobi")):
+        methods = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
+        for (name, m, n, a), method, full in itertools.product(self.cases(), methods, (True, False)):
             k = min(m, n)
-            with self.subTest(name, method=method):
-                u, s, vh = (np.asarray(t) for t in numerical.svd(a, method))
-                self.assertEqual((u.shape, s.shape, vh.shape), ((m, k), (k,), (k, n)))
+            with self.subTest(name, method=method, full=full):
+                u, s, vh = (np.asarray(t) for t in numerical.svd(a, full, method=method))
+                rows, cols = (m, n) if full else (k, k)
+                self.assertEqual((u.shape, s.shape, vh.shape), ((m, rows), (k,), (cols, n)))
                 want = np.linalg.svd(a, compute_uv=False)
                 self.assertLess(np.max(np.abs(s - want)), 1e2 * EPS * max(m, n) * want[0])
-                self.assertLess(np.linalg.norm((u * s) @ vh - a) / np.linalg.norm(a), 1e2 * EPS * max(m, n))
-                self.assertLess(np.linalg.norm(u.conj().T @ u - np.eye(k)), 1e2 * EPS * max(m, n))
-                self.assertLess(np.linalg.norm(vh @ vh.conj().T - np.eye(k)), 1e2 * EPS * max(m, n))
+                self.assertLess(np.linalg.norm((u[:, :k] * s) @ vh[:k] - a) / np.linalg.norm(a), 1e2 * EPS * max(m, n))
+                self.assertLess(np.linalg.norm(u.conj().T @ u - np.eye(rows)), 1e2 * EPS * max(m, n))
+                self.assertLess(np.linalg.norm(vh @ vh.conj().T - np.eye(cols)), 1e2 * EPS * max(m, n))
 
     def test_qr_is_orthonormal_and_reconstructs_any_shape(self):
         for name, m, n, a in self.cases():

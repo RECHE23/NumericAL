@@ -27,8 +27,8 @@ Small and complete, grown measured, honest about what is not yet here:
   `solve`, and `determinant`; throws `not_positive_definite_error` otherwise.
 - `numerical::qr_decomposition<T>` — `A = Q R` (Householder reflections, so `Q` stays
   orthonormal to rounding however ill-conditioned `A` is) for an `m × n` matrix of any
-  shape, as NumPy's reduced `qr`: the factors `q()` (`m × k`) / `r()` (`k × n`), `k = min(m, n)`,
-  and for `m ≥ n` a least-squares `solve` of `A x ≈ b`, which throws `singular_matrix_error`
+  shape, as NumPy's reduced `qr`: the factors `q()` (`m × k`) / `r()` (`k × n`), `k = min(m, n)`
+  (`qr_mode::complete`: `q()` `m × m`, `r()` `m × n`, the reduced factors extended), and for `m ≥ n` a least-squares `solve` of `A x ≈ b`, which throws `singular_matrix_error`
   when `A` is rank-deficient.
 - `numerical::hermitian_eigen` — the same for a complex Hermitian matrix (real eigenvalues,
   a unitary `V`), reduced to a real tridiagonal by Householder reflections and unit phases, then
@@ -42,7 +42,8 @@ Small and complete, grown measured, honest about what is not yet here:
   bidiagonalisation of `R` (by panels, for a real one) and divide and conquer, as LAPACK's `dgesdd`;
   implicit-shift QR (`svd_method::bidiagonal_qr`, `dgesvd`'s) or one-sided Jacobi on `R`
   (`svd_method::jacobi`, which gives every singular value to high relative accuracy) on request. `singular_values()` (descending), `u()` (`m × k`), `v()` (`n × k`) and
-  `vh()`, with `k = min(m, n)`; `U` and `V` stay orthonormal for a rank-deficient `A`.
+  `vh()`, with `k = min(m, n)` (`full = true`: `u()` `m × m` and `v()` `n × n`, the thin factors extended
+  by an orthonormal basis of the complement); `U` and `V` stay orthonormal for a rank-deficient `A`.
 - `numerical::lstsq(a, b)` — the minimum-norm least-squares solution of `A x ≈ b`,
   as NumPy's `lstsq` gives it, for any shape and rank (from the SVD), `b` a vector or a
   matrix of right-hand sides (as `solve(a, b)` takes too); `least_squares(a, b)` adds the residuals, the
@@ -143,12 +144,16 @@ Shapes that do not broadcast raise a `ValueError` worded as NumPy's. `max` and `
 
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)`, `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)`, `pinv(a)`,
-`matrix_rank(a)`, `eigvalsh(a)`, `lstsq(a, b)` → `(x, residuals, rank, s)` as NumPy's, `cholesky(a)`, `qr(a)` → `(Q, R)`,
-`eigh(a)` → `(values, vectors)`, `svd(a)` → `(U, S, Vh)` — NumPy's
-`svd(a, full_matrices=False)`, so `(U * S) @ Vh` is `a`. Every one accepts `float64`
+`matrix_rank(a)`, `eigvalsh(a)`, `lstsq(a, b)` → `(x, residuals, rank, s)` as NumPy's, `cholesky(a)`,
+`qr(a, mode="reduced")` → `(Q, R)` (`"complete"` as NumPy's, `"r"` → `R` alone), `eigh(a)` → `(values, vectors)`,
+`svd(a, full_matrices=True, compute_uv=True)` → `(U, S, Vh)` as NumPy's (`full_matrices=False`: the thin
+factors, so `(U * S) @ Vh` is `a`; `compute_uv=False`: `S` alone). Every one accepts `float64`
 and `complex128`; `eigh` of a complex Hermitian matrix gives real values and complex vectors.
-`eigh(a, method)` and `svd(a, method)` choose the algorithm: divide and conquer by default (LAPACK's
+`eigh(a, method)` and `svd(a, method=...)` choose the algorithm: divide and conquer by default (LAPACK's
 `dsyevd`/`zheevd`, `dgesdd`), `"tridiagonal_ql"` or `"bidiagonal_qr"` (`dsyev`'s, `dgesvd`'s), or `"jacobi"`.
+A matrix holding a NaN or an infinity (in the triangle `eigh` and `eigvalsh` read, the lower one) raises
+`numerical.LinAlgError`, where NumPy returns NaN factors or raises depending on the routine: a decomposition
+of a non-finite matrix has no meaning, and saying so beats propagating NaN into every factor.
 
 A `Tensor` is a citizen of the scientific Python stack, **zero-copy**:
 

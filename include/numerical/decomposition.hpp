@@ -1684,24 +1684,28 @@ namespace numerical {
      * Blocked as LAPACK's `dgeqrf`: the reflectors of a panel of \ref qr_block columns act on the panel
      * one by one, then on the columns right of it at once, as `I − V T Vᴴ` through the matrix product
      * kernel; `Q` is formed block by block the same way.
-     * \param[in] a    The matrix, row-major.
-     * \param[in] rows Its row count.
-     * \param[in] cols Its column count.
+     * \param[in] a        The matrix, row-major.
+     * \param[in] rows     Its row count.
+     * \param[in] cols     Its column count.
+     * \param[in] complete Whether `Q` is the whole `rows × rows` product of the reflections, its columns past `k` an
+     *                     orthonormal basis of the complement of `A`'s column space (`numpy.linalg.qr(mode="complete")`).
      * \return `Q` and `R`.
      */
     template <typename T>
     [[nodiscard]] thin_qr<T> householder_qr(buffer<T>      a,
                                             std::size_t    rows,
-                                            std::size_t    cols)
+                                            std::size_t    cols,
+                                            bool           complete = false)
     {
       const std::size_t depth   {std::min(rows, cols)};
+      const std::size_t width   {complete ? rows : depth};
       qr_reflections<T> factors {householder_reflect(std::move(a), rows, cols)};
-      thin_qr<T>        out     {.q = buffer<T>(rows * depth, T {}), .r = std::move(factors.r)};
-      for (std::size_t i {0}; i < depth; ++i) {
-        out.q[(i * depth) + i] = T {1};
+      thin_qr<T>        out     {.q = buffer<T>(rows * width, T {}), .r = std::move(factors.r)};
+      for (std::size_t i {0}; i < width; ++i) {
+        out.q[(i * width) + i] = T {1};
       }
       for (std::size_t b {factors.blocks.size()}; b-- > 0;) { // Q = H₀ H₁ … applied to the first columns of I
-        apply_reflector_block(factors.blocks[b], false, out.q, depth, factors.blocks[b].first, depth);
+        apply_reflector_block(factors.blocks[b], false, out.q, width, factors.blocks[b].first, width);
       }
       for (std::size_t k {0}; k < depth; ++k) {               // R's diagonal real and non-negative: rotate row k, column k
         const T phase {phase_of(out.r[(k * cols) + k])};
@@ -1709,7 +1713,7 @@ namespace numerical {
           out.r[(k * cols) + j] *= conj_of(phase);
         }
         for (std::size_t i {0}; i < rows; ++i) {
-          out.q[(i * depth) + k] *= phase;
+          out.q[(i * width) + k] *= phase;
         }
       }
       return out;
@@ -1725,12 +1729,20 @@ namespace numerical {
     }
   } // namespace detail
 
+  //! \brief The factors a \ref qr_decomposition keeps, as `numpy.linalg.qr`'s modes name them.
+  enum class qr_mode
+  {
+    reduced, //!< `Q` is `m × k`, `R` `k × n`, `k = min(m, n)`: NumPy's default.
+    complete //!< `Q` is `m × m`, its columns past `k` a basis of the complement of `A`'s column space; `R` is `m × n`.
+  };
+
   /*!
-   * \brief A QR factorisation `A = Q R` of an `m × n` matrix, as NumPy's reduced `qr`.
+   * \brief A QR factorisation `A = Q R` of an `m × n` matrix, as NumPy's `qr`, reduced by default.
    * \tparam T The scalar element type (a field: `double`, `std::complex<double>`, …).
    *
    * With `k = min(m, n)`, `Q` is `m × k` with orthonormal columns (`Qᴴ Q = I`) and `R` is `k × n` upper
-   * trapezoidal (triangular when `m ≥ n`) with a real, non-negative diagonal. Computed by Householder
+   * trapezoidal (triangular when `m ≥ n`) with a real, non-negative diagonal; complete (\ref qr_mode::complete),
+   * `Q` is `m × m` and `R` `m × n`, its rows past `k` zero. Computed by Householder
    * reflections, so `Q` stays orthonormal to rounding however ill-conditioned `A` is, and a rank-deficient
    * `A` factorises too (with zeros on `R`'s diagonal). \ref solve returns the least-squares solution of
    * `A x ≈ b` for a full-column-rank `A` (`m ≥ n`); for a rank-deficient or wide one, \ref numerical::lstsq
@@ -1743,48 +1755,55 @@ namespace numerical {
 
     /*!
      * \brief Factorises \p a. \param[in] a The matrix, any shape.
+     * \param[in] mode \ref qr_mode::reduced (`Q` `m × k`) or \ref qr_mode::complete (`Q` `m × m`).
      * \throws non_finite_error If an entry is infinite or NaN.
      */
-    explicit qr_decomposition(const matrix<T>& a)
-      : qr_decomposition(matrix<T> {a})
+    explicit qr_decomposition(const matrix<T>& a,
+                              qr_mode          mode = qr_mode::reduced)
+      : qr_decomposition(matrix<T> {a},
+                         mode)
     {}
 
     /*!
      * \brief Factorises \p a in its own storage, an expiring matrix's elements taken over: no copy of them.
      * \param[in] a The matrix, any shape.
+     * \param[in] mode \ref qr_mode::reduced (`Q` `m × k`) or \ref qr_mode::complete (`Q` `m × m`).
      * \throws non_finite_error If an entry is infinite or NaN.
      */
-    explicit qr_decomposition(matrix<T>&& a)
-      : rows_(a.rows()), cols_(a.cols()), depth_(std::min(rows_, cols_))
+    explicit qr_decomposition(matrix<T>&& a,
+                              qr_mode     mode = qr_mode::reduced)
+      : rows_(a.rows()), cols_(a.cols()), depth_(std::min(rows_, cols_)),
+        width_(mode == qr_mode::complete ? rows_ : depth_)
     {
       detail::require_finite(a, "QR decomposition");
-      detail::thin_qr<T> factors {detail::householder_qr(std::move(a).elements(), rows_, cols_)};
+      detail::thin_qr<T> factors {detail::householder_qr(std::move(a).elements(), rows_, cols_, mode == qr_mode::complete)};
       q_ = std::move(factors.q);
       r_ = std::move(factors.r);
+      r_.resize(width_ * cols_, T {}); // complete: R's rows past k are zero
     }
 
-    //! \brief The `m × k` factor `Q` (orthonormal columns), `k = min(m, n)`.
+    //! \brief The factor `Q` (orthonormal columns): `m × k`, `k = min(m, n)`, or `m × m` complete.
     [[nodiscard]] matrix<T> q() const&
     {
-      return matrix<T> {rows_, depth_, q_};
+      return matrix<T> {rows_, width_, q_};
     }
 
     //! \brief `Q`, moved out of an expiring decomposition (\ref r stays).
     [[nodiscard]] matrix<T> q() &&
     {
-      return matrix<T> {rows_, depth_, std::move(q_)};
+      return matrix<T> {rows_, width_, std::move(q_)};
     }
 
-    //! \brief The `k × n` upper-trapezoidal factor `R`, `k = min(m, n)`.
+    //! \brief The upper-trapezoidal factor `R`: `k × n`, `k = min(m, n)`, or `m × n` complete.
     [[nodiscard]] matrix<T> r() const&
     {
-      return matrix<T> {depth_, cols_, r_};
+      return matrix<T> {width_, cols_, r_};
     }
 
     //! \brief `R`, moved out of an expiring decomposition (\ref q stays).
     [[nodiscard]] matrix<T> r() &&
     {
-      return matrix<T> {depth_, cols_, std::move(r_)};
+      return matrix<T> {width_, cols_, std::move(r_)};
     }
 
     /*!
@@ -1816,7 +1835,7 @@ namespace numerical {
         }
         T sum {};
         for (std::size_t k {0}; k < rows_; ++k) {
-          sum += detail::conj_of(q_[(k * depth_) + i]) * b[k];
+          sum += detail::conj_of(q_[(k * width_) + i]) * b[k];
         }
         y[i] = sum;
       }
@@ -1836,8 +1855,9 @@ namespace numerical {
     std::size_t    rows_;  //!< The number of rows (m).
     std::size_t    cols_;  //!< The number of columns (n).
     std::size_t    depth_; //!< min(m, n).
-    buffer<T>      q_;     //!< The m×k factor Q, row-major.
-    buffer<T>      r_;     //!< The k×n upper-trapezoidal factor R, row-major.
+    std::size_t    width_; //!< Q's columns and R's rows: k, or m complete.
+    buffer<T>      q_;     //!< The factor Q, row-major, m × width_.
+    buffer<T>      r_;     //!< The upper-trapezoidal factor R, row-major, width_ × n.
   };
 
   //! \brief QR-factorises an `m × n` matrix. \see qr_decomposition
@@ -4758,6 +4778,8 @@ namespace numerical {
    * value to an absolute accuracy of the largest times the machine epsilon. One-sided Jacobi on `R`
    * (\ref svd_method::jacobi) gives every singular value to high relative accuracy — the small ones of a
    * graded matrix too — at several times the cost. \ref vh is `Vᴴ`, the third factor NumPy's `svd` returns.
+   * Full (`full` true, NumPy's `full_matrices=True`), `U` is `m × m` and `V` `n × n`: the columns past `k` are an
+   * orthonormal basis of the complement, the rest of the complete Householder `Q` of the larger side.
    */
   template <typename T>
   class svd_decomposition
@@ -4768,18 +4790,20 @@ namespace numerical {
      * \brief Decomposes \p a.
      * \param[in] a      The matrix.
      * \param[in] method The algorithm for `R`.
+     * \param[in] full   Whether `U` and `V` are square (`m × m`, `n × n`), as NumPy's `full_matrices=True`.
      * \throws non_finite_error If an entry is infinite or NaN.
      * \throws convergence_error If the iteration does not converge within its bound (not observed).
      */
     explicit svd_decomposition(const matrix<T>& a,
-                               svd_method       method = svd_method::divide_and_conquer)
+                               svd_method       method = svd_method::divide_and_conquer,
+                               bool             full   = false)
     {
       detail::require_finite(a, "SVD");
       if (a.rows() >= a.cols()) {
-        factor(a, method);
+        factor(a, method, full);
       }
       else { // A = (Aᴴ)ᴴ = (U' Σ V'ᴴ)ᴴ = V' Σ U'ᴴ
-        factor(detail::adjoint(a), method);
+        factor(detail::adjoint(a), method, full);
         std::swap(u_, v_);
       }
     }
@@ -4790,7 +4814,7 @@ namespace numerical {
       return singular_values_;
     }
 
-    //! \brief The `m × k` left singular vectors `U` (columns).
+    //! \brief The left singular vectors `U` (columns): `m × k`, or `m × m` full.
     [[nodiscard]] const matrix<T>& u() const& noexcept
     {
       return u_;
@@ -4802,13 +4826,14 @@ namespace numerical {
       return std::move(u_);
     }
 
-    //! \brief The `n × k` right singular vectors `V` (columns).
+    //! \brief The right singular vectors `V` (columns): `n × k`, or `n × n` full.
     [[nodiscard]] const matrix<T>& v() const& noexcept
     {
       return v_;
     }
 
-    //! \brief `Vᴴ` (`k × n`), so that `A = U Σ Vᴴ` reads `u() * diag(singular_values()) * vh()`.
+    //! \brief `Vᴴ` (`k × n`, or `n × n` full), so that `A = U Σ Vᴴ` reads `u() * diag(singular_values()) * vh()` (full,
+    //!        `Σ` padded with zeros to `m × n`).
     [[nodiscard]] matrix<T> vh() const
     {
       return detail::adjoint(v_);
@@ -4816,9 +4841,34 @@ namespace numerical {
 
   private:
 
-    //! \brief Decomposes an `m × n` \p a with `m ≥ n` into \ref u_, \ref singular_values_ and \ref v_.
+    /*!
+     * \brief `U` from the Householder \p q (`rows × width`) and the left vectors \p left of `R` (`cols × cols`): `Q`
+     *        times them, and when `Q` is complete (`width` = `rows`) its columns past `cols` after them.
+     */
+    [[nodiscard]] static matrix<T> left_vectors(buffer<T>   q,
+                                                buffer<T>   left,
+                                                std::size_t rows,
+                                                std::size_t cols,
+                                                std::size_t width)
+    {
+      if (width == cols) {
+        return matrix<T> {rows, cols, std::move(q)} *matrix<T> {cols, cols, std::move(left)};
+      }
+      buffer<T> u(rows * rows, T {});
+      detail::gemm(rows, cols, cols, q.data(), rows, left.data(), cols, u.data(), rows);
+      for (std::size_t i {0}; i < rows; ++i) {
+        for (std::size_t j {cols}; j < rows; ++j) {
+          u[(i * rows) + j] = q[(i * rows) + j];
+        }
+      }
+      return matrix<T> {rows, rows, std::move(u)};
+    }
+
+    //! \brief Decomposes an `m × n` \p a with `m ≥ n` into \ref u_, \ref singular_values_ and \ref v_, `U` square when
+    //!        \p full.
     void factor(const matrix<T>& a,
-                svd_method       method)
+                svd_method       method,
+                bool             full)
     {
       const std::size_t rows {a.rows()};
       const std::size_t cols {a.cols()};
@@ -4842,8 +4892,9 @@ namespace numerical {
       // A square matrix is reduced to bidiagonal form as it is (as LAPACK's dgesdd does short of a tall one): a QR
       // first, its Q formed and multiplied in at the end, took a third of the decomposition's time at order 1024.
       const bool         direct  {rows == cols && method != svd_method::jacobi};
+      const std::size_t  width   {full ? rows : cols};
       detail::thin_qr<T> factors {direct ? detail::thin_qr<T> {.q = {}, .r = std::move(entries)}
-                                         : detail::householder_qr(std::move(entries), rows, cols)};
+                                         : detail::householder_qr(std::move(entries), rows, cols, full)};
       if (method != svd_method::jacobi) {
         buffer<double> d(cols, double {});
         buffer<double> e(cols, double {});
@@ -4869,7 +4920,7 @@ namespace numerical {
         }
         singular_values_ = vector<double> {std::move(d)};
         u_               = direct ? matrix<T> {cols, cols, std::move(left)}
-                                  : matrix<T> {rows, cols, std::move(factors.q)} *matrix<T> {cols, cols, std::move(left)};
+                                  : left_vectors(std::move(factors.q), std::move(left), rows, cols, width);
         v_               = matrix<T> {cols, cols, std::move(right)};
         return;
       }
@@ -4931,7 +4982,7 @@ namespace numerical {
         }
       }
       singular_values_ = vector<double> {std::move(values)};
-      u_               = matrix<T> {rows, cols, std::move(factors.q)} *matrix<T> {cols, cols, std::move(left)};
+      u_               = left_vectors(std::move(factors.q), std::move(left), rows, cols, width);
       v_               = matrix<T> {cols, cols, std::move(sorted_right)};
     }
 

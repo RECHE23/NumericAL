@@ -380,11 +380,13 @@ lstsq = _linalg(_numerical.lstsq)
 eigvalsh = _linalg(_numerical.eigvalsh)
 matrix_rank = _linalg(_numerical.matrix_rank)
 pinv = _linalg(_numerical.pinv)
-qr = _linalg(_numerical.qr)
+_qr = _linalg(_numerical.qr)
 slogdet = _linalg(_numerical.slogdet)
 solve = _linalg(_numerical.solve)
 _eigh = _linalg(_numerical.eigh)
 _svd = _linalg(_numerical.svd)
+_singular_values = _linalg(_numerical._singular_values)
+_QR_MODES = ("reduced", "complete", "r")
 _EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
 _SVD_METHODS = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
 
@@ -399,14 +401,32 @@ def eigh(a, method="divide_and_conquer"):
     return _eigh(a, method)
 
 
-def svd(a, method="divide_and_conquer"):
-    """``(U, S, Vh)`` with ``a = U @ diag(S) @ Vh``, the singular values descending, as
-    ``numpy.linalg.svd(a, full_matrices=False)``. `method` decomposes the bidiagonal form: ``"divide_and_conquer"``
-    (LAPACK's ``dgesdd``), ``"bidiagonal_qr"`` (implicit-shift QR, ``dgesvd``'s, the default before 2026.10.4) or
-    ``"jacobi"`` (one-sided Jacobi, each singular value to high relative accuracy)."""
+def svd(a, full_matrices=True, compute_uv=True, *, method="divide_and_conquer"):
+    """``(U, S, Vh)`` with ``a = U @ diag(S) @ Vh``, the singular values descending, as ``numpy.linalg.svd``: for an
+    m×n `a`, `U` is m×m and `Vh` n×n (``full_matrices=True``, NumPy's default: the columns past min(m, n) an
+    orthonormal basis of the complement), or m×k and k×n, k = min(m, n) (``full_matrices=False``); the singular values
+    alone with ``compute_uv=False``. `method` decomposes the bidiagonal form: ``"divide_and_conquer"`` (LAPACK's
+    ``dgesdd``), ``"bidiagonal_qr"`` (implicit-shift QR, ``dgesvd``'s) or ``"jacobi"`` (one-sided Jacobi, each singular
+    value to high relative accuracy)."""
+    if isinstance(full_matrices, str):
+        raise TypeError("svd: the second argument is full_matrices, as in NumPy; give the method by name, "
+                        f"svd(a, method={full_matrices!r})")
     if method not in _SVD_METHODS:
         raise ValueError(f"svd: method {method!r} is none of {_SVD_METHODS}")
-    return _svd(a, method)
+    if not compute_uv:
+        return _singular_values(a)
+    return _svd(a, method, bool(full_matrices))
+
+
+def qr(a, mode="reduced"):
+    """``(Q, R)`` with ``a = Q @ R``, as ``numpy.linalg.qr``: for an m×n `a` and k = min(m, n), `Q` is m×k with
+    orthonormal columns and `R` k×n upper trapezoidal (``mode="reduced"``, the default); `Q` m×m and `R` m×n
+    (``"complete"``); `R` alone, k×n (``"r"``). `R`'s diagonal is real and non-negative."""
+    if mode not in _QR_MODES:
+        raise ValueError(f"qr: mode {mode!r} is none of {_QR_MODES} (the LAPACK reflectors of \"raw\" are not offered)")
+    if mode == "r":
+        return _qr(a, "reduced")[1]
+    return _qr(a, mode)
 
 
 _NATIVE_NUMBERS = (float, int, bool, complex)

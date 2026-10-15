@@ -409,12 +409,14 @@ class LinalgSurface(unittest.TestCase):
         sym = numerical.Tensor([2, 1, 1, 2], shape=(2, 2))
         values, vectors = numerical.eigh(sym)
         self.assertEqual((values.shape, vectors.shape), ((2,), (2, 2)))
-        u, s, vh = numerical.svd(a)
-        self.assertEqual((u.shape, s.shape, vh.shape), ((3, 2), (2,), (2, 2)))
+        u, s, vh = numerical.svd(a)  # NumPy's full_matrices=True: U m×m, Vh n×n
+        self.assertEqual((u.shape, s.shape, vh.shape), ((3, 3), (2,), (2, 2)))
         wide = numerical.Tensor([1, 2, 3, 4, 5, 6], shape=(2, 3))
         q, r = numerical.qr(wide)  # NumPy's reduced QR: Q m×k, R k×n
         self.assertEqual((q.shape, r.shape), ((2, 2), (2, 3)))
         u, s, vh = numerical.svd(wide)
+        self.assertEqual((u.shape, s.shape, vh.shape), ((2, 2), (2,), (3, 3)))
+        u, s, vh = numerical.svd(wide, full_matrices=False)
         self.assertEqual((u.shape, s.shape, vh.shape), ((2, 2), (2,), (2, 3)))
 
     def test_eigh_takes_a_hermitian_matrix_and_svd_rejects_a_vector(self):
@@ -710,7 +712,7 @@ class LinalgVsNumpy(unittest.TestCase):
 
     def test_svd_reconstructs(self):
         a = np.array([[1.0, 1.0], [1.0, 2.0], [1.0, 3.0]])
-        u, s, vh = numerical.svd(numerical.asarray(a))
+        u, s, vh = numerical.svd(numerical.asarray(a), full_matrices=False)
         reconstructed = np.asarray(u) @ np.diag(np.asarray(s)) @ np.asarray(vh)
         self.assertTrue(np.allclose(reconstructed, a))
         self.assertTrue(np.allclose(np.asarray(s), np.linalg.svd(a, compute_uv=False)))
@@ -720,7 +722,7 @@ class LinalgVsNumpy(unittest.TestCase):
         rng = np.random.default_rng(7)
         for a in (rng.standard_normal((4, 3)), rng.standard_normal((3, 5)),
                   rng.standard_normal((4, 3)) + 1j * rng.standard_normal((4, 3))):
-            u, s, vh = (np.asarray(f) for f in numerical.svd(numerical.asarray(a)))
+            u, s, vh = (np.asarray(f) for f in numerical.svd(numerical.asarray(a), full_matrices=False))
             self.assertTrue(np.allclose((u * s) @ vh, a))
             self.assertTrue(np.allclose(s, np.linalg.svd(a, compute_uv=False)))
 
