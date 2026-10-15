@@ -16,7 +16,8 @@ _ArrayLike = Any
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "slogdet", "inverse", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh", "eigvalsh", "svd",
+    "determinant", "det", "slogdet", "inverse", "inv", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh",
+    "eigvalsh", "svd",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config",
     "sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "eye", "arange", "linspace",
