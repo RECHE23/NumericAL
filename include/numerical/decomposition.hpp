@@ -2846,6 +2846,8 @@ namespace numerical {
       std::size_t    n1       {0}; //!< The order of its first half; 0 for a leaf.
       double         beta     {};  //!< The coupling of its halves.
       std::size_t    depth    {};  //!< Its distance from the root.
+      std::size_t    first    {};  //!< Its first half.
+      std::size_t    second   {};  //!< Its second half.
     };
 
     /*!
@@ -2891,8 +2893,11 @@ namespace numerical {
       double* const        work_d   {node.work_d};
       const double* const  work_e   {node.work_e};
       const std::size_t    n1       {node.n1};
+      const std::size_t    index    {nodes.size()};
       nodes.push_back(std::move(node));
+      nodes[index].first  = nodes.size();
       plan_divide(nodes, work_d, work_e, n1, q, ldq, depth + 1);
+      nodes[index].second = nodes.size();
       plan_divide(nodes, work_d + n1, work_e + n1, n - n1, q + (n1 * ldq) + n1, ldq, depth + 1);
     }
 
@@ -2952,6 +2957,23 @@ namespace numerical {
       }
     }
 
+    //! \brief Solves the block \p index of \p nodes and everything below it, each block right after its halves.
+    inline void solve_divide_subtree(std::vector<divide_node>& nodes,
+                                     std::size_t               index,
+                                     merge_workspace&          work)
+    {
+      const divide_node& node {nodes[index]};
+      if (node.n1 == 0) {
+        solve_divide_leaf(node);
+      }
+      else {
+        solve_divide_subtree(nodes, node.first, work);
+        solve_divide_subtree(nodes, node.second, work);
+        join_divide_node(node, work);
+      }
+      unscale_divide_node(node);
+    }
+
     /*!
      * \brief The eigenvalues, ascending, of the symmetric tridiagonal with diagonal `d[0…n-1]` and subdiagonal
      *        `e[0…n-2]` into \p d, and its eigenvectors as the columns of the row-major \p q (`n × n`), by
@@ -2960,13 +2982,13 @@ namespace numerical {
      *        them, each half into its own diagonal block of \p q, so the joins copy no half and leave the blocks off
      *        the diagonal as they found them until the join of their two halves fills them.
      *
-     * The tree is laid out first (\ref plan_divide), then solved from the leaves up, a level at a time: the leaves
-     * and the joins of one level are independent of one another, and go to the threads together, each join on one
-     * thread with its own buffers, where one after another each ran alone (six AVX2 cores, an `eigh` of order 256:
-     * leaves and the joins below the last, 1.5 ms of the 4 ms the eigenvectors took, no faster than on one); a level
-     * of one join shares that join among the threads. Every block takes the same inputs either way, so the result
-     * is the same to the bit. An `eigh` of order 256 on every thread: six AVX2 cores 6.5 → 5.9 ms, ten AVX-512
-     * cores 7.5 → 6.5, eight arm64 cores 3.3 → 2.9.
+     * The tree is laid out first (\ref plan_divide). The blocks at the depth that gives each thread one, and the
+     * leaves above it, are independent of one another and go to the threads together, each solved on one thread
+     * with its own buffers, a block right after its halves while they are still in its caches; the joins above them
+     * then come a level at a time, those of one level together, a level of one join sharing it among the threads.
+     * One after another each block had run alone (six AVX2 cores, an `eigh` of order 256: the leaves and the joins
+     * below the last, 1.5 ms of the 4 ms the eigenvectors took, no faster than on one). Every block takes the same
+     * inputs either way, so the result is the same to the bit; on one thread the order is the recursion's.
      */
     inline void divide_and_conquer(double*              d,
                                    const double*        e,
@@ -2976,33 +2998,34 @@ namespace numerical {
       q.assign(n * n, 0.0);
       std::vector<divide_node> nodes;
       plan_divide(nodes, d, e, n, q.data(), n, 0);
-      std::vector<std::size_t> leaves;
-      std::size_t              deepest {0};
+      const auto               cut {static_cast<std::size_t>(std::bit_width(max_threads() - 1))};
+      std::vector<std::size_t> tasks;
       for (std::size_t i {0}; i < nodes.size(); ++i) {
-        deepest = std::max(deepest, nodes[i].depth);
-        if (nodes[i].n1 == 0) {
-          leaves.push_back(i);
+        if (nodes[i].depth == cut || (nodes[i].depth < cut && nodes[i].n1 == 0)) {
+          tasks.push_back(i);
         }
       }
-      parallel_for(leaves.size(), 2 * divide_leaf * divide_leaf * divide_leaf, [&](std::size_t l) {
-                     solve_divide_leaf(nodes[leaves[l]]);
-                     unscale_divide_node(nodes[leaves[l]]);
+      std::vector<merge_workspace> own(tasks.size());
+      const std::size_t            task_order {nodes[tasks[0]].n};
+      parallel_for(tasks.size(), tasks.size() > 1 ? task_order * task_order * task_order : 0, [&](std::size_t t) {
+                     solve_divide_subtree(nodes, tasks[t], own[t]);
                    });
-      merge_workspace shared;
-      for (std::size_t level {deepest + 1}; level-- > 0;) {
+      for (std::size_t level {cut}; level-- > 0;) {
         std::vector<std::size_t> joins;
         for (std::size_t i {0}; i < nodes.size(); ++i) {
           if (nodes[i].n1 != 0 && nodes[i].depth == level) {
             joins.push_back(i);
           }
         }
+        if (joins.empty()) { // a tree shallower than the cut
+          continue;
+        }
         if (joins.size() == 1) {
-          join_divide_node(nodes[joins[0]], shared);
+          join_divide_node(nodes[joins[0]], own[0]);
           unscale_divide_node(nodes[joins[0]]);
           continue;
         }
-        const std::size_t            order {joins.empty() ? 0 : nodes[joins[0]].n};
-        std::vector<merge_workspace> own(joins.size());
+        const std::size_t order {nodes[joins[0]].n};
         parallel_for(joins.size(), order * order * order / 4, [&](std::size_t j) {
                        join_divide_node(nodes[joins[j]], own[j]);
                        unscale_divide_node(nodes[joins[j]]);
@@ -4330,110 +4353,163 @@ namespace numerical {
     inline constexpr std::size_t bidiagonal_leaf {32};
 
     /*!
-     * \brief The singular value decomposition of the upper bidiagonal `n × (n + extra)` (`extra` 0 or 1) with
-     *        diagonal `d[0…n-1]` and superdiagonal `e[0…n+extra-2]` (`e[n-1]` the last column's entry when `extra`
-     *        is 1), by divide and conquer, as LAPACK's `dbdsdc`: \p sigma ascending, \p u (`n × n`) and \p v
-     *        (`m × m`, `m = n + extra`, the null vector last) row-major, their columns the singular vectors.
-     *
-     * The rows split at a middle row `k`: above it an `k × (k + 1)` bidiagonal, below it an `(n − k − 1) × (…)` one,
-     * each decomposed the same way (by implicit-shift QR up to \ref bidiagonal_leaf); row `k`'s two entries, in
-     * their right bases, with the two null vectors rotated into one, make an arrow, which \ref merge_arrow
-     * decomposes.
+     * \brief One block of \ref bidiagonal_divide's tree: the bidiagonal it decomposes (its own copies scaled by a
+     *        power of two, or its parent's), the two halves it splits into, and its decomposition once solved.
      */
-    inline void bidiagonal_divide(const double*        d,
-                                  const double*        e,
-                                  std::size_t          n,
-                                  std::size_t          extra,
-                                  buffer<double>&      sigma,
-                                  buffer<double>&      u,
-                                  buffer<double>&      v)
+    struct bidiagonal_node
     {
-      // Work near unit size, scaled by a power of two (exactly): the secular equation works on squares, which
-      // overflow past 1e154.
+      const double*  d        {};  //!< The diagonal it is solved on.
+      const double*  e        {};  //!< The superdiagonal it is solved on.
+      std::size_t    n        {};  //!< Its rows.
+      std::size_t    extra    {};  //!< Its columns past its rows, 0 or 1.
+      int            exponent {0}; //!< The power of two it is scaled down by.
+      buffer<double> scaled_d {};  //!< The scaled diagonal, when \p exponent is not 0.
+      buffer<double> scaled_e {};  //!< The scaled superdiagonal, when \p exponent is not 0.
+      std::size_t    k        {0}; //!< The row it splits at; 0 for a leaf.
+      std::size_t    first    {};  //!< The block above row \p k.
+      std::size_t    second   {};  //!< The block below row \p k.
+      std::size_t    depth    {};  //!< Its distance from the root.
+      buffer<double> sigma    {};  //!< Its singular values, ascending.
+      buffer<double> u        {};  //!< Its left singular vectors, as columns.
+      buffer<double> v        {};  //!< Its right singular vectors, as columns.
+    };
+
+    /*!
+     * \brief Appends the block (\p d, \p e, \p n, \p extra) and everything below it to \p nodes, parents before
+     *        children, each scaled to work near unit size by a power of two (exactly): the secular equation works on
+     *        squares, which overflow past 1e154.
+     * \return Its index in \p nodes.
+     */
+    inline std::size_t plan_bidiagonal(std::vector<bidiagonal_node>& nodes,
+                                       const double*                 d,
+                                       const double*                 e,
+                                       std::size_t                   n,
+                                       std::size_t                   extra,
+                                       std::size_t                   depth)
+    {
       double largest {0.0};
       for (std::size_t i {0}; i < n; ++i) {
         largest = std::max({largest, std::abs(d[i]), i + 1 < n + extra ? std::abs(e[i]) : 0.0});
       }
-      int exponent {0};
-      (void)std::frexp(largest, &exponent);
-      if (exponent != 0) {
-        buffer<double> scaled_d(n, double {});
-        buffer<double> scaled_e(n, 0.0);
+      bidiagonal_node node {.d = d, .e = e, .n = n, .extra = extra, .depth = depth};
+      (void)std::frexp(largest, &node.exponent);
+      if (node.exponent != 0) {
+        node.scaled_d.assign(n, double {});
+        node.scaled_e.assign(n, 0.0);
         for (std::size_t i {0}; i < n; ++i) {
-          scaled_d[i] = std::ldexp(d[i], -exponent);
-          scaled_e[i] = i + 1 < n + extra ? std::ldexp(e[i], -exponent) : 0.0;
+          node.scaled_d[i] = std::ldexp(d[i], -node.exponent);
+          node.scaled_e[i] = i + 1 < n + extra ? std::ldexp(e[i], -node.exponent) : 0.0;
         }
-        bidiagonal_divide(scaled_d.data(), scaled_e.data(), n, extra, sigma, u, v);
-        for (double& value : sigma) {
-          value = std::ldexp(value, exponent);
-        }
-        return;
+        node.d = node.scaled_d.data(); // the buffers' storage stays put as the node moves into the vector
+        node.e = node.scaled_e.data();
       }
-      const std::size_t m {n + extra};
-      sigma.assign(n, 0.0);
-      u.assign(n * n, 0.0);
-      v.assign(m * m, 0.0);
-      for (std::size_t i {0}; i < m; ++i) {
-        v[(i * m) + i] = 1.0;
-      }
+      const std::size_t index {nodes.size()};
       if (n <= bidiagonal_leaf) {
-        buffer<double> diagonal(d, d + n);
-        buffer<double> super(n, 0.0);
-        std::copy_n(e, n - std::min<std::size_t>(n, 1), super.begin());
-        // An extra column first: rotations of it against each column, from the last row up, chase its one entry
-        // out (B G = [B' 0]), so the square B' remains.
-        double fill {extra == 1 ? e[n - 1] : 0.0};
-        for (std::size_t j {n}; extra == 1 && j-- > 0;) {
-          const double length {std::hypot(diagonal[j], fill)};
-          const double c      {length == 0.0 ? 1.0 : diagonal[j] / length};
-          const double s      {length == 0.0 ? 0.0 : fill / length};
-          diagonal[j] = length;
-          rotate_columns(v, m, j, n, c, s);
-          if (j > 0) {
-            fill         = -s * super[j - 1];
-            super[j - 1] = c * super[j - 1];
-          }
-        }
-        buffer<double> ut(n * n, 0.0);
-        buffer<double> vt(n * n, 0.0);
-        for (std::size_t i {0}; i < n; ++i) {
-          ut[(i * n) + i] = 1.0;
-          vt[(i * n) + i] = 1.0;
-        }
-        bidiagonal_qr(diagonal, super, ut, vt, n, svd_qr_steps_per_value * n); // descending
-        buffer<double> rotated(v);
-        for (std::size_t c {0}; c < n; ++c) {
-          const std::size_t source {n - 1 - c};
-          sigma[c] = diagonal[source];
-          for (std::size_t r {0}; r < n; ++r) {
-            u[(r * n) + c] = ut[(source * n) + r];
-          }
-          for (std::size_t r {0}; r < m; ++r) { // G times B''s right vector
-            double sum {0.0};
-            for (std::size_t t {0}; t < n; ++t) {
-              sum += rotated[(r * m) + t] * vt[(source * n) + t];
-            }
-            v[(r * m) + c] = sum;
-          }
-        }
-        return;
+        nodes.push_back(std::move(node));
+        return index;
       }
-      const std::size_t   k     {n / 2};
-      const std::size_t   lower {n - k - 1};
-      const double        alpha {d[k]};
-      const double        beta  {e[k]};
-      buffer<double>      sigma1;
-      buffer<double>      u1;
-      buffer<double>      v1;
-      buffer<double>      sigma2;
-      buffer<double>      u2;
-      buffer<double>      v2;
-      bidiagonal_divide(d, e, k, 1, sigma1, u1, v1);
-      bidiagonal_divide(d + k + 1, e + k + 1, lower, extra, sigma2, u2, v2);
-      const std::size_t   m1 {k + 1};
-      const std::size_t   m2 {lower + extra};
-      buffer<double>      arrow(n, 0.0);
-      buffer<double>      z(n, 0.0);
+      node.k = n / 2;
+      const double* const work_d {node.d};
+      const double* const work_e {node.e};
+      const std::size_t   k      {node.k};
+      nodes.push_back(std::move(node));
+      const std::size_t first    {plan_bidiagonal(nodes, work_d, work_e, k, 1, depth + 1)};
+      const std::size_t second   {plan_bidiagonal(nodes, work_d + k + 1, work_e + k + 1, n - k - 1, extra, depth + 1)};
+      nodes[index].first  = first;
+      nodes[index].second = second;
+      return index;
+    }
+
+    //! \brief Its singular values and vectors into \p node's, from scratch: \p u zero, \p v the identity.
+    inline void start_bidiagonal_node(bidiagonal_node& node)
+    {
+      const std::size_t m {node.n + node.extra};
+      node.sigma.assign(node.n, 0.0);
+      node.u.assign(node.n * node.n, 0.0);
+      node.v.assign(m * m, 0.0);
+      for (std::size_t i {0}; i < m; ++i) {
+        node.v[(i * m) + i] = 1.0;
+      }
+    }
+
+    //! \brief Decomposes the leaf \p node by implicit-shift QR.
+    inline void solve_bidiagonal_leaf(bidiagonal_node& node)
+    {
+      start_bidiagonal_node(node);
+      const double* const d     {node.d};
+      const double* const e     {node.e};
+      const std::size_t   n     {node.n};
+      const std::size_t   extra {node.extra};
+      const std::size_t   m     {n + extra};
+      buffer<double>&     sigma {node.sigma};
+      buffer<double>&     u     {node.u};
+      buffer<double>&     v     {node.v};
+      buffer<double>      diagonal(d, d + n);
+      buffer<double>      super(n, 0.0);
+      std::copy_n(e, n - std::min<std::size_t>(n, 1), super.begin());
+      // An extra column first: rotations of it against each column, from the last row up, chase its one entry
+      // out (B G = [B' 0]), so the square B' remains.
+      double fill {extra == 1 ? e[n - 1] : 0.0};
+      for (std::size_t j {n}; extra == 1 && j-- > 0;) {
+        const double length {std::hypot(diagonal[j], fill)};
+        const double c      {length == 0.0 ? 1.0 : diagonal[j] / length};
+        const double s      {length == 0.0 ? 0.0 : fill / length};
+        diagonal[j] = length;
+        rotate_columns(v, m, j, n, c, s);
+        if (j > 0) {
+          fill         = -s * super[j - 1];
+          super[j - 1] = c * super[j - 1];
+        }
+      }
+      buffer<double> ut(n * n, 0.0);
+      buffer<double> vt(n * n, 0.0);
+      for (std::size_t i {0}; i < n; ++i) {
+        ut[(i * n) + i] = 1.0;
+        vt[(i * n) + i] = 1.0;
+      }
+      bidiagonal_qr(diagonal, super, ut, vt, n, svd_qr_steps_per_value * n);   // descending
+      buffer<double> rotated(v);
+      for (std::size_t c {0}; c < n; ++c) {
+        const std::size_t source {n - 1 - c};
+        sigma[c] = diagonal[source];
+        for (std::size_t r {0}; r < n; ++r) {
+          u[(r * n) + c] = ut[(source * n) + r];
+        }
+        for (std::size_t r {0}; r < m; ++r) {   // G times B''s right vector
+          double sum {0.0};
+          for (std::size_t t {0}; t < n; ++t) {
+            sum += rotated[(r * m) + t] * vt[(source * n) + t];
+          }
+          v[(r * m) + c] = sum;
+        }
+      }
+    }
+
+    //! \brief Joins the two decomposed halves of \p node, \p one and \p two, by \ref merge_arrow, \p node started
+    //!        (\ref start_bidiagonal_node).
+    inline void join_bidiagonal_node(bidiagonal_node&       node,
+                                     const bidiagonal_node& one,
+                                     const bidiagonal_node& two)
+    {
+      const std::size_t     n      {node.n};
+      const std::size_t     extra  {node.extra};
+      const std::size_t     m      {n + extra};
+      const std::size_t     k      {node.k};
+      const std::size_t     lower  {n - k - 1};
+      const double          alpha  {node.d[k]};
+      const double          beta   {node.e[k]};
+      const buffer<double>& sigma1 {one.sigma};
+      const buffer<double>& u1     {one.u};
+      const buffer<double>& v1     {one.v};
+      const buffer<double>& sigma2 {two.sigma};
+      const buffer<double>& u2     {two.u};
+      const buffer<double>& v2     {two.v};
+      buffer<double>&       u      {node.u};
+      buffer<double>&       v      {node.v};
+      const std::size_t     m1     {k + 1};
+      const std::size_t     m2     {lower + extra};
+      buffer<double>        arrow(n, 0.0);
+      buffer<double>        z(n, 0.0);
       // The bases: row k is the arrow's first row; the arrow's columns are the null vector, then the halves'.
       u[k * n] = 1.0;
       for (std::size_t c {0}; c < k; ++c) {
@@ -4475,7 +4551,100 @@ namespace numerical {
         z[0] = length;
       }
       merge_arrow(arrow, std::move(z), alpha, beta, u, v, n, m, k);
-      sigma = std::move(arrow);
+      node.sigma = std::move(arrow);
+    }
+
+    //! \brief The singular values of a solved \p node scaled back.
+    inline void unscale_bidiagonal_node(bidiagonal_node& node)
+    {
+      if (node.exponent != 0) {
+        for (double& value : node.sigma) {
+          value = std::ldexp(value, node.exponent);
+        }
+      }
+    }
+
+    //! \brief Joins the halves of \p nodes' block \p index, then lets them go.
+    inline void join_bidiagonal_halves(std::vector<bidiagonal_node>& nodes,
+                                       std::size_t                   index)
+    {
+      bidiagonal_node& node {nodes[index]};
+      join_bidiagonal_node(node, nodes[node.first], nodes[node.second]);
+      unscale_bidiagonal_node(node);
+      nodes[node.first]  = bidiagonal_node {}; // read by no other join
+      nodes[node.second] = bidiagonal_node {};
+    }
+
+    //! \brief Decomposes the block \p index of \p nodes and everything below it, each block right after its halves.
+    inline void solve_bidiagonal_subtree(std::vector<bidiagonal_node>& nodes,
+                                         std::size_t                   index)
+    {
+      if (nodes[index].k == 0) {
+        solve_bidiagonal_leaf(nodes[index]);
+        unscale_bidiagonal_node(nodes[index]);
+        return;
+      }
+      start_bidiagonal_node(nodes[index]); // before its halves, as the recursion did: their buffers then come back to it
+      solve_bidiagonal_subtree(nodes, nodes[index].first);
+      solve_bidiagonal_subtree(nodes, nodes[index].second);
+      join_bidiagonal_halves(nodes, index);
+    }
+
+    /*!
+     * \brief The singular value decomposition of the upper bidiagonal `n × (n + extra)` (`extra` 0 or 1) with
+     *        diagonal `d[0…n-1]` and superdiagonal `e[0…n+extra-2]` (`e[n-1]` the last column's entry when `extra`
+     *        is 1), by divide and conquer, as LAPACK's `dbdsdc`: \p sigma ascending, \p u (`n × n`) and \p v
+     *        (`m × m`, `m = n + extra`, the null vector last) row-major, their columns the singular vectors.
+     *
+     * The rows split at a middle row `k`: above it an `k × (k + 1)` bidiagonal, below it an `(n − k − 1) × (…)` one,
+     * each decomposed the same way (by implicit-shift QR up to \ref bidiagonal_leaf); row `k`'s two entries, in
+     * their right bases, with the two null vectors rotated into one, make an arrow, which \ref merge_arrow
+     * decomposes.
+     *
+     * The tree is laid out first (\ref plan_bidiagonal). The blocks at the depth that gives each thread one, and the
+     * leaves above it, are independent of one another and go to the threads together, each decomposed on one
+     * thread, a block right after its halves while they are still in its caches; the joins above them then come a
+     * level at a time, those of one level together, a level of one join sharing it among the threads. Every block
+     * takes the same inputs either way, so the result is the same to the bit; on one thread the order is the
+     * recursion's.
+     */
+    inline void bidiagonal_divide(const double*        d,
+                                  const double*        e,
+                                  std::size_t          n,
+                                  std::size_t          extra,
+                                  buffer<double>&      sigma,
+                                  buffer<double>&      u,
+                                  buffer<double>&      v)
+    {
+      std::vector<bidiagonal_node> nodes;
+      (void)plan_bidiagonal(nodes, d, e, n, extra, 0);
+      const auto               cut {static_cast<std::size_t>(std::bit_width(max_threads() - 1))};
+      std::vector<std::size_t> tasks;
+      for (std::size_t i {0}; i < nodes.size(); ++i) {
+        if (nodes[i].depth == cut || (nodes[i].depth < cut && nodes[i].k == 0)) {
+          tasks.push_back(i);
+        }
+      }
+      const std::size_t task_order {nodes[tasks[0]].n};
+      parallel_for(tasks.size(), tasks.size() > 1 ? task_order * task_order * task_order : 0, [&](std::size_t t) {
+                     solve_bidiagonal_subtree(nodes, tasks[t]);
+                   });
+      for (std::size_t level {cut}; level-- > 0;) {
+        std::vector<std::size_t> joins;
+        for (std::size_t i {0}; i < nodes.size(); ++i) {
+          if (nodes[i].k != 0 && nodes[i].depth == level) {
+            joins.push_back(i);
+          }
+        }
+        const std::size_t order {joins.empty() ? 0 : nodes[joins[0]].n};
+        parallel_for(joins.size(), joins.size() > 1 ? order * order * order / 4 : 0, [&](std::size_t j) {
+                       start_bidiagonal_node(nodes[joins[j]]);
+                       join_bidiagonal_halves(nodes, joins[j]);
+                     });
+      }
+      sigma = std::move(nodes[0].sigma);
+      u     = std::move(nodes[0].u);
+      v     = std::move(nodes[0].v);
     }
 
     /*!

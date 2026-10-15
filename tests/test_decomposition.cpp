@@ -1150,6 +1150,35 @@ TEST(lu_looks_ahead_one_panel_with_the_same_factors)
   EXPECT(residual < 1e-8);
 }
 
+// The divide and conquer of eigh and of the SVD solves blocks of its tree on separate threads, each on one thread
+// below a depth and the joins above it a level at a time; on one thread it is the recursion's order. Every block
+// takes the same inputs either way: the same values and vectors, to the bit. Past eight threads' worth of leaves, so
+// a thread's block has halves of its own.
+TEST(divide_and_conquer_gives_the_same_bits_on_one_thread_as_on_all)
+{
+  const std::size_t   n     {(16 * numerical::detail::divide_leaf) + 9};
+  std::vector<double> entries(n * n);
+  std::uint64_t       state {2024};
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {0}; j <= i; ++j) {
+      entries[(i * n) + j] = entries[(j * n) + i] = next_uniform(state);
+    }
+  }
+  const matrix<double> a                          {n, n, entries};
+  const matrix<double> wide                       {n - 40, n, std::vector<double>(entries.begin(), entries.begin() + static_cast<std::ptrdiff_t>((n - 40) * n))};
+  numerical::set_max_threads(1);
+  const symmetric_eigen                 eigen_one {a};
+  const svd_decomposition<double>       svd_one   {wide};
+  numerical::set_max_threads(0);
+  const symmetric_eigen                 eigen_all {a};
+  const svd_decomposition<double>       svd_all   {wide};
+  EXPECT(eigen_one.values() == eigen_all.values());
+  EXPECT(eigen_one.vectors() == eigen_all.vectors());
+  EXPECT(svd_one.singular_values() == svd_all.singular_values());
+  EXPECT(svd_one.u() == svd_all.u());
+  EXPECT(svd_one.v() == svd_all.v());
+}
+
 // Past one panel: the diagonal blocks, the rows below them by leaves (or, under many rows, as one leaf), and
 // the trailing products.
 TEST(blocked_cholesky_equals_the_unblocked_algorithm_to_the_bit)
