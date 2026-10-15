@@ -115,6 +115,11 @@ namespace numerical {
     inline constexpr std::size_t panel_copy_rows {1};
 #endif
 
+    //! \brief The fewest rows of a panel copied by tiles of \ref panel_copy_rows: a shorter panel stays in the L1 cache
+    //!        whichever way it is written, and the tiles' loops cost it (one x86-64 core, the LU of order 17 2.29 →
+    //!        2.55 µs, of order 64 27.0 → 29.8 µs).
+    inline constexpr std::size_t panel_tile_rows {256};
+
     //! \brief The columns of one panel of the blocked Cholesky factorisation (as \ref lu_block).
     inline constexpr std::size_t cholesky_block {64};
 
@@ -863,7 +868,10 @@ namespace numerical {
     }
 
     //! \brief Copies the columns `[k0, end)` of the factor, every row from `k0`, into \p panel (column-major, \p rows
-    //!        rows) when \p in, back otherwise, by tiles of \ref detail::panel_copy_rows rows.
+    //!        rows) when \p in, back otherwise: by tiles of \ref detail::panel_copy_rows rows on the x86-64 units from
+    //!        \ref detail::panel_tile_rows rows, row by row otherwise, in the plainest loops, which Apple clang
+    //!        compiles best (tiles of one row there ran the whole LU of order 17 1.1 → 1.7 µs, of order 512 1.8 →
+    //!        2.1 ms, on one thread).
     void transpose_panel(buffer<T>&      panel,
                          std::size_t     rows,
                          std::size_t     k0,
@@ -871,21 +879,36 @@ namespace numerical {
                          bool            in)
     {
       const std::size_t width {end - k0};
-      T* const          base  {lu_.data() + (k0 * n_) + k0};
-      for (std::size_t r0 {0}; r0 < rows; r0 += detail::panel_copy_rows) {
-        const std::size_t r1 {std::min(r0 + detail::panel_copy_rows, rows)};
-        if (in) {
-          for (std::size_t j {0}; j < width; ++j) {
-            for (std::size_t r {r0}; r < r1; ++r) {
-              panel[(j * rows) + r] = base[(r * n_) + j];
+      if constexpr (detail::panel_copy_rows > 1) {
+        if (rows >= detail::panel_tile_rows) {
+          T* const base {lu_.data() + (k0 * n_) + k0};
+          for (std::size_t r0 {0}; r0 < rows; r0 += detail::panel_copy_rows) {
+            const std::size_t r1 {std::min(r0 + detail::panel_copy_rows, rows)};
+            if (in) {
+              for (std::size_t j {0}; j < width; ++j) {
+                for (std::size_t r {r0}; r < r1; ++r) {
+                  panel[(j * rows) + r] = base[(r * n_) + j];
+                }
+              }
+            }
+            else {
+              for (std::size_t j {0}; j < width; ++j) {
+                for (std::size_t r {r0}; r < r1; ++r) {
+                  base[(r * n_) + j] = panel[(j * rows) + r];
+                }
+              }
             }
           }
+          return;
         }
-        else {
-          for (std::size_t j {0}; j < width; ++j) {
-            for (std::size_t r {r0}; r < r1; ++r) {
-              base[(r * n_) + j] = panel[(j * rows) + r];
-            }
+      }
+      for (std::size_t r {0}; r < rows; ++r) {
+        for (std::size_t j {0}; j < width; ++j) {
+          if (in) {
+            panel[(j * rows) + r] = lu_[((k0 + r) * n_) + k0 + j];
+          }
+          else {
+            lu_[((k0 + r) * n_) + k0 + j] = panel[(j * rows) + r];
           }
         }
       }
