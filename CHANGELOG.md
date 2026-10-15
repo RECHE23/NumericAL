@@ -6,6 +6,23 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **`eigh` and `svd` share their divide and conquer among the threads**: the leaves of its tree and the joins of one
+  level are independent, and go to the threads together, each block depth-first on one thread below the depth that
+  gives every thread one, where one block after another had run alone and the leaves and the lower joins did not
+  scale at all. On one thread the order is the recursion's. The same bits on any number of threads (a new test holds
+  it). All threads, order 128 to 512: `eigh` up to 18 % faster (six AVX2 cores 256: 6.5 → 5.9 ms; ten AVX-512 cores 7.5
+  → 6.5; eight arm64 cores 3.3 → 2.9), `svd` 5–16 % (six AVX2 cores 128: 3.29 → 2.90 ms; eight arm64 cores 512: 38.7
+  → 34.7 ms).
+- **On Linux, a worker joins a parallel run by its core's rank rather than by arrival**: a run of few threads takes the
+  same cores from one run to the next, their caches still warm, where the first workers to wake took it, on other
+  cores each time. Ten AVX-512 cores, an LU of order 1024 on two threads 21.5 → 14.6 ms (one thread took 18), on four
+  18 → 11.4 ms; six AVX2 cores unchanged; the regions sized for a few threads gain at the default count too (LU of
+  order 512 on all ten: 3.2 → 2.8 ms).
+- **The LU's row swaps reach the columns left of each panel at the end, in parallel**, where each swap held up the
+  panel the other threads wait for, and on x86-64 a panel of 256 rows or more is copied by tiles of rows. The same
+  bits. Six AVX2 cores: order 384 1.33 → 1.25 ms, 768 5.02 → 4.65 ms; arm64 and one thread unchanged.
+
 ## 2026.10.13 — 2026-10-15
 
 ### Changed
