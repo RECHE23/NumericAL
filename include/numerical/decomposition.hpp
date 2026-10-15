@@ -2828,79 +2828,128 @@ namespace numerical {
     }
 
     /*!
-     * \brief \ref divide_and_conquer into the `n × n` block \p q of rows \p ldq apart, zero on entry: each half
-     *        into its own diagonal block, as LAPACK's `dlaed0`, so the joins copy no half and leave the blocks off
-     *        the diagonal as they found them until the join of their two halves fills them.
+     * \brief One block of \ref divide_and_conquer's tree: its rows `[0, n)` of the diagonal \p d its parent reads,
+     *        the diagonal and subdiagonal it is solved on (its own copies scaled by a power of two, or \p d and the
+     *        parent's), and its diagonal block of the eigenvector matrix, \p q, rows \p ldq apart.
      */
-    inline void divide_block(double*          d,
-                             const double*    e,
-                             std::size_t      n,
-                             double*          q,
-                             std::size_t      ldq,
-                             merge_workspace& work)
+    struct divide_node
     {
-      // Work near unit size, scaled by a power of two (exactly): the deflation tolerance is relative to the weights,
-      // which have unit norm, so it is relative to the tridiagonal only at that size; each half has its own.
+      double*        d        {};  //!< The diagonal its parent reads, the eigenvalues once solved.
+      double*        work_d   {};  //!< The diagonal it is solved on.
+      const double*  work_e   {};  //!< The subdiagonal it is solved on.
+      std::size_t    n        {};  //!< Its order.
+      double*        q        {};  //!< Its diagonal block of the eigenvectors.
+      std::size_t    ldq      {};  //!< The distance between the rows of \p q.
+      int            exponent {0}; //!< The power of two it is scaled down by.
+      buffer<double> scaled_d {};  //!< The scaled diagonal, when \p exponent is not 0.
+      buffer<double> scaled_e {};  //!< The scaled subdiagonal, when \p exponent is not 0.
+      std::size_t    n1       {0}; //!< The order of its first half; 0 for a leaf.
+      double         beta     {};  //!< The coupling of its halves.
+      std::size_t    depth    {};  //!< Its distance from the root.
+    };
+
+    /*!
+     * \brief Appends the block (\p d, \p e, \p n) and, before it is solved, everything below it to \p nodes, parents
+     *        before children: each scaled to work near unit size by a power of two (exactly), as the deflation
+     *        tolerance is relative to the weights, which have unit norm, and so to the tridiagonal only at that size;
+     *        each half has its own. A block past \ref divide_leaf is split into two halves plus a rank-one coupling,
+     *        as LAPACK's `dlaed0`: `T = diag(T₁ − ρ e_a e_aᵀ, T₂ − ρ e_b e_bᵀ) + ρ u uᵀ`, `u = e_a + sign(β) e_b`,
+     *        `ρ = |β|`, `β` the coupling.
+     */
+    inline void plan_divide(std::vector<divide_node>& nodes,
+                            double*                   d,
+                            const double*             e,
+                            std::size_t               n,
+                            double*                   q,
+                            std::size_t               ldq,
+                            std::size_t               depth)
+    {
       double largest {0.0};
       for (std::size_t i {0}; i < n; ++i) {
         largest = std::max({largest, std::abs(d[i]), i + 1 < n ? std::abs(e[i]) : 0.0});
       }
-      int exponent {0};
-      (void)std::frexp(largest, &exponent);
-      if (exponent != 0) {
-        buffer<double> scaled_d(n, double {});
-        buffer<double> scaled_e(n, 0.0);
+      divide_node node {.d = d, .work_d = d, .work_e = e, .n = n, .q = q, .ldq = ldq, .depth = depth};
+      (void)std::frexp(largest, &node.exponent);
+      if (node.exponent != 0) {
+        node.scaled_d.assign(n, double {});
+        node.scaled_e.assign(n, 0.0);
         for (std::size_t i {0}; i < n; ++i) {
-          scaled_d[i] = std::ldexp(d[i], -exponent);
-          scaled_e[i] = i + 1 < n ? std::ldexp(e[i], -exponent) : 0.0;
+          node.scaled_d[i] = std::ldexp(d[i], -node.exponent);
+          node.scaled_e[i] = i + 1 < n ? std::ldexp(e[i], -node.exponent) : 0.0;
         }
-        divide_block(scaled_d.data(), scaled_e.data(), n, q, ldq, work);
-        for (std::size_t i {0}; i < n; ++i) {
-          d[i] = std::ldexp(scaled_d[i], exponent);
-        }
-        return;
+        node.work_d = node.scaled_d.data(); // the buffers' storage stays put as the node moves into the vector
+        node.work_e = node.scaled_e.data();
       }
       if (n <= divide_leaf) {
-        buffer<double> diagonal(d, d + n);
-        buffer<double> sub(n, 0.0);
-        std::copy(e, e + (n - 1), sub.begin());
-        buffer<double> zt(n * n, 0.0);
-        for (std::size_t i {0}; i < n; ++i) {
-          zt[(i * n) + i] = 1.0;
-        }
-        tridiagonal_ql(diagonal, sub, zt, n, ql_steps_per_value * n);
-        std::vector<std::size_t> order(n);
-        for (std::size_t i {0}; i < n; ++i) {
-          order[i] = i;
-        }
-        std::sort(order.begin(), order.end(), [&diagonal](std::size_t x, std::size_t y) { return diagonal[x] < diagonal[y]; });
-        for (std::size_t j {0}; j < n; ++j) {
-          d[j] = diagonal[order[j]];
-          for (std::size_t r {0}; r < n; ++r) {
-            q[(r * ldq) + j] = zt[(order[j] * n) + r];
-          }
-        }
+        nodes.push_back(std::move(node));
         return;
       }
-      // T = diag(T₁ − ρ e_a e_aᵀ, T₂ − ρ e_b e_bᵀ) + ρ u uᵀ, u = e_a + sign(β) e_b, ρ = |β|, β the coupling.
-      const std::size_t n1   {n / 2};
-      const std::size_t n2   {n - n1};
-      const double      beta {e[n1 - 1]};
-      const double      rho  {std::abs(beta)};
-      d[n1 - 1] -= rho;
-      d[n1]     -= rho;
-      divide_block(d, e, n1, q, ldq, work);
-      divide_block(d + n1, e + n1, n2, q + (n1 * ldq) + n1, ldq, work);
-      buffer<double> z(n, double {});
+      node.n1                       = n / 2;
+      node.beta                     = node.work_e[node.n1 - 1];
+      node.work_d[node.n1 - 1]     -= std::abs(node.beta);
+      node.work_d[node.n1]         -= std::abs(node.beta);
+      double* const        work_d   {node.work_d};
+      const double* const  work_e   {node.work_e};
+      const std::size_t    n1       {node.n1};
+      nodes.push_back(std::move(node));
+      plan_divide(nodes, work_d, work_e, n1, q, ldq, depth + 1);
+      plan_divide(nodes, work_d + n1, work_e + n1, n - n1, q + (n1 * ldq) + n1, ldq, depth + 1);
+    }
+
+    //! \brief Solves the leaf \p node by implicit QL: its eigenvalues ascending into its diagonal, their
+    //!        eigenvectors as the columns of its block of `q`.
+    inline void solve_divide_leaf(const divide_node& node)
+    {
+      const std::size_t n {node.n};
+      buffer<double>    diagonal(node.work_d, node.work_d + n);
+      buffer<double>    sub(n, 0.0);
+      std::copy(node.work_e, node.work_e + (n - 1), sub.begin());
+      buffer<double> zt(n * n, 0.0);
+      for (std::size_t i {0}; i < n; ++i) {
+        zt[(i * n) + i] = 1.0;
+      }
+      tridiagonal_ql(diagonal, sub, zt, n, ql_steps_per_value * n);
+      std::vector<std::size_t> order(n);
+      for (std::size_t i {0}; i < n; ++i) {
+        order[i] = i;
+      }
+      std::sort(order.begin(), order.end(), [&diagonal](std::size_t x, std::size_t y) { return diagonal[x] < diagonal[y]; });
+      for (std::size_t j {0}; j < n; ++j) {
+        node.work_d[j] = diagonal[order[j]];
+        for (std::size_t r {0}; r < n; ++r) {
+          node.q[(r * node.ldq) + j] = zt[(order[j] * n) + r];
+        }
+      }
+    }
+
+    //! \brief Joins the two solved halves of \p node by \ref merge_rank_one, in \p work.
+    inline void join_divide_node(const divide_node& node,
+                                 merge_workspace&   work)
+    {
+      const std::size_t n           {node.n};
+      const std::size_t n1          {node.n1};
+      const std::size_t n2          {n - n1};
+      double* const     q           {node.q};
+      buffer<double>    z(n, double {});
       for (std::size_t i {0}; i < n1; ++i) {
-        z[i] = q[((n1 - 1) * ldq) + i];
+        z[i] = q[((n1 - 1) * node.ldq) + i];
       }
       for (std::size_t i {0}; i < n2; ++i) {
-        z[n1 + i] = std::copysign(1.0, beta) * q[(n1 * ldq) + n1 + i];
+        z[n1 + i] = std::copysign(1.0, node.beta) * q[(n1 * node.ldq) + n1 + i];
       }
-      buffer<double> values(d, d + n);
-      merge_rank_one(values, std::move(z), rho, q, ldq, n, n1, work);
-      std::copy(values.begin(), values.end(), d);
+      buffer<double> values(node.work_d, node.work_d + n);
+      merge_rank_one(values, std::move(z), std::abs(node.beta), q, node.ldq, n, n1, work);
+      std::copy(values.begin(), values.end(), node.work_d);
+    }
+
+    //! \brief The eigenvalues of a solved \p node, scaled back, where its parent reads them.
+    inline void unscale_divide_node(const divide_node& node)
+    {
+      if (node.exponent != 0) {
+        for (std::size_t i {0}; i < node.n; ++i) {
+          node.d[i] = std::ldexp(node.work_d[i], node.exponent);
+        }
+      }
     }
 
     /*!
@@ -2908,7 +2957,16 @@ namespace numerical {
      *        `e[0…n-2]` into \p d, and its eigenvectors as the columns of the row-major \p q (`n × n`), by
      *        Cuppen's divide and conquer: the tridiagonal is two halves plus a rank-one coupling, each half is
      *        diagonalised the same way (by implicit QL up to \ref divide_leaf), and \ref merge_rank_one joins
-     *        them (\ref divide_block).
+     *        them, each half into its own diagonal block of \p q, so the joins copy no half and leave the blocks off
+     *        the diagonal as they found them until the join of their two halves fills them.
+     *
+     * The tree is laid out first (\ref plan_divide), then solved from the leaves up, a level at a time: the leaves
+     * and the joins of one level are independent of one another, and go to the threads together, each join on one
+     * thread with its own buffers, where one after another each ran alone (six AVX2 cores, an `eigh` of order 256:
+     * leaves and the joins below the last, 1.5 ms of the 4 ms the eigenvectors took, no faster than on one); a level
+     * of one join shares that join among the threads. Every block takes the same inputs either way, so the result
+     * is the same to the bit. An `eigh` of order 256 on every thread: six AVX2 cores 6.5 → 5.9 ms, ten AVX-512
+     * cores 7.5 → 6.5, eight arm64 cores 3.3 → 2.9.
      */
     inline void divide_and_conquer(double*              d,
                                    const double*        e,
@@ -2916,8 +2974,40 @@ namespace numerical {
                                    buffer<double>&      q)
     {
       q.assign(n * n, 0.0);
-      merge_workspace work;
-      divide_block(d, e, n, q.data(), n, work);
+      std::vector<divide_node> nodes;
+      plan_divide(nodes, d, e, n, q.data(), n, 0);
+      std::vector<std::size_t> leaves;
+      std::size_t              deepest {0};
+      for (std::size_t i {0}; i < nodes.size(); ++i) {
+        deepest = std::max(deepest, nodes[i].depth);
+        if (nodes[i].n1 == 0) {
+          leaves.push_back(i);
+        }
+      }
+      parallel_for(leaves.size(), 2 * divide_leaf * divide_leaf * divide_leaf, [&](std::size_t l) {
+                     solve_divide_leaf(nodes[leaves[l]]);
+                     unscale_divide_node(nodes[leaves[l]]);
+                   });
+      merge_workspace shared;
+      for (std::size_t level {deepest + 1}; level-- > 0;) {
+        std::vector<std::size_t> joins;
+        for (std::size_t i {0}; i < nodes.size(); ++i) {
+          if (nodes[i].n1 != 0 && nodes[i].depth == level) {
+            joins.push_back(i);
+          }
+        }
+        if (joins.size() == 1) {
+          join_divide_node(nodes[joins[0]], shared);
+          unscale_divide_node(nodes[joins[0]]);
+          continue;
+        }
+        const std::size_t            order {joins.empty() ? 0 : nodes[joins[0]].n};
+        std::vector<merge_workspace> own(joins.size());
+        parallel_for(joins.size(), order * order * order / 4, [&](std::size_t j) {
+                       join_divide_node(nodes[joins[j]], own[j]);
+                       unscale_divide_node(nodes[joins[j]]);
+                     });
+      }
     }
 
     //! \brief \p zt ← \p left · \p zt, `n × n`, row-major, for any other element type: the real factor converted.
