@@ -151,6 +151,15 @@ def bound(n, scale):
     return SLACK * max(n, 1) * EPS * scale
 
 
+def bit_gap(got, want):
+    """How two arrays meant to agree to the bit differ: how many entries, and by how much at most."""
+    if got.shape != want.shape:
+        return f"shapes {got.shape} and {want.shape}"
+    differ = got != want
+    largest = float(np.max(np.abs(got - want), initial=0.0)) if np.isfinite(got).all() and np.isfinite(want).all() else np.nan
+    return f"{int(np.count_nonzero(differ))} of {got.size} entries differ, by up to {largest:.3g}"
+
+
 def run_eigh(a):
     n = a.shape[0]
     w, v = numerical.eigh(numerical.asarray(a))
@@ -166,9 +175,12 @@ def run_eigh(a):
     # UPLO="U" reads the upper triangle: of a Hermitian matrix, the conjugate of the lower, so the same bits.
     upper_only = np.triu(a) + np.tril(np.full((n, n), np.nan), -1)
     wu, vu = (as_np(t) for t in numerical.eigh(numerical.asarray(upper_only), "U"))
-    check(np.array_equal(wu, w) and np.array_equal(vu, v), "eigh(UPLO='U') differs from the lower triangle's")
-    check(np.array_equal(as_np(numerical.eigvalsh(numerical.asarray(upper_only), "U")), alone),
-          "eigvalsh(UPLO='U') differs from the lower triangle's")
+    check(np.array_equal(wu, w) and np.array_equal(vu, v),
+          f"eigh(UPLO='U') differs from the lower triangle's: {bit_gap(wu, w)}, vectors {bit_gap(vu, v)}")
+    via_upper = as_np(numerical.eigvalsh(numerical.asarray(upper_only), "U"))
+    check(np.array_equal(via_upper, alone),
+          f"eigvalsh(UPLO='U') differs from the lower triangle's: {bit_gap(via_upper, alone)}; the lower triangle's again "
+          f"{bit_gap(as_np(numerical.eigvalsh(numerical.asarray(a))), alone)}")
 
 
 def run_svd(a):
