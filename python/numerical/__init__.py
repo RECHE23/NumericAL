@@ -38,7 +38,8 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "slogdet", "inverse", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh", "eigvalsh", "svd",
+    "determinant", "det", "slogdet", "inverse", "inv", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh",
+    "eigvalsh", "svd",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config",
 ]
@@ -192,19 +193,21 @@ def _nested(obj):
     raise TypeError(f"asarray: a nested list holds numbers, not {type(obj).__name__}")
 
 
-def _linalg(native):
+def _linalg(native, arrays=None):
     """`native` taking array-likes: every argument that is not a :class:`Tensor` or a string goes through
-    :func:`asarray` (a NumPy array, a nested list, a number); when one operand is complex the real ones are
-    widened to complex128, as NumPy promotes them; and its failures are :class:`LinAlgError`."""
+    :func:`asarray` (a NumPy array, a nested list, a number), or only the first `arrays` of them, the options after
+    passed as they are; when one operand is complex the real ones are widened to complex128, as NumPy promotes them;
+    and its failures are :class:`LinAlgError`."""
 
     @_functools.wraps(native)
     def call(*args):
-        operands = [arg if isinstance(arg, (Tensor, str)) else asarray(arg) for arg in args]
+        count = len(args) if arrays is None else arrays
+        operands = [arg if isinstance(arg, (Tensor, str)) else asarray(arg) for arg in args[:count]]
         if any(isinstance(operand, Tensor) and operand.dtype == "complex128" for operand in operands):
             operands = [asarray(operand, "complex128") if isinstance(operand, Tensor) else operand
                         for operand in operands]
         try:
-            return native(*operands)
+            return native(*operands, *args[count:])
         except error as caught:
             raise LinAlgError(*caught.args) from None
 
@@ -372,33 +375,110 @@ for _name in ("__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"):
     setattr(Tensor, _name, _uncomparable)
 Tensor.__hash__ = None  # unhashable, as a NumPy array: equality will be element-wise
 
-cholesky = _linalg(_numerical.cholesky)
+_cholesky = _linalg(_numerical.cholesky, arrays=1)
 determinant = _linalg(_numerical.determinant)
+det = determinant
 einsum = _linalg(_numerical.einsum)
 inverse = _linalg(_numerical.inverse)
-lstsq = _linalg(_numerical.lstsq)
-eigvalsh = _linalg(_numerical.eigvalsh)
-matrix_rank = _linalg(_numerical.matrix_rank)
-pinv = _linalg(_numerical.pinv)
-_qr = _linalg(_numerical.qr)
+inv = inverse
+_lstsq = _linalg(_numerical.lstsq, arrays=2)
+_eigvalsh = _linalg(_numerical.eigvalsh, arrays=1)
+_matrix_rank = _linalg(_numerical.matrix_rank, arrays=1)
+_pinv = _linalg(_numerical.pinv, arrays=1)
+_qr = _linalg(_numerical.qr, arrays=1)
 slogdet = _linalg(_numerical.slogdet)
 solve = _linalg(_numerical.solve)
-_eigh = _linalg(_numerical.eigh)
-_svd = _linalg(_numerical.svd)
+_eigh = _linalg(_numerical.eigh, arrays=1)
+_svd = _linalg(_numerical.svd, arrays=1)
 _singular_values = _linalg(_numerical._singular_values)
 _QR_MODES = ("reduced", "complete", "r")
 _EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
 _SVD_METHODS = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
 
 
-def eigh(a, method="divide_and_conquer"):
+_MACHINE_EPSILON = 2.220446049250313e-16  # float64's, which complex128's parts share
+
+
+def _upper(name, UPLO):
+    """Whether NumPy's `UPLO` names the upper triangle: ``"L"`` or ``"U"``, in either case."""
+    if isinstance(UPLO, str) and UPLO.upper() in ("L", "U"):
+        return UPLO.upper() == "U"
+    if UPLO in _EIGH_METHODS:
+        raise TypeError(f"{name}: the second argument is UPLO, as in NumPy; give the method by name, "
+                        f"{name}(a, method={UPLO!r})")
+    raise ValueError(f"{name}: UPLO must be 'L' or 'U', not {UPLO!r}")
+
+
+def _tolerance(name, value):
+    """A tolerance as a float: a real number, not a bool; None stays None."""
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, _numbers.Real):
+        raise TypeError(f"{name}: a tolerance is a real number, not {type(value).__name__}")
+    return float(value)
+
+
+def eigh(a, UPLO="L", *, method="divide_and_conquer"):
     """The eigenvalues (real, ascending) and eigenvectors (columns) of a real symmetric or complex Hermitian
-    matrix, as ``numpy.linalg.eigh``: its lower triangle is read. `method` diagonalises the tridiagonal form:
-    ``"divide_and_conquer"`` (LAPACK's ``dsyevd``/``zheevd``), ``"tridiagonal_ql"`` (implicit QL, ``dsyev``'s,
-    the default before 2026.10.4) or ``"jacobi"`` (cyclic Jacobi rotations, real matrices only)."""
+    matrix, as ``numpy.linalg.eigh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``).
+    `method` diagonalises the tridiagonal form: ``"divide_and_conquer"`` (LAPACK's ``dsyevd``/``zheevd``),
+    ``"tridiagonal_ql"`` (implicit QL, ``dsyev``'s, the default before 2026.10.4) or ``"jacobi"`` (cyclic Jacobi
+    rotations, real matrices only)."""
+    upper = _upper("eigh", UPLO)
     if method not in _EIGH_METHODS:
         raise ValueError(f"eigh: method {method!r} is none of {_EIGH_METHODS}")
-    return _eigh(a, method)
+    return _eigh(a, method, upper)
+
+
+def eigvalsh(a, UPLO="L"):
+    """The eigenvalues alone of a real symmetric or complex Hermitian matrix, real and ascending, as
+    ``numpy.linalg.eigvalsh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``)."""
+    return _eigvalsh(a, _upper("eigvalsh", UPLO))
+
+
+def cholesky(a, /, *, upper=False):
+    """The Cholesky factor of a Hermitian positive-definite matrix, as ``numpy.linalg.cholesky``: the lower `L` with
+    ``a = L @ L.conj().T``, read from the lower triangle; with ``upper=True``, the upper `U` with ``a = U.conj().T @ U``,
+    read from the upper triangle."""
+    return _cholesky(a, bool(upper))
+
+
+def lstsq(a, b, rcond=None):
+    """``(x, residuals, rank, s)``, as ``numpy.linalg.lstsq``: the minimum-norm least-squares solution of
+    ``a @ x ≈ b``, the residual sums of squares (for a tall `a` of full column rank, else empty), the rank and the
+    singular values of `a`. A singular value at or under `rcond` times the largest counts as zero: by default
+    (``None``) machine epsilon times max(m, n), NumPy's; a negative `rcond` is machine epsilon, as LAPACK's."""
+    rcond = _tolerance("lstsq", rcond)
+    if rcond is not None and rcond < 0:
+        rcond = _MACHINE_EPSILON
+    return _lstsq(a, b, rcond)
+
+
+def pinv(a, rcond=None, hermitian=False, *, rtol=None):
+    """The Moore–Penrose pseudo-inverse, as ``numpy.linalg.pinv``: a singular value at or under `rcond` (or `rtol`,
+    its NumPy 2 name; not both) times the largest counts as zero, by default machine epsilon times max(m, n). With
+    ``hermitian=True`` `a` is taken as real symmetric or complex Hermitian, its lower triangle read, and the
+    pseudo-inverse comes from its eigendecomposition, cheaper. A negative or NaN tolerance raises, where NumPy's
+    result is infinite or NaN."""
+    if rcond is not None and rtol is not None:
+        raise ValueError("pinv: rtol and rcond can't be both set")
+    return _pinv(a, _tolerance("pinv", rcond if rcond is not None else rtol), bool(hermitian))
+
+
+def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):
+    """The numerical rank, as ``numpy.linalg.matrix_rank``: the singular values above `tol`, or above `rtol` times the
+    largest (not both), by default machine epsilon times max(m, n) times the largest. With ``hermitian=True`` `A` is
+    taken as real symmetric or complex Hermitian, its lower triangle read, its singular values the magnitudes of its
+    eigenvalues, cheaper. A vector or a number has rank 1 unless all zero. A negative or NaN tolerance raises."""
+    if tol is not None and rtol is not None:
+        raise ValueError("matrix_rank: tol and rtol can't be both set")
+    tol, rtol = _tolerance("matrix_rank", tol), _tolerance("matrix_rank", rtol)
+    if not isinstance(A, Tensor):
+        A = asarray(A)
+    if A.ndim < 2:  # NumPy's: a vector or a number is of rank 1 unless all zero
+        values = A.tolist()
+        return int(any(value != 0 for value in (values if A.ndim == 1 else [values])))
+    return _matrix_rank(A, rtol, tol, bool(hermitian))
 
 
 def svd(a, full_matrices=True, compute_uv=True, *, method="divide_and_conquer"):

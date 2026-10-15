@@ -83,9 +83,9 @@ class SquareProperties(unittest.TestCase):
             with self.subTest(name, method=method):
                 if method == "jacobi" and np.iscomplexobj(h):
                     with self.assertRaises(numerical.LinAlgError):
-                        numerical.eigh(h, method)
+                        numerical.eigh(h, method=method)
                     continue
-                values, vectors = (np.asarray(t) for t in numerical.eigh(h, method))
+                values, vectors = (np.asarray(t) for t in numerical.eigh(h, method=method))
                 scale = max(1.0, np.max(np.abs(np.linalg.eigvalsh(h))))
                 self.assertLess(np.max(np.abs(values - np.linalg.eigvalsh(h))), 1e3 * EPS * n * scale)
                 self.assertLess(np.linalg.norm(vectors.conj().T @ vectors - np.eye(n)), 1e3 * EPS * n)
@@ -102,6 +102,81 @@ class SquareProperties(unittest.TestCase):
                 self.assertLess(np.linalg.norm(lower @ lower.conj().T - spd) / np.linalg.norm(spd), 1e2 * EPS * n)
 
 
+class NumPyKeywords(unittest.TestCase):
+    """UPLO, upper, rcond, rtol, tol and hermitian mean what they mean to numpy.linalg."""
+
+    def setUp(self):
+        rng = np.random.default_rng(7)
+        self.real = rng.standard_normal((6, 6))
+        self.complex = rng.standard_normal((5, 5)) + 1j * rng.standard_normal((5, 5))
+        self.diagonal = np.diag([1.0, 1e-3, 1e-9, 0.0])
+
+    def test_uplo_and_upper_read_the_triangle_numpy_reads(self):
+        for a in (self.real, self.complex):
+            n = a.shape[0]
+            spd = a @ a.conj().T + n * np.eye(n)
+            noisy = np.triu(spd) + np.tril(np.full((n, n), 99.0), -1)  # only the upper triangle is meaningful
+            for UPLO in ("U", "u"):
+                values, vectors = (np.asarray(t) for t in numerical.eigh(noisy, UPLO))
+                self.assertTrue(np.allclose(values, np.linalg.eigh(noisy, "U")[0]))
+                self.assertTrue(np.allclose(np.asarray(numerical.eigvalsh(noisy, UPLO)), np.linalg.eigvalsh(noisy, "U")))
+                hermitian = np.triu(noisy) + np.triu(noisy, 1).conj().T
+                self.assertLess(np.linalg.norm(hermitian @ vectors - vectors * values), 1e3 * EPS * n * np.linalg.norm(spd))
+            upper = np.asarray(numerical.cholesky(noisy, upper=True))
+            self.assertTrue(np.allclose(upper, np.linalg.cholesky(noisy, upper=True)))
+            self.assertEqual(np.linalg.norm(np.tril(upper, -1)), 0.0)
+            self.assertTrue(np.array_equal(np.asarray(numerical.cholesky(spd, upper=False)), np.asarray(numerical.cholesky(spd))))
+        with self.assertRaises(ValueError):
+            numerical.eigh(self.real, "X")
+        with self.assertRaises(ValueError):
+            numerical.eigvalsh(self.real, 1)
+
+    def test_tolerances_cut_the_singular_values_numpy_cuts(self):
+        d = self.diagonal
+        for kw in ({}, {"rcond": 1e-6}, {"rcond": -1}, {"rcond": 0.0}):
+            x, _, rank, _ = numerical.lstsq(d, np.ones(4), **kw)
+            want = np.linalg.lstsq(d, np.ones(4), **kw)
+            self.assertTrue(np.allclose(np.asarray(x), want[0]))
+            self.assertEqual(rank, want[2])
+        for kw in ({}, {"rcond": 1e-6}, {"rtol": 1e-2}, {"hermitian": True}, {"rcond": 1e-6, "hermitian": True}):
+            self.assertTrue(np.allclose(np.asarray(numerical.pinv(d, **kw)), np.linalg.pinv(d, **kw)))
+        for kw in ({}, {"tol": 1e-6}, {"rtol": 1e-2}, {"hermitian": True}, {"tol": 0.5, "hermitian": True}):
+            self.assertEqual(numerical.matrix_rank(d, **kw), np.linalg.matrix_rank(d, **kw))
+        for v in ([0.0, 0.0, 3.0], [0.0, 0.0], 5.0, 0.0, np.zeros(0), [1j]):
+            self.assertEqual(numerical.matrix_rank(v), np.linalg.matrix_rank(np.asarray(v)))
+
+    def test_a_hermitian_matrix_is_read_from_its_lower_triangle(self):
+        for a in (self.real, self.complex):
+            n = a.shape[0]
+            h = (a + a.conj().T) / 2
+            noisy = np.tril(h) + np.triu(np.full((n, n), np.nan), 1)
+            self.assertTrue(np.allclose(np.asarray(numerical.pinv(noisy, hermitian=True)), np.linalg.pinv(h)))
+            self.assertEqual(numerical.matrix_rank(noisy, hermitian=True), np.linalg.matrix_rank(h))
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.pinv(np.ones((2, 3)), hermitian=True)
+
+    def test_tolerances_are_numbers_set_once_and_not_negative(self):
+        d = self.diagonal
+        with self.assertRaises(ValueError):
+            numerical.pinv(d, 1e-3, rtol=1e-3)
+        with self.assertRaises(ValueError):
+            numerical.matrix_rank(d, tol=1.0, rtol=1.0)
+        for bad in (-1.0, float("nan")):
+            with self.assertRaises(ValueError):
+                numerical.pinv(d, bad)
+            with self.assertRaises(ValueError):
+                numerical.matrix_rank(d, bad)
+        with self.assertRaises(ValueError):
+            numerical.lstsq(d, np.ones(4), float("nan"))
+        for bad in ("1e-3", True, 1j):
+            with self.assertRaises(TypeError):
+                numerical.pinv(d, bad)
+
+    def test_det_and_inv_are_numpys_names(self):
+        self.assertIs(numerical.det, numerical.determinant)
+        self.assertIs(numerical.inv, numerical.inverse)
+
+
 class MethodNames(unittest.TestCase):
     def test_an_unknown_method_is_a_value_error(self):
         with self.assertRaises(ValueError):
@@ -110,11 +185,13 @@ class MethodNames(unittest.TestCase):
             numerical.svd([[1.0]], method="tridiagonal_ql")
         with self.assertRaises(TypeError):  # the second argument is full_matrices, as in NumPy
             numerical.svd([[1.0]], "jacobi")
+        with self.assertRaises(TypeError):  # the second argument is UPLO, as in NumPy
+            numerical.eigh([[1.0]], "jacobi")
 
     def test_the_extension_refuses_an_unknown_method_too(self):
         one = numerical.asarray([[1.0]])
         with self.assertRaises(numerical.error):
-            numerical._numerical.eigh(one, "qr")
+            numerical._numerical.eigh(one, "qr", False)
         with self.assertRaises(numerical.error):
             numerical._numerical.svd(one, "qr", False)
 

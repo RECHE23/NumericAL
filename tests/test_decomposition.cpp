@@ -688,6 +688,71 @@ TEST(the_phase_of_a_scalar_is_of_unit_modulus_in_every_precision)
   EXPECT(std::abs(std::abs(phase_of(std::complex<double> {1e-320, -3e-320})) - 1.0) < 4.0 * std::numeric_limits<double>::epsilon());
 }
 
+// A cutoff is NumPy's by default (the largest singular value times ε times the larger dimension), relative to the
+// largest as rcond and rtol, or absolute as tol; a singular value at or under it counts as zero in the rank, the
+// pseudo-inverse and the least-squares solution, on the QR's road as on the decomposition's.
+TEST(rank_pseudo_inverse_and_lstsq_take_numpys_cutoffs)
+{
+  using numerical::rank_cutoff;
+  const matrix<double> d {diagonal_matrix(vector<double> {1.0, 1e-3, 1e-9, 0.0})};
+  EXPECT_EQ(numerical::matrix_rank(d), 3U);
+  EXPECT_EQ(numerical::matrix_rank(d, rank_cutoff::relative(1e-6)), 2U);
+  EXPECT_EQ(numerical::matrix_rank(d, rank_cutoff::relative(1e-3)), 1U); // at the cutoff counts as zero
+  EXPECT_EQ(numerical::matrix_rank(d, rank_cutoff::relative(0.0)), 3U);
+  EXPECT_EQ(numerical::matrix_rank(d, rank_cutoff::absolute(1e-9)), 2U);
+  EXPECT_EQ(numerical::matrix_rank(d, rank_cutoff::absolute(2.0)), 0U);
+  EXPECT_THROWS(static_cast<void>(rank_cutoff::relative(-1e-3)), std::invalid_argument);
+  EXPECT_THROWS(static_cast<void>(rank_cutoff::absolute(std::numeric_limits<double>::quiet_NaN())), std::invalid_argument);
+  EXPECT(approx_equal(numerical::pinv(d, rank_cutoff::relative(1e-6)), diagonal_matrix(vector<double> {1.0, 1e3, 0.0, 0.0})));
+  const vector<double> ones                           {1.0, 1.0, 1.0, 1.0};
+  EXPECT(approx_equal(numerical::lstsq(d, ones, rank_cutoff::relative(1e-6)), vector<double> {1.0, 1e3, 0.0, 0.0}));
+  const numerical::least_squares_solution<double> cut {
+    numerical::least_squares(d, matrix<double> {4, 1, std::vector<double>(4, 1.0)}, rank_cutoff::relative(1e-6))};
+  EXPECT_EQ(cut.rank, 2U);
+  // Tall and full-rank: the QR's road, which must still drop what the cutoff drops, at any scale.
+  const matrix<double> tall {{2.0, 0.0}, {0.0, 1e-3}, {0.0, 0.0}};
+  EXPECT(approx_equal(numerical::lstsq(tall, vector<double> {2.0, 1.0, 5.0}), vector<double> {1.0, 1e3}));
+  EXPECT(approx_equal(numerical::lstsq(tall, vector<double> {2.0, 1.0, 5.0}, rank_cutoff::absolute(1e-2)),
+                      vector<double> {1.0, 0.0}));
+  const matrix<double> huge {{1e300, 0.0}, {0.0, 1e297}, {0.0, 0.0}};
+  EXPECT(approx_equal(numerical::lstsq(huge, vector<double> {1e300, 1e297, 0.0}, rank_cutoff::absolute(1e298)),
+                      vector<double> {1.0, 0.0}));
+  EXPECT(approx_equal(numerical::lstsq(huge, vector<double> {1e300, 1e297, 0.0}, rank_cutoff::absolute(1e296)),
+                      vector<double> {1.0, 1.0}));
+  // Tiny: unscaled, the cutoff would look negligible beside the scaled values, and the QR's road keep what it drops.
+  const matrix<double> tiny {{1e-300, 0.0}, {0.0, 1e-303}, {0.0, 0.0}};
+  EXPECT(approx_equal(numerical::lstsq(tiny, vector<double> {1e-300, 1e-303, 0.0}, rank_cutoff::absolute(1e-302)),
+                      vector<double> {1.0, 0.0}));
+  EXPECT(approx_equal(numerical::lstsq(tiny, vector<double> {1e-300, 1e-303, 0.0}, rank_cutoff::absolute(1e-304)),
+                      vector<double> {1.0, 1.0}));
+  const numerical::least_squares_solution<double> full {
+    numerical::least_squares(tall, matrix<double> {{2.0}, {1.0}, {5.0}}, rank_cutoff::relative(1e-6))};
+  EXPECT(full.rank == 2U && full.residuals.size() == 1U && std::abs(full.residuals[0] - 25.0) < 1e-9);
+}
+
+// hermitian, as NumPy's: the rank from the eigenvalues' magnitudes and the pseudo-inverse from the eigendecomposition,
+// the lower triangle alone read (what lies above it, a NaN even, is not looked at); square or refused.
+TEST(rank_and_pseudo_inverse_of_a_hermitian_matrix_read_its_lower_triangle)
+{
+  const double         nan {std::numeric_limits<double>::quiet_NaN()};
+  const matrix<double> s   {{2.0, 1.0, 0.0}, {1.0, -3.0, 0.0}, {0.0, 0.0, 0.0}}; // indefinite, rank 2
+  const matrix<double> low {{2.0, 99.0, nan}, {1.0, -3.0, 7.0}, {0.0, 0.0, 0.0}};
+  EXPECT_EQ(numerical::matrix_rank(low, {}, true), 2U);
+  EXPECT(approx_equal(numerical::pinv(low, {}, true), numerical::pinv(s), 1e-12));
+  EXPECT_EQ(numerical::matrix_rank(s, numerical::rank_cutoff::absolute(2.5), true), 1U); // |−3.2| kept, 2.2 not
+  using c = std::complex<double>;
+  const matrix<c> z      {{c {2.0, 0.0}, c {1.0, 1.0}}, {c {1.0, -1.0}, c {3.0, 0.0}}};
+  const matrix<c> z_low  {{c {2.0, 5.0}, c {nan, 0.0}}, {c {1.0, -1.0}, c {3.0, 0.0}}};  // the diagonal's real part
+  EXPECT(approx_equal(numerical::pinv(z_low, {}, true), numerical::inverse(z), 1e-12));
+  EXPECT_EQ(numerical::matrix_rank(z_low, {}, true), 2U);
+  const matrix<double> wide {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}};
+  EXPECT_THROWS(static_cast<void>(numerical::pinv(wide, {}, true)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::matrix_rank(wide, {}, true)), numerical::dimension_error);
+  const matrix<double> nan_below {{1.0, 0.0}, {nan, 1.0}};
+  EXPECT_THROWS(static_cast<void>(numerical::pinv(nan_below, {}, true)), numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::matrix_rank(nan_below, {}, true)), numerical::non_finite_error);
+}
+
 // lstsq is NumPy's: the least-squares solution of a full-rank tall system, accurate on a Vandermonde
 // fit (modified Gram–Schmidt left a coefficient error of 0.6 at degree 11), and the minimum-norm one
 // of a rank-deficient or wide system.

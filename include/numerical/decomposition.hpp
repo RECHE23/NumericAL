@@ -464,6 +464,37 @@ namespace numerical {
         }
       }
     }
+
+    //! \brief \ref require_finite_lower entry by entry, kept out of line: the rare road, which inlined cost GCC the
+    //!        inlining of the Cholesky's own code (order 8, 7–9 % slower).
+    template <typename T>
+    NUMERICAL_OUT_OF_LINE void require_finite_lower_out_of_line(const matrix<T>& a,
+                                                                const char*      what)
+    {
+      require_finite_lower<T>(a, what);
+    }
+
+    //! \brief \ref require_finite_lower for `double`: \ref all_finite over the whole matrix, the one vectorised pass
+    //!        \ref require_finite takes, and the triangle entry by entry only where it finds a NaN or an infinity (each
+    //!        entry checked with its exit cost a Cholesky of order 64 6 % on arm64, each row through \ref all_finite one
+    //!        of order 8 21 % under GCC).
+    inline void require_finite_lower(const matrix<double>& a,
+                                     const char*           what)
+    {
+      if (!all_finite(std::to_address(a.begin()), a.rows() * a.cols())) [[unlikely]] {
+        require_finite_lower_out_of_line(a, what);
+      }
+    }
+
+    //! \brief The same for `std::complex<double>`, whose array holds its parts in order ([complex.numbers]).
+    inline void require_finite_lower(const matrix<std::complex<double>>& a,
+                                     const char*                         what)
+    {
+      const auto* const parts {reinterpret_cast<const double*>(std::to_address(a.begin()))}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+      if (!all_finite(parts, 2 * a.rows() * a.cols())) [[unlikely]] {
+        require_finite_lower_out_of_line(a, what);
+      }
+    }
   } // namespace detail
 
   /*!
@@ -1172,8 +1203,9 @@ namespace numerical {
   public:
 
     /*!
-     * \brief Factorises \p a. \param[in] a The Hermitian positive-definite matrix.
+     * \brief Factorises \p a. \param[in] a The Hermitian positive-definite matrix, its lower triangle alone read.
      * \throws dimension_error If \p a is not square.
+     * \throws non_finite_error If an entry of its lower triangle is infinite or NaN.
      * \throws not_positive_definite_error If \p a is not positive-definite.
      */
     explicit cholesky_decomposition(const matrix<T>& a)
@@ -1182,8 +1214,9 @@ namespace numerical {
 
     /*!
      * \brief Factorises \p a in its own storage, an expiring matrix's elements taken over: no copy of them.
-     * \param[in] a The Hermitian positive-definite matrix.
+     * \param[in] a The Hermitian positive-definite matrix, its lower triangle alone read.
      * \throws dimension_error If \p a is not square.
+     * \throws non_finite_error If an entry of its lower triangle is infinite or NaN.
      * \throws not_positive_definite_error If \p a is not positive-definite.
      */
     explicit cholesky_decomposition(matrix<T>&& a)
@@ -1192,7 +1225,7 @@ namespace numerical {
       if (a.cols() != n_) {
         throw dimension_error("Cholesky decomposition requires a square matrix");
       }
-      detail::require_finite(a, "Cholesky decomposition");
+      detail::require_finite_lower(a, "Cholesky decomposition");
       lower_ = std::move(a).elements(); // the upper triangle is never read, and zeroed once factorised
       factorize();
     }
@@ -1744,6 +1777,73 @@ namespace numerical {
       return largest * std::numeric_limits<double>::epsilon() * static_cast<double>(std::max(rows, cols));
     }
   } // namespace detail
+
+  /*!
+   * \brief The magnitude at or under which a singular value counts as zero, in a rank (\ref matrix_rank), a
+   *        pseudo-inverse (\ref pinv) or a least-squares solution (\ref lstsq): by default NumPy's, the largest
+   *        singular value times the machine epsilon times the larger dimension; \ref relative to the largest, as
+   *        NumPy's `rcond` and `rtol`; or \ref absolute, as `matrix_rank`'s `tol`.
+   */
+  class rank_cutoff
+  {
+  public:
+
+    //! \brief NumPy's default: the largest singular value times the machine epsilon times the larger dimension.
+    constexpr rank_cutoff() noexcept = default;
+
+    /*!
+     * \brief The largest singular value times \p ratio.
+     * \throws std::invalid_argument If \p ratio is negative or NaN.
+     */
+    [[nodiscard]] static rank_cutoff relative(double ratio)
+    {
+      return rank_cutoff {checked(ratio), false};
+    }
+
+    /*!
+     * \brief \p magnitude itself, whatever the largest singular value.
+     * \throws std::invalid_argument If \p magnitude is negative or NaN.
+     */
+    [[nodiscard]] static rank_cutoff absolute(double magnitude)
+    {
+      return rank_cutoff {checked(magnitude), true};
+    }
+
+    //! \brief The cutoff for a `rows × cols` matrix whose largest singular value is \p largest.
+    [[nodiscard]] double magnitude(double      largest,
+                                   std::size_t rows,
+                                   std::size_t cols) const noexcept
+    {
+      if (absolute_) {
+        return value_;
+      }
+      return value_ < 0.0 ? detail::rank_tolerance(largest, rows, cols) : largest * value_;
+    }
+
+    //! \brief The same cutoff for the matrix divided by `2^exponent`.
+    [[nodiscard]] rank_cutoff scaled(int exponent) const noexcept
+    {
+      return absolute_ ? rank_cutoff {std::ldexp(value_, -exponent), true} : *this;
+    }
+
+  private:
+
+    constexpr rank_cutoff(double value,
+                          bool   absolute) noexcept
+      : value_(value), absolute_(absolute)
+    {}
+
+    [[nodiscard]] static double checked(double value)
+    {
+      if (!(value >= 0.0)) {
+        throw std::invalid_argument("rank cutoff: a tolerance is non-negative");
+      }
+      return value;
+    }
+
+    double value_    {-1.0};  //!< The ratio or the magnitude; negative for NumPy's default.
+    bool   absolute_ {false}; //!< Whether \ref value_ is a magnitude.
+  };
 
   //! \brief The factors a \ref qr_decomposition keeps, as `numpy.linalg.qr`'s modes name them.
   enum class qr_mode
@@ -5027,17 +5127,18 @@ namespace numerical {
 
   namespace detail {
 
-    //! \brief How many of the singular values \p sigma of an `rows × cols` matrix exceed \ref rank_tolerance
-    //!        of the largest: its numerical rank (the first that many, \p sigma being descending).
+    //! \brief How many of the singular values \p sigma of an `rows × cols` matrix exceed \p cutoff: its numerical
+    //!        rank (the first that many, where \p sigma is descending).
     [[nodiscard]] inline std::size_t numerical_rank(const vector<double>& sigma,
                                                     std::size_t           rows,
-                                                    std::size_t           cols)
+                                                    std::size_t           cols,
+                                                    rank_cutoff           cutoff = {})
     {
       double largest {0.0};
       for (std::size_t d {0}; d < sigma.size(); ++d) {
         largest = std::max(largest, sigma[d]);
       }
-      const double tolerance {rank_tolerance(largest, rows, cols)};
+      const double tolerance {cutoff.magnitude(largest, rows, cols)};
       std::size_t  rank      {0};
       for (std::size_t d {0}; d < sigma.size(); ++d) {
         rank += static_cast<std::size_t>(sigma[d] > tolerance);
@@ -5045,8 +5146,8 @@ namespace numerical {
       return rank;
     }
 
-    //! \brief How far under the reciprocal of \ref rank_tolerance a bound on the condition number must stay for
-    //!        \ref lstsq_by_qr to answer: nearer, the singular value decomposition decides the rank.
+    //! \brief How far above the rank cutoff a bound on the smallest singular value must stay for \ref lstsq_by_qr to
+    //!        answer: nearer, the singular value decomposition decides the rank.
     inline constexpr double qr_rank_margin {100.0};
 
     //! \brief \p x times two to the \p exponent, exactly where the result is a normal number (no power of two is
@@ -5097,12 +5198,14 @@ namespace numerical {
     /*!
      * \brief The least-squares solution of `A X ≈ B` by a QR factorisation, of `A`, or of `Aᴴ` for a wide `A` (the
      *        minimum-norm solution), where it is the one the singular value decomposition gives: with `A` divided by
-     *        a power of two near its largest magnitude, `κ₂(R) ≤ ‖R‖_F ‖R⁻¹‖_F` must stay \ref qr_rank_margin times
-     *        under the reciprocal of \ref rank_tolerance, so that every singular value is far above it and the rank
-     *        full (a zero on `R`'s diagonal makes the bound infinite or NaN, which fails). Else nothing. A fraction
-     *        of the decomposition's work, the rest in matrix products.
-     * \param[in]  a The `m × n` matrix `A`.
-     * \param[in]  b The right-hand sides, one per column.
+     *        a power of two near its largest magnitude, the bound `1 / ‖R⁻¹‖_F` under its smallest singular value must
+     *        stay \ref qr_rank_margin times above \p cutoff of the bound `‖R‖_F` over its largest, so that every
+     *        singular value is far above the cutoff and the rank full (a zero on `R`'s diagonal makes the first bound
+     *        zero, or NaN, which fails). Else nothing. A fraction of the decomposition's work, the rest in matrix
+     *        products.
+     * \param[in]  a      The `m × n` matrix `A`.
+     * \param[in]  b      The right-hand sides, one per column.
+     * \param[in]  cutoff Where a singular value counts as zero.
      * \param[out] r Where given, the square `R` factorised, of `A` divided by `2^exponent`, and that exponent: its
      *              singular values are `A`'s over `2^exponent`.
      * \return The solution, or nothing where the decomposition must decide the rank.
@@ -5110,6 +5213,7 @@ namespace numerical {
     template <typename T>
     [[nodiscard]] std::optional<matrix<T>> lstsq_by_qr(const matrix<T>&                       a,
                                                        const matrix<T>&                       b,
+                                                       rank_cutoff                            cutoff,
                                                        std::pair<buffer<T>, int>* const       r = nullptr)
     {
       const std::size_t m       {a.rows()};
@@ -5146,8 +5250,8 @@ namespace numerical {
         r_squares       += static_cast<double>(std::norm(factors.r[e]));
         inverse_squares += static_cast<double>(std::norm(inverse[e]));
       }
-      const double condition {std::sqrt(r_squares) * std::sqrt(inverse_squares)};
-      if (!(condition * rank_tolerance(1.0, m, n) * qr_rank_margin < 1.0)) {
+      const double smallest_bound {1.0 / std::sqrt(inverse_squares)};
+      if (!(smallest_bound > qr_rank_margin * cutoff.scaled(exponent).magnitude(std::sqrt(r_squares), m, n))) {
         return std::nullopt;
       }
       const std::size_t k          {b.cols()};
@@ -5227,20 +5331,22 @@ namespace numerical {
    * \brief The minimum-norm least-squares solution of `A x ≈ b`, as NumPy's `lstsq` gives it.
    * \tparam T The scalar element type (`double` or `std::complex<double>`).
    *
-   * From the SVD of `A`: `x = V Σ⁺ Uᴴ b`, where a singular value under \ref detail::rank_tolerance of the
-   * largest counts as zero. Any shape, any rank: an overdetermined full-rank system gives its least-squares
+   * From the SVD of `A`: `x = V Σ⁺ Uᴴ b`, where a singular value at or under \p cutoff (by default NumPy's,
+   * \ref rank_cutoff) counts as zero. Any shape, any rank: an overdetermined full-rank system gives its least-squares
    * solution, an underdetermined or rank-deficient one the solution of smallest norm.
-   * \param[in] a The `m × n` matrix.
-   * \param[in] b The right-hand side (size `m`).
+   * \param[in] a      The `m × n` matrix.
+   * \param[in] b      The right-hand side (size `m`).
+   * \param[in] cutoff Where a singular value counts as zero.
    * \return `x` (size `n`).
    * \throws dimension_error If `b`'s size differs from the row count.
    * \throws non_finite_error If an entry of \p a is infinite or NaN.
    */
   template <typename T>
   [[nodiscard]] vector<T> lstsq(const matrix<T>& a,
-                                const vector<T>& b)
+                                const vector<T>& b,
+                                rank_cutoff      cutoff = {})
   {
-    const matrix<T> column {lstsq(a, matrix<T> {b.size(), 1, buffer<T>(b.begin(), b.end())})};
+    const matrix<T> column {lstsq(a, matrix<T> {b.size(), 1, buffer<T>(b.begin(), b.end())}, cutoff)};
     return vector<T> {buffer<T>(column.begin(), column.end())};
   }
 
@@ -5250,25 +5356,27 @@ namespace numerical {
    *        on the condition number shows the rank full with room to spare, the same solution to rounding by one
    *        QR factorisation (\ref detail::lstsq_by_qr).
    * \tparam T The scalar element type (`double` or `std::complex<double>`).
-   * \param[in] a The `m × n` matrix.
-   * \param[in] b The right-hand sides (`m × k`).
+   * \param[in] a      The `m × n` matrix.
+   * \param[in] b      The right-hand sides (`m × k`).
+   * \param[in] cutoff Where a singular value counts as zero.
    * \return `X` (`n × k`).
    * \throws dimension_error If `b`'s row count differs from `a`'s.
    * \throws non_finite_error If an entry of \p a is infinite or NaN.
    */
   template <typename T>
   [[nodiscard]] matrix<T> lstsq(const matrix<T>& a,
-                                const matrix<T>& b)
+                                const matrix<T>& b,
+                                rank_cutoff      cutoff = {})
   {
     if (b.rows() != a.rows()) {
       throw dimension_error("lstsq: right-hand side size differs from the matrix");
     }
     detail::require_finite(a, "lstsq");
-    if (std::optional<matrix<T>> fast {detail::lstsq_by_qr(a, b)}) {
+    if (std::optional<matrix<T>> fast {detail::lstsq_by_qr(a, b, cutoff)}) {
       return *std::move(fast);
     }
     const svd_decomposition<T> s {a};
-    return detail::lstsq_from_svd(s, detail::numerical_rank(s.singular_values(), a.rows(), a.cols()), b);
+    return detail::lstsq_from_svd(s, detail::numerical_rank(s.singular_values(), a.rows(), a.cols(), cutoff), b);
   }
 
   /*!
@@ -5369,12 +5477,16 @@ namespace numerical {
    * \brief \ref lstsq, with the residuals, the rank and the singular values `numpy.linalg.lstsq` returns beside the
    *        solution: the residual sums of squares are given only where the solution is unique and need not be exact,
    *        `A` tall (`m > n`) and of full column rank, as NumPy gives them.
+   * \param[in] a      The `m × n` matrix.
+   * \param[in] b      The right-hand sides (`m × k`).
+   * \param[in] cutoff Where a singular value counts as zero, in the solution and the rank.
    * \throws dimension_error If \p b's rows differ from \p a's.
    * \throws non_finite_error If an entry of \p a is infinite or NaN.
    */
   template <typename T>
   [[nodiscard]] least_squares_solution<T> least_squares(const matrix<T>& a,
-                                                        const matrix<T>& b)
+                                                        const matrix<T>& b,
+                                                        rank_cutoff      cutoff = {})
   {
     if (b.rows() != a.rows()) {
       throw dimension_error("lstsq: right-hand side size differs from the matrix");
@@ -5382,7 +5494,7 @@ namespace numerical {
     detail::require_finite(a, "lstsq");
     // The singular values from what the solution took: the QR's R (A's over a power of two), else the decomposition.
     std::pair<buffer<T>, int>           r;
-    std::optional<matrix<T>>            fast {detail::lstsq_by_qr(a, b, &r)};
+    std::optional<matrix<T>>            fast {detail::lstsq_by_qr(a, b, cutoff, &r)};
     std::optional<svd_decomposition<T>> s;
     if (!fast) {
       s.emplace(a);
@@ -5395,7 +5507,7 @@ namespace numerical {
       }
     }
     const vector<double> sigma {std::move(values)};
-    const std::size_t    rank  {detail::numerical_rank(sigma, a.rows(), a.cols())};
+    const std::size_t    rank  {detail::numerical_rank(sigma, a.rows(), a.cols(), cutoff)};
     matrix<T>            x     {fast ? *std::move(fast) : detail::lstsq_from_svd(*s, rank, b)};
     buffer<double>       residuals;
     if (rank == a.cols() && a.rows() > a.cols()) {
@@ -5413,46 +5525,187 @@ namespace numerical {
                                       .singular_values = sigma};
   }
 
+  namespace detail {
+
+    //! \brief The real symmetric or complex Hermitian matrix whose lower triangle is the square \p a's, and of its
+    //!        diagonal the real part.
+    template <typename T>
+    [[nodiscard]] matrix<T> hermitian_from_lower(const matrix<T>& a)
+    {
+      const std::size_t n                {a.rows()};
+      buffer<T>         entries(n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < i; ++j) {
+          entries[(i * n) + j] = a(i, j);
+          entries[(j * n) + i] = conj_of(a(i, j));
+        }
+        entries[(i * n) + i] = from_double<T>(real_part(a(i, i)));
+      }
+      return matrix<T> {n, n, std::move(entries)};
+    }
+
+    /*!
+     * \brief `Σ_d right_d (1 / σ_d) left_dᴴ` over the columns `d` of \p right (`cols × k`) and \p left (`rows × k`)
+     *        whose \p sigma is above \p cutoff (of the largest magnitude in \p sigma): a pseudo-inverse from a
+     *        singular value decomposition (`right = V`, `left = U`) or from an eigendecomposition (`V` both, `σ` the
+     *        eigenvalues, signed). Through the matrix product kernel: summed term by term it ran five times as long as
+     *        NumPy's at order 512.
+     */
+    template <typename T>
+    [[nodiscard]] matrix<T> inverse_on_kept(const vector<double>& sigma,
+                                            const matrix<T>&      right,
+                                            const matrix<T>&      left,
+                                            rank_cutoff           cutoff)
+    {
+      const std::size_t rows    {left.rows()};
+      const std::size_t cols    {right.rows()};
+      double            largest {0.0};
+      for (std::size_t d {0}; d < sigma.size(); ++d) {
+        largest = std::max(largest, std::abs(sigma[d]));
+      }
+      const double             tolerance {cutoff.magnitude(largest, rows, cols)};
+      std::vector<std::size_t> kept;
+      for (std::size_t d {0}; d < sigma.size(); ++d) {
+        if (std::abs(sigma[d]) > tolerance) {
+          kept.push_back(d);
+        }
+      }
+      const std::size_t rank                        {kept.size()};
+      buffer<T>         scaled(cols * rank, T       {});
+      buffer<T>         left_adjoint(rank * rows, T {});
+      for (std::size_t e {0}; e < rank; ++e) {
+        const std::size_t d       {kept[e]};
+        const auto        inverse {from_double<T>(1.0 / sigma[d])};
+        for (std::size_t i {0}; i < cols; ++i) {
+          scaled[(i * rank) + e] = right(i, d) * inverse;
+        }
+        for (std::size_t j {0}; j < rows; ++j) {
+          left_adjoint[(e * rows) + j] = conj_of(left(j, d));
+        }
+      }
+      buffer<T> out(cols * rows, T {});
+      gemm(cols, rows, rank, scaled.data(), rank, left_adjoint.data(), rows, out.data(), rows);
+      return matrix<T> {cols, rows, std::move(out)};
+    }
+
+    /*!
+     * \brief The singular values of the real symmetric or complex Hermitian matrix whose lower triangle is \p a's: of
+     *        the matrix made whole, for a scalar the eigendecompositions do not take (they compute in `double`).
+     */
+    template <typename T>
+    [[nodiscard]] vector<double> hermitian_singular_values(const matrix<T>& a)
+    {
+      return singular_values(hermitian_from_lower(a));
+    }
+
+    //! \brief The magnitudes of the eigenvalues of the real symmetric or complex Hermitian \p a, its lower triangle read:
+    //!        its singular values, unordered.
+    template <typename T>
+    [[nodiscard]] vector<double> eigenvalue_magnitudes(const matrix<T>& a)
+    {
+      const vector<double> signed_values {symmetric_eigenvalues(a)};
+      buffer<double>       values(signed_values.begin(), signed_values.end());
+      for (double& value : values) {
+        value = std::abs(value);
+      }
+      return vector<double> {std::move(values)};
+    }
+
+    //! \brief \ref hermitian_singular_values in `double`: the magnitudes of the eigenvalues, cheaper.
+    [[nodiscard]] inline vector<double> hermitian_singular_values(const matrix<double>& a)
+    {
+      return eigenvalue_magnitudes(a);
+    }
+
+    //! \brief \ref hermitian_singular_values in `std::complex<double>`: the magnitudes of the eigenvalues, cheaper.
+    [[nodiscard]] inline vector<double> hermitian_singular_values(const matrix<std::complex<double>>& a)
+    {
+      return eigenvalue_magnitudes(a);
+    }
+
+    /*!
+     * \brief The pseudo-inverse of the real symmetric or complex Hermitian matrix whose lower triangle is \p a's: from
+     *        the singular value decomposition of the matrix made whole, for a scalar the eigendecompositions do not take.
+     */
+    template <typename T>
+    [[nodiscard]] matrix<T> hermitian_pseudo_inverse(const matrix<T>& a,
+                                                     rank_cutoff      cutoff)
+    {
+      const svd_decomposition<T> s {hermitian_from_lower(a)};
+      return inverse_on_kept(s.singular_values(), s.v(), s.u(), cutoff);
+    }
+
+    //! \brief \ref hermitian_pseudo_inverse in `double`: `V Λ⁺ Vᵀ` from the eigendecomposition, cheaper.
+    [[nodiscard]] inline matrix<double> hermitian_pseudo_inverse(const matrix<double>& a,
+                                                                 rank_cutoff           cutoff)
+    {
+      const symmetric_eigen decomposition {a};
+      const matrix<double>& vectors       {decomposition.vectors()};
+      return inverse_on_kept(decomposition.values(), vectors, vectors, cutoff);
+    }
+
+    //! \brief \ref hermitian_pseudo_inverse in `std::complex<double>`: `V Λ⁺ Vᴴ` from the eigendecomposition, cheaper.
+    [[nodiscard]] inline matrix<std::complex<double>> hermitian_pseudo_inverse(const matrix<std::complex<double>>& a,
+                                                                               rank_cutoff                         cutoff)
+    {
+      const hermitian_eigen               decomposition {a};
+      const matrix<std::complex<double>>& vectors       {decomposition.vectors()};
+      return inverse_on_kept(decomposition.values(), vectors, vectors, cutoff);
+    }
+  } // namespace detail
+
   /*!
-   * \brief The numerical rank of \p a, as `numpy.linalg.matrix_rank` counts it: its singular values above
-   *        \ref detail::rank_tolerance of the largest.
-   * \throws non_finite_error If an entry of \p a is infinite or NaN.
+   * \brief The numerical rank of \p a, as `numpy.linalg.matrix_rank` counts it: its singular values above \p cutoff.
+   * \param[in] a         The matrix.
+   * \param[in] cutoff    Where a singular value counts as zero; by default NumPy's (\ref rank_cutoff).
+   * \param[in] hermitian Whether \p a is real symmetric or complex Hermitian, as NumPy's `hermitian=True`: its
+   *                      singular values are then the magnitudes of its eigenvalues, cheaper to find (in `double`,
+   *                      real or complex; any other scalar takes its singular values), and only its lower triangle is
+   *                      read.
+   * \throws dimension_error  If \p hermitian and \p a is not square.
+   * \throws non_finite_error If an entry read is infinite or NaN.
    */
   template <typename T>
-  [[nodiscard]] std::size_t matrix_rank(const matrix<T>& a)
+  [[nodiscard]] std::size_t matrix_rank(const matrix<T>& a,
+                                        rank_cutoff      cutoff    = {},
+                                        bool             hermitian = false)
   {
-    return detail::numerical_rank(singular_values(a), a.rows(), a.cols());
+    if (hermitian) {
+      if (a.cols() != a.rows()) {
+        throw dimension_error("matrix_rank: a Hermitian matrix is square");
+      }
+      detail::require_finite_lower(a, "matrix_rank");
+      return detail::numerical_rank(detail::hermitian_singular_values(a), a.rows(), a.cols(), cutoff);
+    }
+    return detail::numerical_rank(singular_values(a), a.rows(), a.cols(), cutoff);
   }
 
   /*!
    * \brief The Moore–Penrose pseudo-inverse of the `m × n` \p a (`n × m`), as `numpy.linalg.pinv` gives it:
-   *        `V Σ⁺ Uᴴ`, a singular value under \ref detail::rank_tolerance of the largest counting as zero.
-   * \throws non_finite_error If an entry of \p a is infinite or NaN.
+   *        `V Σ⁺ Uᴴ`, a singular value at or under \p cutoff counting as zero.
+   * \param[in] a         The matrix.
+   * \param[in] cutoff    Where a singular value counts as zero; by default NumPy's (\ref rank_cutoff).
+   * \param[in] hermitian Whether \p a is real symmetric or complex Hermitian, as NumPy's `hermitian=True`: from its
+   *                      eigendecomposition `V Λ Vᴴ`, `V Λ⁺ Vᴴ`, cheaper (in `double`, real or complex; any other
+   *                      scalar takes its singular value decomposition), and only its lower triangle is read.
+   * \throws dimension_error  If \p hermitian and \p a is not square.
+   * \throws non_finite_error If an entry read is infinite or NaN.
    */
   template <typename T>
-  [[nodiscard]] matrix<T> pinv(const matrix<T>& a)
+  [[nodiscard]] matrix<T> pinv(const matrix<T>& a,
+                               rank_cutoff      cutoff    = {},
+                               bool             hermitian = false)
   {
-    detail::require_finite(a, "pinv");
-    const svd_decomposition<T> s    {a};
-    const std::size_t          rows {a.rows()};
-    const std::size_t          cols {a.cols()};
-    const std::size_t          rank {detail::numerical_rank(s.singular_values(), rows, cols)};
-    // (V Σ⁺) · Uᴴ over the first `rank` singular triplets, through the matrix product kernel: summed term by term
-    // it ran five times as long as NumPy's at order 512.
-    buffer<T> scaled(cols * rank, T       {});
-    buffer<T> left_adjoint(rank * rows, T {});
-    for (std::size_t d {0}; d < rank; ++d) {
-      const auto inverse {detail::from_double<T>(1.0 / s.singular_values()[d])};
-      for (std::size_t i {0}; i < cols; ++i) {
-        scaled[(i * rank) + d] = s.v()(i, d) * inverse;
+    if (hermitian) {
+      if (a.cols() != a.rows()) {
+        throw dimension_error("pinv: a Hermitian matrix is square");
       }
-      for (std::size_t j {0}; j < rows; ++j) {
-        left_adjoint[(d * rows) + j] = detail::conj_of(s.u()(j, d));
-      }
+      detail::require_finite_lower(a, "pinv");
+      return detail::hermitian_pseudo_inverse(a, cutoff);
     }
-    buffer<T> out(cols * rows, T {});
-    detail::gemm(cols, rows, rank, scaled.data(), rank, left_adjoint.data(), rows, out.data(), rows);
-    return matrix<T> {cols, rows, std::move(out)};
+    detail::require_finite(a, "pinv");
+    const svd_decomposition<T> s {a};
+    return detail::inverse_on_kept(s.singular_values(), s.v(), s.u(), cutoff);
   }
 } // namespace numerical
 

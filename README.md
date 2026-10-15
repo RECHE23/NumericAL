@@ -50,7 +50,10 @@ Small and complete, grown measured, honest about what is not yet here:
   rank and the singular values NumPy returns beside it; `pinv(a)` from the same SVD, `singular_values(a)`
   without the singular vectors (and `matrix_rank(a)` from them), `symmetric_eigenvalues(a)` without the
   eigenvectors (as NumPy's `eigvalsh`), and `lu_decomposition::log_determinant()` —
-  NumPy's `slogdet`, which does not underflow where the determinant does.
+  NumPy's `slogdet`, which does not underflow where the determinant does. `lstsq`, `least_squares`, `pinv` and
+  `matrix_rank` take a `rank_cutoff`: NumPy's default, `rank_cutoff::relative(r)` (`rcond`, `rtol`) or
+  `rank_cutoff::absolute(t)` (`tol`); `pinv(a, cutoff, true)` and `matrix_rank(a, cutoff, true)` take a Hermitian
+  `a` by its eigendecomposition, its lower triangle alone read.
 - `numerical::tensor<T>` — a dense, row-major, N-dimensional tensor (rank-1 is a
   vector, rank-2 a matrix, rank-0 a scalar; built directly or from a `vector` /
   `matrix`), with **`einsum`** — Einstein-summation index notation for
@@ -143,17 +146,21 @@ Shapes that do not broadcast raise a `ValueError` worded as NumPy's. `max` and `
 `float64` only (NumPy orders complex numbers lexicographically; NumericAL does not order them).
 
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
-`determinant(a)`, `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)`, `pinv(a)`,
-`matrix_rank(a)`, `eigvalsh(a)`, `lstsq(a, b)` → `(x, residuals, rank, s)` as NumPy's, `cholesky(a)`,
-`qr(a, mode="reduced")` → `(Q, R)` (`"complete"` as NumPy's, `"r"` → `R` alone), `eigh(a)` → `(values, vectors)`,
+`determinant(a)` (`det`), `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)` (`inv`), `pinv(a, rcond, hermitian)`,
+`matrix_rank(a, tol, hermitian)`, `eigvalsh(a, UPLO)`, `lstsq(a, b, rcond)` → `(x, residuals, rank, s)`,
+`cholesky(a, upper=False)`, `qr(a, mode="reduced")` → `(Q, R)` (`"complete"` as NumPy's, `"r"` → `R` alone),
+`eigh(a, UPLO)` → `(values, vectors)`,
 `svd(a, full_matrices=True, compute_uv=True)` → `(U, S, Vh)` as NumPy's (`full_matrices=False`: the thin
-factors, so `(U * S) @ Vh` is `a`; `compute_uv=False`: `S` alone). Every one accepts `float64`
+factors, so `(U * S) @ Vh` is `a`; `compute_uv=False`: `S` alone). The keywords mean what they mean to NumPy 2:
+`UPLO="U"` and `upper=True` read the upper triangle, `rcond`/`rtol` cut the singular values relative to the
+largest and `tol` absolutely, `hermitian=True` takes the eigendecomposition. Every one accepts `float64`
 and `complex128`; `eigh` of a complex Hermitian matrix gives real values and complex vectors.
-`eigh(a, method)` and `svd(a, method=...)` choose the algorithm: divide and conquer by default (LAPACK's
+`eigh(a, method=...)` and `svd(a, method=...)` choose the algorithm: divide and conquer by default (LAPACK's
 `dsyevd`/`zheevd`, `dgesdd`), `"tridiagonal_ql"` or `"bidiagonal_qr"` (`dsyev`'s, `dgesvd`'s), or `"jacobi"`.
-A matrix holding a NaN or an infinity (in the triangle `eigh` and `eigvalsh` read, the lower one) raises
+A matrix holding a NaN or an infinity (in the triangle read, where only one is) raises
 `numerical.LinAlgError`, where NumPy returns NaN factors or raises depending on the routine: a decomposition
-of a non-finite matrix has no meaning, and saying so beats propagating NaN into every factor.
+of a non-finite matrix has no meaning, and saying so beats propagating NaN into every factor. A negative or NaN
+tolerance raises too, where NumPy's `pinv` and `matrix_rank` return infinities or a rank of 0.
 
 A `Tensor` is a citizen of the scientific Python stack, **zero-copy**:
 

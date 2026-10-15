@@ -128,6 +128,16 @@ def norm(a):
     return float(np.linalg.norm(a)) if a.size else 0.0
 
 
+def scaled_norm(a):
+    """The Frobenius norm, taken at the scale of the largest magnitude: a plain sum of squares overflows past 1e154."""
+    if not a.size:
+        return 0.0
+    largest = float(np.max(np.abs(a)))
+    if largest == 0.0 or not np.isfinite(largest):
+        return largest
+    return largest * float(np.linalg.norm(a / largest))
+
+
 class Failure(Exception):
     pass
 
@@ -153,6 +163,12 @@ def run_eigh(a):
     check(np.max(np.abs(w - want), initial=0.0) <= bound(n, size_a), "eigenvalues differ from NumPy's")
     alone = as_np(numerical.eigvalsh(numerical.asarray(a)))
     check(np.max(np.abs(alone - want), initial=0.0) <= bound(n, size_a), "eigvalsh differs from NumPy's")
+    # UPLO="U" reads the upper triangle: of a Hermitian matrix, the conjugate of the lower, so the same bits.
+    upper_only = np.triu(a) + np.tril(np.full((n, n), np.nan), -1)
+    wu, vu = (as_np(t) for t in numerical.eigh(numerical.asarray(upper_only), "U"))
+    check(np.array_equal(wu, w) and np.array_equal(vu, v), "eigh(UPLO='U') differs from the lower triangle's")
+    check(np.array_equal(as_np(numerical.eigvalsh(numerical.asarray(upper_only), "U")), alone),
+          "eigvalsh(UPLO='U') differs from the lower triangle's")
 
 
 def run_svd(a):
@@ -231,25 +247,35 @@ def run_cholesky(a):
     lower = as_np(numerical.cholesky(numerical.asarray(spd)))
     check(np.allclose(np.triu(lower, 1), 0), "Cholesky factor not lower triangular")
     check(norm(lower @ lower.conj().T - spd) <= bound(n, norm(spd)), "Cholesky does not reconstruct")
+    # upper=True reads the upper triangle, as NumPy's: the factor of the matrix that triangle makes.
+    upper_only = np.triu(spd) + np.tril(np.full((n, n), np.nan), -1)
+    from_upper = np.triu(spd) + np.triu(spd, 1).conj().T
+    upper = as_np(numerical.cholesky(numerical.asarray(upper_only), upper=True))
+    check(np.allclose(np.tril(upper, -1), 0), "upper Cholesky factor not upper triangular")
+    check(norm(upper.conj().T @ upper - from_upper) <= bound(n, norm(spd)), "upper Cholesky does not reconstruct")
+
+
+RCONDS = (None, None, -1.0, 0.0, 1e-12, 1e-6, 1e-2)
 
 
 def run_lstsq(a, rng):
-    """Any shape, any rank. Where NumPy's rank is plain (every singular value a thousand times past its tolerance,
-    one way or the other), the same minimum-norm solution to within the conditioning of the kept values; between,
-    where the two may draw the rank differently, a finite answer."""
+    """Any shape, any rank, any rcond. Where NumPy's rank is plain (every singular value a thousand times past its
+    tolerance, one way or the other), the same minimum-norm solution to within the conditioning of the kept values;
+    between, where the two may draw the rank differently, a finite answer."""
     m, n = a.shape
     if a.size == 0:
         return
     b = rng.standard_normal(m) + (1j * rng.standard_normal(m) if np.iscomplexobj(a) else 0)
-    x = as_np(numerical.lstsq(numerical.asarray(a), numerical.asarray(b))[0])
-    want = np.linalg.lstsq(a, b, rcond=None)[0]
+    rcond = RCONDS[int(rng.integers(len(RCONDS)))]
+    x = as_np(numerical.lstsq(numerical.asarray(a), numerical.asarray(b), rcond)[0])
+    want = np.linalg.lstsq(a, b, rcond=rcond)[0]
     if not np.isfinite(want).all():
         return  # NumPy's own answer overflowed: nothing to compare
     sigma = np.linalg.svd(a, compute_uv=False)
     if not np.isfinite(sigma).all() or sigma[0] == 0:
         check(np.allclose(x, want), "lstsq of a zero matrix differs from NumPy's")
         return
-    tolerance = sigma[0] * EPS * max(m, n)
+    tolerance = sigma[0] * relative_tolerance(rcond, m, n, lapack=True)
     if np.any((sigma > tolerance / 1e3) & (sigma < tolerance * 1e3)):
         check(np.isfinite(x).all(), "lstsq near NumPy's rank tolerance is not finite")
         return
@@ -262,6 +288,70 @@ def run_lstsq(a, rng):
     allowed = 50 * max(m, n) * EPS * (condition * max(norm(want), 1e-300) + condition**2 * residual / kept[0])
     check(norm(x - want) <= allowed + bound(max(m, n), 1e-300),
           f"lstsq differs from NumPy's ({norm(x - want):.3g} for |x| {norm(want):.3g}, kept κ {condition:.3g})")
+
+
+def relative_tolerance(rtol, m, n, lapack=False):
+    """NumPy's cutoff relative to the largest singular value: rtol, or ε max(m, n) for None (for lstsq, ε for a
+    negative one, as LAPACK's)."""
+    if rtol is None:
+        return EPS * max(m, n)
+    return EPS if lapack and rtol < 0 else rtol
+
+
+def plain_rank(sigma, cutoff, floor):
+    """The rank at `cutoff` where no singular value lies within a factor of a thousand of it, else None. Under `floor`,
+    the rounding of the decomposition (ε max(m, n) times the largest), a value may come out zero or not: a cutoff
+    under a thousand times it leaves every value under that ambiguous."""
+    if cutoff < floor * 1e3:
+        ambiguous = sigma < floor * 1e3
+    else:
+        ambiguous = (sigma > cutoff / 1e3) & (sigma < cutoff * 1e3)
+    if np.any(ambiguous):
+        return None
+    return int(np.count_nonzero(sigma > cutoff))
+
+
+def run_pinv_and_rank(a, h, rng):
+    """pinv and matrix_rank, general and Hermitian, at NumPy's tolerance or a drawn one: where the rank is plain, the
+    same rank, and a pseudo-inverse that meets the Penrose conditions and agrees with NumPy's to the conditioning of the
+    kept values. The Hermitian forms read the lower triangle alone."""
+    rtol = RCONDS[int(rng.integers(len(RCONDS)))]
+    rtol = None if rtol is not None and rtol < 0 else rtol
+    for matrix, hermitian in ((a, False), (h, True)):
+        m, n = matrix.shape
+        if matrix.size == 0 or not np.isfinite(matrix).all():
+            continue
+        given = np.tril(matrix) + np.triu(np.full((n, n), np.nan), 1) if hermitian else matrix
+        sigma = np.abs(np.linalg.eigvalsh(matrix)) if hermitian else np.linalg.svd(matrix, compute_uv=False)
+        largest = float(np.max(sigma, initial=0.0))
+        if not np.isfinite(largest):
+            continue
+        cutoff = largest * relative_tolerance(rtol, m, n)
+        floor = largest * EPS * max(m, n)
+        rank = numerical.matrix_rank(numerical.asarray(given), hermitian=hermitian, rtol=rtol)
+        plain = plain_rank(sigma, cutoff, floor)
+        if plain is not None:
+            check(rank == plain, f"matrix_rank {rank}, NumPy's {plain} (hermitian={hermitian}, rtol={rtol})")
+        tol = cutoff * float(rng.choice((0.5, 2.0)))  # an absolute tol, as matrix_rank's
+        plain = plain_rank(sigma, tol, floor)
+        if plain is not None:
+            got = numerical.matrix_rank(numerical.asarray(given), tol, hermitian)
+            check(got == plain, f"matrix_rank(tol) {got}, NumPy's {plain} (hermitian={hermitian})")
+        p = as_np(numerical.pinv(numerical.asarray(given), rtol, hermitian))
+        check(p.shape == (n, m), f"pinv shape {p.shape}")
+        if plain_rank(sigma, cutoff, floor) is None or largest == 0:
+            check(np.isfinite(p).all() or largest == 0, "pinv near the tolerance is not finite")
+            continue
+        kept = np.sort(sigma[sigma > cutoff])[::-1]
+        if kept.size == 0:
+            check(not np.any(p), "pinv of a rank-0 matrix is not zero")
+            continue
+        condition = kept[0] / kept[-1]
+        want = np.linalg.pinv(matrix, rcond=rtol, hermitian=hermitian) if rtol is not None else \
+            np.linalg.pinv(matrix, hermitian=hermitian)
+        allowed = 50 * max(m, n) * EPS * condition / kept[-1]
+        check(scaled_norm(p - want) <= allowed * max(1.0, np.sqrt(kept.size)),
+              f"pinv differs from NumPy's ({scaled_norm(p - want):.3g}, allowed {allowed:.3g}, hermitian={hermitian})")
 
 
 def case(seed, index, largest):
@@ -283,7 +373,7 @@ def run_case(seed, index, largest):
     rng, label, g, h, square = case(seed, index, largest)
     operations = (("eigh", lambda: run_eigh(h)), ("svd", lambda: run_svd(g)), ("qr", lambda: run_qr(g)),
                   ("solve", lambda: run_solve(square, rng)), ("cholesky", lambda: run_cholesky(square)),
-                  ("lstsq", lambda: run_lstsq(g, rng)))
+                  ("lstsq", lambda: run_lstsq(g, rng)), ("pinv/rank", lambda: run_pinv_and_rank(g, h, rng)))
     failures = []
     for name, operation in operations:
         try:

@@ -7,6 +7,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Breaking
+- **`eigh(a, UPLO="L", *, method=...)`**: the second argument is NumPy's `UPLO`, and the method goes by keyword; a
+  method's name in second place raises `TypeError` naming `method=`.
 - **`svd(a)` returns NumPy's default, the full factors**: `svd(a, full_matrices=True, compute_uv=True)`, `U` `m × m`
   and `Vh` `n × n`, the thin ones extended by an orthonormal basis of the complement, where it returned the thin
   factors of `full_matrices=False`. Code that relied on `(U * S) @ Vh` being `a` passes `full_matrices=False`;
@@ -14,10 +16,26 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   second place raises `TypeError` naming it. C++: `svd_decomposition(a, method, full)`.
 
 ### Added
+- **NumPy's keywords on the decompositions**: `eigh(a, UPLO)` and `eigvalsh(a, UPLO)` (`"U"` reads the upper
+  triangle), `cholesky(a, upper=True)` (`U` with `a = Uᴴ U`, from the upper triangle), `lstsq(a, b, rcond)` (a negative
+  `rcond` is machine epsilon, as LAPACK's), `pinv(a, rcond, hermitian, *, rtol)` and
+  `matrix_rank(A, tol, hermitian, *, rtol)`; `hermitian=True` takes the eigendecomposition, cheaper, and reads the
+  lower triangle alone. `matrix_rank` of a vector or a number is NumPy's (1 unless all zero). `det` and `inv` name
+  `determinant` and `inverse`. C++: `rank_cutoff` (NumPy's default, `relative`, `absolute`) for `lstsq`,
+  `least_squares`, `pinv` and `matrix_rank`, which take `hermitian` too. A negative or NaN tolerance raises, where
+  NumPy returns infinities or a rank of 0.
 - **`qr(a, mode)`** takes NumPy's `"reduced"` (the default), `"complete"` (`Q` `m × m`, `R` `m × n`, the reduced
   factors extended) and `"r"` (`R` alone); `"raw"` raises `ValueError`. C++: `qr_decomposition(a, qr_mode::complete)`.
 - The differential fuzzer holds the full factors orthonormal and the thin ones their first columns, and the
   complete QR an extension of the reduced one, bit for bit.
+
+### Fixed
+- **C++: the singular value decomposition of a `float` or `std::complex<float>` matrix converges**: a zero in its
+  bidiagonal took a NaN phase (the factor that rescues a tiny magnitude was a `double`'s, infinite in `float`), and
+  one-sided Jacobi sought an orthogonality to `double`'s epsilon that `float` columns do not hold; both ran out of
+  steps and threw. The Python binding, in `float64` and `complex128`, was not touched.
+- **`cholesky` reads its lower triangle alone, NaN and infinities included**, as it reads the values: a NaN above the
+  diagonal raised, where NumPy ignores it.
 
 ### Changed
 - **`eigh` keeps the buffers of its divide and conquer from one call to the next, on each thread**, where every call

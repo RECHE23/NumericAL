@@ -1188,61 +1188,82 @@ PyObject* module_slogdet(PyObject* /*self*/, PyObject* args)
     }
 }
 
-template <typename T>
-std::size_t do_matrix_rank(const numerical::tensor<T>& a)
+// The cutoff named by NumPy's tolerances: tol absolute, else rtol relative to the largest singular value, else NumPy's
+// default.
+numerical::rank_cutoff cutoff_named(std::optional<double> rtol, std::optional<double> tol)
 {
-    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-    return numerical::matrix_rank(matrix_from(a));
+    if (tol) {
+        return numerical::rank_cutoff::absolute(*tol);
+    }
+    return rtol ? numerical::rank_cutoff::relative(*rtol) : numerical::rank_cutoff {};
 }
 
-// matrix_rank(a) -> int, as numpy.linalg.matrix_rank.
-std::size_t matrix_rank(const any_tensor& v)
+// The matrix whose lower triangle is a's upper one, conjugated: what a routine reading the lower triangle reads for
+// NumPy's UPLO="U".
+template <typename T>
+numerical::matrix<T> lower_read(const numerical::tensor<T>& a, bool upper)
+{
+    numerical::matrix<T> m {matrix_from(a)};
+    return upper ? numerical::detail::adjoint(m) : m;
+}
+
+template <typename T>
+std::size_t do_matrix_rank(const numerical::tensor<T>& a, numerical::rank_cutoff cutoff, bool hermitian)
+{
+    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+    return numerical::matrix_rank(matrix_from(a), cutoff, hermitian);
+}
+
+// matrix_rank(a, rtol, tol, hermitian) -> int, as numpy.linalg.matrix_rank.
+std::size_t matrix_rank(const any_tensor& v, std::optional<double> rtol, std::optional<double> tol, bool hermitian)
 {
     if (shape_of(v).size() != 2) {
         throw std::runtime_error("matrix_rank expects a matrix (rank-2 tensor)");
     }
+    const numerical::rank_cutoff cutoff {cutoff_named(rtol, tol)};
     if (is_complex(v)) {
-        return do_matrix_rank<std::complex<double>>(std::get<cplx_tensor>(v));
+        return do_matrix_rank<std::complex<double>>(std::get<cplx_tensor>(v), cutoff, hermitian);
     }
-    return do_matrix_rank<double>(std::get<real_tensor>(v));
+    return do_matrix_rank<double>(std::get<real_tensor>(v), cutoff, hermitian);
 }
 
 template <typename T>
-any_tensor do_eigvalsh(const numerical::tensor<T>& a)
+any_tensor do_eigvalsh(const numerical::tensor<T>& a, bool upper)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-    return any_tensor {real_tensor {numerical::symmetric_eigenvalues(matrix_from(a))}};
+    return any_tensor {real_tensor {numerical::symmetric_eigenvalues(lower_read(a, upper))}};
 }
 
-// eigvalsh(a) -> Tensor, as numpy.linalg.eigvalsh: the eigenvalues alone, real and ascending.
-any_tensor eigvalsh(const any_tensor& v)
+// eigvalsh(a, upper) -> Tensor, as numpy.linalg.eigvalsh: the eigenvalues alone, real and ascending.
+any_tensor eigvalsh(const any_tensor& v, bool upper)
 {
     if (shape_of(v).size() != 2) {
         throw std::runtime_error("eigvalsh expects a matrix (rank-2 tensor)");
     }
     if (is_complex(v)) {
-        return do_eigvalsh<std::complex<double>>(std::get<cplx_tensor>(v));
+        return do_eigvalsh<std::complex<double>>(std::get<cplx_tensor>(v), upper);
     }
-    return do_eigvalsh<double>(std::get<real_tensor>(v));
+    return do_eigvalsh<double>(std::get<real_tensor>(v), upper);
 }
 
 template <typename T>
-any_tensor do_pinv(const numerical::tensor<T>& a)
+any_tensor do_pinv(const numerical::tensor<T>& a, numerical::rank_cutoff cutoff, bool hermitian)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-    return any_tensor {numerical::tensor<T> {numerical::pinv(matrix_from(a))}};
+    return any_tensor {numerical::tensor<T> {numerical::pinv(matrix_from(a), cutoff, hermitian)}};
 }
 
-// pinv(a) -> Tensor, as numpy.linalg.pinv.
-any_tensor pinv(const any_tensor& v)
+// pinv(a, rtol, hermitian) -> Tensor, as numpy.linalg.pinv.
+any_tensor pinv(const any_tensor& v, std::optional<double> rtol, bool hermitian)
 {
     if (shape_of(v).size() != 2) {
         throw std::runtime_error("pinv expects a matrix (rank-2 tensor)");
     }
+    const numerical::rank_cutoff cutoff {cutoff_named(rtol, std::nullopt)};
     if (is_complex(v)) {
-        return do_pinv<std::complex<double>>(std::get<cplx_tensor>(v));
+        return do_pinv<std::complex<double>>(std::get<cplx_tensor>(v), cutoff, hermitian);
     }
-    return do_pinv<double>(std::get<real_tensor>(v));
+    return do_pinv<double>(std::get<real_tensor>(v), cutoff, hermitian);
 }
 
 template <typename T>
@@ -1269,12 +1290,12 @@ any_tensor inverse(const any_tensor& v)
 using lstsq_result = std::tuple<any_tensor, any_tensor, std::size_t, any_tensor>;
 
 template <typename T>
-lstsq_result do_lstsq(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+lstsq_result do_lstsq(const numerical::tensor<T>& a, const numerical::tensor<T>& b, numerical::rank_cutoff cutoff)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
     const bool                   column {b.shape().size() == 1};
     const numerical::matrix<T>   rhs {column ? numerical::matrix<T> {b.shape()[0], 1, b.data()} : matrix_from(b)};
-    numerical::least_squares_solution<T> found {numerical::least_squares(matrix_from(a), rhs)};
+    numerical::least_squares_solution<T> found {numerical::least_squares(matrix_from(a), rhs, cutoff)};
     const auto as_tensor_of = [](const numerical::vector<double>& values) {
         return any_tensor {real_tensor {{values.size()}, numerical::buffer<double>(values.begin(), values.end())}};
     };
@@ -1285,9 +1306,9 @@ lstsq_result do_lstsq(const numerical::tensor<T>& a, const numerical::tensor<T>&
     return {any_tensor {std::move(x)}, as_tensor_of(found.residuals), found.rank, as_tensor_of(found.singular_values)};
 }
 
-// lstsq(a, b) -> (x, residuals, rank, s), as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one
+// lstsq(a, b, rtol) -> (x, residuals, rank, s), as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one
 // right-hand side per column).
-lstsq_result lstsq(const any_tensor& a, const any_tensor& b)
+lstsq_result lstsq(const any_tensor& a, const any_tensor& b, std::optional<double> rtol)
 {
     if (shape_of(a).size() != 2 || (shape_of(b).size() != 1 && shape_of(b).size() != 2)) {
         throw std::runtime_error("lstsq(a, b) needs a rank-2 a and a rank-1 or rank-2 b");
@@ -1295,29 +1316,32 @@ lstsq_result lstsq(const any_tensor& a, const any_tensor& b)
     if (is_complex(a) != is_complex(b)) {
         throw std::runtime_error("lstsq operands must share one dtype");
     }
+    const numerical::rank_cutoff cutoff {cutoff_named(rtol, std::nullopt)};
     if (is_complex(a)) {
-        return do_lstsq<std::complex<double>>(std::get<cplx_tensor>(a), std::get<cplx_tensor>(b));
+        return do_lstsq<std::complex<double>>(std::get<cplx_tensor>(a), std::get<cplx_tensor>(b), cutoff);
     }
-    return do_lstsq<double>(std::get<real_tensor>(a), std::get<real_tensor>(b));
+    return do_lstsq<double>(std::get<real_tensor>(a), std::get<real_tensor>(b), cutoff);
 }
 
 template <typename T>
-any_tensor do_cholesky(const numerical::tensor<T>& a)
+any_tensor do_cholesky(const numerical::tensor<T>& a, bool upper)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-    return any_tensor {numerical::tensor<T> {numerical::cholesky_decomposition<T> {matrix_from(a)}.lower()}};
+    numerical::matrix<T>         lower {numerical::cholesky_decomposition<T> {lower_read(a, upper)}.lower()};
+    return any_tensor {numerical::tensor<T> {upper ? numerical::detail::adjoint(lower) : std::move(lower)}};
 }
 
-// cholesky(a) -> Tensor (the lower factor L of A = L Lᴴ).
-any_tensor cholesky(const any_tensor& v)
+// cholesky(a, upper) -> Tensor: the lower factor L of A = L Lᴴ, or with upper the factor U of A = Uᴴ U, from A's upper
+// triangle, as numpy.linalg.cholesky(a, upper=True).
+any_tensor cholesky(const any_tensor& v, bool upper)
 {
     if (shape_of(v).size() != 2) {
         throw std::runtime_error("cholesky expects a matrix (rank-2 tensor)");
     }
     if (is_complex(v)) {
-        return do_cholesky<std::complex<double>>(std::get<cplx_tensor>(v));
+        return do_cholesky<std::complex<double>>(std::get<cplx_tensor>(v), upper);
     }
-    return do_cholesky<double>(std::get<real_tensor>(v));
+    return do_cholesky<double>(std::get<real_tensor>(v), upper);
 }
 
 // An eigen_method, svd_method or qr_mode by its enumerator's name.
@@ -1355,9 +1379,9 @@ std::tuple<any_tensor, any_tensor> qr(const any_tensor& v, const std::string& na
 }
 
 
-// eigh(a, method) -> (eigenvalues, eigenvectors) for a real symmetric or a complex Hermitian matrix: the values
-// are real.
-std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& name)
+// eigh(a, method, upper) -> (eigenvalues, eigenvectors) for a real symmetric or a complex Hermitian matrix: the values
+// are real; its lower triangle is read, or its upper one.
+std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& name, bool upper)
 {
     using numerical::eigen_method;
     const eigen_method method {method_named<eigen_method>(name, {{"divide_and_conquer", eigen_method::divide_and_conquer},
@@ -1369,13 +1393,13 @@ std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& 
     if (is_complex(v)) {
         const cplx_tensor&               a = std::get<cplx_tensor>(v);
         const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
-        numerical::hermitian_eigen   decomposition {matrix_from(a), method};
+        numerical::hermitian_eigen   decomposition {lower_read(a, upper), method};
         return {any_tensor {real_tensor {decomposition.values()}},
                 any_tensor {cplx_tensor {std::move(decomposition).vectors()}}};
     }
     const real_tensor&               a = std::get<real_tensor>(v);
     const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
-    numerical::symmetric_eigen   decomposition {matrix_from(a), method};
+    numerical::symmetric_eigen   decomposition {lower_read(a, upper), method};
     return {any_tensor {real_tensor {decomposition.values()}},
             any_tensor {real_tensor {std::move(decomposition).vectors()}}};
 }
@@ -2032,13 +2056,13 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&amx_probed>("_amx_probed", "_amx_probed() -> bool\nWhether the AMX's self-test has run in this process.");
     m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
-    m.def<&lstsq>("lstsq", "lstsq(a, b) -> (x, residuals, rank, s)\nThe minimum-norm least-squares solution of a @ x ≈ b with its residual sums of squares, the rank and the singular values of a, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
-    m.def<&cholesky>("cholesky", "cholesky(a) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite).");
+    m.def<&lstsq>("lstsq", "lstsq(a, b, rtol) -> (x, residuals, rank, s)\nThe minimum-norm least-squares solution of a @ x ≈ b with its residual sums of squares, the rank and the singular values of a, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
+    m.def<&cholesky>("cholesky", "cholesky(a, upper) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite), or with upper the factor U of A = Uᴴ U from its upper triangle.");
     m.def<&qr>("qr", "qr(a, mode) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr: reduced, Q is m×k, R k×n, k = min(m, n); complete, Q is m×m, R m×n.");
-    m.def<&eigh>("eigh", "eigh(a, method) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, as numpy.linalg.eigh reads it.");
-    m.def<&eigvalsh>("eigvalsh", "eigvalsh(a) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read).");
-    m.def<&matrix_rank>("matrix_rank", "matrix_rank(a) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank.");
-    m.def<&pinv>("pinv", "pinv(a) -> Tensor\nThe Moore–Penrose pseudo-inverse of an m×n matrix, as numpy.linalg.pinv.");
+    m.def<&eigh>("eigh", "eigh(a, method, upper) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, or with upper its upper one, as numpy.linalg.eigh's UPLO.");
+    m.def<&eigvalsh>("eigvalsh", "eigvalsh(a, upper) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read, or with upper its upper one).");
+    m.def<&matrix_rank>("matrix_rank", "matrix_rank(a, rtol, tol, hermitian) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank: its singular values above tol, else above rtol times the largest (None, None: NumPy's default).");
+    m.def<&pinv>("pinv", "pinv(a, rtol, hermitian) -> Tensor\nThe Moore–Penrose pseudo-inverse of an m×n matrix, as numpy.linalg.pinv (rtol None: NumPy's default).");
     m.def<&svd>("svd", "svd(a, method, full) -> (U, S, Vh)\nThe singular value decomposition of an m×n matrix, as numpy.linalg.svd(a, full_matrices=full).");
     m.def<&singular_values>("_singular_values", "_singular_values(a) -> Tensor\nThe singular values alone, descending, as numpy.linalg.svd(a, compute_uv=False).");
     // The 3 that stay manual: determinant (dtype-dependent scalar), einsum (variadic),
