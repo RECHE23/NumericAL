@@ -142,9 +142,10 @@ if(NUMERICAL_SANITIZE)
     if(MSVC)
         message(FATAL_ERROR "NUMERICAL_SANITIZE requires a GCC/Clang-family compiler")
     endif()
+    # -fno-sanitize-recover: undefined behaviour stops the run; recovering, UBSan prints a line and the test passes.
     target_compile_options(numerical_tests_bin PRIVATE
-        -fsanitize=address,undefined -fno-omit-frame-pointer -g -O1)
-    target_link_options(numerical_tests_bin PRIVATE -fsanitize=address,undefined)
+        -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1)
+    target_link_options(numerical_tests_bin PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=undefined)
 endif()
 
 if(NUMERICAL_COVERAGE)
