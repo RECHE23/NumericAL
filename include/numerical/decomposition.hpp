@@ -207,11 +207,26 @@ namespace numerical {
       return static_cast<double>(x.real());
     }
 
-    //! \brief The exact power of two that brings a magnitude below 2⁻⁵⁰⁰ up among normal numbers, as LAPACK's dlarfg
-    //!        rescales; 1 for any larger magnitude.
-    [[nodiscard]] inline double rescue_factor(double largest)
+    //! \brief The real type whose range a `T`'s values take: `float` for a single-precision scalar, real or complex;
+    //!        `double` otherwise (a `long double`'s magnitudes are carried in `double`).
+    template <typename T>
+    using value_range_t =
+      std::conditional_t<std::is_same_v<T, float> || std::is_same_v<T, std::complex<float>>, float, double>;
+
+    //! \brief The magnitude under which \ref rescue_factor scales a `T` up: about the square root of the smallest normal
+    //!        number of its range.
+    template <typename T>
+    inline constexpr double rescue_below {std::is_same_v<value_range_t<T>, float> ? 0x1p-60 : 0x1p-500};
+
+    //! \brief The exact power of two that brings a magnitude below about the square root of the smallest normal number
+    //!        of \p T's range (2⁻⁵⁰⁰ in `double`, 2⁻⁶⁰ in `float`) up among normal numbers, as LAPACK's dlarfg
+    //!        rescales; 1 for any larger magnitude. It is a `T` itself: a zero takes the factor of the smallest normal
+    //!        number, which a `double`'s range holds and a `float`'s does not.
+    template <typename T>
+    [[nodiscard]] double rescue_factor(double largest)
     {
-      return largest < 0x1p-500 ? std::ldexp(1.0, -std::ilogb(std::max(largest, std::numeric_limits<double>::min()))) : 1.0;
+      constexpr double least {static_cast<double>(std::numeric_limits<value_range_t<T>>::min())};
+      return largest < rescue_below<T> ? std::ldexp(1.0, -std::ilogb(std::max(largest, least))) : 1.0;
     }
 
     /*!
@@ -222,7 +237,7 @@ namespace numerical {
     template <typename T>
     [[nodiscard]] T phase_of(const T& x)
     {
-      const T      scaled    {x * detail::from_double<T>(rescue_factor(static_cast<double>(std::abs(x))))};
+      const T      scaled    {x * detail::from_double<T>(rescue_factor<T>(static_cast<double>(std::abs(x))))};
       const double magnitude {static_cast<double>(std::abs(scaled))};
       return magnitude == 0.0 ? T {1} : scaled / detail::from_double<T>(magnitude);
     }
@@ -230,7 +245,8 @@ namespace numerical {
     /*!
      * \brief Scales \p x by \ref rescue_factor of its largest magnitude, exactly, so that a Householder vector built
      *        from it is computed among normal numbers: a subnormal norm rounds to the coarse subnormal grid, and the
-     *        reflector is then not orthogonal. \return The factor (1 unless the entries are all below 2⁻⁵⁰⁰).
+     *        reflector is then not orthogonal. \return The factor (1 unless the entries are all below 2⁻⁵⁰⁰, 2⁻⁶⁰ in
+     *        `float`).
      */
     template <typename T>
     double rescale_tiny(buffer<T>& x)
@@ -239,7 +255,7 @@ namespace numerical {
       for (const T& element : x) {
         largest = std::max(largest, static_cast<double>(std::abs(element)));
       }
-      const double factor {rescue_factor(largest)};
+      const double factor {rescue_factor<T>(largest)};
       for (T& element : x) {
         element *= detail::from_double<T>(factor);
       }
@@ -3578,7 +3594,8 @@ namespace numerical {
                                    }};
       transpose_square(w);
       transpose_square(v);
-      const double epsilon {std::numeric_limits<double>::epsilon()};
+      // Orthogonal to the rounding of the columns' storage: a float column holds no inner product to double's.
+      const double epsilon {static_cast<double>(std::numeric_limits<value_range_t<T>>::epsilon())};
       for (std::size_t sweep {1};; ++sweep) {
         bool rotated {false};
         for (std::size_t p {0}; p < n; ++p) {

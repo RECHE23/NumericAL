@@ -209,6 +209,16 @@ namespace {
     const vector<T> b       {right_hand_side<T>(matrix_order + 2)};
     const vector<T> x       {numerical::lstsq(a, b)};
     const matrix<T> p       {numerical::pinv(a)};
+    // Every method on a Hermitian positive-definite matrix: in float, its bidiagonal holds an exact zero, whose phase
+    // once came out NaN, and one-sided Jacobi looked for an orthogonality float columns do not hold.
+    const matrix<T> h       {hermitian_positive<T>()};
+    for (const numerical::svd_method method :
+         {numerical::svd_method::divide_and_conquer, numerical::svd_method::bidiagonal_qr, numerical::svd_method::jacobi}) {
+      const numerical::svd_decomposition<T> e {h, method};
+      if (std::abs(e.singular_values()[0] - numerical::singular_values(h)[0]) > residual_bound<T>() * e.singular_values()[0]) {
+        return false;
+      }
+    }
     return relative_gap(rebuilt, a) < residual_bound<T>() && numerical::matrix_rank(a) == matrix_order
            && relative_gap(p * b, x) < residual_bound<T>() && relative_gap(p * a, identity<T>(matrix_order)) < residual_bound<T>();
   }

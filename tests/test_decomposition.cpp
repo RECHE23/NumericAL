@@ -674,6 +674,20 @@ TEST(log_determinant_rank_and_pseudo_inverse)
   EXPECT(approx_equal(numerical::pinv(z), numerical::inverse(z)));
 }
 
+// A phase is of unit modulus at any magnitude a scalar holds, and 1 at zero: in float the factor that rescues a
+// subnormal once overflowed to infinity, and zero times it was NaN.
+TEST(the_phase_of_a_scalar_is_of_unit_modulus_in_every_precision)
+{
+  using numerical::detail::phase_of;
+  using cf = std::complex<float>;
+  EXPECT(phase_of(0.0F) == 1.0F && phase_of(cf {}) == cf {1.0F});
+  EXPECT(phase_of(0.0) == 1.0 && phase_of(std::complex<double> {}) == std::complex<double> {1.0});
+  const float tiny {std::numeric_limits<float>::denorm_min() * 7.0F};
+  EXPECT(phase_of(-tiny) == -1.0F);
+  EXPECT(std::abs(std::abs(phase_of(cf {tiny, tiny})) - 1.0F) < 4.0F * std::numeric_limits<float>::epsilon());
+  EXPECT(std::abs(std::abs(phase_of(std::complex<double> {1e-320, -3e-320})) - 1.0) < 4.0 * std::numeric_limits<double>::epsilon());
+}
+
 // lstsq is NumPy's: the least-squares solution of a full-rank tall system, accurate on a Vandermonde
 // fit (modified Gram–Schmidt left a coefficient error of 0.6 at degree 11), and the minimum-norm one
 // of a rank-deficient or wide system.
