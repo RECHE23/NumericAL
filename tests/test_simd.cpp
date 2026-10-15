@@ -144,6 +144,34 @@ TEST(row_combinations_match_their_terms_one_by_one)
   }
 }
 
+// Eight rows at once, each with its own factors on the same rows of x: each element as subtract_products gives it
+// row by row, on every path, across every remainder of the column loops (8 and 4 at a time, then one).
+TEST(rows_together_match_their_rows_one_by_one)
+{
+  constexpr std::size_t rows {numerical::detail::product_rows};
+  for (const std::size_t count : {std::size_t {0}, std::size_t {1}, std::size_t {3}, std::size_t {4}, std::size_t {5}, std::size_t {8}, std::size_t {11}, std::size_t {16}}) {
+    for (const std::size_t terms : {std::size_t {0}, std::size_t {1}, std::size_t {6}}) {
+      const std::size_t   ldx {count + 3};
+      const std::size_t   ldy {count + 2};
+      const std::size_t   ldf {terms + 1};
+      std::vector<double> x   {values<double>((terms * ldx) + 1, 3.0)};
+      std::vector<double> f   {values<double>((rows * ldf) + 1, 0.25)};
+      for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512}) {
+        if (numerical::limit_gemm_path(path) == path) {
+          std::vector<double> held   {values<double>(rows * ldy, 5.0)};
+          std::vector<double> wanted {held};
+          for (std::size_t r {0}; r < rows; ++r) {
+            numerical::detail::subtract_products(wanted.data() + (r * ldy), f.data() + (r * ldf), x.data(), ldx, terms, count);
+          }
+          numerical::detail::subtract_rows(held.data(), ldy, f.data(), ldf, x.data(), ldx, terms, count);
+          EXPECT(held == wanted);
+        }
+      }
+      (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+    }
+  }
+}
+
 // Complex terms into one row: past the portable path, each part of each term one fused multiply-add (Re f · x, then
 // Im f times the swapped parts); on it, the template's whole complex products. Every remainder of the vector loops.
 TEST(complex_row_combinations_take_each_part_in_order)

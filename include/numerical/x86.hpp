@@ -433,6 +433,91 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
+  /*!
+   * \brief \ref avx512_subtract_products for eight rows of `y` at once, \p ldy apart, each with its own factors (\p ldf
+   *        apart): a register of eight columns per row through the terms, the last columns masked. Each element is
+   *        the same chain of fused multiply-adds, so the same value.
+   */
+  NUMERICAL_TARGET("avx512f") inline void avx512_subtract_rows(double*       y,
+                                                               std::size_t   ldy,
+                                                               const double* f,
+                                                               std::size_t   ldf,
+                                                               const double* x,
+                                                               std::size_t   ldx,
+                                                               std::size_t   terms,
+                                                               std::size_t   count) noexcept
+  {
+    struct lane // a register in a struct: an array of the register type itself loses its alignment attribute
+    {
+      __m512d value;
+    };
+    for (std::size_t i {0}; i < count; i += 8) {
+      const auto               mask {static_cast<__mmask8>(count - i >= 8 ? 0xFFU : (1U << (count - i)) - 1U)};
+      std::array<lane, 8>      held {};
+      for (std::size_t r {0}; r < 8; ++r) {
+        held[r].value = _mm512_maskz_loadu_pd(mask, y + (r * ldy) + i);
+      }
+      for (std::size_t t {0}; t < terms; ++t) {
+        const __m512d row {_mm512_maskz_loadu_pd(mask, x + (t * ldx) + i)};
+        for (std::size_t r {0}; r < 8; ++r) {
+          held[r].value = _mm512_fmadd_pd(_mm512_set1_pd(-f[(r * ldf) + t]), row, held[r].value);
+        }
+      }
+      for (std::size_t r {0}; r < 8; ++r) {
+        _mm512_mask_storeu_pd(y + (r * ldy) + i, mask, held[r].value);
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief \ref avx512_subtract_rows on AVX2 with FMA: a register of four columns per row, then a column at a time.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_subtract_rows(double*       y,
+                                                              std::size_t   ldy,
+                                                              const double* f,
+                                                              std::size_t   ldf,
+                                                              const double* x,
+                                                              std::size_t   ldx,
+                                                              std::size_t   terms,
+                                                              std::size_t   count) noexcept
+  {
+    struct lane // as avx512_subtract_rows's
+    {
+      __m256d value;
+    };
+    std::size_t i {0};
+    for (; i + 4 <= count; i += 4) {
+      std::array<lane, 8> held {};
+      for (std::size_t r {0}; r < 8; ++r) {
+        held[r].value = _mm256_loadu_pd(y + (r * ldy) + i);
+      }
+      for (std::size_t t {0}; t < terms; ++t) {
+        const __m256d row {_mm256_loadu_pd(x + (t * ldx) + i)};
+        for (std::size_t r {0}; r < 8; ++r) {
+          held[r].value = _mm256_fmadd_pd(_mm256_set1_pd(-f[(r * ldf) + t]), row, held[r].value);
+        }
+      }
+      for (std::size_t r {0}; r < 8; ++r) {
+        _mm256_storeu_pd(y + (r * ldy) + i, held[r].value);
+      }
+    }
+    for (; i < count; ++i) {
+      std::array<double, 8> held {};
+      for (std::size_t r {0}; r < 8; ++r) {
+        held[r] = y[(r * ldy) + i];
+      }
+      for (std::size_t t {0}; t < terms; ++t) {
+        const double value {x[(t * ldx) + i]};
+        for (std::size_t r {0}; r < 8; ++r) {
+          held[r] = std::fma(-f[(r * ldf) + t], value, held[r]);
+        }
+      }
+      for (std::size_t r {0}; r < 8; ++r) {
+        y[(r * ldy) + i] = held[r];
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
   //! \brief \ref avx512_subtract_products on AVX2 with FMA: four registers of four `double`, then one.
   NUMERICAL_TARGET("avx2,fma") inline void avx2_subtract_products(double*       y,
                                                                   const double* f,

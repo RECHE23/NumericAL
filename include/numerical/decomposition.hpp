@@ -107,9 +107,6 @@ namespace numerical {
     inline constexpr std::size_t slice_solve_order {384};
 #endif
 
-    //! \brief The order up to which an LU solve goes row by row off the x86-64 units: past it the blocked products win
-    //!        (arm64, four columns: order 128 49 → 37 µs, 192 93 → 86; order 256 145 → 160).
-    inline constexpr std::size_t narrow_solve_order {192};
 
     //! \brief The columns of one leaf of the recursive LU panel.
     inline constexpr std::size_t solve_leaf {16};
@@ -678,7 +675,15 @@ namespace numerical {
                     bool            lower = false) const
     {
       if constexpr (std::is_same_v<T, double>) { // there subtract_products holds its row in registers through the terms
-        if (!lower && cols <= detail::narrow_solve && narrow_pays()) {
+        // The rows beat the blocked passes on the x86-64 units at any order (the portable path's products there fuse
+        // nothing, the rows would), and at any order elsewhere, by groups (arm64, four columns: order 256 0.65 times the
+        // blocked passes' time under Clang, 0.45 under GCC; order 1024 on every thread 0.91 and 0.62).
+#ifdef NUMERICAL_X86_COMPILED
+        const bool narrow {!lower && cols <= detail::narrow_solve && detail::gemm_path_current() != gemm_path::portable};
+#else
+        const bool narrow {!lower && cols <= detail::narrow_solve};
+#endif
+        if (narrow) {
           solve_narrow(y, cols);
           return;
         }
@@ -758,17 +763,6 @@ namespace numerical {
       }
     }
 
-    //! \brief Whether \ref solve_narrow beats the blocked passes here: on the x86-64 units at any order (the portable
-    //!        path's products there fuse nothing, the rows would), elsewhere up to \ref detail::narrow_solve_order.
-    [[nodiscard]] bool narrow_pays() const
-    {
-#ifdef NUMERICAL_X86_COMPILED
-      return detail::gemm_path_current() != gemm_path::portable;
-#else
-      return n_ <= detail::narrow_solve_order;
-#endif
-    }
-
     /*!
      * \brief \ref solve_rows for a few right-hand sides: row by row, each one's terms in the order the blocked passes
      *        give them (forward, ascending; backward, the blocks from the last down to its own, each ascending),
@@ -781,7 +775,19 @@ namespace numerical {
     void solve_narrow(buffer<T>&      y,
                       std::size_t     cols) const
     {
-      for (std::size_t i {1}; i < n_; ++i) {
+      // Forward, by groups of rows: their terms before the group are independent of one another, and go together
+      // (\ref detail::subtract_rows), the group's own triangle after; each element's terms in ascending order still.
+      constexpr std::size_t group {detail::product_rows};
+      std::size_t           i0    {0};
+      for (; i0 + group <= n_; i0 += group) {
+        if (i0 > 0) {
+          detail::subtract_rows(y.data() + (i0 * cols), cols, lu_.data() + (i0 * n_), n_, y.data(), cols, i0, cols);
+        }
+        for (std::size_t i {i0 + 1}; i < i0 + group; ++i) {
+          detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_) + i0, y.data() + (i0 * cols), cols, i - i0, cols);
+        }
+      }
+      for (std::size_t i {std::max<std::size_t>(i0, 1)}; i < n_; ++i) {
         detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_), y.data(), cols, i, cols);
       }
       const std::size_t last {panel_of(n_ - 1)};

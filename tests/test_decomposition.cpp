@@ -1423,14 +1423,14 @@ TEST(blocked_matrix_solve_agrees_with_column_solves)
 // sixteen columns is the blocked solve's of seventeen to the bit, past one block of rows, on every path whose
 // products fuse as the rows do (the portable path, fusing neither; AVX2 and AVX-512, both, where the rows go so at
 // any order) and at orders whose blocked products all run the matrix kernel (192 is whole blocks, 200 a last
-// block deep enough); off the x86-64 units the rows go so up to narrow_solve_order, past it both are blocked.
+// block deep enough); off the x86-64 units the rows go so at any order too.
 TEST(narrow_solve_equals_the_blocked_solve_to_the_bit)
 {
   for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512}) {
     if (numerical::limit_gemm_path(path) != path) {
       continue;
     }
-    for (const std::size_t n : {numerical::detail::narrow_solve_order, numerical::detail::narrow_solve_order + 8}) {
+    for (const std::size_t n : {std::size_t {192}, std::size_t {200}}) {
       const std::size_t                         wide {numerical::detail::narrow_solve + 1};
       const numerical::lu_decomposition<double> lu   {matrix<double> {n, n, pivoting_entries<double>(n)}};
       const std::vector<double>                 rhs  {pivoting_entries<double>(n)};

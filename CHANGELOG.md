@@ -38,6 +38,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   diagonal raised, where NumPy ignores it.
 
 ### Changed
+- **An LU solve of up to sixteen right-hand sides goes forward by groups of eight rows**: their terms before the
+  group are independent and go together, each value of the solution read once for all eight, where each row's
+  multiply-adds waited on its last one. The same bits. One thread, four right-hand sides on a factor built once: six
+  AVX2 cores, order 128 −22 %, 512 −33 %, 1024 −30 % (Clang; GCC alike); arm64, order 128 −21 %, and past 192, where
+  the blocked passes took over, the rows by groups now beat them (order 256 −35 % under Clang, −55 % under GCC; order
+  1024 on every thread −9 % and −38 %). `solve` with its factorisation: 2–4 %.
 - **`eigh` keeps the buffers of its divide and conquer from one call to the next, on each thread**, where every call
   mapped them anew, page by page; a buffer past 2 MiB (an order past about 512) is let go after the call, so a thread
   keeps at most 8 MiB. The same bits. Six AVX2 cores, all threads: order 256 6.2 → 5.5 ms, 512 21.3 → 20.0 ms; one

@@ -326,6 +326,9 @@ namespace numerical::detail {
 
 #endif
 
+  //! \brief The rows of `y` \ref subtract_rows takes at once.
+  inline constexpr std::size_t product_rows {8};
+
 #if defined(__GNUC__) && !defined(__clang__)
 
   //! \brief The leading elements of `y[i] -= f · x[i]`, a whole number of native vectors: how many it did.
@@ -385,6 +388,47 @@ namespace numerical::detail {
 #  pragma GCC unroll 4
       for (std::size_t u {0}; u < lanes; ++u) {
         std::memcpy(y + i + (u * width), &held[u], sizeof(lane));
+      }
+    }
+    return done;
+  }
+
+  /*!
+   * \brief The leading columns of \ref subtract_rows, a whole number of native vectors, one per row held through the
+   *        terms: how many it did. Each element takes the scalar statement's arithmetic, a term at a time in ascending
+   *        order, as \ref subtract_combined_vectors's. GCC keeps the scalar block's rows in memory.
+   */
+  template <native_scalar T>
+  std::size_t subtract_rows_vectors(T*          y,
+                                    std::size_t ldy,
+                                    const T*    f,
+                                    std::size_t ldf,
+                                    const T*    x,
+                                    std::size_t ldx,
+                                    std::size_t terms,
+                                    std::size_t count)
+  {
+    using lane = typename native_vector<T>::type;
+    constexpr std::size_t width {native_vector_bytes / sizeof(T)};
+    const std::size_t     done  {count - (count % width)};
+    for (std::size_t i {0}; i < done; i += width) {
+      std::array<lane, product_rows> held {};
+#  pragma GCC unroll 8
+      for (std::size_t r {0}; r < product_rows; ++r) {
+        std::memcpy(&held[r], y + (r * ldy) + i, sizeof(lane));
+      }
+      for (std::size_t t {0}; t < terms; ++t) {
+        lane row;
+        std::memcpy(&row, x + (t * ldx) + i, sizeof(lane));
+#  pragma GCC unroll 8
+        for (std::size_t r {0}; r < product_rows; ++r) {
+          const T factor {f[(r * ldf) + t]};
+          held[r] -= factor * row;
+        }
+      }
+#  pragma GCC unroll 8
+      for (std::size_t r {0}; r < product_rows; ++r) {
+        std::memcpy(y + (r * ldy) + i, &held[r], sizeof(lane));
       }
     }
     return done;
@@ -476,6 +520,21 @@ namespace numerical::detail {
                                         std::size_t /*ldx*/,
                                         std::size_t /*terms*/,
                                         std::size_t /*count*/)
+  {
+    return 0;
+  }
+
+  //! \brief No leading columns in vectors, for a type no native vector holds or a compiler that vectorises the
+  //!        scalar block itself (Clang).
+  template <typename T>
+  std::size_t subtract_rows_vectors(T* /*y*/,
+                                    std::size_t /*ldy*/,
+                                    const T* /*f*/,
+                                    std::size_t /*ldf*/,
+                                    const T* /*x*/,
+                                    std::size_t /*ldx*/,
+                                    std::size_t /*terms*/,
+                                    std::size_t /*count*/)
   {
     return 0;
   }
@@ -624,6 +683,50 @@ namespace numerical::detail {
     blocks(std::integral_constant<std::size_t, 4> {});
     blocks(std::integral_constant<std::size_t, 2> {});
     blocks(std::integral_constant<std::size_t, 1> {});
+  }
+
+  /*!
+   * \brief \ref subtract_products for \ref product_rows rows of `y` at once, \p ldy apart, each with its own factors
+   *        (\p ldf apart in \p f) on the same rows of \p x: `y_r[i] -= Σₜ f_r[t] · x[(t · ldx) + i]`. Each element takes
+   *        the statement of \ref subtract_products, a term at a time in ascending order, so the same value; each element
+   *        of `x` read serves every row, and the rows' chains of multiply-adds advance together, where a row alone
+   *        waits on its last one through each term.
+   */
+  template <typename T>
+  requires std::is_floating_point_v<T>
+  void subtract_rows(T*          y,
+                     std::size_t ldy,
+                     const T*    f,
+                     std::size_t ldf,
+                     const T*    x,
+                     std::size_t ldx,
+                     std::size_t terms,
+                     std::size_t count)
+  {
+    constexpr std::size_t width {4}; // four columns of eight rows: 32 values, which arm64's registers hold
+    std::size_t           i     {subtract_rows_vectors(y, ldy, f, ldf, x, ldx, terms, count)};
+    const auto            columns = [&]<std::size_t Width>(std::integral_constant<std::size_t, Width>) {
+                                      for (; i + Width <= count; i += Width) {
+                                        std::array<std::array<T, Width>, product_rows> held {};
+                                        for (std::size_t r {0}; r < product_rows; ++r) {
+                                          std::copy_n(y + (r * ldy) + i, Width, held[r].begin());
+                                        }
+                                        for (std::size_t t {0}; t < terms; ++t) {
+                                          const T* const row {x + (t * ldx) + i};
+                                          for (std::size_t r {0}; r < product_rows; ++r) {
+                                            const T factor {f[(r * ldf) + t]};
+                                            for (std::size_t u {0}; u < Width; ++u) {
+                                              held[r][u] -= factor * row[u];
+                                            }
+                                          }
+                                        }
+                                        for (std::size_t r {0}; r < product_rows; ++r) {
+                                          std::copy_n(held[r].begin(), Width, y + (r * ldy) + i);
+                                        }
+                                      }
+                                    };
+    columns(std::integral_constant<std::size_t, width> {});
+    columns(std::integral_constant<std::size_t, 1> {});
   }
 
   //! \brief `y[i] -= x[i] · f`, as the other \ref subtract_product (a real product is the same either way round).

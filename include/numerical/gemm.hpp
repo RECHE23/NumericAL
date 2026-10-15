@@ -152,6 +152,31 @@ namespace numerical::detail {
     subtract_products<double>(y, f, x, ldx, terms, count);
   }
 
+  //! \brief \ref subtract_rows for `double`, the units chosen as \ref subtract_products chooses them: each element the
+  //!        value \ref subtract_products gives it.
+  inline void subtract_rows(double*       y,
+                            std::size_t   ldy,
+                            const double* f,
+                            std::size_t   ldf,
+                            const double* x,
+                            std::size_t   ldx,
+                            std::size_t   terms,
+                            std::size_t   count)
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::avx512) {
+      avx512_subtract_rows(y, ldy, f, ldf, x, ldx, terms, count);
+      return;
+    }
+    if (path == gemm_path::avx2) {
+      avx2_subtract_rows(y, ldy, f, ldf, x, ldx, terms, count);
+      return;
+    }
+#endif
+    subtract_rows<double>(y, ldy, f, ldf, x, ldx, terms, count);
+  }
+
   /*!
    * \brief \ref subtract_products for `std::complex<double>`: on AVX-512 or AVX2 with FMA where the matrix product's
    *        kernel runs there, each part of each term one fused multiply-add (`Re f · x`, then `Im f` times the
