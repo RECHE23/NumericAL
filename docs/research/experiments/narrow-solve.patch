@@ -1,0 +1,103 @@
+--- a/include/numerical/decomposition.hpp
++++ b/include/numerical/decomposition.hpp
+@@ -26,6 +26,7 @@
+ #include <array>
+ #include <bit>
+ #include <cmath>
++#include <cstdlib>
+ #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
+ #include <cstddef>
+ #include <cstdint>
+@@ -57,6 +58,67 @@
+ #  define NUMERICAL_OUT_OF_LINE [[gnu::noinline]] // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
+ #endif
+ 
++
++#ifdef NUMERICAL_X86_COMPILED
++namespace numerical::detail {
++
++  //! \brief Expérience : la substitution avant `L Y = B` (L unitaire, Y `n × cols`, `cols ≤ 8`) par blocs de 8 lignes,
++  //!        dont les chaînes de multiply-adds sont indépendantes : chaque élément reçoit ses termes dans le même ordre
++  //!        (j croissant) que ligne par ligne, donc les mêmes bits.
++  NUMERICAL_TARGET("avx512f") inline void avx512_forward_narrow(double* y, const double* lu, std::size_t n, std::size_t cols) noexcept
++  {
++    const __mmask8 mask {static_cast<__mmask8>((1U << cols) - 1U)};
++    std::size_t    i0 {0};
++    for (; i0 + 8 <= n; i0 += 8) {
++      __m512d acc[8];
++      for (std::size_t r {0}; r < 8; ++r) { acc[r] = _mm512_maskz_loadu_pd(mask, y + ((i0 + r) * cols)); }
++      for (std::size_t j {0}; j < i0; ++j) {
++        const __m512d x {_mm512_maskz_loadu_pd(mask, y + (j * cols))};
++        for (std::size_t r {0}; r < 8; ++r) { acc[r] = _mm512_fnmadd_pd(_mm512_set1_pd(lu[((i0 + r) * n) + j]), x, acc[r]); }
++      }
++      for (std::size_t r {1}; r < 8; ++r) {
++        for (std::size_t q {0}; q < r; ++q) { acc[r] = _mm512_fnmadd_pd(_mm512_set1_pd(lu[((i0 + r) * n) + i0 + q]), acc[q], acc[r]); }
++      }
++      for (std::size_t r {0}; r < 8; ++r) { _mm512_mask_storeu_pd(y + ((i0 + r) * cols), mask, acc[r]); }
++    }
++    for (std::size_t i {std::max<std::size_t>(i0, 1)}; i < n; ++i) {
++      for (std::size_t c {0}; c < cols; ++c) {
++        double sum {y[(i * cols) + c]};
++        for (std::size_t j {0}; j < i; ++j) { sum = std::fma(-lu[(i * n) + j], y[(j * cols) + c], sum); }
++        y[(i * cols) + c] = sum;
++      }
++    }
++    _mm256_zeroupper();
++  }
++
++  //! \brief Expérience : la substitution arrière `U X = Y` par blocs de 8 lignes, les termes du plus lointain au plus
++  //!        proche (j décroissant), puis la division par le pivot. Un autre ordre que la boucle actuelle : d'autres
++  //!        derniers bits, tout aussi déterministes.
++  NUMERICAL_TARGET("avx512f") inline void avx512_backward_narrow(double* y, const double* lu, std::size_t n, std::size_t cols) noexcept
++  {
++    const __mmask8 mask {static_cast<__mmask8>((1U << cols) - 1U)};
++    for (std::size_t i1 {n}; i1 > 0;) {
++      const std::size_t count {std::min<std::size_t>(8, i1)};
++      const std::size_t i0 {i1 - count};
++      __m512d           acc[8];
++      for (std::size_t r {0}; r < count; ++r) { acc[r] = _mm512_maskz_loadu_pd(mask, y + ((i0 + r) * cols)); }
++      for (std::size_t j {n}; j-- > i1;) {
++        const __m512d x {_mm512_maskz_loadu_pd(mask, y + (j * cols))};
++        for (std::size_t r {0}; r < count; ++r) { acc[r] = _mm512_fnmadd_pd(_mm512_set1_pd(lu[((i0 + r) * n) + j]), x, acc[r]); }
++      }
++      for (std::size_t r {count}; r-- > 0;) {
++        for (std::size_t q {count}; q-- > r + 1;) { acc[r] = _mm512_fnmadd_pd(_mm512_set1_pd(lu[((i0 + r) * n) + i0 + q]), acc[q], acc[r]); }
++        acc[r] = _mm512_div_pd(acc[r], _mm512_set1_pd(lu[((i0 + r) * n) + i0 + r]));
++      }
++      for (std::size_t r {0}; r < count; ++r) { _mm512_mask_storeu_pd(y + ((i0 + r) * cols), mask, acc[r]); }
++      i1 = i0;
++    }
++    _mm256_zeroupper();
++  }
++
++} // namespace numerical::detail
++#endif
++
+ namespace numerical {
+ 
+   namespace detail {
+@@ -734,9 +796,24 @@
+     void solve_narrow(buffer<T>&      y,
+                       std::size_t     cols) const
+     {
++#ifdef NUMERICAL_X86_COMPILED
++      if constexpr (std::is_same_v<T, double>) {
++        if (cols <= 8 && std::getenv("NARROW_OLD") == nullptr && detail::gemm_path_current() == gemm_path::avx512) {
++          detail::avx512_forward_narrow(y.data(), lu_.data(), n_, cols);
++          if (std::getenv("NARROW_FWD_ONLY") == nullptr) {
++            detail::avx512_backward_narrow(y.data(), lu_.data(), n_, cols);
++            return;
++          }
++          goto backward; // NOLINT : expérience
++        }
++      }
++#endif
+       for (std::size_t i {1}; i < n_; ++i) {
+         detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_), y.data(), cols, i, cols);
+       }
++#ifdef NUMERICAL_X86_COMPILED
++      backward:
++#endif
+       const std::size_t last {panel_of(n_ - 1)};
+       for (std::size_t i {n_}; i-- > 0;) {
+         const std::size_t own {panel_of(i)};

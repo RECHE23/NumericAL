@@ -3,6 +3,10 @@
 *Octobre 2026. Pistes classiques, atypiques et expérimentales pour qu'une bibliothèque header-only, générique et
 sans dépendance (NumericAL) rattrape puis dépasse OpenBLAS, MKL et Accelerate.*
 
+> **Mise à jour du 15 octobre 2026.** Plusieurs pistes ont été adoptées depuis (le produit complexe par le noyau réel,
+> `gemm_split` ; le `lstsq` C++ par une QR où le rang est sûrement plein ; `eigvalsh`). Les écarts restants, mesurés,
+> profilés et prototypés sur v2026.10.14, sont dans [l'audit du 15 octobre](audit-2026-10-15.md).
+
 Point de départ : les écarts mesurés dans [BENCHMARKS.md](../../BENCHMARKS.md) (2026-10-12) :
 
 - petits problèmes (n ≤ 256) : 1,5 à 4 fois plus lents ;
