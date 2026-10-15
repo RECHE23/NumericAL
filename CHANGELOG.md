@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.13 — 2026-10-15
+
 ### Changed
 - **C++: `vector`, `matrix` and `tensor` store their elements in `numerical::buffer<T>`** (`buffer.hpp`), a `std::vector`
   whose elements constructed without a value are left uninitialised, so that a result written in full need not be
