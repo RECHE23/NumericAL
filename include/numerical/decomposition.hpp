@@ -4324,6 +4324,50 @@ namespace numerical {
       }
     }
 
+    //! \brief The buffers \ref merge_arrow works in, kept by each thread from one join to the next (\ref
+    //!        thread_arrow_workspace): mapping their pages anew took 11–16 % of an `svd` of order 64 to 512 on one
+    //!        x86-64 core, 13–20 % on six.
+    struct arrow_workspace
+    {
+      workspace_buffer below    {}; //!< `poles[j] − roots[i]`, row by root.
+      workspace_buffer above    {}; //!< `poles[j] + roots[i]`.
+      workspace_buffer left     {}; //!< The arrow's left vectors.
+      workspace_buffer right    {}; //!< Its right vectors.
+      workspace_buffer new_u    {}; //!< The kept columns of `u` times the left vectors.
+      workspace_buffer new_v    {}; //!< The kept columns of `v` times the right vectors.
+      workspace_buffer columns  {}; //!< One segment's rows of the kept columns that reach it.
+      workspace_buffer factor   {}; //!< The rows of the arrow's vectors for those columns.
+      buffer<double>   sorted_u {}; //!< `u`'s columns by ascending value, swapped with `u`.
+      buffer<double>   sorted_v {}; //!< `v`'s, swapped with `v`.
+    };
+
+    /*!
+     * \brief The calling thread's \ref arrow_workspace, kept from one decomposition to the next. A join uses it whole
+     *        on one thread and nests no other join; \ref release_large_arrow_workspace lets a large buffer go after.
+     */
+    [[nodiscard]] inline arrow_workspace& thread_arrow_workspace()
+    {
+      thread_local arrow_workspace work;
+      return work;
+    }
+
+    //! \brief Releases the buffers of \p work longer than \ref kept_workspace.
+    inline void release_large_arrow_workspace(arrow_workspace& work)
+    {
+      for (workspace_buffer* buffer : {&work.below, &work.above, &work.left, &work.right, &work.new_u, &work.new_v,
+                                       &work.columns, &work.factor}) {
+        if (buffer->size > kept_workspace) {
+          buffer->data.reset();
+          buffer->size = 0;
+        }
+      }
+      for (buffer<double>* sorted : {&work.sorted_u, &work.sorted_v}) {
+        if (sorted->capacity() > kept_workspace) {
+          *sorted = buffer<double> {};
+        }
+      }
+    }
+
     /*!
      * \brief The singular value decomposition of the arrow `M` (first row `z`, diagonal `d`, `d₀ = 0`), carried into
      *        the bases \p u (`n × n`) and \p v (`m × m`, its first `n` columns the arrow's; a last, null column
@@ -4345,6 +4389,7 @@ namespace numerical {
      * \param[in]     split      The row of \p u the arrow's first row is (its upper half above, its lower below):
      *                           the bases are block diagonal by it, and each half's rows take only the columns
      *                           that reach them (`dlasd3` multiplies the halves apart the same way).
+     * \param[in,out] work       The buffers it works in, the caller's thread's (\ref thread_arrow_workspace).
      */
     inline void merge_arrow(buffer<double>&      d,
                             buffer<double>       z,
@@ -4354,7 +4399,8 @@ namespace numerical {
                             buffer<double>&      v,
                             std::size_t          n,
                             std::size_t          m,
-                            std::size_t          split)
+                            std::size_t          split,
+                            arrow_workspace&     work)
     {
       // The rows each column reaches: 1 the upper half's, 2 u's row `split` (the arrow's first), 4 the lower half's.
       // A rotation of two columns makes each reach the rows of both.
@@ -4432,14 +4478,13 @@ namespace numerical {
         weights[i] = z[kept[i]];
       }
       buffer<double> roots(k, double     {});
-      buffer<double> below(k * k, double {}); // below[i * k + j] = poles[j] − roots[i]
-      buffer<double> above(k * k, double {}); // above[i * k + j] = poles[j] + roots[i]
+      double* const  below               {workspace_of(work.below, k * k)}; // below[i * k + j] = poles[j] − roots[i]
+      double* const  above               {workspace_of(work.above, k * k)}; // above[i * k + j] = poles[j] + roots[i]
       parallel_for(k, 8 * k, [&](std::size_t i) {
-                     roots[i] = singular_secular_root(poles, weights, i, secular_iterations, below.data() + (i * k),
-                                                      above.data() + (i * k));
+                     roots[i] = singular_secular_root(poles, weights, i, secular_iterations, below + (i * k), above + (i * k));
                    });
-      buffer<double> left(k * k, double  {}); // column i: the left vector of roots[i], in the kept columns' basis
-      buffer<double> right(k * k, double {}); // and the right one
+      double* const left  {workspace_of(work.left, k * k)};  // column i: the left vector of roots[i], in the kept columns' basis
+      double* const right {workspace_of(work.right, k * k)}; // and the right one
       // Löwner: ẑⱼ² = Πᵢ (σᵢ² − dⱼ²) / Πᵢ≠ⱼ (dᵢ² − dⱼ²), each pole paired with its root, by blocks of poles on every
       // core, each pole's product in ascending order of the roots (a row of the gaps at a time, along the block).
       buffer<double> signed_weights(k, double {});
@@ -4469,11 +4514,11 @@ namespace numerical {
                        left[(j * k) + i]  = j == 0 ? -1.0 : poles[j] * ratio;
                      }
                    });
-      for (buffer<double>* vectors : {&left, &right}) {
+      for (double* const vectors : {left, right}) {
         buffer<double> length(k, 0.0);
         for (std::size_t j {0}; j < k; ++j) { // by rows, each a contiguous update of every column's sum
           for (std::size_t i {0}; i < k; ++i) {
-            length[i] += (*vectors)[(j * k) + i] * (*vectors)[(j * k) + i];
+            length[i] += vectors[(j * k) + i] * vectors[(j * k) + i];
           }
         }
         for (double& l : length) {
@@ -4481,7 +4526,7 @@ namespace numerical {
         }
         parallel_for(k, k, [&](std::size_t j) {
                        for (std::size_t i {0}; i < k; ++i) {
-                         (*vectors)[(j * k) + i] /= length[i];
+                         vectors[(j * k) + i] /= length[i];
                        }
                      });
       }
@@ -4489,9 +4534,8 @@ namespace numerical {
       // By segments of rows, each taking the kept columns that reach it and their rows of the arrow's vectors: the
       // others are zero there, and an element's sum without them is the same to the bit.
       using segment = std::tuple<std::size_t, std::size_t, unsigned>; // first row, rows, the bit of reach
-      const auto carried {[&](const buffer<double>& basis, std::size_t rows, const buffer<double>& small,
-                              const std::vector<unsigned>& reach, const std::vector<segment>& segments) {
-                            buffer<double> product(rows * k, double {});
+      const auto carried {[&](const buffer<double>& basis, std::size_t rows, const double* small,
+                              const std::vector<unsigned>& reach, const std::vector<segment>& segments, double* product) {
                             for (const auto& [first, count, bit] : segments) {
                               std::vector<std::size_t> reaching;
                               for (std::size_t i {0}; i < k; ++i) {
@@ -4500,23 +4544,24 @@ namespace numerical {
                                 }
                               }
                               const std::size_t   width {reaching.size()};
-                              buffer<double> columns(count * width, double {});
-                              buffer<double> factor(width * k, double      {});
+                              double* const       columns {workspace_of(work.columns, count * width)};
+                              double* const       factor {workspace_of(work.factor, width * k)};
                               parallel_for(count, width + k, [&](std::size_t r) {
                                              for (std::size_t c {0}; c < width; ++c) {
                                                columns[(r * width) + c] = basis[((first + r) * rows) + kept[reaching[c]]];
                                              }
-                                             std::fill_n(product.data() + ((first + r) * k), k, 0.0); // the product adds to it
+                                             std::fill_n(product + ((first + r) * k), k, 0.0); // the product adds to it
                                            });
                               for (std::size_t c {0}; c < width; ++c) {
-                                std::copy_n(small.data() + (reaching[c] * k), k, factor.data() + (c * k));
+                                std::copy_n(small + (reaching[c] * k), k, factor + (c * k));
                               }
-                              gemm(count, k, width, columns.data(), width, factor.data(), k, product.data() + (first * k), k);
+                              gemm(count, k, width, columns, width, factor, k, product + (first * k), k);
                             }
-                            return product;
                           }};
-      const buffer<double>      new_u            {carried(u, n, left, reach_u, {{0, split, 1U}, {split, 1, 2U}, {split + 1, n - split - 1, 4U}})};
-      const buffer<double>      new_v            {carried(v, m, right, reach_v, {{0, split + 1, 1U}, {split + 1, m - split - 1, 4U}})};
+      double* const new_u {workspace_of(work.new_u, n * k)};
+      double* const new_v {workspace_of(work.new_v, m * k)};
+      carried(u, n, left, reach_u, {{0, split, 1U}, {split, 1, 2U}, {split + 1, n - split - 1, 4U}}, new_u);
+      carried(v, m, right, reach_v, {{0, split + 1, 1U}, {split + 1, m - split - 1, 4U}}, new_v);
       buffer<double>            values(n, double {});
       std::vector<std::size_t>  from(n); // where each value's vectors are: a kept root (< k) or a deflated column
       for (std::size_t i {0}; i < k; ++i) {
@@ -4538,8 +4583,10 @@ namespace numerical {
         d[c]      = values[rank[c]];
       }
       // Row by row on every core, each row written whole (by columns, each write was a row apart).
-      buffer<double> sorted_u(n * n, double {});
-      buffer<double> sorted_v(v); // the null column, if any, stays last
+      buffer<double>& sorted_u {work.sorted_u};
+      buffer<double>& sorted_v {work.sorted_v};
+      sorted_u.resize(n * n);              // written whole below
+      sorted_v.assign(v.begin(), v.end()); // the null column, if any, stays last
       parallel_for(m, n, [&](std::size_t r) { // m ≥ n: the right basis has the rows of both
                      for (std::size_t c {0}; c < n; ++c) {
                        if (r < n) {
@@ -4548,8 +4595,8 @@ namespace numerical {
                        sorted_v[(r * m) + c] = source[c] < k ? new_v[(r * k) + source[c]] : v[(r * m) + deflated[source[c] - k]];
                      }
                    });
-      u = std::move(sorted_u);
-      v = std::move(sorted_v);
+      std::swap(u, sorted_u); // the old bases' storage is kept for the next join
+      std::swap(v, sorted_v);
     }
 
     //! \brief The order up to which \ref bidiagonal_divide decomposes by implicit-shift QR.
@@ -4692,7 +4739,8 @@ namespace numerical {
     //!        (\ref start_bidiagonal_node).
     NUMERICAL_OUT_OF_LINE inline void join_bidiagonal_node(bidiagonal_node&       node,
                                                            const bidiagonal_node& one,
-                                                           const bidiagonal_node& two)
+                                                           const bidiagonal_node& two,
+                                                           arrow_workspace&       work)
     {
       const std::size_t     n      {node.n};
       const std::size_t     extra  {node.extra};
@@ -4753,7 +4801,7 @@ namespace numerical {
         rotate_columns(v, m, 0, n, c, s);
         z[0] = length;
       }
-      merge_arrow(arrow, std::move(z), alpha, beta, u, v, n, m, k);
+      merge_arrow(arrow, std::move(z), alpha, beta, u, v, n, m, k, work);
       node.sigma = std::move(arrow);
     }
 
@@ -4767,12 +4815,13 @@ namespace numerical {
       }
     }
 
-    //! \brief Joins the halves of \p nodes' block \p index, then lets them go.
+    //! \brief Joins the halves of \p nodes' block \p index in \p work, then lets them go.
     NUMERICAL_OUT_OF_LINE inline void join_bidiagonal_halves(std::vector<bidiagonal_node>& nodes,
-                                                             std::size_t                   index)
+                                                             std::size_t                   index,
+                                                             arrow_workspace&              work)
     {
       bidiagonal_node& node {nodes[index]};
-      join_bidiagonal_node(node, nodes[node.first], nodes[node.second]);
+      join_bidiagonal_node(node, nodes[node.first], nodes[node.second], work);
       unscale_bidiagonal_node(node);
       nodes[node.first]  = bidiagonal_node {}; // read by no other join
       nodes[node.second] = bidiagonal_node {};
@@ -4780,7 +4829,8 @@ namespace numerical {
 
     //! \brief Decomposes the block \p index of \p nodes and everything below it, each block right after its halves.
     NUMERICAL_OUT_OF_LINE inline void solve_bidiagonal_subtree(std::vector<bidiagonal_node>& nodes,
-                                                               std::size_t                   index)
+                                                               std::size_t                   index,
+                                                               arrow_workspace&              work)
     {
       if (nodes[index].k == 0) {
         solve_bidiagonal_leaf(nodes[index]);
@@ -4788,9 +4838,9 @@ namespace numerical {
         return;
       }
       start_bidiagonal_node(nodes[index]); // before its halves, as the recursion did: their buffers then come back to it
-      solve_bidiagonal_subtree(nodes, nodes[index].first);
-      solve_bidiagonal_subtree(nodes, nodes[index].second);
-      join_bidiagonal_halves(nodes, index);
+      solve_bidiagonal_subtree(nodes, nodes[index].first, work);
+      solve_bidiagonal_subtree(nodes, nodes[index].second, work);
+      join_bidiagonal_halves(nodes, index, work);
     }
 
     /*!
@@ -4830,7 +4880,8 @@ namespace numerical {
       }
       const std::size_t task_order {nodes[tasks[0]].n};
       parallel_for(tasks.size(), tasks.size() > 1 ? task_order * task_order * task_order : 0, [&](std::size_t t) {
-                     solve_bidiagonal_subtree(nodes, tasks[t]);
+                     solve_bidiagonal_subtree(nodes, tasks[t], thread_arrow_workspace());
+                     release_large_arrow_workspace(thread_arrow_workspace());
                    });
       for (std::size_t level {cut}; level-- > 0;) {
         std::vector<std::size_t> joins;
@@ -4842,7 +4893,8 @@ namespace numerical {
         const std::size_t order {joins.empty() ? 0 : nodes[joins[0]].n};
         parallel_for(joins.size(), joins.size() > 1 ? order * order * order / 4 : 0, [&](std::size_t j) {
                        start_bidiagonal_node(nodes[joins[j]]);
-                       join_bidiagonal_halves(nodes, joins[j]);
+                       join_bidiagonal_halves(nodes, joins[j], thread_arrow_workspace());
+                       release_large_arrow_workspace(thread_arrow_workspace());
                      });
       }
       sigma = std::move(nodes[0].sigma);

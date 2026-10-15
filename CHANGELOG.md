@@ -38,6 +38,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   diagonal raised, where NumPy ignores it.
 
 ### Changed
+- **`svd` keeps the buffers of its divide and conquer's joins from one call to the next, on each thread**, as `eigh`
+  does, the sorted bases swapped with the old ones so that their storage serves the next join; past 2 MiB a buffer is
+  let go after the call. The same bits. Six AVX2 cores, one thread and all: orders 64 to 1024 5–12 % faster.
 - **An LU solve of up to sixteen right-hand sides goes forward by groups of eight rows**: their terms before the
   group are independent and go together, each value of the solution read once for all eight, where each row's
   multiply-adds waited on its last one. The same bits. One thread, four right-hand sides on a factor built once: six

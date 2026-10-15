@@ -1282,6 +1282,35 @@ TEST(eigh_keeps_its_buffers_and_lets_the_large_ones_go)
   EXPECT(approx_equal(reconstruct(large), symmetric(700, 11), 1e-9));
 }
 
+// The SVD's joins keep their buffers too, and let a large one go: an svd of order 700 between two of the same smaller
+// matrix, taller than wide so both bases are joined, leaves the second the first's to the bit.
+TEST(svd_keeps_its_buffers_and_lets_the_large_ones_go)
+{
+  const auto general {[](std::size_t rows, std::size_t cols, std::uint64_t seed) {
+                        std::vector<double> entries(rows * cols);
+                        std::uint64_t       state {seed};
+                        for (double& x : entries) {
+                          x = next_uniform(state) - 0.5;
+                        }
+                        return matrix<double> {rows, cols, entries};
+                      }};
+  const matrix<double>                 small  {general(230, 200, 3)};
+  const svd_decomposition<double>      before {small};
+  const matrix<double>                 big    {general(700, 700, 5)};
+  const svd_decomposition<double>      large  {big};
+  const svd_decomposition<double>      after  {small};
+  EXPECT(before.singular_values() == after.singular_values());
+  EXPECT(before.u() == after.u());
+  EXPECT(before.v() == after.v());
+  std::vector<double> us(std::size_t {700} *700);
+  for (std::size_t i {0}; i < 700; ++i) {
+    for (std::size_t j {0}; j < 700; ++j) {
+      us[(i * 700) + j] = large.u()(i, j) * large.singular_values()[j];
+    }
+  }
+  EXPECT(approx_equal(matrix<double> {700, 700, us} *large.vh(), big, 1e-9));
+}
+
 // Complete (NumPy's mode="complete"): Q is m × m, its columns past min(m, n) an orthonormal basis of the complement,
 // and R m × n with zero rows past min(m, n); the reduced factors are its first columns and rows, to the bit.
 TEST(qr_complete_extends_the_reduced_factors)
