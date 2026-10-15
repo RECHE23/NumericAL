@@ -47,6 +47,16 @@
 #include "parallel.hpp"
 #include "vector.hpp"
 
+// A function no hot path calls, kept out of its callers: inlined, it spent GCC's growth budget for the whole translation
+// unit, and the products, the Cholesky factorisation and the LU solve lost their own inlining (one arm64 thread, GCC 14:
+// a product of order 8 0.29 → 0.33 µs, a Cholesky factorisation of order 17 0.77 → 0.87 µs, a solve of order 512 0.47
+// → 0.54 ms).
+#if defined(_MSC_VER) && !defined(__clang__)
+#  define NUMERICAL_OUT_OF_LINE __declspec(noinline)
+#else
+#  define NUMERICAL_OUT_OF_LINE [[gnu::noinline]] // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
+#endif
+
 namespace numerical {
 
   namespace detail {
@@ -109,16 +119,13 @@ namespace numerical {
     //!        a 64-byte line, at a time, where row by row each write fell on another line (six AVX2 cores, order 768:
     //!        5.08 → 4.74 ms; tiles of 16 or 32 rows were slower again, order 512 by 7 %).
     inline constexpr std::size_t panel_copy_rows {8};
-#else
-    //! \brief The rows an LU panel's copy takes together: one, row by row, on arm64, where tiles of rows were no
-    //!        faster (eight cores, order 256: tiles of 8 rows 3 % slower, of 16 2 %).
-    inline constexpr std::size_t panel_copy_rows {1};
-#endif
 
-    //! \brief The fewest rows of a panel copied by tiles of \ref panel_copy_rows: a shorter panel stays in the L1 cache
-    //!        whichever way it is written, and the tiles' loops cost it (one x86-64 core, the LU of order 17 2.29 →
-    //!        2.55 µs, of order 64 27.0 → 29.8 µs).
+    //! \brief The fewest rows of a panel copied by tiles of \ref panel_copy_rows rows: a shorter panel stays in the L1
+    //!        cache whichever way it is written, and the tiles' loops cost it (one x86-64 core, the LU of order 17
+    //!        2.29 → 2.55 µs, of order 64 27.0 → 29.8 µs). Off the x86-64 units every panel goes row by row: tiles of
+    //!        rows were no faster on arm64, and Apple clang compiled them worse.
     inline constexpr std::size_t panel_tile_rows {256};
+#endif
 
     //! \brief The columns of one panel of the blocked Cholesky factorisation (as \ref lu_block).
     inline constexpr std::size_t cholesky_block {64};
@@ -868,10 +875,9 @@ namespace numerical {
     }
 
     //! \brief Copies the columns `[k0, end)` of the factor, every row from `k0`, into \p panel (column-major, \p rows
-    //!        rows) when \p in, back otherwise: by tiles of \ref detail::panel_copy_rows rows on the x86-64 units from
-    //!        \ref detail::panel_tile_rows rows, row by row otherwise, in the plainest loops, which Apple clang
-    //!        compiles best (tiles of one row there ran the whole LU of order 17 1.1 → 1.7 µs, of order 512 1.8 →
-    //!        2.1 ms, on one thread).
+    //!        rows) when \p in, back otherwise: by tiles of rows on the x86-64 units from `panel_tile_rows` rows, row
+    //!        by row otherwise, in the plainest loops, which Apple clang compiles best (tiles of one row there ran the
+    //!        whole LU of order 17 1.1 → 1.7 µs, of order 512 1.8 → 2.1 ms, on one thread).
     void transpose_panel(buffer<T>&      panel,
                          std::size_t     rows,
                          std::size_t     k0,
@@ -879,29 +885,29 @@ namespace numerical {
                          bool            in)
     {
       const std::size_t width {end - k0};
-      if constexpr (detail::panel_copy_rows > 1) {
-        if (rows >= detail::panel_tile_rows) {
-          T* const base {lu_.data() + (k0 * n_) + k0};
-          for (std::size_t r0 {0}; r0 < rows; r0 += detail::panel_copy_rows) {
-            const std::size_t r1 {std::min(r0 + detail::panel_copy_rows, rows)};
-            if (in) {
-              for (std::size_t j {0}; j < width; ++j) {
-                for (std::size_t r {r0}; r < r1; ++r) {
-                  panel[(j * rows) + r] = base[(r * n_) + j];
-                }
-              }
-            }
-            else {
-              for (std::size_t j {0}; j < width; ++j) {
-                for (std::size_t r {r0}; r < r1; ++r) {
-                  base[(r * n_) + j] = panel[(j * rows) + r];
-                }
+#ifdef NUMERICAL_X86_COMPILED
+      if (rows >= detail::panel_tile_rows) {
+        T* const base {lu_.data() + (k0 * n_) + k0};
+        for (std::size_t r0 {0}; r0 < rows; r0 += detail::panel_copy_rows) {
+          const std::size_t r1 {std::min(r0 + detail::panel_copy_rows, rows)};
+          if (in) {
+            for (std::size_t j {0}; j < width; ++j) {
+              for (std::size_t r {r0}; r < r1; ++r) {
+                panel[(j * rows) + r] = base[(r * n_) + j];
               }
             }
           }
-          return;
+          else {
+            for (std::size_t j {0}; j < width; ++j) {
+              for (std::size_t r {r0}; r < r1; ++r) {
+                base[(r * n_) + j] = panel[(j * rows) + r];
+              }
+            }
+          }
         }
+        return;
       }
+#endif
       for (std::size_t r {0}; r < rows; ++r) {
         for (std::size_t j {0}; j < width; ++j) {
           if (in) {
@@ -2881,13 +2887,13 @@ namespace numerical {
      *        as LAPACK's `dlaed0`: `T = diag(T₁ − ρ e_a e_aᵀ, T₂ − ρ e_b e_bᵀ) + ρ u uᵀ`, `u = e_a + sign(β) e_b`,
      *        `ρ = |β|`, `β` the coupling.
      */
-    inline void plan_divide(std::vector<divide_node>& nodes,
-                            double*                   d,
-                            const double*             e,
-                            std::size_t               n,
-                            double*                   q,
-                            std::size_t               ldq,
-                            std::size_t               depth)
+    NUMERICAL_OUT_OF_LINE inline void plan_divide(std::vector<divide_node>& nodes,
+                                                  double*                   d,
+                                                  const double*             e,
+                                                  std::size_t               n,
+                                                  double*                   q,
+                                                  std::size_t               ldq,
+                                                  std::size_t               depth)
     {
       double largest {0.0};
       for (std::size_t i {0}; i < n; ++i) {
@@ -2926,7 +2932,7 @@ namespace numerical {
 
     //! \brief Solves the leaf \p node by implicit QL: its eigenvalues ascending into its diagonal, their
     //!        eigenvectors as the columns of its block of `q`.
-    inline void solve_divide_leaf(const divide_node& node)
+    NUMERICAL_OUT_OF_LINE inline void solve_divide_leaf(const divide_node& node)
     {
       const std::size_t n {node.n};
       buffer<double>    diagonal(node.work_d, node.work_d + n);
@@ -2951,8 +2957,8 @@ namespace numerical {
     }
 
     //! \brief Joins the two solved halves of \p node by \ref merge_rank_one, in \p work.
-    inline void join_divide_node(const divide_node& node,
-                                 merge_workspace&   work)
+    NUMERICAL_OUT_OF_LINE inline void join_divide_node(const divide_node& node,
+                                                       merge_workspace&   work)
     {
       const std::size_t n           {node.n};
       const std::size_t n1          {node.n1};
@@ -2971,7 +2977,7 @@ namespace numerical {
     }
 
     //! \brief The eigenvalues of a solved \p node, scaled back, where its parent reads them.
-    inline void unscale_divide_node(const divide_node& node)
+    NUMERICAL_OUT_OF_LINE inline void unscale_divide_node(const divide_node& node)
     {
       if (node.exponent != 0) {
         for (std::size_t i {0}; i < node.n; ++i) {
@@ -2981,9 +2987,9 @@ namespace numerical {
     }
 
     //! \brief Solves the block \p index of \p nodes and everything below it, each block right after its halves.
-    inline void solve_divide_subtree(std::vector<divide_node>& nodes,
-                                     std::size_t               index,
-                                     merge_workspace&          work)
+    NUMERICAL_OUT_OF_LINE inline void solve_divide_subtree(std::vector<divide_node>& nodes,
+                                                           std::size_t               index,
+                                                           merge_workspace&          work)
     {
       const divide_node& node {nodes[index]};
       if (node.n1 == 0) {
@@ -4403,12 +4409,12 @@ namespace numerical {
      *        squares, which overflow past 1e154.
      * \return Its index in \p nodes.
      */
-    inline std::size_t plan_bidiagonal(std::vector<bidiagonal_node>& nodes,
-                                       const double*                 d,
-                                       const double*                 e,
-                                       std::size_t                   n,
-                                       std::size_t                   extra,
-                                       std::size_t                   depth)
+    NUMERICAL_OUT_OF_LINE inline std::size_t plan_bidiagonal(std::vector<bidiagonal_node>& nodes,
+                                                             const double*                 d,
+                                                             const double*                 e,
+                                                             std::size_t                   n,
+                                                             std::size_t                   extra,
+                                                             std::size_t                   depth)
     {
       double largest {0.0};
       for (std::size_t i {0}; i < n; ++i) {
@@ -4444,7 +4450,7 @@ namespace numerical {
     }
 
     //! \brief Its singular values and vectors into \p node's, from scratch: \p u zero, \p v the identity.
-    inline void start_bidiagonal_node(bidiagonal_node& node)
+    NUMERICAL_OUT_OF_LINE inline void start_bidiagonal_node(bidiagonal_node& node)
     {
       const std::size_t m {node.n + node.extra};
       node.sigma.assign(node.n, 0.0);
@@ -4456,7 +4462,7 @@ namespace numerical {
     }
 
     //! \brief Decomposes the leaf \p node by implicit-shift QR.
-    inline void solve_bidiagonal_leaf(bidiagonal_node& node)
+    NUMERICAL_OUT_OF_LINE inline void solve_bidiagonal_leaf(bidiagonal_node& node)
     {
       start_bidiagonal_node(node);
       const double* const d     {node.d};
@@ -4510,9 +4516,9 @@ namespace numerical {
 
     //! \brief Joins the two decomposed halves of \p node, \p one and \p two, by \ref merge_arrow, \p node started
     //!        (\ref start_bidiagonal_node).
-    inline void join_bidiagonal_node(bidiagonal_node&       node,
-                                     const bidiagonal_node& one,
-                                     const bidiagonal_node& two)
+    NUMERICAL_OUT_OF_LINE inline void join_bidiagonal_node(bidiagonal_node&       node,
+                                                           const bidiagonal_node& one,
+                                                           const bidiagonal_node& two)
     {
       const std::size_t     n      {node.n};
       const std::size_t     extra  {node.extra};
@@ -4578,7 +4584,7 @@ namespace numerical {
     }
 
     //! \brief The singular values of a solved \p node scaled back.
-    inline void unscale_bidiagonal_node(bidiagonal_node& node)
+    NUMERICAL_OUT_OF_LINE inline void unscale_bidiagonal_node(bidiagonal_node& node)
     {
       if (node.exponent != 0) {
         for (double& value : node.sigma) {
@@ -4588,8 +4594,8 @@ namespace numerical {
     }
 
     //! \brief Joins the halves of \p nodes' block \p index, then lets them go.
-    inline void join_bidiagonal_halves(std::vector<bidiagonal_node>& nodes,
-                                       std::size_t                   index)
+    NUMERICAL_OUT_OF_LINE inline void join_bidiagonal_halves(std::vector<bidiagonal_node>& nodes,
+                                                             std::size_t                   index)
     {
       bidiagonal_node& node {nodes[index]};
       join_bidiagonal_node(node, nodes[node.first], nodes[node.second]);
@@ -4599,8 +4605,8 @@ namespace numerical {
     }
 
     //! \brief Decomposes the block \p index of \p nodes and everything below it, each block right after its halves.
-    inline void solve_bidiagonal_subtree(std::vector<bidiagonal_node>& nodes,
-                                         std::size_t                   index)
+    NUMERICAL_OUT_OF_LINE inline void solve_bidiagonal_subtree(std::vector<bidiagonal_node>& nodes,
+                                                               std::size_t                   index)
     {
       if (nodes[index].k == 0) {
         solve_bidiagonal_leaf(nodes[index]);
