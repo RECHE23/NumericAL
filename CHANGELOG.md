@@ -6,6 +6,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **`eigh` keeps the buffers of its divide and conquer from one call to the next, on each thread**, where every call
+  mapped them anew, page by page; a buffer past 2 MiB (an order past about 512) is let go after the call, so a thread
+  keeps at most 8 MiB. The same bits. Six AVX2 cores, all threads: order 256 6.2 → 5.5 ms, 512 21.3 → 20.0 ms; one
+  thread, order 512 38.8 → 36.0 ms; arm64 1–3 % (its pages cost less to map).
+
 ## 2026.10.14 — 2026-10-15
 
 ### Changed
