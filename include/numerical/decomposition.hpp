@@ -2653,6 +2653,32 @@ namespace numerical {
       return buffer.data.get();
     }
 
+    //! \brief The most elements a buffer of a thread's \ref merge_workspace keeps from one decomposition to the next:
+    //!        2 MiB, every buffer an `eigh` of order 512 needs, so a thread keeps at most 8 MiB.
+    inline constexpr std::size_t kept_workspace {std::size_t {1} << 18};
+
+    /*!
+     * \brief The calling thread's \ref merge_workspace, kept from one decomposition to the next: mapping its pages anew
+     *        took 8–11 % of the eigenvectors' time (six AVX2 cores, an `eigh` of order 256 or 512). A join uses it
+     *        whole on one thread, and nests no other join; \ref release_large_workspace lets a large buffer go after.
+     */
+    [[nodiscard]] inline merge_workspace& thread_workspace()
+    {
+      thread_local merge_workspace work;
+      return work;
+    }
+
+    //! \brief Releases the buffers of \p work longer than \ref kept_workspace.
+    inline void release_large_workspace(merge_workspace& work)
+    {
+      for (workspace_buffer* buffer : {&work.gaps, &work.updated, &work.columns, &work.factor}) {
+        if (buffer->size > kept_workspace) {
+          buffer->data.reset();
+          buffer->size = 0;
+        }
+      }
+    }
+
     /*!
      * \brief The eigenvalues of `diag(d) + ρ z zᵀ`, ascending, into \p d, and its eigenvectors times \p q (the
      *        row-major `n × n` block of rows \p ldq apart whose columns span the halves) into \p q, as LAPACK's
@@ -3034,10 +3060,10 @@ namespace numerical {
           tasks.push_back(i);
         }
       }
-      std::vector<merge_workspace> own(tasks.size());
-      const std::size_t            task_order {nodes[tasks[0]].n};
+      const std::size_t task_order {nodes[tasks[0]].n};
       parallel_for(tasks.size(), tasks.size() > 1 ? task_order * task_order * task_order : 0, [&](std::size_t t) {
-                     solve_divide_subtree(nodes, tasks[t], own[t]);
+                     solve_divide_subtree(nodes, tasks[t], thread_workspace());
+                     release_large_workspace(thread_workspace());
                    });
       for (std::size_t level {cut}; level-- > 0;) {
         std::vector<std::size_t> joins;
@@ -3050,13 +3076,15 @@ namespace numerical {
           continue;
         }
         if (joins.size() == 1) {
-          join_divide_node(nodes[joins[0]], own[0]);
+          join_divide_node(nodes[joins[0]], thread_workspace());
+          release_large_workspace(thread_workspace());
           unscale_divide_node(nodes[joins[0]]);
           continue;
         }
         const std::size_t order {nodes[joins[0]].n};
         parallel_for(joins.size(), order * order * order / 4, [&](std::size_t j) {
-                       join_divide_node(nodes[joins[j]], own[j]);
+                       join_divide_node(nodes[joins[j]], thread_workspace());
+                       release_large_workspace(thread_workspace());
                        unscale_divide_node(nodes[joins[j]]);
                      });
       }

@@ -1179,6 +1179,30 @@ TEST(divide_and_conquer_gives_the_same_bits_on_one_thread_as_on_all)
   EXPECT(svd_one.v() == svd_all.v());
 }
 
+// Each thread keeps the joins' buffers from one decomposition to the next, and lets a large one go after it: at order
+// 700 the last join's buffers are larger than it keeps. The decompositions on either side of it are the same to the
+// bit, whatever the buffers held before.
+TEST(eigh_keeps_its_buffers_and_lets_the_large_ones_go)
+{
+  const auto symmetric {[](std::size_t n, std::uint64_t seed) {
+                          std::vector<double> entries(n * n);
+                          std::uint64_t       state {seed};
+                          for (std::size_t i {0}; i < n; ++i) {
+                            for (std::size_t j {0}; j <= i; ++j) {
+                              entries[(i * n) + j] = entries[(j * n) + i] = next_uniform(state);
+                            }
+                          }
+                          return matrix<double> {n, n, entries};
+                        }};
+  const matrix<double>  small  {symmetric(200, 7)};
+  const symmetric_eigen before {small};
+  const symmetric_eigen large  {symmetric(700, 11)};
+  const symmetric_eigen after  {small};
+  EXPECT(before.values() == after.values());
+  EXPECT(before.vectors() == after.vectors());
+  EXPECT(approx_equal(reconstruct(large), symmetric(700, 11), 1e-9));
+}
+
 // Past one panel: the diagonal blocks, the rows below them by leaves (or, under many rows, as one leaf), and
 // the trailing products.
 TEST(blocked_cholesky_equals_the_unblocked_algorithm_to_the_bit)
