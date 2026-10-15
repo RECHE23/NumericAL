@@ -104,6 +104,17 @@ namespace numerical {
     //! \brief The columns of one leaf of the recursive LU panel.
     inline constexpr std::size_t solve_leaf {16};
 
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief The rows an LU panel's copy takes together, so that it writes each column of the panel eight `double`s,
+    //!        a 64-byte line, at a time, where row by row each write fell on another line (six AVX2 cores, order 768:
+    //!        5.08 → 4.74 ms; tiles of 16 or 32 rows were slower again, order 512 by 7 %).
+    inline constexpr std::size_t panel_copy_rows {8};
+#else
+    //! \brief The rows an LU panel's copy takes together: one, row by row, on arm64, where tiles of rows were no
+    //!        faster (eight cores, order 256: tiles of 8 rows 3 % slower, of 16 2 %).
+    inline constexpr std::size_t panel_copy_rows {1};
+#endif
+
     //! \brief The columns of one panel of the blocked Cholesky factorisation (as \ref lu_block).
     inline constexpr std::size_t cholesky_block {64};
 
@@ -785,6 +796,9 @@ namespace numerical {
     // panel, a column at a time, would otherwise hold every other thread idle). Its row swaps reach those
     // columns once both are done: an update reads its rows of L from a copy and writes row by row, so a swap
     // after it is the swap before it, and the factors stay the ones above, to the bit.
+    //
+    // A pivot's swap reaches the columns left of its panel only at the end (\ref swap_left_columns): nothing reads
+    // them before, and on the calling thread each swap held up the panel the other threads wait for.
     void factorize()
     {
       std::size_t end {std::min(block_, n_)};
@@ -826,6 +840,7 @@ namespace numerical {
         k0  = end;
         end = next;
       }
+      swap_left_columns();
     }
 
     /*!
@@ -842,15 +857,36 @@ namespace numerical {
       const std::size_t rows                  {n_ - k0};
       const std::size_t width                 {end - k0};
       buffer<T>         panel(rows * width, T {}); // column j of the panel at panel[j * rows]
-      for (std::size_t r {0}; r < rows; ++r) {
-        for (std::size_t j {0}; j < width; ++j) {
-          panel[(j * rows) + r] = lu_[((k0 + r) * n_) + k0 + j];
-        }
-      }
+      transpose_panel(panel, rows, k0, end, true);
       factorize_columns(panel, rows, 0, width, k0, end);
-      for (std::size_t r {0}; r < rows; ++r) {
-        for (std::size_t j {0}; j < width; ++j) {
-          lu_[((k0 + r) * n_) + k0 + j] = panel[(j * rows) + r];
+      transpose_panel(panel, rows, k0, end, false);
+    }
+
+    //! \brief Copies the columns `[k0, end)` of the factor, every row from `k0`, into \p panel (column-major, \p rows
+    //!        rows) when \p in, back otherwise, by tiles of \ref detail::panel_copy_rows rows.
+    void transpose_panel(buffer<T>&      panel,
+                         std::size_t     rows,
+                         std::size_t     k0,
+                         std::size_t     end,
+                         bool            in)
+    {
+      const std::size_t width {end - k0};
+      T* const          base  {lu_.data() + (k0 * n_) + k0};
+      for (std::size_t r0 {0}; r0 < rows; r0 += detail::panel_copy_rows) {
+        const std::size_t r1 {std::min(r0 + detail::panel_copy_rows, rows)};
+        if (in) {
+          for (std::size_t j {0}; j < width; ++j) {
+            for (std::size_t r {r0}; r < r1; ++r) {
+              panel[(j * rows) + r] = base[(r * n_) + j];
+            }
+          }
+        }
+        else {
+          for (std::size_t j {0}; j < width; ++j) {
+            for (std::size_t r {r0}; r < r1; ++r) {
+              base[(r * n_) + j] = panel[(j * rows) + r];
+            }
+          }
         }
       }
     }
@@ -931,14 +967,15 @@ namespace numerical {
     }
 
     //! \brief Swaps rows \p a and \p b of the factor outside the panel's columns `[k0, end)`: right of the panel up
-    //!        to \ref swap_limit_, the rest left in \ref deferred_swaps_ (columns another thread is updating).
+    //!        to \ref swap_limit_, the rest left in \ref deferred_swaps_ (columns another thread is updating); left of
+    //!        it, in \ref left_swaps_, for \ref swap_left_columns.
     void swap_rows_outside(std::size_t a,
                            std::size_t b,
                            std::size_t k0,
                            std::size_t end)
     {
-      for (std::size_t c {0}; c < k0; ++c) {
-        std::swap(lu_[(a * n_) + c], lu_[(b * n_) + c]);
+      if (k0 > 0) {
+        left_swaps_.emplace_back(a, b);
       }
       for (std::size_t c {end}; c < swap_limit_; ++c) {
         std::swap(lu_[(a * n_) + c], lu_[(b * n_) + c]);
@@ -946,6 +983,30 @@ namespace numerical {
       if (swap_limit_ < n_) {
         deferred_swaps_.emplace_back(a, b);
       }
+    }
+
+    /*!
+     * \brief Applies \ref left_swaps_ to the columns left of each swap's panel: a panel's columns take, in order, the
+     *        swaps of the panels after it, which are the swaps from its last column on. The panels' columns are
+     *        independent, so they go to the threads; a column sees its swaps in the order the pivots were chosen.
+     */
+    void swap_left_columns()
+    {
+      if (left_swaps_.empty()) {
+        return;
+      }
+      const std::size_t panels {(n_ - 1) / block_}; // every panel but the last, which no later swap reaches
+      detail::parallel_for(panels, left_swaps_.size() * block_, [&](std::size_t p) {
+                             const std::size_t c0 {p * block_};
+                             const std::size_t c1 {c0 + block_};
+                             const auto first {std::lower_bound(left_swaps_.begin(), left_swaps_.end(), c1,
+                                                                [](const auto& swap, std::size_t row) { return swap.first < row; })};
+                             for (auto swap {first}; swap != left_swaps_.end(); ++swap) {
+                               std::swap_ranges(lu_.data() + (swap->first * n_) + c0, lu_.data() + (swap->first * n_) + c1,
+                                                lu_.data() + (swap->second * n_) + c0);
+                             }
+                           });
+      left_swaps_.clear();
     }
 
     //! \brief `U₁₂ = L₁₁⁻¹ A₁₂`: the panel's rows right of it, by forward substitution with its unit-lower L. Each
@@ -985,6 +1046,7 @@ namespace numerical {
     bool                                             singular_   {false};               //!< Set if a zero pivot was met.
     std::size_t                                      swap_limit_ {n_};                  //!< The columns a panel's row swaps reach now.
     std::vector<std::pair<std::size_t, std::size_t>> deferred_swaps_;                   //!< Swaps left for the columns past it.
+    std::vector<std::pair<std::size_t, std::size_t>> left_swaps_;                       //!< Swaps left for the columns before their panel.
   };
 
   /*!
