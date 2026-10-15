@@ -227,10 +227,29 @@ namespace {
            && relative_gap(h_plus * h, identity<T>(matrix_order)) < residual_bound<T>();
   }
 
+  //! \brief A Cholesky factorisation reads the lower triangle alone, whatever the scalar: a NaN above it is not looked at,
+  //!        one below is refused.
+  template <typename T>
+  bool cholesky_reads_its_lower_triangle_alone()
+  {
+    const auto      nan     {T(std::numeric_limits<real_t<T>>::quiet_NaN())};
+    const matrix<T> above   {{T(4), nan}, {T(2), T(3)}};
+    const matrix<T> below   {{T(4), T(2)}, {nan, T(3)}};
+    bool            refused {false};
+    try {
+      static_cast<void>(numerical::cholesky_decomposition<T> {below});
+    }
+    catch (const numerical::non_finite_error&) {
+      refused = true;
+    }
+    return refused && numerical::cholesky_decomposition<T> {above}.lower()(1, 0) == T(1);
+  }
+
   template <typename T>
   bool every_decomposition_answers()
   {
-    return lu_answers<T>() && cholesky_answers<T>() && qr_answers<T>() && svd_answers<T>();
+    return lu_answers<T>() && cholesky_answers<T>() && cholesky_reads_its_lower_triangle_alone<T>() && qr_answers<T>()
+           && svd_answers<T>();
   }
 } // namespace
 

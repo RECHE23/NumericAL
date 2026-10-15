@@ -442,6 +442,23 @@ namespace numerical {
       }
     }
 
+    //! \brief Whether the lower triangle of the square \p a, and its diagonal's real part, are finite: entry by entry,
+    //!        kept out of line: the rare road of \ref require_finite_lower where the whole matrix is not finite.
+    template <typename T>
+    NUMERICAL_OUT_OF_LINE bool lower_is_finite(const matrix<T>& a)
+    {
+      for (std::size_t i {0}; i < a.rows(); ++i) {
+        bool finite {std::isfinite(real_part(a(i, i)))};
+        for (std::size_t j {0}; j < i; ++j) {
+          finite = finite && is_finite_entry(a(i, j));
+        }
+        if (!finite) {
+          return false;
+        }
+      }
+      return true;
+    }
+
     //! \brief \ref require_finite over what a Hermitian eigensolver reads: the lower triangle, and the diagonal's real
     //!        part (as `numpy.linalg.eigh` reads them, whatever the rest holds).
     //! \param[in] a    The square input.
@@ -451,45 +468,31 @@ namespace numerical {
     void require_finite_lower(const matrix<T>& a,
                               const char*      what)
     {
-      for (std::size_t i {0}; i < a.rows(); ++i) {
-        bool finite {std::isfinite(real_part(a(i, i)))};
-        for (std::size_t j {0}; j < i; ++j) {
-          finite = finite && is_finite_entry(a(i, j));
-        }
-        if (!finite) {
-          throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
-        }
+      if (!lower_is_finite(a)) {
+        throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
       }
     }
 
-    //! \brief \ref require_finite_lower entry by entry, kept out of line: the rare road, which inlined cost GCC the
-    //!        inlining of the Cholesky's own code (order 8, 7–9 % slower).
-    template <typename T>
-    NUMERICAL_OUT_OF_LINE void require_finite_lower_out_of_line(const matrix<T>& a,
-                                                                const char*      what)
-    {
-      require_finite_lower<T>(a, what);
-    }
-
     //! \brief \ref require_finite_lower for `double`: \ref all_finite over the whole matrix, the one vectorised pass
-    //!        \ref require_finite takes, and the triangle entry by entry only where it finds a NaN or an infinity (each
-    //!        entry checked with its exit cost a Cholesky of order 64 6 % on arm64, each row through \ref all_finite one
-    //!        of order 8 21 % under GCC).
-    inline void require_finite_lower(const matrix<double>& a,
-                                     const char*           what)
+    //!        \ref require_finite takes, and the triangle entry by entry only where it finds a NaN or an infinity. Out of
+    //!        line, so that a decomposition's constructor stays small enough to be inlined: in it, the check kept GCC
+    //!        from inlining the Cholesky's (order 8, 0.204 → 0.220 µs), as an entry-by-entry check (6 % at order 64 on
+    //!        arm64) or a row-by-row one (21 % at order 8 under GCC) cost in time.
+    NUMERICAL_OUT_OF_LINE inline void require_finite_lower(const matrix<double>& a,
+                                                           const char*           what)
     {
-      if (!all_finite(std::to_address(a.begin()), a.rows() * a.cols())) [[unlikely]] {
-        require_finite_lower_out_of_line(a, what);
+      if (!all_finite(std::to_address(a.begin()), a.rows() * a.cols()) && !lower_is_finite(a)) {
+        throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
       }
     }
 
     //! \brief The same for `std::complex<double>`, whose array holds its parts in order ([complex.numbers]).
-    inline void require_finite_lower(const matrix<std::complex<double>>& a,
-                                     const char*                         what)
+    NUMERICAL_OUT_OF_LINE inline void require_finite_lower(const matrix<std::complex<double>>& a,
+                                                           const char*                         what)
     {
       const auto* const parts {reinterpret_cast<const double*>(std::to_address(a.begin()))}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
-      if (!all_finite(parts, 2 * a.rows() * a.cols())) [[unlikely]] {
-        require_finite_lower_out_of_line(a, what);
+      if (!all_finite(parts, 2 * a.rows() * a.cols()) && !lower_is_finite(a)) {
+        throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
       }
     }
   } // namespace detail
