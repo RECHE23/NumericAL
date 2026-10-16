@@ -867,6 +867,93 @@ namespace numerical::detail {
       avx2_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
     }
   };
+  //! \brief The AVX-512 complex tile (\ref avx512_full_tile_c64).
+  struct avx512_complex_tile_kernel
+  {
+    static constexpr std::size_t mr           {avx512_complex_mr};        //!< The tile's rows.
+    static constexpr std::size_t nr           {avx512_complex_nr};        //!< The tile's columns.
+    static constexpr std::size_t depth        {gemm_kc / 2};              //!< The panel depth: an element is two `double`.
+    static constexpr std::size_t block_rows   {96};                       //!< The rows of one task, a whole number of tiles.
+    static constexpr std::size_t speedup      {gemm_kernel_speedup / 16}; //!< A complex multiply-add is four real ones.
+    static constexpr std::size_t serial_below {1};                        //!< Every product with work shares it.
+
+    //! \brief Nothing to turn on around a task.
+    struct session
+    {};
+
+    //! \brief Whether B's rows \p ldb apart are read in place: never, its slivers are packed.
+    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    {
+      return false;
+    }
+
+    //! \brief A's slivers for this tile (\ref gemm_pack_a).
+    static void pack_a(const std::complex<double>* a,
+                       std::size_t                 lda,
+                       std::size_t                 rows,
+                       std::size_t                 kc,
+                       std::complex<double>*       out)
+    {
+      gemm_pack_a<mr>(a, lda, rows, kc, out);
+    }
+
+    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
+    static void tile(std::size_t                 kc,
+                     const std::complex<double>* ap,
+                     const std::complex<double>* bp,
+                     std::size_t                 ldb,
+                     std::complex<double>*       c,
+                     std::size_t                 ldc,
+                     std::size_t                 rows,
+                     std::size_t                 cols) noexcept
+    {
+      avx512_tile_c64(kc, ap, bp, ldb, c, ldc, rows, cols);
+    }
+  };
+
+  //! \brief The AVX2 complex tile (\ref avx2_full_tile_c64).
+  struct avx2_complex_tile_kernel
+  {
+    static constexpr std::size_t mr           {avx2_complex_mr};          //!< The tile's rows.
+    static constexpr std::size_t nr           {avx2_complex_nr};          //!< The tile's columns.
+    static constexpr std::size_t depth        {gemm_kc / 2};              //!< The panel depth: an element is two `double`.
+    static constexpr std::size_t block_rows   {72};                       //!< The rows of one task, a whole number of tiles.
+    static constexpr std::size_t speedup      {gemm_kernel_speedup / 16}; //!< A complex multiply-add is four real ones.
+    static constexpr std::size_t serial_below {1};                        //!< Every product with work shares it.
+
+    //! \brief Nothing to turn on around a task.
+    struct session
+    {};
+
+    //! \brief Whether B's rows \p ldb apart are read in place: never, its slivers are packed.
+    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    {
+      return false;
+    }
+
+    //! \brief A's slivers for this tile (\ref gemm_pack_a).
+    static void pack_a(const std::complex<double>* a,
+                       std::size_t                 lda,
+                       std::size_t                 rows,
+                       std::size_t                 kc,
+                       std::complex<double>*       out)
+    {
+      gemm_pack_a<mr>(a, lda, rows, kc, out);
+    }
+
+    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
+    static void tile(std::size_t                 kc,
+                     const std::complex<double>* ap,
+                     const std::complex<double>* bp,
+                     std::size_t                 ldb,
+                     std::complex<double>*       c,
+                     std::size_t                 ldc,
+                     std::size_t                 rows,
+                     std::size_t                 cols) noexcept
+    {
+      avx2_tile_c64(kc, ap, bp, ldb, c, ldc, rows, cols);
+    }
+  };
 #endif
 
   //! \brief A product a faster path than the vector one takes, if any: none for this scalar.
@@ -1055,8 +1142,8 @@ namespace numerical::detail {
     }
   }
 
-  //! \brief A complex product past the plain loop: through the real kernel (`gemm_split`) past the portable
-  //!        path, else on the vector tile, whole complex products summed in order.
+  //! \brief A complex product past the plain loop: on the vector tile on the portable path, whole complex products
+  //!        summed in order; complex `double` on the x86-64 complex tiles; else through the real kernel (`gemm_split`).
   template <split_complex T>
   void gemm_large(std::size_t m,
                   std::size_t n,
@@ -1068,12 +1155,24 @@ namespace numerical::detail {
                   T*          c,
                   std::size_t ldc)
   {
-    if (gemm_path_current() == gemm_path::portable) {
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::portable) {
       gemm_packed<vector_tile_kernel<T>>(m, n, k, a, lda, b, ldb, c, ldc);
+      return;
     }
-    else {
-      gemm_split(m, n, k, a, lda, b, ldb, c, ldc);
+#ifdef NUMERICAL_X86_COMPILED
+    if constexpr (std::is_same_v<T, std::complex<double>>) { // a complex tile of its own on the x86-64 units
+      if (path == gemm_path::avx512) {
+        gemm_packed<avx512_complex_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
+        return;
+      }
+      if (path == gemm_path::avx2) {
+        gemm_packed<avx2_complex_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
+        return;
+      }
     }
+#endif
+    gemm_split(m, n, k, a, lda, b, ldb, c, ldc);
   }
 
   /*!
@@ -1084,9 +1183,10 @@ namespace numerical::detail {
    * element a chain of fused multiply-adds), else on the vector tile, which rounds `c + a·b` as the compiler
    * does: each product before its sum with contraction off (GCC's default in ISO C++ mode), fused where it
    * contracts (Clang's default). Either way the plain loop and the packed one agree to the bit, and every
-   * element is summed in ascending order of the depth on any number of threads. Complex `float` and `double`
-   * past the portable path (\ref gemm_path_current) run through the real kernel instead (`gemm_split`),
-   * the same on any number of threads too, but no longer the plain loop's to the bit.
+   * element is summed in ascending order of the depth on any number of threads. Complex `double` on the x86-64
+   * paths runs on their complex tiles (`avx2_full_tile_c64`, `avx512_full_tile_c64`); complex `float` and
+   * `double` past the portable path otherwise run through the real kernel (`gemm_split`). Either is the same on
+   * any number of threads too, but no longer the plain loop's to the bit.
    *
    * \param[in]     m,n,k       The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major.
    * \param[in]     a,lda,b,ldb The operands and the distance between their rows.

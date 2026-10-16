@@ -147,13 +147,14 @@ namespace {
   }
 } // namespace
 
-// Complex products past the portable path: several column blocks and depth blocks of the real products, each
-// partial.
-TEST(complex_products_run_through_the_real_kernel)
+// Complex products past the portable path, through the real kernel or the x86-64 complex tiles: several column
+// blocks and depth blocks, each partial, and rows ending in a partial tile of either.
+TEST(complex_products_past_the_portable_path)
 {
   const std::size_t n {numerical::detail::split_columns + 37};
   const std::size_t k {numerical::detail::split_depth + 19};
   EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<double>>(45, n, k); }));
+  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<double>>(46, 70, 135); }));
   EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>>(21, 70, k); }));
 }
 
@@ -162,16 +163,17 @@ TEST(complex_products_run_through_the_real_kernel)
 TEST(complex_products_keep_their_real_operands_within_the_limit)
 {
   using numerical::detail::split_storage;
-  // Only past the portable path does a complex product go through the real kernel (an arm64 Linux processor has none).
+  // Only past the portable path does a complex product go through the real kernel (an arm64 Linux processor has none);
+  // complex float on every such path (complex double has a tile of its own on the x86-64 units).
   const bool        split {numerical::limit_gemm_path(numerical::gemm_path::amx) != numerical::gemm_path::portable};
   const std::size_t k     {numerical::detail::split_depth};
-  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<double>>(40, 70, 50); }));
-  EXPECT(!split || !split_storage<double>().c.empty());
+  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>>(40, 70, 50); }));
+  EXPECT(!split || !split_storage<float>().c.empty());
   const std::size_t rows {(numerical::detail::split_kept / (2 * k)) + 8}; // [Re A | −Im A] past the limit
-  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<double>>(rows, 30, k); }));
-  EXPECT(split_storage<double>().a.empty());
-  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<double>>(40, 70, 50); }));
-  EXPECT(!split || !split_storage<double>().c.empty());
+  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>>(rows, 30, k); }));
+  EXPECT(split_storage<float>().a.empty());
+  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>>(40, 70, 50); }));
+  EXPECT(!split || !split_storage<float>().c.empty());
 }
 
 // More columns than one packed block of B holds: the column blocks are summed independently.

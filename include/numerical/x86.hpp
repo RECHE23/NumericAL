@@ -228,6 +228,133 @@ namespace numerical::detail {
     through_edge<avx2_mr, avx2_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { avx2_full_tile_f64(kc, ap, bp, ldb, tile, ld); });
   }
 
+  //! \brief The rows of C one AVX2 complex tile covers.
+  inline constexpr std::size_t avx2_complex_mr {3};
+
+  //! \brief The columns of C one AVX2 complex tile covers: two registers of two `std::complex<double>`.
+  inline constexpr std::size_t avx2_complex_nr {4};
+
+  /*!
+   * \brief `C += Aₚ·Bₚ` for one whole tile of complex C (\ref avx2_complex_mr × \ref avx2_complex_nr) over a panel of
+   *        depth \p kc, the operands read as their parts in order ([complex.numbers]): each row accumulates `Re a · b`
+   *        and `Im a · b` apart, 12 accumulators of four `double`, each step one fused multiply-add per accumulator;
+   *        their sum `Re a · b + i Im a · b` is formed once, by exchanging the second's parts and subtracting or
+   *        adding them (`addsub`).
+   */
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_full_tile_c64(std::size_t                 kc,
+                                                              const std::complex<double>* ap,
+                                                              const std::complex<double>* bp,
+                                                              std::size_t                 ldb,
+                                                              std::complex<double>*       tile,
+                                                              std::size_t                 ld) noexcept
+  {
+    const auto* const                             a   {reinterpret_cast<const double*>(ap)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+    const auto* const                             b   {reinterpret_cast<const double*>(bp)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    auto* const                                   c   {reinterpret_cast<double*>(tile)};     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    std::array<ymm_register, avx2_complex_mr * 4> acc {};
+    NUMERICAL_UNROLL_DEPTH
+    for (std::size_t p {0}; p < kc; ++p) {
+      const __m256d b0 {_mm256_loadu_pd(b + (2 * p * ldb))};
+      const __m256d b1 {_mm256_loadu_pd(b + (2 * p * ldb) + 4)};
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t i {0}; i < avx2_complex_mr; ++i) {
+        const __m256d re {_mm256_broadcast_sd(a + (2 * ((p * avx2_complex_mr) + i)))};
+        const __m256d im {_mm256_broadcast_sd(a + (2 * ((p * avx2_complex_mr) + i)) + 1)};
+        acc[4 * i].v       = _mm256_fmadd_pd(re, b0, acc[4 * i].v);
+        acc[(4 * i) + 1].v = _mm256_fmadd_pd(re, b1, acc[(4 * i) + 1].v);
+        acc[(4 * i) + 2].v = _mm256_fmadd_pd(im, b0, acc[(4 * i) + 2].v);
+        acc[(4 * i) + 3].v = _mm256_fmadd_pd(im, b1, acc[(4 * i) + 3].v);
+      }
+    }
+    NUMERICAL_UNROLL_TILE
+    for (std::size_t i {0}; i < avx2_complex_mr; ++i) {
+      double* const row {c + (2 * i * ld)};
+      const __m256d lo  {_mm256_addsub_pd(acc[4 * i].v, _mm256_permute_pd(acc[(4 * i) + 2].v, 0b0101))};
+      const __m256d hi  {_mm256_addsub_pd(acc[(4 * i) + 1].v, _mm256_permute_pd(acc[(4 * i) + 3].v, 0b0101))};
+      _mm256_storeu_pd(row, _mm256_add_pd(_mm256_loadu_pd(row), lo));
+      _mm256_storeu_pd(row + 4, _mm256_add_pd(_mm256_loadu_pd(row + 4), hi));
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the tile may be SSE alone
+  }
+
+  //! \brief \ref avx2_full_tile_c64 for a tile of \p rows × \p cols (at most \ref avx2_complex_mr ×
+  //!        \ref avx2_complex_nr), a partial one through a whole one whose outside is zero (\ref through_edge).
+  inline void avx2_tile_c64(std::size_t                 kc,
+                            const std::complex<double>* ap,
+                            const std::complex<double>* bp,
+                            std::size_t                 ldb,
+                            std::complex<double>*       c,
+                            std::size_t                 ldc,
+                            std::size_t                 rows,
+                            std::size_t                 cols) noexcept
+  {
+    through_edge<avx2_complex_mr, avx2_complex_nr>(c, ldc, rows, cols, [&](std::complex<double>* tile, std::size_t ld) noexcept {
+                                                     avx2_full_tile_c64(kc, ap, bp, ldb, tile, ld);
+                                                   });
+  }
+
+  //! \brief The rows of C one AVX-512 complex tile covers.
+  inline constexpr std::size_t avx512_complex_mr {6};
+
+  //! \brief The columns of C one AVX-512 complex tile covers: two registers of four `std::complex<double>`.
+  inline constexpr std::size_t avx512_complex_nr {8};
+
+  /*!
+   * \brief \ref avx2_full_tile_c64 on the AVX-512 units: a tile of \ref avx512_complex_mr × \ref avx512_complex_nr,
+   *        24 accumulators of eight `double`; with no `addsub` there, the second's exchanged parts are added times
+   *        `(−1, 1, …)` by one fused multiply-add, as exact.
+   */
+  NUMERICAL_TARGET("avx512f") inline void avx512_full_tile_c64(std::size_t                 kc,
+                                                               const std::complex<double>* ap,
+                                                               const std::complex<double>* bp,
+                                                               std::size_t                 ldb,
+                                                               std::complex<double>*       tile,
+                                                               std::size_t                 ld) noexcept
+  {
+    const auto* const                               a   {reinterpret_cast<const double*>(ap)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+    const auto* const                               b   {reinterpret_cast<const double*>(bp)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    auto* const                                     c   {reinterpret_cast<double*>(tile)};     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    std::array<zmm_register, avx512_complex_mr * 4> acc {};
+    NUMERICAL_UNROLL_DEPTH
+    for (std::size_t p {0}; p < kc; ++p) {
+      const __m512d b0 {_mm512_loadu_pd(b + (2 * p * ldb))};
+      const __m512d b1 {_mm512_loadu_pd(b + (2 * p * ldb) + 8)};
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t i {0}; i < avx512_complex_mr; ++i) {
+        const __m512d re {_mm512_set1_pd(a[2 * ((p * avx512_complex_mr) + i)])};
+        const __m512d im {_mm512_set1_pd(a[(2 * ((p * avx512_complex_mr) + i)) + 1])};
+        acc[4 * i].v       = _mm512_fmadd_pd(re, b0, acc[4 * i].v);
+        acc[(4 * i) + 1].v = _mm512_fmadd_pd(re, b1, acc[(4 * i) + 1].v);
+        acc[(4 * i) + 2].v = _mm512_fmadd_pd(im, b0, acc[(4 * i) + 2].v);
+        acc[(4 * i) + 3].v = _mm512_fmadd_pd(im, b1, acc[(4 * i) + 3].v);
+      }
+    }
+    const __m512d signs {_mm512_set_pd(1.0, -1.0, 1.0, -1.0, 1.0, -1.0, 1.0, -1.0)}; // −1 on the real parts
+    NUMERICAL_UNROLL_TILE
+    for (std::size_t i {0}; i < avx512_complex_mr; ++i) {
+      double* const row {c + (2 * i * ld)};
+      const __m512d lo  {_mm512_fmadd_pd(_mm512_permute_pd(acc[(4 * i) + 2].v, 0x55), signs, acc[4 * i].v)};
+      const __m512d hi  {_mm512_fmadd_pd(_mm512_permute_pd(acc[(4 * i) + 3].v, 0x55), signs, acc[(4 * i) + 1].v)};
+      _mm512_storeu_pd(row, _mm512_add_pd(_mm512_loadu_pd(row), lo));
+      _mm512_storeu_pd(row + 8, _mm512_add_pd(_mm512_loadu_pd(row + 8), hi));
+    }
+  }
+
+  //! \brief \ref avx512_full_tile_c64 for a tile of \p rows × \p cols, a partial one through a whole one (\ref through_edge).
+  inline void avx512_tile_c64(std::size_t                 kc,
+                              const std::complex<double>* ap,
+                              const std::complex<double>* bp,
+                              std::size_t                 ldb,
+                              std::complex<double>*       c,
+                              std::size_t                 ldc,
+                              std::size_t                 rows,
+                              std::size_t                 cols) noexcept
+  {
+    through_edge<avx512_complex_mr, avx512_complex_nr>(c, ldc, rows, cols, [&](std::complex<double>* tile, std::size_t ld) noexcept {
+                                                         avx512_full_tile_c64(kc, ap, bp, ldb, tile, ld);
+                                                       });
+  }
+
   /*!
    * \brief `Σ row[i] · v[i]`, and `out[i] += row[i] · f`, for \p count elements in one pass over \p row (see
    *        \ref symmetric_row): four accumulators of eight `double`, each a chain of fused multiply-adds, summed

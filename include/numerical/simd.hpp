@@ -465,8 +465,9 @@ namespace numerical::detail {
    */
   template <std::size_t Rows,
             std::size_t Cols,
+            typename T,
             typename Full>
-  void through_edge(double*     c,
+  void through_edge(T*          c,
                     std::size_t ldc,
                     std::size_t rows,
                     std::size_t cols,
@@ -476,7 +477,7 @@ namespace numerical::detail {
       full(c, ldc);
       return;
     }
-    std::array<double, Rows * Cols> edge {};
+    std::array<T, Rows * Cols> edge {};
     for (std::size_t i {0}; i < rows; ++i) {
       for (std::size_t j {0}; j < cols; ++j) {
         edge[(i * Cols) + j] = c[(i * ldc) + j];

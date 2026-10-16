@@ -6,6 +6,12 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **Complex `double` products on x86-64 run on complex tiles of their own** (AVX2 3 × 4, AVX-512 6 × 8), where they went
+  through four real products (`gemm_split`): each row of a tile accumulates `Re a · b` and `Im a · b` apart, combined
+  once. Six AVX2 cores, against NumPy's OpenBLAS: a complex product of order 512 4.9 ms (3.7; was 7.6), 1024 37 ms
+  (30; was 52); complex `eig` of order 512 422 ms (499; was 491), 1024 1.80 s (1.95; was 2.19).
+
 ## 2026.10.17 — 2026-10-16
 
 ### Added
