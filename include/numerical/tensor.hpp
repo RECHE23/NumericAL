@@ -31,6 +31,7 @@
 #include <optional>
 #include <stdexcept>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
 
@@ -573,6 +574,142 @@ namespace numerical {
     //! auto-vectorise. (Pairwise contraction-path optimisation, as in opt_einsum,
     //! and a BLAS reduction are deliberately not included — they would trade the
     //! library's generic simplicity and zero dependencies for raw throughput.)
+    //! \brief The position of the ellipsis in \p subscripts, or `npos` where there is none: `'.'` only as one `...`.
+    //! \throws einsum_error If a `'.'` stands otherwise.
+    [[nodiscard]] inline std::size_t ellipsis_in(const std::string& subscripts)
+    {
+      const std::size_t at   {subscripts.find("...")};
+      const auto        dots {static_cast<std::size_t>(std::count(subscripts.begin(), subscripts.end(), '.'))};
+      if (dots != (at == std::string::npos ? 0U : 3U)) {
+        throw einsum_error("einsum: '.' stands only as one ellipsis, '...', per subscript");
+      }
+      return at;
+    }
+
+    template <typename T>
+    [[nodiscard]] tensor<T> einsum_impl(const std::string&                   spec_in,
+                                        const std::vector<const tensor<T>*>& operands);
+
+    /*!
+     * \brief \ref einsum_impl of a spec with ellipses, as NumPy reads them: each `...` stands for an operand's axes its
+     *        letters leave, aligned from the right across the operands and broadcast (an extent of 1 repeated), named by
+     *        letters the spec does not use. An operand's axis of extent 1 under the ellipsis where another's is longer is
+     *        dropped with its letter, so that operand repeats along it. The output: its `...` the broadcast axes (an
+     *        output without one, where an operand has such axes, is refused, as NumPy refuses it); with no `->`, the
+     *        broadcast axes then the letters that appear once, in order.
+     */
+    template <typename T>
+    [[nodiscard]] tensor<T> einsum_ellipsis(const std::string&                   spec,
+                                            const std::vector<const tensor<T>*>& operands)
+    {
+      const std::size_t        arrow  {spec.find("->")};
+      std::vector<std::string> inputs {""};
+      for (const char ch : spec.substr(0, arrow)) {
+        if (ch == ',') {
+          inputs.emplace_back();
+        }
+        else {
+          inputs.back().push_back(ch);
+        }
+      }
+      if (inputs.size() != operands.size()) {
+        throw einsum_error("einsum: number of operands does not match the spec");
+      }
+      std::vector<std::size_t> at(inputs.size());
+      std::vector<std::size_t> under(inputs.size(), 0); // the axes each operand's ellipsis stands for
+      std::size_t              widest {0};
+      for (std::size_t i {0}; i < inputs.size(); ++i) {
+        at[i] = ellipsis_in(inputs[i]);
+        if (at[i] != std::string::npos) {
+          const std::size_t letters {inputs[i].size() - 3};
+          if (operands[i]->rank() < letters) {
+            throw einsum_error("einsum: operand rank does not match its subscripts");
+          }
+          under[i] = operands[i]->rank() - letters;
+          widest   = std::max(widest, under[i]);
+        }
+      }
+      static constexpr std::string_view alphabet {"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"};
+      std::string                       fresh;
+      for (const char letter : alphabet) {
+        if (fresh.size() < widest && spec.find(letter) == std::string::npos) {
+          fresh.push_back(letter);
+        }
+      }
+      if (fresh.size() < widest) {
+        throw einsum_error("einsum: too many axes under the ellipsis for the letters left");
+      }
+      std::vector<std::size_t> extent(widest, 1);
+      for (std::size_t i {0}; i < inputs.size(); ++i) {
+        for (std::size_t d {0}; d < under[i]; ++d) {
+          const std::size_t dim       {operands[i]->shape()[at[i] + d]};
+          std::size_t&      broadcast {extent[widest - under[i] + d]};
+          if (dim != 1 && broadcast != 1 && dim != broadcast) {
+            throw dimension_error("einsum: the axes under the ellipsis do not broadcast");
+          }
+          broadcast = dim == 1 ? broadcast : dim;
+        }
+      }
+      std::deque<tensor<T>>         owned; // the operands with axes dropped (a deque keeps their addresses)
+      std::vector<const tensor<T>*> next;
+      std::string                   rewritten;
+      for (std::size_t i {0}; i < inputs.size(); ++i) {
+        rewritten += i == 0 ? "" : ",";
+        if (at[i] == std::string::npos) {
+          rewritten += inputs[i];
+          next.push_back(operands[i]);
+          continue;
+        }
+        std::string              labels {inputs[i].substr(0, at[i])};
+        std::vector<std::size_t> shape(operands[i]->shape().begin(), operands[i]->shape().begin() + static_cast<std::ptrdiff_t>(at[i]));
+        for (std::size_t d {0}; d < under[i]; ++d) {
+          const std::size_t axis {widest - under[i] + d};
+          const std::size_t dim  {operands[i]->shape()[at[i] + d]};
+          if (dim != extent[axis]) { // 1 where another operand's is longer: repeated, its letter dropped
+            continue;
+          }
+          labels.push_back(fresh[axis]);
+          shape.push_back(dim);
+        }
+        labels += inputs[i].substr(at[i] + 3);
+        shape.insert(shape.end(), operands[i]->shape().begin() + static_cast<std::ptrdiff_t>(at[i] + under[i]), operands[i]->shape().end());
+        rewritten += labels;
+        if (shape.size() == operands[i]->rank()) {
+          next.push_back(operands[i]);
+        }
+        else {
+          owned.emplace_back(std::move(shape), buffer<T>(operands[i]->data().begin(), operands[i]->data().end()));
+          next.push_back(&owned.back());
+        }
+      }
+      std::string output;
+      if (arrow != std::string::npos) {
+        output                  = spec.substr(arrow + 2);
+        const std::size_t where {ellipsis_in(output)};
+        if (where == std::string::npos && widest > 0) {
+          throw einsum_error("einsum: the output keeps the axes under the ellipsis: '...' in it, as NumPy requires");
+        }
+        if (where != std::string::npos) {
+          output.replace(where, 3, fresh);
+        }
+      }
+      else { // implicit: the broadcast axes, then the letters that appear once, in order
+        std::map<char, std::size_t> seen;
+        for (const char label : spec) {
+          if (is_label(label)) {
+            ++seen[label];
+          }
+        }
+        output = fresh;
+        for (const auto& [label, count] : seen) {
+          if (count == 1) {
+            output.push_back(label);
+          }
+        }
+      }
+      return einsum_impl<T>(rewritten + "->" + output, next);
+    }
+
     template <typename T>
     [[nodiscard]] tensor<T> einsum_impl(const std::string&                    spec_in,
                                         const std::vector<const tensor<T>*>&  operands)
@@ -582,6 +719,9 @@ namespace numerical {
       spec.erase(std::remove_if(spec.begin(), spec.end(),
                                 [](unsigned char ch) { return std::isspace(ch) != 0; }),
                  spec.end());
+      if (spec.find('.') != std::string::npos) {
+        return einsum_ellipsis<T>(spec, operands);
+      }
       if (spec.find("->") == std::string::npos) {
         // Implicit mode, as NumPy reads it: the output is every label that appears once, in ASCII order (`"ij,jk"`
         // is `"ij,jk->ik"`, `"ii"` the trace, `"ba"` the transpose).
@@ -911,6 +1051,86 @@ namespace numerical {
                                  const std::vector<const tensor<T>*>& operands)
   {
     return detail::einsum_impl<T>(spec, operands);
+  }
+
+  /*!
+   * \brief The matrix product of two tensors, as NumPy's `matmul`: each operand a stack of matrices along its leading
+   *        axes, those axes broadcast against the other's (aligned from the right, an extent of 1 repeated), one product
+   *        per matrix of the broadcast stack through the packed kernel, the products in parallel. A vector first is a
+   *        row (its axis absent from the result), a vector second a column (likewise); two vectors give their dot
+   *        product, of rank 0. The broadcast operands are not copied: a repeated matrix is read where it is.
+   * \param[in] a,b The operands, of rank 1 or more.
+   * \return `a @ b`, of the broadcast leading axes, then the rows of \p a and the columns of \p b.
+   * \throws dimension_error If an operand is of rank 0, the inner extents differ, or the leading axes do not broadcast.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> matmul(const tensor<T>& a,
+                                 const tensor<T>& b)
+  {
+    const std::vector<std::size_t>& sa {a.shape()};
+    const std::vector<std::size_t>& sb {b.shape()};
+    if (sa.empty() || sb.empty()) {
+      throw dimension_error("matmul: a rank-0 operand has no matrix to multiply");
+    }
+    const bool        row    {sa.size() == 1};
+    const bool        column {sb.size() == 1};
+    const std::size_t m      {row ? 1 : sa[sa.size() - 2]};
+    const std::size_t k      {sa.back()};
+    const std::size_t n      {column ? 1 : sb.back()};
+    if ((column ? sb[0] : sb[sb.size() - 2]) != k) {
+      throw dimension_error("matmul: the inner extents of the operands differ");
+    }
+    const std::size_t        lead_a {sa.size() - (row ? 1 : 2)};
+    const std::size_t        lead_b {sb.size() - (column ? 1 : 2)};
+    const std::size_t        rank   {std::max(lead_a, lead_b)};
+    std::vector<std::size_t> batch(rank);
+    std::vector<std::size_t> stride_a(rank, 0); // 0 along an axis the operand repeats
+    std::vector<std::size_t> stride_b(rank, 0);
+    std::size_t              step_a {m * k};
+    std::size_t              step_b {k * n};
+    for (std::size_t d {rank}; d-- > 0;) {
+      const std::size_t da {d + lead_a >= rank ? sa[d + lead_a - rank] : 1};
+      const std::size_t db {d + lead_b >= rank ? sb[d + lead_b - rank] : 1};
+      if (da != db && da != 1 && db != 1) {
+        throw dimension_error("matmul: the leading axes of the operands do not broadcast");
+      }
+      batch[d]    = da == 1 ? db : da;
+      stride_a[d] = da == 1 ? 0 : step_a;
+      stride_b[d] = db == 1 ? 0 : step_b;
+      step_a      = detail::checked_mul(step_a, da);
+      step_b      = detail::checked_mul(step_b, db);
+    }
+    std::size_t count {1};
+    for (const std::size_t extent : batch) {
+      count = detail::checked_mul(count, extent);
+    }
+    std::vector<std::size_t> shape {batch};
+    if (!row) {
+      shape.push_back(m);
+    }
+    if (!column) {
+      shape.push_back(n);
+    }
+    buffer<T> c(detail::checked_mul(count, m * n));
+    detail::parallel_zero(c.data(), c.size()); // gemm adds to C
+    if (rank == 0) {                           // no stack: one product
+      detail::gemm(m, n, k, a.data().data(), k, b.data().data(), n, c.data(), n);
+      return tensor<T> {std::move(shape), std::move(c)};
+    }
+    const auto product {[&](std::size_t p) {
+                          std::size_t rest {p};
+                          std::size_t offset_a {0};
+                          std::size_t offset_b {0};
+                          for (std::size_t d {batch.size()}; d-- > 0;) {
+                            const std::size_t index {rest % batch[d]};
+                            rest     /= batch[d];
+                            offset_a += index * stride_a[d];
+                            offset_b += index * stride_b[d];
+                          }
+                          detail::gemm(m, n, k, a.data().data() + offset_a, k, b.data().data() + offset_b, n, c.data() + (p * m * n), n);
+                        }};
+    detail::parallel_for(count, m * n * k / detail::gemm_kernel_speedup, product); // the stack's products in parallel
+    return tensor<T> {std::move(shape), std::move(c)};
   }
 } // namespace numerical
 

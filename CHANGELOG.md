@@ -6,6 +6,17 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Added
+- **`a @ b` and `matmul` of stacks of matrices**, as NumPy's: the leading axes broadcast against each other (an extent
+  of 1 repeated, read where it is, not copied), a vector first a row and second a column, mixed dtypes promoted; one
+  product per matrix of the stack through the packed kernel, the products in parallel. `@` took ranks 1 and 2 alone.
+  Eight arm64 cores, against NumPy: 64 products of order 128 0.87 ms (1.33), 100 of order 64 by one matrix 0.22 ms
+  (0.30), 1000 of order 16 0.24 ms (0.26); behind on the smallest and the largest, 1000 of order 4 0.079 ms (0.045),
+  8 of order 512 5.3 ms (4.5).
+- **An ellipsis in `einsum`**, as NumPy reads it: `...` stands for an operand's axes its letters leave, aligned from the
+  right across the operands and broadcast; with no `->`, the output is the broadcast axes then the letters that appear
+  once. An output without `...` where an operand has such axes is refused, as NumPy refuses it.
+
 ### Changed
 - **Complex `double` products on x86-64 run on complex tiles of their own** (AVX2 3 × 4, AVX-512 6 × 8), where they went
   through four real products (`gemm_split`): each row of a tile accumulates `Re a · b` and `Im a · b` apart, combined

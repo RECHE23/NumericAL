@@ -127,12 +127,14 @@ a = [[1, 2], [3, 4]]
 numerical.einsum("ij,jk->ik", a, [[5, 6], [7, 8]])   # matrix product
 numerical.einsum("i,i->", [1, 2, 3], [1, 2, 3])       # dot
 numerical.einsum("ij,jk", a, [[5, 6], [7, 8]])        # implicit output, as NumPy: "ij,jk->ik"
+numerical.einsum("...ij,...jk->...ik", s, t)          # an ellipsis, its axes broadcast, as NumPy's
 numerical.solve(a, [1.0, 1.0])                         # a @ x = b
 ```
 
 A failure is a `numerical.LinAlgError`: a `ValueError`, as `numpy.linalg.LinAlgError` is,
 and a `numerical.error`. A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`), iterates, transposes
-(`t.T`) and multiplies (`a @ b`) as a NumPy array of rank 1 or 2 does, and computes as one:
+(`t.T`) and multiplies (`a @ b`, `numerical.matmul`) as a NumPy array does, stacks of matrices along leading axes
+broadcast against each other, and computes as one:
 
 ```python
 t = numerical.arange(6).reshape(2, 3)

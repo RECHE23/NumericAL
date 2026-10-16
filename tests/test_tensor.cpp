@@ -625,3 +625,96 @@ TEST(einsum_takes_operands_counted_at_run_time)
   EXPECT_THROWS(numerical::einsum("ij,jk->ik", std::vector<const tensor<double>*> {&a}), numerical::einsum_error);
   EXPECT_THROWS(numerical::einsum("->", std::vector<const tensor<double>*> {}), numerical::einsum_error);
 }
+
+namespace {
+
+  //! \brief A tensor of \p shape holding 0, 1, 2, … times \p scale plus \p shift.
+  tensor<double> counting(const std::vector<std::size_t>& shape,
+                          double                          scale = 1.0,
+                          double                          shift = 0.0)
+  {
+    std::size_t size {1};
+    for (const std::size_t extent : shape) {
+      size *= extent;
+    }
+    std::vector<double> values(size);
+    for (std::size_t i {0}; i < size; ++i) {
+      values[i] = (static_cast<double>(i) * scale) + shift;
+    }
+    return tensor<double> {shape, values};
+  }
+
+  //! \brief `a @ b` by loops, for two operands of rank 3 whose leading axes are equal or 1.
+  std::vector<double> stacked_product(const tensor<double>& a,
+                                      const tensor<double>& b,
+                                      std::size_t           count)
+  {
+    const std::size_t   m {a.shape()[1]};
+    const std::size_t   k {a.shape()[2]};
+    const std::size_t   n {b.shape()[2]};
+    std::vector<double> out(count * m * n, 0.0);
+    for (std::size_t p {0}; p < count; ++p) {
+      const std::size_t pa {a.shape()[0] == 1 ? 0 : p};
+      const std::size_t pb {b.shape()[0] == 1 ? 0 : p};
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          for (std::size_t q {0}; q < k; ++q) {
+            out[(((p * m) + i) * n) + j] += a.data()[(((pa * m) + i) * k) + q] * b.data()[(((pb * k) + q) * n) + j];
+          }
+        }
+      }
+    }
+    return out;
+  }
+} // namespace
+
+TEST(matmul_of_stacks_broadcasts_their_leading_axes)
+{
+  const tensor<double> a           {counting({3, 2, 4}, 0.5, -1.0)};
+  const tensor<double> b           {counting({1, 4, 5}, 0.25, 0.5)};
+  const tensor<double> product     {numerical::matmul(a, b)};
+  EXPECT(product.shape() == (std::vector<std::size_t> {3, 2, 5}));
+  const std::vector<double> wanted {stacked_product(a, b, 3)};
+  EXPECT(product.data() == numerical::buffer<double>(wanted.begin(), wanted.end()));
+  const tensor<double> c           {numerical::matmul(counting({4, 1, 3, 2}), counting({5, 2, 6}))}; // leading axes 4 × 1 and 5
+  EXPECT(c.shape() == (std::vector<std::size_t> {4, 5, 3, 6}));
+  // a vector first is a row, a vector second a column, two vectors their dot product
+  EXPECT(numerical::matmul(counting({4}), counting({2, 4, 3})).shape() == (std::vector<std::size_t> {2, 3}));
+  EXPECT(numerical::matmul(counting({2, 3, 4}), counting({4})).shape() == (std::vector<std::size_t> {2, 3}));
+  const tensor<double> dot {numerical::matmul(counting({3}), counting({3}))};
+  EXPECT(dot.shape().empty() && dot.data()[0] == 5.0);
+  EXPECT(numerical::matmul(counting({0, 2, 3}), counting({3, 4})).shape() == (std::vector<std::size_t> {0, 2, 4}));
+  EXPECT(numerical::matmul(counting({2, 3, 0}), counting({0, 4})).data() == numerical::buffer<double>(24, 0.0));
+  EXPECT(numerical::matmul(counting({2, 3, 4}), counting({2, 4, 5})).shape() == (std::vector<std::size_t> {2, 3, 5})); // equal axes
+  EXPECT_THROWS((void)numerical::matmul(tensor<double> {{}, std::vector<double> {1.0}}, counting({2, 2})), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::matmul(counting({2, 2}), tensor<double> {{}, std::vector<double> {1.0}}), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::matmul(counting({2, 3}), counting({2, 3})), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::matmul(counting({2, 2, 3}), counting({3, 3, 4})), numerical::dimension_error);
+}
+
+TEST(einsum_reads_an_ellipsis_as_numpy)
+{
+  const tensor<double> a           {counting({2, 3, 4})};
+  const tensor<double> b           {counting({1, 4, 5}, 0.5)};
+  const tensor<double> batched     {einsum("...ij,...jk->...ik", a, b)}; // b's leading 1 repeated
+  EXPECT(batched.shape() == (std::vector<std::size_t> {2, 3, 5}));
+  const std::vector<double> wanted {stacked_product(a, b, 2)};
+  EXPECT(batched.data() == numerical::buffer<double>(wanted.begin(), wanted.end()));
+  EXPECT(einsum("...ij,jk", a, counting({4, 5})).shape() == (std::vector<std::size_t> {2, 3, 5}));                   // implicit
+  EXPECT(einsum("i...->...", counting({4, 2, 3})).shape() == (std::vector<std::size_t> {2, 3}));
+  EXPECT(einsum("...", counting({1, 1})).shape() == (std::vector<std::size_t> {1, 1}));                              // every operand's 1 kept
+  EXPECT(einsum("...ii->...i", counting({2, 3, 3})).data() == numerical::buffer<double>({0, 4, 8, 9, 13, 17}));
+  EXPECT(einsum("i,...->...i", counting({3}), counting({2})).shape() == (std::vector<std::size_t> {2, 3}));
+  EXPECT(einsum("...i,...i->...", counting({2, 3}), counting({2, 3})).data() == numerical::buffer<double>({5, 50})); // equal axes
+  EXPECT(einsum("...ij->ij", counting({2, 3})).shape() == (std::vector<std::size_t> {2, 3}));                        // an ellipsis of no axis
+  const tensor<int> whole {{2, 2}, std::vector<int> {1, 2, 3, 4}};                                                   // the same for every scalar type
+  EXPECT(einsum("...i->...", whole).data() == numerical::buffer<int>({3, 7}));
+  EXPECT_THROWS((void)einsum("..i", counting({2})), numerical::einsum_error);
+  EXPECT_THROWS((void)einsum("...i...", counting({2, 3})), numerical::einsum_error);
+  EXPECT_THROWS((void)einsum("...ij", counting({2})), numerical::einsum_error);                    // fewer axes than letters
+  EXPECT_THROWS((void)einsum("...i->i", counting({2, 3})), numerical::einsum_error);               // NumPy keeps them
+  EXPECT_THROWS((void)einsum("...,...", counting({2, 3})), numerical::einsum_error);               // one operand for two
+  EXPECT_THROWS((void)einsum("...i,...i->...", counting({2, 3}), counting({4, 3})), numerical::dimension_error);
+  EXPECT_THROWS((void)einsum("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz...->...",
+                             counting(std::vector<std::size_t>(53, 1))), numerical::einsum_error); // no letter left
+}

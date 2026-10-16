@@ -687,6 +687,19 @@ PyObject* tensor_matmul(PyObject* self, PyObject* other)
     return PyObject_CallFunctionObjArgs(matmul_fallback, self, other, nullptr);
 }
 
+// _matmul_nd(a, b) -> Tensor: numerical::matmul, the product of two stacks of one dtype, their leading axes broadcast.
+any_tensor matmul_nd(const any_tensor& a, const any_tensor& b)
+{
+    if (a.index() != b.index()) {
+        throw std::runtime_error("_matmul_nd: the operands share one dtype");
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) + count_of(b))};
+    return std::visit([&](const auto& x) -> any_tensor {
+                          using tensor_type = std::decay_t<decltype(x)>;
+                          return numerical::matmul(x, std::get<tensor_type>(b));
+                      }, a);
+}
+
 // --- the linear-algebra functions (m.def: any_tensor in/out through caster<any_tensor>) ---
 // Validation failures throw -> numerical.error; the variant dispatch (is_complex / std::get)
 // stays here in the consumer (the substrate grows no variant machinery).
@@ -2695,6 +2708,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&cholesky>("cholesky", "cholesky(a, upper) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite), or with upper the factor U of A = Uᴴ U from its upper triangle.");
     m.def<&qr>("qr", "qr(a, mode) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr: reduced, Q is m×k, R k×n, k = min(m, n); complete, Q is m×m, R m×n.");
     m.def<&eigh>("eigh", "eigh(a, method, upper) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, or with upper its upper one, as numpy.linalg.eigh's UPLO.");
+    m.def<&matmul_nd>("_matmul_nd", "_matmul_nd(a, b) -> Tensor\nThe matrix product of two stacks of one dtype, their leading axes broadcast, as numpy.matmul.");
     m.def<&eig>("_eig", "_eig(a) -> (w, v)\nThe eigenvalues and right eigenvectors of a general square matrix (or stack), as numpy.linalg.eig: complex, as NumPy 2.5's.");
     m.def<&eigvals>("_eigvals", "_eigvals(a) -> w\nThe eigenvalues alone of a general square matrix (or stack), as numpy.linalg.eigvals: complex.");
     m.def<&eigvalsh>("eigvalsh", "eigvalsh(a, upper) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read, or with upper its upper one).");

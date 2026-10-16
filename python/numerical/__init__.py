@@ -42,7 +42,7 @@ __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "det", "slogdet", "inverse", "inv", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
-    "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate",
+    "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config",
 ]
@@ -306,13 +306,24 @@ _MATMUL = {(1, 1): "i,i->", (2, 1): "ij,j->i", (1, 2): "i,ij->j", (2, 2): "ij,jk
 
 
 def _matmul(self, other):
-    """``a @ b`` for vectors and matrices, as NumPy's matmul of rank 1 and 2 (a number for two vectors)."""
+    """``a @ b`` as NumPy's matmul: vectors and matrices, and stacks of matrices along leading axes broadcast against
+    each other (a number for two vectors); the dtypes promoted as NumPy promotes them."""
     other = other if isinstance(other, Tensor) else asarray(other)
-    spec = _MATMUL.get((len(self.shape), len(other.shape)))
+    if not self.shape or not other.shape:
+        raise LinAlgError("matmul: a rank-0 operand has no matrix to multiply (multiply it with *)")
+    dtype = _promoted((self.dtype, other.dtype))
+    a, b = (t if t.dtype == dtype else asarray(t, dtype=dtype) for t in (self, other))
+    spec = _MATMUL.get((len(a.shape), len(b.shape)))
     if spec is None:
-        raise LinAlgError(f"@ takes vectors and matrices, not ranks {len(self.shape)} and {len(other.shape)}")
-    product = einsum(spec, self, other)
+        return _matmul_nd(a, b)
+    product = einsum(spec, a, b)
     return product[()] if not product.shape else product  # two vectors give a number, as NumPy's
+
+
+def matmul(x1, x2, /):
+    """The matrix product of `x1` and `x2`, as ``numpy.matmul`` (and ``x1 @ x2``): stacks of matrices along leading axes
+    broadcast against each other, a vector a row first and a column second, two vectors their dot product."""
+    return _matmul(_tensor(x1), x2)
 
 
 def _rmatmul(self, other):
@@ -421,6 +432,7 @@ _eigh = _linalg(_numerical.eigh, arrays=1)
 _svd = _linalg(_numerical.svd, arrays=1)
 _singular_values = _linalg(_numerical._singular_values)
 _svd_hermitian = _linalg(_numerical._svd_hermitian)
+_matmul_nd = _linalg(_numerical._matmul_nd)
 _eig = _linalg(_numerical._eig)
 _eigvals = _linalg(_numerical._eigvals)
 _QR_MODES = ("reduced", "complete", "r")
