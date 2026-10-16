@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.15 — 2026-10-16
+
 ### Breaking
 - **`eigh(a, UPLO="L", *, method=...)`**: the second argument is NumPy's `UPLO`, and the method goes by keyword; a
   method's name in second place raises `TypeError` naming `method=`.
