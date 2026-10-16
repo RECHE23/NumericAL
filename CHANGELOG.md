@@ -35,7 +35,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   one-sided Jacobi sought an orthogonality to `double`'s epsilon that `float` columns do not hold; both ran out of
   steps and threw. The Python binding, in `float64` and `complex128`, was not touched.
 - **`cholesky` reads its lower triangle alone, NaN and infinities included**, as it reads the values: a NaN above the
-  diagonal raised, where NumPy ignores it.
+  diagonal raised, where NumPy ignores it. One vectorised pass over the whole matrix still comes first, the triangle
+  entry by entry only behind a NaN or an infinity; GCC 14 on arm64 pays about 20 ns at order 8 (0.205 → 0.224 µs,
+  the one cell `make bench-diff` flags), Clang nothing.
 
 ### Changed
 - **A complex matrix product keeps its real operands from one product to the next, on each thread**, where each
