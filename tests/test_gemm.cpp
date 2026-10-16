@@ -31,8 +31,9 @@ namespace {
   }
 
   // The definition the kernel must reproduce: C starts at zero and adds a(i,p)·b(p,j) for p ascending, each
-  // product rounded before its sum, or fused with it where the product runs on a fused path (AVX2, AVX-512 or the
-  // AMX: a double product large enough to be packed; a small one runs the plain loop on any chip).
+  // product rounded before its sum, or fused with it where the product runs on a fused path (NEON, AVX2, AVX-512 or
+  // the AMX: a double product large enough to be packed, or a float one on arm64's; a small one runs the plain loop
+  // on any chip).
   template <typename T>
   std::vector<T> reference(std::size_t           m,
                            std::size_t           n,
@@ -42,7 +43,8 @@ namespace {
   {
     const bool packed         {k >= numerical::detail::gemm_min_depth
                                && m * n >= ((numerical::detail::gemm_packed_threshold + k) - 1) / k};
-    const bool     fused      {std::is_same_v<T, double> && packed && numerical::gemm_path_in_use() != numerical::gemm_path::portable};
+    const bool     fused      {(std::is_same_v<T, double> || (std::is_same_v<T, float> && numerical::detail::neon_compiled)) && packed
+                               && numerical::gemm_path_in_use() != numerical::gemm_path::portable};
     std::vector<T> c(m * n, T {});
     for (std::size_t i {0}; i < m; ++i) {
       for (std::size_t p {0}; p < k; ++p) {
@@ -104,7 +106,7 @@ TEST(packed_product_equals_the_ascending_sum_to_the_bit)
   const std::size_t k {(numerical::detail::gemm_kc * 2) + 17};
   EXPECT(on_every_path([&] { return product_is_exact<double>(129, 101, k); }));
   EXPECT(on_every_path([&] { return product_is_exact<double>(31, 15, k); })); // one partial AMX tile
-  EXPECT(product_is_exact<float>(67, 75, k));
+  EXPECT(on_every_path([&] { return product_is_exact<float>(67, 75, k); }));
   (void)numerical::limit_gemm_path(numerical::gemm_path::portable);           // complex: past it, through the real kernel
   EXPECT(product_is_exact<std::complex<double>>(37, 29, k));
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);

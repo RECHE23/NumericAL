@@ -71,14 +71,14 @@
 namespace numerical {
 
   /*!
-   * \brief The kernels a `double` matrix product can run on, from the most portable. Each is used only where the
+   * \brief The kernels a `double` matrix product can run on (a `float` one too on arm64), from the most portable. Each is used only where the
    *        processor has it: NEON on every arm64 chip, the AVX ones where `cpuid` reports them, the Apple AMX on an
    *        M1 to M4 chip whose self-test passes (see x86.hpp and amx.hpp).
    */
   enum class gemm_path : std::uint8_t
   {
     portable = 0, //!< The compiler's vectors (16 bytes on x86-64 wheels), as the compiler rounds `c + a·b` (see gemm).
-    neon     = 1, //!< arm64's vectors with fused multiply-adds.
+    neon     = 1, //!< arm64's vectors with fused multiply-adds, for `double` and `float`.
     avx2     = 2, //!< AVX2 with fused multiply-adds.
     avx512   = 3, //!< AVX-512 with fused multiply-adds.
     amx      = 4, //!< The Apple AMX coprocessor, fused multiply-adds; the products it does not suit on the NEON path's tile.
@@ -508,6 +508,38 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief \ref neon_kernel for `float`: the tile in 24 vectors of four, A's column one vector (GCC's portable
+  //!        tile, unfused: 33 GFLOP/s on one M1 core at order 512, Clang's fused 65).
+  inline void neon_kernel(std::size_t       kc,
+                          const float*      ap,
+                          const float*      bp,
+                          std::size_t       ldb,
+                          gemm_tile<float>& tile) noexcept
+  {
+    static_assert(gemm_mr == 4 && gemm_nr<float> == 24, "four rows of A a vector, 24 columns six vectors");
+    constexpr std::size_t              lanes {6};
+    std::array<float32x4_t, 4 * lanes> acc   {};
+    NUMERICAL_UNROLL_BLOCK
+    for (std::size_t q {0}; q < acc.size(); ++q) {
+      acc[q] = vld1q_f32(tile.data() + (4 * q));
+    }
+    for (std::size_t p {0}; p < kc; ++p) {
+      const float32x4_t column {vld1q_f32(ap + (p * gemm_mr))};
+      NUMERICAL_UNROLL_BLOCK
+      for (std::size_t j {0}; j < lanes; ++j) {
+        const float32x4_t b {vld1q_f32(bp + (p * ldb) + (4 * j))};
+        acc[j]               = vfmaq_laneq_f32(acc[j], b, column, 0);
+        acc[lanes + j]       = vfmaq_laneq_f32(acc[lanes + j], b, column, 1);
+        acc[(2 * lanes) + j] = vfmaq_laneq_f32(acc[(2 * lanes) + j], b, column, 2);
+        acc[(3 * lanes) + j] = vfmaq_laneq_f32(acc[(3 * lanes) + j], b, column, 3);
+      }
+    }
+    NUMERICAL_UNROLL_BLOCK
+    for (std::size_t q {0}; q < acc.size(); ++q) {
+      vst1q_f32(tile.data() + (4 * q), acc[q]);
+    }
+  }
+
 #endif
 
   /*!
@@ -622,19 +654,21 @@ namespace numerical::detail {
 
 #ifdef NUMERICAL_NEON_COMPILED
   //! \brief The NEON path's tile (\ref neon_kernel): the vector tile's shape, packing and panels, each multiply-add fused.
-  struct neon_tile_kernel : vector_tile_kernel<double>
+  template <typename T>
+  struct neon_tile_kernel : vector_tile_kernel<T>
   {
     //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
-    static void tile(std::size_t   kc,
-                     const double* ap,
-                     const double* bp,
-                     std::size_t   ldb,
-                     double*       c,
-                     std::size_t   ldc,
-                     std::size_t   rows,
-                     std::size_t   cols) noexcept
+    static void tile(std::size_t kc,
+                     const T*    ap,
+                     const T*    bp,
+                     std::size_t ldb,
+                     T*          c,
+                     std::size_t ldc,
+                     std::size_t rows,
+                     std::size_t cols) noexcept
     {
-      gemm_tile<double> accumulators {};
+      constexpr std::size_t nr           {vector_tile_kernel<T>::nr};
+      gemm_tile<T>          accumulators {};
       for (std::size_t i {0}; i < rows; ++i) {
         std::copy_n(c + (i * ldc), cols, accumulators.data() + (i * nr));
       }
@@ -1207,7 +1241,7 @@ namespace numerical::detail {
 #endif
 #ifdef NUMERICAL_NEON_COMPILED
     if (path == gemm_path::neon || path == gemm_path::amx) {
-      gemm_packed<neon_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<neon_tile_kernel<double>>(m, n, k, a, lda, b, ldb, c, ldc);
       return true;
     }
 #endif
@@ -1222,6 +1256,29 @@ namespace numerical::detail {
     }
 #endif
     (void)path;
+    (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc;
+    return false;
+  }
+
+  //! \brief A `float` product on the NEON tile on arm64's fused paths (the NEON path, and the AMX path, whose AMX takes
+  //!        `double` alone); elsewhere the vector tile. \return Whether it ran on the NEON tile.
+  [[nodiscard]] inline bool gemm_elsewhere(std::size_t  m,
+                                           std::size_t  n,
+                                           std::size_t  k,
+                                           const float* a,
+                                           std::size_t  lda,
+                                           const float* b,
+                                           std::size_t  ldb,
+                                           float*       c,
+                                           std::size_t  ldc)
+  {
+#ifdef NUMERICAL_NEON_COMPILED
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::neon || path == gemm_path::amx) {
+      gemm_packed<neon_tile_kernel<float>>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+#endif
     (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc;
     return false;
   }
@@ -1401,7 +1458,7 @@ namespace numerical::detail {
    * Products of fewer than \ref gemm_packed_threshold multiply-adds, or shallower than \ref gemm_min_depth, run
    * \ref gemm_rows. The rest run packed (\ref gemm_packed). A `double` product runs on the AMX where it is in use
    * and suits the product (`amx_suits`), else on the NEON or AVX tiles: each element a chain of fused
-   * multiply-adds. On the portable path it runs on the vector tile, which rounds `c + a·b` as the compiler does:
+   * multiply-adds; a `float` one on the NEON tile on arm64's NEON and AMX paths. On the portable path either runs on the vector tile, which rounds `c + a·b` as the compiler does:
    * each product before its sum with contraction off, as the plain loop then does; fused under Clang's
    * -ffp-contract=on, as the plain loop then is; under GCC's, apart, where the plain loop's scalar statement is
    * fused. Every element is summed in ascending order of the depth on any number of threads. Complex `double` on the x86-64

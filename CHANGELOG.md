@@ -6,6 +6,13 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **`float32` products on arm64 run on a NEON tile of their own**, each multiply-add fused by lane, on the NEON path
+  and on the AMX path (whose coprocessor takes `float64` alone), where they ran the portable tile, which GCC fuses
+  nothing on: the Linux arm64 wheels ran them at half speed. One arm64 thread, GCC 14: order 128 27 → 47 GFLOP/s, 512
+  33 → 65 (Clang 67). Their last bits change on Linux arm64, now fused; not under the macOS wheels' Clang, which fused
+  them already.
+
 ## 2026.10.18 — 2026-10-16
 
 ### Added

@@ -228,7 +228,8 @@ headers has a pool and a cap of its own.
 `numerical.gemm_path()` (C++: `gemm_path_in_use`) reports:
 
 - `"portable"` — the compiler's own vectors, on any processor;
-- `"neon"` — on arm64, its vectors with each multiply-add fused, whatever the compiler would contract;
+- `"neon"` — on arm64, its vectors with each multiply-add fused, whatever the compiler would contract (`float32`
+  products too, there and on the AMX path, whose coprocessor takes `float64` alone);
 - `"avx2"`, `"avx512"` — on x86-64, where `cpuid` reports the instructions and the system saves their registers
   (the wheels are built for the baseline x86-64 and carry these tiles beside it);
 - `"amx"` — on Apple M1 to M4, the matrix coprocessor Apple's Accelerate uses, which Apple does not document; a
