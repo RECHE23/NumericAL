@@ -6,6 +6,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Fixed
+- **The same operands give the same bits from one call to the next, under GCC too**: the wheels and the sdist are
+  built with `-ffp-contract=on` (Clang's default), where GCC's default, `fast`, fused multiply-adds across statements as
+  its passes found them, so a loop's vectorised and scalar versions, the one or the other run as the operands'
+  addresses fell, rounded an element differently. Seen as an `eigvalsh` (or any decomposition through its symmetric
+  product) changing its last bits with what ran before, on AVX-512 under GCC -O3: the Linux x86-64 wheels since the
+  AVX-512 kernels. Compiling the headers with GCC, pass `-ffp-contract=on` (GCC before 14 takes it as off).
+
 ### Added
 - **Stacks of matrices, `(..., m, n)`, in every decomposition and solver but `lstsq`** (2-D in NumPy too): `solve`,
   `inv`, `det`, `slogdet`, `cholesky`, `qr`, `eigh`, `eigvalsh`, `svd`, `pinv` and `matrix_rank`, each matrix

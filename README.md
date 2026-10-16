@@ -189,6 +189,11 @@ tuple of numbers and a plain number (rank 0): a float32, complex64 or complex128
 float64 (complex128 for a complex list or number), or into the `dtype` asked; a complex input is never cast to a
 real dtype.
 
+Compiled with GCC, the headers want `-ffp-contract=on` (Clang's default; the wheels and the sdist set it): GCC's own
+default, `fast`, fuses multiply-adds across statements as its passes find them, so a loop's vectorised and scalar
+versions, one or the other chosen at run time by the operands' addresses, can round an element differently, and the
+same operands then give other last bits from one call to the next.
+
 `numerical.get_include()` returns the header directory, so the C++ library can be
 located through its Python install. `make python` builds the extension in place;
 `make python-test` runs the binding suite — including a seeded **differential

@@ -115,6 +115,20 @@ class Stacks(unittest.TestCase):
         with self.assertRaises(numerical.LinAlgError):
             numerical.inv(np.ones(3))
 
+    def test_an_answer_does_not_depend_on_what_ran_before(self):
+        # The same matrices in two orders, other allocations between: the same bits. GCC's default fusion of
+        # multiply-adds (-ffp-contract=fast, which the build replaces by on) rounded an element otherwise in a loop's
+        # vectorised version than in its scalar one, the one run chosen by the operands' addresses: on AVX-512, one
+        # eigvalsh in a hundred and fifty changed bits with the heap's history.
+        h = self.hermitian_positive((300, 6, 6))
+        first = [np.asarray(numerical.eigvalsh(m)) for m in h]
+        clutter = [numerical.asarray(np.ones(k)) for k in range(1, 40)]
+        again = {i: np.asarray(numerical.eigvalsh(h[i])) for i in itertools.chain(range(0, 300, 7), range(300))}
+        del clutter
+        stacked = np.asarray(numerical.eigvalsh(h))
+        for i in range(300):
+            self.assertTrue(np.array_equal(first[i], again[i]) and np.array_equal(first[i], stacked[i]), f"matrix {i}")
+
     def test_the_threads_give_the_same_bits_as_one(self):
         a = self.general((500, 8, 8))
         many = np.asarray(numerical.inv(a))

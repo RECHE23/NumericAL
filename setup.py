@@ -68,7 +68,11 @@ else:
     # unrolling and vectorising took 7-18 % off the decompositions of order 64 to 512 (solve, inverse,
     # cholesky, qr, eigh, svd); on arm64 it moved some up and some down, so -O2 stays there.
     level = "-O3" if platform.machine().lower() in ("x86_64", "amd64") else "-O2"
-    compile_args = ["-std=c++20", level, "-g0", "-fvisibility=hidden", "-pthread"]
+    # -ffp-contract=on (Clang's default) fuses a multiply-add within one expression only. GCC's default, fast, fuses
+    # across statements as its passes find them, so a loop's vectorised version and its scalar one (which runs,
+    # chosen at run time by the operands' addresses) could round the same element differently: an eigvalsh of
+    # order 6 answered with other bits after other allocations (AVX-512, GCC 15 -O3).
+    compile_args = ["-std=c++20", level, "-g0", "-fvisibility=hidden", "-pthread", "-ffp-contract=on"]
     link_args = ["-pthread"]  # parallel.hpp uses std::thread
 
 setup(

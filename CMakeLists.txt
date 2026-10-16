@@ -130,11 +130,12 @@ else()
     # -Wshadow is MSVC /W4's C4456/C4457/C4459 (a name hiding a local, a parameter or a global), which a
     # POSIX-only local gate would otherwise first see in CI.
     target_compile_options(numerical_tests_bin PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)
-    # test_gemm.cpp asserts the product sums in the order of its reference loop, to the bit. Fusing a
-    # multiply-add is the compiler's choice per expression (GCC in gnu++ mode fuses at will), so it can
-    # differ between two loops that sum in the same order. It is held off for the whole target: the
-    # library's templates are instantiated in every test file and the linker keeps one copy, so a
-    # per-file flag would not reach the copy that runs. MSVC does not fuse under its default /fp:precise.
+    # test_gemm.cpp asserts the product sums in the order of its reference loop, and the blocked factorisations the
+    # unblocked ones' sums, to the bit: properties of the algorithms with no multiply-add fused, which a fusion within
+    # one expression (-ffp-contract=on, the wheels') may round otherwise in one loop than in the other. It is held off
+    # for the whole target: the library's templates are instantiated in every test file and the linker keeps one copy,
+    # so a per-file flag would not reach the copy that runs. MSVC does not fuse under its default /fp:precise. The
+    # Python suite runs the wheels' flags.
     target_compile_options(numerical_tests_bin PRIVATE -ffp-contract=off)
 endif()
 
