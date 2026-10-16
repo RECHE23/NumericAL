@@ -53,7 +53,7 @@ class TensorBasics(unittest.TestCase):
 
     def test_bad_dtype_raises(self):
         with self.assertRaises(numerical.error):
-            numerical.Tensor([1, 2], dtype="float32")
+            numerical.Tensor([1, 2], dtype="float16")
 
     def test_shape_mismatch_raises(self):
         with self.assertRaises(numerical.error):
@@ -287,7 +287,7 @@ class ArrayInterface(unittest.TestCase):
 
     def test_asarray_rejects_unknown_dtype(self):
         with self.assertRaises(numerical.error):
-            numerical.asarray(numerical.Tensor([1.0]), dtype="float32")
+            numerical.asarray(numerical.Tensor([1.0]), dtype="float16")
 
 
 class GilRelease(unittest.TestCase):

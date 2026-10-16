@@ -118,7 +118,7 @@ pip install numeric-al        # the distribution is numeric-al; the module is nu
 
 A CPython binding (stable ABI, one `cp310` abi3 wheel serves 3.10+) exposes the
 unifying object `numerical.Tensor` (rank-1 a vector, rank-2 a matrix, rank-0 a
-scalar; `float64` or `complex128`) and the algebra over it. Every function takes a
+scalar; `float64`, `complex128`, `float32` or `complex64`) and the algebra over it. Every function takes a
 `Tensor` or anything `asarray` reads — a NumPy array, a nested list, a number:
 
 ```python
@@ -143,7 +143,10 @@ numerical.exp(t), numerical.sqrt(t), abs(t), t ** 2
 ```
 
 Shapes that do not broadcast raise a `ValueError` worded as NumPy's. `max` and `min` take
-`float64` only (NumPy orders complex numbers lexicographically; NumericAL does not order them).
+real dtypes only (NumPy orders complex numbers lexicographically; NumericAL does not order them). Operands of two dtypes
+promote as NumPy 2 promotes them: complex where one is, single precision only where both are, a Python number keeping
+the tensor's precision (`float32 + 2.0` is float32). float32 and complex64 arithmetic is single precision, as NumPy's:
+`+ - * /` and `sqrt` give its very bits.
 
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)` (`det`), `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)` (`inv`), `pinv(a, rcond, hermitian)`,
@@ -153,8 +156,11 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `svd(a, full_matrices=True, compute_uv=True)` → `(U, S, Vh)` as NumPy's (`full_matrices=False`: the thin
 factors, so `(U * S) @ Vh` is `a`; `compute_uv=False`: `S` alone). The keywords mean what they mean to NumPy 2:
 `UPLO="U"` and `upper=True` read the upper triangle, `rcond`/`rtol` cut the singular values relative to the
-largest and `tol` absolutely, `hermitian=True` takes the eigendecomposition. Every one accepts `float64`
-and `complex128`; `eigh` of a complex Hermitian matrix gives real values and complex vectors.
+largest and `tol` absolutely, `hermitian=True` takes the eigendecomposition. Every one accepts the four dtypes
+and answers in the input's: a float32 or complex64 matrix is decomposed in double precision and its answers rounded
+to single, where NumPy's LAPACK computes in single (so they are as accurate as single precision holds, and the default
+tolerances are float32's epsilon, as NumPy's). `eigh` of a complex Hermitian matrix gives real values and complex
+vectors.
 `eigh(a, method=...)` and `svd(a, method=...)` choose the algorithm: divide and conquer by default (LAPACK's
 `dsyevd`/`zheevd`, `dgesdd`), `"tridiagonal_ql"` or `"bidiagonal_qr"` (`dsyev`'s, `dgesvd`'s), or `"jacobi"`.
 A matrix holding a NaN or an infinity (in the triangle read, where only one is) raises
@@ -174,7 +180,9 @@ numerical.asarray(np.eye(3))   # the other direction (a copy)
 
 `asarray` copies any NumPy array — bool, integer, float32/64 or complex64/128 elements, in either
 byte order, at any strides (a transposed, sliced or reversed view) — as well as a nested list or
-tuple of numbers and a plain number (rank 0), into float64, or complex128 for complex input.
+tuple of numbers and a plain number (rank 0): a float32, complex64 or complex128 array as it is, anything else into
+float64 (complex128 for a complex list or number), or into the `dtype` asked; a complex input is never cast to a
+real dtype.
 
 `numerical.get_include()` returns the header directory, so the C++ library can be
 located through its Python install. `make python` builds the extension in place;

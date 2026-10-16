@@ -2,7 +2,7 @@
 from collections.abc import Iterator, Sequence
 from typing import Any, ClassVar, Literal, NoReturn, final
 
-_Dtype = Literal["float64", "complex128"]
+_Dtype = Literal["float64", "complex128", "float32", "complex64"]
 _Number = float | complex
 _Shape = tuple[int, ...]
 

@@ -1,7 +1,7 @@
 r"""NumericAL — a generic, header-only numerical library, exposed to Python.
 
 The one object is :class:`Tensor` — an N-dimensional, row-major array of
-``float64`` or ``complex128`` (rank-1 is a vector, rank-2 a matrix, rank-0 a
+``float64``, ``complex128``, ``float32`` or ``complex64`` (rank-1 is a vector, rank-2 a matrix, rank-0 a
 scalar). The algebra over it is reached through module functions, which take a
 Tensor or anything :func:`asarray` reads (a NumPy array, a nested list, a number):
 
@@ -193,19 +193,44 @@ def _nested(obj):
     raise TypeError(f"asarray: a nested list holds numbers, not {type(obj).__name__}")
 
 
+_DTYPES = ("float64", "complex128", "float32", "complex64")
+_SINGLE = ("float32", "complex64")
+
+
+def _promoted(dtypes):
+    """NumPy's result dtype of tensors of `dtypes`: complex where one is, single precision only where all are."""
+    single = all(dtype in _SINGLE for dtype in dtypes)
+    if any(dtype.startswith("complex") for dtype in dtypes):
+        return "complex64" if single else "complex128"
+    return "float32" if single else "float64"
+
+
+def _weak(value):
+    """Whether `value` is a Python number, which NumPy 2 promotes as weak: it keeps the tensor's precision."""
+    return type(value) in _NATIVE_NUMBERS
+
+
+def _beside_weak(dtype, value):
+    """The dtype of a tensor of `dtype` beside the Python number `value`: its own, complex for a complex `value`."""
+    if isinstance(value, complex) and not dtype.startswith("complex"):
+        return "complex64" if dtype in _SINGLE else "complex128"
+    return dtype
+
+
 def _linalg(native, arrays=None):
     """`native` taking array-likes: every argument that is not a :class:`Tensor` or a string goes through
     :func:`asarray` (a NumPy array, a nested list, a number), or only the first `arrays` of them, the options after
-    passed as they are; when one operand is complex the real ones are widened to complex128, as NumPy promotes them;
-    and its failures are :class:`LinAlgError`."""
+    passed as they are; the operands are brought to one dtype as NumPy promotes them (complex where one is, single
+    precision only where all are); and its failures are :class:`LinAlgError`."""
 
     @_functools.wraps(native)
     def call(*args):
         count = len(args) if arrays is None else arrays
         operands = [arg if isinstance(arg, (Tensor, str)) else asarray(arg) for arg in args[:count]]
-        if any(isinstance(operand, Tensor) and operand.dtype == "complex128" for operand in operands):
-            operands = [asarray(operand, "complex128") if isinstance(operand, Tensor) else operand
-                        for operand in operands]
+        tensors = [operand for operand in operands if isinstance(operand, Tensor)]
+        if len({tensor.dtype for tensor in tensors}) > 1:
+            dtype = _promoted([tensor.dtype for tensor in tensors])
+            operands = [asarray(operand, dtype) if isinstance(operand, Tensor) else operand for operand in operands]
         try:
             return native(*operands, *args[count:])
         except error as caught:
@@ -396,7 +421,7 @@ _EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
 _SVD_METHODS = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
 
 
-_MACHINE_EPSILON = 2.220446049250313e-16  # float64's, which complex128's parts share
+_MACHINE_EPSILON = {"float64": 2.220446049250313e-16, "float32": 1.1920928955078125e-07}  # complex's parts share them
 
 
 def _upper(name, UPLO):
@@ -447,10 +472,13 @@ def lstsq(a, b, rcond=None):
     """``(x, residuals, rank, s)``, as ``numpy.linalg.lstsq``: the minimum-norm least-squares solution of
     ``a @ x ≈ b``, the residual sums of squares (for a tall `a` of full column rank, else empty), the rank and the
     singular values of `a`. A singular value at or under `rcond` times the largest counts as zero: by default
-    (``None``) machine epsilon times max(m, n), NumPy's; a negative `rcond` is machine epsilon, as LAPACK's."""
+    (``None``) machine epsilon times max(m, n), NumPy's; a negative `rcond` is machine epsilon, as LAPACK's. The
+    epsilon is the operands' precision's (float32's for float32 and complex64)."""
     rcond = _tolerance("lstsq", rcond)
+    a = a if isinstance(a, Tensor) else asarray(a)
+    b = b if isinstance(b, Tensor) else asarray(b)
     if rcond is not None and rcond < 0:
-        rcond = _MACHINE_EPSILON
+        rcond = _MACHINE_EPSILON["float32" if _promoted((a.dtype, b.dtype)) in _SINGLE else "float64"]
     return _lstsq(a, b, rcond)
 
 
@@ -515,9 +543,10 @@ _NATIVE_NUMBERS = (float, int, bool, complex)
 def asarray(obj, dtype=None):
     """A :class:`Tensor` from `obj`: a Tensor (the same object when `dtype` matches), an object with an
     ``__array_interface__`` (NumPy: bool, integer, float32/64 and complex64/128 elements, any strides),
-    a nested list or tuple of numbers, or a number (rank 0). `dtype` is ``"float64"`` or
-    ``"complex128"``; by default float64, or complex128 for complex input. A complex input is never cast
-    to float64 (that would discard the imaginary part).
+    a nested list or tuple of numbers, or a number (rank 0). `dtype` is ``"float64"``, ``"complex128"``,
+    ``"float32"`` or ``"complex64"``; by default an array's own for float32, complex64 and complex128, else
+    float64 (bool and integers included), and complex128 for a complex number or list. A complex input is never
+    cast to a real dtype (that would discard the imaginary part).
 
     Raises:
         ValueError: if a nested list is not rectangular.
@@ -555,13 +584,19 @@ def _native(call, *args):
 
 
 def _same_dtype(a, b):
-    """`a` and `b` as Tensors of one dtype: array-likes through :func:`asarray`, a real one widened to
-    complex128 when the other is complex, as NumPy promotes them."""
-    a = a if isinstance(a, Tensor) else asarray(a)
-    b = b if isinstance(b, Tensor) else asarray(b)
-    if a.dtype != b.dtype:
-        a, b = asarray(a, "complex128"), asarray(b, "complex128")
-    return a, b
+    """`a` and `b` as Tensors of one dtype, as NumPy 2 promotes them: array-likes through :func:`asarray`; two
+    tensors to the dtype both fit (:func:`_promoted`); a Python number keeps the tensor's precision, made complex
+    only by a complex number (``float32 + 2.0`` is float32)."""
+    weak_a, weak_b = _weak(a) and not _weak(b), _weak(b) and not _weak(a)
+    tensor_a = a if isinstance(a, Tensor) else asarray(a)
+    tensor_b = b if isinstance(b, Tensor) else asarray(b)
+    if weak_a:
+        dtype = _beside_weak(tensor_b.dtype, a)
+    elif weak_b:
+        dtype = _beside_weak(tensor_a.dtype, b)
+    else:
+        dtype = _promoted((tensor_a.dtype, tensor_b.dtype))
+    return asarray(tensor_a, dtype), asarray(tensor_b, dtype)
 
 
 def _arithmetic(op, reflected=False):
@@ -619,10 +654,10 @@ def _reduction(op, doc):
 sum = _reduction("sum", """The sum of every element (a number), or the sums along `axis` (a Tensor without it),
 as ``numpy.sum``; added by pairwise halving, as NumPy adds.""")
 mean = _reduction("mean", """The mean of every element, or the means along `axis`, as ``numpy.mean``.""")
-max = _reduction("max", """The largest element, or the largest along `axis`, as ``numpy.max``; a NaN wins. float64
-only (complex128 has no order).""")
-min = _reduction("min", """The smallest element, or the smallest along `axis`, as ``numpy.min``; a NaN wins.
-float64 only.""")
+max = _reduction("max", """The largest element, or the largest along `axis`, as ``numpy.max``; a NaN wins. Real
+dtypes only (a complex one has no order).""")
+min = _reduction("min", """The smallest element, or the smallest along `axis`, as ``numpy.min``; a NaN wins. Real
+dtypes only.""")
 Tensor.sum = lambda self, axis=None: sum(self, axis)
 Tensor.mean = lambda self, axis=None: mean(self, axis)
 Tensor.max = lambda self, axis=None: max(self, axis)
@@ -657,33 +692,37 @@ def reshape(a, shape):
 Tensor.reshape = lambda self, *shape: reshape(self, shape[0] if len(shape) == 1 else shape)
 
 
-def _is_complex_dtype(dtype, value=0.0):
+def _dtype_of(dtype, value=0.0):
+    """`dtype` checked, one of float64, complex128, float32 and complex64; ``None``: complex128 for a complex
+    `value`, else float64, as NumPy infers it."""
     if dtype is None:
-        return isinstance(value, complex)
-    if dtype not in ("float64", "complex128"):
-        raise ValueError("dtype must be 'float64' or 'complex128'")
-    return dtype == "complex128"
+        return "complex128" if isinstance(value, complex) else "float64"
+    if dtype not in _DTYPES:
+        raise ValueError(f"dtype must be one of {_DTYPES}, not {dtype!r}")
+    if not dtype.startswith("complex") and isinstance(value, complex):
+        raise TypeError(f"full: a complex value does not fit a {dtype} tensor")
+    return dtype
 
 
 def full(shape, value, dtype=None):
-    """A Tensor of `shape` whose every element is `value`, as ``numpy.full``; complex128 for a complex value
-    unless `dtype` says otherwise."""
-    return _native(_numerical._full, _shape(shape), value, _is_complex_dtype(dtype, value))
+    """A Tensor of `shape` whose every element is `value`, as ``numpy.full``; complex128 for a complex value and
+    float64 otherwise unless `dtype` says (float64, complex128, float32 or complex64)."""
+    return _native(_numerical._full, _shape(shape), value, _dtype_of(dtype, value))
 
 
 def zeros(shape, dtype="float64"):
     """A Tensor of `shape` full of zeros, as ``numpy.zeros``."""
-    return _native(_numerical._full, _shape(shape), 0.0, _is_complex_dtype(dtype))
+    return _native(_numerical._full, _shape(shape), 0.0, _dtype_of(dtype))
 
 
 def ones(shape, dtype="float64"):
     """A Tensor of `shape` full of ones, as ``numpy.ones``."""
-    return _native(_numerical._full, _shape(shape), 1.0, _is_complex_dtype(dtype))
+    return _native(_numerical._full, _shape(shape), 1.0, _dtype_of(dtype))
 
 
 def eye(n, dtype="float64"):
     """The `n × n` identity, as ``numpy.eye(n)``."""
-    return _native(_numerical._eye, _operator.index(n), _is_complex_dtype(dtype))
+    return _native(_numerical._eye, _operator.index(n), _dtype_of(dtype))
 
 
 def arange(start, stop=None, step=1.0):
@@ -714,7 +753,7 @@ sin = _elementwise("sin", "The sine of every element, as ``numpy.sin``.")
 cos = _elementwise("cos", "The cosine of every element, as ``numpy.cos``.")
 tan = _elementwise("tan", "The tangent of every element, as ``numpy.tan``.")
 tanh = _elementwise("tanh", "The hyperbolic tangent of every element, as ``numpy.tanh``.")
-absolute = _elementwise("abs", "The magnitude of every element, float64 for either dtype, as ``numpy.abs``.")
+absolute = _elementwise("abs", "The magnitude of every element, real of the same precision, as ``numpy.abs``.")
 absolute.__name__ = "absolute"
 
 

@@ -302,6 +302,50 @@ def run_lstsq(a, rng):
           f"lstsq differs from NumPy's ({norm(x - want):.3g} for |x| {norm(want):.3g}, kept κ {condition:.3g})")
 
 
+def run_single(g, h, square):
+    """Single precision: a float32 or complex64 matrix's decompositions compute in double and round, so each is the
+    double one of the same values rounded to the input's precision, to the bit; a failure (a singular matrix) is the
+    same failure. The tolerances are given, their single-precision defaults being float32's epsilon."""
+    def answers(call):
+        try:
+            got = call()
+        except numerical.LinAlgError as failure:
+            return ("raises", str(failure).split(":")[0])
+        return [as_np(t) for t in (got if isinstance(got, tuple) else (got,)) if isinstance(t, numerical.Tensor)]
+
+    for matrix, operations in ((g, ("svd", "qr", "pinv", "rank")), (h, ("eigh", "eigvalsh")),
+                               (square, ("inverse", "solve", "det"))):
+        if matrix.size == 0:
+            continue
+        cplx = np.iscomplexobj(matrix)
+        single = matrix.astype(np.complex64 if cplx else np.float32)
+        if not np.isfinite(single).all():
+            continue  # past float32's range: nothing to compare
+        wide = single.astype(np.complex128 if cplx else np.float64)
+        rhs = np.ones(single.shape[0], single.dtype)
+        calls = {"svd": lambda x: numerical.svd(x, full_matrices=False), "qr": numerical.qr,
+                 "pinv": lambda x: numerical.pinv(x, rtol=1e-4), "eigh": numerical.eigh, "eigvalsh": numerical.eigvalsh,
+                 "inverse": numerical.inverse, "solve": lambda x: numerical.solve(x, rhs.astype(x.dtype)),
+                 "rank": lambda x: numerical.matrix_rank(x, rtol=1e-4), "det": numerical.det}
+        for name in operations:
+            if name in ("rank", "det"):
+                try:
+                    got, want = calls[name](single), calls[name](wide)
+                except numerical.LinAlgError:
+                    continue
+                check(np.array_equal(np.array([got]), np.array([want]), equal_nan=True),
+                      f"single-precision {name} {got}, double {want}")
+                continue
+            got, want = answers(lambda: calls[name](single)), answers(lambda: calls[name](wide))
+            if isinstance(want, tuple) or isinstance(got, tuple):
+                check(got == want, f"single-precision {name} {got}, double {want}")
+                continue
+            for part, (x, y) in enumerate(zip(got, want)):
+                check(x.dtype == single.dtype or x.dtype == np.float32, f"single-precision {name} returned {x.dtype}")
+                check(np.array_equal(x, y.astype(x.dtype), equal_nan=True),
+                      f"single-precision {name} part {part} is not the double one rounded ({bit_gap(x, y.astype(x.dtype))})")
+
+
 def relative_tolerance(rtol, m, n, lapack=False):
     """NumPy's cutoff relative to the largest singular value: rtol, or ε max(m, n) for None (for lstsq, ε for a
     negative one, as LAPACK's)."""
@@ -385,7 +429,8 @@ def run_case(seed, index, largest):
     rng, label, g, h, square = case(seed, index, largest)
     operations = (("eigh", lambda: run_eigh(h)), ("svd", lambda: run_svd(g)), ("qr", lambda: run_qr(g)),
                   ("solve", lambda: run_solve(square, rng)), ("cholesky", lambda: run_cholesky(square)),
-                  ("lstsq", lambda: run_lstsq(g, rng)), ("pinv/rank", lambda: run_pinv_and_rank(g, h, rng)))
+                  ("lstsq", lambda: run_lstsq(g, rng)), ("pinv/rank", lambda: run_pinv_and_rank(g, h, rng)),
+                  ("single", lambda: run_single(g, h, square)))
     failures = []
     for name, operation in operations:
         try:

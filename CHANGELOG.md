@@ -6,6 +6,21 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Added
+- **float32 and complex64**, kept as they are, as NumPy keeps them: `asarray` keeps a float32, complex64 or complex128
+  array's dtype (and takes any of the four as `dtype`), `Tensor`, `zeros`, `ones`, `full` and `eye` make them, and
+  `__array_interface__` and DLPack export them without a copy. Arithmetic, functions, reductions, indexing, products
+  and `einsum` compute in single precision, as NumPy's (`+ - * /` and `sqrt` to its bits). The decompositions compute
+  in double and round their answers to the input's precision: as accurate as single precision holds, where NumPy's
+  LAPACK computes in it; their default tolerances (`matrix_rank`, `pinv`, `lstsq`) are float32's epsilon, as NumPy's.
+- **NumPy 2's type promotion**: complex where one operand is, single precision only where both are; a Python number
+  keeps the tensor's precision (`float32 + 2.0` is float32, `float32 + 1j` complex64).
+
+### Breaking
+- **`asarray` keeps float32 and complex64** where it widened them to float64 and complex128: code that relied on a
+  float64 result from a float32 array asks for it with `dtype="float64"`. Bool and integer arrays still read as
+  float64.
+
 ## 2026.10.15 — 2026-10-16
 
 ### Breaking

@@ -6,7 +6,7 @@ from numerical._numerical import Tensor as Tensor
 from numerical._numerical import error as error
 from numerical._numerical import get_num_threads as get_num_threads
 
-_Dtype = Literal["float64", "complex128"]
+_Dtype = Literal["float64", "complex128", "float32", "complex64"]
 _Number = float | complex
 _GemmPath = Literal["portable", "avx2", "avx512", "amx"]
 
