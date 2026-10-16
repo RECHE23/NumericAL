@@ -3,6 +3,8 @@
 // cyclic, graded, a complex pair nearly real); and its pieces alone: the balancing, the 2 × 2 standard form, the small
 // reflections, the bounded iterations.
 #include <algorithm>
+#include <array>
+#include <type_traits>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -385,4 +387,569 @@ TEST(the_standard_form_of_every_kind_of_block)
   EXPECT(check(1.0, 1.0, -1.0, 3.0));    // a double eigenvalue
   EXPECT(check(2.0, -0.5, 2.0, 0.0));    // a double eigenvalue whose rotation zeroes the upper entry: exchanged
   EXPECT(check(-6.0, -18.0, 0.5, 0.0));  // one whose rotation zeroes the lower entry: triangular as it is
+}
+
+namespace {
+
+  //! \brief A random upper Hessenberg matrix of order \p n, row-major, with zeros on the subdiagonal where \p split.
+  template <typename T>
+  numerical::buffer<T> random_hessenberg(std::size_t      n,
+                                         std::mt19937_64& g,
+                                         std::size_t      split = 0)
+  {
+    std::normal_distribution<double> d;
+    numerical::buffer<T>             h(n * n, T {});
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {i == 0 ? 0 : i - 1}; j < n; ++j) {
+        if constexpr (std::is_same_v<T, double>) {
+          h[(i * n) + j] = d(g);
+        }
+        else {
+          h[(i * n) + j] = T(d(g), d(g));
+        }
+      }
+      if (split != 0 && i > 0 && i % split == 0) {
+        h[(i * n) + i - 1] = T {};
+      }
+    }
+    return h;
+  }
+
+  //! \brief Whether \p t is the Schur form of \p h by \p zt (`Zᵀ`): `Zᴴ H Z = T` and `Zᴴ Z = I` to rounding, `T` upper
+  //!        triangular (quasi-triangular with standard 2 × 2 blocks for a real `T`).
+  template <typename T>
+  bool is_schur_form(const numerical::buffer<T>& h,
+                     const numerical::buffer<T>& t,
+                     const numerical::buffer<T>& zt,
+                     std::size_t                 n)
+  {
+    double size {1e-300};
+    for (const T& x : h) {
+      size = std::max(size, static_cast<double>(std::abs(x)));
+    }
+    const double tolerance {1e-13 * static_cast<double>(n) * size};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        C similar {};
+        C gram    {};
+        for (std::size_t k {0}; k < n; ++k) {
+          C row {};
+          for (std::size_t l {0}; l < n; ++l) {
+            row += std::conj(C {zt[(i * n) + k]}) * C {h[(k * n) + l]} *C {zt[(j * n) + l]};
+          }
+          similar += row;
+          gram    += std::conj(C {zt[(i * n) + k]}) * C {zt[(j * n) + k]};
+        }
+        if (std::abs(similar - C {t[(i * n) + j]}) > tolerance || std::abs(gram - (i == j ? 1.0 : 0.0)) > 1e-13 * static_cast<double>(n)) {
+          return false;
+        }
+        const bool below {i > j + 1 || (i == j + 1 && (std::is_same_v<T, C> || (j > 0 && t[(j * n) + j - 1] != T {})))};
+        if (below && t[(i * n) + j] != T {}) {
+          return false;
+        }
+        if constexpr (std::is_same_v<T, double>) {
+          if (i == j + 1 && t[(i * n) + j] != 0.0 && (t[(j * n) + j] != t[(i * n) + i] || std::signbit(t[(j * n) + i]) == std::signbit(t[(i * n) + j]))) {
+            return false; // a 2 × 2 block not standard
+          }
+        }
+      }
+    }
+    return true;
+  }
+
+  //! \brief The multishift Schur form of \p h0 (order \p n), checked; \p full and \p recursive as given.
+  template <typename T>
+  bool multishift_checks(const numerical::buffer<T>& h0,
+                         std::size_t                 n,
+                         bool                        recursive = true)
+  {
+    numerical::buffer<T> h           {h0};
+    numerical::buffer<T> zt(n * n, T {});
+    for (std::size_t i {0}; i < n; ++i) {
+      zt[(i * n) + i] = T {1};
+    }
+    numerical::buffer<C>                     w(n);
+    const numerical::detail::schur_target<T> target {.h = &h, .n = n, .low = 0, .high = n, .full = true, .zt = &zt};
+    numerical::detail::multishift_schur(target, w.data(), recursive);
+    return is_schur_form(h0, h, zt, n);
+  }
+} // namespace
+
+TEST(the_multishift_schur_form_of_random_hessenberg_matrices)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64 g {31};
+  for (const std::size_t n : {16U, 30U, 61U, 80U}) {
+    EXPECT(multishift_checks(random_hessenberg<double>(n, g), n));
+    EXPECT(multishift_checks(random_hessenberg<C>(n, g), n));
+    EXPECT(multishift_checks(random_hessenberg<double>(n, g, 7), n, false)); // zeros on the subdiagonal: blocks apart
+    EXPECT(multishift_checks(random_hessenberg<C>(n, g, 7), n, false));
+  }
+  EXPECT(multishift_checks(numerical::buffer<double>(400, 0.0), 20)); // everything deflates at once
+}
+
+TEST(eig_of_matrices_past_every_crossover)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64                   g {37};
+  const matrix<double>              a {random_real(205, g)}; // multishift, blocked reduction
+  const eigen_decomposition<double> e {a};
+  EXPECT(residual(a, e) < 10.0);
+  const numerical::vector<C> alone    {numerical::eigenvalues(a)};
+  for (std::size_t i {0}; i < 205; ++i) {
+    EXPECT_EQ(alone[i], e.values()[i]); // the whole Schur form for the eigenvalues alone too
+  }
+  const matrix<C>              b {random_complex(130, g)};
+  const eigen_decomposition<C> f {b};
+  EXPECT(residual(b, f) < 10.0);
+}
+
+TEST(plane_rotations_take_a_pair_to_its_length)
+{
+  using numerical::detail::givens;
+  const auto real_zero_g    {givens(3.0, 0.0)};
+  EXPECT(real_zero_g.c == 1.0 && real_zero_g.s == 0.0 && real_zero_g.r == 3.0);
+  const auto real_zero_f    {givens(0.0, -2.0)};
+  EXPECT(real_zero_f.c == 0.0 && real_zero_f.s == -1.0 && real_zero_f.r == 2.0);
+  const auto real_both      {givens(-3.0, 4.0)};
+  EXPECT(std::abs(real_both.r + 5.0) < 1e-15 && std::abs((real_both.c * -3.0) + (real_both.s * 4.0) - real_both.r) < 1e-15);
+  const auto complex_zero_g {givens(C(1.0, 2.0), C {})};
+  EXPECT(complex_zero_g.c == 1.0 && complex_zero_g.r == C(1.0, 2.0));
+  const auto complex_zero_f {givens(C {}, C(0.0, 2.0))};
+  EXPECT(complex_zero_f.c == 0.0 && complex_zero_f.r == C(2.0) && std::abs((complex_zero_f.s * C(0.0, 2.0)) - complex_zero_f.r) < 1e-15);
+  const auto complex_both   {givens(C(1.0, 1.0), C(2.0, -1.0))};
+  EXPECT(std::abs((complex_both.c * C(1.0, 1.0)) + (complex_both.s * C(2.0, -1.0)) - complex_both.r) < 1e-15);
+  EXPECT(std::abs((-std::conj(complex_both.s) * C(1.0, 1.0)) + (complex_both.c * C(2.0, -1.0))) < 1e-15);
+}
+
+namespace {
+
+  //! \brief The largest residual of `TL X − X TR = B` for the \p n1 × \p n2 solution of \ref small_sylvester.
+  double sylvester_residual(std::array<double, 4> tl,
+                            std::array<double, 4> tr,
+                            std::array<double, 4> b,
+                            long                  n1,
+                            long                  n2)
+  {
+    using numerical::detail::one_based;
+    double x[4]  {};
+    numerical::detail::small_sylvester(one_based<double> {tl.data(), 2}, one_based<double> {tr.data(), 2}, one_based<double> {b.data(), 2}, n1, n2, x);
+    double worst {0.0};
+    for (long i {0}; i < n1; ++i) {
+      for (long j {0}; j < n2; ++j) {
+        double lhs {0.0};
+        for (long k {0}; k < n1; ++k) {
+          lhs += tl[static_cast<std::size_t>((i * 2) + k)] * x[(k * n2) + j];
+        }
+        for (long k {0}; k < n2; ++k) {
+          lhs -= x[(i * n2) + k] * tr[static_cast<std::size_t>((k * 2) + j)];
+        }
+        worst = std::max(worst, std::abs(lhs - b[static_cast<std::size_t>((i * 2) + j)]));
+      }
+    }
+    return worst;
+  }
+} // namespace
+
+TEST(the_small_sylvester_equations_of_a_block_exchange)
+{
+  const std::array<double, 4> tl {1.0, 2.0, -3.0, 1.0};
+  const std::array<double, 4> tr {4.0, 1.0, -2.0, 4.0};
+  const std::array<double, 4> b  {1.0, 2.0, 3.0, 4.0};
+  EXPECT(sylvester_residual(tl, tr, b, 1, 2) < 1e-14);
+  EXPECT(sylvester_residual(tl, tr, b, 2, 1) < 1e-14);
+  EXPECT(sylvester_residual(tl, tr, b, 2, 2) < 1e-14);
+  EXPECT(std::isfinite(sylvester_residual(tl, tl, b, 2, 2))); // TL = TR: singular, a pivot floored, the answer finite
+}
+
+TEST(a_block_exchange_that_would_not_hold_is_refused)
+{
+  using numerical::detail::one_based;
+  // a 2 × 2 block of eigenvalues 1 ± 6e-6 i above one of 1.0000043 ± 1.4e-5 i: the swap would leave them coupled
+  const std::vector<double> before {1, 2.9258991580319096, -0.99582361335424341, 0.6660776232485035, -3.4177527863695918e-11, 1, -0.63530008058277909,
+                                    0.22425311739723819, 0, 0, 1.0000043005630168, 0.68529066378232517, 0, 0, -2.0478021681892508e-10, 1.0000043005630168};
+  std::vector<double>       t      {before};
+  std::vector<double>       q(16, 0.0);
+  for (std::size_t i {0}; i < 4; ++i) {
+    q[(i * 4) + i] = 1.0;
+  }
+  EXPECT(!numerical::detail::exchange_blocks(one_based<double> {t.data(), 4}, one_based<double> {q.data(), 4}, 4, 1, 2, 2));
+  EXPECT(t == before);
+  long last {1};
+  EXPECT(!numerical::detail::reorder(one_based<double> {t.data(), 4}, one_based<double> {q.data(), 4}, 4, 3, last));
+  EXPECT_EQ(last, 3L); // where the block stayed
+  last = 4;
+  EXPECT(!numerical::detail::reorder(one_based<double> {t.data(), 4}, one_based<double> {q.data(), 4}, 4, 1, last));
+  EXPECT_EQ(last, 1L);
+}
+
+TEST(reordering_a_schur_form_keeps_it_one)
+{
+  using numerical::detail::one_based;
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64                        g {17};
+  std::uniform_real_distribution<double> u(-1.0, 1.0);
+  const long                             n {7};
+  for (int trial {0}; trial < 400; ++trial) { // blocks nearly real among them split as they move
+    std::vector<double>     t(49, 0.0);
+    std::vector<double>     q(49, 0.0);
+    const one_based<double> tt {t.data(), n};
+    for (long i {1}; i <= n; ++i) {
+      q[static_cast<std::size_t>((i - 1) * 8)] = 1.0;
+      for (long j {i}; j <= n; ++j) {
+        tt(i, j) = u(g);
+      }
+    }
+    for (long i {1}; i < n;) {
+      if (g() % 2 == 1) {
+        const double w {std::pow(10.0, -static_cast<double>(g() % 17))};
+        const double b {1.0 + u(g)};
+        tt(i, i + 1)     = b;
+        tt(i + 1, i)     = -w * w / b;
+        tt(i + 1, i + 1) = tt(i, i);
+        i               += 2;
+      }
+      else {
+        ++i;
+      }
+    }
+    const std::vector<double> before {t};
+    long                      last {1 + static_cast<long>(g() % n)};
+    long                      first {1 + static_cast<long>(g() % n)};
+    first = first > 1 && tt(first, first - 1) != 0.0 ? first - 1 : first;
+    const long size {first < n && tt(first + 1, first) != 0.0 ? 2 : 1};
+    const auto trace_and_det {[&tt, size](long at) { // of the size × size diagonal block at `at`
+                                return size == 1 ? std::pair {tt(at, at), tt(at, at)}
+                       : std::pair {tt(at, at) + tt(at + 1, at + 1), (tt(at, at) * tt(at + 1, at + 1)) - (tt(at, at + 1) * tt(at + 1, at))};
+                              }};
+    const auto moved   {trace_and_det(first)};
+    EXPECT(numerical::detail::reorder(tt, one_based<double> {q.data(), n}, n, first, last));
+    const auto arrived {trace_and_det(last)}; // the block, or what it split into, where reorder says it ended
+    EXPECT(std::abs(arrived.first - moved.first) < 1e-12 && std::abs(arrived.second - moved.second) < 1e-12);
+    // rows of Qᵀ: T = Qᵀ T₀ Q, the form quasi-triangular
+    EXPECT(is_schur_form(numerical::buffer<double>(before.begin(), before.end()), numerical::buffer<double>(t.begin(), t.end()),
+                         numerical::buffer<double>(q.begin(), q.end()), 7));
+  }
+  std::vector<C> c(25, C  {});
+  std::vector<C> cq(25, C {});
+  for (std::size_t i {0}; i < 5; ++i) {
+    cq[(i * 5) + i] = C(1.0);
+    for (std::size_t j {i}; j < 5; ++j) {
+      c[(i * 5) + j] = C(u(g), u(g));
+    }
+  }
+  const std::vector<C> before {c};
+  long                 last   {5};
+  EXPECT(numerical::detail::reorder(one_based<C> {c.data(), 5}, one_based<C> {cq.data(), 5}, 5, 1, last)); // down
+  EXPECT(c[24] == before[0]);                                                                              // to the end
+  last = 1;
+  const C fourth {c[18]};
+  EXPECT(numerical::detail::reorder(one_based<C> {c.data(), 5}, one_based<C> {cq.data(), 5}, 5, 4, last)); // and up
+  EXPECT(c[0] == fourth);
+  EXPECT(is_schur_form(numerical::buffer<C>(before.begin(), before.end()), numerical::buffer<C>(c.begin(), c.end()),
+                       numerical::buffer<C>(cq.begin(), cq.end()), 5));
+}
+
+TEST(the_bulge_columns_of_zero_shifts_on_zero_entries)
+{
+  using numerical::detail::one_based;
+  double zeros[9] {};
+  double v[3]     {1.0, 1.0, 1.0};
+  numerical::detail::bulge_column(one_based<double> {zeros, 3}, 3, C {}, C {}, v);
+  EXPECT(v[0] == 0.0 && v[1] == 0.0 && v[2] == 0.0);
+  v[0] = 1.0;
+  numerical::detail::bulge_column(one_based<double> {zeros, 3}, 2, C {}, C {}, v);
+  EXPECT(v[0] == 0.0 && v[1] == 0.0);
+  C czeros[9] {};
+  C cv[3]     {C(1.0), C(1.0), C(1.0)};
+  numerical::detail::bulge_column(one_based<C> {czeros, 3}, 3, C {}, C {}, cv);
+  EXPECT(cv[0] == C {} && cv[2] == C {});
+  cv[0] = C(1.0);
+  numerical::detail::bulge_column(one_based<C> {czeros, 3}, 2, C {}, C {}, cv);
+  EXPECT(cv[0] == C {} && cv[1] == C {});
+}
+
+TEST(sweeps_of_many_shifts_keep_a_schur_similarity)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64 g {41};
+  for (const bool accumulate : {false, true}) {
+    for (const long top : {1L, 9L}) { // the whole matrix, and an active block below a zero subdiagonal
+      for (const std::size_t n : {24U, 7U}) {
+        numerical::buffer<double> h0 {random_hessenberg<double>(n, g)};
+        if (top > 1 && n > 9) {
+          h0[(8 * n) + 7] = 0.0;
+        }
+        if (n < 9) {
+          h0[(5 * n) + 4] = 0.0; // the trailing 2 × 2 apart
+        }
+        numerical::buffer<double> h {h0};
+        numerical::buffer<double> zt(n * n, 0.0);
+        for (std::size_t i {0}; i < n; ++i) {
+          zt[(i * n) + i] = 1.0;
+        }
+        // real shifts out of pairs, then a conjugate pair: the sweep pairs them
+        std::vector<C>                                shifts {C(0.5), C(0.3, 0.2), C(0.3, -0.2), C(-0.1), C(2.0), C(-1.5)};
+        const numerical::detail::schur_target<double> target {.h = &h, .n = n, .low = 0, .high = n, .full = true, .zt = &zt};
+        const long                                    ktop   {n > 9 ? top : static_cast<long>(n) - 1}; // the order-7 block: its last 2 × 2
+        numerical::detail::chase_bulges(target, ktop, static_cast<long>(n), shifts.data(), n > 9 ? 6 : 2, accumulate);
+        // H stays similar to H₀ through Z, Hessenberg below its first subdiagonal
+        bool similar {true};
+        for (std::size_t i {0}; i < n && similar; ++i) {
+          for (std::size_t j {0}; j < n && similar; ++j) {
+            double s {0.0};
+            for (std::size_t k {0}; k < n; ++k) {
+              for (std::size_t l {0}; l < n; ++l) {
+                s += zt[(i * n) + k] * h0[(k * n) + l] * zt[(j * n) + l];
+              }
+            }
+            similar = std::abs(s - h[(i * n) + j]) < 1e-12 && (i <= j + 1 || h[(i * n) + j] == 0.0);
+          }
+        }
+        EXPECT(similar);
+      }
+    }
+  }
+  numerical::buffer<C> ch0       {random_hessenberg<C>(9, g)};
+  numerical::buffer<C> ch        {ch0};
+  numerical::buffer<C> czt(81, C {});
+  for (std::size_t i {0}; i < 9; ++i) {
+    czt[(i * 9) + i] = C(1.0);
+  }
+  std::vector<C>                           cshifts {C(0.5, 1.0), C(-0.5, 0.2), C(1.0), C(0.0, -1.0)};
+  const numerical::detail::schur_target<C> ctarget {.h = &ch, .n = 9, .low = 0, .high = 9, .full = false, .zt = &czt};
+  numerical::detail::chase_bulges(ctarget, 1, 9, cshifts.data(), 4, true);
+  EXPECT(std::isfinite(ch[0].real()));
+}
+
+TEST(the_multishift_iterations_where_the_shifts_stall)
+{
+  for (const std::size_t n : {40U, 64U}) { // the cyclic permutation: exceptional shifts, windows grown and shrunk
+    numerical::buffer<double> cyclic(n * n, 0.0);
+    for (std::size_t i {0}; i + 1 < n; ++i) {
+      cyclic[((i + 1) * n) + i] = 1.0;
+    }
+    cyclic[n - 1] = 1.0;
+    // as a Hessenberg matrix: rotate the corner entry in by a similarity is not needed, the corner is in the first row
+    EXPECT(multishift_checks(cyclic, n));
+    EXPECT(multishift_checks(numerical::buffer<C>(cyclic.begin(), cyclic.end()), n));
+  }
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64           g          {43};
+  numerical::buffer<double> zero_last  {random_hessenberg<double>(30, g)}; // an exact zero eigenvalue at the bottom
+  numerical::buffer<C>      czero_last {random_hessenberg<C>(30, g)};
+  for (std::size_t i {0}; i < 30; ++i) {
+    zero_last[(i * 30) + 29]  = 0.0;
+    czero_last[(i * 30) + 29] = C {};
+  }
+  EXPECT(multishift_checks(zero_last, 30));
+  EXPECT(multishift_checks(czero_last, 30));
+  numerical::buffer<double>                     h       {random_hessenberg<double>(30, g)};
+  numerical::buffer<C>                          w(30);
+  const numerical::detail::schur_target<double> bounded {.h = &h, .n = 30, .low = 0, .high = 30, .full = false, .zt = nullptr};
+  EXPECT_THROWS(numerical::detail::multishift_schur(bounded, w.data(), true, 1), numerical::convergence_error);
+}
+
+TEST(a_wide_deflation_window_is_itself_taken_by_the_multishift_iterations)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64                           g      {47};
+  const std::size_t                         n      {110};
+  numerical::buffer<C>                      h      {random_hessenberg<C>(n, g)};
+  numerical::buffer<C>                      w(n);
+  const numerical::detail::schur_target<C>  target {.h = &h, .n = n, .low = 0, .high = n, .full = false, .zt = nullptr};
+  const numerical::detail::deflation_count  found  {numerical::detail::early_deflation(target, 1, static_cast<long>(n), 105, w.data(), true)};
+  EXPECT_EQ(found.shifts + found.deflated, 105L);
+  EXPECT_EQ(numerical::detail::recommended_shifts(20), 2L);
+  EXPECT_EQ(numerical::detail::recommended_shifts(40), 4L);
+  EXPECT_EQ(numerical::detail::recommended_shifts(100), 10L);
+  EXPECT_EQ(numerical::detail::recommended_shifts(1024), 64L);
+  EXPECT_EQ(numerical::detail::recommended_shifts(4000), 128L);
+  EXPECT_EQ(numerical::detail::recommended_shifts(7000), 256L);
+}
+
+namespace {
+
+  //! \brief The cyclic permutation of order \p n plus \p eps times an exact pattern on its Hessenberg part: shifts that
+  //!        stall for dozens of iterations, the same on every platform.
+  numerical::buffer<double> perturbed_cyclic(std::size_t n,
+                                             double      eps,
+                                             long        seed)
+  {
+    numerical::buffer<double> h(n * n, 0.0);
+    for (std::size_t i {0}; i + 1 < n; ++i) {
+      h[((i + 1) * n) + i] = 1.0;
+    }
+    h[n - 1] = 1.0;
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {i == 0 ? 0 : i - 1}; j < n; ++j) {
+        const long pattern {((static_cast<long>(i) * 131) + (static_cast<long>(j) * 71) + (seed * 29)) % 97};
+        h[(i * n) + j] += eps * ((static_cast<double>(pattern) / 48.0) - 1.0);
+      }
+    }
+    return h;
+  }
+} // namespace
+
+TEST(long_stalls_take_their_shifts_elsewhere)
+{
+  // after many iterations without deflation the window has shrunk below half the shifts: the shifts are the trailing
+  // submatrix's eigenvalues; two real shifts, the one nearer the corner twice
+  const numerical::buffer<double> real_trailing    {perturbed_cyclic(30, 1e-3, 0)};
+  EXPECT(multishift_checks(real_trailing, 30));
+  const numerical::buffer<double> complex_trailing {perturbed_cyclic(40, 1e-12, 0)};
+  EXPECT(multishift_checks(numerical::buffer<C>(complex_trailing.begin(), complex_trailing.end()), 40));
+  EXPECT(multishift_checks(perturbed_cyclic(25, 1e-15, 3), 25));
+  const numerical::buffer<double> complex_nearer {perturbed_cyclic(16, 1e-6, 2)};
+  EXPECT(multishift_checks(numerical::buffer<C>(complex_nearer.begin(), complex_nearer.end()), 16));
+}
+
+TEST(a_complex_reflection_makes_its_first_entry_real)
+{
+  C          alpha   {0.0, 2.0};
+  C          tail[1] {C {}};
+  const C    tau     {numerical::detail::reflector_tau(alpha, tail, 1)};
+  EXPECT(tau != C {});
+  EXPECT(alpha.imag() == 0.0 && std::abs(std::abs(alpha) - 2.0) < 1e-15);
+  C          real_alpha {3.0};
+  EXPECT(numerical::detail::reflector_tau(real_alpha, tail, 1) == C {});
+}
+
+TEST(vigilant_deflation_zeroes_a_negligible_subdiagonal_entry)
+{
+  using numerical::detail::one_based;
+  const auto deflated {[](auto entries) { // entries: a 4 × 4 row-major, k = 2: whether h(3, 2) was set to zero
+                         using T = std::decay_t<decltype(entries[0])>;
+                         std::vector<T> h(entries.begin(), entries.end());
+                         numerical::detail::vigilant_deflation(one_based<T> {h.data(), 4}, 2, 1, 4, 1e-290);
+                         return h[(2 * 4) + 1] == T {};
+                       }};
+  EXPECT(deflated(std::array<double, 16> {1, 1, 1, 1, 1, 1, 1, 1, 0, 1e-20, 2, 1, 0, 0, 1, 1}));          // negligible: zeroed
+  EXPECT(!deflated(std::array<double, 16> {1, 1, 1, 1, 1, 1, 1, 1, 0, 1e-3, 2, 1, 0, 0, 1, 1}));          // not negligible
+  EXPECT(deflated(std::array<double, 16> {1, 1, 1, 1, 1, 0, 1, 1, 0, 0, 0, 1, 0, 0, 1, 1}));              // already zero
+  EXPECT(deflated(std::array<double, 16> {1, 1, 1, 1, 1e-30, 0, 5, 1, 0, 1e-300, 0, 1, 0, 0, 1e-30, 1})); // zero diagonal: the neighbours judge
+  EXPECT(deflated(std::array<double, 16> {1, 1, 1, 1, 1, 2, 1, 1, 0, 1e-20, 2, 1, 0, 0, 1, 1}));          // equal diagonal entries: test2 = 0
+  EXPECT(!deflated(std::array<double, 16> {1, 1, 1, 1, 1, 1, 1e18, 1, 0, 1e-17, 1.0001, 1, 0, 0, 1, 1})); // small, but its product with the
+                                                                                                          // entry above is not
+  EXPECT(deflated(std::array<C, 16> {C(1), C(1), C(1), C(1), C(1), C(1), C(1), C(1), C {}, C(1e-20), C(2), C(1), C {}, C {}, C(1), C(1)}));
+  EXPECT(!deflated(std::array<C, 16> {C(1), C(1), C(1), C(1), C(1), C(1), C(1e18), C(1), C {}, C(1e-17), C(1.0001), C(1), C {}, C {}, C(1), C(1)}));
+  EXPECT(deflated(std::array<C, 16> {C(1), C(1), C(1), C(1), C(1), C(2), C(1), C(1), C {}, C(1e-20), C(2), C(1), C {}, C {}, C(1), C(1)}));
+}
+
+TEST(sweeps_of_a_complex_matrix_with_and_without_z)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64 g {53};
+  for (const bool accumulate : {false, true}) {
+    for (const bool full : {false, true}) {
+      for (const bool with_z : {false, true}) {
+        for (const std::size_t n : {7U, 24U}) {
+          numerical::buffer<C> h {random_hessenberg<C>(n, g)};
+          if (n < 9) {
+            h[(5 * n) + 4] = C {}; // a 2 × 2 active block at the bottom
+          }
+          numerical::buffer<C> zt(n * n, C {});
+          for (std::size_t i {0}; i < n; ++i) {
+            zt[(i * n) + i] = C(1.0);
+          }
+          std::vector<C>                           shifts {C(0.5, 1.0), C(-0.5, 0.2), C(1.0), C(0.0, -1.0)};
+          const numerical::detail::schur_target<C> target {.h = &h, .n = n, .low = 0, .high = n, .full = full, .zt = with_z ? &zt : nullptr};
+          numerical::detail::chase_bulges(target, n < 9 ? 6 : 1, static_cast<long>(n), shifts.data(), n < 9 ? 2 : 4, accumulate);
+          EXPECT(std::isfinite(h[(n * n) - 1].real()));
+        }
+      }
+    }
+  }
+  for (const bool full : {false, true}) { // real accumulated sweeps, without Z
+    numerical::buffer<double>                     h      {random_hessenberg<double>(24, g)};
+    std::vector<C>                                shifts {C(0.5), C(-0.5), C(0.3, 0.4), C(0.3, -0.4)};
+    const numerical::detail::schur_target<double> target {.h = &h, .n = 24, .low = 0, .high = 24, .full = full, .zt = nullptr};
+    numerical::detail::chase_bulges(target, 1, 24, shifts.data(), 4, true);
+    EXPECT(std::isfinite(h[575]));
+  }
+}
+
+TEST(the_multishift_eigenvalues_alone)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64 g {59};
+  for (const std::size_t n : {30U, 160U}) { // 160: accumulated sweeps
+    for (int kind {0}; kind < 2; ++kind) {
+      numerical::buffer<double>                     h           {random_hessenberg<double>(n, g)};
+      numerical::buffer<C>                          hc          {random_hessenberg<C>(n, g)};
+      numerical::buffer<C>                          w(n);
+      const numerical::detail::schur_target<double> real_target {.h = &h, .n = n, .low = 0, .high = n, .full = kind == 1, .zt = nullptr};
+      numerical::detail::multishift_schur(real_target, w.data(), true);
+      EXPECT(std::isfinite(w[0].real()));
+      const numerical::detail::schur_target<C> complex_target {.h = &hc, .n = n, .low = 0, .high = n, .full = kind == 1, .zt = nullptr};
+      numerical::detail::multishift_schur(complex_target, w.data(), true);
+      EXPECT(std::isfinite(w[0].real()));
+    }
+  }
+  numerical::buffer<C>                     hc      {random_hessenberg<C>(30, g)};
+  numerical::buffer<C>                     w(30);
+  const numerical::detail::schur_target<C> bounded {.h = &hc, .n = 30, .low = 0, .high = 30, .full = false, .zt = nullptr};
+  EXPECT_THROWS(numerical::detail::multishift_schur(bounded, w.data(), true, 1), numerical::convergence_error);
+  const matrix<C>              b                   {random_complex(130, g)};
+  const numerical::vector<C>   alone               {numerical::eigenvalues(b)};
+  const eigen_decomposition<C> f                   {b};
+  for (std::size_t i {0}; i < 130; ++i) {
+    EXPECT_EQ(alone[i], f.values()[i]);
+  }
+  EXPECT_EQ(numerical::detail::recommended_window(400, 40), 40L);
+  EXPECT_EQ(numerical::detail::recommended_window(600, 64), 96L);
+}
+
+TEST(a_refused_exchange_while_sorting_the_window)
+{
+  using numerical::detail::one_based;
+  // two 2 × 2 blocks that will not exchange, the larger below, over a 1 × 1 that deflates
+  std::vector<double> t(25, 0.0);
+  const double        blocks[16] {1, 2.9258991580319096, -0.99582361335424341, 0.6660776232485035, -3.4177527863695918e-11, 1, -0.63530008058277909,
+                                  0.22425311739723819, 0, 0, 1.0000043005630168, 0.68529066378232517, 0, 0, -2.0478021681892508e-10, 1.0000043005630168};
+  for (std::size_t i {0}; i < 4; ++i) {
+    for (std::size_t j {0}; j < 4; ++j) {
+      t[(i * 5) + j] = blocks[(i * 4) + j];
+    }
+    t[(i * 5) + 4] = 0.5;
+  }
+  t[24] = 3.0;
+  std::vector<double> vt(25, 0.0);
+  for (std::size_t i {0}; i < 4; ++i) {
+    vt[i * 5] = 1.0; // the first column of V: the spike, undeflatable but for the last row
+  }
+  std::vector<C> w(5);
+  EXPECT_EQ(numerical::detail::undeflated(one_based<double> {t.data(), 5}, one_based<double> {vt.data(), 5}, 5, 1.0, 1e-290, w.data()), 4L);
+}
+
+TEST(a_real_window_past_the_crossover)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64                               g      {61};
+  const std::size_t                             n      {205};
+  numerical::buffer<double>                     h      {random_hessenberg<double>(n, g)};
+  numerical::buffer<C>                          w(n);
+  const numerical::detail::schur_target<double> target {.h = &h, .n = n, .low = 0, .high = n, .full = false, .zt = nullptr};
+  const numerical::detail::deflation_count      found  {numerical::detail::early_deflation(target, 1, static_cast<long>(n), 202, w.data(), true)};
+  EXPECT_EQ(found.shifts + found.deflated, 202L);
+}
+
+TEST(a_nearly_real_pair_below_a_chain_of_its_real_part)
+{
+  // 1 ± 1e-20 i at the bottom of a Jordan chain of eigenvalue 1: the pair's vector meets pivots of 1e-20 row after
+  // row, floored, its components scaled down as they grow
+  const std::size_t   n {30};
+  std::vector<double> t(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    t[(i * n) + i] = 1.0;
+    if (i + 1 < n) {
+      t[(i * n) + i + 1] = 1.0;
+    }
+  }
+  t[((n - 2) * n) + n - 1] = 1e-20;
+  t[((n - 1) * n) + n - 2] = -1e-20;
+  const eigen_decomposition<double> e {matrix<double> {n, n, t}};
+  for (std::size_t c {0}; c < n; ++c) {
+    EXPECT(std::isfinite(e.vectors()(0, c).real()) && std::isfinite(e.vectors()(0, c).imag()));
+  }
 }

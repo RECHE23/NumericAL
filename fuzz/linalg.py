@@ -463,8 +463,9 @@ def run_eig(a):
               f"{np.max(per_vector) / (n * EPS * max(scaled_norm(b), 1e-300)):.3g} n·ε·‖D⁻¹AD‖")
     check(w.dtype == v.dtype == np.complex128, f"eig answers {w.dtype}, {v.dtype}")
     check(np.max(np.abs(np.linalg.norm(v, axis=0) - 1.0)) <= bound(n, 1.0), "eigenvectors not of unit norm")
-    largest = v[np.argmax(np.abs(v), axis=0), np.arange(n)]
-    check(np.all(np.imag(largest) == 0), "an eigenvector's largest component is not real")
+    # one of the components of largest modulus (to rounding: a tie where they all are, as a permutation's) is real
+    tops = np.abs(v) >= np.max(np.abs(v), axis=0) * (1 - 1e-12)
+    check(np.all(np.any(tops & (np.imag(v) == 0), axis=0)), "an eigenvector's largest component is not real")
     alone = as_np(numerical.eigvals(numerical.asarray(a)))
     check(np.array_equal(alone, w), f"eigvals differs from eig's eigenvalues ({bit_gap(alone, w)})")
     if not np.iscomplexobj(a):

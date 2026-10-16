@@ -7,15 +7,22 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Added
-- **`eig` and `eigvals` of a general square matrix**, real or complex, and of stacks, as `numpy.linalg`'s: LAPACK's
-  method (`dgeev`, `zgeev`): balancing by permutations and powers of two, Householder reduction to Hessenberg form,
-  Francis's double-shift QR for a real matrix (its complex eigenvalues in conjugate pairs, their vectors conjugate to
-  the bit) and Wilkinson's single shift for a complex one, the eigenvectors by back-substitution in the Schur form
-  carried back by a matrix product. Complex answers whatever the eigenvalues, as NumPy 2.5's (NumPy before 2.5
-  made them real where they all were); each vector of unit norm with its largest component real. As accurate as LAPACK's on the differential fuzzer (the
-  residual within LAPACK's own on graded matrices, which the balancing makes small against `‖D⁻¹ A D‖`). Eight arm64
-  cores, against NumPy: `eig` of order 64 0.69 ms (1.24), 128 4.8 ms (9.9), 256 51 ms (29), 512 509 ms (249); a stack
-  of 1000 of order 16 7.7 ms (66.6). Unblocked: past order 200 LAPACK's blocked reduction and multishift QR lead.
+- **`eig` and `eigvals` of a general square matrix**, real or complex, and of stacks, as `numpy.linalg`'s, by LAPACK's
+  method (`dgeev`, `zgeev`): balancing by permutations and powers of two; Householder reduction to Hessenberg form, by
+  panels whose update is a matrix product past order 128 (`dgehrd`); the Schur form by the multishift QR algorithm with
+  aggressive early deflation (`dlaqr0`, `dlaqr3`, `dlaqr5`) from order 200 for a real matrix and 100 for a complex one,
+  below them Francis's double shift (`dlahqr`) or Wilkinson's single shift (`zlahqr`), each where it measured the
+  faster; the eigenvectors by back-substitution in the Schur form (its sums vectorised), carried back by a matrix
+  product. A real matrix's
+  complex eigenvalues come in conjugate pairs, their vectors conjugate to the bit; `eigvals` gives `eig`'s eigenvalues
+  to the bit. Complex answers whatever the eigenvalues, as NumPy 2.5's (NumPy before 2.5 made them real where they all
+  were); each vector of unit norm with its largest component real. As accurate as LAPACK's on the differential fuzzer
+  (each pair's residual within the backward-error bound of the balanced matrix `D⁻¹ A D`, each of NumPy's
+  well-conditioned eigenvalues near one of ours). Eight arm64 cores, against NumPy: `eig` of order 64 0.7 ms (1.2),
+  128 3.8 ms (9.5), 512 117 ms (247), 1024 569 ms (985); `eigvals` of order 1024 433 ms (770); a complex `eig` of
+  order 512 329 ms (694); a stack of 1000 of order 16 7.4 ms (67). Six x86-64 AVX2 cores, against NumPy's OpenBLAS:
+  `eig` of order 512 174 ms (233), 1024 647 ms (832); a complex `eig` stays behind past order 256 (1024: 2.2 s,
+  NumPy 1.9).
 - **The rest of `numpy.linalg`, as NumPy 2 answers it, stacks included**: `norm`, `vector_norm` and `matrix_norm` on
   every order, axis and `keepdims`; `cond` (infinite for a singular matrix, as NumPy's); `svdvals`; `matrix_power`
   (negative powers through the inverse); `multi_dot`, multiplying the chain in its cheapest order; `trace`, `outer`,

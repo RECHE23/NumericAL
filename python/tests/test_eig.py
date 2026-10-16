@@ -29,8 +29,8 @@ class Eig(unittest.TestCase):
         self.assertTrue(np.allclose(a @ v, v * w[..., None, :], rtol=0, atol=tolerance * scale * max(1, a.shape[-1])))
         if a.size:
             self.assertTrue(np.allclose(np.linalg.norm(v, axis=-2), 1.0, atol=1e-13))
-            largest = np.take_along_axis(v, np.argmax(np.abs(v), axis=-2)[..., None, :], axis=-2)
-            self.assertTrue(np.all(np.imag(largest) == 0))
+            tops = np.abs(v) >= np.max(np.abs(v), axis=-2, keepdims=True) * (1 - 1e-12)  # ties: a permutation's
+            self.assertTrue(np.all(np.any(tops & (np.imag(v) == 0), axis=-2)))
         self.assertTrue(np.array_equal(np.asarray(numerical.eigvals(a)), w))  # the same Schur form either way
         return w, v
 
