@@ -40,6 +40,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   the one cell `make bench-diff` flags), Clang nothing.
 
 ### Changed
+- **An LU solve of up to sixteen right-hand sides goes backward by groups of eight rows too**: a group's terms in the
+  blocks past its own go together, in the order each row took them, its own block's after, row by row. The same bits.
+  One thread, four right-hand sides on a factor built once: arm64, order 128 −36 %, 256 −51 %, 1024 −59 % (Clang;
+  GCC −36 to −50 %); six AVX2 cores, order 128 −31 %, 512 −45 %, 1024 −46 %. `solve` with its factorisation: 2–8 %.
 - **A complex matrix product keeps its real operands from one product to the next, on each thread**, where each
   product mapped them anew, page by page; past 2 MiB an operand is let go after its product. The same bits. Six AVX2
   cores, one thread: order 64 0.12 → 0.07 ms, 128 0.76 → 0.44, 256 4.6 → 3.1; all threads, order 128 0.52 → 0.17 ms;

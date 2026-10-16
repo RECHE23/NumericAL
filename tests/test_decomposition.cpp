@@ -1455,6 +1455,9 @@ TEST(blocked_matrix_solve_agrees_with_column_solves)
 // block deep enough); off the x86-64 units the rows go so at any order too.
 TEST(narrow_solve_equals_the_blocked_solve_to_the_bit)
 {
+  const numerical::lu_decomposition<double> small {matrix<double> {{2.0, 1.0}, {1.0, 3.0}}};
+  const matrix<double>                      none  {small.solve(matrix<double> {2, 0, std::vector<double> {}})};
+  EXPECT(none.rows() == 2U && none.cols() == 0U); // no right-hand side: nothing to solve, by either road
   for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512}) {
     if (numerical::limit_gemm_path(path) != path) {
       continue;

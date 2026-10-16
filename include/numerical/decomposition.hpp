@@ -682,9 +682,9 @@ namespace numerical {
         // nothing, the rows would), and at any order elsewhere, by groups (arm64, four columns: order 256 0.65 times the
         // blocked passes' time under Clang, 0.45 under GCC; order 1024 on every thread 0.91 and 0.62).
 #ifdef NUMERICAL_X86_COMPILED
-        const bool narrow {!lower && cols <= detail::narrow_solve && detail::gemm_path_current() != gemm_path::portable};
+        const bool narrow {!lower && !y.empty() && cols <= detail::narrow_solve && detail::gemm_path_current() != gemm_path::portable};
 #else
-        const bool narrow {!lower && cols <= detail::narrow_solve};
+        const bool narrow {!lower && !y.empty() && cols <= detail::narrow_solve};
 #endif
         if (narrow) {
           solve_narrow(y, cols);
@@ -781,6 +781,7 @@ namespace numerical {
       // Forward, by groups of rows: their terms before the group are independent of one another, and go together
       // (\ref detail::subtract_rows), the group's own triangle after; each element's terms in ascending order still.
       constexpr std::size_t group {detail::product_rows};
+      static_assert(detail::lu_small_block % group == 0 && detail::lu_block % group == 0, "a panel is a whole number of groups");
       std::size_t           i0    {0};
       for (; i0 + group <= n_; i0 += group) {
         if (i0 > 0) {
@@ -793,22 +794,33 @@ namespace numerical {
       for (std::size_t i {std::max<std::size_t>(i0, 1)}; i < n_; ++i) {
         detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_), y.data(), cols, i, cols);
       }
+      // Backward, each row's terms block by block from the last down to its own, ascending within each: a group's
+      // terms in the blocks past its own are independent of one another and go together (\ref detail::subtract_rows),
+      // in that same order; its own block's after, row by row (\p finish). The rows past the last whole group lie in
+      // the last block, a panel being a whole number of groups: they have their own block's terms alone.
       const std::size_t last {panel_of(n_ - 1)};
-      for (std::size_t i {n_}; i-- > 0;) {
-        const std::size_t own {panel_of(i)};
-        for (std::size_t b0 {last};; b0 -= block_) {
-          const std::size_t from {std::max(b0, i + 1)};
-          const std::size_t to   {std::min(b0 + block_, n_)};
-          if (from < to) {
-            detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_) + from, y.data() + (from * cols), cols, to - from, cols);
-          }
-          if (b0 == own) {
-            break;
-          }
+      const auto        finish {[this, &y, cols](std::size_t i) {
+                                  const std::size_t to {std::min(panel_of(i) + block_, n_)};
+                                  if (i + 1 < to) {
+                                    detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_) + i + 1, y.data() + ((i + 1) * cols), cols, to - (i + 1), cols);
+                                  }
+                                  const T pivot {lu_[(i * n_) + i]};
+                                  for (std::size_t c {0}; c < cols; ++c) {
+                                    y[(i * cols) + c] = y[(i * cols) + c] / pivot;
+                                  }
+                                }};
+      std::size_t i1 {n_};
+      for (; i1 % group != 0; --i1) {
+        finish(i1 - 1);
+      }
+      for (; i1 > 0; i1 -= group) {
+        const std::size_t top {i1 - group};
+        const std::size_t own {panel_of(top)};
+        for (std::size_t b0 {last}; b0 > own; b0 -= block_) {
+          detail::subtract_rows(y.data() + (top * cols), cols, lu_.data() + (top * n_) + b0, n_, y.data() + (b0 * cols), cols, std::min(block_, n_ - b0), cols);
         }
-        const T pivot {lu_[(i * n_) + i]};
-        for (std::size_t c {0}; c < cols; ++c) {
-          y[(i * cols) + c] = y[(i * cols) + c] / pivot;
+        for (std::size_t i {i1}; i-- > top;) {
+          finish(i);
         }
       }
     }
