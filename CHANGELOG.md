@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.17 — 2026-10-16
+
 ### Added
 - **`eig` and `eigvals` of a general square matrix**, real or complex, and of stacks, as `numpy.linalg`'s, by LAPACK's
   method (`dgeev`, `zgeev`): balancing by permutations and powers of two; Householder reduction to Hessenberg form, by
