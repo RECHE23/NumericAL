@@ -6,6 +6,15 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Added
+- **The rest of `numpy.linalg`, as NumPy 2 answers it, stacks included**: `norm`, `vector_norm` and `matrix_norm` on
+  every order, axis and `keepdims`; `cond` (infinite for a singular matrix, as NumPy's); `svdvals`; `matrix_power`
+  (negative powers through the inverse); `multi_dot`, multiplying the chain in its cheapest order; `trace`, `outer`,
+  `cross`, `tensordot` and `vecdot`; `conj` (`conjugate`). The norms keep a float32 or complex64 input's precision.
+- `svd(..., hermitian=True)`, from the eigendecomposition: the singular values are the eigenvalues' magnitudes in
+  descending order, `Vh` the eigenvectors signed by the eigenvalues.
+- A 2-norm is scaled by the largest magnitude, so it neither overflows nor underflows: `vector_norm([1e200, 1e200])` is 1.414e200, where NumPy's is infinite.
+
 ## 2026.10.16 — 2026-10-16
 
 ### Fixed

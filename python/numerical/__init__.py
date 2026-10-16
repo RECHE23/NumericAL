@@ -25,7 +25,9 @@ PETSc (petsc4py) has no such protocol; bridging it would require an explicit
 copy into a PETSc object.
 """
 import array as _array
+import builtins as _builtins
 import functools as _functools
+import math as _math
 import numbers as _numbers
 import operator as _operator
 import os as _os
@@ -39,7 +41,8 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "det", "slogdet", "inverse", "inv", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh",
-    "eigvalsh", "svd",
+    "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
+    "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config",
 ]
@@ -417,6 +420,7 @@ solve = _linalg(_numerical.solve)
 _eigh = _linalg(_numerical.eigh, arrays=1)
 _svd = _linalg(_numerical.svd, arrays=1)
 _singular_values = _linalg(_numerical._singular_values)
+_svd_hermitian = _linalg(_numerical._svd_hermitian)
 _QR_MODES = ("reduced", "complete", "r")
 _EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
 _SVD_METHODS = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
@@ -517,18 +521,23 @@ def _as_integers(nested):
     return [_as_integers(item) for item in nested] if isinstance(nested, list) else int(nested)
 
 
-def svd(a, full_matrices=True, compute_uv=True, *, method="divide_and_conquer"):
+def svd(a, full_matrices=True, compute_uv=True, hermitian=False, *, method="divide_and_conquer"):
     """``(U, S, Vh)`` with ``a = U @ diag(S) @ Vh``, the singular values descending, as ``numpy.linalg.svd``: for an
     m×n `a`, `U` is m×m and `Vh` n×n (``full_matrices=True``, NumPy's default: the columns past min(m, n) an
     orthonormal basis of the complement), or m×k and k×n, k = min(m, n) (``full_matrices=False``); the singular values
     alone with ``compute_uv=False``. `method` decomposes the bidiagonal form: ``"divide_and_conquer"`` (LAPACK's
     ``dgesdd``), ``"bidiagonal_qr"`` (implicit-shift QR, ``dgesvd``'s) or ``"jacobi"`` (one-sided Jacobi, each singular
-    value to high relative accuracy)."""
+    value to high relative accuracy). ``hermitian=True`` takes `a` as real symmetric or complex Hermitian (its lower
+    triangle read) and decomposes it through its eigendecomposition, cheaper: the singular values the magnitudes of
+    the eigenvalues, ``Vh = (U * sign(w)).conj().T``, as NumPy's."""
     if isinstance(full_matrices, str):
         raise TypeError("svd: the second argument is full_matrices, as in NumPy; give the method by name, "
                         f"svd(a, method={full_matrices!r})")
     if method not in _SVD_METHODS:
         raise ValueError(f"svd: method {method!r} is none of {_SVD_METHODS}")
+    if hermitian:
+        answer = _svd_hermitian(a)
+        return answer if compute_uv else answer[1]
     if not compute_uv:
         return _singular_values(a)
     return _svd(a, method, bool(full_matrices))
@@ -543,6 +552,327 @@ def qr(a, mode="reduced"):
     if mode == "r":
         return _qr(a, "reduced")[1]
     return _qr(a, mode)
+
+
+_LETTERS = "abcdefghijklmnopqrstuvwxyz"
+
+
+def _tensor(x):
+    return x if isinstance(x, Tensor) else asarray(x)
+
+
+def _number_if_scalar(t):
+    """A rank-0 tensor as the Python number it holds, as NumPy answers a full reduction; any other as it is."""
+    return t[()] if isinstance(t, Tensor) and not t.shape else t
+
+
+def _resolved_axes(t, axis, name):
+    """`axis` (None for every axis, an integer or a tuple of them) as distinct non-negative axes of `t`."""
+    rank = len(t.shape)
+    if axis is None:
+        return tuple(range(rank))
+    axes = []
+    for each in axis if isinstance(axis, tuple) else (axis,):
+        each = _operator.index(each)
+        if not -rank <= each < rank:
+            raise _ShapeError(f"{name}: axis {each} is out of bounds for a tensor of rank {rank}")
+        axes.append(each + rank if each < 0 else each)
+    if len(set(axes)) != len(axes):
+        raise ValueError(f"{name}: repeated axis")
+    return tuple(axes)
+
+
+def _permuted(t, order):
+    """`t` with its axes in `order` (a permutation): through einsum, which copies."""
+    letters = _LETTERS[:len(t.shape)]
+    return _numerical.einsum(f"{letters}->{''.join(letters[a] for a in order)}", t)
+
+
+def _matmul_stack(a, b):
+    """``a @ b`` for two stacks of one shape (..., m, k) and (..., k, n), or two matrices."""
+    if len(a.shape) == 2 and len(b.shape) == 2:
+        return a @ b
+    batch = _LETTERS[:len(a.shape) - 2]
+    return einsum(f"{batch}yz,{batch}zw->{batch}yw", a, b)
+
+
+def conj(x):
+    """The complex conjugate of every element, as ``numpy.conj``; a real tensor's own elements."""
+    return _numerical._unary("conj", _tensor(x))
+
+
+conjugate = conj
+
+
+def _vector_order(ord):
+    if isinstance(ord, (str, bool)) or not isinstance(ord, _numbers.Real):
+        raise ValueError(f"Invalid norm order {ord!r} for vectors")
+    return float(ord)
+
+
+def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
+    """The `ord` norm of `x` over `axis` (None: every element; an integer or a tuple of them), as
+    ``numpy.linalg.vector_norm``: ``(Σ |x|^ord)^(1/ord)``, ``inf`` the largest magnitude, ``-inf`` the smallest, 0 how
+    many are not zero; real, of `x`'s precision. Summed at the scale of the largest magnitude, it does not overflow
+    where NumPy's 2-norm of entries past 1e154 is infinite."""
+    x = _tensor(x)
+    return _native(_numerical._vector_norm, x, _vector_order(ord), list(_resolved_axes(x, axis, "vector_norm")),
+                   bool(keepdims))
+
+
+def svdvals(x, /):
+    """The singular values of a matrix or of every matrix of a stack, descending, as ``numpy.linalg.svdvals``."""
+    return svd(x, compute_uv=False)
+
+
+def _matrix_norm(x, ord, row, col, keepdims):
+    """The `ord` norm of the matrices of `x` over its axes `row` and `col` (distinct, non-negative)."""
+    rank = len(x.shape)
+    if ord in (None, "fro"):
+        return vector_norm(x, axis=(row, col), keepdims=keepdims)
+    if ord in ("nuc", 2, -2):
+        moved = _permuted(x, [a for a in range(rank) if a not in (row, col)] + [row, col])
+        values = svdvals(moved)
+        reduced = sum(values, axis=-1) if ord == "nuc" else (max if ord == 2 else min)(values, axis=-1)
+    elif ord in (1, -1, _math.inf, -_math.inf):
+        inner, outer = (row, col) if ord in (1, -1) else (col, row)  # column sums for 1, row sums for inf
+        sums = vector_norm(x, axis=inner, ord=1)
+        reduced = (max if ord > 0 else min)(sums, axis=outer - (1 if outer > inner else 0))
+    else:
+        raise ValueError(f"Invalid norm order {ord!r} for matrices")
+    if keepdims:
+        shape = list(x.shape)
+        shape[row] = shape[col] = 1
+        return reshape(reduced, tuple(shape))
+    return _number_if_scalar(reduced)
+
+
+def matrix_norm(x, /, *, keepdims=False, ord="fro"):
+    """The `ord` norm of a matrix or of every matrix of a stack (its last two axes), as ``numpy.linalg.matrix_norm``:
+    ``"fro"`` (Frobenius, without overflow), ``"nuc"`` (the sum of the singular values), 2 and -2 (the largest and the
+    smallest singular value), 1 and -1 (the largest and smallest column sum of magnitudes), ``inf`` and ``-inf``
+    (row sums)."""
+    x = _tensor(x)
+    if len(x.shape) < 2:
+        raise LinAlgError("matrix_norm: a matrix or a stack of matrices (rank ≥ 2)")
+    rank = len(x.shape)
+    return _matrix_norm(x, ord, rank - 2, rank - 1, keepdims)
+
+
+def norm(x, ord=None, axis=None, keepdims=False):
+    """A vector or a matrix norm, as ``numpy.linalg.norm``: with no `axis`, the 2-norm of every element for no `ord`,
+    else the `ord` norm of the vector or the matrix `x` is; with an integer `axis`, the vector norms along it; with a
+    pair, the matrix norms over it (:func:`vector_norm`, :func:`matrix_norm`)."""
+    x = _tensor(x)
+    rank = len(x.shape)
+    if axis is None:
+        if ord is None:
+            return vector_norm(x, keepdims=keepdims)
+        if rank == 1:
+            return vector_norm(x, ord=ord, keepdims=keepdims)
+        if rank == 2:
+            return _matrix_norm(x, ord, 0, 1, keepdims)
+        raise ValueError("norm: an ord with no axis takes a vector or a matrix")
+    axes = _resolved_axes(x, axis, "norm")
+    if len(axes) == 1:
+        return vector_norm(x, axis=axes[0], keepdims=keepdims, ord=2 if ord is None else ord)
+    if len(axes) == 2:
+        return _matrix_norm(x, ord, axes[0], axes[1], keepdims)
+    raise ValueError("norm: axis is an integer or a pair of them")
+
+
+def cond(x, p=None):
+    """The condition number of a matrix or of every matrix of a stack in the `p` norm, as ``numpy.linalg.cond``: for
+    None, 2 and -2 the ratio of the extreme singular values (infinite for a singular matrix), else
+    ``norm(x, p) * norm(inv(x), p)`` (infinite where `x` is singular)."""
+    x = _tensor(x)
+    if len(x.shape) < 2:
+        raise LinAlgError("cond: a matrix or a stack of matrices (rank ≥ 2)")
+    if p in (None, 2, -2):
+        values = svdvals(x)
+        largest, smallest = _number_if_scalar(max(values, axis=-1)), _number_if_scalar(min(values, axis=-1))
+        top, bottom = (largest, smallest) if p != -2 else (smallest, largest)
+
+        def ratio(t, b):  # a singular matrix's, zero over zero included, is infinite, as NumPy's
+            return _math.inf if b == 0 else t / b
+
+        if not isinstance(top, Tensor):
+            return ratio(top, bottom)
+        return asarray(_paired(top.tolist(), bottom.tolist(), ratio), top.dtype)
+    if x.shape[-1] != x.shape[-2]:
+        raise LinAlgError(f"cond: the {p!r} norm takes square matrices")
+    if len(x.shape) == 2:
+        try:
+            return norm(x, p) * norm(inv(x), p)
+        except LinAlgError:
+            return _math.inf
+    stack = reshape(x, (-1,) + tuple(x.shape[-2:]))
+    return reshape(asarray([cond(stack[i], p) for i in range(stack.shape[0])]), tuple(x.shape[:-2]))
+
+
+def _paired(x, y, f):
+    """`f` of the numbers of two nested lists of one shape, nested alike."""
+    return [_paired(u, v, f) for u, v in zip(x, y)] if isinstance(x, list) else f(x, y)
+
+
+def matrix_power(a, n):
+    """`a` to the integer power `n` by repeated squaring, as ``numpy.linalg.matrix_power``: the identity for 0, the
+    inverse's powers for a negative `n`; a matrix or a stack of square matrices."""
+    a = _tensor(a)
+    n = _operator.index(n)
+    if len(a.shape) < 2 or a.shape[-1] != a.shape[-2]:
+        raise LinAlgError("matrix_power: a square matrix or a stack of them")
+    if n == 0:
+        return eye(a.shape[-1], a.dtype) + zeros(a.shape, a.dtype)
+    if n < 0:
+        a, n = inv(a), -n
+    result, square = None, a
+    while n:
+        if n & 1:
+            result = square if result is None else _matmul_stack(result, square)
+        n >>= 1
+        if n:
+            square = _matmul_stack(square, square)
+    return result
+
+
+def _chain_order(shapes):
+    """The split of each range of the cheapest product of matrices of `shapes`, as NumPy's multi_dot finds it: by
+    dynamic programming over the multiply-adds."""
+    dims = [shapes[0][0]] + [shape[1] for shape in shapes]
+    count = len(shapes)
+    cost = [[0] * count for _ in range(count)]
+    split = [[0] * count for _ in range(count)]
+    for length in range(1, count):
+        for i in range(count - length):
+            j = i + length
+            cost[i][j] = _math.inf
+            for k in range(i, j):
+                c = cost[i][k] + cost[k + 1][j] + dims[i] * dims[k + 1] * dims[j + 1]
+                if c < cost[i][j]:
+                    cost[i][j], split[i][j] = c, k
+    return split
+
+
+def multi_dot(arrays, *, out=None):
+    """The product of two or more matrices in the cheapest order, as ``numpy.linalg.multi_dot``: the first may be a
+    vector (a row), the last a vector (a column). `out` is not taken."""
+    if out is not None:
+        raise TypeError("multi_dot: out= is not taken; the product is returned")
+    operands = [_tensor(array) for array in arrays]
+    if len(operands) < 2:
+        raise ValueError("multi_dot: at least two arrays")
+    first_vector, last_vector = len(operands[0].shape) == 1, len(operands[-1].shape) == 1
+    if first_vector:
+        operands[0] = reshape(operands[0], (1, operands[0].shape[0]))
+    if last_vector:
+        operands[-1] = reshape(operands[-1], (operands[-1].shape[0], 1))
+    if any(len(operand.shape) != 2 for operand in operands):
+        raise LinAlgError("multi_dot: matrices, the first and last of which may be vectors")
+    split = _chain_order([operand.shape for operand in operands])
+
+    def product(i, j):
+        return operands[i] if i == j else product(i, split[i][j]) @ product(split[i][j] + 1, j)
+
+    result = product(0, len(operands) - 1)
+    if first_vector and last_vector:
+        return result[0, 0]
+    if first_vector:
+        return result[0]
+    if last_vector:
+        return reshape(result, (result.shape[0],))
+    return result
+
+
+def trace(x, /, *, offset=0, dtype=None):
+    """The sum of the `offset` diagonal of a matrix or of every matrix of a stack (its last two axes), as
+    ``numpy.linalg.trace``: above the main diagonal for a positive `offset`, below for a negative one; in `dtype` when
+    given."""
+    x = _tensor(x)
+    if len(x.shape) < 2:
+        raise _ShapeError("trace: a matrix or a stack of matrices (rank ≥ 2)")
+    offset = _operator.index(offset)
+    rows, cols = x.shape[-2:]
+    r0, c0 = _builtins.max(-offset, 0), _builtins.max(offset, 0)
+    length = _builtins.max(_builtins.min(rows - r0, cols - c0), 0)
+    batch = _LETTERS[:len(x.shape) - 2]
+    if length == 0:
+        result = zeros(tuple(x.shape[:-2]), x.dtype)
+    else:
+        block = x[(slice(None),) * (len(x.shape) - 2) + (slice(r0, r0 + length), slice(c0, c0 + length))]
+        result = _numerical.einsum(f"{batch}zz->{batch}", block)
+    if dtype is not None:
+        result = asarray(result, dtype)
+    return _number_if_scalar(result)
+
+
+def outer(x1, x2, /):
+    """The outer product of two vectors, ``x1[i] * x2[j]``, as ``numpy.linalg.outer``."""
+    a, b = _same_dtype(x1, x2)
+    if len(a.shape) != 1 or len(b.shape) != 1:
+        raise ValueError("outer: two vectors (numpy.linalg.outer)")
+    return _numerical.einsum("i,j->ij", a, b)
+
+
+def cross(x1, x2, /, *, axis=-1):
+    """The cross product of 3-vectors along `axis`, broadcast over the other axes, as ``numpy.linalg.cross``."""
+    a, b = _same_dtype(x1, x2)
+    moved = []
+    for operand in (a, b):
+        if not operand.shape or operand.shape[_resolved_axes(operand, axis, "cross")[0]] != 3:
+            raise ValueError("cross: both operands have 3 elements along axis (numpy.linalg.cross)")
+        rank, at = len(operand.shape), _resolved_axes(operand, axis, "cross")[0]
+        moved.append(_permuted(operand, [k for k in range(rank) if k != at] + [at]))
+    a, b = moved
+
+    def part(t, i):
+        return t[(slice(None),) * (len(t.shape) - 1) + (i,)]
+
+    components = (part(a, 1) * part(b, 2) - part(a, 2) * part(b, 1), part(a, 2) * part(b, 0) - part(a, 0) * part(b, 2),
+                  part(a, 0) * part(b, 1) - part(a, 1) * part(b, 0))
+    result = None
+    for i, component in enumerate(components):
+        component = _tensor(component)
+        unit = asarray([1.0 if k == i else 0.0 for k in range(3)], component.dtype)
+        term = reshape(component, tuple(component.shape) + (1,)) * unit
+        result = term if result is None else result + term
+    rank = len(result.shape)
+    at = axis + rank if axis < 0 else axis
+    if at != rank - 1:  # the vectors' axis back where it was
+        order = list(range(rank - 1))
+        order.insert(at, rank - 1)
+        result = _permuted(result, order)
+    return result
+
+
+def tensordot(x1, x2, /, *, axes=2):
+    """The sum of products over `axes` of `x1` and `x2`, as ``numpy.linalg.tensordot``: an integer N contracts the
+    last N axes of `x1` with the first N of `x2`, a pair of sequences the axes it names."""
+    a, b = _same_dtype(x1, x2)
+    if isinstance(axes, (tuple, list)):
+        left = [axes[0]] if isinstance(axes[0], int) else list(axes[0])
+        right = [axes[1]] if isinstance(axes[1], int) else list(axes[1])
+    else:
+        count = _operator.index(axes)
+        left, right = list(range(len(a.shape) - count, len(a.shape))), list(range(count))
+    left = [k + len(a.shape) if k < 0 else k for k in left]
+    right = [k + len(b.shape) if k < 0 else k for k in right]
+    if len(left) != len(right) or any(a.shape[i] != b.shape[j] for i, j in zip(left, right)):
+        raise ValueError("tensordot: the contracted axes do not match")
+    letters_a = list(_LETTERS[:len(a.shape)])
+    letters_b = list(_LETTERS[len(a.shape):len(a.shape) + len(b.shape)])
+    for i, j in zip(left, right):
+        letters_b[j] = letters_a[i]
+    kept = [letters_a[i] for i in range(len(a.shape)) if i not in left] + \
+           [letters_b[j] for j in range(len(b.shape)) if j not in right]
+    return _number_if_scalar(_numerical.einsum(f"{''.join(letters_a)},{''.join(letters_b)}->{''.join(kept)}", a, b))
+
+
+def vecdot(x1, x2, /, *, axis=-1):
+    """``Σ conj(x1) · x2`` along `axis`, broadcast over the other axes, as ``numpy.linalg.vecdot``."""
+    a, b = _same_dtype(x1, x2)
+    product = conj(a) * b
+    return sum(product, axis=_resolved_axes(product, axis, "vecdot")[0])
 
 
 _NATIVE_NUMBERS = (float, int, bool, complex)

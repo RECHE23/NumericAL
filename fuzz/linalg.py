@@ -377,6 +377,35 @@ def run_stack(g, h, square):
                           f"stacked {name} part {k} matrix {i} differs from its own ({bit_gap(as_np(part)[i], want)})")
 
 
+def run_norms(g, h, square):
+    """Norms against NumPy's (to rounding at the matrix's scale; the 2-norm where NumPy's overflows, finite), the
+    Hermitian SVD against the matrix (its values the eigenvalues' magnitudes, descending, U orthonormal, U S Vh the
+    matrix), and a power against repeated products."""
+    if g.size and np.isfinite(g).all():
+        scale = np.max(np.abs(g))
+        for order in ("fro", "nuc", 1, -1, 2, -2, np.inf, -np.inf):
+            got = numerical.norm(numerical.asarray(g), order)
+            with np.errstate(all="ignore"):
+                want = np.linalg.norm(g / scale, order) * scale if scale > 0 else 0.0
+            # the smallest singular value is known to rounding at the scale of the largest
+            reference = np.linalg.norm(g / scale, 2) * scale if order == -2 and scale > 0 else abs(want)
+            check(abs(got - want) <= bound(max(g.shape), max(reference, 1e-300)), f"norm {order!r} {got}, NumPy's {want}")
+    if h.size and np.isfinite(h).all():
+        n = h.shape[0]
+        size_h = norm(h)
+        u, s, vh = (as_np(t) for t in numerical.svd(numerical.asarray(h), hermitian=True))
+        want = np.sort(np.abs(np.linalg.eigvalsh(h)))[::-1]
+        check(np.all(np.diff(s) <= 0), "hermitian svd values not descending")
+        check(np.max(np.abs(s - want), initial=0.0) <= bound(n, size_h), "hermitian svd values differ from NumPy's")
+        check(norm(u.conj().T @ u - np.eye(n)) <= bound(n, 1.0), "hermitian svd U not orthonormal")
+        check(norm((u * s) @ vh - h) <= bound(n, size_h), "hermitian svd does not reconstruct")
+    if square.size and np.isfinite(square).all() and square.shape[0] <= 64:
+        unit = square / max(np.max(np.abs(square)), 1e-300)  # powers of a unit-scale matrix stay in range
+        got = as_np(numerical.matrix_power(numerical.asarray(unit), 3))
+        want = unit @ unit @ unit
+        check(norm(got - want) <= bound(unit.shape[0], max(norm(unit) ** 3, 1e-300)), "matrix_power 3 differs")
+
+
 def relative_tolerance(rtol, m, n, lapack=False):
     """NumPy's cutoff relative to the largest singular value: rtol, or ε max(m, n) for None (for lstsq, ε for a
     negative one, as LAPACK's)."""
@@ -461,7 +490,8 @@ def run_case(seed, index, largest):
     operations = (("eigh", lambda: run_eigh(h)), ("svd", lambda: run_svd(g)), ("qr", lambda: run_qr(g)),
                   ("solve", lambda: run_solve(square, rng)), ("cholesky", lambda: run_cholesky(square)),
                   ("lstsq", lambda: run_lstsq(g, rng)), ("pinv/rank", lambda: run_pinv_and_rank(g, h, rng)),
-                  ("single", lambda: run_single(g, h, square)), ("stack", lambda: run_stack(g, h, square)))
+                  ("single", lambda: run_single(g, h, square)), ("stack", lambda: run_stack(g, h, square)),
+                  ("norms", lambda: run_norms(g, h, square)))
     failures = []
     for name, operation in operations:
         try:

@@ -1283,13 +1283,21 @@ PyObject* unary_on(std::string_view name, const numerical::tensor<T>& t)
     if (name == "tan") {
         return wrap(any_tensor {map(t, [](const T& x) { return std::tan(x); })});
     }
+    if (name == "conj") { // a real tensor's own elements
+        if constexpr (complex_scalar<T>) {
+            return wrap(any_tensor {map(t, [](const T& x) { return std::conj(x); })});
+        }
+        else {
+            return wrap(any_tensor {t});
+        }
+    }
     if (name == "tanh") {
         return wrap(any_tensor {map(t, [](const T& x) { return std::tanh(x); })});
     }
     if (name == "abs") { // a real result of the same precision, as NumPy's absolute
         return wrap(any_tensor {map(t, [](const T& x) { return static_cast<real_of_t<T>>(std::abs(x)); })});
     }
-    PyErr_SetString(PyExc_ValueError, "_unary: name is exp, log, sqrt, sin, cos, tan, tanh or abs");
+    PyErr_SetString(PyExc_ValueError, "_unary: name is exp, log, sqrt, sin, cos, tan, tanh, abs or conj");
     return nullptr;
 }
 
@@ -1861,6 +1869,182 @@ any_tensor singular_values(const any_tensor& v)
     const real_tensor&           a = std::get<real_tensor>(v);
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
     return any_tensor {real_tensor {numerical::singular_values(matrix_from(a))}};
+}
+
+// The `ord` norm of the magnitudes `values` (all finite or not), as numpy.linalg.vector_norm: 2 and every p > 0 at
+// the scale of the largest (a plain sum of squares overflows past 1e154, NumPy's to infinity), p < 0 at the smallest's;
+// inf the largest, -inf the smallest, 0 how many are not zero.
+double norm_of(const std::vector<double>& values, double ord)
+{
+    if (values.empty()) {
+        return ord == -std::numeric_limits<double>::infinity() ? std::numeric_limits<double>::infinity() : 0.0;
+    }
+    double largest {0.0};
+    double smallest {std::numeric_limits<double>::infinity()};
+    double count {0.0};
+    for (const double value : values) {
+        if (std::isnan(value)) {
+            return value;
+        }
+        largest  = std::max(largest, value);
+        smallest = std::min(smallest, value);
+        count   += value != 0.0 ? 1.0 : 0.0;
+    }
+    if (std::isinf(ord)) {
+        return ord > 0 ? largest : smallest;
+    }
+    if (ord == 0.0) {
+        return count;
+    }
+    const double scale {ord > 0 ? largest : smallest};
+    if (scale == 0.0 || std::isinf(scale)) {
+        return scale; // a zero (or infinite) largest for p > 0, a zero (or infinite) smallest for p < 0
+    }
+    double sum {0.0};
+    for (const double value : values) {
+        const double ratio {value / scale};
+        sum += ord == 2.0 ? ratio * ratio : (ord == 1.0 ? ratio : std::pow(ratio, ord));
+    }
+    return scale * (ord == 2.0 ? std::sqrt(sum) : (ord == 1.0 ? sum : std::pow(sum, 1.0 / ord)));
+}
+
+// _vector_norm(x, ord, axes, keepdims) -> Tensor or number: the ord norm over the axes `axes` (distinct, non-negative)
+// of every other position, as numpy.linalg.vector_norm; real, of x's precision; a number when every axis goes and
+// keepdims is false.
+PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* obj      = nullptr;
+    double    ord      = 2.0;
+    PyObject* axes_obj = nullptr;
+    int       keepdims = 0;
+    if (PyArg_ParseTuple(args, "OdOp", &obj, &ord, &axes_obj, &keepdims) == 0) {
+        return nullptr;
+    }
+    const any_tensor*       h = as_tensor(obj);
+    std::vector<Py_ssize_t> axes;
+    if (h == nullptr || !read_integers(axes_obj, axes)) {
+        return nullptr;
+    }
+    const std::vector<std::size_t>& shape {shape_of(*h)};
+    std::vector<bool>               reduced(shape.size(), false);
+    for (const Py_ssize_t axis : axes) {
+        if (axis < 0 || static_cast<std::size_t>(axis) >= shape.size() || reduced[static_cast<std::size_t>(axis)]) {
+            PyErr_SetString(sciforge_module_error(), "_vector_norm: the axes are distinct axes of the tensor");
+            return nullptr;
+        }
+        reduced[static_cast<std::size_t>(axis)] = true;
+    }
+    try {
+        std::vector<std::size_t> strides(shape.size(), 1);
+        for (std::size_t a = shape.size(); a-- > 1;) {
+            strides[a - 1] = strides[a] * shape[a];
+        }
+        std::vector<std::size_t> kept_shape;
+        std::vector<std::size_t> out_shape;
+        std::size_t              kept_count {1};
+        std::size_t              reduced_count {1};
+        for (std::size_t a = 0; a < shape.size(); ++a) {
+            if (reduced[a]) {
+                reduced_count *= shape[a];
+                if (keepdims != 0) {
+                    out_shape.push_back(1);
+                }
+            }
+            else {
+                kept_count *= shape[a];
+                kept_shape.push_back(shape[a]);
+                out_shape.push_back(shape[a]);
+            }
+        }
+        const auto magnitudes {std::visit([](const auto& t) {
+                                              std::vector<double> m(t.size());
+                                              std::transform(t.data().begin(), t.data().end(), m.begin(), [](const auto& x) {
+                                                  return static_cast<double>(std::abs(x));
+                                              });
+                                              return m;
+                                          }, *h)};
+        // The offset of a multi-index over the axes `which` (kept or reduced) of position `n` in their C order.
+        const auto offset_of {[&](std::size_t n, bool which) {
+            std::size_t offset {0};
+            for (std::size_t a = shape.size(); a-- > 0;) {
+                if (reduced[a] == which) {
+                    offset += (n % shape[a]) * strides[a];
+                    n /= shape[a];
+                }
+            }
+            return offset;
+        }};
+        numerical::buffer<double> out(kept_count, 0.0);
+        std::vector<double>       values(reduced_count);
+        for (std::size_t k = 0; k < kept_count; ++k) {
+            const std::size_t base {offset_of(k, false)};
+            for (std::size_t r = 0; r < reduced_count; ++r) {
+                values[r] = magnitudes[base + offset_of(r, true)];
+            }
+            out[k] = norm_of(values, ord);
+        }
+        if (out_shape.empty() && keepdims == 0) {
+            return PyFloat_FromDouble(is_single(*h) ? static_cast<double>(static_cast<float>(out[0])) : out[0]);
+        }
+        any_tensor result {real_tensor {std::move(out_shape), std::move(out)}};
+        return wrap(is_single(*h) ? narrowed(result) : std::move(result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// The singular value decomposition of the real symmetric or complex Hermitian matrix `v` (its lower triangle read)
+// through its eigendecomposition, as numpy.linalg.svd(a, hermitian=True): the magnitudes of the eigenvalues
+// descending (ties in the reverse of their ascending order), U their vectors, Vh = (U · sign(λ))ᴴ.
+std::tuple<any_tensor, any_tensor, any_tensor> svd_hermitian(const any_tensor& v)
+{
+    const auto [values, vectors] {eigh(v, "divide_and_conquer", false)};
+    return std::visit([&](const auto& vt) -> std::tuple<any_tensor, any_tensor, any_tensor> {
+        using tensor_type = std::decay_t<decltype(vt)>;
+        using T           = element_of_t<tensor_type>;
+        using R           = real_of_t<T>;
+        const auto&       w {std::get<numerical::tensor<R>>(values)};
+        const std::size_t n {w.size()};
+        std::vector<std::size_t> order(n);
+        for (std::size_t i = 0; i < n; ++i) {
+            order[i] = n - 1 - i;
+        }
+        std::stable_sort(order.begin(), order.end(), [&](std::size_t x, std::size_t y) {
+            return std::abs(w.data()[x]) > std::abs(w.data()[y]);
+        });
+        numerical::buffer<R> s(n);
+        numerical::buffer<T> u(n * n);
+        numerical::buffer<T> vh(n * n);
+        for (std::size_t c = 0; c < n; ++c) {
+            const R value {w.data()[order[c]]};
+            s[c] = std::abs(value);
+            const R sign {value < R {0} ? R {-1} : R {1}};
+            for (std::size_t r = 0; r < n; ++r) {
+                const T x {vt.data()[(r * n) + order[c]]};
+                u[(r * n) + c]  = x;
+                if constexpr (complex_scalar<T>) {
+                    vh[(c * n) + r] = std::conj(x) * sign;
+                }
+                else {
+                    vh[(c * n) + r] = x * sign;
+                }
+            }
+        }
+        return {tensor_type {{n, n}, std::move(u)}, numerical::tensor<R> {{n}, std::move(s)}, tensor_type {{n, n}, std::move(vh)}};
+    }, vectors);
+}
+
+// _svd_hermitian(a) -> (U, S, Vh): svd_hermitian of a matrix or of every matrix of a stack.
+std::tuple<any_tensor, any_tensor, any_tensor> svd_hermitian_of(const any_tensor& v)
+{
+    if (shape_of(v).size() < 2 || shape_of(v).back() != shape_of(v)[shape_of(v).size() - 2]) {
+        throw std::runtime_error("svd(hermitian=True) expects a square matrix or a stack of them");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<std::tuple<any_tensor, any_tensor, any_tensor>>(v, svd_hermitian_of);
+    }
+    return svd_hermitian(v);
 }
 
 // asarray(obj, dtype=None): an existing Tensor (returned as-is when its dtype already matches, else converted), or a
@@ -2471,6 +2655,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&matrix_rank>("matrix_rank", "matrix_rank(a, rtol, tol, hermitian) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank: its singular values above tol, else above rtol times the largest (None, None: NumPy's default).");
     m.def<&pinv>("pinv", "pinv(a, rtol, hermitian) -> Tensor\nThe Moore–Penrose pseudo-inverse of an m×n matrix, as numpy.linalg.pinv (rtol None: NumPy's default).");
     m.def<&svd>("svd", "svd(a, method, full) -> (U, S, Vh)\nThe singular value decomposition of an m×n matrix, as numpy.linalg.svd(a, full_matrices=full).");
+    m.def<&svd_hermitian_of>("_svd_hermitian", "_svd_hermitian(a) -> (U, S, Vh)\nThe SVD of a real symmetric or complex Hermitian matrix (or stack) from its eigendecomposition, as numpy.linalg.svd(a, hermitian=True).");
     m.def<&singular_values>("_singular_values", "_singular_values(a) -> Tensor\nThe singular values alone, descending, as numpy.linalg.svd(a, compute_uv=False).");
     // The 3 that stay manual: determinant (dtype-dependent scalar), einsum (variadic),
     // asarray (returns the same object when the dtype matches — Py_NewRef identity).
@@ -2485,6 +2670,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_equal(a, b) -> bool\nWhether two tensors of one dtype and size hold equal elements (a NaN equals nothing).");
     m.raw("_unary", module_unary, METH_VARARGS,
           "_unary(name, a) -> Tensor\nexp, log, sqrt, sin, cos, tan, tanh or abs of every element.");
+    m.raw("_vector_norm", module_vector_norm, METH_VARARGS,
+          "_vector_norm(x, ord, axes, keepdims) -> Tensor or number\nThe ord norm over the given axes, as numpy.linalg.vector_norm, without overflow.");
     m.raw("_reduce", module_reduce, METH_VARARGS,
           "_reduce(op, a, axis) -> number or Tensor\nsum, mean, max or min of every element (axis -1) or along an axis.");
     m.raw("_reshape", module_reshape, METH_VARARGS, "_reshape(a, shape) -> Tensor\nThe elements under another shape.");

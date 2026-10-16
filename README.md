@@ -153,8 +153,9 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `matrix_rank(a, tol, hermitian)`, `eigvalsh(a, UPLO)`, `lstsq(a, b, rcond)` → `(x, residuals, rank, s)`,
 `cholesky(a, upper=False)`, `qr(a, mode="reduced")` → `(Q, R)` (`"complete"` as NumPy's, `"r"` → `R` alone),
 `eigh(a, UPLO)` → `(values, vectors)`,
-`svd(a, full_matrices=True, compute_uv=True)` → `(U, S, Vh)` as NumPy's (`full_matrices=False`: the thin
-factors, so `(U * S) @ Vh` is `a`; `compute_uv=False`: `S` alone). The keywords mean what they mean to NumPy 2:
+`svd(a, full_matrices=True, compute_uv=True, hermitian=False)` → `(U, S, Vh)` as NumPy's (`full_matrices=False`:
+the thin factors, so `(U * S) @ Vh` is `a`; `compute_uv=False`: `S` alone; `hermitian=True`: from the
+eigendecomposition, the singular values the eigenvalues' magnitudes), `svdvals(a)`. The keywords mean what they mean to NumPy 2:
 `UPLO="U"` and `upper=True` read the upper triangle, `rcond`/`rtol` cut the singular values relative to the
 largest and `tol` absolutely, `hermitian=True` takes the eigendecomposition. Every one accepts the four dtypes
 and answers in the input's: a float32 or complex64 matrix is decomposed in double precision and its answers rounded
@@ -168,6 +169,12 @@ when it is 1-D. Small matrices, or as many as threads, go to the threads one eac
 with the threads (10 000 inverses of order 4 on eight arm64 cores: 2.0 ms, NumPy 4.4 ms).
 `eigh(a, method=...)` and `svd(a, method=...)` choose the algorithm: divide and conquer by default (LAPACK's
 `dsyevd`/`zheevd`, `dgesdd`), `"tridiagonal_ql"` or `"bidiagonal_qr"` (`dsyev`'s, `dgesvd`'s), or `"jacobi"`.
+The rest of `numpy.linalg` answers as NumPy 2's, on stacks too: `norm(x, ord, axis, keepdims)`, `vector_norm`,
+`matrix_norm` (`"fro"`, `"nuc"`, 1, -1, 2, -2, ±inf), `cond(x, p)` (infinite for a singular matrix),
+`matrix_power(a, n)` (`n` negative through the inverse), `multi_dot(arrays)` (the cheapest order of the chain),
+`trace(x, offset, dtype)`, `outer`, `cross(x1, x2, axis)`, `tensordot(a, b, axes)`, `vecdot(x1, x2, axis)`
+(conjugating `x1`), and `conj` (`conjugate`). A 2-norm is scaled by its largest magnitude, so it neither overflows nor
+underflows: `vector_norm([1e200, 1e200])` is 1.414e200, where NumPy's is infinite.
 A matrix holding a NaN or an infinity (in the triangle read, where only one is) raises
 `numerical.LinAlgError`, where NumPy returns NaN factors or raises depending on the routine: a decomposition
 of a non-finite matrix has no meaning, and saying so beats propagating NaN into every factor. A negative or NaN
