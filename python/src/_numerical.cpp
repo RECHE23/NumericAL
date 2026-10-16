@@ -2047,6 +2047,51 @@ std::tuple<any_tensor, any_tensor, any_tensor> svd_hermitian_of(const any_tensor
     return svd_hermitian(v);
 }
 
+template <typename T>
+std::tuple<any_tensor, any_tensor> do_eig(const numerical::tensor<T>& a, bool vectors)
+{
+    const sb::scoped_gil_release            unlocked {releases_gil(a.data().size())};
+    numerical::eigen_decomposition<T>       decomposition {matrix_from(a), vectors};
+    return {any_tensor {cplx_tensor {decomposition.values()}},
+            any_tensor {vectors ? cplx_tensor {std::move(decomposition).vectors()} : cplx_tensor {{0}, {}}}};
+}
+
+// The eigenvalues (and, with `vectors`, the eigenvectors) of the square matrix, or of every matrix of the stack, `v`,
+// complex, in double precision.
+std::tuple<any_tensor, any_tensor> eig_complex(const any_tensor& v, bool vectors)
+{
+    if (shape_of(v).size() > 2) {
+        return over_stack<std::tuple<any_tensor, any_tensor>>(v, [&](const any_tensor& m) { return eig_complex(m, vectors); });
+    }
+    if (is_complex(v)) {
+        return do_eig<std::complex<double>>(std::get<cplx_tensor>(v), vectors);
+    }
+    return do_eig<double>(std::get<real_tensor>(v), vectors);
+}
+
+// eig_of(a, vectors): numpy.linalg.eig's answers (eigvals' alone without `vectors`), complex as NumPy 2.5's whatever
+// the eigenvalues, in the input's precision.
+std::tuple<any_tensor, any_tensor> eig_of(const any_tensor& v, bool vectors)
+{
+    if (shape_of(v).size() < 2 || shape_of(v).back() != shape_of(v)[shape_of(v).size() - 2]) {
+        throw std::runtime_error("eig expects a square matrix or a stack of them");
+    }
+    const std::tuple<any_tensor, any_tensor> out {eig_complex(is_single(v) ? widened(v) : v, vectors)};
+    return is_single(v) ? narrowed(out) : out;
+}
+
+// _eig(a) -> (w, v), as numpy.linalg.eig.
+std::tuple<any_tensor, any_tensor> eig(const any_tensor& v)
+{
+    return eig_of(v, true);
+}
+
+// _eigvals(a) -> w, as numpy.linalg.eigvals.
+any_tensor eigvals(const any_tensor& v)
+{
+    return std::get<0>(eig_of(v, false));
+}
+
 // asarray(obj, dtype=None): an existing Tensor (returned as-is when its dtype already matches, else converted), or a
 // copy built from obj's elements (__array_struct__ or __array_interface__, any strides). The dtype is the requested
 // one, else the source's own for float32, complex64 and complex128, else float64: a real source becomes complex with a
@@ -2650,6 +2695,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&cholesky>("cholesky", "cholesky(a, upper) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite), or with upper the factor U of A = Uᴴ U from its upper triangle.");
     m.def<&qr>("qr", "qr(a, mode) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr: reduced, Q is m×k, R k×n, k = min(m, n); complete, Q is m×m, R m×n.");
     m.def<&eigh>("eigh", "eigh(a, method, upper) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, or with upper its upper one, as numpy.linalg.eigh's UPLO.");
+    m.def<&eig>("_eig", "_eig(a) -> (w, v)\nThe eigenvalues and right eigenvectors of a general square matrix (or stack), as numpy.linalg.eig: complex, as NumPy 2.5's.");
+    m.def<&eigvals>("_eigvals", "_eigvals(a) -> w\nThe eigenvalues alone of a general square matrix (or stack), as numpy.linalg.eigvals: complex.");
     m.def<&eigvalsh>("eigvalsh", "eigvalsh(a, upper) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read, or with upper its upper one).");
     m.def<&matrix_ranks>("_matrix_ranks", "_matrix_ranks(a, rtol, tol, hermitian) -> Tensor\nThe rank of every matrix of a stack, as float64 numbers along its leading axes.");
     m.def<&matrix_rank>("matrix_rank", "matrix_rank(a, rtol, tol, hermitian) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank: its singular values above tol, else above rtol times the largest (None, None: NumPy's default).");

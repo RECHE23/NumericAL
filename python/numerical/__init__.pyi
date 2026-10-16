@@ -16,8 +16,8 @@ _ArrayLike = Any
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "det", "slogdet", "inverse", "inv", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh",
-    "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
+    "determinant", "det", "slogdet", "inverse", "inv", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eig",
+    "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config",
@@ -46,6 +46,8 @@ _Uplo = Literal["L", "U", "l", "u"]
 def lstsq(a: _ArrayLike, b: _ArrayLike, rcond: float | None = None) -> tuple[Tensor, Tensor, int, Tensor]: ...
 def pinv(a: _ArrayLike, rcond: float | None = None, hermitian: bool = False, *, rtol: float | None = None) -> Tensor: ...
 def eigvalsh(a: _ArrayLike, UPLO: _Uplo = "L") -> Tensor: ...
+def eig(a: _ArrayLike) -> tuple[Tensor, Tensor]: ...
+def eigvals(a: _ArrayLike) -> Tensor: ...
 def matrix_rank(
     A: _ArrayLike, tol: float | None = None, hermitian: bool = False, *, rtol: float | None = None
 ) -> int | list[Any]: ...

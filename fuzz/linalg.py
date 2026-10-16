@@ -314,7 +314,7 @@ def run_single(g, h, square):
         return [as_np(t) for t in (got if isinstance(got, tuple) else (got,)) if isinstance(t, numerical.Tensor)]
 
     for matrix, operations in ((g, ("svd", "qr", "pinv", "rank")), (h, ("eigh", "eigvalsh")),
-                               (square, ("inverse", "solve", "det"))):
+                               (square, ("inverse", "solve", "det", "eig", "eigvals"))):
         if matrix.size == 0:
             continue
         cplx = np.iscomplexobj(matrix)
@@ -326,7 +326,8 @@ def run_single(g, h, square):
         calls = {"svd": lambda x: numerical.svd(x, full_matrices=False), "qr": numerical.qr,
                  "pinv": lambda x: numerical.pinv(x, rtol=1e-4), "eigh": numerical.eigh, "eigvalsh": numerical.eigvalsh,
                  "inverse": numerical.inverse, "solve": lambda x: numerical.solve(x, rhs.astype(x.dtype)),
-                 "rank": lambda x: numerical.matrix_rank(x, rtol=1e-4), "det": numerical.det}
+                 "rank": lambda x: numerical.matrix_rank(x, rtol=1e-4), "det": numerical.det, "eig": numerical.eig,
+                 "eigvals": numerical.eigvals}
         for name in operations:
             if name in ("rank", "det"):
                 try:
@@ -343,7 +344,8 @@ def run_single(g, h, square):
                 check(got == want, f"single-precision {name} {got}, double {want}")
                 continue
             for part, (x, y) in enumerate(zip(got, want)):
-                check(x.dtype == single.dtype or x.dtype == np.float32, f"single-precision {name} returned {x.dtype}")
+                check(x.dtype in ((np.complex64,) if name in ("eig", "eigvals") else (single.dtype, np.float32)),
+                      f"single-precision {name} returned {x.dtype}")
                 check(np.array_equal(x, y.astype(x.dtype), equal_nan=True),
                       f"single-precision {name} part {part} is not the double one rounded ({bit_gap(x, y.astype(x.dtype))})")
 
@@ -351,13 +353,13 @@ def run_single(g, h, square):
 def run_stack(g, h, square):
     """Stacks: each matrix of a stack of three (the case's matrix, its negative and its double) answers as it does
     alone, to the bit, the answers stacked along the leading axis; one that fails fails the stack."""
-    for matrix, names in ((g, ("svd", "values", "qr", "pinv")), (h, ("eigh", "eigvalsh")), (square, ("inv", "det"))):
+    for matrix, names in ((g, ("svd", "values", "qr", "pinv")), (h, ("eigh", "eigvalsh")), (square, ("inv", "det", "eig", "eigvals"))):
         if matrix.size == 0 or not np.isfinite(matrix).all():
             continue
         stack = np.stack([matrix, -matrix, 2 * matrix])
         calls = {"svd": lambda x: numerical.svd(x, full_matrices=False), "values": lambda x: numerical.svd(x, compute_uv=False),
                  "qr": numerical.qr, "pinv": numerical.pinv, "eigh": numerical.eigh, "eigvalsh": numerical.eigvalsh,
-                 "inv": numerical.inv, "det": numerical.det}
+                 "inv": numerical.inv, "det": numerical.det, "eig": numerical.eig, "eigvals": numerical.eigvals}
         for name in names:
             try:
                 alone = [calls[name](numerical.asarray(m)) for m in stack]
@@ -404,6 +406,80 @@ def run_norms(g, h, square):
         got = as_np(numerical.matrix_power(numerical.asarray(unit), 3))
         want = unit @ unit @ unit
         check(norm(got - want) <= bound(unit.shape[0], max(norm(unit) ** 3, 1e-300)), "matrix_power 3 differs")
+
+
+def balancing(a, limit=2.0 ** 256):
+    """The diagonal D of LAPACK's dgebal scaling (and eig's): powers of two until each row and column of D⁻¹ A D have
+    2-norms within a factor of 2, no factor past `limit`."""
+    a = np.array(a, dtype=complex)
+    largest = float(np.max(np.abs(a), initial=0.0))
+    if largest > 0:  # at a power of two near 1, as eig takes it: the sums of squares stay in range
+        a /= 2.0 ** np.floor(np.log2(largest))
+    d = np.ones(a.shape[0])
+    unbalanced = True
+    while unbalanced:
+        unbalanced = False
+        for i in range(a.shape[0]):
+            c, r = np.linalg.norm(a[:, i]), np.linalg.norm(a[i, :])
+            if c == 0 or r == 0:
+                continue
+            before, f = c + r, 1.0
+            while 2 * c < r and d[i] * f < limit:
+                f, c, r = f * 2, c * 2, r / 2
+            while c >= 2 * r and d[i] * f > 1 / limit:
+                f, c, r = f / 2, c / 2, r * 2
+            if c + r >= 0.95 * before:
+                continue
+            d[i] *= f
+            unbalanced = True
+            a[i, :] /= f
+            a[:, i] *= f
+    return d
+
+
+def run_eig(a):
+    """The general eigendecomposition: each pair's residual within the backward-error bound (whatever the conditioning:
+    a defective matrix's vectors are nearly parallel, each still an eigenvector of a matrix near A; a graded matrix's
+    in the balanced coordinates the algorithm works in, against ‖D⁻¹ A D‖), unit vectors with
+    their largest component real, a real matrix's pairs conjugate to the bit, eigvals the same bits, complex answers
+    (as NumPy 2.5's); and, where NumPy's eigenvalues are well conditioned, each of them near one of ours (within the
+    bound times its condition number, the norm of the row of V⁻¹)."""
+    if not np.isfinite(a).all():
+        return
+    n = a.shape[0]
+    w, v = (as_np(t) for t in numerical.eig(numerical.asarray(a)))
+    size_a = scaled_norm(a)
+    if n == 0:
+        check(w.shape == (0,) and v.shape == (0, 0), f"eig of an empty matrix: {w.shape}, {v.shape}")
+        return
+    want, vectors = np.linalg.eig(a)
+    residual = scaled_norm(a @ v - v * w)
+    if residual > bound(n, size_a):  # a graded matrix's: judged where the algorithm works, on D⁻¹ A D
+        d = balancing(a)
+        b = a / d[:, None] * d[None, :]
+        per_vector = np.linalg.norm((a @ v - v * w) / d[:, None], axis=0) / np.linalg.norm(v / d[:, None], axis=0)
+        check(np.max(per_vector) <= bound(n, scaled_norm(b)),
+              f"eig residual {residual / (n * EPS * max(size_a, 1e-300)):.3g} n·ε·‖A‖, balanced "
+              f"{np.max(per_vector) / (n * EPS * max(scaled_norm(b), 1e-300)):.3g} n·ε·‖D⁻¹AD‖")
+    check(w.dtype == v.dtype == np.complex128, f"eig answers {w.dtype}, {v.dtype}")
+    check(np.max(np.abs(np.linalg.norm(v, axis=0) - 1.0)) <= bound(n, 1.0), "eigenvectors not of unit norm")
+    largest = v[np.argmax(np.abs(v), axis=0), np.arange(n)]
+    check(np.all(np.imag(largest) == 0), "an eigenvector's largest component is not real")
+    alone = as_np(numerical.eigvals(numerical.asarray(a)))
+    check(np.array_equal(alone, w), f"eigvals differs from eig's eigenvalues ({bit_gap(alone, w)})")
+    if not np.iscomplexobj(a):
+        first = np.flatnonzero(w.imag > 0)
+        check(np.array_equal(w[first + 1], np.conj(w[first])) and np.array_equal(v[:, first + 1], np.conj(v[:, first])),
+              "a real matrix's complex eigenpairs are not conjugate pairs")
+    try:
+        condition = np.linalg.norm(np.linalg.inv(vectors), axis=1) if np.linalg.cond(vectors) < 1e12 else None
+    except np.linalg.LinAlgError:
+        condition = None
+    if condition is None:
+        return
+    nearest = np.min(np.abs(want[:, None] - w[None, :]), axis=1)
+    allowed = 2.0 * bound(n, size_a) * condition
+    check(np.all(nearest <= allowed), f"an eigenvalue of NumPy's is {np.max(nearest / allowed):.3g}× the bound from ours")
 
 
 def relative_tolerance(rtol, m, n, lapack=False):
@@ -491,7 +567,7 @@ def run_case(seed, index, largest):
                   ("solve", lambda: run_solve(square, rng)), ("cholesky", lambda: run_cholesky(square)),
                   ("lstsq", lambda: run_lstsq(g, rng)), ("pinv/rank", lambda: run_pinv_and_rank(g, h, rng)),
                   ("single", lambda: run_single(g, h, square)), ("stack", lambda: run_stack(g, h, square)),
-                  ("norms", lambda: run_norms(g, h, square)))
+                  ("norms", lambda: run_norms(g, h, square)), ("eig", lambda: run_eig(square)))
     failures = []
     for name, operation in operations:
         try:

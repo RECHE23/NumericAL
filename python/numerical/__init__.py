@@ -40,8 +40,8 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "det", "slogdet", "inverse", "inv", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eigh",
-    "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
+    "determinant", "det", "slogdet", "inverse", "inv", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eig",
+    "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config",
@@ -421,6 +421,8 @@ _eigh = _linalg(_numerical.eigh, arrays=1)
 _svd = _linalg(_numerical.svd, arrays=1)
 _singular_values = _linalg(_numerical._singular_values)
 _svd_hermitian = _linalg(_numerical._svd_hermitian)
+_eig = _linalg(_numerical._eig)
+_eigvals = _linalg(_numerical._eigvals)
 _QR_MODES = ("reduced", "complete", "r")
 _EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
 _SVD_METHODS = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
@@ -464,6 +466,21 @@ def eigvalsh(a, UPLO="L"):
     """The eigenvalues alone of a real symmetric or complex Hermitian matrix, real and ascending, as
     ``numpy.linalg.eigvalsh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``)."""
     return _eigvalsh(a, _upper("eigvalsh", UPLO))
+
+
+def eig(a):
+    """The eigenvalues and right eigenvectors (columns) of a general square matrix, or of each of a stack, as
+    ``numpy.linalg.eig``: ``a @ v[:, j] == w[j] * v[:, j]``, each vector of unit norm with its component of largest
+    modulus real. Complex whatever the eigenvalues, as NumPy 2.5's (complex64 for a single-precision matrix); in the
+    order LAPACK's ``dgeev`` and ``zgeev`` give them (balancing, Hessenberg reduction, shifted QR), a real matrix's
+    conjugate pairs together, the positive imaginary part first."""
+    return _eig(a)
+
+
+def eigvals(a):
+    """The eigenvalues alone of a general square matrix, or of each of a stack, as ``numpy.linalg.eigvals``: complex
+    whatever they are, as NumPy 2.5's; the same values as ``eig``'s, to the bit."""
+    return _eigvals(a)
 
 
 def cholesky(a, /, *, upper=False):

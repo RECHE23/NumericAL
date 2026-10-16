@@ -152,7 +152,10 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)` (`det`), `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)` (`inv`), `pinv(a, rcond, hermitian)`,
 `matrix_rank(a, tol, hermitian)`, `eigvalsh(a, UPLO)`, `lstsq(a, b, rcond)` → `(x, residuals, rank, s)`,
 `cholesky(a, upper=False)`, `qr(a, mode="reduced")` → `(Q, R)` (`"complete"` as NumPy's, `"r"` → `R` alone),
-`eigh(a, UPLO)` → `(values, vectors)`,
+`eigh(a, UPLO)` → `(values, vectors)`, `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix
+(LAPACK's `dgeev`/`zgeev`: balancing, Hessenberg reduction, shifted QR; complex answers whatever the eigenvalues, as
+NumPy 2.5's, where NumPy before 2.5 made them real where it could; the eigenvalues in the Schur form's order, a real matrix's pairs conjugate to
+the bit; each vector of unit norm, its largest component real),
 `svd(a, full_matrices=True, compute_uv=True, hermitian=False)` → `(U, S, Vh)` as NumPy's (`full_matrices=False`:
 the thin factors, so `(U * S) @ Vh` is `a`; `compute_uv=False`: `S` alone; `hermitian=True`: from the
 eigendecomposition, the singular values the eigenvalues' magnitudes), `svdvals(a)`. The keywords mean what they mean to NumPy 2:
