@@ -38,6 +38,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   diagonal raised, where NumPy ignores it.
 
 ### Changed
+- **A complex matrix product keeps its real operands from one product to the next, on each thread**, where each
+  product mapped them anew, page by page; past 2 MiB an operand is let go after its product. The same bits. Six AVX2
+  cores, one thread: order 64 0.12 → 0.07 ms, 128 0.76 → 0.44, 256 4.6 → 3.1; all threads, order 128 0.52 → 0.17 ms;
+  arm64, order 256 15–22 % faster, smaller orders unchanged.
 - **`svd` keeps the buffers of its divide and conquer's joins from one call to the next, on each thread**, as `eigh`
   does, the sorted bases swapped with the old ones so that their storage serves the next join; past 2 MiB a buffer is
   let go after the call. The same bits. Six AVX2 cores, one thread and all: orders 64 to 1024 5–12 % faster.

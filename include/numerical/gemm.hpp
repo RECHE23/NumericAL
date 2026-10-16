@@ -941,6 +941,32 @@ namespace numerical::detail {
   //! \brief The depth of one real product of `gemm_split` (\ref split_columns).
   inline constexpr std::size_t split_depth {256};
 
+  //! \brief The most elements an operand of `gemm_split` keeps from one product to the next on a thread: 2 MiB of
+  //!        `double`, every operand of a product of order 512; a larger one is let go after its product.
+  inline constexpr std::size_t split_kept {std::size_t {1} << 18};
+
+  //! \brief The real operands of `gemm_split`, kept by each thread from one product to the next (\ref split_storage):
+  //!        mapping their pages anew took a third to a half of a complex product of order 64 to 256 on one x86-64 core
+  //!        (six AVX2 cores, all threads: order 128 0.52 → 0.17 ms), 15–20 % of one of order 256 on arm64.
+  template <typename R>
+  struct split_operands
+  {
+    buffer<R> a {}; //!< `[Re A | −Im A]`, a block of depth.
+    buffer<R> b {}; //!< `[[Re B, Im B], [Im B, −Re B]]`, a block of columns and of depth.
+    buffer<R> c {}; //!< `[Re C | Im C]`, a block of columns.
+  };
+
+  /*!
+   * \brief The calling thread's \ref split_operands. A product uses them whole on one thread, and the real product it
+   *        runs on them nests no complex one.
+   */
+  template <typename R>
+  [[nodiscard]] split_operands<R>& split_storage()
+  {
+    thread_local split_operands<R> kept;
+    return kept;
+  }
+
   /*!
    * \brief `C += A·B` for complex numbers through the real kernel, by blocks of \ref split_columns columns and
    *        \ref split_depth of depth: each block is one real product, `[Re C | Im C] += [Re A | −Im A] ·
@@ -962,9 +988,13 @@ namespace numerical::detail {
     using R = typename Z::value_type;
     const std::size_t           widest  {std::min(n, split_columns)};
     const std::size_t           deepest {std::min(k, split_depth)};
-    const std::unique_ptr<R[]>  ar      {std::make_unique_for_overwrite<R[]>(m * 2 * deepest)};
-    const std::unique_ptr<R[]>  br      {std::make_unique_for_overwrite<R[]>(4 * deepest * widest)};
-    const std::unique_ptr<R[]>  cr      {std::make_unique_for_overwrite<R[]>(m * 2 * widest)};
+    split_operands<R>&          kept    {split_storage<R>()};
+    kept.a.resize(std::max(kept.a.size(), m * 2 * deepest)); // grown only, its elements written before they are read
+    kept.b.resize(std::max(kept.b.size(), 4 * deepest * widest));
+    kept.c.resize(std::max(kept.c.size(), m * 2 * widest));
+    R* const                    ar      {kept.a.data()};
+    R* const                    br      {kept.b.data()};
+    R* const                    cr      {kept.c.data()};
     for (std::size_t jc {0}; jc < n; jc += split_columns) {
       const std::size_t nb {std::min(split_columns, n - jc)};
       parallel_for(m, nb, [&](std::size_t i) {
@@ -982,8 +1012,8 @@ namespace numerical::detail {
                        }
                      });
         parallel_for(kb, 2 * nb, [&](std::size_t p) {
-                       R* const top {br.get() + (p * 2 * nb)};
-                       R* const bottom {br.get() + ((kb + p) * 2 * nb)};
+                       R* const top {br + (p * 2 * nb)};
+                       R* const bottom {br + ((kb + p) * 2 * nb)};
                        for (std::size_t j {0}; j < nb; ++j) {
                          const Z value {b[((pc + p) * ldb) + jc + j]};
                          top[j]         = value.real();
@@ -992,13 +1022,18 @@ namespace numerical::detail {
                          bottom[nb + j] = -value.real();
                        }
                      });
-        gemm(m, 2 * nb, 2 * kb, ar.get(), 2 * kb, br.get(), 2 * nb, cr.get(), 2 * nb);
+        gemm(m, 2 * nb, 2 * kb, ar, 2 * kb, br, 2 * nb, cr, 2 * nb);
       }
       parallel_for(m, nb, [&](std::size_t i) {
                      for (std::size_t j {0}; j < nb; ++j) {
                        c[(i * ldc) + jc + j] = Z {cr[(i * 2 * nb) + j], cr[(i * 2 * nb) + nb + j]};
                      }
                    });
+    }
+    for (buffer<R>* operand : {&kept.a, &kept.b, &kept.c}) {
+      if (operand->size() > split_kept) {
+        *operand = buffer<R> {};
+      }
     }
   }
 
