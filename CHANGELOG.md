@@ -7,6 +7,11 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **One copy of the operand, its pages faulted in on threads, before a decomposition from Python**: the routines that
+  read one triangle (`cholesky`, `eigh`, `eigvalsh`) copied the matrix twice, and every copy into fresh memory took its
+  page faults on one thread (a 2 MiB copy: 0.85 ms on one x86-64 core in a container, a third of a Cholesky
+  factorisation of order 512). Six x86-64 AVX2 cores, against NumPy's OpenBLAS: `cholesky` of order 512 1.86 ms (2.02;
+  was 4.5), 1024 8.9 ms (10.9; was 15.2); on eight arm64 cores, 3 to 14 % less from order 512.
 - **`float32` products on arm64 run on a NEON tile of their own**, each multiply-add fused by lane, on the NEON path
   and on the AMX path (whose coprocessor takes `float64` alone), where they ran the portable tile, which GCC fuses
   nothing on: the Linux arm64 wheels ran them at half speed. One arm64 thread, GCC 14: order 128 27 → 47 GFLOP/s, 512

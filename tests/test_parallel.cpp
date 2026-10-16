@@ -174,6 +174,25 @@ TEST(parallel_zero_clears_its_count_and_nothing_past_it)
   }
 }
 
+// parallel_copy copies exactly its count on both sides of the size that pays a second thread, and leaves the element
+// past it alone.
+TEST(parallel_copy_copies_its_count_and_nothing_past_it)
+{
+  using numerical::detail::parallel_copy;
+  constexpr std::size_t threshold {2 * (numerical::detail::work_per_thread / numerical::detail::zero_work)};
+  for (const std::size_t count : {std::size_t {0}, std::size_t {1000}, threshold - 1, threshold,
+                                  threshold + (numerical::detail::zero_chunk / 2) + 3}) {
+    std::vector<double> in(count);
+    for (std::size_t i {0}; i < count; ++i) {
+      in[i] = static_cast<double>(i) * 0.5;
+    }
+    std::vector<double> out(count + 1, -1.0);
+    parallel_copy(in.data(), count, out.data());
+    EXPECT(std::equal(in.begin(), in.end(), out.begin()));
+    EXPECT_EQ(out[count], -1.0);
+  }
+}
+
 // A parallel_for nested in a body finds the pool busy and runs its chunks in the calling worker: every index of
 // both levels once, no wait on itself.
 TEST(a_parallel_for_nested_in_a_body_runs_in_its_thread)

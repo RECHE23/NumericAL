@@ -706,7 +706,9 @@ any_tensor matmul_nd(const any_tensor& a, const any_tensor& b)
 template <typename T>
 numerical::matrix<T> matrix_from(const numerical::tensor<T>& t)
 {
-    return numerical::matrix<T> {t.shape()[0], t.shape()[1], t.data()};
+    numerical::buffer<T> values(t.size());
+    numerical::detail::parallel_copy(t.data().data(), t.size(), values.data()); // its pages faulted in on threads
+    return numerical::matrix<T> {t.shape()[0], t.shape()[1], std::move(values)};
 }
 
 // A tensor's elements in another scalar type, converted one by one.
@@ -1576,7 +1578,10 @@ template <typename T>
 numerical::matrix<T> lower_read(const numerical::tensor<T>& a, bool upper)
 {
     numerical::matrix<T> m {matrix_from(a)};
-    return upper ? numerical::detail::adjoint(m) : m;
+    if (upper) {
+        return numerical::detail::adjoint(m);
+    }
+    return m; // moved out: a conditional expression would copy it
 }
 
 template <typename T>

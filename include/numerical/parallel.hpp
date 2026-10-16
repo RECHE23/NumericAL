@@ -613,6 +613,27 @@ namespace numerical::detail {
                    std::fill(out + begin, out + std::min(count, begin + zero_chunk), T {});
                  });
   }
+
+  /*!
+   * \brief Copies the \p count elements at \p in to \p out, split across the threads the work pays for, as
+   *        \ref parallel_zero does: a fresh copy's pages are faulted in by several threads, where a sequential copy pays
+   *        every fault on one (a 2 MiB copy into fresh memory took 0.85 ms on one x86-64 core in a container, a
+   *        third of the Cholesky factorisation of order 512).
+   */
+  template <typename T>
+  void parallel_copy(const T*    in,
+                     std::size_t count,
+                     T*          out)
+  {
+    if (count < 2 * (work_per_thread / zero_work)) { // too little to pay for a second thread
+      std::copy(in, in + count, out);
+      return;
+    }
+    parallel_for((count + zero_chunk - 1) / zero_chunk, zero_chunk * zero_work, [in, out, count](std::size_t chunk) {
+                   const std::size_t begin {chunk * zero_chunk};
+                   std::copy(in + begin, in + std::min(count, begin + zero_chunk), out + begin);
+                 });
+  }
 } // namespace numerical::detail
 
 namespace numerical {
