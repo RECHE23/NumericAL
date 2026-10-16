@@ -288,7 +288,7 @@ def run_lstsq(a, rng):
         check(np.allclose(x, want), "lstsq of a zero matrix differs from NumPy's")
         return
     tolerance = sigma[0] * relative_tolerance(rcond, m, n, lapack=True)
-    if np.any((sigma > tolerance / 1e3) & (sigma < tolerance * 1e3)):
+    if plain_rank(sigma, tolerance, sigma[0] * EPS * max(m, n)) is None:
         check(np.isfinite(x).all(), "lstsq near NumPy's rank tolerance is not finite")
         return
     kept = sigma[sigma > tolerance]
