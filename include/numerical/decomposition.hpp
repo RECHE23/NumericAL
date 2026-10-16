@@ -1770,12 +1770,29 @@ namespace numerical {
       const std::size_t depth   {std::min(rows, cols)};
       const std::size_t width   {complete ? rows : depth};
       qr_reflections<T> factors {householder_reflect(std::move(a), rows, cols)};
-      thin_qr<T>        out     {.q = buffer<T>(rows * width, T {}), .r = std::move(factors.r)};
-      for (std::size_t i {0}; i < width; ++i) {
-        out.q[(i * width) + i] = T {1};
-      }
-      for (std::size_t b {factors.blocks.size()}; b-- > 0;) { // Q = H₀ H₁ … applied to the first columns of I
-        apply_reflector_block(factors.blocks[b], false, out.q, width, factors.blocks[b].first, width);
+      // Q = H₀ H₁ … applied to the columns [first, first + count) of I, each column's own product: the first `depth`
+      // formed alone whether Q is complete or not, so that the complete Q's are the reduced one's to the bit (formed
+      // together, the products' tiles differ, and a fused multiply-add may round a column otherwise).
+      const auto formed {[&](std::size_t first, std::size_t count) {
+                           buffer<T> columns(rows * count, T {});
+                           for (std::size_t c {0}; c < count; ++c) {
+                             columns[((first + c) * count) + c] = T {1};
+                           }
+                           for (std::size_t b {factors.blocks.size()}; b-- > 0;) { // the columns of I left of a block's rows it leaves
+                             const std::size_t from {std::max(first, factors.blocks[b].first) - first};
+                             apply_reflector_block(factors.blocks[b], false, columns, count, from, count);
+                           }
+                           return columns;
+                         }};
+      thin_qr<T> out {.q = formed(0, depth), .r = std::move(factors.r)};
+      if (width > depth) {
+        const buffer<T> rest                  {formed(depth, width - depth)};
+        buffer<T>       whole(rows * width, T {});
+        for (std::size_t i {0}; i < rows; ++i) {
+          std::copy_n(out.q.data() + (i * depth), depth, whole.data() + (i * width));
+          std::copy_n(rest.data() + (i * (width - depth)), width - depth, whole.data() + (i * width) + depth);
+        }
+        out.q = std::move(whole);
       }
       for (std::size_t k {0}; k < depth; ++k) {               // R's diagonal real and non-negative: rotate row k, column k
         const T phase {phase_of(out.r[(k * cols) + k])};
