@@ -162,14 +162,16 @@ TEST(complex_products_run_through_the_real_kernel)
 TEST(complex_products_keep_their_real_operands_within_the_limit)
 {
   using numerical::detail::split_storage;
-  const std::size_t k {numerical::detail::split_depth};
+  // Only past the portable path does a complex product go through the real kernel (an arm64 Linux processor has none).
+  const bool        split {numerical::limit_gemm_path(numerical::gemm_path::amx) != numerical::gemm_path::portable};
+  const std::size_t k     {numerical::detail::split_depth};
   EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<double>>(40, 70, 50); }));
-  EXPECT(!split_storage<double>().c.empty());
+  EXPECT(!split || !split_storage<double>().c.empty());
   const std::size_t rows {(numerical::detail::split_kept / (2 * k)) + 8}; // [Re A | −Im A] past the limit
   EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<double>>(rows, 30, k); }));
   EXPECT(split_storage<double>().a.empty());
   EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<double>>(40, 70, 50); }));
-  EXPECT(!split_storage<double>().c.empty());
+  EXPECT(!split || !split_storage<double>().c.empty());
 }
 
 // More columns than one packed block of B holds: the column blocks are summed independently.
