@@ -1571,7 +1571,7 @@ TEST(blocked_qr_across_panels_any_shape)
 TEST(blocked_factorisations_solve_accurately_on_every_path)
 {
   const std::size_t n {(2 * numerical::detail::lu_block) + 22};
-  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2,
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
                                           numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
     if (numerical::limit_gemm_path(path) != path) {
       continue;
@@ -1940,8 +1940,8 @@ TEST(eigh_runs_every_kernel_path)
     }
   }
   const matrix<double> a {n, n, entries};
-  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512,
-                                          numerical::gemm_path::amx}) {
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
     if (numerical::limit_gemm_path(path) != path) {
       continue;
     }

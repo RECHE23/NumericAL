@@ -8,7 +8,7 @@ from numerical._numerical import get_num_threads as get_num_threads
 
 _Dtype = Literal["float64", "complex128", "float32", "complex64"]
 _Number = float | complex
-_GemmPath = Literal["portable", "avx2", "avx512", "amx"]
+_GemmPath = Literal["portable", "neon", "avx2", "avx512", "amx"]
 
 #: Anything :func:`asarray` reads: a Tensor, an object with an ``__array_interface__``, a nested list or tuple of
 #: numbers, or a number.

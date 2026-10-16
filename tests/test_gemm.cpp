@@ -66,7 +66,7 @@ namespace {
   bool on_every_path(const Check& check)
   {
     bool ok {true};
-    for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2,
+    for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
                                             numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
       if (numerical::limit_gemm_path(path) == path) {
         ok = ok && check();

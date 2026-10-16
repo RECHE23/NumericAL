@@ -24,7 +24,7 @@ import numerical
 EPS = np.finfo(float).eps
 SLACK = 50.0  # the multiple of n·ε·‖A‖ a backward-stable result stays within
 BOUNDARIES = (1, 2, 3, 15, 16, 17, 31, 32, 33, 63, 64, 65, 95, 96, 97, 127, 128, 129, 191, 192, 193, 255, 256, 257)
-PATHS = ("portable", "avx2", "avx512", "amx")
+PATHS = ("portable", "neon", "avx2", "avx512", "amx")
 
 
 def size(rng, largest):

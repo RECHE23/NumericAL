@@ -82,13 +82,14 @@ if _threads is not None:
     set_num_threads(_threads)
 del _threads
 
-_GEMM_PATHS = ("portable", "avx2", "avx512", "amx")
+_GEMM_PATHS = ("portable", "neon", "avx2", "avx512", "amx")
 
 
 def gemm_path():
-    """The kernel float64 matrix products run on: ``"portable"`` (the compiler's vectors), ``"avx2"``,
-    ``"avx512"`` (x86-64, chosen at run time from cpuid) or ``"amx"`` (Apple M1 to M4, an undocumented
-    coprocessor, used only on a known chip that passes a self-test; see numerical/amx.hpp)."""
+    """The kernel float64 matrix products run on: ``"portable"`` (the compiler's vectors), ``"neon"`` (arm64's
+    vectors, each multiply-add fused), ``"avx2"``, ``"avx512"`` (x86-64, chosen at run time from cpuid) or ``"amx"``
+    (Apple M1 to M4, an undocumented coprocessor, used only on a known chip that passes a self-test, the products it
+    does not suit on NEON; see numerical/amx.hpp)."""
     return _GEMM_PATHS[_gemm_path()]
 
 
@@ -104,7 +105,7 @@ def limit_gemm_path(most):
 
 def _environment_gemm_cap():
     """The cap NUMERICAL_GEMM and NUMERICAL_AMX set, the more portable of the two: NUMERICAL_GEMM names a path
-    (portable, avx2, avx512, amx); NUMERICAL_AMX set to 0, false, no or off keeps products off the Apple AMX, its
+    (portable, neon, avx2, avx512, amx); NUMERICAL_AMX set to 0, false, no or off keeps products off the Apple AMX, its
     self-test included. A value neither reads is ignored, with a warning."""
     cap = len(_GEMM_PATHS) - 1
     amx = _os.environ.get("NUMERICAL_AMX", "").strip().lower()

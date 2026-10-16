@@ -26,9 +26,18 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   product moves from the AVX2, AVX-512 or AMX kernel, which fuses each multiply-add, to the plain loop, which rounds
   as the compiler does, its last bits can differ from 10.17's: on x86-64 from 512 to 2047 multiply-adds, on Linux
   arm64 from 512 to 8191; not under the macOS wheels' Clang, which fuses both.
+- **A NEON path for `double` products on arm64** (`gemm_path()` answers `"neon"` where the AMX is not in use): the
+  vector tile with each multiply-add fused, by A's element in its lane. GCC fuses no arithmetic on vector extensions,
+  even under the wheels' `-ffp-contract=on`, so on the portable path its tile ran a product and a sum per term, its
+  accumulators spilled: the Linux arm64 wheels ran every matrix product at half speed. One arm64 thread, GCC 14,
+  against the portable path: a product of order 128 0.55 times as long, 512 0.52; `lu`, `solve`, `inv`, `cholesky`,
+  `qr`, `eigh` and `svd` of order 512 0.64 to 0.73 times; a complex product of order 192 0.23 times, through the real
+  kernel where it ran the scalar complex tile. Their last bits change there, now fused as on the AMX and AVX paths.
+  Paths from the most portable: `portable`, `neon`, `avx2`, `avx512`, `amx` (the C++ enumerators after `portable`
+  are one higher); a cap at `avx2` or `avx512` on arm64, or `NUMERICAL_AMX=0`, keeps the NEON tile.
 - **The AMX runs only the products it suits**: 16 rows and 16 columns at least, or 2^16 multiply-adds. A product of a
   few rows or columns computed whole tiles of 32 × 16 on it, and ran up to 5.5 times slower than on the vector tile
-  (8 × 166 by 166 × 8: 7.0 µs, 1.3 on the vector tile).
+  (8 × 166 by 166 × 8: 7.0 µs, 1.3 on the vector tile); it now runs on the NEON tile, which rounds as the AMX does.
 - **Complex `double` products on x86-64 run on complex tiles of their own** (AVX2 3 × 4, AVX-512 6 × 8), where they went
   through four real products (`gemm_split`): each row of a tile accumulates `Re a · b` and `Im a · b` apart, combined
   once. Six AVX2 cores, against NumPy's OpenBLAS: a complex product of order 512 4.9 ms (3.7; was 7.6), 1024 37 ms

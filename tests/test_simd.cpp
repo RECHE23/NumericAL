@@ -63,8 +63,8 @@ TEST(scaled_row_updates_equal_the_scalar_statements_to_the_bit)
 // multiply-add per element on AVX2 or AVX-512, the scalar statement elsewhere; and its dot product sums every term.
 TEST(double_row_updates_follow_the_kernel_path)
 {
-  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512,
-                                          numerical::gemm_path::amx}) {
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
     if (numerical::limit_gemm_path(path) != path) {
       continue;
     }

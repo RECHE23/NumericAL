@@ -2647,7 +2647,8 @@ std::size_t get_num_threads()
 // The GEMM path as its code (numerical::gemm_path's value); a code past the last is the last.
 int limit_gemm_path_code(int code)
 {
-    const int most {code < 0 ? 0 : (code > 3 ? 3 : code)};
+    const int last {static_cast<int>(numerical::gemm_path::amx)};
+    const int most {code < 0 ? 0 : (code > last ? last : code)};
     return static_cast<int>(numerical::limit_gemm_path(static_cast<numerical::gemm_path>(most)));
 }
 

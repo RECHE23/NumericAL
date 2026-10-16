@@ -5,6 +5,7 @@ need nothing installed (the __array_interface__ dict, the DLPack capsule and
 device), and once against NumPy proper when it happens to be importable.
 """
 import os
+import subprocess
 import sys
 import unittest
 
@@ -760,14 +761,24 @@ class Threads(unittest.TestCase):
         a = numerical.asarray([[((i * 7 + j * 3) % 11) / 3.0 - 1.5 for j in range(200)] for i in range(200)])
         self.assertEqual(numerical.limit_gemm_path("portable"), "portable")
         plain = (a @ a).tolist()
-        for path in ("avx2", "avx512", "amx"):
+        for path in ("neon", "avx2", "avx512", "amx"):
             got = numerical.limit_gemm_path(path)
-            self.assertIn(got, ("portable", "avx2", "avx512", "amx"))
+            self.assertIn(got, ("portable", "neon", "avx2", "avx512", "amx"))
             worst = max(abs(x - y) for row_f, row_p in zip((a @ a).tolist(), plain) for x, y in zip(row_f, row_p))
             self.assertLess(worst, 1e-11)
         self.assertEqual(numerical.get_config()["gemm_path"], numerical.gemm_path())
         with self.assertRaises(ValueError):
             numerical.limit_gemm_path("sse9")
+
+    def test_the_highest_cap_restores_the_best_path(self):
+        # In a process no environment caps: the path at import is the best one, and the last name gives it back.
+        env = {k: v for k, v in os.environ.items() if k not in ("NUMERICAL_GEMM", "NUMERICAL_AMX")}
+        env["PYTHONPATH"] = os.pathsep.join(p for p in sys.path if p)
+        script = ("import numerical; best = numerical.gemm_path(); numerical.limit_gemm_path('portable'); "
+                  "print(best, numerical.limit_gemm_path('amx'))")
+        best, restored = subprocess.run([sys.executable, "-c", script], env=env, capture_output=True, text=True,
+                                        check=True).stdout.split()
+        self.assertEqual(restored, best)
 
     def test_the_environment_limits_the_gemm_path_at_import(self):
         import subprocess

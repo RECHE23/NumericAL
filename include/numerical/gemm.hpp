@@ -31,6 +31,11 @@
 #include <utility>
 #include <vector>
 
+#if defined(__GNUC__) && defined(__aarch64__)
+#  include <arm_neon.h>
+#  define NUMERICAL_NEON_COMPILED // the arm64 fused tile is compiled in (tested with #ifdef only)
+#endif
+
 #include "parallel.hpp"
 #include "amx.hpp"
 #include "buffer.hpp"
@@ -67,19 +72,27 @@ namespace numerical {
 
   /*!
    * \brief The kernels a `double` matrix product can run on, from the most portable. Each is used only where the
-   *        processor has it: the AVX ones where `cpuid` reports them, the Apple AMX on an M1 to M4 chip whose
-   *        self-test passes (see x86.hpp and amx.hpp).
+   *        processor has it: NEON on every arm64 chip, the AVX ones where `cpuid` reports them, the Apple AMX on an
+   *        M1 to M4 chip whose self-test passes (see x86.hpp and amx.hpp).
    */
   enum class gemm_path : std::uint8_t
   {
     portable = 0, //!< The compiler's vectors (16 bytes on x86-64 wheels), as the compiler rounds `c + a·b` (see gemm).
-    avx2     = 1, //!< AVX2 with fused multiply-adds.
-    avx512   = 2, //!< AVX-512 with fused multiply-adds.
-    amx      = 3, //!< The Apple AMX coprocessor, fused multiply-adds.
+    neon     = 1, //!< arm64's vectors with fused multiply-adds.
+    avx2     = 2, //!< AVX2 with fused multiply-adds.
+    avx512   = 3, //!< AVX-512 with fused multiply-adds.
+    amx      = 4, //!< The Apple AMX coprocessor, fused multiply-adds; the products it does not suit on the NEON path's tile.
   };
 } // namespace numerical
 
 namespace numerical::detail {
+
+  //! \brief Whether the NEON path's tile is compiled in: on every arm64 target GCC or Clang builds.
+#ifdef NUMERICAL_NEON_COMPILED
+  inline constexpr bool neon_compiled {true};
+#else
+  inline constexpr bool neon_compiled {false};
+#endif
 
   //! \brief Whether \p path can run here.
   [[nodiscard]] inline bool gemm_path_usable(gemm_path path) noexcept
@@ -89,6 +102,7 @@ namespace numerical::detail {
       case gemm_path::avx2:   return cpu_features().avx2_fma;
       case gemm_path::avx512: return cpu_features().avx512f;
 #endif
+      case gemm_path::neon:   return neon_compiled;
       case gemm_path::amx:    return amx_usable();
       default:                return path == gemm_path::portable;
     }
@@ -455,6 +469,47 @@ namespace numerical::detail {
 
 #endif
 
+#ifdef NUMERICAL_NEON_COMPILED
+  /*!
+   * \brief \ref gemm_kernel for `double` on the NEON path: the tile in 24 vectors of two, each multiply-add fused, by
+   *        A's element in its lane (A's column in two vectors). GCC fuses no product of vector extensions into its
+   *        sum, even under -ffp-contract=on: the portable tile ran at half speed there, its accumulators spilled
+   *        (one M1 core, a product of order 512: 23 GFLOP/s; fused, 46). Each element is the AMX's chain of
+   *        multiply-adds, in the same order as the scalar kernel.
+   */
+  inline void neon_kernel(std::size_t        kc,
+                          const double*      ap,
+                          const double*      bp,
+                          std::size_t        ldb,
+                          gemm_tile<double>& tile) noexcept
+  {
+    static_assert(gemm_mr == 4 && gemm_nr<double> == 12, "two rows of A a vector, twelve columns six vectors");
+    constexpr std::size_t              lanes {6};
+    std::array<float64x2_t, 4 * lanes> acc   {};
+    NUMERICAL_UNROLL_BLOCK
+    for (std::size_t q {0}; q < acc.size(); ++q) {
+      acc[q] = vld1q_f64(tile.data() + (2 * q));
+    }
+    for (std::size_t p {0}; p < kc; ++p) {
+      const float64x2_t top    {vld1q_f64(ap + (p * gemm_mr))};
+      const float64x2_t bottom {vld1q_f64(ap + (p * gemm_mr) + 2)};
+      NUMERICAL_UNROLL_BLOCK
+      for (std::size_t j {0}; j < lanes; ++j) {
+        const float64x2_t b {vld1q_f64(bp + (p * ldb) + (2 * j))};
+        acc[j]               = vfmaq_laneq_f64(acc[j], b, top, 0);
+        acc[lanes + j]       = vfmaq_laneq_f64(acc[lanes + j], b, top, 1);
+        acc[(2 * lanes) + j] = vfmaq_laneq_f64(acc[(2 * lanes) + j], b, bottom, 0);
+        acc[(3 * lanes) + j] = vfmaq_laneq_f64(acc[(3 * lanes) + j], b, bottom, 1);
+      }
+    }
+    NUMERICAL_UNROLL_BLOCK
+    for (std::size_t q {0}; q < acc.size(); ++q) {
+      vst1q_f64(tile.data() + (2 * q), acc[q]);
+    }
+  }
+
+#endif
+
   /*!
    * \brief Copies `rows × kc` of A (from row-major, leading dimension \p lda) into slivers of \p Mr rows, each
    *        stored column by column; a last partial sliver is padded with zeros.
@@ -564,6 +619,32 @@ namespace numerical::detail {
       }
     }
   };
+
+#ifdef NUMERICAL_NEON_COMPILED
+  //! \brief The NEON path's tile (\ref neon_kernel): the vector tile's shape, packing and panels, each multiply-add fused.
+  struct neon_tile_kernel : vector_tile_kernel<double>
+  {
+    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
+    static void tile(std::size_t   kc,
+                     const double* ap,
+                     const double* bp,
+                     std::size_t   ldb,
+                     double*       c,
+                     std::size_t   ldc,
+                     std::size_t   rows,
+                     std::size_t   cols) noexcept
+    {
+      gemm_tile<double> accumulators {};
+      for (std::size_t i {0}; i < rows; ++i) {
+        std::copy_n(c + (i * ldc), cols, accumulators.data() + (i * nr));
+      }
+      neon_kernel(kc, ap, bp, ldb, accumulators);
+      for (std::size_t i {0}; i < rows; ++i) {
+        std::copy_n(accumulators.data() + (i * nr), cols, c + (i * ldc));
+      }
+    }
+  };
+#endif
 
 #ifdef NUMERICAL_AMX_COMPILED
   //! \brief The AMX path's tile (\ref amx_tile_f64): \ref amx_mr × \ref amx_nr elements of C in the Z registers,
@@ -1119,8 +1200,14 @@ namespace numerical::detail {
   {
     const gemm_path path {gemm_path_current()};
 #ifdef NUMERICAL_AMX_COMPILED
-    if (path == gemm_path::amx && amx_suits(m, n, k)) { // else the vector tile
+    if (path == gemm_path::amx && amx_suits(m, n, k)) { // else the NEON tile
       gemm_packed<amx_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+    if (path == gemm_path::neon || path == gemm_path::amx) {
+      gemm_packed<neon_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
       return true;
     }
 #endif
@@ -1312,11 +1399,12 @@ namespace numerical::detail {
    * \brief `C += A·B`, every element of C summed in ascending order of the depth.
    *
    * Products of fewer than \ref gemm_packed_threshold multiply-adds, or shallower than \ref gemm_min_depth, run
-   * \ref gemm_rows. The rest run packed (\ref gemm_packed): on the AMX for `double` where it is in use (each
-   * element a chain of fused multiply-adds), else on the vector tile, which rounds `c + a·b` as the compiler
-   * does: each product before its sum with contraction off (GCC's default in ISO C++ mode), fused where it
-   * contracts (Clang's default). Either way the plain loop and the packed one agree to the bit, and every
-   * element is summed in ascending order of the depth on any number of threads. Complex `double` on the x86-64
+   * \ref gemm_rows. The rest run packed (\ref gemm_packed). A `double` product runs on the AMX where it is in use
+   * and suits the product (`amx_suits`), else on the NEON or AVX tiles: each element a chain of fused
+   * multiply-adds. On the portable path it runs on the vector tile, which rounds `c + a·b` as the compiler does:
+   * each product before its sum with contraction off, as the plain loop then does; fused under Clang's
+   * -ffp-contract=on, as the plain loop then is; under GCC's, apart, where the plain loop's scalar statement is
+   * fused. Every element is summed in ascending order of the depth on any number of threads. Complex `double` on the x86-64
    * paths runs on their complex tiles (`avx2_full_tile_c64`, `avx512_full_tile_c64`); complex `float` and
    * `double` past the portable path otherwise run through the real kernel (`gemm_split`). Either is the same on
    * any number of threads too, but no longer the plain loop's to the bit.
