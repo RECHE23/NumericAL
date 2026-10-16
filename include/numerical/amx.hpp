@@ -114,6 +114,25 @@ namespace numerical::detail {
   //! \brief The columns of C one AMX tile covers: two X registers of eight `double`.
   inline constexpr std::size_t amx_nr {16};
 
+  //! \brief The fewest rows and columns of C, together, for which the AMX runs a product of fewer than
+  //!        \ref amx_least_work multiply-adds: half its tile's rows and all its columns. A shorter or narrower product
+  //!        computes whole tiles into a scratch block, and with the AMX's start-up (about 0.35 µs a product) it lost
+  //!        to the vector tile up to five times over (M1 Pro, 8 × 166 by 166 × 8: 7.0 µs against 1.3).
+  inline constexpr std::size_t amx_least_extent {16};
+
+  //! \brief The multiply-adds from which the AMX runs a product of any shape. With \ref amx_least_extent, against
+  //!        the faster of the AMX and the vector tile on 302 random shapes of 2^13 to 2^22 multiply-adds (M1 Pro), the
+  //!        products took 1.05 times as long in all, the slowest 1.8 times; on the AMX always, 1.09 and 5.5.
+  inline constexpr std::size_t amx_least_work {std::size_t {1} << 16U};
+
+  //! \brief Whether the AMX runs a product of \p m × \p k by \p k × \p n (\ref amx_least_extent, \ref amx_least_work).
+  [[nodiscard]] constexpr bool amx_suits(std::size_t m,
+                                         std::size_t n,
+                                         std::size_t k) noexcept
+  {
+    return (m >= amx_least_extent && n >= amx_least_extent) || m * n * k >= amx_least_work;
+  }
+
   //! \brief The longest rows of B the AMX reads in place, unpacked: X loads a row's 16 elements as they lie, and
   //!        packing them took a fifth of a small product (M1 Pro, order 64: 5.5 → 4.3 µs, 256: 130 → 104 µs); rows
   //!        further apart cost more in translations than packing (order 1024: +8 %, 2048: +35 %).

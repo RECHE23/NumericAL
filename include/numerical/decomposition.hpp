@@ -47,16 +47,6 @@
 #include "parallel.hpp"
 #include "vector.hpp"
 
-// A function no hot path calls, kept out of its callers: inlined, it spent GCC's growth budget for the whole translation
-// unit, and the products, the Cholesky factorisation and the LU solve lost their own inlining (one arm64 thread, GCC 14:
-// a product of order 8 0.29 → 0.33 µs, a Cholesky factorisation of order 17 0.77 → 0.87 µs, a solve of order 512 0.47
-// → 0.54 ms).
-#if defined(_MSC_VER) && !defined(__clang__)
-#  define NUMERICAL_OUT_OF_LINE __declspec(noinline)
-#else
-#  define NUMERICAL_OUT_OF_LINE [[gnu::noinline]] // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
-#endif
-
 namespace numerical {
 
   namespace detail {

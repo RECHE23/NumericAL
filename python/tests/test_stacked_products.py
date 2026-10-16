@@ -3,6 +3,7 @@
 refuses; ``einsum`` reads an ellipsis as NumPy does, broadcast included. Skipped when NumPy is not importable.
 """
 import unittest
+from fractions import Fraction
 
 import numerical
 
@@ -56,6 +57,28 @@ class StackedProducts(unittest.TestCase):
         stacked = np.asarray(numerical.matmul(a, b))
         for i in range(3):
             self.assertTrue(np.array_equal(stacked[i], np.asarray(numerical.matmul(a[i], b))))
+
+    def test_a_small_product_rounds_every_term_one_way(self):
+        # Each element is its terms summed in ascending order of the depth, every term rounded the same way: fused with
+        # its product (arm64) or after it (x86-64's baseline vectors), as the packed kernels round theirs. A loop the
+        # compiler vectorised along the depth once split the first terms' multiply-adds and fused the last ones.
+        def fused(x, y, z):
+            return float(Fraction(x) * Fraction(y) + Fraction(z))
+
+        for m, n, k in ((3, 1, 33), (5, 1, 19), (4, 2, 40), (6, 3, 17), (7, 5, 24), (2, 7, 9), (9, 8, 12), (5, 11, 21)):
+            a, b = self.operand((2, m, k)), self.operand((2, k, n))
+            got = np.asarray(numerical.matmul(a, b))
+            all_fused, all_apart = True, True
+            for s in range(2):
+                for i in range(m):
+                    for j in range(n):
+                        one, apart = 0.0, 0.0
+                        for p in range(k):
+                            one = fused(float(a[s, i, p]), float(b[s, p, j]), one)
+                            apart = apart + float(a[s, i, p]) * float(b[s, p, j])
+                        all_fused = all_fused and got[s, i, j] == one
+                        all_apart = all_apart and got[s, i, j] == apart
+            self.assertTrue(all_fused or all_apart, f"{m} × {k} by {k} × {n}: terms rounded both ways")
 
     def test_einsum_reads_an_ellipsis(self):
         cases = [("...ij,...jk->...ik", [(2, 3, 4, 5), (2, 3, 5, 6)]), ("...ij,...jk->...ik", [(2, 1, 4, 5), (3, 5, 6)]),

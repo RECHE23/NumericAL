@@ -10,14 +10,25 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 - **`a @ b` and `matmul` of stacks of matrices**, as NumPy's: the leading axes broadcast against each other (an extent
   of 1 repeated, read where it is, not copied), a vector first a row and second a column, mixed dtypes promoted; one
   product per matrix of the stack through the packed kernel, the products in parallel. `@` took ranks 1 and 2 alone.
-  Eight arm64 cores, against NumPy: 64 products of order 128 0.87 ms (1.33), 100 of order 64 by one matrix 0.22 ms
-  (0.30), 1000 of order 16 0.24 ms (0.26); behind on the smallest and the largest, 1000 of order 4 0.079 ms (0.045),
-  8 of order 512 5.3 ms (4.5).
+  Eight arm64 cores, against NumPy: 1000 products of order 4 0.019 ms (0.045), of order 8 0.050 ms (0.092), of order
+  16 0.14 ms (0.27); 64 of order 128 0.91 ms (1.32); 100 of order 64 by one matrix 0.22 ms (0.30); behind on 8 of
+  order 512, 5.4 ms (4.5).
 - **An ellipsis in `einsum`**, as NumPy reads it: `...` stands for an operand's axes its letters leave, aligned from the
   right across the operands and broadcast; with no `->`, the output is the broadcast axes then the letters that appear
   once. An output without `...` where an operand has such axes is refused, as NumPy refuses it.
 
 ### Changed
+- **Small products by blocks of rows held in registers**: below 2^13 multiply-adds on arm64 and 2^11 on x86-64 (it
+  was 512), a product runs the plain loop four rows of C by eight columns at a time, each sum in a register over the
+  whole depth, where it ran the packed kernel or the plain loop of unknown width: the same sums in the same order. One
+  arm64 thread against 10.17: a product of order 8 0.11 times as long (Clang; GCC 0.28), 17 0.30 (GCC 0.22); `qr` of
+  order 8 and 17 0.42 to 0.73, `eigh` 0.78 to 0.83, `svd` 0.75 to 0.94; one x86-64 thread, order 8 0.73. Where a
+  product moves from the AVX2, AVX-512 or AMX kernel, which fuses each multiply-add, to the plain loop, which rounds
+  as the compiler does, its last bits can differ from 10.17's: on x86-64 from 512 to 2047 multiply-adds, on Linux
+  arm64 from 512 to 8191; not under the macOS wheels' Clang, which fuses both.
+- **The AMX runs only the products it suits**: 16 rows and 16 columns at least, or 2^16 multiply-adds. A product of a
+  few rows or columns computed whole tiles of 32 × 16 on it, and ran up to 5.5 times slower than on the vector tile
+  (8 × 166 by 166 × 8: 7.0 µs, 1.3 on the vector tile).
 - **Complex `double` products on x86-64 run on complex tiles of their own** (AVX2 3 × 4, AVX-512 6 × 8), where they went
   through four real products (`gemm_split`): each row of a tile accumulates `Re a · b` and `Im a · b` apart, combined
   once. Six AVX2 cores, against NumPy's OpenBLAS: a complex product of order 512 4.9 ms (3.7; was 7.6), 1024 37 ms

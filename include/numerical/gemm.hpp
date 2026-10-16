@@ -37,6 +37,32 @@
 #include "simd.hpp"
 #include "x86.hpp"
 
+// A function kept out of its callers: inlined, it spent GCC's growth budget for the whole translation unit, and the
+// products, the Cholesky factorisation and the LU solve lost their own inlining (one arm64 thread, GCC 14: a product of
+// order 8 0.29 → 0.33 µs, a Cholesky factorisation of order 17 0.77 → 0.87 µs, a solve of order 512 0.47 → 0.54 ms).
+#if defined(_MSC_VER) && !defined(__clang__)
+#  define NUMERICAL_OUT_OF_LINE __declspec(noinline)
+#else
+#  define NUMERICAL_OUT_OF_LINE [[gnu::noinline]] // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
+#endif
+
+#if defined(__clang__)
+// A block's depth loop kept scalar: vectorised, Clang sums its terms in order but splits each multiply-add (which
+// -ffp-contract=on lets it fuse, not makes it) into a product and a sum, the last terms fused: one element rounded
+// two ways, where the packed kernels fuse every term.
+#  define NUMERICAL_SCALAR_DEPTH _Pragma("clang loop vectorize(disable) interleave(disable)")
+#else
+#  define NUMERICAL_SCALAR_DEPTH
+#endif
+
+#if defined(__GNUC__)
+// A block's loops unrolled whole, so that each of its sums stays in a register: GCC at -O2 does not unroll them,
+// and kept the sums in memory (a product of order 17 on one arm64 core: 2.0 µs, against 0.31 under Clang).
+#  define NUMERICAL_UNROLL_BLOCK _Pragma("GCC unroll 32")
+#else
+#  define NUMERICAL_UNROLL_BLOCK
+#endif
+
 namespace numerical {
 
   /*!
@@ -333,9 +359,18 @@ namespace numerical::detail {
   template <typename T>
   inline constexpr std::size_t gemm_nc {gemm_nr<T> * 128};
 
-  //! \brief Below this many multiply-adds the plain i-k-j loop runs instead of the packed kernel (both
-  //!        sum in the same order): the kernel already wins at order 12 (3× on arm64), and ties at 8.
-  inline constexpr std::size_t gemm_packed_threshold {std::size_t {8} *8 * 8};
+  //! \brief Below this many multiply-adds the plain loop (\ref gemm_rows, by blocks of rows held in registers) runs
+  //!        instead of the packed kernel, both summing in the same order. Against the packed kernel on 400 random
+  //!        shapes from 512 multiply-adds, the plain loop took 0.25 to 0.41 times as long below 2^13 on arm64 (M1 Pro,
+  //!        geometric means by octave, the slowest shape 0.91); above, it lost up to 2.5 times on shapes the AMX
+  //!        suits. On x86-64 the plain loop has the baseline's vectors and the packed one the AVX2 or AVX-512 units:
+  //!        there it took 0.43 to 0.55 times as long below 2^11, 0.86 above with shapes up to 2 times slower (six
+  //!        AVX2 cores, GCC 13).
+#ifdef NUMERICAL_X86_COMPILED
+  inline constexpr std::size_t gemm_packed_threshold {std::size_t {1} << 11U};
+#else
+  inline constexpr std::size_t gemm_packed_threshold {std::size_t {1} << 13U};
+#endif
 
   //! \brief Below this depth the plain loop runs too: each panel reads and writes its tiles of C once,
   //!        which a shallow product does not amortise (1000×1000×1 ran six times slower packed, ×4 still
@@ -580,8 +615,93 @@ namespace numerical::detail {
   };
 #endif
 
+  //! \brief The least depth at which rows of C wider than one block (\ref narrow_columns) run by blocks in
+  //!        \ref gemm_rows; one block or narrower takes any depth past 1. Against the plain loop of unknown width, on
+  //!        500 random shapes below the packed kernel, the blocks took 0.11 to 0.63 times as long from a depth of 2
+  //!        on arm64 (M1 Pro, geometric means by width); on x86-64, where the loop has the baseline's vectors, 0.35 to
+  //!        0.90 from a depth of 8 but 1.08 to 1.31 below it past one block (six AVX2 cores, GCC 13).
+#ifdef NUMERICAL_X86_COMPILED
+  inline constexpr std::size_t narrow_least_depth {8};
+#else
+  inline constexpr std::size_t narrow_least_depth {2};
+#endif
+
+  //! \brief The columns of C one block of \ref gemm_rows keeps in registers over the whole depth.
+  inline constexpr std::size_t narrow_columns {8};
+
+  //! \brief The rows of C one block of \ref gemm_rows takes together: each element a chain of multiply-adds that
+  //!         waits on its last, four rows give the units four times the chains (M1 Pro, order 8 to 24: 1.6 to 1.9
+  //!         times as fast as one row; two rows on six x86-64 AVX2 cores, the fastest there, were within 7 %).
+  inline constexpr std::size_t narrow_group {4};
+
+  //! \brief `C += A·B` for \p R rows and \p N columns of C, each sum in ascending order of the depth, as the plain
+  //!        loop's: the block held in registers, of a size the compiler knows. Out of line: its unrolled sizes,
+  //!        inlined, spent GCC's growth budget, and the LU factorisation, which runs none of them, lost 3 to 8 % at
+  //!        every order (one arm64 thread, GCC 14).
+  template <std::size_t R, std::size_t N, typename T>
+  NUMERICAL_OUT_OF_LINE void narrow_block(std::size_t k,
+                                          const T*    a,
+                                          std::size_t lda,
+                                          const T*    b,
+                                          std::size_t ldb,
+                                          T*          c,
+                                          std::size_t ldc) noexcept
+  {
+    std::array<T, R * N> sums {};
+    NUMERICAL_UNROLL_BLOCK
+    for (std::size_t e {0}; e < R * N; ++e) {
+      sums[e] = c[((e / N) * ldc) + (e % N)];
+    }
+    NUMERICAL_SCALAR_DEPTH
+    for (std::size_t p {0}; p < k; ++p) {
+      NUMERICAL_UNROLL_BLOCK
+      for (std::size_t r {0}; r < R; ++r) {
+        const T ap {a[(r * lda) + p]};
+        NUMERICAL_UNROLL_BLOCK
+        for (std::size_t j {0}; j < N; ++j) {
+          sums[(r * N) + j] += ap * b[(p * ldb) + j];
+        }
+      }
+    }
+    NUMERICAL_UNROLL_BLOCK
+    for (std::size_t e {0}; e < R * N; ++e) {
+      c[((e / N) * ldc) + (e % N)] = sums[e];
+    }
+  }
+
+  //! \brief `C += A·B` for \p R whole rows of C of \p n columns: blocks of \ref narrow_columns, the last narrower.
+  template <std::size_t R, typename T>
+  void narrow_rows(std::size_t n,
+                   std::size_t k,
+                   const T*    a,
+                   std::size_t lda,
+                   const T*    b,
+                   std::size_t ldb,
+                   T*          c,
+                   std::size_t ldc) noexcept
+  {
+    static_assert(narrow_columns == 8, "the switch below names each narrower last block");
+    std::size_t j {0};
+    for (; j + narrow_columns <= n; j += narrow_columns) {
+      narrow_block<R, narrow_columns>(k, a, lda, b + j, ldb, c + j, ldc);
+    }
+    switch (n - j) {
+      case 1: narrow_block<R, 1>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 2: narrow_block<R, 2>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 3: narrow_block<R, 3>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 4: narrow_block<R, 4>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 5: narrow_block<R, 5>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 6: narrow_block<R, 6>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 7: narrow_block<R, 7>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      default: break; // a whole number of blocks
+    }
+  }
+
   /*!
-   * \brief `C += A·B` by the plain i-k-j loop, parallel over the rows of C.
+   * \brief `C += A·B` by the plain i-k-j loop, parallel over the rows of C. Past a depth of 1 (\ref
+   *        narrow_least_depth), the rows run \ref narrow_group at a time by blocks (\ref narrow_rows), the last rows
+   *        one by one: the same sums, six to ten times as fast from order 4 to 16 (M1 Pro) as the loop of unknown
+   *        width, whose sums the compiler cannot keep in registers. A depth of 1 streams as fast through that loop.
    * \param[in]     m,n,k       The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major.
    * \param[in]     a,lda,b,ldb The operands and the distance between their rows.
    * \param[in,out] c,ldc       The result and the distance between its rows.
@@ -597,6 +717,19 @@ namespace numerical::detail {
                  T*          c,
                  std::size_t ldc)
   {
+    if (k >= (n <= narrow_columns ? std::size_t {2} : narrow_least_depth)) {
+      parallel_for((m + narrow_group - 1) / narrow_group, narrow_group * k * n / vector_speedup, [&](std::size_t g) {
+                     const std::size_t first {g * narrow_group};
+                     if (first + narrow_group <= m) {
+                       narrow_rows<narrow_group>(n, k, a + (first * lda), lda, b, ldb, c + (first * ldc), ldc);
+                       return;
+                     }
+                     for (std::size_t i {first}; i < m; ++i) {
+                       narrow_rows<1>(n, k, a + (i * lda), lda, b, ldb, c + (i * ldc), ldc);
+                     }
+                   });
+      return;
+    }
     parallel_for(m, k * n / vector_speedup, [&](std::size_t i) {
                    for (std::size_t p {0}; p < k; ++p) {
                      const T aip {a[(i * lda) + p]};
@@ -986,7 +1119,7 @@ namespace numerical::detail {
   {
     const gemm_path path {gemm_path_current()};
 #ifdef NUMERICAL_AMX_COMPILED
-    if (path == gemm_path::amx) {
+    if (path == gemm_path::amx && amx_suits(m, n, k)) { // else the vector tile
       gemm_packed<amx_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
       return true;
     }
