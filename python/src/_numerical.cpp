@@ -538,10 +538,41 @@ PyObject* tensor_tolist(PyObject* self, PyObject* /*ignored*/)
 // thread's switch interval (5 ms by default), which a small matrix would pay many times over; from 64 × 64
 // up, the computation dominates. The operands stay readable meanwhile: a Tensor never changes once built,
 // and the call holds a reference to each.
+//
+// A stack of matrices releases the GIL once, around the whole stack: the computations of each matrix, on this thread
+// or on the pool's, then run with `gil_released` set, and release nothing more (a thread that does not hold the GIL
+// cannot release it).
+thread_local bool gil_released {false};
+
 bool releases_gil(std::size_t elements)
 {
-    return elements >= std::size_t {4096};
+    return elements >= std::size_t {4096} && !gil_released;
 }
+
+// Marks the calling thread's computations as running without the GIL, for its lifetime.
+class without_gil
+{
+public:
+
+    without_gil() : previous_(gil_released)
+    {
+        gil_released = true;
+    }
+
+    ~without_gil()
+    {
+        gil_released = previous_;
+    }
+
+    without_gil(const without_gil&)            = delete;
+    without_gil& operator=(const without_gil&) = delete;
+    without_gil(without_gil&&)                 = delete;
+    without_gil& operator=(without_gil&&)      = delete;
+
+private:
+
+    bool previous_;
+};
 
 // einsum(spec, *operands): all operands must share a dtype.
 PyObject* module_einsum(PyObject* /*self*/, PyObject* args)
@@ -711,6 +742,138 @@ std::tuple<Ts...> narrowed(const std::tuple<Ts...>& values)
     return std::apply([](const auto&... each) { return std::tuple<Ts...> {narrowed(each)...}; }, values);
 }
 
+// --- stacks of matrices: (..., m, n), the leading axes a batch, as NumPy's linalg takes them --------------------
+
+// The order up to which the matrices of a stack go to the threads together, one each, however few: a decomposition
+// that small shares little of itself among threads. A larger one keeps its own threads, the stack going a matrix at a
+// time, unless there are as many matrices as threads.
+constexpr std::size_t stack_order {128};
+
+// The leading axes of a stacked tensor (rank ≥ 2) and its matrices' rows and columns.
+struct stack_shape
+{
+    std::vector<std::size_t> batch;
+    std::size_t              count {1};
+    std::size_t              rows {0};
+    std::size_t              cols {0};
+};
+
+stack_shape stack_of(const any_tensor& v)
+{
+    const std::vector<std::size_t>& shape {shape_of(v)};
+    stack_shape                     out {{shape.begin(), shape.end() - 2}, 1, shape[shape.size() - 2], shape.back()};
+    for (const std::size_t extent : out.batch) {
+        out.count *= extent;
+    }
+    return out;
+}
+
+// Matrix `i` of the stack `v` (its last two axes `rows` × `cols`), a rank-2 tensor of its dtype.
+any_tensor matrix_of(const any_tensor& v, std::size_t rows, std::size_t cols, std::size_t i)
+{
+    return std::visit([&](const auto& t) -> any_tensor {
+                          using T = element_of_t<std::decay_t<decltype(t)>>;
+                          const auto first {t.data().begin() + static_cast<std::ptrdiff_t>(i * rows * cols)};
+                          return numerical::tensor<T> {{rows, cols}, numerical::buffer<T>(first, first + static_cast<std::ptrdiff_t>(rows * cols))};
+                      }, v);
+}
+
+// The `rows` × `cols` identity (ones on the diagonal) of `v`'s dtype: an empty stack's answers take their shapes and
+// dtypes from those of a matrix every function takes.
+any_tensor identity_like(const any_tensor& v, std::size_t rows, std::size_t cols)
+{
+    return std::visit([&](const auto& t) -> any_tensor {
+                          using T = element_of_t<std::decay_t<decltype(t)>>;
+                          numerical::buffer<T> values(rows * cols, T {});
+                          for (std::size_t d = 0; d < std::min(rows, cols); ++d) {
+                              values[(d * cols) + d] = T {1};
+                          }
+                          return numerical::tensor<T> {{rows, cols}, std::move(values)};
+                      }, v);
+}
+
+// The answers `parts` (one per matrix, all of one shape and dtype; `probe` stands for them when there are none)
+// stacked along the leading axes `batch`.
+any_tensor stacked(const std::vector<any_tensor>& parts, const std::vector<std::size_t>& batch, const any_tensor& probe)
+{
+    const any_tensor& first {parts.empty() ? probe : parts.front()};
+    return std::visit([&](const auto& t) -> any_tensor {
+                          using tensor_type = std::decay_t<decltype(t)>;
+                          using T           = element_of_t<tensor_type>;
+                          std::vector<std::size_t> shape {batch};
+                          shape.insert(shape.end(), t.shape().begin(), t.shape().end());
+                          numerical::buffer<T> values;
+                          values.reserve(parts.size() * t.size());
+                          for (const any_tensor& part : parts) {
+                              const auto& data {std::get<tensor_type>(part).data()};
+                              values.insert(values.end(), data.begin(), data.end());
+                          }
+                          return tensor_type {std::move(shape), std::move(values)};
+                      }, first);
+}
+
+template <typename... Ts>
+std::tuple<Ts...> stacked(const std::vector<std::tuple<Ts...>>& parts, const std::vector<std::size_t>& batch,
+                          const std::tuple<Ts...>& probe)
+{
+    return [&]<std::size_t... I>(std::index_sequence<I...>) {
+        const auto component {[&](auto index) {
+            std::vector<any_tensor> each;
+            each.reserve(parts.size());
+            for (const auto& part : parts) {
+                each.push_back(std::get<decltype(index)::value>(part));
+            }
+            return stacked(each, batch, std::get<decltype(index)::value>(probe));
+        }};
+        return std::tuple<Ts...> {component(std::integral_constant<std::size_t, I> {})...};
+    }(std::index_sequence_for<Ts...> {});
+}
+
+// `answer(i)` for each of the `count` items of a batch of leading axes `batch`, stacked (`probe()` answers for an
+// empty one): the GIL released once around them all, the items to the threads together where their matrices are no
+// larger than `stack_order` or there are as many as threads (each one's own computation is then on one thread), else
+// one at a time, each with the threads. Every item's answer is the same to the bit either way.
+template <typename Result, typename Answer, typename Probe>
+Result over_batch(const std::vector<std::size_t>& batch, std::size_t count, std::size_t order, std::size_t elements,
+                  Answer answer, Probe probe)
+{
+    if (count == 0) {
+        return stacked(std::vector<Result> {}, batch, probe());
+    }
+    std::vector<std::optional<Result>> parts(count);
+    {
+        const sb::scoped_gil_release unlocked {releases_gil(elements)};
+        const without_gil            inside;
+        if (order <= stack_order || count >= numerical::max_threads()) {
+            numerical::detail::parallel_for(count, order * order * order, [&](std::size_t i) {
+                const without_gil worker;
+                parts[i].emplace(answer(i));
+            });
+        }
+        else {
+            for (std::size_t i = 0; i < count; ++i) {
+                parts[i].emplace(answer(i));
+            }
+        }
+    }
+    std::vector<Result> answers;
+    answers.reserve(count);
+    for (std::optional<Result>& part : parts) {
+        answers.push_back(std::move(*part));
+    }
+    return stacked(answers, batch, answers.front()); // the probe stands in for an empty stack's answers alone
+}
+
+// `f` of every matrix of the stack `v` (rank > 2), stacked.
+template <typename Result, typename F>
+Result over_stack(const any_tensor& v, F f)
+{
+    const stack_shape s {stack_of(v)};
+    return over_batch<Result>(s.batch, s.count, std::max(s.rows, s.cols), count_of(v),
+                              [&](std::size_t i) { return f(matrix_of(v, s.rows, s.cols, i)); },
+                              [&] { return f(identity_like(v, s.rows, s.cols)); });
+}
+
 // The relative cutoff of a float32 or complex64 matrix's rank where neither tolerance is given: NumPy's default at
 // float32's epsilon (its LAPACK computes in it), where the double default would count its rounding as rank.
 std::optional<double> single_rtol(const any_tensor& a, std::optional<double> rtol, std::optional<double> tol)
@@ -742,14 +905,70 @@ any_tensor do_solve(const numerical::tensor<T>& a, const numerical::tensor<T>& b
                      [&factored](const numerical::matrix<T>& rhs) { return factored.solve(rhs); });
 }
 
-// solve(a, b): a a rank-2 tensor, b a rank-1 or rank-2 tensor, sharing a dtype.
+// The leading axes two stacks' answers take: `x` and `y` right-aligned, an axis of 1 (or a missing one) taking the
+// other's extent, as NumPy broadcasts them.
+std::vector<std::size_t> broadcast_batch(const std::vector<std::size_t>& x, const std::vector<std::size_t>& y)
+{
+    std::vector<std::size_t> out(std::max(x.size(), y.size()), 1);
+    for (std::size_t k = 0; k < out.size(); ++k) {
+        const std::size_t from_x {k < x.size() ? x[x.size() - 1 - k] : 1};
+        const std::size_t from_y {k < y.size() ? y[y.size() - 1 - k] : 1};
+        if (from_x != from_y && from_x != 1 && from_y != 1) {
+            throw std::runtime_error("solve: the stacks' leading axes do not broadcast together");
+        }
+        out[out.size() - 1 - k] = from_x == 1 ? from_y : from_x;
+    }
+    return out;
+}
+
+// The index, in a stack of leading axes `own`, of item `i` of the broadcast leading axes `out`.
+std::size_t broadcast_index(std::size_t i, const std::vector<std::size_t>& out, const std::vector<std::size_t>& own)
+{
+    std::size_t index {0};
+    std::size_t stride {1};
+    for (std::size_t k = 0; k < own.size(); ++k) {
+        const std::size_t axis {out.size() - 1 - k};
+        std::size_t       position {i};
+        for (std::size_t later = out.size() - 1; later > axis; --later) {
+            position /= out[later];
+        }
+        position %= out[axis];
+        const std::size_t extent {own[own.size() - 1 - k]};
+        index += (extent == 1 ? 0 : position) * stride;
+        stride *= extent;
+    }
+    return index;
+}
+
+// solve(a, b), sharing a dtype: a a matrix or a stack of them (..., m, m); b a vector (m,), solved against every
+// matrix, or matrices (..., m, k), the leading axes broadcast as NumPy 2 broadcasts them.
 any_tensor solve(const any_tensor& a, const any_tensor& b)
 {
-    if (shape_of(a).size() != 2 || (shape_of(b).size() != 1 && shape_of(b).size() != 2)) {
-        throw std::runtime_error("solve(a, b) needs a rank-2 a and a rank-1 or rank-2 b");
+    const std::size_t rank_a {shape_of(a).size()};
+    const std::size_t rank_b {shape_of(b).size()};
+    if (rank_a < 2 || rank_b < 1) {
+        throw std::runtime_error("solve(a, b) needs a matrix or a stack of them, and a vector or matrices b");
     }
     if (a.index() != b.index()) {
         throw std::runtime_error("solve operands must share one dtype");
+    }
+    if (rank_a > 2 || rank_b > 2) {
+        const stack_shape              sa {stack_of(a)};
+        const bool                     vector_b {rank_b == 1};
+        const std::vector<std::size_t> own_b {vector_b ? std::vector<std::size_t> {} : stack_of(b).batch};
+        const std::vector<std::size_t> batch {broadcast_batch(sa.batch, own_b)};
+        std::size_t                    count {1};
+        for (const std::size_t extent : batch) {
+            count *= extent;
+        }
+        const std::size_t b_rows {vector_b ? 0 : shape_of(b)[rank_b - 2]};
+        const std::size_t b_cols {shape_of(b).back()};
+        const auto        right_side {[&](std::size_t i) {
+            return vector_b ? b : matrix_of(b, b_rows, b_cols, broadcast_index(i, batch, own_b));
+        }};
+        return over_batch<any_tensor>(batch, count, sa.rows, count_of(a) + count_of(b),
+                                      [&](std::size_t i) { return solve(matrix_of(a, sa.rows, sa.cols, broadcast_index(i, batch, sa.batch)), right_side(i)); },
+                                      [&] { return solve(identity_like(a, sa.rows, sa.cols), vector_b ? b : identity_like(b, b_rows, b_cols)); });
     }
     if (is_single(a)) {
         return narrowed(solve(widened(a), widened(b)));
@@ -760,8 +979,35 @@ any_tensor solve(const any_tensor& a, const any_tensor& b)
     return do_solve<double>(std::get<real_tensor>(a), std::get<real_tensor>(b));
 }
 
+// The determinant of the matrix `m` as a rank-0 tensor of its dtype (a single-precision one's computed in double and
+// rounded): a stack's determinants, stacked.
+any_tensor determinant_tensor(const any_tensor& m)
+{
+    const any_tensor wide {widened(m)};
+    const any_tensor value {is_complex(wide)
+                                ? any_tensor {cplx_tensor {{}, numerical::buffer<std::complex<double>> {numerical::determinant(matrix_from(std::get<cplx_tensor>(wide)))}}}
+                                : any_tensor {real_tensor {{}, numerical::buffer<double> {numerical::determinant(matrix_from(std::get<real_tensor>(wide)))}}}};
+    return is_single(m) ? narrowed(value) : value;
+}
+
+// The sign (of `m`'s dtype) and the logarithm of the magnitude (real, of its precision) of the matrix `m`'s
+// determinant, as rank-0 tensors: a stack's, stacked.
+std::tuple<any_tensor, any_tensor> slogdet_tensors(const any_tensor& m)
+{
+    const any_tensor wide {widened(m)};
+    const auto       value {[&]() -> std::tuple<any_tensor, any_tensor> {
+        if (is_complex(wide)) {
+            const auto [sign, logarithm] {numerical::lu_decomposition<std::complex<double>> {matrix_from(std::get<cplx_tensor>(wide))}.log_determinant()};
+            return {cplx_tensor {{}, numerical::buffer<std::complex<double>> {sign}}, real_tensor {{}, numerical::buffer<double> {logarithm}}};
+        }
+        const auto [sign, logarithm] {numerical::lu_decomposition<double> {matrix_from(std::get<real_tensor>(wide))}.log_determinant()};
+        return {real_tensor {{}, numerical::buffer<double> {sign}}, real_tensor {{}, numerical::buffer<double> {logarithm}}};
+    }()};
+    return is_single(m) ? narrowed(value) : value;
+}
+
 // determinant(a) -> float or complex: a dtype-dependent scalar (a variant return no single
-// caster covers), so it stays a manual .raw function.
+// caster covers), so it stays a manual .raw function; a stack's determinants, a Tensor.
 PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
 {
     PyObject* obj = nullptr;
@@ -772,29 +1018,20 @@ PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
     if (h == nullptr) {
         return nullptr;
     }
-    if (shape_of(*h).size() != 2) {
-        PyErr_SetString(sciforge_module_error(), "determinant expects a matrix (rank-2 tensor)");
+    if (shape_of(*h).size() < 2) {
+        PyErr_SetString(sciforge_module_error(), "determinant expects a matrix or a stack of matrices (rank ≥ 2)");
         return nullptr;
     }
     try {
-        const any_tensor wide {widened(*h)}; // a float32 or complex64 matrix in double, its determinant a Python number
-        h = &wide;
-        if (is_complex(*h)) {
-            const cplx_tensor&   a     {std::get<cplx_tensor>(*h)};
-            std::complex<double> value;
-            {
-                const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-                value = numerical::determinant(matrix_from(a));
-            }
-            return PyComplex_FromDoubles(value.real(), value.imag());
+        if (shape_of(*h).size() > 2) {
+            return wrap(over_stack<any_tensor>(*h, determinant_tensor));
         }
-        const real_tensor& a {std::get<real_tensor>(*h)};
-        double             value {};
+        std::optional<any_tensor> value; // a single-precision matrix's rounded to its precision, as a stack's
         {
-            const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-            value = numerical::determinant(matrix_from(a));
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*h))};
+            value.emplace(determinant_tensor(*h));
         }
-        return PyFloat_FromDouble(value);
+        return std::visit([](const auto& t) { return from_scalar(t.data()[0]); }, *value);
     }
     catch (...) {
         return set_cpp_error();
@@ -1275,33 +1512,27 @@ PyObject* module_slogdet(PyObject* /*self*/, PyObject* args)
     if (h == nullptr) {
         return nullptr;
     }
-    if (shape_of(*h).size() != 2) {
-        PyErr_SetString(sciforge_module_error(), "slogdet expects a matrix (rank-2 tensor)");
+    if (shape_of(*h).size() < 2) {
+        PyErr_SetString(sciforge_module_error(), "slogdet expects a matrix or a stack of matrices (rank ≥ 2)");
         return nullptr;
     }
     try {
-        const any_tensor wide {widened(*h)}; // as determinant's
-        h = &wide;
-        if (is_complex(*h)) {
-            const cplx_tensor&                       a {std::get<cplx_tensor>(*h)};
-            std::pair<std::complex<double>, double> value;
-            {
-                const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-                value = numerical::lu_decomposition<std::complex<double>> {matrix_from(a)}.log_determinant();
-            }
-            PyObject* sign {PyComplex_FromDoubles(value.first.real(), value.first.imag())}; // new ref
-            if (sign == nullptr) {
-                return nullptr;
-            }
-            return Py_BuildValue("(Nd)", sign, value.second); // N: the tuple takes the reference
+        if (shape_of(*h).size() > 2) {
+            auto [sign, logarithm] {over_stack<std::tuple<any_tensor, any_tensor>>(*h, slogdet_tensors)};
+            return Py_BuildValue("(NN)", wrap(std::move(sign)), wrap(std::move(logarithm)));
         }
-        const real_tensor&         a {std::get<real_tensor>(*h)};
-        std::pair<double, double> value;
+        std::optional<std::tuple<any_tensor, any_tensor>> value; // as determinant's
         {
-            const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-            value = numerical::lu_decomposition<double> {matrix_from(a)}.log_determinant();
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*h))};
+            value.emplace(slogdet_tensors(*h));
         }
-        return Py_BuildValue("(dd)", value.first, value.second);
+        const auto scalar {[](const any_tensor& v) { return std::visit([](const auto& t) { return from_scalar(t.data()[0]); }, v); }};
+        PyObject* sign {scalar(std::get<0>(*value))}; // new ref
+        if (sign == nullptr) {
+            return nullptr;
+        }
+        const double logarithm {std::visit([](const auto& t) { return static_cast<double>(std::real(t.data()[0])); }, std::get<1>(*value))};
+        return Py_BuildValue("(Nd)", sign, logarithm); // N: the tuple takes the reference
     }
     catch (...) {
         return set_cpp_error();
@@ -1338,7 +1569,7 @@ std::size_t do_matrix_rank(const numerical::tensor<T>& a, numerical::rank_cutoff
 std::size_t matrix_rank(const any_tensor& v, std::optional<double> rtol, std::optional<double> tol, bool hermitian)
 {
     if (shape_of(v).size() != 2) {
-        throw std::runtime_error("matrix_rank expects a matrix (rank-2 tensor)");
+        throw std::runtime_error("matrix_rank expects a matrix (rank-2 tensor); a stack goes through _matrix_ranks");
     }
     if (is_single(v)) {
         return matrix_rank(widened(v), single_rtol(v, rtol, tol), tol, hermitian);
@@ -1348,6 +1579,18 @@ std::size_t matrix_rank(const any_tensor& v, std::optional<double> rtol, std::op
         return do_matrix_rank<std::complex<double>>(std::get<cplx_tensor>(v), cutoff, hermitian);
     }
     return do_matrix_rank<double>(std::get<real_tensor>(v), cutoff, hermitian);
+}
+
+// _matrix_ranks(a, rtol, tol, hermitian) -> Tensor: the rank of every matrix of the stack `a` (rank > 2), as float64
+// numbers along its leading axes (the Python side makes them integers).
+any_tensor matrix_ranks(const any_tensor& v, std::optional<double> rtol, std::optional<double> tol, bool hermitian)
+{
+    if (shape_of(v).size() <= 2) {
+        throw std::runtime_error("_matrix_ranks expects a stack of matrices (rank > 2)");
+    }
+    return over_stack<any_tensor>(v, [&](const any_tensor& m) {
+        return any_tensor {real_tensor {{}, numerical::buffer<double> {static_cast<double>(matrix_rank(m, rtol, tol, hermitian))}}};
+    });
 }
 
 template <typename T>
@@ -1360,8 +1603,11 @@ any_tensor do_eigvalsh(const numerical::tensor<T>& a, bool upper)
 // eigvalsh(a, upper) -> Tensor, as numpy.linalg.eigvalsh: the eigenvalues alone, real and ascending.
 any_tensor eigvalsh(const any_tensor& v, bool upper)
 {
-    if (shape_of(v).size() != 2) {
-        throw std::runtime_error("eigvalsh expects a matrix (rank-2 tensor)");
+    if (shape_of(v).size() < 2) {
+        throw std::runtime_error("eigvalsh expects a matrix or a stack of matrices (rank ≥ 2)");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<any_tensor>(v, [&](const any_tensor& m) { return eigvalsh(m, upper); });
     }
     if (is_single(v)) {
         return narrowed(eigvalsh(widened(v), upper));
@@ -1382,8 +1628,11 @@ any_tensor do_pinv(const numerical::tensor<T>& a, numerical::rank_cutoff cutoff,
 // pinv(a, rtol, hermitian) -> Tensor, as numpy.linalg.pinv.
 any_tensor pinv(const any_tensor& v, std::optional<double> rtol, bool hermitian)
 {
-    if (shape_of(v).size() != 2) {
-        throw std::runtime_error("pinv expects a matrix (rank-2 tensor)");
+    if (shape_of(v).size() < 2) {
+        throw std::runtime_error("pinv expects a matrix or a stack of matrices (rank ≥ 2)");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<any_tensor>(v, [&](const any_tensor& m) { return pinv(m, rtol, hermitian); });
     }
     if (is_single(v)) {
         return narrowed(pinv(widened(v), single_rtol(v, rtol, std::nullopt), hermitian));
@@ -1405,8 +1654,11 @@ any_tensor do_inverse(const numerical::tensor<T>& a)
 // inverse(a) -> Tensor (the matrix inverse).
 any_tensor inverse(const any_tensor& v)
 {
-    if (shape_of(v).size() != 2) {
-        throw std::runtime_error("inverse expects a matrix (rank-2 tensor)");
+    if (shape_of(v).size() < 2) {
+        throw std::runtime_error("inverse expects a matrix or a stack of matrices (rank ≥ 2)");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<any_tensor>(v, [&](const any_tensor& m) { return inverse(m); });
     }
     if (is_single(v)) {
         return narrowed(inverse(widened(v)));
@@ -1470,8 +1722,11 @@ any_tensor do_cholesky(const numerical::tensor<T>& a, bool upper)
 // triangle, as numpy.linalg.cholesky(a, upper=True).
 any_tensor cholesky(const any_tensor& v, bool upper)
 {
-    if (shape_of(v).size() != 2) {
-        throw std::runtime_error("cholesky expects a matrix (rank-2 tensor)");
+    if (shape_of(v).size() < 2) {
+        throw std::runtime_error("cholesky expects a matrix or a stack of matrices (rank ≥ 2)");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<any_tensor>(v, [&](const any_tensor& m) { return cholesky(m, upper); });
     }
     if (is_single(v)) {
         return narrowed(cholesky(widened(v), upper));
@@ -1507,8 +1762,11 @@ std::tuple<any_tensor, any_tensor> qr(const any_tensor& v, const std::string& na
 {
     using numerical::qr_mode;
     const qr_mode mode {method_named<qr_mode>(name, {{"reduced", qr_mode::reduced}, {"complete", qr_mode::complete}})};
-    if (shape_of(v).size() != 2) {
-        throw std::runtime_error("qr expects a matrix (rank-2 tensor)");
+    if (shape_of(v).size() < 2) {
+        throw std::runtime_error("qr expects a matrix or a stack of matrices (rank ≥ 2)");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<std::tuple<any_tensor, any_tensor>>(v, [&](const any_tensor& m) { return qr(m, name); });
     }
     if (is_single(v)) {
         return narrowed(qr(widened(v), name));
@@ -1528,8 +1786,11 @@ std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& 
     const eigen_method method {method_named<eigen_method>(name, {{"divide_and_conquer", eigen_method::divide_and_conquer},
                                                                  {"tridiagonal_ql", eigen_method::tridiagonal_ql},
                                                                  {"jacobi", eigen_method::jacobi}})};
-    if (shape_of(v).size() != 2) {
-        throw std::runtime_error("eigh expects a matrix (rank-2 tensor)");
+    if (shape_of(v).size() < 2) {
+        throw std::runtime_error("eigh expects a matrix or a stack of matrices (rank ≥ 2)");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<std::tuple<any_tensor, any_tensor>>(v, [&](const any_tensor& m) { return eigh(m, name, upper); });
     }
     if (is_single(v)) {
         return narrowed(eigh(widened(v), name, upper));
@@ -1565,8 +1826,11 @@ std::tuple<any_tensor, any_tensor, any_tensor> svd(const any_tensor& v, const st
     const svd_method method {method_named<svd_method>(name, {{"divide_and_conquer", svd_method::divide_and_conquer},
                                                              {"bidiagonal_qr", svd_method::bidiagonal_qr},
                                                              {"jacobi", svd_method::jacobi}})};
-    if (shape_of(v).size() != 2) {
-        throw std::runtime_error("svd expects a matrix (rank-2 tensor)");
+    if (shape_of(v).size() < 2) {
+        throw std::runtime_error("svd expects a matrix or a stack of matrices (rank ≥ 2)");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<std::tuple<any_tensor, any_tensor, any_tensor>>(v, [&](const any_tensor& m) { return svd(m, name, full); });
     }
     if (is_single(v)) {
         return narrowed(svd(widened(v), name, full));
@@ -1580,8 +1844,11 @@ std::tuple<any_tensor, any_tensor, any_tensor> svd(const any_tensor& v, const st
 // _singular_values(a) -> Tensor: the singular values alone, descending, as numpy.linalg.svd(a, compute_uv=False).
 any_tensor singular_values(const any_tensor& v)
 {
-    if (shape_of(v).size() != 2) {
-        throw std::runtime_error("svd expects a matrix (rank-2 tensor)");
+    if (shape_of(v).size() < 2) {
+        throw std::runtime_error("svd expects a matrix or a stack of matrices (rank ≥ 2)");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<any_tensor>(v, [&](const any_tensor& m) { return singular_values(m); });
     }
     if (is_single(v)) {
         return narrowed(singular_values(widened(v)));
@@ -2200,6 +2467,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&qr>("qr", "qr(a, mode) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr: reduced, Q is m×k, R k×n, k = min(m, n); complete, Q is m×m, R m×n.");
     m.def<&eigh>("eigh", "eigh(a, method, upper) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, or with upper its upper one, as numpy.linalg.eigh's UPLO.");
     m.def<&eigvalsh>("eigvalsh", "eigvalsh(a, upper) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read, or with upper its upper one).");
+    m.def<&matrix_ranks>("_matrix_ranks", "_matrix_ranks(a, rtol, tol, hermitian) -> Tensor\nThe rank of every matrix of a stack, as float64 numbers along its leading axes.");
     m.def<&matrix_rank>("matrix_rank", "matrix_rank(a, rtol, tol, hermitian) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank: its singular values above tol, else above rtol times the largest (None, None: NumPy's default).");
     m.def<&pinv>("pinv", "pinv(a, rtol, hermitian) -> Tensor\nThe Moore–Penrose pseudo-inverse of an m×n matrix, as numpy.linalg.pinv (rtol None: NumPy's default).");
     m.def<&svd>("svd", "svd(a, method, full) -> (U, S, Vh)\nThe singular value decomposition of an m×n matrix, as numpy.linalg.svd(a, full_matrices=full).");

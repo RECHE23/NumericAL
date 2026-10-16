@@ -161,6 +161,11 @@ and answers in the input's: a float32 or complex64 matrix is decomposed in doubl
 to single, where NumPy's LAPACK computes in single (so they are as accurate as single precision holds, and the default
 tolerances are float32's epsilon, as NumPy's). `eigh` of a complex Hermitian matrix gives real values and complex
 vectors.
+Every one but `lstsq` (2-D in NumPy too) takes a stack of matrices, `(..., m, n)`, as NumPy's: each matrix answers
+as it does alone, to the bit, and the answers stack along the leading axes (`det` and `slogdet` give tensors, a stack's
+`matrix_rank` nested integers); `solve` broadcasts the leading axes of `a` and `b` as NumPy 2 does, `b` a vector only
+when it is 1-D. Small matrices, or as many as threads, go to the threads one each; larger ones one at a time, each
+with the threads (10 000 inverses of order 4 on eight arm64 cores: 2.0 ms, NumPy 4.4 ms).
 `eigh(a, method=...)` and `svd(a, method=...)` choose the algorithm: divide and conquer by default (LAPACK's
 `dsyevd`/`zheevd`, `dgesdd`), `"tridiagonal_ql"` or `"bidiagonal_qr"` (`dsyev`'s, `dgesvd`'s), or `"jacobi"`.
 A matrix holding a NaN or an infinity (in the triangle read, where only one is) raises

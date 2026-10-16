@@ -333,6 +333,8 @@ def run_single(g, h, square):
                     got, want = calls[name](single), calls[name](wide)
                 except numerical.LinAlgError:
                     continue
+                if name == "det":  # rounded to the input's precision, as the decompositions' answers
+                    want = (np.complex64 if cplx else np.float32)(want)
                 check(np.array_equal(np.array([got]), np.array([want]), equal_nan=True),
                       f"single-precision {name} {got}, double {want}")
                 continue
@@ -344,6 +346,35 @@ def run_single(g, h, square):
                 check(x.dtype == single.dtype or x.dtype == np.float32, f"single-precision {name} returned {x.dtype}")
                 check(np.array_equal(x, y.astype(x.dtype), equal_nan=True),
                       f"single-precision {name} part {part} is not the double one rounded ({bit_gap(x, y.astype(x.dtype))})")
+
+
+def run_stack(g, h, square):
+    """Stacks: each matrix of a stack of three (the case's matrix, its negative and its double) answers as it does
+    alone, to the bit, the answers stacked along the leading axis; one that fails fails the stack."""
+    for matrix, names in ((g, ("svd", "values", "qr", "pinv")), (h, ("eigh", "eigvalsh")), (square, ("inv", "det"))):
+        if matrix.size == 0 or not np.isfinite(matrix).all():
+            continue
+        stack = np.stack([matrix, -matrix, 2 * matrix])
+        calls = {"svd": lambda x: numerical.svd(x, full_matrices=False), "values": lambda x: numerical.svd(x, compute_uv=False),
+                 "qr": numerical.qr, "pinv": numerical.pinv, "eigh": numerical.eigh, "eigvalsh": numerical.eigvalsh,
+                 "inv": numerical.inv, "det": numerical.det}
+        for name in names:
+            try:
+                alone = [calls[name](numerical.asarray(m)) for m in stack]
+            except numerical.LinAlgError:
+                try:
+                    calls[name](numerical.asarray(stack))
+                except numerical.LinAlgError:
+                    continue
+                check(False, f"stacked {name} answers where a matrix of it fails")
+                continue
+            together = calls[name](numerical.asarray(stack))
+            together = together if isinstance(together, tuple) else (together,)
+            for k, part in enumerate(together):
+                for i, answer in enumerate(alone):
+                    want = np.asarray(answer[k] if isinstance(answer, tuple) else answer)
+                    check(np.array_equal(as_np(part)[i], want, equal_nan=True),
+                          f"stacked {name} part {k} matrix {i} differs from its own ({bit_gap(as_np(part)[i], want)})")
 
 
 def relative_tolerance(rtol, m, n, lapack=False):
@@ -430,7 +461,7 @@ def run_case(seed, index, largest):
     operations = (("eigh", lambda: run_eigh(h)), ("svd", lambda: run_svd(g)), ("qr", lambda: run_qr(g)),
                   ("solve", lambda: run_solve(square, rng)), ("cholesky", lambda: run_cholesky(square)),
                   ("lstsq", lambda: run_lstsq(g, rng)), ("pinv/rank", lambda: run_pinv_and_rank(g, h, rng)),
-                  ("single", lambda: run_single(g, h, square)))
+                  ("single", lambda: run_single(g, h, square)), ("stack", lambda: run_stack(g, h, square)))
     failures = []
     for name, operation in operations:
         try:

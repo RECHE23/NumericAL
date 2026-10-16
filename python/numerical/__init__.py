@@ -409,6 +409,7 @@ inv = inverse
 _lstsq = _linalg(_numerical.lstsq, arrays=2)
 _eigvalsh = _linalg(_numerical.eigvalsh, arrays=1)
 _matrix_rank = _linalg(_numerical.matrix_rank, arrays=1)
+_matrix_ranks = _linalg(_numerical._matrix_ranks, arrays=1)
 _pinv = _linalg(_numerical.pinv, arrays=1)
 _qr = _linalg(_numerical.qr, arrays=1)
 slogdet = _linalg(_numerical.slogdet)
@@ -506,7 +507,14 @@ def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):
     if A.ndim < 2:  # NumPy's: a vector or a number is of rank 1 unless all zero
         values = A.tolist()
         return int(any(value != 0 for value in (values if A.ndim == 1 else [values])))
+    if A.ndim > 2:  # a stack: its ranks, integers nested along its leading axes (NumPy's an integer array)
+        return _as_integers(_matrix_ranks(A, rtol, tol, bool(hermitian)).tolist())
     return _matrix_rank(A, rtol, tol, bool(hermitian))
+
+
+def _as_integers(nested):
+    """The numbers of a nested list as integers, nested alike."""
+    return [_as_integers(item) for item in nested] if isinstance(nested, list) else int(nested)
 
 
 def svd(a, full_matrices=True, compute_uv=True, *, method="divide_and_conquer"):

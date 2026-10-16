@@ -7,6 +7,15 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Added
+- **Stacks of matrices, `(..., m, n)`, in every decomposition and solver but `lstsq`** (2-D in NumPy too): `solve`,
+  `inv`, `det`, `slogdet`, `cholesky`, `qr`, `eigh`, `eigvalsh`, `svd`, `pinv` and `matrix_rank`, each matrix
+  answering as it does alone, to the bit, the answers stacked along the leading axes (`det` and `slogdet` give
+  tensors; a stack's `matrix_rank`, integers nested as its leading axes). `solve` broadcasts the leading axes of `a`
+  and `b` as NumPy 2 does, `b` a vector only when it is 1-D. Matrices of order 128 or less, or as many as threads, go
+  to the threads one each (the GIL released once for the stack); larger ones one at a time, each with the threads.
+  Eight arm64 cores, against NumPy: 10 000 inverses of order 4 2.0 ms (4.4), 2 000 `eigvalsh` of order 16 4.1 ms
+  (17.3), 1 000 `svd` of order 32 25 ms (119), 16 inverses of order 400 12.6 ms (24.8).
+- `det` and `slogdet` of a float32 or complex64 matrix are rounded to its precision, as its decompositions' answers.
 - **float32 and complex64**, kept as they are, as NumPy keeps them: `asarray` keeps a float32, complex64 or complex128
   array's dtype (and takes any of the four as `dtype`), `Tensor`, `zeros`, `ones`, `full` and `eye` make them, and
   `__array_interface__` and DLPack export them without a copy. Arithmetic, functions, reductions, indexing, products
