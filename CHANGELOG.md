@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.18 — 2026-10-16
+
 ### Added
 - **`a @ b` and `matmul` of stacks of matrices**, as NumPy's: the leading axes broadcast against each other (an extent
   of 1 repeated, read where it is, not copied), a vector first a row and second a column, mixed dtypes promoted; one
