@@ -13,6 +13,9 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
   addresses fell, rounded an element differently. Seen as an `eigvalsh` (or any decomposition through its symmetric
   product) changing its last bits with what ran before, on AVX-512 under GCC -O3: the Linux x86-64 wheels since the
   AVX-512 kernels. Compiling the headers with GCC, pass `-ffp-contract=on` (GCC before 14 takes it as off).
+- **The complete `qr`'s `Q`, and the full `svd`'s `U`, extend the reduced ones to the bit under any fusion of
+  multiply-adds**: their first columns are formed as the reduced `Q`'s, the complement apart, where formed together
+  the products' tiles differed and GCC 14 on aarch64 rounded some columns otherwise.
 
 ### Added
 - **Stacks of matrices, `(..., m, n)`, in every decomposition and solver but `lstsq`** (2-D in NumPy too): `solve`,
