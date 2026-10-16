@@ -19,6 +19,7 @@ namespace {
   using numerical::eigen_decomposition;
   using numerical::matrix;
   using C = std::complex<double>;
+  using numerical::detail::lapack_index; // std::ptrdiff_t: long long where long is 32 bits
 
   //! \brief `|(A V)(r, c) − λ_c V(r, c)|`.
   template <typename T>
@@ -525,23 +526,23 @@ TEST(plane_rotations_take_a_pair_to_its_length)
 namespace {
 
   //! \brief The largest residual of `TL X − X TR = B` for the \p n1 × \p n2 solution of \ref small_sylvester.
-  double sylvester_residual(std::array<double, 4> tl,
-                            std::array<double, 4> tr,
-                            std::array<double, 4> b,
-                            long                  n1,
-                            long                  n2)
+  double sylvester_residual(std::array<double, 4>         tl,
+                            std::array<double, 4>         tr,
+                            std::array<double, 4>         b,
+                            lapack_index                  n1,
+                            lapack_index                  n2)
   {
     using numerical::detail::one_based;
     double x[4]  {};
     numerical::detail::small_sylvester(one_based<double> {tl.data(), 2}, one_based<double> {tr.data(), 2}, one_based<double> {b.data(), 2}, n1, n2, x);
     double worst {0.0};
-    for (long i {0}; i < n1; ++i) {
-      for (long j {0}; j < n2; ++j) {
+    for (lapack_index i {0}; i < n1; ++i) {
+      for (lapack_index j {0}; j < n2; ++j) {
         double lhs {0.0};
-        for (long k {0}; k < n1; ++k) {
+        for (lapack_index k {0}; k < n1; ++k) {
           lhs += tl[static_cast<std::size_t>((i * 2) + k)] * x[(k * n2) + j];
         }
-        for (long k {0}; k < n2; ++k) {
+        for (lapack_index k {0}; k < n2; ++k) {
           lhs -= x[(i * n2) + k] * tr[static_cast<std::size_t>((k * 2) + j)];
         }
         worst = std::max(worst, std::abs(lhs - b[static_cast<std::size_t>((i * 2) + j)]));
@@ -575,32 +576,32 @@ TEST(a_block_exchange_that_would_not_hold_is_refused)
   }
   EXPECT(!numerical::detail::exchange_blocks(one_based<double> {t.data(), 4}, one_based<double> {q.data(), 4}, 4, 1, 2, 2));
   EXPECT(t == before);
-  long last {1};
+  lapack_index last {1};
   EXPECT(!numerical::detail::reorder(one_based<double> {t.data(), 4}, one_based<double> {q.data(), 4}, 4, 3, last));
-  EXPECT_EQ(last, 3L); // where the block stayed
+  EXPECT_EQ(last, lapack_index {3}); // where the block stayed
   last = 4;
   EXPECT(!numerical::detail::reorder(one_based<double> {t.data(), 4}, one_based<double> {q.data(), 4}, 4, 1, last));
-  EXPECT_EQ(last, 1L);
+  EXPECT_EQ(last, lapack_index {1});
 }
 
 TEST(reordering_a_schur_form_keeps_it_one)
 {
   using numerical::detail::one_based;
   // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
-  std::mt19937_64                        g {17};
-  std::uniform_real_distribution<double> u(-1.0, 1.0);
-  const long                             n {7};
+  std::mt19937_64                                g {17};
+  std::uniform_real_distribution<double>         u(-1.0, 1.0);
+  const lapack_index                             n {7};
   for (int trial {0}; trial < 400; ++trial) { // blocks nearly real among them split as they move
     std::vector<double>     t(49, 0.0);
     std::vector<double>     q(49, 0.0);
     const one_based<double> tt {t.data(), n};
-    for (long i {1}; i <= n; ++i) {
+    for (lapack_index i {1}; i <= n; ++i) {
       q[static_cast<std::size_t>((i - 1) * 8)] = 1.0;
-      for (long j {i}; j <= n; ++j) {
+      for (lapack_index j {i}; j <= n; ++j) {
         tt(i, j) = u(g);
       }
     }
-    for (long i {1}; i < n;) {
+    for (lapack_index i {1}; i < n;) {
       if (g() % 2 == 1) {
         const double w {std::pow(10.0, -static_cast<double>(g() % 17))};
         const double b {1.0 + u(g)};
@@ -613,15 +614,15 @@ TEST(reordering_a_schur_form_keeps_it_one)
         ++i;
       }
     }
-    const std::vector<double> before {t};
-    long                      last {1 + static_cast<long>(g() % n)};
-    long                      first {1 + static_cast<long>(g() % n)};
+    const std::vector<double>         before {t};
+    lapack_index                      last {1 + static_cast<lapack_index>(g() % n)};
+    lapack_index                      first {1 + static_cast<lapack_index>(g() % n)};
     first = first > 1 && tt(first, first - 1) != 0.0 ? first - 1 : first;
-    const long size {first < n && tt(first + 1, first) != 0.0 ? 2 : 1};
-    const auto trace_and_det {[&tt, size](long at) { // of the size × size diagonal block at `at`
-                                return size == 1 ? std::pair {tt(at, at), tt(at, at)}
+    const lapack_index size {first < n && tt(first + 1, first) != 0.0 ? 2 : 1};
+    const auto         trace_and_det {[&tt, size](lapack_index at) { // of the size × size diagonal block at `at`
+                                        return size == 1 ? std::pair {tt(at, at), tt(at, at)}
                        : std::pair {tt(at, at) + tt(at + 1, at + 1), (tt(at, at) * tt(at + 1, at + 1)) - (tt(at, at + 1) * tt(at + 1, at))};
-                              }};
+                                      }};
     const auto moved   {trace_and_det(first)};
     EXPECT(numerical::detail::reorder(tt, one_based<double> {q.data(), n}, n, first, last));
     const auto arrived {trace_and_det(last)}; // the block, or what it split into, where reorder says it ended
@@ -638,8 +639,8 @@ TEST(reordering_a_schur_form_keeps_it_one)
       c[(i * 5) + j] = C(u(g), u(g));
     }
   }
-  const std::vector<C> before {c};
-  long                 last   {5};
+  const std::vector<C>         before {c};
+  lapack_index                 last   {5};
   EXPECT(numerical::detail::reorder(one_based<C> {c.data(), 5}, one_based<C> {cq.data(), 5}, 5, 1, last)); // down
   EXPECT(c[24] == before[0]);                                                                              // to the end
   last = 1;
@@ -674,7 +675,7 @@ TEST(sweeps_of_many_shifts_keep_a_schur_similarity)
   // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
   std::mt19937_64 g {41};
   for (const bool accumulate : {false, true}) {
-    for (const long top : {1L, 9L}) { // the whole matrix, and an active block below a zero subdiagonal
+    for (const lapack_index top : {lapack_index {1}, lapack_index {9}}) { // the whole matrix, and an active block below a zero subdiagonal
       for (const std::size_t n : {24U, 7U}) {
         numerical::buffer<double> h0 {random_hessenberg<double>(n, g)};
         if (top > 1 && n > 9) {
@@ -689,10 +690,10 @@ TEST(sweeps_of_many_shifts_keep_a_schur_similarity)
           zt[(i * n) + i] = 1.0;
         }
         // real shifts out of pairs, then a conjugate pair: the sweep pairs them
-        std::vector<C>                                shifts {C(0.5), C(0.3, 0.2), C(0.3, -0.2), C(-0.1), C(2.0), C(-1.5)};
-        const numerical::detail::schur_target<double> target {.h = &h, .n = n, .low = 0, .high = n, .full = true, .zt = &zt};
-        const long                                    ktop   {n > 9 ? top : static_cast<long>(n) - 1}; // the order-7 block: its last 2 × 2
-        numerical::detail::chase_bulges(target, ktop, static_cast<long>(n), shifts.data(), n > 9 ? 6 : 2, accumulate);
+        std::vector<C>                                        shifts {C(0.5), C(0.3, 0.2), C(0.3, -0.2), C(-0.1), C(2.0), C(-1.5)};
+        const numerical::detail::schur_target<double>         target {.h = &h, .n = n, .low = 0, .high = n, .full = true, .zt = &zt};
+        const lapack_index                                    ktop   {n > 9 ? top : static_cast<lapack_index>(n) - 1}; // the order-7 block: its last 2 × 2
+        numerical::detail::chase_bulges(target, ktop, static_cast<lapack_index>(n), shifts.data(), n > 9 ? 6 : 2, accumulate);
         // H stays similar to H₀ through Z, Hessenberg below its first subdiagonal
         bool similar {true};
         for (std::size_t i {0}; i < n && similar; ++i) {
@@ -758,23 +759,23 @@ TEST(a_wide_deflation_window_is_itself_taken_by_the_multishift_iterations)
   numerical::buffer<C>                      h      {random_hessenberg<C>(n, g)};
   numerical::buffer<C>                      w(n);
   const numerical::detail::schur_target<C>  target {.h = &h, .n = n, .low = 0, .high = n, .full = false, .zt = nullptr};
-  const numerical::detail::deflation_count  found  {numerical::detail::early_deflation(target, 1, static_cast<long>(n), 105, w.data(), true)};
-  EXPECT_EQ(found.shifts + found.deflated, 105L);
-  EXPECT_EQ(numerical::detail::recommended_shifts(20), 2L);
-  EXPECT_EQ(numerical::detail::recommended_shifts(40), 4L);
-  EXPECT_EQ(numerical::detail::recommended_shifts(100), 10L);
-  EXPECT_EQ(numerical::detail::recommended_shifts(1024), 64L);
-  EXPECT_EQ(numerical::detail::recommended_shifts(4000), 128L);
-  EXPECT_EQ(numerical::detail::recommended_shifts(7000), 256L);
+  const numerical::detail::deflation_count  found  {numerical::detail::early_deflation(target, 1, static_cast<lapack_index>(n), 105, w.data(), true)};
+  EXPECT_EQ(found.shifts + found.deflated, lapack_index {105});
+  EXPECT_EQ(numerical::detail::recommended_shifts(20), lapack_index {2});
+  EXPECT_EQ(numerical::detail::recommended_shifts(40), lapack_index {4});
+  EXPECT_EQ(numerical::detail::recommended_shifts(100), lapack_index {10});
+  EXPECT_EQ(numerical::detail::recommended_shifts(1024), lapack_index {64});
+  EXPECT_EQ(numerical::detail::recommended_shifts(4000), lapack_index {128});
+  EXPECT_EQ(numerical::detail::recommended_shifts(7000), lapack_index {256});
 }
 
 namespace {
 
   //! \brief The cyclic permutation of order \p n plus \p eps times an exact pattern on its Hessenberg part: shifts that
   //!        stall for dozens of iterations, the same on every platform.
-  numerical::buffer<double> perturbed_cyclic(std::size_t n,
-                                             double      eps,
-                                             long        seed)
+  numerical::buffer<double> perturbed_cyclic(std::size_t         n,
+                                             double              eps,
+                                             lapack_index        seed)
   {
     numerical::buffer<double> h(n * n, 0.0);
     for (std::size_t i {0}; i + 1 < n; ++i) {
@@ -783,7 +784,7 @@ namespace {
     h[n - 1] = 1.0;
     for (std::size_t i {0}; i < n; ++i) {
       for (std::size_t j {i == 0 ? 0 : i - 1}; j < n; ++j) {
-        const long pattern {((static_cast<long>(i) * 131) + (static_cast<long>(j) * 71) + (seed * 29)) % 97};
+        const lapack_index pattern {((static_cast<lapack_index>(i) * 131) + (static_cast<lapack_index>(j) * 71) + (seed * 29)) % 97};
         h[(i * n) + j] += eps * ((static_cast<double>(pattern) / 48.0) - 1.0);
       }
     }
@@ -854,7 +855,7 @@ TEST(sweeps_of_a_complex_matrix_with_and_without_z)
           }
           std::vector<C>                           shifts {C(0.5, 1.0), C(-0.5, 0.2), C(1.0), C(0.0, -1.0)};
           const numerical::detail::schur_target<C> target {.h = &h, .n = n, .low = 0, .high = n, .full = full, .zt = with_z ? &zt : nullptr};
-          numerical::detail::chase_bulges(target, n < 9 ? 6 : 1, static_cast<long>(n), shifts.data(), n < 9 ? 2 : 4, accumulate);
+          numerical::detail::chase_bulges(target, n < 9 ? 6 : 1, static_cast<lapack_index>(n), shifts.data(), n < 9 ? 2 : 4, accumulate);
           EXPECT(std::isfinite(h[(n * n) - 1].real()));
         }
       }
@@ -896,8 +897,8 @@ TEST(the_multishift_eigenvalues_alone)
   for (std::size_t i {0}; i < 130; ++i) {
     EXPECT_EQ(alone[i], f.values()[i]);
   }
-  EXPECT_EQ(numerical::detail::recommended_window(400, 40), 40L);
-  EXPECT_EQ(numerical::detail::recommended_window(600, 64), 96L);
+  EXPECT_EQ(numerical::detail::recommended_window(400, 40), lapack_index {40});
+  EXPECT_EQ(numerical::detail::recommended_window(600, 64), lapack_index {96});
 }
 
 TEST(a_refused_exchange_while_sorting_the_window)
@@ -919,7 +920,7 @@ TEST(a_refused_exchange_while_sorting_the_window)
     vt[i * 5] = 1.0; // the first column of V: the spike, undeflatable but for the last row
   }
   std::vector<C> w(5);
-  EXPECT_EQ(numerical::detail::undeflated(one_based<double> {t.data(), 5}, one_based<double> {vt.data(), 5}, 5, 1.0, 1e-290, w.data()), 4L);
+  EXPECT_EQ(numerical::detail::undeflated(one_based<double> {t.data(), 5}, one_based<double> {vt.data(), 5}, 5, 1.0, 1e-290, w.data()), lapack_index {4});
 }
 
 TEST(a_real_window_past_the_crossover)
@@ -930,8 +931,8 @@ TEST(a_real_window_past_the_crossover)
   numerical::buffer<double>                     h      {random_hessenberg<double>(n, g)};
   numerical::buffer<C>                          w(n);
   const numerical::detail::schur_target<double> target {.h = &h, .n = n, .low = 0, .high = n, .full = false, .zt = nullptr};
-  const numerical::detail::deflation_count      found  {numerical::detail::early_deflation(target, 1, static_cast<long>(n), 202, w.data(), true)};
-  EXPECT_EQ(found.shifts + found.deflated, 202L);
+  const numerical::detail::deflation_count      found  {numerical::detail::early_deflation(target, 1, static_cast<lapack_index>(n), 202, w.data(), true)};
+  EXPECT_EQ(found.shifts + found.deflated, lapack_index {202});
 }
 
 TEST(a_nearly_real_pair_below_a_chain_of_its_real_part)
