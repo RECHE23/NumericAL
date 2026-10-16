@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.16 — 2026-10-16
+
 ### Fixed
 - **The same operands give the same bits from one call to the next, under GCC too**: the wheels and the sdist are
   built with `-ffp-contract=on` (Clang's default), where GCC's default, `fast`, fused multiply-adds across statements as
