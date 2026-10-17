@@ -13,6 +13,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   of A then stays in the L1 cache beside its slivers of B. Six AVX2 cores, 936 × 936 by 64 (an LU's trailing update):
   one core 44.7 → 47.9 GFLOP/s, six 235 → 255; by 32, 11 and 14 % faster; by 192 and more, unchanged. The tiles, and so
   the bits, are the same.
+- On the AVX2 units a matrix product prefetches the next row of tiles' block of C while a tile computes: within a row
+  the tiles walk one page's lines, which the processor follows, the next row lands on other pages. Six AVX2 cores, order
+  1000: one core 49.2 → 50.0 GFLOP/s, six 228 → 232; 936 × 936 by 32 to 256, 1 to 5 %.
 
 ## 2026.10.21 — 2026-10-17
 

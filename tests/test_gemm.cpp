@@ -210,12 +210,14 @@ TEST(a_left_operand_packed_once_gives_gemm_s_bits_on_every_path)
 }
 
 #ifdef NUMERICAL_X86_COMPILED
-// The AVX2 tile's task rows follow the panel's depth: the hook is found (a signature it no longer matches would fall back
-// to the block's rows in silence), and other tiles keep their block.
+// The AVX2 tile's task rows follow the panel's depth and it prefetches the next row's C: the hooks are found (a
+// signature they no longer match would fall back in silence), and other tiles keep their block and prefetch nothing.
 static_assert(numerical::detail::task_rows_cap<numerical::detail::avx2_tile_kernel>(64) == 36);
 static_assert(numerical::detail::task_rows_cap<numerical::detail::avx2_tile_kernel>(128) == 36);
 static_assert(numerical::detail::task_rows_cap<numerical::detail::avx2_tile_kernel>(256) == numerical::detail::avx2_tile_kernel::block_rows);
 static_assert(numerical::detail::task_rows_cap<numerical::detail::avx512_tile_kernel>(64) == numerical::detail::avx512_tile_kernel::block_rows);
+static_assert(numerical::detail::prefetches_next_row_of_c<numerical::detail::avx2_tile_kernel>);
+static_assert(!numerical::detail::prefetches_next_row_of_c<numerical::detail::avx512_tile_kernel>);
 #endif
 
 TEST(complex_products_past_the_portable_path)
