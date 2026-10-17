@@ -35,6 +35,23 @@ void dsyevd_(const char*, const char*, const int*, double*, const int*, double*,
              std::size_t) noexcept;
 void dgesdd_(const char*, const int*, const int*, double*, const int*, double*, double*, const int*, double*, const int*, double*, const int*,
              int*, int*, std::size_t) noexcept;
+void dgeqrf_(const int*,
+             const int*,
+             double*,
+             const int*,
+             double*,
+             double*,
+             const int*,
+             int*) noexcept;
+void dorgqr_(const int*,
+             const int*,
+             const int*,
+             double*,
+             const int*,
+             const double*,
+             double*,
+             const int*,
+             int*) noexcept;
 }
 
 namespace {
@@ -764,4 +781,194 @@ TEST(the_fortran_eigensolvers_answer_as_the_cpp_ones)
   EXPECT_EQ(info, -3);
   dgesdd_("A", &bad, &two, b.data(), &two, s.data(), u.data(), &two, vt.data(), &two, big.data(), &lbig, iwork.data(), &info, 1);
   EXPECT_EQ(info, -2);
+}
+
+namespace {
+  // The first n columns of H₀ H₁ … H_{k-1}, H_i = I − τ_i w wᵀ with w 1 at row i and A's column i below it,
+  // column-major m × n, by plain loops: each reflector applied in turn, the last first.
+  std::vector<double> reflected_identity(const std::vector<double>& a,
+                                         std::size_t                lda,
+                                         const std::vector<double>& tau,
+                                         std::size_t                m,
+                                         std::size_t                n,
+                                         std::size_t                k)
+  {
+    std::vector<double> q(m * n, 0.0);
+    for (std::size_t c {0}; c < n; ++c) {
+      q[c + (c * m)] = 1.0;
+    }
+    for (std::size_t i {k}; i-- > 0;) {
+      for (std::size_t c {0}; c < n; ++c) {
+        double dot {q[i + (c * m)]};
+        for (std::size_t r {i + 1}; r < m; ++r) {
+          dot += a[r + (i * lda)] * q[r + (c * m)];
+        }
+        q[i + (c * m)] -= tau[i] * dot;
+        for (std::size_t r {i + 1}; r < m; ++r) {
+          q[r + (c * m)] -= tau[i] * a[r + (i * lda)] * dot;
+        }
+      }
+    }
+    return q;
+  }
+
+  // Whether geqrf of an m × n matrix (the leading dimension padded, \p zero_column zeroed if below n) leaves R and
+  // reflectors whose product is A, Q orthonormal, and orgqr forming that Q.
+  bool geqrf_factorises(std::size_t m,
+                        std::size_t n,
+                        std::size_t zero_column)
+  {
+    const std::size_t   lda {m + 3};
+    const std::size_t   k   {std::min(m, n)};
+    std::vector<double> a   {entries(lda * n, 23)};
+    for (std::size_t i {0}; i < m && zero_column < n; ++i) {
+      a[i + (zero_column * lda)] = 0.0;
+    }
+    const std::vector<double> original {a};
+    std::vector<double>       tau(k);
+    double                    query    {0.0};
+    const auto                lm       {static_cast<std::ptrdiff_t>(m)};
+    const auto                ln       {static_cast<std::ptrdiff_t>(n)};
+    const auto                ld       {static_cast<std::ptrdiff_t>(lda)};
+    if (numerical::blas::geqrf(lm, ln, a.data(), ld, tau.data(), &query, -1) != 0) {
+      return false;
+    }
+    std::vector<double> work(static_cast<std::size_t>(query));
+    if (numerical::blas::geqrf(lm, ln, a.data(), ld, tau.data(), work.data(), static_cast<std::ptrdiff_t>(work.size())) != 0) {
+      return false;
+    }
+    const std::vector<double> q    {reflected_identity(a, lda, tau, m, k, k)};
+    const double              tol  {1e-13 * static_cast<double>(m + n)};
+    bool                      good {zero_column >= k || tau[zero_column] == 0.0};
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        double sum {0.0};
+        for (std::size_t l {0}; l <= std::min(j, k - 1); ++l) {
+          sum += q[i + (l * m)] * a[l + (j * lda)];
+        }
+        good = good && std::abs(sum - original[i + (j * lda)]) <= tol;
+      }
+    }
+    for (std::size_t p {0}; p < k; ++p) {
+      for (std::size_t c {0}; c < k; ++c) {
+        double gram {0.0};
+        for (std::size_t i {0}; i < m; ++i) {
+          gram += q[i + (p * m)] * q[i + (c * m)];
+        }
+        good = good && std::abs(gram - (p == c ? 1.0 : 0.0)) <= tol;
+      }
+    }
+    if (numerical::blas::orgqr(lm, static_cast<std::ptrdiff_t>(k), static_cast<std::ptrdiff_t>(k), a.data(), ld, tau.data(),
+                               work.data(), static_cast<std::ptrdiff_t>(std::max<std::size_t>(1, k))) != 0) {
+      return false;
+    }
+    for (std::size_t j {0}; j < k; ++j) {
+      for (std::size_t i {0}; i < m; ++i) {
+        good = good && std::abs(a[i + (j * lda)] - q[i + (j * m)]) <= tol;
+      }
+    }
+    return good;
+  }
+
+  // Whether orgqr forms the product of k arbitrary reflectors (not only a QR's: τ_i not 2 / ‖w‖², each I − τ w wᵀ a
+  // contraction, so that the product stays of order 1) as plain loops do.
+  bool orgqr_forms(std::size_t m,
+                   std::size_t n,
+                   std::size_t k)
+  {
+    const std::size_t   lda {m + 1};
+    std::vector<double> a   {entries(lda * n, 29)};
+    std::vector<double> tau {entries(k, 31)};
+    for (std::size_t i {0}; i < k; ++i) {
+      double norm_squared {1.0};
+      for (std::size_t r {i + 1}; r < m; ++r) {
+        norm_squared += a[r + (i * lda)] * a[r + (i * lda)];
+      }
+      tau[i] = (tau[i] + 1.0) / norm_squared; // in [0, 2 / ‖w‖²)
+    }
+    const std::vector<double> want {reflected_identity(a, lda, tau, m, n, k)};
+    std::vector<double>       work(n + 1);
+    if (numerical::blas::orgqr(static_cast<std::ptrdiff_t>(m), static_cast<std::ptrdiff_t>(n), static_cast<std::ptrdiff_t>(k), a.data(),
+                               static_cast<std::ptrdiff_t>(lda), tau.data(), work.data(), static_cast<std::ptrdiff_t>(work.size())) != 0) {
+      return false;
+    }
+    bool good {true};
+    for (std::size_t j {0}; j < n; ++j) {
+      for (std::size_t i {0}; i < m; ++i) {
+        good = good && std::abs(a[i + (j * lda)] - want[i + (j * m)]) <= 1e-12 * static_cast<double>(m);
+      }
+    }
+    return good;
+  }
+} // namespace
+
+TEST(geqrf_factorises_and_orgqr_forms_its_q)
+{
+  EXPECT(geqrf_factorises(9, 5, 99));
+  EXPECT(geqrf_factorises(5, 9, 99));
+  EXPECT(geqrf_factorises(100, 70, 40)); // three blocks of reflectors, one column zero: its τ 0
+  EXPECT(geqrf_factorises(70, 100, 3));
+  EXPECT(geqrf_factorises(1, 1, 99));
+}
+
+TEST(orgqr_forms_any_product_of_reflectors)
+{
+  EXPECT(orgqr_forms(80, 70, 65));
+  EXPECT(orgqr_forms(80, 70, 0));
+  EXPECT(orgqr_forms(10, 10, 10));
+  EXPECT(orgqr_forms(5, 0, 0));
+}
+
+TEST(geqrf_and_orgqr_size_their_workspaces_and_report_an_illegal_argument_and_a_nan)
+{
+  std::vector<double> a(12, 1.0); // 4 × 3
+  std::vector<double> tau(3, 1.0);
+  std::vector<double> work(8);
+  EXPECT_EQ(numerical::blas::geqrf(4, 3, a.data(), 4, tau.data(), work.data(), -1), 0);
+  EXPECT(work[0] == 3.0);
+  EXPECT_EQ(numerical::blas::geqrf(0, 3, a.data(), 1, tau.data(), work.data(), -1), 0);
+  EXPECT(work[0] == 1.0);
+  EXPECT_EQ(numerical::blas::geqrf(0, 3, a.data(), 1, tau.data(), work.data(), 1), 0);
+  EXPECT_EQ(numerical::blas::geqrf(-1, 3, a.data(), 4, tau.data(), work.data(), 8), -1);
+  EXPECT_EQ(numerical::blas::geqrf(4, -1, a.data(), 4, tau.data(), work.data(), 8), -2);
+  EXPECT_EQ(numerical::blas::geqrf(4, 3, a.data(), 3, tau.data(), work.data(), 8), -4);
+  EXPECT_EQ(numerical::blas::geqrf(4, 3, a.data(), 4, tau.data(), work.data(), 2), -7);
+  EXPECT_EQ(numerical::blas::orgqr(4, 3, 3, a.data(), 4, tau.data(), work.data(), -1), 0);
+  EXPECT(work[0] == 3.0);
+  EXPECT_EQ(numerical::blas::orgqr(-1, 0, 0, a.data(), 4, tau.data(), work.data(), 8), -1);
+  EXPECT_EQ(numerical::blas::orgqr(4, -1, 0, a.data(), 4, tau.data(), work.data(), 8), -2);
+  EXPECT_EQ(numerical::blas::orgqr(2, 3, 0, a.data(), 4, tau.data(), work.data(), 8), -2);
+  EXPECT_EQ(numerical::blas::orgqr(4, 3, -1, a.data(), 4, tau.data(), work.data(), 8), -3);
+  EXPECT_EQ(numerical::blas::orgqr(4, 2, 3, a.data(), 4, tau.data(), work.data(), 8), -3);
+  EXPECT_EQ(numerical::blas::orgqr(4, 3, 3, a.data(), 3, tau.data(), work.data(), 8), -5);
+  EXPECT_EQ(numerical::blas::orgqr(4, 3, 3, a.data(), 4, tau.data(), work.data(), 2), -8);
+  a[0] = std::numeric_limits<double>::quiet_NaN(); // on the diagonal: R's, not a reflector's, for orgqr
+  EXPECT_EQ(numerical::blas::geqrf(4, 3, a.data(), 4, tau.data(), work.data(), 8), -3);
+  a[0] = 1.0;
+  a[3] = std::numeric_limits<double>::infinity();  // below the diagonal of column 0: reflector 0's
+  EXPECT_EQ(numerical::blas::orgqr(4, 3, 1, a.data(), 4, tau.data(), work.data(), 8), -4);
+  a[3]   = 1.0;
+  tau[1] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(numerical::blas::orgqr(4, 3, 2, a.data(), 4, tau.data(), work.data(), 8), -6);
+  a[0] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(numerical::blas::orgqr(4, 3, 1, a.data(), 4, tau.data(), work.data(), 8), 0);
+}
+
+TEST(the_fortran_qr_routines_answer_as_the_cpp_ones)
+{
+  const int           two  {2};
+  const int           lw   {2};
+  std::vector<double> a    {3.0, 4.0, 1.0, 2.0}; // column 0 = (3, 4): R(0, 0) = −5
+  std::vector<double> tau(2);
+  std::vector<double> work(2);
+  int                 info {7};
+  dgeqrf_(&two, &two, a.data(), &two, tau.data(), work.data(), &lw, &info);
+  EXPECT(info == 0 && std::abs(a[0] + 5.0) < 1e-15);
+  dorgqr_(&two, &two, &two, a.data(), &two, tau.data(), work.data(), &lw, &info);
+  EXPECT(info == 0 && std::abs(a[0] + 0.6) < 1e-15 && std::abs(a[1] + 0.8) < 1e-15);
+  const int bad {-1};
+  dgeqrf_(&bad, &two, a.data(), &two, tau.data(), work.data(), &lw, &info);
+  EXPECT_EQ(info, -1);
+  dorgqr_(&two, &two, &bad, a.data(), &two, tau.data(), work.data(), &lw, &info);
+  EXPECT_EQ(info, -3);
 }

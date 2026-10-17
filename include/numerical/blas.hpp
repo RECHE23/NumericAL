@@ -1,9 +1,10 @@
 /*!
  * \file blas.hpp
  * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`dgemm`, `dgesv`,
- *        `dpotrf`), as their reference implementations define them, over NumericAL's kernels: what the optional
- *        `numerical_blas` library exports with the Fortran calling convention (blas/numerical_blas.cpp), so that a
- *        program linked against BLAS and LAPACK, or a switch such as FlexiBLAS, can run on NumericAL.
+ *        `dgetrf`, `dgetrs`, `dpotrf`, `dpotrs`, `dsyevd`, `dgesdd`, `dgeqrf`, `dorgqr`), as their reference
+ *        implementations define them, over NumericAL's kernels: what the optional `numerical_blas` library exports
+ *        with the Fortran calling convention (blas/numerical_blas.cpp), so that a program linked against BLAS and
+ *        LAPACK, or a switch such as FlexiBLAS, can run on NumericAL.
  *
  * Each function checks its arguments as the reference does and returns the position of the first illegal one (the
  * number the reference passes to `XERBLA`), negated for the LAPACK routines as their `INFO`; it computes nothing then.
@@ -38,7 +39,8 @@ namespace numerical::blas {
       return op != 'N' && op != 'n';
     }
 
-    //! \brief `rows × cols` of the column-major \p a (\p lda apart), as a row-major buffer, each element times \p scale.
+    //! \brief `rows × cols` of the column-major \p a (\p lda apart), as a row-major buffer, each element times
+    //!        \p scale.
     [[nodiscard]] inline buffer<double> row_major(const double * a,
                                                   std::ptrdiff_t lda,
                                                   std::ptrdiff_t rows,
@@ -535,9 +537,9 @@ namespace numerical::blas {
    * \brief The eigenvalues, and with \p jobz `V` the eigenvectors, of a symmetric column-major `A`, as LAPACK's
    *        `dsyevd`: the triangle \p uplo (`L` or `U`) read; the eigenvalues ascending in \p w; the orthonormal
    *        eigenvectors overwriting `A`, column `j` that of `w[j]`; with `N`, `A` left as it was (LAPACK leaves it
-   *        overwritten). NumericAL's divide and conquer computes them; the workspaces are not used, but their sizes are
-   *        `dsyevd`'s: an `lwork` or `liwork` of -1 asks them (written to `work[0]` and `iwork[0]`), and a smaller one is
-   *        illegal.
+   *        overwritten). NumericAL's divide and conquer computes them; the workspaces are not used, but their sizes
+   *        are `dsyevd`'s: an `lwork` or `liwork` of -1 asks them (written to `work[0]` and `iwork[0]`), and a
+   *        smaller one is illegal.
    * \return `INFO`: 0, or `-i` where argument `i` is illegal (`-4`: a NaN or an infinity in the triangle read).
    */
   template <typename Index>
@@ -595,7 +597,7 @@ namespace numerical::blas {
       }
     }
     try {
-      matrix<double> symmetric {size, size, std::move(lower_rows)};
+      const matrix<double> symmetric {size, size, std::move(lower_rows)};
       if (!vectors) {
         const vector<double> values {symmetric_eigenvalues(symmetric)};
         std::copy_n(&values[0], size, w);
@@ -664,13 +666,10 @@ namespace numerical::blas {
       return -8;
     }
     std::ptrdiff_t vt_rows {1};
-    if (all) {
-      vt_rows = n;
-    }
-    else if (some) {
+    if (some) {
       vt_rows = least;
     }
-    else if (vt_out) {
+    else if (vt_out) { // A, or O with m ≥ n: Vᵀ whole
       vt_rows = n;
     }
     if (ldvt < std::max<std::ptrdiff_t>(1, vt_rows)) {
@@ -725,6 +724,175 @@ namespace numerical::blas {
     }
     catch (const non_finite_error&) {
       return -4;
+    }
+    return 0;
+  }
+
+  /*!
+   * \brief The QR factorisation `A = Q R` of a column-major `m × n` `A`, as LAPACK's `dgeqrf`: `R` overwrites the upper
+   *        trapezoid of `A`; `Q = H₀ H₁ … H_{k-1}` (`k = min(m, n)`) is left as its reflectors `H_i = I − τ_i w wᵀ`,
+   *        `w` 1 at row `i` and below it held in `A`'s column `i`, `τ_i` in \p tau (0 for the identity) — the form
+   *        `dorgqr` and `dormqr` read. NumericAL's blocked Householder reflections compute them; the workspace is not
+   *        used, but its size is `dgeqrf`'s least, `n`: an `lwork` of -1 asks it (written to `work[0]`), and a smaller
+   *        one is illegal.
+   * \return `INFO`: 0, or `-i` where argument `i` is illegal (`-3`: a NaN or an infinity in `A`).
+   */
+  inline int geqrf(std::ptrdiff_t m,
+                   std::ptrdiff_t n,
+                   double*        a,
+                   std::ptrdiff_t lda,
+                   double*        tau,
+                   double*        work,
+                   std::ptrdiff_t lwork)
+  {
+    if (m < 0) {
+      return -1;
+    }
+    if (n < 0) {
+      return -2;
+    }
+    if (lda < std::max<std::ptrdiff_t>(1, m)) {
+      return -4;
+    }
+    const std::ptrdiff_t lwork_least {std::min(m, n) == 0 ? 1 : n};
+    if (lwork == -1) {
+      work[0] = static_cast<double>(lwork_least);
+      return 0;
+    }
+    if (lwork < lwork_least) {
+      return -7;
+    }
+    if (std::min(m, n) == 0) {
+      return 0;
+    }
+    const auto           rows    {static_cast<std::size_t>(m)};
+    const auto           cols    {static_cast<std::size_t>(n)};
+    const auto           ld      {static_cast<std::size_t>(lda)};
+    buffer<double>       entries {detail::row_major(a, lda, m, n, 1.0)};
+    if (!std::ranges::all_of(entries, [](double x) { return std::isfinite(x); })) {
+      return -3;
+    }
+    const numerical::detail::qr_reflections<double> factors {numerical::detail::householder_reflect(std::move(entries), rows, cols)};
+    const std::size_t                               depth   {std::min(rows, cols)};
+    for (std::size_t i {0}; i < depth; ++i) {
+      for (std::size_t j {i}; j < cols; ++j) {
+        a[i + (j * ld)] = factors.r[(i * cols) + j];
+      }
+    }
+    // A unit reflector I − 2 v vᵀ is I − τ w wᵀ with w = v / v₀ and τ = 2 v₀²; v₀ is 0 only for an empty one (the
+    // identity).
+    for (const numerical::detail::reflector_block<double>& block : factors.blocks) {
+      for (std::size_t j {0}; j < block.width; ++j) {
+        const std::size_t k   {block.first + j};
+        const double      top {block.v[(j * block.width) + j]};
+        tau[k] = 2.0 * top * top; // 0 for an empty reflector (the identity), its v zero
+        for (std::size_t r {1}; j + r < block.height; ++r) {
+          a[(k + r) + (k * ld)] = tau[k] == 0.0 ? 0.0 : block.v[((j + r) * block.width) + j] / top;
+        }
+      }
+    }
+    return 0;
+  }
+
+  /*!
+   * \brief The first \p n columns of `Q = H₀ H₁ … H_{k-1}`, from the reflectors of a `dgeqrf` (\ref geqrf's or any
+   *        implementation's: column `i` of `A` below row `i`, `τ_i` in \p tau), overwriting the column-major `m × n`
+   *        `A`, as LAPACK's `dorgqr`: the reflectors gathered by blocks into `I − V T Vᵀ` (`T` as `dlarft` forms it)
+   *        and applied through the matrix product kernel. The workspace is not used, but its size is `dorgqr`'s
+   *        least, `n`: an `lwork` of -1 asks it (written to `work[0]`), and a smaller one is illegal.
+   * \return `INFO`: 0, or `-i` where argument `i` is illegal (`-4`: a NaN or an infinity in a reflector, `-6` in
+   *         \p tau).
+   */
+  inline int orgqr(std::ptrdiff_t m,
+                   std::ptrdiff_t n,
+                   std::ptrdiff_t k,
+                   double*        a,
+                   std::ptrdiff_t lda,
+                   const double*  tau,
+                   double*        work,
+                   std::ptrdiff_t lwork)
+  {
+    if (m < 0) {
+      return -1;
+    }
+    if (n < 0 || n > m) {
+      return -2;
+    }
+    if (k < 0 || k > n) {
+      return -3;
+    }
+    if (lda < std::max<std::ptrdiff_t>(1, m)) {
+      return -5;
+    }
+    const std::ptrdiff_t lwork_least {std::max<std::ptrdiff_t>(1, n)};
+    if (lwork == -1) {
+      work[0] = static_cast<double>(lwork_least);
+      return 0;
+    }
+    if (lwork < lwork_least) {
+      return -8;
+    }
+    if (n == 0) {
+      return 0;
+    }
+    const auto rows  {static_cast<std::size_t>(m)};
+    const auto cols  {static_cast<std::size_t>(n)};
+    const auto depth {static_cast<std::size_t>(k)};
+    const auto ld    {static_cast<std::size_t>(lda)};
+    for (std::size_t j {0}; j < depth; ++j) {
+      if (!std::isfinite(tau[j])) {
+        return -6;
+      }
+      for (std::size_t i {j + 1}; i < rows; ++i) {
+        if (!std::isfinite(a[i + (j * ld)])) {
+          return -4;
+        }
+      }
+    }
+    std::vector<numerical::detail::reflector_block<double>> blocks;
+    for (std::size_t k0 {0}; k0 < depth; k0 += numerical::detail::qr_block) {
+      const std::size_t                          width {std::min(numerical::detail::qr_block, depth - k0)};
+      numerical::detail::reflector_block<double> block {.first = k0, .height = rows - k0, .width = width, .v = {}, .t = {}};
+      block.v.assign(block.height * width, 0.0);
+      block.t.assign(width * width, 0.0);
+      for (std::size_t j {0}; j < width; ++j) {
+        block.v[(j * width) + j] = 1.0;
+        for (std::size_t r {j + 1}; r < block.height; ++r) {
+          block.v[(r * width) + j] = a[(k0 + r) + ((k0 + j) * ld)];
+        }
+      }
+      // T(j, j) = τ_j; T(0…j-1, j) = −τ_j T(0…j-1, 0…j-1) V(:, 0…j-1)ᵀ v_j.
+      for (std::size_t j {0}; j < width; ++j) {
+        const double t_j {tau[k0 + j]};
+        block.t[(j * width) + j] = t_j;
+        std::vector<double> z(j, 0.0);
+        for (std::size_t p {0}; p < j; ++p) {
+          for (std::size_t r {j}; r < block.height; ++r) {
+            z[p] += block.v[(r * width) + p] * block.v[(r * width) + j];
+          }
+        }
+        for (std::size_t i {0}; i < j; ++i) {
+          double sum {0.0};
+          for (std::size_t p {i}; p < j; ++p) {
+            sum += block.t[(i * width) + p] * z[p];
+          }
+          block.t[(i * width) + j] = -t_j * sum;
+        }
+      }
+      blocks.push_back(std::move(block));
+    }
+    buffer<double> q(rows * cols, 0.0); // the first n columns of I, row-major, then Q's
+    for (std::size_t c {0}; c < cols; ++c) {
+      q[(c * cols) + c] = 1.0;
+    }
+    // Q = B₀ B₁ … applied right to left; the columns of I left of a block's first row are left as they are.
+    for (std::size_t b {blocks.size()}; b-- > 0;) {
+      numerical::detail::apply_reflector_block(blocks[b], false, q, cols, blocks[b].first, cols);
+    }
+    for (std::size_t j {0}; j < cols; ++j) {
+      for (std::size_t i {0}; i < rows; ++i) {
+        a[i + (j * ld)] = q[(i * cols) + j];
+      }
     }
     return 0;
   }

@@ -20,6 +20,10 @@ for full in (False, True):
     u, sigma, vh = np.linalg.svd(a[:, :200], full_matrices=full)
     assert np.abs((u[:, :200] * sigma) @ vh[:200] - a[:, :200]).max() < 1e-9, "svd"
 assert np.abs(np.linalg.svd(a, compute_uv=False) - np.linalg.svd(a)[1]).max() < 1e-9, "singular values"
+for mode in ("reduced", "complete"):
+    q, r = np.linalg.qr(a[:, :200], mode=mode)
+    assert np.abs(q @ r - a[:, :200]).max() < 1e-9, "qr"
+    assert np.abs(q.T @ q - np.eye(q.shape[1])).max() < 1e-12, "qr orthonormal"
 try:
     np.linalg.cholesky(np.array([[1.0, 2.0], [2.0, 1.0]]))
     raise AssertionError("an indefinite matrix was factorised")

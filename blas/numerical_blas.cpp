@@ -1,8 +1,8 @@
-// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (dgemm, dgesdd, dgesv, dgetrf,
-// dgetrs, dpotrf, dpotrs, dsyevd): every argument by address, 32-bit integers (LP64), and a hidden length after the
-// arguments for each character one, as gfortran passes it. The semantics are numerical/blas.hpp's. An illegal argument is reported as the
-// reference XERBLA reports it, on the standard error, and the call returns (as OpenBLAS's does) rather than stopping
-// the program; no C++ exception leaves these functions.
+// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (dgemm, dgeqrf, dgesdd, dgesv,
+// dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd): every argument by address, 32-bit integers (LP64), and a hidden
+// length after the arguments for each character one, as gfortran passes it. The semantics are numerical/blas.hpp's. An
+// illegal argument is reported as the reference XERBLA reports it, on the standard error, and the call returns (as
+// OpenBLAS's does) rather than stopping the program; no C++ exception leaves these functions.
 #include <cstddef>
 #include <cstdio>
 #include <exception>
@@ -191,6 +191,45 @@ void dgesdd_(const char* jobz,
   }
   catch (...) {
     report_failure("DGESDD");
+    *info = -1;
+  }
+}
+
+void dgeqrf_(const int* m,
+             const int* n,
+             double*    a,
+             const int* lda,
+             double*    tau,
+             double*    work,
+             const int* lwork,
+             int*       info) noexcept
+{
+  try {
+    *info = numerical::blas::geqrf(*m, *n, a, *lda, tau, work, *lwork);
+    report_illegal("DGEQRF", -*info);
+  }
+  catch (...) {
+    report_failure("DGEQRF");
+    *info = -1;
+  }
+}
+
+void dorgqr_(const int*    m,
+             const int*    n,
+             const int*    k,
+             double*       a,
+             const int*    lda,
+             const double* tau,
+             double*       work,
+             const int*    lwork,
+             int*          info) noexcept
+{
+  try {
+    *info = numerical::blas::orgqr(*m, *n, *k, a, *lda, tau, work, *lwork);
+    report_illegal("DORGQR", -*info);
+  }
+  catch (...) {
+    report_failure("DORGQR");
     *info = -1;
   }
 }
