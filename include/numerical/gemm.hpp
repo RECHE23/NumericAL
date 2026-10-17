@@ -955,6 +955,25 @@ namespace numerical::detail {
     return m * n * k >= Kernel::serial_below;
   }
 
+  //! \brief The most rows of a task of \p Kernel over a panel of depth \p kc: its block of rows.
+  template <typename Kernel>
+  [[nodiscard]] constexpr std::size_t task_rows_cap(std::size_t /*kc*/) noexcept
+  {
+    return Kernel::block_rows;
+  }
+
+  //! \brief \ref task_rows_cap for a tile whose task rows depend on the panel's depth (\c Kernel::task_rows_for).
+  template <typename Kernel>
+  requires requires(std::size_t kc)
+  {
+    Kernel::task_rows_for(kc);
+  }
+
+  [[nodiscard]] constexpr std::size_t task_rows_cap(std::size_t kc) noexcept
+  {
+    return Kernel::task_rows_for(kc);
+  }
+
   /*!
    * \brief The packed product with the tile \p Kernel computes: for each block of B's columns and each panel of
    *        the depth, both operands are packed (in parallel, by the blocks the product takes), then tasks of
@@ -1011,7 +1030,7 @@ namespace numerical::detail {
         // than tasks_per_thread tasks (order 256 on twenty x86-64 threads: twelve tasks took 116 µs, 44 took 104).
         const std::size_t tiles      {((m + mr) - 1) / mr};
         const std::size_t row_tasks  {(((tasks_per_thread * max_threads()) + groups) - 1) / groups};
-        const std::size_t task_rows  {std::clamp(((tiles + row_tasks) - 1) / row_tasks, std::size_t {1}, Kernel::block_rows / mr) * mr};
+        const std::size_t task_rows  {std::clamp(((tiles + row_tasks) - 1) / row_tasks, std::size_t {1}, task_rows_cap<Kernel>(kc) / mr) * mr};
         const std::size_t task_count {((m + task_rows) - 1) / task_rows};
         parallel_for(task_count * groups, shared * task_rows * gemm_slivers_per_task * nr * kc / Kernel::speedup, [&](std::size_t task) {
                        const std::size_t                   ic     {(task / groups) * task_rows};
@@ -1089,6 +1108,17 @@ namespace numerical::detail {
     static constexpr std::size_t nr         {avx2_nr}; //!< The tile's columns.
     static constexpr std::size_t depth      {gemm_kc}; //!< The panel depth.
     static constexpr std::size_t block_rows {72};      //!< The rows of one task, a whole number of tiles.
+
+    /*!
+     * \brief The most rows of a task over a panel of depth \p kc: up to 128 deep, 36, so that the task's A block
+     *        stays in the L1 cache beside its B slivers (six AVX2 cores, 936 × 936 by 64: one core 33 → 41 GFLOP/s,
+     *        six 119 → 176); deeper, \ref block_rows, the block in the L2 (by 256, 36 rows fell 244 → 150 on six).
+     */
+    [[nodiscard]] static constexpr std::size_t task_rows_for(std::size_t kc) noexcept
+    {
+      return kc <= 128 ? 36 : block_rows;
+    }
+
     //! \brief The weight of its work, a quarter of \ref gemm_kernel_speedup: more threads paid on physical cores (eight
     //!        AVX2 cores: order 128 73 → 39 µs, 192 107 → 90; Cholesky of order 1024 20 → 16 ms).
     static constexpr std::size_t speedup      {gemm_kernel_speedup / 4};

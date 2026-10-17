@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- On the AVX2 units a matrix product's task covers at most 36 rows over a panel of depth up to 128, 72 deeper: its block
+  of A then stays in the L1 cache beside its slivers of B. Six AVX2 cores, 936 × 936 by 64 (an LU's trailing update):
+  one core 44.7 → 47.9 GFLOP/s, six 235 → 255; by 32, 11 and 14 % faster; by 192 and more, unchanged. The tiles, and so
+  the bits, are the same.
+
 ## 2026.10.21 — 2026-10-17
 
 ### Added
