@@ -70,6 +70,8 @@ void dgelsd_(const int*,
              int*) noexcept;
 void dgeev_(const char*, const char*, const int*, const double*, const int*, double*, double*, double*, const int*, double*, const int*,
             double*, const int*, int*, std::size_t, std::size_t) noexcept;
+void dsyrk_(const char*, const char*, const int*, const int*, const double*, const double*, const int*, const double*, double*, const int*,
+            std::size_t, std::size_t) noexcept;
 }
 
 namespace {
@@ -1348,4 +1350,87 @@ TEST(the_fortran_eigenvalue_routine_answers_as_the_cpp_one)
   const int bad {-1};
   dgeev_("N", "V", &bad, a.data(), &two, wr.data(), wi.data(), none.data(), &one, vr.data(), &two, work.data(), &lwork, &info, 1, 1);
   EXPECT_EQ(info, -3);
+}
+
+namespace {
+  // Whether syrk(uplo, trans) of order n and depth k, the leading dimensions padded, gives α op(A) op(A)ᵀ + β C on the
+  // triangle by a plain loop and leaves the other triangle as it was (NaN where β = 0: never read on the triangle).
+  bool syrk_matches(char        uplo,
+                    char        trans,
+                    std::size_t n,
+                    std::size_t k,
+                    double      alpha,
+                    double      beta)
+  {
+    const bool                lower {uplo == 'L' || uplo == 'l'};
+    const bool                t     {trans != 'N' && trans != 'n'};
+    const std::size_t         lda   {(t ? k : n) + 2};
+    const std::size_t         ldc   {n + 1};
+    const std::vector<double> a     {entries(lda * (t ? n : k), 59)};
+    std::vector<double>       c     {entries(ldc * n, 61)};
+    for (std::size_t j {0}; j < n && beta == 0.0; ++j) {
+      for (std::size_t i {lower ? j : 0}; i < (lower ? n : j + 1); ++i) {
+        c[i + (j * ldc)] = std::numeric_limits<double>::quiet_NaN();
+      }
+    }
+    const std::vector<double> before {c};
+    if (numerical::blas::syrk(uplo, trans, static_cast<std::ptrdiff_t>(n), static_cast<std::ptrdiff_t>(k), alpha, a.data(),
+                              static_cast<std::ptrdiff_t>(lda), beta, c.data(), static_cast<std::ptrdiff_t>(ldc)) != 0) {
+      return false;
+    }
+    bool good {true};
+    for (std::size_t j {0}; j < n; ++j) {
+      for (std::size_t i {0}; i < n; ++i) {
+        const std::size_t at {i + (j * ldc)};
+        if (lower ? i < j : i > j) {
+          good = good && c[at] == before[at];
+          continue;
+        }
+        double sum {0.0};
+        for (std::size_t l {0}; l < k; ++l) {
+          sum += element(a, lda, trans, i, l) * element(a, lda, trans, j, l);
+        }
+        const double want {(alpha * sum) + (beta == 0.0 ? 0.0 : beta * before[at])};
+        good = good && std::abs(c[at] - want) <= 1e-12 * static_cast<double>(k + 1);
+      }
+    }
+    return good && std::ranges::equal(c.begin() + static_cast<std::ptrdiff_t>(n * ldc), c.end(),
+                                      before.begin() + static_cast<std::ptrdiff_t>(n * ldc), before.end());
+  }
+} // namespace
+
+TEST(syrk_updates_one_triangle_by_alpha_op_a_op_a_transposed)
+{
+  for (const char uplo : {'L', 'U', 'l', 'u'}) {
+    for (const char trans : {'N', 'T', 'c'}) {
+      EXPECT(syrk_matches(uplo, trans, 7, 5, 1.5, 0.5));
+      EXPECT(syrk_matches(uplo, trans, 300, 40, -1.0, 0.0)); // three blocks, the last partial; C not read
+    }
+  }
+  EXPECT(syrk_matches('L', 'N', 9, 0, 1.0, 2.0));  // no depth: C ← β C
+  EXPECT(syrk_matches('U', 'T', 9, 4, 0.0, 0.0));  // α = 0, β = 0: zeros
+  EXPECT(syrk_matches('U', 'N', 9, 4, 0.0, 1.0));  // nothing to do
+  EXPECT(syrk_matches('L', 'N', 0, 4, 1.0, 1.0));
+}
+
+TEST(syrk_reports_its_first_illegal_argument)
+{
+  std::vector<double> x(16, 1.0);
+  EXPECT_EQ(numerical::blas::syrk('X', 'N', 2, 2, 1.0, x.data(), 2, 0.0, x.data(), 2), 1);
+  EXPECT_EQ(numerical::blas::syrk('L', 'X', 2, 2, 1.0, x.data(), 2, 0.0, x.data(), 2), 2);
+  EXPECT_EQ(numerical::blas::syrk('L', 'N', -1, 2, 1.0, x.data(), 2, 0.0, x.data(), 2), 3);
+  EXPECT_EQ(numerical::blas::syrk('L', 'N', 2, -1, 1.0, x.data(), 2, 0.0, x.data(), 2), 4);
+  EXPECT_EQ(numerical::blas::syrk('L', 'N', 3, 2, 1.0, x.data(), 2, 0.0, x.data(), 3), 7);
+  EXPECT_EQ(numerical::blas::syrk('L', 'T', 2, 3, 1.0, x.data(), 2, 0.0, x.data(), 2), 7);
+  EXPECT_EQ(numerical::blas::syrk('L', 'N', 3, 2, 1.0, x.data(), 3, 0.0, x.data(), 2), 10);
+  const int           two   {2};
+  const int           bad   {-1};
+  const double        one   {1.0};
+  const double        zero  {0.0};
+  std::vector<double> a     {1.0, 2.0, 3.0, 4.0}; // [[1, 3], [2, 4]]: A Aᵀ = [[10, 14], [14, 20]]
+  std::vector<double> c(4, -7.0);
+  dsyrk_("L", "N", &two, &two, &one, a.data(), &two, &zero, c.data(), &two, 1, 1);
+  EXPECT(c[0] == 10.0 && c[1] == 14.0 && c[2] == -7.0 && c[3] == 20.0);
+  dsyrk_("L", "N", &bad, &two, &one, a.data(), &two, &zero, c.data(), &two, 1, 1); // reported, C untouched
+  EXPECT(c[0] == 10.0);
 }

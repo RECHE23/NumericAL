@@ -1,6 +1,6 @@
 /*!
  * \file blas.hpp
- * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`dgemm`, `dgesv`,
+ * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`dgemm`, `dsyrk`, `dgesv`,
  *        `dgetrf`, `dgetrs`, `dpotrf`, `dpotrs`, `dsyevd`, `dgesdd`, `dgeqrf`, `dorgqr`, `dgelsd`, `dgeev`), as their reference
  *        implementations define them, over NumericAL's kernels: what the optional `numerical_blas` library exports
  *        with the Fortran calling convention (blas/numerical_blas.cpp), so that a program linked against BLAS and
@@ -26,6 +26,10 @@
 #include "matrix.hpp"
 
 namespace numerical::blas {
+
+  //! \brief The columns of \ref syrk's blocks: the wasted half of its diagonal blocks, `64 n k` multiply-adds, stays
+  //!        small beside the `n² k / 2` of the triangle.
+  inline constexpr std::size_t syrk_block {128};
 
   namespace detail {
 
@@ -230,6 +234,78 @@ namespace numerical::blas {
     const double* const  r      {detail::transposes(transa) ? right.data() : a};
     const std::size_t    ldr    {detail::transposes(transa) ? static_cast<std::size_t>(m) : static_cast<std::size_t>(lda)};
     numerical::detail::gemm(cols, rows, static_cast<std::size_t>(k), l, ldl, r, ldr, c, stride);
+    return 0;
+  }
+
+  /*!
+   * \brief `C ← α op(A) op(A)ᵀ + β C` on the triangle \p uplo (`U` or `L`) of the column-major `n × n` `C`, `op(A)`
+   *        `n × k`, as BLAS's `dsyrk` (NumPy's `a @ a.T`): the other triangle neither read nor written, `C` not read
+   *        where `β = 0`. By blocks of \ref syrk_block columns: a diagonal block formed whole aside and its triangle
+   *        kept, the rows past it (`L`) or before it (`U`) by \ref gemm.
+   * \return 0, or the position of the first illegal argument, as the reference passes it to `XERBLA`.
+   */
+  inline int syrk(char           uplo,
+                  char           trans,
+                  std::ptrdiff_t n,
+                  std::ptrdiff_t k,
+                  double         alpha,
+                  const double*  a,
+                  std::ptrdiff_t lda,
+                  double         beta,
+                  double*        c,
+                  std::ptrdiff_t ldc)
+  {
+    const bool lower      {uplo == 'L' || uplo == 'l'};
+    const bool transposed {detail::transposes(trans)};
+    if (!lower && uplo != 'U' && uplo != 'u') {
+      return 1;
+    }
+    if (!detail::is_operation(trans)) {
+      return 2;
+    }
+    if (n < 0) {
+      return 3;
+    }
+    if (k < 0) {
+      return 4;
+    }
+    if (lda < std::max<std::ptrdiff_t>(1, transposed ? k : n)) {
+      return 7;
+    }
+    if (ldc < std::max<std::ptrdiff_t>(1, n)) {
+      return 10;
+    }
+    const auto order {static_cast<std::size_t>(n)};
+    const auto ld    {static_cast<std::size_t>(ldc)};
+    if (alpha == 0.0 || k == 0) { // C ← β C on the triangle
+      for (std::size_t j {0}; j < order && beta != 1.0; ++j) {
+        for (std::size_t i {lower ? j : 0}; i < (lower ? order : j + 1); ++i) {
+          c[i + (j * ld)] = beta == 0.0 ? 0.0 : beta * c[i + (j * ld)];
+        }
+      }
+      return 0;
+    }
+    const char other {transposed ? 'N' : 'T'};
+    // Rows r… of op(A): A's rows (N) or columns (T) from r.
+    const auto rows_from {[&](std::size_t r) { return transposed ? a + (r * static_cast<std::size_t>(lda)) : a + r; }};
+    for (std::size_t j0 {0}; j0 < order; j0 += syrk_block) {
+      const std::size_t w {std::min(syrk_block, order - j0)};
+      buffer<double>    diagonal(w * w, 0.0);
+      (void)gemm(trans, other, static_cast<std::ptrdiff_t>(w), static_cast<std::ptrdiff_t>(w), k, alpha, rows_from(j0), lda, rows_from(j0),
+                 lda, 0.0, diagonal.data(), static_cast<std::ptrdiff_t>(w));
+      for (std::size_t j {0}; j < w; ++j) {
+        for (std::size_t i {lower ? j : 0}; i < (lower ? w : j + 1); ++i) {
+          double& entry {c[(j0 + i) + ((j0 + j) * ld)]};
+          entry = diagonal[i + (j * w)] + (beta == 0.0 ? 0.0 : beta * entry);
+        }
+      }
+      const std::size_t first {lower ? j0 + w : 0};
+      const std::size_t count {lower ? order - first : j0};
+      if (count > 0) {
+        (void)gemm(trans, other, static_cast<std::ptrdiff_t>(count), static_cast<std::ptrdiff_t>(w), k, alpha, rows_from(first), lda,
+                   rows_from(j0), lda, beta, c + first + (j0 * ld), ldc);
+      }
+    }
     return 0;
   }
 
