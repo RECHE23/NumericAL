@@ -66,7 +66,7 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q python3-numpy cmake g++
-          cmake -S . -B build -DNUMERICAL_BUILD_BLAS=ON -DNUMERICAL_FETCH_SCIFORGE=ON -DCMAKE_BUILD_TYPE=Release
+          cmake -S . -B build -DNUMERICAL_BUILD_BLAS=ON -DNUMERICAL_FETCH_SCIFORGE=ON -DSCIFORGE_REPO=https://github.com/RECHE23/sciforge.git -DCMAKE_BUILD_TYPE=Release
           cmake --build build --target numerical_blas -j4
       - name: NumPy's answers with numerical_blas preloaded
         run: LD_PRELOAD="$PWD/build/libnumerical_blas.so" /usr/bin/python3 blas/preload_check.py
