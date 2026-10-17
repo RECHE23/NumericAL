@@ -79,6 +79,8 @@ double ddot_(const int*,
              const int*,
              const double*,
              const int*) noexcept;
+void dtrsm_(const char*, const char*, const char*, const char*, const int*, const int*, const double*, const double*, const int*, double*,
+            const int*, std::size_t, std::size_t, std::size_t, std::size_t) noexcept;
 }
 
 namespace {
@@ -1555,4 +1557,113 @@ TEST(dot_sums_the_products_with_any_increments)
   const std::vector<double> u     {1.0, 2.0, 3.0};
   const std::vector<double> v     {4.0, 5.0, 6.0};
   EXPECT_EQ(ddot_(&three, u.data(), &one, v.data(), &one), 32.0);
+}
+
+namespace {
+  // Whether trsm(side, uplo, transa, diag) of an m × n B, the leading dimensions padded, leaves X with op(A) X = α B
+  // (left) or X op(A) = α B (right), checked by multiplying back with a plain loop; A's other triangle (and a unit
+  // diagonal) NaN, never read.
+  bool trsm_solves(char        side,
+                   char        uplo,
+                   char        transa,
+                   char        diag,
+                   std::size_t m,
+                   std::size_t n,
+                   double      alpha)
+  {
+    const bool          left  {side == 'L' || side == 'l'};
+    const bool          lower {uplo == 'L' || uplo == 'l'};
+    const bool          unit  {diag == 'U' || diag == 'u'};
+    const bool          t     {transa != 'N' && transa != 'n'};
+    const std::size_t   k     {left ? m : n};
+    const std::size_t   lda   {k + 2};
+    const std::size_t   ldb   {m + 1};
+    std::vector<double> a     {entries(lda * k, 89)};
+    for (std::size_t j {0}; j < k; ++j) {
+      for (std::size_t i {0}; i < k; ++i) {
+        const bool inside {lower ? i > j : i < j};
+        if (i == j) {
+          a[i + (j * lda)] = unit ? std::numeric_limits<double>::quiet_NaN() : 2.0 + a[i + (j * lda)]; // well away from 0
+        }
+        else if (!inside) {
+          a[i + (j * lda)] = std::numeric_limits<double>::quiet_NaN();
+        }
+        else {
+          a[i + (j * lda)] /= static_cast<double>(k); // a well-conditioned triangle
+        }
+      }
+    }
+    // op(A)(i, j), the triangle's entries alone (a unit diagonal as 1).
+    const auto op_a {[&](std::size_t i, std::size_t j) {
+                       const std::size_t r {t ? j : i};
+                       const std::size_t c {t ? i : j};
+                       if (r == c) {
+                         return unit ? 1.0 : a[r + (c * lda)];
+                       }
+                       const bool inside {lower ? r > c : r < c};
+                       return inside ? a[r + (c * lda)] : 0.0;
+                     }};
+    const std::vector<double> b0 {entries(ldb * n, 97)};
+    std::vector<double>       x  {b0};
+    if (numerical::blas::trsm(side, uplo, transa, diag, static_cast<std::ptrdiff_t>(m), static_cast<std::ptrdiff_t>(n), alpha, a.data(),
+                              static_cast<std::ptrdiff_t>(lda), x.data(), static_cast<std::ptrdiff_t>(ldb)) != 0) {
+      return false;
+    }
+    bool good {true};
+    for (std::size_t j {0}; j < n; ++j) {
+      for (std::size_t i {0}; i < m; ++i) {
+        double product {0.0};
+        for (std::size_t l {0}; l < k; ++l) {
+          product += left ? op_a(i, l) * x[l + (j * ldb)] : x[i + (l * ldb)] * op_a(l, j);
+        }
+        good = good && std::abs(product - (alpha * b0[i + (j * ldb)])) <= 1e-12 * static_cast<double>(k);
+      }
+      good = good && x[m + (j * ldb)] == b0[m + (j * ldb)]; // the padding untouched
+    }
+    return good;
+  }
+} // namespace
+
+TEST(trsm_solves_every_side_triangle_and_transposition)
+{
+  for (const char side : {'L', 'R', 'l', 'r'}) {
+    for (const char uplo : {'L', 'U', 'l', 'u'}) {
+      for (const char transa : {'N', 'T', 'c'}) {
+        for (const char diag : {'N', 'U', 'n', 'u'}) {
+          EXPECT(trsm_solves(side, uplo, transa, diag, 9, 6, 1.5));
+        }
+      }
+      EXPECT(trsm_solves(side, uplo, 'N', 'N', 150, 140, -1.0)); // three blocks, the last partial
+      EXPECT(trsm_solves(side, uplo, 'T', 'N', 150, 140, 2.0));
+    }
+  }
+}
+
+TEST(trsm_with_alpha_zero_clears_b_and_reports_its_first_illegal_argument)
+{
+  std::vector<double> nan(4, std::numeric_limits<double>::quiet_NaN()); // A, never read where α = 0
+  std::vector<double> b {1.0, 2.0, 3.0, 4.0};
+  EXPECT_EQ(numerical::blas::trsm('L', 'L', 'N', 'N', 2, 2, 0.0, nan.data(), 2, b.data(), 2), 0);
+  EXPECT(std::ranges::all_of(b, [](double x) { return x == 0.0; }));
+  EXPECT_EQ(numerical::blas::trsm('L', 'L', 'N', 'N', 0, 2, 1.0, nan.data(), 1, b.data(), 1), 0);
+  EXPECT_EQ(numerical::blas::trsm('R', 'L', 'N', 'N', 2, 0, 1.0, nan.data(), 1, b.data(), 2), 0);
+  EXPECT_EQ(numerical::blas::trsm('X', 'L', 'N', 'N', 2, 2, 1.0, b.data(), 2, b.data(), 2), 1);
+  EXPECT_EQ(numerical::blas::trsm('L', 'X', 'N', 'N', 2, 2, 1.0, b.data(), 2, b.data(), 2), 2);
+  EXPECT_EQ(numerical::blas::trsm('L', 'L', 'X', 'N', 2, 2, 1.0, b.data(), 2, b.data(), 2), 3);
+  EXPECT_EQ(numerical::blas::trsm('L', 'L', 'N', 'X', 2, 2, 1.0, b.data(), 2, b.data(), 2), 4);
+  EXPECT_EQ(numerical::blas::trsm('L', 'L', 'N', 'N', -1, 2, 1.0, b.data(), 2, b.data(), 2), 5);
+  EXPECT_EQ(numerical::blas::trsm('L', 'L', 'N', 'N', 2, -1, 1.0, b.data(), 2, b.data(), 2), 6);
+  EXPECT_EQ(numerical::blas::trsm('L', 'L', 'N', 'N', 3, 1, 1.0, b.data(), 2, b.data(), 3), 9);
+  EXPECT_EQ(numerical::blas::trsm('R', 'L', 'N', 'N', 1, 3, 1.0, b.data(), 2, b.data(), 1), 9);
+  EXPECT_EQ(numerical::blas::trsm('L', 'L', 'N', 'N', 2, 1, 1.0, b.data(), 2, b.data(), 1), 11);
+  const int           two  {2};
+  const int           bad  {-1};
+  const double        unit {1.0};
+  std::vector<double> l    {2.0, 1.0, 0.0, 4.0}; // [[2, 0], [1, 4]]
+  std::vector<double> y    {2.0, 9.0};           // L x = (2, 9): x = (1, 2)
+  const int           one  {1};
+  dtrsm_("L", "L", "N", "N", &two, &one, &unit, l.data(), &two, y.data(), &two, 1, 1, 1, 1);
+  EXPECT(y[0] == 1.0 && y[1] == 2.0);
+  dtrsm_("L", "L", "N", "N", &bad, &one, &unit, l.data(), &two, y.data(), &two, 1, 1, 1, 1); // reported, y untouched
+  EXPECT(y[0] == 1.0);
 }

@@ -1,6 +1,6 @@
 /*!
  * \file blas.hpp
- * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`ddot`, `dgemm`, `dsyrk`, `dgemv`, `dgesv`,
+ * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`ddot`, `dgemm`, `dsyrk`, `dgemv`, `dtrsm`, `dgesv`,
  *        `dgetrf`, `dgetrs`, `dpotrf`, `dpotrs`, `dsyevd`, `dgesdd`, `dgeqrf`, `dorgqr`, `dgelsd`, `dgeev`), as their reference
  *        implementations define them, over NumericAL's kernels: what the optional `numerical_blas` library exports
  *        with the Fortran calling convention (blas/numerical_blas.cpp), so that a program linked against BLAS and
@@ -429,6 +429,150 @@ namespace numerical::blas {
       if (count > 0) {
         (void)gemm(trans, other, static_cast<std::ptrdiff_t>(count), static_cast<std::ptrdiff_t>(w), k, alpha, rows_from(first), lda,
                    rows_from(j0), lda, beta, c + first + (j0 * ld), ldc);
+      }
+    }
+    return 0;
+  }
+
+  //! \brief The rows of \ref trsm's blocks: within one, each column solved alone; past it, the matrix product kernel.
+  inline constexpr std::size_t trsm_block {64};
+
+  namespace detail {
+
+    /*!
+     * \brief `A X = B` in place for the column-major triangular `k × k` \p a (\p lower or upper, a \p unit diagonal
+     *        not read) and `k × n` \p b: by blocks of \ref trsm_block rows, from the top (lower) or the bottom
+     *        (upper); a block's diagonal triangle column by column of `B`, the columns in parallel, then its terms out
+     *        of the rows still to solve through \ref gemm.
+     */
+    inline void triangular_solve(bool          lower,
+                                 bool          unit,
+                                 std::size_t   k,
+                                 std::size_t   n,
+                                 const double* a,
+                                 std::size_t   lda,
+                                 double*       b,
+                                 std::size_t   ldb)
+    {
+      for (std::size_t done {0}; done < k; done += trsm_block) {
+        const std::size_t w     {std::min(trsm_block, k - done)};
+        const std::size_t k0    {lower ? done : k - done - w};
+        const std::size_t k1    {k0 + w};
+        // The block's triangle, each column of B alone, the columns in parallel.
+        numerical::detail::parallel_for(n, w * w, [a, b, lda, ldb, k0, k1, lower, unit](std::size_t j) {
+                                          double* x {b + (j * ldb)};
+                                          for (std::size_t s {0}; s < k1 - k0; ++s) {
+                                            const std::size_t p {lower ? k0 + s : k1 - 1 - s};
+                                            if (!unit) {
+                                              x[p] /= a[p + (p * lda)];
+                                            }
+                                            const std::size_t from {lower ? p + 1 : k0};
+                                            const std::size_t to {lower ? k1 : p};
+                                            numerical::detail::add_product(x + from, -x[p], a + from + (p * lda), to - from);
+                                          }
+                                        });
+        const std::size_t first {lower ? k1 : 0};
+        const std::size_t count {lower ? k - k1 : k0};
+        if (count > 0) { // B(rows still to solve) −= A(those rows, block) X(block)
+          (void)gemm('N', 'N', static_cast<std::ptrdiff_t>(count), static_cast<std::ptrdiff_t>(n), static_cast<std::ptrdiff_t>(w), -1.0,
+                     a + first + (k0 * lda), static_cast<std::ptrdiff_t>(lda), b + k0, static_cast<std::ptrdiff_t>(ldb), 1.0, b + first,
+                     static_cast<std::ptrdiff_t>(ldb));
+        }
+      }
+    }
+  } // namespace detail
+
+  /*!
+   * \brief `B ← α op(A)⁻¹ B` (\p side `L`) or `α B op(A)⁻¹` (`R`), column-major, `B` `m × n` and the triangular `A`
+   *        (\p uplo `U` or `L`, its other triangle not read; a \p diag `U`nit diagonal not read either) `m × m` or
+   *        `n × n`, as BLAS's `dtrsm`; `A` not read where `α = 0`. Every case is `A' X = B'` with `A'` triangular:
+   *        `A` or a transposed copy of it, `B` or a transposed copy of it (`X op(A) = B` is `op(A)ᵀ Xᵀ = Bᵀ`), solved
+   *        by \ref detail::triangular_solve. A zero on the diagonal gives infinities, as the reference's division does.
+   * \return 0, or the position of the first illegal argument, as the reference passes it to `XERBLA`.
+   */
+  inline int trsm(char           side,
+                  char           uplo,
+                  char           transa,
+                  char           diag,
+                  std::ptrdiff_t m,
+                  std::ptrdiff_t n,
+                  double         alpha,
+                  const double*  a,
+                  std::ptrdiff_t lda,
+                  double*        b,
+                  std::ptrdiff_t ldb)
+  {
+    const bool left  {side == 'L' || side == 'l'};
+    const bool lower {uplo == 'L' || uplo == 'l'};
+    const bool unit  {diag == 'U' || diag == 'u'};
+    if (!left && side != 'R' && side != 'r') {
+      return 1;
+    }
+    if (!lower && uplo != 'U' && uplo != 'u') {
+      return 2;
+    }
+    if (!detail::is_operation(transa)) {
+      return 3;
+    }
+    if (!unit && diag != 'N' && diag != 'n') {
+      return 4;
+    }
+    if (m < 0) {
+      return 5;
+    }
+    if (n < 0) {
+      return 6;
+    }
+    if (lda < std::max<std::ptrdiff_t>(1, left ? m : n)) {
+      return 9;
+    }
+    if (ldb < std::max<std::ptrdiff_t>(1, m)) {
+      return 11;
+    }
+    if (m == 0 || n == 0) {
+      return 0;
+    }
+    const auto rows {static_cast<std::size_t>(m)};
+    const auto cols {static_cast<std::size_t>(n)};
+    const auto ld   {static_cast<std::size_t>(ldb)};
+    for (std::size_t j {0}; j < cols; ++j) {
+      for (std::size_t i {0}; i < rows; ++i) {
+        double& entry {b[i + (j * ld)]};
+        entry = alpha == 0.0 ? 0.0 : alpha * entry;
+      }
+    }
+    if (alpha == 0.0) {
+      return 0;
+    }
+    const std::size_t k            {left ? rows : cols};
+    const bool        flip_a       {left == detail::transposes(transa)}; // A' = Aᵀ: op(A) = Aᵀ on the left, A on the right
+    buffer<double>    transposed_a;
+    const double*     a_used       {a};
+    std::size_t       lda_used     {static_cast<std::size_t>(lda)};
+    if (flip_a) {
+      transposed_a = buffer<double>(k * k, 0.0);
+      for (std::size_t j {0}; j < k; ++j) {
+        for (std::size_t i {lower ? j : 0}; i < (lower ? k : j + 1); ++i) { // A's triangle, transposed
+          transposed_a[j + (i * k)] = a[i + (j * static_cast<std::size_t>(lda))];
+        }
+      }
+      a_used   = transposed_a.data();
+      lda_used = k;
+    }
+    if (left) {
+      detail::triangular_solve(lower != flip_a, unit, k, cols, a_used, lda_used, b, ld);
+      return 0;
+    }
+    buffer<double> bt(cols * rows, 0.0); // Bᵀ, column-major n × m
+    for (std::size_t j {0}; j < cols; ++j) {
+      for (std::size_t i {0}; i < rows; ++i) {
+        bt[j + (i * cols)] = b[i + (j * ld)];
+      }
+    }
+    detail::triangular_solve(lower != flip_a, unit, k, rows, a_used, lda_used, bt.data(), cols);
+    for (std::size_t j {0}; j < cols; ++j) {
+      for (std::size_t i {0}; i < rows; ++i) {
+        b[i + (j * ld)] = bt[j + (i * cols)];
       }
     }
     return 0;

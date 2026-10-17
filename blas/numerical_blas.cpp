@@ -1,5 +1,5 @@
 // The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (ddot, dgeev, dgelsd, dgemm,
-// dgemv, dgeqrf, dgesdd, dgesv, dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd, dsyrk): every argument by address, 32-bit integers (LP64), and a hidden
+// dgemv, dgeqrf, dgesdd, dgesv, dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd, dsyrk, dtrsm): every argument by address, 32-bit integers (LP64), and a hidden
 // length after the arguments for each character one, as gfortran passes it. The semantics are numerical/blas.hpp's. An
 // illegal argument is reported as the reference XERBLA reports it, on the standard error, and the call returns (as
 // OpenBLAS's does) rather than stopping the program; no C++ exception leaves these functions.
@@ -105,6 +105,30 @@ void dsyrk_(const char*   uplo,
   }
   catch (...) {
     report_failure("DSYRK");
+  }
+}
+
+void dtrsm_(const char*   side,
+            const char*   uplo,
+            const char*   transa,
+            const char*   diag,
+            const int*    m,
+            const int*    n,
+            const double* alpha,
+            const double* a,
+            const int*    lda,
+            double*       b,
+            const int*    ldb,
+            std::size_t /*side_length*/,
+            std::size_t /*uplo_length*/,
+            std::size_t /*transa_length*/,
+            std::size_t /*diag_length*/) noexcept
+{
+  try {
+    report_illegal("DTRSM ", numerical::blas::trsm(*side, *uplo, *transa, *diag, *m, *n, *alpha, a, *lda, b, *ldb));
+  }
+  catch (...) {
+    report_failure("DTRSM");
   }
 }
 
