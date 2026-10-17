@@ -16,6 +16,8 @@ assert np.abs(a @ a.T - np.einsum("ij,kj->ik", a, a)).max() < 1e-9, "matmul"
 v = b[:, 0]
 assert np.abs(a @ v - np.einsum("ij,j->i", a, v)).max() < 1e-9, "matrix times vector"
 assert np.abs(v @ a - np.einsum("i,ij->j", v, a)).max() < 1e-9, "vector times matrix"
+long = rng.standard_normal(100000)
+assert abs(long @ long - np.einsum("i,i->", long, long)) < 1e-7, "dot"
 values, vectors = np.linalg.eigh(s)
 assert np.abs(s @ vectors - vectors * values).max() < 1e-9, "eigh"
 assert np.abs(np.linalg.eigvalsh(s) - values).max() < 1e-9, "eigvalsh"

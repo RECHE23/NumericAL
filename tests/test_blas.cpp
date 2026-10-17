@@ -74,6 +74,11 @@ void dsyrk_(const char*, const char*, const int*, const int*, const double*, con
             std::size_t, std::size_t) noexcept;
 void dgemv_(const char*, const int*, const int*, const double*, const double*, const int*, const double*, const int*, const double*, double*,
             const int*, std::size_t) noexcept;
+double ddot_(const int*,
+             const double*,
+             const int*,
+             const double*,
+             const int*) noexcept;
 }
 
 namespace {
@@ -1523,4 +1528,31 @@ TEST(gemv_reports_its_first_illegal_argument)
   EXPECT(y[0] == 4.0 && y[1] == 6.0);
   dgemv_("N", &two, &two, &unit, a.data(), &two, x.data(), &bad, &zero, y.data(), &one, 1); // reported, y untouched
   EXPECT(y[0] == 4.0);
+}
+
+TEST(dot_sums_the_products_with_any_increments)
+{
+  const auto x        {entries(std::size_t {3} *100000, 79)}; // past one chunk of the parallel sum
+  const auto y        {entries(std::size_t {2} *100000, 83)};
+  double     plain    {0.0};
+  double     strided  {0.0};
+  double     reversed {0.0};
+  double     mixed    {0.0};
+  for (std::size_t i {0}; i < 100000; ++i) {
+    plain    += x[i] * y[i];
+    strided  += x[3 * i] * y[2 * i];
+    reversed += x[3 * i] * y[2 * (99999 - i)];
+    mixed    += x[i] * y[2 * i];
+  }
+  EXPECT(std::abs(numerical::blas::dot(100000, x.data(), 1, y.data(), 1) - plain) < 1e-9);
+  EXPECT(std::abs(numerical::blas::dot(100000, x.data(), 3, y.data(), 2) - strided) < 1e-9);
+  EXPECT(std::abs(numerical::blas::dot(100000, x.data(), 3, y.data(), -2) - reversed) < 1e-9);
+  EXPECT(std::abs(numerical::blas::dot(100000, x.data(), 1, y.data(), 2) - mixed) < 1e-9);
+  EXPECT_EQ(numerical::blas::dot(0, x.data(), 1, y.data(), 1), 0.0);
+  EXPECT_EQ(numerical::blas::dot(-3, x.data(), 1, y.data(), 1), 0.0);
+  const int                 three {3};
+  const int                 one   {1};
+  const std::vector<double> u     {1.0, 2.0, 3.0};
+  const std::vector<double> v     {4.0, 5.0, 6.0};
+  EXPECT_EQ(ddot_(&three, u.data(), &one, v.data(), &one), 32.0);
 }

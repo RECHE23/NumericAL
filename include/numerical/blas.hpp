@@ -1,6 +1,6 @@
 /*!
  * \file blas.hpp
- * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`dgemm`, `dsyrk`, `dgemv`, `dgesv`,
+ * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`ddot`, `dgemm`, `dsyrk`, `dgemv`, `dgesv`,
  *        `dgetrf`, `dgetrs`, `dpotrf`, `dpotrs`, `dsyevd`, `dgesdd`, `dgeqrf`, `dorgqr`, `dgelsd`, `dgeev`), as their reference
  *        implementations define them, over NumericAL's kernels: what the optional `numerical_blas` library exports
  *        with the Fortran calling convention (blas/numerical_blas.cpp), so that a program linked against BLAS and
@@ -249,6 +249,33 @@ namespace numerical::blas {
       return inc > 0 ? i * static_cast<std::size_t>(inc) : (length - 1 - i) * static_cast<std::size_t>(-inc);
     }
   } // namespace detail
+
+  /*!
+   * \brief `Σ x_i y_i` over \p n elements \p incx and \p incy apart (from the last where negative), as BLAS's `ddot`;
+   *        0 where `n ≤ 0`. Contiguous vectors by \ref numerical::detail::chunked_dot (the vector units, the chunks in
+   *        parallel, the same sum on any number of threads); others gathered first.
+   */
+  [[nodiscard]] inline double dot(std::ptrdiff_t n,
+                                  const double*  x,
+                                  std::ptrdiff_t incx,
+                                  const double*  y,
+                                  std::ptrdiff_t incy)
+  {
+    if (n <= 0) {
+      return 0.0;
+    }
+    const auto count {static_cast<std::size_t>(n)};
+    if (incx == 1 && incy == 1) {
+      return numerical::detail::chunked_dot(x, y, count);
+    }
+    buffer<double> xs(count, 0.0);
+    buffer<double> ys(count, 0.0);
+    for (std::size_t i {0}; i < count; ++i) {
+      xs[i] = x[detail::strided(i, count, incx)];
+      ys[i] = y[detail::strided(i, count, incy)];
+    }
+    return numerical::detail::chunked_dot(xs.data(), ys.data(), count);
+  }
 
   //! \brief The rows a thread takes of \ref gemv's `A x`, each a column-by-column sum of scaled columns.
   inline constexpr std::size_t gemv_rows {256};
