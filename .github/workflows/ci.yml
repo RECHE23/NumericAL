@@ -54,6 +54,29 @@ jobs:
       enable-windows: true
       pre-install: numpy
 
+  # The optional numerical_blas library under a real BLAS/LAPACK consumer: Ubuntu's NumPy, linked against the system's
+  # libblas.so.3 and liblapack.so.3, with the library in LD_PRELOAD. Its answers are checked, and the dynamic linker's
+  # bindings show NumPy's dgesv_ and dpotrf_, and the reference BLAS's dgemm_, resolved to it.
+  blas-preload:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install the system's NumPy and build numerical_blas
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q python3-numpy cmake g++
+          cmake -S . -B build -DNUMERICAL_BUILD_BLAS=ON -DNUMERICAL_FETCH_SCIFORGE=ON -DCMAKE_BUILD_TYPE=Release
+          cmake --build build --target numerical_blas -j4
+      - name: NumPy's answers with numerical_blas preloaded
+        run: LD_PRELOAD="$PWD/build/libnumerical_blas.so" /usr/bin/python3 blas/preload_check.py
+      - name: NumPy's calls bound to numerical_blas
+        run: |
+          LD_PRELOAD="$PWD/build/libnumerical_blas.so" LD_DEBUG=bindings /usr/bin/python3 blas/preload_check.py 2> bindings.txt
+          for symbol in dgesv_ dpotrf_ dgemm_; do
+            grep -q "to $PWD/build/libnumerical_blas.so \[0\]: normal symbol \`$symbol'" bindings.txt || { echo "$symbol not bound to numerical_blas"; exit 1; }
+          done
+
   # A platform without a wheel (free-threaded CPython, ppc64le, s390x, BSD…) builds the
   # sdist: it must hold everything the build reads. Built, installed from source in a
   # clean venv outside the checkout, then tested.
