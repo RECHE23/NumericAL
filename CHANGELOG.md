@@ -9,6 +9,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **Arithmetic between tensors of one dtype, or with a Python `float` or `int`, skips the promotion**: the operands
+  went through NumPy's promotion rules and `asarray` each call. A 4 × 4 `a + b` 1.71 → 0.37 µs (NumPy 0.29),
+  `a * 2.0` 1.67 → 0.71 (NumPy 0.42); every other operand takes the rules as before.
 - **The Cholesky factorisation's trailing update runs as tiles shared in one parallel loop**, of 64 columns by 256
   rows, each one product on one thread, where a parallel product for each block of columns started and joined the
   threads some thirty times a panel; each element's terms in the order of one product, the same bits. All threads:

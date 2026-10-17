@@ -972,10 +972,16 @@ def _arithmetic(op, reflected=False):
     one (``2 - t``) puts the other operand first. Anything :func:`asarray` cannot read is NotImplemented."""
 
     def method(self, other):
-        try:
-            a, b = _same_dtype(self, other)
-        except (TypeError, error):  # asarray cannot read it: let the other operand try
-            return NotImplemented
+        kind = type(other)
+        if kind is Tensor and other.dtype == self.dtype:  # nothing to promote: the common cases, straight through
+            a, b = self, other
+        elif kind is float or kind is int:  # a real Python number is weak: it takes the tensor's dtype
+            a, b = self, asarray(other, self.dtype)
+        else:
+            try:
+                a, b = _same_dtype(self, other)
+            except (TypeError, error):  # asarray cannot read it: let the other operand try
+                return NotImplemented
         if reflected:
             a, b = b, a
         return _native(_numerical._binary, op, a, b)
