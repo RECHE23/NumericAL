@@ -1,8 +1,8 @@
-// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (dgemm, dgesv, dpotrf): every
-// argument by address, 32-bit integers (LP64), and a hidden length after the arguments for each character one, as
-// gfortran passes it. The semantics are numerical/blas.hpp's. An illegal argument is reported as the reference
-// XERBLA reports it, on the standard error, and the call returns (as OpenBLAS's does) rather than stopping the
-// program; no C++ exception leaves these functions.
+// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (dgemm, dgesv, dgetrf, dgetrs,
+// dpotrf, dpotrs): every argument by address, 32-bit integers (LP64), and a hidden length after the arguments for each
+// character one, as gfortran passes it. The semantics are numerical/blas.hpp's. An illegal argument is reported as the
+// reference XERBLA reports it, on the standard error, and the call returns (as OpenBLAS's does) rather than stopping
+// the program; no C++ exception leaves these functions.
 #include <cstddef>
 #include <cstdio>
 #include <exception>
@@ -83,6 +83,64 @@ void dpotrf_(const char* uplo,
   }
   catch (...) {
     report_failure("DPOTRF");
+    *info = -1;
+  }
+}
+
+void dgetrf_(const int* m,
+             const int* n,
+             double*    a,
+             const int* lda,
+             int*       ipiv,
+             int*       info) noexcept
+{
+  try {
+    *info = numerical::blas::getrf(*m, *n, a, *lda, ipiv);
+    report_illegal("DGETRF", -*info);
+  }
+  catch (...) {
+    report_failure("DGETRF");
+    *info = -1;
+  }
+}
+
+void dgetrs_(const char*   trans,
+             const int*    n,
+             const int*    nrhs,
+             const double* a,
+             const int*    lda,
+             const int*    ipiv,
+             double*       b,
+             const int*    ldb,
+             int*          info,
+             std::size_t /*trans_length*/) noexcept
+{
+  try {
+    *info = numerical::blas::getrs(*trans, *n, *nrhs, a, *lda, ipiv, b, *ldb);
+    report_illegal("DGETRS", -*info);
+  }
+  catch (...) {
+    report_failure("DGETRS");
+    *info = -1;
+  }
+}
+
+void dpotrs_(const char*   uplo,
+             const int*    n,
+             const int*    nrhs,
+             const double* a,
+             const int*    lda,
+             double*       b,
+             const int*    ldb,
+             int*          info,
+             std::size_t /*uplo_length*/) noexcept
+{
+  try {
+    *info = numerical::blas::potrs(*uplo, *n, *nrhs, a, *lda, b, *ldb);
+    report_illegal("DPOTRS", -*info);
+  }
+  catch (...) {
+    report_failure("DPOTRS");
     *info = -1;
   }
 }

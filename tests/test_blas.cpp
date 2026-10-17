@@ -23,6 +23,14 @@ void dgesv_(const int*,
             const int*,
             int*) noexcept;
 void dpotrf_(const char*, const int*, double*, const int*, int*, std::size_t) noexcept;
+void dgetrf_(const int*,
+             const int*,
+             double*,
+             const int*,
+             int*,
+             int*) noexcept;
+void dgetrs_(const char*, const int*, const int*, const double*, const int*, const int*, double*, const int*, int*, std::size_t) noexcept;
+void dpotrs_(const char*, const int*, const int*, const double*, const int*, double*, const int*, int*, std::size_t) noexcept;
 }
 
 namespace {
@@ -301,4 +309,182 @@ TEST(the_fortran_routines_answer_as_the_cpp_ones)
   EXPECT_EQ(s[0], 2.0);
   dpotrf_("Q", &two, s.data(), &two, &info, 1);
   EXPECT_EQ(info, -1);
+}
+
+namespace {
+  // Whether getrf of the m × n A leaves P A = L U (L m × min(m, n) unit lower, U min(m, n) × n upper), the
+  // interchanges of ipiv applied to A's rows in order.
+  bool getrf_factorises(std::size_t m,
+                        std::size_t n)
+  {
+    const std::size_t         lda   {m + 2};
+    const std::size_t         steps {std::min(m, n)};
+    const std::vector<double> a     {entries(lda * n, 11)};
+    std::vector<double>       lu    {a};
+    std::vector<int>          ipiv(steps);
+    if (numerical::blas::getrf(static_cast<std::ptrdiff_t>(m), static_cast<std::ptrdiff_t>(n), lu.data(), static_cast<std::ptrdiff_t>(lda),
+                               ipiv.data()) != 0) {
+      return false;
+    }
+    std::vector<double> pa {a};
+    for (std::size_t i {0}; i < steps; ++i) {
+      const auto other {static_cast<std::size_t>(ipiv[i] - 1)};
+      for (std::size_t j {0}; j < n; ++j) {
+        std::swap(pa[i + (j * lda)], pa[other + (j * lda)]);
+      }
+    }
+    bool same {true};
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        double sum {0.0};
+        for (std::size_t p {0}; p <= std::min({i, j, steps - 1}); ++p) {
+          sum += (p == i ? 1.0 : lu[i + (p * lda)]) * lu[p + (j * lda)];
+        }
+        same = same && std::abs(sum - pa[i + (j * lda)]) <= 1e-12 * static_cast<double>(m + n);
+      }
+    }
+    return same;
+  }
+
+  // Whether getrs(trans) with getrf's factors of an order-n A solves A X = B (Aᵀ X = B), nrhs columns.
+  bool getrs_solves(char        trans,
+                    std::size_t n,
+                    std::size_t nrhs)
+  {
+    const std::size_t         lda  {n + 1};
+    const std::size_t         ldb  {n + 3};
+    const std::vector<double> a    {entries(lda * n, 12)};
+    const std::vector<double> b    {entries(ldb * nrhs, 13)};
+    std::vector<double>       lu   {a};
+    std::vector<double>       x    {b};
+    std::vector<int>          ipiv(n);
+    const auto                size {static_cast<std::ptrdiff_t>(n)};
+    if (numerical::blas::getrf(size, size, lu.data(), static_cast<std::ptrdiff_t>(lda), ipiv.data()) != 0
+        || numerical::blas::getrs(trans, size, static_cast<std::ptrdiff_t>(nrhs), lu.data(), static_cast<std::ptrdiff_t>(lda), ipiv.data(), x.data(),
+                                  static_cast<std::ptrdiff_t>(ldb)) != 0) {
+      return false;
+    }
+    const bool transposed {trans != 'N'};
+    bool       same       {true};
+    for (std::size_t c {0}; c < nrhs; ++c) {
+      for (std::size_t i {0}; i < n; ++i) {
+        double sum {0.0};
+        for (std::size_t j {0}; j < n; ++j) {
+          sum += (transposed ? a[j + (i * lda)] : a[i + (j * lda)]) * x[j + (c * ldb)];
+        }
+        same = same && std::abs(sum - b[i + (c * ldb)]) <= 1e-9 * static_cast<double>(n);
+      }
+    }
+    return same;
+  }
+
+  // Whether potrs(uplo) with potrf's factor of an order-n symmetric positive-definite A solves A X = B.
+  bool potrs_solves(char        uplo,
+                    std::size_t n)
+  {
+    const std::size_t         lda {n};
+    const std::vector<double> g   {entries(n * n, 14)};
+    std::vector<double>       a(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        double sum {i == j ? static_cast<double>(n) : 0.0};
+        for (std::size_t p {0}; p < n; ++p) {
+          sum += g[i + (p * n)] * g[j + (p * n)];
+        }
+        a[i + (j * lda)] = sum;
+      }
+    }
+    const std::vector<double> b      {entries(n * 2, 15)};
+    std::vector<double>       factor {a};
+    std::vector<double>       x      {b};
+    const auto                size   {static_cast<std::ptrdiff_t>(n)};
+    if (numerical::blas::potrf(uplo, size, factor.data(), size) != 0 || numerical::blas::potrs(uplo, size, 2, factor.data(), size, x.data(), size) != 0) {
+      return false;
+    }
+    bool same {true};
+    for (std::size_t c {0}; c < 2; ++c) {
+      for (std::size_t i {0}; i < n; ++i) {
+        double sum {0.0};
+        for (std::size_t j {0}; j < n; ++j) {
+          sum += a[i + (j * lda)] * x[j + (c * n)];
+        }
+        same = same && std::abs(sum - b[i + (c * n)]) <= 1e-9 * static_cast<double>(n);
+      }
+    }
+    return same;
+  }
+} // namespace
+
+TEST(getrf_factorises_square_tall_and_wide_matrices)
+{
+  EXPECT(getrf_factorises(9, 9));
+  EXPECT(getrf_factorises(130, 130)); // blocked
+  EXPECT(getrf_factorises(12, 7));    // tall
+  EXPECT(getrf_factorises(7, 12));    // wide
+}
+
+TEST(getrf_reports_zero_pivots_illegal_arguments_and_a_nan)
+{
+  std::vector<int>    ipiv(3);
+  std::vector<double> square {1.0, 2.0, 0.0, 0.0};           // second column zero
+  EXPECT_EQ(numerical::blas::getrf(2, 2, square.data(), 2, ipiv.data()), 2);
+  std::vector<double> tall   {0.0, 0.0, 0.0, 1.0, 2.0, 3.0}; // 3 × 2, first column zero
+  EXPECT_EQ(numerical::blas::getrf(3, 2, tall.data(), 3, ipiv.data()), 1);
+  std::vector<double> nan    {std::numeric_limits<double>::quiet_NaN(), 1.0};
+  EXPECT_EQ(numerical::blas::getrf(2, 1, nan.data(), 2, ipiv.data()), -3);
+  EXPECT_EQ(numerical::blas::getrf(-1, 2, square.data(), 2, ipiv.data()), -1);
+  EXPECT_EQ(numerical::blas::getrf(2, -1, square.data(), 2, ipiv.data()), -2);
+  EXPECT_EQ(numerical::blas::getrf(2, 2, square.data(), 1, ipiv.data()), -4);
+  EXPECT_EQ(numerical::blas::getrf(0, 2, square.data(), 1, ipiv.data()), 0);
+  EXPECT_EQ(numerical::blas::getrf(2, 0, square.data(), 2, ipiv.data()), 0);
+  std::vector<double> two_zero {0.0, 0.0, 0.0, 0.0, 0.0, 0.0}; // 3 × 2, both columns zero: INFO the first
+  EXPECT_EQ(numerical::blas::getrf(3, 2, two_zero.data(), 3, ipiv.data()), 1);
+}
+
+TEST(getrs_and_potrs_solve_from_the_factors)
+{
+  EXPECT(getrs_solves('N', 8, 3));
+  EXPECT(getrs_solves('T', 8, 3));
+  EXPECT(getrs_solves('c', 70, 2));
+  EXPECT(potrs_solves('L', 9));
+  EXPECT(potrs_solves('U', 9));
+  EXPECT(potrs_solves('l', 4));
+  std::vector<double> a(4, 1.0);
+  std::vector<int>    ipiv {1, 2};
+  EXPECT_EQ(numerical::blas::getrs('X', 2, 1, a.data(), 2, ipiv.data(), a.data(), 2), -1);
+  EXPECT_EQ(numerical::blas::getrs('N', -1, 1, a.data(), 2, ipiv.data(), a.data(), 2), -2);
+  EXPECT_EQ(numerical::blas::getrs('N', 2, -1, a.data(), 2, ipiv.data(), a.data(), 2), -3);
+  EXPECT_EQ(numerical::blas::getrs('N', 2, 1, a.data(), 1, ipiv.data(), a.data(), 2), -5);
+  EXPECT_EQ(numerical::blas::getrs('N', 2, 1, a.data(), 2, ipiv.data(), a.data(), 1), -8);
+  EXPECT_EQ(numerical::blas::potrs('X', 2, 1, a.data(), 2, a.data(), 2), -1);
+  EXPECT_EQ(numerical::blas::potrs('L', -1, 1, a.data(), 2, a.data(), 2), -2);
+  EXPECT_EQ(numerical::blas::potrs('L', 2, -1, a.data(), 2, a.data(), 2), -3);
+  EXPECT_EQ(numerical::blas::potrs('U', 2, 1, a.data(), 1, a.data(), 2), -5);
+  EXPECT_EQ(numerical::blas::potrs('u', 2, 1, a.data(), 2, a.data(), 1), -7);
+}
+
+TEST(the_fortran_solvers_answer_as_the_cpp_ones)
+{
+  const int           two  {2};
+  const int           one  {1};
+  std::vector<double> a    {4.0, 2.0, 2.0, 3.0};
+  std::vector<int>    ipiv(2);
+  int                 info {7};
+  dgetrf_(&two, &two, a.data(), &two, ipiv.data(), &info);
+  EXPECT_EQ(info, 0);
+  std::vector<double> b {2.0, 1.0}; // [[4, 2], [2, 3]] x = (2, 1): x = (0.5, 0)
+  dgetrs_("N", &two, &one, a.data(), &two, ipiv.data(), b.data(), &two, &info, 1);
+  EXPECT(info == 0 && std::abs(b[0] - 0.5) < 1e-15 && std::abs(b[1]) < 1e-15);
+  std::vector<double> s {4.0, 2.0, 2.0, 3.0};
+  dpotrf_("L", &two, s.data(), &two, &info, 1);
+  std::vector<double> c {2.0, 1.0};
+  dpotrs_("L", &two, &one, s.data(), &two, c.data(), &two, &info, 1);
+  EXPECT(info == 0 && std::abs(c[0] - 0.5) < 1e-15 && std::abs(c[1]) < 1e-15);
+  const int bad {-1};
+  dgetrf_(&bad, &two, a.data(), &two, ipiv.data(), &info);
+  EXPECT_EQ(info, -1);
+  dgetrs_("N", &bad, &one, a.data(), &two, ipiv.data(), b.data(), &two, &info, 1);
+  EXPECT_EQ(info, -2);
+  dpotrs_("L", &bad, &one, s.data(), &two, c.data(), &two, &info, 1);
+  EXPECT_EQ(info, -2);
 }
