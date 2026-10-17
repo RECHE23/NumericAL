@@ -214,8 +214,11 @@ namespace numerical::detail {
   }
 
   //! \brief How long a thread polls before it sleeps: kernels run in quick succession (a matrix product packs, then
-  //!        computes, panel after panel), and a thread woken from sleep starts tens of microseconds late.
-  inline constexpr std::chrono::microseconds spin_time {100};
+  //!        computes, panel after panel), and a thread woken from sleep starts tens of microseconds late, its wake-up
+  //!        paid by the caller of the next run, about 10 µs a sleeping worker on six x86-64 cores. A factorisation's
+  //!        steps last about 100 µs at order 256, so at 100 µs the workers one step left out were asleep for the next
+  //!        (an LU of order 256: six x86-64 cores 560 → 500 µs at 500; eight arm64 cores 358 → 324).
+  inline constexpr std::chrono::microseconds spin_time {500};
 
   //! \brief Polls \p ready, yielding the core between polls, until it holds or \ref spin_time has passed.
   template <typename Ready>

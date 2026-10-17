@@ -7,6 +7,10 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 ## Unreleased
 
 ### Changed
+- **The workers poll 500 µs, not 100, before they sleep**: a factorisation's steps last about that long at order 256,
+  so the workers one step had left out slept through to the next, whose caller paid about 10 µs to wake each. LU of
+  order 192 to 512 on six x86-64 AVX2 cores 5 to 13 % faster (256: 560 → 500 µs), `solve` 256 8 %; on eight arm64
+  cores LU 256 and 512 7 to 10 %.
 - **One copy of the operand, its pages faulted in on threads, before a decomposition from Python**: the routines that
   read one triangle (`cholesky`, `eigh`, `eigvalsh`) copied the matrix twice, and every copy into fresh memory took its
   page faults on one thread (a 2 MiB copy: 0.85 ms on one x86-64 core in a container, a third of a Cholesky
