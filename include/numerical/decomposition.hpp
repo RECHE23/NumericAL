@@ -55,9 +55,18 @@ namespace numerical {
     //!        deep enough for the packed kernel while the unblocked panel stays a small part of the work.
     inline constexpr std::size_t lu_block {64};
 
+#ifdef NUMERICAL_X86_COMPILED
     //! \brief The order up to which the LU takes panels of \ref lu_small_block columns: there the panels, a column
-    //!        at a time on one thread, are most of the time, and narrower ones halve their work.
+    //!        at a time on one thread, are most of the time, and narrower ones halve their work. On six AVX2 cores the
+    //!        panel is the critical path further up (orders 300 and 384: 8 and 10 % faster than at 64 columns; 500, 5 %
+    //!        slower).
+    inline constexpr std::size_t lu_small_order {384};
+#else
+    //! \brief The order up to which the LU takes panels of \ref lu_small_block columns: there the panels, a column
+    //!        at a time on one thread, are most of the time, and narrower ones halve their work (arm64, order 300 on
+    //!        every core: 14 % slower at 32 columns than at 64).
     inline constexpr std::size_t lu_small_order {256};
+#endif
 
     //! \brief The columns of one panel of the LU of an order up to \ref lu_small_order.
     inline constexpr std::size_t lu_small_block {32};
