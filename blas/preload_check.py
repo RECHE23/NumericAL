@@ -1,8 +1,9 @@
-"""The numerical_blas library standing in for a system's BLAS and LAPACK: run by the system's NumPy (linked against
-libblas.so.3 and liblapack.so.3) with the library in LD_PRELOAD, its answers checked against their defining
-properties, a non-positive-definite matrix still reported. Whether NumPy's calls reach the library is checked
+"""The numerical_blas library standing in for a system's BLAS and LAPACK: run by the system's NumPy and SciPy
+(linked against libblas.so.3 and liblapack.so.3) with the library in LD_PRELOAD, its answers checked against their
+defining properties, a non-positive-definite matrix still reported. Whether NumPy's calls reach the library is checked
 apart, by the dynamic linker's bindings (the CI job's LD_DEBUG step)."""
 import numpy as np
+from scipy.linalg import solve_triangular
 
 rng = np.random.default_rng(0)
 a = rng.standard_normal((300, 300))
@@ -47,4 +48,8 @@ try:
     raise AssertionError("an indefinite matrix was factorised")
 except np.linalg.LinAlgError:
     pass
+lower = np.tril(a) + 300 * np.eye(300)
+for trans in (0, 1):
+    x = solve_triangular(lower, b, lower=True, trans=trans)
+    assert np.abs((lower.T if trans else lower) @ x - b).max() < 1e-9, "solve_triangular"
 print("numerical_blas answers as the reference BLAS and LAPACK do")
