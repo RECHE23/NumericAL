@@ -855,6 +855,18 @@ namespace numerical::detail {
                  });
   }
 
+  //! \brief The cache line a packed operand starts.
+  inline constexpr std::size_t packed_line {64};
+
+  //! \brief The first element of \p at's run that starts a cache line (or \p at's nearest element towards one, for
+  //!        an element whose size does not divide the allocator's alignment).
+  template <typename T>
+  [[nodiscard]] T* line_aligned(T* at) noexcept
+  {
+    const std::size_t miss {static_cast<std::size_t>(std::bit_cast<std::uintptr_t>(at) % packed_line)};
+    return at + (((packed_line - miss) % packed_line) / sizeof(T));
+  }
+
   /*!
    * \brief The storage of a product's packed operands, kept by the calling thread from one product to the next.
    *
@@ -912,8 +924,7 @@ namespace numerical::detail {
 
   private:
 
-    static constexpr std::size_t cache_line {64};
-    static constexpr std::size_t padding    {(cache_line / sizeof(T)) + 1}; //!< Elements enough to reach a line.
+    static constexpr std::size_t padding {(packed_line / sizeof(T)) + 1}; //!< Elements enough to reach a line.
 
     //! \brief \p storage with at least \p count elements (it only grows, so a reuse writes nothing).
     [[nodiscard]] static buffer<T> grown(buffer<T>      storage,
@@ -923,12 +934,10 @@ namespace numerical::detail {
       return storage;
     }
 
-    //! \brief The first element of \p at's run that starts a cache line (or \p at's nearest element towards one,
-    //!        for an element whose size does not divide the allocator's alignment).
+    //! \brief \ref line_aligned.
     [[nodiscard]] static T* aligned(T* at) noexcept
     {
-      const std::size_t miss {static_cast<std::size_t>(std::bit_cast<std::uintptr_t>(at) % cache_line)};
-      return at + (((cache_line - miss) % cache_line) / sizeof(T));
+      return line_aligned(at);
     }
 
     buffer<T>      storage_;
@@ -950,7 +959,8 @@ namespace numerical::detail {
    * \brief The packed product with the tile \p Kernel computes: for each block of B's columns and each panel of
    *        the depth, both operands are packed (in parallel, by the blocks the product takes), then tasks of
    *        \ref gemm_mc rows by \ref gemm_slivers_per_task slivers of columns run in parallel, each writing a
-   *        disjoint block of C, one tile at a time.
+   *        disjoint block of C, one tile at a time. Given \p a_packed (A as \ref pack_left packs it for \p Kernel, a
+   *        depth of one panel), A is read from there and only B is packed: the same tiles, the same bits.
    */
   template <typename Kernel,
             typename T>
@@ -962,14 +972,17 @@ namespace numerical::detail {
                    const T*    b,
                    std::size_t ldb,
                    T*          c,
-                   std::size_t ldc)
+                   std::size_t ldc,
+                   const T*    a_packed = nullptr)
   {
     constexpr std::size_t    mr     {Kernel::mr};
     constexpr std::size_t    nr     {Kernel::nr};
     constexpr std::size_t    nc_max {nr * 128};
     const std::size_t        a_rows {((m + mr) - 1) / mr * mr};
     const std::size_t        b_cols {((std::min(nc_max, n) + nr) - 1) / nr * nr};
-    const packing_storage<T> packed {a_rows * std::min(Kernel::depth, k), b_cols * std::min(Kernel::depth, k)};
+    const packing_storage<T> packed {a_packed != nullptr ? 0 : a_rows * std::min(Kernel::depth, k), b_cols * std::min(Kernel::depth, k)};
+    const std::size_t        a_blocks {a_packed != nullptr ? 0 : ((m + Kernel::block_rows) - 1) / Kernel::block_rows};
+    const T* const           a_tiles  {a_packed != nullptr ? a_packed : packed.a()};
     const std::size_t        shared   {gemm_shares<Kernel>(m, n, k) ? 1U : 0U}; // a weight of zero starts no thread
     const bool               in_place {Kernel::reads_b_in_place(ldb)};          // B's whole slivers unpacked
     for (std::size_t jc {0}; jc < n; jc += nc_max) {
@@ -977,12 +990,11 @@ namespace numerical::detail {
       const std::size_t slivers {((nc + nr) - 1) / nr};
       for (std::size_t pc {0}; pc < k; pc += Kernel::depth) {
         const std::size_t kc         {std::min(Kernel::depth, k - pc)};
-        const std::size_t row_blocks {((m + Kernel::block_rows) - 1) / Kernel::block_rows};
         const std::size_t groups     {((slivers + gemm_slivers_per_task) - 1) / gemm_slivers_per_task};
         // One pass packs both: B's groups of slivers first, then A's row blocks.
         // The packing weighed as the tile's work is (\p Kernel's speedup): a small product then packs in parallel too
         // (eight AVX2 cores: order 128 40 → 30 µs, 192 92 → 62).
-        parallel_for(groups + row_blocks, shared * Kernel::block_rows * kc * gemm_kernel_speedup / Kernel::speedup, [&](std::size_t piece) {
+        parallel_for(groups + a_blocks, shared * Kernel::block_rows * kc * gemm_kernel_speedup / Kernel::speedup, [&](std::size_t piece) {
                        if (piece < groups) {
                          const std::size_t jr    {piece * gemm_slivers_per_task * nr};
                          const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
@@ -1014,7 +1026,7 @@ namespace numerical::detail {
                          for (std::size_t s {first}; s < last; ++s) {
                            const std::size_t jr {s * nr};
                            const bool direct {in_place && jr + nr <= nc};
-                           Kernel::tile(kc, packed.a() + (ir * kc), direct ? b + (pc * ldb) + jc + jr : packed.b() + (jr * kc),
+                           Kernel::tile(kc, a_tiles + (ir * kc), direct ? b + (pc * ldb) + jc + jr : packed.b() + (jr * kc),
                                         direct ? ldb : nr, c + (ir * ldc) + jc + jr, ldc, std::min(mr, m - ir), std::min(nr, nc - jr));
                          }
                        }
@@ -1488,6 +1500,201 @@ namespace numerical::detail {
       return;
     }
     gemm_large(m, n, k, a, lda, b, ldb, c, ldc);
+  }
+
+  //! \brief The tile a product's left operand is packed for (\ref pack_left): \c plain where it is not packed.
+  enum class left_kernel : unsigned char
+  {
+    plain,  //!< \ref gemm_rows, or a scalar whose products are not shared: A is read in place.
+    vector, //!< The portable path's vector tile.
+    neon,   //!< The NEON tile.
+    amx,    //!< The AMX tile.
+    avx512, //!< The AVX-512 tile.
+    avx2    //!< The AVX2 tile.
+  };
+
+  //! \brief A left operand packed once for several products by it (an LU's −L₂₁ against blocks of its U₁₂): the tile
+  //!        chosen and A packed for it (\ref gemm_packed's layout of one panel), or A to read in place (\c plain).
+  template <typename T>
+  struct packed_left
+  {
+    left_kernel kernel; //!< The tile.
+    std::size_t m;      //!< A's rows.
+    std::size_t k;      //!< A's columns, the depth.
+    const T*    a;      //!< A, row-major.
+    std::size_t lda;    //!< A's row distance.
+    const T*    packed; //!< A packed for the tile (null where \c plain).
+  };
+
+  //! \brief The tile \ref gemm runs a product of \p m × \p n by depth \p k on, for a left operand packed once for many
+  //!        products: \c plain for a scalar other than `double` (written as an overload per scalar, as `conj_of`).
+  template <typename T>
+  [[nodiscard]] left_kernel left_kernel_for(std::size_t /*m*/,
+                                            std::size_t /*n*/,
+                                            std::size_t /*k*/) noexcept
+  {
+    return left_kernel::plain;
+  }
+
+  //! \brief \ref left_kernel_for a `double` product: past \ref gemm_rows, as \ref gemm_elsewhere chooses, of a depth
+  //!        of one panel; \c plain otherwise.
+  template <>
+  [[nodiscard]] inline left_kernel left_kernel_for<double>(std::size_t m,
+                                                           std::size_t n,
+                                                           std::size_t k) noexcept
+  {
+    if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k || k > gemm_kc) {
+      return left_kernel::plain;
+    }
+    const gemm_path path {gemm_path_current()};
+#ifdef NUMERICAL_AMX_COMPILED
+    if (path == gemm_path::amx && amx_suits(m, n, k)) {
+      return left_kernel::amx;
+    }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+    if (path == gemm_path::neon || path == gemm_path::amx) {
+      return left_kernel::neon;
+    }
+#endif
+#ifdef NUMERICAL_X86_COMPILED
+    if (path == gemm_path::avx512) {
+      return left_kernel::avx512;
+    }
+    if (path == gemm_path::avx2) {
+      return left_kernel::avx2;
+    }
+#endif
+    (void)path;
+    return left_kernel::vector;
+  }
+
+  //! \brief A packed for \p Kernel into \p storage, in parallel by its blocks of rows, as \ref gemm_packed packs it.
+  template <typename Kernel,
+            typename T>
+  [[nodiscard]] const T* pack_left_for(std::size_t m,
+                                       std::size_t k,
+                                       const T*    a,
+                                       std::size_t lda,
+                                       buffer<T>&  storage)
+  {
+    const std::size_t a_rows {((m + Kernel::mr) - 1) / Kernel::mr * Kernel::mr};
+    storage.resize(std::max(storage.size(), (a_rows * k) + (packed_line / sizeof(T)) + 1));
+    T* const          out    {line_aligned(storage.data())};
+    const std::size_t blocks {((m + Kernel::block_rows) - 1) / Kernel::block_rows};
+    parallel_for(blocks, Kernel::block_rows * k * gemm_kernel_speedup / Kernel::speedup, [&](std::size_t block) {
+                   const std::size_t ic {block * Kernel::block_rows};
+                   Kernel::pack_a(a + (ic * lda), lda, std::min(Kernel::block_rows, m - ic), k, out + (ic * k));
+                 });
+    return out;
+  }
+
+  /*!
+   * \brief The `m × k` \p a packed once for products with it of about \p n columns each (\ref gemm_with), in
+   *        \p storage (grown as needed, kept by the caller from one call to the next): on the tile \ref gemm would
+   *        choose for `m × n × k`. A scalar other than `double` (here), a depth of more than one panel, or a product
+   *        \ref gemm_rows takes, leaves A to be read in place.
+   */
+  template <typename T>
+  [[nodiscard]] packed_left<T> pack_left(std::size_t m,
+                                         std::size_t /*n*/,
+                                         std::size_t k,
+                                         const T*    a,
+                                         std::size_t lda,
+                                         buffer<T>&  /*storage*/)
+  {
+    return packed_left<T> {.kernel = left_kernel::plain, .m = m, .k = k, .a = a, .lda = lda, .packed = nullptr};
+  }
+
+  //! \brief \ref pack_left for `double`, on the tile \ref left_kernel_for chooses.
+  template <>
+  [[nodiscard]] inline packed_left<double> pack_left<double>(std::size_t       m,
+                                                             std::size_t       n,
+                                                             std::size_t       k,
+                                                             const double*     a,
+                                                             std::size_t       lda,
+                                                             buffer<double>&   storage)
+  {
+    packed_left<double> left {.kernel = left_kernel_for<double>(m, n, k), .m = m, .k = k, .a = a, .lda = lda, .packed = nullptr};
+#ifdef NUMERICAL_AMX_COMPILED
+    if (left.kernel == left_kernel::amx) {
+      left.packed = pack_left_for<amx_tile_kernel>(m, k, a, lda, storage);
+    }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+    if (left.kernel == left_kernel::neon) {
+      left.packed = pack_left_for<neon_tile_kernel<double>>(m, k, a, lda, storage);
+    }
+#endif
+#ifdef NUMERICAL_X86_COMPILED
+    if (left.kernel == left_kernel::avx512) {
+      left.packed = pack_left_for<avx512_tile_kernel>(m, k, a, lda, storage);
+    }
+    if (left.kernel == left_kernel::avx2) {
+      left.packed = pack_left_for<avx2_tile_kernel>(m, k, a, lda, storage);
+    }
+#endif
+    if (left.kernel == left_kernel::vector) {
+      left.packed = pack_left_for<vector_tile_kernel<double>>(m, k, a, lda, storage);
+    }
+    return left;
+  }
+
+  /*!
+   * \brief `C += A·B` for the packed \p left (\ref pack_left) and the `k × n` \p b, as \ref gemm computes it, A read
+   *        in place here, for a scalar other than `double`.
+   */
+  template <typename T>
+  void gemm_with(const packed_left<T>& left,
+                 std::size_t           n,
+                 const T*              b,
+                 std::size_t           ldb,
+                 T*                    c,
+                 std::size_t           ldc)
+  {
+    gemm(left.m, n, left.k, left.a, left.lda, b, ldb, c, ldc);
+  }
+
+  /*!
+   * \brief \ref gemm_with for `double`: on the tile A was packed for, A read from its packing, where \ref gemm would
+   *        choose that tile for this \p n; else as \ref gemm. Either way \ref gemm's tiles and order of summation,
+   *        its bits.
+   */
+  template <>
+  inline void gemm_with<double>(const packed_left<double>& left,
+                                std::size_t                n,
+                                const double*              b,
+                                std::size_t                ldb,
+                                double*                    c,
+                                std::size_t                ldc)
+  {
+    if (left.kernel == left_kernel::plain || left_kernel_for<double>(left.m, n, left.k) != left.kernel) {
+      gemm(left.m, n, left.k, left.a, left.lda, b, ldb, c, ldc);
+      return;
+    }
+#ifdef NUMERICAL_AMX_COMPILED
+    if (left.kernel == left_kernel::amx) {
+      gemm_packed<amx_tile_kernel>(left.m, n, left.k, left.a, left.lda, b, ldb, c, ldc, left.packed);
+      return;
+    }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+    if (left.kernel == left_kernel::neon) {
+      gemm_packed<neon_tile_kernel<double>>(left.m, n, left.k, left.a, left.lda, b, ldb, c, ldc, left.packed);
+      return;
+    }
+#endif
+#ifdef NUMERICAL_X86_COMPILED
+    if (left.kernel == left_kernel::avx512) {
+      gemm_packed<avx512_tile_kernel>(left.m, n, left.k, left.a, left.lda, b, ldb, c, ldc, left.packed);
+      return;
+    }
+    if (left.kernel == left_kernel::avx2) {
+      gemm_packed<avx2_tile_kernel>(left.m, n, left.k, left.a, left.lda, b, ldb, c, ldc, left.packed);
+      return;
+    }
+#endif
+    gemm_packed<vector_tile_kernel<double>>(left.m, n, left.k, left.a, left.lda, b, ldb, c, ldc, left.packed);
   }
 
   //! \brief The elements of one partial sum of `chunked_dot`: fixed, so the sum does not depend on the threads.

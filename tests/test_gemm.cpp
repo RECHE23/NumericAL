@@ -3,6 +3,7 @@
 // several column blocks, partial register tiles, every scalar it is instantiated for, and any number of
 // threads. Exact equality is the property; a tolerance would hide a reordered sum.
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -151,6 +152,63 @@ namespace {
 
 // Complex products past the portable path, through the real kernel or the x86-64 complex tiles: several column
 // blocks and depth blocks, each partial, and rows ending in a partial tile of either.
+namespace {
+  // Whether gemm_with on A packed once (pack_left, for products of about n_hint columns) gives gemm's bits for a
+  // product of n columns, A and B with padded row distances, C added to.
+  template <typename T>
+  bool shared_left_equals_gemm(std::size_t m,
+                               std::size_t n_hint,
+                               std::size_t n,
+                               std::size_t k)
+  {
+    const std::size_t lda {k + 3};
+    const std::size_t ldb {n + 2};
+    const std::size_t ldc {n + 5};
+    std::vector<T>    a(m * lda);
+    std::vector<T>    b(k * ldb);
+    std::vector<T>    c(m * ldc);
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = fill<T>(i);
+    }
+    for (std::size_t i {0}; i < b.size(); ++i) {
+      b[i] = fill<T>(i + 7);
+    }
+    for (std::size_t i {0}; i < c.size(); ++i) {
+      c[i] = fill<T>(i + 3);
+    }
+    std::vector<T> want {c};
+    numerical::detail::gemm(m, n, k, a.data(), lda, b.data(), ldb, want.data(), ldc);
+    numerical::buffer<T>                    storage;
+    const numerical::detail::packed_left<T> left {numerical::detail::pack_left(m, n_hint, k, a.data(), lda, storage)};
+    numerical::detail::gemm_with(left, n, b.data(), ldb, c.data(), ldc);
+    numerical::detail::gemm_with(left, n, b.data(), ldb, c.data(), ldc); // A's packing read twice, unchanged
+    numerical::detail::gemm(m, n, k, a.data(), lda, b.data(), ldb, want.data(), ldc);
+    return c == want;
+  }
+} // namespace
+
+TEST(a_left_operand_packed_once_gives_gemm_s_bits_on_every_path)
+{
+  // Packed for the tile in use (the depth of an LU panel, 32 or 64, and a deep one); a narrow product whose
+  // tile differs from the hint's (on the AMX path, too few columns to suit it) or that the plain loop takes (7 × 1
+  // and 20 × 2 by 64: a packing read there would round otherwise); a
+  // depth past one panel, and other scalars, read A in place.
+  for (const auto& [m, hint, n, k] : {std::array<std::size_t, 4> {936, 64, 64, 64}, {936, 64, 200, 64}, {300, 32, 97, 32},
+                                      {130, 64, 3, 64}, {7, 64, 1, 64}, {20, 64, 2, 64}, {7, 64, 5, 4}, {260, 64, 64, 300}, {64, 64, 64, 256}}) {
+    EXPECT(shared_left_equals_gemm<double>(m, hint, n, k));
+  }
+  EXPECT(shared_left_equals_gemm<float>(200, 64, 64, 64));
+  EXPECT(shared_left_equals_gemm<std::complex<double>>(100, 32, 40, 32));
+  numerical::buffer<double> storage;
+  const std::vector<double> a(64, 1.0);
+  EXPECT(numerical::detail::pack_left(8, 8, 8, a.data(), 8, storage).kernel == numerical::detail::left_kernel::plain);
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    (void)numerical::limit_gemm_path(path); // every path this machine runs, the portable vector tile among them
+    EXPECT(shared_left_equals_gemm<double>(300, 64, 128, 64));
+  }
+}
+
 TEST(complex_products_past_the_portable_path)
 {
   const std::size_t n {numerical::detail::split_columns + 37};

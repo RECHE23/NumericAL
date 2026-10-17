@@ -924,6 +924,21 @@ namespace numerical {
       }
     }
 
+    //! \brief \ref negated_block into \p out, resized to it.
+    void negated_block_into(buffer<T>&  out,
+                            std::size_t r0,
+                            std::size_t r1,
+                            std::size_t c0,
+                            std::size_t c1) const
+    {
+      out.resize((r1 - r0) * (c1 - c0));
+      for (std::size_t r {r0}; r < r1; ++r) {
+        for (std::size_t c {c0}; c < c1; ++c) {
+          out[((r - r0) * (c1 - c0)) + (c - c0)] = -lu_[(r * n_) + c];
+        }
+      }
+    }
+
     //! \brief The rows `[r0, r1)` and columns `[c0, c1)` of the factor, negated, row-major and contiguous.
     [[nodiscard]] buffer<T> negated_block(std::size_t r0,
                                           std::size_t r1,
@@ -959,25 +974,46 @@ namespace numerical {
       // Every panel in the one column-major storage, of the first (and tallest) one's size: a fresh one each panel was
       // mapped anew and faulted in page by page, on the critical path (order 1000 on six AVX2 cores: 24 µs of a panel's
       // 470, and its copy in 97 µs instead of about 40).
-      buffer<T>   panel(n_ * std::min(block_, n_));
-      std::size_t end {std::min(block_, n_)};
+      buffer<T>         panel(n_ * std::min(block_, n_));
+      const std::size_t end {std::min(block_, n_)};
       factorize_panel(panel, 0, end);
+      if (end < n_) {
+        factorize_trailing(panel, end);
+      }
+      swap_left_columns();
+    }
+
+    /*!
+     * \brief The panels after the first (whose columns end at \p first_end), each with its trailing update. Out of
+     *        line: in \ref factorize, the update's storage and calls cost an LU of one panel 5 % (orders 8 to 48 under
+     *        clang on arm64), where none of them runs.
+     */
+    NUMERICAL_OUT_OF_LINE void factorize_trailing(buffer<T>&  panel,
+                                                  std::size_t first_end)
+    {
+      // −L₂₁ and its packing for the product's tile, in storage kept from panel to panel: packed once, it serves every
+      // block of the trailing update, where each block's product packed it again (6.9 % of the time on six AVX2 cores
+      // at order 1000).
+      buffer<T>   minus_l;
+      buffer<T>   packing;
+      std::size_t end {first_end};
       for (std::size_t k0 {0}; end < n_;) {
         const std::size_t next       {std::min(end + block_, n_)};
         solve_panel_rows(k0, end);
-        const buffer<T> minus_l      {negated_block(end, n_, k0, end)};
-        update_columns(minus_l, k0, end, end, next);
-        const std::size_t right      {n_ - next};
+        negated_block_into(minus_l, end, n_, k0, end);
+        const detail::packed_left<T> left {detail::pack_left(n_ - end, block_, end - k0, minus_l.data(), end - k0, packing)};
+        update_columns(left, k0, end, next);
+        const std::size_t right           {n_ - next};
         if (right > detail::lu_lookahead_columns) { // one product of the whole trailing block, then the panel
-          update_columns(minus_l, k0, end, next, n_);
+          update_columns(left, k0, next, n_);
           factorize_panel(panel, end, next);
           k0  = end;
           end = next;
           continue;
         }
-        // About two blocks of columns for each thread the work pays for: each block's product packs L₂₁ again, and a
-        // product too small to share ran one block for each thread the machine has (order 256 on eight arm64
-        // threads: 329 → 311 µs); two, not one, as on x86-64 a block of half the columns stays in its cache.
+        // About two blocks of columns for each thread the work pays for: a product too small to share ran one block for
+        // each thread the machine has (order 256 on eight arm64 threads: 329 → 311 µs); two, not one, as on x86-64 a
+        // block of half the columns stays in its cache, and the balance beat one (six AVX2 cores, order 1000: 12 %).
         const std::size_t work    {(n_ - end) * right * (end - k0) / detail::lu_update_speedup};
         const std::size_t helpers {std::clamp(work / detail::work_per_thread, std::size_t {1}, max_threads())};
         const std::size_t width   {std::max(block_, (right + (2 * helpers) - 1) / (2 * helpers))};
@@ -986,7 +1022,7 @@ namespace numerical {
         detail::parallel_for_beside(blocks, (n_ - end) * width * (end - k0) / detail::lu_update_speedup,
                                     [&](std::size_t block) {
                                       const std::size_t first {next + (block * width)};
-                                      update_columns(minus_l, k0, end, first, std::min(first + width, n_));
+                                      update_columns(left, k0, first, std::min(first + width, n_));
                                     },
                                     [&] { factorize_panel(panel, end, next); });
         swap_limit_ = n_;
@@ -999,7 +1035,6 @@ namespace numerical {
         k0  = end;
         end = next;
       }
-      swap_left_columns();
     }
 
     /*!
@@ -1203,15 +1238,14 @@ namespace numerical {
     }
 
     //! \brief `A₂₂ −= L₂₁ U₁₂` on the trailing columns `[c0, c1)`, as `A₂₂ += (−L₂₁) U₁₂` through the matrix product
-    //!        kernel, \p minus_l being `−L₂₁` (the rows below the panel `[k0, end)`).
-    void update_columns(const buffer<T>&      minus_l,
-                        std::size_t           k0,
-                        std::size_t           end,
-                        std::size_t           c0,
-                        std::size_t           c1)
+    //!        kernel, \p left being `−L₂₁` (the rows below the panel from \p k0) as \ref detail::pack_left packed it.
+    void update_columns(const detail::packed_left<T>& left,
+                        std::size_t                   k0,
+                        std::size_t                   c0,
+                        std::size_t                   c1)
     {
-      detail::gemm(n_ - end, c1 - c0, end - k0, minus_l.data(), end - k0, lu_.data() + (k0 * n_) + c0, n_,
-                   lu_.data() + (end * n_) + c0, n_);
+      const std::size_t end {k0 + left.k};
+      detail::gemm_with(left, c1 - c0, lu_.data() + (k0 * n_) + c0, n_, lu_.data() + (end * n_) + c0, n_);
     }
 
     std::size_t                                      n_;                                //!< The matrix order.
