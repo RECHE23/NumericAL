@@ -86,9 +86,17 @@ namespace numerical {
     //! \brief The most right-hand sides an LU solve takes row by row rather than by blocks through the product kernel.
     inline constexpr std::size_t narrow_solve {16};
 
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief The fewest columns an LU solve gives a thread of its own: on six AVX2 cores, 300 right-hand sides of
+    //!        order 300 in six slices rather than four (of 64) took 0.54 ms instead of 0.62, an inverse 0.50 instead of
+    //!        0.59; 32 did no better.
+    inline constexpr std::size_t slice_columns {48};
+#else
     //! \brief The fewest columns an LU solve gives a thread of its own: a narrower slice starves the product kernel
-    //!        (arm64, order 256 and 64 right-hand sides in eight slices: 112 → 194 µs).
+    //!        (arm64, order 256 and 64 right-hand sides in eight slices: 112 → 194 µs; 48 columns, order 300 and 300
+    //!        right-hand sides: 8 % slower than 64).
     inline constexpr std::size_t slice_columns {64};
+#endif
 
 #ifdef NUMERICAL_X86_COMPILED
     //! \brief The order up to which an LU solve gives each thread its own columns on the x86-64 units: each thread
