@@ -1,7 +1,7 @@
 /*!
  * \file blas.hpp
  * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`dgemm`, `dgesv`,
- *        `dgetrf`, `dgetrs`, `dpotrf`, `dpotrs`, `dsyevd`, `dgesdd`, `dgeqrf`, `dorgqr`), as their reference
+ *        `dgetrf`, `dgetrs`, `dpotrf`, `dpotrs`, `dsyevd`, `dgesdd`, `dgeqrf`, `dorgqr`, `dgelsd`), as their reference
  *        implementations define them, over NumericAL's kernels: what the optional `numerical_blas` library exports
  *        with the Fortran calling convention (blas/numerical_blas.cpp), so that a program linked against BLAS and
  *        LAPACK, or a switch such as FlexiBLAS, can run on NumericAL.
@@ -17,6 +17,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <limits>
 #include <vector>
 
 #include "decomposition.hpp"
@@ -893,6 +894,100 @@ namespace numerical::blas {
       for (std::size_t i {0}; i < rows; ++i) {
         a[i + (j * ld)] = q[(i * cols) + j];
       }
+    }
+    return 0;
+  }
+
+  /*!
+   * \brief The minimum-norm least-squares solutions of `A X ≈ B`, column-major `A` `m × n` and `B` `max(m, n) × nrhs`,
+   *        as LAPACK's `dgelsd`: a singular value at or under \p rcond times the largest counts as zero (`rcond ≤ 0` or
+   *        `≥ 1`: the machine epsilon); `X` overwrites `B`'s first `n` rows, the singular values (descending) go to
+   *        \p s and the effective rank to \p rank. Where `m > n`, `B`'s rows `n…m-1` of each column hold its residual
+   *        as LAPACK leaves it, a vector whose norm is `‖b − A x‖` (here that norm, then zeros), from which NumPy's
+   *        `lstsq` takes its residuals. `A` is left as it was. NumericAL's \ref least_squares computes them; the
+   *        workspaces are not used, but their sizes are `dgelsd`'s: an `lwork` of -1 asks them (written to `work[0]`
+   *        and `iwork[0]`), and a smaller `lwork` is illegal.
+   * \return `INFO`: 0, or `-i` where argument `i` is illegal (`-4`, `-6`: a NaN or an infinity in `A`, in `B`).
+   */
+  template <typename Index>
+  int gelsd(std::ptrdiff_t m,
+            std::ptrdiff_t n,
+            std::ptrdiff_t nrhs,
+            const double*  a,
+            std::ptrdiff_t lda,
+            double*        b,
+            std::ptrdiff_t ldb,
+            double*        s,
+            double         rcond,
+            Index*         rank,
+            double*        work,
+            std::ptrdiff_t lwork,
+            Index*         iwork)
+  {
+    if (m < 0) {
+      return -1;
+    }
+    if (n < 0) {
+      return -2;
+    }
+    if (nrhs < 0) {
+      return -3;
+    }
+    if (lda < std::max<std::ptrdiff_t>(1, m)) {
+      return -5;
+    }
+    if (ldb < std::max<std::ptrdiff_t>({1, m, n})) {
+      return -7;
+    }
+    // dgelsd's sizes: its divide and conquer's leaves of 25 values, NLVL levels above them.
+    constexpr std::ptrdiff_t leaf    {25};
+    const std::ptrdiff_t     least   {std::max<std::ptrdiff_t>(1, std::min(m, n))};
+    const auto               levels  {std::max<std::ptrdiff_t>(
+                                        static_cast<std::ptrdiff_t>(std::log2(static_cast<double>(least) / static_cast<double>(leaf + 1))) + 1, 0)};
+    const std::ptrdiff_t lwork_least {(3 * least) + (9 * least) + (2 * least * leaf) + (8 * least * levels) + (least * nrhs)
+                                      + ((leaf + 1) * (leaf + 1))};
+    if (lwork == -1) {
+      work[0]  = static_cast<double>(lwork_least);
+      iwork[0] = static_cast<Index>((3 * least * levels) + (11 * least));
+      return 0;
+    }
+    if (lwork < lwork_least) {
+      return -12;
+    }
+    *rank = 0;
+    if (m == 0 || n == 0) {
+      return 0;
+    }
+    const auto     rows {static_cast<std::size_t>(m)};
+    const auto     cols {static_cast<std::size_t>(n)};
+    const auto     rhs  {static_cast<std::size_t>(nrhs)};
+    const auto     ld   {static_cast<std::size_t>(ldb)};
+    buffer<double> right(rows * rhs, 0.0);
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t c {0}; c < rhs; ++c) {
+        right[(i * rhs) + c] = b[i + (c * ld)];
+      }
+    }
+    if (!std::ranges::all_of(right, [](double x) { return std::isfinite(x); })) {
+      return -6;
+    }
+    const rank_cutoff cutoff {rank_cutoff::relative(rcond > 0.0 && rcond < 1.0 ? rcond : std::numeric_limits<double>::epsilon())};
+    try {
+      const matrix<double>                    left {rows, cols, detail::row_major(a, lda, m, n, 1.0)};
+      const least_squares_solution<double>    fit  {least_squares(left, matrix<double> {rows, rhs, std::move(right)}, cutoff)};
+      std::copy_n(&fit.singular_values[0], fit.singular_values.size(), s);
+      *rank = static_cast<Index>(fit.rank);
+      for (std::size_t c {0}; c < rhs; ++c) {
+        for (std::size_t i {0}; i < cols; ++i) {
+          b[i + (c * ld)] = fit.solution(i, c);
+        }
+        for (std::size_t i {cols}; i < rows; ++i) {
+          b[i + (c * ld)] = i == cols && fit.residuals.size() > 0 ? std::sqrt(fit.residuals[c]) : 0.0;
+        }
+      }
+    }
+    catch (const non_finite_error&) {
+      return -4;
     }
     return 0;
   }

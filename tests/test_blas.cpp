@@ -6,6 +6,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -51,6 +52,20 @@ void dorgqr_(const int*,
              const double*,
              double*,
              const int*,
+             int*) noexcept;
+void dgelsd_(const int*,
+             const int*,
+             const int*,
+             const double*,
+             const int*,
+             double*,
+             const int*,
+             double*,
+             const double*,
+             int*,
+             double*,
+             const int*,
+             int*,
              int*) noexcept;
 }
 
@@ -971,4 +986,162 @@ TEST(the_fortran_qr_routines_answer_as_the_cpp_ones)
   EXPECT_EQ(info, -1);
   dorgqr_(&two, &two, &bad, a.data(), &two, tau.data(), work.data(), &lw, &info);
   EXPECT_EQ(info, -3);
+}
+
+namespace {
+  // Whether gelsd of an m × n A of rank r (a product of m × r and r × n factors) and nrhs right-hand sides, the
+  // leading dimensions padded, gives the rank, the singular values and V Σ⁺ Uᵀ B as gesdd's factors give them by plain
+  // loops, A left as it was and, where m > n and the rank full, the residual's norm in row n.
+  bool gelsd_solves(std::size_t m,
+                    std::size_t n,
+                    std::size_t r,
+                    std::size_t nrhs,
+                    double      rcond)
+  {
+    const std::size_t   lda {m + 1};
+    const std::size_t   ldb {std::max(m, n) + 2};
+    const std::size_t   k   {std::min(m, n)};
+    const auto          f   {entries(m * r, 37)};
+    const auto          g   {entries(r * n, 41)};
+    std::vector<double> a(lda * n, 0.0);
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        for (std::size_t l {0}; l < r; ++l) {
+          a[i + (j * lda)] += f[i + (l * m)] * g[l + (j * r)];
+        }
+      }
+    }
+    std::vector<double>       b      {entries(ldb * nrhs, 43)};
+    const std::vector<double> a0     {a};
+    const std::vector<double> b0     {b};
+    std::vector<double>       s(k);
+    int                       rank   {-1};
+    double                    query  {0.0};
+    int                       iquery {0};
+    const auto                lm     {static_cast<std::ptrdiff_t>(m)};
+    const auto                ln     {static_cast<std::ptrdiff_t>(n)};
+    const auto                lr     {static_cast<std::ptrdiff_t>(nrhs)};
+    if (numerical::blas::gelsd(lm, ln, lr, a.data(), static_cast<std::ptrdiff_t>(lda), b.data(), static_cast<std::ptrdiff_t>(ldb),
+                               s.data(), rcond, &rank, &query, -1, &iquery) != 0) {
+      return false;
+    }
+    std::vector<double> work(static_cast<std::size_t>(query));
+    std::vector<int>    iwork(static_cast<std::size_t>(iquery));
+    if (numerical::blas::gelsd(lm, ln, lr, a.data(), static_cast<std::ptrdiff_t>(lda), b.data(), static_cast<std::ptrdiff_t>(ldb),
+                               s.data(), rcond, &rank, work.data(), static_cast<std::ptrdiff_t>(work.size()), iwork.data()) != 0) {
+      return false;
+    }
+    // The reference: gesdd's U, Σ, Vᵀ, the values at or under the cutoff dropped.
+    std::vector<double> copy {a0};
+    std::vector<double> sigma(k);
+    std::vector<double> u(m * k);
+    std::vector<double> vt(k * n);
+    std::vector<double> svd_work((3 * k) + std::max({m, n, (4 * k * k) + (4 * k)}));
+    std::vector<int>    svd_iwork(8 * k);
+    if (numerical::blas::gesdd('S', lm, ln, copy.data(), static_cast<std::ptrdiff_t>(lda), sigma.data(), u.data(), lm, vt.data(),
+                               static_cast<std::ptrdiff_t>(k), svd_work.data(), static_cast<std::ptrdiff_t>(svd_work.size()),
+                               svd_iwork.data()) != 0) {
+      return false;
+    }
+    const double cutoff    {(rcond > 0.0 && rcond < 1.0 ? rcond : std::numeric_limits<double>::epsilon()) * sigma[0]};
+    std::size_t  want_rank {0};
+    bool         good      {a == a0};
+    for (std::size_t d {0}; d < k; ++d) {
+      want_rank += static_cast<std::size_t>(sigma[d] > cutoff);
+      good       = good && std::abs(s[d] - sigma[d]) <= 1e-12 * static_cast<double>(m + n);
+    }
+    good = good && std::cmp_equal(rank, want_rank) && want_rank == std::min(r, k);
+    for (std::size_t c {0}; c < nrhs; ++c) {
+      for (std::size_t j {0}; j < n; ++j) {
+        double x {0.0};
+        for (std::size_t d {0}; d < want_rank; ++d) {
+          double projection {0.0};
+          for (std::size_t i {0}; i < m; ++i) {
+            projection += u[i + (d * m)] * b0[i + (c * ldb)];
+          }
+          x += vt[d + (j * k)] * projection / sigma[d];
+        }
+        good = good && std::abs(b[j + (c * ldb)] - x) <= 1e-9;
+      }
+      if (m > n) {
+        double residual {0.0};
+        for (std::size_t i {0}; i < m; ++i) {
+          double fitted {0.0};
+          for (std::size_t j {0}; j < n; ++j) {
+            fitted += a0[i + (j * lda)] * b[j + (c * ldb)];
+          }
+          residual += (b0[i + (c * ldb)] - fitted) * (b0[i + (c * ldb)] - fitted);
+        }
+        const double row_n {want_rank == n ? std::sqrt(residual) : 0.0};
+        good = good && std::abs(b[n + (c * ldb)] - row_n) <= 1e-12 * static_cast<double>(m);
+        for (std::size_t i {n + 1}; i < m; ++i) {
+          good = good && b[i + (c * ldb)] == 0.0;
+        }
+      }
+    }
+    return good;
+  }
+} // namespace
+
+TEST(gelsd_gives_the_minimum_norm_least_squares_solution_its_rank_and_residual)
+{
+  EXPECT(gelsd_solves(12, 5, 5, 3, -1.0));   // tall, full rank: residuals in row n
+  EXPECT(gelsd_solves(5, 12, 5, 2, 0.0));    // wide, full rank
+  EXPECT(gelsd_solves(30, 20, 7, 2, 1e-10)); // rank-deficient: the minimum-norm solution
+  EXPECT(gelsd_solves(20, 30, 7, 1, 1e-10));
+  EXPECT(gelsd_solves(9, 9, 9, 4, 2.0));     // rcond ≥ 1: the machine epsilon
+  EXPECT(gelsd_solves(80, 60, 60, 1, -1.0)); // past one leaf of dgelsd's divide and conquer
+  EXPECT(gelsd_solves(6, 4, 4, 0, -1.0));    // no right-hand side: the values and the rank alone
+}
+
+TEST(gelsd_sizes_its_workspaces_and_reports_an_illegal_argument_and_a_nan)
+{
+  std::vector<double> a(12, 1.0); // 4 × 3
+  std::vector<double> b(8, 1.0);
+  std::vector<double> s(3);
+  std::vector<double> work(2000);
+  std::vector<int>    iwork(100);
+  int                 rank {-1};
+  EXPECT_EQ(numerical::blas::gelsd(4, 3, 2, a.data(), 4, b.data(), 4, s.data(), -1.0, &rank, work.data(), -1, iwork.data()), 0);
+  EXPECT(work[0] == 9.0 + 27.0 + 150.0 + 6.0 + 676.0 && iwork[0] == 33);           // 3 < 26: no level, 12·3 + 50·3 + 3·2 + 676
+  EXPECT_EQ(numerical::blas::gelsd(200, 100, 1, a.data(), 200, b.data(), 200, s.data(), -1.0, &rank, work.data(), -1, iwork.data()), 0);
+  EXPECT(work[0] == 1200.0 + 5000.0 + 1600.0 + 100.0 + 676.0 && iwork[0] == 1700); // log₂(100 / 26) → 2 levels
+  EXPECT_EQ(numerical::blas::gelsd(-1, 3, 2, a.data(), 4, b.data(), 4, s.data(), -1.0, &rank, work.data(), 2000, iwork.data()), -1);
+  EXPECT_EQ(numerical::blas::gelsd(4, -1, 2, a.data(), 4, b.data(), 4, s.data(), -1.0, &rank, work.data(), 2000, iwork.data()), -2);
+  EXPECT_EQ(numerical::blas::gelsd(4, 3, -1, a.data(), 4, b.data(), 4, s.data(), -1.0, &rank, work.data(), 2000, iwork.data()), -3);
+  EXPECT_EQ(numerical::blas::gelsd(4, 3, 2, a.data(), 3, b.data(), 4, s.data(), -1.0, &rank, work.data(), 2000, iwork.data()), -5);
+  EXPECT_EQ(numerical::blas::gelsd(3, 4, 2, a.data(), 3, b.data(), 3, s.data(), -1.0, &rank, work.data(), 2000, iwork.data()), -7);
+  EXPECT_EQ(numerical::blas::gelsd(4, 3, 2, a.data(), 4, b.data(), 4, s.data(), -1.0, &rank, work.data(), 867, iwork.data()), -12);
+  EXPECT_EQ(numerical::blas::gelsd(0, 3, 2, a.data(), 1, b.data(), 3, s.data(), -1.0, &rank, work.data(), 2000, iwork.data()), 0);
+  EXPECT_EQ(rank, 0);
+  rank = -1;
+  EXPECT_EQ(numerical::blas::gelsd(4, 0, 2, a.data(), 4, b.data(), 4, s.data(), -1.0, &rank, work.data(), 2000, iwork.data()), 0);
+  EXPECT_EQ(rank, 0);
+  b[5] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(numerical::blas::gelsd(4, 3, 2, a.data(), 4, b.data(), 4, s.data(), -1.0, &rank, work.data(), 868, iwork.data()), -6);
+  b[5] = 1.0;
+  a[7] = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(numerical::blas::gelsd(4, 3, 2, a.data(), 4, b.data(), 4, s.data(), -1.0, &rank, work.data(), 868, iwork.data()), -4);
+}
+
+TEST(the_fortran_least_squares_answers_as_the_cpp_one)
+{
+  const int           three {3};
+  const int           one   {1};
+  const int           lwork {1000};
+  const double        rcond {-1.0};
+  std::vector<double> a     {1.0, 1.0, 1.0, 0.0, 1.0, 2.0}; // fit c₀ + c₁ t at t = 0, 1, 2
+  std::vector<double> b     {1.0, 2.0, 4.0};                // c = (5/6, 3/2), residual 1/6 in squares
+  std::vector<double> s(2);
+  std::vector<double> work(1000);
+  std::vector<int>    iwork(100);
+  int                 rank  {0};
+  int                 info  {7};
+  const int           two   {2};
+  dgelsd_(&three, &two, &one, a.data(), &three, b.data(), &three, s.data(), &rcond, &rank, work.data(), &lwork, iwork.data(), &info);
+  EXPECT(info == 0 && rank == 2 && std::abs(b[0] - (5.0 / 6.0)) < 1e-14 && std::abs(b[1] - 1.5) < 1e-14);
+  EXPECT(std::abs((b[2] * b[2]) - (1.0 / 6.0)) < 1e-14);
+  const int bad {-1};
+  dgelsd_(&three, &bad, &one, a.data(), &three, b.data(), &three, s.data(), &rcond, &rank, work.data(), &lwork, iwork.data(), &info);
+  EXPECT_EQ(info, -2);
 }

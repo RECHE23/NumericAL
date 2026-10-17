@@ -24,6 +24,16 @@ for mode in ("reduced", "complete"):
     q, r = np.linalg.qr(a[:, :200], mode=mode)
     assert np.abs(q @ r - a[:, :200]).max() < 1e-9, "qr"
     assert np.abs(q.T @ q - np.eye(q.shape[1])).max() < 1e-12, "qr orthonormal"
+tall = a[:, :200]
+x, residuals, rank, sigma = np.linalg.lstsq(tall, b, rcond=None)
+assert np.abs(tall.T @ (tall @ x - b)).max() < 1e-9, "lstsq normal equations"
+assert np.abs(residuals - ((tall @ x - b) ** 2).sum(axis=0)).max() < 1e-9, "lstsq residuals"
+assert rank == 200 and np.abs(sigma - np.linalg.svd(tall, compute_uv=False)).max() < 1e-9, "lstsq rank"
+deficient = tall[:, :50] @ rng.standard_normal((50, 120))
+x, residuals, rank, _ = np.linalg.lstsq(deficient, b, rcond=None)
+assert rank == 50 and residuals.size == 0, "lstsq deficient rank"
+cutoff = np.finfo(float).eps * max(deficient.shape)  # lstsq's rcond=None: pinv's default keeps the rounding noise
+assert np.abs(x - np.linalg.pinv(deficient, rcond=cutoff) @ b).max() < 1e-9, "lstsq minimum norm"
 try:
     np.linalg.cholesky(np.array([[1.0, 2.0], [2.0, 1.0]]))
     raise AssertionError("an indefinite matrix was factorised")
