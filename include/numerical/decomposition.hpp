@@ -956,8 +956,12 @@ namespace numerical {
     // them before, and on the calling thread each swap held up the panel the other threads wait for.
     void factorize()
     {
+      // Every panel in the one column-major storage, of the first (and tallest) one's size: a fresh one each panel was
+      // mapped anew and faulted in page by page, on the critical path (order 1000 on six AVX2 cores: 24 µs of a panel's
+      // 470, and its copy in 97 µs instead of about 40).
+      buffer<T>   panel(n_ * std::min(block_, n_));
       std::size_t end {std::min(block_, n_)};
-      factorize_panel(0, end);
+      factorize_panel(panel, 0, end);
       for (std::size_t k0 {0}; end < n_;) {
         const std::size_t next       {std::min(end + block_, n_)};
         solve_panel_rows(k0, end);
@@ -966,7 +970,7 @@ namespace numerical {
         const std::size_t right      {n_ - next};
         if (right > detail::lu_lookahead_columns) { // one product of the whole trailing block, then the panel
           update_columns(minus_l, k0, end, next, n_);
-          factorize_panel(end, next);
+          factorize_panel(panel, end, next);
           k0  = end;
           end = next;
           continue;
@@ -984,7 +988,7 @@ namespace numerical {
                                       const std::size_t first {next + (block * width)};
                                       update_columns(minus_l, k0, end, first, std::min(first + width, n_));
                                     },
-                                    [&] { factorize_panel(end, next); });
+                                    [&] { factorize_panel(panel, end, next); });
         swap_limit_ = n_;
         for (const auto& [a, b] : deferred_swaps_) {
           for (std::size_t c {next}; c < n_; ++c) {
@@ -1004,15 +1008,15 @@ namespace numerical {
      * The panel is factorised in a column-major copy, where a pivot search and every update run along a
      * column at unit stride (row-major, each reads one element per row: four times slower at order 2048);
      * a pivot's row swap reaches the columns outside the panel in place. The arithmetic is the in-place
-     * algorithm's, step for step.
+     * algorithm's, step for step. \p panel is the copy's storage, of `(n − k0) × (end − k0)` elements or more.
      */
-    void factorize_panel(std::size_t k0,
-                         std::size_t end)
+    void factorize_panel(buffer<T>&      panel,
+                         std::size_t     k0,
+                         std::size_t     end)
     {
       const std::size_t rows                  {n_ - k0};
       const std::size_t width                 {end - k0};
-      buffer<T>         panel(rows * width, T {}); // column j of the panel at panel[j * rows]
-      transpose_panel(panel, rows, k0, end, true);
+      transpose_panel(panel, rows, k0, end, true); // column j of the panel at panel[j * rows], every element written
       factorize_columns(panel, rows, 0, width, k0, end);
       transpose_panel(panel, rows, k0, end, false);
     }
