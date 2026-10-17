@@ -1082,7 +1082,8 @@ namespace numerical::blas {
   /*!
    * \brief The QR factorisation `A = Q R` of a column-major `m × n` `A`, as LAPACK's `dgeqrf`: `R` overwrites the upper
    *        trapezoid of `A`; `Q = H₀ H₁ … H_{k-1}` (`k = min(m, n)`) is left as its reflectors `H_i = I − τ_i w wᵀ`,
-   *        `w` 1 at row `i` and below it held in `A`'s column `i`, `τ_i` in \p tau (0 for the identity) — the form
+   *        `w` 1 at row `i` and below it held in `A`'s column `i`, `τ_i` in \p tau (0 for the identity, which a column with
+   *        nothing below the diagonal takes, as in `dlarfg`) — the form
    *        `dorgqr` and `dormqr` read. NumericAL's blocked Householder reflections compute them; the workspace is not
    *        used, but its size is `dgeqrf`'s least, `n`: an `lwork` of -1 asks it (written to `work[0]`), and a smaller
    *        one is illegal.
@@ -1130,15 +1131,14 @@ namespace numerical::blas {
         a[i + (j * ld)] = factors.r[(i * cols) + j];
       }
     }
-    // A unit reflector I − 2 v vᵀ is I − τ w wᵀ with w = v / v₀ and τ = 2 v₀²; v₀ is 0 only for an empty one (the
-    // identity).
+    // The reflectors are LAPACK's already (numerical::detail::factor_qr_panel, as dlarfg): τ on T's diagonal, w in V's
+    // column, 1 on the diagonal; the identity's column of V is zero.
     for (const numerical::detail::reflector_block<double>& block : factors.blocks) {
       for (std::size_t j {0}; j < block.width; ++j) {
-        const std::size_t k   {block.first + j};
-        const double      top {block.v[(j * block.width) + j]};
-        tau[k] = 2.0 * top * top; // 0 for an empty reflector (the identity), its v zero
+        const std::size_t k {block.first + j};
+        tau[k] = block.t[(j * block.width) + j];
         for (std::size_t r {1}; j + r < block.height; ++r) {
-          a[(k + r) + (k * ld)] = tau[k] == 0.0 ? 0.0 : block.v[((j + r) * block.width) + j] / top;
+          a[(k + r) + (k * ld)] = block.v[((j + r) * block.width) + j];
         }
       }
     }

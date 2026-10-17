@@ -940,6 +940,40 @@ TEST(geqrf_factorises_and_orgqr_forms_its_q)
   EXPECT(geqrf_factorises(1, 1, 99));
 }
 
+TEST(geqrf_takes_the_identity_where_nothing_lies_below_the_diagonal)
+{
+  // An upper triangular A is its own R, every τ 0, as LAPACK's dlarfg leaves it (a reflection would flip R's signs:
+  // SciPy compares the Q of its pivoted QR, the reference dgeqp3's, with dgeqrf's of the same columns).
+  std::vector<double>       a {3.0, 0.0, 0.0, 1.0, -2.0, 0.0, 5.0, 4.0, -1.0}; // [[3, 1, 5], [0, −2, 4], [0, 0, −1]]
+  const std::vector<double> r {a};
+  std::vector<double>       tau(3, 7.0);
+  std::vector<double>       work(3);
+  EXPECT_EQ(numerical::blas::geqrf(3, 3, a.data(), 3, tau.data(), work.data(), 3), 0);
+  EXPECT(a == r);
+  EXPECT(tau[0] == 0.0 && tau[1] == 0.0 && tau[2] == 0.0);
+  std::vector<double>       wide   {2.0, 0.0, 1.0, -3.0}; // [[2, 1], [0, −3]] and a third row of a taller one below
+  const std::vector<double> wide_r {wide};
+  EXPECT_EQ(numerical::blas::geqrf(2, 2, wide.data(), 2, tau.data(), work.data(), 3), 0);
+  EXPECT(wide == wide_r && tau[0] == 0.0 && tau[1] == 0.0);
+  // [[1, 7], [2, 0], [0, 0]]: the first reflection mixes rows 0 and 1, and leaves row 2 of column 1 zero, so the
+  // second is the identity; Q R is still A.
+  const std::vector<double> tall    {1.0, 2.0, 0.0, 7.0, 0.0, 0.0};
+  std::vector<double>       factors {tall};
+  EXPECT_EQ(numerical::blas::geqrf(3, 2, factors.data(), 3, tau.data(), work.data(), 3), 0);
+  EXPECT(tau[0] != 0.0 && tau[1] == 0.0);
+  std::vector<double> q {factors};
+  EXPECT_EQ(numerical::blas::orgqr(3, 2, 2, q.data(), 3, tau.data(), work.data(), 3), 0);
+  for (std::size_t i {0}; i < 3; ++i) {
+    for (std::size_t j {0}; j < 2; ++j) {
+      double sum {0.0};
+      for (std::size_t l {0}; l <= j; ++l) {
+        sum += q[i + (l * 3)] * factors[l + (j * 3)];
+      }
+      EXPECT(std::abs(sum - tall[i + (j * 3)]) < 1e-14);
+    }
+  }
+}
+
 TEST(orgqr_forms_any_product_of_reflectors)
 {
   EXPECT(orgqr_forms(80, 70, 65));

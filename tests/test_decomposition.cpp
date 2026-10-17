@@ -201,6 +201,22 @@ TEST(qr_factor_is_orthonormal_and_reconstructs_the_matrix)
   EXPECT(approx_equal(transpose(factored.q()) * factored.q(), identity)); // Qᵀ Q == I
 }
 
+TEST(qr_and_svd_of_columns_of_the_identity_are_exact)
+{
+  // e₁, e₂, e₅ of order 5: each reflection maps a unit vector onto a unit vector, w = (1, 0, …, 1) with τ = 1 as
+  // LAPACK's dlarfg forms it; a unit Householder vector there holds 1/√2 and its products round. SciPy's
+  // subspace_angles takes an arcsin of the singular values: 1 − 2⁻⁵² there is an angle off by 2e-8.
+  const matrix<double> a {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 1.0}};
+  const auto           exact {[](const matrix<double>& m) {
+                                return std::ranges::all_of(m, [](double x) { return x == 0.0 || x == 1.0 || x == -1.0; });
+                              }};
+  const auto factored               {qr(a)};
+  EXPECT(exact(factored.q()) && exact(factored.r()));
+  const svd_decomposition<double> s {a};
+  EXPECT(s.singular_values()[0] == 1.0 && s.singular_values()[1] == 1.0 && s.singular_values()[2] == 1.0);
+  EXPECT(exact(s.u()) && exact(s.vh()));
+}
+
 TEST(qr_solve_is_the_least_squares_solution)
 {
   // Overdetermined system: QR's solution must match the normal equations.

@@ -1529,14 +1529,16 @@ namespace numerical {
     };
 
     /*!
-     * \brief Gathers the unit reflectors `reflectors[k0…k1-1]` (each `I − 2 v vᴴ`, an empty one the
-     *        identity) into `I − V T Vᴴ = H_{k0} H_{k0+1} … H_{k1-1}`.
+     * \brief Gathers the reflectors `reflectors[k0…k1-1]` (each `I − τ_k v vᴴ`: `τ_k` from \p taus, else 2 for a unit
+     *        `v`; an empty one the identity) into `I − V T Vᴴ = H_{k0} H_{k0+1} … H_{k1-1}`, `T` as LAPACK's `dlarft`
+     *        forms it.
      */
     template <typename T>
     [[nodiscard]] reflector_block<T> gather_reflectors(const std::vector<buffer<T>>&      reflectors,
                                                        std::size_t                        k0,
                                                        std::size_t                        k1,
-                                                       std::size_t                        rows)
+                                                       std::size_t                        rows,
+                                                       const std::vector<T>*              taus = nullptr)
     {
       reflector_block<T> block {.first = k0, .height = rows - k0, .width = k1 - k0, .v = {}, .t = {}};
       const std::size_t  b     {block.width};
@@ -1561,14 +1563,15 @@ namespace numerical {
         if (reflectors[k0 + j].empty()) {
           continue;                           // the identity: a zero column of T
         }
-        for (std::size_t i {0}; i < j; ++i) { // T(0…j-1, j) = −2 T(0…j-1, 0…j-1) z, z = V(:, 0…j-1)ᴴ v_j
+        const T tau {taus == nullptr ? static_cast<T>(2) : (*taus)[k0 + j]};
+        for (std::size_t i {0}; i < j; ++i) { // T(0…j-1, j) = −τ_j T(0…j-1, 0…j-1) z, z = V(:, 0…j-1)ᴴ v_j
           T sum {};
           for (std::size_t p {i}; p < j; ++p) {
             sum += block.t[(i * b) + p] * gram[(p * b) + j];
           }
-          block.t[(i * b) + j] = static_cast<T>(-2) * sum;
+          block.t[(i * b) + j] = -tau * sum;
         }
-        block.t[(j * b) + j] = static_cast<T>(2);
+        block.t[(j * b) + j] = tau;
       }
       return block;
     }
@@ -1676,9 +1679,9 @@ namespace numerical {
     }
 
     /*!
-     * \brief Applies `I − 2 v vᴴ` from the left to the columns `from…to-1` of a column-major panel of \p height rows,
-     *        on its rows `first…first+|v|-1`: each column a dot product with `v`, then `v` scaled out of it, both
-     *        along the column at unit stride.
+     * \brief Applies `I − s v vᴴ` from the left (\p s 2 for a unit `v`) to the columns `from…to-1` of a column-major
+     *        panel of \p height rows, on its rows `first…first+|v|-1`: each column a dot product with `v`, then `v`
+     *        scaled out of it, both along the column at unit stride.
      */
     template <typename T>
     void reflect_columns(buffer<T>&            panel,
@@ -1686,12 +1689,13 @@ namespace numerical {
                          const buffer<T>&      v,
                          std::size_t           first,
                          std::size_t           from,
-                         std::size_t           to)
+                         std::size_t           to,
+                         const T&              s = T {2})
     {
       for (std::size_t j {from}; j < to; ++j) {
         T* const column {panel.data() + (j * height) + first};
-        const T  twice  {static_cast<T>(2) * conjugate_dot(v.data(), column, v.size())};
-        subtract_product(column, twice, v.data(), v.size());
+        const T  scaled {s * conjugate_dot(v.data(), column, v.size())};
+        subtract_product(column, scaled, v.data(), v.size());
       }
     }
 
@@ -1700,15 +1704,21 @@ namespace numerical {
 
     /*!
      * \brief Householder reflections of the panel's columns `k0…k1-1` of the row-major \p a, rows from `k0`, one by
-     *        one, into `reflectors[k0…k1-1]`: in a column-major copy, where a reflector meets each column at unit
-     *        stride (row by row, each row's part of the panel was a call of a few elements). Recursive halves, the
+     *        one, into `reflectors[k0…k1-1]` and \p taus: in a column-major copy, where a reflector meets each column at
+     *        unit stride (row by row, each row's part of the panel was a call of a few elements). Recursive halves, the
      *        left's reflectors applied to the right at once, took longer at these widths (32 columns).
+     *
+     * Each as LAPACK's `dlarfg` (`zlarfg`) forms it: `H = I − τ w wᴴ`, `w₀ = 1`, with `Hᴴ x = β e₁` for a real `β` of
+     * the sign opposite to `Re x₀`; the identity (`τ = 0`, an empty reflector) where nothing lies below the diagonal
+     * and `x₀` is real. Exact inputs stay exact where LAPACK's do (`e₃` reflected onto `e₁`: `w = (1, 0, 1)`, `τ = 1`;
+     * a unit `v` there holds `1/√2`, rounded), and the factors are LAPACK's to rounding.
      */
     template <typename T>
     void factor_qr_panel(buffer<T>&                   a,
                          std::size_t                  rows,
                          std::size_t                  cols,
                          std::vector<buffer<T>>&      reflectors,
+                         std::vector<T>&              taus,
                          std::size_t                  k0,
                          std::size_t                  k1)
     {
@@ -1721,21 +1731,27 @@ namespace numerical {
         }
       }
       for (std::size_t k {k0}; k < k1; ++k) {
-        const std::size_t c {k - k0};
-        buffer<T>         v(panel.begin() + static_cast<std::ptrdiff_t>((c * height) + c),
-                            panel.begin() + static_cast<std::ptrdiff_t>((c + 1) * height));
-        (void)rescale_tiny(v); // the reflector is the same at any scale
-        const double norm {scaled_norm(v)};
-        if (norm == 0.0) {
-          continue; // nothing to reflect: the column is already zero below and on the diagonal
+        const std::size_t c      {k - k0};
+        T* const          x      {panel.data() + (c * height) + c};
+        buffer<T>         w(x, x + (height - c));
+        const double      factor {rescale_tiny(w)}; // w, τ and the signs the same at any scale; β scaled back
+        const T           alpha  {w[0]};
+        const double      below  {scaled_norm(w.data() + 1, w.size() - 1)};
+        if (below == 0.0 && alpha == detail::from_double<T>(detail::real_part(alpha))) {
+          continue; // the identity: nothing below the diagonal, and the diagonal real
         }
-        v[0] += phase_of(v[0]) * detail::from_double<T>(norm); // x − α e₁ with α = −phase(x₀)‖x‖: no cancellation
-        const auto length {detail::from_double<T>(scaled_norm(v))};
-        for (T& element : v) {
-          element /= length;
+        const double beta  {-std::copysign(scaled_norm(w), detail::real_part(alpha))};
+        const T      tau   {(detail::from_double<T>(beta) - alpha) / detail::from_double<T>(beta)};
+        const T      scale {T {1} / (alpha - detail::from_double<T>(beta))}; // |α − β| ≥ ‖x‖: no cancellation
+        w[0] = T {1};
+        for (std::size_t r {1}; r < w.size(); ++r) {
+          w[r] *= scale;
         }
-        reflect_columns(panel, height, v, c, c, width); // the panel: A ← (I − 2 v vᴴ) A, columns k…k1-1
-        reflectors[k] = std::move(v);
+        reflect_columns(panel, height, w, c, c + 1, width, conj_of(tau)); // Hᴴ on the panel's columns past k
+        x[0] = detail::from_double<T>(beta / factor);
+        std::fill(x + 1, x + (height - c), T {});
+        reflectors[k] = std::move(w);
+        taus[k]       = tau;
       }
       for (std::size_t i {0}; i < height; ++i) {
         for (std::size_t j {0}; j < width; ++j) {
@@ -1763,13 +1779,14 @@ namespace numerical {
                                                         std::size_t    rows,
                                                         std::size_t    cols)
     {
-      const std::size_t           depth {std::min(rows, cols)};
-      std::vector<buffer<T>>      reflectors(depth); // v_k on rows k…m-1; empty where the column was zero
-      qr_reflections<T>           out   {.r = buffer<T>(depth * cols, T {}), .blocks = {}};
+      const std::size_t           depth         {std::min(rows, cols)};
+      std::vector<buffer<T>>      reflectors(depth); // w_k on rows k…m-1; empty for the identity
+      std::vector<T>              taus(depth, T {});
+      qr_reflections<T>           out           {.r = buffer<T>(depth * cols, T {}), .blocks = {}};
       for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
         const std::size_t k1 {std::min(k0 + qr_block, depth)};
-        factor_qr_panel(a, rows, cols, reflectors, k0, k1);
-        out.blocks.push_back(gather_reflectors(reflectors, k0, k1, rows));
+        factor_qr_panel(a, rows, cols, reflectors, taus, k0, k1);
+        out.blocks.push_back(gather_reflectors(reflectors, k0, k1, rows, &taus));
         if (k1 < cols) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A
           apply_reflector_block(out.blocks.back(), true, a, cols, k1, cols);
         }
