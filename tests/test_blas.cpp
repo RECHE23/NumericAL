@@ -1547,6 +1547,18 @@ TEST(syrk_keeps_its_operand_copy_up_to_its_limit)
   EXPECT(!numerical::blas::detail::syrk_operand().empty());
 }
 
+TEST(kept_storage_holds_at_most_its_limit_and_serves_the_next_call)
+{
+  // Storage past kept_bytes is released; smaller storage is kept and handed to the next taker.
+  numerical::blas::detail::give_back(1, numerical::buffer<double>((numerical::blas::detail::kept_bytes / sizeof(double)) + 1));
+  EXPECT(numerical::blas::detail::kept_storage<double>(1).capacity() <= numerical::blas::detail::kept_bytes / sizeof(double));
+  numerical::blas::detail::give_back(1, numerical::buffer<double>(1000));
+  EXPECT(numerical::blas::detail::take_kept<double>(1).capacity() >= 1000);
+  EXPECT(numerical::blas::detail::kept_storage<double>(1).empty());
+  // A solve then reuses what the last one kept, with the same answers.
+  EXPECT(gesv_solves(40, 3) && gesv_solves(40, 3) && gesv_solves(25, 2));
+}
+
 TEST(syrk_reports_its_first_illegal_argument)
 {
   std::vector<double> x(16, 1.0);

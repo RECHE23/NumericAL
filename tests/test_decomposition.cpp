@@ -1218,6 +1218,32 @@ namespace {
 // Past numerical::detail::lu_lookahead_columns: the first steps update the trailing block as one product, the last
 // ones factorise the next panel beside the update of the rest. The same factors on one thread as on all of them,
 // and a solve to rounding.
+TEST(lu_solves_an_expiring_right_hand_side_in_its_own_storage)
+{
+  // Rows permuted in place, cycle by cycle: the same bits as the copying solve, the factors moved out the same too.
+  std::vector<double> entries(std::size_t {60} *60);
+  for (std::size_t i {0}; i < entries.size(); ++i) {
+    entries[i] = std::sin(static_cast<double>(i) * 0.37) + std::cos(static_cast<double>(i * i) * 0.011);
+  }
+  const matrix<double>                  a               {60, 60, entries};
+  numerical::lu_decomposition<double>   lu              {a};
+  std::vector<double>                   rhs(std::size_t {60} *7);
+  for (std::size_t i {0}; i < rhs.size(); ++i) {
+    rhs[i] = std::cos(static_cast<double>(i) * 0.5);
+  }
+  const matrix<double> b                             {60, 7, rhs};
+  const matrix<double> copied                        {lu.solve(b)};
+  const matrix<double> taken                         {lu.solve(matrix<double> {b})};
+  EXPECT(std::equal(copied.begin(), copied.end(), taken.begin()));
+  const matrix<double> kept                          {lu.factors()};
+  const matrix<double> moved                         {std::move(lu).factors()};
+  EXPECT(std::equal(kept.begin(), kept.end(), moved.begin()));
+  const numerical::lu_decomposition<double> again    {a};
+  EXPECT_THROWS((void)again.solve(matrix<double> {59, 1, std::vector<double>(59, 1.0)}), numerical::dimension_error);
+  const numerical::lu_decomposition<double> singular {matrix<double> {{1.0, 2.0}, {2.0, 4.0}}};
+  EXPECT_THROWS((void)singular.solve(matrix<double> {2, 1, std::vector<double>(2, 1.0)}), numerical::singular_matrix_error);
+}
+
 TEST(lu_looks_ahead_one_panel_with_the_same_factors)
 {
   const std::size_t   n     {numerical::detail::lu_lookahead_columns + (2 * numerical::detail::lu_block) + 5};

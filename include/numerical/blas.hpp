@@ -15,6 +15,7 @@
 #define NUMERICAL_BLAS_HPP
 
 #include <algorithm>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -84,6 +85,38 @@ namespace numerical::blas {
 
     //! \brief `rows × cols` of the column-major \p a (\p lda apart), as a row-major buffer, each element times
     //!        \p scale (conjugated first where \p conjugate).
+    //! \brief The tile side of the transposing copies between column-major arguments and row-major storage: a tile's
+    //!        rows and columns both stay in the cache, where a whole column read across rows `lda` apart misses on
+    //!        every element (a 1000 × 1000 copy took several milliseconds).
+    inline constexpr std::size_t transpose_tile {32};
+
+    //! \brief The column-major `rows × cols` \p a (\p lda apart) into the row-major \p out (resized to it), by tiles,
+    //!        each element times \p scale (conjugated first where \p conjugate).
+    template <typename T>
+    void row_major_into(buffer<T>&     out,
+                        const T*       a,
+                        std::ptrdiff_t lda,
+                        std::ptrdiff_t rows,
+                        std::ptrdiff_t cols,
+                        T              scale,
+                        bool           conjugate = false)
+    {
+      const auto r  {static_cast<std::size_t>(rows)};
+      const auto c  {static_cast<std::size_t>(cols)};
+      const auto ld {static_cast<std::size_t>(lda)};
+      out.resize(r * c);
+      for (std::size_t i0 {0}; i0 < r; i0 += transpose_tile) {
+        for (std::size_t j0 {0}; j0 < c; j0 += transpose_tile) {
+          for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, c); ++j) {
+            for (std::size_t i {i0}; i < std::min(i0 + transpose_tile, r); ++i) {
+              const T x {a[i + (j * ld)]};
+              out[(i * c) + j] = scale * (conjugate ? numerical::detail::conj_of(x) : x);
+            }
+          }
+        }
+      }
+    }
+
     template <typename T>
     [[nodiscard]] buffer<T> row_major(const T*       a,
                                       std::ptrdiff_t lda,
@@ -92,16 +125,60 @@ namespace numerical::blas {
                                       T              scale,
                                       bool           conjugate = false)
     {
-      const auto r {static_cast<std::size_t>(rows)};
-      const auto c {static_cast<std::size_t>(cols)};
-      buffer<T>  out(r * c);
-      for (std::size_t i {0}; i < r; ++i) {
-        for (std::size_t j {0}; j < c; ++j) {
-          const T x {a[i + (j * static_cast<std::size_t>(lda))]};
-          out[(i * c) + j] = scale * (conjugate ? numerical::detail::conj_of(x) : x);
+      buffer<T> out;
+      row_major_into(out, a, lda, rows, cols, scale, conjugate);
+      return out;
+    }
+
+    //! \brief The most bytes a thread keeps in each of \ref kept_storage's slots between calls (32 MiB).
+    inline constexpr std::size_t kept_bytes {std::size_t {32} << 20U};
+
+    /*!
+     * \brief Row-major storage of the scalar \p T this thread keeps between calls, in \p slot (0 for a call's `A`, 1
+     *        for its `B`): a fresh one of megabytes is mapped anew and faulted in page by page on every call (a solve
+     *        of order 1000 spent 2.5 ms of its 30 on each).
+     */
+    template <typename T>
+    [[nodiscard]] buffer<T>& kept_storage(std::size_t slot) noexcept
+    {
+      thread_local std::array<buffer<T>, 2> kept;
+      return kept[slot];
+    }
+
+    //! \brief \ref kept_storage's \p slot, taken over by the caller (left empty there meanwhile).
+    template <typename T>
+    [[nodiscard]] buffer<T> take_kept(std::size_t slot)
+    {
+      return std::exchange(kept_storage<T>(slot), buffer<T> {});
+    }
+
+    //! \brief \p storage given back to \ref kept_storage's \p slot, unless past \ref kept_bytes.
+    template <typename T>
+    void give_back(std::size_t slot,
+                   buffer<T>&& storage)
+    {
+      if (storage.capacity() <= kept_bytes / sizeof(T)) {
+        kept_storage<T>(slot) = std::move(storage);
+      }
+    }
+
+    //! \brief The row-major `rows × cols` \p from into the column-major \p a (\p lda apart), by tiles.
+    template <typename T>
+    void column_major_into(const T*    from,
+                           std::size_t rows,
+                           std::size_t cols,
+                           T*          a,
+                           std::size_t lda)
+    {
+      for (std::size_t j0 {0}; j0 < cols; j0 += transpose_tile) {
+        for (std::size_t i0 {0}; i0 < rows; i0 += transpose_tile) {
+          for (std::size_t i {i0}; i < std::min(i0 + transpose_tile, rows); ++i) {
+            for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, cols); ++j) {
+              a[i + (j * lda)] = from[(i * cols) + j];
+            }
+          }
         }
       }
-      return out;
     }
 
     //! \brief The \p cols columns of \p rows elements of the column-major \p a (\p lda apart) as the rows of a
@@ -720,31 +797,30 @@ namespace numerical::blas {
     std::vector<std::size_t> pivots;
     matrix<T>                factors;
     bool                     singular {false};
-    try {
-      const lu_decomposition<T> lu {matrix<T> {size, size, detail::row_major(a, lda, n, n, T {1})}};
-      factors  = lu.factors();
+    try { // B and A each transposed in and out once, in storage the thread keeps: the LU solves in B's copy and gives
+          // its factors up
+      buffer<T> a_rows       {detail::take_kept<T>(0)};
+      detail::row_major_into(a_rows, a, lda, n, n, T {1});
+      lu_decomposition<T> lu {matrix<T> {size, size, std::move(a_rows)}};
       pivots   = lu.pivots();
       singular = lu.singular();
       if (!singular && nrhs > 0) {
-        const matrix<T> x {lu.solve(matrix<T> {size, static_cast<std::size_t>(nrhs), detail::row_major(b, ldb, n, nrhs, T {1})})};
-        for (std::size_t j {0}; j < static_cast<std::size_t>(nrhs); ++j) {
-          for (std::size_t i {0}; i < size; ++i) {
-            b[i + (j * static_cast<std::size_t>(ldb))] = x(i, j);
-          }
-        }
+        buffer<T> b_rows {detail::take_kept<T>(1)};
+        detail::row_major_into(b_rows, b, ldb, n, nrhs, T {1});
+        matrix<T> x      {lu.solve(matrix<T> {size, static_cast<std::size_t>(nrhs), std::move(b_rows)})};
+        detail::column_major_into(&*x.begin(), size, static_cast<std::size_t>(nrhs), b, static_cast<std::size_t>(ldb));
+        detail::give_back(1, std::move(x).elements());
       }
+      factors = std::move(lu).factors();
     }
     catch (const non_finite_error&) {
       return -3;
     }
-    for (std::size_t j {0}; j < size; ++j) {
-      for (std::size_t i {0}; i < size; ++i) {
-        a[i + (j * ld)] = factors(i, j);
-      }
-    }
+    detail::column_major_into(&*factors.begin(), size, size, a, ld);
+    detail::give_back(0, std::move(factors).elements());
     detail::interchanges(pivots, ipiv);
     for (std::size_t i {0}; i < size; ++i) {
-      if (factors(i, i) == T {}) {
+      if (a[i + (i * ld)] == T {}) { // U(i, i), as just written
         return static_cast<int>(i + 1);
       }
     }
@@ -847,16 +923,15 @@ namespace numerical::blas {
     if (rows != cols) {
       return detail::rectangular_lu(rows, cols, a, ld, ipiv);
     }
-    const lu_decomposition<T> lu      {matrix<T> {rows, cols, detail::row_major(a, lda, m, n, T {1})}};
-    const matrix<T>           factors {lu.factors()};
-    for (std::size_t j {0}; j < cols; ++j) {
-      for (std::size_t i {0}; i < rows; ++i) {
-        a[i + (j * ld)] = factors(i, j);
-      }
-    }
+    buffer<T> a_rows       {detail::take_kept<T>(0)}; // transposed in and out once, in storage the thread keeps
+    detail::row_major_into(a_rows, a, lda, m, n, T {1});
+    lu_decomposition<T> lu {matrix<T> {rows, cols, std::move(a_rows)}};
     detail::interchanges(lu.pivots(), ipiv);
+    matrix<T> factors      {std::move(lu).factors()};
+    detail::column_major_into(&*factors.begin(), rows, cols, a, ld);
+    detail::give_back(0, std::move(factors).elements());
     for (std::size_t i {0}; i < rows; ++i) {
-      if (factors(i, i) == T {}) {
+      if (a[i + (i * ld)] == T {}) { // U(i, i), as just written
         return static_cast<int>(i + 1);
       }
     }

@@ -656,11 +656,55 @@ namespace numerical {
       return matrix<T> {n_, cols, std::move(rows)};
     }
 
+    /*!
+     * \brief \ref solve on an expiring \p b, in its own storage: its rows permuted in place (cycle by cycle of the
+     *        pivots, one row held aside), then solved there. No copy of `B`.
+     * \param[in] b The right-hand sides (`n × k`), taken over.
+     * \return `X` (`n × k`), in `b`'s storage.
+     * \throws dimension_error If `b`'s row count differs from the matrix.
+     * \throws singular_matrix_error If the matrix is singular.
+     */
+    [[nodiscard]] matrix<T> solve(matrix<T>&& b) const
+    {
+      if (b.rows() != n_) {
+        throw dimension_error("solve: right-hand side row count differs from the matrix");
+      }
+      if (singular_) {
+        throw singular_matrix_error("solve: matrix is singular");
+      }
+      const std::size_t cols {b.cols()};
+      buffer<T>         rows {std::move(b).elements()};
+      // Row i of P B is row pivots_[i] of B: each cycle i → pivots_[i] → … walked once, its first row held aside.
+      std::vector<bool> placed(n_, false);
+      buffer<T>         held(cols);
+      for (std::size_t start {0}; start < n_; ++start) {
+        if (placed[start] || pivots_[start] == start) {
+          continue;
+        }
+        std::copy_n(rows.data() + (start * cols), cols, held.data());
+        std::size_t i {start};
+        for (std::size_t from {pivots_[i]}; from != start; i = from, from = pivots_[i]) {
+          std::copy_n(rows.data() + (from * cols), cols, rows.data() + (i * cols));
+          placed[i] = true;
+        }
+        std::copy_n(held.data(), cols, rows.data() + (i * cols));
+        placed[i] = true;
+      }
+      solve_rows(rows, cols);
+      return matrix<T> {n_, cols, std::move(rows)};
+    }
+
     //! \brief `L` and `U` in one matrix, as LAPACK's `dgetrf` leaves them: `U` on and above the diagonal, `L` below it
     //!         (its unit diagonal not stored), of the rows in their pivoted order.
-    [[nodiscard]] matrix<T> factors() const
+    [[nodiscard]] matrix<T> factors() const&
     {
       return matrix<T> {n_, n_, lu_};
+    }
+
+    //! \brief \ref factors, moved out of an expiring decomposition: no copy.
+    [[nodiscard]] matrix<T> factors() &&
+    {
+      return matrix<T> {n_, n_, std::move(lu_)};
     }
 
     //! \brief The row permutation: row `i` of `P A = L U` is row `pivots()[i]` of `A`.
