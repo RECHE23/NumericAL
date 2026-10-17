@@ -76,7 +76,8 @@ namespace numerical {
         return n <= (static_cast<std::size_t>(-1) - huge_page) / sizeof(T) && n * sizeof(T) >= huge_least;
       }
 
-      //! \brief `n` elements: from \ref huge_least bytes on huge pages, the allocation's start kept before the data.
+      //! \brief `n` elements: from \ref huge_least bytes on huge pages, the data's distance from the allocation's
+      //!        start kept before it.
       [[nodiscard]] T* allocate(std::size_t n)
       {
         if (!on_huge_pages(n)) {
@@ -86,10 +87,10 @@ namespace numerical {
         const std::size_t               offset {((colour.fetch_add(1) % huge_colours) * 4096) + alignof(std::max_align_t) * 4};
         const std::size_t               bytes  {((offset + (n * sizeof(T))) + huge_page - 1) / huge_page * huge_page};
         auto* const                     start  {static_cast<std::byte*>(::operator new(bytes, std::align_val_t {huge_page}))};
-        (void)madvise(start, bytes, MADV_HUGEPAGE); // a hint: the pages stay 4 KiB where the system declines
+        (void)madvise(start, bytes, MADV_HUGEPAGE);                            // a hint: the pages stay 4 KiB where the system declines
         std::byte* const data                  {start + offset};
-        std::memcpy(data - sizeof(std::byte*), static_cast<const void*>(&start), sizeof(std::byte*));
-        return reinterpret_cast<T*>(data);          // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): storage for T, aligned past max_align_t
+        std::memcpy(data - sizeof(std::size_t), &offset, sizeof(std::size_t)); // the start, as the data's distance from it
+        return reinterpret_cast<T*>(data);                                     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): storage for T, aligned past max_align_t
       }
 
       //! \brief Frees what \ref allocate gave for \p n elements.
@@ -100,9 +101,10 @@ namespace numerical {
           std::allocator<T>::deallocate(at, n);
           return;
         }
-        std::byte* start {};
-        std::memcpy(static_cast<void*>(&start), reinterpret_cast<std::byte*>(at) - sizeof(std::byte*), sizeof(std::byte*)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the bytes before the data
-        ::operator delete(start,
+        auto* const data   {reinterpret_cast<std::byte*>(at)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the storage's bytes
+        std::size_t offset {};
+        std::memcpy(&offset, data - sizeof(std::size_t), sizeof(std::size_t));
+        ::operator delete(data - offset,
                           std::align_val_t {huge_page});
       }
 
