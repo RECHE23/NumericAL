@@ -2676,12 +2676,21 @@ namespace numerical {
       return factor;
     }
 
+    //! \brief A quotient of \ref divided and the factor its dividend was scaled by: a type of its own, where a
+    //!        `std::pair` of them made GCC on arm64 print, at every caller, a note on its ABI change of GCC 10.1.
+    template <typename S>
+    struct scaled_quotient
+    {
+      S      value;  //!< The quotient.
+      double factor; //!< The dividend's scaling, 1 where none was needed.
+    };
+
     //! \brief `r / pivot`, a pivot below \p floor taken as \p floor, \p r scaled first where the quotient would pass
     //!        \ref back_substitution_limit. \return The quotient and the factor (1 where none was needed).
     template <typename S, typename P>
-    [[nodiscard]] std::pair<S, double> divided(S      r,
-                                               P      pivot,
-                                               double floor)
+    [[nodiscard]] scaled_quotient<S> divided(S      r,
+                                             P      pivot,
+                                             double floor)
     {
       const double size    {modulus_1(pivot) < floor ? floor : modulus_1(pivot)};
       const P      divisor {modulus_1(pivot) < floor ? P {floor} : pivot};

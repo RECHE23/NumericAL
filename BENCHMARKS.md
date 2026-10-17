@@ -16,6 +16,13 @@ against NumPy within `rtol=1e-9`, and runs in CI (the Python job installs NumPy)
 
 ## Dense linear algebra against BLAS/LAPACK
 
+Both libraries are called from Python, so each ratio below includes NumPy's per-call overhead as well as ours: at
+small orders it is a sizable part of NumPy's time, and a ratio there says less about the kernels than about the two
+paths from Python. Against the same LAPACK libraries called directly from C++ (a separate comparison, 2026-10-17, on
+a four-core Cascade Lake Xeon against MKL, OpenBLAS, BLIS and the reference LAPACK), NumericAL took 1.3 to 3.5
+times MKL's time, beat it on `eig` at orders 128 and 512, beat OpenBLAS on `inverse` and `eig`, and was the only
+library whose answers were the same to the bit on one and four threads.
+
 NumericAL aims to match and then beat the BLAS/LAPACK NumPy ships, in portable C++ with no dependency. `make
 bench-linalg` measures where it stands: each library in its own process with all its threads (a BLAS whose threads
 still spin after a call would otherwise slow the next library's), every NumericAL answer checked before it is timed

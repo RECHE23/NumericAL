@@ -10,6 +10,46 @@ with concrete numeric structures — vectors, matrices, tensors — and the
 algorithms over them. SciLang consumes it as a numeric backend through its
 module seam; the symbolic↔numeric reconciliation stays in SciLang.
 
+## Quick start (C++)
+
+Header-only: add `include/` to the include path, or after `cmake --install`, in your `CMakeLists.txt`:
+
+```cmake
+find_package(numerical CONFIG REQUIRED)
+target_link_libraries(your_target PRIVATE numerical::numerical) # C++20, and the threads library
+```
+
+then (this is `cmake/smoke/main.cpp`, which CI builds against the installed package):
+
+```cpp
+#include <cmath>
+#include <complex>
+#include <cstdio>
+
+#include <numerical/numerical.hpp>
+
+int main()
+{
+  const numerical::matrix<double> a {{4.0, 1.0, 0.0}, {1.0, 3.0, 1.0}, {0.0, 1.0, 2.0}};
+  const numerical::vector<double> b {1.0, 2.0, 3.0};
+
+  const numerical::vector<double>              x       {numerical::solve(a, b)}; // LU, partial pivoting
+  const numerical::symmetric_eigen             eigen   {a};                      // A = V L V^T, as numpy.linalg.eigh
+  const numerical::eigen_decomposition<double> general {a};                      // as numpy.linalg.eig
+  const numerical::svd_decomposition<double>   svd     {a};                      // A = U S V^H
+
+  std::printf("x = %.6f %.6f %.6f\n", x[0], x[1], x[2]);
+  std::printf("eigh: %.6f %.6f %.6f\n", eigen.values()[0], eigen.values()[1], eigen.values()[2]);
+  std::printf("eig: %.6f%+.6fi, its vectors %zu x %zu\n", general.values()[0].real(), general.values()[0].imag(),
+              general.vectors().rows(), general.vectors().cols());
+  std::printf("svd: %.6f %.6f %.6f\n", svd.singular_values()[0], svd.singular_values()[1], svd.singular_values()[2]);
+  const numerical::vector<double> residual {(a * x) - b};
+  return std::abs(residual[0]) + std::abs(residual[1]) + std::abs(residual[2]) < 1e-12 ? 0 : 1;
+}
+```
+
+The Python package, `pip install numeric-al`, follows NumPy's API (see Python binding, below).
+
 ## Capabilities
 
 Small and complete, grown measured, honest about what is not yet here:
@@ -37,6 +77,10 @@ Small and complete, grown measured, honest about what is not yet here:
   symmetric matrix (`A = V Λ Vᵀ`): Householder tridiagonalisation by panels then divide and conquer,
   as LAPACK's `dsyevd` (most of the work in matrix products); implicit QL (`eigen_method::tridiagonal_ql`,
   `dsyev`'s) or cyclic Jacobi rotations (`eigen_method::jacobi`) on request.
+- `numerical::eigen_decomposition<T>` — the eigenvalues and right eigenvectors of a general real or complex
+  square matrix, complex either way, as `numpy.linalg.eig` (LAPACK's `dgeev`/`zgeev`: balancing, blocked
+  Hessenberg reduction, the multishift QR algorithm with aggressive early deflation); `values()`, `vectors()`,
+  and `eigenvalues(a)` without the vectors (as `eigvals`).
 - `numerical::svd_decomposition<T>` — the singular value decomposition `A = U Σ Vᴴ`
   of a real or complex `m × n` matrix, any shape: a Householder QR, then Golub–Kahan
   bidiagonalisation of `R` (by panels, for a real one) and divide and conquer, as LAPACK's `dgesdd`;
@@ -68,10 +112,12 @@ Small and complete, grown measured, honest about what is not yet here:
   axis (sums by NumPy's pairwise blocks), `reshape`, and `zeros`, `ones`, `full`,
   `eye`, `arange`, `linspace`.
 
-**Grows in as measured:** sparse storage, non-symmetric eigenvalues, FFT, numeric autodiff, iterative
-solvers, numerical integration, arbitrary precision.
+**Grows in as measured:** sparse storage, banded and LDLᵀ factorisations, a BLAS/LAPACK-compatible interface,
+FFT, numeric autodiff, iterative solvers, numerical integration, arbitrary precision.
 
 ## Build
+
+Maintainers: the release procedure and the versioning rules are in `RELEASING.md`, beside this file.
 
 ```bash
 make test        # build and run the test suite
@@ -92,23 +138,6 @@ installed config package:
 find_package(numerical CONFIG REQUIRED)
 target_link_libraries(app PRIVATE numerical::numerical)
 ```
-
-## Releasing
-
-`make release` computes the next calendar version `YYYY.M.PATCH` — the patch
-resets each month, the first release of a month is `.0` (PEP 440 drops leading
-zeros, so `2026.6.1`, never `2026.06.001`) — bumps it in `pyproject.toml` and
-`python/numerical/__init__.py`, then commits, tags and pushes from a clean `main`.
-Pushing the tag drives `release.yml`, which checks the tag matches the version,
-builds the abi3 wheels (Linux x86-64/aarch64, macOS universal, Windows) and the
-sdist, and publishes to PyPI via Trusted Publishing (OIDC, no stored secret).
-
-One-time PyPI setup (before the first release): create a
-[Trusted Publisher](https://docs.pypi.org/trusted-publishers/) for the project
-`numeric-al` — owner `RECHE23`, repository `NumericAL`, workflow `release.yml`,
-environment `pypi` — and create the matching GitHub Environment named `pypi`.
-Until that exists the build/sdist jobs still run, but the publish step fails;
-the pushed tag remains a valid versioned snapshot regardless.
 
 ## Python binding
 

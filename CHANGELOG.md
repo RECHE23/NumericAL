@@ -3,6 +3,8 @@
 All notable changes to NumericAL. Versions are calendar-based (`YYYY.M.PATCH`, the patch resetting each
 month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 100%-4D coverage of
 `include/`, clang and GCC, sanitizers, MISRA, and a NumPy differential.
+A change that can break code is listed under **Breaking** and held for a month's first release (see
+`RELEASING.md`).
 
 ## Unreleased
 
