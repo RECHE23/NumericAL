@@ -3,6 +3,7 @@
 // defining properties; every illegal argument reported by its position.
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -67,6 +68,8 @@ void dgelsd_(const int*,
              const int*,
              int*,
              int*) noexcept;
+void dgeev_(const char*, const char*, const int*, const double*, const int*, double*, double*, double*, const int*, double*, const int*,
+            double*, const int*, int*, std::size_t, std::size_t) noexcept;
 }
 
 namespace {
@@ -1144,4 +1147,205 @@ TEST(the_fortran_least_squares_answers_as_the_cpp_one)
   const int bad {-1};
   dgelsd_(&three, &bad, &one, a.data(), &three, b.data(), &three, s.data(), &rcond, &rank, work.data(), &lwork, iwork.data(), &info);
   EXPECT_EQ(info, -2);
+}
+
+namespace {
+  // Eigenvector j of dgeev's packed real form (column-major, ld apart), as a complex vector.
+  std::vector<std::complex<double>> packed_vector(const std::vector<double>& packed,
+                                                  std::size_t                ld,
+                                                  const std::vector<double>& wi,
+                                                  std::size_t                j,
+                                                  std::size_t                n)
+  {
+    std::vector<std::complex<double>> v(n);
+    for (std::size_t i {0}; i < n; ++i) {
+      if (wi[j] == 0.0) {
+        v[i] = packed[i + (j * ld)];
+      }
+      else if (wi[j] > 0.0) {
+        v[i] = {packed[i + (j * ld)], packed[i + ((j + 1) * ld)]};
+      }
+      else {
+        v[i] = {packed[i + ((j - 1) * ld)], -packed[i + (j * ld)]};
+      }
+    }
+    return v;
+  }
+
+  // Whether v has unit norm with its component of largest modulus real.
+  bool unit_and_real_at_largest(const std::vector<std::complex<double>>& v)
+  {
+    double      norm_squared {0.0};
+    std::size_t largest      {0};
+    for (std::size_t i {0}; i < v.size(); ++i) {
+      norm_squared += std::norm(v[i]);
+      largest       = std::abs(v[i]) > std::abs(v[largest]) ? i : largest;
+    }
+    return std::abs(norm_squared - 1.0) <= 1e-13 && std::abs(v[largest].imag()) <= 1e-13;
+  }
+
+  // Whether geev(jobvl, jobvr) of a: its eigenvalues with conjugate pairs adjacent (positive imaginary part first);
+  // A v = λ v and uᴴ A = λ uᴴ for the vectors asked, of unit norm and largest component real; the eigenvalues alone
+  // the same; A left as it was.
+  bool geev_decomposes(char                       jobvl,
+                       char                       jobvr,
+                       const std::vector<double>& a,
+                       std::size_t                n)
+  {
+    const std::size_t   ld {n + 1};
+    std::vector<double> padded(ld * n, 0.0);
+    for (std::size_t j {0}; j < n; ++j) {
+      for (std::size_t i {0}; i < n; ++i) {
+        padded[i + (j * ld)] = a[i + (j * n)];
+      }
+    }
+    const std::vector<double> before {padded};
+    std::vector<double>       wr(n);
+    std::vector<double>       wi(n);
+    std::vector<double>       vl(ld * n, 0.0);
+    std::vector<double>       vr(ld * n, 0.0);
+    double                    query {0.0};
+    const auto                ln    {static_cast<std::ptrdiff_t>(n)};
+    const auto                lld   {static_cast<std::ptrdiff_t>(ld)};
+    if (numerical::blas::geev(jobvl, jobvr, ln, padded.data(), lld, wr.data(), wi.data(), vl.data(), lld, vr.data(), lld, &query, -1)
+        != 0) {
+      return false;
+    }
+    std::vector<double> work(static_cast<std::size_t>(query));
+    if (numerical::blas::geev(jobvl, jobvr, ln, padded.data(), lld, wr.data(), wi.data(), vl.data(), lld, vr.data(), lld, work.data(),
+                              static_cast<std::ptrdiff_t>(work.size())) != 0) {
+      return false;
+    }
+    std::vector<double> wr0(n);
+    std::vector<double> wi0(n);
+    std::vector<double> none(1);
+    std::vector<double> small_work(std::max<std::size_t>(1, 3 * n));
+    bool                good {padded == before};
+    good = good && numerical::blas::geev('N', 'N', ln, padded.data(), lld, wr0.data(), wi0.data(), none.data(), 1, none.data(), 1,
+                                         small_work.data(), static_cast<std::ptrdiff_t>(small_work.size())) == 0;
+    const double scale {1e-12 * static_cast<double>(n)};
+    for (std::size_t j {0}; j < n; ++j) {
+      good = good && std::abs(wr[j] - wr0[j]) <= scale && std::abs(wi[j] - wi0[j]) <= scale;
+      if (wi[j] > 0.0) {
+        good = good && j + 1 < n && wr[j + 1] == wr[j] && wi[j + 1] == -wi[j];
+      }
+      const std::complex<double> lambda {wr[j], wi[j]};
+      if (jobvr == 'V' || jobvr == 'v') {
+        const auto v {packed_vector(vr, ld, wi, j, n)};
+        good = good && unit_and_real_at_largest(v);
+        for (std::size_t i {0}; i < n; ++i) {
+          std::complex<double> av {};
+          for (std::size_t l {0}; l < n; ++l) {
+            av += a[i + (l * n)] * v[l];
+          }
+          good = good && std::abs(av - (lambda * v[i])) <= scale;
+        }
+      }
+      if (jobvl == 'V' || jobvl == 'v') {
+        const auto u {packed_vector(vl, ld, wi, j, n)};
+        good = good && unit_and_real_at_largest(u);
+        for (std::size_t c {0}; c < n; ++c) { // (uᴴ A)_c = Σ conj(u_l) A(l, c)
+          std::complex<double> ua {};
+          for (std::size_t l {0}; l < n; ++l) {
+            ua += std::conj(u[l]) * a[l + (c * n)];
+          }
+          good = good && std::abs(ua - (lambda * std::conj(u[c]))) <= scale;
+        }
+      }
+    }
+    return good;
+  }
+
+  // X diag(2, 2, 3, −1, 5) X⁻¹ with X lower unit triangular: a double eigenvalue, not symmetric.
+  std::vector<double> with_a_double_eigenvalue()
+  {
+    const std::size_t   n   {5};
+    const double        d[] {2.0, 2.0, 3.0, -1.0, 5.0};
+    const auto          l   {entries(n * n, 47)};
+    std::vector<double> x(n * n, 0.0);
+    std::vector<double> inverse(n * n, 0.0);
+    for (std::size_t i {0}; i < n; ++i) {
+      x[i + (i * n)] = 1.0;
+      for (std::size_t j {0}; j < i; ++j) {
+        x[i + (j * n)] = l[i + (j * n)];
+      }
+    }
+    for (std::size_t c {0}; c < n; ++c) { // X⁻¹ column by column, forward substitution
+      for (std::size_t i {0}; i < n; ++i) {
+        double sum {i == c ? 1.0 : 0.0};
+        for (std::size_t j {0}; j < i; ++j) {
+          sum -= x[i + (j * n)] * inverse[j + (c * n)];
+        }
+        inverse[i + (c * n)] = sum;
+      }
+    }
+    std::vector<double> a(n * n, 0.0);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        for (std::size_t p {0}; p < n; ++p) {
+          a[i + (j * n)] += x[i + (p * n)] * d[p] * inverse[p + (j * n)];
+        }
+      }
+    }
+    return a;
+  }
+} // namespace
+
+TEST(geev_gives_the_eigenvalues_and_either_side_s_vectors)
+{
+  const auto general {entries(std::size_t {40} *40, 53)}; // conjugate pairs and real eigenvalues
+  for (const char left : {'N', 'V', 'n', 'v'}) {
+    for (const char right : {'N', 'V', 'n', 'v'}) {
+      EXPECT(geev_decomposes(left, right, general, 40));
+    }
+  }
+  EXPECT(geev_decomposes('V', 'V', with_a_double_eigenvalue(), 5));
+  EXPECT(geev_decomposes('V', 'V', {0.0, 1.0, -1.0, 0.0}, 2)); // ±i alone
+  EXPECT(geev_decomposes('V', 'V', {4.0}, 1));
+  EXPECT(geev_decomposes('V', 'V', {}, 0));
+}
+
+TEST(geev_sizes_its_workspace_and_reports_an_illegal_argument_and_a_nan)
+{
+  std::vector<double> a(9, 1.0);
+  std::vector<double> w(6);
+  std::vector<double> v(9);
+  std::vector<double> work(12);
+  EXPECT_EQ(numerical::blas::geev('N', 'N', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 1, v.data(), 1, work.data(), -1), 0);
+  EXPECT(work[0] == 9.0);
+  EXPECT_EQ(numerical::blas::geev('N', 'V', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 1, v.data(), 3, work.data(), -1), 0);
+  EXPECT(work[0] == 12.0);
+  EXPECT_EQ(numerical::blas::geev('N', 'N', 0, a.data(), 1, w.data(), w.data() + 3, v.data(), 1, v.data(), 1, work.data(), -1), 0);
+  EXPECT(work[0] == 1.0);
+  EXPECT_EQ(numerical::blas::geev('X', 'N', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 1, v.data(), 1, work.data(), 12), -1);
+  EXPECT_EQ(numerical::blas::geev('N', 'X', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 1, v.data(), 1, work.data(), 12), -2);
+  EXPECT_EQ(numerical::blas::geev('N', 'N', -1, a.data(), 3, w.data(), w.data() + 3, v.data(), 1, v.data(), 1, work.data(), 12), -3);
+  EXPECT_EQ(numerical::blas::geev('N', 'N', 3, a.data(), 2, w.data(), w.data() + 3, v.data(), 1, v.data(), 1, work.data(), 12), -5);
+  EXPECT_EQ(numerical::blas::geev('N', 'N', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 0, v.data(), 1, work.data(), 12), -9);
+  EXPECT_EQ(numerical::blas::geev('V', 'N', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 2, v.data(), 1, work.data(), 12), -9);
+  EXPECT_EQ(numerical::blas::geev('N', 'N', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 1, v.data(), 0, work.data(), 12), -11);
+  EXPECT_EQ(numerical::blas::geev('N', 'V', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 1, v.data(), 2, work.data(), 12), -11);
+  EXPECT_EQ(numerical::blas::geev('N', 'N', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 1, v.data(), 1, work.data(), 8), -13);
+  EXPECT_EQ(numerical::blas::geev('V', 'N', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 3, v.data(), 1, work.data(), 11), -13);
+  a[4] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(numerical::blas::geev('N', 'N', 3, a.data(), 3, w.data(), w.data() + 3, v.data(), 1, v.data(), 1, work.data(), 12), -4);
+}
+
+TEST(the_fortran_eigenvalue_routine_answers_as_the_cpp_one)
+{
+  const int           two   {2};
+  const int           one   {1};
+  const int           lwork {8};
+  std::vector<double> a     {0.0, -2.0, 2.0, 0.0}; // [[0, 2], [−2, 0]]: ±2i
+  std::vector<double> wr(2);
+  std::vector<double> wi(2);
+  std::vector<double> vr(4);
+  std::vector<double> none(1);
+  std::vector<double> work(8);
+  int                 info  {7};
+  dgeev_("N", "V", &two, a.data(), &two, wr.data(), wi.data(), none.data(), &one, vr.data(), &two, work.data(), &lwork, &info, 1, 1);
+  EXPECT(info == 0 && wr[0] == 0.0 && std::abs(wi[0] - 2.0) < 1e-15 && wi[1] == -wi[0]);
+  const int bad {-1};
+  dgeev_("N", "V", &bad, a.data(), &two, wr.data(), wi.data(), none.data(), &one, vr.data(), &two, work.data(), &lwork, &info, 1, 1);
+  EXPECT_EQ(info, -3);
 }

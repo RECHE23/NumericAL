@@ -1,7 +1,7 @@
 /*!
  * \file blas.hpp
  * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`dgemm`, `dgesv`,
- *        `dgetrf`, `dgetrs`, `dpotrf`, `dpotrs`, `dsyevd`, `dgesdd`, `dgeqrf`, `dorgqr`, `dgelsd`), as their reference
+ *        `dgetrf`, `dgetrs`, `dpotrf`, `dpotrs`, `dsyevd`, `dgesdd`, `dgeqrf`, `dorgqr`, `dgelsd`, `dgeev`), as their reference
  *        implementations define them, over NumericAL's kernels: what the optional `numerical_blas` library exports
  *        with the Fortran calling convention (blas/numerical_blas.cpp), so that a program linked against BLAS and
  *        LAPACK, or a switch such as FlexiBLAS, can run on NumericAL.
@@ -21,6 +21,7 @@
 #include <vector>
 
 #include "decomposition.hpp"
+#include "eigen.hpp"
 #include "gemm.hpp"
 #include "matrix.hpp"
 
@@ -984,6 +985,135 @@ namespace numerical::blas {
         for (std::size_t i {cols}; i < rows; ++i) {
           b[i + (c * ld)] = i == cols && fit.residuals.size() > 0 ? std::sqrt(fit.residuals[c]) : 0.0;
         }
+      }
+    }
+    catch (const non_finite_error&) {
+      return -4;
+    }
+    return 0;
+  }
+
+  namespace detail {
+
+    //! \brief The eigenvectors \p v (columns, complex) in `dgeev`'s real form, into the column-major \p out: column `j`
+    //!        of a real eigenvalue its vector; of a pair `λ_j`, `λ_{j+1} = conj(λ_j)` (positive imaginary part first)
+    //!        the real and imaginary parts of `λ_j`'s vector; conjugated where \p conjugate (the left vectors).
+    inline void real_form(const matrix<std::complex<double>>&       v,
+                          const vector<std::complex<double>>&       values,
+                          const std::vector<std::size_t>&           column_of,
+                          bool                                      conjugate,
+                          double*                                   out,
+                          std::size_t                               ld)
+    {
+      const std::size_t n    {values.size()};
+      const double      sign {conjugate ? -1.0 : 1.0};
+      for (std::size_t j {0}; j < n; ++j) {
+        const std::size_t c {column_of[j]};
+        if (values[j].imag() == 0.0) {
+          for (std::size_t i {0}; i < n; ++i) {
+            out[i + (j * ld)] = v(i, c).real();
+          }
+        }
+        else if (values[j].imag() > 0.0) {
+          for (std::size_t i {0}; i < n; ++i) {
+            out[i + (j * ld)]       = v(i, c).real();
+            out[i + ((j + 1) * ld)] = sign * v(i, c).imag();
+          }
+        }
+      }
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The eigenvalues, and with \p jobvl or \p jobvr `V` the left or right eigenvectors, of a column-major
+   *        `n × n` `A`, as LAPACK's `dgeev`: the eigenvalues as \p wr + i \p wi, a conjugate pair adjacent with its
+   *        positive imaginary part first; a right eigenvector `v` (`A v = λ v`) and a left one `u` (`uᴴ A = λ uᴴ`) of
+   *        unit norm with its largest component real, in `VR` and `VL` as `dgeev` packs them (a real eigenvalue's
+   *        column its vector, a pair's two columns the real and imaginary parts of the first's). NumericAL's
+   *        \ref eigen_decomposition computes them; the left vectors are `Aᵀ`'s right ones, conjugated, each matched to
+   *        the nearest unmatched eigenvalue. `A` is left as it was. The workspace is not used, but its size is
+   *        `dgeev`'s least, `3n` (`4n` with vectors): an `lwork` of -1 asks it (written to `work[0]`), and a smaller
+   *        one is illegal.
+   * \return `INFO`: 0, or `-i` where argument `i` is illegal (`-4`: a NaN or an infinity in `A`).
+   */
+  inline int geev(char           jobvl,
+                  char           jobvr,
+                  std::ptrdiff_t n,
+                  const double*  a,
+                  std::ptrdiff_t lda,
+                  double*        wr,
+                  double*        wi,
+                  double*        vl,
+                  std::ptrdiff_t ldvl,
+                  double*        vr,
+                  std::ptrdiff_t ldvr,
+                  double*        work,
+                  std::ptrdiff_t lwork)
+  {
+    const bool left  {jobvl == 'V' || jobvl == 'v'};
+    const bool right {jobvr == 'V' || jobvr == 'v'};
+    if (!left && jobvl != 'N' && jobvl != 'n') {
+      return -1;
+    }
+    if (!right && jobvr != 'N' && jobvr != 'n') {
+      return -2;
+    }
+    if (n < 0) {
+      return -3;
+    }
+    if (lda < std::max<std::ptrdiff_t>(1, n)) {
+      return -5;
+    }
+    if (ldvl < 1 || (left && ldvl < n)) {
+      return -9;
+    }
+    if (ldvr < 1 || (right && ldvr < n)) {
+      return -11;
+    }
+    const std::ptrdiff_t lwork_least {std::max<std::ptrdiff_t>(1, (left || right ? 4 : 3) * n)};
+    if (lwork == -1) {
+      work[0] = static_cast<double>(lwork_least);
+      return 0;
+    }
+    if (lwork < lwork_least) {
+      return -13;
+    }
+    if (n == 0) {
+      return 0;
+    }
+    const auto size {static_cast<std::size_t>(n)};
+    try {
+      const matrix<double>                      source {size, size, detail::row_major(a, lda, n, n, 1.0)};
+      const eigen_decomposition<double>         eigen  {source, right};
+      const vector<std::complex<double>>&       values {eigen.values()};
+      for (std::size_t j {0}; j < size; ++j) {
+        wr[j] = values[j].real();
+        wi[j] = values[j].imag();
+      }
+      std::vector<std::size_t> same(size);
+      for (std::size_t j {0}; j < size; ++j) {
+        same[j] = j;
+      }
+      if (right) {
+        detail::real_form(eigen.vectors(), values, same, false, vr, static_cast<std::size_t>(ldvr));
+      }
+      if (left) {
+        const eigen_decomposition<double> transposed {matrix<double> {size, size, detail::columns_as_rows(a, lda, n, n, 1.0)}, true};
+        // Aᵀ w = λ w is (conj w)ᴴ A = λ (conj w)ᴴ: each eigenvalue's left vector is the conjugate of Aᵀ's right one
+        // for the same eigenvalue, the nearest one not yet taken (a multiple eigenvalue takes its vectors in turn).
+        std::vector<std::size_t> column_of(size);
+        std::vector<bool>        taken(size, false);
+        for (std::size_t j {0}; j < size; ++j) {
+          std::size_t best {size};
+          for (std::size_t p {0}; p < size; ++p) {
+            if (!taken[p] && (best == size || std::abs(transposed.values()[p] - values[j]) < std::abs(transposed.values()[best] - values[j]))) {
+              best = p;
+            }
+          }
+          taken[best]  = true;
+          column_of[j] = best;
+        }
+        detail::real_form(transposed.vectors(), values, column_of, true, vl, static_cast<std::size_t>(ldvl));
       }
     }
     catch (const non_finite_error&) {

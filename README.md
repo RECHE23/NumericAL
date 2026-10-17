@@ -113,10 +113,10 @@ Small and complete, grown measured, honest about what is not yet here:
   `eye`, `arange`, `linspace`.
 
 - `numerical::blas` (`blas.hpp`) — `gemm`, `gesv`, `getrf`, `getrs`, `potrf`, `potrs`, `syevd`, `gesdd`, `geqrf`,
-  `orgqr` and `gelsd` with the column-major semantics of BLAS's `dgemm` and LAPACK's routines of those names; built with
-  `-DNUMERICAL_BUILD_BLAS=ON`, the `numerical_blas` shared library exports them as `dgemm_`, `dgesv_`… (Fortran calling
-  convention, 32-bit integers), to stand in for those routines under a program linked against BLAS and LAPACK
-  (`LD_PRELOAD`) or a switch such as FlexiBLAS.
+  `orgqr`, `gelsd` and `geev` with the column-major semantics of BLAS's `dgemm` and LAPACK's routines of those names;
+  built with `-DNUMERICAL_BUILD_BLAS=ON`, the `numerical_blas` shared library exports them as `dgemm_`, `dgesv_`…
+  (Fortran calling convention, 32-bit integers), to stand in for those routines under a program linked against BLAS and
+  LAPACK (`LD_PRELOAD`) or a switch such as FlexiBLAS.
 
 **Grows in as measured:** sparse storage, banded and LDLᵀ factorisations, the rest of the BLAS/LAPACK interface,
 FFT, numeric autodiff, iterative solvers, numerical integration, arbitrary precision.

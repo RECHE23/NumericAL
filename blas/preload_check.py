@@ -34,6 +34,9 @@ x, residuals, rank, _ = np.linalg.lstsq(deficient, b, rcond=None)
 assert rank == 50 and residuals.size == 0, "lstsq deficient rank"
 cutoff = np.finfo(float).eps * max(deficient.shape)  # lstsq's rcond=None: pinv's default keeps the rounding noise
 assert np.abs(x - np.linalg.pinv(deficient, rcond=cutoff) @ b).max() < 1e-9, "lstsq minimum norm"
+values, vectors = np.linalg.eig(a)
+assert np.abs(a @ vectors - vectors * values).max() < 1e-9, "eig"
+assert np.iscomplexobj(values) and np.abs(np.sort_complex(np.linalg.eigvals(a)) - np.sort_complex(values)).max() < 1e-9, "eigvals"
 try:
     np.linalg.cholesky(np.array([[1.0, 2.0], [2.0, 1.0]]))
     raise AssertionError("an indefinite matrix was factorised")
