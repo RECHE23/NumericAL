@@ -8,7 +8,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "numeric-al"
-version = "2026.10.20"
+version = "2026.10.21"
 description = "NumericAL — a generic, header-only numerical library: tensors, Einstein summation and dense linear algebra without BLAS"
 readme = "README.md"
 requires-python = ">=3.10"

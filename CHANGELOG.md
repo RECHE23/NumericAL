@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.21 — 2026-10-17
+
 ### Added
 - **An optional BLAS/LAPACK library, `numerical_blas`** (CMake `-DNUMERICAL_BUILD_BLAS=ON`): `ddot_`, `dgemm_` (and
   `sgemm_`, `cgemm_`, `zgemm_`, the conjugate transposes conjugated), `dsyrk_`, `dgemv_`, `dtrsm_`, `dgesv_`, `dgetrf_`,
