@@ -31,11 +31,22 @@ A change that can break code is listed under **Breaking** and held for a month's
   (1000 × 200) 98.9 → 3.9 ms, `a @ a` of order 500 in `float32` 64.9 → 1.9 ms, `complex64` 225 → 8.5 ms, `complex128`
   190 → 3.9 ms, `solve` and `inv` of order 500 in `float32` 25.0 → 4.6 and 75.9 → 6.7 ms, `complex64` 71.7 → 12.6 and
   223 → 24.4 ms, `complex128` 69.0 → 9.6 and 217 → 24.0 ms, `cholesky` of order 500 in `float32` 15.0 → 2.5 ms,
-  `complex128` 36.7 → 8.8 ms, the same answers to rounding. The reference LAPACK, linked against the BLAS, then runs on
-  these kernels too: NumPy's and SciPy's linear algebra test suites (`numpy.linalg`, `scipy.linalg`, 4007 tests) pass
-  with the library preloaded, in CI.
+  `complex128` 36.7 → 8.8 ms, the same answers to rounding; at order 1000, `inv` 577 → 29 ms, `det` 182 → 11.8 ms, `a @
+  a.T` 508 → 9.1 ms. The reference LAPACK, linked against the BLAS, then runs on these kernels too: NumPy's and SciPy's
+  linear algebra test suites (`numpy.linalg`, `scipy.linalg`, 4007 tests) pass with the library preloaded, in CI.
 - `lu_decomposition::factors()`, `pivots()` and `singular()`; `not_positive_definite_error::order()`, the order of the
   first leading minor found not positive definite.
+- `lu_decomposition::solve(matrix&&)`, which solves in the right-hand sides' own storage (their rows permuted in place,
+  no copy), and `factors() &&`, which moves the factors out of an expiring decomposition.
+
+### Changed
+- The LU factorisation packs −L₂₁ once per panel for the matrix product's tile and shares it with every block of the
+  trailing update, which packed it again each (the tiles, and so the factors, are the same to the bit); every panel is
+  factorised in one storage, allocated once. Six x86-64 cores (AVX2), order 1000: 7.75 → 6.94 ms; on arm64 the LU and
+  solves of order 128 to 256 are 5 to 8 % faster.
+- On the x86-64 units the LU takes panels of 32 columns up to order 384 (not 256), where the panel is its critical path
+  (order 300: 0.70 → 0.64 ms), and an LU solve gives each thread 48 right-hand sides or more (not 64), so that 300 of
+  them use six threads rather than four (0.62 → 0.54 ms); arm64 keeps both, which it measured slower.
 
 ### Fixed
 - QR (and the SVD and least squares built on it) forms its Householder reflectors as LAPACK's `dlarfg` does, `w₀ = 1`
