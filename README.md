@@ -112,7 +112,12 @@ Small and complete, grown measured, honest about what is not yet here:
   axis (sums by NumPy's pairwise blocks), `reshape`, and `zeros`, `ones`, `full`,
   `eye`, `arange`, `linspace`.
 
-**Grows in as measured:** sparse storage, banded and LDLᵀ factorisations, a BLAS/LAPACK-compatible interface,
+- `numerical::blas` (`blas.hpp`) — `gemm`, `gesv` and `potrf` with the column-major semantics of BLAS's `dgemm` and
+  LAPACK's `dgesv` and `dpotrf`; built with `-DNUMERICAL_BUILD_BLAS=ON`, the `numerical_blas` shared library exports them
+  as `dgemm_`, `dgesv_` and `dpotrf_` (Fortran calling convention, 32-bit integers), to stand in for those routines
+  under a program linked against BLAS and LAPACK (`LD_PRELOAD`) or a switch such as FlexiBLAS.
+
+**Grows in as measured:** sparse storage, banded and LDLᵀ factorisations, the rest of the BLAS/LAPACK interface,
 FFT, numeric autodiff, iterative solvers, numerical integration, arbitrary precision.
 
 ## Build

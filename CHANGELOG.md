@@ -8,6 +8,19 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **An optional BLAS/LAPACK library, `numerical_blas`** (CMake `-DNUMERICAL_BUILD_BLAS=ON`): `dgemm_`, `dgesv_` and
+  `dpotrf_` with the Fortran calling convention (32-bit integers, hidden lengths of character arguments), over
+  NumericAL's kernels, so that a program linked against BLAS and LAPACK, or a switch such as FlexiBLAS, runs on them.
+  Their column-major semantics are `numerical/blas.hpp`'s, as the reference routines define them: arguments checked
+  in the reference's order (an illegal one reported as `XERBLA` reports it, and in `INFO`), `β = 0` not reading `C`,
+  `dgesv`'s factors and interchanges as `dgetrf` leaves them, `dpotrf`'s `INFO` the failing minor's order. A matrix
+  holding a NaN or an infinity, which NumericAL's decompositions refuse, is reported as an illegal value of that
+  argument. Preloaded under Ubuntu's NumPy 1.26, which calls the reference BLAS and LAPACK, on six x86-64 cores at
+  order 300: `solve` 5.3 → 1.6 ms, `cholesky` 3.2 → 1.4 ms, `a @ a` 14.4 → 0.3 ms, the same answers to rounding.
+- `lu_decomposition::factors()`, `pivots()` and `singular()`; `not_positive_definite_error::order()`, the order of the
+  first leading minor found not positive definite.
+
 ## 2026.10.20 — 2026-10-17
 
 ### Changed

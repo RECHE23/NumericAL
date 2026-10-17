@@ -59,6 +59,15 @@ target_include_directories(numerical INTERFACE
 target_compile_features(numerical INTERFACE cxx_std_20)
 target_link_libraries(numerical INTERFACE Threads::Threads)
 
+# The optional BLAS/LAPACK library: dgemm_, dgesv_ and dpotrf_ with the Fortran calling convention, over NumericAL's
+# kernels (blas/numerical_blas.cpp), for a program linked against BLAS and LAPACK or a switch such as FlexiBLAS.
+option(NUMERICAL_BUILD_BLAS "Build the numerical_blas shared library (a BLAS/LAPACK stand-in)" OFF)
+if(NUMERICAL_BUILD_BLAS)
+    add_library(numerical_blas SHARED blas/numerical_blas.cpp)
+    target_link_libraries(numerical_blas PRIVATE numerical::numerical)
+    set_target_properties(numerical_blas PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON VERSION ${PROJECT_VERSION})
+endif()
+
 include(GNUInstallDirs)
 install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 
@@ -68,6 +77,9 @@ install(DIRECTORY include/ DESTINATION ${CMAKE_INSTALL_INCLUDEDIR})
 #   find_package(numerical CONFIG REQUIRED)
 #   target_link_libraries(app PRIVATE numerical::numerical)
 install(TARGETS numerical EXPORT numericalTargets)
+if(NUMERICAL_BUILD_BLAS)
+    install(TARGETS numerical_blas LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR} RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
+endif()
 install(EXPORT numericalTargets
     NAMESPACE numerical::
     DESTINATION ${CMAKE_INSTALL_LIBDIR}/cmake/numerical)
@@ -118,7 +130,8 @@ if(NOT EXISTS "${SCIFORGE_INCLUDE_DIR}/sciforge/test/framework.hpp")
 endif()
 
 file(GLOB NUMERICAL_TEST_SOURCES CONFIGURE_DEPENDS tests/*.cpp)
-add_executable(numerical_tests_bin ${NUMERICAL_TEST_SOURCES})
+# The BLAS/LAPACK shim is tested in the same binary: its symbols are what a Fortran caller resolves.
+add_executable(numerical_tests_bin ${NUMERICAL_TEST_SOURCES} blas/numerical_blas.cpp)
 target_link_libraries(numerical_tests_bin PRIVATE numerical::numerical)
 # The harness include path comes from SciForge, not from a local tests/ copy.
 target_include_directories(numerical_tests_bin PRIVATE "${SCIFORGE_INCLUDE_DIR}")

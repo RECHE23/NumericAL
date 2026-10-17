@@ -656,6 +656,25 @@ namespace numerical {
       return matrix<T> {n_, cols, std::move(rows)};
     }
 
+    //! \brief `L` and `U` in one matrix, as LAPACK's `dgetrf` leaves them: `U` on and above the diagonal, `L` below it
+    //!         (its unit diagonal not stored), of the rows in their pivoted order.
+    [[nodiscard]] matrix<T> factors() const
+    {
+      return matrix<T> {n_, n_, lu_};
+    }
+
+    //! \brief The row permutation: row `i` of `P A = L U` is row `pivots()[i]` of `A`.
+    [[nodiscard]] const std::vector<std::size_t>& pivots() const noexcept
+    {
+      return pivots_;
+    }
+
+    //! \brief Whether a pivot was zero: `U` is singular, and \ref solve and \ref inverse throw.
+    [[nodiscard]] bool singular() const noexcept
+    {
+      return singular_;
+    }
+
   private:
 
     //! \brief Performs the pivoted elimination, filling \ref lu_ and \ref pivots_.
@@ -1197,10 +1216,21 @@ namespace numerical {
   {
   public:
 
-    //! \brief Builds the error. \param[in] message Human-readable cause.
-    explicit not_positive_definite_error(const std::string& message)
-      : std::runtime_error(message)
+    //! \brief Builds the error. \param[in] message Human-readable cause. \param[in] order As \ref order gives it.
+    explicit not_positive_definite_error(const std::string& message,
+                                         std::size_t        order = 0)
+      : std::runtime_error(message), order_ {order}
     {}
+
+    //! \brief The order of the first leading minor found not positive definite (LAPACK's `info`), 0 where unknown.
+    [[nodiscard]] std::size_t order() const noexcept
+    {
+      return order_;
+    }
+
+  private:
+
+    std::size_t order_; //!< The order of the failing leading minor, or 0.
   };
 
   /*!
@@ -1341,7 +1371,7 @@ namespace numerical {
         if (i == j) {
           const double diagonal {detail::real_part(sum)};
           if (diagonal <= 0.0) {
-            throw not_positive_definite_error("Cholesky: matrix is not positive-definite");
+            throw not_positive_definite_error("Cholesky: matrix is not positive-definite", i + 1);
           }
           lower_[(i * n_) + i] = detail::from_double<T>(std::sqrt(diagonal));
         }

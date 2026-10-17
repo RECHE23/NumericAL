@@ -1,0 +1,89 @@
+// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (dgemm, dgesv, dpotrf): every
+// argument by address, 32-bit integers (LP64), and a hidden length after the arguments for each character one, as
+// gfortran passes it. The semantics are numerical/blas.hpp's. An illegal argument is reported as the reference
+// XERBLA reports it, on the standard error, and the call returns (as OpenBLAS's does) rather than stopping the
+// program; no C++ exception leaves these functions.
+#include <cstddef>
+#include <cstdio>
+#include <exception>
+
+#include "numerical/blas.hpp"
+
+namespace {
+  //! \brief The reference XERBLA's message for the illegal argument \p position of the routine \p name.
+  void report_illegal(const char* name,
+                      int         position) noexcept
+  {
+    if (position > 0) {
+      (void)std::fprintf(stderr, " ** On entry to %s parameter number %2d had an illegal value\n", name, position); // NOLINT(cppcoreguidelines-pro-type-vararg): the reference's message
+    }
+  }
+
+  //! \brief A failure no argument explains (memory exhausted): reported, the call then returns.
+  void report_failure(const char* name) noexcept
+  {
+    (void)std::fprintf(stderr, " ** %s failed: %s\n", name, "out of memory or an internal error"); // NOLINT(cppcoreguidelines-pro-type-vararg): a message on the standard error
+  }
+} // namespace
+
+extern "C" {
+void dgemm_(const char*   transa,
+            const char*   transb,
+            const int*    m,
+            const int*    n,
+            const int*    k,
+            const double* alpha,
+            const double* a,
+            const int*    lda,
+            const double* b,
+            const int*    ldb,
+            const double* beta,
+            double*       c,
+            const int*    ldc,
+            std::size_t /*transa_length*/,
+            std::size_t /*transb_length*/) noexcept
+{
+  try {
+    report_illegal("DGEMM ", numerical::blas::gemm(*transa, *transb, *m, *n, *k, *alpha, a, *lda, b, *ldb, *beta, c, *ldc));
+  }
+  catch (...) {
+    report_failure("DGEMM");
+  }
+}
+
+void dgesv_(const int* n,
+            const int* nrhs,
+            double*    a,
+            const int* lda,
+            int*       ipiv,
+            double*    b,
+            const int* ldb,
+            int*       info) noexcept
+{
+  try {
+    *info = numerical::blas::gesv(*n, *nrhs, a, *lda, ipiv, b, *ldb);
+    report_illegal("DGESV ", -*info);
+  }
+  catch (...) {
+    report_failure("DGESV");
+    *info = -1;
+  }
+}
+
+void dpotrf_(const char* uplo,
+             const int*  n,
+             double*     a,
+             const int*  lda,
+             int*        info,
+             std::size_t /*uplo_length*/) noexcept
+{
+  try {
+    *info = numerical::blas::potrf(*uplo, *n, a, *lda);
+    report_illegal("DPOTRF", -*info);
+  }
+  catch (...) {
+    report_failure("DPOTRF");
+    *info = -1;
+  }
+}
+}

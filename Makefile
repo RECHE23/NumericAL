@@ -34,7 +34,7 @@ SCIFORGE_INCLUDE ?= ../sciforge/include
 # SciForge also owns the shared lint config (the MISRA base + uncrustify.cfg), in
 # its lint/ dir. Same sibling default; CI checks SciForge out alongside as ../sciforge.
 SCIFORGE_LINT ?= ../sciforge/lint
-FORMAT_FILES := $(shell find include tests -name '*.hpp' -o -name '*.cpp')
+FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: check-pins all build test sanitize coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate \
@@ -135,7 +135,7 @@ coverage-html:
 	@echo "HTML coverage report: $(COV_DIR)/html/index.html"
 
 lint:
-	@ls tests/*.cpp | xargs -P $(JOBS) -I{} clang-tidy {} -- $(CXXSTD) $(INCLUDES) -I$(SCIFORGE_INCLUDE)
+	@ls tests/*.cpp blas/*.cpp | xargs -P $(JOBS) -I{} clang-tidy {} -- $(CXXSTD) $(INCLUDES) -I$(SCIFORGE_INCLUDE)
 
 # The clang-tidy CI pins, named in SciForge's lint/misra.mk (MISRA_TIDY, MISRA_TIDY_CHECK).
 include $(SCIFORGE_LINT)/misra.mk
