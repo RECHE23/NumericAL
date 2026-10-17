@@ -14,6 +14,12 @@ assert np.abs(a @ x - b).max() < 1e-9, "solve"
 lower = np.linalg.cholesky(s)
 assert np.abs(lower @ lower.T - s).max() < 1e-9, "cholesky"
 assert np.abs(a @ a.T - np.einsum("ij,kj->ik", a, a)).max() < 1e-9, "matmul"
+for dtype in (np.float32, np.complex64, np.complex128):
+    x = a.astype(dtype) * (1 + 1j if np.iscomplexobj(np.zeros(1, dtype)) else 1)
+    y = x[:, :200].copy()
+    want = np.einsum("ij,jk->ik", x.astype(np.complex128), y.astype(np.complex128))
+    bound = 1e-2 if dtype in (np.float32, np.complex64) else 1e-9
+    assert np.abs(x @ y - want).max() < bound, f"matmul {np.dtype(dtype).name}"
 v = b[:, 0]
 assert np.abs(a @ v - np.einsum("ij,j->i", a, v)).max() < 1e-9, "matrix times vector"
 assert np.abs(v @ a - np.einsum("i,ij->j", v, a)).max() < 1e-9, "vector times matrix"

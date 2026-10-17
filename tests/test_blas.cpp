@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -81,6 +82,14 @@ double ddot_(const int*,
              const int*) noexcept;
 void dtrsm_(const char*, const char*, const char*, const char*, const int*, const int*, const double*, const double*, const int*, double*,
             const int*, std::size_t, std::size_t, std::size_t, std::size_t) noexcept;
+void sgemm_(const char*, const char*, const int*, const int*, const int*, const float*, const float*, const int*, const float*, const int*,
+            const float*, float*, const int*, std::size_t, std::size_t) noexcept;
+void zgemm_(const char*, const char*, const int*, const int*, const int*, const std::complex<double>*, const std::complex<double>*,
+            const int*, const std::complex<double>*, const int*, const std::complex<double>*, std::complex<double>*, const int*,
+            std::size_t, std::size_t) noexcept;
+void cgemm_(const char*, const char*, const int*, const int*, const int*, const std::complex<float>*, const std::complex<float>*,
+            const int*, const std::complex<float>*, const int*, const std::complex<float>*, std::complex<float>*, const int*,
+            std::size_t, std::size_t) noexcept;
 }
 
 namespace {
@@ -1717,4 +1726,145 @@ TEST(trsm_with_alpha_zero_clears_b_and_reports_its_first_illegal_argument)
   EXPECT(y[0] == 1.0 && y[1] == 2.0);
   dtrsm_("L", "L", "N", "N", &bad, &one, &unit, l.data(), &two, y.data(), &two, 1, 1, 1, 1); // reported, y untouched
   EXPECT(y[0] == 1.0);
+}
+
+namespace {
+  // Deterministic entries of the scalar T: entries()'s, two of them a complex number.
+  template <typename T>
+  std::vector<T> scalars(std::size_t count,
+                         std::size_t seed)
+  {
+    const auto     parts {entries(2 * count, seed)};
+    std::vector<T> out(count);
+    for (std::size_t i {0}; i < count; ++i) {
+      if constexpr (std::is_floating_point_v<T>) {
+        out[i] = static_cast<T>(parts[i]);
+      }
+      else {
+        using R = T::value_type;
+        out[i]  = T {static_cast<R>(parts[2 * i]), static_cast<R>(parts[(2 * i) + 1])};
+      }
+    }
+    return out;
+  }
+
+  // Whether gemm<T>(transa, transb) of m × k by k × n, the leading dimensions padded, matches α op(A) op(B) + β C by
+  // a plain loop, op C conjugating, to the type's precision.
+  template <typename T>
+  bool typed_gemm_matches(char        transa,
+                          char        transb,
+                          std::size_t m,
+                          std::size_t n,
+                          std::size_t k,
+                          T           alpha,
+                          T           beta)
+  {
+    const bool        ta  {transa != 'N' && transa != 'n'};
+    const bool        tb  {transb != 'N' && transb != 'n'};
+    const std::size_t lda {(ta ? k : m) + 2};
+    const std::size_t ldb {(tb ? n : k) + 1};
+    const std::size_t ldc {m + 3};
+    const auto        a   {scalars<T>(lda * (ta ? m : k), 101)};
+    const auto        b   {scalars<T>(ldb * (tb ? k : n), 103)};
+    auto              c   {scalars<T>(ldc * n, 107)};
+    const auto        c0  {c};
+    const auto        op  {[](const std::vector<T>& x, std::size_t ld, char o, std::size_t i, std::size_t j) {
+                             if (o == 'N' || o == 'n') {
+                               return x[i + (j * ld)];
+                             }
+                             const T element {x[j + (i * ld)]};
+                             return (o == 'C' || o == 'c') ? numerical::detail::conj_of(element) : element;
+                           }};
+    if (numerical::blas::gemm(transa, transb, static_cast<std::ptrdiff_t>(m), static_cast<std::ptrdiff_t>(n), static_cast<std::ptrdiff_t>(k),
+                              alpha, a.data(), static_cast<std::ptrdiff_t>(lda), b.data(), static_cast<std::ptrdiff_t>(ldb), beta, c.data(),
+                              static_cast<std::ptrdiff_t>(ldc))
+        != 0) {
+      return false;
+    }
+    const double tol  {(std::is_same_v<T, float> || std::is_same_v<T, std::complex<float>> ? 1e-5 : 1e-13) * static_cast<double>(k + 1) * 4};
+    bool         good {true};
+    for (std::size_t j {0}; j < n; ++j) {
+      for (std::size_t i {0}; i < m; ++i) {
+        std::complex<double> sum {};
+        for (std::size_t l {0}; l < k; ++l) {
+          sum += std::complex<double> {op(a, lda, transa, i, l)} *std::complex<double> {op(b, ldb, transb, l, j)};
+        }
+        const std::complex<double> want {(std::complex<double> {alpha} *sum) + (std::complex<double> {beta} *std::complex<double> {c0[i + (j * ldc)]})};
+        good = good && std::abs(std::complex<double> {c[i + (j * ldc)]} - want) <= tol;
+      }
+      good = good && c[m + (j * ldc)] == c0[m + (j * ldc)];
+    }
+    return good;
+  }
+
+  // Whether each argument check of gemm<T> answers, in the reference's order.
+  template <typename T>
+  bool gemm_checks_in_order(T alpha,
+                            T beta)
+  {
+    std::vector<T> x(64, T {1});
+    T* const       p       {x.data()};
+    return numerical::blas::gemm('X', 'N', 2, 2, 2, alpha, p, 2, p, 2, beta, p, 2) == 1
+           && numerical::blas::gemm('N', 'X', 2, 2, 2, alpha, p, 2, p, 2, beta, p, 2) == 2
+           && numerical::blas::gemm('N', 'N', -1, 2, 2, alpha, p, 2, p, 2, beta, p, 2) == 3
+           && numerical::blas::gemm('N', 'N', 2, -1, 2, alpha, p, 2, p, 2, beta, p, 2) == 4
+           && numerical::blas::gemm('N', 'N', 2, 2, -1, alpha, p, 2, p, 2, beta, p, 2) == 5
+           && numerical::blas::gemm('N', 'N', 2, 2, 2, alpha, p, 1, p, 2, beta, p, 2) == 8
+           && numerical::blas::gemm('N', 'N', 2, 2, 2, alpha, p, 2, p, 1, beta, p, 2) == 10
+           && numerical::blas::gemm('N', 'N', 2, 2, 2, alpha, p, 2, p, 2, beta, p, 1) == 13;
+  }
+
+  template <typename T>
+  bool every_operation_matches(T alpha,
+                               T beta)
+  {
+    bool good {true};
+    for (const char ta : {'N', 'T', 'C', 'c'}) {
+      for (const char tb : {'N', 't', 'C'}) {
+        good = good && typed_gemm_matches<T>(ta, tb, 7, 5, 6, alpha, beta) && typed_gemm_matches<T>(ta, tb, 70, 90, 80, alpha, beta);
+      }
+    }
+    good = good && typed_gemm_matches<T>('N', 'N', 4, 3, 2, T {}, beta) && typed_gemm_matches<T>('T', 'N', 4, 3, 2, alpha, T {1})
+           && typed_gemm_matches<T>('N', 'N', 4, 3, 0, alpha, beta) && typed_gemm_matches<T>('N', 'N', 0, 3, 2, alpha, beta)
+           && typed_gemm_matches<T>('N', 'N', 4, 0, 2, alpha, beta);
+    return good && gemm_checks_in_order<T>(alpha, beta);
+  }
+} // namespace
+
+TEST(gemm_of_every_scalar_conjugates_where_asked)
+{
+  EXPECT(every_operation_matches<float>(1.5F, 0.5F));
+  EXPECT(every_operation_matches<double>(1.0, 0.0));
+  EXPECT(every_operation_matches<std::complex<float>>({0.5F, -1.0F}, {1.0F, 0.0F}));
+  EXPECT(every_operation_matches<std::complex<double>>({0.5, -1.0}, {0.25, 2.0}));
+  EXPECT(every_operation_matches<std::complex<double>>({1.0, 0.0}, {0.0, 0.0}));
+}
+
+TEST(the_fortran_sgemm_cgemm_zgemm_answer_as_the_cpp_one)
+{
+  const int                          two  {2};
+  const int                          bad  {-1};
+  const float                        one  {1.0F};
+  const float                        zero {0.0F};
+  const std::vector<float>           a    {1.0F, 3.0F, 2.0F, 4.0F}; // [[1, 2], [3, 4]]
+  std::vector<float>                 c(4, 9.0F);
+  sgemm_("N", "N", &two, &two, &two, &one, a.data(), &two, a.data(), &two, &zero, c.data(), &two, 1, 1);
+  EXPECT(c[0] == 7.0F && c[1] == 15.0F && c[2] == 10.0F && c[3] == 22.0F);
+  sgemm_("N", "N", &bad, &two, &two, &one, a.data(), &two, a.data(), &two, &zero, c.data(), &two, 1, 1);
+  EXPECT(c[0] == 7.0F);
+  const std::complex<double>              unit   {1.0, 0.0};
+  const std::complex<double>              none   {};
+  const std::vector<std::complex<double>> z      {{0.0, 1.0}}; // i: i·conj(i) = 1, i·i = −1
+  std::vector<std::complex<double>>       w(1);
+  const int                               single {1};
+  zgemm_("N", "C", &single, &single, &single, &unit, z.data(), &single, z.data(), &single, &none, w.data(), &single, 1, 1);
+  EXPECT(w[0] == unit);
+  zgemm_("N", "T", &single, &single, &single, &unit, z.data(), &single, z.data(), &single, &none, w.data(), &single, 1, 1);
+  EXPECT(w[0] == -unit);
+  const std::complex<float>              unit_f {1.0F, 0.0F};
+  const std::complex<float>              none_f {};
+  const std::vector<std::complex<float>> zf     {{0.0F, 1.0F}};
+  std::vector<std::complex<float>>       wf(1);
+  cgemm_("C", "N", &single, &single, &single, &unit_f, zf.data(), &single, zf.data(), &single, &none_f, wf.data(), &single, 1, 1);
+  EXPECT(wf[0] == unit_f);
 }

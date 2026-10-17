@@ -9,26 +9,27 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
-- **An optional BLAS/LAPACK library, `numerical_blas`** (CMake `-DNUMERICAL_BUILD_BLAS=ON`): `ddot_`, `dgemm_`,
-  `dsyrk_`, `dgemv_`, `dtrsm_`, `dgesv_`, `dgetrf_`, `dgetrs_`, `dpotrf_`, `dpotrs_`, `dsyevd_`, `dgesdd_`, `dgeqrf_`,
-  `dorgqr_`, `dgelsd_` and `dgeev_` with the Fortran calling convention (32-bit integers, hidden lengths of character
-  arguments), over NumericAL's kernels, so that a program linked against BLAS and LAPACK, or a switch such as FlexiBLAS,
-  runs on them. Their column-major semantics are `numerical/blas.hpp`'s, as the reference routines define them:
-  arguments checked in the reference's order (an illegal one reported as `XERBLA` reports it, and in `INFO`), `β = 0`
-  not reading `C`, `dsyrk` writing one triangle, `dgemv`'s negative increments, every side, triangle and transposition
-  of `dtrsm`, `dgesv`'s factors and interchanges as `dgetrf` leaves them (a rectangular matrix too), `dpotrf`'s `INFO`
-  the failing minor's order, `dsyevd`'s and `dgesdd`'s workspace queries (`LWORK = -1`) and minimums, every `JOBZ` of
-  `dgesdd`, `dgeqrf`'s reflectors in the form `dorgqr` and `dormqr` read (and `dorgqr` forming `Q` from any
-  implementation's), `dgelsd`'s rank (its cutoff relative to LAPACK's precision, 2⁻⁵³), singular values and, below the
-  solution, the residual NumPy's `lstsq` reads, `dgeev`'s packed conjugate pairs and left eigenvectors. A matrix holding
-  a NaN or an infinity, which NumericAL's decompositions refuse, is reported as an illegal value of that argument.
-  Preloaded under Ubuntu's NumPy 1.26, which calls the reference BLAS and LAPACK, on six x86-64 cores at order 300:
-  `solve` 5.3 → 1.6 ms, `cholesky` 3.2 → 1.4 ms, `a @ a` 14.4 → 0.3 ms, `a @ a.T` (NumPy's `dsyrk`) 12.7 → 0.5 ms, `a @
-  v` at order 1000 1.02 → 0.08 ms, `v @ w` of 100 000 elements 102 → 25 µs, `eigh` 41.9 → 8.1 ms, `eigvalsh` 11.0 → 4.5
-  ms, `svd` 84.1 → 15.7 ms, `qr` 27.5 → 4.0 ms, `lstsq` (300 × 200) 17.6 → 6.2 ms, `eig` 182.6 → 42.6 ms, SciPy's
-  `solve_triangular` (1000 × 200) 98.9 → 3.9 ms, the same answers to rounding. The reference LAPACK, linked against the
-  BLAS, then runs on these kernels too: NumPy's and SciPy's linear algebra test suites (`numpy.linalg`, `scipy.linalg`,
-  4007 tests) pass with the library preloaded, in CI.
+- **An optional BLAS/LAPACK library, `numerical_blas`** (CMake `-DNUMERICAL_BUILD_BLAS=ON`): `ddot_`, `dgemm_` (and
+  `sgemm_`, `cgemm_`, `zgemm_`, the conjugate transposes conjugated), `dsyrk_`, `dgemv_`, `dtrsm_`, `dgesv_`, `dgetrf_`,
+  `dgetrs_`, `dpotrf_`, `dpotrs_`, `dsyevd_`, `dgesdd_`, `dgeqrf_`, `dorgqr_`, `dgelsd_` and `dgeev_` with the Fortran
+  calling convention (32-bit integers, hidden lengths of character arguments), over NumericAL's kernels, so that a
+  program linked against BLAS and LAPACK, or a switch such as FlexiBLAS, runs on them. Their column-major semantics are
+  `numerical/blas.hpp`'s, as the reference routines define them: arguments checked in the reference's order (an illegal
+  one reported as `XERBLA` reports it, and in `INFO`), `β = 0` not reading `C`, `dsyrk` writing one triangle, `dgemv`'s
+  negative increments, every side, triangle and transposition of `dtrsm`, `dgesv`'s factors and interchanges as `dgetrf`
+  leaves them (a rectangular matrix too), `dpotrf`'s `INFO` the failing minor's order, `dsyevd`'s and `dgesdd`'s
+  workspace queries (`LWORK = -1`) and minimums, every `JOBZ` of `dgesdd`, `dgeqrf`'s reflectors in the form `dorgqr`
+  and `dormqr` read (and `dorgqr` forming `Q` from any implementation's), `dgelsd`'s rank (its cutoff relative to
+  LAPACK's precision, 2⁻⁵³), singular values and, below the solution, the residual NumPy's `lstsq` reads, `dgeev`'s
+  packed conjugate pairs and left eigenvectors. A matrix holding a NaN or an infinity, which NumericAL's decompositions
+  refuse, is reported as an illegal value of that argument. Preloaded under Ubuntu's NumPy 1.26, which calls the
+  reference BLAS and LAPACK, on six x86-64 cores at order 300: `solve` 5.3 → 1.6 ms, `cholesky` 3.2 → 1.4 ms, `a @ a`
+  14.4 → 0.3 ms, `a @ a.T` (NumPy's `dsyrk`) 12.7 → 0.5 ms, `a @ v` at order 1000 1.02 → 0.08 ms, `v @ w` of 100 000
+  elements 102 → 25 µs, `eigh` 41.9 → 8.1 ms, `eigvalsh` 11.0 → 4.5 ms, `svd` 84.1 → 15.7 ms, `qr` 27.5 → 4.0 ms,
+  `lstsq` (300 × 200) 17.6 → 6.2 ms, `eig` 182.6 → 42.6 ms, SciPy's `solve_triangular` (1000 × 200) 98.9 → 3.9 ms, `a @
+  a` of order 500 in `float32` 64.9 → 1.9 ms, `complex64` 225 → 8.5 ms, `complex128` 190 → 3.9 ms, the same answers to
+  rounding. The reference LAPACK, linked against the BLAS, then runs on these kernels too: NumPy's and SciPy's linear
+  algebra test suites (`numpy.linalg`, `scipy.linalg`, 4007 tests) pass with the library preloaded, in CI.
 - `lu_decomposition::factors()`, `pivots()` and `singular()`; `not_positive_definite_error::order()`, the order of the
   first leading minor found not positive definite.
 

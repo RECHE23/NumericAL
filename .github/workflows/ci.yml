@@ -73,7 +73,7 @@ jobs:
       - name: NumPy's calls bound to numerical_blas
         run: |
           LD_PRELOAD="$PWD/build/libnumerical_blas.so" LD_DEBUG=bindings /usr/bin/python3 blas/preload_check.py 2> bindings.txt
-          for symbol in dgesv_ dpotrf_ dgemm_ dsyevd_ dgesdd_ dgeqrf_ dorgqr_ dgelsd_ dgeev_ dsyrk_ dgemv_ ddot_ dtrsm_; do
+          for symbol in dgesv_ dpotrf_ dgemm_ dsyevd_ dgesdd_ dgeqrf_ dorgqr_ dgelsd_ dgeev_ dsyrk_ dgemv_ ddot_ dtrsm_ sgemm_ cgemm_ zgemm_; do
             grep -q "to $PWD/build/libnumerical_blas.so \[0\]: normal symbol \`$symbol'" bindings.txt || { echo "$symbol not bound to numerical_blas"; exit 1; }
           done
       # The reference LAPACK calls the BLAS it is linked with: preloaded, its routines run on numerical_blas's too, and

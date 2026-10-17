@@ -50,20 +50,29 @@ namespace numerical::blas {
       return op != 'N' && op != 'n';
     }
 
-    //! \brief `rows × cols` of the column-major \p a (\p lda apart), as a row-major buffer, each element times
-    //!        \p scale.
-    [[nodiscard]] inline buffer<double> row_major(const double * a,
-                                                  std::ptrdiff_t lda,
-                                                  std::ptrdiff_t rows,
-                                                  std::ptrdiff_t cols,
-                                                  double         scale)
+    //! \brief Whether \p op is BLAS's `C`: the conjugate transpose (a real matrix's is its transpose).
+    [[nodiscard]] constexpr bool conjugates(char op) noexcept
     {
-      const auto     r {static_cast<std::size_t>(rows)};
-      const auto     c {static_cast<std::size_t>(cols)};
-      buffer<double> out(r * c);
+      return op == 'C' || op == 'c';
+    }
+
+    //! \brief `rows × cols` of the column-major \p a (\p lda apart), as a row-major buffer, each element times
+    //!        \p scale (conjugated first where \p conjugate).
+    template <typename T>
+    [[nodiscard]] buffer<T> row_major(const T*       a,
+                                      std::ptrdiff_t lda,
+                                      std::ptrdiff_t rows,
+                                      std::ptrdiff_t cols,
+                                      T              scale,
+                                      bool           conjugate = false)
+    {
+      const auto r {static_cast<std::size_t>(rows)};
+      const auto c {static_cast<std::size_t>(cols)};
+      buffer<T>  out(r * c);
       for (std::size_t i {0}; i < r; ++i) {
         for (std::size_t j {0}; j < c; ++j) {
-          out[(i * c) + j] = scale * a[i + (j * static_cast<std::size_t>(lda))];
+          const T x {a[i + (j * static_cast<std::size_t>(lda))]};
+          out[(i * c) + j] = scale * (conjugate ? numerical::detail::conj_of(x) : x);
         }
       }
       return out;
@@ -71,15 +80,16 @@ namespace numerical::blas {
 
     //! \brief The \p cols columns of \p rows elements of the column-major \p a (\p lda apart) as the rows of a
     //!        row-major buffer, each element times \p scale: `aᵀ`, row-major.
-    [[nodiscard]] inline buffer<double> columns_as_rows(const double*  a,
-                                                        std::ptrdiff_t lda,
-                                                        std::ptrdiff_t rows,
-                                                        std::ptrdiff_t cols,
-                                                        double         scale)
+    template <typename T>
+    [[nodiscard]] buffer<T> columns_as_rows(const T*       a,
+                                            std::ptrdiff_t lda,
+                                            std::ptrdiff_t rows,
+                                            std::ptrdiff_t cols,
+                                            T              scale)
     {
-      const auto     r {static_cast<std::size_t>(rows)};
-      const auto     c {static_cast<std::size_t>(cols)};
-      buffer<double> out(r * c);
+      const auto r {static_cast<std::size_t>(rows)};
+      const auto c {static_cast<std::size_t>(cols)};
+      buffer<T>  out(r * c);
       for (std::size_t j {0}; j < c; ++j) {
         for (std::size_t i {0}; i < r; ++i) {
           out[(j * r) + i] = scale * a[i + (j * static_cast<std::size_t>(lda))];
@@ -163,19 +173,20 @@ namespace numerical::blas {
    *        product kernel, each element's terms in ascending order of the depth.
    * \return 0, or the position of the first illegal argument as `XERBLA` numbers it (then nothing is computed).
    */
-  inline int gemm(char           transa,
-                  char           transb,
-                  std::ptrdiff_t m,
-                  std::ptrdiff_t n,
-                  std::ptrdiff_t k,
-                  double         alpha,
-                  const double*  a,
-                  std::ptrdiff_t lda,
-                  const double*  b,
-                  std::ptrdiff_t ldb,
-                  double         beta,
-                  double*        c,
-                  std::ptrdiff_t ldc)
+  template <typename T>
+  int gemm(char           transa,
+           char           transb,
+           std::ptrdiff_t m,
+           std::ptrdiff_t n,
+           std::ptrdiff_t k,
+           T              alpha,
+           const T*       a,
+           std::ptrdiff_t lda,
+           const T*       b,
+           std::ptrdiff_t ldb,
+           T              beta,
+           T*             c,
+           std::ptrdiff_t ldc)
   {
     const std::ptrdiff_t a_rows  {detail::transposes(transa) ? k : m};
     const std::ptrdiff_t b_rows  {detail::transposes(transb) ? n : k};
@@ -211,32 +222,32 @@ namespace numerical::blas {
     const auto cols   {static_cast<std::size_t>(n)};
     const auto stride {static_cast<std::size_t>(ldc)};
     for (std::size_t j {0}; j < cols; ++j) { // C ← β C, column by column
-      double* const column {c + (j * stride)};
-      if (beta == 0.0) {
-        std::fill_n(column, rows, 0.0);
+      T* const column {c + (j * stride)};
+      if (beta == T {}) {
+        std::fill_n(column, rows, T {});
       }
-      else if (beta != 1.0) {
-        std::transform(column, column + rows, column, [beta](double x) { return beta * x; });
+      else if (beta != T {1}) {
+        std::transform(column, column + rows, column, [beta](T x) { return beta * x; });
       }
     }
-    if (alpha == 0.0 || k == 0) {
+    if (alpha == T {} || k == 0) {
       return 0;
     }
     // Column-major C is row-major Cᵀ (n × m): Cᵀ += (α op(B))ᵀ op(A)ᵀ. A column-major matrix is row-major as its
     // transpose, so op(B)ᵀ is B read in place when B is not transposed (unless α scales a copy), and op(A)ᵀ is A
     // read in place when A is not; a transposed one is copied.
-    const bool     copy_b {detail::transposes(transb) || alpha != 1.0};
-    buffer<double> left   {};
+    const bool        copy_b {detail::transposes(transb) || alpha != T {1}};
+    buffer<T>         left   {};
     if (detail::transposes(transb)) {
-      left = detail::row_major(b, ldb, n, k, alpha);
+      left = detail::row_major(b, ldb, n, k, alpha, detail::conjugates(transb));
     }
     else if (copy_b) {
       left = detail::columns_as_rows(b, ldb, k, n, alpha);
     }
-    const double* const  l      {copy_b ? left.data() : b};
+    const T* const       l      {copy_b ? left.data() : b};
     const std::size_t    ldl    {copy_b ? static_cast<std::size_t>(k) : static_cast<std::size_t>(ldb)};
-    const buffer<double> right  {detail::transposes(transa) ? detail::row_major(a, lda, k, m, 1.0) : buffer<double> {}};
-    const double* const  r      {detail::transposes(transa) ? right.data() : a};
+    const buffer<T>      right  {detail::transposes(transa) ? detail::row_major(a, lda, k, m, T {1}, detail::conjugates(transa)) : buffer<T> {}};
+    const T* const       r      {detail::transposes(transa) ? right.data() : a};
     const std::size_t    ldr    {detail::transposes(transa) ? static_cast<std::size_t>(m) : static_cast<std::size_t>(lda)};
     numerical::detail::gemm(cols, rows, static_cast<std::size_t>(k), l, ldl, r, ldr, c, stride);
     return 0;

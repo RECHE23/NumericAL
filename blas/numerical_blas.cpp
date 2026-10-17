@@ -1,8 +1,9 @@
-// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (ddot, dgeev, dgelsd, dgemm,
-// dgemv, dgeqrf, dgesdd, dgesv, dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd, dsyrk, dtrsm): every argument by address, 32-bit integers (LP64), and a hidden
+// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (ddot, dgeev, dgelsd, dgemm and
+// sgemm, cgemm, zgemm, dgemv, dgeqrf, dgesdd, dgesv, dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd, dsyrk, dtrsm): every argument by address, 32-bit integers (LP64), and a hidden
 // length after the arguments for each character one, as gfortran passes it. The semantics are numerical/blas.hpp's. An
 // illegal argument is reported as the reference XERBLA reports it, on the standard error, and the call returns (as
 // OpenBLAS's does) rather than stopping the program; no C++ exception leaves these functions.
+#include <complex>
 #include <cstddef>
 #include <cstdio>
 #include <exception>
@@ -49,6 +50,92 @@ void dgemm_(const char*   transa,
   catch (...) {
     report_failure("DGEMM");
   }
+}
+}
+
+namespace {
+  //! \brief The `?gemm` of the scalar \p T, reported under \p name: the Fortran routines differ in nothing else.
+  template <typename T>
+  void any_gemm(const char*    name,
+                const char*    transa,
+                const char*    transb,
+                const int*     m,
+                const int*     n,
+                const int*     k,
+                const T*       alpha,
+                const T*       a,
+                const int*     lda,
+                const T*       b,
+                const int*     ldb,
+                const T*       beta,
+                T*             c,
+                const int*     ldc) noexcept
+  {
+    try {
+      report_illegal(name, numerical::blas::gemm(*transa, *transb, *m, *n, *k, *alpha, a, *lda, b, *ldb, *beta, c, *ldc));
+    }
+    catch (...) {
+      report_failure(name);
+    }
+  }
+} // namespace
+
+extern "C" {
+void sgemm_(const char*  transa,
+            const char*  transb,
+            const int*   m,
+            const int*   n,
+            const int*   k,
+            const float* alpha,
+            const float* a,
+            const int*   lda,
+            const float* b,
+            const int*   ldb,
+            const float* beta,
+            float*       c,
+            const int*   ldc,
+            std::size_t /*transa_length*/,
+            std::size_t /*transb_length*/) noexcept
+{
+  any_gemm("SGEMM ", transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void cgemm_(const char*                transa,
+            const char*                transb,
+            const int*                 m,
+            const int*                 n,
+            const int*                 k,
+            const std::complex<float>* alpha,
+            const std::complex<float>* a,
+            const int*                 lda,
+            const std::complex<float>* b,
+            const int*                 ldb,
+            const std::complex<float>* beta,
+            std::complex<float>*       c,
+            const int*                 ldc,
+            std::size_t /*transa_length*/,
+            std::size_t /*transb_length*/) noexcept
+{
+  any_gemm("CGEMM ", transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void zgemm_(const char*                 transa,
+            const char*                 transb,
+            const int*                  m,
+            const int*                  n,
+            const int*                  k,
+            const std::complex<double>* alpha,
+            const std::complex<double>* a,
+            const int*                  lda,
+            const std::complex<double>* b,
+            const int*                  ldb,
+            const std::complex<double>* beta,
+            std::complex<double>*       c,
+            const int*                  ldc,
+            std::size_t /*transa_length*/,
+            std::size_t /*transb_length*/) noexcept
+{
+  any_gemm("ZGEMM ", transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
 }
 
 double ddot_(const int*    n,
