@@ -28,6 +28,10 @@
 
 namespace numerical::blas {
 
+  //! \brief LAPACK's relative machine precision, `dlamch('E')`: the unit roundoff `2⁻⁵³`, half of
+  //!        `std::numeric_limits<double>::epsilon()`. The default rank cutoff of `dgelsd` is relative to it.
+  inline constexpr double lapack_precision {0x1p-53};
+
   //! \brief The columns of \ref syrk's blocks: the wasted half of its diagonal blocks, `64 n k` multiply-adds, stays
   //!        small beside the `n² k / 2` of the triangle.
   inline constexpr std::size_t syrk_block {128};
@@ -1247,7 +1251,7 @@ namespace numerical::blas {
   /*!
    * \brief The minimum-norm least-squares solutions of `A X ≈ B`, column-major `A` `m × n` and `B` `max(m, n) × nrhs`,
    *        as LAPACK's `dgelsd`: a singular value at or under \p rcond times the largest counts as zero (`rcond ≤ 0` or
-   *        `≥ 1`: the machine epsilon); `X` overwrites `B`'s first `n` rows, the singular values (descending) go to
+   *        `≥ 1`: \ref lapack_precision); `X` overwrites `B`'s first `n` rows, the singular values (descending) go to
    *        \p s and the effective rank to \p rank. Where `m > n`, `B`'s rows `n…m-1` of each column hold its residual
    *        as LAPACK leaves it, a vector whose norm is `‖b − A x‖` (here that norm, then zeros), from which NumPy's
    *        `lstsq` takes its residuals. `A` is left as it was. NumericAL's \ref least_squares computes them; the
@@ -1317,7 +1321,7 @@ namespace numerical::blas {
     if (!std::ranges::all_of(right, [](double x) { return std::isfinite(x); })) {
       return -6;
     }
-    const rank_cutoff cutoff {rank_cutoff::relative(rcond > 0.0 && rcond < 1.0 ? rcond : std::numeric_limits<double>::epsilon())};
+    const rank_cutoff cutoff {rank_cutoff::relative(rcond > 0.0 && rcond < 1.0 ? rcond : lapack_precision)};
     try {
       const matrix<double>                    left {rows, cols, detail::row_major(a, lda, m, n, 1.0)};
       const least_squares_solution<double>    fit  {least_squares(left, matrix<double> {rows, rhs, std::move(right)}, cutoff)};

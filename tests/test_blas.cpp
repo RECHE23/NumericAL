@@ -1057,7 +1057,7 @@ namespace {
                                svd_iwork.data()) != 0) {
       return false;
     }
-    const double cutoff    {(rcond > 0.0 && rcond < 1.0 ? rcond : std::numeric_limits<double>::epsilon()) * sigma[0]};
+    const double cutoff    {(rcond > 0.0 && rcond < 1.0 ? rcond : 0x1p-53) * sigma[0]};
     std::size_t  want_rank {0};
     bool         good      {a == a0};
     for (std::size_t d {0}; d < k; ++d) {
@@ -1103,9 +1103,26 @@ TEST(gelsd_gives_the_minimum_norm_least_squares_solution_its_rank_and_residual)
   EXPECT(gelsd_solves(5, 12, 5, 2, 0.0));    // wide, full rank
   EXPECT(gelsd_solves(30, 20, 7, 2, 1e-10)); // rank-deficient: the minimum-norm solution
   EXPECT(gelsd_solves(20, 30, 7, 1, 1e-10));
-  EXPECT(gelsd_solves(9, 9, 9, 4, 2.0));     // rcond ≥ 1: the machine epsilon
+  EXPECT(gelsd_solves(9, 9, 9, 4, 2.0));     // rcond ≥ 1: LAPACK's precision, 2⁻⁵³
   EXPECT(gelsd_solves(80, 60, 60, 1, -1.0)); // past one leaf of dgelsd's divide and conquer
   EXPECT(gelsd_solves(6, 4, 4, 0, -1.0));    // no right-hand side: the values and the rank alone
+}
+
+TEST(gelsd_cuts_the_rank_at_lapack_s_precision_not_the_machine_epsilon)
+{
+  // Rank 3 (column 3 is 2 column 0 − column 1), its fourth singular value rounding noise near 5e-16: above 2⁻⁵³ times
+  // the largest (4.9e-16), under the machine epsilon times it (9.9e-16). NumPy's test of rcond = -1 asks rank 4, as
+  // LAPACK's dgelsd gives it.
+  std::vector<double> a {0.0, 1.0, 0.0, 1.0, 2.0, 0.0, 0.0, 2.0, 0.0, 0.0, 1.0, 0.0,
+                         1.0, 0.0, 1.0, 0.0, 0.0, 4.0, 0.0, 0.0, 0.0, 2.0, 3.0, 0.0};
+  std::vector<double> b {1.0, 0.0, 0.0, 0.0, 0.0, 0.0};
+  std::vector<double> s(4);
+  std::vector<double> work(1000);
+  std::vector<int>    iwork(100);
+  int                 rank {0};
+  EXPECT_EQ(numerical::blas::gelsd(6, 4, 1, a.data(), 6, b.data(), 6, s.data(), -1.0, &rank, work.data(), 1000, iwork.data()), 0);
+  EXPECT(s[3] > 0x1p-53 * s[0] && s[3] < 0x1p-52 * s[0]);
+  EXPECT_EQ(rank, 4);
 }
 
 TEST(gelsd_sizes_its_workspaces_and_reports_an_illegal_argument_and_a_nan)
