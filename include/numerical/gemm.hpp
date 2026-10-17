@@ -1523,10 +1523,23 @@ namespace numerical::detail {
   //! \brief The rows a thread takes of a matrix times a vector (\ref matrix_times_vector).
   inline constexpr std::size_t row_group {64};
 
+#ifdef NUMERICAL_AMX_COMPILED
+  //! \brief The fewest elements of a `double` matrix the AMX multiplies by a vector: below, the matrix sits in the L1
+  //!        cache and the NEON rows are faster (one M1 core, order 128: 1.4 µs, on the AMX 2.2; order 192: 4.7, 3.7).
+  inline constexpr std::size_t amx_dot_least {std::size_t {1} << 15U};
+
+  //! \brief The elements of a `double` matrix past which the AMX no longer multiplies it by a vector: the NEON rows
+  //!        on several threads take it there (M1 Pro, from Python, order 512: 20 µs either way; order 1024 on four
+  //!        threads' AMX, two a cluster, 53 to 61 µs, on the NEON rows 45).
+  inline constexpr std::size_t amx_dot_most {std::size_t {1} << 18U};
+#endif
+
   /*!
    * \brief `y = A x` for the row-major `rows × cols` \p a: each element the dot product of its row with \p x, as
    *        \ref chunked_dot sums it (a row of a chunk or less is one \ref dot_product), the rows in parallel by
-   *        groups (\ref row_dots, which share each load of \p x). The same on any number of threads.
+   *        groups (\ref row_dots, which share each load of \p x). The same on any number of threads. A `double`
+   *        matrix of `amx_dot_least` elements to fewer than `amx_dot_most`, on the AMX path, runs on the AMX
+   *        (`amx_dot_rows_f64`): each element then its eight lanes of fused multiply-adds, added in order.
    */
   template <typename T>
   void matrix_times_vector(const T*    a,
@@ -1535,6 +1548,16 @@ namespace numerical::detail {
                            const T*    x,
                            T*          y)
   {
+#ifdef NUMERICAL_AMX_COMPILED
+    if constexpr (std::is_same_v<T, double>) {
+      const std::size_t elements {rows * cols};
+      if (cols <= dot_chunk && elements >= amx_dot_least && elements < amx_dot_most && gemm_path_current() == gemm_path::amx) {
+        const amx_session on {}; // on the caller alone
+        amx_dot_rows_f64(a, cols, rows, x, cols, y);
+        return;
+      }
+    }
+#endif
     if (cols > dot_chunk) {   // rows longer than a chunk: chunked_dot's partial sums
       parallel_for(rows, cols, [&](std::size_t r) { y[r] = chunked_dot(a + (r * cols), x, cols); });
       return;

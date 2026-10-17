@@ -1,6 +1,8 @@
 // The GEMM paths' guards: limit_gemm_path never selects a path this processor cannot run; the AMX (amx.hpp) is
 // used only on a known M-series family and after its self-test; the AVX paths only where cpuid reports them.
 #include <array>
+#include <cmath>
+#include <vector>
 #include <cstdint>
 
 #include <sciforge/test/framework.hpp>
@@ -49,6 +51,68 @@ TEST(this_chip_is_known_and_its_amx_passes_the_self_test)
   EXPECT(numerical::detail::amx_family_known(numerical::detail::cpu_family()));
   EXPECT(numerical::detail::amx_self_test());
   EXPECT(numerical::detail::amx_usable());
+}
+
+namespace {
+  // y = A x by the AMX's lanes: element j of a row on lane j mod 8, each lane a chain of fused multiply-adds in
+  // ascending order, the lanes added from 0 to 7.
+  std::vector<double> lane_product(const std::vector<double>& a,
+                                   std::size_t                rows,
+                                   std::size_t                cols,
+                                   const std::vector<double>& x)
+  {
+    std::vector<double> y(rows);
+    for (std::size_t r {0}; r < rows; ++r) {
+      std::array<double, 8> lane {};
+      for (std::size_t j {0}; j < cols; ++j) {
+        lane[j % 8] = std::fma(a[(r * cols) + j], x[j], lane[j % 8]);
+      }
+      double sum {lane[0]};
+      for (std::size_t l {1}; l < 8; ++l) {
+        sum += lane[l];
+      }
+      y[r] = sum;
+    }
+    return y;
+  }
+
+  // Whether matrix × vector of the shape, on the path in use, equals the AMX's lanes to the bit (\p lanes) or, off
+  // them, the plain sum within a rounding.
+  bool matvec_as_expected(std::size_t rows,
+                          std::size_t cols,
+                          bool        lanes)
+  {
+    std::vector<double> a(rows * cols);
+    std::vector<double> x(cols);
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = std::sin(static_cast<double>(i));
+    }
+    for (std::size_t j {0}; j < cols; ++j) {
+      x[j] = std::cos(static_cast<double>(j));
+    }
+    const numerical::vector<double> got  {numerical::matrix<double> {rows, cols, a} *numerical::vector<double> {std::vector<double>(x)}};
+    const std::vector<double>       want {lane_product(a, rows, cols, x)};
+    bool                            same {true};
+    for (std::size_t r {0}; r < rows; ++r) {
+      same = same && (lanes ? got[r] == want[r] : std::abs(got[r] - want[r]) <= 1e-9 * static_cast<double>(cols));
+    }
+    return same;
+  }
+} // namespace
+
+// On the AMX path a double matrix of 2^15 to 2^18 elements is multiplied by a vector on the AMX, its lanes to the
+// bit, with rows and columns past a multiple of eight. Smaller, larger, rows longer than a dot chunk, or off the AMX
+// path, the NEON rows answer, within a rounding.
+TEST(matrix_times_vector_runs_on_the_amx_lanes_where_it_pays)
+{
+  EXPECT(matvec_as_expected(203, 181, true));    // 36 743 elements, one block, tails of rows and columns
+  EXPECT(matvec_as_expected(511, 509, true));    // 260 099, just under 2^18
+  EXPECT(matvec_as_expected(100, 100, false));   // under 2^15
+  EXPECT(matvec_as_expected(512, 512, false));   // 2^18
+  EXPECT(matvec_as_expected(3, 20000, false));   // rows longer than a dot chunk
+  (void)numerical::limit_gemm_path(numerical::gemm_path::neon);
+  EXPECT(matvec_as_expected(203, 181, false));
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
 #endif
 

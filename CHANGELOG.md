@@ -6,6 +6,14 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+### Changed
+- **A `float64` matrix of 2^15 to 2^18 elements times a vector runs on the Apple AMX**, eight rows at a time, each
+  row's elements on eight lanes of fused multiply-adds (`fma64` in vector mode), the lanes added in order; the AMX's
+  self-test now checks that mode too, to the bit against `std::fma`, and a failure keeps the AMX off. One M1 Pro
+  core, from Python: order 192 6.5 → 5.2 µs, 256 11.1 → 7.6, 384 17 → 13.9 (Accelerate: 4.0 at 256). Smaller
+  matrices sit in the L1 cache, where the NEON rows are faster; larger ones stay on the NEON rows' threads. Their
+  last bits change on the AMX path (the lanes' order).
+
 ## 2026.10.19 — 2026-10-17
 
 ### Changed
