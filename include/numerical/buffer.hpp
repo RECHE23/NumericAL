@@ -88,7 +88,7 @@ namespace numerical {
         auto* const                     start  {static_cast<std::byte*>(::operator new(bytes, std::align_val_t {huge_page}))};
         (void)madvise(start, bytes, MADV_HUGEPAGE); // a hint: the pages stay 4 KiB where the system declines
         std::byte* const data                  {start + offset};
-        std::memcpy(data - sizeof(std::byte*), &start, sizeof(std::byte*));
+        std::memcpy(data - sizeof(std::byte*), static_cast<const void*>(&start), sizeof(std::byte*));
         return reinterpret_cast<T*>(data);          // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): storage for T, aligned past max_align_t
       }
 
@@ -101,7 +101,7 @@ namespace numerical {
           return;
         }
         std::byte* start {};
-        std::memcpy(&start, reinterpret_cast<std::byte*>(at) - sizeof(std::byte*), sizeof(std::byte*)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the bytes before the data
+        std::memcpy(static_cast<void*>(&start), reinterpret_cast<std::byte*>(at) - sizeof(std::byte*), sizeof(std::byte*)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the bytes before the data
         ::operator delete(start,
                           std::align_val_t {huge_page});
       }
