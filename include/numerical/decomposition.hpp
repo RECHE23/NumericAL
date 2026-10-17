@@ -149,6 +149,11 @@ namespace numerical {
     //!        (M1 Pro, order 128: 61 → 53 µs), and the triangle a wider block computes past the diagonal is wasted.
     inline constexpr std::size_t cholesky_update_columns {64};
 
+    //! \brief The rows of one tile of a Cholesky update: the tiles of a panel's update, each one product on one thread,
+    //!        share the threads in one parallel loop, where a parallel product for each block of columns started and
+    //!        joined the threads some thirty times a panel.
+    inline constexpr std::size_t cholesky_update_rows {256};
+
 
     // conj_of / real_part are written as overloads (not `if constexpr`) so each
     // is a single, fully-covered expression: a complex scalar selects the
@@ -1393,22 +1398,31 @@ namespace numerical {
                            });
     }
 
-    //! \brief `A22 += (−L21) L21ᴴ`, by blocks of \ref detail::cholesky_update_columns columns, on and below the
-    //!        diagonal blocks (the upper triangle, never read, takes what falls in a block past the diagonal), from
+    //! \brief `A22 += (−L21) L21ᴴ`, by tiles of \ref detail::cholesky_update_columns columns and
+    //!        \ref detail::cholesky_update_rows rows on and below the diagonal blocks (the upper triangle, never read,
+    //!        takes what falls in a block past the diagonal), in parallel, each element's terms in the order of one
+    //!        product, from
     //!        \p minus_l and \p l_adjoint as \ref factor_rows_below wrote them.
     void update_trailing(std::size_t      k0,
                          std::size_t      end,
                          const buffer<T>& minus_l,
                          const buffer<T>& l_adjoint)
     {
-      const std::size_t rows                      {n_ - end};
-      const std::size_t depth                     {end - k0};
-      const std::size_t step                      {std::max(block_, detail::cholesky_update_columns)};
+      const std::size_t                                rows                      {n_ - end};
+      const std::size_t                                depth                     {end - k0};
+      const std::size_t                                step                      {std::max(block_, detail::cholesky_update_columns)};
+      const std::size_t                                height                    {detail::cholesky_update_rows};
+      std::vector<std::pair<std::size_t, std::size_t>> tiles; // each one's first column and first row, below the panel
       for (std::size_t jb {0}; jb < rows; jb += step) {
-        const std::size_t width {std::min(step, rows - jb)};
-        detail::gemm(rows - jb, width, depth, minus_l.data() + (jb * depth), depth, l_adjoint.data() + jb, rows,
-                     lower_.data() + ((end + jb) * n_) + end + jb, n_);
+        for (std::size_t r0 {jb}; r0 < rows; r0 += height) {
+          tiles.emplace_back(jb, r0);
+        }
       }
+      detail::parallel_for(tiles.size(), height * step * depth / detail::gemm_kernel_speedup, [&](std::size_t t) {
+                             const auto [jb, r0] {tiles[t]};
+                             detail::gemm(std::min(height, rows - r0), std::min(step, rows - jb), depth, minus_l.data() + (r0 * depth), depth,
+                                          l_adjoint.data() + jb, rows, lower_.data() + ((end + r0) * n_) + end + jb, n_);
+                           });
     }
 
     std::size_t    n_;                                      //!< The matrix order.

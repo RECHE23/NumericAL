@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **The Cholesky factorisation's trailing update runs as tiles shared in one parallel loop**, of 64 columns by 256
+  rows, each one product on one thread, where a parallel product for each block of columns started and joined the
+  threads some thirty times a panel; each element's terms in the order of one product, the same bits. All threads:
+  six x86-64 AVX2 cores, order 512 −18 %, 2048 −17 %; eight arm64 cores, order 2048 −45 % (Clang) and −40 % (GCC 14),
+  1024 −10 to −30 % (Clang) and −44 % (GCC 14); one thread 1 to 4 % slower, each tile packing its columns again.
 - **The Cholesky factorisation writes its trailing update's operands where it computes them**: the rows below a panel,
   factorised in parallel chunks, now each write their share of `−L₂₁` and `L₂₁ᴴ`, which a copy on one thread made
   afterwards (15 to 20 % of the factorisation on six cores). Six x86-64 AVX2 cores: order 512 −12 %, 1024 −14 %,
