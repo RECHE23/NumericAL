@@ -685,10 +685,11 @@ namespace numerical::blas {
    * \return `INFO`: 0; `i > 0` where the leading minor of order `i` is not positive definite; `-i` where argument `i`
    *         is illegal (`-3`: the triangle read holds a NaN or an infinity).
    */
-  inline int potrf(char           uplo,
-                   std::ptrdiff_t n,
-                   double*        a,
-                   std::ptrdiff_t lda)
+  template <typename T>
+  int potrf(char           uplo,
+            std::ptrdiff_t n,
+            T*             a,
+            std::ptrdiff_t lda)
   {
     const bool lower {uplo == 'L' || uplo == 'l'};
     if (!lower && uplo != 'U' && uplo != 'u') {
@@ -703,19 +704,24 @@ namespace numerical::blas {
     if (n == 0) {
       return 0;
     }
-    const auto     size {static_cast<std::size_t>(n)};
-    const auto     ld   {static_cast<std::size_t>(lda)};
-    buffer<double> lower_rows(size * size, 0.0); // A's lower triangle, row-major
+    const auto     size                      {static_cast<std::size_t>(n)};
+    const auto     ld                        {static_cast<std::size_t>(lda)};
+    buffer<T>      lower_rows(size * size, T {}); // A's lower triangle, row-major: the upper one's conjugate (Hermitian)
     for (std::size_t i {0}; i < size; ++i) {
       for (std::size_t j {0}; j <= i; ++j) {
-        lower_rows[(i * size) + j] = lower ? a[i + (j * ld)] : a[j + (i * ld)];
+        lower_rows[(i * size) + j] = lower ? a[i + (j * ld)] : numerical::detail::conj_of(a[j + (i * ld)]);
       }
     }
     try {
-      const matrix<double> l {cholesky_decomposition<double> {matrix<double> {size, size, std::move(lower_rows)}}.lower()};
+      const matrix<T> l {cholesky_decomposition<T> {matrix<T> {size, size, std::move(lower_rows)}}.lower()};
       for (std::size_t i {0}; i < size; ++i) {
         for (std::size_t j {0}; j <= i; ++j) {
-          (lower ? a[i + (j * ld)] : a[j + (i * ld)]) = l(i, j);
+          if (lower) {
+            a[i + (j * ld)] = l(i, j);
+          }
+          else { // U = Lᴴ
+            a[j + (i * ld)] = numerical::detail::conj_of(l(i, j));
+          }
         }
       }
     }
@@ -866,13 +872,14 @@ namespace numerical::blas {
    *        (`n × nrhs`) overwritten by `X`.
    * \return `INFO`: 0, or `-i` where argument `i` is illegal.
    */
-  inline int potrs(char           uplo,
-                   std::ptrdiff_t n,
-                   std::ptrdiff_t nrhs,
-                   const double*  a,
-                   std::ptrdiff_t lda,
-                   double*        b,
-                   std::ptrdiff_t ldb)
+  template <typename T>
+  int potrs(char           uplo,
+            std::ptrdiff_t n,
+            std::ptrdiff_t nrhs,
+            const T*       a,
+            std::ptrdiff_t lda,
+            T*             b,
+            std::ptrdiff_t ldb)
   {
     const bool lower {uplo == 'L' || uplo == 'l'};
     if (!lower && uplo != 'U' && uplo != 'u') {
@@ -892,22 +899,23 @@ namespace numerical::blas {
     }
     const auto size {static_cast<std::size_t>(n)};
     const auto ld   {static_cast<std::size_t>(lda)};
-    const auto l    = [&](std::size_t i, std::size_t j) { return lower ? a[i + (j * ld)] : a[j + (i * ld)]; }; // L(i, j), i ≥ j
+    // L(i, j), i ≥ j: U(j, i) conjugated where U = Lᴴ is stored.
+    const auto l = [&](std::size_t i, std::size_t j) { return lower ? a[i + (j * ld)] : numerical::detail::conj_of(a[j + (i * ld)]); };
     for (std::size_t c {0}; c < static_cast<std::size_t>(nrhs); ++c) {
-      double* const x {b + (c * static_cast<std::size_t>(ldb))};
+      T* const x {b + (c * static_cast<std::size_t>(ldb))};
       for (std::size_t i {0}; i < size; ++i) { // L y = b
-        double sum {x[i]};
+        T sum {x[i]};
         for (std::size_t k {0}; k < i; ++k) {
           sum -= l(i, k) * x[k];
         }
         x[i] = sum / l(i, i);
       }
-      for (std::size_t i {size}; i-- > 0;) { // Lᵀ x = y
-        double sum {x[i]};
+      for (std::size_t i {size}; i-- > 0;) { // Lᴴ x = y
+        T sum {x[i]};
         for (std::size_t k {i + 1}; k < size; ++k) {
-          sum -= l(k, i) * x[k];
+          sum -= numerical::detail::conj_of(l(k, i)) * x[k];
         }
-        x[i] = sum / l(i, i);
+        x[i] = sum / numerical::detail::conj_of(l(i, i));
       }
     }
     return 0;

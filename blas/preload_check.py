@@ -29,6 +29,9 @@ for dtype in (np.float32, np.complex64, np.complex128):
     sign, logdet = np.linalg.slogdet(m)
     _, want = np.linalg.slogdet(m.astype(np.complex128))
     assert abs(logdet - want) < bound * 300, f"slogdet {np.dtype(dtype).name}"
+    h = s.astype(dtype) + (1j * (a - a.T) if np.iscomplexobj(np.zeros(1, dtype)) else 0)  # Hermitian, positive definite
+    factor = np.linalg.cholesky(h)
+    assert np.abs(factor @ factor.conj().T - h).max() < bound * 300, f"cholesky {np.dtype(dtype).name}"
 v = b[:, 0]
 assert np.abs(a @ v - np.einsum("ij,j->i", a, v)).max() < 1e-9, "matrix times vector"
 assert np.abs(v @ a - np.einsum("i,ij->j", v, a)).max() < 1e-9, "vector times matrix"

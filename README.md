@@ -113,12 +113,12 @@ Small and complete, grown measured, honest about what is not yet here:
   `eye`, `arange`, `linspace`.
 
 - `numerical::blas` (`blas.hpp`) — `dot`, `gemm` (of `float`, `double` and their complex numbers), `syrk`, `gemv`,
-  `trsm`, `gesv`, `getrf`, `getrs` (these four of `float`, `double` and their complex numbers), `potrf`, `potrs`,
-  `syevd`, `gesdd`, `geqrf`, `orgqr`, `gelsd` and `geev` with the column-major semantics of BLAS's `ddot`, `dgemm`,
-  `dsyrk`, `dgemv` and `dtrsm` and LAPACK's routines of those names; built with `-DNUMERICAL_BUILD_BLAS=ON`, the
-  `numerical_blas` shared library exports them as `dgemm_`, `dgesv_`… (Fortran calling convention, 32-bit integers), to
-  stand in for those routines under a program linked against BLAS and LAPACK (`LD_PRELOAD`) or a switch such as
-  FlexiBLAS.
+  `trsm`, `gesv`, `getrf`, `getrs`, `potrf` and `potrs` (the last five, as `gemm`, of `float`, `double` and their
+  complex numbers), `syevd`, `gesdd`, `geqrf`, `orgqr`, `gelsd` and `geev` with the column-major semantics of BLAS's
+  `ddot`, `dgemm`, `dsyrk`, `dgemv` and `dtrsm` and LAPACK's routines of those names; built with
+  `-DNUMERICAL_BUILD_BLAS=ON`, the `numerical_blas` shared library exports them as `dgemm_`, `dgesv_`… (Fortran calling
+  convention, 32-bit integers), to stand in for those routines under a program linked against BLAS and LAPACK
+  (`LD_PRELOAD`) or a switch such as FlexiBLAS.
 
 **Grows in as measured:** sparse storage, banded and LDLᵀ factorisations, the rest of the BLAS/LAPACK interface,
 FFT, numeric autodiff, iterative solvers, numerical integration, arbitrary precision.

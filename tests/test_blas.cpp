@@ -135,6 +135,12 @@ void zgetrf_(const int*,
              int*,
              int*) noexcept;
 void zgetrs_(const char*, const int*, const int*, const std::complex<double>*, const int*, const int*, std::complex<double>*, const int*, int*, std::size_t) noexcept;
+void spotrf_(const char*, const int*, float*, const int*, int*, std::size_t) noexcept;
+void spotrs_(const char*, const int*, const int*, const float*, const int*, float*, const int*, int*, std::size_t) noexcept;
+void cpotrf_(const char*, const int*, std::complex<float>*, const int*, int*, std::size_t) noexcept;
+void cpotrs_(const char*, const int*, const int*, const std::complex<float>*, const int*, std::complex<float>*, const int*, int*, std::size_t) noexcept;
+void zpotrf_(const char*, const int*, std::complex<double>*, const int*, int*, std::size_t) noexcept;
+void zpotrs_(const char*, const int*, const int*, const std::complex<double>*, const int*, std::complex<double>*, const int*, int*, std::size_t) noexcept;
 }
 
 namespace {
@@ -2071,4 +2077,120 @@ TEST(the_fortran_lu_routines_of_every_scalar_answer_as_the_cpp_ones)
   EXPECT_EQ(info, -1);
   sgesv_(&bad, &one, f.data(), &two, ipiv.data(), y.data(), &two, &info);
   EXPECT_EQ(info, -1);
+}
+
+namespace {
+  // Whether potrf<T>(uplo) of the Hermitian positive definite Bᴴ B + n I (its other triangle NaN, never read) gives
+  // L Lᴴ (or Uᴴ U) = A, and potrs<T> from it solves A X = B.
+  template <typename T>
+  bool typed_cholesky_holds(char        uplo,
+                            std::size_t n)
+  {
+    const bool        lower {uplo == 'L' || uplo == 'l'};
+    const std::size_t lda   {n + 1};
+    const auto        g     {scalars<T>(n * n, 127)};
+    std::vector<T>    a(lda * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        T sum {i == j ? T {static_cast<float>(n)} : T {}};
+        for (std::size_t l {0}; l < n; ++l) {
+          sum += numerical::detail::conj_of(g[l + (i * n)]) * g[l + (j * n)];
+        }
+        a[i + (j * lda)] = sum;
+      }
+    }
+    const auto a0 {a};
+    for (std::size_t j {0}; j < n; ++j) {
+      for (std::size_t i {0}; i < n; ++i) {
+        if (lower ? i < j : i > j) {
+          a[i + (j * lda)] = T {std::numeric_limits<float>::quiet_NaN()};
+        }
+      }
+    }
+    if (numerical::blas::potrf(uplo, static_cast<std::ptrdiff_t>(n), a.data(), static_cast<std::ptrdiff_t>(lda)) != 0) {
+      return false;
+    }
+    // L(i, j) from the triangle written.
+    const auto l {[&](std::size_t i, std::size_t j) {
+                    if (j > i) {
+                      return std::complex<double> {};
+                    }
+                    return std::complex<double> {lower ? a[i + (j * lda)] : numerical::detail::conj_of(a[j + (i * lda)])};
+                  }};
+    bool good {true};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        std::complex<double> sum {};
+        for (std::size_t k {0}; k < n; ++k) {
+          sum += l(i, k) * std::conj(l(j, k));
+        }
+        good = good && std::abs(sum - std::complex<double> {a0[i + (j * lda)]}) <= precision_of<T>(n) * static_cast<double>(n);
+      }
+    }
+    const std::size_t ldb {n + 2};
+    const auto        b0  {scalars<T>(ldb * 2, 131)};
+    auto              x   {b0};
+    good = good && numerical::blas::potrs(uplo, static_cast<std::ptrdiff_t>(n), 2, a.data(), static_cast<std::ptrdiff_t>(lda), x.data(),
+                                          static_cast<std::ptrdiff_t>(ldb)) == 0;
+    for (std::size_t c {0}; c < 2; ++c) {
+      for (std::size_t i {0}; i < n; ++i) {
+        std::complex<double> sum {};
+        for (std::size_t k {0}; k < n; ++k) {
+          sum += std::complex<double> {a0[i + (k * lda)]} *std::complex<double> {x[k + (c * ldb)]};
+        }
+        good = good && std::abs(sum - std::complex<double> {b0[i + (c * ldb)]}) <= precision_of<T>(n) * static_cast<double>(n);
+      }
+    }
+    return good;
+  }
+
+  // Whether potrf<T> and potrs<T> report a failing minor, a NaN and every illegal argument, as for double.
+  template <typename T>
+  bool typed_cholesky_reports()
+  {
+    std::vector<T> indefinite {T {1}, T {2}, T {2}, T {1}};
+    std::vector<T> nan        {T {std::numeric_limits<float>::quiet_NaN()}};
+    std::vector<T> x(16, T    {1});
+    T* const       p          {x.data()};
+    return numerical::blas::potrf('L', 2, indefinite.data(), 2) == 2 && numerical::blas::potrf('U', 1, nan.data(), 1) == -3
+           && numerical::blas::potrf('X', 2, p, 2) == -1 && numerical::blas::potrf('L', -1, p, 2) == -2 && numerical::blas::potrf('L', 2, p, 1) == -4
+           && numerical::blas::potrf('L', 0, p, 1) == 0 && numerical::blas::potrs('X', 2, 1, p, 2, p, 2) == -1
+           && numerical::blas::potrs('L', -1, 1, p, 2, p, 2) == -2 && numerical::blas::potrs('L', 2, -1, p, 2, p, 2) == -3
+           && numerical::blas::potrs('U', 2, 1, p, 1, p, 2) == -5 && numerical::blas::potrs('u', 2, 1, p, 2, p, 1) == -7;
+  }
+} // namespace
+
+TEST(cholesky_routines_of_every_scalar_factorise_either_triangle_and_solve)
+{
+  for (const char uplo : {'L', 'U', 'l', 'u'}) {
+    EXPECT(typed_cholesky_holds<float>(uplo, 30) && typed_cholesky_holds<std::complex<float>>(uplo, 30));
+    EXPECT(typed_cholesky_holds<std::complex<double>>(uplo, 70) && typed_cholesky_holds<double>(uplo, 20));
+  }
+  EXPECT(typed_cholesky_reports<float>() && typed_cholesky_reports<std::complex<float>>() && typed_cholesky_reports<std::complex<double>>());
+}
+
+TEST(the_fortran_cholesky_routines_of_every_scalar_answer_as_the_cpp_ones)
+{
+  const int                         two  {2};
+  const int                         one  {1};
+  const int                         bad  {-1};
+  int                               info {7};
+  std::vector<std::complex<double>> z    {{4.0, 0.0}, {0.0, 2.0}, {0.0, -2.0}, {3.0, 0.0}}; // [[4, −2i], [2i, 3]]
+  zpotrf_("L", &two, z.data(), &two, &info, 1);
+  EXPECT(info == 0 && z[0] == std::complex<double>(2.0, 0.0) && std::abs(z[1] - std::complex<double>(0.0, 1.0)) < 1e-15);
+  std::vector<std::complex<double>> y {{6.0, 0.0}, {0.0, 5.0}};                             // A (1, i) = (4 − 2i·i, 2i + 3i)
+  zpotrs_("L", &two, &one, z.data(), &two, y.data(), &two, &info, 1);
+  EXPECT(info == 0 && std::abs(y[0] - std::complex<double> {1.0, 0.0}) < 1e-15 && std::abs(y[1] - std::complex<double> {0.0, 1.0}) < 1e-15);
+  std::vector<float> f {4.0F, 2.0F, 2.0F, 3.0F};
+  spotrf_("U", &two, f.data(), &two, &info, 1);
+  std::vector<float> w {2.0F, 1.0F};
+  spotrs_("U", &two, &one, f.data(), &two, w.data(), &two, &info, 1);
+  EXPECT(info == 0 && std::abs(w[0] - 0.5F) < 1e-6F && std::abs(w[1]) < 1e-6F);
+  std::vector<std::complex<float>> c {{4.0F, 0.0F}, {0.0F, 0.0F}, {0.0F, 0.0F}, {9.0F, 0.0F}};
+  cpotrf_("L", &two, c.data(), &two, &info, 1);
+  std::vector<std::complex<float>> v {{4.0F, 0.0F}, {9.0F, 0.0F}};
+  cpotrs_("L", &two, &one, c.data(), &two, v.data(), &two, &info, 1);
+  EXPECT(info == 0 && v[0] == std::complex<float>(1.0F, 0.0F) && v[1] == std::complex<float>(1.0F, 0.0F));
+  cpotrf_("L", &bad, c.data(), &two, &info, 1);
+  EXPECT_EQ(info, -2);
 }

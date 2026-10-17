@@ -1,5 +1,5 @@
 // The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (ddot, dgeev, dgelsd, dgemm and
-// sgemm, cgemm, zgemm, dgemv, sgesv, cgesv, zgesv, sgetrf…, sgetrs…, dgeqrf, dgesdd, dgesv, dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd, dsyrk, dtrsm): every argument by address, 32-bit integers (LP64), and a hidden
+// sgemm, cgemm, zgemm, dgemv, sgesv, cgesv, zgesv, sgetrf…, sgetrs…, spotrf…, spotrs…, dgeqrf, dgesdd, dgesv, dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd, dsyrk, dtrsm): every argument by address, 32-bit integers (LP64), and a hidden
 // length after the arguments for each character one, as gfortran passes it. The semantics are numerical/blas.hpp's. An
 // illegal argument is reported as the reference XERBLA reports it, on the standard error, and the call returns (as
 // OpenBLAS's does) rather than stopping the program; no C++ exception leaves these functions.
@@ -136,6 +136,47 @@ namespace {
   {
     try {
       *info = numerical::blas::getrs(*trans, *n, *nrhs, a, *lda, ipiv, b, *ldb);
+      report_illegal(name, -*info);
+    }
+    catch (...) {
+      report_failure(name);
+      *info = -1;
+    }
+  }
+
+  //! \brief The `?potrf` of the scalar \p T, reported under \p name.
+  template <typename T>
+  void any_potrf(const char* name,
+                 const char* uplo,
+                 const int*  n,
+                 T*          a,
+                 const int*  lda,
+                 int*        info) noexcept
+  {
+    try {
+      *info = numerical::blas::potrf(*uplo, *n, a, *lda);
+      report_illegal(name, -*info);
+    }
+    catch (...) {
+      report_failure(name);
+      *info = -1;
+    }
+  }
+
+  //! \brief The `?potrs` of the scalar \p T, reported under \p name.
+  template <typename T>
+  void any_potrs(const char* name,
+                 const char* uplo,
+                 const int*  n,
+                 const int*  nrhs,
+                 const T*    a,
+                 const int*  lda,
+                 T*          b,
+                 const int*  ldb,
+                 int*        info) noexcept
+  {
+    try {
+      *info = numerical::blas::potrs(*uplo, *n, *nrhs, a, *lda, b, *ldb);
       report_illegal(name, -*info);
     }
     catch (...) {
@@ -309,6 +350,75 @@ void zgetrs_(const char                * trans,
              std::size_t /*trans_length*/) noexcept
 {
   any_getrs("ZGETRS", trans, n, nrhs, a, lda, ipiv, b, ldb, info);
+}
+
+void spotrf_(const char* uplo,
+             const int * n,
+             float     * a,
+             const int * lda,
+             int       * info,
+             std::size_t /*uplo_length*/) noexcept
+{
+  any_potrf("SPOTRF", uplo, n, a, lda, info);
+}
+
+void spotrs_(const char * uplo,
+             const int  * n,
+             const int  * nrhs,
+             const float* a,
+             const int  * lda,
+             float      * b,
+             const int  * ldb,
+             int        * info,
+             std::size_t /*uplo_length*/) noexcept
+{
+  any_potrs("SPOTRS", uplo, n, nrhs, a, lda, b, ldb, info);
+}
+
+void cpotrf_(const char         * uplo,
+             const int          * n,
+             std::complex<float>* a,
+             const int          * lda,
+             int                * info,
+             std::size_t /*uplo_length*/) noexcept
+{
+  any_potrf("CPOTRF", uplo, n, a, lda, info);
+}
+
+void cpotrs_(const char               * uplo,
+             const int                * n,
+             const int                * nrhs,
+             const std::complex<float>* a,
+             const int                * lda,
+             std::complex<float>      * b,
+             const int                * ldb,
+             int                      * info,
+             std::size_t /*uplo_length*/) noexcept
+{
+  any_potrs("CPOTRS", uplo, n, nrhs, a, lda, b, ldb, info);
+}
+
+void zpotrf_(const char          * uplo,
+             const int           * n,
+             std::complex<double>* a,
+             const int           * lda,
+             int                 * info,
+             std::size_t /*uplo_length*/) noexcept
+{
+  any_potrf("ZPOTRF", uplo, n, a, lda, info);
+}
+
+void zpotrs_(const char                * uplo,
+             const int                 * n,
+             const int                 * nrhs,
+             const std::complex<double>* a,
+             const int                 * lda,
+             std::complex<double>      * b,
+             const int                 * ldb,
+             int                       * info,
+             std::size_t /*uplo_length*/) noexcept
+{
+  any_potrs("ZPOTRS", uplo, n, nrhs, a, lda, b, ldb, info);
 }
 
 double ddot_(const int*    n,
