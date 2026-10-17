@@ -1307,8 +1307,10 @@ namespace numerical {
           factor_row(i, k0, std::min(i + 1, end));
         }
         if (end < n_) {
-          factor_rows_below(k0, end);
-          update_trailing(k0, end);
+          buffer<T> minus_l((n_ - end) * (end - k0));   // −L₂₁, row-major
+          buffer<T> l_adjoint((end - k0) * (n_ - end)); // L₂₁ᴴ, row-major
+          factor_rows_below(k0, end, minus_l, l_adjoint);
+          update_trailing(k0, end, minus_l, l_adjoint);
         }
       }
       for (std::size_t i {0}; i < n_; ++i) {
@@ -1349,10 +1351,14 @@ namespace numerical {
      *        parallel, each in a column-major copy where column `j` takes `L[i][j] −= L[i][k]·conj(L[j][k])` for
      *        `k` ascending, then the division by `L[j][j]`, for every row of the chunk at once along the column
      *        (\ref detail::subtract_product): each element the unblocked step's arithmetic, in its order; row by
-     *        row, each sum waited on its last addition.
+     *        row, each sum waited on its last addition. Each chunk also writes its rows of \p minus_l (`−L₂₁`,
+     *        row-major) and its columns of \p l_adjoint (`L₂₁ᴴ`, row-major), the trailing update's operands, which a
+     *        copy on one thread after it took 15 to 20 % of the factorisation on six x86-64 cores (order 1024 to 2048).
      */
     void factor_rows_below(std::size_t k0,
-                           std::size_t end)
+                           std::size_t end,
+                           buffer<T>&  minus_l,
+                           buffer<T>&  l_adjoint)
     {
       const std::size_t width  {end - k0};
       const std::size_t chunks {((n_ - end) + detail::cholesky_rows - 1) / detail::cholesky_rows};
@@ -1375,31 +1381,29 @@ namespace numerical {
                                  column[r] = column[r] / pivot;
                                }
                              }
+                             const std::size_t below {n_ - end};
                              for (std::size_t r {0}; r < height; ++r) {
                                for (std::size_t j {0}; j < width; ++j) {
-                                 lower_[((first + r) * n_) + k0 + j] = panel[(j * height) + r];
+                                 const T value {panel[(j * height) + r]};
+                                 lower_[((first + r) * n_) + k0 + j]                = value;
+                                 minus_l[((first - end + r) * width) + j]           = -value;
+                                 l_adjoint[(j * below) + (first - end + r)]         = detail::conj_of(value);
                                }
                              }
                            });
     }
 
     //! \brief `A22 += (−L21) L21ᴴ`, by blocks of \ref detail::cholesky_update_columns columns, on and below the
-    //!        diagonal blocks (the upper triangle, never read, takes what falls in a block past the diagonal).
-    void update_trailing(std::size_t k0,
-                         std::size_t end)
+    //!        diagonal blocks (the upper triangle, never read, takes what falls in a block past the diagonal), from
+    //!        \p minus_l and \p l_adjoint as \ref factor_rows_below wrote them.
+    void update_trailing(std::size_t      k0,
+                         std::size_t      end,
+                         const buffer<T>& minus_l,
+                         const buffer<T>& l_adjoint)
     {
       const std::size_t rows                      {n_ - end};
       const std::size_t depth                     {end - k0};
-      buffer<T>         minus_l(rows * depth, T   {});
-      buffer<T>         l_adjoint(depth * rows, T {});
-      for (std::size_t r {0}; r < rows; ++r) {
-        for (std::size_t p {0}; p < depth; ++p) {
-          const T value {lower_[((end + r) * n_) + k0 + p]};
-          minus_l[(r * depth) + p]  = -value;
-          l_adjoint[(p * rows) + r] = detail::conj_of(value);
-        }
-      }
-      const std::size_t step {std::max(block_, detail::cholesky_update_columns)};
+      const std::size_t step                      {std::max(block_, detail::cholesky_update_columns)};
       for (std::size_t jb {0}; jb < rows; jb += step) {
         const std::size_t width {std::min(step, rows - jb)};
         detail::gemm(rows - jb, width, depth, minus_l.data() + (jb * depth), depth, l_adjoint.data() + jb, rows,

@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **The Cholesky factorisation writes its trailing update's operands where it computes them**: the rows below a panel,
+  factorised in parallel chunks, now each write their share of `−L₂₁` and `L₂₁ᴴ`, which a copy on one thread made
+  afterwards (15 to 20 % of the factorisation on six cores). Six x86-64 AVX2 cores: order 512 −12 %, 1024 −14 %,
+  2048 −13 %; eight arm64 cores, GCC 14, −6 to −9 %; the same bits.
 - **Buffers of 16 MiB or more ask Linux for huge pages** (`madvise(MADV_HUGEPAGE)`; most distributions leave
   transparent huge pages to the program), each at another offset past its 2 MiB boundary so that they do not fall on
   the same cache sets: fewer address translations for the decompositions' strided passes. Six x86-64 AVX2 cores, order
