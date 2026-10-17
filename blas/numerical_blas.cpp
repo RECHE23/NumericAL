@@ -1,5 +1,5 @@
-// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (dgeev, dgelsd, dgemm, dgeqrf,
-// dgesdd, dgesv, dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd, dsyrk): every argument by address, 32-bit integers (LP64), and a hidden
+// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (dgeev, dgelsd, dgemm, dgemv,
+// dgeqrf, dgesdd, dgesv, dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd, dsyrk): every argument by address, 32-bit integers (LP64), and a hidden
 // length after the arguments for each character one, as gfortran passes it. The semantics are numerical/blas.hpp's. An
 // illegal argument is reported as the reference XERBLA reports it, on the standard error, and the call returns (as
 // OpenBLAS's does) rather than stopping the program; no C++ exception leaves these functions.
@@ -48,6 +48,27 @@ void dgemm_(const char*   transa,
   }
   catch (...) {
     report_failure("DGEMM");
+  }
+}
+
+void dgemv_(const char*   trans,
+            const int*    m,
+            const int*    n,
+            const double* alpha,
+            const double* a,
+            const int*    lda,
+            const double* x,
+            const int*    incx,
+            const double* beta,
+            double*       y,
+            const int*    incy,
+            std::size_t /*trans_length*/) noexcept
+{
+  try {
+    report_illegal("DGEMV ", numerical::blas::gemv(*trans, *m, *n, *alpha, a, *lda, x, *incx, *beta, y, *incy));
+  }
+  catch (...) {
+    report_failure("DGEMV");
   }
 }
 

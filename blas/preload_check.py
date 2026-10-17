@@ -13,6 +13,9 @@ assert np.abs(a @ x - b).max() < 1e-9, "solve"
 lower = np.linalg.cholesky(s)
 assert np.abs(lower @ lower.T - s).max() < 1e-9, "cholesky"
 assert np.abs(a @ a.T - np.einsum("ij,kj->ik", a, a)).max() < 1e-9, "matmul"
+v = b[:, 0]
+assert np.abs(a @ v - np.einsum("ij,j->i", a, v)).max() < 1e-9, "matrix times vector"
+assert np.abs(v @ a - np.einsum("i,ij->j", v, a)).max() < 1e-9, "vector times matrix"
 values, vectors = np.linalg.eigh(s)
 assert np.abs(s @ vectors - vectors * values).max() < 1e-9, "eigh"
 assert np.abs(np.linalg.eigvalsh(s) - values).max() < 1e-9, "eigvalsh"

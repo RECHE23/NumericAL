@@ -1,6 +1,6 @@
 /*!
  * \file blas.hpp
- * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`dgemm`, `dsyrk`, `dgesv`,
+ * \brief The column-major semantics of the BLAS and LAPACK routines NumericAL stands in for (`dgemm`, `dsyrk`, `dgemv`, `dgesv`,
  *        `dgetrf`, `dgetrs`, `dpotrf`, `dpotrs`, `dsyevd`, `dgesdd`, `dgeqrf`, `dorgqr`, `dgelsd`, `dgeev`), as their reference
  *        implementations define them, over NumericAL's kernels: what the optional `numerical_blas` library exports
  *        with the Fortran calling convention (blas/numerical_blas.cpp), so that a program linked against BLAS and
@@ -24,6 +24,7 @@
 #include "eigen.hpp"
 #include "gemm.hpp"
 #include "matrix.hpp"
+#include "parallel.hpp"
 
 namespace numerical::blas {
 
@@ -234,6 +235,103 @@ namespace numerical::blas {
     const double* const  r      {detail::transposes(transa) ? right.data() : a};
     const std::size_t    ldr    {detail::transposes(transa) ? static_cast<std::size_t>(m) : static_cast<std::size_t>(lda)};
     numerical::detail::gemm(cols, rows, static_cast<std::size_t>(k), l, ldl, r, ldr, c, stride);
+    return 0;
+  }
+
+  namespace detail {
+
+    //! \brief Index of element \p i of a BLAS vector of \p length elements \p inc apart: from the last one where
+    //!        \p inc is negative, as the reference walks it.
+    [[nodiscard]] constexpr std::size_t strided(std::size_t    i,
+                                                std::size_t    length,
+                                                std::ptrdiff_t inc) noexcept
+    {
+      return inc > 0 ? i * static_cast<std::size_t>(inc) : (length - 1 - i) * static_cast<std::size_t>(-inc);
+    }
+  } // namespace detail
+
+  //! \brief The rows a thread takes of \ref gemv's `A x`, each a column-by-column sum of scaled columns.
+  inline constexpr std::size_t gemv_rows {256};
+
+  /*!
+   * \brief `y ← α op(A) x + β y`, column-major `A` `m × n`, as BLAS's `dgemv`: the vectors \p incx and \p incy
+   *        apart (from the last element where negative), `y` not read where `β = 0`. `Aᵀ x` is each column's dot
+   *        product with `x` (\ref numerical::detail::row_dots, `A`'s columns the rows of `Aᵀ`); `A x` adds `α x_j`
+   *        times each column, by groups of \ref gemv_rows rows in parallel.
+   * \return 0, or the position of the first illegal argument, as the reference passes it to `XERBLA`.
+   */
+  inline int gemv(char           trans,
+                  std::ptrdiff_t m,
+                  std::ptrdiff_t n,
+                  double         alpha,
+                  const double*  a,
+                  std::ptrdiff_t lda,
+                  const double*  x,
+                  std::ptrdiff_t incx,
+                  double         beta,
+                  double*        y,
+                  std::ptrdiff_t incy)
+  {
+    if (!detail::is_operation(trans)) {
+      return 1;
+    }
+    if (m < 0) {
+      return 2;
+    }
+    if (n < 0) {
+      return 3;
+    }
+    if (lda < std::max<std::ptrdiff_t>(1, m)) {
+      return 6;
+    }
+    if (incx == 0) {
+      return 8;
+    }
+    if (incy == 0) {
+      return 11;
+    }
+    if (m == 0 || n == 0 || (alpha == 0.0 && beta == 1.0)) {
+      return 0;
+    }
+    const bool        transposed {detail::transposes(trans)};
+    const auto        rows       {static_cast<std::size_t>(m)};
+    const auto        cols       {static_cast<std::size_t>(n)};
+    const auto        ld         {static_cast<std::size_t>(lda)};
+    const std::size_t x_length   {transposed ? rows : cols};
+    const std::size_t y_length   {transposed ? cols : rows};
+    buffer<double>    out(y_length, 0.0);
+    for (std::size_t i {0}; i < y_length && beta != 0.0; ++i) {
+      out[i] = beta * y[detail::strided(i, y_length, incy)];
+    }
+    if (alpha != 0.0) {
+      buffer<double> scaled(x_length, 0.0); // α x, gathered
+      for (std::size_t i {0}; i < x_length; ++i) {
+        scaled[i] = alpha * x[detail::strided(i, x_length, incx)];
+      }
+      if (transposed) {
+        buffer<double> dots(cols, 0.0);
+        numerical::detail::parallel_for((cols + gemv_rows - 1) / gemv_rows, gemv_rows * rows, [&](std::size_t group) {
+                                          const std::size_t first {group * gemv_rows};
+                                          numerical::detail::row_dots(a + (first * ld), ld, std::min(gemv_rows, cols - first),
+                                                                      scaled.data(), rows, dots.data() + first);
+                                        });
+        for (std::size_t j {0}; j < cols; ++j) {
+          out[j] += dots[j];
+        }
+      }
+      else {
+        numerical::detail::parallel_for((rows + gemv_rows - 1) / gemv_rows, gemv_rows * cols, [&](std::size_t group) {
+                                          const std::size_t first {group * gemv_rows};
+                                          const std::size_t count {std::min(gemv_rows, rows - first)};
+                                          for (std::size_t j {0}; j < cols; ++j) {
+                                            numerical::detail::add_product(out.data() + first, scaled[j], a + first + (j * ld), count);
+                                          }
+                                        });
+      }
+    }
+    for (std::size_t i {0}; i < y_length; ++i) {
+      y[detail::strided(i, y_length, incy)] = out[i];
+    }
     return 0;
   }
 

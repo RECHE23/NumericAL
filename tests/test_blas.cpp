@@ -72,6 +72,8 @@ void dgeev_(const char*, const char*, const int*, const double*, const int*, dou
             double*, const int*, int*, std::size_t, std::size_t) noexcept;
 void dsyrk_(const char*, const char*, const int*, const int*, const double*, const double*, const int*, const double*, double*, const int*,
             std::size_t, std::size_t) noexcept;
+void dgemv_(const char*, const int*, const int*, const double*, const double*, const int*, const double*, const int*, const double*, double*,
+            const int*, std::size_t) noexcept;
 }
 
 namespace {
@@ -1433,4 +1435,92 @@ TEST(syrk_reports_its_first_illegal_argument)
   EXPECT(c[0] == 10.0 && c[1] == 14.0 && c[2] == -7.0 && c[3] == 20.0);
   dsyrk_("L", "N", &bad, &two, &one, a.data(), &two, &zero, c.data(), &two, 1, 1); // reported, C untouched
   EXPECT(c[0] == 10.0);
+}
+
+namespace {
+  // Whether gemv(trans) of an m × n A (its leading dimension padded) with vectors incx and incy apart (from the last
+  // element where negative) gives α op(A) x + β y by a plain loop, the elements between the vector's left as they were
+  // (and y not read where β = 0).
+  bool gemv_matches(char           trans,
+                    std::size_t    m,
+                    std::size_t    n,
+                    double         alpha,
+                    double         beta,
+                    std::ptrdiff_t incx,
+                    std::ptrdiff_t incy)
+  {
+    const bool                t        {trans != 'N' && trans != 'n'};
+    const std::size_t         lda      {m + 3};
+    const std::size_t         x_length {t ? m : n};
+    const std::size_t         y_length {t ? n : m};
+    const auto                step_x   {static_cast<std::size_t>(std::abs(incx))};
+    const auto                step_y   {static_cast<std::size_t>(std::abs(incy))};
+    const std::vector<double> a        {entries(lda * n, 67)};
+    const std::vector<double> x        {entries((x_length * step_x) + 1, 71)};
+    std::vector<double>       y        {entries((y_length * step_y) + 1, 73)};
+    const auto                at       {[](std::size_t i, std::size_t length, std::ptrdiff_t inc) {
+                                          return inc > 0 ? i * static_cast<std::size_t>(inc) : (length - 1 - i) * static_cast<std::size_t>(-inc);
+                                        }};
+    for (std::size_t i {0}; i < y_length && beta == 0.0; ++i) {
+      y[at(i, y_length, incy)] = std::numeric_limits<double>::quiet_NaN();
+    }
+    const std::vector<double> before {y};
+    if (numerical::blas::gemv(trans, static_cast<std::ptrdiff_t>(m), static_cast<std::ptrdiff_t>(n), alpha, a.data(),
+                              static_cast<std::ptrdiff_t>(lda), x.data(), incx, beta, y.data(), incy) != 0) {
+      return false;
+    }
+    std::vector<bool> touched(y.size(), false);
+    bool              good {true};
+    for (std::size_t i {0}; i < y_length && m > 0 && n > 0; ++i) {
+      double sum {0.0};
+      for (std::size_t l {0}; l < x_length; ++l) {
+        sum += (t ? a[l + (i * lda)] : a[i + (l * lda)]) * x[at(l, x_length, incx)];
+      }
+      const std::size_t k    {at(i, y_length, incy)};
+      const double      want {(alpha * sum) + (beta == 0.0 ? 0.0 : beta * before[k])};
+      touched[k] = true;
+      good       = good && std::abs(y[k] - want) <= 1e-12 * static_cast<double>(x_length + 1);
+    }
+    for (std::size_t k {0}; k < y.size(); ++k) {
+      good = good && (touched[k] || y[k] == before[k] || (std::isnan(y[k]) && std::isnan(before[k])));
+    }
+    return good;
+  }
+} // namespace
+
+TEST(gemv_computes_alpha_op_a_x_plus_beta_y_with_any_increments)
+{
+  for (const char trans : {'N', 'T', 'n', 'c'}) {
+    EXPECT(gemv_matches(trans, 7, 5, 1.5, 0.5, 1, 1));
+    EXPECT(gemv_matches(trans, 7, 5, -1.0, 0.0, 2, -3));   // y not read
+    EXPECT(gemv_matches(trans, 7, 5, 2.0, 1.0, -1, 2));
+    EXPECT(gemv_matches(trans, 600, 530, 1.0, 1.0, 1, 1)); // several row groups, the last partial
+    EXPECT(gemv_matches(trans, 7, 5, 0.0, 2.0, 1, 1));     // α = 0: y ← β y
+    EXPECT(gemv_matches(trans, 7, 5, 0.0, 1.0, 1, 1));     // nothing to do
+    EXPECT(gemv_matches(trans, 0, 5, 1.0, 0.0, 1, 1));     // empty: y untouched, as the reference leaves it
+    EXPECT(gemv_matches(trans, 5, 0, 1.0, 0.0, 1, 1));
+  }
+}
+
+TEST(gemv_reports_its_first_illegal_argument)
+{
+  std::vector<double> v(16, 1.0);
+  EXPECT_EQ(numerical::blas::gemv('X', 2, 2, 1.0, v.data(), 2, v.data(), 1, 0.0, v.data(), 1), 1);
+  EXPECT_EQ(numerical::blas::gemv('N', -1, 2, 1.0, v.data(), 2, v.data(), 1, 0.0, v.data(), 1), 2);
+  EXPECT_EQ(numerical::blas::gemv('N', 2, -1, 1.0, v.data(), 2, v.data(), 1, 0.0, v.data(), 1), 3);
+  EXPECT_EQ(numerical::blas::gemv('N', 3, 2, 1.0, v.data(), 2, v.data(), 1, 0.0, v.data(), 1), 6);
+  EXPECT_EQ(numerical::blas::gemv('N', 2, 2, 1.0, v.data(), 2, v.data(), 0, 0.0, v.data(), 1), 8);
+  EXPECT_EQ(numerical::blas::gemv('N', 2, 2, 1.0, v.data(), 2, v.data(), 1, 0.0, v.data(), 0), 11);
+  const int           two  {2};
+  const int           one  {1};
+  const int           bad  {0};
+  const double        unit {1.0};
+  const double        zero {0.0};
+  std::vector<double> a    {1.0, 2.0, 3.0, 4.0}; // [[1, 3], [2, 4]]
+  std::vector<double> x    {1.0, 1.0};
+  std::vector<double> y(2, -7.0);
+  dgemv_("N", &two, &two, &unit, a.data(), &two, x.data(), &one, &zero, y.data(), &one, 1);
+  EXPECT(y[0] == 4.0 && y[1] == 6.0);
+  dgemv_("N", &two, &two, &unit, a.data(), &two, x.data(), &bad, &zero, y.data(), &one, 1); // reported, y untouched
+  EXPECT(y[0] == 4.0);
 }
