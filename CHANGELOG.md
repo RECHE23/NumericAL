@@ -6,6 +6,8 @@ month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 1
 
 ## Unreleased
 
+## 2026.10.19 — 2026-10-17
+
 ### Changed
 - **The workers poll 500 µs, not 100, before they sleep**: a factorisation's steps last about that long at order 256,
   so the workers one step had left out slept through to the next, whose caller paid about 10 µs to wake each. LU of
