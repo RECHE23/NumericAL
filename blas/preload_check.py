@@ -13,6 +13,13 @@ assert np.abs(a @ x - b).max() < 1e-9, "solve"
 lower = np.linalg.cholesky(s)
 assert np.abs(lower @ lower.T - s).max() < 1e-9, "cholesky"
 assert np.abs(a @ a.T - np.einsum("ij,kj->ik", a, a)).max() < 1e-9, "matmul"
+values, vectors = np.linalg.eigh(s)
+assert np.abs(s @ vectors - vectors * values).max() < 1e-9, "eigh"
+assert np.abs(np.linalg.eigvalsh(s) - values).max() < 1e-9, "eigvalsh"
+for full in (False, True):
+    u, sigma, vh = np.linalg.svd(a[:, :200], full_matrices=full)
+    assert np.abs((u[:, :200] * sigma) @ vh[:200] - a[:, :200]).max() < 1e-9, "svd"
+assert np.abs(np.linalg.svd(a, compute_uv=False) - np.linalg.svd(a)[1]).max() < 1e-9, "singular values"
 try:
     np.linalg.cholesky(np.array([[1.0, 2.0], [2.0, 1.0]]))
     raise AssertionError("an indefinite matrix was factorised")

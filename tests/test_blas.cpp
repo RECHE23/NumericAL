@@ -31,6 +31,10 @@ void dgetrf_(const int*,
              int*) noexcept;
 void dgetrs_(const char*, const int*, const int*, const double*, const int*, const int*, double*, const int*, int*, std::size_t) noexcept;
 void dpotrs_(const char*, const int*, const int*, const double*, const int*, double*, const int*, int*, std::size_t) noexcept;
+void dsyevd_(const char*, const char*, const int*, double*, const int*, double*, double*, const int*, int*, const int*, int*, std::size_t,
+             std::size_t) noexcept;
+void dgesdd_(const char*, const int*, const int*, double*, const int*, double*, double*, const int*, double*, const int*, double*, const int*,
+             int*, int*, std::size_t) noexcept;
 }
 
 namespace {
@@ -486,5 +490,278 @@ TEST(the_fortran_solvers_answer_as_the_cpp_ones)
   dgetrs_("N", &bad, &one, a.data(), &two, ipiv.data(), b.data(), &two, &info, 1);
   EXPECT_EQ(info, -2);
   dpotrs_("L", &bad, &one, s.data(), &two, c.data(), &two, &info, 1);
+  EXPECT_EQ(info, -2);
+}
+
+namespace {
+  // Whether syevd(jobz, uplo) of a symmetric matrix of order n, the other triangle NaN (never read) and the leading
+  // dimension padded, gives ascending eigenvalues and, with V, orthonormal eigenvectors with A v = λ v; with N, the
+  // same values and A left as it was.
+  bool syevd_decomposes(char        jobz,
+                        char        uplo,
+                        std::size_t n)
+  {
+    const bool          lower {uplo == 'L' || uplo == 'l'};
+    const std::size_t   lda   {n + 2};
+    std::vector<double> sym(n * n);
+    const auto          draw  {entries(n * n, 13)};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j <= i; ++j) {
+        sym[i + (j * n)] = draw[i + (j * n)];
+        sym[j + (i * n)] = draw[i + (j * n)];
+      }
+    }
+    std::vector<double> a(lda * n, 0.0);
+    for (std::size_t j {0}; j < n; ++j) {
+      for (std::size_t i {0}; i < n; ++i) {
+        const bool read {lower ? i >= j : i <= j};
+        a[i + (j * lda)] = read ? sym[i + (j * n)] : std::numeric_limits<double>::quiet_NaN();
+      }
+    }
+    const std::vector<double> original {a};
+    std::vector<double>       w(n);
+    std::vector<double>       work(1);
+    std::vector<int>          iwork(1);
+    const auto                ln {static_cast<std::ptrdiff_t>(n)};
+    const auto                ld {static_cast<std::ptrdiff_t>(lda)};
+    if (numerical::blas::syevd(jobz, uplo, ln, a.data(), ld, w.data(), work.data(), -1, iwork.data(), -1) != 0) {
+      return false;
+    }
+    const auto lwork  {static_cast<std::ptrdiff_t>(work[0])};
+    const auto liwork {static_cast<std::ptrdiff_t>(iwork[0])};
+    work.resize(static_cast<std::size_t>(lwork));
+    iwork.resize(static_cast<std::size_t>(liwork));
+    if (numerical::blas::syevd(jobz, uplo, ln, a.data(), ld, w.data(), work.data(), lwork, iwork.data(), liwork) != 0) {
+      return false;
+    }
+    bool good {std::ranges::is_sorted(w)};
+    if (jobz == 'N' || jobz == 'n') {
+      std::vector<double> again {original};
+      std::vector<double> values(n);
+      std::vector<double> big_work(1 + (6 * n) + (2 * n * n));
+      std::vector<int>    big_iwork(3 + (5 * n));
+      good = good && numerical::blas::syevd('V', uplo, ln, again.data(), ld, values.data(), big_work.data(),
+                                            static_cast<std::ptrdiff_t>(big_work.size()), big_iwork.data(),
+                                            static_cast<std::ptrdiff_t>(big_iwork.size())) == 0;
+      for (std::size_t i {0}; i < n; ++i) {
+        good = good && std::abs(values[i] - w[i]) <= 1e-12 * static_cast<double>(n);
+      }
+      for (std::size_t i {0}; i < a.size(); ++i) {
+        good = good && (std::isnan(original[i]) ? std::isnan(a[i]) : a[i] == original[i]);
+      }
+      return good;
+    }
+    for (std::size_t p {0}; p < n; ++p) {
+      for (std::size_t q {0}; q < n; ++q) {
+        double gram     {0.0};
+        double residual {0.0};
+        for (std::size_t i {0}; i < n; ++i) {
+          gram     += a[i + (p * lda)] * a[i + (q * lda)];
+          residual += sym[p + (i * n)] * a[i + (q * lda)];
+        }
+        residual -= w[q] * a[p + (q * lda)];
+        good      = good && std::abs(gram - (p == q ? 1.0 : 0.0)) <= 1e-12 * static_cast<double>(n);
+        good      = good && std::abs(residual) <= 1e-12 * static_cast<double>(n);
+      }
+    }
+    return good;
+  }
+
+  // Whether gesdd(jobz) of an m × n matrix, leading dimensions padded, gives descending singular values and factors
+  // with orthonormal columns (U) and rows (Vᵀ) whose product with Σ is A; with N, the values of S and A left as it was.
+  bool gesdd_decomposes(char        jobz,
+                        std::size_t m,
+                        std::size_t n)
+  {
+    const std::size_t         k        {std::min(m, n)};
+    const bool                all      {jobz == 'A' || jobz == 'a'};
+    const bool                over     {jobz == 'O' || jobz == 'o'};
+    const std::size_t         lda      {m + 1};
+    const std::size_t         ucol     {all ? m : k};
+    const std::size_t         vrow     {all ? n : k};
+    const std::size_t         ldu      {m + 2};
+    const std::size_t         ldvt     {n + 3};
+    std::vector<double>       a        {entries(lda * n, 17)};
+    const std::vector<double> original {a};
+    std::vector<double>       s(k);
+    std::vector<double>       u(ldu * m, 0.0);
+    std::vector<double>       vt(ldvt * n, 0.0);
+    std::vector<double>       work(1);
+    std::vector<int>          iwork(8 * k);
+    const auto                lm {static_cast<std::ptrdiff_t>(m)};
+    const auto                ln {static_cast<std::ptrdiff_t>(n)};
+    if (numerical::blas::gesdd(jobz, lm, ln, a.data(), static_cast<std::ptrdiff_t>(lda), s.data(), u.data(),
+                               static_cast<std::ptrdiff_t>(ldu), vt.data(), static_cast<std::ptrdiff_t>(ldvt), work.data(),
+                               -1, iwork.data()) != 0) {
+      return false;
+    }
+    const auto lwork {static_cast<std::ptrdiff_t>(work[0])};
+    work.resize(static_cast<std::size_t>(lwork));
+    if (numerical::blas::gesdd(jobz, lm, ln, a.data(), static_cast<std::ptrdiff_t>(lda), s.data(), u.data(),
+                               static_cast<std::ptrdiff_t>(ldu), vt.data(), static_cast<std::ptrdiff_t>(ldvt), work.data(),
+                               lwork, iwork.data()) != 0) {
+      return false;
+    }
+    bool good {std::ranges::is_sorted(s, std::ranges::greater {})};
+    if (jobz == 'N' || jobz == 'n') {
+      std::vector<double> again                       {original};
+      std::vector<double> values(k);
+      std::vector<double> big_work((3 * k) + std::max({m, n, (4 * k * k) + (4 * k)}));
+      good = good && numerical::blas::gesdd('S', lm, ln, again.data(), static_cast<std::ptrdiff_t>(lda), values.data(), u.data(),
+                                            static_cast<std::ptrdiff_t>(ldu), vt.data(), static_cast<std::ptrdiff_t>(ldvt),
+                                            big_work.data(), static_cast<std::ptrdiff_t>(big_work.size()), iwork.data()) == 0;
+      for (std::size_t i {0}; i < k; ++i) {
+        good = good && std::abs(values[i] - s[i]) <= 1e-12 * static_cast<double>(m + n);
+      }
+      return good && a == original;
+    }
+    // Where O put a factor into A, read it from there.
+    const double*     uf  {over && m >= n ? a.data() : u.data()};
+    const std::size_t lu  {over && m >= n ? lda : ldu};
+    const double*     vf  {over && m < n ? a.data() : vt.data()};
+    const std::size_t lv  {over && m < n ? lda : ldvt};
+    const double      tol {1e-12 * static_cast<double>(m + n)};
+    for (std::size_t p {0}; p < ucol; ++p) {
+      for (std::size_t q {0}; q < ucol; ++q) {
+        double gram {0.0};
+        for (std::size_t i {0}; i < m; ++i) {
+          gram += uf[i + (p * lu)] * uf[i + (q * lu)];
+        }
+        good = good && std::abs(gram - (p == q ? 1.0 : 0.0)) <= tol;
+      }
+    }
+    for (std::size_t p {0}; p < vrow; ++p) {
+      for (std::size_t q {0}; q < vrow; ++q) {
+        double gram {0.0};
+        for (std::size_t j {0}; j < n; ++j) {
+          gram += vf[p + (j * lv)] * vf[q + (j * lv)];
+        }
+        good = good && std::abs(gram - (p == q ? 1.0 : 0.0)) <= tol;
+      }
+    }
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        double sum {0.0};
+        for (std::size_t l {0}; l < k; ++l) {
+          sum += uf[i + (l * lu)] * s[l] * vf[l + (j * lv)];
+        }
+        good = good && std::abs(sum - original[i + (j * lda)]) <= tol;
+      }
+    }
+    return good;
+  }
+} // namespace
+
+TEST(syevd_diagonalises_either_triangle)
+{
+  EXPECT(syevd_decomposes('V', 'L', 9));
+  EXPECT(syevd_decomposes('v', 'U', 40));
+  EXPECT(syevd_decomposes('N', 'L', 9));
+  EXPECT(syevd_decomposes('n', 'u', 40));
+  EXPECT(syevd_decomposes('V', 'l', 1));
+  EXPECT(syevd_decomposes('N', 'U', 0));
+}
+
+TEST(syevd_sizes_its_workspaces_and_reports_an_illegal_argument_and_a_nan)
+{
+  std::vector<double> a(9, 1.0);
+  std::vector<double> w(3);
+  std::vector<double> work(100);
+  std::vector<int>    iwork(100);
+  EXPECT_EQ(numerical::blas::syevd('V', 'L', 3, a.data(), 3, w.data(), work.data(), -1, iwork.data(), 100), 0);
+  EXPECT(work[0] == 1.0 + 18.0 + 18.0 && iwork[0] == 18);
+  EXPECT_EQ(numerical::blas::syevd('N', 'L', 3, a.data(), 3, w.data(), work.data(), 100, iwork.data(), -1), 0);
+  EXPECT(work[0] == 7.0 && iwork[0] == 1);
+  EXPECT_EQ(numerical::blas::syevd('V', 'U', 1, a.data(), 1, w.data(), work.data(), -1, iwork.data(), -1), 0);
+  EXPECT(work[0] == 1.0 && iwork[0] == 1);
+  EXPECT_EQ(numerical::blas::syevd('X', 'L', 3, a.data(), 3, w.data(), work.data(), 100, iwork.data(), 100), -1);
+  EXPECT_EQ(numerical::blas::syevd('V', 'X', 3, a.data(), 3, w.data(), work.data(), 100, iwork.data(), 100), -2);
+  EXPECT_EQ(numerical::blas::syevd('V', 'L', -1, a.data(), 3, w.data(), work.data(), 100, iwork.data(), 100), -3);
+  EXPECT_EQ(numerical::blas::syevd('V', 'L', 3, a.data(), 2, w.data(), work.data(), 100, iwork.data(), 100), -5);
+  EXPECT_EQ(numerical::blas::syevd('V', 'L', 3, a.data(), 3, w.data(), work.data(), 36, iwork.data(), 100), -8);
+  EXPECT_EQ(numerical::blas::syevd('V', 'L', 3, a.data(), 3, w.data(), work.data(), 37, iwork.data(), 17), -10);
+  a[1] = std::numeric_limits<double>::quiet_NaN(); // (2, 1): in the lower triangle, not the upper
+  EXPECT_EQ(numerical::blas::syevd('V', 'L', 3, a.data(), 3, w.data(), work.data(), 37, iwork.data(), 18), -4);
+  EXPECT_EQ(numerical::blas::syevd('N', 'L', 3, a.data(), 3, w.data(), work.data(), 7, iwork.data(), 1), -4);
+  EXPECT_EQ(numerical::blas::syevd('N', 'U', 3, a.data(), 3, w.data(), work.data(), 7, iwork.data(), 1), 0);
+}
+
+TEST(gesdd_decomposes_tall_wide_and_square_matrices_by_every_job)
+{
+  for (const char job : {'A', 'S', 'O', 'N', 'a', 's', 'o', 'n'}) {
+    EXPECT(gesdd_decomposes(job, 9, 5));
+    EXPECT(gesdd_decomposes(job, 5, 9));
+    EXPECT(gesdd_decomposes(job, 6, 6));
+  }
+  EXPECT(gesdd_decomposes('S', 0, 4));
+}
+
+namespace {
+  // The workspace gesdd(job) asks for an m × n matrix.
+  double gesdd_query(char           job,
+                     std::ptrdiff_t m,
+                     std::ptrdiff_t n)
+  {
+    double work    {0.0};
+    double unused  {0.0};
+    int    iunused {0};
+    (void)numerical::blas::gesdd(job, m, n, &unused, 4, &unused, &unused, 4, &unused, 4, &work, -1, &iunused);
+    return work;
+  }
+} // namespace
+
+TEST(gesdd_sizes_its_workspace_and_reports_an_illegal_argument_and_a_nan)
+{
+  std::vector<double> a(12, 1.0); // 4 × 3
+  std::vector<double> s(3);
+  std::vector<double> u(16);
+  std::vector<double> vt(9);
+  std::vector<double> work(200);
+  std::vector<int>    iwork(24);
+  EXPECT(gesdd_query('N', 4, 3) == 9.0 + 21.0);
+  EXPECT(gesdd_query('O', 4, 3) == 9.0 + 45.0 + 12.0);
+  EXPECT(gesdd_query('S', 4, 3) == 9.0 + 36.0 + 12.0);
+  EXPECT(gesdd_query('A', 3, 4) == 9.0 + 36.0 + 12.0);
+  EXPECT(gesdd_query('N', 0, 3) == 3.0);
+  EXPECT_EQ(numerical::blas::gesdd('X', 4, 3, a.data(), 4, s.data(), u.data(), 4, vt.data(), 3, work.data(), 200, iwork.data()), -1);
+  EXPECT_EQ(numerical::blas::gesdd('S', -1, 3, a.data(), 4, s.data(), u.data(), 4, vt.data(), 3, work.data(), 200, iwork.data()), -2);
+  EXPECT_EQ(numerical::blas::gesdd('S', 4, -1, a.data(), 4, s.data(), u.data(), 4, vt.data(), 3, work.data(), 200, iwork.data()), -3);
+  EXPECT_EQ(numerical::blas::gesdd('S', 4, 3, a.data(), 3, s.data(), u.data(), 4, vt.data(), 3, work.data(), 200, iwork.data()), -5);
+  EXPECT_EQ(numerical::blas::gesdd('S', 4, 3, a.data(), 4, s.data(), u.data(), 3, vt.data(), 3, work.data(), 200, iwork.data()), -8);
+  EXPECT_EQ(numerical::blas::gesdd('O', 3, 4, a.data(), 3, s.data(), u.data(), 2, vt.data(), 1, work.data(), 200, iwork.data()), -8);
+  EXPECT_EQ(numerical::blas::gesdd('O', 4, 3, a.data(), 4, s.data(), u.data(), 1, vt.data(), 2, work.data(), 200, iwork.data()), -10);
+  EXPECT_EQ(numerical::blas::gesdd('A', 3, 4, a.data(), 3, s.data(), u.data(), 3, vt.data(), 3, work.data(), 200, iwork.data()), -10);
+  EXPECT_EQ(numerical::blas::gesdd('S', 3, 4, a.data(), 3, s.data(), u.data(), 3, vt.data(), 2, work.data(), 200, iwork.data()), -10);
+  EXPECT_EQ(numerical::blas::gesdd('N', 4, 3, a.data(), 4, s.data(), u.data(), 1, vt.data(), 1, work.data(), 29, iwork.data()), -12);
+  EXPECT_EQ(numerical::blas::gesdd('N', 4, 3, a.data(), 4, s.data(), u.data(), 1, vt.data(), 1, work.data(), 30, iwork.data()), 0);
+  a[5] = std::numeric_limits<double>::infinity();
+  EXPECT_EQ(numerical::blas::gesdd('S', 4, 3, a.data(), 4, s.data(), u.data(), 4, vt.data(), 3, work.data(), 200, iwork.data()), -4);
+  EXPECT_EQ(numerical::blas::gesdd('N', 4, 3, a.data(), 4, s.data(), u.data(), 1, vt.data(), 1, work.data(), 30, iwork.data()), -4);
+}
+
+TEST(the_fortran_eigensolvers_answer_as_the_cpp_ones)
+{
+  const int           two    {2};
+  const int           lwork  {21};                 // 1 + 6 n + 2 n²
+  const int           liwork {13};
+  std::vector<double> a      {2.0, 1.0, 1.0, 2.0}; // eigenvalues 1 and 3
+  std::vector<double> w(2);
+  std::vector<double> work(21);
+  std::vector<int>    iwork(13);
+  int                 info   {7};
+  dsyevd_("V", "L", &two, a.data(), &two, w.data(), work.data(), &lwork, iwork.data(), &liwork, &info, 1, 1);
+  EXPECT(info == 0 && std::abs(w[0] - 1.0) < 1e-15 && std::abs(w[1] - 3.0) < 1e-15);
+  std::vector<double> b {3.0, 0.0, 0.0, -4.0}; // singular values 4 and 3
+  std::vector<double> s(2);
+  std::vector<double> u(4);
+  std::vector<double> vt(4);
+  std::vector<double> big(64);
+  const int           lbig {64};
+  dgesdd_("A", &two, &two, b.data(), &two, s.data(), u.data(), &two, vt.data(), &two, big.data(), &lbig, iwork.data(), &info, 1);
+  EXPECT(info == 0 && std::abs(s[0] - 4.0) < 1e-15 && std::abs(s[1] - 3.0) < 1e-15);
+  const int bad {-1};
+  dsyevd_("V", "L", &bad, a.data(), &two, w.data(), work.data(), &lwork, iwork.data(), &liwork, &info, 1, 1);
+  EXPECT_EQ(info, -3);
+  dgesdd_("A", &bad, &two, b.data(), &two, s.data(), u.data(), &two, vt.data(), &two, big.data(), &lbig, iwork.data(), &info, 1);
   EXPECT_EQ(info, -2);
 }

@@ -1,6 +1,6 @@
-// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (dgemm, dgesv, dgetrf, dgetrs,
-// dpotrf, dpotrs): every argument by address, 32-bit integers (LP64), and a hidden length after the arguments for each
-// character one, as gfortran passes it. The semantics are numerical/blas.hpp's. An illegal argument is reported as the
+// The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (dgemm, dgesdd, dgesv, dgetrf,
+// dgetrs, dpotrf, dpotrs, dsyevd): every argument by address, 32-bit integers (LP64), and a hidden length after the
+// arguments for each character one, as gfortran passes it. The semantics are numerical/blas.hpp's. An illegal argument is reported as the
 // reference XERBLA reports it, on the standard error, and the call returns (as OpenBLAS's does) rather than stopping
 // the program; no C++ exception leaves these functions.
 #include <cstddef>
@@ -141,6 +141,56 @@ void dpotrs_(const char*   uplo,
   }
   catch (...) {
     report_failure("DPOTRS");
+    *info = -1;
+  }
+}
+
+void dsyevd_(const char* jobz,
+             const char* uplo,
+             const int*  n,
+             double*     a,
+             const int*  lda,
+             double*     w,
+             double*     work,
+             const int*  lwork,
+             int*        iwork,
+             const int*  liwork,
+             int*        info,
+             std::size_t /*jobz_length*/,
+             std::size_t /*uplo_length*/) noexcept
+{
+  try {
+    *info = numerical::blas::syevd(*jobz, *uplo, *n, a, *lda, w, work, *lwork, iwork, *liwork);
+    report_illegal("DSYEVD", -*info);
+  }
+  catch (...) {
+    report_failure("DSYEVD");
+    *info = -1;
+  }
+}
+
+void dgesdd_(const char* jobz,
+             const int*  m,
+             const int*  n,
+             double*     a,
+             const int*  lda,
+             double*     s,
+             double*     u,
+             const int*  ldu,
+             double*     vt,
+             const int*  ldvt,
+             double*     work,
+             const int*  lwork,
+             int*        iwork,
+             int*        info,
+             std::size_t /*jobz_length*/) noexcept
+{
+  try {
+    *info = numerical::blas::gesdd(*jobz, *m, *n, a, *lda, s, u, *ldu, vt, *ldvt, work, *lwork, iwork);
+    report_illegal("DGESDD", -*info);
+  }
+  catch (...) {
+    report_failure("DGESDD");
     *info = -1;
   }
 }

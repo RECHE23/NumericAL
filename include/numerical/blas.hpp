@@ -530,6 +530,204 @@ namespace numerical::blas {
     }
     return 0;
   }
+
+  /*!
+   * \brief The eigenvalues, and with \p jobz `V` the eigenvectors, of a symmetric column-major `A`, as LAPACK's
+   *        `dsyevd`: the triangle \p uplo (`L` or `U`) read; the eigenvalues ascending in \p w; the orthonormal
+   *        eigenvectors overwriting `A`, column `j` that of `w[j]`; with `N`, `A` left as it was (LAPACK leaves it
+   *        overwritten). NumericAL's divide and conquer computes them; the workspaces are not used, but their sizes are
+   *        `dsyevd`'s: an `lwork` or `liwork` of -1 asks them (written to `work[0]` and `iwork[0]`), and a smaller one is
+   *        illegal.
+   * \return `INFO`: 0, or `-i` where argument `i` is illegal (`-4`: a NaN or an infinity in the triangle read).
+   */
+  template <typename Index>
+  int syevd(char           jobz,
+            char           uplo,
+            std::ptrdiff_t n,
+            double*        a,
+            std::ptrdiff_t lda,
+            double*        w,
+            double*        work,
+            std::ptrdiff_t lwork,
+            Index*         iwork,
+            std::ptrdiff_t liwork)
+  {
+    const bool vectors {jobz == 'V' || jobz == 'v'};
+    const bool lower   {uplo == 'L' || uplo == 'l'};
+    if (!vectors && jobz != 'N' && jobz != 'n') {
+      return -1;
+    }
+    if (!lower && uplo != 'U' && uplo != 'u') {
+      return -2;
+    }
+    if (n < 0) {
+      return -3;
+    }
+    if (lda < std::max<std::ptrdiff_t>(1, n)) {
+      return -5;
+    }
+    std::ptrdiff_t lwork_least  {1};
+    std::ptrdiff_t liwork_least {1};
+    if (n > 1) {
+      lwork_least  = vectors ? 1 + (6 * n) + (2 * n * n) : (2 * n) + 1;
+      liwork_least = vectors ? 3 + (5 * n) : 1;
+    }
+    if (lwork == -1 || liwork == -1) {
+      work[0]  = static_cast<double>(lwork_least);
+      iwork[0] = static_cast<Index>(liwork_least);
+      return 0;
+    }
+    if (lwork < lwork_least) {
+      return -8;
+    }
+    if (liwork < liwork_least) {
+      return -10;
+    }
+    if (n == 0) {
+      return 0;
+    }
+    const auto     size {static_cast<std::size_t>(n)};
+    const auto     ld   {static_cast<std::size_t>(lda)};
+    buffer<double> lower_rows(size * size, 0.0); // the triangle read, as the lower one, row-major
+    for (std::size_t i {0}; i < size; ++i) {
+      for (std::size_t j {0}; j <= i; ++j) {
+        lower_rows[(i * size) + j] = lower ? a[i + (j * ld)] : a[j + (i * ld)];
+      }
+    }
+    try {
+      matrix<double> symmetric {size, size, std::move(lower_rows)};
+      if (!vectors) {
+        const vector<double> values {symmetric_eigenvalues(symmetric)};
+        std::copy_n(&values[0], size, w);
+        return 0;
+      }
+      const symmetric_eigen eigen {symmetric};
+      std::copy_n(&eigen.values()[0], size, w);
+      for (std::size_t j {0}; j < size; ++j) {
+        for (std::size_t i {0}; i < size; ++i) {
+          a[i + (j * ld)] = eigen.vectors()(i, j);
+        }
+      }
+    }
+    catch (const non_finite_error&) {
+      return -4;
+    }
+    return 0;
+  }
+
+  /*!
+   * \brief The singular value decomposition `A = U Σ Vᵀ` of a column-major `m × n` `A`, as LAPACK's `dgesdd`: the
+   *        singular values descending in \p s; with \p jobz `A`, all of `U` (`m × m`) and `Vᵀ` (`n × n`); with `S`,
+   *        their first `min(m, n)` columns and rows; with `O`, those overwriting `A` (`U`'s where `m ≥ n`, else
+   *        `Vᵀ`'s) and the other in \p u or \p vt; with `N`, the values alone (`A` then left as it was). NumericAL's
+   *        divide and conquer computes them; the workspaces are not used, but their sizes are `dgesdd`'s: an `lwork`
+   *        of -1 asks it (written to `work[0]`), and a smaller one is illegal.
+   * \return `INFO`: 0, or `-i` where argument `i` is illegal (`-4`: a NaN or an infinity in `A`).
+   */
+  template <typename Index>
+  int gesdd(char           jobz,
+            std::ptrdiff_t m,
+            std::ptrdiff_t n,
+            double*        a,
+            std::ptrdiff_t lda,
+            double*        s,
+            double*        u,
+            std::ptrdiff_t ldu,
+            double*        vt,
+            std::ptrdiff_t ldvt,
+            double*        work,
+            std::ptrdiff_t lwork,
+            Index*         iwork)
+  {
+    (void)iwork; // dgesdd's integer workspace, of 8 min(m, n): not used
+    const bool all       {jobz == 'A' || jobz == 'a'};
+    const bool some      {jobz == 'S' || jobz == 's'};
+    const bool overwrite {jobz == 'O' || jobz == 'o'};
+    const bool none      {jobz == 'N' || jobz == 'n'};
+    if (!all && !some && !overwrite && !none) {
+      return -1;
+    }
+    if (m < 0) {
+      return -2;
+    }
+    if (n < 0) {
+      return -3;
+    }
+    if (lda < std::max<std::ptrdiff_t>(1, m)) {
+      return -5;
+    }
+    const std::ptrdiff_t least  {std::min(m, n)};
+    const std::ptrdiff_t most   {std::max(m, n)};
+    const bool           u_out  {all || some || (overwrite && m < n)};
+    const bool           vt_out {all || some || (overwrite && m >= n)};
+    if (ldu < std::max<std::ptrdiff_t>(1, u_out ? m : 1)) {
+      return -8;
+    }
+    std::ptrdiff_t vt_rows {1};
+    if (all) {
+      vt_rows = n;
+    }
+    else if (some) {
+      vt_rows = least;
+    }
+    else if (vt_out) {
+      vt_rows = n;
+    }
+    if (ldvt < std::max<std::ptrdiff_t>(1, vt_rows)) {
+      return -10;
+    }
+    std::ptrdiff_t lwork_least {(3 * least) + std::max(most, 7 * least)};
+    if (overwrite) {
+      lwork_least = (3 * least) + std::max(most, (5 * least * least) + (4 * least));
+    }
+    else if (all || some) {
+      lwork_least = (3 * least) + std::max(most, (4 * least * least) + (4 * least));
+    }
+    if (lwork == -1) {
+      work[0] = static_cast<double>(std::max<std::ptrdiff_t>(1, lwork_least));
+      return 0;
+    }
+    if (lwork < std::max<std::ptrdiff_t>(1, lwork_least)) {
+      return -12;
+    }
+    if (least == 0) {
+      return 0;
+    }
+    const auto rows {static_cast<std::size_t>(m)};
+    const auto cols {static_cast<std::size_t>(n)};
+    const auto k    {static_cast<std::size_t>(least)};
+    try {
+      const matrix<double> source {rows, cols, detail::row_major(a, lda, m, n, 1.0)};
+      if (none) {
+        const vector<double> values {singular_values(source)};
+        std::copy_n(&values[0], k, s);
+        return 0;
+      }
+      const svd_decomposition<double> svd {source, svd_method::divide_and_conquer, all};
+      std::copy_n(&svd.singular_values()[0], k, s);
+      const matrix<double> left           {svd.u()};
+      const matrix<double> right          {svd.vh()};
+      // With O, the factor that fits A's storage goes there, the other to its own argument.
+      double* const        u_into         {overwrite && m >= n ? a : u};
+      const std::size_t    ld_u           {overwrite && m >= n ? static_cast<std::size_t>(lda) : static_cast<std::size_t>(ldu)};
+      double* const        vt_into        {overwrite && m < n ? a : vt};
+      const std::size_t    ld_vt          {overwrite && m < n ? static_cast<std::size_t>(lda) : static_cast<std::size_t>(ldvt)};
+      for (std::size_t j {0}; j < left.cols(); ++j) {
+        for (std::size_t i {0}; i < left.rows(); ++i) {
+          u_into[i + (j * ld_u)] = left(i, j);
+        }
+      }
+      for (std::size_t j {0}; j < right.cols(); ++j) {
+        for (std::size_t i {0}; i < right.rows(); ++i) {
+          vt_into[i + (j * ld_vt)] = right(i, j);
+        }
+      }
+    }
+    catch (const non_finite_error&) {
+      return -4;
+    }
+    return 0;
+  }
 } // namespace numerical::blas
 
 #endif // NUMERICAL_BLAS_HPP
