@@ -19,6 +19,7 @@
 #include <complex>
 #include <cstddef>
 #include <limits>
+#include <utility>
 #include <vector>
 
 #include "decomposition.hpp"
@@ -33,11 +34,21 @@ namespace numerical::blas {
   //!        `std::numeric_limits<double>::epsilon()`. The default rank cutoff of `dgelsd` is relative to it.
   inline constexpr double lapack_precision {0x1p-53};
 
-  //! \brief The columns of \ref syrk's blocks: the wasted half of its diagonal blocks, `64 n k` multiply-adds, stays
-  //!        small beside the `n² k / 2` of the triangle.
+  //! \brief The columns of \ref syrk's smallest diagonal blocks, formed whole: their wasted half, at most
+  //!        `64 n k` multiply-adds, stays small beside the `n² k / 2` of the triangle.
   inline constexpr std::size_t syrk_block {128};
 
+  //! \brief The most elements of \ref syrk's operand copy a thread keeps between calls (32 MiB).
+  inline constexpr std::size_t syrk_kept_limit {(std::size_t {32} << 20U) / sizeof(double)};
+
   namespace detail {
+
+    //! \brief The storage of \ref syrk's operand copy this thread keeps between calls.
+    [[nodiscard]] inline buffer<double>& syrk_operand() noexcept
+    {
+      thread_local buffer<double> storage;
+      return storage;
+    }
 
     //! \brief Whether \p op is one of BLAS's `N`, `T` or `C` (either case): no transpose, transpose, conjugate one.
     [[nodiscard]] constexpr bool is_operation(char op) noexcept
@@ -392,6 +403,55 @@ namespace numerical::blas {
     return 0;
   }
 
+  namespace detail {
+
+    //! \brief The operands of \ref syrk_triangle: row-major `P = op(A)` and `Q = op(A)ᵀ` (one of them scaled by α),
+    //!        the column-major `C` and which triangle of it is written.
+    struct syrk_operands
+    {
+      const double* p;     //!< `P`, `n × depth`.
+      std::size_t   ldp;   //!< `P`'s row distance.
+      const double* q;     //!< `Q`, `depth × n`.
+      std::size_t   ldq;   //!< `Q`'s row distance.
+      std::size_t   depth; //!< `k`.
+      double*       c;     //!< `C`, column-major.
+      std::size_t   ldc;   //!< `C`'s column distance.
+      bool          lower; //!< The lower triangle (else the upper).
+    };
+
+    /*!
+     * \brief Adds `P Q` to the triangle of the diagonal block `[j0, j0 + w)` of `C`: halved until it is a block of
+     *        \ref syrk_block columns or fewer, formed whole aside; above that, the off-diagonal half is one product of
+     *        `(w / 2)²` entries, which the matrix product kernel runs on every core. A block of `C` (rows `r0…`,
+     *        columns `c0…`), column-major, is row-major `Cᵀ`: it adds `P(c0…) Q(…, r0…)`.
+     */
+    inline void syrk_triangle(syrk_operands operands,
+                              std::size_t   j0,
+                              std::size_t   w)
+    {
+      if (w <= syrk_block) {
+        buffer<double> diagonal(w * w, 0.0); // row-major: (i, j) is C(j0 + j, j0 + i)
+        numerical::detail::gemm(w, w, operands.depth, operands.p + (j0 * operands.ldp), operands.ldp, operands.q + j0, operands.ldq,
+                                diagonal.data(), w);
+        for (std::size_t j {0}; j < w; ++j) {
+          for (std::size_t i {operands.lower ? j : 0}; i < (operands.lower ? w : j + 1); ++i) {
+            operands.c[(j0 + i) + ((j0 + j) * operands.ldc)] += diagonal[(j * w) + i];
+          }
+        }
+        return;
+      }
+      const std::size_t h    {w / 2};
+      syrk_triangle(operands, j0, h);
+      const std::size_t r0   {operands.lower ? j0 + h : j0}; // below the first half (L), or right of it (U)
+      const std::size_t c0   {operands.lower ? j0 : j0 + h};
+      const std::size_t rows {operands.lower ? w - h : h};
+      const std::size_t cols {operands.lower ? h : w - h};
+      numerical::detail::gemm(cols, rows, operands.depth, operands.p + (c0 * operands.ldp), operands.ldp, operands.q + r0, operands.ldq,
+                              operands.c + r0 + (c0 * operands.ldc), operands.ldc);
+      syrk_triangle(operands, j0 + h, w - h);
+    }
+  } // namespace detail
+
   /*!
    * \brief `C ← α op(A) op(A)ᵀ + β C` on the triangle \p uplo (`U` or `L`) of the column-major `n × n` `C`, `op(A)`
    *        `n × k`, as BLAS's `dsyrk` (NumPy's `a @ a.T`): the other triangle neither read nor written, `C` not read
@@ -430,6 +490,9 @@ namespace numerical::blas {
     if (ldc < std::max<std::ptrdiff_t>(1, n)) {
       return 10;
     }
+    if (n == 0) {
+      return 0;
+    }
     const auto order {static_cast<std::size_t>(n)};
     const auto ld    {static_cast<std::size_t>(ldc)};
     if (alpha == 0.0 || k == 0) { // C ← β C on the triangle
@@ -440,26 +503,37 @@ namespace numerical::blas {
       }
       return 0;
     }
-    const char other {transposed ? 'N' : 'T'};
-    // Rows r… of op(A): A's rows (N) or columns (T) from r.
-    const auto rows_from {[&](std::size_t r) { return transposed ? a + (r * static_cast<std::size_t>(lda)) : a + r; }};
-    for (std::size_t j0 {0}; j0 < order; j0 += syrk_block) {
-      const std::size_t w {std::min(syrk_block, order - j0)};
-      buffer<double>    diagonal(w * w, 0.0);
-      (void)gemm(trans, other, static_cast<std::ptrdiff_t>(w), static_cast<std::ptrdiff_t>(w), k, alpha, rows_from(j0), lda, rows_from(j0),
-                 lda, 0.0, diagonal.data(), static_cast<std::ptrdiff_t>(w));
-      for (std::size_t j {0}; j < w; ++j) {
-        for (std::size_t i {lower ? j : 0}; i < (lower ? w : j + 1); ++i) {
-          double& entry {c[(j0 + i) + ((j0 + j) * ld)]};
-          entry = diagonal[i + (j * w)] + (beta == 0.0 ? 0.0 : beta * entry);
-        }
+    // C(r, c) = α Σ_l op(A)(r, l) op(A)(c, l). The kernel takes row-major operands: P = op(A) (n × k) and
+    // Q = op(A)ᵀ (k × n). A column-major A is one of them read in place (Q for N, P for T); the other is copied once,
+    // α folded into it.
+    const auto     depth {static_cast<std::size_t>(k)};
+    const auto     lda_s {static_cast<std::size_t>(lda)};
+    // The copy in storage the thread keeps between calls (as the kernel's packing_storage): a fresh one of a megabyte
+    // is mapped anew and faulted in page by page on every call.
+    buffer<double>       copy      {std::exchange(detail::syrk_operand(), buffer<double> {})};
+    const std::size_t    copy_rows {transposed ? depth : order}; // row-major: α A as it lies, k × n (T) or n × k (N)
+    const std::size_t    copy_cols {transposed ? order : depth};
+    if (copy.size() < copy_rows * copy_cols) {
+      copy = buffer<double>(copy_rows * copy_cols);
+    }
+    for (std::size_t i {0}; i < copy_rows; ++i) {
+      for (std::size_t j {0}; j < copy_cols; ++j) {
+        copy[(i * copy_cols) + j] = alpha * a[i + (j * lda_s)];
       }
-      const std::size_t first {lower ? j0 + w : 0};
-      const std::size_t count {lower ? order - first : j0};
-      if (count > 0) {
-        (void)gemm(trans, other, static_cast<std::ptrdiff_t>(count), static_cast<std::ptrdiff_t>(w), k, alpha, rows_from(first), lda,
-                   rows_from(j0), lda, beta, c + first + (j0 * ld), ldc);
+    }
+    const double* const  p_rows {transposed ? a : copy.data()};
+    const std::size_t    ldp    {transposed ? lda_s : depth};
+    const double* const  q_cols {transposed ? copy.data() : a};
+    const std::size_t    ldq    {transposed ? order : lda_s};
+    for (std::size_t j {0}; j < order; ++j) { // C ← β C on the triangle; the products then add into it
+      for (std::size_t i {lower ? j : 0}; i < (lower ? order : j + 1); ++i) {
+        double& entry {c[i + (j * ld)]};
+        entry = beta == 0.0 ? 0.0 : beta * entry;
       }
+    }
+    detail::syrk_triangle({p_rows, ldp, q_cols, ldq, depth, c, ld, lower}, 0, order);
+    if (copy.size() <= syrk_kept_limit) {
+      detail::syrk_operand() = std::move(copy);
     }
     return 0;
   }

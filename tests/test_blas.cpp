@@ -1533,6 +1533,20 @@ TEST(syrk_updates_one_triangle_by_alpha_op_a_op_a_transposed)
   EXPECT(syrk_matches('L', 'N', 0, 4, 1.0, 1.0));
 }
 
+TEST(syrk_keeps_its_operand_copy_up_to_its_limit)
+{
+  // An operand copy past syrk_kept_limit is released after the call; a smaller one is kept and reused. Either way
+  // the triangle is right: here A of order 3 and depth past the limit / 3, ones, so A Aᵀ is k everywhere.
+  const std::size_t   depth {(numerical::blas::syrk_kept_limit / 3) + 1};
+  std::vector<double> a(3 * depth, 1.0);
+  std::vector<double> c(9, -1.0);
+  EXPECT_EQ(numerical::blas::syrk('L', 'N', 3, static_cast<std::ptrdiff_t>(depth), 1.0, a.data(), 3, 0.0, c.data(), 3), 0);
+  EXPECT(c[0] == static_cast<double>(depth) && c[1] == static_cast<double>(depth) && c[8] == static_cast<double>(depth) && c[3] == -1.0);
+  EXPECT(numerical::blas::detail::syrk_operand().size() <= numerical::blas::syrk_kept_limit);
+  EXPECT(syrk_matches('U', 'T', 40, 30, 1.0, 0.0)); // a kept copy reused
+  EXPECT(!numerical::blas::detail::syrk_operand().empty());
+}
+
 TEST(syrk_reports_its_first_illegal_argument)
 {
   std::vector<double> x(16, 1.0);
