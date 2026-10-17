@@ -482,8 +482,8 @@ namespace numerical::blas {
 
   namespace detail {
 
-    //! \brief The operands of \ref syrk_triangle: row-major `P = op(A)` and `Q = op(A)ᵀ` (one of them scaled by α),
-    //!        the column-major `C` and which triangle of it is written.
+    //! \brief The operands of \ref syrk_triangle, which are row-major `P = op(A)` and `Q = op(A)ᵀ` (one of them
+    //!        scaled by α), the column-major `C` and which triangle of it is written.
     struct syrk_operands
     {
       const double* p;     //!< `P`, `n × depth`.
