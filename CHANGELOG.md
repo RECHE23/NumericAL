@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.20 — 2026-10-17
+
 ### Changed
 - **Arithmetic between tensors of one dtype, or with a Python `float` or `int`, skips the promotion**: the operands
   went through NumPy's promotion rules and `asarray` each call. A 4 × 4 `a + b` 1.71 → 0.37 µs (NumPy 0.29),
