@@ -5,6 +5,8 @@
 // EXPECT(...) conditions containing braced `{a, b}` literals are wrapped in an
 // extra pair of parentheses, so their commas are not seen as macro arguments.
 #include <complex>
+#include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <vector>
 
@@ -94,3 +96,31 @@ TEST(shape_mismatch_throws)
   EXPECT_THROWS((vector<int> {1, 2} - vector<int> {1, 2, 3}), numerical::dimension_error);
   EXPECT_THROWS((dot(vector<int> {1, 2}, vector<int> {1, 2, 3})), numerical::dimension_error);
 }
+
+#if defined(__linux__)
+// A buffer of 16 MiB or more asks for huge pages: its data is there in full, written and read back, copied and grown,
+// each one at another offset past its 2 MiB boundary; below, and for a count whose bytes overflow, std::allocator's.
+TEST(a_large_buffer_on_huge_pages_holds_its_elements)
+{
+  using allocator = numerical::detail::default_init_allocator<double>;
+  const std::size_t count {allocator::huge_least / sizeof(double)};
+  EXPECT(allocator::on_huge_pages(count));
+  EXPECT(!allocator::on_huge_pages(count - 1));
+  EXPECT(!allocator::on_huge_pages(std::numeric_limits<std::size_t>::max() / 4));
+  numerical::buffer<double> a(count);
+  for (std::size_t i {0}; i < count; ++i) {
+    a[i] = static_cast<double>(i);
+  }
+  numerical::buffer<double> b {a};
+  b.resize(count + 5, 1.0);
+  bool same                   {true};
+  for (std::size_t i {0}; i < count; ++i) {
+    same = same && b[i] == static_cast<double>(i);
+  }
+  EXPECT(same);
+  EXPECT_EQ(b[count + 4], 1.0);
+  const auto offset = [](const double* at) { return reinterpret_cast<std::uintptr_t>(at) % allocator::huge_page; };
+  EXPECT(offset(a.data()) != offset(b.data()));
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(a.data()) % alignof(std::max_align_t), 0U);
+}
+#endif

@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **Buffers of 16 MiB or more ask Linux for huge pages** (`madvise(MADV_HUGEPAGE)`; most distributions leave
+  transparent huge pages to the program), each at another offset past its 2 MiB boundary so that they do not fall on
+  the same cache sets: fewer address translations for the decompositions' strided passes. Six x86-64 AVX2 cores, order
+  2048: `inverse` −23 %, `solve` −19 %, `cholesky` −23 %, LU −18 %, a product −5 %; order 3072 −14 to −20 %; below
+  16 MiB unchanged, where a fresh result's huge pages, each zeroed on one thread, made a product slower.
 - **A `float64` matrix of 2^15 to 2^18 elements times a vector runs on the Apple AMX**, eight rows at a time, each
   row's elements on eight lanes of fused multiply-adds (`fma64` in vector mode), the lanes added in order; the AMX's
   self-test now checks that mode too, to the bit against `std::fma`, and a failure keeps the AMX off. One M1 Pro
