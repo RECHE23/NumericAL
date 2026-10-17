@@ -90,6 +90,51 @@ void zgemm_(const char*, const char*, const int*, const int*, const int*, const 
 void cgemm_(const char*, const char*, const int*, const int*, const int*, const std::complex<float>*, const std::complex<float>*,
             const int*, const std::complex<float>*, const int*, const std::complex<float>*, std::complex<float>*, const int*,
             std::size_t, std::size_t) noexcept;
+void sgesv_(const int*,
+            const int*,
+            float*,
+            const int*,
+            int*,
+            float*,
+            const int*,
+            int*) noexcept;
+void sgetrf_(const int*,
+             const int*,
+             float*,
+             const int*,
+             int*,
+             int*) noexcept;
+void sgetrs_(const char*, const int*, const int*, const float*, const int*, const int*, float*, const int*, int*, std::size_t) noexcept;
+void cgesv_(const int*,
+            const int*,
+            std::complex<float>*,
+            const int*,
+            int*,
+            std::complex<float>*,
+            const int*,
+            int*) noexcept;
+void cgetrf_(const int*,
+             const int*,
+             std::complex<float>*,
+             const int*,
+             int*,
+             int*) noexcept;
+void cgetrs_(const char*, const int*, const int*, const std::complex<float>*, const int*, const int*, std::complex<float>*, const int*, int*, std::size_t) noexcept;
+void zgesv_(const int*,
+            const int*,
+            std::complex<double>*,
+            const int*,
+            int*,
+            std::complex<double>*,
+            const int*,
+            int*) noexcept;
+void zgetrf_(const int*,
+             const int*,
+             std::complex<double>*,
+             const int*,
+             int*,
+             int*) noexcept;
+void zgetrs_(const char*, const int*, const int*, const std::complex<double>*, const int*, const int*, std::complex<double>*, const int*, int*, std::size_t) noexcept;
 }
 
 namespace {
@@ -1867,4 +1912,163 @@ TEST(the_fortran_sgemm_cgemm_zgemm_answer_as_the_cpp_one)
   std::vector<std::complex<float>>       wf(1);
   cgemm_("C", "N", &single, &single, &single, &unit_f, zf.data(), &single, zf.data(), &single, &none_f, wf.data(), &single, 1, 1);
   EXPECT(wf[0] == unit_f);
+}
+
+namespace {
+  // The tolerance of a residual of order n in the scalar T: its precision times the order, with room.
+  template <typename T>
+  double precision_of(std::size_t n)
+  {
+    const bool single {std::is_same_v<T, float> || std::is_same_v<T, std::complex<float>>};
+    return (single ? 1e-4 : 1e-11) * static_cast<double>(n);
+  }
+
+  // Whether getrf<T> of an m × n A gives P A = L U as LAPACK lays the factors and interchanges out, and, square,
+  // gesv<T> solves A X = B and getrs<T> each op(A) X = B from those factors.
+  template <typename T>
+  bool typed_lu_holds(std::size_t m,
+                      std::size_t n)
+  {
+    const std::size_t lda {m + 1};
+    const auto        a0  {scalars<T>(lda * n, 109)};
+    auto              f   {a0};
+    std::vector<int>  ipiv(std::min(m, n));
+    if (numerical::blas::getrf(static_cast<std::ptrdiff_t>(m), static_cast<std::ptrdiff_t>(n), f.data(), static_cast<std::ptrdiff_t>(lda),
+                               ipiv.data())
+        != 0) {
+      return false;
+    }
+    auto pa {a0}; // P A: the interchanges applied in order
+    for (std::size_t i {0}; i < ipiv.size(); ++i) {
+      for (std::size_t c {0}; c < n; ++c) {
+        std::swap(pa[i + (c * lda)], pa[static_cast<std::size_t>(ipiv[i] - 1) + (c * lda)]);
+      }
+    }
+    bool good {true};
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        std::complex<double> sum {};
+        for (std::size_t l {0}; l <= std::min({i, j, std::min(m, n) - 1}); ++l) {
+          const std::complex<double> lower {l == i ? std::complex<double> {1.0} : std::complex<double> {f[i + (l * lda)]}};
+          sum += lower * std::complex<double> {f[l + (j * lda)]};
+        }
+        good = good && std::abs(sum - std::complex<double> {pa[i + (j * lda)]}) <= precision_of<T>(n);
+      }
+    }
+    if (m != n) {
+      return good;
+    }
+    const std::size_t ldb {n + 2};
+    const auto        b0  {scalars<T>(ldb * 3, 113)};
+    for (const char trans : {'N', 'T', 'C'}) {
+      auto x {b0};
+      good = good && numerical::blas::getrs(trans, static_cast<std::ptrdiff_t>(n), 3, f.data(), static_cast<std::ptrdiff_t>(lda), ipiv.data(),
+                                            x.data(), static_cast<std::ptrdiff_t>(ldb)) == 0;
+      for (std::size_t c {0}; c < 3; ++c) {
+        for (std::size_t i {0}; i < n; ++i) {
+          std::complex<double> sum {};
+          for (std::size_t l {0}; l < n; ++l) {
+            const T element {trans == 'N' ? a0[i + (l * lda)] : a0[l + (i * lda)]};
+            sum += std::complex<double> {trans == 'C' ? numerical::detail::conj_of(element) : element} *std::complex<double> {x[l + (c * ldb)]};
+          }
+          good = good && std::abs(sum - std::complex<double> {b0[i + (c * ldb)]}) <= precision_of<T>(n) * 10;
+        }
+      }
+    }
+    auto             g {a0};
+    auto             x {b0};
+    std::vector<int> pivots(n);
+    good = good && numerical::blas::gesv(static_cast<std::ptrdiff_t>(n), 3, g.data(), static_cast<std::ptrdiff_t>(lda), pivots.data(), x.data(),
+                                         static_cast<std::ptrdiff_t>(ldb)) == 0
+           && pivots == ipiv;
+    for (std::size_t c {0}; c < 3; ++c) {
+      for (std::size_t i {0}; i < n; ++i) {
+        std::complex<double> sum {};
+        for (std::size_t l {0}; l < n; ++l) {
+          sum += std::complex<double> {a0[i + (l * lda)]} *std::complex<double> {x[l + (c * ldb)]};
+        }
+        good = good && std::abs(sum - std::complex<double> {b0[i + (c * ldb)]}) <= precision_of<T>(n) * 10;
+      }
+    }
+    return good;
+  }
+
+  // Whether gesv<T> and getrf<T> report a zero pivot, an illegal argument and a NaN, as for double.
+  template <typename T>
+  bool typed_lu_reports()
+  {
+    std::vector<T>   a    {T {1}, T {2}, T {}, T {}}; // second column zero: U(2, 2) = 0
+    std::vector<T>   b    {T {5}, T {6}};
+    std::vector<int> ipiv(2);
+    bool             good {numerical::blas::gesv(2, 1, a.data(), 2, ipiv.data(), b.data(), 2) == 2 && b[0] == T {5}};
+    good = good && numerical::blas::gesv(-1, 1, a.data(), 2, ipiv.data(), b.data(), 2) == -1;
+    std::vector<T> nan    {T {1}, T {std::numeric_limits<float>::quiet_NaN()}, T {}, T {1}};
+    good = good && numerical::blas::gesv(2, 1, nan.data(), 2, ipiv.data(), b.data(), 2) == -3;
+    good = good && numerical::blas::getrf(2, 2, nan.data(), 2, ipiv.data()) == -3;
+    std::vector<T> tall   {T {}, T {}, T {}, T {1}, T {2}, T {3}}; // 3 × 2, first column zero
+    good = good && numerical::blas::getrf(3, 2, tall.data(), 3, ipiv.data()) == 1;
+    std::vector<T> square {T {1}, T {2}, T {}, T {}};
+    good = good && numerical::blas::getrf(2, 2, square.data(), 2, ipiv.data()) == 2;
+    // Every argument check and the empty sizes, for this scalar too.
+    std::vector<T> x(16, T {1});
+    T* const       p       {x.data()};
+    int* const     q       {ipiv.data()};
+    good = good && numerical::blas::gesv(2, -1, p, 2, q, p, 2) == -2 && numerical::blas::gesv(2, 1, p, 1, q, p, 2) == -4
+           && numerical::blas::gesv(2, 1, p, 2, q, p, 1) == -7 && numerical::blas::gesv(0, 1, p, 1, q, p, 1) == 0;
+    std::vector<T> identity {T {1}, T {}, T {}, T {1}};
+    good = good && numerical::blas::gesv(2, 0, identity.data(), 2, q, p, 2) == 0;
+    good = good && numerical::blas::getrf(-1, 2, p, 2, q) == -1 && numerical::blas::getrf(2, -1, p, 2, q) == -2
+           && numerical::blas::getrf(2, 2, p, 1, q) == -4 && numerical::blas::getrf(0, 2, p, 1, q) == 0;
+    const std::vector<int> unit {1, 2};
+    good = good && numerical::blas::getrs('X', 2, 1, p, 2, unit.data(), p, 2) == -1 && numerical::blas::getrs('N', -1, 1, p, 2, unit.data(), p, 2) == -2
+           && numerical::blas::getrs('N', 2, -1, p, 2, unit.data(), p, 2) == -3 && numerical::blas::getrs('N', 2, 1, p, 1, unit.data(), p, 2) == -5
+           && numerical::blas::getrs('N', 2, 1, p, 2, unit.data(), p, 1) == -8;
+    return good;
+  }
+} // namespace
+
+TEST(lu_routines_of_every_scalar_factorise_and_solve)
+{
+  EXPECT(typed_lu_holds<float>(40, 40) && typed_lu_holds<float>(9, 5) && typed_lu_holds<float>(5, 9));
+  EXPECT(typed_lu_holds<std::complex<float>>(40, 40) && typed_lu_holds<std::complex<float>>(9, 5));
+  EXPECT(typed_lu_holds<std::complex<double>>(130, 130) && typed_lu_holds<std::complex<double>>(5, 9));
+  EXPECT(typed_lu_holds<double>(40, 40));
+  EXPECT(typed_lu_reports<float>() && typed_lu_reports<std::complex<float>>() && typed_lu_reports<std::complex<double>>());
+  std::vector<std::complex<double>> imaginary_infinity {{1.0, std::numeric_limits<double>::infinity()}}; // the real part finite
+  std::vector<int>                  ipiv(1);
+  EXPECT_EQ(numerical::blas::getrf(1, 1, imaginary_infinity.data(), 1, ipiv.data()), -3);
+}
+
+TEST(the_fortran_lu_routines_of_every_scalar_answer_as_the_cpp_ones)
+{
+  const int                         two  {2};
+  const int                         one  {1};
+  const int                         bad  {-1};
+  int                               info {7};
+  std::vector<int>                  ipiv(2);
+  std::vector<std::complex<double>> a    {{4.0, 0.0}, {2.0, 0.0}, {2.0, 0.0}, {3.0, 0.0}};
+  std::vector<std::complex<double>> b    {{2.0, 2.0}, {1.0, 1.0}}; // (1 + i) (2, 1): x = (0.5 + 0.5i, 0)
+  zgesv_(&two, &one, a.data(), &two, ipiv.data(), b.data(), &two, &info);
+  EXPECT(info == 0 && std::abs(b[0] - std::complex<double> {0.5, 0.5}) < 1e-15 && std::abs(b[1]) < 1e-15);
+  std::vector<std::complex<double>> c {{2.0, 2.0}, {1.0, 1.0}};
+  zgetrs_("C", &two, &one, a.data(), &two, ipiv.data(), c.data(), &two, &info, 1); // A is real symmetric: Aᴴ = A
+  EXPECT(info == 0 && std::abs(c[0] - std::complex<double> {0.5, 0.5}) < 1e-15);
+  zgetrf_(&bad, &two, a.data(), &two, ipiv.data(), &info);
+  EXPECT_EQ(info, -1);
+  std::vector<float> f {4.0F, 2.0F, 2.0F, 3.0F};
+  std::vector<float> y {2.0F, 1.0F};
+  sgesv_(&two, &one, f.data(), &two, ipiv.data(), y.data(), &two, &info);
+  EXPECT(info == 0 && std::abs(y[0] - 0.5F) < 1e-6F);
+  sgetrs_("N", &two, &one, f.data(), &two, ipiv.data(), y.data(), &two, &info, 1);
+  sgetrf_(&two, &two, f.data(), &two, ipiv.data(), &info);
+  EXPECT_EQ(info, 0);
+  std::vector<std::complex<float>> g {{4.0F, 0.0F}, {2.0F, 0.0F}, {2.0F, 0.0F}, {3.0F, 0.0F}};
+  std::vector<std::complex<float>> h {{2.0F, 0.0F}, {1.0F, 0.0F}};
+  cgesv_(&two, &one, g.data(), &two, ipiv.data(), h.data(), &two, &info);
+  EXPECT(info == 0 && std::abs(h[0] - std::complex<float> {0.5F, 0.0F}) < 1e-6F);
+  cgetrs_("T", &two, &one, g.data(), &two, ipiv.data(), h.data(), &two, &info, 1);
+  cgetrf_(&bad, &two, g.data(), &two, ipiv.data(), &info);
+  EXPECT_EQ(info, -1);
+  sgesv_(&bad, &one, f.data(), &two, ipiv.data(), y.data(), &two, &info);
+  EXPECT_EQ(info, -1);
 }

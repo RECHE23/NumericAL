@@ -20,6 +20,15 @@ for dtype in (np.float32, np.complex64, np.complex128):
     want = np.einsum("ij,jk->ik", x.astype(np.complex128), y.astype(np.complex128))
     bound = 1e-2 if dtype in (np.float32, np.complex64) else 1e-9
     assert np.abs(x @ y - want).max() < bound, f"matmul {np.dtype(dtype).name}"
+for dtype in (np.float32, np.complex64, np.complex128):
+    m = (s + (1j * a if np.iscomplexobj(np.zeros(1, dtype)) else 0)).astype(dtype)
+    rhs = b.astype(dtype)
+    bound = 1e-3 if dtype in (np.float32, np.complex64) else 1e-9
+    assert np.abs(m @ np.linalg.solve(m, rhs) - rhs).max() < bound, f"solve {np.dtype(dtype).name}"
+    assert np.abs(m @ np.linalg.inv(m) - np.eye(300)).max() < bound, f"inv {np.dtype(dtype).name}"
+    sign, logdet = np.linalg.slogdet(m)
+    _, want = np.linalg.slogdet(m.astype(np.complex128))
+    assert abs(logdet - want) < bound * 300, f"slogdet {np.dtype(dtype).name}"
 v = b[:, 0]
 assert np.abs(a @ v - np.einsum("ij,j->i", a, v)).max() < 1e-9, "matrix times vector"
 assert np.abs(v @ a - np.einsum("i,ij->j", v, a)).max() < 1e-9, "vector times matrix"

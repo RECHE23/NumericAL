@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cmath>
+#include <complex>
 #include <cstddef>
 #include <limits>
 #include <vector>
@@ -54,6 +55,20 @@ namespace numerical::blas {
     [[nodiscard]] constexpr bool conjugates(char op) noexcept
     {
       return op == 'C' || op == 'c';
+    }
+
+    //! \brief Whether the real \p x is finite (an overload per kind of scalar, as `conj_of`: each one expression).
+    template <typename T>
+    [[nodiscard]] bool finite(const T& x)
+    {
+      return std::isfinite(x);
+    }
+
+    //! \brief Whether both parts of the complex \p x are finite.
+    template <typename U>
+    [[nodiscard]] bool finite(const std::complex<U>& x)
+    {
+      return std::isfinite(x.real()) && std::isfinite(x.imag());
     }
 
     //! \brief `rows × cols` of the column-major \p a (\p lda apart), as a row-major buffer, each element times
@@ -127,24 +142,24 @@ namespace numerical::blas {
      * \brief The LU factorisation with partial pivoting of a rectangular column-major `A` in place, as LAPACK's
      *        `dgetf2`, column by column: NumericAL's blocked LU takes square matrices. \return `INFO` as `dgetrf`'s.
      */
-    template <typename Index>
+    template <typename T, typename Index>
     int rectangular_lu(std::size_t m,
                        std::size_t n,
-                       double*     a,
+                       T*          a,
                        std::size_t lda,
                        Index*      ipiv)
     {
       int info {0};
       for (std::size_t j {0}; j < std::min(m, n); ++j) {
-        double* const column {a + (j * lda)};
-        std::size_t   pivot  {j};
+        T* const    column {a + (j * lda)};
+        std::size_t pivot  {j};
         for (std::size_t i {j + 1}; i < m; ++i) {
           if (std::abs(column[i]) > std::abs(column[pivot])) {
             pivot = i;
           }
         }
         ipiv[j] = static_cast<Index>(pivot + 1);
-        if (column[pivot] == 0.0) {
+        if (column[pivot] == T {}) {
           info = info == 0 ? static_cast<int>(j + 1) : info;
           continue;
         }
@@ -155,8 +170,8 @@ namespace numerical::blas {
           column[i] = column[i] / column[j];
         }
         for (std::size_t c {j + 1}; c < n; ++c) {
-          double* const target {a + (c * lda)};
-          const double  factor {target[j]};
+          T* const target {a + (c * lda)};
+          const T  factor {target[j]};
           for (std::size_t i {j + 1}; i < m; ++i) {
             target[i] -= column[i] * factor;
           }
@@ -602,13 +617,13 @@ namespace numerical::blas {
    * \return `INFO`: 0; `i > 0` where `U(i, i)` is exactly zero; `-i` where argument `i` is illegal (`-3`: `A` holds a
    *         NaN or an infinity, which NumericAL's LU refuses), nothing then computed.
    */
-  template <typename Index>
+  template <typename T, typename Index>
   int gesv(std::ptrdiff_t n,
            std::ptrdiff_t nrhs,
-           double*        a,
+           T*             a,
            std::ptrdiff_t lda,
            Index*         ipiv,
-           double*        b,
+           T*             b,
            std::ptrdiff_t ldb)
   {
     if (n < 0) {
@@ -629,15 +644,15 @@ namespace numerical::blas {
     const auto               size {static_cast<std::size_t>(n)};
     const auto               ld   {static_cast<std::size_t>(lda)};
     std::vector<std::size_t> pivots;
-    matrix<double>           factors;
+    matrix<T>                factors;
     bool                     singular {false};
     try {
-      const lu_decomposition<double> lu {matrix<double> {size, size, detail::row_major(a, lda, n, n, 1.0)}};
+      const lu_decomposition<T> lu {matrix<T> {size, size, detail::row_major(a, lda, n, n, T {1})}};
       factors  = lu.factors();
       pivots   = lu.pivots();
       singular = lu.singular();
       if (!singular && nrhs > 0) {
-        const matrix<double> x {lu.solve(matrix<double> {size, static_cast<std::size_t>(nrhs), detail::row_major(b, ldb, n, nrhs, 1.0)})};
+        const matrix<T> x {lu.solve(matrix<T> {size, static_cast<std::size_t>(nrhs), detail::row_major(b, ldb, n, nrhs, T {1})})};
         for (std::size_t j {0}; j < static_cast<std::size_t>(nrhs); ++j) {
           for (std::size_t i {0}; i < size; ++i) {
             b[i + (j * static_cast<std::size_t>(ldb))] = x(i, j);
@@ -655,7 +670,7 @@ namespace numerical::blas {
     }
     detail::interchanges(pivots, ipiv);
     for (std::size_t i {0}; i < size; ++i) {
-      if (factors(i, i) == 0.0) {
+      if (factors(i, i) == T {}) {
         return static_cast<int>(i + 1);
       }
     }
@@ -720,10 +735,10 @@ namespace numerical::blas {
    * \return `INFO`: 0; `i > 0` where `U(i, i)` is exactly zero; `-i` where argument `i` is illegal (`-3`: a NaN or an
    *         infinity in `A`).
    */
-  template <typename Index>
+  template <typename T, typename Index>
   int getrf(std::ptrdiff_t m,
             std::ptrdiff_t n,
-            double*        a,
+            T*             a,
             std::ptrdiff_t lda,
             Index*         ipiv)
   {
@@ -744,7 +759,7 @@ namespace numerical::blas {
     const auto ld   {static_cast<std::size_t>(lda)};
     for (std::size_t j {0}; j < cols; ++j) {
       for (std::size_t i {0}; i < rows; ++i) {
-        if (!std::isfinite(a[i + (j * ld)])) {
+        if (!detail::finite(a[i + (j * ld)])) {
           return -3;
         }
       }
@@ -752,8 +767,8 @@ namespace numerical::blas {
     if (rows != cols) {
       return detail::rectangular_lu(rows, cols, a, ld, ipiv);
     }
-    const lu_decomposition<double> lu      {matrix<double> {rows, cols, detail::row_major(a, lda, m, n, 1.0)}};
-    const matrix<double>           factors {lu.factors()};
+    const lu_decomposition<T> lu      {matrix<T> {rows, cols, detail::row_major(a, lda, m, n, T {1})}};
+    const matrix<T>           factors {lu.factors()};
     for (std::size_t j {0}; j < cols; ++j) {
       for (std::size_t i {0}; i < rows; ++i) {
         a[i + (j * ld)] = factors(i, j);
@@ -761,7 +776,7 @@ namespace numerical::blas {
     }
     detail::interchanges(lu.pivots(), ipiv);
     for (std::size_t i {0}; i < rows; ++i) {
-      if (factors(i, i) == 0.0) {
+      if (factors(i, i) == T {}) {
         return static_cast<int>(i + 1);
       }
     }
@@ -769,19 +784,19 @@ namespace numerical::blas {
   }
 
   /*!
-   * \brief `A X = B` or `Aᵀ X = B` (\p trans `N`, or `T`/`C`), column-major, from the factors and interchanges of a
+   * \brief `A X = B`, `Aᵀ X = B` or `Aᴴ X = B` (\p trans `N`, `T` or `C`), column-major, from the factors and interchanges of a
    *        `dgetrf` (by any implementation), as LAPACK's `dgetrs`: `B` (`n × nrhs`) overwritten by `X`, each column by
    *        forward then backward substitution.
    * \return `INFO`: 0, or `-i` where argument `i` is illegal.
    */
-  template <typename Index>
+  template <typename T, typename Index>
   int getrs(char           trans,
             std::ptrdiff_t n,
             std::ptrdiff_t nrhs,
-            const double*  a,
+            const T*       a,
             std::ptrdiff_t lda,
             const Index*   ipiv,
-            double*        b,
+            T*             b,
             std::ptrdiff_t ldb)
   {
     if (!detail::is_operation(trans)) {
@@ -801,9 +816,12 @@ namespace numerical::blas {
     }
     const auto size {static_cast<std::size_t>(n)};
     const auto ld   {static_cast<std::size_t>(lda)};
-    const auto at   = [&](std::size_t i, std::size_t j) { return a[i + (j * ld)]; };
+    const bool conjugate {detail::conjugates(trans)};
+    const auto at        = [&](std::size_t i, std::size_t j) { return a[i + (j * ld)]; };
+    // An element of op(A)'s factor read transposed: conjugated for Aᴴ.
+    const auto across    = [&](std::size_t i, std::size_t j) { return conjugate ? numerical::detail::conj_of(at(i, j)) : at(i, j); };
     for (std::size_t c {0}; c < static_cast<std::size_t>(nrhs); ++c) {
-      double* const x {b + (c * static_cast<std::size_t>(ldb))};
+      T* const x {b + (c * static_cast<std::size_t>(ldb))};
       if (!detail::transposes(trans)) { // L U x = P b
         for (std::size_t i {0}; i < size; ++i) {
           std::swap(x[i], x[static_cast<std::size_t>(ipiv[i]) - 1]);
@@ -821,17 +839,17 @@ namespace numerical::blas {
         }
         continue;
       }
-      for (std::size_t i {0}; i < size; ++i) { // Uᵀ, by rows of U's columns
-        double sum {x[i]};
+      for (std::size_t i {0}; i < size; ++i) { // Uᵀ (Uᴴ), by rows of U's columns
+        T sum {x[i]};
         for (std::size_t k {0}; k < i; ++k) {
-          sum -= at(k, i) * x[k];
+          sum -= across(k, i) * x[k];
         }
-        x[i] = sum / at(i, i);
+        x[i] = sum / across(i, i);
       }
-      for (std::size_t i {size}; i-- > 0;) { // Lᵀ
-        double sum {x[i]};
+      for (std::size_t i {size}; i-- > 0;) { // Lᵀ (Lᴴ)
+        T sum {x[i]};
         for (std::size_t k {i + 1}; k < size; ++k) {
-          sum -= at(k, i) * x[k];
+          sum -= across(k, i) * x[k];
         }
         x[i] = sum;
       }

@@ -1,5 +1,5 @@
 // The Fortran calling convention of the BLAS and LAPACK routines NumericAL stands in for (ddot, dgeev, dgelsd, dgemm and
-// sgemm, cgemm, zgemm, dgemv, dgeqrf, dgesdd, dgesv, dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd, dsyrk, dtrsm): every argument by address, 32-bit integers (LP64), and a hidden
+// sgemm, cgemm, zgemm, dgemv, sgesv, cgesv, zgesv, sgetrf…, sgetrs…, dgeqrf, dgesdd, dgesv, dgetrf, dgetrs, dorgqr, dpotrf, dpotrs, dsyevd, dsyrk, dtrsm): every argument by address, 32-bit integers (LP64), and a hidden
 // length after the arguments for each character one, as gfortran passes it. The semantics are numerical/blas.hpp's. An
 // illegal argument is reported as the reference XERBLA reports it, on the standard error, and the call returns (as
 // OpenBLAS's does) rather than stopping the program; no C++ exception leaves these functions.
@@ -78,6 +78,71 @@ namespace {
       report_failure(name);
     }
   }
+
+  //! \brief The `?gesv` of the scalar \p T, reported under \p name.
+  template <typename T>
+  void any_gesv(const char* name,
+                const int*  n,
+                const int*  nrhs,
+                T*          a,
+                const int*  lda,
+                int*        ipiv,
+                T*          b,
+                const int*  ldb,
+                int*        info) noexcept
+  {
+    try {
+      *info = numerical::blas::gesv(*n, *nrhs, a, *lda, ipiv, b, *ldb);
+      report_illegal(name, -*info);
+    }
+    catch (...) {
+      report_failure(name);
+      *info = -1;
+    }
+  }
+
+  //! \brief The `?getrf` of the scalar \p T, reported under \p name.
+  template <typename T>
+  void any_getrf(const char* name,
+                 const int*  m,
+                 const int*  n,
+                 T*          a,
+                 const int*  lda,
+                 int*        ipiv,
+                 int*        info) noexcept
+  {
+    try {
+      *info = numerical::blas::getrf(*m, *n, a, *lda, ipiv);
+      report_illegal(name, -*info);
+    }
+    catch (...) {
+      report_failure(name);
+      *info = -1;
+    }
+  }
+
+  //! \brief The `?getrs` of the scalar \p T, reported under \p name.
+  template <typename T>
+  void any_getrs(const char* name,
+                 const char* trans,
+                 const int*  n,
+                 const int*  nrhs,
+                 const T*    a,
+                 const int*  lda,
+                 const int*  ipiv,
+                 T*          b,
+                 const int*  ldb,
+                 int*        info) noexcept
+  {
+    try {
+      *info = numerical::blas::getrs(*trans, *n, *nrhs, a, *lda, ipiv, b, *ldb);
+      report_illegal(name, -*info);
+    }
+    catch (...) {
+      report_failure(name);
+      *info = -1;
+    }
+  }
 } // namespace
 
 extern "C" {
@@ -136,6 +201,114 @@ void zgemm_(const char*                 transa,
             std::size_t /*transb_length*/) noexcept
 {
   any_gemm("ZGEMM ", transa, transb, m, n, k, alpha, a, lda, b, ldb, beta, c, ldc);
+}
+
+void sgesv_(const int* n,
+            const int* nrhs,
+            float    * a,
+            const int* lda,
+            int      * ipiv,
+            float    * b,
+            const int* ldb,
+            int      * info) noexcept
+{
+  any_gesv("SGESV ", n, nrhs, a, lda, ipiv, b, ldb, info);
+}
+
+void sgetrf_(const int* m,
+             const int* n,
+             float    * a,
+             const int* lda,
+             int      * ipiv,
+             int      * info) noexcept
+{
+  any_getrf("SGETRF", m, n, a, lda, ipiv, info);
+}
+
+void sgetrs_(const char * trans,
+             const int  * n,
+             const int  * nrhs,
+             const float* a,
+             const int  * lda,
+             const int  * ipiv,
+             float      * b,
+             const int  * ldb,
+             int        * info,
+             std::size_t /*trans_length*/) noexcept
+{
+  any_getrs("SGETRS", trans, n, nrhs, a, lda, ipiv, b, ldb, info);
+}
+
+void cgesv_(const int          * n,
+            const int          * nrhs,
+            std::complex<float>* a,
+            const int          * lda,
+            int                * ipiv,
+            std::complex<float>* b,
+            const int          * ldb,
+            int                * info) noexcept
+{
+  any_gesv("CGESV ", n, nrhs, a, lda, ipiv, b, ldb, info);
+}
+
+void cgetrf_(const int          * m,
+             const int          * n,
+             std::complex<float>* a,
+             const int          * lda,
+             int                * ipiv,
+             int                * info) noexcept
+{
+  any_getrf("CGETRF", m, n, a, lda, ipiv, info);
+}
+
+void cgetrs_(const char               * trans,
+             const int                * n,
+             const int                * nrhs,
+             const std::complex<float>* a,
+             const int                * lda,
+             const int                * ipiv,
+             std::complex<float>      * b,
+             const int                * ldb,
+             int                      * info,
+             std::size_t /*trans_length*/) noexcept
+{
+  any_getrs("CGETRS", trans, n, nrhs, a, lda, ipiv, b, ldb, info);
+}
+
+void zgesv_(const int           * n,
+            const int           * nrhs,
+            std::complex<double>* a,
+            const int           * lda,
+            int                 * ipiv,
+            std::complex<double>* b,
+            const int           * ldb,
+            int                 * info) noexcept
+{
+  any_gesv("ZGESV ", n, nrhs, a, lda, ipiv, b, ldb, info);
+}
+
+void zgetrf_(const int           * m,
+             const int           * n,
+             std::complex<double>* a,
+             const int           * lda,
+             int                 * ipiv,
+             int                 * info) noexcept
+{
+  any_getrf("ZGETRF", m, n, a, lda, ipiv, info);
+}
+
+void zgetrs_(const char                * trans,
+             const int                 * n,
+             const int                 * nrhs,
+             const std::complex<double>* a,
+             const int                 * lda,
+             const int                 * ipiv,
+             std::complex<double>      * b,
+             const int                 * ldb,
+             int                       * info,
+             std::size_t /*trans_length*/) noexcept
+{
+  any_getrs("ZGETRS", trans, n, nrhs, a, lda, ipiv, b, ldb, info);
 }
 
 double ddot_(const int*    n,
