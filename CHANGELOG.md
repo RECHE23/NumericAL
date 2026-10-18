@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.22 — 2026-10-18
+
 ### Changed
 - On the AVX2 units a matrix product's task covers at most 36 rows over a panel of depth up to 128, 72 deeper: its block
   of A then stays in the L1 cache beside its slivers of B. Six AVX2 cores, 936 × 936 by 64 (an LU's trailing update):
