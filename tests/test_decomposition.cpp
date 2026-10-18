@@ -148,6 +148,27 @@ TEST(inverse_of_a_large_matrix)
   EXPECT(approx_equal(a * inverse(a), identity));
 }
 
+TEST(large_matrices_are_checked_for_non_finite_entries_on_the_threads)
+{
+  // Past two chunks of the shared check: a NaN in the triangle read is refused, one above it alone is not read.
+  const std::size_t   n {300};
+  std::vector<double> entries(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    entries[(i * n) + i] = 2.0;
+  }
+  std::vector<double> above           {entries};
+  above[(5 * n) + 250] = std::numeric_limits<double>::quiet_NaN();
+  std::vector<double> below           {entries};
+  below[(290 * n) + 3] = std::numeric_limits<double>::infinity();
+  const matrix<double> nan_above      {n, n, above};
+  const matrix<double> infinite_below {n, n, below};
+  const matrix<double> finite         {n, n, entries};
+  EXPECT(numerical::cholesky_decomposition<double> {nan_above}.lower()(n - 1, n - 1) == std::sqrt(2.0));
+         EXPECT_THROWS(numerical::cholesky_decomposition<double> {infinite_below}, numerical::non_finite_error);
+  EXPECT_THROWS(numerical::lu_decomposition<double> {nan_above}, numerical::non_finite_error);
+  EXPECT(numerical::lu_decomposition<double> {finite}.determinant() > 0.0);
+}
+
 TEST(factorisation_rejects_singular_and_non_square)
 {
   const matrix<double> singular   {{1.0, 2.0}, {2.0, 4.0}};

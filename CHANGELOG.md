@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- The passes bound by the memory around a factorisation run on the threads: the check for NaN and infinities of a
+  `double` matrix past two chunks of 32 768 elements (`detail::all_finite_shared`: LU, Cholesky, QR, SVD, the
+  eigensolvers), the zeroing of a Cholesky factor's upper triangle, and `dpotrf_`'s copies of its triangle. Six x86-64
+  AVX2 cores, `dpotrf_`: order 300 426 → 399 µs, 500 1.02 → 0.82 ms, 1000 5.02 → 4.29 ms; `dgetrf_` 1000 7.0 → 6.7
+  ms; one core unchanged. arm64, every core, `dpotrf_` 1000 4.1–4.6 → 3.7–3.9 ms; one core order 300 +5 %, a placement
+  of the code (at `-falign-functions=128` or 256, +1 %; no inlining lost).
 - The Cholesky factorisation's diagonal blocks go four rows at a time over the columns before them, which depend on
   the rows above alone: four chains of sums where row by row each term waited on the last (`cholesky_diagonal_rows`).
   Each element takes the same terms in the same order: on x86-64, and for complex matrices, the factor is the same to
