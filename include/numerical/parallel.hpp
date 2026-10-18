@@ -274,6 +274,34 @@ namespace numerical::detail {
     }
   };
 
+  //! \brief A worker's own wake-up: its core, whether it sleeps, and what wakes it.
+  struct worker_bell
+  {
+    explicit worker_bell(std::size_t on) : core {on}
+    {}
+
+    const std::size_t       core;             //!< The core it is pinned to, or no_core.
+    std::atomic<bool>       asleep {false};   //!< Set before it checks for a run and sleeps.
+    std::mutex              lock;             //!< Orders a ring against its sleep.
+    std::condition_variable rung;             //!< Signalled when a run that wants it starts.
+  };
+
+  //! \brief Whether the worker on \p core joins a run of \p helpers workers whose caller is on \p caller: by rank
+  //!        among the cores, the caller's aside, so a run of few threads takes the same cores from one run to the next.
+  [[nodiscard]] constexpr bool wants(std::size_t core,
+                                     std::size_t caller,
+                                     std::size_t helpers) noexcept
+  {
+    if (core == no_core) {
+      return true;
+    }
+    if (core == caller) {
+      return false;
+    }
+    const std::size_t rank {caller == no_core || core < caller ? core : core - 1};
+    return rank < helpers;
+  }
+
   /*!
    * \brief The threads every kernel shares, started once: a parallel_for costs a wake-up, not a thread start.
    *
@@ -359,7 +387,18 @@ namespace numerical::detail {
         current_ = job;
         generation_.fetch_add(1);
       }
-      wake_.notify_all();
+      for (std::size_t w {0}; w < bells_.size(); ++w) { // the workers the run wants, asleep: not the one on the caller's core
+        worker_bell& bell {*bells_[w]};
+#if defined(__linux__)                                  // elsewhere no worker is pinned, and every one may join
+        if (!wants(bell.core, job->core, helpers)) {
+          continue;
+        }
+#endif
+        if (bell.asleep.load()) {
+          { const std::lock_guard<std::mutex> held {bell.lock}; }
+          bell.rung.notify_one();
+        }
+      }
       std::exception_ptr side_failed;
       if (side != nullptr) {
         try {
@@ -402,15 +441,19 @@ namespace numerical::detail {
       const std::vector<cpu_set_t> cores {core_sets()};
       processor_cores_ = processor_cores(cores);
       for (const std::size_t core : worker_cores(cores.size(), hardware_threads())) {
-        std::thread {[this, cores, core] {
+        bells_.push_back(std::make_unique<worker_bell>(core));
+        worker_bell* const bell {bells_.back().get()};
+        std::thread {[this, cores, core, bell] {
                        pin_to_core(cores, core);
-                       serve(core);
+                       serve(*bell);
                      }}.detach();
         ++workers_;
       }
 #else
       for (const std::size_t core : worker_cores(0, hardware_threads())) {
-        std::thread {[this, core] { serve(core); }}.detach();
+        bells_.push_back(std::make_unique<worker_bell>(core));
+        worker_bell* const bell {bells_.back().get()};
+        std::thread {[this, bell] { serve(*bell); }}.detach();
         ++workers_;
       }
 #endif
@@ -418,11 +461,12 @@ namespace numerical::detail {
 
     //! \brief A worker on \p core: waits for a run (polling a while, then asleep), works on it unless it sits it
     //!        out, waits for the next.
-    [[noreturn]] void serve([[maybe_unused]] std::size_t core)
+    [[noreturn]] void serve(worker_bell& bell)
     {
-      std::size_t seen {0};
+      [[maybe_unused]] const std::size_t core {bell.core};
+      std::size_t                        seen {0};
 #if defined(__linux__)
-      bool spin        {true}; // the worker that sat a run out sleeps till the next: polling, it slowed its core's caller
+      bool spin                               {true}; // the worker that sat a run out sleeps till the next: polling, it slowed its core's caller
 #endif
       for (;;) {
         const auto started {[this, &seen] { return generation_.load() != seen; }};
@@ -433,10 +477,15 @@ namespace numerical::detail {
 #else
         spin_until(started);
 #endif
+        if (!started()) { // asleep till a run that wants it rings: one that leaves it out never wakes it
+          bell.asleep.store(true);
+          std::unique_lock<std::mutex> held {bell.lock};
+          bell.rung.wait(held, started);
+          bell.asleep.store(false);
+        }
         std::shared_ptr<pool_job> job;
         {
-          std::unique_lock<std::mutex> held {lock_};
-          wake_.wait(held, started);
+          const std::lock_guard<std::mutex> held {lock_};
           seen = generation_.load();
           job  = current_;
         }
@@ -450,8 +499,7 @@ namespace numerical::detail {
         // By rank among the cores, the caller's aside, not by arrival: a run of few threads then takes the same cores
         // from one run to the next, their caches still warm (ten AVX-512 cores, an LU of order 1024 on two threads:
         // 21.5 → 14.6 ms, on four 18 → 11.4; six AVX2 cores unchanged).
-        const std::size_t rank   {core == no_core || job->core == no_core || core < job->core ? core : core - 1};
-        const bool        wanted {core == no_core || rank < job->helpers};
+        const bool        wanted {wants(core, job->core, job->helpers)};
 #else
         const bool wanted        {true};
 #endif
@@ -461,16 +509,16 @@ namespace numerical::detail {
       }
     }
 
-    std::mutex                lock_;                           //!< Guards current_ and generation_.
-    std::condition_variable   wake_;                           //!< Signalled when a run starts.
-    std::shared_ptr<pool_job> current_;                        //!< The latest run.
-    std::atomic<std::size_t>  generation_ {0};                 //!< Counts the runs (polled without the lock).
-    std::atomic<bool>         busy_       {false};             //!< Whether a run holds the pool.
-    std::size_t               workers_    {0};                 //!< The threads started.
+    std::mutex                                lock_;               //!< Guards current_ and generation_.
+    std::vector<std::unique_ptr<worker_bell>> bells_;              //!< Each worker's, set before it starts.
+    std::shared_ptr<pool_job>                 current_;            //!< The latest run.
+    std::atomic<std::size_t>                  generation_ {0};     //!< Counts the runs (polled without the lock).
+    std::atomic<bool>                         busy_       {false}; //!< Whether a run holds the pool.
+    std::size_t                               workers_    {0};     //!< The threads started.
 #if defined(__linux__)
-    std::vector<std::size_t> processor_cores_;                 //!< Each processor's core (`processor_cores`), set before the workers start.
+    std::vector<std::size_t> processor_cores_;                     //!< Each processor's core (`processor_cores`), set before the workers start.
 #endif
-    long                      owner_      {current_process()}; //!< The process whose threads they are.
+    long                      owner_      {current_process()};     //!< The process whose threads they are.
   };
 
   //! \brief The most threads a parallel_for uses (0: as many as the pool has), set by \ref numerical::set_max_threads.

@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- The thread pool rings each worker it wants for a run, asleep, on a bell of its own, where every run woke them all:
+  on Linux the worker pinned to the caller's core, which sits the run out, was woken on that core every time, held
+  the caller off it, and slept again — about 4 µs a run. Six x86-64 AVX2 cores: an empty run 5.3 → 1.1–2.6 µs;
+  `eigvalsh` order 300 4.05 → 3.73 ms, `dgetrf_` 300 625 → 590 µs, `dpotrf_` 300 398 → 371 µs. macOS, whose workers
+  are not pinned and sit nothing out, is unchanged.
 - The Cholesky factorisation's trailing update reads `L₂₁` where the factor holds it and takes the sign on its right
   operand (`L₂₁ (−L₂₁ᴴ)`, the same products exactly), where the rows below each panel were also written negated into a
   copy; that operand's storage is kept from panel to panel. The factor is the same to the bit. One x86-64 AVX2 core,

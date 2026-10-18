@@ -4,6 +4,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstddef>
 #include <filesystem>
@@ -399,6 +400,54 @@ TEST(the_pool_pins_each_worker_to_a_core_of_its_own)
   EXPECT(cores.empty() || std::all_of(workers.begin(), workers.end(), one_of_the_cores));
 }
 #endif
+
+// A run rings a worker by rank among the cores, the caller's left out; a worker free to move always joins.
+TEST(a_run_wants_the_workers_by_rank_without_the_callers)
+{
+  using numerical::detail::no_core;
+  struct asked
+  {
+    std::size_t core;
+    std::size_t caller;
+    std::size_t helpers;
+    bool        joins;
+  };
+  // Core 3 is rank 2 beside a caller on core 2; with no caller's core known, a worker's rank is its core.
+  const std::vector<asked> cases {
+    {.core = 2, .caller = 2, .helpers = 5, .joins = false},       {.core = 1, .caller = 2, .helpers = 2, .joins = true},
+    {.core = 3, .caller = 2, .helpers = 2, .joins = false},       {.core = 3, .caller = 2, .helpers = 3, .joins = true},
+    {.core = 0, .caller = no_core, .helpers = 1, .joins = true},  {.core = 1, .caller = no_core, .helpers = 1, .joins = false},
+    {.core = no_core, .caller = 0, .helpers = 0, .joins = true}};
+  for (const asked& run : cases) {
+    EXPECT_EQ(numerical::detail::wants(run.core, run.caller, run.helpers), run.joins);
+  }
+}
+
+// Workers asleep (the polling long over) are rung by the next run: chunk 0 waits for chunk 1 to start on another
+// thread, which only a woken worker can take, the caller being held in chunk 0.
+TEST(a_run_wakes_the_workers_asleep)
+{
+  if (numerical::max_threads() < 2) {
+    return;
+  }
+  for (int round {0}; round < 3; ++round) {
+    std::this_thread::sleep_for(numerical::detail::spin_time * 4);
+    std::atomic<bool> second {false};
+    std::atomic<bool> met    {false};
+    numerical::detail::parallel_for(2, std::size_t {1} << 20, [&second, &met](std::size_t i) {
+                                      if (i == 1) {
+                                        second = true;
+                                        return;
+                                      }
+                                      const auto until {std::chrono::steady_clock::now() + std::chrono::seconds {2}};
+                                      while (!second.load() && std::chrono::steady_clock::now() < until) {
+                                        std::this_thread::yield();
+                                      }
+                                      met = second.load();
+                                    });
+    EXPECT(met.load());
+  }
+}
 
 TEST(set_max_threads_caps_the_threads_a_kernel_uses)
 {
