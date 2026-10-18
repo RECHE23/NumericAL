@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- The Cholesky factorisation's trailing update reads `L₂₁` where the factor holds it and takes the sign on its right
+  operand (`L₂₁ (−L₂₁ᴴ)`, the same products exactly), where the rows below each panel were also written negated into a
+  copy; that operand's storage is kept from panel to panel. The factor is the same to the bit. One x86-64 AVX2 core,
+  `dpotrf_`: order 100 48 → 45 µs, 300 608 → 587 µs, 1000 12.5 → 12.2 ms; six cores 1000 4.31 → 4.16 ms; arm64, one
+  core, 100 35 → 31 µs, 300 331 → 310 µs, 1000 5.1–5.4 → 4.6–5.0 ms.
 - The passes bound by the memory around a factorisation run on the threads: the check for NaN and infinities of a
   `double` matrix past two chunks of 32 768 elements (`detail::all_finite_shared`: LU, Cholesky, QR, SVD, the
   eigensolvers), the zeroing of a Cholesky factor's upper triangle, and `dpotrf_`'s copies of its triangle. Six x86-64
