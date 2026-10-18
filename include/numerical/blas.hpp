@@ -205,6 +205,49 @@ namespace numerical::blas {
       }
     }
 
+    /*!
+     * \brief `C += L op(A)ᵀ` (`C` row-major `m × n`, `L` `m × k`), \p a the column-major `op(A)`'s storage (\p lda apart):
+     *        `op(A)ᵀ` is A read in place where \p transa does not transpose, else a copy of its transpose (an overload
+     *        per scalar, as `conj_of`).
+     */
+    template <typename T>
+    void product_by_op_a(char        transa,
+                         std::size_t m,
+                         std::size_t n,
+                         std::size_t k,
+                         const T*    l,
+                         std::size_t ldl,
+                         const T*    a,
+                         std::size_t lda,
+                         T*          c,
+                         std::size_t ldc)
+    {
+      const bool      copied {transposes(transa)};
+      const buffer<T> right  {copied ? row_major(a, static_cast<std::ptrdiff_t>(lda), static_cast<std::ptrdiff_t>(k), static_cast<std::ptrdiff_t>(n), T {1}, conjugates(transa))
+                                     : buffer<T> {}};
+      numerical::detail::gemm(m, n, k, l, ldl, copied ? right.data() : a, copied ? n : lda, c, ldc);
+    }
+
+    //! \brief \ref product_by_op_a for `double`: a transposed A read in place too, as `op(A)ᵀ`'s transpose (\ref
+    //!        numerical::detail::gemm_bt, the bits of the product by the copy; NumPy's `a @ b.T`).
+    inline void product_by_op_a(char          transa,
+                                std::size_t   m,
+                                std::size_t   n,
+                                std::size_t   k,
+                                const double* l,
+                                std::size_t   ldl,
+                                const double* a,
+                                std::size_t   lda,
+                                double*       c,
+                                std::size_t   ldc)
+    {
+      if (transposes(transa)) {
+        numerical::detail::gemm_bt(m, n, k, l, ldl, a, lda, c, ldc);
+        return;
+      }
+      numerical::detail::gemm(m, n, k, l, ldl, a, lda, c, ldc);
+    }
+
     //! \brief The lower triangle of the column-major `n × n` \p a (\p lda apart) into that of the row-major \p rows
     //!        (`n` apart) where \p in, out of it back into \p a otherwise, by tiles; the other triangles untouched.
     template <typename T>
@@ -398,10 +441,7 @@ namespace numerical::blas {
     }
     const T* const       l      {copy_b ? left.data() : b};
     const std::size_t    ldl    {copy_b ? static_cast<std::size_t>(k) : static_cast<std::size_t>(ldb)};
-    const buffer<T>      right  {detail::transposes(transa) ? detail::row_major(a, lda, k, m, T {1}, detail::conjugates(transa)) : buffer<T> {}};
-    const T* const       r      {detail::transposes(transa) ? right.data() : a};
-    const std::size_t    ldr    {detail::transposes(transa) ? static_cast<std::size_t>(m) : static_cast<std::size_t>(lda)};
-    numerical::detail::gemm(cols, rows, static_cast<std::size_t>(k), l, ldl, r, ldr, c, stride);
+    detail::product_by_op_a(transa, cols, rows, static_cast<std::size_t>(k), l, ldl, a, static_cast<std::size_t>(lda), c, stride);
     return 0;
   }
 
@@ -543,15 +583,35 @@ namespace numerical::blas {
     //!        scaled by α), the column-major `C` and which triangle of it is written.
     struct syrk_operands
     {
-      const double* p;     //!< `P`, `n × depth`.
-      std::size_t   ldp;   //!< `P`'s row distance.
-      const double* q;     //!< `Q`, `depth × n`.
-      std::size_t   ldq;   //!< `Q`'s row distance.
-      std::size_t   depth; //!< `k`.
-      double*       c;     //!< `C`, column-major.
-      std::size_t   ldc;   //!< `C`'s column distance.
-      bool          lower; //!< The lower triangle (else the upper).
+      const double* p;       //!< `P`, `n × depth`.
+      std::size_t   ldp;     //!< `P`'s row distance.
+      const double* q;       //!< `Q`, `depth × n`.
+      std::size_t   ldq;     //!< `Q`'s row distance.
+      std::size_t   depth;   //!< `k`.
+      double*       c;       //!< `C`, column-major.
+      std::size_t   ldc;     //!< `C`'s column distance.
+      bool          lower;   //!< The lower triangle (else the upper).
+      bool          q_is_pt; //!< `Q` is `Pᵀ` read from `P`'s rows (\ref numerical::detail::gemm_bt), \p q unused.
     };
+
+    //! \brief `P(c0…) Q(…, r0…)` added to the `cols × rows` row-major block at \p out (\p ldo apart): \ref
+    //!        numerical::detail::gemm, or, where `Q` is `Pᵀ`, \ref numerical::detail::gemm_bt from `P`'s rows (the same
+    //!        bits, no copy of `Q`).
+    inline void syrk_product(const syrk_operands& operands,
+                             std::size_t          c0,
+                             std::size_t          cols,
+                             std::size_t          r0,
+                             std::size_t          rows,
+                             double*              out,
+                             std::size_t          ldo)
+    {
+      const double* const left {operands.p + (c0 * operands.ldp)};
+      if (operands.q_is_pt) {
+        numerical::detail::gemm_bt(cols, rows, operands.depth, left, operands.ldp, operands.p + (r0 * operands.ldp), operands.ldp, out, ldo);
+        return;
+      }
+      numerical::detail::gemm(cols, rows, operands.depth, left, operands.ldp, operands.q + r0, operands.ldq, out, ldo);
+    }
 
     /*!
      * \brief Adds `P Q` to the triangle of the diagonal block `[j0, j0 + w)` of `C`: halved until it is a block of
@@ -565,8 +625,7 @@ namespace numerical::blas {
     {
       if (w <= syrk_block) {
         buffer<double> diagonal(w * w, 0.0); // row-major: (i, j) is C(j0 + j, j0 + i)
-        numerical::detail::gemm(w, w, operands.depth, operands.p + (j0 * operands.ldp), operands.ldp, operands.q + j0, operands.ldq,
-                                diagonal.data(), w);
+        syrk_product(operands, j0, w, j0, w, diagonal.data(), w);
         for (std::size_t j {0}; j < w; ++j) {
           for (std::size_t i {operands.lower ? j : 0}; i < (operands.lower ? w : j + 1); ++i) {
             operands.c[(j0 + i) + ((j0 + j) * operands.ldc)] += diagonal[(j * w) + i];
@@ -580,8 +639,7 @@ namespace numerical::blas {
       const std::size_t c0   {operands.lower ? j0 : j0 + h};
       const std::size_t rows {operands.lower ? w - h : h};
       const std::size_t cols {operands.lower ? h : w - h};
-      numerical::detail::gemm(cols, rows, operands.depth, operands.p + (c0 * operands.ldp), operands.ldp, operands.q + r0, operands.ldq,
-                              operands.c + r0 + (c0 * operands.ldc), operands.ldc);
+      syrk_product(operands, c0, cols, r0, rows, operands.c + r0 + (c0 * operands.ldc), operands.ldc);
       syrk_triangle(operands, j0 + h, w - h);
     }
   } // namespace detail
@@ -638,15 +696,26 @@ namespace numerical::blas {
       return 0;
     }
     // C(r, c) = α Σ_l op(A)(r, l) op(A)(c, l). The kernel takes row-major operands: P = op(A) (n × k) and
-    // Q = op(A)ᵀ (k × n). A column-major A is one of them read in place (Q for N, P for T); the other is copied once,
-    // α folded into it.
-    const auto     depth {static_cast<std::size_t>(k)};
-    const auto     lda_s {static_cast<std::size_t>(lda)};
+    // Q = op(A)ᵀ (k × n). A column-major A is one of them read in place (Q for N, P for T). For T with α = 1 (NumPy's
+    // a @ a.T), Q is P's transpose read from P's rows (detail::syrk_product): no copy, the same bits. Otherwise the
+    // other is copied once, α folded into it.
+    const auto depth {static_cast<std::size_t>(k)};
+    const auto lda_s {static_cast<std::size_t>(lda)};
+    for (std::size_t j {0}; j < order; ++j) { // C ← β C on the triangle; the products then add into it
+      for (std::size_t i {lower ? j : 0}; i < (lower ? order : j + 1); ++i) {
+        double& entry {c[i + (j * ld)]};
+        entry = beta == 0.0 ? 0.0 : beta * entry;
+      }
+    }
+    if (transposed && alpha == 1.0) {
+      detail::syrk_triangle({a, lda_s, nullptr, 0, depth, c, ld, lower, true}, 0, order);
+      return 0;
+    }
     // The copy in storage the thread keeps between calls (as the kernel's packing_storage): a fresh one of a megabyte
     // is mapped anew and faulted in page by page on every call.
-    buffer<double>       copy      {std::exchange(detail::syrk_operand(), buffer<double> {})};
-    const std::size_t    copy_rows {transposed ? depth : order}; // row-major: α A as it lies, k × n (T) or n × k (N)
-    const std::size_t    copy_cols {transposed ? order : depth};
+    buffer<double>    copy      {std::exchange(detail::syrk_operand(), buffer<double> {})};
+    const std::size_t copy_rows {transposed ? depth : order}; // row-major: α A as it lies, k × n (T) or n × k (N)
+    const std::size_t copy_cols {transposed ? order : depth};
     if (copy.size() < copy_rows * copy_cols) {
       copy = buffer<double>(copy_rows * copy_cols);
     }
@@ -655,17 +724,11 @@ namespace numerical::blas {
         copy[(i * copy_cols) + j] = alpha * a[i + (j * lda_s)];
       }
     }
-    const double* const  p_rows {transposed ? a : copy.data()};
-    const std::size_t    ldp    {transposed ? lda_s : depth};
-    const double* const  q_cols {transposed ? copy.data() : a};
-    const std::size_t    ldq    {transposed ? order : lda_s};
-    for (std::size_t j {0}; j < order; ++j) { // C ← β C on the triangle; the products then add into it
-      for (std::size_t i {lower ? j : 0}; i < (lower ? order : j + 1); ++i) {
-        double& entry {c[i + (j * ld)]};
-        entry = beta == 0.0 ? 0.0 : beta * entry;
-      }
-    }
-    detail::syrk_triangle({p_rows, ldp, q_cols, ldq, depth, c, ld, lower}, 0, order);
+    const double* const p_rows {transposed ? a : copy.data()};
+    const std::size_t   ldp    {transposed ? lda_s : depth};
+    const double* const q_cols {transposed ? copy.data() : a};
+    const std::size_t   ldq    {transposed ? order : lda_s};
+    detail::syrk_triangle({p_rows, ldp, q_cols, ldq, depth, c, ld, lower, false}, 0, order);
     if (copy.size() <= syrk_kept_limit) {
       detail::syrk_operand() = std::move(copy);
     }

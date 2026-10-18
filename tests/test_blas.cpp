@@ -1577,6 +1577,9 @@ TEST(syrk_updates_one_triangle_by_alpha_op_a_op_a_transposed)
       EXPECT(syrk_matches(uplo, trans, 300, 40, -1.0, 0.0)); // three blocks, the last partial; C not read
     }
   }
+  for (const char uplo : {'L', 'U'}) { // T with α = 1: Q read from P's rows, three blocks off the diagonal
+    EXPECT(syrk_matches(uplo, 'T', 300, 40, 1.0, 0.5));
+  }
   EXPECT(syrk_matches('L', 'N', 9, 0, 1.0, 2.0));  // no depth: C ← β C
   EXPECT(syrk_matches('U', 'T', 9, 4, 0.0, 0.0));  // α = 0, β = 0: zeros
   EXPECT(syrk_matches('U', 'N', 9, 4, 0.0, 1.0));  // nothing to do
@@ -1593,8 +1596,12 @@ TEST(syrk_keeps_its_operand_copy_up_to_its_limit)
   EXPECT_EQ(numerical::blas::syrk('L', 'N', 3, static_cast<std::ptrdiff_t>(depth), 1.0, a.data(), 3, 0.0, c.data(), 3), 0);
   EXPECT(c[0] == static_cast<double>(depth) && c[1] == static_cast<double>(depth) && c[8] == static_cast<double>(depth) && c[3] == -1.0);
   EXPECT(numerical::blas::detail::syrk_operand().size() <= numerical::blas::syrk_kept_limit);
-  EXPECT(syrk_matches('U', 'T', 40, 30, 1.0, 0.0)); // a kept copy reused
+  EXPECT(syrk_matches('U', 'T', 40, 30, 1.5, 0.0)); // a kept copy reused
   EXPECT(!numerical::blas::detail::syrk_operand().empty());
+  // T with α = 1 reads Q from P's rows: no copy taken, the kept one left as it was.
+  const std::size_t kept {numerical::blas::detail::syrk_operand().size()};
+  EXPECT(syrk_matches('L', 'T', 40, 30, 1.0, 0.5));
+  EXPECT(numerical::blas::detail::syrk_operand().size() == kept);
 }
 
 TEST(kept_storage_holds_at_most_its_limit_and_serves_the_next_call)

@@ -209,6 +209,46 @@ TEST(a_left_operand_packed_once_gives_gemm_s_bits_on_every_path)
   }
 }
 
+namespace {
+  // Whether gemm_bt of A and Bᵀ (row-major, its rows padded) adds to C what gemm of A and B does, to the bit.
+  bool transposed_b_equals_gemm(std::size_t m,
+                                std::size_t n,
+                                std::size_t k)
+  {
+    const std::size_t   ldbt {k + 3};
+    std::vector<double> a(m * k);
+    std::vector<double> b(k * n);
+    std::vector<double> bt(n * ldbt, -7.0); // the padding past each row of Bᵀ is never read
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = fill<double>(i);
+    }
+    for (std::size_t p {0}; p < k; ++p) {
+      for (std::size_t j {0}; j < n; ++j) {
+        b[(p * n) + j]       = fill<double>((p * 7) + (j * 11) + 3);
+        bt[(j * ldbt) + p]   = b[(p * n) + j];
+      }
+    }
+    std::vector<double> want(m * n);
+    for (std::size_t e {0}; e < want.size(); ++e) {
+      want[e] = fill<double>(e + 5);
+    }
+    std::vector<double> got {want};
+    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, want.data(), n);
+    numerical::detail::gemm_bt(m, n, k, a.data(), k, bt.data(), ldbt, got.data(), n);
+    return got == want;
+  }
+} // namespace
+
+// B given transposed: the plain loop's small products, the tiles' (a partial sliver, several panels of depth and blocks
+// of columns), on every path this machine runs.
+TEST(a_transposed_right_operand_gives_gemm_s_bits_on_every_path)
+{
+  for (const auto& [m, n, k] : {std::array<std::size_t, 3> {3, 4, 5}, {7, 1, 64}, {64, 64, 64}, {129, 101, 300}, {31, 15, 40},
+                                {20, 1030, 260}}) {
+    EXPECT(on_every_path([&] { return transposed_b_equals_gemm(m, n, k); }));
+  }
+}
+
 #ifdef NUMERICAL_X86_COMPILED
 // The AVX2 tile's task rows follow the panel's depth and it prefetches the next row's C: the hooks are found (a
 // signature they no longer match would fall back in silence), and other tiles keep their block and prefetch nothing.
