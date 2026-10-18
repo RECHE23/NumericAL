@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- The bidiagonal reduction of the SVD (past order 128) gathers each panel's columns once, row by row, where each step
+  read its column across rows `n` apart, and takes a step's terms of the panel's earlier ones a family at a time in one
+  update through their rows (`detail::subtract_products`; the reflectors and what they move interleaved), in the same
+  order. The bits are the same on x86-64 and under Clang on arm64; under GCC on arm64 those terms are now fused. Six
+  x86-64 AVX2 cores, `svd`: order 300 12.7 → 12.2 ms, 1000 210 → 203 ms (OpenBLAS `dgesdd` 11.3 and 188).
 - The thread pool rings each worker it wants for a run, asleep, on a bell of its own, where every run woke them all:
   on Linux the worker pinned to the caller's core, which sits the run out, was woken on that core every time, held
   the caller off it, and slept again — about 4 µs a run. Six x86-64 AVX2 cores: an empty run 5.3 → 1.1–2.6 µs;
@@ -37,7 +42,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   where each step read its column across rows `n` apart, and takes a step's terms of the panel's earlier ones in one
   update through their rows (`detail::subtract_products`, the vectors and their products interleaved), in the same
   order; its trailing update runs on the triangle's tiles alone (`detail::gemm_triangle`) where bands of rows computed
-  what the reduction never reads. The bits are the same, x86-64 and arm64. `eigvalsh` against OpenBLAS 0.3.26 on six
+  what the reduction never reads. The bits are the same on x86-64 and under Clang on arm64; under GCC on arm64 (the
+  aarch64 Linux wheels) the panel's terms are now fused, and a real reduction moves by rounding. `eigvalsh` against OpenBLAS 0.3.26 on six
   x86-64 AVX2 cores: one core, order 100 0.47 → 0.42 ms (0.37), 300 4.61 → 4.06 ms (3.48), 1000 88 → 77 ms (67); six,
   300 4.38 → 4.04 ms (3.01), 1000 53 → 48 ms (36.6). arm64, order 300 3.16 → 2.93 ms, 1000 59 → 56 ms.
 - `dgesv_` with `B` the identity to the bit (NumPy's `inv`) solves through the LU's inverse of the rows in their

@@ -4446,34 +4446,44 @@ namespace numerical {
       std::vector<buffer<T>>      left(n);  // the left reflector of step k, on rows k…, empty where none was needed
       std::vector<buffer<T>>      right(n); // the right reflector of step k, on columns k+1…, likewise
       const auto                  nonzero {[](const T& value) { return value != T {}; }};
+      // By reflector, each row over the whole order: row 2p of vx holds step k0 + p's left reflector v (at its rows),
+      // row 2p + 1 what its right one moves, x = 2 B u (at the rows); row 2p of yu what v moves, y = 2 Bᵀ v (at the
+      // columns), row 2p + 1 the right reflector u (at its columns). A step's terms of the panel's earlier ones are then
+      // one update through their rows (subtract_products, a family's rows 2n apart), in their order.
+      buffer<T> vx(2 * bidiagonal_block * n);
+      buffer<T> yu(2 * bidiagonal_block * n);
+      buffer<T> columns(bidiagonal_block * n); // the panel's columns of B, gathered row by row
+      buffer<T> factors(2 * bidiagonal_block); // a step's coefficients of those rows
       for (std::size_t k0 {0}; k0 < n; k0 += bidiagonal_block) {
         const std::size_t k1    {std::min(k0 + bidiagonal_block, n)};
         const std::size_t width {k1 - k0};
-        // By reflector: row p of each holds step k0 + p's vector over the rows (v, x) or the columns (u, y), so every
-        // term of the panel is a contiguous update.
-        buffer<T>      by_row_v(width * n, T {}); // the left reflectors, at their rows
-        buffer<T>      by_row_y(width * n, T {}); // what they move, 2 Bᵀ v, at the columns
-        buffer<T>      by_row_u(width * n, T {}); // the right reflectors, at their columns
-        buffer<T>      by_row_x(width * n, T {}); // what they move, 2 B u, at the rows
-        const auto     row_of {[n](buffer<T>& rows, std::size_t p, std::size_t from) { return rows.data() + (p * n) + from; }};
+        std::fill_n(vx.data(), 2 * width * n, T {});
+        std::fill_n(yu.data(), 2 * width * n, T {});
+        for (std::size_t r {k0}; r < n; ++r) { // column k from row k down, each row's part read once
+          for (std::size_t k {k0}; k < std::min(k1, r + 1); ++k) {
+            columns[((k - k0) * n) + r] = b[(r * n) + k];
+          }
+        }
+        const auto v_row {[&vx, n](std::size_t p, std::size_t from) { return vx.data() + (2 * p * n) + from; }};
+        const auto x_row {[&vx, n](std::size_t p, std::size_t from) { return vx.data() + (((2 * p) + 1) * n) + from; }};
+        const auto y_row {[&yu, n](std::size_t p, std::size_t from) { return yu.data() + (2 * p * n) + from; }};
+        const auto u_row {[&yu, n](std::size_t p, std::size_t from) { return yu.data() + (((2 * p) + 1) * n) + from; }};
         for (std::size_t k {k0}; k < k1; ++k) {
           const std::size_t i          {k - k0};
-          buffer<T>         x(n - k, T {}); // column k from the diagonal down, the panel's earlier steps applied
-          for (std::size_t r {k}; r < n; ++r) {
-            x[r - k] = b[(r * n) + k];
+          for (std::size_t p {0}; p < i; ++p) { // v's row by y's element, x's by u's
+            factors[2 * p]       = *y_row(p, k);
+            factors[(2 * p) + 1] = *u_row(p, k);
           }
-          for (std::size_t p {0}; p < i; ++p) {
-            subtract_product(x.data(), by_row_y[(p * n) + k], row_of(by_row_v, p, k), n - k);
-            subtract_product(x.data(), by_row_u[(p * n) + k], row_of(by_row_x, p, k), n - k);
-          }
+          T* const column {columns.data() + (i * n) + k}; // column k from the diagonal down, the panel's earlier steps applied
+          subtract_products(column, factors.data(), v_row(0, k), n, 2 * i, n - k);
+          buffer<T> x(column, column + (n - k));
           if (std::any_of(x.begin() + 1, x.end(), nonzero)) { // something below the diagonal to reflect
             d[k] = static_cast<double>(householder_in_place(x));
             // y = 2 (B − V Yᵀ − X Uᵀ)ᵀ v on the columns past k: Bᵀ v by contiguous rows, then the panel's terms.
-            buffer<T> by_v(i, T {});                          // Vᵀ v and Xᵀ v over the earlier steps
-            buffer<T> by_x(i, T {});
+            buffer<T> by_vx(2 * i, T {});                     // Vᵀ v and Xᵀ v over the earlier steps, interleaved as their rows
             for (std::size_t p {0}; p < i; ++p) {
-              by_v[p] = dot_product(row_of(by_row_v, p, k), x.data(), n - k);
-              by_x[p] = dot_product(row_of(by_row_x, p, k), x.data(), n - k);
+              by_vx[2 * p]       = dot_product(v_row(p, k), x.data(), n - k);
+              by_vx[(2 * p) + 1] = dot_product(x_row(p, k), x.data(), n - k);
             }
             const std::size_t     span        {n - k - 1};
             constexpr std::size_t chunk_width {64};
@@ -4487,15 +4497,12 @@ namespace numerical {
                            const std::size_t count {std::min(chunk_width, n - first)};
                            buffer<T>    sum(count, T {});
                            subtract_products(sum.data(), minus.data(), b.data() + (k * n) + first, n, n - k, count);
-                           for (std::size_t p {0}; p < i; ++p) {
-                             subtract_product(sum.data(), by_v[p], row_of(by_row_y, p, first), count);
-                             subtract_product(sum.data(), by_x[p], row_of(by_row_u, p, first), count);
-                           }
+                           subtract_products(sum.data(), by_vx.data(), y_row(0, first), n, 2 * i, count);
                            for (std::size_t c {0}; c < count; ++c) {
-                             by_row_y[(i * n) + first + c] = static_cast<T>(2) * sum[c];
+                             *y_row(i, first + c) = static_cast<T>(2) * sum[c];
                            }
                          });
-            std::copy(x.begin(), x.end(), row_of(by_row_v, i, k));
+            std::copy(x.begin(), x.end(), v_row(i, k));
             left[k] = std::move(x);
           }
           else {
@@ -4507,36 +4514,34 @@ namespace numerical {
           buffer<T> y(b.begin() + static_cast<std::ptrdiff_t>((k * n) + k + 1), // row k past the diagonal, the left
                       b.begin() + static_cast<std::ptrdiff_t>((k + 1) * n));    // reflection included
           for (std::size_t p {0}; p <= i; ++p) {
-            subtract_product(y.data(), by_row_v[(p * n) + k], row_of(by_row_y, p, k + 1), n - k - 1);
+            factors[p] = *v_row(p, k);
           }
+          subtract_products(y.data(), factors.data(), y_row(0, k + 1), 2 * n, i + 1, n - k - 1);
           for (std::size_t p {0}; p < i; ++p) {
-            subtract_product(y.data(), by_row_x[(p * n) + k], row_of(by_row_u, p, k + 1), n - k - 1);
+            factors[p] = *x_row(p, k);
           }
+          subtract_products(y.data(), factors.data(), u_row(0, k + 1), 2 * n, i, n - k - 1);
           if (std::any_of(y.begin() + 1, y.end(), nonzero)) { // something past the superdiagonal to reflect
             e[k] = static_cast<double>(householder_in_place(y));
             // x = 2 (B − V Yᵀ − X Uᵀ) u on the rows past k: B u by rows, then the panel's terms.
             buffer<T> by_y(i + 1, T {});                      // Yᵀ u over this and the earlier steps, Uᵀ u over the earlier
             buffer<T> by_u(i, T     {});
             for (std::size_t p {0}; p <= i; ++p) {
-              by_y[p] = dot_product(row_of(by_row_y, p, k + 1), y.data(), y.size());
+              by_y[p] = dot_product(y_row(p, k + 1), y.data(), y.size());
             }
             for (std::size_t p {0}; p < i; ++p) {
-              by_u[p] = dot_product(row_of(by_row_u, p, k + 1), y.data(), y.size());
+              by_u[p] = dot_product(u_row(p, k + 1), y.data(), y.size());
             }
             buffer<T> moved(n - k - 1, T {});
             parallel_for(n - k - 1, bidiagonal_product_weight * 2 * (n - k), [&](std::size_t row) {
                            moved[row] = dot_product(b.data() + ((k + 1 + row) * n) + k + 1, y.data(), y.size());
                          });
-            for (std::size_t p {0}; p <= i; ++p) {
-              subtract_product(moved.data(), by_y[p], row_of(by_row_v, p, k + 1), n - k - 1);
-            }
-            for (std::size_t p {0}; p < i; ++p) {
-              subtract_product(moved.data(), by_u[p], row_of(by_row_x, p, k + 1), n - k - 1);
-            }
+            subtract_products(moved.data(), by_y.data(), v_row(0, k + 1), 2 * n, i + 1, n - k - 1);
+            subtract_products(moved.data(), by_u.data(), x_row(0, k + 1), 2 * n, i, n - k - 1);
             for (std::size_t r {0}; r < n - k - 1; ++r) {
-              by_row_x[(i * n) + k + 1 + r] = static_cast<T>(2) * moved[r];
+              *x_row(i, k + 1 + r) = static_cast<T>(2) * moved[r];
             }
-            std::copy(y.begin(), y.end(), row_of(by_row_u, i, k + 1));
+            std::copy(y.begin(), y.end(), u_row(i, k + 1));
             right[k] = std::move(y);
           }
           else {
@@ -4549,13 +4554,13 @@ namespace numerical {
           buffer<T>         minus_x(rest * width, T {});
           for (std::size_t r {0}; r < rest; ++r) {
             for (std::size_t p {0}; p < width; ++p) {
-              minus_v[(r * width) + p] = -by_row_v[(p * n) + k1 + r];
-              minus_x[(r * width) + p] = -by_row_x[(p * n) + k1 + r];
+              minus_v[(r * width) + p] = -*v_row(p, k1 + r);
+              minus_x[(r * width) + p] = -*x_row(p, k1 + r);
             }
           }
           T* trailing {b.data() + (k1 * n) + k1};
-          gemm(rest, rest, width, minus_v.data(), width, by_row_y.data() + k1, n, trailing, n);
-          gemm(rest, rest, width, minus_x.data(), width, by_row_u.data() + k1, n, trailing, n);
+          gemm(rest, rest, width, minus_v.data(), width, y_row(0, k1), 2 * n, trailing, n);
+          gemm(rest, rest, width, minus_x.data(), width, u_row(0, k1), 2 * n, trailing, n);
         }
       }
       e[n - 1] = 0.0;
