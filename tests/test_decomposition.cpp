@@ -12,6 +12,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -256,6 +257,59 @@ TEST(qr_is_generic_over_a_complex_scalar)
   const auto      factored {qr(a)};
   EXPECT(approx_equal(factored.q() * factored.r(), a));     // Q R == A
   EXPECT(approx_equal(factored.solve(b), solve(a, b)));     // square ⇒ matches the LU solve
+}
+
+namespace {
+  // Whether the column-major factorisation (the x86-64 units') and the row-major one (arm64's) of the same rows × cols
+  // matrix leave the same R and reflectors in place, and the same blocks' T, to rounding: past one block of reflectors,
+  // tall and wide.
+  template <typename T>
+  bool qr_layouts_agree(std::size_t rows,
+                        std::size_t cols)
+  {
+    numerical::buffer<T> by_rows(rows * cols);
+    numerical::buffer<T> by_columns(rows * cols);
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        const double x {std::sin(static_cast<double>((i * 5) + (j * 11) + 1))};
+        by_rows[(i * cols) + j]    = numerical::detail::from_double<T>(x) + (i == j ? T {2} : T {});
+        by_columns[(j * rows) + i] = by_rows[(i * cols) + j];
+      }
+    }
+    if constexpr (!std::is_floating_point_v<T>) { // an imaginary part, so that the adjoints are not transposes
+      for (std::size_t e {0}; e < rows * cols; e += 3) {
+        by_rows[e] += T {0.0, 0.5};
+      }
+      for (std::size_t i {0}; i < rows; ++i) {
+        for (std::size_t j {0}; j < cols; ++j) {
+          by_columns[(j * rows) + i] = by_rows[(i * cols) + j];
+        }
+      }
+    }
+    const auto row_blocks    {numerical::detail::reflect_in_rows(by_rows, rows, cols)};
+    const auto column_blocks {numerical::detail::reflect_in_columns(by_columns, rows, cols)};
+    bool       agree         {row_blocks.size() == column_blocks.size()};
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        agree = agree && std::abs(by_rows[(i * cols) + j] - by_columns[(j * rows) + i]) < 1e-12;
+      }
+    }
+    for (std::size_t b {0}; agree && b < row_blocks.size(); ++b) {
+      for (std::size_t e {0}; e < row_blocks[b].t.size(); ++e) {
+        agree = agree && std::abs(row_blocks[b].t[e] - column_blocks[b].t[e]) < 1e-12;
+      }
+    }
+    return agree;
+  }
+} // namespace
+
+TEST(qr_factorises_alike_column_major_and_row_major)
+{
+  EXPECT(qr_layouts_agree<double>(70, 40));
+  EXPECT(qr_layouts_agree<double>(40, 70));
+  EXPECT(qr_layouts_agree<double>(33, 33));
+  EXPECT((qr_layouts_agree<std::complex<double>>(70, 40)));
+  EXPECT((qr_layouts_agree<std::complex<double>>(40, 70)));
 }
 
 // Householder reflections keep Q orthonormal to rounding however ill-conditioned A is: Hilbert-12

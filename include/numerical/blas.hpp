@@ -16,9 +16,11 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -83,8 +85,28 @@ namespace numerical::blas {
       return std::isfinite(x.real()) && std::isfinite(x.imag());
     }
 
-    //! \brief `rows × cols` of the column-major \p a (\p lda apart), as a row-major buffer, each element times
-    //!        \p scale (conjugated first where \p conjugate).
+    /*!
+     * \brief Whether the \p count reals from \p x are all finite: an exponent of all ones is infinite or NaN. Each chunk
+     *        is tested without a branch, the flags or-ed as integers, so that the loop runs on vectors (an exit at every
+     *        element kept it scalar: 0.9 ms for a million).
+     */
+    [[nodiscard]] inline bool all_finite(const double* x,
+                                         std::size_t   count)
+    {
+      constexpr std::uint64_t exponent {0x7FF0'0000'0000'0000ULL};
+      constexpr std::size_t   chunk    {512};
+      for (std::size_t i0 {0}; i0 < count; i0 += chunk) {
+        std::uint64_t infinite {0};
+        for (std::size_t i {i0}; i < std::min(i0 + chunk, count); ++i) {
+          infinite |= static_cast<std::uint64_t>((std::bit_cast<std::uint64_t>(x[i]) & exponent) == exponent);
+        }
+        if (infinite != 0) {
+          return false;
+        }
+      }
+      return true;
+    }
+
     //! \brief The tile side of the transposing copies between column-major arguments and row-major storage: a tile's
     //!        rows and columns both stay in the cache, where a whole column read across rows `lda` apart misses on
     //!        every element (a 1000 × 1000 copy took several milliseconds).
@@ -117,6 +139,8 @@ namespace numerical::blas {
       }
     }
 
+    //! \brief `rows × cols` of the column-major \p a (\p lda apart), as a row-major buffer, each element times
+    //!        \p scale (conjugated first where \p conjugate).
     template <typename T>
     [[nodiscard]] buffer<T> row_major(const T*       a,
                                       std::ptrdiff_t lda,
@@ -1303,29 +1327,38 @@ namespace numerical::blas {
     if (std::min(m, n) == 0) {
       return 0;
     }
-    const auto           rows    {static_cast<std::size_t>(m)};
-    const auto           cols    {static_cast<std::size_t>(n)};
-    const auto           ld      {static_cast<std::size_t>(lda)};
-    buffer<double>       entries {detail::row_major(a, lda, m, n, 1.0)};
-    if (!std::ranges::all_of(entries, [](double x) { return std::isfinite(x); })) {
+    const auto     rows    {static_cast<std::size_t>(m)};
+    const auto     cols    {static_cast<std::size_t>(n)};
+    const auto     ld      {static_cast<std::size_t>(lda)};
+    // In the layout the factorisation runs in (numerical::detail::householder_reflect), in storage the thread keeps: R and
+    // the reflectors' w₁… where dgeqrf leaves them (numerical::detail::factor_qr_panel, as dlarfg); τ on each block's T
+    // diagonal, 0 for the identity.
+    buffer<double> entries {detail::take_kept<double>(0)};
+#ifdef NUMERICAL_X86_COMPILED
+    entries.resize(rows * cols); // column-major: copied in and out by columns
+    for (std::size_t j {0}; j < cols; ++j) {
+      std::copy_n(a + (j * ld), rows, entries.data() + (j * rows));
+    }
+#else
+    detail::row_major_into(entries, a, lda, m, n, 1.0);
+#endif
+    if (!detail::all_finite(entries.data(), entries.size())) {
+      detail::give_back(0, std::move(entries));
       return -3;
     }
-    const numerical::detail::qr_reflections<double> factors {numerical::detail::householder_reflect(std::move(entries), rows, cols)};
-    const std::size_t                               depth   {std::min(rows, cols)};
-    for (std::size_t i {0}; i < depth; ++i) {
-      for (std::size_t j {i}; j < cols; ++j) {
-        a[i + (j * ld)] = factors.r[(i * cols) + j];
-      }
+#ifdef NUMERICAL_X86_COMPILED
+    const std::vector<numerical::detail::reflector_block<double>> blocks {numerical::detail::reflect_in_columns(entries, rows, cols)};
+    for (std::size_t j {0}; j < cols; ++j) {
+      std::copy_n(entries.data() + (j * rows), rows, a + (j * ld));
     }
-    // The reflectors are LAPACK's already (numerical::detail::factor_qr_panel, as dlarfg): τ on T's diagonal, w in V's
-    // column, 1 on the diagonal; the identity's column of V is zero.
-    for (const numerical::detail::reflector_block<double>& block : factors.blocks) {
+#else
+    const std::vector<numerical::detail::reflector_block<double>> blocks {numerical::detail::reflect_in_rows(entries, rows, cols)};
+    detail::column_major_into(entries.data(), rows, cols, a, ld);
+#endif
+    detail::give_back(0, std::move(entries));
+    for (const numerical::detail::reflector_block<double>& block : blocks) {
       for (std::size_t j {0}; j < block.width; ++j) {
-        const std::size_t k {block.first + j};
-        tau[k] = block.t[(j * block.width) + j];
-        for (std::size_t r {1}; j + r < block.height; ++r) {
-          a[(k + r) + (k * ld)] = block.v[((j + r) * block.width) + j];
-        }
+        tau[block.first + j] = block.t[(j * block.width) + j];
       }
     }
     return 0;
@@ -1386,51 +1419,24 @@ namespace numerical::blas {
         }
       }
     }
+    // Each reflector w_j = (1, A(j+1…m-1, j)) and τ_j, gathered by blocks into I − V T Vᵀ (T as dlarft forms it).
+    std::vector<buffer<double>> reflectors(depth);
+    const std::vector<double>   taus(tau, tau + depth);
+    for (std::size_t j {0}; j < depth; ++j) {
+      reflectors[j].resize(rows - j);
+      reflectors[j][0] = 1.0;
+      std::copy_n(a + (j + 1) + (j * ld), rows - j - 1, reflectors[j].data() + 1);
+    }
     std::vector<numerical::detail::reflector_block<double>> blocks;
     for (std::size_t k0 {0}; k0 < depth; k0 += numerical::detail::qr_block) {
-      const std::size_t                          width {std::min(numerical::detail::qr_block, depth - k0)};
-      numerical::detail::reflector_block<double> block {.first = k0, .height = rows - k0, .width = width, .v = {}, .t = {}};
-      block.v.assign(block.height * width, 0.0);
-      block.t.assign(width * width, 0.0);
-      for (std::size_t j {0}; j < width; ++j) {
-        block.v[(j * width) + j] = 1.0;
-        for (std::size_t r {j + 1}; r < block.height; ++r) {
-          block.v[(r * width) + j] = a[(k0 + r) + ((k0 + j) * ld)];
-        }
-      }
-      // T(j, j) = τ_j; T(0…j-1, j) = −τ_j T(0…j-1, 0…j-1) V(:, 0…j-1)ᵀ v_j.
-      for (std::size_t j {0}; j < width; ++j) {
-        const double t_j {tau[k0 + j]};
-        block.t[(j * width) + j] = t_j;
-        std::vector<double> z(j, 0.0);
-        for (std::size_t p {0}; p < j; ++p) {
-          for (std::size_t r {j}; r < block.height; ++r) {
-            z[p] += block.v[(r * width) + p] * block.v[(r * width) + j];
-          }
-        }
-        for (std::size_t i {0}; i < j; ++i) {
-          double sum {0.0};
-          for (std::size_t p {i}; p < j; ++p) {
-            sum += block.t[(i * width) + p] * z[p];
-          }
-          block.t[(i * width) + j] = -t_j * sum;
-        }
-      }
-      blocks.push_back(std::move(block));
+      blocks.push_back(numerical::detail::gather_reflectors(reflectors, k0, std::min(k0 + numerical::detail::qr_block, depth), rows, &taus));
     }
-    buffer<double> q(rows * cols, 0.0); // the first n columns of I, row-major, then Q's
-    for (std::size_t c {0}; c < cols; ++c) {
-      q[(c * cols) + c] = 1.0;
-    }
-    // Q = B₀ B₁ … applied right to left; the columns of I left of a block's first row are left as they are.
-    for (std::size_t b {blocks.size()}; b-- > 0;) {
-      numerical::detail::apply_reflector_block(blocks[b], false, q, cols, blocks[b].first, cols);
-    }
+    buffer<double> columns {detail::take_kept<double>(0)}; // Q column-major, as numerical::qr() forms it
+    numerical::detail::form_q_into(columns, blocks, rows, 0, cols, true);
     for (std::size_t j {0}; j < cols; ++j) {
-      for (std::size_t i {0}; i < rows; ++i) {
-        a[i + (j * ld)] = q[(i * cols) + j];
-      }
+      std::copy_n(columns.data() + (j * rows), rows, a + (j * ld));
     }
+    detail::give_back(0, std::move(columns));
     return 0;
   }
 

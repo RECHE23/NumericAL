@@ -2,6 +2,7 @@
 // semantics as the reference routines define them, checked against plain loops and against the factorisations'
 // defining properties; every illegal argument reported by its position.
 #include <algorithm>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -1000,6 +1001,41 @@ TEST(geqrf_factorises_and_orgqr_forms_its_q)
   EXPECT(geqrf_factorises(1, 1, 99));
 }
 
+TEST(orgqr_of_geqrf_forms_the_q_of_qr_to_the_bit)
+{
+  // The same reflectors gathered into the same blocks, applied by the same products: qr()'s Q, each column times the sign
+  // of R's diagonal, is orgqr's of geqrf's factors to the bit, past one block of reflectors and either way round.
+  for (const auto& [m, n] : {std::pair<std::size_t, std::size_t> {130, 70}, {70, 130}, {33, 33}}) {
+    const std::size_t         k {std::min(m, n)};
+    numerical::buffer<double> entries(m * n);
+    std::vector<double>       factors(m * n);
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        entries[(i * n) + j] = std::sin(static_cast<double>((i * 7) + (j * 13) + 1)) + (i == j ? 2.0 : 0.0);
+        factors[i + (j * m)] = entries[(i * n) + j];
+      }
+    }
+    const numerical::matrix<double> a {m, n, std::move(entries)};
+    std::vector<double>             tau(k);
+    std::vector<double>             work(n);
+    const auto                      lm   {static_cast<std::ptrdiff_t>(m)};
+    const auto                      ln   {static_cast<std::ptrdiff_t>(n)};
+    const auto                      lk   {static_cast<std::ptrdiff_t>(k)};
+    EXPECT_EQ(numerical::blas::geqrf(lm, ln, factors.data(), lm, tau.data(), work.data(), ln), 0);
+    const std::vector<double> r          {factors};
+    EXPECT_EQ(numerical::blas::orgqr(lm, lk, lk, factors.data(), lm, tau.data(), work.data(), ln), 0);
+    const numerical::matrix<double> q    {numerical::qr(a).q()};
+    bool                            same {q.rows() == m && q.cols() == k};
+    for (std::size_t i {0}; same && i < m; ++i) {
+      for (std::size_t j {0}; j < k; ++j) {
+        const double sign {r[j + (j * m)] < 0.0 ? -1.0 : 1.0};
+        same = same && std::bit_cast<std::uint64_t>(q(i, j)) == std::bit_cast<std::uint64_t>(sign * factors[i + (j * m)]);
+      }
+    }
+    EXPECT(same);
+  }
+}
+
 TEST(geqrf_takes_the_identity_where_nothing_lies_below_the_diagonal)
 {
   // An upper triangular A is its own R, every τ 0, as LAPACK's dlarfg leaves it (a reflection would flip R's signs:
@@ -1075,6 +1111,20 @@ TEST(geqrf_and_orgqr_size_their_workspaces_and_report_an_illegal_argument_and_a_
   EXPECT_EQ(numerical::blas::orgqr(4, 3, 2, a.data(), 4, tau.data(), work.data(), 8), -6);
   a[0] = std::numeric_limits<double>::quiet_NaN();
   EXPECT_EQ(numerical::blas::orgqr(4, 3, 1, a.data(), 4, tau.data(), work.data(), 8), 0);
+  // The finite test runs by chunks of 512: an infinity past the first, in the last element, and in a row past m, which
+  // lda pads and geqrf does not read.
+  constexpr std::size_t large_rows {40};
+  constexpr std::size_t large_cols {30};
+  constexpr std::size_t large_ld   {large_rows + 1};
+  std::vector<double>   large(large_ld * large_cols, 1.0);
+  std::vector<double>   large_tau(large_cols);
+  std::vector<double>   large_work(large_cols);
+  for (std::size_t j {0}; j < large_cols; ++j) {
+    large[large_rows + (j * large_ld)] = std::numeric_limits<double>::infinity();
+  }
+  EXPECT_EQ(numerical::blas::geqrf(40, 30, large.data(), 41, large_tau.data(), large_work.data(), 30), 0);
+  large[(large_rows - 1) + ((large_cols - 1) * large_ld)] = -std::numeric_limits<double>::infinity();
+  EXPECT_EQ(numerical::blas::geqrf(40, 30, large.data(), 41, large_tau.data(), large_work.data(), 30), -3);
 }
 
 TEST(the_fortran_qr_routines_answer_as_the_cpp_ones)

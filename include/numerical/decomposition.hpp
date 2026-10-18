@@ -1747,7 +1747,8 @@ namespace numerical {
     /*!
      * \brief \ref apply_reflector_block to `A` held transposed: \p at is `Aᵀ` (row-major, \p cols columns), and
      *        `A ← (I − V T Vᴴ) A` on `A`'s rows `first…` and columns `from…to-1` is `Aᵀ ← Aᵀ (I − conj(V) Tᵀ Vᵀ)`
-     *        on `Aᵀ`'s columns `first…` and rows `from…to-1`. Its three products have `to − from` rows, which the
+     *        on `Aᵀ`'s columns `first…` and rows `from…to-1` (with the \p adjoint `(I − V Tᴴ Vᴴ) A`, `conj(T)` for
+     *        `Tᵀ`). Its three products have `to − from` rows, which the
      *        matrix product kernel runs well and on every core; \ref apply_reflector_block's first has the
      *        block's few (a reflector block's 32 rows by 1000 deep: 54 GFLOP/s on twenty x86-64 threads).
      */
@@ -1756,14 +1757,15 @@ namespace numerical {
                                           buffer<T>&                at,
                                           std::size_t               cols,
                                           std::size_t               from,
-                                          std::size_t               to)
+                                          std::size_t               to,
+                                          bool                      adjoint = false)
     {
       const std::size_t b            {block.width};
       const std::size_t h            {block.height};
       const std::size_t r            {to - from};
       const auto        v_conjugate  {std::make_unique_for_overwrite<T[]>(h * b)}; // conj(V), h × b, written whole
       const auto        minus_v_t    {std::make_unique_for_overwrite<T[]>(b * h)}; // −Vᵀ, b × h
-      const auto        t_transposed {std::make_unique_for_overwrite<T[]>(b * b)}; // Tᵀ
+      const auto        t_transposed {std::make_unique_for_overwrite<T[]>(b * b)}; // Tᵀ, or conj(T)
       for (std::size_t row {0}; row < h; ++row) {
         for (std::size_t j {0}; j < b; ++j) {
           v_conjugate[(row * b) + j] = conj_of(block.v[(row * b) + j]);
@@ -1772,7 +1774,7 @@ namespace numerical {
       }
       for (std::size_t i {0}; i < b; ++i) {
         for (std::size_t p {0}; p < b; ++p) {
-          t_transposed[(p * b) + i] = block.t[(i * b) + p];
+          t_transposed[(p * b) + i] = adjoint ? conj_of(block.t[(p * b) + i]) : block.t[(i * b) + p];
         }
       }
       T*             left                {at.data() + (from * cols) + block.first};
@@ -1807,12 +1809,12 @@ namespace numerical {
     }
 
     /*!
-     * \brief Applies `I − s v vᴴ` from the left (\p s 2 for a unit `v`) to the columns `from…to-1` of a column-major
-     *        panel of \p height rows, on its rows `first…first+|v|-1`: each column a dot product with `v`, then `v`
-     *        scaled out of it, both along the column at unit stride.
+     * \brief Applies `I − s v vᴴ` from the left (\p s 2 for a unit `v`) to the columns `from…to-1` of the
+     *        column-major \p panel (\p height rows per column), on its rows `first…first+|v|-1`: each column a dot
+     *        product with `v`, then `v` scaled out of it, both along the column at unit stride.
      */
     template <typename T>
-    void reflect_columns(buffer<T>&            panel,
+    void reflect_columns(T*                    panel,
                          std::size_t           height,
                          const buffer<T>&      v,
                          std::size_t           first,
@@ -1821,7 +1823,7 @@ namespace numerical {
                          const T&              s = T {2})
     {
       for (std::size_t j {from}; j < to; ++j) {
-        T* const column {panel.data() + (j * height) + first};
+        T* const column {panel + (j * height) + first};
         const T  scaled {s * conjugate_dot(v.data(), column, v.size())};
         subtract_product(column, scaled, v.data(), v.size());
       }
@@ -1831,37 +1833,31 @@ namespace numerical {
     inline constexpr std::size_t qr_block {32};
 
     /*!
-     * \brief Householder reflections of the panel's columns `k0…k1-1` of the row-major \p a, rows from `k0`, one by
-     *        one, into `reflectors[k0…k1-1]` and \p taus: in a column-major copy, where a reflector meets each column at
-     *        unit stride (row by row, each row's part of the panel was a call of a few elements). Recursive halves, the
-     *        left's reflectors applied to the right at once, took longer at these widths (32 columns).
+     * \brief Householder reflections of the columns `k0…k1-1` of a column-major matrix, rows from `k0`, one by one, in
+     *        place, into `reflectors[k0…k1-1]` and \p taus: \p panel holds column `k0`, \p ld elements per column from
+     *        row \p top (0 in the whole matrix, `k0` in a copy of the panel). A reflector meets each column at unit
+     *        stride. Recursive halves, the left's reflectors applied to the right at once, took longer at these widths
+     *        (32 columns).
      *
      * Each as LAPACK's `dlarfg` (`zlarfg`) forms it: `H = I − τ w wᴴ`, `w₀ = 1`, with `Hᴴ x = β e₁` for a real `β` of
      * the sign opposite to `Re x₀`; the identity (`τ = 0`, an empty reflector) where nothing lies below the diagonal
      * and `x₀` is real. Exact inputs stay exact where LAPACK's do (`e₃` reflected onto `e₁`: `w = (1, 0, 1)`, `τ = 1`;
-     * a unit `v` there holds `1/√2`, rounded), and the factors are LAPACK's to rounding.
+     * a unit `v` there holds `1/√2`, rounded), and the factors are LAPACK's to rounding. `β` goes on the diagonal and
+     * `w₁…` below it, where `dgeqrf` leaves them.
      */
     template <typename T>
-    void factor_qr_panel(buffer<T>&                   a,
-                         std::size_t                  rows,
-                         std::size_t                  cols,
+    void factor_qr_panel(T*                           panel,
+                         std::size_t                  ld,
+                         std::size_t                  top,
                          std::vector<buffer<T>>&      reflectors,
                          std::vector<T>&              taus,
                          std::size_t                  k0,
                          std::size_t                  k1)
     {
-      const std::size_t height                  {rows - k0};
-      const std::size_t width                   {k1 - k0};
-      buffer<T>         panel(height * width, T {});
-      for (std::size_t i {0}; i < height; ++i) {
-        for (std::size_t j {0}; j < width; ++j) {
-          panel[(j * height) + i] = a[((k0 + i) * cols) + k0 + j];
-        }
-      }
       for (std::size_t k {k0}; k < k1; ++k) {
         const std::size_t c      {k - k0};
-        T* const          x      {panel.data() + (c * height) + c};
-        buffer<T>         w(x, x + (height - c));
+        T* const          x      {panel + (c * ld) + (k - top)};
+        buffer<T>         w(x, x + (ld + top - k));
         const double      factor {rescale_tiny(w)}; // w, τ and the signs the same at any scale; β scaled back
         const T           alpha  {w[0]};
         const double      below  {scaled_norm(w.data() + 1, w.size() - 1)};
@@ -1875,16 +1871,11 @@ namespace numerical {
         for (std::size_t r {1}; r < w.size(); ++r) {
           w[r] *= scale;
         }
-        reflect_columns(panel, height, w, c, c + 1, width, conj_of(tau)); // Hᴴ on the panel's columns past k
+        reflect_columns(panel, ld, w, k - top, c + 1, k1 - k0, conj_of(tau)); // Hᴴ on the panel's columns past k
         x[0] = detail::from_double<T>(beta / factor);
-        std::fill(x + 1, x + (height - c), T {});
+        std::copy(w.begin() + 1, w.end(), x + 1);
         reflectors[k] = std::move(w);
         taus[k]       = tau;
-      }
-      for (std::size_t i {0}; i < height; ++i) {
-        for (std::size_t j {0}; j < width; ++j) {
-          a[((k0 + i) * cols) + k0 + j] = panel[(j * height) + i];
-        }
       }
     }
 
@@ -1897,34 +1888,202 @@ namespace numerical {
     };
 
     /*!
+     * \brief The blocks of reflectors of a Householder QR of the column-major \p columns (\p rows per column, \p cols
+     *        columns), factorised in place as LAPACK's `dgeqrf` leaves it: `R` on and above the diagonal, each
+     *        reflector's `w₁…` below it. The columns right of a panel take its block as `(I − V T Vᴴ)ᴴ`, held transposed
+     *        (\ref apply_transposed_reflector_block): the products then have as many rows as there are columns to
+     *        update, where the row-major form's first product has the block's 32 (one x86-64 core: 39 ms against 46 for
+     *        the updates of order 1000).
+     */
+    template <typename T>
+    [[nodiscard]] std::vector<reflector_block<T>> reflect_in_columns(buffer<T>&  columns,
+                                                                     std::size_t rows,
+                                                                     std::size_t cols)
+    {
+      const std::size_t               depth         {std::min(rows, cols)};
+      std::vector<buffer<T>>          reflectors(depth); // w_k on rows k…m-1; empty for the identity
+      std::vector<T>                  taus(depth, T {});
+      std::vector<reflector_block<T>> blocks;
+      for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
+        const std::size_t k1 {std::min(k0 + qr_block, depth)};
+        factor_qr_panel(columns.data() + (k0 * rows), rows, 0, reflectors, taus, k0, k1);
+        blocks.push_back(gather_reflectors(reflectors, k0, k1, rows, &taus));
+        if (k1 < cols) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A
+          apply_transposed_reflector_block(blocks.back(), columns, rows, k1, cols, true);
+        }
+      }
+      return blocks;
+    }
+
+    //! \brief The side of the tiles in which the QR transposes (\ref transpose_into): a tile's rows and columns both
+    //!        stay in the cache, where a whole column read across rows misses on every element.
+    inline constexpr std::size_t qr_transpose_tile {32};
+
+    //! \brief The row-major `rows × cols` \p from into \p to as its transpose, `cols × rows` row-major, by tiles.
+    template <typename T>
+    void transpose_into(const T*    from,
+                        std::size_t rows,
+                        std::size_t cols,
+                        T*          to)
+    {
+      for (std::size_t i0 {0}; i0 < rows; i0 += qr_transpose_tile) {
+        for (std::size_t j0 {0}; j0 < cols; j0 += qr_transpose_tile) {
+          for (std::size_t j {j0}; j < std::min(j0 + qr_transpose_tile, cols); ++j) {
+            for (std::size_t i {i0}; i < std::min(i0 + qr_transpose_tile, rows); ++i) {
+              to[(j * rows) + i] = from[(i * cols) + j];
+            }
+          }
+        }
+      }
+    }
+
+    /*!
+     * \brief \ref factor_qr_panel on the columns `k0…k1-1` of the row-major \p a, rows from `k0`, in a column-major copy
+     *        of the panel, copied back. A function of its own: written into \ref reflect_in_rows' loop, the same
+     *        instructions took 5 % more cycles at order 128 (clang, arm64).
+     */
+    template <typename T>
+    void factor_row_major_panel(buffer<T>&              a,
+                                std::size_t             rows,
+                                std::size_t             cols,
+                                std::vector<buffer<T>>& reflectors,
+                                std::vector<T>&         taus,
+                                std::size_t             k0,
+                                std::size_t             k1)
+    {
+      const std::size_t height                  {rows - k0};
+      const std::size_t width                   {k1 - k0};
+      buffer<T>         panel(height * width, T {});
+      for (std::size_t i {0}; i < height; ++i) {
+        for (std::size_t j {0}; j < width; ++j) {
+          panel[(j * height) + i] = a[((k0 + i) * cols) + k0 + j];
+        }
+      }
+      factor_qr_panel(panel.data(), height, k0, reflectors, taus, k0, k1);
+      for (std::size_t i {0}; i < height; ++i) {
+        for (std::size_t j {0}; j < width; ++j) {
+          a[((k0 + i) * cols) + k0 + j] = panel[(j * height) + i];
+        }
+      }
+    }
+
+    /*!
+     * \brief The blocks of reflectors of a Householder QR of the row-major \p a (\p rows × \p cols), factorised in place
+     *        as \ref reflect_in_columns leaves the column-major one (`R` on and above the diagonal, each reflector's `w₁…`
+     *        below it): each panel in a column-major copy, the columns right of it updated by \ref apply_reflector_block,
+     *        whose projection reads `A` as the product's right operand. The AMX tile reads that in place, and NEON's packs
+     *        it faster than the column-major form's left one (arm64, order 512: 6.3 ms against 7.2 under clang, 16.4
+     *        against 17.9 under GCC). Where \p r is given, it is `R` (`min(rows, cols) × cols` row-major, zeros below
+     *        the diagonal).
+     */
+    template <typename T>
+    [[nodiscard]] std::vector<reflector_block<T>> reflect_in_rows(buffer<T>&  a,
+                                                                  std::size_t rows,
+                                                                  std::size_t cols,
+                                                                  buffer<T>*  r = nullptr)
+    {
+      const std::size_t      depth         {std::min(rows, cols)};
+      std::vector<buffer<T>> reflectors(depth); // w_k on rows k…m-1; empty for the identity
+      std::vector<T>         taus(depth, T {});
+      if (r != nullptr) {
+        *r = buffer<T>(depth * cols, T {}); // constructed, not assigned: the generic fill of assign took 4 % of qr at order 128
+      }
+      std::vector<reflector_block<T>> blocks;
+      for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
+        const std::size_t k1 {std::min(k0 + qr_block, depth)};
+        factor_row_major_panel(a, rows, cols, reflectors, taus, k0, k1);
+        blocks.push_back(gather_reflectors(reflectors, k0, k1, rows, &taus));
+        if (k1 < cols) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A
+          apply_reflector_block(blocks.back(), true, a, cols, k1, cols);
+        }
+      }
+      for (std::size_t i {0}; r != nullptr && i < depth; ++i) {
+        for (std::size_t j {i}; j < cols; ++j) {
+          (*r)[(i * cols) + j] = a[(i * cols) + j];
+        }
+      }
+      return blocks;
+    }
+
+    /*!
      * \brief The reflections of \ref householder_qr, without forming `Q`: `A = Q R` with `Q` the product of the
      *        blocks' reflectors applied to the first `k = min(rows, cols)` columns of the identity, `R`'s diagonal
      *        not yet made real (a product with `Qᴴ`, or with `Q` of a block padded with zeros, applies the blocks
-     *        instead).
+     *        instead). \p a is row-major. On the x86-64 units it is transposed in by tiles and factorised column-major
+     *        (\ref reflect_in_columns, whose updates' products run faster there: one AVX2 core, order 1000, 39 ms against
+     *        46), elsewhere in place (\ref reflect_in_rows).
      */
     template <typename T>
-    [[nodiscard]] qr_reflections<T> householder_reflect(buffer<T>      a,
-                                                        std::size_t    rows,
-                                                        std::size_t    cols)
+    [[nodiscard]] qr_reflections<T> householder_reflect(buffer<T>   a,
+                                                        std::size_t rows,
+                                                        std::size_t cols)
     {
-      const std::size_t           depth         {std::min(rows, cols)};
-      std::vector<buffer<T>>      reflectors(depth); // w_k on rows k…m-1; empty for the identity
-      std::vector<T>              taus(depth, T {});
-      qr_reflections<T>           out           {.r = buffer<T>(depth * cols, T {}), .blocks = {}};
-      for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
-        const std::size_t k1 {std::min(k0 + qr_block, depth)};
-        factor_qr_panel(a, rows, cols, reflectors, taus, k0, k1);
-        out.blocks.push_back(gather_reflectors(reflectors, k0, k1, rows, &taus));
-        if (k1 < cols) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A
-          apply_reflector_block(out.blocks.back(), true, a, cols, k1, cols);
+#ifdef NUMERICAL_X86_COMPILED
+      const std::size_t depth {std::min(rows, cols)};
+      buffer<T>         columns(rows * cols);
+      transpose_into(a.data(), rows, cols, columns.data());
+      qr_reflections<T> out {.r = buffer<T>(depth * cols), .blocks = reflect_in_columns(columns, rows, cols)};
+      for (std::size_t j0 {0}; j0 < cols; j0 += qr_transpose_tile) { // R, row-major: written whole, zeros below
+        for (std::size_t i0 {0}; i0 < depth; i0 += qr_transpose_tile) {
+          for (std::size_t i {i0}; i < std::min(i0 + qr_transpose_tile, depth); ++i) {
+            for (std::size_t j {j0}; j < std::min(j0 + qr_transpose_tile, cols); ++j) {
+              out.r[(i * cols) + j] = i <= j ? columns[(j * rows) + i] : T {};
+            }
+          }
         }
       }
-      for (std::size_t i {0}; i < depth; ++i) {
-        for (std::size_t j {i}; j < cols; ++j) {
-          out.r[(i * cols) + j] = a[(i * cols) + j];
-        }
-      }
+#else
+      qr_reflections<T> out;
+      out.blocks = reflect_in_rows(a, rows, cols, &out.r);
+#endif
       return out;
+    }
+
+    /*!
+     * \brief The columns `[first, first + count)` of `Q = H₀ H₁ …`, the \p blocks applied (the last first) to those of
+     *        the identity, into \p out: `rows × count` row-major, or where \p transposed `Qᵀ` row-major (`Q`
+     *        column-major). Formed as \ref householder_reflect factorises, so that a `Q` is the same to the bit in either
+     *        layout: as the rows of `Qᵀ` on the x86-64 units (\ref apply_transposed_reflector_block), row-major elsewhere
+     *        (\ref apply_reflector_block), then transposed where the other layout is asked. The columns of the identity
+     *        left of a block's rows are left as they are.
+     */
+    template <typename T>
+    void form_q_into(buffer<T>&                             out,
+                     const std::vector<reflector_block<T>>& blocks,
+                     std::size_t                            rows,
+                     std::size_t                            first,
+                     std::size_t                            count,
+                     bool                                   transposed)
+    {
+#ifdef NUMERICAL_X86_COMPILED
+      buffer<T>  formed;
+      buffer<T>& qt {transposed ? out : formed};
+      qt = buffer<T>(count * rows, T {});
+      for (std::size_t c {0}; c < count; ++c) {
+        qt[(c * rows) + first + c] = T {1};
+      }
+      for (std::size_t b {blocks.size()}; b-- > 0;) {
+        apply_transposed_reflector_block(blocks[b], qt, rows, std::max(first, blocks[b].first) - first, count);
+      }
+      if (!transposed) {
+        out.resize(rows * count);
+        transpose_into(qt.data(), count, rows, out.data());
+      }
+#else
+      buffer<T>  formed;
+      buffer<T>& q {transposed ? formed : out};
+      q = buffer<T>(rows * count, T {});
+      for (std::size_t c {0}; c < count; ++c) {
+        q[((first + c) * count) + c] = T {1};
+      }
+      for (std::size_t b {blocks.size()}; b-- > 0;) {
+        apply_reflector_block(blocks[b], false, q, count, std::max(first, blocks[b].first) - first, count);
+      }
+      if (transposed) {
+        out.resize(count * rows);
+        transpose_into(q.data(), rows, count, out.data());
+      }
+#endif
     }
 
     /*!
@@ -1957,14 +2116,8 @@ namespace numerical {
       // formed alone whether Q is complete or not, so that the complete Q's are the reduced one's to the bit (formed
       // together, the products' tiles differ, and a fused multiply-add may round a column otherwise).
       const auto formed {[&](std::size_t first, std::size_t count) {
-                           buffer<T> columns(rows * count, T {});
-                           for (std::size_t c {0}; c < count; ++c) {
-                             columns[((first + c) * count) + c] = T {1};
-                           }
-                           for (std::size_t b {factors.blocks.size()}; b-- > 0;) { // the columns of I left of a block's rows it leaves
-                             const std::size_t from {std::max(first, factors.blocks[b].first) - first};
-                             apply_reflector_block(factors.blocks[b], false, columns, count, from, count);
-                           }
+                           buffer<T> columns;
+                           form_q_into(columns, factors.blocks, rows, first, count, false);
                            return columns;
                          }};
       thin_qr<T> out {.q = formed(0, depth), .r = std::move(factors.r)};
@@ -4016,8 +4169,8 @@ namespace numerical {
       }
       if (n < bidiagonal_basis_crossover) { // a reflector at a time, the last first, as LAPACK's dorg2r
         for (std::size_t k {n}; k-- > 0;) {
-          reflect_columns(ut, n, left[k], k, k, n);
-          reflect_columns(vt, n, shifted[k], k, k, n);
+          reflect_columns(ut.data(), n, left[k], k, k, n);
+          reflect_columns(vt.data(), n, shifted[k], k, k, n);
         }
         return;
       }

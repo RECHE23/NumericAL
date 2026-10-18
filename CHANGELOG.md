@@ -21,6 +21,19 @@ A change that can break code is listed under **Breaking** and held for a month's
   and packs −L₂₁ once for the tiles of the trailing update where a block of its rows serves several (past 512 rows); the
   factor is the unblocked algorithm's to the bit still. One AVX2 core: order 300 0.76 → 0.67 ms, 1000 13.9 → 12.7 ms,
   2000 86 → 76 ms; six cores 3 to 5 % faster; arm64, order 512, 16 %.
+- On the x86-64 units the QR factorisation runs on the matrix column-major, as LAPACK's `dgeqrf`: each panel is
+  factorised in place (it was copied out and back), and the columns right of it take its block of reflectors through
+  products whose rows are those columns, where the row-major form's first product had the block's 32; `Q` is formed the
+  same way. On arm64 the row-major form stays, faster there (the AMX tile reads the projection's right operand in
+  place). `dgeqrf_` and `dorgqr_` copy their matrix in and out of that layout in storage the thread keeps (they
+  transposed it into fresh storage, column by column), test it for NaN on vectors, and `dorgqr_` gathers its blocks'
+  `T` through the matrix product kernel and forms `Q` as `qr()` does, so that its `Q` of `dgeqrf_`'s factors is
+  `qr()`'s to the bit. Against OpenBLAS 0.3.26 on six x86-64 AVX2 cores, `dgeqrf_` one core 1.89 → 1.27× its time at
+  order 300, 1.54 → 1.21× at 1000, 1.32 → 1.13× at 2000, six cores 1.47 → 1.24×, 1.6 → 1.24×, 1.16 → 1.01×;
+  `dorgqr_` one core 1.78 → 1.14×, 1.62 → 1.17×, 1.39 → 1.10×, six cores 1.64 → 1.04×, 1.83 → 1.06×, 1.26 → 0.93×.
+  One arm64 core, order 512: `dgeqrf_` 3.8 → 3.3 ms, `dorgqr_` 4.4 → 2.4 ms. On x86-64, real and complex factors move
+  by rounding (the products run in other kernels), as accurate as before; on arm64 they are the same, and only
+  `dorgqr_`'s `Q` moves, to `qr()`'s.
 
 ## 2026.10.21 — 2026-10-17
 
