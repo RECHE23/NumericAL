@@ -9,14 +9,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
-- `dgesv_` with `B` the identity to the bit (NumPy's `inv`) solves through the LU's inverse, whose forward pass leaves
-  out the identity's zeros: the same terms otherwise, so the same bits, a test holding it at orders 9 to 301. The
-  inverse (`lu_decomposition::inverse`, `numerical::inverse`) writes its identity and applies the interchanges in
-  place, by bands of rows on the threads, where a fresh `n × n` was faulted in and filled on one thread (order 1000 on
-  six x86-64 AVX2 cores: 3.9 → 0.27 ms); its column slices weigh alike (`n² + (n − c)²` a column) where the first did
-  twice the last's work. `lu_decomposition::inverse(buffer)` takes the result's storage. NumPy's `inv` on six x86-64
-  AVX2 cores, against OpenBLAS 0.3.26: order 100 201 → 179 µs (81), 300 1.30 → 1.22 ms (0.74), 1000 24.0 → 20.4 ms
-  (17.7); arm64 100 123 → 110 µs, 300 980 → 935 µs, 1000 17.3 → 12.3 ms.
+- `dgesv_` with `B` the identity to the bit (NumPy's `inv`) solves through the LU's inverse of the rows in their
+  pivoted order (`lu_decomposition::pivoted_inverse`), whose forward pass leaves out the identity's zeros: the same
+  terms otherwise, so the same bits, a test holding it at orders 9 to 301. Its columns go to the interchanged places as
+  they are copied out. The inverse (`lu_decomposition::inverse`, `numerical::inverse`) writes its identity and applies
+  the interchanges in place, by bands of rows on the threads, where a fresh `n × n` was faulted in and filled on one
+  thread; its column slices weigh alike (`n² + (n − c)²` a column) where the first did twice the last's work;
+  `inverse(buffer)` takes the result's storage. `inverse` on six x86-64 AVX2 cores: order 300 970 → 430 µs, 1000 15.3
+  → 9.1 ms. NumPy's `inv`, against OpenBLAS 0.3.26: order 100 201 → 173 µs (81), 300 1.30 → 1.12 ms (0.74), 1000 24.0
+  → 20.1 ms (17.7); arm64 100 123 → 110 µs, 300 980 → 935 µs, 1000 17.3 → 12.3 ms.
 - The BLAS routines' transposing copies of their column-major arguments run in parallel by bands of tiles past a few
   hundred thousand elements (`dgesv_`, `dgetrf_`, `dpotrf_`, `dsyrk_`'s and `dgemm_`'s copies, …): NumPy's `inv` on six
   x86-64 AVX2 cores, order 300 1.50 → 1.29 ms, 1000 24.4 → 24.0 ms; arm64 300 1.23 → 1.15 ms, 1000 19.3 → 18.3 ms.

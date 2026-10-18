@@ -121,6 +121,10 @@ namespace numerical {
     //! \brief The rows an LU inverse writes its identity into, and permutes the columns of, on one thread at a time.
     inline constexpr std::size_t inverse_band {16};
 
+    //! \brief The weight of an element an LU inverse writes or moves against a multiply-add: bound by the memory, as
+    //!        the BLAS routines' transposing copies (weighed as one, order 300 permuted its columns on one thread).
+    inline constexpr std::size_t inverse_element_weight {4};
+
 #ifdef NUMERICAL_X86_COMPILED
     //! \brief The rows an LU panel's copy takes together, so that it writes each column of the panel eight `double`s,
     //!        a 64-byte line, at a time, where row by row each write fell on another line (six AVX2 cores, order 768:
@@ -663,12 +667,39 @@ namespace numerical {
 
     /*!
      * \brief \ref inverse in \p storage, its elements discarded: no fresh `n × n` mapped and faulted in where it holds
-     *        that much already. The identity written and `P` applied in place, by bands of rows on the threads.
+     *        that much already. \ref pivoted_inverse, then `P` applied in place, by bands of rows on the threads.
      * \param[in] storage The storage of the result, taken over.
      * \return The inverse matrix, in \p storage.
      * \throws singular_matrix_error If the matrix is singular.
      */
     [[nodiscard]] matrix<T> inverse(buffer<T> storage) const
+    {
+      buffer<T>                rows {pivoted_inverse(std::move(storage)).elements()};
+      const std::size_t        n    {n_};
+      T* const                 at   {rows.data()};
+      const std::size_t* const to   {pivots_.data()};
+      // Bounds captured by value: by reference, the stores might have changed them, and each would be read again.
+      detail::parallel_for((n + detail::inverse_band - 1) / detail::inverse_band, detail::inverse_element_weight * detail::inverse_band * n, [at, n, to](std::size_t band) {
+                             buffer<T> held(n); // column to[i] of A⁻¹ is column i of U⁻¹ L⁻¹
+                             for (std::size_t r {band * detail::inverse_band}; r < std::min(n, (band + 1) * detail::inverse_band); ++r) {
+                               std::copy_n(at + (r * n), n, held.data());
+                               for (std::size_t i {0}; i < n; ++i) {
+                                 at[(r * n) + to[i]] = held[i];
+                               }
+                             }
+                           });
+      return matrix<T> {n, n, std::move(rows)};
+    }
+
+    /*!
+     * \brief `(P A)⁻¹ = U⁻¹ L⁻¹`, the inverse of the rows in their pivoted order, in \p storage (its elements discarded):
+     *        column `pivots()[i]` of `A⁻¹` is its column `i`, which \ref inverse moves there (a caller that copies the
+     *        result anyway can move them as it copies). The identity written by bands of rows on the threads.
+     * \param[in] storage The storage of the result, taken over.
+     * \return `(P A)⁻¹`, in \p storage.
+     * \throws singular_matrix_error If the matrix is singular.
+     */
+    [[nodiscard]] matrix<T> pivoted_inverse(buffer<T> storage) const
     {
       if (singular_) {
         throw singular_matrix_error("inverse: matrix is singular");
@@ -676,24 +707,13 @@ namespace numerical {
       const std::size_t n    {n_};
       storage.resize(n * n);
       T* const          rows {storage.data()};
-      // Bounds captured by value: by reference, the stores might have changed them, and each would be read again.
-      detail::parallel_for((n + detail::inverse_band - 1) / detail::inverse_band, detail::inverse_band * n, [rows, n](std::size_t band) {
+      detail::parallel_for((n + detail::inverse_band - 1) / detail::inverse_band, detail::inverse_element_weight * detail::inverse_band * n, [rows, n](std::size_t band) {
                              for (std::size_t r {band * detail::inverse_band}; r < std::min(n, (band + 1) * detail::inverse_band); ++r) {
                                std::fill_n(rows + (r * n), n, T {});
                                rows[(r * n) + r] = T {1};
                              }
                            });
       solve_rows(storage, n, true);
-      const std::size_t* const to {pivots_.data()};
-      detail::parallel_for((n + detail::inverse_band - 1) / detail::inverse_band, detail::inverse_band * n, [rows, n, to](std::size_t band) {
-                             buffer<T> held(n); // column to[i] of A⁻¹ is column i of U⁻¹ L⁻¹
-                             for (std::size_t r {band * detail::inverse_band}; r < std::min(n, (band + 1) * detail::inverse_band); ++r) {
-                               std::copy_n(rows + (r * n), n, held.data());
-                               for (std::size_t i {0}; i < n; ++i) {
-                                 rows[(r * n) + to[i]] = held[i];
-                               }
-                             }
-                           });
       return matrix<T> {n, n, std::move(storage)};
     }
 

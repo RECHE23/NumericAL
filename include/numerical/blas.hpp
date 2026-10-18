@@ -242,6 +242,26 @@ namespace numerical::blas {
                                       });
     }
 
+    //! \brief \ref column_major_into for the `n × n` \p from, its column `j` written as column `to[j]` of \p a.
+    template <typename T>
+    void column_major_permuted_into(const T*           from,
+                                    std::size_t        n,
+                                    const std::size_t* to,
+                                    T*                 a,
+                                    std::size_t        lda)
+    {
+      numerical::detail::parallel_for((n + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * n, [from, n, to, a, lda](std::size_t band) {
+                                        const std::size_t j0 {band * transpose_tile};
+                                        for (std::size_t i0 {0}; i0 < n; i0 += transpose_tile) {
+                                          for (std::size_t i {i0}; i < std::min(i0 + transpose_tile, n); ++i) {
+                                            for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, n); ++j) {
+                                              a[i + (to[j] * lda)] = from[(i * n) + j];
+                                            }
+                                          }
+                                        }
+                                      });
+    }
+
     /*!
      * \brief `C += L op(A)ᵀ` (`C` row-major `m × n`, `L` `m × k`), \p a the column-major `op(A)`'s storage (\p lda apart):
      *        `op(A)ᵀ` is A read in place where \p transa does not transpose, else a copy of its transpose (an overload
@@ -1050,8 +1070,14 @@ namespace numerical::blas {
         if (!inverting) {
           detail::row_major_into(b_rows, b, ldb, n, nrhs, T {1});
         }
-        matrix<T> x {inverting ? lu.inverse(std::move(b_rows)) : lu.solve(matrix<T> {size, static_cast<std::size_t>(nrhs), std::move(b_rows)})};
-        detail::column_major_into(&*x.begin(), size, static_cast<std::size_t>(nrhs), b, static_cast<std::size_t>(ldb));
+        // (P A)⁻¹'s columns moved to A⁻¹'s as they are copied out.
+        matrix<T> x {inverting ? lu.pivoted_inverse(std::move(b_rows)) : lu.solve(matrix<T> {size, static_cast<std::size_t>(nrhs), std::move(b_rows)})};
+        if (inverting) {
+          detail::column_major_permuted_into(&*x.begin(), size, lu.pivots().data(), b, static_cast<std::size_t>(ldb));
+        }
+        else {
+          detail::column_major_into(&*x.begin(), size, static_cast<std::size_t>(nrhs), b, static_cast<std::size_t>(ldb));
+        }
         detail::give_back(1, std::move(x).elements());
       }
       factors = std::move(lu).factors();

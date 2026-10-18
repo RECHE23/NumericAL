@@ -382,6 +382,16 @@ TEST(inverse_in_given_storage_is_the_inverse)
   const numerical::matrix<double>           fresh {lu.inverse()};
   EXPECT(lu.inverse(numerical::buffer<double>(n * n * 2, 3.0)) == fresh);
   EXPECT(lu.inverse(numerical::buffer<double>(5, -1.0)) == fresh);
+  const numerical::matrix<double> pivoted {lu.pivoted_inverse(numerical::buffer<double> {})};
+  bool                            moved   {true}; // column pivots()[i] of A⁻¹ is column i of (P A)⁻¹
+  for (std::size_t r {0}; r < n; ++r) {
+    for (std::size_t i {0}; i < n; ++i) {
+      moved = moved && std::bit_cast<std::uint64_t>(fresh(r, lu.pivots()[i])) == std::bit_cast<std::uint64_t>(pivoted(r, i));
+    }
+  }
+  EXPECT(moved);
+  const numerical::lu_decomposition<double> singular {numerical::matrix<double> {{1.0, 2.0}, {2.0, 4.0}}};
+  EXPECT_THROWS((void)singular.pivoted_inverse(numerical::buffer<double>(4)), numerical::singular_matrix_error);
 }
 
 TEST(gesv_reports_a_zero_pivot_an_illegal_argument_and_a_nan)
