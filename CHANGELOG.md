@@ -9,6 +9,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- The BLAS routines' transposing copies of their column-major arguments run in parallel by bands of tiles past a few
+  hundred thousand elements (`dgesv_`, `dgetrf_`, `dpotrf_`, `dsyrk_`'s and `dgemm_`'s copies, …): NumPy's `inv` on six
+  x86-64 AVX2 cores, order 300 1.50 → 1.29 ms, 1000 24.4 → 24.0 ms; arm64 300 1.23 → 1.15 ms, 1000 19.3 → 18.3 ms.
 - The Cholesky factorisation's rows below a diagonal block take each column's terms of its sub-block with the column
   held in registers (`detail::subtract_products`), where each term read and wrote it again; the same multiply-adds in
   the same order, so without fusion the factor is still the unblocked algorithm's to the bit. One x86-64 AVX2 core:

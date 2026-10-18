@@ -112,6 +112,12 @@ namespace numerical::blas {
     //!        every element (a 1000 × 1000 copy took several milliseconds).
     inline constexpr std::size_t transpose_tile {32};
 
+    //! \brief The weight of an element of the transposing copies against a multiply-add: bound by the memory, a copy
+    //!        spreads over threads from a few hundred thousand elements (an inverse of order 1000 on six AVX2 cores
+    //!        spent a fifth of its time in its four copies on one thread). The bands capture their bounds by value: by
+    //!        reference, the stores might have changed them, and each was read again (order 100: 5.9 → 10 µs).
+    inline constexpr std::size_t transpose_weight {4};
+
     //! \brief The column-major `rows × cols` \p a (\p lda apart) into the row-major \p out (resized to it), by tiles,
     //!        each element times \p scale (conjugated first where \p conjugate).
     template <typename T>
@@ -127,16 +133,18 @@ namespace numerical::blas {
       const auto c  {static_cast<std::size_t>(cols)};
       const auto ld {static_cast<std::size_t>(lda)};
       out.resize(r * c);
-      for (std::size_t i0 {0}; i0 < r; i0 += transpose_tile) {
-        for (std::size_t j0 {0}; j0 < c; j0 += transpose_tile) {
-          for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, c); ++j) {
-            for (std::size_t i {i0}; i < std::min(i0 + transpose_tile, r); ++i) {
-              const T x {a[i + (j * ld)]};
-              out[(i * c) + j] = scale * (conjugate ? numerical::detail::conj_of(x) : x);
-            }
-          }
-        }
-      }
+      T* const to   {out.data()};
+      numerical::detail::parallel_for((r + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * c, [a, ld, r, c, to, scale, conjugate](std::size_t band) {
+                                        const std::size_t i0 {band * transpose_tile};
+                                        for (std::size_t j0 {0}; j0 < c; j0 += transpose_tile) {
+                                          for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, c); ++j) {
+                                            for (std::size_t i {i0}; i < std::min(i0 + transpose_tile, r); ++i) {
+                                              const T x {a[i + (j * ld)]};
+                                              to[(i * c) + j] = scale * (conjugate ? numerical::detail::conj_of(x) : x);
+                                            }
+                                          }
+                                        }
+                                      });
     }
 
     //! \brief `rows × cols` of the column-major \p a (\p lda apart), as a row-major buffer, each element times
@@ -194,15 +202,16 @@ namespace numerical::blas {
                            T*          a,
                            std::size_t lda)
     {
-      for (std::size_t j0 {0}; j0 < cols; j0 += transpose_tile) {
-        for (std::size_t i0 {0}; i0 < rows; i0 += transpose_tile) {
-          for (std::size_t i {i0}; i < std::min(i0 + transpose_tile, rows); ++i) {
-            for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, cols); ++j) {
-              a[i + (j * lda)] = from[(i * cols) + j];
-            }
-          }
-        }
-      }
+      numerical::detail::parallel_for((cols + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * rows, [from, rows, cols, a, lda](std::size_t band) {
+                                        const std::size_t j0 {band * transpose_tile};
+                                        for (std::size_t i0 {0}; i0 < rows; i0 += transpose_tile) {
+                                          for (std::size_t i {i0}; i < std::min(i0 + transpose_tile, rows); ++i) {
+                                            for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, cols); ++j) {
+                                              a[i + (j * lda)] = from[(i * cols) + j];
+                                            }
+                                          }
+                                        }
+                                      });
     }
 
     /*!
