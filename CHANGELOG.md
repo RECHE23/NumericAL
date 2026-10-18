@@ -45,6 +45,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   every call), the lower one by tiles, and the factor back the same way (a row read across columns `lda` apart missed
   on every element). One x86-64 AVX2 core: order 200 370 → 255 µs, 300 980 → 710 µs, 500 3.06 → 2.35 ms.
 
+### Fixed
+- A program built with GCC 14 under `-Werror` (`-Wall`, glibc's fortified `memcpy`) no longer fails on a false
+  `-Warray-bounds` in the buffers' release of huge pages, where a small buffer of a size known at compile time was
+  inlined (a QR of constant 70 × 40 complex columns): that release is out of line.
+
 ## 2026.10.21 — 2026-10-17
 
 ### Added
