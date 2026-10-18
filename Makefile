@@ -38,7 +38,7 @@ FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: check-pins all build test sanitize coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate test-gcc lint-gate stubtest-gate bench-diff-selftest \
-        python python-test python-stubtest fuzz-linalg bench-diff bench-linalg bench-python bench-gemm version-check install uninstall release clean help
+        python python-test python-stubtest fuzz-linalg bench-diff bench-linalg bench-python bench-gemm version-check install uninstall release release-bump clean help
 
 .DEFAULT_GOAL := help
 
@@ -276,35 +276,12 @@ uninstall:
 # (--cleanup=verbatim keeps its "## " headings, which git would drop as comments); release.yml publishes
 # that body as the GitHub release notes. An empty Unreleased section refuses the release. DRY_RUN=1 runs
 # the computation and that guard with no commit, tag or push.
-release:
-	@test "$$(git symbolic-ref --short HEAD)" = main || { echo "release from main only"; exit 1; }
-	@test -z "$$(git status --porcelain)" || { echo "working tree not clean"; exit 1; }
-	@git fetch --tags --quiet origin
-	@if [ -z "$$SKIP_BENCH_DIFF" ] && [ -z "$$DRY_RUN" ]; then $(MAKE) --no-print-directory bench-diff \
-	   || { echo "release: bench-diff found a regression against the last release (SKIP_BENCH_DIFF=1 to release anyway)"; exit 1; }; fi
-	@year=$$(date -u +%Y); month=$$(date -u +%m | sed 's/^0//'); today=$$(date -u +%Y-%m-%d); \
-	 patch=$$(git tag -l "v$$year.$$month.*" | wc -l | tr -d ' '); \
-	 version="$$year.$$month.$$patch"; \
-	 echo "Releasing v$$version ($$today)$${DRY_RUN:+  [DRY_RUN — no commit/tag/push]}"; \
-	 awk '/^## Unreleased$$/{f=1;next} f&&/^## /{exit 1} f&&NF{found=1;exit 0} END{if(!found)exit 1}' CHANGELOG.md \
-	   || { echo "release: '## Unreleased' is empty — add a CHANGELOG line (even 'maintenance release') first"; exit 1; }; \
-	 tb=$$(mktemp); \
-	 awk -v v="$$version" -v d="$$today" '/^## Unreleased$$/{print; print ""; print "## " v " — " d; next} {print}' CHANGELOG.md > CHANGELOG.md.tmp && mv CHANGELOG.md.tmp CHANGELOG.md; \
-	 awk -v h="## $$version " 'index($$0,h)==1{f=1;print;next} f&&/^## /{exit} f{print}' CHANGELOG.md > $$tb; \
-	 sed -i.bak -E "s/^version = \".*\"/version = \"$$version\"/" pyproject.toml && rm -f pyproject.toml.bak; \
-	 sed -i.bak -E "s/^__version__ = \".*\"/__version__ = \"$$version\"/" python/numerical/__init__.py && rm -f python/numerical/__init__.py.bak; \
-	 if [ -n "$$DRY_RUN" ]; then \
-	   echo "would commit 'release: v$$version' (pyproject, __init__, CHANGELOG); annotated tag v$$version, body:"; \
-	   sed 's/^/    | /' $$tb; \
-	   echo "would run: git push origin HEAD v$$version"; \
-	   git checkout -- pyproject.toml python/numerical/__init__.py CHANGELOG.md; \
-	 else \
-	   git add pyproject.toml python/numerical/__init__.py CHANGELOG.md; \
-	   git commit -m "release: v$$version"; \
-	   git tag -a --cleanup=verbatim "v$$version" -F $$tb; \
-	   git push origin HEAD "v$$version"; \
-	 fi; \
-	 rm -f $$tb
+# The version `make release` (SciForge's make/release.mk, below) writes: pyproject.toml is its source, CMake derives
+# it, __init__.py carries it for Python.
+release-bump:
+	@test -n "$(VERSION)" || { echo "release-bump: VERSION= is required"; exit 1; }
+	@sed -i.bak -E "s/^version = \".*\"/version = \"$(VERSION)\"/" pyproject.toml && rm -f pyproject.toml.bak
+	@sed -i.bak -E "s/^__version__ = \".*\"/__version__ = \"$(VERSION)\"/" python/numerical/__init__.py && rm -f python/numerical/__init__.py.bak
 
 clean:
 	rm -rf $(BUILD) build dist ./*.egg-info python/numerical/*.so
@@ -318,3 +295,9 @@ QUALITY_PUSH     := version-check check-pins test test-gcc sanitize misra doc-no
                     stubtest-gate lint-gate
 QUALITY_RELEASE  := bench-diff fuzz-linalg
 -include $(SCIFORGE_MAKE)/quality.mk
+
+# The calendar release every SciForge project cuts (the sibling checkout's make/release.mk): bench-diff against the last
+# release first (SKIP_BENCH_DIFF=1, or SKIP_PRECHECK=1, to release anyway), CI green on the commit tagged.
+RELEASE_FILES    := pyproject.toml python/numerical/__init__.py
+RELEASE_PRECHECK := $(if $(SKIP_BENCH_DIFF),,bench-diff)
+-include $(SCIFORGE_MAKE)/release.mk
