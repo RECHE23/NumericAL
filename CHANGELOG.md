@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- The SVD scales and copies its input, and turns its bases' rows into columns, by bands of rows on the threads, the
+  transposition by tiles (`detail::transpose_into`, which the QR's copies share), where each ran on one thread and the
+  transposition read its source a row apart. Six x86-64 AVX2 cores, `svd` of order 1000: 218 → 199 ms (OpenBLAS
+  `dgesdd` 188); the transpositions 9.5 → 2.1 ms on six cores, 2.4 on one.
 - The bidiagonal reduction of the SVD (past order 128) gathers each panel's columns once, row by row, where each step
   read its column across rows `n` apart, and takes a step's terms of the panel's earlier ones a family at a time in one
   update through their rows (`detail::subtract_products`; the reflectors and what they move interleaved), in the same

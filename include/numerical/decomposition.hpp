@@ -126,6 +126,9 @@ namespace numerical {
     //!        routines' transposing copies (weighed as one, an LU inverse of order 300 permuted its columns on one thread).
     inline constexpr std::size_t memory_element_weight {4};
 
+    //! \brief The rows of an SVD's input one thread scales and copies at a time.
+    inline constexpr std::size_t svd_band {32};
+
     //! \brief The rows of a Cholesky factor whose upper part one thread zeroes at a time.
     inline constexpr std::size_t zeroed_rows {32};
 
@@ -2100,22 +2103,24 @@ namespace numerical {
     //!        stay in the cache, where a whole column read across rows misses on every element.
     inline constexpr std::size_t qr_transpose_tile {32};
 
-    //! \brief The row-major `rows × cols` \p from into \p to as its transpose, `cols × rows` row-major, by tiles.
+    //! \brief The row-major `rows × cols` \p from into \p to as its transpose, `cols × rows` row-major, by tiles,
+    //!        bands of them on the threads (a pass bound by the memory, its bounds captured by value).
     template <typename T>
     void transpose_into(const T*    from,
                         std::size_t rows,
                         std::size_t cols,
                         T*          to)
     {
-      for (std::size_t i0 {0}; i0 < rows; i0 += qr_transpose_tile) {
-        for (std::size_t j0 {0}; j0 < cols; j0 += qr_transpose_tile) {
-          for (std::size_t j {j0}; j < std::min(j0 + qr_transpose_tile, cols); ++j) {
-            for (std::size_t i {i0}; i < std::min(i0 + qr_transpose_tile, rows); ++i) {
-              to[(j * rows) + i] = from[(i * cols) + j];
-            }
-          }
-        }
-      }
+      parallel_for((rows + qr_transpose_tile - 1) / qr_transpose_tile, memory_element_weight * qr_transpose_tile * cols, [from, rows, cols, to](std::size_t band) {
+                     const std::size_t i0 {band * qr_transpose_tile};
+                     for (std::size_t j0 {0}; j0 < cols; j0 += qr_transpose_tile) {
+                       for (std::size_t j {j0}; j < std::min(j0 + qr_transpose_tile, cols); ++j) {
+                         for (std::size_t i {i0}; i < std::min(i0 + qr_transpose_tile, rows); ++i) {
+                           to[(j * rows) + i] = from[(i * cols) + j];
+                         }
+                       }
+                     }
+                   });
     }
 
     /*!
@@ -5615,21 +5620,30 @@ namespace numerical {
       const std::size_t cols {a.cols()};
       // Work on A divided by its largest magnitude: the sums of squares in the sweeps overflow near
       // 1e155 and underflow near 1e-155. The singular values are scaled back; the vectors do not change.
-      double scale {0.0};
-      for (std::size_t i {0}; i < rows; ++i) {
-        for (std::size_t j {0}; j < cols; ++j) {
-          scale = std::max(scale, static_cast<double>(std::abs(a(i, j))));
-        }
-      }
+      // Both passes by bands of rows on the threads, bound by the memory: a band's largest magnitude, then the
+      // largest of those (exact in any order), then the quotients.
+      const T* const      source {std::to_address(a.begin())};
+      const std::size_t   bands  {(rows + detail::svd_band - 1) / detail::svd_band};
+      std::vector<double> largest(bands, 0.0);
+      detail::parallel_for(bands, detail::memory_element_weight * detail::svd_band * cols, [source, rows, cols, &largest](std::size_t band) {
+                             double most {0.0};
+                             for (std::size_t e {band * detail::svd_band * cols}; e < std::min(rows, (band + 1) * detail::svd_band) * cols; ++e) {
+                               most = std::max(most, static_cast<double>(std::abs(source[e])));
+                             }
+                             largest[band] = most;
+                           });
+      double scale {*std::max_element(largest.begin(), largest.end())};
       if (scale == 0.0) {
         scale = 1.0;
       }
-      buffer<T> entries(rows * cols, T {});
-      for (std::size_t i {0}; i < rows; ++i) {
-        for (std::size_t j {0}; j < cols; ++j) {
-          entries[(i * cols) + j] = a(i, j) / detail::from_double<T>(scale);
-        }
-      }
+      buffer<T>         entries(rows * cols);
+      T* const          into    {entries.data()};
+      const T           divisor {detail::from_double<T>(scale)};
+      detail::parallel_for(bands, detail::memory_element_weight * detail::svd_band * cols, [source, into, rows, cols, divisor](std::size_t band) {
+                             for (std::size_t e {band * detail::svd_band * cols}; e < std::min(rows, (band + 1) * detail::svd_band) * cols; ++e) {
+                               into[e] = source[e] / divisor;
+                             }
+                           });
       // A square matrix is reduced to bidiagonal form as it is (as LAPACK's dgesdd does short of a tall one): a QR
       // first, its Q formed and multiplied in at the end, took a third of the decomposition's time at order 1024.
       const bool         direct  {rows == cols && method != svd_method::jacobi};
@@ -5648,14 +5662,10 @@ namespace numerical {
         else {
           detail::bidiagonal_divide_and_conquer(d, e, ut, vt, cols);
         }
-        buffer<T> left(cols * cols, T  {});
-        buffer<T> right(cols * cols, T {});
-        for (std::size_t i {0}; i < cols; ++i) { // rows of ut and vt are the vectors: make them columns
-          for (std::size_t j {0}; j < cols; ++j) {
-            left[(i * cols) + j]  = ut[(j * cols) + i];
-            right[(i * cols) + j] = vt[(j * cols) + i];
-          }
-        }
+        buffer<T> left(cols * cols);  // rows of ut and vt are the vectors: made columns
+        buffer<T> right(cols * cols);
+        detail::transpose_into(ut.data(), cols, cols, left.data());
+        detail::transpose_into(vt.data(), cols, cols, right.data());
         for (double& value : d) {
           value *= scale;
         }
