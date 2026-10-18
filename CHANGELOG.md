@@ -25,7 +25,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   Each element takes the same terms in the same order: on x86-64, and for complex matrices, the factor is the same to
   the bit; on arm64 Clang fuses other terms of a real one's sums, which move by rounding. One x86-64 AVX2 core,
   `dpotrf_`: order 300 701 → 635 µs (the diagonal blocks 128 → 65), 500 2.28 → 2.16 ms, 1000 13.4 → 13.1 ms; six
-  cores, 300 504 → 440 µs; arm64, one core, 300 354 → 318 µs, 500 1.00 → 0.95 ms.
+  cores, 300 504 → 440 µs; arm64, one core, 300 354 → 318 µs, 500 1.00 → 0.95 ms. The rows' loops are unrolled
+  (GCC kept their sums in memory) and a block narrower than 16 goes row by row: arm64 under GCC 14, order 17 0.95 →
+  0.79 µs, 33 4.6 → 2.8 µs; under Clang 17 0.80 → 0.62 µs.
 - The Hermitian tridiagonal reduction (`eigvalsh`, `eigh`, `dsyevd_`) gathers each panel's columns once, row by row,
   where each step read its column across rows `n` apart, and takes a step's terms of the panel's earlier ones in one
   update through their rows (`detail::subtract_products`, the vectors and their products interleaved), in the same

@@ -149,6 +149,10 @@ namespace numerical {
     //!        order 300: the diagonal blocks 128 → 65 µs; eight rows did no better).
     inline constexpr std::size_t cholesky_diagonal_rows {4};
 
+    //! \brief The narrowest Cholesky diagonal block whose rows go together: in a block of 8, the groups' loops cost
+    //!        more than the chains save (order 8, one arm64 core: 0.21 → 0.23 µs).
+    inline constexpr std::size_t cholesky_together_width {16};
+
     //! \brief The order below which the Cholesky factorisation is one panel: no trailing product, whose packing the
     //!        few panels of a small order do not repay (order 17 on one thread: 0.8 µs whole, 1.3 µs in panels of 16).
     //!        Panels of 16 win from order 40 on x86-64 and from 48 on arm64.
@@ -1576,7 +1580,7 @@ namespace numerical {
       for (std::size_t k0 {0}; k0 < n_; k0 += block_) {
         const std::size_t end {std::min(k0 + block_, n_)};
         std::size_t       i   {k0};
-        for (; i + detail::cholesky_diagonal_rows <= end; i += detail::cholesky_diagonal_rows) {
+        for (; end - k0 >= detail::cholesky_together_width && i + detail::cholesky_diagonal_rows <= end; i += detail::cholesky_diagonal_rows) {
           factor_rows_together(i, k0);
           for (std::size_t r {0}; r < detail::cholesky_diagonal_rows; ++r) { // their triangle, row after row
             factor_row(i + r, k0, i, i + r + 1);
@@ -1605,7 +1609,8 @@ namespace numerical {
      * \brief The columns `[k0, i)` of the \ref detail::cholesky_diagonal_rows rows from \p i, together: each element
      *        depends on its own row's earlier columns and on the rows above \p i alone, so the rows' sums are chains of
      *        their own, where row by row each term waited on the last. Each element is \ref factor_row's, its terms in
-     *        the same order.
+     *        the same order. The rows' loops unrolled: rolled, GCC kept the sums in memory (order 33 on one arm64
+     *        core: 8.3 µs, against 2.8 unrolled and 4.6 row by row).
      */
     void factor_rows_together(std::size_t i,
                               std::size_t k0)
@@ -1613,15 +1618,18 @@ namespace numerical {
       std::array<T, detail::cholesky_diagonal_rows> sums {};
       for (std::size_t j {k0}; j < i; ++j) {
         const T* const above {lower_.data() + (j * n_)};
+        NUMERICAL_UNROLL_BLOCK
         for (std::size_t r {0}; r < detail::cholesky_diagonal_rows; ++r) {
           sums[r] = lower_[((i + r) * n_) + j];
         }
         for (std::size_t k {k0}; k < j; ++k) {
           const T other {detail::conj_of(above[k])};
+          NUMERICAL_UNROLL_BLOCK
           for (std::size_t r {0}; r < detail::cholesky_diagonal_rows; ++r) {
             sums[r] -= lower_[((i + r) * n_) + k] * other;
           }
         }
+        NUMERICAL_UNROLL_BLOCK
         for (std::size_t r {0}; r < detail::cholesky_diagonal_rows; ++r) {
           lower_[((i + r) * n_) + j] = sums[r] / above[j];
         }
