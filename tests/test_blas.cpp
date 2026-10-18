@@ -304,6 +304,86 @@ TEST(gesv_factorises_as_dgetrf_and_solves)
   EXPECT(gesv_solves(9, 0));   // factors only
 }
 
+namespace {
+  // Whether gesv of order n with B the identity (lda and ldb padded), but for its element at \p offset set to \p value,
+  // leaves the bits of the LU's solve of that B.
+  bool gesv_as_the_solve(std::size_t n,
+                         std::size_t offset,
+                         double      value)
+  {
+    const std::size_t         lda {n + 3};
+    const std::size_t         ldb {n + 1};
+    const std::vector<double> a   {entries(lda * n, 9)};
+    std::vector<double>       b(ldb * n, 0.0);
+    for (std::size_t i {0}; i < n; ++i) {
+      b[i + (i * ldb)] = 1.0;
+    }
+    b[offset] = value;
+    numerical::buffer<double> a_rows(n * n);
+    numerical::buffer<double> b_rows(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        a_rows[(i * n) + j] = a[i + (j * lda)];
+        b_rows[(i * n) + j] = b[i + (j * ldb)];
+      }
+    }
+    const numerical::lu_decomposition<double> factored {numerical::matrix<double> {n, n, std::move(a_rows)}};
+    const numerical::matrix<double>           expected {factored.solve(numerical::matrix<double> {n, n, std::move(b_rows)})};
+    std::vector<double>                       lu       {a};
+    std::vector<int>                          ipiv(n);
+    if (numerical::blas::gesv(static_cast<std::ptrdiff_t>(n), static_cast<std::ptrdiff_t>(n), lu.data(), static_cast<std::ptrdiff_t>(lda), ipiv.data(), b.data(),
+                              static_cast<std::ptrdiff_t>(ldb)) != 0) {
+      return false;
+    }
+    bool same {true};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        same = same && std::bit_cast<std::uint64_t>(b[i + (j * ldb)]) == std::bit_cast<std::uint64_t>(expected(i, j));
+      }
+    }
+    return same;
+  }
+} // namespace
+
+TEST(gesv_of_the_identity_is_the_solve_of_it_to_the_bit)
+{
+  // The identity goes to the LU's inverse past the orders solved row by row: orders of one block to several, odd ones.
+  for (const std::size_t n : {std::size_t {9}, std::size_t {17}, std::size_t {40}, std::size_t {67}, std::size_t {130}, std::size_t {301}}) {
+    EXPECT(gesv_as_the_solve(n, 0, 1.0));
+  }
+  EXPECT(gesv_as_the_solve(40, 1, -0.0)); // a signed zero is not the identity's
+  EXPECT(gesv_as_the_solve(40, 0, 2.0));
+  EXPECT(gesv_as_the_solve(40, 41, 0.5)); // the first column the identity's, the second not (ldb is 41)
+}
+
+TEST(gesv_keeps_a_signed_zero_of_b)
+{
+  // A = 2 I: X = B / 2, so B's -0 is X's, where the identity's solve would have given +0.
+  const std::size_t   n {40};
+  std::vector<double> a(n * n, 0.0);
+  std::vector<double> b(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    a[i + (i * n)] = 2.0;
+    b[i + (i * n)] = 1.0;
+  }
+  b[1] = -0.0;
+  std::vector<int> ipiv(n);
+  EXPECT_EQ(numerical::blas::gesv(static_cast<std::ptrdiff_t>(n), static_cast<std::ptrdiff_t>(n), a.data(), static_cast<std::ptrdiff_t>(n), ipiv.data(), b.data(),
+                                  static_cast<std::ptrdiff_t>(n)),
+            0);
+  EXPECT(std::signbit(b[1]));
+  EXPECT_EQ(b[0], 0.5);
+}
+
+TEST(inverse_in_given_storage_is_the_inverse)
+{
+  const std::size_t                         n     {70};
+  const numerical::lu_decomposition<double> lu    {numerical::matrix<double> {n, n, entries(n * n, 4)}};
+  const numerical::matrix<double>           fresh {lu.inverse()};
+  EXPECT(lu.inverse(numerical::buffer<double>(n * n * 2, 3.0)) == fresh);
+  EXPECT(lu.inverse(numerical::buffer<double>(5, -1.0)) == fresh);
+}
+
 TEST(gesv_reports_a_zero_pivot_an_illegal_argument_and_a_nan)
 {
   std::vector<double> a {1.0, 2.0, 0.0, 0.0}; // second column zero: U(2, 2) = 0

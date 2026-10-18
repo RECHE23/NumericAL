@@ -16,11 +16,13 @@
 
 #include <algorithm>
 #include <array>
+#include <atomic>
 #include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <utility>
 #include <vector>
@@ -192,6 +194,32 @@ namespace numerical::blas {
       if (storage.capacity() <= kept_bytes / sizeof(T)) {
         kept_storage<T>(slot) = std::move(storage);
       }
+    }
+
+    /*!
+     * \brief Whether the column-major `n × n` \p b (\p ldb apart) is the identity to the bit (a `-0` is no zero of it, a
+     *        solve from it signing zeros of its own): column `j` against `n` elements of a unit column of `2n − 1`, its
+     *        one in the middle, from `n − 1 − j`, a comparison of bytes a column. The first column alone, most other
+     *        right-hand sides told apart there; the rest by columns on the threads, bound by the memory.
+     */
+    template <typename T>
+    [[nodiscard]] bool is_identity(const T*    b,
+                                   std::size_t ldb,
+                                   std::size_t n)
+    {
+      buffer<T> unit((2 * n) - 1, T {});
+      unit[n - 1] = T {1};
+      const T* const middle         {unit.data() + (n - 1)};
+      if (std::memcmp(b, middle, n * sizeof(T)) != 0) {
+        return false;
+      }
+      std::atomic<bool> holds {true};
+      numerical::detail::parallel_for(n - 1, transpose_weight * n, [b, ldb, n, middle, &holds](std::size_t j) {
+                                        if (std::memcmp(b + ((j + 1) * ldb), middle - (j + 1), n * sizeof(T)) != 0) {
+                                          holds.store(false, std::memory_order_relaxed);
+                                        }
+                                      });
+      return holds.load(std::memory_order_relaxed);
     }
 
     //! \brief The row-major `rows × cols` \p from into the column-major \p a (\p lda apart), by tiles.
@@ -1015,9 +1043,14 @@ namespace numerical::blas {
       pivots   = lu.pivots();
       singular = lu.singular();
       if (!singular && nrhs > 0) {
-        buffer<T> b_rows {detail::take_kept<T>(1)};
-        detail::row_major_into(b_rows, b, ldb, n, nrhs, T {1});
-        matrix<T> x      {lu.solve(matrix<T> {size, static_cast<std::size_t>(nrhs), std::move(b_rows)})};
+        // B = I (NumPy's inv) as the LU's inverse, its forward pass without the identity's zeros: the same terms
+        // otherwise, so the same bits, where the right-hand sides are too many to go row by row.
+        const bool inverting {nrhs == n && size > numerical::detail::narrow_solve && detail::is_identity(b, static_cast<std::size_t>(ldb), size)};
+        buffer<T>  b_rows    {detail::take_kept<T>(1)};
+        if (!inverting) {
+          detail::row_major_into(b_rows, b, ldb, n, nrhs, T {1});
+        }
+        matrix<T> x {inverting ? lu.inverse(std::move(b_rows)) : lu.solve(matrix<T> {size, static_cast<std::size_t>(nrhs), std::move(b_rows)})};
         detail::column_major_into(&*x.begin(), size, static_cast<std::size_t>(nrhs), b, static_cast<std::size_t>(ldb));
         detail::give_back(1, std::move(x).elements());
       }

@@ -118,6 +118,9 @@ namespace numerical {
     //! \brief The columns of one leaf of the recursive LU panel.
     inline constexpr std::size_t solve_leaf {16};
 
+    //! \brief The rows an LU inverse writes its identity into, and permutes the columns of, on one thread at a time.
+    inline constexpr std::size_t inverse_band {16};
+
 #ifdef NUMERICAL_X86_COMPILED
     //! \brief The rows an LU panel's copy takes together, so that it writes each column of the panel eight `double`s,
     //!        a 64-byte line, at a time, where row by row each write fell on another line (six AVX2 cores, order 768:
@@ -655,21 +658,43 @@ namespace numerical {
      */
     [[nodiscard]] matrix<T> inverse() const
     {
+      return inverse(buffer<T> {});
+    }
+
+    /*!
+     * \brief \ref inverse in \p storage, its elements discarded: no fresh `n × n` mapped and faulted in where it holds
+     *        that much already. The identity written and `P` applied in place, by bands of rows on the threads.
+     * \param[in] storage The storage of the result, taken over.
+     * \return The inverse matrix, in \p storage.
+     * \throws singular_matrix_error If the matrix is singular.
+     */
+    [[nodiscard]] matrix<T> inverse(buffer<T> storage) const
+    {
       if (singular_) {
         throw singular_matrix_error("inverse: matrix is singular");
       }
-      buffer<T> rows(n_ * n_, T {});
-      for (std::size_t i {0}; i < n_; ++i) {
-        rows[(i * n_) + i] = T {1};
-      }
-      solve_rows(rows, n_, true);
-      buffer<T> inverted(n_ * n_, T {});
-      detail::parallel_for(n_, n_, [&](std::size_t r) { // column pivots_[i] of A⁻¹ is column i of U⁻¹ L⁻¹
-                             for (std::size_t i {0}; i < n_; ++i) {
-                               inverted[(r * n_) + pivots_[i]] = rows[(r * n_) + i];
+      const std::size_t n    {n_};
+      storage.resize(n * n);
+      T* const          rows {storage.data()};
+      // Bounds captured by value: by reference, the stores might have changed them, and each would be read again.
+      detail::parallel_for((n + detail::inverse_band - 1) / detail::inverse_band, detail::inverse_band * n, [rows, n](std::size_t band) {
+                             for (std::size_t r {band * detail::inverse_band}; r < std::min(n, (band + 1) * detail::inverse_band); ++r) {
+                               std::fill_n(rows + (r * n), n, T {});
+                               rows[(r * n) + r] = T {1};
                              }
                            });
-      return matrix<T> {n_, n_, std::move(inverted)};
+      solve_rows(storage, n, true);
+      const std::size_t* const to {pivots_.data()};
+      detail::parallel_for((n + detail::inverse_band - 1) / detail::inverse_band, detail::inverse_band * n, [rows, n, to](std::size_t band) {
+                             buffer<T> held(n); // column to[i] of A⁻¹ is column i of U⁻¹ L⁻¹
+                             for (std::size_t r {band * detail::inverse_band}; r < std::min(n, (band + 1) * detail::inverse_band); ++r) {
+                               std::copy_n(rows + (r * n), n, held.data());
+                               for (std::size_t i {0}; i < n; ++i) {
+                                 rows[(r * n) + to[i]] = held[i];
+                               }
+                             }
+                           });
+      return matrix<T> {n, n, std::move(storage)};
     }
 
     /*!
@@ -798,8 +823,11 @@ namespace numerical {
       const std::size_t slices {column_slices(cols)};
       if (slices > 1) { // independent right-hand sides: each thread its own columns, all the blocks, no join per block
         const std::size_t slice {(((cols + slices - 1) / slices) + 7) / 8 * 8};
-        detail::parallel_for((cols + slice - 1) / slice, n_ * n_ * slice / detail::gemm_kernel_speedup, [&](std::size_t s) {
-                               solve_columns(y, cols, s * slice, std::min(cols, (s + 1) * slice), lower);
+        const auto        start {[this, slice, slices, cols, lower](std::size_t s) {
+                                   return lower ? lower_slice_start(s, slices, cols) : std::min(cols, s * slice);
+                                 }};
+        detail::parallel_for(lower ? slices : (cols + slice - 1) / slice, n_ * n_ * slice / detail::gemm_kernel_speedup, [&](std::size_t s) {
+                               solve_columns(y, cols, start(s), start(s + 1), lower);
                              });
         return;
       }
@@ -823,6 +851,33 @@ namespace numerical {
         return 1;
       }
       return std::min(max_threads(), cols / detail::slice_columns);
+    }
+
+    /*!
+     * \brief The first column of slice \p s of \p slices (\p slices itself: \p cols) where the forward pass is lower:
+     *        column `c` weighs `n² + (n − c)²`, the backward pass's triangle and the forward pass's below row `c`, and
+     *        the slices weigh alike (by columns alike the first slice did twice the last's work), each from a multiple
+     *        of 8 columns. A slice is never empty: it spans at least half of `cols / slices` columns, past 8.
+     */
+    [[nodiscard]] std::size_t lower_slice_start(std::size_t s,
+                                                std::size_t slices,
+                                                std::size_t cols) const
+    {
+      const auto   n {static_cast<double>(n_)};
+      const auto   weight {[n](double c) { return (n * n * c) + (((n * n * n) - ((n - c) * (n - c) * (n - c))) / 3.0); }};
+      const double target {weight(static_cast<double>(cols)) * static_cast<double>(s) / static_cast<double>(slices)};
+      std::size_t  low    {0};
+      std::size_t  high   {cols};
+      while (low < high) { // the fewest columns that weigh the target
+        const std::size_t middle {low + ((high - low) / 2)};
+        if (weight(static_cast<double>(middle)) < target) {
+          low = middle + 1;
+        }
+        else {
+          high = middle;
+        }
+      }
+      return std::min(cols, (low + 7) / 8 * 8);
     }
 
     /*!
