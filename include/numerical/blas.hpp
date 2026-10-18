@@ -419,8 +419,14 @@ namespace numerical::blas {
     return numerical::detail::chunked_dot(xs.data(), ys.data(), count);
   }
 
-  //! \brief The rows a thread takes of \ref gemv's `A x`, each a column-by-column sum of scaled columns.
-  inline constexpr std::size_t gemv_rows {256};
+  //! \brief The rows (or, for `Aᵀ x`, the columns) each task of \ref gemv takes, 64 so that an order of a few
+  //!        hundred shares out (256 left order 300 two tasks).
+  inline constexpr std::size_t gemv_rows {64};
+
+  //! \brief The weight of \ref gemv's multiply-adds against a compute-bound product's: each reads an element of `A`
+  //!        once, so the product is bound by the memory, and spreads over more threads' caches for its work (six
+  //!        x86-64 AVX2 cores, `Aᵀ x`: order 300 17.7 → 7.5 µs, order 1000 74 → 60 µs).
+  inline constexpr std::size_t gemv_weight {4};
 
   /*!
    * \brief `y ← α op(A) x + β y`, column-major `A` `m × n`, as BLAS's `dgemv`: the vectors \p incx and \p incy
@@ -479,7 +485,7 @@ namespace numerical::blas {
       }
       if (transposed) {
         buffer<double> dots(cols, 0.0);
-        numerical::detail::parallel_for((cols + gemv_rows - 1) / gemv_rows, gemv_rows * rows, [&](std::size_t group) {
+        numerical::detail::parallel_for((cols + gemv_rows - 1) / gemv_rows, gemv_weight * gemv_rows * rows, [&](std::size_t group) {
                                           const std::size_t first {group * gemv_rows};
                                           numerical::detail::row_dots(a + (first * ld), ld, std::min(gemv_rows, cols - first),
                                                                       scaled.data(), rows, dots.data() + first);
@@ -488,13 +494,15 @@ namespace numerical::blas {
           out[j] += dots[j];
         }
       }
-      else {
-        numerical::detail::parallel_for((rows + gemv_rows - 1) / gemv_rows, gemv_rows * cols, [&](std::size_t group) {
+      else { // A x: each task's rows of y held through every column (numerical::detail::subtract_products, the
+             // factors −α x_j), each element fma(α x_j, a_ij, y_i) for j ascending, as column by column
+        for (double& factor : scaled) {
+          factor = -factor;
+        }
+        numerical::detail::parallel_for((rows + gemv_rows - 1) / gemv_rows, gemv_weight * gemv_rows * cols, [&](std::size_t group) {
                                           const std::size_t first {group * gemv_rows};
-                                          const std::size_t count {std::min(gemv_rows, rows - first)};
-                                          for (std::size_t j {0}; j < cols; ++j) {
-                                            numerical::detail::add_product(out.data() + first, scaled[j], a + first + (j * ld), count);
-                                          }
+                                          numerical::detail::subtract_products(out.data() + first, scaled.data(), a + first, ld, cols,
+                                                                               std::min(gemv_rows, rows - first));
                                         });
       }
     }

@@ -34,6 +34,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   One arm64 core, order 512: `dgeqrf_` 3.8 → 3.3 ms, `dorgqr_` 4.4 → 2.4 ms. On x86-64, real and complex factors move
   by rounding (the products run in other kernels), as accurate as before; on arm64 they are the same, and only
   `dorgqr_`'s `Q` moves, to `qr()`'s.
+- `dgemv_` shares its work out in tasks of 64 rows (or columns), weighed as the memory-bound product it is (a quarter
+  of a compute-bound product's multiply-adds), so that an order of a few hundred runs on several cores; `A x` holds each
+  task's rows of `y` in registers through every column (the multiply-adds of a column at a time, in the same order:
+  the same bits, but for arm64 under GCC, where they are now fused). Six x86-64 AVX2 cores against OpenBLAS 0.3.26:
+  `Aᵀ x` (NumPy's `a @ v`) order 300 17.2 → 7.5 µs (OpenBLAS 3.0), 1000 73 → 61 µs (54); `A x` order 100 2.1 → 1.0 µs
+  (1.7), 300 24 → 5.5 µs (6.8), 1000 135 → 99 µs (64). arm64, every core: `Aᵀ x` order 300 10.4 → 5.1 µs, `A x`
+  300 13.4 → 5.4 µs, 1000 85 → 36 µs.
 
 ## 2026.10.21 — 2026-10-17
 
