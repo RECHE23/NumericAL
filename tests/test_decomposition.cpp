@@ -1034,6 +1034,90 @@ TEST(eigen_qr_and_svd_do_not_depend_on_the_matrix_scale)
   }
 }
 
+// The scale past one band of rows: the largest entries in the first rows alone, the rest of order one. The singular
+// values are those of the matrix at unit scale, times the scale.
+// Rows of scales far apart: the largest entries in the first 32 rows alone, the rest of order one. Divided by the
+// largest, the small rows' squares underflow, and one-sided Jacobi judged such a pair by sums of squares of 0 (and past
+// a ratio of 1e150 its tangent overflowed to no rotation): it did not converge. Its singular values are the others',
+// the large ones at least, whatever the method.
+TEST(svd_of_rows_of_scales_far_apart)
+{
+  const std::size_t   n     {40};
+  std::vector<double> unit(n * n, 0.0);
+  std::uint64_t       state {7};
+  for (double& x : unit) {
+    state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+    x     = (static_cast<double>(state >> 11U) * 0x1.0p-53) - 0.5;
+  }
+  for (const double scale : {1e100, 1e150, 1e200, 1e300}) {
+    std::vector<double> scaled {unit};
+    for (std::size_t e {0}; e < 32 * n; ++e) {
+      scaled[e] *= scale;
+    }
+    std::vector<double> columns {unit}; // the first columns large instead
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n / 2; ++j) {
+        columns[(i * n) + j] *= scale;
+      }
+    }
+    const svd_decomposition by_columns     {matrix<double> {n, n, columns}, numerical::svd_method::jacobi};
+    bool                    columns_finite {std::isfinite(by_columns.singular_values()[0])};
+    for (std::size_t i {0}; i < n; ++i) {
+      columns_finite = columns_finite && std::isfinite(by_columns.u()(i, 0)) && std::isfinite(by_columns.v()(i, 0));
+    }
+    EXPECT(columns_finite);
+    const svd_decomposition jacobi {matrix<double> {n, n, scaled}, numerical::svd_method::jacobi};
+    const svd_decomposition other  {matrix<double> {n, n, scaled}};
+    bool                    same   {true};
+    for (std::size_t i {0}; i < 32; ++i) {
+      same = same && std::abs((jacobi.singular_values()[i] / other.singular_values()[i]) - 1.0) < 1e-12;
+    }
+    bool finite {true};
+    for (std::size_t i {0}; i < n; ++i) {
+      finite = finite && std::isfinite(jacobi.singular_values()[i]) && std::isfinite(jacobi.u()(i, 0)) && std::isfinite(jacobi.v()(i, 0));
+    }
+    EXPECT(same && finite);
+  }
+  // Orthonormal factors to rounding while the small rows stay above the subnormals (to a ratio of 1e250), each
+  // row reconstructed to its own scale.
+  for (const double scale : {1e100, 1e150, 1e200, 1e250}) {
+    for (const bool by_rows : {true, false}) {
+      std::vector<double> apart {unit};
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          apart[(i * n) + j] *= (by_rows ? i : j) < n / 2 ? scale : 1.0;
+        }
+      }
+      const svd_decomposition jacobi {matrix<double> {n, n, apart}, numerical::svd_method::jacobi};
+      double                  off    {0.0};
+      for (std::size_t a {0}; a < n; ++a) {
+        for (std::size_t b {0}; b < n; ++b) {
+          double uu {a == b ? -1.0 : 0.0};
+          double vv {a == b ? -1.0 : 0.0};
+          for (std::size_t k {0}; k < n; ++k) {
+            uu += jacobi.u()(k, a) * jacobi.u()(k, b);
+            vv += jacobi.v()(k, a) * jacobi.v()(k, b);
+          }
+          off = std::max({off, std::abs(uu), std::abs(vv)});
+        }
+      }
+      EXPECT(off < 1e-12);
+    }
+  }
+  // A pair whose ratio ζ is near the largest double: its tangent underflowed to no rotation, and the sweeps never ended.
+  std::vector<double> near  {unit};
+  std::uint64_t       other {40};
+  for (double& x : near) {
+    other = (other * 6364136223846793005ULL) + 1442695040888963407ULL;
+    x     = (static_cast<double>(other >> 11U) * 0x1.0p-53) - 0.5;
+  }
+  for (std::size_t e {0}; e < (n / 2) * n; ++e) {
+    near[e] *= 1e300;
+  }
+  const svd_decomposition far {matrix<double> {n, n, near}, numerical::svd_method::jacobi};
+  EXPECT(std::isfinite(far.singular_values()[0]) && far.singular_values()[0] > 1e299);
+}
+
 TEST(decompositions_of_a_zero_or_non_finite_matrix_keep_their_scale_at_one)
 {
   // A zero matrix has no largest entry to divide by, and an infinite one no finite scale: both are

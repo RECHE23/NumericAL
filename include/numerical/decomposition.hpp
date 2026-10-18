@@ -4239,6 +4239,13 @@ namespace numerical {
 
   namespace detail {
 
+    //! \brief The sum of squares under which one-sided Jacobi judges a pair of columns over their norms: below it a
+    //!        square has lost digits to underflow (`DBL_MIN / ε`).
+    inline constexpr double jacobi_tiny {std::numeric_limits<double>::min() / std::numeric_limits<double>::epsilon()};
+
+    //! \brief The |ζ| past which one-sided Jacobi takes the rotation's tangent as `1 / (2|ζ|)`: ζ² stays finite under it.
+    inline constexpr double jacobi_large {1e150};
+
     /*!
      * \brief One-sided (Hestenes) Jacobi on the columns of the `n × n` row-major \p w: plane rotations,
      *        accumulated into \p v, until every pair of columns is orthogonal to rounding. The column
@@ -4282,15 +4289,44 @@ namespace numerical {
               beta  += static_cast<double>(std::norm(wq[i]));
               gamma += conj_of(wp[i]) * wq[i];
             }
-            const double magnitude {static_cast<double>(std::abs(gamma))};
-            if (magnitude <= epsilon * std::sqrt(alpha) * std::sqrt(beta)) {
-              continue; // already orthogonal to rounding (or a zero column)
+            double magnitude {static_cast<double>(std::abs(gamma))};
+            double zeta      {};
+            if (std::min(alpha, beta) < jacobi_tiny) {
+              // A column whose squares underflow (rows of a far smaller scale than the largest): its sum of squares
+              // is 0 or has lost its digits, and the test below never holds. The pair is judged on the columns over
+              // their norms, which need no squares: the cosine, and ζ from the ratio of the norms.
+              const double norm_p {scaled_norm(wp, n)};
+              const double norm_q {scaled_norm(wq, n)};
+              if (norm_p == 0.0 || norm_q == 0.0) {
+                continue; // a zero column is orthogonal to any other
+              }
+              T cosine {};
+              for (std::size_t i {0}; i < n; ++i) {
+                cosine += conj_of(wp[i] / detail::from_double<T>(norm_p)) * (wq[i] / detail::from_double<T>(norm_q));
+              }
+              const double size {static_cast<double>(std::abs(cosine))};
+              zeta = ((norm_q / norm_p) - (norm_p / norm_q)) / (2.0 * size);
+              if (size <= epsilon) {
+                continue; // orthogonal to rounding
+              }
+              gamma     = cosine; // the phase is γ's
+              magnitude = size;
+            }
+            else {
+              if (magnitude <= epsilon * std::sqrt(alpha) * std::sqrt(beta)) {
+                continue; // already orthogonal to rounding (or a zero column)
+              }
+              zeta = (beta - alpha) / (2.0 * magnitude);
+            }
+            // Past jacobi_large, ζ² overflows and t would be 0 (no rotation, ever): there |ζ| + √(1 + ζ²) is 2|ζ| exactly,
+            // and t is 1 / (2|ζ|). A tangent that still underflows to 0 is a rotation below the smallest double.
+            const double t {(zeta >= 0.0 ? 1.0 : -1.0) * (std::abs(zeta) > jacobi_large ? 0.5 / std::abs(zeta) : 1.0 / (std::abs(zeta) + std::sqrt(1.0 + (zeta * zeta))))};
+            if (t == 0.0) {
+              continue; // a rotation below the smallest double: the pair is as orthogonal as it can be
             }
             rotated = true;
             // Turn column q by the phase of γ so that the pair's inner product is real, then rotate.
             const T      turn {conj_of(gamma) / detail::from_double<T>(magnitude)};
-            const double zeta {(beta - alpha) / (2.0 * magnitude)};
-            const double t    {(zeta >= 0.0 ? 1.0 : -1.0) / (std::abs(zeta) + std::sqrt(1.0 + (zeta * zeta)))};
             const double c    {1.0 / std::sqrt(1.0 + (t * t))};
             const double s    {c * t};
             for (buffer<T>* side : {&w, &v}) {

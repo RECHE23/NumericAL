@@ -89,6 +89,16 @@ A change that can break code is listed under **Breaking** and held for a month's
   (OpenBLAS 14.1), 300 421 → 386 µs (179), 1000 8.62 → 6.33 ms (4.71), 1500 24.8 → 20.0 ms (15.7); `dgemm_` `T`, `N`
   order 100 32.7 → 25.6 µs (27.7), 300 376 → 293 µs (231), 1000 10.2 → 8.64 ms (8.11).
 
+### Fixed
+- The SVD by one-sided Jacobi (`svd_method::jacobi`) converges on a matrix whose rows or columns are of scales far apart
+  (past a ratio of about 1e150), where it threw `convergence_error`: divided by its largest magnitude, the small rows'
+  squares underflowed, so a pair of columns was judged on sums of squares of 0 and never found orthogonal, and past
+  1e150 the rotation's tangent overflowed to no rotation at all. Such a pair is judged on the columns over their norms
+  (their cosine, and the rotation from the ratio of the norms), a tangent past `|ζ| = 1e150` is `1 / (2|ζ|)`, and a
+  rotation below the smallest double is skipped. To a ratio of 1e250 the factors stay orthonormal to rounding, each row
+  reconstructed to its own scale (1e-13); at 1e300 the small rows reach the subnormals and `U` is orthonormal to about
+  1e-5. Other matrices take the same rotations, to the bit.
+
 ## 2026.10.22 — 2026-10-18
 
 ### Changed
