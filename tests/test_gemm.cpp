@@ -266,6 +266,71 @@ TEST(transposed_operands_give_gemm_s_bits_on_every_path)
   }
 }
 
+namespace {
+  // Whether gemm_triangle of A (n × k) and B (k × n), the layouts `which` picks (0: both row-major, 1: B given
+  // transposed, 2: A given transposed), adds to its triangle of C what gemm adds there, to the bit, and leaves the
+  // other triangle as it was.
+  bool triangle_equals_gemm(std::size_t n,
+                            std::size_t k,
+                            int         which,
+                            bool        lower)
+  {
+    std::vector<double> a(n * k);
+    std::vector<double> at(k * n);
+    std::vector<double> b(k * n);
+    std::vector<double> bt(n * k);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t p {0}; p < k; ++p) {
+        a[(i * k) + p]  = fill<double>((i * k) + p);
+        at[(p * n) + i] = a[(i * k) + p];
+        b[(p * n) + i]  = fill<double>((p * 7) + (i * 11) + 3);
+        bt[(i * k) + p] = b[(p * n) + i];
+      }
+    }
+    const std::size_t   ldc {n + 2};
+    std::vector<double> want(n * ldc);
+    for (std::size_t e {0}; e < want.size(); ++e) {
+      want[e] = fill<double>(e + 5);
+    }
+    const std::vector<double> before {want};
+    std::vector<double>       got    {want};
+    numerical::detail::gemm(n, n, k, a.data(), k, b.data(), n, want.data(), ldc);
+    if (which == 0) {
+      numerical::detail::gemm_triangle<numerical::detail::a_rows, numerical::detail::b_rows>(n, k, a.data(), k, b.data(), n, got.data(), ldc, lower);
+    }
+    else if (which == 1) {
+      numerical::detail::gemm_triangle<numerical::detail::a_rows, numerical::detail::b_transposed>(n, k, a.data(), k, bt.data(), k, got.data(), ldc, lower);
+    }
+    else {
+      numerical::detail::gemm_triangle<numerical::detail::a_transposed, numerical::detail::b_rows>(n, k, at.data(), n, b.data(), n, got.data(), ldc, lower);
+    }
+    bool same {true};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < ldc; ++j) {
+        const bool   in    {j < n && (lower ? j <= i : j >= i)};
+        const double right {in ? want[(i * ldc) + j] : before[(i * ldc) + j]};
+        same = same && got[(i * ldc) + j] == right;
+      }
+    }
+    return same;
+  }
+} // namespace
+
+// The triangle of a product: tiles across the diagonal, partial tiles (a last row of tiles one row deep, whose
+// one element in the triangle is its diagonal's: orders 65 and 129), one packed but too small for the AMX (on its path, the NEON
+// tile's) and one past every path's block of columns (2100: row blocks with no tile in the triangle left unpacked), several panels of depth and blocks of columns,
+// each triangle and layout, on every path this machine runs.
+TEST(the_triangle_of_a_product_gives_gemm_s_bits_and_leaves_the_other_alone)
+{
+  for (const bool lower : {true, false}) {
+    for (const int which : {0, 1, 2}) {
+      for (const auto& [n, k] : {std::array<std::size_t, 2> {67, 40}, {65, 30}, {129, 40}, {130, 300}, {1100, 70}, {15, 40}, {2100, 9}}) {
+        EXPECT(on_every_path([&] { return triangle_equals_gemm(n, k, which, lower); }));
+      }
+    }
+  }
+}
+
 #ifdef NUMERICAL_X86_COMPILED
 // The AVX2 tile's task rows follow the panel's depth and it prefetches the next row's C: the hooks are found (a
 // signature they no longer match would fall back in silence), and other tiles keep their block and prefetch nothing.

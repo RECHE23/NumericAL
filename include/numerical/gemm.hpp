@@ -1303,6 +1303,107 @@ namespace numerical::detail {
     }
   }
 
+  /*!
+   * \brief \ref gemm_packed restricted to a triangle of the square `C = A·B` (`n × n`): its lower one (`j ≤ i`) where
+   *        \p lower, else its upper one (`j ≥ i`); the other is neither written nor depended on. The same packing (A's
+   *        row blocks with no tile in the triangle left out) and the same tiles, so each element's sum is the
+   *        product's; a tile across the diagonal runs on a copy of its block of C, the triangle's part copied back.
+   *        A `syrk` takes the triangle in one pass, its operands packed once a panel, where products by halves packed
+   *        them again for every block.
+   */
+  template <typename Kernel,
+            typename T,
+            typename B = b_rows,
+            typename A = a_rows>
+  void gemm_packed_triangle(std::size_t n,
+                            std::size_t k,
+                            const T*    a,
+                            std::size_t lda,
+                            const T*    b,
+                            std::size_t ldb,
+                            T*          c,
+                            std::size_t ldc,
+                            bool        lower)
+  {
+    constexpr std::size_t    mr       {Kernel::mr};
+    constexpr std::size_t    nr       {Kernel::nr};
+    constexpr std::size_t    nc_max   {nr * 128};
+    const std::size_t        a_rows   {((n + mr) - 1) / mr * mr};
+    const std::size_t        b_cols   {((std::min(nc_max, n) + nr) - 1) / nr * nr};
+    const packing_storage<T> packed   {a_rows * std::min(Kernel::depth, k), b_cols * std::min(Kernel::depth, k)};
+    const std::size_t        a_blocks {((n + Kernel::block_rows) - 1) / Kernel::block_rows};
+    const std::size_t        shared   {gemm_shares<Kernel>(n, n / 2, k) ? 1U : 0U};
+    const bool               in_place {B::template in_place<Kernel>(ldb)};
+    // Whether rows [r0, r1) and columns [j0, j1) of C meet the triangle, and whether they lie wholly in it.
+    const auto meets  = [lower](std::size_t r0, std::size_t r1, std::size_t j0, std::size_t j1) { return lower ? j0 < r1 : r0 < j1; };
+    const auto inside = [lower](std::size_t r0, std::size_t r1, std::size_t j0, std::size_t j1) { return lower ? j1 <= r0 + 1 : r1 <= j0 + 1; };
+    for (std::size_t jc {0}; jc < n; jc += nc_max) {
+      const std::size_t nc      {std::min(nc_max, n - jc)};
+      const std::size_t slivers {((nc + nr) - 1) / nr};
+      for (std::size_t pc {0}; pc < k; pc += Kernel::depth) {
+        const std::size_t kc     {std::min(Kernel::depth, k - pc)};
+        const std::size_t groups {((slivers + gemm_slivers_per_task) - 1) / gemm_slivers_per_task};
+        parallel_for(groups + a_blocks, shared * Kernel::block_rows * kc * gemm_kernel_speedup / Kernel::speedup, [&](std::size_t piece) {
+                       if (piece < groups) {
+                         const std::size_t jr    {piece * gemm_slivers_per_task * nr};
+                         const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
+                         if (!in_place || width % nr != 0) {
+                           B::template pack<nr>(b, ldb, pc, jc + jr, kc, width, packed.b() + (jr * kc));
+                         }
+                         return;
+                       }
+                       const std::size_t ic   {(piece - groups) * Kernel::block_rows};
+                       const std::size_t rows {std::min(Kernel::block_rows, n - ic)};
+                       if (meets(ic, ic + rows, jc, jc + nc)) {
+                         A::template pack<Kernel>(a, lda, ic, pc, rows, kc, packed.a() + (ic * kc));
+                       }
+                     });
+        const std::size_t tiles      {((n + mr) - 1) / mr};
+        const std::size_t row_tasks  {(((tasks_per_thread * max_threads()) + groups) - 1) / groups};
+        const std::size_t task_rows  {std::clamp(((tiles + row_tasks) - 1) / row_tasks, std::size_t {1}, task_rows_cap<Kernel>(kc) / mr) * mr};
+        const std::size_t task_count {((n + task_rows) - 1) / task_rows};
+        parallel_for(task_count * groups, shared * task_rows * gemm_slivers_per_task * nr * kc / (2 * Kernel::speedup), [&](std::size_t task) {
+                       const std::size_t                   ic     {(task / groups) * task_rows};
+                       const std::size_t                   first  {(task % groups) * gemm_slivers_per_task};
+                       const std::size_t                   last   {std::min(first + gemm_slivers_per_task, slivers)};
+                       const std::size_t                   ic_end {std::min(ic + task_rows, n)};
+                       [[maybe_unused]] const typename Kernel::session on {};
+                       for (std::size_t ir {ic}; ir < ic_end; ir += mr) {
+                         const std::size_t rows {std::min(mr, n - ir)};
+                         for (std::size_t s {first}; s < last; ++s) {
+                           const std::size_t jr   {s * nr};
+                           const std::size_t j0   {jc + jr};
+                           const std::size_t cols {std::min(nr, nc - jr)};
+                           if (!meets(ir, ir + rows, j0, j0 + cols)) {
+                             continue;
+                           }
+                           const bool     direct {in_place && jr + nr <= nc};
+                           const T* const bp     {direct ? b + (pc * ldb) + j0 : packed.b() + (jr * kc)};
+                           const std::size_t ldbp {direct ? ldb : nr};
+                           T* const       block  {c + (ir * ldc) + j0};
+                           if (inside(ir, ir + rows, j0, j0 + cols)) {
+                             Kernel::tile(kc, packed.a() + (ir * kc), bp, ldbp, block, ldc, rows, cols);
+                             continue;
+                           }
+                           std::array<T, mr * nr> copy {};
+                           for (std::size_t i {0}; i < rows; ++i) {
+                             std::copy_n(block + (i * ldc), cols, copy.data() + (i * nr));
+                           }
+                           Kernel::tile(kc, packed.a() + (ir * kc), bp, ldbp, copy.data(), nr, rows, cols);
+                           for (std::size_t i {0}; i < rows; ++i) {
+                             for (std::size_t j {0}; j < cols; ++j) {
+                               if (lower ? j0 + j <= ir + i : j0 + j >= ir + i) {
+                                 block[(i * ldc) + j] = copy[(i * nr) + j];
+                               }
+                             }
+                           }
+                         }
+                       }
+                     });
+      }
+    }
+  }
+
 #ifdef NUMERICAL_X86_COMPILED
   //! \brief The AVX-512 tile (\ref avx512_tile_f64): \ref avx512_mr × \ref avx512_nr elements of C in 24 registers.
   struct avx512_tile_kernel
@@ -1565,6 +1666,49 @@ namespace numerical::detail {
     (void)path;
     (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc;
     return false;
+  }
+
+  /*!
+   * \brief The triangle of the `double` product `C = A·B` (\ref gemm_packed_triangle) on the tile of the path in use,
+   *        A and B laid out as \p A and \p B say.
+   */
+  template <typename A,
+            typename B>
+  void gemm_triangle(std::size_t   n,
+                     std::size_t   k,
+                     const double* a,
+                     std::size_t   lda,
+                     const double* b,
+                     std::size_t   ldb,
+                     double*       c,
+                     std::size_t   ldc,
+                     bool          lower)
+  {
+    const gemm_path path {gemm_path_current()};
+#ifdef NUMERICAL_AMX_COMPILED
+    if (path == gemm_path::amx && amx_suits(n, n, k)) {
+      gemm_packed_triangle<amx_tile_kernel, double, B, A>(n, k, a, lda, b, ldb, c, ldc, lower);
+      return;
+    }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+    if (path == gemm_path::neon || path == gemm_path::amx) {
+      gemm_packed_triangle<neon_tile_kernel<double>, double, B, A>(n, k, a, lda, b, ldb, c, ldc, lower);
+      return;
+    }
+#endif
+#ifdef NUMERICAL_X86_COMPILED
+    if (path == gemm_path::avx512) {
+      gemm_packed_triangle<avx512_tile_kernel, double, B, A>(n, k, a, lda, b, ldb, c, ldc, lower);
+      return;
+    }
+    if (path == gemm_path::avx2) {
+      gemm_packed_triangle<avx2_tile_kernel, double, B, A>(n, k, a, lda, b, ldb, c, ldc, lower);
+      return;
+    }
+#endif
+    (void)path;
+    gemm_packed_triangle<vector_tile_kernel<double>, double, B, A>(n, k, a, lda, b, ldb, c, ldc, lower);
   }
 
   //! \brief \ref gemm_double_elsewhere of a row-major B.

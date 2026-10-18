@@ -1580,7 +1580,12 @@ TEST(syrk_updates_one_triangle_by_alpha_op_a_op_a_transposed)
   for (const char uplo : {'L', 'U'}) { // α = 1: Q read from P's rows (T), P from Q's columns (N), three blocks
     EXPECT(syrk_matches(uplo, 'T', 300, 40, 1.0, 0.5));
     EXPECT(syrk_matches(uplo, 'N', 300, 40, 1.0, 0.5));
+    for (const char trans : {'N', 'T'}) { // shallower than the packed product takes: by halves, the plain loop's sums
+      EXPECT(syrk_matches(uplo, trans, 300, 5, 1.0, 0.5));
+      EXPECT(syrk_matches(uplo, trans, 300, 5, 1.5, 0.5));
+    }
   }
+  EXPECT(syrk_matches('U', 'T', 9, 10, 1.0, 0.5)); // deep enough, too small to pack: by halves
   EXPECT(syrk_matches('L', 'N', 9, 0, 1.0, 2.0));  // no depth: C ← β C
   EXPECT(syrk_matches('U', 'T', 9, 4, 0.0, 0.0));  // α = 0, β = 0: zeros
   EXPECT(syrk_matches('U', 'N', 9, 4, 0.0, 1.0));  // nothing to do

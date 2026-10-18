@@ -694,6 +694,35 @@ namespace numerical::blas {
       syrk_product(operands, c0, cols, r0, rows, operands.c + r0 + (c0 * operands.ldc), operands.ldc);
       syrk_triangle(operands, j0 + h, w - h);
     }
+
+    /*!
+     * \brief The whole triangle of `C` (order \p n) from \p operands: a product the matrix product kernel packs runs in
+     *        one pass over the triangle's tiles (\ref numerical::detail::gemm_triangle; each operand read where it lies,
+     *        as \ref syrk_product reads it), a smaller one by halves (\ref syrk_triangle). Column-major `C` is row-major
+     *        `Cᵀ = P Q`, so its upper triangle is the product's lower one.
+     */
+    inline void syrk_all(const syrk_operands& operands,
+                         std::size_t          n)
+    {
+      const std::size_t k {operands.depth};
+      if (k < numerical::detail::gemm_min_depth || n * n < ((numerical::detail::gemm_packed_threshold + k) - 1) / k) {
+        syrk_triangle(operands, 0, n);
+        return;
+      }
+      const bool m_lower {!operands.lower};
+      if (operands.q_is_pt) {
+        numerical::detail::gemm_triangle<numerical::detail::a_rows, numerical::detail::b_transposed>(
+          n, k, operands.p, operands.ldp, operands.p, operands.ldp, operands.c, operands.ldc, m_lower);
+        return;
+      }
+      if (operands.p_is_qt) {
+        numerical::detail::gemm_triangle<numerical::detail::a_transposed, numerical::detail::b_rows>(
+          n, k, operands.q, operands.ldq, operands.q, operands.ldq, operands.c, operands.ldc, m_lower);
+        return;
+      }
+      numerical::detail::gemm_triangle<numerical::detail::a_rows, numerical::detail::b_rows>(
+        n, k, operands.p, operands.ldp, operands.q, operands.ldq, operands.c, operands.ldc, m_lower);
+    }
   } // namespace detail
 
   /*!
@@ -760,7 +789,7 @@ namespace numerical::blas {
       }
     }
     if (alpha == 1.0) {
-      detail::syrk_triangle({transposed ? a : nullptr, lda_s, transposed ? nullptr : a, lda_s, depth, c, ld, lower, transposed, !transposed}, 0, order);
+      detail::syrk_all({transposed ? a : nullptr, lda_s, transposed ? nullptr : a, lda_s, depth, c, ld, lower, transposed, !transposed}, order);
       return 0;
     }
     // The copy in storage the thread keeps between calls (as the kernel's packing_storage): a fresh one of a megabyte
@@ -780,7 +809,7 @@ namespace numerical::blas {
     const std::size_t   ldp    {transposed ? lda_s : depth};
     const double* const q_cols {transposed ? copy.data() : a};
     const std::size_t   ldq    {transposed ? order : lda_s};
-    detail::syrk_triangle({p_rows, ldp, q_cols, ldq, depth, c, ld, lower, false, false}, 0, order);
+    detail::syrk_all({p_rows, ldp, q_cols, ldq, depth, c, ld, lower, false, false}, order);
     if (copy.size() <= syrk_kept_limit) {
       detail::syrk_operand() = std::move(copy);
     }

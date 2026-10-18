@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- `dsyrk_` takes its triangle in one pass (`detail::gemm_triangle`): both operands packed once a panel of depth, the
+  tiles outside the triangle skipped, a tile across the diagonal run on a copy of its block, where products by halves
+  packed them again for every block and ran the diagonal blocks one after another. Each element's sum is the product's;
+  with `β = 0` (NumPy's `a @ a.T`) the bits are the same, with another `β` the diagonal blocks' elements move by
+  rounding (`β C` now starts their sums, as it does the others'). Six x86-64 AVX2 cores, against OpenBLAS 0.3.26: order
+  200 110 → 61 µs (63), 300 386 → 181 µs (179), 400 594 → 335 µs (350), 500 949 → 667 µs (671), 700 2.46 → 1.66 ms
+  (1.66), 1000 6.4 → 5.2 ms (4.7), 1500 19.8 → 17.3 ms (15.7); arm64 order 300 320 → 185 µs, 1000 4.6 → 2.3 ms.
 - The matrix product takes either operand given as its transpose (`detail::gemm_at`, `gemm_atbt`, `double`): A packed
   from the transpose's rows, as B already is (`gemm_bt`), the bits those of the product by copies. `dgemm_` with a
   transposed `B` and `α = 1` (NumPy's `a.T @ b`), whether or not `A` is transposed too, and `dsyrk_` with `N` and
