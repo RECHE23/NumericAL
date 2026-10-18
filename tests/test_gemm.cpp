@@ -210,17 +210,24 @@ TEST(a_left_operand_packed_once_gives_gemm_s_bits_on_every_path)
 }
 
 namespace {
-  // Whether gemm_bt of A and Bᵀ (row-major, its rows padded) adds to C what gemm of A and B does, to the bit.
-  bool transposed_b_equals_gemm(std::size_t m,
-                                std::size_t n,
-                                std::size_t k)
+  // Whether the product with A, B or both given as their transposes (row-major, their rows padded) adds to C what
+  // gemm of A and B does, to the bit: gemm_bt, gemm_at, gemm_atbt as `which` is 0, 1, 2.
+  bool transposed_operands_equal_gemm(std::size_t m,
+                                      std::size_t n,
+                                      std::size_t k,
+                                      int         which)
   {
     const std::size_t   ldbt {k + 3};
+    const std::size_t   ldat {m + 2};
     std::vector<double> a(m * k);
+    std::vector<double> at(k * ldat, -5.0); // the padding past each row of a transpose is never read
     std::vector<double> b(k * n);
-    std::vector<double> bt(n * ldbt, -7.0); // the padding past each row of Bᵀ is never read
-    for (std::size_t i {0}; i < a.size(); ++i) {
-      a[i] = fill<double>(i);
+    std::vector<double> bt(n * ldbt, -7.0);
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t p {0}; p < k; ++p) {
+        a[(i * k) + p]       = fill<double>((i * k) + p);
+        at[(p * ldat) + i]   = a[(i * k) + p];
+      }
     }
     for (std::size_t p {0}; p < k; ++p) {
       for (std::size_t j {0}; j < n; ++j) {
@@ -234,18 +241,28 @@ namespace {
     }
     std::vector<double> got {want};
     numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, want.data(), n);
-    numerical::detail::gemm_bt(m, n, k, a.data(), k, bt.data(), ldbt, got.data(), n);
+    if (which == 0) {
+      numerical::detail::gemm_bt(m, n, k, a.data(), k, bt.data(), ldbt, got.data(), n);
+    }
+    else if (which == 1) {
+      numerical::detail::gemm_at(m, n, k, at.data(), ldat, b.data(), n, got.data(), n);
+    }
+    else {
+      numerical::detail::gemm_atbt(m, n, k, at.data(), ldat, bt.data(), ldbt, got.data(), n);
+    }
     return got == want;
   }
 } // namespace
 
-// B given transposed: the plain loop's small products, the tiles' (a partial sliver, several panels of depth and blocks
-// of columns), on every path this machine runs.
-TEST(a_transposed_right_operand_gives_gemm_s_bits_on_every_path)
+// Either operand given transposed: the plain loop's small products, the tiles' (partial slivers of A and B, several
+// panels of depth and blocks of columns), on every path this machine runs.
+TEST(transposed_operands_give_gemm_s_bits_on_every_path)
 {
-  for (const auto& [m, n, k] : {std::array<std::size_t, 3> {3, 4, 5}, {7, 1, 64}, {64, 64, 64}, {129, 101, 300}, {31, 15, 40},
-                                {20, 1030, 260}}) {
-    EXPECT(on_every_path([&] { return transposed_b_equals_gemm(m, n, k); }));
+  for (const int which : {0, 1, 2}) {
+    for (const auto& [m, n, k] : {std::array<std::size_t, 3> {3, 4, 5}, {7, 1, 64}, {64, 64, 64}, {129, 101, 300}, {31, 15, 40},
+                                  {20, 1030, 260}, {200, 9, 70}}) {
+      EXPECT(on_every_path([&] { return transposed_operands_equal_gemm(m, n, k, which); }));
+    }
   }
 }
 

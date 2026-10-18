@@ -620,6 +620,36 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief A row-major `rows × cols` operand for the plain loop, \p x itself (\p ld apart).
+  template <typename T>
+  [[nodiscard]] const T* rows_in_place(const T*     x,
+                                       std::size_t  ld,
+                                       std::size_t& ld_out) noexcept
+  {
+    ld_out = ld;
+    return x;
+  }
+
+  //! \brief A row-major `rows × cols` operand for the plain loop, copied into \p scratch from its transpose \p x
+  //!        (`cols × rows`, \p ld apart).
+  template <typename T>
+  [[nodiscard]] const T* rows_from_transpose(const T*     x,
+                                             std::size_t  ld,
+                                             std::size_t  rows,
+                                             std::size_t  cols,
+                                             buffer<T>&   scratch,
+                                             std::size_t& ld_out)
+  {
+    scratch.resize(rows * cols);
+    for (std::size_t j {0}; j < cols; ++j) {
+      for (std::size_t i {0}; i < rows; ++i) {
+        scratch[(i * cols) + j] = x[(j * ld) + i];
+      }
+    }
+    ld_out = cols;
+    return scratch.data();
+  }
+
   //! \brief B as \ref gemm_packed reads it by default: row-major, `k × n`, its rows `ldb` apart.
   struct b_rows
   {
@@ -642,6 +672,18 @@ namespace numerical::detail {
     [[nodiscard]] static constexpr bool in_place(std::size_t ldb) noexcept
     {
       return Kernel::reads_b_in_place(ldb);
+    }
+
+    //! \brief The `rows × cols` operand row-major for the plain loop: \p x itself, \p ld apart.
+    template <typename T>
+    [[nodiscard]] static const T* rows_of(const T*     x,
+                                          std::size_t  ld,
+                                          std::size_t  /*rows*/,
+                                          std::size_t  /*cols*/,
+                                          buffer<T>&   /*scratch*/,
+                                          std::size_t& ld_out)
+    {
+      return rows_in_place(x, ld, ld_out);
     }
   };
 
@@ -668,6 +710,105 @@ namespace numerical::detail {
     [[nodiscard]] static constexpr bool in_place(std::size_t /*ldbt*/) noexcept
     {
       return false;
+    }
+
+    //! \brief The `rows × cols` operand row-major for the plain loop, copied from its transpose \p x (\p ld apart)
+    //!        into \p scratch.
+    template <typename T>
+    [[nodiscard]] static const T* rows_of(const T*     x,
+                                          std::size_t  ld,
+                                          std::size_t  rows,
+                                          std::size_t  cols,
+                                          buffer<T>&   scratch,
+                                          std::size_t& ld_out)
+    {
+      return rows_from_transpose(x, ld, rows, cols, scratch, ld_out);
+    }
+  };
+
+  /*!
+   * \brief The slivers of \p Mr rows of A (`rows × kc`), column by column, from its transpose \p at (`kc × rows`
+   *        row-major, \p ldat apart): each column of a sliver is a run of a row of \p at; a last partial sliver is
+   *        padded with zeros, as \ref gemm_pack_a lays them out.
+   */
+  template <std::size_t Mr,
+            typename T>
+  void gemm_pack_at(const T*    at,
+                    std::size_t ldat,
+                    std::size_t rows,
+                    std::size_t kc,
+                    T*          out)
+  {
+    for (std::size_t ir {0}; ir < rows; ir += Mr) {
+      const std::size_t mr     {std::min(Mr, rows - ir)};
+      T*                sliver {out + (ir * kc)};
+      for (std::size_t p {0}; p < kc; ++p) {
+        const T* const column {at + (p * ldat) + ir};
+        for (std::size_t i {0}; i < Mr; ++i) {
+          sliver[(p * Mr) + i] = i < mr ? column[i] : T {};
+        }
+      }
+    }
+  }
+
+  //! \brief A as \ref gemm_packed reads it by default: row-major, `m × k`, its rows `lda` apart, packed by the tile.
+  struct a_rows
+  {
+    //! \brief The rows from \p i0 of A, `rows × kc` from column \p p0, packed for \p Kernel.
+    template <typename Kernel,
+              typename T>
+    static void pack(const T*    a,
+                     std::size_t lda,
+                     std::size_t i0,
+                     std::size_t p0,
+                     std::size_t rows,
+                     std::size_t kc,
+                     T*          out)
+    {
+      Kernel::pack_a(a + (i0 * lda) + p0, lda, rows, kc, out);
+    }
+
+    //! \brief A row-major for the plain loop: itself.
+    template <typename T>
+    [[nodiscard]] static const T* rows_of(const T*     a,
+                                          std::size_t  lda,
+                                          std::size_t  /*rows*/,
+                                          std::size_t  /*cols*/,
+                                          buffer<T>&   /*scratch*/,
+                                          std::size_t& ld_out)
+    {
+      return rows_in_place(a, lda, ld_out);
+    }
+  };
+
+  //! \brief A given as `Aᵀ`: row-major, `k × m`, its rows `lda` apart (C = Aᵀᵀ·B, no copy of the transpose).
+  struct a_transposed
+  {
+    //! \brief The rows from \p i0 of A, `rows × kc` from column \p p0, packed as \p Kernel lays them out
+    //!        (\ref gemm_pack_at).
+    template <typename Kernel,
+              typename T>
+    static void pack(const T*    at,
+                     std::size_t ldat,
+                     std::size_t i0,
+                     std::size_t p0,
+                     std::size_t rows,
+                     std::size_t kc,
+                     T*          out)
+    {
+      gemm_pack_at<Kernel::mr>(at + (p0 * ldat) + i0, ldat, rows, kc, out);
+    }
+
+    //! \brief A row-major for the plain loop, copied from \p at into \p scratch.
+    template <typename T>
+    [[nodiscard]] static const T* rows_of(const T*     at,
+                                          std::size_t  ldat,
+                                          std::size_t  rows,
+                                          std::size_t  cols,
+                                          buffer<T>&   scratch,
+                                          std::size_t& ld_out)
+    {
+      return rows_from_transpose(at, ldat, rows, cols, scratch, ld_out);
     }
   };
 
@@ -1081,11 +1222,13 @@ namespace numerical::detail {
    *        \ref gemm_mc rows by \ref gemm_slivers_per_task slivers of columns run in parallel, each writing a
    *        disjoint block of C, one tile at a time. Given \p a_packed (A as \ref pack_left packs it for \p Kernel, a
    *        depth of one panel), A is read from there and only B is packed: the same tiles, the same bits. \p B is
-   *        B's layout (\ref b_rows, \ref b_transposed): the packing alone differs, so the bits do not.
+   *        B's layout (\ref b_rows, \ref b_transposed), \p A A's (\ref a_rows, \ref a_transposed): the packing alone
+   *        differs, so the bits do not.
    */
   template <typename Kernel,
             typename T,
-            typename B = b_rows>
+            typename B = b_rows,
+            typename A = a_rows>
   void gemm_packed(std::size_t m,
                    std::size_t n,
                    std::size_t k,
@@ -1126,7 +1269,7 @@ namespace numerical::detail {
                        }
                        else {
                          const std::size_t ic {(piece - groups) * Kernel::block_rows};
-                         Kernel::pack_a(a + (ic * lda) + pc, lda, std::min(Kernel::block_rows, m - ic), kc, packed.a() + (ic * kc));
+                         A::template pack<Kernel>(a, lda, ic, pc, std::min(Kernel::block_rows, m - ic), kc, packed.a() + (ic * kc));
                        }
                      });
         // A task covers task_rows rows: a whole block, or fewer whole tiles when blocks would leave a thread fewer
@@ -1382,8 +1525,10 @@ namespace numerical::detail {
   }
 
   //! \brief A `double` product on the path in use (\ref numerical::gemm_path_in_use), unless it is the portable one,
-  //!        B laid out as \p B says (\ref b_rows, \ref b_transposed). \return Whether it ran there.
-  template <typename B>
+  //!        B and A laid out as \p B and \p A say (\ref b_rows, \ref a_rows and their transposes). \return Whether
+  //!        it ran there.
+  template <typename B,
+            typename A = a_rows>
   [[nodiscard]] bool gemm_double_elsewhere(std::size_t   m,
                                            std::size_t   n,
                                            std::size_t   k,
@@ -1397,23 +1542,23 @@ namespace numerical::detail {
     const gemm_path path {gemm_path_current()};
 #ifdef NUMERICAL_AMX_COMPILED
     if (path == gemm_path::amx && amx_suits(m, n, k)) { // else the NEON tile
-      gemm_packed<amx_tile_kernel, double, B>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<amx_tile_kernel, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
       return true;
     }
 #endif
 #ifdef NUMERICAL_NEON_COMPILED
     if (path == gemm_path::neon || path == gemm_path::amx) {
-      gemm_packed<neon_tile_kernel<double>, double, B>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<neon_tile_kernel<double>, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
       return true;
     }
 #endif
 #ifdef NUMERICAL_X86_COMPILED
     if (path == gemm_path::avx512) {
-      gemm_packed<avx512_tile_kernel, double, B>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<avx512_tile_kernel, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
       return true;
     }
     if (path == gemm_path::avx2) {
-      gemm_packed<avx2_tile_kernel, double, B>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<avx2_tile_kernel, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
       return true;
     }
 #endif
@@ -1667,11 +1812,40 @@ namespace numerical::detail {
   }
 
   /*!
-   * \brief `C += A·B` for `double` with B given as its transpose: \p bt is `Bᵀ`, row-major `n × k` (its rows \p ldbt
-   *        apart), so that a product by a transpose (a `syrk`'s `P Pᵀ`, BLAS's `transb`) needs no copy of it. The
-   *        tiles are \ref gemm's, B packed from \p bt's rows (\ref b_transposed), and so are the bits; a product
-   *        \ref gemm runs in the plain loop copies `Bᵀ`'s transpose and runs there, small as it is.
+   * \brief `C += A·B` for `double`, either operand given as its transpose (\p A: \ref a_rows or \ref a_transposed, \p B:
+   *        \ref b_rows or \ref b_transposed), so that a product by a transpose (a `syrk`'s `P Pᵀ`, BLAS's `transa` and
+   *        `transb`) needs no copy of it. The tiles are \ref gemm's, the operands packed from where they lie, and so are
+   *        the bits; a product \ref gemm runs in the plain loop copies a transposed operand row-major and runs there,
+   *        small as it is.
    */
+  template <typename A,
+            typename B>
+  void gemm_layouts(std::size_t   m,
+                    std::size_t   n,
+                    std::size_t   k,
+                    const double* a,
+                    std::size_t   lda,
+                    const double* b,
+                    std::size_t   ldb,
+                    double*       c,
+                    std::size_t   ldc)
+  {
+    if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
+      buffer<double>      a_rows_copy;
+      buffer<double>      b_rows_copy;
+      std::size_t         a_ld  {};
+      std::size_t         b_ld  {};
+      const double* const left  {A::rows_of(a, lda, m, k, a_rows_copy, a_ld)};
+      const double* const right {B::rows_of(b, ldb, k, n, b_rows_copy, b_ld)};
+      gemm_rows(m, n, k, left, a_ld, right, b_ld, c, ldc);
+      return;
+    }
+    if (!gemm_double_elsewhere<B, A>(m, n, k, a, lda, b, ldb, c, ldc)) {
+      gemm_packed<vector_tile_kernel<double>, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+    }
+  }
+
+  //! \brief \ref gemm_layouts with B given as `Bᵀ` (\p bt, `n × k`, \p ldbt apart).
   inline void gemm_bt(std::size_t   m,
                       std::size_t   n,
                       std::size_t   k,
@@ -1682,19 +1856,35 @@ namespace numerical::detail {
                       double*       c,
                       std::size_t   ldc)
   {
-    if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
-      buffer<double> b(k * n);
-      for (std::size_t j {0}; j < n; ++j) {
-        for (std::size_t p {0}; p < k; ++p) {
-          b[(p * n) + j] = bt[(j * ldbt) + p];
-        }
-      }
-      gemm_rows(m, n, k, a, lda, b.data(), n, c, ldc);
-      return;
-    }
-    if (!gemm_double_elsewhere<b_transposed>(m, n, k, a, lda, bt, ldbt, c, ldc)) {
-      gemm_packed<vector_tile_kernel<double>, double, b_transposed>(m, n, k, a, lda, bt, ldbt, c, ldc);
-    }
+    gemm_layouts<a_rows, b_transposed>(m, n, k, a, lda, bt, ldbt, c, ldc);
+  }
+
+  //! \brief \ref gemm_layouts with A given as `Aᵀ` (\p at, `k × m`, \p ldat apart).
+  inline void gemm_at(std::size_t   m,
+                      std::size_t   n,
+                      std::size_t   k,
+                      const double* at,
+                      std::size_t   ldat,
+                      const double* b,
+                      std::size_t   ldb,
+                      double*       c,
+                      std::size_t   ldc)
+  {
+    gemm_layouts<a_transposed, b_rows>(m, n, k, at, ldat, b, ldb, c, ldc);
+  }
+
+  //! \brief \ref gemm_layouts with both operands given as their transposes.
+  inline void gemm_atbt(std::size_t   m,
+                        std::size_t   n,
+                        std::size_t   k,
+                        const double* at,
+                        std::size_t   ldat,
+                        const double* bt,
+                        std::size_t   ldbt,
+                        double*       c,
+                        std::size_t   ldc)
+  {
+    gemm_layouts<a_transposed, b_transposed>(m, n, k, at, ldat, bt, ldbt, c, ldc);
   }
 
   //! \brief The tile a product's left operand is packed for (\ref pack_left): \c plain where it is not packed.

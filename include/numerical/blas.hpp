@@ -292,6 +292,65 @@ namespace numerical::blas {
       }
       return out;
     }
+
+    /*!
+     * \brief `C += α op(B)ᵀ op(A)ᵀ`, row-major `C` (`m × n`, \p ldc apart), the column-major `C` of BLAS's `gemm` as
+     *        its transpose. A column-major matrix is row-major as its transpose, so `op(B)ᵀ` is B read in place when B
+     *        is not transposed (unless α scales a copy), and `op(A)ᵀ` is A read in place when A is not; a transposed one
+     *        is copied (an overload per scalar, as `conj_of`).
+     */
+    template <typename T>
+    void product_of_ops(char        transa,
+                        char        transb,
+                        T           alpha,
+                        std::size_t m,
+                        std::size_t n,
+                        std::size_t k,
+                        const T*    a,
+                        std::size_t lda,
+                        const T*    b,
+                        std::size_t ldb,
+                        T*          c,
+                        std::size_t ldc)
+    {
+      const bool copy_b {transposes(transb) || alpha != T {1}};
+      buffer<T>  left   {};
+      if (transposes(transb)) {
+        left = row_major(b, static_cast<std::ptrdiff_t>(ldb), static_cast<std::ptrdiff_t>(m), static_cast<std::ptrdiff_t>(k), alpha,
+                         conjugates(transb));
+      }
+      else if (copy_b) {
+        left = columns_as_rows(b, static_cast<std::ptrdiff_t>(ldb), static_cast<std::ptrdiff_t>(k), static_cast<std::ptrdiff_t>(m), alpha);
+      }
+      product_by_op_a(transa, m, n, k, copy_b ? left.data() : b, copy_b ? k : ldb, a, lda, c, ldc);
+    }
+
+    //! \brief \ref product_of_ops for `double`: with α = 1 a transposed B is read in place too, as `op(B)ᵀ`'s
+    //!        transpose (\ref numerical::detail::gemm_at, or \ref numerical::detail::gemm_atbt with a transposed A:
+    //!        the bits of the products by the copies; NumPy's `a.T @ b`).
+    inline void product_of_ops(char          transa,
+                               char          transb,
+                               double        alpha,
+                               std::size_t   m,
+                               std::size_t   n,
+                               std::size_t   k,
+                               const double* a,
+                               std::size_t   lda,
+                               const double* b,
+                               std::size_t   ldb,
+                               double*       c,
+                               std::size_t   ldc)
+    {
+      if (!transposes(transb) || alpha != 1.0) {
+        product_of_ops<double>(transa, transb, alpha, m, n, k, a, lda, b, ldb, c, ldc);
+        return;
+      }
+      if (transposes(transa)) {
+        numerical::detail::gemm_atbt(m, n, k, b, ldb, a, lda, c, ldc);
+        return;
+      }
+      numerical::detail::gemm_at(m, n, k, b, ldb, a, lda, c, ldc);
+    }
   } // namespace detail
 
   namespace detail {
@@ -428,20 +487,8 @@ namespace numerical::blas {
     if (alpha == T {} || k == 0) {
       return 0;
     }
-    // Column-major C is row-major Cᵀ (n × m): Cᵀ += (α op(B))ᵀ op(A)ᵀ. A column-major matrix is row-major as its
-    // transpose, so op(B)ᵀ is B read in place when B is not transposed (unless α scales a copy), and op(A)ᵀ is A
-    // read in place when A is not; a transposed one is copied.
-    const bool        copy_b {detail::transposes(transb) || alpha != T {1}};
-    buffer<T>         left   {};
-    if (detail::transposes(transb)) {
-      left = detail::row_major(b, ldb, n, k, alpha, detail::conjugates(transb));
-    }
-    else if (copy_b) {
-      left = detail::columns_as_rows(b, ldb, k, n, alpha);
-    }
-    const T* const       l      {copy_b ? left.data() : b};
-    const std::size_t    ldl    {copy_b ? static_cast<std::size_t>(k) : static_cast<std::size_t>(ldb)};
-    detail::product_by_op_a(transa, cols, rows, static_cast<std::size_t>(k), l, ldl, a, static_cast<std::size_t>(lda), c, stride);
+    detail::product_of_ops(transa, transb, alpha, cols, rows, static_cast<std::size_t>(k), a, static_cast<std::size_t>(lda), b,
+                           static_cast<std::size_t>(ldb), c, stride);
     return 0;
   }
 
@@ -592,6 +639,7 @@ namespace numerical::blas {
       std::size_t   ldc;     //!< `C`'s column distance.
       bool          lower;   //!< The lower triangle (else the upper).
       bool          q_is_pt; //!< `Q` is `Pᵀ` read from `P`'s rows (\ref numerical::detail::gemm_bt), \p q unused.
+      bool          p_is_qt; //!< `P` is `Qᵀ` read from `Q`'s columns (\ref numerical::detail::gemm_at), \p p unused.
     };
 
     //! \brief `P(c0…) Q(…, r0…)` added to the `cols × rows` row-major block at \p out (\p ldo apart): \ref
@@ -605,12 +653,16 @@ namespace numerical::blas {
                              double*              out,
                              std::size_t          ldo)
     {
-      const double* const left {operands.p + (c0 * operands.ldp)};
       if (operands.q_is_pt) {
-        numerical::detail::gemm_bt(cols, rows, operands.depth, left, operands.ldp, operands.p + (r0 * operands.ldp), operands.ldp, out, ldo);
+        numerical::detail::gemm_bt(cols, rows, operands.depth, operands.p + (c0 * operands.ldp), operands.ldp, operands.p + (r0 * operands.ldp),
+                                   operands.ldp, out, ldo);
         return;
       }
-      numerical::detail::gemm(cols, rows, operands.depth, left, operands.ldp, operands.q + r0, operands.ldq, out, ldo);
+      if (operands.p_is_qt) {
+        numerical::detail::gemm_at(cols, rows, operands.depth, operands.q + c0, operands.ldq, operands.q + r0, operands.ldq, out, ldo);
+        return;
+      }
+      numerical::detail::gemm(cols, rows, operands.depth, operands.p + (c0 * operands.ldp), operands.ldp, operands.q + r0, operands.ldq, out, ldo);
     }
 
     /*!
@@ -696,9 +748,9 @@ namespace numerical::blas {
       return 0;
     }
     // C(r, c) = α Σ_l op(A)(r, l) op(A)(c, l). The kernel takes row-major operands: P = op(A) (n × k) and
-    // Q = op(A)ᵀ (k × n). A column-major A is one of them read in place (Q for N, P for T). For T with α = 1 (NumPy's
-    // a @ a.T), Q is P's transpose read from P's rows (detail::syrk_product): no copy, the same bits. Otherwise the
-    // other is copied once, α folded into it.
+    // Q = op(A)ᵀ (k × n). A column-major A is one of them read in place (Q for N, P for T). With α = 1 the other is
+    // read from it as its transpose (detail::syrk_product; NumPy's a @ a.T is T): no copy, the same bits. Otherwise
+    // the other is copied once, α folded into it.
     const auto depth {static_cast<std::size_t>(k)};
     const auto lda_s {static_cast<std::size_t>(lda)};
     for (std::size_t j {0}; j < order; ++j) { // C ← β C on the triangle; the products then add into it
@@ -707,8 +759,8 @@ namespace numerical::blas {
         entry = beta == 0.0 ? 0.0 : beta * entry;
       }
     }
-    if (transposed && alpha == 1.0) {
-      detail::syrk_triangle({a, lda_s, nullptr, 0, depth, c, ld, lower, true}, 0, order);
+    if (alpha == 1.0) {
+      detail::syrk_triangle({transposed ? a : nullptr, lda_s, transposed ? nullptr : a, lda_s, depth, c, ld, lower, transposed, !transposed}, 0, order);
       return 0;
     }
     // The copy in storage the thread keeps between calls (as the kernel's packing_storage): a fresh one of a megabyte
@@ -728,7 +780,7 @@ namespace numerical::blas {
     const std::size_t   ldp    {transposed ? lda_s : depth};
     const double* const q_cols {transposed ? copy.data() : a};
     const std::size_t   ldq    {transposed ? order : lda_s};
-    detail::syrk_triangle({p_rows, ldp, q_cols, ldq, depth, c, ld, lower, false}, 0, order);
+    detail::syrk_triangle({p_rows, ldp, q_cols, ldq, depth, c, ld, lower, false, false}, 0, order);
     if (copy.size() <= syrk_kept_limit) {
       detail::syrk_operand() = std::move(copy);
     }

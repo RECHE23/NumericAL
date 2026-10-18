@@ -1577,8 +1577,9 @@ TEST(syrk_updates_one_triangle_by_alpha_op_a_op_a_transposed)
       EXPECT(syrk_matches(uplo, trans, 300, 40, -1.0, 0.0)); // three blocks, the last partial; C not read
     }
   }
-  for (const char uplo : {'L', 'U'}) { // T with α = 1: Q read from P's rows, three blocks off the diagonal
+  for (const char uplo : {'L', 'U'}) { // α = 1: Q read from P's rows (T), P from Q's columns (N), three blocks
     EXPECT(syrk_matches(uplo, 'T', 300, 40, 1.0, 0.5));
+    EXPECT(syrk_matches(uplo, 'N', 300, 40, 1.0, 0.5));
   }
   EXPECT(syrk_matches('L', 'N', 9, 0, 1.0, 2.0));  // no depth: C ← β C
   EXPECT(syrk_matches('U', 'T', 9, 4, 0.0, 0.0));  // α = 0, β = 0: zeros
@@ -1589,16 +1590,18 @@ TEST(syrk_updates_one_triangle_by_alpha_op_a_op_a_transposed)
 TEST(syrk_keeps_its_operand_copy_up_to_its_limit)
 {
   // An operand copy past syrk_kept_limit is released after the call; a smaller one is kept and reused. Either way
-  // the triangle is right: here A of order 3 and depth past the limit / 3, ones, so A Aᵀ is k everywhere.
+  // the triangle is right: here A of order 3 and depth past the limit / 3, ones, and α = 2 (which a copy takes), so
+  // α A Aᵀ is 2k everywhere.
   const std::size_t   depth {(numerical::blas::syrk_kept_limit / 3) + 1};
   std::vector<double> a(3 * depth, 1.0);
   std::vector<double> c(9, -1.0);
-  EXPECT_EQ(numerical::blas::syrk('L', 'N', 3, static_cast<std::ptrdiff_t>(depth), 1.0, a.data(), 3, 0.0, c.data(), 3), 0);
-  EXPECT(c[0] == static_cast<double>(depth) && c[1] == static_cast<double>(depth) && c[8] == static_cast<double>(depth) && c[3] == -1.0);
+  EXPECT_EQ(numerical::blas::syrk('L', 'N', 3, static_cast<std::ptrdiff_t>(depth), 2.0, a.data(), 3, 0.0, c.data(), 3), 0);
+  const auto twice {static_cast<double>(2 * depth)};
+  EXPECT(c[0] == twice && c[1] == twice && c[8] == twice && c[3] == -1.0);
   EXPECT(numerical::blas::detail::syrk_operand().size() <= numerical::blas::syrk_kept_limit);
   EXPECT(syrk_matches('U', 'T', 40, 30, 1.5, 0.0)); // a kept copy reused
   EXPECT(!numerical::blas::detail::syrk_operand().empty());
-  // T with α = 1 reads Q from P's rows: no copy taken, the kept one left as it was.
+  // α = 1 reads the other operand from the one given: no copy taken, the kept one left as it was.
   const std::size_t kept {numerical::blas::detail::syrk_operand().size()};
   EXPECT(syrk_matches('L', 'T', 40, 30, 1.0, 0.5));
   EXPECT(numerical::blas::detail::syrk_operand().size() == kept);

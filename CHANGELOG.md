@@ -9,6 +9,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- The matrix product takes either operand given as its transpose (`detail::gemm_at`, `gemm_atbt`, `double`): A packed
+  from the transpose's rows, as B already is (`gemm_bt`), the bits those of the product by copies. `dgemm_` with a
+  transposed `B` and `α = 1` (NumPy's `a.T @ b`), whether or not `A` is transposed too, and `dsyrk_` with `N` and
+  `α = 1` copy no operand any more: the same bits. Six x86-64 AVX2 cores, against OpenBLAS 0.3.26: `dgemm_` `N`, `T`
+  order 100 34.5 → 23.3 µs (OpenBLAS 15.4), 300 376 → 291 µs (234), 1000 10.1 → 8.75 ms (8.16); `T`, `T` 100 45.0 →
+  24.4 µs (15.2), 300 977 → 295 µs (234), 1000 17.3 → 8.55 ms (8.16).
+
+### Changed
 - The matrix product takes its right operand given as its transpose (`detail::gemm_bt`, `double`): B is packed from
   the transpose's rows, the tiles and so the bits are the product's by a copy of it. `dsyrk_` with `T` and `α = 1`
   (NumPy's `a @ a.T`) reads both operands from `A` in place, and `dgemm_` with a transposed `A` (NumPy's `a @ b.T`)
