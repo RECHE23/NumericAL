@@ -1590,13 +1590,40 @@ namespace numerical::detail {
   template <typename T>
   struct packed_left
   {
-    left_kernel kernel; //!< The tile.
-    std::size_t m;      //!< A's rows.
-    std::size_t k;      //!< A's columns, the depth.
-    const T*    a;      //!< A, row-major.
-    std::size_t lda;    //!< A's row distance.
-    const T*    packed; //!< A packed for the tile (null where \c plain).
+    left_kernel kernel;  //!< The tile.
+    std::size_t m;       //!< A's rows.
+    std::size_t k;       //!< A's columns, the depth.
+    const T*    a;       //!< A, row-major.
+    std::size_t lda;     //!< A's row distance.
+    const T*    packed;  //!< A packed for the tile (null where \c plain).
+    std::size_t granule; //!< The rows of the tile's slivers: a block of rows from a multiple of it reads the packing.
   };
+
+  //! \brief The `m × k` \p a read in place by \ref gemm_with, unpacked: each product packs it as \ref gemm does.
+  template <typename T>
+  [[nodiscard]] packed_left<T> read_in_place(std::size_t m,
+                                             std::size_t k,
+                                             const T*    a,
+                                             std::size_t lda) noexcept
+  {
+    return packed_left<T> {.kernel = left_kernel::plain, .m = m, .k = k, .a = a, .lda = lda, .packed = nullptr, .granule = 1};
+  }
+
+  /*!
+   * \brief The rows `[r0, r0 + rows)` of \p left, \p r0 a multiple of `left.granule`: their slivers in its packing, or
+   *        their rows of A in place.
+   */
+  template <typename T>
+  [[nodiscard]] packed_left<T> left_rows(const packed_left<T>& left,
+                                         std::size_t           r0,
+                                         std::size_t           rows) noexcept
+  {
+    packed_left<T> part {left};
+    part.m      = rows;
+    part.a      = left.a + (r0 * left.lda);
+    part.packed = left.packed == nullptr ? nullptr : left.packed + (r0 * left.k);
+    return part;
+  }
 
   //! \brief The tile \ref gemm runs a product of \p m × \p n by depth \p k on, for a left operand packed once for many
   //!        products: \c plain for a scalar other than `double` (written as an overload per scalar, as `conj_of`).
@@ -1675,7 +1702,7 @@ namespace numerical::detail {
                                          std::size_t lda,
                                          buffer<T>&  /*storage*/)
   {
-    return packed_left<T> {.kernel = left_kernel::plain, .m = m, .k = k, .a = a, .lda = lda, .packed = nullptr};
+    return read_in_place(m, k, a, lda);
   }
 
   //! \brief \ref pack_left for `double`, on the tile \ref left_kernel_for chooses.
@@ -1687,27 +1714,32 @@ namespace numerical::detail {
                                                              std::size_t       lda,
                                                              buffer<double>&   storage)
   {
-    packed_left<double> left {.kernel = left_kernel_for<double>(m, n, k), .m = m, .k = k, .a = a, .lda = lda, .packed = nullptr};
+    packed_left<double> left {.kernel = left_kernel_for<double>(m, n, k), .m = m, .k = k, .a = a, .lda = lda, .packed = nullptr, .granule = 1};
 #ifdef NUMERICAL_AMX_COMPILED
     if (left.kernel == left_kernel::amx) {
-      left.packed = pack_left_for<amx_tile_kernel>(m, k, a, lda, storage);
+      left.packed  = pack_left_for<amx_tile_kernel>(m, k, a, lda, storage);
+      left.granule = amx_tile_kernel::mr;
     }
 #endif
 #ifdef NUMERICAL_NEON_COMPILED
     if (left.kernel == left_kernel::neon) {
-      left.packed = pack_left_for<neon_tile_kernel<double>>(m, k, a, lda, storage);
+      left.packed  = pack_left_for<neon_tile_kernel<double>>(m, k, a, lda, storage);
+      left.granule = neon_tile_kernel<double>::mr;
     }
 #endif
 #ifdef NUMERICAL_X86_COMPILED
     if (left.kernel == left_kernel::avx512) {
-      left.packed = pack_left_for<avx512_tile_kernel>(m, k, a, lda, storage);
+      left.packed  = pack_left_for<avx512_tile_kernel>(m, k, a, lda, storage);
+      left.granule = avx512_tile_kernel::mr;
     }
     if (left.kernel == left_kernel::avx2) {
-      left.packed = pack_left_for<avx2_tile_kernel>(m, k, a, lda, storage);
+      left.packed  = pack_left_for<avx2_tile_kernel>(m, k, a, lda, storage);
+      left.granule = avx2_tile_kernel::mr;
     }
 #endif
     if (left.kernel == left_kernel::vector) {
-      left.packed = pack_left_for<vector_tile_kernel<double>>(m, k, a, lda, storage);
+      left.packed  = pack_left_for<vector_tile_kernel<double>>(m, k, a, lda, storage);
+      left.granule = vector_tile_kernel<double>::mr;
     }
     return left;
   }

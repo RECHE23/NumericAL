@@ -1435,6 +1435,7 @@ namespace numerical {
     // order, so without multiply-add fusion the factor is the unblocked algorithm's to the bit.
     void factorize()
     {
+      buffer<T> packing; // −L₂₁ packed for the trailing update's tiles, kept from panel to panel
       for (std::size_t k0 {0}; k0 < n_; k0 += block_) {
         const std::size_t end {std::min(k0 + block_, n_)};
         for (std::size_t i {k0}; i < end; ++i) {
@@ -1444,7 +1445,7 @@ namespace numerical {
           buffer<T> minus_l((n_ - end) * (end - k0));   // −L₂₁, row-major
           buffer<T> l_adjoint((end - k0) * (n_ - end)); // L₂₁ᴴ, row-major
           factor_rows_below(k0, end, minus_l, l_adjoint);
-          update_trailing(k0, end, minus_l, l_adjoint);
+          update_trailing(k0, end, minus_l, l_adjoint, packing);
         }
       }
       for (std::size_t i {0}; i < n_; ++i) {
@@ -1483,9 +1484,12 @@ namespace numerical {
     /*!
      * \brief The rows below the panel `[k0, end)`, `L₂₁ = A₂₁ L₁₁⁻ᴴ`: chunks of \ref detail::cholesky_rows rows in
      *        parallel, each in a column-major copy where column `j` takes `L[i][j] −= L[i][k]·conj(L[j][k])` for
-     *        `k` ascending, then the division by `L[j][j]`, for every row of the chunk at once along the column
-     *        (\ref detail::subtract_product): each element the unblocked step's arithmetic, in its order; row by
-     *        row, each sum waited on its last addition. Each chunk also writes its rows of \p minus_l (`−L₂₁`,
+     *        `k` ascending, then the division by `L[j][j]`, for every row of the chunk at once along the column: by
+     *        sub-blocks of 16 columns, the terms of the sub-blocks before one through the matrix product kernel, its
+     *        own column by column (\ref detail::subtract_product), each element's terms in ascending order, each fused
+     *        as the column step fuses it, so the unblocked step's arithmetic, in its order (one core of six AVX2, order
+     *        1000: 4.95 → 3.95 ms; all column by column, the solve took 37 % of the factorisation for a tenth of its
+     *        work); row by row, each sum waited on its last addition. Each chunk also writes its rows of \p minus_l (`−L₂₁`,
      *        row-major) and its columns of \p l_adjoint (`L₂₁ᴴ`, row-major), the trailing update's operands, which a
      *        copy on one thread after it took 15 to 20 % of the factorisation on six x86-64 cores (order 1024 to 2048).
      */
@@ -1499,20 +1503,34 @@ namespace numerical {
       detail::parallel_for(chunks, detail::cholesky_rows * width * width / 2, [&](std::size_t chunk) {
                              const std::size_t first {end + (chunk * detail::cholesky_rows)};
                              const std::size_t height {std::min(detail::cholesky_rows, n_ - first)};
-                             buffer<T>    panel(height * width, T {}); // column j at panel[j * height]
+                             buffer<T>    panel(height * width); // column j at panel[j * height], every element written
                              for (std::size_t r {0}; r < height; ++r) {
                                for (std::size_t j {0}; j < width; ++j) {
                                  panel[(j * height) + r] = lower_[((first + r) * n_) + k0 + j];
                                }
                              }
-                             for (std::size_t j {0}; j < width; ++j) {
-                               T* const column {panel.data() + (j * height)};
-                               for (std::size_t k {0}; k < j; ++k) {
-                                 detail::subtract_product(column, panel.data() + (k * height), detail::conj_of(lower_[((k0 + j) * n_) + k0 + k]), height);
+                             constexpr std::size_t sub {16};
+                             buffer<T>             minus_conj;
+                             for (std::size_t s0 {0}; s0 < width; s0 += sub) {
+                               const std::size_t s1 {std::min(s0 + sub, width)};
+                               if (s0 > 0) { // the earlier sub-blocks' terms, through the product kernel: Pᵀ[s0, s1) += (−conj L₁₁[s0, s1) × [0, s0)) Pᵀ[0, s0)
+                                 minus_conj.resize((s1 - s0) * s0);
+                                 for (std::size_t j {s0}; j < s1; ++j) {
+                                   for (std::size_t k {0}; k < s0; ++k) {
+                                     minus_conj[((j - s0) * s0) + k] = -detail::conj_of(lower_[((k0 + j) * n_) + k0 + k]);
+                                   }
+                                 }
+                                 detail::gemm(s1 - s0, height, s0, minus_conj.data(), s0, panel.data(), height, panel.data() + (s0 * height), height);
                                }
-                               const T pivot {lower_[((k0 + j) * n_) + k0 + j]};
-                               for (std::size_t r {0}; r < height; ++r) {
-                                 column[r] = column[r] / pivot;
+                               for (std::size_t j {s0}; j < s1; ++j) {
+                                 T* const column {panel.data() + (j * height)};
+                                 for (std::size_t k {s0}; k < j; ++k) {
+                                   detail::subtract_product(column, panel.data() + (k * height), detail::conj_of(lower_[((k0 + j) * n_) + k0 + k]), height);
+                                 }
+                                 const T pivot {lower_[((k0 + j) * n_) + k0 + j]};
+                                 for (std::size_t r {0}; r < height; ++r) {
+                                   column[r] = column[r] / pivot;
+                                 }
                                }
                              }
                              const std::size_t below {n_ - end};
@@ -1527,30 +1545,41 @@ namespace numerical {
                            });
     }
 
-    //! \brief `A22 += (−L21) L21ᴴ`, by tiles of \ref detail::cholesky_update_columns columns and
-    //!        \ref detail::cholesky_update_rows rows on and below the diagonal blocks (the upper triangle, never read,
-    //!        takes what falls in a block past the diagonal), in parallel, each element's terms in the order of one
-    //!        product, from
-    //!        \p minus_l and \p l_adjoint as \ref factor_rows_below wrote them.
+    /*!
+     * \brief `A22 += (−L21) L21ᴴ`, by tiles of \ref detail::cholesky_update_columns columns and
+     *        \ref detail::cholesky_update_rows rows on and below the diagonal blocks (the upper triangle, never read,
+     *        takes what falls in a block past the diagonal), in parallel, each element's terms in the order of one
+     *        product, from \p minus_l and \p l_adjoint as \ref factor_rows_below wrote them. `−L₂₁` is packed once, in
+     *        \p packing, for the tile the products run on (\ref detail::pack_left), and every tile reads its rows there
+     *        (a tile packed its own, again for each block of columns: 8 % of the factorisation on one AVX2 core at order
+     *        1000): so a tile's rows start at a multiple of the tile's slivers, a few rows above the diagonal block.
+     */
     void update_trailing(std::size_t      k0,
                          std::size_t      end,
                          const buffer<T>& minus_l,
-                         const buffer<T>& l_adjoint)
+                         const buffer<T>& l_adjoint,
+                         buffer<T>&       packing)
     {
-      const std::size_t                                rows                      {n_ - end};
-      const std::size_t                                depth                     {end - k0};
-      const std::size_t                                step                      {std::max(block_, detail::cholesky_update_columns)};
-      const std::size_t                                height                    {detail::cholesky_update_rows};
-      std::vector<std::pair<std::size_t, std::size_t>> tiles; // each one's first column and first row, below the panel
+      const std::size_t                                rows    {n_ - end};
+      const std::size_t                                depth   {end - k0};
+      const std::size_t                                step    {std::max(block_, detail::cholesky_update_columns)};
+      // Packed once where a block of rows serves several tiles: past two tiles' rows (one AVX2 core, the shared packing
+      // cost order 300 5 % and 500 3 %, where a block of columns has one or two tiles), else each tile packs its own.
+      const bool                                       shared  {rows > 2 * detail::cholesky_update_rows};
+      const detail::packed_left<T>                     left    {shared ? detail::pack_left(rows, step, depth, minus_l.data(), depth, packing)
+                                                                       : detail::read_in_place(rows, depth, minus_l.data(), depth)};
+      const std::size_t                                granule {std::max<std::size_t>(1, left.granule)}; // a row at least
+      const std::size_t                                height  {std::max(granule, detail::cholesky_update_rows / granule * granule)};
+      std::vector<std::pair<std::size_t, std::size_t>> tiles;                                            // each one's first column and first row, below the panel
       for (std::size_t jb {0}; jb < rows; jb += step) {
-        for (std::size_t r0 {jb}; r0 < rows; r0 += height) {
+        for (std::size_t r0 {jb / granule * granule}; r0 < rows; r0 += height) {
           tiles.emplace_back(jb, r0);
         }
       }
       detail::parallel_for(tiles.size(), height * step * depth / detail::gemm_kernel_speedup, [&](std::size_t t) {
                              const auto [jb, r0] {tiles[t]};
-                             detail::gemm(std::min(height, rows - r0), std::min(step, rows - jb), depth, minus_l.data() + (r0 * depth), depth,
-                                          l_adjoint.data() + jb, rows, lower_.data() + ((end + r0) * n_) + end + jb, n_);
+                             detail::gemm_with(detail::left_rows(left, r0, std::min(height, rows - r0)), std::min(step, rows - jb),
+                                               l_adjoint.data() + jb, rows, lower_.data() + ((end + r0) * n_) + end + jb, n_);
                            });
     }
 
