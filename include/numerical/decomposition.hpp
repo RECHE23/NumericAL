@@ -2719,29 +2719,34 @@ namespace numerical {
       // The trailing update's factors, for the first panel's size, the largest: one buffer each, mapped once.
       const auto left                      {std::make_unique_for_overwrite<T[]>(n * 2 * tridiagonal_block)}; // row i: −V's then −W's
       const auto right                     {std::make_unique_for_overwrite<T[]>(2 * tridiagonal_block * n)}; // Wᴴ's rows, then Vᴴ's
+      // By reflection: row 2p holds step k0 + p's vector v over the rows (zero above), row 2p + 1 its w, so that a
+      // step's terms of the panel's earlier ones are one update through the rows (subtract_products), in their order.
+      buffer<T> by_row(2 * tridiagonal_block * n);
+      buffer<T> columns(tridiagonal_block * n); // the panel's columns of A, gathered row by row
+      buffer<T> factors(2 * tridiagonal_block); // a step's coefficients of those rows
       for (std::size_t k0 {0}; k0 + 1 < n; k0 += tridiagonal_block) {
         // A panel of reflections, as LAPACK's dlatrd: the matrix the panel's later steps see is
         // A − V Wᴴ − W Vᴴ, applied to the one column and the one product each step needs; the whole trailing
         // block takes it after the panel, through the matrix product kernel.
         const std::size_t k1                 {std::min(k0 + tridiagonal_block, n - 1)};
         const std::size_t width              {k1 - k0};
-        // By reflection: row p of each holds step k0 + p's vector over the rows (zero above), so every term of the
-        // panel is a contiguous update.
-        buffer<T> by_row_v(width * n, T {});
-        buffer<T> by_row_w(width * n, T {});
+        std::fill_n(by_row.data(), 2 * width * n, T {});
+        for (std::size_t i {k0}; i < n; ++i) { // column k from row k down, each row's part read once
+          for (std::size_t k {k0}; k < std::min(k1, i + 1); ++k) {
+            columns[((k - k0) * n) + i] = a[(i * n) + k];
+          }
+        }
         for (std::size_t k {k0}; k < k1; ++k) {
           const std::size_t j               {k - k0};
           const std::size_t m               {n - k - 1};
-          buffer<T>         column(m + 1, T {}); // column k from the diagonal down, the panel's earlier steps applied
-          for (std::size_t i {k}; i < n; ++i) {
-            column[i - k] = a[(i * n) + k];
-          }
+          T* const          column          {columns.data() + (j * n) + k}; // column k from the diagonal down, the panel's earlier steps applied
           for (std::size_t p {0}; p < j; ++p) {
-            subtract_product(column.data(), by_row_v.data() + (p * n) + k, conj_of(by_row_w[(p * n) + k]), m + 1);
-            subtract_product(column.data(), by_row_w.data() + (p * n) + k, conj_of(by_row_v[(p * n) + k]), m + 1);
+            factors[2 * p]       = conj_of(by_row[(((2 * p) + 1) * n) + k]); // v's row by w's element
+            factors[(2 * p) + 1] = conj_of(by_row[((2 * p) * n) + k]);
           }
+          subtract_products(column, factors.data(), by_row.data() + k, n, 2 * j, m + 1);
           a[(k * n) + k] = column[0];
-          buffer<T>      v(column.begin() + 1, column.end()); // column k below the diagonal
+          buffer<T>      v(column + 1, column + m + 1); // column k below the diagonal
           const double   below {m > 1 ? scaled_norm(v.data() + 1, m - 1) : 0.0};
           if (below == 0.0) {
             sub[k] = v[0]; // already tridiagonal in this column: nothing to reflect
@@ -2758,38 +2763,45 @@ namespace numerical {
           const T*       block  {a.data() + ((k + 1) * n) + k + 1};         // the trailing block, row stride n
           buffer<T>      w(m, T {});
           hermitian_product(block, n, m, v.data(), w.data(), symv_scratch); // w = A v on the trailing block
-          for (std::size_t p {0}; p < j; ++p) {                                           // w = (A − V Wᴴ − W Vᴴ) v
-            const T by_w {conjugate_dot(by_row_w.data() + (p * n) + k + 1, v.data(), m)}; // (Wᴴ v)ₚ
-            const T by_v {conjugate_dot(by_row_v.data() + (p * n) + k + 1, v.data(), m)}; // (Vᴴ v)ₚ
-            subtract_product(w.data(), by_row_v.data() + (p * n) + k + 1, by_w, m);
-            subtract_product(w.data(), by_row_w.data() + (p * n) + k + 1, by_v, m);
+          for (std::size_t p {0}; p < j; ++p) {                                                               // w = (A − V Wᴴ − W Vᴴ) v
+            factors[2 * p]       = conjugate_dot(by_row.data() + ((((2 * p) + 1) * n) + k + 1), v.data(), m); // (Wᴴ v)ₚ
+            factors[(2 * p) + 1] = conjugate_dot(by_row.data() + (((2 * p) * n) + k + 1), v.data(), m);       // (Vᴴ v)ₚ
           }
+          subtract_products(w.data(), factors.data(), by_row.data() + k + 1, n, 2 * j, m);
           const T c {conjugate_dot(v.data(), w.data(), m)};
           for (std::size_t i {0}; i < m; ++i) { // w = 2 B v − 2 (vᴴ B v) v, so H B H = B − v wᴴ − w vᴴ
-            w[i]                                = (static_cast<T>(2) * w[i]) - (static_cast<T>(2) * c * v[i]);
-            by_row_v[(j * n) + k + 1 + i]       = v[i];
-            by_row_w[(j * n) + k + 1 + i]       = w[i];
+            w[i]                                    = (static_cast<T>(2) * w[i]) - (static_cast<T>(2) * c * v[i]);
+            by_row[((2 * j) * n) + k + 1 + i]       = v[i];
+            by_row[(((2 * j) + 1) * n) + k + 1 + i] = w[i];
           }
           reflectors[k + 1] = std::move(v); // acting from row k + 1, as householder_qr's from row k
         }
         // The trailing block from row and column k1: A −= V Wᴴ + W Vᴴ, one product of depth 2 · width,
         // [−V −W] [Wᴴ; Vᴴ], on the lower triangle alone, as LAPACK's dsyr2k: the reduction reads nothing above the
-        // diagonal. By bands of rows, each to the diagonal: about half the full block's operations.
+        // diagonal. A real product the kernel packs runs on the triangle's tiles alone (\ref gemm_triangle, each
+        // element the bands' sum); a smaller or complex one by bands of rows, each to the diagonal, past which a band
+        // computes what is never read.
         const std::size_t rest  {n - k1};
         const std::size_t depth {2 * width};
         for (std::size_t i {0}; i < rest; ++i) { // each row of left written whole, in order
           for (std::size_t p {0}; p < width; ++p) {
-            left[(i * depth) + p]         = -by_row_v[(p * n) + k1 + i];
-            left[(i * depth) + width + p] = -by_row_w[(p * n) + k1 + i];
+            left[(i * depth) + p]         = -by_row[((2 * p) * n) + k1 + i];
+            left[(i * depth) + width + p] = -by_row[(((2 * p) + 1) * n) + k1 + i];
           }
         }
         for (std::size_t p {0}; p < width; ++p) {
           for (std::size_t i {0}; i < rest; ++i) {
-            right[(p * rest) + i]           = conj_of(by_row_w[(p * n) + k1 + i]);
-            right[((width + p) * rest) + i] = conj_of(by_row_v[(p * n) + k1 + i]);
+            right[(p * rest) + i]           = conj_of(by_row[(((2 * p) + 1) * n) + k1 + i]);
+            right[((width + p) * rest) + i] = conj_of(by_row[((2 * p) * n) + k1 + i]);
           }
         }
         T* trailing {a.data() + (k1 * n) + k1};
+        if constexpr (std::is_same_v<T, double>) {
+          if (depth >= gemm_min_depth && rest * rest >= ((gemm_packed_threshold + depth) - 1) / depth) {
+            gemm_triangle<a_rows, b_rows>(rest, depth, left.get(), depth, right.get(), rest, trailing, n, true);
+            continue;
+          }
+        }
         for (std::size_t r0 {0}; r0 < rest; r0 += tridiagonal_band) {
           const std::size_t rows {std::min(tridiagonal_band, rest - r0)};
           gemm(rows, r0 + rows, depth, left.get() + (r0 * depth), depth, right.get(), rest, trailing + (r0 * n), n);

@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- The Hermitian tridiagonal reduction (`eigvalsh`, `eigh`, `dsyevd_`) gathers each panel's columns once, row by row,
+  where each step read its column across rows `n` apart, and takes a step's terms of the panel's earlier ones in one
+  update through their rows (`detail::subtract_products`, the vectors and their products interleaved), in the same
+  order; its trailing update runs on the triangle's tiles alone (`detail::gemm_triangle`) where bands of rows computed
+  what the reduction never reads. The bits are the same, x86-64 and arm64. `eigvalsh` against OpenBLAS 0.3.26 on six
+  x86-64 AVX2 cores: one core, order 100 0.47 → 0.42 ms (0.37), 300 4.61 → 4.06 ms (3.48), 1000 88 → 77 ms (67); six,
+  300 4.38 → 4.04 ms (3.01), 1000 53 → 48 ms (36.6). arm64, order 300 3.16 → 2.93 ms, 1000 59 → 56 ms.
 - `dgesv_` with `B` the identity to the bit (NumPy's `inv`) solves through the LU's inverse of the rows in their
   pivoted order (`lu_decomposition::pivoted_inverse`), whose forward pass leaves out the identity's zeros: the same
   terms otherwise, so the same bits, a test holding it at orders 9 to 301. Its columns go to the interchanged places as
