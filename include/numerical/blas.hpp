@@ -205,6 +205,31 @@ namespace numerical::blas {
       }
     }
 
+    //! \brief The lower triangle of the column-major `n × n` \p a (\p lda apart) into that of the row-major \p rows
+    //!        (`n` apart) where \p in, out of it back into \p a otherwise, by tiles; the other triangles untouched.
+    template <typename T>
+    void lower_triangle_rows(T*          a,
+                             std::size_t lda,
+                             std::size_t n,
+                             T*          rows,
+                             bool        in)
+    {
+      for (std::size_t j0 {0}; j0 < n; j0 += transpose_tile) {
+        for (std::size_t i0 {j0}; i0 < n; i0 += transpose_tile) {
+          for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, n); ++j) {
+            for (std::size_t i {std::max(i0, j)}; i < std::min(i0 + transpose_tile, n); ++i) {
+              if (in) {
+                rows[(i * n) + j] = a[i + (j * lda)];
+              }
+              else {
+                a[i + (j * lda)] = rows[(i * n) + j];
+              }
+            }
+          }
+        }
+      }
+    }
+
     //! \brief The \p cols columns of \p rows elements of the column-major \p a (\p lda apart) as the rows of a
     //!        row-major buffer, each element times \p scale: `aᵀ`, row-major.
     template <typename T>
@@ -886,26 +911,36 @@ namespace numerical::blas {
     if (n == 0) {
       return 0;
     }
-    const auto     size                      {static_cast<std::size_t>(n)};
-    const auto     ld                        {static_cast<std::size_t>(lda)};
-    buffer<T>      lower_rows(size * size, T {}); // A's lower triangle, row-major: the upper one's conjugate (Hermitian)
-    for (std::size_t i {0}; i < size; ++i) {
-      for (std::size_t j {0}; j <= i; ++j) {
-        lower_rows[(i * size) + j] = lower ? a[i + (j * ld)] : numerical::detail::conj_of(a[j + (i * ld)]);
+    const auto size {static_cast<std::size_t>(n)};
+    const auto ld   {static_cast<std::size_t>(lda)};
+    // A's lower triangle, row-major (the upper one's conjugate, Hermitian), in storage the thread keeps: the decomposition
+    // reads no more of it and zeroes the rest. L's triangle by tiles (a row of it read across columns lda apart missed on
+    // every element), U's columns as they lie; the factor written back the same ways.
+    buffer<T> lower_rows {detail::take_kept<T>(0)};
+    lower_rows.resize(size * size);
+    if (lower) {
+      detail::lower_triangle_rows(a, ld, size, lower_rows.data(), true);
+    }
+    else {
+      for (std::size_t i {0}; i < size; ++i) {
+        for (std::size_t j {0}; j <= i; ++j) {
+          lower_rows[(i * size) + j] = numerical::detail::conj_of(a[j + (i * ld)]);
+        }
       }
     }
     try {
-      const matrix<T> l {cholesky_decomposition<T> {matrix<T> {size, size, std::move(lower_rows)}}.lower()};
-      for (std::size_t i {0}; i < size; ++i) {
-        for (std::size_t j {0}; j <= i; ++j) {
-          if (lower) {
-            a[i + (j * ld)] = l(i, j);
-          }
-          else { // U = Lᴴ
-            a[j + (i * ld)] = numerical::detail::conj_of(l(i, j));
+      buffer<T> l {cholesky_decomposition<T> {matrix<T> {size, size, std::move(lower_rows)}}.lower().elements()};
+      if (lower) {
+        detail::lower_triangle_rows(a, ld, size, l.data(), false);
+      }
+      else { // U = Lᴴ
+        for (std::size_t i {0}; i < size; ++i) {
+          for (std::size_t j {0}; j <= i; ++j) {
+            a[j + (i * ld)] = numerical::detail::conj_of(l[(i * size) + j]);
           }
         }
       }
+      detail::give_back(0, std::move(l));
     }
     catch (const not_positive_definite_error& failed) {
       return static_cast<int>(failed.order());

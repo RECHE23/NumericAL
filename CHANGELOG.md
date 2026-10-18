@@ -41,6 +41,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   `Aᵀ x` (NumPy's `a @ v`) order 300 17.2 → 7.5 µs (OpenBLAS 3.0), 1000 73 → 61 µs (54); `A x` order 100 2.1 → 1.0 µs
   (1.7), 300 24 → 5.5 µs (6.8), 1000 135 → 99 µs (64). arm64, every core: `Aᵀ x` order 300 10.4 → 5.1 µs, `A x`
   300 13.4 → 5.4 µs, 1000 85 → 36 µs.
+- `dpotrf_` copies `A`'s triangle into storage the thread keeps (a fresh zeroed one was faulted in page by page on
+  every call), the lower one by tiles, and the factor back the same way (a row read across columns `lda` apart missed
+  on every element). One x86-64 AVX2 core: order 200 370 → 255 µs, 300 980 → 710 µs, 500 3.06 → 2.35 ms.
 
 ## 2026.10.21 — 2026-10-17
 
