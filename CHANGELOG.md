@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- The Cholesky factorisation's diagonal blocks go four rows at a time over the columns before them, which depend on
+  the rows above alone: four chains of sums where row by row each term waited on the last (`cholesky_diagonal_rows`).
+  Each element takes the same terms in the same order: on x86-64, and for complex matrices, the factor is the same to
+  the bit; on arm64 Clang fuses other terms of a real one's sums, which move by rounding. One x86-64 AVX2 core,
+  `dpotrf_`: order 300 701 → 635 µs (the diagonal blocks 128 → 65), 500 2.28 → 2.16 ms, 1000 13.4 → 13.1 ms; six
+  cores, 300 504 → 440 µs; arm64, one core, 300 354 → 318 µs, 500 1.00 → 0.95 ms.
 - The Hermitian tridiagonal reduction (`eigvalsh`, `eigh`, `dsyevd_`) gathers each panel's columns once, row by row,
   where each step read its column across rows `n` apart, and takes a step's terms of the panel's earlier ones in one
   update through their rows (`detail::subtract_products`, the vectors and their products interleaved), in the same

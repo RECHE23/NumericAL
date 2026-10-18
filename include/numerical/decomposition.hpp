@@ -141,6 +141,10 @@ namespace numerical {
     //! \brief The columns of one panel of the blocked Cholesky factorisation (as \ref lu_block).
     inline constexpr std::size_t cholesky_block {64};
 
+    //! \brief The rows of a Cholesky diagonal block factorised together, one chain of sums each (one x86-64 AVX2 core,
+    //!        order 300: the diagonal blocks 128 → 65 µs; eight rows did no better).
+    inline constexpr std::size_t cholesky_diagonal_rows {4};
+
     //! \brief The order below which the Cholesky factorisation is one panel: no trailing product, whose packing the
     //!        few panels of a small order do not repay (order 17 on one thread: 0.8 µs whole, 1.3 µs in panels of 16).
     //!        Panels of 16 win from order 40 on x86-64 and from 48 on arm64.
@@ -1542,8 +1546,15 @@ namespace numerical {
       buffer<T> packing; // −L₂₁ packed for the trailing update's tiles, kept from panel to panel
       for (std::size_t k0 {0}; k0 < n_; k0 += block_) {
         const std::size_t end {std::min(k0 + block_, n_)};
-        for (std::size_t i {k0}; i < end; ++i) {
-          factor_row(i, k0, std::min(i + 1, end));
+        std::size_t       i   {k0};
+        for (; i + detail::cholesky_diagonal_rows <= end; i += detail::cholesky_diagonal_rows) {
+          factor_rows_together(i, k0);
+          for (std::size_t r {0}; r < detail::cholesky_diagonal_rows; ++r) { // their triangle, row after row
+            factor_row(i + r, k0, i, i + r + 1);
+          }
+        }
+        for (; i < end; ++i) {
+          factor_row(i, k0, k0, i + 1);
         }
         if (end < n_) {
           buffer<T> minus_l((n_ - end) * (end - k0));   // −L₂₁, row-major
@@ -1559,15 +1570,43 @@ namespace numerical {
     }
 
     /*!
-     * \brief Row \p i of L in the columns `[k0, last)`, the terms of the columns before \p k0 already subtracted: the
-     *        unblocked step, `L[i][j] = (A[i][j] − Σₖ L[i][k]·conj(L[j][k])) / L[j][j]` over `k ∈ [k0, j)`.
+     * \brief The columns `[k0, i)` of the \ref detail::cholesky_diagonal_rows rows from \p i, together: each element
+     *        depends on its own row's earlier columns and on the rows above \p i alone, so the rows' sums are chains of
+     *        their own, where row by row each term waited on the last. Each element is \ref factor_row's, its terms in
+     *        the same order.
+     */
+    void factor_rows_together(std::size_t i,
+                              std::size_t k0)
+    {
+      std::array<T, detail::cholesky_diagonal_rows> sums {};
+      for (std::size_t j {k0}; j < i; ++j) {
+        const T* const above {lower_.data() + (j * n_)};
+        for (std::size_t r {0}; r < detail::cholesky_diagonal_rows; ++r) {
+          sums[r] = lower_[((i + r) * n_) + j];
+        }
+        for (std::size_t k {k0}; k < j; ++k) {
+          const T other {detail::conj_of(above[k])};
+          for (std::size_t r {0}; r < detail::cholesky_diagonal_rows; ++r) {
+            sums[r] -= lower_[((i + r) * n_) + k] * other;
+          }
+        }
+        for (std::size_t r {0}; r < detail::cholesky_diagonal_rows; ++r) {
+          lower_[((i + r) * n_) + j] = sums[r] / above[j];
+        }
+      }
+    }
+
+    /*!
+     * \brief Row \p i of L in the columns `[first, last)`, the terms of the columns before \p k0 already subtracted:
+     *        the unblocked step, `L[i][j] = (A[i][j] − Σₖ L[i][k]·conj(L[j][k])) / L[j][j]` over `k ∈ [k0, j)`.
      * \throws not_positive_definite_error At a diagonal that is not positive.
      */
     void factor_row(std::size_t i,
                     std::size_t k0,
+                    std::size_t first,
                     std::size_t last)
     {
-      for (std::size_t j {k0}; j < last; ++j) {
+      for (std::size_t j {first}; j < last; ++j) {
         T sum {lower_[(i * n_) + j]};
         for (std::size_t k {k0}; k < j; ++k) {
           sum -= lower_[(i * n_) + k] * detail::conj_of(lower_[(j * n_) + k]);
