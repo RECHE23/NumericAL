@@ -101,6 +101,16 @@ namespace numerical {
           std::allocator<T>::deallocate(at, n);
           return;
         }
+        deallocate_huge(at);
+      }
+
+      /*!
+       * \brief Frees the huge pages \ref allocate gave from \p at. Out of line: inlined where a small buffer's size is
+       *        known (a QR's columns of 40 complex numbers), GCC 14 took the read before \p at for one past the
+       *        buffer's bounds (-Warray-bounds), though a buffer of that size never comes here.
+       */
+      [[gnu::noinline]] static void deallocate_huge(T* at) noexcept
+      {
         auto* const data   {reinterpret_cast<std::byte*>(at)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the storage's bytes
         std::size_t offset {};
         std::memcpy(&offset, data - sizeof(std::size_t), sizeof(std::size_t));
