@@ -37,7 +37,7 @@ SCIFORGE_LINT ?= ../sciforge/lint
 FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: check-pins all build test sanitize coverage coverage-build coverage-x86 coverage-html \
-        lint misra doc doc-no-coverage format format-check full-local-gate \
+        lint misra doc doc-no-coverage format format-check full-local-gate test-gcc lint-gate stubtest-gate bench-diff-selftest \
         python python-test python-stubtest fuzz-linalg bench-diff bench-linalg bench-python bench-gemm version-check install uninstall release clean help
 
 .DEFAULT_GOAL := help
@@ -59,7 +59,10 @@ help:
 	@echo "  make python-test  Run the Python binding test suite"
 	@echo "  make fuzz-linalg  Decompositions vs NumPy on adversarial matrices, every GEMM path (CASES=, SEED=)"
 	@echo "  make version-check  Assert pyproject = __init__ = CMake-derived version"
-	@echo "  make full-local-gate  Every gate in one command (the macOS gate of record)"
+	@echo "  make check-commit  Before each commit: format, the suite under coverage at 100 % (~2 min)"
+	@echo "  make check-push    Before each push: the above, g++-14, sanitizers, MISRA, lint, doc, Python (~6 min)"
+	@echo "  make check-release Before each release: the above, bench-diff against the last release, fuzz-linalg"
+	@echo "  make full-local-gate  The push tier, by its former name"
 	@echo "  make bench-python Differential validation + perf vs NumPy"
 	@echo "  make bench-linalg Dense linear algebra vs NumPy's BLAS/LAPACK, each alone in its process (SIZES=, ROUNDS=)"
 	@echo "  make bench-gemm   GEMM loop-order micro-benchmark (C++, vs naive baseline)"
@@ -209,25 +212,22 @@ check-pins:
 # of record. Runs every check this machine owns and fails on any issue, including a
 # lint warning or any coverage dimension below 100%. If an incremental coverage build
 # is ever suspect, `rm -rf $(COV_DIR)` first to force a clean re-measure.
-full-local-gate:
-	@$(MAKE) format-check
-	@$(MAKE) version-check
-	@$(MAKE) check-pins
-	@$(MAKE) test
-	@$(MAKE) test CXX=g++-14 BUILD=$(BUILD)/gcc
-	@$(MAKE) sanitize
-	@$(MAKE) misra
-	@$(MAKE) doc-no-coverage
-	@$(MAKE) python-test
+# The steps of the verification tiers (make/quality.mk, below) that take arguments, as targets of their own.
+test-gcc:
+	@$(MAKE) --no-print-directory test CXX=g++-14 BUILD=$(BUILD)/gcc
+
+lint-gate:
+	@$(MAKE) --no-print-directory lint | tee $(BUILD)/lint.log; ! grep -qE 'warning:|error:' $(BUILD)/lint.log
+
+stubtest-gate:
+	@if $(MYPY_PYTHON) -c 'import mypy' >/dev/null 2>&1; then $(MAKE) --no-print-directory python-stubtest; \
+	 else echo "stubtest-gate: WARN — mypy absent from MYPY_PYTHON, python-stubtest skipped (CI runs it)"; fi
+
+bench-diff-selftest:
 	@$(PYTHON) benchmarks/bench_diff.py --self-test
-	@if $(MYPY_PYTHON) -c 'import mypy' >/dev/null 2>&1; then $(MAKE) python-stubtest; else echo "full-local-gate: WARN — mypy absent from MYPY_PYTHON, python-stubtest skipped (CI runs it)"; fi
-	@$(MAKE) lint | tee $(BUILD)/lint.log; ! grep -qE 'warning:|error:' $(BUILD)/lint.log
-	@$(MAKE) coverage | tee $(BUILD)/coverage.log
-	# Gate on a flag, not a bare exit 1 in the rule: that exit is overridden by END's exit,
-	# so the gate silently accepted coverage below 100% 4D before this fix.
-	@awk '/^TOTAL/{seen=1; if (gsub(/100\.00%/, "&") != 4) bad=1} END{exit (seen && !bad) ? 0 : 1}' $(BUILD)/coverage.log \
-	  || { echo "full-local-gate: coverage is below 100% on some dimension — see above"; exit 1; }
-	@echo "full-local-gate: ALL gates green (clang + g++-14, sanitize, MISRA, lint, doc, python, version-check, 100% coverage)"
+
+full-local-gate:
+	@$(MAKE) --no-print-directory check-push
 
 # Differential validation + performance versus NumPy (needs numpy installed).
 bench-python: python
@@ -309,3 +309,12 @@ release:
 clean:
 	rm -rf $(BUILD) build dist ./*.egg-info python/numerical/*.so
 	find python -name '__pycache__' -type d -prune -exec rm -rf {} +
+
+# The verification tiers every SciForge project shares (the sibling checkout's make/quality.mk). Optional, so a
+# checkout without the sibling (CI pins its own SciForge) still runs every other target.
+SCIFORGE_MAKE    ?= ../sciforge/make
+QUALITY_COMMIT   := format-check coverage-gate
+QUALITY_PUSH     := version-check check-pins test test-gcc sanitize misra doc-no-coverage python-test bench-diff-selftest \
+                    stubtest-gate lint-gate
+QUALITY_RELEASE  := bench-diff fuzz-linalg
+-include $(SCIFORGE_MAKE)/quality.mk

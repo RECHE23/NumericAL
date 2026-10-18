@@ -15,6 +15,15 @@ environment `pypi` — and create the matching GitHub Environment named `pypi`.
 Until that exists the build/sdist jobs still run, but the publish step fails;
 the pushed tag remains a valid versioned snapshot regardless.
 
+## Verification tiers
+
+The checks run in three tiers, through SciForge's shared `make/quality.mk` (the sibling `../sciforge` checkout):
+`make check-commit` before each commit (format, the suite under coverage at 100 %), `make check-push` before each
+push (that, then g++-14, the sanitizers, MISRA, lint, the documentation, the Python suite and its stubs) and
+`make check-release` before a release (both, then `bench-diff` against the last release and `fuzz-linalg`).
+`make release` runs `bench-diff` itself as well. Each tier stops at its first red step, prints each step's time,
+refuses to run beside another gate in the same tree, and voids its verdict if the tree moved while it ran.
+
 ## Versions and breaking changes
 
 Versions are calendar-based, `YYYY.M.PATCH`. A change that can break a user's code or results it depends on — a
