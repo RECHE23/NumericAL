@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- The Cholesky factorisation's rows below a diagonal block take each column's terms of its sub-block with the column
+  held in registers (`detail::subtract_products`), where each term read and wrote it again; the same multiply-adds in
+  the same order, so without fusion the factor is still the unblocked algorithm's to the bit. One x86-64 AVX2 core:
+  order 300 696 → 659 µs, 500 2.26 → 2.12 ms; arm64 300 350 → 332 µs, 1000 4.67 → 4.36 ms. The bits are the same on
+  x86-64; on arm64 a few elements of large orders move by rounding where the column's last elements were fused
+  otherwise.
 - `dsyrk_` takes its triangle in one pass (`detail::gemm_triangle`): both operands packed once a panel of depth, the
   tiles outside the triangle skipped, a tile across the diagonal run on a copy of its block, where products by halves
   packed them again for every block and ran the diagonal blocks one after another. Each element's sum is the product's;

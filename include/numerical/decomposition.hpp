@@ -507,6 +507,35 @@ namespace numerical {
         throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
       }
     }
+
+    /*!
+     * \brief `column −= Σₜ x_t · conj(l[t])` over the \p terms columns \p columns (\p height elements each, one after
+     *        another), term by term in ascending order: an elimination step of a Cholesky panel's rows below (an overload
+     *        per scalar, as `conj_of`). Each term \ref subtract_product, the column read and written again for every one.
+     */
+    template <typename T>
+    void subtract_panel_columns(T*          column,
+                                const T*    columns,
+                                std::size_t height,
+                                const T*    l,
+                                std::size_t terms)
+    {
+      for (std::size_t t {0}; t < terms; ++t) {
+        subtract_product(column, columns + (t * height), conj_of(l[t]), height);
+      }
+    }
+
+    //! \brief \ref subtract_panel_columns for `double`: \ref subtract_products, which holds the column in registers
+    //!        through the terms, the same multiply-adds in the same order, so the same values (a complex one keeps the
+    //!        term-by-term calls, whose `x · f` the other would round as `f · x`).
+    inline void subtract_panel_columns(double*       column,
+                                       const double* columns,
+                                       std::size_t   height,
+                                       const double* l,
+                                       std::size_t   terms)
+    {
+      subtract_products(column, l, columns, height, terms, height);
+    }
   } // namespace detail
 
   /*!
@@ -1524,9 +1553,7 @@ namespace numerical {
                                }
                                for (std::size_t j {s0}; j < s1; ++j) {
                                  T* const column {panel.data() + (j * height)};
-                                 for (std::size_t k {s0}; k < j; ++k) {
-                                   detail::subtract_product(column, panel.data() + (k * height), detail::conj_of(lower_[((k0 + j) * n_) + k0 + k]), height);
-                                 }
+                                 detail::subtract_panel_columns(column, panel.data() + (s0 * height), height, lower_.data() + ((k0 + j) * n_) + k0 + s0, j - s0);
                                  const T pivot {lower_[((k0 + j) * n_) + k0 + j]};
                                  for (std::size_t r {0}; r < height; ++r) {
                                    column[r] = column[r] / pivot;
