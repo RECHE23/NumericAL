@@ -23,6 +23,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   OpenBLAS's Haswell kernel does: the same operations in the same order, so the same bits. One x86-64 AVX2 core,
   against OpenBLAS 0.3.26 and MKL 2024.2: `dgemm_` order 1000 41.8 → 38.0 ms (35.2, 34.9), 300 1.12 → 1.07 ms; `dsyrk_`
   1000 22.4 → 21.1 ms; six cores, `dgemm_` 1000 8.89 → 8.56 ms (8.39, 7.58).
+- The LU, Cholesky and QR decompositions of a `const matrix&` copy it on the threads, its pages faulted in by
+  several, where the matrix's copy faulted every one on the caller's: on every core of an M1 Pro, `cholesky` of order
+  1000 3.58 → 3.22 ms, 2000 15.0 → 13.3 ms, `lu` 1000 5.42 → 5.14 ms, 2000 30.0 → 27.7 ms; six x86-64 AVX2 cores,
+  `cholesky` 500 733 → 676 µs, 1000 3.55 → 3.29 ms. From 16 MiB on Linux, where a buffer takes 2 MiB pages, the
+  threads' zeroing and copies take a page each: by eight 4 KiB pages a thread they waited on one another's fault
+  (six x86-64 cores, 32 MiB zeroed into fresh memory 3.6 → 2.5 ms, a product of order 2000 −2 %; the copy before a
+  decomposition of order 2000 was 2 to 4 % slower than one thread's, now level with it).
 
 ## 2026.10.23 — 2026-10-19
 

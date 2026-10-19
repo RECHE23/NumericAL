@@ -161,13 +161,13 @@ TEST(threads_for_pays_a_thread_for_each_share_of_work)
 }
 
 // parallel_zero clears exactly its count, below the size that pays a second thread (one fill) and above it (chunks
-// across the threads, the last one partial), and leaves the element past it alone.
+// across the threads, the last one partial; past 16 MiB, by 2 MiB on Linux), and leaves the element past it alone.
 TEST(parallel_zero_clears_its_count_and_nothing_past_it)
 {
   using numerical::detail::parallel_zero;
   constexpr std::size_t threshold {2 * (numerical::detail::work_per_thread / numerical::detail::zero_work)};
   for (const std::size_t count : {std::size_t {0}, std::size_t {1000}, threshold - 1, threshold,
-                                  threshold + (numerical::detail::zero_chunk / 2) + 3}) {
+                                  threshold + (numerical::detail::zero_chunk / 2) + 3, (std::size_t {1} << 21U) + 77}) {
     std::vector<double> data(count + 1, 1.5);
     parallel_zero(data.data(), count);
     EXPECT(std::all_of(data.begin(), data.begin() + static_cast<std::ptrdiff_t>(count), [](double x) { return x == 0.0; }));
@@ -175,14 +175,14 @@ TEST(parallel_zero_clears_its_count_and_nothing_past_it)
   }
 }
 
-// parallel_copy copies exactly its count on both sides of the size that pays a second thread, and leaves the element
-// past it alone.
+// parallel_copy copies exactly its count on both sides of the size that pays a second thread and past 16 MiB, and
+// leaves the element past it alone.
 TEST(parallel_copy_copies_its_count_and_nothing_past_it)
 {
   using numerical::detail::parallel_copy;
   constexpr std::size_t threshold {2 * (numerical::detail::work_per_thread / numerical::detail::zero_work)};
   for (const std::size_t count : {std::size_t {0}, std::size_t {1000}, threshold - 1, threshold,
-                                  threshold + (numerical::detail::zero_chunk / 2) + 3}) {
+                                  threshold + (numerical::detail::zero_chunk / 2) + 3, (std::size_t {1} << 21U) + 77}) {
     std::vector<double> in(count);
     for (std::size_t i {0}; i < count; ++i) {
       in[i] = static_cast<double>(i) * 0.5;

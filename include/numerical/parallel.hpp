@@ -638,6 +638,28 @@ namespace numerical::detail {
   //! \brief The elements one index of \ref parallel_zero writes: eight 4 KiB pages of `double`.
   inline constexpr std::size_t zero_chunk {std::size_t {1} << 12};
 
+  /*!
+   * \brief The elements one index of \ref parallel_zero or \ref parallel_copy takes of \p count: \ref zero_chunk, or,
+   *        from the size at which a \ref buffer takes Linux's 2 MiB pages (16 MiB), one such page's worth, so that no
+   *        two threads fault in the same page: they waited on each other's fault there (six x86-64 AVX2 cores, 32 MiB
+   *        zeroed into fresh memory 3.6 → 2.5 ms; the LU and Cholesky of order 2000, their operand copied by eight 4 KiB
+   *        pages a thread, took 2 to 4 % longer than with one thread's copy).
+   */
+  template <typename T>
+  [[nodiscard]] constexpr std::size_t fault_chunk(std::size_t count) noexcept
+  {
+#if defined(__linux__)
+    constexpr std::size_t huge_page  {std::size_t {1} << 21U};
+    constexpr std::size_t huge_least {std::size_t {1} << 24U};
+    if (count >= huge_least / sizeof(T)) {
+      return huge_page / sizeof(T);
+    }
+#else
+    (void)count;
+#endif
+    return zero_chunk;
+  }
+
   //! \brief The work of zeroing one element, in multiply-adds: a second thread from 1 MiB of `double`. Below, the
   //!        allocator mostly hands back memory already touched, and zeroing 512 KiB took 4.5 µs on one arm64 thread,
   //!        9 µs split across eight.
@@ -659,9 +681,10 @@ namespace numerical::detail {
       std::fill(out, out + count, T {});
       return;
     }
-    parallel_for((count + zero_chunk - 1) / zero_chunk, zero_chunk * zero_work, [out, count](std::size_t chunk) {
-                   const std::size_t begin {chunk * zero_chunk};
-                   std::fill(out + begin, out + std::min(count, begin + zero_chunk), T {});
+    const std::size_t piece {fault_chunk<T>(count)};
+    parallel_for((count + piece - 1) / piece, piece * zero_work, [out, count, piece](std::size_t chunk) {
+                   const std::size_t begin {chunk * piece};
+                   std::fill(out + begin, out + std::min(count, begin + piece), T {});
                  });
   }
 
@@ -680,9 +703,10 @@ namespace numerical::detail {
       std::copy(in, in + count, out);
       return;
     }
-    parallel_for((count + zero_chunk - 1) / zero_chunk, zero_chunk * zero_work, [in, out, count](std::size_t chunk) {
-                   const std::size_t begin {chunk * zero_chunk};
-                   std::copy(in + begin, in + std::min(count, begin + zero_chunk), out + begin);
+    const std::size_t piece {fault_chunk<T>(count)};
+    parallel_for((count + piece - 1) / piece, piece * zero_work, [in, out, count, piece](std::size_t chunk) {
+                   const std::size_t begin {chunk * piece};
+                   std::copy(in + begin, in + std::min(count, begin + piece), out + begin);
                  });
   }
 } // namespace numerical::detail
