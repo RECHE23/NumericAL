@@ -138,6 +138,22 @@ make doc         # API reference (Doxygen) with embedded coverage
 
 Override the compiler with `make test CXX=g++-14`.
 
+### Supported toolchains
+
+A C++20 compiler is required. These are the toolchains each push is built and tested with; an older one may work,
+and is not tested:
+
+| Toolchain | Where |
+| --- | --- |
+| GCC 14 | Linux x86-64: the test suite, under ASan and UBSan too |
+| Clang 18 | Linux x86-64: the test suite, under ASan and UBSan too |
+| GCC 13 (Ubuntu 24.04's) | Linux arm64: the CMake build, tests and install |
+| MSVC (Visual Studio 2022) | Windows x64: the CMake build, tests and install |
+| Apple Clang 16 | macOS arm64: the local gate (`make check-push`), not CI |
+
+CMake 3.16 or newer; Python 3.10 or newer for the binding. The x86-64 kernels are checked on an emulated AVX-512
+processor in CI.
+
 `numerical::numerical` is the CMake target — `add_subdirectory`, `FetchContent`, or an
 installed config package:
 
