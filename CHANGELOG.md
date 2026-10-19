@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.25 — 2026-10-19
+
 ### Fixed
 - **A product's elements are the same whatever its shape, under GCC too, so a real inverse is the same to the bit on
   one thread as on all.** The plain loop of the small products rounded each term as the compiler does, and GCC under
