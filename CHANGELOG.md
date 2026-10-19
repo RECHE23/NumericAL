@@ -26,6 +26,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   68 → 57 µs.
 
 ### Development
+- `make tsan`, in `make check-push`: the suite under ThreadSanitizer (the pool's workers, nested parallel loops, the
+  buffers each thread keeps), after a race planted in a parallel loop is reported, so that a runtime unable to watch
+  the threads cannot pass for a clean run. The suite has no race under it.
+- `SECURITY.md` (the threat model: values, shapes, the BLAS ABI, threads) and `CONTRIBUTING.md`.
 - The differential fuzzer covers the rest of the NumPy surface and two contracts: `svdvals`, `cond` (below κ = 10⁶,
   its error growing as n·ε·κ²), `multi_dot`, `trace`, `outer`, `cross`, `tensordot` and `vecdot` against NumPy's
   within the bound of the sums they form; a NaN or an infinity in what a decomposition reads raising `LinAlgError`;

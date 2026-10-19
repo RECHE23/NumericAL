@@ -47,6 +47,7 @@ endif()
 
 option(NUMERICAL_SANITIZE "Build the tests with AddressSanitizer + UndefinedBehaviorSanitizer" OFF)
 option(NUMERICAL_COVERAGE "Build the tests with LLVM source-based coverage instrumentation" OFF)
+option(NUMERICAL_TSAN "Build the tests with ThreadSanitizer" OFF)
 
 # Header-only library: consumers link numerical::numerical to get the include path.
 # It also uses std::thread (parallel.hpp), so it carries the threads dependency.
@@ -160,6 +161,14 @@ if(NUMERICAL_SANITIZE)
     target_compile_options(numerical_tests_bin PRIVATE
         -fsanitize=address,undefined -fno-sanitize-recover=undefined -fno-omit-frame-pointer -g -O1)
     target_link_options(numerical_tests_bin PRIVATE -fsanitize=address,undefined -fno-sanitize-recover=undefined)
+endif()
+
+if(NUMERICAL_TSAN)
+    if(MSVC)
+        message(FATAL_ERROR "NUMERICAL_TSAN requires a GCC/Clang-family compiler")
+    endif()
+    target_compile_options(numerical_tests_bin PRIVATE -fsanitize=thread -g -O1)
+    target_link_options(numerical_tests_bin PRIVATE -fsanitize=thread)
 endif()
 
 if(NUMERICAL_COVERAGE)

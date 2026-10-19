@@ -36,7 +36,7 @@ SCIFORGE_INCLUDE ?= ../sciforge/include
 SCIFORGE_LINT ?= ../sciforge/lint
 FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
-.PHONY: check-pins all build test sanitize coverage coverage-build coverage-x86 coverage-html \
+.PHONY: check-pins all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate test-gcc lint-gate stubtest-gate bench-diff-selftest \
         python python-test python-stubtest fuzz-linalg bench-diff bench-linalg bench-python bench-gemm version-check install uninstall release release-bump clean help
 
@@ -48,6 +48,7 @@ help:
 	@echo "  make build      Configure and build the test binary (CMake)"
 	@echo "  make test       Build and run the test suite (ctest)"
 	@echo "  make sanitize   Build and run the tests under ASan + UBSan"
+	@echo "  make tsan       Build and run the tests under ThreadSanitizer (a planted race reported first)"
 	@echo "  make coverage   Line-coverage text summary + HTML report"
 	@echo "  make lint       clang-tidy over the test sources"
 	@echo "  make misra      MISRA C++:2023-oriented analysis"
@@ -84,6 +85,25 @@ sanitize:
 	$(CMAKE) -S . -B $(BUILD)/sanitize $(CMAKE_CXX) -DNUMERICAL_SANITIZE=ON
 	$(CMAKE) --build $(BUILD)/sanitize --parallel $(JOBS)
 	$(CTEST) --test-dir $(BUILD)/sanitize --output-on-failure
+
+# ThreadSanitizer over the suite: the pool's workers, nested parallel_for, the buffers each thread keeps. A race
+# planted in a parallel_for (tests/tsan/planted_race.cpp) must be reported first, else a clean run proves nothing.
+# TSan cannot map its shadow memory under the high-entropy ASLR of recent Linux kernels: run without it there.
+ifeq ($(shell uname -s),Darwin)
+TSAN_CXX ?= /usr/bin/clang++
+else
+TSAN_CXX ?= clang++
+endif
+TSAN_RUN := $(if $(shell command -v setarch 2>/dev/null),setarch $(shell uname -m) -R,)
+tsan:
+	@mkdir -p $(BUILD)/tsan
+	$(TSAN_CXX) $(CXXSTD) -O1 -g -fsanitize=thread $(INCLUDES) tests/tsan/planted_race.cpp -o $(BUILD)/tsan/planted_race
+	@if $(TSAN_RUN) $(BUILD)/tsan/planted_race > $(BUILD)/tsan/planted_race.log 2>&1 || true; \
+	   ! grep -q "WARNING: ThreadSanitizer: data race" $(BUILD)/tsan/planted_race.log; then \
+	   cat $(BUILD)/tsan/planted_race.log; echo "tsan: the planted race was not reported"; exit 1; fi
+	$(CMAKE) -S . -B $(BUILD)/tsan/suite -DCMAKE_CXX_COMPILER=$(TSAN_CXX) -DNUMERICAL_TSAN=ON
+	$(CMAKE) --build $(BUILD)/tsan/suite --parallel $(JOBS)
+	$(TSAN_RUN) $(BUILD)/tsan/suite/numerical_tests_bin
 
 # Coverage uses LLVM source-based instrumentation, so it pins a Clang toolchain
 # end to end. On macOS the Apple toolchain is required (Homebrew clang links a
@@ -291,7 +311,7 @@ clean:
 # checkout without the sibling (CI pins its own SciForge) still runs every other target.
 SCIFORGE_MAKE    ?= ../sciforge/make
 QUALITY_COMMIT   := format-check coverage-gate
-QUALITY_PUSH     := version-check check-pins test test-gcc sanitize misra doc-no-coverage python-test bench-diff-selftest \
+QUALITY_PUSH     := version-check check-pins test test-gcc sanitize tsan misra doc-no-coverage python-test bench-diff-selftest \
                     stubtest-gate lint-gate
 QUALITY_RELEASE  := bench-diff fuzz-linalg
 -include $(SCIFORGE_MAKE)/quality.mk

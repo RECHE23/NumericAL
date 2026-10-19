@@ -44,5 +44,6 @@ access with consistent arguments is in scope.
 
 **Threads.** The pool runs a kernel's work on worker threads that it starts once; the results are the same
 to the bit on any number of threads (`set_max_threads` / `numerical.set_num_threads`), which the fuzzer
-checks. The sanitizer tier runs AddressSanitizer and UndefinedBehaviorSanitizer, not yet
-ThreadSanitizer: a data race, found by any means, is in scope.
+checks. `make check-push` runs the suite under AddressSanitizer with UndefinedBehaviorSanitizer and again under
+ThreadSanitizer (`make tsan`, which first requires a race planted in the pool to be reported); a data race found
+by any means is in scope.

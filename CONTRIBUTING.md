@@ -19,7 +19,7 @@ Then, from `numerical/`:
 
 ```sh
 make check-commit   # before each commit: format, the suite under coverage at 100 % on every dimension
-make check-push     # before each push: the above, g++-14, ASan + UBSan, MISRA, lint, doc, the Python suite
+make check-push     # before each push: the above, g++-14, ASan + UBSan, TSan, MISRA, lint, doc, the Python suite
 make check-release  # before a release: the above, bench-diff against the last release, fuzz-linalg
 ```
 
