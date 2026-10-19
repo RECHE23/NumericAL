@@ -1331,8 +1331,10 @@ namespace numerical {
           minus_u[((c - mid) * depth) + (j - first)] = -panel[(c * rows) + j];
         }
       }
-      detail::gemm(last - mid, rows - mid, depth, minus_u.data(), depth, panel.data() + (first * rows) + mid, rows,
-                   panel.data() + (mid * rows) + mid, rows);
+      // The plain loop, which rounds as the tiles do (the same bits): a product this narrow packed a sliver of the
+      // panel's whole height for each few columns (six x86-64 AVX2 cores, LU of order 1000: 6.86 → 6.36 ms).
+      detail::gemm_rows(last - mid, rows - mid, depth, minus_u.data(), depth, panel.data() + (first * rows) + mid, rows,
+                        panel.data() + (mid * rows) + mid, rows);
       factorize_columns(panel, rows, mid, last, k0, end);
     }
 

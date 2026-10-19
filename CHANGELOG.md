@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **The LU factorisation's panels update their right half through the product's plain loop**, which rounds as the
+  tiles do (the same bits), where the packed product packed a sliver of the panel's whole height for every few
+  columns. Six x86-64 AVX2 cores: order 300 607 → 577 µs, 1000 6.86 → 6.36 ms; one core, order 100 62 → 59 µs. One
+  arm64 core: order 128 −5 % (Clang and GCC), 512 −4 % under GCC.
 - **The Cholesky factorisation's rows below each panel solve faster**: their products by the earlier columns go through
   the product's plain loop, which rounds as the tiles do (the same bits), where the packed product packed slivers too
   small to pay for it; and on x86-64 the factor's rows and `−L₂₁ᴴ`'s columns are written one after the other, each
