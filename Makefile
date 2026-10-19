@@ -299,5 +299,7 @@ QUALITY_RELEASE  := bench-diff fuzz-linalg
 # The calendar release every SciForge project cuts (the sibling checkout's make/release.mk): bench-diff against the last
 # release first (SKIP_BENCH_DIFF=1, or SKIP_PRECHECK=1, to release anyway), CI green on the commit tagged.
 RELEASE_FILES    := pyproject.toml python/numerical/__init__.py
+# ci.yml's paths-ignore: a HEAD changed in those paths alone is judged by ci.yml's run before it.
+RELEASE_CI_IGNORED := *.md docs/*
 RELEASE_PRECHECK := $(if $(SKIP_BENCH_DIFF),,bench-diff)
 -include $(SCIFORGE_MAKE)/release.mk
