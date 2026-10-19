@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.23 — 2026-10-19
+
 ### Changed
 - The SVD scales and copies its input, and turns its bases' rows into columns, by bands of rows on the threads, the
   transposition by tiles (`detail::transpose_into`, which the QR's copies share), where each ran on one thread and the
