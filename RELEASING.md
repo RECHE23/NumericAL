@@ -33,6 +33,13 @@ held for the first release of a month (`YYYY.M.0`), so that the patch releases w
 Changes in the last bits of a floating-point result, from a faster kernel summing in another order, are not
 breaking: each is noted under **Changed**.
 
+## Release cadence
+
+One planned release a month, its first (`YYYY.M.0`), carrying what the month brought, breaking changes included
+under their heading. Between two, a release goes out for a correctness fix — a wrong answer, a crash, a broken
+guarantee — the day it is ready, carrying `main` as it is; additions and speed-ups wait for the next planned one.
+Dependents then follow one version a month, and a fix never waits.
+
 ## Stable surface
 
 What the policy above protects, and what it does not:
