@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **`einsum`, `solve`, `det` (`determinant`), `slogdet` and `inv` (`inverse`) have their signatures**, positional as
+  NumPy's: `einsum(subscripts, /, *operands)`, `solve(a, b, /)` and `(a, /)` for the others, in the stubs and at run
+  time (`inspect.signature`), where both took `*args`. A type checker now refuses `solve(a)` or `einsum(a, a)`, and
+  `stubtest` holds the stubs to the functions. Each call goes through one more Python frame, 22 ns on a 2 × 2
+  `solve` of 830 ns.
+
 ## 2026.10.25 — 2026-10-19
 
 ### Fixed

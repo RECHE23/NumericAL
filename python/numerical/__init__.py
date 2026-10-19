@@ -317,7 +317,7 @@ def _matmul(self, other):
     spec = _MATMUL.get((len(a.shape), len(b.shape)))
     if spec is None:
         return _matmul_nd(a, b)
-    product = einsum(spec, a, b)
+    product = _einsum(spec, a, b)
     return product[()] if not product.shape else product  # two vectors give a number, as NumPy's
 
 
@@ -416,19 +416,48 @@ for _name in ("__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"):
 Tensor.__hash__ = None  # unhashable, as a NumPy array: equality will be element-wise
 
 _cholesky = _linalg(_numerical.cholesky, arrays=1)
-determinant = _linalg(_numerical.determinant)
-det = determinant
-einsum = _linalg(_numerical.einsum)
-inverse = _linalg(_numerical.inverse)
-inv = inverse
+_determinant = _linalg(_numerical.determinant)
+_einsum = _linalg(_numerical.einsum)
+_inverse = _linalg(_numerical.inverse)
 _lstsq = _linalg(_numerical.lstsq, arrays=2)
 _eigvalsh = _linalg(_numerical.eigvalsh, arrays=1)
 _matrix_rank = _linalg(_numerical.matrix_rank, arrays=1)
 _matrix_ranks = _linalg(_numerical._matrix_ranks, arrays=1)
 _pinv = _linalg(_numerical.pinv, arrays=1)
 _qr = _linalg(_numerical.qr, arrays=1)
-slogdet = _linalg(_numerical.slogdet)
-solve = _linalg(_numerical.solve)
+_slogdet = _linalg(_numerical.slogdet)
+_solve = _linalg(_numerical.solve)
+
+
+# The public functions over the native ones, with the signatures their stubs give, so that stubtest holds the stubs to
+# them (a native function taking *args has none to compare); each keeps the native one's documentation.
+def einsum(subscripts, /, *operands):
+    return _einsum(subscripts, *operands)
+
+
+def solve(a, b, /):
+    return _solve(a, b)
+
+
+def determinant(a, /):
+    return _determinant(a)
+
+
+def slogdet(a, /):
+    return _slogdet(a)
+
+
+def inverse(a, /):
+    return _inverse(a)
+
+
+for _public, _native in ((einsum, _numerical.einsum), (solve, _numerical.solve), (determinant, _numerical.determinant),
+                         (slogdet, _numerical.slogdet), (inverse, _numerical.inverse)):
+    _public.__doc__ = _native.__doc__
+del _public, _native
+
+det = determinant
+inv = inverse
 _eigh = _linalg(_numerical.eigh, arrays=1)
 _svd = _linalg(_numerical.svd, arrays=1)
 _singular_values = _linalg(_numerical._singular_values)
@@ -623,7 +652,7 @@ def _matmul_stack(a, b):
     if len(a.shape) == 2 and len(b.shape) == 2:
         return a @ b
     batch = _LETTERS[:len(a.shape) - 2]
-    return einsum(f"{batch}yz,{batch}zw->{batch}yw", a, b)
+    return _einsum(f"{batch}yz,{batch}zw->{batch}yw", a, b)
 
 
 def conj(x):
