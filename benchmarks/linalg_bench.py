@@ -19,31 +19,40 @@ import subprocess
 import sys
 import time
 
-OPERATIONS = ("matmul", "matvec", "transpose", "solve", "inverse", "cholesky", "qr", "eigh", "svd", "lstsq")
+OPERATIONS = ("matmul", "matvec", "transpose", "solve", "inverse", "cholesky", "qr", "eigh", "svd", "lstsq", "eig",
+              "eigvalsh", "slogdet", "svdvals", "cond", "matmul32", "inverse_stack")
 
 
 def inputs(np, n):
     rng = np.random.default_rng(n)
     a = rng.standard_normal((n, n))
+    side = max(4, n // 8)  # a stack of 64 matrices an eighth of the order
     return {"a": a, "spd": a @ a.T + n * np.eye(n), "sym": (a + a.T) / 2, "b": rng.standard_normal((n, 4)),
-            "tall": rng.standard_normal((2 * n, n)), "rhs": rng.standard_normal(2 * n), "v": rng.standard_normal(n)}
+            "tall": rng.standard_normal((2 * n, n)), "rhs": rng.standard_normal(2 * n), "v": rng.standard_normal(n),
+            "a32": a.astype(np.float32), "stack": rng.standard_normal((64, side, side)) + side * np.eye(side)}
 
 
 def calls(library, np, data):
     """Each operation as a call on the library's own arrays, built outside the timing."""
     if library == "numpy":
         la = np.linalg
-        a, spd, sym, b, tall, rhs, v = (data[k] for k in ("a", "spd", "sym", "b", "tall", "rhs", "v"))
+        a, spd, sym, b, tall, rhs, v, a32, stack = (data[k] for k in ("a", "spd", "sym", "b", "tall", "rhs", "v", "a32", "stack"))
         # NumPy's .T is a view, free and lazy; NumericAL's is a contiguous copy, so it is timed against one.
         return {"matmul": lambda: a @ a, "matvec": lambda: a @ v, "transpose": lambda: np.ascontiguousarray(a.T), "solve": lambda: la.solve(a, b), "inverse": lambda: la.inv(a),
                 "cholesky": lambda: la.cholesky(spd), "qr": lambda: la.qr(a), "eigh": lambda: la.eigh(sym),
-                "svd": lambda: la.svd(a, full_matrices=False), "lstsq": lambda: la.lstsq(tall, rhs, rcond=None)}
+                "svd": lambda: la.svd(a, full_matrices=False), "lstsq": lambda: la.lstsq(tall, rhs, rcond=None),
+                "eig": lambda: la.eig(a), "eigvalsh": lambda: la.eigvalsh(sym), "slogdet": lambda: la.slogdet(a),
+                "svdvals": lambda: la.svd(a, compute_uv=False), "cond": lambda: la.cond(a), "matmul32": lambda: a32 @ a32,
+                "inverse_stack": lambda: la.inv(stack)}
     import numerical as nl
 
-    a, spd, sym, b, tall, rhs, v = (nl.asarray(data[k]) for k in ("a", "spd", "sym", "b", "tall", "rhs", "v"))
+    a, spd, sym, b, tall, rhs, v, a32, stack = (nl.asarray(data[k]) for k in ("a", "spd", "sym", "b", "tall", "rhs", "v", "a32", "stack"))
     return {"matmul": lambda: a @ a, "matvec": lambda: a @ v, "transpose": lambda: a.T, "solve": lambda: nl.solve(a, b), "inverse": lambda: nl.inverse(a),
             "cholesky": lambda: nl.cholesky(spd), "qr": lambda: nl.qr(a), "eigh": lambda: nl.eigh(sym),
-            "svd": lambda: nl.svd(a, full_matrices=False), "lstsq": lambda: nl.lstsq(tall, rhs)}
+            "svd": lambda: nl.svd(a, full_matrices=False), "lstsq": lambda: nl.lstsq(tall, rhs),
+            "eig": lambda: nl.eig(a), "eigvalsh": lambda: nl.eigvalsh(sym), "slogdet": lambda: nl.slogdet(a),
+            "svdvals": lambda: nl.svdvals(a), "cond": lambda: nl.cond(a), "matmul32": lambda: a32 @ a32,
+            "inverse_stack": lambda: nl.inverse(stack)}
 
 
 def agrees(np, operation, data, got):
@@ -73,8 +82,28 @@ def agrees(np, operation, data, got):
     if operation == "svd":
         u, s, vh = (np.asarray(x) for x in got)
         return norm((u * s) @ vh - data["a"]) <= tolerance * norm(data["a"])
-    want = np.linalg.lstsq(data["tall"], data["rhs"], rcond=None)[0]
-    return norm(np.asarray(got[0]) - want) <= 1e-6 * norm(want)
+    if operation == "lstsq":
+        want = np.linalg.lstsq(data["tall"], data["rhs"], rcond=None)[0]
+        return norm(np.asarray(got[0]) - want) <= 1e-6 * norm(want)
+    if operation == "eig":
+        w, v = (np.asarray(x) for x in got)
+        return norm(data["a"] @ v - v * w) <= tolerance * norm(data["a"])
+    if operation == "eigvalsh":
+        return np.max(np.abs(np.asarray(got) - np.linalg.eigvalsh(data["sym"]))) <= tolerance * norm(data["sym"])
+    if operation == "slogdet":
+        sign, logdet = got
+        want_sign, want_logdet = np.linalg.slogdet(data["a"])
+        return sign == want_sign and abs(logdet - want_logdet) <= 1e-8 * n * max(1.0, abs(want_logdet))
+    if operation == "svdvals":
+        return np.max(np.abs(np.asarray(got) - np.linalg.svd(data["a"], compute_uv=False))) <= tolerance * norm(data["a"])
+    if operation == "cond":
+        want = np.linalg.cond(data["a"])
+        return abs(float(got) - want) <= 1e-6 * want
+    if operation == "matmul32":
+        want = data["a"] @ data["a"]
+        return norm(np.asarray(got).astype(float) - want) <= 1e3 * n * np.finfo(np.float32).eps * norm(data["a"]) ** 2
+    inverses = np.asarray(got)
+    return all(norm(m @ x - np.eye(m.shape[0])) <= tolerance * norm(m) * norm(x) for m, x in zip(data["stack"], inverses))
 
 
 def measure(library, sizes, operations, reps):

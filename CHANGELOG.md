@@ -9,6 +9,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Development
+- `make bench-linalg` times `eig`, `eigvalsh`, `slogdet`, `svdvals`, `cond`, a `float32` product and a stack of inverses
+  too, each answer checked before it is timed.
 - **The API reference is published** at <https://reche23.github.io/NumericAL/> (`docs.yml`: Doxygen on every push to
   `main` that touches the headers or the pages it reads, every warning fatal under Ubuntu 24.04's Doxygen 1.9.8, whose
   stricter resolution of six references the headers now meet).
