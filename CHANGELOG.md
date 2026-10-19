@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A `double` product too narrow or too shallow to pay for packing runs in the plain loop** (which rounds as the tiles
+  do: the same bits): on the NEON tile, a depth of 16 or less, or of 64 or less for 64 rows or fewer; on the AVX2 and
+  AVX-512 tiles, 16 rows or fewer to a depth of 64, or 32 to 32, at least 64 columns wide. GCC 14 on one arm64 core
+  (the NEON path the aarch64 wheels take): products of order 24 to 64 −32 to −50 %, Cholesky of order 48 to 512 −10
+  to −31 %, QR −5 to −21 %, `eigh` −3 to −12 %, `inv` −3 to −11 %; x86-64 AVX2, a QR of order 96 −3 %.
 - **The LU factorisation's panels update their right half through the product's plain loop**, which rounds as the
   tiles do (the same bits), where the packed product packed a sliver of the panel's whole height for every few
   columns. Six x86-64 AVX2 cores: order 300 607 → 577 µs, 1000 6.86 → 6.36 ms; one core, order 100 62 → 59 µs. One

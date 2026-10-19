@@ -2057,6 +2057,58 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief The fewest columns of a product \ref plain_loop_pays sends to the plain loop on the x86-64 tiles: there an
+  //!        order-24 SVD, whose two products of 24 × 24 × 24 it took, ran 9 % slower (GCC 13, the same bits), though such
+  //!        a product alone ran faster in the plain loop. On the NEON tile the small square products gain most (GCC 14,
+  //!        one core: a product of order 24 to 64 −32 to −50 %, a QR −5 to −21 %).
+  inline constexpr std::size_t plain_loop_least_width {64};
+
+  /*!
+   * \brief Whether a `double` product of \p m rows, \p n columns and depth \p k, past \ref gemm_rows's threshold,
+   *        still runs faster in the plain loop than packed on the path in use: packing B's slivers for so few rows of A, or so short a depth,
+   *        did not pay. One core, the plain loop's time over the packed product's: the NEON tile at a depth of 16 or
+   *        less whatever the shape (0.5 to 0.6 up to 2000 × 2000), at 64 or less for 64 rows or fewer (0.4 to 0.9; the
+   *        same under GCC 14 and on eight threads); the AVX2 tile for 16 rows or fewer to a depth of 64, or 32 rows to
+   *        32 (0.2 to 0.8, six cores too), as wide as \ref plain_loop_least_width. The AMX's packing pays from 16
+   *        rows.
+   */
+  [[nodiscard]] inline bool plain_loop_pays(std::size_t m,
+                                            std::size_t n,
+                                            std::size_t k) noexcept
+  {
+    [[maybe_unused]] const gemm_path path {gemm_path_current()};
+#ifdef NUMERICAL_NEON_COMPILED
+    if (path == gemm_path::neon) {
+      return k <= 16 || (m <= 64 && k <= 64);
+    }
+#endif
+#ifdef NUMERICAL_X86_COMPILED
+    if (path == gemm_path::avx2 || path == gemm_path::avx512) {
+      return n >= plain_loop_least_width && ((m <= 16 && k <= 64) || (m <= 32 && k <= 32));
+    }
+#endif
+    (void)m, (void)n, (void)k;
+    return false;
+  }
+
+  //! \brief \ref plain_loop_pays for a product of \p T: `double`'s alone, the one it was measured for.
+  template <typename T>
+  [[nodiscard]] bool plain_loop_suits(std::size_t /*m*/,
+                                      std::size_t /*n*/,
+                                      std::size_t /*k*/) noexcept
+  {
+    return false;
+  }
+
+  //! \brief \ref plain_loop_pays for `double`.
+  template <>
+  [[nodiscard]] inline bool plain_loop_suits<double>(std::size_t m,
+                                                     std::size_t n,
+                                                     std::size_t k) noexcept
+  {
+    return plain_loop_pays(m, n, k);
+  }
+
   //! \brief A product past the plain loop: on the AMX or x86-64 tiles where \ref gemm_elsewhere takes it, else on
   //!        the vector tile.
   template <typename T>
@@ -2070,6 +2122,10 @@ namespace numerical::detail {
                   T*          c,
                   std::size_t ldc)
   {
+    if (plain_loop_suits<T>(m, n, k)) { // the plain loop rounds as the tiles do: the same bits either way
+      gemm_rows(m, n, k, a, lda, b, ldb, c, ldc);
+      return;
+    }
     if (!gemm_elsewhere(m, n, k, a, lda, b, ldb, c, ldc)) {
       gemm_packed<vector_tile_kernel<T>>(m, n, k, a, lda, b, ldb, c, ldc);
     }
