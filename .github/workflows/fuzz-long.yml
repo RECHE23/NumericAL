@@ -1,0 +1,75 @@
+name: Fuzz (long)
+
+# The per-push campaign in ci.yml runs 60 cases from one seed on the emulated AVX-512 processor: a smoke. This
+# workflow gives the differential fuzzer (fuzz/linalg.py: every decomposition and product against NumPy, a NaN or an
+# infinity raising, the same bits on one thread as on all) an hour a week on each architecture the wheels ship for,
+# built by GCC as the Linux wheels are, a new seed every campaign. A finding turns the job red and prints the seed
+# and the case, which `python3 fuzz/linalg.py --seed S --case C` replays alone. Six weeks of green runs with no
+# finding in between are the correctness half of what RELEASING.md calls mature.
+on:
+  schedule:
+    - cron: '23 6 * * 0' # weekly, Sunday 06:23 UTC
+  workflow_dispatch:
+    inputs:
+      seconds:
+        description: 'Fuzzing time per architecture, in seconds (60-18000)'
+        required: false
+        default: '3600'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: fuzz-long
+  cancel-in-progress: false
+
+jobs:
+  fuzz:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    # The fuzzing time is bounded by the input check below (5 h at most); the build takes minutes. 330 minutes
+    # leaves room for both at the maximum and stays under GitHub's 360-minute job limit.
+    timeout-minutes: 330
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: RECHE23/sciforge
+          ref: v2026.10.4
+          path: sciforge
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.12'
+      # The dispatch input reaches the shell through the environment, never spliced into the script, and is refused
+      # unless it is a whole number of seconds inside the job's budget.
+      - name: Fuzzing time
+        env:
+          SECONDS_INPUT: ${{ inputs.seconds || '3600' }}
+        run: |
+          case "$SECONDS_INPUT" in
+            ''|*[!0-9]*) echo "::error::seconds must be a whole number, got '$SECONDS_INPUT'"; exit 1 ;;
+          esac
+          if [ "$SECONDS_INPUT" -lt 60 ] || [ "$SECONDS_INPUT" -gt 18000 ]; then
+            echo "::error::seconds must be within 60-18000, got $SECONDS_INPUT"; exit 1
+          fi
+          echo "FUZZ_TIME=$SECONDS_INPUT" >> "$GITHUB_ENV"
+      - name: Build the extension with GCC
+        run: |
+          python -m pip install numpy setuptools wheel
+          CC=gcc CXX=g++ SCIFORGE_INCLUDE="$PWD/sciforge/include" python setup.py -q build_ext --inplace --force
+      # Campaigns of 100 cases, each from a fresh seed, until the time is spent; the first finding stops the job.
+      - name: Fuzz against NumPy
+        env:
+          PYTHONPATH: python
+        run: |
+          end=$(( $(date +%s) + FUZZ_TIME ))
+          campaigns=0
+          while [ "$(date +%s)" -lt "$end" ]; do
+            seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
+            python fuzz/linalg.py --seed "$seed" --cases 100
+            campaigns=$((campaigns + 1))
+          done
+          echo "$campaigns campaigns of 100 cases, no finding"

@@ -32,3 +32,34 @@ same input beyond its last bits — is listed under a **Breaking** heading of it
 held for the first release of a month (`YYYY.M.0`), so that the patch releases within a month only add and fix.
 Changes in the last bits of a floating-point result, from a faster kernel summing in another order, are not
 breaking: each is noted under **Changed**.
+
+## Stable surface
+
+What the policy above protects, and what it does not:
+
+- **Stable — C++.** Every name in namespace `numerical` that `<numerical/numerical.hpp>` brings in (`matrix`,
+  `vector`, `tensor`, the decompositions and their results, the free functions, the exceptions,
+  `set_max_threads`, `max_threads`), with its signature, its defaults and the meaning of its answer.
+- **Stable — Python.** Every name in `numerical.__all__` but the three below, with NumPy's semantics where the
+  name is NumPy's and the divergences the README lists (a NaN or an infinity raises; `float32` stays `float32`).
+- **Tuning, not a contract.** `gemm_path`, `limit_gemm_path` and `get_config` (Python), `limit_gemm_path` and
+  `gemm_path_in_use` (C++), the `NUMERICAL_GEMM` variable: they name the kernels this release has, which a later
+  one may add to, rename or retire.
+- **Experimental.** `numerical_blas`, the BLAS/LAPACK ABI library: built from source on request
+  (`-DNUMERICAL_BUILD_BLAS=ON`), shipped in no wheel, its routines and their coverage still growing.
+- **Internal.** Namespace `numerical::detail`, every `NUMERICAL_*` macro, and the layout of the headers
+  themselves (include `<numerical/numerical.hpp>`, not a file within it).
+- **The answers.** On one build, the same input gives the same bits on any number of threads. Across releases a
+  result may move in its last bits (a faster kernel summing in another order, noted under **Changed**); a larger
+  change is **Breaking**.
+
+## Correctness record
+
+The day of the last correctness finding — a wrong answer, a crash, or a broken guarantee such as the same bits on
+any number of threads — in a released version, and the release that fixed it. The library is called mature once
+six weeks have passed without one, six weekly long fuzzing campaigns green on x86-64 and arm64
+(`.github/workflows/fuzz-long.yml`) beside the differential suites of every push.
+
+| Last finding | What | Fixed in |
+| --- | --- | --- |
+| 2026-10-19 | `inv` not the same to the bit on one thread as on several (complex on arm64; real on the GCC-built Linux wheels), found by the fuzzer's thread arm | the release after 2026.10.24 |

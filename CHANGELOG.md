@@ -26,6 +26,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   68 → 57 µs.
 
 ### Development
+- A weekly long fuzzing campaign (`fuzz-long.yml`): an hour of the differential fuzzer on x86-64 and on arm64, built
+  by GCC as the Linux wheels are, a fresh seed every hundred cases. `RELEASING.md` names the stable surface (C++
+  `numerical`, Python `__all__`), what is tuning (the kernel paths), experimental (`numerical_blas`) or internal, and
+  keeps the correctness record whose six quiet weeks make the library mature.
 - `make tsan`, in `make check-push`: the suite under ThreadSanitizer (the pool's workers, nested parallel loops, the
   buffers each thread keeps), after a race planted in a parallel loop is reported, so that a runtime unable to watch
   the threads cannot pass for a clean run. The suite has no race under it.
