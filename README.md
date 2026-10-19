@@ -10,6 +10,8 @@ with concrete numeric structures — vectors, matrices, tensors — and the
 algorithms over them. SciLang consumes it as a numeric backend through its
 module seam; the symbolic↔numeric reconciliation stays in SciLang.
 
+The API reference, generated from the headers: <https://reche23.github.io/NumericAL/>.
+
 ## Quick start (C++)
 
 Header-only: add `include/` to the include path, or after `cmake --install`, in your `CMakeLists.txt`:

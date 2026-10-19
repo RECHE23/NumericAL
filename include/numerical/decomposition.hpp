@@ -2458,7 +2458,7 @@ namespace numerical {
     bool   absolute_ {false}; //!< Whether \ref value_ is a magnitude.
   };
 
-  //! \brief The factors a \ref qr_decomposition keeps, as `numpy.linalg.qr`'s modes name them.
+  //! \brief The factors a \ref numerical::qr_decomposition keeps, as `numpy.linalg.qr`'s modes name them.
   enum class qr_mode
   {
     reduced, //!< `Q` is `m × k`, `R` `k × n`, `k = min(m, n)`: NumPy's default.
@@ -4043,7 +4043,7 @@ namespace numerical {
     }
   } // namespace detail
 
-  //! \brief How \ref symmetric_eigen diagonalises.
+  //! \brief How \ref numerical::symmetric_eigen diagonalises.
   enum class eigen_method
   {
     tridiagonal_ql,    //!< Householder tridiagonalisation then implicit QL, as LAPACK's `dsyev`: the vectors by rotations.
@@ -5593,7 +5593,7 @@ namespace numerical {
     }
   } // namespace detail
 
-  //! \brief How \ref svd_decomposition computes the decomposition of `R`, after a Householder QR.
+  //! \brief How \ref numerical::svd_decomposition computes the decomposition of `R`, after a Householder QR.
   enum class svd_method
   {
     bidiagonal_qr,     //!< Golub–Kahan bidiagonalisation then implicit-shift QR, as LAPACK's `dgesvd`.

@@ -316,7 +316,7 @@ unavoidable O(n²)+O(n³). <3 % on a non-bottleneck → documented, not "fixed".
 ### The einsum engine, in three steps
 
 1. **Incremental odometer.** The first cut allocated a fresh index vector and did
-   `std::map<char,std::size_t>` lookups **per output element**. It was replaced by
+   `std::map` (from `char` to `std::size_t`) lookups **per output element**. It was replaced by
    a single integer index space walked with an incremental mixed-radix odometer:
    per-label stride coefficients computed once, each operand's flat offset carried
    in O(1), no allocation and no lookup in the hot loop. Geomean **0.021× →

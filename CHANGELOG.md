@@ -8,6 +8,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Development
+- **The API reference is published** at <https://reche23.github.io/NumericAL/> (`docs.yml`: Doxygen on every push to
+  `main` that touches the headers or the pages it reads, every warning fatal under Ubuntu 24.04's Doxygen 1.9.8, whose
+  stricter resolution of six references the headers now meet).
+
 ### Changed
 - **A `double` product too narrow or too shallow to pay for packing runs in the plain loop** (which rounds as the tiles
   do: the same bits): on the NEON tile, a depth of 16 or less, or of 64 or less for 64 rows or fewer; on the AVX2 and

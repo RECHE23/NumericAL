@@ -1,0 +1,46 @@
+name: Docs
+
+# The API reference (Doxygen: the headers, the README and BENCHMARKS.md), built and published to GitHub Pages on every
+# push to the default branch. Ubuntu 24.04's Doxygen (1.9.8), every warning fatal (the Doxyfile's WARN_AS_ERROR): a
+# newer one resolved references 1.9.8 refused, so the runner is named, not `ubuntu-latest`.
+on:
+  push:
+    branches: [main]
+    paths: ['include/**', 'README.md', 'BENCHMARKS.md', 'docs/**', 'Doxyfile', '.github/workflows/docs.yml']
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# One deployment at a time; a newer push supersedes an unfinished one.
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v6
+      - name: Install Doxygen and Graphviz
+        run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
+      - name: Build the reference
+        run: mkdir -p build/doc && doxygen Doxyfile  # make doc-no-coverage, without the Makefile's SciForge sibling
+      - uses: actions/configure-pages@v6
+      - uses: actions/upload-pages-artifact@v5
+        with:
+          path: build/doc/html
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v5

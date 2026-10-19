@@ -1003,7 +1003,7 @@ namespace numerical::detail {
   //!         times as fast as one row; two rows on six x86-64 AVX2 cores, the fastest there, were within 7 %).
   inline constexpr std::size_t narrow_group {4};
 
-  //! \brief How \ref gemm_rows rounds each term `sum + a·b`, as the tile of the path in use does: as the compiler
+  //! \brief How \ref numerical::detail::gemm_rows rounds each term `sum + a·b`, as the tile of the path in use does: as the compiler
   //!        rounds it (the vector tile's way), one fused multiply-add (arm64's NEON and AMX tiles), or one fused
   //!        multiply-add of AVX2's unit (the x86-64 tiles), in code built for any x86-64 processor.
   enum class term_rounding : unsigned char
@@ -2289,7 +2289,7 @@ namespace numerical::detail {
     gemm_layouts<a_transposed, b_transposed>(m, n, k, at, ldat, bt, ldbt, c, ldc);
   }
 
-  //! \brief The tile a product's left operand is packed for (\ref pack_left): \c plain where it is not packed.
+  //! \brief The tile a product's left operand is packed for (\ref numerical::detail::pack_left): \c plain where it is not packed.
   enum class left_kernel : unsigned char
   {
     plain,  //!< \ref gemm_rows, or a scalar whose products are not shared: A is read in place.
