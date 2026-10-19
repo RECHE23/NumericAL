@@ -33,8 +33,8 @@ namespace {
 
   // The definition the kernel must reproduce: C starts at zero and adds a(i,p)·b(p,j) for p ascending, each
   // product rounded before its sum, or fused with it where the product runs on a fused path (NEON, AVX2, AVX-512 or
-  // the AMX: a double product large enough to be packed, or a float one on arm64's; a small one runs the plain loop
-  // on any chip).
+  // the AMX: a double product, or a float one on arm64's), small or packed alike: the plain loop rounds each term as
+  // the tile of the path does, so an element is the same whatever the shape of the product.
   template <typename T>
   std::vector<T> reference(std::size_t           m,
                            std::size_t           n,
@@ -42,9 +42,7 @@ namespace {
                            const std::vector<T>& a,
                            const std::vector<T>& b)
   {
-    const bool packed         {k >= numerical::detail::gemm_min_depth
-                               && m * n >= ((numerical::detail::gemm_packed_threshold + k) - 1) / k};
-    const bool     fused      {(std::is_same_v<T, double> || (std::is_same_v<T, float> && numerical::detail::neon_compiled)) && packed
+    const bool     fused      {(std::is_same_v<T, double> || (std::is_same_v<T, float> && numerical::detail::neon_compiled))
                                && numerical::gemm_path_in_use() != numerical::gemm_path::portable};
     std::vector<T> c(m * n, T {});
     for (std::size_t i {0}; i < m; ++i) {
@@ -383,6 +381,62 @@ TEST(small_or_shallow_product_takes_the_plain_loop_and_the_same_order)
   EXPECT(on_every_path([] { return product_is_exact<double>(3, 5, 9); }));
   EXPECT(std::size_t {5} < numerical::detail::gemm_min_depth);
   EXPECT(on_every_path([] { return product_is_exact<double>(70, 60, 5); }));
+}
+
+namespace {
+  // fill's value, its imaginary part filled too for a complex T (a zero one would hide how its products round).
+  template <typename T>
+  T entry(std::size_t i)
+  {
+    if constexpr (std::is_floating_point_v<T>) {
+      return fill<T>(i);
+    }
+    else {
+      using R = T::value_type;
+      return T {fill<R>(i), fill<R>((i * 3) + 1)};
+    }
+  }
+
+  // C += A·B whole, and again as two products of its columns cut at each multiple of 8: the same bits, so that a
+  // caller splitting its columns by the threads (an LU inverse's slices) has the same answer on any number of them.
+  // The pieces run the plain loop and the packed tiles in turn (16 rows, depth 16: 131 columns pack, 8 do not).
+  template <typename T>
+  bool columns_cut_anywhere_give_the_same_bits()
+  {
+    const std::size_t m {16};
+    const std::size_t k {16};
+    const std::size_t n {131};
+    std::vector<T>    a(m * k);
+    std::vector<T>    b(k * n);
+    std::vector<T>    start(m * n);
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = entry<T>((i * 13) + 1) / T {7};
+    }
+    for (std::size_t i {0}; i < b.size(); ++i) {
+      b[i] = entry<T>((i * 5) + 2) / T {3};
+    }
+    for (std::size_t i {0}; i < start.size(); ++i) {
+      start[i] = entry<T>(i) / T {11};
+    }
+    std::vector<T> whole {start};
+    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, whole.data(), n);
+    bool same            {true};
+    for (std::size_t cut {8}; cut < n; cut += 8) {
+      std::vector<T> pieces {start};
+      numerical::detail::gemm(m, cut, k, a.data(), k, b.data(), n, pieces.data(), n);
+      numerical::detail::gemm(m, n - cut, k, a.data(), k, b.data() + cut, n, pieces.data() + cut, n);
+      same = same && pieces == whole;
+    }
+    return same;
+  }
+} // namespace
+
+TEST(a_product_cut_by_its_columns_gives_the_same_bits)
+{
+  EXPECT(on_every_path([] { return columns_cut_anywhere_give_the_same_bits<double>(); }));
+  EXPECT(on_every_path([] { return columns_cut_anywhere_give_the_same_bits<float>(); }));
+  EXPECT(on_every_path([] { return columns_cut_anywhere_give_the_same_bits<std::complex<double>>(); }));
+  EXPECT(on_every_path([] { return columns_cut_anywhere_give_the_same_bits<std::complex<float>>(); }));
 }
 
 // An empty inner dimension leaves C at zero; an empty outer one leaves it empty.

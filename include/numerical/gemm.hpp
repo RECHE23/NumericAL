@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
 #include <atomic>
 #include <complex>
 #include <cstddef>
@@ -979,37 +980,87 @@ namespace numerical::detail {
   //! \brief The columns of C one block of \ref gemm_rows keeps in registers over the whole depth.
   inline constexpr std::size_t narrow_columns {8};
 
+  /*!
+   * \brief `sum + a·b` as the vector tile rounds it (\ref vector_tile_kernel), so that the plain loop's elements are its
+   *        own: under Clang's -ffp-contract=on one expression, fused in both; under GCC's, whose vector extensions fuse
+   *        nothing while a scalar statement's multiply-add fuses, the product apart, a statement of its own.
+   */
+  template <typename T>
+  [[nodiscard]] inline T rounded_apart_add(T sum,
+                                           T a,
+                                           T b) noexcept
+  {
+#if defined(__GNUC__) && !defined(__clang__)
+    const T product {a * b};
+    return sum + product;
+#else
+    return sum + (a * b);
+#endif
+  }
+
   //! \brief The rows of C one block of \ref gemm_rows takes together: each element a chain of multiply-adds that
   //!         waits on its last, four rows give the units four times the chains (M1 Pro, order 8 to 24: 1.6 to 1.9
   //!         times as fast as one row; two rows on six x86-64 AVX2 cores, the fastest there, were within 7 %).
   inline constexpr std::size_t narrow_group {4};
 
-  //! \brief `C += A·B` for \p R rows and \p N columns of C, each sum in ascending order of the depth, as the plain
-  //!        loop's: the block held in registers, of a size the compiler knows. Out of line: its unrolled sizes,
-  //!        inlined, spent GCC's growth budget, and the LU factorisation, which runs none of them, lost 3 to 8 % at
-  //!        every order (one arm64 thread, GCC 14).
-  template <std::size_t R, std::size_t N, typename T>
-  NUMERICAL_OUT_OF_LINE void narrow_block(std::size_t k,
-                                          const T*    a,
-                                          std::size_t lda,
-                                          const T*    b,
-                                          std::size_t ldb,
-                                          T*          c,
-                                          std::size_t ldc) noexcept
+  //! \brief How \ref gemm_rows rounds each term `sum + a·b`, as the tile of the path in use does: as the compiler
+  //!        rounds it (the vector tile's way), one fused multiply-add (arm64's NEON and AMX tiles), or one fused
+  //!        multiply-add of AVX2's unit (the x86-64 tiles), in code built for any x86-64 processor.
+  enum class term_rounding : unsigned char
   {
-    std::array<T, R * N> sums {};
+    compiler,  //!< As the compiler rounds `sum + a·b` (\ref rounded_apart_add).
+    fused,     //!< `std::fma`, where every target has the instruction.
+    x86_fused, //!< `std::fma` in functions built for AVX2 with FMA.
+  };
+
+  //! \brief The rounding mode \p Mode as a type, which picks \ref rounded_term's overload.
+  template <term_rounding Mode>
+  using rounding_is = std::integral_constant<term_rounding, Mode>;
+
+  //! \brief `sum + a·b` as the compiler rounds it (\ref rounded_apart_add).
+  template <typename T>
+  [[nodiscard]] inline T rounded_term(rounding_is<term_rounding::compiler> /*mode*/,
+                                      T sum,
+                                      T a,
+                                      T b) noexcept
+  {
+    return rounded_apart_add(sum, a, b);
+  }
+
+  //! \brief `sum + a·b` as one fused multiply-add.
+  template <typename T>
+  [[nodiscard]] inline T rounded_term(rounding_is<term_rounding::fused> /*mode*/,
+                                      T sum,
+                                      T a,
+                                      T b) noexcept
+  {
+    return std::fma(a, b, sum);
+  }
+
+#ifdef NUMERICAL_X86_COMPILED
+  //! \brief \ref narrow_block's \c term_rounding::x86_fused block, built for AVX2 with FMA: there `std::fma` is the
+  //!        instruction (in code built for any x86-64, a call), the block's sums as narrow_block keeps them.
+  template <std::size_t R, std::size_t N>
+  NUMERICAL_OUT_OF_LINE NUMERICAL_TARGET("avx2,fma") void narrow_block_x86(std::size_t   k,
+                                                                           const double* a,
+                                                                           std::size_t   lda,
+                                                                           const double* b,
+                                                                           std::size_t   ldb,
+                                                                           double*       c,
+                                                                           std::size_t   ldc) noexcept
+  {
+    std::array<double, R * N> sums {};
     NUMERICAL_UNROLL_BLOCK
     for (std::size_t e {0}; e < R * N; ++e) {
       sums[e] = c[((e / N) * ldc) + (e % N)];
     }
-    NUMERICAL_SCALAR_DEPTH
     for (std::size_t p {0}; p < k; ++p) {
       NUMERICAL_UNROLL_BLOCK
       for (std::size_t r {0}; r < R; ++r) {
-        const T ap {a[(r * lda) + p]};
+        const double ap {a[(r * lda) + p]};
         NUMERICAL_UNROLL_BLOCK
         for (std::size_t j {0}; j < N; ++j) {
-          sums[(r * N) + j] += ap * b[(p * ldb) + j];
+          sums[(r * N) + j] = std::fma(ap, b[(p * ldb) + j], sums[(r * N) + j]);
         }
       }
     }
@@ -1019,8 +1070,69 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief The plain loop's row of \ref gemm_rows in \c term_rounding::x86_fused, built for AVX2 with FMA.
+  NUMERICAL_TARGET("avx2,fma") inline void plain_row_x86(std::size_t   n,
+                                                         std::size_t   k,
+                                                         const double* a,
+                                                         const double* b,
+                                                         std::size_t   ldb,
+                                                         double*       c) noexcept
+  {
+    for (std::size_t p {0}; p < k; ++p) {
+      const double ap {a[p]};
+      for (std::size_t j {0}; j < n; ++j) {
+        c[j] = std::fma(ap, b[(p * ldb) + j], c[j]);
+      }
+    }
+  }
+
+#endif
+
+  //! \brief `C += A·B` for \p R rows and \p N columns of C, each sum in ascending order of the depth, as the plain
+  //!        loop's: the block held in registers, of a size the compiler knows; each term rounded as \p Mode says. Out
+  //!        of line: its unrolled sizes, inlined, spent GCC's growth budget, and the LU factorisation, which runs none
+  //!        of them, lost 3 to 8 % at every order (one arm64 thread, GCC 14).
+  template <std::size_t R, std::size_t N, term_rounding Mode, typename T>
+  NUMERICAL_OUT_OF_LINE void narrow_block(std::size_t k,
+                                          const T*    a,
+                                          std::size_t lda,
+                                          const T*    b,
+                                          std::size_t ldb,
+                                          T*          c,
+                                          std::size_t ldc) noexcept
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    if constexpr (Mode == term_rounding::x86_fused) {
+      narrow_block_x86<R, N>(k, a, lda, b, ldb, c, ldc);
+    }
+    else
+#endif
+    {
+      std::array<T, R * N> sums {};
+      NUMERICAL_UNROLL_BLOCK
+      for (std::size_t e {0}; e < R * N; ++e) {
+        sums[e] = c[((e / N) * ldc) + (e % N)];
+      }
+      NUMERICAL_SCALAR_DEPTH
+      for (std::size_t p {0}; p < k; ++p) {
+        NUMERICAL_UNROLL_BLOCK
+        for (std::size_t r {0}; r < R; ++r) {
+          const T ap {a[(r * lda) + p]};
+          NUMERICAL_UNROLL_BLOCK
+          for (std::size_t j {0}; j < N; ++j) {
+            sums[(r * N) + j] = rounded_term(rounding_is<Mode> {}, sums[(r * N) + j], ap, b[(p * ldb) + j]);
+          }
+        }
+      }
+      NUMERICAL_UNROLL_BLOCK
+      for (std::size_t e {0}; e < R * N; ++e) {
+        c[((e / N) * ldc) + (e % N)] = sums[e];
+      }
+    }
+  }
+
   //! \brief `C += A·B` for \p R whole rows of C of \p n columns: blocks of \ref narrow_columns, the last narrower.
-  template <std::size_t R, typename T>
+  template <std::size_t R, term_rounding Mode, typename T>
   void narrow_rows(std::size_t n,
                    std::size_t k,
                    const T*    a,
@@ -1033,16 +1145,16 @@ namespace numerical::detail {
     static_assert(narrow_columns == 8, "the switch below names each narrower last block");
     std::size_t j {0};
     for (; j + narrow_columns <= n; j += narrow_columns) {
-      narrow_block<R, narrow_columns>(k, a, lda, b + j, ldb, c + j, ldc);
+      narrow_block<R, narrow_columns, Mode>(k, a, lda, b + j, ldb, c + j, ldc);
     }
     switch (n - j) {
-      case 1: narrow_block<R, 1>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 2: narrow_block<R, 2>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 3: narrow_block<R, 3>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 4: narrow_block<R, 4>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 5: narrow_block<R, 5>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 6: narrow_block<R, 6>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 7: narrow_block<R, 7>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 1: narrow_block<R, 1, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 2: narrow_block<R, 2, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 3: narrow_block<R, 3, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 4: narrow_block<R, 4, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 5: narrow_block<R, 5, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 6: narrow_block<R, 6, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 7: narrow_block<R, 7, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
       default: break; // a whole number of blocks
     }
   }
@@ -1055,6 +1167,71 @@ namespace numerical::detail {
    * \param[in]     m,n,k       The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major.
    * \param[in]     a,lda,b,ldb The operands and the distance between their rows.
    * \param[in,out] c,ldc       The result and the distance between its rows.
+   * Each term rounded as \p Mode says (\ref term_rounding).
+   */
+  template <term_rounding Mode, typename T>
+  void gemm_rows_rounded(std::size_t m,
+                         std::size_t n,
+                         std::size_t k,
+                         const T*    a,
+                         std::size_t lda,
+                         const T*    b,
+                         std::size_t ldb,
+                         T*          c,
+                         std::size_t ldc)
+  {
+    if (k >= (n <= narrow_columns ? std::size_t {2} : narrow_least_depth)) {
+      parallel_for((m + narrow_group - 1) / narrow_group, narrow_group * k * n / vector_speedup, [&](std::size_t g) {
+                     const std::size_t first {g * narrow_group};
+                     if (first + narrow_group <= m) {
+                       narrow_rows<narrow_group, Mode>(n, k, a + (first * lda), lda, b, ldb, c + (first * ldc), ldc);
+                       return;
+                     }
+                     for (std::size_t i {first}; i < m; ++i) {
+                       narrow_rows<1, Mode>(n, k, a + (i * lda), lda, b, ldb, c + (i * ldc), ldc);
+                     }
+                   });
+      return;
+    }
+    parallel_for(m, k * n / vector_speedup, [&](std::size_t i) {
+#ifdef NUMERICAL_X86_COMPILED
+                   if constexpr (Mode == term_rounding::x86_fused) {
+                     plain_row_x86(n, k, a + (i * lda), b, ldb, c + (i * ldc));
+                   }
+                   else
+#endif
+                   {
+                     for (std::size_t p {0}; p < k; ++p) {
+                       const T aip {a[(i * lda) + p]};
+                       for (std::size_t j {0}; j < n; ++j) {
+                         c[(i * ldc) + j] = rounded_term(rounding_is<Mode> {}, c[(i * ldc) + j], aip, b[(p * ldb) + j]);
+                       }
+                     }
+                   }
+                 });
+  }
+
+  /*!
+   * \brief Whether the tile a `double` or `float` product past the plain loop runs on fuses each term (\ref
+   *        gemm_rows rounds its own so): `double` on arm64's NEON and AMX paths, `float` on the NEON tile there. The x86-64
+   *        tiles' `double` takes \c term_rounding::x86_fused; the vector tile, and so the portable path, rounds as
+   *        the compiler does, as the plain loop then does. On arm64 every cap but the portable one runs the NEON or the
+   *        AMX path, so the cap alone answers: one load, where the path in use took an order-4 product on one arm64
+   *        core from 10.6 to 13.3 ns (the cap, 11.5).
+   */
+  [[nodiscard]] inline bool rows_fuse() noexcept
+  {
+#ifdef NUMERICAL_NEON_COMPILED
+    return gemm_path_cap().load(std::memory_order_relaxed) != gemm_path::portable;
+#else
+    return false;
+#endif
+  }
+
+  /*!
+   * \brief `C += A·B` by the plain i-k-j loop (\ref gemm_rows_rounded), each element rounded as the tile of the path
+   *        in use rounds it, so that it is the same whatever the shape of the product it falls in: a caller that splits
+   *        its columns by the threads (an LU inverse) then has the same bits on any number of them.
    */
   template <typename T>
   void gemm_rows(std::size_t m,
@@ -1067,27 +1244,22 @@ namespace numerical::detail {
                  T*          c,
                  std::size_t ldc)
   {
-    if (k >= (n <= narrow_columns ? std::size_t {2} : narrow_least_depth)) {
-      parallel_for((m + narrow_group - 1) / narrow_group, narrow_group * k * n / vector_speedup, [&](std::size_t g) {
-                     const std::size_t first {g * narrow_group};
-                     if (first + narrow_group <= m) {
-                       narrow_rows<narrow_group>(n, k, a + (first * lda), lda, b, ldb, c + (first * ldc), ldc);
-                       return;
-                     }
-                     for (std::size_t i {first}; i < m; ++i) {
-                       narrow_rows<1>(n, k, a + (i * lda), lda, b, ldb, c + (i * ldc), ldc);
-                     }
-                   });
-      return;
+#ifdef NUMERICAL_X86_COMPILED
+    if constexpr (std::is_same_v<T, double>) {
+      const gemm_path path {gemm_path_current()};
+      if (path == gemm_path::avx512 || path == gemm_path::avx2) {
+        gemm_rows_rounded<term_rounding::x86_fused>(m, n, k, a, lda, b, ldb, c, ldc);
+        return;
+      }
     }
-    parallel_for(m, k * n / vector_speedup, [&](std::size_t i) {
-                   for (std::size_t p {0}; p < k; ++p) {
-                     const T aip {a[(i * lda) + p]};
-                     for (std::size_t j {0}; j < n; ++j) {
-                       c[(i * ldc) + j] += aip * b[(p * ldb) + j];
-                     }
-                   }
-                 });
+#endif
+    if constexpr (std::is_floating_point_v<T>) {
+      if (rows_fuse()) {
+        gemm_rows_rounded<term_rounding::fused>(m, n, k, a, lda, b, ldb, c, ldc);
+        return;
+      }
+    }
+    gemm_rows_rounded<term_rounding::compiler>(m, n, k, a, lda, b, ldb, c, ldc);
   }
 
   //! \brief The cache line a packed operand starts.

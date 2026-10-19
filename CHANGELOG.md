@@ -9,6 +9,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Fixed
+- **A product's elements are the same whatever its shape, under GCC too, so a real inverse is the same to the bit on
+  one thread as on all.** The plain loop of the small products rounded each term as the compiler does, and GCC under
+  -ffp-contract=on (the wheels' flag) left its products unfused where the AVX and NEON tiles fuse every one: an LU
+  inverse, which splits its columns by the threads, moved by up to an ulp on the Linux wheels (order 97 to 257, x86-64
+  and aarch64). The plain loop now rounds as the tile of the path in use does: one fused multiply-add on the AVX2,
+  AVX-512, NEON and AMX paths (on x86-64 in code built for AVX2 with FMA, so no call in a wheel built for any
+  x86-64), and on the portable path as the vector tile rounds. One x86-64 AVX2 core, GCC 13: products of order 8 0.78
+  → 0.67 µs, `qr` 3.93 → 3.52 µs, the rest level; one arm64 core: an order-4 product 10.6 → 11.5 ns, the rest level.
 - **A complex inverse is the same to the bit on one thread as on all.** Past the portable path a complex product ran
   in the plain loop when small and through the real kernel when large, which round its terms differently, and the
   LU solve splits its right-hand sides' columns by the threads: at order 131 or 257 on arm64, `inv` of a complex
