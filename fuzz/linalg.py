@@ -408,6 +408,115 @@ def run_norms(g, h, square):
         check(norm(got - want) <= bound(unit.shape[0], max(norm(unit) ** 3, 1e-300)), "matrix_power 3 differs")
 
 
+def run_products(g, h, square):
+    """The products and the conditioning against NumPy's, on unit-scale copies (a product of three matrices at 1e150
+    overflows): svdvals and cond (2-norm; its error grows as n·ε·κ², so it is compared below κ = 1e6), multi_dot,
+    trace, outer, cross, tensordot and vecdot, each within the backward-error bound of the sums it forms."""
+    def unit(a):
+        return a / max(float(np.max(np.abs(a), initial=0.0)), 1e-300)
+    if g.size and np.isfinite(g).all():
+        a = unit(g)
+        m, n = a.shape
+        got = as_np(numerical.svdvals(numerical.asarray(a)))
+        want = np.linalg.svd(a, compute_uv=False)
+        check(got.shape == want.shape and np.max(np.abs(got - want), initial=0.0) <= bound(max(m, n), max(norm(a), 1e-300)),
+              "svdvals differ from NumPy's")
+        chain = [a, a.conj().T, a]
+        got = as_np(numerical.multi_dot([numerical.asarray(x) for x in chain]))
+        want = a @ a.conj().T @ a
+        check(norm(got - want) <= bound(max(m, n) ** 2, max(norm(a) ** 3, 1e-300)), "multi_dot differs from the chained products")
+        got = as_np(numerical.tensordot(numerical.asarray(a), numerical.asarray(a.conj().T), axes=1))
+        want = np.tensordot(a, a.conj().T, axes=1)
+        check(norm(got - want) <= bound(n, max(norm(a) ** 2, 1e-300)), "tensordot differs from NumPy's")
+        x, y = a[0], a[-1]
+        got = as_np(numerical.outer(numerical.asarray(x), numerical.asarray(y)))
+        check(norm(got - np.outer(x, y)) <= bound(1, max(norm(x) * norm(y), 1e-300)), "outer differs from NumPy's")
+        got = complex(numerical.vecdot(numerical.asarray(x), numerical.asarray(y))) if np.iscomplexobj(a) \
+            else float(numerical.vecdot(numerical.asarray(x), numerical.asarray(y)))
+        check(abs(got - np.vecdot(x, y)) <= bound(n, max(norm(x) * norm(y), 1e-300)), "vecdot differs from NumPy's")
+        if a.size >= 6:
+            u, v = a.reshape(-1)[:3], a.reshape(-1)[3:6]
+            got = as_np(numerical.cross(numerical.asarray(u), numerical.asarray(v)))
+            check(norm(got - np.cross(u, v)) <= bound(2, max(norm(u) * norm(v), 1e-300)), "cross differs from NumPy's")
+    if square.size and np.isfinite(square).all():
+        a = unit(square)
+        n = a.shape[0]
+        got = as_np(numerical.trace(numerical.asarray(a))).item()
+        check(abs(got - np.trace(a)) <= bound(n, max(float(np.sum(np.abs(np.diag(a)))), 1e-300)), "trace differs from NumPy's")
+        want = float(np.linalg.cond(a))
+        got = float(numerical.cond(numerical.asarray(a)))
+        if np.isfinite(want) and want < 1e6:
+            check(abs(got - want) <= bound(n, want * want), f"cond {got:.17g}, NumPy's {want:.17g}")
+
+
+def run_nonfinite(g, h, square, rng):
+    """A NaN or an infinity in what a decomposition reads raises numerical.LinAlgError, as the README documents, where
+    NumPy returns NaN factors or raises depending on the routine: placed at a random entry of the matrix (of its
+    lower triangle for the Hermitian and Cholesky readers, which read no other)."""
+    def spoiled(a, lower=False):
+        b = np.array(a)
+        i = int(rng.integers(b.shape[0]))
+        j = int(rng.integers(i + 1 if lower else b.shape[1]))
+        b[i, j] = rng.choice([np.nan, np.inf, -np.inf])
+        return numerical.asarray(b)
+    readers = []
+    if g.size:
+        readers += [(g, False, ("svd", "svdvals", "qr", "lstsq", "pinv", "matrix_rank"))]
+    if h.size:
+        readers += [(h, True, ("eigh", "eigvalsh"))]
+    if square.size:
+        readers += [(square, False, ("solve", "inv", "det", "slogdet", "eig", "eigvals")), (square, True, ("cholesky",))]
+    calls = {"svd": numerical.svd, "svdvals": numerical.svdvals, "qr": numerical.qr, "pinv": numerical.pinv,
+             "matrix_rank": numerical.matrix_rank, "eigh": numerical.eigh, "eigvalsh": numerical.eigvalsh,
+             "inv": numerical.inv, "det": numerical.det, "slogdet": numerical.slogdet, "eig": numerical.eig,
+             "eigvals": numerical.eigvals, "cholesky": numerical.cholesky,
+             "solve": lambda x: numerical.solve(x, numerical.asarray(np.ones(x.shape[0], as_np(x).dtype))),
+             "lstsq": lambda x: numerical.lstsq(x, numerical.asarray(np.ones(x.shape[0], as_np(x).dtype)))}
+    for matrix, lower, names in readers:
+        bad = spoiled(matrix, lower)
+        for name in names:
+            try:
+                calls[name](bad)
+            except numerical.LinAlgError:
+                continue
+            check(False, f"{name} of a matrix holding {as_np(bad)[~np.isfinite(as_np(bad))][0]} did not raise LinAlgError")
+
+
+def run_threads(g, h, square):
+    """The same bits on one thread as on all of them: each element's terms are summed in one order whatever the
+    split, so a threaded decomposition is its sequential one, factors and all."""
+    calls = ((g, ("svd", "qr", "pinv")), (h, ("eigh",)), (square, ("solve", "inv", "det", "eig", "product")))
+    every = numerical.get_num_threads()
+    named = {"svd": numerical.svd, "qr": numerical.qr, "pinv": numerical.pinv, "eigh": numerical.eigh,
+             "inv": numerical.inv, "det": numerical.det, "eig": numerical.eig,
+             "solve": lambda x: numerical.solve(x, numerical.asarray(np.ones((x.shape[0], 3), as_np(x).dtype))),
+             "product": lambda x: x @ x}
+
+    def answers(name, matrix):
+        try:
+            got = named[name](numerical.asarray(matrix))
+        except numerical.LinAlgError as failure:
+            return str(failure)
+        return [np.array(as_np(t)) for t in (got if isinstance(got, tuple) else (got,))]
+    try:
+        for matrix, names in calls:
+            if matrix.size == 0 or not np.isfinite(matrix).all():
+                continue
+            for name in names:
+                numerical.set_num_threads(1)
+                alone = answers(name, matrix)
+                numerical.set_num_threads(every)
+                together = answers(name, matrix)
+                if isinstance(alone, str) or isinstance(together, str):
+                    check(alone == together, f"{name}: one thread {alone!r}, every thread {together!r}")
+                    continue
+                for k, (x, y) in enumerate(zip(alone, together)):
+                    check(np.array_equal(x, y, equal_nan=True),
+                          f"{name} part {k} differs between one thread and {every} ({bit_gap(y, x)})")
+    finally:
+        numerical.set_num_threads(every)
+
+
 def balancing(a, limit=2.0 ** 256):
     """The diagonal D of LAPACK's dgebal scaling (and eig's): powers of two until each row and column of D⁻¹ A D have
     2-norms within a factor of 2, no factor past `limit`."""
@@ -568,7 +677,9 @@ def run_case(seed, index, largest):
                   ("solve", lambda: run_solve(square, rng)), ("cholesky", lambda: run_cholesky(square)),
                   ("lstsq", lambda: run_lstsq(g, rng)), ("pinv/rank", lambda: run_pinv_and_rank(g, h, rng)),
                   ("single", lambda: run_single(g, h, square)), ("stack", lambda: run_stack(g, h, square)),
-                  ("norms", lambda: run_norms(g, h, square)), ("eig", lambda: run_eig(square)))
+                  ("norms", lambda: run_norms(g, h, square)), ("eig", lambda: run_eig(square)),
+                  ("products", lambda: run_products(g, h, square)), ("non-finite", lambda: run_nonfinite(g, h, square, rng)),
+                  ("threads", lambda: run_threads(g, h, square)))
     failures = []
     for name, operation in operations:
         try:

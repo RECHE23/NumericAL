@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Development
+- The differential fuzzer covers the rest of the NumPy surface and two contracts: `svdvals`, `cond` (below κ = 10⁶,
+  its error growing as n·ε·κ²), `multi_dot`, `trace`, `outer`, `cross`, `tensordot` and `vecdot` against NumPy's
+  within the bound of the sums they form; a NaN or an infinity in what a decomposition reads raising `LinAlgError`;
+  and the same bits on one thread as on every one, factors and all. Each arm fails alone when its function is made
+  to answer otherwise.
+
 ## 2026.10.24 — 2026-10-19
 
 ### Changed
