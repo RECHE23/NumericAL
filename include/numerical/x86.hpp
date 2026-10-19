@@ -27,6 +27,7 @@
 #    define NUMERICAL_TARGET(isa)
 #    define NUMERICAL_UNROLL_TILE
 #    define NUMERICAL_UNROLL_DEPTH
+#    define NUMERICAL_UNROLL_DEPTH_AVX2
 #  else
 #    include <cpuid.h>
 #    define NUMERICAL_TARGET(isa) __attribute__((target(isa))) // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
@@ -35,6 +36,9 @@
 // The depth loop unrolled by two: half the loop's own instructions, which compete with the multiply-adds for
 // issue slots (an AVX-512 tile in the L1 cache: 103 GFLOP/s rolled, 115 unrolled, on one x86-64 core).
 #    define NUMERICAL_UNROLL_DEPTH _Pragma("GCC unroll 2")
+// The AVX2 tile's depth loop unrolled by four, as OpenBLAS's Haswell kernel unrolls it (by eight): a product of order
+// 1000 on one AVX2 core, 50.5 → 52.9 GFLOP/s, by two; by eight no better.
+#    define NUMERICAL_UNROLL_DEPTH_AVX2 _Pragma("GCC unroll 4")
 #  endif
 #endif
 
@@ -178,6 +182,9 @@ namespace numerical::detail {
     through_edge<avx512_mr, avx512_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { avx512_full_tile_f64(kc, ap, bp, ldb, tile, ld); });
   }
 
+  //! \brief How far ahead, in `double`s (512 bytes), the AVX2 tile fetches its slivers of A and B.
+  inline constexpr std::size_t avx2_prefetch_ahead {64};
+
   /*!
    * \brief `C += Aₚ·Bₚ` for one whole tile of C (\ref avx2_mr × \ref avx2_nr) over a panel of
    *        depth \p kc: 12 accumulators of four `double`, each step one fused multiply-add per accumulator.
@@ -195,8 +202,12 @@ namespace numerical::detail {
       acc[2 * i].v       = _mm256_loadu_pd(tile + (i * ld));
       acc[(2 * i) + 1].v = _mm256_loadu_pd(tile + (i * ld) + 4);
     }
-    NUMERICAL_UNROLL_DEPTH
+    NUMERICAL_UNROLL_DEPTH_AVX2
     for (std::size_t p {0}; p < kc; ++p) {
+      // A and B a few steps ahead, into the L1 cache: the hardware's streams start a step late at each sliver (as
+      // OpenBLAS's Haswell kernel fetches both 512 bytes ahead; with the unrolling, order 1000 52.9 → 53.9 GFLOP/s).
+      _mm_prefetch(reinterpret_cast<const char*>(bp + (p * ldb) + avx2_prefetch_ahead), _MM_HINT_T0);     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the intrinsic takes a char pointer
+      _mm_prefetch(reinterpret_cast<const char*>(ap + (p * avx2_mr) + avx2_prefetch_ahead), _MM_HINT_T0); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
       const __m256d b0 {_mm256_loadu_pd(bp + (p * ldb))};
       const __m256d b1 {_mm256_loadu_pd(bp + (p * ldb) + 4)};
       NUMERICAL_UNROLL_TILE

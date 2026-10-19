@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- The AVX2 tile unrolls its depth loop by four (it was by two) and fetches its slivers of A and B 512 bytes ahead, as
+  OpenBLAS's Haswell kernel does: the same operations in the same order, so the same bits. One x86-64 AVX2 core,
+  against OpenBLAS 0.3.26 and MKL 2024.2: `dgemm_` order 1000 41.8 → 38.0 ms (35.2, 34.9), 300 1.12 → 1.07 ms; `dsyrk_`
+  1000 22.4 → 21.1 ms; six cores, `dgemm_` 1000 8.89 → 8.56 ms (8.39, 7.58).
+
 ## 2026.10.23 — 2026-10-19
 
 ### Changed
