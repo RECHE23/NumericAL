@@ -1745,6 +1745,20 @@ namespace numerical {
     {
       const std::size_t                                rows    {n_ - end};
       const std::size_t                                depth   {end - k0};
+#ifdef NUMERICAL_X86_COMPILED
+      // On the x86-64 units a real product the kernel packs runs on the triangle's tiles alone (detail::gemm_triangle,
+      // each element the tiles' sum below), where the blocks below computed the part of each diagonal block past the
+      // diagonal: six AVX2 cores, order 500 787 → 721 µs. On arm64 the blocks stay, faster there (all cores, order 500:
+      // 0.85 ms, by the triangle 1.03: the AMX takes −L₂₁ packed once for every block). A smaller or complex product by
+      // the blocks.
+      if constexpr (std::is_same_v<T, double>) {
+        if (depth >= detail::gemm_min_depth && rows * rows >= ((detail::gemm_packed_threshold + depth) - 1) / depth) {
+          detail::gemm_triangle<detail::a_rows, detail::b_rows>(rows, depth, lower_.data() + (end * n_) + k0, n_, minus_adjoint.data(), rows,
+                                                                lower_.data() + (end * n_) + end, n_, true);
+          return;
+        }
+      }
+#endif
       const std::size_t                                step    {std::max(block_, detail::cholesky_update_columns)};
       // Packed once where a block of rows serves several tiles: past two tiles' rows (one AVX2 core, the shared packing
       // cost order 300 5 % and 500 3 %, where a block of columns has one or two tiles), else each tile packs its own.

@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- On the x86-64 units the Cholesky factorisation's trailing update runs on the triangle's tiles alone
+  (`detail::gemm_triangle`), where its blocks computed the part of each diagonal block past the diagonal; each
+  element's sum is the same, so the factor's bits. Six x86-64 AVX2 cores, `dpotrf_`: order 300 363 → 332 µs, 500 787 →
+  721 µs, 1000 4.10 → 3.82 ms; one core, 500 2.04 → 1.89 ms. On arm64, where the AMX takes `−L₂₁` packed once for every
+  block, the blocks stay (the triangle there: order 500 on every core 0.85 → 1.03 ms).
 - Small steps cost less: the instruction set the next product takes is kept with the cap it was found under (one
   load), where each small update walked the paths down through their probes' guards; `dgetrf_` checks a square matrix
   for NaN and infinities once, in the decomposition, where it also checked it entry by entry across its columns. One
