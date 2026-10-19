@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
-#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -86,28 +85,6 @@ namespace numerical::blas {
     [[nodiscard]] bool finite(const std::complex<U>& x)
     {
       return std::isfinite(x.real()) && std::isfinite(x.imag());
-    }
-
-    /*!
-     * \brief Whether the \p count reals from \p x are all finite: an exponent of all ones is infinite or NaN. Each chunk
-     *        is tested without a branch, the flags or-ed as integers, so that the loop runs on vectors (an exit at every
-     *        element kept it scalar: 0.9 ms for a million).
-     */
-    [[nodiscard]] inline bool all_finite(const double* x,
-                                         std::size_t   count)
-    {
-      constexpr std::uint64_t exponent {0x7FF0'0000'0000'0000ULL};
-      constexpr std::size_t   chunk    {512};
-      for (std::size_t i0 {0}; i0 < count; i0 += chunk) {
-        std::uint64_t infinite {0};
-        for (std::size_t i {i0}; i < std::min(i0 + chunk, count); ++i) {
-          infinite |= static_cast<std::uint64_t>((std::bit_cast<std::uint64_t>(x[i]) & exponent) == exponent);
-        }
-        if (infinite != 0) {
-          return false;
-        }
-      }
-      return true;
     }
 
     //! \brief The tile side of the transposing copies between column-major arguments and row-major storage: a tile's
@@ -1607,7 +1584,7 @@ namespace numerical::blas {
 #else
     detail::row_major_into(entries, a, lda, m, n, 1.0);
 #endif
-    if (!detail::all_finite(entries.data(), entries.size())) {
+    if (!numerical::detail::all_finite(entries.data(), entries.size())) {
       detail::give_back(0, std::move(entries));
       return -3;
     }

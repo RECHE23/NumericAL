@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **The check for NaN and infinities before a decomposition reads a quarter faster**: an exponent of all ones is the
+  one that one more carries into the sign bit, so the pass ANDs, adds and ORs, where it compared every value. One M1
+  Pro core, a matrix of order 100 1.56 → 1.17 µs, 300 14.0 → 10.5 µs; x86-64 under GCC 13 % faster, under Clang 40 %.
+  The BLAS ABI's `geqrf_` uses the same pass, where it kept a copy of its own.
 - **On the AMX, a product whose rows are not a multiple of 32 ends in place**: its last tile of eight rows or fewer
   went through a copy the core wrote and the AMX read, a microsecond each. One M1 Pro core: products of order 33 3.7
   → 2.5 µs, 100 19.2 → 15.9 µs, 129 32.9 → 28.8 µs, 200 70.9 → 64.6 µs; an SVD and a QR of order 33 −16 %, order 8

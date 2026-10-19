@@ -441,20 +441,23 @@ namespace numerical {
       }
     }
 
-    //! \brief Whether the \p count values at \p x are all finite: a NaN or an infinity has every exponent bit set. One
-    //!        pass with no early exit, an integer OR the compilers vectorise (a check per element and an exit at the
-    //!        first was a tenth of an LU of order 128).
+    //! \brief Whether the \p count values at \p x are all finite: a NaN or an infinity has every exponent bit set, the
+    //!        one exponent that one more carries into the sign bit. One pass with no early exit and no comparison, an
+    //!        integer AND, add and OR the compilers vectorise (a check per element and an exit at the first was a tenth
+    //!        of an LU of order 128; the comparison per element, one M1 Pro core: 6.4 → 8.5 values a nanosecond, six
+    //!        x86-64 cores under GCC 3.3 → 3.5, under Clang 4.1 → 5.9).
     [[nodiscard]] inline bool all_finite(const double* x,
                                          std::size_t   count) noexcept
     {
       constexpr std::uint64_t exponent {0x7FF0000000000000ULL};
+      constexpr std::uint64_t carry    {std::uint64_t {1} << 52U};
       std::uint64_t           flagged  {0};
       for (std::size_t i {0}; i < count; ++i) {
         std::uint64_t bits {};
         std::memcpy(&bits, x + i, sizeof(bits));
-        flagged |= static_cast<std::uint64_t>((bits & exponent) == exponent);
+        flagged |= (bits & exponent) + carry;
       }
-      return flagged == 0;
+      return (flagged >> 63U) == 0;
     }
 
     /*!
