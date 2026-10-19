@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.24 — 2026-10-19
+
 ### Changed
 - On the x86-64 units the Cholesky factorisation's trailing update runs on the triangle's tiles alone
   (`detail::gemm_triangle`), where its blocks computed the part of each diagonal block past the diagonal; each
