@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **The Cholesky factorisation's rows below each panel solve faster**: their products by the earlier columns go through
+  the product's plain loop, which rounds as the tiles do (the same bits), where the packed product packed slivers too
+  small to pay for it; and on x86-64 the factor's rows and `−L₂₁ᴴ`'s columns are written one after the other, each
+  along. One x86-64 AVX2 core, order 1000: that pass 2.82 → 1.97 ms, the factorisation 11.06 → 10.19 ms; six cores
+  3.43 → 3.23 ms. arm64, one core: order 256 −5 % under GCC 14, −2 to −8 % under Clang from order 192.
 - **The check for NaN and infinities before a decomposition reads a quarter faster**: an exponent of all ones is the
   one that one more carries into the sign bit, so the pass ANDs, adds and ORs, where it compared every value. One M1
   Pro core, a matrix of order 100 1.56 → 1.17 µs, 300 14.0 → 10.5 µs; x86-64 under GCC 13 % faster, under Clang 40 %.

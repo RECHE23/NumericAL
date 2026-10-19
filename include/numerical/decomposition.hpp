@@ -1687,7 +1687,7 @@ namespace numerical {
      * \brief The rows below the panel `[k0, end)`, `L₂₁ = A₂₁ L₁₁⁻ᴴ`: chunks of \ref detail::cholesky_rows rows in
      *        parallel, each in a column-major copy where column `j` takes `L[i][j] −= L[i][k]·conj(L[j][k])` for
      *        `k` ascending, then the division by `L[j][j]`, for every row of the chunk at once along the column: by
-     *        sub-blocks of 16 columns, the terms of the sub-blocks before one through the matrix product kernel, its
+     *        sub-blocks of 16 columns, the terms of the sub-blocks before one through the matrix product's plain loop, its
      *        own column by column (\ref detail::subtract_product), each element's terms in ascending order, each fused
      *        as the column step fuses it, so the unblocked step's arithmetic, in its order (one core of six AVX2, order
      *        1000: 4.95 → 3.95 ms; all column by column, the solve took 37 % of the factorisation for a tenth of its
@@ -1721,7 +1721,10 @@ namespace numerical {
                                      minus_conj[((j - s0) * s0) + k] = -detail::conj_of(lower_[((k0 + j) * n_) + k0 + k]);
                                    }
                                  }
-                                 detail::gemm(s1 - s0, height, s0, minus_conj.data(), s0, panel.data(), height, panel.data() + (s0 * height), height);
+                                 // The plain loop, which rounds as the tiles do (the same bits), where the packed
+                                 // product packed slivers too small to pay for it (six AVX2 cores' one, order 1000:
+                                 // this pass 2.82 → 2.23 ms).
+                                 detail::gemm_rows(s1 - s0, height, s0, minus_conj.data(), s0, panel.data(), height, panel.data() + (s0 * height), height);
                                }
                                for (std::size_t j {s0}; j < s1; ++j) {
                                  T* const column {panel.data() + (j * height)};
@@ -1733,6 +1736,23 @@ namespace numerical {
                                }
                              }
                              const std::size_t below {n_ - end};
+#ifdef NUMERICAL_X86_COMPILED
+                             // On the x86-64 units the factor's rows, then −L₂₁ᴴ's columns, each written along: written
+                             // together, one of them went across (one AVX2 core, order 1000: this pass 2.23 → 1.97 ms).
+                             // Together on arm64, where apart was 3 % slower under GCC 14 (orders 48 to 128).
+                             for (std::size_t r {0}; r < height; ++r) {
+                               for (std::size_t j {0}; j < width; ++j) {
+                                 lower_[((first + r) * n_) + k0 + j] = panel[(j * height) + r];
+                               }
+                             }
+                             for (std::size_t j {0}; j < width; ++j) {
+                               const T* const from {panel.data() + (j * height)};
+                               T* const       to {minus_adjoint.data() + (j * below) + (first - end)};
+                               for (std::size_t r {0}; r < height; ++r) {
+                                 to[r] = -detail::conj_of(from[r]);
+                               }
+                             }
+#else
                              for (std::size_t r {0}; r < height; ++r) {
                                for (std::size_t j {0}; j < width; ++j) {
                                  const T value {panel[(j * height) + r]};
@@ -1740,6 +1760,7 @@ namespace numerical {
                                  minus_adjoint[(j * below) + (first - end + r)] = -detail::conj_of(value);
                                }
                              }
+#endif
                            });
     }
 
