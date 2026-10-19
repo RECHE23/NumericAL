@@ -1,0 +1,40 @@
+name: Bug report
+description: A wrong answer, a crash, a hang, or a build that fails.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for the report. A security issue goes through private reporting instead (see SECURITY.md), not here.
+  - type: input
+    id: version
+    attributes:
+      label: Version
+      description: The NumericAL release (`pip show numeric-al`, or the git tag or commit).
+    validations:
+      required: true
+  - type: input
+    id: platform
+    attributes:
+      label: Platform
+      description: Operating system, processor, compiler and its version (or the Python version and the wheel).
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction
+      description: The smallest example that shows it — the matrix (or the seed of `make fuzz-linalg` that finds it), the call, and the answer you expected — NumPy's, or a property such as A = Q R.
+      render: text
+      placeholder: |
+        import numpy as np, numerical
+        a = np.array([[4.0, 1.0], [1.0, 3.0]])
+        print(numerical.eigh(numerical.asarray(a)))
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected, and what happened
+    validations:
+      required: true
