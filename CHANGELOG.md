@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **On the AMX, a product whose rows are not a multiple of 32 ends in place**: its last tile of eight rows or fewer
+  went through a copy the core wrote and the AMX read, a microsecond each. One M1 Pro core: products of order 33 3.7
+  → 2.5 µs, 100 19.2 → 15.9 µs, 129 32.9 → 28.8 µs, 200 70.9 → 64.6 µs; an SVD and a QR of order 33 −16 %, order 8
+  level. The same operations in the same order: the same bits.
 - **`einsum`, `solve`, `det` (`determinant`), `slogdet` and `inv` (`inverse`) have their signatures**, positional as
   NumPy's: `einsum(subscripts, /, *operands)`, `solve(a, b, /)` and `(a, /)` for the others, in the stubs and at run
   time (`inspect.signature`), where both took `*args`. A type checker now refuses `solve(a)` or `einsum(a, a)`, and
