@@ -1459,6 +1459,55 @@ TEST(divide_and_conquer_gives_the_same_bits_on_one_thread_as_on_all)
   EXPECT(svd_one.v() == svd_all.v());
 }
 
+// A complex inverse splits its columns by the threads (an LU solve's slices): past the portable path every complex
+// product, whatever its shape, runs on the one kernel, so each element is the same however narrow its slice, and the
+// inverse is the same to the bit on one thread as on all. At order 131 a slice of 64 columns rounded its products in
+// the plain loop where the whole width took the real kernel. A product with an empty side leaves C alone.
+TEST(complex_inverse_gives_the_same_bits_on_one_thread_as_on_all)
+{
+  using complex = std::complex<double>;
+  const std::size_t    n     {131};
+  std::vector<complex> entries(n * n);
+  std::uint64_t        state {77};
+  for (complex& z : entries) {
+    const double re {next_uniform(state)};
+    z = complex {re, next_uniform(state)};
+  }
+  const matrix<complex> a   {n, n, entries};
+  numerical::set_max_threads(1);
+  const matrix<complex> one {inverse(a)};
+  numerical::set_max_threads(0);
+  const matrix<complex> all {inverse(a)};
+  EXPECT(one == all);
+  const auto leaves_c       {[]<typename Z>(Z /*type*/) {
+                               const std::vector<Z> operand(4, Z {1, 1});
+                               Z                    untouched {2, -3};
+                               for (const auto& [rows, cols, depth] : {std::array<std::size_t, 3> {0, 1, 4}, {1, 0, 4}, {1, 1, 0}}) {
+                                 numerical::detail::gemm<Z>(rows, cols, depth, operand.data(), 4, operand.data(), 1, &untouched, 1);
+                               }
+                               return untouched == Z {2, -3};
+                             }};
+  EXPECT(leaves_c(complex {}));
+  EXPECT(leaves_c(std::complex<float> {}));
+  // On the portable path a small complex product keeps the plain loop, shallow or not: whole complex products,
+  // summed in order (small integers, so exactly).
+  numerical::limit_gemm_path(numerical::gemm_path::portable);
+  for (const std::size_t depth : {std::size_t {2}, numerical::detail::gemm_min_depth}) {
+    std::vector<std::complex<float>> left(depth);
+    std::vector<std::complex<float>> right(depth);
+    std::complex<float>              want {};
+    for (std::size_t p {0}; p < depth; ++p) {
+      left[p]  = {static_cast<float>(p + 1), static_cast<float>(2 - static_cast<int>(p))};
+      right[p] = {static_cast<float>(p % 3), -1.0F};
+      want    += left[p] * right[p];
+    }
+    std::complex<float> sum {};
+    numerical::detail::gemm<std::complex<float>>(1, 1, depth, left.data(), depth, right.data(), 1, &sum, 1);
+    EXPECT(sum == want);
+  }
+  numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
+
 // Each thread keeps the joins' buffers from one decomposition to the next, and lets a large one go after it: at order
 // 700 the last join's buffers are larger than it keeps. The decompositions on either side of it are the same to the
 // bit, whatever the buffers held before.

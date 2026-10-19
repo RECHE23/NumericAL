@@ -8,6 +8,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+- **A complex inverse is the same to the bit on one thread as on all.** Past the portable path a complex product ran
+  in the plain loop when small and through the real kernel when large, which round its terms differently, and the
+  LU solve splits its right-hand sides' columns by the threads: at order 131 or 257 on arm64, `inv` of a complex
+  matrix moved by up to an ulp of its largest entries between one thread and eight. Every complex product there now
+  runs on the one kernel whatever its shape (the real kernel on arm64, the complex tiles on x86-64). Small complex
+  decompositions got faster with it: one arm64 core, `qr` of order 8 6.5 → 4.8 µs, 16 32.4 → 23.3 µs, `eigh` of 16
+  68 → 57 µs.
+
 ### Development
 - The differential fuzzer covers the rest of the NumPy surface and two contracts: `svdvals`, `cond` (below κ = 10⁶,
   its error growing as n·ε·κ²), `multi_dot`, `trace`, `outer`, `cross`, `tensordot` and `vecdot` against NumPy's

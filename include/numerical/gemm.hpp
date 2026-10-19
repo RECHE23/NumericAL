@@ -1948,7 +1948,10 @@ namespace numerical::detail {
    * fused. Every element is summed in ascending order of the depth on any number of threads. Complex `double` on the x86-64
    * paths runs on their complex tiles (`avx2_full_tile_c64`, `avx512_full_tile_c64`); complex `float` and
    * `double` past the portable path otherwise run through the real kernel (`gemm_split`). Either is the same on
-   * any number of threads too, but no longer the plain loop's to the bit.
+   * any number of threads too, but no longer the plain loop's to the bit: so past the portable path a complex
+   * product of any shape runs there, and each element of C is the same whatever the shape of the product it falls
+   * in. A caller that splits its columns by the threads (an LU inverse's slices) then has the same bits on any
+   * number of them, where a slice narrow enough for the plain loop rounded its complex products otherwise.
    *
    * \param[in]     m,n,k       The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major.
    * \param[in]     a,lda,b,ldb The operands and the distance between their rows.
@@ -1967,6 +1970,14 @@ namespace numerical::detail {
             T*          c,
             std::size_t ldc)
   {
+    if constexpr (split_complex<T>) {
+      if (gemm_path_current() != gemm_path::portable) {
+        if (m != 0 && n != 0 && k != 0) {
+          gemm_large(m, n, k, a, lda, b, ldb, c, ldc);
+        }
+        return;
+      }
+    }
     if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
       gemm_rows(m, n, k, a, lda, b, ldb, c, ldc);
       return;
