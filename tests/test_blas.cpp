@@ -627,12 +627,25 @@ TEST(getrf_factorises_square_tall_and_wide_matrices)
 TEST(getrf_reports_zero_pivots_illegal_arguments_and_a_nan)
 {
   std::vector<int>    ipiv(3);
-  std::vector<double> square {1.0, 2.0, 0.0, 0.0};           // second column zero
+  std::vector<double> square           {1.0, 2.0, 0.0, 0.0};           // second column zero
   EXPECT_EQ(numerical::blas::getrf(2, 2, square.data(), 2, ipiv.data()), 2);
-  std::vector<double> tall   {0.0, 0.0, 0.0, 1.0, 2.0, 3.0}; // 3 × 2, first column zero
+  std::vector<double> tall             {0.0, 0.0, 0.0, 1.0, 2.0, 3.0}; // 3 × 2, first column zero
   EXPECT_EQ(numerical::blas::getrf(3, 2, tall.data(), 3, ipiv.data()), 1);
-  std::vector<double> nan    {std::numeric_limits<double>::quiet_NaN(), 1.0};
+  std::vector<double> nan              {std::numeric_limits<double>::quiet_NaN(), 1.0};
   EXPECT_EQ(numerical::blas::getrf(2, 1, nan.data(), 2, ipiv.data()), -3);
+  std::vector<double>       square_nan {1.0, 2.0, std::numeric_limits<double>::infinity(), 4.0};
+  const std::vector<double> before     {square_nan};
+  EXPECT_EQ(numerical::blas::getrf(2, 2, square_nan.data(), 2, ipiv.data()), -3); // checked by the decomposition
+  EXPECT(square_nan[0] == before[0] && square_nan[3] == before[3]);               // nothing written
+  // A rectangular complex A checked entry by entry, the real part and the imaginary one.
+  const auto rectangular_refuses = []<typename R>(R bad_real, R bad_imaginary) {
+                                     std::vector<int>                 pivots(2);
+                                     std::vector<std::complex<R>>     by_real      {{1, 0}, {bad_real, 0}, {2, 0}, {0, 1}, {1, 1}, {3, 0}};
+                                     std::vector<std::complex<R>>     by_imaginary {{1, 0}, {2, 0}, {0, bad_imaginary}, {0, 1}, {1, 1}, {3, 0}};
+                                     return numerical::blas::getrf(3, 2, by_real.data(), 3, pivots.data()) == -3 && numerical::blas::getrf(3, 2, by_imaginary.data(), 3, pivots.data()) == -3;
+                                   };
+  EXPECT(rectangular_refuses(std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()));
+  EXPECT(rectangular_refuses(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()));
   EXPECT_EQ(numerical::blas::getrf(-1, 2, square.data(), 2, ipiv.data()), -1);
   EXPECT_EQ(numerical::blas::getrf(2, -1, square.data(), 2, ipiv.data()), -2);
   EXPECT_EQ(numerical::blas::getrf(2, 2, square.data(), 1, ipiv.data()), -4);

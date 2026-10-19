@@ -24,6 +24,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <optional>
 #include <utility>
 #include <vector>
 
@@ -1194,21 +1195,28 @@ namespace numerical::blas {
     const auto rows {static_cast<std::size_t>(m)};
     const auto cols {static_cast<std::size_t>(n)};
     const auto ld   {static_cast<std::size_t>(lda)};
-    for (std::size_t j {0}; j < cols; ++j) {
-      for (std::size_t i {0}; i < rows; ++i) {
-        if (!detail::finite(a[i + (j * ld)])) {
-          return -3;
+    if (rows != cols) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        for (std::size_t i {0}; i < rows; ++i) {
+          if (!detail::finite(a[i + (j * ld)])) {
+            return -3;
+          }
         }
       }
-    }
-    if (rows != cols) {
       return detail::rectangular_lu(rows, cols, a, ld, ipiv);
     }
-    buffer<T> a_rows       {detail::take_kept<T>(0)}; // transposed in and out once, in storage the thread keeps
+    buffer<T> a_rows {detail::take_kept<T>(0)};  // transposed in and out once, in storage the thread keeps
     detail::row_major_into(a_rows, a, lda, m, n, T {1});
-    lu_decomposition<T> lu {matrix<T> {rows, cols, std::move(a_rows)}};
+    std::optional<lu_decomposition<T>> factored; // a square A checked once, by the decomposition, where it was also
+    try {                                        // checked here, entry by entry across its columns
+      factored.emplace(matrix<T> {rows, cols, std::move(a_rows)});
+    }
+    catch (const non_finite_error&) {
+      return -3;
+    }
+    lu_decomposition<T>& lu {*factored};
     detail::interchanges(lu.pivots(), ipiv);
-    matrix<T> factors      {std::move(lu).factors()};
+    matrix<T> factors       {std::move(lu).factors()};
     detail::column_major_into(&*factors.begin(), rows, cols, a, ld);
     detail::give_back(0, std::move(factors).elements());
     for (std::size_t i {0}; i < rows; ++i) {

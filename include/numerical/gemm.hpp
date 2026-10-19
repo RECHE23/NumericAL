@@ -127,11 +127,30 @@ namespace numerical::detail {
     return cap;
   }
 
-  //! \brief The path the next `double` product takes: the most capable one under the cap that runs here (each
-  //!        path's probe is made once).
+  //! \brief The path \ref gemm_path_current found last, packed with the cap it was found under (`cap · 8 + path`); 0xFF
+  //!        before any.
+  [[nodiscard]] inline std::atomic<std::uint8_t>& gemm_path_found() noexcept
+  {
+    static std::atomic<std::uint8_t> found {0xFF};
+    return found;
+  }
+
+  /*!
+   * \brief The path the next `double` product takes: the most capable one under the cap that runs here (each
+   *        path's probe is made once). Kept with its cap, one load, where each call walked the paths down from the cap
+   *        through their probes' guards: every small step of a decomposition asks (an LU of order 100 through
+   *        `dgetrf_` on one AVX2 core spent 5 % of its time here). A race stores the same value twice.
+   */
   [[nodiscard]] inline gemm_path gemm_path_current() noexcept
   {
-    return best_gemm_path(gemm_path_cap().load(std::memory_order_relaxed));
+    const unsigned cap   {static_cast<unsigned>(gemm_path_cap().load(std::memory_order_relaxed))};
+    const unsigned found {gemm_path_found().load(std::memory_order_relaxed)};
+    if (found >> 3U == cap) {
+      return static_cast<gemm_path>(found & 7U);
+    }
+    const gemm_path path {best_gemm_path(static_cast<gemm_path>(cap))};
+    gemm_path_found().store(static_cast<std::uint8_t>((cap << 3U) | static_cast<unsigned>(path)), std::memory_order_relaxed);
+    return path;
   }
 
   /*!

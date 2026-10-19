@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- Small steps cost less: the instruction set the next product takes is kept with the cap it was found under (one
+  load), where each small update walked the paths down through their probes' guards; `dgetrf_` checks a square matrix
+  for NaN and infinities once, in the decomposition, where it also checked it entry by entry across its columns. One
+  x86-64 AVX2 core: `dgetrf_` order 100 88 → 79 µs, 300 0.99 → 0.93 ms; `dgesv_`, `dsyevd_`, `dgesdd_` of order 100
+  2 to 4 % faster.
 - The AVX2 tile unrolls its depth loop by four (it was by two) and fetches its slivers of A and B 512 bytes ahead, as
   OpenBLAS's Haswell kernel does: the same operations in the same order, so the same bits. One x86-64 AVX2 core,
   against OpenBLAS 0.3.26 and MKL 2024.2: `dgemm_` order 1000 41.8 → 38.0 ms (35.2, 34.9), 300 1.12 → 1.07 ms; `dsyrk_`
