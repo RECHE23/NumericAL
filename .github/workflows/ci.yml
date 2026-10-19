@@ -18,10 +18,10 @@ jobs:
   # Lint (format + MISRA) via SciForge's reusable spine: pins clang-tidy-18 and runs
   # this repo's make format-check / misra against the shared lint/ config. NumericAL is a leaf — no dependency siblings.
   lint:
-    uses: RECHE23/sciforge/.github/workflows/lint-cpp.yml@v2026.10.3
+    uses: RECHE23/sciforge/.github/workflows/lint-cpp.yml@v2026.10.4
     with:
       deps: '[]'
-      sciforge-ref: v2026.10.3
+      sciforge-ref: v2026.10.4
       runner-mode: hosted
 
   # POSIX + CMake build via SciForge's reusable build spine: the Makefile under
@@ -30,10 +30,10 @@ jobs:
   # — matching NumericAL's prior coverage exactly (macOS is the local gate, off in CI).
   # NumericAL is a leaf (no dependency siblings, so no ci-pat).
   build:
-    uses: RECHE23/sciforge/.github/workflows/build-cpp.yml@v2026.10.3
+    uses: RECHE23/sciforge/.github/workflows/build-cpp.yml@v2026.10.4
     with:
       deps: '[]'
-      sciforge-ref: v2026.10.3
+      sciforge-ref: v2026.10.4
       runner-mode: hosted
       enable-windows-msvc: true
       enable-arm: true
@@ -44,10 +44,10 @@ jobs:
   # pre-installed for the interop round-trips. The stubs are checked against the runtime (stubtest) before the
   # unit tests, with mypy pinned as SciLex pins it.
   python:
-    uses: RECHE23/sciforge/.github/workflows/python-cpp.yml@v2026.10.3
+    uses: RECHE23/sciforge/.github/workflows/python-cpp.yml@v2026.10.4
     with:
       python-versions: '["3.10","3.14"]'
-      sciforge-ref: v2026.10.3
+      sciforge-ref: v2026.10.4
       deps: '[]'
       test-cmd: 'python -m pip install mypy==2.3.0 && python -m mypy.stubtest numerical && python -m unittest discover -s python/tests'
       runner-mode: hosted
@@ -120,7 +120,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: RECHE23/sciforge
-          ref: v2026.10.3
+          ref: v2026.10.4
           path: sciforge
       - uses: actions/setup-python@v6
         with:
@@ -164,7 +164,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: RECHE23/sciforge
-          ref: v2026.10.3
+          ref: v2026.10.4
           path: sciforge
       - uses: actions/setup-python@v6
         with:
