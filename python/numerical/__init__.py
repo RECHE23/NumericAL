@@ -540,7 +540,7 @@ def cholesky(a, /, *, upper=False):
     """The Cholesky factor of a Hermitian positive-definite matrix, as ``numpy.linalg.cholesky``: the lower `L` with
     ``a = L @ L.conj().T``, read from the lower triangle; with ``upper=True``, the upper `U` with ``a = U.conj().T @ U``,
     read from the upper triangle."""
-    return _cholesky(a, bool(upper))
+    return _borrowed("cholesky", lambda x, flag: _cholesky(x, flag), a, bool(upper))
 
 
 def lstsq(a, b, rcond=None):

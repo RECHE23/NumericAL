@@ -517,6 +517,58 @@ def run_threads(g, h, square):
         numerical.set_num_threads(every)
 
 
+def layouts(a, rng):
+    """The values of `a` as NumPy arrays of other layouts: those read in place (contiguous, a block of rows of a larger
+    array) and those converted first (Fortran order, strided, byte-swapped, misaligned)."""
+    out = {"contiguous": np.ascontiguousarray(a), "fortran": np.asfortranarray(a)}
+    if a.ndim == 2 and a.shape[0] > 0:
+        taller = np.zeros((a.shape[0] + 2,) + a.shape[1:], a.dtype)
+        taller[1:-1] = a
+        out["rows of a larger"] = taller[1:-1]
+        wider = np.zeros((a.shape[0], 2 * a.shape[1]), a.dtype)
+        wider[:, ::2] = a
+        out["strided"] = wider[:, ::2]
+    out["swapped"] = a.astype(a.dtype.newbyteorder())
+    raw = np.zeros(a.nbytes + 1, np.uint8)[1:].view(a.dtype).reshape(a.shape) if a.size else np.array(a)
+    raw[...] = a
+    out["misaligned"] = raw
+    return out
+
+
+def run_borrowed(g, square, rng):
+    """NumPy arrays of every layout answer as their values in a Tensor do, to the bit and error for error: the products
+    and solve, det, slogdet and inv read some in place (no copy) and convert the rest."""
+    def answer(f, *args):
+        try:
+            got = f(*args)
+        except numerical.LinAlgError as failure:
+            return ("error", str(failure))
+        parts = got if isinstance(got, tuple) else (got,)
+        return tuple(np.array(as_np(x)) if isinstance(x, numerical.Tensor) else np.array(x) for x in parts)
+
+    def same(x, y):
+        if isinstance(x[0], str) or isinstance(y[0], str):  # an error on either side: the same error on both
+            return isinstance(x[0], str) and isinstance(y[0], str) and x == y
+        return len(x) == len(y) and all(p.shape == q.shape and p.dtype == q.dtype and np.array_equal(p, q, equal_nan=True)
+                                        for p, q in zip(x, y))
+    v = rng.standard_normal(square.shape[0]).astype(square.dtype)
+    w = rng.standard_normal(g.shape[0]).astype(g.dtype)
+    rhs = rng.standard_normal((square.shape[0], 2)).astype(square.dtype)
+    calls = [("square @ square", lambda x: numerical.matmul(x, x), square),
+             ("g @ gᴴ", lambda x: numerical.matmul(x, np.ascontiguousarray(x.T)), g),
+             ("g @ vector", lambda x: numerical.matmul(x, np.ones(x.shape[1], x.dtype)), g),
+             ("vector @ g", lambda x: numerical.matmul(w, x), g),
+             ("solve", lambda x: numerical.solve(x, rhs), square), ("solve vector", lambda x: numerical.solve(x, v), square),
+             ("det", numerical.det, square), ("slogdet", numerical.slogdet, square), ("inv", numerical.inv, square)]
+    for name, f, base in calls:
+        if base.size == 0:
+            continue
+        want = answer(lambda x: f(x), numerical.asarray(np.ascontiguousarray(base)))
+        for kind, array in layouts(base, rng).items():
+            got = answer(f, array)
+            check(same(got, want), f"{name} of a {kind} array differs from its Tensor's: {got!r:.200} against {want!r:.200}")
+
+
 def balancing(a, limit=2.0 ** 256):
     """The diagonal D of LAPACK's dgebal scaling (and eig's): powers of two until each row and column of D⁻¹ A D have
     2-norms within a factor of 2, no factor past `limit`."""
@@ -679,7 +731,7 @@ def run_case(seed, index, largest):
                   ("single", lambda: run_single(g, h, square)), ("stack", lambda: run_stack(g, h, square)),
                   ("norms", lambda: run_norms(g, h, square)), ("eig", lambda: run_eig(square)),
                   ("products", lambda: run_products(g, h, square)), ("non-finite", lambda: run_nonfinite(g, h, square, rng)),
-                  ("threads", lambda: run_threads(g, h, square)))
+                  ("threads", lambda: run_threads(g, h, square)), ("borrowed", lambda: run_borrowed(g, square, rng)))
     failures = []
     for name, operation in operations:
         try:

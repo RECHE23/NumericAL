@@ -1599,13 +1599,18 @@ numerical::rank_cutoff cutoff_named(std::optional<double> rtol, std::optional<do
 // The matrix whose lower triangle is a's upper one, conjugated: what a routine reading the lower triangle reads for
 // NumPy's UPLO="U".
 template <typename T>
-numerical::matrix<T> lower_read(const numerical::tensor<T>& a, bool upper)
+numerical::matrix<T> lower_read(numerical::matrix<T> m, bool upper)
 {
-    numerical::matrix<T> m {matrix_from(a)};
     if (upper) {
         return numerical::detail::adjoint(m);
     }
     return m; // moved out: a conditional expression would copy it
+}
+
+template <typename T>
+numerical::matrix<T> lower_read(const numerical::tensor<T>& a, bool upper)
+{
+    return lower_read(matrix_from(a), upper);
 }
 
 template <typename T>
@@ -1760,12 +1765,19 @@ lstsq_result lstsq(const any_tensor& a, const any_tensor& b, std::optional<doubl
     return do_lstsq<double>(std::get<real_tensor>(a), std::get<real_tensor>(b), cutoff);
 }
 
+// The Cholesky factor, `a` the copy of A the reduction reads (lower_read): L, or U = Lᴴ for NumPy's UPLO="U".
+template <typename T>
+any_tensor cholesky_copied(numerical::matrix<T> a, bool upper)
+{
+    numerical::matrix<T> lower {numerical::cholesky_decomposition<T> {std::move(a)}.lower()};
+    return any_tensor {numerical::tensor<T> {upper ? numerical::detail::adjoint(lower) : std::move(lower)}};
+}
+
 template <typename T>
 any_tensor do_cholesky(const numerical::tensor<T>& a, bool upper)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-    numerical::matrix<T>         lower {numerical::cholesky_decomposition<T> {lower_read(a, upper)}.lower()};
-    return any_tensor {numerical::tensor<T> {upper ? numerical::detail::adjoint(lower) : std::move(lower)}};
+    return cholesky_copied(lower_read(a, upper), upper);
 }
 
 // cholesky(a, upper) -> Tensor: the lower factor L of A = L Lᴴ, or with upper the factor U of A = Uᴴ U, from A's upper
@@ -2605,7 +2617,7 @@ numerical::tensor<T> owned_copy(const borrowed_operand& operand)
     return numerical::tensor<T> {operand.shape, std::move(values)};
 }
 
-// _borrowed_linalg(name, a[, b]) -> the answer, or NotImplemented: solve, determinant, slogdet or inverse of a square
+// _borrowed_linalg(name, a[, b]) -> the answer, or NotImplemented: cholesky (b its upper flag), solve, determinant, slogdet or inverse of a square
 // float64 or complex128 NumPy array read where it lies (borrow_operand), its one copy the one the factorisation takes
 // in place, where asarray's Tensor was a copy before it; b, if any, of the same dtype and rank 1 or 2 (a NumPy array
 // copied, or a Tensor; its rows are the solve's to check). NotImplemented for anything else (a Tensor, a stack, single
@@ -2620,6 +2632,33 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     const std::string operation {name};
+    if (operation == "cholesky") { // the third argument is the upper flag, not a right-hand side
+        const int upper {b == nullptr ? 0 : PyObject_IsTrue(b)};
+        if (upper < 0) {
+            return nullptr;
+        }
+        borrowed_operand matrix;
+        const bool       tensor {PyObject_TypeCheck(a, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0};
+        if (tensor || !borrow_operand(a, matrix) || matrix.dtype > 1 || matrix.shape.size() != 2 || matrix.shape[0] != matrix.shape[1]
+            || matrix.shape[0] == 0) {
+            Py_RETURN_NOTIMPLEMENTED;
+        }
+        const std::size_t order {matrix.shape[0]};
+        const auto factor = [&]<typename T>(std::type_identity<T>) -> PyObject* {
+            std::optional<any_tensor> l;
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(order * order)};
+                l.emplace(cholesky_copied(lower_read(matrix_of_elements(static_cast<const T*>(matrix.data), order, order), upper != 0), upper != 0));
+            }
+            return wrap(std::move(*l));
+        };
+        try {
+            return matrix.dtype == 0 ? factor(std::type_identity<double> {}) : factor(std::type_identity<std::complex<double>> {});
+        }
+        catch (...) {
+            return set_cpp_error();
+        }
+    }
     borrowed_operand  left;
     const bool        tensor {PyObject_TypeCheck(a, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0};
     if (tensor || !borrow_operand(a, left) || left.dtype > 1 || left.shape.size() != 2 || left.shape[0] != left.shape[1]
@@ -2995,8 +3034,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "slogdet(a) -> (sign, logabsdet)\nThe sign and the natural log of |det(a)|, as numpy.linalg.slogdet; it\n"
           "does not underflow or overflow where determinant(a) does.");
     m.raw("_borrowed_linalg", module_borrowed_linalg, METH_VARARGS,
-          "_borrowed_linalg(name, a, b=None) -> the answer or NotImplemented\nsolve, determinant, slogdet or inverse of "
-          "a NumPy array read where it lies.");
+          "_borrowed_linalg(name, a, b=None) -> the answer or NotImplemented\ncholesky, solve, determinant, slogdet or "
+          "inverse of a NumPy array read where it lies.");
     m.raw("_borrowed_product", module_borrowed_product, METH_VARARGS,
           "_borrowed_product(a, b) -> Tensor, number or NotImplemented\nThe product of two operands read where they lie.");
     m.raw("_set_matmul_fallback", module_set_matmul_fallback, METH_O,

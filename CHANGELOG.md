@@ -8,6 +8,17 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **`cholesky` reads a square float64 or complex128 NumPy array where it lies**, as `solve`, `det`, `slogdet` and `inv`
+  do: its one copy is the one the factorisation takes, where the converted Tensor was a copy before it; the same
+  factor and the same errors. From NumPy arrays, one M1 Pro: order 64 13 → 9 µs, 1024 4.42 → 3.15 ms, 2048 20.7 →
+  16.5 ms (NumPy 11.3 and 72 ms).
+
+### Development
+- The linear-algebra fuzzer's `borrowed` section hands NumPy arrays of every layout (contiguous, Fortran order,
+  strided, byte-swapped, misaligned, a block of rows of a larger array) to the products, `solve`, `det`, `slogdet`
+  and `inv`, and requires the answer or the error the same values give in a Tensor, to the bit.
+
 ## 2026.10.27 — 2026-10-20
 
 ### Changed

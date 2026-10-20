@@ -86,6 +86,26 @@ class BorrowedOperands(unittest.TestCase):
                         self.same(numerical.solve(a, b), numerical.solve(tensor, numerical.asarray(b)))
                         self.same(numerical.solve(a, numerical.asarray(b)), numerical.solve(tensor, numerical.asarray(b)))
 
+    def test_cholesky_gives_the_tensors_factor_either_triangle(self):
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            for n in (1, 2, 7, 64):
+                m = self.operand((n, n), dtype)
+                spd = (m @ m.conj().T + n * np.eye(n)).astype(dtype)
+                with self.subTest(dtype=np.dtype(dtype).name, n=n):
+                    for upper in (False, True):
+                        self.same(numerical.cholesky(spd, upper=upper), numerical.cholesky(numerical.asarray(spd), upper=upper))
+        indefinite = -np.eye(3)
+        def failure(x):
+            try:
+                numerical.cholesky(x)
+            except numerical.LinAlgError as caught:
+                return str(caught)
+            return None
+        self.assertIsNotNone(failure(numerical.asarray(indefinite)))
+        self.assertEqual(failure(indefinite), failure(numerical.asarray(indefinite)))
+        spd = np.eye(6) * 4
+        np.testing.assert_allclose(np.asarray(numerical.cholesky(spd[::2, ::2])), np.eye(3) * 2)
+
     def test_decompositions_of_unreadable_or_wrong_operands_answer_as_the_tensors(self):
         def failure(f, *args):
             try:
