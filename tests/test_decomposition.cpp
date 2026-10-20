@@ -455,6 +455,45 @@ TEST(symmetric_eigen_methods_agree_and_reach_rounding)
   EXPECT(approx_equal(reconstruct(ql), a, 1e-13));
 }
 
+// Orders whose reductions share their steps with the threads (the coefficients among the products' tasks, the
+// corrections and the next column by bands): the same bits on one thread as on all, an orthonormal basis, A back.
+TEST(a_reduction_large_enough_to_share_its_steps)
+{
+  const std::size_t         n     {520};
+  numerical::buffer<double> entries(n * n, 0.0);
+  std::uint64_t             state {7};
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {0}; j <= i; ++j) {
+      state                  = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+      entries[(i * n) + j]   = (static_cast<double>(state >> 11U) * 0x1.0p-52) - 0.5;
+      entries[(j * n) + i]   = entries[(i * n) + j];
+    }
+  }
+  const matrix<double>  a   {n, n, std::move(entries)};
+  const symmetric_eigen all {a};
+  numerical::set_max_threads(1);
+  const symmetric_eigen one {a};
+  numerical::set_max_threads(0);
+  EXPECT(all.values() == one.values());
+  EXPECT(all.vectors() == one.vectors());
+  EXPECT(orthonormality_error(all.vectors()) < 1e-12);
+  EXPECT(approx_equal(reconstruct(all), a, 1e-11));
+  // And a bidiagonal reduction whose steps share theirs on x86-64 (from 256 rows): the same values on one thread.
+  const std::size_t   m {300};
+  std::vector<double> general(m * m);
+  for (double& entry : general) {
+    state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+    entry = (static_cast<double>(state >> 11U) * 0x1.0p-52) - 0.5;
+  }
+  const matrix<double> g      {m, m, general};
+  const vector<double> values {numerical::singular_values(g)};
+  numerical::set_max_threads(1);
+  const vector<double> alone  {numerical::singular_values(g)};
+  numerical::set_max_threads(0);
+  EXPECT(values == alone);
+  EXPECT(values.size() == m && values[0] >= values[m - 1] && values[m - 1] > 0.0);
+}
+
 // Implicit QL on request gives the divide and conquer's eigenvalues, past the order where the divide and conquer
 // splits (QL alone below it); the Jacobi method has no complex form and is refused.
 TEST(hermitian_eigen_by_implicit_ql_on_request)

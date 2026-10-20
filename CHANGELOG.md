@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **The reductions behind `eigh`, `eigvalsh`, `svd` and `svdvals` share their steps' serial work with the threads**:
+  each step of a panel computes its coefficients among the threads' matrix-vector products, then takes its
+  corrections, and the next column's terms of the earlier steps, by bands of rows in one pass, where they ran on the
+  caller between two products; every element the same operations in the same order, so the same bits. Six x86-64
+  AVX2 cores: the tridiagonal reduction of order 1024 34.8 → 29.9 ms (`eigh` −5 to −8 % at 512–1024), the bidiagonal
+  reduction 108.9 → 95.5 ms; an M1 Pro on eight cores, `eigh` of order 768–1024 −2 to −11 %. From 256 rows on
+  x86-64, 512 on arm64 for the tridiagonal step; the bidiagonal step on x86-64 alone, where it gains.
 - **`cholesky` reads a square float64 or complex128 NumPy array where it lies**, as `solve`, `det`, `slogdet` and `inv`
   do: its one copy is the one the factorisation takes, where the converted Tensor was a copy before it; the same
   factor and the same errors. From NumPy arrays, one M1 Pro: order 64 13 → 9 µs, 1024 4.42 → 3.15 ms, 2048 20.7 →

@@ -2809,6 +2809,130 @@ namespace numerical {
       }
     }
 
+    //! \brief The rows from which \ref corrected_hermitian_product shares its coefficients and bands with the threads:
+    //!        on six x86-64 AVX2 cores from 256 (below, eigh of order 128 took 13 % longer), on an M1 Pro from 512
+    //!        (from 256, eigh of order 512 on eight cores took 3 to 9 % longer).
+#ifdef NUMERICAL_X86_COMPILED
+    inline constexpr std::size_t corrected_product_least {256};
+#else
+    inline constexpr std::size_t corrected_product_least {512};
+#endif
+
+    /*!
+     * \brief \ref hermitian_product corrected by a panel's earlier steps: `w = B v − Σₜ fₜ cₜ`, the coefficients
+     *        `f[2p] = (c[2p+1] · v)` and `f[2p+1] = (c[2p] · v)` (conjugated) computed beside the product, among its
+     *        tasks, and the partials summed and the corrections taken by bands of rows: each element the operations,
+     *        in the order, \ref hermitian_product, \ref conjugate_dot and \ref subtract_products give it apart.
+     * \param[in]     block        The block's first element; its rows \p n apart.
+     * \param[in]     n            The row stride.
+     * \param[in]     m            The block's order.
+     * \param[in]     v            The vector (\p m elements).
+     * \param[out]    w            `B v` corrected (\p m elements).
+     * \param[in,out] scratch      \ref hermitian_product's partials, kept by the caller from one step to the next.
+     * \param[in]     corrections  The rows `c₀ … c_{terms−1}` (\p ldc apart), over the block's rows.
+     * \param[in]     ldc          The distance between those rows.
+     * \param[in]     terms        Their count, even (two a step: its `v` and its `w`).
+     * \param[out]    factors      The coefficients (\p terms).
+     * \param[in,out] next         The panel's next column over the block's rows, which takes the terms of these
+     *                              corrections with \p next_factors in the same pass; none past a panel's last step.
+     * \param[in]     next_factors Its coefficients of the rows (\p terms).
+     */
+    template <typename T>
+    void corrected_hermitian_product(const T*        block,
+                                     std::size_t     n,
+                                     std::size_t     m,
+                                     const T*        v,
+                                     T*              w,
+                                     buffer<T>&      scratch,
+                                     const T*        corrections,
+                                     std::size_t     ldc,
+                                     std::size_t     terms,
+                                     T*              factors,
+                                     T*              next         = nullptr,
+                                     const T*        next_factors = nullptr)
+    {
+      constexpr std::size_t rows_per_task {32};
+      const std::size_t     tasks         {(m + rows_per_task - 1) / rows_per_task};
+      if (scratch.size() < tasks * m) {
+        scratch.resize(tasks * m, T {});
+      }
+      symmetric_row_kernel kernel {[](const double* row, const double* x, double f, double* out, std::size_t count) {
+                                     return symmetric_row(row, x, f, out, count);
+                                   }};
+      symmetric_rows_kernel group {[](const double* rows, std::size_t ld, const double* x, double* out, std::size_t i) {
+                                     return symmetric_rows(rows, ld, x, out, i);
+                                   }};
+#ifdef NUMERICAL_X86_COMPILED
+      if constexpr (std::is_same_v<T, double>) {
+        const gemm_path path {gemm_path_current()};
+        if (path == gemm_path::avx512) {
+          kernel = &avx512_symmetric_row;
+          group  = &avx512_symmetric_rows;
+        }
+        else if (path == gemm_path::avx2) {
+          kernel = &avx2_symmetric_row;
+          group  = &avx2_symmetric_rows;
+        }
+      }
+#endif
+      // Below corrected_product_least rows the coefficients and the bands run on the caller: woken threads cost more
+      // than they take (an eigh of order 128, six x86-64 cores, +13 %).
+      const bool        share {m >= corrected_product_least};
+      const std::size_t pairs {terms / 2};
+      const auto        coefficients = [&](std::size_t p) {
+                                         factors[2 * p]       = conjugate_dot(corrections + (((2 * p) + 1) * ldc), v, m);
+                                         factors[(2 * p) + 1] = conjugate_dot(corrections + ((2 * p) * ldc), v, m);
+                                       };
+      parallel_for(tasks + (share ? pairs : 0), rows_per_task * m * symmetric_row_speedup<T>(), [&](std::size_t task) {
+                     if (task >= tasks) { // a pair of coefficients: an earlier step's w and v against v
+                       coefficients(task - tasks);
+                       return;
+                     }
+                     const std::size_t first {task * rows_per_task};
+                     const std::size_t last {std::min(first + rows_per_task, m)};
+                     T*                own {scratch.data() + (task * m)};
+                     std::fill(own, own + last, T {});
+                     std::size_t i {first};
+                     if constexpr (std::is_same_v<T, double>) {
+                       for (; i + symmetric_row_group <= last; i += symmetric_row_group) {
+                         const std::array<double, symmetric_row_group> sums {group(block + (i * n), n, v, own, i)};
+                         for (std::size_t r {0}; r < symmetric_row_group; ++r) {
+                           own[i + r] += sums[r];
+                         }
+                       }
+                     }
+                     for (; i < last; ++i) {
+                       own[i] += hermitian_row(kernel, block + (i * n), v, own, i);
+                     }
+                   });
+      for (std::size_t p {0}; !share && p < pairs; ++p) {
+        coefficients(p);
+      }
+      constexpr std::size_t band {256};
+      const auto            bands = [&](std::size_t b) {
+                                      const std::size_t first {b * band};
+                                      const std::size_t count {std::min(band, m - first)};
+                                      std::fill(w + first, w + first + count, T {});
+                                      for (std::size_t task {0}; task < tasks; ++task) { // the partials in order, as hermitian_product
+                                        const std::size_t reach {std::min((task + 1) * rows_per_task, m)};
+                                        if (reach > first) {
+                                          add_product(w + first, T {1}, scratch.data() + (task * m) + first, std::min(count, reach - first));
+                                        }
+                                      }
+                                      subtract_products(w + first, factors, corrections + first, ldc, terms, count);
+                                      if (next != nullptr) { // the next step's column: these earlier steps' terms (next implies an earlier step)
+                                        subtract_products(next + first, next_factors, corrections + first, ldc, terms, count);
+                                      }
+                                    };
+      if (share) {
+        parallel_for((m + band - 1) / band, band * (tasks + terms) * 8, bands);
+        return;
+      }
+      for (std::size_t b {0}; b < (m + band - 1) / band; ++b) {
+        bands(b);
+      }
+    }
+
     //! \brief The reflections of one panel of the blocked tridiagonal reduction.
     inline constexpr std::size_t tridiagonal_block {32};
 
@@ -2884,8 +3008,10 @@ namespace numerical {
       // By reflection: row 2p holds step k0 + p's vector v over the rows (zero above), row 2p + 1 its w, so that a
       // step's terms of the panel's earlier ones are one update through the rows (subtract_products), in their order.
       buffer<T> by_row(2 * tridiagonal_block * n);
-      buffer<T> columns(tridiagonal_block * n); // the panel's columns of A, gathered row by row
-      buffer<T> factors(2 * tridiagonal_block); // a step's coefficients of those rows
+      buffer<T> columns(tridiagonal_block * n);      // the panel's columns of A, gathered row by row
+      buffer<T> factors(2 * tridiagonal_block);      // a step's coefficients of those rows
+      buffer<T> next_factors(2 * tridiagonal_block); // the next column's, applied ahead
+      bool      column_ahead {false};                // whether the step's column took its earlier terms ahead
       for (std::size_t k0 {0}; k0 + 1 < n; k0 += tridiagonal_block) {
         // A panel of reflections, as LAPACK's dlatrd: the matrix the panel's later steps see is
         // A − V Wᴴ − W Vᴴ, applied to the one column and the one product each step needs; the whole trailing
@@ -2902,11 +3028,14 @@ namespace numerical {
           const std::size_t j               {k - k0};
           const std::size_t m               {n - k - 1};
           T* const          column          {columns.data() + (j * n) + k}; // column k from the diagonal down, the panel's earlier steps applied
-          for (std::size_t p {0}; p < j; ++p) {
-            factors[2 * p]       = conj_of(by_row[(((2 * p) + 1) * n) + k]); // v's row by w's element
-            factors[(2 * p) + 1] = conj_of(by_row[((2 * p) * n) + k]);
+          // The steps before the last were applied during it (column_ahead); the last's two terms, or all, here.
+          const std::size_t from            {column_ahead ? j - 1 : 0};
+          for (std::size_t p {from}; p < j; ++p) {
+            factors[2 * (p - from)]       = conj_of(by_row[(((2 * p) + 1) * n) + k]); // v's row by w's element
+            factors[(2 * (p - from)) + 1] = conj_of(by_row[((2 * p) * n) + k]);
           }
-          subtract_products(column, factors.data(), by_row.data() + k, n, 2 * j, m + 1);
+          subtract_products(column, factors.data(), by_row.data() + ((2 * from) * n) + k, n, 2 * (j - from), m + 1);
+          column_ahead   = false;
           a[(k * n) + k] = column[0];
           buffer<T>      v(column + 1, column + m + 1); // column k below the diagonal
           const double   below {m > 1 ? scaled_norm(v.data() + 1, m - 1) : 0.0};
@@ -2924,12 +3053,16 @@ namespace numerical {
           }
           const T*       block  {a.data() + ((k + 1) * n) + k + 1};         // the trailing block, row stride n
           buffer<T>      w(m, T {});
-          hermitian_product(block, n, m, v.data(), w.data(), symv_scratch); // w = A v on the trailing block
-          for (std::size_t p {0}; p < j; ++p) {                                                               // w = (A − V Wᴴ − W Vᴴ) v
-            factors[2 * p]       = conjugate_dot(by_row.data() + ((((2 * p) + 1) * n) + k + 1), v.data(), m); // (Wᴴ v)ₚ
-            factors[(2 * p) + 1] = conjugate_dot(by_row.data() + (((2 * p) * n) + k + 1), v.data(), m);       // (Vᴴ v)ₚ
+          // w = (A − V Wᴴ − W Vᴴ) v on the trailing block, (Wᴴ v)ₚ and (Vᴴ v)ₚ beside A v; the next column of the
+          // panel takes these earlier steps' terms in the same pass (its rows are w's).
+          T* const next {k + 1 < k1 && j > 0 ? columns.data() + ((j + 1) * n) + k + 1 : nullptr};
+          for (std::size_t p {0}; next != nullptr && p < j; ++p) {
+            next_factors[2 * p]       = conj_of(by_row[(((2 * p) + 1) * n) + k + 1]);
+            next_factors[(2 * p) + 1] = conj_of(by_row[((2 * p) * n) + k + 1]);
           }
-          subtract_products(w.data(), factors.data(), by_row.data() + k + 1, n, 2 * j, m);
+          corrected_hermitian_product(block, n, m, v.data(), w.data(), symv_scratch, by_row.data() + k + 1, n, 2 * j, factors.data(),
+                                      next, next_factors.data());
+          column_ahead = next != nullptr;
           const T c {conjugate_dot(v.data(), w.data(), m)};
           for (std::size_t i {0}; i < m; ++i) { // w = 2 B v − 2 (vᴴ B v) v, so H B H = B − v wᴴ − w vᴴ
             w[i]                                    = (static_cast<T>(2) * w[i]) - (static_cast<T>(2) * c * v[i]);
@@ -4494,6 +4627,14 @@ namespace numerical {
       }
     }
 
+    //! \brief The rows from which a step of the blocked bidiagonal reduction shares its coefficients and corrections
+    //!        with the threads: on x86-64 (six AVX2 cores, the reduction of order 512 −5 to −14 %, 1024 −12 %); never
+    //!        on arm64, where its serial part is smaller and the shared step gained nothing (M1 Pro, eight cores,
+    //!        order 1024 0.97 to 1.05 times as long).
+#ifdef NUMERICAL_X86_COMPILED
+    inline constexpr std::size_t bidiagonal_shared_least {256};
+#endif
+
     //! \brief The reflections from each side in one panel of the blocked bidiagonal reduction.
     inline constexpr std::size_t bidiagonal_block {32};
 
@@ -4571,8 +4712,11 @@ namespace numerical {
       // one update through their rows (subtract_products, a family's rows 2n apart), in their order.
       buffer<T> vx(2 * bidiagonal_block * n);
       buffer<T> yu(2 * bidiagonal_block * n);
-      buffer<T> columns(bidiagonal_block * n); // the panel's columns of B, gathered row by row
-      buffer<T> factors(2 * bidiagonal_block); // a step's coefficients of those rows
+      buffer<T> columns(bidiagonal_block * n);      // the panel's columns of B, gathered row by row
+      buffer<T> factors(2 * bidiagonal_block);      // a step's coefficients of those rows
+#ifdef NUMERICAL_X86_COMPILED
+      buffer<T> next_factors(2 * bidiagonal_block); // the next column's, applied ahead (a shared step)
+#endif
       for (std::size_t k0 {0}; k0 < n; k0 += bidiagonal_block) {
         const std::size_t k1    {std::min(k0 + bidiagonal_block, n)};
         const std::size_t width {k1 - k0};
@@ -4587,14 +4731,23 @@ namespace numerical {
         const auto x_row {[&vx, n](std::size_t p, std::size_t from) { return vx.data() + (((2 * p) + 1) * n) + from; }};
         const auto y_row {[&yu, n](std::size_t p, std::size_t from) { return yu.data() + (2 * p * n) + from; }};
         const auto u_row {[&yu, n](std::size_t p, std::size_t from) { return yu.data() + (((2 * p) + 1) * n) + from; }};
+#ifdef NUMERICAL_X86_COMPILED
+        bool column_ahead {false}; // whether the step's column took the steps before the last ahead (a shared step)
+#endif
         for (std::size_t k {k0}; k < k1; ++k) {
-          const std::size_t i          {k - k0};
-          for (std::size_t p {0}; p < i; ++p) { // v's row by y's element, x's by u's
-            factors[2 * p]       = *y_row(p, k);
-            factors[(2 * p) + 1] = *u_row(p, k);
+          const std::size_t i    {k - k0};
+#ifdef NUMERICAL_X86_COMPILED
+          const std::size_t from {column_ahead ? i - 1 : 0};
+          column_ahead = false;
+#else
+          constexpr std::size_t from {0};
+#endif
+          for (std::size_t p {from}; p < i; ++p) { // v's row by y's element, x's by u's
+            factors[2 * (p - from)]       = *y_row(p, k);
+            factors[(2 * (p - from)) + 1] = *u_row(p, k);
           }
           T* const column {columns.data() + (i * n) + k}; // column k from the diagonal down, the panel's earlier steps applied
-          subtract_products(column, factors.data(), v_row(0, k), n, 2 * i, n - k);
+          subtract_products(column, factors.data(), v_row(from, k), n, 2 * (i - from), n - k);
           buffer<T> x(column, column + (n - k));
           if (std::any_of(x.begin() + 1, x.end(), nonzero)) { // something below the diagonal to reflect
             d[k] = static_cast<double>(householder_in_place(x));
@@ -4643,23 +4796,65 @@ namespace numerical {
           if (std::any_of(y.begin() + 1, y.end(), nonzero)) { // something past the superdiagonal to reflect
             e[k] = static_cast<double>(householder_in_place(y));
             // x = 2 (B − V Yᵀ − X Uᵀ) u on the rows past k: B u by rows, then the panel's terms.
-            buffer<T> by_y(i + 1, T {});                      // Yᵀ u over this and the earlier steps, Uᵀ u over the earlier
-            buffer<T> by_u(i, T     {});
-            for (std::size_t p {0}; p <= i; ++p) {
-              by_y[p] = dot_product(y_row(p, k + 1), y.data(), y.size());
+            const std::size_t rows          {n - k - 1};
+            buffer<T>         by_y(i + 1, T {}); // Yᵀ u over this and the earlier steps, Uᵀ u over the earlier
+            buffer<T>         by_u(i, T     {});
+            buffer<T>         moved(rows, T {});
+#ifdef NUMERICAL_X86_COMPILED
+            if (rows >= bidiagonal_shared_least) {
+              // The coefficients run among B u's tasks, and the corrections by bands on the threads, the next column
+              // taking the earlier steps' terms in the same pass (its rows are these): each element the operations,
+              // in the order, of the branch above.
+              parallel_for(rows + (2 * i) + 1, bidiagonal_product_weight * 2 * (n - k), [&](std::size_t task) {
+                             if (task < rows) {
+                               moved[task] = dot_product(b.data() + ((k + 1 + task) * n) + k + 1, y.data(), y.size());
+                             }
+                             else if (task - rows <= i) {
+                               by_y[task - rows] = dot_product(y_row(task - rows, k + 1), y.data(), y.size());
+                             }
+                             else {
+                               by_u[task - rows - i - 1] = dot_product(u_row(task - rows - i - 1, k + 1), y.data(), y.size());
+                             }
+                           });
+              T* const next {k + 1 < k1 && i > 0 ? columns.data() + ((i + 1) * n) + k + 1 : nullptr};
+              for (std::size_t p {0}; next != nullptr && p < i; ++p) { // the next column's terms of the steps before this
+                next_factors[2 * p]       = *y_row(p, k + 1);
+                next_factors[(2 * p) + 1] = *u_row(p, k + 1);
+              }
+              constexpr std::size_t band {256};
+              parallel_for((rows + band - 1) / band, band * 4 * (i + 1) * 8, [&](std::size_t c) {
+                             const std::size_t first {c * band};
+                             const std::size_t count {std::min(band, rows - first)};
+                             subtract_products(moved.data() + first, by_y.data(), v_row(0, k + 1 + first), 2 * n, i + 1, count);
+                             subtract_products(moved.data() + first, by_u.data(), x_row(0, k + 1 + first), 2 * n, i, count);
+                             for (std::size_t r {first}; r < first + count; ++r) {
+                               *x_row(i, k + 1 + r) = static_cast<T>(2) * moved[r];
+                             }
+                             if (next != nullptr) {
+                               subtract_products(next + first, next_factors.data(), v_row(0, k + 1 + first), n, 2 * i, count);
+                             }
+                           });
+              column_ahead = next != nullptr;
             }
-            for (std::size_t p {0}; p < i; ++p) {
-              by_u[p] = dot_product(u_row(p, k + 1), y.data(), y.size());
+            else
+#endif
+            {
+              for (std::size_t p {0}; p <= i; ++p) {
+                by_y[p] = dot_product(y_row(p, k + 1), y.data(), y.size());
+              }
+              for (std::size_t p {0}; p < i; ++p) {
+                by_u[p] = dot_product(u_row(p, k + 1), y.data(), y.size());
+              }
+              parallel_for(rows, bidiagonal_product_weight * 2 * (n - k), [&](std::size_t row) {
+                             moved[row] = dot_product(b.data() + ((k + 1 + row) * n) + k + 1, y.data(), y.size());
+                           });
+              subtract_products(moved.data(), by_y.data(), v_row(0, k + 1), 2 * n, i + 1, rows);
+              subtract_products(moved.data(), by_u.data(), x_row(0, k + 1), 2 * n, i, rows);
+              for (std::size_t r {0}; r < rows; ++r) {
+                *x_row(i, k + 1 + r) = static_cast<T>(2) * moved[r];
+              }
             }
-            buffer<T> moved(n - k - 1, T {});
-            parallel_for(n - k - 1, bidiagonal_product_weight * 2 * (n - k), [&](std::size_t row) {
-                           moved[row] = dot_product(b.data() + ((k + 1 + row) * n) + k + 1, y.data(), y.size());
-                         });
-            subtract_products(moved.data(), by_y.data(), v_row(0, k + 1), 2 * n, i + 1, n - k - 1);
-            subtract_products(moved.data(), by_u.data(), x_row(0, k + 1), 2 * n, i, n - k - 1);
-            for (std::size_t r {0}; r < n - k - 1; ++r) {
-              *x_row(i, k + 1 + r) = static_cast<T>(2) * moved[r];
-            }
+
             std::copy(y.begin(), y.end(), u_row(i, k + 1));
             right[k] = std::move(y);
           }
