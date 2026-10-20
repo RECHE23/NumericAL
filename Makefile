@@ -37,7 +37,7 @@ SCIFORGE_LINT ?= ../sciforge/lint
 FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: check-pins all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
-        lint misra doc doc-no-coverage format format-check full-local-gate test-gcc lint-gate stubtest-gate bench-diff-selftest \
+        lint misra doc doc-no-coverage format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
         python python-test python-stubtest fuzz-linalg bench-diff bench-linalg bench-python bench-gemm version-check install uninstall release release-bump clean help
 
 .DEFAULT_GOAL := help
@@ -49,6 +49,7 @@ help:
 	@echo "  make test       Build and run the test suite (ctest)"
 	@echo "  make sanitize   Build and run the tests under ASan + UBSan"
 	@echo "  make tsan       Build and run the tests under ThreadSanitizer (a planted race reported first)"
+	@echo "  make test-gcc-neon  The tests under GCC 14 without the AMX: NEON the default path, as on the aarch64 wheels"
 	@echo "  make coverage   Line-coverage text summary + HTML report"
 	@echo "  make lint       clang-tidy over the test sources"
 	@echo "  make misra      MISRA C++:2023-oriented analysis"
@@ -236,6 +237,13 @@ check-pins:
 test-gcc:
 	@$(MAKE) --no-print-directory test CXX=g++-14 BUILD=$(BUILD)/gcc
 
+# GCC 14 without the Apple AMX: NEON the default path, as on the aarch64 wheels and CI's linux-arm job. A test that
+# holds on the AMX by default (and on NEON only where it asks for that path) can fail there alone.
+test-gcc-neon:
+	$(CMAKE) -S . -B $(BUILD)/gcc-neon -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-DNUMERICAL_NO_AMX
+	$(CMAKE) --build $(BUILD)/gcc-neon --parallel $(JOBS)
+	$(CTEST) --test-dir $(BUILD)/gcc-neon --output-on-failure
+
 lint-gate:
 	@$(MAKE) --no-print-directory lint | tee $(BUILD)/lint.log; ! grep -qE 'warning:|error:' $(BUILD)/lint.log
 
@@ -311,7 +319,7 @@ clean:
 # checkout without the sibling (CI pins its own SciForge) still runs every other target.
 SCIFORGE_MAKE    ?= ../sciforge/make
 QUALITY_COMMIT   := format-check coverage-gate
-QUALITY_PUSH     := version-check check-pins test test-gcc sanitize tsan misra doc-no-coverage python-test bench-diff-selftest \
+QUALITY_PUSH     := version-check check-pins test test-gcc test-gcc-neon sanitize tsan misra doc-no-coverage python-test bench-diff-selftest \
                     stubtest-gate lint-gate
 QUALITY_RELEASE  := bench-diff fuzz-linalg
 -include $(SCIFORGE_MAKE)/quality.mk
