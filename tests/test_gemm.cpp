@@ -453,18 +453,18 @@ TEST(product_over_an_empty_dimension)
          (tensor<double> {{2, 3}, std::vector<double>(6, 0.0)}));
 }
 
-// The packing storage stays with the calling thread for the next product, unless it outgrew the limit.
+// The packing storage stays with the calling thread for the next product, unless it outgrew the limit. The kept
+// products are 128 deep with 128 rows: every tile packs them (a shallower or narrower one may run in the plain loop).
 TEST(the_calling_thread_keeps_its_packing_storage_within_the_limit)
 {
   using storage = numerical::detail::packing_storage<double>;
-  EXPECT(product_is_exact<double>(64, 64, 64));
-  EXPECT(!storage::kept().empty());
-  // A tall product packs more of A than the limit: correct, then nothing kept.
-  const std::size_t rows {(storage::kept_limit / numerical::detail::gemm_kc) + 64};
-  EXPECT(product_is_exact<double>(rows, 3, numerical::detail::gemm_kc));
-  EXPECT(storage::kept().empty());
-  EXPECT(product_is_exact<double>(64, 64, 64));
-  EXPECT(!storage::kept().empty());
+  EXPECT(on_every_path([] {
+                         bool ok {product_is_exact<double>(128, 128, 128) && !storage::kept().empty()};
+                         // A tall product packs more of A than the limit: correct, then nothing kept.
+                         const std::size_t rows {(storage::kept_limit / numerical::detail::gemm_kc) + 64};
+                         ok = ok && product_is_exact<double>(rows, 3, numerical::detail::gemm_kc) && storage::kept().empty();
+                         return ok && product_is_exact<double>(128, 128, 128) && !storage::kept().empty();
+                       }));
 }
 
 // A zero dimension leaves C as it is, whichever it is (the decompositions call it so when nothing is left).
