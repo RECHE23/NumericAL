@@ -27,7 +27,7 @@ class BlasLibrary(unittest.TestCase):
 
     def test_located_in_the_package(self):
         self.assertTrue(os.path.isabs(self.path))
-        self.assertEqual(os.path.dirname(self.path), os.path.dirname(numerical.__file__))
+        self.assertEqual(os.path.dirname(self.path), os.path.join(os.path.dirname(numerical.__file__), "lib"))
 
     def test_every_routine_exported(self):
         self.assertEqual(len(ROUTINES), 34)

@@ -72,9 +72,11 @@ jobs:
         run: |
           sudo apt-get update -q
           sudo apt-get install -y -q python3-numpy python3-scipy python3-pytest python3-hypothesis python3-venv cmake g++
+          # Built in a venv of its own, its build requirements isolated as pip installs them; then installed beside
+          # the system's NumPy and SciPy, whose own setuptools and packaging are too old for the build.
+          /usr/bin/python3 -m venv /tmp/build
+          SCIFORGE_INCLUDE="$PWD/sciforge/include" /tmp/build/bin/pip wheel -q --no-deps -w dist .
           /usr/bin/python3 -m venv --system-site-packages /tmp/venv
-          /tmp/venv/bin/pip install -q setuptools wheel
-          SCIFORGE_INCLUDE="$PWD/sciforge/include" /tmp/venv/bin/pip wheel -q --no-build-isolation --no-deps -w dist .
           /tmp/venv/bin/pip install -q --no-deps dist/*.whl
           echo "BLAS_LIBRARY=$(cd /tmp && /tmp/venv/bin/python -c 'import numerical; print(numerical.blas_library())')" >> "$GITHUB_ENV"
       - name: The library from Python, and the Fortran routines alone exported

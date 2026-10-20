@@ -312,7 +312,7 @@ release-bump:
 	@sed -i.bak -E "s/^__version__ = \".*\"/__version__ = \"$(VERSION)\"/" python/numerical/__init__.py && rm -f python/numerical/__init__.py.bak
 
 clean:
-	rm -rf $(BUILD) build dist ./*.egg-info python/numerical/*.so
+	rm -rf $(BUILD) build dist ./*.egg-info python/numerical/*.so python/numerical/lib
 	find python -name '__pycache__' -type d -prune -exec rm -rf {} +
 
 # The verification tiers every SciForge project shares (the sibling checkout's make/quality.mk). Optional, so a

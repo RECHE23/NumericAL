@@ -88,7 +88,9 @@ class build_ext_with_blas(build_ext):
         super().run()
         if not sys.platform.startswith("linux"):
             return
-        package = os.path.dirname(self.get_ext_fullpath("numerical._numerical"))
+        # In a directory of its own, without __init__.py: a .so beside the package's modules would be taken for an
+        # extension module (numerical.libnumerical_blas), by an import as by the tools that walk the package.
+        package = os.path.join(os.path.dirname(self.get_ext_fullpath("numerical._numerical")), "lib")
         os.makedirs(package, exist_ok=True)
         library = os.path.join(package, "libnumerical_blas.so")
         command = [*self.compiler.compiler_cxx, *compile_args, "-fPIC", "-shared", "-Iinclude",

@@ -164,7 +164,7 @@ def blas_library():
     Returns:
         str | None: Absolute path to ``libnumerical_blas.so``, or ``None``.
     """
-    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "libnumerical_blas.so")
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "lib", "libnumerical_blas.so")
     return path if _os.path.isfile(path) else None
 
 
