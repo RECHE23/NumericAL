@@ -2,7 +2,8 @@
 // argument by address, a hidden length after the arguments for each character one, 32-bit integers under the
 // reference names (LP64) and 64-bit ones under the names ending in `64_` (ILP64). Declared once, so each definition is
 // checked against its declaration, and with default visibility, which the definitions take from it.
-#pragma once
+#ifndef NUMERICAL_BLAS_ROUTINES_HPP
+#define NUMERICAL_BLAS_ROUTINES_HPP
 
 #include <complex>
 #include <cstddef>
@@ -310,3 +311,5 @@ numerical_blas_complex_double zdotc_64_(const std::int64_t*,
 #if defined(__GNUC__)
 #pragma GCC visibility pop
 #endif
+
+#endif // NUMERICAL_BLAS_ROUTINES_HPP
