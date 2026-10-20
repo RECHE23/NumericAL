@@ -16,6 +16,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   stricter resolution of six references the headers now meet).
 
 ### Changed
+- **A `float` product runs on Apple's AMX** where the chip offers it, as a `double` one already did: tiles of 32 × 32
+  in four 16 × 16 accumulators of fused multiply-adds, each element's terms in ascending order (the bits of the NEON
+  tile, on one thread as on all). A narrow product with partial tiles stays on the NEON tile (`amx_suits_f32`); the
+  AMX's self-test checks the `float` arithmetic too before it is used. M1 Pro: products of order 64 −80 % (12.3 → 2.5
+  µs), 128 −89 % (59 → 6.3 µs), 512 −81 %, 1024 −77 % (6.0 → 1.39 ms).
 - **A `double` product too narrow or too shallow to pay for packing runs in the plain loop** (which rounds as the tiles
   do: the same bits): on the NEON tile, a depth of 16 or less, or of 64 or less for 64 rows or fewer; on the AVX2 and
   AVX-512 tiles, 16 rows or fewer to a depth of 64, or 32 to 32, at least 64 columns wide. GCC 14 on one arm64 core

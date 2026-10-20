@@ -964,6 +964,44 @@ namespace numerical::detail {
       amx_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
     }
   };
+
+  //! \brief \ref amx_tile_kernel for `float`: 32 × 32 tiles of four 16 × 16 accumulators.
+  struct amx_tile_kernel_f32
+  {
+    static constexpr std::size_t mr           {amx_f32_side};
+    static constexpr std::size_t nr           {amx_f32_side};
+    static constexpr std::size_t depth        {512};
+    static constexpr std::size_t block_rows   {gemm_mc};
+    static constexpr std::size_t speedup      {gemm_kernel_speedup};
+    static constexpr std::size_t serial_below {std::size_t {1} << 24};
+    using session = amx_session;
+
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
+    {
+      return ldb <= 2 * amx_in_place_stride;
+    }
+
+    static void pack_a(const float* a,
+                       std::size_t  lda,
+                       std::size_t  rows,
+                       std::size_t  kc,
+                       float*       out) noexcept
+    {
+      amx_pack_a_f32(a, lda, rows, kc, out);
+    }
+
+    static void tile(std::size_t  kc,
+                     const float* ap,
+                     const float* bp,
+                     std::size_t  ldb,
+                     float*       c,
+                     std::size_t  ldc,
+                     std::size_t  rows,
+                     std::size_t  cols) noexcept
+    {
+      amx_tile_f32(kc, ap, bp, ldb, c, ldc, rows, cols);
+    }
+  };
 #endif
 
   //! \brief The least depth at which rows of C wider than one block (\ref narrow_columns) run by blocks in
@@ -1930,6 +1968,12 @@ namespace numerical::detail {
   {
 #ifdef NUMERICAL_NEON_COMPILED
     const gemm_path path {gemm_path_current()};
+#  ifdef NUMERICAL_AMX_COMPILED
+    if (path == gemm_path::amx && amx_suits_f32(m, n, k)) {
+      gemm_packed<amx_tile_kernel_f32>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+#  endif
     if (path == gemm_path::neon || path == gemm_path::amx) {
       gemm_packed<neon_tile_kernel<float>>(m, n, k, a, lda, b, ldb, c, ldc);
       return true;

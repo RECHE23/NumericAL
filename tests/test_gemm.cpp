@@ -112,6 +112,17 @@ TEST(packed_product_equals_the_ascending_sum_to_the_bit)
   EXPECT(product_is_exact<int>(70, 50, k));
 }
 
+// float products on every path, the AMX's among them: whole and partial tiles in place, a last column cutting a
+// tile's first half row or its second, A's slivers by streaming stores to a depth past a multiple of four.
+TEST(float_products_equal_the_ascending_sum_to_the_bit)
+{
+  for (const auto& [rows, cols, depth] : {std::array<std::size_t, 3> {40, 45, 300}, std::array<std::size_t, 3> {70, 60, 130},
+                                          std::array<std::size_t, 3> {33, 64, 7}, std::array<std::size_t, 3> {64, 100, 130},
+                                          std::array<std::size_t, 3> {128, 24, 64}, std::array<std::size_t, 3> {96, 96, 96}}) {
+    EXPECT(on_every_path([&] { return product_is_exact<float>(rows, cols, depth); }));
+  }
+}
+
 namespace {
   // A complex product past the portable path, which sums the real and imaginary parts of A apart, on small
   // multiples of an eighth: every product and partial sum is exact, so it must equal the ascending sum, on one

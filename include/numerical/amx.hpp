@@ -52,6 +52,7 @@ namespace numerical::detail {
     ldz   = 4,  //!< Load 64 bytes into a Z row.
     stz   = 5,  //!< Store a Z row's 64 bytes.
     fma64 = 10, //!< `double` fused multiply-add, as an outer product in matrix mode, or lane by lane in vector mode.
+    fma32 = 12, //!< `float` fused multiply-add, as an outer product in matrix mode.
   };
 
   /*!
@@ -183,6 +184,31 @@ namespace numerical::detail {
     return (m >= amx_least_extent && n >= amx_least_extent) || m * n * k >= amx_least_work;
   }
 
+  //! \brief The rows and columns of one `float` tile of \ref amx_full_tile_f32: four 16 × 16 accumulators.
+  inline constexpr std::size_t amx_f32_side {32};
+
+  //! \brief The fewest columns of a `float` product the AMX runs by \ref amx_suits_f32's work alone.
+  inline constexpr std::size_t amx_f32_least_width {28};
+
+  /*!
+   * \brief Whether the AMX runs a `float` product of \p m × \p k by \p k × \p n (\ref amx_suits): a width of whole
+   *        tiles; or \ref amx_least_extent rows, \ref amx_f32_least_width columns and \ref amx_least_work
+   *        multiply-adds; or 64 rows to a depth of 64. Below, partial tiles of four 16 × 16 accumulators took up to
+   *        2.4 times the NEON tile's time. One M1 Pro core, against the faster of the two, on the AMX always then by
+   *        this rule: 168 shapes of 8 to 128 rows and columns, depths 16 to 256, 1.08 then 1.04 times as long in
+   *        all; 149 of 12 to 200 rows, 12 to 90 columns, depths 32 to 512, 1.14 then 1.02; 39 squares of 20 to
+   *        100, as deep or 256 deep, 1.10 then 1.00.
+   */
+  [[nodiscard]] constexpr bool amx_suits_f32(std::size_t m,
+                                             std::size_t n,
+                                             std::size_t k) noexcept
+  {
+    const bool whole_tiles   {n % amx_f32_side == 0};
+    const bool wide          {m >= amx_least_extent && n >= amx_f32_least_width && m * n * k >= amx_least_work};
+    const bool tall_and_deep {m >= 64 && k >= 64};
+    return amx_suits(m, n, k) && (whole_tiles || wide || tall_and_deep);
+  }
+
   //! \brief The longest rows of B the AMX reads in place, unpacked: X loads a row's 16 elements as they lie, and
   //!        packing them took a fifth of a small product (M1 Pro, order 64: 5.5 → 4.3 µs, 256: 130 → 104 µs); rows
   //!        further apart cost more in translations than packing (order 1024: +8 %, 2048: +35 %).
@@ -258,71 +284,166 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief \ref amx_depth_f64 for `float`: each step A's 32 elements into two Y registers and B's 32 into two X
+  //!        registers, one fused outer product per accumulator (`fma32`, 16 × 16).
+  [[gnu::noinline, gnu::aligned(64)]] inline void amx_depth_f32(std::size_t  kc,
+                                                                const float* ap,
+                                                                const float* bp,
+                                                                std::size_t  ldb) noexcept
+  {
+    for (std::size_t p {0}; p < kc; ++p) {
+      const float* const a {ap + (p * amx_f32_side)};
+      const float* const b {bp + (p * ldb)};
+      amx<amx_op::ldy>(amx_address(a, 0));
+      amx<amx_op::ldy>(amx_address(a + 16, 1));
+      amx<amx_op::ldx>(amx_address(b, 0));
+      amx<amx_op::ldx>(amx_address(b + 16, 1));
+      for (std::uint64_t ya {0}; ya < 2; ++ya) {
+        for (std::uint64_t xb {0}; xb < 2; ++xb) {
+          amx<amx_op::fma32>((((ya * 2) + xb) << 20U) | ((xb * 64) << 10U) | (ya * 64));
+        }
+      }
+    }
+  }
+
+  //! \brief The depth loop of a tile of `double` (\ref amx_depth_f64), by its operands' type.
+  inline void amx_depth(std::size_t   kc,
+                        const double* ap,
+                        const double* bp,
+                        std::size_t   ldb) noexcept
+  {
+    amx_depth_f64(kc, ap, bp, ldb);
+  }
+
+  //! \brief The depth loop of a tile of `float` (\ref amx_depth_f32), by its operands' type.
+  inline void amx_depth(std::size_t  kc,
+                        const float* ap,
+                        const float* bp,
+                        std::size_t  ldb) noexcept
+  {
+    amx_depth_f32(kc, ap, bp, ldb);
+  }
+
   /*!
-   * \brief \ref amx_full_tile_f64 for a partial tile of \p rows × \p cols, in C itself: each half row of eight
-   *        elements inside C is loaded and stored in place, one the last column cuts through a buffer, and those
-   *        outside are neither (their Z rows sum the zeros beyond A's and B's slivers, and are never read).
+   * \brief \ref amx_full_tile_f64 or \ref amx_full_tile_f32 for a partial tile of \p rows × \p cols, in C itself:
+   *        each half row (a Z row's 64 bytes) inside C is loaded and stored in place, one the last column cuts
+   *        through a buffer, and those outside are neither (their Z rows sum the zeros beyond A's and B's slivers,
+   *        and are never read).
+   * \tparam        T    `double` or `float`.
    * \param[in]     kc   The panel depth.
    * \param[in]     ap   The A sliver: \p kc columns of \ref amx_mr elements.
-   * \param[in]     bp   The B sliver: \p kc rows of \ref amx_nr elements.
+   * \param[in]     bp   The B sliver: \p kc rows of a tile's columns.
    * \param[in]     ldb  The distance between the sliver's rows.
    * \param[in,out] c    The tile's first element, in a row-major C.
    * \param[in]     ldc  The distance between C's rows.
    * \param[in]     rows The tile's rows inside C.
    * \param[in]     cols The tile's columns inside C.
    */
-  inline void amx_partial_tile_f64(std::size_t   kc,
-                                   const double* ap,
-                                   const double* bp,
-                                   std::size_t   ldb,
-                                   double*       c,
-                                   std::size_t   ldc,
-                                   std::size_t   rows,
-                                   std::size_t   cols) noexcept
+  template <typename T>
+  void amx_partial_tile(std::size_t kc,
+                        const T*    ap,
+                        const T*    bp,
+                        std::size_t ldb,
+                        T*          c,
+                        std::size_t ldc,
+                        std::size_t rows,
+                        std::size_t cols) noexcept
   {
-    alignas(64) std::array<double, amx_mr * 8> cut {}; // the half row the last column cuts, per row
-    const std::uint64_t whole_halves {cols / 8};       // halves wholly inside C
-    const std::size_t   cut_width {cols % 8};          // the cut half's elements inside C
-    const auto          each_half = [&](auto&& at) {
-                                      for (std::uint64_t ya {0}; ya < 4; ++ya) {
-                                        for (std::uint64_t j {0}; j < 8; ++j) {
-                                          const std::size_t row {(ya * 8) + j};
-                                          if (row >= rows) {
-                                            continue;
-                                          }
-                                          for (std::uint64_t xb {0}; xb < 2; ++xb) {
-                                            if (xb < whole_halves) {
-                                              at(c + (row * ldc) + (xb * 8), (j * 8) + (ya * 2) + xb);
-                                            }
-                                            else if (xb == whole_halves && cut_width != 0) {
-                                              at(cut.data() + (row * 8), (j * 8) + (ya * 2) + xb);
-                                            }
-                                          }
-                                        }
-                                      }
-                                    };
+    static_assert(amx_f32_side == amx_mr, "both tiles have amx_mr rows");
+    constexpr std::size_t           lanes {64 / sizeof(T)};                // a half row: one Z row
+    constexpr std::uint64_t         bands {amx_mr / lanes};                // accumulators down the tile
+    alignas(64) std::array<T, amx_mr * lanes> cut {};                      // the half row the last column cuts, per row
+    const std::uint64_t             whole_halves {cols / lanes};           // halves wholly inside C
+    const std::size_t               cut_width {cols % lanes};              // the cut half's elements inside C
+    const auto                      each_half = [&](auto&& at) {
+                                                  for (std::uint64_t ya {0}; ya < bands; ++ya) {
+                                                    for (std::uint64_t j {0}; j < lanes; ++j) {
+                                                      const std::size_t row {(ya * lanes) + j};
+                                                      if (row >= rows) {
+                                                        continue;
+                                                      }
+                                                      for (std::uint64_t xb {0}; xb < 2; ++xb) {
+                                                        const std::uint64_t z {(j * 2 * bands) + (ya * 2) + xb};
+                                                        if (xb < whole_halves) {
+                                                          at(c + (row * ldc) + (xb * lanes), z);
+                                                        }
+                                                        else if (xb == whole_halves && cut_width != 0) {
+                                                          at(cut.data() + (row * lanes), z);
+                                                        }
+                                                      }
+                                                    }
+                                                  }
+                                                };
     if (cut_width != 0) {
       for (std::size_t row {0}; row < rows; ++row) {
         for (std::size_t e {0}; e < cut_width; ++e) {
-          cut[(row * 8) + e] = c[(row * ldc) + (whole_halves * 8) + e];
+          cut[(row * lanes) + e] = c[(row * ldc) + (whole_halves * lanes) + e];
         }
       }
     }
-    each_half([](double* half, std::uint64_t z) { amx<amx_op::ldz>(amx_address(half, z)); });
-    amx_depth_f64(kc, ap, bp, ldb);
-    each_half([](double* half, std::uint64_t z) { amx<amx_op::stz>(amx_address(half, z)); });
+    each_half([](T* half, std::uint64_t z) { amx<amx_op::ldz>(amx_address(half, z)); });
+    amx_depth(kc, ap, bp, ldb);
+    each_half([](T* half, std::uint64_t z) { amx<amx_op::stz>(amx_address(half, z)); });
     if (cut_width != 0) {
       for (std::size_t row {0}; row < rows; ++row) {
         for (std::size_t e {0}; e < cut_width; ++e) {
-          c[(row * ldc) + (whole_halves * 8) + e] = cut[(row * 8) + e];
+          c[(row * ldc) + (whole_halves * lanes) + e] = cut[(row * lanes) + e];
+        }
+      }
+    }
+  }
+
+  //! \brief `C += Aₚ·Bₚ` for one whole 32 × 32 `float` tile: accumulator `2·ya + xb` holds rows `16·ya …` and
+  //!        columns `16·xb …`, its row `j` in Z row `4·j + 2·ya + xb`.
+  inline void amx_full_tile_f32(std::size_t  kc,
+                                const float* ap,
+                                const float* bp,
+                                std::size_t  ldb,
+                                float*       tile,
+                                std::size_t  ld) noexcept
+  {
+    for (std::uint64_t ya {0}; ya < 2; ++ya) {
+      for (std::uint64_t xb {0}; xb < 2; ++xb) {
+        for (std::uint64_t j {0}; j < 16; ++j) {
+          amx<amx_op::ldz>(amx_address(tile + (((ya * 16) + j) * ld) + (xb * 16), (j * 4) + (ya * 2) + xb));
+        }
+      }
+    }
+    amx_depth_f32(kc, ap, bp, ldb);
+    for (std::uint64_t ya {0}; ya < 2; ++ya) {
+      for (std::uint64_t xb {0}; xb < 2; ++xb) {
+        for (std::uint64_t j {0}; j < 16; ++j) {
+          amx<amx_op::stz>(amx_address(tile + (((ya * 16) + j) * ld) + (xb * 16), (j * 4) + (ya * 2) + xb));
         }
       }
     }
   }
 
   /*!
+   * \brief \ref amx_full_tile_f32 for a tile of \p rows × \p cols (at most \ref amx_f32_side each): a whole tile and a
+   *        partial one in place (\ref amx_partial_tile), whatever column cuts it. Unlike `double`'s, a partial tile
+   *        through a copy (\ref through_edge) was slower for every cut (one M1 Pro core, products of order 24: 1.6 →
+   *        2.0–2.9 times the NEON tile's time; 56: 0.6–0.9 → 1.0; 120: 0.4 → 0.55).
+   */
+  inline void amx_tile_f32(std::size_t  kc,
+                           const float* ap,
+                           const float* bp,
+                           std::size_t  ldb,
+                           float*       c,
+                           std::size_t  ldc,
+                           std::size_t  rows,
+                           std::size_t  cols) noexcept
+  {
+    if (rows == amx_f32_side && cols == amx_f32_side) {
+      amx_full_tile_f32(kc, ap, bp, ldb, c, ldc);
+      return;
+    }
+    amx_partial_tile(kc, ap, bp, ldb, c, ldc, rows, cols);
+  }
+
+  /*!
    * \brief \ref amx_full_tile_f64 for a tile of \p rows × \p cols (at most \ref amx_mr × \ref amx_nr); the slivers
-   *        beyond it are zero. A whole tile is computed in place; a partial one in place too (\ref amx_partial_tile_f64)
+   *        beyond it are zero. A whole tile is computed in place; a partial one in place too (\ref amx_partial_tile)
    *        unless its last column cuts its second half row, then through a whole one whose outside is zero
    *        (\ref through_edge). A copy of the tile, written by the core and read by the AMX, then the other way, held
    *        each partial tile behind its lines' write-back to the L2 the AMX reads (M1 Pro, a product of order 48: 4.2
@@ -342,7 +463,7 @@ namespace numerical::detail {
                            std::size_t   cols) noexcept
   {
     if ((rows < amx_mr || cols < amx_nr) && (cols < 8 || cols % 8 == 0)) {
-      amx_partial_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
+      amx_partial_tile(kc, ap, bp, ldb, c, ldc, rows, cols);
       return;
     }
     through_edge<amx_mr, amx_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { amx_full_tile_f64(kc, ap, bp, ldb, tile, ld); });
@@ -434,6 +555,77 @@ namespace numerical::detail {
     }
   }
 
+  /*!
+   * \brief A's slivers for \ref amx_full_tile_f32 (\ref amx_f32_side rows each, stored column by column), as
+   *        \ref amx_pack_a does for `double`: from as many bytes as \ref amx_stream_least elements of `double`, the
+   *        whole slivers by non-temporal pair stores, so the AMX does not wait on A's lines dirty in the core's L1; a
+   *        smaller block's slivers, and a last partial one, by ordinary stores, the partial one padded with zeros.
+   */
+  inline void amx_pack_a_f32(const float* a,
+                             std::size_t  lda,
+                             std::size_t  rows,
+                             std::size_t  kc,
+                             float*       out) noexcept
+  {
+    using quad = float __attribute__((vector_size(16)));
+    constexpr std::size_t stream_least {amx_stream_least * (sizeof(double) / sizeof(float))};
+    // Four rows' four elements as four columns.
+    const auto transposed = [](const quad& r0, const quad& r1, const quad& r2, const quad& r3) noexcept {
+                              const quad low01  {__builtin_shufflevector(r0, r1, 0, 4, 1, 5)};
+                              const quad high01 {__builtin_shufflevector(r0, r1, 2, 6, 3, 7)};
+                              const quad low23  {__builtin_shufflevector(r2, r3, 0, 4, 1, 5)};
+                              const quad high23 {__builtin_shufflevector(r2, r3, 2, 6, 3, 7)};
+                              return std::array<quad, 4> {__builtin_shufflevector(low01, low23, 0, 1, 4, 5), __builtin_shufflevector(low01, low23, 2, 3, 6, 7),
+                                                          __builtin_shufflevector(high01, high23, 0, 1, 4, 5), __builtin_shufflevector(high01, high23, 2, 3, 6, 7)};
+                            };
+    // A column's eight rows, past the L1.
+    const auto store = [](const quad& upper, const quad& lower, float* at) noexcept {
+                         __asm__ volatile ("stnp %q0, %q1, [%2]" // NOLINT(hicpp-no-assembler): as amx_pack_a, eight elements at once
+                                           :
+                                           : "w" (upper), "w" (lower), "r" (at)
+                                           : "memory");
+                       };
+    std::size_t           ir           {0};
+    for (; rows * kc >= stream_least && ir + amx_f32_side <= rows; ir += amx_f32_side) {
+      float* const sliver {out + (ir * kc)};
+      std::size_t  p      {0};
+      for (; p + 4 <= kc; p += 4) { // four columns of eight rows a step: two blocks of 4 × 4 transposed
+        for (std::size_t i {0}; i < amx_f32_side; i += 8) {
+          std::array<quad, 8> row {};
+          for (std::size_t r {0}; r < 8; ++r) {
+            std::memcpy(&row.at(r), a + ((ir + i + r) * lda) + p, sizeof(quad));
+          }
+          const std::array<quad, 4> upper {transposed(row[0], row[1], row[2], row[3])};
+          const std::array<quad, 4> lower {transposed(row[4], row[5], row[6], row[7])};
+          float* const              at    {sliver + (p * amx_f32_side) + i};
+          store(upper[0], lower[0], at);
+          store(upper[1], lower[1], at + amx_f32_side);
+          store(upper[2], lower[2], at + (2 * amx_f32_side));
+          store(upper[3], lower[3], at + (3 * amx_f32_side));
+        }
+      }
+      for (; p < kc; ++p) {
+        for (std::size_t i {0}; i < amx_f32_side; i += 2) {
+          const float first  {a[((ir + i) * lda) + p]};
+          const float second {a[((ir + i + 1) * lda) + p]};
+          __asm__ volatile ("stnp %s0, %s1, [%2]" // NOLINT(hicpp-no-assembler): as amx_pack_a, a pair past the L1
+                            :
+                            : "w" (first), "w" (second), "r" (sliver + (p * amx_f32_side) + i)
+                            : "memory");
+        }
+      }
+    }
+    for (; ir < rows; ir += amx_f32_side) {
+      float* const      sliver {out + (ir * kc)};
+      const std::size_t height {std::min(amx_f32_side, rows - ir)};
+      for (std::size_t p {0}; p < kc; ++p) {
+        for (std::size_t i {0}; i < amx_f32_side; ++i) {
+          sliver[(p * amx_f32_side) + i] = i < height ? a[((ir + i) * lda) + p] : 0.0F;
+        }
+      }
+    }
+  }
+
   //! \brief Whether \p family (Apple's CPUFAMILY_ARM_* values) is one of the M1 to M4 families.
   [[nodiscard]] constexpr bool amx_family_known(std::uint32_t family) noexcept
   {
@@ -496,10 +688,46 @@ namespace numerical::detail {
     return got == want;
   }
 
+  //! \brief \ref amx_tile_f32 equals, to the bit, the same product by `std::fma` on `float` in ascending order of the
+  //!        depth: a full tile and a partial one, all four accumulators, signs and magnitudes mixed.
+  [[nodiscard]] inline bool amx_f32_self_test() noexcept
+  {
+    constexpr std::size_t                          depth {7};
+    constexpr std::size_t                          side  {amx_f32_side};
+    std::array<float, depth * side>                a     {};
+    std::array<float, depth * side>                b     {};
+    std::array<float, side * side>                 c     {};
+    std::array<float, side * side>                 want  {};
+    for (std::size_t i {0}; i < depth * side; ++i) {
+      a[i] = std::ldexp(static_cast<float>((i * 37) % 101) - 50.0F, -static_cast<int>(i % 9));
+      b[i] = 1.0F / static_cast<float>((i % 13) + 3);
+    }
+    for (std::size_t i {0}; i < side * side; ++i) {
+      c[i]    = static_cast<float>(i % 17) * 0.1F;
+      want[i] = c[i];
+    }
+    for (const std::size_t rows : {side, std::size_t {19}}) {
+      const std::size_t cols {rows == side ? side : std::size_t {11}};
+      for (std::size_t i {0}; i < rows; ++i) {
+        for (std::size_t j {0}; j < cols; ++j) {
+          for (std::size_t p {0}; p < depth; ++p) {
+            want[(i * side) + j] = std::fma(a[(p * side) + i], b[(p * side) + j], want[(i * side) + j]);
+          }
+        }
+      }
+      {
+        const amx_session on {};
+        amx_tile_f32(depth, a.data(), b.data(), side, c.data(), side, rows, cols);
+      }
+    }
+    return c == want;
+  }
+
   /*!
    * \brief A product through the AMX equals, to the bit, the same product by `std::fma` in ascending order of
-   *        the depth: a full tile and a partial one, every accumulator, signs and magnitudes mixed; and the
-   *        rows' dot products their lanes by `std::fma` (\ref amx_dot_self_test).
+   *        the depth: a full tile and a partial one, every accumulator, signs and magnitudes mixed, in `double`
+   *        and in `float` (\ref amx_f32_self_test); and the rows' dot products their lanes by `std::fma`
+   *        (\ref amx_dot_self_test).
    */
   [[nodiscard]] inline bool amx_self_test() noexcept
   {
@@ -532,8 +760,8 @@ namespace numerical::detail {
         amx_tile_f64(depth, a.data(), b.data(), amx_nr, c.data(), amx_nr, rows, cols);
       }
     }
-    const std::array<bool, 2> passed {c == want, amx_dot_self_test()};
-    return std::count(passed.begin(), passed.end(), true) == 2; // no branch on a check that only a fault fails
+    const std::array<bool, 3> passed {c == want, amx_f32_self_test(), amx_dot_self_test()};
+    return std::count(passed.begin(), passed.end(), true) == 3; // no branch on a check that only a fault fails
   }
 
   //! \brief Whether this system runs in a virtual machine, whose host decides what the guest's processor offers.

@@ -50,6 +50,7 @@ TEST(this_chip_is_known_and_its_amx_passes_the_self_test)
   // The local gate runs on an M-series Mac: the path it measures is the one users get.
   EXPECT(numerical::detail::amx_family_known(numerical::detail::cpu_family()));
   EXPECT(numerical::detail::amx_self_test());
+  EXPECT(numerical::detail::amx_f32_self_test());
   EXPECT(numerical::detail::amx_usable());
 }
 
@@ -103,6 +104,19 @@ namespace {
 // On the AMX path a double matrix of 2^15 to 2^18 elements is multiplied by a vector on the AMX, its lanes to the
 // bit, with rows and columns past a multiple of eight. Smaller, larger, rows longer than a dot chunk, or off the AMX
 // path, the NEON rows answer, within a rounding.
+// A float product runs on the AMX at a width of whole tiles, when wide with enough work, or tall and deep.
+TEST(a_float_product_runs_on_the_amx_where_its_tiles_pay)
+{
+  using numerical::detail::amx_suits_f32;
+  EXPECT(amx_suits_f32(16, 32, 16));   // whole tiles
+  EXPECT(amx_suits_f32(40, 60, 128));  // wide, enough work
+  EXPECT(!amx_suits_f32(40, 40, 40));  // wide, too little work
+  EXPECT(amx_suits_f32(128, 24, 64));  // tall and deep
+  EXPECT(!amx_suits_f32(128, 24, 16)); // tall, shallow
+  EXPECT(!amx_suits_f32(24, 24, 256)); // narrow
+  EXPECT(!amx_suits_f32(8, 8, 8));     // the AMX's own floor
+}
+
 TEST(matrix_times_vector_runs_on_the_amx_lanes_where_it_pays)
 {
   EXPECT(matvec_as_expected(203, 181, true));    // 36 743 elements, one block, tails of rows and columns
