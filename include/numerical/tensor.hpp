@@ -242,8 +242,8 @@ namespace numerical {
      * general engine's order, so no tolerance changes.
      */
     template <typename T>
-    [[nodiscard]] tensor<T> tile_gemm(const buffer<T>&         a,
-                                      const buffer<T>&         b,
+    [[nodiscard]] tensor<T> tile_gemm(const T*                 a,
+                                      const T*                 b,
                                       std::size_t              rows,
                                       std::size_t              inner,
                                       std::size_t              cols,
@@ -252,13 +252,48 @@ namespace numerical {
       buffer<T> c(rows * cols);          // the caller routes only an output of two elements or more here
       parallel_zero(c.data(), c.size()); // gemm adds to C
       if (inner != 0) {
-        gemm(rows, cols, inner, a.data(), inner, b.data(), cols, c.data(), cols);
+        gemm(rows, cols, inner, a, inner, b, cols, c.data(), cols);
       }
       return tensor<T> {std::move(out_shape), std::move(c)};
     }
 
     //! \brief The columns a thread takes of a vector times a matrix: each of its rows added to them in order.
     inline constexpr std::size_t vector_chunk {128};
+
+    /*!
+     * \brief The product of the row-major `rows × inner` \p a and `inner × cols` \p b, shaped \p out_shape: the
+     *        canonical two-operand contraction of \ref einsum_impl (a matrix times a vector, a vector times a
+     *        matrix, a matrix product, a dot product), on any storage that holds the operands contiguously.
+     */
+    template <typename T>
+    [[nodiscard]] tensor<T> canonical_product(const T*                 a,
+                                              const T*                 b,
+                                              std::size_t              rows,
+                                              std::size_t              inner,
+                                              std::size_t              cols,
+                                              std::vector<std::size_t> out_shape)
+    {
+      if (cols == 1 && rows > 1 && inner != 0) { // a matrix times a vector: each row's dot product, as "i,i->"
+        buffer<T> y(rows);
+        matrix_times_vector(a, rows, inner, b, y.data());
+        return tensor<T> {std::move(out_shape), std::move(y)};
+      }
+      if (rows == 1 && cols > 1 && inner != 0) { // a vector times a matrix: its rows scaled and added in order
+        buffer<T> y(cols, T {});
+        parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
+                       const std::size_t first {chunk * vector_chunk};
+                       const std::size_t count {std::min(vector_chunk, cols - first)};
+                       for (std::size_t k {0}; k < inner; ++k) {
+                         add_product(y.data() + first, a[k], b + (k * cols) + first, count);
+                       }
+                     });
+        return tensor<T> {std::move(out_shape), std::move(y)};
+      }
+      if (rows * cols != 1) { // the product, an empty one included; a single element is one dot product
+        return tile_gemm<T>(a, b, rows, inner, cols, std::move(out_shape));
+      }
+      return tensor<T> {std::move(out_shape), buffer<T> {chunked_dot(a, b, inner)}};
+    }
 
     /*!
      * \brief The elements of \p data, whose axes carry the labels \p from (extents in \p sizes), laid out row-major
@@ -864,31 +899,7 @@ namespace numerical {
             cols *= sizes.at(s1[k]);
             out_shape.push_back(sizes.at(s1[k]));
           }
-          if (cols == 1 && rows > 1 && inner != 0) { // a matrix times a vector: each row's dot product, as "i,i->"
-            const T* const matrix    {operands[0]->data().data()};
-            const T* const vector    {operands[1]->data().data()};
-            buffer<T>      y(rows);
-            matrix_times_vector(matrix, rows, inner, vector, y.data());
-            return tensor<T> {std::move(out_shape), std::move(y)};
-          }
-          if (rows == 1 && cols > 1 && inner != 0) { // a vector times a matrix: its rows scaled and added in order
-            const T* const vector    {operands[0]->data().data()};
-            const T* const matrix    {operands[1]->data().data()};
-            buffer<T>      y(cols, T {});
-            parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
-                           const std::size_t first {chunk * vector_chunk};
-                           const std::size_t count {std::min(vector_chunk, cols - first)};
-                           for (std::size_t k {0}; k < inner; ++k) {
-                             add_product(y.data() + first, vector[k], matrix + (k * cols) + first, count);
-                           }
-                         });
-            return tensor<T> {std::move(out_shape), std::move(y)};
-          }
-          if (rows * cols != 1) { // the product, an empty one included; a single element is one dot product
-            return tile_gemm<T>(operands[0]->data(), operands[1]->data(),
-                                rows, inner, cols, std::move(out_shape));
-          }
-          return tensor<T> {std::move(out_shape), buffer<T> {chunked_dot(operands[0]->data().data(), operands[1]->data().data(), inner)}};
+          return canonical_product<T>(operands[0]->data().data(), operands[1]->data().data(), rows, inner, cols, std::move(out_shape));
         }
       }
       if (operands.size() == 2) {

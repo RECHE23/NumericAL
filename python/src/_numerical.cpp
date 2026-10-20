@@ -37,6 +37,7 @@
 #include <new>
 #include <array>
 #include <optional>
+#include <type_traits>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -633,6 +634,10 @@ PyObject* module_einsum(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// The product of `a` and `b` read where they lie (a Tensor's elements, a NumPy array's), when both can be and it is a
+// plain one (defined below, beside NumPy's __array_struct__): nullopt otherwise, the caller then converting.
+std::optional<PyObject*> borrowed_product(PyObject* a, PyObject* b);
+
 // The Python `_matmul` (numerical/__init__.py), set once at import: every product Tensor._matmul does not take
 // itself (an operand to convert, a rank past 2, two dtypes) goes there, so its conversions and errors stay one.
 PyObject* matmul_fallback = nullptr;
@@ -679,6 +684,9 @@ PyObject* tensor_matmul(PyObject* self, PyObject* other)
                 return set_cpp_error();
             }
         }
+    }
+    else if (const std::optional<PyObject*> product {borrowed_product(self, other)}) { // a NumPy array, read in place
+        return *product;
     }
     if (matmul_fallback == nullptr) {
         PyErr_SetString(sciforge_module_error(), "Tensor._matmul: numerical/__init__.py set no fallback");
@@ -2446,6 +2454,130 @@ bool asarray_from_struct(PyObject* obj, std::optional<std::size_t> wanted, PyObj
     return true;
 }
 
+// NPY_ARRAY_C_CONTIGUOUS and NPY_ARRAY_ALIGNED: the elements row-major with no gaps, each at an address of its type's
+// alignment.
+constexpr int array_c_contiguous {0x1};
+constexpr int array_aligned {0x100};
+
+// An operand a product reads where it lies: a Tensor's elements, or a NumPy array's (through its __array_struct__) when
+// they are row-major, contiguous, aligned, in this machine's byte order and of one of the four dtypes. `owner` (a new
+// reference: the Tensor, or the capsule, which holds the array) keeps them alive.
+struct borrowed_operand
+{
+    PyObject*                owner {nullptr};
+    std::size_t              dtype {0}; // the any_tensor index of the elements' type
+    std::vector<std::size_t> shape;
+    const void*              data {nullptr};
+
+    borrowed_operand() = default;
+    borrowed_operand(const borrowed_operand&) = delete;
+    borrowed_operand& operator=(const borrowed_operand&) = delete;
+    ~borrowed_operand() { Py_XDECREF(owner); }
+};
+
+// Whether `obj` is read where it lies, into `out`; false (no error set) when it is not a Tensor or such an array.
+bool borrow_operand(PyObject* obj, borrowed_operand& out)
+{
+    if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
+        const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
+        if (v == nullptr) {
+            return false;
+        }
+        out.owner = Py_NewRef(obj);
+        out.dtype = v->index();
+        out.shape = shape_of(*v);
+        out.data  = data_of(*v);
+        return true;
+    }
+    PyObject* capsule = PyObject_GetAttrString(obj, "__array_struct__"); // new ref
+    if (capsule == nullptr) {
+        PyErr_Clear();
+        return false;
+    }
+    const auto* view {static_cast<const array_struct*>(PyCapsule_GetPointer(capsule, nullptr))};
+    constexpr int needed {array_c_contiguous | array_aligned | array_not_swapped};
+    const bool    usable {view != nullptr && view->two == 2 && view->data != nullptr && (view->flags & needed) == needed};
+    if (view == nullptr) {
+        PyErr_Clear();
+    }
+    const char kind {usable ? view->typekind : '\0'};
+    const int  size {usable ? view->itemsize : 0};
+    const int  dtype {kind == 'f' && size == 8 ? 0 : kind == 'c' && size == 16 ? 1 : kind == 'f' && size == 4 ? 2 : kind == 'c' && size == 8 ? 3 : -1};
+    if (dtype < 0) {
+        Py_DECREF(capsule);
+        return false;
+    }
+    out.owner = capsule;
+    out.dtype = static_cast<std::size_t>(dtype);
+    out.data  = view->data;
+    for (int axis = 0; axis < view->nd; ++axis) {
+        out.shape.push_back(static_cast<std::size_t>(view->shape[axis]));
+    }
+    return true;
+}
+
+std::optional<PyObject*> borrowed_product(PyObject* a, PyObject* b)
+{
+    borrowed_operand left;
+    borrowed_operand right;
+    if (!borrow_operand(a, left) || !borrow_operand(b, right) || left.dtype != right.dtype) {
+        return std::nullopt;
+    }
+    const std::size_t ranks[2] {left.shape.size(), right.shape.size()};
+    if (ranks[0] < 1 || ranks[0] > 2 || ranks[1] < 1 || ranks[1] > 2 || left.shape.back() != right.shape.front()) {
+        return std::nullopt; // the converting path computes it, or raises its own error
+    }
+    // As Tensor._matmul's einsum ("ij,jk->ik", "ij,j->i", "i,ij->j", "i,i->") routes a plain product.
+    const std::size_t        rows {ranks[0] == 2 ? left.shape[0] : 1};
+    const std::size_t        inner {left.shape.back()};
+    const std::size_t        cols {ranks[1] == 2 ? right.shape[1] : 1};
+    std::vector<std::size_t> out_shape;
+    if (ranks[0] == 2) {
+        out_shape.push_back(rows);
+    }
+    if (ranks[1] == 2) {
+        out_shape.push_back(cols);
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil((rows * inner) + (inner * cols))};
+            const auto product = [&]<typename T>(std::type_identity<T>) {
+                result.emplace(numerical::detail::canonical_product<T>(static_cast<const T*>(left.data), static_cast<const T*>(right.data),
+                                                                       rows, inner, cols, std::move(out_shape)));
+            };
+            switch (left.dtype) {
+            case 0: product(std::type_identity<double> {}); break;
+            case 1: product(std::type_identity<std::complex<double>> {}); break;
+            case 2: product(std::type_identity<float> {}); break;
+            default: product(std::type_identity<std::complex<float>> {}); break;
+            }
+        }
+        if (ranks[0] == 1 && ranks[1] == 1) { // two vectors give a number, as NumPy's
+            return std::visit([](const auto& t) { return from_scalar(t.data()[0]); }, *result);
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _borrowed_product(a, b) -> Tensor, number or NotImplemented: numerical.matmul's product of operands read where they
+// lie (borrowed_product), NotImplemented when they cannot be, the caller then converting them.
+PyObject* module_borrowed_product(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* a = nullptr;
+    PyObject* b = nullptr;
+    if (PyArg_ParseTuple(args, "OO", &a, &b) == 0) {
+        return nullptr;
+    }
+    if (const std::optional<PyObject*> product {borrowed_product(a, b)}) {
+        return *product;
+    }
+    Py_RETURN_NOTIMPLEMENTED;
+}
+
 // A Python float, int (bool included) or complex as a rank-0 tensor of the requested dtype, into `*result`;
 // false for anything else, with no error set.
 bool asarray_from_number(PyObject* obj, std::optional<std::size_t> wanted, PyObject** result)
@@ -2752,6 +2884,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("slogdet", module_slogdet, METH_VARARGS,
           "slogdet(a) -> (sign, logabsdet)\nThe sign and the natural log of |det(a)|, as numpy.linalg.slogdet; it\n"
           "does not underflow or overflow where determinant(a) does.");
+    m.raw("_borrowed_product", module_borrowed_product, METH_VARARGS,
+          "_borrowed_product(a, b) -> Tensor, number or NotImplemented\nThe product of two operands read where they lie.");
     m.raw("_set_matmul_fallback", module_set_matmul_fallback, METH_O,
           "_set_matmul_fallback(f)\nThe Python product Tensor._matmul hands every case it does not take.");
     m.raw("einsum", module_einsum, METH_VARARGS,

@@ -18,6 +18,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   stricter resolution of six references the headers now meet).
 
 ### Changed
+- **`matmul` and `@` read NumPy arrays where they lie**, with no copy into a Tensor, when each is row-major, contiguous,
+  aligned, in native byte order and of one of the four dtypes, both of one dtype, a vector or a matrix: the same
+  kernels and bits as the product of two Tensors. M1 Pro, from NumPy arrays: a matrix of order 512 times a vector
+  231 → 18 µs (NumPy 14), order 64 7.2 → 0.9 µs; a matrix product of order 1024 at NumPy's time.
 - `numerical.matmul(a, b)` goes through the same native method as `a @ b`, where it ran the Python fallback for
   every call: two tensors of order 8 2.3 → 0.5 µs.
 - **The NaN and infinity check before a decomposition runs on vectors** under GCC and Clang (eight values a step), where
