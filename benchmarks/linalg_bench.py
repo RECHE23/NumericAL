@@ -8,7 +8,8 @@ result). Every figure is the median of `--reps` calls after a warm-up (a third o
 512), and the table takes the median over `--rounds` processes per library, so one noisy process does not decide
 it.
 
-Run from the repository root: make bench-linalg (SIZES=64,128,256,512,1024 ROUNDS=3 by default).
+Run from the repository root: make bench-linalg (SIZES=64,128,256,512,1024 ROUNDS=3 by default; NUMPY_INPUTS=1 calls
+NumericAL on the NumPy arrays, as a NumPy user does, where it takes Tensors converted beforehand by default).
 """
 import argparse
 import json
@@ -46,6 +47,15 @@ def calls(library, np, data):
                 "inverse_stack": lambda: la.inv(stack)}
     import numerical as nl
 
+    if os.environ.get("NUMERICAL_BENCH_NUMPY_INPUTS"):
+        # NumericAL called on the NumPy arrays themselves, as a NumPy user calls it: each conversion is timed.
+        a, spd, sym, b, tall, rhs, v, a32, stack = (data[k] for k in ("a", "spd", "sym", "b", "tall", "rhs", "v", "a32", "stack"))
+        return {"matmul": lambda: nl.matmul(a, a), "matvec": lambda: nl.matmul(a, v), "transpose": lambda: nl.asarray(a).T,
+                "solve": lambda: nl.solve(a, b), "inverse": lambda: nl.inverse(a), "cholesky": lambda: nl.cholesky(spd),
+                "qr": lambda: nl.qr(a), "eigh": lambda: nl.eigh(sym), "svd": lambda: nl.svd(a, full_matrices=False),
+                "lstsq": lambda: nl.lstsq(tall, rhs), "eig": lambda: nl.eig(a), "eigvalsh": lambda: nl.eigvalsh(sym),
+                "slogdet": lambda: nl.slogdet(a), "svdvals": lambda: nl.svdvals(a), "cond": lambda: nl.cond(a),
+                "matmul32": lambda: nl.matmul(a32, a32), "inverse_stack": lambda: nl.inverse(stack)}
     a, spd, sym, b, tall, rhs, v, a32, stack = (nl.asarray(data[k]) for k in ("a", "spd", "sym", "b", "tall", "rhs", "v", "a32", "stack"))
     return {"matmul": lambda: a @ a, "matvec": lambda: a @ v, "transpose": lambda: a.T, "solve": lambda: nl.solve(a, b), "inverse": lambda: nl.inverse(a),
             "cholesky": lambda: nl.cholesky(spd), "qr": lambda: nl.qr(a), "eigh": lambda: nl.eigh(sym),
@@ -167,6 +177,8 @@ def main():
     parser.add_argument("--rounds", type=int, default=3)
     parser.add_argument("--threads", type=int, help="the threads of both libraries (NumPy's BLAS, NumericAL's pool): "
                         "on a host with hyperthreads or other users, one per core, run under taskset")
+    parser.add_argument("--numpy-inputs", action="store_true", help="call NumericAL on the NumPy arrays, each conversion "
+                        "timed, where it takes Tensors converted beforehand by default")
     parser.add_argument("--json", help="write the figures here too")
     parser.add_argument("--worker", choices=("numpy", "numerical"), help=argparse.SUPPRESS)
     args = parser.parse_args()
@@ -185,13 +197,16 @@ def main():
                 env["OPENBLAS_NUM_THREADS"] = str(args.threads)
             if args.threads:
                 env["NUMERICAL_BENCH_THREADS"] = str(args.threads)
+            if args.numpy_inputs:
+                env["NUMERICAL_BENCH_NUMPY_INPUTS"] = "1"
             out = subprocess.run([sys.executable, __file__, "--worker", library, "--sizes", args.sizes, "--operations",
                                   args.operations, "--reps", str(args.reps)], env=env, capture_output=True, text=True,
                                  check=True).stdout
             rounds[library].append(json.loads(out))
     info = machine()
     print(f"{info['cpu']}, {args.threads or info['cores']} threads; NumPy {info['numpy']} ({info['blas']}); Python {info['python']}; "
-          f"NumericAL {info['commit']}; {info['date']}. Median of {args.rounds} processes per library; "
+          f"NumericAL {info['commit']}, {'on the NumPy arrays' if args.numpy_inputs else 'on Tensors converted beforehand'}; "
+          f"{info['date']}. Median of {args.rounds} processes per library; "
           "ratio = NumericAL / NumPy (below 1: NumericAL faster).\n")
     print("| operation | " + " | ".join(f"n = {n}" for n in sizes) + " |")
     print("| --- | " + " | ".join("---:" for _ in sizes) + " |")

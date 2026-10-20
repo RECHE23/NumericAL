@@ -266,7 +266,7 @@ SIZES  ?= 64,128,256,512,1024
 ROUNDS ?= 3
 
 bench-linalg: python
-	$(PYRUN) benchmarks/linalg_bench.py --sizes $(SIZES) --rounds $(ROUNDS) \
+	$(PYRUN) benchmarks/linalg_bench.py --sizes $(SIZES) --rounds $(ROUNDS) $(if $(NUMPY_INPUTS),--numpy-inputs) \
 	    --json $(BUILD)/bench-linalg.json
 
 # Standalone C++ GEMM micro-benchmark: the shipping operator* against a naive
