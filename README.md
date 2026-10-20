@@ -345,7 +345,7 @@ the conditioning, and a wrong update or deflation misses it by orders of magnitu
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+MIT — see [LICENSE](LICENSE). Several algorithms follow LAPACK's routines closely; its BSD license, which their redistribution carries, is in [NOTICE](NOTICE).
 
 ## Author
 

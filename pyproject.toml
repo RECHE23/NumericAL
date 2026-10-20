@@ -13,7 +13,7 @@ description = "NumericAL — a generic, header-only numerical library: tensors, 
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
-license-files = ["LICENSE"]
+license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "René Chenard", email = "rene.chenard.1@ulaval.ca" }]
 keywords = ["tensor", "einsum", "linear-algebra", "numerical", "blas", "lapack", "gemm", "eigenvalues", "svd", "dlpack", "array-interface"]
 classifiers = [

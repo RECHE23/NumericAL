@@ -5,6 +5,6 @@ graft include
 recursive-include python/src *.cpp
 include python/numerical/py.typed python/numerical/__init__.pyi python/numerical/_numerical.pyi
 recursive-include python/tests *.py
-include README.md LICENSE CHANGELOG.md
+include README.md LICENSE NOTICE CHANGELOG.md
 global-exclude *.so *.pyd *.pyc
 prune python/tests/__pycache__

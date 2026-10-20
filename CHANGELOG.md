@@ -9,6 +9,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Development
+- `NOTICE` credits LAPACK, whose routines several algorithms follow closely, with its BSD license; the wheels and the
+  sdist carry it beside `LICENSE`.
 - `make bench-linalg` times `eig`, `eigvalsh`, `slogdet`, `svdvals`, `cond`, a `float32` product and a stack of inverses
   too, each answer checked before it is timed.
 - **The API reference is published** at <https://reche23.github.io/NumericAL/> (`docs.yml`: Doxygen on every push to
