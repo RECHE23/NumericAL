@@ -257,7 +257,8 @@ tuple of numbers and a plain number (rank 0): a float32, complex64 or complex128
 float64 (complex128 for a complex list or number), or into the `dtype` asked; a complex input is never cast to a
 real dtype. `matmul` and `@` read a NumPy array where it lies, with no copy, when it is row-major, contiguous, aligned,
 in this machine's byte order and of one of the four dtypes, the other operand of the same dtype (a product of
-order 512 by a vector: 231 → 18 µs); any other array is copied first, with the same answer.
+order 512 by a vector: 231 → 18 µs); `solve`, `det`, `slogdet` and `inv` read a square float64 or complex128 array so
+too, into the one copy their factorisation takes. Any other array is copied first, with the same answer.
 
 Compiled with GCC, the headers want `-ffp-contract=on` (Clang's default; the wheels and the sdist set it): GCC's own
 default, `fast`, fuses multiply-adds across statements as its passes find them, so a loop's vectorised and scalar

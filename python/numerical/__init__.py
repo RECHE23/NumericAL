@@ -436,20 +436,30 @@ def einsum(subscripts, /, *operands):
     return _einsum(subscripts, *operands)
 
 
+def _borrowed(name, convert, *operands):
+    """`name` of a NumPy array read where it lies, its one copy the one the factorisation takes (where the converted
+    Tensor was a copy before it), else `convert`'s path for anything else: the same answer either way."""
+    try:
+        result = _numerical._borrowed_linalg(name, *operands)
+    except error as caught:
+        raise LinAlgError(*caught.args) from None
+    return convert(*operands) if result is NotImplemented else result
+
+
 def solve(a, b, /):
-    return _solve(a, b)
+    return _borrowed("solve", _solve, a, b)
 
 
 def determinant(a, /):
-    return _determinant(a)
+    return _borrowed("determinant", _determinant, a)
 
 
 def slogdet(a, /):
-    return _slogdet(a)
+    return _borrowed("slogdet", _slogdet, a)
 
 
 def inverse(a, /):
-    return _inverse(a)
+    return _borrowed("inverse", _inverse, a)
 
 
 for _public, _native in ((einsum, _numerical.einsum), (solve, _numerical.solve), (determinant, _numerical.determinant),

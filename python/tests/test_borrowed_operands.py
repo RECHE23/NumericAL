@@ -62,6 +62,54 @@ class BorrowedOperands(unittest.TestCase):
         b[...] = 0.0
         self.assertTrue(np.array_equal(np.asarray(product), before))
 
+    def same(self, got, want):
+        if isinstance(want, tuple):
+            self.assertEqual(len(got), len(want))
+            for g, w in zip(got, want):
+                self.same(g, w)
+        elif isinstance(want, numerical.Tensor):
+            self.assert_same(got, want)
+        else:
+            self.assertIs(type(got), type(want))
+            self.assertEqual(got, want)
+
+    def test_solve_det_slogdet_and_inverse_give_the_tensors_answers(self):
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            for n in (1, 2, 7, 64):
+                a = self.operand((n, n), dtype)
+                with self.subTest(dtype=np.dtype(dtype).name, n=n):
+                    tensor = numerical.asarray(a)
+                    for f in (numerical.det, numerical.slogdet, numerical.inv):
+                        self.same(f(a), f(tensor))
+                    for rhs in ((n,), (n, 3)):
+                        b = self.operand(rhs, dtype)
+                        self.same(numerical.solve(a, b), numerical.solve(tensor, numerical.asarray(b)))
+                        self.same(numerical.solve(a, numerical.asarray(b)), numerical.solve(tensor, numerical.asarray(b)))
+
+    def test_decompositions_of_unreadable_or_wrong_operands_answer_as_the_tensors(self):
+        def failure(f, *args):
+            try:
+                f(*args)
+            except numerical.LinAlgError as caught:
+                return str(caught)
+            return None
+
+        a = self.operand((5, 5), np.float64)
+        singular, holed = np.ones((4, 4)), np.eye(3)
+        holed[1, 1] = np.nan
+        for f, args in ((numerical.inv, (singular,)), (numerical.det, (holed,)), (numerical.slogdet, (holed,)),
+                        (numerical.inv, (np.ones((3, 4)),)), (numerical.solve, (a, np.ones(4))),
+                        (numerical.solve, (singular, np.ones(4)))):
+            with self.subTest(function=f.__name__, shape=args[0].shape):
+                want = failure(f, *(numerical.asarray(x) for x in args))
+                self.assertIsNotNone(want)
+                self.assertEqual(failure(f, *args), want)
+        strided = np.eye(6)[::2, ::2] * 2
+        np.testing.assert_allclose(np.asarray(numerical.inv(strided)), np.eye(3) / 2)
+        self.assertEqual(numerical.inv(np.stack([np.eye(3)] * 2)).shape, (2, 3, 3))
+        stacked = self.operand((2, 5, 3), np.float64)  # a stack of right-hand sides, broadcast against one matrix
+        self.same(numerical.solve(a, stacked), numerical.solve(numerical.asarray(a), numerical.asarray(stacked)))
+
 
 if __name__ == "__main__":
     unittest.main()

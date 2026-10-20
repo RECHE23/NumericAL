@@ -22,6 +22,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   aligned, in native byte order and of one of the four dtypes, both of one dtype, a vector or a matrix: the same
   kernels and bits as the product of two Tensors. M1 Pro, from NumPy arrays: a matrix of order 512 times a vector
   231 → 18 µs (NumPy 14), order 64 7.2 → 0.9 µs; a matrix product of order 1024 at NumPy's time.
+- **`solve`, `det`, `slogdet` and `inv` read a square float64 or complex128 NumPy array where it lies**: its one copy is
+  the one the factorisation takes in place, where the converted Tensor was a copy before it; the same answers and
+  errors. From NumPy arrays of order 1024: `solve` 9.07 → 6.82 ms, `slogdet` 7.66 → 6.90 ms (NumPy 7.4), `inv`
+  15.6 → 14.2 ms.
 - `numerical.matmul(a, b)` goes through the same native method as `a @ b`, where it ran the Python fallback for
   every call: two tensors of order 8 2.3 → 0.5 µs.
 - **The NaN and infinity check before a decomposition runs on vectors** under GCC and Clang (eight values a step), where

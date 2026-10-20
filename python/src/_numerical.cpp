@@ -711,12 +711,19 @@ any_tensor matmul_nd(const any_tensor& a, const any_tensor& b)
 // --- the linear-algebra functions (m.def: any_tensor in/out through caster<any_tensor>) ---
 // Validation failures throw -> numerical.error; the variant dispatch (is_complex / std::get)
 // stays here in the consumer (the substrate grows no variant machinery).
+// The rows × cols matrix of the row-major elements at `data`, copied on threads (its pages faulted in there).
+template <typename T>
+numerical::matrix<T> matrix_of_elements(const T* data, std::size_t rows, std::size_t cols)
+{
+    numerical::buffer<T> values(rows * cols);
+    numerical::detail::parallel_copy(data, rows * cols, values.data());
+    return numerical::matrix<T> {rows, cols, std::move(values)};
+}
+
 template <typename T>
 numerical::matrix<T> matrix_from(const numerical::tensor<T>& t)
 {
-    numerical::buffer<T> values(t.size());
-    numerical::detail::parallel_copy(t.data().data(), t.size(), values.data()); // its pages faulted in on threads
-    return numerical::matrix<T> {t.shape()[0], t.shape()[1], std::move(values)};
+    return matrix_of_elements(t.data().data(), t.shape()[0], t.shape()[1]);
 }
 
 // A tensor's elements in another scalar type, converted one by one.
@@ -919,13 +926,20 @@ any_tensor solve_for(const numerical::tensor<T>& b, VectorSolver by_vector, Matr
     return any_tensor {numerical::tensor<T> {{answer.size()}, numerical::buffer<T>(answer.begin(), answer.end())}};
 }
 
+// A solved for b, `a` the copy of A the factorisation takes in place.
+template <typename T>
+any_tensor solve_copied(numerical::matrix<T> a, const numerical::tensor<T>& b)
+{
+    const numerical::lu_decomposition<T> factored {std::move(a)};
+    return solve_for(b, [&factored](const numerical::vector<T>& rhs) { return factored.solve(rhs); },
+                     [&factored](const numerical::matrix<T>& rhs) { return factored.solve(rhs); });
+}
+
 template <typename T>
 any_tensor do_solve(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
     const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
-    const numerical::lu_decomposition<T> factored {matrix_from(a)}; // the copy of a factorised in place
-    return solve_for(b, [&factored](const numerical::vector<T>& rhs) { return factored.solve(rhs); },
-                     [&factored](const numerical::matrix<T>& rhs) { return factored.solve(rhs); });
+    return solve_copied(matrix_from(a), b);
 }
 
 // The leading axes two stacks' answers take: `x` and `y` right-aligned, an axis of 1 (or a missing one) taking the
@@ -2578,6 +2592,102 @@ PyObject* module_borrowed_product(PyObject* /*self*/, PyObject* args)
     Py_RETURN_NOTIMPLEMENTED;
 }
 
+// The elements of a borrowed operand of `T` (borrow_operand's dtype index 0 or 1) as an owned tensor: asarray's copy.
+template <typename T>
+numerical::tensor<T> owned_copy(const borrowed_operand& operand)
+{
+    std::size_t count {1};
+    for (const std::size_t extent : operand.shape) {
+        count *= extent;
+    }
+    const T* const       first {static_cast<const T*>(operand.data)};
+    numerical::buffer<T> values(first, first + count);
+    return numerical::tensor<T> {operand.shape, std::move(values)};
+}
+
+// _borrowed_linalg(name, a[, b]) -> the answer, or NotImplemented: solve, determinant, slogdet or inverse of a square
+// float64 or complex128 NumPy array read where it lies (borrow_operand), its one copy the one the factorisation takes
+// in place, where asarray's Tensor was a copy before it; b, if any, of the same dtype and rank 1 or 2 (a NumPy array
+// copied, or a Tensor; its rows are the solve's to check). NotImplemented for anything else (a Tensor, a stack, single
+// precision, a shape the converting path rejects), the caller then converting: each answer is the converting
+// path's, from the same values, and so is each error.
+PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
+{
+    const char* name = nullptr;
+    PyObject*   a    = nullptr;
+    PyObject*   b    = nullptr;
+    if (PyArg_ParseTuple(args, "sO|O", &name, &a, &b) == 0) {
+        return nullptr;
+    }
+    const std::string operation {name};
+    borrowed_operand  left;
+    const bool        tensor {PyObject_TypeCheck(a, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0};
+    if (tensor || !borrow_operand(a, left) || left.dtype > 1 || left.shape.size() != 2 || left.shape[0] != left.shape[1]
+        || left.shape[0] == 0 || (operation == "solve") != (b != nullptr)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    const std::size_t n {left.shape[0]};
+    borrowed_operand  right;
+    if (b != nullptr && (!borrow_operand(b, right) || right.dtype != left.dtype || right.shape.empty() || right.shape.size() > 2)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    const auto run = [&]<typename T>(std::type_identity<T>) -> PyObject* {
+        std::optional<numerical::tensor<T>> rhs;
+        if (b != nullptr) {
+            const bool rhs_tensor {PyObject_TypeCheck(b, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0};
+            if (rhs_tensor) {
+                rhs.emplace(std::get<numerical::tensor<T>>(*reinterpret_cast<sb::wrapper<any_tensor>*>(b)->held));
+            }
+            else {
+                rhs.emplace(owned_copy<T>(right));
+            }
+        }
+        if (operation == "solve") {
+            std::optional<any_tensor> x;
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(n * n)};
+                x.emplace(solve_copied(matrix_of_elements(static_cast<const T*>(left.data), n, n), *rhs));
+            }
+            return wrap(std::move(*x));
+        }
+        if (operation == "inverse") {
+            std::optional<numerical::tensor<T>> inverse;
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(n * n)};
+                inverse.emplace(numerical::inverse(matrix_of_elements(static_cast<const T*>(left.data), n, n)));
+            }
+            return wrap(any_tensor {std::move(*inverse)});
+        }
+        if (operation == "determinant") {
+            std::optional<T> value;
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(n * n)};
+                value.emplace(numerical::determinant(matrix_of_elements(static_cast<const T*>(left.data), n, n)));
+            }
+            return from_scalar(*value);
+        }
+        if (operation == "slogdet") {
+            std::optional<std::pair<T, double>> value;
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(n * n)};
+                value.emplace(numerical::lu_decomposition<T> {matrix_of_elements(static_cast<const T*>(left.data), n, n)}.log_determinant());
+            }
+            PyObject* sign {from_scalar(value->first)}; // new ref
+            if (sign == nullptr) {
+                return nullptr;
+            }
+            return Py_BuildValue("(Nd)", sign, value->second);
+        }
+        Py_RETURN_NOTIMPLEMENTED;
+    };
+    try {
+        return left.dtype == 0 ? run(std::type_identity<double> {}) : run(std::type_identity<std::complex<double>> {});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // A Python float, int (bool included) or complex as a rank-0 tensor of the requested dtype, into `*result`;
 // false for anything else, with no error set.
 bool asarray_from_number(PyObject* obj, std::optional<std::size_t> wanted, PyObject** result)
@@ -2884,6 +2994,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("slogdet", module_slogdet, METH_VARARGS,
           "slogdet(a) -> (sign, logabsdet)\nThe sign and the natural log of |det(a)|, as numpy.linalg.slogdet; it\n"
           "does not underflow or overflow where determinant(a) does.");
+    m.raw("_borrowed_linalg", module_borrowed_linalg, METH_VARARGS,
+          "_borrowed_linalg(name, a, b=None) -> the answer or NotImplemented\nsolve, determinant, slogdet or inverse of "
+          "a NumPy array read where it lies.");
     m.raw("_borrowed_product", module_borrowed_product, METH_VARARGS,
           "_borrowed_product(a, b) -> Tensor, number or NotImplemented\nThe product of two operands read where they lie.");
     m.raw("_set_matmul_fallback", module_set_matmul_fallback, METH_O,
