@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **A `float32` product runs on the AVX2 and AVX-512 tiles on x86-64**, where it ran on the portable path (the wheels'
+  baseline SSE2, no fused multiply-add): tiles of 6 × 16 and 12 × 32 with each term fused in ascending order, and the
+  plain loop of small and narrow `float32` products fused too, so that an element is the same whatever the shape of
+  its product. Six x86-64 AVX2 cores: order 1024 17 → 4.0 ms, `matmul` of `float32` arrays from 3.7–4.9 to
+  1.12–1.23 times OpenBLAS's time; one core 24 → 106 GFLOP/s. Their last bits change on those paths (fused now).
+
 ## 2026.10.26 — 2026-10-20
 
 ### Development

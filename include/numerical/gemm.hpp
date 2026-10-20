@@ -1078,16 +1078,16 @@ namespace numerical::detail {
 #ifdef NUMERICAL_X86_COMPILED
   //! \brief \ref narrow_block's \c term_rounding::x86_fused block, built for AVX2 with FMA: there `std::fma` is the
   //!        instruction (in code built for any x86-64, a call), the block's sums as narrow_block keeps them.
-  template <std::size_t R, std::size_t N>
-  NUMERICAL_OUT_OF_LINE NUMERICAL_TARGET("avx2,fma") void narrow_block_x86(std::size_t   k,
-                                                                           const double* a,
-                                                                           std::size_t   lda,
-                                                                           const double* b,
-                                                                           std::size_t   ldb,
-                                                                           double*       c,
-                                                                           std::size_t   ldc) noexcept
+  template <std::size_t R, std::size_t N, typename T>
+  NUMERICAL_OUT_OF_LINE NUMERICAL_TARGET("avx2,fma") void narrow_block_x86(std::size_t k,
+                                                                           const T*    a,
+                                                                           std::size_t lda,
+                                                                           const T*    b,
+                                                                           std::size_t ldb,
+                                                                           T*          c,
+                                                                           std::size_t ldc) noexcept
   {
-    std::array<double, R * N> sums {};
+    std::array<T, R * N> sums {};
     NUMERICAL_UNROLL_BLOCK
     for (std::size_t e {0}; e < R * N; ++e) {
       sums[e] = c[((e / N) * ldc) + (e % N)];
@@ -1095,7 +1095,7 @@ namespace numerical::detail {
     for (std::size_t p {0}; p < k; ++p) {
       NUMERICAL_UNROLL_BLOCK
       for (std::size_t r {0}; r < R; ++r) {
-        const double ap {a[(r * lda) + p]};
+        const T ap {a[(r * lda) + p]};
         NUMERICAL_UNROLL_BLOCK
         for (std::size_t j {0}; j < N; ++j) {
           sums[(r * N) + j] = std::fma(ap, b[(p * ldb) + j], sums[(r * N) + j]);
@@ -1109,15 +1109,16 @@ namespace numerical::detail {
   }
 
   //! \brief The plain loop's row of \ref gemm_rows in \c term_rounding::x86_fused, built for AVX2 with FMA.
-  NUMERICAL_TARGET("avx2,fma") inline void plain_row_x86(std::size_t   n,
-                                                         std::size_t   k,
-                                                         const double* a,
-                                                         const double* b,
-                                                         std::size_t   ldb,
-                                                         double*       c) noexcept
+  template <typename T>
+  NUMERICAL_TARGET("avx2,fma") void plain_row_x86(std::size_t n,
+                                                  std::size_t k,
+                                                  const T*    a,
+                                                  const T*    b,
+                                                  std::size_t ldb,
+                                                  T*          c) noexcept
   {
     for (std::size_t p {0}; p < k; ++p) {
-      const double ap {a[p]};
+      const T ap {a[p]};
       for (std::size_t j {0}; j < n; ++j) {
         c[j] = std::fma(ap, b[(p * ldb) + j], c[j]);
       }
@@ -1283,7 +1284,7 @@ namespace numerical::detail {
                  std::size_t ldc)
   {
 #ifdef NUMERICAL_X86_COMPILED
-    if constexpr (std::is_same_v<T, double>) {
+    if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
       const gemm_path path {gemm_path_current()};
       if (path == gemm_path::avx512 || path == gemm_path::avx2) {
         gemm_rows_rounded<term_rounding::x86_fused>(m, n, k, a, lda, b, ldb, c, ldc);
@@ -1749,6 +1750,91 @@ namespace numerical::detail {
       avx2_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
     }
   };
+  //! \brief \ref avx512_tile_kernel for `float` (\ref avx512_tile_f32).
+  struct avx512_tile_kernel_f32
+  {
+    static constexpr std::size_t mr           {avx512_mr};
+    static constexpr std::size_t nr           {avx512_nr_f32};
+    static constexpr std::size_t depth        {gemm_kc};
+    static constexpr std::size_t block_rows   {96};
+    static constexpr std::size_t speedup      {gemm_kernel_speedup / 4};
+    static constexpr std::size_t serial_below {1};
+
+    struct session
+    {};
+
+    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    {
+      return false;
+    }
+
+    static void pack_a(const float* a,
+                       std::size_t  lda,
+                       std::size_t  rows,
+                       std::size_t  kc,
+                       float*       out)
+    {
+      gemm_pack_a<mr>(a, lda, rows, kc, out);
+    }
+
+    static void tile(std::size_t  kc,
+                     const float* ap,
+                     const float* bp,
+                     std::size_t  ldb,
+                     float*       c,
+                     std::size_t  ldc,
+                     std::size_t  rows,
+                     std::size_t  cols) noexcept
+    {
+      avx512_tile_f32(kc, ap, bp, ldb, c, ldc, rows, cols);
+    }
+  };
+
+  //! \brief \ref avx2_tile_kernel for `float` (\ref avx2_tile_f32).
+  struct avx2_tile_kernel_f32
+  {
+    static constexpr std::size_t mr           {avx2_mr};
+    static constexpr std::size_t nr           {avx2_nr_f32};
+    static constexpr std::size_t depth        {gemm_kc};
+    static constexpr std::size_t block_rows   {72};
+    static constexpr std::size_t speedup      {gemm_kernel_speedup / 4};
+    static constexpr std::size_t serial_below {1};
+
+    [[nodiscard]] static constexpr std::size_t task_rows_for(std::size_t kc) noexcept
+    {
+      return kc <= 128 ? 36 : block_rows;
+    }
+
+    struct session
+    {};
+
+    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    {
+      return false;
+    }
+
+    static void pack_a(const float* a,
+                       std::size_t  lda,
+                       std::size_t  rows,
+                       std::size_t  kc,
+                       float*       out)
+    {
+      gemm_pack_a<mr>(a, lda, rows, kc, out);
+    }
+
+    static void tile(std::size_t  kc,
+                     const float* ap,
+                     const float* bp,
+                     std::size_t  ldb,
+                     float*       c,
+                     std::size_t  ldc,
+                     std::size_t  rows,
+                     std::size_t  cols) noexcept
+    {
+      avx2_tile_f32(kc, ap, bp, ldb, c, ldc, rows, cols);
+    }
+  };
+
   //! \brief The AVX-512 complex tile (\ref avx512_full_tile_c64).
   struct avx512_complex_tile_kernel
   {
@@ -1976,6 +2062,17 @@ namespace numerical::detail {
 #  endif
     if (path == gemm_path::neon || path == gemm_path::amx) {
       gemm_packed<neon_tile_kernel<float>>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+#endif
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path x86_path {gemm_path_current()};
+    if (x86_path == gemm_path::avx512) {
+      gemm_packed<avx512_tile_kernel_f32>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+    if (x86_path == gemm_path::avx2) {
+      gemm_packed<avx2_tile_kernel_f32>(m, n, k, a, lda, b, ldb, c, ldc);
       return true;
     }
 #endif

@@ -33,8 +33,8 @@ namespace {
 
   // The definition the kernel must reproduce: C starts at zero and adds a(i,p)·b(p,j) for p ascending, each
   // product rounded before its sum, or fused with it where the product runs on a fused path (NEON, AVX2, AVX-512 or
-  // the AMX: a double product, or a float one on arm64's), small or packed alike: the plain loop rounds each term as
-  // the tile of the path does, so an element is the same whatever the shape of the product.
+  // the AMX, double and float alike), small or packed alike: the plain loop rounds each term as the tile of the path
+  // does, so an element is the same whatever the shape of the product.
   template <typename T>
   std::vector<T> reference(std::size_t           m,
                            std::size_t           n,
@@ -42,7 +42,7 @@ namespace {
                            const std::vector<T>& a,
                            const std::vector<T>& b)
   {
-    const bool     fused      {(std::is_same_v<T, double> || (std::is_same_v<T, float> && numerical::detail::neon_compiled))
+    const bool     fused      {(std::is_same_v<T, double> || std::is_same_v<T, float>)
                                && numerical::gemm_path_in_use() != numerical::gemm_path::portable};
     std::vector<T> c(m * n, T {});
     for (std::size_t i {0}; i < m; ++i) {

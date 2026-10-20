@@ -239,6 +239,118 @@ namespace numerical::detail {
     through_edge<avx2_mr, avx2_nr>(c, ldc, rows, cols, [&](double* tile, std::size_t ld) noexcept { avx2_full_tile_f64(kc, ap, bp, ldb, tile, ld); });
   }
 
+  //! \brief A 512-bit register of `float` as an element of `std::array`.
+  struct zmm_register_f32
+  {
+    __m512 v; //!< The register.
+  };
+
+  //! \brief A 256-bit register of `float` as an element of `std::array`.
+  struct ymm_register_f32
+  {
+    __m256 v; //!< The register.
+  };
+
+  //! \brief The columns of C one AVX-512 `float` tile covers: two registers of sixteen `float`.
+  inline constexpr std::size_t avx512_nr_f32 {32};
+
+  //! \brief The columns of C one AVX2 `float` tile covers: two registers of eight `float`.
+  inline constexpr std::size_t avx2_nr_f32 {16};
+
+  //! \brief \ref avx512_full_tile_f64 for `float`: \ref avx512_mr × \ref avx512_nr_f32, 24 accumulators of sixteen.
+  NUMERICAL_TARGET("avx512f") inline void avx512_full_tile_f32(std::size_t  kc,
+                                                               const float* ap,
+                                                               const float* bp,
+                                                               std::size_t  ldb,
+                                                               float*       tile,
+                                                               std::size_t  ld) noexcept
+  {
+    std::array<zmm_register_f32, avx512_mr * 2> acc {};
+    NUMERICAL_UNROLL_TILE
+    for (std::size_t i {0}; i < avx512_mr; ++i) {
+      acc[2 * i].v       = _mm512_loadu_ps(tile + (i * ld));
+      acc[(2 * i) + 1].v = _mm512_loadu_ps(tile + (i * ld) + 16);
+    }
+    NUMERICAL_UNROLL_DEPTH
+    for (std::size_t p {0}; p < kc; ++p) {
+      const __m512 b0 {_mm512_loadu_ps(bp + (p * ldb))};
+      const __m512 b1 {_mm512_loadu_ps(bp + (p * ldb) + 16)};
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t i {0}; i < avx512_mr; ++i) {
+        const __m512 a {_mm512_set1_ps(ap[(p * avx512_mr) + i])};
+        acc[2 * i].v       = _mm512_fmadd_ps(a, b0, acc[2 * i].v);
+        acc[(2 * i) + 1].v = _mm512_fmadd_ps(a, b1, acc[(2 * i) + 1].v);
+      }
+    }
+    NUMERICAL_UNROLL_TILE
+    for (std::size_t i {0}; i < avx512_mr; ++i) {
+      _mm512_storeu_ps(tile + (i * ld), acc[2 * i].v);
+      _mm512_storeu_ps(tile + (i * ld) + 16, acc[(2 * i) + 1].v);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the tile may be SSE alone
+  }
+
+  //! \brief \ref avx512_full_tile_f32 for a tile of \p rows × \p cols, a partial one through a whole one (\ref through_edge).
+  inline void avx512_tile_f32(std::size_t  kc,
+                              const float* ap,
+                              const float* bp,
+                              std::size_t  ldb,
+                              float*       c,
+                              std::size_t  ldc,
+                              std::size_t  rows,
+                              std::size_t  cols) noexcept
+  {
+    through_edge<avx512_mr, avx512_nr_f32>(c, ldc, rows, cols, [&](float* tile, std::size_t ld) noexcept { avx512_full_tile_f32(kc, ap, bp, ldb, tile, ld); });
+  }
+
+  //! \brief \ref avx2_full_tile_f64 for `float`: \ref avx2_mr × \ref avx2_nr_f32, 12 accumulators of eight.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_full_tile_f32(std::size_t  kc,
+                                                              const float* ap,
+                                                              const float* bp,
+                                                              std::size_t  ldb,
+                                                              float*       tile,
+                                                              std::size_t  ld) noexcept
+  {
+    std::array<ymm_register_f32, avx2_mr * 2> acc {};
+    NUMERICAL_UNROLL_TILE
+    for (std::size_t i {0}; i < avx2_mr; ++i) {
+      acc[2 * i].v       = _mm256_loadu_ps(tile + (i * ld));
+      acc[(2 * i) + 1].v = _mm256_loadu_ps(tile + (i * ld) + 8);
+    }
+    NUMERICAL_UNROLL_DEPTH_AVX2
+    for (std::size_t p {0}; p < kc; ++p) {
+      _mm_prefetch(reinterpret_cast<const char*>(bp + (p * ldb) + (2 * avx2_prefetch_ahead)), _MM_HINT_T0);     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the intrinsic takes a char pointer
+      _mm_prefetch(reinterpret_cast<const char*>(ap + (p * avx2_mr) + (2 * avx2_prefetch_ahead)), _MM_HINT_T0); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+      const __m256 b0 {_mm256_loadu_ps(bp + (p * ldb))};
+      const __m256 b1 {_mm256_loadu_ps(bp + (p * ldb) + 8)};
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t i {0}; i < avx2_mr; ++i) {
+        const __m256 a {_mm256_broadcast_ss(ap + (p * avx2_mr) + i)};
+        acc[2 * i].v       = _mm256_fmadd_ps(a, b0, acc[2 * i].v);
+        acc[(2 * i) + 1].v = _mm256_fmadd_ps(a, b1, acc[(2 * i) + 1].v);
+      }
+    }
+    NUMERICAL_UNROLL_TILE
+    for (std::size_t i {0}; i < avx2_mr; ++i) {
+      _mm256_storeu_ps(tile + (i * ld), acc[2 * i].v);
+      _mm256_storeu_ps(tile + (i * ld) + 8, acc[(2 * i) + 1].v);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the tile may be SSE alone
+  }
+
+  //! \brief \ref avx2_full_tile_f32 for a tile of \p rows × \p cols, a partial one through a whole one (\ref through_edge).
+  inline void avx2_tile_f32(std::size_t  kc,
+                            const float* ap,
+                            const float* bp,
+                            std::size_t  ldb,
+                            float*       c,
+                            std::size_t  ldc,
+                            std::size_t  rows,
+                            std::size_t  cols) noexcept
+  {
+    through_edge<avx2_mr, avx2_nr_f32>(c, ldc, rows, cols, [&](float* tile, std::size_t ld) noexcept { avx2_full_tile_f32(kc, ap, bp, ldb, tile, ld); });
+  }
+
   //! \brief The rows of C one AVX2 complex tile covers.
   inline constexpr std::size_t avx2_complex_mr {3};
 
