@@ -16,6 +16,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   stricter resolution of six references the headers now meet).
 
 ### Changed
+- `numerical.matmul(a, b)` goes through the same native method as `a @ b`, where it ran the Python fallback for
+  every call: two tensors of order 8 2.3 → 0.5 µs.
 - **The NaN and infinity check before a decomposition runs on vectors** under GCC and Clang (eight values a step), where
   GCC at the arm64 wheels' -O2 did not vectorise it at all: GCC 14 on one arm64 core, Cholesky of order 24 to 100 −11
   to −17 % (order 33 2.58 → 2.18 µs, below 2026.10.25's 2.40); x86-64 GCC 13 -O3, the check itself −40 %.

@@ -324,7 +324,7 @@ def _matmul(self, other):
 def matmul(x1, x2, /):
     """The matrix product of `x1` and `x2`, as ``numpy.matmul`` (and ``x1 @ x2``): stacks of matrices along leading axes
     broadcast against each other, a vector a row first and a column second, two vectors their dot product."""
-    return _matmul(_tensor(x1), x2)
+    return _tensor(x1)._matmul(x2)  # as ``@``: the native method, which falls back on _matmul past its own cases
 
 
 def _rmatmul(self, other):
