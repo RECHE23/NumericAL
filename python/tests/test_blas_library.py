@@ -8,8 +8,10 @@ import unittest
 
 import numerical
 
-ROUTINES = ["ddot_", "dsyrk_", "dgemv_", "dtrsm_", "dsyevd_", "dgesdd_", "dgeqrf_", "dorgqr_", "dgelsd_", "dgeev_"] + [
+LP64 = ["ddot_", "sdot_", "cdotu_", "cdotc_", "zdotu_", "zdotc_", "dsyrk_", "dgemv_", "dtrsm_", "dsyevd_", "dgesdd_",
+        "dgeqrf_", "dorgqr_", "dgelsd_", "dgeev_"] + [
     prefix + name for name in ("gemm_", "gesv_", "getrf_", "getrs_", "potrf_", "potrs_") for prefix in "sdcz"]
+ROUTINES = LP64 + [name + "64_" for name in LP64]  # the ILP64 names: dgemm_64_
 
 LINUX = sys.platform.startswith("linux")
 
@@ -30,7 +32,7 @@ class BlasLibrary(unittest.TestCase):
         self.assertEqual(os.path.dirname(self.path), os.path.join(os.path.dirname(numerical.__file__), "lib"))
 
     def test_every_routine_exported(self):
-        self.assertEqual(len(ROUTINES), 34)
+        self.assertEqual(len(ROUTINES), 78)
         for name in ROUTINES:
             self.assertTrue(hasattr(self.lib, name), name)
 
@@ -52,6 +54,31 @@ class BlasLibrary(unittest.TestCase):
         rows = [[1, 2], [3, 4], [5, 6]]  # Aᵀ
         want = [2 * (rows[i][0] * [1, 1][j] + rows[i][1] * [0, 1][j]) + 1 for j in range(2) for i in range(3)]
         self.assertEqual(list(c), want)
+
+    def test_ilp64_names(self):
+        # 64-bit integers; a complex dot returned by value, as gfortran returns it.
+        ddot = self.lib.ddot_64_
+        ddot.restype = ctypes.c_double
+        n, one = ctypes.c_int64(3), ctypes.c_int64(1)
+        self.assertEqual(ddot(ctypes.byref(n), doubles(1, 2, 3), ctypes.byref(one), doubles(4, 5, 6), ctypes.byref(one)),
+                         32.0)
+
+        class Complex(ctypes.Structure):
+            _fields_ = [("re", ctypes.c_double), ("im", ctypes.c_double)]
+
+        zdotc = self.lib.zdotc_64_
+        zdotc.restype = Complex
+        x, y = doubles(1, 2, 3, -1), doubles(2, 0, 1, 1)  # x = (1 + 2i, 3 - i), y = (2, 1 + i)
+        two = ctypes.c_int64(2)
+        result = zdotc(ctypes.byref(two), x, ctypes.byref(one), y, ctypes.byref(one))
+        self.assertEqual((result.re, result.im), (4.0, 0.0))  # (1 - 2i) 2 + (3 + i)(1 + i) = 2 - 4i + 2 + 4i
+        n, nrhs, info = ctypes.c_int64(2), ctypes.c_int64(1), ctypes.c_int64(-7)
+        pivots = (ctypes.c_int64 * 2)()
+        a, b = doubles(4, 2, 1, 3), doubles(9, 11)
+        self.lib.dgesv_64_(ctypes.byref(n), ctypes.byref(nrhs), a, ctypes.byref(n), pivots, b, ctypes.byref(n),
+                           ctypes.byref(info))
+        self.assertEqual((info.value, list(pivots)), (0, [1, 2]))
+        self.assertAlmostEqual(b[0], 1.6, places=14)
 
     def test_dgesv_and_a_singular_matrix(self):
         n, nrhs, info = ctypes.c_int(2), ctypes.c_int(1), ctypes.c_int(-7)

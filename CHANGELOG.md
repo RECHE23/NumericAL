@@ -16,6 +16,19 @@ A change that can break code is listed under **Breaking** and held for a month's
   LAPACK (a NumPy or SciPy from the system's packages, R, Octave) or a switch such as FlexiBLAS; the import never loads
   it. It exports those routines alone (CMake's build of it too), so a process holding another build of NumericAL binds
   none of its code to the library's. The wheel grows by about 0.6 MB.
+- **`numerical_blas` under the ILP64 names too**, its routines again with 64-bit integers as OpenBLAS's `64_` build
+  names them (`dgemm_64_`), and with `sdot_`, `cdotu_`, `cdotc_`, `zdotu_` and `zdotc_` (a complex result returned by
+  value, as gfortran returns it; `numerical::blas::complex_dot` and a `float` `dot` in C++): 78 routines, which Julia's
+  libblastrampoline takes (`BLAS.lbt_forward(path; clear=false, suffix_hint="64_")`). Under it, twelve groups of
+  Julia 1.11's LinearAlgebra tests (blas, matmul, dense, lapack, cholesky, lu, qr, svd, eigen, symmetriceigen, pinv,
+  generic) pass but for two comparisons of `svd`'s vectors with `gesvd`'s, which are equal up to the signs of their
+  columns, as LAPACK leaves them. The routines are declared once (`blas/numerical_blas.hpp`), each definition checked
+  against its declaration: the 64-bit names of the complex and `float` routines had taken 32-bit integers.
+
+### Fixed
+- **`getrf` and `gesv` carry a NaN or an infinity through, as LAPACK's do** (`dgetf2`'s column by column factors,
+  `getrs` after), where they reported the matrix as an illegal argument: Julia's `lu` of a matrix of NaN, under
+  `numerical_blas`, raised.
 
 ### Development
 - The AVX-512 emulator's run is a workflow of its own (`avx512.yml`): on a push that touches the x86-64 kernels,

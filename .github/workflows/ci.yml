@@ -87,9 +87,9 @@ jobs:
           cmake --build cmake-build --target numerical_blas -j4
           for library in "$BLAS_LIBRARY" cmake-build/libnumerical_blas.so; do
             symbols=$(nm -D --defined-only "$library" | awk '{print $3}')
-            others=$(echo "$symbols" | grep -v -E '^[a-z]+_$' || true)
+            others=$(echo "$symbols" | grep -v -E '^[a-z]+_(64_)?$' || true)
             [ -z "$others" ] || { echo "$library exports more than the Fortran routines:"; echo "$others"; exit 1; }
-            [ "$(echo "$symbols" | wc -l)" -eq 34 ] || { echo "$library: $(echo "$symbols" | wc -l) routines, not 34"; exit 1; }
+            [ "$(echo "$symbols" | wc -l)" -eq 78 ] || { echo "$library: $(echo "$symbols" | wc -l) routines, not 78"; exit 1; }
           done
       - name: NumPy's answers with numerical_blas preloaded
         run: LD_PRELOAD="$BLAS_LIBRARY" /tmp/venv/bin/python blas/preload_check.py

@@ -539,6 +539,30 @@ namespace numerical::blas {
     {
       return inc > 0 ? i * static_cast<std::size_t>(inc) : (length - 1 - i) * static_cast<std::size_t>(-inc);
     }
+
+    //! \brief \ref numerical::blas::dot of the real scalar \p T.
+    template <typename T>
+    [[nodiscard]] T real_dot(std::ptrdiff_t n,
+                             const T*       x,
+                             std::ptrdiff_t incx,
+                             const T*       y,
+                             std::ptrdiff_t incy)
+    {
+      if (n <= 0) {
+        return T {};
+      }
+      const auto count {static_cast<std::size_t>(n)};
+      if (incx == 1 && incy == 1) {
+        return numerical::detail::chunked_dot(x, y, count);
+      }
+      buffer<T> xs(count, T {});
+      buffer<T> ys(count, T {});
+      for (std::size_t i {0}; i < count; ++i) {
+        xs[i] = x[strided(i, count, incx)];
+        ys[i] = y[strided(i, count, incy)];
+      }
+      return numerical::detail::chunked_dot(xs.data(), ys.data(), count);
+    }
   } // namespace detail
 
   /*!
@@ -552,20 +576,42 @@ namespace numerical::blas {
                                   const double*  y,
                                   std::ptrdiff_t incy)
   {
+    return detail::real_dot(n, x, incx, y, incy);
+  }
+
+  //! \brief \ref dot of `float` elements, summed in `float`, as BLAS's `sdot`.
+  [[nodiscard]] inline float dot(std::ptrdiff_t n,
+                                 const float*   x,
+                                 std::ptrdiff_t incx,
+                                 const float*   y,
+                                 std::ptrdiff_t incy)
+  {
+    return detail::real_dot(n, x, incx, y, incy);
+  }
+
+  /*!
+   * \brief `Σ x_i y_i` (\p conjugate false, BLAS's `zdotu`) or `Σ conj(x_i) y_i` (true, `zdotc`) over \p n complex
+   *        elements \p incx and \p incy apart (from the last where negative); 0 where `n ≤ 0`. The terms are summed in
+   *        the order of their index, on the calling thread.
+   */
+  template <typename T>
+  [[nodiscard]] std::complex<T> complex_dot(bool                   conjugate,
+                                            std::ptrdiff_t         n,
+                                            const std::complex<T>* x,
+                                            std::ptrdiff_t         incx,
+                                            const std::complex<T>* y,
+                                            std::ptrdiff_t         incy) noexcept
+  {
+    std::complex<T> sum {};
     if (n <= 0) {
-      return 0.0;
+      return sum;
     }
     const auto count {static_cast<std::size_t>(n)};
-    if (incx == 1 && incy == 1) {
-      return numerical::detail::chunked_dot(x, y, count);
-    }
-    buffer<double> xs(count, 0.0);
-    buffer<double> ys(count, 0.0);
     for (std::size_t i {0}; i < count; ++i) {
-      xs[i] = x[detail::strided(i, count, incx)];
-      ys[i] = y[detail::strided(i, count, incy)];
+      const std::complex<T> xi {x[detail::strided(i, count, incx)]};
+      sum += (conjugate ? std::conj(xi) : xi) * y[detail::strided(i, count, incy)];
     }
-    return numerical::detail::chunked_dot(xs.data(), ys.data(), count);
+    return sum;
   }
 
   //! \brief The rows (or, for `Aᵀ x`, the columns) each task of \ref gemv takes, 64 so that an order of a few
@@ -997,14 +1043,25 @@ namespace numerical::blas {
     return 0;
   }
 
+  template <typename T, typename Index>
+  int getrs(char           trans,
+            std::ptrdiff_t n,
+            std::ptrdiff_t nrhs,
+            const T*       a,
+            std::ptrdiff_t lda,
+            const Index*   ipiv,
+            T*             b,
+            std::ptrdiff_t ldb);
+
   /*!
    * \brief `A X = B`, column-major, as LAPACK's `dgesv`: `A` (`n × n`, \p lda apart) is factorised as `P A = L U` by
    *        NumericAL's blocked LU with partial pivoting, the factors left in \p a as `dgetrf` leaves them (`U` on and
    *        above the diagonal, `L` below, its unit diagonal not stored) and the row interchanges in \p ipiv (1-based:
    *        row `i` was interchanged with row `ipiv[i]`, in order); then `B` (`n × nrhs`, \p ldb apart) is overwritten
-   *        by `X`. A zero pivot leaves `B` as it was.
-   * \return `INFO`: 0; `i > 0` where `U(i, i)` is exactly zero; `-i` where argument `i` is illegal (`-3`: `A` holds a
-   *         NaN or an infinity, which NumericAL's LU refuses), nothing then computed.
+   *        by `X`. A zero pivot leaves `B` as it was. A NaN or an infinity in `A` or `B`, which NumericAL's LU refuses,
+   *        is carried through as the reference's routines carry it: `A` factorised column by column (`dgetf2`), then
+   *        `B` solved by \ref getrs.
+   * \return `INFO`: 0; `i > 0` where `U(i, i)` is exactly zero; `-i` where argument `i` is illegal.
    */
   template <typename T, typename Index>
   int gesv(std::ptrdiff_t n,
@@ -1062,8 +1119,12 @@ namespace numerical::blas {
       }
       factors = std::move(lu).factors();
     }
-    catch (const non_finite_error&) {
-      return -3;
+    catch (const non_finite_error&) { // A and B untouched: dgetf2's factors, then getrs, the NaN carried through
+      const int info {detail::rectangular_lu(size, size, a, ld, ipiv)};
+      if (info == 0) {
+        (void)getrs('N', n, nrhs, a, lda, ipiv, b, ldb); // its arguments already checked
+      }
+      return info;
     }
     detail::column_major_into(&*factors.begin(), size, size, a, ld);
     detail::give_back(0, std::move(factors).elements());
@@ -1146,9 +1207,9 @@ namespace numerical::blas {
   /*!
    * \brief `P A = L U` of the column-major `m × n` `A` in place, as LAPACK's `dgetrf`: the factors as `dgetrf` leaves
    *        them and the row interchanges in \p ipiv (1-based, `min(m, n)` of them). A square `A` by NumericAL's
-   *        blocked LU, a rectangular one column by column.
-   * \return `INFO`: 0; `i > 0` where `U(i, i)` is exactly zero; `-i` where argument `i` is illegal (`-3`: a NaN or an
-   *         infinity in `A`).
+   *        blocked LU, a rectangular one, or one holding a NaN or an infinity, column by column as the reference's
+   *        `dgetf2` (which carries the NaN through).
+   * \return `INFO`: 0; `i > 0` where `U(i, i)` is exactly zero; `-i` where argument `i` is illegal.
    */
   template <typename T, typename Index>
   int getrf(std::ptrdiff_t m,
@@ -1173,23 +1234,16 @@ namespace numerical::blas {
     const auto cols {static_cast<std::size_t>(n)};
     const auto ld   {static_cast<std::size_t>(lda)};
     if (rows != cols) {
-      for (std::size_t j {0}; j < cols; ++j) {
-        for (std::size_t i {0}; i < rows; ++i) {
-          if (!detail::finite(a[i + (j * ld)])) {
-            return -3;
-          }
-        }
-      }
       return detail::rectangular_lu(rows, cols, a, ld, ipiv);
     }
     buffer<T> a_rows {detail::take_kept<T>(0)};  // transposed in and out once, in storage the thread keeps
     detail::row_major_into(a_rows, a, lda, m, n, T {1});
     std::optional<lu_decomposition<T>> factored; // a square A checked once, by the decomposition, where it was also
-    try {                                        // checked here, entry by entry across its columns
+    try {                             // checked here, entry by entry across its columns
       factored.emplace(matrix<T> {rows, cols, std::move(a_rows)});
     }
-    catch (const non_finite_error&) {
-      return -3;
+    catch (const non_finite_error&) { // A untouched: factorised as the reference's dgetf2 does, the NaN carried through
+      return detail::rectangular_lu(rows, cols, a, ld, ipiv);
     }
     lu_decomposition<T>& lu {*factored};
     detail::interchanges(lu.pivots(), ipiv);

@@ -15,134 +15,7 @@
 #include <sciforge/test/framework.hpp>
 #include "numerical/numerical.hpp"
 
-extern "C" {
-void dgemm_(const char*, const char*, const int*, const int*, const int*, const double*, const double*, const int*, const double*,
-            const int*, const double*, double*, const int*, std::size_t, std::size_t) noexcept;
-void dgesv_(const int*,
-            const int*,
-            double*,
-            const int*,
-            int*,
-            double*,
-            const int*,
-            int*) noexcept;
-void dpotrf_(const char*, const int*, double*, const int*, int*, std::size_t) noexcept;
-void dgetrf_(const int*,
-             const int*,
-             double*,
-             const int*,
-             int*,
-             int*) noexcept;
-void dgetrs_(const char*, const int*, const int*, const double*, const int*, const int*, double*, const int*, int*, std::size_t) noexcept;
-void dpotrs_(const char*, const int*, const int*, const double*, const int*, double*, const int*, int*, std::size_t) noexcept;
-void dsyevd_(const char*, const char*, const int*, double*, const int*, double*, double*, const int*, int*, const int*, int*, std::size_t,
-             std::size_t) noexcept;
-void dgesdd_(const char*, const int*, const int*, double*, const int*, double*, double*, const int*, double*, const int*, double*, const int*,
-             int*, int*, std::size_t) noexcept;
-void dgeqrf_(const int*,
-             const int*,
-             double*,
-             const int*,
-             double*,
-             double*,
-             const int*,
-             int*) noexcept;
-void dorgqr_(const int*,
-             const int*,
-             const int*,
-             double*,
-             const int*,
-             const double*,
-             double*,
-             const int*,
-             int*) noexcept;
-void dgelsd_(const int*,
-             const int*,
-             const int*,
-             const double*,
-             const int*,
-             double*,
-             const int*,
-             double*,
-             const double*,
-             int*,
-             double*,
-             const int*,
-             int*,
-             int*) noexcept;
-void dgeev_(const char*, const char*, const int*, const double*, const int*, double*, double*, double*, const int*, double*, const int*,
-            double*, const int*, int*, std::size_t, std::size_t) noexcept;
-void dsyrk_(const char*, const char*, const int*, const int*, const double*, const double*, const int*, const double*, double*, const int*,
-            std::size_t, std::size_t) noexcept;
-void dgemv_(const char*, const int*, const int*, const double*, const double*, const int*, const double*, const int*, const double*, double*,
-            const int*, std::size_t) noexcept;
-double ddot_(const int*,
-             const double*,
-             const int*,
-             const double*,
-             const int*) noexcept;
-void dtrsm_(const char*, const char*, const char*, const char*, const int*, const int*, const double*, const double*, const int*, double*,
-            const int*, std::size_t, std::size_t, std::size_t, std::size_t) noexcept;
-void sgemm_(const char*, const char*, const int*, const int*, const int*, const float*, const float*, const int*, const float*, const int*,
-            const float*, float*, const int*, std::size_t, std::size_t) noexcept;
-void zgemm_(const char*, const char*, const int*, const int*, const int*, const std::complex<double>*, const std::complex<double>*,
-            const int*, const std::complex<double>*, const int*, const std::complex<double>*, std::complex<double>*, const int*,
-            std::size_t, std::size_t) noexcept;
-void cgemm_(const char*, const char*, const int*, const int*, const int*, const std::complex<float>*, const std::complex<float>*,
-            const int*, const std::complex<float>*, const int*, const std::complex<float>*, std::complex<float>*, const int*,
-            std::size_t, std::size_t) noexcept;
-void sgesv_(const int*,
-            const int*,
-            float*,
-            const int*,
-            int*,
-            float*,
-            const int*,
-            int*) noexcept;
-void sgetrf_(const int*,
-             const int*,
-             float*,
-             const int*,
-             int*,
-             int*) noexcept;
-void sgetrs_(const char*, const int*, const int*, const float*, const int*, const int*, float*, const int*, int*, std::size_t) noexcept;
-void cgesv_(const int*,
-            const int*,
-            std::complex<float>*,
-            const int*,
-            int*,
-            std::complex<float>*,
-            const int*,
-            int*) noexcept;
-void cgetrf_(const int*,
-             const int*,
-             std::complex<float>*,
-             const int*,
-             int*,
-             int*) noexcept;
-void cgetrs_(const char*, const int*, const int*, const std::complex<float>*, const int*, const int*, std::complex<float>*, const int*, int*, std::size_t) noexcept;
-void zgesv_(const int*,
-            const int*,
-            std::complex<double>*,
-            const int*,
-            int*,
-            std::complex<double>*,
-            const int*,
-            int*) noexcept;
-void zgetrf_(const int*,
-             const int*,
-             std::complex<double>*,
-             const int*,
-             int*,
-             int*) noexcept;
-void zgetrs_(const char*, const int*, const int*, const std::complex<double>*, const int*, const int*, std::complex<double>*, const int*, int*, std::size_t) noexcept;
-void spotrf_(const char*, const int*, float*, const int*, int*, std::size_t) noexcept;
-void spotrs_(const char*, const int*, const int*, const float*, const int*, float*, const int*, int*, std::size_t) noexcept;
-void cpotrf_(const char*, const int*, std::complex<float>*, const int*, int*, std::size_t) noexcept;
-void cpotrs_(const char*, const int*, const int*, const std::complex<float>*, const int*, std::complex<float>*, const int*, int*, std::size_t) noexcept;
-void zpotrf_(const char*, const int*, std::complex<double>*, const int*, int*, std::size_t) noexcept;
-void zpotrs_(const char*, const int*, const int*, const std::complex<double>*, const int*, std::complex<double>*, const int*, int*, std::size_t) noexcept;
-}
+#include "../blas/numerical_blas.hpp"
 
 namespace {
   // Deterministic entries in [-1, 1), of full rank (a sine of a linear index would give a matrix of rank two).
@@ -394,15 +267,23 @@ TEST(inverse_in_given_storage_is_the_inverse)
   EXPECT_THROWS((void)singular.pivoted_inverse(numerical::buffer<double>(4)), numerical::singular_matrix_error);
 }
 
-TEST(gesv_reports_a_zero_pivot_an_illegal_argument_and_a_nan)
+TEST(gesv_reports_a_zero_pivot_an_illegal_argument_and_carries_a_nan)
 {
   std::vector<double> a {1.0, 2.0, 0.0, 0.0}; // second column zero: U(2, 2) = 0
   std::vector<double> b {5.0, 6.0};
   std::vector<int>    ipiv(2);
   EXPECT_EQ(numerical::blas::gesv(2, 1, a.data(), 2, ipiv.data(), b.data(), 2), 2);
   EXPECT_EQ(b[0], 5.0); // not solved
+  // A NaN carried through as the reference's dgetf2 and dgetrs carry it: [[1, 0], [NaN, 1]], its pivot the 1 (a NaN is
+  // never larger), L(2, 1) and U(2, 2) NaN, so X too; INFO 0, as U(2, 2) is not zero.
   std::vector<double> nan {1.0, std::numeric_limits<double>::quiet_NaN(), 0.0, 1.0};
-  EXPECT_EQ(numerical::blas::gesv(2, 1, nan.data(), 2, ipiv.data(), b.data(), 2), -3);
+  EXPECT_EQ(numerical::blas::gesv(2, 1, nan.data(), 2, ipiv.data(), b.data(), 2), 0);
+  EXPECT(ipiv[0] == 1 && ipiv[1] == 2 && std::isnan(nan[3]) && std::isnan(b[0]) && std::isnan(b[1]));
+  // A zero pivot beside a NaN: INFO names it, and B is not solved.
+  std::vector<double> zero_and_nan {0.0, 0.0, std::numeric_limits<double>::quiet_NaN(), 1.0};
+  b = {5.0, 6.0};
+  EXPECT_EQ(numerical::blas::gesv(2, 1, zero_and_nan.data(), 2, ipiv.data(), b.data(), 2), 1);
+  EXPECT(b[0] == 5.0 && b[1] == 6.0);
   EXPECT_EQ(numerical::blas::gesv(-1, 1, a.data(), 2, ipiv.data(), b.data(), 2), -1);
   EXPECT_EQ(numerical::blas::gesv(2, -1, a.data(), 2, ipiv.data(), b.data(), 2), -2);
   EXPECT_EQ(numerical::blas::gesv(2, 1, a.data(), 1, ipiv.data(), b.data(), 2), -4);
@@ -510,6 +391,250 @@ TEST(the_fortran_routines_answer_as_the_cpp_ones)
   EXPECT_EQ(s[0], 2.0);
   dpotrf_("Q", &two, s.data(), &two, &info, 1);
   EXPECT_EQ(info, -1);
+}
+
+// The ILP64 names: every routine the same bits as its 32-bit twin on the same operands, its integers (dimensions,
+// pivots, workspaces, the rank, INFO) 64 bits; an illegal argument reported in the 64-bit INFO.
+TEST(the_ilp64_routines_answer_as_the_lp64_ones)
+{
+  using wide = std::int64_t;
+  const int                 n     {5};
+  const wide                nw    {5};
+  const int                 one_i {1};
+  const wide                one_w {1};
+  const double              one   {1.0};
+  const double              half  {0.5};
+  const std::vector<double> a     {entries(25, 41)};
+  const std::vector<double> b     {entries(25, 42)};
+  std::vector<double>       spd(25);                                    // A Aᵀ + n I, positive definite
+  for (std::size_t i {0}; i < 5; ++i) {
+    for (std::size_t j {0}; j < 5; ++j) {
+      double sum {i == j ? 5.0 : 0.0};
+      for (std::size_t p {0}; p < 5; ++p) {
+        sum += a[i + (p * 5)] * a[j + (p * 5)];
+      }
+      spd[i + (j * 5)] = sum;
+    }
+  }
+  {
+    std::vector<double> c32 {b};
+    std::vector<double> c64 {b};
+    dgemm_("T", "N", &n, &n, &n, &half, a.data(), &n, b.data(), &n, &one, c32.data(), &n, 1, 1);
+    dgemm_64_("T", "N", &nw, &nw, &nw, &half, a.data(), &nw, b.data(), &nw, &one, c64.data(), &nw, 1, 1);
+    EXPECT(c32 == c64);
+    EXPECT_EQ(ddot_(&n, a.data(), &n, b.data(), &one_i), ddot_64_(&nw, a.data(), &nw, b.data(), &one_w));
+    std::vector<double> y32 {b.begin(), b.begin() + 5};
+    std::vector<double> y64 {y32};
+    dgemv_("T", &n, &n, &half, a.data(), &n, b.data(), &one_i, &one, y32.data(), &one_i, 1);
+    dgemv_64_("T", &nw, &nw, &half, a.data(), &nw, b.data(), &one_w, &one, y64.data(), &one_w, 1);
+    EXPECT(y32 == y64);
+    std::vector<double> s32 {b};
+    std::vector<double> s64 {b};
+    dsyrk_("L", "N", &n, &n, &half, a.data(), &n, &one, s32.data(), &n, 1, 1);
+    dsyrk_64_("L", "N", &nw, &nw, &half, a.data(), &nw, &one, s64.data(), &nw, 1, 1);
+    EXPECT(s32 == s64);
+    std::vector<double> t32 {b};
+    std::vector<double> t64 {b};
+    dtrsm_("L", "U", "N", "N", &n, &n, &one, spd.data(), &n, t32.data(), &n, 1, 1, 1, 1);
+    dtrsm_64_("L", "U", "N", "N", &nw, &nw, &one, spd.data(), &nw, t64.data(), &nw, 1, 1, 1, 1);
+    EXPECT(t32 == t64);
+  }
+  {
+    std::vector<double> lu32 {a};
+    std::vector<double> lu64 {a};
+    std::vector<double> x32  {b};
+    std::vector<double> x64  {b};
+    std::vector<int>    p32(5);
+    std::vector<wide>   p64(5);
+    int                 info32 {7};
+    wide                info64 {7};
+    dgesv_(&n, &n, lu32.data(), &n, p32.data(), x32.data(), &n, &info32);
+    dgesv_64_(&nw, &nw, lu64.data(), &nw, p64.data(), x64.data(), &nw, &info64);
+    EXPECT(info32 == 0 && info64 == 0 && lu32 == lu64 && x32 == x64);
+    EXPECT(std::equal(p32.begin(), p32.end(), p64.begin()));
+    lu32 = a;
+    lu64 = a;
+    dgetrf_(&n, &n, lu32.data(), &n, p32.data(), &info32);
+    dgetrf_64_(&nw, &nw, lu64.data(), &nw, p64.data(), &info64);
+    x32 = b;
+    x64 = b;
+    dgetrs_("T", &n, &n, lu32.data(), &n, p32.data(), x32.data(), &n, &info32, 1);
+    dgetrs_64_("T", &nw, &nw, lu64.data(), &nw, p64.data(), x64.data(), &nw, &info64, 1);
+    EXPECT(info32 == 0 && info64 == 0 && lu32 == lu64 && x32 == x64);
+    std::vector<double> l32 {spd};
+    std::vector<double> l64 {spd};
+    dpotrf_("U", &n, l32.data(), &n, &info32, 1);
+    dpotrf_64_("U", &nw, l64.data(), &nw, &info64, 1);
+    x32 = b;
+    x64 = b;
+    dpotrs_("U", &n, &n, l32.data(), &n, x32.data(), &n, &info32, 1);
+    dpotrs_64_("U", &nw, &nw, l64.data(), &nw, x64.data(), &nw, &info64, 1);
+    EXPECT(info32 == 0 && info64 == 0 && l32 == l64 && x32 == x64);
+    const wide bad {-3};
+    dpotrf_64_("U", &bad, l64.data(), &nw, &info64, 1); // reported
+    EXPECT_EQ(info64, wide {-2});
+  }
+  {
+    // Each routine asked for its workspace first (lwork = -1), then run with it: the sizes are the same too.
+    double              query32  {0.0};
+    double              query64  {0.0};
+    const int           ask32    {-1};
+    const wide          ask64    {-1};
+    int                 iquery32 {0};
+    wide                iquery64 {0};
+    int                 info32   {7};
+    wide                info64   {7};
+    std::vector<double> e32      {spd};
+    std::vector<double> e64      {spd};
+    std::vector<double> w32(5);
+    std::vector<double> w64(5);
+    dsyevd_("V", "L", &n, e32.data(), &n, w32.data(), &query32, &ask32, &iquery32, &ask32, &info32, 1, 1);
+    dsyevd_64_("V", "L", &nw, e64.data(), &nw, w64.data(), &query64, &ask64, &iquery64, &ask64, &info64, 1, 1);
+    EXPECT(query32 == query64 && iquery32 == iquery64);
+    const int           lwork32 {static_cast<int>(query32)};
+    const wide          lwork64 {static_cast<wide>(query64)};
+    std::vector<double> work32(static_cast<std::size_t>(lwork32));
+    std::vector<double> work64(static_cast<std::size_t>(lwork64));
+    std::vector<int>    iwork32(static_cast<std::size_t>(iquery32));
+    std::vector<wide>   iwork64(static_cast<std::size_t>(iquery64));
+    const int           liwork32 {iquery32};
+    dsyevd_("V", "L", &n, e32.data(), &n, w32.data(), work32.data(), &lwork32, iwork32.data(), &liwork32, &info32, 1, 1);
+    dsyevd_64_("V", "L", &nw, e64.data(), &nw, w64.data(), work64.data(), &lwork64, iwork64.data(), &iquery64, &info64, 1, 1);
+    EXPECT(info32 == 0 && info64 == 0 && e32 == e64 && w32 == w64);
+
+    std::vector<double> g32 {a};
+    std::vector<double> g64 {a};
+    std::vector<double> sv32(5);
+    std::vector<double> sv64(5);
+    std::vector<double> u32(25);
+    std::vector<double> u64(25);
+    std::vector<double> vt32(25);
+    std::vector<double> vt64(25);
+    std::vector<int>    svd_iwork32(40);
+    std::vector<wide>   svd_iwork64(40);
+    dgesdd_("A", &n, &n, g32.data(), &n, sv32.data(), u32.data(), &n, vt32.data(), &n, &query32, &ask32, svd_iwork32.data(), &info32, 1);
+    dgesdd_64_("A", &nw, &nw, g64.data(), &nw, sv64.data(), u64.data(), &nw, vt64.data(), &nw, &query64, &ask64, svd_iwork64.data(), &info64, 1);
+    EXPECT(query32 == query64);
+    work32.assign(static_cast<std::size_t>(query32), 0.0);
+    work64.assign(static_cast<std::size_t>(query64), 0.0);
+    const int  svd_lwork32 {static_cast<int>(query32)};
+    const wide svd_lwork64 {static_cast<wide>(query64)};
+    dgesdd_("A", &n, &n, g32.data(), &n, sv32.data(), u32.data(), &n, vt32.data(), &n, work32.data(), &svd_lwork32, svd_iwork32.data(),
+            &info32, 1);
+    dgesdd_64_("A", &nw, &nw, g64.data(), &nw, sv64.data(), u64.data(), &nw, vt64.data(), &nw, work64.data(), &svd_lwork64,
+               svd_iwork64.data(), &info64, 1);
+    EXPECT(info32 == 0 && info64 == 0 && sv32 == sv64 && u32 == u64 && vt32 == vt64);
+
+    std::vector<double> q32 {a};
+    std::vector<double> q64 {a};
+    std::vector<double> tau32(5);
+    std::vector<double> tau64(5);
+    std::vector<double> qr_work32(64);
+    std::vector<double> qr_work64(64);
+    const int           qr_lwork32 {64};
+    const wide          qr_lwork64 {64};
+    dgeqrf_(&n, &n, q32.data(), &n, tau32.data(), qr_work32.data(), &qr_lwork32, &info32);
+    dgeqrf_64_(&nw, &nw, q64.data(), &nw, tau64.data(), qr_work64.data(), &qr_lwork64, &info64);
+    dorgqr_(&n, &n, &n, q32.data(), &n, tau32.data(), qr_work32.data(), &qr_lwork32, &info32);
+    dorgqr_64_(&nw, &nw, &nw, q64.data(), &nw, tau64.data(), qr_work64.data(), &qr_lwork64, &info64);
+    EXPECT(info32 == 0 && info64 == 0 && q32 == q64 && tau32 == tau64);
+
+    std::vector<double> rhs32  {b};
+    std::vector<double> rhs64  {b};
+    const double        rcond  {-1.0};
+    int                 rank32 {0};
+    wide                rank64 {0};
+    std::vector<double> ls_work32(2000);
+    std::vector<double> ls_work64(2000);
+    std::vector<int>    ls_iwork32(200);
+    std::vector<wide>   ls_iwork64(200);
+    const int           ls_lwork32 {2000};
+    const wide          ls_lwork64 {2000};
+    dgelsd_(&n, &n, &n, a.data(), &n, rhs32.data(), &n, sv32.data(), &rcond, &rank32, ls_work32.data(), &ls_lwork32, ls_iwork32.data(),
+            &info32);
+    dgelsd_64_(&nw, &nw, &nw, a.data(), &nw, rhs64.data(), &nw, sv64.data(), &rcond, &rank64, ls_work64.data(), &ls_lwork64,
+               ls_iwork64.data(), &info64);
+    EXPECT(info32 == 0 && info64 == 0 && rank32 == 5 && rank64 == 5 && rhs32 == rhs64 && sv32 == sv64);
+
+    std::vector<double> wr32(5);
+    std::vector<double> wr64(5);
+    std::vector<double> wi32(5);
+    std::vector<double> wi64(5);
+    std::vector<double> vr32(25);
+    std::vector<double> vr64(25);
+    std::vector<double> ev_work32(500);
+    std::vector<double> ev_work64(500);
+    const int           ev_lwork32 {500};
+    const wide          ev_lwork64 {500};
+    dgeev_("N", "V", &n, a.data(), &n, wr32.data(), wi32.data(), nullptr, &one_i, vr32.data(), &n, ev_work32.data(), &ev_lwork32, &info32,
+           1, 1);
+    dgeev_64_("N", "V", &nw, a.data(), &nw, wr64.data(), wi64.data(), nullptr, &one_w, vr64.data(), &nw, ev_work64.data(), &ev_lwork64,
+              &info64, 1, 1);
+    EXPECT(info32 == 0 && info64 == 0 && wr32 == wr64 && wi32 == wi64 && vr32 == vr64);
+  }
+  {
+    // The other scalars run through the same templates: one complex double, one complex float, one float routine each.
+    using zd = std::complex<double>;
+    using cf = std::complex<float>;
+    std::vector<zd>    za(25);
+    std::vector<cf>    ca(25);
+    std::vector<float> sa(25);
+    for (std::size_t i {0}; i < 25; ++i) {
+      za[i] = zd {spd[i], i % 6 == 0 ? 0.0 : a[i] * 0.1};
+      ca[i] = cf {static_cast<float>(a[i]), static_cast<float>(b[i])};
+      sa[i] = static_cast<float>(spd[i]);
+    }
+    for (std::size_t i {0}; i < 5; ++i) { // Hermitian: the upper triangle conjugated below
+      for (std::size_t j {0}; j < i; ++j) {
+        za[i + (j * 5)] = std::conj(za[j + (i * 5)]);
+      }
+    }
+    const zd         zone {1.0, 0.0};
+    std::vector<zd>  zc32(25);
+    std::vector<zd>  zc64(25);
+    zgemm_("C", "N", &n, &n, &n, &zone, za.data(), &n, za.data(), &n, &zone, zc32.data(), &n, 1, 1);
+    zgemm_64_("C", "N", &nw, &nw, &nw, &zone, za.data(), &nw, za.data(), &nw, &zone, zc64.data(), &nw, 1, 1);
+    EXPECT(zc32 == zc64);
+    std::vector<zd> zf32   {za};
+    std::vector<zd> zf64   {za};
+    int             info32 {7};
+    wide            info64 {7};
+    zpotrf_("U", &n, zf32.data(), &n, &info32, 1);
+    zpotrf_64_("U", &nw, zf64.data(), &nw, &info64, 1);
+    std::vector<zd> zx32 {zc32};
+    std::vector<zd> zx64 {zc64};
+    zpotrs_("U", &n, &n, zf32.data(), &n, zx32.data(), &n, &info32, 1);
+    zpotrs_64_("U", &nw, &nw, zf64.data(), &nw, zx64.data(), &nw, &info64, 1);
+    EXPECT(info32 == 0 && info64 == 0 && zf32 == zf64 && zx32 == zx64);
+    std::vector<cf>   clu32 {ca};
+    std::vector<cf>   clu64 {ca};
+    std::vector<cf>   cx32  {ca};
+    std::vector<cf>   cx64  {ca};
+    std::vector<int>  cp32(5);
+    std::vector<wide> cp64(5);
+    cgesv_(&n, &n, clu32.data(), &n, cp32.data(), cx32.data(), &n, &info32);
+    cgesv_64_(&nw, &nw, clu64.data(), &nw, cp64.data(), cx64.data(), &nw, &info64);
+    EXPECT(info32 == 0 && info64 == 0 && clu32 == clu64 && cx32 == cx64);
+    clu32 = ca;
+    clu64 = ca;
+    cgetrf_(&n, &n, clu32.data(), &n, cp32.data(), &info32);
+    cgetrf_64_(&nw, &nw, clu64.data(), &nw, cp64.data(), &info64);
+    cx32 = ca;
+    cx64 = ca;
+    cgetrs_("C", &n, &n, clu32.data(), &n, cp32.data(), cx32.data(), &n, &info32, 1);
+    cgetrs_64_("C", &nw, &nw, clu64.data(), &nw, cp64.data(), cx64.data(), &nw, &info64, 1);
+    EXPECT(info32 == 0 && info64 == 0 && clu32 == clu64 && cx32 == cx64);
+    std::vector<float> sf32 {sa};
+    std::vector<float> sf64 {sa};
+    spotrf_("L", &n, sf32.data(), &n, &info32, 1);
+    spotrf_64_("L", &nw, sf64.data(), &nw, &info64, 1);
+    const float        sone {1.0F};
+    std::vector<float> sc32(25);
+    std::vector<float> sc64(25);
+    sgemm_("N", "T", &n, &n, &n, &sone, sf32.data(), &n, sf32.data(), &n, &sone, sc32.data(), &n, 1, 1);
+    sgemm_64_("N", "T", &nw, &nw, &nw, &sone, sf64.data(), &nw, sf64.data(), &nw, &sone, sc64.data(), &nw, 1, 1);
+    EXPECT(info32 == 0 && info64 == 0 && sf32 == sf64 && sc32 == sc64);
+  }
 }
 
 namespace {
@@ -624,28 +749,30 @@ TEST(getrf_factorises_square_tall_and_wide_matrices)
   EXPECT(getrf_factorises(7, 12));    // wide
 }
 
-TEST(getrf_reports_zero_pivots_illegal_arguments_and_a_nan)
+TEST(getrf_reports_zero_pivots_illegal_arguments_and_carries_a_nan)
 {
   std::vector<int>    ipiv(3);
   std::vector<double> square           {1.0, 2.0, 0.0, 0.0};           // second column zero
   EXPECT_EQ(numerical::blas::getrf(2, 2, square.data(), 2, ipiv.data()), 2);
   std::vector<double> tall             {0.0, 0.0, 0.0, 1.0, 2.0, 3.0}; // 3 × 2, first column zero
   EXPECT_EQ(numerical::blas::getrf(3, 2, tall.data(), 3, ipiv.data()), 1);
+  // A NaN or an infinity factorised as the reference's dgetf2 factorises it: a NaN never the pivot (no larger than any
+  // number), an infinity the pivot where it is the largest, the NaN carried through; INFO 0.
   std::vector<double> nan              {std::numeric_limits<double>::quiet_NaN(), 1.0};
-  EXPECT_EQ(numerical::blas::getrf(2, 1, nan.data(), 2, ipiv.data()), -3);
-  std::vector<double>       square_nan {1.0, 2.0, std::numeric_limits<double>::infinity(), 4.0};
-  const std::vector<double> before     {square_nan};
-  EXPECT_EQ(numerical::blas::getrf(2, 2, square_nan.data(), 2, ipiv.data()), -3); // checked by the decomposition
-  EXPECT(square_nan[0] == before[0] && square_nan[3] == before[3]);               // nothing written
-  // A rectangular complex A checked entry by entry, the real part and the imaginary one.
-  const auto rectangular_refuses = []<typename R>(R bad_real, R bad_imaginary) {
+  EXPECT_EQ(numerical::blas::getrf(2, 1, nan.data(), 2, ipiv.data()), 0);
+  EXPECT(ipiv[0] == 1 && std::isnan(nan[0]) && std::isnan(nan[1]));                              // 1 / NaN below the NaN pivot
+  std::vector<double> square_nan       {1.0, 2.0, std::numeric_limits<double>::infinity(), 4.0}; // [[1, ∞], [2, 4]]
+  EXPECT_EQ(numerical::blas::getrf(2, 2, square_nan.data(), 2, ipiv.data()), 0);                 // the square LU refuses it: dgetf2's
+  EXPECT(ipiv[0] == 2 && ipiv[1] == 2 && square_nan[0] == 2.0 && square_nan[1] == 0.5 && std::isinf(square_nan[3]));
+  // A rectangular complex A, a NaN or an infinity in the real part or the imaginary one: factorised, INFO 0.
+  const auto rectangular_carries = []<typename R>(R bad_real, R bad_imaginary) {
                                      std::vector<int>                 pivots(2);
                                      std::vector<std::complex<R>>     by_real      {{1, 0}, {bad_real, 0}, {2, 0}, {0, 1}, {1, 1}, {3, 0}};
                                      std::vector<std::complex<R>>     by_imaginary {{1, 0}, {2, 0}, {0, bad_imaginary}, {0, 1}, {1, 1}, {3, 0}};
-                                     return numerical::blas::getrf(3, 2, by_real.data(), 3, pivots.data()) == -3 && numerical::blas::getrf(3, 2, by_imaginary.data(), 3, pivots.data()) == -3;
+                                     return numerical::blas::getrf(3, 2, by_real.data(), 3, pivots.data()) == 0 && numerical::blas::getrf(3, 2, by_imaginary.data(), 3, pivots.data()) == 0;
                                    };
-  EXPECT(rectangular_refuses(std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()));
-  EXPECT(rectangular_refuses(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()));
+  EXPECT(rectangular_carries(std::numeric_limits<double>::quiet_NaN(), std::numeric_limits<double>::infinity()));
+  EXPECT(rectangular_carries(std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN()));
   EXPECT_EQ(numerical::blas::getrf(-1, 2, square.data(), 2, ipiv.data()), -1);
   EXPECT_EQ(numerical::blas::getrf(2, -1, square.data(), 2, ipiv.data()), -2);
   EXPECT_EQ(numerical::blas::getrf(2, 2, square.data(), 1, ipiv.data()), -4);
@@ -1837,6 +1964,80 @@ TEST(gemv_reports_its_first_illegal_argument)
   EXPECT(y[0] == 4.0);
 }
 
+// The complex dots, ?dotu and ?dotc: each term in index order, x conjugated for dotc, any increments (from the last
+// element where negative), zero for no element; through the Fortran names too, both integer widths, their result
+// returned by value.
+// sdot: the float dot as ddot sums it (the same chunks, in float), any increments, zero for no element; through both
+// Fortran names.
+TEST(float_dot_sums_as_the_double_one)
+{
+  const std::vector<double> xd      {entries(3000, 61)};
+  const std::vector<double> yd      {entries(3000, 62)};
+  const std::vector<float>  x       {xd.begin(), xd.end()};
+  const std::vector<float>  y       {yd.begin(), yd.end()};
+  float                     strided {0.0F};
+  for (std::size_t i {0}; i < 1000; ++i) {
+    strided += x[3 * i] * y[2 * (999 - i)];
+  }
+  EXPECT(numerical::detail::chunked_dot(x.data(), y.data(), 3000) == numerical::blas::dot(3000, x.data(), 1, y.data(), 1));
+  EXPECT(std::abs(numerical::blas::dot(1000, x.data(), 3, y.data(), -2) - strided) < 1e-3F);
+  EXPECT(numerical::blas::dot(0, x.data(), 1, y.data(), 1) == 0.0F);
+  const int          count   {3000};
+  const int          step    {1};
+  const std::int64_t count_w {3000};
+  const std::int64_t step_w  {1};
+  EXPECT(sdot_(&count, x.data(), &step, y.data(), &step) == numerical::blas::dot(3000, x.data(), 1, y.data(), 1));
+  EXPECT(sdot_64_(&count_w, x.data(), &step_w, y.data(), &step_w) == numerical::blas::dot(3000, x.data(), 1, y.data(), 1));
+}
+
+TEST(complex_dot_sums_in_index_order)
+{
+  using zd = std::complex<double>;
+  const std::vector<double> re {entries(60, 51)};
+  const std::vector<double> im {entries(60, 52)};
+  std::vector<zd>           x(30);
+  std::vector<zd>           y(30);
+  for (std::size_t i {0}; i < 30; ++i) {
+    x[i] = zd {re[i], im[i]};
+    y[i] = zd {re[i + 30], im[i + 30]};
+  }
+  for (const bool conjugate : {false, true}) {
+    zd forward {};
+    zd crossed {};
+    for (std::size_t i {0}; i < 10; ++i) {
+      const zd xi {conjugate ? std::conj(x[3 * i]) : x[3 * i]};
+      forward += xi * y[2 * i];
+      crossed += xi * y[2 * (9 - i)];
+    }
+    EXPECT(numerical::blas::complex_dot(conjugate, 10, x.data(), 3, y.data(), 2) == forward);
+    EXPECT(numerical::blas::complex_dot(conjugate, 10, x.data(), 3, y.data(), -2) == crossed);
+    EXPECT(numerical::blas::complex_dot(conjugate, 0, x.data(), 3, y.data(), 2) == zd {});
+  }
+  const int          ten {10};
+  const int          three {3};
+  const int          two {2};
+  const std::int64_t ten_w {10};
+  const std::int64_t three_w {3};
+  const std::int64_t two_w {2};
+  const auto         same {[](auto got, auto want) { return got.re == want.real() && got.im == want.imag(); }};
+  EXPECT(same(zdotu_(&ten, x.data(), &three, y.data(), &two), numerical::blas::complex_dot(false, 10, x.data(), 3, y.data(), 2)));
+  EXPECT(same(zdotc_(&ten, x.data(), &three, y.data(), &two), numerical::blas::complex_dot(true, 10, x.data(), 3, y.data(), 2)));
+  EXPECT(same(zdotu_64_(&ten_w, x.data(), &three_w, y.data(), &two_w), numerical::blas::complex_dot(false, 10, x.data(), 3, y.data(), 2)));
+  EXPECT(same(zdotc_64_(&ten_w, x.data(), &three_w, y.data(), &two_w), numerical::blas::complex_dot(true, 10, x.data(), 3, y.data(), 2)));
+  std::vector<std::complex<float>> xf(30);
+  std::vector<std::complex<float>> yf(30);
+  for (std::size_t i {0}; i < 30; ++i) {
+    xf[i] = std::complex<float> {static_cast<float>(re[i]), static_cast<float>(im[i])};
+    yf[i] = std::complex<float> {static_cast<float>(re[i + 30]), static_cast<float>(im[i + 30])};
+  }
+  EXPECT(same(cdotu_(&ten, xf.data(), &three, yf.data(), &two), numerical::blas::complex_dot(false, 10, xf.data(), 3, yf.data(), 2)));
+  EXPECT(same(cdotc_(&ten, xf.data(), &three, yf.data(), &two), numerical::blas::complex_dot(true, 10, xf.data(), 3, yf.data(), 2)));
+  EXPECT(same(cdotu_64_(&ten_w, xf.data(), &three_w, yf.data(), &two_w),
+              numerical::blas::complex_dot(false, 10, xf.data(), 3, yf.data(), 2)));
+  EXPECT(same(cdotc_64_(&ten_w, xf.data(), &three_w, yf.data(), &two_w),
+              numerical::blas::complex_dot(true, 10, xf.data(), 3, yf.data(), 2)));
+}
+
 TEST(dot_sums_the_products_with_any_increments)
 {
   const auto x        {entries(std::size_t {3} *100000, 79)}; // past one chunk of the parallel sum
@@ -2197,15 +2398,16 @@ namespace {
   template <typename T>
   bool typed_lu_reports()
   {
-    std::vector<T>   a    {T {1}, T {2}, T {}, T {}}; // second column zero: U(2, 2) = 0
-    std::vector<T>   b    {T {5}, T {6}};
+    std::vector<T>   a     {T {1}, T {2}, T {}, T {}}; // second column zero: U(2, 2) = 0
+    std::vector<T>   b     {T {5}, T {6}};
     std::vector<int> ipiv(2);
-    bool             good {numerical::blas::gesv(2, 1, a.data(), 2, ipiv.data(), b.data(), 2) == 2 && b[0] == T {5}};
+    bool             good  {numerical::blas::gesv(2, 1, a.data(), 2, ipiv.data(), b.data(), 2) == 2 && b[0] == T {5}};
     good = good && numerical::blas::gesv(-1, 1, a.data(), 2, ipiv.data(), b.data(), 2) == -1;
-    std::vector<T> nan    {T {1}, T {std::numeric_limits<float>::quiet_NaN()}, T {}, T {1}};
-    good = good && numerical::blas::gesv(2, 1, nan.data(), 2, ipiv.data(), b.data(), 2) == -3;
-    good = good && numerical::blas::getrf(2, 2, nan.data(), 2, ipiv.data()) == -3;
-    std::vector<T> tall   {T {}, T {}, T {}, T {1}, T {2}, T {3}}; // 3 × 2, first column zero
+    std::vector<T> nan     {T {1}, T {std::numeric_limits<float>::quiet_NaN()}, T {}, T {1}};
+    std::vector<T> nan_too {nan};
+    good = good && numerical::blas::gesv(2, 1, nan.data(), 2, ipiv.data(), b.data(), 2) == 0; // carried, as dgesv
+    good = good && numerical::blas::getrf(2, 2, nan_too.data(), 2, ipiv.data()) == 0;
+    std::vector<T> tall   {T {}, T {}, T {}, T {1}, T {2}, T {3}};                            // 3 × 2, first column zero
     good = good && numerical::blas::getrf(3, 2, tall.data(), 3, ipiv.data()) == 1;
     std::vector<T> square {T {1}, T {2}, T {}, T {}};
     good = good && numerical::blas::getrf(2, 2, square.data(), 2, ipiv.data()) == 2;
@@ -2236,7 +2438,8 @@ TEST(lu_routines_of_every_scalar_factorise_and_solve)
   EXPECT(typed_lu_reports<float>() && typed_lu_reports<std::complex<float>>() && typed_lu_reports<std::complex<double>>());
   std::vector<std::complex<double>> imaginary_infinity {{1.0, std::numeric_limits<double>::infinity()}}; // the real part finite
   std::vector<int>                  ipiv(1);
-  EXPECT_EQ(numerical::blas::getrf(1, 1, imaginary_infinity.data(), 1, ipiv.data()), -3);
+  EXPECT_EQ(numerical::blas::getrf(1, 1, imaginary_infinity.data(), 1, ipiv.data()), 0);                 // carried, as dgetf2
+  EXPECT(ipiv[0] == 1 && std::isinf(imaginary_infinity[0].imag()));
 }
 
 TEST(the_fortran_lu_routines_of_every_scalar_answer_as_the_cpp_ones)

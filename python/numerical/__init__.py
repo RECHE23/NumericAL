@@ -149,10 +149,14 @@ def get_include():
 def blas_library():
     """Return the path of the numerical_blas shared library, or ``None`` where the package carries none.
 
-    The library exports 34 BLAS and LAPACK routines under their Fortran names and calling convention (32-bit
-    integers): ``?gemm_``, ``?gesv_``, ``?getrf_``, ``?getrs_``, ``?potrf_`` and ``?potrs_`` in every precision
-    (``s``, ``d``, ``c``, ``z``), and ``ddot_``, ``dsyrk_``, ``dgemv_``, ``dtrsm_``, ``dsyevd_``, ``dgesdd_``,
-    ``dgeqrf_``, ``dorgqr_``, ``dgelsd_`` and ``dgeev_`` in double precision. Preloaded ahead of the system's BLAS and LAPACK, it answers those calls and leaves the others to them::
+    The library exports 39 BLAS and LAPACK routines under their Fortran names and calling convention:
+    ``?gemm_``, ``?gesv_``, ``?getrf_``, ``?getrs_``, ``?potrf_`` and ``?potrs_`` in every precision (``s``, ``d``,
+    ``c``, ``z``), ``sdot_``, ``ddot_``, ``cdotu_``, ``cdotc_``, ``zdotu_`` and ``zdotc_``, and ``dsyrk_``,
+    ``dgemv_``, ``dtrsm_``, ``dsyevd_``, ``dgesdd_``, ``dgeqrf_``, ``dorgqr_``, ``dgelsd_`` and ``dgeev_`` in double
+    precision; each with 32-bit integers (LP64), and again under its name ending in ``64_`` with 64-bit ones (ILP64,
+    as OpenBLAS's ``64_`` build), which Julia's libblastrampoline takes::
+
+        BLAS.lbt_forward(path; clear=false, suffix_hint="64_") Preloaded ahead of the system's BLAS and LAPACK, it answers those calls and leaves the others to them::
 
         LD_PRELOAD=$(python -c "import numerical; print(numerical.blas_library())") python script.py
 
