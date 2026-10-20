@@ -16,6 +16,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   stricter resolution of six references the headers now meet).
 
 ### Changed
+- **The NaN and infinity check before a decomposition runs on vectors** under GCC and Clang (eight values a step), where
+  GCC at the arm64 wheels' -O2 did not vectorise it at all: GCC 14 on one arm64 core, Cholesky of order 24 to 100 −11
+  to −17 % (order 33 2.58 → 2.18 µs, below 2026.10.25's 2.40); x86-64 GCC 13 -O3, the check itself −40 %.
 - **A `float` product runs on Apple's AMX** where the chip offers it, as a `double` one already did: tiles of 32 × 32
   in four 16 × 16 accumulators of fused multiply-adds, each element's terms in ascending order (the bits of the NEON
   tile, on one thread as on all). A narrow product with partial tiles stays on the NEON tile (`amx_suits_f32`); the

@@ -169,6 +169,25 @@ TEST(large_matrices_are_checked_for_non_finite_entries_on_the_threads)
   EXPECT(numerical::lu_decomposition<double> {finite}.determinant() > 0.0);
 }
 
+// A NaN or an infinity is found wherever it lies: in each of the eight lanes a step checks, and in the values past
+// the last whole step; the largest finite value and the smallest subnormal are finite.
+TEST(the_finiteness_check_sees_every_position)
+{
+  for (const std::size_t count : {std::size_t {7}, std::size_t {8}, std::size_t {19}}) {
+    std::vector<double> values(count, 1.5);
+    values.front() = std::numeric_limits<double>::max();
+    values.back()  = -std::numeric_limits<double>::denorm_min();
+    EXPECT(numerical::detail::all_finite(values.data(), count));
+    for (std::size_t at {0}; at < count; ++at) {
+      for (const double bad : {std::numeric_limits<double>::quiet_NaN(), -std::numeric_limits<double>::infinity()}) {
+        std::vector<double> flawed {values};
+        flawed[at] = bad;
+        EXPECT(!numerical::detail::all_finite(flawed.data(), count));
+      }
+    }
+  }
+}
+
 TEST(factorisation_rejects_singular_and_non_square)
 {
   const matrix<double> singular   {{1.0, 2.0}, {2.0, 4.0}};
