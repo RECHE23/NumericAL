@@ -1973,8 +1973,12 @@ TEST(float_dot_sums_as_the_double_one)
 {
   const std::vector<double> xd      {entries(3000, 61)};
   const std::vector<double> yd      {entries(3000, 62)};
-  const std::vector<float>  x       {xd.begin(), xd.end()};
-  const std::vector<float>  y       {yd.begin(), yd.end()};
+  std::vector<float>        x(3000);
+  std::vector<float>        y(3000);
+  for (std::size_t i {0}; i < 3000; ++i) {
+    x[i] = static_cast<float>(xd[i]);
+    y[i] = static_cast<float>(yd[i]);
+  }
   float                     strided {0.0F};
   for (std::size_t i {0}; i < 1000; ++i) {
     strided += x[3 * i] * y[2 * (999 - i)];
