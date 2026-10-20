@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.26 — 2026-10-20
+
 ### Development
 - `NOTICE` credits LAPACK, whose routines several algorithms follow closely, with its BSD license; the wheels and the
   sdist carry it beside `LICENSE`.
