@@ -8,6 +8,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Development
+- The AVX-512 emulator's run is a workflow of its own (`avx512.yml`): on a push that touches the x86-64 kernels,
+  weekly, on demand, and required on the commit a release tags (`RELEASE_CI`), where every push waited on its sixteen
+  minutes; the C++ suite runs once under the emulator, instrumented for `coverage-x86`, where it ran twice.
+
 ## 2026.10.28 — 2026-10-20
 
 ### Changed

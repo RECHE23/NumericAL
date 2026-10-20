@@ -106,53 +106,6 @@ jobs:
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s "$RUNNER_TEMP"/unpacked/numeric_al-*/python/tests
 
-  # The AVX-512 kernels, which no hosted runner is sure to have: the C++ suite and a fuzz campaign under Intel's
-  # Software Development Emulator as a Skylake server, which cpuid then reports. The run fails unless the kernel
-  # in use is "avx512", so an emulator that stopped emulating cannot pass for one.
-  avx512:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    env:
-      SDE_URL: https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
-      SDE_SHA256: 94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50
-    steps:
-      - uses: actions/checkout@v6
-      - uses: actions/checkout@v6
-        with:
-          repository: RECHE23/sciforge
-          ref: v2026.10.6
-          path: sciforge
-      - uses: actions/setup-python@v6
-        with:
-          python-version: '3.14'
-      - name: Fetch the emulator
-        run: |
-          curl -sSfL -A 'Mozilla/5.0' -o "$RUNNER_TEMP/sde.tar.xz" "$SDE_URL"
-          echo "$SDE_SHA256  $RUNNER_TEMP/sde.tar.xz" | sha256sum -c -
-          mkdir "$RUNNER_TEMP/sde" && tar -xJf "$RUNNER_TEMP/sde.tar.xz" -C "$RUNNER_TEMP/sde" --strip-components=1
-      - name: Build the tests and the extension
-        run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSCIFORGE_INCLUDE_DIR="$PWD/sciforge/include"
-          cmake --build build -j4
-          python -m pip install numpy setuptools
-          SCIFORGE_INCLUDE="$PWD/sciforge/include" python setup.py -q build_ext --inplace --force
-      - name: The C++ suite and a fuzz campaign on the AVX-512 kernels
-        env:
-          PYTHONPATH: python
-        run: |
-          sde="$RUNNER_TEMP/sde/sde64 -skx --"
-          path=$($sde python -c 'import numerical; print(numerical.gemm_path())')
-          test "$path" = avx512 || { echo "::error::the emulated processor runs the $path kernel, not avx512"; exit 1; }
-          $sde build/numerical_tests_bin
-          $sde python fuzz/linalg.py --cases 60
-      # The macOS gate's 100 % coverage does not compile x86.hpp: here every line and function of it must run, the
-      # tests taking every path the emulated processor has.
-      - name: Every line of the x86-64 kernels run, under the emulator
-        run: >
-          make coverage-x86 COV_CXX=clang++-18 LLVM_COV=llvm-cov-18 PROFDATA=llvm-profdata-18
-          SCIFORGE_INCLUDE="$PWD/sciforge/include" SCIFORGE_LINT="$PWD/sciforge/lint"
-          COV_RUN="$RUNNER_TEMP/sde/sde64 -skx --"
-
   # The Python suite on arm64 Linux, built by GCC as the aarch64 wheels are. GCC fuses a multiply and an add
   # wherever a fused multiply-add exists, across statements: a result held to NumPy's to the bit (linspace)
   # differed there alone, which no x86-64 or Clang leg can see.

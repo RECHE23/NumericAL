@@ -328,6 +328,8 @@ QUALITY_RELEASE  := bench-diff fuzz-linalg
 # release first (SKIP_BENCH_DIFF=1, or SKIP_PRECHECK=1, to release anyway), CI green on the commit tagged.
 RELEASE_FILES    := pyproject.toml python/numerical/__init__.py
 # ci.yml's paths-ignore: a HEAD changed in those paths alone is judged by ci.yml's run before it.
+# The AVX-512 emulator's run, which pushes outside the x86-64 kernels skip, must also have passed on the commit tagged.
+RELEASE_CI       := ci.yml avx512.yml
 RELEASE_CI_IGNORED := *.md docs/*
 RELEASE_PRECHECK := $(if $(SKIP_BENCH_DIFF),,bench-diff)
 -include $(SCIFORGE_MAKE)/release.mk
