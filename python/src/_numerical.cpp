@@ -998,27 +998,29 @@ any_tensor solve(const any_tensor& a, const any_tensor& b)
 // rounded): a stack's determinants, stacked.
 any_tensor determinant_tensor(const any_tensor& m)
 {
-    const any_tensor wide {widened(m)};
-    const any_tensor value {is_complex(wide)
-                                ? any_tensor {cplx_tensor {{}, numerical::buffer<std::complex<double>> {numerical::determinant(matrix_from(std::get<cplx_tensor>(wide)))}}}
-                                : any_tensor {real_tensor {{}, numerical::buffer<double> {numerical::determinant(matrix_from(std::get<real_tensor>(wide)))}}}};
-    return is_single(m) ? narrowed(value) : value;
+    // A double matrix read as it is: widened() would copy it whole for nothing (8 MiB at order 1024).
+    const auto of = [](const any_tensor& wide) {
+        return is_complex(wide)
+                   ? any_tensor {cplx_tensor {{}, numerical::buffer<std::complex<double>> {numerical::determinant(matrix_from(std::get<cplx_tensor>(wide)))}}}
+                   : any_tensor {real_tensor {{}, numerical::buffer<double> {numerical::determinant(matrix_from(std::get<real_tensor>(wide)))}}};
+    };
+    return is_single(m) ? narrowed(of(widened(m))) : of(m);
 }
 
 // The sign (of `m`'s dtype) and the logarithm of the magnitude (real, of its precision) of the matrix `m`'s
 // determinant, as rank-0 tensors: a stack's, stacked.
 std::tuple<any_tensor, any_tensor> slogdet_tensors(const any_tensor& m)
 {
-    const any_tensor wide {widened(m)};
-    const auto       value {[&]() -> std::tuple<any_tensor, any_tensor> {
+    // As determinant_tensor: a double matrix read as it is.
+    const auto of = [](const any_tensor& wide) -> std::tuple<any_tensor, any_tensor> {
         if (is_complex(wide)) {
             const auto [sign, logarithm] {numerical::lu_decomposition<std::complex<double>> {matrix_from(std::get<cplx_tensor>(wide))}.log_determinant()};
             return {cplx_tensor {{}, numerical::buffer<std::complex<double>> {sign}}, real_tensor {{}, numerical::buffer<double> {logarithm}}};
         }
         const auto [sign, logarithm] {numerical::lu_decomposition<double> {matrix_from(std::get<real_tensor>(wide))}.log_determinant()};
         return {real_tensor {{}, numerical::buffer<double> {sign}}, real_tensor {{}, numerical::buffer<double> {logarithm}}};
-    }()};
-    return is_single(m) ? narrowed(value) : value;
+    };
+    return is_single(m) ? narrowed(of(widened(m))) : of(m);
 }
 
 // determinant(a) -> float or complex: a dtype-dependent scalar (a variant return no single

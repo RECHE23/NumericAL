@@ -180,6 +180,19 @@ class SinglePrecisionLinearAlgebra(unittest.TestCase):
         self.close(x, want[0], "float32")
         self.assertEqual((residuals.dtype, rank, s.dtype), ("float32", 4, "float32"))
 
+    def test_det_and_slogdet_of_single_precision_are_the_double_answer_rounded(self):
+        # The single-precision matrix's values in double, the answer rounded to single, to the bit (a plain number).
+        # Compared as Python numbers: NumPy 2 would round a Python float to float32 to compare it with one.
+        rng = np.random.default_rng(7)
+        real = rng.standard_normal((6, 6)).astype(np.float32)
+        for single, rounded, number in ((real, np.float32, float), ((real + 1j * real.T).astype(np.complex64), np.complex64, complex)):
+            double = single.astype(np.complex128 if rounded is np.complex64 else np.float64)
+            self.assertEqual(numerical.det(single), number(rounded(numerical.det(double))))
+            sign, logarithm = numerical.slogdet(single)
+            wide_sign, wide_logarithm = numerical.slogdet(double)
+            self.assertEqual(sign, number(rounded(wide_sign)))
+            self.assertEqual(logarithm, float(np.float32(wide_logarithm)))
+
     def test_a_rank_counts_float32_s_rounding_as_zero(self):
         # σ = 1, 1e-9: zero at float32's precision (NumPy's own float32 rank says 1), not at float64's.
         a = np.diag([1.0, 1e-9]).astype(np.float32)
