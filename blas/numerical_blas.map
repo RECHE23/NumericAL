@@ -1,0 +1,7 @@
+/* The symbols numerical_blas exports: the Fortran routines, lowercase names ending in an underscore. The C++ ones
+   (the standard library's instantiations, mangled from _Z) stay local, so a library preloaded beside another build
+   of NumericAL binds none of that build's code to its own. */
+{
+  global: [a-z]*_;
+  local: *;
+};

@@ -54,33 +54,54 @@ jobs:
       enable-windows: true
       pre-install: numpy
 
-  # The optional numerical_blas library under a real BLAS/LAPACK consumer: Ubuntu's NumPy, linked against the system's
-  # libblas.so.3 and liblapack.so.3, with the library in LD_PRELOAD. Its answers are checked, and the dynamic linker's
-  # bindings show NumPy's dgesv_ and dpotrf_, and the reference BLAS's dgemm_, resolved to it.
+  # The numerical_blas library the Linux wheel carries, under a real BLAS/LAPACK consumer: Ubuntu's NumPy and SciPy,
+  # linked against the system's libblas.so.3 and liblapack.so.3, with numerical.blas_library() in LD_PRELOAD. Its
+  # answers are checked, the dynamic linker's bindings show NumPy's calls resolved to it, and it exports the Fortran
+  # routines alone, as CMake's -DNUMERICAL_BUILD_BLAS=ON build of it does.
   blas-preload:
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - name: Install the system's NumPy and SciPy and build numerical_blas
+      - uses: actions/checkout@v6
+        with:
+          repository: RECHE23/sciforge
+          ref: v2026.10.6
+          path: sciforge
+      - name: Install the system's NumPy and SciPy, build the wheel and install it beside them
         run: |
           sudo apt-get update -q
-          sudo apt-get install -y -q python3-numpy python3-scipy python3-pytest python3-hypothesis cmake g++
-          cmake -S . -B build -DNUMERICAL_BUILD_BLAS=ON -DNUMERICAL_FETCH_SCIFORGE=ON -DSCIFORGE_REPO=https://github.com/RECHE23/sciforge.git -DCMAKE_BUILD_TYPE=Release
-          cmake --build build --target numerical_blas -j4
+          sudo apt-get install -y -q python3-numpy python3-scipy python3-pytest python3-hypothesis python3-venv cmake g++
+          /usr/bin/python3 -m venv --system-site-packages /tmp/venv
+          /tmp/venv/bin/pip install -q setuptools wheel
+          SCIFORGE_INCLUDE="$PWD/sciforge/include" /tmp/venv/bin/pip wheel -q --no-build-isolation --no-deps -w dist .
+          /tmp/venv/bin/pip install -q --no-deps dist/*.whl
+          echo "BLAS_LIBRARY=$(cd /tmp && /tmp/venv/bin/python -c 'import numerical; print(numerical.blas_library())')" >> "$GITHUB_ENV"
+      - name: The library from Python, and the Fortran routines alone exported
+        working-directory: /tmp
+        run: |
+          /tmp/venv/bin/python -m unittest discover -s "$GITHUB_WORKSPACE/python/tests" -p test_blas_library.py -v
+          cmake -S "$GITHUB_WORKSPACE" -B cmake-build -DNUMERICAL_BUILD_BLAS=ON -DSCIFORGE_INCLUDE_DIR="$GITHUB_WORKSPACE/sciforge/include" -DCMAKE_BUILD_TYPE=Release
+          cmake --build cmake-build --target numerical_blas -j4
+          for library in "$BLAS_LIBRARY" cmake-build/libnumerical_blas.so; do
+            symbols=$(nm -D --defined-only "$library" | awk '{print $3}')
+            others=$(echo "$symbols" | grep -v -E '^[a-z]+_$' || true)
+            [ -z "$others" ] || { echo "$library exports more than the Fortran routines:"; echo "$others"; exit 1; }
+            [ "$(echo "$symbols" | wc -l)" -eq 34 ] || { echo "$library: $(echo "$symbols" | wc -l) routines, not 34"; exit 1; }
+          done
       - name: NumPy's answers with numerical_blas preloaded
-        run: LD_PRELOAD="$PWD/build/libnumerical_blas.so" /usr/bin/python3 blas/preload_check.py
+        run: LD_PRELOAD="$BLAS_LIBRARY" /tmp/venv/bin/python blas/preload_check.py
       - name: NumPy's calls bound to numerical_blas
         run: |
-          LD_PRELOAD="$PWD/build/libnumerical_blas.so" LD_DEBUG=bindings /usr/bin/python3 blas/preload_check.py 2> bindings.txt
+          LD_PRELOAD="$BLAS_LIBRARY" LD_DEBUG=bindings /tmp/venv/bin/python blas/preload_check.py 2> bindings.txt
           for symbol in dgesv_ dpotrf_ dgemm_ dsyevd_ dgesdd_ dgeqrf_ dorgqr_ dgelsd_ dgeev_ dsyrk_ dgemv_ ddot_ dtrsm_ sgemm_ cgemm_ zgemm_ sgesv_ cgesv_ zgesv_ sgetrf_ cgetrf_ zgetrf_ spotrf_ cpotrf_ zpotrf_; do
-            grep -q "to $PWD/build/libnumerical_blas.so \[0\]: normal symbol \`$symbol'" bindings.txt || { echo "$symbol not bound to numerical_blas"; exit 1; }
+            grep -q "to $BLAS_LIBRARY \[0\]: normal symbol \`$symbol'" bindings.txt || { echo "$symbol not bound to numerical_blas"; exit 1; }
           done
       # The reference LAPACK calls the BLAS it is linked with: preloaded, its routines run on numerical_blas's too, and
       # NumPy's and SciPy's own linear algebra suites check both.
       - name: NumPy's and SciPy's linear algebra test suites with numerical_blas preloaded
         working-directory: /tmp
-        run: LD_PRELOAD="$GITHUB_WORKSPACE/build/libnumerical_blas.so" /usr/bin/python3 -m pytest -q -p no:cacheprovider --pyargs numpy.linalg scipy.linalg
+        run: LD_PRELOAD="$BLAS_LIBRARY" /tmp/venv/bin/python -m pytest -q -p no:cacheprovider --pyargs numpy.linalg scipy.linalg
 
   # A platform without a wheel (free-threaded CPython, ppc64le, s390x, BSD…) builds the
   # sdist: it must hold everything the build reads. Built, installed from source in a

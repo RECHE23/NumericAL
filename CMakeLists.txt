@@ -66,7 +66,11 @@ option(NUMERICAL_BUILD_BLAS "Build the numerical_blas shared library (a BLAS/LAP
 if(NUMERICAL_BUILD_BLAS)
     add_library(numerical_blas SHARED blas/numerical_blas.cpp)
     target_link_libraries(numerical_blas PRIVATE numerical::numerical)
-    set_target_properties(numerical_blas PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON VERSION ${PROJECT_VERSION})
+    set_target_properties(numerical_blas PROPERTIES CXX_STANDARD 20 CXX_STANDARD_REQUIRED ON VERSION ${PROJECT_VERSION}
+                                                    CXX_VISIBILITY_PRESET hidden)
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(numerical_blas PRIVATE "LINKER:--version-script=${CMAKE_CURRENT_SOURCE_DIR}/blas/numerical_blas.map")
+    endif()
 endif()
 
 include(GNUInstallDirs)

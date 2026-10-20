@@ -117,10 +117,10 @@ Small and complete, grown measured, honest about what is not yet here:
 - `numerical::blas` (`blas.hpp`) — `dot`, `gemm` (of `float`, `double` and their complex numbers), `syrk`, `gemv`,
   `trsm`, `gesv`, `getrf`, `getrs`, `potrf` and `potrs` (the last five, as `gemm`, of `float`, `double` and their
   complex numbers), `syevd`, `gesdd`, `geqrf`, `orgqr`, `gelsd` and `geev` with the column-major semantics of BLAS's
-  `ddot`, `dgemm`, `dsyrk`, `dgemv` and `dtrsm` and LAPACK's routines of those names; built with
-  `-DNUMERICAL_BUILD_BLAS=ON`, the `numerical_blas` shared library exports them as `dgemm_`, `dgesv_`… (Fortran calling
-  convention, 32-bit integers), to stand in for those routines under a program linked against BLAS and LAPACK
-  (`LD_PRELOAD`) or a switch such as FlexiBLAS.
+  `ddot`, `dgemm`, `dsyrk`, `dgemv` and `dtrsm` and LAPACK's routines of those names; the `numerical_blas` shared
+  library exports them as `dgemm_`, `dgesv_`… (Fortran calling convention, 32-bit integers), to stand in for those
+  routines under a program linked against BLAS and LAPACK (`LD_PRELOAD`) or a switch such as FlexiBLAS. The Linux
+  wheels carry it (see *BLAS and LAPACK for other programs*); CMake builds it with `-DNUMERICAL_BUILD_BLAS=ON`.
 
 **Grows in as measured:** sparse storage, banded and LDLᵀ factorisations, the rest of the BLAS/LAPACK interface,
 FFT, numeric autodiff, iterative solvers, numerical integration, arbitrary precision.
@@ -271,6 +271,27 @@ located through its Python install. `make python` builds the extension in place;
 fuzzer** that checks hundreds of random einsum specifications and linear-algebra
 problems against NumPy within tolerance (when NumPy is importable, as in CI). PETSc (petsc4py) has no such exchange protocol — bridging it
 would require an explicit copy into a PETSc object.
+
+### BLAS and LAPACK for other programs
+
+**Experimental.** The Linux wheels carry `numerical_blas`, a shared library of 34 BLAS and LAPACK routines under
+their Fortran names: `?gemm_`, `?gesv_`, `?getrf_`, `?getrs_`, `?potrf_` and `?potrs_` in the four precisions, and
+`ddot_`, `dsyrk_`, `dgemv_`, `dtrsm_`, `dsyevd_`, `dgesdd_`, `dgeqrf_`, `dorgqr_`, `dgelsd_` and `dgeev_` (32-bit
+integers, gfortran's calling convention). `numerical.blas_library()` gives its path (`None` on macOS and Windows,
+where the wheels carry none: macOS's dyld binds each routine a program imports to the library that provides it,
+which a library inserted by `DYLD_INSERT_LIBRARIES`, `DYLD_FORCE_FLAT_NAMESPACE` or not, does not replace; there,
+CMake's build is linked by name, `-lnumerical_blas`). Preloaded, it answers those calls in a program linked against the system's BLAS and
+LAPACK, which keep every other routine:
+
+```bash
+LD_PRELOAD=$(python -c "import numerical; print(numerical.blas_library())") python script.py
+```
+
+The program must call BLAS by those names: a NumPy or SciPy from the system's packages (Debian, Ubuntu, Fedora…) or
+from FlexiBLAS, R, Octave, a Fortran or C program. NumPy and SciPy wheels from PyPI carry an OpenBLAS whose symbols
+are renamed, which a preloaded library does not reach. Importing `numerical` never loads it. Its routines run
+NumPy's and SciPy's linear algebra test suites in CI; an argument is checked as the reference BLAS checks it (the
+reference XERBLA's message, then the call returns).
 
 ## Threads and kernels
 

@@ -10,6 +10,13 @@
 
 #include "numerical/blas.hpp"
 
+// Built with hidden visibility (the wheels' library), only these Fortran routines are visible: NumericAL's own
+// functions, declared above, stay inside, where no other library in the process can bind to them
+// (numerical_blas.map hides the standard library's instantiations, which keep their default visibility).
+#if defined(__GNUC__)
+#pragma GCC visibility push(default)
+#endif
+
 namespace {
   //! \brief The reference XERBLA's message for the illegal argument \p position of the routine \p name.
   void report_illegal(const char* name,
@@ -737,3 +744,7 @@ void dgeev_(const char*   jobvl,
   }
 }
 }
+
+#if defined(__GNUC__)
+#pragma GCC visibility pop
+#endif

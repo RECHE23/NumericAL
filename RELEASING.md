@@ -47,13 +47,14 @@ What the policy above protects, and what it does not:
 - **Stable — C++.** Every name in namespace `numerical` that `<numerical/numerical.hpp>` brings in (`matrix`,
   `vector`, `tensor`, the decompositions and their results, the free functions, the exceptions,
   `set_max_threads`, `max_threads`), with its signature, its defaults and the meaning of its answer.
-- **Stable — Python.** Every name in `numerical.__all__` but the three below, with NumPy's semantics where the
+- **Stable — Python.** Every name in `numerical.__all__` but the four below, with NumPy's semantics where the
   name is NumPy's and the divergences the README lists (a NaN or an infinity raises; `float32` stays `float32`).
 - **Tuning, not a contract.** `gemm_path`, `limit_gemm_path` and `get_config` (Python), `limit_gemm_path` and
   `gemm_path_in_use` (C++), the `NUMERICAL_GEMM` variable: they name the kernels this release has, which a later
   one may add to, rename or retire.
-- **Experimental.** `numerical_blas`, the BLAS/LAPACK ABI library: built from source on request
-  (`-DNUMERICAL_BUILD_BLAS=ON`), shipped in no wheel, its routines and their coverage still growing.
+- **Experimental.** `numerical_blas`, the BLAS/LAPACK ABI library, and `numerical.blas_library()`, which locates it:
+  carried by the Linux wheels and built by CMake on request (`-DNUMERICAL_BUILD_BLAS=ON`), its routines and their
+  coverage still growing.
 - **Internal.** Namespace `numerical::detail`, every `NUMERICAL_*` macro, and the layout of the headers
   themselves (include `<numerical/numerical.hpp>`, not a file within it).
 - **The answers.** On one build, the same input gives the same bits on any number of threads. Across releases a

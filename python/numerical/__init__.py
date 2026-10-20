@@ -44,7 +44,7 @@ __all__ = [
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
-    "get_include", "get_config",
+    "get_include", "get_config", "blas_library",
 ]
 
 
@@ -144,6 +144,28 @@ def get_include():
     if _os.path.isdir(_os.path.join(packaged, "numerical")):
         return packaged
     return _os.path.normpath(_os.path.join(here, _os.pardir, _os.pardir, "include"))
+
+
+def blas_library():
+    """Return the path of the numerical_blas shared library, or ``None`` where the package carries none.
+
+    The library exports 34 BLAS and LAPACK routines under their Fortran names and calling convention (32-bit
+    integers): ``?gemm_``, ``?gesv_``, ``?getrf_``, ``?getrs_``, ``?potrf_`` and ``?potrs_`` in every precision
+    (``s``, ``d``, ``c``, ``z``), and ``ddot_``, ``dsyrk_``, ``dgemv_``, ``dtrsm_``, ``dsyevd_``, ``dgesdd_``,
+    ``dgeqrf_``, ``dorgqr_``, ``dgelsd_`` and ``dgeev_`` in double precision. Preloaded ahead of the system's BLAS and LAPACK, it answers those calls and leaves the others to them::
+
+        LD_PRELOAD=$(python -c "import numerical; print(numerical.blas_library())") python script.py
+
+    A program reaches it only through a BLAS it calls by those names: a NumPy or SciPy installed by the system's
+    package manager or switched by FlexiBLAS, not the wheels from PyPI, whose OpenBLAS is renamed inside them.
+    Importing :mod:`numerical` never loads it. It is built for Linux alone; elsewhere this returns ``None``.
+    Experimental: its routines are checked by NumPy's and SciPy's linear algebra suites, and more may join.
+
+    Returns:
+        str | None: Absolute path to ``libnumerical_blas.so``, or ``None``.
+    """
+    path = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "libnumerical_blas.so")
+    return path if _os.path.isfile(path) else None
 
 
 def get_config():

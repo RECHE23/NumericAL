@@ -8,6 +8,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **The Linux wheels carry `numerical_blas`** (experimental), the BLAS and LAPACK routines under their Fortran names —
+  `?gemm_`, `?gesv_`, `?getrf_`, `?getrs_`, `?potrf_` and `?potrs_` in the four precisions, `ddot_`, `dsyrk_`,
+  `dgemv_`, `dtrsm_`, `dsyevd_`, `dgesdd_`, `dgeqrf_`, `dorgqr_`, `dgelsd_` and `dgeev_` — and
+  `numerical.blas_library()` gives its path, for `LD_PRELOAD` under a program linked against the system's BLAS and
+  LAPACK (a NumPy or SciPy from the system's packages, R, Octave) or a switch such as FlexiBLAS; the import never loads
+  it. It exports those routines alone (CMake's build of it too), so a process holding another build of NumericAL binds
+  none of its code to the library's. The wheel grows by about 0.6 MB.
+
 ### Development
 - The AVX-512 emulator's run is a workflow of its own (`avx512.yml`): on a push that touches the x86-64 kernels,
   weekly, on demand, and required on the commit a release tags (`RELEASE_CI`), where every push waited on its sixteen

@@ -19,7 +19,7 @@ vulnerability reporting). Do **not** open a public issue for a security report.
 ## Threat model
 
 NumericAL is a dense linear-algebra library: a header-only C++20 core, an abi3 Python binding
-(`numeric-al`) and a BLAS/LAPACK ABI library (`numerical_blas`, built from source on request). Its input is
+(`numeric-al`) and a BLAS/LAPACK ABI library (`numerical_blas`, in the Linux wheels and built by CMake on request). Its input is
 numbers and shapes, and the boundary is the same through all three.
 
 **Values.** Any value is accepted, adversarial ones included (extreme scales, denormals, exact integers,

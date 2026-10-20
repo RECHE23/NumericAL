@@ -5,9 +5,11 @@
 import os
 import platform
 import shutil
+import subprocess
 import sys
 
 from setuptools import Extension, setup
+from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
 
 try:  # setuptools >= 70.1 vendors bdist_wheel; older installs get it from wheel
@@ -75,8 +77,29 @@ else:
     compile_args = ["-std=c++20", level, "-g0", "-fvisibility=hidden", "-pthread", "-ffp-contract=on"]
     link_args = ["-pthread"]  # parallel.hpp uses std::thread
 
+
+class build_ext_with_blas(build_ext):
+    """Builds, beside the extension, the numerical_blas library (blas/numerical_blas.cpp): the BLAS and LAPACK
+    routines under their Fortran names, for a program linked against those libraries (LD_PRELOAD, FlexiBLAS, the
+    system's alternatives). On Linux alone, where a library preloaded or switched in takes the place of the
+    system's; numerical.blas_library() gives its path."""
+
+    def run(self):
+        super().run()
+        if not sys.platform.startswith("linux"):
+            return
+        package = os.path.dirname(self.get_ext_fullpath("numerical._numerical"))
+        os.makedirs(package, exist_ok=True)
+        library = os.path.join(package, "libnumerical_blas.so")
+        command = [*self.compiler.compiler_cxx, *compile_args, "-fPIC", "-shared", "-Iinclude",
+                   os.path.join("blas", "numerical_blas.cpp"), "-o", library, *link_args,
+                   "-Wl,--version-script=" + os.path.join("blas", "numerical_blas.map")]
+        self.announce(" ".join(command), level=2)
+        subprocess.run(command, check=True)
+
+
 setup(
-    cmdclass={"bdist_wheel": abi3_wheel, "build_py": build_py_with_headers},
+    cmdclass={"bdist_wheel": abi3_wheel, "build_ext": build_ext_with_blas, "build_py": build_py_with_headers},
     ext_modules=[
         Extension(
             "numerical._numerical",
