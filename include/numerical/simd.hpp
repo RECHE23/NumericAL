@@ -354,9 +354,11 @@ namespace numerical::detail {
 
   /*!
    * \brief The leading elements of `y[i] -= Σₜ f[t] · x[(t · ldx) + i]`, a whole number of blocks of four native
-   *        vectors held through the terms: how many it did. Each element takes the scalar statement's arithmetic, a
-   *        term at a time in ascending order. GCC leaves the scalar block of \ref subtract_products unvectorised;
-   *        each lane moves in and out alone, as \ref gemm_kernel's do.
+   *        vectors held through the terms: how many it did. Each element takes its terms in ascending order, a
+   *        product then a difference: GCC fuses no multiply-add of its vectors, though under `-ffp-contract=on` it
+   *        fuses the scalar statement of the elements past them (arm64), so a row's elements may be rounded two ways,
+   *        the split set by the count alone (the same bits on any number of threads). GCC leaves the scalar block of
+   *        \ref subtract_products unvectorised; each lane moves in and out alone, as \ref gemm_kernel's do.
    */
   template <native_scalar T>
   std::size_t subtract_combined_vectors(T*          y,
@@ -395,8 +397,8 @@ namespace numerical::detail {
 
   /*!
    * \brief The leading columns of \ref subtract_rows, a whole number of native vectors, one per row held through the
-   *        terms: how many it did. Each element takes the scalar statement's arithmetic, a term at a time in ascending
-   *        order, as \ref subtract_combined_vectors's. GCC keeps the scalar block's rows in memory.
+   *        terms: how many it did. Each element takes its terms in ascending order and is rounded as
+   *        \ref subtract_combined_vectors's are. GCC keeps the scalar block's rows in memory.
    */
   template <native_scalar T>
   std::size_t subtract_rows_vectors(T*          y,
@@ -648,8 +650,10 @@ namespace numerical::detail {
   /*!
    * \brief \ref subtract_products for a real `T`: eight elements of \p y held in a local array through the terms,
    *        which the compiler keeps in registers, where each term was a call through the whole row. Each element
-   *        takes the same statement in the same order, so the same value (an LU solve of order 64 and four columns
-   *        on arm64: 18 → 8.5 µs).
+   *        takes its terms in the same order as a sequence of \ref subtract_product gives them (an LU solve of order
+   *        64 and four columns on arm64: 18 → 8.5 µs), and the same value under Clang, and under GCC on x86-64, which
+   *        fuses neither; under GCC on arm64 the vectors of \ref subtract_combined_vectors and
+   *        \ref subtract_scaled_vectors round apart and the scalar statements fused, and their splits differ.
    */
   template <typename T>
   requires std::is_floating_point_v<T>
