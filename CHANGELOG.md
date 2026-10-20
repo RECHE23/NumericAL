@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.28 — 2026-10-20
+
 ### Changed
 - **The reductions behind `eigh`, `eigvalsh`, `svd` and `svdvals` share their steps' serial work with the threads**:
   each step of a panel computes its coefficients among the threads' matrix-vector products, then takes its
