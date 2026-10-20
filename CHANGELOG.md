@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.27 — 2026-10-20
+
 ### Changed
 - **A `float32` product runs on the AVX2 and AVX-512 tiles on x86-64**, where it ran on the portable path (the wheels'
   baseline SSE2, no fused multiply-add): tiles of 6 × 16 and 12 × 32 with each term fused in ascending order, and the
