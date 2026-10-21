@@ -2561,6 +2561,8 @@ bool asarray_from_struct(PyObject* obj, std::optional<std::size_t> wanted, PyObj
 // NPY_ARRAY_C_CONTIGUOUS and NPY_ARRAY_ALIGNED: the elements row-major with no gaps, each at an address of its type's
 // alignment.
 constexpr int array_c_contiguous {0x1};
+// NPY_ARRAY_F_CONTIGUOUS: the elements column-major with no gaps (a transposed C array).
+constexpr int array_f_contiguous {0x2};
 constexpr int array_aligned {0x100};
 
 // An operand a product reads where it lies: a Tensor's elements, or a NumPy array's (through its __array_struct__) when
@@ -2572,6 +2574,7 @@ struct borrowed_operand
     std::size_t              dtype {0}; // the any_tensor index of the elements' type
     std::vector<std::size_t> shape;
     const void*              data {nullptr};
+    bool                     transposed {false}; // a matrix whose elements run column-major (borrow_operand's columns)
 
     borrowed_operand() = default;
     borrowed_operand(const borrowed_operand&) = delete;
@@ -2579,8 +2582,10 @@ struct borrowed_operand
     ~borrowed_operand() { Py_XDECREF(owner); }
 };
 
-// Whether `obj` is read where it lies, into `out`; false (no error set) when it is not a Tensor or such an array.
-bool borrow_operand(PyObject* obj, borrowed_operand& out)
+// Whether `obj` is read where it lies, into `out`; false (no error set) when it is not a Tensor or such an array. With
+// `columns`, a matrix whose elements run column-major (Fortran order, a transpose) is read too, `out.transposed` set:
+// for a caller whose answer does not depend on the order the elements lie in.
+bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false)
 {
     if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
         const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
@@ -2600,7 +2605,11 @@ bool borrow_operand(PyObject* obj, borrowed_operand& out)
     }
     const auto* view {static_cast<const array_struct*>(PyCapsule_GetPointer(capsule, nullptr))};
     constexpr int needed {array_c_contiguous | array_aligned | array_not_swapped};
-    const bool    usable {view != nullptr && view->two == 2 && view->data != nullptr && (view->flags & needed) == needed};
+    constexpr int needed_columns {array_f_contiguous | array_aligned | array_not_swapped};
+    const bool    rows_usable {view != nullptr && view->two == 2 && view->data != nullptr && (view->flags & needed) == needed};
+    const bool    columns_usable {columns && !rows_usable && view != nullptr && view->two == 2 && view->data != nullptr && view->nd == 2
+                                  && (view->flags & needed_columns) == needed_columns};
+    const bool    usable {rows_usable || columns_usable};
     if (view == nullptr) {
         PyErr_Clear();
     }
@@ -2611,9 +2620,10 @@ bool borrow_operand(PyObject* obj, borrowed_operand& out)
         Py_DECREF(capsule);
         return false;
     }
-    out.owner = capsule;
-    out.dtype = static_cast<std::size_t>(dtype);
-    out.data  = view->data;
+    out.owner      = capsule;
+    out.dtype      = static_cast<std::size_t>(dtype);
+    out.data       = view->data;
+    out.transposed = columns_usable;
     for (int axis = 0; axis < view->nd; ++axis) {
         out.shape.push_back(static_cast<std::size_t>(view->shape[axis]));
     }
@@ -2648,12 +2658,55 @@ PyObject* module_borrowed_norm(PyObject* /*self*/, PyObject* obj)
     return PyFloat_FromDouble(x.dtype >= 2 ? static_cast<double>(static_cast<float>(*norm)) : *norm);
 }
 
+// The product of two float64 matrices read where they lie, one or both column-major: packed from there by gemm's
+// layouts (gemm_at, gemm_bt, gemm_atbt), its tiles gemm's and so its bits, where the column-major one was copied first
+// (NumPy passes BLAS the transpose; a 300 × 300 product of a transposed operand copied 0.7 MB). Every other product
+// with such an operand (another dtype, a vector, a single row or column, whose kernels sum in their own order) is
+// left to the converting path: none.
+std::optional<PyObject*> borrowed_transposed_product(const borrowed_operand& left, const borrowed_operand& right)
+{
+    if (left.dtype != 0 || left.shape.size() != 2 || right.shape.size() != 2 || left.shape[1] != right.shape[0]) {
+        return std::nullopt;
+    }
+    const std::size_t m {left.shape[0]};
+    const std::size_t k {left.shape[1]};
+    const std::size_t n {right.shape[1]};
+    if (m < 2 || n < 2 || k == 0) {
+        return std::nullopt;
+    }
+    try {
+        numerical::buffer<double> c(m * n);
+        {
+            const sb::scoped_gil_release unlocked {releases_gil((m * k) + (k * n))};
+            numerical::detail::parallel_zero(c.data(), c.size()); // gemm adds to C
+            const auto* const a {static_cast<const double*>(left.data)};
+            const auto* const b {static_cast<const double*>(right.data)};
+            if (left.transposed && right.transposed) {
+                numerical::detail::gemm_atbt(m, n, k, a, m, b, k, c.data(), n);
+            }
+            else if (left.transposed) {
+                numerical::detail::gemm_at(m, n, k, a, m, b, n, c.data(), n);
+            }
+            else {
+                numerical::detail::gemm_bt(m, n, k, a, k, b, k, c.data(), n);
+            }
+        }
+        return wrap(any_tensor {numerical::tensor<double> {{m, n}, std::move(c)}});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 std::optional<PyObject*> borrowed_product(PyObject* a, PyObject* b)
 {
     borrowed_operand left;
     borrowed_operand right;
-    if (!borrow_operand(a, left) || !borrow_operand(b, right) || left.dtype != right.dtype) {
+    if (!borrow_operand(a, left, true) || !borrow_operand(b, right, true) || left.dtype != right.dtype) {
         return std::nullopt;
+    }
+    if (left.transposed || right.transposed) {
+        return borrowed_transposed_product(left, right);
     }
     const std::size_t ranks[2] {left.shape.size(), right.shape.size()};
     if (ranks[0] < 1 || ranks[0] > 2 || ranks[1] < 1 || ranks[1] > 2 || left.shape.back() != right.shape.front()) {

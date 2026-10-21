@@ -64,6 +64,20 @@ class BorrowedOperands(unittest.TestCase):
                 self.assertTrue(np.array_equal(np.asarray(numerical.asarray(fortran)),
                                                np.asarray(numerical.asarray(np.ascontiguousarray(values)))), (shape, values.dtype))
 
+    def test_a_product_of_fortran_ordered_matrices_gives_the_c_ordered_bits(self):
+        # float64 matrices read where they lie, either or both column-major, packed from there: the product of their
+        # C-ordered copies to the bit; a vector, a single row and the other dtypes take the converting path, the same.
+        for m, k, n in ((7, 5, 3), (64, 64, 64), (129, 40, 75), (2, 300, 2), (1, 9, 4), (9, 4, 1)):
+            a = self.rng.standard_normal((m, k))
+            b = self.rng.standard_normal((k, n))
+            want = np.asarray(numerical.matmul(np.ascontiguousarray(a), np.ascontiguousarray(b)))
+            for left in (a, np.asfortranarray(a)):
+                for right in (b, np.asfortranarray(b)):
+                    self.assertTrue(np.array_equal(np.asarray(numerical.matmul(left, right)), want), (m, k, n))
+            single = a.astype(np.float32)
+            self.assertTrue(np.array_equal(np.asarray(numerical.matmul(np.asfortranarray(single), b.astype(np.float32))),
+                                           np.asarray(numerical.matmul(single, b.astype(np.float32)))))
+
     def test_the_product_owns_its_elements(self):
         a, b = self.operand((4, 4), np.float64), self.operand((4, 4), np.float64)
         product = numerical.matmul(a, b)

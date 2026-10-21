@@ -18,6 +18,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   their weight (a complex multiply-add four real ones), in groups of fewer rows where there are few. The last bits
   of complex dot products move. A complex128 matrix of 632 × 351 times a vector, one M1 Pro: 32 µs (NumPy 87); six
   AVX2 cores, each library timed in a process of its own: 25 µs (NumPy 16), and 189 × 206 12 µs (5.3).
+- **A product of float64 matrices reads a Fortran-ordered (transposed) NumPy operand where it lies**, packed from there
+  as gemm packs it, so with the bits of the C-ordered product, where it was copied first; and a Fortran-ordered matrix
+  of 32 rows or more converts by tiles where it is copied (256 × 256 doubles 49.7 → 32.3 µs, NumPy's copy 43).
 - **The 2-norm (`norm`, `vector_norm`, `matrix_norm`'s Frobenius) sums the squares in one pass**, in double, where
   their sum lies between 2^-900 and the largest double; outside (a NaN, an infinity, a sum past either bound) the
   scaled sum as before, so no overflow and no underflow still. Each element was copied, divided by the largest and
