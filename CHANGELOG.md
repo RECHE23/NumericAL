@@ -8,6 +8,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **The Hermitian reduction of complex `eigh` and `eigvalsh` runs on vectors**: its conjugate dot products over
+  vectors of the parts (the dot product's four sums, combined as the conjugate's), its panel corrections spelled out
+  as the complex product's statements, a reflector divided by its real norm part by part, and on arm64 each row of
+  the Hermitian product read once for both of its uses (NEON, as AVX2's and AVX-512's rows). The last bits of complex
+  `eigh`, `eigvalsh` and of the complex blocked QR move; they stay the same on any number of threads. One M1 Pro,
+  complex128 `eigvalsh`: order 64 430 → 277 µs (NumPy 162), order 152 3.02 → 1.75 ms (1.54); complex64 order 321
+  19.7 → 10.9 ms (14.7).
+
 ## 2026.10.30 — 2026-10-21
 
 ### Changed

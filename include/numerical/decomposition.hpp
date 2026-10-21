@@ -2109,17 +2109,13 @@ namespace numerical {
       return dot_product(x, y, count);
     }
 
-    //! \brief `Σ conj(x[i]) · y[i]`, in order.
+    //! \brief `Σ conj(x[i]) · y[i]` of complex numbers (\ref conjugate_dot_product).
     template <typename T>
     [[nodiscard]] T conjugate_dot(const T*    x,
                                   const T*    y,
                                   std::size_t count)
     {
-      T total {};
-      for (std::size_t i {0}; i < count; ++i) {
-        total += conj_of(x[i]) * y[i];
-      }
-      return total;
+      return conjugate_dot_product(x, y, count);
     }
 
     /*!
@@ -2701,15 +2697,31 @@ namespace numerical {
       add_product(y, f, x, count);
     }
 
-    //! \brief `y[i] += conj(x[i]) · f`.
+    /*!
+     * \brief `y[i] += conj(x[i]) · f`, each product's statements spelled out as the complex operator's (four part
+     *        products rounded apart, `ac − bd` and `ad + bc`, then their sums with `y`): the same bits for finite parts
+     *        whose products stay finite, where the operator's rescue of a product whose parts are both NaN never acts,
+     *        and a loop the compiler vectorises (the reduction's rows, scaled by their largest magnitude, are such).
+     */
     template <typename T>
     void add_conjugate_product(T*          y,
                                const T*    x,
                                const T&    f,
                                std::size_t count)
     {
+      using R = typename T::value_type;
+      const R c {f.real()};
+      const R d {f.imag()};
       for (std::size_t i {0}; i < count; ++i) {
-        y[i] += conj_of(x[i]) * f;
+        const R a  {x[i].real()};
+        const R b  {-x[i].imag()};
+        const R ac {a * c};
+        const R bd {b * d};
+        const R ad {a * d};
+        const R bc {b * c};
+        const R re {ac - bd};
+        const R im {ad + bc};
+        y[i] = T {y[i].real() + re, y[i].imag() + im};
       }
     }
 
@@ -2735,6 +2747,55 @@ namespace numerical {
       return dot_product(row, v, i + 1);
     }
 
+#ifdef NUMERICAL_NEON_COMPILED
+    /*!
+     * \brief \ref hermitian_row of a `std::complex<double>` row in one pass on the NEON units, as `avx2_hermitian_row`
+     *        on AVX2: a number a register, `out[j] += conj(row[j]) v[i]` by two fused multiply-adds, and
+     *        `Σⱼ<count row[j] v[j]` in two pairs of accumulators (each part product's terms apart, summed in a fixed
+     *        order), the row read once for both; the return leaves out the diagonal's term.
+     */
+    inline std::complex<double> neon_hermitian_row(const double* row,
+                                                   const double* v,
+                                                   double        vr,
+                                                   double        vi,
+                                                   double*       out,
+                                                   std::size_t   count) noexcept
+    {
+      const float64x2_t real      {vr, -vr};
+      const float64x2_t imag      {vi, vi};
+      float64x2_t       same[2]   {vdupq_n_f64(0.0), vdupq_n_f64(0.0)};
+      float64x2_t       across[2] {vdupq_n_f64(0.0), vdupq_n_f64(0.0)};
+      std::size_t       j         {0};
+      for (; j + 2 <= count; j += 2) {
+        for (std::size_t l {0}; l < 2; ++l) {
+          const float64x2_t r {vld1q_f64(row + (2 * (j + l)))};
+          const float64x2_t x {vld1q_f64(v + (2 * (j + l)))};
+          const float64x2_t s {vextq_f64(r, r, 1)};
+          float64x2_t       o {vld1q_f64(out + (2 * (j + l)))};
+          o         = vfmaq_f64(o, real, r);
+          o         = vfmaq_f64(o, imag, s);
+          same[l]   = vfmaq_f64(same[l], r, x);
+          across[l] = vfmaq_f64(across[l], s, x);
+          vst1q_f64(out + (2 * (j + l)), o);
+        }
+      }
+      const float64x2_t sum_same   {vaddq_f64(same[0], same[1])};
+      const float64x2_t sum_across {vaddq_f64(across[0], across[1])};
+      double            re         {vgetq_lane_f64(sum_same, 0) - vgetq_lane_f64(sum_same, 1)};
+      double            im         {vgetq_lane_f64(sum_across, 0) + vgetq_lane_f64(sum_across, 1)};
+      for (; j < count; ++j) {
+        const double rr {row[2 * j]};
+        const double ri {row[(2 * j) + 1]};
+        out[2 * j]       = std::fma(vi, ri, std::fma(vr, rr, out[2 * j]));
+        out[(2 * j) + 1] = std::fma(vi, rr, std::fma(-vr, ri, out[(2 * j) + 1]));
+        re               = std::fma(-ri, v[(2 * j) + 1], std::fma(rr, v[2 * j], re));
+        im               = std::fma(rr, v[(2 * j) + 1], std::fma(ri, v[2 * j], im));
+      }
+      return std::complex<double> {re, im};
+    }
+
+#endif
+
     /*!
      * \brief The same for a `std::complex<double>` row: in one pass on AVX-512 or AVX2 with FMA where the matrix
      *        product's kernel runs there (`avx512_hermitian_row`), else as the template.
@@ -2755,6 +2816,15 @@ namespace numerical {
         const std::complex<double> lower  {path == gemm_path::avx512
                                           ? avx512_hermitian_row(parts, values, v[i].real(), v[i].imag(), into, i)
                                           : avx2_hermitian_row(parts, values, v[i].real(), v[i].imag(), into, i)};
+        return lower + (row[i] * v[i]);
+      }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+      if (const gemm_path neon_path {gemm_path_current()}; neon_path == gemm_path::neon || neon_path == gemm_path::amx) {
+        const auto* const          values {reinterpret_cast<const double*>(v)};   // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+        const auto* const          parts  {reinterpret_cast<const double*>(row)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+        auto* const                into   {reinterpret_cast<double*>(out)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+        const std::complex<double> lower  {neon_hermitian_row(parts, values, v[i].real(), v[i].imag(), into, i)};
         return lower + (row[i] * v[i]);
       }
 #endif
@@ -2870,6 +2940,61 @@ namespace numerical {
     inline constexpr std::size_t corrected_product_least {512};
 #endif
 
+    //! \brief \ref subtract_products of a real `T`, where the reduction's corrections are those of its type.
+    template <typename T>
+    requires std::is_floating_point_v<T>
+    void subtract_corrections(T*          y,
+                              const T*    f,
+                              const T*    x,
+                              std::size_t ldx,
+                              std::size_t terms,
+                              std::size_t count)
+    {
+      subtract_products(y, f, x, ldx, terms, count);
+    }
+
+    /*!
+     * \brief \ref subtract_products of complex numbers, each term `y[i] −= f · x[i]` spelled out as the complex
+     *        operator's statements (four part products rounded apart, `ac − bd` and `ad + bc`, then their differences
+     *        with `y`): the same bits for finite parts whose products stay finite, where the operator's rescue of a
+     *        product whose parts are both NaN never acts, and loops the compiler vectorises (the reduction's rows,
+     *        scaled by their largest magnitude, are such). Complex `double` on the x86-64 units keeps its fused kernel.
+     */
+    template <split_complex T>
+    void subtract_corrections(T*          y,
+                              const T*    f,
+                              const T*    x,
+                              std::size_t ldx,
+                              std::size_t terms,
+                              std::size_t count)
+    {
+#ifdef NUMERICAL_X86_COMPILED
+      if constexpr (std::is_same_v<T, std::complex<double>>) { // its own fused kernel on the x86-64 units, as fast
+        if (const gemm_path path {gemm_path_current()}; path == gemm_path::avx2 || path == gemm_path::avx512) {
+          subtract_products(y, f, x, ldx, terms, count);
+          return;
+        }
+      }
+#endif
+      using R = typename T::value_type;
+      for (std::size_t t {0}; t < terms; ++t) {
+        const R        c   {f[t].real()};
+        const R        d   {f[t].imag()};
+        const T* const row {x + (t * ldx)};
+        for (std::size_t i {0}; i < count; ++i) {
+          const R a  {row[i].real()};
+          const R b  {row[i].imag()};
+          const R ac {c * a};
+          const R bd {d * b};
+          const R ad {c * b};
+          const R bc {d * a};
+          const R re {ac - bd};
+          const R im {ad + bc};
+          y[i] = T {y[i].real() - re, y[i].imag() - im};
+        }
+      }
+    }
+
     /*!
      * \brief \ref hermitian_product corrected by a panel's earlier steps: `w = B v − Σₜ fₜ cₜ`, the coefficients
      *        `f[2p] = (c[2p+1] · v)` and `f[2p+1] = (c[2p] · v)` (conjugated) computed beside the product, among its
@@ -2971,9 +3096,9 @@ namespace numerical {
                                           add_product(w + first, T {1}, scratch.data() + (task * m) + first, std::min(count, reach - first));
                                         }
                                       }
-                                      subtract_products(w + first, factors, corrections + first, ldc, terms, count);
+                                      subtract_corrections(w + first, factors, corrections + first, ldc, terms, count);
                                       if (next != nullptr) { // the next step's column: these earlier steps' terms (next implies an earlier step)
-                                        subtract_products(next + first, next_factors, corrections + first, ldc, terms, count);
+                                        subtract_corrections(next + first, next_factors, corrections + first, ldc, terms, count);
                                       }
                                     };
       if (share) {
@@ -3086,7 +3211,7 @@ namespace numerical {
             factors[2 * (p - from)]       = conj_of(by_row[(((2 * p) + 1) * n) + k]); // v's row by w's element
             factors[(2 * (p - from)) + 1] = conj_of(by_row[((2 * p) * n) + k]);
           }
-          subtract_products(column, factors.data(), by_row.data() + ((2 * from) * n) + k, n, 2 * (j - from), m + 1);
+          subtract_corrections(column, factors.data(), by_row.data() + ((2 * from) * n) + k, n, 2 * (j - from), m + 1);
           column_ahead   = false;
           a[(k * n) + k] = column[0];
           buffer<T>      v(column + 1, column + m + 1); // column k below the diagonal
@@ -3097,9 +3222,9 @@ namespace numerical {
           }
           const double up    {rescale_tiny(v)};                                  // the reflector is the same at any scale; α is scaled back
           const T      alpha {-phase_of(v[0]) * static_cast<T>(scaled_norm(v))}; // the sign that avoids cancellation
-          sub[k]  = alpha / static_cast<T>(up);
+          sub[k]  = alpha / up;
           v[0]   -= alpha;
-          const auto length {static_cast<T>(scaled_norm(v))};
+          const double length {scaled_norm(v)};                                  // real: each part divided, where a complex division scaled and divided both
           for (T& element : v) {
             element /= length;
           }

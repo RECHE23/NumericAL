@@ -7,6 +7,7 @@
 #include <cstddef>
 #include <limits>
 #include <utility>
+#include <random>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -229,12 +230,13 @@ TEST(complex_row_combinations_take_each_part_in_order)
 }
 
 // A complex row of a Hermitian product: out[j] += conj(row[j]) · v[i] for j < i, each part two fused multiply-adds
-// past the portable path (the template's complex products on it), and Σⱼ≤ᵢ row[j] v[j], exact here in any order
-// (multiples of a quarter). Every remainder of the vector loops.
+// past the portable path (NEON's, AVX2's and AVX-512's kernels; the template's complex products on it), and
+// Σⱼ≤ᵢ row[j] v[j], exact here in any order (multiples of a quarter). Every remainder of the vector loops.
 TEST(complex_hermitian_rows_take_each_part_in_order)
 {
   using c = std::complex<double>;
-  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::avx2, numerical::gemm_path::avx512}) {
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
     if (numerical::limit_gemm_path(path) != path) {
       continue;
     }
@@ -266,6 +268,34 @@ TEST(complex_hermitian_rows_take_each_part_in_order)
     }
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
+
+// The conjugate dot product is the dot product of the conjugate to the bit: its sums are the dot product's, each
+// term's sign changed exactly where a part was conjugated. Drawn parts, every remainder of the vectors.
+TEST(conjugate_dot_products_are_the_conjugate_s_dot_products)
+{
+  std::uniform_real_distribution<double> part {-1.0, 1.0};
+  for (const std::size_t count : {std::size_t {0}, std::size_t {1}, std::size_t {5}, std::size_t {16}, std::size_t {67}}) {
+    std::mt19937                      draw {static_cast<std::mt19937::result_type>(count + 7)};
+    std::vector<std::complex<double>> x(count);
+    std::vector<std::complex<double>> conjugated(count);
+    std::vector<std::complex<double>> y(count);
+    std::vector<std::complex<float>>  xf(count);
+    std::vector<std::complex<float>>  conjugated_f(count);
+    std::vector<std::complex<float>>  yf(count);
+    for (std::size_t i {0}; i < count; ++i) {
+      x[i]            = {part(draw), part(draw)};
+      y[i]            = {part(draw), part(draw)};
+      conjugated[i]   = std::conj(x[i]);
+      xf[i]           = std::complex<float>(x[i]);
+      yf[i]           = std::complex<float>(y[i]);
+      conjugated_f[i] = std::conj(xf[i]);
+    }
+    EXPECT(numerical::detail::conjugate_dot_product(x.data(), y.data(), count)
+           == numerical::detail::dot_product<std::complex<double>>(conjugated.data(), y.data(), count));
+    EXPECT(numerical::detail::conjugate_dot_product(xf.data(), yf.data(), count)
+           == numerical::detail::dot_product<std::complex<float>>(conjugated_f.data(), yf.data(), count));
+  }
 }
 
 // Whole numbers small enough that every partial sum is exact: any order of summation gives the exact dot

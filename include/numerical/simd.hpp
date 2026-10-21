@@ -131,7 +131,8 @@ namespace numerical::detail {
   }
 
   /*!
-   * \brief `Σ x[i] · y[i]` of complex numbers over native vectors of their parts: four accumulate `x · y` part by part
+   * \brief The sums of `Σ x[i] · y[i]` of complex numbers over native vectors of their parts, `{re·re, im·im, re·im,
+   *        im·re}`: four vectors accumulate `x · y` part by part
    *        (`re·re` in the even lanes, `im·im` in the odd), four `x` times `y` with its parts swapped (`re·im`,
    *        `im·re`); their lanes, then the remainder's products, summed in a fixed order, the real part their first
    *        two sums' difference, the imaginary part the other two's sum. Where a running complex sum waited on each
@@ -139,9 +140,9 @@ namespace numerical::detail {
    *        matrix times a vector, 58 µs (NumPy 3.5).
    */
   template <split_complex C>
-  [[nodiscard]] C dot_product(const C*    x,
-                              const C*    y,
-                              std::size_t count)
+  [[nodiscard]] std::array<typename C::value_type, 4> complex_dot_sums(const C*    x,
+                                                                       const C*    y,
+                                                                       std::size_t count)
   {
     using R    = typename C::value_type;
     using lane = typename native_vector<R>::type;
@@ -186,7 +187,28 @@ namespace numerical::detail {
       ri += a[i] * b[i + 1];
       ir += a[i + 1] * b[i];
     }
+    return {rr, ii, ri, ir};
+  }
+
+  //! \brief `Σ x[i] · y[i]` of complex numbers: \ref complex_dot_sums' `re·re − im·im` and `re·im + im·re`.
+  template <split_complex C>
+  [[nodiscard]] C dot_product(const C*    x,
+                              const C*    y,
+                              std::size_t count)
+  {
+    const auto [rr, ii, ri, ir] {complex_dot_sums(x, y, count)};
     return C {rr - ii, ri + ir};
+  }
+
+  //! \brief `Σ conj(x[i]) · y[i]` of complex numbers: the same sums, \ref complex_dot_sums', as `re·re + im·im` and
+  //!        `re·im − im·re`, where a running complex sum waited on each addition and each product's rescue.
+  template <split_complex C>
+  [[nodiscard]] C conjugate_dot_product(const C*    x,
+                                        const C*    y,
+                                        std::size_t count)
+  {
+    const auto [rr, ii, ri, ir] {complex_dot_sums(x, y, count)};
+    return C {rr + ii, ri - ir};
   }
 
   /*!
@@ -708,6 +730,19 @@ namespace numerical::detail {
     T total {};
     for (std::size_t i {0}; i < count; ++i) {
       total += x[i] * y[i];
+    }
+    return total;
+  }
+
+  //! \brief `Σ conj(x[i]) · y[i]`, in order, where no native vector holds the parts.
+  template <typename T>
+  [[nodiscard]] T conjugate_dot_product(const T*    x,
+                                        const T*    y,
+                                        std::size_t count)
+  {
+    T total {};
+    for (std::size_t i {0}; i < count; ++i) {
+      total += std::conj(x[i]) * y[i];
     }
     return total;
   }

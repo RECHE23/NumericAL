@@ -94,6 +94,41 @@ namespace {
   }
 } // namespace
 
+// The reduction's spelled-out complex corrections are subtract_products' to the bit on finite parts: the same
+// statements, without the operator's rescue of a NaN product, which finite parts never take.
+TEST(the_reduction_s_corrections_are_subtract_products)
+{
+  using c = std::complex<double>;
+  std::uniform_real_distribution<double> part {-1.0, 1.0};
+  for (const auto& [terms, count] : {std::array<std::size_t, 2> {1, 1}, {4, 7}, {6, 33}, {62, 40}}) {
+    std::mt19937      draw {static_cast<std::mt19937::result_type>((terms * 131) + count)};
+    const std::size_t ldx  {count + 3};
+    std::vector<c>    f(terms);
+    std::vector<c>    x(terms * ldx);
+    std::vector<c>    y(count);
+    for (c& value : f) {
+      value = {part(draw), part(draw)};
+    }
+    for (c& value : x) {
+      value = {part(draw), part(draw)};
+    }
+    for (c& value : y) {
+      value = {part(draw), part(draw)};
+    }
+    std::vector<c> want {y};
+    numerical::detail::subtract_products(want.data(), f.data(), x.data(), ldx, terms, count);
+    numerical::detail::subtract_corrections(y.data(), f.data(), x.data(), ldx, terms, count);
+    EXPECT(y == want);
+    std::vector<double> ry(count, 0.5);
+    std::vector<double> rwant {ry};
+    std::vector<double> rf(terms, -0.25);
+    std::vector<double> rx(terms * ldx, 0.75);
+    numerical::detail::subtract_products(rwant.data(), rf.data(), rx.data(), ldx, terms, count);
+    numerical::detail::subtract_corrections(ry.data(), rf.data(), rx.data(), ldx, terms, count);
+    EXPECT(ry == rwant);
+  }
+}
+
 TEST(lu_factorisation_is_reused_for_solve_and_determinant)
 {
   const matrix<double>           a  {{2.0, 1.0}, {1.0, 3.0}}; // no row swap needed (det = 5)
