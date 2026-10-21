@@ -1046,15 +1046,17 @@ namespace numerical::detail {
   template <typename T>
   struct neon_tile_kernel : vector_tile_kernel<T>
   {
-    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart.
-    static void tile(std::size_t kc,
-                     const T*    ap,
-                     const T*    bp,
-                     std::size_t ldb,
-                     T*          c,
-                     std::size_t ldc,
-                     std::size_t rows,
-                     std::size_t cols) noexcept
+    //! \brief `C += Aₚ·Bₚ` for one tile of C (\p rows × \p cols) over a panel of depth \p kc, B's rows \p ldb apart;
+    //!        always inlined: once \ref gemm_packed could read B in place, GCC 14 stopped inlining it into the task
+    //!        loop, and a Cholesky of order 17 to 33 on the NEON tile ran 10–17 % slower.
+    NUMERICAL_ALWAYS_INLINE static void tile(std::size_t kc,
+                                             const T*    ap,
+                                             const T*    bp,
+                                             std::size_t ldb,
+                                             T*          c,
+                                             std::size_t ldc,
+                                             std::size_t rows,
+                                             std::size_t cols) noexcept
     {
       constexpr std::size_t nr           {vector_tile_kernel<T>::nr};
       gemm_tile<T>          accumulators {};
