@@ -38,7 +38,7 @@ FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: check-pins all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
-        python python-test python-stubtest fuzz-linalg bench-diff bench-linalg bench-python bench-gemm version-check install uninstall release release-bump clean help
+        python python-test python-stubtest fuzz-linalg bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
 .DEFAULT_GOAL := help
 
@@ -66,6 +66,7 @@ help:
 	@echo "  make check-release Before each release: the above, bench-diff against the last release, fuzz-linalg"
 	@echo "  make full-local-gate  The push tier, by its former name"
 	@echo "  make bench-python Differential validation + perf vs NumPy"
+	@echo "  make bench-fuzz   Drawn cases vs NumPy: the ratios' distribution and the worst (CASES=, SEED=, LARGEST=)"
 	@echo "  make bench-linalg Dense linear algebra vs NumPy's BLAS/LAPACK, each alone in its process (SIZES=, ROUNDS=)"
 	@echo "  make bench-gemm   GEMM loop-order micro-benchmark (C++, vs naive baseline)"
 	@echo "  make release    Cut a calendar-versioned release (tag + push)"
@@ -260,6 +261,13 @@ full-local-gate:
 # Differential validation + performance versus NumPy (needs numpy installed).
 bench-python: python
 	$(PYRUN) benchmarks/bench.py
+
+# Drawn cases versus NumPy: operations, shapes on a log scale, dtypes and operand layouts, each library timed in a
+# process of its own; the distribution of the ratios and the worst cases (CASES=, SEED=, LARGEST=).
+# Defaults of its own, as fuzz-linalg keeps its own for CASES and SEED.
+bench-fuzz: python
+	$(PYRUN) benchmarks/bench_fuzz.py --cases $(or $(CASES),300) --seed $(or $(SEED),20261021) \
+	    --largest $(or $(LARGEST),1024) --json $(BUILD)/bench-fuzz.json
 
 # The default sizes in a variable: inside $(or …) its commas would split the arguments, leaving 64 alone.
 SIZES  ?= 64,128,256,512,1024
