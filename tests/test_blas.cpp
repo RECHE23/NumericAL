@@ -2019,7 +2019,7 @@ TEST(float_dot_sums_as_the_double_one)
 }
 
 // Contiguous vectors (both apart by 1) go by vectors of their parts: the library's complex dot products to the bit,
-// and the exact sum on parts that are multiples of a quarter, in double and float.
+// and the exact sum on parts that are multiples of a quarter, in double and float; one of them strided, term by term.
 TEST(contiguous_complex_dots_are_the_library_s)
 {
   for (const std::size_t count : {std::size_t {1}, std::size_t {7}, std::size_t {40}}) {
@@ -2044,6 +2044,14 @@ TEST(contiguous_complex_dots_are_the_library_s)
     EXPECT(numerical::blas::complex_dot(true, n, x.data(), 1, y.data(), 1) == exact_conjugate);
     EXPECT(numerical::blas::complex_dot(false, n, xf.data(), 1, yf.data(), 1) == std::complex<float>(exact));
     EXPECT(numerical::blas::complex_dot(true, n, xf.data(), 1, yf.data(), 1) == std::complex<float>(exact_conjugate));
+    std::vector<std::complex<double>> spread(2 * count); // y two apart: term by term
+    std::vector<std::complex<float>>  spread_f(2 * count);
+    for (std::size_t i {0}; i < count; ++i) {
+      spread[2 * i]   = y[i];
+      spread_f[2 * i] = yf[i];
+    }
+    EXPECT(numerical::blas::complex_dot(false, n, x.data(), 1, spread.data(), 2) == exact);
+    EXPECT(numerical::blas::complex_dot(true, n, xf.data(), 1, spread_f.data(), 2) == std::complex<float>(exact_conjugate));
   }
 }
 
