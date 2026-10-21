@@ -52,9 +52,9 @@ namespace numerical {
 
   namespace detail {
     /*!
-     * \brief What the LU divides by its pivot \p pivot through \ref over_pivot: a complex pivot's reciprocal, once,
-     *        as LAPACK's zgetf2 takes it (a complex division calls the C library's robust one, a quarter of a complex
-     *        LU of order 48 when it ran for every element); a real pivot itself, each element divided.
+     * \brief The divisor \ref over_pivot takes for the pivot \p pivot. A complex pivot's reciprocal, once, as LAPACK's
+     *        zgetf2 takes it (a complex division calls the C library's robust one, a quarter of a complex LU of order
+     *        48 when it ran for every element); a real pivot itself, each element divided.
      */
     template <typename T>
     [[nodiscard]] T pivot_divisor(const T& pivot)
