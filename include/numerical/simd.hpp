@@ -15,6 +15,13 @@
 #include <cstring>
 #include <type_traits>
 
+// A function inlined wherever it is called, past the compiler's budget: a call there costs more than its body.
+#if defined(_MSC_VER) && !defined(__clang__)
+#  define NUMERICAL_ALWAYS_INLINE __forceinline
+#else
+#  define NUMERICAL_ALWAYS_INLINE [[gnu::always_inline]] inline // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
+#endif
+
 namespace numerical::detail {
 
   //! \brief The side of the tiles a transposing copy goes by (an `einsum` permutation of two axes, the eigenvectors'
@@ -622,8 +629,8 @@ namespace numerical::detail {
    *        a real `T`, the operator itself.
    */
   template <typename T>
-  [[nodiscard, gnu::always_inline]] inline T operator_times(const T& a,
-                                                            const T& b)
+  [[nodiscard]] NUMERICAL_ALWAYS_INLINE T operator_times(const T& a,
+                                                         const T& b)
   {
     return a * b;
   }
@@ -631,8 +638,8 @@ namespace numerical::detail {
 #if defined(_LIBCPP_VERSION)
   //! \brief \ref operator_times of two complex numbers under libc++: its product's statements, its rescue its own.
   template <typename R>
-  [[nodiscard, gnu::always_inline]] inline std::complex<R> operator_times(const std::complex<R>& a,
-                                                                          const std::complex<R>& b)
+  [[nodiscard]] NUMERICAL_ALWAYS_INLINE std::complex<R> operator_times(const std::complex<R>& a,
+                                                                       const std::complex<R>& b)
   {
     const R ac {a.real() * b.real()};
     const R bd {a.imag() * b.imag()};
