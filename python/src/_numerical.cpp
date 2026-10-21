@@ -1962,6 +1962,36 @@ double norm_of(const std::vector<double>& values, double ord)
     return scale * (ord == 2.0 ? std::sqrt(sum) : (ord == 1.0 ? sum : std::pow(sum, 1.0 / ord)));
 }
 
+// The 2-norm of `count` elements from `x` as the square root of their squares' sum, in double, in one pass: where
+// that sum lies between 2^-900 and the largest double, no square overflowed and those lost below the smallest double
+// weigh nothing beside it. Elsewhere (a NaN, an infinity, a sum past either bound), no answer: norm_of's scaled one
+// decides. A complex element's square is its parts' squares, the parts read as the array of two the standard lays
+// out.
+template <typename T>
+std::optional<double> plain_two_norm(const T* x, std::size_t count)
+{
+    using R = real_of_t<T>;
+    const auto*        parts {reinterpret_cast<const R*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout above
+    const std::size_t  n {count * (sizeof(T) / sizeof(R))};
+    std::array<double, 8> partial {};
+    std::size_t        i {0};
+    for (; i + partial.size() <= n; i += partial.size()) {
+        for (std::size_t j = 0; j < partial.size(); ++j) {
+            const auto value {static_cast<double>(parts[i + j])};
+            partial[j] += value * value;
+        }
+    }
+    double sum {((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]))};
+    for (; i < n; ++i) {
+        const auto value {static_cast<double>(parts[i])};
+        sum += value * value;
+    }
+    if (!(sum >= 0x1p-900) || std::isinf(sum)) { // a NaN fails the first test
+        return std::nullopt;
+    }
+    return std::sqrt(sum);
+}
+
 // _vector_norm(x, ord, axes, keepdims) -> Tensor or number: the ord norm over the axes `axes` (distinct, non-negative)
 // of every other position, as numpy.linalg.vector_norm; real, of x's precision; a number when every axis goes and
 // keepdims is false.
@@ -2009,6 +2039,31 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
                 kept_shape.push_back(shape[a]);
                 out_shape.push_back(shape[a]);
             }
+        }
+        // The 2-norm over trailing axes, each position's elements one run: their squares summed where they lie.
+        bool trailing {true};
+        for (std::size_t a = 0; a + 1 < shape.size(); ++a) {
+            trailing = trailing && !(reduced[a] && !reduced[a + 1]);
+        }
+        if (ord == 2.0 && trailing) {
+            numerical::buffer<double> out(kept_count, 0.0);
+            std::visit([&](const auto& t) {
+                for (std::size_t k = 0; k < kept_count; ++k) {
+                    const auto* const run {t.data().data() + (k * reduced_count)};
+                    if (const std::optional<double> plain {plain_two_norm(run, reduced_count)}) {
+                        out[k] = *plain;
+                        continue;
+                    }
+                    std::vector<double> values(reduced_count);
+                    std::transform(run, run + reduced_count, values.begin(), [](const auto& x) { return static_cast<double>(std::abs(x)); });
+                    out[k] = norm_of(values, ord);
+                }
+            }, *h);
+            if (out_shape.empty() && keepdims == 0) {
+                return PyFloat_FromDouble(is_single(*h) ? static_cast<double>(static_cast<float>(out[0])) : out[0]);
+            }
+            any_tensor result {real_tensor {std::move(out_shape), std::move(out)}};
+            return wrap(is_single(*h) ? narrowed(result) : std::move(result));
         }
         const auto magnitudes {std::visit([](const auto& t) {
                                               std::vector<double> m(t.size());

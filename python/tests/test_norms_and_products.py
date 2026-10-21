@@ -60,6 +60,20 @@ class NormsAndProducts(unittest.TestCase):
         self.assertEqual(numerical.vector_norm(self.complex.astype(np.complex64), axis=0).dtype, "float32")
         self.close(single, np.linalg.vector_norm(self.a.astype(np.float32), axis=1), 1e-6)
 
+    def test_the_2_norm_sums_squares_where_none_is_lost_and_scales_elsewhere(self):
+        # Squares summed as they are where their sum lies between 2^-900 and the largest double, scaled by the largest
+        # magnitude past either bound: either way the norm math.hypot gives, row by row, each row taking its own way.
+        rows = np.array([[3.0, 4.0, 12.0],                       # 13, summed
+                         [2.0 ** -449, 2.0 ** -449, 0.0],         # a sum of squares 2^-897: summed
+                         [2.0 ** -460, 2.0 ** -460, 2.0 ** -460],  # 3 · 2^-920: scaled
+                         [1e300, 1e300, 1.0]])                    # past the largest double: scaled
+        got = np.asarray(numerical.vector_norm(rows, axis=1))
+        for row, value in zip(rows, got):
+            self.assertAlmostEqual(value / math.hypot(*row), 1.0, places=14)
+        for dtype in (np.float32, np.complex128, np.complex64):  # the parts' squares, in double
+            values = (self.complex if np.dtype(dtype).kind == "c" else self.a).astype(dtype)
+            self.close(numerical.norm(values), np.linalg.norm(values.astype(np.complex128)), 1e-6)
+
     def test_condition_numbers_and_singular_values(self):
         matrix = self.stack[0, 0]
         for p in (None, 1, -1, 2, -2, math.inf, -math.inf, "fro", "nuc"):
