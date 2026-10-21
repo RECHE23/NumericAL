@@ -11,6 +11,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <map>
 #include <utility>
@@ -260,9 +261,59 @@ TEST(einsum_sums_one_axis_under_several_free_ones)
     same = same && sums.data()[abc] == (5.0 * first) + 10.0; // first + (first+1) + … + (first+4)
   }
   EXPECT(same);
-  // The same loop for integers, whose einsum the coverage counts apart.
+  // The same for integers, whose einsum the coverage counts apart.
   const tensor<int> ints {{2, 3, 4, 5}, std::vector<int>(120, 1)};
   EXPECT(einsum("abcd->abc", ints) == (tensor<int> {{2, 3, 4}, std::vector<int>(24, 5)}));
+  // Summed labels apart (a and c, around b): the general loop, an odometer over the outer free label, the last swept.
+  const tensor<double> apart      {einsum("abcd->bd", t)};
+  bool                 apart_same {apart.shape() == (std::vector<std::size_t> {3, 5})};
+  for (std::size_t b {0}; b < 3; ++b) {
+    for (std::size_t d {0}; d < 5; ++d) {
+      double sum {0.0};
+      for (std::size_t a {0}; a < 2; ++a) {
+        for (std::size_t c {0}; c < 4; ++c) {
+          sum += static_cast<double>((a * 60) + (b * 20) + (c * 5) + d);
+        }
+      }
+      apart_same = apart_same && apart.data()[(b * 5) + d] == sum;
+    }
+  }
+  EXPECT(apart_same);
+  EXPECT(einsum("abcd->bd", ints) == (tensor<int> {{3, 5}, std::vector<int>(15, 8)}));
+}
+
+// One operand summed over a run of its axes (ij->, ij->i, ij->j, ijk->ik): each output element the pairwise sum of its
+// run, the bits of sum() and of sum(t, axis), every column summed down a block by rows as alone.
+TEST(einsum_reductions_sum_pairwise_as_sum_does)
+{
+  std::vector<double> values(std::size_t {300} *700);
+  std::uint64_t       state              {7};
+  for (double& x : values) {
+    state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+    x     = (static_cast<double>(state >> 11U) * 0x1.0p-53) - 0.5;
+  }
+  const tensor<double> m {{300, 700}, values};
+  EXPECT(einsum("ij->", m).data()[0] == numerical::sum(m));
+  EXPECT(einsum("ij->i", m) == numerical::sum(m, 1));
+  EXPECT(einsum("ij->j", m) == numerical::sum(m, 0));
+  const tensor<double> cube {{6, 50, 700}, values};
+  EXPECT(einsum("ijk->ik", cube) == numerical::sum(cube, 1));
+  EXPECT(einsum("ijk->i", cube).shape() == (std::vector<std::size_t> {6}));
+  // Every column of sum(t, 0) as pairwise_sum walks it down alone, across the shapes the halving takes (fewer than 8
+  // rows, up to 128, more) and widths either side of the 512 columns summed at once.
+  bool same {true};
+  for (const std::size_t rows : {std::size_t {3}, std::size_t {100}, std::size_t {129}, std::size_t {300}}) {
+    for (const std::size_t cols : {std::size_t {1}, std::size_t {5}, std::size_t {512}, std::size_t {700}}) {
+      const tensor<double> block {{rows, cols}, std::vector<double>(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(rows * cols))};
+      const tensor<double> sums  {numerical::sum(block, 0)};
+      for (std::size_t c {0}; c < cols; ++c) {
+        same = same && sums.data()[c] == numerical::detail::pairwise_sum(block.data().data() + c, rows, cols);
+      }
+    }
+  }
+  EXPECT(same);
+  const tensor<double> means {numerical::mean(m, 0)};
+  EXPECT(means.data()[3] == numerical::sum(m, 0).data()[3] / 300.0);
 }
 
 TEST(einsum_matrix_vector_rows_are_their_dot_products)

@@ -57,47 +57,6 @@ namespace numerical {
       return strides;
     }
 
-    /*!
-     * \brief Sum of `count` values from \p first at stride \p stride, by NumPy's pairwise summation: below 8
-     *        values in order; up to 128 in eight interleaved partial sums, added pairwise, then the
-     *        remainder in order; above, the two halves (the first a multiple of 8 long) summed apart.
-     */
-    template <typename T>
-    [[nodiscard]] T pairwise_sum(const T*    first,
-                                 std::size_t count,
-                                 std::size_t stride)
-    {
-      constexpr std::size_t lanes {8};
-      constexpr std::size_t block {128};
-      if (count < lanes) {
-        T sum {};
-        for (std::size_t i {0}; i < count; ++i) {
-          sum += first[i * stride];
-        }
-        return sum;
-      }
-      if (count <= block) {
-        std::array<T, lanes> partial {};
-        for (std::size_t j {0}; j < lanes; ++j) {
-          partial[j] = first[j * stride];
-        }
-        std::size_t i {lanes};
-        for (; i < count - (count % lanes); i += lanes) {
-          for (std::size_t j {0}; j < lanes; ++j) {
-            partial[j] += first[(i + j) * stride];
-          }
-        }
-        T sum {((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]))};
-        for (; i < count; ++i) {
-          sum += first[i * stride];
-        }
-        return sum;
-      }
-      std::size_t half {count / 2};
-      half -= half % lanes;
-      return pairwise_sum(first, half, stride) + pairwise_sum(first + (half * stride), count - half, stride);
-    }
-
     //! \brief The extents and strides that walk a tensor of \p shape with axis \p axis taken out: `outer`
     //!        positions before it, `inner` after it, the axis itself `extent` long at stride `inner`.
     struct axis_walk
@@ -535,9 +494,10 @@ namespace numerical {
   [[nodiscard]] tensor<T> sum(const tensor<T>& t,
                               std::size_t      axis)
   {
-    return detail::reduce_along(t, axis, [](const T* first, std::size_t count, std::size_t stride) {
-                                  return detail::pairwise_sum(first, count, stride);
-                                });
+    const detail::axis_walk walk {detail::walk_along(t.shape(), axis)};
+    buffer<T>               out(walk.outer * walk.inner);
+    detail::pairwise_sums(t.data().data(), walk.outer, walk.extent, walk.inner, out.data());
+    return tensor<T> {detail::without_axis(t.shape(), axis), std::move(out)};
   }
 
   /*!
@@ -554,9 +514,14 @@ namespace numerical {
   [[nodiscard]] tensor<T> mean(const tensor<T>& t,
                                std::size_t      axis)
   {
-    return detail::reduce_along(t, axis, [](const T* first, std::size_t count, std::size_t stride) {
-                                  return detail::pairwise_sum(first, count, stride) / static_cast<T>(static_cast<double>(count));
-                                });
+    const detail::axis_walk walk  {detail::walk_along(t.shape(), axis)};
+    const auto              count {static_cast<T>(static_cast<double>(walk.extent))};
+    buffer<T>               out(walk.outer * walk.inner);
+    detail::pairwise_sums(t.data().data(), walk.outer, walk.extent, walk.inner, out.data());
+    for (T& x : out) {
+      x = x / count;
+    }
+    return tensor<T> {detail::without_axis(t.shape(), axis), std::move(out)};
   }
 
   //! \brief The largest element (a NaN, if there is one). \throws dimension_error If \p t is empty.

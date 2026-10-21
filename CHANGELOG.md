@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **`einsum` sums one operand over a run of its axes (`ij->`, `ij->i`, `ij->j`, `ijk->ik`) by pairwise halving**, as
+  `sum` adds, where its general loop added the terms one after another: the bits of `sum()` and `sum(axis)`. Order 256,
+  one M1 Pro: `ij->` and `ij->i` 97 → 16 µs (NumPy's `einsum` 11.7, its `sum` 16.7), `ij->j` 56 → 16 µs (NumPy 22.7).
+- **`sum` and `mean` along an axis other than the last add whole rows**, each column's pairwise sum the same to the
+  bit as when it was walked down alone: `sum(axis=0)` of order 256 55 → 14.5 µs (NumPy 16.2).
+
 ### Added
 - **The Linux wheels carry `numerical_blas`** (experimental), the BLAS and LAPACK routines under their Fortran names —
   `?gemm_`, `?gesv_`, `?getrf_`, `?getrs_`, `?potrf_` and `?potrs_` in the four precisions, `ddot_`, `dsyrk_`,

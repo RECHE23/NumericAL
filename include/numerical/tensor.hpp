@@ -21,6 +21,7 @@
 #define NUMERICAL_TENSOR_HPP
 
 #include <algorithm>
+#include <array>
 #include <cctype>
 #include <cmath>
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
@@ -206,6 +207,135 @@ namespace numerical {
   }
 
   namespace detail {
+    /*!
+     * \brief Sum of `count` values from \p first at stride \p stride, by NumPy's pairwise summation: below 8
+     *        values in order; up to 128 in eight interleaved partial sums, added pairwise, then the
+     *        remainder in order; above, the two halves (the first a multiple of 8 long) summed apart.
+     */
+    template <typename T>
+    [[nodiscard]] T pairwise_sum(const T*    first,
+                                 std::size_t count,
+                                 std::size_t stride)
+    {
+      constexpr std::size_t lanes {8};
+      constexpr std::size_t block {128};
+      if (count < lanes) {
+        T sum {};
+        for (std::size_t i {0}; i < count; ++i) {
+          sum += first[i * stride];
+        }
+        return sum;
+      }
+      if (count <= block) {
+        std::array<T, lanes> partial {};
+        for (std::size_t j {0}; j < lanes; ++j) {
+          partial[j] = first[j * stride];
+        }
+        std::size_t i {lanes};
+        for (; i < count - (count % lanes); i += lanes) {
+          for (std::size_t j {0}; j < lanes; ++j) {
+            partial[j] += first[(i + j) * stride];
+          }
+        }
+        T sum {((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]))};
+        for (; i < count; ++i) {
+          sum += first[i * stride];
+        }
+        return sum;
+      }
+      std::size_t half {count / 2};
+      half -= half % lanes;
+      return pairwise_sum(first, half, stride) + pairwise_sum(first + (half * stride), count - half, stride);
+    }
+
+    /*!
+     * \brief \ref pairwise_sum of \p width neighbouring columns at once, into \p out: column `q`'s sum that of
+     *        `pairwise_sum(first + q, count, stride)`, to the bit, each step adding a whole row of the columns
+     *        (contiguous, \p stride apart) where a column was walked down \p stride at a time.
+     */
+    template <typename T>
+    void pairwise_sum_rows(const T*    first,
+                           std::size_t count,
+                           std::size_t stride,
+                           std::size_t width,
+                           T*          out)
+    {
+      constexpr std::size_t lanes {8};
+      constexpr std::size_t block {128};
+      const auto            row = [&](std::size_t i) { return first + (i * stride); };
+      if (count < lanes) {
+        std::fill_n(out, width, T {});
+        for (std::size_t i {0}; i < count; ++i) {
+          for (std::size_t q {0}; q < width; ++q) {
+            out[q] += row(i)[q];
+          }
+        }
+        return;
+      }
+      if (count <= block) {
+        std::vector<T> partial(lanes * width);
+        for (std::size_t j {0}; j < lanes; ++j) {
+          std::copy_n(row(j), width, partial.data() + (j * width));
+        }
+        std::size_t i {lanes};
+        for (; i < count - (count % lanes); i += lanes) {
+          for (std::size_t j {0}; j < lanes; ++j) {
+            T* const       sums {partial.data() + (j * width)};
+            const T* const next {row(i + j)};
+            for (std::size_t q {0}; q < width; ++q) {
+              sums[q] += next[q];
+            }
+          }
+        }
+        const T* const p {partial.data()};
+        for (std::size_t q {0}; q < width; ++q) {
+          out[q] = ((p[q] + p[width + q]) + (p[(2 * width) + q] + p[(3 * width) + q]))
+                   + ((p[(4 * width) + q] + p[(5 * width) + q]) + (p[(6 * width) + q] + p[(7 * width) + q]));
+        }
+        for (; i < count; ++i) {
+          for (std::size_t q {0}; q < width; ++q) {
+            out[q] += row(i)[q];
+          }
+        }
+        return;
+      }
+      std::size_t half {count / 2};
+      half -= half % lanes;
+      std::vector<T> second(width);
+      pairwise_sum_rows(first, half, stride, width, out);
+      pairwise_sum_rows(row(half), count - half, stride, width, second.data());
+      for (std::size_t q {0}; q < width; ++q) {
+        out[q] = out[q] + second[q];
+      }
+    }
+
+    //! \brief The columns \ref pairwise_sum_rows sums at once: its partial sums of eight rows, 32 KiB of doubles,
+    //!        stay in the L1 cache.
+    inline constexpr std::size_t pairwise_columns {512};
+
+    /*!
+     * \brief The pairwise sums of \p outer blocks of \p count rows of \p inner elements (row-major), each
+     *        column of a block summed down its rows, into \p out (`outer × inner`): one column at a time where
+     *        \p inner is 1, else by rows (\ref pairwise_sum_rows), the same bits.
+     */
+    template <typename T>
+    void pairwise_sums(const T*    data,
+                       std::size_t outer,
+                       std::size_t count,
+                       std::size_t inner,
+                       T*          out)
+    {
+      for (std::size_t o {0}; o < outer; ++o) {
+        const T* const base {data + (o * count * inner)};
+        if (inner == 1) {
+          out[o] = pairwise_sum(base, count, 1);
+          continue;
+        }
+        for (std::size_t q {0}; q < inner; q += pairwise_columns) {
+          pairwise_sum_rows(base + q, count, inner, std::min(pairwise_columns, inner - q), out + (o * inner) + q);
+        }
+      }
+    }
 
     //! \brief Is \p ch an ASCII letter (a valid index label)?
     [[nodiscard]] inline bool is_label(char ch)
@@ -873,6 +1003,30 @@ namespace numerical {
           out_shape.push_back(sizes.at(label));
         }
         return tensor<T> {std::move(out_shape), inputs[0] == output ? operands[0]->data() : permuted(operands[0]->data(), inputs[0], output, sizes)};
+      }
+
+      // Fast path: one operand, each label once, its summed labels one run of its axes and the output the others in
+      // order (ij->i, ij->, ij->j, ijk->ik): each output element the sum of evenly spaced elements, by pairwise halving
+      // as sum() adds them, where the loop below added them one after another.
+      if (operands.size() == 1 && !summed.empty() && sizes.size() == inputs[0].size()) {
+        const std::string& in    {inputs[0]};
+        const std::size_t  first {in.find_first_not_of(output)};
+        const std::size_t  past  {in.find_first_of(output, first) == std::string::npos ? in.size() : in.find_first_of(output, first)};
+        if (in.substr(0, first) + in.substr(past) == output) {
+          std::size_t outer {1};
+          std::size_t run   {1};
+          std::size_t inner {1};
+          for (std::size_t k {0}; k < in.size(); ++k) {
+            (k < first ? outer : k < past ? run : inner) *= sizes.at(in[k]);
+          }
+          std::vector<std::size_t> out_shape;
+          for (const char label : output) {
+            out_shape.push_back(sizes.at(label));
+          }
+          std::vector<T> sums(outer * inner);
+          pairwise_sums(operands[0]->data().data(), outer, run, inner, sums.data());
+          return tensor<T> {std::move(out_shape), std::move(sums)};
+        }
       }
 
       // Fast path: a plain two-operand single contraction in canonical layout —
