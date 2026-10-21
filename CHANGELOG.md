@@ -72,19 +72,22 @@ A change that can break code is listed under **Breaking** and held for a month's
   reference's `INFO` on the same matrices, NaN, ∞ and −∞ on and off the diagonal); `syevd` gives NaN eigenvalues and
   `INFO` `n`. Julia's `lu` of a matrix of NaN, under `numerical_blas`, raised. `gesdd`, `geev` and `gelsd` still
   report it (`INFO` `-4`), as the reference's `gesdd` and `geev` report a NaN.
+- **The sdist builds with setuptools 77 or later**, the first to read the SPDX `license` and `license-files` the
+  project declares, where `pyproject.toml` asked for 68.
 
 ### Development
 - **`make bench-fuzz`**: drawn cases against NumPy (an operation of seventeen, every dimension on a log scale up to
   `LARGEST`, the four dtypes, the operands contiguous, transposed, strided or already a Tensor), each library timed in
   a process of its own, twice in turn; every answer checked first. It reports the ratios' distribution by operation,
   size, dtype and layout, and the worst cases with their seed: where the fixed benchmarks, at hand-picked and
-  power-of-two orders, put NumericAL at 1.45× NumPy on this Mac, 600 drawn cases put it at 0.94×, and found the norm
-  and the narrow products above.
+  power-of-two orders, put NumericAL at 1.45× NumPy on this Mac, 600 drawn cases put it at 0.94× (0.89× on six AVX2
+  cores against OpenBLAS), and found the norm, the narrow products and the complex ones above; after them, 1.07× on
+  both [1.00-1.14].
 - `make bench-python` reports SciForge's verdict on the ratios, where it said "slower" whatever they were.
 - The test binary runs the tests whose name holds its first argument (all without one).
 - The AVX-512 workflow logs its host's processor and may take two hours: the emulator's speed is the host's (10
   minutes on one runner, 55 on another).
- (`julia.yml`: on a change to the BLAS interface, weekly, on
+- Julia's LinearAlgebra tests run on `numerical_blas` (`julia.yml`: on a change to the BLAS interface, weekly, on
   demand), twelve groups under libblastrampoline, through `blas/julia_check.sh`: a failure fails the run unless the
   script lists it as a known divergence, and a listed one that stops failing fails it too.
 - The AVX-512 emulator's run is a workflow of its own (`avx512.yml`): on a push that touches the x86-64 kernels,
