@@ -537,3 +537,27 @@ TEST(rotation_runs_apply_as_the_operations_one_by_one)
     }
   }
 }
+
+// operator_times: the complex product std::operator* computes, finite and not (an infinity by zero, whose naive parts are both
+// NaN, takes the operator's own rescue), for both precisions; a real product as the operator.
+TEST(operator_times_is_the_operator_s_product)
+{
+  const auto same = []<typename T>(const T& a, const T& b) {
+                      const T    got {numerical::detail::operator_times(a, b)};
+                      const T    want {a * b};
+                      const auto equal = [](auto x, auto y) { return x == y || (std::isnan(x) && std::isnan(y)); };
+                      return equal(got.real(), want.real()) && equal(got.imag(), want.imag());
+                    };
+  const double inf {std::numeric_limits<double>::infinity()};
+  const double nan {std::numeric_limits<double>::quiet_NaN()};
+  using zd = std::complex<double>;
+  using cf = std::complex<float>;
+  EXPECT(same(zd {0.1, -0.3}, zd {1.7, 2.9}));
+  EXPECT(same(zd {inf, 0.0}, zd {0.0, 0.0}));      // ∞·0 in both naive parts: the rescue
+  EXPECT(same(zd {inf, inf}, zd {nan, 1.0}));
+  EXPECT(same(zd {inf, 1.0}, zd {1.0, inf}));      // ∞ − ∞ in the real part alone: no rescue
+  EXPECT(same(zd {1e300, 1e300}, zd {1e300, -1e300}));
+  EXPECT(same(cf {0.1F, -0.3F}, cf {1.7F, 2.9F}));
+  EXPECT(same(cf {static_cast<float>(inf), 0.0F}, cf {0.0F, 0.0F}));
+  EXPECT(numerical::detail::operator_times(0.1, 3.0) == 0.1 * 3.0);
+}

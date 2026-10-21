@@ -51,6 +51,57 @@
 namespace numerical {
 
   namespace detail {
+    /*!
+     * \brief What the LU divides by its pivot \p pivot through \ref over_pivot: a complex pivot's reciprocal, once,
+     *        as LAPACK's zgetf2 takes it (a complex division calls the C library's robust one, a quarter of a complex
+     *        LU of order 48 when it ran for every element); a real pivot itself, each element divided.
+     */
+    template <typename T>
+    [[nodiscard]] T pivot_divisor(const T& pivot)
+    {
+      return pivot;
+    }
+
+    //! \brief \ref pivot_divisor of a complex pivot: its reciprocal.
+    template <typename R>
+    [[nodiscard]] std::complex<R> pivot_divisor(const std::complex<R>& pivot)
+    {
+      return std::complex<R> {1} / pivot;
+    }
+
+    //! \brief \p x over the pivot whose \ref pivot_divisor is \p divisor: the same quotient wherever the LU takes it.
+    template <typename T>
+    [[nodiscard]] T over_pivot(const T& x,
+                               const T& divisor)
+    {
+      return x / divisor;
+    }
+
+    //! \brief \ref over_pivot of a complex \p x: times the pivot's reciprocal, the product in line.
+    template <typename R>
+    [[nodiscard]] std::complex<R> over_pivot(const std::complex<R>& x,
+                                             const std::complex<R>& divisor)
+    {
+      return operator_times(x, divisor);
+    }
+
+    //! \brief `sum −= a · b` in one statement, which the compiler may fuse (as it fuses the matrix solve's).
+    template <typename T>
+    void subtract_term(T&       sum,
+                       const T& a,
+                       const T& b)
+    {
+      sum -= a * b;
+    }
+
+    //! \brief \ref subtract_term of complex numbers: the product in line (\ref operator_times, the operator's rounding).
+    template <typename R>
+    void subtract_term(std::complex<R>&       sum,
+                       const std::complex<R>& a,
+                       const std::complex<R>& b)
+    {
+      sum -= operator_times(a, b);
+    }
 
     //! \brief The columns of one panel of the blocked LU: the trailing update, a product of this depth, is
     //!        deep enough for the packed kernel while the unblocked panel stays a small part of the work.
@@ -686,16 +737,16 @@ namespace numerical {
       for (std::size_t i {0}; i < n_; ++i) { // forward substitution (unit lower L)
         T sum {b[pivots_[i]]};
         for (std::size_t j {0}; j < i; ++j) {
-          sum -= lu_[(i * n_) + j] * y[j];
+          detail::subtract_term(sum, lu_[(i * n_) + j], y[j]);
         }
         y[i] = sum;
       }
       for (std::size_t i {n_}; i-- > 0;) { // back substitution (upper U)
         T sum {y[i]};
         for (std::size_t j {i + 1}; j < n_; ++j) {
-          sum -= lu_[(i * n_) + j] * y[j];
+          detail::subtract_term(sum, lu_[(i * n_) + j], y[j]);
         }
-        y[i] = sum / lu_[(i * n_) + i];
+        y[i] = detail::over_pivot(sum, detail::pivot_divisor(lu_[(i * n_) + i]));
       }
       return vector<T> {std::move(y)};
     }
@@ -1014,9 +1065,9 @@ namespace numerical {
                                const std::size_t last {std::min(first + width, c1)};
                                for (std::size_t i {k1}; i-- > k0;) {
                                  detail::subtract_products(y.data() + (i * cols) + first, lu_.data() + (i * n_) + i + 1, y.data() + ((i + 1) * cols) + first, cols, k1 - (i + 1), last - first);
-                                 const T pivot {lu_[(i * n_) + i]};
+                                 const T divisor {detail::pivot_divisor(lu_[(i * n_) + i])};
                                  for (std::size_t c {first}; c < last; ++c) {
-                                   y[(i * cols) + c] = y[(i * cols) + c] / pivot;
+                                   y[(i * cols) + c] = detail::over_pivot(y[(i * cols) + c], divisor);
                                  }
                                }
                              });
@@ -1063,9 +1114,9 @@ namespace numerical {
                                   if (i + 1 < to) {
                                     detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_) + i + 1, y.data() + ((i + 1) * cols), cols, to - (i + 1), cols);
                                   }
-                                  const T pivot {lu_[(i * n_) + i]};
+                                  const T divisor {detail::pivot_divisor(lu_[(i * n_) + i])};
                                   for (std::size_t c {0}; c < cols; ++c) {
-                                    y[(i * cols) + c] = y[(i * cols) + c] / pivot;
+                                    y[(i * cols) + c] = detail::over_pivot(y[(i * cols) + c], divisor);
                                   }
                                 }};
       std::size_t i1 {n_};
@@ -1329,8 +1380,9 @@ namespace numerical {
             std::swap(pivots_[k0 + j], pivots_[k0 + pivot]);
             sign_ = -sign_;
           }
+          const T divisor {detail::pivot_divisor(column[j])};
           for (std::size_t r {j + 1}; r < rows; ++r) {
-            column[r] = column[r] / column[j]; // the multiplier, in L's slot
+            column[r] = detail::over_pivot(column[r], divisor); // the multiplier, in L's slot
           }
           for (std::size_t c {j + 1}; c < last; ++c) {
             T*      target {panel.data() + (c * rows)};

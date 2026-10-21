@@ -1036,6 +1036,16 @@ namespace numerical::detail {
 #endif
   }
 
+  //! \brief \ref rounded_apart_add of complex numbers: the product in line (\ref operator_times, the operator's own
+  //!        rounding, unfused), where it was a call that took a sixth of a complex LU.
+  template <typename R>
+  [[nodiscard]] inline std::complex<R> rounded_apart_add(std::complex<R> sum,
+                                                         std::complex<R> a,
+                                                         std::complex<R> b) noexcept
+  {
+    return sum + operator_times(a, b);
+  }
+
   //! \brief The rows of C one block of \ref gemm_rows takes together: each element a chain of multiply-adds that
   //!         waits on its last, four rows give the units four times the chains (M1 Pro, order 8 to 24: 1.6 to 1.9
   //!         times as fast as one row; two rows on six x86-64 AVX2 cores, the fastest there, were within 7 %).
@@ -2090,10 +2100,6 @@ namespace numerical::detail {
             std::size_t ldb,
             T*          c,
             std::size_t ldc);
-
-  //! \brief The complex numbers `gemm_split` multiplies through the real kernel.
-  template <typename T>
-  concept split_complex = std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>;
 
   //! \brief The columns of B and C, and the depth, of one real product of `gemm_split`: its real operands
   //!         stay a few megabytes whatever the shapes.

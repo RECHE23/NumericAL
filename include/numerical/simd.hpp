@@ -9,6 +9,8 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <cmath>
+#include <complex>
 #include <cstddef>
 #include <cstring>
 #include <type_traits>
@@ -607,6 +609,45 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief A complex number of `float` or `double`, which `gemm_split` multiplies through the real kernel and the
+  //!        kernels take apart into its real and imaginary parts.
+  template <typename T>
+  concept split_complex = std::is_same_v<T, std::complex<float>> || std::is_same_v<T, std::complex<double>>;
+
+  /*!
+   * \brief `a · b`, as `std::operator*` computes it, in line. libc++'s complex product (the four products and their
+   *        sums as statements of their own, so unfused) is copied here, its rescue of a product whose parts are both
+   *        NaN left to it: where it was a call, out of line in a translation unit as large as the Python extension,
+   *        it took 45 % of a complex LU of order 48. Elsewhere (libstdc++, whose product the compiler expands) and for
+   *        a real `T`, the operator itself.
+   */
+  template <typename T>
+  [[nodiscard, gnu::always_inline]] inline T operator_times(const T& a,
+                                                            const T& b)
+  {
+    return a * b;
+  }
+
+#if defined(_LIBCPP_VERSION)
+  //! \brief \ref operator_times of two complex numbers under libc++: its product's statements, its rescue its own.
+  template <typename R>
+  [[nodiscard, gnu::always_inline]] inline std::complex<R> operator_times(const std::complex<R>& a,
+                                                                          const std::complex<R>& b)
+  {
+    const R ac {a.real() * b.real()};
+    const R bd {a.imag() * b.imag()};
+    const R ad {a.real() * b.imag()};
+    const R bc {a.imag() * b.real()};
+    const R x  {ac - bd};
+    const R y  {ad + bc};
+    if (std::isnan(x) && std::isnan(y)) [[unlikely]] {
+      return a * b;
+    }
+    return {x, y};
+  }
+
+#endif
+
   /*!
    * \brief `y[i] -= f · x[i]` for \p count elements of \p y and \p x, which do not overlap. Each element is
    *        computed exactly as that scalar statement computes it (its product rounded before its difference, or
@@ -625,7 +666,7 @@ namespace numerical::detail {
   {
     const T factor {f}; // read once, as a scalar loop would: it may be an element of y's array
     for (std::size_t i {subtract_scaled_vectors(y, x, factor, count)}; i < count; ++i) {
-      y[i] -= factor * x[i];
+      y[i] -= operator_times(factor, x[i]);
     }
   }
 
@@ -743,7 +784,7 @@ namespace numerical::detail {
   {
     const T factor {f}; // read once, as a scalar loop would: it may be an element of y's array
     for (std::size_t i {subtract_scaled_vectors(y, x, factor, count)}; i < count; ++i) {
-      y[i] -= x[i] * factor;
+      y[i] -= operator_times(x[i], factor);
     }
   }
 
@@ -756,7 +797,7 @@ namespace numerical::detail {
   {
     const T factor {f}; // read once, as a scalar loop would: it may be an element of y's array
     for (std::size_t i {add_scaled_vectors(y, x, factor, count)}; i < count; ++i) {
-      y[i] += factor * x[i];
+      y[i] += operator_times(factor, x[i]);
     }
   }
 } // namespace numerical::detail

@@ -12,6 +12,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`einsum` sums one operand over a run of its axes (`ij->`, `ij->i`, `ij->j`, `ijk->ik`) by pairwise halving**, as
   `sum` adds, where its general loop added the terms one after another: the bits of `sum()` and `sum(axis)`. Order 256,
   one M1 Pro: `ij->` and `ij->i` 97 → 16 µs (NumPy's `einsum` 11.7, its `sum` 16.7), `ij->j` 56 → 16 µs (NumPy 22.7).
+- **A complex LU divides by each pivot once, as LAPACK's `zgetf2`**, its reciprocal multiplying the column and the
+  solves' rows, where every element went through the C library's robust complex division (a quarter of a complex LU
+  of order 48); the factors' and solutions' last bits move. Under libc++ the complex products of the LU, its solves
+  and the small products run in line, the operator's own statements and its rescue of a product whose parts are both
+  NaN copied (`detail::operator_times`, the same bits), where a translation unit as large as the Python extension left
+  them a call (45 % of a complex LU of order 48). One M1 Pro, against NumPy (Accelerate), complex `solve` of order
+  48 0.71× → 0.88×, `det` 0.75× → 0.97×, `inv` 0.95× → 1.29×; order 128 `solve` 0.66× → 0.81×, `inv` 1.58× → 1.86×.
 - **`sum` and `mean` along an axis other than the last add whole rows**, each column's pairwise sum the same to the
   bit as when it was walked down alone: `sum(axis=0)` of order 256 55 → 14.5 µs (NumPy 16.2).
 

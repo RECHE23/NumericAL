@@ -1248,7 +1248,20 @@ TEST(every_decomposition_refuses_a_non_finite_entry)
 namespace {
 
   // The unblocked algorithm the blocked one regroups: partial pivoting, whole-row swaps, each update
-  // applied at its step. Returns the determinant and the solution of `A x = b`.
+  // applied at its step; a complex pivot's reciprocal taken once and multiplied by, as LAPACK's zgetf2 (a real
+  // pivot divides). Returns the determinant and the solution of `A x = b`.
+  template <typename T>
+  T over(const T& x,
+         const T& pivot)
+  {
+    if constexpr (std::is_same_v<T, std::complex<double>>) {
+      return x * (T {1.0} / pivot);
+    }
+    else {
+      return x / pivot;
+    }
+  }
+
   template <typename T>
   std::pair<T, std::vector<T>> unblocked_lu_solve(std::size_t    n,
                                                   std::vector<T> a,
@@ -1270,7 +1283,7 @@ namespace {
         sign = -sign;
       }
       for (std::size_t r {k + 1}; r < n; ++r) {
-        const T factor {a[(r * n) + k] / a[(k * n) + k]};
+        const T factor {over(a[(r * n) + k], a[(k * n) + k])};
         a[(r * n) + k] = factor;
         for (std::size_t c {k + 1}; c < n; ++c) {
           a[(r * n) + c] -= factor * a[(k * n) + c];
@@ -1294,7 +1307,7 @@ namespace {
       for (std::size_t j {i + 1}; j < n; ++j) {
         sum -= a[(i * n) + j] * x[j];
       }
-      x[i] = sum / a[(i * n) + i];
+      x[i] = over(sum, a[(i * n) + i]);
     }
     return {determinant, x};
   }
