@@ -1489,7 +1489,10 @@ namespace numerical::detail {
     const std::size_t        a_blocks {a_packed != nullptr ? 0 : ((m + Kernel::block_rows) - 1) / Kernel::block_rows};
     const T* const           a_tiles  {a_packed != nullptr ? a_packed : packed.a()};
     const std::size_t        shared   {gemm_shares<Kernel>(m, n, k) ? 1U : 0U}; // a weight of zero starts no thread
-    const bool               in_place {B::template in_place<Kernel>(ldb)};      // B's whole slivers unpacked
+    // B's whole slivers unpacked: rows close enough, or a B read once (A one block of rows) whatever its stride, where
+    // the kernel reads B in place at all: packing it was a pass over it the product then made again (6 rows of A by
+    // a B of 700 × 800 doubles: 61 % of the time).
+    const bool               in_place {B::template in_place<Kernel>(ldb) || (m <= Kernel::block_rows && B::template in_place<Kernel>(1))};
     for (std::size_t jc {0}; jc < n; jc += nc_max) {
       const std::size_t nc      {std::min(nc_max, n - jc)};
       const std::size_t slivers {((nc + nr) - 1) / nr};

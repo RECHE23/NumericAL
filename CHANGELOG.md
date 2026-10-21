@@ -12,6 +12,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`einsum` sums one operand over a run of its axes (`ij->`, `ij->i`, `ij->j`, `ijk->ik`) by pairwise halving**, as
   `sum` adds, where its general loop added the terms one after another: the bits of `sum()` and `sum(axis)`. Order 256,
   one M1 Pro: `ij->` and `ij->i` 97 → 16 µs (NumPy's `einsum` 11.7, its `sum` 16.7), `ij->j` 56 → 16 µs (NumPy 22.7).
+- **The 2-norm (`norm`, `vector_norm`, `matrix_norm`'s Frobenius) sums the squares in one pass**, in double, where
+  their sum lies between 2^-900 and the largest double; outside (a NaN, an infinity, a sum past either bound) the
+  scaled sum as before, so no overflow and no underflow still. Each element was copied, divided by the largest and
+  indexed through every axis: a 371 × 208 float64 norm 361 → 13 µs (NumPy 13), complex128 100 × 100 4.1 µs (NumPy 7.7).
+  The last bits move (a division fewer per element).
+- **A product whose A is one block of rows reads B in place whatever its stride** on the AMX, where a B more than
+  512 doubles wide was packed for every call, a pass the product then made again; and a partial AMX tile takes the
+  products of the accumulators its rows and columns fill, where it took all of them. The same bits. One M1 Pro, A of
+  2 to 24 rows by a B of 700 × 800 doubles: 308 → 63 to 97 µs (NumPy 27 to 79).
 - **A complex LU divides by each pivot once, as LAPACK's `zgetf2`**, its reciprocal multiplying the column and the
   solves' rows, where every element went through the C library's robust complex division (a quarter of a complex LU
   of order 48); the factors' and solutions' last bits move. Under libc++ the complex products of the LU, its solves
@@ -48,7 +57,14 @@ A change that can break code is listed under **Breaking** and held for a month's
   report it (`INFO` `-4`), as the reference's `gesdd` and `geev` report a NaN.
 
 ### Development
-- Julia's LinearAlgebra tests run on `numerical_blas` (`julia.yml`: on a change to the BLAS interface, weekly, on
+- **`make bench-fuzz`**: drawn cases against NumPy (an operation of seventeen, every dimension on a log scale up to
+  `LARGEST`, the four dtypes, the operands contiguous, transposed, strided or already a Tensor), each library timed in
+  a process of its own, twice in turn; every answer checked first. It reports the ratios' distribution by operation,
+  size, dtype and layout, and the worst cases with their seed: where the fixed benchmarks, at hand-picked and
+  power-of-two orders, put NumericAL at 1.45× NumPy on this Mac, 600 drawn cases put it at 0.94×, and found the norm
+  and the narrow products above.
+- `make bench-python` reports SciForge's verdict on the ratios, where it said "slower" whatever they were.
+ (`julia.yml`: on a change to the BLAS interface, weekly, on
   demand), twelve groups under libblastrampoline, through `blas/julia_check.sh`: a failure fails the run unless the
   script lists it as a known divergence, and a listed one that stops failing fails it too.
 - The AVX-512 emulator's run is a workflow of its own (`avx512.yml`): on a push that touches the x86-64 kernels,

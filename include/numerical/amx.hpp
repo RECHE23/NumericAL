@@ -324,6 +324,103 @@ namespace numerical::detail {
     amx_depth_f32(kc, ap, bp, ldb);
   }
 
+  //! \brief The matrix-mode multiply-add of the scalar \p T: `fma32` for `float`.
+  template <typename T>
+  inline constexpr amx_op amx_multiply_add {amx_op::fma32};
+
+  //! \brief \ref amx_multiply_add of `double`: `fma64`.
+  template <>
+  inline constexpr amx_op amx_multiply_add<double> {amx_op::fma64};
+
+  /*!
+   * \brief \ref amx_depth for a tile whose rows fill \p bands of its accumulators down and whose columns fill \p halves
+   *        of them across: those accumulators' operands alone loaded and their products alone taken. The others' Z rows
+   *        lie outside C and are never read; each element inside C takes the same products in the same order as in
+   *        the whole tile, so the same bits. A product of 6 rows took all four bands of a `double` tile, 26 rows of it
+   *        sums of zeros.
+   */
+  template <typename T,
+            std::uint64_t Bands,
+            std::uint64_t Halves>
+  [[gnu::noinline, gnu::aligned(64)]] void amx_depth_part(std::size_t kc,
+                                                          const T*    ap,
+                                                          const T*    bp,
+                                                          std::size_t ldb) noexcept
+  {
+    constexpr std::size_t lanes        {64 / sizeof(T)}; // a register's elements
+    for (std::size_t p {0}; p < kc; ++p) {
+      const T* const a {ap + (p * amx_mr)};
+      const T* const b {bp + (p * ldb)};
+      for (std::uint64_t ya {0}; ya < Bands; ++ya) {
+        amx<amx_op::ldy>(amx_address(a + (ya * lanes), ya));
+      }
+      for (std::uint64_t xb {0}; xb < Halves; ++xb) {
+        amx<amx_op::ldx>(amx_address(b + (xb * lanes), xb));
+      }
+      for (std::uint64_t ya {0}; ya < Bands; ++ya) {
+        for (std::uint64_t xb {0}; xb < Halves; ++xb) {
+          amx<amx_multiply_add<T>>((((ya * 2) + xb) << 20U) | ((xb * 64) << 10U) | (ya * 64));
+        }
+      }
+    }
+  }
+
+  //! \brief \ref amx_depth_part of \p Bands bands for \p halves known at run time.
+  template <typename T,
+            std::uint64_t Bands>
+  void amx_depth_part_halves(std::size_t   kc,
+                             const T*      ap,
+                             const T*      bp,
+                             std::size_t   ldb,
+                             std::uint64_t halves) noexcept
+  {
+    if (halves == 1) {
+      amx_depth_part<T, Bands, 1>(kc, ap, bp, ldb);
+    }
+    else {
+      amx_depth_part<T, Bands, 2>(kc, ap, bp, ldb);
+    }
+  }
+
+  //! \brief \ref amx_depth_part of a `double` tile (four bands) for \p bands and \p halves known at run time: each
+  //!        pair its own loop, unrolled.
+  inline void amx_depth_part(std::size_t   kc,
+                             const double* ap,
+                             const double* bp,
+                             std::size_t   ldb,
+                             std::uint64_t bands,
+                             std::uint64_t halves) noexcept
+  {
+    if (bands == 1) {
+      amx_depth_part_halves<double, 1>(kc, ap, bp, ldb, halves);
+    }
+    else if (bands == 2) {
+      amx_depth_part_halves<double, 2>(kc, ap, bp, ldb, halves);
+    }
+    else if (bands == 3) {
+      amx_depth_part_halves<double, 3>(kc, ap, bp, ldb, halves);
+    }
+    else { // every band: a partial tile, so one half (the whole tile goes to amx_depth)
+      amx_depth_part<double, 4, 1>(kc, ap, bp, ldb);
+    }
+  }
+
+  //! \brief \ref amx_depth_part of a `float` tile (two bands).
+  inline void amx_depth_part(std::size_t   kc,
+                             const float*  ap,
+                             const float*  bp,
+                             std::size_t   ldb,
+                             std::uint64_t bands,
+                             std::uint64_t halves) noexcept
+  {
+    if (bands == 1) {
+      amx_depth_part_halves<float, 1>(kc, ap, bp, ldb, halves);
+    }
+    else { // every band: a partial tile, so one half (the whole tile goes to amx_depth)
+      amx_depth_part<float, 2, 1>(kc, ap, bp, ldb);
+    }
+  }
+
   /*!
    * \brief \ref amx_full_tile_f64 or \ref amx_full_tile_f32 for a partial tile of \p rows × \p cols, in C itself:
    *        each half row (a Z row's 64 bytes) inside C is loaded and stored in place, one the last column cuts
@@ -382,7 +479,14 @@ namespace numerical::detail {
       }
     }
     each_half([](T* half, std::uint64_t z) { amx<amx_op::ldz>(amx_address(half, z)); });
-    amx_depth(kc, ap, bp, ldb);
+    const std::uint64_t used_bands  {(rows + lanes - 1) / lanes};                          // the accumulators C's rows fill
+    const std::uint64_t used_halves {std::min<std::uint64_t>(2, (cols + lanes - 1) / lanes)};
+    if (used_bands == bands && used_halves == 2) {
+      amx_depth(kc, ap, bp, ldb);
+    }
+    else {
+      amx_depth_part(kc, ap, bp, ldb, used_bands, used_halves);
+    }
     each_half([](T* half, std::uint64_t z) { amx<amx_op::stz>(amx_address(half, z)); });
     if (cut_width != 0) {
       for (std::size_t row {0}; row < rows; ++row) {
