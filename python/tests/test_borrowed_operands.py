@@ -124,6 +124,17 @@ class BorrowedOperands(unittest.TestCase):
             with self.assertRaises(ValueError):
                 numerical.einsum(bad, base)
 
+    def test_an_einsum_of_a_fortran_ordered_matrix_over_one_axis_gives_the_c_ordered_bits(self):
+        # A column-major matrix summed over one axis is read where it lies, its transpose row-major: each sum the
+        # pairwise sum of the C-ordered copy's, to the bit; a whole sum takes the C-ordered path, the same.
+        for rows, cols in ((5, 9), (130, 70), (564, 774)):
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                with self.subTest(rows=rows, cols=cols, dtype=np.dtype(dtype).name):
+                    copy = self.operand((rows, cols), dtype)
+                    fortran = np.asfortranarray(copy)
+                    for spec in ("ij->i", "ij->j", "ij->", "ji->j", "ji->i"):
+                        self.assert_same(numerical.einsum(spec, fortran), numerical.einsum(spec, copy))
+
     def test_the_product_owns_its_elements(self):
         a, b = self.operand((4, 4), np.float64), self.operand((4, 4), np.float64)
         product = numerical.matmul(a, b)

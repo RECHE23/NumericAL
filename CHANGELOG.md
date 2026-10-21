@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`einsum` of a Fortran-ordered (transposed) NumPy matrix over one of its axes reads it where it lies** (`ij->i`,
+  `ij->j`), its transpose row-major with the labels reversed: each sum the pairwise sum of the same elements, the bits
+  of its C-ordered copy, where the matrix was copied first. 564 × 774 doubles by columns, one M1 Pro: 567 → 88 µs
+  (NumPy 45).
 - **The Hermitian reduction of complex `eigh` and `eigvalsh` runs on vectors**: its conjugate dot products over
   vectors of the parts (the dot product's four sums, combined as the conjugate's), its panel corrections spelled out
   as the complex product's statements, a reflector divided by its real norm part by part, and on arm64 each row of

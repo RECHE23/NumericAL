@@ -2704,10 +2704,19 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
         }
         return true;
     };
+    // A matrix summed over one of its axes may lie column-major: it is then its transpose row-major, read with its
+    // labels and extents reversed, each output element the same pairwise sum of the same elements (a column summed
+    // down a block by rows is the pairwise sum of that column alone). A whole sum would take them in another order.
+    const bool       one_axis {in.size() == 2 && out.size() == 1};
     borrowed_operand x;
-    if (!letters_once(in) || !letters_once(out) || out.find_first_not_of(in) != std::string::npos || !borrow_operand(obj, x)
+    if (!letters_once(in) || !letters_once(out) || out.find_first_not_of(in) != std::string::npos || !borrow_operand(obj, x, one_axis)
         || x.shape.size() != in.size()) {
         return Py_NewRef(Py_NotImplemented);
+    }
+    std::string labels {in};
+    if (x.transposed) {
+        std::reverse(labels.begin(), labels.end());
+        std::reverse(x.shape.begin(), x.shape.end());
     }
     try {
         std::optional<any_tensor> result;
@@ -2718,7 +2727,7 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
             }
             const sb::scoped_gil_release unlocked {releases_gil(count)};
             const auto sum = [&]<typename T>(std::type_identity<T>) {
-                if (std::optional<numerical::tensor<T>> sums {numerical::detail::sum_over_run(in, out, x.shape, static_cast<const T*>(x.data))}) {
+                if (std::optional<numerical::tensor<T>> sums {numerical::detail::sum_over_run(labels, out, x.shape, static_cast<const T*>(x.data))}) {
                     result.emplace(*std::move(sums));
                 }
             };
