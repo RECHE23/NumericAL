@@ -591,8 +591,10 @@ namespace numerical::blas {
 
   /*!
    * \brief `Σ x_i y_i` (\p conjugate false, BLAS's `zdotu`) or `Σ conj(x_i) y_i` (true, `zdotc`) over \p n complex
-   *        elements \p incx and \p incy apart (from the last where negative); 0 where `n ≤ 0`. The terms are summed in
-   *        the order of their index, on the calling thread.
+   *        elements \p incx and \p incy apart (from the last where negative); 0 where `n ≤ 0`. Contiguous vectors
+   *        (both apart by 1) go by vectors of their parts, as the library's own complex dot products
+   *        (\ref numerical::detail::complex_dot_product, \ref numerical::detail::conjugate_dot_product); others term by
+   *        term in the order of their index. Either on the calling thread.
    */
   template <typename T>
   [[nodiscard]] std::complex<T> complex_dot(bool                   conjugate,
@@ -607,6 +609,9 @@ namespace numerical::blas {
       return sum;
     }
     const auto count {static_cast<std::size_t>(n)};
+    if (incx == 1 && incy == 1) {
+      return conjugate ? numerical::detail::conjugate_dot_product(x, y, count) : numerical::detail::complex_dot_product(x, y, count);
+    }
     for (std::size_t i {0}; i < count; ++i) {
       const std::complex<T> xi {x[detail::strided(i, count, incx)]};
       sum += (conjugate ? std::conj(xi) : xi) * y[detail::strided(i, count, incy)];

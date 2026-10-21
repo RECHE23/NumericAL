@@ -21,6 +21,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   where Windows' 32-bit `long` refused one past 2**31 − 1.
 
 ### Changed
+- **Element-wise arithmetic shares a large tensor among the threads** (a same-shape pair by chunks, a broadcast one by
+  rows, each task's odometer set from its first row), with the GIL released from Python, and **`transpose` copies by
+  blocks of 32 among the threads**, where a row of the result walked a column of the source: each element computed or
+  copied as before. One M1 Pro, 2000 × 2000 doubles: `a + b` 3.1 → 1.4 ms, `a + row` 2.8 → 1.2 ms, `transpose` 6.1
+  → 1.7 ms. **BLAS's `cdotu`, `cdotc`, `zdotu` and `zdotc` of contiguous vectors run on vectors of their parts**, as
+  the library's complex dot products, where they summed term by term: their last bits move.
 - **`einsum` of a Fortran-ordered (transposed) NumPy matrix over one of its axes reads it where it lies** (`ij->i`,
   `ij->j`), its transpose row-major with the labels reversed: each sum the pairwise sum of the same elements, the bits
   of its C-ordered copy, where the matrix was copied first. 564 × 774 doubles by columns, one M1 Pro: 567 → 88 µs

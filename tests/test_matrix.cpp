@@ -6,6 +6,7 @@
 // Brace `{a, b}` literals are kept in named locals so their commas are not seen
 // as macro arguments; where a literal must appear inside a macro it is wrapped
 // in an extra pair of parentheses.
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -135,6 +136,30 @@ TEST(matrix_matrix_product)
 
   const matrix<int> wrong {{1, 2, 3}};
   EXPECT_THROWS(a * wrong, numerical::dimension_error);
+}
+
+// By blocks, partial ones at either edge, and by the threads' shares: each element where it belongs.
+TEST(transpose_by_blocks_puts_each_element_where_it_belongs)
+{
+  for (const auto& [rows, cols] : {std::array<std::size_t, 2> {1, 1}, {33, 65}, {700, 1003}, {1, 513}}) {
+    numerical::buffer<double> values(rows * cols);
+    for (std::size_t k {0}; k < values.size(); ++k) {
+      values[k] = static_cast<double>(k);
+    }
+    const numerical::matrix<double> m {rows, cols, std::move(values)};
+    for (const std::size_t threads : {std::size_t {1}, std::size_t {0}}) {
+      numerical::set_max_threads(threads);
+      const numerical::matrix<double> t    {numerical::transpose(m)};
+      bool                            each {t.rows() == cols && t.cols() == rows};
+      for (std::size_t i {0}; each && i < rows; ++i) {
+        for (std::size_t j {0}; j < cols; ++j) {
+          each = each && t(j, i) == m(i, j);
+        }
+      }
+      EXPECT(each);
+    }
+    numerical::set_max_threads(0);
+  }
 }
 
 TEST(transpose_swaps_rows_and_columns)

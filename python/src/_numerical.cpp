@@ -1216,13 +1216,18 @@ bool same_dtype_pair(PyObject* x, PyObject* y, const any_tensor*& a, const any_t
 template <typename T>
 PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
-    switch (op) {
-        case '+': return wrap(any_tensor {a + b});
-        case '-': return wrap(any_tensor {a - b});
-        case '*': return wrap(any_tensor {a * b});
-        case '^': return wrap(any_tensor {numerical::pow(a, b)});
-        default: return wrap(any_tensor {a / b});
+    std::optional<any_tensor> result;
+    {
+        const sb::scoped_gil_release unlocked {releases_gil(std::max(a.size(), b.size()))};
+        switch (op) {
+            case '+': result.emplace(a + b); break;
+            case '-': result.emplace(a - b); break;
+            case '*': result.emplace(a * b); break;
+            case '^': result.emplace(numerical::pow(a, b)); break;
+            default: result.emplace(a / b); break;
+        }
     }
+    return wrap(std::move(*result));
 }
 
 // _binary(op, a, b) -> Tensor: a op b element by element, broadcast as NumPy's; op one of "+-*/", or "^"

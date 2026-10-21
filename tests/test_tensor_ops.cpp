@@ -31,6 +31,51 @@ namespace {
   }
 } // namespace
 
+// Element-wise operations past a task's elements run by tasks: a same-shape pair by chunks, a broadcast one by rows,
+// each task's odometer set from its first row (a row starting partway through the outer axes), the last task partial.
+// Each element op(a, b) of its operands, as the plain loop gives it, on one thread as on all.
+TEST(element_wise_operations_by_tasks_are_each_element_s_op)
+{
+  using numerical::tensor;
+  const auto filled = [](std::vector<std::size_t> shape, double seed) {
+                        std::size_t count {1};
+                        for (const std::size_t extent : shape) {
+                          count *= extent;
+                        }
+                        numerical::buffer<double> values(count);
+                        for (std::size_t i {0}; i < count; ++i) {
+                          values[i] = std::sin(seed + static_cast<double>(i));
+                        }
+                        return tensor<double> {std::move(shape), std::move(values)};
+                      };
+  const tensor<double> a      {filled({7, 301, 157}, 0.5)};
+  const tensor<double> same   {filled({7, 301, 157}, 1.5)};
+  const tensor<double> column {filled({7, 301, 1}, 2.5)};
+  const tensor<double> row    {filled({1, 157}, 3.5)};
+  const tensor<double> plane  {filled({301, 157}, 4.5)};
+  for (const std::size_t threads : {std::size_t {1}, std::size_t {0}}) {
+    numerical::set_max_threads(threads);
+    const tensor<double> sum       {a + same};
+    const tensor<double> by_column {a * column};
+    const tensor<double> by_row    {a - row};
+    const tensor<double> by_plane  {plane / a};
+    bool                 each      {true};
+    for (std::size_t p {0}; p < 7; ++p) {
+      for (std::size_t r {0}; r < 301; ++r) {
+        for (std::size_t c {0}; c < 157; ++c) {
+          const std::size_t k {(((p * 301) + r) * 157) + c};
+          each = each && sum.data()[k] == a.data()[k] + same.data()[k];
+          each = each && by_column.data()[k] == a.data()[k] * column.data()[(p * 301) + r];
+          each = each && by_row.data()[k] == a.data()[k] - row.data()[c];
+          each = each && by_plane.data()[k] == plane.data()[(r * 157) + c] / a.data()[k];
+        }
+      }
+    }
+    EXPECT(each);
+  }
+  numerical::set_max_threads(0);
+}
+
 // A tensor holding 0 elements along one axis may hold any number along the others: a reduction keeping axes whose
 // extents multiply past std::size_t refuses, where a wrapped size gave a buffer too small, written past (its end
 // at address 0); one keeping an empty axis is empty, whatever the others. In each type, int among them.

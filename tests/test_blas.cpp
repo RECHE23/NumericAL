@@ -2018,6 +2018,35 @@ TEST(float_dot_sums_as_the_double_one)
   EXPECT(sdot_64_(&count_w, x.data(), &step_w, y.data(), &step_w) == numerical::blas::dot(3000, x.data(), 1, y.data(), 1));
 }
 
+// Contiguous vectors (both apart by 1) go by vectors of their parts: the library's complex dot products to the bit,
+// and the exact sum on parts that are multiples of a quarter, in double and float.
+TEST(contiguous_complex_dots_are_the_library_s)
+{
+  for (const std::size_t count : {std::size_t {1}, std::size_t {7}, std::size_t {40}}) {
+    std::vector<std::complex<double>> x(count);
+    std::vector<std::complex<double>> y(count);
+    std::vector<std::complex<float>>  xf(count);
+    std::vector<std::complex<float>>  yf(count);
+    std::complex<double>              exact           {};
+    std::complex<double>              exact_conjugate {};
+    for (std::size_t i {0}; i < count; ++i) {
+      x[i]             = {static_cast<double>(i % 5) - 2.0, static_cast<double>(i % 3) / 4.0};
+      y[i]             = {static_cast<double>(i % 7) / 2.0, 1.0 - static_cast<double>(i % 4)};
+      xf[i]            = std::complex<float>(x[i]);
+      yf[i]            = std::complex<float>(y[i]);
+      exact           += x[i] * y[i];
+      exact_conjugate += std::conj(x[i]) * y[i];
+    }
+    const auto n {static_cast<std::ptrdiff_t>(count)};
+    EXPECT(numerical::blas::complex_dot(false, n, x.data(), 1, y.data(), 1) == numerical::detail::complex_dot_product(x.data(), y.data(), count));
+    EXPECT(numerical::blas::complex_dot(true, n, x.data(), 1, y.data(), 1) == numerical::detail::conjugate_dot_product(x.data(), y.data(), count));
+    EXPECT(numerical::blas::complex_dot(false, n, x.data(), 1, y.data(), 1) == exact);
+    EXPECT(numerical::blas::complex_dot(true, n, x.data(), 1, y.data(), 1) == exact_conjugate);
+    EXPECT(numerical::blas::complex_dot(false, n, xf.data(), 1, yf.data(), 1) == std::complex<float>(exact));
+    EXPECT(numerical::blas::complex_dot(true, n, xf.data(), 1, yf.data(), 1) == std::complex<float>(exact_conjugate));
+  }
+}
+
 TEST(complex_dot_sums_in_index_order)
 {
   using zd = std::complex<double>;

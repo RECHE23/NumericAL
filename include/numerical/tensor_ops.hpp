@@ -346,8 +346,14 @@ namespace numerical {
                                           const Op&        op)
   {
     if (a.shape() == b.shape()) {
-      buffer<T> out(a.size());
-      std::transform(a.data().begin(), a.data().end(), b.data().begin(), out.begin(), op);
+      buffer<T>         out(a.size());
+      const std::size_t chunks {(a.size() + detail::elementwise_chunk - 1) / detail::elementwise_chunk};
+      detail::parallel_for(chunks, detail::elementwise_chunk, [&](std::size_t c) {
+                             const std::size_t first {c * detail::elementwise_chunk};
+                             const std::size_t last {std::min(first + detail::elementwise_chunk, a.size())};
+                             std::transform(a.data().begin() + static_cast<std::ptrdiff_t>(first), a.data().begin() + static_cast<std::ptrdiff_t>(last),
+                                            b.data().begin() + static_cast<std::ptrdiff_t>(first), out.begin() + static_cast<std::ptrdiff_t>(first), op);
+                           });
       return tensor<T> {a.shape(), std::move(out)};
     }
     std::vector<std::size_t>       shape {broadcast_shape(a.shape(), b.shape())};
@@ -360,49 +366,62 @@ namespace numerical {
       return tensor<T> {std::move(shape), std::move(out)};
     }
     // The innermost axis runs as one loop, each operand stepping 1 or 0 (a broadcast one) along it, so a
-    // scalar or a row against a matrix is a plain vector loop; the odometer turns only between rows.
-    const std::size_t        inner  {shape[rank - 1]};
-    const std::size_t        step_a {sa[rank - 1]};
-    const std::size_t        step_b {sb[rank - 1]};
-    std::vector<std::size_t> index(rank, 0);
-    std::size_t              ia     {0};
-    std::size_t              ib     {0};
-    for (std::size_t k {0}; k < count; k += inner) {
-      const T* const pa {a.data().data() + ia};
-      const T* const pb {b.data().data() + ib};
-      T* const       po {out.data() + k};
-      if (step_a == 1 && step_b == 1) {
-        for (std::size_t i {0}; i < inner; ++i) {
-          po[i] = op(pa[i], pb[i]);
-        }
-      }
-      else if (step_a == 1) {
-        const T y {pb[0]};
-        for (std::size_t i {0}; i < inner; ++i) {
-          po[i] = op(pa[i], y);
-        }
-      }
-      else if (step_b == 1) {
-        const T x {pa[0]};
-        for (std::size_t i {0}; i < inner; ++i) {
-          po[i] = op(x, pb[i]);
-        }
-      }
-      else {
-        std::fill(po, po + inner, op(pa[0], pb[0]));
-      }
-      for (std::size_t axis {rank - 1}; axis-- > 0;) { // odometer over the outer axes: carry on wrap
-        ++index[axis];
-        ia += sa[axis];
-        ib += sb[axis];
-        if (index[axis] < shape[axis]) {
-          break;
-        }
-        ia          -= sa[axis] * shape[axis];
-        ib          -= sb[axis] * shape[axis];
-        index[axis]  = 0;
-      }
-    }
+    // scalar or a row against a matrix is a plain vector loop; the odometer turns only between rows. The rows go
+    // by tasks, each task's odometer set from its first row.
+    const std::size_t inner          {shape[rank - 1]};
+    const std::size_t step_a         {sa[rank - 1]};
+    const std::size_t step_b         {sb[rank - 1]};
+    const std::size_t rows           {count / inner};
+    const std::size_t rows_per_task  {std::max<std::size_t>(1, detail::elementwise_chunk / inner)};
+    detail::parallel_for((rows + rows_per_task - 1) / rows_per_task, rows_per_task * inner, [&](std::size_t task) {
+                           const std::size_t        first {task * rows_per_task};
+                           const std::size_t        last {std::min(first + rows_per_task, rows)};
+                           std::vector<std::size_t> index(rank, 0);
+                           std::size_t              ia {0};
+                           std::size_t              ib {0};
+                           for (std::size_t axis {rank - 1}, rest {first}; axis-- > 0;) { // the first row's position
+                             index[axis]  = rest % shape[axis];
+                             rest        /= shape[axis];
+                             ia          += index[axis] * sa[axis];
+                             ib          += index[axis] * sb[axis];
+                           }
+                           for (std::size_t row {first}; row < last; ++row) {
+                             const T* const pa {a.data().data() + ia};
+                             const T* const pb {b.data().data() + ib};
+                             T* const       po {out.data() + (row * inner)};
+                             if (step_a == 1 && step_b == 1) {
+                               for (std::size_t i {0}; i < inner; ++i) {
+                                 po[i] = op(pa[i], pb[i]);
+                               }
+                             }
+                             else if (step_a == 1) {
+                               const T y {pb[0]};
+                               for (std::size_t i {0}; i < inner; ++i) {
+                                 po[i] = op(pa[i], y);
+                               }
+                             }
+                             else if (step_b == 1) {
+                               const T x {pa[0]};
+                               for (std::size_t i {0}; i < inner; ++i) {
+                                 po[i] = op(x, pb[i]);
+                               }
+                             }
+                             else {
+                               std::fill(po, po + inner, op(pa[0], pb[0]));
+                             }
+                             for (std::size_t axis {rank - 1}; axis-- > 0;) { // odometer over the outer axes: carry on wrap
+                               ++index[axis];
+                               ia += sa[axis];
+                               ib += sb[axis];
+                               if (index[axis] < shape[axis]) {
+                                 break;
+                               }
+                               ia          -= sa[axis] * shape[axis];
+                               ib          -= sb[axis] * shape[axis];
+                               index[axis]  = 0;
+                             }
+                           }
+                         });
     return tensor<T> {std::move(shape), std::move(out)};
   }
 

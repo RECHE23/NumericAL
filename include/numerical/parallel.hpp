@@ -533,6 +533,11 @@ namespace numerical::detail {
   //!        eight threads; of 16384, 324 µs and 128 µs).
   inline constexpr std::size_t work_per_thread {std::size_t {1} << 16};
 
+  //! \brief The elements one task of an element-wise operation takes, a quarter of a thread's work: a tensor of a
+  //!        million shares out (M1 Pro, 2000 × 2000 doubles added: 3.1 → 1.4 ms), one of a few hundred thousand stays
+  //!        within its time (a sixteenth: 300 × 300 plus a row 13 % slower, each task setting up its odometer).
+  inline constexpr std::size_t elementwise_chunk {work_per_thread / 4};
+
   //! \brief The multiply-adds a vectorised inner loop does in the time of one in \ref work_per_thread's
   //!        dependent chain: a product weighs its work by it (at order 64, a matrix product on eight threads
   //!        took 95 µs, on one 35 µs).
