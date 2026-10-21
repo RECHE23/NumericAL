@@ -325,6 +325,45 @@ namespace numerical::detail {
     add_product<double>(y, factor, x, count);
   }
 
+  //! \brief `y[i] += f · x[i]` for complex `float`: on the x86-64 paths by AVX2 vectors of its arithmetic
+  //!        (`avx2_scaled_add_c32`), the same bits as \ref add_product's template, which runs elsewhere.
+  inline void add_product(std::complex<float>*       y,
+                          const std::complex<float>& f,
+                          const std::complex<float>* x,
+                          std::size_t                count)
+  {
+    const std::complex<float> factor {f}; // read once: it may be an element of y's array
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path             {gemm_path_current()};
+    if (path == gemm_path::avx512 || path == gemm_path::avx2) {
+      for (std::size_t i {avx2_scaled_add_c32(y, x, factor, count)}; i < count; ++i) {
+        complex_scaled_add(y[i], factor, x[i]);
+      }
+      return;
+    }
+#endif
+    add_product<std::complex<float>>(y, factor, x, count);
+  }
+
+  //! \brief \ref add_product for complex `double` (`avx2_scaled_add_c64` on the x86-64 paths).
+  inline void add_product(std::complex<double>*       y,
+                          const std::complex<double>& f,
+                          const std::complex<double>* x,
+                          std::size_t                 count)
+  {
+    const std::complex<double> factor {f}; // read once: it may be an element of y's array
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path              {gemm_path_current()};
+    if (path == gemm_path::avx512 || path == gemm_path::avx2) {
+      for (std::size_t i {avx2_scaled_add_c64(y, x, factor, count)}; i < count; ++i) {
+        complex_scaled_add(y[i], factor, x[i]);
+      }
+      return;
+    }
+#endif
+    add_product<std::complex<double>>(y, factor, x, count);
+  }
+
   //! \brief `Σ x[i] · y[i]` for `double`, as \ref subtract_product chooses its units (in another order of
   //!        summation there, as fixed).
   [[nodiscard]] inline double dot_product(const double* x,

@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A complex `y += f · x` runs on AVX2 vectors on the x86-64 units** (a vector times a matrix, and the complex
+  factorizations' updates), where the extension's baseline build ran SSE or scalar code: the same arithmetic, each
+  part product rounded apart and no multiply-add fused, so the same bits. Six AVX2 cores (GCC 13), one pass of
+  complex64 rows of 583 over 406 rows 182 → 69 µs; a complex64 vector of 406 times a 406 × 583 matrix 112 → 75 µs.
 - **A small strided NumPy array is copied in C order where a product, a norm, an `einsum` reduction or a solve reads
   it** (up to 65 536 elements, aligned, in this machine's byte order), as the converting path copied it but without
   the Python calls around the copy: the same answers. A 4 × 31 strided matrix times a strided vector: one M1 Pro

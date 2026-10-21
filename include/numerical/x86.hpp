@@ -1158,6 +1158,51 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief The leading elements of `y[i] += f · x[i]` for complex `float`, whole vectors of four: how many it did. Each
+   *        product's part products rounded apart (`f.re · x` and `f.im ·` x's exchanged parts), then `re·re − im·im` and
+   *        `re·im + im·re` by one `addsub`, then added to `y`: \ref complex_scaled_add's arithmetic, so the same bits as
+   *        the scalar loop. AVX2 alone, no fused multiply-add: none may be contracted.
+   */
+  NUMERICAL_TARGET("avx2") inline std::size_t avx2_scaled_add_c32(std::complex<float>*       y,
+                                                                  const std::complex<float>* x,
+                                                                  std::complex<float>        f,
+                                                                  std::size_t                count) noexcept
+  {
+    auto* const       out  {reinterpret_cast<float*>(y)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee of [complex.numbers]
+    const auto* const in   {reinterpret_cast<const float*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    const __m256      re   {_mm256_set1_ps(f.real())};
+    const __m256      im   {_mm256_set1_ps(f.imag())};
+    const std::size_t done {count - (count % 4)};
+    for (std::size_t i {0}; i < 2 * done; i += 8) {
+      const __m256 xv      {_mm256_loadu_ps(in + i)};
+      const __m256 product {_mm256_addsub_ps(_mm256_mul_ps(re, xv), _mm256_mul_ps(im, _mm256_permute_ps(xv, 0xB1)))};
+      _mm256_storeu_ps(out + i, _mm256_add_ps(_mm256_loadu_ps(out + i), product));
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return done;
+  }
+
+  //! \brief \ref avx2_scaled_add_c32 for complex `double`: whole vectors of two.
+  NUMERICAL_TARGET("avx2") inline std::size_t avx2_scaled_add_c64(std::complex<double>*       y,
+                                                                  const std::complex<double>* x,
+                                                                  std::complex<double>        f,
+                                                                  std::size_t                 count) noexcept
+  {
+    auto* const       out  {reinterpret_cast<double*>(y)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee of [complex.numbers]
+    const auto* const in   {reinterpret_cast<const double*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    const __m256d     re   {_mm256_set1_pd(f.real())};
+    const __m256d     im   {_mm256_set1_pd(f.imag())};
+    const std::size_t done {count - (count % 2)};
+    for (std::size_t i {0}; i < 2 * done; i += 4) {
+      const __m256d xv      {_mm256_loadu_pd(in + i)};
+      const __m256d product {_mm256_addsub_pd(_mm256_mul_pd(re, xv), _mm256_mul_pd(im, _mm256_permute_pd(xv, 0b0101)))};
+      _mm256_storeu_pd(out + i, _mm256_add_pd(_mm256_loadu_pd(out + i), product));
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return done;
+  }
+
+  /*!
    * \brief Columns \p first to \p last of a vector \p a (\p inner) times a matrix given as its transpose \p bt (its rows
    *        \p ldbt apart) into \p y: each element `a[k] · B[k][j]` added in ascending order of `k` by one fused
    *        multiply-add, as \ref avx2_scaled_add adds each row (and so \ref avx512_scaled_add, whose processors have
