@@ -1097,6 +1097,104 @@ namespace numerical::detail {
     return total;
   }
 
+  /*!
+   * \brief `Σ x[i] · y[i]` of complex numbers (AVX2 with FMA), their parts interleaved as the standard lays them out:
+   *        four accumulators take `x · y` part by part (`re·re` in the even lanes, `im·im` in the odd), four `x` times
+   *        `y` with its parts swapped (`re·im`, `im·re`), as chains of fused multiply-adds; their lanes, then the
+   *        remainder, summed in a fixed order, the real part the first two sums' difference, the imaginary part the
+   *        other two's sum (\ref dot_product's of complex numbers, fused).
+   */
+  NUMERICAL_TARGET("avx2,fma") inline std::complex<double> avx2_complex_dot(const std::complex<double>* x,
+                                                                            const std::complex<double>* y,
+                                                                            std::size_t                 count) noexcept
+  {
+    constexpr std::size_t           width {4};                                  // parts in a register: two complex numbers
+    constexpr std::size_t           lanes {4};
+    const auto* const               a     {reinterpret_cast<const double*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is an array of its two parts
+    const auto* const               b     {reinterpret_cast<const double*>(y)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): as above
+    const std::size_t               parts {2 * count};
+    std::array<ymm_register, lanes> same  {};
+    std::array<ymm_register, lanes> cross {};
+    const std::size_t               done  {parts - (parts % (width * lanes))};
+    for (std::size_t i {0}; i < done; i += width * lanes) {
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t l {0}; l < lanes; ++l) {
+        const __m256d av {_mm256_loadu_pd(a + i + (l * width))};
+        const __m256d bv {_mm256_loadu_pd(b + i + (l * width))};
+        same[l].v  = _mm256_fmadd_pd(av, bv, same[l].v);
+        cross[l].v = _mm256_fmadd_pd(av, _mm256_permute_pd(bv, 0x5), cross[l].v); // each pair's parts swapped
+      }
+    }
+    double rr {0.0};
+    double ii {0.0};
+    double ri {0.0};
+    double ir {0.0};
+    for (std::size_t l {0}; l < lanes; ++l) {
+      alignas(32) std::array<double, width> s {}; // a register stored whole: some compilers store it aligned
+      alignas(32) std::array<double, width> c {};
+      _mm256_storeu_pd(s.data(), same[l].v);
+      _mm256_storeu_pd(c.data(), cross[l].v);
+      rr += s[0] + s[2];
+      ii += s[1] + s[3];
+      ri += c[0] + c[2];
+      ir += c[1] + c[3];
+    }
+    for (std::size_t i {done}; i < parts; i += 2) {
+      rr += a[i] * b[i];
+      ii += a[i + 1] * b[i + 1];
+      ri += a[i] * b[i + 1];
+      ir += a[i + 1] * b[i];
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return {rr - ii, ri + ir};
+  }
+
+  //! \brief \ref avx2_complex_dot of `std::complex<float>`: four complex numbers a register.
+  NUMERICAL_TARGET("avx2,fma") inline std::complex<float> avx2_complex_dot(const std::complex<float>* x,
+                                                                           const std::complex<float>* y,
+                                                                           std::size_t                count) noexcept
+  {
+    constexpr std::size_t               width {8};
+    constexpr std::size_t               lanes {4};
+    const auto* const                   a     {reinterpret_cast<const float*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is an array of its two parts
+    const auto* const                   b     {reinterpret_cast<const float*>(y)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): as above
+    const std::size_t                   parts {2 * count};
+    std::array<ymm_register_f32, lanes> same  {};
+    std::array<ymm_register_f32, lanes> cross {};
+    const std::size_t                   done  {parts - (parts % (width * lanes))};
+    for (std::size_t i {0}; i < done; i += width * lanes) {
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t l {0}; l < lanes; ++l) {
+        const __m256 av {_mm256_loadu_ps(a + i + (l * width))};
+        const __m256 bv {_mm256_loadu_ps(b + i + (l * width))};
+        same[l].v  = _mm256_fmadd_ps(av, bv, same[l].v);
+        cross[l].v = _mm256_fmadd_ps(av, _mm256_permute_ps(bv, 0xB1), cross[l].v); // each pair's parts swapped
+      }
+    }
+    float rr {0.0F};
+    float ii {0.0F};
+    float ri {0.0F};
+    float ir {0.0F};
+    for (std::size_t l {0}; l < lanes; ++l) {
+      alignas(32) std::array<float, width> s {};
+      alignas(32) std::array<float, width> c {};
+      _mm256_storeu_ps(s.data(), same[l].v);
+      _mm256_storeu_ps(c.data(), cross[l].v);
+      rr += (s[0] + s[2]) + (s[4] + s[6]);
+      ii += (s[1] + s[3]) + (s[5] + s[7]);
+      ri += (c[0] + c[2]) + (c[4] + c[6]);
+      ir += (c[1] + c[3]) + (c[5] + c[7]);
+    }
+    for (std::size_t i {done}; i < parts; i += 2) {
+      rr += a[i] * b[i];
+      ii += a[i + 1] * b[i + 1];
+      ri += a[i] * b[i + 1];
+      ir += a[i + 1] * b[i];
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return {rr - ii, ri + ir};
+  }
+
 #endif
 } // namespace numerical::detail
 

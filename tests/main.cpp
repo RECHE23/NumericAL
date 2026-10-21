@@ -1,6 +1,8 @@
 #include <sciforge/test/framework.hpp>
 
-int main()
+// The tests whose name holds the first argument, or all of them.
+int main(int    argc,
+         char** argv)
 {
-  return test::run_all();
+  return test::run_all(argc, argv);
 }

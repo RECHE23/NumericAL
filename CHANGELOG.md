@@ -12,6 +12,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`einsum` sums one operand over a run of its axes (`ij->`, `ij->i`, `ij->j`, `ijk->ik`) by pairwise halving**, as
   `sum` adds, where its general loop added the terms one after another: the bits of `sum()` and `sum(axis)`. Order 256,
   one M1 Pro: `ij->` and `ij->i` 97 → 16 µs (NumPy's `einsum` 11.7, its `sum` 16.7), `ij->j` 56 → 16 µs (NumPy 22.7).
+- **A complex dot product sums over vectors of the parts**, its real and imaginary sums apart (`re·re`, `im·im`,
+  `re·im`, `im·re`), where a running complex sum waited on each addition and tested each product for NaN; on the x86-64
+  units with AVX2 their fused multiply-adds. A complex matrix times a vector shares its rows among the threads by
+  their weight (a complex multiply-add four real ones), in groups of fewer rows where there are few. The last bits
+  of complex dot products move. A complex128 matrix of 632 × 351 times a vector, one M1 Pro: 32 µs (NumPy 87); six
+  AVX2 cores, each library timed in a process of its own: 25 µs (NumPy 16), and 189 × 206 12 µs (5.3).
 - **The 2-norm (`norm`, `vector_norm`, `matrix_norm`'s Frobenius) sums the squares in one pass**, in double, where
   their sum lies between 2^-900 and the largest double; outside (a NaN, an infinity, a sum past either bound) the
   scaled sum as before, so no overflow and no underflow still. Each element was copied, divided by the largest and
@@ -65,6 +71,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   power-of-two orders, put NumericAL at 1.45× NumPy on this Mac, 600 drawn cases put it at 0.94×, and found the norm
   and the narrow products above.
 - `make bench-python` reports SciForge's verdict on the ratios, where it said "slower" whatever they were.
+- The test binary runs the tests whose name holds its first argument (all without one).
+- The AVX-512 workflow logs its host's processor and may take two hours: the emulator's speed is the host's (10
+  minutes on one runner, 55 on another).
  (`julia.yml`: on a change to the BLAS interface, weekly, on
   demand), twelve groups under libblastrampoline, through `blas/julia_check.sh`: a failure fails the run unless the
   script lists it as a known divergence, and a listed one that stops failing fails it too.

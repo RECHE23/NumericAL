@@ -343,6 +343,74 @@ namespace numerical::detail {
     return dot_product<double>(x, y, count);
   }
 
+  //! \brief `Σ x[i] · y[i]` of complex numbers: on the x86-64 units with AVX2 (the AVX-512 path too) their fused
+  //!        chains (`avx2_complex_dot`), elsewhere the native vectors' (in another order of summation there, as
+  //!        fixed).
+  template <split_complex C>
+  [[nodiscard]] C complex_dot_product(const C*    x,
+                                      const C*    y,
+                                      std::size_t count)
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    if (gemm_path_current() != gemm_path::portable) {
+      return avx2_complex_dot(x, y, count);
+    }
+#endif
+    return dot_product<C>(x, y, count); // the native vectors' (the overloads below come here)
+  }
+
+  //! \brief \ref dot_product for `std::complex<double>`, through \ref complex_dot_product.
+  [[nodiscard]] inline std::complex<double> dot_product(const std::complex<double>* x,
+                                                        const std::complex<double>* y,
+                                                        std::size_t                 count)
+  {
+    return complex_dot_product(x, y, count);
+  }
+
+  //! \brief \ref dot_product for `std::complex<float>`, through \ref complex_dot_product.
+  [[nodiscard]] inline std::complex<float> dot_product(const std::complex<float>* x,
+                                                       const std::complex<float>* y,
+                                                       std::size_t                count)
+  {
+    return complex_dot_product(x, y, count);
+  }
+
+  //! \brief \ref row_dots of complex numbers: each row by \ref complex_dot_product, as \ref chunked_dot sums a row.
+  template <split_complex C>
+  void complex_row_dots(const C*    m,
+                        std::size_t ld,
+                        std::size_t rows,
+                        const C*    x,
+                        std::size_t count,
+                        C*          out)
+  {
+    for (std::size_t r {0}; r < rows; ++r) {
+      out[r] = complex_dot_product(m + (r * ld), x, count);
+    }
+  }
+
+  //! \brief \ref row_dots for `std::complex<double>`, through \ref complex_row_dots.
+  inline void row_dots(const std::complex<double>* m,
+                       std::size_t                 ld,
+                       std::size_t                 rows,
+                       const std::complex<double>* x,
+                       std::size_t                 count,
+                       std::complex<double>*       out)
+  {
+    complex_row_dots(m, ld, rows, x, count, out);
+  }
+
+  //! \brief \ref row_dots for `std::complex<float>`, through \ref complex_row_dots.
+  inline void row_dots(const std::complex<float>* m,
+                       std::size_t                ld,
+                       std::size_t                rows,
+                       const std::complex<float>* x,
+                       std::size_t                count,
+                       std::complex<float>*       out)
+  {
+    complex_row_dots(m, ld, rows, x, count, out);
+  }
+
   //! \brief \ref row_dots for `double`: on the x86-64 units each row by their \ref dot_product (wider than four rows
   //!        of the portable vectors), elsewhere four rows at a time.
   inline void row_dots(const double* m,
@@ -2696,6 +2764,18 @@ namespace numerical::detail {
     return total;
   }
 
+  //! \brief The real multiply-adds one multiply-add of `T` weighs: 1 for a real number.
+  template <typename T>
+  inline constexpr std::size_t multiply_add_weight {1};
+
+  //! \brief \ref multiply_add_weight of `std::complex<double>`: four real multiply-adds.
+  template <>
+  inline constexpr std::size_t multiply_add_weight<std::complex<double>> {4};
+
+  //! \brief \ref multiply_add_weight of `std::complex<float>`: four real multiply-adds.
+  template <>
+  inline constexpr std::size_t multiply_add_weight<std::complex<float>> {4};
+
   //! \brief The rows a thread takes of a matrix times a vector (\ref matrix_times_vector).
   inline constexpr std::size_t row_group {64};
 
@@ -2738,9 +2818,14 @@ namespace numerical::detail {
       parallel_for(rows, cols, [&](std::size_t r) { y[r] = chunked_dot(a + (r * cols), x, cols); });
       return;
     }
-    parallel_for((rows + row_group - 1) / row_group, row_group * cols, [&](std::size_t group) {
-                   const std::size_t first {group * row_group};
-                   row_dots(a + (first * cols), cols, std::min(row_group, rows - first), x, cols, y + first);
+    // A complex multiply-add weighs four real ones. Groups of fewer rows where the matrix has too few for each thread
+    // to take some (189 rows of 64 were three groups: six AVX2 cores' L3 read by one, a complex matrix of 189 × 206
+    // times a vector 24 µs); each row its own dot product whatever the grouping, so the same bits.
+    constexpr std::size_t weight {multiply_add_weight<T>};
+    const std::size_t     group  {std::clamp<std::size_t>(rows / (4 * max_threads()), 8, row_group)};
+    parallel_for((rows + group - 1) / group, group * cols * weight, [&](std::size_t g) {
+                   const std::size_t first {g * group};
+                   row_dots(a + (first * cols), cols, std::min(group, rows - first), x, cols, y + first);
                  });
   }
 } // namespace numerical::detail

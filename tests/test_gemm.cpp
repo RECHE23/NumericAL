@@ -490,3 +490,59 @@ TEST(an_empty_dimension_leaves_c_unchanged)
   numerical::detail::gemm(64, 64, 0, a.data(), 1, b.data(), 1, c.data(), 1);
   EXPECT(std::ranges::all_of(c, [](double value) { return value == 7.0; }));
 }
+
+namespace {
+  // Whether the complex dot products of type C are close to a long double sum at every length about the vectors' widths
+  // (the native vectors' parts, AVX2's two or four complex numbers, four accumulators of each), each row of row_dots
+  // and of matrix_times_vector its dot_product to the bit.
+  template <typename C>
+  bool complex_dots_hold()
+  {
+    using R = C::value_type;
+    const auto value = [](std::size_t i, std::size_t salt) {
+                         const auto phase {static_cast<double>(((i * 2654435761U) + salt) % 1000U) / 1000.0};
+                         return C {static_cast<R>(phase - 0.5), static_cast<R>(0.25 - (phase * phase))};
+                       };
+    bool ok {true};
+    for (const std::size_t count : {std::size_t {0}, std::size_t {1}, std::size_t {3}, std::size_t {15}, std::size_t {16},
+                                    std::size_t {17}, std::size_t {33}, std::size_t {1000}}) {
+      std::vector<C>            x(count);
+      std::vector<C>            y(count);
+      std::complex<long double> want {};
+      for (std::size_t i {0}; i < count; ++i) {
+        x[i]  = value(i, 1);
+        y[i]  = value(i, 7);
+        want += std::complex<long double> {x[i].real(), x[i].imag()} *std::complex<long double> {y[i].real(), y[i].imag()};
+      }
+      const C           got   {numerical::detail::dot_product(x.data(), y.data(), count)};
+      const long double bound {(std::is_same_v<R, float> ? 1e-4L : 1e-12L) * static_cast<long double>(count + 1)};
+      ok = ok && std::abs(std::complex<long double> {got.real(), got.imag()} - want) <= bound;
+    }
+    constexpr std::size_t rows {189};
+    constexpr std::size_t cols {206};
+    std::vector<C>        m(rows * cols);
+    std::vector<C>        v(cols);
+    for (std::size_t i {0}; i < m.size(); ++i) {
+      m[i] = value(i, 3);
+    }
+    for (std::size_t i {0}; i < cols; ++i) {
+      v[i] = value(i, 5);
+    }
+    std::vector<C> by_rows(rows);
+    std::vector<C> product(rows);
+    numerical::detail::row_dots(m.data(), cols, rows, v.data(), cols, by_rows.data());
+    numerical::detail::matrix_times_vector(m.data(), rows, cols, v.data(), product.data());
+    for (std::size_t r {0}; r < rows; ++r) {
+      const C alone {numerical::detail::dot_product(m.data() + (r * cols), v.data(), cols)};
+      ok = ok && by_rows[r] == alone && product[r] == alone;
+    }
+    return ok;
+  }
+} // namespace
+
+// The complex dot products, on every path (AVX2's fused chains on the x86-64 units, the native vectors' elsewhere).
+TEST(complex_dot_products_on_every_path)
+{
+  EXPECT(on_every_path([] { return complex_dots_hold<std::complex<double>>(); }));
+  EXPECT(on_every_path([] { return complex_dots_hold<std::complex<float>>(); }));
+}
