@@ -9,6 +9,16 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Fixed
+- **`mean` of `float32` and `complex64` divides by an exact count**, in double precision and back, as NumPy's:
+  the count was rounded to a `float`, so 2**24 + 1 ones averaged to 1 where NumPy gives 0.99999994.
+- **`max` gives +0 and `min` −0 wherever both zeros are among the elements**, whatever their order, as NumPy's,
+  where the first zero met kept its sign; a NaN still wins.
+- **`outer` keeps each product's sign**, as NumPy's: computed through an einsum, a −0 product was added to a zero and
+  came out +0. **A mean of an integer tensor over no element refuses** (`dimension_error`), where the division by
+  a count of 0 was undefined (an integer has no NaN to give).
+- **`cross` keeps each component apart**: the components were assembled by products with unit vectors, so an
+  infinite one, or one overflowing from finite operands, turned the others NaN (`[1e308, 1e308, 0] × [1e308, -1e308, 0]`
+  gave NaNs where NumPy gives `[0, 0, -inf]`).
 - **A reduction keeping axes whose extents multiply past `std::size_t` refuses** (`dimension_error`), where a
   tensor holding no element along another axis — `(2**32, 0, 2**32)` — made `sum` and `mean` along that axis, an
   `einsum` such as `ijk->ik` and a norm over it allocate a buffer of the wrapped size and write past it. One keeping
@@ -26,7 +36,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   blocks of 32 among the threads**, where a row of the result walked a column of the source: each element computed or
   copied as before. One M1 Pro, 2000 × 2000 doubles: `a + b` 3.1 → 1.4 ms, `a + row` 2.8 → 1.2 ms, `transpose` 6.1
   → 1.7 ms. **BLAS's `cdotu`, `cdotc`, `zdotu` and `zdotc` of contiguous vectors run on vectors of their parts**, as
-  the library's complex dot products, where they summed term by term: their last bits move.
+  the library's complex dot products, where they summed term by term: their last bits move. BLAS's `dgemv` works in `y`
+  itself where it is contiguous, and reads `x` where it lies for `Aᵀ x` with α 1: the same values, without the copies.
 - **`einsum` of a Fortran-ordered (transposed) NumPy matrix over one of its axes reads it where it lies** (`ij->i`,
   `ij->j`), its transpose row-major with the labels reversed: each sum the pairwise sum of the same elements, the bits
   of its C-ordered copy, where the matrix was copied first. 564 × 774 doubles by columns, one M1 Pro: 567 → 88 µs

@@ -31,6 +31,74 @@ namespace {
   }
 } // namespace
 
+// A mean divides by its count in the wider of its type and double, the count exact: a float sum of 2^24 + 1 ones is
+// 2^24, and divided by 2^24 + 1 it is NumPy's 0.99999994, where the count rounded to a float gave 1. Each part of a
+// complex number so; a long double stays one; an integer divides by its count.
+TEST(means_divide_by_an_exact_count)
+{
+  const std::size_t n        {(std::size_t {1} << 24) + 1};
+  const float       expected {static_cast<float>(16777216.0 / 16777217.0)};
+  EXPECT(numerical::detail::divided_by_count(16777216.0F, n) == expected);
+  EXPECT(expected != 1.0F);
+  EXPECT((numerical::detail::divided_by_count(std::complex<float> {16777216.0F, 33554432.0F}, n)
+          == std::complex<float> {expected, static_cast<float>(33554432.0 / 16777217.0)}));
+  EXPECT(numerical::detail::divided_by_count(3.0, 4) == 0.75);
+  EXPECT((numerical::detail::divided_by_count(std::complex<double> {3.0, -1.0}, 4) == std::complex<double> {0.75, -0.25}));
+  EXPECT(numerical::detail::divided_by_count(1.0L, 3) == 1.0L / 3.0L);
+  EXPECT(numerical::detail::divided_by_count(7, 2) == 3);
+  const numerical::tensor<int> no_ints {{2, 0, 3}, numerical::buffer<int> {}};          // no NaN to give: refused
+  EXPECT_THROWS((void)numerical::mean(no_ints, 1), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::mean(no_ints), numerical::dimension_error);
+  const numerical::tensor<double> no_doubles {{2, 0, 3}, numerical::buffer<double> {}}; // NaNs, as NumPy's
+  EXPECT(std::isnan(numerical::mean(no_doubles, 1).data()[0]) && std::isnan(numerical::mean(no_doubles)));
+  const numerical::tensor<float> twos        {{3, 2}, numerical::buffer<float> {2.0F, 4.0F, 6.0F, 8.0F, 10.0F, 12.0F}};
+  EXPECT(numerical::mean(twos) == 7.0F);
+  EXPECT((numerical::mean(twos, 0).data() == numerical::buffer<float> {6.0F, 8.0F}));
+}
+
+// max gives +0 and min −0 wherever both zeros are among the elements, whatever their order, as NumPy's: no zero is
+// larger than the other, so the first met stayed. On a short line, a long one (the vectors' lanes) and along an
+// outer axis (slabs compared element by element); a NaN still wins.
+namespace {
+  template <typename T>
+  bool zeros_settle()
+  {
+    const T zero     {0};
+    const T negative {-zero};
+    bool    ok       {true};
+    for (const std::size_t count : {std::size_t {2}, std::size_t {64}}) {
+      for (const bool positive_first : {true, false}) {
+        numerical::buffer<T> values(count);
+        for (std::size_t i {0}; i < count; ++i) {
+          values[i] = (i < count / 2) == positive_first ? zero : negative;
+        }
+        const numerical::tensor<T> line {{count}, values};
+        ok = ok && !std::signbit(numerical::max(line)) && std::signbit(numerical::min(line));
+        const numerical::tensor<T> rows {{count, 2}, [&] {
+            numerical::buffer<T> pairs(2 * count);
+            for (std::size_t i {0}; i < count; ++i) {
+              pairs[2 * i]       = values[i];
+              pairs[(2 * i) + 1] = T {1};
+            }
+            return pairs;
+          }()};
+        ok = ok && !std::signbit(numerical::max(rows, 0).data()[0]) && std::signbit(numerical::min(rows, 0).data()[0]);
+        ok = ok && !std::signbit(numerical::max(line, 0).data()[0]);
+      }
+    }
+    const numerical::tensor<T> only_negative {{3}, numerical::buffer<T> {negative, negative, T {-1}}};
+    ok = ok && std::signbit(numerical::max(only_negative)) && numerical::max(only_negative) == zero;
+    const numerical::tensor<T> with_nan      {{3}, numerical::buffer<T> {zero, std::numeric_limits<T>::quiet_NaN(), negative}};
+    return ok && std::isnan(numerical::max(with_nan)) && std::isnan(numerical::min(with_nan));
+  }
+} // namespace
+
+TEST(extremes_settle_a_zero_s_sign_as_numpy)
+{
+  EXPECT(zeros_settle<double>());
+  EXPECT(zeros_settle<float>());
+}
+
 // Element-wise operations past a task's elements run by tasks: a same-shape pair by chunks, a broadcast one by rows,
 // each task's odometer set from its first row (a row starting partway through the outer axes), the last task partial.
 // Each element op(a, b) of its operands, as the plain loop gives it, on one thread as on all.

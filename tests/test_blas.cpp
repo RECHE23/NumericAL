@@ -1965,6 +1965,40 @@ TEST(gemv_computes_alpha_op_a_x_plus_beta_y_with_any_increments)
   }
 }
 
+// Contiguous vectors are read and written where they lie (x for Aᵀ x with α 1, y always), strided ones through copies:
+// the same values computed, the same bits, for A x and Aᵀ x, with β 0 and not.
+TEST(gemv_in_place_gives_the_copies_bits)
+{
+  const std::size_t         m    {70};
+  const std::size_t         n    {53};
+  const std::vector<double> a    {entries(m * n, 81)}; // A is m × n, column-major, for either operation
+  const auto                rows {static_cast<std::ptrdiff_t>(m)};
+  const auto                cols {static_cast<std::ptrdiff_t>(n)};
+  for (const char trans : {'N', 'T'}) {
+    const std::size_t         x_length {trans == 'N' ? n : m};
+    const std::size_t         y_length {trans == 'N' ? m : n};
+    const std::vector<double> x        {entries(x_length, 83)};
+    std::vector<double>       x_apart(2 * x_length);
+    for (std::size_t i {0}; i < x_length; ++i) {
+      x_apart[2 * i] = x[i];
+    }
+    for (const double beta : {0.0, 0.5}) {
+      std::vector<double> y {entries(y_length, 85)};
+      std::vector<double> y_apart(2 * y_length);
+      for (std::size_t i {0}; i < y_length; ++i) {
+        y_apart[2 * i] = y[i];
+      }
+      EXPECT(numerical::blas::gemv(trans, rows, cols, 1.0, a.data(), rows, x.data(), 1, beta, y.data(), 1) == 0);
+      EXPECT(numerical::blas::gemv(trans, rows, cols, 1.0, a.data(), rows, x_apart.data(), 2, beta, y_apart.data(), 2) == 0);
+      bool same {true};
+      for (std::size_t i {0}; i < y_length; ++i) {
+        same = same && y[i] == y_apart[2 * i];
+      }
+      EXPECT(same);
+    }
+  }
+}
+
 TEST(gemv_reports_its_first_illegal_argument)
 {
   std::vector<double> v(16, 1.0);

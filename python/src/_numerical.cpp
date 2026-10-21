@@ -1276,6 +1276,61 @@ PyObject* module_binary(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _stack_last(parts) -> Tensor: the tensors of `parts` (a sequence of one shape and one dtype) side by side along a
+// new last axis, as numpy.stack(parts, axis=-1): a copy, element by element, where assembling them by products with
+// unit vectors multiplied each by zeros (an infinite part made the others NaN).
+PyObject* module_stack_last(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* seq = nullptr;
+    if (PyArg_ParseTuple(args, "O", &seq) == 0) {
+        return nullptr;
+    }
+    const Py_ssize_t count = PySequence_Size(seq);
+    if (count <= 0) {
+        if (count == 0) {
+            PyErr_SetString(PyExc_ValueError, "_stack_last: at least one tensor");
+        }
+        return nullptr;
+    }
+    std::vector<const any_tensor*> parts;
+    for (Py_ssize_t i = 0; i < count; ++i) {
+        PyObject* item = PySequence_GetItem(seq, i); // new ref; the sequence keeps the tensor alive
+        if (item == nullptr) {
+            return nullptr;
+        }
+        const any_tensor* part = as_tensor(item);
+        Py_DECREF(item);
+        if (part == nullptr) {
+            return nullptr;
+        }
+        if (!parts.empty() && (part->index() != parts.front()->index() || shape_of(*part) != shape_of(*parts.front()))) {
+            PyErr_SetString(sciforge_module_error(), "_stack_last: the tensors differ in shape or dtype");
+            return nullptr;
+        }
+        parts.push_back(part);
+    }
+    try {
+        return std::visit([&](const auto& first) {
+            using T = std::remove_cvref_t<decltype(first.data()[0])>;
+            const std::size_t        k {parts.size()};
+            const std::size_t        n {first.data().size()};
+            std::vector<std::size_t> shape {first.shape()};
+            shape.push_back(k);
+            numerical::buffer<T> out(numerical::detail::checked_mul(n, k));
+            for (std::size_t j = 0; j < k; ++j) {
+                const auto& values {std::get<std::decay_t<decltype(first)>>(*parts[j]).data()};
+                for (std::size_t i = 0; i < n; ++i) {
+                    out[(i * k) + j] = values[i];
+                }
+            }
+            return wrap(any_tensor {numerical::tensor<T> {std::move(shape), std::move(out)}});
+        }, *parts.front());
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _negate(a) -> Tensor.
 PyObject* module_negate(PyObject* /*self*/, PyObject* args)
 {
@@ -3366,6 +3421,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_take(t, starts, steps, counts, keep) -> Tensor or number\nThe strided copy behind Tensor.__getitem__.");
     m.raw("_binary", module_binary, METH_VARARGS,
           "_binary(op, a, b) -> Tensor\nElement-wise a op b (op one of + - * /), broadcast; one dtype.");
+    m.raw("_stack_last", module_stack_last, METH_VARARGS,
+          "_stack_last(parts) -> Tensor\nTensors of one shape and dtype side by side along a new last axis (a copy).");
     m.raw("_negate", module_negate, METH_VARARGS, "_negate(a) -> Tensor\nElement-wise negation.");
     m.raw("_equal", module_equal, METH_VARARGS,
           "_equal(a, b) -> bool\nWhether two tensors of one dtype and size hold equal elements (a NaN equals nothing).");

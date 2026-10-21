@@ -674,21 +674,26 @@ namespace numerical::blas {
     const auto        ld         {static_cast<std::size_t>(lda)};
     const std::size_t x_length   {transposed ? rows : cols};
     const std::size_t y_length   {transposed ? cols : rows};
-    buffer<double>    out(y_length, 0.0);
-    for (std::size_t i {0}; i < y_length && beta != 0.0; ++i) {
-      out[i] = beta * y[detail::strided(i, y_length, incy)];
+    // y itself where its elements are contiguous, else a copy written back; x itself for Aᵀ x where it is contiguous
+    // and α 1, else α x gathered (A x takes −α x, its factors): the same values either way, so the same bits.
+    buffer<double>    gathered_y(incy == 1 ? 0 : y_length);
+    double* const     out {incy == 1 ? y : gathered_y.data()};
+    for (std::size_t i {0}; i < y_length; ++i) {
+      out[i] = beta == 0.0 ? 0.0 : beta * y[detail::strided(i, y_length, incy)];
     }
     if (alpha != 0.0) {
-      buffer<double> scaled(x_length, 0.0); // α x, gathered
-      for (std::size_t i {0}; i < x_length; ++i) {
+      const bool     in_place {transposed && incx == 1 && alpha == 1.0};
+      buffer<double> scaled(in_place ? 0 : x_length); // α x, gathered
+      for (std::size_t i {0}; i < scaled.size(); ++i) {
         scaled[i] = alpha * x[detail::strided(i, x_length, incx)];
       }
       if (transposed) {
-        buffer<double> dots(cols, 0.0);
+        const double* const factors {in_place ? x : scaled.data()};
+        buffer<double>      dots(cols, 0.0);
         numerical::detail::parallel_for((cols + gemv_rows - 1) / gemv_rows, gemv_weight * gemv_rows * rows, [&](std::size_t group) {
                                           const std::size_t first {group * gemv_rows};
                                           numerical::detail::row_dots(a + (first * ld), ld, std::min(gemv_rows, cols - first),
-                                                                      scaled.data(), rows, dots.data() + first);
+                                                                      factors, rows, dots.data() + first);
                                         });
         for (std::size_t j {0}; j < cols; ++j) {
           out[j] += dots[j];
@@ -701,12 +706,12 @@ namespace numerical::blas {
         }
         numerical::detail::parallel_for((rows + gemv_rows - 1) / gemv_rows, gemv_weight * gemv_rows * cols, [&](std::size_t group) {
                                           const std::size_t first {group * gemv_rows};
-                                          numerical::detail::subtract_products(out.data() + first, scaled.data(), a + first, ld, cols,
+                                          numerical::detail::subtract_products(out + first, scaled.data(), a + first, ld, cols,
                                                                                std::min(gemv_rows, rows - first));
                                         });
       }
     }
-    for (std::size_t i {0}; i < y_length; ++i) {
+    for (std::size_t i {0}; incy != 1 && i < y_length; ++i) {
       y[detail::strided(i, y_length, incy)] = out[i];
     }
     return 0;

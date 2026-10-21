@@ -932,7 +932,8 @@ def outer(x1, x2, /):
     a, b = _same_dtype(x1, x2)
     if len(a.shape) != 1 or len(b.shape) != 1:
         raise ValueError("outer: two vectors (numpy.linalg.outer)")
-    return _numerical.einsum("i,j->ij", a, b)
+    # each element its own product, broadcast, as NumPy's multiply.outer: an einsum adds it to a zero, which loses −0
+    return reshape(a, (a.shape[0], 1)) * reshape(b, (1, b.shape[0]))
 
 
 def cross(x1, x2, /, *, axis=-1):
@@ -950,14 +951,11 @@ def cross(x1, x2, /, *, axis=-1):
     def part(t, i):
         return t[(slice(None),) * (len(t.shape) - 1) + (i,)]
 
-    components = (part(a, 1) * part(b, 2) - part(a, 2) * part(b, 1), part(a, 2) * part(b, 0) - part(a, 0) * part(b, 2),
-                  part(a, 0) * part(b, 1) - part(a, 1) * part(b, 0))
-    result = None
-    for i, component in enumerate(components):
-        component = _tensor(component)
-        unit = asarray([1.0 if k == i else 0.0 for k in range(3)], component.dtype)
-        term = reshape(component, tuple(component.shape) + (1,)) * unit
-        result = term if result is None else result + term
+    components = [_tensor(c) for c in (part(a, 1) * part(b, 2) - part(a, 2) * part(b, 1),
+                                       part(a, 2) * part(b, 0) - part(a, 0) * part(b, 2),
+                                       part(a, 0) * part(b, 1) - part(a, 1) * part(b, 0))]
+    # side by side, copied: products with unit vectors multiplied an infinite component by their zeros (NaN elsewhere)
+    result = _numerical._stack_last(components)
     rank = len(result.shape)
     at = axis + rank if axis < 0 else axis
     if at != rank - 1:  # the vectors' axis back where it was

@@ -90,13 +90,75 @@ namespace numerical {
       return walk;
     }
 
-    //! \brief The count \p n as a `T`, through the type of its parts (`T`'s own, a complex number's real one): a mean's
-    //!        divisor, where a complex `float` built from a `double` narrows it implicitly (MSVC C4244).
-    template <typename T>
-    [[nodiscard]] T count_as(std::size_t n)
+    /*!
+     * \brief A mean: \p value divided by the count \p n, in the wider of `T` and `double` and back to `T`, the count
+     *        exact (to 2^53), as NumPy divides by its integer count; a `float`'s count rounded to a `float` past 2^24
+     *        (2^24 + 1 ones averaged to 1, NumPy's 0.99999994).
+     */
+    template <std::floating_point T>
+    [[nodiscard]] T divided_by_count(T           value,
+                                     std::size_t n)
     {
-      using parts = decltype(std::abs(T {}));
-      return static_cast<T>(static_cast<parts>(static_cast<double>(n)));
+      using wide = std::common_type_t<T, double>;
+      return static_cast<T>(static_cast<wide>(value) / static_cast<wide>(n));
+    }
+
+    //! \brief \ref divided_by_count of a complex number of `float` or `double`: each part so divided.
+    template <split_complex T>
+    [[nodiscard]] T divided_by_count(T           value,
+                                     std::size_t n)
+    {
+      return T {divided_by_count(value.real(), n), divided_by_count(value.imag(), n)};
+    }
+
+    //! \brief \ref divided_by_count of any other scalar: divided by the count as a `T`.
+    //!        \throws dimension_error If the count is 0: an integer has no NaN for the mean of nothing.
+    template <typename T>
+    [[nodiscard]] T divided_by_count(T           value,
+                                     std::size_t n)
+    {
+      if (n == 0) {
+        throw dimension_error("a mean over no element has no value in an integer type");
+      }
+      return value / static_cast<T>(n);
+    }
+
+    /*!
+     * \brief The extreme \p value of \p count elements \p stride apart from \p first, its zero's sign settled as
+     *        NumPy's: no zero is larger than the other, so the first met stayed; `max` gives +0 where one is among
+     *        them, `min` −0. A NaN, or any other value, as it is.
+     */
+    template <std::floating_point T,
+              typename Order>
+    [[nodiscard]] T settled_zero(T            value,
+                                 const T*     first,
+                                 std::size_t  count,
+                                 std::size_t  stride,
+                                 const Order& larger)
+    {
+      if (value != T {0}) {
+        return value;
+      }
+      const bool maximum {larger(T {1}, T {0})};
+      for (std::size_t i {0}; i < count; ++i) {
+        const T x {first[i * stride]};
+        if (x == T {0} && std::signbit(x) != maximum) {
+          return x;
+        }
+      }
+      return value;
+    }
+
+    //! \brief \ref settled_zero of a type with one zero: \p value.
+    template <typename T,
+              typename Order>
+    [[nodiscard]] T settled_zero(T value,
+                                 const T* /*first*/,
+                                 std::size_t /*count*/,
+                                 std::size_t /*stride*/,
+                                 const Order& /*larger*/)
+    {
+      return value;
     }
 
     //! \brief The shape with axis \p axis removed.
@@ -262,7 +324,7 @@ namespace numerical {
         if (stride == 1) {
           // A contiguous line: the comparison without a branch (so it vectorises) and the NaN tracked apart,
           // a NaN anywhere is the answer, as NumPy's.
-          return contiguous_extreme(first, count, larger);
+          return settled_zero(contiguous_extreme(first, count, larger), first, count, 1, larger);
         }
       }
       T best {first[0]};
@@ -274,7 +336,7 @@ namespace numerical {
           best = candidate;
         }
       }
-      return best;
+      return settled_zero(best, first, count, stride, larger);
     }
 
     /*!
@@ -314,6 +376,7 @@ namespace numerical {
           }
         }
         for (std::size_t i {0}; i < walk.inner; ++i) {
+          best[i] = settled_zero(best[i], slab + i, walk.extent, walk.inner, larger);
           if (nan[i] != 0U) {
             best[i] = std::numeric_limits<T>::quiet_NaN();
           }
@@ -537,7 +600,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] T mean(const tensor<T>& t)
   {
-    return sum(t) / detail::count_as<T>(t.size());
+    return detail::divided_by_count(sum(t), t.size());
   }
 
   //! \brief The means along \p axis. \throws dimension_error If \p axis is not an axis.
@@ -546,11 +609,10 @@ namespace numerical {
                                std::size_t      axis)
   {
     const detail::axis_walk walk  {detail::walk_along(t.shape(), axis)};
-    const auto              count {detail::count_as<T>(walk.extent)};
     buffer<T>               out(walk.outer * walk.inner);
     detail::pairwise_sums(t.data().data(), walk.outer, walk.extent, walk.inner, out.data());
     for (T& x : out) {
-      x = x / count;
+      x = detail::divided_by_count(x, walk.extent);
     }
     return tensor<T> {detail::without_axis(t.shape(), axis), std::move(out)};
   }

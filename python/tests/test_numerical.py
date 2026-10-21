@@ -127,6 +127,21 @@ class HighRanks(unittest.TestCase):
         with self.assertRaises(ValueError):
             _ = numerical.zeros((1,) * 53).T
 
+    def test_cross_keeps_each_component_apart(self):
+        # Copied side by side, where products with unit vectors spread an infinite component as NaN into the others.
+        with np.errstate(all="ignore"):
+            for a, b in (([np.inf, 1, 0], [0, 1, 0]), ([0, 0, 1], [np.inf, 0, 0]), ([1e308, 1e308, 0], [1e308, -1e308, 0])):
+                a, b = np.array(a, float), np.array(b, float)
+                np.testing.assert_array_equal(np.asarray(numerical.cross(numerical.asarray(a), numerical.asarray(b))), np.cross(a, b))
+
+    def test_outer_keeps_each_product_s_sign(self):
+        x, y = np.array([-0.0, 2.0, np.inf]), np.array([1.0, -0.0, 3.0])
+        got = np.asarray(numerical.outer(numerical.asarray(x), numerical.asarray(y)))
+        with np.errstate(all="ignore"):
+            want = np.outer(x, y)
+        np.testing.assert_array_equal(got, want)
+        np.testing.assert_array_equal(np.signbit(got), np.signbit(want))
+
     def test_cross_takes_one_axis(self):
         with self.assertRaises(TypeError):
             numerical.cross(numerical.asarray(np.ones((3, 3))), numerical.asarray(np.ones((3, 3))), axis=(0, 1))
