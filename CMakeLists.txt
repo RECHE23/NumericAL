@@ -145,9 +145,10 @@ set_target_properties(numerical_tests_bin PROPERTIES CXX_STANDARD 20 CXX_STANDAR
 if(MSVC)
     target_compile_options(numerical_tests_bin PRIVATE /W4 /WX /Zc:__cplusplus /EHsc /utf-8)
 else()
-    # -Wshadow is MSVC /W4's C4456/C4457/C4459 (a name hiding a local, a parameter or a global), which a
-    # POSIX-only local gate would otherwise first see in CI.
-    target_compile_options(numerical_tests_bin PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Werror)
+    # -Wshadow is MSVC /W4's C4456/C4457/C4459 (a name hiding a local, a parameter or a global), and -Wconversion
+    # -Wfloat-conversion its C4244 (a conversion that may lose data, a double into a float or a complex float among
+    # them), which a POSIX-only local gate would otherwise first see in CI.
+    target_compile_options(numerical_tests_bin PRIVATE -Wall -Wextra -Wpedantic -Wshadow -Wconversion -Wfloat-conversion -Werror)
     # test_gemm.cpp asserts the product sums in the order of its reference loop, and the blocked factorisations the
     # unblocked ones' sums, to the bit: properties of the algorithms with no multiply-add fused, which a fusion within
     # one expression (-ffp-contract=on, the wheels') may round otherwise in one loop than in the other. It is held off

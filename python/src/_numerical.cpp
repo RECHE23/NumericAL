@@ -304,6 +304,25 @@ bool read_buffer(PyObject* sequence, numerical::buffer<T>& out)
     return true;
 }
 
+// `x` as an element of `Out`, a dtype's conversion: a complex `Out` takes each part in the type of its parts, where
+// building it from a wider number narrowed that implicitly (MSVC's C4244, clang's -Wconversion).
+template <typename Out, typename In>
+Out converted(const In& x)
+{
+    if constexpr (complex_scalar<Out>) {
+        using R = typename Out::value_type;
+        if constexpr (complex_scalar<In>) {
+            return Out {static_cast<R>(x.real()), static_cast<R>(x.imag())};
+        }
+        else {
+            return Out {static_cast<R>(x)};
+        }
+    }
+    else {
+        return static_cast<Out>(x);
+    }
+}
+
 bool read_shape(PyObject* shape_obj, std::vector<std::size_t>& out)
 {
     const Py_ssize_t size = PySequence_Size(shape_obj);
@@ -732,7 +751,7 @@ template <typename Out, typename In>
 numerical::tensor<Out> converted(const numerical::tensor<In>& t)
 {
     numerical::buffer<Out> values(t.size());
-    std::transform(t.data().begin(), t.data().end(), values.begin(), [](const In& x) { return static_cast<Out>(x); });
+    std::transform(t.data().begin(), t.data().end(), values.begin(), [](const In& x) { return converted<Out>(x); });
     return numerical::tensor<Out> {t.shape(), std::move(values)};
 }
 
@@ -2295,7 +2314,7 @@ void gather_typed(const unsigned char*           base,
 {
     const std::size_t rank {shape.size()};
     if (rank == 0) {
-        *out = static_cast<Out>(read_scalar<Src>(base));
+        *out = converted<Out>(read_scalar<Src>(base));
         return;
     }
     const std::size_t        inner  {shape[rank - 1]};
@@ -2318,7 +2337,7 @@ void gather_typed(const unsigned char*           base,
                             out[(r * inner) + c] = static_cast<Out>(column[r] != 0 ? 1.0 : 0.0);
                         }
                         else {
-                            out[(r * inner) + c] = static_cast<Out>(read_scalar<Src>(column + (r * sizeof(Src))));
+                            out[(r * inner) + c] = converted<Out>(read_scalar<Src>(column + (r * sizeof(Src))));
                         }
                     }
                 }
@@ -2346,7 +2365,7 @@ void gather_typed(const unsigned char*           base,
                     out[i] = static_cast<Out>(at[static_cast<Py_ssize_t>(i) * step] != 0 ? 1.0 : 0.0);
                 }
                 else {
-                    out[i] = static_cast<Out>(read_scalar<Src>(at + (static_cast<Py_ssize_t>(i) * step)));
+                    out[i] = converted<Out>(read_scalar<Src>(at + (static_cast<Py_ssize_t>(i) * step)));
                 }
             }
         }
