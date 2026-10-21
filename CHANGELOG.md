@@ -8,6 +8,18 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+- **A reduction keeping axes whose extents multiply past `std::size_t` refuses** (`dimension_error`), where a
+  tensor holding no element along another axis — `(2**32, 0, 2**32)` — made `sum` and `mean` along that axis, an
+  `einsum` such as `ijk->ik` and a norm over it allocate a buffer of the wrapped size and write past it. One keeping
+  an empty axis is empty, whatever its other extents; a product or broadcast past `std::size_t` refuses before
+  writing; `arange` refuses a length past `std::size_t`, or an infinite span, where the conversion was undefined.
+- **Specs built in Python take the 52 labels einsum has**: `Tensor.T` past 26 axes, `tensordot` past 26 axes in
+  all, and a stack's matrices labelled apart from its batch, where `matrix_power` of a stack of rank 25 refused and
+  `trace` of one of rank 28 read a diagonal of its batch, silently wrong. Past 52 axes, a `ValueError` that says so.
+  `cross` takes one integer axis, a `TypeError` otherwise, as NumPy's; a shape's extents are read as `Py_ssize_t`,
+  where Windows' 32-bit `long` refused one past 2**31 − 1.
+
 ### Changed
 - **`einsum` of a Fortran-ordered (transposed) NumPy matrix over one of its axes reads it where it lies** (`ij->i`,
   `ij->j`), its transpose row-major with the labels reversed: each sum the pairwise sum of the same elements, the bits

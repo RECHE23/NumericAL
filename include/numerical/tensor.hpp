@@ -511,17 +511,23 @@ namespace numerical {
       if (in.substr(0, first) + in.substr(past) != output) {
         return std::nullopt;
       }
-      std::size_t              outer {1};
-      std::size_t              run   {1};
-      std::size_t              inner {1};
       std::vector<std::size_t> out_shape;
       for (std::size_t k {0}; k < in.size(); ++k) {
-        (k < first ? outer : k < past ? run : inner) *= shape[k];
         if (k < first || k >= past) {
           out_shape.push_back(shape[k]);
         }
       }
-      std::vector<T> sums(outer * inner);
+      // The result's elements: none where a kept extent is 0, whatever the others (each part then 0); else their
+      // checked product, which bounds the parts, and the run's with them the operand's.
+      const std::size_t kept  {element_count(out_shape.begin(), out_shape.end())};
+      if (kept == 0) {
+        return tensor<T> {std::move(out_shape), buffer<T> {}};
+      }
+      const auto        begin {shape.begin()};
+      const std::size_t outer {element_count(begin, begin + static_cast<std::ptrdiff_t>(first))};
+      const std::size_t run   {element_count(begin + static_cast<std::ptrdiff_t>(first), begin + static_cast<std::ptrdiff_t>(past))};
+      const std::size_t inner {element_count(begin + static_cast<std::ptrdiff_t>(past), shape.end())};
+      std::vector<T>    sums(kept);
       pairwise_sums(data, outer, run, inner, sums.data());
       return tensor<T> {std::move(out_shape), std::move(sums)};
     }
@@ -1127,17 +1133,21 @@ namespace numerical {
         if (!s0.empty() && !s1.empty() && s0.back() == contracted && s1.front() == contracted
             && output == s0.substr(0, s0.size() - 1) + s1.substr(1)) {
           const std::size_t        inner {sizes.at(contracted)};
-          std::size_t              rows  {1};
-          std::size_t              cols  {1};
           std::vector<std::size_t> out_shape;
           for (std::size_t k {0}; k + 1 < s0.size(); ++k) {
-            rows *= sizes.at(s0[k]);
             out_shape.push_back(sizes.at(s0[k]));
           }
           for (std::size_t k {1}; k < s1.size(); ++k) {
-            cols *= sizes.at(s1[k]);
             out_shape.push_back(sizes.at(s1[k]));
           }
+          // The result's elements, 0 where one of its extents is 0 whatever the others (an empty contraction's
+          // operands may hold any number along their other axes); else checked, and the rows and columns within.
+          if (element_count(out_shape.begin(), out_shape.end()) == 0) {
+            return tensor<T> {std::move(out_shape), buffer<T> {}};
+          }
+          const auto        split {out_shape.begin() + static_cast<std::ptrdiff_t>(s0.size() - 1)};
+          const std::size_t rows  {element_count(out_shape.begin(), split)};
+          const std::size_t cols  {element_count(split, out_shape.end())};
           return canonical_product<T>(operands[0]->data().data(), operands[1]->data().data(), rows, inner, cols, std::move(out_shape));
         }
       }
@@ -1201,7 +1211,12 @@ namespace numerical {
       for (std::size_t k {0}; k < n_free; ++k) {
         out_size = detail::checked_mul(out_size, extent[k]); // guard the result allocation size
       }
-      std::size_t out_outer {1};
+      std::vector<std::size_t> out_shape(extent.begin(),
+                                         extent.begin() + static_cast<std::ptrdiff_t>(n_free));
+      if (out_size == 0) { // an empty result computes nothing, whatever its other extents multiply to
+        return tensor<T> {std::move(out_shape), buffer<T> {}};
+      }
+      std::size_t out_outer {1}; // bounded by out_size
       for (std::size_t k {0}; k < free_outer_end; ++k) {
         out_outer *= extent[k];
       }
@@ -1209,8 +1224,6 @@ namespace numerical {
       for (std::size_t k {n_free}; k < sum_outer_end; ++k) {
         sum_outer = detail::checked_mul(sum_outer, extent[k]); // a wrapped count would sum nothing, silently
       }
-      std::vector<std::size_t> out_shape(extent.begin(),
-                                         extent.begin() + static_cast<std::ptrdiff_t>(n_free));
 
       std::vector<std::size_t> index(n_labels, 0); // value of each outer label
       std::vector<std::size_t> offset(n_ops, 0);   // each operand's flat offset (outer labels only)
@@ -1361,7 +1374,8 @@ namespace numerical {
     if (!column) {
       shape.push_back(n);
     }
-    buffer<T> c(detail::checked_mul(count, m * n));
+    const std::array<std::size_t, 3> elements {count, m, n};
+    buffer<T>                        c(detail::element_count(elements.begin(), elements.end()));
     detail::parallel_zero(c.data(), c.size()); // gemm adds to C
     if (rank == 0) {                           // no stack: one product
       detail::gemm(m, n, k, a.data().data(), k, b.data().data(), n, c.data(), n);

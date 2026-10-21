@@ -319,14 +319,25 @@ def _iter(self):
     return (self[i] for i in range(self.shape[0]))
 
 
-_LETTERS = "abcdefghijklmnopqrstuvwxyz"
+# The labels einsum takes: the 52 ASCII letters, as the extension's.
+_LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _REVERSALS = [f"{_LETTERS[:rank]}->{_LETTERS[:rank][::-1]}" for rank in range(len(_LETTERS) + 1)]
+
+
+def _labels(count, what):
+    """The first `count` labels, distinct; ValueError past the 52 an einsum spec has."""
+    if count > len(_LETTERS):
+        raise ValueError(f"{what}: at most {len(_LETTERS)} axes, the labels an einsum spec has ({count} asked)")
+    return _LETTERS[:count]
 
 
 def _transpose(self):
     """The tensor with its axes reversed: a matrix's transpose, as NumPy's ``.T``. The spec is built once per rank and
     the extension called directly: a transposition has no error for the wrapper to translate."""
-    return _numerical.einsum(_REVERSALS[len(self.shape)], self)
+    rank = len(self.shape)
+    if rank >= len(_REVERSALS):
+        _labels(rank, "T")  # raises
+    return _numerical.einsum(_REVERSALS[rank], self)
 
 
 _MATMUL = {(1, 1): "i,i->", (2, 1): "ij,j->i", (1, 2): "i,ij->j", (2, 2): "ij,jk->ik"}
@@ -657,9 +668,6 @@ def qr(a, mode="reduced"):
     return _qr(a, mode)
 
 
-_LETTERS = "abcdefghijklmnopqrstuvwxyz"
-
-
 def _tensor(x):
     return x if isinstance(x, Tensor) else asarray(x)
 
@@ -687,7 +695,7 @@ def _resolved_axes(t, axis, name):
 
 def _permuted(t, order):
     """`t` with its axes in `order` (a permutation): through einsum, which copies."""
-    letters = _LETTERS[:len(t.shape)]
+    letters = _labels(len(t.shape), "permute")
     return _numerical.einsum(f"{letters}->{''.join(letters[a] for a in order)}", t)
 
 
@@ -695,8 +703,9 @@ def _matmul_stack(a, b):
     """``a @ b`` for two stacks of one shape (..., m, k) and (..., k, n), or two matrices."""
     if len(a.shape) == 2 and len(b.shape) == 2:
         return a @ b
-    batch = _LETTERS[:len(a.shape) - 2]
-    return _einsum(f"{batch}yz,{batch}zw->{batch}yw", a, b)
+    labels = _labels(len(a.shape) + 1, "matmul")  # the batch's, then the matrices' three, apart from them
+    batch, (y, z, w) = labels[:-3], labels[-3:]
+    return _einsum(f"{batch}{y}{z},{batch}{z}{w}->{batch}{y}{w}", a, b)
 
 
 def conj(x):
@@ -906,12 +915,13 @@ def trace(x, /, *, offset=0, dtype=None):
     rows, cols = x.shape[-2:]
     r0, c0 = _builtins.max(-offset, 0), _builtins.max(offset, 0)
     length = _builtins.max(_builtins.min(rows - r0, cols - c0), 0)
-    batch = _LETTERS[:len(x.shape) - 2]
+    labels = _labels(len(x.shape) - 1, "trace")  # the batch's, then the diagonal's, apart from them
+    batch, diagonal = labels[:-1], labels[-1]
     if length == 0:
         result = zeros(tuple(x.shape[:-2]), x.dtype)
     else:
         block = x[(slice(None),) * (len(x.shape) - 2) + (slice(r0, r0 + length), slice(c0, c0 + length))]
-        result = _numerical.einsum(f"{batch}zz->{batch}", block)
+        result = _numerical.einsum(f"{batch}{diagonal}{diagonal}->{batch}", block)
     if dtype is not None:
         result = asarray(result, dtype)
     return _number_if_scalar(result)
@@ -927,6 +937,7 @@ def outer(x1, x2, /):
 
 def cross(x1, x2, /, *, axis=-1):
     """The cross product of 3-vectors along `axis`, broadcast over the other axes, as ``numpy.linalg.cross``."""
+    axis = _operator.index(axis)  # one axis: TypeError for any other, as NumPy's
     a, b = _same_dtype(x1, x2)
     moved = []
     for operand in (a, b):
@@ -970,8 +981,9 @@ def tensordot(x1, x2, /, *, axes=2):
     right = [k + len(b.shape) if k < 0 else k for k in right]
     if len(left) != len(right) or any(a.shape[i] != b.shape[j] for i, j in zip(left, right)):
         raise ValueError("tensordot: the contracted axes do not match")
-    letters_a = list(_LETTERS[:len(a.shape)])
-    letters_b = list(_LETTERS[len(a.shape):len(a.shape) + len(b.shape)])
+    labels = _labels(len(a.shape) + len(b.shape), "tensordot")
+    letters_a = list(labels[:len(a.shape)])
+    letters_b = list(labels[len(a.shape):])
     for i, j in zip(left, right):
         letters_b[j] = letters_a[i]
     kept = [letters_a[i] for i in range(len(a.shape)) if i not in left] + \

@@ -31,6 +31,77 @@ namespace {
   }
 } // namespace
 
+// A tensor holding 0 elements along one axis may hold any number along the others: a reduction keeping axes whose
+// extents multiply past std::size_t refuses, where a wrapped size gave a buffer too small, written past (its end
+// at address 0); one keeping an empty axis is empty, whatever the others. In each type, int among them.
+namespace {
+  template <typename T>
+  bool huge_reductions_refuse_or_are_empty()
+  {
+    using numerical::tensor;
+    using extents = std::vector<std::size_t>;
+    const std::size_t big    {std::size_t {1} << 32};
+    const tensor<T>   middle {{big, 0, big}, numerical::buffer<T> {}};
+    bool              ok     {true};
+    for (const auto& refused : {std::function<void()> {[&] { (void)numerical::sum(middle, 1); }},
+                                std::function<void()> {[&] { (void)numerical::mean(middle, 1); }},
+                                std::function<void()> {[&] { (void)numerical::einsum("ijk->ik", middle); }}}) {
+      try {
+        refused();
+        ok = false;
+      }
+      catch (const numerical::dimension_error&) {}
+    }
+    ok = ok && numerical::sum(middle, 0).shape() == extents {0, big} && numerical::sum(middle, 0).data().empty();
+    ok = ok && numerical::sum(middle, 2).shape() == extents {big, 0};
+    const std::size_t huge {std::size_t {1} << 40};
+    const tensor<T>   last {{huge, huge, 3, 0}, numerical::buffer<T> {}};
+    ok = ok && numerical::sum(last, 2).shape() == extents {huge, huge, 0} && numerical::mean(last, 2).shape() == extents {huge, huge, 0};
+    ok = ok && numerical::einsum("ijkl->ijl", last).shape() == extents {huge, huge, 0} && numerical::einsum("ijkl->ijl", last).data().empty();
+    const tensor<T> diagonal {{0, 0, huge}, numerical::buffer<T> {}}; // einsum's general loop
+    ok = ok && numerical::einsum("iij->ij", diagonal).shape() == extents {0, huge};
+    // A contraction routed to the matrix product: empty where the result is, refused where it is past std::size_t.
+    const tensor<T> left {{huge, huge, 0}, numerical::buffer<T> {}};
+    const tensor<T> none {{0, 0}, numerical::buffer<T> {}};
+    const tensor<T> five {{0, 5}, numerical::buffer<T> {}};
+    ok = ok && numerical::einsum("ijk,kl->ijl", left, none).shape() == extents {huge, huge, 0};
+    try {
+      (void)numerical::einsum("ijk,kl->ijl", left, five);
+      ok = false;
+    }
+    catch (const numerical::dimension_error&) {}
+    return ok;
+  }
+} // namespace
+
+TEST(reductions_keeping_huge_extents_refuse_or_are_empty)
+{
+  EXPECT(huge_reductions_refuse_or_are_empty<double>());
+  EXPECT(huge_reductions_refuse_or_are_empty<float>());
+  EXPECT(huge_reductions_refuse_or_are_empty<std::complex<double>>());
+  EXPECT(huge_reductions_refuse_or_are_empty<std::complex<float>>());
+  EXPECT(huge_reductions_refuse_or_are_empty<int>());
+}
+
+// Products and broadcasts whose result's extents multiply past std::size_t refuse before writing; an empty one is
+// empty. arange refuses a length past std::size_t (or an infinite span), where the conversion was undefined.
+TEST(products_broadcasts_and_ranges_past_size_t_refuse)
+{
+  const std::size_t               big  {std::size_t {1} << 33};
+  const numerical::tensor<double> tall {{big, 0}, numerical::buffer<double> {}};
+  const numerical::tensor<double> wide {{0, big}, numerical::buffer<double> {}};
+  EXPECT_THROWS((void)numerical::matmul(tall, wide), numerical::dimension_error);
+  EXPECT((numerical::matmul(wide, tall).shape() == std::vector<std::size_t> {0, 0}));
+  const numerical::tensor<double> left  {{big, 1, 0}, numerical::buffer<double> {}};
+  const numerical::tensor<double> right {{1, big, 0}, numerical::buffer<double> {}};
+  const numerical::tensor<double> both  {left + right};
+  EXPECT((both.shape() == std::vector<std::size_t> {big, big, 0}));
+  EXPECT(both.data().empty());
+  EXPECT_THROWS((void)numerical::arange(0.0, 1e20, 1.0), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::arange(-1e308, 1e308, 1.0), numerical::dimension_error);
+  EXPECT(numerical::arange(0.0, 3.0, 1.0).size() == 3);
+}
+
 TEST(broadcast_shape_aligns_trailing_axes)
 {
   EXPECT(numerical::broadcast_shape({3, 1}, {1, 4}) == (shape {3, 4}));

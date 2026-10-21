@@ -55,6 +55,26 @@ namespace numerical {
       }
       return a * b;
     }
+
+    /*!
+     * \brief The elements a shape's extents `[first, last)` hold: 0 where one of them is 0, whatever the others,
+     *        else their product (\ref checked_mul). The extents a tensor keeps, past one it holds 0 of, may multiply
+     *        past `std::size_t`: a result of them is empty, not of a wrapped size.
+     * \throws dimension_error If none is 0 and their product overflows.
+     */
+    template <typename It>
+    [[nodiscard]] std::size_t element_count(It first,
+                                            It last)
+    {
+      if (std::find(first, last, std::size_t {0}) != last) {
+        return 0;
+      }
+      std::size_t count {1};
+      for (; first != last; ++first) {
+        count = checked_mul(count, *first);
+      }
+      return count;
+    }
   } // namespace detail
 
   /*!

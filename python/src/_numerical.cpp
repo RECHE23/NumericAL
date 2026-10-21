@@ -315,7 +315,7 @@ bool read_shape(PyObject* shape_obj, std::vector<std::size_t>& out)
         if (item == nullptr) {
             return false;
         }
-        const long extent = PyLong_AsLong(item);
+        const Py_ssize_t extent = PyLong_AsSsize_t(item); // a pointer's width everywhere, where long is 32 bits under Windows
         Py_DECREF(item);
         if (PyErr_Occurred() != nullptr) {
             return false;
@@ -793,9 +793,7 @@ stack_shape stack_of(const any_tensor& v)
 {
     const std::vector<std::size_t>& shape {shape_of(v)};
     stack_shape                     out {{shape.begin(), shape.end() - 2}, 1, shape[shape.size() - 2], shape.back()};
-    for (const std::size_t extent : out.batch) {
-        out.count *= extent;
-    }
+    out.count = numerical::detail::element_count(out.batch.begin(), out.batch.end()); // empty matrices: any batch
     return out;
 }
 
@@ -995,10 +993,7 @@ any_tensor solve(const any_tensor& a, const any_tensor& b)
         const bool                     vector_b {rank_b == 1};
         const std::vector<std::size_t> own_b {vector_b ? std::vector<std::size_t> {} : stack_of(b).batch};
         const std::vector<std::size_t> batch {broadcast_batch(sa.batch, own_b)};
-        std::size_t                    count {1};
-        for (const std::size_t extent : batch) {
-            count *= extent;
-        }
+        const std::size_t              count {numerical::detail::element_count(batch.begin(), batch.end())};
         const std::size_t b_rows {vector_b ? 0 : shape_of(b)[rank_b - 2]};
         const std::size_t b_cols {shape_of(b).back()};
         const auto        right_side {[&](std::size_t i) {
@@ -2036,11 +2031,13 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
                 }
             }
             else {
-                kept_count *= shape[a];
                 kept_shape.push_back(shape[a]);
                 out_shape.push_back(shape[a]);
             }
         }
+        // The positions kept: none where one of their extents is 0, whatever the others; else their checked
+        // product, which with the reduced count's makes the operand's.
+        kept_count = numerical::detail::element_count(kept_shape.begin(), kept_shape.end());
         // The 2-norm over trailing axes, each position's elements one run: their squares summed where they lie.
         bool trailing {true};
         for (std::size_t a = 0; a + 1 < shape.size(); ++a) {

@@ -66,7 +66,8 @@ namespace numerical {
       std::size_t inner;  //!< The product of the extents after the axis.
     };
 
-    //! \brief \ref axis_walk of \p shape along \p axis. \throws dimension_error If \p axis is not an axis.
+    //! \brief \ref axis_walk of \p shape along \p axis; `outer` and `inner` 0 where the result is empty.
+    //!        \throws dimension_error If \p axis is not an axis, or the result's elements overflow.
     [[nodiscard]] inline axis_walk walk_along(const std::vector<std::size_t>& shape,
                                               std::size_t                     axis)
     {
@@ -74,13 +75,18 @@ namespace numerical {
         throw dimension_error("axis " + std::to_string(axis) + " is out of bounds for a tensor of rank "
                               + std::to_string(shape.size()));
       }
-      axis_walk walk {.outer = 1, .extent = shape[axis], .inner = 1};
-      for (std::size_t i {0}; i < axis; ++i) {
-        walk.outer *= shape[i];
+      const auto before {shape.begin() + static_cast<std::ptrdiff_t>(axis)};
+      axis_walk  walk   {.outer = 1, .extent = shape[axis], .inner = 1};
+      // The result's elements, the axis taken out: none (and no line walked) where a kept extent is 0, whatever
+      // the others; else their product, checked, which the outer and inner parts then divide.
+      if (std::find(shape.begin(), before, std::size_t {0}) != before || std::find(before + 1, shape.end(), std::size_t {0}) != shape.end()) {
+        walk.outer = 0;
+        walk.inner = 0;
+        return walk;
       }
-      for (std::size_t i {axis + 1}; i < shape.size(); ++i) {
-        walk.inner *= shape[i];
-      }
+      walk.outer = detail::element_count(shape.begin(), before);
+      walk.inner = detail::element_count(before + 1, shape.end());
+      static_cast<void>(detail::checked_mul(walk.outer, walk.inner));
       return walk;
     }
 
@@ -348,11 +354,8 @@ namespace numerical {
     const std::size_t              rank  {shape.size()};
     const std::vector<std::size_t> sa    {detail::broadcast_strides(a.shape(), rank)};
     const std::vector<std::size_t> sb    {detail::broadcast_strides(b.shape(), rank)};
-    std::size_t                    count {1};
-    for (const std::size_t extent : shape) {
-      count *= extent;
-    }
-    buffer<T> out(count); // every element written below
+    const std::size_t              count {detail::element_count(shape.begin(), shape.end())};
+    buffer<T>                      out(count); // every element written below
     if (count == 0) {
       return tensor<T> {std::move(shape), std::move(out)};
     }
@@ -626,6 +629,9 @@ namespace numerical {
       throw dimension_error("arange needs finite bounds and a finite, non-zero step");
     }
     const double        length            {std::ceil((stop - start) / step)};
+    if (!(length < 0x1p64)) { // past std::size_t, or an infinite span: no conversion holds it
+      throw dimension_error("arange: the length does not fit in std::size_t");
+    }
     const std::size_t   count             {length > 0.0 ? static_cast<std::size_t>(length) : 0};
     buffer<double>      out(count);
     const double        delta             {(start + step) - start};

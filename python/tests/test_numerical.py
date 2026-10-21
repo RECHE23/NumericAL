@@ -100,6 +100,53 @@ class Einsum(unittest.TestCase):
                 numerical.einsum(spec, numerical.Tensor([1, 2, 3, 4], shape=(2, 2)))
 
 
+@unittest.skipIf(np is None, "NumPy is the reference")
+class HighRanks(unittest.TestCase):
+    """Specs built in Python past 26 axes: the 52 labels einsum takes, the matrices' own labels apart from the
+    batch's (a batch reaching them read a diagonal, or refused), and a clear refusal past 52."""
+
+    def setUp(self):
+        self.rng = np.random.default_rng(3)
+
+    def test_stacks_whose_batch_reaches_the_matrices_labels(self):
+        stack = self.rng.standard_normal((1,) * 22 + (2,) + (2, 2))
+        np.testing.assert_allclose(np.asarray(numerical.matrix_power(numerical.asarray(stack), 2)),
+                                   np.linalg.matrix_power(stack, 2), rtol=1e-12)
+        deep = self.rng.standard_normal((1,) * 25 + (3,) + (3, 3))
+        np.testing.assert_allclose(np.asarray(numerical.trace(numerical.asarray(deep))),
+                                   np.trace(deep, axis1=-2, axis2=-1), rtol=1e-12)
+
+    def test_transposes_and_tensordots_past_26_axes(self):
+        values = self.rng.standard_normal((1,) * 26 + (2,))
+        self.assertEqual(numerical.asarray(values).T.shape, values.T.shape)
+        np.testing.assert_array_equal(np.asarray(numerical.asarray(values).T), values.T)
+        p = self.rng.standard_normal((1,) * 14 + (2,))
+        q = self.rng.standard_normal((2,) + (1,) * 13)
+        np.testing.assert_allclose(np.asarray(numerical.tensordot(numerical.asarray(p), numerical.asarray(q), axes=([14], [0]))),
+                                   np.tensordot(p, q, axes=([14], [0])), rtol=1e-12)
+        with self.assertRaises(ValueError):
+            _ = numerical.zeros((1,) * 53).T
+
+    def test_cross_takes_one_axis(self):
+        with self.assertRaises(TypeError):
+            numerical.cross(numerical.asarray(np.ones((3, 3))), numerical.asarray(np.ones((3, 3))), axis=(0, 1))
+
+
+class HugeEmptyShapes(unittest.TestCase):
+    """A tensor of no elements along one axis, any number along the others: a sum keeping extents whose product
+    overflows refuses (it wrote past a buffer of the wrapped size), one keeping an empty axis is empty."""
+
+    def test_sums_and_norms(self):
+        big = 2 ** 32
+        t = numerical.zeros((big, 0, big))
+        with self.assertRaises(numerical.error):
+            numerical.sum(t, axis=1)
+        with self.assertRaises(numerical.error):
+            numerical.vector_norm(t, axis=1)
+        self.assertEqual(numerical.sum(t, axis=0).shape, (0, big))
+        self.assertEqual(numerical.zeros((2 ** 31, 0)).shape, (2 ** 31, 0))
+
+
 class Solve(unittest.TestCase):
     def test_solves_a_linear_system(self):
         a = numerical.Tensor([2, 1, 1, 1, 3, 1, 1, 1, 4], shape=(3, 3))
