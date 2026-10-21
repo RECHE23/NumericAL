@@ -7,6 +7,7 @@ reproducible gap). Reproduce with:
 ```bash
 make bench-linalg      # dense linear algebra against BLAS/LAPACK, each library alone (the first tables)
 make bench-python      # differential validation + timing, one process (the history's tables)
+make bench-fuzz        # drawn cases, each library alone: the distribution of the ratios (the drawn-cases tables)
 make python-test       # the parity suite alone (also runs in CI)
 ```
 
@@ -98,6 +99,52 @@ Where the gaps are, and what closes them:
 - **Shared machines**: the campus x86-64 hosts serve other users, whose load moves single figures by 30 % or
   more; a figure that departs from its row is re-measured alone before it is read as a regression, and `uptime`
   before a run says whether it was alone.
+
+## Drawn cases: `make bench-fuzz`
+
+The tables above time chosen operations at chosen orders, mostly powers of two, where the kernels' tiles and panels
+divide evenly. `make bench-fuzz` draws its cases instead: the operation (seventeen), every dimension on a log scale
+from 1 to 1024 (an order of 100 or 300, between two thresholds, as likely as 128), the dtype (float64, complex128,
+float32, complex64) and how the operands arrive (a contiguous NumPy array, a transposed or a strided one, or a Tensor
+already). Each library is timed in a process of its own, twice in turn, each case keeping its fastest batch; every
+answer is checked first. The ratio is NumPy's time over NumericAL's: above 1, NumericAL is faster. Seed 20261021, 600
+cases.
+
+| Commit | Machine | Geometric mean [95 % CI] | NumericAL faster |
+| --- | --- | --- | ---: |
+| 2026.10.28 | M1 Pro, NumPy 2.4.2 on Accelerate | 0.94× [0.88–1.00] | 55 % |
+| 2026.10.28 | six AVX2 cores, NumPy 2.5.4 on OpenBLAS 0.3.34 | 0.89× [0.83–0.96] | 48 % |
+| 2026.10.28 and the first fixes (918a6c5, 91624ca) | M1 Pro | 1.07× [1.00–1.14] | 59 % |
+| 2026.10.28 and the first fixes (918a6c5, 91624ca) | six AVX2 cores | 1.07× [1.00–1.14] | 56 % |
+| 7df6a9c (2026.10.29 and one change) | M1 Pro | 1.20× [1.13–1.26] | 65 % |
+| 7df6a9c (2026.10.29 and one change) | six AVX2 cores | 1.14× [1.06–1.21] | 60 % |
+
+Where the first campaign put NumericAL, the twenty chosen cases of `make bench-python` had put it at 1.45× on the
+same Mac: they favoured its strong operations. By operation, at 7df6a9c:
+
+| Operation | Cases | M1 Pro (Accelerate) | Six AVX2 cores (OpenBLAS) |
+| --- | ---: | --- | --- |
+| cholesky | 39 | 1.48× [1.29–1.71] | 1.33× [1.05–1.66] |
+| det | 37 | 1.10× [0.96–1.25] | 1.01× [0.86–1.20] |
+| eig | 19 | 1.90× [1.62–2.33] | 1.62× [1.40–1.93] |
+| eigh | 38 | 1.18× [1.11–1.25] | 1.12× [1.04–1.19] |
+| eigvalsh | 15 | 0.88× [0.69–1.08] | 0.94× [0.80–1.10] |
+| einsum-product | 18 | 1.39× [0.83–2.51] | 1.30× [0.85–2.13] |
+| einsum-reduce | 44 | 1.17× [0.96–1.42] | 1.35× [1.08–1.64] |
+| inv | 32 | 1.43× [1.23–1.65] | 1.48× [1.20–1.81] |
+| lstsq | 36 | 1.20× [1.05–1.37] | 1.21× [0.99–1.45] |
+| matmul | 61 | 0.75× [0.60–0.93] | 0.60× [0.49–0.72] |
+| matvec | 47 | 0.82× [0.66–1.04] | 0.59× [0.46–0.76] |
+| norm | 31 | 1.69× [1.21–2.41] | 1.63× [1.02–2.54] |
+| qr | 46 | 1.59× [1.31–1.95] | 1.81× [1.38–2.36] |
+| slogdet | 16 | 1.16× [1.01–1.34] | 1.07× [0.84–1.35] |
+| solve | 54 | 1.41× [1.24–1.61] | 1.44× [1.20–1.76] |
+| svd | 43 | 1.19× [1.07–1.33] | 1.10× [0.99–1.22] |
+| svdvals | 24 | 1.06× [0.85–1.34] | 1.18× [0.99–1.45] |
+
+The products and matrix-vector products are what is left: a narrow product (A of a few rows) of complex numbers on
+x86-64, whose real form of B is built for every call; operands NumPy hands its BLAS transposed, which NumericAL
+copies; and the fixed cost of a call of a microsecond or two.
 
 ## Release against release: `make bench-diff`
 
