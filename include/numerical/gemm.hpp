@@ -2024,6 +2024,88 @@ namespace numerical::detail {
       avx2_tile_c64(kc, ap, bp, ldb, c, ldc, rows, cols);
     }
   };
+  //! \brief \ref avx512_complex_tile_kernel for complex `float` (\ref avx512_full_tile_c32).
+  struct avx512_complex_tile_kernel_f32
+  {
+    static constexpr std::size_t mr              {avx512_complex_mr};
+    static constexpr std::size_t nr              {avx512_complex_nr_f32};
+    static constexpr std::size_t depth           {gemm_kc}; // an element is two `float`, the size of a `double`
+    static constexpr std::size_t block_rows      {96};
+    static constexpr std::size_t b_in_place_rows {mr};
+    static constexpr std::size_t speedup         {gemm_kernel_speedup / 16};
+    static constexpr std::size_t serial_below    {1};
+
+    struct session
+    {};
+
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
+    {
+      return ldb <= nr;
+    }
+
+    static void pack_a(const std::complex<float>* a,
+                       std::size_t                lda,
+                       std::size_t                rows,
+                       std::size_t                kc,
+                       std::complex<float>*       out)
+    {
+      gemm_pack_a<mr>(a, lda, rows, kc, out);
+    }
+
+    static void tile(std::size_t                kc,
+                     const std::complex<float>* ap,
+                     const std::complex<float>* bp,
+                     std::size_t                ldb,
+                     std::complex<float>*       c,
+                     std::size_t                ldc,
+                     std::size_t                rows,
+                     std::size_t                cols) noexcept
+    {
+      avx512_tile_c32(kc, ap, bp, ldb, c, ldc, rows, cols);
+    }
+  };
+
+  //! \brief \ref avx2_complex_tile_kernel for complex `float` (\ref avx2_full_tile_c32).
+  struct avx2_complex_tile_kernel_f32
+  {
+    static constexpr std::size_t mr              {avx2_complex_mr};
+    static constexpr std::size_t nr              {avx2_complex_nr_f32};
+    static constexpr std::size_t depth           {gemm_kc}; // an element is two `float`, the size of a `double`
+    static constexpr std::size_t block_rows      {72};
+    static constexpr std::size_t b_in_place_rows {mr};
+    static constexpr std::size_t speedup         {gemm_kernel_speedup / 16};
+    static constexpr std::size_t serial_below    {1};
+
+    struct session
+    {};
+
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
+    {
+      return ldb <= nr;
+    }
+
+    static void pack_a(const std::complex<float>* a,
+                       std::size_t                lda,
+                       std::size_t                rows,
+                       std::size_t                kc,
+                       std::complex<float>*       out)
+    {
+      gemm_pack_a<mr>(a, lda, rows, kc, out);
+    }
+
+    static void tile(std::size_t                kc,
+                     const std::complex<float>* ap,
+                     const std::complex<float>* bp,
+                     std::size_t                ldb,
+                     std::complex<float>*       c,
+                     std::size_t                ldc,
+                     std::size_t                rows,
+                     std::size_t                cols) noexcept
+    {
+      avx2_tile_c32(kc, ap, bp, ldb, c, ldc, rows, cols);
+    }
+  };
+
 #endif
 
   //! \brief A product a faster path than the vector one takes, if any: none for this scalar.
@@ -2214,8 +2296,8 @@ namespace numerical::detail {
    * \brief Whether `gemm_split` runs a product of \p m rows of A by four real products of each block's parts
    *        (\ref split_parts_block), else by one of its expanded operands (\ref split_expanded_block): the same bits,
    *        the parts' products faster where they read B's parts in place (\ref gemm_packed). On the AMX path up to
-   *        \ref split_parts_rows; elsewhere up to one row of the real tile (its `b_in_place_rows`): six AVX2 cores,
-   *        complex `float`, 3 rows by 803 × 247 34 % faster, 8 to 16 rows by 300 to 512 5 to 20 % slower.
+   *        \ref split_parts_rows; elsewhere (the NEON path) up to one row of the NEON tile, its `b_in_place_rows`:
+   *        M1 Pro, all threads, by 400 × 500, 1 to 4 rows 2 to 18 % faster, 6 to 32 rows 5 to 52 % slower.
    */
   [[nodiscard]] inline bool split_by_parts(std::size_t m) noexcept
   {
@@ -2223,14 +2305,6 @@ namespace numerical::detail {
 #ifdef NUMERICAL_AMX_COMPILED
     if (path == gemm_path::amx) {
       return m <= split_parts_rows;
-    }
-#endif
-#ifdef NUMERICAL_X86_COMPILED
-    if (path == gemm_path::avx512) {
-      return m <= avx512_mr;
-    }
-    if (path == gemm_path::avx2) {
-      return m <= avx2_mr;
     }
 #endif
     return m <= gemm_mr;
@@ -2471,8 +2545,16 @@ namespace numerical::detail {
     }
   }
 
+#ifdef NUMERICAL_X86_COMPILED
+  //! \brief The x86-64 complex tile for \p Z: \p Double for complex `double`, \p Float for complex `float`.
+  template <split_complex Z,
+            typename Double,
+            typename Float>
+  using x86_complex_kernel = std::conditional_t<std::is_same_v<Z, std::complex<double>>, Double, Float>;
+#endif
+
   //! \brief A complex product past the plain loop: on the vector tile on the portable path, whole complex products
-  //!        summed in order; complex `double` on the x86-64 complex tiles; else through the real kernel (`gemm_split`).
+  //!        summed in order; on the x86-64 complex tiles there; else (arm64) through the real kernel (`gemm_split`).
   template <split_complex T>
   void gemm_large(std::size_t m,
                   std::size_t n,
@@ -2490,15 +2572,13 @@ namespace numerical::detail {
       return;
     }
 #ifdef NUMERICAL_X86_COMPILED
-    if constexpr (std::is_same_v<T, std::complex<double>>) { // a complex tile of its own on the x86-64 units
-      if (path == gemm_path::avx512) {
-        gemm_packed<avx512_complex_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
-        return;
-      }
-      if (path == gemm_path::avx2) {
-        gemm_packed<avx2_complex_tile_kernel>(m, n, k, a, lda, b, ldb, c, ldc);
-        return;
-      }
+    if (path == gemm_path::avx512) { // a complex tile of its own on the x86-64 units
+      gemm_packed<x86_complex_kernel<T, avx512_complex_tile_kernel, avx512_complex_tile_kernel_f32>>(m, n, k, a, lda, b, ldb, c, ldc);
+      return;
+    }
+    if (path == gemm_path::avx2) {
+      gemm_packed<x86_complex_kernel<T, avx2_complex_tile_kernel, avx2_complex_tile_kernel_f32>>(m, n, k, a, lda, b, ldb, c, ldc);
+      return;
     }
 #endif
     gemm_split(m, n, k, a, lda, b, ldb, c, ldc);
@@ -2513,9 +2593,9 @@ namespace numerical::detail {
    * multiply-adds; a `float` one on the NEON tile on arm64's NEON and AMX paths. On the portable path either runs on the vector tile, which rounds `c + a·b` as the compiler does:
    * each product before its sum with contraction off, as the plain loop then does; fused under Clang's
    * -ffp-contract=on, as the plain loop then is; under GCC's, apart, where the plain loop's scalar statement is
-   * fused. Every element is summed in ascending order of the depth on any number of threads. Complex `double` on the x86-64
-   * paths runs on their complex tiles (`avx2_full_tile_c64`, `avx512_full_tile_c64`); complex `float` and
-   * `double` past the portable path otherwise run through the real kernel (`gemm_split`). Either is the same on
+   * fused. Every element is summed in ascending order of the depth on any number of threads. Complex numbers on the x86-64
+   * paths run on their complex tiles (`avx2_full_tile_c64`, `avx512_full_tile_c64` and their `_c32` for `float`);
+   * past the portable path on arm64, through the real kernel (`gemm_split`). Either is the same on
    * any number of threads too, but no longer the plain loop's to the bit: so past the portable path a complex
    * product of any shape runs there, and each element of C is the same whatever the shape of the product it falls
    * in. A caller that splits its columns by the threads (an LU inverse's slices) then has the same bits on any

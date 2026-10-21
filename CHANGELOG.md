@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **Complex64 products on the x86-64 units run on complex tiles of their own** (AVX2 and AVX-512, as complex128's:
+  each row accumulates `Re a · b` and `Im a · b` apart, by fused multiply-adds, and forms their sum once), where they
+  went through the real kernel, copying B's parts for every product. The last bits of complex64 products on x86-64
+  move; they stay the same on any number of threads and whatever the shape of the product. Six AVX2 cores (GCC 13):
+  1 × 406 by 406 × 583 411 → 30 µs, 3 × 803 by 803 × 247 574 → 47, 16 × 512 by 512 × 512 389 → 128, order 128
+  119 → 41, order 512 2.71 → 2.00 ms.
 - **A complex product of a few rows of A runs four real products of each block's parts** (`Re C += Re A·Re B`, then
   `−Im A·Im B`; `Im C += Re A·Im B`, then `Im A·Re B`), where one real product of its expanded operands needed a copy
   of B four times its size, built for every product: the same chains, the same bits. On the AMX path up to 64 rows,

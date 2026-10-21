@@ -127,8 +127,9 @@ TEST(float_products_equal_the_ascending_sum_to_the_bit)
 namespace {
   // A complex product past the portable path, which sums the real and imaginary parts of A apart, on small
   // multiples of an eighth: every product and partial sum is exact, so it must equal the ascending sum, on one
-  // thread as on all of them.
-  template <typename Z>
+  // thread as on all of them; through gemm, or through gemm_split itself where \p Split.
+  template <typename Z,
+            bool Split = false>
   bool split_product_is_exact(std::size_t m,
                               std::size_t n,
                               std::size_t k)
@@ -152,9 +153,17 @@ namespace {
         }
       }
     }
-    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, all.data(), n);
+    const auto product {[&](std::vector<Z>& c) {
+                          if constexpr (Split) {
+                            numerical::detail::gemm_split(m, n, k, a.data(), k, b.data(), n, c.data(), n);
+                          }
+                          else {
+                            numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, c.data(), n);
+                          }
+                        }};
+    product(all);
     numerical::set_max_threads(1);
-    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, alone.data(), n);
+    product(alone);
     numerical::set_max_threads(0);
     return all == wanted && alone == wanted;
   }
@@ -366,17 +375,16 @@ TEST(complex_products_past_the_portable_path)
 TEST(complex_products_keep_their_real_operands_within_the_limit)
 {
   using numerical::detail::split_storage;
-  // Only past the portable path does a complex product go through the real kernel (an arm64 Linux processor has none);
-  // complex float on every such path (complex double has a tile of its own on the x86-64 units).
-  const bool        split {numerical::limit_gemm_path(numerical::gemm_path::amx) != numerical::gemm_path::portable};
-  const std::size_t k     {numerical::detail::split_depth};
-  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>>(40, 70, 50); }));
-  EXPECT(!split || !split_storage<float>().c.empty());
+  // gemm_split called itself, on every path: arm64 takes it past the portable path, the x86-64 units have complex
+  // tiles of their own.
+  const std::size_t k {numerical::detail::split_depth};
+  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>, true>(40, 70, 50); }));
+  EXPECT(!split_storage<float>().c.empty());
   const std::size_t rows {(numerical::detail::split_kept / (2 * k)) + 8}; // [Re A | −Im A] past the limit
-  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>>(rows, 30, k); }));
+  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>, true>(rows, 30, k); }));
   EXPECT(split_storage<float>().a.empty());
-  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>>(40, 70, 50); }));
-  EXPECT(!split || !split_storage<float>().c.empty());
+  EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>, true>(40, 70, 50); }));
+  EXPECT(!split_storage<float>().c.empty());
 }
 
 // gemm_split gives each element of C the chains of one real product of each block's expanded operands,
