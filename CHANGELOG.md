@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.29 — 2026-10-21
+
 ### Changed
 - **`einsum` sums one operand over a run of its axes (`ij->`, `ij->i`, `ij->j`, `ijk->ik`) by pairwise halving**, as
   `sum` adds, where its general loop added the terms one after another: the bits of `sum()` and `sum(axis)`. Order 256,
