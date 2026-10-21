@@ -90,6 +90,15 @@ namespace numerical {
       return walk;
     }
 
+    //! \brief The count \p n as a `T`, through the type of its parts (`T`'s own, a complex number's real one): a mean's
+    //!        divisor, where a complex `float` built from a `double` narrows it implicitly (MSVC C4244).
+    template <typename T>
+    [[nodiscard]] T count_as(std::size_t n)
+    {
+      using parts = decltype(std::abs(T {}));
+      return static_cast<T>(static_cast<parts>(static_cast<double>(n)));
+    }
+
     //! \brief The shape with axis \p axis removed.
     [[nodiscard]] inline std::vector<std::size_t> without_axis(std::vector<std::size_t> shape,
                                                                std::size_t              axis)
@@ -528,7 +537,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] T mean(const tensor<T>& t)
   {
-    return sum(t) / static_cast<T>(static_cast<double>(t.size()));
+    return sum(t) / detail::count_as<T>(t.size());
   }
 
   //! \brief The means along \p axis. \throws dimension_error If \p axis is not an axis.
@@ -537,7 +546,7 @@ namespace numerical {
                                std::size_t      axis)
   {
     const detail::axis_walk walk  {detail::walk_along(t.shape(), axis)};
-    const auto              count {static_cast<T>(static_cast<double>(walk.extent))};
+    const auto              count {detail::count_as<T>(walk.extent)};
     buffer<T>               out(walk.outer * walk.inner);
     detail::pairwise_sums(t.data().data(), walk.outer, walk.extent, walk.inner, out.data());
     for (T& x : out) {
