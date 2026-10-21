@@ -78,6 +78,24 @@ class BorrowedOperands(unittest.TestCase):
             self.assertTrue(np.array_equal(np.asarray(numerical.matmul(np.asfortranarray(single), b.astype(np.float32))),
                                            np.asarray(numerical.matmul(single, b.astype(np.float32)))))
 
+    def test_an_einsum_of_one_operand_summing_a_run_reads_it_where_it_lies(self):
+        # A contiguous array summed over a run of its axes: read in place, the bits of the same einsum of its Tensor;
+        # another spec, a strided array or a wrong one take the converting path, the same answers and refusals.
+        base = self.rng.standard_normal((6, 5, 4))
+        for values in (base, base + 1j * base, base.astype(np.float32), (base + 2j).astype(np.complex64)):
+            as_tensor = numerical.asarray(values)
+            for spec in ("ijk->ik", "ijk->i", "ijk->", "ijk->ij", "ijk->jk", "ijk->ki", "ijk->j", "i j k -> i k"):
+                got = numerical.einsum(spec, values)
+                want = numerical.einsum(spec, as_tensor)
+                self.assertEqual(got.shape, want.shape, spec)
+                self.assertTrue(np.array_equal(np.asarray(got), np.asarray(want)), spec)
+        strided = base[:, ::2]
+        self.assertTrue(np.array_equal(np.asarray(numerical.einsum("ijk->i", strided)),
+                                       np.asarray(numerical.einsum("ijk->i", numerical.asarray(np.ascontiguousarray(strided))))))
+        for bad in ("ij->i", "ijk->l", "iik->i", "ijk->ii"):
+            with self.assertRaises(ValueError):
+                numerical.einsum(bad, base)
+
     def test_the_product_owns_its_elements(self):
         a, b = self.operand((4, 4), np.float64), self.operand((4, 4), np.float64)
         product = numerical.matmul(a, b)

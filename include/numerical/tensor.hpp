@@ -426,6 +426,43 @@ namespace numerical {
     }
 
     /*!
+     * \brief einsum of one row-major operand \p data (\p shape, its axes labelled \p in, each label once) into the
+     *        labels \p output, where those it sums are one run of its axes and \p output the others in order (ij->i,
+     *        ij->, ij->j, ijk->ik): each output element the sum of evenly spaced elements, by pairwise halving as sum()
+     *        adds them (\ref pairwise_sums), where einsum's general loop added them one after another. None for any
+     *        other spec (nothing summed, the summed labels apart, the output reordered).
+     */
+    template <typename T>
+    [[nodiscard]] std::optional<tensor<T>> sum_over_run(const std::string&              in,
+                                                        const std::string&              output,
+                                                        const std::vector<std::size_t>& shape,
+                                                        const T*                        data)
+    {
+      const std::size_t first {in.find_first_not_of(output)};
+      if (first == std::string::npos) {
+        return std::nullopt; // nothing summed: a permutation, or the operand itself
+      }
+      const std::size_t next {in.find_first_of(output, first)};
+      const std::size_t past {next == std::string::npos ? in.size() : next};
+      if (in.substr(0, first) + in.substr(past) != output) {
+        return std::nullopt;
+      }
+      std::size_t              outer {1};
+      std::size_t              run   {1};
+      std::size_t              inner {1};
+      std::vector<std::size_t> out_shape;
+      for (std::size_t k {0}; k < in.size(); ++k) {
+        (k < first ? outer : k < past ? run : inner) *= shape[k];
+        if (k < first || k >= past) {
+          out_shape.push_back(shape[k]);
+        }
+      }
+      std::vector<T> sums(outer * inner);
+      pairwise_sums(data, outer, run, inner, sums.data());
+      return tensor<T> {std::move(out_shape), std::move(sums)};
+    }
+
+    /*!
      * \brief The elements of \p data, whose axes carry the labels \p from (extents in \p sizes), laid out row-major
      *        along the labels \p to, a permutation of \p from that differs from it (so at least one label): an
      *        odometer over \p to's outer labels, a strided sweep of its last.
@@ -1006,26 +1043,10 @@ namespace numerical {
       }
 
       // Fast path: one operand, each label once, its summed labels one run of its axes and the output the others in
-      // order (ij->i, ij->, ij->j, ijk->ik): each output element the sum of evenly spaced elements, by pairwise halving
-      // as sum() adds them, where the loop below added them one after another.
-      if (operands.size() == 1 && !summed.empty() && sizes.size() == inputs[0].size()) {
-        const std::string& in    {inputs[0]};
-        const std::size_t  first {in.find_first_not_of(output)};
-        const std::size_t  past  {in.find_first_of(output, first) == std::string::npos ? in.size() : in.find_first_of(output, first)};
-        if (in.substr(0, first) + in.substr(past) == output) {
-          std::size_t outer {1};
-          std::size_t run   {1};
-          std::size_t inner {1};
-          for (std::size_t k {0}; k < in.size(); ++k) {
-            (k < first ? outer : k < past ? run : inner) *= sizes.at(in[k]);
-          }
-          std::vector<std::size_t> out_shape;
-          for (const char label : output) {
-            out_shape.push_back(sizes.at(label));
-          }
-          std::vector<T> sums(outer * inner);
-          pairwise_sums(operands[0]->data().data(), outer, run, inner, sums.data());
-          return tensor<T> {std::move(out_shape), std::move(sums)};
+      // order (ij->i, ij->, ij->j, ijk->ik): sum_over_run.
+      if (operands.size() == 1 && sizes.size() == inputs[0].size()) {
+        if (std::optional<tensor<T>> sums {sum_over_run(inputs[0], output, operands[0]->shape(), operands[0]->data().data())}) {
+          return *std::move(sums);
         }
       }
 

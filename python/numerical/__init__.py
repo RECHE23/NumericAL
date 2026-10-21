@@ -462,6 +462,10 @@ _solve = _linalg(_numerical.solve)
 # The public functions over the native ones, with the signatures their stubs give, so that stubtest holds the stubs to
 # them (a native function taking *args has none to compare); each keeps the native one's documentation.
 def einsum(subscripts, /, *operands):
+    if len(operands) == 1 and isinstance(subscripts, str):
+        summed = _numerical._borrowed_einsum(subscripts, operands[0])  # a run of axes summed where the operand lies
+        if summed is not NotImplemented:
+            return summed
     return _einsum(subscripts, *operands)
 
 

@@ -282,6 +282,22 @@ TEST(einsum_sums_one_axis_under_several_free_ones)
   EXPECT(einsum("abcd->bd", ints) == (tensor<int> {{3, 5}, std::vector<int>(15, 8)}));
 }
 
+// sum_over_run, the reduction a NumPy array is read in place for: a run of axes summed into the others in order, and
+// nothing for a spec that sums nothing, sums labels apart or reorders the output.
+TEST(sum_over_run_takes_a_run_of_axes_and_declines_the_rest)
+{
+  const std::vector<double>      values {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}; // 2 × 3
+  const std::vector<std::size_t> shape  {2, 3};
+  const auto                     rows   {numerical::detail::sum_over_run<double>("ij", "i", shape, values.data())};
+  EXPECT(rows.has_value() && rows->shape() == (std::vector<std::size_t> {2}) && rows->data()[0] == 6.0 && rows->data()[1] == 15.0);
+  const auto columns                    {numerical::detail::sum_over_run<double>("ij", "j", shape, values.data())};
+  EXPECT(columns.has_value() && columns->data()[2] == 9.0);
+  EXPECT(!numerical::detail::sum_over_run<double>("ij", "ij", shape, values.data()).has_value()); // nothing summed
+  EXPECT(!numerical::detail::sum_over_run<double>("ij", "ji", shape, values.data()).has_value()); // nothing summed either
+  const std::vector<std::size_t> cube {1, 2, 3};
+  EXPECT(!numerical::detail::sum_over_run<double>("ijk", "j", cube, values.data()).has_value());  // i and k apart
+}
+
 // One operand summed over a run of its axes (ij->, ij->i, ij->j, ijk->ik): each output element the pairwise sum of its
 // run, the bits of sum() and of sum(t, axis), every column summed down a block by rows as alone.
 TEST(einsum_reductions_sum_pairwise_as_sum_does)

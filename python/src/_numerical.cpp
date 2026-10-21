@@ -26,6 +26,7 @@
 #include <sciforge/binding/module.hpp>
 
 #include <algorithm>
+#include <cctype>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -2630,6 +2631,70 @@ bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false)
     return true;
 }
 
+// _borrowed_einsum(spec, x) -> Tensor or NotImplemented: einsum of one Tensor or contiguous NumPy array read where it
+// lies, for a spec that sums a run of its axes into the others in order ("ij->i", "ij->", "ij->j", "ijk->ik":
+// numerical::detail::sum_over_run, the bits of einsum's own path); NotImplemented for any other spec or operand, which
+// einsum then reads from a copy as before. A NumPy array was copied into a Tensor first: 344 × 961 doubles summed by
+// rows, 16 µs of the 217.
+PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
+{
+    const char* spec_text = nullptr;
+    PyObject*   obj       = nullptr;
+    if (PyArg_ParseTuple(args, "sO", &spec_text, &obj) == 0) {
+        return nullptr;
+    }
+    std::string spec;
+    for (const char* c = spec_text; *c != '\0'; ++c) {
+        if (*c != ' ') {
+            spec.push_back(*c);
+        }
+    }
+    const std::size_t arrow {spec.find("->")};
+    if (arrow == std::string::npos) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const std::string in {spec.substr(0, arrow)};
+    const std::string out {spec.substr(arrow + 2)};
+    const auto letters_once = [](const std::string& labels) {
+        for (std::size_t k = 0; k < labels.size(); ++k) {
+            if (std::isalpha(static_cast<unsigned char>(labels[k])) == 0 || labels.find(labels[k], k + 1) != std::string::npos) {
+                return false;
+            }
+        }
+        return true;
+    };
+    borrowed_operand x;
+    if (!letters_once(in) || !letters_once(out) || out.find_first_not_of(in) != std::string::npos || !borrow_operand(obj, x)
+        || x.shape.size() != in.size()) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            std::size_t count {1};
+            for (const std::size_t extent : x.shape) {
+                count *= extent;
+            }
+            const sb::scoped_gil_release unlocked {releases_gil(count)};
+            const auto sum = [&]<typename T>(std::type_identity<T>) {
+                if (std::optional<numerical::tensor<T>> sums {numerical::detail::sum_over_run(in, out, x.shape, static_cast<const T*>(x.data))}) {
+                    result.emplace(*std::move(sums));
+                }
+            };
+            switch (x.dtype) {
+            case 0: sum(std::type_identity<double> {}); break;
+            case 1: sum(std::type_identity<std::complex<double>> {}); break;
+            case 2: sum(std::type_identity<float> {}); break;
+            default: sum(std::type_identity<std::complex<float>> {}); break;
+            }
+        }
+        return result ? wrap(std::move(*result)) : Py_NewRef(Py_NotImplemented);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _borrowed_norm(x) -> float or NotImplemented: the 2-norm of every element of a Tensor or of a NumPy array read where it
 // lies (borrow_operand), its squares summed where plain_two_norm takes them; NotImplemented for any other operand and
 // for a sum it leaves to the scaled norm, which vector_norm then computes from a copy as before. A float32 or complex64
@@ -3179,6 +3244,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_equal(a, b) -> bool\nWhether two tensors of one dtype and size hold equal elements (a NaN equals nothing).");
     m.raw("_unary", module_unary, METH_VARARGS,
           "_unary(name, a) -> Tensor\nexp, log, sqrt, sin, cos, tan, tanh or abs of every element.");
+    m.raw("_borrowed_einsum", module_borrowed_einsum, METH_VARARGS,
+          "_borrowed_einsum(spec, x) -> Tensor or NotImplemented\nOne operand summed over a run of its axes, read where it lies.");
     m.raw("_borrowed_norm", module_borrowed_norm, METH_O,
           "_borrowed_norm(x) -> float or NotImplemented\nThe 2-norm of every element of a Tensor or a NumPy array read where it lies.");
     m.raw("_vector_norm", module_vector_norm, METH_VARARGS,
