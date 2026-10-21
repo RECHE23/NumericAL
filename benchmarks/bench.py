@@ -4,12 +4,10 @@
 Each case first checks that NumericAL's result equals NumPy's within a tolerance
 (a fast wrong answer is not a benchmark win); only matching cases are timed.
 Inputs are built once, outside the timed region, so the figure is the operation
-itself. `ratio` is numpy_time / numerical_time, so ratio < 1 means NumericAL is
-slower — which is expected and honest: NumPy dispatches linear algebra to
-BLAS/LAPACK (decades of blocked, vectorised kernels), whereas NumericAL is a
-portable, dependency-free *reference* implementation (a naive index-walking
-einsum and an unblocked LU). The value validated here is correctness within
-tolerance and a measured, reproducible performance gap — not beating BLAS.
+itself. `ratio` is numpy_time / numerical_time: above 1, NumericAL is faster;
+below 1, NumPy (its BLAS and LAPACK: OpenBLAS, or Accelerate on macOS) is. Calls
+of a few microseconds move by tens of percent from one run to the next on a
+laptop's cores; repeat a run before reading a small case's ratio.
 
 Timing, statistics and rendering come from SciForge's shared, dependency-free
 benchmark substrate (sciforge.bench): `collect` gathers raw per-call samples, and
@@ -181,13 +179,11 @@ def main():
 
     print("-" * len(header))
     print(f"all {matched} timed cases matched NumPy within rtol={RTOL}, atol={ATOL}")
-    # The CI-aware aggregate (NumPy/NumericAL); for a reference implementation, being slower is
-    # the expected, honest outcome — only a result mismatch fails. So we report the gap.
+    # The CI-aware aggregate (NumPy/NumericAL): faster, slower, equivalent or indecisive, as its confidence interval
+    # says; only a result mismatch fails.
     result = verdict(cases, subject_label="NumericAL")
     if result.classification != "no-data":
-        print(f"geometric-mean ratio (NumPy/NumericAL): {result.geomean:.4f}x "
-              f"[{result.ci_low:.4f}-{result.ci_high:.4f}]  "
-              f"⇒ NumericAL is ~{1.0 / result.geomean:.0f}× slower than NumPy on average")
+        print(f"geometric-mean ratio (NumPy/NumericAL): {result.text}")
 
     if boxplots:
         print("\nper-call time distributions — NumPy vs NumericAL (left = faster):")
@@ -195,9 +191,8 @@ def main():
             print(f"  {name}:")
             print(ascii_boxplot([np_samples, sc_samples], ["NumPy", "NumericAL"], width=42))
 
-    print("\nExpected: NumPy dispatches to BLAS/LAPACK; NumericAL is a portable, "
-          "dependency-free reference\n(naive einsum, unblocked LU). Correctness "
-          "within tolerance is the pass criterion here.")
+    print("\nNumPy dispatches to its BLAS/LAPACK; NumericAL runs its own kernels, in C++, without one. "
+          "Correctness within\ntolerance is the pass criterion; a small case's ratio moves between runs.")
     sys.exit(0 if result.passed else 1)
 
 
