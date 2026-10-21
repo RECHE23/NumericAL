@@ -561,3 +561,31 @@ TEST(operator_times_is_the_operator_s_product)
   EXPECT(same(cf {static_cast<float>(inf), 0.0F}, cf {0.0F, 0.0F}));
   EXPECT(numerical::detail::operator_times(0.1, 3.0) == 0.1 * 3.0);
 }
+
+// add_product of complex numbers: every element the arithmetic of complex_scaled_add, whether the vectors of parts or
+// the loop past them takes it, at every length about the vectors' widths, in both precisions.
+TEST(complex_add_product_gives_each_element_the_same_arithmetic)
+{
+  const auto holds = []<typename C>(C /*type*/) {
+                       using R = C::value_type;
+                       bool ok {true};
+                       for (std::size_t count {0}; count < 20; ++count) {
+                         std::vector<C> y(count);
+                         std::vector<C> x(count);
+                         for (std::size_t i {0}; i < count; ++i) {
+                           y[i] = C {static_cast<R>(0.1 * static_cast<double>(i)), static_cast<R>(-0.3)};
+                           x[i] = C {static_cast<R>(1.0 / (1.0 + static_cast<double>(i))), static_cast<R>(0.7 - (0.05 * static_cast<double>(i)))};
+                         }
+                         const C        f    {static_cast<R>(0.37), static_cast<R>(-1.9)};
+                         std::vector<C> want {y};
+                         for (std::size_t i {0}; i < count; ++i) {
+                           numerical::detail::complex_scaled_add(want[i], f, x[i]);
+                         }
+                         numerical::detail::add_product(y.data(), f, x.data(), count);
+                         ok = ok && y == want;
+                       }
+                       return ok;
+                     };
+  EXPECT(holds(std::complex<double> {}));
+  EXPECT(holds(std::complex<float> {}));
+}

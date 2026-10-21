@@ -12,6 +12,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`einsum` sums one operand over a run of its axes (`ij->`, `ij->i`, `ij->j`, `ijk->ik`) by pairwise halving**, as
   `sum` adds, where its general loop added the terms one after another: the bits of `sum()` and `sum(axis)`. Order 256,
   one M1 Pro: `ij->` and `ij->i` 97 → 16 µs (NumPy's `einsum` 11.7, its `sum` 16.7), `ij->j` 56 → 16 µs (NumPy 22.7).
+- **A complex `y += f · x` (a vector times a matrix, its rows added in order) spells out its part products**, each
+  rounded apart as libc++'s operator rounds them, which Clang then vectorises, and GCC runs over vectors of the parts;
+  every element the same arithmetic, the bits libc++'s. One M1 Pro, a complex64 vector of 406 times a 406 × 583
+  matrix: 121 → 39 µs (NumPy 47); complex128 131 → 83 µs (NumPy 67).
 - **A complex dot product sums over vectors of the parts**, its real and imaginary sums apart (`re·re`, `im·im`,
   `re·im`, `im·re`), where a running complex sum waited on each addition and tested each product for NaN; on the x86-64
   units with AVX2 their fused multiply-adds. A complex matrix times a vector shares its rows among the threads by

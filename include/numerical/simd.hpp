@@ -530,6 +530,52 @@ namespace numerical::detail {
     return done;
   }
 
+  /*!
+   * \brief The leading elements of `y[i] += f · x[i]` of complex numbers, a whole number of native vectors of their
+   *        parts: how many it did. Each product's four part products rounded apart, then `re·re − im·im` and
+   *        `re·im + im·re`, then added to `y` (\ref complex_scaled_add's arithmetic): its statements apart, so no
+   *        multiply-add is fused, and the swapped parts' sign a multiplication by ±1, exact.
+   */
+  template <split_complex C>
+  std::size_t add_scaled_vectors(C*          y,
+                                 const C*    x,
+                                 const C&    f,
+                                 std::size_t count)
+  {
+    using R    = C::value_type;
+    using lane = typename native_vector<R>::type;
+    constexpr std::size_t width {native_vector_bytes / sizeof(R)}; // parts in a vector: an even count
+    auto* const           out   {reinterpret_cast<R*>(y)};         // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is an array of its two parts
+    const auto* const     in    {reinterpret_cast<const R*>(x)};   // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): as above
+    lane                  real_part;
+    lane                  imaginary_part;
+    lane                  sign;
+    for (std::size_t k {0}; k < width; ++k) {
+      real_part[k]      = f.real();
+      imaginary_part[k] = f.imag();
+      sign[k]           = (k % 2 == 0) ? R {-1} : R {1};
+    }
+    const std::size_t parts {2 * count};
+    const std::size_t done  {parts - (parts % width)};
+    for (std::size_t i {0}; i < done; i += width) {
+      lane yv;
+      lane xv;
+      std::memcpy(&yv, out + i, sizeof(lane));
+      std::memcpy(&xv, in + i, sizeof(lane));
+      lane swapped;
+      for (std::size_t k {0}; k < width; ++k) {
+        swapped[k] = xv[k ^ 1U];
+      }
+      const lane straight       {real_part * xv};            // re·re, re·im
+      const lane crossed        {imaginary_part * swapped};  // im·im, im·re
+      const lane signed_crossed {sign * crossed};            // −im·im, +im·re
+      const lane product        {straight + signed_crossed}; // re·re − im·im, re·im + im·re
+      yv = yv + product;
+      std::memcpy(out + i, &yv, sizeof(lane));
+    }
+    return done / 2;
+  }
+
 #endif
 
   /*!
@@ -851,6 +897,37 @@ namespace numerical::detail {
     const T factor {f}; // read once, as a scalar loop would: it may be an element of y's array
     for (std::size_t i {subtract_scaled_vectors(y, x, factor, count)}; i < count; ++i) {
       y[i] -= operator_times(x[i], factor);
+    }
+  }
+
+  //! \brief `y += f · x` of one complex number, its part products rounded apart as libc++'s operator computes them
+  //!        (\ref add_scaled_vectors's arithmetic, for the elements past its vectors).
+  template <split_complex C>
+  void complex_scaled_add(C&       y,
+                          const C& f,
+                          const C& x)
+  {
+    using R = C::value_type;
+    const R ac {f.real() * x.real()};
+    const R bd {f.imag() * x.imag()};
+    const R ad {f.real() * x.imag()};
+    const R bc {f.imag() * x.real()};
+    const R re {ac - bd};
+    const R im {ad + bc};
+    y = C {y.real() + re, y.imag() + im};
+  }
+
+  //! \brief \ref add_product of complex numbers: vectors of their parts, then \ref complex_scaled_add, every element
+  //!        the same arithmetic.
+  template <split_complex C>
+  void add_product(C*          y,
+                   const C&    f,
+                   const C*    x,
+                   std::size_t count)
+  {
+    const C factor {f}; // read once, as a scalar loop would: it may be an element of y's array
+    for (std::size_t i {add_scaled_vectors(y, x, factor, count)}; i < count; ++i) {
+      complex_scaled_add(y[i], factor, x[i]);
     }
   }
 
