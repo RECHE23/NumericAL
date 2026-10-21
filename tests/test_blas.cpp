@@ -350,12 +350,33 @@ TEST(potrf_factorises_either_triangle)
   EXPECT(potrf_factorises('U', 140));
 }
 
-TEST(potrf_reports_the_failing_minor_an_illegal_argument_and_a_nan)
+TEST(potrf_reports_the_failing_minor_an_illegal_argument_and_carries_a_nan)
 {
   std::vector<double> a   {4.0, 2.0, 0.0, 2.0, 1.0, 0.0, 0.0, 0.0, 1.0}; // the minor of order 2 is singular
   EXPECT_EQ(numerical::blas::potrf('L', 3, a.data(), 3), 2);
-  std::vector<double> nan {std::numeric_limits<double>::infinity()};
-  EXPECT_EQ(numerical::blas::potrf('U', 1, nan.data(), 1), -3);
+  // A NaN or an infinity in the triangle read: INFO as the reference LAPACK's (3.12) on the same matrices, A + 5 I
+  // with A(i, j) = 1 / (1 + i + j), the value at (row, column) of the triangle read and at its mirror for 'U'.
+  const auto info_with = [](char uplo, double bad, std::size_t row, std::size_t column) {
+                           std::vector<double> m(16);
+                           for (std::size_t j {0}; j < 4; ++j) {
+                             for (std::size_t i {0}; i < 4; ++i) {
+                               m[i + (j * 4)] = (i == j ? 5.0 : 0.0) + (1.0 / static_cast<double>(1 + i + j));
+                             }
+                           }
+                           m[uplo == 'L' ? row + (column * 4) : column + (row * 4)] = bad;
+                           return numerical::blas::potrf(uplo, 4, m.data(), 4);
+                         };
+  const double nan {std::numeric_limits<double>::quiet_NaN()};
+  const double inf {std::numeric_limits<double>::infinity()};
+  for (const char uplo : {'L', 'U'}) {
+    EXPECT_EQ(info_with(uplo, nan, 0, 0), 1);
+    EXPECT_EQ(info_with(uplo, nan, 2, 1), 3);
+    EXPECT_EQ(info_with(uplo, nan, 3, 3), 4);
+    EXPECT_EQ(info_with(uplo, inf, 0, 0), 0); // √∞, then zeros below it
+    EXPECT_EQ(info_with(uplo, inf, 2, 1), 3);
+    EXPECT_EQ(info_with(uplo, -inf, 0, 0), 1);
+    EXPECT_EQ(info_with(uplo, -inf, 3, 3), 4);
+  }
   EXPECT_EQ(numerical::blas::potrf('X', 1, a.data(), 1), -1);
   EXPECT_EQ(numerical::blas::potrf('L', -1, a.data(), 1), -2);
   EXPECT_EQ(numerical::blas::potrf('l', 2, a.data(), 1), -4);
@@ -1017,10 +1038,18 @@ TEST(syevd_sizes_its_workspaces_and_reports_an_illegal_argument_and_a_nan)
   EXPECT_EQ(numerical::blas::syevd('V', 'L', 3, a.data(), 2, w.data(), work.data(), 100, iwork.data(), 100), -5);
   EXPECT_EQ(numerical::blas::syevd('V', 'L', 3, a.data(), 3, w.data(), work.data(), 36, iwork.data(), 100), -8);
   EXPECT_EQ(numerical::blas::syevd('V', 'L', 3, a.data(), 3, w.data(), work.data(), 37, iwork.data(), 17), -10);
+  // A NaN in the triangle read: NaN eigenvalues (and vectors) and INFO n, an eigenvalue that did not converge, as the
+  // reference's divide and conquer reports it; one in the other triangle is not read.
+  const auto all_nan = [](const std::vector<double>& v, std::size_t count) {
+                         return std::all_of(v.begin(), v.begin() + static_cast<std::ptrdiff_t>(count), [](double x) { return std::isnan(x); });
+                       };
   a[1] = std::numeric_limits<double>::quiet_NaN(); // (2, 1): in the lower triangle, not the upper
-  EXPECT_EQ(numerical::blas::syevd('V', 'L', 3, a.data(), 3, w.data(), work.data(), 37, iwork.data(), 18), -4);
-  EXPECT_EQ(numerical::blas::syevd('N', 'L', 3, a.data(), 3, w.data(), work.data(), 7, iwork.data(), 1), -4);
+  EXPECT_EQ(numerical::blas::syevd('N', 'L', 3, a.data(), 3, w.data(), work.data(), 7, iwork.data(), 1), 3);
+  EXPECT(all_nan(w, 3) && !std::isnan(a[0]));      // A left as it was without vectors
   EXPECT_EQ(numerical::blas::syevd('N', 'U', 3, a.data(), 3, w.data(), work.data(), 7, iwork.data(), 1), 0);
+  EXPECT(!std::isnan(w[0]));
+  EXPECT_EQ(numerical::blas::syevd('V', 'L', 3, a.data(), 3, w.data(), work.data(), 37, iwork.data(), 18), 3);
+  EXPECT(all_nan(w, 3) && all_nan(a, 9));
 }
 
 TEST(gesdd_decomposes_tall_wide_and_square_matrices_by_every_job)
@@ -1331,30 +1360,25 @@ TEST(geqrf_and_orgqr_size_their_workspaces_and_report_an_illegal_argument_and_a_
   EXPECT_EQ(numerical::blas::orgqr(4, 2, 3, a.data(), 4, tau.data(), work.data(), 8), -3);
   EXPECT_EQ(numerical::blas::orgqr(4, 3, 3, a.data(), 3, tau.data(), work.data(), 8), -5);
   EXPECT_EQ(numerical::blas::orgqr(4, 3, 3, a.data(), 4, tau.data(), work.data(), 2), -8);
-  a[0] = std::numeric_limits<double>::quiet_NaN(); // on the diagonal: R's, not a reflector's, for orgqr
-  EXPECT_EQ(numerical::blas::geqrf(4, 3, a.data(), 4, tau.data(), work.data(), 8), -3);
-  a[0] = 1.0;
-  a[3] = std::numeric_limits<double>::infinity();  // below the diagonal of column 0: reflector 0's
-  EXPECT_EQ(numerical::blas::orgqr(4, 3, 1, a.data(), 4, tau.data(), work.data(), 8), -4);
-  a[3]   = 1.0;
-  tau[1] = std::numeric_limits<double>::quiet_NaN();
-  EXPECT_EQ(numerical::blas::orgqr(4, 3, 2, a.data(), 4, tau.data(), work.data(), 8), -6);
+  // A NaN or an infinity carried through, as the reference's dgeqrf and dorgqr carry it: INFO 0 and the answer NaN
+  // where the value reaches it (reflector 0's column holds it, then every column of R it is applied to).
+  const auto has_nan = [](const std::vector<double>& v) { return std::ranges::any_of(v, [](double x) { return std::isnan(x); }); };
   a[0] = std::numeric_limits<double>::quiet_NaN();
-  EXPECT_EQ(numerical::blas::orgqr(4, 3, 1, a.data(), 4, tau.data(), work.data(), 8), 0);
-  // The finite test runs by chunks of 512: an infinity past the first, in the last element, and in a row past m, which
-  // lda pads and geqrf does not read.
-  constexpr std::size_t large_rows {40};
-  constexpr std::size_t large_cols {30};
-  constexpr std::size_t large_ld   {large_rows + 1};
-  std::vector<double>   large(large_ld * large_cols, 1.0);
-  std::vector<double>   large_tau(large_cols);
-  std::vector<double>   large_work(large_cols);
-  for (std::size_t j {0}; j < large_cols; ++j) {
-    large[large_rows + (j * large_ld)] = std::numeric_limits<double>::infinity();
-  }
-  EXPECT_EQ(numerical::blas::geqrf(40, 30, large.data(), 41, large_tau.data(), large_work.data(), 30), 0);
-  large[(large_rows - 1) + ((large_cols - 1) * large_ld)] = -std::numeric_limits<double>::infinity();
-  EXPECT_EQ(numerical::blas::geqrf(40, 30, large.data(), 41, large_tau.data(), large_work.data(), 30), -3);
+  EXPECT_EQ(numerical::blas::geqrf(4, 3, a.data(), 4, tau.data(), work.data(), 8), 0);
+  EXPECT(has_nan(a) && has_nan(tau));
+  std::vector<double> reflectors(12, 0.5);
+  std::vector<double> taus(3, 1.5);
+  reflectors[3] = std::numeric_limits<double>::infinity(); // below the diagonal of column 0: reflector 0's
+  EXPECT_EQ(numerical::blas::orgqr(4, 3, 1, reflectors.data(), 4, taus.data(), work.data(), 8), 0);
+  EXPECT(has_nan(reflectors));
+  std::ranges::fill(reflectors, 0.5);
+  taus[1] = std::numeric_limits<double>::quiet_NaN();
+  EXPECT_EQ(numerical::blas::orgqr(4, 3, 2, reflectors.data(), 4, taus.data(), work.data(), 8), 0);
+  EXPECT(has_nan(reflectors));
+  // Q's columns past those the NaN's reflector reaches stay finite: k = 1, a NaN only in τ's unread second element.
+  std::ranges::fill(reflectors, 0.5);
+  EXPECT_EQ(numerical::blas::orgqr(4, 3, 1, reflectors.data(), 4, taus.data(), work.data(), 8), 0);
+  EXPECT(!has_nan(reflectors));
 }
 
 TEST(the_fortran_qr_routines_answer_as_the_cpp_ones)
@@ -2553,7 +2577,7 @@ namespace {
     std::vector<T> nan        {T {std::numeric_limits<float>::quiet_NaN()}};
     std::vector<T> x(16, T    {1});
     T* const       p          {x.data()};
-    return numerical::blas::potrf('L', 2, indefinite.data(), 2) == 2 && numerical::blas::potrf('U', 1, nan.data(), 1) == -3
+    return numerical::blas::potrf('L', 2, indefinite.data(), 2) == 2 && numerical::blas::potrf('U', 1, nan.data(), 1) == 1
            && numerical::blas::potrf('X', 2, p, 2) == -1 && numerical::blas::potrf('L', -1, p, 2) == -2 && numerical::blas::potrf('L', 2, p, 1) == -4
            && numerical::blas::potrf('L', 0, p, 1) == 0 && numerical::blas::potrs('X', 2, 1, p, 2, p, 2) == -1
            && numerical::blas::potrs('L', -1, 1, p, 2, p, 2) == -2 && numerical::blas::potrs('L', 2, -1, p, 2, p, 2) == -3

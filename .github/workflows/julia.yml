@@ -1,0 +1,46 @@
+name: Julia
+
+# Julia's LinearAlgebra tests on numerical_blas: a third consumer of the BLAS/LAPACK interface beside NumPy's and SciPy's
+# suites (ci.yml's blas-preload), and its only ILP64 one. On a push that touches the interface, weekly and on demand.
+on:
+  push:
+    branches: [main]
+    paths: ['blas/**', 'include/numerical/blas.hpp', 'setup.py', '.github/workflows/julia.yml']
+  schedule:
+    - cron: '17 6 * * 0' # weekly, Sunday 06:17 UTC
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  # The library as the Linux wheel builds it, forwarded under libblastrampoline (BLAS.lbt_forward): twelve groups of
+  # Julia's LinearAlgebra tests, each failure a new one unless blas/julia_check.sh lists it as a known divergence.
+  julia:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    env:
+      JULIA_URL: https://julialang-s3.julialang.org/bin/linux/x64/1.11/julia-1.11.5-linux-x86_64.tar.gz
+      JULIA_SHA256: 723e878c642220cc0251a0e13758c059a389cadc7f01376feaf1ea7388fe8f9c
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: RECHE23/sciforge
+          ref: v2026.10.6
+          path: sciforge
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
+      - name: Fetch Julia
+        run: |
+          curl -sSfL -o "$RUNNER_TEMP/julia.tar.gz" "$JULIA_URL"
+          echo "$JULIA_SHA256  $RUNNER_TEMP/julia.tar.gz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/julia" && tar -xzf "$RUNNER_TEMP/julia.tar.gz" -C "$RUNNER_TEMP/julia" --strip-components=1
+      - name: Build numerical_blas as the wheel does
+        run: |
+          python -m pip install setuptools
+          SCIFORGE_INCLUDE="$PWD/sciforge/include" python setup.py -q build_ext --inplace --force
+          test -f python/numerical/lib/libnumerical_blas.so
+      - name: Julia's LinearAlgebra tests with numerical_blas forwarded
+        run: blas/julia_check.sh "$RUNNER_TEMP/julia/bin/julia" "$PWD/python/numerical/lib/libnumerical_blas.so"

@@ -300,9 +300,15 @@ BLAS.lbt_forward(path; clear=false, suffix_hint="64_")  # path: numerical.blas_l
 
 The program must call BLAS by those names: a NumPy or SciPy from the system's packages (Debian, Ubuntu, Fedora…) or
 from FlexiBLAS, R, Octave, a Fortran or C program. NumPy and SciPy wheels from PyPI carry an OpenBLAS whose symbols
-are renamed, which a preloaded library does not reach. Importing `numerical` never loads it. Its routines run
-NumPy's and SciPy's linear algebra test suites in CI; an argument is checked as the reference BLAS checks it (the
-reference XERBLA's message, then the call returns).
+are renamed, which a preloaded library does not reach. Importing `numerical` never loads it.
+
+Its routines run NumPy's and SciPy's linear algebra test suites in CI, and Julia's (`julia.yml`, weekly and on a
+change to them); an argument is checked as the reference BLAS checks it (the reference XERBLA's message, then the call
+returns). A NaN or an infinity, which NumericAL's own functions refuse, is taken as the reference LAPACK (3.12) takes
+it, where it takes it one way: `getrf`, `gesv`, `geqrf`, `orgqr` and the solvers carry it through, `potrf` reports the
+order its factorisation stops at, `syevd` gives NaN eigenvalues and `INFO` `n`. `gesdd`, `geev` and `gelsd` report the
+matrix as an illegal argument (`INFO` `-4`), as the reference's `gesdd` and `geev` report a NaN; on an infinity the
+reference loops without end or gives NaN, and on a NaN its `gelsd` fails inside.
 
 ## Threads and kernels
 

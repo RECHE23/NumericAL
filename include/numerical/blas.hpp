@@ -1137,13 +1137,55 @@ namespace numerical::blas {
     return 0;
   }
 
+  namespace detail {
+    /*!
+     * \brief The Cholesky factor of the column-major order-\p size `A` in place, column by column as the reference's
+     *        `dpotf2` computes it (\p lower: `L` below the diagonal, else `U` above it, as conjugates for a complex
+     *        `A`): where it holds a NaN or an infinity, which NumericAL's Cholesky refuses, the NaN carried through.
+     * \return `INFO` as `dpotf2`'s: 0, or `j` where the diagonal's `j`-th term is not positive (or NaN), left in it.
+     */
+    template <typename T>
+    int column_cholesky(bool        lower,
+                        std::size_t size,
+                        T*          a,
+                        std::size_t ld)
+    {
+      // Element (i, j) of L: below the diagonal for lower, the conjugate of U's (j, i) above it otherwise.
+      const auto l = [&](std::size_t i, std::size_t j) -> T& { return lower ? a[i + (j * ld)] : a[j + (i * ld)]; };
+      const auto from_l = [&](T x) { return lower ? x : numerical::detail::conj_of(x); }; // L's value as stored
+      for (std::size_t j {0}; j < size; ++j) {
+        auto diagonal {std::real(a[j + (j * ld)])};
+        for (std::size_t k {0}; k < j; ++k) {
+          const T ljk {from_l(l(j, k))};
+          diagonal -= std::real(ljk * numerical::detail::conj_of(ljk));
+        }
+        if (!(diagonal > 0)) { // not positive, or NaN
+          a[j + (j * ld)] = T {diagonal};
+          return static_cast<int>(j + 1);
+        }
+        diagonal        = std::sqrt(diagonal);
+        a[j + (j * ld)] = T {diagonal};
+        for (std::size_t i {j + 1}; i < size; ++i) {
+          T sum {from_l(l(i, j))};
+          for (std::size_t k {0}; k < j; ++k) {
+            sum -= from_l(l(i, k)) * numerical::detail::conj_of(from_l(l(j, k)));
+          }
+          l(i, j) = from_l(sum / diagonal);
+        }
+      }
+      return 0;
+    }
+  } // namespace detail
+
   /*!
    * \brief The Cholesky factor of a symmetric positive-definite `A`, column-major, as LAPACK's `dpotrf`: with \p uplo
    *        `L`, `A = L Lᵀ` read from and written to `A`'s lower triangle; with `U`, `A = Uᵀ U` and the upper one. The
    *        other triangle is not referenced. Where `A` is not positive definite, `A` is left as it was (LAPACK leaves
-   *        the factorisation it reached).
-   * \return `INFO`: 0; `i > 0` where the leading minor of order `i` is not positive definite; `-i` where argument `i`
-   *         is illegal (`-3`: the triangle read holds a NaN or an infinity).
+   *        the factorisation it reached). A NaN or an infinity in the triangle read, which NumericAL's Cholesky
+   *        refuses, is carried through as the reference's `dpotf2` carries it (\ref detail::column_cholesky), its
+   *        `INFO` too.
+   * \return `INFO`: 0; `i > 0` where the leading minor of order `i` is not positive definite (or holds a NaN); `-i`
+   *         where argument `i` is illegal.
    */
   template <typename T>
   int potrf(char           uplo,
@@ -1198,8 +1240,8 @@ namespace numerical::blas {
     catch (const not_positive_definite_error& failed) {
       return static_cast<int>(failed.order());
     }
-    catch (const non_finite_error&) {
-      return -3;
+    catch (const non_finite_error&) { // A untouched: factorised as the reference's dpotf2 does, the NaN carried through
+      return detail::column_cholesky(lower, size, a, ld);
     }
     return 0;
   }
@@ -1396,8 +1438,10 @@ namespace numerical::blas {
    *        eigenvectors overwriting `A`, column `j` that of `w[j]`; with `N`, `A` left as it was (LAPACK leaves it
    *        overwritten). NumericAL's divide and conquer computes them; the workspaces are not used, but their sizes
    *        are `dsyevd`'s: an `lwork` or `liwork` of -1 asks them (written to `work[0]` and `iwork[0]`), and a
-   *        smaller one is illegal.
-   * \return `INFO`: 0, or `-i` where argument `i` is illegal (`-4`: a NaN or an infinity in the triangle read).
+   *        smaller one is illegal. A NaN or an infinity in the triangle read gives NaN eigenvalues (and
+   *        eigenvectors) and `INFO` `n`, an eigenvalue that did not converge, as the reference's gives for a NaN (an
+   *        infinity it turns to NaN eigenvalues, `INFO` 0 or positive).
+   * \return `INFO`: 0; `n` where `A` holds a NaN or an infinity; `-i` where argument `i` is illegal.
    */
   template <typename Index>
   int syevd(char           jobz,
@@ -1468,8 +1512,14 @@ namespace numerical::blas {
         }
       }
     }
-    catch (const non_finite_error&) {
-      return -4;
+    catch (const non_finite_error&) { // as the reference's divide and conquer on a NaN: no eigenvalue converges
+      std::fill_n(w, size, std::numeric_limits<double>::quiet_NaN());
+      if (vectors) {
+        for (std::size_t j {0}; j < size; ++j) {
+          std::fill_n(a + (j * ld), size, std::numeric_limits<double>::quiet_NaN());
+        }
+      }
+      return static_cast<int>(size);
     }
     return 0;
   }
@@ -1592,8 +1642,8 @@ namespace numerical::blas {
    *        nothing below the diagonal takes, as in `dlarfg`) — the form
    *        `dorgqr` and `dormqr` read. NumericAL's blocked Householder reflections compute them; the workspace is not
    *        used, but its size is `dgeqrf`'s least, `n`: an `lwork` of -1 asks it (written to `work[0]`), and a smaller
-   *        one is illegal.
-   * \return `INFO`: 0, or `-i` where argument `i` is illegal (`-3`: a NaN or an infinity in `A`).
+   *        one is illegal. A NaN or an infinity in `A` is carried through, as the reference's `dgeqrf` carries it.
+   * \return `INFO`: 0, or `-i` where argument `i` is illegal.
    */
   inline int geqrf(std::ptrdiff_t m,
                    std::ptrdiff_t n,
@@ -1638,10 +1688,6 @@ namespace numerical::blas {
 #else
     detail::row_major_into(entries, a, lda, m, n, 1.0);
 #endif
-    if (!numerical::detail::all_finite(entries.data(), entries.size())) {
-      detail::give_back(0, std::move(entries));
-      return -3;
-    }
 #ifdef NUMERICAL_X86_COMPILED
     const std::vector<numerical::detail::reflector_block<double>> blocks {numerical::detail::reflect_in_columns(entries, rows, cols)};
     for (std::size_t j {0}; j < cols; ++j) {
@@ -1665,9 +1711,9 @@ namespace numerical::blas {
    *        implementation's: column `i` of `A` below row `i`, `τ_i` in \p tau), overwriting the column-major `m × n`
    *        `A`, as LAPACK's `dorgqr`: the reflectors gathered by blocks into `I − V T Vᵀ` (`T` as `dlarft` forms it)
    *        and applied through the matrix product kernel. The workspace is not used, but its size is `dorgqr`'s
-   *        least, `n`: an `lwork` of -1 asks it (written to `work[0]`), and a smaller one is illegal.
-   * \return `INFO`: 0, or `-i` where argument `i` is illegal (`-4`: a NaN or an infinity in a reflector, `-6` in
-   *         \p tau).
+   *        least, `n`: an `lwork` of -1 asks it (written to `work[0]`), and a smaller one is illegal. A NaN or an
+   *        infinity in a reflector or in \p tau is carried through, as the reference's `dorgqr` carries it.
+   * \return `INFO`: 0, or `-i` where argument `i` is illegal.
    */
   inline int orgqr(std::ptrdiff_t m,
                    std::ptrdiff_t n,
@@ -1705,16 +1751,6 @@ namespace numerical::blas {
     const auto cols  {static_cast<std::size_t>(n)};
     const auto depth {static_cast<std::size_t>(k)};
     const auto ld    {static_cast<std::size_t>(lda)};
-    for (std::size_t j {0}; j < depth; ++j) {
-      if (!std::isfinite(tau[j])) {
-        return -6;
-      }
-      for (std::size_t i {j + 1}; i < rows; ++i) {
-        if (!std::isfinite(a[i + (j * ld)])) {
-          return -4;
-        }
-      }
-    }
     // Each reflector w_j = (1, A(j+1…m-1, j)) and τ_j, gathered by blocks into I − V T Vᵀ (T as dlarft forms it).
     std::vector<buffer<double>> reflectors(depth);
     const std::vector<double>   taus(tau, tau + depth);

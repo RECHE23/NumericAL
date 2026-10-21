@@ -26,11 +26,17 @@ A change that can break code is listed under **Breaking** and held for a month's
   against its declaration: the 64-bit names of the complex and `float` routines had taken 32-bit integers.
 
 ### Fixed
-- **`getrf` and `gesv` carry a NaN or an infinity through, as LAPACK's do** (`dgetf2`'s column by column factors,
-  `getrs` after), where they reported the matrix as an illegal argument: Julia's `lu` of a matrix of NaN, under
-  `numerical_blas`, raised.
+- **`numerical_blas` takes a NaN or an infinity as the reference LAPACK (3.12) does**, where it reported the matrix as
+  an illegal argument: `getrf` and `gesv` carry it through (`dgetf2`'s column by column factors, `getrs` after), as
+  `geqrf` and `orgqr` do; `potrf` factorises column by column as `dpotf2` and reports the order it stops at (the
+  reference's `INFO` on the same matrices, NaN, ∞ and −∞ on and off the diagonal); `syevd` gives NaN eigenvalues and
+  `INFO` `n`. Julia's `lu` of a matrix of NaN, under `numerical_blas`, raised. `gesdd`, `geev` and `gelsd` still
+  report it (`INFO` `-4`), as the reference's `gesdd` and `geev` report a NaN.
 
 ### Development
+- Julia's LinearAlgebra tests run on `numerical_blas` (`julia.yml`: on a change to the BLAS interface, weekly, on
+  demand), twelve groups under libblastrampoline, through `blas/julia_check.sh`: a failure fails the run unless the
+  script lists it as a known divergence, and a listed one that stops failing fails it too.
 - The AVX-512 emulator's run is a workflow of its own (`avx512.yml`): on a push that touches the x86-64 kernels,
   weekly, on demand, and required on the commit a release tags (`RELEASE_CI`), where every push waited on its sixteen
   minutes; the C++ suite runs once under the emulator, instrumented for `coverage-x86`, where it ran twice.
