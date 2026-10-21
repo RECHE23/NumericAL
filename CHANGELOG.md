@@ -18,6 +18,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   their weight (a complex multiply-add four real ones), in groups of fewer rows where there are few. The last bits
   of complex dot products move. A complex128 matrix of 632 × 351 times a vector, one M1 Pro: 32 µs (NumPy 87); six
   AVX2 cores, each library timed in a process of its own: 25 µs (NumPy 16), and 189 × 206 12 µs (5.3).
+- **Converting a NumPy array asks for its `__array_struct__` before its `__array_interface__`**, a capsule where the
+  other is a dictionary built anew at every access, and `@` of two Tensors past the conversions calls the extension
+  itself: a 4 × 31 strided matrix times a strided vector, six AVX2 cores, 11.7 → 6.7 µs.
 - **A product of float64 matrices reads a Fortran-ordered (transposed) NumPy operand where it lies**, packed from there
   as gemm packs it, so with the bits of the C-ordered product, where it was copied first; and a Fortran-ordered matrix
   of 32 rows or more converts by tiles where it is copied (256 × 256 doubles 49.7 → 32.3 µs, NumPy's copy 43).

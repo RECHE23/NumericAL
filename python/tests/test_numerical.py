@@ -493,8 +493,10 @@ class TensorProtocol(unittest.TestCase):
             real @ numerical.asarray(1.0)
         mixed = real @ cplx  # two dtypes: promoted, as einsum promotes them
         self.assertEqual((mixed.dtype, mixed.tolist()), ("complex128", numerical.einsum("ij,jk->ik", real, cplx).tolist()))
-        with self.assertRaises(numerical.error):
+        with self.assertRaises(numerical.error):  # two tensors: the type's own product, in C
             real @ numerical.asarray([[1.0, 2.0, 3.0]])
+        with self.assertRaises(numerical.LinAlgError):  # a list converted first: a ValueError, as NumPy's matmul raises
+            real @ [[1.0, 2.0, 3.0]]
 
     @unittest.skipIf(np is None, "NumPy not installed")
     def test_indexing_as_numpy(self):

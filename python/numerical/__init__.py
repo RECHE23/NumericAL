@@ -343,7 +343,10 @@ def _matmul(self, other):
     spec = _MATMUL.get((len(a.shape), len(b.shape)))
     if spec is None:
         return _matmul_nd(a, b)
-    product = _einsum(spec, a, b)
+    try:  # two Tensors of one dtype already: the extension itself, its failures LinAlgError as _einsum's
+        product = _numerical.einsum(spec, a, b)
+    except error as caught:
+        raise LinAlgError(*caught.args) from None
     return product[()] if not product.shape else product  # two vectors give a number, as NumPy's
 
 
@@ -1000,8 +1003,8 @@ def asarray(obj, dtype=None):
                                           and not hasattr(obj, "__array_interface__")):
         values, shape = _nested(obj)
         obj = _NestedBuffer(values, shape)
-    elif not (isinstance(obj, Tensor) or type(obj) in _NATIVE_NUMBERS or hasattr(obj, "__array_interface__")
-              or hasattr(obj, "__array_struct__")):
+    elif not (isinstance(obj, Tensor) or type(obj) in _NATIVE_NUMBERS or hasattr(obj, "__array_struct__")
+              or hasattr(obj, "__array_interface__")):  # a NumPy array's struct a capsule, its interface a dict built anew
         raise _UnreadableError(f"asarray: a {type(obj).__name__} is not a tensor, an array, a nested list of numbers "
                                "or a number")
     return _asarray(obj, dtype) if dtype is not None else _asarray(obj)
