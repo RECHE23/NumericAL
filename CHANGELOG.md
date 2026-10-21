@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.30 — 2026-10-21
+
 ### Changed
 - **A complex `y += f · x` runs on AVX2 vectors on the x86-64 units** (a vector times a matrix, and the complex
   factorizations' updates), where the extension's baseline build ran SSE or scalar code: the same arithmetic, each
