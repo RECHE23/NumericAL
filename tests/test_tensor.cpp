@@ -11,6 +11,8 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <algorithm>
+#include <array>
 #include <cstdint>
 #include <limits>
 #include <map>
@@ -296,6 +298,56 @@ TEST(sum_over_run_takes_a_run_of_axes_and_declines_the_rest)
   EXPECT(!numerical::detail::sum_over_run<double>("ij", "ji", shape, values.data()).has_value()); // nothing summed either
   const std::vector<std::size_t> cube {1, 2, 3};
   EXPECT(!numerical::detail::sum_over_run<double>("ijk", "j", cube, values.data()).has_value());  // i and k apart
+}
+
+namespace {
+  // vector_times_transposed of `a` (inner) and B given as its transpose (cols × inner, rows padded): canonical_product's
+  // vector times the row-major B, to the bit.
+  template <typename T>
+  bool transposed_vector_product_is_canonical(std::size_t inner,
+                                              std::size_t cols)
+  {
+    const std::size_t ldbt {inner + 3};
+    std::vector<T>    a(inner);
+    std::vector<T>    b(inner * cols);
+    std::vector<T>    bt(cols * ldbt, T(-9)); // the padding is never read
+    for (std::size_t k {0}; k < inner; ++k) {
+      a[k] = T(std::sin(static_cast<double>(k) + 0.5));
+      if constexpr (!std::is_floating_point_v<T>) {
+        a[k] += T(0, std::cos(static_cast<double>(k) * 1.3));
+      }
+      for (std::size_t j {0}; j < cols; ++j) {
+        T value {T(std::cos((static_cast<double>(k) * 0.7) + (static_cast<double>(j) * 1.9)))};
+        if constexpr (!std::is_floating_point_v<T>) {
+          value += T(0, std::sin(static_cast<double>(j + k)));
+        }
+        b[(k * cols) + j]   = value;
+        bt[(j * ldbt) + k]  = value;
+      }
+    }
+    const numerical::tensor<T> want {numerical::detail::canonical_product<T>(a.data(), b.data(), 1, inner, cols, {cols})};
+    const numerical::buffer<T> got  {numerical::detail::vector_times_transposed(a.data(), bt.data(), ldbt, inner, cols)};
+    return std::equal(got.begin(), got.end(), want.data().begin(), want.data().end());
+  }
+} // namespace
+
+// A vector times a matrix given as its transpose (a Fortran-ordered NumPy matrix): canonical_product's sums, the same
+// bits, in each type, on every path this processor runs; a partial group of columns, several chunks, a depth of one.
+TEST(a_vector_times_a_transposed_matrix_gives_the_canonical_bits)
+{
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    for (const auto& [inner, cols] : {std::array<std::size_t, 2> {406, 583}, {1, 9}, {37, 3}, {200, 130}, {5, 2}}) {
+      EXPECT(transposed_vector_product_is_canonical<double>(inner, cols));
+      EXPECT(transposed_vector_product_is_canonical<float>(inner, cols));
+      EXPECT(transposed_vector_product_is_canonical<std::complex<double>>(inner, cols));
+      EXPECT(transposed_vector_product_is_canonical<std::complex<float>>(inner, cols));
+    }
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
 
 // One operand summed over a run of its axes (ij->, ij->i, ij->j, ijk->ik): each output element the pairwise sum of its

@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A vector, or a matrix of one row, times a Fortran-ordered (transposed) NumPy matrix reads it where it lies**, a
+  column at a time, eight columns' sums at once, each element summed as a vector times a row-major matrix sums it
+  (its terms in order, the same arithmetic: fused on the x86-64 units for float64, as there): the same bits, where the
+  matrix was copied first. 1 × 406 by 406 × 583, one M1 Pro: complex64 382 → 66 µs (NumPy 55), float64 25.7 µs
+  (NumPy 22); six AVX2 cores: complex64 331 → 102 µs, float64 23.7 µs.
 - **A product of matrices in any dtype reads a Fortran-ordered (transposed) NumPy operand where it lies**, as
   float64's did: packed from there for the tiles, or copied into its parts from there for a complex product through
   the real kernel, the bits of the product of its C-ordered copy. One M1 Pro, B Fortran-ordered: complex64 3 × 803

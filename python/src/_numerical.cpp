@@ -2723,13 +2723,59 @@ PyObject* module_borrowed_norm(PyObject* /*self*/, PyObject* obj)
     return PyFloat_FromDouble(x.dtype >= 2 ? static_cast<double>(static_cast<float>(*norm)) : *norm);
 }
 
+// A vector, or a matrix of one row, times a column-major matrix of two columns or more, both read where they lie: the
+// vector times the matrix as canonical_product sums it, a column of the matrix at a time (vector_times_transposed), so
+// the bits of the product of its C-ordered copy, which was copied first. None for any other pair.
+std::optional<PyObject*> borrowed_row_times_transposed(const borrowed_operand& left, const borrowed_operand& right)
+{
+    const bool row {left.shape.size() == 1 || (left.shape.size() == 2 && left.shape[0] == 1)};
+    if (!row || left.transposed || !right.transposed || right.shape.size() != 2 || left.shape.back() != right.shape[0]) {
+        return std::nullopt;
+    }
+    const std::size_t inner {right.shape[0]};
+    const std::size_t cols {right.shape[1]};
+    if (inner == 0 || cols < 2) {
+        return std::nullopt;
+    }
+    std::vector<std::size_t> out_shape {cols};
+    if (left.shape.size() == 2) {
+        out_shape.insert(out_shape.begin(), 1);
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(inner * (cols + 1))};
+            const auto product = [&]<typename T>(std::type_identity<T>) {
+                result.emplace(numerical::tensor<T> {std::move(out_shape),
+                                                     numerical::detail::vector_times_transposed(static_cast<const T*>(left.data),
+                                                                                                static_cast<const T*>(right.data),
+                                                                                                inner, inner, cols)});
+            };
+            switch (left.dtype) {
+            case 0: product(std::type_identity<double> {}); break;
+            case 1: product(std::type_identity<std::complex<double>> {}); break;
+            case 2: product(std::type_identity<float> {}); break;
+            default: product(std::type_identity<std::complex<float>> {}); break;
+            }
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // The product of two matrices read where they lie, one or both column-major, in any of the four dtypes: packed (or,
 // through gemm_split, copied into their parts) from there by gemm's layouts (gemm_at, gemm_bt, gemm_atbt), its tiles
 // gemm's and so its bits, where the column-major one was copied first (NumPy passes BLAS the transpose; a 300 × 300
-// product of a transposed operand copied 0.7 MB). Every other product with such an operand (a vector, a single row or
-// column, whose kernels sum in their own order) is left to the converting path: none.
+// product of a transposed operand copied 0.7 MB). A vector or a single row times such a matrix is
+// borrowed_row_times_transposed's; every other product with such an operand (a single column, a matrix times a vector,
+// whose kernels sum in their own order) is left to the converting path: none.
 std::optional<PyObject*> borrowed_transposed_product(const borrowed_operand& left, const borrowed_operand& right)
 {
+    if (const std::optional<PyObject*> row {borrowed_row_times_transposed(left, right)}) {
+        return row;
+    }
     if (left.shape.size() != 2 || right.shape.size() != 2 || left.shape[1] != right.shape[0]) {
         return std::nullopt;
     }

@@ -66,8 +66,8 @@ class BorrowedOperands(unittest.TestCase):
 
     def test_a_product_of_fortran_ordered_matrices_gives_the_c_ordered_bits(self):
         # Matrices of each dtype read where they lie, either or both column-major, packed (or copied into their
-        # parts) from there: the product of their C-ordered copies to the bit; a vector and a single row or column
-        # take the converting path, the same.
+        # parts) from there, and a vector or a single row times such a matrix a column at a time: the product of their
+        # C-ordered copies to the bit; a single column takes the converting path, the same.
         for m, k, n in ((7, 5, 3), (64, 64, 64), (129, 40, 75), (2, 300, 2), (3, 803, 247), (1, 9, 4), (9, 4, 1)):
             real_a = self.rng.standard_normal((m, k))
             real_b = self.rng.standard_normal((k, n))
@@ -79,6 +79,10 @@ class BorrowedOperands(unittest.TestCase):
                     for right in (b, np.asfortranarray(b)):
                         self.assertTrue(np.array_equal(np.asarray(numerical.matmul(left, right)), want),
                                         (m, k, n, np.dtype(dtype).name))
+                vector = np.ascontiguousarray(a[0])  # a vector times the matrix: the bits of its C-ordered copy
+                self.assertTrue(np.array_equal(np.asarray(numerical.matmul(vector, np.asfortranarray(b))),
+                                               np.asarray(numerical.matmul(vector, np.ascontiguousarray(b)))),
+                                (k, n, np.dtype(dtype).name))
 
     def test_an_einsum_of_one_operand_summing_a_run_reads_it_where_it_lies(self):
         # A contiguous array summed over a run of its axes: read in place, the bits of the same einsum of its Tensor;

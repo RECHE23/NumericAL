@@ -931,6 +931,24 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief `y += f · x` of one element, as \ref add_product computes each of its elements.
+  template <typename T>
+  void add_one_product(T&       y,
+                       const T& f,
+                       const T& x)
+  {
+    y += operator_times(f, x);
+  }
+
+  //! \brief \ref add_one_product of complex numbers: \ref complex_scaled_add, as \ref add_product computes them.
+  template <split_complex C>
+  void add_one_product(C&       y,
+                       const C& f,
+                       const C& x)
+  {
+    complex_scaled_add(y, f, x);
+  }
+
   //! \brief `y[i] += f · x[i]`, as \ref subtract_product.
   template <typename T>
   void add_product(T*          y,

@@ -11,6 +11,7 @@
 #ifndef NUMERICAL_X86_HPP
 #define NUMERICAL_X86_HPP
 
+#include <algorithm>
 #include <array>
 #include <cmath>
 #include <complex>
@@ -1154,6 +1155,41 @@ namespace numerical::detail {
       y[i] = std::fma(f, x[i], y[i]);
     }
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  /*!
+   * \brief Columns \p first to \p last of a vector \p a (\p inner) times a matrix given as its transpose \p bt (its rows
+   *        \p ldbt apart) into \p y: each element `a[k] · B[k][j]` added in ascending order of `k` by one fused
+   *        multiply-add, as \ref avx2_scaled_add adds each row (and so \ref avx512_scaled_add, whose processors have
+   *        these units too); eight columns' chains at once.
+   */
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_transposed_columns(const double* a,
+                                                                   const double* bt,
+                                                                   std::size_t   ldbt,
+                                                                   std::size_t   inner,
+                                                                   std::size_t   first,
+                                                                   std::size_t   last,
+                                                                   double*       y) noexcept
+  {
+    constexpr std::size_t group {8};
+    std::size_t           j     {first};
+    for (; j + group <= last; j += group) {
+      std::array<double, group> sums {};
+      for (std::size_t k {0}; k < inner; ++k) {
+        const double f {a[k]};
+        for (std::size_t c {0}; c < group; ++c) {
+          sums[c] = std::fma(f, bt[((j + c) * ldbt) + k], sums[c]);
+        }
+      }
+      std::copy(sums.begin(), sums.end(), y + j);
+    }
+    for (; j < last; ++j) {
+      double sum {};
+      for (std::size_t k {0}; k < inner; ++k) {
+        sum = std::fma(a[k], bt[(j * ldbt) + k], sum);
+      }
+      y[j] = sum;
+    }
   }
 
   //! \brief `Σ x[i] · y[i]`: four accumulators of eight `double`, chains of fused multiply-adds summed in a fixed

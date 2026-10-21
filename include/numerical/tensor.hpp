@@ -425,6 +425,70 @@ namespace numerical {
       return tensor<T> {std::move(out_shape), buffer<T> {chunked_dot(a, b, inner)}};
     }
 
+    //! \brief The columns of B one task of \ref vector_times_transposed sums together: their sums' chains interleaved,
+    //!        each waiting on its own last addition.
+    inline constexpr std::size_t transposed_columns {8};
+
+    /*!
+     * \brief \ref canonical_product's vector \p a (\p inner) times a matrix given as its transpose \p bt (`cols ×
+     *        inner`, its rows \p ldbt apart, B's columns): each element of the product the sum canonical_product forms,
+     *        `a[k] · B[k][j]` added in ascending order of `k` with \ref add_product's arithmetic (\ref
+     *        add_one_product), so the same bits; a column of B a run of \p bt, \ref transposed_columns of them at once.
+     */
+    template <typename T>
+    [[nodiscard]] buffer<T> vector_times_transposed(const T*    a,
+                                                    const T*    bt,
+                                                    std::size_t ldbt,
+                                                    std::size_t inner,
+                                                    std::size_t cols)
+    {
+      buffer<T> y(cols, T {});
+      parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
+                     const std::size_t last {std::min((chunk + 1) * vector_chunk, cols)};
+                     std::size_t j {chunk * vector_chunk};
+                     for (; j + transposed_columns <= last; j += transposed_columns) { // a whole group: its sums in registers
+                       std::array<T, transposed_columns> sums {};
+                       for (std::size_t k {0}; k < inner; ++k) {
+                         const T f {a[k]};
+                         for (std::size_t c {0}; c < transposed_columns; ++c) {
+                           add_one_product(sums[c], f, bt[((j + c) * ldbt) + k]);
+                         }
+                       }
+                       std::copy(sums.begin(), sums.end(), y.data() + j);
+                     }
+                     for (; j < last; ++j) {
+                       T sum {};
+                       for (std::size_t k {0}; k < inner; ++k) {
+                         add_one_product(sum, a[k], bt[(j * ldbt) + k]);
+                       }
+                       y[j] = sum;
+                     }
+                   });
+      return y;
+    }
+
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief \ref vector_times_transposed for `double`: on the x86-64 fused paths, where \ref add_product adds each
+    //!        row by fused multiply-adds, by \ref avx2_transposed_columns; elsewhere the template's arithmetic.
+    [[nodiscard]] inline buffer<double> vector_times_transposed(const double* a,
+                                                                const double* bt,
+                                                                std::size_t   ldbt,
+                                                                std::size_t   inner,
+                                                                std::size_t   cols)
+    {
+      const gemm_path path {gemm_path_current()};
+      if (path != gemm_path::avx2 && path != gemm_path::avx512) {
+        return vector_times_transposed<double>(a, bt, ldbt, inner, cols);
+      }
+      buffer<double> y(cols);
+      parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
+                     avx2_transposed_columns(a, bt, ldbt, inner, chunk * vector_chunk, std::min((chunk + 1) * vector_chunk, cols), y.data());
+                   });
+      return y;
+    }
+
+#endif
+
     /*!
      * \brief einsum of one row-major operand \p data (\p shape, its axes labelled \p in, each label once) into the
      *        labels \p output, where those it sums are one run of its axes and \p output the others in order (ij->i,
