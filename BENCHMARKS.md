@@ -118,6 +118,8 @@ cases.
 | 2026.10.28 and the first fixes (918a6c5, 91624ca) | six AVX2 cores | 1.07× [1.00–1.14] | 56 % |
 | 7df6a9c (2026.10.29 and one change) | M1 Pro | 1.20× [1.13–1.26] | 65 % |
 | 7df6a9c (2026.10.29 and one change) | six AVX2 cores | 1.14× [1.06–1.21] | 60 % |
+| f6e8d6e (narrow, x86-64 complex64 and transposed products) | M1 Pro | 1.21× [1.14–1.28] | 66 % |
+| f6e8d6e | six AVX2 cores | 1.14× [1.07–1.22] | 61 % |
 
 Where the first campaign put NumericAL, the twenty chosen cases of `make bench-python` had put it at 1.45× on the
 same Mac: they favoured its strong operations. By operation, at 7df6a9c:
@@ -142,9 +144,11 @@ same Mac: they favoured its strong operations. By operation, at 7df6a9c:
 | svd | 43 | 1.19× [1.07–1.33] | 1.10× [0.99–1.22] |
 | svdvals | 24 | 1.06× [0.85–1.34] | 1.18× [0.99–1.45] |
 
-The products and matrix-vector products are what is left: a narrow product (A of a few rows) of complex numbers on
-x86-64, whose real form of B is built for every call; operands NumPy hands its BLAS transposed, which NumericAL
-copies; and the fixed cost of a call of a microsecond or two.
+At f6e8d6e the products read 0.83× on the M1 Pro and 0.73× on the AVX2 cores (0.75× and 0.60× at 7df6a9c), complex64
+1.00× on the AVX2 cores (0.92×), operands NumPy hands transposed 0.90× and 0.79× (0.74× on the AVX2 cores). The
+products and matrix-vector products are still what is left: a single row of A times a transposed B (vector times
+matrix, which sums in its own order and copies the transpose), small strided operands (a fixed cost of 5 to 7 µs a
+call, NumPy's about 1), and a transposed operand summed or normed over its rows.
 
 ## Release against release: `make bench-diff`
 
