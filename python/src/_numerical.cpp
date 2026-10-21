@@ -2300,6 +2300,29 @@ void gather_typed(const unsigned char*           base,
         return; // nothing to read, and the address may be null
     }
     const Py_ssize_t         step   {strides[rank - 1]};
+    // A matrix whose columns run contiguously (Fortran order, a transpose): copied by tiles, each column of a tile read
+    // where it runs and its rows written in the cache, where a row of the output walked a column of the source a
+    // stride apart for every element (48 × 275 doubles: 7.1 µs, NumPy's own copy 1).
+    constexpr std::size_t tile {32}; // fewer rows than a tile: the rows' loop below reads a few elements a column
+    if (rank == 2 && shape[0] >= tile && strides[0] == static_cast<Py_ssize_t>(sizeof(Src)) && step != strides[0]) {
+        const std::size_t     rows {shape[0]};
+        for (std::size_t r0 = 0; r0 < rows; r0 += tile) {
+            for (std::size_t c0 = 0; c0 < inner; c0 += tile) {
+                for (std::size_t c = c0; c < std::min(c0 + tile, inner); ++c) {
+                    const unsigned char* const column {base + (static_cast<Py_ssize_t>(c) * step)};
+                    for (std::size_t r = r0; r < std::min(r0 + tile, rows); ++r) {
+                        if constexpr (std::is_same_v<Src, bool>) {
+                            out[(r * inner) + c] = static_cast<Out>(column[r] != 0 ? 1.0 : 0.0);
+                        }
+                        else {
+                            out[(r * inner) + c] = static_cast<Out>(read_scalar<Src>(column + (r * sizeof(Src))));
+                        }
+                    }
+                }
+            }
+        }
+        return;
+    }
     std::vector<std::size_t> index(rank - 1, 0);
     std::size_t              rows   {1};
     for (std::size_t axis = 0; axis + 1 < rank; ++axis) {

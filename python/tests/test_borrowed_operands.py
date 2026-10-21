@@ -54,6 +54,16 @@ class BorrowedOperands(unittest.TestCase):
         with self.assertRaises(numerical.LinAlgError):
             numerical.matmul(a, a)
 
+    def test_a_fortran_ordered_array_converts_element_for_element(self):
+        # Its columns running contiguously: by tiles from 32 rows, a row at a time below; every dtype asarray reads,
+        # converted as from the same array in C order.
+        for shape in ((70, 45), (33, 1), (31, 50), (1, 9)):
+            base = self.rng.standard_normal(shape)
+            for values in (base, base + 1j * base, base.astype(np.float32), (base * 10).astype(np.int32), base > 0):
+                fortran = np.asfortranarray(values)
+                self.assertTrue(np.array_equal(np.asarray(numerical.asarray(fortran)),
+                                               np.asarray(numerical.asarray(np.ascontiguousarray(values)))), (shape, values.dtype))
+
     def test_the_product_owns_its_elements(self):
         a, b = self.operand((4, 4), np.float64), self.operand((4, 4), np.float64)
         product = numerical.matmul(a, b)
