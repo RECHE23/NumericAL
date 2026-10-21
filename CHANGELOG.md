@@ -8,6 +8,20 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **A complex product of a few rows of A runs four real products of each block's parts** (`Re C += Re A·Re B`, then
+  `−Im A·Im B`; `Im C += Re A·Im B`, then `Im A·Re B`), where one real product of its expanded operands needed a copy
+  of B four times its size, built for every product: the same chains, the same bits. On the AMX path up to 64 rows,
+  elsewhere up to one row of the real tile, past which the expanded product stays. And a product whose A is one row of
+  tiles reads B where it lies on the NEON and x86-64 tiles too, as the AMX's did for a block of rows, packing only a
+  partial sliver (a group of slivers ending in one was packed whole). One M1 Pro, complex64 3 × 803 by 803 × 247
+  376 → 133 µs, complex128 16 × 512 by 512 × 512 582 → 257 µs, float32 3 × 803 by 803 × 247 62 → 27 µs; six AVX2
+  cores (GCC 13), complex64 572 → 380 µs, complex128 1 × 406 by 406 × 583 180 → 113 µs, float64 3 × 803 by 803 × 247
+  114 → 90 µs; no other shape slower beyond noise.
+- **`einsum` of one contiguous NumPy array summed over a run of its axes (`ij->i`, `ij->`, `ij->j`, `ijk->ik`) reads
+  it where it lies**, where it was copied into a Tensor first: the same pairwise sums, the same bits. 344 × 961
+  doubles by rows, one M1 Pro: 217 → 57 µs (NumPy 34).
+
 ## 2026.10.29 — 2026-10-21
 
 ### Changed

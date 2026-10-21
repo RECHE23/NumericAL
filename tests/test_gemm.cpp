@@ -7,6 +7,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <random>
 #include <type_traits>
 #include <vector>
 
@@ -376,6 +377,98 @@ TEST(complex_products_keep_their_real_operands_within_the_limit)
   EXPECT(split_storage<float>().a.empty());
   EXPECT(on_every_path([&] { return split_product_is_exact<std::complex<float>>(40, 70, 50); }));
   EXPECT(!split || !split_storage<float>().c.empty());
+}
+
+// gemm_split gives each element of C the chains of one real product of each block's expanded operands,
+// `[Re C | Im C] += [Re A | −Im A] · [[Re B, Im B], [Im B, −Re B]]`, by four real products of its parts too (as
+// split_by_parts chooses): the same bits, on drawn parts that round, on every path; a row of A or a few, either side of
+// each path's choice, and several blocks of columns and of depth.
+namespace {
+  template <typename Z>
+  bool split_product_is_the_expanded_one(std::size_t m,
+                                         std::size_t n,
+                                         std::size_t k)
+  {
+    using R = Z::value_type;
+    std::mt19937                      draw {static_cast<std::mt19937::result_type>((m * 7919) + (n * 31) + k)};
+    std::uniform_real_distribution<R> part {R {-1}, R {1}};
+    const auto                        drawn {[&](std::size_t count) {
+                                               std::vector<Z> values(count);
+                                               for (Z & value : values) {
+                                                 value = Z {part(draw), part(draw)};
+                                               }
+                                               return values;
+                                             }};
+    const std::vector<Z> a {drawn(m * k)};
+    const std::vector<Z> b {drawn(k * n)};
+    std::vector<Z>       c {drawn(m * n)};
+    std::vector<R>       expanded_c(m * 2 * n);
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        expanded_c[(i * 2 * n) + j]     = c[(i * n) + j].real();
+        expanded_c[(i * 2 * n) + n + j] = c[(i * n) + j].imag();
+      }
+    }
+    for (std::size_t jc {0}; jc < n; jc += numerical::detail::split_columns) {
+      const std::size_t nb {std::min(numerical::detail::split_columns, n - jc)};
+      for (std::size_t pc {0}; pc < k; pc += numerical::detail::split_depth) {
+        const std::size_t kb {std::min(numerical::detail::split_depth, k - pc)};
+        std::vector<R>    ar(m * 2 * kb);
+        std::vector<R>    br(2 * kb * 2 * nb);
+        for (std::size_t i {0}; i < m; ++i) {
+          for (std::size_t p {0}; p < kb; ++p) {
+            ar[(i * 2 * kb) + p]      = a[(i * k) + pc + p].real();
+            ar[(i * 2 * kb) + kb + p] = -a[(i * k) + pc + p].imag();
+          }
+        }
+        for (std::size_t p {0}; p < kb; ++p) {
+          for (std::size_t j {0}; j < nb; ++j) {
+            const Z value {b[((pc + p) * n) + jc + j]};
+            br[(p * 2 * nb) + j]             = value.real();
+            br[(p * 2 * nb) + nb + j]        = value.imag();
+            br[((kb + p) * 2 * nb) + j]      = value.imag();
+            br[((kb + p) * 2 * nb) + nb + j] = -value.real();
+          }
+        }
+        std::vector<R> cr(m * 2 * nb);
+        for (std::size_t i {0}; i < m; ++i) {
+          for (std::size_t j {0}; j < nb; ++j) {
+            cr[(i * 2 * nb) + j]      = expanded_c[(i * 2 * n) + jc + j];
+            cr[(i * 2 * nb) + nb + j] = expanded_c[(i * 2 * n) + n + jc + j];
+          }
+        }
+        numerical::detail::gemm(m, 2 * nb, 2 * kb, ar.data(), 2 * kb, br.data(), 2 * nb, cr.data(), 2 * nb);
+        for (std::size_t i {0}; i < m; ++i) {
+          for (std::size_t j {0}; j < nb; ++j) {
+            expanded_c[(i * 2 * n) + jc + j]     = cr[(i * 2 * nb) + j];
+            expanded_c[(i * 2 * n) + n + jc + j] = cr[(i * 2 * nb) + nb + j];
+          }
+        }
+      }
+    }
+    numerical::detail::gemm_split(m, n, k, a.data(), k, b.data(), n, c.data(), n);
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        if (c[(i * n) + j] != Z {expanded_c[(i * 2 * n) + j], expanded_c[(i * 2 * n) + n + j]}) {
+          return false;
+        }
+      }
+    }
+    return true;
+  }
+} // namespace
+
+TEST(split_products_give_the_expanded_product_s_bits)
+{
+  const std::size_t n {numerical::detail::split_columns + 37};
+  const std::size_t k {numerical::detail::split_depth + 19};
+  for (const std::size_t m : {std::size_t {1}, std::size_t {3}, std::size_t {5}, std::size_t {45}, numerical::detail::split_parts_rows,
+                              numerical::detail::split_parts_rows + 1}) {
+    EXPECT(on_every_path([&] { return split_product_is_the_expanded_one<std::complex<float>>(m, n, k); }));
+    EXPECT(on_every_path([&] { return split_product_is_the_expanded_one<std::complex<double>>(m, n, k); }));
+    EXPECT(on_every_path([&] { return split_product_is_the_expanded_one<std::complex<float>>(m, 70, 135); }));
+    EXPECT(on_every_path([&] { return split_product_is_the_expanded_one<std::complex<double>>(m, 5, 9); }));
+  }
 }
 
 // More columns than one packed block of B holds: the column blocks are summed independently.

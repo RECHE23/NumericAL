@@ -911,17 +911,23 @@ namespace numerical::detail {
     static constexpr std::size_t nr           {gemm_nr<T>};          //!< The tile's columns.
     static constexpr std::size_t depth        {gemm_kc};             //!< The panel depth.
     static constexpr std::size_t block_rows   {gemm_mc};             //!< The rows of one task, a whole number of tiles.
-    static constexpr std::size_t speedup      {gemm_kernel_speedup}; //!< The weight of its work (\ref gemm_kernel_speedup).
-    static constexpr std::size_t serial_below {1};                   //!< Every product with work shares it (\ref gemm_shares).
+    //! \brief The most rows of A for which \ref gemm_packed reads B in place at any distance between its rows (where
+    //!        \ref reads_b_in_place does at all): one row of tiles, each of B's slivers read once. Six AVX2 cores, B of
+    //!        300 to 800 square: 1 to 8 rows 22 to 40 % faster, 16 to 72 up to 2.5 times slower, B read again for each
+    //!        row of tiles.
+    static constexpr std::size_t b_in_place_rows {mr};
+    static constexpr std::size_t speedup         {gemm_kernel_speedup}; //!< The weight of its work (\ref gemm_kernel_speedup).
+    static constexpr std::size_t serial_below    {1};                   //!< Every product with work shares it (\ref gemm_shares).
 
     //! \brief Nothing to turn on around a task.
     struct session
     {};
 
-    //! \brief Whether B's rows \p ldb apart are read in place: never, its slivers are packed.
-    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    //! \brief Whether B's rows \p ldb apart are read in place: no farther apart than a packed sliver's (and a B
+    //!        that one block of rows of A reads once, wherever its rows are: \ref gemm_packed).
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
     {
-      return false;
+      return ldb <= nr;
     }
 
     //! \brief A's slivers for this tile (\ref gemm_pack_a).
@@ -995,8 +1001,11 @@ namespace numerical::detail {
     //!        each panel loads and stores its tiles of C once.
     static constexpr std::size_t depth      {512};
     static constexpr std::size_t block_rows {gemm_mc};             //!< The rows of one task, a whole number of tiles.
-    static constexpr std::size_t speedup    {gemm_kernel_speedup}; //!< The weight of its work (\ref gemm_kernel_speedup):
-                                                                   //!< fewer threads paid AMX more (QR of order 256: 2.34 ms, 2.62 at a quarter).
+    //! \brief One block of rows reads B in place: packing it was a pass over it the product then made again (6 rows
+    //!        of A by a B of 700 × 800 doubles: 61 % of the time).
+    static constexpr std::size_t b_in_place_rows {block_rows};
+    static constexpr std::size_t speedup         {gemm_kernel_speedup}; //!< The weight of its work (\ref gemm_kernel_speedup):
+                                                                        //!< fewer threads paid AMX more (QR of order 256: 2.34 ms, 2.62 at a quarter).
     //! \brief The multiply-adds below which the product runs on the caller alone: a cluster of cores shares one
     //!        AMX, so threads beside the caller pay only when the product spans clusters (M1 Pro, order 192:
     //!        70 µs on one thread, 84 on its threads; order 248: 151 against 174; order 256: 149 against 129).
@@ -1036,12 +1045,13 @@ namespace numerical::detail {
   //! \brief \ref amx_tile_kernel for `float`: 32 × 32 tiles of four 16 × 16 accumulators.
   struct amx_tile_kernel_f32
   {
-    static constexpr std::size_t mr           {amx_f32_side};
-    static constexpr std::size_t nr           {amx_f32_side};
-    static constexpr std::size_t depth        {512};
-    static constexpr std::size_t block_rows   {gemm_mc};
-    static constexpr std::size_t speedup      {gemm_kernel_speedup};
-    static constexpr std::size_t serial_below {std::size_t {1} << 24};
+    static constexpr std::size_t mr              {amx_f32_side};
+    static constexpr std::size_t nr              {amx_f32_side};
+    static constexpr std::size_t depth           {512};
+    static constexpr std::size_t block_rows      {gemm_mc};
+    static constexpr std::size_t b_in_place_rows {block_rows};
+    static constexpr std::size_t speedup         {gemm_kernel_speedup};
+    static constexpr std::size_t serial_below    {std::size_t {1} << 24};
     using session = amx_session;
 
     static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
@@ -1557,10 +1567,9 @@ namespace numerical::detail {
     const std::size_t        a_blocks {a_packed != nullptr ? 0 : ((m + Kernel::block_rows) - 1) / Kernel::block_rows};
     const T* const           a_tiles  {a_packed != nullptr ? a_packed : packed.a()};
     const std::size_t        shared   {gemm_shares<Kernel>(m, n, k) ? 1U : 0U}; // a weight of zero starts no thread
-    // B's whole slivers unpacked: rows close enough, or a B read once (A one block of rows) whatever its stride, where
-    // the kernel reads B in place at all: packing it was a pass over it the product then made again (6 rows of A by
-    // a B of 700 × 800 doubles: 61 % of the time).
-    const bool               in_place {B::template in_place<Kernel>(ldb) || (m <= Kernel::block_rows && B::template in_place<Kernel>(1))};
+    // B's whole slivers unpacked: rows close enough, or few enough rows of A whatever B's stride
+    // (Kernel::b_in_place_rows), where the kernel reads B in place at all.
+    const bool               in_place {B::template in_place<Kernel>(ldb) || (m <= Kernel::b_in_place_rows && B::template in_place<Kernel>(1))};
     for (std::size_t jc {0}; jc < n; jc += nc_max) {
       const std::size_t nc      {std::min(nc_max, n - jc)};
       const std::size_t slivers {((nc + nr) - 1) / nr};
@@ -1574,8 +1583,9 @@ namespace numerical::detail {
                        if (piece < groups) {
                          const std::size_t jr    {piece * gemm_slivers_per_task * nr};
                          const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
-                         if (!in_place || width % nr != 0) { // read in place, a partial sliver is still packed: its outside zero
-                           B::template pack<nr>(b, ldb, pc, jc + jr, kc, width, packed.b() + (jr * kc));
+                         const std::size_t whole {in_place ? width - (width % nr) : 0}; // read in place
+                         if (whole < width) { // a partial sliver is packed even so: its outside zero
+                           B::template pack<nr>(b, ldb, pc, jc + jr + whole, kc, width - whole, packed.b() + ((jr + whole) * kc));
                          }
                        }
                        else {
@@ -1658,8 +1668,9 @@ namespace numerical::detail {
                        if (piece < groups) {
                          const std::size_t jr    {piece * gemm_slivers_per_task * nr};
                          const std::size_t width {std::min(gemm_slivers_per_task * nr, nc - jr)};
-                         if (!in_place || width % nr != 0) {
-                           B::template pack<nr>(b, ldb, pc, jc + jr, kc, width, packed.b() + (jr * kc));
+                         const std::size_t whole {in_place ? width - (width % nr) : 0}; // read in place
+                         if (whole < width) { // a partial sliver is packed even so: its outside zero
+                           B::template pack<nr>(b, ldb, pc, jc + jr + whole, kc, width - whole, packed.b() + ((jr + whole) * kc));
                          }
                          return;
                        }
@@ -1719,10 +1730,11 @@ namespace numerical::detail {
   //! \brief The AVX-512 tile (\ref avx512_tile_f64): \ref avx512_mr × \ref avx512_nr elements of C in 24 registers.
   struct avx512_tile_kernel
   {
-    static constexpr std::size_t mr         {avx512_mr};           //!< The tile's rows.
-    static constexpr std::size_t nr         {avx512_nr};           //!< The tile's columns.
-    static constexpr std::size_t depth      {gemm_kc};             //!< The panel depth.
-    static constexpr std::size_t block_rows {96};                  //!< The rows of one task, a whole number of tiles.
+    static constexpr std::size_t mr              {avx512_mr}; //!< The tile's rows.
+    static constexpr std::size_t nr              {avx512_nr}; //!< The tile's columns.
+    static constexpr std::size_t depth           {gemm_kc};   //!< The panel depth.
+    static constexpr std::size_t block_rows      {96};        //!< The rows of one task, a whole number of tiles.
+    static constexpr std::size_t b_in_place_rows {mr};        //!< One row of tiles, as the vector tile's.
     //! \brief The weight of its work, a quarter of \ref gemm_kernel_speedup, as AVX2's (ten AVX-512 cores: order 128
     //!        90 → 51 µs, 192 155 → 94, 384 580 → 450, 512 940 → 860; an eighth slowed order 64 15 → 24 µs).
     static constexpr std::size_t speedup      {gemm_kernel_speedup / 4};
@@ -1732,10 +1744,11 @@ namespace numerical::detail {
     struct session
     {};
 
-    //! \brief Whether B's rows \p ldb apart are read in place: never, its slivers are packed.
-    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    //! \brief Whether B's rows \p ldb apart are read in place: no farther apart than a packed sliver's (and a B
+    //!        that one block of rows of A reads once, wherever its rows are: \ref gemm_packed).
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
     {
-      return false;
+      return ldb <= nr;
     }
 
     //! \brief A's slivers for this tile (\ref gemm_pack_a).
@@ -1765,10 +1778,11 @@ namespace numerical::detail {
   //! \brief The AVX2 tile (\ref avx2_tile_f64): \ref avx2_mr × \ref avx2_nr elements of C in 12 registers.
   struct avx2_tile_kernel
   {
-    static constexpr std::size_t mr         {avx2_mr}; //!< The tile's rows.
-    static constexpr std::size_t nr         {avx2_nr}; //!< The tile's columns.
-    static constexpr std::size_t depth      {gemm_kc}; //!< The panel depth.
-    static constexpr std::size_t block_rows {72};      //!< The rows of one task, a whole number of tiles.
+    static constexpr std::size_t mr              {avx2_mr}; //!< The tile's rows.
+    static constexpr std::size_t nr              {avx2_nr}; //!< The tile's columns.
+    static constexpr std::size_t depth           {gemm_kc}; //!< The panel depth.
+    static constexpr std::size_t block_rows      {72};      //!< The rows of one task, a whole number of tiles.
+    static constexpr std::size_t b_in_place_rows {mr};      //!< One row of tiles, as the vector tile's.
 
     /*!
      * \brief The most rows of a task over a panel of depth \p kc: up to 128 deep, 36, so that the task's A block
@@ -1802,10 +1816,11 @@ namespace numerical::detail {
     struct session
     {};
 
-    //! \brief Whether B's rows \p ldb apart are read in place: never, its slivers are packed.
-    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    //! \brief Whether B's rows \p ldb apart are read in place: no farther apart than a packed sliver's (and a B
+    //!        that one block of rows of A reads once, wherever its rows are: \ref gemm_packed).
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
     {
-      return false;
+      return ldb <= nr;
     }
 
     //! \brief A's slivers for this tile (\ref gemm_pack_a).
@@ -1834,19 +1849,20 @@ namespace numerical::detail {
   //! \brief \ref avx512_tile_kernel for `float` (\ref avx512_tile_f32).
   struct avx512_tile_kernel_f32
   {
-    static constexpr std::size_t mr           {avx512_mr};
-    static constexpr std::size_t nr           {avx512_nr_f32};
-    static constexpr std::size_t depth        {gemm_kc};
-    static constexpr std::size_t block_rows   {96};
-    static constexpr std::size_t speedup      {gemm_kernel_speedup / 4};
-    static constexpr std::size_t serial_below {1};
+    static constexpr std::size_t mr              {avx512_mr};
+    static constexpr std::size_t nr              {avx512_nr_f32};
+    static constexpr std::size_t depth           {gemm_kc};
+    static constexpr std::size_t block_rows      {96};
+    static constexpr std::size_t b_in_place_rows {mr};
+    static constexpr std::size_t speedup         {gemm_kernel_speedup / 4};
+    static constexpr std::size_t serial_below    {1};
 
     struct session
     {};
 
-    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
     {
-      return false;
+      return ldb <= nr;
     }
 
     static void pack_a(const float* a,
@@ -1874,12 +1890,13 @@ namespace numerical::detail {
   //! \brief \ref avx2_tile_kernel for `float` (\ref avx2_tile_f32).
   struct avx2_tile_kernel_f32
   {
-    static constexpr std::size_t mr           {avx2_mr};
-    static constexpr std::size_t nr           {avx2_nr_f32};
-    static constexpr std::size_t depth        {gemm_kc};
-    static constexpr std::size_t block_rows   {72};
-    static constexpr std::size_t speedup      {gemm_kernel_speedup / 4};
-    static constexpr std::size_t serial_below {1};
+    static constexpr std::size_t mr              {avx2_mr};
+    static constexpr std::size_t nr              {avx2_nr_f32};
+    static constexpr std::size_t depth           {gemm_kc};
+    static constexpr std::size_t block_rows      {72};
+    static constexpr std::size_t b_in_place_rows {mr};
+    static constexpr std::size_t speedup         {gemm_kernel_speedup / 4};
+    static constexpr std::size_t serial_below    {1};
 
     [[nodiscard]] static constexpr std::size_t task_rows_for(std::size_t kc) noexcept
     {
@@ -1889,9 +1906,9 @@ namespace numerical::detail {
     struct session
     {};
 
-    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
     {
-      return false;
+      return ldb <= nr;
     }
 
     static void pack_a(const float* a,
@@ -1919,21 +1936,23 @@ namespace numerical::detail {
   //! \brief The AVX-512 complex tile (\ref avx512_full_tile_c64).
   struct avx512_complex_tile_kernel
   {
-    static constexpr std::size_t mr           {avx512_complex_mr};        //!< The tile's rows.
-    static constexpr std::size_t nr           {avx512_complex_nr};        //!< The tile's columns.
-    static constexpr std::size_t depth        {gemm_kc / 2};              //!< The panel depth: an element is two `double`.
-    static constexpr std::size_t block_rows   {96};                       //!< The rows of one task, a whole number of tiles.
-    static constexpr std::size_t speedup      {gemm_kernel_speedup / 16}; //!< A complex multiply-add is four real ones.
-    static constexpr std::size_t serial_below {1};                        //!< Every product with work shares it.
+    static constexpr std::size_t mr              {avx512_complex_mr};        //!< The tile's rows.
+    static constexpr std::size_t nr              {avx512_complex_nr};        //!< The tile's columns.
+    static constexpr std::size_t depth           {gemm_kc / 2};              //!< The panel depth: an element is two `double`.
+    static constexpr std::size_t block_rows      {96};                       //!< The rows of one task, a whole number of tiles.
+    static constexpr std::size_t b_in_place_rows {mr};                       //!< One row of tiles, as the vector tile's.
+    static constexpr std::size_t speedup         {gemm_kernel_speedup / 16}; //!< A complex multiply-add is four real ones.
+    static constexpr std::size_t serial_below    {1};                        //!< Every product with work shares it.
 
     //! \brief Nothing to turn on around a task.
     struct session
     {};
 
-    //! \brief Whether B's rows \p ldb apart are read in place: never, its slivers are packed.
-    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    //! \brief Whether B's rows \p ldb apart are read in place: no farther apart than a packed sliver's (and a B
+    //!        that one block of rows of A reads once, wherever its rows are: \ref gemm_packed).
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
     {
-      return false;
+      return ldb <= nr;
     }
 
     //! \brief A's slivers for this tile (\ref gemm_pack_a).
@@ -1963,21 +1982,23 @@ namespace numerical::detail {
   //! \brief The AVX2 complex tile (\ref avx2_full_tile_c64).
   struct avx2_complex_tile_kernel
   {
-    static constexpr std::size_t mr           {avx2_complex_mr};          //!< The tile's rows.
-    static constexpr std::size_t nr           {avx2_complex_nr};          //!< The tile's columns.
-    static constexpr std::size_t depth        {gemm_kc / 2};              //!< The panel depth: an element is two `double`.
-    static constexpr std::size_t block_rows   {72};                       //!< The rows of one task, a whole number of tiles.
-    static constexpr std::size_t speedup      {gemm_kernel_speedup / 16}; //!< A complex multiply-add is four real ones.
-    static constexpr std::size_t serial_below {1};                        //!< Every product with work shares it.
+    static constexpr std::size_t mr              {avx2_complex_mr};          //!< The tile's rows.
+    static constexpr std::size_t nr              {avx2_complex_nr};          //!< The tile's columns.
+    static constexpr std::size_t depth           {gemm_kc / 2};              //!< The panel depth: an element is two `double`.
+    static constexpr std::size_t block_rows      {72};                       //!< The rows of one task, a whole number of tiles.
+    static constexpr std::size_t b_in_place_rows {mr};                       //!< One row of tiles, as the vector tile's.
+    static constexpr std::size_t speedup         {gemm_kernel_speedup / 16}; //!< A complex multiply-add is four real ones.
+    static constexpr std::size_t serial_below    {1};                        //!< Every product with work shares it.
 
     //! \brief Nothing to turn on around a task.
     struct session
     {};
 
-    //! \brief Whether B's rows \p ldb apart are read in place: never, its slivers are packed.
-    static constexpr bool reads_b_in_place(std::size_t /*ldb*/) noexcept
+    //! \brief Whether B's rows \p ldb apart are read in place: no farther apart than a packed sliver's (and a B
+    //!        that one block of rows of A reads once, wherever its rows are: \ref gemm_packed).
+    static constexpr bool reads_b_in_place(std::size_t ldb) noexcept
     {
-      return false;
+      return ldb <= nr;
     }
 
     //! \brief A's slivers for this tile (\ref gemm_pack_a).
@@ -2183,14 +2204,46 @@ namespace numerical::detail {
   //!        `double`, every operand of a product of order 512; a larger one is let go after its product.
   inline constexpr std::size_t split_kept {std::size_t {1} << 18};
 
+  //! \brief The most rows of A for which `gemm_split` runs four real products of a block's parts on the AMX path
+  //!        (\ref split_by_parts). M1 Pro, all threads, A of 16 to 64 rows by B of 256 to 1024: complex `float` 1.1 to 2.4
+  //!        times faster, complex `double` 0.97 to 1.6; 96 to 128 rows by 512, complex `double` 1.2 to 1.4 times slower,
+  //!        where one wide product suited the AMX.
+  inline constexpr std::size_t split_parts_rows {64};
+
+  /*!
+   * \brief Whether `gemm_split` runs a product of \p m rows of A by four real products of each block's parts
+   *        (\ref split_parts_block), else by one of its expanded operands (\ref split_expanded_block): the same bits,
+   *        the parts' products faster where they read B's parts in place (\ref gemm_packed). On the AMX path up to
+   *        \ref split_parts_rows; elsewhere up to one row of the real tile (its `b_in_place_rows`): six AVX2 cores,
+   *        complex `float`, 3 rows by 803 × 247 34 % faster, 8 to 16 rows by 300 to 512 5 to 20 % slower.
+   */
+  [[nodiscard]] inline bool split_by_parts(std::size_t m) noexcept
+  {
+    [[maybe_unused]] const gemm_path path {gemm_path_current()};
+#ifdef NUMERICAL_AMX_COMPILED
+    if (path == gemm_path::amx) {
+      return m <= split_parts_rows;
+    }
+#endif
+#ifdef NUMERICAL_X86_COMPILED
+    if (path == gemm_path::avx512) {
+      return m <= avx512_mr;
+    }
+    if (path == gemm_path::avx2) {
+      return m <= avx2_mr;
+    }
+#endif
+    return m <= gemm_mr;
+  }
+
   //! \brief The real operands of `gemm_split`, kept by each thread from one product to the next (\ref split_storage):
   //!        mapping their pages anew took a third to a half of a complex product of order 64 to 256 on one x86-64 core
   //!        (six AVX2 cores, all threads: order 128 0.52 → 0.17 ms), 15–20 % of one of order 256 on arm64.
   template <typename R>
   struct split_operands
   {
-    buffer<R> a {}; //!< `[Re A | −Im A]`, a block of depth.
-    buffer<R> b {}; //!< `[[Re B, Im B], [Im B, −Re B]]`, a block of columns and of depth.
+    buffer<R> a {}; //!< A's parts for a block of depth: `[Re A | −Im A | Im A]`, or `[Re A | −Im A]`.
+    buffer<R> b {}; //!< B's parts for a block of columns and of depth: `[Re B | Im B]`, or `[[Re B, Im B], [Im B, −Re B]]`.
     buffer<R> c {}; //!< `[Re C | Im C]`, a block of columns.
   };
 
@@ -2206,11 +2259,91 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief One block of `gemm_split` (`[Re C | Im C]` at \p cr, \p m × \p nb each, += A·B, A \p m × \p kb and B
+   *        \p kb × \p nb) by four real products of its parts: `Re C += Re A·Re B`, then `−Im A·Im B`; `Im C += Re A·Im B`,
+   *        then `Im A·Re B`, each continuing its elements' chains (`(−x)·(−y)` is `x·y` exactly: the bits of
+   *        `−Im A·−Re B`). B's parts are a copy of its size, which a product of a few rows of A reads in place.
+   */
+  template <split_complex Z>
+  void split_parts_block(std::size_t                 m,
+                         std::size_t                 nb,
+                         std::size_t                 kb,
+                         const Z*                    a,
+                         std::size_t                 lda,
+                         const Z*                    b,
+                         std::size_t                 ldb,
+                         typename Z::value_type*     ar,
+                         typename Z::value_type*     br,
+                         typename Z::value_type*     cr)
+  {
+    using R = typename Z::value_type;
+    parallel_for(m, kb, [&](std::size_t i) {
+                   R* const row {ar + (i * 3 * kb)};
+                   for (std::size_t p {0}; p < kb; ++p) {
+                     const Z value {a[(i * lda) + p]};
+                     row[p]            = value.real();
+                     row[kb + p]       = -value.imag();
+                     row[(2 * kb) + p] = value.imag();
+                   }
+                 });
+    parallel_for(kb, nb, [&](std::size_t p) {
+                   R* const row {br + (p * 2 * nb)};
+                   for (std::size_t j {0}; j < nb; ++j) {
+                     const Z value {b[(p * ldb) + j]};
+                     row[j]      = value.real();
+                     row[nb + j] = value.imag();
+                   }
+                 });
+    gemm(m, nb, kb, ar, 3 * kb, br, 2 * nb, cr, 2 * nb);                 // Re C += Re A·Re B
+    gemm(m, nb, kb, ar + kb, 3 * kb, br + nb, 2 * nb, cr, 2 * nb);       // Re C += −Im A·Im B
+    gemm(m, nb, kb, ar, 3 * kb, br + nb, 2 * nb, cr + nb, 2 * nb);       // Im C += Re A·Im B
+    gemm(m, nb, kb, ar + (2 * kb), 3 * kb, br, 2 * nb, cr + nb, 2 * nb); // Im C += Im A·Re B
+  }
+
+  /*!
+   * \brief One block of `gemm_split` (\ref split_parts_block's) by one real product of its expanded operands,
+   *        `[Re C | Im C] += [Re A | −Im A] · [[Re B, Im B], [Im B, −Re B]]`: the same chains, B copied four times its
+   *        size, the product as wide and as deep as the block's two.
+   */
+  template <split_complex Z>
+  void split_expanded_block(std::size_t                 m,
+                            std::size_t                 nb,
+                            std::size_t                 kb,
+                            const Z*                    a,
+                            std::size_t                 lda,
+                            const Z*                    b,
+                            std::size_t                 ldb,
+                            typename Z::value_type*     ar,
+                            typename Z::value_type*     br,
+                            typename Z::value_type*     cr)
+  {
+    using R = typename Z::value_type;
+    parallel_for(m, kb, [&](std::size_t i) {
+                   for (std::size_t p {0}; p < kb; ++p) {
+                     ar[(i * 2 * kb) + p]      = a[(i * lda) + p].real();
+                     ar[(i * 2 * kb) + kb + p] = -a[(i * lda) + p].imag();
+                   }
+                 });
+    parallel_for(kb, 2 * nb, [&](std::size_t p) {
+                   R* const top {br + (p * 2 * nb)};
+                   R* const bottom {br + ((kb + p) * 2 * nb)};
+                   for (std::size_t j {0}; j < nb; ++j) {
+                     const Z value {b[(p * ldb) + j]};
+                     top[j]         = value.real();
+                     top[nb + j]    = value.imag();
+                     bottom[j]      = value.imag();
+                     bottom[nb + j] = -value.real();
+                   }
+                 });
+    gemm(m, 2 * nb, 2 * kb, ar, 2 * kb, br, 2 * nb, cr, 2 * nb);
+  }
+
+  /*!
    * \brief `C += A·B` for complex numbers through the real kernel, by blocks of \ref split_columns columns and
-   *        \ref split_depth of depth: each block is one real product, `[Re C | Im C] += [Re A | −Im A] ·
-   *        [[Re B, Im B], [Im B, −Re B]]`, of the multiply-adds the complex product has, on the real path's
-   *        units and threads (a scalar complex tile has none). Within a block, each element of C takes the
-   *        products of the real parts of A in ascending order of the depth, then those of the imaginary parts.
+   *        \ref split_depth of depth, on the real path's units and threads (a scalar complex tile has none). Within a
+   *        block, each element of C takes the products of the real parts of A in ascending order of the depth, then
+   *        those of the imaginary parts: by four real products of the block's parts (\ref split_parts_block) or one of
+   *        its expanded operands (\ref split_expanded_block), as \ref split_by_parts chooses, the same bits either way.
    */
   template <split_complex Z>
   void gemm_split(std::size_t m,
@@ -2224,11 +2357,12 @@ namespace numerical::detail {
                   std::size_t ldc)
   {
     using R = typename Z::value_type;
+    const bool                  parts   {split_by_parts(m)};
     const std::size_t           widest  {std::min(n, split_columns)};
     const std::size_t           deepest {std::min(k, split_depth)};
     split_operands<R>&          kept    {split_storage<R>()};
-    kept.a.resize(std::max(kept.a.size(), m * 2 * deepest)); // grown only, its elements written before they are read
-    kept.b.resize(std::max(kept.b.size(), 4 * deepest * widest));
+    kept.a.resize(std::max(kept.a.size(), m * (parts ? 3 : 2) * deepest)); // grown only, written before they are read
+    kept.b.resize(std::max(kept.b.size(), (parts ? 2 : 4) * deepest * widest));
     kept.c.resize(std::max(kept.c.size(), m * 2 * widest));
     R* const                    ar      {kept.a.data()};
     R* const                    br      {kept.b.data()};
@@ -2243,24 +2377,12 @@ namespace numerical::detail {
                    });
       for (std::size_t pc {0}; pc < k; pc += split_depth) {
         const std::size_t kb {std::min(split_depth, k - pc)};
-        parallel_for(m, kb, [&](std::size_t i) {
-                       for (std::size_t p {0}; p < kb; ++p) {
-                         ar[(i * 2 * kb) + p]      = a[(i * lda) + pc + p].real();
-                         ar[(i * 2 * kb) + kb + p] = -a[(i * lda) + pc + p].imag();
-                       }
-                     });
-        parallel_for(kb, 2 * nb, [&](std::size_t p) {
-                       R* const top {br + (p * 2 * nb)};
-                       R* const bottom {br + ((kb + p) * 2 * nb)};
-                       for (std::size_t j {0}; j < nb; ++j) {
-                         const Z value {b[((pc + p) * ldb) + jc + j]};
-                         top[j]         = value.real();
-                         top[nb + j]    = value.imag();
-                         bottom[j]      = value.imag();
-                         bottom[nb + j] = -value.real();
-                       }
-                     });
-        gemm(m, 2 * nb, 2 * kb, ar, 2 * kb, br, 2 * nb, cr, 2 * nb);
+        if (parts) {
+          split_parts_block(m, nb, kb, a + pc, lda, b + (pc * ldb) + jc, ldb, ar, br, cr);
+        }
+        else {
+          split_expanded_block(m, nb, kb, a + pc, lda, b + (pc * ldb) + jc, ldb, ar, br, cr);
+        }
       }
       parallel_for(m, nb, [&](std::size_t i) {
                      for (std::size_t j {0}; j < nb; ++j) {
