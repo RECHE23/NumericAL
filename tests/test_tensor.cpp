@@ -307,19 +307,21 @@ namespace {
   bool transposed_vector_product_is_canonical(std::size_t inner,
                                               std::size_t cols)
   {
+    using R = decltype(std::abs(T {})); // the parts' type
+    const auto        part {[](double value) { return static_cast<R>(value); }};
     const std::size_t ldbt {inner + 3};
     std::vector<T>    a(inner);
     std::vector<T>    b(inner * cols);
     std::vector<T>    bt(cols * ldbt, T(-9)); // the padding is never read
     for (std::size_t k {0}; k < inner; ++k) {
-      a[k] = T(std::sin(static_cast<double>(k) + 0.5));
+      a[k] = T(part(std::sin(static_cast<double>(k) + 0.5)));
       if constexpr (!std::is_floating_point_v<T>) {
-        a[k] += T(0, std::cos(static_cast<double>(k) * 1.3));
+        a[k] += T(R {0}, part(std::cos(static_cast<double>(k) * 1.3)));
       }
       for (std::size_t j {0}; j < cols; ++j) {
-        T value {T(std::cos((static_cast<double>(k) * 0.7) + (static_cast<double>(j) * 1.9)))};
+        T value {T(part(std::cos((static_cast<double>(k) * 0.7) + (static_cast<double>(j) * 1.9))))};
         if constexpr (!std::is_floating_point_v<T>) {
-          value += T(0, std::sin(static_cast<double>(j + k)));
+          value += T(R {0}, part(std::sin(static_cast<double>(j + k))));
         }
         b[(k * cols) + j]   = value;
         bt[(j * ldbt) + k]  = value;
