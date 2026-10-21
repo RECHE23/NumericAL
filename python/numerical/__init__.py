@@ -711,6 +711,10 @@ def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
     ``numpy.linalg.vector_norm``: ``(Σ |x|^ord)^(1/ord)``, ``inf`` the largest magnitude, ``-inf`` the smallest, 0 how
     many are not zero; real, of `x`'s precision. Summed at the scale of the largest magnitude, it does not overflow
     where NumPy's 2-norm of entries past 1e154 is infinite."""
+    if axis is None and ord == 2 and not keepdims:
+        plain = _numerical._borrowed_norm(x)  # read where it lies: a NumPy array is not copied
+        if plain is not NotImplemented:
+            return plain
     x = _tensor(x)
     return _native(_numerical._vector_norm, x, _vector_order(ord), list(_resolved_axes(x, axis, "vector_norm")),
                    bool(keepdims))
@@ -759,6 +763,10 @@ def norm(x, ord=None, axis=None, keepdims=False):
     """A vector or a matrix norm, as ``numpy.linalg.norm``: with no `axis`, the 2-norm of every element for no `ord`,
     else the `ord` norm of the vector or the matrix `x` is; with an integer `axis`, the vector norms along it; with a
     pair, the matrix norms over it (:func:`vector_norm`, :func:`matrix_norm`)."""
+    if axis is None and ord is None and not keepdims:
+        plain = _numerical._borrowed_norm(x)  # every element's 2-norm, a NumPy array read where it lies
+        if plain is not NotImplemented:
+            return plain
     x = _tensor(x)
     rank = len(x.shape)
     if axis is None:

@@ -2597,6 +2597,34 @@ bool borrow_operand(PyObject* obj, borrowed_operand& out)
     return true;
 }
 
+// _borrowed_norm(x) -> float or NotImplemented: the 2-norm of every element of a Tensor or of a NumPy array read where it
+// lies (borrow_operand), its squares summed where plain_two_norm takes them; NotImplemented for any other operand and
+// for a sum it leaves to the scaled norm, which vector_norm then computes from a copy as before. A float32 or complex64
+// operand's norm rounded to single precision, as vector_norm gives it. A NumPy array was copied into a Tensor first:
+// six AVX2 cores, 371 × 208 doubles, 39.5 of the 56 µs.
+PyObject* module_borrowed_norm(PyObject* /*self*/, PyObject* obj)
+{
+    borrowed_operand x;
+    if (!borrow_operand(obj, x)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    std::size_t count {1};
+    for (const std::size_t extent : x.shape) {
+        count *= extent;
+    }
+    std::optional<double> norm;
+    switch (x.dtype) {
+    case 0: norm = plain_two_norm(static_cast<const double*>(x.data), count); break;
+    case 1: norm = plain_two_norm(static_cast<const std::complex<double>*>(x.data), count); break;
+    case 2: norm = plain_two_norm(static_cast<const float*>(x.data), count); break;
+    default: norm = plain_two_norm(static_cast<const std::complex<float>*>(x.data), count); break;
+    }
+    if (!norm) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    return PyFloat_FromDouble(x.dtype >= 2 ? static_cast<double>(static_cast<float>(*norm)) : *norm);
+}
+
 std::optional<PyObject*> borrowed_product(PyObject* a, PyObject* b)
 {
     borrowed_operand left;
@@ -3075,6 +3103,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_equal(a, b) -> bool\nWhether two tensors of one dtype and size hold equal elements (a NaN equals nothing).");
     m.raw("_unary", module_unary, METH_VARARGS,
           "_unary(name, a) -> Tensor\nexp, log, sqrt, sin, cos, tan, tanh or abs of every element.");
+    m.raw("_borrowed_norm", module_borrowed_norm, METH_O,
+          "_borrowed_norm(x) -> float or NotImplemented\nThe 2-norm of every element of a Tensor or a NumPy array read where it lies.");
     m.raw("_vector_norm", module_vector_norm, METH_VARARGS,
           "_vector_norm(x, ord, axes, keepdims) -> Tensor or number\nThe ord norm over the given axes, as numpy.linalg.vector_norm, without overflow.");
     m.raw("_reduce", module_reduce, METH_VARARGS,

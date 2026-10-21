@@ -74,6 +74,20 @@ class NormsAndProducts(unittest.TestCase):
             values = (self.complex if np.dtype(dtype).kind == "c" else self.a).astype(dtype)
             self.close(numerical.norm(values), np.linalg.norm(values.astype(np.complex128)), 1e-6)
 
+    def test_the_2_norm_reads_a_numpy_array_where_it_lies(self):
+        # Contiguous: read in place, the very norm of the same elements as a Tensor; not contiguous, or a list: copied
+        # first, the same answer; past the plain sum's range: the scaled norm either way.
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            values = (self.complex if np.dtype(dtype).kind == "c" else self.a).astype(dtype)
+            as_tensor = numerical.asarray(values)
+            self.assertEqual(numerical.norm(values), numerical.norm(as_tensor))
+            self.assertEqual(numerical.vector_norm(values), numerical.vector_norm(as_tensor))
+            self.assertIsInstance(numerical.norm(values), float)
+        self.assertEqual(numerical.norm(self.a[:, ::2]), numerical.norm(numerical.asarray(np.ascontiguousarray(self.a[:, ::2]))))
+        self.assertEqual(numerical.norm([[3.0, 4.0]]), 5.0)
+        self.assertAlmostEqual(numerical.norm(np.array([1e300, 1e300])) / 1e300, math.sqrt(2), places=14)
+        self.assertEqual(numerical.norm(np.zeros((0, 3))), 0.0)
+
     def test_condition_numbers_and_singular_values(self):
         matrix = self.stack[0, 0]
         for p in (None, 1, -1, 2, -2, math.inf, -math.inf, "fro", "nuc"):

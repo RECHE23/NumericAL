@@ -16,7 +16,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   their sum lies between 2^-900 and the largest double; outside (a NaN, an infinity, a sum past either bound) the
   scaled sum as before, so no overflow and no underflow still. Each element was copied, divided by the largest and
   indexed through every axis: a 371 × 208 float64 norm 361 → 13 µs (NumPy 13), complex128 100 × 100 4.1 µs (NumPy 7.7).
-  The last bits move (a division fewer per element).
+  The last bits move (a division fewer per element). A contiguous NumPy array is read where it lies, where it was
+  copied into a Tensor first (six AVX2 cores, 371 × 208 doubles: 39.5 of the 56 µs).
 - **A product whose A is one block of rows reads B in place whatever its stride** on the AMX, where a B more than
   512 doubles wide was packed for every call, a pass the product then made again; and a partial AMX tile takes the
   products of the accumulators its rows and columns fill, where it took all of them. The same bits. One M1 Pro, A of
