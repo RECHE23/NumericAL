@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A small strided NumPy array is copied in C order where a product, a norm, an `einsum` reduction or a solve reads
+  it** (up to 65 536 elements, aligned, in this machine's byte order), as the converting path copied it but without
+  the Python calls around the copy: the same answers. A 4 × 31 strided matrix times a strided vector: one M1 Pro
+  5.1 → 1.1 µs (NumPy 0.8); six AVX2 cores 6.7 → 1.2 µs (NumPy 1.1).
 - **A vector, or a matrix of one row, times a Fortran-ordered (transposed) NumPy matrix reads it where it lies**, a
   column at a time, eight columns' sums at once, each element summed as a vector times a row-major matrix sums it
   (its terms in order, the same arithmetic: fused on the x86-64 units for float64, as there): the same bits, where the

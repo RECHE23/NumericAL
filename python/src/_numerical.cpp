@@ -2576,6 +2576,7 @@ struct borrowed_operand
     std::vector<std::size_t> shape;
     const void*              data {nullptr};
     bool                     transposed {false}; // a matrix whose elements run column-major (borrow_operand's columns)
+    std::vector<std::byte>   gathered;           // a small strided array's elements copied in C order, `data` then
 
     borrowed_operand() = default;
     borrowed_operand(const borrowed_operand&) = delete;
@@ -2583,9 +2584,46 @@ struct borrowed_operand
     ~borrowed_operand() { Py_XDECREF(owner); }
 };
 
+// The most elements of a strided NumPy array borrow_operand copies itself: past them the copy outweighs the converting
+// path's calls (a 4 × 31 strided matrix times a strided vector, M1 Pro: 5.1 µs, 3.8 of them asarray and the Python
+// around it, where a contiguous pair took 0.7).
+constexpr std::size_t gathered_most {std::size_t {1} << 16};
+
+// The elements of `view` (aligned, in this machine's byte order, of a dtype index `dtype`) gathered in C order into
+// `out.gathered`, `out.data` pointing there; false, nothing copied, past gathered_most elements.
+bool gather_operand(const array_struct& view, int dtype, borrowed_operand& out)
+{
+    std::vector<std::size_t> shape;
+    std::vector<Py_ssize_t>  strides;
+    std::size_t              count {1};
+    for (int axis = 0; axis < view.nd; ++axis) {
+        shape.push_back(static_cast<std::size_t>(view.shape[axis]));
+        strides.push_back(static_cast<Py_ssize_t>(view.strides[axis]));
+        count *= shape.back();
+    }
+    if (count > gathered_most) {
+        return false;
+    }
+    out.gathered.resize(count * static_cast<std::size_t>(view.itemsize));
+    const auto* const base {static_cast<const unsigned char*>(view.data)};
+    const auto gather_as = [&]<typename T>(std::type_identity<T>) {
+        gather_typed<T>(base, shape, strides, reinterpret_cast<T*>(out.gathered.data())); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): bytes from the allocator, aligned for any scalar
+    };
+    switch (dtype) {
+    case 0: gather_as(std::type_identity<double> {}); break;
+    case 1: gather_as(std::type_identity<std::complex<double>> {}); break;
+    case 2: gather_as(std::type_identity<float> {}); break;
+    default: gather_as(std::type_identity<std::complex<float>> {}); break;
+    }
+    out.data = out.gathered.data();
+    return true;
+}
+
 // Whether `obj` is read where it lies, into `out`; false (no error set) when it is not a Tensor or such an array. With
 // `columns`, a matrix whose elements run column-major (Fortran order, a transpose) is read too, `out.transposed` set:
-// for a caller whose answer does not depend on the order the elements lie in.
+// for a caller whose answer does not depend on the order the elements lie in. A small strided array (up to
+// gathered_most elements, aligned, in this machine's byte order) is copied in C order instead, as the converting path
+// would copy it, without the calls around it.
 bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false)
 {
     if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
@@ -2610,20 +2648,23 @@ bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false)
     const bool    rows_usable {view != nullptr && view->two == 2 && view->data != nullptr && (view->flags & needed) == needed};
     const bool    columns_usable {columns && !rows_usable && view != nullptr && view->two == 2 && view->data != nullptr && view->nd == 2
                                   && (view->flags & needed_columns) == needed_columns};
-    const bool    usable {rows_usable || columns_usable};
+    constexpr int needed_gathered {array_aligned | array_not_swapped};
+    const bool    gatherable {!rows_usable && !columns_usable && view != nullptr && view->two == 2 && view->data != nullptr
+                              && (view->flags & needed_gathered) == needed_gathered};
+    const bool    usable {rows_usable || columns_usable || gatherable};
     if (view == nullptr) {
         PyErr_Clear();
     }
     const char kind {usable ? view->typekind : '\0'};
     const int  size {usable ? view->itemsize : 0};
     const int  dtype {kind == 'f' && size == 8 ? 0 : kind == 'c' && size == 16 ? 1 : kind == 'f' && size == 4 ? 2 : kind == 'c' && size == 8 ? 3 : -1};
-    if (dtype < 0) {
+    if (dtype < 0 || (gatherable && !gather_operand(*view, dtype, out))) {
         Py_DECREF(capsule);
         return false;
     }
     out.owner      = capsule;
     out.dtype      = static_cast<std::size_t>(dtype);
-    out.data       = view->data;
+    out.data       = gatherable ? out.data : view->data;
     out.transposed = columns_usable;
     for (int axis = 0; axis < view->nd; ++axis) {
         out.shape.push_back(static_cast<std::size_t>(view->shape[axis]));

@@ -54,6 +54,28 @@ class BorrowedOperands(unittest.TestCase):
         with self.assertRaises(numerical.LinAlgError):
             numerical.matmul(a, a)
 
+    def test_strided_arrays_give_their_contiguous_copies_bits(self):
+        # A small strided array is copied in C order where it is read, a large one by the converting path: either way
+        # the answers of its contiguous copy, to the bit, for every reader of borrowed operands.
+        for rows, cols in ((4, 31), (80, 80), (400, 400)):  # the last past the elements copied in place
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                with self.subTest(rows=rows, cols=cols, dtype=np.dtype(dtype).name):
+                    whole = self.operand((2 * rows, 2 * cols), dtype)
+                    strided = whole[::2, ::-2]
+                    copy = np.ascontiguousarray(strided)
+                    vector = self.operand((2 * cols,), dtype)[::2]
+                    self.assert_same(numerical.matmul(strided, vector), numerical.matmul(copy, np.ascontiguousarray(vector)))
+                    self.assert_same(numerical.matmul(vector, strided.T), numerical.matmul(np.ascontiguousarray(vector),
+                                                                                           np.ascontiguousarray(copy.T)))
+                    self.assertEqual(numerical.vector_norm(strided), numerical.vector_norm(copy))
+                    self.assert_same(numerical.einsum("ij->j", strided), numerical.einsum("ij->j", copy))
+                    if dtype in (np.float64, np.complex128) and rows == cols:
+                        spread = np.zeros((2 * rows, 2 * rows), dtype)
+                        spread[::2, ::2] = copy + rows * np.eye(rows)
+                        square = spread[::2, ::2]  # strided, well conditioned
+                        self.assert_same(numerical.solve(square, vector[:rows]),
+                                         numerical.solve(np.ascontiguousarray(square), np.ascontiguousarray(vector[:rows])))
+
     def test_a_fortran_ordered_array_converts_element_for_element(self):
         # Its columns running contiguously: by tiles from 32 rows, a row at a time below; every dtype asarray reads,
         # converted as from the same array in C order.
