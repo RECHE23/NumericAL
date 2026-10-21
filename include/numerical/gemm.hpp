@@ -773,6 +773,16 @@ namespace numerical::detail {
     {
       return rows_in_place(x, ld, ld_out);
     }
+
+    //! \brief B's element in row \p p and column \p j.
+    template <typename T>
+    [[nodiscard]] static const T& at(const T*    b,
+                                     std::size_t ldb,
+                                     std::size_t p,
+                                     std::size_t j) noexcept
+    {
+      return b[(p * ldb) + j];
+    }
   };
 
   //! \brief B given as `Bᵀ`: row-major, `n × k`, its rows `ldb` apart (C = A·Bᵀᵀ, no copy of the transpose).
@@ -811,6 +821,16 @@ namespace numerical::detail {
                                           std::size_t& ld_out)
     {
       return rows_from_transpose(x, ld, rows, cols, scratch, ld_out);
+    }
+
+    //! \brief B's element in row \p p and column \p j: `Bᵀ`'s in row \p j and column \p p.
+    template <typename T>
+    [[nodiscard]] static const T& at(const T*    bt,
+                                     std::size_t ldbt,
+                                     std::size_t p,
+                                     std::size_t j) noexcept
+    {
+      return bt[(j * ldbt) + p];
     }
   };
 
@@ -867,6 +887,16 @@ namespace numerical::detail {
     {
       return rows_in_place(a, lda, ld_out);
     }
+
+    //! \brief A's element in row \p i and column \p p.
+    template <typename T>
+    [[nodiscard]] static const T& at(const T*    a,
+                                     std::size_t lda,
+                                     std::size_t i,
+                                     std::size_t p) noexcept
+    {
+      return a[(i * lda) + p];
+    }
   };
 
   //! \brief A given as `Aᵀ`: row-major, `k × m`, its rows `lda` apart (C = Aᵀᵀ·B, no copy of the transpose).
@@ -897,6 +927,16 @@ namespace numerical::detail {
                                           std::size_t& ld_out)
     {
       return rows_from_transpose(at, ldat, rows, cols, scratch, ld_out);
+    }
+
+    //! \brief A's element in row \p i and column \p p: `Aᵀ`'s in row \p p and column \p i.
+    template <typename T>
+    [[nodiscard]] static const T& at(const T*    at_,
+                                     std::size_t ldat,
+                                     std::size_t i,
+                                     std::size_t p) noexcept
+    {
+      return at_[(p * ldat) + i];
     }
   };
 
@@ -2224,8 +2264,50 @@ namespace numerical::detail {
     return gemm_double_elsewhere<b_rows>(m, n, k, a, lda, b, ldb, c, ldc);
   }
 
-  //! \brief A `float` product on the NEON tile on arm64's fused paths (the NEON path, and the AMX path, whose AMX takes
-  //!        `double` alone); elsewhere the vector tile. \return Whether it ran on the NEON tile.
+  //! \brief A `float` product on the AMX where it suits the product, on the NEON tile on arm64's fused paths, on the
+  //!        x86-64 tiles there; elsewhere the vector tile. B and A laid out as \p B and \p A say. \return Whether it
+  //!        ran on a tile of its path.
+  template <typename B,
+            typename A = a_rows>
+  [[nodiscard]] bool gemm_float_elsewhere(std::size_t  m,
+                                          std::size_t  n,
+                                          std::size_t  k,
+                                          const float* a,
+                                          std::size_t  lda,
+                                          const float* b,
+                                          std::size_t  ldb,
+                                          float*       c,
+                                          std::size_t  ldc)
+  {
+#ifdef NUMERICAL_NEON_COMPILED
+    const gemm_path path {gemm_path_current()};
+#  ifdef NUMERICAL_AMX_COMPILED
+    if (path == gemm_path::amx && amx_suits_f32(m, n, k)) {
+      gemm_packed<amx_tile_kernel_f32, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+#  endif
+    if (path == gemm_path::neon || path == gemm_path::amx) {
+      gemm_packed<neon_tile_kernel<float>, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+#endif
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path x86_path {gemm_path_current()};
+    if (x86_path == gemm_path::avx512) {
+      gemm_packed<avx512_tile_kernel_f32, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+    if (x86_path == gemm_path::avx2) {
+      gemm_packed<avx2_tile_kernel_f32, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      return true;
+    }
+#endif
+    (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc;
+    return false;
+  }
+
+  //! \brief \ref gemm_float_elsewhere of row-major operands.
   [[nodiscard]] inline bool gemm_elsewhere(std::size_t  m,
                                            std::size_t  n,
                                            std::size_t  k,
@@ -2236,32 +2318,7 @@ namespace numerical::detail {
                                            float*       c,
                                            std::size_t  ldc)
   {
-#ifdef NUMERICAL_NEON_COMPILED
-    const gemm_path path {gemm_path_current()};
-#  ifdef NUMERICAL_AMX_COMPILED
-    if (path == gemm_path::amx && amx_suits_f32(m, n, k)) {
-      gemm_packed<amx_tile_kernel_f32>(m, n, k, a, lda, b, ldb, c, ldc);
-      return true;
-    }
-#  endif
-    if (path == gemm_path::neon || path == gemm_path::amx) {
-      gemm_packed<neon_tile_kernel<float>>(m, n, k, a, lda, b, ldb, c, ldc);
-      return true;
-    }
-#endif
-#ifdef NUMERICAL_X86_COMPILED
-    const gemm_path x86_path {gemm_path_current()};
-    if (x86_path == gemm_path::avx512) {
-      gemm_packed<avx512_tile_kernel_f32>(m, n, k, a, lda, b, ldb, c, ldc);
-      return true;
-    }
-    if (x86_path == gemm_path::avx2) {
-      gemm_packed<avx2_tile_kernel_f32>(m, n, k, a, lda, b, ldb, c, ldc);
-      return true;
-    }
-#endif
-    (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc;
-    return false;
+    return gemm_float_elsewhere<b_rows>(m, n, k, a, lda, b, ldb, c, ldc);
   }
 
   template <typename T>
@@ -2336,12 +2393,17 @@ namespace numerical::detail {
    * \brief One block of `gemm_split` (`[Re C | Im C]` at \p cr, \p m × \p nb each, += A·B, A \p m × \p kb and B
    *        \p kb × \p nb) by four real products of its parts: `Re C += Re A·Re B`, then `−Im A·Im B`; `Im C += Re A·Im B`,
    *        then `Im A·Re B`, each continuing its elements' chains (`(−x)·(−y)` is `x·y` exactly: the bits of
-   *        `−Im A·−Re B`). B's parts are a copy of its size, which a product of a few rows of A reads in place.
+   *        `−Im A·−Re B`). B's parts are a copy of its size, which a product of a few rows of A reads in place. The
+   *        block is A's columns and B's rows from \p pc, B's columns from \p jc, A and B laid out as \p A and \p B say.
    */
-  template <split_complex Z>
+  template <split_complex Z,
+            typename B = b_rows,
+            typename A = a_rows>
   void split_parts_block(std::size_t                 m,
                          std::size_t                 nb,
                          std::size_t                 kb,
+                         std::size_t                 pc,
+                         std::size_t                 jc,
                          const Z*                    a,
                          std::size_t                 lda,
                          const Z*                    b,
@@ -2354,7 +2416,7 @@ namespace numerical::detail {
     parallel_for(m, kb, [&](std::size_t i) {
                    R* const row {ar + (i * 3 * kb)};
                    for (std::size_t p {0}; p < kb; ++p) {
-                     const Z value {a[(i * lda) + p]};
+                     const Z value {A::at(a, lda, i, pc + p)};
                      row[p]            = value.real();
                      row[kb + p]       = -value.imag();
                      row[(2 * kb) + p] = value.imag();
@@ -2363,7 +2425,7 @@ namespace numerical::detail {
     parallel_for(kb, nb, [&](std::size_t p) {
                    R* const row {br + (p * 2 * nb)};
                    for (std::size_t j {0}; j < nb; ++j) {
-                     const Z value {b[(p * ldb) + j]};
+                     const Z value {B::at(b, ldb, pc + p, jc + j)};
                      row[j]      = value.real();
                      row[nb + j] = value.imag();
                    }
@@ -2379,10 +2441,14 @@ namespace numerical::detail {
    *        `[Re C | Im C] += [Re A | −Im A] · [[Re B, Im B], [Im B, −Re B]]`: the same chains, B copied four times its
    *        size, the product as wide and as deep as the block's two.
    */
-  template <split_complex Z>
+  template <split_complex Z,
+            typename B = b_rows,
+            typename A = a_rows>
   void split_expanded_block(std::size_t                 m,
                             std::size_t                 nb,
                             std::size_t                 kb,
+                            std::size_t                 pc,
+                            std::size_t                 jc,
                             const Z*                    a,
                             std::size_t                 lda,
                             const Z*                    b,
@@ -2394,15 +2460,16 @@ namespace numerical::detail {
     using R = typename Z::value_type;
     parallel_for(m, kb, [&](std::size_t i) {
                    for (std::size_t p {0}; p < kb; ++p) {
-                     ar[(i * 2 * kb) + p]      = a[(i * lda) + p].real();
-                     ar[(i * 2 * kb) + kb + p] = -a[(i * lda) + p].imag();
+                     const Z value {A::at(a, lda, i, pc + p)};
+                     ar[(i * 2 * kb) + p]      = value.real();
+                     ar[(i * 2 * kb) + kb + p] = -value.imag();
                    }
                  });
     parallel_for(kb, 2 * nb, [&](std::size_t p) {
                    R* const top {br + (p * 2 * nb)};
                    R* const bottom {br + ((kb + p) * 2 * nb)};
                    for (std::size_t j {0}; j < nb; ++j) {
-                     const Z value {b[(p * ldb) + j]};
+                     const Z value {B::at(b, ldb, pc + p, jc + j)};
                      top[j]         = value.real();
                      top[nb + j]    = value.imag();
                      bottom[j]      = value.imag();
@@ -2418,8 +2485,11 @@ namespace numerical::detail {
    *        block, each element of C takes the products of the real parts of A in ascending order of the depth, then
    *        those of the imaginary parts: by four real products of the block's parts (\ref split_parts_block) or one of
    *        its expanded operands (\ref split_expanded_block), as \ref split_by_parts chooses, the same bits either way.
+   *        A and B laid out as \p A and \p B say, read where they lie as the parts are copied.
    */
-  template <split_complex Z>
+  template <split_complex Z,
+            typename B = b_rows,
+            typename A = a_rows>
   void gemm_split(std::size_t m,
                   std::size_t n,
                   std::size_t k,
@@ -2452,10 +2522,10 @@ namespace numerical::detail {
       for (std::size_t pc {0}; pc < k; pc += split_depth) {
         const std::size_t kb {std::min(split_depth, k - pc)};
         if (parts) {
-          split_parts_block(m, nb, kb, a + pc, lda, b + (pc * ldb) + jc, ldb, ar, br, cr);
+          split_parts_block<Z, B, A>(m, nb, kb, pc, jc, a, lda, b, ldb, ar, br, cr);
         }
         else {
-          split_expanded_block(m, nb, kb, a + pc, lda, b + (pc * ldb) + jc, ldb, ar, br, cr);
+          split_expanded_block<Z, B, A>(m, nb, kb, pc, jc, a, lda, b, ldb, ar, br, cr);
         }
       }
       parallel_for(m, nb, [&](std::size_t i) {
@@ -2555,6 +2625,39 @@ namespace numerical::detail {
 
   //! \brief A complex product past the plain loop: on the vector tile on the portable path, whole complex products
   //!        summed in order; on the x86-64 complex tiles there; else (arm64) through the real kernel (`gemm_split`).
+  //!        B and A laid out as \p B and \p A say.
+  template <typename B,
+            typename A,
+            split_complex T>
+  void gemm_large_complex(std::size_t m,
+                          std::size_t n,
+                          std::size_t k,
+                          const T*    a,
+                          std::size_t lda,
+                          const T*    b,
+                          std::size_t ldb,
+                          T*          c,
+                          std::size_t ldc)
+  {
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::portable) {
+      gemm_packed<vector_tile_kernel<T>, T, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      return;
+    }
+#ifdef NUMERICAL_X86_COMPILED
+    if (path == gemm_path::avx512) { // a complex tile of its own on the x86-64 units
+      gemm_packed<x86_complex_kernel<T, avx512_complex_tile_kernel, avx512_complex_tile_kernel_f32>, T, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      return;
+    }
+    if (path == gemm_path::avx2) {
+      gemm_packed<x86_complex_kernel<T, avx2_complex_tile_kernel, avx2_complex_tile_kernel_f32>, T, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      return;
+    }
+#endif
+    gemm_split<T, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+  }
+
+  //! \brief \ref gemm_large_complex of row-major operands.
   template <split_complex T>
   void gemm_large(std::size_t m,
                   std::size_t n,
@@ -2566,22 +2669,7 @@ namespace numerical::detail {
                   T*          c,
                   std::size_t ldc)
   {
-    const gemm_path path {gemm_path_current()};
-    if (path == gemm_path::portable) {
-      gemm_packed<vector_tile_kernel<T>>(m, n, k, a, lda, b, ldb, c, ldc);
-      return;
-    }
-#ifdef NUMERICAL_X86_COMPILED
-    if (path == gemm_path::avx512) { // a complex tile of its own on the x86-64 units
-      gemm_packed<x86_complex_kernel<T, avx512_complex_tile_kernel, avx512_complex_tile_kernel_f32>>(m, n, k, a, lda, b, ldb, c, ldc);
-      return;
-    }
-    if (path == gemm_path::avx2) {
-      gemm_packed<x86_complex_kernel<T, avx2_complex_tile_kernel, avx2_complex_tile_kernel_f32>>(m, n, k, a, lda, b, ldb, c, ldc);
-      return;
-    }
-#endif
-    gemm_split(m, n, k, a, lda, b, ldb, c, ldc);
+    gemm_large_complex<b_rows, a_rows>(m, n, k, a, lda, b, ldb, c, ldc);
   }
 
   /*!
@@ -2633,78 +2721,142 @@ namespace numerical::detail {
     gemm_large(m, n, k, a, lda, b, ldb, c, ldc);
   }
 
-  /*!
-   * \brief `C += A·B` for `double`, either operand given as its transpose (\p A: \ref a_rows or \ref a_transposed, \p B:
-   *        \ref b_rows or \ref b_transposed), so that a product by a transpose (a `syrk`'s `P Pᵀ`, BLAS's `transa` and
-   *        `transb`) needs no copy of it. The tiles are \ref gemm's, the operands packed from where they lie, and so are
-   *        the bits; a product \ref gemm runs in the plain loop copies a transposed operand row-major and runs there,
-   *        small as it is.
-   */
-  template <typename A,
-            typename B>
-  void gemm_layouts(std::size_t   m,
-                    std::size_t   n,
-                    std::size_t   k,
-                    const double* a,
-                    std::size_t   lda,
-                    const double* b,
-                    std::size_t   ldb,
-                    double*       c,
-                    std::size_t   ldc)
+  //! \brief A `double` product past the plain loop, B and A laid out as \p B and \p A say (\ref gemm_layouts).
+  template <typename B,
+            typename A>
+  void gemm_large_layouts(std::size_t   m,
+                          std::size_t   n,
+                          std::size_t   k,
+                          const double* a,
+                          std::size_t   lda,
+                          const double* b,
+                          std::size_t   ldb,
+                          double*       c,
+                          std::size_t   ldc)
   {
-    if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
-      buffer<double>      a_rows_copy;
-      buffer<double>      b_rows_copy;
-      std::size_t         a_ld  {};
-      std::size_t         b_ld  {};
-      const double* const left  {A::rows_of(a, lda, m, k, a_rows_copy, a_ld)};
-      const double* const right {B::rows_of(b, ldb, k, n, b_rows_copy, b_ld)};
-      gemm_rows(m, n, k, left, a_ld, right, b_ld, c, ldc);
-      return;
-    }
     if (!gemm_double_elsewhere<B, A>(m, n, k, a, lda, b, ldb, c, ldc)) {
       gemm_packed<vector_tile_kernel<double>, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
     }
   }
 
+  //! \brief A `float` product past the plain loop, B and A laid out as \p B and \p A say (\ref gemm_layouts).
+  template <typename B,
+            typename A>
+  void gemm_large_layouts(std::size_t  m,
+                          std::size_t  n,
+                          std::size_t  k,
+                          const float* a,
+                          std::size_t  lda,
+                          const float* b,
+                          std::size_t  ldb,
+                          float*       c,
+                          std::size_t  ldc)
+  {
+    if (!gemm_float_elsewhere<B, A>(m, n, k, a, lda, b, ldb, c, ldc)) {
+      gemm_packed<vector_tile_kernel<float>, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+    }
+  }
+
+  //! \brief A complex product past the plain loop, B and A laid out as \p B and \p A say (\ref gemm_layouts).
+  template <typename B,
+            typename A,
+            split_complex T>
+  void gemm_large_layouts(std::size_t m,
+                          std::size_t n,
+                          std::size_t k,
+                          const T*    a,
+                          std::size_t lda,
+                          const T*    b,
+                          std::size_t ldb,
+                          T*          c,
+                          std::size_t ldc)
+  {
+    gemm_large_complex<B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+  }
+
+  /*!
+   * \brief \ref gemm with either operand given as its transpose (\p A: \ref a_rows or \ref a_transposed, \p B:
+   *        \ref b_rows or \ref b_transposed), so that a product by a transpose (a `syrk`'s `P Pᵀ`, BLAS's `transa` and
+   *        `transb`, a NumPy array in Fortran order) needs no copy of it. The tiles are \ref gemm's, the operands
+   *        packed (or, through `gemm_split`, copied into their parts) from where they lie, and so are the bits; a
+   *        product \ref gemm runs in the plain loop copies a transposed operand row-major and runs there, small as it
+   *        is.
+   */
+  template <typename A,
+            typename B,
+            typename T>
+  void gemm_layouts(std::size_t m,
+                    std::size_t n,
+                    std::size_t k,
+                    const T*    a,
+                    std::size_t lda,
+                    const T*    b,
+                    std::size_t ldb,
+                    T*          c,
+                    std::size_t ldc)
+  {
+    if constexpr (split_complex<T>) {
+      if (gemm_path_current() != gemm_path::portable) {
+        if (m != 0 && n != 0 && k != 0) {
+          gemm_large_complex<B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+        }
+        return;
+      }
+    }
+    if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
+      buffer<T>      a_rows_copy;
+      buffer<T>      b_rows_copy;
+      std::size_t    a_ld  {};
+      std::size_t    b_ld  {};
+      const T* const left  {A::rows_of(a, lda, m, k, a_rows_copy, a_ld)};
+      const T* const right {B::rows_of(b, ldb, k, n, b_rows_copy, b_ld)};
+      gemm_rows(m, n, k, left, a_ld, right, b_ld, c, ldc);
+      return;
+    }
+    gemm_large_layouts<B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+  }
+
   //! \brief \ref gemm_layouts with B given as `Bᵀ` (\p bt, `n × k`, \p ldbt apart).
-  inline void gemm_bt(std::size_t   m,
-                      std::size_t   n,
-                      std::size_t   k,
-                      const double* a,
-                      std::size_t   lda,
-                      const double* bt,
-                      std::size_t   ldbt,
-                      double*       c,
-                      std::size_t   ldc)
+  template <typename T>
+  void gemm_bt(std::size_t m,
+               std::size_t n,
+               std::size_t k,
+               const T*    a,
+               std::size_t lda,
+               const T*    bt,
+               std::size_t ldbt,
+               T*          c,
+               std::size_t ldc)
   {
     gemm_layouts<a_rows, b_transposed>(m, n, k, a, lda, bt, ldbt, c, ldc);
   }
 
   //! \brief \ref gemm_layouts with A given as `Aᵀ` (\p at, `k × m`, \p ldat apart).
-  inline void gemm_at(std::size_t   m,
-                      std::size_t   n,
-                      std::size_t   k,
-                      const double* at,
-                      std::size_t   ldat,
-                      const double* b,
-                      std::size_t   ldb,
-                      double*       c,
-                      std::size_t   ldc)
+  template <typename T>
+  void gemm_at(std::size_t m,
+               std::size_t n,
+               std::size_t k,
+               const T*    at,
+               std::size_t ldat,
+               const T*    b,
+               std::size_t ldb,
+               T*          c,
+               std::size_t ldc)
   {
     gemm_layouts<a_transposed, b_rows>(m, n, k, at, ldat, b, ldb, c, ldc);
   }
 
   //! \brief \ref gemm_layouts with both operands given as their transposes.
-  inline void gemm_atbt(std::size_t   m,
-                        std::size_t   n,
-                        std::size_t   k,
-                        const double* at,
-                        std::size_t   ldat,
-                        const double* bt,
-                        std::size_t   ldbt,
-                        double*       c,
-                        std::size_t   ldc)
+  template <typename T>
+  void gemm_atbt(std::size_t m,
+                 std::size_t n,
+                 std::size_t k,
+                 const T*    at,
+                 std::size_t ldat,
+                 const T*    bt,
+                 std::size_t ldbt,
+                 T*          c,
+                 std::size_t ldc)
   {
     gemm_layouts<a_transposed, b_transposed>(m, n, k, at, ldat, bt, ldbt, c, ldc);
   }

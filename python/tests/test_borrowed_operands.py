@@ -65,18 +65,20 @@ class BorrowedOperands(unittest.TestCase):
                                                np.asarray(numerical.asarray(np.ascontiguousarray(values)))), (shape, values.dtype))
 
     def test_a_product_of_fortran_ordered_matrices_gives_the_c_ordered_bits(self):
-        # float64 matrices read where they lie, either or both column-major, packed from there: the product of their
-        # C-ordered copies to the bit; a vector, a single row and the other dtypes take the converting path, the same.
-        for m, k, n in ((7, 5, 3), (64, 64, 64), (129, 40, 75), (2, 300, 2), (1, 9, 4), (9, 4, 1)):
-            a = self.rng.standard_normal((m, k))
-            b = self.rng.standard_normal((k, n))
-            want = np.asarray(numerical.matmul(np.ascontiguousarray(a), np.ascontiguousarray(b)))
-            for left in (a, np.asfortranarray(a)):
-                for right in (b, np.asfortranarray(b)):
-                    self.assertTrue(np.array_equal(np.asarray(numerical.matmul(left, right)), want), (m, k, n))
-            single = a.astype(np.float32)
-            self.assertTrue(np.array_equal(np.asarray(numerical.matmul(np.asfortranarray(single), b.astype(np.float32))),
-                                           np.asarray(numerical.matmul(single, b.astype(np.float32)))))
+        # Matrices of each dtype read where they lie, either or both column-major, packed (or copied into their
+        # parts) from there: the product of their C-ordered copies to the bit; a vector and a single row or column
+        # take the converting path, the same.
+        for m, k, n in ((7, 5, 3), (64, 64, 64), (129, 40, 75), (2, 300, 2), (3, 803, 247), (1, 9, 4), (9, 4, 1)):
+            real_a = self.rng.standard_normal((m, k))
+            real_b = self.rng.standard_normal((k, n))
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                a = (real_a + 1j * real_a[::-1] if np.iscomplexobj(dtype(0)) else real_a).astype(dtype)
+                b = (real_b - 1j * real_b[::-1] if np.iscomplexobj(dtype(0)) else real_b).astype(dtype)
+                want = np.asarray(numerical.matmul(np.ascontiguousarray(a), np.ascontiguousarray(b)))
+                for left in (a, np.asfortranarray(a)):
+                    for right in (b, np.asfortranarray(b)):
+                        self.assertTrue(np.array_equal(np.asarray(numerical.matmul(left, right)), want),
+                                        (m, k, n, np.dtype(dtype).name))
 
     def test_an_einsum_of_one_operand_summing_a_run_reads_it_where_it_lies(self):
         # A contiguous array summed over a run of its axes: read in place, the bits of the same einsum of its Tensor;

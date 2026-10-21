@@ -2723,14 +2723,14 @@ PyObject* module_borrowed_norm(PyObject* /*self*/, PyObject* obj)
     return PyFloat_FromDouble(x.dtype >= 2 ? static_cast<double>(static_cast<float>(*norm)) : *norm);
 }
 
-// The product of two float64 matrices read where they lie, one or both column-major: packed from there by gemm's
-// layouts (gemm_at, gemm_bt, gemm_atbt), its tiles gemm's and so its bits, where the column-major one was copied first
-// (NumPy passes BLAS the transpose; a 300 × 300 product of a transposed operand copied 0.7 MB). Every other product
-// with such an operand (another dtype, a vector, a single row or column, whose kernels sum in their own order) is
-// left to the converting path: none.
+// The product of two matrices read where they lie, one or both column-major, in any of the four dtypes: packed (or,
+// through gemm_split, copied into their parts) from there by gemm's layouts (gemm_at, gemm_bt, gemm_atbt), its tiles
+// gemm's and so its bits, where the column-major one was copied first (NumPy passes BLAS the transpose; a 300 × 300
+// product of a transposed operand copied 0.7 MB). Every other product with such an operand (a vector, a single row or
+// column, whose kernels sum in their own order) is left to the converting path: none.
 std::optional<PyObject*> borrowed_transposed_product(const borrowed_operand& left, const borrowed_operand& right)
 {
-    if (left.dtype != 0 || left.shape.size() != 2 || right.shape.size() != 2 || left.shape[1] != right.shape[0]) {
+    if (left.shape.size() != 2 || right.shape.size() != 2 || left.shape[1] != right.shape[0]) {
         return std::nullopt;
     }
     const std::size_t m {left.shape[0]};
@@ -2740,23 +2740,33 @@ std::optional<PyObject*> borrowed_transposed_product(const borrowed_operand& lef
         return std::nullopt;
     }
     try {
-        numerical::buffer<double> c(m * n);
+        std::optional<any_tensor> result;
         {
             const sb::scoped_gil_release unlocked {releases_gil((m * k) + (k * n))};
-            numerical::detail::parallel_zero(c.data(), c.size()); // gemm adds to C
-            const auto* const a {static_cast<const double*>(left.data)};
-            const auto* const b {static_cast<const double*>(right.data)};
-            if (left.transposed && right.transposed) {
-                numerical::detail::gemm_atbt(m, n, k, a, m, b, k, c.data(), n);
-            }
-            else if (left.transposed) {
-                numerical::detail::gemm_at(m, n, k, a, m, b, n, c.data(), n);
-            }
-            else {
-                numerical::detail::gemm_bt(m, n, k, a, k, b, k, c.data(), n);
+            const auto product = [&]<typename T>(std::type_identity<T>) {
+                numerical::buffer<T> c(m * n);
+                numerical::detail::parallel_zero(c.data(), c.size()); // gemm adds to C
+                const auto* const a {static_cast<const T*>(left.data)};
+                const auto* const b {static_cast<const T*>(right.data)};
+                if (left.transposed && right.transposed) {
+                    numerical::detail::gemm_atbt(m, n, k, a, m, b, k, c.data(), n);
+                }
+                else if (left.transposed) {
+                    numerical::detail::gemm_at(m, n, k, a, m, b, n, c.data(), n);
+                }
+                else {
+                    numerical::detail::gemm_bt(m, n, k, a, k, b, k, c.data(), n);
+                }
+                result.emplace(numerical::tensor<T> {{m, n}, std::move(c)});
+            };
+            switch (left.dtype) {
+            case 0: product(std::type_identity<double> {}); break;
+            case 1: product(std::type_identity<std::complex<double>> {}); break;
+            case 2: product(std::type_identity<float> {}); break;
+            default: product(std::type_identity<std::complex<float>> {}); break;
             }
         }
-        return wrap(any_tensor {numerical::tensor<double> {{m, n}, std::move(c)}});
+        return wrap(std::move(*result));
     }
     catch (...) {
         return set_cpp_error();

@@ -32,6 +32,19 @@ namespace {
     return static_cast<int>(i % 11) - 5;
   }
 
+  // fill's value, its imaginary part filled too for a complex T (a zero one would hide how its products round).
+  template <typename T>
+  T entry(std::size_t i)
+  {
+    if constexpr (std::is_floating_point_v<T>) {
+      return fill<T>(i);
+    }
+    else {
+      using R = T::value_type;
+      return T {fill<R>(i), fill<R>((i * 3) + 1)};
+    }
+  }
+
   // The definition the kernel must reproduce: C starts at zero and adds a(i,p)·b(p,j) for p ascending, each
   // product rounded before its sum, or fused with it where the product runs on a fused path (NEON, AVX2, AVX-512 or
   // the AMX, double and float alike), small or packed alike: the plain loop rounds each term as the tile of the path
@@ -231,34 +244,35 @@ TEST(a_left_operand_packed_once_gives_gemm_s_bits_on_every_path)
 namespace {
   // Whether the product with A, B or both given as their transposes (row-major, their rows padded) adds to C what
   // gemm of A and B does, to the bit: gemm_bt, gemm_at, gemm_atbt as `which` is 0, 1, 2.
+  template <typename T>
   bool transposed_operands_equal_gemm(std::size_t m,
                                       std::size_t n,
                                       std::size_t k,
                                       int         which)
   {
-    const std::size_t   ldbt {k + 3};
-    const std::size_t   ldat {m + 2};
-    std::vector<double> a(m * k);
-    std::vector<double> at(k * ldat, -5.0); // the padding past each row of a transpose is never read
-    std::vector<double> b(k * n);
-    std::vector<double> bt(n * ldbt, -7.0);
+    const std::size_t ldbt {k + 3};
+    const std::size_t ldat {m + 2};
+    std::vector<T>    a(m * k);
+    std::vector<T>    at(k * ldat, T(-5)); // the padding past each row of a transpose is never read
+    std::vector<T>    b(k * n);
+    std::vector<T>    bt(n * ldbt, T(-7));
     for (std::size_t i {0}; i < m; ++i) {
       for (std::size_t p {0}; p < k; ++p) {
-        a[(i * k) + p]       = fill<double>((i * k) + p);
-        at[(p * ldat) + i]   = a[(i * k) + p];
+        a[(i * k) + p]     = entry<T>((i * k) + p);
+        at[(p * ldat) + i] = a[(i * k) + p];
       }
     }
     for (std::size_t p {0}; p < k; ++p) {
       for (std::size_t j {0}; j < n; ++j) {
-        b[(p * n) + j]       = fill<double>((p * 7) + (j * 11) + 3);
-        bt[(j * ldbt) + p]   = b[(p * n) + j];
+        b[(p * n) + j]     = entry<T>((p * 7) + (j * 11) + 3);
+        bt[(j * ldbt) + p] = b[(p * n) + j];
       }
     }
-    std::vector<double> want(m * n);
+    std::vector<T> want(m * n);
     for (std::size_t e {0}; e < want.size(); ++e) {
-      want[e] = fill<double>(e + 5);
+      want[e] = entry<T>(e + 5);
     }
-    std::vector<double> got {want};
+    std::vector<T> got {want};
     numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, want.data(), n);
     if (which == 0) {
       numerical::detail::gemm_bt(m, n, k, a.data(), k, bt.data(), ldbt, got.data(), n);
@@ -274,13 +288,17 @@ namespace {
 } // namespace
 
 // Either operand given transposed: the plain loop's small products, the tiles' (partial slivers of A and B, several
-// panels of depth and blocks of columns), on every path this machine runs.
+// panels of depth and blocks of columns), and for complex numbers gemm_split's copies of the parts on either side
+// of its choice, on every path this machine runs, in each of the four types; an empty product leaves C as it is.
 TEST(transposed_operands_give_gemm_s_bits_on_every_path)
 {
   for (const int which : {0, 1, 2}) {
     for (const auto& [m, n, k] : {std::array<std::size_t, 3> {3, 4, 5}, {7, 1, 64}, {64, 64, 64}, {129, 101, 300}, {31, 15, 40},
-                                  {20, 1030, 260}, {200, 9, 70}}) {
-      EXPECT(on_every_path([&] { return transposed_operands_equal_gemm(m, n, k, which); }));
+                                  {20, 1030, 260}, {200, 9, 70}, {2, 600, 300}, {0, 4, 5}, {3, 0, 5}, {3, 4, 0}}) {
+      EXPECT(on_every_path([&] { return transposed_operands_equal_gemm<double>(m, n, k, which); }));
+      EXPECT(on_every_path([&] { return transposed_operands_equal_gemm<float>(m, n, k, which); }));
+      EXPECT(on_every_path([&] { return transposed_operands_equal_gemm<std::complex<double>>(m, n, k, which); }));
+      EXPECT(on_every_path([&] { return transposed_operands_equal_gemm<std::complex<float>>(m, n, k, which); }));
     }
   }
 }
@@ -496,18 +514,6 @@ TEST(small_or_shallow_product_takes_the_plain_loop_and_the_same_order)
 }
 
 namespace {
-  // fill's value, its imaginary part filled too for a complex T (a zero one would hide how its products round).
-  template <typename T>
-  T entry(std::size_t i)
-  {
-    if constexpr (std::is_floating_point_v<T>) {
-      return fill<T>(i);
-    }
-    else {
-      using R = T::value_type;
-      return T {fill<R>(i), fill<R>((i * 3) + 1)};
-    }
-  }
 
   // C += A·B whole, and again as two products of its columns cut at each multiple of 8: the same bits, so that a
   // caller splitting its columns by the threads (an LU inverse's slices) has the same answer on any number of them.

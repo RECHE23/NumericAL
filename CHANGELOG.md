@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A product of matrices in any dtype reads a Fortran-ordered (transposed) NumPy operand where it lies**, as
+  float64's did: packed from there for the tiles, or copied into its parts from there for a complex product through
+  the real kernel, the bits of the product of its C-ordered copy. One M1 Pro, B Fortran-ordered: complex64 3 × 803
+  by 803 × 247 453 → 263 µs (C-ordered 221), complex128 712 → 341 µs (310), float32 300 × 300 × 300 172 → 109 µs.
 - **Complex64 products on the x86-64 units run on complex tiles of their own** (AVX2 and AVX-512, as complex128's:
   each row accumulates `Re a · b` and `Im a · b` apart, by fused multiply-adds, and forms their sum once), where they
   went through the real kernel, copying B's parts for every product. The last bits of complex64 products on x86-64
