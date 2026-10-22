@@ -62,15 +62,43 @@ namespace numerical::detail {
 #endif
   }
 
-  //! \brief `sin` and `cos` of \p x, or \p x and 1 for one under the smallest normal value (an exact sine there).
+  //! \brief `sin` and `cos` of \p x together, as glibc's complex functions take them: its `sincos` under glibc (whose
+  //!        single-precision one strayed from `sinf` and `cosf` by a unit in the last place before 2.29), `std::sin` and
+  //!        `std::cos` elsewhere.
+  inline void sine_and_cosine(double  x,
+                              double& sine,
+                              double& cosine)
+  {
+#if defined(__GLIBC__)
+    ::sincos(x, &sine, &cosine);
+#else
+    sine   = std::sin(x);
+    cosine = std::cos(x);
+#endif
+  }
+
+  //! \brief \ref sine_and_cosine of a `float`.
+  inline void sine_and_cosine(float  x,
+                              float& sine,
+                              float& cosine)
+  {
+#if defined(__GLIBC__)
+    ::sincosf(x, &sine, &cosine);
+#else
+    sine   = std::sin(x);
+    cosine = std::cos(x);
+#endif
+  }
+
+  //! \brief `sin` and `cos` of \p x (\ref sine_and_cosine), or \p x and 1 for one under the smallest normal value (an
+  //!        exact sine there).
   template <std::floating_point R>
   void small_sincos(R  x,
                     R& sine,
                     R& cosine)
   {
     if (std::abs(x) > std::numeric_limits<R>::min()) {
-      sine   = std::sin(x);
-      cosine = std::cos(x);
+      sine_and_cosine(x, sine, cosine);
       return;
     }
     sine   = x;
