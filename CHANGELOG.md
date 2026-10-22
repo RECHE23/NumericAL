@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+2026.10.31 was tagged but never published: its musllinux and 32-bit Windows wheels failed two tests (a square root
+compared with NumPy's to the bit outside glibc, an extent past a 32-bit `Py_ssize_t`). This release carries all of it.
+
+### Development
+- **The test suite builds under GCC 15**, which took a vector set element by element in the complex dot products and
+  scaled adds for maybe used uninitialised: the swapped parts are built in an array and loaded as the operands are, the
+  same code under clang and in GCC 14's loops.
+
 ## 2026.10.31 — 2026-10-22
 
 ### Fixed
