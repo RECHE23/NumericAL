@@ -138,6 +138,11 @@ def numpy_root(a):
     return np.where(scaled, root.real + 2j * root.imag, root).astype(root.dtype)
 
 
+def numpy_power(a, exponent):
+    """NumPy's `a ** exponent`, the halved imaginary part of a scaled square root undone where it has one."""
+    return numpy_root(a) if exponent == 0.5 and type(exponent) is float else a**exponent
+
+
 def parts_close(a, b, scale, tol, near_overflow):
     """Within `tol` times `scale` (the terms' magnitude, elementwise), the NaNs and infinities where NumPy has them;
     an infinity or a NaN on one side only where values near overflow may overflow in one order and not another."""
@@ -248,7 +253,7 @@ def drawn_case(seed, index, largest):
     a = draw_array(rng, shape, dtype, special)
     t = numerical.asarray(a)
     op = rng.choice(["add", "subtract", "multiply", "divide", "negate", "max", "min", "sum", "mean", "norm",
-                     "absolute", "sqrt", "cross", "outer", "vecdot", "trace", "einsum"])
+                     "absolute", "sqrt", "power", "cross", "outer", "vecdot", "trace", "einsum"])
     label = f"{op} {np.dtype(dtype).name} {shape} special={special}"
     exact = parts_equal
 
@@ -300,6 +305,15 @@ def drawn_case(seed, index, largest):
     if op == "sqrt":
         compare = exact if not np.issubdtype(dtype, np.complexfloating) else tolerant(np.sqrt(np.abs(a)), 4.0)
         return label, check(label, lambda: numpy_root(a), lambda: numerical.sqrt(t), compare)
+    if op == "power":
+        exponent = [2, -1, 0.5, 2.0, -1.0, 3, -2, 5, -7][int(rng.integers(9))]
+        label += f" ** {exponent!r}"
+        compare = exact
+        if exponent == 0.5 and np.issubdtype(dtype, np.complexfloating) and not sys.platform.startswith("linux"):
+            compare = tolerant(np.sqrt(np.abs(a)), 4.0)  # NumPy's root is the C library's, glibc's on Linux
+        elif not np.issubdtype(dtype, np.complexfloating) and exponent not in (2, -1, 0.5, 2.0, -1.0):
+            compare = tolerant(np.abs(a) ** exponent, 4.0)  # the C library's pow, NumPy's and std::pow alike
+        return label, check(label, lambda: numpy_power(a, exponent), lambda: t**exponent, compare)
     if op == "cross":
         b = draw_array(rng, shape, dtype, special)
         operands.append(b)

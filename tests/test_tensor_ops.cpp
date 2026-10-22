@@ -578,3 +578,139 @@ TEST(broadcasting_steps_each_operand_or_holds_it_along_the_inner_axis)
   EXPECT(cube(std::vector<std::size_t> {1, 2, 0}) == 2.0);
   EXPECT((numerical::zeros<double>({0, 3}) + counting({3})).size() == 0U);         // an empty result
 }
+
+namespace {
+  // |root² − z| within a few rounding errors of |z|, the real part not negative, the imaginary part of z's sign.
+  template <typename R>
+  bool is_the_root(const std::complex<R>& root,
+                   const std::complex<R>& z)
+  {
+    using wide = long double;
+    const std::complex<wide> r      {root.real(), root.imag()};
+    const std::complex<wide> square {(r.real() * r.real()) - (r.imag() * r.imag()), 2 * r.real() * r.imag()};
+    const wide               error  {std::abs(square - std::complex<wide> {z.real(), z.imag()})};
+    return error <= 8 * static_cast<wide>(std::numeric_limits<R>::epsilon()) * std::abs(std::complex<wide> {z.real(), z.imag()})
+           && !std::signbit(root.real()) && std::signbit(root.imag()) == std::signbit(z.imag());
+  }
+
+  template <typename R>
+  bool complex_roots_hold()
+  {
+    using C = std::complex<R>;
+    const R    inf {std::numeric_limits<R>::infinity()};
+    const R    nan {std::numeric_limits<R>::quiet_NaN()};
+    const R    big {std::numeric_limits<R>::max()};
+    const R    least {std::numeric_limits<R>::min()};
+    const R    tiny {std::numeric_limits<R>::denorm_min()};
+    bool       ok {true};
+    const auto root {[](const C& z) { return numerical::detail::complex_sqrt(z); }};
+    // exact ones: the real and the imaginary axes apart
+    ok = ok && root(C {R {-1}, R {0}}) == C {R {0}, R {1}} && root(C {R {-4}, R {-0.0}}) == C {R {0}, R {-2}};
+    ok = ok && root(C {R {4}, R {0}}) == C {R {2}, R {0}} && std::signbit(root(C {R {4}, R {-0.0}}).imag());
+    ok = ok && root(C {R {0}, R {2}}) == C {R {1}, R {1}} && root(C {R {-0.0}, R {-8}}) == C {R {2}, R {-2}};
+    ok = ok && root(C {R {0}, R {0}}) == C {R {0}, R {0}};
+    // Annex G's infinities and NaNs
+    ok = ok && root(C {nan, inf}) == C {inf, inf} && root(C {R {1}, -inf}) == C {inf, -inf};
+    ok = ok && root(C {-inf, R {2}}) == C {R {0}, inf} && root(C {-inf, R {-2}}) == C {R {0}, -inf};
+    ok = ok && std::isnan(root(C {-inf, nan}).real()) && std::isinf(root(C {-inf, nan}).imag());
+    ok = ok && root(C {inf, R {-2}}) == C {inf, R {-0.0}} && std::signbit(root(C {inf, R {-2}}).imag());
+    ok = ok && root(C {inf, nan}).real() == inf && std::isnan(root(C {inf, nan}).imag());
+    ok = ok && std::isnan(root(C {nan, R {1}}).real()) && std::isnan(root(C {R {1}, nan}).imag());
+    // each branch: either sign of the real part, scaled near overflow (by either part, the imaginary one small or
+    // not, the real one negligible or not) and among subnormal parts, and an imaginary axis of subnormal values
+    for (const C& z : {C {R {3}, R {4}}, C {R {-3}, R {4}}, C {static_cast<R>(-1e3), static_cast<R>(1e-3)}, C {big, R {0.5}}, C {-big, R {0.5}},
+                       C {big, big}, C {-big, big / R {2}}, C {R {1}, big}, C {least, -big}, C {tiny, tiny},
+                       C {-tiny * R {3}, tiny}, C {R {0}, tiny}, C {R {-0.0}, least}, C {tiny, R {1}}, C {-tiny, R {-2}}}) {
+      ok = ok && is_the_root(root(z), z);
+    }
+    // the polar form's loss near the negative real axis: the real part is |y| / (2 √|x|)
+    const C near {root(C {static_cast<R>(-1e20), R {1}})};
+    ok = ok && std::abs(near.real() - static_cast<R>(5e-11)) < static_cast<R>(1e-15) && near.imag() == std::sqrt(static_cast<R>(1e20));
+    // the tensor's square root and the exponent 0.5 take it
+    const numerical::tensor<C> t    {{2}, numerical::buffer<C> {C {R {-1}, R {0}}, C {static_cast<R>(-1e20), R {1}}}};
+    ok = ok && numerical::sqrt(t).data()[0] == C {R {0}, R {1}} && numerical::sqrt(t).data()[1] == near;
+    const numerical::tensor<C> half {std::vector<std::size_t> {}, numerical::buffer<C> {C {R {0.5}, R {0}}}};
+    ok = ok && numerical::pow(t, half).data()[1] == near;
+    const numerical::tensor<R> real {{1}, numerical::buffer<R> {R {9}}};
+    ok = ok && numerical::sqrt(real).data()[0] == R {3};
+    return ok;
+  }
+
+  template <typename R>
+  bool numpy_powers_hold()
+  {
+    using C = std::complex<R>;
+    using numerical::detail::numpy_divide;
+    using numerical::detail::numpy_multiply;
+    using numerical::detail::numpy_power;
+    using numerical::detail::numpy_reciprocal;
+    const R nan  {std::numeric_limits<R>::quiet_NaN()};
+    const C a    {R {1.25}, R {-0.75}};
+    const C wide {R {3}, R {0.5}};
+    bool    ok   {true};
+    for (const bool fused : {false, true}) {
+      const C square {numpy_multiply(a, a, fused)};
+      ok = ok && numpy_power(a, C {R {0}, R {0}}, fused) == C {R {1}, R {0}};
+      ok = ok && numpy_power(a, C {R {0}, R {1}}, fused).imag() != R {0}; // an exponent of i, by std::pow
+      ok = ok && numpy_power(C {R {0}, R {2}}, C {R {2}, R {0}}, fused) == numpy_multiply(C {R {0}, R {2}}, C {R {0}, R {2}}, fused);
+      ok = ok && numpy_power(C {R {0}, R {0}}, C {R {2}, R {1}}, fused) == C {R {0}, R {0}};
+      const C nan_power {numpy_power(C {R {0}, R {-0.0}}, C {R {-1}, R {0}}, fused)};
+      ok = ok && std::isnan(nan_power.real()) && std::isnan(nan_power.imag());
+      ok = ok && numpy_power(a, C {R {1}, R {0}}, fused) == a && numpy_power(a, C {R {2}, R {0}}, fused) == square;
+      ok = ok && numpy_power(a, C {R {3}, R {0}}, fused) == numpy_multiply(a, square, fused);
+      // past the cubes, by the binary powers from 1; a negative exponent's quotient of 1 by them
+      const C fourth {numpy_multiply(square, square, fused)};
+      const C fifth  {numpy_multiply(numpy_multiply(C {R {1}, R {0}}, a, fused), fourth, fused)};
+      ok = ok && numpy_power(a, C {R {5}, R {0}}, fused) == fifth;
+      ok = ok && numpy_power(a, C {R {-1}, R {0}}, fused) == numpy_divide(C {R {1}, R {0}}, numpy_multiply(C {R {1}, R {0}}, a, fused), fused);
+      ok = ok && numpy_power(a, C {R {-2}, R {0}}, fused) == numpy_divide(C {R {1}, R {0}}, numpy_multiply(C {R {1}, R {0}}, square, fused), fused);
+      // any other exponent by std::pow: a fraction, one of 100 or more, an imaginary part
+      // (read back through volatile parts: GCC folds std::pow of constants exactly, where a call rounds as the C
+      // library's cpow does)
+      for (const C& exponent : {C {R {0.5}, R {0}}, C {R {100}, R {0}}, C {R {-100}, R {0}}, C {R {2}, R {1}}, C {nan, R {0}}}) {
+        volatile R real_part      {exponent.real()};
+        volatile R imaginary_part {exponent.imag()};
+        volatile R base_real      {a.real()};
+        volatile R base_imaginary {a.imag()};
+        const C    base           {base_real, base_imaginary};
+        const C    b              {real_part, imaginary_part};
+        const C    want           {std::pow(base, b)};
+        const C    got            {numpy_power(base, b, fused)};
+        ok = ok && ((got == want) || (std::isnan(got.real()) && std::isnan(want.real())));
+      }
+      // the reciprocal: the smaller part over the larger, either way round
+      for (const C& x : {a, wide, C {R {0.5}, R {3}}}) {
+        const C    r           {numpy_reciprocal(x, fused)};
+        const bool real_larger {std::abs(x.imag()) <= std::abs(x.real())};
+        const R    ratio       {real_larger ? x.imag() / x.real() : x.real() / x.imag()};
+        const R    d           {real_larger ? numerical::detail::numpy_muladd(x.imag(), ratio, x.real(), fused)
+                                  : numerical::detail::numpy_muladd(x.real(), ratio, x.imag(), fused)};
+        ok = ok && r == (real_larger ? C {R {1} / d, -ratio / d} : C {ratio / d, R {-1} / d});
+      }
+    }
+    // the tensors' forms, fused as the loops say
+    const numerical::tensor<C>   t     {{2}, numerical::buffer<C> {a, wide}};
+    const numerical::tensor<C>   three {std::vector<std::size_t> {}, numerical::buffer<C> {C {R {3}, R {0}}}};
+    for (const bool fused : {false, true}) {
+      const numerical::numpy_loops loops {.products = fused, .scalar_products = !fused, .quotients = !fused};
+      ok = ok && numerical::numpy_square(t, loops).data()[1] == numpy_multiply(wide, wide, fused);
+      ok = ok && numerical::numpy_reciprocal(t, loops).data()[1] == numpy_reciprocal(wide, !fused);
+      ok = ok && numerical::numpy_power(t, three, loops).data()[0] == numpy_power(a, C {R {3}, R {0}}, !fused);
+    }
+    return ok;
+  }
+} // namespace
+
+// The complex square root as glibc's csqrt (NumPy's on Linux): exact on the axes, Annex G's specials, each scaling.
+TEST(complex_square_roots_are_glibc_s)
+{
+  EXPECT(complex_roots_hold<double>());
+  EXPECT(complex_roots_hold<float>());
+}
+
+// x ** 2, x ** -1 and x ** n as NumPy's square, reciprocal and npy_cpow compute them.
+TEST(complex_powers_as_numpy_computes_them)
+{
+  EXPECT(numpy_powers_hold<double>());
+  EXPECT(numpy_powers_hold<float>());
+}

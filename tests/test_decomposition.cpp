@@ -2469,3 +2469,22 @@ TEST(least_squares_reports_what_numpy_lstsq_reports)
   EXPECT(complex_found.rank == 1 && complex_found.residuals.size() == 1 && complex_found.residuals[0] > 0.0);
   EXPECT_THROWS((void)numerical::least_squares(tall, matrix<double> {{1.0}}), numerical::dimension_error);
 }
+
+// A matrix without rows or columns decomposes into empty factors of NumPy's shapes, each method, thin or full: 0 × 0
+// read the largest of no band of rows.
+TEST(svd_of_empty_matrices_has_empty_factors)
+{
+  for (const auto method : {numerical::svd_method::divide_and_conquer, numerical::svd_method::bidiagonal_qr,
+                            numerical::svd_method::jacobi}) {
+    for (const auto& [rows, cols] : {std::pair<std::size_t, std::size_t> {0, 0}, {0, 3}, {3, 0}}) {
+      for (const bool full : {false, true}) {
+        const matrix<double>                       a   {rows, cols, std::vector<double> {}};
+        const numerical::svd_decomposition<double> svd {a, method, full};
+        const std::size_t                          k   {std::min(rows, cols)};
+        EXPECT(svd.singular_values().size() == 0);
+        EXPECT(svd.u().rows() == rows && svd.u().cols() == (full ? rows : k));
+        EXPECT(svd.v().rows() == cols && svd.v().cols() == (full ? cols : k));
+      }
+    }
+  }
+}

@@ -22,6 +22,17 @@ A change that can break code is listed under **Breaking** and held for a month's
   `-inf + inf j` where NumPy gives `nan + nan j`, and complex64 products differed in their last bit where NumPy fuses.
   The C++ operators keep Annex G; `numpy_multiply` and `numpy_divide` are NumPy's (`numpy_loops` says which fuse).
   **A complex `mean` divides by its count as NumPy divides**, by `n + 0j`: a NaN part makes both parts NaN.
+- **`svd` of a 0 × 0 matrix gives empty factors**, as NumPy's, where it read the largest of no band of rows (an access
+  at address 0 under AddressSanitizer), in C++ and from Python; `cond` of an empty matrix raises `LinAlgError`, as
+  NumPy's, where a bare `ValueError` did.
+- **A complex square root is computed as glibc's `csqrt`**: `sqrt`, and `** 0.5`, took `std::sqrt`, whose libc++
+  form goes through the polar one — `sqrt(-1e20 + 1j)` in single precision had a real part of 755 for 5e-11, and
+  `sqrt(-1 + 0j)` a real part of 6e-17 for 0. Now exact on the axes, Annex G's infinities and NaNs, scaled near
+  overflow and among subnormal parts: NumPy's on Linux to the bit. **A complex `** 2`, `** -1` and `** n` from Python
+  are NumPy's**: the square by its product's vector loop, `** -1` by its own reciprocal (`1 / (inf + inf j)` is
+  NaN there, where `std::complex`'s division gave `0 − 0j`), an integer exponent below 100 by products and a
+  quotient of 1 as `npy_cpow`, each fused as the NumPy beside them fuses it (`numpy_square`, `numpy_reciprocal`,
+  `numpy_power`): `(1e308 + 1e308j) ** 2` was `nan + inf j` where NumPy gives `-inf + inf j`.
 - **`einsum`'s general loop starts each product from its first factor**, where it multiplied a 1 by it: a complex 1
   times an infinity gave a NaN (0 · inf) and −0 came out +0, so a complex `trace` or sum of infinities or signed zeros
   went wrong. **`vector_norm` with `ord=0` counts a NaN** (it is not zero), as NumPy's, where it gave the NaN; with

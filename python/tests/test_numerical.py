@@ -187,6 +187,41 @@ class HighRanks(unittest.TestCase):
             numerical._numpy_loops()
         np.testing.assert_array_equal(np.asarray(a * b), np.asarray(a) * np.asarray(b))
 
+    def test_complex_powers_are_numpys_to_the_bit(self):
+        # ** 2 and ** -1 of a Python integer are NumPy's square and reciprocal, ** 0.5 its square root, any other
+        # integer exponent below 100 its products (npy_cpow): on a grid of special parts and drawn values.
+        values = [0.0, -0.0, np.inf, -np.inf, np.nan, 1e308, -1e308, 1.0, -2.5, 1e-310, 1 + 2.0**-30]
+        rng = np.random.default_rng(23)
+        drawn = rng.standard_normal((200, 2)) * np.exp(rng.uniform(-5, 5, (200, 2)))
+        z = np.array([complex(r, i) for r in values for i in values] + list(drawn[:, 0] + 1j * drawn[:, 1]))
+        for dtype in (np.complex128, np.complex64):
+            with np.errstate(all="ignore"):
+                a = z.astype(dtype)
+                t = numerical.asarray(a)
+                for exponent in (2, -1, 2.0, -1.0, 3, -2, 5, -7, 0, 1):
+                    want, got = a**exponent, np.asarray(t**exponent)
+                    for x, y in ((want.real, got.real), (want.imag, got.imag)):
+                        same = (np.isnan(x) & np.isnan(y)) | ((x == y) & (np.signbit(x) == np.signbit(y)))
+                        self.assertTrue(np.all(same), (np.dtype(dtype).name, exponent, int(np.sum(~same))))
+
+    def test_complex_square_roots_are_glibcs(self):
+        # NumPy's on Linux to the bit (glibc's csqrt); within two units in the last place of the others' (macOS's
+        # libm drops an imaginary part far smaller than the real one, npymath on Windows halves a scaled one).
+        values = [0.0, -0.0, np.inf, -np.inf, np.nan, 1e308, -1e308, 1.0, -1.0, -1e20, 1e-310, 3.0]
+        z = np.array([complex(r, i) for r in values for i in values])
+        for dtype in (np.complex128, np.complex64):
+            with np.errstate(all="ignore"):
+                a = z.astype(dtype)
+                for got in (np.asarray(numerical.sqrt(numerical.asarray(a))), np.asarray(numerical.asarray(a) ** 0.5)):
+                    self.assertEqual(complex(got[values.index(-1.0) * len(values) + values.index(0.0)]), 1j)
+                    near = complex(got[values.index(-1e20) * len(values) + values.index(1.0)])
+                    self.assertLess(abs(near.real - 5e-11), 1e-15)
+                    if sys.platform.startswith("linux"):
+                        want = np.sqrt(a)
+                        for x, y in ((want.real, got.real), (want.imag, got.imag)):
+                            same = (np.isnan(x) & np.isnan(y)) | ((x == y) & (np.signbit(x) == np.signbit(y)))
+                            self.assertTrue(np.all(same), (np.dtype(dtype).name, int(np.sum(~same))))
+
     def test_means_and_norms_where_numpy_says_nothing_or_nan(self):
         # A complex mean divided as NumPy divides, by n + 0j: a NaN part makes both NaN, to NumPy's bits; the smallest
         # magnitude over no element refused, as NumPy's minimum; a result empty along a non-empty axis allowed.
@@ -237,6 +272,17 @@ class HugeEmptyShapes(unittest.TestCase):
             numerical.vector_norm(t, axis=1)
         self.assertEqual(numerical.sum(t, axis=0).shape, (0, big))
         self.assertEqual(numerical.zeros((2 ** 31, 0)).shape, (2 ** 31, 0))
+
+    def test_empty_matrices_decompose_as_numpys(self):
+        # svd of 0 × 0 read the largest of no band of rows; each factor has NumPy's shape, thin or full
+        for shape in ((0, 0), (0, 3), (3, 0)):
+            for full in (True, False):
+                got = numerical.svd(numerical.zeros(shape), full_matrices=full)
+                want = np.linalg.svd(np.zeros(shape), full_matrices=full)
+                self.assertEqual([np.asarray(x).shape for x in got], [x.shape for x in want])
+            with self.assertRaises(numerical.LinAlgError):  # as NumPy's: cond is not defined on empty arrays
+                numerical.cond(numerical.zeros(shape))
+        self.assertEqual(np.asarray(numerical.cond(numerical.zeros((0, 2, 2)))).shape, (0,))
 
 
 class Solve(unittest.TestCase):

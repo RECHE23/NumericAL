@@ -35,6 +35,7 @@
 #include <limits>
 #include <memory>
 #include <numbers>
+#include <numeric>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -6118,7 +6119,8 @@ namespace numerical {
                              }
                              largest[band] = most;
                            });
-      double scale {*std::max_element(largest.begin(), largest.end())};
+      // the largest over no band (no row) is 0, as over zeros
+      double scale {std::accumulate(largest.begin(), largest.end(), 0.0, [](double x, double y) { return std::max(x, y); })};
       if (scale == 0.0) {
         scale = 1.0;
       }

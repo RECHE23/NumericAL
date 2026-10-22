@@ -160,6 +160,179 @@ namespace numerical {
       return C {numpy_muladd(a.real(), ratio, a.imag(), fused) * scale, numpy_muladd(a.imag(), ratio, -a.real(), fused) * scale};
     }
 
+    /*!
+     * \brief NumPy's complex reciprocal `1 / x` (its `reciprocal`, the loop `x ** -1` takes): the ratio of the smaller
+     *        part to the larger, `d` the larger plus the smaller times it (one fused multiply-add where \p fused), then
+     *        `1 / d` and `−ratio / d` — not \ref numpy_divide's quotient of 1.
+     */
+    template <split_complex C>
+    [[nodiscard]] C numpy_reciprocal(const C& x,
+                                     bool     fused)
+    {
+      using R = typename C::value_type;
+      if (std::abs(x.imag()) <= std::abs(x.real())) {
+        const R ratio {x.imag() / x.real()};
+        const R d     {numpy_muladd(x.imag(), ratio, x.real(), fused)};
+        return C {R {1} / d, -ratio / d};
+      }
+      const R ratio {x.real() / x.imag()};
+      const R d     {numpy_muladd(x.real(), ratio, x.imag(), fused)};
+      return C {ratio / d, R {-1} / d};
+    }
+
+    /*!
+     * \brief NumPy's complex power `a ** b` (npymath's `npy_cpow`): 1 for a zero exponent, 0 or NaN for a zero base;
+     *        an integer exponent below 100 in magnitude by products (\ref numpy_multiply, from 1 past the cubes) and,
+     *        when negative, the quotient of 1 by them (\ref numpy_divide), each fused where \p fused; any other by
+     *        `std::pow`, where NumPy calls the C library's `cpow`.
+     */
+    template <split_complex C>
+    [[nodiscard]] C numpy_power(const C& a,
+                                const C& b,
+                                bool     fused)
+    {
+      using R = typename C::value_type;
+      if (b.real() == R {0} && b.imag() == R {0}) {
+        return C {R {1}, R {0}};
+      }
+      if (a.real() == R {0} && a.imag() == R {0}) {
+        if (b.real() > R {0}) {
+          return C {R {0}, R {0}};
+        }
+        return C {std::numeric_limits<R>::quiet_NaN(), std::numeric_limits<R>::quiet_NaN()};
+      }
+      if (b.imag() != R {0} || !(b.real() > R {-100} && b.real() < R {100}) || std::trunc(b.real()) != b.real()) {
+        return std::pow(a, b);
+      }
+      const auto n {static_cast<int>(b.real())};
+      if (n == 1) {
+        return a;
+      }
+      if (n == 2) {
+        return numpy_multiply(a, a, fused);
+      }
+      if (n == 3) {
+        return numpy_multiply(a, numpy_multiply(a, a, fused), fused);
+      }
+      const auto magnitude {static_cast<unsigned>(n < 0 ? -n : n)};
+      C          product   {R {1}, R {0}};
+      C          power     {a};
+      for (unsigned bit {1U};; bit <<= 1U) { // the binary powers of a, those of the exponent's bits multiplied in
+        if ((magnitude & bit) != 0U) {
+          product = numpy_multiply(product, power, fused);
+        }
+        if (magnitude < (bit << 1U)) {
+          break;
+        }
+        power = numpy_multiply(power, power, fused);
+      }
+      if (n < 0) {
+        return numpy_divide(C {R {1}, R {0}}, product, fused);
+      }
+      return product;
+    }
+
+    /*!
+     * \brief The square root of a complex number, as the GNU C library's `csqrt` computes it (NumPy's on Linux, to the
+     *        bit): the infinities and NaNs of C's Annex G; a real or an imaginary argument apart (the root of `-1` is
+     *        `i` exactly, that of `y i` has equal parts); otherwise `sqrt((|z| ± re) / 2)` for the larger part and the
+     *        imaginary part over twice it for the other, scaled by 4 near overflow and by a power of 2 among subnormal
+     *        parts. `std::sqrt` of libc++ goes through the polar form: `sqrt(-1e20 + 1j)` in single precision had a
+     *        real part of 755 for 5e-11.
+     */
+    template <std::floating_point R>
+    [[nodiscard]] std::complex<R> complex_sqrt(const std::complex<R>& z)
+    {
+      constexpr R inf   {std::numeric_limits<R>::infinity()};
+      constexpr R nan   {std::numeric_limits<R>::quiet_NaN()};
+      constexpr R least {std::numeric_limits<R>::min()};
+      constexpr R half  {0.5};
+      R           x     {z.real()};
+      R           y     {z.imag()};
+      if (std::isinf(y)) {
+        return {inf, y};
+      }
+      if (std::isinf(x)) {
+        if (x < R {0}) {
+          return {std::isnan(y) ? nan : R {0}, std::copysign(inf, y)};
+        }
+        return {x, std::isnan(y) ? nan : std::copysign(R {0}, y)};
+      }
+      if (std::isnan(x) || std::isnan(y)) {
+        return {nan, nan};
+      }
+      if (y == R {0}) {
+        if (x < R {0}) {
+          return {R {0}, std::copysign(std::sqrt(-x), y)};
+        }
+        return {std::abs(std::sqrt(x)), y};
+      }
+      if (x == R {0}) {
+        const R part {std::abs(y) >= R {2} *least ? std::sqrt(half * std::abs(y)) : half * std::sqrt(R {2} *std::abs(y))};
+        return {part, std::copysign(part, y)};
+      }
+      int scale {0};
+      if (std::abs(x) > std::numeric_limits<R>::max() / R {4}) {
+        scale = 1;
+        x     = std::ldexp(x, -2);
+        y     = std::ldexp(y, -2);
+      }
+      else if (std::abs(y) > std::numeric_limits<R>::max() / R {4}) {
+        scale = 1;
+        x     = std::abs(x) >= R {4} *least ? std::ldexp(x, -2) : R {0};
+        y     = std::ldexp(y, -2);
+      }
+      else if (std::abs(x) < R {2} *least && std::abs(y) < R {2} *least) {
+        scale = -((std::numeric_limits<R>::digits + 1) / 2);
+        x     = std::ldexp(x, -2 * scale);
+        y     = std::ldexp(y, -2 * scale);
+      }
+      const R modulus {std::hypot(x, y)};
+      R       re      {};
+      R       im      {};
+      if (x > R {0}) { // re from |z| + x, im = y / (2 re): no cancellation
+        re = std::sqrt(half * (modulus + x));
+        if (scale == 1 && std::abs(y) < R {1}) {
+          im    = y / re;
+          re    = std::ldexp(re, scale);
+          scale = 0;
+        }
+        else {
+          im = half * (y / re);
+        }
+      }
+      else { // im from |z| − x, re = |y| / (2 im)
+        im = std::sqrt(half * (modulus - x));
+        if (scale == 1 && std::abs(y) < R {1}) {
+          re    = std::abs(y / im);
+          im    = std::ldexp(im, scale);
+          scale = 0;
+        }
+        else {
+          re = std::abs(half * (y / im));
+        }
+      }
+      if (scale != 0) {
+        re = std::ldexp(re, scale);
+        im = std::ldexp(im, scale);
+      }
+      return {re, std::copysign(im, y)};
+    }
+
+    //! \brief The square root of a scalar, as `std::sqrt` gives it.
+    template <typename T>
+    [[nodiscard]] T root(const T& x)
+    {
+      return static_cast<T>(std::sqrt(x));
+    }
+
+    //! \brief The square root of a complex number of `float` or `double`: \ref complex_sqrt.
+    template <split_complex T>
+    [[nodiscard]] T root(const T& x)
+    {
+      return complex_sqrt(x);
+    }
+
     //! \brief Whether NumPy's complex product fuses its multiply-adds on this processor: on arm64, and on x86-64
     //!        where its AVX2 loop runs (FMA with it); elsewhere its loop rounds each product.
     [[nodiscard]] inline bool numpy_fuses_products() noexcept
@@ -675,6 +848,44 @@ namespace numerical {
     return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_divide(x, y, fused); });
   }
 
+  //! \brief `x ** 2` of a complex tensor as NumPy's `square` computes it (the loop of an array to the Python integer
+  //!        2): its product's vector loop, fused as \p loops says of it.
+  template <detail::split_complex C>
+  [[nodiscard]] tensor<C> numpy_square(const tensor<C>&   a,
+                                       const numpy_loops& loops = numpy_wheel_loops())
+  {
+    const bool fused {loops.products};
+    return map(a, [fused](const C& x) { return detail::numpy_multiply(x, x, fused); });
+  }
+
+  //! \brief `x ** -1` of a complex tensor as NumPy's `reciprocal` computes it (the loop of an array to the Python
+  //!        integer -1, \ref detail::numpy_reciprocal), fused as \p loops says of its scalar loops.
+  template <detail::split_complex C>
+  [[nodiscard]] tensor<C> numpy_reciprocal(const tensor<C>&   a,
+                                           const numpy_loops& loops = numpy_wheel_loops())
+  {
+    const bool fused {loops.quotients};
+    return map(a, [fused](const C& x) { return detail::numpy_reciprocal(x, fused); });
+  }
+
+  //! \brief `a ** b` of complex tensors, broadcast, as NumPy's `power` computes each (\ref detail::numpy_power), fused
+  //!        as \p loops says of its scalar loops.
+  template <detail::split_complex C>
+  [[nodiscard]] tensor<C> numpy_power(const tensor<C>&   a,
+                                      const tensor<C>&   b,
+                                      const numpy_loops& loops = numpy_wheel_loops())
+  {
+    const bool fused {loops.quotients};
+    return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_power(x, y, fused); });
+  }
+
+  //! \brief The square root of every element: `std::sqrt` of a real one, \ref detail::complex_sqrt of a complex one.
+  template <typename T>
+  [[nodiscard]] tensor<T> sqrt(const tensor<T>& a)
+  {
+    return map(a, [](const T& x) { return detail::root(x); });
+  }
+
   //! \brief Element-wise sum, broadcast. \throws dimension_error If the shapes do not broadcast.
   template <typename T>
   [[nodiscard]] tensor<T> operator+(const tensor<T>& a,
@@ -744,7 +955,7 @@ namespace numerical {
           return map(a, [](const T& x) { return detail::square(x); });
         }
         if (y == T(0.5)) {
-          return map(a, [](const T& x) { return static_cast<T>(std::sqrt(x)); });
+          return map(a, [](const T& x) { return detail::root(x); });
         }
         if (y == T(-1)) {
           return map(a, [](const T& x) { return static_cast<T>(T(1) / x); });

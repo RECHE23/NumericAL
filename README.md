@@ -205,7 +205,9 @@ real dtypes only (NumPy orders complex numbers lexicographically; NumericAL does
 its loops meet them). Operands of two dtypes
 promote as NumPy 2 promotes them: complex where one is, single precision only where both are, a Python number keeping
 the tensor's precision (`float32 + 2.0` is float32). float32 and complex64 arithmetic is single precision, as NumPy's:
-`+ - * /` and `sqrt` give its very bits.
+`+ - * /` and `**` by an integer give its very bits, complex ones included (each fused as the NumPy beside it
+fuses it); a complex square root is glibc's `csqrt`, NumPy's on Linux to the bit (macOS's and Windows' libraries
+stray from it, and from the exact root, past its last bits).
 
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)` (`det`), `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)` (`inv`), `pinv(a, rcond, hermitian)`,

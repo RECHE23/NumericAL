@@ -810,6 +810,8 @@ def cond(x, p=None):
     x = _tensor(x)
     if len(x.shape) < 2:
         raise LinAlgError("cond: a matrix or a stack of matrices (rank ≥ 2)")
+    if 0 in x.shape[-2:]:  # as NumPy's
+        raise LinAlgError("cond is not defined on empty arrays")
     if p in (None, 2, -2):
         values = svdvals(x)
         largest, smallest = _number_if_scalar(max(values, axis=-1)), _number_if_scalar(min(values, axis=-1))
@@ -1092,6 +1094,14 @@ def _arithmetic(op, reflected=False):
 
     def method(self, other):
         kind = type(other)
+        if op == "^" and not reflected and self.dtype.startswith("complex"):
+            # NumPy takes an array to the Python integer 2 or -1, or the float 0.5, by its square, its reciprocal or its
+            # square root, not by its power
+            shortcut = {(int, 2): "2", (int, -1): "r", (float, 0.5): "h"}.get((kind, other)) if kind in (int, float) else None
+            if shortcut is not None:
+                if not _numpy_loops_measured:
+                    _numpy_loops()
+                return _native(_numerical._power_shortcut, shortcut, self)
         if kind is Tensor and other.dtype == self.dtype:  # nothing to promote: the common cases, straight through
             a, b = self, other
         elif kind is float or kind is int:  # a real Python number is weak: it takes the tensor's dtype
@@ -1103,7 +1113,7 @@ def _arithmetic(op, reflected=False):
                 return NotImplemented
         if reflected:
             a, b = b, a
-        if not _numpy_loops_measured and op in ("*", "/"):
+        if not _numpy_loops_measured and op in ("*", "/", "^"):
             _numpy_loops()
         return _native(_numerical._binary, op, a, b)
 
@@ -1255,6 +1265,8 @@ absolute.__name__ = "absolute"
 def power(a, b):
     """`a` to the power `b` element by element, broadcast, as ``numpy.power``."""
     a, b = _same_dtype(a, b)
+    if not _numpy_loops_measured:
+        _numpy_loops()
     return _native(_numerical._binary, "^", a, b)
 
 

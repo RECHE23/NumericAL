@@ -1277,6 +1277,22 @@ numerical::tensor<T> quotient_as_numpy(const numerical::tensor<T>& a, const nume
     return numerical::numpy_divide(a, b, loops);
 }
 
+// `a ** b` as NumPy's power computes it: a real type's as std::pow (the exponents NumPy takes apart, 2, 0.5 and -1,
+// exactly); a complex type's as npymath's npy_cpow (numerical::numpy_power).
+template <typename T>
+numerical::tensor<T> power_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
+                                    const numerical::numpy_loops& /*loops*/)
+{
+    return numerical::pow(a, b);
+}
+
+template <numerical::detail::split_complex T>
+numerical::tensor<T> power_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
+                                    const numerical::numpy_loops& loops)
+{
+    return numerical::numpy_power(a, b, loops);
+}
+
 template <typename T>
 PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
@@ -1288,7 +1304,7 @@ PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::ten
             case '+': result.emplace(a + b); break;
             case '-': result.emplace(a - b); break;
             case '*': result.emplace(product_as_numpy(a, b, loops)); break;
-            case '^': result.emplace(numerical::pow(a, b)); break;
+            case '^': result.emplace(power_as_numpy(a, b, loops)); break;
             default: result.emplace(quotient_as_numpy(a, b, loops)); break;
         }
     }
@@ -1316,6 +1332,54 @@ PyObject* module_binary(PyObject* /*self*/, PyObject* args)
     }
     try {
         return std::visit([&](const auto& x) { return binary_on(op[0], x, std::get<std::decay_t<decltype(x)>>(*b)); }, *a);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// A complex tensor to the Python integer 2 or -1, or the float 0.5, as NumPy takes an array there: its square (the
+// product's vector loop), its reciprocal, its square root.
+template <typename T>
+PyObject* power_shortcut_on(char kind, const numerical::tensor<T>& t)
+{
+    if constexpr (numerical::detail::split_complex<T>) {
+        const numerical::numpy_loops loops {numpy_loops_beside()};
+        std::optional<any_tensor>    result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+            switch (kind) {
+                case '2': result.emplace(numerical::numpy_square(t, loops)); break;
+                case 'r': result.emplace(numerical::numpy_reciprocal(t, loops)); break;
+                default: result.emplace(numerical::sqrt(t)); break;
+            }
+        }
+        return wrap(std::move(*result));
+    }
+    else {
+        PyErr_SetString(PyExc_TypeError, "_power_shortcut: a complex tensor");
+        return nullptr;
+    }
+}
+
+// _power_shortcut(kind, a) -> Tensor: kind "2" (square), "r" (reciprocal) or "h" (square root) of a complex tensor.
+PyObject* module_power_shortcut(PyObject* /*self*/, PyObject* args)
+{
+    const char* kind = nullptr;
+    PyObject*   x    = nullptr;
+    if (PyArg_ParseTuple(args, "sO", &kind, &x) == 0) {
+        return nullptr;
+    }
+    if (std::string_view {kind}.size() != 1 || std::string_view {"2rh"}.find(kind[0]) == std::string_view::npos) {
+        PyErr_SetString(PyExc_ValueError, "_power_shortcut: kind is 2, r or h");
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        return std::visit([&](const auto& t) { return power_shortcut_on(kind[0], t); }, *a);
     }
     catch (...) {
         return set_cpp_error();
@@ -1431,8 +1495,8 @@ PyObject* unary_on(std::string_view name, const numerical::tensor<T>& t)
     if (name == "log") {
         return wrap(any_tensor {map(t, [](const T& x) { return std::log(x); })});
     }
-    if (name == "sqrt") {
-        return wrap(any_tensor {map(t, [](const T& x) { return std::sqrt(x); })});
+    if (name == "sqrt") { // a complex root as glibc's csqrt, NumPy's (std::sqrt of libc++ goes by the polar form)
+        return wrap(any_tensor {numerical::sqrt(t)});
     }
     if (name == "sin") {
         return wrap(any_tensor {map(t, [](const T& x) { return std::sin(x); })});
@@ -3466,6 +3530,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "determinant(a) -> number\nThe determinant of a square matrix (float or complex).");
     m.raw("_take", module_take, METH_VARARGS,
           "_take(t, starts, steps, counts, keep) -> Tensor or number\nThe strided copy behind Tensor.__getitem__.");
+    m.raw("_power_shortcut", module_power_shortcut, METH_VARARGS,
+          "_power_shortcut(kind, a) -> Tensor\nA complex tensor squared (\"2\"), inverted (\"r\") or rooted (\"h\") as NumPy's ** 2, ** -1, ** 0.5.");
     m.raw("_binary", module_binary, METH_VARARGS,
           "_binary(op, a, b) -> Tensor\nElement-wise a op b (op one of + - * /), broadcast; one dtype.");
     m.raw("_stack_last", module_stack_last, METH_VARARGS,
