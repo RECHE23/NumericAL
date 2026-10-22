@@ -26,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+#include "complex_math.hpp"
 #include "simd.hpp"
 #include "tensor.hpp"
 
@@ -232,93 +233,6 @@ namespace numerical {
       return product;
     }
 
-    /*!
-     * \brief The square root of a complex number, as the GNU C library's `csqrt` computes it (NumPy's on Linux, to the
-     *        bit): the infinities and NaNs of C's Annex G; a real or an imaginary argument apart (the root of `-1` is
-     *        `i` exactly, that of `y i` has equal parts); otherwise `sqrt((|z| ± re) / 2)` for the larger part and the
-     *        imaginary part over twice it for the other, scaled by 4 near overflow and by a power of 2 among subnormal
-     *        parts. `std::sqrt` of libc++ goes through the polar form: `sqrt(-1e20 + 1j)` in single precision had a
-     *        real part of 755 for 5e-11.
-     */
-    template <std::floating_point R>
-    [[nodiscard]] std::complex<R> complex_sqrt(const std::complex<R>& z)
-    {
-      constexpr R inf   {std::numeric_limits<R>::infinity()};
-      constexpr R nan   {std::numeric_limits<R>::quiet_NaN()};
-      constexpr R least {std::numeric_limits<R>::min()};
-      constexpr R half  {0.5};
-      R           x     {z.real()};
-      R           y     {z.imag()};
-      if (std::isinf(y)) {
-        return {inf, y};
-      }
-      if (std::isinf(x)) {
-        if (x < R {0}) {
-          return {std::isnan(y) ? nan : R {0}, std::copysign(inf, y)};
-        }
-        return {x, std::isnan(y) ? nan : std::copysign(R {0}, y)};
-      }
-      if (std::isnan(x) || std::isnan(y)) {
-        return {nan, nan};
-      }
-      if (y == R {0}) {
-        if (x < R {0}) {
-          return {R {0}, std::copysign(std::sqrt(-x), y)};
-        }
-        return {std::abs(std::sqrt(x)), y};
-      }
-      if (x == R {0}) {
-        const R part {std::abs(y) >= R {2} *least ? std::sqrt(half * std::abs(y)) : half * std::sqrt(R {2} *std::abs(y))};
-        return {part, std::copysign(part, y)};
-      }
-      int scale {0};
-      if (std::abs(x) > std::numeric_limits<R>::max() / R {4}) {
-        scale = 1;
-        x     = std::ldexp(x, -2);
-        y     = std::ldexp(y, -2);
-      }
-      else if (std::abs(y) > std::numeric_limits<R>::max() / R {4}) {
-        scale = 1;
-        x     = std::abs(x) >= R {4} *least ? std::ldexp(x, -2) : R {0};
-        y     = std::ldexp(y, -2);
-      }
-      else if (std::abs(x) < R {2} *least && std::abs(y) < R {2} *least) {
-        scale = -((std::numeric_limits<R>::digits + 1) / 2);
-        x     = std::ldexp(x, -2 * scale);
-        y     = std::ldexp(y, -2 * scale);
-      }
-      const R modulus {std::hypot(x, y)};
-      R       re      {};
-      R       im      {};
-      if (x > R {0}) { // re from |z| + x, im = y / (2 re): no cancellation
-        re = std::sqrt(half * (modulus + x));
-        if (scale == 1 && std::abs(y) < R {1}) {
-          im    = y / re;
-          re    = std::ldexp(re, scale);
-          scale = 0;
-        }
-        else {
-          im = half * (y / re);
-        }
-      }
-      else { // im from |z| − x, re = |y| / (2 im)
-        im = std::sqrt(half * (modulus - x));
-        if (scale == 1 && std::abs(y) < R {1}) {
-          re    = std::abs(y / im);
-          im    = std::ldexp(im, scale);
-          scale = 0;
-        }
-        else {
-          re = std::abs(half * (y / im));
-        }
-      }
-      if (scale != 0) {
-        re = std::ldexp(re, scale);
-        im = std::ldexp(im, scale);
-      }
-      return {re, std::copysign(im, y)};
-    }
-
     //! \brief The square root of a scalar, as `std::sqrt` gives it.
     template <typename T>
     [[nodiscard]] T root(const T& x)
@@ -331,6 +245,130 @@ namespace numerical {
     [[nodiscard]] T root(const T& x)
     {
       return complex_sqrt(x);
+    }
+
+    //! \brief `exp` of a scalar, as `std::exp` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_exp(const T& x)
+    {
+      return static_cast<T>(std::exp(x));
+    }
+
+    //! \brief `exp` of a complex number of `float` or `double`: \ref complex_exp.
+    template <split_complex T>
+    [[nodiscard]] T elementary_exp(const T& x)
+    {
+      return complex_exp(x);
+    }
+
+    //! \brief `log` of a scalar, as `std::log` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_log(const T& x)
+    {
+      return static_cast<T>(std::log(x));
+    }
+
+    //! \brief `log` of a complex number of `float` or `double`: \ref complex_log.
+    template <split_complex T>
+    [[nodiscard]] T elementary_log(const T& x)
+    {
+      return complex_log(x);
+    }
+
+    //! \brief `sin` of a scalar, as `std::sin` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_sin(const T& x)
+    {
+      return static_cast<T>(std::sin(x));
+    }
+
+    //! \brief `sin` of a complex number of `float` or `double`: \ref complex_sin.
+    template <split_complex T>
+    [[nodiscard]] T elementary_sin(const T& x)
+    {
+      return complex_sin(x);
+    }
+
+    //! \brief `cos` of a scalar, as `std::cos` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_cos(const T& x)
+    {
+      return static_cast<T>(std::cos(x));
+    }
+
+    //! \brief `cos` of a complex number of `float` or `double`: \ref complex_cos.
+    template <split_complex T>
+    [[nodiscard]] T elementary_cos(const T& x)
+    {
+      return complex_cos(x);
+    }
+
+    //! \brief `tan` of a scalar, as `std::tan` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_tan(const T& x)
+    {
+      return static_cast<T>(std::tan(x));
+    }
+
+    //! \brief `tan` of a complex number of `float` or `double`: \ref complex_tan.
+    template <split_complex T>
+    [[nodiscard]] T elementary_tan(const T& x)
+    {
+      return complex_tan(x);
+    }
+
+    //! \brief `tanh` of a scalar, as `std::tanh` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_tanh(const T& x)
+    {
+      return static_cast<T>(std::tanh(x));
+    }
+
+    //! \brief `tanh` of a complex number of `float` or `double`: \ref complex_tanh.
+    template <split_complex T>
+    [[nodiscard]] T elementary_tanh(const T& x)
+    {
+      return complex_tanh(x);
+    }
+
+    /*!
+     * \brief NumPy's complex magnitude (its `absolute`'s vector loop): the parts' magnitudes, an infinite one making
+     *        both infinite and then a NaN both NaN, then the larger times `sqrt(ratio² + 1)` for the ratio of the
+     *        smaller to it (0 where the larger is 0 or the smaller infinite), `ratio² + 1` one fused multiply-add
+     *        where \p fused.
+     */
+    template <split_complex C>
+    [[nodiscard]] typename C::value_type numpy_absolute(const C& x,
+                                                        bool     fused)
+    {
+      using R = typename C::value_type;
+      constexpr R inf         {std::numeric_limits<R>::infinity()};
+      constexpr R nan         {std::numeric_limits<R>::quiet_NaN()};
+      R           re          {std::abs(x.real())};
+      R           im          {std::abs(x.imag())};
+      const bool  re_infinite {re == inf};
+      const bool  im_infinite {im == inf};
+      if (re_infinite) {
+        im = inf;
+      }
+      if (im_infinite) {
+        re = inf;
+      }
+      const bool re_nan {std::isnan(re)};
+      const bool im_nan {std::isnan(im)};
+      if (re_nan) {
+        im = nan;
+      }
+      if (im_nan) {
+        re = nan;
+      }
+      const R larger  {std::max(re, im)};
+      const R smaller {std::min(im, re)};
+      R       ratio   {0};
+      if (larger != R {0} && smaller != inf) {
+        ratio = smaller / larger;
+      }
+      return std::sqrt(numpy_muladd(ratio, ratio, R {1}, fused)) * larger;
     }
 
     //! \brief Whether NumPy's complex product fuses its multiply-adds on this processor: on arm64, and on x86-64
@@ -848,6 +886,16 @@ namespace numerical {
     return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_divide(x, y, fused); });
   }
 
+  //! \brief `|x|` of every element of a complex tensor as NumPy's `absolute` computes it
+  //!        (\ref detail::numpy_absolute), fused as \p loops says of its vector loops.
+  template <detail::split_complex C>
+  [[nodiscard]] tensor<typename C::value_type> numpy_absolute(const tensor<C>&   a,
+                                                              const numpy_loops& loops = numpy_wheel_loops())
+  {
+    const bool fused {loops.products};
+    return map(a, [fused](const C& x) { return detail::numpy_absolute(x, fused); });
+  }
+
   //! \brief `x ** 2` of a complex tensor as NumPy's `square` computes it (the loop of an array to the Python integer
   //!        2): its product's vector loop, fused as \p loops says of it.
   template <detail::split_complex C>
@@ -877,6 +925,48 @@ namespace numerical {
   {
     const bool fused {loops.quotients};
     return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_power(x, y, fused); });
+  }
+
+  //! \brief `exp` of every element: `std::exp` of a real one, \ref detail::complex_exp of a complex one.
+  template <typename T>
+  [[nodiscard]] tensor<T> exp(const tensor<T>& a)
+  {
+    return map(a, [](const T& x) { return detail::elementary_exp(x); });
+  }
+
+  //! \brief `log` of every element: `std::log` of a real one, \ref detail::complex_log of a complex one.
+  template <typename T>
+  [[nodiscard]] tensor<T> log(const tensor<T>& a)
+  {
+    return map(a, [](const T& x) { return detail::elementary_log(x); });
+  }
+
+  //! \brief `sin` of every element: `std::sin` of a real one, \ref detail::complex_sin of a complex one.
+  template <typename T>
+  [[nodiscard]] tensor<T> sin(const tensor<T>& a)
+  {
+    return map(a, [](const T& x) { return detail::elementary_sin(x); });
+  }
+
+  //! \brief `cos` of every element: `std::cos` of a real one, \ref detail::complex_cos of a complex one.
+  template <typename T>
+  [[nodiscard]] tensor<T> cos(const tensor<T>& a)
+  {
+    return map(a, [](const T& x) { return detail::elementary_cos(x); });
+  }
+
+  //! \brief `tan` of every element: `std::tan` of a real one, \ref detail::complex_tan of a complex one.
+  template <typename T>
+  [[nodiscard]] tensor<T> tan(const tensor<T>& a)
+  {
+    return map(a, [](const T& x) { return detail::elementary_tan(x); });
+  }
+
+  //! \brief `tanh` of every element: `std::tanh` of a real one, \ref detail::complex_tanh of a complex one.
+  template <typename T>
+  [[nodiscard]] tensor<T> tanh(const tensor<T>& a)
+  {
+    return map(a, [](const T& x) { return detail::elementary_tanh(x); });
   }
 
   //! \brief The square root of every element: `std::sqrt` of a real one, \ref detail::complex_sqrt of a complex one.

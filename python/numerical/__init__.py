@@ -1252,6 +1252,8 @@ def linspace(start, stop, num=50):
 
 def _elementwise(name, doc):
     def function(a):
+        if name == "abs" and not _numpy_loops_measured:  # a complex magnitude fused as NumPy's vector loop
+            _numpy_loops()
         return _numerical._unary(name, a if isinstance(a, Tensor) else asarray(a))
 
     function.__name__ = name

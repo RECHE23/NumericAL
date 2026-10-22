@@ -13,6 +13,16 @@ A change that can break code is listed under **Breaking** and held for a month's
 2026.10.31 was tagged but never published: its musllinux and 32-bit Windows wheels failed two tests (a square root
 compared with NumPy's to the bit outside glibc, an extent past a 32-bit `Py_ssize_t`). This release carries all of it.
 
+### Fixed
+- **A complex number's `exp`, `log`, `sin`, `cos`, `tan` and `tanh` are computed as the GNU C library computes them**
+  (`numerical/complex_math.hpp`), where they were `std::`'s, libc++'s on macOS and MSVC's on Windows, which lose a part
+  glibc's keeps: `tan(1e308 + 0j)` was NaN for −0.509, `sin(1e308j)` had a NaN real part for 0, `log(1 + 1e-20j)` a
+  real part of 0 for 5e-41. Annex G's infinities and NaNs, the parts scaled against overflow, the logarithm near the
+  unit circle from an almost exact `x² + y² − 1`, the sums of products fused where glibc's arm64 build fuses them:
+  NumPy's on Linux to the bit, x86-64 and arm64, both complex types. `numerical::exp`, `log`, `sin`, `cos`, `tan` and
+  `tanh` of a tensor take them. **A complex magnitude from Python is NumPy's** (`numpy_absolute`: the larger part times
+  `sqrt(ratio² + 1)`, fused as its vector loop), where `std::abs` differed from it by two units in the last place.
+
 ### Development
 - **The test suite builds under GCC 15**, which took a vector set element by element in the complex dot products and
   scaled adds for maybe used uninitialised: the swapped parts are built in an array and loaded as the operands are, the

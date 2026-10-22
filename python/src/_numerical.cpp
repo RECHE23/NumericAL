@@ -1490,22 +1490,22 @@ PyObject* unary_on(std::string_view name, const numerical::tensor<T>& t)
 {
     using numerical::map;
     if (name == "exp") {
-        return wrap(any_tensor {map(t, [](const T& x) { return std::exp(x); })});
+        return wrap(any_tensor {numerical::exp(t)});
     }
     if (name == "log") {
-        return wrap(any_tensor {map(t, [](const T& x) { return std::log(x); })});
+        return wrap(any_tensor {numerical::log(t)});
     }
-    if (name == "sqrt") { // a complex root as glibc's csqrt, NumPy's (std::sqrt of libc++ goes by the polar form)
+    if (name == "sqrt") { // a complex number's elementary functions as glibc's, NumPy's (numerical/complex_math.hpp)
         return wrap(any_tensor {numerical::sqrt(t)});
     }
     if (name == "sin") {
-        return wrap(any_tensor {map(t, [](const T& x) { return std::sin(x); })});
+        return wrap(any_tensor {numerical::sin(t)});
     }
     if (name == "cos") {
-        return wrap(any_tensor {map(t, [](const T& x) { return std::cos(x); })});
+        return wrap(any_tensor {numerical::cos(t)});
     }
     if (name == "tan") {
-        return wrap(any_tensor {map(t, [](const T& x) { return std::tan(x); })});
+        return wrap(any_tensor {numerical::tan(t)});
     }
     if (name == "conj") { // a real tensor's own elements
         if constexpr (complex_scalar<T>) {
@@ -1516,10 +1516,15 @@ PyObject* unary_on(std::string_view name, const numerical::tensor<T>& t)
         }
     }
     if (name == "tanh") {
-        return wrap(any_tensor {map(t, [](const T& x) { return std::tanh(x); })});
+        return wrap(any_tensor {numerical::tanh(t)});
     }
-    if (name == "abs") { // a real result of the same precision, as NumPy's absolute
-        return wrap(any_tensor {map(t, [](const T& x) { return static_cast<real_of_t<T>>(std::abs(x)); })});
+    if (name == "abs") { // a real result of the same precision, as NumPy's absolute (a complex one by its vector loop)
+        if constexpr (numerical::detail::split_complex<T>) {
+            return wrap(any_tensor {numerical::numpy_absolute(t, numpy_loops_beside())});
+        }
+        else {
+            return wrap(any_tensor {map(t, [](const T& x) { return static_cast<real_of_t<T>>(std::abs(x)); })});
+        }
     }
     PyErr_SetString(PyExc_ValueError, "_unary: name is exp, log, sqrt, sin, cos, tan, tanh, abs or conj");
     return nullptr;

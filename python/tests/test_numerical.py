@@ -223,6 +223,39 @@ class HighRanks(unittest.TestCase):
                             same = (np.isnan(x) & np.isnan(y)) | ((x == y) & (np.signbit(x) == np.signbit(y)))
                             self.assertTrue(np.all(same), (np.dtype(dtype).name, int(np.sum(~same))))
 
+    def test_complex_elementary_functions_are_glibcs(self):
+        # NumPy's under glibc to the bit (its cexp, clog, csin, ccos, ctan, ctanh); elsewhere NumPy takes the platform's
+        # library, which chooses otherwise among infinities and NaNs and strays further near the unit circle: the
+        # finite answers agree within a few dozen units in the last place of the larger part.
+        values = [0.0, -0.0, np.inf, -np.inf, np.nan, 1e308, -1e308, 1.0, -1.0, 1e-310, 710.0, -745.0, 40.0, 1e-20]
+        rng = np.random.default_rng(29)
+        drawn = rng.standard_normal((300, 2)) * np.exp(rng.uniform(-6, 6, (300, 2)))
+        z = np.array([complex(r, i) for r in values for i in values] + list(drawn[:, 0] + 1j * drawn[:, 1]))
+        glibc = platform.libc_ver()[0] == "glibc"
+        for dtype in (np.complex128, np.complex64):
+            a = z.astype(dtype)
+            eps = np.finfo(dtype).eps
+            for name in ("exp", "log", "sin", "cos", "tan", "tanh"):
+                with np.errstate(all="ignore"):
+                    want = getattr(np, name)(a)
+                    got = np.asarray(getattr(numerical, name)(numerical.asarray(a)))
+                if glibc:
+                    for x, y in ((want.real, got.real), (want.imag, got.imag)):
+                        same = (np.isnan(x) & np.isnan(y)) | ((x == y) & (np.signbit(x) == np.signbit(y)))
+                        self.assertTrue(np.all(same), (np.dtype(dtype).name, name, int(np.sum(~same))))
+                    continue
+                finite = np.isfinite(want) & np.isfinite(got)
+                with np.errstate(all="ignore"):
+                    scale = np.maximum(np.abs(want.real), np.abs(want.imag))
+                    off = np.maximum(np.abs(want.real - got.real), np.abs(want.imag - got.imag))
+                self.assertTrue(np.all(off[finite] <= 64 * eps * scale[finite]), (np.dtype(dtype).name, name))
+        # the losses of libc++'s forms, whatever the platform
+        tangent = complex(numerical.tan(numerical.asarray(np.array([1e308 + 0j])))[0])
+        self.assertLess(abs(tangent.real - np.tan(1e308)), 4e-16)  # NaN under libc++, from 1e308 + 0j
+        self.assertEqual(tangent.imag, 0.0)
+        self.assertEqual(complex(numerical.sin(numerical.asarray(np.array([1e308j])))[0]).real, 0.0)
+        self.assertGreater(complex(numerical.log(numerical.asarray(np.array([1 + 1e-20j])))[0]).real, 0.0)
+
     def test_means_and_norms_where_numpy_says_nothing_or_nan(self):
         # A complex mean divided as NumPy divides, by n + 0j: a NaN part makes both NaN, to NumPy's bits; the smallest
         # magnitude over no element refused, as NumPy's minimum; a result empty along a non-empty axis allowed.

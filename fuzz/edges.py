@@ -10,7 +10,9 @@ leave a zero's sign to their loops' order, so there a zero extreme agrees with e
 the terms' magnitudes where the order of a sum may differ (sums, means, norms, dot products), the pattern of NaNs and
 infinities exact unless a value near overflow makes an overflow depend on that order, or unless NumPy's complex dot
 product is its BLAS's, which may make a part NaN where a term is infinite. NumPy on Windows halves the imaginary part
-of a complex square root it scaled against overflow (npymath's), which is undone before comparing. Where NumPy
+of a complex square root it scaled against overflow (npymath's), which is undone before comparing. A complex number's
+elementary functions are glibc's in NumericAL: to the bit under glibc, elsewhere (NumPy takes the platform's library)
+within a few dozen units in the last place where both answers are finite. Where NumPy
 raises, NumericAL must raise too.
 
 A failure prints the seed and the case, which reproduce it alone:
@@ -39,6 +41,7 @@ NUMPY_SETTLES_ZEROS = platform.machine().lower() in ("arm64", "aarch64")
 # NumPy on Windows takes a complex square root from npymath, which divides a part past max / (1 + sqrt(2)) by 4 and
 # then doubles the real part of the root alone: its imaginary part comes out halved.
 NUMPY_HALVES_SCALED_ROOTS = platform.system() == "Windows"
+GLIBC = platform.libc_ver()[0] == "glibc"  # NumPy's complex functions are glibc's there, as NumericAL's everywhere
 
 
 def real_type(dtype):
@@ -136,6 +139,21 @@ def numpy_root(a):
     finite = np.isfinite(a.real) & np.isfinite(a.imag)
     scaled = finite & ((np.abs(a.real) >= threshold) | (np.abs(a.imag) >= threshold))
     return np.where(scaled, root.real + 2j * root.imag, root).astype(root.dtype)
+
+
+def finite_close(tol):
+    """Where both answers are finite, within `tol` of the larger part's magnitude; where either is not, either: NumPy
+    takes the platform's library outside glibc, which chooses otherwise among infinities and NaNs."""
+    def compare(got, want):
+        got, want = np.asarray(got), np.asarray(want)
+        if got.shape != want.shape:
+            return False
+        with np.errstate(all="ignore"):
+            finite = np.isfinite(got) & np.isfinite(want)
+            scale = np.maximum(np.abs(np.real(want)), np.abs(np.imag(want)))
+            off = np.maximum(np.abs(np.real(want) - np.real(got)), np.abs(np.imag(want) - np.imag(got)))
+            return bool(np.all(off[finite] <= tol * np.maximum(scale[finite], np.finfo(float).tiny)))
+    return compare
 
 
 def numpy_norm(a, order, axis):
@@ -263,7 +281,7 @@ def drawn_case(seed, index, largest):
     a = draw_array(rng, shape, dtype, special)
     t = numerical.asarray(a)
     op = rng.choice(["add", "subtract", "multiply", "divide", "negate", "max", "min", "sum", "mean", "norm",
-                     "absolute", "sqrt", "power", "cross", "outer", "vecdot", "trace", "einsum"])
+                     "absolute", "sqrt", "power", "elementary", "cross", "outer", "vecdot", "trace", "einsum"])
     label = f"{op} {np.dtype(dtype).name} {shape} special={special}"
     exact = parts_equal
 
@@ -315,11 +333,20 @@ def drawn_case(seed, index, largest):
     if op == "sqrt":
         compare = exact if not np.issubdtype(dtype, np.complexfloating) else tolerant(np.sqrt(np.abs(a)), 4.0)
         return label, check(label, lambda: numpy_root(a), lambda: numerical.sqrt(t), compare)
+    if op == "elementary":
+        name = ["exp", "log", "sin", "cos", "tan", "tanh"][int(rng.integers(6))]
+        label += f" {name}"
+        compare = exact
+        if np.issubdtype(dtype, np.complexfloating):
+            compare = exact if GLIBC else finite_close(64.0 * eps)  # NumPy's complex ones are the C library's
+        else:
+            compare = finite_close(4.0 * eps)  # NumPy's real ones its own vector loops, a few units from the library's
+        return label, check(label, lambda: getattr(np, name)(a), lambda: getattr(numerical, name)(t), compare)
     if op == "power":
         exponent = [2, -1, 0.5, 2.0, -1.0, 3, -2, 5, -7][int(rng.integers(9))]
         label += f" ** {exponent!r}"
         compare = exact
-        if exponent == 0.5 and np.issubdtype(dtype, np.complexfloating) and platform.libc_ver()[0] != "glibc":
+        if exponent == 0.5 and np.issubdtype(dtype, np.complexfloating) and not GLIBC:
             compare = tolerant(np.sqrt(np.abs(a)), 4.0)  # NumPy's root is the C library's: glibc's is NumericAL's
         elif not np.issubdtype(dtype, np.complexfloating) and exponent not in (2, -1, 0.5, 2.0, -1.0):
             compare = tolerant(np.abs(a) ** exponent, 4.0)  # the C library's pow, NumPy's and std::pow alike
