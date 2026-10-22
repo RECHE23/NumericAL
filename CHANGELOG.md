@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.32 — 2026-10-22
+
 2026.10.31 was tagged but never published: its musllinux and 32-bit Windows wheels failed two tests (a square root
 compared with NumPy's to the bit outside glibc, an extent past a 32-bit `Py_ssize_t`). This release carries all of it.
 
