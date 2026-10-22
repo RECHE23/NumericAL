@@ -3,9 +3,13 @@ name: Release
 # Build the wheels + sdist and publish to PyPI when a version tag is pushed.
 # Publishing uses PyPI Trusted Publishing (OIDC) — no API token is stored.
 # One-time PyPI setup (Trusted Publisher) is documented in README.md.
+# Every week, and by hand, the same wheels are built and tested without publishing (publish and github-release take a
+# tag only): the 32-bit Windows and musllinux wheels, which no push builds, met their first test at a tag otherwise.
 on:
   push:
     tags: ["v*"]
+  schedule:
+    - cron: '53 4 * * 0' # weekly, Sunday 04:53 UTC
   workflow_dispatch: {}
 
 jobs:
