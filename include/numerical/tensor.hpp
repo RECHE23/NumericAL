@@ -1235,8 +1235,10 @@ namespace numerical {
           T acc {};
           for (std::size_t os {0}; os < sum_outer; ++os) {
             for (std::size_t se {0}; se < inner_sum; ++se) {
-              T prod {1};
-              for (std::size_t i {0}; i < n_ops; ++i) {
+              // The first factor itself, then the others: a complex 1 times an element was no identity (0 · inf
+              // is a NaN, and −0 − (−0) a +0), so a trace or a sum of complex infinities or signed zeros went wrong.
+              T prod {operands[0]->data()[offset[0] + (fe * free_step[0]) + (se * sum_step[0])]};
+              for (std::size_t i {1}; i < n_ops; ++i) {
                 prod *= operands[i]->data()[offset[i] + (fe * free_step[i]) + (se * sum_step[i])];
               }
               acc += prod;

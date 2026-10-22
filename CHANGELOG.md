@@ -11,8 +11,22 @@ A change that can break code is listed under **Breaking** and held for a month's
 ### Fixed
 - **`mean` of `float32` and `complex64` divides by an exact count**, in double precision and back, as NumPy's:
   the count was rounded to a `float`, so 2**24 + 1 ones averaged to 1 where NumPy gives 0.99999994.
-- **`max` gives +0 and `min` −0 wherever both zeros are among the elements**, whatever their order, as NumPy's,
-  where the first zero met kept its sign; a NaN still wins.
+- **`max` gives +0 and `min` −0 wherever both zeros are among the elements**, whatever their order — IEEE
+  754-2019's maximum and minimum, and NumPy's on arm64 — where the first zero met kept its sign; a NaN still wins.
+  NumPy on x86-64 keeps the sign of a zero as its vector loops meet them.
+- **Complex `*` and `/` from Python give NumPy's bits, its infinities and NaNs included**: NumPy's own loops — the
+  product's four part products, fused where NumPy's are (arm64, and x86-64 with AVX2 and FMA except where one element
+  comes from an operand of rank above 0 broadcast to a higher rank, NumPy's scalar loop's), the quotient by Smith's
+  algorithm — where `std::complex`'s operators recover infinities as C's Annex G does: `1j * (inf + inf j)` gave
+  `-inf + inf j` where NumPy gives `nan + nan j`, and complex64 products differed in their last bit where NumPy fuses.
+  The C++ operators keep Annex G; `numpy_multiply` and `numpy_divide` are NumPy's. **A complex `mean` divides by
+  its count as NumPy divides**, by `n + 0j`: a NaN part makes both parts NaN.
+- **`einsum`'s general loop starts each product from its first factor**, where it multiplied a 1 by it: a complex 1
+  times an infinity gave a NaN (0 · inf) and −0 came out +0, so a complex `trace` or sum of infinities or signed zeros
+  went wrong. **`vector_norm` with `ord=0` counts a NaN** (it is not zero), as NumPy's, where it gave the NaN; with
+  `ord=-inf` over no element it raises `ValueError`, as NumPy's smallest of nothing, where it gave inf. **The cross
+  product of two 3-vectors is computed in their dtype**, where its components came from Python numbers, in double and
+  by Python's complex product.
 - **`outer` keeps each product's sign**, as NumPy's: computed through an einsum, a −0 product was added to a zero and
   came out +0. **A mean of an integer tensor over no element refuses** (`dimension_error`), where the division by
   a count of 0 was undefined (an integer has no NaN to give).

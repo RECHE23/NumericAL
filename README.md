@@ -200,7 +200,9 @@ numerical.exp(t), numerical.sqrt(t), abs(t), t ** 2
 ```
 
 Shapes that do not broadcast raise a `ValueError` worded as NumPy's. `max` and `min` take
-real dtypes only (NumPy orders complex numbers lexicographically; NumericAL does not order them). Operands of two dtypes
+real dtypes only (NumPy orders complex numbers lexicographically; NumericAL does not order them); `max` gives +0 and `min`
+−0 where both zeros are among the elements, as IEEE 754-2019 and NumPy on arm64 (NumPy on x86-64 keeps a zero's sign as
+its loops meet them). Operands of two dtypes
 promote as NumPy 2 promotes them: complex where one is, single precision only where both are, a Python number keeping
 the tensor's precision (`float32 + 2.0` is float32). float32 and complex64 arithmetic is single precision, as NumPy's:
 `+ - * /` and `sqrt` give its very bits.

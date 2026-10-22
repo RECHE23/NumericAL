@@ -1232,6 +1232,33 @@ bool same_dtype_pair(PyObject* x, PyObject* y, const any_tensor*& a, const any_t
     return true;
 }
 
+// `a * b` and `a / b` as NumPy's array loops compute them: a real type's are IEEE's, the same; a complex type's
+// NumPy's own (numerical::numpy_multiply, numpy_divide), where std::complex's operators recover infinities that NumPy's
+// leave NaN, and fuse otherwise.
+template <typename T>
+numerical::tensor<T> product_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+{
+    return a * b;
+}
+
+template <numerical::detail::split_complex T>
+numerical::tensor<T> product_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+{
+    return numerical::numpy_multiply(a, b);
+}
+
+template <typename T>
+numerical::tensor<T> quotient_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+{
+    return a / b;
+}
+
+template <numerical::detail::split_complex T>
+numerical::tensor<T> quotient_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+{
+    return numerical::numpy_divide(a, b);
+}
+
 template <typename T>
 PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
@@ -1241,9 +1268,9 @@ PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::ten
         switch (op) {
             case '+': result.emplace(a + b); break;
             case '-': result.emplace(a - b); break;
-            case '*': result.emplace(a * b); break;
+            case '*': result.emplace(product_as_numpy(a, b)); break;
             case '^': result.emplace(numerical::pow(a, b)); break;
-            default: result.emplace(a / b); break;
+            default: result.emplace(quotient_as_numpy(a, b)); break;
         }
     }
     return wrap(std::move(*result));
@@ -2002,28 +2029,27 @@ any_tensor singular_values(const any_tensor& v)
 
 // The `ord` norm of the magnitudes `values` (all finite or not), as numpy.linalg.vector_norm: 2 and every p > 0 at
 // the scale of the largest (a plain sum of squares overflows past 1e154, NumPy's to infinity), p < 0 at the smallest's;
-// inf the largest, -inf the smallest, 0 how many are not zero.
+// inf the largest, -inf the smallest, 0 how many are not zero (a NaN counted: it is not zero). A NaN makes every
+// other order NaN.
 double norm_of(const std::vector<double>& values, double ord)
 {
     if (values.empty()) {
         return ord == -std::numeric_limits<double>::infinity() ? std::numeric_limits<double>::infinity() : 0.0;
     }
+    if (ord == 0.0) { // how many are not zero, a NaN among them (it is not zero), as NumPy's count
+        return static_cast<double>(std::count_if(values.begin(), values.end(), [](double value) { return value != 0.0; }));
+    }
     double largest {0.0};
     double smallest {std::numeric_limits<double>::infinity()};
-    double count {0.0};
     for (const double value : values) {
         if (std::isnan(value)) {
             return value;
         }
         largest  = std::max(largest, value);
         smallest = std::min(smallest, value);
-        count   += value != 0.0 ? 1.0 : 0.0;
     }
     if (std::isinf(ord)) {
         return ord > 0 ? largest : smallest;
-    }
-    if (ord == 0.0) {
-        return count;
     }
     const double scale {ord > 0 ? largest : smallest};
     if (scale == 0.0 || std::isinf(scale)) {

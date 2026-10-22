@@ -31,6 +31,108 @@ namespace {
   }
 } // namespace
 
+// einsum's general loop takes each term's first factor itself, then multiplies the others in: a complex 1 times an
+// element was no identity (0 · inf a NaN, −0 − (−0) a +0). A complex trace keeps a finite imaginary part beside an
+// infinite real one; a product of two operands through the same loop (a label repeated) is each term's product.
+namespace {
+  template <typename T>
+  bool general_einsum_keeps_its_factors()
+  {
+    const auto value {[](double re, double im) {
+                        if constexpr (numerical::detail::split_complex<T>) {
+                          using R = typename T::value_type;
+                          return T {static_cast<R>(re), static_cast<R>(im)};
+                        }
+                        else {
+                          return static_cast<T>(re);
+                        }
+                      }};
+    const numerical::tensor<T> square {{2, 2}, numerical::buffer<T> {value(4, 1), value(0, 0), value(0, 0), value(-1, -1)}};
+    const numerical::tensor<T> twice  {{2}, numerical::buffer<T> {value(2, 0), value(3, 0)}};
+    const T                    trace  {numerical::einsum("ii->", square).data()[0]};
+    const numerical::tensor<T> rows   {numerical::einsum("ii,i->i", square, twice)};
+    return trace == value(3, 0) && rows.data()[0] == value(8, 2) && rows.data()[1] == value(-3, -3);
+  }
+} // namespace
+
+TEST(general_einsum_takes_each_first_factor_itself)
+{
+  using c = std::complex<double>;
+  EXPECT(general_einsum_keeps_its_factors<double>());
+  EXPECT(general_einsum_keeps_its_factors<float>());
+  EXPECT(general_einsum_keeps_its_factors<c>());
+  EXPECT(general_einsum_keeps_its_factors<std::complex<float>>());
+  EXPECT(general_einsum_keeps_its_factors<int>());
+  const double               inf      {std::numeric_limits<double>::infinity()};
+  const numerical::tensor<c> infinite {{2, 2}, numerical::buffer<c> {c {inf, 1.0}, c {}, c {}, c {-0.0, -1.0}}};
+  const c                    trace    {numerical::einsum("ii->", infinite).data()[0]};
+  EXPECT(trace.real() == inf && trace.imag() == 0.0);
+}
+
+// NumPy's complex product and quotient, fused or not: no recovery of an infinity (1j · (inf + inf·j) is NaN either
+// way, where std::complex's gives one), the fused product's overflow an infinity in both parts where the rounded one
+// leaves a NaN; Smith's quotient exact on exact parts, a zero divisor divided part by part. The tensors' broadcast
+// operations take this processor's choice.
+namespace {
+  template <typename C>
+  bool numpy_complex_arithmetic_holds()
+  {
+    using R = typename C::value_type;
+    const R    inf {std::numeric_limits<R>::infinity()};
+    const R    big {std::numeric_limits<R>::max() / R {2}};
+    const auto nan_both {[](const C& z) { return std::isnan(z.real()) && std::isnan(z.imag()); }};
+    bool       ok {true};
+    for (const bool fused : {false, true}) {
+      ok = ok && nan_both(numerical::detail::numpy_multiply(C {R {0}, R {1}}, C {inf, inf}, fused));
+      ok = ok && numerical::detail::numpy_multiply(C {R {3}, R {-2}}, C {R {0.5}, R {4}}, fused) == C {R {9.5}, R {11}};
+      ok = ok && numerical::detail::numpy_divide(C {R {2}, R {4}}, C {R {1}, R {1}}, fused) == C {R {3}, R {1}};
+      ok = ok && numerical::detail::numpy_divide(C {R {6}, R {3}}, C {R {0}, R {3}}, fused) == C {R {1}, R {-2}};
+      ok = ok && numerical::detail::numpy_divide(C {R {1}, R {-1}}, C {R {0}, R {0}}, fused) == C {inf, -inf};
+      ok = ok && nan_both(numerical::detail::numpy_divide(C {R {0}, R {0}}, C {R {0}, R {0}}, fused));
+    }
+    const C wide                        {numerical::detail::numpy_multiply(C {big, big}, C {big, -big}, true)};
+    const C rounded                     {numerical::detail::numpy_multiply(C {big, big}, C {big, -big}, false)};
+    ok = ok && wide.real() == inf && wide.imag() == inf && rounded.real() == inf && std::isnan(rounded.imag());
+    const numerical::tensor<C> a        {{2, 1}, numerical::buffer<C> {C {R {1}, R {2}}, C {R {-3}, R {0.5}}}};
+    const numerical::tensor<C> b        {{3}, numerical::buffer<C> {C {R {2}, R {0}}, C {R {0}, R {-1}}, C {R {0.25}, R {4}}}};
+    const numerical::tensor<C> product  {numerical::numpy_multiply(a, b)};
+    const numerical::tensor<C> quotient {numerical::numpy_divide(a, b)};
+    for (std::size_t i {0}; i < 2; ++i) {
+      for (std::size_t j {0}; j < 3; ++j) {
+        ok = ok && product.data()[(i * 3) + j]
+             == numerical::detail::numpy_multiply(a.data()[i], b.data()[j], numerical::detail::numpy_fuses_products());
+        ok = ok && quotient.data()[(i * 3) + j]
+             == numerical::detail::numpy_divide(a.data()[i], b.data()[j], numerical::detail::numpy_scalar_loops_fuse());
+      }
+    }
+    // One element from a broadcast operand of rank above 0 is NumPy's scalar loop's; from equal ranks or a rank-0
+    // operand, its vector loop's. (1 + e)(1 - e) - 1 is -e² fused and 0 rounded.
+    const R                    e           {std::numeric_limits<R>::epsilon() * R {4}};
+    const C                    x           {R {1} + e, R {1}};
+    const C                    y           {R {1} - e, R {1}};
+    const C                    scalar_loop {numerical::detail::numpy_multiply(x, y, numerical::detail::numpy_scalar_loops_fuse())};
+    const C                    vector_loop {numerical::detail::numpy_multiply(x, y, numerical::detail::numpy_fuses_products())};
+    const numerical::tensor<C> one_one     {{1, 1}, numerical::buffer<C> {x}};
+    const numerical::tensor<C> other_one   {{1, 1}, numerical::buffer<C> {y}};
+    const numerical::tensor<C> one         {{1}, numerical::buffer<C> {y}};
+    const numerical::tensor<C> zero_rank   {std::vector<std::size_t> {}, numerical::buffer<C> {y}};
+    const numerical::tensor<C> three       {{3}, numerical::buffer<C> {y, y, y}};
+    ok = ok && numerical::detail::numpy_multiply(x, y, true) != numerical::detail::numpy_multiply(x, y, false);
+    ok = ok && numerical::numpy_multiply(one_one, one).data()[0] == scalar_loop;
+    ok = ok && numerical::numpy_multiply(one, one_one).data()[0] == scalar_loop;
+    ok = ok && numerical::numpy_multiply(one_one, zero_rank).data()[0] == vector_loop;
+    ok = ok && numerical::numpy_multiply(one_one, other_one).data()[0] == vector_loop;
+    ok = ok && numerical::numpy_multiply(one_one, three).data()[2] == vector_loop;
+    return ok;
+  }
+} // namespace
+
+TEST(complex_arithmetic_as_numpy_computes_it)
+{
+  EXPECT(numpy_complex_arithmetic_holds<std::complex<double>>());
+  EXPECT(numpy_complex_arithmetic_holds<std::complex<float>>());
+}
+
 // A mean divides by its count in the wider of its type and double, the count exact: a float sum of 2^24 + 1 ones is
 // 2^24, and divided by 2^24 + 1 it is NumPy's 0.99999994, where the count rounded to a float gave 1. Each part of a
 // complex number so; a long double stays one; an integer divides by its count.

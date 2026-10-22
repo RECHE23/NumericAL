@@ -732,8 +732,10 @@ def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
         if plain is not NotImplemented:
             return plain
     x = _tensor(x)
-    return _native(_numerical._vector_norm, x, _vector_order(ord), list(_resolved_axes(x, axis, "vector_norm")),
-                   bool(keepdims))
+    order, axes = _vector_order(ord), list(_resolved_axes(x, axis, "vector_norm"))
+    if order == -_math.inf and any(x.shape[a] == 0 for a in axes):  # the smallest of nothing, as NumPy's minimum
+        raise ValueError("vector_norm: ord=-inf over no element has no value (a minimum of nothing)")
+    return _native(_numerical._vector_norm, x, order, axes, bool(keepdims))
 
 
 def svdvals(x, /):
@@ -940,6 +942,9 @@ def cross(x1, x2, /, *, axis=-1):
     """The cross product of 3-vectors along `axis`, broadcast over the other axes, as ``numpy.linalg.cross``."""
     axis = _operator.index(axis)  # one axis: TypeError for any other, as NumPy's
     a, b = _same_dtype(x1, x2)
+    if len(a.shape) == 1 and len(b.shape) == 1:  # as rows, so a part is a tensor of the dtype, not a Python number
+        rows = cross(reshape(a, (1,) + tuple(a.shape)), reshape(b, (1,) + tuple(b.shape)), axis=-1)
+        return reshape(rows, tuple(a.shape))
     moved = []
     for operand in (a, b):
         if not operand.shape or operand.shape[_resolved_axes(operand, axis, "cross")[0]] != 3:

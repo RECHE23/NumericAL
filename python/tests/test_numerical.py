@@ -142,6 +142,70 @@ class HighRanks(unittest.TestCase):
         np.testing.assert_array_equal(got, want)
         np.testing.assert_array_equal(np.signbit(got), np.signbit(want))
 
+    def test_complex_products_and_quotients_are_numpys_to_the_bit(self):
+        # NumPy's loops, fused where NumPy's are on this processor: every pair of a grid of special parts (zeros of
+        # either sign, infinities, a NaN, values near overflow, a subnormal) and drawn pairs, in both complex types.
+        values = [0.0, -0.0, np.inf, -np.inf, np.nan, 1e308, -1e308, 1.0, -2.5, 1e-310]
+        grid = [complex(r, i) for r in values for i in values]
+        rng = np.random.default_rng(17)
+        drawn = rng.standard_normal((500, 4)) * np.exp(rng.uniform(-5, 5, (500, 4)))
+        left = [x for x in grid for _ in grid] + list(drawn[:, 0] + 1j * drawn[:, 1])
+        right = [y for _ in grid for y in grid] + list(drawn[:, 2] + 1j * drawn[:, 3])
+        for dtype in (np.complex128, np.complex64):
+            with np.errstate(all="ignore"):
+                a, b = np.array(left).astype(dtype), np.array(right).astype(dtype)
+                for want, got in ((a * b, numerical.asarray(a) * numerical.asarray(b)),
+                                  (a / b, numerical.asarray(a) / numerical.asarray(b))):
+                    got = np.asarray(got)
+                    for x, y in ((want.real, got.real), (want.imag, got.imag)):
+                        same = (np.isnan(x) & np.isnan(y)) | ((x == y) & (np.signbit(x) == np.signbit(y)))
+                        self.assertTrue(np.all(same), (np.dtype(dtype).name, int(np.sum(~same))))
+
+    def test_one_element_products_take_numpys_loop(self):
+        # One element from an operand of rank above 0 broadcast to a higher rank is NumPy's scalar loop's, which x86-64
+        # does not fuse; from equal ranks or a rank-0 operand, its vector loop's. (1 + e)(1 - e) - 1 is -e² fused.
+        for dtype in (np.complex128, np.complex64):
+            e = np.finfo(dtype).eps * 4
+            x, y = complex(1 + e, 1), complex(1 - e, 1)
+            for left, right in (((1, 1), (1,)), ((1,), (1, 1)), ((1, 1, 1), (1,)), ((1, 1), ()), ((1, 1), (1, 1)),
+                                ((1,), (1,)), ((1, 1), (3,))):
+                a = np.full(left, x, dtype=dtype)
+                b = np.full(right, y, dtype=dtype)
+                got = np.asarray(numerical.asarray(a) * numerical.asarray(b))
+                np.testing.assert_array_equal(got, a * b, (np.dtype(dtype).name, left, right))
+
+    def test_means_and_norms_where_numpy_says_nothing_or_nan(self):
+        # A complex mean divided as NumPy divides, by n + 0j: a NaN part makes both NaN, to NumPy's bits; the smallest
+        # magnitude over no element refused, as NumPy's minimum; a result empty along a non-empty axis allowed.
+        a = np.array([[complex(np.nan, 1.0), 1 + 2j, 3 - 1j], [0.5 + 0.25j, -1 + 0j, 2 + 2j]])
+        for dtype in (np.complex128, np.complex64):
+            for axis in (None, 0, 1):
+                with np.errstate(all="ignore"):
+                    want = np.mean(a.astype(dtype), axis=axis)
+                got = np.asarray(numerical.mean(numerical.asarray(a.astype(dtype)), axis=axis))
+                np.testing.assert_array_equal(got, want)
+        for shape, axis in (((0,), None), ((2, 0), 1), ((0, 3), 0)):
+            with self.assertRaises(ValueError):
+                numerical.vector_norm(numerical.zeros(shape), ord=-np.inf, axis=axis)
+        self.assertEqual(numerical.vector_norm(numerical.zeros((0, 3)), ord=-np.inf, axis=1).shape, (0,))
+        with_nan = np.array([[0.0, np.nan, 2.0], [-0.0, 0.0, np.inf]])
+        for axis in (None, 0, 1):  # ord=0 counts a NaN, which is not zero; every other order is NaN where one is
+            for order in (0.0, 1.0, 2.0, np.inf):
+                with np.errstate(all="ignore"):
+                    want = np.linalg.vector_norm(with_nan, ord=order, axis=axis)
+                got = np.asarray(numerical.vector_norm(numerical.asarray(with_nan), ord=order, axis=axis))
+                np.testing.assert_array_equal(got, want)
+
+    def test_one_dimensional_cross_and_complex_trace_keep_numpys_values(self):
+        # A cross of two vectors in their own dtype (a part read as a Python number computed in double); a trace of
+        # complex numbers with an infinite part (a complex 1 times each element made 0 · inf a NaN).
+        x, y = np.array([1.1, -2.3, 0.7], np.float32), np.array([0.3, 4.1, -1.9], np.float32)
+        got = numerical.cross(numerical.asarray(x), numerical.asarray(y))
+        self.assertEqual(got.dtype, "float32")
+        np.testing.assert_array_equal(np.asarray(got), np.cross(x, y))
+        m = np.array([[complex(np.inf, 1.0), 0j], [0j, -0.0 - 1j]])
+        np.testing.assert_array_equal(np.asarray(numerical.trace(numerical.asarray(m))), np.trace(m))
+
     def test_cross_takes_one_axis(self):
         with self.assertRaises(TypeError):
             numerical.cross(numerical.asarray(np.ones((3, 3))), numerical.asarray(np.ones((3, 3))), axis=(0, 1))

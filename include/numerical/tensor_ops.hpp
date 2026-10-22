@@ -90,6 +90,108 @@ namespace numerical {
       return walk;
     }
 
+    //! \brief `x · y + z`: one fused multiply-add where \p fused, else the product rounded first (statements apart, so
+    //!        no compiler contracts them).
+    template <std::floating_point R>
+    [[nodiscard]] R numpy_muladd(R    x,
+                                 R    y,
+                                 R    z,
+                                 bool fused)
+    {
+      if (fused) {
+        return std::fma(x, y, z);
+      }
+      const R product {x * y};
+      return product + z;
+    }
+
+    /*!
+     * \brief `a · b` of complex numbers as NumPy's array loop computes it: `ai·bi` and `ai·br` rounded, then
+     *        `ar·br − ai·bi` and `ar·bi + ai·br`, each by a fused multiply-add where \p fused (NumPy's vectors on arm64
+     *        and on x86-64 with FMA), else each product rounded first. No recovery of an infinity from a NaN, as
+     *        `std::complex`'s (C Annex G) makes: `1j · (inf + inf·j)` is NaN, `(1e308 + 1e308j) · (1e308 − 1e308j)`
+     *        `inf + inf·j` when fused.
+     */
+    template <split_complex C>
+    [[nodiscard]] C numpy_multiply(const C& a,
+                                   const C& b,
+                                   bool     fused)
+    {
+      using R = typename C::value_type;
+      const R ii {a.imag() * b.imag()};
+      const R ir {a.imag() * b.real()};
+      return C {numpy_muladd(a.real(), b.real(), -ii, fused), numpy_muladd(a.real(), b.imag(), ir, fused)};
+    }
+
+    /*!
+     * \brief `a / b` of complex numbers as NumPy's array loop computes it: Smith's division by the larger part of
+     *        \p b (an exact zero divided part by part, to an infinity or a NaN), each `x + y·z` of it one fused
+     *        multiply-add where \p fused (NumPy's build contracts them on arm64, not on x86-64).
+     */
+    template <split_complex C>
+    [[nodiscard]] C numpy_divide(const C& a,
+                                 const C& b,
+                                 bool     fused)
+    {
+      using R = typename C::value_type;
+      const R real_part      {std::abs(b.real())};
+      const R imaginary_part {std::abs(b.imag())};
+      if (real_part >= imaginary_part) {
+        if (real_part == R {0}) { // the imaginary part's magnitude no larger: a zero too
+          return C {a.real() / real_part, a.imag() / imaginary_part};
+        }
+        const R ratio {b.imag() / b.real()};
+        const R scale {R {1} / numpy_muladd(b.imag(), ratio, b.real(), fused)};
+        return C {numpy_muladd(a.imag(), ratio, a.real(), fused) * scale, numpy_muladd(-a.real(), ratio, a.imag(), fused) * scale};
+      }
+      const R ratio {b.real() / b.imag()};
+      const R scale {R {1} / numpy_muladd(b.real(), ratio, b.imag(), fused)};
+      return C {numpy_muladd(a.real(), ratio, a.imag(), fused) * scale, numpy_muladd(a.imag(), ratio, -a.real(), fused) * scale};
+    }
+
+    //! \brief Whether NumPy's complex product fuses its multiply-adds on this processor: on arm64, and on x86-64
+    //!        where its AVX2 loop runs (FMA with it); elsewhere its loop rounds each product.
+    [[nodiscard]] inline bool numpy_fuses_products() noexcept
+    {
+#if defined(__aarch64__) || defined(_M_ARM64)
+      return true;
+#elif defined(NUMERICAL_X86_COMPILED)
+      return cpu_features().avx2_fma;
+#else
+      return false;
+#endif
+    }
+
+    //! \brief Whether NumPy's scalar loops fuse their multiply-adds — its complex quotient's always, its product's
+    //!        where \ref numpy_loop_is_scalar: on arm64, where its build contracts them (FMA is arm64's baseline); not
+    //!        on x86-64, whose baseline has none.
+    [[nodiscard]] inline bool numpy_scalar_loops_fuse() noexcept
+    {
+#if defined(__aarch64__) || defined(_M_ARM64)
+      return true;
+#else
+      return false;
+#endif
+    }
+
+    /*!
+     * \brief Whether NumPy multiplies \p a by \p b in its scalar loop rather than its vector one: when the result is
+     *        one element and an operand of rank above 0 is broadcast to a higher rank, NumPy's iterator hands its loop
+     *        an output step of 0, which the vector loop refuses.
+     */
+    template <typename T>
+    [[nodiscard]] bool numpy_loop_is_scalar(const tensor<T>& a,
+                                            const tensor<T>& b) noexcept
+    {
+      const auto        ones {[](const tensor<T>& t) { return std::ranges::all_of(t.shape(), [](std::size_t e) { return e == 1; }); }};
+      const std::size_t rank {std::max(a.rank(), b.rank())};
+      const auto        broadcast {[rank](const tensor<T>& t) { return t.rank() != 0 && t.rank() != rank; }};
+      if (!ones(a) || !ones(b)) {
+        return false;
+      }
+      return broadcast(a) || broadcast(b);
+    }
+
     /*!
      * \brief A mean: \p value divided by the count \p n, in the wider of `T` and `double` and back to `T`, the count
      *        exact (to 2^53), as NumPy divides by its integer count; a `float`'s count rounded to a `float` past 2^24
@@ -103,12 +205,19 @@ namespace numerical {
       return static_cast<T>(static_cast<wide>(value) / static_cast<wide>(n));
     }
 
-    //! \brief \ref divided_by_count of a complex number of `float` or `double`: each part so divided.
+    /*!
+     * \brief \ref divided_by_count of a complex number of `float` or `double`, as NumPy's mean divides it: by the
+     *        complex count `n + 0j`, in complex `double`, by its division (\ref numpy_divide), so a NaN part makes
+     *        both NaN and each part is multiplied by the reciprocal of the count.
+     */
     template <split_complex T>
     [[nodiscard]] T divided_by_count(T           value,
                                      std::size_t n)
     {
-      return T {divided_by_count(value.real(), n), divided_by_count(value.imag(), n)};
+      using R = typename T::value_type;
+      const std::complex<double> wide {static_cast<double>(value.real()), static_cast<double>(value.imag())};
+      const std::complex<double> mean {numpy_divide(wide, std::complex<double> {static_cast<double>(n), 0.0}, numpy_scalar_loops_fuse())};
+      return T {static_cast<R>(mean.real()), static_cast<R>(mean.imag())};
     }
 
     //! \brief \ref divided_by_count of any other scalar: divided by the count as a `T`.
@@ -125,8 +234,9 @@ namespace numerical {
 
     /*!
      * \brief The extreme \p value of \p count elements \p stride apart from \p first, its zero's sign settled as
-     *        NumPy's: no zero is larger than the other, so the first met stayed; `max` gives +0 where one is among
-     *        them, `min` −0. A NaN, or any other value, as it is.
+     *        IEEE 754-2019's maximum and minimum settle it, and NumPy's on arm64: no zero is larger than the other, so
+     *        the first met stayed; `max` gives +0 where one is among them, `min` −0, whatever their order. A NaN, or
+     *        any other value, as it is.
      */
     template <std::floating_point T,
               typename Order>
@@ -495,6 +605,29 @@ namespace numerical {
                            }
                          });
     return tensor<T> {std::move(shape), std::move(out)};
+  }
+
+  /*!
+   * \brief `a · b` of complex tensors, broadcast, each product as NumPy's array loop computes it
+   *        (\ref detail::numpy_multiply on this processor): the binding's `*`, where `std::complex`'s operator (this
+   *        library's `*`) recovers infinities NumPy's makes NaN.
+   */
+  template <detail::split_complex C>
+  [[nodiscard]] tensor<C> numpy_multiply(const tensor<C>& a,
+                                         const tensor<C>& b)
+  {
+    const bool fused {detail::numpy_loop_is_scalar(a, b) ? detail::numpy_scalar_loops_fuse() : detail::numpy_fuses_products()};
+    return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_multiply(x, y, fused); });
+  }
+
+  //! \brief `a / b` of complex tensors, broadcast, each quotient as NumPy's array loop computes it
+  //!        (\ref detail::numpy_divide on this processor): the binding's `/`.
+  template <detail::split_complex C>
+  [[nodiscard]] tensor<C> numpy_divide(const tensor<C>& a,
+                                       const tensor<C>& b)
+  {
+    const bool fused {detail::numpy_scalar_loops_fuse()};
+    return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_divide(x, y, fused); });
   }
 
   //! \brief Element-wise sum, broadcast. \throws dimension_error If the shapes do not broadcast.
