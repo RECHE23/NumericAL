@@ -162,9 +162,9 @@ namespace numerical {
 #endif
     }
 
-    //! \brief Whether NumPy's scalar loops fuse their multiply-adds — its complex quotient's always, its product's
-    //!        where \ref numpy_loop_is_scalar: on arm64, where its build contracts them (FMA is arm64's baseline); not
-    //!        on x86-64, whose baseline has none.
+    //! \brief Whether NumPy's scalar loops fuse their multiply-adds (its complex quotient's always, its product's
+    //!        where \ref numpy_loop_is_scalar holds): on arm64, where its build contracts them (FMA is arm64's
+    //!        baseline); not on x86-64, whose baseline has none.
     [[nodiscard]] inline bool numpy_scalar_loops_fuse() noexcept
     {
 #if defined(__aarch64__) || defined(_M_ARM64)
