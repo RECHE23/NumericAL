@@ -138,6 +138,16 @@ def numpy_root(a):
     return np.where(scaled, root.real + 2j * root.imag, root).astype(root.dtype)
 
 
+def numpy_norm(a, order, axis):
+    """NumPy's vector norm; the largest magnitude of no element 0, as NumPy has it since 2.3 (2.2 raised)."""
+    try:
+        return np.linalg.vector_norm(a, ord=order, axis=axis)
+    except ValueError:
+        if order != np.inf:
+            raise
+        return np.max(np.abs(a), axis=axis, initial=0.0).astype(real_type(a.dtype))
+
+
 def numpy_power(a, exponent):
     """NumPy's `a ** exponent`, the halved imaginary part of a scaled square root undone where it has one."""
     return numpy_root(a) if exponent == 0.5 and type(exponent) is float else a**exponent
@@ -296,7 +306,7 @@ def drawn_case(seed, index, largest):
         label += f" ord={order} axis={axis}"
         with np.errstate(all="ignore"):
             scale = np.sum(magnitude(a), axis=axis) if order not in (0.0, -np.inf) else 1.0
-        return label, check(label, lambda: np.linalg.vector_norm(a, ord=order, axis=axis),
+        return label, check(label, lambda: numpy_norm(a, order, axis),
                             lambda: numerical.vector_norm(t, ord=float(order), axis=axis),
                             lambda got, want: norm_close(got, want, scale, 16 * eps * max(1, a.size), operands))
     if op == "absolute":

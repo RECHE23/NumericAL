@@ -1066,13 +1066,14 @@ def _same_dtype(a, b):
 
 
 _numpy_loops_measured = False
+_numpy_shortcuts_any_number = False  # NumPy before 2.3 takes ** of any number 2, -1 or 0.5 by a shortcut, not of exact ones
 
 
 def _numpy_loops():
     """Measures, once NumPy is imported, which of its complex loops fuse their multiply-adds, so that ``*`` and ``/``
     give its bits: they follow how its wheel was built (clang and MSVC contract its scalar loop, GCC does not), not
     the processor alone. Each probe's exact answer is a 0 where the loop rounds each product, and not where it fuses."""
-    global _numpy_loops_measured
+    global _numpy_loops_measured, _numpy_shortcuts_any_number
     np = _sys.modules.get("numpy")
     if np is None:
         return
@@ -1085,6 +1086,8 @@ def _numpy_loops():
         products = np.multiply(np.array([x, x]), np.array([y, y]))[0].real != 0  # the vector loop
         scalar_products = np.multiply(np.array([[x]]), np.array([y]))[0, 0].real != 0  # one element, broadcast
         quotients = np.divide(np.array([complex(-(1 - 2.0**-29), r)]), np.array([complex(1, r)]))[0].real != 0
+        # (inf + 0j) ** -1.0: 0 by the reciprocal a shortcut takes, NaN by the power (its 1 · inf is 0 · inf in part)
+        _numpy_shortcuts_any_number = not np.isnan((np.array([complex(np.inf, 0.0)]) ** -1.0)[0].real)
     _numerical._set_numpy_loops(bool(products), bool(scalar_products), bool(quotients))
 
 
@@ -1096,11 +1099,16 @@ def _arithmetic(op, reflected=False):
         kind = type(other)
         if op == "^" and not reflected and self.dtype.startswith("complex"):
             # NumPy takes an array to the Python integer 2 or -1, or the float 0.5, by its square, its reciprocal or its
-            # square root, not by its power
-            shortcut = {(int, 2): "2", (int, -1): "r", (float, 0.5): "h"}.get((kind, other)) if kind in (int, float) else None
+            # square root, not by its power; before 2.3, to any real number equal to them
+            if not _numpy_loops_measured:
+                _numpy_loops()
+            if _numpy_shortcuts_any_number:
+                if isinstance(other, _numbers.Real) and other == 1:  # its positive: the elements themselves, -0 kept
+                    return self
+                shortcut = {2: "2", -1: "r", 0.5: "h"}.get(other) if isinstance(other, _numbers.Real) else None
+            else:
+                shortcut = {(int, 2): "2", (int, -1): "r", (float, 0.5): "h"}.get((kind, other)) if kind in (int, float) else None
             if shortcut is not None:
-                if not _numpy_loops_measured:
-                    _numpy_loops()
                 return _native(_numerical._power_shortcut, shortcut, self)
         if kind is Tensor and other.dtype == self.dtype:  # nothing to promote: the common cases, straight through
             a, b = self, other

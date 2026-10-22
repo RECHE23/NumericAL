@@ -672,8 +672,8 @@ namespace {
         volatile R imaginary_part {exponent.imag()};
         volatile R base_real      {a.real()};
         volatile R base_imaginary {a.imag()};
-        const C    base           {base_real, base_imaginary};
-        const C    b              {real_part, imaginary_part};
+        const C    base           {static_cast<R>(base_real), static_cast<R>(base_imaginary)};
+        const C    b              {static_cast<R>(real_part), static_cast<R>(imaginary_part)};
         const C    want           {std::pow(base, b)};
         const C    got            {numpy_power(base, b, fused)};
         ok = ok && ((got == want) || (std::isnan(got.real()) && std::isnan(want.real())));
