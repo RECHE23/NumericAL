@@ -38,7 +38,7 @@ FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: check-pins all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
-        python python-test python-stubtest fuzz-linalg bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
+        python python-test python-stubtest fuzz-linalg fuzz-edges bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
 .DEFAULT_GOAL := help
 
@@ -60,6 +60,7 @@ help:
 	@echo "  make python     Build the Python extension in place (abi3)"
 	@echo "  make python-test  Run the Python binding test suite"
 	@echo "  make fuzz-linalg  Decompositions vs NumPy on adversarial matrices, every GEMM path (CASES=, SEED=)"
+	@echo "  make fuzz-edges   Element-wise ops and reductions vs NumPy on zeros, infinities, NaNs, empty axes (CASES=, SEED=)"
 	@echo "  make version-check  Assert pyproject = __init__ = CMake-derived version"
 	@echo "  make check-commit  Before each commit: format, the suite under coverage at 100 % (~2 min)"
 	@echo "  make check-push    Before each push: the above, g++-14, sanitizers, MISRA, lint, doc, Python (~6 min)"
@@ -208,6 +209,9 @@ python-stubtest: python
 fuzz-linalg: python
 	$(PYRUN) fuzz/linalg.py --cases $(or $(CASES),500) $(if $(SEED),--seed $(SEED),)
 
+fuzz-edges: python
+	$(PYRUN) fuzz/edges.py --cases $(or $(CASES),20000) $(if $(SEED),--seed $(SEED),)
+
 # Version-consistency gate: pyproject.toml is the single source of truth — `make
 # release` bumps __init__.py from it, CMakeLists.txt derives it. Asserts the three
 # agree and that CMake still DERIVES (no hardcoded literal that could drift; the
@@ -329,7 +333,7 @@ SCIFORGE_MAKE    ?= ../sciforge/make
 QUALITY_COMMIT   := format-check coverage-gate
 QUALITY_PUSH     := version-check check-pins test test-gcc test-gcc-neon sanitize tsan misra doc-no-coverage python-test bench-diff-selftest \
                     stubtest-gate lint-gate
-QUALITY_RELEASE  := bench-diff fuzz-linalg
+QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges
 -include $(SCIFORGE_MAKE)/quality.mk
 
 # The calendar release every SciForge project cuts (the sibling checkout's make/release.mk): bench-diff against the last

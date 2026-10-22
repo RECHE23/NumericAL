@@ -350,7 +350,8 @@ products in order.
 
 `make bench-linalg` times NumericAL against the BLAS/LAPACK NumPy ships, each library alone in its process,
 every answer checked first; `make fuzz-linalg` checks every decomposition against NumPy on adversarial matrices,
-on every kernel. On an M1 Pro against Accelerate, at order 1024, matrix products, `solve` and `inverse` are as
+on every kernel, and `make fuzz-edges` the element-wise operations and reductions on signed zeros, infinities, NaNs,
+values near overflow and empty axes. On an M1 Pro against Accelerate, at order 1024, matrix products, `solve` and `inverse` are as
 fast or faster (0.94×), Cholesky, QR and `eigh` within 1.0–1.2×, `svd` and `lstsq` 1.3–1.4×; small problems
 (order 64–256) take 1.5–3× Accelerate's time. Against OpenBLAS on x86-64 (i9-10900X, i9-9900K) large problems
 (order 512 and 1024) take 1.1–2.5×, `eigh` 2.6–2.9×. The tables, the method and where the gaps are:

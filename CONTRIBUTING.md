@@ -20,10 +20,10 @@ Then, from `numerical/`:
 ```sh
 make check-commit   # before each commit: format, the suite under coverage at 100 % on every dimension
 make check-push     # before each push: the above, g++-14 (on the AMX and on NEON alone), ASan + UBSan, TSan, MISRA, lint, doc, the Python suite
-make check-release  # before a release: the above, bench-diff against the last release, fuzz-linalg
+make check-release  # before a release: the above, bench-diff against the last release, fuzz-linalg, fuzz-edges
 ```
 
-`make help` lists the single steps (`make test`, `make python-test`, `make fuzz-linalg`, `make bench-linalg`).
+`make help` lists the single steps (`make test`, `make python-test`, `make fuzz-linalg`, `make fuzz-edges`, `make bench-linalg`).
 
 ## Conventions the gates and the tests hold
 

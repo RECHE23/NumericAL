@@ -64,6 +64,16 @@ A change that can break code is listed under **Breaking** and held for a month's
   complex128 `eigvalsh`: order 64 430 → 277 µs (NumPy 162), order 152 3.02 → 1.75 ms (1.54); complex64 order 321
   19.7 → 10.9 ms (14.7).
 
+### Development
+- **`make fuzz-edges`, a differential fuzz of the element-wise operations and reductions against NumPy** on the
+  values and shapes that break them — zeros of either sign, infinities, NaNs, values near overflow, subnormal ones,
+  empty axes, extents past a vector's or a task's width — to the bit where both compute the same expression, the NaNs
+  and infinities exact elsewhere. Its fixed seeds run with the Python suite, a campaign in `check-release` and every
+  week in `fuzz-long.yml`, with the shapes too large for a push (a float32 mean of 2^24 + 1 elements, sums keeping
+  extents whose product overflows). Where NumPy's own answer depends on the processor or on its BLAS — a zero
+  extreme's sign on x86-64, a NaN part of a complex dot product with an infinite term — it accepts either. It found
+  the complex arithmetic, mean, `einsum`, norm and cross fixes above.
+
 ## 2026.10.30 — 2026-10-21
 
 ### Changed

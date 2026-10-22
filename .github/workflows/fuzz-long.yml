@@ -60,6 +60,18 @@ jobs:
         run: |
           python -m pip install numpy setuptools wheel
           CC=gcc CXX=g++ SCIFORGE_INCLUDE="$PWD/sciforge/include" python setup.py -q build_ext --inplace --force
+      # The edge values first (fuzz/edges.py: element-wise operations and reductions on signed zeros, infinities,
+      # NaNs, values near overflow, empty and long axes), a fresh seed, then its large shapes; a tenth of the time.
+      - name: Fuzz edge values against NumPy
+        env:
+          PYTHONPATH: python
+        run: |
+          python fuzz/edges.py --huge
+          end=$(( $(date +%s) + FUZZ_TIME / 10 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
+            python fuzz/edges.py --seed "$seed" --cases 5000
+          done
       # Campaigns of 100 cases, each from a fresh seed, until the time is spent; the first finding stops the job.
       - name: Fuzz against NumPy
         env:
