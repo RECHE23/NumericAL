@@ -161,7 +161,7 @@ namespace numerical::detail {
         lane bv;
         std::memcpy(&av, a + i + (l * width), sizeof(lane));
         std::memcpy(&bv, b + i + (l * width), sizeof(lane));
-        std::array<R, width> pairs_swapped; // each pair's parts swapped, then loaded: GCC 15 takes a lane set element by element for uninitialised
+        std::array<R, width> pairs_swapped {}; // each pair's parts swapped, then loaded: GCC 15 takes a lane set element by element for uninitialised
         for (std::size_t k {0}; k < width; ++k) {
           pairs_swapped[k] = bv[k ^ 1U];
         }
@@ -586,7 +586,7 @@ namespace numerical::detail {
       lane xv;
       std::memcpy(&yv, out + i, sizeof(lane));
       std::memcpy(&xv, in + i, sizeof(lane));
-      std::array<R, width> pairs_swapped; // as complex_dot_sums's
+      std::array<R, width> pairs_swapped {}; // as complex_dot_sums's
       for (std::size_t k {0}; k < width; ++k) {
         pairs_swapped[k] = xv[k ^ 1U];
       }
