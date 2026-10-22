@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.31 — 2026-10-22
+
 ### Fixed
 - **`mean` of `float32` and `complex64` divides by an exact count**, in double precision and back, as NumPy's:
   the count was rounded to a `float`, so 2**24 + 1 ones averaged to 1 where NumPy gives 0.99999994.
