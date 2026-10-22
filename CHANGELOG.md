@@ -15,9 +15,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   754-2019's maximum and minimum, and NumPy's on arm64 — where the first zero met kept its sign; a NaN still wins.
   NumPy on x86-64 keeps the sign of a zero as its vector loops meet them.
 - **Complex `*` and `/` from Python give NumPy's bits, its infinities and NaNs included**: NumPy's own loops — the
-  product's four part products, fused where NumPy's are (arm64, and x86-64 with AVX2 and FMA except where one element
-  comes from an operand of rank above 0 broadcast to a higher rank, NumPy's scalar loop's), the quotient by Smith's
-  algorithm — where `std::complex`'s operators recover infinities as C's Annex G does: `1j * (inf + inf j)` gave
+  product's four part products, fused where its PyPI wheels fuse them (its vector loop on arm64 and on x86-64 with
+  AVX2 and FMA; its scalar loop, which takes one element from an operand of rank above 0 broadcast to a higher rank,
+  likewise on macOS and Windows but never on Linux), the quotient by Smith's algorithm (fused on macOS arm64 alone) —
+  where `std::complex`'s operators recover infinities as C's Annex G does: `1j * (inf + inf j)` gave
   `-inf + inf j` where NumPy gives `nan + nan j`, and complex64 products differed in their last bit where NumPy fuses.
   The C++ operators keep Annex G; `numpy_multiply` and `numpy_divide` are NumPy's. **A complex `mean` divides by
   its count as NumPy divides**, by `n + 0j`: a NaN part makes both parts NaN.
@@ -71,8 +72,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   and infinities exact elsewhere. Its fixed seeds run with the Python suite, a campaign in `check-release` and every
   week in `fuzz-long.yml`, with the shapes too large for a push (a float32 mean of 2^24 + 1 elements, sums keeping
   extents whose product overflows). Where NumPy's own answer depends on the processor or on its BLAS — a zero
-  extreme's sign on x86-64, a NaN part of a complex dot product with an infinite term — it accepts either. It found
-  the complex arithmetic, mean, `einsum`, norm and cross fixes above.
+  extreme's sign on x86-64, a NaN part of a complex dot product with an infinite term — it accepts either; NumPy on Windows
+  halves the imaginary part of a complex square root it scaled against overflow (npymath rescales the real part
+  alone), which it undoes before comparing. It found the complex arithmetic, mean, `einsum`, norm and cross fixes above.
 
 ## 2026.10.30 — 2026-10-21
 

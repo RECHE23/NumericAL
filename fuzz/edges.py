@@ -9,8 +9,9 @@ real square root), the sign of a zero and the NaN taken into account (two NaNs a
 leave a zero's sign to their loops' order, so there a zero extreme agrees with either); within a tolerance scaled by
 the terms' magnitudes where the order of a sum may differ (sums, means, norms, dot products), the pattern of NaNs and
 infinities exact unless a value near overflow makes an overflow depend on that order, or unless NumPy's complex dot
-product is its BLAS's, which may make a part NaN where a term is infinite. Where NumPy raises, NumericAL must raise
-too.
+product is its BLAS's, which may make a part NaN where a term is infinite. NumPy on Windows halves the imaginary part
+of a complex square root it scaled against overflow (npymath's), which is undone before comparing. Where NumPy
+raises, NumericAL must raise too.
 
 A failure prints the seed and the case, which reproduce it alone:
 
@@ -35,6 +36,9 @@ LONG_EXTENTS = (65, 130, 257, 1031)  # a vector's lanes and an element-wise task
 # NumPy's max and min give +0 and -0 where both zeros are among the elements on arm64, as NumericAL's on any processor
 # (IEEE 754-2019's maximum and minimum); on x86-64, the sign of a zero as its vector loops meet them.
 NUMPY_SETTLES_ZEROS = platform.machine().lower() in ("arm64", "aarch64")
+# NumPy on Windows takes a complex square root from npymath, which divides a part past max / (1 + sqrt(2)) by 4 and
+# then doubles the real part of the root alone: its imaginary part comes out halved.
+NUMPY_HALVES_SCALED_ROOTS = platform.system() == "Windows"
 
 
 def real_type(dtype):
@@ -101,23 +105,37 @@ def equal_but_zero_signs(a, b):
 
 
 def with_blas_nans(compare, a, b):
-    """`compare`, a NaN part of NumPy's complex dot product along the last axis taken for NumericAL's infinite one where
-    a term is infinite: NumPy's answer there is its BLAS's, whose kernels may make that part NaN (OpenBLAS's on
-    x86-64), where NumericAL sums the terms."""
+    """`compare`, a NaN part of NumPy's complex dot product along the last axis taken for NumericAL's where a product
+    of two parts is infinite (an infinite part, or an overflow): NumPy's answer there is its BLAS's, whose kernels may
+    make either part of the result NaN from a product of the other's (OpenBLAS's on x86-64 and arm64), where NumericAL
+    sums each part's terms."""
+    with np.errstate(all="ignore"):
+        products = [x * y for x in (a.real, a.imag) for y in (b.real, b.imag)]  # each in the parts' precision
     infinite = np.zeros(np.broadcast_shapes(a.shape, b.shape)[:-1], bool)
-    for operand in (a, b):
-        infinite |= np.any(np.isinf(operand.real) | np.isinf(operand.imag), axis=-1)
+    for product in products:
+        infinite |= np.any(np.isinf(product), axis=-1)
 
     def compare_with(got, want):
         got, want = np.asarray(got), np.array(want)
         if got.shape != want.shape or not np.iscomplexobj(want):
             return compare(got, want)
         for g, w in ((got.real, want.real), (got.imag, want.imag)):
-            taken = np.isnan(w) & np.isinf(g) & infinite
+            taken = np.isnan(w) & ~np.isnan(g) & infinite
             w[taken] = g[taken]
         return compare(got, want)
 
     return compare_with
+
+
+def numpy_root(a):
+    """NumPy's square root of `a`, its halved imaginary parts doubled where it has them (`NUMPY_HALVES_SCALED_ROOTS`)."""
+    root = np.sqrt(a)
+    if not NUMPY_HALVES_SCALED_ROOTS or not np.iscomplexobj(a):
+        return root
+    threshold = np.finfo(real_type(a.dtype)).max / (1 + np.sqrt(2.0))
+    finite = np.isfinite(a.real) & np.isfinite(a.imag)
+    scaled = finite & ((np.abs(a.real) >= threshold) | (np.abs(a.imag) >= threshold))
+    return np.where(scaled, root.real + 2j * root.imag, root).astype(root.dtype)
 
 
 def parts_close(a, b, scale, tol, near_overflow):
@@ -127,6 +145,7 @@ def parts_close(a, b, scale, tol, near_overflow):
     if a.shape != b.shape:
         return False
     scale = np.broadcast_to(np.asarray(scale, dtype=float), a.shape)
+    scale = np.where(np.isnan(scale), np.inf, scale)  # magnitudes overflowed to inf, then times 0: terms past 1e308
     for x, y in ((np.real(a), np.real(b)), (np.imag(a), np.imag(b))):
         finite = np.isfinite(x) & np.isfinite(y)
         special_same = (np.isnan(x) & np.isnan(y)) | ((x == y) & ~np.isnan(x))
@@ -280,7 +299,7 @@ def drawn_case(seed, index, largest):
         return label, check(label, lambda: np.abs(a), lambda: numerical.absolute(t), compare)
     if op == "sqrt":
         compare = exact if not np.issubdtype(dtype, np.complexfloating) else tolerant(np.sqrt(np.abs(a)), 4.0)
-        return label, check(label, lambda: np.sqrt(a), lambda: numerical.sqrt(t), compare)
+        return label, check(label, lambda: numpy_root(a), lambda: numerical.sqrt(t), compare)
     if op == "cross":
         b = draw_array(rng, shape, dtype, special)
         operands.append(b)

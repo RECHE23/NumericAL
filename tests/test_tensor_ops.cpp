@@ -38,7 +38,7 @@ namespace {
   template <typename T>
   bool general_einsum_keeps_its_factors()
   {
-    const auto value {[](double re, double im) {
+    const auto value {[](double re, [[maybe_unused]] double im) {
                         if constexpr (numerical::detail::split_complex<T>) {
                           using R = T::value_type;
                           return T {static_cast<R>(re), static_cast<R>(im)};
@@ -102,7 +102,7 @@ namespace {
         ok = ok && product.data()[(i * 3) + j]
              == numerical::detail::numpy_multiply(a.data()[i], b.data()[j], numerical::detail::numpy_fuses_products());
         ok = ok && quotient.data()[(i * 3) + j]
-             == numerical::detail::numpy_divide(a.data()[i], b.data()[j], numerical::detail::numpy_scalar_loops_fuse());
+             == numerical::detail::numpy_divide(a.data()[i], b.data()[j], numerical::detail::numpy_fuses_quotients());
       }
     }
     // One element from a broadcast operand of rank above 0 is NumPy's scalar loop's; from equal ranks or a rank-0
@@ -110,7 +110,7 @@ namespace {
     const R                    e           {std::numeric_limits<R>::epsilon() * R {4}};
     const C                    x           {R {1} + e, R {1}};
     const C                    y           {R {1} - e, R {1}};
-    const C                    scalar_loop {numerical::detail::numpy_multiply(x, y, numerical::detail::numpy_scalar_loops_fuse())};
+    const C                    scalar_loop {numerical::detail::numpy_multiply(x, y, numerical::detail::numpy_fuses_scalar_products())};
     const C                    vector_loop {numerical::detail::numpy_multiply(x, y, numerical::detail::numpy_fuses_products())};
     const numerical::tensor<C> one_one     {{1, 1}, numerical::buffer<C> {x}};
     const numerical::tensor<C> other_one   {{1, 1}, numerical::buffer<C> {y}};

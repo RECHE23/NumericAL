@@ -162,12 +162,24 @@ namespace numerical {
 #endif
     }
 
-    //! \brief Whether NumPy's scalar loops fuse their multiply-adds (its complex quotient's always, its product's
-    //!        where \ref numpy_loop_is_scalar holds): on arm64, where its build contracts them (FMA is arm64's
-    //!        baseline); not on x86-64, whose baseline has none.
-    [[nodiscard]] inline bool numpy_scalar_loops_fuse() noexcept
+    //! \brief Whether NumPy's complex product fuses its multiply-adds in its scalar loop (where \ref
+    //!        numpy_loop_is_scalar holds), as its PyPI wheels are built: that loop sits beside the vector one, and
+    //!        clang (macOS) and MSVC (Windows) contract it where the vector loop has FMA; GCC (Linux, ISO C) does not.
+    [[nodiscard]] inline bool numpy_fuses_scalar_products() noexcept
     {
-#if defined(__aarch64__) || defined(_M_ARM64)
+#if defined(__APPLE__) || defined(_WIN32)
+      return numpy_fuses_products();
+#else
+      return false;
+#endif
+    }
+
+    //! \brief Whether NumPy's complex quotient fuses its multiply-adds, as its PyPI wheels are built: on macOS arm64,
+    //!        whose clang contracts them (FMA is arm64's baseline); not on Linux, whose GCC does not, nor on x86-64,
+    //!        whose baseline has no FMA.
+    [[nodiscard]] inline bool numpy_fuses_quotients() noexcept
+    {
+#if defined(__APPLE__) && defined(__aarch64__)
       return true;
 #else
       return false;
@@ -216,7 +228,7 @@ namespace numerical {
     {
       using R = typename T::value_type;
       const std::complex<double> wide {static_cast<double>(value.real()), static_cast<double>(value.imag())};
-      const std::complex<double> mean {numpy_divide(wide, std::complex<double> {static_cast<double>(n), 0.0}, numpy_scalar_loops_fuse())};
+      const std::complex<double> mean {numpy_divide(wide, std::complex<double> {static_cast<double>(n), 0.0}, numpy_fuses_quotients())};
       return T {static_cast<R>(mean.real()), static_cast<R>(mean.imag())};
     }
 
@@ -616,7 +628,7 @@ namespace numerical {
   [[nodiscard]] tensor<C> numpy_multiply(const tensor<C>& a,
                                          const tensor<C>& b)
   {
-    const bool fused {detail::numpy_loop_is_scalar(a, b) ? detail::numpy_scalar_loops_fuse() : detail::numpy_fuses_products()};
+    const bool fused {detail::numpy_loop_is_scalar(a, b) ? detail::numpy_fuses_scalar_products() : detail::numpy_fuses_products()};
     return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_multiply(x, y, fused); });
   }
 
@@ -626,7 +638,7 @@ namespace numerical {
   [[nodiscard]] tensor<C> numpy_divide(const tensor<C>& a,
                                        const tensor<C>& b)
   {
-    const bool fused {detail::numpy_scalar_loops_fuse()};
+    const bool fused {detail::numpy_fuses_quotients()};
     return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_divide(x, y, fused); });
   }
 
