@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.33 — 2026-10-22
+
 ### Fixed
 - **A complex number's `exp`, `log`, `sin`, `cos`, `tan` and `tanh` are computed as the GNU C library computes them**
   (`numerical/complex_math.hpp`), where they were `std::`'s, libc++'s on macOS and MSVC's on Windows, which lose a part
