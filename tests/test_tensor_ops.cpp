@@ -40,7 +40,7 @@ namespace {
   {
     const auto value {[](double re, double im) {
                         if constexpr (numerical::detail::split_complex<T>) {
-                          using R = typename T::value_type;
+                          using R = T::value_type;
                           return T {static_cast<R>(re), static_cast<R>(im)};
                         }
                         else {
@@ -77,7 +77,7 @@ namespace {
   template <typename C>
   bool numpy_complex_arithmetic_holds()
   {
-    using R = typename C::value_type;
+    using R = C::value_type;
     const R    inf {std::numeric_limits<R>::infinity()};
     const R    big {std::numeric_limits<R>::max() / R {2}};
     const auto nan_both {[](const C& z) { return std::isnan(z.real()) && std::isnan(z.imag()); }};
