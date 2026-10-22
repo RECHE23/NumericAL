@@ -319,8 +319,8 @@ def drawn_case(seed, index, largest):
         exponent = [2, -1, 0.5, 2.0, -1.0, 3, -2, 5, -7][int(rng.integers(9))]
         label += f" ** {exponent!r}"
         compare = exact
-        if exponent == 0.5 and np.issubdtype(dtype, np.complexfloating) and not sys.platform.startswith("linux"):
-            compare = tolerant(np.sqrt(np.abs(a)), 4.0)  # NumPy's root is the C library's, glibc's on Linux
+        if exponent == 0.5 and np.issubdtype(dtype, np.complexfloating) and platform.libc_ver()[0] != "glibc":
+            compare = tolerant(np.sqrt(np.abs(a)), 4.0)  # NumPy's root is the C library's: glibc's is NumericAL's
         elif not np.issubdtype(dtype, np.complexfloating) and exponent not in (2, -1, 0.5, 2.0, -1.0):
             compare = tolerant(np.abs(a) ** exponent, 4.0)  # the C library's pow, NumPy's and std::pow alike
         return label, check(label, lambda: numpy_power(a, exponent), lambda: t**exponent, compare)
@@ -378,12 +378,13 @@ def huge_checks():
                       lambda: numerical.mean(numerical.asarray(ones)), parts_equal)
     failures += check("mean along an axis of 2^24 + 1", lambda: np.mean(ones.reshape(1, -1), axis=1),
                       lambda: numerical.mean(numerical.asarray(ones.reshape(1, -1)), axis=1), parts_equal)
-    huge = numerical.zeros((1 << 32, 0, 1 << 32))
+    half = (sys.maxsize.bit_length() + 1) // 2  # extents whose product is past std::size_t
+    huge = numerical.zeros((1 << half, 0, 1 << half))
     for name, call in (("sum", lambda: numerical.sum(huge, axis=1)), ("mean", lambda: numerical.mean(huge, axis=1)),
                        ("einsum", lambda: numerical.einsum("ijk->ik", huge))):
         try:
             call()
-            failures.append(f"{name} keeping 2^32 × 2^32 elements answered")
+            failures.append(f"{name} keeping 2^{half} × 2^{half} elements answered")
         except numerical.error:
             pass
     return failures

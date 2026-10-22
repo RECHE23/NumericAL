@@ -5,6 +5,7 @@ need nothing installed (the __array_interface__ dict, the DLPack capsule and
 device), and once against NumPy proper when it happens to be importable.
 """
 import os
+import platform
 import subprocess
 import sys
 import unittest
@@ -205,7 +206,7 @@ class HighRanks(unittest.TestCase):
                         self.assertTrue(np.all(same), (np.dtype(dtype).name, exponent, int(np.sum(~same))))
 
     def test_complex_square_roots_are_glibcs(self):
-        # NumPy's on Linux to the bit (glibc's csqrt); within two units in the last place of the others' (macOS's
+        # NumPy's under glibc to the bit (its csqrt); within two units in the last place of the others' (macOS's
         # libm drops an imaginary part far smaller than the real one, npymath on Windows halves a scaled one).
         values = [0.0, -0.0, np.inf, -np.inf, np.nan, 1e308, -1e308, 1.0, -1.0, -1e20, 1e-310, 3.0]
         z = np.array([complex(r, i) for r in values for i in values])
@@ -216,7 +217,7 @@ class HighRanks(unittest.TestCase):
                     self.assertEqual(complex(got[values.index(-1.0) * len(values) + values.index(0.0)]), 1j)
                     near = complex(got[values.index(-1e20) * len(values) + values.index(1.0)])
                     self.assertLess(abs(near.real - 5e-11), 1e-15)
-                    if sys.platform.startswith("linux"):
+                    if platform.libc_ver()[0] == "glibc":  # musl's csqrt is its own
                         want = np.sqrt(a)
                         for x, y in ((want.real, got.real), (want.imag, got.imag)):
                             same = (np.isnan(x) & np.isnan(y)) | ((x == y) & (np.signbit(x) == np.signbit(y)))
@@ -264,14 +265,16 @@ class HugeEmptyShapes(unittest.TestCase):
     overflows refuses (it wrote past a buffer of the wrapped size), one keeping an empty axis is empty."""
 
     def test_sums_and_norms(self):
-        big = 2 ** 32
+        big = 2 ** ((sys.maxsize.bit_length() + 1) // 2)  # its square past std::size_t: 2**32, or 2**16 on 32 bits
         t = numerical.zeros((big, 0, big))
         with self.assertRaises(numerical.error):
             numerical.sum(t, axis=1)
         with self.assertRaises(numerical.error):
             numerical.vector_norm(t, axis=1)
         self.assertEqual(numerical.sum(t, axis=0).shape, (0, big))
-        self.assertEqual(numerical.zeros((2 ** 31, 0)).shape, (2 ** 31, 0))
+        self.assertEqual(numerical.zeros((big // 2, 0)).shape, (big // 2, 0))  # 2**31: past a 32-bit long
+        with self.assertRaises(OverflowError):  # an extent past Py_ssize_t
+            numerical.zeros((sys.maxsize + 1, 0))
 
     def test_empty_matrices_decompose_as_numpys(self):
         # svd of 0 × 0 read the largest of no band of rows; each factor has NumPy's shape, thin or full
