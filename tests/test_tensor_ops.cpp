@@ -89,6 +89,8 @@ namespace {
       ok = ok && numerical::detail::numpy_divide(C {R {6}, R {3}}, C {R {0}, R {3}}, fused) == C {R {1}, R {-2}};
       ok = ok && numerical::detail::numpy_divide(C {R {1}, R {-1}}, C {R {0}, R {0}}, fused) == C {inf, -inf};
       ok = ok && nan_both(numerical::detail::numpy_divide(C {R {0}, R {0}}, C {R {0}, R {0}}, fused));
+      const C nan_over_zero {numerical::detail::numpy_divide(C {std::numeric_limits<R>::quiet_NaN(), R {-2}}, C {R {0}, R {0}}, fused)};
+      ok = ok && std::isnan(nan_over_zero.real()) && nan_over_zero.imag() == -inf;
     }
     const C wide                        {numerical::detail::numpy_multiply(C {big, big}, C {big, -big}, true)};
     const C rounded                     {numerical::detail::numpy_multiply(C {big, big}, C {big, -big}, false)};
@@ -102,7 +104,7 @@ namespace {
         ok = ok && product.data()[(i * 3) + j]
              == numerical::detail::numpy_multiply(a.data()[i], b.data()[j], numerical::detail::numpy_fuses_products());
         ok = ok && quotient.data()[(i * 3) + j]
-             == numerical::detail::numpy_divide(a.data()[i], b.data()[j], numerical::detail::numpy_fuses_quotients());
+             == numerical::detail::numpy_divide(a.data()[i], b.data()[j], numerical::numpy_wheel_loops().quotients);
       }
     }
     // One element from a broadcast operand of rank above 0 is NumPy's scalar loop's; from equal ranks or a rank-0
@@ -123,6 +125,15 @@ namespace {
     ok = ok && numerical::numpy_multiply(one_one, zero_rank).data()[0] == vector_loop;
     ok = ok && numerical::numpy_multiply(one_one, other_one).data()[0] == vector_loop;
     ok = ok && numerical::numpy_multiply(one_one, three).data()[2] == vector_loop;
+    // The loops as measured beside a NumPy, whichever way each fuses.
+    const C fused_product   {numerical::detail::numpy_multiply(x, y, true)};
+    const C rounded_product {numerical::detail::numpy_multiply(x, y, false)};
+    for (const bool scalar : {false, true}) {
+      const numerical::numpy_loops loops {.products = !scalar, .scalar_products = scalar, .quotients = scalar};
+      ok = ok && numerical::numpy_multiply(one_one, one, loops).data()[0] == (scalar ? fused_product : rounded_product);
+      ok = ok && numerical::numpy_multiply(one_one, other_one, loops).data()[0] == (scalar ? rounded_product : fused_product);
+      ok = ok && numerical::numpy_divide(one_one, other_one, loops).data()[0] == numerical::detail::numpy_divide(x, y, scalar);
+    }
     return ok;
   }
 } // namespace

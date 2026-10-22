@@ -15,13 +15,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   754-2019's maximum and minimum, and NumPy's on arm64 — where the first zero met kept its sign; a NaN still wins.
   NumPy on x86-64 keeps the sign of a zero as its vector loops meet them.
 - **Complex `*` and `/` from Python give NumPy's bits, its infinities and NaNs included**: NumPy's own loops — the
-  product's four part products, fused where its PyPI wheels fuse them (its vector loop on arm64 and on x86-64 with
-  AVX2 and FMA; its scalar loop, which takes one element from an operand of rank above 0 broadcast to a higher rank,
-  likewise on macOS and Windows but never on Linux), the quotient by Smith's algorithm (fused on macOS arm64 alone) —
-  where `std::complex`'s operators recover infinities as C's Annex G does: `1j * (inf + inf j)` gave
+  product's four part products and the quotient by Smith's algorithm, each fused as the NumPy beside them fuses it,
+  measured once NumPy is imported (its wheel's build decides, not the processor alone: the scalar loop that takes one
+  element from an operand of rank above 0 broadcast to a higher rank is fused by clang and recent MSVC builds, not by
+  GCC's) — where `std::complex`'s operators recover infinities as C's Annex G does: `1j * (inf + inf j)` gave
   `-inf + inf j` where NumPy gives `nan + nan j`, and complex64 products differed in their last bit where NumPy fuses.
-  The C++ operators keep Annex G; `numpy_multiply` and `numpy_divide` are NumPy's. **A complex `mean` divides by
-  its count as NumPy divides**, by `n + 0j`: a NaN part makes both parts NaN.
+  The C++ operators keep Annex G; `numpy_multiply` and `numpy_divide` are NumPy's (`numpy_loops` says which fuse).
+  **A complex `mean` divides by its count as NumPy divides**, by `n + 0j`: a NaN part makes both parts NaN.
 - **`einsum`'s general loop starts each product from its first factor**, where it multiplied a 1 by it: a complex 1
   times an infinity gave a NaN (0 · inf) and −0 came out +0, so a complex `trace` or sum of infinities or signed zeros
   went wrong. **`vector_norm` with `ord=0` counts a NaN** (it is not zero), as NumPy's, where it gave the NaN; with

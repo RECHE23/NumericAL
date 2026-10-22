@@ -123,6 +123,17 @@ namespace numerical {
       return C {numpy_muladd(a.real(), b.real(), -ii, fused), numpy_muladd(a.real(), b.imag(), ir, fused)};
     }
 
+    //! \brief \p x divided by +0, as IEEE divides it, spelled out: a NaN for a zero or a NaN, else an infinity of
+    //!        \p x's sign (a division by a zero the compiler sees is MSVC's C4723 under /WX).
+    template <std::floating_point R>
+    [[nodiscard]] R divided_by_zero(R x) noexcept
+    {
+      if (x == R {0} || std::isnan(x)) {
+        return std::numeric_limits<R>::quiet_NaN();
+      }
+      return std::copysign(std::numeric_limits<R>::infinity(), x);
+    }
+
     /*!
      * \brief `a / b` of complex numbers as NumPy's array loop computes it: Smith's division by the larger part of
      *        \p b (an exact zero divided part by part, to an infinity or a NaN), each `x + y·z` of it one fused
@@ -138,7 +149,7 @@ namespace numerical {
       const R imaginary_part {std::abs(b.imag())};
       if (real_part >= imaginary_part) {
         if (real_part == R {0}) { // the imaginary part's magnitude no larger: a zero too
-          return C {a.real() / real_part, a.imag() / imaginary_part};
+          return C {divided_by_zero(a.real()), divided_by_zero(a.imag())};
         }
         const R ratio {b.imag() / b.real()};
         const R scale {R {1} / numpy_muladd(b.imag(), ratio, b.real(), fused)};
@@ -228,8 +239,10 @@ namespace numerical {
     {
       using R = typename T::value_type;
       const std::complex<double> wide {static_cast<double>(value.real()), static_cast<double>(value.imag())};
-      const std::complex<double> mean {numpy_divide(wide, std::complex<double> {static_cast<double>(n), 0.0}, numpy_fuses_quotients())};
-      return T {static_cast<R>(mean.real()), static_cast<R>(mean.imag())};
+      // Smith's division by n + 0j: a ratio of 0 and a scale of 1 / n, each product with that 0 exact, fused or not.
+      const double scale              {1.0 / static_cast<double>(n)};
+      const double zero               {0.0};
+      return T {static_cast<R>((wide.real() + (wide.imag() * zero)) * scale), static_cast<R>((wide.imag() - (wide.real() * zero)) * scale)};
     }
 
     //! \brief \ref divided_by_count of any other scalar: divided by the count as a `T`.
@@ -619,26 +632,46 @@ namespace numerical {
     return tensor<T> {std::move(shape), std::move(out)};
   }
 
+  //! \brief Which of NumPy's complex loops fuse their multiply-adds: its product's vector loop, its product's scalar
+  //!        loop (\ref detail::numpy_loop_is_scalar) and its quotient's. They follow how its wheels were built, not
+  //!        only the processor, so the binding measures them on the NumPy it runs beside.
+  struct numpy_loops {
+    bool products;        //!< The product's vector loop.
+    bool scalar_products; //!< The product's scalar loop.
+    bool quotients;       //!< The quotient (Smith's algorithm, a scalar loop).
+  };
+
+  //! \brief NumPy's loops as its current PyPI wheels build them on this processor (\ref detail::numpy_fuses_products,
+  //!        \ref detail::numpy_fuses_scalar_products, \ref detail::numpy_fuses_quotients).
+  [[nodiscard]] inline numpy_loops numpy_wheel_loops() noexcept
+  {
+    return numpy_loops {.products        = detail::numpy_fuses_products(),
+                        .scalar_products = detail::numpy_fuses_scalar_products(),
+                        .quotients       = detail::numpy_fuses_quotients()};
+  }
+
   /*!
    * \brief `a · b` of complex tensors, broadcast, each product as NumPy's array loop computes it
-   *        (\ref detail::numpy_multiply on this processor): the binding's `*`, where `std::complex`'s operator (this
-   *        library's `*`) recovers infinities NumPy's makes NaN.
+   *        (\ref detail::numpy_multiply, fused as \p loops says): the binding's `*`, where `std::complex`'s operator
+   *        (this library's `*`) recovers infinities NumPy's makes NaN.
    */
   template <detail::split_complex C>
-  [[nodiscard]] tensor<C> numpy_multiply(const tensor<C>& a,
-                                         const tensor<C>& b)
+  [[nodiscard]] tensor<C> numpy_multiply(const tensor<C>&   a,
+                                         const tensor<C>&   b,
+                                         const numpy_loops& loops = numpy_wheel_loops())
   {
-    const bool fused {detail::numpy_loop_is_scalar(a, b) ? detail::numpy_fuses_scalar_products() : detail::numpy_fuses_products()};
+    const bool fused {detail::numpy_loop_is_scalar(a, b) ? loops.scalar_products : loops.products};
     return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_multiply(x, y, fused); });
   }
 
   //! \brief `a / b` of complex tensors, broadcast, each quotient as NumPy's array loop computes it
-  //!        (\ref detail::numpy_divide on this processor): the binding's `/`.
+  //!        (\ref detail::numpy_divide, fused as \p loops says): the binding's `/`.
   template <detail::split_complex C>
-  [[nodiscard]] tensor<C> numpy_divide(const tensor<C>& a,
-                                       const tensor<C>& b)
+  [[nodiscard]] tensor<C> numpy_divide(const tensor<C>&   a,
+                                       const tensor<C>&   b,
+                                       const numpy_loops& loops = numpy_wheel_loops())
   {
-    const bool fused {detail::numpy_fuses_quotients()};
+    const bool fused {loops.quotients};
     return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_divide(x, y, fused); });
   }
 

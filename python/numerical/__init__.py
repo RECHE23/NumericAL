@@ -1063,6 +1063,29 @@ def _same_dtype(a, b):
     return asarray(tensor_a, dtype), asarray(tensor_b, dtype)
 
 
+_numpy_loops_measured = False
+
+
+def _numpy_loops():
+    """Measures, once NumPy is imported, which of its complex loops fuse their multiply-adds, so that ``*`` and ``/``
+    give its bits: they follow how its wheel was built (clang and MSVC contract its scalar loop, GCC does not), not
+    the processor alone. Each probe's exact answer is a 0 where the loop rounds each product, and not where it fuses."""
+    global _numpy_loops_measured
+    np = _sys.modules.get("numpy")
+    if np is None:
+        return
+    _numpy_loops_measured = True
+    e = 2.0**-30
+    x, y = complex(1 + e, 1), complex(1 - e, 1)  # the real part (1 + e)(1 - e) - 1: -e² fused, 0 rounded
+    # Smith's a / (1 + r j) adds a.imag · r to a.real: (1 - 2^-30)² sits 2^-60 past 1 - 2^-29 fused, on it rounded
+    r = 1 - 2.0**-30
+    with np.errstate(all="ignore"):
+        products = np.multiply(np.array([x, x]), np.array([y, y]))[0].real != 0  # the vector loop
+        scalar_products = np.multiply(np.array([[x]]), np.array([y]))[0, 0].real != 0  # one element, broadcast
+        quotients = np.divide(np.array([complex(-(1 - 2.0**-29), r)]), np.array([complex(1, r)]))[0].real != 0
+    _numerical._set_numpy_loops(bool(products), bool(scalar_products), bool(quotients))
+
+
 def _arithmetic(op, reflected=False):
     """The Tensor method for `op` ("+", "-", "*", "/", or "^" for ``**``), element-wise and broadcast as NumPy's; a reflected
     one (``2 - t``) puts the other operand first. Anything :func:`asarray` cannot read is NotImplemented."""
@@ -1080,6 +1103,8 @@ def _arithmetic(op, reflected=False):
                 return NotImplemented
         if reflected:
             a, b = b, a
+        if not _numpy_loops_measured and op in ("*", "/"):
+            _numpy_loops()
         return _native(_numerical._binary, op, a, b)
 
     return method

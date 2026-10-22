@@ -174,6 +174,19 @@ class HighRanks(unittest.TestCase):
                 got = np.asarray(numerical.asarray(a) * numerical.asarray(b))
                 np.testing.assert_array_equal(got, a * b, (np.dtype(dtype).name, left, right))
 
+    def test_products_follow_numpys_loops_as_measured(self):
+        # Fused or rounded as the NumPy beside it fuses, which the binding measures: forced either way, then measured.
+        e = 2.0**-30
+        a = numerical.asarray(np.array([complex(1 + e, 1)] * 2))
+        b = numerical.asarray(np.array([complex(1 - e, 1)] * 2))
+        try:
+            for fused, real in ((False, 0.0), (True, -(e * e))):
+                numerical._numerical._set_numpy_loops(fused, fused, fused)
+                self.assertEqual(np.asarray(a * b)[0].real, real)
+        finally:
+            numerical._numpy_loops()
+        np.testing.assert_array_equal(np.asarray(a * b), np.asarray(a) * np.asarray(b))
+
     def test_means_and_norms_where_numpy_says_nothing_or_nan(self):
         # A complex mean divided as NumPy divides, by n + 0j: a NaN part makes both NaN, to NumPy's bits; the smallest
         # magnitude over no element refused, as NumPy's minimum; a result empty along a non-empty axis allowed.

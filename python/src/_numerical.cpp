@@ -1232,45 +1232,64 @@ bool same_dtype_pair(PyObject* x, PyObject* y, const any_tensor*& a, const any_t
     return true;
 }
 
+// NumPy's complex loops as the NumPy beside this process fuses them: its PyPI wheels' until the Python side has
+// measured the NumPy it imported (numerical._numpy_loops). Read and written under the GIL.
+numerical::numpy_loops& numpy_loops_beside()
+{
+    static numerical::numpy_loops loops {numerical::numpy_wheel_loops()};
+    return loops;
+}
+
+// _set_numpy_loops(products, scalar_products, quotients): which of NumPy's complex loops fuse, as measured.
+void set_numpy_loops(bool products, bool scalar_products, bool quotients)
+{
+    numpy_loops_beside() = numerical::numpy_loops {.products = products, .scalar_products = scalar_products, .quotients = quotients};
+}
+
 // `a * b` and `a / b` as NumPy's array loops compute them: a real type's are IEEE's, the same; a complex type's
-// NumPy's own (numerical::numpy_multiply, numpy_divide), where std::complex's operators recover infinities that NumPy's
-// leave NaN, and fuse otherwise.
+// NumPy's own (numerical::numpy_multiply, numpy_divide, fused as `loops`), where std::complex's operators recover
+// infinities that NumPy's leave NaN, and fuse otherwise.
 template <typename T>
-numerical::tensor<T> product_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+numerical::tensor<T> product_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
+                                      const numerical::numpy_loops& /*loops*/)
 {
     return a * b;
 }
 
 template <numerical::detail::split_complex T>
-numerical::tensor<T> product_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+numerical::tensor<T> product_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
+                                      const numerical::numpy_loops& loops)
 {
-    return numerical::numpy_multiply(a, b);
+    return numerical::numpy_multiply(a, b, loops);
 }
 
 template <typename T>
-numerical::tensor<T> quotient_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+numerical::tensor<T> quotient_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
+                                       const numerical::numpy_loops& /*loops*/)
 {
     return a / b;
 }
 
 template <numerical::detail::split_complex T>
-numerical::tensor<T> quotient_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+numerical::tensor<T> quotient_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
+                                       const numerical::numpy_loops& loops)
 {
-    return numerical::numpy_divide(a, b);
+    return numerical::numpy_divide(a, b, loops);
 }
 
 template <typename T>
 PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
-    std::optional<any_tensor> result;
+    const numerical::numpy_loops loops {numpy_loops_beside()}; // read while the GIL is held
+    std::optional<any_tensor>    result;
     {
         const sb::scoped_gil_release unlocked {releases_gil(std::max(a.size(), b.size()))};
         switch (op) {
             case '+': result.emplace(a + b); break;
             case '-': result.emplace(a - b); break;
-            case '*': result.emplace(product_as_numpy(a, b)); break;
+            case '*': result.emplace(product_as_numpy(a, b, loops)); break;
             case '^': result.emplace(numerical::pow(a, b)); break;
-            default: result.emplace(quotient_as_numpy(a, b)); break;
+            default: result.emplace(quotient_as_numpy(a, b, loops)); break;
         }
     }
     return wrap(std::move(*result));
@@ -3419,6 +3438,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     // The 7 linear-algebra functions whose args/return are caster-able -> m.def.
     m.def<&set_num_threads>("_set_num_threads",
                             "_set_num_threads(n)\nCap the threads a kernel uses at n (see numerical.set_num_threads).");
+    m.def<&set_numpy_loops>("_set_numpy_loops",
+                            "_set_numpy_loops(products, scalar_products, quotients)\nWhich of NumPy's complex loops fuse (see numerical._numpy_loops).");
     m.def<&get_num_threads>("get_num_threads", "get_num_threads() -> int\nThe threads a kernel may use.");
     m.def<&limit_gemm_path_code>("_limit_gemm_path", "_limit_gemm_path(code) -> int\nThe path code now in use (see numerical.limit_gemm_path).");
     m.def<&gemm_path_code>("_gemm_path", "_gemm_path() -> int\nThe path code float64 matrix products take.");
