@@ -13,6 +13,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   `/`), where the square took the school formula with each product rounded, neither the library's `*` nor NumPy's:
   `pow(1e308 + 1e308j, 2)` is now `z * z`; NumPy's loops stay `numpy_square`, `numpy_reciprocal` and `numpy_power`,
   which the binding takes. Its documentation said NumPy's.
+- **`numpy.sum(t)`, `numpy.mean`, `numpy.max` and `numpy.min` of a Tensor answer**: NumPy calls the object's method
+  with `out` (and `dtype` for a mean), which the Tensor methods refused with a `TypeError`; they now take `dtype` (the
+  result converted) and an `out` of None (a Tensor is never written into).
 
 ### Added
 - **`diagonal`, `matrix_transpose`, `tensorsolve` and `tensorinv`**, as `numpy.linalg`'s: the rest of its functions.

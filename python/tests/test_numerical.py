@@ -271,6 +271,17 @@ class HighRanks(unittest.TestCase):
             with self.assertRaises(ValueError):  # a repeated axis, as NumPy's
                 getattr(numerical, name)(t, axis=(0, 0))
 
+    def test_numpys_reductions_take_a_tensor(self):
+        # numpy.sum(t) and the like call the Tensor's method with `out` (and `dtype` for a mean), as for any object
+        a = np.random.default_rng(41).standard_normal((3, 4))
+        t = numerical.asarray(a)
+        for f in (np.sum, np.mean, np.max, np.min):
+            self.assertAlmostEqual(f(t), f(a), places=12)
+            np.testing.assert_allclose(np.asarray(f(t, axis=1, keepdims=True)), f(a, axis=1, keepdims=True), rtol=1e-12)
+        self.assertEqual(np.asarray(np.mean(t, axis=0, dtype=np.complex128)).dtype, np.complex128)
+        with self.assertRaises(TypeError):
+            np.sum(t, out=np.zeros(()))
+
     def test_ellipsis_and_new_axes_index_as_numpy(self):
         a = np.arange(24.0).reshape(2, 3, 4)
         t = numerical.asarray(a)

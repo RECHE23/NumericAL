@@ -1284,10 +1284,34 @@ max = _reduction("max", """The largest element, or the largest along `axis`, as 
 dtypes only (a complex one has no order).""")
 min = _reduction("min", """The smallest element, or the smallest along `axis`, as ``numpy.min``; a NaN wins. Real
 dtypes only.""")
-Tensor.sum = lambda self, axis=None, keepdims=False: sum(self, axis, keepdims)
-Tensor.mean = lambda self, axis=None, keepdims=False: mean(self, axis, keepdims)
-Tensor.max = lambda self, axis=None, keepdims=False: max(self, axis, keepdims)
-Tensor.min = lambda self, axis=None, keepdims=False: min(self, axis, keepdims)
+def _dtype_name(dtype):
+    """A dtype's name as a Tensor takes it: a string as it is, ``numpy.float64`` or ``numpy.dtype("float32")`` by name."""
+    if isinstance(dtype, str):
+        return dtype
+    return getattr(dtype, "__name__", None) or str(dtype)
+
+
+def _reduction_method(reduce):
+    """The Tensor method of `reduce`, which NumPy's `numpy.sum(t)` and the like call with `out` (and `dtype` for a
+    mean): None the only `out` a Tensor takes, since it is never written into; `dtype` converts the result."""
+    def method(self, axis=None, dtype=None, out=None, keepdims=False):
+        if out is not None:
+            raise TypeError(f"{reduce.__name__}: a Tensor takes no `out` (it is never written into)")
+        result = reduce(self, axis, keepdims)
+        if dtype is None:
+            return result
+        converted = asarray(result, dtype=_dtype_name(dtype))
+        return converted if isinstance(result, Tensor) else converted[()]
+
+    method.__name__ = reduce.__name__
+    method.__doc__ = reduce.__doc__
+    return method
+
+
+Tensor.sum = _reduction_method(sum)
+Tensor.mean = _reduction_method(mean)
+Tensor.max = _reduction_method(max)
+Tensor.min = _reduction_method(min)
 
 
 def _shape(shape):
