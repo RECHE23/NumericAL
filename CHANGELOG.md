@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A product of up to 24 columns runs by rows** (8 under Clang on arm64), where the packed kernel's tile of 16 or more
+  columns left most of its width idle: the same bits, each term rounded as the tile rounds it. On 200 random products of
+  1 to 24 columns, 0.42 to 0.64 times as long on x86-64 (ten AVX-512 cores, six AVX2 cores), 0.44 to 0.54 on arm64
+  under GCC, 0.60 under Clang; 169 × 579 by 579 × 2 on one AVX-512 core 82 → 24 µs (OpenBLAS 13).
+
+### Changed
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on
   x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
   order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,

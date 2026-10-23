@@ -112,19 +112,58 @@ namespace {
   }
 } // namespace
 
+// A product of up to gemm_rows_columns columns runs by rows (gemm_rows), where the packed kernel's tile left most of
+// its width idle: the packed product's bits, on every path, past one depth panel, any number of rows and threads, every
+// width of a last block of columns after whole blocks of rows and after a last row alone.
+TEST(narrow_products_by_rows_give_the_packed_bits)
+{
+  EXPECT(on_every_path([] {
+                         bool same {true};
+                         for (const std::size_t threads : {std::size_t {1}, std::size_t {4}}) {
+                           numerical::set_max_threads(threads);
+                           for (const auto& [m, n, k] : {std::array<std::size_t, 3> {169, 2, 579}, {37, 7, 37}, {300, 8, 300}, {130, 13, 600},
+                                                         {41, 3, 90}, {23, 14, 70}, {9, 11, 50}, {42, 6, 33},
+                                                         {64, numerical::detail::gemm_rows_columns, (numerical::detail::gemm_kc * 2) + 5},
+                                                         {500, numerical::detail::gemm_rows_columns, 40}}) {
+                             std::vector<double> a(m * k);
+                             std::vector<double> b(k * n);
+                             for (std::size_t i {0}; i < a.size(); ++i) {
+                               a[i] = fill<double>(i);
+                             }
+                             for (std::size_t i {0}; i < b.size(); ++i) {
+                               b[i] = fill<double>((i * 7) + 3);
+                             }
+                             std::vector<double> by_rows(m * n, 0.0);
+                             std::vector<double> packed(m * n, 0.0);
+                             numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, by_rows.data(), n);
+                             numerical::detail::gemm_large(m, n, k, a.data(), k, b.data(), n, packed.data(), n);
+                             same = same && by_rows == packed;
+                           }
+                         }
+                         numerical::set_max_threads(0); // every thread again
+                         return same;
+                       }));
+}
+
 // Past the packing threshold: three depth panels (the last partial), a last partial register tile in
 // both directions, and enough tasks to run in parallel.
 TEST(packed_product_equals_the_ascending_sum_to_the_bit)
 {
   const std::size_t k {(numerical::detail::gemm_kc * 2) + 17};
   EXPECT(on_every_path([&] { return product_is_exact<double>(129, 101, k); }));
-  EXPECT(on_every_path([&] { return product_is_exact<double>(33, 15, k); })); // a whole AMX tile's rows and a partial one
-  EXPECT(on_every_path([&] { return product_is_exact<double>(31, 15, k); })); // within one tile: the vector tile's
+  EXPECT(on_every_path([&] { return product_is_exact<double>(33, 15, k); }));                                        // a whole AMX tile's rows and a partial one
+  EXPECT(on_every_path([&] { return product_is_exact<double>(31, 15, k); }));                                        // within one tile: the vector tile's
+  EXPECT(on_every_path([] { return product_is_exact<double>(50, numerical::detail::gemm_rows_columns + 16, 2); }));  // wide, shallow
+  EXPECT(on_every_path([] { return product_is_exact<double>(3, numerical::detail::gemm_rows_columns + 40, 300); })); // few rows: B in place
   EXPECT(on_every_path([&] { return product_is_exact<float>(67, 75, k); }));
-  (void)numerical::limit_gemm_path(numerical::gemm_path::portable);           // complex: past it, through the real kernel
+  (void)numerical::limit_gemm_path(numerical::gemm_path::portable);                                                  // complex: past it, through the real kernel
   EXPECT(product_is_exact<std::complex<double>>(37, 29, k));
+  EXPECT(product_is_exact<std::complex<double>>(50, numerical::detail::gemm_rows_columns + 16, 2));                  // wide, shallow
+  EXPECT(product_is_exact<std::complex<double>>(3, numerical::detail::gemm_rows_columns + 16, 30));                  // wide, below packing
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
   EXPECT(product_is_exact<int>(70, 50, k));
+  EXPECT(product_is_exact<int>(50, numerical::detail::gemm_rows_columns + 16, 2));                                   // wider than by rows, shallow
+  EXPECT(product_is_exact<int>(3, numerical::detail::gemm_rows_columns + 16, 30));                                   // wider, below the packing threshold
 }
 
 // float products on every path, the AMX's among them: whole and partial tiles in place, a last column cutting a
@@ -581,7 +620,7 @@ TEST(the_calling_thread_keeps_its_packing_storage_within_the_limit)
                          bool ok {product_is_exact<double>(128, 128, 128) && !storage::kept().empty()};
                          // A tall product packs more of A than the limit: correct, then nothing kept.
                          const std::size_t rows {(storage::kept_limit / numerical::detail::gemm_kc) + 64};
-                         ok = ok && product_is_exact<double>(rows, 3, numerical::detail::gemm_kc) && storage::kept().empty();
+                         ok = ok && product_is_exact<double>(rows, numerical::detail::gemm_rows_columns + 1, numerical::detail::gemm_kc) && storage::kept().empty();
                          return ok && product_is_exact<double>(128, 128, 128) && !storage::kept().empty();
                        }));
 }

@@ -1178,6 +1178,21 @@ namespace numerical::detail {
   inline constexpr std::size_t narrow_columns {8};
 
   /*!
+   * \brief The most columns of C for which \ref gemm runs any product by \ref gemm_rows, whose
+   *        blocks keep C's rows in registers over the whole depth: the packed kernel's tile spans 16 or more columns,
+   *        so a narrower C left most of it idle (x86-64, 169 × 579 by 579 × 2: 82 µs, OpenBLAS 13). Both round each
+   *        term as the path's tile does, so the same bits. Against the packed kernel on 200 random products of 1 to 24
+   *        columns: x86-64 0.42 to 0.64 times as long by width (ten AVX-512 cores, six AVX2 cores, GCC); arm64 under
+   *        GCC 0.44 to 0.54; under Clang 0.60 up to 8 columns, while from 9 its packed tile kept pace and some
+   *        products took twice as long by rows (M1 Pro).
+   */
+#if defined(NUMERICAL_X86_COMPILED) || !defined(__clang__)
+  inline constexpr std::size_t gemm_rows_columns {24};
+#else
+  inline constexpr std::size_t gemm_rows_columns {8};
+#endif
+
+  /*!
    * \brief `sum + a·b` as the vector tile rounds it (\ref vector_tile_kernel), so that the plain loop's elements are its
    *        own: under Clang's -ffp-contract=on one expression, fused in both; under GCC's, whose vector extensions fuse
    *        nothing while a scalar statement's multiply-add fuses, the product apart, a statement of its own.
@@ -2754,6 +2769,10 @@ namespace numerical::detail {
         }
         return;
       }
+    }
+    if (n <= gemm_rows_columns) { // narrower than the packed kernel's tile: by rows, the same bits
+      gemm_rows(m, n, k, a, lda, b, ldb, c, ldc);
+      return;
     }
     if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
       gemm_rows(m, n, k, a, lda, b, ldb, c, ldc);
