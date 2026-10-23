@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Breaking
+- **NumPy's loops over tensors leave the public namespace for `numerical::detail`**: `numpy_loops`,
+  `numpy_wheel_loops`, `numpy_multiply`, `numpy_divide`, `numpy_power`, `numpy_square`, `numpy_reciprocal` and
+  `numpy_absolute`. They follow the loops of the NumPy beside the binding, which changed between NumPy 2.2 and 2.3,
+  and no part of the library's own algebra uses them: the operators and `pow` keep C's Annex G. The binding calls
+  them where it called the public names.
+
 ### Fixed
 - **`pow` of a complex tensor to a single 2 or −1 is the operators' square and reciprocal** (C's Annex G, as `*` and
   `/`), where the square took the school formula with each product rounded, neither the library's `*` nor NumPy's:

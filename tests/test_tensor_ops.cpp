@@ -97,14 +97,14 @@ namespace {
     ok = ok && wide.real() == inf && wide.imag() == inf && rounded.real() == inf && std::isnan(rounded.imag());
     const numerical::tensor<C> a        {{2, 1}, numerical::buffer<C> {C {R {1}, R {2}}, C {R {-3}, R {0.5}}}};
     const numerical::tensor<C> b        {{3}, numerical::buffer<C> {C {R {2}, R {0}}, C {R {0}, R {-1}}, C {R {0.25}, R {4}}}};
-    const numerical::tensor<C> product  {numerical::numpy_multiply(a, b)};
-    const numerical::tensor<C> quotient {numerical::numpy_divide(a, b)};
+    const numerical::tensor<C> product  {numerical::detail::numpy_multiply(a, b)};
+    const numerical::tensor<C> quotient {numerical::detail::numpy_divide(a, b)};
     for (std::size_t i {0}; i < 2; ++i) {
       for (std::size_t j {0}; j < 3; ++j) {
         ok = ok && product.data()[(i * 3) + j]
              == numerical::detail::numpy_multiply(a.data()[i], b.data()[j], numerical::detail::numpy_fuses_products());
         ok = ok && quotient.data()[(i * 3) + j]
-             == numerical::detail::numpy_divide(a.data()[i], b.data()[j], numerical::numpy_wheel_loops().quotients);
+             == numerical::detail::numpy_divide(a.data()[i], b.data()[j], numerical::detail::numpy_wheel_loops().quotients);
       }
     }
     // One element from a broadcast operand of rank above 0 is NumPy's scalar loop's; from equal ranks or a rank-0
@@ -120,19 +120,19 @@ namespace {
     const numerical::tensor<C> zero_rank   {std::vector<std::size_t> {}, numerical::buffer<C> {y}};
     const numerical::tensor<C> three       {{3}, numerical::buffer<C> {y, y, y}};
     ok = ok && numerical::detail::numpy_multiply(x, y, true) != numerical::detail::numpy_multiply(x, y, false);
-    ok = ok && numerical::numpy_multiply(one_one, one).data()[0] == scalar_loop;
-    ok = ok && numerical::numpy_multiply(one, one_one).data()[0] == scalar_loop;
-    ok = ok && numerical::numpy_multiply(one_one, zero_rank).data()[0] == vector_loop;
-    ok = ok && numerical::numpy_multiply(one_one, other_one).data()[0] == vector_loop;
-    ok = ok && numerical::numpy_multiply(one_one, three).data()[2] == vector_loop;
+    ok = ok && numerical::detail::numpy_multiply(one_one, one).data()[0] == scalar_loop;
+    ok = ok && numerical::detail::numpy_multiply(one, one_one).data()[0] == scalar_loop;
+    ok = ok && numerical::detail::numpy_multiply(one_one, zero_rank).data()[0] == vector_loop;
+    ok = ok && numerical::detail::numpy_multiply(one_one, other_one).data()[0] == vector_loop;
+    ok = ok && numerical::detail::numpy_multiply(one_one, three).data()[2] == vector_loop;
     // The loops as measured beside a NumPy, whichever way each fuses.
     const C fused_product   {numerical::detail::numpy_multiply(x, y, true)};
     const C rounded_product {numerical::detail::numpy_multiply(x, y, false)};
     for (const bool scalar : {false, true}) {
-      const numerical::numpy_loops loops {.products = !scalar, .scalar_products = scalar, .quotients = scalar};
-      ok = ok && numerical::numpy_multiply(one_one, one, loops).data()[0] == (scalar ? fused_product : rounded_product);
-      ok = ok && numerical::numpy_multiply(one_one, other_one, loops).data()[0] == (scalar ? rounded_product : fused_product);
-      ok = ok && numerical::numpy_divide(one_one, other_one, loops).data()[0] == numerical::detail::numpy_divide(x, y, scalar);
+      const numerical::detail::numpy_loops loops {.products = !scalar, .scalar_products = scalar, .quotients = scalar};
+      ok = ok && numerical::detail::numpy_multiply(one_one, one, loops).data()[0] == (scalar ? fused_product : rounded_product);
+      ok = ok && numerical::detail::numpy_multiply(one_one, other_one, loops).data()[0] == (scalar ? rounded_product : fused_product);
+      ok = ok && numerical::detail::numpy_divide(one_one, other_one, loops).data()[0] == numerical::detail::numpy_divide(x, y, scalar);
     }
     return ok;
   }
@@ -236,7 +236,7 @@ TEST(element_wise_functions_by_chunks_are_the_sequential_map_s)
     EXPECT(numerical::log(r) == numerical::map(r, [](double x) { return std::log(x); }));
     EXPECT(numerical::tanh(z) == numerical::map(z, [](const cplx& x) { return numerical::detail::complex_tanh(x); }));
     EXPECT(-z == numerical::map(z, [](const cplx& x) { return -x; }));
-    EXPECT(numerical::numpy_absolute(z) == numerical::map(z, [](const cplx& x) { return numerical::detail::numpy_absolute(x, numerical::numpy_wheel_loops().products); }));
+    EXPECT(numerical::detail::numpy_absolute(z) == numerical::map(z, [](const cplx& x) { return numerical::detail::numpy_absolute(x, numerical::detail::numpy_wheel_loops().products); }));
   }
   numerical::set_max_threads(threads);
 }
@@ -756,10 +756,10 @@ namespace {
     const numerical::tensor<C>   t     {{2}, numerical::buffer<C> {a, wide}};
     const numerical::tensor<C>   three {std::vector<std::size_t> {}, numerical::buffer<C> {C {R {3}, R {0}}}};
     for (const bool fused : {false, true}) {
-      const numerical::numpy_loops loops {.products = fused, .scalar_products = !fused, .quotients = !fused};
-      ok = ok && numerical::numpy_square(t, loops).data()[1] == numpy_multiply(wide, wide, fused);
-      ok = ok && numerical::numpy_reciprocal(t, loops).data()[1] == numpy_reciprocal(wide, !fused);
-      ok = ok && numerical::numpy_power(t, three, loops).data()[0] == numpy_power(a, C {R {3}, R {0}}, !fused);
+      const numerical::detail::numpy_loops loops {.products = fused, .scalar_products = !fused, .quotients = !fused};
+      ok = ok && numerical::detail::numpy_square(t, loops).data()[1] == numpy_multiply(wide, wide, fused);
+      ok = ok && numerical::detail::numpy_reciprocal(t, loops).data()[1] == numpy_reciprocal(wide, !fused);
+      ok = ok && numerical::detail::numpy_power(t, three, loops).data()[0] == numpy_power(a, C {R {3}, R {0}}, !fused);
     }
     return ok;
   }
