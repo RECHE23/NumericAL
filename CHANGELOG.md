@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.34 — 2026-10-23
+
 ### Fixed
 - **`pow` of a complex tensor to a single 2 or −1 is the operators' square and reciprocal** (C's Annex G, as `*` and
   `/`), where the square took the school formula with each product rounded, neither the library's `*` nor NumPy's:
