@@ -67,7 +67,8 @@ help:
 	@echo "  make check-release Before each release: the above, bench-diff against the last release, fuzz-linalg"
 	@echo "  make full-local-gate  The push tier, by its former name"
 	@echo "  make bench-python Differential validation + perf vs NumPy"
-	@echo "  make bench-fuzz   Drawn cases vs NumPy: the ratios' distribution and the worst (CASES=, SEED=, LARGEST=)"
+	@echo "  make bench-fuzz   Drawn cases vs NumPy: the ratios' distribution and the worst (CASES=, SEED=, LARGEST=,"
+	@echo "                    EIGEN= adds Eigen against NumericAL from C++)"
 	@echo "  make bench-linalg Dense linear algebra vs NumPy's BLAS/LAPACK, each alone in its process (SIZES=, ROUNDS=)"
 	@echo "  make bench-gemm   GEMM loop-order micro-benchmark (C++, vs naive baseline)"
 	@echo "  make release    Cut a calendar-versioned release (tag + push)"
@@ -268,10 +269,15 @@ bench-python: python
 
 # Drawn cases versus NumPy: operations, shapes on a log scale, dtypes and operand layouts, each library timed in a
 # process of its own; the distribution of the ratios and the worst cases (CASES=, SEED=, LARGEST=).
-# Defaults of its own, as fuzz-linalg keeps its own for CASES and SEED.
+# Defaults of its own, as fuzz-linalg keeps its own for CASES and SEED. EIGEN= (or EIGEN_INCLUDE=), Eigen's include
+# directory, adds Eigen against NumericAL from C++ (benchmarks/fuzz_worker.cpp); EIGEN_FLAGS= adds to Eigen's worker's
+# flags, EIGEN_OPENMP=1 builds it with OpenMP, NUMERICAL_THREADS= caps NumericAL's C++ worker's threads.
+EIGEN_DIR := $(or $(EIGEN),$(EIGEN_INCLUDE))
 bench-fuzz: python
 	$(PYRUN) benchmarks/bench_fuzz.py --cases $(or $(CASES),300) --seed $(or $(SEED),20261021) \
-	    --largest $(or $(LARGEST),1024) --json $(BUILD)/bench-fuzz.json
+	    --largest $(or $(LARGEST),1024) --json $(BUILD)/bench-fuzz.json \
+	    $(if $(EIGEN_DIR),--eigen '$(EIGEN_DIR)') $(if $(EIGEN_FLAGS),'--eigen-flags=$(EIGEN_FLAGS)') \
+	    $(if $(EIGEN_OPENMP),--eigen-openmp) $(if $(NUMERICAL_THREADS),--numerical-threads $(NUMERICAL_THREADS))
 
 # The default sizes in a variable: inside $(or …) its commas would split the arguments, leaving 64 alone.
 SIZES  ?= 64,128,256,512,1024

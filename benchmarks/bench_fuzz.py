@@ -14,18 +14,31 @@ each case keeps its fastest batch: OpenBLAS's threads, which spin for a while af
 cores NumericAL's next call runs on, and a drift of the clock between the passes cancels. Every case's answers are
 then compared, untimed: a case where they differ is reported and fails the run (a fast wrong answer is no win).
 
+With --eigen (Eigen's include directory), the cases Eigen and NumericAL's C++ API both have a function for are
+also timed from C++: benchmarks/fuzz_worker.cpp, compiled here once for each library, times them in a process of its
+own for each, in turn with the Python sides, each library given its operands in its own matrix type. Both C++
+sides' answers pass the check NumericAL's Python answers pass, against NumPy's; a case either fails is reported and
+left out of their ratio (Eigen's time over NumericAL's), and a NumericAL failure fails the run. The NumPy ratio stays
+Python against Python. An operation either C++ side lacks (einsum in Eigen, a matrix norm in NumericAL's C++ API)
+is reported as n/a for that comparison.
+
     make bench-fuzz                                  # 300 cases up to order 1024
     make bench-fuzz CASES=1000 SEED=7 LARGEST=2048
+    make bench-fuzz EIGEN=path/to/eigen-3.4.0        # and Eigen against NumericAL, from C++
+    make bench-fuzz EIGEN=path/to/eigen-3.4.0 EIGEN_OPENMP=1 NUMERICAL_THREADS=1
     python3 benchmarks/bench_fuzz.py --seed 7 --only 41,97   # the cases a report names
 
 Run from the repository root.
 """
 import argparse
+import hashlib
 import json
 import math
+import os
 import platform
 import subprocess
 import sys
+import tempfile
 import time
 
 sys.path.insert(0, "python")
@@ -68,6 +81,17 @@ OPS = {
 }
 # Orders past which a drawn eig is not worth its time against the others.
 LIMITS = {"eig": 400}
+# The operations both C++ sides have a function for: Eigen has no einsum, NumericAL's C++ API no matrix norm.
+CPP_NA = {"einsum-product": "no Eigen function", "einsum-reduce": "no Eigen function",
+          "norm": "no NumericAL C++ function"}
+CPP_OPS = tuple(op for op in OPS if op not in CPP_NA)
+HERE = os.path.dirname(os.path.abspath(__file__))
+WORKER = os.path.join(HERE, "fuzz_worker.cpp")
+INCLUDE = os.path.join(os.path.dirname(HERE), "include")
+# The wheels' flags (setup.py's, with the -DNDEBUG and -fwrapv the interpreter's own add): -O3 on x86-64, -O2
+# elsewhere.
+NUMERICAL_FLAGS = ["-O3" if platform.machine().lower() in ("x86_64", "amd64") else "-O2", "-fwrapv", "-g0",
+                   "-fvisibility=hidden", "-pthread", "-ffp-contract=on", "-I" + INCLUDE]
 
 
 def weighted(rng, pairs):
@@ -236,7 +260,11 @@ def batch_time(fn, number):
     return (time.perf_counter() - start) / number
 
 
-def fastest(fn, rounds, target=0.002):
+# How long a timed batch lasts at least, in seconds: Eigen's worker reads it from its manifest.
+TARGET = 0.002
+
+
+def fastest(fn, rounds, target=TARGET):
     """The fastest per-call time over `rounds` batches, each long enough (`target` seconds) for the clock."""
     fn()  # a first call outside the timing: allocations, the pool's start, a lazy path
     number = 1
@@ -280,6 +308,108 @@ def table(title, groups):
         print(f"{name:<16} {len(ratios):>6} {g:>8.2f}x {ci:>17} {min(ratios):>7.2f}x")
 
 
+def build_worker(library, command, sources):
+    """The worker for `library` ("eigen" or "numerical"), built once for each command and each content of `sources`
+    (under build/). Returns its path."""
+    digest = hashlib.sha256("\0".join(command).encode())
+    for path in sources:
+        with open(path, "rb") as source:
+            digest.update(source.read())
+    binary = os.path.join("build", f"fuzz_worker-{library}-{digest.hexdigest()[:16]}")
+    if not os.path.exists(binary):
+        os.makedirs("build", exist_ok=True)
+        built = subprocess.run(command + [WORKER, "-o", binary + ".part"], capture_output=True, text=True)
+        if built.returncode:
+            sys.exit(f"building the {library} worker failed:\n{' '.join(command)} {WORKER}\n{built.stderr}")
+        os.replace(binary + ".part", binary)
+    return binary
+
+
+def has_openmp(cxx):
+    """Whether `cxx` compiles and links a program with -fopenmp."""
+    with tempfile.TemporaryDirectory() as scratch:
+        probe = os.path.join(scratch, "probe.cpp")
+        with open(probe, "w") as out:
+            out.write("#include <omp.h>\nint main() { return omp_get_max_threads() > 0 ? 0 : 1; }\n")
+        return subprocess.run([cxx, "-fopenmp", probe, "-o", os.path.join(scratch, "probe")],
+                              capture_output=True).returncode == 0
+
+
+def cpp_workers(include, args):
+    """The two C++ workers, one compiler for both: {library: (binary, command)}. Eigen at -O3 -DNDEBUG, without
+    -march=native, and without OpenMP unless --eigen-openmp asks for it (skipped where the compiler lacks it);
+    NumericAL with the wheels' flags."""
+    cxx = os.environ.get("CXX") or "c++"
+    common = [cxx, "-std=c++20", "-DNDEBUG"]
+    openmp = []
+    if args.eigen_openmp:
+        if has_openmp(cxx):
+            openmp = ["-fopenmp"]
+        else:
+            print(f"--eigen-openmp: {cxx} does not build with -fopenmp; Eigen runs on one thread (CXX= names another "
+                  "compiler)")
+    eigen = common + ["-O3", "-I" + include] + openmp + args.eigen_flags.split() + ["-DBENCH_EIGEN"]
+    numerical = common + NUMERICAL_FLAGS + ["-DBENCH_NUMERICAL"]
+    package = os.path.join(INCLUDE, "numerical")
+    headers = sorted(os.path.join(package, name) for name in os.listdir(package))
+    return {"numerical": (build_worker("numerical", numerical, [WORKER] + headers), " ".join(numerical)),
+            "eigen": (build_worker("eigen", eigen, [WORKER]), " ".join(eigen))}
+
+
+def write_cpp_cases(cases, directory, args):
+    """The cases both C++ sides can take, for their workers: each operand as raw little-endian elements in row-major
+    order, and a manifest of them."""
+    listed = []
+    for case in cases:
+        if case["op"] not in CPP_OPS:
+            continue
+        files = []
+        for k, operand in enumerate(build(case)[2]):
+            name = f"{case['index']}-{k}.bin"
+            np.ascontiguousarray(operand, dtype=operand.dtype.newbyteorder("<")).tofile(os.path.join(directory, name))
+            files.append({"file": name, "shape": list(operand.shape)})
+        listed.append({"index": case["index"], "op": case["op"], "dtype": case["dtype"], "operands": files})
+    with open(os.path.join(directory, "manifest.json"), "w") as out:
+        json.dump({"rounds": args.rounds, "target": TARGET, "numerical_threads": args.numerical_threads,
+                   "cases": listed}, out)
+
+
+def cpp_answer(directory, described):
+    """A case's answers as a worker wrote them: an array, or a tuple of them where NumPy returns one."""
+    answers = [np.fromfile(os.path.join(directory, d["file"]), dtype=np.dtype(d["dtype"]).newbyteorder("<"))
+               .reshape(d["shape"]) for d in described]
+    return answers[0] if len(answers) == 1 else tuple(answers)
+
+
+def report(rows, title, name, ratio_key, ours_key, theirs_key, args, reproduce="", layouts=True):
+    """The distribution of `name`'s time over NumericAL's: overall, by operation, size, dtype and (with `layouts`)
+    layout, and the worst cases."""
+    ratios = [row[ratio_key] for row in rows]
+    g, low, high = geomean_ci(ratios)
+    faster = sum(r > 1 for r in ratios)
+    print(f"\n{title} over {len(rows)} cases: geometric mean {g:.2f}x [{low:.2f}-{high:.2f}], "
+          f"NumericAL faster in {faster} ({100 * faster / len(rows):.0f} %), the worst {min(ratios):.2f}x")
+    groupings = [("operation", lambda r: r["op"]), ("largest dim", band), ("dtype", lambda r: r["dtype"])]
+    for heading, key in groupings + ([("operands", lambda r: r["layout"])] if layouts else []):
+        groups = {}
+        for row in rows:
+            groups.setdefault(key(row), []).append(row[ratio_key])
+        table(heading, groups)
+
+    print(f"\nratios, cumulative (log scale; left of 1, {name} faster):")
+    print(ascii_ecdf(ratios, log=True))
+
+    print(f"\nthe {args.worst} worst cases (reproduce: --seed {args.seed} --largest {args.largest}{reproduce} "
+          "--only N):")
+    operands = f" {'operands':<11}" if layouts else ""
+    print(f"{'N':>5} {'ratio':>7} {'operation':<15} {'dims':<16} {'dtype':<11}{operands} {'NumericAL':>10} {name:>10}")
+    for row in sorted(rows, key=lambda r: r[ratio_key])[:args.worst]:
+        label = row["op"] + (f" {row['spec']}" if row.get("spec") else "")
+        layout = f" {row['layout']:<11}" if layouts else ""
+        print(f"{row['index']:>5} {row[ratio_key]:>6.2f}x {label:<15} {str(row['dims']):<16} {row['dtype']:<11}"
+              f"{layout} {fmt(row[ours_key], 10)} {fmt(row[theirs_key], 10)}")
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     parser.add_argument("--cases", type=int, default=300)
@@ -290,43 +420,105 @@ def main():
     parser.add_argument("--only", default="", help="comma-separated case indices (to reproduce a reported case)")
     parser.add_argument("--worst", type=int, default=20)
     parser.add_argument("--json", default="", help="write every case and its times here")
+    parser.add_argument("--eigen", default="",
+                        help="Eigen's include directory (the one holding Eigen/): Eigen against NumericAL, from C++")
+    parser.add_argument("--eigen-flags", default="", help="compiler flags added to Eigen's worker's (as one argument)")
+    parser.add_argument("--eigen-openmp", action="store_true", help="Eigen's worker with OpenMP: its threaded products")
+    parser.add_argument("--numerical-threads", type=int, default=0,
+                        help="the threads NumericAL's C++ worker may use (0: the hardware's)")
     parser.add_argument("--side", choices=("numerical", "numpy"), help=argparse.SUPPRESS)
     args = parser.parse_args()
     if args.side:
         side_main(args)
         return 0
+    if not args.eigen:
+        return compare(args, None)
+    include = os.path.expanduser(args.eigen)
+    if not os.path.isfile(os.path.join(include, "Eigen", "Dense")):
+        print(f"--eigen {args.eigen}: no Eigen/Dense there; give Eigen's include directory, the one holding Eigen/")
+        return 2
+    workers = cpp_workers(include, args)
+    with tempfile.TemporaryDirectory(prefix="bench-fuzz-cpp-") as directory:
+        return compare(args, {"workers": workers, "directory": directory})
 
+
+def check_cpp(case, theirs, operands, cpp):
+    """Whether each C++ side's answer to `case` is NumPy's (`theirs`): {library: None, or why not}."""
+    verdicts = {}
+    for library in ("numerical", "eigen"):
+        try:
+            answer = cpp_answer(cpp["directory"], cpp["described"][library][str(case["index"])])
+            verdicts[library] = None if agrees(case, answer, theirs, operands) else "differs"
+        except Exception as caught:  # the same check NumericAL's Python answer passes
+            verdicts[library] = repr(caught)
+    return verdicts
+
+
+def compare(args, cpp):
+    """Times every case on each side, checks every answer, and reports; `cpp` (the C++ workers and the directory of
+    their operands) adds the comparison of Eigen with NumericAL from C++."""
     cases = cases_of(args)
     child = [sys.executable, __file__, "--seed", str(args.seed), "--largest", str(args.largest), "--rounds",
              str(args.rounds), "--cases", str(args.cases)] + (["--ops", args.ops] if args.ops else []) \
         + (["--only", args.only] if args.only else [])
-    best = {"numerical": {}, "numpy": {}}
+    sides = {"numerical": child + ["--side", "numerical"], "numpy": child + ["--side", "numpy"]}
+    if cpp:
+        write_cpp_cases(cases, cpp["directory"], args)
+        for library, (binary, _) in cpp["workers"].items():
+            sides[f"{library}-cpp"] = [binary, cpp["directory"]]
+    best = {side: {} for side in sides}
     started = time.perf_counter()
-    for _ in range(2):
-        for side in ("numerical", "numpy"):
-            out = subprocess.run(child + ["--side", side], check=True, capture_output=True, text=True).stdout
+    for turn in range(2):
+        for side, command in sides.items():
+            answers = ["--results"] if side.endswith("-cpp") and turn == 0 else []  # written once, outside the timing
+            out = subprocess.run(command + answers, check=True, capture_output=True, text=True).stdout
             for index, seconds in json.loads(out).items():
                 previous = best[side].get(int(index), math.inf)
                 best[side][int(index)] = min(previous, seconds)
 
     print(f"NumericAL {nl.__version__} ({nl.gemm_path()}, {nl.get_num_threads()} threads) vs NumPy {np.__version__}, "
           f"Python {platform.python_version()}, {platform.machine()}")
+    if cpp:
+        cpp["info"], cpp["described"] = {}, {}
+        for library, (_, command) in cpp["workers"].items():
+            with open(os.path.join(cpp["directory"], f"{library}-info.json")) as info_file:
+                cpp["info"][library] = dict(json.load(info_file), compiled=command)
+            with open(os.path.join(cpp["directory"], f"{library}-results.json")) as results_file:
+                cpp["described"][library] = json.load(results_file)
+        ours, eigen = cpp["info"]["numerical"], cpp["info"]["eigen"]
+        def threads(count):
+            return f"{count} thread{'s' if count != 1 else ''}"
+
+        print(f"and from C++: NumericAL ({ours['gemm_path']}, {threads(ours['threads'])}) vs Eigen {eigen['version']} "
+              f"({threads(eigen['threads'])}, "
+              f"{'OpenMP' if eigen['openmp'] else 'no OpenMP: single-threaded, as it ships'}, "
+              f"{eigen['simd']})")
+        print(f"  NumericAL built with {ours['compiled']}\n  Eigen built with {eigen['compiled']}")
     print(f"{len(cases)} cases, seed {args.seed}, dimensions up to {args.largest} on a log scale, "
           f"{time.perf_counter() - started:.0f} s of timing")
 
-    rows, divergent = [], []
+    rows, divergent, cpp_rows, cpp_divergent = [], [], [], []
     for case in cases:
         ours_fn, theirs_fn, operands = build(case)
+        theirs = None
         try:
-            ok = agrees(case, ours_fn(), theirs_fn(), operands)
+            theirs = theirs_fn()
+            ok = agrees(case, ours_fn(), theirs, operands)
         except Exception as caught:  # an exception where NumPy answers is a divergence too
             ok = False
             case["error"] = repr(caught)
-        if not ok:
+        if ok:
+            t_ours, t_theirs = best["numerical"][case["index"]], best["numpy"][case["index"]]
+            rows.append(dict(case, numerical=t_ours, numpy=t_theirs, ratio=t_theirs / t_ours))
+        else:
             divergent.append(case)
-            continue
-        t_ours, t_theirs = best["numerical"][case["index"]], best["numpy"][case["index"]]
-        rows.append(dict(case, numerical=t_ours, numpy=t_theirs, ratio=t_theirs / t_ours))
+        if cpp and case["op"] in CPP_OPS and theirs is not None:
+            failed = {library: why for library, why in check_cpp(case, theirs, operands, cpp).items() if why}
+            if failed:
+                cpp_divergent.append(dict(case, failed=failed))
+            else:
+                t_ours, t_eigen = best["numerical-cpp"][case["index"]], best["eigen-cpp"][case["index"]]
+                cpp_rows.append(dict(case, numerical_cpp=t_ours, eigen=t_eigen, eigen_ratio=t_eigen / t_ours))
 
     if divergent:
         print(f"\n{len(divergent)} case(s) where NumericAL's answer is not NumPy's (not timed):")
@@ -336,34 +528,35 @@ def main():
     if not rows:
         return 1
 
-    ratios = [row["ratio"] for row in rows]
-    g, low, high = geomean_ci(ratios)
-    faster = sum(r > 1 for r in ratios)
-    print(f"\nNumPy/NumericAL over {len(rows)} cases: geometric mean {g:.2f}x [{low:.2f}-{high:.2f}], "
-          f"NumericAL faster in {faster} ({100 * faster / len(rows):.0f} %), the worst {min(ratios):.2f}x")
-    for title, key in (("operation", lambda r: r["op"]), ("largest dim", band), ("dtype", lambda r: r["dtype"]),
-                       ("operands", lambda r: r["layout"])):
-        groups = {}
-        for row in rows:
-            groups.setdefault(key(row), []).append(row["ratio"])
-        table(title, groups)
+    report(rows, "NumPy/NumericAL", "NumPy", "ratio", "numerical", "numpy", args)
 
-    print("\nratios, cumulative (log scale; left of 1, NumPy faster):")
-    print(ascii_ecdf(ratios, log=True))
-
-    print(f"\nthe {args.worst} worst cases (reproduce: --seed {args.seed} --largest {args.largest} --only N):")
-    print(f"{'N':>5} {'ratio':>7} {'operation':<15} {'dims':<16} {'dtype':<11} {'operands':<11} "
-          f"{'NumericAL':>10} {'NumPy':>10}")
-    for row in sorted(rows, key=lambda r: r["ratio"])[:args.worst]:
-        name = row["op"] + (f" {row['spec']}" if row.get("spec") else "")
-        print(f"{row['index']:>5} {row['ratio']:>6.2f}x {name:<15} {str(row['dims']):<16} {row['dtype']:<11} "
-              f"{row['layout']:<11} {fmt(row['numerical'], 10)} {fmt(row['numpy'], 10)}")
+    cpp_failed = False
+    if cpp:
+        na = [case["index"] for case in cases if case["op"] not in CPP_OPS]
+        reasons = "; ".join(f"{op}: {why}" for op, why in CPP_NA.items())
+        print(f"\n\nFrom C++: {len(na)} case(s) n/a ({reasons}), left out of the Eigen/NumericAL ratios; the operands "
+              "in each library's own matrix type, whatever the case's layout")
+        if cpp_divergent:
+            print(f"{len(cpp_divergent)} case(s) where a C++ answer is not NumPy's (left out of the ratios):")
+            for case in cpp_divergent:
+                print(f"  #{case['index']} {case['op']} {case['dims']} {case['dtype']} "
+                      + ", ".join(f"{'NumericAL' if library == 'numerical' else 'Eigen'}: {why}"
+                                  for library, why in case["failed"].items()))
+        cpp_failed = any("numerical" in case["failed"] for case in cpp_divergent)
+        if cpp_rows:
+            reproduce = f" --eigen {args.eigen}" + (" --eigen-openmp" if args.eigen_openmp else "") \
+                + (f" --numerical-threads {args.numerical_threads}" if args.numerical_threads else "")
+            report(cpp_rows, "Eigen/NumericAL from C++", "Eigen", "eigen_ratio", "numerical_cpp", "eigen", args,
+                   reproduce, layouts=False)
 
     if args.json:
+        summary = dict(seed=args.seed, largest=args.largest, numerical=nl.__version__, numpy=np.__version__,
+                       machine=platform.machine(), rows=rows, divergent=divergent)
+        if cpp:
+            summary.update(cpp=cpp["info"], cpp_rows=cpp_rows, cpp_na=na, cpp_divergent=cpp_divergent)
         with open(args.json, "w") as out:
-            json.dump(dict(seed=args.seed, largest=args.largest, numerical=nl.__version__, numpy=np.__version__,
-                           machine=platform.machine(), rows=rows, divergent=divergent), out, indent=1)
-    return 1 if divergent else 0
+            json.dump(summary, out, indent=1)
+    return 1 if divergent or cpp_failed else 0
 
 
 if __name__ == "__main__":

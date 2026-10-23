@@ -8,6 +8,7 @@ reproducible gap). Reproduce with:
 make bench-linalg      # dense linear algebra against BLAS/LAPACK, each library alone (the first tables)
 make bench-python      # differential validation + timing, one process (the history's tables)
 make bench-fuzz        # drawn cases, each library alone: the distribution of the ratios (the drawn-cases tables)
+make bench-fuzz EIGEN=path/to/eigen-3.4.0   # and Eigen against NumericAL, from C++
 make python-test       # the parity suite alone (also runs in CI)
 ```
 
@@ -149,6 +150,24 @@ At f6e8d6e the products read 0.83× on the M1 Pro and 0.73× on the AVX2 cores (
 products and matrix-vector products are still what is left: a single row of A times a transposed B (vector times
 matrix, which sums in its own order and copies the transpose), small strided operands (a fixed cost of 5 to 7 µs a
 call, NumPy's about 1), and a transposed operand summed or normed over its rows.
+
+`make bench-fuzz EIGEN=<Eigen's include directory>` adds Eigen against NumericAL, both called from C++:
+`benchmarks/fuzz_worker.cpp`, compiled once for each with the same compiler, times the cases both have a function for
+in a process of its own for each, in turn with the Python sides, each library given its operands in its own matrix
+type (an `Eigen::Matrix`, a `numerical::matrix`) built before the timing; what a call copies inside is timed, Eigen's
+working copies as NumericAL's double-precision widening of a float32 or complex64 operand. Eigen is built with `-O3
+-DNDEBUG`, without `-march=native` (its SIMD set is fixed at compile time: NEON on arm64, SSE2 on x86-64, where
+NumericAL picks its kernels at run time; `EIGEN_FLAGS=` adds flags) and without OpenMP, one thread as it ships;
+`EIGEN_OPENMP=1` builds it with OpenMP where the compiler has it (`CXX=g++-14` on macOS). NumericAL is built with the
+wheels' flags and its default threads (`NUMERICAL_THREADS=1` caps them). Both C++ answers pass the check NumericAL's
+Python answers pass, against NumPy's; a case either fails is reported and left out, and a NumericAL failure fails the
+run. The ratio is Eigen's time over NumericAL's, by operation, size and dtype. Eigen's functions: `PartialPivLU`
+(solve, det, slogdet from its pivots, inv), `LLT`, `HouseholderQR` (the thin Q), `SelfAdjointEigenSolver`, `BDCSVD`
+(svd, svdvals, and lstsq by its solve, an SVD's least-squares answer as NumPy's), `EigenSolver` and
+`ComplexEigenSolver` without vectors; NumericAL's: `solve`, `determinant`, `lu_decomposition::log_determinant`,
+`inverse`, `cholesky`, `qr_decomposition`, `symmetric_eigen`/`hermitian_eigen`, `symmetric_eigenvalues`,
+`svd_decomposition`, `singular_values`, `lstsq`, `eigenvalues` and the products. einsum (no Eigen function) and norm
+(no matrix norm in NumericAL's C++ API) are n/a there. The NumPy ratio stays Python against Python.
 
 ## Release against release: `make bench-diff`
 
