@@ -22,6 +22,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **A stack of small matrices goes to the threads**: each matrix counts its copy and its answer's tensor beside its
   arithmetic, where a stack of 1000 matrices of order 4 stayed on one thread. `inv` and `det` of 256 to 1000 matrices
   of order 2 to 6 take 0.4 to 0.6 times as long; a stack of 16 or fewer the same. Each matrix's answer is the same.
+- **The LU of order 3072 and more takes panels of 128 columns on x86-64**, where 64: each trailing update rereads the
+  whole trailing block, and there its memory traffic sets the time. The same factors to the bit. Order 4096 on ten
+  AVX-512 cores 322 → 279 ms, on six AVX2 cores 416 → 330; order 3072 10 and 12 % faster. arm64 keeps 64 columns.
 - `eig` returns its eigenvectors without copying them, and `solve` with several right-hand sides solves them in their
   own storage, where both copied a matrix more.
 

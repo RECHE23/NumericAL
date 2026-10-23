@@ -1428,6 +1428,21 @@ namespace {
   }
 } // namespace
 
+// The LU's panel width by order: narrow panels up to lu_small_order, 64 columns above, and on x86-64 128 from
+// lu_wide_order, where the trailing updates' memory traffic sets the time.
+TEST(lu_panel_width_follows_the_order)
+{
+  using numerical::detail::lu_block_for;
+  EXPECT_EQ(lu_block_for(numerical::detail::lu_small_order), numerical::detail::lu_small_block);
+  EXPECT_EQ(lu_block_for(numerical::detail::lu_small_order + 1), numerical::detail::lu_block);
+#ifdef NUMERICAL_X86_COMPILED
+  EXPECT_EQ(lu_block_for(numerical::detail::lu_wide_order - 1), numerical::detail::lu_block);
+  EXPECT_EQ(lu_block_for(numerical::detail::lu_wide_order), numerical::detail::lu_wide_block);
+#else
+  EXPECT_EQ(lu_block_for(4096), numerical::detail::lu_block);
+#endif
+}
+
 // Past one panel: panels of `lu_block_for(n)` columns, the last partial. On the portable path: on a fused one the trailing products fuse
 // their multiply-adds and the panels do not, which a later test bounds instead, and complex products sum the real
 // and imaginary parts apart.
