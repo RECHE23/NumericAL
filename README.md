@@ -187,14 +187,14 @@ numerical.solve(a, [1.0, 1.0])                         # a @ x = b
 ```
 
 A failure is a `numerical.LinAlgError`: a `ValueError`, as `numpy.linalg.LinAlgError` is,
-and a `numerical.error`. A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`), iterates, transposes
+and a `numerical.error`. A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`, `t[..., 0]`, `t[None, i]`), iterates, transposes
 (`t.T`) and multiplies (`a @ b`, `numerical.matmul`) as a NumPy array does, stacks of matrices along leading axes
 broadcast against each other, and computes as one:
 
 ```python
 t = numerical.arange(6).reshape(2, 3)
 (t + 1) * [10, 0, 1] / 2      # element-wise, broadcast as NumPy's
-t.sum(), t.mean(axis=0), t.max(axis=-1)
+t.sum(), t.mean(axis=0), t.max(axis=-1), t.sum(axis=(0, 1), keepdims=True)
 numerical.zeros((2, 2)), numerical.eye(3), numerical.linspace(0, 1, 5)
 numerical.exp(t), numerical.sqrt(t), abs(t), t ** 2
 ```
@@ -238,8 +238,9 @@ with the threads (10 000 inverses of order 4 on eight arm64 cores: 2.0 ms, NumPy
 The rest of `numpy.linalg` answers as NumPy 2's, on stacks too: `norm(x, ord, axis, keepdims)`, `vector_norm`,
 `matrix_norm` (`"fro"`, `"nuc"`, 1, -1, 2, -2, ±inf), `cond(x, p)` (infinite for a singular matrix),
 `matrix_power(a, n)` (`n` negative through the inverse), `multi_dot(arrays)` (the cheapest order of the chain),
-`trace(x, offset, dtype)`, `outer`, `cross(x1, x2, axis)`, `tensordot(a, b, axes)`, `vecdot(x1, x2, axis)`
-(conjugating `x1`), and `conj` (`conjugate`). A 2-norm is scaled by its largest magnitude, so it neither overflows nor
+`trace(x, offset, dtype)`, `diagonal(x, offset)`, `matrix_transpose`, `outer`, `cross(x1, x2, axis)`,
+`tensordot(a, b, axes)`, `tensorsolve(a, b, axes)`, `tensorinv(a, ind)`, `vecdot(x1, x2, axis)` (conjugating `x1`),
+and `conj` (`conjugate`). A 2-norm is scaled by its largest magnitude, so it neither overflows nor
 underflows: `vector_norm([1e200, 1e200])` is 1.414e200, where NumPy's is infinite.
 A matrix holding a NaN or an infinity (in the triangle read, where only one is) raises
 `numerical.LinAlgError`, where NumPy returns NaN factors or raises depending on the routine: a decomposition

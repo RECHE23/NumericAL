@@ -14,6 +14,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   `pow(1e308 + 1e308j, 2)` is now `z * z`; NumPy's loops stay `numpy_square`, `numpy_reciprocal` and `numpy_power`,
   which the binding takes. Its documentation said NumPy's.
 
+### Added
+- **`diagonal`, `matrix_transpose`, `tensorsolve` and `tensorinv`**, as `numpy.linalg`'s: the rest of its functions.
+  **`sum`, `mean`, `max` and `min` take several axes and `keepdims`**, as NumPy's (`axis=(0, 2)`, `()` for none, a
+  repeated axis a `ValueError`): the axes are moved last and reduced together, one pass, so a mean divides by their
+  whole count and a sum adds by pairwise halving over them. **A `Tensor` indexes with `...` and `None`**, as NumPy's
+  basic indexing: an `...` stands for the whole axes the other indices leave, a `None` adds an axis of extent 1.
+
 ### Changed
 - **The element-wise functions share a large tensor among the threads** (`exp`, `log`, `sqrt`, `sin`, `cos`, `tan`,
   `tanh`, negation, `pow`'s single exponents, the `numpy_` forms), by the chunks the element-wise arithmetic takes,

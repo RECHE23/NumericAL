@@ -277,6 +277,8 @@ def _getitem(self, key):
     if not isinstance(key, tuple):
         key = (key,)
     shape = self.shape
+    if any(k is Ellipsis for k in key) or any(k is None for k in key):
+        return _getitem_extended(self, key)
     if len(key) > len(shape):
         raise IndexError(f"too many indices for a tensor of rank {len(shape)}: {len(key)} were given")
     starts, steps, counts, keep = [], [], [], []
@@ -303,6 +305,35 @@ def _getitem(self, key):
         counts.append(1)
         keep.append(0)
     return _numerical._take(self, starts, steps, counts, keep)
+
+
+def _getitem_extended(self, key):
+    """``t[..., i]`` and ``t[None, i]``: an ``...`` stands for as many whole axes as the other indices leave (once), a
+    ``None`` adds an axis of extent 1 where it stands, as NumPy's basic indexing."""
+    if _builtins.sum(1 for k in key if k is Ellipsis) > 1:
+        raise IndexError("an index can only have a single ellipsis ('...')")
+    named = _builtins.sum(1 for k in key if k is not None and k is not Ellipsis)
+    if named > len(self.shape):
+        raise IndexError(f"too many indices for a tensor of rank {len(self.shape)}: {named} were given")
+    expanded = []
+    for k in key:
+        expanded += [slice(None)] * (len(self.shape) - named) if k is Ellipsis else [k]
+    plain = tuple(k for k in expanded if k is not None)
+    picked = _getitem(self, plain) if plain else self
+    if not any(k is None for k in expanded):
+        return picked
+    out, axis = [], 0  # the result's extents: a slice keeps its axis, an integer drops one, a None adds 1
+    picked_shape = picked.shape if isinstance(picked, Tensor) else ()
+    for k in expanded:
+        if k is None:
+            out.append(1)
+        elif isinstance(k, slice):
+            out.append(picked_shape[axis])
+            axis += 1
+    out += list(picked_shape[axis:])  # the axes no index named
+    if not isinstance(picked, Tensor):
+        picked = asarray([picked], self.dtype)
+    return reshape(picked, tuple(out))
 
 
 def _len(self):
@@ -931,6 +962,66 @@ def trace(x, /, *, offset=0, dtype=None):
     return _number_if_scalar(result)
 
 
+def diagonal(x, /, *, offset=0):
+    """The `offset` diagonal of a matrix or of every matrix of a stack (its last two axes), as
+    ``numpy.linalg.diagonal``: above the main diagonal for a positive `offset`, below for a negative one."""
+    x = _tensor(x)
+    if len(x.shape) < 2:
+        raise _ShapeError("diagonal: a matrix or a stack of matrices (rank ≥ 2)")
+    offset = _operator.index(offset)
+    rows, cols = x.shape[-2:]
+    r0, c0 = _builtins.max(-offset, 0), _builtins.max(offset, 0)
+    length = _builtins.max(_builtins.min(rows - r0, cols - c0), 0)
+    if length == 0:
+        return zeros(tuple(x.shape[:-2]) + (0,), x.dtype)
+    labels = _labels(len(x.shape) - 1, "diagonal")
+    batch, along = labels[:-1], labels[-1]
+    block = x[(slice(None),) * (len(x.shape) - 2) + (slice(r0, r0 + length), slice(c0, c0 + length))]
+    return _numerical.einsum(f"{batch}{along}{along}->{batch}{along}", block)
+
+
+def matrix_transpose(x, /):
+    """A matrix, or every matrix of a stack, transposed (its last two axes swapped), as
+    ``numpy.linalg.matrix_transpose``."""
+    x = _tensor(x)
+    rank = len(x.shape)
+    if rank < 2:
+        raise _ShapeError("matrix_transpose: a matrix or a stack of matrices (rank ≥ 2)")
+    return _permuted(x, list(range(rank - 2)) + [rank - 1, rank - 2])
+
+
+def tensorsolve(a, b, axes=None):
+    """`x` with ``tensordot(a, x, axes=x.ndim) == b``, as ``numpy.linalg.tensorsolve``: `a`'s leading axes those of
+    `b`, its others `x`'s, their products equal (`axes`, when given, are moved to the end of `a` first)."""
+    a, b = _same_dtype(a, b)
+    rank = len(a.shape)
+    if axes is not None:
+        moved = [k for k in range(rank) if k not in [ax % rank for ax in axes]] + [ax % rank for ax in axes]
+        a = _permuted(a, moved)
+    shape = tuple(a.shape[len(b.shape):])
+    rows = _math.prod(a.shape[:len(b.shape)])
+    cols = _math.prod(shape)
+    if rows != cols:
+        raise LinAlgError(f"tensorsolve: a's leading axes hold {rows} elements and its trailing ones {cols}: no "
+                          "square system")
+    return reshape(solve(reshape(a, (rows, cols)), reshape(b, (rows,))), shape)
+
+
+def tensorinv(a, ind=2):
+    """The inverse of `a` read as a matrix of its first `ind` axes by the others, as ``numpy.linalg.tensorinv``:
+    ``tensordot(tensorinv(a, ind), a, ind)`` is the identity of `a`'s trailing axes."""
+    a = _tensor(a)
+    ind = _operator.index(ind)
+    if ind <= 0:
+        raise ValueError("tensorinv: ind must be a positive integer")
+    left, right = a.shape[:ind], a.shape[ind:]
+    rows, cols = _math.prod(left), _math.prod(right)
+    if rows != cols:
+        raise LinAlgError(f"tensorinv: the first {ind} axes hold {rows} elements and the others {cols}: no square "
+                          "matrix to invert")
+    return reshape(inv(reshape(a, (rows, cols))), tuple(right) + tuple(left))
+
+
 def outer(x1, x2, /):
     """The outer product of two vectors, ``x1[i] * x2[j]``, as ``numpy.linalg.outer``."""
     a, b = _same_dtype(x1, x2)
@@ -1155,12 +1246,34 @@ def _axis(t, axis):
 
 
 def _reduction(op, doc):
-    def reduce(a, axis=None):
+    def reduce(a, axis=None, keepdims=False):
         a = a if isinstance(a, Tensor) else asarray(a)
-        return _native(_numerical._reduce, op, a, _axis(a, axis))
+        rank = len(a.shape)
+        if isinstance(axis, tuple):  # several axes: moved last and run together, one native reduction over them
+            axes = _resolved_axes(a, axis, op)
+            if not axes:
+                return a
+            kept = [k for k in range(rank) if k not in axes]
+            if kept:
+                moved = _permuted(a, kept + sorted(axes)) if kept + sorted(axes) != list(range(rank)) else a
+                count = _math.prod(a.shape[k] for k in axes)
+                joined = reshape(moved, tuple(a.shape[k] for k in kept) + (count,))
+                result = _native(_numerical._reduce, op, joined, len(kept))
+            else:
+                result = _native(_numerical._reduce, op, a, -1)
+        else:
+            axes = _resolved_axes(a, axis, op)
+            result = _native(_numerical._reduce, op, a, _axis(a, axis))
+        if not keepdims:
+            return result
+        shape = tuple(1 if k in axes else a.shape[k] for k in range(rank))  # each reduced axis kept with extent 1
+        if not isinstance(result, Tensor):
+            return full(shape, result, a.dtype)
+        return reshape(result, shape)
 
     reduce.__name__ = op
-    reduce.__doc__ = doc
+    reduce.__doc__ = doc + """ `axis` may name several axes (a tuple, `()` for none), and `keepdims` keeps each reduced
+axis with extent 1, as NumPy's."""
     return reduce
 
 
@@ -1171,10 +1284,10 @@ max = _reduction("max", """The largest element, or the largest along `axis`, as 
 dtypes only (a complex one has no order).""")
 min = _reduction("min", """The smallest element, or the smallest along `axis`, as ``numpy.min``; a NaN wins. Real
 dtypes only.""")
-Tensor.sum = lambda self, axis=None: sum(self, axis)
-Tensor.mean = lambda self, axis=None: mean(self, axis)
-Tensor.max = lambda self, axis=None: max(self, axis)
-Tensor.min = lambda self, axis=None: min(self, axis)
+Tensor.sum = lambda self, axis=None, keepdims=False: sum(self, axis, keepdims)
+Tensor.mean = lambda self, axis=None, keepdims=False: mean(self, axis, keepdims)
+Tensor.max = lambda self, axis=None, keepdims=False: max(self, axis, keepdims)
+Tensor.min = lambda self, axis=None, keepdims=False: min(self, axis, keepdims)
 
 
 def _shape(shape):
@@ -1280,5 +1393,6 @@ def power(a, b):
     return _native(_numerical._binary, "^", a, b)
 
 
+__all__ += ["diagonal", "matrix_transpose", "tensorsolve", "tensorinv"]
 __all__ += ["sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "eye", "arange", "linspace",
             "exp", "log", "sqrt", "sin", "cos", "tan", "tanh", "absolute", "power"]

@@ -256,6 +256,51 @@ class HighRanks(unittest.TestCase):
         self.assertEqual(complex(numerical.sin(numerical.asarray(np.array([1e308j])))[0]).real, 0.0)
         self.assertGreater(complex(numerical.log(numerical.asarray(np.array([1 + 1e-20j])))[0]).real, 0.0)
 
+    def test_reductions_over_several_axes_and_kept_dims(self):
+        # a tuple of axes reduced together (one pass over them moved last), () none, keepdims each an extent of 1
+        b = np.random.default_rng(31).standard_normal((3, 4, 5))
+        t = numerical.asarray(b)
+        for name in ("sum", "mean", "max", "min"):
+            for axis in (None, 1, (0, 2), (2, 0), (0, 1, 2), (), -1):
+                for keepdims in (False, True):
+                    want = getattr(np, name)(b, axis=axis, keepdims=keepdims)
+                    got = np.asarray(getattr(numerical, name)(t, axis=axis, keepdims=keepdims))
+                    self.assertEqual(got.shape, np.shape(want), (name, axis, keepdims))
+                    np.testing.assert_allclose(got, want, rtol=1e-12, err_msg=f"{name} {axis} {keepdims}")
+            self.assertEqual(np.asarray(getattr(t, name)(axis=(0, 1), keepdims=True)).shape, (1, 1, 5))
+            with self.assertRaises(ValueError):  # a repeated axis, as NumPy's
+                getattr(numerical, name)(t, axis=(0, 0))
+
+    def test_ellipsis_and_new_axes_index_as_numpy(self):
+        a = np.arange(24.0).reshape(2, 3, 4)
+        t = numerical.asarray(a)
+        for key in (Ellipsis, (Ellipsis, 1), (0, Ellipsis), (None, 0), (0, None, 1, None), (Ellipsis, None), (0, 1, 2, None),
+                    (None, Ellipsis, 1), (slice(1, 2), None, Ellipsis)):
+            np.testing.assert_array_equal(np.asarray(t[key]), a[key])
+        for key in ((Ellipsis, Ellipsis), (0, 1, 2, 3, Ellipsis)):
+            with self.assertRaises(IndexError):
+                t[key]
+
+    def test_diagonals_transposes_and_tensor_systems_as_numpy(self):
+        rng = np.random.default_rng(37)
+        for x in (rng.standard_normal((4, 4)), rng.standard_normal((2, 3, 5)), rng.standard_normal((3, 5)) + 1j):
+            for offset in (0, 2, -1, 9):
+                np.testing.assert_array_equal(np.asarray(numerical.diagonal(numerical.asarray(x), offset=offset)),
+                                              np.linalg.diagonal(x, offset=offset))
+            np.testing.assert_array_equal(np.asarray(numerical.matrix_transpose(numerical.asarray(x))), np.linalg.matrix_transpose(x))
+        a = rng.standard_normal((6, 2, 3)) + np.eye(6).reshape(6, 2, 3)
+        b = rng.standard_normal(6)
+        np.testing.assert_allclose(np.asarray(numerical.tensorsolve(numerical.asarray(a), numerical.asarray(b))),
+                                   np.linalg.tensorsolve(a, b), rtol=1e-9)
+        c = np.eye(24).reshape(4, 6, 8, 3) * 3 + rng.standard_normal((4, 6, 8, 3))
+        np.testing.assert_allclose(np.asarray(numerical.tensorinv(numerical.asarray(c))), np.linalg.tensorinv(c), rtol=1e-8)
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.tensorinv(numerical.asarray(rng.standard_normal((2, 3, 4))), ind=1)
+        with self.assertRaises(ValueError):
+            numerical.tensorinv(numerical.asarray(c), ind=0)
+        with self.assertRaises(ValueError):
+            numerical.matrix_transpose(numerical.asarray(b))
+
     def test_means_and_norms_where_numpy_says_nothing_or_nan(self):
         # A complex mean divided as NumPy divides, by n + 0j: a NaN part makes both NaN, to NumPy's bits; the smallest
         # magnitude over no element refused, as NumPy's minimum; a result empty along a non-empty axis allowed.
