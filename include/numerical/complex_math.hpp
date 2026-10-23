@@ -63,14 +63,17 @@ namespace numerical::detail {
   }
 
   //! \brief `sin` and `cos` of \p x together, as glibc's complex functions take them: its `sincos` under glibc (whose
-  //!        single-precision one strayed from `sinf` and `cosf` by a unit in the last place before 2.29), `std::sin` and
-  //!        `std::cos` elsewhere.
+  //!        single-precision one strayed from `sinf` and `cosf` by a unit in the last place before 2.29), the system's
+  //!        `__sincos` on macOS (a compiler may fuse a `sin` and a `cos` into it where it inlines them, and it strays
+  //!        from them by a unit: the same call in every context), `std::sin` and `std::cos` elsewhere.
   inline void sine_and_cosine(double  x,
                               double& sine,
                               double& cosine)
   {
 #if defined(__GLIBC__)
     ::sincos(x, &sine, &cosine);
+#elif defined(__APPLE__)
+    ::__sincos(x, &sine, &cosine);
 #else
     sine   = std::sin(x);
     cosine = std::cos(x);
@@ -84,6 +87,8 @@ namespace numerical::detail {
   {
 #if defined(__GLIBC__)
     ::sincosf(x, &sine, &cosine);
+#elif defined(__APPLE__)
+    ::__sincosf(x, &sine, &cosine);
 #else
     sine   = std::sin(x);
     cosine = std::cos(x);

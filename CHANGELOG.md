@@ -8,6 +8,25 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+- **`pow` of a complex tensor to a single 2 or −1 is the operators' square and reciprocal** (C's Annex G, as `*` and
+  `/`), where the square took the school formula with each product rounded, neither the library's `*` nor NumPy's:
+  `pow(1e308 + 1e308j, 2)` is now `z * z`; NumPy's loops stay `numpy_square`, `numpy_reciprocal` and `numpy_power`,
+  which the binding takes. Its documentation said NumPy's.
+
+### Changed
+- **The element-wise functions share a large tensor among the threads** (`exp`, `log`, `sqrt`, `sin`, `cos`, `tan`,
+  `tanh`, negation, `pow`'s single exponents, the `numpy_` forms), by the chunks the element-wise arithmetic takes,
+  each element as before; from Python they release the GIL as the arithmetic does. One M1 Pro, a complex128 `tan` of
+  4M elements: 41 → 10 ms. `map` itself stays sequential: its function may hold state. A complex function's sine and
+  cosine are the system's `__sincos` on macOS, where GCC fused a `sin` and a `cos` into it in one inlining context and
+  not in another: the same element took bits a unit apart.
+
+### Development
+- **`decomposition.hpp` gathers two headers**: `factorizations.hpp` (LU, Cholesky, QR, the symmetric and Hermitian
+  eigen-decompositions) and `svd.hpp` (the singular value decomposition, least squares, the pseudo-inverse, the rank),
+  the same declarations.
+
 ## 2026.10.33 — 2026-10-22
 
 ### Fixed

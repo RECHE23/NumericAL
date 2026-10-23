@@ -540,6 +540,36 @@ class GilRelease(unittest.TestCase):
         thread.join()
         self.assertLess(woke[0] - begin, (end - begin) / 2)
 
+    def test_a_large_elementwise_function_lets_another_thread_run(self):
+        # As the decomposition: a complex tangent of 8M elements on one thread (80 ms) outlasts the sleep by far.
+        import threading
+        import time
+
+        z = numerical.asarray(np.full(1 << 23, 0.5 + 0.25j)) if np is not None else None
+        if z is None:
+            self.skipTest("NumPy builds the operand")
+        threads = numerical.get_num_threads()
+        numerical.set_num_threads(1)
+        try:
+            started = threading.Event()
+            woke = []
+
+            def other():
+                started.wait()
+                time.sleep(0.001)
+                woke.append(time.perf_counter())
+
+            thread = threading.Thread(target=other)
+            thread.start()
+            begin = time.perf_counter()
+            started.set()
+            numerical.tan(z)
+            end = time.perf_counter()
+            thread.join()
+        finally:
+            numerical.set_num_threads(threads)
+        self.assertLess(woke[0] - begin, (end - begin) / 2)
+
 
 class DLPack(unittest.TestCase):
     def test_capsule_and_device(self):

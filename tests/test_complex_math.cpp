@@ -233,6 +233,17 @@ namespace {
     ok = ok && numerical::cos(t).data()[1] == numerical::detail::complex_cos(t.data()[1]) && numerical::cos(r).data()[1] == std::cos(R {2});
     ok = ok && numerical::tan(t).data()[1] == numerical::detail::complex_tan(t.data()[1]) && numerical::tan(r).data()[1] == std::tan(R {2});
     ok = ok && numerical::tanh(t).data()[1] == numerical::detail::complex_tanh(t.data()[1]) && numerical::tanh(r).data()[1] == std::tanh(R {2});
+    // pow of a complex tensor: the operators' square and reciprocal, the root, std::pow past them, and an exponent
+    // tensor of more elements or of a higher rank taken element by element
+    const auto exponent {[](C y) { return numerical::tensor<C> {std::vector<std::size_t> {}, numerical::buffer<C> {y}}; }};
+    ok = ok && numerical::pow(t, exponent(C {R {2}, R {0}})).data()[1] == t.data()[1] * t.data()[1];
+    ok = ok && numerical::pow(t, exponent(C {R {-1}, R {0}})).data()[1] == C {R {1}, R {0}} / t.data()[1];
+    ok = ok && numerical::pow(t, exponent(C {static_cast<R>(0.5), R {0}})).data()[1] == numerical::detail::complex_sqrt(t.data()[1]);
+    ok = ok && numerical::pow(t, exponent(C {R {3}, R {0}})).data()[1] == std::pow(t.data()[1], C {R {3}, R {0}});
+    const numerical::tensor<C> pair   {{2}, numerical::buffer<C> {C {R {2}, R {0}}, C {R {3}, R {0}}}};
+    ok = ok && numerical::pow(t, pair).data()[0] == std::pow(t.data()[0], C {R {2}, R {0}});
+    const numerical::tensor<C> deeper {{1, 1}, numerical::buffer<C> {C {R {2}, R {0}}}};
+    ok = ok && numerical::pow(t, deeper).shape() == std::vector<std::size_t> {1, 2};
     return ok;
   }
 } // namespace

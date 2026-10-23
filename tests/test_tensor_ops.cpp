@@ -215,6 +215,58 @@ TEST(extremes_settle_a_zero_s_sign_as_numpy)
 // Element-wise operations past a task's elements run by tasks: a same-shape pair by chunks, a broadcast one by rows,
 // each task's odometer set from its first row (a row starting partway through the outer axes), the last task partial.
 // Each element op(a, b) of its operands, as the plain loop gives it, on one thread as on all.
+// The element-wise functions share a large tensor among the threads by chunks, a last one partial: each element is the
+// sequential map's, on one thread and on all of them.
+TEST(element_wise_functions_by_chunks_are_the_sequential_map_s)
+{
+  using cplx = std::complex<double>;
+  const std::size_t          count {(3 * numerical::detail::elementwise_chunk) + 7};
+  numerical::buffer<double>  reals(count);
+  numerical::buffer<cplx>    complexes(count);
+  for (std::size_t i {0}; i < count; ++i) {
+    reals[i]     = 1.5 + std::sin(static_cast<double>(i)); // positive: each logarithm finite
+    complexes[i] = cplx {reals[i], std::cos(static_cast<double>(i))};
+  }
+  const numerical::tensor<double> r       {{count}, std::move(reals)};
+  const numerical::tensor<cplx>   z       {{count}, std::move(complexes)};
+  const std::size_t               threads {numerical::max_threads()};
+  for (const std::size_t n : {std::size_t {1}, threads}) {
+    numerical::set_max_threads(n);
+    EXPECT(numerical::exp(z) == numerical::map(z, [](const cplx& x) { return numerical::detail::complex_exp(x); }));
+    EXPECT(numerical::log(r) == numerical::map(r, [](double x) { return std::log(x); }));
+    EXPECT(numerical::tanh(z) == numerical::map(z, [](const cplx& x) { return numerical::detail::complex_tanh(x); }));
+    EXPECT(-z == numerical::map(z, [](const cplx& x) { return -x; }));
+    EXPECT(numerical::numpy_absolute(z) == numerical::map(z, [](const cplx& x) { return numerical::detail::numpy_absolute(x, numerical::numpy_wheel_loops().products); }));
+  }
+  numerical::set_max_threads(threads);
+}
+
+// NumPy's complex magnitude: an infinite part makes it infinite whatever the other, NaN, and a NaN part then NaN;
+// a zero is 0; otherwise the larger part times sqrt(ratio² + 1).
+namespace {
+  template <typename R>
+  bool numpy_magnitudes_hold()
+  {
+    using C = std::complex<R>;
+    const R inf {std::numeric_limits<R>::infinity()};
+    const R nan {std::numeric_limits<R>::quiet_NaN()};
+    bool    ok  {true};
+    for (const bool fused : {false, true}) {
+      const auto magnitude {[fused](C z) { return numerical::detail::numpy_absolute(z, fused); }};
+      ok = ok && magnitude(C {inf, nan}) == inf && magnitude(C {nan, -inf}) == inf && magnitude(C {R {1}, inf}) == inf;
+      ok = ok && std::isnan(magnitude(C {nan, R {1}})) && std::isnan(magnitude(C {R {2}, nan}));
+      ok = ok && magnitude(C {R {0}, R {-0.0}}) == R {0} && magnitude(C {R {-3}, R {4}}) == R {5};
+    }
+    return ok;
+  }
+} // namespace
+
+TEST(complex_magnitudes_as_numpy_computes_them)
+{
+  EXPECT(numpy_magnitudes_hold<double>());
+  EXPECT(numpy_magnitudes_hold<float>());
+}
+
 TEST(element_wise_operations_by_tasks_are_each_element_s_op)
 {
   using numerical::tensor;
@@ -548,6 +600,18 @@ TEST(a_scalar_exponent_of_two_a_half_or_minus_one_is_computed_as_numpy_does)
   using cplx = std::complex<double>;
   const tensor<cplx> z {{2}, {cplx {1.0, 1.0}, cplx {3.0, -2.0}}};
   EXPECT(numerical::pow(z, tensor<cplx> {{}, {cplx {2.0, 0.0}}}) == (tensor<cplx> {{2}, {cplx {0.0, 2.0}, cplx {5.0, -12.0}}}));
+  // a complex one keeps the operators' Annex G, the square and the reciprocal alike (NumPy's are the numpy_ forms)
+  const tensor<cplx> extreme {{2}, {cplx {1e308, 1e308}, cplx {std::numeric_limits<double>::infinity(), std::numeric_limits<double>::infinity()}}};
+  const tensor<cplx> squared {numerical::pow(extreme, tensor<cplx> {{}, {cplx {2.0, 0.0}}})};
+  const tensor<cplx> inverted {numerical::pow(extreme, tensor<cplx> {{}, {cplx {-1.0, 0.0}}})};
+  const auto         same_parts {[](cplx a, cplx b) {
+                                   const auto part {[](double p, double q) { return (std::isnan(p) && std::isnan(q)) || p == q; }};
+                                   return part(a.real(), b.real()) && part(a.imag(), b.imag());
+                                 }};
+  for (std::size_t i {0}; i < 2; ++i) {
+    EXPECT(same_parts(squared.data()[i], extreme.data()[i] * extreme.data()[i]));
+    EXPECT(same_parts(inverted.data()[i], cplx {1.0, 0.0} / extreme.data()[i]));
+  }
   // An exponent per element is a power per element.
   EXPECT(numerical::pow(x, tensor<double> {{4}, {2.0, 2.0, 0.5, -1.0}})
          == (tensor<double> {{4}, {std::pow(0.3, 2.0), std::pow(2.0, 2.0), std::pow(7.25, 0.5), std::pow(1e-3, -1.0)}}));

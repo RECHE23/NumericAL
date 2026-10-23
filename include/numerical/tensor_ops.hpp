@@ -535,19 +535,11 @@ namespace numerical {
       return tensor<T> {without_axis(t.shape(), axis), std::move(out)};
     }
 
-    //! \brief `x · x`.
+    //! \brief `x · x`, by the type's own product (a complex one's C Annex G, as the library's `*`).
     template <typename T>
     [[nodiscard]] T square(const T& x)
     {
       return static_cast<T>(x * x);
-    }
-
-    //! \brief NumPy's complex square, (re·re − im·im) + (re·im + im·re)i, without the infinity handling of a
-    //!        general product (C Annex G), which costs a call per element.
-    template <typename U>
-    [[nodiscard]] std::complex<U> square(const std::complex<U>& x)
-    {
-      return {(x.real() * x.real()) - (x.imag() * x.imag()), (x.real() * x.imag()) + (x.imag() * x.real())};
     }
 
     //! \brief A NaN? Never for a scalar without one.
@@ -753,6 +745,29 @@ namespace numerical {
     return out;
   }
 
+  namespace detail {
+    /*!
+     * \brief `f(x)` for every element of \p t, by chunks of \ref elementwise_chunk among the threads (as
+     *        \ref broadcast_apply's same-shape pairs): for a stateless \p f, the library's element-wise functions.
+     */
+    template <typename T,
+              typename F>
+    [[nodiscard]] auto parallel_map(const tensor<T>& t,
+                                    const F&         f) -> tensor<std::decay_t<decltype(f(std::declval<const T&>()))>>
+    {
+      using R = std::decay_t<decltype(f(std::declval<const T&>()))>;
+      buffer<R>         out(t.size());
+      const std::size_t chunks {(t.size() + elementwise_chunk - 1) / elementwise_chunk};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     const std::size_t last {std::min(first + elementwise_chunk, t.size())};
+                     std::transform(t.data().begin() + static_cast<std::ptrdiff_t>(first), t.data().begin() + static_cast<std::ptrdiff_t>(last),
+                                    out.begin() + static_cast<std::ptrdiff_t>(first), f);
+                   });
+      return tensor<R> {t.shape(), std::move(out)};
+    }
+  } // namespace detail
+
   /*!
    * \brief `op(a, b)` element by element, the operands broadcast against each other.
    * \throws dimension_error If the shapes do not broadcast.
@@ -893,7 +908,7 @@ namespace numerical {
                                                               const numpy_loops& loops = numpy_wheel_loops())
   {
     const bool fused {loops.products};
-    return map(a, [fused](const C& x) { return detail::numpy_absolute(x, fused); });
+    return detail::parallel_map(a, [fused](const C& x) { return detail::numpy_absolute(x, fused); });
   }
 
   //! \brief `x ** 2` of a complex tensor as NumPy's `square` computes it (the loop of an array to the Python integer
@@ -903,7 +918,7 @@ namespace numerical {
                                        const numpy_loops& loops = numpy_wheel_loops())
   {
     const bool fused {loops.products};
-    return map(a, [fused](const C& x) { return detail::numpy_multiply(x, x, fused); });
+    return detail::parallel_map(a, [fused](const C& x) { return detail::numpy_multiply(x, x, fused); });
   }
 
   //! \brief `x ** -1` of a complex tensor as NumPy's `reciprocal` computes it (the loop of an array to the Python
@@ -913,7 +928,7 @@ namespace numerical {
                                            const numpy_loops& loops = numpy_wheel_loops())
   {
     const bool fused {loops.quotients};
-    return map(a, [fused](const C& x) { return detail::numpy_reciprocal(x, fused); });
+    return detail::parallel_map(a, [fused](const C& x) { return detail::numpy_reciprocal(x, fused); });
   }
 
   //! \brief `a ** b` of complex tensors, broadcast, as NumPy's `power` computes each (\ref detail::numpy_power), fused
@@ -931,49 +946,49 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] tensor<T> exp(const tensor<T>& a)
   {
-    return map(a, [](const T& x) { return detail::elementary_exp(x); });
+    return detail::parallel_map(a, [](const T& x) { return detail::elementary_exp(x); });
   }
 
   //! \brief `log` of every element: `std::log` of a real one, \ref detail::complex_log of a complex one.
   template <typename T>
   [[nodiscard]] tensor<T> log(const tensor<T>& a)
   {
-    return map(a, [](const T& x) { return detail::elementary_log(x); });
+    return detail::parallel_map(a, [](const T& x) { return detail::elementary_log(x); });
   }
 
   //! \brief `sin` of every element: `std::sin` of a real one, \ref detail::complex_sin of a complex one.
   template <typename T>
   [[nodiscard]] tensor<T> sin(const tensor<T>& a)
   {
-    return map(a, [](const T& x) { return detail::elementary_sin(x); });
+    return detail::parallel_map(a, [](const T& x) { return detail::elementary_sin(x); });
   }
 
   //! \brief `cos` of every element: `std::cos` of a real one, \ref detail::complex_cos of a complex one.
   template <typename T>
   [[nodiscard]] tensor<T> cos(const tensor<T>& a)
   {
-    return map(a, [](const T& x) { return detail::elementary_cos(x); });
+    return detail::parallel_map(a, [](const T& x) { return detail::elementary_cos(x); });
   }
 
   //! \brief `tan` of every element: `std::tan` of a real one, \ref detail::complex_tan of a complex one.
   template <typename T>
   [[nodiscard]] tensor<T> tan(const tensor<T>& a)
   {
-    return map(a, [](const T& x) { return detail::elementary_tan(x); });
+    return detail::parallel_map(a, [](const T& x) { return detail::elementary_tan(x); });
   }
 
   //! \brief `tanh` of every element: `std::tanh` of a real one, \ref detail::complex_tanh of a complex one.
   template <typename T>
   [[nodiscard]] tensor<T> tanh(const tensor<T>& a)
   {
-    return map(a, [](const T& x) { return detail::elementary_tanh(x); });
+    return detail::parallel_map(a, [](const T& x) { return detail::elementary_tanh(x); });
   }
 
   //! \brief The square root of every element: `std::sqrt` of a real one, \ref detail::complex_sqrt of a complex one.
   template <typename T>
   [[nodiscard]] tensor<T> sqrt(const tensor<T>& a)
   {
-    return map(a, [](const T& x) { return detail::root(x); });
+    return detail::parallel_map(a, [](const T& x) { return detail::root(x); });
   }
 
   //! \brief Element-wise sum, broadcast. \throws dimension_error If the shapes do not broadcast.
@@ -1012,9 +1027,7 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] tensor<T> operator-(const tensor<T>& a)
   {
-    buffer<T> out(a.size());
-    std::transform(a.data().begin(), a.data().end(), out.begin(), std::negate<T> {});
-    return tensor<T> {a.shape(), std::move(out)};
+    return detail::parallel_map(a, std::negate<T> {});
   }
 
   //! \brief `f(x)` for every element, in a tensor of the same shape and of `f`'s result type.
@@ -1031,8 +1044,9 @@ namespace numerical {
 
   /*!
    * \brief `a` to the power `b` element by element, broadcast, as `std::pow`; a single exponent of 2, 0.5 or
-   *        -1 is computed as NumPy computes it, `x·x`, `sqrt(x)` or `1/x` (exact where `pow` rounds: a complex
-   *        square has no stray real part).
+   *        -1 as the library's own `x * x`, square root (\ref detail::complex_sqrt for a complex one) and `1 / x`
+   *        (exact where `pow` rounds: a complex square has no stray real part). A complex one keeps C's Annex G, as
+   *        the operators do: NumPy's loops are \ref numpy_square, \ref numpy_reciprocal and \ref numpy_power.
    */
   template <typename T>
   [[nodiscard]] tensor<T> pow(const tensor<T>& a,
@@ -1042,13 +1056,13 @@ namespace numerical {
       if (b.size() == 1 && b.shape().size() <= a.shape().size()) {
         const T y {b.data()[0]};
         if (y == T(2)) {
-          return map(a, [](const T& x) { return detail::square(x); });
+          return detail::parallel_map(a, [](const T& x) { return detail::square(x); });
         }
         if (y == T(0.5)) {
-          return map(a, [](const T& x) { return detail::root(x); });
+          return detail::parallel_map(a, [](const T& x) { return detail::root(x); });
         }
         if (y == T(-1)) {
-          return map(a, [](const T& x) { return static_cast<T>(T(1) / x); });
+          return detail::parallel_map(a, [](const T& x) { return static_cast<T>(T(1) / x); });
         }
       }
     }
