@@ -301,11 +301,28 @@ TEST(sum_over_run_takes_a_run_of_axes_and_declines_the_rest)
 }
 
 namespace {
-  // vector_times_transposed of `a` (inner) and B given as its transpose (cols × inner, rows padded): canonical_product's
-  // vector times the row-major B, to the bit.
+  // `a` (inner) times the row-major B (inner × cols) as add_product sums it, B's rows scaled and added in order in
+  // chunks of vector_chunk columns: the arithmetic the column kernels must give to the bit.
   template <typename T>
-  bool transposed_vector_product_is_canonical(std::size_t inner,
-                                              std::size_t cols)
+  std::vector<T> rows_added_in_order(const std::vector<T>& a,
+                                     const std::vector<T>& b,
+                                     std::size_t           cols)
+  {
+    std::vector<T> y(cols, T {});
+    for (std::size_t first {0}; first < cols; first += numerical::detail::vector_chunk) {
+      const std::size_t count {std::min(numerical::detail::vector_chunk, cols - first)};
+      for (std::size_t k {0}; k < a.size(); ++k) {
+        numerical::detail::add_product(y.data() + first, a[k], b.data() + (k * cols) + first, count);
+      }
+    }
+    return y;
+  }
+
+  // canonical_product of `a` (inner) and the row-major B, and vector_times_transposed of `a` and B given as its
+  // transpose (cols × inner, rows padded): B's rows added in order, to the bit.
+  template <typename T>
+  bool vector_products_add_the_rows_in_order(std::size_t inner,
+                                             std::size_t cols)
   {
     using R = decltype(std::abs(T {})); // the parts' type
     const auto        part {[](double value) { return static_cast<R>(value); }};
@@ -327,26 +344,36 @@ namespace {
         bt[(j * ldbt) + k]  = value;
       }
     }
-    const numerical::tensor<T> want {numerical::detail::canonical_product<T>(a.data(), b.data(), 1, inner, cols, {cols})};
-    const numerical::buffer<T> got  {numerical::detail::vector_times_transposed(a.data(), bt.data(), ldbt, inner, cols)};
-    return std::equal(got.begin(), got.end(), want.data().begin(), want.data().end());
+    const std::vector<T>       want       {rows_added_in_order(a, b, cols)};
+    const numerical::tensor<T> canonical  {numerical::detail::canonical_product<T>(a.data(), b.data(), 1, inner, cols, {cols})};
+    const numerical::buffer<T> transposed {numerical::detail::vector_times_transposed(a.data(), bt.data(), ldbt, inner, cols)};
+    return std::equal(canonical.data().begin(), canonical.data().end(), want.begin(), want.end()) &&
+           std::equal(transposed.begin(), transposed.end(), want.begin(), want.end());
   }
 } // namespace
 
-// A vector times a matrix given as its transpose (a Fortran-ordered NumPy matrix): canonical_product's sums, the same
-// bits, in each type, on every path this processor runs; a partial group of columns, several chunks, a depth of one.
-TEST(a_vector_times_a_transposed_matrix_gives_the_canonical_bits)
+// A vector times a matrix, row-major (narrow: its columns' sums held) and given as its transpose (a Fortran-ordered
+// NumPy matrix): B's rows added in order, the same bits, in each type, on every path this processor runs; every width
+// of a partial group of columns, the narrow kernel's last width and the first past it, several chunks, a depth of one
+// and an empty one (zeros).
+TEST(a_vector_times_a_matrix_adds_its_rows_in_order)
 {
   for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
                                           numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
     if (numerical::limit_gemm_path(path) != path) {
       continue; // a path this processor does not run
     }
-    for (const auto& [inner, cols] : {std::array<std::size_t, 2> {406, 583}, {1, 9}, {37, 3}, {200, 130}, {5, 2}}) {
-      EXPECT(transposed_vector_product_is_canonical<double>(inner, cols));
-      EXPECT(transposed_vector_product_is_canonical<float>(inner, cols));
-      EXPECT(transposed_vector_product_is_canonical<std::complex<double>>(inner, cols));
-      EXPECT(transposed_vector_product_is_canonical<std::complex<float>>(inner, cols));
+    std::vector<std::array<std::size_t, 2>> shapes {{406, 583}, {200, 130}, {764, 2}};
+    for (const std::size_t inner : {std::size_t {0}, std::size_t {1}, std::size_t {5}, std::size_t {37}}) {
+      for (std::size_t cols {2}; cols <= numerical::detail::column_sums_below; ++cols) {
+        shapes.push_back({inner, cols});
+      }
+    }
+    for (const auto& [inner, cols] : shapes) {
+      EXPECT(vector_products_add_the_rows_in_order<double>(inner, cols));
+      EXPECT(vector_products_add_the_rows_in_order<float>(inner, cols));
+      EXPECT(vector_products_add_the_rows_in_order<std::complex<double>>(inner, cols));
+      EXPECT(vector_products_add_the_rows_in_order<std::complex<float>>(inner, cols));
     }
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);

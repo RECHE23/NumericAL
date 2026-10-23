@@ -1202,38 +1202,56 @@ namespace numerical::detail {
     return done;
   }
 
-  /*!
-   * \brief Columns \p first to \p last of a vector \p a (\p inner) times a matrix given as its transpose \p bt (its rows
-   *        \p ldbt apart) into \p y: each element `a[k] · B[k][j]` added in ascending order of `k` by one fused
-   *        multiply-add, as \ref avx2_scaled_add adds each row (and so \ref avx512_scaled_add, whose processors have
-   *        these units too); eight columns' chains at once.
-   */
-  NUMERICAL_TARGET("avx2,fma") inline void avx2_transposed_columns(const double* a,
-                                                                   const double* bt,
-                                                                   std::size_t   ldbt,
-                                                                   std::size_t   inner,
-                                                                   std::size_t   first,
-                                                                   std::size_t   last,
-                                                                   double*       y) noexcept
+  //! \brief Columns \p j to `j + Width` of \ref avx2_strided_columns into \p y, their sums held through the rows.
+  template <std::size_t Width>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_strided_column_group(const double* a,
+                                                                     const double* b,
+                                                                     std::size_t   row_step,
+                                                                     std::size_t   column_step,
+                                                                     std::size_t   inner,
+                                                                     std::size_t   j,
+                                                                     double*       y) noexcept
   {
-    constexpr std::size_t group {8};
+    std::array<double, Width> sums {};
+    for (std::size_t k {0}; k < inner; ++k) {
+      const double        f   {a[k]};
+      const double* const row {b + (k * row_step) + (j * column_step)};
+      for (std::size_t c {0}; c < Width; ++c) {
+        sums[c] = std::fma(f, row[c * column_step], sums[c]);
+      }
+    }
+    std::copy(sums.begin(), sums.end(), y + j);
+  }
+
+  /*!
+   * \brief Columns \p first to \p last of a vector \p a (\p inner) times a matrix \p b whose element `B[k][j]` is
+   *        `b[(k · row_step) + (j · column_step)]`, into \p y: each element `a[k] · B[k][j]` added in ascending order
+   *        of `k` by one fused multiply-add, as \ref avx2_scaled_add adds each row (and so \ref avx512_scaled_add,
+   *        whose processors have these units too); eight columns' chains at once, the rest as one group of its width.
+   */
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_strided_columns(const double* a,
+                                                                const double* b,
+                                                                std::size_t   row_step,
+                                                                std::size_t   column_step,
+                                                                std::size_t   inner,
+                                                                std::size_t   first,
+                                                                std::size_t   last,
+                                                                double*       y) noexcept
+  {
+    constexpr std::size_t group {8}; // the switch below names each narrower last group
     std::size_t           j     {first};
     for (; j + group <= last; j += group) {
-      std::array<double, group> sums {};
-      for (std::size_t k {0}; k < inner; ++k) {
-        const double f {a[k]};
-        for (std::size_t c {0}; c < group; ++c) {
-          sums[c] = std::fma(f, bt[((j + c) * ldbt) + k], sums[c]);
-        }
-      }
-      std::copy(sums.begin(), sums.end(), y + j);
+      avx2_strided_column_group<group>(a, b, row_step, column_step, inner, j, y);
     }
-    for (; j < last; ++j) {
-      double sum {};
-      for (std::size_t k {0}; k < inner; ++k) {
-        sum = std::fma(a[k], bt[(j * ldbt) + k], sum);
-      }
-      y[j] = sum;
+    switch (last - j) {
+      case 1: avx2_strided_column_group<1>(a, b, row_step, column_step, inner, j, y); break;
+      case 2: avx2_strided_column_group<2>(a, b, row_step, column_step, inner, j, y); break;
+      case 3: avx2_strided_column_group<3>(a, b, row_step, column_step, inner, j, y); break;
+      case 4: avx2_strided_column_group<4>(a, b, row_step, column_step, inner, j, y); break;
+      case 5: avx2_strided_column_group<5>(a, b, row_step, column_step, inner, j, y); break;
+      case 6: avx2_strided_column_group<6>(a, b, row_step, column_step, inner, j, y); break;
+      case 7: avx2_strided_column_group<7>(a, b, row_step, column_step, inner, j, y); break;
+      default: break; // a whole number of groups
     }
   }
 

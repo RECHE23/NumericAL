@@ -390,6 +390,115 @@ namespace numerical {
     //! \brief The columns a thread takes of a vector times a matrix: each of its rows added to them in order.
     inline constexpr std::size_t vector_chunk {128};
 
+    //! \brief The columns of B one task of \ref vector_times_columns sums together: their sums' chains interleaved,
+    //!        each waiting on its own last addition.
+    inline constexpr std::size_t strided_columns {8};
+
+    //! \brief Columns \p j to `j + Width` of \ref vector_times_columns into \p y, their sums held through the rows.
+    template <std::size_t Width, typename T>
+    void strided_column_group(const T*    a,
+                              const T*    b,
+                              std::size_t row_step,
+                              std::size_t column_step,
+                              std::size_t inner,
+                              std::size_t j,
+                              T*          y)
+    {
+      std::array<T, Width> sums {};
+      for (std::size_t k {0}; k < inner; ++k) {
+        const T        f   {a[k]};
+        const T* const row {b + (k * row_step) + (j * column_step)};
+        for (std::size_t c {0}; c < Width; ++c) {
+          add_one_product(sums[c], f, row[c * column_step]);
+        }
+      }
+      std::copy(sums.begin(), sums.end(), y + j);
+    }
+
+    /*!
+     * \brief \ref canonical_product's vector \p a (\p inner) times a matrix \p b whose element `B[k][j]` is
+     *        `b[(k · row_step) + (j · column_step)]`: each element of the product the sum canonical_product forms,
+     *        `a[k] · B[k][j]` added in ascending order of `k` with \ref add_product's arithmetic (\ref
+     *        add_one_product), so the same bits; \ref strided_columns columns' sums held at once, where add_product
+     *        stores and reloads them for every row of B.
+     */
+    template <typename T>
+    [[nodiscard]] buffer<T> vector_times_columns(const T*    a,
+                                                 const T*    b,
+                                                 std::size_t row_step,
+                                                 std::size_t column_step,
+                                                 std::size_t inner,
+                                                 std::size_t cols)
+    {
+      static_assert(strided_columns == 8, "the switch below names each narrower last group");
+      buffer<T> y(cols);
+      parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
+                     const std::size_t last {std::min((chunk + 1) * vector_chunk, cols)};
+                     std::size_t j {chunk * vector_chunk};
+                     for (; j + strided_columns <= last; j += strided_columns) {
+                       strided_column_group<strided_columns>(a, b, row_step, column_step, inner, j, y.data());
+                     }
+                     switch (last - j) {
+                       case 1: strided_column_group<1>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 2: strided_column_group<2>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 3: strided_column_group<3>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 4: strided_column_group<4>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 5: strided_column_group<5>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 6: strided_column_group<6>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 7: strided_column_group<7>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       default: break; // a whole number of groups
+                     }
+                   });
+      return y;
+    }
+
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief \ref vector_times_columns for `double`: on the x86-64 fused paths, where \ref add_product adds each
+    //!        row by fused multiply-adds, by \ref avx2_strided_columns; elsewhere the template's arithmetic.
+    [[nodiscard]] inline buffer<double> vector_times_columns(const double* a,
+                                                             const double* b,
+                                                             std::size_t   row_step,
+                                                             std::size_t   column_step,
+                                                             std::size_t   inner,
+                                                             std::size_t   cols)
+    {
+      const gemm_path path {gemm_path_current()};
+      if (path != gemm_path::avx2 && path != gemm_path::avx512) {
+        return vector_times_columns<double>(a, b, row_step, column_step, inner, cols);
+      }
+      buffer<double> y(cols);
+      parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
+                     avx2_strided_columns(a, b, row_step, column_step, inner, chunk * vector_chunk, std::min((chunk + 1) * vector_chunk, cols), y.data());
+                   });
+      return y;
+    }
+
+#endif
+
+    //! \brief \ref vector_times_columns of a matrix given as its transpose \p bt (`cols × inner`, its rows \p ldbt
+    //!         apart, B's columns).
+    template <typename T>
+    [[nodiscard]] buffer<T> vector_times_transposed(const T*    a,
+                                                    const T*    bt,
+                                                    std::size_t ldbt,
+                                                    std::size_t inner,
+                                                    std::size_t cols)
+    {
+      return vector_times_columns(a, bt, 1, ldbt, inner, cols);
+    }
+
+    /*!
+     * \brief The columns under which \ref canonical_product sums a vector times a matrix by \ref vector_times_columns,
+     *        the same bits as its rows added in order: below it faster for every type from a depth of a hundred (a few
+     *        nanoseconds either way under it), from it slower for a real type. On x86-64 the rows' vectors of eight
+     *        `float` (AVX2) make the rows' loop the faster sooner.
+     */
+#if defined(__aarch64__) || defined(_M_ARM64)
+    inline constexpr std::size_t column_sums_below {16};
+#else
+    inline constexpr std::size_t column_sums_below {9};
+#endif
+
     /*!
      * \brief The product of the row-major `rows × inner` \p a and `inner × cols` \p b, shaped \p out_shape: the
      *        canonical two-operand contraction of \ref einsum_impl (a matrix times a vector, a vector times a
@@ -409,6 +518,9 @@ namespace numerical {
         return tensor<T> {std::move(out_shape), std::move(y)};
       }
       if (rows == 1 && cols > 1 && inner != 0) { // a vector times a matrix: its rows scaled and added in order
+        if (cols < column_sums_below) {          // a narrow one: its columns' sums held instead, the same bits
+          return tensor<T> {std::move(out_shape), vector_times_columns(a, b, cols, 1, inner, cols)};
+        }
         buffer<T> y(cols, T {});
         parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
                        const std::size_t first {chunk * vector_chunk};
@@ -424,70 +536,6 @@ namespace numerical {
       }
       return tensor<T> {std::move(out_shape), buffer<T> {chunked_dot(a, b, inner)}};
     }
-
-    //! \brief The columns of B one task of \ref vector_times_transposed sums together: their sums' chains interleaved,
-    //!        each waiting on its own last addition.
-    inline constexpr std::size_t transposed_columns {8};
-
-    /*!
-     * \brief \ref canonical_product's vector \p a (\p inner) times a matrix given as its transpose \p bt (`cols ×
-     *        inner`, its rows \p ldbt apart, B's columns): each element of the product the sum canonical_product forms,
-     *        `a[k] · B[k][j]` added in ascending order of `k` with \ref add_product's arithmetic (\ref
-     *        add_one_product), so the same bits; a column of B a run of \p bt, \ref transposed_columns of them at once.
-     */
-    template <typename T>
-    [[nodiscard]] buffer<T> vector_times_transposed(const T*    a,
-                                                    const T*    bt,
-                                                    std::size_t ldbt,
-                                                    std::size_t inner,
-                                                    std::size_t cols)
-    {
-      buffer<T> y(cols, T {});
-      parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
-                     const std::size_t last {std::min((chunk + 1) * vector_chunk, cols)};
-                     std::size_t j {chunk * vector_chunk};
-                     for (; j + transposed_columns <= last; j += transposed_columns) { // a whole group: its sums in registers
-                       std::array<T, transposed_columns> sums {};
-                       for (std::size_t k {0}; k < inner; ++k) {
-                         const T f {a[k]};
-                         for (std::size_t c {0}; c < transposed_columns; ++c) {
-                           add_one_product(sums[c], f, bt[((j + c) * ldbt) + k]);
-                         }
-                       }
-                       std::copy(sums.begin(), sums.end(), y.data() + j);
-                     }
-                     for (; j < last; ++j) {
-                       T sum {};
-                       for (std::size_t k {0}; k < inner; ++k) {
-                         add_one_product(sum, a[k], bt[(j * ldbt) + k]);
-                       }
-                       y[j] = sum;
-                     }
-                   });
-      return y;
-    }
-
-#ifdef NUMERICAL_X86_COMPILED
-    //! \brief \ref vector_times_transposed for `double`: on the x86-64 fused paths, where \ref add_product adds each
-    //!        row by fused multiply-adds, by \ref avx2_transposed_columns; elsewhere the template's arithmetic.
-    [[nodiscard]] inline buffer<double> vector_times_transposed(const double* a,
-                                                                const double* bt,
-                                                                std::size_t   ldbt,
-                                                                std::size_t   inner,
-                                                                std::size_t   cols)
-    {
-      const gemm_path path {gemm_path_current()};
-      if (path != gemm_path::avx2 && path != gemm_path::avx512) {
-        return vector_times_transposed<double>(a, bt, ldbt, inner, cols);
-      }
-      buffer<double> y(cols);
-      parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
-                     avx2_transposed_columns(a, bt, ldbt, inner, chunk * vector_chunk, std::min((chunk + 1) * vector_chunk, cols), y.data());
-                   });
-      return y;
-    }
-
-#endif
 
     /*!
      * \brief einsum of one row-major operand \p data (\p shape, its axes labelled \p in, each label once) into the

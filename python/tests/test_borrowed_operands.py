@@ -106,6 +106,24 @@ class BorrowedOperands(unittest.TestCase):
                                                np.asarray(numerical.matmul(vector, np.ascontiguousarray(b)))),
                                 (k, n, np.dtype(dtype).name))
 
+    def test_a_vector_times_a_narrow_matrix_gives_the_bits_of_its_rows_added_in_order(self):
+        # A vector times a matrix of a few columns sums each column's products in registers; a matrix of forty adds its
+        # rows in order. Each element of the product depends on its column alone: the narrow product is the leading
+        # columns of the wide one to the bit, on the wheels' flags, for every width under the narrow route's.
+        for k in (1, 7, 300):
+            real_a = self.rng.standard_normal(k)
+            real_b = self.rng.standard_normal((k, 40))
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                a = (real_a + 1j * real_a[::-1] if np.iscomplexobj(dtype(0)) else real_a).astype(dtype)
+                b = (real_b - 1j * real_b[::-1] if np.iscomplexobj(dtype(0)) else real_b).astype(dtype)
+                wide = np.asarray(numerical.matmul(a, b))
+                for n in range(2, 17):
+                    narrow = np.ascontiguousarray(b[:, :n])
+                    self.assertTrue(np.array_equal(np.asarray(numerical.matmul(a, narrow)), wide[:n]),
+                                    (k, n, np.dtype(dtype).name))
+                    self.assertTrue(np.array_equal(np.asarray(numerical.matmul(a, np.asfortranarray(narrow))), wide[:n]),
+                                    (k, n, np.dtype(dtype).name))
+
     def test_an_einsum_of_one_operand_summing_a_run_reads_it_where_it_lies(self):
         # A contiguous array summed over a run of its axes: read in place, the bits of the same einsum of its Tensor;
         # another spec, a strided array or a wrong one take the converting path, the same answers and refusals.

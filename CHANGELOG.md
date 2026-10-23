@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on
+  x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
+  order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,
+  4096 × 3 26.5 → 4.3 µs; a complex128 4096 × 3 28.7 → 8.0 µs (NumPy's 14.6).
+
 ## 2026.10.34 — 2026-10-23
 
 ### Fixed
