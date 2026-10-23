@@ -17,6 +17,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   16 columns, on Apple's AMX): the AMX computed its whole tile at every step of the depth; both tiles sum each element
   by the same chain of fused multiply-adds, so the same bits. One M1 Pro: 8 × 1024 by 1024 × 8 24.3 → 7.9 µs,
   4 × 4096 by 4096 × 15 101.5 → 28.8 µs, a symmetric rank update of order 8, 4096 deep, 56 → 32 µs.
+- **`qr(a, mode="r")` no longer forms `Q`**: `R` alone (`numerical::qr_r` in C++), the reduced decomposition's to the
+  bit. One M1 Pro, order 1000: 34.8 → 20.6 ms (NumPy's `mode="r"` 19.6).
+- **A stack of small matrices goes to the threads**: each matrix counts its copy and its answer's tensor beside its
+  arithmetic, where a stack of 1000 matrices of order 4 stayed on one thread. `inv` and `det` of 256 to 1000 matrices
+  of order 2 to 6 take 0.4 to 0.6 times as long; a stack of 16 or fewer the same. Each matrix's answer is the same.
+- `eig` returns its eigenvectors without copying them, and `solve` with several right-hand sides solves them in their
+  own storage, where both copied a matrix more.
 
 ## 2026.10.34 — 2026-10-23
 

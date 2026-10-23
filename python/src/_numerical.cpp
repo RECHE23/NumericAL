@@ -799,6 +799,12 @@ std::tuple<Ts...> narrowed(const std::tuple<Ts...>& values)
 // time, unless there are as many matrices as threads.
 constexpr std::size_t stack_order {128};
 
+// The work a stacked matrix costs past its arithmetic, in multiply-adds, for parallel_for's split: its slice copied in
+// and its answer's tensor built, about 300 ns where a 2 × 2 inverse's arithmetic is ten (M1 Pro). Counted as its
+// order cubed alone, a stack of 1000 matrices of order 4 stayed on one thread; with it, inv and det of 256 to 1000
+// matrices of order 2 to 6 take 0.4 to 0.6 times as long, 16 and fewer the same (8192 doubled those).
+constexpr std::size_t stack_item_work {2048};
+
 // The leading axes of a stacked tensor (rank ≥ 2) and its matrices' rows and columns.
 struct stack_shape
 {
@@ -893,7 +899,7 @@ Result over_batch(const std::vector<std::size_t>& batch, std::size_t count, std:
         const sb::scoped_gil_release unlocked {releases_gil(elements)};
         const without_gil            inside;
         if (order <= stack_order || count >= numerical::max_threads()) {
-            numerical::detail::parallel_for(count, order * order * order, [&](std::size_t i) {
+            numerical::detail::parallel_for(count, (order * order * order) + stack_item_work, [&](std::size_t i) {
                 const without_gil worker;
                 parts[i].emplace(answer(i));
             });
@@ -950,7 +956,7 @@ any_tensor solve_copied(numerical::matrix<T> a, const numerical::tensor<T>& b)
 {
     const numerical::lu_decomposition<T> factored {std::move(a)};
     return solve_for(b, [&factored](const numerical::vector<T>& rhs) { return factored.solve(rhs); },
-                     [&factored](const numerical::matrix<T>& rhs) { return factored.solve(rhs); });
+                     [&factored](numerical::matrix<T>&& rhs) { return factored.solve(std::move(rhs)); });
 }
 
 template <typename T>
@@ -2037,6 +2043,24 @@ std::tuple<any_tensor, any_tensor> qr(const any_tensor& v, const std::string& na
 }
 
 
+// qr_r(a) -> R, k×n, qr's R to the bit with Q never formed (numpy.linalg.qr's mode "r").
+any_tensor qr_r(const any_tensor& v)
+{
+    if (shape_of(v).size() < 2) {
+        throw std::runtime_error("qr expects a matrix or a stack of matrices (rank ≥ 2)");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<any_tensor>(v, [](const any_tensor& m) { return qr_r(m); });
+    }
+    if (is_single(v)) {
+        return narrowed(qr_r(widened(v)));
+    }
+    if (is_complex(v)) {
+        return any_tensor {numerical::tensor<std::complex<double>> {numerical::qr_r(matrix_from(std::get<cplx_tensor>(v)))}};
+    }
+    return any_tensor {numerical::tensor<double> {numerical::qr_r(matrix_from(std::get<real_tensor>(v)))}};
+}
+
 // eigh(a, method, upper) -> (eigenvalues, eigenvectors) for a real symmetric or a complex Hermitian matrix: the values
 // are real; its lower triangle is read, or its upper one.
 std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& name, bool upper)
@@ -2383,8 +2407,10 @@ std::tuple<any_tensor, any_tensor> eig_of(const any_tensor& v, bool vectors)
     if (shape_of(v).size() < 2 || shape_of(v).back() != shape_of(v)[shape_of(v).size() - 2]) {
         throw std::runtime_error("eig expects a square matrix or a stack of them");
     }
-    const std::tuple<any_tensor, any_tensor> out {eig_complex(is_single(v) ? widened(v) : v, vectors)};
-    return is_single(v) ? narrowed(out) : out;
+    if (is_single(v)) {
+        return narrowed(eig_complex(widened(v), vectors));
+    }
+    return eig_complex(v, vectors); // moved out: a const result would be copied, its n × n vectors with it
 }
 
 // _eig(a) -> (w, v), as numpy.linalg.eig.
@@ -3525,6 +3551,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&lstsq>("lstsq", "lstsq(a, b, rtol) -> (x, residuals, rank, s)\nThe minimum-norm least-squares solution of a @ x ≈ b with its residual sums of squares, the rank and the singular values of a, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&cholesky>("cholesky", "cholesky(a, upper) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite), or with upper the factor U of A = Uᴴ U from its upper triangle.");
     m.def<&qr>("qr", "qr(a, mode) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr: reduced, Q is m×k, R k×n, k = min(m, n); complete, Q is m×m, R m×n.");
+    m.def<&qr_r>("qr_r", "qr_r(a) -> R\nqr's R alone, k×n, k = min(m, n), to the bit, Q never formed (numpy.linalg.qr's mode=\"r\").");
     m.def<&eigh>("eigh", "eigh(a, method, upper) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, or with upper its upper one, as numpy.linalg.eigh's UPLO.");
     m.def<&matmul_nd>("_matmul_nd", "_matmul_nd(a, b) -> Tensor\nThe matrix product of two stacks of one dtype, their leading axes broadcast, as numpy.matmul.");
     m.def<&eig>("_eig", "_eig(a) -> (w, v)\nThe eigenvalues and right eigenvectors of a general square matrix (or stack), as numpy.linalg.eig: complex, as NumPy 2.5's.");

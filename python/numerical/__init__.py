@@ -497,6 +497,7 @@ _matrix_rank = _linalg(_numerical.matrix_rank, arrays=1)
 _matrix_ranks = _linalg(_numerical._matrix_ranks, arrays=1)
 _pinv = _linalg(_numerical.pinv, arrays=1)
 _qr = _linalg(_numerical.qr, arrays=1)
+_qr_r = _linalg(_numerical.qr_r, arrays=1)
 _slogdet = _linalg(_numerical.slogdet)
 _solve = _linalg(_numerical.solve)
 
@@ -695,7 +696,7 @@ def qr(a, mode="reduced"):
     if mode not in _QR_MODES:
         raise ValueError(f"qr: mode {mode!r} is none of {_QR_MODES} (the LAPACK reflectors of \"raw\" are not offered)")
     if mode == "r":
-        return _qr(a, "reduced")[1]
+        return _qr_r(a)
     return _qr(a, mode)
 
 

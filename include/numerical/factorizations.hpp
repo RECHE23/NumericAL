@@ -869,7 +869,7 @@ namespace numerical {
         throw singular_matrix_error("solve: matrix is singular");
       }
       const std::size_t cols              {b.cols()};
-      buffer<T>         rows(n_ * cols, T {});
+      buffer<T>         rows(n_ * cols); // every element written below
       for (std::size_t i {0}; i < n_; ++i) {
         for (std::size_t c {0}; c < cols; ++c) {
           rows[(i * cols) + c] = b(pivots_[i], c);
@@ -2455,6 +2455,31 @@ namespace numerical {
       return out;
     }
 
+    /*!
+     * \brief \ref householder_qr's `R` alone, `k × cols`, `k = min(rows, cols)`: the same reflections and the same
+     *        rotation of each row by its diagonal's phase, so the same bits, `Q` never formed (`numpy.linalg.qr`'s
+     *        `mode="r"`; forming `Q` is about as much work again).
+     * \param[in] a    The matrix, row-major.
+     * \param[in] rows Its row count.
+     * \param[in] cols Its column count.
+     * \return `R`, row-major, its diagonal real and non-negative.
+     */
+    template <typename T>
+    [[nodiscard]] buffer<T> householder_r(buffer<T>   a,
+                                          std::size_t rows,
+                                          std::size_t cols)
+    {
+      const std::size_t depth {std::min(rows, cols)};
+      buffer<T>         r     {householder_reflect(std::move(a), rows, cols).r};
+      for (std::size_t k {0}; k < depth; ++k) { // as householder_qr rotates R's row k
+        const T phase {phase_of(r[(k * cols) + k])};
+        for (std::size_t j {k}; j < cols; ++j) {
+          r[(k * cols) + j] *= conj_of(phase);
+        }
+      }
+      return r;
+    }
+
     //! \brief The magnitude under which a diagonal entry of `R` or a singular value counts as zero, as
     //!        NumPy draws it: the largest times the machine epsilon times the larger dimension.
     [[nodiscard]] inline double rank_tolerance(double      largest,
@@ -2668,6 +2693,22 @@ namespace numerical {
   [[nodiscard]] qr_decomposition<T> qr(const matrix<T>& a)
   {
     return qr_decomposition<T> {a};
+  }
+
+  /*!
+   * \brief The factor `R` of the QR decomposition of an `m × n` matrix, `k × n`, `k = min(m, n)`: \ref qr_decomposition's
+   *        `R` to the bit, `Q` never formed.
+   * \param[in] a The matrix, any shape, its elements taken over.
+   * \return `R`, upper trapezoidal, its diagonal real and non-negative.
+   * \throws non_finite_error If an entry is infinite or NaN.
+   */
+  template <typename T>
+  [[nodiscard]] matrix<T> qr_r(matrix<T> a)
+  {
+    detail::require_finite(a, "QR decomposition");
+    const std::size_t rows {a.rows()};
+    const std::size_t cols {a.cols()};
+    return matrix<T> {std::min(rows, cols), cols, detail::householder_r(std::move(a).elements(), rows, cols)};
   }
 
   //! \brief Thrown when an iterative algorithm has not converged within its bound of sweeps.

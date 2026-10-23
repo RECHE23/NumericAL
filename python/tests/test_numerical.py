@@ -937,6 +937,20 @@ class LinalgVsNumpy(unittest.TestCase):
         q, r = numerical.qr(numerical.asarray(a))
         self.assertTrue(np.allclose(np.asarray(q) @ np.asarray(r), a)) # signs may differ; reconstruct
 
+    def test_qr_mode_r_is_the_reduced_r_to_the_bit(self):
+        # mode "r" never forms Q: its R is the reduced decomposition's, bit for bit, in each dtype and over a stack.
+        rng = np.random.default_rng(5)
+        for shape in ((1, 1), (5, 3), (3, 5), (70, 65), (2, 9, 7)):
+            base = rng.standard_normal(shape)
+            for values in (base, base + 1j * base[..., ::-1], base.astype(np.float32), (base - 2j * base).astype(np.complex64)):
+                t = numerical.asarray(values)
+                r = np.asarray(numerical.qr(t, mode="r"))
+                want = np.asarray(numerical.qr(t)[1])
+                self.assertEqual((r.shape, r.dtype), (want.shape, want.dtype), shape)
+                self.assertTrue(np.array_equal(r, want), (shape, values.dtype))
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.qr(numerical.asarray(np.array([[1.0, np.nan], [0.0, 1.0]])), mode="r")
+
     def test_eigh_reconstructs(self):
         a = np.array([[2.0, 1.0], [1.0, 2.0]])
         values, vectors = numerical.eigh(numerical.asarray(a))

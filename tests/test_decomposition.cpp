@@ -324,6 +324,32 @@ TEST(qr_factorises_any_shape_and_solves_only_full_column_rank)
   EXPECT_THROWS(qr(tall).solve(vector<double> {1.0, 2.0}), numerical::dimension_error); // wrong RHS size
 }
 
+// qr_r is the decomposition's R to the bit, Q never formed: tall, wide, square past one block of reflectors, complex,
+// a rank-deficient matrix; a non-finite entry refused as the decomposition refuses it.
+TEST(qr_r_is_the_decompositions_r_to_the_bit)
+{
+  using c = std::complex<double>;
+  const auto real_case {[](std::size_t rows, std::size_t cols) {
+                          std::vector<double> e(rows * cols);
+                          for (std::size_t i {0}; i < e.size(); ++i) {
+                            e[i] = std::sin(static_cast<double>(i) * 0.37) + ((i % 7 == 0) ? 1.0 : 0.0);
+                          }
+                          const matrix<double> a {rows, cols, e};
+                          return numerical::qr_r(a) == qr(a).r();
+                        }};
+  EXPECT(real_case(70, 40) && real_case(40, 70) && real_case(65, 65) && real_case(1, 1));
+  std::vector<c> e(std::size_t {33} *29);
+  for (std::size_t i {0}; i < e.size(); ++i) {
+    e[i] = c {std::cos(static_cast<double>(i) * 0.11), std::sin(static_cast<double>(i) * 0.23)};
+  }
+  const matrix<c> complex_a      {33, 29, e};
+  EXPECT(numerical::qr_r(complex_a) == qr(complex_a).r());
+  const matrix<double> dependent {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}};
+  EXPECT(numerical::qr_r(dependent) == qr(dependent).r());
+  const matrix<double> bad       {{1.0, std::numeric_limits<double>::quiet_NaN()}, {0.0, 1.0}};
+  EXPECT_THROWS(numerical::qr_r(bad), numerical::non_finite_error);
+}
+
 TEST(qr_is_generic_over_a_complex_scalar)
 {
   using c = std::complex<double>;
