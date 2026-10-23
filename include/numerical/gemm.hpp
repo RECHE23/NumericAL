@@ -156,6 +156,299 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief Whether the tile a `double` or `float` product past the plain loop runs on fuses each term (\ref
+   *        gemm_rows rounds its own so): `double` on arm64's NEON and AMX paths, `float` on the NEON tile there. The x86-64
+   *        tiles' `double` takes \c term_rounding::x86_fused; the vector tile, and so the portable path, rounds as
+   *        the compiler does, as the plain loop then does. On arm64 every cap but the portable one runs the NEON or the
+   *        AMX path, so the cap alone answers: one load, where the path in use took an order-4 product on one arm64
+   *        core from 10.6 to 13.3 ns (the cap, 11.5).
+   */
+  [[nodiscard]] inline bool rows_fuse() noexcept
+  {
+#ifdef NUMERICAL_NEON_COMPILED
+    return gemm_path_cap().load(std::memory_order_relaxed) != gemm_path::portable;
+#else
+    return false;
+#endif
+  }
+
+#ifdef NUMERICAL_NEON_COMPILED
+  //! \brief `y[i] += f · x[i]` for \p count elements on arm64, each one fused multiply-add, the tail's as the vectors':
+  //!        as the NEON and AMX tiles round every term, whatever the compiler contracts (a subtraction passes `−f`,
+  //!        whose negation is exact).
+  inline void neon_scaled_add(double*       y,
+                              const double* x,
+                              double        f,
+                              std::size_t   count) noexcept
+  {
+    const float64x2_t splat {vdupq_n_f64(f)};
+    std::size_t       i     {0};
+    for (; i + 8 <= count; i += 8) { // four independent vectors a step: one chain each would wait on its own load
+      vst1q_f64(y + i, vfmaq_f64(vld1q_f64(y + i), splat, vld1q_f64(x + i)));
+      vst1q_f64(y + i + 2, vfmaq_f64(vld1q_f64(y + i + 2), splat, vld1q_f64(x + i + 2)));
+      vst1q_f64(y + i + 4, vfmaq_f64(vld1q_f64(y + i + 4), splat, vld1q_f64(x + i + 4)));
+      vst1q_f64(y + i + 6, vfmaq_f64(vld1q_f64(y + i + 6), splat, vld1q_f64(x + i + 6)));
+    }
+    for (; i + 2 <= count; i += 2) {
+      vst1q_f64(y + i, vfmaq_f64(vld1q_f64(y + i), splat, vld1q_f64(x + i)));
+    }
+    for (; i < count; ++i) {
+      y[i] = std::fma(f, x[i], y[i]);
+    }
+  }
+
+  //! \brief `y[i] −= Σₜ f[t] · x[(t · ldx) + i]` for \p count elements on arm64, each element a chain of fused
+  //!        multiply-adds through the terms in ascending order (\ref neon_scaled_add with `−f[t]`, term after term),
+  //!        eight elements held in registers.
+  inline void neon_subtract_products(double*       y,
+                                     const double* f,
+                                     const double* x,
+                                     std::size_t   ldx,
+                                     std::size_t   terms,
+                                     std::size_t   count) noexcept
+  {
+    // Named registers, not an array: GCC kept an array of vectors in memory, three to five times slower.
+    std::size_t i {0};
+    for (; i + 32 <= count; i += 32) {
+      float64x2_t z0  {vld1q_f64(y + i + 0)};
+      float64x2_t z1  {vld1q_f64(y + i + 2)};
+      float64x2_t z2  {vld1q_f64(y + i + 4)};
+      float64x2_t z3  {vld1q_f64(y + i + 6)};
+      float64x2_t z4  {vld1q_f64(y + i + 8)};
+      float64x2_t z5  {vld1q_f64(y + i + 10)};
+      float64x2_t z6  {vld1q_f64(y + i + 12)};
+      float64x2_t z7  {vld1q_f64(y + i + 14)};
+      float64x2_t z8  {vld1q_f64(y + i + 16)};
+      float64x2_t z9  {vld1q_f64(y + i + 18)};
+      float64x2_t z10 {vld1q_f64(y + i + 20)};
+      float64x2_t z11 {vld1q_f64(y + i + 22)};
+      float64x2_t z12 {vld1q_f64(y + i + 24)};
+      float64x2_t z13 {vld1q_f64(y + i + 26)};
+      float64x2_t z14 {vld1q_f64(y + i + 28)};
+      float64x2_t z15 {vld1q_f64(y + i + 30)};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const float64x2_t   minus {vdupq_n_f64(-f[t])};
+        const double* const row   {x + (t * ldx) + i};
+        z0  = vfmaq_f64(z0, minus, vld1q_f64(row + 0));
+        z1  = vfmaq_f64(z1, minus, vld1q_f64(row + 2));
+        z2  = vfmaq_f64(z2, minus, vld1q_f64(row + 4));
+        z3  = vfmaq_f64(z3, minus, vld1q_f64(row + 6));
+        z4  = vfmaq_f64(z4, minus, vld1q_f64(row + 8));
+        z5  = vfmaq_f64(z5, minus, vld1q_f64(row + 10));
+        z6  = vfmaq_f64(z6, minus, vld1q_f64(row + 12));
+        z7  = vfmaq_f64(z7, minus, vld1q_f64(row + 14));
+        z8  = vfmaq_f64(z8, minus, vld1q_f64(row + 16));
+        z9  = vfmaq_f64(z9, minus, vld1q_f64(row + 18));
+        z10 = vfmaq_f64(z10, minus, vld1q_f64(row + 20));
+        z11 = vfmaq_f64(z11, minus, vld1q_f64(row + 22));
+        z12 = vfmaq_f64(z12, minus, vld1q_f64(row + 24));
+        z13 = vfmaq_f64(z13, minus, vld1q_f64(row + 26));
+        z14 = vfmaq_f64(z14, minus, vld1q_f64(row + 28));
+        z15 = vfmaq_f64(z15, minus, vld1q_f64(row + 30));
+      }
+      vst1q_f64(y + i + 0, z0);
+      vst1q_f64(y + i + 2, z1);
+      vst1q_f64(y + i + 4, z2);
+      vst1q_f64(y + i + 6, z3);
+      vst1q_f64(y + i + 8, z4);
+      vst1q_f64(y + i + 10, z5);
+      vst1q_f64(y + i + 12, z6);
+      vst1q_f64(y + i + 14, z7);
+      vst1q_f64(y + i + 16, z8);
+      vst1q_f64(y + i + 18, z9);
+      vst1q_f64(y + i + 20, z10);
+      vst1q_f64(y + i + 22, z11);
+      vst1q_f64(y + i + 24, z12);
+      vst1q_f64(y + i + 26, z13);
+      vst1q_f64(y + i + 28, z14);
+      vst1q_f64(y + i + 30, z15);
+    }
+    for (; i + 16 <= count; i += 16) {
+      float64x2_t y0 {vld1q_f64(y + i + 0)};
+      float64x2_t y1 {vld1q_f64(y + i + 2)};
+      float64x2_t y2 {vld1q_f64(y + i + 4)};
+      float64x2_t y3 {vld1q_f64(y + i + 6)};
+      float64x2_t y4 {vld1q_f64(y + i + 8)};
+      float64x2_t y5 {vld1q_f64(y + i + 10)};
+      float64x2_t y6 {vld1q_f64(y + i + 12)};
+      float64x2_t y7 {vld1q_f64(y + i + 14)};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const float64x2_t   minus {vdupq_n_f64(-f[t])};
+        const double* const row   {x + (t * ldx) + i};
+        y0 = vfmaq_f64(y0, minus, vld1q_f64(row + 0));
+        y1 = vfmaq_f64(y1, minus, vld1q_f64(row + 2));
+        y2 = vfmaq_f64(y2, minus, vld1q_f64(row + 4));
+        y3 = vfmaq_f64(y3, minus, vld1q_f64(row + 6));
+        y4 = vfmaq_f64(y4, minus, vld1q_f64(row + 8));
+        y5 = vfmaq_f64(y5, minus, vld1q_f64(row + 10));
+        y6 = vfmaq_f64(y6, minus, vld1q_f64(row + 12));
+        y7 = vfmaq_f64(y7, minus, vld1q_f64(row + 14));
+      }
+      vst1q_f64(y + i + 0, y0);
+      vst1q_f64(y + i + 2, y1);
+      vst1q_f64(y + i + 4, y2);
+      vst1q_f64(y + i + 6, y3);
+      vst1q_f64(y + i + 8, y4);
+      vst1q_f64(y + i + 10, y5);
+      vst1q_f64(y + i + 12, y6);
+      vst1q_f64(y + i + 14, y7);
+    }
+    for (; i + 8 <= count; i += 8) {
+      float64x2_t y0 {vld1q_f64(y + i)};
+      float64x2_t y1 {vld1q_f64(y + i + 2)};
+      float64x2_t y2 {vld1q_f64(y + i + 4)};
+      float64x2_t y3 {vld1q_f64(y + i + 6)};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const float64x2_t   minus {vdupq_n_f64(-f[t])};
+        const double* const row   {x + (t * ldx) + i};
+        y0 = vfmaq_f64(y0, minus, vld1q_f64(row));
+        y1 = vfmaq_f64(y1, minus, vld1q_f64(row + 2));
+        y2 = vfmaq_f64(y2, minus, vld1q_f64(row + 4));
+        y3 = vfmaq_f64(y3, minus, vld1q_f64(row + 6));
+      }
+      vst1q_f64(y + i, y0);
+      vst1q_f64(y + i + 2, y1);
+      vst1q_f64(y + i + 4, y2);
+      vst1q_f64(y + i + 6, y3);
+    }
+    for (; i + 4 <= count; i += 4) { // two chains interleaved, each waiting on its own last multiply-add
+      float64x2_t y0 {vld1q_f64(y + i)};
+      float64x2_t y1 {vld1q_f64(y + i + 2)};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const float64x2_t   minus {vdupq_n_f64(-f[t])};
+        const double* const row   {x + (t * ldx) + i};
+        y0 = vfmaq_f64(y0, minus, vld1q_f64(row));
+        y1 = vfmaq_f64(y1, minus, vld1q_f64(row + 2));
+      }
+      vst1q_f64(y + i, y0);
+      vst1q_f64(y + i + 2, y1);
+    }
+    for (; i + 2 <= count; i += 2) {
+      float64x2_t y0 {vld1q_f64(y + i)};
+      for (std::size_t t {0}; t < terms; ++t) {
+        y0 = vfmaq_f64(y0, vdupq_n_f64(-f[t]), vld1q_f64(x + (t * ldx) + i));
+      }
+      vst1q_f64(y + i, y0);
+    }
+    for (; i < count; ++i) {
+      double sum {y[i]};
+      for (std::size_t t {0}; t < terms; ++t) {
+        sum = std::fma(-f[t], x[(t * ldx) + i], sum);
+      }
+      y[i] = sum;
+    }
+  }
+
+  //! \brief \ref neon_subtract_products for \ref product_rows rows of \p y (\p ldy apart), each row's terms \p f a row
+  //!        of \p ldf: four columns of the eight rows held in registers through the terms, each element the chain
+  //!        neon_subtract_products gives it.
+  inline void neon_subtract_rows(double*       y,
+                                 std::size_t   ldy,
+                                 const double* f,
+                                 std::size_t   ldf,
+                                 const double* x,
+                                 std::size_t   ldx,
+                                 std::size_t   terms,
+                                 std::size_t   count) noexcept
+  {
+    static_assert(product_rows == 8, "eight rows, sixteen named registers");
+    std::size_t i {0};
+    for (; i + 4 <= count; i += 4) {
+      float64x2_t r0a {vld1q_f64(y + (0 * ldy) + i)};
+      float64x2_t r0b {vld1q_f64(y + (0 * ldy) + i + 2)};
+      float64x2_t r1a {vld1q_f64(y + (1 * ldy) + i)};
+      float64x2_t r1b {vld1q_f64(y + (1 * ldy) + i + 2)};
+      float64x2_t r2a {vld1q_f64(y + (2 * ldy) + i)};
+      float64x2_t r2b {vld1q_f64(y + (2 * ldy) + i + 2)};
+      float64x2_t r3a {vld1q_f64(y + (3 * ldy) + i)};
+      float64x2_t r3b {vld1q_f64(y + (3 * ldy) + i + 2)};
+      float64x2_t r4a {vld1q_f64(y + (4 * ldy) + i)};
+      float64x2_t r4b {vld1q_f64(y + (4 * ldy) + i + 2)};
+      float64x2_t r5a {vld1q_f64(y + (5 * ldy) + i)};
+      float64x2_t r5b {vld1q_f64(y + (5 * ldy) + i + 2)};
+      float64x2_t r6a {vld1q_f64(y + (6 * ldy) + i)};
+      float64x2_t r6b {vld1q_f64(y + (6 * ldy) + i + 2)};
+      float64x2_t r7a {vld1q_f64(y + (7 * ldy) + i)};
+      float64x2_t r7b {vld1q_f64(y + (7 * ldy) + i + 2)};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const float64x2_t low  {vld1q_f64(x + (t * ldx) + i)};
+        const float64x2_t high {vld1q_f64(x + (t * ldx) + i + 2)};
+        const float64x2_t m0   {vdupq_n_f64(-f[(0 * ldf) + t])};
+        r0a = vfmaq_f64(r0a, m0, low);
+        r0b = vfmaq_f64(r0b, m0, high);
+        const float64x2_t m1 {vdupq_n_f64(-f[(1 * ldf) + t])};
+        r1a = vfmaq_f64(r1a, m1, low);
+        r1b = vfmaq_f64(r1b, m1, high);
+        const float64x2_t m2 {vdupq_n_f64(-f[(2 * ldf) + t])};
+        r2a = vfmaq_f64(r2a, m2, low);
+        r2b = vfmaq_f64(r2b, m2, high);
+        const float64x2_t m3 {vdupq_n_f64(-f[(3 * ldf) + t])};
+        r3a = vfmaq_f64(r3a, m3, low);
+        r3b = vfmaq_f64(r3b, m3, high);
+        const float64x2_t m4 {vdupq_n_f64(-f[(4 * ldf) + t])};
+        r4a = vfmaq_f64(r4a, m4, low);
+        r4b = vfmaq_f64(r4b, m4, high);
+        const float64x2_t m5 {vdupq_n_f64(-f[(5 * ldf) + t])};
+        r5a = vfmaq_f64(r5a, m5, low);
+        r5b = vfmaq_f64(r5b, m5, high);
+        const float64x2_t m6 {vdupq_n_f64(-f[(6 * ldf) + t])};
+        r6a = vfmaq_f64(r6a, m6, low);
+        r6b = vfmaq_f64(r6b, m6, high);
+        const float64x2_t m7 {vdupq_n_f64(-f[(7 * ldf) + t])};
+        r7a = vfmaq_f64(r7a, m7, low);
+        r7b = vfmaq_f64(r7b, m7, high);
+      }
+      vst1q_f64(y + (0 * ldy) + i, r0a);
+      vst1q_f64(y + (0 * ldy) + i + 2, r0b);
+      vst1q_f64(y + (1 * ldy) + i, r1a);
+      vst1q_f64(y + (1 * ldy) + i + 2, r1b);
+      vst1q_f64(y + (2 * ldy) + i, r2a);
+      vst1q_f64(y + (2 * ldy) + i + 2, r2b);
+      vst1q_f64(y + (3 * ldy) + i, r3a);
+      vst1q_f64(y + (3 * ldy) + i + 2, r3b);
+      vst1q_f64(y + (4 * ldy) + i, r4a);
+      vst1q_f64(y + (4 * ldy) + i + 2, r4b);
+      vst1q_f64(y + (5 * ldy) + i, r5a);
+      vst1q_f64(y + (5 * ldy) + i + 2, r5b);
+      vst1q_f64(y + (6 * ldy) + i, r6a);
+      vst1q_f64(y + (6 * ldy) + i + 2, r6b);
+      vst1q_f64(y + (7 * ldy) + i, r7a);
+      vst1q_f64(y + (7 * ldy) + i + 2, r7b);
+    }
+    for (; i < count; ++i) { // the last columns one at a time, the eight rows' chains interleaved
+      double s0 {y[(0 * ldy) + i]};
+      double s1 {y[(1 * ldy) + i]};
+      double s2 {y[(2 * ldy) + i]};
+      double s3 {y[(3 * ldy) + i]};
+      double s4 {y[(4 * ldy) + i]};
+      double s5 {y[(5 * ldy) + i]};
+      double s6 {y[(6 * ldy) + i]};
+      double s7 {y[(7 * ldy) + i]};
+      for (std::size_t t {0}; t < terms; ++t) {
+        const double v {x[(t * ldx) + i]};
+        s0 = std::fma(-f[(0 * ldf) + t], v, s0);
+        s1 = std::fma(-f[(1 * ldf) + t], v, s1);
+        s2 = std::fma(-f[(2 * ldf) + t], v, s2);
+        s3 = std::fma(-f[(3 * ldf) + t], v, s3);
+        s4 = std::fma(-f[(4 * ldf) + t], v, s4);
+        s5 = std::fma(-f[(5 * ldf) + t], v, s5);
+        s6 = std::fma(-f[(6 * ldf) + t], v, s6);
+        s7 = std::fma(-f[(7 * ldf) + t], v, s7);
+      }
+      y[(0 * ldy) + i] = s0;
+      y[(1 * ldy) + i] = s1;
+      y[(2 * ldy) + i] = s2;
+      y[(3 * ldy) + i] = s3;
+      y[(4 * ldy) + i] = s4;
+      y[(5 * ldy) + i] = s5;
+      y[(6 * ldy) + i] = s6;
+      y[(7 * ldy) + i] = s7;
+    }
+  }
+
+#endif
+
+  /*!
    * \brief `y[i] −= f · x[i]` for `double` on the widest x86-64 units the matrix product's kernel may use
    *        (\ref gemm_path_current), each element one fused multiply-add there; elsewhere \ref subtract_product's
    *        template. The decompositions' row updates take it: a wheel built for the baseline x86-64 holds two
@@ -175,6 +468,12 @@ namespace numerical::detail {
     }
     if (path == gemm_path::avx2) {
       avx2_scaled_add(y, x, -factor, count);
+      return;
+    }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+    if (rows_fuse()) { // the NEON or the AMX path: the cap alone answers, one load
+      neon_scaled_add(y, x, -factor, count);
       return;
     }
 #endif
@@ -210,6 +509,12 @@ namespace numerical::detail {
       return;
     }
 #endif
+#ifdef NUMERICAL_NEON_COMPILED
+    if (rows_fuse()) { // the NEON or the AMX path: the cap alone answers, one load
+      neon_subtract_products(y, f, x, ldx, terms, count);
+      return;
+    }
+#endif
     subtract_products<double>(y, f, x, ldx, terms, count);
   }
 
@@ -232,6 +537,12 @@ namespace numerical::detail {
     }
     if (path == gemm_path::avx2) {
       avx2_subtract_rows(y, ldy, f, ldf, x, ldx, terms, count);
+      return;
+    }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+    if (rows_fuse()) { // the NEON or the AMX path: the cap alone answers, one load
+      neon_subtract_rows(y, ldy, f, ldf, x, ldx, terms, count);
       return;
     }
 #endif
@@ -320,6 +631,12 @@ namespace numerical::detail {
     }
     if (path == gemm_path::avx2) {
       avx2_scaled_add(y, x, factor, count);
+      return;
+    }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+    if (rows_fuse()) { // the NEON or the AMX path: the cap alone answers, one load
+      neon_scaled_add(y, x, factor, count);
       return;
     }
 #endif
@@ -1754,23 +2071,6 @@ namespace numerical::detail {
                      }
                    }
                  });
-  }
-
-  /*!
-   * \brief Whether the tile a `double` or `float` product past the plain loop runs on fuses each term (\ref
-   *        gemm_rows rounds its own so): `double` on arm64's NEON and AMX paths, `float` on the NEON tile there. The x86-64
-   *        tiles' `double` takes \c term_rounding::x86_fused; the vector tile, and so the portable path, rounds as
-   *        the compiler does, as the plain loop then does. On arm64 every cap but the portable one runs the NEON or the
-   *        AMX path, so the cap alone answers: one load, where the path in use took an order-4 product on one arm64
-   *        core from 10.6 to 13.3 ns (the cap, 11.5).
-   */
-  [[nodiscard]] inline bool rows_fuse() noexcept
-  {
-#ifdef NUMERICAL_NEON_COMPILED
-    return gemm_path_cap().load(std::memory_order_relaxed) != gemm_path::portable;
-#else
-    return false;
-#endif
   }
 
   /*!

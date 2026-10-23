@@ -672,8 +672,30 @@ namespace numerical {
     //!        each waiting on its own last addition.
     inline constexpr std::size_t strided_columns {8};
 
-    //! \brief Columns \p j to `j + Width` of \ref vector_times_columns into \p y, their sums held through the rows.
-    template <std::size_t Width, typename T>
+    //! \brief `sum += f · x` of \ref strided_column_group, one fused multiply-add.
+    template <typename T>
+    void add_column_term(std::true_type /*fused*/,
+                         T&       sum,
+                         const T& f,
+                         const T& x)
+    {
+      sum = std::fma(f, x, sum);
+    }
+
+    //! \brief `sum += f · x` of \ref strided_column_group, as \ref add_one_product computes it.
+    template <typename T>
+    void add_column_term(std::false_type /*fused*/,
+                         T&       sum,
+                         const T& f,
+                         const T& x)
+    {
+      add_one_product(sum, f, x);
+    }
+
+    //! \brief Columns \p j to `j + Width` of \ref vector_times_columns into \p y, their sums held through the rows: each
+    //!        term one fused multiply-add where \p Fused (as \ref add_product adds each row on the arm64 fused paths),
+    //!        else \ref add_one_product.
+    template <std::size_t Width, bool Fused = false, typename T>
     void strided_column_group(const T*    a,
                               const T*    b,
                               std::size_t row_step,
@@ -687,7 +709,7 @@ namespace numerical {
         const T        f   {a[k]};
         const T* const row {b + (k * row_step) + (j * column_step)};
         for (std::size_t c {0}; c < Width; ++c) {
-          add_one_product(sums[c], f, row[c * column_step]);
+          add_column_term(std::bool_constant<Fused> {}, sums[c], f, row[c * column_step]);
         }
       }
       std::copy(sums.begin(), sums.end(), y + j);
@@ -700,7 +722,7 @@ namespace numerical {
      *        add_one_product), so the same bits; \ref strided_columns columns' sums held at once, where add_product
      *        stores and reloads them for every row of B.
      */
-    template <typename T>
+    template <typename T, bool Fused = false>
     [[nodiscard]] buffer<T> vector_times_columns(const T*    a,
                                                  const T*    b,
                                                  std::size_t row_step,
@@ -714,25 +736,25 @@ namespace numerical {
                      const std::size_t last {std::min((chunk + 1) * vector_chunk, cols)};
                      std::size_t j {chunk * vector_chunk};
                      for (; j + strided_columns <= last; j += strided_columns) {
-                       strided_column_group<strided_columns>(a, b, row_step, column_step, inner, j, y.data());
+                       strided_column_group<strided_columns, Fused>(a, b, row_step, column_step, inner, j, y.data());
                      }
                      switch (last - j) {
-                       case 1: strided_column_group<1>(a, b, row_step, column_step, inner, j, y.data()); break;
-                       case 2: strided_column_group<2>(a, b, row_step, column_step, inner, j, y.data()); break;
-                       case 3: strided_column_group<3>(a, b, row_step, column_step, inner, j, y.data()); break;
-                       case 4: strided_column_group<4>(a, b, row_step, column_step, inner, j, y.data()); break;
-                       case 5: strided_column_group<5>(a, b, row_step, column_step, inner, j, y.data()); break;
-                       case 6: strided_column_group<6>(a, b, row_step, column_step, inner, j, y.data()); break;
-                       case 7: strided_column_group<7>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 1: strided_column_group<1, Fused>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 2: strided_column_group<2, Fused>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 3: strided_column_group<3, Fused>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 4: strided_column_group<4, Fused>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 5: strided_column_group<5, Fused>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 6: strided_column_group<6, Fused>(a, b, row_step, column_step, inner, j, y.data()); break;
+                       case 7: strided_column_group<7, Fused>(a, b, row_step, column_step, inner, j, y.data()); break;
                        default: break; // a whole number of groups
                      }
                    });
       return y;
     }
 
-#ifdef NUMERICAL_X86_COMPILED
-    //! \brief \ref vector_times_columns for `double`: on the x86-64 fused paths, where \ref add_product adds each
-    //!        row by fused multiply-adds, by \ref avx2_strided_columns; elsewhere the template's arithmetic.
+    //! \brief \ref vector_times_columns for `double`: on the x86-64 fused paths, where \ref add_product adds each row by
+    //!        fused multiply-adds, by `avx2_strided_columns`; on the arm64 NEON and AMX paths, where it does too, by
+    //!        fused terms; elsewhere the template's arithmetic.
     [[nodiscard]] inline buffer<double> vector_times_columns(const double* a,
                                                              const double* b,
                                                              std::size_t   row_step,
@@ -740,18 +762,23 @@ namespace numerical {
                                                              std::size_t   inner,
                                                              std::size_t   cols)
     {
-      const gemm_path path {gemm_path_current()};
-      if (path != gemm_path::avx2 && path != gemm_path::avx512) {
-        return vector_times_columns<double>(a, b, row_step, column_step, inner, cols);
+      [[maybe_unused]] const gemm_path path {gemm_path_current()};
+#ifdef NUMERICAL_X86_COMPILED
+      if (path == gemm_path::avx2 || path == gemm_path::avx512) {
+        buffer<double> y(cols);
+        parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
+                       avx2_strided_columns(a, b, row_step, column_step, inner, chunk * vector_chunk, std::min((chunk + 1) * vector_chunk, cols), y.data());
+                     });
+        return y;
       }
-      buffer<double> y(cols);
-      parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
-                     avx2_strided_columns(a, b, row_step, column_step, inner, chunk * vector_chunk, std::min((chunk + 1) * vector_chunk, cols), y.data());
-                   });
-      return y;
-    }
-
 #endif
+#ifdef NUMERICAL_NEON_COMPILED
+      if (path == gemm_path::neon || path == gemm_path::amx) {
+        return vector_times_columns<double, true>(a, b, row_step, column_step, inner, cols);
+      }
+#endif
+      return vector_times_columns<double>(a, b, row_step, column_step, inner, cols);
+    }
 
     //! \brief \ref vector_times_columns of a matrix given as its transpose \p bt (`cols × inner`, its rows \p ldbt
     //!         apart, B's columns).

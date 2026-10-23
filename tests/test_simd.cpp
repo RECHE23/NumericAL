@@ -61,7 +61,8 @@ TEST(scaled_row_updates_equal_the_scalar_statements_to_the_bit)
 }
 
 // double's row updates on the units the matrix product's kernel takes, on every path this processor runs: one fused
-// multiply-add per element on AVX2 or AVX-512, the scalar statement elsewhere; and its dot product sums every term.
+// multiply-add per element on AVX2, AVX-512, NEON and the AMX, the scalar statement on the portable path; and its dot
+// product sums every term.
 TEST(double_row_updates_follow_the_kernel_path)
 {
   for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
@@ -77,7 +78,7 @@ TEST(double_row_updates_follow_the_kernel_path)
       std::vector<double>       right       {down};
       std::vector<double>       down_wanted {down};
       std::vector<double>       up_wanted   {down};
-      const bool                fused       {path == numerical::gemm_path::avx2 || path == numerical::gemm_path::avx512};
+      const bool                fused       {path != numerical::gemm_path::portable};
       for (std::size_t i {0}; i < count; ++i) {
         down_wanted[i] = fused ? std::fma(-f, x[i], down_wanted[i]) : down_wanted[i] - (f * x[i]);
         up_wanted[i]   = fused ? std::fma(f, x[i], up_wanted[i]) : up_wanted[i] + (f * x[i]);

@@ -144,28 +144,24 @@ namespace numerical {
     //! \brief The columns of one panel of the LU of an order up to \ref lu_small_order.
     inline constexpr std::size_t lu_small_block {32};
 
-#ifdef NUMERICAL_X86_COMPILED
     //! \brief The order from which the LU takes panels of \ref lu_wide_block columns: each trailing update rereads the
     //!        whole trailing block, and from there the memory traffic of panels of 64, not their arithmetic, sets the
-    //!        time; 128 halves it. Order 4096: ten AVX-512 cores 322 → 273 ms, six AVX2 cores 416 → 330; order 3072
-    //!        10 and 12 % faster; 2560 the same; 2048 on ten cores 10 % slower, the wider panel's own work then the
-    //!        longer. The factors are the same to the bit at either width.
+    //!        time; 128 halves it. Order 4096: ten AVX-512 cores 322 → 273 ms, six AVX2 cores 416 → 330, eight arm64
+    //!        cores 285 → 252; order 3072 10 to 17 % faster; 2560 the same; 2048 10 % slower, the wider panel's own
+    //!        work then the longer. The factors are the same to the bit at either width.
     inline constexpr std::size_t lu_wide_order {3072};
 
     //! \brief The columns of one panel of the LU from \ref lu_wide_order.
     inline constexpr std::size_t lu_wide_block {128};
-#endif
 
     //! \brief The panel width of the LU of order \p n: a power of two, so a row's panel is a mask away, not a division.
     [[nodiscard]] constexpr std::size_t lu_block_for(std::size_t n) noexcept
     {
       static_assert(std::has_single_bit(lu_small_block) && std::has_single_bit(lu_block), "a panel is a mask away");
-#ifdef NUMERICAL_X86_COMPILED
       static_assert(std::has_single_bit(lu_wide_block), "a panel is a mask away");
       if (n >= lu_wide_order) {
         return lu_wide_block;
       }
-#endif
       return n <= lu_small_order ? lu_small_block : lu_block;
     }
 
@@ -1138,9 +1134,7 @@ namespace numerical {
       // (\ref detail::subtract_rows), the group's own triangle after; each element's terms in ascending order still.
       constexpr std::size_t group {detail::product_rows};
       static_assert(detail::lu_small_block % group == 0 && detail::lu_block % group == 0, "a panel is a whole number of groups");
-#ifdef NUMERICAL_X86_COMPILED
       static_assert(detail::lu_wide_block % group == 0, "a panel is a whole number of groups");
-#endif
       std::size_t           i0    {0};
       for (; i0 + group <= n_; i0 += group) {
         if (i0 > 0) {
