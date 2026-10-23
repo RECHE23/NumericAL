@@ -13,6 +13,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
   order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,
   4096 × 3 26.5 → 4.3 µs; a complex128 4096 × 3 28.7 → 8.0 µs (NumPy's 14.6).
+- **A deep `double` product whose result lies within one AMX tile runs on the vector tile** (fewer than 32 rows and
+  16 columns, on Apple's AMX): the AMX computed its whole tile at every step of the depth; both tiles sum each element
+  by the same chain of fused multiply-adds, so the same bits. One M1 Pro: 8 × 1024 by 1024 × 8 24.3 → 7.9 µs,
+  4 × 4096 by 4096 × 15 101.5 → 28.8 µs, a symmetric rank update of order 8, 4096 deep, 56 → 32 µs.
 
 ## 2026.10.34 — 2026-10-23
 

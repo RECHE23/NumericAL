@@ -118,7 +118,8 @@ TEST(packed_product_equals_the_ascending_sum_to_the_bit)
 {
   const std::size_t k {(numerical::detail::gemm_kc * 2) + 17};
   EXPECT(on_every_path([&] { return product_is_exact<double>(129, 101, k); }));
-  EXPECT(on_every_path([&] { return product_is_exact<double>(31, 15, k); })); // one partial AMX tile
+  EXPECT(on_every_path([&] { return product_is_exact<double>(33, 15, k); })); // a whole AMX tile's rows and a partial one
+  EXPECT(on_every_path([&] { return product_is_exact<double>(31, 15, k); })); // within one tile: the vector tile's
   EXPECT(on_every_path([&] { return product_is_exact<float>(67, 75, k); }));
   (void)numerical::limit_gemm_path(numerical::gemm_path::portable);           // complex: past it, through the real kernel
   EXPECT(product_is_exact<std::complex<double>>(37, 29, k));

@@ -176,12 +176,22 @@ namespace numerical::detail {
   //!        products took 1.05 times as long in all, the slowest 1.8 times; on the AMX always, 1.09 and 5.5.
   inline constexpr std::size_t amx_least_work {std::size_t {1} << 16U};
 
-  //! \brief Whether the AMX runs a product of \p m × \p k by \p k × \p n (\ref amx_least_extent, \ref amx_least_work).
+  /*!
+   * \brief Whether the AMX runs a product of \p m × \p k by \p k × \p n (\ref amx_least_extent, \ref amx_least_work),
+   *        a C within one tile's rows and columns (\ref amx_mr × \ref amx_nr) excepted however deep: the AMX computes
+   *        the whole tile at every step of the depth; the vector tile computes the same chains of fused multiply-adds,
+   *        the same bits. One M1 Pro core, on 500 such shapes from 2^16 multiply-adds (2 to 31 rows, 2 to 15 columns,
+   *        depths 256 to 4096), against the faster of the two: the vector tile 1.075 times as long in all (the slowest
+   *        1.76, a C near a whole tile), the AMX 1.37; a symmetric product's triangle of order 4 to 15, the vector tile
+   *        the faster at every depth. On 300 random shapes of 2^13 to 2^22 multiply-adds, 1.043 times as long in all,
+   *        where 1.052 without the exception.
+   */
   [[nodiscard]] constexpr bool amx_suits(std::size_t m,
                                          std::size_t n,
                                          std::size_t k) noexcept
   {
-    return (m >= amx_least_extent && n >= amx_least_extent) || m * n * k >= amx_least_work;
+    const bool within_one_tile {m < amx_mr && n < amx_nr};
+    return (m >= amx_least_extent && n >= amx_least_extent) || (m * n * k >= amx_least_work && !within_one_tile);
   }
 
   //! \brief The rows and columns of one `float` tile of \ref amx_full_tile_f32: four 16 × 16 accumulators.
