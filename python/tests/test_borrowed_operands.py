@@ -76,6 +76,24 @@ class BorrowedOperands(unittest.TestCase):
                         self.assert_same(numerical.solve(square, vector[:rows]),
                                          numerical.solve(np.ascontiguousarray(square), np.ascontiguousarray(vector[:rows])))
 
+    def test_matrices_of_rows_apart_give_their_contiguous_copies_bits(self):
+        # Every other row of a larger array, each row's elements together: read where it lies at any size (its rows'
+        # distance the kernels' leading dimension), beside a contiguous, a column-major or another such operand, the
+        # product of the contiguous copies to the bit; a single column of them is copied first, the same.
+        for m, k, n in ((169, 579, 2), (300, 300, 300), (473, 38, 1), (1, 40, 30), (3, 247, 803), (9, 4, 1)):
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                a, b = self.operand((m, k), dtype), self.operand((k, n), dtype)
+                apart_a, apart_b = np.zeros((2 * m, k), dtype), np.zeros((3 * k, n), dtype)
+                apart_a[::2], apart_b[::3] = a, b
+                want = np.asarray(numerical.matmul(a, b))
+                for left, right in ((apart_a[::2], b), (a, apart_b[::3]), (apart_a[::2], apart_b[::3]),
+                                    (apart_a[::2], np.asfortranarray(b)), (np.asfortranarray(a), apart_b[::3])):
+                    with self.subTest(shape=(m, k, n), dtype=np.dtype(dtype).name, left=left.flags.c_contiguous,
+                                      right=right.flags.c_contiguous):
+                        self.assertTrue(np.array_equal(np.asarray(numerical.matmul(left, right)), want))
+                vector = self.operand((k,), dtype)
+                self.assert_same(numerical.matmul(apart_a[::2], vector), numerical.matmul(a, vector))
+
     def test_a_fortran_ordered_array_converts_element_for_element(self):
         # Its columns running contiguously: by tiles from 32 rows, a row at a time below; every dtype asarray reads,
         # converted as from the same array in C order.

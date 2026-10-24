@@ -373,14 +373,16 @@ namespace numerical {
      */
     template <typename T>
     [[nodiscard]] tensor<T> tile_gemm(const T*                 a,
+                                      std::size_t              lda,
                                       const T*                 b,
+                                      std::size_t              ldb,
                                       std::size_t              rows,
                                       std::size_t              inner,
                                       std::size_t              cols,
                                       std::vector<std::size_t> out_shape)
     {
       buffer<T> c(rows * cols); // the caller routes only an output of two elements or more here
-      gemm(rows, cols, inner, a, inner, b, cols, c.data(), cols, c_start::zero);
+      gemm(rows, cols, inner, a, lda, b, ldb, c.data(), cols, c_start::zero);
       return tensor<T> {std::move(out_shape), std::move(c)};
     }
 
@@ -499,11 +501,14 @@ namespace numerical {
     /*!
      * \brief The product of the row-major `rows × inner` \p a and `inner × cols` \p b, shaped \p out_shape: the
      *        canonical two-operand contraction of \ref einsum_impl (a matrix times a vector, a vector times a
-     *        matrix, a matrix product, a dot product), on any storage that holds the operands contiguously.
+     *        matrix, a matrix product, a dot product). A matrix's rows lie \p lda (\p a) and \p ldb (\p b) apart,
+     *        each row's elements together; a vector's elements together (\p b of one column: \p ldb then 1).
      */
     template <typename T>
     [[nodiscard]] tensor<T> canonical_product(const T*                 a,
+                                              std::size_t              lda,
                                               const T*                 b,
+                                              std::size_t              ldb,
                                               std::size_t              rows,
                                               std::size_t              inner,
                                               std::size_t              cols,
@@ -511,25 +516,25 @@ namespace numerical {
     {
       if (cols == 1 && rows > 1 && inner != 0) { // a matrix times a vector: each row's dot product, as "i,i->"
         buffer<T> y(rows);
-        matrix_times_vector(a, rows, inner, b, y.data());
+        matrix_times_vector(a, lda, rows, inner, b, y.data());
         return tensor<T> {std::move(out_shape), std::move(y)};
       }
       if (rows == 1 && cols > 1 && inner != 0) { // a vector times a matrix: its rows scaled and added in order
         if (cols < column_sums_below) {          // a narrow one: its columns' sums held instead, the same bits
-          return tensor<T> {std::move(out_shape), vector_times_columns(a, b, cols, 1, inner, cols)};
+          return tensor<T> {std::move(out_shape), vector_times_columns(a, b, ldb, 1, inner, cols)};
         }
         buffer<T> y(cols, T {});
         parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
                        const std::size_t first {chunk * vector_chunk};
                        const std::size_t count {std::min(vector_chunk, cols - first)};
                        for (std::size_t k {0}; k < inner; ++k) {
-                         add_product(y.data() + first, a[k], b + (k * cols) + first, count);
+                         add_product(y.data() + first, a[k], b + (k * ldb) + first, count);
                        }
                      });
         return tensor<T> {std::move(out_shape), std::move(y)};
       }
       if (rows * cols != 1) { // the product, an empty one included; a single element is one dot product
-        return tile_gemm<T>(a, b, rows, inner, cols, std::move(out_shape));
+        return tile_gemm<T>(a, lda, b, ldb, rows, inner, cols, std::move(out_shape));
       }
       return tensor<T> {std::move(out_shape), buffer<T> {chunked_dot(a, b, inner)}};
     }
@@ -1192,7 +1197,7 @@ namespace numerical {
           const auto        split {out_shape.begin() + static_cast<std::ptrdiff_t>(s0.size() - 1)};
           const std::size_t rows  {element_count(out_shape.begin(), split)};
           const std::size_t cols  {element_count(split, out_shape.end())};
-          return canonical_product<T>(operands[0]->data().data(), operands[1]->data().data(), rows, inner, cols, std::move(out_shape));
+          return canonical_product<T>(operands[0]->data().data(), inner, operands[1]->data().data(), cols, rows, inner, cols, std::move(out_shape));
         }
       }
       if (operands.size() == 2) {

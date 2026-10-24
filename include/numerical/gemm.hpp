@@ -3347,7 +3347,7 @@ namespace numerical::detail {
 #endif
 
   /*!
-   * \brief `y = A x` for the row-major `rows × cols` \p a: each element the dot product of its row with \p x, as
+   * \brief `y = A x` for the row-major `rows × cols` \p a, its rows \p lda apart: each element the dot product of its row with \p x, as
    *        \ref chunked_dot sums it (a row of a chunk or less is one \ref dot_product), the rows in parallel by
    *        groups (\ref row_dots, which share each load of \p x). The same on any number of threads. A `double`
    *        matrix of `amx_dot_least` elements to fewer than `amx_dot_most`, on the AMX path, runs on the AMX
@@ -3355,6 +3355,7 @@ namespace numerical::detail {
    */
   template <typename T>
   void matrix_times_vector(const T*    a,
+                           std::size_t lda,
                            std::size_t rows,
                            std::size_t cols,
                            const T*    x,
@@ -3365,13 +3366,13 @@ namespace numerical::detail {
       const std::size_t elements {rows * cols};
       if (cols <= dot_chunk && elements >= amx_dot_least && elements < amx_dot_most && gemm_path_current() == gemm_path::amx) {
         const amx_session on {}; // on the caller alone
-        amx_dot_rows_f64(a, cols, rows, x, cols, y);
+        amx_dot_rows_f64(a, lda, rows, x, cols, y);
         return;
       }
     }
 #endif
     if (cols > dot_chunk) {   // rows longer than a chunk: chunked_dot's partial sums
-      parallel_for(rows, cols, [&](std::size_t r) { y[r] = chunked_dot(a + (r * cols), x, cols); });
+      parallel_for(rows, cols, [&](std::size_t r) { y[r] = chunked_dot(a + (r * lda), x, cols); });
       return;
     }
     // A complex multiply-add weighs four real ones. Groups of fewer rows where the matrix has too few for each thread
@@ -3381,7 +3382,7 @@ namespace numerical::detail {
     const std::size_t     group  {std::clamp<std::size_t>(rows / (4 * max_threads()), 8, row_group)};
     parallel_for((rows + group - 1) / group, group * cols * weight, [&](std::size_t g) {
                    const std::size_t first {g * group};
-                   row_dots(a + (first * cols), cols, std::min(group, rows - first), x, cols, y + first);
+                   row_dots(a + (first * lda), lda, std::min(group, rows - first), x, cols, y + first);
                  });
   }
 } // namespace numerical::detail

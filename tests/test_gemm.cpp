@@ -781,7 +781,7 @@ namespace {
     std::vector<C> by_rows(rows);
     std::vector<C> product(rows);
     numerical::detail::row_dots(m.data(), cols, rows, v.data(), cols, by_rows.data());
-    numerical::detail::matrix_times_vector(m.data(), rows, cols, v.data(), product.data());
+    numerical::detail::matrix_times_vector(m.data(), cols, rows, cols, v.data(), product.data());
     for (std::size_t r {0}; r < rows; ++r) {
       const C alone {numerical::detail::dot_product(m.data() + (r * cols), v.data(), cols)};
       ok = ok && by_rows[r] == alone && product[r] == alone;

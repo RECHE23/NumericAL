@@ -345,12 +345,68 @@ namespace {
       }
     }
     const std::vector<T>       want       {rows_added_in_order(a, b, cols)};
-    const numerical::tensor<T> canonical  {numerical::detail::canonical_product<T>(a.data(), b.data(), 1, inner, cols, {cols})};
+    const numerical::tensor<T> canonical  {numerical::detail::canonical_product<T>(a.data(), inner, b.data(), cols, 1, inner, cols, {cols})};
     const numerical::buffer<T> transposed {numerical::detail::vector_times_transposed(a.data(), bt.data(), ldbt, inner, cols)};
     return std::equal(canonical.data().begin(), canonical.data().end(), want.begin(), want.end()) &&
            std::equal(transposed.begin(), transposed.end(), want.begin(), want.end());
   }
 } // namespace
+
+namespace
+{
+  // canonical_product of A (rows × inner) and B (inner × cols) laid with their rows apart (NaN between, never read)
+  // against the same operands together: the same bits on every route (a matrix times a vector, a vector times a narrow
+  // or a wide matrix, the matrix product, a dot product).
+  template <typename T>
+  bool rows_apart_give_the_contiguous_bits(std::size_t rows,
+                                           std::size_t inner,
+                                           std::size_t cols)
+  {
+    using R = decltype(std::abs(T {})); // the parts' type
+    const std::size_t lda {inner + 3};
+    const std::size_t ldb {cols + 5};
+    std::vector<T>    a(rows * inner);
+    std::vector<T>    b(inner * cols);
+    std::vector<T>    a_apart(rows * lda, T(std::numeric_limits<R>::quiet_NaN()));
+    std::vector<T>    b_apart(inner * ldb, T(std::numeric_limits<R>::quiet_NaN()));
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t k {0}; k < inner; ++k) {
+        a[(i * inner) + k] = a_apart[(i * lda) + k] = T(static_cast<R>(std::sin(static_cast<double>((i * 7) + k) + 0.5)));
+      }
+    }
+    for (std::size_t k {0}; k < inner; ++k) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        b[(k * cols) + j] = b_apart[(k * ldb) + j] = T(static_cast<R>(std::cos((static_cast<double>(k) * 0.7) + (static_cast<double>(j) * 1.9))));
+      }
+    }
+    // A vector (one row of A, one column of B) lies together: its ld unused, given as its length.
+    const std::size_t          b_ld     {cols == 1 ? 1 : ldb};
+    const T* const             b_at     {cols == 1 ? b.data() : b_apart.data()};
+    const numerical::tensor<T> together {numerical::detail::canonical_product<T>(a.data(), inner, b.data(), cols, rows, inner, cols, {rows * cols})};
+    const numerical::tensor<T> apart    {numerical::detail::canonical_product<T>(a_apart.data(), lda, b_at, b_ld, rows, inner, cols, {rows * cols})};
+    return together.data().size() == apart.data().size() && std::equal(together.data().begin(), together.data().end(), apart.data().begin());
+  }
+} // namespace
+
+// Operands whose rows lie apart (every other row of a larger NumPy array, read where it lies) give the bits of the
+// same operands together, on every route of canonical_product, in each type, on every path this processor runs.
+TEST(a_product_of_rows_apart_gives_the_contiguous_bits)
+{
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    // the rows of the second longer than a chunk of the dot product (chunked_dot's partial sums)
+    for (const auto& [rows, inner, cols] : {std::array<std::size_t, 3> {40, 50, 1}, {300, 700, 1}, {3, numerical::detail::dot_chunk + 9, 1},
+                                            {1, 37, 5}, {1, 300, 200}, {169, 579, 2}, {64, 64, 64}, {130, 101, 600}, {1, 9, 1}}) {
+      EXPECT(rows_apart_give_the_contiguous_bits<double>(rows, inner, cols));
+      EXPECT(rows_apart_give_the_contiguous_bits<float>(rows, inner, cols));
+      EXPECT(rows_apart_give_the_contiguous_bits<std::complex<double>>(rows, inner, cols));
+    }
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
 
 // A vector times a matrix, row-major (narrow: its columns' sums held) and given as its transpose (a Fortran-ordered
 // NumPy matrix): B's rows added in order, the same bits, in each type, on every path this processor runs; every width

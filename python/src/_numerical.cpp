@@ -2799,6 +2799,7 @@ struct borrowed_operand
     std::vector<std::size_t> shape;
     const void*              data {nullptr};
     bool                     transposed {false}; // a matrix whose elements run column-major (borrow_operand's columns)
+    std::size_t              ld {0};             // a matrix's elements between its rows (column-major: its columns)
     std::vector<std::byte>   gathered;           // a small strided array's elements copied in C order, `data` then
 
     borrowed_operand() = default;
@@ -2844,10 +2845,12 @@ bool gather_operand(const array_struct& view, int dtype, borrowed_operand& out)
 
 // Whether `obj` is read where it lies, into `out`; false (no error set) when it is not a Tensor or such an array. With
 // `columns`, a matrix whose elements run column-major (Fortran order, a transpose) is read too, `out.transposed` set:
-// for a caller whose answer does not depend on the order the elements lie in. A small strided array (up to
-// gathered_most elements, aligned, in this machine's byte order) is copied in C order instead, as the converting path
-// would copy it, without the calls around it.
-bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false)
+// for a caller whose answer does not depend on the order the elements lie in. With `rows_apart`, a matrix of rows of
+// two or more elements together but the rows farther apart (every other row of a larger one) is read too, `out.ld`
+// their distance. A small strided array (up to gathered_most elements, aligned, in this machine's byte order) is
+// copied in C order instead, as the converting path would copy it, without the calls around it. `out.ld` is a
+// matrix's distance between its rows (its columns, column-major).
+bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false, bool rows_apart = false)
 {
     if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
         const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
@@ -2858,6 +2861,7 @@ bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false)
         out.dtype = v->index();
         out.shape = shape_of(*v);
         out.data  = data_of(*v);
+        out.ld    = out.shape.empty() ? 0 : out.shape.back();
         return true;
     }
     PyObject* capsule = PyObject_GetAttrString(obj, "__array_struct__"); // new ref
@@ -2872,9 +2876,12 @@ bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false)
     const bool    columns_usable {columns && !rows_usable && view != nullptr && view->two == 2 && view->data != nullptr && view->nd == 2
                                   && (view->flags & needed_columns) == needed_columns};
     constexpr int needed_gathered {array_aligned | array_not_swapped};
-    const bool    gatherable {!rows_usable && !columns_usable && view != nullptr && view->two == 2 && view->data != nullptr
-                              && (view->flags & needed_gathered) == needed_gathered};
-    const bool    usable {rows_usable || columns_usable || gatherable};
+    const bool    plain {view != nullptr && view->two == 2 && view->data != nullptr && (view->flags & needed_gathered) == needed_gathered};
+    const bool    apart_usable {rows_apart && !rows_usable && !columns_usable && plain && view->nd == 2 && view->shape[1] > 1
+                                && view->strides[1] == view->itemsize && view->strides[0] % view->itemsize == 0
+                                && view->strides[0] / view->itemsize >= view->shape[1]};
+    const bool    gatherable {!rows_usable && !columns_usable && !apart_usable && plain};
+    const bool    usable {rows_usable || columns_usable || apart_usable || gatherable};
     if (view == nullptr) {
         PyErr_Clear();
     }
@@ -2892,6 +2899,10 @@ bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = false)
     for (int axis = 0; axis < view->nd; ++axis) {
         out.shape.push_back(static_cast<std::size_t>(view->shape[axis]));
     }
+    out.ld = view->nd != 2 ? 0
+             : apart_usable ? static_cast<std::size_t>(view->strides[0] / view->itemsize)
+             : columns_usable ? out.shape[0]
+                              : out.shape[1];
     return true;
 }
 
@@ -3068,13 +3079,13 @@ std::optional<PyObject*> borrowed_transposed_product(const borrowed_operand& lef
                 const auto* const a {static_cast<const T*>(left.data)};
                 const auto* const b {static_cast<const T*>(right.data)};
                 if (left.transposed && right.transposed) {
-                    numerical::detail::gemm_atbt(m, n, k, a, m, b, k, c.data(), n);
+                    numerical::detail::gemm_atbt(m, n, k, a, left.ld, b, right.ld, c.data(), n);
                 }
                 else if (left.transposed) {
-                    numerical::detail::gemm_at(m, n, k, a, m, b, n, c.data(), n);
+                    numerical::detail::gemm_at(m, n, k, a, left.ld, b, right.ld, c.data(), n);
                 }
                 else {
-                    numerical::detail::gemm_bt(m, n, k, a, k, b, k, c.data(), n);
+                    numerical::detail::gemm_bt(m, n, k, a, left.ld, b, right.ld, c.data(), n);
                 }
                 result.emplace(numerical::tensor<T> {{m, n}, std::move(c)});
             };
@@ -3096,7 +3107,7 @@ std::optional<PyObject*> borrowed_product(PyObject* a, PyObject* b)
 {
     borrowed_operand left;
     borrowed_operand right;
-    if (!borrow_operand(a, left, true) || !borrow_operand(b, right, true) || left.dtype != right.dtype) {
+    if (!borrow_operand(a, left, true, true) || !borrow_operand(b, right, true, true) || left.dtype != right.dtype) {
         return std::nullopt;
     }
     if (left.transposed || right.transposed) {
@@ -3122,7 +3133,9 @@ std::optional<PyObject*> borrowed_product(PyObject* a, PyObject* b)
         {
             const sb::scoped_gil_release unlocked {releases_gil((rows * inner) + (inner * cols))};
             const auto product = [&]<typename T>(std::type_identity<T>) {
-                result.emplace(numerical::detail::canonical_product<T>(static_cast<const T*>(left.data), static_cast<const T*>(right.data),
+                // a vector's elements together, ld then unused: a row's (left), or a column's of one element each (right)
+                result.emplace(numerical::detail::canonical_product<T>(static_cast<const T*>(left.data), ranks[0] == 2 ? left.ld : inner,
+                                                                       static_cast<const T*>(right.data), ranks[1] == 2 ? right.ld : cols,
                                                                        rows, inner, cols, std::move(out_shape)));
             };
             switch (left.dtype) {

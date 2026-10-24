@@ -216,7 +216,7 @@ namespace numerical {
       std::fill(out.begin(), out.end(), T {}); // each element an empty sum
     }
     else {
-      detail::matrix_times_vector(&*a.begin(), a.rows(), a.cols(), &v[0], out.data());
+      detail::matrix_times_vector(&*a.begin(), a.cols(), a.rows(), a.cols(), &v[0], out.data());
     }
     return vector<T> {std::move(out)};
   }
