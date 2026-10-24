@@ -790,6 +790,57 @@ namespace {
   }
 } // namespace
 
+namespace
+{
+  // row_dots of rows ld apart: each row the bits of its own dot_product (complex_dot_product for a complex T).
+  template <typename T>
+  bool each_row_is_its_dot_product(std::size_t rows,
+                                   std::size_t count)
+  {
+    const std::size_t ld {count + 3};
+    std::vector<T>    m(rows * ld);
+    std::vector<T>    x(count);
+    for (std::size_t i {0}; i < m.size(); ++i) {
+      m[i] = entry<T>(i);
+    }
+    for (std::size_t i {0}; i < count; ++i) {
+      x[i] = entry<T>((i * 5) + 2);
+    }
+    std::vector<T> out(rows);
+    numerical::detail::row_dots(m.data(), ld, rows, x.data(), count, out.data());
+    bool same {true};
+    for (std::size_t r {0}; r < rows; ++r) {
+      if constexpr (std::is_floating_point_v<T>) {
+        same = same && out[r] == numerical::detail::dot_product(m.data() + (r * ld), x.data(), count);
+      }
+      else {
+        same = same && out[r] == numerical::detail::complex_dot_product(m.data() + (r * ld), x.data(), count);
+      }
+    }
+    return same;
+  }
+} // namespace
+
+// The rows of a matrix times a vector (row_dots), four at a time on the x86-64 units with their remainders together:
+// each row the bits of its dot product alone, on every path, for every length about the 16- and 32-element blocks
+// and a number of rows past whole groups of four.
+TEST(row_dots_give_each_rows_dot_product)
+{
+  EXPECT(on_every_path([] {
+                         bool same {true};
+                         for (const std::size_t count : {std::size_t {0}, std::size_t {1}, std::size_t {3}, std::size_t {15},
+                                                         std::size_t {16}, std::size_t {17}, std::size_t {31}, std::size_t {32},
+                                                         std::size_t {33}, std::size_t {59}, std::size_t {275}}) {
+                           for (const std::size_t rows : {std::size_t {1}, std::size_t {4}, std::size_t {37}}) {
+                             same = same && each_row_is_its_dot_product<double>(rows, count) &&
+                                    each_row_is_its_dot_product<std::complex<double>>(rows, count) &&
+                                    each_row_is_its_dot_product<std::complex<float>>(rows, count);
+                           }
+                         }
+                         return same;
+                       }));
+}
+
 // The complex dot products, on every path (AVX2's fused chains on the x86-64 units, the native vectors' elsewhere).
 TEST(complex_dot_products_on_every_path)
 {

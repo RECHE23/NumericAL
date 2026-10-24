@@ -423,6 +423,12 @@ namespace numerical::detail {
                         std::size_t count,
                         C*          out)
   {
+#ifdef NUMERICAL_X86_COMPILED
+    if (gemm_path_current() != gemm_path::portable) {
+      avx2_complex_row_dots(m, ld, rows, x, count, out);
+      return;
+    }
+#endif
     for (std::size_t r {0}; r < rows; ++r) {
       out[r] = complex_dot_product(m + (r * ld), x, count);
     }
@@ -460,10 +466,13 @@ namespace numerical::detail {
                        double*       out)
   {
 #ifdef NUMERICAL_X86_COMPILED
-    if (gemm_path_current() != gemm_path::portable) {
-      for (std::size_t r {0}; r < rows; ++r) {
-        out[r] = dot_product(m + (r * ld), x, count);
-      }
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::avx512) {
+      interleaved_row_dots<32, avx512_dot_blocks>(m, ld, rows, x, count, out);
+      return;
+    }
+    if (path == gemm_path::avx2) {
+      interleaved_row_dots<16, avx2_dot_blocks>(m, ld, rows, x, count, out);
       return;
     }
 #endif
