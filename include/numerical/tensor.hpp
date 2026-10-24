@@ -934,6 +934,20 @@ namespace numerical {
      *        matrix product of depth one per element of the batch (1000 × 1000 times a row of 1000, six AVX2 cores:
      *        19.7 → 0.5 ms).
      */
+    /*!
+     * \brief `std::fma(p, q, +0)` without the instruction (in code built for any x86-64, `std::fma` is a call to the
+     *        library, 40 000 elements of an outer product 18 → 114 µs on four AVX2 cores): the rounded product, which
+     *        keeps the sign of a product that underflows to zero, plus +0 where an operand is zero, as the fused sum
+     *        of an exact zero product and +0 is.
+     */
+    template <std::floating_point T>
+    [[nodiscard]] inline T fused_from_zero(T p,
+                                           T q) noexcept
+    {
+      const T product {p * q};
+      return p == T {} || q == T {} ? product + T {} : product;
+    }
+
     template <typename T>
     [[nodiscard]] tensor<T> each_product(const std::string&                 sa,
                                          const tensor<T>&                   a,
@@ -965,7 +979,7 @@ namespace numerical {
       const T* const           y {in_output_order(sb, b, b_copy, b_shape)};
       if constexpr (std::is_floating_point_v<T>) { // gemm_rows fuses no integer's terms
         if (rows_terms_fuse<T>()) {
-          return broadcast_into(x, a_shape, y, b_shape, [](T p, T q) { return std::fma(p, q, T {}); });
+          return broadcast_into(x, a_shape, y, b_shape, [](T p, T q) { return fused_from_zero(p, q); });
         }
       }
       return broadcast_into(x, a_shape, y, b_shape, [](T p, T q) { return rounded_apart_add(T {}, p, q); });

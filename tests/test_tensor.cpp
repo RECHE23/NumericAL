@@ -1050,6 +1050,35 @@ namespace
   }
 } // namespace
 
+namespace {
+  // fused_from_zero against std::fma(p, q, +0), value and sign, for every pair among zeros of either sign, products
+  // that underflow to zero of either sign, subnormal, normal, huge and infinite values and NaN.
+  template <typename T>
+  bool fused_from_zero_is_fma()
+  {
+    const T                 inf    {std::numeric_limits<T>::infinity()};
+    const T                 tiny   {std::numeric_limits<T>::denorm_min()};
+    const T                 least  {std::numeric_limits<T>::min()};
+    const std::array<T, 14> values {T {0}, -T {0}, tiny, -tiny, least, -least, T {0.75}, -T {1.5}, std::sqrt(least), -std::sqrt(least),
+                                    std::numeric_limits<T>::max(), -inf, inf, std::numeric_limits<T>::quiet_NaN()};
+    bool ok                        {true};
+    for (const T p : values) {
+      for (const T q : values) {
+        const T got  {numerical::detail::fused_from_zero(p, q)};
+        const T want {std::fma(p, q, T {})};
+        ok = ok && ((std::isnan(got) && std::isnan(want)) || (got == want && std::signbit(got) == std::signbit(want)));
+      }
+    }
+    return ok;
+  }
+} // namespace
+
+TEST(a_product_from_zero_is_the_fused_one)
+{
+  EXPECT(fused_from_zero_is_fma<double>());
+  EXPECT(fused_from_zero_is_fma<float>());
+}
+
 // An einsum product that sums nothing (each element one product) gives, on every path, each element's product of
 // depth one through gemm to the bit, its zero's sign included: as matrix products of depth one gave it before.
 TEST(an_einsum_that_sums_nothing_gives_gemms_first_terms)
