@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <atomic>
+#include <charconv>
 #include <chrono>
 #include <condition_variable>
 #include <cstddef>
@@ -24,6 +25,9 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <string>
+#include <string_view>
+#include <system_error>
 #include <thread>
 #include <vector>
 
@@ -191,25 +195,116 @@ namespace numerical::detail {
 #endif
   }
 
-  //! \brief The pool's threads from the \p logical hardware threads and the \p physical cores (0: unknown): the
-  //!        cores where known, at least 1.
+  //! \brief The pool's threads from the \p logical hardware threads, the \p physical cores and the processors a CPU
+  //!        \p quota allows (each 0: unknown, or none): the cores where known, no more than the quota, at least 1.
   [[nodiscard]] constexpr std::size_t pool_threads(std::size_t logical,
-                                                   std::size_t physical) noexcept
+                                                   std::size_t physical,
+                                                   std::size_t quota = 0) noexcept
   {
     const std::size_t hardware {std::max<std::size_t>(1, logical)};
-    return physical == 0 ? hardware : std::min(physical, hardware);
+    const std::size_t cores    {physical == 0 ? hardware : std::min(physical, hardware)};
+    return quota == 0 ? cores : std::max<std::size_t>(1, std::min(cores, quota));
+  }
+
+  //! \brief The processors a CPU quota of \p quota microseconds a \p period allows, rounded up (cgroup v1's
+  //!        `cpu.cfs_quota_us`, -1 for none, and `cpu.cfs_period_us`): 0 for none.
+  [[nodiscard]] constexpr std::size_t quota_processors(long long quota,
+                                                       long long period) noexcept
+  {
+    return quota <= 0 || period <= 0 ? 0 : static_cast<std::size_t>((quota + period - 1) / period);
+  }
+
+  //! \brief \ref quota_processors of cgroup v2's `cpu.max` text, "<quota> <period>" ("max" for none): 0 for none or a
+  //!        text it does not read.
+  [[nodiscard]] inline std::size_t cpu_max_processors(std::string_view text) noexcept
+  {
+    const auto number {[](std::string_view digits, long long& value) {
+                         const auto [end, error] {std::from_chars(digits.data(), digits.data() + digits.size(), value)};
+                         return error == std::errc {} && end == digits.data() + digits.size();
+                       }};
+    while (!text.empty() && (text.back() == '\n' || text.back() == ' ')) {
+      text.remove_suffix(1);
+    }
+    const std::size_t space  {text.find(' ')};
+    long long         quota  {0};
+    long long         period {0};
+    if (space == std::string_view::npos || !number(text.substr(0, space), quota) || !number(text.substr(space + 1), period)) {
+      return 0;
+    }
+    return quota_processors(quota, period);
+  }
+
+#if defined(__linux__)
+  /*!
+   * \brief The processors the CPU quotas over this process allow, the least of them, 0 where there is none: a container
+   *        started with two processors' quota on a machine of many cores, whose quota a pool of a thread a core would
+   *        exhaust and then wait out (six AVX2 cores, a quota of two: products of order 128 took 100 µs on six threads,
+   *        59 on two). cgroup v2: `cpu.max` of this process's group (`/proc/self/cgroup`'s `0::` line) and of each
+   *        group above it; cgroup v1: `cpu.cfs_quota_us` over `cpu.cfs_period_us`.
+   */
+  [[nodiscard]] inline std::size_t cgroup_quota()
+  {
+    std::size_t   least {0};
+    const auto    keep {[&least](std::size_t processors) {
+                          if (processors != 0 && (least == 0 || processors < least)) {
+                            least = processors;
+                          }
+                        }};
+    std::ifstream self {"/proc/self/cgroup"};
+    std::string   line;
+    std::string   group;
+    while (std::getline(self, line)) {
+      if (line.rfind("0::", 0) == 0) {
+        group = line.substr(3);
+      }
+    }
+    while (!group.empty() && group != "/") {
+      keep(cpu_max_processors(first_line("/sys/fs/cgroup" + group + "/cpu.max")));
+      group.erase(group.rfind('/'));
+    }
+    keep(cpu_max_processors(first_line("/sys/fs/cgroup/cpu.max")));
+    for (const char* const v1 : {"/sys/fs/cgroup/cpu", "/sys/fs/cgroup/cpu,cpuacct"}) {
+      const std::string quota  {first_line(std::string {v1} + "/cpu.cfs_quota_us")};
+      const std::string period {first_line(std::string {v1} + "/cpu.cfs_period_us")};
+      keep(cpu_max_processors(quota + " " + period));
+    }
+    return least;
+  }
+
+  //! \brief \ref cgroup_quota, 0 where reading fails.
+  [[nodiscard]] inline std::size_t cgroup_processors() noexcept
+  {
+    try {
+      return cgroup_quota();
+    }
+    catch (...) { // a file or a string that cannot be had: no quota known
+      return 0;
+    }
+  }
+
+#endif
+
+  //! \brief The processors the CPU quotas over this process allow (`cgroup_processors` on Linux), 0 for none.
+  [[nodiscard]] inline std::size_t quota_limit() noexcept
+  {
+#if defined(__linux__)
+    return cgroup_processors();
+#else
+    return 0;
+#endif
   }
 
   /*!
    * \brief The threads the pool runs, the caller's included (at least 1), known without starting the pool: one per
-   *        physical core where the system tells them (else one per hardware thread). Two threads on one core's
+   *        physical core where the system tells them (else one per hardware thread), no more than a CPU quota allows
+   *        (\ref quota_limit). Two threads on one core's
    *        hyperthreads share its multiply-add units: a product of order 128 on eight AVX2 cores with sixteen
    *        hyperthreads took 140 µs on sixteen threads, 71 on eight; order 2048, the same either way. Asked once,
    *        as the pool's workers are started once (glibc reads a file for the hardware threads on every call).
    */
   [[nodiscard]] inline std::size_t hardware_threads() noexcept
   {
-    static const std::size_t threads {pool_threads(std::thread::hardware_concurrency(), physical_cores())};
+    static const std::size_t threads {pool_threads(std::thread::hardware_concurrency(), physical_cores(), quota_limit())};
     return threads;
   }
 

@@ -238,10 +238,27 @@ TEST(parallel_fors_from_two_threads_both_complete)
 TEST(the_pool_runs_one_thread_per_physical_core)
 {
   using numerical::detail::pool_threads;
-  EXPECT_EQ(pool_threads(16, 8), 8U);  // hyperthreads: the cores
-  EXPECT_EQ(pool_threads(16, 0), 16U); // the cores unknown: the hardware threads
-  EXPECT_EQ(pool_threads(4, 8), 4U);   // never more than the hardware threads
-  EXPECT_EQ(pool_threads(0, 0), 1U);   // an unknown hardware: one
+  EXPECT_EQ(pool_threads(16, 8), 8U);     // hyperthreads: the cores
+  EXPECT_EQ(pool_threads(16, 0), 16U);    // the cores unknown: the hardware threads
+  EXPECT_EQ(pool_threads(4, 8), 4U);      // never more than the hardware threads
+  EXPECT_EQ(pool_threads(0, 0), 1U);      // an unknown hardware: one
+  EXPECT_EQ(pool_threads(16, 8, 2), 2U);  // a CPU quota of two processors: two
+  EXPECT_EQ(pool_threads(16, 8, 20), 8U); // a quota past the cores: the cores
+  EXPECT_EQ(pool_threads(4, 0, 3), 3U);
+  using numerical::detail::cpu_max_processors;
+  using numerical::detail::quota_processors;
+  EXPECT_EQ(quota_processors(200000, 100000), 2U);
+  EXPECT_EQ(quota_processors(150000, 100000), 2U); // rounded up
+  EXPECT_EQ(quota_processors(50000, 100000), 1U);
+  EXPECT_EQ(quota_processors(-1, 100000), 0U);     // cgroup v1's none
+  EXPECT_EQ(quota_processors(100000, 0), 0U);
+  EXPECT_EQ(cpu_max_processors("200000 100000"), 2U);
+  EXPECT_EQ(cpu_max_processors("150000 100000\n"), 2U);
+  EXPECT_EQ(cpu_max_processors("300000 100000 \n"), 3U); // a space before the end of the line too
+  EXPECT_EQ(cpu_max_processors("max 100000"), 0U);       // cgroup v2's none
+  EXPECT_EQ(cpu_max_processors(""), 0U);                 // no file
+  EXPECT_EQ(cpu_max_processors("200000"), 0U);
+  EXPECT_EQ(cpu_max_processors("200000 1e5"), 0U);
   EXPECT(numerical::detail::hardware_threads() >= 1U);
 }
 

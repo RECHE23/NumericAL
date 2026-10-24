@@ -59,6 +59,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   element its operands' product added to 0 as the matrix product rounds its first term, where it went one matrix
   product of depth one per element of the batch: the same bits, a zero's sign included (real types; complex ones keep
   their route). Six AVX2 cores: 1000 × 1000 times a row of 1000 19.7 → 0.55 ms (the time of `x * v`).
+- **The thread pool runs no more threads than a CPU quota allows** (a container started with `--cpus=2`, a
+  `CPUQuota=`, on Linux: cgroup v2's `cpu.max` of the process's group and those above it, or cgroup v1's
+  `cpu.cfs_quota_us`), where a thread a core exhausted the quota and then waited it out. Six AVX2 cores under a quota
+  of two processors: products of order 128 100 → 62 µs, 256 460 → 357 µs.
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on
   x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
   order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,
