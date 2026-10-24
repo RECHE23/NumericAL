@@ -2212,6 +2212,52 @@ std::optional<double> plain_two_norm(const T* x, std::size_t count)
     return std::sqrt(sum);
 }
 
+// plain_two_norm of a `rows` × `cols` matrix whose elements lie column-major (`x` its first column, `rows` long), its
+// elements taken row by row as its C-ordered copy lies, so its bits: eight rows at a time copied row-major into a band
+// (each column's eight elements together where they lie), a band starting at a multiple of eight parts, each square
+// added to the sum of its index modulo 8 among the whole blocks of 8 parts and the tail to their sum after.
+template <typename T>
+std::optional<double> plain_two_norm_columns(const T* x, std::size_t rows, std::size_t cols)
+{
+    using R = real_of_t<T>;
+    constexpr std::size_t per {sizeof(T) / sizeof(R)};
+    constexpr std::size_t band_rows {8};
+    const auto*           parts {reinterpret_cast<const R*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): plain_two_norm's layout
+    std::array<double, 8> partial {};
+    std::vector<R>        band(band_rows * cols * per);
+    double                sum {0.0};
+    for (std::size_t r0 {0}; r0 < rows; r0 += band_rows) {
+        const std::size_t height {std::min(band_rows, rows - r0)};
+        for (std::size_t c {0}; c < cols; ++c) {
+            const R* const column {parts + (((c * rows) + r0) * per)};
+            for (std::size_t i {0}; i < height; ++i) {
+                for (std::size_t q {0}; q < per; ++q) {
+                    band[(((i * cols) + c) * per) + q] = column[(i * per) + q];
+                }
+            }
+        }
+        const std::size_t length {height * cols * per};
+        std::size_t       k {0};
+        for (; k + partial.size() <= length; k += partial.size()) {
+            for (std::size_t j = 0; j < partial.size(); ++j) {
+                const auto value {static_cast<double>(band[k + j])};
+                partial[j] += value * value;
+            }
+        }
+        if (k < length || r0 + height == rows) { // the last band: the whole blocks' sums, then its tail
+            sum = ((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]));
+            for (; k < length; ++k) {
+                const auto value {static_cast<double>(band[k])};
+                sum += value * value;
+            }
+        }
+    }
+    if (!(sum >= 0x1p-900) || std::isinf(sum)) { // a NaN fails the first test
+        return std::nullopt;
+    }
+    return std::sqrt(sum);
+}
+
 // _vector_norm(x, ord, axes, keepdims) -> Tensor or number: the ord norm over the axes `axes` (distinct, non-negative)
 // of every other position, as numpy.linalg.vector_norm; real, of x's precision; a number when every axis goes and
 // keepdims is false.
@@ -2980,14 +3026,15 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
 }
 
 // _borrowed_norm(x) -> float or NotImplemented: the 2-norm of every element of a Tensor or of a NumPy array read where it
-// lies (borrow_operand), its squares summed where plain_two_norm takes them; NotImplemented for any other operand and
+// lies (borrow_operand; a column-major matrix in its C order, plain_two_norm_columns), its squares summed where
+// plain_two_norm takes them; NotImplemented for any other operand and
 // for a sum it leaves to the scaled norm, which vector_norm then computes from a copy as before. A float32 or complex64
 // operand's norm rounded to single precision, as vector_norm gives it. A NumPy array was copied into a Tensor first:
 // six AVX2 cores, 371 × 208 doubles, 39.5 of the 56 µs.
 PyObject* module_borrowed_norm(PyObject* /*self*/, PyObject* obj)
 {
     borrowed_operand x;
-    if (!borrow_operand(obj, x)) {
+    if (!borrow_operand(obj, x, true)) {
         return Py_NewRef(Py_NotImplemented);
     }
     std::size_t count {1};
@@ -2995,6 +3042,17 @@ PyObject* module_borrowed_norm(PyObject* /*self*/, PyObject* obj)
         count *= extent;
     }
     std::optional<double> norm;
+    if (x.transposed) {
+        const std::size_t rows {x.shape[0]};
+        const std::size_t cols {x.shape[1]};
+        switch (x.dtype) {
+        case 0: norm = plain_two_norm_columns(static_cast<const double*>(x.data), rows, cols); break;
+        case 1: norm = plain_two_norm_columns(static_cast<const std::complex<double>*>(x.data), rows, cols); break;
+        case 2: norm = plain_two_norm_columns(static_cast<const float*>(x.data), rows, cols); break;
+        default: norm = plain_two_norm_columns(static_cast<const std::complex<float>*>(x.data), rows, cols); break;
+        }
+        return norm ? PyFloat_FromDouble(x.dtype >= 2 ? static_cast<double>(static_cast<float>(*norm)) : *norm) : Py_NewRef(Py_NotImplemented);
+    }
     switch (x.dtype) {
     case 0: norm = plain_two_norm(static_cast<const double*>(x.data), count); break;
     case 1: norm = plain_two_norm(static_cast<const std::complex<double>*>(x.data), count); break;

@@ -49,6 +49,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   in parallel, each as before, then added in the tree's order, the subtrees set by the count alone (the whole tensor's
   sum, and an axis's of single-element rows). M1 Pro: 2^20 doubles 181 → 45 µs, 2^24 2.97 → 1.17 ms; ten AVX-512 cores
   2^20 247 → 44 µs, 2^24 12.5 → 2.2 ms.
+- **`norm` of a transposed NumPy matrix reads it where it lies** (a column-major array, as `a.T` hands it), eight rows
+  at a time copied into a band in their C order, where the whole matrix was copied into a Tensor first: the same bits
+  as its contiguous copy's. One M1 Pro: 252 × 175 26.5 → 17.3 µs, 371 × 208 47.1 → 30.4 µs, 1000 × 1000 1.23 → 0.58 ms.
 - **A large buffer freed on Linux is kept for the next that fits** (two blocks at most, each under 64 MiB, the newest
   kept), where each buffer of 16 MiB or more took fresh huge pages, each faulted in and zeroed by the system at its
   first write: a sum of two vectors of 2^21 to 2^22 doubles 1.9–1.4 → 0.7–0.8 ns an element on six AVX2 cores,

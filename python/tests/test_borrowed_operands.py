@@ -76,6 +76,25 @@ class BorrowedOperands(unittest.TestCase):
                         self.assert_same(numerical.solve(square, vector[:rows]),
                                          numerical.solve(np.ascontiguousarray(square), np.ascontiguousarray(vector[:rows])))
 
+    def test_a_transposed_matrix_norm_gives_its_contiguous_copys_bits(self):
+        # A column-major matrix (a transpose) is read where it lies, its elements in its C order: the norm of its
+        # C-ordered copy to the bit, by bands of eight rows, the whole blocks of eight parts and the tail after them,
+        # real and complex, single and double; values whose squares overflow or underflow leave it to the scaled norm.
+        for rows, cols in ((2, 3), (3, 5), (8, 8), (7, 9), (252, 175), (31, 2)):
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                for scale in (1.0, 1e200, 1e-200):
+                    if scale != 1.0 and dtype in (np.float32, np.complex64):
+                        continue  # past single precision's range
+                    with self.subTest(rows=rows, cols=cols, dtype=np.dtype(dtype).name, scale=scale):
+                        a = (self.operand((cols, rows), dtype) * scale).astype(dtype).T
+                        self.assertTrue(a.flags.f_contiguous and not a.flags.c_contiguous)
+                        copy = np.ascontiguousarray(a)
+                        got, want = numerical.norm(a), numerical.norm(copy)
+                        self.assertEqual(got, want)
+                        read = numerical._numerical._borrowed_norm(a)  # where it lies, unless the scaled norm decides
+                        self.assertEqual(read is NotImplemented, scale != 1.0)
+                        self.assertEqual(type(got), type(want))
+
     def test_matrices_of_rows_apart_give_their_contiguous_copies_bits(self):
         # Every other row of a larger array, each row's elements together: read where it lies at any size (its rows'
         # distance the kernels' leading dimension), beside a contiguous, a column-major or another such operand, the
