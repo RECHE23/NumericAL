@@ -151,7 +151,8 @@ TEST(narrow_products_by_rows_give_the_packed_bits)
 // Complex products by rows (gemm_rows, which the LU's and the Cholesky factorisation's panels call): each element its
 // start (C's own, or zero) plus a(i,p)·b(p,j) for p ascending, the library's product rounded before its sum, on every
 // path and width (the x86-64 vectors' two columns apiece and a last one alone, past four columns in two parts), and
-// with infinities whose product has two NaN parts, which the library rescues: the block then left to the scalar loop.
+// with infinities whose product has two NaN parts, which the library rescues where it follows C's Annex G: the block
+// then left to the scalar loop.
 TEST(complex_products_by_rows_give_the_ascending_sum)
 {
   using C = std::complex<double>;
@@ -203,8 +204,9 @@ TEST(complex_products_by_rows_give_the_ascending_sum)
                                ok = ok && same_part(kept[e].real(), want[e].real()) && same_part(kept[e].imag(), want[e].imag());
                                ok = ok && same_part(zero[e].real(), from_zero[e].real()) && same_part(zero[e].imag(), from_zero[e].imag());
                              }
-                             if (infinite) {
-                               ok = ok && std::isinf(want[(3 * n) + (n - 1)].real()); // the rescue reached the sum
+                             if (infinite) { // where the library rescues the product (C's Annex G; MSVC's does not), the sum is infinite
+                               const double inf {std::numeric_limits<double>::infinity()};
+                               ok = ok && std::isinf(want[(3 * n) + (n - 1)].real()) == std::isinf((C {inf, inf} *C {0.0, 1.0}).real());
                              }
                            }
                          }
