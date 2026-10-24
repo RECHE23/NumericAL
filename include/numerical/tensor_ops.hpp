@@ -804,19 +804,36 @@ namespace numerical {
                            });
       return tensor<T> {a.shape(), std::move(out)};
     }
-    std::vector<std::size_t>       shape {broadcast_shape(a.shape(), b.shape())};
-    const std::size_t              rank  {shape.size()};
-    const std::vector<std::size_t> sa    {detail::broadcast_strides(a.shape(), rank)};
-    const std::vector<std::size_t> sb    {detail::broadcast_strides(b.shape(), rank)};
-    const std::size_t              count {detail::element_count(shape.begin(), shape.end())};
+    std::vector<std::size_t>       shape     {broadcast_shape(a.shape(), b.shape())};
+    const std::size_t              full_rank {shape.size()};
+    const std::vector<std::size_t> full_sa   {detail::broadcast_strides(a.shape(), full_rank)};
+    const std::vector<std::size_t> full_sb   {detail::broadcast_strides(b.shape(), full_rank)};
+    const std::size_t              count     {detail::element_count(shape.begin(), shape.end())};
     buffer<T>                      out(count); // every element written below
     if (count == 0) {
       return tensor<T> {std::move(shape), std::move(out)};
     }
+    // Neighbouring axes each operand steps through as one (its stride on the outer the inner's times the inner's
+    // extent, a broadcast axis 0 on both) run as one axis: the same elements in the same order.
+    std::vector<std::size_t> dims {shape[0]};
+    std::vector<std::size_t> sa   {full_sa[0]};
+    std::vector<std::size_t> sb   {full_sb[0]};
+    for (std::size_t axis {1}; axis < full_rank; ++axis) {
+      if (sa.back() == full_sa[axis] * shape[axis] && sb.back() == full_sb[axis] * shape[axis]) {
+        dims.back() *= shape[axis];
+        sa.back()    = full_sa[axis];
+        sb.back()    = full_sb[axis];
+        continue;
+      }
+      dims.push_back(shape[axis]);
+      sa.push_back(full_sa[axis]);
+      sb.push_back(full_sb[axis]);
+    }
+    const std::size_t rank {dims.size()};
     // The innermost axis runs as one loop, each operand stepping 1 or 0 (a broadcast one) along it, so a
     // scalar or a row against a matrix is a plain vector loop; the odometer turns only between rows. The rows go
     // by tasks, each task's odometer set from its first row.
-    const std::size_t inner          {shape[rank - 1]};
+    const std::size_t inner          {dims[rank - 1]};
     const std::size_t step_a         {sa[rank - 1]};
     const std::size_t step_b         {sb[rank - 1]};
     const std::size_t rows           {count / inner};
@@ -828,10 +845,39 @@ namespace numerical {
                            std::size_t              ia {0};
                            std::size_t              ib {0};
                            for (std::size_t axis {rank - 1}, rest {first}; axis-- > 0;) { // the first row's position
-                             index[axis]  = rest % shape[axis];
-                             rest        /= shape[axis];
+                             index[axis]  = rest % dims[axis];
+                             rest        /= dims[axis];
                              ia          += index[axis] * sa[axis];
                              ib          += index[axis] * sb[axis];
+                           }
+                           // Two axes, short rows, one operand's row the same for every row (stride 0) and the other's rows
+                           // together (stepping 1 along a row of two axes, its rows lie `inner` apart): that row repeated into
+                           // a run of at least 64, the task's rows one loop against it.
+                           if (rank == 2 && inner < 32 && step_a == 1 && step_b == 1 && (sa[0] == 0) != (sb[0] == 0)) {
+                             const bool        a_repeats {sa[0] == 0};
+                             const T* const    row_of    {a_repeats ? a.data().data() : b.data().data()};
+                             const T* const    whole     {(a_repeats ? b.data().data() : a.data().data()) + (first * inner)};
+                             T* const          po        {out.data() + (first * inner)};
+                             const std::size_t span      {((64 + inner - 1) / inner) * inner};
+                             std::array<T, 96> repeated {};
+                             for (std::size_t i {0}; i < span; ++i) {
+                               repeated[i] = row_of[i % inner];
+                             }
+                             const std::size_t total {(last - first) * inner};
+                             for (std::size_t from {0}; from < total; from += span) {
+                               const std::size_t n {std::min(span, total - from)};
+                               if (a_repeats) {
+                                 for (std::size_t i {0}; i < n; ++i) {
+                                   po[from + i] = op(repeated[i], whole[from + i]);
+                                 }
+                               }
+                               else {
+                                 for (std::size_t i {0}; i < n; ++i) {
+                                   po[from + i] = op(whole[from + i], repeated[i]);
+                                 }
+                               }
+                             }
+                             return;
                            }
                            for (std::size_t row {first}; row < last; ++row) {
                              const T* const pa {a.data().data() + ia};
@@ -861,11 +907,11 @@ namespace numerical {
                                ++index[axis];
                                ia += sa[axis];
                                ib += sb[axis];
-                               if (index[axis] < shape[axis]) {
+                               if (index[axis] < dims[axis]) {
                                  break;
                                }
-                               ia          -= sa[axis] * shape[axis];
-                               ib          -= sb[axis] * shape[axis];
+                               ia          -= sa[axis] * dims[axis];
+                               ib          -= sb[axis] * dims[axis];
                                index[axis]  = 0;
                              }
                            }

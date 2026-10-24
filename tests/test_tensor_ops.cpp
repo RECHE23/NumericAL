@@ -657,6 +657,71 @@ TEST(broadcasting_steps_each_operand_or_holds_it_along_the_inner_axis)
 }
 
 namespace {
+  // a + b and a − b broadcast against the sum and difference element by element (each output index's operands found by
+  // its own coordinates).
+  bool sum_is_each_elements(const shape& sa,
+                            const shape& sb)
+  {
+    const auto values {[](const shape& s, double phase) {
+                         std::size_t count {1};
+                         for (const std::size_t e : s) {
+                           count *= e;
+                         }
+                         std::vector<double> v(count);
+                         for (std::size_t i {0}; i < count; ++i) {
+                           v[i] = std::sin((static_cast<double>(i) * 0.3) + phase);
+                         }
+                         return tensor<double> {s, v};
+                       }};
+    const tensor<double> a          {values(sa, 0.1)};
+    const tensor<double> b          {values(sb, 0.9)};
+    const tensor<double> got        {a + b};
+    const tensor<double> difference {a - b};
+    const shape          out        {numerical::broadcast_shape(sa, sb)};
+    const std::size_t    rank       {out.size()};
+    bool                 same       {got.shape() == out};
+    for (std::size_t flat {0}; same && flat < got.size(); ++flat) {
+      std::size_t ia     {0};
+      std::size_t ib     {0};
+      std::size_t step_a {1};
+      std::size_t step_b {1};
+      std::size_t rest   {flat};
+      for (std::size_t axis {rank}; axis-- > 0;) {
+        const std::size_t index  {rest % out[axis]};
+        rest /= out[axis];
+        const std::size_t lead_a {rank - sa.size()};
+        const std::size_t lead_b {rank - sb.size()};
+        if (axis >= lead_a) {
+          const std::size_t extent {sa[axis - lead_a]};
+          ia     += (extent == 1 ? 0 : index) * step_a;
+          step_a *= extent;
+        }
+        if (axis >= lead_b) {
+          const std::size_t extent {sb[axis - lead_b]};
+          ib     += (extent == 1 ? 0 : index) * step_b;
+          step_b *= extent;
+        }
+      }
+      same = got.data()[flat] == a.data()[ia] + b.data()[ib] && difference.data()[flat] == a.data()[ia] - b.data()[ib];
+    }
+    return same;
+  }
+} // namespace
+
+// Broadcasting merges the axes both operands step through as one, and runs short rows of one operand repeated over the
+// other's as one loop against that row repeated: every element the sum of its own operands, whichever operand repeats,
+// rows of 1 to 32 elements, merged axes and not, more than one task.
+TEST(broadcasting_gives_each_elements_sum)
+{
+  for (const auto& [sa, sb] : std::vector<std::pair<shape, shape>> {{{50000, 3}, {3}}, {{3}, {50000, 3}}, {{20000, 1}, {1}}, {{20000, 31}, {31}},
+         {{20000, 32}, {32}}, {{6, 31}, {1, 31}}, {{1000, 4, 3}, {1, 4, 3}}, {{1, 4, 3}, {1000, 4, 3}},
+         {{1000, 3}, {1000, 1}}, {{4, 100, 100}, {100, 100}}, {{2, 3, 4, 5}, {3, 1, 5}},
+         {{3, 1, 7}, {1, 4, 1}}, {{5, 6}, {5, 1}}, {{1}, {9, 9}}, {{1, 3}, {3}}}) {
+    EXPECT(sum_is_each_elements(sa, sb));
+  }
+}
+
+namespace {
   // |root² − z| within a few rounding errors of |z|, the real part not negative, the imaginary part of z's sign.
   template <typename R>
   bool is_the_root(const std::complex<R>& root,

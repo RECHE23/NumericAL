@@ -49,6 +49,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   in parallel, each as before, then added in the tree's order, the subtrees set by the count alone (the whole tensor's
   sum, and an axis's of single-element rows). M1 Pro: 2^20 doubles 181 → 45 µs, 2^24 2.97 → 1.17 ms; ten AVX-512 cores
   2^20 247 → 44 µs, 2^24 12.5 → 2.2 ms.
+- **Broadcasting merges the axes both operands step through as one, and runs short rows repeated over a matrix as one
+  loop**: `(1000, 4, 3) + (1, 4, 3)` runs as rows of 12; a row of under 32 elements repeated over a matrix's rows (`(n,
+  3) + (3,)`) runs the matrix's rows as one loop against that row repeated, where each row of three turned the loop over
+  the axes. Every element the same operation on the same operands. Six AVX2 cores, one thread: 10^6 rows of 3 plus a row
+  7.1 → 3.0 ms (the time of a plain addition of as many elements); all threads: (1000, 4, 3) + (1, 4, 3) 23.7 → 5.6 µs,
+  (4, 1000, 1000) + (1000, 1000) 6.2 → 4.3 ms.
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on
   x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
   order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,
