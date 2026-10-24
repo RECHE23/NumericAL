@@ -121,6 +121,17 @@ cases.
 | 7df6a9c (2026.10.29 and one change) | six AVX2 cores | 1.14× [1.06–1.21] | 60 % |
 | f6e8d6e (narrow, x86-64 complex64 and transposed products) | M1 Pro | 1.21× [1.14–1.28] | 66 % |
 | f6e8d6e | six AVX2 cores | 1.14× [1.07–1.22] | 61 % |
+| d40c1ae (2026.10.34 and fourteen changes) | six AVX2 cores | 1.33× [1.26–1.40] | 68 % |
+| d40c1ae, 300 cases | ten AVX-512 cores, NumPy on OpenBLAS | 1.79× [1.66–1.95] | 80 % |
+| d40c1ae, 300 cases, ten busy processes beside | ten AVX-512 cores | 2.99× [2.39–3.73] | 68 % |
+| d40c1ae, 300 cases, twenty busy processes beside | ten AVX-512 cores | 3.74× [3.01–4.69] | 81 % |
+| a10f188 (2026.10.35 and four changes; eighteen operations) | six AVX2 cores | 1.27× [1.19–1.34] | 67 % |
+| a10f188, 300 cases (eighteen operations) | ten AVX-512 cores | 1.63× [1.48–1.80] | 79 % |
+
+Under load the gap widens: NumPy's OpenBLAS threads wait for cores the busy processes hold, where NumericAL's pool
+runs no more threads than it is given. From a10f188 the draw adds `einsum-each` (calls that sum nothing), whose
+transposes NumPy answers with a view where NumericAL copies: 0.02× on that spec, which pulls the whole down (the
+seventeen operations of before drawn alone stand higher).
 
 Where the first campaign put NumericAL, the twenty chosen cases of `make bench-python` had put it at 1.45× on the
 same Mac: they favoured its strong operations. By operation, at 7df6a9c:
