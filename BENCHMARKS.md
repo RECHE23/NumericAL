@@ -104,7 +104,7 @@ Where the gaps are, and what closes them:
 ## Drawn cases: `make bench-fuzz`
 
 The tables above time chosen operations at chosen orders, mostly powers of two, where the kernels' tiles and panels
-divide evenly. `make bench-fuzz` draws its cases instead: the operation (seventeen), every dimension on a log scale
+divide evenly. `make bench-fuzz` draws its cases instead: the operation (eighteen: seventeen before the einsum calls that sum nothing were added, so the draws of a seed differ from that commit on), every dimension on a log scale
 from 1 to 1024 (an order of 100 or 300, between two thresholds, as likely as 128), the dtype (float64, complex128,
 float32, complex64) and how the operands arrive (a contiguous NumPy array, a transposed or a strided one, or a Tensor
 already). Each library is timed in a process of its own, twice in turn, each case keeping its fastest batch; every

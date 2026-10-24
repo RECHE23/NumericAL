@@ -66,7 +66,7 @@ def flops(op, dims):
     k = dims[2] if len(dims) > 2 else n
     return {
         "matmul": 2 * m * k * n, "einsum-product": 2 * m * k * n, "matvec": 2 * m * n, "norm": 2 * m * n,
-        "einsum-reduce": m * n, "solve": (2 / 3) * m ** 3 + 2 * m * m * max(n, 1), "det": (2 / 3) * m ** 3,
+        "einsum-reduce": m * n, "einsum-each": m * n, "solve": (2 / 3) * m ** 3 + 2 * m * m * max(n, 1), "det": (2 / 3) * m ** 3,
         "slogdet": (2 / 3) * m ** 3, "inv": 2 * m ** 3, "cholesky": m ** 3 / 3, "qr": 4 * m * n * n,
         "eigh": 9 * m ** 3, "eigvalsh": 4 * m ** 3, "svd": 14 * m * n * n, "svdvals": 4 * m * n * n,
         "lstsq": 14 * m * n * n + 2 * m * n * k, "eig": 25 * m ** 3,
@@ -76,13 +76,17 @@ def flops(op, dims):
 # Each operation: its weight in the draw, and how many dimensions it takes.
 OPS = {
     "matmul": (3, 3), "einsum-product": (1, 3), "matvec": (2, 2), "norm": (1, 2), "einsum-reduce": (2, 2),
+    "einsum-each": (1, 2),
     "solve": (3, 2), "det": (2, 1), "slogdet": (1, 1), "inv": (2, 1), "cholesky": (2, 1), "qr": (2, 2),
     "eigh": (2, 1), "eigvalsh": (1, 1), "svd": (2, 2), "svdvals": (1, 2), "lstsq": (2, 3), "eig": (1, 1),
 }
+# The einsum calls that sum nothing, each element one operand's or a product of two: an outer product, a row or a
+# column broadcast over a matrix's rows, a transpose.
+EACH_SPECS = ("i,j->ij", "ij,j->ij", "ij,i->ij", "ij->ji")
 # Orders past which a drawn eig is not worth its time against the others.
 LIMITS = {"eig": 400}
 # The operations both C++ sides have a function for: Eigen has no einsum, NumericAL's C++ API no matrix norm.
-CPP_NA = {"einsum-product": "no Eigen function", "einsum-reduce": "no Eigen function",
+CPP_NA = {"einsum-product": "no Eigen function", "einsum-reduce": "no Eigen function", "einsum-each": "no Eigen function",
           "norm": "no NumericAL C++ function"}
 CPP_OPS = tuple(op for op in OPS if op not in CPP_NA)
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -119,7 +123,8 @@ def draw_case(seed, index, largest, ops):
         dims = [max(1, int(d * 0.8)) for d in dims]
     return {"index": index, "op": op, "dims": dims, "dtype": weighted(rng, DTYPES), "layout": weighted(rng, LAYOUTS),
             "spec": ["ij->", "ij->i", "ij->j"][int(rng.integers(3))] if op == "einsum-reduce"
-            else ["ij,jk->ik", "ij,kj->ik", "ji,jk->ik"][int(rng.integers(3))] if op == "einsum-product" else None}
+            else ["ij,jk->ik", "ij,kj->ik", "ji,jk->ik"][int(rng.integers(3))] if op == "einsum-product"
+            else EACH_SPECS[int(rng.integers(len(EACH_SPECS)))] if op == "einsum-each" else None}
 
 
 def matrix(rng, shape, dtype):
@@ -174,6 +179,11 @@ def build(case):
         spec = case["spec"]
         operands = [matrix(rng, (m, n), dtype)]
         ours, theirs = (lambda a: nl.einsum(spec, a)), (lambda a: np.einsum(spec, a))
+    elif op == "einsum-each":
+        spec = case["spec"]
+        shapes = {"i,j->ij": ((m,), (n,)), "ij,j->ij": ((m, n), (n,)), "ij,i->ij": ((m, n), (m,)), "ij->ji": ((m, n),)}[spec]
+        operands = [matrix(rng, shape, dtype) for shape in shapes]
+        ours, theirs = (lambda *xs: nl.einsum(spec, *xs)), (lambda *xs: np.einsum(spec, *xs))
     elif op == "solve":
         rhs = matrix(rng, (m,) if n == 0 else (m, n), dtype)
         operands = [well(m), rhs]
