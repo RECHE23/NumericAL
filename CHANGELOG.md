@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.35 — 2026-10-24
+
 ### Changed
 - **A product of up to 24 columns runs by rows** (8 under Clang on arm64), where the packed kernel's tile of 16 or more
   columns left most of its width idle: the same bits, each term rounded as the tile rounds it. On 200 random products of
