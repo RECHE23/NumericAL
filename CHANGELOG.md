@@ -55,6 +55,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   product of infinities) is left to the scalar loop. The same bits. Six AVX2 cores, one thread: complex `cholesky` of
   order 286 2.66 → 1.87 ms, 512 10.6 → 7.9 ms; `det` of order 512 16.0 → 13.1 ms; ten AVX-512 cores, all threads:
   `cholesky` of order 512 4.1 → 3.4 ms, `det` 10.3 → 7.0 ms.
+- **A transpose whose rows lie a multiple of 1 KiB apart (x86-64) or 8 KiB (arm64) copies its tiles by pieces of 8 ×
+  8** (`einsum("ij->ji")`, `transpose` of a matrix, the BLAS interface's copies between column-major arguments and
+  row-major storage): a tile's 32 rows that far apart fell in a few sets of the L1 cache and evicted one another. Four
+  AVX2 cores, from Python: 256 × 256 doubles 163 → 52 µs, 1024 × 1024 2.65 → 2.45 ms; ten AVX-512 cores 256 × 256
+  142 → 51 µs; M1 Pro 1024 × 1024 1.39 → 1.05 ms; other orders unchanged.
 - **`norm` of a transposed NumPy matrix reads it where it lies** (a column-major array, as `a.T` hands it), eight rows
   at a time copied into a band in their C order, where the whole matrix was copied into a Tensor first: the same bits
   as its contiguous copy's. One M1 Pro: 252 × 175 26.5 → 17.3 µs, 371 × 208 47.1 → 30.4 µs, 1000 × 1000 1.23 → 0.58 ms.

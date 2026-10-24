@@ -249,6 +249,29 @@ TEST(einsum_permutes_by_tiles_and_copies_an_identity)
   EXPECT(einsum("abc->cab", cube).shape() == (std::vector<std::size_t> {4, 2, 3}));
 }
 
+// A transpose whose rows lie 8 KiB apart, walked by pieces of 8 on every processor (transpose_piece), ragged at both
+// edges, through einsum and the matrix's transpose, either way round.
+TEST(a_transpose_of_aliased_rows_moves_every_element)
+{
+  for (const auto& [rows, cols] : {std::pair<std::size_t, std::size_t> {37, 1024}, {1024, 37}}) {
+    std::vector<double> values(rows * cols);
+    for (std::size_t i {0}; i < values.size(); ++i) {
+      values[i] = static_cast<double>(i) * 0.25;
+    }
+    const tensor<double>              t       {{rows, cols}, values};
+    const tensor<double>              flipped {einsum("ij->ji", t)};
+    const numerical::matrix<double>   m       {rows, cols, values};
+    const numerical::matrix<double>   mt      {numerical::transpose(m)};
+    bool                              same    {mt.rows() == cols && mt.cols() == rows};
+    for (std::size_t r {0}; r < rows; ++r) {
+      for (std::size_t c {0}; c < cols; ++c) {
+        same = same && flipped.data()[(c * rows) + r] == values[(r * cols) + c] && mt(c, r) == values[(r * cols) + c];
+      }
+    }
+    EXPECT(same);
+  }
+}
+
 TEST(einsum_sums_one_axis_under_several_free_ones)
 {
   // The general loop's odometer over two outer free labels (a, b), the last free one (c) swept inside.

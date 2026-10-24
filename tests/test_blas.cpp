@@ -2690,3 +2690,64 @@ TEST(the_fortran_cholesky_routines_of_every_scalar_answer_as_the_cpp_ones)
   cpotrf_("L", &bad, c.data(), &two, &info, 1);
   EXPECT_EQ(info, -2);
 }
+
+// The transposing copies between column-major arguments and row-major storage, element by element: with rows 1024
+// elements (8 KiB) apart, which the copies walk by pieces of 8 on every processor (transpose_piece), and with rows a
+// few dozen apart, by whole tiles; ragged at the tiles' edges, complex and conjugated, the triangle both ways.
+TEST(the_transposing_copies_move_every_element)
+{
+  using C      = std::complex<double>;
+  namespace nb = numerical::blas::detail;
+  EXPECT_EQ(numerical::detail::transpose_piece(8192, 40), 8U);
+  EXPECT_EQ(numerical::detail::transpose_piece(800, 8000), numerical::detail::transpose_tile);
+  for (const std::size_t lda : {std::size_t {1024}, std::size_t {77}}) {
+    const std::size_t rows {69};
+    const std::size_t cols {37};
+    std::vector<C>    a(lda * cols);
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = C {static_cast<double>(i), -static_cast<double>(i) * 0.5};
+    }
+    numerical::buffer<C> out;
+    nb::row_major_into(out, a.data(), static_cast<std::ptrdiff_t>(lda), static_cast<std::ptrdiff_t>(rows), static_cast<std::ptrdiff_t>(cols), C {2.0, 0.0}, true);
+    bool same {out.size() == rows * cols};
+    for (std::size_t i {0}; i < rows; ++i) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        same = same && out[(i * cols) + j] == C {2.0, 0.0} *std::conj(a[i + (j * lda)]);
+      }
+    }
+    std::vector<C> back(lda * cols, C {-1.0, -1.0});
+    nb::column_major_into(out.data(), rows, cols, back.data(), lda);
+    for (std::size_t i {0}; i < lda; ++i) {
+      for (std::size_t j {0}; j < cols; ++j) {
+        same = same && back[i + (j * lda)] == (i < rows ? out[(i * cols) + j] : C {-1.0, -1.0});
+      }
+    }
+    const std::size_t        n {37};
+    std::vector<std::size_t> to(n);
+    for (std::size_t j {0}; j < n; ++j) {
+      to[j] = (j * 5) % n; // a permutation: 5 and 37 coprime
+    }
+    std::vector<C> square(n * n);
+    for (std::size_t i {0}; i < square.size(); ++i) {
+      square[i] = C {static_cast<double>(i), 1.0};
+    }
+    std::vector<C> moved(lda * n, C {});
+    nb::column_major_permuted_into(square.data(), n, to.data(), moved.data(), lda);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        same = same && moved[i + (to[j] * lda)] == square[(i * n) + j];
+      }
+    }
+    std::vector<C> lower(n * n, C      {-2.0, 0.0});
+    nb::lower_triangle_rows(a.data(), lda, n, lower.data(), true);
+    std::vector<C> restored(lda * n, C {-3.0, 0.0});
+    nb::lower_triangle_rows(restored.data(), lda, n, lower.data(), false);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        same = same && lower[(i * n) + j] == (i >= j ? a[i + (j * lda)] : C {-2.0, 0.0});
+        same = same && restored[i + (j * lda)] == (i >= j ? a[i + (j * lda)] : C {-3.0, 0.0});
+      }
+    }
+    EXPECT(same);
+  }
+}

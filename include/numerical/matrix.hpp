@@ -243,25 +243,23 @@ namespace numerical {
   inline constexpr std::size_t transpose_tile {32};
 
   /*!
-   * \brief The transpose, by blocks of \ref transpose_tile, the result's blocks of rows shared among the threads.
+   * \brief The transpose, by blocks of \ref transpose_tile (walked by \ref detail::transpose_piece's pieces), the
+   *        result's blocks of rows shared among the threads.
    * \param[in] m The matrix. \return An `cols×rows` matrix.
    */
   template <typename T>
   [[nodiscard]] matrix<T> transpose(const matrix<T>& m)
   {
-    const std::size_t rows {m.rows()};
-    const std::size_t cols {m.cols()};
+    const std::size_t rows  {m.rows()};
+    const std::size_t cols  {m.cols()};
     buffer<T>         out(rows * cols);
+    const std::size_t piece {detail::transpose_piece(cols * sizeof(T), rows * sizeof(T))};
     detail::parallel_for((cols + transpose_tile - 1) / transpose_tile, transpose_tile * rows, [&](std::size_t block) {
                            const std::size_t j0 {block * transpose_tile};
                            const std::size_t j1 {std::min(j0 + transpose_tile, cols)};
                            for (std::size_t i0 {0}; i0 < rows; i0 += transpose_tile) {
-                             const std::size_t i1 {std::min(i0 + transpose_tile, rows)};
-                             for (std::size_t j {j0}; j < j1; ++j) {
-                               for (std::size_t i {i0}; i < i1; ++i) {
-                                 out[(j * rows) + i] = m(i, j);
-                               }
-                             }
+                             detail::transpose_walk(j0, j1, i0, std::min(i0 + transpose_tile, rows), piece,
+                                                    [&](std::size_t j, std::size_t i) { out[(j * rows) + i] = m(i, j); });
                            }
                          });
     return matrix<T> {cols, rows, std::move(out)};

@@ -109,20 +109,20 @@ namespace numerical::blas {
                         T              scale,
                         bool           conjugate = false)
     {
-      const auto r  {static_cast<std::size_t>(rows)};
-      const auto c  {static_cast<std::size_t>(cols)};
-      const auto ld {static_cast<std::size_t>(lda)};
+      const auto r            {static_cast<std::size_t>(rows)};
+      const auto c            {static_cast<std::size_t>(cols)};
+      const auto ld           {static_cast<std::size_t>(lda)};
       out.resize(r * c);
-      T* const to   {out.data()};
-      numerical::detail::parallel_for((r + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * c, [a, ld, r, c, to, scale, conjugate](std::size_t band) {
+      T* const          to    {out.data()};
+      const std::size_t piece {numerical::detail::transpose_piece(ld * sizeof(T), c * sizeof(T))};
+      numerical::detail::parallel_for((r + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * c, [a, ld, r, c, to, scale, conjugate, piece](std::size_t band) {
                                         const std::size_t i0 {band * transpose_tile};
                                         for (std::size_t j0 {0}; j0 < c; j0 += transpose_tile) {
-                                          for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, c); ++j) {
-                                            for (std::size_t i {i0}; i < std::min(i0 + transpose_tile, r); ++i) {
-                                              const T x {a[i + (j * ld)]};
-                                              to[(i * c) + j] = scale * (conjugate ? numerical::detail::conj_of(x) : x);
-                                            }
-                                          }
+                                          numerical::detail::transpose_walk(j0, std::min(j0 + transpose_tile, c), i0, std::min(i0 + transpose_tile, r), piece,
+                                                                            [a, ld, c, to, scale, conjugate](std::size_t j, std::size_t i) {
+                                                                              const T x {a[i + (j * ld)]};
+                                                                              to[(i * c) + j] = scale * (conjugate ? numerical::detail::conj_of(x) : x);
+                                                                            });
                                         }
                                       });
     }
@@ -208,14 +208,12 @@ namespace numerical::blas {
                            T*          a,
                            std::size_t lda)
     {
-      numerical::detail::parallel_for((cols + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * rows, [from, rows, cols, a, lda](std::size_t band) {
+      const std::size_t piece {numerical::detail::transpose_piece(cols * sizeof(T), lda * sizeof(T))};
+      numerical::detail::parallel_for((cols + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * rows, [from, rows, cols, a, lda, piece](std::size_t band) {
                                         const std::size_t j0 {band * transpose_tile};
                                         for (std::size_t i0 {0}; i0 < rows; i0 += transpose_tile) {
-                                          for (std::size_t i {i0}; i < std::min(i0 + transpose_tile, rows); ++i) {
-                                            for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, cols); ++j) {
-                                              a[i + (j * lda)] = from[(i * cols) + j];
-                                            }
-                                          }
+                                          numerical::detail::transpose_walk(i0, std::min(i0 + transpose_tile, rows), j0, std::min(j0 + transpose_tile, cols), piece,
+                                                                            [from, cols, a, lda](std::size_t i, std::size_t j) { a[i + (j * lda)] = from[(i * cols) + j]; });
                                         }
                                       });
     }
@@ -228,14 +226,12 @@ namespace numerical::blas {
                                     T*                 a,
                                     std::size_t        lda)
     {
-      numerical::detail::parallel_for((n + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * n, [from, n, to, a, lda](std::size_t band) {
+      const std::size_t piece {numerical::detail::transpose_piece(n * sizeof(T), lda * sizeof(T))};
+      numerical::detail::parallel_for((n + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * n, [from, n, to, a, lda, piece](std::size_t band) {
                                         const std::size_t j0 {band * transpose_tile};
                                         for (std::size_t i0 {0}; i0 < n; i0 += transpose_tile) {
-                                          for (std::size_t i {i0}; i < std::min(i0 + transpose_tile, n); ++i) {
-                                            for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, n); ++j) {
-                                              a[i + (to[j] * lda)] = from[(i * n) + j];
-                                            }
-                                          }
+                                          numerical::detail::transpose_walk(i0, std::min(i0 + transpose_tile, n), j0, std::min(j0 + transpose_tile, n), piece,
+                                                                            [from, n, to, a, lda](std::size_t i, std::size_t j) { a[i + (to[j] * lda)] = from[(i * n) + j]; });
                                         }
                                       });
     }
@@ -293,19 +289,22 @@ namespace numerical::blas {
                              T*          rows,
                              bool        in)
     {
-      numerical::detail::parallel_for((n + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * n / 2, [a, lda, n, rows, in](std::size_t band) {
+      const std::size_t piece {numerical::detail::transpose_piece(lda * sizeof(T), n * sizeof(T))};
+      numerical::detail::parallel_for((n + transpose_tile - 1) / transpose_tile, transpose_weight * transpose_tile * n / 2, [a, lda, n, rows, in, piece](std::size_t band) {
                                         const std::size_t i0 {band * transpose_tile};
                                         for (std::size_t j0 {0}; j0 <= i0; j0 += transpose_tile) {
-                                          for (std::size_t j {j0}; j < std::min(j0 + transpose_tile, n); ++j) {
-                                            for (std::size_t i {std::max(i0, j)}; i < std::min(i0 + transpose_tile, n); ++i) {
-                                              if (in) {
-                                                rows[(i * n) + j] = a[i + (j * lda)];
-                                              }
-                                              else {
-                                                a[i + (j * lda)] = rows[(i * n) + j];
-                                              }
-                                            }
-                                          }
+                                          numerical::detail::transpose_walk(j0, std::min(j0 + transpose_tile, n), i0, std::min(i0 + transpose_tile, n), piece,
+                                                                            [a, lda, n, rows, in](std::size_t j, std::size_t i) {
+                                                                              if (i < j) { // the upper triangle, untouched
+                                                                                return;
+                                                                              }
+                                                                              if (in) {
+                                                                                rows[(i * n) + j] = a[i + (j * lda)];
+                                                                              }
+                                                                              else {
+                                                                                a[i + (j * lda)] = rows[(i * n) + j];
+                                                                              }
+                                                                            });
                                         }
                                       });
     }

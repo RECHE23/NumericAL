@@ -877,18 +877,15 @@ namespace numerical {
         return out;
       }
       if (to.size() == 2) { // the one permutation of two axes, a transpose: by tiles, each read and written in the cache
-        const std::size_t rows {sizes.at(from[0])};
-        const std::size_t cols {sizes.at(from[1])};
+        const std::size_t rows  {sizes.at(from[0])};
+        const std::size_t cols  {sizes.at(from[1])};
+        const std::size_t piece {transpose_piece(cols * sizeof(T), rows * sizeof(T))};
         parallel_for((rows + transpose_tile - 1) / transpose_tile, transpose_tile * cols, [&](std::size_t block) {
                        const std::size_t r0 {block * transpose_tile};
                        const std::size_t r1 {std::min(r0 + transpose_tile, rows)};
                        for (std::size_t c0 {0}; c0 < cols; c0 += transpose_tile) {
-                         const std::size_t c1 {std::min(c0 + transpose_tile, cols)};
-                         for (std::size_t r {r0}; r < r1; ++r) {
-                           for (std::size_t c {c0}; c < c1; ++c) {
-                             out[(c * rows) + r] = data[(r * cols) + c];
-                           }
-                         }
+                         transpose_walk(r0, r1, c0, std::min(c0 + transpose_tile, cols), piece,
+                                        [&](std::size_t r, std::size_t c) { out[(c * rows) + r] = data[(r * cols) + c]; });
                        }
                      });
         return out;

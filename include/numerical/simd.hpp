@@ -30,6 +30,72 @@ namespace numerical::detail {
   //!        on six x86-64 cores).
   inline constexpr std::size_t transpose_tile {32};
 
+  /*!
+   * \brief The side of the square pieces a transposing copy walks a tile by, from the bytes between rows of its source
+   *        and of its result: a tile's 32 rows a multiple of a power of two of bytes apart fall in a few of the L1
+   *        cache's sets and evict one another, where 8 rows fit them. Pieces of 8 where either stride is a multiple of
+   *        1 KiB on x86-64 (sets every 4 KiB: four AVX2 cores, 256 × 256 doubles 165 → 51 µs, 128 × 128 15.8 →
+   *        10.3, 2048 × 2048 15.4 → 9.2 ms; ten AVX-512 cores 256 × 256 142 → 51 µs), of 8 KiB on arm64 (M1 Pro,
+   *        1024 × 1024 3.8 → 0.95 ms, 2048 × 2048 19.7 → 7.2); elsewhere the whole tile, which pieces slowed (100 ×
+   *        100 on the AVX2 cores 10.5 → 11.6 µs, most orders on the M1 Pro 10 to 40 %).
+   */
+  [[nodiscard]] inline std::size_t transpose_piece(std::size_t from_bytes,
+                                                   std::size_t to_bytes) noexcept
+  {
+#if defined(__x86_64__) || defined(_M_X64)
+    constexpr std::size_t aliased {std::size_t {1} << 10U};
+#else
+    constexpr std::size_t aliased {std::size_t {1} << 13U};
+#endif
+    return from_bytes % aliased == 0 || to_bytes % aliased == 0 ? 8 : transpose_tile;
+  }
+
+  /*!
+   * \brief `copy(i, j)` for every `i` in `[i0, i1)` and `j` in `[j0, j1)`, by square pieces of side \p Piece, `j` the
+   *        faster within a piece.
+   */
+  template <std::size_t Piece,
+            typename Copy>
+  void transpose_pieces(std::size_t i0,
+                        std::size_t i1,
+                        std::size_t j0,
+                        std::size_t j1,
+                        const Copy& copy)
+  {
+    for (std::size_t pi {i0}; pi < i1; pi += Piece) {
+      const std::size_t pi1 {std::min(pi + Piece, i1)};
+      for (std::size_t pj {j0}; pj < j1; pj += Piece) {
+        const std::size_t pj1 {std::min(pj + Piece, j1)};
+        for (std::size_t i {pi}; i < pi1; ++i) {
+          for (std::size_t j {pj}; j < pj1; ++j) {
+            copy(i, j);
+          }
+        }
+      }
+    }
+  }
+
+  /*!
+   * \brief \ref transpose_pieces of side \p piece (\ref transpose_piece's 8 or the whole tile), each side its own
+   *        instance: a side known only at run time slowed the whole tile's copy (100 × 100 doubles, four AVX2 cores,
+   *        10.4 → 11.2 µs).
+   */
+  template <typename Copy>
+  void transpose_walk(std::size_t i0,
+                      std::size_t i1,
+                      std::size_t j0,
+                      std::size_t j1,
+                      std::size_t piece,
+                      const Copy& copy)
+  {
+    if (piece == 8) {
+      transpose_pieces<8>(i0, i1, j0, j1, copy);
+    }
+    else {
+      transpose_pieces<transpose_tile>(i0, i1, j0, j1, copy);
+    }
+  }
+
   //! \brief The rows of a lower triangle \ref symmetric_rows takes at once.
   inline constexpr std::size_t symmetric_row_group {4};
 
