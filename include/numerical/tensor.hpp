@@ -354,6 +354,36 @@ namespace numerical {
                                }
                                return;
                              }
+                             // Two axes, short rows, one operand a column (one element a row, stepping 0 along it) and the other's
+                             // rows together: each run of rows' column elements spread over their rows, one loop against them.
+                             if (rank == 2 && inner < 32 && step_a + step_b == 1 && (step_a == 1 ? sb[0] : sa[0]) == 1
+                                 && (step_a == 1 ? sa[0] : sb[0]) == inner) {
+                               const bool        a_spreads {step_a == 0};
+                               const T* const    column    {(a_spreads ? a : b) + first};
+                               const T* const    whole     {(a_spreads ? b : a) + (first * inner)};
+                               T* const          po        {out.data() + (first * inner)};
+                               const std::size_t run       {256 / inner};
+                               std::array<T, 256> spread {};
+                               for (std::size_t from {0}; from < last - first; from += run) {
+                                 const std::size_t n {std::min(run, last - first - from)};
+                                 for (std::size_t r {0}; r < n; ++r) {
+                                   std::fill_n(spread.data() + (r * inner), inner, column[from + r]);
+                                 }
+                                 const T* const w {whole + (from * inner)};
+                                 T* const       o {po + (from * inner)};
+                                 if (a_spreads) {
+                                   for (std::size_t i {0}; i < n * inner; ++i) {
+                                     o[i] = op(spread[i], w[i]);
+                                   }
+                                 }
+                                 else {
+                                   for (std::size_t i {0}; i < n * inner; ++i) {
+                                     o[i] = op(w[i], spread[i]);
+                                   }
+                                 }
+                               }
+                               return;
+                             }
                              for (std::size_t row {first}; row < last; ++row) {
                                const T* const pa {a + ia};
                                const T* const pb {b + ib};

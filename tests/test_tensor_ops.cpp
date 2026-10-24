@@ -709,14 +709,15 @@ namespace {
 } // namespace
 
 // Broadcasting merges the axes both operands step through as one, and runs short rows of one operand repeated over the
-// other's as one loop against that row repeated: every element the sum of its own operands, whichever operand repeats,
-// rows of 1 to 32 elements, merged axes and not, more than one task.
+// other's, or a column's elements spread over the other's rows, as one loop: every element the sum of its own operands,
+// whichever operand repeats or spreads, rows of 1 to 32 elements, merged axes and not, more than one task.
 TEST(broadcasting_gives_each_elements_sum)
 {
   for (const auto& [sa, sb] : std::vector<std::pair<shape, shape>> {{{50000, 3}, {3}}, {{3}, {50000, 3}}, {{20000, 1}, {1}}, {{20000, 31}, {31}},
          {{20000, 32}, {32}}, {{6, 31}, {1, 31}}, {{1000, 4, 3}, {1, 4, 3}}, {{1, 4, 3}, {1000, 4, 3}},
          {{1000, 3}, {1000, 1}}, {{4, 100, 100}, {100, 100}}, {{2, 3, 4, 5}, {3, 1, 5}},
-         {{3, 1, 7}, {1, 4, 1}}, {{5, 6}, {5, 1}}, {{1}, {9, 9}}, {{1, 3}, {3}}}) {
+         {{3, 1, 7}, {1, 4, 1}}, {{5, 6}, {5, 1}}, {{1}, {9, 9}}, {{1, 3}, {3}}, {{50000, 3}, {50000, 1}},
+         {{50000, 1}, {50000, 2}}, {{20000, 31}, {20000, 1}}, {{20000, 32}, {20000, 1}}, {{7, 5}, {7, 1}}, {{5000, 1}, {1, 6}}}) {
     EXPECT(sum_is_each_elements(sa, sb));
   }
 }

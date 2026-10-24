@@ -54,7 +54,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   3) + (3,)`) runs the matrix's rows as one loop against that row repeated, where each row of three turned the loop over
   the axes. Every element the same operation on the same operands. Six AVX2 cores, one thread: 10^6 rows of 3 plus a row
   7.1 → 3.0 ms (the time of a plain addition of as many elements); all threads: (1000, 4, 3) + (1, 4, 3) 23.7 → 5.6 µs,
-  (4, 1000, 1000) + (1000, 1000) 6.2 → 4.3 ms.
+  (4, 1000, 1000) + (1000, 1000) 6.2 → 4.3 ms. A column against a matrix of rows under 32 (`(n, 3) + (n, 1)`) spreads
+  its elements over a run of rows, one loop against them: all six AVX2 cores, 10^6 rows of 2 4.1 → 1.9 ms, of 3 5.9 →
+  4.4 ms; M1 Pro 1.09 → 0.40 and 1.83 → 1.25 ms.
 - **An `einsum` product that sums nothing runs element by element** (`ij,j->ij`, `i,j->ij`, `ijk,ik->ijk`), each
   element its operands' product added to 0 as the matrix product rounds its first term, where it went one matrix
   product of depth one per element of the batch: the same bits, a zero's sign included (real types; complex ones keep
