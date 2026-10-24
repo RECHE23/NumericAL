@@ -3065,6 +3065,59 @@ PyObject* module_borrowed_norm(PyObject* /*self*/, PyObject* obj)
     return PyFloat_FromDouble(x.dtype >= 2 ? static_cast<double>(static_cast<float>(*norm)) : *norm);
 }
 
+// _borrowed_reduce(op, x) -> number or NotImplemented: sum, mean, max or min of every element of a NumPy array read
+// where it lies (borrow_operand: its elements in C order, as its Tensor's), by the functions numerical::sum, mean, max
+// and min call on a Tensor's storage, so their bits; NotImplemented for any other operand, and for max or min of a
+// complex or an empty one, which the converting path then takes (and refuses, as for a Tensor). The array was copied into a Tensor first, three
+// to four times the reduction's own time: 10^6 doubles summed 1.51 ms against 0.35 from a Tensor.
+PyObject* module_borrowed_reduce(PyObject* /*self*/, PyObject* args)
+{
+    const char* op  = nullptr;
+    PyObject*   obj = nullptr;
+    if (PyArg_ParseTuple(args, "sO", &op, &obj) == 0) {
+        return nullptr;
+    }
+    const std::string_view name {op};
+    borrowed_operand       x;
+    if ((name != "sum" && name != "mean" && name != "max" && name != "min") || !borrow_operand(obj, x)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    std::size_t count {1};
+    for (const std::size_t extent : x.shape) {
+        count *= extent;
+    }
+    try {
+        const auto reduce = [&]<typename T>(std::type_identity<T>) -> PyObject* {
+            const T* const data {static_cast<const T*>(x.data)};
+            if (name == "sum" || name == "mean") {
+                const T total {numerical::detail::parallel_pairwise_sum(data, count)};
+                return from_scalar<T>(name == "mean" ? numerical::detail::divided_by_count(total, count) : total);
+            }
+            if constexpr (numerical::detail::split_complex<T>) {
+                return Py_NewRef(Py_NotImplemented);
+            }
+            else if (count == 0) { // no maximum: the converting path raises it, as for a Tensor
+                return Py_NewRef(Py_NotImplemented);
+            }
+            else if (name == "max") {
+                return from_scalar<T>(numerical::detail::extreme(data, count, 1, std::greater<T> {}));
+            }
+            else {
+                return from_scalar<T>(numerical::detail::extreme(data, count, 1, std::less<T> {}));
+            }
+        };
+        switch (x.dtype) {
+        case 0: return reduce(std::type_identity<double> {});
+        case 1: return reduce(std::type_identity<std::complex<double>> {});
+        case 2: return reduce(std::type_identity<float> {});
+        default: return reduce(std::type_identity<std::complex<float>> {});
+        }
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // A vector, or a matrix of one row, times a column-major matrix of two columns or more, both read where they lie: the
 // vector times the matrix as canonical_product sums it, a column of the matrix at a time (vector_times_transposed), so
 // the bits of the product of its C-ordered copy, which was copied first. None for any other pair.
@@ -3695,6 +3748,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_unary(name, a) -> Tensor\nexp, log, sqrt, sin, cos, tan, tanh or abs of every element.");
     m.raw("_borrowed_einsum", module_borrowed_einsum, METH_VARARGS,
           "_borrowed_einsum(spec, x) -> Tensor or NotImplemented\nOne operand summed over a run of its axes, read where it lies.");
+    m.raw("_borrowed_reduce", module_borrowed_reduce, METH_VARARGS,
+          "_borrowed_reduce(op, x) -> number or NotImplemented\nsum, mean, max or min of every element of a NumPy array read where it lies.");
     m.raw("_borrowed_norm", module_borrowed_norm, METH_O,
           "_borrowed_norm(x) -> float or NotImplemented\nThe 2-norm of every element of a Tensor or a NumPy array read where it lies.");
     m.raw("_vector_norm", module_vector_norm, METH_VARARGS,

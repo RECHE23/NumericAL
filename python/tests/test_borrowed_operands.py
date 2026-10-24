@@ -76,6 +76,30 @@ class BorrowedOperands(unittest.TestCase):
                         self.assert_same(numerical.solve(square, vector[:rows]),
                                          numerical.solve(np.ascontiguousarray(square), np.ascontiguousarray(vector[:rows])))
 
+    def test_a_whole_reduction_reads_the_array_and_gives_the_tensors_bits(self):
+        # sum, mean, max and min of every element of a NumPy array, read where it lies: the Tensor's answer to the bit,
+        # of its type, for each dtype, from one element to a million (the sum's threads), strided (copied in place
+        # where small, through a Tensor where large); max and min of a complex array and of an empty one still refuse.
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            for shape in ((1,), (7, 3), (1000, 1000), (3, 0)):
+                x = self.operand(shape, dtype)
+                for view in (x, x[::2, ::-1] if len(shape) == 2 else x):
+                    tensor = numerical.asarray(np.ascontiguousarray(view))
+                    for op in ("sum", "mean", "max", "min"):
+                        with self.subTest(dtype=np.dtype(dtype).name, shape=view.shape, op=op):
+                            f = getattr(numerical, op)
+                            if op in ("max", "min") and (np.dtype(dtype).kind == "c" or view.size == 0):
+                                with self.assertRaises(Exception) as from_tensor:
+                                    f(tensor)
+                                with self.assertRaises(type(from_tensor.exception)):
+                                    f(view)
+                                continue
+                            got, want = f(view), f(tensor)
+                            self.assertEqual(type(got), type(want))
+                            self.assertTrue(got == want or (got != got and want != want))
+        self.assertIs(numerical._numerical._borrowed_reduce("prod", np.ones(3)), NotImplemented)
+        self.assertIs(numerical._numerical._borrowed_reduce("sum", [1.0, 2.0]), NotImplemented)
+
     def test_a_transposed_matrix_norm_gives_its_contiguous_copys_bits(self):
         # A column-major matrix (a transpose) is read where it lies, its elements in its C order: the norm of its
         # C-ordered copy to the bit, by bands of eight rows, the whole blocks of eight parts and the tail after them,

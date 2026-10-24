@@ -16,6 +16,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   26 → 10 µs; one thread 1.3 to 3 times as fast.
 - **`einsum("ij,ij->ij")` runs element by element**, as the batches of products that sum nothing do: the same bits. M1
   Pro, 1000 × 1000: 527 → 343 µs, the time of `a * b`.
+- **`sum`, `mean`, `max` and `min` of every element of a NumPy array read it where it lies**, where it was copied into a
+  Tensor first: the Tensor's answer to the bit. M1 Pro, 10^6 doubles: `sum` 791 → 52 µs, `mean` 811 → 44, `max` and
+  `min` 700–796 → 237.
 
 ## 2026.10.35 — 2026-10-24
 

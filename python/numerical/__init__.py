@@ -1248,6 +1248,10 @@ def _axis(t, axis):
 
 def _reduction(op, doc):
     def reduce(a, axis=None, keepdims=False):
+        if axis is None and not keepdims and not isinstance(a, Tensor):
+            whole = _numerical._borrowed_reduce(op, a)  # every element of a NumPy array read where it lies
+            if whole is not NotImplemented:
+                return whole
         a = a if isinstance(a, Tensor) else asarray(a)
         rank = len(a.shape)
         if isinstance(axis, tuple):  # several axes: moved last and run together, one native reduction over them
