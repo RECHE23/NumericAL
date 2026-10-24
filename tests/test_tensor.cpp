@@ -945,6 +945,35 @@ TEST(a_stack_of_products_gives_each_products_bits)
   numerical::set_max_threads(0); // every thread again
 }
 
+// A sum of many elements on the threads gives the bits of pairwise_sum on one: the whole tensor's and along an axis whose
+// rows are single elements, past the four subtrees summed on the caller, an odd count among them; float and complex too.
+TEST(a_parallel_sum_gives_the_pairwise_sums_bits)
+{
+  const auto check {[](auto zero, std::size_t count) {
+                      using T = decltype(zero);
+                      std::vector<T> values(count);
+                      for (std::size_t i {0}; i < count; ++i) {
+                        const double x {std::sin(static_cast<double>(i) * 0.61) * 1e3};
+                        if constexpr (std::is_arithmetic_v<T>) {
+                          values[i] = static_cast<T>(x);
+                        }
+                        else {
+                          values[i] = T(static_cast<T::value_type>(x), static_cast<T::value_type>(std::cos(x)));
+                        }
+                      }
+                      const T              alone {numerical::detail::pairwise_sum(values.data(), count, 1)};
+                      const tensor<T>      whole   {{count}, values};
+                      const tensor<T>      column  {{count, 1}, values};
+                      const tensor<T>      by_axis {numerical::sum(column, 0)};
+                      return numerical::sum(whole) == alone && by_axis.data()[0] == alone;
+                    }};
+  for (const std::size_t count : {(4 * numerical::detail::pairwise_leaf) + 1, std::size_t {3000017}, std::size_t {1} << 20U}) {
+    EXPECT(check(0.0, count));
+    EXPECT(check(0.0F, count));
+    EXPECT(check(std::complex<double> {}, count));
+  }
+}
+
 TEST(einsum_reads_an_ellipsis_as_numpy)
 {
   const tensor<double> a           {counting({2, 3, 4})};

@@ -1084,11 +1084,12 @@ namespace numerical {
     return broadcast_apply(a, b, [](const T& x, const T& y) { return static_cast<T>(std::pow(x, y)); });
   }
 
-  //! \brief The sum of every element, by pairwise halving (0 for an empty tensor).
+  //! \brief The sum of every element, by pairwise halving (0 for an empty tensor), on the threads where they are many
+  //!        (\ref detail::parallel_pairwise_sum): the same bits.
   template <typename T>
   [[nodiscard]] T sum(const tensor<T>& t)
   {
-    return detail::pairwise_sum(t.data().data(), t.size(), 1);
+    return detail::parallel_pairwise_sum(t.data().data(), t.size());
   }
 
   //! \brief The sums along \p axis, by pairwise halving. \throws dimension_error If \p axis is not an axis.

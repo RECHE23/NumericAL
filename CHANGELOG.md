@@ -45,6 +45,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   batches); and a stack whose second operand is shared runs as one product of all the first's rows, that operand
   packed once. The same bits. Ten AVX-512 cores: two products of order 1000 28.0 → 7.5 ms, three of 600 6.5 → 2.8 ms;
   16 × 32 × 512 by 512 × 512 1013 → 509 µs, 1000 × 3 × 64 by 64 × 64 165 → 87 µs.
+- **`sum` of many elements runs on the threads, to the bit**: the pairwise tree's subtrees of up to 2^15 elements summed
+  in parallel, each as before, then added in the tree's order, the subtrees set by the count alone (the whole tensor's
+  sum, and an axis's of single-element rows). M1 Pro: 2^20 doubles 181 → 45 µs, 2^24 2.97 → 1.17 ms; ten AVX-512 cores
+  2^20 247 → 44 µs, 2^24 12.5 → 2.2 ms.
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on
   x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
   order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,
