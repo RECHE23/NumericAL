@@ -670,6 +670,15 @@ namespace numerical {
       return settled_zero(best, first, count, stride, larger);
     }
 
+    //! \brief Whether \ref extremes_along takes the reduction's path: an exact type, or an axis of single elements. A
+    //!        function, where the test written in the condition joined a constant to the axis's, which MSVC 19.44
+    //!        (Visual Studio 2022's) rejects (C4127, an error under /WX).
+    template <typename T>
+    [[nodiscard]] constexpr bool by_reduction(std::size_t inner) noexcept
+    {
+      return !std::is_floating_point_v<T> || inner == 1;
+    }
+
     /*!
      * \brief The largest (\p larger is `std::greater`) or smallest elements along \p axis. Along an inner axis
      *        each line is contiguous (\ref extreme); along an outer one the slabs are compared element by element,
@@ -686,7 +695,7 @@ namespace numerical {
       if (walk.extent == 0) {
         throw dimension_error("a zero-size reduction to a maximum or a minimum has no identity");
       }
-      if (!std::is_floating_point_v<T> || walk.inner == 1) {
+      if (by_reduction<T>(walk.inner)) {
         return reduce_along(t, axis, [&larger](const T* first, std::size_t count, std::size_t stride) {
                               return extreme(first, count, stride, larger);
                             });
