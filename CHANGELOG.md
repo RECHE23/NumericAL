@@ -77,7 +77,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   (4, 1000, 1000) + (1000, 1000) 6.2 → 4.3 ms. A column against a matrix of rows under 32 (`(n, 3) + (n, 1)`) spreads
   its elements over a run of rows, one loop against them: all six AVX2 cores, 10^6 rows of 2 4.1 → 1.9 ms, of 3 5.9 →
   4.4 ms; M1 Pro 1.09 → 0.40 and 1.83 → 1.25 ms.
-- **An `einsum` product that sums nothing runs element by element** (`ij,j->ij`, `i,j->ij`, `ijk,ik->ijk`), each
+- **An `einsum` batch of products that sum nothing runs element by element** (`ij,j->ij`, `ijk,ik->ijk`; an outer
+  product, `i,j->ij`, stays one matrix product of depth one), each
   element its operands' product added to 0 as the matrix product rounds its first term, where it went one matrix
   product of depth one per element of the batch: the same bits, a zero's sign included (real types; complex ones keep
   their route). Six AVX2 cores: 1000 × 1000 times a row of 1000 19.7 → 0.55 ms (the time of `x * v`).

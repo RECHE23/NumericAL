@@ -1113,7 +1113,7 @@ TEST(an_einsum_that_sums_nothing_gives_gemms_first_terms)
     }
     for (const auto& [spec, sa, sb] : std::vector<std::tuple<std::string, std::vector<std::size_t>, std::vector<std::size_t>>> {
       {"ij,j->ij", {40, 30}, {30}}, {"i,j->ij", {17}, {23}}, {"ij,i->ij", {40, 30}, {40}}, {"ji,j->ij", {30, 40}, {30}},
-      {"ijk,ik->ijk", {6, 5, 7}, {6, 7}}, {"j,ij->ij", {30}, {40, 30}}, {"ij,jk->ijk", {4, 5}, {5, 6}}}) {
+      {"ijk,ik->ijk", {6, 5, 7}, {6, 7}}, {"j,ij->ij", {30}, {40, 30}}, {"ij,jk->ijk", {4, 5}, {5, 6}}, {"ij,ij->ij", {9, 7}, {9, 7}}}) {
       EXPECT(each_product_is_gemms<double>(spec, sa, sb));
       EXPECT(each_product_is_gemms<float>(spec, sa, sb));
       EXPECT(each_product_is_gemms<int>(spec, sa, sb));
