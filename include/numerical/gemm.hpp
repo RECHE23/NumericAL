@@ -24,6 +24,7 @@
 #include <cmath>
 #include <atomic>
 #include <complex>
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -1571,6 +1572,25 @@ namespace numerical::detail {
 #else
     return false;
 #endif
+  }
+
+  /*!
+   * \brief Whether \ref gemm_rows rounds each term `c + a·b` as one fused multiply-add on the path in use, as its choice
+   *        of \ref term_rounding below makes it (the x86-64 AVX paths' `double` and `float`, arm64's fused paths' floating
+   *        types): the first term of a product that sums nothing (`0 + a·b`) rounded as gemm_rows rounds it elsewhere.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] bool rows_terms_fuse() noexcept
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+      const gemm_path path {gemm_path_current()};
+      if (path == gemm_path::avx512 || path == gemm_path::avx2) {
+        return true;
+      }
+    }
+#endif
+    return rows_fuse();
   }
 
   /*!

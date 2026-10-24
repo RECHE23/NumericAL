@@ -17,6 +17,8 @@
 #include <limits>
 #include <map>
 #include <utility>
+#include <tuple>
+#include <string>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -972,6 +974,100 @@ TEST(a_parallel_sum_gives_the_pairwise_sums_bits)
     EXPECT(check(0.0F, count));
     EXPECT(check(std::complex<double> {}, count));
   }
+}
+
+namespace
+{
+  // einsum of a product that sums nothing against each element's own product of depth one through gemm (0 + x·y as
+  // gemm rounds a first term): signed zeros, products that underflow to a zero of either sign, ordinary values.
+  template <typename T>
+  bool each_product_is_gemms(const std::string&       spec,
+                             std::vector<std::size_t> sa,
+                             std::vector<std::size_t> sb)
+  {
+    const auto values {[](const std::vector<std::size_t>& s, std::size_t phase) {
+                         std::size_t count {1};
+                         for (const std::size_t e : s) {
+                           count *= e;
+                         }
+                         std::vector<T> v(count);
+                         for (std::size_t i {0}; i < count; ++i) {
+                           const std::size_t k {(i * 7) + phase};
+                           if constexpr (std::is_floating_point_v<T>) {
+                             const T tiny {std::numeric_limits<T>::min() * T(0.75)};
+                             const T table[] {T(-0.0), T(0.0), tiny, -tiny, T(1.5), T(-2.25), T(1) / T(3), std::numeric_limits<T>::min()};
+                             v[i] = table[k % 8];
+                           }
+                           else {
+                             v[i] = static_cast<T>(static_cast<int>(k % 11) - 5);
+                           }
+                         }
+                         return tensor<T> {s, v};
+                       }};
+    const tensor<T> a                  {values(sa, 1)};
+    const tensor<T> b                  {values(sb, 4)};
+    const tensor<T> got                {numerical::einsum(spec, a, b)};
+    // the reference: the output's labels give each element's operands
+    const std::string           inputs {spec.substr(0, spec.find("->"))};
+    const std::string           la     {inputs.substr(0, inputs.find(','))};
+    const std::string           lb     {inputs.substr(inputs.find(',') + 1)};
+    const std::string           out    {spec.substr(spec.find("->") + 2)};
+    std::map<char, std::size_t> size;
+    for (std::size_t i {0}; i < la.size(); ++i) {
+      size[la[i]] = sa[i];
+    }
+    for (std::size_t i {0}; i < lb.size(); ++i) {
+      size[lb[i]] = sb[i];
+    }
+    const auto offset {[&](const std::string& labels, const std::map<char, std::size_t>& at) {
+                         std::size_t o {0};
+                         for (const char l : labels) {
+                           o = (o * size.at(l)) + at.at(l);
+                         }
+                         return o;
+                       }};
+    bool same {true};
+    for (std::size_t flat {0}; flat < got.size(); ++flat) {
+      std::map<char, std::size_t> at;
+      std::size_t                 rest {flat};
+      for (std::size_t i {out.size()}; i-- > 0;) {
+        at[out[i]]  = rest % size.at(out[i]);
+        rest       /= size.at(out[i]);
+      }
+      const T x    {a.data()[offset(la, at)]};
+      const T y    {b.data()[offset(lb, at)]};
+      T       want {};
+      numerical::detail::gemm(1, 1, 1, &x, 1, &y, 1, &want, 1, numerical::detail::c_start::zero);
+      const T have {got.data()[flat]};
+      if constexpr (std::is_floating_point_v<T>) { // the same value and the same sign, a zero's included (no NaN here)
+        same = same && have == want && std::signbit(have) == std::signbit(want);
+      }
+      else {
+        same = same && have == want;
+      }
+    }
+    return same;
+  }
+} // namespace
+
+// An einsum product that sums nothing (each element one product) gives, on every path, each element's product of
+// depth one through gemm to the bit, its zero's sign included: as matrix products of depth one gave it before.
+TEST(an_einsum_that_sums_nothing_gives_gemms_first_terms)
+{
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    for (const auto& [spec, sa, sb] : std::vector<std::tuple<std::string, std::vector<std::size_t>, std::vector<std::size_t>>> {
+      {"ij,j->ij", {40, 30}, {30}}, {"i,j->ij", {17}, {23}}, {"ij,i->ij", {40, 30}, {40}}, {"ji,j->ij", {30, 40}, {30}},
+      {"ijk,ik->ijk", {6, 5, 7}, {6, 7}}, {"j,ij->ij", {30}, {40, 30}}, {"ij,jk->ijk", {4, 5}, {5, 6}}}) {
+      EXPECT(each_product_is_gemms<double>(spec, sa, sb));
+      EXPECT(each_product_is_gemms<float>(spec, sa, sb));
+      EXPECT(each_product_is_gemms<int>(spec, sa, sb));
+    }
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
 
 TEST(einsum_reads_an_ellipsis_as_numpy)

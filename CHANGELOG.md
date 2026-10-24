@@ -55,6 +55,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   the axes. Every element the same operation on the same operands. Six AVX2 cores, one thread: 10^6 rows of 3 plus a row
   7.1 → 3.0 ms (the time of a plain addition of as many elements); all threads: (1000, 4, 3) + (1, 4, 3) 23.7 → 5.6 µs,
   (4, 1000, 1000) + (1000, 1000) 6.2 → 4.3 ms.
+- **An `einsum` product that sums nothing runs element by element** (`ij,j->ij`, `i,j->ij`, `ijk,ik->ijk`), each
+  element its operands' product added to 0 as the matrix product rounds its first term, where it went one matrix
+  product of depth one per element of the batch: the same bits, a zero's sign included (real types; complex ones keep
+  their route). Six AVX2 cores: 1000 × 1000 times a row of 1000 19.7 → 0.55 ms (the time of `x * v`).
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on
   x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
   order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,

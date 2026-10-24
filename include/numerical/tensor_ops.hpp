@@ -34,29 +34,7 @@ namespace numerical {
 
   namespace detail {
 
-    //! \brief A shape as NumPy prints it, `(2, 3)`, for a message.
-    [[nodiscard]] inline std::string shape_text(const std::vector<std::size_t>& shape)
-    {
-      std::string out {"("};
-      for (std::size_t i {0}; i < shape.size(); ++i) {
-        out += (i == 0 ? "" : ", ") + std::to_string(shape[i]);
-      }
-      return out + (shape.size() == 1 ? ",)" : ")");
-    }
 
-    //! \brief The row-major strides of \p shape, with a stride of 0 on each axis of extent 1 (it broadcasts),
-    //!        aligned on the last axis of a result of rank \p rank (missing leading axes stride 0 too).
-    [[nodiscard]] inline std::vector<std::size_t> broadcast_strides(const std::vector<std::size_t>& shape,
-                                                                    std::size_t                     rank)
-    {
-      std::vector<std::size_t> strides(rank, 0);
-      std::size_t              stride {1};
-      for (std::size_t i {shape.size()}; i-- > 0;) {
-        strides[rank - shape.size() + i] = shape[i] == 1 ? 0 : stride;
-        stride                          *= shape[i];
-      }
-      return strides;
-    }
 
     //! \brief The extents and strides that walk a tensor of \p shape with axis \p axis taken out: `outer`
     //!        positions before it, `inner` after it, the axis itself `extent` long at stride `inner`.
@@ -739,26 +717,6 @@ namespace numerical {
     }
   } // namespace detail
 
-  /*!
-   * \brief The shape two shapes broadcast to, as NumPy's `broadcast_shapes`.
-   * \throws dimension_error If an axis has two extents, neither of them 1.
-   */
-  [[nodiscard]] inline std::vector<std::size_t> broadcast_shape(const std::vector<std::size_t>& a,
-                                                                const std::vector<std::size_t>& b)
-  {
-    const std::size_t        rank {std::max(a.size(), b.size())};
-    std::vector<std::size_t> out(rank);
-    for (std::size_t i {0}; i < rank; ++i) {
-      const std::size_t x {i < rank - a.size() ? 1 : a[i - (rank - a.size())]};
-      const std::size_t y {i < rank - b.size() ? 1 : b[i - (rank - b.size())]};
-      if (x != y && x != 1 && y != 1) {
-        throw dimension_error("operands could not be broadcast together with shapes " + detail::shape_text(a) + " "
-                              + detail::shape_text(b));
-      }
-      out[i] = x == 1 ? y : x;
-    }
-    return out;
-  }
 
   namespace detail {
     /*!
@@ -783,6 +741,7 @@ namespace numerical {
     }
   } // namespace detail
 
+
   /*!
    * \brief `op(a, b)` element by element, the operands broadcast against each other.
    * \throws dimension_error If the shapes do not broadcast.
@@ -793,130 +752,7 @@ namespace numerical {
                                           const tensor<T>& b,
                                           const Op&        op)
   {
-    if (a.shape() == b.shape()) {
-      buffer<T>         out(a.size());
-      const std::size_t chunks {(a.size() + detail::elementwise_chunk - 1) / detail::elementwise_chunk};
-      detail::parallel_for(chunks, detail::elementwise_chunk, [&](std::size_t c) {
-                             const std::size_t first {c * detail::elementwise_chunk};
-                             const std::size_t last {std::min(first + detail::elementwise_chunk, a.size())};
-                             std::transform(a.data().begin() + static_cast<std::ptrdiff_t>(first), a.data().begin() + static_cast<std::ptrdiff_t>(last),
-                                            b.data().begin() + static_cast<std::ptrdiff_t>(first), out.begin() + static_cast<std::ptrdiff_t>(first), op);
-                           });
-      return tensor<T> {a.shape(), std::move(out)};
-    }
-    std::vector<std::size_t>       shape     {broadcast_shape(a.shape(), b.shape())};
-    const std::size_t              full_rank {shape.size()};
-    const std::vector<std::size_t> full_sa   {detail::broadcast_strides(a.shape(), full_rank)};
-    const std::vector<std::size_t> full_sb   {detail::broadcast_strides(b.shape(), full_rank)};
-    const std::size_t              count     {detail::element_count(shape.begin(), shape.end())};
-    buffer<T>                      out(count); // every element written below
-    if (count == 0) {
-      return tensor<T> {std::move(shape), std::move(out)};
-    }
-    // Neighbouring axes each operand steps through as one (its stride on the outer the inner's times the inner's
-    // extent, a broadcast axis 0 on both) run as one axis: the same elements in the same order.
-    std::vector<std::size_t> dims {shape[0]};
-    std::vector<std::size_t> sa   {full_sa[0]};
-    std::vector<std::size_t> sb   {full_sb[0]};
-    for (std::size_t axis {1}; axis < full_rank; ++axis) {
-      if (sa.back() == full_sa[axis] * shape[axis] && sb.back() == full_sb[axis] * shape[axis]) {
-        dims.back() *= shape[axis];
-        sa.back()    = full_sa[axis];
-        sb.back()    = full_sb[axis];
-        continue;
-      }
-      dims.push_back(shape[axis]);
-      sa.push_back(full_sa[axis]);
-      sb.push_back(full_sb[axis]);
-    }
-    const std::size_t rank {dims.size()};
-    // The innermost axis runs as one loop, each operand stepping 1 or 0 (a broadcast one) along it, so a
-    // scalar or a row against a matrix is a plain vector loop; the odometer turns only between rows. The rows go
-    // by tasks, each task's odometer set from its first row.
-    const std::size_t inner          {dims[rank - 1]};
-    const std::size_t step_a         {sa[rank - 1]};
-    const std::size_t step_b         {sb[rank - 1]};
-    const std::size_t rows           {count / inner};
-    const std::size_t rows_per_task  {std::max<std::size_t>(1, detail::elementwise_chunk / inner)};
-    detail::parallel_for((rows + rows_per_task - 1) / rows_per_task, rows_per_task * inner, [&](std::size_t task) {
-                           const std::size_t        first {task * rows_per_task};
-                           const std::size_t        last {std::min(first + rows_per_task, rows)};
-                           std::vector<std::size_t> index(rank, 0);
-                           std::size_t              ia {0};
-                           std::size_t              ib {0};
-                           for (std::size_t axis {rank - 1}, rest {first}; axis-- > 0;) { // the first row's position
-                             index[axis]  = rest % dims[axis];
-                             rest        /= dims[axis];
-                             ia          += index[axis] * sa[axis];
-                             ib          += index[axis] * sb[axis];
-                           }
-                           // Two axes, short rows, one operand's row the same for every row (stride 0) and the other's rows
-                           // together (stepping 1 along a row of two axes, its rows lie `inner` apart): that row repeated into
-                           // a run of at least 64, the task's rows one loop against it.
-                           if (rank == 2 && inner < 32 && step_a == 1 && step_b == 1 && (sa[0] == 0) != (sb[0] == 0)) {
-                             const bool        a_repeats {sa[0] == 0};
-                             const T* const    row_of    {a_repeats ? a.data().data() : b.data().data()};
-                             const T* const    whole     {(a_repeats ? b.data().data() : a.data().data()) + (first * inner)};
-                             T* const          po        {out.data() + (first * inner)};
-                             const std::size_t span      {((64 + inner - 1) / inner) * inner};
-                             std::array<T, 96> repeated {};
-                             for (std::size_t i {0}; i < span; ++i) {
-                               repeated[i] = row_of[i % inner];
-                             }
-                             const std::size_t total {(last - first) * inner};
-                             for (std::size_t from {0}; from < total; from += span) {
-                               const std::size_t n {std::min(span, total - from)};
-                               if (a_repeats) {
-                                 for (std::size_t i {0}; i < n; ++i) {
-                                   po[from + i] = op(repeated[i], whole[from + i]);
-                                 }
-                               }
-                               else {
-                                 for (std::size_t i {0}; i < n; ++i) {
-                                   po[from + i] = op(whole[from + i], repeated[i]);
-                                 }
-                               }
-                             }
-                             return;
-                           }
-                           for (std::size_t row {first}; row < last; ++row) {
-                             const T* const pa {a.data().data() + ia};
-                             const T* const pb {b.data().data() + ib};
-                             T* const       po {out.data() + (row * inner)};
-                             if (step_a == 1 && step_b == 1) {
-                               for (std::size_t i {0}; i < inner; ++i) {
-                                 po[i] = op(pa[i], pb[i]);
-                               }
-                             }
-                             else if (step_a == 1) {
-                               const T y {pb[0]};
-                               for (std::size_t i {0}; i < inner; ++i) {
-                                 po[i] = op(pa[i], y);
-                               }
-                             }
-                             else if (step_b == 1) {
-                               const T x {pa[0]};
-                               for (std::size_t i {0}; i < inner; ++i) {
-                                 po[i] = op(x, pb[i]);
-                               }
-                             }
-                             else {
-                               std::fill(po, po + inner, op(pa[0], pb[0]));
-                             }
-                             for (std::size_t axis {rank - 1}; axis-- > 0;) { // odometer over the outer axes: carry on wrap
-                               ++index[axis];
-                               ia += sa[axis];
-                               ib += sb[axis];
-                               if (index[axis] < dims[axis]) {
-                                 break;
-                               }
-                               ia          -= sa[axis] * dims[axis];
-                               ib          -= sb[axis] * dims[axis];
-                               index[axis]  = 0;
-                             }
-                           }
-                         });
-    return tensor<T> {std::move(shape), std::move(out)};
+    return detail::broadcast_into(a.data().data(), a.shape(), b.data().data(), b.shape(), op);
   }
 
   //! \brief Which of NumPy's complex loops fuse their multiply-adds: its product's vector loop, its product's scalar
