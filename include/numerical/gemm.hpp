@@ -1297,6 +1297,16 @@ namespace numerical::detail {
     return std::fma(a, b, sum);
   }
 
+  //! \brief What a product finds in C: the sums it adds to (`C += A·B`), or nothing it reads (`C = A·B`). Then the
+  //!        blocks by rows start their sums at zero and the packed tasks zero their block of C before its first panel, on
+  //!        the thread that computes it, where the caller's zeroing had the threads take C's lines from its cache (six
+  //!        AVX2 cores, all threads: order 64 7.1 → 5.2 µs, 96 12.7 → 9.4, 128 32.7 → 28.8; one: 32 1.62 → 1.47).
+  enum class c_start : bool
+  {
+    kept, //!< `C += A·B`.
+    zero  //!< `C = A·B`: C's elements before the product are not read.
+  };
+
 #ifdef NUMERICAL_X86_COMPILED
   //! \brief \ref narrow_block's \c term_rounding::x86_fused block, built for AVX2 with FMA: there `std::fma` is the
   //!        instruction (in code built for any x86-64, a call), the block's sums as narrow_block keeps them.
@@ -1307,12 +1317,15 @@ namespace numerical::detail {
                                                                            const T*    b,
                                                                            std::size_t ldb,
                                                                            T*          c,
-                                                                           std::size_t ldc) noexcept
+                                                                           std::size_t ldc,
+                                                                           c_start     start) noexcept
   {
-    std::array<T, R * N> sums {};
-    NUMERICAL_UNROLL_BLOCK
-    for (std::size_t e {0}; e < R * N; ++e) {
-      sums[e] = c[((e / N) * ldc) + (e % N)];
+    std::array<T, R * N> sums {}; // from zero where C holds nothing
+    if (start == c_start::kept) {
+      NUMERICAL_UNROLL_BLOCK
+      for (std::size_t e {0}; e < R * N; ++e) {
+        sums[e] = c[((e / N) * ldc) + (e % N)];
+      }
     }
     for (std::size_t p {0}; p < k; ++p) {
       NUMERICAL_UNROLL_BLOCK
@@ -1349,8 +1362,9 @@ namespace numerical::detail {
 
 #endif
 
-  //! \brief `C += A·B` for \p R rows and \p N columns of C, each sum in ascending order of the depth, as the plain
-  //!        loop's: the block held in registers, of a size the compiler knows; each term rounded as \p Mode says. Out
+  //! \brief `C += A·B` for \p R rows and \p N columns of C (`C = A·B` as \p start says), each sum in ascending order of
+  //!        the depth, as the plain loop's: the block held in registers, of a size the compiler knows; each term rounded
+  //!        as \p Mode says. Out
   //!        of line: its unrolled sizes, inlined, spent GCC's growth budget, and the LU factorisation, which runs none
   //!        of them, lost 3 to 8 % at every order (one arm64 thread, GCC 14).
   template <std::size_t R, std::size_t N, term_rounding Mode, typename T>
@@ -1360,19 +1374,22 @@ namespace numerical::detail {
                                           const T*    b,
                                           std::size_t ldb,
                                           T*          c,
-                                          std::size_t ldc) noexcept
+                                          std::size_t ldc,
+                                          c_start     start) noexcept
   {
 #ifdef NUMERICAL_X86_COMPILED
     if constexpr (Mode == term_rounding::x86_fused) {
-      narrow_block_x86<R, N>(k, a, lda, b, ldb, c, ldc);
+      narrow_block_x86<R, N>(k, a, lda, b, ldb, c, ldc, start);
     }
     else
 #endif
     {
-      std::array<T, R * N> sums {};
-      NUMERICAL_UNROLL_BLOCK
-      for (std::size_t e {0}; e < R * N; ++e) {
-        sums[e] = c[((e / N) * ldc) + (e % N)];
+      std::array<T, R * N> sums {}; // from zero where C holds nothing
+      if (start == c_start::kept) {
+        NUMERICAL_UNROLL_BLOCK
+        for (std::size_t e {0}; e < R * N; ++e) {
+          sums[e] = c[((e / N) * ldc) + (e % N)];
+        }
       }
       NUMERICAL_SCALAR_DEPTH
       for (std::size_t p {0}; p < k; ++p) {
@@ -1392,7 +1409,8 @@ namespace numerical::detail {
     }
   }
 
-  //! \brief `C += A·B` for \p R whole rows of C of \p n columns: blocks of \ref narrow_columns, the last narrower.
+  //! \brief `C += A·B` for \p R whole rows of C of \p n columns (`C = A·B` as \p start says): blocks of
+  //!        \ref narrow_columns, the last narrower.
   template <std::size_t R, term_rounding Mode, typename T>
   void narrow_rows(std::size_t n,
                    std::size_t k,
@@ -1401,23 +1419,57 @@ namespace numerical::detail {
                    const T*    b,
                    std::size_t ldb,
                    T*          c,
-                   std::size_t ldc) noexcept
+                   std::size_t ldc,
+                   c_start     start) noexcept
   {
     static_assert(narrow_columns == 8, "the switch below names each narrower last block");
     std::size_t j {0};
     for (; j + narrow_columns <= n; j += narrow_columns) {
-      narrow_block<R, narrow_columns, Mode>(k, a, lda, b + j, ldb, c + j, ldc);
+      narrow_block<R, narrow_columns, Mode>(k, a, lda, b + j, ldb, c + j, ldc, start);
     }
     switch (n - j) {
-      case 1: narrow_block<R, 1, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 2: narrow_block<R, 2, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 3: narrow_block<R, 3, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 4: narrow_block<R, 4, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 5: narrow_block<R, 5, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 6: narrow_block<R, 6, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
-      case 7: narrow_block<R, 7, Mode>(k, a, lda, b + j, ldb, c + j, ldc); break;
+      case 1: narrow_block<R, 1, Mode>(k, a, lda, b + j, ldb, c + j, ldc, start); break;
+      case 2: narrow_block<R, 2, Mode>(k, a, lda, b + j, ldb, c + j, ldc, start); break;
+      case 3: narrow_block<R, 3, Mode>(k, a, lda, b + j, ldb, c + j, ldc, start); break;
+      case 4: narrow_block<R, 4, Mode>(k, a, lda, b + j, ldb, c + j, ldc, start); break;
+      case 5: narrow_block<R, 5, Mode>(k, a, lda, b + j, ldb, c + j, ldc, start); break;
+      case 6: narrow_block<R, 6, Mode>(k, a, lda, b + j, ldb, c + j, ldc, start); break;
+      case 7: narrow_block<R, 7, Mode>(k, a, lda, b + j, ldb, c + j, ldc, start); break;
       default: break; // a whole number of blocks
     }
+  }
+
+  //! \brief Zeroes rows \p first to \p last (excluded) of C, columns \p from to \p to (excluded), its rows \p ldc apart.
+  template <typename T>
+  void zero_block(T*          c,
+                  std::size_t ldc,
+                  std::size_t first,
+                  std::size_t last,
+                  std::size_t from,
+                  std::size_t to) noexcept
+  {
+    if (to - from == ldc) { // whole rows: one run
+      std::fill(c + (first * ldc), c + (last * ldc), T {});
+      return;
+    }
+    for (std::size_t i {first}; i < last; ++i) {
+      std::fill(c + (i * ldc) + from, c + (i * ldc) + to, T {});
+    }
+  }
+
+  //! \brief Zeroes C's `m × n` elements, its rows \p ldc apart: on the threads where they lie together and are many
+  //!        (\ref parallel_zero), a fresh C's pages then faulted in by several.
+  template <typename T>
+  void zero_c(T*          c,
+              std::size_t ldc,
+              std::size_t m,
+              std::size_t n)
+  {
+    if (ldc == n) {
+      parallel_zero(c, m * n);
+      return;
+    }
+    zero_block(c, ldc, 0, m, 0, n);
   }
 
   /*!
@@ -1428,6 +1480,8 @@ namespace numerical::detail {
    * \param[in]     m,n,k       The shapes: A is `m×k`, B `k×n`, C `m×n`, all row-major.
    * \param[in]     a,lda,b,ldb The operands and the distance between their rows.
    * \param[in,out] c,ldc       The result and the distance between its rows.
+   * \param[in]     start       What C holds (\ref c_start): by blocks, their sums from zero; one by one, each row
+   *                             zeroed by the thread that computes it.
    * Each term rounded as \p Mode says (\ref term_rounding).
    */
   template <term_rounding Mode, typename T>
@@ -1439,22 +1493,26 @@ namespace numerical::detail {
                          const T*    b,
                          std::size_t ldb,
                          T*          c,
-                         std::size_t ldc)
+                         std::size_t ldc,
+                         c_start     start = c_start::kept)
   {
     if (k >= (n <= narrow_columns ? std::size_t {2} : narrow_least_depth)) {
       parallel_for((m + narrow_group - 1) / narrow_group, narrow_group * k * n / gemm_rows_weight, [&](std::size_t g) {
                      const std::size_t first {g * narrow_group};
                      if (first + narrow_group <= m) {
-                       narrow_rows<narrow_group, Mode>(n, k, a + (first * lda), lda, b, ldb, c + (first * ldc), ldc);
+                       narrow_rows<narrow_group, Mode>(n, k, a + (first * lda), lda, b, ldb, c + (first * ldc), ldc, start);
                        return;
                      }
                      for (std::size_t i {first}; i < m; ++i) {
-                       narrow_rows<1, Mode>(n, k, a + (i * lda), lda, b, ldb, c + (i * ldc), ldc);
+                       narrow_rows<1, Mode>(n, k, a + (i * lda), lda, b, ldb, c + (i * ldc), ldc, start);
                      }
                    });
       return;
     }
     parallel_for(m, k * n / vector_speedup, [&](std::size_t i) {
+                   if (start == c_start::zero) {
+                     zero_block(c, ldc, i, i + 1, 0, n);
+                   }
 #ifdef NUMERICAL_X86_COMPILED
                    if constexpr (Mode == term_rounding::x86_fused) {
                      plain_row_x86(n, k, a + (i * lda), b, ldb, c + (i * ldc));
@@ -1503,24 +1561,25 @@ namespace numerical::detail {
                  const T*    b,
                  std::size_t ldb,
                  T*          c,
-                 std::size_t ldc)
+                 std::size_t ldc,
+                 c_start     start = c_start::kept)
   {
 #ifdef NUMERICAL_X86_COMPILED
     if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
       const gemm_path path {gemm_path_current()};
       if (path == gemm_path::avx512 || path == gemm_path::avx2) {
-        gemm_rows_rounded<term_rounding::x86_fused>(m, n, k, a, lda, b, ldb, c, ldc);
+        gemm_rows_rounded<term_rounding::x86_fused>(m, n, k, a, lda, b, ldb, c, ldc, start);
         return;
       }
     }
 #endif
     if constexpr (std::is_floating_point_v<T>) {
       if (rows_fuse()) {
-        gemm_rows_rounded<term_rounding::fused>(m, n, k, a, lda, b, ldb, c, ldc);
+        gemm_rows_rounded<term_rounding::fused>(m, n, k, a, lda, b, ldb, c, ldc, start);
         return;
       }
     }
-    gemm_rows_rounded<term_rounding::compiler>(m, n, k, a, lda, b, ldb, c, ldc);
+    gemm_rows_rounded<term_rounding::compiler>(m, n, k, a, lda, b, ldb, c, ldc, start);
   }
 
   //! \brief The cache line a packed operand starts.
@@ -1675,7 +1734,7 @@ namespace numerical::detail {
    *        disjoint block of C, one tile at a time. Given \p a_packed (A as \ref pack_left packs it for \p Kernel, a
    *        depth of one panel), A is read from there and only B is packed: the same tiles, the same bits. \p B is
    *        B's layout (\ref b_rows, \ref b_transposed), \p A A's (\ref a_rows, \ref a_transposed): the packing alone
-   *        differs, so the bits do not.
+   *        differs, so the bits do not. \p start says what C holds (\ref c_start), \p k then not zero.
    */
   template <typename Kernel,
             typename T,
@@ -1690,7 +1749,8 @@ namespace numerical::detail {
                    std::size_t ldb,
                    T*          c,
                    std::size_t ldc,
-                   const T*    a_packed = nullptr)
+                   const T*    a_packed = nullptr,
+                   c_start     start    = c_start::kept)
   {
     constexpr std::size_t    mr     {Kernel::mr};
     constexpr std::size_t    nr     {Kernel::nr};
@@ -1710,6 +1770,19 @@ namespace numerical::detail {
       for (std::size_t pc {0}; pc < k; pc += Kernel::depth) {
         const std::size_t kc         {std::min(Kernel::depth, k - pc)};
         const std::size_t groups     {((slivers + gemm_slivers_per_task) - 1) / gemm_slivers_per_task};
+        // A task covers task_rows rows: a whole block, or fewer whole tiles when blocks would leave a thread fewer
+        // than tasks_per_thread tasks (order 256 on twenty x86-64 threads: twelve tasks took 116 µs, 44 took 104).
+        const std::size_t tiles      {((m + mr) - 1) / mr};
+        const std::size_t row_tasks  {(((tasks_per_thread * max_threads()) + groups) - 1) / groups};
+        const std::size_t task_rows  {std::clamp(((tiles + row_tasks) - 1) / row_tasks, std::size_t {1}, task_rows_cap<Kernel>(kc) / mr) * mr};
+        const std::size_t task_count {((m + task_rows) - 1) / task_rows};
+        const std::size_t task_work  {shared * task_rows * gemm_slivers_per_task * nr * kc / Kernel::speedup};
+        // C holding nothing: zeroed by the tasks on threads, each its block before its first panel; else here, at
+        // once and before the packing, which its lines would then evict (one AVX-512 thread, order 256: 434 → 428 µs).
+        const bool        zero_tasks {start == c_start::zero && pc == 0 && parallel_threads(task_count * groups, task_work) > 1};
+        if (start == c_start::zero && pc == 0 && !zero_tasks) {
+          zero_block(c, ldc, 0, m, jc, jc + nc);
+        }
         // One pass packs both: B's groups of slivers first, then A's row blocks.
         // The packing weighed as the tile's work is (\p Kernel's speedup): a small product then packs in parallel too
         // (eight AVX2 cores: order 128 40 → 30 µs, 192 92 → 62).
@@ -1727,17 +1800,14 @@ namespace numerical::detail {
                          A::template pack<Kernel>(a, lda, ic, pc, std::min(Kernel::block_rows, m - ic), kc, packed.a() + (ic * kc));
                        }
                      });
-        // A task covers task_rows rows: a whole block, or fewer whole tiles when blocks would leave a thread fewer
-        // than tasks_per_thread tasks (order 256 on twenty x86-64 threads: twelve tasks took 116 µs, 44 took 104).
-        const std::size_t tiles      {((m + mr) - 1) / mr};
-        const std::size_t row_tasks  {(((tasks_per_thread * max_threads()) + groups) - 1) / groups};
-        const std::size_t task_rows  {std::clamp(((tiles + row_tasks) - 1) / row_tasks, std::size_t {1}, task_rows_cap<Kernel>(kc) / mr) * mr};
-        const std::size_t task_count {((m + task_rows) - 1) / task_rows};
-        parallel_for(task_count * groups, shared * task_rows * gemm_slivers_per_task * nr * kc / Kernel::speedup, [&](std::size_t task) {
+        parallel_for(task_count * groups, task_work, [&](std::size_t task) {
                        const std::size_t                   ic     {(task / groups) * task_rows};
                        const std::size_t                   first  {(task % groups) * gemm_slivers_per_task};
                        const std::size_t                   last   {std::min(first + gemm_slivers_per_task, slivers)};
                        const std::size_t                   ic_end {std::min(ic + task_rows, m)};
+                       if (zero_tasks) {
+                         zero_block(c, ldc, ic, ic_end, jc + (first * nr), jc + std::min(last * nr, nc));
+                       }
                        [[maybe_unused]] const typename Kernel::session on {};
                        // A sliver (the operand each step broadcasts) stays in the L1 cache across the task's B slivers,
                        // which stream from the L2, as BLIS orders its loops: B sliver outer, its 32 KiB filled the L1
@@ -2252,9 +2322,10 @@ namespace numerical::detail {
                                     const T*    b,
                                     std::size_t ldb,
                                     T*          c,
-                                    std::size_t ldc)
+                                    std::size_t ldc,
+                                    c_start     start = c_start::kept)
   {
-    (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc;
+    (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc, (void)start;
     return false;
   }
 
@@ -2271,33 +2342,34 @@ namespace numerical::detail {
                                            const double* b,
                                            std::size_t   ldb,
                                            double*       c,
-                                           std::size_t   ldc)
+                                           std::size_t   ldc,
+                                           c_start       start = c_start::kept)
   {
     const gemm_path path {gemm_path_current()};
 #ifdef NUMERICAL_AMX_COMPILED
     if (path == gemm_path::amx && amx_suits(m, n, k)) { // else the NEON tile
-      gemm_packed<amx_tile_kernel, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<amx_tile_kernel, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return true;
     }
 #endif
 #ifdef NUMERICAL_NEON_COMPILED
     if (path == gemm_path::neon || path == gemm_path::amx) {
-      gemm_packed<neon_tile_kernel<double>, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<neon_tile_kernel<double>, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return true;
     }
 #endif
 #ifdef NUMERICAL_X86_COMPILED
     if (path == gemm_path::avx512) {
-      gemm_packed<avx512_tile_kernel, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<avx512_tile_kernel, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return true;
     }
     if (path == gemm_path::avx2) {
-      gemm_packed<avx2_tile_kernel, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<avx2_tile_kernel, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return true;
     }
 #endif
     (void)path;
-    (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc;
+    (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc, (void)start;
     return false;
   }
 
@@ -2353,9 +2425,10 @@ namespace numerical::detail {
                                            const double* b,
                                            std::size_t   ldb,
                                            double*       c,
-                                           std::size_t   ldc)
+                                           std::size_t   ldc,
+                                           c_start       start = c_start::kept)
   {
-    return gemm_double_elsewhere<b_rows>(m, n, k, a, lda, b, ldb, c, ldc);
+    return gemm_double_elsewhere<b_rows>(m, n, k, a, lda, b, ldb, c, ldc, start);
   }
 
   //! \brief A `float` product on the AMX where it suits the product, on the NEON tile on arm64's fused paths, on the
@@ -2371,33 +2444,34 @@ namespace numerical::detail {
                                           const float* b,
                                           std::size_t  ldb,
                                           float*       c,
-                                          std::size_t  ldc)
+                                          std::size_t  ldc,
+                                          c_start      start = c_start::kept)
   {
 #ifdef NUMERICAL_NEON_COMPILED
     const gemm_path path {gemm_path_current()};
 #  ifdef NUMERICAL_AMX_COMPILED
     if (path == gemm_path::amx && amx_suits_f32(m, n, k)) {
-      gemm_packed<amx_tile_kernel_f32, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<amx_tile_kernel_f32, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return true;
     }
 #  endif
     if (path == gemm_path::neon || path == gemm_path::amx) {
-      gemm_packed<neon_tile_kernel<float>, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<neon_tile_kernel<float>, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return true;
     }
 #endif
 #ifdef NUMERICAL_X86_COMPILED
     const gemm_path x86_path {gemm_path_current()};
     if (x86_path == gemm_path::avx512) {
-      gemm_packed<avx512_tile_kernel_f32, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<avx512_tile_kernel_f32, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return true;
     }
     if (x86_path == gemm_path::avx2) {
-      gemm_packed<avx2_tile_kernel_f32, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<avx2_tile_kernel_f32, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return true;
     }
 #endif
-    (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc;
+    (void)m, (void)n, (void)k, (void)a, (void)lda, (void)b, (void)ldb, (void)c, (void)ldc, (void)start;
     return false;
   }
 
@@ -2410,9 +2484,10 @@ namespace numerical::detail {
                                            const float* b,
                                            std::size_t  ldb,
                                            float*       c,
-                                           std::size_t  ldc)
+                                           std::size_t  ldc,
+                                           c_start      start = c_start::kept)
   {
-    return gemm_float_elsewhere<b_rows>(m, n, k, a, lda, b, ldb, c, ldc);
+    return gemm_float_elsewhere<b_rows>(m, n, k, a, lda, b, ldb, c, ldc, start);
   }
 
   template <typename T>
@@ -2424,7 +2499,8 @@ namespace numerical::detail {
             const T*    b,
             std::size_t ldb,
             T*          c,
-            std::size_t ldc);
+            std::size_t ldc,
+            c_start     start = c_start::kept);
 
   //! \brief The columns of B and C, and the depth, of one real product of `gemm_split`: its real operands
   //!         stay a few megabytes whatever the shapes.
@@ -2698,14 +2774,15 @@ namespace numerical::detail {
                   const T*    b,
                   std::size_t ldb,
                   T*          c,
-                  std::size_t ldc)
+                  std::size_t ldc,
+                  c_start     start = c_start::kept)
   {
     if (plain_loop_suits<T>(m, n, k)) { // the plain loop rounds as the tiles do: the same bits either way
-      gemm_rows(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_rows(m, n, k, a, lda, b, ldb, c, ldc, start);
       return;
     }
-    if (!gemm_elsewhere(m, n, k, a, lda, b, ldb, c, ldc)) {
-      gemm_packed<vector_tile_kernel<T>>(m, n, k, a, lda, b, ldb, c, ldc);
+    if (!gemm_elsewhere(m, n, k, a, lda, b, ldb, c, ldc, start)) {
+      gemm_packed<vector_tile_kernel<T>, T>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
     }
   }
 
@@ -2751,7 +2828,7 @@ namespace numerical::detail {
     gemm_split<T, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
   }
 
-  //! \brief \ref gemm_large_complex of row-major operands.
+  //! \brief \ref gemm_large_complex of row-major operands, C zeroed first where \p start says it holds nothing.
   template <split_complex T>
   void gemm_large(std::size_t m,
                   std::size_t n,
@@ -2761,8 +2838,12 @@ namespace numerical::detail {
                   const T*    b,
                   std::size_t ldb,
                   T*          c,
-                  std::size_t ldc)
+                  std::size_t ldc,
+                  c_start     start = c_start::kept)
   {
+    if (start == c_start::zero) { // its routes add to C
+      zero_c(c, ldc, m, n);
+    }
     gemm_large_complex<b_rows, a_rows>(m, n, k, a, lda, b, ldb, c, ldc);
   }
 
@@ -2787,7 +2868,9 @@ namespace numerical::detail {
    * \param[in]     a,lda,b,ldb The operands and the distance between their rows.
    * \param[in,out] c,ldc       The result and the distance between its rows (C may be a block of a
    *                             larger matrix that A and B do not overlap).
-   * A zero `m`, `n` or `k` leaves C as it is.
+   * \param[in]     start       What C holds (\ref c_start): with \c c_start::zero, `C = A·B`, the same bits as C
+   *                             zeroed then this product, each part of C zeroed by the thread that computes it.
+   * A zero `m` or `n` leaves C as it is; a zero `k` too, or zeroes it with \c c_start::zero.
    */
   template <typename T>
   void gemm(std::size_t m,
@@ -2798,25 +2881,29 @@ namespace numerical::detail {
             const T*    b,
             std::size_t ldb,
             T*          c,
-            std::size_t ldc)
+            std::size_t ldc,
+            c_start     start)
   {
     if constexpr (split_complex<T>) {
       if (gemm_path_current() != gemm_path::portable) {
         if (m != 0 && n != 0 && k != 0) {
-          gemm_large(m, n, k, a, lda, b, ldb, c, ldc);
+          gemm_large(m, n, k, a, lda, b, ldb, c, ldc, start);
+        }
+        else if (start == c_start::zero) {
+          zero_c(c, ldc, m, n);
         }
         return;
       }
     }
     if (by_rows(m, n, k)) { // narrow, or small: by rows, the same bits
-      gemm_rows(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_rows(m, n, k, a, lda, b, ldb, c, ldc, start);
       return;
     }
     if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
-      gemm_rows(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_rows(m, n, k, a, lda, b, ldb, c, ldc, start);
       return;
     }
-    gemm_large(m, n, k, a, lda, b, ldb, c, ldc);
+    gemm_large(m, n, k, a, lda, b, ldb, c, ldc, start);
   }
 
   //! \brief A `double` product past the plain loop, B and A laid out as \p B and \p A say (\ref gemm_layouts).

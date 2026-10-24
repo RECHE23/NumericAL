@@ -17,6 +17,7 @@
 #include <cstddef>
 #include <functional>
 #include <initializer_list>
+#include <memory>
 #include <utility>
 #include <vector>
 
@@ -228,13 +229,12 @@ namespace numerical {
     if (a.cols() != b.rows()) {
       throw dimension_error("matrix–matrix product: inner dimensions differ");
     }
-    // detail::gemm adds to `out`, every element in ascending order of the inner index, whatever the blocking and
-    // the number of threads (see gemm.hpp): `out` starts at zero, written by the threads that will compute it.
+    // detail::gemm sums every element in ascending order of the inner index, whatever the blocking and the number of
+    // threads (see gemm.hpp), from zero: each part of `out` zeroed by the thread that computes it. An empty operand
+    // gives its address, which a product of an empty dimension never reads.
     buffer<T> out(detail::checked_mul(a.rows(), b.cols())); // guard the cross-product alloc
-    detail::parallel_zero(out.data(), out.size());
-    if (!out.empty() && a.cols() != 0) {
-      detail::gemm(a.rows(), b.cols(), a.cols(), &*a.begin(), a.cols(), &*b.begin(), b.cols(), out.data(), b.cols());
-    }
+    detail::gemm(a.rows(), b.cols(), a.cols(), std::to_address(a.begin()), a.cols(), std::to_address(b.begin()), b.cols(), out.data(),
+                 b.cols(), detail::c_start::zero);
     return matrix<T> {a.rows(), b.cols(), std::move(out)};
   }
 

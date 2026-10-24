@@ -379,11 +379,8 @@ namespace numerical {
                                       std::size_t              cols,
                                       std::vector<std::size_t> out_shape)
     {
-      buffer<T> c(rows * cols);          // the caller routes only an output of two elements or more here
-      parallel_zero(c.data(), c.size()); // gemm adds to C
-      if (inner != 0) {
-        gemm(rows, cols, inner, a, inner, b, cols, c.data(), cols);
-      }
+      buffer<T> c(rows * cols); // the caller routes only an output of two elements or more here
+      gemm(rows, cols, inner, a, inner, b, cols, c.data(), cols, c_start::zero);
       return tensor<T> {std::move(out_shape), std::move(c)};
     }
 
@@ -717,10 +714,9 @@ namespace numerical {
                      });
       }
       else {
-        parallel_zero(c.data(), c.size()); // gemm adds to C
         parallel_for(batches, rows * cols * inner / gemm_kernel_speedup, [&](std::size_t p) {
                        gemm(rows, cols, inner, left_data + (p * rows * inner), inner, right_data + (p * inner * cols), cols,
-                            c.data() + (p * rows * cols), cols);
+                            c.data() + (p * rows * cols), cols, c_start::zero);
                      });
       }
       std::vector<std::size_t> shape;
@@ -1426,9 +1422,8 @@ namespace numerical {
     }
     const std::array<std::size_t, 3> elements {count, m, n};
     buffer<T>                        c(detail::element_count(elements.begin(), elements.end()));
-    detail::parallel_zero(c.data(), c.size()); // gemm adds to C
-    if (rank == 0) {                           // no stack: one product
-      detail::gemm(m, n, k, a.data().data(), k, b.data().data(), n, c.data(), n);
+    if (rank == 0) { // no stack: one product
+      detail::gemm(m, n, k, a.data().data(), k, b.data().data(), n, c.data(), n, detail::c_start::zero);
       return tensor<T> {std::move(shape), std::move(c)};
     }
     const auto product {[&](std::size_t p) {
@@ -1441,7 +1436,7 @@ namespace numerical {
                             offset_a += index * stride_a[d];
                             offset_b += index * stride_b[d];
                           }
-                          detail::gemm(m, n, k, a.data().data() + offset_a, k, b.data().data() + offset_b, n, c.data() + (p * m * n), n);
+                          detail::gemm(m, n, k, a.data().data() + offset_a, k, b.data().data() + offset_b, n, c.data() + (p * m * n), n, detail::c_start::zero);
                         }};
     detail::parallel_for(count, m * n * k / detail::gemm_kernel_speedup, product); // the stack's products in parallel
     return tensor<T> {std::move(shape), std::move(c)};

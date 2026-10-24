@@ -6,6 +6,7 @@
 #include <array>
 #include <cmath>
 #include <complex>
+#include <limits>
 #include <cstddef>
 #include <random>
 #include <type_traits>
@@ -36,7 +37,7 @@ namespace {
   template <typename T>
   T entry(std::size_t i)
   {
-    if constexpr (std::is_floating_point_v<T>) {
+    if constexpr (std::is_arithmetic_v<T>) {
       return fill<T>(i);
     }
     else {
@@ -623,6 +624,103 @@ TEST(the_calling_thread_keeps_its_packing_storage_within_the_limit)
                          const std::size_t rows {(storage::kept_limit / numerical::detail::gemm_kc) + 64};
                          ok = ok && product_is_exact<double>(rows, numerical::detail::gemm_rows_columns + 1, numerical::detail::gemm_kc) && storage::kept().empty();
                          return ok && product_is_exact<double>(128, 128, 128) && !storage::kept().empty();
+                       }));
+}
+
+namespace
+{
+  // A value C holds before a product that does not read it: NaN, or for int a value no product below reaches.
+  template <typename T>
+  T stale()
+  {
+    if constexpr (std::is_same_v<T, int>) {
+      return 1 << 30;
+    }
+    else if constexpr (std::is_floating_point_v<T>) {
+      return std::numeric_limits<T>::quiet_NaN();
+    }
+    else {
+      return T {stale<typename T::value_type>(), stale<typename T::value_type>()};
+    }
+  }
+
+  // Whether \p value is still stale: NaN, or for int the value stale gave.
+  template <typename T>
+  bool is_stale(const T& value)
+  {
+    if constexpr (std::is_same_v<T, int>) {
+      return value == stale<int>();
+    }
+    else if constexpr (std::is_floating_point_v<T>) {
+      return std::isnan(value);
+    }
+    else {
+      return is_stale(value.real()) && is_stale(value.imag());
+    }
+  }
+
+  // gemm with c_start::zero into a C of stale values, its rows \p ldc apart: the bits of C zeroed then the product
+  // added, and the columns past it untouched.
+  template <typename T>
+  bool product_into_stale_c_is_zeroed_then_added_apart(std::size_t m,
+                                                       std::size_t n,
+                                                       std::size_t k,
+                                                       std::size_t ldc)
+  {
+    std::vector<T>    a(m * k);
+    std::vector<T>    b(k * n);
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = entry<T>(i);
+    }
+    for (std::size_t i {0}; i < b.size(); ++i) {
+      b[i] = entry<T>((i * 7) + 3);
+    }
+    std::vector<T> added(m * ldc, T {});
+    std::vector<T> into(m * ldc, stale<T>());
+    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, added.data(), ldc);
+    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, into.data(), ldc, numerical::detail::c_start::zero);
+    bool same {true};
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < ldc; ++j) {
+        const T& got {into[(i * ldc) + j]};
+        same = same && (j < n ? got == added[(i * ldc) + j] : is_stale(got));
+      }
+    }
+    return same;
+  }
+
+  // The same, C a whole matrix and a block of a wider one.
+  template <typename T>
+  bool product_into_stale_c_is_zeroed_then_added(std::size_t m,
+                                                 std::size_t n,
+                                                 std::size_t k)
+  {
+    return product_into_stale_c_is_zeroed_then_added_apart<T>(m, n, k, n) && product_into_stale_c_is_zeroed_then_added_apart<T>(m, n, k, n + 3);
+  }
+} // namespace
+
+// gemm into a C it does not read (c_start::zero), each part of C zeroed by the thread that computes it: the bits of C
+// zeroed then the product added, on every path, one and four threads, by rows (narrow, small, of depth one), packed
+// (one depth panel and three, several blocks of columns), and of depth zero; C a whole matrix and a block of a wider one.
+TEST(a_product_into_c_gives_the_bits_of_c_zeroed_then_added)
+{
+  const std::size_t wide {std::max(numerical::detail::gemm_nc<double>, std::size_t {16} *128) + 13};
+  const std::size_t deep {(numerical::detail::gemm_kc * 2) + 17};
+  EXPECT(on_every_path([&] {
+                         bool same {true};
+                         for (const std::size_t threads : {std::size_t {1}, std::size_t {4}}) {
+                           numerical::set_max_threads(threads);
+                           for (const auto& [m, n, k] : {std::array<std::size_t, 3> {3, 5, 7}, {169, 2, 579}, {64, 64, 64}, {40, 40, 1},
+                                                         {130, 101, 600}, {129, 67, deep}, {9, wide, 40}, {5, 6, 0}}) {
+                             same = same && product_into_stale_c_is_zeroed_then_added<double>(m, n, k) &&
+                                    product_into_stale_c_is_zeroed_then_added<float>(m, n, k) &&
+                                    product_into_stale_c_is_zeroed_then_added<std::complex<double>>(m, n, k) &&
+                                    product_into_stale_c_is_zeroed_then_added<std::complex<float>>(m, n, k) &&
+                                    product_into_stale_c_is_zeroed_then_added<int>(m, n, k);
+                           }
+                         }
+                         numerical::set_max_threads(0); // every thread again
+                         return same;
                        }));
 }
 

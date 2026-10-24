@@ -561,6 +561,17 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief The threads \ref parallel_for shares \p count indices of \p work_per_index out to (\ref threads_for): the
+   *        hardware's, at most the cap \ref numerical::set_max_threads set. Fewer than two runs them on the caller.
+   */
+  [[nodiscard]] inline std::size_t parallel_threads(std::size_t count,
+                                                    std::size_t work_per_index)
+  {
+    const std::size_t cap {thread_cap().load()};
+    return threads_for(count, work_per_index, cap == 0 ? hardware_threads() : std::min(cap, hardware_threads()));
+  }
+
+  /*!
    * \brief Runs `body(i)` for every `i` in `[0, count)`.
    *
    * The range is partitioned across as many threads as its work pays for (\ref threads_for), and runs
@@ -581,8 +592,7 @@ namespace numerical::detail {
                     std::size_t work_per_index,
                     const Body& body)
   {
-    const std::size_t cap     {thread_cap().load()};
-    const std::size_t threads {threads_for(count, work_per_index, cap == 0 ? hardware_threads() : std::min(cap, hardware_threads()))};
+    const std::size_t threads {parallel_threads(count, work_per_index)};
     const auto        runner  {[](const void* erased, std::size_t begin, std::size_t end) {
                                  const Body& work {*static_cast<const Body*>(erased)};
                                  for (std::size_t i {begin}; i < end; ++i) {

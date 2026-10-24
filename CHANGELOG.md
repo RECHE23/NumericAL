@@ -20,8 +20,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`max` and `min` of contiguous `double` and `float` run on AVX2 where the processor has it**, where the x86-64
   wheels' baseline build compared two `double` at a time: the same answer (each lane its own best, a NaN flagged apart,
   a zero's sign settled after). Six AVX2 cores, one thread: 4096 elements 0.36 → 0.09 ns each, 262 144 0.41 → 0.20.
-
-### Changed
+- **A matrix product no longer zeroes its result on the calling thread first** (`a * b`, `matmul`, `@` and `einsum`'s
+  products; `detail::c_start::zero` in C++): the blocks by rows start their sums at zero, and on the threads each
+  packed task zeroes its own block of the result before its first panel, where the threads then took the result's
+  cache lines from the caller's cache. The same bits. Six AVX2 cores, all threads: order 64 7.1 → 5.2 µs, 96 12.7 →
+  9.4, 128 32.7 → 28.8, 256 152 → 143; one thread, order 24 to 96 5 to 9 % faster.
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on
   x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
   order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,
