@@ -49,6 +49,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   in parallel, each as before, then added in the tree's order, the subtrees set by the count alone (the whole tensor's
   sum, and an axis's of single-element rows). M1 Pro: 2^20 doubles 181 → 45 µs, 2^24 2.97 → 1.17 ms; ten AVX-512 cores
   2^20 247 → 44 µs, 2^24 12.5 → 2.2 ms.
+- **Complex `double` products by rows run on AVX2 on x86-64** (the panels' products of the complex LU and Cholesky
+  factorisations), where they ran scalar: each term the library's product `(ac − bd, ad + bc)`, its products rounded
+  apart, added to its sum, two columns a vector; a block with a NaN part among its products (the library rescues a
+  product of infinities) is left to the scalar loop. The same bits. Six AVX2 cores, one thread: complex `cholesky` of
+  order 286 2.66 → 1.87 ms, 512 10.6 → 7.9 ms; `det` of order 512 16.0 → 13.1 ms; ten AVX-512 cores, all threads:
+  `cholesky` of order 512 4.1 → 3.4 ms, `det` 10.3 → 7.0 ms.
 - **`norm` of a transposed NumPy matrix reads it where it lies** (a column-major array, as `a.T` hands it), eight rows
   at a time copied into a band in their C order, where the whole matrix was copied into a Tensor first: the same bits
   as its contiguous copy's. One M1 Pro: 252 × 175 26.5 → 17.3 µs, 371 × 208 47.1 → 30.4 µs, 1000 × 1000 1.23 → 0.58 ms.

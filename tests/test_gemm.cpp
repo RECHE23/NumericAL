@@ -148,6 +148,70 @@ TEST(narrow_products_by_rows_give_the_packed_bits)
                        }));
 }
 
+// Complex products by rows (gemm_rows, which the LU's and the Cholesky factorisation's panels call): each element its
+// start (C's own, or zero) plus a(i,p)·b(p,j) for p ascending, the library's product rounded before its sum, on every
+// path and width (the x86-64 vectors' two columns apiece and a last one alone, past four columns in two parts), and
+// with infinities whose product has two NaN parts, which the library rescues: the block then left to the scalar loop.
+TEST(complex_products_by_rows_give_the_ascending_sum)
+{
+  using C = std::complex<double>;
+  const auto same_part = [](double x, double y) { return (std::isnan(x) && std::isnan(y)) || (x == y && std::signbit(x) == std::signbit(y)); };
+  EXPECT(on_every_path([&] {
+                         bool ok {true};
+                         for (const std::size_t n : {1U, 2U, 3U, 4U, 5U, 7U, 8U, 9U, 13U, 24U}) {
+                           for (const bool infinite : {false, true}) {
+                             const std::size_t m {11};
+                             const std::size_t k {37};
+                             std::vector<C>    a(m * k);
+                             std::vector<C>    b(k * n);
+                             std::vector<C>    c(m * n);
+                             for (std::size_t i {0}; i < a.size(); ++i) {
+                               a[i] = entry<C>(i);
+                             }
+                             for (std::size_t i {0}; i < b.size(); ++i) {
+                               b[i] = entry<C>((i * 7) + 3);
+                             }
+                             for (std::size_t i {0}; i < c.size(); ++i) {
+                               c[i] = entry<C>((i * 5) + 2);
+                             }
+                             if (infinite) { // (inf, inf)·(0, 1): both parts NaN, the library's rescue an infinity
+                               const double inf {std::numeric_limits<double>::infinity()};
+                               a[(3 * k) + 4]       = C {inf, inf};
+                               b[(4 * n) + (n - 1)] = C {0.0, 1.0};
+                             }
+                             std::vector<C> want {c};
+                             for (std::size_t i {0}; i < m; ++i) {
+                               for (std::size_t p {0}; p < k; ++p) {
+                                 for (std::size_t j {0}; j < n; ++j) {
+                                   want[(i * n) + j] = want[(i * n) + j] + (a[(i * k) + p] * b[(p * n) + j]);
+                                 }
+                               }
+                             }
+                             std::vector<C> kept {c};
+                             numerical::detail::gemm_rows(m, n, k, a.data(), k, b.data(), n, kept.data(), n);
+                             std::vector<C> zero(m * n, C {std::numeric_limits<double>::quiet_NaN(), 0.0}); // not read
+                             numerical::detail::gemm_rows(m, n, k, a.data(), k, b.data(), n, zero.data(), n, numerical::detail::c_start::zero);
+                             std::vector<C>  from_zero(m * n);
+                             for (std::size_t i {0}; i < m; ++i) {
+                               for (std::size_t p {0}; p < k; ++p) {
+                                 for (std::size_t j {0}; j < n; ++j) {
+                                   from_zero[(i * n) + j] = (p == 0 ? C {} : from_zero[(i * n) + j]) + (a[(i * k) + p] * b[(p * n) + j]);
+                                 }
+                               }
+                             }
+                             for (std::size_t e {0}; e < m * n; ++e) {
+                               ok = ok && same_part(kept[e].real(), want[e].real()) && same_part(kept[e].imag(), want[e].imag());
+                               ok = ok && same_part(zero[e].real(), from_zero[e].real()) && same_part(zero[e].imag(), from_zero[e].imag());
+                             }
+                             if (infinite) {
+                               ok = ok && std::isinf(want[(3 * n) + (n - 1)].real()); // the rescue reached the sum
+                             }
+                           }
+                         }
+                         return ok;
+                       }));
+}
+
 // Past the packing threshold: three depth panels (the last partial), a last partial register tile in
 // both directions, and enough tasks to run in parallel.
 TEST(packed_product_equals_the_ascending_sum_to_the_bit)

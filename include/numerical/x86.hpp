@@ -121,6 +121,12 @@ namespace numerical::detail {
     __m256d v; //!< The register.
   };
 
+  //! \brief A 128-bit register as an element of `std::array`.
+  struct xmm_register
+  {
+    __m128d v; //!< The register.
+  };
+
   //! \brief The rows of C one AVX-512 tile covers.
   inline constexpr std::size_t avx512_mr {12};
 

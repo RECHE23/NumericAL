@@ -1389,6 +1389,132 @@ namespace numerical::detail {
 
 #endif
 
+#ifdef NUMERICAL_X86_COMPILED
+  /*!
+   * \brief \ref narrow_block's \c term_rounding::compiler block of complex `double`s on AVX2, \p W of its columns from
+   *        \p j0 (up to four, two to a vector): each term `sum + a·b` with the product as the standard library's,
+   *        `(ac − bd, ad + bc)` each part's products rounded apart (the two products of a vector, then their
+   *        difference and sum together), added to its sum in ascending order of the depth. False, nothing written, where
+   *        a product has a NaN part: the caller's scalar loop then takes the block, the library's rescue of a product
+   *        of infinities with it.
+   */
+  template <std::size_t R, std::size_t W>
+  NUMERICAL_TARGET("avx2") bool narrow_columns_complex_x86(std::size_t                 k,
+                                                           const std::complex<double>* a,
+                                                           std::size_t                 lda,
+                                                           const std::complex<double>* b,
+                                                           std::size_t                 ldb,
+                                                           std::complex<double>*       c,
+                                                           std::size_t                 ldc,
+                                                           c_start                     start) noexcept
+  {
+    static_assert(W >= 1 && W <= 4, "four complex columns at most, two to a vector");
+    constexpr std::size_t           wide     {W / 2}; // whole vectors of two
+    constexpr bool                  half     {W % 2 == 1};
+    std::array<ymm_register, R * 2> sums     {};
+    std::array<xmm_register, R>     last     {};
+    __m256d                         nan_wide {_mm256_setzero_pd()};
+    __m128d                         nan_half {_mm_setzero_pd()};
+    auto* const                     cs       {reinterpret_cast<double*>(c)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is the array of its two parts
+    const auto* const               as       {reinterpret_cast<const double*>(a)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): as above
+    const auto* const               bs       {reinterpret_cast<const double*>(b)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): as above
+    NUMERICAL_UNROLL_BLOCK
+    for (std::size_t r {0}; r < R; ++r) {
+      NUMERICAL_UNROLL_BLOCK
+      for (std::size_t v {0}; v < wide; ++v) {
+        sums[(r * 2) + v].v = start == c_start::kept ? _mm256_loadu_pd(cs + (2 * ((r * ldc) + (2 * v)))) : _mm256_setzero_pd();
+      }
+      if constexpr (half) {
+        last[r].v = start == c_start::kept ? _mm_loadu_pd(cs + (2 * ((r * ldc) + (2 * wide)))) : _mm_setzero_pd();
+      }
+    }
+    for (std::size_t p {0}; p < k; ++p) {
+      const double* const         row {bs + (2 * p * ldb)};
+      std::array<ymm_register, 2> bw  {};
+      std::array<ymm_register, 2> bx  {};
+      NUMERICAL_UNROLL_BLOCK
+      for (std::size_t v {0}; v < wide; ++v) {
+        bw[v].v = _mm256_loadu_pd(row + (4 * v));
+        bx[v].v = _mm256_permute_pd(bw[v].v, 0b0101); // each number's parts swapped
+      }
+      __m128d bh  {};
+      __m128d bhx {};
+      if constexpr (half) {
+        bh  = _mm_loadu_pd(row + (4 * wide));
+        bhx = _mm_permute_pd(bh, 0b01);
+      }
+      NUMERICAL_UNROLL_BLOCK
+      for (std::size_t r {0}; r < R; ++r) {
+        const double* const ap {as + (2 * ((r * lda) + p))};
+        const __m256d       re {_mm256_set1_pd(ap[0])};
+        const __m256d       im {_mm256_set1_pd(ap[1])};
+        NUMERICAL_UNROLL_BLOCK
+        for (std::size_t v {0}; v < wide; ++v) {
+          const __m256d product {_mm256_addsub_pd(_mm256_mul_pd(re, bw[v].v), _mm256_mul_pd(im, bx[v].v))};
+          nan_wide            = _mm256_or_pd(nan_wide, _mm256_cmp_pd(product, product, _CMP_UNORD_Q));
+          sums[(r * 2) + v].v = _mm256_add_pd(sums[(r * 2) + v].v, product);
+        }
+        if constexpr (half) {
+          const __m128d product {_mm_addsub_pd(_mm_mul_pd(_mm256_castpd256_pd128(re), bh), _mm_mul_pd(_mm256_castpd256_pd128(im), bhx))};
+          nan_half   = _mm_or_pd(nan_half, _mm_cmp_pd(product, product, _CMP_UNORD_Q));
+          last[r].v  = _mm_add_pd(last[r].v, product);
+        }
+      }
+    }
+    if (_mm256_movemask_pd(nan_wide) != 0 || _mm_movemask_pd(nan_half) != 0) {
+      _mm256_zeroupper();
+      return false;
+    }
+    NUMERICAL_UNROLL_BLOCK
+    for (std::size_t r {0}; r < R; ++r) {
+      NUMERICAL_UNROLL_BLOCK
+      for (std::size_t v {0}; v < wide; ++v) {
+        _mm256_storeu_pd(cs + (2 * ((r * ldc) + (2 * v))), sums[(r * 2) + v].v);
+      }
+      if constexpr (half) {
+        _mm_storeu_pd(cs + (2 * ((r * ldc) + (2 * wide))), last[r].v);
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return true;
+  }
+
+  //! \brief \ref narrow_columns_complex_x86 over the \p N columns of a block, four at a time; false, nothing written,
+  //!        where any part declines.
+  template <std::size_t R, std::size_t N>
+  bool narrow_block_complex_x86(std::size_t                 k,
+                                const std::complex<double>* a,
+                                std::size_t                 lda,
+                                const std::complex<double>* b,
+                                std::size_t                 ldb,
+                                std::complex<double>*       c,
+                                std::size_t                 ldc,
+                                c_start                     start) noexcept
+  {
+    if constexpr (N > 4) {
+      // the first four columns into a copy of the rows first: a decline after them leaves C as it was
+      std::array<std::complex<double>, R * 4> first {};
+      if (start == c_start::kept) {
+        for (std::size_t e {0}; e < R * 4; ++e) {
+          first[e] = c[((e / 4) * ldc) + (e % 4)];
+        }
+      }
+      if (!narrow_columns_complex_x86<R, 4>(k, a, lda, b, ldb, first.data(), 4, start)
+          || !narrow_columns_complex_x86<R, N - 4>(k, a, lda, b + 4, ldb, c + 4, ldc, start)) {
+        return false;
+      }
+      for (std::size_t e {0}; e < R * 4; ++e) {
+        c[((e / 4) * ldc) + (e % 4)] = first[e];
+      }
+      return true;
+    }
+    else {
+      return narrow_columns_complex_x86<R, N>(k, a, lda, b, ldb, c, ldc, start);
+    }
+  }
+
+#endif
+
   //! \brief `C += A·B` for \p R rows and \p N columns of C (`C = A·B` as \p start says), each sum in ascending order of
   //!        the depth, as the plain loop's: the block held in registers, of a size the compiler knows; each term rounded
   //!        as \p Mode says. Out
@@ -1411,6 +1537,14 @@ namespace numerical::detail {
     else
 #endif
     {
+#ifdef NUMERICAL_X86_COMPILED
+      if constexpr (Mode == term_rounding::compiler && std::is_same_v<T, std::complex<double>>) {
+        if (const gemm_path path {gemm_path_current()};
+            (path == gemm_path::avx2 || path == gemm_path::avx512) && narrow_block_complex_x86<R, N>(k, a, lda, b, ldb, c, ldc, start)) {
+          return;
+        }
+      }
+#endif
       std::array<T, R * N> sums {}; // from zero where C holds nothing
       if (start == c_start::kept) {
         NUMERICAL_UNROLL_BLOCK
