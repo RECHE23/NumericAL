@@ -125,9 +125,11 @@ TEST(narrow_products_by_rows_give_the_packed_bits)
                            for (const auto& [m, n, k] : {std::array<std::size_t, 3> {169, 2, 579}, {37, 7, 37}, {300, 8, 300}, {130, 13, 600},
                                                          {41, 3, 90}, {23, 14, 70}, {9, 11, 50}, {42, 6, 33},
                                                          {64, 64, 64}, {80, 80, 80}, {40, 100, 60}, {4, 40, 75}, {3, 138, 137},
-                                                         {128, 128, 128}, {150, 100, 120}, {12, 300, 300}, // by rows on four threads
+                                                         {128, 128, 128}, {150, 100, 120}, {12, 300, 300},                      // by rows on four threads
                                                          {64, numerical::detail::gemm_rows_columns, (numerical::detail::gemm_kc * 2) + 5},
-                                                         {500, numerical::detail::gemm_rows_columns, 40}}) {
+                                                         {500, numerical::detail::gemm_rows_columns, 40},
+                                                         {1, 517, 300}, {2, 84, 987}, {3, 200, 50}, {4, 301, 300}, {1, 33, 40}, // a few rows by blocks of columns
+                                                         {3, numerical::detail::gemm_rows_columns + 1, 70}}) {
                              std::vector<double> a(m * k);
                              std::vector<double> b(k * n);
                              for (std::size_t i {0}; i < a.size(); ++i) {
@@ -211,6 +213,35 @@ TEST(complex_products_by_rows_give_the_ascending_sum)
                            }
                          }
                          return ok;
+                       }));
+}
+
+// A product of one to four rows of float, by blocks of columns on the threads where the x86-64 units run it: the
+// packed product's bits, a last block of columns narrower, one thread and four.
+TEST(float_products_of_a_few_rows_give_the_packed_bits)
+{
+  EXPECT(on_every_path([] {
+                         bool same {true};
+                         for (const std::size_t threads : {std::size_t {1}, std::size_t {4}}) {
+                           numerical::set_max_threads(threads);
+                           for (const auto& [m, n, k] : {std::array<std::size_t, 3> {1, 517, 300}, {2, 84, 987}, {3, 200, 50}, {4, 301, 300}}) {
+                             std::vector<float> a(m * k);
+                             std::vector<float> b(k * n);
+                             for (std::size_t i {0}; i < a.size(); ++i) {
+                               a[i] = fill<float>(i);
+                             }
+                             for (std::size_t i {0}; i < b.size(); ++i) {
+                               b[i] = fill<float>((i * 7) + 3);
+                             }
+                             std::vector<float> by_blocks(m * n, 0.0F);
+                             std::vector<float> packed(m * n, 0.0F);
+                             numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, by_blocks.data(), n);
+                             numerical::detail::gemm_large(m, n, k, a.data(), k, b.data(), n, packed.data(), n);
+                             same = same && by_blocks == packed;
+                           }
+                         }
+                         numerical::set_max_threads(0); // every thread again
+                         return same;
                        }));
 }
 

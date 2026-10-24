@@ -2706,6 +2706,47 @@ namespace numerical::detail {
             std::size_t ldc,
             c_start     start = c_start::kept);
 
+#ifdef NUMERICAL_X86_COMPILED
+  /*!
+   * \brief The columns of C one block of \ref few_rows_x86 keeps in registers for \p R rows of A, about a dozen vector
+   *        registers of sums whatever the rows (narrow_columns's 8 for four).
+   */
+  template <std::size_t R>
+  inline constexpr std::size_t few_rows_columns {R == 1 ? 32 : (R == 2 ? 16 : (R == 3 ? 12 : 8))};
+
+  /*!
+   * \brief `C += A·B` (`C = A·B` as \p start says) for \p R rows of A, at most \ref narrow_group, on the x86-64 units:
+   *        blocks of \ref few_rows_columns columns of C, each its sums in registers over the whole depth with B read
+   *        where it lies (\ref narrow_block_x86), the blocks shared among the threads; the last columns by \ref
+   *        narrow_rows. Each element the fused chain of the tile and of the rows' blocks, so their bits. The packed
+   *        kernel copied the whole of B for these few rows, and a product by rows of that few took one thread: 1 × 1000
+   *        by 1000 × 512 on six AVX2 cores 173 → 33 µs, on ten AVX-512 cores 131 → 34; 4 × 300 by 300 × 300 26 → 10
+   *        and 30 → 10; one thread 1.3 to 3 times as fast.
+   */
+  template <std::size_t R, typename T>
+  void few_rows_x86(std::size_t n,
+                    std::size_t k,
+                    const T*    a,
+                    std::size_t lda,
+                    const T*    b,
+                    std::size_t ldb,
+                    T*          c,
+                    std::size_t ldc,
+                    c_start     start)
+  {
+    constexpr std::size_t width  {few_rows_columns<R>};
+    const std::size_t     blocks {n / width};
+    parallel_for(blocks, R * width * k, [&](std::size_t block) {
+                   narrow_block_x86<R, width>(k, a, lda, b + (block * width), ldb, c + (block * width), ldc, start);
+                 });
+    if (n % width != 0) {
+      narrow_rows<R, term_rounding::x86_fused>(n % width, k, a, lda, b + (blocks * width), ldb, c + (blocks * width), ldc, start);
+    }
+  }
+
+#endif
+
+
   //! \brief The columns of B and C, and the depth, of one real product of `gemm_split`: its real operands
   //!         stay a few megabytes whatever the shapes.
   inline constexpr std::size_t split_columns {512};
@@ -3099,6 +3140,20 @@ namespace numerical::detail {
         return;
       }
     }
+#ifdef NUMERICAL_X86_COMPILED
+    if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+      if (const gemm_path path {gemm_path_current()};
+          m != 0 && m <= narrow_group && n > gemm_rows_columns && k != 0 && (path == gemm_path::avx2 || path == gemm_path::avx512)) {
+        static_assert(narrow_group == 4, "the switch below names each count of rows up to narrow_group");
+        switch (m) { // a few rows, by blocks of columns on the threads: the same bits
+          case 1: few_rows_x86<1>(n, k, a, lda, b, ldb, c, ldc, start); return;
+          case 2: few_rows_x86<2>(n, k, a, lda, b, ldb, c, ldc, start); return;
+          case 3: few_rows_x86<3>(n, k, a, lda, b, ldb, c, ldc, start); return;
+          default: few_rows_x86<4>(n, k, a, lda, b, ldb, c, ldc, start); return;
+        }
+      }
+    }
+#endif
     if (by_rows(m, n, k)) { // narrow, or small: by rows, the same bits
       gemm_rows(m, n, k, a, lda, b, ldb, c, ldc, start);
       return;

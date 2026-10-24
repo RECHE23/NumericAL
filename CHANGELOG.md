@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **A product of one to four rows on x86-64 runs by blocks of columns on the threads** (`x @ W` with `x` a vector or a
+  few rows): each block keeps its sums in registers over the whole depth with B read where it lies, where the packed
+  kernel copied the whole of B for those few rows and a product by rows of four took one thread. The same bits. All
+  threads: 1 × 1000 by 1000 × 512 on six AVX2 cores 173 → 33 µs, on ten AVX-512 cores 131 → 34; 4 × 300 by 300 × 300
+  26 → 10 µs; one thread 1.3 to 3 times as fast.
+
 ## 2026.10.35 — 2026-10-24
 
 ### Changed
