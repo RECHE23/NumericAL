@@ -1193,6 +1193,30 @@ namespace numerical::detail {
 #endif
 
   /*!
+   * \brief The most multiply-adds of a product \ref gemm runs by rows (\ref gemm_rows) whatever its width: up to there
+   *        its rows' blocks, on the threads (\ref gemm_rows_weight), finished before the packed kernel had packed and
+   *        shared its work. Six AVX2 cores: order 64 14.5 → 7.2 µs, 80 20.3 → 8.9, 96 24.5 → 12.7, 40 × 60 by 60 ×
+   *        100 14.2 → 7.5; arm64 under GCC order 80 32 → 15, 96 49 → 18. Under Clang on arm64 the packed tiles (the
+   *        AMX's) kept small products ahead, order 64 3.3 µs against 12 by rows: none there (\ref by_rows). Fewer
+   *        rows than one of gemm_rows' blocks (\ref narrow_group) stay packed, B then read in place (arm64 under GCC,
+   *        3 × 137 by 137 × 138: 1.48 times as long by rows). The same bits.
+   */
+  inline constexpr std::size_t gemm_rows_work {std::size_t {1} << 20U};
+
+
+  /*!
+   * \brief The divisor of a block of \ref gemm_rows' rows' multiply-adds as its threads are weighed: on x86-64 its
+   *        work itself, so a product of order 64 takes the threads (six AVX2 cores: 11.5 → 7.4 µs; 1000 × 64 by 64 × 5
+   *        28.3 → 10.8); on arm64 a quarter of it, where weighing the whole slowed narrow products a fifth (M1 Pro,
+   *        300 × 300 by 300 × 8 under Clang).
+   */
+#ifdef NUMERICAL_X86_COMPILED
+  inline constexpr std::size_t gemm_rows_weight {1};
+#else
+  inline constexpr std::size_t gemm_rows_weight {vector_speedup};
+#endif
+
+  /*!
    * \brief `sum + a·b` as the vector tile rounds it (\ref vector_tile_kernel), so that the plain loop's elements are its
    *        own: under Clang's -ffp-contract=on one expression, fused in both; under GCC's, whose vector extensions fuse
    *        nothing while a scalar statement's multiply-add fuses, the product apart, a statement of its own.
@@ -1224,6 +1248,20 @@ namespace numerical::detail {
   //!         waits on its last, four rows give the units four times the chains (M1 Pro, order 8 to 24: 1.6 to 1.9
   //!         times as fast as one row; two rows on six x86-64 AVX2 cores, the fastest there, were within 7 %).
   inline constexpr std::size_t narrow_group {4};
+
+  //! \brief Whether \ref gemm runs an `m × k` by `k × n` product by rows (\ref gemm_rows): \ref gemm_rows_columns columns
+  //!        or fewer, or \ref gemm_rows_work multiply-adds or fewer from \ref narrow_group rows, where the target's packed
+  //!        tiles do not keep a small product ahead.
+  [[nodiscard]] constexpr bool by_rows([[maybe_unused]] std::size_t m,
+                                       std::size_t                  n,
+                                       [[maybe_unused]] std::size_t k) noexcept
+  {
+#if defined(NUMERICAL_X86_COMPILED) || !defined(__clang__)
+    return n <= gemm_rows_columns || (m >= narrow_group && m * n * k <= gemm_rows_work);
+#else
+    return n <= gemm_rows_columns; // Clang on arm64: the AMX's and NEON's packed tiles kept small products ahead
+#endif
+  }
 
   //! \brief How \ref numerical::detail::gemm_rows rounds each term `sum + a·b`, as the tile of the path in use does: as the compiler
   //!        rounds it (the vector tile's way), one fused multiply-add (arm64's NEON and AMX tiles), or one fused
@@ -1404,7 +1442,7 @@ namespace numerical::detail {
                          std::size_t ldc)
   {
     if (k >= (n <= narrow_columns ? std::size_t {2} : narrow_least_depth)) {
-      parallel_for((m + narrow_group - 1) / narrow_group, narrow_group * k * n / vector_speedup, [&](std::size_t g) {
+      parallel_for((m + narrow_group - 1) / narrow_group, narrow_group * k * n / gemm_rows_weight, [&](std::size_t g) {
                      const std::size_t first {g * narrow_group};
                      if (first + narrow_group <= m) {
                        narrow_rows<narrow_group, Mode>(n, k, a + (first * lda), lda, b, ldb, c + (first * ldc), ldc);
@@ -2770,7 +2808,7 @@ namespace numerical::detail {
         return;
       }
     }
-    if (n <= gemm_rows_columns) { // narrower than the packed kernel's tile: by rows, the same bits
+    if (by_rows(m, n, k)) { // narrow, or small: by rows, the same bits
       gemm_rows(m, n, k, a, lda, b, ldb, c, ldc);
       return;
     }

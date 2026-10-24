@@ -13,6 +13,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   columns left most of its width idle: the same bits, each term rounded as the tile rounds it. On 200 random products of
   1 to 24 columns, 0.42 to 0.64 times as long on x86-64 (ten AVX-512 cores, six AVX2 cores), 0.44 to 0.54 on arm64
   under GCC, 0.60 under Clang; 169 × 579 by 579 × 2 on one AVX-512 core 82 → 24 µs (OpenBLAS 13).
+- **A small product runs by rows too, on the threads** (up to 2^20 multiply-adds from 4 rows, on x86-64 and under GCC
+  on arm64; Clang's AMX tiles on arm64 keep it ahead already): the same bits. On 200 random products of 1 to 256 in
+  each dimension, 0.78 times as long in all on six AVX2 cores and on arm64 under GCC; order 64 on six AVX2 cores
+  14.5 → 7.2 µs, 96 24.5 → 12.7.
 
 ### Changed
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on

@@ -112,9 +112,9 @@ namespace {
   }
 } // namespace
 
-// A product of up to gemm_rows_columns columns runs by rows (gemm_rows), where the packed kernel's tile left most of
-// its width idle: the packed product's bits, on every path, past one depth panel, any number of rows and threads, every
-// width of a last block of columns after whole blocks of rows and after a last row alone.
+// A product of up to gemm_rows_columns columns, or of up to gemm_rows_work multiply-adds from narrow_group rows, runs
+// by rows (gemm_rows): the packed product's bits, on every path, past one depth panel, any number of rows and threads,
+// every width of a last block of columns after whole blocks of rows and after a last row alone.
 TEST(narrow_products_by_rows_give_the_packed_bits)
 {
   EXPECT(on_every_path([] {
@@ -123,6 +123,7 @@ TEST(narrow_products_by_rows_give_the_packed_bits)
                            numerical::set_max_threads(threads);
                            for (const auto& [m, n, k] : {std::array<std::size_t, 3> {169, 2, 579}, {37, 7, 37}, {300, 8, 300}, {130, 13, 600},
                                                          {41, 3, 90}, {23, 14, 70}, {9, 11, 50}, {42, 6, 33},
+                                                         {64, 64, 64}, {80, 80, 80}, {40, 100, 60}, {4, 40, 75}, {3, 138, 137},
                                                          {64, numerical::detail::gemm_rows_columns, (numerical::detail::gemm_kc * 2) + 5},
                                                          {500, numerical::detail::gemm_rows_columns, 40}}) {
                              std::vector<double> a(m * k);
