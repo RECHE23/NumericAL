@@ -63,6 +63,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   `CPUQuota=`, on Linux: cgroup v2's `cpu.max` of the process's group and those above it, or cgroup v1's
   `cpu.cfs_quota_us`), where a thread a core exhausted the quota and then waited it out. Six AVX2 cores under a quota
   of two processors: products of order 128 100 → 62 µs, 256 460 → 357 µs.
+- **`a @ a.T` and `a.T @ a` of a float64 NumPy array compute one triangle and mirror it**: the matrix product's tiles
+  on the lower triangle (as `syrk` does), each element the same products in the same order as its mirror, so the same
+  bits as the whole product, with half its multiply-adds. 1000 × 1000: M1 Pro 4.33 → 2.89 ms (NumPy's 2.71), six AVX2
+  cores 8.0 → 5.6 ms (NumPy's 5.8); 300 × 2000 on the M1 Pro 1.08 → 0.79 ms.
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on
   x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
   order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,

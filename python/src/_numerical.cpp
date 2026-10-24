@@ -3049,6 +3049,41 @@ std::optional<PyObject*> borrowed_row_times_transposed(const borrowed_operand& l
     }
 }
 
+// Whether the product of `left` and `right` is a Gram matrix A·Aᵀ or Aᵀ·A (`a @ a.T`, `a.T @ a`): one operand the other's
+// transpose, the same elements where they lie, and enough work for the packed kernel, as syrk_all takes it.
+bool gram_product(const borrowed_operand& left, const borrowed_operand& right, std::size_t n, std::size_t k)
+{
+    return left.data == right.data && left.ld == right.ld && left.transposed != right.transposed && k >= numerical::detail::gemm_min_depth
+           && n * n >= ((numerical::detail::gemm_packed_threshold + k) - 1) / k;
+}
+
+// C = A·Aᵀ (`transposed` false: `a` the row-major n × k A, `ld` apart) or Aᵀ·A (`transposed`: `a` A's column-major n × k
+// transpose) into the zeroed n × n `c`: the lower triangle by the matrix product's tiles (gemm_triangle, each element its
+// sum in the product), then mirrored, element (i, j) the same products in the same order as (j, i). Half the
+// multiply-adds of the whole product (a @ a.T of 1000 × 1000, M1 Pro: 4.33 → 2.89 ms; 300 × 2000: 1.08 → 0.79).
+void gram_triangle_mirrored(const double* a, std::size_t ld, bool transposed, std::size_t n, std::size_t k, double* c)
+{
+    namespace nd = numerical::detail;
+    if (transposed) {
+        nd::gemm_triangle<nd::a_transposed, nd::b_rows>(n, k, a, ld, a, ld, c, n, true);
+    }
+    else {
+        nd::gemm_triangle<nd::a_rows, nd::b_transposed>(n, k, a, ld, a, ld, c, n, true);
+    }
+    constexpr std::size_t tile {32};
+    const std::size_t     tiles {(n + tile - 1) / tile};
+    nd::parallel_for(tiles, tile * n, [&](std::size_t bi) { // block row bi's upper blocks from the lower ones
+        const std::size_t i0 {bi * tile};
+        for (std::size_t j0 {i0}; j0 < n; j0 += tile) {
+            for (std::size_t i {i0}; i < std::min(i0 + tile, n); ++i) {
+                for (std::size_t j {std::max(j0, i + 1)}; j < std::min(j0 + tile, n); ++j) {
+                    c[(i * n) + j] = c[(j * n) + i];
+                }
+            }
+        }
+    });
+}
+
 // The product of two matrices read where they lie, one or both column-major, in any of the four dtypes: packed (or,
 // through gemm_split, copied into their parts) from there by gemm's layouts (gemm_at, gemm_bt, gemm_atbt), its tiles
 // gemm's and so its bits, where the column-major one was copied first (NumPy passes BLAS the transpose; a 300 × 300
@@ -3078,6 +3113,13 @@ std::optional<PyObject*> borrowed_transposed_product(const borrowed_operand& lef
                 numerical::detail::parallel_zero(c.data(), c.size()); // gemm adds to C
                 const auto* const a {static_cast<const T*>(left.data)};
                 const auto* const b {static_cast<const T*>(right.data)};
+                if constexpr (std::is_same_v<T, double>) {
+                    if (gram_product(left, right, m, k)) {
+                        gram_triangle_mirrored(a, left.ld, left.transposed, m, k, c.data());
+                        result.emplace(numerical::tensor<T> {{m, n}, std::move(c)});
+                        return;
+                    }
+                }
                 if (left.transposed && right.transposed) {
                     numerical::detail::gemm_atbt(m, n, k, a, left.ld, b, right.ld, c.data(), n);
                 }

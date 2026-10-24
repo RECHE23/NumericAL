@@ -94,6 +94,18 @@ class BorrowedOperands(unittest.TestCase):
                 vector = self.operand((k,), dtype)
                 self.assert_same(numerical.matmul(apart_a[::2], vector), numerical.matmul(a, vector))
 
+    def test_a_gram_product_gives_the_products_bits(self):
+        # a @ a.T and a.T @ a of float64, a NumPy array read where it lies: one triangle by the product's tiles, mirrored,
+        # the product of a and a contiguous copy of its transpose to the bit; small ones, and other dtypes, keep their route.
+        for m, k in ((300, 50), (64, 700), (129, 257), (9, 3), (200, 8)):
+            for dtype in (np.float64, np.float32, np.complex128):
+                with self.subTest(m=m, k=k, dtype=np.dtype(dtype).name):
+                    a = self.operand((m, k), dtype)
+                    self.assertTrue(np.array_equal(np.asarray(numerical.matmul(a, a.T)),
+                                                   np.asarray(numerical.matmul(a, np.ascontiguousarray(a.T)))))
+                    self.assertTrue(np.array_equal(np.asarray(numerical.matmul(a.T, a)),
+                                                   np.asarray(numerical.matmul(np.ascontiguousarray(a.T), a))))
+
     def test_a_fortran_ordered_array_converts_element_for_element(self):
         # Its columns running contiguously: by tiles from 32 rows, a row at a time below; every dtype asarray reads,
         # converted as from the same array in C order.
