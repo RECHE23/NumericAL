@@ -8,6 +8,8 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <new>
+#include <thread>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -122,5 +124,71 @@ TEST(a_large_buffer_on_huge_pages_holds_its_elements)
   const auto offset = [](const double* at) { return reinterpret_cast<std::uintptr_t>(at) % allocator::huge_page; };
   EXPECT(offset(a.data()) != offset(b.data()));
   EXPECT_EQ(reinterpret_cast<std::uintptr_t>(a.data()) % alignof(std::max_align_t), 0U);
+}
+// Freed huge-page blocks are kept, two at most, the newest: a block is taken by an allocation it fits with no more than
+// half of it unused, a third block freed frees the one kept longest, one of 64 MiB or more is not kept.
+TEST(freed_huge_page_blocks_are_kept_for_the_next_that_fits)
+{
+  using blocks = numerical::detail::kept_huge_blocks;
+  const std::size_t mib {std::size_t {1} << 20U};
+  const auto        fresh {[](std::size_t bytes) { return static_cast<std::byte*>(::operator new(bytes, std::align_val_t {blocks::huge_page})); }};
+  const auto        free_block {[](std::byte* at) { ::operator delete(at, std::align_val_t {blocks::huge_page}); }};
+  blocks            kept;
+  std::size_t       got    {0};
+  EXPECT(kept.take(4 * mib, got) == nullptr);
+  std::byte* const  first  {fresh(4 * mib)};
+  std::byte* const  second {fresh(8 * mib)};
+  std::byte* const  third  {fresh(6 * mib)};
+  EXPECT(kept.keep(first, 4 * mib));
+  EXPECT(kept.keep(second, 8 * mib));
+  EXPECT(kept.take(9 * mib, got) == nullptr); // larger than either
+  EXPECT(kept.take(3 * mib, got) == first && got == 4 * mib);
+  EXPECT(kept.take(3 * mib, got) == nullptr); // the 8 MiB block would leave more than half unused
+  EXPECT(kept.keep(first, 4 * mib));
+  EXPECT(kept.keep(third, 6 * mib));          // both taken: the 8 MiB block, kept longest, is freed
+  EXPECT(kept.take(8 * mib, got) == nullptr);
+  EXPECT(kept.take(5 * mib, got) == third && got == 6 * mib);
+  EXPECT(kept.take(4 * mib, got) == first);
+  EXPECT(!kept.keep(first, blocks::largest));
+  free_block(first);
+  free_block(third);
+}
+
+// A large buffer freed leaves its block among the kept ones, and the next buffer it fits takes it back, its elements
+// written anew; threads freeing and asking for them at once each get a block of their own.
+TEST(a_large_buffer_takes_a_freed_block_back)
+{
+  using allocator = numerical::detail::default_init_allocator<double>;
+  using blocks    = numerical::detail::kept_huge_blocks;
+  constexpr std::size_t count {((allocator::huge_least * 5 / 2) / sizeof(double)) + 12345}; // no other test frees a block this size
+  const auto            start {[](const double* at) { return reinterpret_cast<std::uintptr_t>(at) / allocator::huge_page * allocator::huge_page; }};
+  std::uintptr_t        before {0};
+  {
+    const numerical::buffer<double> a(count, 2.0);
+    before = start(a.data());
+  }
+  std::size_t      got   {0};
+  std::byte* const block {blocks::shared().take(count * sizeof(double), got)};
+  EXPECT_EQ(reinterpret_cast<std::uintptr_t>(block), before);
+  EXPECT(blocks::shared().keep(block, got));
+  const numerical::buffer<double> b(count, 3.0);
+  EXPECT_EQ(start(b.data()), before);
+  EXPECT_EQ(b[count - 1], 3.0);
+  std::vector<std::thread> threads;
+  std::vector<int>         held(4, 0);
+  for (std::size_t t {0}; t < held.size(); ++t) {
+    threads.emplace_back([&held, t] {
+                           bool whole {true};
+                           for (int round {0}; round < 8; ++round) {
+                             numerical::buffer<double> c(count, static_cast<double>(t));
+                             whole = whole && c[0] == static_cast<double>(t) && c[count - 1] == static_cast<double>(t);
+                           }
+                           held[t] = whole ? 1 : 0;
+                         });
+  }
+  for (std::thread& thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(held, (std::vector<int> {1, 1, 1, 1}));
 }
 #endif

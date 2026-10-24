@@ -7,6 +7,7 @@
 #define NUMERICAL_BUFFER_HPP
 
 #include <algorithm>
+#include <array>
 #include <atomic>
 #include <cstddef>
 #include <cstring>
@@ -17,12 +18,105 @@
 #include <vector>
 
 #if defined(__linux__)
+#  include <mutex>
 #  include <sys/mman.h>
 #endif
 
 namespace numerical {
 
   namespace detail {
+
+#if defined(__linux__)
+    /*!
+     * \brief Huge-page blocks freed and kept for the next buffer that fits one: a fresh block's pages are each faulted
+     *        in and zeroed by the system at their first write, where glibc hands a block under 32 MiB freed by
+     *        std::allocator back without that (a sum of two vectors of 2^21 to 2^22 doubles took 2 to 5 times as
+     *        long as on such a block). Two blocks at most, each under \ref largest bytes, the newest kept: a block
+     *        freed while both places are taken frees the one kept longest. The first allocation one fits, with no
+     *        more than half of it unused, takes it.
+     */
+    class kept_huge_blocks
+    {
+    public:
+
+      //! \brief The size of a huge page, and the alignment of a block.
+      static constexpr std::size_t huge_page {std::size_t {1} << 21U};
+
+      //! \brief The bytes from which a freed block is freed at once, not kept.
+      static constexpr std::size_t largest {std::size_t {1} << 26U};
+
+      //! \brief The process's blocks, never destroyed: a buffer of static storage may be freed after any destructor.
+      [[nodiscard]] static kept_huge_blocks& shared()
+      {
+        static kept_huge_blocks* const blocks {new kept_huge_blocks}; // NOLINT(cppcoreguidelines-owning-memory): lives as long as the process
+        return *blocks;
+      }
+
+      //! \brief A kept block of at least \p bytes and under twice as many, its size in \p got; nullptr if none.
+      [[nodiscard]] std::byte* take(std::size_t  bytes,
+                                    std::size_t& got) noexcept
+      {
+        const std::lock_guard<std::mutex> held {lock_};
+        block*                            best {nullptr};
+        for (block& b : kept_) {
+          if (b.start != nullptr && b.bytes >= bytes && b.bytes / 2 < bytes && (best == nullptr || b.bytes < best->bytes)) {
+            best = &b;
+          }
+        }
+        if (best == nullptr) {
+          return nullptr;
+        }
+        got = best->bytes;
+        return std::exchange(best->start, nullptr);
+      }
+
+      /*!
+       * \brief Keeps the block at \p start of \p bytes if it is under \ref largest, in place of the block kept
+       *        longest when both places are taken (that one freed): the blocks of the sizes in use stay, those of a
+       *        size no longer asked for leave. False, the block not kept, if it is too large.
+       */
+      [[nodiscard]] bool keep(std::byte*  start,
+                              std::size_t bytes) noexcept
+      {
+        if (bytes >= largest) {
+          return false;
+        }
+        std::byte* evicted {nullptr};
+        {
+          const std::lock_guard<std::mutex> held  {lock_};
+          block*                            place {&kept_[0]};
+          for (block& b : kept_) {
+            if (b.start == nullptr || b.order < place->order) {
+              place = &b;
+              if (b.start == nullptr) {
+                break;
+              }
+            }
+          }
+          evicted = place->start;
+          *place  = block {start, bytes, ++kept_count_};
+        }
+        if (evicted != nullptr) {
+          ::operator delete(evicted, std::align_val_t {huge_page});
+        }
+        return true;
+      }
+
+    private:
+
+      struct block
+      {
+        std::byte*  start {nullptr}; //!< The block's start, nullptr for a free place.
+        std::size_t bytes {0};       //!< Its size.
+        std::size_t order {0};       //!< When it was kept, the least the longest.
+      };
+
+      std::mutex           lock_;
+      std::array<block, 2> kept_       {};
+      std::size_t          kept_count_ {0};
+    };
+
+#endif
 
     /*!
      * \brief The allocator of \ref numerical::buffer. An element constructed with no value is default-initialised, so a
@@ -54,7 +148,7 @@ namespace numerical {
       //! \brief Default-initialises the element at \p at.
 #if defined(__linux__)
       //! \brief The size of a huge page, and the alignment of a buffer that asks for them.
-      static constexpr std::size_t huge_page {std::size_t {1} << 21U};
+      static constexpr std::size_t huge_page {kept_huge_blocks::huge_page};
 
       //! \brief The bytes from which a buffer asks Linux for huge pages (`MADV_HUGEPAGE`; distributions leave
       //!        transparent huge pages to the program, as `madvise`): fewer translations for the decompositions'
@@ -85,12 +179,16 @@ namespace numerical {
         }
         static std::atomic<std::size_t> colour {0};
         const std::size_t               offset {((colour.fetch_add(1) % huge_colours) * 4096) + alignof(std::max_align_t) * 4};
-        const std::size_t               bytes  {((offset + (n * sizeof(T))) + huge_page - 1) / huge_page * huge_page};
-        auto* const                     start  {static_cast<std::byte*>(::operator new(bytes, std::align_val_t {huge_page}))};
-        (void)madvise(start, bytes, MADV_HUGEPAGE);                            // a hint: the pages stay 4 KiB where the system declines
-        std::byte* const data                  {start + offset};
-        std::memcpy(data - sizeof(std::size_t), &offset, sizeof(std::size_t)); // the start, as the data's distance from it
-        return reinterpret_cast<T*>(data);                                     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): storage for T, aligned past max_align_t
+        std::size_t                     bytes  {((offset + (n * sizeof(T))) + huge_page - 1) / huge_page * huge_page};
+        std::byte*                      start  {kept_huge_blocks::shared().take(bytes, bytes)};
+        if (start == nullptr) {
+          start = static_cast<std::byte*>(::operator new(bytes, std::align_val_t {huge_page}));
+          (void)madvise(start, bytes, MADV_HUGEPAGE);                                        // a hint: the pages stay 4 KiB where the system declines
+        }
+        std::byte* const data {start + offset};
+        std::memcpy(data - sizeof(std::size_t), &offset, sizeof(std::size_t));      // the start, as the data's distance from it
+        std::memcpy(data - (2 * sizeof(std::size_t)), &bytes, sizeof(std::size_t)); // the block's size
+        return reinterpret_cast<T*>(data);                                          // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): storage for T, aligned past max_align_t
       }
 
       //! \brief Frees what \ref allocate gave for \p n elements.
@@ -113,9 +211,13 @@ namespace numerical {
       {
         auto* const data   {reinterpret_cast<std::byte*>(at)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the storage's bytes
         std::size_t offset {};
+        std::size_t bytes  {};
         std::memcpy(&offset, data - sizeof(std::size_t), sizeof(std::size_t));
-        ::operator delete(data - offset,
-                          std::align_val_t {huge_page});
+        std::memcpy(&bytes, data - (2 * sizeof(std::size_t)), sizeof(std::size_t));
+        if (!kept_huge_blocks::shared().keep(data - offset, bytes)) {
+          ::operator delete(data - offset,
+                            std::align_val_t {huge_page});
+        }
       }
 
 #endif

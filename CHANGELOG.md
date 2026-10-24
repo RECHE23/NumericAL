@@ -49,6 +49,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   in parallel, each as before, then added in the tree's order, the subtrees set by the count alone (the whole tensor's
   sum, and an axis's of single-element rows). M1 Pro: 2^20 doubles 181 → 45 µs, 2^24 2.97 → 1.17 ms; ten AVX-512 cores
   2^20 247 → 44 µs, 2^24 12.5 → 2.2 ms.
+- **A large buffer freed on Linux is kept for the next that fits** (two blocks at most, each under 64 MiB, the newest
+  kept), where each buffer of 16 MiB or more took fresh huge pages, each faulted in and zeroed by the system at its
+  first write: a sum of two vectors of 2^21 to 2^22 doubles 1.9–1.4 → 0.7–0.8 ns an element on six AVX2 cores,
+  1.25–0.95 → 0.23–0.33 on ten AVX-512 cores (the time of a block glibc reuses below 32 MiB); a Cholesky factorization
+  of order 1800 on ten AVX-512 cores 15.0 → 12.2 ms, products of order 1800 to 2400 1 to 14 % faster there; the
+  decompositions on six AVX2 cores the same within noise. A program holds up to 128 MiB of such blocks after freeing them.
 - **Broadcasting merges the axes both operands step through as one, and runs short rows repeated over a matrix as one
   loop**: `(1000, 4, 3) + (1, 4, 3)` runs as rows of 12; a row of under 32 elements repeated over a matrix's rows (`(n,
   3) + (3,)`) runs the matrix's rows as one loop against that row repeated, where each row of three turned the loop over
