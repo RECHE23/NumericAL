@@ -1032,10 +1032,11 @@ namespace numerical {
         inner *= sizes.at(label);
       }
       if constexpr (std::is_arithmetic_v<T>) {
-        // A batch of such products (ij,j->ij: one of depth one per row) element by element; a single one (i,j->ij, an
-        // outer product) stays one product of depth one, whose kernel the processor's vectors run (four AVX2 cores,
-        // 200 by 200: 21 µs, 25 element by element in code built for any x86-64).
-        if (summed.empty() && !batch.empty() && !(free_a.empty() && free_b.empty())) {
+        // A batch of such products (ij,j->ij: one of depth one per row; ij,ij->ij: one per element) element by
+        // element; a single one (i,j->ij, an outer product) stays one product of depth one, whose kernel the
+        // processor's vectors run (four AVX2 cores, 200 by 200: 21 µs, 25 element by element in code built for any
+        // x86-64).
+        if (summed.empty() && !batch.empty()) {
           return each_product(sa, a, sb, b, output, sizes);
         }
       }
