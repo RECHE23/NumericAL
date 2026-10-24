@@ -25,6 +25,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   packed task zeroes its own block of the result before its first panel, where the threads then took the result's
   cache lines from the caller's cache. The same bits. Six AVX2 cores, all threads: order 64 7.1 → 5.2 µs, 96 12.7 →
   9.4, 128 32.7 → 28.8, 256 152 → 143; one thread, order 24 to 96 5 to 9 % faster.
+- **A product on threads runs by rows up to 2^19 multiply-adds a thread** where its blocks of rows give at least half
+  the threads one each (x86-64, and arm64 under GCC): the packed product's pass of packing and its tasks scaled less
+  well there. The same bits. Order 128 on six AVX2 cores 31 → 24 µs, on ten AVX-512 cores 32 → 21, on eight arm64 cores
+  under GCC 72 → 30; of 150 drawn products of 2^18 to 2^23 multiply-adds, those it moves take 0.64, 0.58 and 0.38 times
+  as long. One thread keeps the packed product.
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on
   x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
   order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,

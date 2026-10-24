@@ -125,6 +125,7 @@ TEST(narrow_products_by_rows_give_the_packed_bits)
                            for (const auto& [m, n, k] : {std::array<std::size_t, 3> {169, 2, 579}, {37, 7, 37}, {300, 8, 300}, {130, 13, 600},
                                                          {41, 3, 90}, {23, 14, 70}, {9, 11, 50}, {42, 6, 33},
                                                          {64, 64, 64}, {80, 80, 80}, {40, 100, 60}, {4, 40, 75}, {3, 138, 137},
+                                                         {128, 128, 128}, {150, 100, 120}, {12, 300, 300}, // by rows on four threads
                                                          {64, numerical::detail::gemm_rows_columns, (numerical::detail::gemm_kc * 2) + 5},
                                                          {500, numerical::detail::gemm_rows_columns, 40}}) {
                              std::vector<double> a(m * k);
@@ -614,10 +615,12 @@ TEST(product_over_an_empty_dimension)
 }
 
 // The packing storage stays with the calling thread for the next product, unless it outgrew the limit. The kept
-// products are 128 deep with 128 rows: every tile packs them (a shallower or narrower one may run in the plain loop).
+// products are 128 deep with 128 rows, on one thread: every tile packs them (a shallower or narrower one may run in
+// the plain loop, and on threads a product of order 128 by rows).
 TEST(the_calling_thread_keeps_its_packing_storage_within_the_limit)
 {
   using storage = numerical::detail::packing_storage<double>;
+  numerical::set_max_threads(1);
   EXPECT(on_every_path([] {
                          bool ok {product_is_exact<double>(128, 128, 128) && !storage::kept().empty()};
                          // A tall product packs more of A than the limit: correct, then nothing kept.
@@ -625,6 +628,7 @@ TEST(the_calling_thread_keeps_its_packing_storage_within_the_limit)
                          ok = ok && product_is_exact<double>(rows, numerical::detail::gemm_rows_columns + 1, numerical::detail::gemm_kc) && storage::kept().empty();
                          return ok && product_is_exact<double>(128, 128, 128) && !storage::kept().empty();
                        }));
+  numerical::set_max_threads(0); // every thread again
 }
 
 namespace

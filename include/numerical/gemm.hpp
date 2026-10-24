@@ -1249,15 +1249,32 @@ namespace numerical::detail {
   //!         times as fast as one row; two rows on six x86-64 AVX2 cores, the fastest there, were within 7 %).
   inline constexpr std::size_t narrow_group {4};
 
-  //! \brief Whether \ref gemm runs an `m × k` by `k × n` product by rows (\ref gemm_rows): \ref gemm_rows_columns columns
-  //!        or fewer, or \ref gemm_rows_work multiply-adds or fewer from \ref narrow_group rows, where the target's packed
-  //!        tiles do not keep a small product ahead.
-  [[nodiscard]] constexpr bool by_rows([[maybe_unused]] std::size_t m,
-                                       std::size_t                  n,
-                                       [[maybe_unused]] std::size_t k) noexcept
+  //! \brief The multiply-adds by rows a thread takes at most past \ref gemm_rows_work, the blocks of rows shared out:
+  //!        the packed product's pass of packing and its tasks scale less well there (all threads, order 128: six AVX2
+  //!        cores 31 → 24 µs, ten AVX-512 cores 32 → 21, eight arm64 cores under GCC 72 → 30; of 150 drawn products, those
+  //!        it moves 0.64, 0.58 and 0.38 times as long). On one thread the packed product stays, 2.3 times as fast at
+  //!        order 128 on AVX-512.
+  inline constexpr std::size_t gemm_rows_share {std::size_t {1} << 19U};
+
+  /*!
+   * \brief Whether \ref gemm runs an `m × k` by `k × n` product by rows (\ref gemm_rows): \ref gemm_rows_columns columns
+   *        or fewer; or, from \ref narrow_group rows, \ref gemm_rows_work multiply-adds or fewer, or \ref gemm_rows_share
+   *        a thread where its blocks of rows give at least half the threads one each (fewer, and the packed product's
+   *        tasks, which split the columns too, are faster: 12 × 302 by 302 × 389 on ten AVX-512 cores, 1.6 times). Where
+   *        the target's packed tiles do not keep a small product ahead.
+   */
+  [[nodiscard]] inline bool by_rows([[maybe_unused]] std::size_t m,
+                                    std::size_t                  n,
+                                    [[maybe_unused]] std::size_t k)
   {
 #if defined(NUMERICAL_X86_COMPILED) || !defined(__clang__)
-    return n <= gemm_rows_columns || (m >= narrow_group && m * n * k <= gemm_rows_work);
+    if (n <= gemm_rows_columns || (m >= narrow_group && m * n * k <= gemm_rows_work)) {
+      return true;
+    }
+    // The threads read only past the cheaper tests; a block of rows each at most.
+    const std::size_t all     {max_threads()};
+    const std::size_t threads {std::min(all, m / narrow_group)};
+    return m >= narrow_group && 2 * threads >= all && m * n * k <= gemm_rows_share * threads;
 #else
     return n <= gemm_rows_columns; // Clang on arm64: the AMX's and NEON's packed tiles kept small products ahead
 #endif
