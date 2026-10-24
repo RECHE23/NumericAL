@@ -25,6 +25,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`asarray` hands a NumPy array or a Tensor to the extension at once**, before the slower tests for numbers: every
   function converting its operands pays less. M1 Pro, `einsum("ij,j->ij")` of an 11 × 3 array and a row: 4.44 → 2.84
   µs.
+- **A matrix times a vector on x86-64 shares its rows among more threads**: each element is read once, so the
+  memory, not the arithmetic, sets the time, and the rows went to too few threads. The same bits (each row its own dot
+  product). Six AVX2 cores: a `double` matrix of 1000 × 100 19.1 → 6.6 µs, 256 × 256 10.6 → 5.2, complex 671 × 36
+  16.4 → 6.1, 539 × 68 14.3 → 9.8.
 
 ## 2026.10.35 — 2026-10-24
 

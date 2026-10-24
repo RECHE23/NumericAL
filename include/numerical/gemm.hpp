@@ -3577,6 +3577,19 @@ namespace numerical::detail {
   //! \brief The rows a thread takes of a matrix times a vector (\ref matrix_times_vector).
   inline constexpr std::size_t row_group {64};
 
+  /*!
+   * \brief The weight of a matrix element in \ref matrix_times_vector's share of the threads, beside its multiply-add:
+   *        each element read once, the product the memory's, so more threads read it. On x86-64, 4: six AVX2 cores,
+   *        a `double` matrix of 1000 × 100 times a vector 19.1 → 6.6 µs, 256 × 256 10.6 → 5.2, a complex one of 671 × 36
+   *        16.4 → 6.1, 539 × 68 14.3 → 9.8, the smallest the same. On arm64, 1: the M1 Pro's complex products took
+   *        longer on more threads (100 × 100 3.1 → 7.0 µs), its `double` ones the same.
+   */
+#ifdef NUMERICAL_X86_COMPILED
+  inline constexpr std::size_t matrix_vector_weight {4};
+#else
+  inline constexpr std::size_t matrix_vector_weight {1};
+#endif
+
 #ifdef NUMERICAL_AMX_COMPILED
   //! \brief The fewest elements of a `double` matrix the AMX multiplies by a vector: below, the matrix sits in the L1
   //!        cache and the NEON rows are faster (one M1 core, order 128: 1.4 µs, on the AMX 2.2; order 192: 4.7, 3.7).
@@ -3620,7 +3633,7 @@ namespace numerical::detail {
     // A complex multiply-add weighs four real ones. Groups of fewer rows where the matrix has too few for each thread
     // to take some (189 rows of 64 were three groups: six AVX2 cores' L3 read by one, a complex matrix of 189 × 206
     // times a vector 24 µs); each row its own dot product whatever the grouping, so the same bits.
-    constexpr std::size_t weight {multiply_add_weight<T>};
+    constexpr std::size_t weight {multiply_add_weight<T> * matrix_vector_weight};
     const std::size_t     group  {std::clamp<std::size_t>(rows / (4 * max_threads()), 8, row_group)};
     parallel_for((rows + group - 1) / group, group * cols * weight, [&](std::size_t g) {
                    const std::size_t first {g * group};
