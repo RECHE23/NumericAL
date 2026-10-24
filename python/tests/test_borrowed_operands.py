@@ -121,6 +121,19 @@ class BorrowedOperands(unittest.TestCase):
         self.assertIs(numerical._numerical._borrowed_unary("abs", np.ones(3, np.complex128)), NotImplemented)
         self.assertIs(numerical._numerical._borrowed_unary("exp", [1.0]), NotImplemented)
 
+    def test_a_transposed_matrix_times_a_vector_gives_its_copys_bits(self):
+        # A column-major matrix (a transpose) times a vector, read where it lies on the x86-64 units: the product of its
+        # C-ordered copy, byte for byte, about the kernels' 16 and 32 partial sums and the blocks of 256 rows; the
+        # other dtypes through their copy, the same answer.
+        for dtype in (np.float64, np.complex128, np.float32):
+            for rows, cols in ((1, 1), (3, 17), (37, 32), (48, 275), (259, 65), (129, 7)):
+                with self.subTest(dtype=np.dtype(dtype).name, rows=rows, cols=cols):
+                    a = self.operand((cols, rows), dtype).T
+                    x = self.operand((cols,), dtype)
+                    got = numerical.matmul(a, x)
+                    want = numerical.matmul(np.ascontiguousarray(a), x)
+                    self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes())
+
     def test_a_transposed_matrix_norm_gives_its_contiguous_copys_bits(self):
         # A column-major matrix (a transpose) is read where it lies, its elements in its C order: the norm of its
         # C-ordered copy to the bit, by bands of eight rows, the whole blocks of eight parts and the tail after them,

@@ -3640,6 +3640,55 @@ namespace numerical::detail {
                    row_dots(a + (first * lda), lda, std::min(group, rows - first), x, cols, y + first);
                  });
   }
+
+  //! \brief The rows of a column-major matrix \ref columns_times_vector takes at once: their partial sums (32 a row on
+  //!         the AVX-512 path) stay in the L2 cache.
+  inline constexpr std::size_t column_rows {256};
+
+  /*!
+   * \brief `y = A x` for the column-major `rows × cols` \p a (column `j` at `a + j · lda`; NumPy's `a.T`, a transposed
+   *        operand) on the x86-64 units: each element the bits \ref matrix_times_vector gives its C-ordered copy
+   *        (`avx2_dot`'s or `avx512_dot`'s sum of its row), from the partial sums those kernels keep, updated a column
+   *        at a time over the rows together (`avx2_column_partials`), then finished as the kernels finish a row; blocks
+   *        of \ref column_rows rows among the threads. The copy NumPy made of the transpose first cost more than the
+   *        product (500 × 500: 170 µs of 213). \return False, nothing written, off those units or for rows longer than
+   *        a chunk (\ref chunked_dot sums them otherwise).
+   */
+  [[nodiscard]] inline bool columns_times_vector(const double* a,
+                                                 std::size_t   lda,
+                                                 std::size_t   rows,
+                                                 std::size_t   cols,
+                                                 const double* x,
+                                                 double*       y)
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path {gemm_path_current()};
+    if ((path != gemm_path::avx2 && path != gemm_path::avx512) || cols > dot_chunk) {
+      return false;
+    }
+    const bool        wide     {path == gemm_path::avx512};
+    const std::size_t partials {wide ? 32U : 16U};
+    const std::size_t done     {cols - (cols % partials)};
+    parallel_for((rows + column_rows - 1) / column_rows, column_rows * cols * matrix_vector_weight, [&](std::size_t block) {
+                   const std::size_t first  {block * column_rows};
+                   const std::size_t height {std::min(column_rows, rows - first)};
+                   buffer<double>    sums(partials * height, 0.0);
+                   const double* const part {a + first};
+                   if (wide) {
+                     avx2_column_partials<32>(part, lda, height, done, x, sums.data());
+                     avx512_columns_finish(part, lda, height, done, cols, x, sums.data(), y + first);
+                   }
+                   else {
+                     avx2_column_partials<16>(part, lda, height, done, x, sums.data());
+                     avx2_columns_finish(part, lda, height, done, cols, x, sums.data(), y + first);
+                   }
+                 });
+    return true;
+#else
+    (void)a, (void)lda, (void)rows, (void)cols, (void)x, (void)y;
+    return false;
+#endif
+  }
 } // namespace numerical::detail
 
 namespace numerical {

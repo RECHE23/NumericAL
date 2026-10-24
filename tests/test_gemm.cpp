@@ -4,10 +4,12 @@
 // threads. Exact equality is the property; a tolerance would hide a reordered sum.
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <limits>
 #include <cstddef>
+#include <cstdint>
 #include <random>
 #include <type_traits>
 #include <vector>
@@ -917,6 +919,49 @@ namespace
     return same;
   }
 } // namespace
+
+// A column-major matrix times a vector on the x86-64 units (columns_times_vector): each element the bits of its
+// row-major copy's product (matrix_times_vector), for every length about the kernels' 16 and 32 partial sums, rows past
+// whole blocks and vectors, and on every path; rows longer than a chunk, and the other paths, decline.
+TEST(a_column_major_matrix_times_a_vector_gives_its_copys_bits)
+{
+  EXPECT(on_every_path([] {
+                         bool same {true};
+                         for (const std::size_t cols : {std::size_t {1}, std::size_t {15}, std::size_t {16}, std::size_t {17}, std::size_t {31},
+                                                        std::size_t {32}, std::size_t {33}, std::size_t {65}, std::size_t {275}}) {
+                           for (const std::size_t rows : {std::size_t {1}, std::size_t {3}, std::size_t {4}, std::size_t {37},
+                                                          numerical::detail::column_rows + 3}) {
+                             std::vector<double> columns(rows * cols);
+                             std::vector<double> row_major(rows * cols);
+                             std::vector<double> x(cols);
+                             for (std::size_t i {0}; i < rows; ++i) {
+                               for (std::size_t j {0}; j < cols; ++j) {
+                                 columns[i + (j * rows)]   = fill<double>((i * cols) + j);
+                                 row_major[(i * cols) + j] = columns[i + (j * rows)];
+                               }
+                             }
+                             for (std::size_t j {0}; j < cols; ++j) {
+                               x[j] = fill<double>((j * 5) + 2);
+                             }
+                             std::vector<double> want(rows);
+                             std::vector<double> got(rows, -1.0);
+                             numerical::detail::matrix_times_vector(row_major.data(), cols, rows, cols, x.data(), want.data());
+                             if (numerical::detail::columns_times_vector(columns.data(), rows, rows, cols, x.data(), got.data())) {
+                               for (std::size_t i {0}; i < rows; ++i) {
+                                 same = same && std::bit_cast<std::uint64_t>(got[i]) == std::bit_cast<std::uint64_t>(want[i]);
+                               }
+                             }
+                             else {
+                               same = same && got == std::vector<double>(rows, -1.0); // declined: nothing written
+                             }
+                           }
+                         }
+                         std::vector<double> long_row(numerical::detail::dot_chunk + 1, 1.0);
+                         double              out {0.0};
+                         same = same && !numerical::detail::columns_times_vector(long_row.data(), 1, 1, long_row.size(), long_row.data(), &out);
+                         return same;
+                       }));
+}
 
 // The rows of a matrix times a vector (row_dots), four at a time on the x86-64 units with their remainders together:
 // each row the bits of its dot product alone, on every path, for every length about the 16- and 32-element blocks

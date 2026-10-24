@@ -29,6 +29,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   memory, not the arithmetic, sets the time, and the rows went to too few threads. The same bits (each row its own dot
   product). Six AVX2 cores: a `double` matrix of 1000 × 100 19.1 → 6.6 µs, 256 × 256 10.6 → 5.2, complex 671 × 36
   16.4 → 6.1, 539 × 68 14.3 → 9.8.
+- **A transposed NumPy matrix times a vector (`a.T @ x`) runs without a copy on x86-64** (`double`): each row's sum
+  the kernel's for its C-ordered copy, from the same partial sums updated a column at a time. The same bits. Six AVX2
+  cores: 500 × 500 266 → 38 µs (NumPy 32), 1000 × 100 105 → 12.3 µs (NumPy 16.2).
 
 ## 2026.10.35 — 2026-10-24
 

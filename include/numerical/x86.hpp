@@ -1420,6 +1420,104 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief The partial sums \ref avx2_dot_blocks (\p Partials 16) or \ref avx512_dot_blocks (32) keep for each of
+   *        \p rows rows of the column-major \p a (column `j` at `a + j · lda`) times \p x, over its first \p done
+   *        columns (a multiple of \p Partials): element `j` of a row into its partial `j mod Partials` by one fused
+   *        multiply-add, in ascending order, as the kernels' lanes take it; \p sums (`Partials × rows`, partial `p` of row
+   *        `r` at `p · rows + r`) zero before. A column's rows lie together, so four rows a vector.
+   */
+  template <std::size_t Partials>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_column_partials(const double* a,
+                                                                std::size_t   lda,
+                                                                std::size_t   rows,
+                                                                std::size_t   done,
+                                                                const double* x,
+                                                                double*       sums) noexcept
+  {
+    for (std::size_t j {0}; j < done; ++j) {
+      double* const       s   {sums + ((j % Partials) * rows)};
+      const double* const col {a + (j * lda)};
+      const __m256d       xv  {_mm256_set1_pd(x[j])};
+      std::size_t         r   {0};
+      for (; r + 4 <= rows; r += 4) {
+        _mm256_storeu_pd(s + r, _mm256_fmadd_pd(_mm256_loadu_pd(col + r), xv, _mm256_loadu_pd(s + r)));
+      }
+      for (; r < rows; ++r) {
+        s[r] = std::fma(col[r], x[j], s[r]);
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  /*!
+   * \brief \ref avx2_dot of each row of the column-major \p a with \p x, into \p y, from \ref avx2_column_partials'
+   *        sixteen partial sums: each vector's four summed as \ref avx2_dot_blocks sums them, the vectors in order from +0
+   *        (none: +0), then the columns past \p done added in order by the same statement as the kernel's, so its
+   *        bits.
+   */
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_columns_finish(const double* a,
+                                                               std::size_t   lda,
+                                                               std::size_t   rows,
+                                                               std::size_t   done,
+                                                               std::size_t   cols,
+                                                               const double* x,
+                                                               const double* sums,
+                                                               double*       y) noexcept
+  {
+    constexpr std::size_t width {4};
+    constexpr std::size_t lanes {4};
+    for (std::size_t r {0}; r < rows; ++r) {
+      double total {0.0};
+      for (std::size_t l {0}; done != 0 && l < lanes; ++l) {
+        const double* const part {sums + (l * width * rows) + r}; // partial l·width + k of row r at part[k · rows]
+        total += (part[0] + part[rows]) + (part[2 * rows] + part[3 * rows]);
+      }
+      y[r] = total;
+    }
+    for (std::size_t j {done}; j < cols; ++j) {
+      const double* const col {a + (j * lda)};
+      for (std::size_t r {0}; r < rows; ++r) {
+        y[r] += col[r] * x[j];
+      }
+    }
+  }
+
+  /*!
+   * \brief \ref avx2_columns_finish for \ref avx512_dot: thirty-two partial sums, each register's eight by the kernel's
+   *        own reduction (`_mm512_reduce_add_pd`), the registers in order from +0, then the remainder in order.
+   */
+  NUMERICAL_TARGET("avx512f") inline void avx512_columns_finish(const double* a,
+                                                                std::size_t   lda,
+                                                                std::size_t   rows,
+                                                                std::size_t   done,
+                                                                std::size_t   cols,
+                                                                const double* x,
+                                                                const double* sums,
+                                                                double*       y) noexcept
+  {
+    constexpr std::size_t width {8};
+    constexpr std::size_t lanes {4};
+    for (std::size_t r {0}; r < rows; ++r) {
+      double total {0.0};
+      for (std::size_t l {0}; done != 0 && l < lanes; ++l) {
+        alignas(64) std::array<double, width> part {};
+        for (std::size_t k {0}; k < width; ++k) {
+          part[k] = sums[(((l * width) + k) * rows) + r];
+        }
+        total += _mm512_reduce_add_pd(_mm512_load_pd(part.data()));
+      }
+      y[r] = total;
+    }
+    for (std::size_t j {done}; j < cols; ++j) {
+      const double* const col {a + (j * lda)};
+      for (std::size_t r {0}; r < rows; ++r) {
+        y[r] += col[r] * x[j];
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  /*!
    * \brief \ref avx2_dot of each of \p rows rows of \p m (\p ld apart) with \p x, into \p out, four rows at a time: each
    *        row's blocks, then the four rows' remainders added in order together, their chains interleaved where one
    *        row's waited on its last addition. Each row's sum the kernel's. \p Width the blocks' elements, \p Blocks
