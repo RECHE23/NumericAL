@@ -100,6 +100,27 @@ class BorrowedOperands(unittest.TestCase):
         self.assertIs(numerical._numerical._borrowed_reduce("prod", np.ones(3)), NotImplemented)
         self.assertIs(numerical._numerical._borrowed_reduce("sum", [1.0, 2.0]), NotImplemented)
 
+    def test_an_elementwise_function_reads_the_array_and_gives_the_tensors_bits(self):
+        # exp, log, sqrt, sin, cos, tan, tanh and absolute of a NumPy array, read where it lies: the Tensor's result to
+        # the byte, of its dtype and shape, for each dtype, empty to a million elements, strided
+        # views small and large; complex magnitudes keep NumPy's loop through a Tensor, the same answer.
+        names = ("exp", "log", "sqrt", "sin", "cos", "tan", "tanh", "absolute")
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            for shape in ((1,), (7, 3), (1000, 1000), (3, 0)):
+                x = self.operand(shape, dtype)
+                for view in (x, x[::2, ::-1] if len(shape) == 2 else x):
+                    tensor = numerical.asarray(np.ascontiguousarray(view))
+                    for name in names:
+                        with self.subTest(dtype=np.dtype(dtype).name, shape=view.shape, name=name):
+                            f = getattr(numerical, name)
+                            got, want = f(view), f(tensor)
+                            self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
+                            self.assertEqual(np.asarray(got).tobytes(), np.asarray(want).tobytes())
+        self.assertIs(numerical._numerical._borrowed_unary("conj", np.ones(3)), NotImplemented)
+        self.assertIs(numerical._numerical._borrowed_unary("absolute", np.ones(3)), NotImplemented)
+        self.assertIs(numerical._numerical._borrowed_unary("abs", np.ones(3, np.complex128)), NotImplemented)
+        self.assertIs(numerical._numerical._borrowed_unary("exp", [1.0]), NotImplemented)
+
     def test_a_transposed_matrix_norm_gives_its_contiguous_copys_bits(self):
         # A column-major matrix (a transpose) is read where it lies, its elements in its C order: the norm of its
         # C-ordered copy to the bit, by bands of eight rows, the whole blocks of eight parts and the tail after them,

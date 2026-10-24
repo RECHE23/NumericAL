@@ -1396,6 +1396,10 @@ def _elementwise(name, doc):
     def function(a):
         if name == "abs" and not _numpy_loops_measured:  # a complex magnitude fused as NumPy's vector loop
             _numpy_loops()
+        if not isinstance(a, Tensor):
+            mapped = _numerical._borrowed_unary(name, a)  # a NumPy array read where it lies
+            if mapped is not NotImplemented:
+                return mapped
         return _numerical._unary(name, a if isinstance(a, Tensor) else asarray(a))
 
     function.__name__ = name

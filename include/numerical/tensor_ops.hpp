@@ -729,6 +729,28 @@ namespace numerical {
 
   namespace detail {
     /*!
+     * \brief `f(x)` for every one of the row-major elements at \p data, of shape \p shape (another array's storage, read
+     *        where it lies).
+     */
+    template <typename T,
+              typename F>
+    [[nodiscard]] auto parallel_map(const T*                        data,
+                                    const std::vector<std::size_t>& shape,
+                                    const F&                        f) -> tensor<std::decay_t<decltype(f(std::declval<const T&>()))>>
+    {
+      using R = std::decay_t<decltype(f(std::declval<const T&>()))>;
+      const std::size_t count  {element_count(shape.begin(), shape.end())};
+      buffer<R>         out(count);
+      const std::size_t chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     const std::size_t last {std::min(first + elementwise_chunk, count)};
+                     std::transform(data + first, data + last, out.begin() + static_cast<std::ptrdiff_t>(first), f);
+                   });
+      return tensor<R> {shape, std::move(out)};
+    }
+
+    /*!
      * \brief `f(x)` for every element of \p t, by chunks of \ref elementwise_chunk among the threads (as
      *        \ref broadcast_apply's same-shape pairs): for a stateless \p f, the library's element-wise functions.
      */
@@ -737,16 +759,7 @@ namespace numerical {
     [[nodiscard]] auto parallel_map(const tensor<T>& t,
                                     const F&         f) -> tensor<std::decay_t<decltype(f(std::declval<const T&>()))>>
     {
-      using R = std::decay_t<decltype(f(std::declval<const T&>()))>;
-      buffer<R>         out(t.size());
-      const std::size_t chunks {(t.size() + elementwise_chunk - 1) / elementwise_chunk};
-      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
-                     const std::size_t first {c * elementwise_chunk};
-                     const std::size_t last {std::min(first + elementwise_chunk, t.size())};
-                     std::transform(t.data().begin() + static_cast<std::ptrdiff_t>(first), t.data().begin() + static_cast<std::ptrdiff_t>(last),
-                                    out.begin() + static_cast<std::ptrdiff_t>(first), f);
-                   });
-      return tensor<R> {t.shape(), std::move(out)};
+      return parallel_map(t.data().data(), t.shape(), f);
     }
   } // namespace detail
 
