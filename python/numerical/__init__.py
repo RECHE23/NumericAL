@@ -1111,7 +1111,10 @@ def asarray(obj, dtype=None):
         TypeError: if `obj` is none of these, or a nested list holds something other than numbers.
     """
     # A float, int, bool or complex, an array (its __array_struct__ or __array_interface__) and a Tensor go to C
-    # as they are; a nested list, or another number (a Fraction), through its values.
+    # as they are; a nested list, or another number (a Fraction), through its values. A Tensor or an array's struct
+    # first: the abstract Number test below took a third of a small einsum's call.
+    if type(obj) is Tensor or hasattr(obj, "__array_struct__"):
+        return _asarray(obj, dtype) if dtype is not None else _asarray(obj)
     if isinstance(obj, (list, tuple)) or (type(obj) not in _NATIVE_NUMBERS and isinstance(obj, _numbers.Number)
                                           and not hasattr(obj, "__array_interface__")):
         values, shape = _nested(obj)

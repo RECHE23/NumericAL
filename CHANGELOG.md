@@ -22,6 +22,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`exp`, `log`, `sqrt`, `sin`, `cos`, `tan`, `tanh` of a NumPy array, and `absolute` of a real one, read it where it
   lies**: the Tensor's result to the byte. M1 Pro, 10^6 doubles: `exp` 1581 → 644 µs, `log` 1889 → 1106, `sqrt` 1080 →
   309, `sin` 2009 → 1121.
+- **`asarray` hands a NumPy array or a Tensor to the extension at once**, before the slower tests for numbers: every
+  function converting its operands pays less. M1 Pro, `einsum("ij,j->ij")` of an 11 × 3 array and a row: 4.44 → 2.84
+  µs.
 
 ## 2026.10.35 — 2026-10-24
 
