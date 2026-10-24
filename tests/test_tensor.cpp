@@ -896,6 +896,55 @@ TEST(matmul_of_stacks_broadcasts_their_leading_axes)
   EXPECT_THROWS((void)numerical::matmul(counting({2, 2, 3}), counting({3, 3, 4})), numerical::dimension_error);
 }
 
+namespace
+{
+  // A stack's product against each of its matrices' products alone (one matmul of matrices), to the bit: (stack, m, k)
+  // by (stack or 1, k, n), A of `a_stack` matrices (1: repeated), B of `b_stack` (1: shared).
+  bool stack_gives_each_products_bits(std::size_t a_stack,
+                                      std::size_t b_stack,
+                                      std::size_t m,
+                                      std::size_t k,
+                                      std::size_t n)
+  {
+    const auto values {[](std::size_t count, double phase) {
+                         std::vector<double> v(count);
+                         for (std::size_t i {0}; i < count; ++i) {
+                           v[i] = std::sin((static_cast<double>(i) * 0.37) + phase);
+                         }
+                         return v;
+                       }};
+    const std::size_t    stack     {std::max(a_stack, b_stack)};
+    const tensor<double> a         {{a_stack, m, k}, values(a_stack * m * k, 0.1)};
+    const tensor<double> b         {{b_stack, k, n}, values(b_stack * k * n, 0.7)};
+    const tensor<double> by_matmul {numerical::matmul(a, b)};
+    const tensor<double> by_einsum {einsum("...ij,...jk->...ik", a, b)};
+    bool                 same      {by_matmul.data().size() == stack * m * n && by_einsum.data() == by_matmul.data()};
+    for (std::size_t p {0}; p < stack; ++p) {
+      const std::size_t    pa    {a_stack == 1 ? 0 : p};
+      const std::size_t    pb    {b_stack == 1 ? 0 : p};
+      const tensor<double> one_a {{m, k}, std::vector<double>(a.data().begin() + static_cast<std::ptrdiff_t>(pa * m * k),
+                                                              a.data().begin() + static_cast<std::ptrdiff_t>((pa + 1) * m * k))};
+      const tensor<double> one_b {{k, n}, std::vector<double>(b.data().begin() + static_cast<std::ptrdiff_t>(pb * k * n),
+                                                              b.data().begin() + static_cast<std::ptrdiff_t>((pb + 1) * k * n))};
+      const tensor<double> alone {numerical::matmul(one_a, one_b)};
+      same = same && std::equal(alone.data().begin(), alone.data().end(), by_matmul.data().begin() + static_cast<std::ptrdiff_t>(p * m * n));
+    }
+    return same;
+  }
+} // namespace
+
+// A stack of products gives each matrix's product alone: B shared by the whole stack (one product of all A's rows),
+// A repeated, both stacked; fewer products than threads (one after another, each on all of them) and more.
+TEST(a_stack_of_products_gives_each_products_bits)
+{
+  numerical::set_max_threads(4);
+  for (const auto& [a_stack, b_stack, m, k, n] : {std::array<std::size_t, 5> {9, 1, 3, 64, 64}, {2, 1, 40, 300, 50},
+                                                  {1, 9, 7, 30, 20}, {2, 2, 130, 101, 120}, {9, 9, 5, 40, 33}, {3, 1, 1, 20, 30}}) {
+    EXPECT(stack_gives_each_products_bits(a_stack, b_stack, m, k, n));
+  }
+  numerical::set_max_threads(0); // every thread again
+}
+
 TEST(einsum_reads_an_ellipsis_as_numpy)
 {
   const tensor<double> a           {counting({2, 3, 4})};

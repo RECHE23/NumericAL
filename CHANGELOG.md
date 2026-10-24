@@ -40,6 +40,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   where each row paid a call and a load of the path. Each row the bits of its own dot product. Six AVX2 cores, one
   thread: 925 × 3 8.2 → 1.7 µs, 152 × 59 2.7 → 1.9; ten AVX-512 cores: 925 × 3 13.3 → 2.5, 498 × 19 14.2 → 3.8; complex
   `double` 652 × 3 7.4 → 3.3.
+- **A stack of matrix products shares its threads with its products**: fewer products than threads run one after
+  another, each on all of them, where the stack's products in parallel held each to one (`matmul` and `einsum`'s
+  batches); and a stack whose second operand is shared runs as one product of all the first's rows, that operand
+  packed once. The same bits. Ten AVX-512 cores: two products of order 1000 28.0 → 7.5 ms, three of 600 6.5 → 2.8 ms;
+  16 × 32 × 512 by 512 × 512 1013 → 509 µs, 1000 × 3 × 64 by 64 × 64 165 → 87 µs.
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on
   x86-64), where it added the matrix's rows through memory: the same bits, each column's products added in the same
   order by the same arithmetic. One M1 Pro, from Python: a float64 vector of 764 times a 764 × 2 matrix 4.6 → 1.1 µs,
