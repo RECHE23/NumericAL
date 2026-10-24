@@ -13,6 +13,7 @@
 
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
@@ -1138,6 +1139,90 @@ namespace numerical::detail {
     }
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
     return std::complex<double> {re, im};
+  }
+
+  /*!
+   * \brief The leading whole blocks of 16 of \p count contiguous `double`s for \ref contiguous_extreme: their largest
+   *        (\p Maximum) or smallest into \p result and whether a NaN is among them into \p nan, four AVX2 vectors each
+   *        its own running best, a NaN never kept (`max` returns its second operand, the best, when the new one is a
+   *        NaN) but flagged apart. A tie keeps the best met, as the portable lanes do; a zero's sign is settled after.
+   * \return The elements done.
+   */
+  template <bool Maximum>
+  NUMERICAL_TARGET("avx2") inline std::size_t avx2_extreme(const double* first,
+                                                           std::size_t   count,
+                                                           double&       result,
+                                                           bool&         nan) noexcept
+  {
+    constexpr std::size_t block {16};
+    const std::size_t     done  {count - (count % block)};
+    if (done == 0) {
+      return 0;
+    }
+    std::array<ymm_register, 4> best {};
+    std::array<ymm_register, 4> nans {};
+    for (std::size_t l {0}; l < 4; ++l) {
+      best[l].v = _mm256_loadu_pd(first + (l * 4));
+      nans[l].v = _mm256_setzero_pd();
+    }
+    for (std::size_t i {0}; i < done; i += block) {
+      for (std::size_t l {0}; l < 4; ++l) {
+        const __m256d x {_mm256_loadu_pd(first + i + (l * 4))};
+        best[l].v = Maximum ? _mm256_max_pd(x, best[l].v) : _mm256_min_pd(x, best[l].v);
+        nans[l].v = _mm256_or_pd(nans[l].v, _mm256_cmp_pd(x, x, _CMP_UNORD_Q));
+      }
+    }
+    std::array<double, block> values {};
+    std::array<double, block> flags  {};
+    for (std::size_t l {0}; l < 4; ++l) {
+      _mm256_storeu_pd(values.data() + (l * 4), best[l].v);
+      _mm256_storeu_pd(flags.data() + (l * 4), nans[l].v);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: the tail may be SSE alone
+    for (std::size_t k {0}; k < block; ++k) {
+      nan    = nan || std::bit_cast<std::uint64_t>(flags[k]) != 0U;
+      result = (Maximum ? values[k] > result : values[k] < result) ? values[k] : result;
+    }
+    return done;
+  }
+
+  //! \brief \ref avx2_extreme for `float`, whole blocks of 32.
+  template <bool Maximum>
+  NUMERICAL_TARGET("avx2") inline std::size_t avx2_extreme(const float* first,
+                                                           std::size_t  count,
+                                                           float&       result,
+                                                           bool&        nan) noexcept
+  {
+    constexpr std::size_t block {32};
+    const std::size_t     done  {count - (count % block)};
+    if (done == 0) {
+      return 0;
+    }
+    std::array<ymm_register_f32, 4> best {};
+    std::array<ymm_register_f32, 4> nans {};
+    for (std::size_t l {0}; l < 4; ++l) {
+      best[l].v = _mm256_loadu_ps(first + (l * 8));
+      nans[l].v = _mm256_setzero_ps();
+    }
+    for (std::size_t i {0}; i < done; i += block) {
+      for (std::size_t l {0}; l < 4; ++l) {
+        const __m256 x {_mm256_loadu_ps(first + i + (l * 8))};
+        best[l].v = Maximum ? _mm256_max_ps(x, best[l].v) : _mm256_min_ps(x, best[l].v);
+        nans[l].v = _mm256_or_ps(nans[l].v, _mm256_cmp_ps(x, x, _CMP_UNORD_Q));
+      }
+    }
+    std::array<float, block> values {};
+    std::array<float, block> flags  {};
+    for (std::size_t l {0}; l < 4; ++l) {
+      _mm256_storeu_ps(values.data() + (l * 8), best[l].v);
+      _mm256_storeu_ps(flags.data() + (l * 8), nans[l].v);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: the tail may be SSE alone
+    for (std::size_t k {0}; k < block; ++k) {
+      nan    = nan || std::bit_cast<std::uint32_t>(flags[k]) != 0U;
+      result = (Maximum ? values[k] > result : values[k] < result) ? values[k] : result;
+    }
+    return done;
   }
 
   //! \brief \ref avx512_scaled_add on AVX2 with FMA.

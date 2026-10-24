@@ -17,6 +17,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   on arm64; Clang's AMX tiles on arm64 keep it ahead already): the same bits. On 200 random products of 1 to 256 in
   each dimension, 0.78 times as long in all on six AVX2 cores and on arm64 under GCC; order 64 on six AVX2 cores
   14.5 → 7.2 µs, 96 24.5 → 12.7.
+- **`max` and `min` of contiguous `double` and `float` run on AVX2 where the processor has it**, where the x86-64
+  wheels' baseline build compared two `double` at a time: the same answer (each lane its own best, a NaN flagged apart,
+  a zero's sign settled after). Six AVX2 cores, one thread: 4096 elements 0.36 → 0.09 ns each, 262 144 0.41 → 0.20.
 
 ### Changed
 - **A vector times a narrow matrix holds each column's sum in registers** (fewer than 16 columns on arm64, 9 on

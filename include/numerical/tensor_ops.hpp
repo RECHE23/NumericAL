@@ -600,11 +600,26 @@ namespace numerical {
       T              result   {first[0]};
       bool           nan      {false};
       std::size_t    done     {0};
+#ifdef NUMERICAL_X86_COMPILED
+      bool           wide     {false}; // the leading elements done by AVX2's wider vectors
+      if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
+        // The processor's AVX2, where the baseline build's vectors hold half as many: the same answer, whatever the
+        // width (each lane its own best, a NaN flagged apart, a zero's sign settled after).
+        if (const gemm_path path {gemm_path_current()}; path == gemm_path::avx2 || path == gemm_path::avx512) {
+          done = avx2_extreme<std::is_same_v<Order, std::greater<T>>>(first, count, result, nan);
+          wide = true;
+        }
+      }
+#endif
 #if defined(__GNUC__)
       using lane = typename native_vector<T>::type;
       constexpr std::size_t width {native_vector_bytes / sizeof(T)};
       constexpr std::size_t lanes {4}; // independent vectors, so no comparison waits on the one before it
+#  ifdef NUMERICAL_X86_COMPILED
+      if (!wide && count >= width * lanes) {
+#  else
       if (count >= width * lanes) {
+#  endif
         using mask = decltype(lane {} > lane {}); // all ones in a lane where a comparison holds
         std::array<lane, lanes> best {};
         std::array<mask, lanes> nans {};

@@ -526,7 +526,7 @@ namespace {
     const T nan {std::numeric_limits<T>::quiet_NaN()};
     const T far {std::numeric_limits<T>::max() / T(2)};
     bool    ok  {true};
-    for (const std::size_t count : {1U, 7U, 31U, 33U, 1000U, 1003U}) {
+    for (const std::size_t count : {1U, 7U, 16U, 17U, 31U, 32U, 33U, 64U, 65U, 1000U, 1003U}) {
       std::vector<T> values(count);
       for (std::size_t i {0}; i < count; ++i) {
         values[i] = static_cast<T>(std::sin(static_cast<double>(i) * 1.7) * 10.0);
@@ -543,16 +543,29 @@ namespace {
         peak[at] = nan;
         ok       = ok && std::isnan(numerical::max(tensor<T> {{count}, peak}));
         ok       = ok && std::isnan(numerical::min(tensor<T> {{count}, peak}));
+        std::vector<T> zeros(count, T(-0.0)); // −0 everywhere but one +0: max's +0, min's −0, wherever it lies
+        zeros[at] = T(0.0);
+        ok        = ok && !std::signbit(numerical::max(tensor<T> {{count}, zeros}));
+        ok        = ok && (count == 1 || std::signbit(numerical::min(tensor<T> {{count}, zeros})));
       }
     }
     return ok;
   }
 } // namespace
 
+// The extremes of contiguous values on every path this processor runs (the x86-64 ones in AVX2's wider vectors):
+// the same answers, the best and a NaN anywhere, a zero's sign settled as NumPy settles it.
 TEST(a_contiguous_extreme_finds_nan_and_the_best_in_every_lane_and_the_tail)
 {
-  EXPECT(contiguous_extremes_hold<double>());
-  EXPECT(contiguous_extremes_hold<float>());
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    EXPECT(contiguous_extremes_hold<double>());
+    EXPECT(contiguous_extremes_hold<float>());
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
 
 TEST(extremes_along_an_outer_axis_compare_slab_by_slab)
