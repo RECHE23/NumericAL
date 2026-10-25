@@ -405,6 +405,104 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief \ref row_dots of complex numbers for the column-major `rows × cols` \p a (column `j` at `a + j · lda`) with
+   *        \p x, into \p y: each row the bits of its row-major copy's \ref complex_dot_sums. A vector of a column holds
+   *        whole rows, each its two parts: times `x[j]`'s parts it is the row kernel's `x · y` lanes, times them
+   *        swapped its crossed ones, so element `j` of a row goes into its slot `j mod 2 · width` by the same vector
+   *        expression; the rows past whole vectors through a vector too. Then each row's slots summed in their order
+   *        from +0, the columns past them added by the kernel's statements, and the parts' difference and sum.
+   */
+  template <split_complex C>
+  void columns_complex_row_dots(const C*    a,
+                                std::size_t lda,
+                                std::size_t rows,
+                                std::size_t cols,
+                                const C*    x,
+                                C*          y)
+  {
+    using R    = typename C::value_type;
+    using lane = typename native_vector<R>::type;
+    constexpr std::size_t   width {native_vector_bytes / sizeof(R)}; // parts in a vector: an even count
+    constexpr std::size_t   per   {width / 2};                       // rows in a vector
+    constexpr std::size_t   slots {2 * width};                       // the elements of a row the kernel takes a step
+    const std::size_t       done  {cols - (cols % slots)};
+    const auto* const       parts {reinterpret_cast<const R*>(a)};   // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is an array of its two parts
+    std::vector<R>          ahead (2 * width * done);                // x[j]'s parts in a vector, then swapped
+    for (std::size_t j {0}; j < done; ++j) {
+      for (std::size_t k {0}; k < width; ++k) {
+        ahead[(2 * j * width) + k]         = (k % 2 == 0) ? x[j].real() : x[j].imag();
+        ahead[(((2 * j) + 1) * width) + k] = (k % 2 == 0) ? x[j].imag() : x[j].real();
+      }
+    }
+    std::vector<R>          sums (4 * rows);                         // each row's rr, ii, ri and ir
+    std::array<lane, slots> same  {};
+    std::array<lane, slots> cross {};
+    std::array<R, width>    part  {};
+    const auto              step {[&](std::size_t j, std::size_t q, const R* column) { // element j + q of the vector's rows
+                                    lane mv;
+                                    lane xs;
+                                    lane xc;
+                                    std::memcpy(&mv, column, sizeof(lane));
+                                    std::memcpy(&xs, ahead.data() + (2 * (j + q) * width), sizeof(lane));
+                                    std::memcpy(&xc, ahead.data() + (((2 * (j + q)) + 1) * width), sizeof(lane));
+                                    same[q]  += mv * xs;
+                                    cross[q] += mv * xc;
+                                  }};
+    for (std::size_t r0 {0}; r0 < rows; r0 += per) {
+      const std::size_t count {std::min(per, rows - r0)};
+      same  = {};
+      cross = {};
+      if (count == per) {
+        for (std::size_t j {0}; j < done; j += slots) {
+#  pragma GCC unroll 16 // the slots in registers
+          for (std::size_t q {0}; q < slots; ++q) {
+            step(j, q, parts + (2 * (((j + q) * lda) + r0)));
+          }
+        }
+      }
+      else { // the last rows, short of a vector: through one all the same, the same expression rounding them
+        for (std::size_t j {0}; j < done; j += slots) {
+          for (std::size_t q {0}; q < slots; ++q) {
+            std::fill(part.begin(), part.end(), R {});
+            std::copy(parts + (2 * (((j + q) * lda) + r0)), parts + (2 * (((j + q) * lda) + r0 + count)), part.begin());
+            step(j, q, part.data());
+          }
+        }
+      }
+      for (std::size_t v {0}; v < count; ++v) {
+        R rr {};
+        R ii {};
+        R ri {};
+        R ir {};
+        for (std::size_t q {0}; q < slots; ++q) {
+          rr += same[q][2 * v];
+          ii += same[q][(2 * v) + 1];
+          ri += cross[q][2 * v];
+          ir += cross[q][(2 * v) + 1];
+        }
+        sums[r0 + v]              = rr;
+        sums[rows + r0 + v]       = ii;
+        sums[(2 * rows) + r0 + v] = ri;
+        sums[(3 * rows) + r0 + v] = ir;
+      }
+    }
+    for (std::size_t j {done}; j < cols; ++j) {
+      const R* const col {parts + (2 * j * lda)};
+      const R        xr  {x[j].real()};
+      const R        xi  {x[j].imag()};
+      for (std::size_t r {0}; r < rows; ++r) {
+        sums[r]              += col[2 * r] * xr;
+        sums[rows + r]       += col[(2 * r) + 1] * xi;
+        sums[(2 * rows) + r] += col[2 * r] * xi;
+        sums[(3 * rows) + r] += col[(2 * r) + 1] * xr;
+      }
+    }
+    for (std::size_t r {0}; r < rows; ++r) {
+      y[r] = C {sums[r] - sums[rows + r], sums[(2 * rows) + r] + sums[(3 * rows) + r]};
+    }
+  }
+
+  /*!
    * \brief `Σ row[i] · v[i]`, and `out[i] += row[i] · f`, for \p count elements, in one pass over \p row: a
    *        symmetric matrix-vector product takes both from each row of its lower triangle, which two passes
    *        would read twice. The sum is accumulated as \ref dot_product accumulates it.

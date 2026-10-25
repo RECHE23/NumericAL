@@ -2093,7 +2093,7 @@ namespace numerical::detail {
   }
 
   //! \brief How a complex product rounds a term that sums nothing (`0 + a·b`) on the path in use, as
-  //!        \ref gemm_large_complex runs it.
+  //!        `gemm_large_complex` runs it.
   enum class complex_term : std::uint8_t
   {
     compiler, //!< The vector tile's and the plain loop's: `0 + a·b` as the compiler rounds it (\ref rounded_apart_add).
@@ -4082,6 +4082,57 @@ namespace numerical::detail {
     parallel_for((rows + column_rows - 1) / column_rows, column_rows * cols * matrix_vector_weight, [&](std::size_t block) {
                    const std::size_t first {block * column_rows};
                    columns_row_dots(a + first, lda, std::min(column_rows, rows - first), cols, x, y + first);
+                 });
+    return true;
+#else
+    (void)a, (void)lda, (void)rows, (void)cols, (void)x, (void)y;
+    return false;
+#endif
+  }
+
+  /*!
+   * \brief \ref columns_times_vector of complex numbers: each element the bits of its C-ordered copy's product, from
+   *        the slots the portable vectors' `complex_dot_sums` keep for a row (`columns_complex_row_dots`), blocks
+   *        of \ref column_rows rows among the threads (GCC and Clang); on the x86-64 AVX paths from the slots their kernel
+   *        keeps (`avx2_complex_column_slots`). \return False, nothing written, under another compiler, or for rows
+   *        longer than a chunk.
+   */
+  template <split_complex C>
+  [[nodiscard]] bool columns_times_vector(const C*    a,
+                                          std::size_t lda,
+                                          std::size_t rows,
+                                          std::size_t cols,
+                                          const C*    x,
+                                          C*          y)
+  {
+#if defined(__GNUC__)
+    if (cols > dot_chunk) {
+      return false;
+    }
+    constexpr std::size_t weight {multiply_add_weight<C> * matrix_vector_weight};
+    // Blocks small enough that each thread takes some: each row's sums its own whatever the block, so the same bits
+    // (ten AVX-512 cores, complex64 500 × 500: 85 µs in four blocks of 128 rows).
+    const std::size_t     height {std::clamp<std::size_t>((((rows / (2 * max_threads())) + 15) / 16) * 16, 16, column_rows)};
+#  ifdef NUMERICAL_X86_COMPILED
+    if (gemm_path_current() != gemm_path::portable) { // avx2_complex_dot's slots, on the AVX-512 path too
+      using R = typename C::value_type;
+      constexpr std::size_t slots {std::is_same_v<R, double> ? 8 : 16};
+      const std::size_t     done  {cols - (cols % slots)};
+      const auto* const     parts {reinterpret_cast<const R*>(a)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is an array of its two parts
+      const auto* const     xs    {reinterpret_cast<const R*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): as above
+      parallel_for((rows + height - 1) / height, height * cols * weight, [&](std::size_t block) {
+                     const std::size_t first {block * height};
+                     const std::size_t count {std::min(height, rows - first)};
+                     buffer<R>         sums(2 * slots * 2 * count, R {});
+                     avx2_complex_column_slots<slots>(parts + (2 * first), lda, count, done, xs, sums.data());
+                     avx2_complex_columns_finish<slots>(parts + (2 * first), lda, count, done, cols, xs, sums.data(), y + first);
+                   });
+      return true;
+    }
+#  endif
+    parallel_for((rows + height - 1) / height, height * cols * weight, [&](std::size_t block) {
+                   const std::size_t first {block * height};
+                   columns_complex_row_dots(a + first, lda, std::min(height, rows - first), cols, x, y + first);
                  });
     return true;
 #else

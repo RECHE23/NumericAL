@@ -4,12 +4,12 @@
 // threads. Exact equality is the property; a tolerance would hide a reordered sum.
 #include <algorithm>
 #include <array>
-#include <bit>
 #include <cmath>
+#include <bit>
 #include <complex>
+#include <cstdint>
 #include <limits>
 #include <cstddef>
-#include <cstdint>
 #include <random>
 #include <type_traits>
 #include <vector>
@@ -33,6 +33,20 @@ namespace {
   int fill<int>(std::size_t i)
   {
     return static_cast<int>(i % 11) - 5;
+  }
+
+  // Whether a and b are the same bits: a real number's, or each part of a complex one's.
+  template <typename T>
+  bool same_bits(T a,
+                 T b)
+  {
+    if constexpr (std::is_floating_point_v<T>) {
+      using bits = std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+      return std::bit_cast<bits>(a) == std::bit_cast<bits>(b);
+    }
+    else {
+      return same_bits(a.real(), b.real()) && same_bits(a.imag(), b.imag());
+    }
   }
 
   // fill's value, its imaginary part filled too for a complex T (a zero one would hide how its products round).
@@ -927,7 +941,6 @@ namespace {
   template <typename T>
   bool column_major_gives_copys_bits()
   {
-    using bits = std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
     bool same {true};
     for (const std::size_t cols : {std::size_t {1}, std::size_t {15}, std::size_t {16}, std::size_t {17}, std::size_t {31},
                                    std::size_t {32}, std::size_t {33}, std::size_t {63}, std::size_t {64}, std::size_t {65},
@@ -939,19 +952,19 @@ namespace {
         std::vector<T> x(cols);
         for (std::size_t i {0}; i < rows; ++i) {
           for (std::size_t j {0}; j < cols; ++j) {
-            columns[i + (j * rows)]   = fill<T>((i * cols) + j);
+            columns[i + (j * rows)]   = entry<T>((i * cols) + j);
             row_major[(i * cols) + j] = columns[i + (j * rows)];
           }
         }
         for (std::size_t j {0}; j < cols; ++j) {
-          x[j] = fill<T>((j * 5) + 2);
+          x[j] = entry<T>((j * 5) + 2);
         }
         std::vector<T> want(rows);
         std::vector<T> got(rows, T {-1});
         numerical::detail::matrix_times_vector(row_major.data(), cols, rows, cols, x.data(), want.data());
         if (numerical::detail::columns_times_vector(columns.data(), rows, rows, cols, x.data(), got.data())) {
           for (std::size_t i {0}; i < rows; ++i) {
-            same = same && std::bit_cast<bits>(got[i]) == std::bit_cast<bits>(want[i]);
+            same = same && same_bits(got[i], want[i]);
           }
         }
         else {
@@ -967,19 +980,19 @@ namespace {
       std::vector<T>    x(cols);
       for (std::size_t i {0}; i < rows; ++i) {
         for (std::size_t j {0}; j < cols; ++j) {
-          columns[i + (j * rows)]   = fill<T>((i * cols) + j);
+          columns[i + (j * rows)]   = entry<T>((i * cols) + j);
           row_major[(i * cols) + j] = columns[i + (j * rows)];
         }
       }
       for (std::size_t j {0}; j < cols; ++j) {
-        x[j] = fill<T>(j + 3);
+        x[j] = entry<T>(j + 3);
       }
       std::vector<T> want(rows);
       std::vector<T> got(rows, T {-1});
       numerical::detail::matrix_times_vector(row_major.data(), cols, rows, cols, x.data(), want.data());
       if (numerical::detail::columns_times_vector(columns.data(), rows, rows, cols, x.data(), got.data())) {
         for (std::size_t i {0}; i < rows; ++i) {
-          same = same && std::bit_cast<bits>(got[i]) == std::bit_cast<bits>(want[i]);
+          same = same && same_bits(got[i], want[i]);
         }
       }
     }
@@ -989,12 +1002,15 @@ namespace {
   }
 } // namespace
 
-// A column-major matrix times a vector on the x86-64 units (columns_times_vector), double and float: each element the
-// bits of its row-major copy's product (matrix_times_vector), for every length about the kernels' 16, 32 and 64 partial
-// sums, rows past whole blocks and vectors, and on every path; rows longer than a chunk, and the other paths, decline.
+// A column-major matrix times a vector (columns_times_vector), in the four types: each element the bits of its row-major
+// copy's product (matrix_times_vector), for every length about the kernels' partial sums and a complex row's slots, rows
+// past whole blocks and vectors, and on every path; rows longer than a chunk, and the paths it does not run, decline.
 TEST(a_column_major_matrix_times_a_vector_gives_its_copys_bits)
 {
   EXPECT(on_every_path([] { return column_major_gives_copys_bits<double>() && column_major_gives_copys_bits<float>(); }));
+  EXPECT(on_every_path([] {
+                         return column_major_gives_copys_bits<std::complex<double>>() && column_major_gives_copys_bits<std::complex<float>>();
+                       }));
 }
 
 // The rows of a matrix times a vector (row_dots), four at a time on the x86-64 units with their remainders together:

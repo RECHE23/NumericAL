@@ -18,6 +18,8 @@
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <type_traits>
+#include <vector>
 
 #include "simd.hpp"
 
@@ -1838,6 +1840,190 @@ namespace numerical::detail {
     for (std::size_t r {0}; r < rows; ++r) {
       out[r] = avx2_complex_dot(m + (r * ld), x, count);
     }
+  }
+
+  //! \brief A register of `double` or `float` from \p p (`_mm256_loadu_pd`, `_mm256_loadu_ps`).
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_load(const double* p) noexcept
+  {
+    return _mm256_loadu_pd(p);
+  }
+
+  //! \brief \ref avx2_load of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_load(const float* p) noexcept
+  {
+    return _mm256_loadu_ps(p);
+  }
+
+  //! \brief \p v stored at \p p.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_store(double* p,
+                                                      __m256d v) noexcept
+  {
+    _mm256_storeu_pd(p, v);
+  }
+
+  //! \brief \ref avx2_store of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_store(float* p,
+                                                      __m256 v) noexcept
+  {
+    _mm256_storeu_ps(p, v);
+  }
+
+  //! \brief `m · v + s`, one fused multiply-add a lane.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_fused(__m256d m,
+                                                         __m256d v,
+                                                         __m256d s) noexcept
+  {
+    return _mm256_fmadd_pd(m, v, s);
+  }
+
+  //! \brief \ref avx2_fused of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_fused(__m256 m,
+                                                        __m256 v,
+                                                        __m256 s) noexcept
+  {
+    return _mm256_fmadd_ps(m, v, s);
+  }
+
+  //! \brief \p first, \p second, \p first, … across a register: a complex number's parts, or them swapped.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_pairs(double first,
+                                                         double second) noexcept
+  {
+    return _mm256_setr_pd(first, second, first, second);
+  }
+
+  //! \brief \ref avx2_pairs of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_pairs(float first,
+                                                        float second) noexcept
+  {
+    return _mm256_setr_ps(first, second, first, second, first, second, first, second);
+  }
+
+  /*!
+   * \brief The slots \ref avx2_complex_dot keeps for each of \p rows complex rows of the column-major \p a (column `j`
+   *        at `a + j · lda`) times \p x, over its first \p done columns (a multiple of \p Slots, two complex numbers a
+   *        register's lane for `double`, four for `float`): element `j` of a row into slot `j mod Slots`, its parts by one
+   *        fused multiply-add each with `x[j]`'s, then with them swapped, as the kernel's lanes take it; \p sums
+   *        (`2 · Slots` vectors of `2 · rows` parts, slot `q`'s `x · y` sums of row `r` at `2 · (q · 2 · rows + r)`, its
+   *        crossed ones `2 · rows` further) zero before. A column's rows lie together, their parts interleaved as a
+   *        row's are.
+   */
+  template <std::size_t Slots,
+            typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_complex_column_slots(const R*    a,
+                                                                     std::size_t lda,
+                                                                     std::size_t rows,
+                                                                     std::size_t done,
+                                                                     const R*    x,
+                                                                     R*          sums) noexcept
+  {
+    // Each slot its own sum over its columns in ascending order: a slot at a time over four registers of rows, its sums
+    // in registers, each column read once and each slot written once.
+    using vec = decltype(avx2_load(a));           // __m256d or __m256
+    constexpr std::size_t width {32 / sizeof(R)}; // parts in a register
+    constexpr std::size_t tile  {4 * width};      // parts of the rows a slot takes at once
+    const std::size_t     parts {2 * rows};
+    for (std::size_t q {0}; q < Slots; ++q) {
+      R* const    same  {sums + (2 * q * parts)};
+      R* const    cross {same + parts};
+      std::size_t p     {0};
+      for (; p + tile <= parts; p += tile) {
+        using held = std::conditional_t<std::is_same_v<R, double>, ymm_register, ymm_register_f32>; // a register in an array
+        std::array<held, 4> s {};
+        std::array<held, 4> c {};
+        for (std::size_t j {q}; j < done; j += Slots) {
+          const R* const col {a + (2 * j * lda) + p};
+          const vec      xs  {avx2_pairs(x[2 * j], x[(2 * j) + 1])};
+          const vec      xc  {avx2_pairs(x[(2 * j) + 1], x[2 * j])};
+          NUMERICAL_UNROLL_TILE
+          for (std::size_t t {0}; t < 4; ++t) {
+            const vec mv {avx2_load(col + (t * width))};
+            s[t].v = avx2_fused(mv, xs, s[t].v);
+            c[t].v = avx2_fused(mv, xc, c[t].v);
+          }
+        }
+        for (std::size_t t {0}; t < 4; ++t) {
+          avx2_store(same + p + (t * width), s[t].v);
+          avx2_store(cross + p + (t * width), c[t].v);
+        }
+      }
+      for (; p < parts; p += 2) { // the rows past whole tiles: the same fused multiply-adds, one at a time
+        for (std::size_t j {q}; j < done; j += Slots) {
+          const R* const col {a + (2 * j * lda) + p};
+          const R        xr  {x[2 * j]};
+          const R        xi  {x[(2 * j) + 1]};
+          same[p]      = std::fma(col[0], xr, same[p]);
+          same[p + 1]  = std::fma(col[1], xi, same[p + 1]);
+          cross[p]     = std::fma(col[0], xi, cross[p]);
+          cross[p + 1] = std::fma(col[1], xr, cross[p + 1]);
+        }
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  /*!
+   * \brief \ref avx2_complex_dot of each complex row of the column-major \p a with \p x, into \p y, from
+   *        \ref avx2_complex_column_slots' sums: each lane's slots summed as the kernel sums a register's (in pairs,
+   *        `float`'s pairs then summed), the lanes in order from +0, then the columns past \p done added by the kernel's
+   *        statements, and the parts' difference and sum; so its bits.
+   */
+  template <std::size_t Slots,
+            typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_complex_columns_finish(const R*                 a,
+                                                                       std::size_t              lda,
+                                                                       std::size_t              rows,
+                                                                       std::size_t              done,
+                                                                       std::size_t              cols,
+                                                                       const R*                 x,
+                                                                       const R*                 sums,
+                                                                       std::complex<R>*         y) noexcept
+  {
+    constexpr std::size_t lanes {4};
+    constexpr std::size_t per   {Slots / lanes}; // the slots of one register: two complex numbers, or four
+    const auto            slot  {[&](std::size_t q, std::size_t kind, std::size_t r, std::size_t part) {
+                                   return sums[(2 * q * 2 * rows) + (kind * 2 * rows) + (2 * r) + part];
+                                 }};
+    std::vector<R>        acc (4 * rows);
+    for (std::size_t r {0}; r < rows; ++r) {
+      R rr {0};
+      R ii {0};
+      R ri {0};
+      R ir {0};
+      for (std::size_t l {0}; done != 0 && l < lanes; ++l) {
+        const std::size_t q {l * per};
+        if constexpr (per == 2) {
+          rr += slot(q, 0, r, 0) + slot(q + 1, 0, r, 0);
+          ii += slot(q, 0, r, 1) + slot(q + 1, 0, r, 1);
+          ri += slot(q, 1, r, 0) + slot(q + 1, 1, r, 0);
+          ir += slot(q, 1, r, 1) + slot(q + 1, 1, r, 1);
+        }
+        else {
+          rr += (slot(q, 0, r, 0) + slot(q + 1, 0, r, 0)) + (slot(q + 2, 0, r, 0) + slot(q + 3, 0, r, 0));
+          ii += (slot(q, 0, r, 1) + slot(q + 1, 0, r, 1)) + (slot(q + 2, 0, r, 1) + slot(q + 3, 0, r, 1));
+          ri += (slot(q, 1, r, 0) + slot(q + 1, 1, r, 0)) + (slot(q + 2, 1, r, 0) + slot(q + 3, 1, r, 0));
+          ir += (slot(q, 1, r, 1) + slot(q + 1, 1, r, 1)) + (slot(q + 2, 1, r, 1) + slot(q + 3, 1, r, 1));
+        }
+      }
+      acc[4 * r]       = rr;
+      acc[(4 * r) + 1] = ii;
+      acc[(4 * r) + 2] = ri;
+      acc[(4 * r) + 3] = ir;
+    }
+    for (std::size_t j {done}; j < cols; ++j) {
+      const R* const col {a + (2 * j * lda)};
+      const R        xr  {x[2 * j]};
+      const R        xi  {x[(2 * j) + 1]};
+      for (std::size_t r {0}; r < rows; ++r) {
+        acc[4 * r]       += col[2 * r] * xr;
+        acc[(4 * r) + 1] += col[(2 * r) + 1] * xi;
+        acc[(4 * r) + 2] += col[2 * r] * xi;
+        acc[(4 * r) + 3] += col[(2 * r) + 1] * xr;
+      }
+    }
+    for (std::size_t r {0}; r < rows; ++r) {
+      y[r] = {acc[4 * r] - acc[(4 * r) + 1], acc[(4 * r) + 2] + acc[(4 * r) + 3]};
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
 #endif

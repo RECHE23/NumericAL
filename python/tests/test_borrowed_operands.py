@@ -123,11 +123,11 @@ class BorrowedOperands(unittest.TestCase):
         self.assertIs(numerical._numerical._borrowed_unary("exp", [1.0]), NotImplemented)
 
     def test_a_transposed_matrix_times_a_vector_gives_its_copys_bits(self):
-        # A column-major matrix (a transpose) times a vector, read where it lies on the x86-64 units: the product of its
-        # C-ordered copy, byte for byte, about the kernels' 16 and 32 partial sums and the blocks of 256 rows; the
-        # other dtypes through their copy, the same answer.
-        for dtype in (np.float64, np.complex128, np.float32):
-            for rows, cols in ((1, 1), (3, 17), (37, 32), (48, 275), (259, 65), (129, 7)):
+        # A column-major matrix (a transpose) times a vector, read where it lies: the product of its C-ordered copy,
+        # byte for byte, in the four dtypes, about the kernels' partial sums, a complex row's slots and the blocks of
+        # rows.
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            for rows, cols in ((1, 1), (3, 17), (37, 32), (48, 275), (259, 65), (129, 7), (17, 16), (300, 47)):
                 with self.subTest(dtype=np.dtype(dtype).name, rows=rows, cols=cols):
                     a = self.operand((cols, rows), dtype).T
                     x = self.operand((cols,), dtype)

@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A transposed complex NumPy matrix times a vector (`a.T @ x`) is read where it lies**, as a real one is, with its
+  C-ordered copy's bits on every path (the slots its row kernel keeps, kept a column at a time over rows): M1 Pro,
+  `complex64` 500 × 500 195 → 18 µs (NumPy 27), `complex128` 1000 × 500 815 → 71–94 µs (NumPy 121–153); the kernel
+  from C++ on ten AVX-512 cores, `complex64` 500 × 500 18–20 µs.
 - **A complex `einsum` product that sums nothing (`ij,j->ij`, `ijk,ik->ijk`) runs element by element**, as a real one
   does, where it went one matrix product of depth one per element of its batch: each element rounded as the path's
   complex product rounds it (the x86-64 complex tiles' parts from zero, arm64's real kernel's fused second term), so

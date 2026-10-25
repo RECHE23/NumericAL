@@ -3505,12 +3505,12 @@ void gram_triangle_mirrored(const double* a, std::size_t ld, bool transposed, st
     });
 }
 
-// A column-major double or float matrix (a transpose) times a vector of its dtype, both read where they lie, on the x86-64 units
-// (columns_times_vector): each element the bits of its C-ordered copy's product, which was copied first. None for any
-// other pair, dtype or processor.
+// A column-major matrix (a transpose) times a vector of its dtype, both read where they lie (columns_times_vector):
+// each element the bits of its C-ordered copy's product, which was copied first. None for any other pair, or where
+// columns_times_vector declines.
 std::optional<PyObject*> borrowed_transposed_times_vector(const borrowed_operand& left, const borrowed_operand& right)
 {
-    if (!left.transposed || right.transposed || (left.dtype != 0 && left.dtype != 2) || left.dtype != right.dtype || left.shape.size() != 2 || right.shape.size() != 1
+    if (!left.transposed || right.transposed || left.dtype != right.dtype || left.shape.size() != 2 || right.shape.size() != 1
         || left.shape[1] != right.shape[0] || left.shape[0] == 0 || left.shape[1] == 0) {
         return std::nullopt;
     }
@@ -3530,7 +3530,12 @@ std::optional<PyObject*> borrowed_transposed_times_vector(const borrowed_operand
         return wrap(any_tensor {numerical::tensor<T> {{rows}, std::move(y)}});
     };
     try {
-        return left.dtype == 0 ? product(std::type_identity<double> {}) : product(std::type_identity<float> {});
+        switch (left.dtype) {
+            case 0: return product(std::type_identity<double> {});
+            case 1: return product(std::type_identity<std::complex<double>> {});
+            case 2: return product(std::type_identity<float> {});
+            default: return product(std::type_identity<std::complex<float>> {});
+        }
     }
     catch (...) {
         return set_cpp_error();
