@@ -8,6 +8,17 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **A complex vector times a matrix (`x @ B`, `einsum("j,jk->k")`) has the bits of its row in a product of a matrix by
+  B** past the portable path, as on it already for finite parts: its terms rounded as the path's complex product rounds
+  them (the x86-64 complex tiles' panels, `Re x · B` and `Im x · B` from zero and then crossed; arm64's real kernel's
+  blocks, `Re x · Re B` before `−Im x · Im B`), where each row of B was added by the compiler's complex arithmetic. B
+  row-major or column-major (a Fortran-ordered NumPy matrix, read where it lies). Faster as well: M1 Pro, `complex128`
+  500 × 500 93 → 47 µs, 4096 × 64 170 → 67 µs, `complex64` 2000 × 2000 1.07 → 0.75 ms; ten AVX-512 cores, `complex64`
+  1000 × 1000 294 → 56 µs, `complex128` 500 × 500 158 → 66 µs; slower in two corners: under GCC 14 on arm64, `complex64`
+  300 × 100 and 64 × 4096 by 4–8 % (B's rows read twice, its real parts' terms first), and on six AVX2 cores
+  `complex128` 2000 × 2000 2.13 → 2.33 ms. Complex `x @ B`'s last bits move on the NEON, AMX, AVX2 and AVX-512 paths.
+
 ## 2026.10.37 — 2026-10-25
 
 ### Changed

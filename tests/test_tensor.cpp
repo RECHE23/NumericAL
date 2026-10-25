@@ -343,8 +343,24 @@ namespace {
     return y;
   }
 
+  // The row of `a` in a product of a matrix by B: a three-row gemm, `a` its middle row.
+  template <typename T>
+  std::vector<T> row_of_a_product(const std::vector<T>& a,
+                                  const std::vector<T>& b,
+                                  std::size_t           cols)
+  {
+    const std::size_t inner {a.size()};
+    std::vector<T>    rows(3 * inner, T(0.25));
+    std::copy(a.begin(), a.end(), rows.begin() + static_cast<std::ptrdiff_t>(inner));
+    std::vector<T> c(3 * cols);
+    numerical::detail::gemm(3, cols, inner, rows.data(), inner, b.data(), cols, c.data(), cols, numerical::detail::c_start::zero);
+    return {c.begin() + static_cast<std::ptrdiff_t>(cols), c.begin() + static_cast<std::ptrdiff_t>(2 * cols)};
+  }
+
   // canonical_product of `a` (inner) and the row-major B, and vector_times_transposed of `a` and B given as its
-  // transpose (cols × inner, rows padded): B's rows added in order, to the bit.
+  // transpose (cols × inner, rows padded), to the bit: B's rows added in order; a complex `a` past the compiler's
+  // complex terms (complex_terms), the bits of its row in a product of a matrix by B. Some terms a signed zero or a
+  // subnormal number.
   template <typename T>
   bool vector_products_add_the_rows_in_order(std::size_t inner,
                                              std::size_t cols)
@@ -365,11 +381,21 @@ namespace {
         if constexpr (!std::is_floating_point_v<T>) {
           value += T(R {0}, part(std::sin(static_cast<double>(j + k))));
         }
+        if ((k + j) % 17 == 0) {
+          value = T(R(-0.0));
+        }
+        else if ((k + (2 * j)) % 19 == 0) {
+          value *= T(std::numeric_limits<R>::denorm_min() * R(1024));
+        }
         b[(k * cols) + j]   = value;
         bt[(j * ldbt) + k]  = value;
       }
     }
-    const std::vector<T>       want       {rows_added_in_order(a, b, cols)};
+    bool by_terms {false};
+    if constexpr (numerical::detail::split_complex<T>) {
+      by_terms = numerical::detail::complex_terms() != numerical::detail::complex_term::compiler;
+    }
+    const std::vector<T>       want       {by_terms ? row_of_a_product(a, b, cols) : rows_added_in_order(a, b, cols)};
     const numerical::tensor<T> canonical  {numerical::detail::canonical_product<T>(a.data(), inner, b.data(), cols, 1, inner, cols, {cols})};
     const numerical::buffer<T> transposed {numerical::detail::vector_times_transposed(a.data(), bt.data(), ldbt, inner, cols)};
     return std::equal(canonical.data().begin(), canonical.data().end(), want.begin(), want.end()) &&
@@ -434,9 +460,10 @@ TEST(a_product_of_rows_apart_gives_the_contiguous_bits)
 }
 
 // A vector times a matrix, row-major (narrow: its columns' sums held) and given as its transpose (a Fortran-ordered
-// NumPy matrix): B's rows added in order, the same bits, in each type, on every path this processor runs; every width
-// of a partial group of columns, the narrow kernel's last width and the first past it, several chunks, a depth of one
-// and an empty one (zeros).
+// NumPy matrix): B's rows added in order, the same bits, in each type, on every path this processor runs, a complex
+// one past the compiler's terms the bits of its row in a product; every width of a partial group of columns, the narrow
+// kernel's last width and the first past it, several chunks, a depth of one and an empty one (zeros); the complex
+// kernels' every count of registers left, over several of the complex tiles' panels and gemm_split's blocks.
 TEST(a_vector_times_a_matrix_adds_its_rows_in_order)
 {
   for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
@@ -444,7 +471,10 @@ TEST(a_vector_times_a_matrix_adds_its_rows_in_order)
     if (numerical::limit_gemm_path(path) != path) {
       continue; // a path this processor does not run
     }
-    std::vector<std::array<std::size_t, 2>> shapes {{406, 583}, {200, 130}, {764, 2}};
+    std::vector<std::array<std::size_t, 2>> shapes {{406, 583}, {200, 130}, {764, 2}, {600, 70}};
+    for (std::size_t cols {14}; cols <= 41; ++cols) {
+      shapes.push_back({260, cols});
+    }
     for (const std::size_t inner : {std::size_t {0}, std::size_t {1}, std::size_t {5}, std::size_t {37}}) {
       for (std::size_t cols {2}; cols <= numerical::detail::column_sums_below; ++cols) {
         shapes.push_back({inner, cols});
@@ -533,6 +563,11 @@ TEST(einsum_matrix_vector_rows_are_their_dot_products)
   EXPECT(long_av.data()[0] == 2.0 * static_cast<double>(long_row) && long_av.data()[1] == long_av.data()[0]);
   const tensor<double> none     {einsum("ij,j->i", tensor<double> {{3, 0}, std::vector<double> {}}, tensor<double> {{0}, std::vector<double> {}})};
   EXPECT(none.data() == (std::vector<double> {0.0, 0.0, 0.0}));
+  using complex_tensor = tensor<std::complex<double>>; // the empty depth of a complex A·v and v·A: zeros
+  EXPECT(einsum("ij,j->i", complex_tensor {{3, 0}, std::vector<std::complex<double>> {}}, complex_tensor {{0}, std::vector<std::complex<double>> {}})
+         == (complex_tensor {{3}, std::vector<std::complex<double>>(3)}));
+  EXPECT(einsum("i,ij->j", complex_tensor {{0}, std::vector<std::complex<double>> {}}, complex_tensor {{0, 4}, std::vector<std::complex<double>> {}})
+         == (complex_tensor {{4}, std::vector<std::complex<double>>(4)}));
   // Integers, whose einsum the coverage counts apart: rows of A·v, one longer than a chunk, and v·A.
   const tensor<int> im {{3, 4}, std::vector<int> {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}};
   EXPECT(einsum("ij,j->i", im, tensor<int> {{4}, std::vector<int> {1, 0, 2, 1}}) == (tensor<int> {{3}, std::vector<int> {11, 27, 43}}));

@@ -2026,6 +2026,91 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
+  //! \brief \p sum plus `re − im` in its real parts and `re + im` in its imaginary ones, \p im's parts exchanged first:
+  //!        the complex tiles' `Re a · b + i Im a · b` added to C (\ref avx2_full_tile_c64).
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_crossed_sum(__m256d sum,
+                                                               __m256d re,
+                                                               __m256d im) noexcept
+  {
+    return _mm256_add_pd(sum, _mm256_addsub_pd(re, _mm256_permute_pd(im, 0b0101)));
+  }
+
+  //! \brief \ref avx2_crossed_sum of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_crossed_sum(__m256 sum,
+                                                              __m256 re,
+                                                              __m256 im) noexcept
+  {
+    return _mm256_add_ps(sum, _mm256_addsub_ps(re, _mm256_permute_ps(im, 0xB1)));
+  }
+
+  /*!
+   * \brief The complex vector \p x (\p inner elements) times columns `0` to \p count of B, into \p y, each element
+   *        summed as the complex tiles sum it (\ref avx2_full_tile_c64, \ref avx512_full_tile_c64 and their `_c32`):
+   *        by panels of \p depth, `Re x · B` and `Im x · B` from zero, one fused multiply-add a part and a term, then
+   *        `Re x·Re B − Im x·Im B` and `Re x·Im B + Im x·Re B` added to the element, from +0. Every operand's parts
+   *        interleaved; the parts of B's element `[k][j]` at `b + 2 · ((k · row_step) + (j · column_step))`: with
+   *        \p column_step 1, a row's columns by registers, else a column at a time.
+   */
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_complex_row_panels(const R*    x,
+                                                                   const R*    b,
+                                                                   std::size_t row_step,
+                                                                   std::size_t column_step,
+                                                                   std::size_t inner,
+                                                                   std::size_t depth,
+                                                                   std::size_t count,
+                                                                   R*          y) noexcept
+  {
+    using vec  = decltype(avx2_load(x));                                                        // __m256d or __m256
+    using held = std::conditional_t<std::is_same_v<R, double>, ymm_register, ymm_register_f32>; // a register in an array
+    constexpr std::size_t width {32 / sizeof(R)};                                               // parts in a register
+    constexpr std::size_t tile  {4 * width};                                                    // parts held through a panel
+    const std::size_t     parts {2 * count};
+    const held            zero  {};
+    for (std::size_t pc {0}; pc < inner; pc += depth) { // a panel of B's rows at a time, read once
+      const std::size_t end   {std::min(pc + depth, inner)};
+      const bool        first {pc == 0};                // y holds nothing before the first panel
+      std::size_t       p     {0};
+      for (; column_step == 1 && p + tile <= parts; p += tile) {
+        std::array<held, 4> re {};
+        std::array<held, 4> im {};
+        for (std::size_t k {pc}; k < end; ++k) {
+          const R* const row {b + (2 * k * row_step) + p};
+          const vec      xr  {avx2_pairs(x[2 * k], x[2 * k])};
+          const vec      xi  {avx2_pairs(x[(2 * k) + 1], x[(2 * k) + 1])};
+          NUMERICAL_UNROLL_TILE
+          for (std::size_t t {0}; t < 4; ++t) {
+            const vec bv {avx2_load(row + (t * width))};
+            re[t].v = avx2_fused(xr, bv, re[t].v);
+            im[t].v = avx2_fused(xi, bv, im[t].v);
+          }
+        }
+        for (std::size_t t {0}; t < 4; ++t) {
+          R* const at {y + p + (t * width)};
+          avx2_store(at, avx2_crossed_sum(first ? zero.v : avx2_load(at), re[t].v, im[t].v));
+        }
+      }
+      for (; p < parts; p += 2) { // the columns past whole registers, or each column: the same terms, one at a time
+        const R* const col {b + (p * column_step)};
+        R              rr  {0};
+        R              ri  {0};
+        R              ir  {0};
+        R              ii  {0};
+        for (std::size_t k {pc}; k < end; ++k) {
+          const R br {col[2 * k * row_step]};
+          const R bi {col[(2 * k * row_step) + 1]};
+          rr = std::fma(x[2 * k], br, rr);
+          ri = std::fma(x[2 * k], bi, ri);
+          ir = std::fma(x[(2 * k) + 1], br, ir);
+          ii = std::fma(x[(2 * k) + 1], bi, ii);
+        }
+        y[p]     = (first ? R {0} : y[p]) + (rr - ii);
+        y[p + 1] = (first ? R {0} : y[p + 1]) + (ri + ir);
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
 #endif
 } // namespace numerical::detail
 

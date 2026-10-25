@@ -780,8 +780,287 @@ namespace numerical {
       return vector_times_columns<double>(a, b, row_step, column_step, inner, cols);
     }
 
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief The depth of one panel of the x86-64 complex tile of \p C: `gemm_kc` parts of each operand's rows.
+    template <split_complex C>
+    inline constexpr std::size_t complex_tile_depth {std::is_same_v<C, std::complex<double>> ? gemm_kc / 2 : gemm_kc};
+
+    static_assert(complex_tile_depth<std::complex<double>> == avx2_complex_tile_kernel::depth
+                  && complex_tile_depth<std::complex<double>> == avx512_complex_tile_kernel::depth
+                  && complex_tile_depth<std::complex<float>> == avx2_complex_tile_kernel_f32::depth
+                  && complex_tile_depth<std::complex<float>> == avx512_complex_tile_kernel_f32::depth,
+                  "avx2_complex_row_panels sums by the complex tiles' panels");
+#else
+    //! \brief The columns \ref split_row_columns holds at once: a block of B's rows read twice stays in the caches.
+    inline constexpr std::size_t split_row_width {32};
+
+    /*!
+     * \brief Columns \p first to \p last of the complex vector \p a (\p inner) times B (`B[k][j]` at
+     *        `b[(k · row_step) + (j · column_step)]`) into \p y, each element summed as `gemm_split` sums it (\c
+     *        complex_term::split): by blocks of \ref split_depth of the depth, `Re a · Re B` then `−Im a · Im B` into
+     *        its real part, `Re a · Im B` then `Im a · Re B` into its imaginary part, each one chain of fused
+     *        multiply-adds from +0 through the blocks.
+     */
+    template <split_complex C>
+    void split_row_columns(const C*    a,
+                           const C*    b,
+                           std::size_t row_step,
+                           std::size_t column_step,
+                           std::size_t inner,
+                           std::size_t first,
+                           std::size_t last,
+                           C*          y)
+    {
+      using R = typename C::value_type;
+      const std::size_t step {2 * column_step}; // between the parts of a row's columns
+      for (std::size_t j {first}; j < last; j += split_row_width) {
+        const std::size_t                  count {std::min(split_row_width, last - j)};
+        std::array<R, 2 * split_row_width> sums  {}; // the columns' parts, interleaved
+        for (std::size_t pc {0}; pc < inner; pc += split_depth) {
+          const std::size_t end {std::min(pc + split_depth, inner)};
+          for (std::size_t k {pc}; k < end; ++k) {
+            const R        f   {a[k].real()};
+            const R* const row {reinterpret_cast<const R*>(b + (k * row_step) + (j * column_step))}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+            for (std::size_t c {0}; c < count; ++c) {
+              sums[2 * c]       = std::fma(f, row[c * step], sums[2 * c]);
+              sums[(2 * c) + 1] = std::fma(f, row[(c * step) + 1], sums[(2 * c) + 1]);
+            }
+          }
+          for (std::size_t k {pc}; k < end; ++k) {
+            const R        g   {a[k].imag()};
+            const R* const row {reinterpret_cast<const R*>(b + (k * row_step) + (j * column_step))}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+            for (std::size_t c {0}; c < count; ++c) {
+              sums[2 * c]       = std::fma(-g, row[(c * step) + 1], sums[2 * c]);
+              sums[(2 * c) + 1] = std::fma(g, row[c * step], sums[(2 * c) + 1]);
+            }
+          }
+        }
+        for (std::size_t c {0}; c < count; ++c) {
+          y[j + c] = {sums[2 * c], sums[(2 * c) + 1]};
+        }
+      }
+    }
+
+#endif
+
+#ifdef NUMERICAL_NEON_COMPILED
+    //! \brief A NEON register of \p v in each lane.
+    inline float64x2_t neon_splat(double v) noexcept
+    {
+      return vdupq_n_f64(v);
+    }
+
+    //! \brief \ref neon_splat of `float`.
+    inline float32x4_t neon_splat(float v) noexcept
+    {
+      return vdupq_n_f32(v);
+    }
+
+    //! \brief `−g, g` across a register: `Im a`'s factors of a complex number's parts exchanged.
+    inline float64x2_t neon_crossed(double g) noexcept
+    {
+      return vsetq_lane_f64(-g, vdupq_n_f64(g), 0);
+    }
+
+    //! \brief \ref neon_crossed of `float`, for two complex numbers.
+    inline float32x4_t neon_crossed(float g) noexcept
+    {
+      return vtrn1q_f32(vdupq_n_f32(-g), vdupq_n_f32(g));
+    }
+
+    //! \brief The complex numbers of \p v, their parts exchanged.
+    inline float64x2_t neon_exchanged(float64x2_t v) noexcept
+    {
+      return vextq_f64(v, v, 1);
+    }
+
+    //! \brief \ref neon_exchanged of `float`.
+    inline float32x4_t neon_exchanged(float32x4_t v) noexcept
+    {
+      return vrev64q_f32(v);
+    }
+
+    //! \brief A register of `double` from \p p.
+    inline float64x2_t neon_load(const double* p) noexcept
+    {
+      return vld1q_f64(p);
+    }
+
+    //! \brief \ref neon_load of `float`.
+    inline float32x4_t neon_load(const float* p) noexcept
+    {
+      return vld1q_f32(p);
+    }
+
+    //! \brief \p v stored at \p p.
+    inline void neon_store(double*     p,
+                           float64x2_t v) noexcept
+    {
+      vst1q_f64(p, v);
+    }
+
+    //! \brief \ref neon_store of `float`.
+    inline void neon_store(float*      p,
+                           float32x4_t v) noexcept
+    {
+      vst1q_f32(p, v);
+    }
+
+    //! \brief `s + f · v`, one fused multiply-add a lane.
+    inline float64x2_t neon_fused(float64x2_t s,
+                                  float64x2_t f,
+                                  float64x2_t v) noexcept
+    {
+      return vfmaq_f64(s, f, v);
+    }
+
+    //! \brief \ref neon_fused of `float`.
+    inline float32x4_t neon_fused(float32x4_t s,
+                                  float32x4_t f,
+                                  float32x4_t v) noexcept
+    {
+      return vfmaq_f32(s, f, v);
+    }
+
+    /*!
+     * \brief One block of \ref split_row_columns' depth, \p pc to \p end, for `Registers` NEON registers of parts at
+     *        once, the parts \p p to `p + Registers · lanes` of B's rows (their columns together, \p row_step parts
+     *        apart) into \p y, which holds the earlier blocks' sums unless \p first: the same terms in the same order,
+     *        each part's sum held in a register through the block.
+     */
+    template <std::size_t Registers,
+              typename R>
+    void neon_split_row_parts(const std::complex<R>* a,
+                              const R*               b,
+                              std::size_t            row_step,
+                              std::size_t            pc,
+                              std::size_t            end,
+                              bool                   first,
+                              std::size_t            p,
+                              R*                     y) noexcept
+    {
+      using vec = decltype(neon_load(b));
+      constexpr std::size_t      lanes {16 / sizeof(R)};
+      std::array<vec, Registers> sums  {};
+      if (!first) {
+#  pragma GCC unroll 16
+        for (std::size_t t {0}; t < Registers; ++t) {
+          sums[t] = neon_load(y + p + (t * lanes));
+        }
+      }
+      for (std::size_t k {pc}; k < end; ++k) {
+        const vec      f   {neon_splat(a[k].real())};
+        const R* const row {b + (k * row_step) + p};
+#  pragma GCC unroll 16
+        for (std::size_t t {0}; t < Registers; ++t) {
+          sums[t] = neon_fused(sums[t], f, neon_load(row + (t * lanes)));
+        }
+      }
+      for (std::size_t k {pc}; k < end; ++k) {
+        const vec      g   {neon_crossed(a[k].imag())};
+        const R* const row {b + (k * row_step) + p};
+#  pragma GCC unroll 16
+        for (std::size_t t {0}; t < Registers; ++t) {
+          sums[t] = neon_fused(sums[t], g, neon_exchanged(neon_load(row + (t * lanes))));
+        }
+      }
+#  pragma GCC unroll 16
+      for (std::size_t t {0}; t < Registers; ++t) {
+        neon_store(y + p + (t * lanes), sums[t]);
+      }
+    }
+
+    //! \brief \ref split_row_columns of B's rows whose columns lie together, a block of the depth at a time (B's rows
+    //!        read once each): by \ref neon_split_row_parts sixteen registers at a time, then four, then those left
+    //!        together; a last complex `float` by split_row_columns.
+    template <split_complex C>
+    void neon_split_row_columns(const C*    a,
+                                const C*    b,
+                                std::size_t row_step,
+                                std::size_t inner,
+                                std::size_t first,
+                                std::size_t last,
+                                C*          y) noexcept
+    {
+      using R = typename C::value_type;
+      constexpr std::size_t lanes {16 / sizeof(R)};
+      const R* const        parts {reinterpret_cast<const R*>(b + first)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+      R* const              out   {reinterpret_cast<R*>(y + first)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+      const std::size_t     count {2 * (last - first)};
+      const std::size_t     whole {(count / lanes) * lanes};               // the parts in whole registers
+      for (std::size_t pc {0}; pc < inner; pc += split_depth) {
+        const std::size_t end      {std::min(pc + split_depth, inner)};
+        const bool        starting {pc == 0};
+        std::size_t       p        {0};
+        for (; p + (16 * lanes) <= count; p += 16 * lanes) {
+          neon_split_row_parts<16>(a, parts, 2 * row_step, pc, end, starting, p, out);
+        }
+        for (; p + (4 * lanes) <= count; p += 4 * lanes) {
+          neon_split_row_parts<4>(a, parts, 2 * row_step, pc, end, starting, p, out);
+        }
+        switch ((whole - p) / lanes) { // the registers left, their chains side by side
+          case 3: neon_split_row_parts<3>(a, parts, 2 * row_step, pc, end, starting, p, out); break;
+          case 2: neon_split_row_parts<2>(a, parts, 2 * row_step, pc, end, starting, p, out); break;
+          case 1: neon_split_row_parts<1>(a, parts, 2 * row_step, pc, end, starting, p, out); break;
+          default: break; // none
+        }
+      }
+      split_row_columns(a, b, row_step, 1, inner, first + (whole / 2), last, y);
+    }
+
+#endif
+
+    //! \brief The columns of a task of \ref complex_vector_times_columns divide: the most its kernels hold in registers
+    //!        at once (sixteen NEON registers of complex `float`).
+    inline constexpr std::size_t complex_row_columns {32};
+
+    /*!
+     * \brief The complex vector \p a (\p inner) times a matrix \p b whose element `B[k][j]` is
+     *        `b[(k · row_step) + (j · column_step)]`, each element of the product rounded as the path's complex
+     *        product rounds it (\ref complex_terms, past \c complex_term::compiler): so the bits of its row in any
+     *        product of a matrix by B. On the x86-64 complex tiles by their panels (`avx2_complex_row_panels`), on
+     *        arm64 by `gemm_split`'s blocks (`split_row_columns`).
+     */
+    template <split_complex C>
+    [[nodiscard]] buffer<C> complex_vector_times_columns(const C*    a,
+                                                         const C*    b,
+                                                         std::size_t row_step,
+                                                         std::size_t column_step,
+                                                         std::size_t inner,
+                                                         std::size_t cols)
+    {
+      if (inner == 0) {
+        return buffer<C>(cols, C {});
+      }
+      // Columns a task: a share of them for each thread, a whole number of complex_row_columns, at most vector_chunk;
+      // a narrow B then shared out where one chunk would keep it on one thread.
+      const std::size_t share {(cols + max_threads() - 1) / max_threads()};
+      const std::size_t width {std::clamp(((share + complex_row_columns - 1) / complex_row_columns) * complex_row_columns, complex_row_columns, vector_chunk)};
+      buffer<C>         y(cols);
+      parallel_for((cols + width - 1) / width, inner * width, [&](std::size_t chunk) {
+                     const std::size_t first {chunk * width};
+                     const std::size_t last {std::min(first + width, cols)};
+#ifdef NUMERICAL_X86_COMPILED
+                     using R = typename C::value_type;
+                     avx2_complex_row_panels(reinterpret_cast<const R*>(a),                             // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+                                             reinterpret_cast<const R*>(b + (first * column_step)),     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+                                             row_step, column_step, inner, complex_tile_depth<C>, last - first,
+                                             reinterpret_cast<R*>(y.data() + first));                   // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+#else
+#  ifdef NUMERICAL_NEON_COMPILED
+                     if (column_step == 1) {
+                       neon_split_row_columns(a, b, row_step, inner, first, last, y.data());
+                       return;
+                     }
+#  endif
+                     split_row_columns(a, b, row_step, column_step, inner, first, last, y.data());
+#endif
+                   });
+      return y;
+    }
+
     //! \brief \ref vector_times_columns of a matrix given as its transpose \p bt (`cols × inner`, its rows \p ldbt
-    //!         apart, B's columns).
+    //!         apart, B's columns); a complex one past \c complex_term::compiler by \ref complex_vector_times_columns.
     template <typename T>
     [[nodiscard]] buffer<T> vector_times_transposed(const T*    a,
                                                     const T*    bt,
@@ -789,6 +1068,11 @@ namespace numerical {
                                                     std::size_t inner,
                                                     std::size_t cols)
     {
+      if constexpr (split_complex<T>) {
+        if (complex_terms() != complex_term::compiler) {
+          return complex_vector_times_columns(a, bt, 1, ldbt, inner, cols);
+        }
+      }
       return vector_times_columns(a, bt, 1, ldbt, inner, cols);
     }
 
@@ -826,6 +1110,11 @@ namespace numerical {
         return tensor<T> {std::move(out_shape), std::move(y)};
       }
       if (rows == 1 && cols > 1 && inner != 0) { // a vector times a matrix: its rows scaled and added in order
+        if constexpr (split_complex<T>) {
+          if (complex_terms() != complex_term::compiler) { // the terms of the path's complex product
+            return tensor<T> {std::move(out_shape), complex_vector_times_columns(a, b, ldb, 1, inner, cols)};
+          }
+        }
         if (cols < column_sums_below) {          // a narrow one: its columns' sums held instead, the same bits
           return tensor<T> {std::move(out_shape), vector_times_columns(a, b, ldb, 1, inner, cols)};
         }
