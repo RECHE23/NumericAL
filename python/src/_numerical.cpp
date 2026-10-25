@@ -2182,19 +2182,16 @@ double norm_of(const std::vector<double>& values, double ord)
     return scale * (ord == 2.0 ? std::sqrt(sum) : (ord == 1.0 ? sum : std::pow(sum, 1.0 / ord)));
 }
 
-// The 2-norm of `count` elements from `x` as the square root of their squares' sum, in double, in one pass: where
-// that sum lies between 2^-900 and the largest double, no square overflowed and those lost below the smallest double
-// weigh nothing beside it. Elsewhere (a NaN, an infinity, a sum past either bound), no answer: norm_of's scaled one
-// decides. A complex element's square is its parts' squares, the parts read as the array of two the standard lays
-// out.
-template <typename T>
-std::optional<double> plain_two_norm(const T* x, std::size_t count)
+// The parts whose squares plain_two_norm sums as one block: fixed, so the sum does not depend on the threads.
+constexpr std::size_t norm_block {std::size_t {1} << 14U};
+
+// The sum of the squares of `n` parts from `parts`, in double: each one's square added to the sum of its index modulo
+// 8 among the whole groups of 8, those eight summed as a tree, then the tail's squares in order.
+template <typename R>
+double block_squares(const R* parts, std::size_t n)
 {
-    using R = real_of_t<T>;
-    const auto*        parts {reinterpret_cast<const R*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout above
-    const std::size_t  n {count * (sizeof(T) / sizeof(R))};
     std::array<double, 8> partial {};
-    std::size_t        i {0};
+    std::size_t           i {0};
     for (; i + partial.size() <= n; i += partial.size()) {
         for (std::size_t j = 0; j < partial.size(); ++j) {
             const auto value {static_cast<double>(parts[i + j])};
@@ -2206,16 +2203,52 @@ std::optional<double> plain_two_norm(const T* x, std::size_t count)
         const auto value {static_cast<double>(parts[i])};
         sum += value * value;
     }
-    if (!(sum >= 0x1p-900) || std::isinf(sum)) { // a NaN fails the first test
+    return sum;
+}
+
+// The 2-norm from a sum of squares where it neither overflowed nor lost its digits below 2^-900 (a NaN fails the
+// first test); no answer elsewhere.
+std::optional<double> root_of_squares(double sum)
+{
+    if (!(sum >= 0x1p-900) || std::isinf(sum)) {
         return std::nullopt;
     }
     return std::sqrt(sum);
 }
 
+// The 2-norm of `count` elements from `x` as the square root of their squares' sum, in double, in one pass: blocks of
+// norm_block parts in parallel, each by block_squares, their sums added in the blocks' order. Where that sum lies
+// between 2^-900 and the largest double, no square overflowed and those lost below the smallest double weigh nothing
+// beside it. Elsewhere (a NaN, an infinity, a sum past either bound), no answer: norm_of's scaled one decides. A
+// complex element's square is its parts' squares, the parts read as the array of two the standard lays out.
+template <typename T>
+std::optional<double> plain_two_norm(const T* x, std::size_t count)
+{
+    using R = real_of_t<T>;
+    const auto*       parts {reinterpret_cast<const R*>(x)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout above
+    const std::size_t n {count * (sizeof(T) / sizeof(R))};
+    const std::size_t blocks {(n + norm_block - 1) / norm_block};
+    if (blocks <= 1) {
+        return root_of_squares(block_squares(parts, n));
+    }
+    std::vector<double> sums(blocks);
+    numerical::detail::parallel_for(blocks, norm_block, [&](std::size_t b) {
+        const std::size_t first {b * norm_block};
+        sums[b] = block_squares(parts + first, std::min(norm_block, n - first));
+    });
+    double sum {0.0};
+    for (const double block : sums) {
+        sum += block;
+    }
+    return root_of_squares(sum);
+}
+
 // plain_two_norm of a `rows` × `cols` matrix whose elements lie column-major (`x` its first column, `rows` long), its
 // elements taken row by row as its C-ordered copy lies, so its bits: eight rows at a time copied row-major into a band
-// (each column's eight elements together where they lie), a band starting at a multiple of eight parts, each square
-// added to the sum of its index modulo 8 among the whole blocks of 8 parts and the tail to their sum after.
+// (each column's eight elements together where they lie), a band starting at a multiple of eight parts, so a block's
+// boundary (a multiple of norm_block) between two groups of 8; each square added to the sum of its index modulo 8
+// among its block's whole groups of 8, a full block's sum taken at its end, and the last block's tail after its
+// groups' sum.
 template <typename T>
 std::optional<double> plain_two_norm_columns(const T* x, std::size_t rows, std::size_t cols)
 {
@@ -2226,6 +2259,7 @@ std::optional<double> plain_two_norm_columns(const T* x, std::size_t rows, std::
     std::array<double, 8> partial {};
     std::vector<R>        band(band_rows * cols * per);
     double                sum {0.0};
+    std::size_t           in_block {0}; // the parts of the current block already summed
     for (std::size_t r0 {0}; r0 < rows; r0 += band_rows) {
         const std::size_t height {std::min(band_rows, rows - r0)};
         for (std::size_t c {0}; c < cols; ++c) {
@@ -2238,24 +2272,31 @@ std::optional<double> plain_two_norm_columns(const T* x, std::size_t rows, std::
         }
         const std::size_t length {height * cols * per};
         std::size_t       k {0};
-        for (; k + partial.size() <= length; k += partial.size()) {
-            for (std::size_t j = 0; j < partial.size(); ++j) {
-                const auto value {static_cast<double>(band[k + j])};
-                partial[j] += value * value;
+        while (k + partial.size() <= length) {
+            const std::size_t take {std::min(norm_block - in_block, ((length - k) / partial.size()) * partial.size())};
+            for (const std::size_t end {k + take}; k < end; k += partial.size()) {
+                for (std::size_t j = 0; j < partial.size(); ++j) {
+                    const auto value {static_cast<double>(band[k + j])};
+                    partial[j] += value * value;
+                }
+            }
+            in_block += take;
+            if (in_block == norm_block) { // a full block: its sum, and the next block's from zero
+                sum      += ((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]));
+                partial   = {};
+                in_block  = 0;
             }
         }
-        if (k < length || r0 + height == rows) { // the last band: the whole blocks' sums, then its tail
-            sum = ((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]));
+        if (r0 + height == rows && (in_block > 0 || k < length)) { // the last block: its groups' sum, then its tail
+            double last {((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]))};
             for (; k < length; ++k) {
                 const auto value {static_cast<double>(band[k])};
-                sum += value * value;
+                last += value * value;
             }
+            sum += last;
         }
     }
-    if (!(sum >= 0x1p-900) || std::isinf(sum)) { // a NaN fails the first test
-        return std::nullopt;
-    }
-    return std::sqrt(sum);
+    return root_of_squares(sum);
 }
 
 // _vector_norm(x, ord, axes, keepdims) -> Tensor or number: the ord norm over the axes `axes` (distinct, non-negative)

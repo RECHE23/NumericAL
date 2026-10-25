@@ -1,6 +1,7 @@
 """Products of NumPy arrays read where they lie (no copy into a Tensor): the same bits as the Tensors' product, and the
 converting path for any array that cannot be read so."""
 
+import math
 import unittest
 
 import numerical
@@ -152,6 +153,20 @@ class BorrowedOperands(unittest.TestCase):
                         read = numerical._numerical._borrowed_norm(a)  # where it lies, unless the scaled norm decides
                         self.assertEqual(read is NotImplemented, scale != 1.0)
                         self.assertEqual(type(got), type(want))
+
+    def test_a_norm_sums_fixed_blocks_of_parts(self):
+        # The squares are summed by blocks of 2^14 parts, whatever the threads, each block's sum taken alone and the
+        # blocks' sums added in order: 1 then 2^14 squares of 2^-60 is 1 + 2^-46 exactly, where one pass added a
+        # quarter of those squares to the 1 and lost them. The same blocks in a column-major array's C order.
+        values = np.zeros(2 * 16384)
+        values[0] = 1.0
+        values[16384:] = 2.0**-30
+        want = math.sqrt(1.0 + 2.0**-46)
+        for operand in (values, values.reshape(2, 16384), np.asfortranarray(values.reshape(2, 16384)),
+                        np.asfortranarray(values.reshape(256, 128))):
+            with self.subTest(shape=operand.shape, fortran=operand.flags.f_contiguous):
+                self.assertEqual(numerical.norm(operand), want)
+        self.assertEqual(numerical.norm(values.view(np.complex128)), want)  # the same parts, as complex pairs
 
     def test_matrices_of_rows_apart_give_their_contiguous_copies_bits(self):
         # Every other row of a larger array, each row's elements together: read where it lies at any size (its rows'
