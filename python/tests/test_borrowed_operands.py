@@ -266,6 +266,10 @@ class BorrowedOperands(unittest.TestCase):
                 with self.subTest(shape=converted.shape, dtype=converted.dtype.name, strides=converted.strides):
                     got = np.asarray(numerical.asarray(converted))
                     self.assertTrue(np.array_equal(got, np.ascontiguousarray(converted).astype(got.dtype)))
+        for shape in ((0, 4), (0, 3, 4), (3, 0, 4), (5, 0), (0,)):  # empty: no group of rows, no element to write
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64, np.int16):
+                with self.subTest(shape=shape, dtype=np.dtype(dtype).name):
+                    self.assertEqual(np.asarray(numerical.asarray(np.zeros(shape, dtype))).shape, shape)
 
     def test_a_product_of_fortran_ordered_matrices_gives_the_c_ordered_bits(self):
         # Matrices of each dtype read where they lie, either or both column-major, packed (or copied into their

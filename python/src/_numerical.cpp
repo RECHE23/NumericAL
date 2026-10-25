@@ -2643,6 +2643,9 @@ void gather_typed(const unsigned char*           base,
     for (std::size_t axis = 0; axis + 1 < rank; ++axis) {
         rows *= shape[axis];
     }
+    if (rows == 0) {
+        return; // an empty extent before the last: nothing to read, and no group to run
+    }
     // Groups of rows of about 2^14 elements on the threads, each group's first row's index from its number: each
     // element written once, the copy and the first touch of the output's pages shared (a copy from one thread left
     // them to page faults on it alone). A complex output, its pages touched by the threads' zeros already, in one
