@@ -268,6 +268,26 @@ TEST(cholesky_is_generic_over_a_complex_hermitian_matrix)
   EXPECT(std::abs(chol.determinant() - determinant(a)) < 1e-9);
 }
 
+// A complex Cholesky factor divides by its diagonal, real and positive: each part over it, one rounding each, in the
+// factor and in both triangular solves (a complex division rounded twice under libc++).
+TEST(complex_cholesky_divides_each_part_by_the_real_diagonal)
+{
+  using c = std::complex<double>;
+  for (int t {1}; t <= 64; ++t) {
+    const double    d     {1.0 + (0.37 * t)};
+    const c         z     {std::sin(static_cast<double>(t)), std::cos(3.0 * t)};
+    const c         below {d * z};
+    const matrix<c> a     {{c {d * d, 0.0}, std::conj(below)}, {below, c {std::norm(z) + 1.0, 0.0}}};
+    const matrix<c> l     {cholesky(a).lower()};
+    const double    pivot {l(0, 0).real()};
+    EXPECT(l(1, 0) == (c {below.real() / pivot, below.imag() / pivot}));
+    const matrix<c> one   {{c {d * d, 0.0}}};
+    const c         x     {cholesky(one).solve(vector<c> {z})[0]};
+    const c         y     {z.real() / pivot, z.imag() / pivot};
+    EXPECT(x == (c {y.real() / pivot, y.imag() / pivot}));
+  }
+}
+
 TEST(qr_factor_is_orthonormal_and_reconstructs_the_matrix)
 {
   const matrix<double> a        {{1.0, 1.0}, {1.0, 2.0}, {1.0, 3.0}};     // 3×2, full column rank
@@ -1488,7 +1508,7 @@ namespace {
         for (std::size_t k {0}; k < j; ++k) {
           sum -= l[(i * n) + k] * numerical::detail::conj_of(l[(j * n) + k]);
         }
-        l[(i * n) + j] = i == j ? T {std::sqrt(numerical::detail::real_part(sum))} : sum / l[(j * n) + j];
+        l[(i * n) + j] = i == j ? T {std::sqrt(numerical::detail::real_part(sum))} : numerical::detail::over_real_diagonal(sum, l[(j * n) + j]);
       }
     }
     return l;

@@ -86,6 +86,26 @@ namespace numerical {
       return operator_times(x, divisor);
     }
 
+    //! \brief \p x over a Cholesky factor's diagonal entry \p diagonal, real and positive whatever the scalar.
+    template <typename T>
+    [[nodiscard]] T over_real_diagonal(const T& x,
+                                       const T& diagonal)
+    {
+      return x / diagonal;
+    }
+
+    /*!
+     * \brief \ref over_real_diagonal of a complex \p x: each part over the diagonal's real part, one rounding each, where a
+     *        complex division took the C library's scaled one (several roundings, and other bits under another
+     *        library).
+     */
+    template <typename R>
+    [[nodiscard]] std::complex<R> over_real_diagonal(const std::complex<R>& x,
+                                                     const std::complex<R>& diagonal)
+    {
+      return std::complex<R> {x.real() / diagonal.real(), x.imag() / diagonal.real()};
+    }
+
     //! \brief `sum −= a · b` in one statement, which the compiler may fuse (as it fuses the matrix solve's).
     template <typename T>
     void subtract_term(T&       sum,
@@ -1671,7 +1691,7 @@ namespace numerical {
         for (std::size_t k {0}; k < i; ++k) {
           sum -= lower_[(i * n_) + k] * y[k];
         }
-        y[i] = sum / lower_[(i * n_) + i];
+        y[i] = detail::over_real_diagonal(sum, lower_[(i * n_) + i]);
       }
       buffer<T> x(n_, T {});
       for (std::size_t i {n_}; i-- > 0;) { // back: Lᴴ x = y, (Lᴴ)[i][k] = conj(L[k][i])
@@ -1679,7 +1699,7 @@ namespace numerical {
         for (std::size_t k {i + 1}; k < n_; ++k) {
           sum -= detail::conj_of(lower_[(k * n_) + i]) * x[k];
         }
-        x[i] = sum / detail::conj_of(lower_[(i * n_) + i]);
+        x[i] = detail::over_real_diagonal(sum, lower_[(i * n_) + i]); // its own conjugate
       }
       return vector<T> {std::move(x)};
     }
@@ -1758,7 +1778,7 @@ namespace numerical {
         }
         NUMERICAL_UNROLL_BLOCK
         for (std::size_t r {0}; r < detail::cholesky_diagonal_rows; ++r) {
-          lower_[((i + r) * n_) + j] = sums[r] / above[j];
+          lower_[((i + r) * n_) + j] = detail::over_real_diagonal(sums[r], above[j]);
         }
       }
     }
@@ -1786,7 +1806,7 @@ namespace numerical {
           lower_[(i * n_) + i] = detail::from_carried<T>(std::sqrt(diagonal));
         }
         else {
-          lower_[(i * n_) + j] = sum / lower_[(j * n_) + j];
+          lower_[(i * n_) + j] = detail::over_real_diagonal(sum, lower_[(j * n_) + j]);
         }
       }
     }
@@ -1839,7 +1859,7 @@ namespace numerical {
                                  detail::subtract_panel_columns(column, panel.data() + (s0 * height), height, lower_.data() + ((k0 + j) * n_) + k0 + s0, j - s0);
                                  const T pivot {lower_[((k0 + j) * n_) + k0 + j]};
                                  for (std::size_t r {0}; r < height; ++r) {
-                                   column[r] = column[r] / pivot;
+                                   column[r] = detail::over_real_diagonal(column[r], pivot);
                                  }
                                }
                              }
