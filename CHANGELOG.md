@@ -8,8 +8,6 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
-## 2026.10.36 — 2026-10-25
-
 ### Changed
 - **`float` dot products and matrix-vector products run on the AVX2 and AVX-512 units** of x86-64, as `double`'s
   do (four accumulators of 8 or 16, fused multiply-adds), where the baseline's SSE2 vectors ran: their last bits change
@@ -20,6 +18,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   500 × 1000: `float64` 240–273 → 157–165 µs (NumPy's own copy 305), `float32` 102–123 → 82–92, a transposed
   `float32` 249–252 → 109–111; 48 × 275 `float64` 4.5 → 3.5. A complex one, zeroed by its own constructor, keeps its
   copy on one thread, which there is faster.
+
+## 2026.10.36 — 2026-10-25
+
 ### Changed
 - **`einsum` of two NumPy arrays reads both where they lie** when each label appears once and none is an operand's
   own (products, broadcasts, batches): `detail::einsum_pair`, the route a pair of Tensors takes, so the same bits.
