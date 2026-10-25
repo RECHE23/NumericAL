@@ -8,6 +8,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Breaking
+- **NumPy's loops over tensors leave the public namespace**: `numpy_loops`, `numpy_wheel_loops`, `numpy_multiply`,
+  `numpy_divide`, `numpy_power`, `numpy_square`, `numpy_reciprocal` and `numpy_absolute`, deprecated since
+  2026.10.36, are now in `numerical::detail` alone.
+
 ### Added
 - **`logm`, as `scipy.linalg.logm`**: the principal logarithm by Al-Mohy and Higham's inverse scaling and squaring
   (2012) on the Schur form (an upper triangular matrix directly), as SciPy's `_logm_triu`: square roots until the
