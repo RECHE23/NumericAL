@@ -154,6 +154,21 @@ class BorrowedOperands(unittest.TestCase):
                         self.assertEqual(read is NotImplemented, scale != 1.0)
                         self.assertEqual(type(got), type(want))
 
+    def test_a_permutation_of_axes_reads_the_array_where_it_lies(self):
+        # einsum of one operand that keeps each label in another order (or the same): the elements in the output's
+        # order, as from a Tensor and as NumPy's einsum; a column-major matrix read with its labels reversed (a.T to
+        # "ij->ji" a copy); empty and higher-rank operands alike.
+        for shape, spec in (((40, 30), "ij->ji"), ((339, 24), "ij->ji"), ((3, 4, 5), "ijk->kij"), ((3, 4, 5), "ijk->ijk"),
+                            ((0, 3), "ij->ji"), ((2, 3, 4, 5), "ijkl->ljik"), ((7, 9), "ij->ij")):
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                a = self.operand(shape, dtype)
+                for x in ((a, np.asfortranarray(a), a.T) if a.ndim == 2 else (a,)):
+                    with self.subTest(shape=x.shape, spec=spec, dtype=np.dtype(dtype).name, fortran=x.flags.f_contiguous):
+                        got = numerical.einsum(spec, x)
+                        self.assert_same(got, numerical.einsum(spec, numerical.asarray(np.ascontiguousarray(x))))
+                        self.assertTrue(np.array_equal(np.asarray(got), np.einsum(spec, x)))
+                        self.assertIsNot(numerical._numerical._borrowed_einsum(spec, x), NotImplemented)
+
     def test_a_norm_sums_fixed_blocks_of_parts(self):
         # The squares are summed by blocks of 2^14 parts, whatever the threads, each block's sum taken alone and the
         # blocks' sums added in order: 1 then 2^14 squares of 2^-60 is 1 + 2^-46 exactly, where one pass added a

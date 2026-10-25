@@ -35,6 +35,7 @@
 #include <cstring>
 #include <exception>
 #include <initializer_list>
+#include <map>
 #include <new>
 #include <array>
 #include <optional>
@@ -3029,9 +3030,13 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
     // A matrix summed over one of its axes may lie column-major: it is then its transpose row-major, read with its
     // labels and extents reversed, each output element the same pairwise sum of the same elements (a column summed
     // down a block by rows is the pairwise sum of that column alone). A whole sum would take them in another order.
+    // A permutation of the axes (each label kept) likewise: a copy in the output's order, a column-major one's labels
+    // reversed first.
     const bool       one_axis {in.size() == 2 && out.size() == 1};
+    const bool       permutes {out.size() == in.size()};
     borrowed_operand x;
-    if (!letters_once(in) || !letters_once(out) || out.find_first_not_of(in) != std::string::npos || !borrow_operand(obj, x, one_axis)
+    if (!letters_once(in) || !letters_once(out) || out.find_first_not_of(in) != std::string::npos
+        || !borrow_operand(obj, x, one_axis || permutes)
         || x.shape.size() != in.size()) {
         return Py_NewRef(Py_NotImplemented);
     }
@@ -3049,7 +3054,21 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
             }
             const sb::scoped_gil_release unlocked {releases_gil(count)};
             const auto sum = [&]<typename T>(std::type_identity<T>) {
-                if (std::optional<numerical::tensor<T>> sums {numerical::detail::sum_over_run(labels, out, x.shape, static_cast<const T*>(x.data))}) {
+                const auto* const data {static_cast<const T*>(x.data)};
+                if (permutes) { // the elements in the output's order: the einsum path's permutation, or its copy
+                    std::map<char, std::size_t> sizes;
+                    std::vector<std::size_t>    shape;
+                    for (std::size_t axis {0}; axis < labels.size(); ++axis) {
+                        sizes[labels[axis]] = x.shape[axis];
+                    }
+                    for (const char label : out) {
+                        shape.push_back(sizes.at(label));
+                    }
+                    numerical::buffer<T> elements {labels == out ? numerical::buffer<T>(data, data + count)
+                                                                         : numerical::detail::permuted(data, count, labels, out, sizes)};
+                    result.emplace(numerical::tensor<T> {std::move(shape), std::move(elements)});
+                }
+                else if (std::optional<numerical::tensor<T>> sums {numerical::detail::sum_over_run(labels, out, x.shape, data)}) {
                     result.emplace(*std::move(sums));
                 }
             };

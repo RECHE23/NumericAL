@@ -9,6 +9,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`einsum` that permutes a NumPy array's axes reads it where it lies** (`ij->ji`, `ijk->kij`), a column-major one
+  with its labels reversed, where the array was copied into a Tensor first: M1 Pro, 1000 × 1000 1797 → 698 µs
+  (NumPy's copy of `a.T` 798), 339 × 24 12.2 → 3.7 µs. NumPy answers with a view, which NumericAL does not make.
 - **A dot product of three chunks or more shares them among the threads from 49 152 elements**, where one weight an
   element kept it on one thread to 131 072: the same chunks, so the same bits. M1 Pro, 10⁵ elements: 19.6 → 13.7 µs
   (NumPy 19.6); `norm`'s blocks likewise, 15.6 → 11.0 µs.

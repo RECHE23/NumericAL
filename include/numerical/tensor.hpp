@@ -864,16 +864,18 @@ namespace numerical {
     /*!
      * \brief The elements of \p data, whose axes carry the labels \p from (extents in \p sizes), laid out row-major
      *        along the labels \p to, a permutation of \p from that differs from it (so at least one label): an
-     *        odometer over \p to's outer labels, a strided sweep of its last.
+     *        odometer over \p to's outer labels, a strided sweep of its last. \p data holds \p count elements, the
+     *        product of the extents.
      */
     template <typename T>
-    [[nodiscard]] buffer<T> permuted(const buffer<T>&                   data,
+    [[nodiscard]] buffer<T> permuted(const T*                           data,
+                                     std::size_t                        count,
                                      const std::string&                 from,
                                      const std::string&                 to,
                                      const std::map<char, std::size_t>& sizes)
     {
-      buffer<T> out(data.size()); // every element written below
-      if (data.empty()) {
+      buffer<T> out(count); // every element written below
+      if (count == 0) {
         return out;
       }
       if (to.size() == 2) { // the one permutation of two axes, a transpose: by tiles, each read and written in the cache
@@ -907,7 +909,7 @@ namespace numerical {
       const std::size_t        sweep  {stride[rank - 1]};
       std::vector<std::size_t> index(rank - 1, 0);
       std::size_t              offset {0};
-      for (std::size_t row {0}; row < data.size() / inner; ++row) {
+      for (std::size_t row {0}; row < count / inner; ++row) {
         for (std::size_t i {0}; i < inner; ++i) {
           out[(row * inner) + i] = data[offset + (i * sweep)];
         }
@@ -921,6 +923,16 @@ namespace numerical {
         }
       }
       return out;
+    }
+
+    //! \brief \ref permuted of a buffer's elements.
+    template <typename T>
+    [[nodiscard]] buffer<T> permuted(const buffer<T>&                   data,
+                                     const std::string&                 from,
+                                     const std::string&                 to,
+                                     const std::map<char, std::size_t>& sizes)
+    {
+      return permuted(data.data(), data.size(), from, to, sizes);
     }
 
     /*!
