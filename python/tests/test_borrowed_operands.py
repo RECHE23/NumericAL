@@ -252,6 +252,21 @@ class BorrowedOperands(unittest.TestCase):
                 self.assertTrue(np.array_equal(np.asarray(numerical.asarray(fortran)),
                                                np.asarray(numerical.asarray(np.ascontiguousarray(values)))), (shape, values.dtype))
 
+    def test_a_large_array_converts_by_groups_of_rows_element_for_element(self):
+        # Past 2^14 elements the copy runs by groups of rows (or bands of a transpose's tiles) on the threads: every
+        # element in its place, C-ordered, strided, reversed, of rank 3 with rows of one or of many, column-major, and
+        # for each dtype the conversion reads; the same values as NumPy's own copy.
+        base = self.rng.standard_normal((300, 200))
+        cube = self.rng.standard_normal((40, 30, 50))
+        layouts = (base, base[::2, ::3], base[::-1], np.asfortranarray(base), cube, cube[:, ::-1, 1::2],
+                   self.rng.standard_normal((70000, 1)), self.rng.standard_normal((1, 70000)), cube.transpose(2, 0, 1))
+        for values in layouts:
+            for converted in (values, values + 1j * values, values.astype(np.float32), (values * 10).astype(np.int16),
+                              values > 0):
+                with self.subTest(shape=converted.shape, dtype=converted.dtype.name, strides=converted.strides):
+                    got = np.asarray(numerical.asarray(converted))
+                    self.assertTrue(np.array_equal(got, np.ascontiguousarray(converted).astype(got.dtype)))
+
     def test_a_product_of_fortran_ordered_matrices_gives_the_c_ordered_bits(self):
         # Matrices of each dtype read where they lie, either or both column-major, packed (or copied into their
         # parts) from there, and a vector or a single row times such a matrix a column at a time: the product of their

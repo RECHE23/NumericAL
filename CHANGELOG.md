@@ -11,6 +11,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## 2026.10.36 — 2026-10-25
 
 ### Changed
+- **A NumPy array converted into a Tensor is copied once, by groups of rows on the threads**: a real tensor's elements
+  are no longer zeroed first, and the copy (with the first touch of its pages) is shared among the threads. M1 Pro,
+  500 × 1000: `float64` 240–273 → 157–165 µs (NumPy's own copy 305), `float32` 102–123 → 82–92, a transposed
+  `float32` 249–252 → 109–111; 48 × 275 `float64` 4.5 → 3.5. A complex one, zeroed by its own constructor, keeps its
+  copy on one thread, which there is faster.
+### Changed
 - **`einsum` of two NumPy arrays reads both where they lie** when each label appears once and none is an operand's
   own (products, broadcasts, batches): `detail::einsum_pair`, the route a pair of Tensors takes, so the same bits.
   M1 Pro: `ij,j->ij` on 1000 × 1000 1127 → 333 µs (NumPy 864), `ij,i->ij` on 112 × 204 15.7 → 9.5, a 64 × 64

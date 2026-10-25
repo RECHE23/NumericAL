@@ -2618,8 +2618,11 @@ void gather_typed(const unsigned char*           base,
     // stride apart for every element (48 × 275 doubles: 7.1 µs, NumPy's own copy 1).
     constexpr std::size_t tile {32}; // fewer rows than a tile: the rows' loop below reads a few elements a column
     if (rank == 2 && shape[0] >= tile && strides[0] == static_cast<Py_ssize_t>(sizeof(Src)) && step != strides[0]) {
-        const std::size_t     rows {shape[0]};
-        for (std::size_t r0 = 0; r0 < rows; r0 += tile) {
+        const std::size_t rows {shape[0]};
+        // Bands of a tile's rows on the threads, each element written once: the copy, and the first touch of the
+        // output's pages, shared.
+        numerical::detail::parallel_for((rows + tile - 1) / tile, numerical::detail::memory_element_weight * tile * inner, [&](std::size_t band) {
+            const std::size_t r0 {band * tile};
             for (std::size_t c0 = 0; c0 < inner; c0 += tile) {
                 for (std::size_t c = c0; c < std::min(c0 + tile, inner); ++c) {
                     const unsigned char* const column {base + (static_cast<Py_ssize_t>(c) * step)};
@@ -2633,41 +2636,56 @@ void gather_typed(const unsigned char*           base,
                     }
                 }
             }
-        }
+        });
         return;
     }
-    std::vector<std::size_t> index(rank - 1, 0);
-    std::size_t              rows   {1};
+    std::size_t rows {1};
     for (std::size_t axis = 0; axis + 1 < rank; ++axis) {
         rows *= shape[axis];
     }
-    for (std::size_t row = 0; row < rows; ++row) {
-        Py_ssize_t offset {0};
-        for (std::size_t axis = 0; axis + 1 < rank; ++axis) {
-            offset += static_cast<Py_ssize_t>(index[axis]) * strides[axis];
+    // Groups of rows of about 2^14 elements on the threads, each group's first row's index from its number: each
+    // element written once, the copy and the first touch of the output's pages shared (a copy from one thread left
+    // them to page faults on it alone). A complex output, its pages touched by the threads' zeros already, in one
+    // group: its copy shared took longer (M1 Pro, 500 × 1000 complex128: 470 → 580 µs).
+    constexpr std::size_t group_elements {std::size_t {1} << 14U};
+    const std::size_t     group {complex_scalar<Out> ? rows : std::max<std::size_t>(1, group_elements / inner)};
+    numerical::detail::parallel_for((rows + group - 1) / group, numerical::detail::memory_element_weight * group * inner, [&](std::size_t g) {
+        const std::size_t        first {g * group};
+        const std::size_t        last {std::min(rows, first + group)};
+        std::vector<std::size_t> index(rank - 1, 0);
+        for (std::size_t axis = rank - 1, rest = first; axis-- > 0;) {
+            index[axis]  = rest % shape[axis];
+            rest        /= shape[axis];
         }
-        const unsigned char* at {base + offset};
-        if (step == static_cast<Py_ssize_t>(sizeof(Src)) && std::is_same_v<Src, Out>) {
-            std::memcpy(out, at, inner * sizeof(Src)); // a contiguous run of the output's own type
-        }
-        else {
-            for (std::size_t i = 0; i < inner; ++i) {
-                if constexpr (std::is_same_v<Src, bool>) {
-                    out[i] = static_cast<Out>(at[static_cast<Py_ssize_t>(i) * step] != 0 ? 1.0 : 0.0);
-                }
-                else {
-                    out[i] = converted<Out>(read_scalar<Src>(at + (static_cast<Py_ssize_t>(i) * step)));
+        Out* to {out + (first * inner)};
+        for (std::size_t row = first; row < last; ++row) {
+            Py_ssize_t offset {0};
+            for (std::size_t axis = 0; axis + 1 < rank; ++axis) {
+                offset += static_cast<Py_ssize_t>(index[axis]) * strides[axis];
+            }
+            const unsigned char* at {base + offset};
+            if (step == static_cast<Py_ssize_t>(sizeof(Src)) && std::is_same_v<Src, Out>) {
+                std::memcpy(to, at, inner * sizeof(Src)); // a contiguous run of the output's own type
+            }
+            else {
+                for (std::size_t i = 0; i < inner; ++i) {
+                    if constexpr (std::is_same_v<Src, bool>) {
+                        to[i] = static_cast<Out>(at[static_cast<Py_ssize_t>(i) * step] != 0 ? 1.0 : 0.0);
+                    }
+                    else {
+                        to[i] = converted<Out>(read_scalar<Src>(at + (static_cast<Py_ssize_t>(i) * step)));
+                    }
                 }
             }
-        }
-        out += inner;
-        for (std::size_t axis = rank - 1; axis-- > 0;) {
-            if (++index[axis] < shape[axis]) {
-                break;
+            to += inner;
+            for (std::size_t axis = rank - 1; axis-- > 0;) {
+                if (++index[axis] < shape[axis]) {
+                    break;
+                }
+                index[axis] = 0;
             }
-            index[axis] = 0;
         }
-    }
+    });
 }
 
 // gather_typed for the element type `type` names; false for a byte-swapped one, which takes read_element.
@@ -2730,10 +2748,18 @@ any_tensor elements_as(const unsigned char*            base,
                        std::size_t                     total,
                        const element_type&             element)
 {
-    numerical::buffer<Out> values(total, Out {});
+    // Each element written below: a real one left unset until then; a complex one's own constructor zeroes it, on
+    // one thread, where filling with zeros shares the work (and the pages' first touch) among them.
+    numerical::buffer<Out> values {complex_scalar<Out> ? numerical::buffer<Out>(total, Out {}) : numerical::buffer<Out>(total)};
     if (!element.swapped) { // the common case: it reads only the buffer
-        const sb::scoped_gil_release unlocked {releases_gil(total)};
-        gather(base, shape, strides, element, values.data());
+        bool gathered {false};
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(total)};
+            gathered = gather(base, shape, strides, element, values.data());
+        }
+        if (!gathered) { // a complex source into a real tensor: asarray refuses it before, so never its unset elements
+            throw std::invalid_argument("asarray: a complex array cannot become a real tensor");
+        }
         return any_tensor {numerical::tensor<Out> {shape, std::move(values)}};
     }
     // A byte-swapped element: each read through read_element, in C order.
