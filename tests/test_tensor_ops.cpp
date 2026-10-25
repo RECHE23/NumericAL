@@ -858,30 +858,6 @@ TEST(complex_powers_as_numpy_computes_them)
   EXPECT(numpy_powers_hold<float>());
 }
 
-// The names NumPy's loops over tensors had in numerical, deprecated until 2026.11.0 removes them: each its
-// numerical::detail form, to the bit.
-#if defined(__GNUC__)
-#  pragma GCC diagnostic push
-#  pragma GCC diagnostic ignored "-Wdeprecated-declarations"
-#elif defined(_MSC_VER)
-#  pragma warning(push)
-#  pragma warning(disable : 4996)
-#endif
-TEST(the_deprecated_names_of_numpys_loops_are_their_detail_forms)
-{
-  using c = std::complex<double>;
-  const tensor<c>                      a     {std::vector<std::size_t> {3}, std::vector<c> {c {1.5, -2.0}, c {0.0, 3.0}, c {-4.0, 0.25}}};
-  const tensor<c>                      b     {std::vector<std::size_t> {3}, std::vector<c> {c {0.5, 1.0}, c {2.0, -1.0}, c {3.0, 3.0}}};
-  const numerical::numpy_loops         loops {numerical::numpy_wheel_loops()};
-  const numerical::detail::numpy_loops same  {numerical::detail::numpy_wheel_loops()};
-  EXPECT(loops.products == same.products && loops.scalar_products == same.scalar_products && loops.quotients == same.quotients);
-  EXPECT(numerical::numpy_multiply(a, b).data() == numerical::detail::numpy_multiply(a, b, same).data());
-  EXPECT(numerical::numpy_divide(a, b).data() == numerical::detail::numpy_divide(a, b, same).data());
-  EXPECT(numerical::numpy_power(a, b).data() == numerical::detail::numpy_power(a, b, same).data());
-  EXPECT(numerical::numpy_absolute(a).data() == numerical::detail::numpy_absolute(a, same).data());
-  EXPECT(numerical::numpy_square(a).data() == numerical::detail::numpy_square(a, same).data());
-  EXPECT(numerical::numpy_reciprocal(a).data() == numerical::detail::numpy_reciprocal(a, same).data());
-}
 // A permutation of three axes, each element where its labels say: the last two exchanged (by tiles, each slice of the
 // first), and two that move the first (row by row of the last label).
 TEST(einsum_permutes_three_axes)
@@ -910,9 +886,3 @@ TEST(einsum_permutes_three_axes)
   }
   EXPECT(all);
 }
-
-#if defined(__GNUC__)
-#  pragma GCC diagnostic pop
-#elif defined(_MSC_VER)
-#  pragma warning(pop)
-#endif

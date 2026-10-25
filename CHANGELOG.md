@@ -43,6 +43,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   NumPy 2.4 over 4000 random keys and every dtype, besides 160 000 in a sweep, and the suite on a 32-bit CPython
   (Windows x86, NumPy 2.2).
 
+### Breaking
+- **NumPy's loops over tensors leave the public namespace**: `numpy_loops`, `numpy_wheel_loops`, `numpy_multiply`,
+  `numpy_divide`, `numpy_power`, `numpy_square`, `numpy_reciprocal` and `numpy_absolute`, deprecated since
+  2026.10.36, are now in `numerical::detail` alone.
+
 ## 2026.10.44 — 2026-10-31
 
 ### Added

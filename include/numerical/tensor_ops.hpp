@@ -872,68 +872,6 @@ namespace numerical {
     }
   } // namespace detail
 
-  // The names NumPy's loops over tensors had here, each to its numerical::detail form until 2026.11.0 removes them.
-
-  //! \brief \ref detail::numpy_loops. \deprecated Internal to the binding; removed in 2026.11.0.
-  using numpy_loops [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] = detail::numpy_loops;
-
-  //! \brief \ref detail::numpy_wheel_loops. \deprecated Internal to the binding; removed in 2026.11.0.
-  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] inline detail::numpy_loops numpy_wheel_loops() noexcept
-  {
-    return detail::numpy_wheel_loops();
-  }
-
-  //! \brief \ref detail::numpy_multiply. \deprecated Internal to the binding; removed in 2026.11.0.
-  template <detail::split_complex C>
-  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<C> numpy_multiply(const tensor<C>&           a,
-                                                                                                                                     const tensor<C>&           b,
-                                                                                                                                     const detail::numpy_loops& loops = detail::numpy_wheel_loops())
-  {
-    return detail::numpy_multiply(a, b, loops);
-  }
-
-  //! \brief \ref detail::numpy_divide. \deprecated Internal to the binding; removed in 2026.11.0.
-  template <detail::split_complex C>
-  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<C> numpy_divide(const tensor<C>&           a,
-                                                                                                                                   const tensor<C>&           b,
-                                                                                                                                   const detail::numpy_loops& loops = detail::numpy_wheel_loops())
-  {
-    return detail::numpy_divide(a, b, loops);
-  }
-
-  //! \brief \ref detail::numpy_absolute. \deprecated Internal to the binding; removed in 2026.11.0.
-  template <detail::split_complex C>
-  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<typename C::value_type> numpy_absolute(const tensor<C>&           a,
-                                                                                                                                                          const detail::numpy_loops& loops = detail::numpy_wheel_loops())
-  {
-    return detail::numpy_absolute(a, loops);
-  }
-
-  //! \brief \ref detail::numpy_square. \deprecated Internal to the binding; removed in 2026.11.0.
-  template <detail::split_complex C>
-  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<C> numpy_square(const tensor<C>&           a,
-                                                                                                                                   const detail::numpy_loops& loops = detail::numpy_wheel_loops())
-  {
-    return detail::numpy_square(a, loops);
-  }
-
-  //! \brief \ref detail::numpy_reciprocal. \deprecated Internal to the binding; removed in 2026.11.0.
-  template <detail::split_complex C>
-  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<C> numpy_reciprocal(const tensor<C>&           a,
-                                                                                                                                       const detail::numpy_loops& loops = detail::numpy_wheel_loops())
-  {
-    return detail::numpy_reciprocal(a, loops);
-  }
-
-  //! \brief \ref detail::numpy_power. \deprecated Internal to the binding; removed in 2026.11.0.
-  template <detail::split_complex C>
-  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<C> numpy_power(const tensor<C>&           a,
-                                                                                                                                  const tensor<C>&           b,
-                                                                                                                                  const detail::numpy_loops& loops = detail::numpy_wheel_loops())
-  {
-    return detail::numpy_power(a, b, loops);
-  }
-
   //! \brief `exp` of every element: `std::exp` of a real one, \ref detail::complex_exp of a complex one.
   template <typename T>
   [[nodiscard]] tensor<T> exp(const tensor<T>& a)
