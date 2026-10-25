@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A complex SVD reduces its matrix to bidiagonal form by panels** past order 128, as a real one did (`zgebrd`,
+  `zlabrd`): the trailing block updated by complex matrix products after each panel of 32 reflections, where each
+  reflection went over the whole of it; the bidiagonal is turned real by the same unit phases. Six AVX2 cores:
+  `svdvals` of a complex 328 × 328 40.1 → 18.4 ms, 200 × 200 11.6 → 7.3. Real matrices keep their bits.
 - **`float` dot products and matrix-vector products run on the AVX2 and AVX-512 units** of x86-64, as `double`'s
   do (four accumulators of 8 or 16, fused multiply-adds), where the baseline's SSE2 vectors ran: their last bits change
   on those units. A transposed `float32` NumPy matrix times a vector (`W.T @ x`) is read where it lies, as `float64`'s

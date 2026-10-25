@@ -243,30 +243,32 @@ namespace numerical {
                                  bool                 form = true);
 
     /*!
-     * \brief The unit Householder vector `v` with `(I − 2 v vᵀ) x = β e₁`, in place of \p x, for a real `x`.
-     * \return `β = −sign(x₀) ‖x‖`.
+     * \brief The unit Householder vector `v` with `(I − 2 v vᴴ) x = β e₁`, in place of \p x.
+     * \return `β = −phase(x₀) ‖x‖` (`−sign(x₀) ‖x‖` for a real `x`).
      */
     template <typename T>
     [[nodiscard]] T householder_in_place(buffer<T>& x)
     {
       const auto   up     {rescale_tiny(x)}; // the reflector is the same at any scale; β is scaled back
-      const auto   norm   {static_cast<T>(scaled_norm(x))};
+      const T      norm   {from_carried<T>(scaled_norm(x))};
       const T      beta   {-phase_of(x[0]) * norm};
       x[0] -= beta;
-      const auto length   {static_cast<T>(scaled_norm(x))};
+      const T    length   {from_carried<T>(scaled_norm(x))};
       for (T& element : x) {
         element /= length;
       }
-      return beta / static_cast<T>(up);
+      return beta / from_carried<T>(up);
     }
 
     /*!
-     * \brief Reduces the real square `n × n` row-major \p b to upper-bidiagonal form, `B = U_b D V_bᵀ`, by panels
-     *        of \ref bidiagonal_block reflections from each side, as LAPACK's `dgebrd` and `dlabrd`: the matrix
-     *        a panel's later steps see is `B − V Yᵀ − X Uᵀ` (`V`, `U` the reflectors, `Y`, `X` what they move),
-     *        applied to the one column and the one row each step needs; the trailing block takes it after the
-     *        panel, through the matrix product kernel. The bidiagonal keeps its signs, which the iterations that
-     *        follow take.
+     * \brief Reduces the square `n × n` row-major \p b to upper-bidiagonal form, `B = U_b D V_bᴴ`, by panels
+     *        of \ref bidiagonal_block reflections from each side, as LAPACK's `dgebrd` and `dlabrd` (`zgebrd`,
+     *        `zlabrd`): the matrix a panel's later steps see is `B − V Ȳᵀ − X Ūᵀ` (`V`, `U` the reflectors, `Y`, `X`
+     *        what they move, `Ȳ` and `Ū` held conjugated, so a complex matrix's update is a plain product), applied
+     *        to the one column and the one row each step needs; the trailing block takes it after the panel, through
+     *        the matrix product kernel. A real bidiagonal keeps its signs, which the iterations that follow take; a
+     *        complex one is turned real as \ref bidiagonalize_unblocked turns it, a unit phase on row `k` before
+     *        its right reflection and on column `k + 1` once that column comes to be reflected.
      * \param[in,out] b  The matrix; destroyed.
      * \param[in]     n  Its order.
      * \param[out]    d  The diagonal (size \p n).
@@ -276,7 +278,7 @@ namespace numerical {
      * \param[in]     form Whether to form \p ut and \p vt; the bidiagonal alone gives the singular values.
      */
     template <typename T>
-    requires std::is_floating_point_v<T>
+    requires std::is_floating_point_v<T> || split_complex<T>
     void bidiagonalize(buffer<T>&           b,
                        std::size_t          n,
                        buffer<double>&      d,
@@ -289,9 +291,12 @@ namespace numerical {
         bidiagonalize_unblocked(b, n, d, e, ut, vt, form);
         return;
       }
-      std::vector<buffer<T>>      left(n);  // the left reflector of step k, on rows k…, empty where none was needed
-      std::vector<buffer<T>>      right(n); // the right reflector of step k, on columns k+1…, likewise
+      std::vector<buffer<T>>      left(n);               // the left reflector of step k, on rows k…, empty where none was needed
+      std::vector<buffer<T>>      right(n);              // the right reflector of step k, on columns k+1…, likewise
+      buffer<T>                   left_phase(n, T {1});  // row k times it puts |d_k| on the diagonal (1: a real T)
+      buffer<T>                   right_phase(n, T {1}); // column k + 1 times it puts |e_k| above
       const auto                  nonzero {[](const T& value) { return value != T {}; }};
+      constexpr bool              complex_entries {split_complex<T>};
       // By reflector, each row over the whole order: row 2p of vx holds step k0 + p's left reflector v (at its rows),
       // row 2p + 1 what its right one moves, x = 2 B u (at the rows); row 2p of yu what v moves, y = 2 Bᵀ v (at the
       // columns), row 2p + 1 the right reflector u (at its columns). A step's terms of the panel's earlier ones are then
@@ -334,14 +339,30 @@ namespace numerical {
           }
           T* const column {columns.data() + (i * n) + k}; // column k from the diagonal down, the panel's earlier steps applied
           subtract_products(column, factors.data(), v_row(from, k), n, 2 * (i - from), n - k);
+          if constexpr (complex_entries) {
+            if (k > 0) { // the previous step's phase on this column, now that it is to be reflected
+              for (std::size_t r {0}; r < n - k; ++r) {
+                column[r] *= right_phase[k - 1];
+              }
+            }
+          }
           buffer<T> x(column, column + (n - k));
           if (std::any_of(x.begin() + 1, x.end(), nonzero)) { // something below the diagonal to reflect
-            d[k] = static_cast<double>(householder_in_place(x));
+            const T beta {householder_in_place(x)};
+            if constexpr (complex_entries) {
+              d[k]          = static_cast<double>(std::abs(beta));
+              left_phase[k] = conj_of(phase_of(beta));
+            }
+            else {
+              d[k] = static_cast<double>(beta);
+            }
             // y = 2 (B − V Yᵀ − X Uᵀ)ᵀ v on the columns past k: Bᵀ v by contiguous rows, then the panel's terms.
-            buffer<T> by_vx(2 * i, T {});                     // Vᵀ v and Xᵀ v over the earlier steps, interleaved as their rows
+            buffer<T> by_vx(2 * i, T {});  // Vᵀ v and Xᵀ v over the earlier steps, interleaved as their rows
+            buffer<T> conjugate(x.size()); // v̄: Bᴴ v as the terms of (Bᵀ v̄) (v itself for a real T)
+            std::transform(x.begin(), x.end(), conjugate.begin(), [](const T& value) { return conj_of(value); });
             for (std::size_t p {0}; p < i; ++p) {
-              by_vx[2 * p]       = dot_product(v_row(p, k), x.data(), n - k);
-              by_vx[(2 * p) + 1] = dot_product(x_row(p, k), x.data(), n - k);
+              by_vx[2 * p]       = dot_product(v_row(p, k), conjugate.data(), n - k);
+              by_vx[(2 * p) + 1] = dot_product(x_row(p, k), conjugate.data(), n - k);
             }
             const std::size_t     span        {n - k - 1};
             constexpr std::size_t chunk_width {64};
@@ -349,7 +370,7 @@ namespace numerical {
             // additions): row by row, each term stored the chunk back (singular values of order 512 on one x86-64
             // core: 46 → 42 ms).
             buffer<T> minus(x.size(), T {});
-            std::transform(x.begin(), x.end(), minus.begin(), std::negate<T> {});
+            std::transform(conjugate.begin(), conjugate.end(), minus.begin(), std::negate<T> {});
             parallel_for((span + chunk_width - 1) / chunk_width, bidiagonal_product_weight * (n - k) * chunk_width, [&](std::size_t chunk) {
                            const std::size_t first {k + 1 + (chunk * chunk_width)};
                            const std::size_t count {std::min(chunk_width, n - first)};
@@ -362,6 +383,10 @@ namespace numerical {
                          });
             std::copy(x.begin(), x.end(), v_row(i, k));
             left[k] = std::move(x);
+          }
+          else if constexpr (complex_entries) {
+            d[k]          = static_cast<double>(std::abs(x[0]));
+            left_phase[k] = conj_of(phase_of(x[0]));
           }
           else {
             d[k] = static_cast<double>(x[0]);
@@ -379,8 +404,20 @@ namespace numerical {
             factors[p] = *x_row(p, k);
           }
           subtract_products(y.data(), factors.data(), u_row(0, k + 1), 2 * n, i, n - k - 1);
+          if constexpr (complex_entries) { // the row times its phase, then conjugated: B ← B H with H yᴴ ∥ e₁
+            for (T& element : y) {
+              element = conj_of(element * left_phase[k]);
+            }
+          }
           if (std::any_of(y.begin() + 1, y.end(), nonzero)) { // something past the superdiagonal to reflect
-            e[k] = static_cast<double>(householder_in_place(y));
+            const T beta {householder_in_place(y)};
+            if constexpr (complex_entries) { // the row's entry is β̄: its phase's conjugate turns it to |β|
+              e[k]           = static_cast<double>(std::abs(beta));
+              right_phase[k] = phase_of(beta);
+            }
+            else {
+              e[k] = static_cast<double>(beta);
+            }
             // x = 2 (B − V Yᵀ − X Uᵀ) u on the rows past k: B u by rows, then the panel's terms.
             const std::size_t rows          {n - k - 1};
             buffer<T>         by_y(i + 1, T {}); // Yᵀ u over this and the earlier steps, Uᵀ u over the earlier
@@ -441,8 +478,12 @@ namespace numerical {
               }
             }
 
-            std::copy(y.begin(), y.end(), u_row(i, k + 1));
+            std::transform(y.begin(), y.end(), u_row(i, k + 1), [](const T& value) { return conj_of(value); }); // Ū
             right[k] = std::move(y);
+          }
+          else if constexpr (complex_entries) {                                                                 // y₀ the entry's conjugate
+            e[k]           = static_cast<double>(std::abs(y[0]));
+            right_phase[k] = phase_of(y[0]);
           }
           else {
             e[k] = static_cast<double>(y[0]);
@@ -465,7 +506,7 @@ namespace numerical {
       }
       e[n - 1] = 0.0;
       if (form) {
-        form_bidiagonal_bases(left, std::move(right), buffer<T>(n, T {1}), buffer<T>(n, T {1}), n, ut, vt);
+        form_bidiagonal_bases(left, std::move(right), left_phase, right_phase, n, ut, vt);
       }
     }
 
@@ -552,9 +593,9 @@ namespace numerical {
       }
     }
 
-    //! \brief \ref bidiagonalize_unblocked, for a complex or any other `T` the panels do not take.
+    //! \brief \ref bidiagonalize_unblocked, for any `T` the panels do not take (a complex `long double`).
     template <typename T>
-    requires(!std::is_floating_point_v<T>)
+    requires(!std::is_floating_point_v<T> && !split_complex<T>)
     void bidiagonalize(buffer<T>&           b,
                        std::size_t          n,
                        buffer<double>&      d,

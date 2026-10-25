@@ -715,6 +715,46 @@ TEST(svd_keeps_small_singular_values)
   }
 }
 
+// A complex matrix past the bidiagonal reduction's crossover is reduced by panels, its bidiagonal turned real by unit
+// phases on its rows and columns: A = U Σ Vᴴ with U and V unitary, the singular values those of the unblocked
+// reduction's bidiagonal, and the same on one thread as on all (past 256 rows the steps share theirs on x86-64).
+TEST(a_complex_matrix_past_the_crossover_is_reduced_by_panels)
+{
+  using c = std::complex<double>;
+  std::uint64_t state {11};
+  for (const std::size_t n : {numerical::detail::bidiagonal_crossover + 3, std::size_t {300}}) {
+    std::vector<c> entries(n * n);
+    for (c& entry : entries) {
+      state                   = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+      const double re {(static_cast<double>(state >> 11U) * 0x1.0p-52) - 0.5};
+      state                   = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+      entry                   = c {re, (static_cast<double>(state >> 11U) * 0x1.0p-52) - 0.5};
+    }
+    const matrix<c>         a {n, n, entries};
+    const svd_decomposition s {a, numerical::svd_method::bidiagonal_qr};
+    EXPECT(approx_equal(reconstruct(s), a, 1e-12));
+    EXPECT(orthonormality_error(s.u()) < 1e-13);
+    EXPECT(orthonormality_error(s.v()) < 1e-13);
+    numerical::buffer<c>      b(entries.begin(), entries.end());
+    numerical::buffer<c>      none;
+    numerical::buffer<c>      none_too;
+    numerical::buffer<double> d(n);
+    numerical::buffer<double> e(n);
+    numerical::detail::bidiagonalize_unblocked(b, n, d, e, none, none_too, false);
+    numerical::detail::bidiagonal_qr(d, e, none, none_too, n, 30 * n);
+    const vector<double> values {numerical::singular_values(a)};
+    double               gap    {0.0};
+    for (std::size_t k {0}; k < n; ++k) {
+      gap = std::max(gap, std::abs(values[k] - d[k]));
+    }
+    EXPECT(gap < 1e-12 * d[0]);
+    numerical::set_max_threads(1);
+    const vector<double> alone {numerical::singular_values(a)};
+    numerical::set_max_threads(0);
+    EXPECT(values == alone);
+  }
+}
+
 // A wide or complex matrix decomposes too: U is m × k and V n × k with k = min(m, n), and A = U Σ Vᴴ.
 TEST(svd_of_a_wide_and_of_a_complex_matrix)
 {
