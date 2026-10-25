@@ -9,6 +9,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`norm` sums its squares on the AVX2 units of x86-64** (the AVX-512 path's too), the same eight partial sums
+  and the same bits: six AVX2 cores, 1000 × 1000 `float64` 90 → 57 µs (one thread 429 → 239), `float32` 73 → 30,
+  101 × 901 `float32` 8.6 → 5.5.
 - **A complex SVD reduces its matrix to bidiagonal form by panels** past order 128, as a real one did (`zgebrd`,
   `zlabrd`): the trailing block updated by complex matrix products after each panel of 32 reflections, where each
   reflection went over the whole of it; the bidiagonal is turned real by the same unit phases. Six AVX2 cores:

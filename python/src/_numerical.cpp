@@ -2187,6 +2187,18 @@ double norm_of(const std::vector<double>& values, double ord)
 // as a chunk of numerical::detail::chunked_dot, whose weight among the threads they take.
 constexpr std::size_t norm_block {numerical::detail::dot_chunk};
 
+// `sum + value²`: on x86-64 the square a statement of its own, so never fused (-ffp-contract=on contracts within an
+// expression), as avx2_block_squares rounds it whatever the build's target; elsewhere one expression, which arm64 fuses.
+inline void add_square(double& sum, double value)
+{
+#ifdef NUMERICAL_X86_COMPILED
+    const double square {value * value};
+    sum += square;
+#else
+    sum += value * value;
+#endif
+}
+
 // The sum of the squares of `n` parts from `parts`, in double: each one's square added to the sum of its index modulo
 // 8 among the whole groups of 8, those eight summed as a tree, then the tail's squares in order.
 template <typename R>
@@ -2196,16 +2208,63 @@ double block_squares(const R* parts, std::size_t n)
     std::size_t           i {0};
     for (; i + partial.size() <= n; i += partial.size()) {
         for (std::size_t j = 0; j < partial.size(); ++j) {
-            const auto value {static_cast<double>(parts[i + j])};
-            partial[j] += value * value;
+            add_square(partial[j], static_cast<double>(parts[i + j]));
         }
     }
     double sum {((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]))};
     for (; i < n; ++i) {
-        const auto value {static_cast<double>(parts[i])};
-        sum += value * value;
+        add_square(sum, static_cast<double>(parts[i]));
     }
     return sum;
+}
+
+#ifdef NUMERICAL_X86_COMPILED
+// block_squares on the AVX2 units (the AVX-512 path's too): the same eight partial sums, two registers of four, each
+// square its own product then added (the baseline that block_squares is built for fuses nothing), the same tree and
+// tail, so its bits, at the vectors' width; a float part widened to double first, as there.
+template <typename R>
+NUMERICAL_TARGET("avx2") double avx2_block_squares(const R* parts, std::size_t n)
+{
+    __m256d     low {_mm256_setzero_pd()};
+    __m256d     high {_mm256_setzero_pd()};
+    std::size_t i {0};
+    for (; i + 8 <= n; i += 8) {
+        __m256d first;
+        __m256d second;
+        if constexpr (std::is_same_v<R, float>) {
+            first  = _mm256_cvtps_pd(_mm_loadu_ps(parts + i));
+            second = _mm256_cvtps_pd(_mm_loadu_ps(parts + i + 4));
+        }
+        else {
+            first  = _mm256_loadu_pd(parts + i);
+            second = _mm256_loadu_pd(parts + i + 4);
+        }
+        low  = _mm256_add_pd(low, _mm256_mul_pd(first, first));
+        high = _mm256_add_pd(high, _mm256_mul_pd(second, second));
+    }
+    alignas(32) std::array<double, 8> partial {};
+    _mm256_store_pd(partial.data(), low);
+    _mm256_store_pd(partial.data() + 4, high);
+    double sum {((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]))};
+    for (; i < n; ++i) {
+        add_square(sum, static_cast<double>(parts[i]));
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return sum;
+}
+#endif
+
+// block_squares on the vector units the processor has: AVX2's on x86-64 where it runs, the same bits.
+template <typename R>
+double fast_block_squares(const R* parts, std::size_t n)
+{
+#ifdef NUMERICAL_X86_COMPILED
+    const numerical::gemm_path path {numerical::detail::gemm_path_current()};
+    if (path == numerical::gemm_path::avx2 || path == numerical::gemm_path::avx512) {
+        return avx2_block_squares(parts, n);
+    }
+#endif
+    return block_squares(parts, n);
 }
 
 // The 2-norm from a sum of squares where it neither overflowed nor lost its digits below 2^-900 (a NaN fails the
@@ -2231,12 +2290,12 @@ std::optional<double> plain_two_norm(const T* x, std::size_t count)
     const std::size_t n {count * (sizeof(T) / sizeof(R))};
     const std::size_t blocks {(n + norm_block - 1) / norm_block};
     if (blocks <= 1) {
-        return root_of_squares(block_squares(parts, n));
+        return root_of_squares(fast_block_squares(parts, n));
     }
     std::vector<double> sums(blocks);
     numerical::detail::parallel_for(blocks, numerical::detail::dot_chunk_weight(blocks), [&](std::size_t b) {
         const std::size_t first {b * norm_block};
-        sums[b] = block_squares(parts + first, std::min(norm_block, n - first));
+        sums[b] = fast_block_squares(parts + first, std::min(norm_block, n - first));
     });
     double sum {0.0};
     for (const double block : sums) {
@@ -2278,8 +2337,7 @@ std::optional<double> plain_two_norm_columns(const T* x, std::size_t rows, std::
             const std::size_t take {std::min(norm_block - in_block, ((length - k) / partial.size()) * partial.size())};
             for (const std::size_t end {k + take}; k < end; k += partial.size()) {
                 for (std::size_t j = 0; j < partial.size(); ++j) {
-                    const auto value {static_cast<double>(band[k + j])};
-                    partial[j] += value * value;
+                    add_square(partial[j], static_cast<double>(band[k + j]));
                 }
             }
             in_block += take;
@@ -2292,8 +2350,7 @@ std::optional<double> plain_two_norm_columns(const T* x, std::size_t rows, std::
         if (r0 + height == rows && (in_block > 0 || k < length)) { // the last block: its groups' sum, then its tail
             double last {((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]))};
             for (; k < length; ++k) {
-                const auto value {static_cast<double>(band[k])};
-                last += value * value;
+                add_square(last, static_cast<double>(band[k]));
             }
             sum += last;
         }
