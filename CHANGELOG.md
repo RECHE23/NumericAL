@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A complex `einsum` product that sums nothing (`ij,j->ij`, `ijk,ik->ijk`) runs element by element**, as a real one
+  does, where it went one matrix product of depth one per element of its batch: each element rounded as the path's
+  complex product rounds it (the x86-64 complex tiles' parts from zero, arm64's real kernel's fused second term), so
+  the same bits. M1 Pro, `complex64` 363 × 183 times a row 517 → 36 µs (NumPy 163–208), `complex128` 1000 × 1000
+  9.8 → 0.33 ms (NumPy 2.5–3.5).
 - **A sum of products rounds the same wherever its loop is compiled, under Clang on arm64** (the macOS wheels):
   Clang vectorised some such loops in order, their products rounded apart where the same loop elsewhere fused them,
   as its callers' inlining decided. A row of a `complex128` matrix times a vector now has the bits of that row times

@@ -972,14 +972,6 @@ namespace numerical {
     };
 
     /*!
-     * \brief A batch of two-operand products that sum nothing (`ij,j->ij`, `ijk,ik->ijk`), each element of the output its operands'
-     *        product added to 0 as \ref gemm_rows rounds a product's first term (\ref rows_terms_fuse), the bits of
-     *        \ref contract_pair's products of depth one: each operand's axes in the output's order (a copy only where
-     *        they lie otherwise), broadcast against the other (\ref broadcast_into), where those products went one
-     *        matrix product of depth one per element of the batch (1000 × 1000 times a row of 1000, six AVX2 cores:
-     *        19.7 → 0.5 ms).
-     */
-    /*!
      * \brief `std::fma(p, q, +0)` without the instruction (in code built for any x86-64, `std::fma` is a call to the
      *        library, 40 000 elements of an outer product 18 → 114 µs on four AVX2 cores): the rounded product, which
      *        keeps the sign of a product that underflows to zero, plus +0 where an operand is zero, as the fused sum
@@ -993,6 +985,75 @@ namespace numerical {
       return p == T {} || q == T {} ? product + T {} : product;
     }
 
+    //! \brief `0 + p·q` of complex numbers as the x86-64 complex tiles round it (\c complex_term::tiles): each part's
+    //!        product from zero, their difference and their sum, each added to 0.
+    template <std::floating_point R>
+    [[nodiscard]] inline std::complex<R> tile_product(const std::complex<R>& p,
+                                                      const std::complex<R>& q) noexcept
+    {
+      const R re {fused_from_zero(p.real(), q.real()) - fused_from_zero(p.imag(), q.imag())};
+      const R im {fused_from_zero(p.real(), q.imag()) + fused_from_zero(p.imag(), q.real())};
+      return {R {} + re, R {} + im};
+    }
+
+    //! \brief `0 + p·q` of complex numbers as arm64's real kernel rounds it (\c complex_term::split), a product of
+    //!        `[Re p | −Im p]` by `[[Re q, Im q], [Im q, −Re q]]`: each part's first product from zero, the second fused
+    //!        into it.
+    template <std::floating_point R>
+    [[nodiscard]] inline std::complex<R> split_product(const std::complex<R>& p,
+                                                       const std::complex<R>& q) noexcept
+    {
+      return {std::fma(-p.imag(), q.imag(), fused_from_zero(p.real(), q.real())),
+              std::fma(-p.imag(), -q.real(), fused_from_zero(p.real(), q.imag()))};
+    }
+
+    //! \brief The products that sum nothing of \ref each_product, \p x and \p y broadcast against each other (\ref
+    //!        broadcast_into), for a real or integer `T`: a fused first term where \ref gemm_rows fuses one (\ref
+    //!        rows_terms_fuse), else as the compiler rounds `0 + x·y`.
+    template <typename T>
+    requires std::is_arithmetic_v<T>
+    [[nodiscard]] tensor<T> each_rounded(const T*                        x,
+                                         const std::vector<std::size_t>& x_shape,
+                                         const T*                        y,
+                                         const std::vector<std::size_t>& y_shape)
+    {
+      if constexpr (std::is_floating_point_v<T>) { // gemm_rows fuses no integer's terms
+        if (rows_terms_fuse<T>()) {
+          return broadcast_into(x, x_shape, y, y_shape, [](T p, T q) { return fused_from_zero(p, q); });
+        }
+      }
+      return broadcast_into(x, x_shape, y, y_shape, [](T p, T q) { return rounded_apart_add(T {}, p, q); });
+    }
+
+    //! \brief \ref each_rounded for complex numbers: as the path's complex product rounds a first term (\ref complex_terms).
+    template <split_complex T>
+    [[nodiscard]] tensor<T> each_rounded(const T*                        x,
+                                         const std::vector<std::size_t>& x_shape,
+                                         const T*                        y,
+                                         const std::vector<std::size_t>& y_shape)
+    {
+      if (complex_terms() != complex_term::compiler) {
+#ifdef NUMERICAL_X86_COMPILED
+        return broadcast_into(x, x_shape, y, y_shape, [](const T& p, const T& q) { return tile_product(p, q); });
+#else
+        return broadcast_into(x, x_shape, y, y_shape, [](const T& p, const T& q) { return split_product(p, q); });
+#endif
+      }
+      return broadcast_into(x, x_shape, y, y_shape, [](const T& p, const T& q) { return rounded_apart_add(T {}, p, q); });
+    }
+
+    //! \brief The element types `each_product` takes: those `each_rounded` rounds as a product of depth one.
+    template <typename T>
+    concept element_product = std::is_arithmetic_v<T> || split_complex<T>;
+
+    /*!
+     * \brief A batch of two-operand products that sum nothing (`ij,j->ij`, `ijk,ik->ijk`), each element of the output its operands'
+     *        product added to 0 as \ref gemm_rows rounds a product's first term (\ref rows_terms_fuse), a complex one as
+     *        the path's complex product rounds it (\ref complex_terms): the bits of \ref contract_pair's products of depth
+     *        one. Each operand's axes in the output's order (a copy only where they lie otherwise), broadcast against the
+     *        other (\ref broadcast_into), where those products went one matrix product of depth one per element of the
+     *        batch (1000 × 1000 times a row of 1000, six AVX2 cores: 19.7 → 0.5 ms).
+     */
     template <typename T>
     [[nodiscard]] tensor<T> each_product(const std::string&                 sa,
                                          operand_span<T>                    a,
@@ -1022,12 +1083,7 @@ namespace numerical {
       std::vector<std::size_t> b_shape;
       const T* const           x {in_output_order(sa, a, a_copy, a_shape)};
       const T* const           y {in_output_order(sb, b, b_copy, b_shape)};
-      if constexpr (std::is_floating_point_v<T>) { // gemm_rows fuses no integer's terms
-        if (rows_terms_fuse<T>()) {
-          return broadcast_into(x, a_shape, y, b_shape, [](T p, T q) { return fused_from_zero(p, q); });
-        }
-      }
-      return broadcast_into(x, a_shape, y, b_shape, [](T p, T q) { return rounded_apart_add(T {}, p, q); });
+      return each_rounded(x, a_shape, y, b_shape);
     }
 
     /*!
@@ -1066,7 +1122,7 @@ namespace numerical {
       for (const char label : summed) {
         inner *= sizes.at(label);
       }
-      if constexpr (std::is_arithmetic_v<T>) {
+      if constexpr (element_product<T>) {
         // A batch of such products (ij,j->ij: one of depth one per row; ij,ij->ij: one per element) element by
         // element; a single one (i,j->ij, an outer product) stays one product of depth one, whose kernel the
         // processor's vectors run (four AVX2 cores, 200 by 200: 21 µs, 25 element by element in code built for any

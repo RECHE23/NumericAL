@@ -2092,6 +2092,28 @@ namespace numerical::detail {
     return rows_fuse();
   }
 
+  //! \brief How a complex product rounds a term that sums nothing (`0 + a·b`) on the path in use, as
+  //!        \ref gemm_large_complex runs it.
+  enum class complex_term : std::uint8_t
+  {
+    compiler, //!< The vector tile's and the plain loop's: `0 + a·b` as the compiler rounds it (\ref rounded_apart_add).
+    tiles,    //!< The x86-64 complex tiles': each part's product from zero, `re·re − im·im` and `re·im + im·re`, then added to 0.
+    split,    //!< arm64's real kernel's (`gemm_split`): `Re a·Re b` from zero, `−Im a·Im b` fused into it; `Re a·Im b`, `Im a·Re b`.
+  };
+
+  //! \brief The \ref complex_term of the path in use.
+  [[nodiscard]] inline complex_term complex_terms() noexcept
+  {
+    if (gemm_path_current() == gemm_path::portable) {
+      return complex_term::compiler;
+    }
+#ifdef NUMERICAL_X86_COMPILED
+    return complex_term::tiles; // the AVX2 and AVX-512 paths, both on a complex tile
+#else
+    return complex_term::split;
+#endif
+  }
+
   /*!
    * \brief `C += A·B` by the plain i-k-j loop (\ref gemm_rows_rounded), each element rounded as the tile of the path
    *        in use rounds it, so that it is the same whatever the shape of the product it falls in: a caller that splits

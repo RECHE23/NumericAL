@@ -1046,6 +1046,12 @@ namespace
                              const T table[] {T(-0.0), T(0.0), tiny, -tiny, T(1.5), T(-2.25), T(1) / T(3), std::numeric_limits<T>::min()};
                              v[i] = table[k % 8];
                            }
+                           else if constexpr (numerical::detail::split_complex<T>) { // the parts from apart in the table
+                             using R = T::value_type;
+                             const R tiny {std::numeric_limits<R>::min() * R(0.75)};
+                             const R table[] {R(-0.0), R(0.0), tiny, -tiny, R(1.5), R(-2.25), R(1) / R(3), std::numeric_limits<R>::min()};
+                             v[i] = T {table[k % 8], table[((k * 3) + 1) % 8]};
+                           }
                            else {
                              v[i] = static_cast<T>(static_cast<int>(k % 11) - 5);
                            }
@@ -1087,8 +1093,12 @@ namespace
       T       want {};
       numerical::detail::gemm(1, 1, 1, &x, 1, &y, 1, &want, 1, numerical::detail::c_start::zero);
       const T have {got.data()[flat]};
-      if constexpr (std::is_floating_point_v<T>) { // the same value and the same sign, a zero's included (no NaN here)
+      if constexpr (std::is_floating_point_v<T>) {              // the same value and the same sign, a zero's included (no NaN here)
         same = same && have == want && std::signbit(have) == std::signbit(want);
+      }
+      else if constexpr (numerical::detail::split_complex<T>) { // each part's, as a real one's
+        same = same && have == want && std::signbit(have.real()) == std::signbit(want.real())
+               && std::signbit(have.imag()) == std::signbit(want.imag());
       }
       else {
         same = same && have == want;
@@ -1128,7 +1138,8 @@ TEST(a_product_from_zero_is_the_fused_one)
 }
 
 // An einsum product that sums nothing (each element one product) gives, on every path, each element's product of
-// depth one through gemm to the bit, its zero's sign included: as matrix products of depth one gave it before.
+// depth one through gemm to the bit, its zero's sign included (a complex one's in each part): as matrix products of
+// depth one gave it before.
 TEST(an_einsum_that_sums_nothing_gives_gemms_first_terms)
 {
   for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
@@ -1142,6 +1153,8 @@ TEST(an_einsum_that_sums_nothing_gives_gemms_first_terms)
       EXPECT(each_product_is_gemms<double>(spec, sa, sb));
       EXPECT(each_product_is_gemms<float>(spec, sa, sb));
       EXPECT(each_product_is_gemms<int>(spec, sa, sb));
+      EXPECT(each_product_is_gemms<std::complex<double>>(spec, sa, sb));
+      EXPECT(each_product_is_gemms<std::complex<float>>(spec, sa, sb));
     }
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
