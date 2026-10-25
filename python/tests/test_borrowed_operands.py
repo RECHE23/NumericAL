@@ -169,6 +169,35 @@ class BorrowedOperands(unittest.TestCase):
                         self.assertTrue(np.array_equal(np.asarray(got), np.einsum(spec, x)))
                         self.assertIsNot(numerical._numerical._borrowed_einsum(spec, x), NotImplemented)
 
+    def test_a_pair_of_arrays_reads_both_where_they_lie(self):
+        # einsum of two NumPy arrays of one dtype, each label once and none an operand's own: the Tensors' result to the
+        # bit, read in place (products, broadcasts, batches, a dot, empty extents); a column-major matrix is copied,
+        # its reversed labels a route of other bits (ij,j->i no canonical product), the same answer; own labels,
+        # repeated labels, mismatched extents and implicit specs left to the converting path.
+        cases = (("i,j->ij", (30,), (40,)), ("ij,j->ij", (112, 204), (204,)), ("ij,i->ij", (112, 204), (112,)),
+                 ("ij,ij->ij", (50, 60), (50, 60)), ("ij,jk->ik", (37, 41), (41, 23)), ("ij,kj->ik", (37, 41), (23, 41)),
+                 ("ij,j->i", (400, 200), (200,)), ("i,i->", (1000,), (1000,)), ("bij,bjk->bik", (4, 9, 11), (4, 11, 6)),
+                 ("ij,jk->ki", (13, 17), (17, 19)), ("ij,ji->", (20, 30), (30, 20)), ("ij,jk->ik", (0, 4), (4, 3)),
+                 (",i->i", (), (5,)))
+        for spec, a_shape, b_shape in cases:
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                a, b = self.operand(a_shape, dtype), self.operand(b_shape, dtype)
+                layouts = [(a, b, True)]
+                if a.ndim == 2 and a.size > 1 << 16:
+                    layouts.append((np.asfortranarray(a), b, False))
+                for x, y, in_place in layouts:
+                    with self.subTest(spec=spec, dtype=np.dtype(dtype).name, fortran=x.flags.f_contiguous):
+                        want = numerical.einsum(spec, numerical.asarray(np.array(x, order="C")),
+                                                numerical.asarray(np.array(y, order="C")))
+                        self.assert_same(numerical.einsum(spec, x, y), want)
+                        read = numerical._numerical._borrowed_einsum_pair(spec, x, y)
+                        self.assertEqual(read is not NotImplemented, in_place)
+        for spec, a_shape, b_shape in (("ijk,jl->il", (3, 4, 5), (4, 6)), ("ii,i->i", (3, 3), (3,)),
+                                       ("ij,jk->ik", (3, 4), (5, 6)), ("ij,jk", (3, 4), (4, 5))):
+            with self.subTest(spec=spec):
+                a, b = self.operand(a_shape, np.float64), self.operand(b_shape, np.float64)
+                self.assertIs(numerical._numerical._borrowed_einsum_pair(spec, a, b), NotImplemented)
+
     def test_a_norm_sums_fixed_blocks_of_parts(self):
         # The squares are summed by blocks of 2^14 parts, whatever the threads, each block's sum taken alone and the
         # blocks' sums added in order: 1 then 2^14 squares of 2^-60 is 1 + 2^-46 exactly, where one pass added a

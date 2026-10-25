@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`einsum` of two NumPy arrays reads both where they lie** when each label appears once and none is an operand's
+  own (products, broadcasts, batches): `detail::einsum_pair`, the route a pair of Tensors takes, so the same bits.
+  M1 Pro: `ij,j->ij` on 1000 × 1000 1127 → 333 µs (NumPy 864), `ij,i->ij` on 112 × 204 15.7 → 9.5, a 64 × 64
+  product 9.0 → 4.1, 16 products of 32 × 32 34.5 → 18.9. A column-major matrix is still copied.
 - **`einsum` that permutes a NumPy array's axes reads it where it lies** (`ij->ji`, `ijk->kij`), a column-major one
   with its labels reversed, where the array was copied into a Tensor first: M1 Pro, 1000 × 1000 1797 → 698 µs
   (NumPy's copy of `a.T` 798), 339 × 24 12.2 → 3.7 µs. NumPy answers with a view, which NumericAL does not make.

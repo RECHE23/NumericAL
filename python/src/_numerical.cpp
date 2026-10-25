@@ -3086,6 +3086,100 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _borrowed_einsum_pair(spec, a, b) -> Tensor or NotImplemented: einsum of two Tensors or C-ordered NumPy arrays of one
+// dtype read where they lie, for an explicit spec whose operands carry each
+// label once, none of them its own alone (numerical::detail::einsum_pair, the path einsum takes for such a pair, so its
+// bits); NotImplemented for anything else, which einsum then reads from copies (and refuses there, as before). Two
+// NumPy arrays were copied into Tensors first: ij,i->ij on 112 × 204, 36 µs where the product takes 14.
+PyObject* module_borrowed_einsum_pair(PyObject* /*self*/, PyObject* args)
+{
+    const char* spec_text = nullptr;
+    PyObject*   a_obj     = nullptr;
+    PyObject*   b_obj     = nullptr;
+    if (PyArg_ParseTuple(args, "sOO", &spec_text, &a_obj, &b_obj) == 0) {
+        return nullptr;
+    }
+    std::string spec;
+    for (const char* c = spec_text; *c != '\0'; ++c) {
+        if (*c != ' ') {
+            spec.push_back(*c);
+        }
+    }
+    const std::size_t arrow {spec.find("->")};
+    const std::size_t comma {spec.find(',')};
+    if (arrow == std::string::npos || comma == std::string::npos || comma > arrow || spec.find(',', comma + 1) != std::string::npos) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const std::string s0 {spec.substr(0, comma)};
+    const std::string s1 {spec.substr(comma + 1, arrow - comma - 1)};
+    const std::string out {spec.substr(arrow + 2)};
+    const auto letters_once = [](const std::string& labels) {
+        for (std::size_t k = 0; k < labels.size(); ++k) {
+            if (std::isalpha(static_cast<unsigned char>(labels[k])) == 0 || labels.find(labels[k], k + 1) != std::string::npos) {
+                return false;
+            }
+        }
+        return true;
+    };
+    const auto elsewhere = [&out](const std::string& labels, const std::string& other) {
+        return std::all_of(labels.begin(), labels.end(), [&](char label) { return other.find(label) != std::string::npos || out.find(label) != std::string::npos; });
+    };
+    if (!letters_once(s0) || !letters_once(s1) || !letters_once(out) || !elsewhere(s0, s1) || !elsewhere(s1, s0)
+        || out.find_first_not_of(s0 + s1) != std::string::npos) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    borrowed_operand x;
+    borrowed_operand y;
+    // A column-major matrix stays with the copy: read with its labels reversed, the pair would take another route
+    // (ji,j->i is no canonical product), and other bits.
+    if (!borrow_operand(a_obj, x, false) || !borrow_operand(b_obj, y, false) || x.dtype != y.dtype || x.shape.size() != s0.size()
+        || y.shape.size() != s1.size()) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    std::map<char, std::size_t> sizes;
+    for (auto [labels, operand] : {std::pair<const std::string*, const borrowed_operand*> {&s0, &x}, std::pair<const std::string*, const borrowed_operand*> {&s1, &y}}) {
+        for (std::size_t axis {0}; axis < labels->size(); ++axis) {
+            const auto [at, fresh] {sizes.emplace((*labels)[axis], operand->shape[axis])};
+            if (!fresh && at->second != operand->shape[axis]) {
+                return Py_NewRef(Py_NotImplemented); // einsum's own path refuses it
+            }
+        }
+    }
+    std::string summed;
+    for (const auto& [label, extent] : sizes) {
+        if (out.find(label) == std::string::npos) {
+            summed.push_back(label);
+        }
+    }
+    const auto count_of = [](const borrowed_operand& operand) {
+        std::size_t count {1};
+        for (const std::size_t extent : operand.shape) {
+            count *= extent;
+        }
+        return count;
+    };
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(x) + count_of(y))};
+            const auto pair = [&]<typename T>(std::type_identity<T>) {
+                result.emplace(numerical::detail::einsum_pair<T>(s0, {static_cast<const T*>(x.data), count_of(x)}, s1,
+                                                                 {static_cast<const T*>(y.data), count_of(y)}, out, summed, sizes));
+            };
+            switch (x.dtype) {
+            case 0: pair(std::type_identity<double> {}); break;
+            case 1: pair(std::type_identity<std::complex<double>> {}); break;
+            case 2: pair(std::type_identity<float> {}); break;
+            default: pair(std::type_identity<std::complex<float>> {}); break;
+            }
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _borrowed_norm(x) -> float or NotImplemented: the 2-norm of every element of a Tensor or of a NumPy array read where it
 // lies (borrow_operand; a column-major matrix in its C order, plain_two_norm_columns), its squares summed where
 // plain_two_norm takes them; NotImplemented for any other operand and
@@ -3908,6 +4002,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_equal(a, b) -> bool\nWhether two tensors of one dtype and size hold equal elements (a NaN equals nothing).");
     m.raw("_unary", module_unary, METH_VARARGS,
           "_unary(name, a) -> Tensor\nexp, log, sqrt, sin, cos, tan, tanh or abs of every element.");
+    m.raw("_borrowed_einsum_pair", module_borrowed_einsum_pair, METH_VARARGS,
+          "_borrowed_einsum_pair(spec, a, b) -> Tensor or NotImplemented\nTwo operands of one dtype, each label once and none its own, read where they lie.");
     m.raw("_borrowed_einsum", module_borrowed_einsum, METH_VARARGS,
           "_borrowed_einsum(spec, x) -> Tensor or NotImplemented\nOne operand summed over a run of its axes, read where it lies.");
     m.raw("_borrowed_unary", module_borrowed_unary, METH_VARARGS,

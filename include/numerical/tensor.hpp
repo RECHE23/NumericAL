@@ -935,6 +935,15 @@ namespace numerical {
       return permuted(data.data(), data.size(), from, to, sizes);
     }
 
+    //! \brief The elements of an operand of \ref einsum_pair, row-major along its labels: a tensor's, or an array's read
+    //!        where it lies.
+    template <typename T>
+    struct operand_span
+    {
+      const T*    data;  //!< The first element.
+      std::size_t count; //!< The elements, the product of the extents.
+    };
+
     /*!
      * \brief A batch of two-operand products that sum nothing (`ij,j->ij`, `ijk,ik->ijk`), each element of the output its operands'
      *        product added to 0 as \ref gemm_rows rounds a product's first term (\ref rows_terms_fuse), the bits of
@@ -959,13 +968,13 @@ namespace numerical {
 
     template <typename T>
     [[nodiscard]] tensor<T> each_product(const std::string&                 sa,
-                                         const tensor<T>&                   a,
+                                         operand_span<T>                    a,
                                          const std::string&                 sb,
-                                         const tensor<T>&                   b,
+                                         operand_span<T>                    b,
                                          const std::string&                 output,
                                          const std::map<char, std::size_t>& sizes)
     {
-      const auto in_output_order {[&](const std::string& labels, const tensor<T>& t, buffer<T>& copy, std::vector<std::size_t>& shape) {
+      const auto in_output_order {[&](const std::string& labels, operand_span<T> t, buffer<T>& copy, std::vector<std::size_t>& shape) {
                                     std::string order;
                                     for (const char label : output) {
                                       const bool carried {labels.find(label) != std::string::npos};
@@ -975,9 +984,9 @@ namespace numerical {
                                       }
                                     }
                                     if (order == labels) {
-                                      return t.data().data();
+                                      return t.data;
                                     }
-                                    copy = permuted(t.data(), labels, order, sizes);
+                                    copy = permuted(t.data, t.count, labels, order, sizes);
                                     return static_cast<const T*>(copy.data());
                                   }};
       buffer<T>                a_copy;
@@ -1006,9 +1015,9 @@ namespace numerical {
      */
     template <typename T>
     [[nodiscard]] tensor<T> contract_pair(const std::string&                 sa,
-                                          const tensor<T>&                   a,
+                                          operand_span<T>                    a,
                                           const std::string&                 sb,
-                                          const tensor<T>&                   b,
+                                          operand_span<T>                    b,
                                           const std::string&                 output,
                                           const std::string&                 summed,
                                           const std::map<char, std::size_t>& sizes)
@@ -1051,10 +1060,10 @@ namespace numerical {
       const std::size_t    cols                                               {extent_of(free_b)};
       const std::string    left_order                                         {batch + free_a + summed};
       const std::string    right_order                                        {batch + summed + free_b};
-      const buffer<T>      left                                               {sa == left_order ? buffer<T> {} : permuted(a.data(), sa, left_order, sizes)};
-      const buffer<T>      right                                              {sb == right_order ? buffer<T> {} : permuted(b.data(), sb, right_order, sizes)};
-      const T* const       left_data                                          {sa == left_order ? a.data().data() : left.data()};
-      const T* const       right_data                                         {sb == right_order ? b.data().data() : right.data()};
+      const buffer<T>      left                                               {sa == left_order ? buffer<T> {} : permuted(a.data, a.count, sa, left_order, sizes)};
+      const buffer<T>      right                                              {sb == right_order ? buffer<T> {} : permuted(b.data, b.count, sb, right_order, sizes)};
+      const T* const       left_data                                          {sa == left_order ? a.data : left.data()};
+      const T* const       right_data                                         {sb == right_order ? b.data : right.data()};
       buffer<T>            c(checked_mul(batches, checked_mul(rows, cols)));
       if (rows == 1 && cols == 1) { // a dot product per batch, as `chunked_dot` sums each chunk
         parallel_for(batches, inner, [&](std::size_t p) {
@@ -1256,6 +1265,51 @@ namespace numerical {
         throw einsum_error("einsum: '.' stands only as one ellipsis, '...', per subscript");
       }
       return at;
+    }
+
+    /*!
+     * \brief einsum of two operands \p a (labels \p s0) and \p b (\p s1) into \p output, \p summed the labels neither
+     *        the output carries (ascending), \p sizes each label's extent: each label of an operand once, and each in
+     *        the other operand or the output (\ref einsum_impl sums an operand's own labels and reads a repeated one's
+     *        diagonal first). A tensor's elements or an array's read where it lies, the same bits either way.
+     */
+    template <typename T>
+    [[nodiscard]] tensor<T> einsum_pair(const std::string&                 s0,
+                                        operand_span<T>                    a,
+                                        const std::string&                 s1,
+                                        operand_span<T>                    b,
+                                        const std::string&                 output,
+                                        const std::string&                 summed,
+                                        const std::map<char, std::size_t>& sizes)
+    {
+      // Fast path: a plain two-operand single contraction in canonical layout —
+      // `A` ending with the contracted label, `B` starting with it, and the
+      // output being A's leading free labels then B's trailing ones — is exactly
+      // a matrix product, routed to the packed kernel (gemm.hpp).
+      if (summed.size() == 1) {
+        const char contracted {summed.front()};
+        if (s0.back() == contracted && s1.front() == contracted // the contracted label in both, so neither empty
+            && output == s0.substr(0, s0.size() - 1) + s1.substr(1)) {
+          const std::size_t        inner {sizes.at(contracted)};
+          std::vector<std::size_t> out_shape;
+          for (std::size_t k {0}; k + 1 < s0.size(); ++k) {
+            out_shape.push_back(sizes.at(s0[k]));
+          }
+          for (std::size_t k {1}; k < s1.size(); ++k) {
+            out_shape.push_back(sizes.at(s1[k]));
+          }
+          // The result's elements, 0 where one of its extents is 0 whatever the others (an empty contraction's
+          // operands may hold any number along their other axes); else checked, and the rows and columns within.
+          if (element_count(out_shape.begin(), out_shape.end()) == 0) {
+            return tensor<T> {std::move(out_shape), buffer<T> {}};
+          }
+          const auto        split {out_shape.begin() + static_cast<std::ptrdiff_t>(s0.size() - 1)};
+          const std::size_t rows  {element_count(out_shape.begin(), split)};
+          const std::size_t cols  {element_count(split, out_shape.end())};
+          return canonical_product<T>(a.data, inner, b.data, cols, rows, inner, cols, std::move(out_shape));
+        }
+      }
+      return contract_pair<T>(s0, a, s1, b, output, summed, sizes);
     }
 
     template <typename T>
@@ -1526,37 +1580,9 @@ namespace numerical {
         }
       }
 
-      // Fast path: a plain two-operand single contraction in canonical layout —
-      // `A` ending with the contracted label, `B` starting with it, and the
-      // output being A's leading free labels then B's trailing ones — is exactly
-      // a matrix product, routed to the packed kernel (gemm.hpp).
-      if (operands.size() == 2 && summed.size() == 1) {
-        const char         contracted {summed.front()};
-        const std::string& s0         {inputs[0]};
-        const std::string& s1         {inputs[1]};
-        if (s0.back() == contracted && s1.front() == contracted // the contracted label in both, so neither empty
-            && output == s0.substr(0, s0.size() - 1) + s1.substr(1)) {
-          const std::size_t        inner {sizes.at(contracted)};
-          std::vector<std::size_t> out_shape;
-          for (std::size_t k {0}; k + 1 < s0.size(); ++k) {
-            out_shape.push_back(sizes.at(s0[k]));
-          }
-          for (std::size_t k {1}; k < s1.size(); ++k) {
-            out_shape.push_back(sizes.at(s1[k]));
-          }
-          // The result's elements, 0 where one of its extents is 0 whatever the others (an empty contraction's
-          // operands may hold any number along their other axes); else checked, and the rows and columns within.
-          if (element_count(out_shape.begin(), out_shape.end()) == 0) {
-            return tensor<T> {std::move(out_shape), buffer<T> {}};
-          }
-          const auto        split {out_shape.begin() + static_cast<std::ptrdiff_t>(s0.size() - 1)};
-          const std::size_t rows  {element_count(out_shape.begin(), split)};
-          const std::size_t cols  {element_count(split, out_shape.end())};
-          return canonical_product<T>(operands[0]->data().data(), inner, operands[1]->data().data(), cols, rows, inner, cols, std::move(out_shape));
-        }
-      }
       if (operands.size() == 2) {
-        return contract_pair<T>(inputs[0], *operands[0], inputs[1], *operands[1], output, summed, sizes);
+        return einsum_pair<T>(inputs[0], {operands[0]->data().data(), operands[0]->size()}, inputs[1],
+                              {operands[1]->data().data(), operands[1]->size()}, output, summed, sizes);
       }
 
       // One operand from here (pairs and more are contracted above), its labels repeated (a diagonal) or summed in

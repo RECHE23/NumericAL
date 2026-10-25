@@ -509,6 +509,10 @@ def einsum(subscripts, /, *operands):
         summed = _numerical._borrowed_einsum(subscripts, operands[0])  # a run of axes summed where the operand lies
         if summed is not NotImplemented:
             return summed
+    if len(operands) == 2 and isinstance(subscripts, str):
+        paired = _numerical._borrowed_einsum_pair(subscripts, *operands)  # both read where they lie
+        if paired is not NotImplemented:
+            return paired
     return _einsum(subscripts, *operands)
 
 
