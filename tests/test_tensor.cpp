@@ -788,6 +788,31 @@ TEST(einsum_sums_each_operand_over_its_own_labels_first)
   EXPECT(einsum("i,j,k,l,m->", ones, ones, ones, ones, ones).data().front() == std::ldexp(1.0, 80));
 }
 
+// A pair whose operand carries a label of its own sums it first, as three operands do: `ijk,jl->il` is `ijk->ij`
+// then `ij,jl->il`, to the bit (I·J·K + I·J·L terms, where one loop over every label ran I·J·K·L); a label kept
+// twice is read on its diagonal, and an operand summed whole is a scalar factor.
+TEST(einsum_sums_a_pairs_own_labels_first)
+{
+  std::vector<double> av(std::size_t {7} *9 * 11);
+  std::vector<double> bv(std::size_t {9} *5);
+  for (std::size_t i {0}; i < av.size(); ++i) {
+    av[i] = std::sin(static_cast<double>(i) + 0.5);
+  }
+  for (std::size_t i {0}; i < bv.size(); ++i) {
+    bv[i] = std::cos(static_cast<double>(i) + 0.25);
+  }
+  const tensor<double> a {std::vector<std::size_t> {7, 9, 11}, av};
+  const tensor<double> b {std::vector<std::size_t> {9, 5}, bv};
+  EXPECT(einsum("ijk,jl->il", a, b).data() == einsum("ij,jl->il", einsum("ijk->ij", a), b).data());
+  EXPECT(einsum("jl,ijk->li", b, a).data() == einsum("jl,ij->li", b, einsum("ijk->ij", a)).data());
+  EXPECT(einsum("ijk,jl->", a, b).data() == einsum("j,j->", einsum("ijk->j", a), einsum("jl->j", b)).data());
+  const tensor<int> m {matrix<int> {{1, 2}, {3, 4}}};
+  const tensor<int> v {vector<int> {5, 6}};
+  EXPECT(einsum("ii,i->i", m, v).data() == (std::vector<int> {5, 24}));
+  EXPECT(einsum("ij,k->k", m, v).data() == (std::vector<int> {50, 60}));
+  EXPECT(einsum("ij,jk->", m, m).data() == std::vector<int> {((1 + 3) * (1 + 2)) + ((2 + 4) * (3 + 4))});
+}
+
 // Three operands or more are contracted two at a time: a chain of products, a shared label kept for a later
 // operand, a diagonal and an output in another order give what the products written out give.
 TEST(einsum_contracts_many_operands_pairwise)

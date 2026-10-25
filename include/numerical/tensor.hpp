@@ -988,29 +988,19 @@ namespace numerical {
      *        ascending order, the order the general loop sums them in, so each element takes the same terms in the
      *        same order) regroup each operand as a stack of matrices, `A` as `batch × free_a × summed` and `B` as
      *        `batch × summed × free_b`, multiplied batch by batch through the packed kernel, batches in parallel;
-     *        the result is laid out in the output's order; a dot product per batch by \ref dot_product. Nothing for a
-     *        label repeated within an operand or summed by one operand alone (the general loop takes those).
+     *        the result is laid out in the output's order; a dot product per batch by \ref dot_product. Each label of
+     *        an operand once, and each in the other operand or the output: \ref einsum_impl sums an operand's own
+     *        labels and reads a repeated one's diagonal first.
      */
     template <typename T>
-    [[nodiscard]] std::optional<tensor<T>> contract_pair(const std::string&                 sa,
-                                                         const tensor<T>&                   a,
-                                                         const std::string&                 sb,
-                                                         const tensor<T>&                   b,
-                                                         const std::string&                 output,
-                                                         const std::string&                 summed,
-                                                         const std::map<char, std::size_t>& sizes)
+    [[nodiscard]] tensor<T> contract_pair(const std::string&                 sa,
+                                          const tensor<T>&                   a,
+                                          const std::string&                 sb,
+                                          const tensor<T>&                   b,
+                                          const std::string&                 output,
+                                          const std::string&                 summed,
+                                          const std::map<char, std::size_t>& sizes)
     {
-      const auto repeats {[](const std::string& labels) {
-                            for (std::size_t i {0}; i < labels.size(); ++i) {
-                              if (labels.find(labels[i], i + 1) != std::string::npos) {
-                                return true;
-                              }
-                            }
-                            return false;
-                          }};
-      if (repeats(sa) || repeats(sb)) {
-        return std::nullopt;
-      }
       std::string batch;
       std::string free_a;
       std::string free_b;
@@ -1026,9 +1016,6 @@ namespace numerical {
       }
       std::size_t inner {1};
       for (const char label : summed) {
-        if (sa.find(label) == std::string::npos || sb.find(label) == std::string::npos) {
-          return std::nullopt;
-        }
         inner *= sizes.at(label);
       }
       if constexpr (std::is_arithmetic_v<T>) {
@@ -1461,14 +1448,17 @@ namespace numerical {
         }
       }
 
-      // Three operands or more: first sum each one over the labels no other operand and not the output
-      // carries, then contract them two at a time in the cheapest order (\ref contraction_path), each
-      // intermediate keeping only the labels still to come. One loop over every label of `ij,jk,kl->il` runs n⁴
-      // terms; pairs run 2·n³, and `i,j,k,l,m->` over 65 536 ones each runs five sums of 65 536 instead of 2⁸⁰.
-      if (operands.size() > 2) {
+      // Two operands or more: first sum each one over the labels no other operand and not the output carries
+      // (`ijk,jl->il` sums k in `ijk->ij` first: I·J·K + I·J·L terms, where one loop over every label ran I·J·K·L),
+      // then contract them two at a time in the cheapest order (\ref contraction_path), each intermediate keeping
+      // only the labels still to come. One loop over every label of `ij,jk,kl->il` runs n⁴ terms; pairs run 2·n³, and
+      // `i,j,k,l,m->` over 65 536 ones each runs five sums of 65 536 instead of 2⁸⁰. A repeated label kept is read
+      // once, on its diagonal (`ii,i->i` takes `ii->i`).
+      if (operands.size() > 1) {
         std::deque<tensor<T>>         owned; // the reductions and intermediates (a deque keeps their addresses)
         std::vector<const tensor<T>*> current;
         std::vector<std::string>      kept;
+        bool                          reduced {false};
         for (std::size_t i {0}; i < operands.size(); ++i) {
           std::string elsewhere {output};
           for (std::size_t j {0}; j < operands.size(); ++j) {
@@ -1487,21 +1477,24 @@ namespace numerical {
             const std::vector<const tensor<T>*> alone {operands[i]};
             owned.push_back(einsum_impl<T>(inputs[i] + "->" + keep, alone));
             current.push_back(&owned.back());
+            reduced = true;
           }
           kept.push_back(std::move(keep));
         }
-        for (const contraction_step step : contraction_path(kept, output, sizes)) {
-          const std::string                   keep {kept.size() == 2 ? output : pair_keeps(kept, step.first, step.second, output)};
-          const std::vector<const tensor<T>*> pair {current[step.first], current[step.second]};
-          owned.push_back(einsum_impl<T>(kept[step.first] + "," + kept[step.second] + "->" + keep, pair));
-          current.erase(current.begin() + static_cast<std::ptrdiff_t>(step.second));
-          current.erase(current.begin() + static_cast<std::ptrdiff_t>(step.first));
-          kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(step.second));
-          kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(step.first));
-          current.push_back(&owned.back());
-          kept.push_back(keep);
+        if (operands.size() > 2 || reduced) { // a pair with nothing of its own to sum is contracted below
+          for (const contraction_step step : contraction_path(kept, output, sizes)) {
+            const std::string                   keep {kept.size() == 2 ? output : pair_keeps(kept, step.first, step.second, output)};
+            const std::vector<const tensor<T>*> pair {current[step.first], current[step.second]};
+            owned.push_back(einsum_impl<T>(kept[step.first] + "," + kept[step.second] + "->" + keep, pair));
+            current.erase(current.begin() + static_cast<std::ptrdiff_t>(step.second));
+            current.erase(current.begin() + static_cast<std::ptrdiff_t>(step.first));
+            kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(step.second));
+            kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(step.first));
+            current.push_back(&owned.back());
+            kept.push_back(keep);
+          }
+          return std::move(owned.back()); // the last contraction's, the output
         }
-        return std::move(owned.back()); // the last contraction's, the output
       }
 
       // Fast path: one operand, nothing summed, each label once: a permutation of its axes (a transpose), a copy.
@@ -1524,14 +1517,12 @@ namespace numerical {
       // Fast path: a plain two-operand single contraction in canonical layout —
       // `A` ending with the contracted label, `B` starting with it, and the
       // output being A's leading free labels then B's trailing ones — is exactly
-      // a matrix product, routed to the packed kernel (gemm.hpp). (Any stray copy of
-      // the contracted label leaves it in a "free" part, so the output would
-      // carry a summed label and this equality fails — correctly declining it.)
+      // a matrix product, routed to the packed kernel (gemm.hpp).
       if (operands.size() == 2 && summed.size() == 1) {
         const char         contracted {summed.front()};
         const std::string& s0         {inputs[0]};
         const std::string& s1         {inputs[1]};
-        if (!s0.empty() && !s1.empty() && s0.back() == contracted && s1.front() == contracted
+        if (s0.back() == contracted && s1.front() == contracted // the contracted label in both, so neither empty
             && output == s0.substr(0, s0.size() - 1) + s1.substr(1)) {
           const std::size_t        inner {sizes.at(contracted)};
           std::vector<std::size_t> out_shape;
@@ -1553,12 +1544,11 @@ namespace numerical {
         }
       }
       if (operands.size() == 2) {
-        if (std::optional<tensor<T>> paired {contract_pair<T>(inputs[0], *operands[0], inputs[1], *operands[1], output, summed, sizes)}) {
-          return *std::move(paired);
-        }
+        return contract_pair<T>(inputs[0], *operands[0], inputs[1], *operands[1], output, summed, sizes);
       }
 
-      // Every distinct label, output (free) first then summed: this fixes the
+      // One operand from here (pairs and more are contracted above), its labels repeated (a diagonal) or summed in
+      // no run. Every distinct label, output (free) first then summed: this fixes the
       // index space and the row-major order of the result.
       const std::string labels   {output + summed};
       const std::size_t n_labels {labels.size()};
@@ -1636,13 +1626,9 @@ namespace numerical {
           T acc {};
           for (std::size_t os {0}; os < sum_outer; ++os) {
             for (std::size_t se {0}; se < inner_sum; ++se) {
-              // The first factor itself, then the others: a complex 1 times an element was no identity (0 · inf
-              // is a NaN, and −0 − (−0) a +0), so a trace or a sum of complex infinities or signed zeros went wrong.
-              T prod {operands[0]->data()[offset[0] + (fe * free_step[0]) + (se * sum_step[0])]};
-              for (std::size_t i {1}; i < n_ops; ++i) {
-                prod *= operands[i]->data()[offset[i] + (fe * free_step[i]) + (se * sum_step[i])];
-              }
-              acc += prod;
+              // The element itself: a complex 1 times it was no identity (0 · inf is a NaN, and −0 − (−0) a +0), so a
+              // trace or a sum of complex infinities or signed zeros went wrong.
+              acc += operands[0]->data()[offset[0] + (fe * free_step[0]) + (se * sum_step[0])];
             }
             // Step the outer-summed odometer (labels [n_free, sum_outer_end)).
             for (std::size_t k {sum_outer_end}; k-- > n_free;) {
