@@ -2357,6 +2357,102 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
+  //! \brief The complex numbers of \p v times −i: each `(im, −re)`, exact.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_times_minus_i(__m256d v) noexcept
+  {
+    return _mm256_xor_pd(_mm256_permute_pd(v, 0b0101), _mm256_setr_pd(0.0, -0.0, 0.0, -0.0));
+  }
+
+  //! \brief \ref avx2_times_minus_i of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_times_minus_i(__m256 v) noexcept
+  {
+    return _mm256_xor_ps(_mm256_permute_ps(v, 0xB1), _mm256_setr_ps(0.0F, -0.0F, 0.0F, -0.0F, 0.0F, -0.0F, 0.0F, -0.0F));
+  }
+
+  //! \brief `fft.hpp`'s `four_point` over registers of complex numbers: \p v0 to \p v3 into \p y0 to \p y3.
+  template <typename V>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_four_point(V  v0,
+                                                           V  v1,
+                                                           V  v2,
+                                                           V  v3,
+                                                           V& y0,
+                                                           V& y1,
+                                                           V& y2,
+                                                           V& y3) noexcept
+  {
+    const V a_plus_c  {avx2_add(v0, v2)};
+    const V a_minus_c {avx2_sub(v0, v2)};
+    const V b_plus_d  {avx2_add(v1, v3)};
+    const V i_b_d     {avx2_times_i(avx2_sub(v1, v3))};
+    y0 = avx2_add(a_plus_c, b_plus_d);
+    y1 = avx2_sub(a_minus_c, i_b_d);
+    y2 = avx2_sub(a_plus_c, b_plus_d);
+    y3 = avx2_add(a_minus_c, i_b_d);
+  }
+
+  /*!
+   * \brief One Stockham pass of radix 16 of `fft.hpp`'s (`radix_sixteen_pass`), a register of complex numbers along the
+   *        stride at a time, which holds whole registers (the first pass is of radix 4, so the stride is at least 4): the
+   *        same sums in the same order, its factors' products as `fused_product`.
+   */
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_radix_sixteen_pass(std::size_t                            current,
+                                                                   std::size_t                            stride,
+                                                                   const std::complex<R>*                 in,
+                                                                   std::complex<R>*                       out,
+                                                                   const std::complex<R>*                 twiddles,
+                                                                   const std::array<std::complex<R>, 16>& sixteenths) noexcept
+  {
+    using vec  = decltype(avx2_load(static_cast<const R*>(nullptr)));                            // __m256d or __m256
+    using held = std::conditional_t<std::is_same_v<R, double>, ymm_register, ymm_register_f32>; // a register in an array
+    constexpr std::size_t width {32 / sizeof(std::complex<R>)};      // complex numbers in a register
+    const std::size_t     part  {current / 16};
+    const std::size_t     run   {part - 1};
+    const std::size_t     apart {2 * stride * part};                 // parts between a butterfly's inputs
+    const R* const        from  {reinterpret_cast<const R*>(in)};    // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+    R* const              into  {reinterpret_cast<R*>(out)};         // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    for (std::size_t p {0}; p < part; ++p) {
+      const R* const in_p {from + (2 * stride * p)};
+      R* const       to   {into + (2 * stride * 16 * p)};
+      for (std::size_t q {0}; q < stride; q += width) {
+        const R* const      at {in_p + (2 * q)};
+        std::array<held, 16> inner {};
+        #  pragma GCC unroll 16
+        for (std::size_t j1 {0}; j1 < 4; ++j1) {
+          avx2_four_point(avx2_load(at + (j1 * apart)), avx2_load(at + ((j1 + 4) * apart)), avx2_load(at + ((j1 + 8) * apart)),
+                          avx2_load(at + ((j1 + 12) * apart)), inner[4 * j1].v, inner[(4 * j1) + 1].v, inner[(4 * j1) + 2].v,
+                          inner[(4 * j1) + 3].v);
+        }
+        #  pragma GCC unroll 16
+        for (std::size_t j1 {1}; j1 < 4; ++j1) {
+          #  pragma GCC unroll 16
+          for (std::size_t k2 {1}; k2 < 4; ++k2) {
+            vec& value {inner[(4 * j1) + k2].v};
+            const std::complex<R>& w {sixteenths[j1 * k2]};
+            value = (j1 * k2) == 4 ? avx2_times_minus_i(value) : avx2_twiddled(avx2_pairs(w.real(), w.real()), avx2_pairs(w.imag(), w.imag()), value);
+          }
+        }
+        #  pragma GCC unroll 16
+        for (std::size_t k2 {0}; k2 < 4; ++k2) {
+          std::array<held, 4> outputs {};
+          avx2_four_point(inner[k2].v, inner[4 + k2].v, inner[8 + k2].v, inner[12 + k2].v, outputs[0].v, outputs[1].v, outputs[2].v,
+                          outputs[3].v);
+          #  pragma GCC unroll 16
+          for (std::size_t k1 {0}; k1 < 4; ++k1) {
+            const std::size_t k {(4 * k1) + k2};
+            vec               y {outputs[k1].v};
+            if (p != 0 && k != 0) {
+              const std::complex<R>& w {twiddles[((k - 1) * run) + p - 1]};
+              y = avx2_twiddled(avx2_pairs(w.real(), w.real()), avx2_pairs(w.imag(), w.imag()), y);
+            }
+            avx2_store(to + (2 * q) + (2 * stride * k), y);
+          }
+        }
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
 #endif
 } // namespace numerical::detail
 

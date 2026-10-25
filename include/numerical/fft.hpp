@@ -232,39 +232,71 @@ namespace numerical {
       }
     }
 
+    //! \brief The radix of each Stockham pass of the power of two \p n: 4 first (its stride 1), then 16 while 16 points
+    //!        remain, then 4, then 2.
+    [[nodiscard]] inline std::vector<std::size_t> stockham_radices(std::size_t n)
+    {
+      std::vector<std::size_t> radices;
+      std::size_t              current {n};
+      if (current >= 4) {
+        radices.push_back(4);
+        current /= 4;
+      }
+      for (; current >= 16; current /= 16) {
+        radices.push_back(16);
+      }
+      for (; current >= 4; current /= 4) {
+        radices.push_back(4);
+      }
+      if (current == 2) {
+        radices.push_back(2);
+      }
+      return radices;
+    }
+
     //! \brief The factors and passes of a transform of one length, built once and shared.
     template <std::floating_point R>
     struct fft_plan
     {
-      std::size_t                  length;    //!< The transform's length.
-      bool                         radix_two; //!< Whether it is a power of two (Stockham passes).
-      std::vector<std::complex<R>> roots;     //!< `e^{−2πi k/n}` for k below n, for the sum term by term.
-      std::vector<std::complex<R>> twiddles;
-      //!< Each radix-4 pass' factors from `p` = 1: its `w^p`, then its `w^{2p}`, then its `w^{3p}`, each run together.
+      std::size_t                     length;     //!< The transform's length.
+      bool                            radix_two;  //!< Whether it is a power of two (Stockham passes).
+      std::vector<std::complex<R>>    roots;      //!< `e^{−2πi k/n}` for k below n, for the sum term by term.
+      std::vector<std::size_t>        radices;    //!< Each Stockham pass' radix (\ref stockham_radices).
+      std::vector<std::complex<R>>    twiddles;
+      //!< Each pass' factors from `p` = 1: its `w^p` run, then its `w^{2p}` run, to its `w^{(r−1)p}` run.
+      std::array<std::complex<R>, 16> sixteenths; //!< `e^{−2πi k/16}`: a radix-16 butterfly's own factors.
     };
 
     //! \brief The \ref fft_plan of length \p n.
     template <std::floating_point R>
     [[nodiscard]] fft_plan<R> make_fft_plan(std::size_t n)
     {
-      fft_plan<R> plan {.length = n, .radix_two = std::has_single_bit(n), .roots = {}, .twiddles = {}};
-      const auto  root {[n](std::size_t k) {
-                          const std::complex<double> value {unit_root(k, n)};
-                          return std::complex<R> {static_cast<R>(value.real()), static_cast<R>(value.imag())};
-                        }};
+      const auto root {[](std::size_t k, std::size_t of) {
+        const std::complex<double> value {unit_root(k, of)};
+        return std::complex<R> {static_cast<R>(value.real()), static_cast<R>(value.imag())};
+      }};
+      fft_plan<R> plan {.length = n, .radix_two = std::has_single_bit(n), .roots = {}, .radices = {}, .twiddles = {}, .sixteenths = {}};
+      for (std::size_t k {0}; k < 16; ++k) {
+        plan.sixteenths.at(k) = root(k, 16);
+      }
       if (!plan.radix_two) {
         plan.roots.resize(n);
         for (std::size_t k {0}; k < n; ++k) {
-          plan.roots[k] = root(k);
+          plan.roots[k] = root(k, n);
         }
         return plan;
       }
-      for (std::size_t current {n}, stride {1}; current >= 4; current /= 4, stride *= 4) {
-        for (std::size_t power {1}; power <= 3; ++power) {
-          for (std::size_t p {1}; p < current / 4; ++p) { // p = 0 multiplies by nothing
-            plan.twiddles.push_back(root(power * p * stride));
+      plan.radices = stockham_radices(n);
+      std::size_t current {n};
+      std::size_t stride  {1};
+      for (const std::size_t radix : plan.radices) {
+        for (std::size_t power {1}; power < radix; ++power) {
+          for (std::size_t p {1}; p < current / radix; ++p) { // p = 0 multiplies by nothing
+            plan.twiddles.push_back(root(power * p * stride, n));
           }
         }
+        current /= radix;
+        stride  *= radix;
       }
       return plan;
     }
@@ -342,6 +374,74 @@ namespace numerical {
       }
     }
 
+    //! \brief A 4-point transform of \p v0 to \p v3 into \p y: the radix-4 butterfly's sums, in its order.
+    template <std::floating_point R>
+    inline void four_point(const std::complex<R>& v0,
+                           const std::complex<R>& v1,
+                           const std::complex<R>& v2,
+                           const std::complex<R>& v3,
+                           std::complex<R>*       y) noexcept
+    {
+      using C = std::complex<R>;
+      const C a_plus_c    {v0 + v2};
+      const C a_minus_c   {v0 - v2};
+      const C b_plus_d    {v1 + v3};
+      const C b_minus_d   {v1 - v3};
+      const C i_b_minus_d {-b_minus_d.imag(), b_minus_d.real()};
+      y[0] = a_plus_c + b_plus_d;
+      y[1] = a_minus_c - i_b_minus_d;
+      y[2] = a_plus_c - b_plus_d;
+      y[3] = a_minus_c + i_b_minus_d;
+    }
+
+    /*!
+     * \brief One Stockham pass of radix 16 over \p in into \p out, as \ref radix_four_pass is of radix 4: each butterfly
+     *        a 16-point transform as two of 4 points, `x_{j1 + 4·j2}` first transformed over `j2`, each result `(j1, k2)`
+     *        then times `e^{−2πi j1·k2/16}` (\p sixteenths; `−i` exactly where `j1·k2` is 4), then over `j1` into output
+     *        `4·k1 + k2`; output `k` of butterfly `p` times `w^{kp}`, none for `p` = 0. \p Fused as \ref twiddled.
+     */
+    template <bool Fused,
+              std::floating_point R>
+    void radix_sixteen_pass(std::size_t                            current,
+                            std::size_t                            stride,
+                            const std::complex<R>*                 in,
+                            std::complex<R>*                       out,
+                            const std::complex<R>*                 twiddles,
+                            const std::array<std::complex<R>, 16>& sixteenths) noexcept
+    {
+      using C = std::complex<R>;
+      const std::size_t part  {current / 16};
+      const std::size_t run   {part - 1};
+      const std::size_t apart {stride * part};
+      for (std::size_t p {0}; p < part; ++p) {
+        const C* const in_p {in + (stride * p)};
+        C* const       to   {out + (stride * 16 * p)};
+        for (std::size_t q {0}; q < stride; ++q) {
+          std::array<C, 16> inner {};
+          #  pragma GCC unroll 16
+          for (std::size_t j1 {0}; j1 < 4; ++j1) {
+            four_point(in_p[q + (j1 * apart)], in_p[q + ((j1 + 4) * apart)], in_p[q + ((j1 + 8) * apart)], in_p[q + ((j1 + 12) * apart)],
+                       inner.data() + (4 * j1));
+            #  pragma GCC unroll 16
+            for (std::size_t k2 {1}; k2 < 4 && j1 != 0; ++k2) {
+              C& value {inner[(4 * j1) + k2]};
+              value = (j1 * k2) == 4 ? C {value.imag(), -value.real()} : twiddled<Fused>(sixteenths[j1 * k2], value);
+            }
+          }
+          #  pragma GCC unroll 16
+          for (std::size_t k2 {0}; k2 < 4; ++k2) {
+            std::array<C, 4> outputs {};
+            four_point(inner[k2], inner[4 + k2], inner[8 + k2], inner[12 + k2], outputs.data());
+            #  pragma GCC unroll 16
+            for (std::size_t k1 {0}; k1 < 4; ++k1) {
+              const std::size_t k {(4 * k1) + k2};
+              to[q + (stride * k)] = (p == 0 || k == 0) ? outputs[k1] : twiddled<Fused>(twiddles[((k - 1) * run) + p - 1], outputs[k1]);
+            }
+          }
+        }
+      }
+    }
+
     //! \brief The last pass of an odd power of two: butterflies of radix 2 at stride \p stride, no factor.
     template <std::floating_point R>
     void radix_two_pass(std::size_t            stride,
@@ -356,14 +456,16 @@ namespace numerical {
       }
     }
 
-    //! \brief The Stockham passes of a power of two over \p data, \p work as long, the result in \p data: each of
-    //!        radix 4 by \p pass (\ref radix_four_pass's arguments), the last of radix 2 where the exponent is odd.
+    //! \brief The Stockham passes of a power of two over \p data, \p work as long, the result in \p data: radix 4 by
+    //!        \p four (\ref radix_four_pass's arguments), radix 16 by \p sixteen (\ref radix_sixteen_pass's), radix 2 last.
     template <std::floating_point R,
-              typename Pass>
+              typename Four,
+              typename Sixteen>
     void stockham_passes(const fft_plan<R>& plan,
                          std::complex<R>*   data,
                          std::complex<R>*   work,
-                         Pass&&             pass) noexcept
+                         Four&&             four,
+                         Sixteen&&          sixteen) noexcept
     {
       const std::size_t      n        {plan.length};
       std::complex<R>*       in       {data};
@@ -371,13 +473,19 @@ namespace numerical {
       const std::complex<R>* twiddles {plan.twiddles.data()};
       std::size_t            current  {n};
       std::size_t            stride   {1};
-      for (; current >= 4; current /= 4, stride *= 4) {
-        pass(current, stride, in, out, twiddles);
-        twiddles += 3 * (current / 4 - 1);
-        std::swap(in, out);
-      }
-      if (current == 2) {
-        radix_two_pass(stride, in, out);
+      for (const std::size_t radix : plan.radices) {
+        if (radix == 16) {
+          sixteen(current, stride, in, out, twiddles, plan.sixteenths);
+        }
+        else if (radix == 4) {
+          four(current, stride, in, out, twiddles);
+        }
+        else {
+          radix_two_pass(stride, in, out);
+        }
+        twiddles += (radix - 1) * (current / radix - 1);
+        current  /= radix;
+        stride   *= radix;
         std::swap(in, out);
       }
       if (in != data) {
@@ -415,13 +523,13 @@ namespace numerical {
         return;
       }
       if (!fused) {
-        stockham_passes(plan, data, work, radix_four_pass<false, R>);
+        stockham_passes(plan, data, work, radix_four_pass<false, R>, radix_sixteen_pass<false, R>);
         return;
       }
 #ifdef NUMERICAL_X86_COMPILED
-      stockham_passes(plan, data, work, avx2_radix_four_pass<R>);
+      stockham_passes(plan, data, work, avx2_radix_four_pass<R>, avx2_radix_sixteen_pass<R>);
 #else
-      stockham_passes(plan, data, work, radix_four_pass<true, R>);
+      stockham_passes(plan, data, work, radix_four_pass<true, R>, radix_sixteen_pass<true, R>);
 #endif
     }
 
