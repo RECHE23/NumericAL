@@ -70,4 +70,4 @@ six weeks have passed without one, six weekly long fuzzing campaigns green on x8
 
 | Last finding | What | Fixed in |
 | --- | --- | --- |
-| 2026-10-19 | `inv` not the same to the bit on one thread as on several (complex on arm64; real on the GCC-built Linux wheels), found by the fuzzer's thread arm | 2026.10.25 |
+| 2026-10-24 | a `long double` QR or Cholesky answered to `double`'s precision, not its own (1419 ε of `long double` at order 12 where 768 are held), found by an audit | 2026.10.36 |
