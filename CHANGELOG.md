@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.36 — 2026-10-25
+
 ### Changed
 - **`einsum` of two NumPy arrays reads both where they lie** when each label appears once and none is an operand's
   own (products, broadcasts, batches): `detail::einsum_pair`, the route a pair of Tensors takes, so the same bits.
