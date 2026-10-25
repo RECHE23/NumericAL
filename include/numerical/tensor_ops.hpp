@@ -777,88 +777,155 @@ namespace numerical {
     return detail::broadcast_into(a.data().data(), a.shape(), b.data().data(), b.shape(), op);
   }
 
-  //! \brief Which of NumPy's complex loops fuse their multiply-adds: its product's vector loop, its product's scalar
-  //!        loop (\ref detail::numpy_loop_is_scalar) and its quotient's. They follow how its wheels were built, not
-  //!        only the processor, so the binding measures them on the NumPy it runs beside.
-  struct numpy_loops {
-    bool products;        //!< The product's vector loop.
-    bool scalar_products; //!< The product's scalar loop.
-    bool quotients;       //!< The quotient (Smith's algorithm, a scalar loop).
-  };
+  namespace detail {
+    // NumPy's loops over tensors, for the binding beside a NumPy: no part of the library's own algebra, which keeps
+    // C's Annex G (the operators, pow).
 
-  //! \brief NumPy's loops as its current PyPI wheels build them on this processor (\ref detail::numpy_fuses_products,
-  //!        \ref detail::numpy_fuses_scalar_products, \ref detail::numpy_fuses_quotients).
-  [[nodiscard]] inline numpy_loops numpy_wheel_loops() noexcept
-  {
-    return numpy_loops {.products        = detail::numpy_fuses_products(),
-                        .scalar_products = detail::numpy_fuses_scalar_products(),
-                        .quotients       = detail::numpy_fuses_quotients()};
-  }
+    //! \brief Which of NumPy's complex loops fuse their multiply-adds: its product's vector loop, its product's scalar
+    //!        loop (\ref detail::numpy_loop_is_scalar) and its quotient's. They follow how its wheels were built, not
+    //!        only the processor, so the binding measures them on the NumPy it runs beside.
+    struct numpy_loops {
+      bool products;        //!< The product's vector loop.
+      bool scalar_products; //!< The product's scalar loop.
+      bool quotients;       //!< The quotient (Smith's algorithm, a scalar loop).
+    };
 
-  /*!
-   * \brief `a · b` of complex tensors, broadcast, each product as NumPy's array loop computes it
-   *        (\ref detail::numpy_multiply, fused as \p loops says): the binding's `*`, where `std::complex`'s operator
-   *        (this library's `*`) recovers infinities NumPy's makes NaN.
-   */
-  template <detail::split_complex C>
-  [[nodiscard]] tensor<C> numpy_multiply(const tensor<C>&   a,
+    //! \brief NumPy's loops as its current PyPI wheels build them on this processor (\ref detail::numpy_fuses_products,
+    //!        \ref detail::numpy_fuses_scalar_products, \ref detail::numpy_fuses_quotients).
+    [[nodiscard]] inline numpy_loops numpy_wheel_loops() noexcept
+    {
+      return numpy_loops {.products        = detail::numpy_fuses_products(),
+                          .scalar_products = detail::numpy_fuses_scalar_products(),
+                          .quotients       = detail::numpy_fuses_quotients()};
+    }
+
+    /*!
+     * \brief `a · b` of complex tensors, broadcast, each product as NumPy's array loop computes it
+     *        (\ref detail::numpy_multiply, fused as \p loops says): the binding's `*`, where `std::complex`'s operator
+     *        (this library's `*`) recovers infinities NumPy's makes NaN.
+     */
+    template <detail::split_complex C>
+    [[nodiscard]] tensor<C> numpy_multiply(const tensor<C>&   a,
+                                           const tensor<C>&   b,
+                                           const numpy_loops& loops = numpy_wheel_loops())
+    {
+      const bool fused {detail::numpy_loop_is_scalar(a, b) ? loops.scalar_products : loops.products};
+      return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_multiply(x, y, fused); });
+    }
+
+    //! \brief `a / b` of complex tensors, broadcast, each quotient as NumPy's array loop computes it
+    //!        (\ref detail::numpy_divide, fused as \p loops says): the binding's `/`.
+    template <detail::split_complex C>
+    [[nodiscard]] tensor<C> numpy_divide(const tensor<C>&   a,
                                          const tensor<C>&   b,
                                          const numpy_loops& loops = numpy_wheel_loops())
+    {
+      const bool fused {loops.quotients};
+      return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_divide(x, y, fused); });
+    }
+
+    //! \brief `|x|` of every element of a complex tensor as NumPy's `absolute` computes it
+    //!        (\ref detail::numpy_absolute), fused as \p loops says of its vector loops.
+    template <detail::split_complex C>
+    [[nodiscard]] tensor<typename C::value_type> numpy_absolute(const tensor<C>&   a,
+                                                                const numpy_loops& loops = numpy_wheel_loops())
+    {
+      const bool fused {loops.products};
+      return detail::parallel_map(a, [fused](const C& x) { return detail::numpy_absolute(x, fused); });
+    }
+
+    //! \brief `x ** 2` of a complex tensor as NumPy's `square` computes it (the loop of an array to the Python integer
+    //!        2): its product's vector loop, fused as \p loops says of it.
+    template <detail::split_complex C>
+    [[nodiscard]] tensor<C> numpy_square(const tensor<C>&   a,
+                                         const numpy_loops& loops = numpy_wheel_loops())
+    {
+      const bool fused {loops.products};
+      return detail::parallel_map(a, [fused](const C& x) { return detail::numpy_multiply(x, x, fused); });
+    }
+
+    //! \brief `x ** -1` of a complex tensor as NumPy's `reciprocal` computes it (the loop of an array to the Python
+    //!        integer -1, \ref detail::numpy_reciprocal), fused as \p loops says of its scalar loops.
+    template <detail::split_complex C>
+    [[nodiscard]] tensor<C> numpy_reciprocal(const tensor<C>&   a,
+                                             const numpy_loops& loops = numpy_wheel_loops())
+    {
+      const bool fused {loops.quotients};
+      return detail::parallel_map(a, [fused](const C& x) { return detail::numpy_reciprocal(x, fused); });
+    }
+
+    //! \brief `a ** b` of complex tensors, broadcast, as NumPy's `power` computes each (\ref detail::numpy_power), fused
+    //!        as \p loops says of its scalar loops.
+    template <detail::split_complex C>
+    [[nodiscard]] tensor<C> numpy_power(const tensor<C>&   a,
+                                        const tensor<C>&   b,
+                                        const numpy_loops& loops = numpy_wheel_loops())
+    {
+      const bool fused {loops.quotients};
+      return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_power(x, y, fused); });
+    }
+  } // namespace detail
+
+  // The names NumPy's loops over tensors had here, each to its numerical::detail form until 2026.11.0 removes them.
+
+  //! \brief \ref detail::numpy_loops. \deprecated Internal to the binding; removed in 2026.11.0.
+  using numpy_loops [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] = detail::numpy_loops;
+
+  //! \brief \ref detail::numpy_wheel_loops. \deprecated Internal to the binding; removed in 2026.11.0.
+  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] inline detail::numpy_loops numpy_wheel_loops() noexcept
   {
-    const bool fused {detail::numpy_loop_is_scalar(a, b) ? loops.scalar_products : loops.products};
-    return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_multiply(x, y, fused); });
+    return detail::numpy_wheel_loops();
   }
 
-  //! \brief `a / b` of complex tensors, broadcast, each quotient as NumPy's array loop computes it
-  //!        (\ref detail::numpy_divide, fused as \p loops says): the binding's `/`.
+  //! \brief \ref detail::numpy_multiply. \deprecated Internal to the binding; removed in 2026.11.0.
   template <detail::split_complex C>
-  [[nodiscard]] tensor<C> numpy_divide(const tensor<C>&   a,
-                                       const tensor<C>&   b,
-                                       const numpy_loops& loops = numpy_wheel_loops())
+  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<C> numpy_multiply(const tensor<C>&           a,
+                                                                                                                                     const tensor<C>&           b,
+                                                                                                                                     const detail::numpy_loops& loops = detail::numpy_wheel_loops())
   {
-    const bool fused {loops.quotients};
-    return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_divide(x, y, fused); });
+    return detail::numpy_multiply(a, b, loops);
   }
 
-  //! \brief `|x|` of every element of a complex tensor as NumPy's `absolute` computes it
-  //!        (\ref detail::numpy_absolute), fused as \p loops says of its vector loops.
+  //! \brief \ref detail::numpy_divide. \deprecated Internal to the binding; removed in 2026.11.0.
   template <detail::split_complex C>
-  [[nodiscard]] tensor<typename C::value_type> numpy_absolute(const tensor<C>&   a,
-                                                              const numpy_loops& loops = numpy_wheel_loops())
+  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<C> numpy_divide(const tensor<C>&           a,
+                                                                                                                                   const tensor<C>&           b,
+                                                                                                                                   const detail::numpy_loops& loops = detail::numpy_wheel_loops())
   {
-    const bool fused {loops.products};
-    return detail::parallel_map(a, [fused](const C& x) { return detail::numpy_absolute(x, fused); });
+    return detail::numpy_divide(a, b, loops);
   }
 
-  //! \brief `x ** 2` of a complex tensor as NumPy's `square` computes it (the loop of an array to the Python integer
-  //!        2): its product's vector loop, fused as \p loops says of it.
+  //! \brief \ref detail::numpy_absolute. \deprecated Internal to the binding; removed in 2026.11.0.
   template <detail::split_complex C>
-  [[nodiscard]] tensor<C> numpy_square(const tensor<C>&   a,
-                                       const numpy_loops& loops = numpy_wheel_loops())
+  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<typename C::value_type> numpy_absolute(const tensor<C>&           a,
+                                                                                                                                                          const detail::numpy_loops& loops = detail::numpy_wheel_loops())
   {
-    const bool fused {loops.products};
-    return detail::parallel_map(a, [fused](const C& x) { return detail::numpy_multiply(x, x, fused); });
+    return detail::numpy_absolute(a, loops);
   }
 
-  //! \brief `x ** -1` of a complex tensor as NumPy's `reciprocal` computes it (the loop of an array to the Python
-  //!        integer -1, \ref detail::numpy_reciprocal), fused as \p loops says of its scalar loops.
+  //! \brief \ref detail::numpy_square. \deprecated Internal to the binding; removed in 2026.11.0.
   template <detail::split_complex C>
-  [[nodiscard]] tensor<C> numpy_reciprocal(const tensor<C>&   a,
-                                           const numpy_loops& loops = numpy_wheel_loops())
+  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<C> numpy_square(const tensor<C>&           a,
+                                                                                                                                   const detail::numpy_loops& loops = detail::numpy_wheel_loops())
   {
-    const bool fused {loops.quotients};
-    return detail::parallel_map(a, [fused](const C& x) { return detail::numpy_reciprocal(x, fused); });
+    return detail::numpy_square(a, loops);
   }
 
-  //! \brief `a ** b` of complex tensors, broadcast, as NumPy's `power` computes each (\ref detail::numpy_power), fused
-  //!        as \p loops says of its scalar loops.
+  //! \brief \ref detail::numpy_reciprocal. \deprecated Internal to the binding; removed in 2026.11.0.
   template <detail::split_complex C>
-  [[nodiscard]] tensor<C> numpy_power(const tensor<C>&   a,
-                                      const tensor<C>&   b,
-                                      const numpy_loops& loops = numpy_wheel_loops())
+  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<C> numpy_reciprocal(const tensor<C>&           a,
+                                                                                                                                       const detail::numpy_loops& loops = detail::numpy_wheel_loops())
   {
-    const bool fused {loops.quotients};
-    return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_power(x, y, fused); });
+    return detail::numpy_reciprocal(a, loops);
+  }
+
+  //! \brief \ref detail::numpy_power. \deprecated Internal to the binding; removed in 2026.11.0.
+  template <detail::split_complex C>
+  [[deprecated("internal to the binding: moved to numerical::detail, removed in 2026.11.0")]] [[nodiscard]] tensor<C> numpy_power(const tensor<C>&           a,
+                                                                                                                                  const tensor<C>&           b,
+                                                                                                                                  const detail::numpy_loops& loops = detail::numpy_wheel_loops())
+  {
+    return detail::numpy_power(a, b, loops);
   }
 
   //! \brief `exp` of every element: `std::exp` of a real one, \ref detail::complex_exp of a complex one.
@@ -965,7 +1032,7 @@ namespace numerical {
    * \brief `a` to the power `b` element by element, broadcast, as `std::pow`; a single exponent of 2, 0.5 or
    *        -1 as the library's own `x * x`, square root (\ref detail::complex_sqrt for a complex one) and `1 / x`
    *        (exact where `pow` rounds: a complex square has no stray real part). A complex one keeps C's Annex G, as
-   *        the operators do: NumPy's loops are \ref numpy_square, \ref numpy_reciprocal and \ref numpy_power.
+   *        the operators do: NumPy's loops are \ref detail::numpy_square, \ref detail::numpy_reciprocal and \ref detail::numpy_power.
    */
   template <typename T>
   [[nodiscard]] tensor<T> pow(const tensor<T>& a,

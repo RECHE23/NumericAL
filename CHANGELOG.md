@@ -48,6 +48,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   the kernel's for its C-ordered copy, from the same partial sums updated a column at a time. The same bits. Six AVX2
   cores: 500 × 500 266 → 38 µs (NumPy 32), 1000 × 100 105 → 12.3 µs (NumPy 16.2).
 
+### Deprecated
+- **NumPy's loops over tensors move to `numerical::detail`**: `numpy_loops`, `numpy_wheel_loops`, `numpy_multiply`,
+  `numpy_divide`, `numpy_power`, `numpy_square`, `numpy_reciprocal` and `numpy_absolute`. They follow the loops of the
+  NumPy beside the binding, which changed between NumPy 2.2 and 2.3, and no part of the library's own algebra uses
+  them: the operators and `pow` keep C's Annex G. Their names in `numerical` remain, each forwarding to its
+  `detail` form under `[[deprecated]]`, until 2026.11.0 removes them.
+
 ### Fixed
 - **A `long double` QR or Cholesky answers to `long double`'s precision**: the norms, reflector lengths and
   Cholesky's diagonal of a `long double` scalar, real or complex, are carried in `long double` (`detail::carried_t`),

@@ -1240,69 +1240,69 @@ bool same_dtype_pair(PyObject* x, PyObject* y, const any_tensor*& a, const any_t
 
 // NumPy's complex loops as the NumPy beside this process fuses them: its PyPI wheels' until the Python side has
 // measured the NumPy it imported (numerical._numpy_loops). Read and written under the GIL.
-numerical::numpy_loops& numpy_loops_beside()
+numerical::detail::numpy_loops& numpy_loops_beside()
 {
-    static numerical::numpy_loops loops {numerical::numpy_wheel_loops()};
+    static numerical::detail::numpy_loops loops {numerical::detail::numpy_wheel_loops()};
     return loops;
 }
 
 // _set_numpy_loops(products, scalar_products, quotients): which of NumPy's complex loops fuse, as measured.
 void set_numpy_loops(bool products, bool scalar_products, bool quotients)
 {
-    numpy_loops_beside() = numerical::numpy_loops {.products = products, .scalar_products = scalar_products, .quotients = quotients};
+    numpy_loops_beside() = numerical::detail::numpy_loops {.products = products, .scalar_products = scalar_products, .quotients = quotients};
 }
 
 // `a * b` and `a / b` as NumPy's array loops compute them: a real type's are IEEE's, the same; a complex type's
-// NumPy's own (numerical::numpy_multiply, numpy_divide, fused as `loops`), where std::complex's operators recover
+// NumPy's own (numerical::detail::numpy_multiply, numpy_divide, fused as `loops`), where std::complex's operators recover
 // infinities that NumPy's leave NaN, and fuse otherwise.
 template <typename T>
 numerical::tensor<T> product_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
-                                      const numerical::numpy_loops& /*loops*/)
+                                      const numerical::detail::numpy_loops& /*loops*/)
 {
     return a * b;
 }
 
 template <numerical::detail::split_complex T>
 numerical::tensor<T> product_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
-                                      const numerical::numpy_loops& loops)
+                                      const numerical::detail::numpy_loops& loops)
 {
-    return numerical::numpy_multiply(a, b, loops);
+    return numerical::detail::numpy_multiply(a, b, loops);
 }
 
 template <typename T>
 numerical::tensor<T> quotient_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
-                                       const numerical::numpy_loops& /*loops*/)
+                                       const numerical::detail::numpy_loops& /*loops*/)
 {
     return a / b;
 }
 
 template <numerical::detail::split_complex T>
 numerical::tensor<T> quotient_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
-                                       const numerical::numpy_loops& loops)
+                                       const numerical::detail::numpy_loops& loops)
 {
-    return numerical::numpy_divide(a, b, loops);
+    return numerical::detail::numpy_divide(a, b, loops);
 }
 
 // `a ** b` as NumPy's power computes it: a real type's as std::pow (the exponents NumPy takes apart, 2, 0.5 and -1,
-// exactly); a complex type's as npymath's npy_cpow (numerical::numpy_power).
+// exactly); a complex type's as npymath's npy_cpow (numerical::detail::numpy_power).
 template <typename T>
 numerical::tensor<T> power_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
-                                    const numerical::numpy_loops& /*loops*/)
+                                    const numerical::detail::numpy_loops& /*loops*/)
 {
     return numerical::pow(a, b);
 }
 
 template <numerical::detail::split_complex T>
 numerical::tensor<T> power_as_numpy(const numerical::tensor<T>& a, const numerical::tensor<T>& b,
-                                    const numerical::numpy_loops& loops)
+                                    const numerical::detail::numpy_loops& loops)
 {
-    return numerical::numpy_power(a, b, loops);
+    return numerical::detail::numpy_power(a, b, loops);
 }
 
 template <typename T>
 PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
-    const numerical::numpy_loops loops {numpy_loops_beside()}; // read while the GIL is held
+    const numerical::detail::numpy_loops loops {numpy_loops_beside()}; // read while the GIL is held
     std::optional<any_tensor>    result;
     {
         const sb::scoped_gil_release unlocked {releases_gil(std::max(a.size(), b.size()))};
@@ -1350,13 +1350,13 @@ template <typename T>
 PyObject* power_shortcut_on(char kind, const numerical::tensor<T>& t)
 {
     if constexpr (numerical::detail::split_complex<T>) {
-        const numerical::numpy_loops loops {numpy_loops_beside()};
+        const numerical::detail::numpy_loops loops {numpy_loops_beside()};
         std::optional<any_tensor>    result;
         {
             const sb::scoped_gil_release unlocked {releases_gil(t.size())};
             switch (kind) {
-                case '2': result.emplace(numerical::numpy_square(t, loops)); break;
-                case 'r': result.emplace(numerical::numpy_reciprocal(t, loops)); break;
+                case '2': result.emplace(numerical::detail::numpy_square(t, loops)); break;
+                case 'r': result.emplace(numerical::detail::numpy_reciprocal(t, loops)); break;
                 default: result.emplace(numerical::sqrt(t)); break;
             }
         }
@@ -1500,7 +1500,7 @@ PyObject* unary_on(std::string_view name, const numerical::tensor<T>& t)
         PyErr_SetString(PyExc_ValueError, "_unary: name is exp, log, sqrt, sin, cos, tan, tanh, abs or conj");
         return nullptr;
     }
-    const numerical::numpy_loops loops {numpy_loops_beside()}; // read while the GIL is held
+    const numerical::detail::numpy_loops loops {numpy_loops_beside()}; // read while the GIL is held
     std::optional<any_tensor>    result;
     {
         const sb::scoped_gil_release unlocked {releases_gil(t.size())};
@@ -1534,7 +1534,7 @@ PyObject* unary_on(std::string_view name, const numerical::tensor<T>& t)
             }
         }
         else if constexpr (numerical::detail::split_complex<T>) { // abs: NumPy's absolute, by its vector loop
-            result.emplace(numerical::numpy_absolute(t, loops));
+            result.emplace(numerical::detail::numpy_absolute(t, loops));
         }
         else { // abs: a real result of the same precision, as NumPy's absolute
             result.emplace(parallel_map(t, [](const T& x) { return static_cast<real_of_t<T>>(std::abs(x)); }));
