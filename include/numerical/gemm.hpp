@@ -383,6 +383,24 @@ namespace numerical::detail {
     return dot_product<double>(x, y, count);
   }
 
+  //! \brief `Σ x[i] · y[i]` for `float`, on the x86-64 units with AVX2 or AVX-512 (`avx2_dot`, `avx512_dot` of `float`),
+  //!        elsewhere the portable vectors' (in another order of summation there, as fixed).
+  [[nodiscard]] inline float dot_product(const float* x,
+                                         const float* y,
+                                         std::size_t  count)
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::avx512) {
+      return avx512_dot(x, y, count);
+    }
+    if (path == gemm_path::avx2) {
+      return avx2_dot(x, y, count);
+    }
+#endif
+    return dot_product<float>(x, y, count);
+  }
+
   //! \brief `Σ x[i] · y[i]` of complex numbers: on the x86-64 units with AVX2 (the AVX-512 path too) their fused
   //!        chains (`avx2_complex_dot`), elsewhere the native vectors' (in another order of summation there, as
   //!        fixed).
@@ -469,15 +487,38 @@ namespace numerical::detail {
 #ifdef NUMERICAL_X86_COMPILED
     const gemm_path path {gemm_path_current()};
     if (path == gemm_path::avx512) {
-      interleaved_row_dots<32, avx512_dot_blocks>(m, ld, rows, x, count, out);
+      interleaved_row_dots<double, 32, avx512_dot_blocks>(m, ld, rows, x, count, out);
       return;
     }
     if (path == gemm_path::avx2) {
-      interleaved_row_dots<16, avx2_dot_blocks>(m, ld, rows, x, count, out);
+      interleaved_row_dots<double, 16, avx2_dot_blocks>(m, ld, rows, x, count, out);
       return;
     }
 #endif
     row_dots<double>(m, ld, rows, x, count, out);
+  }
+
+  //! \brief \ref row_dots for `float`: on the x86-64 units each row by their `float` dot product (\ref dot_product),
+  //!        elsewhere the portable vectors'.
+  inline void row_dots(const float* m,
+                       std::size_t  ld,
+                       std::size_t  rows,
+                       const float* x,
+                       std::size_t  count,
+                       float*       out)
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::avx512) {
+      interleaved_row_dots<float, 64, avx512_dot_blocks>(m, ld, rows, x, count, out);
+      return;
+    }
+    if (path == gemm_path::avx2) {
+      interleaved_row_dots<float, 32, avx2_dot_blocks>(m, ld, rows, x, count, out);
+      return;
+    }
+#endif
+    row_dots<float>(m, ld, rows, x, count, out);
   }
 
   //! \brief The rows of C one register tile covers.
@@ -3662,35 +3703,39 @@ namespace numerical::detail {
    *        (`avx2_dot`'s or `avx512_dot`'s sum of its row), from the partial sums those kernels keep, updated a column
    *        at a time over the rows together (`avx2_column_partials`), then finished as the kernels finish a row; blocks
    *        of \ref column_rows rows among the threads. The copy NumPy made of the transpose first cost more than the
-   *        product (500 × 500: 170 µs of 213). \return False, nothing written, off those units or for rows longer than
-   *        a chunk (\ref chunked_dot sums them otherwise).
+   *        product (500 × 500: 170 µs of 213). `float` likewise, from the partial sums of its own kernels (32 on AVX2,
+   *        64 on AVX-512). \return False, nothing written, off those units or for rows longer than a chunk
+   *        (\ref chunked_dot sums them otherwise).
    */
-  [[nodiscard]] inline bool columns_times_vector(const double* a,
-                                                 std::size_t   lda,
-                                                 std::size_t   rows,
-                                                 std::size_t   cols,
-                                                 const double* x,
-                                                 double*       y)
+  template <typename T>
+  requires std::is_same_v<T, double> || std::is_same_v<T, float>
+  [[nodiscard]] bool columns_times_vector(const T*    a,
+                                          std::size_t lda,
+                                          std::size_t rows,
+                                          std::size_t cols,
+                                          const T*    x,
+                                          T*          y)
   {
 #ifdef NUMERICAL_X86_COMPILED
     const gemm_path path {gemm_path_current()};
     if ((path != gemm_path::avx2 && path != gemm_path::avx512) || cols > dot_chunk) {
       return false;
     }
-    const bool        wide     {path == gemm_path::avx512};
-    const std::size_t partials {wide ? 32U : 16U};
-    const std::size_t done     {cols - (cols % partials)};
+    constexpr std::size_t narrow   {128 / sizeof(T)}; // the AVX2 kernel's partial sums: four registers of 32 bytes
+    const bool            wide     {path == gemm_path::avx512};
+    const std::size_t     partials {wide ? 2 * narrow : narrow};
+    const std::size_t     done     {cols - (cols % partials)};
     parallel_for((rows + column_rows - 1) / column_rows, column_rows * cols * matrix_vector_weight, [&](std::size_t block) {
                    const std::size_t first  {block * column_rows};
                    const std::size_t height {std::min(column_rows, rows - first)};
-                   buffer<double>    sums(partials * height, 0.0);
-                   const double* const part {a + first};
+                   buffer<T>         sums(partials * height, T {});
+                   const T* const    part {a + first};
                    if (wide) {
-                     avx2_column_partials<32>(part, lda, height, done, x, sums.data());
+                     avx2_column_partials<2 * narrow>(part, lda, height, done, x, sums.data());
                      avx512_columns_finish(part, lda, height, done, cols, x, sums.data(), y + first);
                    }
                    else {
-                     avx2_column_partials<16>(part, lda, height, done, x, sums.data());
+                     avx2_column_partials<narrow>(part, lda, height, done, x, sums.data());
                      avx2_columns_finish(part, lda, height, done, cols, x, sums.data(), y + first);
                    }
                  });

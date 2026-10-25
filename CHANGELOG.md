@@ -11,6 +11,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## 2026.10.36 — 2026-10-25
 
 ### Changed
+- **`float` dot products and matrix-vector products run on the AVX2 and AVX-512 units** of x86-64, as `double`'s
+  do (four accumulators of 8 or 16, fused multiply-adds), where the baseline's SSE2 vectors ran: their last bits change
+  on those units. A transposed `float32` NumPy matrix times a vector (`W.T @ x`) is read where it lies, as `float64`'s
+  was, the bits of its C-ordered copy's product: six AVX2 cores, 1000 × 500 491 → 28 µs, 207 × 119 29 → 7.7.
 - **A NumPy array converted into a Tensor is copied once, by groups of rows on the threads**: a real tensor's elements
   are no longer zeroed first, and the copy (with the first touch of its pages) is shared among the threads. M1 Pro,
   500 × 1000: `float64` 240–273 → 157–165 µs (NumPy's own copy 305), `float32` 102–123 → 82–92, a transposed

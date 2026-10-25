@@ -1419,6 +1419,80 @@ namespace numerical::detail {
     return total;
   }
 
+  //! \brief \ref avx512_dot_blocks of `float`: four accumulators of sixteen, \p done a multiple of 64, chains of fused
+  //!        multiply-adds summed in a fixed order from +0 (none: +0).
+  NUMERICAL_TARGET("avx512f") inline float avx512_dot_blocks(const float* x,
+                                                             const float* y,
+                                                             std::size_t  done) noexcept
+  {
+    constexpr std::size_t               width {16};
+    constexpr std::size_t               lanes {4};
+    std::array<zmm_register_f32, lanes> sum   {};
+    for (std::size_t i {0}; i < done; i += width * lanes) {
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t l {0}; l < lanes; ++l) {
+        sum[l].v = _mm512_fmadd_ps(_mm512_loadu_ps(x + i + (l * width)), _mm512_loadu_ps(y + i + (l * width)), sum[l].v);
+      }
+    }
+    float total {0.0F};
+    for (std::size_t l {0}; done != 0 && l < lanes; ++l) { // none summed: +0 left as it is
+      total += _mm512_reduce_add_ps(sum[l].v);
+    }
+    return total;
+  }
+
+  //! \brief \ref avx512_dot of `float`: its blocks of 64, then the remainder added in order.
+  NUMERICAL_TARGET("avx512f") inline float avx512_dot(const float* x,
+                                                      const float* y,
+                                                      std::size_t  count) noexcept
+  {
+    const std::size_t done  {count - (count % 64)};
+    float             total {avx512_dot_blocks(x, y, done)};
+    for (std::size_t i {done}; i < count; ++i) {
+      total += x[i] * y[i];
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return total;
+  }
+
+  //! \brief \ref avx2_dot_blocks of `float`: four accumulators of eight, \p done a multiple of 32, each register's eight
+  //!        summed as a tree of pairs.
+  NUMERICAL_TARGET("avx2,fma") inline float avx2_dot_blocks(const float* x,
+                                                            const float* y,
+                                                            std::size_t  done) noexcept
+  {
+    constexpr std::size_t               width {8};
+    constexpr std::size_t               lanes {4};
+    std::array<ymm_register_f32, lanes> sum   {};
+    for (std::size_t i {0}; i < done; i += width * lanes) {
+      NUMERICAL_UNROLL_TILE
+      for (std::size_t l {0}; l < lanes; ++l) {
+        sum[l].v = _mm256_fmadd_ps(_mm256_loadu_ps(x + i + (l * width)), _mm256_loadu_ps(y + i + (l * width)), sum[l].v);
+      }
+    }
+    float total {0.0F};
+    for (std::size_t l {0}; done != 0 && l < lanes; ++l) { // none summed: +0 left as it is
+      alignas(32) std::array<float, width> part {};        // a register stored whole: some compilers store it aligned
+      _mm256_storeu_ps(part.data(), sum[l].v);
+      total += ((part[0] + part[1]) + (part[2] + part[3])) + ((part[4] + part[5]) + (part[6] + part[7]));
+    }
+    return total;
+  }
+
+  //! \brief \ref avx2_dot of `float`: its blocks of 32, then the remainder added in order.
+  NUMERICAL_TARGET("avx2,fma") inline float avx2_dot(const float* x,
+                                                     const float* y,
+                                                     std::size_t  count) noexcept
+  {
+    const std::size_t done  {count - (count % 32)};
+    float             total {avx2_dot_blocks(x, y, done)};
+    for (std::size_t i {done}; i < count; ++i) {
+      total += x[i] * y[i];
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return total;
+  }
+
   /*!
    * \brief The partial sums \ref avx2_dot_blocks (\p Partials 16) or \ref avx512_dot_blocks (32) keep for each of
    *        \p rows rows of the column-major \p a (column `j` at `a + j · lda`) times \p x, over its first \p done
@@ -1518,27 +1592,119 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief The partial sums `avx2_dot_blocks` (\p Partials 32) or `avx512_dot_blocks` (64) of `float` keep for each of
+   *        \p rows rows of the column-major \p a times \p x, over its first \p done columns: as the `double` form, eight
+   *        rows a vector.
+   */
+  template <std::size_t Partials>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_column_partials(const float* a,
+                                                                std::size_t  lda,
+                                                                std::size_t  rows,
+                                                                std::size_t  done,
+                                                                const float* x,
+                                                                float*       sums) noexcept
+  {
+    for (std::size_t j {0}; j < done; ++j) {
+      float* const       s   {sums + ((j % Partials) * rows)};
+      const float* const col {a + (j * lda)};
+      const __m256       xv  {_mm256_set1_ps(x[j])};
+      std::size_t        r   {0};
+      for (; r + 8 <= rows; r += 8) {
+        _mm256_storeu_ps(s + r, _mm256_fmadd_ps(_mm256_loadu_ps(col + r), xv, _mm256_loadu_ps(s + r)));
+      }
+      for (; r < rows; ++r) {
+        s[r] = std::fma(col[r], x[j], s[r]);
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief `avx2_dot` of `float` of each row of the column-major \p a with \p x, into \p y, from
+  //!        \ref avx2_column_partials' thirty-two partial sums: each vector's eight summed as `avx2_dot_blocks` sums
+  //!        them, the vectors in order from +0 (none: +0), then the columns past \p done in order, so its bits.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_columns_finish(const float* a,
+                                                               std::size_t  lda,
+                                                               std::size_t  rows,
+                                                               std::size_t  done,
+                                                               std::size_t  cols,
+                                                               const float* x,
+                                                               const float* sums,
+                                                               float*       y) noexcept
+  {
+    constexpr std::size_t width {8};
+    constexpr std::size_t lanes {4};
+    for (std::size_t r {0}; r < rows; ++r) {
+      float total {0.0F};
+      for (std::size_t l {0}; done != 0 && l < lanes; ++l) {
+        const float* const part {sums + (l * width * rows) + r}; // partial l·width + k of row r at part[k · rows]
+        total += ((part[0] + part[rows]) + (part[2 * rows] + part[3 * rows]))
+                 + ((part[4 * rows] + part[5 * rows]) + (part[6 * rows] + part[7 * rows]));
+      }
+      y[r] = total;
+    }
+    for (std::size_t j {done}; j < cols; ++j) {
+      const float* const col {a + (j * lda)};
+      for (std::size_t r {0}; r < rows; ++r) {
+        y[r] += col[r] * x[j];
+      }
+    }
+  }
+
+  //! \brief \ref avx2_columns_finish for `avx512_dot` of `float`: sixty-four partial sums, each register's sixteen by
+  //!        the kernel's own `_mm512_reduce_add_ps`.
+  NUMERICAL_TARGET("avx512f") inline void avx512_columns_finish(const float* a,
+                                                                std::size_t  lda,
+                                                                std::size_t  rows,
+                                                                std::size_t  done,
+                                                                std::size_t  cols,
+                                                                const float* x,
+                                                                const float* sums,
+                                                                float*       y) noexcept
+  {
+    constexpr std::size_t width {16};
+    constexpr std::size_t lanes {4};
+    for (std::size_t r {0}; r < rows; ++r) {
+      float total {0.0F};
+      for (std::size_t l {0}; done != 0 && l < lanes; ++l) {
+        alignas(64) std::array<float, width> part {};
+        for (std::size_t k {0}; k < width; ++k) {
+          part[k] = sums[(((l * width) + k) * rows) + r];
+        }
+        total += _mm512_reduce_add_ps(_mm512_load_ps(part.data()));
+      }
+      y[r] = total;
+    }
+    for (std::size_t j {done}; j < cols; ++j) {
+      const float* const col {a + (j * lda)};
+      for (std::size_t r {0}; r < rows; ++r) {
+        y[r] += col[r] * x[j];
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  /*!
    * \brief \ref avx2_dot of each of \p rows rows of \p m (\p ld apart) with \p x, into \p out, four rows at a time: each
    *        row's blocks, then the four rows' remainders added in order together, their chains interleaved where one
    *        row's waited on its last addition. Each row's sum the kernel's. \p Width the blocks' elements, \p Blocks
    *        their kernel.
    */
-  template <std::size_t Width, double (*Blocks)(const double*, const double*, std::size_t) noexcept>
-  NUMERICAL_TARGET("avx2,fma") void interleaved_row_dots(const double* m,
-                                                         std::size_t   ld,
-                                                         std::size_t   rows,
-                                                         const double* x,
-                                                         std::size_t   count,
-                                                         double      * out) noexcept
+  template <typename T, std::size_t Width, T (*Blocks)(const T*, const T*, std::size_t) noexcept>
+  NUMERICAL_TARGET("avx2,fma") void interleaved_row_dots(const T*    m,
+                                                         std::size_t ld,
+                                                         std::size_t rows,
+                                                         const T*    x,
+                                                         std::size_t count,
+                                                         T*          out) noexcept
   {
     const std::size_t done {count - (count % Width)};
     std::size_t       r    {0};
     for (; r + 4 <= rows; r += 4) {
-      const double* const m0 {m + (r * ld)};
-      double              t0 {done == 0 ? 0.0 : Blocks(m0, x, done)};
-      double              t1 {done == 0 ? 0.0 : Blocks(m0 + ld, x, done)};
-      double              t2 {done == 0 ? 0.0 : Blocks(m0 + (2 * ld), x, done)};
-      double              t3 {done == 0 ? 0.0 : Blocks(m0 + (3 * ld), x, done)};
+      const T* const m0 {m + (r * ld)};
+      T              t0 {done == 0 ? T {} : Blocks(m0, x, done)};
+      T              t1 {done == 0 ? T {} : Blocks(m0 + ld, x, done)};
+      T              t2 {done == 0 ? T {} : Blocks(m0 + (2 * ld), x, done)};
+      T              t3 {done == 0 ? T {} : Blocks(m0 + (3 * ld), x, done)};
       for (std::size_t i {done}; i < count; ++i) {
         t0 += m0[i] * x[i];
         t1 += m0[ld + i] * x[i];
@@ -1551,7 +1717,7 @@ namespace numerical::detail {
       out[r + 3] = t3;
     }
     for (; r < rows; ++r) {
-      double total {Blocks(m + (r * ld), x, done)};
+      T total {Blocks(m + (r * ld), x, done)};
       for (std::size_t i {done}; i < count; ++i) {
         total += m[(r * ld) + i] * x[i];
       }

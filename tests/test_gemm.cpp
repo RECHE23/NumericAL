@@ -920,64 +920,98 @@ namespace
   }
 } // namespace
 
-// A column-major matrix times a vector on the x86-64 units (columns_times_vector): each element the bits of its
-// row-major copy's product (matrix_times_vector), for every length about the kernels' 16 and 32 partial sums, rows past
-// whole blocks and vectors, and on every path; rows longer than a chunk, and the other paths, decline.
+namespace {
+
+  // columns_times_vector of T against matrix_times_vector of the row-major copy, bit for bit where it runs, nothing
+  // written where it declines.
+  template <typename T>
+  bool column_major_gives_copys_bits()
+  {
+    using bits = std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+    bool same {true};
+    for (const std::size_t cols : {std::size_t {1}, std::size_t {15}, std::size_t {16}, std::size_t {17}, std::size_t {31},
+                                   std::size_t {32}, std::size_t {33}, std::size_t {63}, std::size_t {64}, std::size_t {65},
+                                   std::size_t {129}, std::size_t {275}}) {
+      for (const std::size_t rows : {std::size_t {1}, std::size_t {3}, std::size_t {4}, std::size_t {9}, std::size_t {37},
+                                     numerical::detail::column_rows + 3}) {
+        std::vector<T> columns(rows * cols);
+        std::vector<T> row_major(rows * cols);
+        std::vector<T> x(cols);
+        for (std::size_t i {0}; i < rows; ++i) {
+          for (std::size_t j {0}; j < cols; ++j) {
+            columns[i + (j * rows)]   = fill<T>((i * cols) + j);
+            row_major[(i * cols) + j] = columns[i + (j * rows)];
+          }
+        }
+        for (std::size_t j {0}; j < cols; ++j) {
+          x[j] = fill<T>((j * 5) + 2);
+        }
+        std::vector<T> want(rows);
+        std::vector<T> got(rows, T {-1});
+        numerical::detail::matrix_times_vector(row_major.data(), cols, rows, cols, x.data(), want.data());
+        if (numerical::detail::columns_times_vector(columns.data(), rows, rows, cols, x.data(), got.data())) {
+          for (std::size_t i {0}; i < rows; ++i) {
+            same = same && std::bit_cast<bits>(got[i]) == std::bit_cast<bits>(want[i]);
+          }
+        }
+        else {
+          same = same && got == std::vector<T>(rows, T {-1}); // declined: nothing written
+        }
+      }
+    }
+    std::vector<T> long_row(numerical::detail::dot_chunk + 1, T {1});
+    T              out                                          {};
+    return same && !numerical::detail::columns_times_vector(long_row.data(), 1, 1, long_row.size(), long_row.data(), &out);
+  }
+} // namespace
+
+// A column-major matrix times a vector on the x86-64 units (columns_times_vector), double and float: each element the
+// bits of its row-major copy's product (matrix_times_vector), for every length about the kernels' 16, 32 and 64 partial
+// sums, rows past whole blocks and vectors, and on every path; rows longer than a chunk, and the other paths, decline.
 TEST(a_column_major_matrix_times_a_vector_gives_its_copys_bits)
 {
-  EXPECT(on_every_path([] {
-                         bool same {true};
-                         for (const std::size_t cols : {std::size_t {1}, std::size_t {15}, std::size_t {16}, std::size_t {17}, std::size_t {31},
-                                                        std::size_t {32}, std::size_t {33}, std::size_t {65}, std::size_t {275}}) {
-                           for (const std::size_t rows : {std::size_t {1}, std::size_t {3}, std::size_t {4}, std::size_t {37},
-                                                          numerical::detail::column_rows + 3}) {
-                             std::vector<double> columns(rows * cols);
-                             std::vector<double> row_major(rows * cols);
-                             std::vector<double> x(cols);
-                             for (std::size_t i {0}; i < rows; ++i) {
-                               for (std::size_t j {0}; j < cols; ++j) {
-                                 columns[i + (j * rows)]   = fill<double>((i * cols) + j);
-                                 row_major[(i * cols) + j] = columns[i + (j * rows)];
-                               }
-                             }
-                             for (std::size_t j {0}; j < cols; ++j) {
-                               x[j] = fill<double>((j * 5) + 2);
-                             }
-                             std::vector<double> want(rows);
-                             std::vector<double> got(rows, -1.0);
-                             numerical::detail::matrix_times_vector(row_major.data(), cols, rows, cols, x.data(), want.data());
-                             if (numerical::detail::columns_times_vector(columns.data(), rows, rows, cols, x.data(), got.data())) {
-                               for (std::size_t i {0}; i < rows; ++i) {
-                                 same = same && std::bit_cast<std::uint64_t>(got[i]) == std::bit_cast<std::uint64_t>(want[i]);
-                               }
-                             }
-                             else {
-                               same = same && got == std::vector<double>(rows, -1.0); // declined: nothing written
-                             }
-                           }
-                         }
-                         std::vector<double> long_row(numerical::detail::dot_chunk + 1, 1.0);
-                         double              out {0.0};
-                         same = same && !numerical::detail::columns_times_vector(long_row.data(), 1, 1, long_row.size(), long_row.data(), &out);
-                         return same;
-                       }));
+  EXPECT(on_every_path([] { return column_major_gives_copys_bits<double>() && column_major_gives_copys_bits<float>(); }));
 }
 
 // The rows of a matrix times a vector (row_dots), four at a time on the x86-64 units with their remainders together:
-// each row the bits of its dot product alone, on every path, for every length about the 16- and 32-element blocks
-// and a number of rows past whole groups of four.
+// each row the bits of its dot product alone, on every path, for every length about the 16-, 32- and 64-element
+// blocks and a number of rows past whole groups of four.
 TEST(row_dots_give_each_rows_dot_product)
 {
   EXPECT(on_every_path([] {
                          bool same {true};
                          for (const std::size_t count : {std::size_t {0}, std::size_t {1}, std::size_t {3}, std::size_t {15},
                                                          std::size_t {16}, std::size_t {17}, std::size_t {31}, std::size_t {32},
-                                                         std::size_t {33}, std::size_t {59}, std::size_t {275}}) {
+                                                         std::size_t {33}, std::size_t {59}, std::size_t {63}, std::size_t {64},
+                                                         std::size_t {65}, std::size_t {275}}) {
                            for (const std::size_t rows : {std::size_t {1}, std::size_t {4}, std::size_t {37}}) {
-                             same = same && each_row_is_its_dot_product<double>(rows, count) &&
+                             same = same && each_row_is_its_dot_product<double>(rows, count) && each_row_is_its_dot_product<float>(rows, count) &&
                                     each_row_is_its_dot_product<std::complex<double>>(rows, count) &&
                                     each_row_is_its_dot_product<std::complex<float>>(rows, count);
                            }
+                         }
+                         return same;
+                       }));
+}
+
+// Whole numbers whose every partial sum is exact in float: any order of summation gives the exact dot product, so
+// float's kernels (four accumulators of 8 or 16 on the x86-64 units, the portable vectors elsewhere), their lanes and
+// their remainder must each equal it, on every path, about the 32- and 64-element blocks.
+TEST(float_dot_products_sum_every_term_on_every_path)
+{
+  EXPECT(on_every_path([] {
+                         bool same {true};
+                         for (const std::size_t count : {std::size_t {0}, std::size_t {5}, std::size_t {31}, std::size_t {32},
+                                                         std::size_t {33}, std::size_t {64}, std::size_t {77}, std::size_t {200}}) {
+                           std::vector<float> x(count);
+                           std::vector<float> y(count);
+                           float              want {0.0F};
+                           for (std::size_t i {0}; i < count; ++i) {
+                             x[i]  = static_cast<float>(i % 7) - 3.0F;
+                             y[i]  = static_cast<float>(i % 5) + 1.0F;
+                             want += x[i] * y[i];
+                           }
+                           same = same && numerical::detail::dot_product(x.data(), y.data(), count) == want;
                          }
                          return same;
                        }));

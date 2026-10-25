@@ -3445,29 +3445,32 @@ void gram_triangle_mirrored(const double* a, std::size_t ld, bool transposed, st
     });
 }
 
-// A column-major double matrix (a transpose) times a vector, both read where they lie, on the x86-64 units
+// A column-major double or float matrix (a transpose) times a vector of its dtype, both read where they lie, on the x86-64 units
 // (columns_times_vector): each element the bits of its C-ordered copy's product, which was copied first. None for any
 // other pair, dtype or processor.
 std::optional<PyObject*> borrowed_transposed_times_vector(const borrowed_operand& left, const borrowed_operand& right)
 {
-    if (!left.transposed || right.transposed || left.dtype != 0 || left.shape.size() != 2 || right.shape.size() != 1
+    if (!left.transposed || right.transposed || (left.dtype != 0 && left.dtype != 2) || left.dtype != right.dtype || left.shape.size() != 2 || right.shape.size() != 1
         || left.shape[1] != right.shape[0] || left.shape[0] == 0 || left.shape[1] == 0) {
         return std::nullopt;
     }
     const std::size_t rows {left.shape[0]};
     const std::size_t cols {left.shape[1]};
-    try {
-        numerical::buffer<double> y(rows);
-        bool                      ran {false};
+    const auto product = [&]<typename T>(std::type_identity<T>) -> std::optional<PyObject*> {
+        numerical::buffer<T> y(rows);
+        bool                 ran {false};
         {
             const sb::scoped_gil_release unlocked {releases_gil(rows * cols)};
-            ran = numerical::detail::columns_times_vector(static_cast<const double*>(left.data), left.ld, rows, cols,
-                                                          static_cast<const double*>(right.data), y.data());
+            ran = numerical::detail::columns_times_vector(static_cast<const T*>(left.data), left.ld, rows, cols,
+                                                          static_cast<const T*>(right.data), y.data());
         }
         if (!ran) {
             return std::nullopt;
         }
-        return wrap(any_tensor {numerical::tensor<double> {{rows}, std::move(y)}});
+        return wrap(any_tensor {numerical::tensor<T> {{rows}, std::move(y)}});
+    };
+    try {
+        return left.dtype == 0 ? product(std::type_identity<double> {}) : product(std::type_identity<float> {});
     }
     catch (...) {
         return set_cpp_error();
