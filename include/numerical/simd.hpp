@@ -14,6 +14,7 @@
 #include <cstddef>
 #include <cstring>
 #include <type_traits>
+#include <vector>
 
 // A function inlined wherever it is called, past the compiler's budget: a call there costs more than its body.
 #if defined(_MSC_VER) && !defined(__clang__)
@@ -331,6 +332,75 @@ namespace numerical::detail {
     }
     for (; r0 < rows; ++r0) {
       out[r0] = dot_product(m + (r0 * ld), x, count);
+    }
+  }
+
+  /*!
+   * \brief \ref row_dots of the column-major `rows × cols` \p a (column `j` at `a + j · lda`) with \p x, into \p y: each
+   *        row the bits of its row-major copy's \ref dot_product, from the partial sums its lanes keep (element `j`
+   *        into partial `j mod (lanes · width)`), updated a column at a time by the same vector expression: a vector
+   *        of rows keeps its partials in registers over every column, the rows past whole vectors through a vector
+   *        too; then each row's partials summed in their order from +0 and its remainder added as \ref row_dots adds
+   *        it.
+   */
+  template <native_scalar T>
+  void columns_row_dots(const T*    a,
+                        std::size_t lda,
+                        std::size_t rows,
+                        std::size_t cols,
+                        const T*    x,
+                        T*          y)
+  {
+    using lane = typename native_vector<T>::type;
+    constexpr std::size_t      width    {native_vector_bytes / sizeof(T)};
+    constexpr std::size_t      partials {4 * width};
+    const std::size_t          done     {cols - (cols % partials)};
+    std::array<lane, partials> sum {};
+    std::array<T, width>       part {};
+    const auto                 finish {[&](std::size_t r0, std::size_t count) { // rows r0… of the vector, from sum
+                                         for (std::size_t r {0}; r < count; ++r) {
+                                           T total {};
+                                           for (std::size_t p {0}; done != 0 && p < partials; ++p) {
+                                             total += sum[p][r];
+                                           }
+                                           y[r0 + r] = total;
+                                         }
+                                       }};
+    std::size_t r0 {0};
+    for (; r0 + width <= rows; r0 += width) {
+      sum = {};
+      for (std::size_t j {0}; j < done; j += partials) {
+#  pragma GCC unroll 16 // the sums in registers
+        for (std::size_t p {0}; p < partials; ++p) {
+          lane mv;
+          std::memcpy(&mv, a + ((j + p) * lda) + r0, sizeof(lane));
+          lane xv {};
+          xv     += x[j + p];
+          sum[p] += mv * xv;
+        }
+      }
+      finish(r0, width);
+    }
+    if (r0 < rows) { // the last rows, short of a vector: through one all the same, the same expression rounding them
+      sum = {};
+      for (std::size_t j {0}; j < done; j += partials) {
+        for (std::size_t p {0}; p < partials; ++p) {
+          std::fill(part.begin(), part.end(), T {});
+          std::copy(a + ((j + p) * lda) + r0, a + ((j + p) * lda) + rows, part.begin());
+          lane mv;
+          std::memcpy(&mv, part.data(), sizeof(lane));
+          lane xv {};
+          xv     += x[j + p];
+          sum[p] += mv * xv;
+        }
+      }
+      finish(r0, rows - r0);
+    }
+    for (std::size_t j {done}; j < cols; ++j) {
+      const T* const col {a + (j * lda)};
+      for (std::size_t r {0}; r < rows; ++r) {
+        y[r] += col[r] * x[j];
+      }
     }
   }
 

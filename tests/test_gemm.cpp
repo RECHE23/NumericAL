@@ -959,6 +959,30 @@ namespace {
         }
       }
     }
+    { // past the AMX's range of sizes (2^18 elements): the portable vectors' partials again on arm64
+      const std::size_t rows {640};
+      const std::size_t cols {450};
+      std::vector<T>    columns(rows * cols);
+      std::vector<T>    row_major(rows * cols);
+      std::vector<T>    x(cols);
+      for (std::size_t i {0}; i < rows; ++i) {
+        for (std::size_t j {0}; j < cols; ++j) {
+          columns[i + (j * rows)]   = fill<T>((i * cols) + j);
+          row_major[(i * cols) + j] = columns[i + (j * rows)];
+        }
+      }
+      for (std::size_t j {0}; j < cols; ++j) {
+        x[j] = fill<T>(j + 3);
+      }
+      std::vector<T> want(rows);
+      std::vector<T> got(rows, T {-1});
+      numerical::detail::matrix_times_vector(row_major.data(), cols, rows, cols, x.data(), want.data());
+      if (numerical::detail::columns_times_vector(columns.data(), rows, rows, cols, x.data(), got.data())) {
+        for (std::size_t i {0}; i < rows; ++i) {
+          same = same && std::bit_cast<bits>(got[i]) == std::bit_cast<bits>(want[i]);
+        }
+      }
+    }
     std::vector<T> long_row(numerical::detail::dot_chunk + 1, T {1});
     T              out                                          {};
     return same && !numerical::detail::columns_times_vector(long_row.data(), 1, 1, long_row.size(), long_row.data(), &out);

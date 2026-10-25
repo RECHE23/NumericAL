@@ -3705,8 +3705,10 @@ namespace numerical::detail {
    *        at a time over the rows together (`avx2_column_partials`), then finished as the kernels finish a row; blocks
    *        of \ref column_rows rows among the threads. The copy NumPy made of the transpose first cost more than the
    *        product (500 × 500: 170 µs of 213). `float` likewise, from the partial sums of its own kernels (32 on AVX2,
-   *        64 on AVX-512). \return False, nothing written, off those units or for rows longer than a chunk
-   *        (\ref chunked_dot sums them otherwise).
+   *        64 on AVX-512). Elsewhere (GCC and Clang) from the portable vectors' partials (`columns_row_dots`), as
+   *        their row_dots sums a row. \return False, nothing written, on x86-64's portable path, where the row-major
+   *        product takes the AMX (amx_dot_rows_f64, its own order), under another compiler, or for rows longer than a
+   *        chunk (\ref chunked_dot sums them otherwise).
    */
   template <typename T>
   requires std::is_same_v<T, double> || std::is_same_v<T, float>
@@ -3739,6 +3741,25 @@ namespace numerical::detail {
                      avx2_column_partials<narrow>(part, lda, height, done, x, sums.data());
                      avx2_columns_finish(part, lda, height, done, cols, x, sums.data(), y + first);
                    }
+                 });
+    return true;
+#elif defined(__GNUC__)
+    // Elsewhere the portable vectors' row_dots (columns_row_dots, its partials), except where the row-major product
+    // takes the AMX (amx_dot_rows_f64, its own order) and for rows longer than a chunk.
+    if (cols > dot_chunk) {
+      return false;
+    }
+#  ifdef NUMERICAL_AMX_COMPILED
+    if constexpr (std::is_same_v<T, double>) {
+      const std::size_t elements {rows * cols};
+      if (elements >= amx_dot_least && elements < amx_dot_most && gemm_path_current() == gemm_path::amx) {
+        return false;
+      }
+    }
+#  endif
+    parallel_for((rows + column_rows - 1) / column_rows, column_rows * cols * matrix_vector_weight, [&](std::size_t block) {
+                   const std::size_t first {block * column_rows};
+                   columns_row_dots(a + first, lda, std::min(column_rows, rows - first), cols, x, y + first);
                  });
     return true;
 #else

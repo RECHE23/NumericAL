@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A transposed NumPy matrix times a vector (`a.T @ x`) is read where it lies on arm64 too**, `float64` and
+  `float32`, with its C-ordered copy's bits (the portable vectors' partial sums kept a vector of rows at a time),
+  except where the row-major product takes the AMX: M1 Pro, 129 × 7 2.13 → 0.66 µs (NumPy 0.69), 1000 × 500
+  `float64` 235 → 43 (NumPy 63), `float32` 207 × 119 12.6 → 2.9.
 - **A transposed matrix times a vector takes its rows by blocks of 128**, where 256 left a matrix of a few hundred rows
   to two threads: six AVX2 cores, 500 × 500 `float64` 33 → 19.6 µs. The same bits.
 - **`norm` sums its squares on the AVX2 units of x86-64** (the AVX-512 path's too), the same eight partial sums
