@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.38 — 2026-10-25
+
 ### Changed
 - **A complex vector times a matrix (`x @ B`, `einsum("j,jk->k")`) has the bits of its row in a product of a matrix by
   B** past the portable path, as on it already for finite parts: its terms rounded as the path's complex product rounds
