@@ -88,6 +88,24 @@ class NormsAndProducts(unittest.TestCase):
         self.assertAlmostEqual(numerical.norm(np.array([1e300, 1e300])) / 1e300, math.sqrt(2), places=14)
         self.assertEqual(numerical.norm(np.zeros((0, 3))), 0.0)
 
+    def test_each_element_of_a_matrix_times_a_vector_is_its_rows_dot_product(self):
+        # To the bit, in the four dtypes: the sum of a row's products is the same whether the rows are summed together
+        # or the row alone, a vector times a vector, whatever the compiler made of the loop at either call.
+        for dtype in (np.float32, np.float64, np.complex64, np.complex128):
+            cast = complex if np.dtype(dtype).kind == "c" else float
+            for rows in range(1, 9):
+                for cols in range(1, 41):
+                    a = self.rng.standard_normal((rows, cols))
+                    x = self.rng.standard_normal(cols)
+                    if np.dtype(dtype).kind == "c":
+                        a = a + 1j * self.rng.standard_normal((rows, cols))
+                        x = x + 1j * self.rng.standard_normal(cols)
+                    a = numerical.asarray(a.astype(dtype))
+                    x = numerical.asarray(x.astype(dtype))
+                    whole = np.asarray(a @ x)
+                    alone = np.array([cast(a[r] @ x) for r in range(rows)]).astype(dtype)
+                    self.assertEqual(whole.tobytes(), alone.tobytes(), f"{np.dtype(dtype).name} {rows} × {cols}")
+
     def test_condition_numbers_and_singular_values(self):
         matrix = self.stack[0, 0]
         for p in (None, 1, -1, 2, -2, math.inf, -math.inf, "fro", "nuc"):

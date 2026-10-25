@@ -273,6 +273,11 @@ default, `fast`, fuses multiply-adds across statements as its passes find them, 
 versions, one or the other chosen at run time by the operands' addresses, can round an element differently, and the
 same operands then give other last bits from one call to the next.
 
+Compiled with Clang for arm64, the headers want `-mllvm -force-ordered-reductions=false` too (the wheels and the sdist set it
+where the compiler takes it): Clang otherwise vectorises some loops that sum products in order, rounding their
+products apart where the same loop inlined elsewhere fuses them, so a sum's last bits depend on its caller (a row of a
+complex matrix times a vector against that row times the vector alone).
+
 `numerical.get_include()` returns the header directory, so the C++ library can be
 located through its Python install. `make python` builds the extension in place;
 `make python-test` runs the binding suite — including a seeded **differential

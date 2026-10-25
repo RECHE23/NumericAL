@@ -7,10 +7,12 @@ import platform
 import shutil
 import subprocess
 import sys
+import tempfile
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
+from setuptools.errors import CompileError
 
 try:  # setuptools >= 70.1 vendors bdist_wheel; older installs get it from wheel
     from setuptools.command.bdist_wheel import bdist_wheel
@@ -77,12 +79,40 @@ else:
     compile_args = ["-std=c++20", level, "-g0", "-fvisibility=hidden", "-pthread", "-ffp-contract=on"]
     link_args = ["-pthread"]  # parallel.hpp uses std::thread
 
+# Clang's loop vectoriser takes a loop that sums products (`s += a[i] * b[i]`, one fused multiply-add under
+# -ffp-contract=on) as an in-order reduction on arm64: its vectors' products rounded apart, its scalar remainder's
+# fused. Whether a loop is vectorised depends on where it is inlined, so the same sum rounded otherwise from one
+# caller to the next: a complex128 matrix times a vector, row by row, against each row's own dot product (732 of
+# 1680 shapes). Kept scalar, every such sum is fused; in order, the vectors were no faster (300 drawn cases, M1 Pro:
+# 1.002). A compiler that does not take the option (GCC, which fuses none of these sums) builds without it.
+ordered_reductions_off = ["-mllvm", "-force-ordered-reductions=false"]
+
 
 class build_ext_with_blas(build_ext):
     """Builds, beside the extension, the numerical_blas library (blas/numerical_blas.cpp): the BLAS and LAPACK
     routines under their Fortran names, for a program linked against those libraries (LD_PRELOAD, FlexiBLAS, the
     system's alternatives). On Linux alone, where a library preloaded or switched in takes the place of the
     system's; numerical.blas_library() gives its path."""
+
+    def build_extensions(self):
+        self.cxx_args = list(compile_args)  # the extension's, and the library's in run()
+        if sys.platform != "win32" and self._compiles_with(ordered_reductions_off):
+            self.cxx_args += ordered_reductions_off
+        for extension in self.extensions:
+            extension.extra_compile_args = self.cxx_args
+        super().build_extensions()
+
+    def _compiles_with(self, flags):
+        """Whether the extensions' compiler builds a translation unit with `flags`."""
+        with tempfile.TemporaryDirectory() as directory:
+            source = os.path.join(directory, "probe.cpp")
+            with open(source, "w") as out:
+                out.write("int main() { return 0; }\n")
+            try:
+                self.compiler.compile([source], output_dir=directory, extra_postargs=[*compile_args, *flags])
+            except CompileError:
+                return False
+        return True
 
     def run(self):
         super().run()
@@ -93,7 +123,7 @@ class build_ext_with_blas(build_ext):
         package = os.path.join(os.path.dirname(self.get_ext_fullpath("numerical._numerical")), "lib")
         os.makedirs(package, exist_ok=True)
         library = os.path.join(package, "libnumerical_blas.so")
-        command = [*self.compiler.compiler_cxx, *compile_args, "-fPIC", "-shared", "-Iinclude",
+        command = [*self.compiler.compiler_cxx, *self.cxx_args, "-fPIC", "-shared", "-Iinclude",
                    os.path.join("blas", "numerical_blas.cpp"), "-o", library, *link_args,
                    "-Wl,--version-script=" + os.path.join("blas", "numerical_blas.map")]
         self.announce(" ".join(command), level=2)

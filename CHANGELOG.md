@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A sum of products rounds the same wherever its loop is compiled, under Clang on arm64** (the macOS wheels):
+  Clang vectorised some such loops in order, their products rounded apart where the same loop elsewhere fused them,
+  as its callers' inlining decided. A row of a `complex128` matrix times a vector now has the bits of that row times
+  the vector alone, where 732 of 1680 shapes from 2 × 2 differed in their last bits. The wheels build with
+  `-mllvm -force-ordered-reductions=false` where the compiler takes it; 300 drawn cases on an M1 Pro run as fast
+  (1.002). Some results on macOS arm64 move in their last bits.
 - **A transposed NumPy matrix times a vector (`a.T @ x`) is read where it lies on arm64 too**, `float64` and
   `float32`, with its C-ordered copy's bits (the portable vectors' partial sums kept a vector of rows at a time),
   except where the row-major product takes the AMX: M1 Pro, 129 × 7 2.13 → 0.66 µs (NumPy 0.69), 1000 × 500
