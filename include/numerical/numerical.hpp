@@ -17,6 +17,7 @@
 #include "blas.hpp"
 #include "decomposition.hpp"
 #include "eigen.hpp"
+#include "fft.hpp"
 #include "matrix.hpp"
 #include "tensor.hpp"
 #include "tensor_ops.hpp"
