@@ -91,14 +91,14 @@ namespace numerical {
               // A column whose squares underflow (rows of a far smaller scale than the largest): its sum of squares
               // is 0 or has lost its digits, and the test below never holds. The pair is judged on the columns over
               // their norms, which need no squares: the cosine, and ζ from the ratio of the norms.
-              const double norm_p {scaled_norm(wp, n)};
-              const double norm_q {scaled_norm(wq, n)};
+              const auto norm_p {static_cast<double>(scaled_norm(wp, n))};
+              const auto norm_q {static_cast<double>(scaled_norm(wq, n))};
               if (norm_p == 0.0 || norm_q == 0.0) {
                 continue; // a zero column is orthogonal to any other
               }
               T cosine {};
               for (std::size_t i {0}; i < n; ++i) {
-                cosine += conj_of(wp[i] / detail::from_double<T>(norm_p)) * (wq[i] / detail::from_double<T>(norm_q));
+                cosine += conj_of(wp[i] / detail::from_carried<T>(norm_p)) * (wq[i] / detail::from_carried<T>(norm_q));
               }
               const double size {static_cast<double>(std::abs(cosine))};
               zeta = ((norm_q / norm_p) - (norm_p / norm_q)) / (2.0 * size);
@@ -122,7 +122,7 @@ namespace numerical {
             }
             rotated = true;
             // Turn column q by the phase of γ so that the pair's inner product is real, then rotate.
-            const T      turn {conj_of(gamma) / detail::from_double<T>(magnitude)};
+            const T      turn {conj_of(gamma) / detail::from_carried<T>(magnitude)};
             const double c    {1.0 / std::sqrt(1.0 + (t * t))};
             const double s    {c * t};
             for (buffer<T>* side : {&w, &v}) {
@@ -131,8 +131,8 @@ namespace numerical {
               for (std::size_t i {0}; i < n; ++i) {
                 const T left  {mp[i]};
                 const T right {turn * mq[i]};
-                mp[i] = (detail::from_double<T>(c) * left) - (detail::from_double<T>(s) * right);
-                mq[i] = (detail::from_double<T>(s) * left) + (detail::from_double<T>(c) * right);
+                mp[i] = (detail::from_carried<T>(c) * left) - (detail::from_carried<T>(s) * right);
+                mq[i] = (detail::from_carried<T>(s) * left) + (detail::from_carried<T>(c) * right);
               }
             }
           }
@@ -248,7 +248,7 @@ namespace numerical {
     template <typename T>
     [[nodiscard]] T householder_in_place(buffer<T>& x)
     {
-      const double up     {rescale_tiny(x)}; // the reflector is the same at any scale; β is scaled back
+      const auto   up     {rescale_tiny(x)}; // the reflector is the same at any scale; β is scaled back
       const auto   norm   {static_cast<T>(scaled_norm(x))};
       const T      beta   {-phase_of(x[0]) * norm};
       x[0] -= beta;
@@ -497,9 +497,9 @@ namespace numerical {
       buffer<T>                   right_phase(n, T {1});
       const auto                  reflector {[](buffer<T>& v) {       // unit v with (I − 2 v vᴴ) x ∥ e₁
                                                (void)rescale_tiny(v); // the same reflector at any scale
-                                               const double norm {scaled_norm(v)};
-                                               v[0] += phase_of(v[0]) * detail::from_double<T>(norm);
-                                               const auto length {detail::from_double<T>(scaled_norm(v))};
+                                               const auto norm {scaled_norm(v)};
+                                               v[0] += phase_of(v[0]) * detail::from_carried<T>(norm);
+                                               const auto length {detail::from_carried<T>(scaled_norm(v))};
                                                for (T & element : v) {
                                                  element /= length;
                                                }
@@ -1533,7 +1533,7 @@ namespace numerical {
       }
       buffer<T>         entries(rows * cols);
       T* const          into    {entries.data()};
-      const T           divisor {detail::from_double<T>(scale)};
+      const T           divisor {detail::from_carried<T>(scale)};
       detail::parallel_for(bands, detail::memory_element_weight * detail::svd_band * cols, [source, into, rows, cols, divisor](std::size_t band) {
                              for (std::size_t e {band * detail::svd_band * cols}; e < std::min(rows, (band + 1) * detail::svd_band) * cols; ++e) {
                                into[e] = source[e] / divisor;
@@ -1583,7 +1583,7 @@ namespace numerical {
         for (std::size_t i {0}; i < cols; ++i) {
           column[i] = w[(i * cols) + j];
         }
-        norms[j] = detail::scaled_norm(column);
+        norms[j] = static_cast<double>(detail::scaled_norm(column));
       }
       std::vector<std::size_t> order(cols);
       for (std::size_t j {0}; j < cols; ++j) {
@@ -1605,7 +1605,7 @@ namespace numerical {
         }
         if (norms[j] > 0.0) {
           for (std::size_t i {0}; i < cols; ++i) {
-            left[(i * cols) + d] = w[(i * cols) + j] / detail::from_double<T>(norms[j]);
+            left[(i * cols) + d] = w[(i * cols) + j] / detail::from_carried<T>(norms[j]);
           }
           continue;
         }
@@ -1615,16 +1615,16 @@ namespace numerical {
           buffer<T> candidate(cols, T {});
           candidate[k] = T {1};
           orthogonalise(candidate, left, cols, d);
-          const double norm {detail::scaled_norm(candidate)};
+          const auto norm {static_cast<double>(detail::scaled_norm(candidate))};
           if (norm > best_norm) {
             best      = std::move(candidate);
             best_norm = norm;
           }
         }
         orthogonalise(best, left, cols, d); // a second pass restores orthogonality lost to rounding
-        const double norm {detail::scaled_norm(best)};
+        const auto norm {static_cast<double>(detail::scaled_norm(best))};
         for (std::size_t i {0}; i < cols; ++i) {
-          left[(i * cols) + d] = best[i] / detail::from_double<T>(norm);
+          left[(i * cols) + d] = best[i] / detail::from_carried<T>(norm);
         }
       }
       singular_values_ = vector<double> {std::move(values)};
@@ -1846,7 +1846,7 @@ namespace numerical {
           for (std::size_t i {0}; i < rows; ++i) {
             coefficient += conj_of(s.u()(i, d)) * b(i, c);
           }
-          coefficient /= from_double<T>(sigma[d]);
+          coefficient /= from_carried<T>(sigma[d]);
           for (std::size_t j {0}; j < cols; ++j) {
             x[(j * b.cols()) + c] += coefficient * s.v()(j, d);
           }
@@ -1934,7 +1934,7 @@ namespace numerical {
     buffer<T> entries(rows * cols, T {});
     for (std::size_t i {0}; i < rows; ++i) {
       for (std::size_t j {0}; j < cols; ++j) {
-        entries[(i * cols) + j] = (tall ? a(i, j) : detail::conj_of(a(j, i))) / detail::from_double<T>(scale);
+        entries[(i * cols) + j] = (tall ? a(i, j) : detail::conj_of(a(j, i))) / detail::from_carried<T>(scale);
       }
     }
     buffer<T>      r {rows == cols ? std::move(entries) : detail::householder_reflect(std::move(entries), rows, cols).r};
@@ -1968,15 +1968,15 @@ namespace numerical {
       for (std::size_t j {0}; j < i; ++j) {
         scale = std::max(scale, static_cast<double>(std::abs(a(i, j))));
       }
-      scale = std::max(scale, std::abs(detail::real_part(a(i, i))));
+      scale = std::max(scale, static_cast<double>(std::abs(detail::real_part(a(i, i)))));
     }
     scale = scale == 0.0 ? 1.0 : scale;
     buffer<T> entries(n * n, T {});
     for (std::size_t i {0}; i < n; ++i) {
       for (std::size_t j {0}; j < i; ++j) {
-        entries[(i * n) + j] = a(i, j) / detail::from_double<T>(scale);
+        entries[(i * n) + j] = a(i, j) / detail::from_carried<T>(scale);
       }
-      entries[(i * n) + i] = detail::from_double<T>(detail::real_part(a(i, i)) / scale);
+      entries[(i * n) + i] = detail::from_carried<T>(detail::real_part(a(i, i)) / scale);
     }
     buffer<double> d(n, double {});
     if (n > 0) {
@@ -2068,7 +2068,7 @@ namespace numerical {
           entries[(i * n) + j] = a(i, j);
           entries[(j * n) + i] = conj_of(a(i, j));
         }
-        entries[(i * n) + i] = from_double<T>(real_part(a(i, i)));
+        entries[(i * n) + i] = from_carried<T>(real_part(a(i, i)));
       }
       return matrix<T> {n, n, std::move(entries)};
     }
@@ -2104,7 +2104,7 @@ namespace numerical {
       buffer<T>         left_adjoint(rank * rows, T {});
       for (std::size_t e {0}; e < rank; ++e) {
         const std::size_t d       {kept[e]};
-        const auto        inverse {from_double<T>(1.0 / sigma[d])};
+        const auto        inverse {from_carried<T>(1.0 / sigma[d])};
         for (std::size_t i {0}; i < cols; ++i) {
           scaled[(i * rank) + e] = right(i, d) * inverse;
         }

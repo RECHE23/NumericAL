@@ -373,7 +373,7 @@ namespace {
     for (std::size_t i {0}; i < rows; ++i) {
       for (std::size_t j {0}; j < cols; ++j) {
         const double x {std::sin(static_cast<double>((i * 5) + (j * 11) + 1))};
-        by_rows[(i * cols) + j]    = numerical::detail::from_double<T>(x) + (i == j ? T {2} : T {});
+        by_rows[(i * cols) + j]    = numerical::detail::from_carried<T>(x) + (i == j ? T {2} : T {});
         by_columns[(j * rows) + i] = by_rows[(i * cols) + j];
       }
     }

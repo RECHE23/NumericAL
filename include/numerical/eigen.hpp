@@ -229,8 +229,8 @@ namespace numerical {
         }
         (void)rescale_tiny(v); // the same reflector at any scale
         const double norm {scaled_norm(v)};
-        v[0] += phase_of(v[0]) * from_double<T>(norm);
-        const T length    {from_double<T>(scaled_norm(v))};
+        v[0] += phase_of(v[0]) * from_carried<T>(norm);
+        const T length    {from_carried<T>(scaled_norm(v))};
         for (T& element : v) {
           element /= length;
         }
@@ -337,12 +337,12 @@ namespace numerical {
         return T {};
       }
       const double beta  {-std::copysign(std::hypot(static_cast<double>(std::abs(alpha)), rest), real_part(alpha))};
-      const T      tau   {(from_double<T>(beta) - alpha) / from_double<T>(beta)};
-      const T      scale {T {1} / (alpha - from_double<T>(beta))};
+      const T      tau   {(from_carried<T>(beta) - alpha) / from_carried<T>(beta)};
+      const T      scale {T {1} / (alpha - from_carried<T>(beta))};
       for (std::size_t i {0}; i < count; ++i) {
         x[i] *= scale;
       }
-      alpha = from_double<T>(beta);
+      alpha = from_carried<T>(beta);
       return tau;
     }
 
@@ -3008,7 +3008,7 @@ namespace numerical {
       buffer<T>      a(n_ * n_, T {});
       for (std::size_t i {0}; i < n_; ++i) {
         for (std::size_t j {0}; j < n_; ++j) {
-          a[(i * n_) + j] = input(i, j) / detail::from_double<T>(scale);
+          a[(i * n_) + j] = input(i, j) / detail::from_carried<T>(scale);
         }
       }
       const detail::balancing       balanced {detail::balance(a, n_)};

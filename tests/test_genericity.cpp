@@ -1,7 +1,8 @@
 // Every decomposition and every solver built on one, instantiated for each scalar the library is generic
 // over (float, double, long double and their complex forms): each compiles, and each answers to the
-// precision of its type. Norms, pivot magnitudes and singular values are carried in double whatever the
-// scalar, so a long double result is checked to double's precision, not its own.
+// precision of its type. LU, Cholesky and QR carry their pivots, norms and reflectors in the scalar's own
+// precision, and answer to it; singular values are carried in double whatever the scalar, so an SVD of long double
+// is checked to double's precision, not its own.
 #include <algorithm>
 #include <cmath>
 #include <complex>
@@ -42,6 +43,14 @@ namespace {
     const double epsilon {std::max(static_cast<double>(std::numeric_limits<real_t<T>>::epsilon()),
                                    std::numeric_limits<double>::epsilon())};
     return 64.0 * static_cast<double>(matrix_order) * epsilon;
+  }
+
+  //! \brief The bound on a residual of a factorisation carried in T's own precision: a small multiple of the matrix
+  //!        order times T's epsilon (below double's for a long double wider than double).
+  template <typename T>
+  double own_bound()
+  {
+    return 64.0 * static_cast<double>(matrix_order) * static_cast<double>(std::numeric_limits<real_t<T>>::epsilon());
   }
 
   //! \brief A deterministic entry with a nonzero imaginary part when T is complex.
@@ -160,9 +169,9 @@ namespace {
     const matrix<T>                      inv   {numerical::inverse(a)};
     const matrix<T>                      many  {numerical::solve(a, a)};
     const T                              det   {numerical::determinant(a)};
-    return relative_gap(a * x, b) < residual_bound<T>() && relative_gap(a * inv, identity<T>(matrix_order)) < residual_bound<T>()
-           && relative_gap(many, identity<T>(matrix_order)) < residual_bound<T>() && std::abs(det) > real_t<T>(0)
-           && relative_gap(numerical::solve(a, b), x) < residual_bound<T>();
+    return relative_gap(a * x, b) < own_bound<T>() && relative_gap(a * inv, identity<T>(matrix_order)) < own_bound<T>()
+           && relative_gap(many, identity<T>(matrix_order)) < own_bound<T>() && std::abs(det) > real_t<T>(0)
+           && relative_gap(numerical::solve(a, b), x) < own_bound<T>();
   }
 
   template <typename T>
@@ -178,8 +187,8 @@ namespace {
         lh[(i * matrix_order) + j] = conjugate(l(j, i));
       }
     }
-    return relative_gap(l * matrix<T> {matrix_order, matrix_order, std::move(lh)}, a) < residual_bound<T>()
-           && relative_gap(a * c.solve(b), b) < residual_bound<T>();
+    return relative_gap(l * matrix<T> {matrix_order, matrix_order, std::move(lh)}, a) < own_bound<T>()
+           && relative_gap(a * c.solve(b), b) < own_bound<T>();
   }
 
   template <typename T>
@@ -189,8 +198,20 @@ namespace {
     const auto      f      {numerical::qr(a)};
     const matrix<T> square {general<T>(matrix_order, matrix_order)};
     const vector<T> b      {right_hand_side<T>(matrix_order)};
-    return relative_gap(f.q() * f.r(), a) < residual_bound<T>()
-           && relative_gap(square * numerical::qr(square).solve(b), b) < residual_bound<T>();
+    const matrix<T> q      {f.q()};
+    std::vector<T>  gram(q.cols() * q.cols()); // Qᴴ Q
+    for (std::size_t i {0}; i < q.cols(); ++i) {
+      for (std::size_t j {0}; j < q.cols(); ++j) {
+        T sum {};
+        for (std::size_t k {0}; k < q.rows(); ++k) {
+          sum += conjugate(q(k, i)) * q(k, j);
+        }
+        gram[(i * q.cols()) + j] = sum;
+      }
+    }
+    return relative_gap(q * f.r(), a) < own_bound<T>()
+           && relative_gap(matrix<T> {q.cols(), q.cols(), std::move(gram)}, identity<T>(q.cols())) < own_bound<T>()
+           && relative_gap(square * numerical::qr(square).solve(b), b) < own_bound<T>();
   }
 
   template <typename T>

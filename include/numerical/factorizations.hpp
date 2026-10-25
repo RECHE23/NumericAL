@@ -286,48 +286,54 @@ namespace numerical {
     template <typename T>
     using magnitude_t = decltype(std::abs(std::declval<const T&>()));
 
-    //! \brief \p x, a magnitude carried in `double`, as the scalar `T`: converted to `T`'s real type first, so a
+    //! \brief The real type a `T`'s norms, reflector lengths and pivot magnitudes are carried in: `long double` for a
+    //!        `long double` scalar, real or complex, whose precision a `double` would cut to its own; `double` otherwise.
+    template <typename T>
+    using carried_t = std::conditional_t<std::is_same_v<magnitude_t<T>, long double>, long double, double>;
+
+    //! \brief \p x, a magnitude carried in \ref carried_t, as the scalar `T`: converted to `T`'s real type first, so a
     //!        `std::complex<float>` is built from a `float` (a `double` argument narrows inside its constructor).
     template <typename T>
-    [[nodiscard]] T from_double(double x)
+    [[nodiscard]] T from_carried(carried_t<T> x)
     {
       return static_cast<T>(static_cast<magnitude_t<T>>(x));
     }
 
-    //! \brief The real part of a real (or general) scalar as a `double`.
+    //! \brief The real part of a real (or general) scalar, in \ref carried_t.
     template <typename T>
-    [[nodiscard]] double real_part(const T& x)
+    [[nodiscard]] carried_t<T> real_part(const T& x)
     {
-      return static_cast<double>(x);
+      return static_cast<carried_t<T>>(x);
     }
 
     //! \brief The real part of a complex scalar.
     template <typename U>
-    [[nodiscard]] double real_part(const std::complex<U>& x)
+    [[nodiscard]] carried_t<U> real_part(const std::complex<U>& x)
     {
-      return static_cast<double>(x.real());
+      return static_cast<carried_t<U>>(x.real());
     }
 
     //! \brief The real type whose range a `T`'s values take: `float` for a single-precision scalar, real or complex;
-    //!        `double` otherwise (a `long double`'s magnitudes are carried in `double`).
+    //!        \ref carried_t otherwise.
     template <typename T>
     using value_range_t =
-      std::conditional_t<std::is_same_v<T, float> || std::is_same_v<T, std::complex<float>>, float, double>;
+      std::conditional_t<std::is_same_v<T, float> || std::is_same_v<T, std::complex<float>>, float, carried_t<T>>;
 
     //! \brief The magnitude under which \ref rescue_factor scales a `T` up: about the square root of the smallest normal
-    //!        number of its range.
+    //!        number of its range, or below it (2⁻⁵⁰⁰ for a `long double`, whose range is the platform's).
     template <typename T>
-    inline constexpr double rescue_below {std::is_same_v<value_range_t<T>, float> ? 0x1p-60 : 0x1p-500};
+    inline constexpr carried_t<T> rescue_below {std::is_same_v<value_range_t<T>, float> ? 0x1p-60 : 0x1p-500};
 
     //! \brief The exact power of two that brings a magnitude below about the square root of the smallest normal number
     //!        of \p T's range (2⁻⁵⁰⁰ in `double`, 2⁻⁶⁰ in `float`) up among normal numbers, as LAPACK's dlarfg
     //!        rescales; 1 for any larger magnitude. It is a `T` itself: a zero takes the factor of the smallest normal
     //!        number, which a `double`'s range holds and a `float`'s does not.
     template <typename T>
-    [[nodiscard]] double rescue_factor(double largest)
+    [[nodiscard]] carried_t<T> rescue_factor(carried_t<T> largest)
     {
-      constexpr double least {static_cast<double>(std::numeric_limits<value_range_t<T>>::min())};
-      return largest < rescue_below<T> ? std::ldexp(1.0, -std::ilogb(std::max(largest, least))) : 1.0;
+      using real = carried_t<T>;
+      constexpr real least {static_cast<real>(std::numeric_limits<value_range_t<T>>::min())};
+      return largest < rescue_below<T> ? std::ldexp(real {1}, -std::ilogb(std::max(largest, least))) : real {1};
     }
 
     /*!
@@ -338,9 +344,9 @@ namespace numerical {
     template <typename T>
     [[nodiscard]] T phase_of(const T& x)
     {
-      const T      scaled    {x * detail::from_double<T>(rescue_factor<T>(static_cast<double>(std::abs(x))))};
-      const double magnitude {static_cast<double>(std::abs(scaled))};
-      return magnitude == 0.0 ? T {1} : scaled / detail::from_double<T>(magnitude);
+      const T            scaled    {x * detail::from_carried<T>(rescue_factor<T>(static_cast<carried_t<T>>(std::abs(x))))};
+      const carried_t<T> magnitude {static_cast<carried_t<T>>(std::abs(scaled))};
+      return magnitude == 0 ? T {1} : scaled / detail::from_carried<T>(magnitude);
     }
 
     /*!
@@ -350,15 +356,15 @@ namespace numerical {
      *        `float`).
      */
     template <typename T>
-    double rescale_tiny(buffer<T>& x)
+    carried_t<T> rescale_tiny(buffer<T>& x)
     {
-      double largest {0.0};
+      carried_t<T> largest {0};
       for (const T& element : x) {
-        largest = std::max(largest, static_cast<double>(std::abs(element)));
+        largest = std::max(largest, static_cast<carried_t<T>>(std::abs(element)));
       }
-      const double factor {rescue_factor<T>(largest)};
+      const carried_t<T> factor {rescue_factor<T>(largest)};
       for (T& element : x) {
-        element *= detail::from_double<T>(factor);
+        element *= detail::from_carried<T>(factor);
       }
       return factor;
     }
@@ -366,19 +372,20 @@ namespace numerical {
     //! \brief The Euclidean norm of the \p count elements at \p x, summed at the scale of their largest magnitude:
     //!        a plain sum of squares overflows near 1e155 and underflows to 0 near 1e-155.
     template <typename T>
-    [[nodiscard]] double norm_at_scale(const T*    x,
-                                       std::size_t count)
+    [[nodiscard]] carried_t<T> norm_at_scale(const T*    x,
+                                             std::size_t count)
     {
-      double largest {0.0};
+      using real = carried_t<T>;
+      real largest {0};
       for (std::size_t i {0}; i < count; ++i) {
-        largest = std::max(largest, static_cast<double>(std::abs(x[i])));
+        largest = std::max(largest, static_cast<real>(std::abs(x[i])));
       }
-      if (largest == 0.0) { // the entries are finite: require_finite runs where every caller starts
+      if (largest == 0) { // the entries are finite: require_finite runs where every caller starts
         return largest;
       }
-      double sum {0.0};
+      real sum {0};
       for (std::size_t i {0}; i < count; ++i) {
-        const double ratio {static_cast<double>(std::abs(x[i])) / largest};
+        const real ratio {static_cast<real>(std::abs(x[i])) / largest};
         sum += ratio * ratio;
       }
       return largest * std::sqrt(sum);
@@ -406,8 +413,8 @@ namespace numerical {
 
     //! \brief The Euclidean norm of the \p count elements at \p x, by \ref norm_at_scale for this type.
     template <typename T>
-    [[nodiscard]] double scaled_norm(const T*    x,
-                                     std::size_t count)
+    [[nodiscard]] carried_t<T> scaled_norm(const T*    x,
+                                           std::size_t count)
     {
       return norm_at_scale(x, count);
     }
@@ -430,7 +437,7 @@ namespace numerical {
 
     //! \brief \ref scaled_norm of a whole vector.
     template <typename T>
-    [[nodiscard]] double scaled_norm(const buffer<T>& x)
+    [[nodiscard]] carried_t<T> scaled_norm(const buffer<T>& x)
     {
       return scaled_norm(x.data(), x.size());
     }
@@ -773,7 +780,7 @@ namespace numerical {
     //! \brief The determinant (the pivot sign times the product of U's diagonal; 0 if singular).
     [[nodiscard]] T determinant() const
     {
-      T value {detail::from_double<T>(sign_)};
+      T value {detail::from_carried<T>(sign_)};
       for (std::size_t i {0}; i < n_; ++i) {
         value *= lu_[(i * n_) + i];
       }
@@ -1772,11 +1779,11 @@ namespace numerical {
           sum -= lower_[(i * n_) + k] * detail::conj_of(lower_[(j * n_) + k]);
         }
         if (i == j) {
-          const double diagonal {detail::real_part(sum)};
-          if (diagonal <= 0.0) {
+          const detail::carried_t<T> diagonal {detail::real_part(sum)};
+          if (diagonal <= 0) {
             throw not_positive_definite_error("Cholesky: matrix is not positive-definite", i + 1);
           }
-          lower_[(i * n_) + i] = detail::from_double<T>(std::sqrt(diagonal));
+          lower_[(i * n_) + i] = detail::from_carried<T>(std::sqrt(diagonal));
         }
         else {
           lower_[(i * n_) + j] = sum / lower_[(j * n_) + j];
@@ -2187,24 +2194,24 @@ namespace numerical {
                          std::size_t                  k1)
     {
       for (std::size_t k {k0}; k < k1; ++k) {
-        const std::size_t c      {k - k0};
-        T* const          x      {panel + (c * ld) + (k - top)};
-        buffer<T>         w(x, x + (ld + top - k));
-        const double      factor {rescale_tiny(w)}; // w, τ and the signs the same at any scale; β scaled back
-        const T           alpha  {w[0]};
-        const double      below  {scaled_norm(w.data() + 1, w.size() - 1)};
-        if (below == 0.0 && alpha == detail::from_double<T>(detail::real_part(alpha))) {
+        const std::size_t  c      {k - k0};
+        T* const           x      {panel + (c * ld) + (k - top)};
+        buffer<T>          w(x, x + (ld + top - k));
+        const carried_t<T> factor {rescale_tiny(w)}; // w, τ and the signs the same at any scale; β scaled back
+        const T            alpha  {w[0]};
+        const carried_t<T> below  {scaled_norm(w.data() + 1, w.size() - 1)};
+        if (below == 0 && alpha == detail::from_carried<T>(detail::real_part(alpha))) {
           continue; // the identity: nothing below the diagonal, and the diagonal real
         }
-        const double beta  {-std::copysign(scaled_norm(w), detail::real_part(alpha))};
-        const T      tau   {(detail::from_double<T>(beta) - alpha) / detail::from_double<T>(beta)};
-        const T      scale {T {1} / (alpha - detail::from_double<T>(beta))}; // |α − β| ≥ ‖x‖: no cancellation
+        const carried_t<T> beta  {-std::copysign(scaled_norm(w), detail::real_part(alpha))};
+        const T            tau   {(detail::from_carried<T>(beta) - alpha) / detail::from_carried<T>(beta)};
+        const T            scale {T {1} / (alpha - detail::from_carried<T>(beta))}; // |α − β| ≥ ‖x‖: no cancellation
         w[0] = T {1};
         for (std::size_t r {1}; r < w.size(); ++r) {
           w[r] *= scale;
         }
         reflect_columns(panel, ld, w, k - top, c + 1, k1 - k0, conj_of(tau)); // Hᴴ on the panel's columns past k
-        x[0] = detail::from_double<T>(beta / factor);
+        x[0] = detail::from_carried<T>(beta / factor);
         std::copy(w.begin() + 1, w.end(), x + 1);
         reflectors[k] = std::move(w);
         taus[k]       = tau;
@@ -2674,7 +2681,7 @@ namespace numerical {
       }
       double largest {0.0};
       for (std::size_t i {0}; i < cols_; ++i) {
-        largest = std::max(largest, detail::real_part(r_[(i * cols_) + i]));
+        largest = std::max(largest, static_cast<double>(detail::real_part(r_[(i * cols_) + i])));
       }
       const double   tolerance  {detail::rank_tolerance(largest, rows_, cols_)};
       buffer<T>      y(cols_, T {}); // y = Qᴴ b
@@ -3277,17 +3284,17 @@ namespace numerical {
           subtract_corrections(column, factors.data(), by_row.data() + ((2 * from) * n) + k, n, 2 * (j - from), m + 1);
           column_ahead   = false;
           a[(k * n) + k] = column[0];
-          buffer<T>      v(column + 1, column + m + 1); // column k below the diagonal
-          const double   below {m > 1 ? scaled_norm(v.data() + 1, m - 1) : 0.0};
+          buffer<T>          v(column + 1, column + m + 1); // column k below the diagonal
+          const carried_t<T> below {m > 1 ? scaled_norm(v.data() + 1, m - 1) : carried_t<T> {0}};
           if (below == 0.0) {
             sub[k] = v[0]; // already tridiagonal in this column: nothing to reflect
             continue;
           }
-          const double up    {rescale_tiny(v)};                                  // the reflector is the same at any scale; α is scaled back
-          const T      alpha {-phase_of(v[0]) * static_cast<T>(scaled_norm(v))}; // the sign that avoids cancellation
+          const carried_t<T> up    {rescale_tiny(v)};                                  // the reflector is the same at any scale; α is scaled back
+          const T            alpha {-phase_of(v[0]) * static_cast<T>(scaled_norm(v))}; // the sign that avoids cancellation
           sub[k]  = alpha / up;
           v[0]   -= alpha;
-          const double length {scaled_norm(v)};                                  // real: each part divided, where a complex division scaled and divided both
+          const carried_t<T> length {scaled_norm(v)};                                  // real: each part divided, where a complex division scaled and divided both
           for (T& element : v) {
             element /= length;
           }
@@ -3486,8 +3493,8 @@ namespace numerical {
                          std::copy(source, source + count, carry.begin());
                          for (std::size_t u {run.first}; u < run.first + run.count; ++u) {
                            const row_operation& op {operations[u]};
-                           const T              c  {detail::from_double<T>(op.c)};
-                           const T              s  {detail::from_double<T>(op.s)};
+                           const T              c  {detail::from_carried<T>(op.c)};
+                           const T              s  {detail::from_carried<T>(op.s)};
                            if (run.down) { // the carried row is op.j: op.i is read, op.j written
                              const T* row   {m.data() + (op.i * n) + first};
                              T*       other {m.data() + (op.j * n) + first};
@@ -3518,8 +3525,8 @@ namespace numerical {
                        T* other {m.data() + (start.j * n) + first};
                        // The kind is tested outside the column loop, which then vectorises.
                        if (start.what == row_operation::kind::rotate) {
-                         const T c {detail::from_double<T>(start.c)};
-                         const T s {detail::from_double<T>(start.s)};
+                         const T c {detail::from_carried<T>(start.c)};
+                         const T s {detail::from_carried<T>(start.s)};
                          for (std::size_t k {0}; k < count; ++k) {
                            const T a {row[k]};
                            const T b {other[k]};
@@ -4257,7 +4264,7 @@ namespace numerical {
     {
       buffer<T> converted(n * n, T {});
       for (std::size_t i {0}; i < n * n; ++i) {
-        converted[i] = from_double<T>(left[i]);
+        converted[i] = from_carried<T>(left[i]);
       }
       buffer<T> product(n * n, T {});
       gemm(n, n, n, converted.data(), n, zt.data(), n, product.data(), n);
@@ -4314,7 +4321,7 @@ namespace numerical {
       buffer<T> at(n * n, T {}); // row j: the eigenvector of d[j], in the tridiagonal's basis, then the matrix's
       parallel_for(n, n, [&](std::size_t j) {
                      for (std::size_t r {0}; r < n; ++r) {
-                       at[(j * n) + r] = from_double<T>(q[(r * n) + j]);
+                       at[(j * n) + r] = from_carried<T>(q[(r * n) + j]);
                      }
                    });
       to_matrix_basis(reduction, at, n);
