@@ -1250,6 +1250,23 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
+  //! \brief \ref avx2_scaled_add for `float`, as the x86-64 `float` tiles round their terms.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_scaled_add(float*       y,
+                                                           const float* x,
+                                                           float        f,
+                                                           std::size_t  count) noexcept
+  {
+    const __m256      splat {_mm256_set1_ps(f)};
+    const std::size_t done  {count - (count % 8)};
+    for (std::size_t i {0}; i < done; i += 8) {
+      _mm256_storeu_ps(y + i, _mm256_fmadd_ps(splat, _mm256_loadu_ps(x + i), _mm256_loadu_ps(y + i)));
+    }
+    for (std::size_t i {done}; i < count; ++i) {
+      y[i] = std::fma(f, x[i], y[i]);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
   /*!
    * \brief The leading elements of `y[i] += f · x[i]` for complex `float`, whole vectors of four: how many it did. Each
    *        product's part products rounded apart (`f.re · x` and `f.im ·` x's exchanged parts), then `re·re − im·im` and
@@ -1296,19 +1313,20 @@ namespace numerical::detail {
   }
 
   //! \brief Columns \p j to `j + Width` of \ref avx2_strided_columns into \p y, their sums held through the rows.
-  template <std::size_t Width>
-  NUMERICAL_TARGET("avx2,fma") inline void avx2_strided_column_group(const double* a,
-                                                                     const double* b,
-                                                                     std::size_t   row_step,
-                                                                     std::size_t   column_step,
-                                                                     std::size_t   inner,
-                                                                     std::size_t   j,
-                                                                     double*       y) noexcept
+  template <std::size_t Width,
+            typename T>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_strided_column_group(const T*    a,
+                                                                     const T*    b,
+                                                                     std::size_t row_step,
+                                                                     std::size_t column_step,
+                                                                     std::size_t inner,
+                                                                     std::size_t j,
+                                                                     T*          y) noexcept
   {
-    std::array<double, Width> sums {};
+    std::array<T, Width> sums {};
     for (std::size_t k {0}; k < inner; ++k) {
-      const double        f   {a[k]};
-      const double* const row {b + (k * row_step) + (j * column_step)};
+      const T        f   {a[k]};
+      const T* const row {b + (k * row_step) + (j * column_step)};
       for (std::size_t c {0}; c < Width; ++c) {
         sums[c] = std::fma(f, row[c * column_step], sums[c]);
       }
@@ -1321,15 +1339,17 @@ namespace numerical::detail {
    *        `b[(k · row_step) + (j · column_step)]`, into \p y: each element `a[k] · B[k][j]` added in ascending order
    *        of `k` by one fused multiply-add, as \ref avx2_scaled_add adds each row (and so \ref avx512_scaled_add,
    *        whose processors have these units too); eight columns' chains at once, the rest as one group of its width.
+   *        `double` or `float`.
    */
-  NUMERICAL_TARGET("avx2,fma") inline void avx2_strided_columns(const double* a,
-                                                                const double* b,
-                                                                std::size_t   row_step,
-                                                                std::size_t   column_step,
-                                                                std::size_t   inner,
-                                                                std::size_t   first,
-                                                                std::size_t   last,
-                                                                double*       y) noexcept
+  template <typename T>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_strided_columns(const T*    a,
+                                                                const T*    b,
+                                                                std::size_t row_step,
+                                                                std::size_t column_step,
+                                                                std::size_t inner,
+                                                                std::size_t first,
+                                                                std::size_t last,
+                                                                T*          y) noexcept
   {
     constexpr std::size_t group {8}; // the switch below names each narrower last group
     std::size_t           j     {first};

@@ -13,11 +13,13 @@
 #include <cstddef>
 #include <algorithm>
 #include <array>
+#include <bit>
 #include <cstdint>
 #include <limits>
 #include <map>
 #include <utility>
 #include <tuple>
+#include <type_traits>
 #include <string>
 #include <vector>
 
@@ -326,21 +328,22 @@ TEST(sum_over_run_takes_a_run_of_axes_and_declines_the_rest)
 }
 
 namespace {
-  // `a` (inner) times the row-major B (inner × cols) as add_product sums it, B's rows scaled and added in order in
-  // chunks of vector_chunk columns: the arithmetic the column kernels must give to the bit.
-  template <typename T>
-  std::vector<T> rows_added_in_order(const std::vector<T>& a,
-                                     const std::vector<T>& b,
-                                     std::size_t           cols)
+  // The same number to the bit, or NaN both: a NaN's sign and payload follow the order of the operations.
+  template <std::floating_point R>
+  bool same_number(R x,
+                   R y)
   {
-    std::vector<T> y(cols, T {});
-    for (std::size_t first {0}; first < cols; first += numerical::detail::vector_chunk) {
-      const std::size_t count {std::min(numerical::detail::vector_chunk, cols - first)};
-      for (std::size_t k {0}; k < a.size(); ++k) {
-        numerical::detail::add_product(y.data() + first, a[k], b.data() + (k * cols) + first, count);
-      }
-    }
-    return y;
+    return std::bit_cast < std::conditional_t < sizeof(R) == 8, std::uint64_t, std::uint32_t >> (x) ==
+           std::bit_cast < std::conditional_t < sizeof(R) == 8, std::uint64_t, std::uint32_t >> (y) ||
+           (std::isnan(x) && std::isnan(y));
+  }
+
+  // same_number of each part.
+  template <std::floating_point R>
+  bool same_number(const std::complex<R>& x,
+                   const std::complex<R>& y)
+  {
+    return same_number(x.real(), y.real()) && same_number(x.imag(), y.imag());
   }
 
   // The row of `a` in a product of a matrix by B: a three-row gemm, `a` its middle row.
@@ -358,12 +361,11 @@ namespace {
   }
 
   // canonical_product of `a` (inner) and the row-major B, and vector_times_transposed of `a` and B given as its
-  // transpose (cols × inner, rows padded), to the bit: B's rows added in order; a complex `a` past the compiler's
-  // complex terms (complex_terms), the bits of its row in a product of a matrix by B. Some terms a signed zero or a
-  // subnormal number.
+  // transpose (cols × inner, rows padded), to the bit: the bits of `a`'s row in a product of a matrix by B. Some terms
+  // a signed zero, a subnormal number or an infinity.
   template <typename T>
-  bool vector_products_add_the_rows_in_order(std::size_t inner,
-                                             std::size_t cols)
+  bool vector_products_are_a_row_of_a_product(std::size_t inner,
+                                              std::size_t cols)
   {
     using R = decltype(std::abs(T {})); // the parts' type
     const auto        part {[](double value) { return static_cast<R>(value); }};
@@ -376,6 +378,14 @@ namespace {
       if constexpr (!std::is_floating_point_v<T>) {
         a[k] += T(R {0}, part(std::cos(static_cast<double>(k) * 1.3)));
       }
+      if (k % 29 == 5) {
+        a[k] = T(std::numeric_limits<R>::infinity());
+      }
+      if constexpr (!std::is_floating_point_v<T>) {
+        if (k % 31 == 7) {
+          a[k] = T(R {1}, std::numeric_limits<R>::infinity());
+        }
+      }
       for (std::size_t j {0}; j < cols; ++j) {
         T value {T(part(std::cos((static_cast<double>(k) * 0.7) + (static_cast<double>(j) * 1.9))))};
         if constexpr (!std::is_floating_point_v<T>) {
@@ -387,19 +397,24 @@ namespace {
         else if ((k + (2 * j)) % 19 == 0) {
           value *= T(std::numeric_limits<R>::denorm_min() * R(1024));
         }
+        else if ((k + (3 * j)) % 23 == 0) {
+          value = T(-std::numeric_limits<R>::infinity());
+        }
+        else if constexpr (!std::is_floating_point_v<T>) {
+          if ((k + (5 * j)) % 37 == 0) {
+            value = T(R {2}, std::numeric_limits<R>::infinity());
+          }
+        }
         b[(k * cols) + j]   = value;
         bt[(j * ldbt) + k]  = value;
       }
     }
-    bool by_terms {false};
-    if constexpr (numerical::detail::split_complex<T>) {
-      by_terms = numerical::detail::complex_terms() != numerical::detail::complex_term::compiler;
-    }
-    const std::vector<T>       want       {by_terms ? row_of_a_product(a, b, cols) : rows_added_in_order(a, b, cols)};
+    const std::vector<T>       want       {row_of_a_product(a, b, cols)};
     const numerical::tensor<T> canonical  {numerical::detail::canonical_product<T>(a.data(), inner, b.data(), cols, 1, inner, cols, {cols})};
     const numerical::buffer<T> transposed {numerical::detail::vector_times_transposed(a.data(), bt.data(), ldbt, inner, cols)};
-    return std::equal(canonical.data().begin(), canonical.data().end(), want.begin(), want.end()) &&
-           std::equal(transposed.begin(), transposed.end(), want.begin(), want.end());
+    const auto                 same       {[](const T& x, const T& y) { return same_number(x, y); }};
+    return std::equal(canonical.data().begin(), canonical.data().end(), want.begin(), want.end(), same) &&
+           std::equal(transposed.begin(), transposed.end(), want.begin(), want.end(), same);
   }
 } // namespace
 
@@ -460,11 +475,11 @@ TEST(a_product_of_rows_apart_gives_the_contiguous_bits)
 }
 
 // A vector times a matrix, row-major (narrow: its columns' sums held) and given as its transpose (a Fortran-ordered
-// NumPy matrix): B's rows added in order, the same bits, in each type, on every path this processor runs, a complex
-// one past the compiler's terms the bits of its row in a product; every width of a partial group of columns, the narrow
-// kernel's last width and the first past it, several chunks, a depth of one and an empty one (zeros); the complex
-// kernels' every count of registers left, over several of the complex tiles' panels and gemm_split's blocks.
-TEST(a_vector_times_a_matrix_adds_its_rows_in_order)
+// NumPy matrix): the bits of its row in a product of a matrix by B, in each type, on every path this processor runs;
+// every width of a partial group of columns, the narrow kernel's last width and the first past it, several chunks, a
+// depth of one and an empty one (zeros); the complex kernels' every count of registers left, over several of the
+// complex tiles' panels and gemm_split's blocks.
+TEST(a_vector_times_a_matrix_is_its_row_of_a_product)
 {
   for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
                                           numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
@@ -481,10 +496,10 @@ TEST(a_vector_times_a_matrix_adds_its_rows_in_order)
       }
     }
     for (const auto& [inner, cols] : shapes) {
-      EXPECT(vector_products_add_the_rows_in_order<double>(inner, cols));
-      EXPECT(vector_products_add_the_rows_in_order<float>(inner, cols));
-      EXPECT(vector_products_add_the_rows_in_order<std::complex<double>>(inner, cols));
-      EXPECT(vector_products_add_the_rows_in_order<std::complex<float>>(inner, cols));
+      EXPECT(vector_products_are_a_row_of_a_product<double>(inner, cols));
+      EXPECT(vector_products_are_a_row_of_a_product<float>(inner, cols));
+      EXPECT(vector_products_are_a_row_of_a_product<std::complex<double>>(inner, cols));
+      EXPECT(vector_products_are_a_row_of_a_product<std::complex<float>>(inner, cols));
     }
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
@@ -572,6 +587,8 @@ TEST(einsum_matrix_vector_rows_are_their_dot_products)
   const tensor<int> im {{3, 4}, std::vector<int> {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12}};
   EXPECT(einsum("ij,j->i", im, tensor<int> {{4}, std::vector<int> {1, 0, 2, 1}}) == (tensor<int> {{3}, std::vector<int> {11, 27, 43}}));
   EXPECT(einsum("i,ij->j", tensor<int> {{3}, std::vector<int> {1, 1, 2}}, im) == (tensor<int> {{4}, std::vector<int> {24, 28, 32, 36}}));
+  const tensor<int> wide {{2, 20}, std::vector<int>(40, 3)}; // v·A past the narrow kernel's columns
+  EXPECT(einsum("i,ij->j", tensor<int> {{2}, std::vector<int> {1, 2}}, wide) == (tensor<int> {{20}, std::vector<int>(20, 9)}));
   EXPECT(einsum("ij,j->i", tensor<int> {{3, 0}, std::vector<int> {}}, tensor<int> {{0}, std::vector<int> {}}) == (tensor<int> {{3}, std::vector<int>(3, 0)}));
   EXPECT(einsum("i,ij->j", tensor<int> {{0}, std::vector<int> {}}, tensor<int> {{0, 4}, std::vector<int> {}}) == (tensor<int> {{4}, std::vector<int>(4, 0)}));
   const std::size_t long_ints {numerical::detail::dot_chunk + 3};

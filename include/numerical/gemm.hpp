@@ -197,8 +197,34 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief `neon_scaled_add` for `float`, as the NEON tile rounds its terms. Under Clang the loop of `std::fma`, which
+  //!        it vectorises with a check that \p y and \p x do not overlap, then free to interleave the vectors' loads and
+  //!        stores (under GCC, which leaves that loop scalar, the vectors by hand).
+  inline void neon_scaled_add(float*       y,
+                              const float* x,
+                              float        f,
+                              std::size_t  count) noexcept
+  {
+    std::size_t i           {0};
+#  if !defined(__clang__)
+    const float32x4_t splat {vdupq_n_f32(f)};
+    for (; i + 16 <= count; i += 16) { // four independent vectors a step
+      vst1q_f32(y + i, vfmaq_f32(vld1q_f32(y + i), splat, vld1q_f32(x + i)));
+      vst1q_f32(y + i + 4, vfmaq_f32(vld1q_f32(y + i + 4), splat, vld1q_f32(x + i + 4)));
+      vst1q_f32(y + i + 8, vfmaq_f32(vld1q_f32(y + i + 8), splat, vld1q_f32(x + i + 8)));
+      vst1q_f32(y + i + 12, vfmaq_f32(vld1q_f32(y + i + 12), splat, vld1q_f32(x + i + 12)));
+    }
+    for (; i + 4 <= count; i += 4) {
+      vst1q_f32(y + i, vfmaq_f32(vld1q_f32(y + i), splat, vld1q_f32(x + i)));
+    }
+#  endif
+    for (; i < count; ++i) {
+      y[i] = std::fma(f, x[i], y[i]);
+    }
+  }
+
   //! \brief `y[i] −= Σₜ f[t] · x[(t · ldx) + i]` for \p count elements on arm64, each element a chain of fused
-  //!        multiply-adds through the terms in ascending order (\ref neon_scaled_add with `−f[t]`, term after term),
+  //!        multiply-adds through the terms in ascending order (`neon_scaled_add` with `−f[t]`, term after term),
   //!        eight elements held in registers.
   inline void neon_subtract_products(double*       y,
                                      const double* f,

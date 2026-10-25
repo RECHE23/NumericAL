@@ -18,6 +18,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   1000 × 1000 294 → 56 µs, `complex128` 500 × 500 158 → 66 µs; slower in two corners: under GCC 14 on arm64, `complex64`
   300 × 100 and 64 × 4096 by 4–8 % (B's rows read twice, its real parts' terms first), and on six AVX2 cores
   `complex128` 2000 × 2000 2.13 → 2.33 ms. Complex `x @ B`'s last bits move on the NEON, AMX, AVX2 and AVX-512 paths.
+- **A real vector times a matrix has the bits of its row in a product of a matrix by it as well, and a complex one on the
+  portable path where an operand is infinite**: each term rounded as `gemm` rounds it on the path (one fused
+  multiply-add on the AVX, NEON and AMX paths, `float` included; on the portable path as its plain loop rounds `sum +
+  a·b`, a complex product's infinities recovered by the library). `float` differed on every vector path, and under Clang
+  the portable path's `double` and `float`, where a row's vectors were fused and its last elements not; a complex
+  product of infinities read NaN. As fast or faster: M1 Pro, `float` 4096 × 64 37 → 26 µs under GCC 14, `double` 4096 ×
+  64 50 → 40 µs. The last bits of a real `x @ B` move on those paths.
 
 ## 2026.10.37 — 2026-10-25
 

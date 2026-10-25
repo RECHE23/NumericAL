@@ -682,14 +682,15 @@ namespace numerical {
       sum = std::fma(f, x, sum);
     }
 
-    //! \brief `sum += f · x` of \ref strided_column_group, as \ref add_one_product computes it.
+    //! \brief `sum += f · x` of \ref strided_column_group, as \ref gemm_rows' plain loop rounds a term where it fuses
+    //!        none (\ref rounded_apart_add, a complex product's infinities recovered as the library's).
     template <typename T>
     void add_column_term(std::false_type /*fused*/,
                          T&       sum,
                          const T& f,
                          const T& x)
     {
-      add_one_product(sum, f, x);
+      sum = rounded_apart_add(sum, f, x);
     }
 
     //! \brief Columns \p j to `j + Width` of \ref vector_times_columns into \p y, their sums held through the rows: each
@@ -750,6 +751,33 @@ namespace numerical {
                      }
                    });
       return y;
+    }
+
+    //! \brief \ref vector_times_columns for `float`: each term as \ref gemm_rows rounds it, fused on the x86-64 AVX paths
+    //!        (`avx2_strided_columns`) and on arm64's NEON and AMX paths, elsewhere the template's arithmetic.
+    [[nodiscard]] inline buffer<float> vector_times_columns(const float* a,
+                                                            const float* b,
+                                                            std::size_t  row_step,
+                                                            std::size_t  column_step,
+                                                            std::size_t  inner,
+                                                            std::size_t  cols)
+    {
+      [[maybe_unused]] const gemm_path path {gemm_path_current()};
+#ifdef NUMERICAL_X86_COMPILED
+      if (path == gemm_path::avx2 || path == gemm_path::avx512) {
+        buffer<float> y(cols);
+        parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
+                       avx2_strided_columns(a, b, row_step, column_step, inner, chunk * vector_chunk, std::min((chunk + 1) * vector_chunk, cols), y.data());
+                     });
+        return y;
+      }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+      if (path == gemm_path::neon || path == gemm_path::amx) {
+        return vector_times_columns<float, true>(a, b, row_step, column_step, inner, cols);
+      }
+#endif
+      return vector_times_columns<float>(a, b, row_step, column_step, inner, cols);
     }
 
     //! \brief \ref vector_times_columns for `double`: on the x86-64 fused paths, where \ref add_product adds each row by
@@ -1076,6 +1104,101 @@ namespace numerical {
       return vector_times_columns(a, bt, 1, ldbt, inner, cols);
     }
 
+    //! \brief `y[j] += Σₖ a[k] · b[(k · ldb) + j]` for \p count columns, B's \p inner rows added in order to a vector
+    //!        times a matrix by \ref add_product, an integer's exact.
+    template <typename T>
+    void add_row_terms(T*          y,
+                       const T*    a,
+                       const T*    b,
+                       std::size_t ldb,
+                       std::size_t inner,
+                       std::size_t count)
+    {
+      for (std::size_t k {0}; k < inner; ++k) {
+        add_product(y, a[k], b + (k * ldb), count);
+      }
+    }
+
+    //! \brief `add_row_terms` of a floating-point `T`: each term as \ref gemm_rows rounds it (`rows_terms_fuse`),
+    //!        so a vector times a matrix has the bits of its row in a product of a matrix by it; the path read once.
+    template <std::floating_point T>
+    void add_row_terms(T*          y,
+                       const T*    a,
+                       const T*    b,
+                       std::size_t ldb,
+                       std::size_t inner,
+                       std::size_t count)
+    {
+      [[maybe_unused]] const gemm_path path {gemm_path_current()};
+#ifdef NUMERICAL_X86_COMPILED
+      if (path == gemm_path::avx2 || path == gemm_path::avx512) {
+        for (std::size_t k {0}; k < inner; ++k) {
+          if constexpr (std::is_same_v<T, double>) {
+            add_product(y, a[k], b + (k * ldb), count); // fused there, AVX-512's own where it runs
+          }
+          else {
+            avx2_scaled_add(y, b + (k * ldb), a[k], count);
+          }
+        }
+        return;
+      }
+#endif
+#ifdef NUMERICAL_NEON_COMPILED
+      if (path == gemm_path::neon || path == gemm_path::amx) {
+        for (std::size_t k {0}; k < inner; ++k) {
+          neon_scaled_add(y, b + (k * ldb), a[k], count);
+        }
+        return;
+      }
+#endif
+      for (std::size_t k {0}; k < inner; ++k) {
+        const T        f   {a[k]};
+        const T* const row {b + (k * ldb)};
+        for (std::size_t j {0}; j < count; ++j) {
+          y[j] = rounded_apart_add(y[j], f, row[j]);
+        }
+      }
+    }
+
+    //! \brief Whether every part of \p count complex numbers from \p x is finite.
+    template <split_complex C>
+    [[nodiscard]] bool parts_finite(const C*    x,
+                                    std::size_t count) noexcept
+    {
+      bool finite {true};
+      for (std::size_t i {0}; i < count; ++i) {
+        finite &= std::isfinite(x[i].real()) && std::isfinite(x[i].imag());
+      }
+      return finite;
+    }
+
+    /*!
+     * \brief `add_row_terms` of complex numbers as \ref gemm_rows' plain loop rounds them (\ref rounded_apart_add): a
+     *        row by \ref add_product's vectors where its factor and itself are finite, whose products are then the
+     *        library's (both of a product's parts are NaN only from an infinite or NaN operand); else term by term, the
+     *        library recovering a product of infinities.
+     */
+    template <split_complex C>
+    void add_row_terms(C*          y,
+                       const C*    a,
+                       const C*    b,
+                       std::size_t ldb,
+                       std::size_t inner,
+                       std::size_t count)
+    {
+      for (std::size_t k {0}; k < inner; ++k) {
+        const C        f   {a[k]};
+        const C* const row {b + (k * ldb)};
+        if (std::isfinite(f.real()) && std::isfinite(f.imag()) && parts_finite(row, count)) {
+          add_product(y, f, row, count);
+          continue;
+        }
+        for (std::size_t j {0}; j < count; ++j) {
+          y[j] = rounded_apart_add(y[j], f, row[j]);
+        }
+      }
+    }
+
     /*!
      * \brief The columns under which \ref canonical_product sums a vector times a matrix by \ref vector_times_columns,
      *        the same bits as its rows added in order: below it faster for every type from a depth of a hundred (a few
@@ -1122,9 +1245,7 @@ namespace numerical {
         parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
                        const std::size_t first {chunk * vector_chunk};
                        const std::size_t count {std::min(vector_chunk, cols - first)};
-                       for (std::size_t k {0}; k < inner; ++k) {
-                         add_product(y.data() + first, a[k], b + (k * ldb) + first, count);
-                       }
+                       add_row_terms(y.data() + first, a, b + first, ldb, inner, count);
                      });
         return tensor<T> {std::move(out_shape), std::move(y)};
       }
@@ -1337,7 +1458,7 @@ namespace numerical {
 
     /*!
      * \brief A batch of two-operand products that sum nothing (`ij,j->ij`, `ijk,ik->ijk`), each element of the output its operands'
-     *        product added to 0 as \ref gemm_rows rounds a product's first term (\ref rows_terms_fuse), a complex one as
+     *        product added to 0 as \ref gemm_rows rounds a product's first term (`rows_terms_fuse`), a complex one as
      *        the path's complex product rounds it (\ref complex_terms): the bits of \ref contract_pair's products of depth
      *        one. Each operand's axes in the output's order (a copy only where they lie otherwise), broadcast against the
      *        other (\ref broadcast_into), where those products went one matrix product of depth one per element of the

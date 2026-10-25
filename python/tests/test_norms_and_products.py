@@ -106,19 +106,25 @@ class NormsAndProducts(unittest.TestCase):
                     alone = np.array([cast(a[r] @ x) for r in range(rows)]).astype(dtype)
                     self.assertEqual(whole.tobytes(), alone.tobytes(), f"{np.dtype(dtype).name} {rows} × {cols}")
 
-    def test_a_complex_vector_times_a_matrix_is_its_row_of_their_product(self):
-        # To the bit: x @ b is row i of a @ b, x that row of a, b row-major or column-major (read where it lies),
-        # across the kernels' widths and past several blocks of the depth.
-        for dtype in (np.complex64, np.complex128):
+    def test_a_vector_times_a_matrix_is_its_row_of_their_product(self):
+        # To the bit, NaN apart: x @ b is row i of a @ b, x that row of a, b row-major or column-major (read where it
+        # lies), in the four dtypes, across the kernels' widths and past several blocks of the depth, an infinity in x.
+        for dtype in (np.float32, np.float64, np.complex64, np.complex128):
             for inner, cols in ((1, 2), (5, 7), (37, 33), (260, 17), (300, 70), (129, 200)):
-                a = self.rng.standard_normal((3, inner)) + 1j * self.rng.standard_normal((3, inner))
-                b = self.rng.standard_normal((inner, cols)) + 1j * self.rng.standard_normal((inner, cols))
+                a = self.rng.standard_normal((3, inner))
+                b = self.rng.standard_normal((inner, cols))
+                if np.dtype(dtype).kind == "c":
+                    a = a + 1j * self.rng.standard_normal((3, inner))
+                    b = b + 1j * self.rng.standard_normal((inner, cols))
+                a[1, inner // 2] = np.inf
                 a = a.astype(dtype)
                 b = b.astype(dtype)
                 row = np.asarray(numerical.matmul(a, b))[1]
                 for operand in (b, np.asfortranarray(b), numerical.asarray(b)):
                     got = np.asarray(numerical.matmul(a[1], operand))
-                    self.assertEqual(got.tobytes(), row.tobytes(), f"{np.dtype(dtype).name} {inner} × {cols}")
+                    np.testing.assert_array_equal(got, row, f"{np.dtype(dtype).name} {inner} × {cols}")
+                    finite = np.isfinite(row)
+                    self.assertEqual(got[finite].tobytes(), row[finite].tobytes(), f"{np.dtype(dtype).name} {inner} × {cols}")
 
     def test_condition_numbers_and_singular_values(self):
         matrix = self.stack[0, 0]
