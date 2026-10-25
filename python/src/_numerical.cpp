@@ -2182,8 +2182,9 @@ double norm_of(const std::vector<double>& values, double ord)
     return scale * (ord == 2.0 ? std::sqrt(sum) : (ord == 1.0 ? sum : std::pow(sum, 1.0 / ord)));
 }
 
-// The parts whose squares plain_two_norm sums as one block: fixed, so the sum does not depend on the threads.
-constexpr std::size_t norm_block {std::size_t {1} << 14U};
+// The parts whose squares plain_two_norm sums as one block: fixed, so the sum does not depend on the threads; as many
+// as a chunk of numerical::detail::chunked_dot, whose weight among the threads they take.
+constexpr std::size_t norm_block {numerical::detail::dot_chunk};
 
 // The sum of the squares of `n` parts from `parts`, in double: each one's square added to the sum of its index modulo
 // 8 among the whole groups of 8, those eight summed as a tree, then the tail's squares in order.
@@ -2232,7 +2233,7 @@ std::optional<double> plain_two_norm(const T* x, std::size_t count)
         return root_of_squares(block_squares(parts, n));
     }
     std::vector<double> sums(blocks);
-    numerical::detail::parallel_for(blocks, norm_block, [&](std::size_t b) {
+    numerical::detail::parallel_for(blocks, numerical::detail::dot_chunk_weight(blocks), [&](std::size_t b) {
         const std::size_t first {b * norm_block};
         sums[b] = block_squares(parts + first, std::min(norm_block, n - first));
     });

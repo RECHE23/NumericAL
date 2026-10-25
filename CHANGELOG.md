@@ -9,6 +9,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A dot product of three chunks or more shares them among the threads from 49 152 elements**, where one weight an
+  element kept it on one thread to 131 072: the same chunks, so the same bits. M1 Pro, 10⁵ elements: 19.6 → 13.7 µs
+  (NumPy 19.6); `norm`'s blocks likewise, 15.6 → 11.0 µs.
 - **`einsum` of two operands sums each one's own labels first** (A-02), as three or more did: `ijk,jl->il` is
   `ijk->ij` then a matrix product, I·J·K + I·J·L terms where one loop over every label ran I·J·K·L. 64⁴ on an M1 Pro:
   21.6 ms → 63 µs. Each element's sum takes another order, so its last bits; fewer terms in each sum.

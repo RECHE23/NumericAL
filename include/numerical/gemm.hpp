@@ -3536,6 +3536,17 @@ namespace numerical::detail {
   inline constexpr std::size_t dot_chunk {std::size_t {1} << 14U};
 
   /*!
+   * \brief The work \ref chunked_dot weighs one of its \p chunks chunks, in multiply-adds for `parallel_for`'s split:
+   *        four an element, each a read of memory's pace, where one kept the product on one thread to 131 072 elements
+   *        (M1 Pro, 10⁵ elements: 19.6 → 13.2 µs); one an element under three chunks, whose split cost more than it saved
+   *        (20 000 elements: 4.5 → 5.6 µs).
+   */
+  [[nodiscard]] constexpr std::size_t dot_chunk_weight(std::size_t chunks) noexcept
+  {
+    return chunks > 2 ? 4 * dot_chunk : dot_chunk;
+  }
+
+  /*!
    * \brief `Σ a[i] · b[i]` for a plain dot product: chunks of \ref dot_chunk elements in parallel, each by
    *        \ref dot_product (several vector accumulators, on the widest x86-64 units for `double`), their sums
    *        added in the chunks' order. The same on any number of threads; in the last bits, not the ascending
@@ -3551,7 +3562,7 @@ namespace numerical::detail {
       return dot_product(a, b, count);
     }
     buffer<T> partial(chunks);
-    parallel_for(chunks, dot_chunk, [&](std::size_t c) {
+    parallel_for(chunks, dot_chunk_weight(chunks), [&](std::size_t c) {
                    const std::size_t first {c * dot_chunk};
                    partial[c] = dot_product(a + first, b + first, std::min(dot_chunk, count - first));
                  });
