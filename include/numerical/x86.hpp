@@ -2189,6 +2189,61 @@ namespace numerical::detail {
     return _mm256_fmaddsub_ps(re, v, _mm256_mul_ps(im, _mm256_permute_ps(v, 0xB1)));
   }
 
+  //! \brief The real parts of the complex numbers in \p v, each in both of its lanes.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_real_parts(__m256d v) noexcept
+  {
+    return _mm256_movedup_pd(v);
+  }
+
+  //! \brief \ref avx2_real_parts of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_real_parts(__m256 v) noexcept
+  {
+    return _mm256_moveldup_ps(v);
+  }
+
+  //! \brief The imaginary parts of the complex numbers in \p v, each in both of its lanes.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_imaginary_parts(__m256d v) noexcept
+  {
+    return _mm256_permute_pd(v, 0b1111);
+  }
+
+  //! \brief \ref avx2_imaginary_parts of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_imaginary_parts(__m256 v) noexcept
+  {
+    return _mm256_movehdup_ps(v);
+  }
+
+  //! \brief The outputs of two radix-4 butterflies, \p y0 to \p y3 their `j`-th outputs (a complex `double` of each per
+  //!        register), stored butterfly by butterfly at \p to: its four outputs together, then the next's.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_store_butterflies(double* to,
+                                                                  __m256d y0,
+                                                                  __m256d y1,
+                                                                  __m256d y2,
+                                                                  __m256d y3) noexcept
+  {
+    _mm256_storeu_pd(to, _mm256_permute2f128_pd(y0, y1, 0x20));
+    _mm256_storeu_pd(to + 4, _mm256_permute2f128_pd(y2, y3, 0x20));
+    _mm256_storeu_pd(to + 8, _mm256_permute2f128_pd(y0, y1, 0x31));
+    _mm256_storeu_pd(to + 12, _mm256_permute2f128_pd(y2, y3, 0x31));
+  }
+
+  //! \brief \ref avx2_store_butterflies of four butterflies of complex `float`: a transpose of their 64-bit complex numbers.
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_store_butterflies(float* to,
+                                                                  __m256 y0,
+                                                                  __m256 y1,
+                                                                  __m256 y2,
+                                                                  __m256 y3) noexcept
+  {
+    const __m256d t0 {_mm256_unpacklo_pd(_mm256_castps_pd(y0), _mm256_castps_pd(y1))};
+    const __m256d t1 {_mm256_unpackhi_pd(_mm256_castps_pd(y0), _mm256_castps_pd(y1))};
+    const __m256d t2 {_mm256_unpacklo_pd(_mm256_castps_pd(y2), _mm256_castps_pd(y3))};
+    const __m256d t3 {_mm256_unpackhi_pd(_mm256_castps_pd(y2), _mm256_castps_pd(y3))};
+    _mm256_storeu_ps(to, _mm256_castpd_ps(_mm256_permute2f128_pd(t0, t2, 0x20)));
+    _mm256_storeu_ps(to + 8, _mm256_castpd_ps(_mm256_permute2f128_pd(t1, t3, 0x20)));
+    _mm256_storeu_ps(to + 16, _mm256_castpd_ps(_mm256_permute2f128_pd(t0, t2, 0x31)));
+    _mm256_storeu_ps(to + 24, _mm256_castpd_ps(_mm256_permute2f128_pd(t1, t3, 0x31)));
+  }
+
   //! \brief `w · v` of complex numbers as \ref avx2_twiddled computes each lane, one at a time.
   template <typename R>
   NUMERICAL_TARGET("avx2,fma") inline std::complex<R> avx2_fused_product(const std::complex<R>& w,
@@ -2219,7 +2274,30 @@ namespace numerical::detail {
     const std::size_t     apart   {2 * stride * quarter};            // parts between a butterfly's inputs
     const R* const        from    {reinterpret_cast<const R*>(in)};  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
     R* const              into    {reinterpret_cast<R*>(out)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    for (std::size_t p {0}; p < quarter; ++p) {
+    std::size_t first_scalar_end {quarter};       // the butterflies the loop below takes
+    if (stride == 1 && quarter >= 2 * width) {     // the first pass: a register of butterflies along p, past the first
+      const R* const factors {reinterpret_cast<const R*>(twiddles)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+      for (std::size_t p {width}; p < quarter; p += width) {
+        const R* const at        {from + (2 * p)};
+        const vec      a         {avx2_load(at)};
+        const vec      b         {avx2_load(at + apart)};
+        const vec      c         {avx2_load(at + (2 * apart))};
+        const vec      d         {avx2_load(at + (3 * apart))};
+        const vec      a_plus_c  {avx2_add(a, c)};
+        const vec      a_minus_c {avx2_sub(a, c)};
+        const vec      b_plus_d  {avx2_add(b, d)};
+        const vec      i_b_d     {avx2_times_i(avx2_sub(b, d))};
+        const vec      w1        {avx2_load(factors + (2 * (p - 1)))};
+        const vec      w2        {avx2_load(factors + (2 * (run + p - 1)))};
+        const vec      w3        {avx2_load(factors + (2 * ((2 * run) + p - 1)))};
+        avx2_store_butterflies(into + (8 * p), avx2_add(a_plus_c, b_plus_d),
+                               avx2_twiddled(avx2_real_parts(w1), avx2_imaginary_parts(w1), avx2_sub(a_minus_c, i_b_d)),
+                               avx2_twiddled(avx2_real_parts(w2), avx2_imaginary_parts(w2), avx2_sub(a_plus_c, b_plus_d)),
+                               avx2_twiddled(avx2_real_parts(w3), avx2_imaginary_parts(w3), avx2_add(a_minus_c, i_b_d)));
+      }
+      first_scalar_end = width; // its first register's butterflies one at a time: p = 0 multiplies by nothing
+    }
+    for (std::size_t p {0}; p < first_scalar_end; ++p) {
       const bool     twiddle {p != 0};
       const C        w1      {twiddle ? twiddles[p - 1] : C {1}};
       const C        w2      {twiddle ? twiddles[run + p - 1] : C {1}};
