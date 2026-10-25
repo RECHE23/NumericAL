@@ -9,6 +9,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A transposed matrix times a vector takes its rows by blocks of 128**, where 256 left a matrix of a few hundred rows
+  to two threads: six AVX2 cores, 500 × 500 `float64` 33 → 19.6 µs. The same bits.
 - **`norm` sums its squares on the AVX2 units of x86-64** (the AVX-512 path's too), the same eight partial sums
   and the same bits: six AVX2 cores, 1000 × 1000 `float64` 90 → 57 µs (one thread 429 → 239), `float32` 73 → 30,
   101 × 901 `float32` 8.6 → 5.5.

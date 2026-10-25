@@ -3693,9 +3693,10 @@ namespace numerical::detail {
                  });
   }
 
-  //! \brief The rows of a column-major matrix \ref columns_times_vector takes at once: their partial sums (32 a row on
-  //!         the AVX-512 path) stay in the L2 cache.
-  inline constexpr std::size_t column_rows {256};
+  //! \brief The rows of a column-major matrix \ref columns_times_vector takes at once: their partial sums (32 KB on any
+  //!        path) stay in the L1 cache, and a matrix of a few hundred rows still makes a block for each core (six AVX2
+  //!        cores, 500 × 500 by a vector: 33 µs in two blocks of 256 rows, 19.6 in four of 128).
+  inline constexpr std::size_t column_rows {128};
 
   /*!
    * \brief `y = A x` for the column-major `rows × cols` \p a (column `j` at `a + j · lda`; NumPy's `a.T`, a transposed
