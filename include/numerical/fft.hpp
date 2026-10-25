@@ -29,6 +29,7 @@
 #include <vector>
 
 #include "buffer.hpp"
+#include "gemm.hpp"
 #include "parallel.hpp"
 #include "simd.hpp"
 #include "tensor.hpp"
@@ -206,6 +207,31 @@ namespace numerical {
       return {rr - ii, ri + ir};
     }
 
+    //! \brief `w · v` of complex numbers on the vector paths: `w.re·v.re − w.im·v.im` and `w.re·v.im + w.im·v.re`, each
+    //!        the second product rounded, the first fused with the sum by `std::fma`.
+    template <std::floating_point R>
+    [[nodiscard]] inline std::complex<R> fused_product(const std::complex<R>& w,
+                                                       const std::complex<R>& v) noexcept
+    {
+      const R ii {w.imag() * v.imag()};
+      const R ir {w.imag() * v.real()};
+      return {std::fma(w.real(), v.real(), -ii), std::fma(w.real(), v.imag(), ir)};
+    }
+
+    //! \brief A butterfly's factor times \p v: \ref fused_product where \p Fused, else \ref rounded_product.
+    template <bool Fused,
+              std::floating_point R>
+    [[nodiscard]] inline std::complex<R> twiddled(const std::complex<R>& w,
+                                                  const std::complex<R>& v) noexcept
+    {
+      if constexpr (Fused) {
+        return fused_product(w, v);
+      }
+      else {
+        return rounded_product(w, v);
+      }
+    }
+
     //! \brief The factors and passes of a transform of one length, built once and shared.
     template <std::floating_point R>
     struct fft_plan
@@ -213,7 +239,8 @@ namespace numerical {
       std::size_t                  length;    //!< The transform's length.
       bool                         radix_two; //!< Whether it is a power of two (Stockham passes).
       std::vector<std::complex<R>> roots;     //!< `e^{−2πi k/n}` for k below n, for the sum term by term.
-      std::vector<std::complex<R>> twiddles;  //!< Each radix-4 pass' factors: for each `p`, `w^p`, `w^{2p}`, `w^{3p}`.
+      std::vector<std::complex<R>> twiddles;
+      //!< Each radix-4 pass' factors from `p` = 1: its `w^p`, then its `w^{2p}`, then its `w^{3p}`, each run together.
     };
 
     //! \brief The \ref fft_plan of length \p n.
@@ -221,19 +248,21 @@ namespace numerical {
     [[nodiscard]] fft_plan<R> make_fft_plan(std::size_t n)
     {
       fft_plan<R> plan {.length = n, .radix_two = std::has_single_bit(n), .roots = {}, .twiddles = {}};
+      const auto  root {[n](std::size_t k) {
+                          const std::complex<double> value {unit_root(k, n)};
+                          return std::complex<R> {static_cast<R>(value.real()), static_cast<R>(value.imag())};
+                        }};
       if (!plan.radix_two) {
         plan.roots.resize(n);
         for (std::size_t k {0}; k < n; ++k) {
-          const std::complex<double> root {unit_root(k, n)};
-          plan.roots[k] = {static_cast<R>(root.real()), static_cast<R>(root.imag())};
+          plan.roots[k] = root(k);
         }
         return plan;
       }
       for (std::size_t current {n}, stride {1}; current >= 4; current /= 4, stride *= 4) {
-        for (std::size_t p {1}; p < current / 4; ++p) { // p = 0 multiplies by nothing
-          for (std::size_t power {1}; power <= 3; ++power) {
-            const std::complex<double> root {unit_root(power * p * stride, n)};
-            plan.twiddles.emplace_back(static_cast<R>(root.real()), static_cast<R>(root.imag()));
+        for (std::size_t power {1}; power <= 3; ++power) {
+          for (std::size_t p {1}; p < current / 4; ++p) { // p = 0 multiplies by nothing
+            plan.twiddles.push_back(root(power * p * stride));
           }
         }
       }
@@ -264,9 +293,11 @@ namespace numerical {
     /*!
      * \brief One Stockham pass of radix 4 over \p in into \p out: \p current points at stride \p stride, so
      *        `current · stride` is the length. Element `q + stride · (p + j · current/4)` of the input is the `j`-th
-     *        input of butterfly `(p, q)`, whose outputs go to `q + stride · (4p + j)`, the last three times `w^{jp}`.
+     *        input of butterfly `(p, q)`, whose outputs go to `q + stride · (4p + j)`, the last three times `w^{jp}`
+     *        (\ref twiddled), none for `p` = 0.
      */
-    template <std::floating_point R>
+    template <bool Fused,
+              std::floating_point R>
     void radix_four_pass(std::size_t            current,
                          std::size_t            stride,
                          const std::complex<R>* in,
@@ -275,34 +306,39 @@ namespace numerical {
     {
       using C = std::complex<R>;
       const std::size_t quarter {current / 4};
-      for (std::size_t p {0}; p < quarter; ++p) {
-        const C* const w {twiddles + (3 * (p - 1))}; // read past p = 0 only
-        for (std::size_t q {0}; q < stride; ++q) {
-          const C  a           {in[q + (stride * p)]};
-          const C  b           {in[q + (stride * (p + quarter))]};
-          const C  c           {in[q + (stride * (p + (2 * quarter)))]};
-          const C  d           {in[q + (stride * (p + (3 * quarter)))]};
-          const C  a_plus_c    {a + c};
-          const C  a_minus_c   {a - c};
-          const C  b_plus_d    {b + d};
-          const C  b_minus_d   {b - d};
-          const C  i_b_minus_d {-b_minus_d.imag(), b_minus_d.real()}; // i·(b − d), exact
-          const C  first       {a_minus_c - i_b_minus_d};
-          const C  second      {a_plus_c - b_plus_d};
-          const C  third       {a_minus_c + i_b_minus_d};
-          C* const to          {out + q + (stride * 4 * p)};
-          to[0] = a_plus_c + b_plus_d;
-          if (p == 0) {
-            to[stride]       = first;
-            to[2 * stride]   = second;
-            to[3 * stride]   = third;
-          }
-          else {
-            to[stride]     = rounded_product(w[0], first);
-            to[2 * stride] = rounded_product(w[1], second);
-            to[3 * stride] = rounded_product(w[2], third);
-          }
-        }
+      const std::size_t run     {quarter - 1}; // the factors of each power
+      const std::size_t apart   {stride * quarter};
+      const auto        butterfly {[&](std::size_t p, auto&& place) {
+                                     const C* const in_p {in + (stride * p)};
+                                     C* const       to   {out + (stride * 4 * p)};
+                                     for (std::size_t q {0}; q < stride; ++q) {
+                                       const C a           {in_p[q]};
+                                       const C b           {in_p[q + apart]};
+                                       const C c           {in_p[q + (2 * apart)]};
+                                       const C d           {in_p[q + (3 * apart)]};
+                                       const C a_plus_c    {a + c};
+                                       const C a_minus_c   {a - c};
+                                       const C b_plus_d    {b + d};
+                                       const C b_minus_d   {b - d};
+                                       const C i_b_minus_d {-b_minus_d.imag(), b_minus_d.real()}; // i·(b − d), exact
+                                       to[q] = a_plus_c + b_plus_d;
+                                       place(to + q, a_minus_c - i_b_minus_d, a_plus_c - b_plus_d, a_minus_c + i_b_minus_d);
+                                     }
+                                   }};
+      butterfly(0, [stride](C* to, const C& first, const C& second, const C& third) {
+                  to[stride]       = first;
+                  to[2 * stride]   = second;
+                  to[3 * stride]   = third;
+                });
+      for (std::size_t p {1}; p < quarter; ++p) {
+        const C w1 {twiddles[p - 1]};
+        const C w2 {twiddles[run + p - 1]};
+        const C w3 {twiddles[(2 * run) + p - 1]};
+        butterfly(p, [stride, w1, w2, w3](C* to, const C& first, const C& second, const C& third) {
+                    to[stride]     = twiddled<Fused>(w1, first);
+                    to[2 * stride] = twiddled<Fused>(w2, second);
+                    to[3 * stride] = twiddled<Fused>(w3, third);
+                  });
       }
     }
 
@@ -320,15 +356,51 @@ namespace numerical {
       }
     }
 
+    //! \brief The Stockham passes of a power of two over \p data, \p work as long, the result in \p data: each of
+    //!        radix 4 by \p pass (\ref radix_four_pass's arguments), the last of radix 2 where the exponent is odd.
+    template <std::floating_point R,
+              typename Pass>
+    void stockham_passes(const fft_plan<R>& plan,
+                         std::complex<R>*   data,
+                         std::complex<R>*   work,
+                         Pass&&             pass) noexcept
+    {
+      const std::size_t      n        {plan.length};
+      std::complex<R>*       in       {data};
+      std::complex<R>*       out      {work};
+      const std::complex<R>* twiddles {plan.twiddles.data()};
+      std::size_t            current  {n};
+      std::size_t            stride   {1};
+      for (; current >= 4; current /= 4, stride *= 4) {
+        pass(current, stride, in, out, twiddles);
+        twiddles += 3 * (current / 4 - 1);
+        std::swap(in, out);
+      }
+      if (current == 2) {
+        radix_two_pass(stride, in, out);
+        std::swap(in, out);
+      }
+      if (in != data) {
+        std::copy(in, in + n, data);
+      }
+    }
+
+    //! \brief Whether a transform's butterflies fuse their products (\ref fused_product): on every path past the portable.
+    [[nodiscard]] inline bool fft_fuses() noexcept
+    {
+      return gemm_path_current() != gemm_path::portable;
+    }
+
     /*!
-     * \brief The forward transform of the \p plan's length, in place in \p data, \p work as long: Stockham passes
-     *        for a power of two, the result in \p data; else each output the sum of its terms in order, each term the
-     *        input times its root (\ref rounded_product).
+     * \brief The forward transform of the \p plan's length, in place in \p data, \p work as long: Stockham passes for
+     *        a power of two, fused where \p fused (\ref fft_fuses), the result in \p data; else each output the sum of
+     *        its terms in order, each term the input times its root (\ref rounded_product).
      */
     template <std::floating_point R>
     void forward_fft(const fft_plan<R>& plan,
                      std::complex<R>*   data,
-                     std::complex<R>*   work) noexcept
+                     std::complex<R>*   work,
+                     bool               fused) noexcept
     {
       const std::size_t n {plan.length};
       if (!plan.radix_two) {
@@ -342,23 +414,15 @@ namespace numerical {
         std::copy(work, work + n, data);
         return;
       }
-      std::complex<R>*       in       {data};
-      std::complex<R>*       out      {work};
-      const std::complex<R>* twiddles {plan.twiddles.data()};
-      std::size_t            current  {n};
-      std::size_t            stride   {1};
-      for (; current >= 4; current /= 4, stride *= 4) {
-        radix_four_pass(current, stride, in, out, twiddles);
-        twiddles += 3 * (current / 4 - 1);
-        std::swap(in, out);
+      if (!fused) {
+        stockham_passes(plan, data, work, radix_four_pass<false, R>);
+        return;
       }
-      if (current == 2) {
-        radix_two_pass(stride, in, out);
-        std::swap(in, out);
-      }
-      if (in != data) {
-        std::copy(in, in + n, data);
-      }
+#ifdef NUMERICAL_X86_COMPILED
+      stockham_passes(plan, data, work, avx2_radix_four_pass<R>);
+#else
+      stockham_passes(plan, data, work, radix_four_pass<true, R>);
+#endif
     }
 
     //! \brief The complex type a transform of \p T computes in: \p T itself, or a real type's complex.
@@ -390,6 +454,43 @@ namespace numerical {
       }
       return (norm == fft_norm::forward) != inverse ? R(1) / static_cast<R>(n) : R(1);
     }
+
+    //! \brief The most elements \ref fft_scratch keeps on a thread between transforms: 1 MiB of complex `double`.
+    inline constexpr std::size_t fft_scratch_kept {std::size_t {1} << 16};
+
+    //! \brief A transform's working space of \p C: the calling thread's own, kept for the next transform, up to
+    //!        \ref fft_scratch_kept elements; past it, its own allocation.
+    template <split_complex C>
+    class fft_scratch
+    {
+    public:
+
+      //! \brief Space for \p count elements.
+      explicit fft_scratch(std::size_t count)
+      {
+        if (count > fft_scratch_kept) {
+          own_.resize(count);
+          data_ = own_.data();
+          return;
+        }
+        thread_local buffer<C> kept;
+        if (kept.size() < count) {
+          kept.resize(fft_scratch_kept);
+        }
+        data_ = kept.data();
+      }
+
+      //! \brief The first element.
+      [[nodiscard]] C* data() const noexcept
+      {
+        return data_;
+      }
+
+    private:
+
+      buffer<C> own_;            //!< The space past fft_scratch_kept.
+      C*        data_ {nullptr}; //!< The space in use.
+    };
 
     /*!
      * \brief The transform of \p a along \p axis, \p n points (the axis cut or padded with zeros to it, as NumPy's),
@@ -423,20 +524,25 @@ namespace numerical {
       if (walk.outer == 0) {
         return tensor<C> {std::move(shape), std::move(out)};
       }
-      const std::shared_ptr<const fft_plan<R>> plan {shared_fft_plan<R>(points)};
-      const std::size_t                        kept {std::min(points, extent)};
-      const T* const                           from {a.data().data()};
+      const std::shared_ptr<const fft_plan<R>> plan  {shared_fft_plan<R>(points)};
+      const std::size_t                        kept  {std::min(points, extent)};
+      const bool                               fused {fft_fuses()};
+      const T* const                           from  {a.data().data()};
       parallel_for(walk.outer * walk.inner, 5 * points * static_cast<std::size_t>(std::bit_width(points)), [&](std::size_t line) {
                      const std::size_t outer {line / walk.inner};
                      const std::size_t inner {line % walk.inner};
                      const T* const    in    {from + (outer * extent * walk.inner) + inner};
                      C* const          to    {out.data() + (outer * points * walk.inner) + inner};
-                     buffer<C>         data(2 * points);
+                     fft_scratch<C>    scratch {walk.inner == 1 ? points : 2 * points};
+                     C* const          data  {walk.inner == 1 ? to : scratch.data() + points}; // a line of the output where it lies together
                      for (std::size_t k {0}; k < points; ++k) {
                        const C value {k < kept ? C(in[k * walk.inner]) : C {}};
                        data[k] = inverse ? std::conj(value) : value;
                      }
-                     forward_fft(*plan, data.data(), data.data() + points);
+                     forward_fft(*plan, data, scratch.data(), fused);
+                     if (data == to && !inverse && scale == R(1)) {
+                       return; // transformed where it lies, nothing to conjugate or scale
+                     }
                      for (std::size_t k {0}; k < points; ++k) {
                        const C value {inverse ? std::conj(data[k]) : data[k]};
                        to[k * walk.inner] = scale == R(1) ? value : C {value.real() * scale, value.imag() * scale};

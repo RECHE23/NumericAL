@@ -91,14 +91,14 @@ namespace {
   }
 } // namespace
 
-// Within half of epsilon · log₂ n in RMS of the exact transform, in both precisions: every power of two to 4096 (both
+// Within half of epsilon · log₂ n in RMS of the exact transform (a single addition at n = 2), in both precisions: every power of two to 4096 (both
 // parities of the exponent: radix 4 alone, and its last pass of radix 2) and other lengths (the sum term by term).
 TEST(fft_is_within_a_fraction_of_epsilon_log_n_of_the_exact_transform)
 {
   std::mt19937_64 draws {20261025};
   for (std::size_t n {1}; n <= 4096; n *= 2) {
-    EXPECT(relative_error<double>(n, draws) < 0.3);
-    EXPECT(relative_error<float>(n, draws) < 0.3);
+    EXPECT(relative_error<double>(n, draws) < 0.5);
+    EXPECT(relative_error<float>(n, draws) < 0.5);
   }
   for (const std::size_t n : {3UL, 5UL, 6UL, 7UL, 12UL, 31UL, 100UL}) {
     EXPECT(relative_error<double>(n, draws) < 0.5);
@@ -289,5 +289,32 @@ TEST(fft_runs_every_axis_point_and_scaling_in_each_type)
     EXPECT(every_axis_point_and_scaling_runs<double>(norm));
     EXPECT(every_axis_point_and_scaling_runs<std::complex<float>>(norm));
     EXPECT(every_axis_point_and_scaling_runs<std::complex<double>>(norm));
+  }
+}
+
+// On every path this processor runs, the transform is as accurate; the fused paths (NEON, AMX, AVX2, AVX-512: each
+// factor's product fused alike) give the same bits as each other, whatever their vectors' width.
+TEST(every_path_is_accurate_and_the_fused_ones_agree_to_the_bit)
+{
+  std::vector<numerical::buffer<std::complex<double>>> fused;
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    std::mt19937_64 draws {3};
+    for (std::size_t n {1}; n <= 2048; n *= 2) {
+      EXPECT(relative_error<double>(n, draws) < 0.5);
+      EXPECT(relative_error<float>(n, draws) < 0.5);
+    }
+    std::mt19937_64                    same {5};
+    const tensor<std::complex<double>> x    {{1024}, drawn<double>(1024, same)};
+    if (path != numerical::gemm_path::portable) {
+      fused.push_back(numerical::fft(x).data());
+    }
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+  for (const auto& bits : fused) {
+    EXPECT(same_bits(bits, fused.front()));
   }
 }
