@@ -9,6 +9,18 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`einsum` of two operands sums each one's own labels first** (A-02), as three or more did: `ijk,jl->il` is
+  `ijk->ij` then a matrix product, I·J·K + I·J·L terms where one loop over every label ran I·J·K·L. 64⁴ on an M1 Pro:
+  21.6 ms → 63 µs. Each element's sum takes another order, so its last bits; fewer terms in each sum.
+- **`norm` with no axis sums its squares by fixed blocks of 2¹⁴ parts on the threads**, each block's eight partial
+  sums and tail as the one pass took them, the blocks' sums added in order: the same on any number of threads, and an
+  array of one block keeps its bits; a larger one's change. A column-major array takes the same blocks in its C
+  order. M1 Pro, 10⁶ elements: `float64` 158 → 40 µs (NumPy 160), `float32` 156 → 41 (NumPy 30); 3000 × 3000
+  1444 → 645 µs.
+- **A complex Cholesky divides by its diagonal as the real number it is**: each part over it, one rounding each, in
+  the factor and in both triangular solves, where a complex division took the C library's scaled one (several
+  roundings under libc++, other bits under another library). M1 Pro: order 48 27.5 → 16.6 µs, 128 247 → 162, 500
+  3240 → 2750. Real Cholesky keeps its bits.
 - **A product of one to four rows on x86-64 runs by blocks of columns on the threads** (`x @ W` with `x` a vector or a
   few rows): each block keeps its sums in registers over the whole depth with B read where it lies, where the packed
   kernel copied the whole of B for those few rows and a product by rows of four took one thread. The same bits. All
@@ -32,6 +44,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **A transposed NumPy matrix times a vector (`a.T @ x`) runs without a copy on x86-64** (`double`): each row's sum
   the kernel's for its C-ordered copy, from the same partial sums updated a column at a time. The same bits. Six AVX2
   cores: 500 × 500 266 → 38 µs (NumPy 32), 1000 × 100 105 → 12.3 µs (NumPy 16.2).
+
+### Fixed
+- **A `long double` QR or Cholesky answers to `long double`'s precision**: the norms, reflector lengths and
+  Cholesky's diagonal of a `long double` scalar, real or complex, are carried in `long double` (`detail::carried_t`),
+  where `double` cut them, and with them `Q`, `R`, `L` and every solve built on them, to `double`'s precision. On
+  x86-64 (80-bit `long double`): QR of order 12, `‖QR − A‖` 1419 ε → under 768 ε as `float` and `double` are held,
+  `Q`'s orthogonality 5397 ε → likewise; of order 100, 2496 and 13 302 ε. LU already answered to it. `float` and
+  `double` keep the same bits: the same type, the same code. Singular values stay carried in `double` whatever the
+  scalar.
 
 ## 2026.10.35 — 2026-10-24
 
