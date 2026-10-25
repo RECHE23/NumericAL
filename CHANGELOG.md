@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.37 — 2026-10-25
+
 ### Changed
 - **A transposed complex NumPy matrix times a vector (`a.T @ x`) is read where it lies**, as a real one is, with its
   C-ordered copy's bits on every path (the slots its row kernel keeps, kept a column at a time over rows): M1 Pro,
