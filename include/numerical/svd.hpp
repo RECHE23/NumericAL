@@ -70,7 +70,8 @@ namespace numerical {
       transpose_square(w);
       transpose_square(v);
       // Orthogonal to the rounding of the columns' storage: a float column holds no inner product to double's.
-      const double epsilon {static_cast<double>(std::numeric_limits<value_range_t<T>>::epsilon())};
+      // The rotations are carried in double: the coarser of T's epsilon and double's.
+      const double epsilon {std::max(static_cast<double>(std::numeric_limits<value_range_t<T>>::epsilon()), std::numeric_limits<double>::epsilon())};
       for (std::size_t sweep {1};; ++sweep) {
         bool rotated {false};
         for (std::size_t p {0}; p < n; ++p) {
