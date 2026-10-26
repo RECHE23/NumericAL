@@ -2673,6 +2673,111 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
+  //! \brief The even lanes of \p even, the odd ones of \p odd: each complex number's real part from one, imaginary from
+  //!        the other.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_parts_of(__m256d even,
+                                                            __m256d odd) noexcept
+  {
+    return _mm256_blend_pd(even, odd, 0b1010);
+  }
+
+  //! \brief \ref avx2_parts_of of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_parts_of(__m256 even,
+                                                           __m256 odd) noexcept
+  {
+    return _mm256_blend_ps(even, odd, 0b10101010);
+  }
+
+  //! \brief \p v with each complex number's imaginary part negated, exact.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_conjugated(__m256d v) noexcept
+  {
+    return _mm256_xor_pd(v, _mm256_setr_pd(0.0, -0.0, 0.0, -0.0));
+  }
+
+  //! \brief \ref avx2_conjugated of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_conjugated(__m256 v) noexcept
+  {
+    return _mm256_xor_ps(v, _mm256_setr_ps(0.0F, -0.0F, 0.0F, -0.0F, 0.0F, -0.0F, 0.0F, -0.0F));
+  }
+
+  //! \brief The complex numbers of \p v, their parts exchanged.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_exchanged(__m256d v) noexcept
+  {
+    return _mm256_permute_pd(v, 0b0101);
+  }
+
+  //! \brief \ref avx2_exchanged of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_exchanged(__m256 v) noexcept
+  {
+    return _mm256_permute_ps(v, 0xB1);
+  }
+
+  /*!
+   * \brief One Stockham pass of radix 8 of `fft.hpp`'s (`radix_eight_pass_body`), fused, a register of complex numbers
+   *        along the stride at a time (the stride a power of two of at least 4: powers of two run first), the same
+   *        operations in the same order. \p half_root_two is √½.
+   */
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_radix_eight_pass(std::size_t            current,
+                                                                 std::size_t            stride,
+                                                                 const std::complex<R>* in,
+                                                                 std::complex<R>*       out,
+                                                                 const std::complex<R>* twiddles,
+                                                                 R                      half_root_two) noexcept
+  {
+    using vec = decltype(avx2_load(static_cast<const R*>(nullptr))); // __m256d or __m256
+    constexpr std::size_t width {32 / sizeof(std::complex<R>)};
+    const std::size_t     part  {current / 8};
+    const std::size_t     run   {part - 1};
+    const std::size_t     apart {2 * stride * part};              // parts between a butterfly's inputs
+    const vec             root  {avx2_splat(half_root_two)};
+    const R* const        from  {reinterpret_cast<const R*>(in)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+    R* const              into  {reinterpret_cast<R*>(out)};      // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    for (std::size_t p {0}; p < part; ++p) {
+      const R* const in_p {from + (2 * stride * p)};
+      R* const       to   {into + (2 * stride * 8 * p)};
+      for (std::size_t q {0}; q + width <= stride; q += width) {
+        const R* const at {in_p + (2 * q)};
+        const vec      x0 {avx2_load(at)};
+        const vec      x1 {avx2_load(at + apart)};
+        const vec      x2 {avx2_load(at + (2 * apart))};
+        const vec      x3 {avx2_load(at + (3 * apart))};
+        const vec      x4 {avx2_load(at + (4 * apart))};
+        const vec      x5 {avx2_load(at + (5 * apart))};
+        const vec      x6 {avx2_load(at + (6 * apart))};
+        const vec      x7 {avx2_load(at + (7 * apart))};
+        const vec      b1 {avx2_sub(x1, x5)};
+        const vec      b3 {avx2_sub(x3, x7)};
+        const vec      s1 {avx2_add(b1, avx2_exchanged(b1))}; // re + im in both lanes
+        const vec      d1 {avx2_sub(b1, avx2_exchanged(b1))}; // re − im, im − re
+        const vec      s3 {avx2_add(b3, avx2_exchanged(b3))};
+        const vec      d3 {avx2_sub(avx2_exchanged(b3), b3)}; // im − re, re − im
+        const vec      w1 {avx2_mul(root, avx2_parts_of(s1, d1))};
+        const vec      w3 {avx2_conjugated(avx2_mul(root, avx2_parts_of(d3, s3)))};
+        vec            e0 {};
+        vec            e1 {};
+        vec            e2 {};
+        vec            e3 {};
+        vec            o0 {};
+        vec            o1 {};
+        vec            o2 {};
+        vec            o3 {};
+        avx2_four_point(avx2_add(x0, x4), avx2_add(x1, x5), avx2_add(x2, x6), avx2_add(x3, x7), e0, e1, e2, e3);
+        avx2_four_point(avx2_sub(x0, x4), w1, avx2_times_minus_i(avx2_sub(x2, x6)), w3, o0, o1, o2, o3);
+        R* const place {to + (2 * q)};
+        avx2_store(place, e0);
+        avx2_store_twiddled(place + (2 * stride), o0, twiddles, run, p, 1);
+        avx2_store_twiddled(place + (4 * stride), e1, twiddles, run, p, 2);
+        avx2_store_twiddled(place + (6 * stride), o1, twiddles, run, p, 3);
+        avx2_store_twiddled(place + (8 * stride), e2, twiddles, run, p, 4);
+        avx2_store_twiddled(place + (10 * stride), o2, twiddles, run, p, 5);
+        avx2_store_twiddled(place + (12 * stride), e3, twiddles, run, p, 6);
+        avx2_store_twiddled(place + (14 * stride), o3, twiddles, run, p, 7);
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
 #endif
 } // namespace numerical::detail
 

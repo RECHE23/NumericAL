@@ -328,7 +328,7 @@ namespace numerical {
 
     /*!
      * \brief The radix of each Stockham pass of \p n, or none where \p n has a prime factor past \ref fft_largest_radix,
-     *        its powers of two first (4 first, its stride 1, then 16 while 16 points remain, then 4), then its factors 3,
+     *        its powers of two first (4 first, its stride 1, then 16 while 16 points remain, then 8 or 4), then its factors 3,
      *        5 and 7, then each other prime in ascending order, then a lone factor 2 last, where its pass has no factor.
      */
     [[nodiscard]] inline std::vector<std::size_t> fft_radices(std::size_t n)
@@ -342,6 +342,10 @@ namespace numerical {
       }
       for (; twos >= 16; twos /= 16) {
         radices.push_back(16);
+      }
+      if (twos == 8) {
+        radices.push_back(8); // three factors of 2: one pass, where 4 and 2 took two
+        twos = 1;
       }
       for (; twos >= 4; twos /= 4) {
         radices.push_back(4);
@@ -360,7 +364,7 @@ namespace numerical {
       return radices;
     }
 
-    //! \brief The real constants of the radix-3 and radix-5 butterflies, rounded once from their double-double values.
+    //! \brief The real constants of the radix-3, -5 and -8 butterflies, rounded once from their double-double values.
     template <std::floating_point R>
     struct small_radix_constants
     {
@@ -369,6 +373,7 @@ namespace numerical {
       R c2;              //!< cos(4π/5).
       R s1;              //!< sin(2π/5).
       R s2;              //!< sin(4π/5).
+      R half_root_two;   //!< √½ = cos(π/4).
     };
 
     //! \brief \ref small_radix_constants from the roots of order 3 and 5 (\ref unit_root, whose imaginary parts are
@@ -380,7 +385,7 @@ namespace numerical {
       const std::complex<double> fifth  {unit_root(1, 5)};
       const std::complex<double> fifth2 {unit_root(2, 5)};
       return {static_cast<R>(-third.imag()), static_cast<R>(fifth.real()), static_cast<R>(fifth2.real()), static_cast<R>(-fifth.imag()),
-              static_cast<R>(-fifth2.imag())};
+              static_cast<R>(-fifth2.imag()), static_cast<R>(unit_root(1, 8).real())};
     }
 
     template <std::floating_point R>
@@ -456,7 +461,7 @@ namespace numerical {
             plan.twiddles.push_back(narrow(roots.root(power * p * stride)));
           }
         }
-        if (radix > 5 && radix != 16) {
+        if (radix > 5 && radix != 8 && radix != 16) {
           for (std::size_t m {0}; m < radix; ++m) {
             plan.radix_roots.push_back(narrow(unit_root(m, radix)));
           }
@@ -771,6 +776,57 @@ namespace numerical {
       }
     }
 
+    /*!
+     * \brief One Stockham pass of radix 8, as \ref radix_four_pass is of 4: `a_j = x_j + x_{j+4}`, `b_j = x_j − x_{j+4}`
+     *        (j below 4), `b_j` then times `e^{−2πi j/8}` (`√½·(re + im, im − re)`, `(im, −re)`,
+     *        `√½·(im − re, −(re + im))`: each sum then its product, no fused operation, so the same bits on every
+     *        path); the even outputs `a`'s \ref four_point, the odd ones `b`'s; output `k` then times `w^{kp}` as
+     *        \p Fused, none for `p` = 0. \p half_root_two is √½.
+     */
+    template <bool Fused,
+              std::floating_point R>
+    NUMERICAL_ALWAYS_INLINE void radix_eight_pass_body(std::size_t            current,
+                                                       std::size_t            stride,
+                                                       const std::complex<R>* in,
+                                                       std::complex<R>*       out,
+                                                       const std::complex<R>* twiddles,
+                                                       R                      half_root_two) noexcept
+    {
+      using C = std::complex<R>;
+      const std::size_t part  {current / 8};
+      const std::size_t run   {part - 1};
+      const std::size_t apart {stride * part};
+      for (std::size_t p {0}; p < part; ++p) {
+        const C* const in_p {in + (stride * p)};
+        C* const       to   {out + (stride * 8 * p)};
+        for (std::size_t q {0}; q < stride; ++q) {
+          std::array<C, 4> a {};
+          std::array<C, 4> b {};
+          for (std::size_t j {0}; j < 4; ++j) {
+            const C low  {in_p[q + (j * apart)]};
+            const C high {in_p[q + ((j + 4) * apart)]};
+            a[j] = low + high;
+            b[j] = low - high;
+          }
+          const R sum1        {b[1].real() + b[1].imag()};
+          const R difference1 {b[1].imag() - b[1].real()};
+          const R sum3        {b[3].real() + b[3].imag()};
+          const R difference3 {b[3].imag() - b[3].real()};
+          b[1] = C {half_root_two * sum1, half_root_two * difference1};
+          b[2] = C {b[2].imag(), -b[2].real()};
+          b[3] = C {half_root_two * difference3, -(half_root_two * sum3)};
+          std::array<C, 4> even {};
+          std::array<C, 4> odd  {};
+          four_point(a[0], a[1], a[2], a[3], even.data());
+          four_point(b[0], b[1], b[2], b[3], odd.data());
+          for (std::size_t k {0}; k < 8; ++k) {
+            const C value {(k % 2) == 0 ? even[k / 2] : odd[k / 2]};
+            to[q + (stride * k)] = (p == 0 || k == 0) ? value : twiddled<Fused>(twiddles[((k - 1) * run) + p - 1], value);
+          }
+        }
+      }
+    }
+
     //! \brief \ref any_radix_pass_body, its products as \p Fused.
     template <bool Fused,
               std::floating_point R>
@@ -788,6 +844,9 @@ namespace numerical {
       }
       else if (radix == 5) {
         radix_five_pass_body<Fused>(current, stride, in, out, twiddles, small);
+      }
+      else if (radix == 8) {
+        radix_eight_pass_body<Fused>(current, stride, in, out, twiddles, small.half_root_two);
       }
       else {
         any_radix_pass_body<Fused>(radix, current, stride, in, out, twiddles, roots);
@@ -811,6 +870,9 @@ namespace numerical {
       }
       else if (radix == 5) {
         avx2_radix_five_pass(current, stride, in, out, twiddles, small.c1, small.c2, small.s1, small.s2);
+      }
+      else if (radix == 8) {
+        avx2_radix_eight_pass(current, stride, in, out, twiddles, small.half_root_two);
       }
       else {
         any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
@@ -868,7 +930,7 @@ namespace numerical {
         }
         else {
           other(radix, current, stride, in, out, twiddles, roots, plan.small);
-          roots += radix > 5 ? radix : 0; // 3 and 5 take the plan's constants
+          roots += (radix > 5 && radix != 8) ? radix : 0; // 3, 5 and 8 take the plan's constants
         }
         twiddles += (radix - 1) * (current / radix - 1);
         current  /= radix;
@@ -1337,8 +1399,8 @@ namespace numerical {
     /*!
      * \brief A transform of each line of \p a along axis \p index into lines of \p out_points: each line gathered (its
      *        first \p in_points elements, padded with zeros), passed with its output line, both together, and the
-     *        thread's working space of \p work elements of `C` to \p line, then scattered; the lines shared among the
-     *        threads.
+     *        thread's working space of \p work elements of `C` to \p line, then scattered; a line together and not
+     *        padded passed where it lies, its output line too. The lines shared among the threads.
      */
     template <typename In,
               typename Out,
@@ -1361,6 +1423,14 @@ namespace numerical {
       }
       const std::size_t kept {std::min(in_points, extent)};
       const In* const   from {a.data().data()};
+      if (walk.inner == 1 && in_points <= extent) { // each line together, none padded: read and written where it lies
+        parallel_for(walk.outer, 5 * (in_points + out_points) * static_cast<std::size_t>(std::bit_width(in_points + out_points)),
+                     [&](std::size_t number) {
+                       fft_scratch<C, 0> space {work};
+                       line(from + (number * extent), out.data() + (number * out_points), space.data());
+                     });
+        return tensor<Out> {std::move(shape), std::move(out)};
+      }
       parallel_for(walk.outer * walk.inner, 5 * (in_points + out_points) * static_cast<std::size_t>(std::bit_width(in_points + out_points)),
                    [&](std::size_t number) {
                      const std::size_t      outer {number / walk.inner};
