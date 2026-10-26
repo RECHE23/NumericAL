@@ -346,3 +346,31 @@ TEST(a_long_transform_takes_its_own_working_space)
   EXPECT(spectrum.data()[0] == std::complex<double>(static_cast<double>(n), 0.0));
   EXPECT(std::all_of(spectrum.data().begin() + 1, spectrum.data().end(), [](const std::complex<double>& v) { return std::abs(v) < 1e-9; }));
 }
+
+// Every length from 1 to 300 in both precisions, on every path this processor runs: ifft undoes fft. The registers'
+// loops end at whole registers, whatever the radices and strides (a length past them once wrote out of bounds).
+TEST(every_length_round_trips_on_every_path)
+{
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    std::mt19937_64 draws {17};
+    for (std::size_t n {1}; n <= 300; ++n) {
+      const tensor<std::complex<double>> x       {{n}, drawn<double>(n, draws)};
+      const tensor<std::complex<float>>  y       {{n}, drawn<float>(n, draws)};
+      const tensor<std::complex<double>> x_back  {numerical::ifft(numerical::fft(x))};
+      const tensor<std::complex<float>>  y_back  {numerical::ifft(numerical::fft(y))};
+      double                             worst_x {0.0};
+      double                             worst_y {0.0};
+      for (std::size_t j {0}; j < n; ++j) {
+        worst_x = std::max(worst_x, std::abs(x_back.data()[j] - x.data()[j]));
+        worst_y = std::max(worst_y, static_cast<double>(std::abs(y_back.data()[j] - y.data()[j])));
+      }
+      EXPECT(worst_x < 1e-13);
+      EXPECT(worst_y < 1e-5);
+    }
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}

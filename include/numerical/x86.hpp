@@ -2274,10 +2274,13 @@ namespace numerical::detail {
     const std::size_t     apart            {2 * stride * quarter};           // parts between a butterfly's inputs
     const R* const        from             {reinterpret_cast<const R*>(in)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
     R* const              into             {reinterpret_cast<R*>(out)};      // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    std::size_t           first_scalar_end {quarter};                        // the butterflies the loop below takes
+    std::size_t           vector_begin     {quarter};                        // the butterflies the first pass takes by registers: [vector_begin, vector_end)
+    std::size_t           vector_end       {quarter};
     if (stride == 1 && quarter >= 2 * width) {                       // the first pass: a register of butterflies along p, past the first
       const R* const factors {reinterpret_cast<const R*>(twiddles)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
-      for (std::size_t p {width}; p < quarter; p += width) {
+      vector_begin = width;                                          // its first register's butterflies one at a time: p = 0 multiplies by nothing
+      vector_end   = quarter - (quarter % width);                    // whole registers only
+      for (std::size_t p {vector_begin}; p < vector_end; p += width) {
         const R* const at        {from + (2 * p)};
         const vec      a         {avx2_load(at)};
         const vec      b         {avx2_load(at + apart)};
@@ -2295,9 +2298,8 @@ namespace numerical::detail {
                                avx2_twiddled(avx2_real_parts(w2), avx2_imaginary_parts(w2), avx2_sub(a_plus_c, b_plus_d)),
                                avx2_twiddled(avx2_real_parts(w3), avx2_imaginary_parts(w3), avx2_add(a_minus_c, i_b_d)));
       }
-      first_scalar_end = width; // its first register's butterflies one at a time: p = 0 multiplies by nothing
     }
-    for (std::size_t p {0}; p < first_scalar_end; ++p) {
+    for (std::size_t p {0}; p < quarter; p = (p + 1 == vector_begin) ? vector_end : p + 1) { // those the registers did not take
       const bool     twiddle {p != 0};
       const C        w1      {twiddle ? twiddles[p - 1] : C {1}};
       const C        w2      {twiddle ? twiddles[run + p - 1] : C {1}};
@@ -2312,7 +2314,7 @@ namespace numerical::detail {
         const vec w2_im {avx2_pairs(w2.imag(), w2.imag())};
         const vec w3_re {avx2_pairs(w3.real(), w3.real())};
         const vec w3_im {avx2_pairs(w3.imag(), w3.imag())};
-        for (; q < stride; q += width) {
+        for (; q + width <= stride; q += width) {
           const R* const at        {in_p + (2 * q)};
           const vec      a         {avx2_load(at)};
           const vec      b         {avx2_load(at + apart)};
@@ -2447,6 +2449,224 @@ namespace numerical::detail {
             }
             avx2_store(to + (2 * q) + (2 * stride * k), y);
           }
+        }
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief A register of \p c in every lane.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_splat(double c) noexcept
+  {
+    return _mm256_set1_pd(c);
+  }
+
+  //! \brief \ref avx2_splat of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_splat(float c) noexcept
+  {
+    return _mm256_set1_ps(c);
+  }
+
+  //! \brief `a · b`, lane by lane.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_mul(__m256d a,
+                                                       __m256d b) noexcept
+  {
+    return _mm256_mul_pd(a, b);
+  }
+
+  //! \brief \ref avx2_mul of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_mul(__m256 a,
+                                                      __m256 b) noexcept
+  {
+    return _mm256_mul_ps(a, b);
+  }
+
+  //! \brief `c + a · b`, lane by lane, one fused multiply-add.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_fma(__m256d a,
+                                                       __m256d b,
+                                                       __m256d c) noexcept
+  {
+    return _mm256_fmadd_pd(a, b, c);
+  }
+
+  //! \brief \ref avx2_fma of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_fma(__m256 a,
+                                                      __m256 b,
+                                                      __m256 c) noexcept
+  {
+    return _mm256_fmadd_ps(a, b, c);
+  }
+
+  //! \brief `s + c · v` of complex numbers and a real \p c, each part one fused multiply-add (`fft.hpp`'s fused
+  //!        `scaled_add`).
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline std::complex<R> avx2_scaled_add(const std::complex<R>& s,
+                                                                      R                      c,
+                                                                      const std::complex<R>& v) noexcept
+  {
+    return {std::fma(c, v.real(), s.real()), std::fma(c, v.imag(), s.imag())};
+  }
+
+  //! \brief Output \p k of butterfly \p p of a pass, \p value, stored at \p place: times `w^{kp}` (its factors \p twiddles,
+  //!        a run of \p run each power, as \ref avx2_twiddled) unless \p p is 0.
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_store_twiddled(R*                                                place,
+                                                               decltype(avx2_load(static_cast<const R*>(nullptr))) value,
+                                                               const std::complex<R>                           * twiddles,
+                                                               std::size_t                                       run,
+                                                               std::size_t                                       p,
+                                                               std::size_t                                       k) noexcept
+  {
+    if (p != 0) {
+      const std::complex<R> w {twiddles[((k - 1) * run) + p - 1]};
+      value = avx2_twiddled(avx2_pairs(w.real(), w.real()), avx2_pairs(w.imag(), w.imag()), value);
+    }
+    avx2_store(place, value);
+  }
+
+  /*!
+   * \brief One Stockham pass of radix 3 of `fft.hpp`'s (`radix_three_pass_body`), fused, a register of complex numbers
+   *        along the stride at a time where it holds one, else one at a time: the same operations in the same order.
+   *        \p half_root_three is √3/2.
+   */
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_radix_three_pass(std::size_t            current,
+                                                                 std::size_t            stride,
+                                                                 const std::complex<R>* in,
+                                                                 std::complex<R>*       out,
+                                                                 const std::complex<R>* twiddles,
+                                                                 R                      half_root_three) noexcept
+  {
+    using C   = std::complex<R>;
+    using vec = decltype(avx2_load(static_cast<const R*>(nullptr))); // __m256d or __m256
+    constexpr std::size_t width {32 / sizeof(C)};
+    const std::size_t     part  {current / 3};
+    const std::size_t     run   {part - 1};
+    const std::size_t     apart {stride * part};
+    const vec             half  {avx2_splat(R(0.5))};
+    const vec             root  {avx2_splat(half_root_three)};
+    for (std::size_t p {0}; p < part; ++p) {
+      const C* const in_p {in + (stride * p)};
+      C* const       to   {out + (stride * 3 * p)};
+      std::size_t    q    {0};
+      if (stride >= width) {
+        const C   w1    {p == 0 ? C {1} : twiddles[p - 1]};
+        const C   w2    {p == 0 ? C {1} : twiddles[run + p - 1]};
+        const vec w1_re {avx2_pairs(w1.real(), w1.real())};
+        const vec w1_im {avx2_pairs(w1.imag(), w1.imag())};
+        const vec w2_re {avx2_pairs(w2.real(), w2.real())};
+        const vec w2_im {avx2_pairs(w2.imag(), w2.imag())};
+        for (; q + width <= stride; q += width) {
+          const R* const at {reinterpret_cast<const R*>(in_p + q)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+          const vec      x0 {avx2_load(at)};
+          const vec      x1 {avx2_load(at + (2 * apart))};
+          const vec      x2 {avx2_load(at + (4 * apart))};
+          const vec      t  {avx2_add(x1, x2)};
+          const vec      v  {avx2_sub(x0, avx2_mul(half, t))};
+          const vec      iu {avx2_times_i(avx2_mul(root, avx2_sub(x1, x2)))};
+          vec            y1 {avx2_sub(v, iu)};
+          vec            y2 {avx2_add(v, iu)};
+          if (p != 0) {
+            y1 = avx2_twiddled(w1_re, w1_im, y1);
+            y2 = avx2_twiddled(w2_re, w2_im, y2);
+          }
+          R* const place {reinterpret_cast<R*>(to + q)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+          avx2_store(place, avx2_add(x0, t));
+          avx2_store(place + (2 * stride), y1);
+          avx2_store(place + (4 * stride), y2);
+        }
+      }
+      for (; q < stride; ++q) { // a stride narrower than a register
+        const C x0 {in_p[q]};
+        const C x1 {in_p[q + apart]};
+        const C x2 {in_p[q + (2 * apart)]};
+        const C t  {x1 + x2};
+        const C v  {x0 - C {R(0.5) * t.real(), R(0.5) * t.imag()}};
+        const C d  {x1 - x2};
+        const C u  {half_root_three * d.real(), half_root_three * d.imag()};
+        const C iu {-u.imag(), u.real()};
+        to[q]              = x0 + t;
+        to[q + stride]     = p == 0 ? v - iu : avx2_fused_product(twiddles[p - 1], v - iu);
+        to[q + 2 * stride] = p == 0 ? v + iu : avx2_fused_product(twiddles[run + p - 1], v + iu);
+      }
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  /*!
+   * \brief One Stockham pass of radix 5 of `fft.hpp`'s (`radix_five_pass_body`), fused, as \ref avx2_radix_three_pass:
+   *        \p c1, \p c2 the cosines and \p s1, \p s2 the sines of 2π/5 and 4π/5.
+   */
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_radix_five_pass(std::size_t            current,
+                                                                std::size_t            stride,
+                                                                const std::complex<R>* in,
+                                                                std::complex<R>*       out,
+                                                                const std::complex<R>* twiddles,
+                                                                R                      c1,
+                                                                R                      c2,
+                                                                R                      s1,
+                                                                R                      s2) noexcept
+  {
+    using C   = std::complex<R>;
+    using vec = decltype(avx2_load(static_cast<const R*>(nullptr))); // __m256d or __m256
+    constexpr std::size_t width {32 / sizeof(C)};
+    const std::size_t     part  {current / 5};
+    const std::size_t     run   {part - 1};
+    const std::size_t     apart {stride * part};
+    const vec             vc1   {avx2_splat(c1)};
+    const vec             vc2   {avx2_splat(c2)};
+    const vec             vs1   {avx2_splat(s1)};
+    const vec             vs2   {avx2_splat(s2)};
+    const vec             vms1  {avx2_splat(-s1)};
+    for (std::size_t p {0}; p < part; ++p) {
+      const C* const in_p {in + (stride * p)};
+      C* const       to   {out + (stride * 5 * p)};
+      std::size_t    q    {0};
+      if (stride >= width) {
+        for (; q + width <= stride; q += width) {
+          const R* const at    {reinterpret_cast<const R*>(in_p + q)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+          const vec      x0    {avx2_load(at)};
+          const vec      x1    {avx2_load(at + (2 * apart))};
+          const vec      x2    {avx2_load(at + (4 * apart))};
+          const vec      x3    {avx2_load(at + (6 * apart))};
+          const vec      x4    {avx2_load(at + (8 * apart))};
+          const vec      t1    {avx2_add(x1, x4)};
+          const vec      t2    {avx2_add(x2, x3)};
+          const vec      t3    {avx2_sub(x1, x4)};
+          const vec      t4    {avx2_sub(x2, x3)};
+          const vec      a1    {avx2_fma(vc2, t2, avx2_fma(vc1, t1, x0))};
+          const vec      a2    {avx2_fma(vc1, t2, avx2_fma(vc2, t1, x0))};
+          const vec      ib1   {avx2_times_i(avx2_fma(vs2, t4, avx2_mul(vs1, t3)))};
+          const vec      ib2   {avx2_times_i(avx2_fma(vms1, t4, avx2_mul(vs2, t3)))};
+          R* const       place {reinterpret_cast<R*>(to + q)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+          avx2_store(place, avx2_add(avx2_add(x0, t1), t2));
+          avx2_store_twiddled(place + (2 * stride), avx2_sub(a1, ib1), twiddles, run, p, 1);
+          avx2_store_twiddled(place + (4 * stride), avx2_sub(a2, ib2), twiddles, run, p, 2);
+          avx2_store_twiddled(place + (6 * stride), avx2_add(a2, ib2), twiddles, run, p, 3);
+          avx2_store_twiddled(place + (8 * stride), avx2_add(a1, ib1), twiddles, run, p, 4);
+        }
+      }
+      for (; q < stride; ++q) { // a stride narrower than a register
+        const C                x0  {in_p[q]};
+        const C                x1  {in_p[q + apart]};
+        const C                x2  {in_p[q + (2 * apart)]};
+        const C                x3  {in_p[q + (3 * apart)]};
+        const C                x4  {in_p[q + (4 * apart)]};
+        const C                t1  {x1 + x4};
+        const C                t2  {x2 + x3};
+        const C                t3  {x1 - x4};
+        const C                t4  {x2 - x3};
+        const C                a1  {avx2_scaled_add(avx2_scaled_add(x0, c1, t1), c2, t2)};
+        const C                a2  {avx2_scaled_add(avx2_scaled_add(x0, c2, t1), c1, t2)};
+        const C                b1  {avx2_scaled_add(C {s1 * t3.real(), s1 * t3.imag()}, s2, t4)};
+        const C                b2  {avx2_scaled_add(C {s2 * t3.real(), s2 * t3.imag()}, -s1, t4)};
+        const C                ib1 {-b1.imag(), b1.real()};
+        const C                ib2 {-b2.imag(), b2.real()};
+        const std::array<C, 4> y   {a1 - ib1, a2 - ib2, a2 + ib2, a1 + ib1};
+        to[q] = (x0 + t1) + t2;
+        for (std::size_t j {1}; j < 5; ++j) {
+          to[q + (j * stride)] = p == 0 ? y[j - 1] : avx2_fused_product(twiddles[((j - 1) * run) + p - 1], y[j - 1]);
         }
       }
     }

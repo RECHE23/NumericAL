@@ -807,10 +807,10 @@ namespace numerical {
                                                          const small_radix_constants<R>& small) noexcept
     {
       if (radix == 3) {
-        radix_three_pass_body<true>(current, stride, in, out, twiddles, small);
+        avx2_radix_three_pass(current, stride, in, out, twiddles, small.half_root_three);
       }
       else if (radix == 5) {
-        radix_five_pass_body<true>(current, stride, in, out, twiddles, small);
+        avx2_radix_five_pass(current, stride, in, out, twiddles, small.c1, small.c2, small.s1, small.s2);
       }
       else {
         any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
