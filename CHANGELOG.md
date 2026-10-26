@@ -36,7 +36,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   prime factor `p` past 61 at least 16 times `p`, over `p` points alone, in two steps (1009·64 points 2.8 → 1.5 ms,
   67·2¹⁴ 112 → 47 ms). The passes of the odd radices from 7 to 61 in the vector units' registers too (ten AVX-512
   cores, one thread: 44 100 points 1.18 → 0.62 ms, 30 030 1.05 → 0.62 ms, 61·256 0.62 → 0.21 ms, `complex64` 4.8×;
-  M1 Pro 1.5–2.0×, `complex128` with radix 31 or 61 even).
+  M1 Pro 1.5–2.0×, `complex128` with radix 31 or 61 even). A transform's plan built with no lock held (a transform
+  of another length no longer waits on it), its roots of unity computed on the threads (M1 Pro, 2²² points 61 → 27 ms,
+  10⁶ 14.5 → 6.4 ms; the same roots).
 
 ## 2026.10.38 — 2026-10-25
 

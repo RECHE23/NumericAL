@@ -1020,12 +1020,15 @@ namespace numerical {
       return n > 1 ? n : largest;
     }
 
-    //! \brief The \ref fft_plan of length \p n.
+    //! \brief A root of unity's cost in \ref parallel_for's units, about a nanosecond each: some 95 ns in double-double
+    //!        (\ref unit_roots::parts).
+    inline constexpr std::size_t fft_root_cost {100};
+
+    //! \brief The \ref fft_plan of length \p n, its roots computed on the threads (each the same on any).
     template <std::floating_point R>
     [[nodiscard]] fft_plan<R> make_fft_plan(std::size_t n)
     {
       using C = std::complex<R>;
-      const unit_roots roots {n};
       const auto       narrow {[](std::complex<double> value) { return C {static_cast<R>(value.real()), static_cast<R>(value.imag())}; }};
       fft_plan<R>      plan {.length = n, .radices = fft_radices(n), .twiddles = {}, .radix_roots = {}, .sixteenths = {}, .bluestein = {},
                              .four_step = {}, .work = n, .small = make_small_radix_constants<R>()};
@@ -1038,9 +1041,7 @@ namespace numerical {
         bluestein_plan<R> b       {.padded = bluestein_length(n), .chirp = {}, .spectrum = {}, .inner = {}};
         const unit_roots  doubled {2 * n};
         b.chirp.resize(n);
-        for (std::size_t j {0}; j < n; ++j) {
-          b.chirp[j] = narrow(doubled.root((j * j) % (2 * n)));
-        }
+        parallel_for(n, fft_root_cost, [&](std::size_t j) { b.chirp[j] = narrow(doubled.root((j * j) % (2 * n))); });
         b.inner = std::make_shared<const fft_plan<R>>(make_fft_plan<R>(b.padded));
         b.spectrum.assign(b.padded, C {});
         for (std::size_t j {0}; j < n; ++j) {
@@ -1061,23 +1062,28 @@ namespace numerical {
         f.column_plan = std::make_shared<const fft_plan<R>>(make_fft_plan<R>(f.rows));
         f.row_plan    = std::make_shared<const fft_plan<R>>(make_fft_plan<R>(f.columns));
         f.twiddles.resize(n);
-        for (std::size_t k2 {0}; k2 < f.rows; ++k2) {
-          for (std::size_t j1 {0}; j1 < f.columns; ++j1) {
-            f.twiddles[(k2 * f.columns) + j1] = narrow(roots.root((j1 * k2) % n));
-          }
-        }
+        const unit_roots roots {n};
+        parallel_for(f.rows, f.columns * fft_root_cost, [&](std::size_t k2) {
+                       for (std::size_t j1 {0}; j1 < f.columns; ++j1) {
+                         f.twiddles[(k2 * f.columns) + j1] = narrow(roots.root((j1 * k2) % n));
+                       }
+                     });
         plan.radices.clear();
-        plan.work      = f.rows * (f.columns + fft_four_step_pad); // the columns' transforms, transposed into place
+        plan.work      = f.rows * (f.columns + fft_four_step_pad); // the columns' transforms, then the rows'
         plan.four_step = std::move(f);
         return plan;
       }
-      std::size_t current {n};
-      std::size_t stride  {1};
+      // Each pass' runs, one a power: the root of `p·power·stride` for `p` from 1 (0 multiplies by nothing), each
+      // computed on whichever thread, the same root.
+      std::vector<std::size_t> starts; // where each run begins among the twiddles, the last their count
+      std::vector<std::size_t> steps;  // each run's `power·stride`
+      std::size_t              current {n};
+      std::size_t              stride  {1};
+      starts.push_back(0);
       for (const std::size_t radix : plan.radices) {
         for (std::size_t power {1}; power < radix; ++power) {
-          for (std::size_t p {1}; p < current / radix; ++p) { // p = 0 multiplies by nothing
-            plan.twiddles.push_back(narrow(roots.root(power * p * stride)));
-          }
+          starts.push_back(starts.back() + (current / radix) - 1);
+          steps.push_back(power * stride);
         }
         if (radix > 5 && radix != 8 && radix != 16) {
           for (std::size_t m {0}; m < radix; ++m) {
@@ -1087,6 +1093,13 @@ namespace numerical {
         current /= radix;
         stride  *= radix;
       }
+      const unit_roots roots {n};
+      plan.twiddles.resize(starts.back());
+      parallel_for(starts.back(), fft_root_cost, [&](std::size_t at) {
+                     const auto        run {static_cast<std::size_t>(std::upper_bound(starts.begin(), starts.end(), at) - starts.begin()) - 1};
+                     const std::size_t p   {at - starts[run] + 1};
+                     plan.twiddles[at] = narrow(roots.root(p * steps[run]));
+                   });
       return plan;
     }
 
@@ -1105,16 +1118,29 @@ namespace numerical {
       };
       static std::mutex         guard;
       static std::vector<entry> plans; // the most recently used last
-      const std::scoped_lock    lock  {guard};
-      const auto                found {std::find_if(plans.begin(), plans.end(), [n](const entry& e) { return e.length == n; })};
-      if (found != plans.end()) {
-        std::rotate(found, found + 1, plans.end());
-        return plans.back().plan;
+      const auto                kept = [n]() -> std::shared_ptr<const fft_plan<R>> { // under the lock
+                                         const auto found {std::find_if(plans.begin(), plans.end(), [n](const entry& e) { return e.length == n; })};
+                                         if (found == plans.end()) {
+                                           return nullptr;
+                                         }
+                                         std::rotate(found, found + 1, plans.end());
+                                         return plans.back().plan;
+                                       };
+      {
+        const std::scoped_lock lock {guard};
+        if (auto plan {kept()}) {
+          return plan;
+        }
       }
+      // Built with the lock released, so that no transform of another length waits on it; a plan another thread built
+      // for the same length meanwhile, the same plan, replaced.
+      auto                   built {std::make_shared<const fft_plan<R>>(make_fft_plan<R>(n))};
+      const std::scoped_lock lock  {guard};
+      std::erase_if(plans, [n](const entry& e) { return e.length == n; });
       if (plans.size() >= fft_plans_kept) {
         plans.erase(plans.begin());
       }
-      plans.push_back({n, std::make_shared<const fft_plan<R>>(make_fft_plan<R>(n))});
+      plans.push_back({n, std::move(built)});
       return plans.back().plan;
     }
 
@@ -2365,12 +2391,18 @@ namespace numerical {
       };
       static std::mutex         guard;
       static std::vector<entry> plans; // the most recently used last
+      const auto                kept = [n]() -> std::shared_ptr<const real_fft_plan<R>> { // under the lock
+                                         const auto found {std::find_if(plans.begin(), plans.end(), [n](const entry& e) { return e.length == n; })};
+                                         if (found == plans.end()) {
+                                           return nullptr;
+                                         }
+                                         std::rotate(found, found + 1, plans.end());
+                                         return plans.back().plan;
+                                       };
       {
-        const std::scoped_lock lock  {guard};
-        const auto             found {std::find_if(plans.begin(), plans.end(), [n](const entry& e) { return e.length == n; })};
-        if (found != plans.end()) {
-          std::rotate(found, found + 1, plans.end());
-          return plans.back().plan;
+        const std::scoped_lock lock {guard};
+        if (auto found {kept()}) {
+          return found;
         }
       }
       auto plan {std::make_shared<real_fft_plan<R>>()};
@@ -2378,15 +2410,17 @@ namespace numerical {
       if (n % 2 == 0) {
         plan->complex = shared_fft_plan<R>(n / 2);
         const unit_roots roots {n};
-        for (std::size_t k {0}; k <= n / 2; ++k) {
-          const std::complex<double> root {roots.root(k)};
-          plan->roots.emplace_back(static_cast<R>(root.real()), static_cast<R>(root.imag()));
-        }
+        plan->roots.resize((n / 2) + 1);
+        parallel_for((n / 2) + 1, fft_root_cost, [&](std::size_t k) {
+                       const std::complex<double> root {roots.root(k)};
+                       plan->roots[k] = {static_cast<R>(root.real()), static_cast<R>(root.imag())};
+                     });
       }
       else {
         plan->complex = shared_fft_plan<R>(n);
       }
       const std::scoped_lock lock {guard};
+      std::erase_if(plans, [n](const entry& e) { return e.length == n; }); // another thread's meanwhile, the same plan
       if (plans.size() >= fft_plans_kept) {
         plans.erase(plans.begin());
       }
