@@ -353,6 +353,29 @@ namespace numerical {
       return radices;
     }
 
+    //! \brief The real constants of the radix-3 and radix-5 butterflies, rounded once from their double-double values.
+    template <std::floating_point R>
+    struct small_radix_constants
+    {
+      R half_root_three; //!< √3/2 = sin(2π/3).
+      R c1;              //!< cos(2π/5).
+      R c2;              //!< cos(4π/5).
+      R s1;              //!< sin(2π/5).
+      R s2;              //!< sin(4π/5).
+    };
+
+    //! \brief \ref small_radix_constants from the roots of order 3 and 5 (\ref unit_root, whose imaginary parts are
+    //!        `−sin`).
+    template <std::floating_point R>
+    [[nodiscard]] small_radix_constants<R> make_small_radix_constants()
+    {
+      const std::complex<double> third  {unit_root(1, 3)};
+      const std::complex<double> fifth  {unit_root(1, 5)};
+      const std::complex<double> fifth2 {unit_root(2, 5)};
+      return {static_cast<R>(-third.imag()), static_cast<R>(fifth.real()), static_cast<R>(fifth2.real()), static_cast<R>(-fifth.imag()),
+              static_cast<R>(-fifth2.imag())};
+    }
+
     template <std::floating_point R>
     struct fft_plan;
 
@@ -375,10 +398,11 @@ namespace numerical {
       std::vector<std::complex<R>>      twiddles;
       //!< Each pass' factors from `p` = 1: its `w^p` run, then its `w^{2p}` run, to its `w^{(r−1)p}` run.
       std::vector<std::complex<R>>      radix_roots;
-      //!< Each pass of a radix other than 4 and 16: `e^{−2πi m/r}` for m below r, the passes in order.
+      //!< Each pass of a radix other than 3, 4, 5 and 16: `e^{−2πi m/r}` for m below r, the passes in order.
       std::array<std::complex<R>, 16>   sixteenths; //!< `e^{−2πi k/16}`: a radix-16 butterfly's own factors.
       std::optional<bluestein_plan<R>>  bluestein;  //!< Where the length has a prime factor past fft_largest_radix.
       std::size_t                       work;       //!< The working space a transform takes beside its data.
+      small_radix_constants<R>          small;      //!< The radix-3 and radix-5 butterflies' constants.
     };
 
     template <std::floating_point R>
@@ -394,7 +418,7 @@ namespace numerical {
       using C = std::complex<R>;
       const unit_roots roots {n};
       const auto       narrow {[](std::complex<double> value) { return C {static_cast<R>(value.real()), static_cast<R>(value.imag())}; }};
-      fft_plan<R>      plan {.length = n, .radices = fft_radices(n), .twiddles = {}, .radix_roots = {}, .sixteenths = {}, .bluestein = {}, .work = n};
+      fft_plan<R>      plan {.length = n, .radices = fft_radices(n), .twiddles = {}, .radix_roots = {}, .sixteenths = {}, .bluestein = {}, .work = n, .small = make_small_radix_constants<R>()};
       for (std::size_t k {0}; k < 16; ++k) {
         plan.sixteenths[k] = narrow(unit_root(k, 16));
       }
@@ -425,7 +449,7 @@ namespace numerical {
             plan.twiddles.push_back(narrow(roots.root(power * p * stride)));
           }
         }
-        if (radix != 4 && radix != 16) {
+        if (radix != 3 && radix != 4 && radix != 5 && radix != 16) {
           for (std::size_t m {0}; m < radix; ++m) {
             plan.radix_roots.push_back(narrow(unit_root(m, radix)));
           }
@@ -631,32 +655,166 @@ namespace numerical {
       }
     }
 
+    //! \brief `c · v` of a real \p c and a complex \p v: each part's product, rounded.
+    template <std::floating_point R>
+    [[nodiscard]] NUMERICAL_ALWAYS_INLINE std::complex<R> scaled(R                      c,
+                                                                 const std::complex<R>& v) noexcept
+    {
+      return {c * v.real(), c * v.imag()};
+    }
+
+    //! \brief `s + c · v` of a complex \p s, a real \p c and a complex \p v on the vector paths: each part one fused
+    //!        multiply-add.
+    template <bool Fused,
+              std::floating_point R>
+    requires Fused
+    [[nodiscard]] NUMERICAL_ALWAYS_INLINE std::complex<R> scaled_add(const std::complex<R>& s,
+                                                                     R                      c,
+                                                                     const std::complex<R>& v) noexcept
+    {
+      return {std::fma(c, v.real(), s.real()), std::fma(c, v.imag(), s.imag())};
+    }
+
+    //! \brief \ref scaled_add on the portable path: the product rounded first.
+    template <bool Fused,
+              std::floating_point R>
+    requires (!Fused)
+    [[nodiscard]] NUMERICAL_ALWAYS_INLINE std::complex<R> scaled_add(const std::complex<R>& s,
+                                                                     R                      c,
+                                                                     const std::complex<R>& v) noexcept
+    {
+      return s + scaled(c, v);
+    }
+
+    /*!
+     * \brief One Stockham pass of radix 3, as \ref any_radix_pass_body is of any: `t = x1 + x2`, `v = x0 − t/2` (exact
+     *        halving, one rounding), `u = (√3/2)·(x1 − x2)`; `X0 = x0 + t`, `X1 = v − i·u`, `X2 = v + i·u`, then times
+     *        `w^{kp}` as \p Fused. Inlined into each caller.
+     */
+    template <bool Fused,
+              std::floating_point R>
+    NUMERICAL_ALWAYS_INLINE void radix_three_pass_body(std::size_t                      current,
+                                                       std::size_t                      stride,
+                                                       const std::complex<R>*           in,
+                                                       std::complex<R>*                 out,
+                                                       const std::complex<R>*           twiddles,
+                                                       const small_radix_constants<R>&  k) noexcept
+    {
+      using C = std::complex<R>;
+      const std::size_t part  {current / 3};
+      const std::size_t run   {part - 1};
+      const std::size_t apart {stride * part};
+      for (std::size_t p {0}; p < part; ++p) {
+        const C* const in_p {in + (stride * p)};
+        C* const       to   {out + (stride * 3 * p)};
+        for (std::size_t q {0}; q < stride; ++q) {
+          const C x0 {in_p[q]};
+          const C x1 {in_p[q + apart]};
+          const C x2 {in_p[q + (2 * apart)]};
+          const C t  {x1 + x2};
+          const C v  {x0 - scaled(R(0.5), t)};
+          const C u  {scaled(k.half_root_three, x1 - x2)};
+          const C iu {-u.imag(), u.real()};
+          const C y1 {v - iu};
+          const C y2 {v + iu};
+          to[q]              = x0 + t;
+          to[q + stride]     = p == 0 ? y1 : twiddled<Fused>(twiddles[p - 1], y1);
+          to[q + 2 * stride] = p == 0 ? y2 : twiddled<Fused>(twiddles[run + p - 1], y2);
+        }
+      }
+    }
+
+    /*!
+     * \brief One Stockham pass of radix 5: `t1 = x1 + x4`, `t2 = x2 + x3`, `t3 = x1 − x4`, `t4 = x2 − x3`;
+     *        `a1 = x0 + c1·t1 + c2·t2`, `a2 = x0 + c2·t1 + c1·t2`, `b1 = s1·t3 + s2·t4`, `b2 = s2·t3 − s1·t4` (each
+     *        sum in that order, its products fused as \p Fused); `X0 = x0 + t1 + t2`, `X1 = a1 − i·b1`, `X4 = a1 + i·b1`,
+     *        `X2 = a2 − i·b2`, `X3 = a2 + i·b2`, then times `w^{kp}`. Inlined into each caller.
+     */
+    template <bool Fused,
+              std::floating_point R>
+    NUMERICAL_ALWAYS_INLINE void radix_five_pass_body(std::size_t                      current,
+                                                      std::size_t                      stride,
+                                                      const std::complex<R>*           in,
+                                                      std::complex<R>*                 out,
+                                                      const std::complex<R>*           twiddles,
+                                                      const small_radix_constants<R>&  k) noexcept
+    {
+      using C = std::complex<R>;
+      const std::size_t part  {current / 5};
+      const std::size_t run   {part - 1};
+      const std::size_t apart {stride * part};
+      for (std::size_t p {0}; p < part; ++p) {
+        const C* const in_p {in + (stride * p)};
+        C* const       to   {out + (stride * 5 * p)};
+        for (std::size_t q {0}; q < stride; ++q) {
+          const C                x0  {in_p[q]};
+          const C                x1  {in_p[q + apart]};
+          const C                x2  {in_p[q + (2 * apart)]};
+          const C                x3  {in_p[q + (3 * apart)]};
+          const C                x4  {in_p[q + (4 * apart)]};
+          const C                t1  {x1 + x4};
+          const C                t2  {x2 + x3};
+          const C                t3  {x1 - x4};
+          const C                t4  {x2 - x3};
+          const C                a1  {scaled_add<Fused>(scaled_add<Fused>(x0, k.c1, t1), k.c2, t2)};
+          const C                a2  {scaled_add<Fused>(scaled_add<Fused>(x0, k.c2, t1), k.c1, t2)};
+          const C                b1  {scaled_add<Fused>(scaled(k.s1, t3), k.s2, t4)};
+          const C                b2  {scaled_add<Fused>(scaled(k.s2, t3), -k.s1, t4)};
+          const C                ib1 {-b1.imag(), b1.real()};
+          const C                ib2 {-b2.imag(), b2.real()};
+          const std::array<C, 5> y   {(x0 + t1) + t2, a1 - ib1, a2 - ib2, a2 + ib2, a1 + ib1};
+          to[q] = y[0];
+          for (std::size_t j {1}; j < 5; ++j) {
+            to[q + (j * stride)] = p == 0 ? y[j] : twiddled<Fused>(twiddles[((j - 1) * run) + p - 1], y[j]);
+          }
+        }
+      }
+    }
+
     //! \brief \ref any_radix_pass_body, its products as \p Fused.
     template <bool Fused,
               std::floating_point R>
-    void any_radix_pass(std::size_t            radix,
-                        std::size_t            current,
-                        std::size_t            stride,
-                        const std::complex<R>* in,
-                        std::complex<R>*       out,
-                        const std::complex<R>* twiddles,
-                        const std::complex<R>* roots) noexcept
+    void any_radix_pass(std::size_t                     radix,
+                        std::size_t                     current,
+                        std::size_t                     stride,
+                        const std::complex<R>         * in,
+                        std::complex<R>         *       out,
+                        const std::complex<R>         * twiddles,
+                        const std::complex<R>         * roots,
+                        const small_radix_constants<R>& small) noexcept
     {
-      any_radix_pass_body<Fused>(radix, current, stride, in, out, twiddles, roots);
+      if (radix == 3) {
+        radix_three_pass_body<Fused>(current, stride, in, out, twiddles, small);
+      }
+      else if (radix == 5) {
+        radix_five_pass_body<Fused>(current, stride, in, out, twiddles, small);
+      }
+      else {
+        any_radix_pass_body<Fused>(radix, current, stride, in, out, twiddles, roots);
+      }
     }
 
 #ifdef NUMERICAL_X86_COMPILED
     //! \brief \ref any_radix_pass_body fused, built for AVX2 with FMA: each `std::fma` one instruction.
     template <std::floating_point R>
-    NUMERICAL_TARGET("avx2,fma") void any_radix_pass_x86(std::size_t            radix,
-                                                         std::size_t            current,
-                                                         std::size_t            stride,
-                                                         const std::complex<R>* in,
-                                                         std::complex<R>*       out,
-                                                         const std::complex<R>* twiddles,
-                                                         const std::complex<R>* roots) noexcept
+    NUMERICAL_TARGET("avx2,fma") void any_radix_pass_x86(std::size_t                     radix,
+                                                         std::size_t                     current,
+                                                         std::size_t                     stride,
+                                                         const std::complex<R>         * in,
+                                                         std::complex<R>         *       out,
+                                                         const std::complex<R>         * twiddles,
+                                                         const std::complex<R>         * roots,
+                                                         const small_radix_constants<R>& small) noexcept
     {
-      any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
+      if (radix == 3) {
+        radix_three_pass_body<true>(current, stride, in, out, twiddles, small);
+      }
+      else if (radix == 5) {
+        radix_five_pass_body<true>(current, stride, in, out, twiddles, small);
+      }
+      else {
+        any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
+      }
     }
 
 #endif
@@ -678,7 +836,7 @@ namespace numerical {
     /*!
      * \brief The Stockham passes of the \p plan over \p data, \p work as long, the result in \p data: radix 4 by \p four
      *        (\ref radix_four_pass's arguments), 16 by \p sixteen (\ref radix_sixteen_pass's), 2 by \ref radix_two_pass
-     *        where it is the last pass, any other by \p other (\ref any_radix_pass's).
+     *        where it is the last pass, any other by \p other (\ref any_radix_pass's: 3 and 5 by their own butterflies).
      */
     template <std::floating_point R,
               typename Four,
@@ -710,8 +868,8 @@ namespace numerical {
           roots += radix;
         }
         else {
-          other(radix, current, stride, in, out, twiddles, roots);
-          roots += radix;
+          other(radix, current, stride, in, out, twiddles, roots, plan.small);
+          roots += (radix == 3 || radix == 5) ? 0 : radix; // their constants are the plan's
         }
         twiddles += (radix - 1) * (current / radix - 1);
         current  /= radix;
