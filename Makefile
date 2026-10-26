@@ -161,14 +161,15 @@ coverage: coverage-build
 	    cat docs/coverage-style.css >> $(COV_DIR)/html/style.css
 	@echo "HTML coverage report: $(COV_DIR)/html/index.html"
 
-# The x86-64 kernels (x86.hpp, and fft.hpp's lanes), which the macOS gate does not compile, every line and function
-# run: on an x86-64 processor with AVX-512, or under COV_RUN (CI: Intel's emulator as a Skylake server), the tests take
-# every path.
+# The x86-64 kernels (x86.hpp, fft.hpp's lanes, fft_kernels.hpp's x86 passes), which the macOS gate does not compile,
+# every line and function run: on an x86-64 processor with AVX-512, or under COV_RUN (CI: Intel's emulator as a
+# Skylake server), the tests take every path.
 coverage-x86: coverage-build
 	@$(LLVM_COV) report $(COV_DIR)/numerical_tests_bin -instr-profile=$(COV_DIR)/tests.profdata \
-	    $(CURDIR)/include/numerical/x86.hpp $(CURDIR)/include/numerical/fft.hpp | tee $(COV_DIR)/x86.txt
-	@awk '/^TOTAL/ { found = 1; if ($$6 != 0 || $$9 != 0) { print "coverage-x86: a line or function of x86.hpp or fft.hpp never ran"; \
-	    exit 1 } } END { if (!found) { print "coverage-x86: no report for x86.hpp and fft.hpp"; exit 1 } }' $(COV_DIR)/x86.txt
+	    $(CURDIR)/include/numerical/x86.hpp $(CURDIR)/include/numerical/fft.hpp $(CURDIR)/include/numerical/fft_kernels.hpp \
+	    | tee $(COV_DIR)/x86.txt
+	@awk '/^TOTAL/ { found = 1; if ($$6 != 0 || $$9 != 0) { print "coverage-x86: a line or function of an x86-64 kernel never ran"; \
+	    exit 1 } } END { if (!found) { print "coverage-x86: no report for the x86-64 kernels"; exit 1 } }' $(COV_DIR)/x86.txt
 
 coverage-html:
 	@mkdir -p $(COV_DIR)

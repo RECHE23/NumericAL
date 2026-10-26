@@ -35,6 +35,7 @@
 #include <vector>
 
 #include "buffer.hpp"
+#include "fft_kernels.hpp"
 #include "gemm.hpp"
 #include "parallel.hpp"
 #include "simd.hpp"
@@ -1726,6 +1727,8 @@ namespace numerical {
         return;
       }
       stockham_passes(plan, data, work, avx2_radix_four_pass<R>, avx2_radix_sixteen_pass<R>, any_radix_pass_x86<R>);
+#elif defined(NUMERICAL_NEON_COMPILED)
+      stockham_passes(plan, data, work, neon_radix_four_pass<R>, neon_radix_sixteen_pass<R>, any_radix_pass<true, R>);
 #else
       stockham_passes(plan, data, work, radix_four_pass<true, R>, radix_sixteen_pass<true, R>, any_radix_pass<true, R>);
 #endif
