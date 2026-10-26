@@ -322,6 +322,505 @@ namespace numerical {
       return rounded_product(w, v);
     }
 
+    // The lanes' functions: built for AVX2 with FMA on x86-64, and there inlined by the compiler's choice where the passes'
+    // bodies, built for no unit of their own, are inlined into their callers built for those units (an always-inlined
+    // function of a unit its caller lacks is refused); always inlined elsewhere.
+#if defined(NUMERICAL_X86_COMPILED)
+#  define NUMERICAL_FFT_LANES_TARGET NUMERICAL_TARGET("avx2,fma")          // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
+#  if defined(_MSC_VER) && !defined(__clang__)
+#    define NUMERICAL_FFT_LANES_INLINE NUMERICAL_ALWAYS_INLINE             // NOLINT(cppcoreguidelines-macro-usage): the same
+#  else
+#    define NUMERICAL_FFT_LANES_INLINE NUMERICAL_TARGET("avx2,fma") inline // NOLINT(cppcoreguidelines-macro-usage): the same
+#  endif
+#else
+#  define NUMERICAL_FFT_LANES_TARGET
+#  define NUMERICAL_FFT_LANES_INLINE NUMERICAL_ALWAYS_INLINE // NOLINT(cppcoreguidelines-macro-usage): the same
+#endif
+
+#if defined(NUMERICAL_X86_COMPILED) || defined(NUMERICAL_NEON_COMPILED)
+#  define NUMERICAL_FFT_LANES // lines transformed a register of them at a time (tested with #ifdef only)
+
+#  if defined(NUMERICAL_X86_COMPILED)
+    //! \brief A register of lines' parts on x86-64: four `double` (AVX2).
+    using fft_lanes_double = __m256d;
+    //! \brief A register of lines' parts on x86-64: eight `float` (AVX2).
+    using fft_lanes_float = __m256;
+
+    //! \brief `a + b`, lane by lane.
+    NUMERICAL_FFT_LANES_INLINE __m256d lanes_add(__m256d a,
+                                                 __m256d b) noexcept
+    {
+      return avx2_add(a, b);
+    }
+
+    //! \brief \ref lanes_add of `float`.
+    NUMERICAL_FFT_LANES_INLINE __m256 lanes_add(__m256 a,
+                                                __m256 b) noexcept
+    {
+      return avx2_add(a, b);
+    }
+
+    //! \brief `a − b`, lane by lane.
+    NUMERICAL_FFT_LANES_INLINE __m256d lanes_sub(__m256d a,
+                                                 __m256d b) noexcept
+    {
+      return avx2_sub(a, b);
+    }
+
+    //! \brief \ref lanes_sub of `float`.
+    NUMERICAL_FFT_LANES_INLINE __m256 lanes_sub(__m256 a,
+                                                __m256 b) noexcept
+    {
+      return avx2_sub(a, b);
+    }
+
+    //! \brief `a · b`, lane by lane, rounded.
+    NUMERICAL_FFT_LANES_INLINE __m256d lanes_mul(__m256d a,
+                                                 __m256d b) noexcept
+    {
+      return avx2_mul(a, b);
+    }
+
+    //! \brief \ref lanes_mul of `float`.
+    NUMERICAL_FFT_LANES_INLINE __m256 lanes_mul(__m256 a,
+                                                __m256 b) noexcept
+    {
+      return avx2_mul(a, b);
+    }
+
+    //! \brief `a · b + c`, lane by lane, one rounding.
+    NUMERICAL_FFT_LANES_INLINE __m256d lanes_fused(__m256d a,
+                                                   __m256d b,
+                                                   __m256d c) noexcept
+    {
+      return avx2_fma(a, b, c);
+    }
+
+    //! \brief \ref lanes_fused of `float`.
+    NUMERICAL_FFT_LANES_INLINE __m256 lanes_fused(__m256 a,
+                                                  __m256 b,
+                                                  __m256 c) noexcept
+    {
+      return avx2_fma(a, b, c);
+    }
+
+    //! \brief `−a`, lane by lane, exact.
+    NUMERICAL_FFT_LANES_INLINE __m256d lanes_negated(__m256d a) noexcept
+    {
+      return avx2_negated(a);
+    }
+
+    //! \brief \ref lanes_negated of `float`.
+    NUMERICAL_FFT_LANES_INLINE __m256 lanes_negated(__m256 a) noexcept
+    {
+      return avx2_negated(a);
+    }
+
+    //! \brief \p c in every lane.
+    NUMERICAL_FFT_LANES_INLINE __m256d lanes_splat(double c) noexcept
+    {
+      return avx2_splat(c);
+    }
+
+    //! \brief \ref lanes_splat of `float`.
+    NUMERICAL_FFT_LANES_INLINE __m256 lanes_splat(float c) noexcept
+    {
+      return avx2_splat(c);
+    }
+
+    //! \brief The complex `float` at \p from and \p apart past it, as four `float`.
+    NUMERICAL_FFT_LANES_INLINE __m128 lanes_two(const double* from,
+                                                std::size_t   apart) noexcept
+    {
+      return _mm_castpd_ps(_mm_loadh_pd(_mm_load_sd(from), from + apart));
+    }
+
+    //! \brief The parts of the complex numbers at \p at, \p apart from one another (four of them), into \p re and \p im.
+    NUMERICAL_FFT_LANES_INLINE void lanes_read(const std::complex<double>* at,
+                                               std::size_t                 apart,
+                                               __m256d&                    re,
+                                               __m256d&                    im) noexcept
+    {
+      const double* const from  {reinterpret_cast<const double*>(at)};                                                  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+      const __m256d       even  {_mm256_set_m128d(_mm_loadu_pd(from + (4 * apart)), _mm_loadu_pd(from))};               // r0 i0 | r2 i2
+      const __m256d       odd   {_mm256_set_m128d(_mm_loadu_pd(from + (6 * apart)), _mm_loadu_pd(from + (2 * apart)))}; // r1 i1 | r3 i3
+      re = _mm256_unpacklo_pd(even, odd);                                                                               // r0 r1 | r2 r3
+      im = _mm256_unpackhi_pd(even, odd);
+    }
+
+    //! \brief \ref lanes_read of eight complex `float`.
+    NUMERICAL_FFT_LANES_INLINE void lanes_read(const std::complex<float>* at,
+                                               std::size_t                apart,
+                                               __m256&                    re,
+                                               __m256&                    im) noexcept
+    {
+      const double* const from {reinterpret_cast<const double*>(at)};                                                         // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex float is eight bytes, read whole
+      const __m256        low  {_mm256_set_m128(lanes_two(from + (4 * apart), apart), lanes_two(from, apart))};               // r0 i0 r1 i1 | r4 i4 r5 i5
+      const __m256        high {_mm256_set_m128(lanes_two(from + (6 * apart), apart), lanes_two(from + (2 * apart), apart))}; // r2 i2 r3 i3 | r6 i6 r7 i7
+      re = _mm256_shuffle_ps(low, high, 0x88);                                                                                // r0 r1 r2 r3 | r4 r5 r6 r7
+      im = _mm256_shuffle_ps(low, high, 0xDD);
+    }
+
+    //! \brief The real numbers at \p at, \p apart from one another (four of them), into \p re, and \p im zeros.
+    NUMERICAL_FFT_LANES_INLINE void lanes_read(const double* at,
+                                               std::size_t   apart,
+                                               __m256d&      re,
+                                               __m256d&      im) noexcept
+    {
+      re = _mm256_setr_pd(at[0], at[apart], at[2 * apart], at[3 * apart]);
+      im = _mm256_setzero_pd();
+    }
+
+    //! \brief \ref lanes_read of eight `float`.
+    NUMERICAL_FFT_LANES_INLINE void lanes_read(const float* at,
+                                               std::size_t  apart,
+                                               __m256&      re,
+                                               __m256&      im) noexcept
+    {
+      re = _mm256_setr_ps(at[0], at[apart], at[2 * apart], at[3 * apart], at[4 * apart], at[5 * apart], at[6 * apart], at[7 * apart]);
+      im = _mm256_setzero_ps();
+    }
+
+    //! \brief The complex numbers of parts \p re and \p im stored at \p at, \p apart from one another (four of them).
+    NUMERICAL_FFT_LANES_INLINE void lanes_write(std::complex<double>* at,
+                                                std::size_t           apart,
+                                                __m256d               re,
+                                                __m256d               im) noexcept
+    {
+      double* const into {reinterpret_cast<double*>(at)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+      const __m256d even {_mm256_unpacklo_pd(re, im)};    // r0 i0 | r2 i2
+      const __m256d odd  {_mm256_unpackhi_pd(re, im)};    // r1 i1 | r3 i3
+      _mm_storeu_pd(into, _mm256_castpd256_pd128(even));
+      _mm_storeu_pd(into + (2 * apart), _mm256_castpd256_pd128(odd));
+      _mm_storeu_pd(into + (4 * apart), _mm256_extractf128_pd(even, 1));
+      _mm_storeu_pd(into + (6 * apart), _mm256_extractf128_pd(odd, 1));
+    }
+
+    //! \brief \ref lanes_write of eight complex `float`.
+    NUMERICAL_FFT_LANES_INLINE void lanes_write(std::complex<float>* at,
+                                                std::size_t          apart,
+                                                __m256               re,
+                                                __m256               im) noexcept
+    {
+      double* const into {reinterpret_cast<double*>(at)};                // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex float is eight bytes, written whole
+      const __m256d low  {_mm256_castps_pd(_mm256_unpacklo_ps(re, im))}; // r0 i0 r1 i1 | r4 i4 r5 i5
+      const __m256d high {_mm256_castps_pd(_mm256_unpackhi_ps(re, im))}; // r2 i2 r3 i3 | r6 i6 r7 i7
+      const __m128d l0   {_mm256_castpd256_pd128(low)};
+      const __m128d l1   {_mm256_extractf128_pd(low, 1)};
+      const __m128d h0   {_mm256_castpd256_pd128(high)};
+      const __m128d h1   {_mm256_extractf128_pd(high, 1)};
+      _mm_storel_pd(into, l0);
+      _mm_storeh_pd(into + apart, l0);
+      _mm_storel_pd(into + (2 * apart), h0);
+      _mm_storeh_pd(into + (3 * apart), h0);
+      _mm_storel_pd(into + (4 * apart), l1);
+      _mm_storeh_pd(into + (5 * apart), l1);
+      _mm_storel_pd(into + (6 * apart), h1);
+      _mm_storeh_pd(into + (7 * apart), h1);
+    }
+
+#  else
+    //! \brief A register of lines' parts on arm64: two `double` (NEON).
+    using fft_lanes_double = float64x2_t;
+    //! \brief A register of lines' parts on arm64: four `float` (NEON).
+    using fft_lanes_float = float32x4_t;
+
+    //! \brief `a + b`, lane by lane.
+    NUMERICAL_ALWAYS_INLINE float64x2_t lanes_add(float64x2_t a,
+                                                  float64x2_t b) noexcept
+    {
+      return vaddq_f64(a, b);
+    }
+
+    //! \brief \ref lanes_add of `float`.
+    NUMERICAL_ALWAYS_INLINE float32x4_t lanes_add(float32x4_t a,
+                                                  float32x4_t b) noexcept
+    {
+      return vaddq_f32(a, b);
+    }
+
+    //! \brief `a − b`, lane by lane.
+    NUMERICAL_ALWAYS_INLINE float64x2_t lanes_sub(float64x2_t a,
+                                                  float64x2_t b) noexcept
+    {
+      return vsubq_f64(a, b);
+    }
+
+    //! \brief \ref lanes_sub of `float`.
+    NUMERICAL_ALWAYS_INLINE float32x4_t lanes_sub(float32x4_t a,
+                                                  float32x4_t b) noexcept
+    {
+      return vsubq_f32(a, b);
+    }
+
+    //! \brief `a · b`, lane by lane, rounded.
+    NUMERICAL_ALWAYS_INLINE float64x2_t lanes_mul(float64x2_t a,
+                                                  float64x2_t b) noexcept
+    {
+      return vmulq_f64(a, b);
+    }
+
+    //! \brief \ref lanes_mul of `float`.
+    NUMERICAL_ALWAYS_INLINE float32x4_t lanes_mul(float32x4_t a,
+                                                  float32x4_t b) noexcept
+    {
+      return vmulq_f32(a, b);
+    }
+
+    //! \brief `a · b + c`, lane by lane, one rounding.
+    NUMERICAL_ALWAYS_INLINE float64x2_t lanes_fused(float64x2_t a,
+                                                    float64x2_t b,
+                                                    float64x2_t c) noexcept
+    {
+      return vfmaq_f64(c, a, b);
+    }
+
+    //! \brief \ref lanes_fused of `float`.
+    NUMERICAL_ALWAYS_INLINE float32x4_t lanes_fused(float32x4_t a,
+                                                    float32x4_t b,
+                                                    float32x4_t c) noexcept
+    {
+      return vfmaq_f32(c, a, b);
+    }
+
+    //! \brief `−a`, lane by lane, exact.
+    NUMERICAL_ALWAYS_INLINE float64x2_t lanes_negated(float64x2_t a) noexcept
+    {
+      return vnegq_f64(a);
+    }
+
+    //! \brief \ref lanes_negated of `float`.
+    NUMERICAL_ALWAYS_INLINE float32x4_t lanes_negated(float32x4_t a) noexcept
+    {
+      return vnegq_f32(a);
+    }
+
+    //! \brief \p c in every lane.
+    NUMERICAL_ALWAYS_INLINE float64x2_t lanes_splat(double c) noexcept
+    {
+      return vdupq_n_f64(c);
+    }
+
+    //! \brief \ref lanes_splat of `float`.
+    NUMERICAL_ALWAYS_INLINE float32x4_t lanes_splat(float c) noexcept
+    {
+      return vdupq_n_f32(c);
+    }
+
+    //! \brief The parts of the complex numbers at \p at, \p apart from one another (two of them), into \p re and \p im.
+    NUMERICAL_ALWAYS_INLINE void lanes_read(const std::complex<double>* at,
+                                            std::size_t                 apart,
+                                            float64x2_t&                re,
+                                            float64x2_t&                im) noexcept
+    {
+      const double* const from   {reinterpret_cast<const double*>(at)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+      const float64x2_t   first  {vld1q_f64(from)};
+      const float64x2_t   second {vld1q_f64(from + (2 * apart))};
+      re = vzip1q_f64(first, second);
+      im = vzip2q_f64(first, second);
+    }
+
+    //! \brief \ref lanes_read of four complex `float`.
+    NUMERICAL_ALWAYS_INLINE void lanes_read(const std::complex<float>* at,
+                                            std::size_t                apart,
+                                            float32x4_t&               re,
+                                            float32x4_t&               im) noexcept
+    {
+      const float* const from {reinterpret_cast<const float*>(at)};                                       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+      const float32x4_t  low  {vcombine_f32(vld1_f32(from), vld1_f32(from + (2 * apart)))};               // r0 i0 r1 i1
+      const float32x4_t  high {vcombine_f32(vld1_f32(from + (4 * apart)), vld1_f32(from + (6 * apart)))}; // r2 i2 r3 i3
+      re = vuzp1q_f32(low, high);
+      im = vuzp2q_f32(low, high);
+    }
+
+    //! \brief The real numbers at \p at, \p apart from one another (two of them), into \p re, and \p im zeros.
+    NUMERICAL_ALWAYS_INLINE void lanes_read(const double* at,
+                                            std::size_t   apart,
+                                            float64x2_t&  re,
+                                            float64x2_t&  im) noexcept
+    {
+      re = vsetq_lane_f64(at[apart], vdupq_n_f64(at[0]), 1);
+      im = vdupq_n_f64(0.0);
+    }
+
+    //! \brief \ref lanes_read of four `float`.
+    NUMERICAL_ALWAYS_INLINE void lanes_read(const float*  at,
+                                            std::size_t   apart,
+                                            float32x4_t&  re,
+                                            float32x4_t&  im) noexcept
+    {
+      re = vsetq_lane_f32(at[3 * apart], vsetq_lane_f32(at[2 * apart], vsetq_lane_f32(at[apart], vdupq_n_f32(at[0]), 1), 2), 3);
+      im = vdupq_n_f32(0.0F);
+    }
+
+    //! \brief The complex numbers of parts \p re and \p im stored at \p at, \p apart from one another (two of them).
+    NUMERICAL_ALWAYS_INLINE void lanes_write(std::complex<double>* at,
+                                             std::size_t           apart,
+                                             float64x2_t           re,
+                                             float64x2_t           im) noexcept
+    {
+      double* const into {reinterpret_cast<double*>(at)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+      vst1q_f64(into, vzip1q_f64(re, im));
+      vst1q_f64(into + (2 * apart), vzip2q_f64(re, im));
+    }
+
+    //! \brief \ref lanes_write of four complex `float`.
+    NUMERICAL_ALWAYS_INLINE void lanes_write(std::complex<float>* at,
+                                             std::size_t          apart,
+                                             float32x4_t          re,
+                                             float32x4_t          im) noexcept
+    {
+      float* const      into  {reinterpret_cast<float*>(at)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+      const float32x4_t first {vzip1q_f32(re, im)};           // r0 i0 r1 i1
+      const float32x4_t last  {vzip2q_f32(re, im)};           // r2 i2 r3 i3
+      vst1_f32(into, vget_low_f32(first));
+      vst1_f32(into + (2 * apart), vget_high_f32(first));
+      vst1_f32(into + (4 * apart), vget_low_f32(last));
+      vst1_f32(into + (6 * apart), vget_high_f32(last));
+    }
+
+#  endif
+
+    //! \brief The register of lines' parts of \p R: \ref fft_lanes_double or \ref fft_lanes_float.
+    template <std::floating_point R>
+    struct fft_lanes_register;
+
+    //! \brief \ref fft_lanes_double.
+    template <>
+    struct fft_lanes_register<double>
+    {
+      using type = fft_lanes_double; //!< The register.
+    };
+
+    //! \brief \ref fft_lanes_float.
+    template <>
+    struct fft_lanes_register<float>
+    {
+      using type = fft_lanes_float; //!< The register.
+    };
+
+    //! \brief \ref fft_lanes_register's register.
+    template <std::floating_point R>
+    using fft_lanes_of = typename fft_lanes_register<R>::type;
+
+    /*!
+     * \brief One part of a register of lines' complex numbers, a line a lane (\ref fft_lanes), \p R the lanes' type:
+     *        each operation each lane's own, rounded as the scalar operation rounds it.
+     */
+    template <std::floating_point R>
+    struct alignas(sizeof(fft_lanes_of<R>)) fft_pack // a register's own alignment, which GCC drops from an alias of it
+    {
+      fft_lanes_of<R> v; //!< The lanes.
+    };
+
+    //! \brief `a + b`, lane by lane.
+    template <std::floating_point R>
+    NUMERICAL_FFT_LANES_INLINE fft_pack<R> operator+(fft_pack<R> a,
+                                                     fft_pack<R> b) noexcept
+    {
+      return {lanes_add(a.v, b.v)};
+    }
+
+    //! \brief `a − b`, lane by lane.
+    template <std::floating_point R>
+    NUMERICAL_FFT_LANES_INLINE fft_pack<R> operator-(fft_pack<R> a,
+                                                     fft_pack<R> b) noexcept
+    {
+      return {lanes_sub(a.v, b.v)};
+    }
+
+    //! \brief `−a`, lane by lane, exact.
+    template <std::floating_point R>
+    NUMERICAL_FFT_LANES_INLINE fft_pack<R> operator-(fft_pack<R> a) noexcept
+    {
+      return {lanes_negated(a.v)};
+    }
+
+    //! \brief `c · a`, each lane's product rounded.
+    template <std::floating_point R>
+    NUMERICAL_FFT_LANES_INLINE fft_pack<R> operator*(R           c,
+                                                     fft_pack<R> a) noexcept
+    {
+      return {lanes_mul(lanes_splat(c), a.v)};
+    }
+
+    //! \brief `c · a + b`, each lane one fused multiply-add.
+    template <std::floating_point R>
+    NUMERICAL_FFT_LANES_INLINE fft_pack<R> fused(R           c,
+                                                 fft_pack<R> a,
+                                                 fft_pack<R> b) noexcept
+    {
+      return {lanes_fused(lanes_splat(c), a.v, b.v)};
+    }
+
+    /*!
+     * \brief A register of lines' complex numbers: lane `b` of \ref re and \ref im the real and imaginary parts of line
+     *        `b`'s number, so that the passes' arithmetic (\ref twiddled, \ref scaled, \ref scaled_add and the sums)
+     *        runs each line's own operations, in its order: a line's bits, among a register of others.
+     */
+    template <std::floating_point R>
+    struct fft_lanes
+    {
+      using value_type = R; //!< The parts' type.
+
+      fft_pack<R> re;       //!< The real parts.
+      fft_pack<R> im;       //!< The imaginary parts.
+
+      //! \brief The real parts.
+      [[nodiscard]] NUMERICAL_FFT_LANES_INLINE fft_pack<R> real() const noexcept
+      {
+        return re;
+      }
+
+      //! \brief The imaginary parts.
+      [[nodiscard]] NUMERICAL_FFT_LANES_INLINE fft_pack<R> imag() const noexcept
+      {
+        return im;
+      }
+
+      //! \brief Each lane's sum with \p other's.
+      NUMERICAL_FFT_LANES_INLINE fft_lanes& operator+=(const fft_lanes& other) noexcept
+      {
+        re = re + other.re;
+        im = im + other.im;
+        return *this;
+      }
+    };
+
+    //! \brief The lines' lanes per register of \p R.
+    template <std::floating_point R>
+    inline constexpr std::size_t fft_lanes_width {sizeof(fft_lanes_of<R>) / sizeof(R)};
+
+    //! \brief `a + b`, lane by lane.
+    template <std::floating_point R>
+    NUMERICAL_FFT_LANES_INLINE fft_lanes<R> operator+(const fft_lanes<R>& a,
+                                                      const fft_lanes<R>& b) noexcept
+    {
+      return {a.re + b.re, a.im + b.im};
+    }
+
+    //! \brief `a − b`, lane by lane.
+    template <std::floating_point R>
+    NUMERICAL_FFT_LANES_INLINE fft_lanes<R> operator-(const fft_lanes<R>& a,
+                                                      const fft_lanes<R>& b) noexcept
+    {
+      return {a.re - b.re, a.im - b.im};
+    }
+
+    //! \brief \ref fused_product of a factor \p w and each lane of \p v: the same operations, lane by lane.
+    template <bool Fused,
+              std::floating_point R>
+    requires Fused
+    [[nodiscard]] NUMERICAL_FFT_LANES_INLINE fft_lanes<R> twiddled(const std::complex<R>& w,
+                                                                   const fft_lanes<R>&    v) noexcept
+    {
+      const fft_pack<R> ii {w.imag() * v.im};
+      const fft_pack<R> ir {w.imag() * v.re};
+      return {fused(w.real(), v.re, -ii), fused(w.real(), v.im, ir)};
+    }
+
+#endif
+
     //! \brief The largest prime a Stockham pass takes as its radix, by its own `r`-point sum: a length with a larger
     //!        prime factor is transformed by Bluestein's convolution.
     inline constexpr std::size_t fft_largest_radix {61};
@@ -500,12 +999,56 @@ namespace numerical {
       return plans.back().plan;
     }
 
+    //! \brief The part type of a complex number (`R`), or of a register of lines' (`fft_pack`).
+    template <typename C>
+    using fft_real_t = typename C::value_type;
+
+    //! \brief The complex number of \p C's part type: a pass' factors.
+    template <typename C>
+    using fft_root_t = std::complex<fft_real_t<C>>;
+
     /*!
      * \brief One Stockham pass of radix 4 over \p in into \p out: \p current points at stride \p stride, so
      *        `current · stride` is the length. Element `q + stride · (p + j · current/4)` of the input is the `j`-th
      *        input of butterfly `(p, q)`, whose outputs go to `q + stride · (4p + j)`, the last three times `w^{jp}`
      *        (\ref twiddled), none for `p` = 0.
      */
+    template <bool Fused,
+              typename C>
+    NUMERICAL_ALWAYS_INLINE void radix_four_pass_body(std::size_t          current,
+                                                      std::size_t          stride,
+                                                      const C *            in,
+                                                      C *                  out,
+                                                      const fft_root_t<C>* twiddles) noexcept
+    {
+      const std::size_t quarter {current / 4};
+      const std::size_t run     {quarter - 1}; // the factors of each power
+      const std::size_t apart   {stride * quarter};
+      for (std::size_t p {0}; p < quarter; ++p) {
+        const C* const in_p {in + (stride * p)};
+        C* const       to   {out + (stride * 4 * p)};
+        for (std::size_t q {0}; q < stride; ++q) {
+          const C a           {in_p[q]};
+          const C b           {in_p[q + apart]};
+          const C c           {in_p[q + (2 * apart)]};
+          const C d           {in_p[q + (3 * apart)]};
+          const C a_plus_c    {a + c};
+          const C a_minus_c   {a - c};
+          const C b_plus_d    {b + d};
+          const C b_minus_d   {b - d};
+          const C i_b_minus_d {-b_minus_d.imag(), b_minus_d.real()}; // i·(b − d), exact
+          const C first       {a_minus_c - i_b_minus_d};
+          const C second      {a_plus_c - b_plus_d};
+          const C third       {a_minus_c + i_b_minus_d};
+          to[q]              = a_plus_c + b_plus_d;
+          to[q + stride]     = p == 0 ? first : twiddled<Fused>(twiddles[p - 1], first);
+          to[q + 2 * stride] = p == 0 ? second : twiddled<Fused>(twiddles[run + p - 1], second);
+          to[q + 3 * stride] = p == 0 ? third : twiddled<Fused>(twiddles[(2 * run) + p - 1], third);
+        }
+      }
+    }
+
+    //! \brief \ref radix_four_pass_body of complex numbers, its products as \p Fused.
     template <bool Fused,
               std::floating_point R>
     void radix_four_pass(std::size_t            current,
@@ -514,53 +1057,17 @@ namespace numerical {
                          std::complex<R>*       out,
                          const std::complex<R>* twiddles) noexcept
     {
-      using C = std::complex<R>;
-      const std::size_t quarter {current / 4};
-      const std::size_t run     {quarter - 1}; // the factors of each power
-      const std::size_t apart   {stride * quarter};
-      const auto        butterfly {[&](std::size_t p, auto&& place) {
-                                     const C* const in_p {in + (stride * p)};
-                                     C* const       to   {out + (stride * 4 * p)};
-                                     for (std::size_t q {0}; q < stride; ++q) {
-                                       const C a           {in_p[q]};
-                                       const C b           {in_p[q + apart]};
-                                       const C c           {in_p[q + (2 * apart)]};
-                                       const C d           {in_p[q + (3 * apart)]};
-                                       const C a_plus_c    {a + c};
-                                       const C a_minus_c   {a - c};
-                                       const C b_plus_d    {b + d};
-                                       const C b_minus_d   {b - d};
-                                       const C i_b_minus_d {-b_minus_d.imag(), b_minus_d.real()}; // i·(b − d), exact
-                                       to[q] = a_plus_c + b_plus_d;
-                                       place(to + q, a_minus_c - i_b_minus_d, a_plus_c - b_plus_d, a_minus_c + i_b_minus_d);
-                                     }
-                                   }};
-      butterfly(0, [stride](C* to, const C& first, const C& second, const C& third) {
-                  to[stride]       = first;
-                  to[2 * stride]   = second;
-                  to[3 * stride]   = third;
-                });
-      for (std::size_t p {1}; p < quarter; ++p) {
-        const C w1 {twiddles[p - 1]};
-        const C w2 {twiddles[run + p - 1]};
-        const C w3 {twiddles[(2 * run) + p - 1]};
-        butterfly(p, [stride, w1, w2, w3](C* to, const C& first, const C& second, const C& third) {
-                    to[stride]     = twiddled<Fused>(w1, first);
-                    to[2 * stride] = twiddled<Fused>(w2, second);
-                    to[3 * stride] = twiddled<Fused>(w3, third);
-                  });
-      }
+      radix_four_pass_body<Fused>(current, stride, in, out, twiddles);
     }
 
     //! \brief A 4-point transform of \p v0 to \p v3 into \p y: the radix-4 butterfly's sums, in its order.
-    template <std::floating_point R>
-    inline void four_point(const std::complex<R>& v0,
-                           const std::complex<R>& v1,
-                           const std::complex<R>& v2,
-                           const std::complex<R>& v3,
-                           std::complex<R>*       y) noexcept
+    template <typename C>
+    NUMERICAL_ALWAYS_INLINE void four_point(const C& v0,
+                                            const C& v1,
+                                            const C& v2,
+                                            const C& v3,
+                                            C*       y) noexcept
     {
-      using C = std::complex<R>;
       const C a_plus_c    {v0 + v2};
       const C a_minus_c   {v0 - v2};
       const C b_plus_d    {v1 + v3};
@@ -579,15 +1086,14 @@ namespace numerical {
      *        `4·k1 + k2`; output `k` of butterfly `p` times `w^{kp}`, none for `p` = 0. \p Fused as \ref twiddled.
      */
     template <bool Fused,
-              std::floating_point R>
-    void radix_sixteen_pass(std::size_t                            current,
-                            std::size_t                            stride,
-                            const std::complex<R>*                 in,
-                            std::complex<R>*                       out,
-                            const std::complex<R>*                 twiddles,
-                            const std::array<std::complex<R>, 16>& sixteenths) noexcept
+              typename C>
+    NUMERICAL_ALWAYS_INLINE void radix_sixteen_pass_body(std::size_t                          current,
+                                                         std::size_t                          stride,
+                                                         const C*                             in,
+                                                         C*                                   out,
+                                                         const fft_root_t<C>*                 twiddles,
+                                                         const std::array<fft_root_t<C>, 16>& sixteenths) noexcept
     {
-      using C = std::complex<R>;
       const std::size_t part  {current / 16};
       const std::size_t run   {part - 1};
       const std::size_t apart {stride * part};
@@ -620,6 +1126,19 @@ namespace numerical {
       }
     }
 
+    //! \brief \ref radix_sixteen_pass_body of complex numbers, its products as \p Fused.
+    template <bool Fused,
+              std::floating_point R>
+    void radix_sixteen_pass(std::size_t                            current,
+                            std::size_t                            stride,
+                            const std::complex<R>*                 in,
+                            std::complex<R>*                       out,
+                            const std::complex<R>*                 twiddles,
+                            const std::array<std::complex<R>, 16>& sixteenths) noexcept
+    {
+      radix_sixteen_pass_body<Fused>(current, stride, in, out, twiddles, sixteenths);
+    }
+
     /*!
      * \brief One Stockham pass of any radix \p radix, as \ref radix_four_pass is of 4: butterfly `(p, q)` the `r`-point
      *        transform of its inputs, `X_k = x_0 + Σ_{j ≥ 1} e^{−2πi jk/r} · x_j` in ascending `j` (\p roots; a factor
@@ -628,16 +1147,15 @@ namespace numerical {
      *        Inlined into each caller, so that the x86-64 fused one is built for FMA.
      */
     template <bool Fused,
-              std::floating_point R>
-    NUMERICAL_ALWAYS_INLINE void any_radix_pass_body(std::size_t            radix,
-                                                     std::size_t            current,
-                                                     std::size_t            stride,
-                                                     const std::complex<R>* in,
-                                                     std::complex<R>*       out,
-                                                     const std::complex<R>* twiddles,
-                                                     const std::complex<R>* roots) noexcept
+              typename C>
+    NUMERICAL_ALWAYS_INLINE void any_radix_pass_body(std::size_t          radix,
+                                                     std::size_t          current,
+                                                     std::size_t          stride,
+                                                     const C*             in,
+                                                     C*                   out,
+                                                     const fft_root_t<C>* twiddles,
+                                                     const fft_root_t<C>* roots) noexcept
     {
-      using C = std::complex<R>;
       const std::size_t part  {current / radix};
       const std::size_t run   {part - 1};
       const std::size_t apart {stride * part};
@@ -691,21 +1209,42 @@ namespace numerical {
       return s + scaled(c, v);
     }
 
+#ifdef NUMERICAL_FFT_LANES
+    //! \brief \ref scaled of each lane of \p v: each part's product, rounded.
+    template <std::floating_point R>
+    [[nodiscard]] NUMERICAL_FFT_LANES_INLINE fft_lanes<R> scaled(R                   c,
+                                                                 const fft_lanes<R>& v) noexcept
+    {
+      return {c * v.re, c * v.im};
+    }
+
+    //! \brief \ref scaled_add of each lane on the vector paths: each part one fused multiply-add.
+    template <bool Fused,
+              std::floating_point R>
+    requires Fused
+    [[nodiscard]] NUMERICAL_FFT_LANES_INLINE fft_lanes<R> scaled_add(const fft_lanes<R>& s,
+                                                                     R                   c,
+                                                                     const fft_lanes<R>& v) noexcept
+    {
+      return {fused(c, v.re, s.re), fused(c, v.im, s.im)};
+    }
+
+#endif
     /*!
      * \brief One Stockham pass of radix 3, as \ref any_radix_pass_body is of any: `t = x1 + x2`, `v = x0 − t/2` (exact
      *        halving, one rounding), `u = (√3/2)·(x1 − x2)`; `X0 = x0 + t`, `X1 = v − i·u`, `X2 = v + i·u`, then times
      *        `w^{kp}` as \p Fused. Inlined into each caller.
      */
     template <bool Fused,
-              std::floating_point R>
-    NUMERICAL_ALWAYS_INLINE void radix_three_pass_body(std::size_t                      current,
-                                                       std::size_t                      stride,
-                                                       const std::complex<R>*           in,
-                                                       std::complex<R>*                 out,
-                                                       const std::complex<R>*           twiddles,
-                                                       const small_radix_constants<R>&  k) noexcept
+              typename C>
+    NUMERICAL_ALWAYS_INLINE void radix_three_pass_body(std::size_t                                 current,
+                                                       std::size_t                                 stride,
+                                                       const C           *                         in,
+                                                       C           *                               out,
+                                                       const fft_root_t<C>           *             twiddles,
+                                                       const small_radix_constants<fft_real_t<C>>& k) noexcept
     {
-      using C = std::complex<R>;
+      using R = fft_real_t<C>;
       const std::size_t part  {current / 3};
       const std::size_t run   {part - 1};
       const std::size_t apart {stride * part};
@@ -736,15 +1275,14 @@ namespace numerical {
      *        `X2 = a2 − i·b2`, `X3 = a2 + i·b2`, then times `w^{kp}`. Inlined into each caller.
      */
     template <bool Fused,
-              std::floating_point R>
-    NUMERICAL_ALWAYS_INLINE void radix_five_pass_body(std::size_t                      current,
-                                                      std::size_t                      stride,
-                                                      const std::complex<R>*           in,
-                                                      std::complex<R>*                 out,
-                                                      const std::complex<R>*           twiddles,
-                                                      const small_radix_constants<R>&  k) noexcept
+              typename C>
+    NUMERICAL_ALWAYS_INLINE void radix_five_pass_body(std::size_t                                 current,
+                                                      std::size_t                                 stride,
+                                                      const C           *                         in,
+                                                      C           *                               out,
+                                                      const fft_root_t<C>           *             twiddles,
+                                                      const small_radix_constants<fft_real_t<C>>& k) noexcept
     {
-      using C = std::complex<R>;
       const std::size_t part  {current / 5};
       const std::size_t run   {part - 1};
       const std::size_t apart {stride * part};
@@ -784,15 +1322,14 @@ namespace numerical {
      *        \p Fused, none for `p` = 0. \p half_root_two is √½.
      */
     template <bool Fused,
-              std::floating_point R>
-    NUMERICAL_ALWAYS_INLINE void radix_eight_pass_body(std::size_t            current,
-                                                       std::size_t            stride,
-                                                       const std::complex<R>* in,
-                                                       std::complex<R>*       out,
-                                                       const std::complex<R>* twiddles,
-                                                       R                      half_root_two) noexcept
+              typename C>
+    NUMERICAL_ALWAYS_INLINE void radix_eight_pass_body(std::size_t          current,
+                                                       std::size_t          stride,
+                                                       const C*             in,
+                                                       C*                   out,
+                                                       const fft_root_t<C>* twiddles,
+                                                       fft_real_t<C>        half_root_two) noexcept
     {
-      using C = std::complex<R>;
       const std::size_t part  {current / 8};
       const std::size_t run   {part - 1};
       const std::size_t apart {stride * part};
@@ -808,10 +1345,10 @@ namespace numerical {
             a[j] = low + high;
             b[j] = low - high;
           }
-          const R sum1        {b[1].real() + b[1].imag()};
-          const R difference1 {b[1].imag() - b[1].real()};
-          const R sum3        {b[3].real() + b[3].imag()};
-          const R difference3 {b[3].imag() - b[3].real()};
+          const auto sum1        {b[1].real() + b[1].imag()};
+          const auto difference1 {b[1].imag() - b[1].real()};
+          const auto sum3        {b[3].real() + b[3].imag()};
+          const auto difference3 {b[3].imag() - b[3].real()};
           b[1] = C {half_root_two * sum1, half_root_two * difference1};
           b[2] = C {b[2].imag(), -b[2].real()};
           b[3] = C {half_root_two * difference3, -(half_root_two * sum3)};
@@ -882,14 +1419,14 @@ namespace numerical {
 #endif
 
     //! \brief The last pass of an odd power of two: butterflies of radix 2 at stride \p stride, no factor.
-    template <std::floating_point R>
-    void radix_two_pass(std::size_t            stride,
-                        const std::complex<R>* in,
-                        std::complex<R>*       out) noexcept
+    template <typename C>
+    NUMERICAL_ALWAYS_INLINE void radix_two_pass(std::size_t stride,
+                                                const C*    in,
+                                                C*          out) noexcept
     {
       for (std::size_t q {0}; q < stride; ++q) {
-        const std::complex<R> a {in[q]};
-        const std::complex<R> b {in[q + stride]};
+        const C a {in[q]};
+        const C b {in[q + stride]};
         out[q]          = a + b;
         out[q + stride] = a - b;
       }
@@ -901,19 +1438,20 @@ namespace numerical {
      *        (always the last pass), any other by \p other (\ref any_radix_pass's: 3 and 5 by their own butterflies).
      */
     template <std::floating_point R,
+              typename C,
               typename Four,
               typename Sixteen,
               typename Other>
-    void stockham_passes(const fft_plan<R>& plan,
-                         std::complex<R>*   data,
-                         std::complex<R>*   work,
-                         Four               four,
-                         Sixteen            sixteen,
-                         Other              other) noexcept
+    NUMERICAL_ALWAYS_INLINE void stockham_passes(const fft_plan<R>& plan,
+                                                 C*                 data,
+                                                 C*                 work,
+                                                 Four               four,
+                                                 Sixteen            sixteen,
+                                                 Other              other) noexcept
     {
       const std::size_t      n        {plan.length};
-      std::complex<R>*       in       {data};
-      std::complex<R>*       out      {work};
+      C*                     in       {data};
+      C*                     out      {work};
       const std::complex<R>* twiddles {plan.twiddles.data()};
       const std::complex<R>* roots    {plan.radix_roots.data()};
       std::size_t            current  {n};
@@ -1025,6 +1563,99 @@ namespace numerical {
 #endif
     }
 
+#ifdef NUMERICAL_FFT_LANES
+    //! \brief \ref radix_four_pass_body of registers of lines, fused.
+    template <std::floating_point R>
+    NUMERICAL_FFT_LANES_TARGET void lanes_four_pass(std::size_t             current,
+                                                    std::size_t             stride,
+                                                    const fft_lanes<R>*     in,
+                                                    fft_lanes<R>*           out,
+                                                    const std::complex<R>*  twiddles) noexcept
+    {
+      radix_four_pass_body<true>(current, stride, in, out, twiddles);
+    }
+
+    //! \brief \ref radix_sixteen_pass_body of registers of lines, fused.
+    template <std::floating_point R>
+    NUMERICAL_FFT_LANES_TARGET void lanes_sixteen_pass(std::size_t                            current,
+                                                       std::size_t                            stride,
+                                                       const fft_lanes<R>*                    in,
+                                                       fft_lanes<R>*                          out,
+                                                       const std::complex<R>*                 twiddles,
+                                                       const std::array<std::complex<R>, 16>& sixteenths) noexcept
+    {
+      radix_sixteen_pass_body<true>(current, stride, in, out, twiddles, sixteenths);
+    }
+
+    //! \brief \ref any_radix_pass of registers of lines, fused: 3, 5 and 8 by their own butterflies.
+    template <std::floating_point R>
+    NUMERICAL_FFT_LANES_TARGET void lanes_any_radix_pass(std::size_t                     radix,
+                                                         std::size_t                     current,
+                                                         std::size_t                     stride,
+                                                         const fft_lanes<R>*             in,
+                                                         fft_lanes<R>*                   out,
+                                                         const std::complex<R>*          twiddles,
+                                                         const std::complex<R>*          roots,
+                                                         const small_radix_constants<R>& small) noexcept
+    {
+      if (radix == 3) {
+        radix_three_pass_body<true>(current, stride, in, out, twiddles, small);
+      }
+      else if (radix == 5) {
+        radix_five_pass_body<true>(current, stride, in, out, twiddles, small);
+      }
+      else if (radix == 8) {
+        radix_eight_pass_body<true>(current, stride, in, out, twiddles, small.half_root_two);
+      }
+      else {
+        any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
+      }
+    }
+
+    /*!
+     * \brief The forward transforms of a register of lines (\ref fft_lanes_width of them), each fused as
+     *        \ref forward_fft fuses a line alone, so each line's bits: element `k` of line `b` from
+     *        `in[b · in_line + k · in_step]` (the first \p kept, zeros past them; conjugated where \p inverse) into
+     *        `out[b · out_line + k · out_step]` (conjugated back where \p inverse, then times \p scale unless 1).
+     *        \p lines and \p work hold the plan's length of registers each; the plan has no Bluestein's convolution.
+     */
+    template <typename T,
+              std::floating_point R>
+    NUMERICAL_FFT_LANES_TARGET void lanes_transform(const fft_plan<R>& plan,
+                                                    const T*           in,
+                                                    std::size_t        in_line,
+                                                    std::size_t        in_step,
+                                                    std::size_t        kept,
+                                                    std::complex<R>*   out,
+                                                    std::size_t        out_line,
+                                                    std::size_t        out_step,
+                                                    bool               inverse,
+                                                    R                  scale,
+                                                    fft_lanes<R>*      lines,
+                                                    fft_lanes<R>*      work) noexcept
+    {
+      const std::size_t points {plan.length};
+      for (std::size_t k {0}; k < points; ++k) {
+        fft_lanes<R> value {};
+        if (k < kept) {
+          lanes_read(in + (k * in_step), in_line, value.re.v, value.im.v);
+        }
+        lines[k] = {value.re, inverse ? -value.im : value.im};
+      }
+      stockham_passes(plan, lines, work, lanes_four_pass<R>, lanes_sixteen_pass<R>, lanes_any_radix_pass<R>);
+      for (std::size_t k {0}; k < points; ++k) {
+        const fft_lanes<R> value {lines[k].re, inverse ? -lines[k].im : lines[k].im};
+        if (scale == R(1)) {
+          lanes_write(out + (k * out_step), out_line, value.re.v, value.im.v);
+        }
+        else {
+          lanes_write(out + (k * out_step), out_line, (scale * value.re).v, (scale * value.im).v);
+        }
+      }
+    }
+
+#endif
+
     //! \brief The complex type a transform of \p T computes in: \p T itself, or a real type's complex.
     template <typename T>
     struct fft_complex
@@ -1094,6 +1725,92 @@ namespace numerical {
       C*        data_ {nullptr}; //!< The space in use.
     };
 
+#ifdef NUMERICAL_FFT_LANES
+    //! \brief The lines a register holds (\ref fft_lanes_width).
+    template <std::floating_point R>
+    inline constexpr std::size_t fft_lines_width {fft_lanes_width<R>};
+
+    //! \brief The longest lines transformed a register of them at a time: past it, a line alone holds its passes in
+    //!        the caches.
+    inline constexpr std::size_t fft_lanes_longest {std::size_t {1} << 12};
+
+#  if defined(NUMERICAL_X86_COMPILED)
+    //! \brief The most bytes of registers of lines that lie together (along the last axis) transformed at a time: past
+    //!        them the two spaces leave the first-level cache, where the AVX2 passes along a line alone hold it.
+    inline constexpr std::size_t fft_lanes_together_bytes {std::size_t {1} << 14};
+#  else
+    //! \brief The most bytes of registers of lines that lie together (along the last axis) transformed at a time.
+    inline constexpr std::size_t fft_lanes_together_bytes {std::size_t {1} << 17};
+#  endif
+
+    /*!
+     * \brief The registers of lines (\ref fft_lines_width each) a batch of \p lines transforms together under \p plan:
+     *        on the vector paths (\p fused) of a length without Bluestein's convolution up to \ref fft_lanes_longest,
+     *        and, where each line lies \p together (along the last axis), whose registers take at most
+     *        \ref fft_lanes_together_bytes; else none.
+     */
+    template <std::floating_point R>
+    [[nodiscard]] std::size_t fft_lane_groups(const fft_plan<R>& plan,
+                                              bool               fused,
+                                              std::size_t        lines,
+                                              bool               together) noexcept
+    {
+      const bool fits {together ? plan.length * sizeof(fft_lanes<R>) <= fft_lanes_together_bytes : plan.length <= fft_lanes_longest};
+      return fused && !plan.bluestein && fits ? lines / fft_lines_width<R> : 0;
+    }
+
+    //! \brief \ref lanes_transform of the lines from \p in into \p out, in this thread's working space.
+    template <typename T,
+              std::floating_point R>
+    void fft_lines_together(const fft_plan<R>& plan,
+                            const T*           in,
+                            std::size_t        in_line,
+                            std::size_t        in_step,
+                            std::size_t        kept,
+                            std::complex<R>*   out,
+                            std::size_t        out_line,
+                            std::size_t        out_step,
+                            bool               inverse,
+                            R                  scale)
+    {
+      const fft_scratch<fft_lanes<R>> space {2 * plan.length};
+      lanes_transform(plan, in, in_line, in_step, kept, out, out_line, out_step, inverse, scale, space.data(),
+                      space.data() + plan.length);
+    }
+
+#else
+    //! \brief One line at a time where no register holds lines.
+    template <std::floating_point R>
+    inline constexpr std::size_t fft_lines_width {1};
+
+    //! \brief No registers of lines.
+    template <std::floating_point R>
+    [[nodiscard]] std::size_t fft_lane_groups(const fft_plan<R>& /*plan*/,
+                                              bool /*fused*/,
+                                              std::size_t /*lines*/,
+                                              bool /*together*/) noexcept
+    {
+      return 0;
+    }
+
+    //! \brief Never called: no registers of lines.
+    template <typename T,
+              std::floating_point R>
+    void fft_lines_together(const fft_plan<R>& /*plan*/,
+                            const T* /*in*/,
+                            std::size_t /*in_line*/,
+                            std::size_t /*in_step*/,
+                            std::size_t /*kept*/,
+                            std::complex<R>* /*out*/,
+                            std::size_t /*out_line*/,
+                            std::size_t /*out_step*/,
+                            bool /*inverse*/,
+                            R /*scale*/) noexcept
+    {
+    }
+
+#endif
+
     //! \brief The lines a task of \ref transform_axis takes together along an axis whose lines lie apart: each row read
     //!        and written as that many neighbours, where one line at a time took one element of each row.
     inline constexpr std::size_t fft_column_block {8};
@@ -1138,10 +1855,20 @@ namespace numerical {
                                                          const C v {inverse ? std::conj(value) : value};
                                                          return scale == R(1) ? v : C {v.real() * scale, v.imag() * scale};
                                                        }};
-      const std::size_t work {5 * points * static_cast<std::size_t>(std::bit_width(points))};
+      // A line's work as work_per_thread counts it, about a nanosecond a unit: 2·n·log₂ n (a line of 64 points 0.2 µs,
+      // of 1024 4.6 µs, on one arm64 core), so that 64 lines of 64 points stay on one thread.
+      const std::size_t work {2 * points * static_cast<std::size_t>(std::bit_width(points))};
       if (walk.inner == 1) { // each line together: transformed where it lies in the output
-        parallel_for(walk.outer, work, [&](std::size_t line) {
-                       const T* const in {from + (line * extent)};
+        const std::size_t groups {fft_lane_groups(*plan, fused, walk.outer, true)};
+        const std::size_t first  {groups * fft_lines_width<R>};
+        parallel_for(groups + walk.outer - first, work * fft_lines_width<R>, [&](std::size_t task) {
+                       if (task < groups) {
+                         fft_lines_together(*plan, from + (task * fft_lines_width<R> * extent), extent, 1, kept,
+                                            out.data() + (task * fft_lines_width<R> * points), points, 1, inverse, scale);
+                         return;
+                       }
+                       const std::size_t line {first + task - groups};
+                       const T* const    in   {from + (line * extent)};
                        C* const       to {out.data() + (line * points)};
                        fft_scratch<C> scratch {plan->work};
                        for (std::size_t k {0}; k < points; ++k) {
@@ -1155,14 +1882,25 @@ namespace numerical {
                      });
         return tensor<C> {std::move(shape), std::move(out)};
       }
-      // Lines `inner` apart: up to fft_column_block of them at a time, each row read and written as that many
-      // neighbours; fewer where that would leave the threads under four tasks each. A line's bits are its own either way.
-      const std::size_t share  {(walk.outer * walk.inner) / (4 * max_threads())};
-      const std::size_t block  {std::clamp(share, std::size_t {1}, fft_column_block)};
-      const std::size_t blocks {(walk.inner + block - 1) / block};
-      parallel_for(walk.outer * blocks, work * block, [&](std::size_t task) {
-                     const std::size_t outer {task / blocks};
-                     const std::size_t first {(task % blocks) * block};
+      // Lines `inner` apart: a register of neighbours at a time where they fill one (fft_lane_groups), the rest up to
+      // fft_column_block of them at a time, each row read and written as that many neighbours; fewer where that would
+      // leave the threads under four tasks each. A line's bits are its own either way.
+      const std::size_t groups   {fft_lane_groups(*plan, fused, walk.inner, false)};
+      const std::size_t together {groups * fft_lines_width<R>};
+      const std::size_t rest     {walk.inner - together};
+      const std::size_t share    {(walk.outer * rest) / (4 * max_threads())};
+      const std::size_t block    {std::clamp(share, std::size_t {1}, fft_column_block)};
+      const std::size_t blocks   {(rest + block - 1) / block};
+      parallel_for(walk.outer * (groups + blocks), work * std::max(block, fft_lines_width<R>), [&](std::size_t task) {
+                     const std::size_t outer {task / (groups + blocks)};
+                     const std::size_t slot  {task % (groups + blocks)};
+                     if (slot < groups) {
+                       const std::size_t column {slot * fft_lines_width<R>};
+                       fft_lines_together(*plan, from + (outer * extent * walk.inner) + column, 1, walk.inner, kept,
+                                          out.data() + (outer * points * walk.inner) + column, 1, walk.inner, inverse, scale);
+                       return;
+                     }
+                     const std::size_t first {together + ((slot - groups) * block)};
                      const std::size_t width {std::min(block, walk.inner - first)};
                      const T* const    in    {from + (outer * extent * walk.inner) + first};
                      C* const          to    {out.data() + (outer * points * walk.inner) + first};

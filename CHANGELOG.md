@@ -20,6 +20,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   products rounded apart, and the vector paths' (NEON, AMX, AVX2, AVX-512), one fused complex product; a line has the
   same bits alone, in a batch and on any threads. Plans kept per length and type (the 32 most recent). Six AVX2 cores,
   one line: 1000 complex points in 4.3 µs, 1.2–2.0× FFTW's time for complex transforms, rfft 1.7–1.9× faster than fft.
+  Lines of a batch transformed a register of them at a time on the vector paths, each line's bits its own: M1 Pro,
+  `complex64` lines 2.1–2.9× faster than one at a time, 64 lines of 64 points 16 → 9 µs; six AVX2 cores, 1024 lines
+  of 16 points 82 → 43 µs, along the first axis of 64 × 1024 346 → 222 µs.
 
 ## 2026.10.38 — 2026-10-25
 

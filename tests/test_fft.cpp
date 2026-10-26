@@ -13,6 +13,7 @@
 #include <optional>
 #include <random>
 #include <ranges>
+#include <type_traits>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -226,6 +227,111 @@ TEST(a_line_has_the_same_bits_alone_among_others_and_on_any_threads)
 
 // Many lengths in turn: the least recently used plan dropped past the store's size, the one in use kept; a plan held
 // outlives its eviction.
+namespace {
+  // A value of T drawn from the normal distribution: complex parts drawn in turn.
+  template <typename T>
+  T drawn_value(std::mt19937_64& draws)
+  {
+    std::normal_distribution<double> normal;
+    if constexpr (std::is_floating_point_v<T>) {
+      return static_cast<T>(normal(draws));
+    }
+    else {
+      const auto re {static_cast<T::value_type>(normal(draws))};
+      return T {re, static_cast<T::value_type>(normal(draws))};
+    }
+  }
+
+  // fft, or ifft where `inverse`, of x to `points` along `axis`.
+  template <typename T>
+  auto transformed(const tensor<T>& x,
+                   bool             inverse,
+                   std::size_t      points,
+                   std::ptrdiff_t   axis,
+                   fft_norm         norm)
+  {
+    return inverse ? numerical::ifft(x, points, axis, norm) : numerical::fft(x, points, axis, norm);
+  }
+
+  // Each line of a batch of `lines` lines of n points of T, along the last axis (`along_last`) or the middle one of a
+  // (2, n, lines) tensor, transformed to `points` (fft, or ifft where `inverse`) has the bits of its transform alone.
+  template <typename T>
+  bool batch_lines_are_alone(std::size_t n,
+                             std::size_t lines,
+                             std::size_t points,
+                             bool        inverse,
+                             bool        along_last,
+                             fft_norm    norm)
+  {
+    // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+    std::mt19937_64   draws {(n * 131) + lines};
+    const std::size_t outer {along_last ? std::size_t {1} : std::size_t {2}};
+    std::vector<T>    values(outer * n * lines);
+    for (T& v : values) {
+      v = drawn_value<T>(draws);
+    }
+    std::vector<std::size_t> shape {lines, n};
+    if (!along_last) {
+      shape = {2, n, lines};
+    }
+    const tensor<T> batch      {shape, values};
+    const auto      all        {transformed(batch, inverse, points, along_last ? -1 : 1, norm)};
+    bool            good       {true};
+    for (std::size_t o {0}; o < outer; ++o) {
+      for (std::size_t l {0}; l < lines; ++l) {
+        std::vector<T> line(n);
+        for (std::size_t k {0}; k < n; ++k) {
+          line[k] = along_last ? values[(l * n) + k] : values[(o * n * lines) + (k * lines) + l];
+        }
+        const auto alone {transformed(tensor<T> {{n}, line}, inverse, points, -1, norm)};
+        for (std::size_t k {0}; k < points; ++k) {
+          const std::size_t at {along_last ? (l * points) + k : (o * points * lines) + (k * lines) + l};
+          good = good && same_bits(std::vector {alone.data()[k]}, std::vector {all.data()[at]});
+        }
+      }
+    }
+    return good;
+  }
+
+  // batch_lines_are_alone over lengths of every kind, both axes, cut and padded, each scaling.
+  template <typename T>
+  bool every_batch_line_is_alone()
+  {
+    bool good {true};
+    for (const std::size_t n : {1UL, 2UL, 12UL, 16UL, 32UL, 60UL, 64UL, 67UL, 96UL, 100UL}) {
+      for (const std::size_t lines : {1UL, 9UL, 17UL}) {
+        good = good && batch_lines_are_alone<T>(n, lines, n, false, true, fft_norm::backward);
+        good = good && batch_lines_are_alone<T>(n, lines, n + 3, true, true, fft_norm::ortho);
+        good = good && batch_lines_are_alone<T>(n, lines, (n / 2) + 1, false, false, fft_norm::forward);
+        good = good && batch_lines_are_alone<T>(n, lines, n, true, false, fft_norm::backward);
+        good = good && batch_lines_are_alone<T>(n, lines, n + 5, false, false, fft_norm::ortho); // columns padded
+      }
+    }
+    good = good && batch_lines_are_alone<T>(1024, 9, 1024, false, true, fft_norm::backward);  // passes of 16 past their first butterfly
+    good = good && batch_lines_are_alone<T>(1024, 9, 1024, true, false, fft_norm::ortho);
+    good = good && batch_lines_are_alone<T>(8192, 8, 8192, false, true, fft_norm::backward);  // past the lanes' bytes along the last axis
+    return good && batch_lines_are_alone<T>(4100, 8, 4100, false, false, fft_norm::backward); // past their length across it
+  }
+} // namespace
+
+// On every path this processor runs: each line of a batch, along either kind of axis, has the bits of its transform
+// alone, whether a register of lines or a line alone transformed it (the lanes of the vector paths: every input type,
+// cut, padded and scaled, lines past a whole register of them, lengths past the lanes' bounds and Bluestein's).
+TEST(every_line_of_a_batch_has_its_bits_alone_on_every_path)
+{
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    EXPECT(every_batch_line_is_alone<std::complex<double>>());
+    EXPECT(every_batch_line_is_alone<std::complex<float>>());
+    EXPECT(every_batch_line_is_alone<double>());
+    EXPECT(every_batch_line_is_alone<float>());
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
+
 TEST(fft_plans_are_kept_and_renewed)
 {
   const auto kept {numerical::detail::shared_fft_plan<double>(7)};
