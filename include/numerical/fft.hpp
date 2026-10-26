@@ -1236,19 +1236,32 @@ namespace numerical {
       return plans.back().plan;
     }
 
+    //! \brief No recombination by registers: the scalar loop's from `k` = 1.
+    template <std::floating_point R>
+    [[nodiscard]] std::size_t no_registers(std::size_t /*h*/,
+                                           const std::complex<R>* /*from*/,
+                                           const std::complex<R>* /*roots*/,
+                                           std::complex<R>* /*into*/) noexcept
+    {
+      return 1;
+    }
+
     /*!
      * \brief The transform of \p n real points \p x (together) into \p X (`n/2 + 1` complex numbers), \p work holding
      *        `n/2 + 1` complex numbers beside the plan's work. An even `n = 2h`: the `h` complex numbers
      *        `x_{2j} + i·x_{2j+1}` transformed, then `X_k = E_k + w^k·O_k`, `E_k = (Z_k + conj Z_{h−k})/2`,
-     *        `O_k = −i·(Z_k − conj Z_{h−k})/2` (exact halvings and products by ±i; `w^k·O_k` as \p Fused). An odd `n`:
-     *        the complex transform of the points, its first `n/2 + 1` outputs. Inlined into each caller.
+     *        `O_k = −i·(Z_k − conj Z_{h−k})/2` (exact halvings and products by ±i; `w^k·O_k` as \p Fused), \p registers
+     *        `(h, Z, roots, X)` computing the first of them and returning the next `k`. An odd `n`: the complex
+     *        transform of the points, its first `n/2 + 1` outputs. Inlined into each caller.
      */
     template <bool Fused,
-              std::floating_point R>
+              std::floating_point R,
+              typename Registers>
     NUMERICAL_ALWAYS_INLINE void real_forward_body(const real_fft_plan<R>& plan,
                                                    const R*                x,
                                                    std::complex<R>*        X,
-                                                   std::complex<R>*        work) noexcept
+                                                   std::complex<R>*        work,
+                                                   Registers               registers) noexcept
     {
       using C = std::complex<R>;
       const std::size_t n {plan.length};
@@ -1269,7 +1282,7 @@ namespace numerical {
       forward_fft(*plan.complex, z, work + h, Fused);
       X[0] = C {z[0].real() + z[0].imag(), R(0)};
       X[h] = C {z[0].real() - z[0].imag(), R(0)};
-      for (std::size_t k {1}; k < h; ++k) {
+      for (std::size_t k {registers(h, z, plan.roots.data(), X)}; k < h; ++k) {
         const C a          {z[k]};
         const C b          {std::conj(z[h - k])};
         const C sum        {a + b};
@@ -1285,16 +1298,19 @@ namespace numerical {
      *        `n/2 + 1` complex numbers \p X (the imaginary parts of `X_0` and, for an even `n`, `X_{n/2}` read as 0,
      *        as NumPy's). An even `n = 2h`: `Z_k = E_k + i·O_k`, `E_k = (X_k + conj X_{h−k})/2`,
      *        `O_k = conj(w^k)·(X_k − conj X_{h−k})/2`, then `Z`'s inverse transform (`conj(fft(conj ·))`), its parts
-     *        `x_{2j}` and `x_{2j+1}`, times \p scale; an odd `n`: the Hermitian spectrum of `n` points, its inverse
-     *        transform's real parts times \p scale. Inlined into each caller.
+     *        `x_{2j}` and `x_{2j+1}`, times \p scale, \p registers `(h, X, roots, conj Z)` computing the first `conj Z_k` and
+     *        returning the next `k`; an odd `n`: the Hermitian spectrum of `n` points, its inverse transform's real parts
+     *        times \p scale. Inlined into each caller.
      */
     template <bool Fused,
-              std::floating_point R>
+              std::floating_point R,
+              typename Registers>
     NUMERICAL_ALWAYS_INLINE void real_inverse_body(const real_fft_plan<R>& plan,
                                                    const std::complex<R>*  X,
                                                    R*                      x,
                                                    std::complex<R>*        work,
-                                                   R                       scale) noexcept
+                                                   R                       scale,
+                                                   Registers               registers) noexcept
     {
       using C = std::complex<R>;
       const std::size_t n {plan.length};
@@ -1316,7 +1332,7 @@ namespace numerical {
       const C  first {X[0].real(), R(0)};
       const C  last  {X[h].real(), R(0)};
       z[0] = std::conj(C {(first.real() + last.real()) * R(0.5), (first.real() - last.real()) * R(0.5)});
-      for (std::size_t k {1}; k < h; ++k) {
+      for (std::size_t k {registers(h, X, plan.roots.data(), z)}; k < h; ++k) {
         const C a          {X[k]};
         const C b          {std::conj(X[h - k])};
         const C sum        {a + b};
@@ -1341,7 +1357,7 @@ namespace numerical {
                                                        std::complex<R>*        X,
                                                        std::complex<R>*        work) noexcept
     {
-      real_forward_body<true>(plan, x, X, work);
+      real_forward_body<true>(plan, x, X, work, avx2_real_forward_registers<R>);
     }
 
     //! \brief \ref real_inverse_body fused, built for AVX2 with FMA.
@@ -1352,7 +1368,7 @@ namespace numerical {
                                                        std::complex<R>*        work,
                                                        R                       scale) noexcept
     {
-      real_inverse_body<true>(plan, X, x, work, scale);
+      real_inverse_body<true>(plan, X, x, work, scale, avx2_real_inverse_registers<R>);
     }
 
 #endif
@@ -1366,13 +1382,13 @@ namespace numerical {
                       bool                    fused) noexcept
     {
       if (!fused) {
-        real_forward_body<false>(plan, x, X, work);
+        real_forward_body<false>(plan, x, X, work, no_registers<R>);
         return;
       }
 #ifdef NUMERICAL_X86_COMPILED
       real_forward_x86(plan, x, X, work);
 #else
-      real_forward_body<true>(plan, x, X, work);
+      real_forward_body<true>(plan, x, X, work, no_registers<R>);
 #endif
     }
 
@@ -1386,13 +1402,13 @@ namespace numerical {
                       bool                    fused) noexcept
     {
       if (!fused) {
-        real_inverse_body<false>(plan, X, x, work, scale);
+        real_inverse_body<false>(plan, X, x, work, scale, no_registers<R>);
         return;
       }
 #ifdef NUMERICAL_X86_COMPILED
       real_inverse_x86(plan, X, x, work, scale);
 #else
-      real_inverse_body<true>(plan, X, x, work, scale);
+      real_inverse_body<true>(plan, X, x, work, scale, no_registers<R>);
 #endif
     }
 

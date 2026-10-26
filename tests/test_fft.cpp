@@ -12,6 +12,7 @@
 #include <numbers>
 #include <optional>
 #include <random>
+#include <ranges>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -78,16 +79,18 @@ namespace {
     return std::sqrt(error / size) / static_cast<double>(std::numeric_limits<R>::epsilon()) / std::max(1.0, std::log2(static_cast<double>(n)));
   }
 
-  // The same bits, part by part.
-  template <typename C>
-  bool same_bits(const numerical::buffer<C>& x,
-                 const numerical::buffer<C>& y)
+  // The same bits, part by part: complex or real values, x's and y's.
+  template <typename X,
+            typename Y>
+  bool same_bits(const X& x,
+                 const Y& y)
   {
-    using R = C::value_type;
+    using V = std::ranges::range_value_t<X>;
+    using R = decltype(std::real(V {}));
     using U = std::conditional_t<sizeof(R) == 8, std::uint64_t, std::uint32_t>;
-    return x.size() == y.size() && std::equal(x.begin(), x.end(), y.begin(), [](const C& p, const C& q) {
-                                                return std::bit_cast<U>(p.real()) == std::bit_cast<U>(q.real()) && std::bit_cast<U>(p.imag()) == std::bit_cast<U>(q.imag());
-                                              });
+    return std::ranges::equal(x, y, [](const V& p, const V& q) {
+                                return std::bit_cast<U>(std::real(p)) == std::bit_cast<U>(std::real(q)) && std::bit_cast<U>(std::imag(p)) == std::bit_cast<U>(std::imag(q));
+                              });
   }
 } // namespace
 
@@ -570,6 +573,52 @@ namespace {
     return good && refused;
   }
 } // namespace
+
+namespace {
+  // rfft and irfft of each even n to 2·limit against the scalar recombination's loop (real_forward_body and
+  // real_inverse_body with no_registers), to the bit: the registers' recombination, where a path has one, rounds as
+  // the loop, about every count of complex numbers left past the registers.
+  template <std::floating_point R>
+  bool recombinations_match_the_loop(std::size_t limit)
+  {
+    using C = std::complex<R>;
+    bool good {true};
+    for (std::size_t n {2}; n <= 2 * limit; n += 2) {
+      // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+      std::mt19937_64                  draws {n};
+      std::normal_distribution<double> normal;
+      std::vector<R>                   values(n);
+      for (R& v : values) {
+        v = static_cast<R>(normal(draws));
+      }
+      const auto                     plan     {numerical::detail::shared_real_fft_plan<R>(n)};
+      const tensor<C>                spectrum {numerical::rfft(tensor<R> {{n}, values})};
+      const tensor<R>                back     {numerical::irfft(spectrum, n)};
+      std::vector<C>                 work((n / 2) + 1 + plan->complex->work);
+      std::vector<C>                 loop((n / 2) + 1);
+      std::vector<R>                 inverse(n);
+      numerical::detail::real_forward_body<true>(*plan, values.data(), loop.data(), work.data(), numerical::detail::no_registers<R>);
+      numerical::detail::real_inverse_body<true>(*plan, spectrum.data().data(), inverse.data(), work.data(), R(2) / static_cast<R>(n),
+                                                 numerical::detail::no_registers<R>);
+      good = good && same_bits(spectrum.data(), loop) && same_bits(back.data(), inverse);
+    }
+    return good;
+  }
+} // namespace
+
+// On every fused path this processor runs: the recombination of an even n's real transforms is the loop's, to the bit.
+TEST(the_real_recombination_has_the_loops_bits_on_every_fused_path)
+{
+  for (const numerical::gemm_path path : {numerical::gemm_path::neon, numerical::gemm_path::avx2, numerical::gemm_path::avx512,
+                                          numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    EXPECT(recombinations_match_the_loop<double>(40));
+    EXPECT(recombinations_match_the_loop<float>(40));
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
 
 // On every path this processor runs (the portable one's products apart): padded real transforms, both precisions.
 TEST(real_transforms_pad_on_every_path)

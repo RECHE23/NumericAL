@@ -2778,6 +2778,92 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
+  //! \brief The complex numbers of \p v in the reverse order.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_reversed(__m256d v) noexcept
+  {
+    return _mm256_permute2f128_pd(v, v, 0x01);
+  }
+
+  //! \brief \ref avx2_reversed of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_reversed(__m256 v) noexcept
+  {
+    return _mm256_castpd_ps(_mm256_permute4x64_pd(_mm256_castps_pd(v), 0x1B));
+  }
+
+  //! \brief \p v negated, exact.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_negated(__m256d v) noexcept
+  {
+    return _mm256_xor_pd(v, _mm256_set1_pd(-0.0));
+  }
+
+  //! \brief \ref avx2_negated of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_negated(__m256 v) noexcept
+  {
+    return _mm256_xor_ps(v, _mm256_set1_ps(-0.0F));
+  }
+
+  /*!
+   * \brief `fft.hpp`'s recombination of a real transform of `2h` points (`real_forward_body`) a register at a time:
+   *        `X_k = E_k + w^k·O_k` from \p z (`Z`, the transform of the `h` pairs) and \p roots (`w^k`) into \p X, for
+   *        `k` from 1 while a register fits below \p h, the same operations in the same order (`Z_{h−k}` read as a
+   *        register reversed). Returns the first `k` left.
+   */
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline std::size_t avx2_real_forward_registers(std::size_t            h,
+                                                                              const std::complex<R>* z,
+                                                                              const std::complex<R>* roots,
+                                                                              std::complex<R>*       X) noexcept
+  {
+    using vec = decltype(avx2_load(static_cast<const R*>(nullptr))); // __m256d or __m256
+    constexpr std::size_t width {32 / sizeof(std::complex<R>)};
+    const vec             half  {avx2_splat(R(0.5))};
+    const R* const        from  {reinterpret_cast<const R*>(z)};     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+    const R* const        root  {reinterpret_cast<const R*>(roots)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    R* const              into  {reinterpret_cast<R*>(X)};           // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    std::size_t           k     {1};
+    for (; k + width <= h; k += width) {
+      const vec a    {avx2_load(from + (2 * k))};
+      const vec b    {avx2_conjugated(avx2_reversed(avx2_load(from + (2 * (h - k - (width - 1))))))};
+      const vec even {avx2_mul(avx2_add(a, b), half)};
+      const vec odd  {avx2_mul(avx2_times_minus_i(avx2_sub(a, b)), half)};
+      const vec w    {avx2_load(root + (2 * k))};
+      avx2_store(into + (2 * k), avx2_add(even, avx2_twiddled(avx2_real_parts(w), avx2_imaginary_parts(w), odd)));
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return k;
+  }
+
+  /*!
+   * \brief `fft.hpp`'s recombination before an inverse real transform of `2h` points (`real_inverse_body`) a register
+   *        at a time: `conj Z_k = conj(E_k + i·O_k)`, `O_k = conj(w^k)·(X_k − conj X_{h−k})/2`, from \p X and \p roots
+   *        (`w^k`) into \p z, for `k` from 1 while a register fits below \p h, the same operations in the same order.
+   *        Returns the first `k` left.
+   */
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline std::size_t avx2_real_inverse_registers(std::size_t            h,
+                                                                              const std::complex<R>* X,
+                                                                              const std::complex<R>* roots,
+                                                                              std::complex<R>*       z) noexcept
+  {
+    using vec = decltype(avx2_load(static_cast<const R*>(nullptr))); // __m256d or __m256
+    constexpr std::size_t width {32 / sizeof(std::complex<R>)};
+    const vec             half  {avx2_splat(R(0.5))};
+    const R* const        from  {reinterpret_cast<const R*>(X)};     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+    const R* const        root  {reinterpret_cast<const R*>(roots)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    R* const              into  {reinterpret_cast<R*>(z)};           // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    std::size_t           k     {1};
+    for (; k + width <= h; k += width) {
+      const vec a    {avx2_load(from + (2 * k))};
+      const vec b    {avx2_conjugated(avx2_reversed(avx2_load(from + (2 * (h - k - (width - 1))))))};
+      const vec even {avx2_mul(avx2_add(a, b), half)};
+      const vec w    {avx2_load(root + (2 * k))};
+      const vec odd  {avx2_twiddled(avx2_real_parts(w), avx2_negated(avx2_imaginary_parts(w)), avx2_mul(avx2_sub(a, b), half))};
+      avx2_store(into + (2 * k), avx2_conjugated(avx2_add(even, avx2_times_i(odd))));
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+    return k;
+  }
+
 #endif
 } // namespace numerical::detail
 
