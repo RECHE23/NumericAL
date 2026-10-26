@@ -92,7 +92,8 @@ namespace {
 } // namespace
 
 // Within half of epsilon · log₂ n in RMS of the exact transform (a single addition at n = 2), in both precisions: every power of two to 4096 (both
-// parities of the exponent: radix 4 alone, and its last pass of radix 2) and other lengths (the sum term by term).
+// parities of the exponent: radix 4 alone, and its last pass of radix 2), lengths of mixed radices (2, 3, 5, 7, 31, a
+// pass of radix 2 before others) and lengths with a prime factor past the largest radix (Bluestein's convolution).
 TEST(fft_is_within_a_fraction_of_epsilon_log_n_of_the_exact_transform)
 {
   std::mt19937_64 draws {20261025};
@@ -100,7 +101,7 @@ TEST(fft_is_within_a_fraction_of_epsilon_log_n_of_the_exact_transform)
     EXPECT(relative_error<double>(n, draws) < 0.5);
     EXPECT(relative_error<float>(n, draws) < 0.5);
   }
-  for (const std::size_t n : {3UL, 5UL, 6UL, 7UL, 12UL, 31UL, 100UL}) {
+  for (const std::size_t n : {3UL, 5UL, 6UL, 7UL, 12UL, 31UL, 100UL, 360UL, 1000UL, 2187UL, 67UL, 127UL, 1009UL, 2018UL}) {
     EXPECT(relative_error<double>(n, draws) < 0.5);
     EXPECT(relative_error<float>(n, draws) < 0.5);
   }
@@ -217,9 +218,17 @@ TEST(a_line_has_the_same_bits_alone_among_others_and_on_any_threads)
   EXPECT(padded.shape() == (std::vector<std::size_t> {3, 2}) && padded.data()[5] == std::complex<double>(0.0, 0.0));
 }
 
-// Many lengths in turn: the store of plans cleared past its size, the plans in use kept by their holders.
+// Many lengths in turn: the least recently used plan dropped past the store's size, the one in use kept; a plan held
+// outlives its eviction.
 TEST(fft_plans_are_kept_and_renewed)
 {
+  const auto kept {numerical::detail::shared_fft_plan<double>(7)};
+  const auto held {numerical::detail::shared_fft_plan<double>(9)};
+  for (std::size_t n {100}; n < 100 + numerical::detail::fft_plans_kept; ++n) {
+    EXPECT(numerical::detail::shared_fft_plan<double>(7) == kept); // used at every step: never the least recent
+    (void)numerical::detail::shared_fft_plan<double>(n);
+  }
+  EXPECT(numerical::detail::shared_fft_plan<double>(9) != held && held->length == 9); // dropped, rebuilt; ours lives on
   for (std::size_t n {1}; n <= numerical::detail::fft_plans_kept + 8; ++n) {
     const tensor<double>               ones     {{n}, std::vector<double>(n, 1.0)};
     const tensor<std::complex<double>> spectrum {numerical::fft(ones)};
@@ -307,14 +316,33 @@ TEST(every_path_is_accurate_and_the_fused_ones_agree_to_the_bit)
       EXPECT(relative_error<double>(n, draws) < 0.5);
       EXPECT(relative_error<float>(n, draws) < 0.5);
     }
-    std::mt19937_64                    same {5};
-    const tensor<std::complex<double>> x    {{1024}, drawn<double>(1024, same)};
+    for (const std::size_t n : {360UL, 1009UL}) { // mixed radices; Bluestein's
+      EXPECT(relative_error<double>(n, draws) < 0.5);
+      EXPECT(relative_error<float>(n, draws) < 0.5);
+    }
     if (path != numerical::gemm_path::portable) {
-      fused.push_back(numerical::fft(x).data());
+      numerical::buffer<std::complex<double>> spectra;
+      for (const std::size_t n : {1024UL, 1000UL, 1009UL}) { // radices 4 and 16; mixed; Bluestein's
+        std::mt19937_64                    same {5};
+        const tensor<std::complex<double>> x    {{n}, drawn<double>(n, same)};
+        const tensor<std::complex<double>> y    {numerical::fft(x)};
+        spectra.insert(spectra.end(), y.data().begin(), y.data().end());
+      }
+      fused.push_back(spectra);
     }
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
   for (const auto& bits : fused) {
     EXPECT(same_bits(bits, fused.front()));
   }
+}
+
+// A transform past the working space a thread keeps (fft_scratch_kept): its own allocation, the same transform.
+TEST(a_long_transform_takes_its_own_working_space)
+{
+  const std::size_t                  n        {2 * numerical::detail::fft_scratch_kept};
+  const tensor<double>               ones     {{n}, std::vector<double>(n, 1.0)};
+  const tensor<std::complex<double>> spectrum {numerical::fft(ones)};
+  EXPECT(spectrum.data()[0] == std::complex<double>(static_cast<double>(n), 0.0));
+  EXPECT(std::all_of(spectrum.data().begin() + 1, spectrum.data().end(), [](const std::complex<double>& v) { return std::abs(v) < 1e-9; }));
 }

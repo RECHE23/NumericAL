@@ -2267,15 +2267,15 @@ namespace numerical::detail {
                                                                 const std::complex<R>* twiddles) noexcept
   {
     using C   = std::complex<R>;
-    using vec = decltype(avx2_load(static_cast<const R*>(nullptr))); // __m256d or __m256
-    constexpr std::size_t width   {32 / sizeof(C)};                  // complex numbers in a register
-    const std::size_t     quarter {current / 4};
-    const std::size_t     run     {quarter - 1};
-    const std::size_t     apart   {2 * stride * quarter};            // parts between a butterfly's inputs
-    const R* const        from    {reinterpret_cast<const R*>(in)};  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
-    R* const              into    {reinterpret_cast<R*>(out)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    std::size_t first_scalar_end {quarter};       // the butterflies the loop below takes
-    if (stride == 1 && quarter >= 2 * width) {     // the first pass: a register of butterflies along p, past the first
+    using vec = decltype(avx2_load(static_cast<const R*>(nullptr)));         // __m256d or __m256
+    constexpr std::size_t width            {32 / sizeof(C)};                 // complex numbers in a register
+    const std::size_t     quarter          {current / 4};
+    const std::size_t     run              {quarter - 1};
+    const std::size_t     apart            {2 * stride * quarter};           // parts between a butterfly's inputs
+    const R* const        from             {reinterpret_cast<const R*>(in)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+    R* const              into             {reinterpret_cast<R*>(out)};      // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    std::size_t           first_scalar_end {quarter};                        // the butterflies the loop below takes
+    if (stride == 1 && quarter >= 2 * width) {                       // the first pass: a register of butterflies along p, past the first
       const R* const factors {reinterpret_cast<const R*>(twiddles)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
       for (std::size_t p {width}; p < quarter; p += width) {
         const R* const at        {from + (2 * p)};
@@ -2403,19 +2403,19 @@ namespace numerical::detail {
                                                                    const std::complex<R>*                 twiddles,
                                                                    const std::array<std::complex<R>, 16>& sixteenths) noexcept
   {
-    using vec  = decltype(avx2_load(static_cast<const R*>(nullptr)));                            // __m256d or __m256
+    using vec  = decltype(avx2_load(static_cast<const R*>(nullptr)));                           // __m256d or __m256
     using held = std::conditional_t<std::is_same_v<R, double>, ymm_register, ymm_register_f32>; // a register in an array
-    constexpr std::size_t width {32 / sizeof(std::complex<R>)};      // complex numbers in a register
+    constexpr std::size_t width {32 / sizeof(std::complex<R>)};                                 // complex numbers in a register
     const std::size_t     part  {current / 16};
     const std::size_t     run   {part - 1};
-    const std::size_t     apart {2 * stride * part};                 // parts between a butterfly's inputs
-    const R* const        from  {reinterpret_cast<const R*>(in)};    // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
-    R* const              into  {reinterpret_cast<R*>(out)};         // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    const std::size_t     apart {2 * stride * part};                                            // parts between a butterfly's inputs
+    const R* const        from  {reinterpret_cast<const R*>(in)};                               // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+    R* const              into  {reinterpret_cast<R*>(out)};                                    // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
     for (std::size_t p {0}; p < part; ++p) {
       const R* const in_p {from + (2 * stride * p)};
       R* const       to   {into + (2 * stride * 16 * p)};
       for (std::size_t q {0}; q < stride; q += width) {
-        const R* const      at {in_p + (2 * q)};
+        const R* const       at    {in_p + (2 * q)};
         std::array<held, 16> inner {};
         #  pragma GCC unroll 16
         for (std::size_t j1 {0}; j1 < 4; ++j1) {
@@ -2427,8 +2427,8 @@ namespace numerical::detail {
         for (std::size_t j1 {1}; j1 < 4; ++j1) {
           #  pragma GCC unroll 16
           for (std::size_t k2 {1}; k2 < 4; ++k2) {
-            vec& value {inner[(4 * j1) + k2].v};
-            const std::complex<R>& w {sixteenths[j1 * k2]};
+            vec&                   value {inner[(4 * j1) + k2].v};
+            const std::complex<R>& w     {sixteenths[j1 * k2]};
             value = (j1 * k2) == 4 ? avx2_times_minus_i(value) : avx2_twiddled(avx2_pairs(w.real(), w.real()), avx2_pairs(w.imag(), w.imag()), value);
           }
         }

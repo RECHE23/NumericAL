@@ -19,7 +19,6 @@
 #include <complex>
 #include <concepts>
 #include <cstddef>
-#include <map>
 #include <memory>
 #include <mutex>
 #include <optional>
@@ -158,22 +157,33 @@ namespace numerical {
       return {-x.hi, -x.lo};
     }
 
-    /*!
-     * \brief `e^{−2πi k/n}` as double-double parts: the angle reduced to an eighth of a turn by integer arithmetic
-     *        (`8k = o·n + r`), its cosine and sine there by \ref dd_sin_cos, then placed by the octant `o`. \p n is at
-     *        most 2⁵⁰, so that `8k` and the angle's fraction are exact.
-     */
-    [[nodiscard]] inline std::pair<double_double, double_double> unit_root_parts(std::size_t k,
-                                                                                 std::size_t n)
+    //! \brief `e^{−2πi k/n}`'s angle reduced to an eighth of a turn by integer arithmetic, `8k = octant·n + rest`: the
+    //!        octant, and the angle's share of π/4 times n, `rest` (`n − rest` in an odd octant, measured back from its
+    //!        end). \p n is at most 2⁵⁰, so that `8k` and the share are exact.
+    struct octant_share
+    {
+      std::size_t octant; //!< The eighth of a turn the angle falls in.
+      std::size_t share;  //!< The angle within it, in units of π/(4n).
+    };
+
+    //! \brief The \ref octant_share of `e^{−2πi k/n}`.
+    [[nodiscard]] inline octant_share reduce_to_octant(std::size_t k,
+                                                       std::size_t n) noexcept
     {
       const std::size_t eighths {8 * (k % n)};
       const std::size_t octant  {eighths / n};
       const std::size_t rest    {eighths % n};
-      const bool        odd     {(octant % 2) == 1};
-      const double      share   {static_cast<double>(odd ? n - rest : rest)};
-      const auto [c, s] {dd_sin_cos(dd_mul(quarter_pi, dd_div({share, 0.0}, static_cast<double>(n))))};
-      double_double cosine      {c};
-      double_double sine        {s};
+      return {octant, (octant % 2) == 1 ? n - rest : rest};
+    }
+
+    //! \brief `e^{−2πi k/n}` from the cosine \p c and sine \p s of its angle within the octant \p octant (\ref
+    //!        reduce_to_octant): as double-double parts, real then imaginary.
+    [[nodiscard]] inline std::pair<double_double, double_double> place_by_octant(std::size_t   octant,
+                                                                                 double_double c,
+                                                                                 double_double s) noexcept
+    {
+      double_double cosine {c};
+      double_double sine   {s};
       switch (octant) { // the angle (π/4)·(octant + rest/n): within an odd octant, measured back from its end
         case 1: cosine = s; sine = c; break;
         case 2: cosine = dd_negate(s); sine = c; break;
@@ -187,6 +197,22 @@ namespace numerical {
       return {cosine, dd_negate(sine)};
     }
 
+    //! \brief The cosine and sine of `(π/4)·share/n` by \ref dd_sin_cos.
+    [[nodiscard]] inline std::pair<double_double, double_double> octant_sin_cos(std::size_t share,
+                                                                                std::size_t n)
+    {
+      return dd_sin_cos(dd_mul(quarter_pi, dd_div({static_cast<double>(share), 0.0}, static_cast<double>(n))));
+    }
+
+    //! \brief `e^{−2πi k/n}` as double-double parts: \ref reduce_to_octant, \ref octant_sin_cos, \ref place_by_octant.
+    [[nodiscard]] inline std::pair<double_double, double_double> unit_root_parts(std::size_t k,
+                                                                                 std::size_t n)
+    {
+      const octant_share reduced {reduce_to_octant(k, n)};
+      const auto [c, s] {octant_sin_cos(reduced.share, n)};
+      return place_by_octant(reduced.octant, c, s);
+    }
+
     //! \brief \ref unit_root_parts rounded once to `double`, a zero's sign positive as the exact value's.
     [[nodiscard]] inline std::complex<double> unit_root(std::size_t k,
                                                         std::size_t n)
@@ -195,10 +221,61 @@ namespace numerical {
       return {unsigned_zero(re.hi), unsigned_zero(im.hi)};
     }
 
+    /*!
+     * \brief The roots `e^{−2πi k/n}` of one `n`, each as \ref unit_root rounds it, from two tables of about √n angles
+     *        instead of a series a root: the angle's share within its octant (\ref reduce_to_octant) split as `a + b·m`,
+     *        `m` the first table's length, and its cosine and sine those of the sum of the two tables' angles in
+     *        double-double arithmetic, then placed by the octant and rounded once. The share 0 is the product of two
+     *        exact `(1, 0)`, so the exact roots stay exact, and a root and its mirror image share their share, so they
+     *        stay each other's conjugates to the bit.
+     */
+    class unit_roots
+    {
+    public:
+
+      //! \brief The tables for the roots of \p n.
+      explicit unit_roots(std::size_t n)
+        : n_ {n}, m_ {static_cast<std::size_t>(std::sqrt(static_cast<double>(n))) + 1}
+      {
+        low_.reserve(m_);
+        for (std::size_t a {0}; a < m_; ++a) {
+          low_.push_back(octant_sin_cos(a, n));
+        }
+        for (std::size_t b {0}; b * m_ <= n; ++b) {
+          high_.push_back(octant_sin_cos(b * m_, n));
+        }
+      }
+
+      //! \brief `e^{−2πi k/n}` as double-double parts: `cos(A + B) = cA·cB − sA·sB`, `sin(A + B) = sA·cB + cA·sB`.
+      [[nodiscard]] std::pair<double_double, double_double> parts(std::size_t k) const noexcept
+      {
+        const octant_share                             reduced                            {reduce_to_octant(k, n_)};
+        const std::pair<double_double, double_double>& low                                {low_[reduced.share % m_]};
+        const std::pair<double_double, double_double>& high                               {high_[reduced.share / m_]};
+        const double_double                            cosine                             {dd_add(dd_mul(low.first, high.first), dd_negate(dd_mul(low.second, high.second)))};
+        const double_double                            sine                               {dd_add(dd_mul(low.second, high.first), dd_mul(low.first, high.second))};
+        return place_by_octant(reduced.octant, cosine, sine);
+      }
+
+      //! \brief \ref parts rounded once to `double`, a zero's sign positive.
+      [[nodiscard]] std::complex<double> root(std::size_t k) const noexcept
+      {
+        const auto [re, im] {parts(k)};
+        return {unsigned_zero(re.hi), unsigned_zero(im.hi)};
+      }
+
+    private:
+
+      std::size_t                                          n_;    //!< The order of the roots.
+      std::size_t                                          m_;    //!< The first table's length.
+      std::vector<std::pair<double_double, double_double>> low_;  //!< cos and sin of (π/4)·a/n, a below m.
+      std::vector<std::pair<double_double, double_double>> high_; //!< cos and sin of (π/4)·b·m/n, b·m up to n.
+    };
+
     //! \brief `p · q` of complex numbers, each product rounded apart from the sum it enters (statements of their own).
     template <std::floating_point R>
-    [[nodiscard]] inline std::complex<R> rounded_product(const std::complex<R>& p,
-                                                         const std::complex<R>& q) noexcept
+    [[nodiscard]] NUMERICAL_ALWAYS_INLINE std::complex<R> rounded_product(const std::complex<R>& p,
+                                                                          const std::complex<R>& q) noexcept
     {
       const R rr {p.real() * q.real()};
       const R ii {p.imag() * q.imag()};
@@ -210,89 +287,147 @@ namespace numerical {
     //! \brief `w · v` of complex numbers on the vector paths: `w.re·v.re − w.im·v.im` and `w.re·v.im + w.im·v.re`, each
     //!        the second product rounded, the first fused with the sum by `std::fma`.
     template <std::floating_point R>
-    [[nodiscard]] inline std::complex<R> fused_product(const std::complex<R>& w,
-                                                       const std::complex<R>& v) noexcept
+    [[nodiscard]] NUMERICAL_ALWAYS_INLINE std::complex<R> fused_product(const std::complex<R>& w,
+                                                                        const std::complex<R>& v) noexcept
     {
       const R ii {w.imag() * v.imag()};
       const R ir {w.imag() * v.real()};
       return {std::fma(w.real(), v.real(), -ii), std::fma(w.real(), v.imag(), ir)};
     }
 
-    //! \brief A butterfly's factor times \p v: \ref fused_product where \p Fused, else \ref rounded_product.
+    //! \brief A butterfly's factor times \p v on the vector paths: \ref fused_product.
     template <bool Fused,
               std::floating_point R>
-    [[nodiscard]] inline std::complex<R> twiddled(const std::complex<R>& w,
-                                                  const std::complex<R>& v) noexcept
+    requires Fused
+    [[nodiscard]] NUMERICAL_ALWAYS_INLINE std::complex<R> twiddled(const std::complex<R>& w,
+                                                                   const std::complex<R>& v) noexcept
     {
-      if constexpr (Fused) {
-        return fused_product(w, v);
-      }
-      else {
-        return rounded_product(w, v);
-      }
+      return fused_product(w, v);
     }
 
-    //! \brief The radix of each Stockham pass of the power of two \p n: 4 first (its stride 1), then 16 while 16 points
-    //!        remain, then 4, then 2.
-    [[nodiscard]] inline std::vector<std::size_t> stockham_radices(std::size_t n)
+    //! \brief A butterfly's factor times \p v on the portable path: \ref rounded_product.
+    template <bool Fused,
+              std::floating_point R>
+    requires (!Fused)
+    [[nodiscard]] NUMERICAL_ALWAYS_INLINE std::complex<R> twiddled(const std::complex<R>& w,
+                                                                   const std::complex<R>& v) noexcept
+    {
+      return rounded_product(w, v);
+    }
+
+    //! \brief The largest prime a Stockham pass takes as its radix, by its own `r`-point sum: a length with a larger
+    //!        prime factor is transformed by Bluestein's convolution.
+    inline constexpr std::size_t fft_largest_radix {61};
+
+    /*!
+     * \brief The radix of each Stockham pass of \p n, or none where \p n has a prime factor past \ref fft_largest_radix:
+     *        its powers of two first (4 first, its stride 1, then 16 while 16 points remain, then 4, then 2), then its
+     *        factors 3, 5 and 7, then each other prime in ascending order.
+     */
+    [[nodiscard]] inline std::vector<std::size_t> fft_radices(std::size_t n)
     {
       std::vector<std::size_t> radices;
-      std::size_t              current {n};
-      if (current >= 4) {
+      std::size_t              twos {std::size_t {1} << std::countr_zero(n)};
+      std::size_t              rest {n / twos};
+      if (twos >= 4) {
         radices.push_back(4);
-        current /= 4;
+        twos /= 4;
       }
-      for (; current >= 16; current /= 16) {
+      for (; twos >= 16; twos /= 16) {
         radices.push_back(16);
       }
-      for (; current >= 4; current /= 4) {
+      for (; twos >= 4; twos /= 4) {
         radices.push_back(4);
       }
-      if (current == 2) {
+      if (twos == 2) {
         radices.push_back(2);
+      }
+      for (std::size_t prime {3}; rest > 1; prime += 2) {
+        if (prime > fft_largest_radix) {
+          return {}; // Bluestein's
+        }
+        for (; rest % prime == 0; rest /= prime) {
+          radices.push_back(prime);
+        }
       }
       return radices;
     }
+
+    template <std::floating_point R>
+    struct fft_plan;
+
+    //! \brief Bluestein's convolution for a length \p n with a prime factor past \ref fft_largest_radix.
+    template <std::floating_point R>
+    struct bluestein_plan
+    {
+      std::size_t                        padded;   //!< M: the power of two at least 2n − 1 the convolution runs at.
+      std::vector<std::complex<R>>       chirp;    //!< `e^{−πi j²/n}`, its exponent `j² mod 2n` reduced exactly.
+      std::vector<std::complex<R>>       spectrum; //!< The transform of M points of the chirp's conjugate, wrapped.
+      std::shared_ptr<const fft_plan<R>> inner;    //!< The plan of M points.
+    };
 
     //! \brief The factors and passes of a transform of one length, built once and shared.
     template <std::floating_point R>
     struct fft_plan
     {
-      std::size_t                     length;     //!< The transform's length.
-      bool                            radix_two;  //!< Whether it is a power of two (Stockham passes).
-      std::vector<std::complex<R>>    roots;      //!< `e^{−2πi k/n}` for k below n, for the sum term by term.
-      std::vector<std::size_t>        radices;    //!< Each Stockham pass' radix (\ref stockham_radices).
-      std::vector<std::complex<R>>    twiddles;
+      std::size_t                       length;     //!< The transform's length.
+      std::vector<std::size_t>          radices;    //!< Each Stockham pass' radix (\ref fft_radices).
+      std::vector<std::complex<R>>      twiddles;
       //!< Each pass' factors from `p` = 1: its `w^p` run, then its `w^{2p}` run, to its `w^{(r−1)p}` run.
-      std::array<std::complex<R>, 16> sixteenths; //!< `e^{−2πi k/16}`: a radix-16 butterfly's own factors.
+      std::vector<std::complex<R>>      radix_roots;
+      //!< Each pass of a radix other than 4 and 16: `e^{−2πi m/r}` for m below r, the passes in order.
+      std::array<std::complex<R>, 16>   sixteenths; //!< `e^{−2πi k/16}`: a radix-16 butterfly's own factors.
+      std::optional<bluestein_plan<R>>  bluestein;  //!< Where the length has a prime factor past fft_largest_radix.
+      std::size_t                       work;       //!< The working space a transform takes beside its data.
     };
+
+    template <std::floating_point R>
+    void forward_fft(const fft_plan<R>& plan,
+                     std::complex<R>*   data,
+                     std::complex<R>*   work,
+                     bool               fused) noexcept;
 
     //! \brief The \ref fft_plan of length \p n.
     template <std::floating_point R>
     [[nodiscard]] fft_plan<R> make_fft_plan(std::size_t n)
     {
-      const auto root {[](std::size_t k, std::size_t of) {
-        const std::complex<double> value {unit_root(k, of)};
-        return std::complex<R> {static_cast<R>(value.real()), static_cast<R>(value.imag())};
-      }};
-      fft_plan<R> plan {.length = n, .radix_two = std::has_single_bit(n), .roots = {}, .radices = {}, .twiddles = {}, .sixteenths = {}};
+      using C = std::complex<R>;
+      const unit_roots roots {n};
+      const auto       narrow {[](std::complex<double> value) { return C {static_cast<R>(value.real()), static_cast<R>(value.imag())}; }};
+      fft_plan<R>      plan {.length = n, .radices = fft_radices(n), .twiddles = {}, .radix_roots = {}, .sixteenths = {}, .bluestein = {}, .work = n};
       for (std::size_t k {0}; k < 16; ++k) {
-        plan.sixteenths.at(k) = root(k, 16);
+        plan.sixteenths[k] = narrow(unit_root(k, 16));
       }
-      if (!plan.radix_two) {
-        plan.roots.resize(n);
-        for (std::size_t k {0}; k < n; ++k) {
-          plan.roots[k] = root(k, n);
+      if (plan.radices.empty() && n > 1) { // Bluestein's: X_k = c_k · Σ_j (x_j c_j) · conj(c_{k−j}), c_j = e^{−πi j²/n}
+        bluestein_plan<R> b       {.padded = std::bit_ceil((2 * n) - 1), .chirp = {}, .spectrum = {}, .inner = {}};
+        const unit_roots  doubled {2 * n};
+        b.chirp.resize(n);
+        for (std::size_t j {0}; j < n; ++j) {
+          b.chirp[j] = narrow(doubled.root((j * j) % (2 * n)));
         }
+        b.inner = std::make_shared<const fft_plan<R>>(make_fft_plan<R>(b.padded));
+        b.spectrum.assign(b.padded, C {});
+        for (std::size_t j {0}; j < n; ++j) {
+          b.spectrum[j]                               = std::conj(b.chirp[j]);
+          b.spectrum[(b.padded - j) % b.padded]       = std::conj(b.chirp[j]);
+        }
+        std::vector<C> scratch(b.padded);
+        forward_fft(*b.inner, b.spectrum.data(), scratch.data(), false); // the portable arithmetic: the same on every path
+        plan.work      = b.padded + b.inner->work;                       // the convolution's sequence, then its transforms' space
+        plan.bluestein = std::move(b);
         return plan;
       }
-      plan.radices = stockham_radices(n);
       std::size_t current {n};
       std::size_t stride  {1};
       for (const std::size_t radix : plan.radices) {
         for (std::size_t power {1}; power < radix; ++power) {
           for (std::size_t p {1}; p < current / radix; ++p) { // p = 0 multiplies by nothing
-            plan.twiddles.push_back(root(power * p * stride, n));
+            plan.twiddles.push_back(narrow(roots.root(power * p * stride)));
+          }
+        }
+        if (radix != 4 && radix != 16) {
+          for (std::size_t m {0}; m < radix; ++m) {
+            plan.radix_roots.push_back(narrow(unit_root(m, radix)));
           }
         }
         current /= radix;
@@ -301,25 +436,32 @@ namespace numerical {
       return plan;
     }
 
-    //! \brief The plans built so far, by length: the most recent ones kept, the store cleared past \ref fft_plans_kept.
+    //! \brief The plans kept, the least recently used dropped past it: a plan in use lives on in its holders.
     inline constexpr std::size_t fft_plans_kept {32};
 
-    //! \brief The shared \ref fft_plan of length \p n, built on first use.
+    //! \brief The shared \ref fft_plan of length \p n, built on first use and kept among the \ref fft_plans_kept most
+    //!        recently used.
     template <std::floating_point R>
     [[nodiscard]] std::shared_ptr<const fft_plan<R>> shared_fft_plan(std::size_t n)
     {
-      static std::mutex                                                guard;
-      static std::map<std::size_t, std::shared_ptr<const fft_plan<R>>> plans;
-      const std::scoped_lock                                           lock {guard};
-      if (const auto found {plans.find(n)}; found != plans.end()) {
-        return found->second;
+      struct entry
+      {
+        std::size_t                        length; //!< The plan's length.
+        std::shared_ptr<const fft_plan<R>> plan;   //!< The plan.
+      };
+      static std::mutex         guard;
+      static std::vector<entry> plans; // the most recently used last
+      const std::scoped_lock    lock  {guard};
+      const auto                found {std::find_if(plans.begin(), plans.end(), [n](const entry& e) { return e.length == n; })};
+      if (found != plans.end()) {
+        std::rotate(found, found + 1, plans.end());
+        return plans.back().plan;
       }
       if (plans.size() >= fft_plans_kept) {
-        plans.clear(); // a plan in use lives on in its holders
+        plans.erase(plans.begin());
       }
-      auto plan {std::make_shared<const fft_plan<R>>(make_fft_plan<R>(n))};
-      plans.emplace(n, plan);
-      return plan;
+      plans.push_back({n, std::make_shared<const fft_plan<R>>(make_fft_plan<R>(n))});
+      return plans.back().plan;
     }
 
     /*!
@@ -442,6 +584,83 @@ namespace numerical {
       }
     }
 
+    /*!
+     * \brief One Stockham pass of any radix \p radix, as \ref radix_four_pass is of 4: butterfly `(p, q)` the `r`-point
+     *        transform of its inputs, `X_k = x_0 + Σ_{j ≥ 1} e^{−2πi jk/r} · x_j` in ascending `j` (\p roots; a factor
+     *        of 1 multiplies nothing, one of −1 subtracts), output `k` then times `w^{kp}`, none for `p` = 0 or `k` = 0.
+     *        Inlined into each caller, so that the x86-64 fused one is built for FMA.
+     */
+    template <bool Fused,
+              std::floating_point R>
+    NUMERICAL_ALWAYS_INLINE void any_radix_pass_body(std::size_t            radix,
+                                                     std::size_t            current,
+                                                     std::size_t            stride,
+                                                     const std::complex<R>* in,
+                                                     std::complex<R>*       out,
+                                                     const std::complex<R>* twiddles,
+                                                     const std::complex<R>* roots) noexcept
+    {
+      using C = std::complex<R>;
+      const std::size_t part  {current / radix};
+      const std::size_t run   {part - 1};
+      const std::size_t apart {stride * part};
+      for (std::size_t p {0}; p < part; ++p) {
+        const C* const in_p {in + (stride * p)};
+        C* const       to   {out + (stride * radix * p)};
+        for (std::size_t q {0}; q < stride; ++q) {
+          for (std::size_t k {0}; k < radix; ++k) {
+            C           sum   {in_p[q]};
+            std::size_t power {0}; // j·k mod r, kept by additions
+            for (std::size_t j {1}; j < radix; ++j) {
+              power += k;
+              power -= power >= radix ? radix : 0;
+              const C value {in_p[q + (j * apart)]};
+              if (power == 0) {
+                sum += value;
+              }
+              else if (2 * power == radix) { // e^{−πi} = −1: a difference, exact
+                sum -= value;
+              }
+              else {
+                sum += twiddled<Fused>(roots[power], value);
+              }
+            }
+            to[q + (stride * k)] = (p == 0 || k == 0) ? sum : twiddled<Fused>(twiddles[((k - 1) * run) + p - 1], sum);
+          }
+        }
+      }
+    }
+
+    //! \brief \ref any_radix_pass_body, its products as \p Fused.
+    template <bool Fused,
+              std::floating_point R>
+    void any_radix_pass(std::size_t            radix,
+                        std::size_t            current,
+                        std::size_t            stride,
+                        const std::complex<R>* in,
+                        std::complex<R>*       out,
+                        const std::complex<R>* twiddles,
+                        const std::complex<R>* roots) noexcept
+    {
+      any_radix_pass_body<Fused>(radix, current, stride, in, out, twiddles, roots);
+    }
+
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief \ref any_radix_pass_body fused, built for AVX2 with FMA: each `std::fma` one instruction.
+    template <std::floating_point R>
+    NUMERICAL_TARGET("avx2,fma") void any_radix_pass_x86(std::size_t            radix,
+                                                         std::size_t            current,
+                                                         std::size_t            stride,
+                                                         const std::complex<R>* in,
+                                                         std::complex<R>*       out,
+                                                         const std::complex<R>* twiddles,
+                                                         const std::complex<R>* roots) noexcept
+    {
+      any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
+    }
+
+#endif
+
     //! \brief The last pass of an odd power of two: butterflies of radix 2 at stride \p stride, no factor.
     template <std::floating_point R>
     void radix_two_pass(std::size_t            stride,
@@ -456,21 +675,27 @@ namespace numerical {
       }
     }
 
-    //! \brief The Stockham passes of a power of two over \p data, \p work as long, the result in \p data: radix 4 by
-    //!        \p four (\ref radix_four_pass's arguments), radix 16 by \p sixteen (\ref radix_sixteen_pass's), radix 2 last.
+    /*!
+     * \brief The Stockham passes of the \p plan over \p data, \p work as long, the result in \p data: radix 4 by \p four
+     *        (\ref radix_four_pass's arguments), 16 by \p sixteen (\ref radix_sixteen_pass's), 2 by \ref radix_two_pass
+     *        where it is the last pass, any other by \p other (\ref any_radix_pass's).
+     */
     template <std::floating_point R,
               typename Four,
-              typename Sixteen>
+              typename Sixteen,
+              typename Other>
     void stockham_passes(const fft_plan<R>& plan,
                          std::complex<R>*   data,
                          std::complex<R>*   work,
                          Four&&             four,
-                         Sixteen&&          sixteen) noexcept
+                         Sixteen&&          sixteen,
+                         Other&&            other) noexcept
     {
       const std::size_t      n        {plan.length};
       std::complex<R>*       in       {data};
       std::complex<R>*       out      {work};
       const std::complex<R>* twiddles {plan.twiddles.data()};
+      const std::complex<R>* roots    {plan.radix_roots.data()};
       std::size_t            current  {n};
       std::size_t            stride   {1};
       for (const std::size_t radix : plan.radices) {
@@ -480,8 +705,13 @@ namespace numerical {
         else if (radix == 4) {
           four(current, stride, in, out, twiddles);
         }
-        else {
+        else if (radix == 2 && current == 2) { // the last pass: no factor
           radix_two_pass(stride, in, out);
+          roots += radix;
+        }
+        else {
+          other(radix, current, stride, in, out, twiddles, roots);
+          roots += radix;
         }
         twiddles += (radix - 1) * (current / radix - 1);
         current  /= radix;
@@ -500,9 +730,52 @@ namespace numerical {
     }
 
     /*!
-     * \brief The forward transform of the \p plan's length, in place in \p data, \p work as long: Stockham passes for
-     *        a power of two, fused where \p fused (\ref fft_fuses), the result in \p data; else each output the sum of
-     *        its terms in order, each term the input times its root (\ref rounded_product).
+     * \brief Bluestein's transform of the \p plan's length in place in \p data, \p work its \ref fft_plan::work: the
+     *        input times the chirp, padded to M; its transform times the chirp's spectrum; the inverse transform of that
+     *        (`conj(fft(conj ·))`, then 1/M, exact), times the chirp. Products as \p Fused. Inlined into each caller.
+     */
+    template <bool Fused,
+              std::floating_point R>
+    NUMERICAL_ALWAYS_INLINE void bluestein_body(const fft_plan<R>& plan,
+                                                std::complex<R>*   data,
+                                                std::complex<R>*   work) noexcept
+    {
+      using C = std::complex<R>;
+      const bluestein_plan<R>& b     {*plan.bluestein};
+      const std::size_t        n     {plan.length};
+      const std::size_t        m     {b.padded};
+      const R                  scale {R(1) / static_cast<R>(m)};
+      C* const                 a     {work};
+      for (std::size_t j {0}; j < n; ++j) {
+        a[j] = twiddled<Fused>(b.chirp[j], data[j]);
+      }
+      std::fill(a + n, a + m, C {});
+      forward_fft(*b.inner, a, work + m, Fused);
+      for (std::size_t k {0}; k < m; ++k) {
+        a[k] = std::conj(twiddled<Fused>(b.spectrum[k], a[k]));
+      }
+      forward_fft(*b.inner, a, work + m, Fused);
+      for (std::size_t k {0}; k < n; ++k) {
+        const C value {a[k].real() * scale, -a[k].imag() * scale};
+        data[k] = twiddled<Fused>(b.chirp[k], value);
+      }
+    }
+
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief \ref bluestein_body fused, built for AVX2 with FMA.
+    template <std::floating_point R>
+    NUMERICAL_TARGET("avx2,fma") void bluestein_x86(const fft_plan<R>& plan,
+                                                    std::complex<R>*   data,
+                                                    std::complex<R>*   work) noexcept
+    {
+      bluestein_body<true>(plan, data, work);
+    }
+
+#endif
+
+    /*!
+     * \brief The forward transform of the \p plan's length, in place in \p data, \p work its \ref fft_plan::work: its
+     *        Stockham passes, or Bluestein's convolution, the products fused where \p fused (\ref fft_fuses).
      */
     template <std::floating_point R>
     void forward_fft(const fft_plan<R>& plan,
@@ -510,26 +783,26 @@ namespace numerical {
                      std::complex<R>*   work,
                      bool               fused) noexcept
     {
-      const std::size_t n {plan.length};
-      if (!plan.radix_two) {
-        for (std::size_t k {0}; k < n; ++k) {
-          std::complex<R> sum {};
-          for (std::size_t j {0}; j < n; ++j) {
-            sum += rounded_product(data[j], plan.roots[(j * k) % n]);
-          }
-          work[k] = sum;
+      if (plan.bluestein) {
+        if (!fused) {
+          bluestein_body<false>(plan, data, work);
+          return;
         }
-        std::copy(work, work + n, data);
+#ifdef NUMERICAL_X86_COMPILED
+        bluestein_x86(plan, data, work);
+#else
+        bluestein_body<true>(plan, data, work);
+#endif
         return;
       }
       if (!fused) {
-        stockham_passes(plan, data, work, radix_four_pass<false, R>, radix_sixteen_pass<false, R>);
+        stockham_passes(plan, data, work, radix_four_pass<false, R>, radix_sixteen_pass<false, R>, any_radix_pass<false, R>);
         return;
       }
 #ifdef NUMERICAL_X86_COMPILED
-      stockham_passes(plan, data, work, avx2_radix_four_pass<R>, avx2_radix_sixteen_pass<R>);
+      stockham_passes(plan, data, work, avx2_radix_four_pass<R>, avx2_radix_sixteen_pass<R>, any_radix_pass_x86<R>);
 #else
-      stockham_passes(plan, data, work, radix_four_pass<true, R>, radix_sixteen_pass<true, R>);
+      stockham_passes(plan, data, work, radix_four_pass<true, R>, radix_sixteen_pass<true, R>, any_radix_pass<true, R>);
 #endif
     }
 
@@ -583,7 +856,7 @@ namespace numerical {
         }
         thread_local buffer<C> kept;
         if (kept.size() < count) {
-          kept.resize(fft_scratch_kept);
+          kept.resize(count); // the most this thread has needed, up to fft_scratch_kept
         }
         data_ = kept.data();
       }
@@ -641,8 +914,8 @@ namespace numerical {
                      const std::size_t inner {line % walk.inner};
                      const T* const    in    {from + (outer * extent * walk.inner) + inner};
                      C* const          to    {out.data() + (outer * points * walk.inner) + inner};
-                     fft_scratch<C>    scratch {walk.inner == 1 ? points : 2 * points};
-                     C* const          data  {walk.inner == 1 ? to : scratch.data() + points}; // a line of the output where it lies together
+                     fft_scratch<C>    scratch {plan->work + (walk.inner == 1 ? 0 : points)};
+                     C* const          data  {walk.inner == 1 ? to : scratch.data() + plan->work}; // a line of the output where it lies together
                      for (std::size_t k {0}; k < points; ++k) {
                        const C value {k < kept ? C(in[k * walk.inner]) : C {}};
                        data[k] = inverse ? std::conj(value) : value;
