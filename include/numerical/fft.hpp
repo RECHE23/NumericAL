@@ -1495,14 +1495,14 @@ namespace numerical {
 #ifdef NUMERICAL_X86_COMPILED
     //! \brief \ref any_radix_pass_body fused, built for AVX2 with FMA: each `std::fma` one instruction.
     template <std::floating_point R>
-    NUMERICAL_TARGET("avx2,fma") void any_radix_pass_x86(std::size_t                     radix,
-                                                         std::size_t                     current,
-                                                         std::size_t                     stride,
-                                                         const std::complex<R>         * in,
-                                                         std::complex<R>         *       out,
-                                                         const std::complex<R>         * twiddles,
-                                                         const std::complex<R>         * roots,
-                                                         const small_radix_constants<R>& small) noexcept
+    NUMERICAL_OUT_OF_LINE NUMERICAL_TARGET("avx2,fma") void any_radix_pass_x86(std::size_t                     radix,
+                                                                               std::size_t                     current,
+                                                                               std::size_t                     stride,
+                                                                               const std::complex<R>         * in,
+                                                                               std::complex<R>         *       out,
+                                                                               const std::complex<R>         * twiddles,
+                                                                               const std::complex<R>         * roots,
+                                                                               const small_radix_constants<R>& small) noexcept
     {
       if (radix == 3) {
         avx2_radix_three_pass(current, stride, in, out, twiddles, small.half_root_three);
@@ -1512,6 +1512,64 @@ namespace numerical {
       }
       else if (radix == 8) {
         avx2_radix_eight_pass(current, stride, in, out, twiddles, small.half_root_two);
+      }
+      else {
+        any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
+      }
+    }
+
+    //! \brief \ref any_radix_pass_x86 of the avx512 path: radices 3, 5 and 8 in AVX-512's registers where the stride
+    //!        holds them, else \ref any_radix_pass_x86 itself (out of line: inlined here, its code built for AVX-512 ran
+    //!        up to a fifth slower, ten AVX-512 cores, complex64 5⁶ points).
+    template <std::floating_point R>
+    NUMERICAL_TARGET("avx512f,avx2,fma") void any_radix_pass_avx512(std::size_t                     radix,
+                                                                    std::size_t                     current,
+                                                                    std::size_t                     stride,
+                                                                    const std::complex<R>         * in,
+                                                                    std::complex<R>         *       out,
+                                                                    const std::complex<R>         * twiddles,
+                                                                    const std::complex<R>         * roots,
+                                                                    const small_radix_constants<R>& small) noexcept
+    {
+      if (stride % (sizeof(fft_reg<fft_avx512, R>) / sizeof(std::complex<R>)) != 0) {
+        any_radix_pass_x86(radix, current, stride, in, out, twiddles, roots, small);
+      }
+      else if (radix == 3) {
+        avx512_radix_three_pass(current, stride, in, out, twiddles, small.half_root_three);
+      }
+      else if (radix == 5) {
+        avx512_radix_five_pass(current, stride, in, out, twiddles, small.c1, small.c2, small.s1, small.s2);
+      }
+      else if (radix == 8) {
+        avx512_radix_eight_pass(current, stride, in, out, twiddles, small.half_root_two);
+      }
+      else {
+        any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
+      }
+    }
+
+#endif
+
+#ifdef NUMERICAL_NEON_COMPILED
+    //! \brief \ref any_radix_pass fused, radices 3, 5 and 8 in NEON's registers.
+    template <std::floating_point R>
+    void any_radix_pass_neon(std::size_t                     radix,
+                             std::size_t                     current,
+                             std::size_t                     stride,
+                             const std::complex<R>         * in,
+                             std::complex<R>         *       out,
+                             const std::complex<R>         * twiddles,
+                             const std::complex<R>         * roots,
+                             const small_radix_constants<R>& small) noexcept
+    {
+      if (radix == 3) {
+        neon_radix_three_pass(current, stride, in, out, twiddles, small.half_root_three);
+      }
+      else if (radix == 5) {
+        neon_radix_five_pass(current, stride, in, out, twiddles, small.c1, small.c2, small.s1, small.s2);
+      }
+      else if (radix == 8) {
+        neon_radix_eight_pass(current, stride, in, out, twiddles, small.half_root_two);
       }
       else {
         any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
@@ -1723,12 +1781,12 @@ namespace numerical {
       }
 #ifdef NUMERICAL_X86_COMPILED
       if (gemm_path_current() == gemm_path::avx512 && plan.length >= fft_avx512_shortest) {
-        stockham_passes(plan, data, work, avx512_radix_four_pass<R>, avx512_radix_sixteen_pass<R>, any_radix_pass_x86<R>);
+        stockham_passes(plan, data, work, avx512_radix_four_pass<R>, avx512_radix_sixteen_pass<R>, any_radix_pass_avx512<R>);
         return;
       }
       stockham_passes(plan, data, work, avx2_radix_four_pass<R>, avx2_radix_sixteen_pass<R>, any_radix_pass_x86<R>);
 #elif defined(NUMERICAL_NEON_COMPILED)
-      stockham_passes(plan, data, work, neon_radix_four_pass<R>, neon_radix_sixteen_pass<R>, any_radix_pass<true, R>);
+      stockham_passes(plan, data, work, neon_radix_four_pass<R>, neon_radix_sixteen_pass<R>, any_radix_pass_neon<R>);
 #else
       stockham_passes(plan, data, work, radix_four_pass<true, R>, radix_sixteen_pass<true, R>, any_radix_pass<true, R>);
 #endif

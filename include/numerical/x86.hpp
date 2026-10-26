@@ -3073,6 +3073,142 @@ namespace numerical::detail {
     _mm512_storeu_pd(into + 24, _mm512_shuffle_f64x2(even_high, odd_high, 0xDD));                 // 6 7
   }
 
+  //! \brief `a · b`, lane by lane, rounded.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_mul(fft_reg<fft_avx2, double> a,
+                                                                        fft_reg<fft_avx2, double> b) noexcept
+  {
+    return {_mm256_mul_pd(a.v, b.v)};
+  }
+
+  //! \brief `a · b + c`, lane by lane, one rounding.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_fused(fft_reg<fft_avx2, double> a,
+                                                                          fft_reg<fft_avx2, double> b,
+                                                                          fft_reg<fft_avx2, double> c) noexcept
+  {
+    return {_mm256_fmadd_pd(a.v, b.v, c.v)};
+  }
+
+  //! \brief Each complex number's real part from \p even, its imaginary part from \p odd.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_parts_of(fft_reg<fft_avx2, double> even,
+                                                                             fft_reg<fft_avx2, double> odd) noexcept
+  {
+    return {_mm256_blend_pd(even.v, odd.v, 0b1010)};
+  }
+
+  //! \brief The complex numbers of \p v conjugated, exact.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_conjugated(fft_reg<fft_avx2, double> v) noexcept
+  {
+    return {_mm256_xor_pd(v.v, _mm256_setr_pd(0.0, -0.0, 0.0, -0.0))};
+  }
+
+  //! \brief Each complex number of \p v, its parts exchanged.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_exchanged(fft_reg<fft_avx2, double> v) noexcept
+  {
+    return {_mm256_permute_pd(v.v, 0b0101)};
+  }
+
+  //! \brief `a · b`, lane by lane, rounded.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_mul(fft_reg<fft_avx2, float> a,
+                                                                       fft_reg<fft_avx2, float> b) noexcept
+  {
+    return {_mm256_mul_ps(a.v, b.v)};
+  }
+
+  //! \brief `a · b + c`, lane by lane, one rounding.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_fused(fft_reg<fft_avx2, float> a,
+                                                                         fft_reg<fft_avx2, float> b,
+                                                                         fft_reg<fft_avx2, float> c) noexcept
+  {
+    return {_mm256_fmadd_ps(a.v, b.v, c.v)};
+  }
+
+  //! \brief Each complex number's real part from \p even, its imaginary part from \p odd.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_parts_of(fft_reg<fft_avx2, float> even,
+                                                                            fft_reg<fft_avx2, float> odd) noexcept
+  {
+    return {_mm256_blend_ps(even.v, odd.v, 0b10101010)};
+  }
+
+  //! \brief The complex numbers of \p v conjugated, exact.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_conjugated(fft_reg<fft_avx2, float> v) noexcept
+  {
+    return {_mm256_xor_ps(v.v, _mm256_setr_ps(0.0F, -0.0F, 0.0F, -0.0F, 0.0F, -0.0F, 0.0F, -0.0F))};
+  }
+
+  //! \brief Each complex number of \p v, its parts exchanged.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_exchanged(fft_reg<fft_avx2, float> v) noexcept
+  {
+    return {_mm256_permute_ps(v.v, 0xB1)};
+  }
+
+  //! \brief `a · b`, lane by lane, rounded.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_mul(fft_reg<fft_avx512, double> a,
+                                                                         fft_reg<fft_avx512, double> b) noexcept
+  {
+    return {_mm512_mul_pd(a.v, b.v)};
+  }
+
+  //! \brief `a · b + c`, lane by lane, one rounding.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_fused(fft_reg<fft_avx512, double> a,
+                                                                           fft_reg<fft_avx512, double> b,
+                                                                           fft_reg<fft_avx512, double> c) noexcept
+  {
+    return {_mm512_fmadd_pd(a.v, b.v, c.v)};
+  }
+
+  //! \brief Each complex number's real part from \p even, its imaginary part from \p odd.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_parts_of(fft_reg<fft_avx512, double> even,
+                                                                              fft_reg<fft_avx512, double> odd) noexcept
+  {
+    return {_mm512_mask_blend_pd(0xAA, even.v, odd.v)};
+  }
+
+  //! \brief The complex numbers of \p v conjugated, exact.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_conjugated(fft_reg<fft_avx512, double> v) noexcept
+  {
+    return {_mm512_castsi512_pd(_mm512_xor_si512(_mm512_castpd_si512(v.v), _mm512_set_epi64(INT64_MIN, 0, INT64_MIN, 0, INT64_MIN, 0, INT64_MIN, 0)))};
+  }
+
+  //! \brief Each complex number of \p v, its parts exchanged.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_exchanged(fft_reg<fft_avx512, double> v) noexcept
+  {
+    return {_mm512_permute_pd(v.v, 0x55)};
+  }
+
+  //! \brief `a · b`, lane by lane, rounded.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_mul(fft_reg<fft_avx512, float> a,
+                                                                        fft_reg<fft_avx512, float> b) noexcept
+  {
+    return {_mm512_mul_ps(a.v, b.v)};
+  }
+
+  //! \brief `a · b + c`, lane by lane, one rounding.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_fused(fft_reg<fft_avx512, float> a,
+                                                                          fft_reg<fft_avx512, float> b,
+                                                                          fft_reg<fft_avx512, float> c) noexcept
+  {
+    return {_mm512_fmadd_ps(a.v, b.v, c.v)};
+  }
+
+  //! \brief Each complex number's real part from \p even, its imaginary part from \p odd.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_parts_of(fft_reg<fft_avx512, float> even,
+                                                                             fft_reg<fft_avx512, float> odd) noexcept
+  {
+    return {_mm512_mask_blend_ps(0xAAAA, even.v, odd.v)};
+  }
+
+  //! \brief The complex numbers of \p v conjugated, exact.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_conjugated(fft_reg<fft_avx512, float> v) noexcept
+  {
+    return {_mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(v.v), _mm512_set1_epi64(INT64_MIN)))};
+  }
+
+  //! \brief Each complex number of \p v, its parts exchanged.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_exchanged(fft_reg<fft_avx512, float> v) noexcept
+  {
+    return {_mm512_permute_ps(v.v, 0xB1)};
+  }
+
 #endif
 } // namespace numerical::detail
 

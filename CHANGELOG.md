@@ -25,7 +25,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   of 16 points 82 → 43 µs, along the first axis of 64 × 1024 346 → 222 µs. A line of 16 MiB and more in four steps
   that the threads share (M1 Pro, `complex128` 2²⁰ points 21.8 → 13.4 ms on one thread, 5.4 ms on all; NumPy 19.1);
   AVX-512's registers on its path (ten AVX-512 cores, `complex128` 4096 points 14.0 → 9.3 µs, FFTW 10.0); NEON's on
-  arm64 (M1 Pro, one line of `complex64` 2.0–2.4× faster, 2²⁰ points 17.9 → 8.3 ms; `complex128` 1.1–1.3×).
+  arm64 (M1 Pro, one line of `complex64` 2.0–2.4× faster, 2²⁰ points 17.9 → 8.3 ms; `complex128` 1.1–1.3×), its
+  passes of radix 3, 5 and 8 too (`complex64` 1000 points 4.1 → 2.4 µs, 5⁶ 96 → 62 µs).
 
 ## 2026.10.38 — 2026-10-25
 

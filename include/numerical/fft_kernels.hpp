@@ -243,9 +243,88 @@ namespace numerical::detail {
     vst1q_f32(to + 12, vreinterpretq_f32_f64(vzip2q_f64(c, d)));
   }
 
+  //! \brief `a · b`, lane by lane, rounded.
+  NUMERICAL_ALWAYS_INLINE fft_reg<fft_neon, double> fft_mul(fft_reg<fft_neon, double> a,
+                                                            fft_reg<fft_neon, double> b) noexcept
+  {
+    return {vmulq_f64(a.v, b.v)};
+  }
+
+  //! \brief `a · b + c`, lane by lane, one rounding.
+  NUMERICAL_ALWAYS_INLINE fft_reg<fft_neon, double> fft_fused(fft_reg<fft_neon, double> a,
+                                                              fft_reg<fft_neon, double> b,
+                                                              fft_reg<fft_neon, double> c) noexcept
+  {
+    return {vfmaq_f64(c.v, a.v, b.v)};
+  }
+
+  //! \brief Each complex number's real part from \p even, its imaginary part from \p odd.
+  NUMERICAL_ALWAYS_INLINE fft_reg<fft_neon, double> fft_parts_of(fft_reg<fft_neon, double> even,
+                                                                 fft_reg<fft_neon, double> odd) noexcept
+  {
+    return {vcopyq_laneq_f64(even.v, 1, odd.v, 1)};
+  }
+
+  //! \brief The complex numbers of \p v conjugated, exact.
+  NUMERICAL_ALWAYS_INLINE fft_reg<fft_neon, double> fft_conjugated(fft_reg<fft_neon, double> v) noexcept
+  {
+    return {neon_flipped(v.v, neon_part_signs(v, false))};
+  }
+
+  //! \brief Each complex number of \p v, its parts exchanged.
+  NUMERICAL_ALWAYS_INLINE fft_reg<fft_neon, double> fft_exchanged(fft_reg<fft_neon, double> v) noexcept
+  {
+    return {neon_exchanged(v.v)};
+  }
+
+  //! \brief `a · b`, lane by lane, rounded.
+  NUMERICAL_ALWAYS_INLINE fft_reg<fft_neon, float> fft_mul(fft_reg<fft_neon, float> a,
+                                                           fft_reg<fft_neon, float> b) noexcept
+  {
+    return {vmulq_f32(a.v, b.v)};
+  }
+
+  //! \brief `a · b + c`, lane by lane, one rounding.
+  NUMERICAL_ALWAYS_INLINE fft_reg<fft_neon, float> fft_fused(fft_reg<fft_neon, float> a,
+                                                             fft_reg<fft_neon, float> b,
+                                                             fft_reg<fft_neon, float> c) noexcept
+  {
+    return {vfmaq_f32(c.v, a.v, b.v)};
+  }
+
+  //! \brief Each complex number's real part from \p even, its imaginary part from \p odd.
+  NUMERICAL_ALWAYS_INLINE fft_reg<fft_neon, float> fft_parts_of(fft_reg<fft_neon, float> even,
+                                                                fft_reg<fft_neon, float> odd) noexcept
+  {
+    return {vbslq_f32(vreinterpretq_u32_u64(vdupq_n_u64(std::uint64_t {0xFFFFFFFF} << 32U)), odd.v, even.v)};
+  }
+
+  //! \brief The complex numbers of \p v conjugated, exact.
+  NUMERICAL_ALWAYS_INLINE fft_reg<fft_neon, float> fft_conjugated(fft_reg<fft_neon, float> v) noexcept
+  {
+    return {neon_flipped(v.v, neon_part_signs(v, false))};
+  }
+
+  //! \brief Each complex number of \p v, its parts exchanged.
+  NUMERICAL_ALWAYS_INLINE fft_reg<fft_neon, float> fft_exchanged(fft_reg<fft_neon, float> v) noexcept
+  {
+    return {neon_exchanged(v.v)};
+  }
+
 #endif
 
 #if defined(NUMERICAL_X86_COMPILED) || defined(NUMERICAL_NEON_COMPILED)
+
+  //! \brief `s + c · v` of complex numbers and a real \p c, each part one fused multiply-add (`fft.hpp`'s fused
+  //!        `scaled_add`).
+  template <typename R>
+  NUMERICAL_ALWAYS_INLINE std::complex<R> fft_scaled_add(const std::complex<R>& s,
+                                                         R                      c,
+                                                         const std::complex<R>& v) noexcept
+  {
+    return {std::fma(c, v.real(), s.real()), std::fma(c, v.imag(), s.imag())};
+  }
+
   //! \brief `w · v` of complex numbers, one at a time, as \ref fft_twiddled computes each lane.
   template <typename R>
   NUMERICAL_ALWAYS_INLINE std::complex<R> fft_fused_product(const std::complex<R>& w,
@@ -448,6 +527,244 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief Output \p k of butterfly \p p of a pass, \p value, stored at \p place: times `w^{kp}` (its factors \p twiddles,
+  //!        a run of \p run each power, as \ref avx2_twiddled) unless \p p is 0.
+  template <typename Isa,
+            typename R>
+  NUMERICAL_ALWAYS_INLINE void fft_store_twiddled(R*                     place,
+                                                  const fft_reg<Isa, R>& value,
+                                                  const std::complex<R>* twiddles,
+                                                  std::size_t            run,
+                                                  std::size_t            p,
+                                                  std::size_t            k) noexcept
+  {
+    constexpr Isa isa {};
+    if (p != 0) {
+      const std::complex<R> w {twiddles[((k - 1) * run) + p - 1]};
+      fft_store(place, fft_twiddled(fft_splat(isa, w.real()), fft_splat(isa, w.imag()), value));
+      return;
+    }
+    fft_store(place, value);
+  }
+
+  /*!
+   * \brief One Stockham pass of radix 3 of `fft.hpp`'s (`radix_three_pass_body`), fused, a register of complex numbers
+   *        along the stride at a time where it holds one, else one at a time: the same operations in the same order.
+   *        \p half_root_three is √3/2.
+   */
+  template <typename Isa,
+            typename R>
+  NUMERICAL_ALWAYS_INLINE void fft_radix_three_pass(std::size_t            current,
+                                                    std::size_t            stride,
+                                                    const std::complex<R>* in,
+                                                    std::complex<R>*       out,
+                                                    const std::complex<R>* twiddles,
+                                                    R                      half_root_three) noexcept
+  {
+    using C   = std::complex<R>;
+    using vec = fft_reg<Isa, R>;
+    constexpr Isa         isa   {};
+    constexpr std::size_t width {sizeof(vec) / sizeof(std::complex<R>)};
+    const std::size_t     part  {current / 3};
+    const std::size_t     run   {part - 1};
+    const std::size_t     apart {stride * part};
+    const vec             half  {fft_splat(isa, R(0.5))};
+    const vec             root  {fft_splat(isa, half_root_three)};
+    for (std::size_t p {0}; p < part; ++p) {
+      const C* const in_p {in + (stride * p)};
+      C* const       to   {out + (stride * 3 * p)};
+      std::size_t    q    {0};
+      if (stride >= width) {
+        const C   w1    {p == 0 ? C {1} : twiddles[p - 1]};
+        const C   w2    {p == 0 ? C {1} : twiddles[run + p - 1]};
+        const vec w1_re {fft_splat(isa, w1.real())};
+        const vec w1_im {fft_splat(isa, w1.imag())};
+        const vec w2_re {fft_splat(isa, w2.real())};
+        const vec w2_im {fft_splat(isa, w2.imag())};
+        for (; q + width <= stride; q += width) {
+          const R* const at {reinterpret_cast<const R*>(in_p + q)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+          const vec      x0 {fft_load(isa, at)};
+          const vec      x1 {fft_load(isa, at + (2 * apart))};
+          const vec      x2 {fft_load(isa, at + (4 * apart))};
+          const vec      t  {fft_add(x1, x2)};
+          const vec      v  {fft_sub(x0, fft_mul(half, t))};
+          const vec      iu {fft_times_i(fft_mul(root, fft_sub(x1, x2)))};
+          vec            y1 {fft_sub(v, iu)};
+          vec            y2 {fft_add(v, iu)};
+          if (p != 0) {
+            y1 = fft_twiddled(w1_re, w1_im, y1);
+            y2 = fft_twiddled(w2_re, w2_im, y2);
+          }
+          R* const place {reinterpret_cast<R*>(to + q)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+          fft_store(place, fft_add(x0, t));
+          fft_store(place + (2 * stride), y1);
+          fft_store(place + (4 * stride), y2);
+        }
+      }
+      for (; q < stride; ++q) { // a stride narrower than a register
+        const C x0 {in_p[q]};
+        const C x1 {in_p[q + apart]};
+        const C x2 {in_p[q + (2 * apart)]};
+        const C t  {x1 + x2};
+        const C v  {x0 - C {R(0.5) * t.real(), R(0.5) * t.imag()}};
+        const C d  {x1 - x2};
+        const C u  {half_root_three * d.real(), half_root_three * d.imag()};
+        const C iu {-u.imag(), u.real()};
+        to[q]              = x0 + t;
+        to[q + stride]     = p == 0 ? v - iu : fft_fused_product(twiddles[p - 1], v - iu);
+        to[q + 2 * stride] = p == 0 ? v + iu : fft_fused_product(twiddles[run + p - 1], v + iu);
+      }
+    }
+  }
+
+  /*!
+   * \brief One Stockham pass of radix 5 of `fft.hpp`'s (`radix_five_pass_body`), fused, as \ref fft_radix_three_pass:
+   *        \p c1, \p c2 the cosines and \p s1, \p s2 the sines of 2π/5 and 4π/5.
+   */
+  template <typename Isa,
+            typename R>
+  NUMERICAL_ALWAYS_INLINE void fft_radix_five_pass(std::size_t            current,
+                                                   std::size_t            stride,
+                                                   const std::complex<R>* in,
+                                                   std::complex<R>*       out,
+                                                   const std::complex<R>* twiddles,
+                                                   R                      c1,
+                                                   R                      c2,
+                                                   R                      s1,
+                                                   R                      s2) noexcept
+  {
+    using C   = std::complex<R>;
+    using vec = fft_reg<Isa, R>;
+    constexpr Isa         isa   {};
+    constexpr std::size_t width {sizeof(vec) / sizeof(std::complex<R>)};
+    const std::size_t     part  {current / 5};
+    const std::size_t     run   {part - 1};
+    const std::size_t     apart {stride * part};
+    const vec             vc1   {fft_splat(isa, c1)};
+    const vec             vc2   {fft_splat(isa, c2)};
+    const vec             vs1   {fft_splat(isa, s1)};
+    const vec             vs2   {fft_splat(isa, s2)};
+    const vec             vms1  {fft_splat(isa, -s1)};
+    for (std::size_t p {0}; p < part; ++p) {
+      const C* const in_p {in + (stride * p)};
+      C* const       to   {out + (stride * 5 * p)};
+      std::size_t    q    {0};
+      if (stride >= width) {
+        for (; q + width <= stride; q += width) {
+          const R* const at    {reinterpret_cast<const R*>(in_p + q)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+          const vec      x0    {fft_load(isa, at)};
+          const vec      x1    {fft_load(isa, at + (2 * apart))};
+          const vec      x2    {fft_load(isa, at + (4 * apart))};
+          const vec      x3    {fft_load(isa, at + (6 * apart))};
+          const vec      x4    {fft_load(isa, at + (8 * apart))};
+          const vec      t1    {fft_add(x1, x4)};
+          const vec      t2    {fft_add(x2, x3)};
+          const vec      t3    {fft_sub(x1, x4)};
+          const vec      t4    {fft_sub(x2, x3)};
+          const vec      a1    {fft_fused(vc2, t2, fft_fused(vc1, t1, x0))};
+          const vec      a2    {fft_fused(vc1, t2, fft_fused(vc2, t1, x0))};
+          const vec      ib1   {fft_times_i(fft_fused(vs2, t4, fft_mul(vs1, t3)))};
+          const vec      ib2   {fft_times_i(fft_fused(vms1, t4, fft_mul(vs2, t3)))};
+          R* const       place {reinterpret_cast<R*>(to + q)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+          fft_store(place, fft_add(fft_add(x0, t1), t2));
+          fft_store_twiddled<Isa>(place + (2 * stride), fft_sub(a1, ib1), twiddles, run, p, 1);
+          fft_store_twiddled<Isa>(place + (4 * stride), fft_sub(a2, ib2), twiddles, run, p, 2);
+          fft_store_twiddled<Isa>(place + (6 * stride), fft_add(a2, ib2), twiddles, run, p, 3);
+          fft_store_twiddled<Isa>(place + (8 * stride), fft_add(a1, ib1), twiddles, run, p, 4);
+        }
+      }
+      for (; q < stride; ++q) { // a stride narrower than a register
+        const C                x0  {in_p[q]};
+        const C                x1  {in_p[q + apart]};
+        const C                x2  {in_p[q + (2 * apart)]};
+        const C                x3  {in_p[q + (3 * apart)]};
+        const C                x4  {in_p[q + (4 * apart)]};
+        const C                t1  {x1 + x4};
+        const C                t2  {x2 + x3};
+        const C                t3  {x1 - x4};
+        const C                t4  {x2 - x3};
+        const C                a1  {fft_scaled_add(fft_scaled_add(x0, c1, t1), c2, t2)};
+        const C                a2  {fft_scaled_add(fft_scaled_add(x0, c2, t1), c1, t2)};
+        const C                b1  {fft_scaled_add(C {s1 * t3.real(), s1 * t3.imag()}, s2, t4)};
+        const C                b2  {fft_scaled_add(C {s2 * t3.real(), s2 * t3.imag()}, -s1, t4)};
+        const C                ib1 {-b1.imag(), b1.real()};
+        const C                ib2 {-b2.imag(), b2.real()};
+        const std::array<C, 4> y   {a1 - ib1, a2 - ib2, a2 + ib2, a1 + ib1};
+        to[q] = (x0 + t1) + t2;
+        for (std::size_t j {1}; j < 5; ++j) {
+          to[q + (j * stride)] = p == 0 ? y[j - 1] : fft_fused_product(twiddles[((j - 1) * run) + p - 1], y[j - 1]);
+        }
+      }
+    }
+  }
+
+  /*!
+   * \brief One Stockham pass of radix 8 of `fft.hpp`'s (`radix_eight_pass_body`), fused, a register of complex numbers
+   *        along the stride at a time (the stride a power of two of at least 4: powers of two run first), the same
+   *        operations in the same order. \p half_root_two is √½.
+   */
+  template <typename Isa,
+            typename R>
+  NUMERICAL_ALWAYS_INLINE void fft_radix_eight_pass(std::size_t            current,
+                                                    std::size_t            stride,
+                                                    const std::complex<R>* in,
+                                                    std::complex<R>*       out,
+                                                    const std::complex<R>* twiddles,
+                                                    R                      half_root_two) noexcept
+  {
+    using vec = fft_reg<Isa, R>;
+    constexpr Isa         isa   {};
+    constexpr std::size_t width {sizeof(vec) / sizeof(std::complex<R>)};
+    const std::size_t     part  {current / 8};
+    const std::size_t     run   {part - 1};
+    const std::size_t     apart {2 * stride * part};              // parts between a butterfly's inputs
+    const vec             root  {fft_splat(isa, half_root_two)};
+    const R* const        from  {reinterpret_cast<const R*>(in)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+    R* const              into  {reinterpret_cast<R*>(out)};      // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    for (std::size_t p {0}; p < part; ++p) {
+      const R* const in_p {from + (2 * stride * p)};
+      R* const       to   {into + (2 * stride * 8 * p)};
+      for (std::size_t q {0}; q + width <= stride; q += width) {
+        const R* const at {in_p + (2 * q)};
+        const vec      x0 {fft_load(isa, at)};
+        const vec      x1 {fft_load(isa, at + apart)};
+        const vec      x2 {fft_load(isa, at + (2 * apart))};
+        const vec      x3 {fft_load(isa, at + (3 * apart))};
+        const vec      x4 {fft_load(isa, at + (4 * apart))};
+        const vec      x5 {fft_load(isa, at + (5 * apart))};
+        const vec      x6 {fft_load(isa, at + (6 * apart))};
+        const vec      x7 {fft_load(isa, at + (7 * apart))};
+        const vec      b1 {fft_sub(x1, x5)};
+        const vec      b3 {fft_sub(x3, x7)};
+        const vec      s1 {fft_add(b1, fft_exchanged(b1))}; // re + im in both lanes
+        const vec      d1 {fft_sub(b1, fft_exchanged(b1))}; // re − im, im − re
+        const vec      s3 {fft_add(b3, fft_exchanged(b3))};
+        const vec      d3 {fft_sub(fft_exchanged(b3), b3)}; // im − re, re − im
+        const vec      w1 {fft_mul(root, fft_parts_of(s1, d1))};
+        const vec      w3 {fft_conjugated(fft_mul(root, fft_parts_of(d3, s3)))};
+        vec            e0 {};
+        vec            e1 {};
+        vec            e2 {};
+        vec            e3 {};
+        vec            o0 {};
+        vec            o1 {};
+        vec            o2 {};
+        vec            o3 {};
+        fft_four_point(fft_add(x0, x4), fft_add(x1, x5), fft_add(x2, x6), fft_add(x3, x7), e0, e1, e2, e3);
+        fft_four_point(fft_sub(x0, x4), w1, fft_times_minus_i(fft_sub(x2, x6)), w3, o0, o1, o2, o3);
+        R* const place {to + (2 * q)};
+        fft_store(place, e0);
+        fft_store_twiddled<Isa>(place + (2 * stride), o0, twiddles, run, p, 1);
+        fft_store_twiddled<Isa>(place + (4 * stride), e1, twiddles, run, p, 2);
+        fft_store_twiddled<Isa>(place + (6 * stride), o1, twiddles, run, p, 3);
+        fft_store_twiddled<Isa>(place + (8 * stride), e2, twiddles, run, p, 4);
+        fft_store_twiddled<Isa>(place + (10 * stride), o2, twiddles, run, p, 5);
+        fft_store_twiddled<Isa>(place + (12 * stride), e3, twiddles, run, p, 6);
+        fft_store_twiddled<Isa>(place + (14 * stride), o3, twiddles, run, p, 7);
+      }
+    }
+  }
+
 #endif
 
 #if defined(NUMERICAL_X86_COMPILED)
@@ -506,6 +823,48 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
+  //! \brief \ref fft_radix_three_pass of AVX-512, its stride a multiple of a register's complex numbers.
+  template <typename R>
+  NUMERICAL_TARGET("avx512f,avx2,fma") inline void avx512_radix_three_pass(std::size_t            current,
+                                                                           std::size_t            stride,
+                                                                           const std::complex<R>* in,
+                                                                           std::complex<R>      * out,
+                                                                           const std::complex<R>* twiddles,
+                                                                           R                      half_root_three) noexcept
+  {
+    fft_radix_three_pass<fft_avx512>(current, stride, in, out, twiddles, half_root_three);
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief \ref fft_radix_five_pass of AVX-512, its stride a multiple of a register's complex numbers.
+  template <typename R>
+  NUMERICAL_TARGET("avx512f,avx2,fma") inline void avx512_radix_five_pass(std::size_t            current,
+                                                                          std::size_t            stride,
+                                                                          const std::complex<R>* in,
+                                                                          std::complex<R>      * out,
+                                                                          const std::complex<R>* twiddles,
+                                                                          R                      c1,
+                                                                          R                      c2,
+                                                                          R                      s1,
+                                                                          R                      s2) noexcept
+  {
+    fft_radix_five_pass<fft_avx512>(current, stride, in, out, twiddles, c1, c2, s1, s2);
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief \ref fft_radix_eight_pass of AVX-512, its stride a multiple of a register's complex numbers.
+  template <typename R>
+  NUMERICAL_TARGET("avx512f,avx2,fma") inline void avx512_radix_eight_pass(std::size_t            current,
+                                                                           std::size_t            stride,
+                                                                           const std::complex<R>* in,
+                                                                           std::complex<R>      * out,
+                                                                           const std::complex<R>* twiddles,
+                                                                           R                      half_root_two) noexcept
+  {
+    fft_radix_eight_pass<fft_avx512>(current, stride, in, out, twiddles, half_root_two);
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
 #endif
 
 #if defined(NUMERICAL_NEON_COMPILED)
@@ -531,6 +890,45 @@ namespace numerical::detail {
                                const std::array<std::complex<R>, 16>& sixteenths) noexcept
   {
     fft_radix_sixteen_pass<fft_neon>(current, stride, in, out, twiddles, sixteenths);
+  }
+
+  //! \brief \ref fft_radix_three_pass of NEON.
+  template <typename R>
+  void neon_radix_three_pass(std::size_t            current,
+                             std::size_t            stride,
+                             const std::complex<R>* in,
+                             std::complex<R>      * out,
+                             const std::complex<R>* twiddles,
+                             R                      half_root_three) noexcept
+  {
+    fft_radix_three_pass<fft_neon>(current, stride, in, out, twiddles, half_root_three);
+  }
+
+  //! \brief \ref fft_radix_five_pass of NEON.
+  template <typename R>
+  void neon_radix_five_pass(std::size_t            current,
+                            std::size_t            stride,
+                            const std::complex<R>* in,
+                            std::complex<R>      * out,
+                            const std::complex<R>* twiddles,
+                            R                      c1,
+                            R                      c2,
+                            R                      s1,
+                            R                      s2) noexcept
+  {
+    fft_radix_five_pass<fft_neon>(current, stride, in, out, twiddles, c1, c2, s1, s2);
+  }
+
+  //! \brief \ref fft_radix_eight_pass of NEON.
+  template <typename R>
+  void neon_radix_eight_pass(std::size_t            current,
+                             std::size_t            stride,
+                             const std::complex<R>* in,
+                             std::complex<R>      * out,
+                             const std::complex<R>* twiddles,
+                             R                      half_root_two) noexcept
+  {
+    fft_radix_eight_pass<fft_neon>(current, stride, in, out, twiddles, half_root_two);
   }
 
 #endif
