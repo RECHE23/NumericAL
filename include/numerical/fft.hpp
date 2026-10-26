@@ -875,17 +875,23 @@ namespace numerical {
     };
 
     /*!
-     * \brief The fewest bytes of complex numbers a transform takes in four steps (\ref four_step_plan): fewer stay in
-     *        the caches through the passes of one transform, faster on a thread alone (six AVX2 cores: complex128 2¹⁷
-     *        points 2.9 ms in passes, 3.2 ms in four steps; 2²⁰ points 21.9 against 17.1 ms, 2²² 208 against 80 ms, all
-     *        threads 174 against 48 ms). By the length and the type alone, so that a transform's bits are its own on any
-     *        threads.
+     * \brief The fewest bytes of complex numbers a transform takes in four steps (\ref four_step_plan), whose columns
+     *        and rows the threads share: fewer stay in the caches through the passes of one transform, faster on a
+     *        thread alone (ten AVX-512 cores: `complex64` 2¹⁸ points 1.5 ms in passes, 2.0 in four steps). From 4 MiB
+     *        (`complex128` 2¹⁸ points: 5.0 ms in passes, 3.8 in four steps on all threads, 5.4 on one; M1 Pro, one
+     *        thread, 3.6 against 2.1 ms). By the length and the type alone, so that a transform's bits are its own on
+     *        any threads.
      */
-    inline constexpr std::size_t fft_four_step_least {std::size_t {1} << 24};
+    inline constexpr std::size_t fft_four_step_least {std::size_t {1} << 22};
 
     //! \brief The complex numbers past each row of the four steps' working space: rows a power of two of bytes apart
     //!        fall in a few sets of the first-level cache, a column's elements evicting one another.
     inline constexpr std::size_t fft_four_step_pad {8};
+
+    //! \brief The rows of the four steps' working space a task transforms together, then writes down the columns of
+    //!        the output: 256 bytes of neighbours (four cache lines) for each of a row's elements.
+    template <std::floating_point R>
+    inline constexpr std::size_t fft_four_step_band {256 / sizeof(std::complex<R>)};
 
     /*!
      * \brief A transform of `n = n1·n2` points in four steps (Bailey's), each a batch of lines the threads share: `x` as
@@ -939,9 +945,10 @@ namespace numerical {
     /*!
      * \brief The columns `n1` of a transform of \p n points of \p bytes each in four steps: the largest divisor of `n`
      *        at most `√n`, `n` of at least \ref fft_four_step_least bytes; else 0, one transform of passes. `n` is taken
-     *        in passes (its prime factors at most fft_largest_radix: make_fft_plan settles Bluestein's lengths first). Such an `n`, 2²⁰ and more, has a divisor from
-     *        16 to `√n` (the product of its smallest prime factors first past 15 is at most 15·61), so that neither side
-     *        is short.
+     *        in passes (its prime factors at most fft_largest_radix: make_fft_plan settles Bluestein's lengths first).
+     *        Such an `n`, 2¹⁸ and more (`√n` at least 512), has a divisor from 16 to `√n`, so that neither side is short:
+     *        a prime factor past 15 (at most 61), or else the product of its smallest prime factors first past 15 (at
+     *        most 15·13).
      */
     [[nodiscard]] inline std::size_t four_step_columns(std::size_t n,
                                                        std::size_t bytes)
@@ -1714,14 +1721,18 @@ namespace numerical {
     }
 
     /*!
-     * \brief The transform of the \p plan's \ref four_step_plan in place in \p data, \p work its \ref fft_plan::work
-     *        (`n`: the columns' transforms, transposed back into \p data), the products fused where \p fused.
+     * \brief The transform of the \p plan's \ref four_step_plan of \p in into \p out (\p in itself or apart from it),
+     *        \p work its \ref fft_plan::work (the columns' transforms, then the rows'), the products fused where
+     *        \p fused; the \p inverse's `conj(fft(conj x))` and times \p scale as \ref transform_axis's lines.
      */
     template <std::floating_point R>
-    void four_step_fft(const fft_plan<R>& plan,
-                       std::complex<R>*   data,
-                       std::complex<R>*   work,
-                       bool               fused);
+    void four_step_fft(const fft_plan<R>&     plan,
+                       const std::complex<R>* in,
+                       std::complex<R>*       out,
+                       std::complex<R>*       work,
+                       bool                   fused,
+                       bool                   inverse = false,
+                       R                      scale   = R(1));
 
     /*!
      * \brief The forward transform of the \p plan's length into \p data, \p work its \ref fft_plan::work, its
@@ -1737,7 +1748,7 @@ namespace numerical {
                      bool               in_work)
     {
       if (plan.four_step) {
-        four_step_fft(plan, data, work, fused);
+        four_step_fft(plan, data, data, work, fused);
         return;
       }
       if (plan.bluestein) {
@@ -2023,30 +2034,11 @@ namespace numerical {
     //!        and written as that many neighbours, where one line at a time took one element of each row.
     inline constexpr std::size_t fft_column_block {8};
 
-    //! \brief \p from, \p rows rows of \p columns (\p apart from one another), transposed into \p to (\p columns rows of
-    //!        \p rows), by tiles that the threads share.
-    template <std::floating_point R>
-    void four_step_transpose(const std::complex<R>* from,
-                             std::size_t            rows,
-                             std::size_t            columns,
-                             std::size_t            apart,
-                             std::complex<R>*       to)
-    {
-      const std::size_t bands {(rows + transpose_tile - 1) / transpose_tile};
-      const std::size_t piece {transpose_piece(apart * sizeof(std::complex<R>), rows * sizeof(std::complex<R>))};
-      parallel_for(bands, transpose_tile * columns, [&](std::size_t band) {
-                     const std::size_t i0 {band * transpose_tile};
-                     transpose_walk(i0, std::min(i0 + transpose_tile, rows), 0, columns, piece, [&](std::size_t i, std::size_t j) {
-                                      to[(j * rows) + i] = from[(i * apart) + j];
-                                    });
-                   });
-    }
-
     /*!
      * \brief The transforms of \p plan's length along each of the \p columns columns of \p data into those of \p to
      *        (\p data's rows of \p columns, \p to's \p to_rows apart, as many as the plan's points): registers of neighbouring columns where they
      *        fill one (\ref fft_lane_groups), the rest up to \ref fft_column_block of them at a time, each row read and
-     *        written as that many neighbours; the threads share them.
+     *        written as that many neighbours; the threads share them. Where \p conjugated, `conj(fft(conj x))`.
      */
     template <std::floating_point R>
     void columns_fft(const fft_plan<R>&     plan,
@@ -2054,7 +2046,8 @@ namespace numerical {
                      std::size_t            columns,
                      std::complex<R>*       to,
                      std::size_t            to_rows,
-                     bool                   fused)
+                     bool                   fused,
+                     bool                   conjugated)
     {
       using C = std::complex<R>;
       const std::size_t points   {plan.length};
@@ -2065,7 +2058,7 @@ namespace numerical {
       parallel_for(groups + blocks, work * std::max(fft_column_block, fft_lines_width<R>), [&](std::size_t task) {
                      if (task < groups) {
                        const std::size_t column {task * fft_lines_width<R>};
-                       fft_lines_together(plan, data + column, 1, columns, points, to + column, 1, to_rows, false, R(1));
+                       fft_lines_together(plan, data + column, 1, columns, points, to + column, 1, to_rows, conjugated, R(1));
                        return;
                      }
                      const std::size_t first {together + ((task - groups) * fft_column_block)};
@@ -2074,7 +2067,8 @@ namespace numerical {
                      C* const          lines {scratch.data() + plan.work};
                      for (std::size_t k {0}; k < points; ++k) {
                        for (std::size_t b {0}; b < width; ++b) {
-                         lines[(b * points) + k] = data[(k * columns) + first + b];
+                         const C value {data[(k * columns) + first + b]};
+                         lines[(b * points) + k] = conjugated ? std::conj(value) : value;
                        }
                      }
                      for (std::size_t b {0}; b < width; ++b) {
@@ -2082,16 +2076,19 @@ namespace numerical {
                      }
                      for (std::size_t k {0}; k < points; ++k) {
                        for (std::size_t b {0}; b < width; ++b) {
-                         to[(k * to_rows) + first + b] = lines[(b * points) + k];
+                         const C value {lines[(b * points) + k]};
+                         to[(k * to_rows) + first + b] = conjugated ? std::conj(value) : value;
                        }
                      }
                    });
     }
 
     /*!
-     * \brief Each of the \p rows rows of \p data (\p apart from one another) times its run of \p twiddles (each as
-     *        long as the rows), then transformed in place (\p plan's length), the row still in the caches, a row a task:
-     *        rows at least a four-step transform's side, whose passes along a line alone outrun registers of them.
+     * \brief Each of the \p rows rows of \p data (\p apart from one another; conjugated first where \p inverse) times its
+     *        run of \p twiddles (each as long as the rows), then transformed in place (\p plan's length), then written
+     *        down a column of \p out, row `r`'s element `k` to `out[r + rows·k]`, conjugated where \p inverse and times
+     *        \p scale: \ref fft_four_step_band rows a task, still in the caches, each element of \p out written among
+     *        that many neighbours.
      */
     template <std::floating_point R>
     void twiddled_rows_fft(const fft_plan<R>&     plan,
@@ -2099,29 +2096,52 @@ namespace numerical {
                            std::size_t            rows,
                            std::size_t            apart,
                            const std::complex<R>* twiddles,
-                           bool                   fused)
+                           bool                   fused,
+                           std::complex<R>*       out,
+                           bool                   inverse,
+                           R                      scale)
     {
-      const std::size_t points {plan.length};
-      parallel_for(rows, 2 * points * static_cast<std::size_t>(std::bit_width(points)), [&](std::size_t row) {
-                     twiddle_run(data + (row * apart), twiddles + (row * points), points, fused);
-                     const fft_scratch<std::complex<R>, 3> space {plan.work};
-                     forward_fft(plan, data + (row * apart), space.data(), fused);
+      using C = std::complex<R>;
+      constexpr std::size_t band   {fft_four_step_band<R>};
+      const std::size_t     points {plan.length};
+      const std::size_t     bands  {(rows + band - 1) / band};
+      parallel_for(bands, band * 2 * points * static_cast<std::size_t>(std::bit_width(points)), [&](std::size_t task) {
+                     const std::size_t       first {task * band};
+                     const std::size_t       count {std::min(band, rows - first)};
+                     const fft_scratch<C, 3> space {plan.work};
+                     for (std::size_t row {first}; row < first + count; ++row) {
+                       C* const line {data + (row * apart)};
+                       if (inverse) {
+                         std::transform(line, line + points, line, [](const C& v) { return std::conj(v); });
+                       }
+                       twiddle_run(line, twiddles + (row * points), points, fused);
+                       forward_fft(plan, line, space.data(), fused);
+                     }
+                     for (std::size_t k {0}; k < points; ++k) {
+                       for (std::size_t r {0}; r < count; ++r) {
+                         const C value {data[((first + r) * apart) + k]};
+                         const C v     {inverse ? std::conj(value) : value};
+                         out[first + r + (rows * k)] = scale == R(1) ? v : C {v.real() * scale, v.imag() * scale};
+                       }
+                     }
                    });
     }
 
     template <std::floating_point R>
-    void four_step_fft(const fft_plan<R>& plan,
-                       std::complex<R>*   data,
-                       std::complex<R>*   work,
-                       bool               fused)
+    void four_step_fft(const fft_plan<R>&     plan,
+                       const std::complex<R>* in,
+                       std::complex<R>*       out,
+                       std::complex<R>*       work,
+                       bool                   fused,
+                       bool                   inverse,
+                       R                      scale)
     {
       const four_step_plan<R>& f  {*plan.four_step};
       const std::size_t        n1 {f.columns};
       const std::size_t        n2 {f.rows};
       const std::size_t        ld {n1 + fft_four_step_pad};
-      columns_fft(*f.column_plan, data, n1, work, ld, fused);                 // work[j1 + ld·k2]
-      twiddled_rows_fft(*f.row_plan, work, n2, ld, f.twiddles.data(), fused); // work[k1 + ld·k2], times w^{j1·k2} first
-      four_step_transpose(work, n2, n1, ld, data);                            // data[k2 + n2·k1]
+      columns_fft(*f.column_plan, in, n1, work, ld, fused, inverse);                               // work[j1 + ld·k2]
+      twiddled_rows_fft(*f.row_plan, work, n2, ld, f.twiddles.data(), fused, out, inverse, scale); // out[k2 + n2·k1]
     }
 
     //! \brief The elements a transform reads where they lie, row-major, of shape `shape`: a tensor's, or an array's
@@ -2141,18 +2161,19 @@ namespace numerical {
     }
 
     /*!
-     * \brief The transform of \p a along \p axis, \p n points (the axis cut or padded with zeros to it, as NumPy's),
-     *        forward or \p inverse (`conj(fft(conj x))`, exact), scaled for \p norm. Each line gathered, transformed
-     *        and scattered on its own, the lines shared among the threads: a line's bits are its own.
+     * \brief The transform of complex \p a along \p axis, \p n points (the axis cut or padded with zeros to it, as
+     *        NumPy's), forward or \p inverse (`conj(fft(conj x))`, exact), scaled for \p norm. Each line gathered,
+     *        transformed and scattered on its own, the lines shared among the threads: a line's bits are its own. (A
+     *        real input takes `real_transform_of`.)
      */
-    template <fft_input T>
-    [[nodiscard]] tensor<typename fft_complex<T>::type> transform_axis(const fft_source<T>&       a,
-                                                                       std::optional<std::size_t> n,
-                                                                       std::ptrdiff_t             axis,
-                                                                       fft_norm                   norm,
-                                                                       bool                       inverse)
+    template <split_complex T>
+    [[nodiscard]] tensor<T> transform_axis(const fft_source<T>&       a,
+                                           std::optional<std::size_t> n,
+                                           std::ptrdiff_t             axis,
+                                           fft_norm                   norm,
+                                           bool                       inverse)
     {
-      using C = typename fft_complex<T>::type;
+      using C = T;
       using R = typename C::value_type;
       const auto rank {static_cast<std::ptrdiff_t>(a.shape.size())};
       if (axis < -rank || axis >= rank) {
@@ -2197,6 +2218,17 @@ namespace numerical {
                        const T* const    in   {from + (line * extent)};
                        C* const       to {out.data() + (line * points)};
                        fft_scratch<C> scratch {plan->work};
+                       if (plan->four_step) { // the columns read the line where it lies, the rows write it finished
+                         const C* source {kept == points ? in : nullptr};
+                         if (source == nullptr) {
+                           for (std::size_t k {0}; k < points; ++k) {
+                             to[k] = k < kept ? C(in[k]) : C {};
+                           }
+                           source = to;
+                         }
+                         four_step_fft(*plan, source, to, scratch.data(), fused, inverse, scale);
+                         return;
+                       }
                        C* const       start {ahead ? scratch.data() : to}; // where the passes read the line
                        for (std::size_t k {0}; k < points; ++k) {
                          const C value {k < kept ? C(in[k]) : C {}};

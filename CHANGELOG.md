@@ -22,8 +22,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   one line: 1000 complex points in 4.3 µs, 1.2–2.0× FFTW's time for complex transforms, rfft 1.7–1.9× faster than fft.
   Lines of a batch transformed a register of them at a time on the vector paths, each line's bits its own: M1 Pro,
   `complex64` lines 2.1–2.9× faster than one at a time, 64 lines of 64 points 16 → 9 µs; six AVX2 cores, 1024 lines
-  of 16 points 82 → 43 µs, along the first axis of 64 × 1024 346 → 222 µs. A line of 16 MiB and more in four steps
-  that the threads share (M1 Pro, `complex128` 2²⁰ points 21.8 → 13.4 ms on one thread, 5.4 ms on all; NumPy 19.1);
+  of 16 points 82 → 43 µs, along the first axis of 64 × 1024 346 → 222 µs. A line of 4 MiB and more in four steps
+  that the threads share, its rows written down the output's columns as they are transformed (M1 Pro, `complex128`
+  2²⁰ points 21.8 → 11.6 ms on one thread, 5.2 ms on all; NumPy 19.1; 2¹⁸ points 3.6 → 2.1 ms on one thread; ten
+  AVX-512 cores, 10⁶ points 26.0 → 19.7 ms on one thread, 9.2 → 4.6 ms on all);
   AVX-512's registers on its path (ten AVX-512 cores, `complex128` 4096 points 14.0 → 9.3 µs, FFTW 10.0); NEON's on
   arm64 (M1 Pro, one line of `complex64` 2.0–2.4× faster, 2²⁰ points 17.9 → 8.3 ms; `complex128` 1.1–1.3×), its
   passes of radix 3, 5 and 8 too (`complex64` 1000 points 4.1 → 2.4 µs, 5⁶ 96 → 62 µs). A real input's `fft` and

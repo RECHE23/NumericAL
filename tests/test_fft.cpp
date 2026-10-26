@@ -469,6 +469,27 @@ TEST(real_transforms_carry_an_infinity_as_the_complex_one)
   }
   const tensor<float> narrow {numerical::irfft(tensor<std::complex<float>> {{2}, std::vector<std::complex<float>> {{1.0F, 0.0F}, {std::numeric_limits<float>::infinity(), 0.0F}}})};
   EXPECT(std::isinf(narrow.data()[0]) && std::isinf(narrow.data()[1]));
+  // An infinity at an odd point, and in either part of a frequency between the first and the last: the complex
+  // transform's answer, value for value (an infinity, a NaN, or the same number).
+  const auto                         alike = [](double a, double b) { return std::isnan(a) ? std::isnan(b) : a == b; };
+  const std::vector<double>          odd     {0.0, inf, 0.0, 0.0};
+  const tensor<std::complex<double>> half    {numerical::rfft(tensor<double> {{4}, odd})};
+  const tensor<std::complex<double>> whole   {numerical::fft(tensor<std::complex<double>> {{4}, std::vector<std::complex<double>>(odd.begin(), odd.end())})};
+  for (std::size_t k {0}; k < 3; ++k) {
+    EXPECT(alike(half.data()[k].real(), whole.data()[k].real()) && alike(half.data()[k].imag(), whole.data()[k].imag()));
+  }
+  for (const std::complex<double> middle : {std::complex<double> {inf, 0.0}, std::complex<double> {0.0, inf}}) {
+    const tensor<double>               real    {numerical::irfft(tensor<std::complex<double>> {{3}, std::vector<std::complex<double>> {{1.0, 0.0}, middle, {0.0, 0.0}}})};
+    const tensor<std::complex<double>> complex {numerical::ifft(tensor<std::complex<double>> {{4}, std::vector<std::complex<double>> {{1.0, 0.0}, middle, {0.0, 0.0}, std::conj(middle)}})};
+    for (std::size_t j {0}; j < 4; ++j) {
+      EXPECT(alike(real.data()[j], complex.data()[j].real()));
+    }
+  }
+  const tensor<double>               last         {numerical::irfft(tensor<std::complex<double>> {{3}, std::vector<std::complex<double>> {{1.0, 0.0}, {0.0, 0.0}, {inf, 0.0}}})};
+  const tensor<std::complex<double>> last_complex {numerical::ifft(tensor<std::complex<double>> {{4}, std::vector<std::complex<double>> {{1.0, 0.0}, {0.0, 0.0}, {inf, 0.0}, {0.0, 0.0}}})};
+  for (std::size_t j {0}; j < 4; ++j) {
+    EXPECT(alike(last.data()[j], last_complex.data()[j].real())); // the last frequency's infinity
+  }
 }
 
 // An infinite input is carried, not turned into NaN by a factor of 1: [∞, 0, 0, 0] transforms to ∞ everywhere.
@@ -489,6 +510,12 @@ TEST(fft_refuses_a_missing_axis_and_no_points)
   EXPECT_THROWS((void)numerical::fft(x, std::nullopt, -3), numerical::dimension_error);
   EXPECT_THROWS((void)numerical::ifft(x, 0), numerical::dimension_error);
   EXPECT(numerical::fft(x, std::nullopt, -2).shape() == (std::vector<std::size_t> {2, 3}));
+  const tensor<std::complex<double>> z {{2, 3}, std::vector<std::complex<double>>(6, {1.0, -1.0})};
+  EXPECT_THROWS((void)numerical::fft(z, std::nullopt, 2), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::fft(z, std::nullopt, -3), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::ifft(z, 0), numerical::dimension_error);
+  const tensor<std::complex<double>> none {{0, 3}, std::vector<std::complex<double>> {}};
+  EXPECT(numerical::fft(none, 5).shape() == (std::vector<std::size_t> {0, 5}));
 }
 
 namespace {
@@ -692,9 +719,10 @@ TEST(long_transforms_are_within_epsilon_log_n_of_their_exact_outputs)
 namespace {
   // A transform in four steps (fft_four_step_least bytes and more) of n points of R: 6 outputs within 2·ε·log₂ n·‖x‖ of
   // the exact ones, and every one of the radix-2 split of two shorter transforms; the same bits on one thread as on all,
-  // and alone as among two lines.
+  // and alone as among two lines; with inverse_too, its inverse and a line padded with zeros to it as well.
   template <std::floating_point R>
-  bool four_step_transform_holds(std::size_t n)
+  bool four_step_transform_holds(std::size_t n,
+                                 bool        inverse_too = false)
   {
     using C = std::complex<R>;
     // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
@@ -738,13 +766,30 @@ namespace {
       good = good && std::abs(std::complex<double>(alone.data()[k]) - (std::complex<double>(evens.data()[k]) + product)) < bound &&
              std::abs(std::complex<double>(alone.data()[k + (n / 2)]) - (std::complex<double>(evens.data()[k]) - product)) < bound;
     }
+    if (!inverse_too) {
+      return good;
+    }
+    // The inverse: conj(fft(conj x)) times 1/n, element for element; a line padded with zeros: its padded copy's.
+    std::vector<C> conjugated(n);
+    std::vector<C> padded(x);
+    std::transform(x.begin(), x.end(), conjugated.begin(), [](const C& v) { return std::conj(v); });
+    std::fill(padded.end() - 5, padded.end(), C {});
+    const tensor<C> back    {numerical::ifft(tensor<C> {{n}, x})};
+    const tensor<C> forward {numerical::fft(tensor<C> {{n}, conjugated})};
+    const R         scale   {R(1) / static_cast<R>(n)};
+    std::vector<C>  wanted  (n);
+    std::transform(forward.data().begin(), forward.data().end(), wanted.begin(), [scale](const C& v) { return C {v.real() * scale, -v.imag() * scale}; });
+    good = good && same_bits(back.data(), wanted);
+    const tensor<C> cut     {{n - 5}, std::vector<C>(x.begin(), x.end() - 5)};
+    good = good && same_bits(numerical::fft(cut, n).data(), numerical::fft(tensor<C> {{n}, padded}).data());
     return good;
   }
 } // namespace
 
 // On every path this processor runs: transforms in four steps (2²⁰ and 3·2¹⁹ points of double, 2²¹ of float: a square
-// and an oblong matrix of points; 67·2¹⁴, a prime past the passes', whose Bluestein's convolution takes them) within
-// ε·log₂ n of the exact transform, their bits a line's own on any threads.
+// and an oblong matrix of points; the shortest, 2¹⁸ of double and 2¹⁹ of float, and 2⁴·3·5³·7² of double; 67·2¹⁴, a
+// prime past the passes', whose Bluestein's convolution takes them) within ε·log₂ n of the exact transform, their bits
+// a line's own on any threads.
 TEST(four_step_transforms_are_exact_to_epsilon_log_n_and_their_own_on_any_threads)
 {
   for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
@@ -755,7 +800,10 @@ TEST(four_step_transforms_are_exact_to_epsilon_log_n_and_their_own_on_any_thread
     EXPECT(four_step_transform_holds<double>(std::size_t {1} << 20));
     EXPECT(four_step_transform_holds<double>(std::size_t {3} << 19));
     EXPECT(four_step_transform_holds<float>(std::size_t {1} << 21));
-    EXPECT(four_step_transform_holds<double>(std::size_t {67} << 14)); // Bluestein's, its transforms in four steps
+    EXPECT(four_step_transform_holds<double>(std::size_t {67} << 14));      // Bluestein's, its transforms in four steps
+    EXPECT(four_step_transform_holds<double>(std::size_t {1} << 18, true)); // its inverse and a padded line too
+    EXPECT(four_step_transform_holds<float>(std::size_t {1} << 19));
+    EXPECT(four_step_transform_holds<double>(std::size_t {294000}));        // 2⁴·3·5³·7²
     const std::size_t   n {std::size_t {1} << 20};
     std::vector<double> real(n);
     for (std::size_t j {0}; j < n; ++j) {
