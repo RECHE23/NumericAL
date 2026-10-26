@@ -1550,6 +1550,13 @@ namespace numerical {
 
 #endif
 
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief The shortest transform the avx512 path takes in AVX-512 registers: shorter ones run faster in AVX2's
+    //!        (ten AVX-512 cores: 16 and 64 points 0.06 → 0.08 µs in AVX-512's, from 256 points AVX-512's faster), the
+    //!        same bits either way.
+    inline constexpr std::size_t fft_avx512_shortest {256};
+
+#endif
     /*!
      * \brief The forward transform of the \p plan's length, in place in \p data, \p work its \ref fft_plan::work, its
      *        Stockham passes, or Bluestein's convolution, the products fused where \p fused (\ref fft_fuses).
@@ -1577,6 +1584,10 @@ namespace numerical {
         return;
       }
 #ifdef NUMERICAL_X86_COMPILED
+      if (gemm_path_current() == gemm_path::avx512 && plan.length >= fft_avx512_shortest) {
+        stockham_passes(plan, data, work, avx512_radix_four_pass<R>, avx512_radix_sixteen_pass<R>, any_radix_pass_x86<R>);
+        return;
+      }
       stockham_passes(plan, data, work, avx2_radix_four_pass<R>, avx2_radix_sixteen_pass<R>, any_radix_pass_x86<R>);
 #else
       stockham_passes(plan, data, work, radix_four_pass<true, R>, radix_sixteen_pass<true, R>, any_radix_pass<true, R>);

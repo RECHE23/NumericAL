@@ -2254,111 +2254,6 @@ namespace numerical::detail {
     return {std::fma(w.real(), v.real(), -ii), std::fma(w.real(), v.imag(), ir)};
   }
 
-  /*!
-   * \brief One Stockham pass of radix 4 of `fft.hpp`'s (`radix_four_pass`), its factors' products fused as
-   *        `fused_product`'s: butterflies `(p, q)` a register of complex numbers along `q` at a time where the stride
-   *        holds one, else one at a time. \p twiddles holds the pass' `w^p`, then `w^{2p}`, then `w^{3p}`, from `p` = 1.
-   */
-  template <typename R>
-  NUMERICAL_TARGET("avx2,fma") inline void avx2_radix_four_pass(std::size_t            current,
-                                                                std::size_t            stride,
-                                                                const std::complex<R>* in,
-                                                                std::complex<R>*       out,
-                                                                const std::complex<R>* twiddles) noexcept
-  {
-    using C   = std::complex<R>;
-    using vec = decltype(avx2_load(static_cast<const R*>(nullptr)));         // __m256d or __m256
-    constexpr std::size_t width            {32 / sizeof(C)};                 // complex numbers in a register
-    const std::size_t     quarter          {current / 4};
-    const std::size_t     run              {quarter - 1};
-    const std::size_t     apart            {2 * stride * quarter};           // parts between a butterfly's inputs
-    const R* const        from             {reinterpret_cast<const R*>(in)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
-    R* const              into             {reinterpret_cast<R*>(out)};      // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    std::size_t           vector_begin     {quarter};                        // the butterflies the first pass takes by registers: [vector_begin, vector_end)
-    std::size_t           vector_end       {quarter};
-    if (stride == 1 && quarter >= 2 * width) {                       // the first pass: a register of butterflies along p, past the first
-      const R* const factors {reinterpret_cast<const R*>(twiddles)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
-      vector_begin = width;                                          // its first register's butterflies one at a time: p = 0 multiplies by nothing
-      vector_end   = quarter - (quarter % width);                    // whole registers only
-      for (std::size_t p {vector_begin}; p < vector_end; p += width) {
-        const R* const at        {from + (2 * p)};
-        const vec      a         {avx2_load(at)};
-        const vec      b         {avx2_load(at + apart)};
-        const vec      c         {avx2_load(at + (2 * apart))};
-        const vec      d         {avx2_load(at + (3 * apart))};
-        const vec      a_plus_c  {avx2_add(a, c)};
-        const vec      a_minus_c {avx2_sub(a, c)};
-        const vec      b_plus_d  {avx2_add(b, d)};
-        const vec      i_b_d     {avx2_times_i(avx2_sub(b, d))};
-        const vec      w1        {avx2_load(factors + (2 * (p - 1)))};
-        const vec      w2        {avx2_load(factors + (2 * (run + p - 1)))};
-        const vec      w3        {avx2_load(factors + (2 * ((2 * run) + p - 1)))};
-        avx2_store_butterflies(into + (8 * p), avx2_add(a_plus_c, b_plus_d),
-                               avx2_twiddled(avx2_real_parts(w1), avx2_imaginary_parts(w1), avx2_sub(a_minus_c, i_b_d)),
-                               avx2_twiddled(avx2_real_parts(w2), avx2_imaginary_parts(w2), avx2_sub(a_plus_c, b_plus_d)),
-                               avx2_twiddled(avx2_real_parts(w3), avx2_imaginary_parts(w3), avx2_add(a_minus_c, i_b_d)));
-      }
-    }
-    for (std::size_t p {0}; p < quarter; p = (p + 1 == vector_begin) ? vector_end : p + 1) { // those the registers did not take
-      const bool     twiddle {p != 0};
-      const C        w1      {twiddle ? twiddles[p - 1] : C {1}};
-      const C        w2      {twiddle ? twiddles[run + p - 1] : C {1}};
-      const C        w3      {twiddle ? twiddles[(2 * run) + p - 1] : C {1}};
-      const R* const in_p    {from + (2 * stride * p)};
-      R* const       to      {into + (2 * stride * 4 * p)};
-      std::size_t    q       {0};
-      if (stride >= width) {
-        const vec w1_re {avx2_pairs(w1.real(), w1.real())};
-        const vec w1_im {avx2_pairs(w1.imag(), w1.imag())};
-        const vec w2_re {avx2_pairs(w2.real(), w2.real())};
-        const vec w2_im {avx2_pairs(w2.imag(), w2.imag())};
-        const vec w3_re {avx2_pairs(w3.real(), w3.real())};
-        const vec w3_im {avx2_pairs(w3.imag(), w3.imag())};
-        for (; q + width <= stride; q += width) {
-          const R* const at        {in_p + (2 * q)};
-          const vec      a         {avx2_load(at)};
-          const vec      b         {avx2_load(at + apart)};
-          const vec      c         {avx2_load(at + (2 * apart))};
-          const vec      d         {avx2_load(at + (3 * apart))};
-          const vec      a_plus_c  {avx2_add(a, c)};
-          const vec      a_minus_c {avx2_sub(a, c)};
-          const vec      b_plus_d  {avx2_add(b, d)};
-          const vec      i_b_d     {avx2_times_i(avx2_sub(b, d))};
-          vec            first     {avx2_sub(a_minus_c, i_b_d)};
-          vec            second    {avx2_sub(a_plus_c, b_plus_d)};
-          vec            third     {avx2_add(a_minus_c, i_b_d)};
-          if (twiddle) {
-            first  = avx2_twiddled(w1_re, w1_im, first);
-            second = avx2_twiddled(w2_re, w2_im, second);
-            third  = avx2_twiddled(w3_re, w3_im, third);
-          }
-          R* const place {to + (2 * q)};
-          avx2_store(place, avx2_add(a_plus_c, b_plus_d));
-          avx2_store(place + (2 * stride), first);
-          avx2_store(place + (4 * stride), second);
-          avx2_store(place + (6 * stride), third);
-        }
-      }
-      for (; q < stride; ++q) { // a stride narrower than a register: one butterfly at a time, the same arithmetic
-        const C  a         {in[(stride * p) + q]};
-        const C  b         {in[(stride * (p + quarter)) + q]};
-        const C  c         {in[(stride * (p + (2 * quarter))) + q]};
-        const C  d         {in[(stride * (p + (3 * quarter))) + q]};
-        const C  a_plus_c  {a + c};
-        const C  a_minus_c {a - c};
-        const C  b_plus_d  {b + d};
-        const C  b_minus_d {b - d};
-        const C  i_b_d     {-b_minus_d.imag(), b_minus_d.real()};
-        C* const place     {out + (stride * 4 * p) + q};
-        place[0]          = a_plus_c + b_plus_d;
-        place[stride]     = twiddle ? avx2_fused_product(w1, a_minus_c - i_b_d) : a_minus_c - i_b_d;
-        place[2 * stride] = twiddle ? avx2_fused_product(w2, a_plus_c - b_plus_d) : a_plus_c - b_plus_d;
-        place[3 * stride] = twiddle ? avx2_fused_product(w3, a_minus_c + i_b_d) : a_minus_c + i_b_d;
-      }
-    }
-    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
-  }
-
   //! \brief The complex numbers of \p v times −i: each `(im, −re)`, exact.
   NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_times_minus_i(__m256d v) noexcept
   {
@@ -2390,69 +2285,6 @@ namespace numerical::detail {
     y1 = avx2_sub(a_minus_c, i_b_d);
     y2 = avx2_sub(a_plus_c, b_plus_d);
     y3 = avx2_add(a_minus_c, i_b_d);
-  }
-
-  /*!
-   * \brief One Stockham pass of radix 16 of `fft.hpp`'s (`radix_sixteen_pass`), a register of complex numbers along the
-   *        stride at a time, which holds whole registers (the first pass is of radix 4, so the stride is at least 4): the
-   *        same sums in the same order, its factors' products as `fused_product`.
-   */
-  template <typename R>
-  NUMERICAL_TARGET("avx2,fma") inline void avx2_radix_sixteen_pass(std::size_t                            current,
-                                                                   std::size_t                            stride,
-                                                                   const std::complex<R>*                 in,
-                                                                   std::complex<R>*                       out,
-                                                                   const std::complex<R>*                 twiddles,
-                                                                   const std::array<std::complex<R>, 16>& sixteenths) noexcept
-  {
-    using vec  = decltype(avx2_load(static_cast<const R*>(nullptr)));                           // __m256d or __m256
-    using held = std::conditional_t<std::is_same_v<R, double>, ymm_register, ymm_register_f32>; // a register in an array
-    constexpr std::size_t width {32 / sizeof(std::complex<R>)};                                 // complex numbers in a register
-    const std::size_t     part  {current / 16};
-    const std::size_t     run   {part - 1};
-    const std::size_t     apart {2 * stride * part};                                            // parts between a butterfly's inputs
-    const R* const        from  {reinterpret_cast<const R*>(in)};                               // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
-    R* const              into  {reinterpret_cast<R*>(out)};                                    // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    for (std::size_t p {0}; p < part; ++p) {
-      const R* const in_p {from + (2 * stride * p)};
-      R* const       to   {into + (2 * stride * 16 * p)};
-      for (std::size_t q {0}; q < stride; q += width) {
-        const R* const       at    {in_p + (2 * q)};
-        std::array<held, 16> inner {};
-        NUMERICAL_UNROLL_TILE
-        for (std::size_t j1 {0}; j1 < 4; ++j1) {
-          avx2_four_point(avx2_load(at + (j1 * apart)), avx2_load(at + ((j1 + 4) * apart)), avx2_load(at + ((j1 + 8) * apart)),
-                          avx2_load(at + ((j1 + 12) * apart)), inner[4 * j1].v, inner[(4 * j1) + 1].v, inner[(4 * j1) + 2].v,
-                          inner[(4 * j1) + 3].v);
-        }
-        NUMERICAL_UNROLL_TILE
-        for (std::size_t j1 {1}; j1 < 4; ++j1) {
-          NUMERICAL_UNROLL_TILE
-          for (std::size_t k2 {1}; k2 < 4; ++k2) {
-            vec&                   value {inner[(4 * j1) + k2].v};
-            const std::complex<R>& w     {sixteenths[j1 * k2]};
-            value = (j1 * k2) == 4 ? avx2_times_minus_i(value) : avx2_twiddled(avx2_pairs(w.real(), w.real()), avx2_pairs(w.imag(), w.imag()), value);
-          }
-        }
-        NUMERICAL_UNROLL_TILE
-        for (std::size_t k2 {0}; k2 < 4; ++k2) {
-          std::array<held, 4> outputs {};
-          avx2_four_point(inner[k2].v, inner[4 + k2].v, inner[8 + k2].v, inner[12 + k2].v, outputs[0].v, outputs[1].v, outputs[2].v,
-                          outputs[3].v);
-          NUMERICAL_UNROLL_TILE
-          for (std::size_t k1 {0}; k1 < 4; ++k1) {
-            const std::size_t k {(4 * k1) + k2};
-            vec               y {outputs[k1].v};
-            if (p != 0 && k != 0) {
-              const std::complex<R>& w {twiddles[((k - 1) * run) + p - 1]};
-              y = avx2_twiddled(avx2_pairs(w.real(), w.real()), avx2_pairs(w.imag(), w.imag()), y);
-            }
-            avx2_store(to + (2 * q) + (2 * stride * k), y);
-          }
-        }
-      }
-    }
-    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
   //! \brief A register of \p c in every lane.
@@ -2862,6 +2694,640 @@ namespace numerical::detail {
     }
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
     return k;
+  }
+
+  // The transform's kernels, written once for AVX2 (__m256d, __m256) and AVX-512 (__m512d, __m512): each operation below
+  // is overloaded on the register and built for its unit; the kernels' bodies, built for none, are inlined into the
+  // functions built for each (fft_avx2_pass, fft_avx512_pass), where the operations then inline. The same operations
+  // lane by lane, whatever the width: the same bits.
+
+  //! \brief AVX2's registers of the transform's kernels.
+  struct fft_avx2
+  {};
+
+  //! \brief AVX-512's registers of the transform's kernels.
+  struct fft_avx512
+  {};
+
+  /*!
+   * \brief A register of complex numbers of \p R that \p Isa holds, as the kernels pass it: in a structure, so that no
+   *        function built for no unit (the kernels' bodies) passes a register of a unit by value, and no register's type
+   *        is a template's argument (GCC drops its alignment there).
+   */
+  template <typename Isa,
+            typename R>
+  struct fft_reg;
+
+  //! \brief Two complex `double` (AVX2).
+  template <>
+  struct fft_reg<fft_avx2, double>
+  {
+    __m256d v; //!< The register.
+  };
+
+  //! \brief Four complex `float` (AVX2).
+  template <>
+  struct fft_reg<fft_avx2, float>
+  {
+    __m256 v; //!< The register.
+  };
+
+  //! \brief Four complex `double` (AVX-512).
+  template <>
+  struct fft_reg<fft_avx512, double>
+  {
+    __m512d v; //!< The register.
+  };
+
+  //! \brief Eight complex `float` (AVX-512).
+  template <>
+  struct fft_reg<fft_avx512, float>
+  {
+    __m512 v; //!< The register.
+  };
+
+  //! \brief The register at \p p.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_load(fft_avx2 /*isa*/,
+                                                                         const double* p) noexcept
+  {
+    return {_mm256_loadu_pd(p)};
+  }
+
+  //! \brief \p c in every lane.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_splat(fft_avx2 /*isa*/,
+                                                                          double c) noexcept
+  {
+    return {_mm256_set1_pd(c)};
+  }
+
+  //! \brief \p v stored at \p p.
+  NUMERICAL_TARGET("avx2,fma") inline void fft_store(double                  * p,
+                                                     fft_reg<fft_avx2, double> v) noexcept
+  {
+    _mm256_storeu_pd(p, v.v);
+  }
+
+  //! \brief `a + b`, lane by lane.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_add(fft_reg<fft_avx2, double> a,
+                                                                        fft_reg<fft_avx2, double> b) noexcept
+  {
+    return {_mm256_add_pd(a.v, b.v)};
+  }
+
+  //! \brief `a − b`, lane by lane.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_sub(fft_reg<fft_avx2, double> a,
+                                                                        fft_reg<fft_avx2, double> b) noexcept
+  {
+    return {_mm256_sub_pd(a.v, b.v)};
+  }
+
+  //! \brief The complex numbers of \p v times i: each `(−im, re)`, exact.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_times_i(fft_reg<fft_avx2, double> v) noexcept
+  {
+    return {avx2_times_i(v.v)};
+  }
+
+  //! \brief The complex numbers of \p v times −i: each `(im, −re)`, exact.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_times_minus_i(fft_reg<fft_avx2, double> v) noexcept
+  {
+    return {avx2_times_minus_i(v.v)};
+  }
+
+  //! \brief `w · v` of each complex number of \p v, \p re and \p im `w`'s parts in every lane, as `fused_product`.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_twiddled(fft_reg<fft_avx2, double> re,
+                                                                             fft_reg<fft_avx2, double> im,
+                                                                             fft_reg<fft_avx2, double> v) noexcept
+  {
+    return {avx2_twiddled(re.v, im.v, v.v)};
+  }
+
+  //! \brief The real parts of the complex numbers of \p v, each in both of its lanes.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_real_parts(fft_reg<fft_avx2, double> v) noexcept
+  {
+    return {_mm256_movedup_pd(v.v)};
+  }
+
+  //! \brief The imaginary parts of the complex numbers of \p v, each in both of its lanes.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_imaginary_parts(fft_reg<fft_avx2, double> v) noexcept
+  {
+    return {_mm256_permute_pd(v.v, 0b1111)};
+  }
+
+  //! \brief The outputs of a register of radix-4 butterflies, \p y0 to \p y3 their `j`-th outputs, stored butterfly by butterfly at \p to: a transpose.
+  NUMERICAL_TARGET("avx2,fma") inline void fft_store_butterflies(double                  * to,
+                                                                 fft_reg<fft_avx2, double> y0,
+                                                                 fft_reg<fft_avx2, double> y1,
+                                                                 fft_reg<fft_avx2, double> y2,
+                                                                 fft_reg<fft_avx2, double> y3) noexcept
+  {
+    avx2_store_butterflies(to, y0.v, y1.v, y2.v, y3.v);
+  }
+
+  //! \brief The register at \p p.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_load(fft_avx2 /*isa*/,
+                                                                        const float* p) noexcept
+  {
+    return {_mm256_loadu_ps(p)};
+  }
+
+  //! \brief \p c in every lane.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_splat(fft_avx2 /*isa*/,
+                                                                         float c) noexcept
+  {
+    return {_mm256_set1_ps(c)};
+  }
+
+  //! \brief \p v stored at \p p.
+  NUMERICAL_TARGET("avx2,fma") inline void fft_store(float                  * p,
+                                                     fft_reg<fft_avx2, float> v) noexcept
+  {
+    _mm256_storeu_ps(p, v.v);
+  }
+
+  //! \brief `a + b`, lane by lane.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_add(fft_reg<fft_avx2, float> a,
+                                                                       fft_reg<fft_avx2, float> b) noexcept
+  {
+    return {_mm256_add_ps(a.v, b.v)};
+  }
+
+  //! \brief `a − b`, lane by lane.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_sub(fft_reg<fft_avx2, float> a,
+                                                                       fft_reg<fft_avx2, float> b) noexcept
+  {
+    return {_mm256_sub_ps(a.v, b.v)};
+  }
+
+  //! \brief The complex numbers of \p v times i: each `(−im, re)`, exact.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_times_i(fft_reg<fft_avx2, float> v) noexcept
+  {
+    return {avx2_times_i(v.v)};
+  }
+
+  //! \brief The complex numbers of \p v times −i: each `(im, −re)`, exact.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_times_minus_i(fft_reg<fft_avx2, float> v) noexcept
+  {
+    return {avx2_times_minus_i(v.v)};
+  }
+
+  //! \brief `w · v` of each complex number of \p v, \p re and \p im `w`'s parts in every lane, as `fused_product`.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_twiddled(fft_reg<fft_avx2, float> re,
+                                                                            fft_reg<fft_avx2, float> im,
+                                                                            fft_reg<fft_avx2, float> v) noexcept
+  {
+    return {avx2_twiddled(re.v, im.v, v.v)};
+  }
+
+  //! \brief The real parts of the complex numbers of \p v, each in both of its lanes.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_real_parts(fft_reg<fft_avx2, float> v) noexcept
+  {
+    return {_mm256_moveldup_ps(v.v)};
+  }
+
+  //! \brief The imaginary parts of the complex numbers of \p v, each in both of its lanes.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_imaginary_parts(fft_reg<fft_avx2, float> v) noexcept
+  {
+    return {_mm256_movehdup_ps(v.v)};
+  }
+
+  //! \brief The outputs of a register of radix-4 butterflies, \p y0 to \p y3 their `j`-th outputs, stored butterfly by butterfly at \p to: a transpose.
+  NUMERICAL_TARGET("avx2,fma") inline void fft_store_butterflies(float                  * to,
+                                                                 fft_reg<fft_avx2, float> y0,
+                                                                 fft_reg<fft_avx2, float> y1,
+                                                                 fft_reg<fft_avx2, float> y2,
+                                                                 fft_reg<fft_avx2, float> y3) noexcept
+  {
+    avx2_store_butterflies(to, y0.v, y1.v, y2.v, y3.v);
+  }
+
+  //! \brief The register at \p p.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_load(fft_avx512 /*isa*/,
+                                                                          const double* p) noexcept
+  {
+    return {_mm512_loadu_pd(p)};
+  }
+
+  //! \brief \p c in every lane.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_splat(fft_avx512 /*isa*/,
+                                                                           double c) noexcept
+  {
+    return {_mm512_set1_pd(c)};
+  }
+
+  //! \brief \p v stored at \p p.
+  NUMERICAL_TARGET("avx512f") inline void fft_store(double                    * p,
+                                                    fft_reg<fft_avx512, double> v) noexcept
+  {
+    _mm512_storeu_pd(p, v.v);
+  }
+
+  //! \brief `a + b`, lane by lane.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_add(fft_reg<fft_avx512, double> a,
+                                                                         fft_reg<fft_avx512, double> b) noexcept
+  {
+    return {_mm512_add_pd(a.v, b.v)};
+  }
+
+  //! \brief `a − b`, lane by lane.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_sub(fft_reg<fft_avx512, double> a,
+                                                                         fft_reg<fft_avx512, double> b) noexcept
+  {
+    return {_mm512_sub_pd(a.v, b.v)};
+  }
+
+  //! \brief The complex numbers of \p v times i: each `(−im, re)`, exact.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_times_i(fft_reg<fft_avx512, double> v) noexcept
+  {
+    return {_mm512_castsi512_pd(_mm512_xor_si512(_mm512_castpd_si512(_mm512_permute_pd(v.v, 0x55)), _mm512_set_epi64(0, INT64_MIN, 0, INT64_MIN, 0, INT64_MIN, 0, INT64_MIN)))};
+  }
+
+  //! \brief The complex numbers of \p v times −i: each `(im, −re)`, exact.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_times_minus_i(fft_reg<fft_avx512, double> v) noexcept
+  {
+    return {_mm512_castsi512_pd(_mm512_xor_si512(_mm512_castpd_si512(_mm512_permute_pd(v.v, 0x55)), _mm512_set_epi64(INT64_MIN, 0, INT64_MIN, 0, INT64_MIN, 0, INT64_MIN, 0)))};
+  }
+
+  //! \brief `w · v` of each complex number of \p v, \p re and \p im `w`'s parts in every lane, as `fused_product`.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_twiddled(fft_reg<fft_avx512, double> re,
+                                                                              fft_reg<fft_avx512, double> im,
+                                                                              fft_reg<fft_avx512, double> v) noexcept
+  {
+    return {_mm512_fmaddsub_pd(re.v, v.v, _mm512_mul_pd(im.v, _mm512_permute_pd(v.v, 0x55)))};
+  }
+
+  //! \brief The real parts of the complex numbers of \p v, each in both of its lanes.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_real_parts(fft_reg<fft_avx512, double> v) noexcept
+  {
+    return {_mm512_movedup_pd(v.v)};
+  }
+
+  //! \brief The imaginary parts of the complex numbers of \p v, each in both of its lanes.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, double> fft_imaginary_parts(fft_reg<fft_avx512, double> v) noexcept
+  {
+    return {_mm512_permute_pd(v.v, 0xFF)};
+  }
+
+  //! \brief The outputs of a register of radix-4 butterflies, \p y0 to \p y3 their `j`-th outputs, stored butterfly by butterfly at \p to: a transpose.
+  NUMERICAL_TARGET("avx512f") inline void fft_store_butterflies(double                    * to,
+                                                                fft_reg<fft_avx512, double> y0,
+                                                                fft_reg<fft_avx512, double> y1,
+                                                                fft_reg<fft_avx512, double> y2,
+                                                                fft_reg<fft_avx512, double> y3) noexcept
+  {
+    const __m512d low01  {_mm512_shuffle_f64x2(y0.v, y1.v, 0x44)};         // y0's butterflies 0 1, y1's 0 1
+    const __m512d high01 {_mm512_shuffle_f64x2(y0.v, y1.v, 0xEE)};         // y0's 2 3, y1's 2 3
+    const __m512d low23  {_mm512_shuffle_f64x2(y2.v, y3.v, 0x44)};
+    const __m512d high23 {_mm512_shuffle_f64x2(y2.v, y3.v, 0xEE)};
+    _mm512_storeu_pd(to, _mm512_shuffle_f64x2(low01, low23, 0x88));        // butterfly 0: y0 y1 y2 y3
+    _mm512_storeu_pd(to + 8, _mm512_shuffle_f64x2(low01, low23, 0xDD));    // butterfly 1
+    _mm512_storeu_pd(to + 16, _mm512_shuffle_f64x2(high01, high23, 0x88)); // butterfly 2
+    _mm512_storeu_pd(to + 24, _mm512_shuffle_f64x2(high01, high23, 0xDD)); // butterfly 3
+  }
+
+  //! \brief The register at \p p.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_load(fft_avx512 /*isa*/,
+                                                                         const float* p) noexcept
+  {
+    return {_mm512_loadu_ps(p)};
+  }
+
+  //! \brief \p c in every lane.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_splat(fft_avx512 /*isa*/,
+                                                                          float c) noexcept
+  {
+    return {_mm512_set1_ps(c)};
+  }
+
+  //! \brief \p v stored at \p p.
+  NUMERICAL_TARGET("avx512f") inline void fft_store(float                    * p,
+                                                    fft_reg<fft_avx512, float> v) noexcept
+  {
+    _mm512_storeu_ps(p, v.v);
+  }
+
+  //! \brief `a + b`, lane by lane.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_add(fft_reg<fft_avx512, float> a,
+                                                                        fft_reg<fft_avx512, float> b) noexcept
+  {
+    return {_mm512_add_ps(a.v, b.v)};
+  }
+
+  //! \brief `a − b`, lane by lane.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_sub(fft_reg<fft_avx512, float> a,
+                                                                        fft_reg<fft_avx512, float> b) noexcept
+  {
+    return {_mm512_sub_ps(a.v, b.v)};
+  }
+
+  //! \brief The complex numbers of \p v times i: each `(−im, re)`, exact.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_times_i(fft_reg<fft_avx512, float> v) noexcept
+  {
+    return {_mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(_mm512_permute_ps(v.v, 0xB1)), _mm512_set1_epi64(static_cast<std::int64_t>(0x0000000080000000))))};
+  }
+
+  //! \brief The complex numbers of \p v times −i: each `(im, −re)`, exact.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_times_minus_i(fft_reg<fft_avx512, float> v) noexcept
+  {
+    return {_mm512_castsi512_ps(_mm512_xor_si512(_mm512_castps_si512(_mm512_permute_ps(v.v, 0xB1)), _mm512_set1_epi64(INT64_MIN)))};
+  }
+
+  //! \brief `w · v` of each complex number of \p v, \p re and \p im `w`'s parts in every lane, as `fused_product`.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_twiddled(fft_reg<fft_avx512, float> re,
+                                                                             fft_reg<fft_avx512, float> im,
+                                                                             fft_reg<fft_avx512, float> v) noexcept
+  {
+    return {_mm512_fmaddsub_ps(re.v, v.v, _mm512_mul_ps(im.v, _mm512_permute_ps(v.v, 0xB1)))};
+  }
+
+  //! \brief The real parts of the complex numbers of \p v, each in both of its lanes.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_real_parts(fft_reg<fft_avx512, float> v) noexcept
+  {
+    return {_mm512_moveldup_ps(v.v)};
+  }
+
+  //! \brief The imaginary parts of the complex numbers of \p v, each in both of its lanes.
+  NUMERICAL_TARGET("avx512f") inline fft_reg<fft_avx512, float> fft_imaginary_parts(fft_reg<fft_avx512, float> v) noexcept
+  {
+    return {_mm512_movehdup_ps(v.v)};
+  }
+
+  //! \brief The outputs of a register of radix-4 butterflies, \p y0 to \p y3 their `j`-th outputs, stored butterfly by butterfly at \p to: a transpose.
+  NUMERICAL_TARGET("avx512f") inline void fft_store_butterflies(float                    * to,
+                                                                fft_reg<fft_avx512, float> y0,
+                                                                fft_reg<fft_avx512, float> y1,
+                                                                fft_reg<fft_avx512, float> y2,
+                                                                fft_reg<fft_avx512, float> y3) noexcept
+  {
+    const __m512d even01    {_mm512_unpacklo_pd(_mm512_castps_pd(y0.v), _mm512_castps_pd(y1.v))}; // butterflies 0 2 4 6: y0 y1
+    const __m512d odd01     {_mm512_unpackhi_pd(_mm512_castps_pd(y0.v), _mm512_castps_pd(y1.v))}; // 1 3 5 7
+    const __m512d even23    {_mm512_unpacklo_pd(_mm512_castps_pd(y2.v), _mm512_castps_pd(y3.v))};
+    const __m512d odd23     {_mm512_unpackhi_pd(_mm512_castps_pd(y2.v), _mm512_castps_pd(y3.v))};
+    const __m512d even_low  {_mm512_shuffle_f64x2(even01, even23, 0x44)};                         // 0 2, each y0 y1 then y2 y3
+    const __m512d odd_low   {_mm512_shuffle_f64x2(odd01, odd23, 0x44)};                           // 1 3
+    const __m512d even_high {_mm512_shuffle_f64x2(even01, even23, 0xEE)};                         // 4 6
+    const __m512d odd_high  {_mm512_shuffle_f64x2(odd01, odd23, 0xEE)};                           // 5 7
+    double* const into      {reinterpret_cast<double*>(to)};                                      // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex float is eight bytes, stored whole
+    _mm512_storeu_pd(into, _mm512_shuffle_f64x2(even_low, odd_low, 0x88));                        // butterflies 0 1
+    _mm512_storeu_pd(into + 8, _mm512_shuffle_f64x2(even_low, odd_low, 0xDD));                    // 2 3
+    _mm512_storeu_pd(into + 16, _mm512_shuffle_f64x2(even_high, odd_high, 0x88));                 // 4 5
+    _mm512_storeu_pd(into + 24, _mm512_shuffle_f64x2(even_high, odd_high, 0xDD));                 // 6 7
+  }
+
+  //! \brief `w · v` of complex numbers, one at a time, as \ref fft_twiddled computes each lane.
+  template <typename R>
+  NUMERICAL_ALWAYS_INLINE std::complex<R> fft_fused_product(const std::complex<R>& w,
+                                                            const std::complex<R>& v) noexcept
+  {
+    const R ii {w.imag() * v.imag()};
+    const R ir {w.imag() * v.real()};
+    return {std::fma(w.real(), v.real(), -ii), std::fma(w.real(), v.imag(), ir)};
+  }
+
+  //! \brief `fft.hpp`'s `four_point` over registers of complex numbers: \p v0 to \p v3 into \p y0 to \p y3.
+  template <typename V>
+  NUMERICAL_ALWAYS_INLINE void fft_four_point(const V& v0,
+                                              const V& v1,
+                                              const V& v2,
+                                              const V& v3,
+                                              V&       y0,
+                                              V&       y1,
+                                              V&       y2,
+                                              V&       y3) noexcept
+  {
+    const V a_plus_c  {fft_add(v0, v2)};
+    const V a_minus_c {fft_sub(v0, v2)};
+    const V b_plus_d  {fft_add(v1, v3)};
+    const V i_b_d     {fft_times_i(fft_sub(v1, v3))};
+    y0 = fft_add(a_plus_c, b_plus_d);
+    y1 = fft_sub(a_minus_c, i_b_d);
+    y2 = fft_sub(a_plus_c, b_plus_d);
+    y3 = fft_add(a_minus_c, i_b_d);
+  }
+
+  /*!
+   * \brief One Stockham pass of radix 4 of `fft.hpp`'s (`radix_four_pass`), its factors' products fused as
+   *        `fused_product`'s: butterflies `(p, q)` a register of complex numbers of \p Isa along `q` at a time where the
+   *        stride holds one, the first pass's a register along `p`, else one at a time. \p twiddles holds the pass'
+   *        `w^p`, then `w^{2p}`, then `w^{3p}`, from `p` = 1. Inlined into the functions built for \p Isa.
+   */
+  template <typename Isa,
+            typename R>
+  NUMERICAL_ALWAYS_INLINE void fft_radix_four_pass(std::size_t            current,
+                                                   std::size_t            stride,
+                                                   const std::complex<R>* in,
+                                                   std::complex<R>*       out,
+                                                   const std::complex<R>* twiddles) noexcept
+  {
+    using C   = std::complex<R>;
+    using vec = fft_reg<Isa, R>;
+    constexpr Isa         isa          {};
+    constexpr std::size_t width        {sizeof(vec) / sizeof(C)};        // complex numbers in a register
+    const std::size_t     quarter      {current / 4};
+    const std::size_t     run          {quarter - 1};
+    const std::size_t     apart        {2 * stride * quarter};           // parts between a butterfly's inputs
+    const R* const        from         {reinterpret_cast<const R*>(in)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+    R* const              into         {reinterpret_cast<R*>(out)};      // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    std::size_t           vector_begin {quarter};                        // the butterflies the first pass takes by registers: [vector_begin, vector_end)
+    std::size_t           vector_end   {quarter};
+    if (stride == 1 && quarter >= 2 * width) {                       // the first pass: a register of butterflies along p, past the first
+      const R* const factors {reinterpret_cast<const R*>(twiddles)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+      vector_begin = width;                                          // its first register's butterflies one at a time: p = 0 multiplies by nothing
+      vector_end   = quarter - (quarter % width);                    // whole registers only
+      for (std::size_t p {vector_begin}; p < vector_end; p += width) {
+        const R* const at        {from + (2 * p)};
+        const vec      a         {fft_load(isa, at)};
+        const vec      b         {fft_load(isa, at + apart)};
+        const vec      c         {fft_load(isa, at + (2 * apart))};
+        const vec      d         {fft_load(isa, at + (3 * apart))};
+        const vec      a_plus_c  {fft_add(a, c)};
+        const vec      a_minus_c {fft_sub(a, c)};
+        const vec      b_plus_d  {fft_add(b, d)};
+        const vec      i_b_d     {fft_times_i(fft_sub(b, d))};
+        const vec      w1        {fft_load(isa, factors + (2 * (p - 1)))};
+        const vec      w2        {fft_load(isa, factors + (2 * (run + p - 1)))};
+        const vec      w3        {fft_load(isa, factors + (2 * ((2 * run) + p - 1)))};
+        fft_store_butterflies(into + (8 * p), fft_add(a_plus_c, b_plus_d),
+                              fft_twiddled(fft_real_parts(w1), fft_imaginary_parts(w1), fft_sub(a_minus_c, i_b_d)),
+                              fft_twiddled(fft_real_parts(w2), fft_imaginary_parts(w2), fft_sub(a_plus_c, b_plus_d)),
+                              fft_twiddled(fft_real_parts(w3), fft_imaginary_parts(w3), fft_add(a_minus_c, i_b_d)));
+      }
+    }
+    for (std::size_t p {0}; p < quarter; p = (p + 1 == vector_begin) ? vector_end : p + 1) { // those the registers did not take
+      const bool     twiddle {p != 0};
+      const C        w1      {twiddle ? twiddles[p - 1] : C {1}};
+      const C        w2      {twiddle ? twiddles[run + p - 1] : C {1}};
+      const C        w3      {twiddle ? twiddles[(2 * run) + p - 1] : C {1}};
+      const R* const in_p    {from + (2 * stride * p)};
+      R* const       to      {into + (2 * stride * 4 * p)};
+      std::size_t    q       {0};
+      if (stride >= width) {
+        const vec w1_re {fft_splat(isa, w1.real())};
+        const vec w1_im {fft_splat(isa, w1.imag())};
+        const vec w2_re {fft_splat(isa, w2.real())};
+        const vec w2_im {fft_splat(isa, w2.imag())};
+        const vec w3_re {fft_splat(isa, w3.real())};
+        const vec w3_im {fft_splat(isa, w3.imag())};
+        for (; q + width <= stride; q += width) {
+          const R* const at        {in_p + (2 * q)};
+          const vec      a         {fft_load(isa, at)};
+          const vec      b         {fft_load(isa, at + apart)};
+          const vec      c         {fft_load(isa, at + (2 * apart))};
+          const vec      d         {fft_load(isa, at + (3 * apart))};
+          const vec      a_plus_c  {fft_add(a, c)};
+          const vec      a_minus_c {fft_sub(a, c)};
+          const vec      b_plus_d  {fft_add(b, d)};
+          const vec      i_b_d     {fft_times_i(fft_sub(b, d))};
+          vec            first     {fft_sub(a_minus_c, i_b_d)};
+          vec            second    {fft_sub(a_plus_c, b_plus_d)};
+          vec            third     {fft_add(a_minus_c, i_b_d)};
+          if (twiddle) {
+            first  = fft_twiddled(w1_re, w1_im, first);
+            second = fft_twiddled(w2_re, w2_im, second);
+            third  = fft_twiddled(w3_re, w3_im, third);
+          }
+          R* const place {to + (2 * q)};
+          fft_store(place, fft_add(a_plus_c, b_plus_d));
+          fft_store(place + (2 * stride), first);
+          fft_store(place + (4 * stride), second);
+          fft_store(place + (6 * stride), third);
+        }
+      }
+      for (; q < stride; ++q) { // a stride narrower than a register: one butterfly at a time, the same arithmetic
+        const C  a         {in[(stride * p) + q]};
+        const C  b         {in[(stride * (p + quarter)) + q]};
+        const C  c         {in[(stride * (p + (2 * quarter))) + q]};
+        const C  d         {in[(stride * (p + (3 * quarter))) + q]};
+        const C  a_plus_c  {a + c};
+        const C  a_minus_c {a - c};
+        const C  b_plus_d  {b + d};
+        const C  b_minus_d {b - d};
+        const C  i_b_d     {-b_minus_d.imag(), b_minus_d.real()};
+        C* const place     {out + (stride * 4 * p) + q};
+        place[0]          = a_plus_c + b_plus_d;
+        place[stride]     = twiddle ? fft_fused_product(w1, a_minus_c - i_b_d) : a_minus_c - i_b_d;
+        place[2 * stride] = twiddle ? fft_fused_product(w2, a_plus_c - b_plus_d) : a_plus_c - b_plus_d;
+        place[3 * stride] = twiddle ? fft_fused_product(w3, a_minus_c + i_b_d) : a_minus_c + i_b_d;
+      }
+    }
+  }
+
+  /*!
+   * \brief One Stockham pass of radix 16 of `fft.hpp`'s (`radix_sixteen_pass`), a register of complex numbers of \p Isa
+   *        along the stride at a time, which holds whole registers of \p Isa (the first pass is of radix 4, so the stride
+   *        is a multiple of 4: AVX2's registers always, AVX-512's of `float` from the second pass of 16): the same sums
+   *        in the same order, its factors' products as `fused_product`.
+   */
+  template <typename Isa,
+            typename R>
+  NUMERICAL_ALWAYS_INLINE void fft_radix_sixteen_pass(std::size_t                            current,
+                                                      std::size_t                            stride,
+                                                      const std::complex<R>*                 in,
+                                                      std::complex<R>*                       out,
+                                                      const std::complex<R>*                 twiddles,
+                                                      const std::array<std::complex<R>, 16>& sixteenths) noexcept
+  {
+    using vec = fft_reg<Isa, R>;
+    constexpr Isa         isa   {};
+    constexpr std::size_t width {sizeof(vec) / sizeof(std::complex<R>)}; // complex numbers in a register
+    const std::size_t     part  {current / 16};
+    const std::size_t     run   {part - 1};
+    const std::size_t     apart {2 * stride * part};                     // parts between a butterfly's inputs
+    const R* const        from  {reinterpret_cast<const R*>(in)};        // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+    R* const              into  {reinterpret_cast<R*>(out)};             // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    for (std::size_t p {0}; p < part; ++p) {
+      const R* const in_p {from + (2 * stride * p)};
+      R* const       to   {into + (2 * stride * 16 * p)};
+      for (std::size_t q {0}; q < stride; q += width) {
+        const R* const       at    {in_p + (2 * q)};
+        std::array<vec, 16>  inner {};
+        NUMERICAL_UNROLL_TILE
+        for (std::size_t j1 {0}; j1 < 4; ++j1) {
+          fft_four_point(fft_load(isa, at + (j1 * apart)), fft_load(isa, at + ((j1 + 4) * apart)), fft_load(isa, at + ((j1 + 8) * apart)),
+                         fft_load(isa, at + ((j1 + 12) * apart)), inner[4 * j1], inner[(4 * j1) + 1], inner[(4 * j1) + 2],
+                         inner[(4 * j1) + 3]);
+        }
+        NUMERICAL_UNROLL_TILE
+        for (std::size_t j1 {1}; j1 < 4; ++j1) {
+          NUMERICAL_UNROLL_TILE
+          for (std::size_t k2 {1}; k2 < 4; ++k2) {
+            vec&                   value {inner[(4 * j1) + k2]};
+            const std::complex<R>& w     {sixteenths[j1 * k2]};
+            value = (j1 * k2) == 4 ? fft_times_minus_i(value) : fft_twiddled(fft_splat(isa, w.real()), fft_splat(isa, w.imag()), value);
+          }
+        }
+        NUMERICAL_UNROLL_TILE
+        for (std::size_t k2 {0}; k2 < 4; ++k2) {
+          std::array<vec, 4>  outputs {};
+          fft_four_point(inner[k2], inner[4 + k2], inner[8 + k2], inner[12 + k2], outputs[0], outputs[1], outputs[2],
+                         outputs[3]);
+          NUMERICAL_UNROLL_TILE
+          for (std::size_t k1 {0}; k1 < 4; ++k1) {
+            const std::size_t k {(4 * k1) + k2};
+            vec               y {outputs[k1]};
+            if (p != 0 && k != 0) {
+              const std::complex<R>& w {twiddles[((k - 1) * run) + p - 1]};
+              y = fft_twiddled(fft_splat(isa, w.real()), fft_splat(isa, w.imag()), y);
+            }
+            fft_store(to + (2 * q) + (2 * stride * k), y);
+          }
+        }
+      }
+    }
+  }
+
+  //! \brief \ref fft_radix_four_pass of AVX2.
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_radix_four_pass(std::size_t            current,
+                                                                std::size_t            stride,
+                                                                const std::complex<R>* in,
+                                                                std::complex<R>*       out,
+                                                                const std::complex<R>* twiddles) noexcept
+  {
+    fft_radix_four_pass<fft_avx2>(current, stride, in, out, twiddles);
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief \ref fft_radix_four_pass of AVX-512.
+  template <typename R>
+  NUMERICAL_TARGET("avx512f,avx2,fma") inline void avx512_radix_four_pass(std::size_t            current,
+                                                                          std::size_t            stride,
+                                                                          const std::complex<R>* in,
+                                                                          std::complex<R>*       out,
+                                                                          const std::complex<R>* twiddles) noexcept
+  {
+    fft_radix_four_pass<fft_avx512>(current, stride, in, out, twiddles);
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief \ref fft_radix_sixteen_pass of AVX2.
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_radix_sixteen_pass(std::size_t                            current,
+                                                                   std::size_t                            stride,
+                                                                   const std::complex<R>*                 in,
+                                                                   std::complex<R>*                       out,
+                                                                   const std::complex<R>*                 twiddles,
+                                                                   const std::array<std::complex<R>, 16>& sixteenths) noexcept
+  {
+    fft_radix_sixteen_pass<fft_avx2>(current, stride, in, out, twiddles, sixteenths);
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief \ref fft_radix_sixteen_pass of AVX-512 where the stride holds its registers, else of AVX2 (the same bits).
+  template <typename R>
+  NUMERICAL_TARGET("avx512f,avx2,fma") inline void avx512_radix_sixteen_pass(std::size_t                            current,
+                                                                             std::size_t                            stride,
+                                                                             const std::complex<R>*                 in,
+                                                                             std::complex<R>*                       out,
+                                                                             const std::complex<R>*                 twiddles,
+                                                                             const std::array<std::complex<R>, 16>& sixteenths) noexcept
+  {
+    if (stride % (sizeof(fft_reg<fft_avx512, R>) / sizeof(std::complex<R>)) == 0) {
+      fft_radix_sixteen_pass<fft_avx512>(current, stride, in, out, twiddles, sixteenths);
+    }
+    else {
+      fft_radix_sixteen_pass<fft_avx2>(current, stride, in, out, twiddles, sixteenths);
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
 #endif
