@@ -2704,7 +2704,7 @@ namespace numerical::detail {
   //! \brief AVX2's registers of the transform's kernels.
   struct fft_avx2
   {
-    static constexpr bool whole_strides {true}; //!< The passes of 3 and 5 never take AVX2's registers' bodies.
+    static constexpr bool whole_strides {false}; //!< An odd stride leaves a register half filled.
   };
 
   //! \brief AVX-512's registers of the transform's kernels.
@@ -3076,6 +3076,36 @@ namespace numerical::detail {
     _mm512_storeu_pd(into + 8, _mm512_shuffle_f64x2(even_low, odd_low, 0xDD));                    // 2 3
     _mm512_storeu_pd(into + 16, _mm512_shuffle_f64x2(even_high, odd_high, 0x88));                 // 4 5
     _mm512_storeu_pd(into + 24, _mm512_shuffle_f64x2(even_high, odd_high, 0xDD));                 // 6 7
+  }
+
+  //! \brief `a · b`, lane by lane, rounded.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_mul(fft_reg<fft_avx2, double> a,
+                                                                        fft_reg<fft_avx2, double> b) noexcept
+  {
+    return {_mm256_mul_pd(a.v, b.v)};
+  }
+
+  //! \brief `a · b + c`, lane by lane, one rounding.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, double> fft_fused(fft_reg<fft_avx2, double> a,
+                                                                          fft_reg<fft_avx2, double> b,
+                                                                          fft_reg<fft_avx2, double> c) noexcept
+  {
+    return {_mm256_fmadd_pd(a.v, b.v, c.v)};
+  }
+
+  //! \brief `a · b`, lane by lane, rounded.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_mul(fft_reg<fft_avx2, float> a,
+                                                                       fft_reg<fft_avx2, float> b) noexcept
+  {
+    return {_mm256_mul_ps(a.v, b.v)};
+  }
+
+  //! \brief `a · b + c`, lane by lane, one rounding.
+  NUMERICAL_TARGET("avx2,fma") inline fft_reg<fft_avx2, float> fft_fused(fft_reg<fft_avx2, float> a,
+                                                                         fft_reg<fft_avx2, float> b,
+                                                                         fft_reg<fft_avx2, float> c) noexcept
+  {
+    return {_mm256_fmadd_ps(a.v, b.v, c.v)};
   }
 
   //! \brief `a · b`, lane by lane, rounded.

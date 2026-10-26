@@ -34,7 +34,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   4.1 → 2.9 ms). Bluestein's convolution over a length of factors 2, 3 and 5 where the power of two would
   nearly double it (ten AVX-512 cores, 65537 points 7.3 → 4.3 ms, 16411 1.24 → 0.66 ms), and, for a length with a
   prime factor `p` past 61 at least 16 times `p`, over `p` points alone, in two steps (1009·64 points 2.8 → 1.5 ms,
-  67·2¹⁴ 112 → 47 ms).
+  67·2¹⁴ 112 → 47 ms). The passes of the odd radices from 7 to 61 in the vector units' registers too (ten AVX-512
+  cores, one thread: 44 100 points 1.18 → 0.62 ms, 30 030 1.05 → 0.62 ms, 61·256 0.62 → 0.21 ms, `complex64` 4.8×;
+  M1 Pro 1.5–2.0×, `complex128` with radix 31 or 61 even).
 
 ## 2026.10.38 — 2026-10-25
 

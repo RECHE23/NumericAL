@@ -771,6 +771,103 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief The most pairs `(j, r − j)` of an odd radix \ref fft_radix_any_pass takes: `fft.hpp`'s largest radix, 61.
+  inline constexpr std::size_t fft_most_pairs {30};
+
+  /*!
+   * \brief One Stockham pass of an odd radix \p radix of `fft.hpp`'s (`any_radix_pass_body`), fused, a register of
+   *        complex numbers along the stride at a time where it holds one, else one at a time: the same operations in
+   *        the same order. \p roots holds `e^{−2πi m/r}` for `m` below `r`.
+   */
+  template <typename Isa,
+            typename R>
+  NUMERICAL_ALWAYS_INLINE void fft_radix_any_pass(std::size_t            radix,
+                                                  std::size_t            current,
+                                                  std::size_t            stride,
+                                                  const std::complex<R>* in,
+                                                  std::complex<R>*       out,
+                                                  const std::complex<R>* twiddles,
+                                                  const std::complex<R>* roots) noexcept
+  {
+    using C   = std::complex<R>;
+    using vec = fft_reg<Isa, R>;
+    constexpr Isa         isa   {};
+    constexpr std::size_t width {sizeof(vec) / sizeof(std::complex<R>)};
+    const std::size_t     part  {current / radix};
+    const std::size_t     run   {part - 1};
+    const std::size_t     apart {stride * part};
+    const std::size_t     half  {radix / 2};
+    for (std::size_t p {0}; p < part; ++p) {
+      const C* const in_p {in + (stride * p)};
+      C* const       to   {out + (stride * radix * p)};
+      std::size_t    q    {0};
+      if (stride >= width) {
+        for (; q + width <= stride; q += width) {
+          std::array<vec, fft_most_pairs> sums;                                         // NOLINT(cppcoreguidelines-pro-type-member-init): the first half written before read
+          std::array<vec, fft_most_pairs> differences;                                  // NOLINT(cppcoreguidelines-pro-type-member-init): the same
+          const R* const                  at    {reinterpret_cast<const R*>(in_p + q)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is its two parts ([complex.numbers])
+          const vec                       x0    {fft_load(isa, at)};
+          vec                             total {x0};
+          for (std::size_t j {1}; j <= half; ++j) {
+            const vec x {fft_load(isa, at + (2 * j * apart))};
+            const vec y {fft_load(isa, at + (2 * (radix - j) * apart))};
+            sums[j - 1]        = fft_add(x, y);
+            differences[j - 1] = fft_sub(x, y);
+            total              = fft_add(total, sums[j - 1]);
+          }
+          R* const place {reinterpret_cast<R*>(to + q)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+          fft_store(place, total);
+          for (std::size_t k {1}; k <= half; ++k) {
+            std::size_t power   {k}; // j·k mod r, kept by additions
+            vec         cosines {fft_fused(fft_splat(isa, roots[power].real()), sums[0], x0)};
+            vec         sines   {fft_mul(fft_splat(isa, -roots[power].imag()), differences[0])};
+            for (std::size_t j {2}; j <= half; ++j) {
+              power   += k;
+              power   -= power >= radix ? radix : 0;
+              cosines  = fft_fused(fft_splat(isa, roots[power].real()), sums[j - 1], cosines);
+              sines    = fft_fused(fft_splat(isa, -roots[power].imag()), differences[j - 1], sines);
+            }
+            const vec i_sines {fft_times_i(sines)};
+            fft_store_twiddled<Isa>(place + (2 * stride * k), fft_sub(cosines, i_sines), twiddles, run, p, k);
+            fft_store_twiddled<Isa>(place + (2 * stride * (radix - k)), fft_add(cosines, i_sines), twiddles, run, p, radix - k);
+          }
+        }
+      }
+      if constexpr (!Isa::whole_strides) {
+        for (; q < stride; ++q) { // a stride narrower than a register
+          std::array<C, fft_most_pairs> sums        {};
+          std::array<C, fft_most_pairs> differences {};
+          const C                       x0          {in_p[q]};
+          C                             total       {x0};
+          for (std::size_t j {1}; j <= half; ++j) {
+            const C x {in_p[q + (j * apart)]};
+            const C y {in_p[q + ((radix - j) * apart)]};
+            sums[j - 1]        = x + y;
+            differences[j - 1] = x - y;
+            total              = total + sums[j - 1];
+          }
+          to[q] = total;
+          for (std::size_t k {1}; k <= half; ++k) {
+            std::size_t power   {k};
+            C           cosines {fft_scaled_add(x0, roots[power].real(), sums[0])};
+            C           sines   {-roots[power].imag() * differences[0].real(), -roots[power].imag() * differences[0].imag()};
+            for (std::size_t j {2}; j <= half; ++j) {
+              power   += k;
+              power   -= power >= radix ? radix : 0;
+              cosines  = fft_scaled_add(cosines, roots[power].real(), sums[j - 1]);
+              sines    = fft_scaled_add(sines, -roots[power].imag(), differences[j - 1]);
+            }
+            const C i_sines {-sines.imag(), sines.real()};
+            const C low     {cosines - i_sines};
+            const C high    {cosines + i_sines};
+            to[q + (stride * k)]           = p == 0 ? low : fft_fused_product(twiddles[((k - 1) * run) + p - 1], low);
+            to[q + (stride * (radix - k))] = p == 0 ? high : fft_fused_product(twiddles[((radix - k - 1) * run) + p - 1], high);
+          }
+        }
+      }
+    }
+  }
+
 #endif
 
 #if defined(NUMERICAL_X86_COMPILED)
@@ -871,6 +968,34 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
+  //! \brief \ref fft_radix_any_pass of AVX-512, its stride a multiple of a register's complex numbers.
+  template <typename R>
+  NUMERICAL_TARGET("avx512f,avx2,fma") inline void avx512_radix_any_pass(std::size_t            radix,
+                                                                         std::size_t            current,
+                                                                         std::size_t            stride,
+                                                                         const std::complex<R>* in,
+                                                                         std::complex<R>      * out,
+                                                                         const std::complex<R>* twiddles,
+                                                                         const std::complex<R>* roots) noexcept
+  {
+    fft_radix_any_pass<fft_avx512>(radix, current, stride, in, out, twiddles, roots);
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
+  //! \brief \ref fft_radix_any_pass of AVX2, its stride a multiple of a register's complex numbers.
+  template <typename R>
+  NUMERICAL_TARGET("avx2,fma") inline void avx2_radix_any_pass(std::size_t            radix,
+                                                               std::size_t            current,
+                                                               std::size_t            stride,
+                                                               const std::complex<R>* in,
+                                                               std::complex<R>      * out,
+                                                               const std::complex<R>* twiddles,
+                                                               const std::complex<R>* roots) noexcept
+  {
+    fft_radix_any_pass<fft_avx2>(radix, current, stride, in, out, twiddles, roots);
+    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
+  }
+
 #endif
 
 #if defined(NUMERICAL_NEON_COMPILED)
@@ -935,6 +1060,19 @@ namespace numerical::detail {
                              R                      half_root_two) noexcept
   {
     fft_radix_eight_pass<fft_neon>(current, stride, in, out, twiddles, half_root_two);
+  }
+
+  //! \brief \ref fft_radix_any_pass of NEON.
+  template <typename R>
+  void neon_radix_any_pass(std::size_t            radix,
+                           std::size_t            current,
+                           std::size_t            stride,
+                           const std::complex<R>* in,
+                           std::complex<R>*       out,
+                           const std::complex<R>* twiddles,
+                           const std::complex<R>* roots) noexcept
+  {
+    fft_radix_any_pass<fft_neon>(radix, current, stride, in, out, twiddles, roots);
   }
 
 #endif

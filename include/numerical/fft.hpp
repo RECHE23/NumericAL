@@ -801,6 +801,9 @@ namespace numerical {
     //! \brief The largest prime a Stockham pass takes as its radix, by its own `r`-point sum: a length with a larger
     //!        prime factor is transformed by Bluestein's convolution.
     inline constexpr std::size_t fft_largest_radix {61};
+#if defined(NUMERICAL_X86_COMPILED) || defined(NUMERICAL_NEON_COMPILED)
+    static_assert(fft_largest_radix / 2 <= fft_most_pairs, "fft_radix_any_pass holds every pair of the largest radix");
+#endif
 
     /*!
      * \brief The radix of each Stockham pass of \p n, or none where \p n has a prime factor past \ref fft_largest_radix,
@@ -1527,7 +1530,7 @@ namespace numerical {
     }
 
 #ifdef NUMERICAL_X86_COMPILED
-    //! \brief \ref any_radix_pass_body fused, built for AVX2 with FMA: each `std::fma` one instruction.
+    //! \brief \ref any_radix_pass fused, built for AVX2 with FMA, every radix in AVX2's registers.
     template <std::floating_point R>
     NUMERICAL_OUT_OF_LINE NUMERICAL_TARGET("avx2,fma") void any_radix_pass_x86(std::size_t                     radix,
                                                                                std::size_t                     current,
@@ -1548,12 +1551,12 @@ namespace numerical {
         avx2_radix_eight_pass(current, stride, in, out, twiddles, small.half_root_two);
       }
       else {
-        any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
+        avx2_radix_any_pass(radix, current, stride, in, out, twiddles, roots);
       }
     }
 
-    //! \brief \ref any_radix_pass_x86 of the avx512 path: radices 3, 5 and 8 in AVX-512's registers where the stride
-    //!        holds them, else \ref any_radix_pass_x86 itself (out of line: inlined here, its code built for AVX-512 ran
+    //! \brief \ref any_radix_pass_x86 of the avx512 path: every radix in AVX-512's registers where the stride holds
+    //!        them, else \ref any_radix_pass_x86 itself (out of line: inlined here, its code built for AVX-512 ran
     //!        up to a fifth slower, ten AVX-512 cores, complex64 5⁶ points).
     template <std::floating_point R>
     NUMERICAL_TARGET("avx512f,avx2,fma") void any_radix_pass_avx512(std::size_t                     radix,
@@ -1578,14 +1581,14 @@ namespace numerical {
         avx512_radix_eight_pass(current, stride, in, out, twiddles, small.half_root_two);
       }
       else {
-        any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
+        avx512_radix_any_pass(radix, current, stride, in, out, twiddles, roots);
       }
     }
 
 #endif
 
 #ifdef NUMERICAL_NEON_COMPILED
-    //! \brief \ref any_radix_pass fused, radices 3, 5 and 8 in NEON's registers.
+    //! \brief \ref any_radix_pass fused, every radix in NEON's registers.
     template <std::floating_point R>
     void any_radix_pass_neon(std::size_t                     radix,
                              std::size_t                     current,
@@ -1606,7 +1609,7 @@ namespace numerical {
         neon_radix_eight_pass(current, stride, in, out, twiddles, small.half_root_two);
       }
       else {
-        any_radix_pass_body<true>(radix, current, stride, in, out, twiddles, roots);
+        neon_radix_any_pass(radix, current, stride, in, out, twiddles, roots);
       }
     }
 
