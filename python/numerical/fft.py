@@ -12,7 +12,8 @@ import operator as _operator
 from numerical import _numerical
 from numerical import Tensor, asarray
 
-__all__ = ["fft", "ifft", "fft2", "ifft2", "fftn", "ifftn", "fftfreq", "rfftfreq", "fftshift", "ifftshift"]
+__all__ = ["fft", "ifft", "fft2", "ifft2", "fftn", "ifftn", "rfft", "irfft", "rfft2", "irfft2", "rfftn", "irfftn", "hfft",
+           "ihfft", "fftfreq", "rfftfreq", "fftshift", "ifftshift"]
 
 _NORMS = {None: 0, "backward": 0, "ortho": 1, "forward": 2}
 
@@ -113,6 +114,112 @@ def ifft2(a, s=None, axes=(-2, -1), norm=None, out=None):
     """The two-dimensional inverse discrete Fourier transform of `a`, as :func:`numpy.fft.ifft2`."""
     _no_out(out)
     return _transform_n(a, s, axes, norm, True)
+
+
+def _real(a, who):
+    """`a` as a real Tensor; a TypeError for a complex one, as NumPy's real transforms refuse it."""
+    tensor = _operand(a)
+    if tensor.dtype.startswith("complex"):
+        raise TypeError(f"ufunc '{who}' not supported for the input types, and the inputs could not be safely coerced "
+                        "to any supported types according to the casting rule ''safe''")
+    return tensor
+
+
+def _complex(a):
+    """`a` as a complex Tensor: a real one widened to the complex of its precision."""
+    tensor = _operand(a)
+    if not tensor.dtype.startswith("complex"):
+        tensor = asarray(tensor, "complex64" if tensor.dtype == "float32" else "complex128")
+    return tensor
+
+
+def _real_transform(a, n, axis, norm, hermitian):
+    """NumPy's `rfft` (or `ihfft`): `n` real points, their ``n // 2 + 1`` frequencies."""
+    tensor = _real(a, "rfft_n_even")
+    axis = _axis(axis, tensor.ndim)
+    points = tensor.shape[axis] if n is None else _operator.index(n)
+    if points < 1:
+        raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
+    return _numerical._rfft(tensor, points, axis, _norm(norm), hermitian)
+
+
+def _real_inverse(a, n, axis, norm, hermitian):
+    """NumPy's `irfft` (or `hfft`): `n` real points, ``2 * (m - 1)`` by default."""
+    tensor = _complex(a)
+    axis = _axis(axis, tensor.ndim)
+    points = (tensor.shape[axis] - 1) * 2 if n is None else _operator.index(n)
+    if points < 1:
+        raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
+    return _numerical._irfft(tensor, points, axis, _norm(norm), hermitian)
+
+
+def rfft(a, n=None, axis=-1, norm=None, out=None):
+    """The discrete Fourier transform of real `a` along `axis`, its ``n // 2 + 1`` non-negative frequencies, as
+    :func:`numpy.fft.rfft`."""
+    _no_out(out)
+    return _real_transform(a, n, axis, norm, False)
+
+
+def irfft(a, n=None, axis=-1, norm=None, out=None):
+    """The inverse of :func:`rfft`, `n` real points (``2 * (m - 1)`` by default), as :func:`numpy.fft.irfft`."""
+    _no_out(out)
+    return _real_inverse(a, n, axis, norm, False)
+
+
+def hfft(a, n=None, axis=-1, norm=None, out=None):
+    """The transform of a signal of Hermitian symmetry, `n` real points, as :func:`numpy.fft.hfft`."""
+    _no_out(out)
+    return _real_inverse(a, n, axis, norm, True)
+
+
+def ihfft(a, n=None, axis=-1, norm=None, out=None):
+    """The inverse of :func:`hfft`, as :func:`numpy.fft.ihfft`."""
+    _no_out(out)
+    return _real_transform(a, n, axis, norm, True)
+
+
+def _real_shape_and_axes(tensor, s, axes, inverse):
+    """NumPy's `s` and `axes` of an n-dimensional real transform; an inverse's last length ``2 * (m - 1)`` by default,
+    an `s` of -1 the whole axis."""
+    given = s is not None
+    s, axes = _shape_and_axes(tensor, s, axes)
+    s = [tensor.shape[axis] if size == -1 else size for size, axis in _builtins.zip(s, axes)]
+    if inverse and not given:
+        s[-1] = (tensor.shape[axes[-1]] - 1) * 2
+    return s, axes
+
+
+def rfftn(a, s=None, axes=None, norm=None, out=None):
+    """The n-dimensional transform of real `a`, as :func:`numpy.fft.rfftn`: :func:`rfft` along the last axis, then
+    :func:`fft` along the others, the last first."""
+    _no_out(out)
+    tensor = _real(a, "rfft_n_even")
+    s, axes = _real_shape_and_axes(tensor, s, axes, False)
+    tensor = _real_transform(tensor, s[-1], axes[-1], norm, False)
+    for points, axis in reversed(list(_builtins.zip(s[:-1], axes[:-1]))):
+        tensor = _transform(tensor, points, axis, norm, False)
+    return tensor
+
+
+def irfftn(a, s=None, axes=None, norm=None, out=None):
+    """The inverse of :func:`rfftn`, as :func:`numpy.fft.irfftn`: :func:`ifft` along each axis but the last, in order,
+    then :func:`irfft` along the last."""
+    _no_out(out)
+    tensor = _complex(a)
+    s, axes = _real_shape_and_axes(tensor, s, axes, True)
+    for points, axis in _builtins.zip(s[:-1], axes[:-1]):
+        tensor = _transform(tensor, points, axis, norm, True)
+    return _real_inverse(tensor, s[-1], axes[-1], norm, False)
+
+
+def rfft2(a, s=None, axes=(-2, -1), norm=None, out=None):
+    """The two-dimensional transform of real `a`, as :func:`numpy.fft.rfft2`."""
+    return rfftn(a, s, axes, norm, out)
+
+
+def irfft2(a, s=None, axes=(-2, -1), norm=None, out=None):
+    """The inverse of :func:`rfft2`, as :func:`numpy.fft.irfft2`."""
+    return irfftn(a, s, axes, norm, out)
 
 
 def fftfreq(n, d=1.0, device=None):

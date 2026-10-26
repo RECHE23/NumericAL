@@ -71,6 +71,33 @@ class FourierTransforms(unittest.TestCase):
             self.assertTrue(np.array_equal(np.asarray(nfft.fftshift(x, axes)), np.fft.fftshift(x, axes)))
             self.assertTrue(np.array_equal(np.asarray(nfft.ifftshift(x, axes)), np.fft.ifftshift(x, axes)))
 
+    def test_real_transforms_are_numpys(self):
+        # rfft and ihfft of real input, irfft and hfft back, on every kind of length, both precisions, every norm.
+        for n in (1, 2, 3, 8, 15, 16, 100, 360, 1000, 1009, 2018):
+            for dtype in (np.float64, np.float32):
+                single = dtype == np.float32
+                x = self.operand(n, dtype)
+                spectrum = np.fft.rfft(x).astype(np.complex64 if single else np.complex128)
+                for norm in (None, "ortho", "forward"):
+                    self.assert_close(nfft.rfft(x, norm=norm), np.fft.rfft(x, norm=norm), single)
+                    self.assert_close(nfft.ihfft(x, norm=norm), np.fft.ihfft(x, norm=norm), single)
+                    self.assert_close(nfft.irfft(spectrum, n, norm=norm), np.fft.irfft(spectrum, n, norm=norm), single)
+                    self.assert_close(nfft.hfft(spectrum, n, norm=norm), np.fft.hfft(spectrum, n, norm=norm), single)
+        x = self.operand((5, 6), np.float64)
+        self.assert_close(nfft.rfft(x, 9, 0), np.fft.rfft(x, 9, 0))
+        self.assert_close(nfft.irfft(np.fft.rfft(x)), np.fft.irfft(np.fft.rfft(x)))  # 2·(m − 1) points
+        self.assert_close(nfft.irfft([1.0, 2.0, 3.0]), np.fft.irfft([1.0, 2.0, 3.0]))  # a real input read as complex
+
+    def test_n_dimensional_real_transforms_are_numpys(self):
+        x = self.operand((6, 8, 5), np.float64)
+        self.assert_close(nfft.rfftn(x), np.fft.rfftn(x))
+        self.assert_close(nfft.rfftn(x, s=(4, 9), axes=(0, 2)), np.fft.rfftn(x, s=(4, 9), axes=(0, 2)))
+        self.assert_close(nfft.rfft2(x, norm="ortho"), np.fft.rfft2(x, norm="ortho"))
+        spectrum = np.fft.rfftn(x)
+        self.assert_close(nfft.irfftn(spectrum), np.fft.irfftn(spectrum))
+        self.assert_close(nfft.irfftn(spectrum, s=(6, 8, 5), axes=(0, 1, 2)), np.fft.irfftn(spectrum, s=(6, 8, 5), axes=(0, 1, 2)))
+        self.assert_close(nfft.irfft2(spectrum, s=(8, -1), axes=(1, 2)), np.fft.irfft2(spectrum, s=(8, -1), axes=(1, 2)))
+
     def test_errors_are_numpys(self):
         x = self.operand((3, 4), np.float64)
         with self.assertRaisesRegex(ValueError, "Invalid norm value spam"):
@@ -85,6 +112,12 @@ class FourierTransforms(unittest.TestCase):
             nfft.fftshift(x, -3)
         with self.assertRaises(TypeError):
             nfft.fft(x, out=np.empty(4, complex))
+        with self.assertRaises(TypeError):
+            nfft.rfft(np.array([1 + 1j, 2]))
+        with self.assertRaisesRegex(ValueError, r"Invalid number of FFT data points \(0\) specified."):
+            nfft.irfft([1.0])
+        with self.assertRaisesRegex(ValueError, r"Invalid number of FFT data points \(0\) specified."):
+            nfft.rfft(x, 0)
         with self.assertRaises(ZeroDivisionError):
             nfft.fftfreq(0)
         with self.assertRaises(ValueError):

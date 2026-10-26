@@ -997,8 +997,10 @@ namespace numerical {
     inline constexpr std::size_t fft_scratch_kept {std::size_t {1} << 16};
 
     //! \brief A transform's working space of \p C: the calling thread's own, kept for the next transform, up to
-    //!        \ref fft_scratch_kept elements; past it, its own allocation.
-    template <split_complex C>
+    //!        \ref fft_scratch_kept elements; past it, its own allocation. Each \p Slot is a space of its own, for
+    //!        spaces of one type in use at once.
+    template <typename C,
+              int Slot = 0>
     class fft_scratch
     {
     public:
@@ -1121,6 +1123,276 @@ namespace numerical {
                    });
       return tensor<C> {std::move(shape), std::move(out)};
     }
+
+    //! \brief What a transform of `n` real points (or to them) takes: the complex plan of `n/2` points for an even `n`,
+    //!        of `n` for an odd one, and for an even `n` the roots `e^{−2πi k/n}` for `k` up to `n/2`.
+    template <std::floating_point R>
+    struct real_fft_plan
+    {
+      std::size_t                        length {0}; //!< n.
+      std::shared_ptr<const fft_plan<R>> complex;    //!< The complex plan: n/2 points (even n), n (odd).
+      std::vector<std::complex<R>>       roots;      //!< `e^{−2πi k/n}`, k from 0 to n/2 (even n).
+    };
+
+    //! \brief The \ref real_fft_plan of \p n, shared as \ref shared_fft_plan shares the complex ones.
+    template <std::floating_point R>
+    [[nodiscard]] std::shared_ptr<const real_fft_plan<R>> shared_real_fft_plan(std::size_t n)
+    {
+      struct entry
+      {
+        std::size_t                             length; //!< The plan's length.
+        std::shared_ptr<const real_fft_plan<R>> plan;   //!< The plan.
+      };
+      static std::mutex         guard;
+      static std::vector<entry> plans; // the most recently used last
+      {
+        const std::scoped_lock lock  {guard};
+        const auto             found {std::find_if(plans.begin(), plans.end(), [n](const entry& e) { return e.length == n; })};
+        if (found != plans.end()) {
+          std::rotate(found, found + 1, plans.end());
+          return plans.back().plan;
+        }
+      }
+      auto plan {std::make_shared<real_fft_plan<R>>()};
+      plan->length = n;
+      if (n % 2 == 0) {
+        plan->complex = shared_fft_plan<R>(n / 2);
+        const unit_roots roots {n};
+        for (std::size_t k {0}; k <= n / 2; ++k) {
+          const std::complex<double> root {roots.root(k)};
+          plan->roots.emplace_back(static_cast<R>(root.real()), static_cast<R>(root.imag()));
+        }
+      }
+      else {
+        plan->complex = shared_fft_plan<R>(n);
+      }
+      const std::scoped_lock lock {guard};
+      if (plans.size() >= fft_plans_kept) {
+        plans.erase(plans.begin());
+      }
+      plans.push_back({n, plan});
+      return plans.back().plan;
+    }
+
+    /*!
+     * \brief The transform of \p n real points \p x (together) into \p X (`n/2 + 1` complex numbers), \p work holding
+     *        `n/2 + 1` complex numbers beside the plan's work. An even `n = 2h`: the `h` complex numbers
+     *        `x_{2j} + i·x_{2j+1}` transformed, then `X_k = E_k + w^k·O_k`, `E_k = (Z_k + conj Z_{h−k})/2`,
+     *        `O_k = −i·(Z_k − conj Z_{h−k})/2` (exact halvings and products by ±i; `w^k·O_k` as \p Fused). An odd `n`:
+     *        the complex transform of the points, its first `n/2 + 1` outputs. Inlined into each caller.
+     */
+    template <bool Fused,
+              std::floating_point R>
+    NUMERICAL_ALWAYS_INLINE void real_forward_body(const real_fft_plan<R>& plan,
+                                                   const R*                x,
+                                                   std::complex<R>*        X,
+                                                   std::complex<R>*        work) noexcept
+    {
+      using C = std::complex<R>;
+      const std::size_t n {plan.length};
+      const std::size_t h {n / 2};
+      if (n % 2 == 1) {
+        C* const line {work};
+        for (std::size_t j {0}; j < n; ++j) {
+          line[j] = C {x[j], R(0)};
+        }
+        forward_fft(*plan.complex, line, work + n, Fused);
+        std::copy(line, line + h + 1, X);
+        return;
+      }
+      C* const z {work};
+      for (std::size_t j {0}; j < h; ++j) {
+        z[j] = C {x[2 * j], x[(2 * j) + 1]};
+      }
+      forward_fft(*plan.complex, z, work + h, Fused);
+      X[0] = C {z[0].real() + z[0].imag(), R(0)};
+      X[h] = C {z[0].real() - z[0].imag(), R(0)};
+      for (std::size_t k {1}; k < h; ++k) {
+        const C a          {z[k]};
+        const C b          {std::conj(z[h - k])};
+        const C sum        {a + b};
+        const C difference {a - b};
+        const C even       {sum.real() * R(0.5), sum.imag() * R(0.5)};
+        const C odd        {difference.imag() * R(0.5), -difference.real() * R(0.5)}; // −i·d/2
+        X[k] = even + twiddled<Fused>(plan.roots[k], odd);
+      }
+    }
+
+    /*!
+     * \brief The inverse of \ref real_forward_body, unscaled save its own halvings: \p n real points \p x from the
+     *        `n/2 + 1` complex numbers \p X (the imaginary parts of `X_0` and, for an even `n`, `X_{n/2}` read as 0,
+     *        as NumPy's). An even `n = 2h`: `Z_k = E_k + i·O_k`, `E_k = (X_k + conj X_{h−k})/2`,
+     *        `O_k = conj(w^k)·(X_k − conj X_{h−k})/2`, then `Z`'s inverse transform (`conj(fft(conj ·))`), its parts
+     *        `x_{2j}` and `x_{2j+1}`, times \p scale; an odd `n`: the Hermitian spectrum of `n` points, its inverse
+     *        transform's real parts times \p scale. Inlined into each caller.
+     */
+    template <bool Fused,
+              std::floating_point R>
+    NUMERICAL_ALWAYS_INLINE void real_inverse_body(const real_fft_plan<R>& plan,
+                                                   const std::complex<R>*  X,
+                                                   R*                      x,
+                                                   std::complex<R>*        work,
+                                                   R                       scale) noexcept
+    {
+      using C = std::complex<R>;
+      const std::size_t n {plan.length};
+      const std::size_t h {n / 2};
+      if (n % 2 == 1) {
+        C* const line {work};
+        line[0] = C {X[0].real(), R(0)};
+        for (std::size_t k {1}; k <= h; ++k) {
+          line[k]     = std::conj(X[k]); // conjugated for conj(fft(conj ·))
+          line[n - k] = X[k];
+        }
+        forward_fft(*plan.complex, line, work + n, Fused);
+        for (std::size_t j {0}; j < n; ++j) {
+          x[j] = line[j].real() * scale;
+        }
+        return;
+      }
+      C* const z     {work};
+      const C  first {X[0].real(), R(0)};
+      const C  last  {X[h].real(), R(0)};
+      z[0] = std::conj(C {(first.real() + last.real()) * R(0.5), (first.real() - last.real()) * R(0.5)});
+      for (std::size_t k {1}; k < h; ++k) {
+        const C a          {X[k]};
+        const C b          {std::conj(X[h - k])};
+        const C sum        {a + b};
+        const C difference {a - b};
+        const C even       {sum.real() * R(0.5), sum.imag() * R(0.5)};
+        const C odd        {twiddled<Fused>(std::conj(plan.roots[k]), C {difference.real() * R(0.5), difference.imag() * R(0.5)})};
+        const C value      {even.real() - odd.imag(), even.imag() + odd.real()}; // E + i·O
+        z[k] = std::conj(value);
+      }
+      forward_fft(*plan.complex, z, work + h, Fused);
+      for (std::size_t j {0}; j < h; ++j) {
+        x[2 * j]       = z[j].real() * scale;
+        x[(2 * j) + 1] = -z[j].imag() * scale;
+      }
+    }
+
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief \ref real_forward_body fused, built for AVX2 with FMA.
+    template <std::floating_point R>
+    NUMERICAL_TARGET("avx2,fma") void real_forward_x86(const real_fft_plan<R>& plan,
+                                                       const R*                x,
+                                                       std::complex<R>*        X,
+                                                       std::complex<R>*        work) noexcept
+    {
+      real_forward_body<true>(plan, x, X, work);
+    }
+
+    //! \brief \ref real_inverse_body fused, built for AVX2 with FMA.
+    template <std::floating_point R>
+    NUMERICAL_TARGET("avx2,fma") void real_inverse_x86(const real_fft_plan<R>& plan,
+                                                       const std::complex<R>*  X,
+                                                       R*                      x,
+                                                       std::complex<R>*        work,
+                                                       R                       scale) noexcept
+    {
+      real_inverse_body<true>(plan, X, x, work, scale);
+    }
+
+#endif
+
+    //! \brief \ref real_forward_body on the path in use.
+    template <std::floating_point R>
+    void real_forward(const real_fft_plan<R>& plan,
+                      const R*                x,
+                      std::complex<R>*        X,
+                      std::complex<R>*        work,
+                      bool                    fused) noexcept
+    {
+      if (!fused) {
+        real_forward_body<false>(plan, x, X, work);
+        return;
+      }
+#ifdef NUMERICAL_X86_COMPILED
+      real_forward_x86(plan, x, X, work);
+#else
+      real_forward_body<true>(plan, x, X, work);
+#endif
+    }
+
+    //! \brief \ref real_inverse_body on the path in use.
+    template <std::floating_point R>
+    void real_inverse(const real_fft_plan<R>& plan,
+                      const std::complex<R>*  X,
+                      R*                      x,
+                      std::complex<R>*        work,
+                      R                       scale,
+                      bool                    fused) noexcept
+    {
+      if (!fused) {
+        real_inverse_body<false>(plan, X, x, work, scale);
+        return;
+      }
+#ifdef NUMERICAL_X86_COMPILED
+      real_inverse_x86(plan, X, x, work, scale);
+#else
+      real_inverse_body<true>(plan, X, x, work, scale);
+#endif
+    }
+
+    /*!
+     * \brief A transform of each line of \p a along axis \p index into lines of \p out_points: each line gathered (its
+     *        first \p in_points elements, padded with zeros), passed with its output line, both together, and the
+     *        thread's working space of \p work elements of `C` to \p line, then scattered; the lines shared among the
+     *        threads.
+     */
+    template <typename In,
+              typename Out,
+              typename C,
+              typename Line>
+    [[nodiscard]] tensor<Out> lines_along(const tensor<In>& a,
+                                          std::size_t       index,
+                                          std::size_t       in_points,
+                                          std::size_t       out_points,
+                                          std::size_t       work,
+                                          Line              line)
+    {
+      std::vector<std::size_t> shape  {a.shape()};
+      const std::size_t        extent {shape[index]};
+      shape[index] = out_points;
+      const axis_walk walk            {walk_along(shape, index)};
+      buffer<Out>     out(element_count(shape.begin(), shape.end()));
+      if (out.empty()) {
+        return tensor<Out> {std::move(shape), std::move(out)};
+      }
+      const std::size_t kept {std::min(in_points, extent)};
+      const In* const   from {a.data().data()};
+      parallel_for(walk.outer * walk.inner, 5 * (in_points + out_points) * static_cast<std::size_t>(std::bit_width(in_points + out_points)),
+                   [&](std::size_t number) {
+                     const std::size_t      outer {number / walk.inner};
+                     const std::size_t      inner {number % walk.inner};
+                     const In* const        in    {from + (outer * extent * walk.inner) + inner};
+                     Out* const             to    {out.data() + (outer * out_points * walk.inner) + inner};
+                     fft_scratch<C, 0>      space {work};
+                     fft_scratch<In, 1>     gathered {in_points};
+                     fft_scratch<Out, 2>    result {out_points};
+                     for (std::size_t k {0}; k < in_points; ++k) {
+                       gathered.data()[k] = k < kept ? in[k * walk.inner] : In {};
+                     }
+                     line(gathered.data(), result.data(), space.data());
+                     for (std::size_t k {0}; k < out_points; ++k) {
+                       to[k * walk.inner] = result.data()[k];
+                     }
+                   });
+      return tensor<Out> {std::move(shape), std::move(out)};
+    }
+
+    //! \brief \p axis of a tensor of rank \p rank from 0, NumPy's negative axes read from the end.
+    //!        \throws dimension_error If \p axis is not an axis.
+    [[nodiscard]] inline std::size_t fft_axis_index(std::ptrdiff_t axis,
+                                                    std::size_t    rank,
+                                                    const char*    who)
+    {
+      const auto signed_rank {static_cast<std::ptrdiff_t>(rank)};
+      if (axis < -signed_rank || axis >= signed_rank) {
+        throw dimension_error(std::string {who} + ": axis " + std::to_string(axis) + " is out of bounds for a tensor of rank " + std::to_string(rank));
+      }
+      return static_cast<std::size_t>(axis < 0 ? axis + signed_rank : axis);
+    }
   } // namespace detail
 
   /*!
@@ -1195,6 +1467,125 @@ namespace numerical {
       }
     }
     return tensor<T> {a.shape(), std::move(out)};
+  }
+
+  /*!
+   * \brief The discrete Fourier transform of real \p a along \p axis, its `n/2 + 1` non-negative frequencies, as
+   *        `numpy.fft.rfft`. An even `n` by the complex transform of its `n/2` pairs and their recombination, an odd one
+   *        by the complex transform of its points.
+   * \param[in] a    A tensor of `float` or `double`.
+   * \param[in] n    The points transformed: the axis cut to them, or padded with zeros; its extent by default.
+   * \param[in] axis The axis transformed, negative from the last (the last by default).
+   * \param[in] norm The scaling (\ref fft_norm): none by default.
+   * \return The complex transform, of `a`'s shape with the axis `n/2 + 1` long.
+   * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<std::complex<T>> rfft(const tensor<T>&           a,
+                                             std::optional<std::size_t> n    = std::nullopt,
+                                             std::ptrdiff_t             axis = -1,
+                                             fft_norm                   norm = fft_norm::backward)
+  {
+    using C = std::complex<T>;
+    const std::size_t index  {detail::fft_axis_index(axis, a.rank(), "rfft")};
+    const std::size_t points {n.value_or(a.shape()[index])};
+    if (points == 0) {
+      throw dimension_error("rfft: invalid number of data points (0)");
+    }
+    const std::shared_ptr<const detail::real_fft_plan<T>>  plan  {detail::shared_real_fft_plan<T>(points)};
+    const bool                                             fused {detail::fft_fuses()};
+    const T                                                scale {detail::fft_scale<T>(norm, false, points)};
+    const std::size_t                                      half  {points / 2};
+    const std::size_t                                      work  {(points % 2 == 0 ? half : points) + plan->complex->work};
+    return detail::lines_along<T, C, C>(a, index, points, half + 1, work, [&](const T* x, C* spectrum, C* space) {
+                                          detail::real_forward(*plan, x, spectrum, space, fused);
+                                          if (scale != T(1)) {
+                                            std::transform(spectrum, spectrum + half + 1, spectrum, [scale](const C& v) { return C {v.real() * scale, v.imag() * scale}; });
+                                          }
+                                        });
+  }
+
+  /*!
+   * \brief The inverse of \ref rfft along \p axis, as `numpy.fft.irfft`: `n` real points from the first `n/2 + 1`
+   *        frequencies of \p a (cut, or padded with zeros), the imaginary parts of the zero frequency and of an even
+   *        `n`'s last read as 0.
+   * \param[in] a    A tensor of complex `float` or `double`.
+   * \param[in] n    The real points: `2·(m − 1)` by default, `m` the axis' extent.
+   * \param[in] axis The axis transformed, negative from the last (the last by default).
+   * \param[in] norm The scaling (\ref fft_norm): 1/n by default.
+   * \return The real inverse transform, of `a`'s shape with the axis `n` long.
+   * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> irfft(const tensor<std::complex<T>>& a,
+                                std::optional<std::size_t>     n    = std::nullopt,
+                                std::ptrdiff_t                 axis = -1,
+                                fft_norm                       norm = fft_norm::backward)
+  {
+    using C = std::complex<T>;
+    const std::size_t index  {detail::fft_axis_index(axis, a.rank(), "irfft")};
+    const std::size_t extent {a.shape()[index]};
+    const std::size_t points {n.value_or(extent == 0 ? 0 : 2 * (extent - 1))};
+    if (points == 0) {
+      throw dimension_error("irfft: invalid number of data points (0)");
+    }
+    const std::shared_ptr<const detail::real_fft_plan<T>>  plan   {detail::shared_real_fft_plan<T>(points)};
+    const bool                                             fused  {detail::fft_fuses()};
+    const T                                                factor {detail::fft_scale<T>(norm, true, points)};
+    const T                                                scale  {points % 2 == 0 ? factor * T(2) : factor}; // an even n's half sums
+    const std::size_t                                      half   {points / 2};
+    const std::size_t                                      work   {(points % 2 == 0 ? half : points) + plan->complex->work};
+    return detail::lines_along<C, T, C>(a, index, half + 1, points, work, [&](const C* spectrum, T* x, C* space) {
+                                          detail::real_inverse(*plan, spectrum, x, space, scale, fused);
+                                        });
+  }
+
+  //! \brief \p norm with its forward and backward exchanged, as NumPy's `hfft` and `ihfft` take it.
+  [[nodiscard]] constexpr fft_norm swapped(fft_norm norm) noexcept
+  {
+    return norm == fft_norm::backward ? fft_norm::forward : norm == fft_norm::forward ? fft_norm::backward : norm;
+  }
+
+  /*!
+   * \brief The transform of a signal of Hermitian symmetry, its `n` real points from the non-negative frequencies \p a,
+   *        as `numpy.fft.hfft`: \ref irfft of `conj(a)`, its scaling's direction exchanged.
+   * \param[in] a    A tensor of complex `float` or `double`.
+   * \param[in] n    The real points: `2·(m − 1)` by default.
+   * \param[in] axis The axis transformed, negative from the last.
+   * \param[in] norm The scaling (\ref fft_norm): none by default.
+   * \return The real transform.
+   * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> hfft(const tensor<std::complex<T>>& a,
+                               std::optional<std::size_t>     n    = std::nullopt,
+                               std::ptrdiff_t                 axis = -1,
+                               fft_norm                       norm = fft_norm::backward)
+  {
+    buffer<std::complex<T>> conjugated(a.data().size());
+    std::transform(a.data().begin(), a.data().end(), conjugated.begin(), [](const std::complex<T>& v) { return std::conj(v); });
+    return irfft(tensor<std::complex<T>> {a.shape(), std::move(conjugated)}, n, axis, swapped(norm));
+  }
+
+  /*!
+   * \brief The inverse of \ref hfft, as `numpy.fft.ihfft`: `conj(rfft(a))`, its scaling's direction exchanged.
+   * \param[in] a    A tensor of `float` or `double`.
+   * \param[in] n    The points transformed: the axis' extent by default.
+   * \param[in] axis The axis transformed, negative from the last.
+   * \param[in] norm The scaling (\ref fft_norm): 1/n by default.
+   * \return The `n/2 + 1` complex frequencies.
+   * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<std::complex<T>> ihfft(const tensor<T>&           a,
+                                              std::optional<std::size_t> n    = std::nullopt,
+                                              std::ptrdiff_t             axis = -1,
+                                              fft_norm                   norm = fft_norm::backward)
+  {
+    tensor<std::complex<T>> spectrum {rfft(a, n, axis, swapped(norm))};
+    buffer<std::complex<T>> conjugated(spectrum.data().size());
+    std::transform(spectrum.data().begin(), spectrum.data().end(), conjugated.begin(), [](const std::complex<T>& v) { return std::conj(v); });
+    return tensor<std::complex<T>> {spectrum.shape(), std::move(conjugated)};
   }
 } // namespace numerical
 

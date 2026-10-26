@@ -459,3 +459,130 @@ TEST(fftshift_rolls_an_axis_by_half_its_extent)
   EXPECT_THROWS((void)numerical::fftshift(grid, 2), numerical::dimension_error);
   EXPECT_THROWS((void)numerical::fftshift(grid, -3), numerical::dimension_error);
 }
+
+namespace {
+  // rfft of n real points against the first n/2 + 1 outputs of fft, and irfft back, within a few units of R's epsilon
+  // times the input's norm, for norm; odd and even n, along the last axis and along the first.
+  template <std::floating_point R>
+  bool real_transforms_agree(std::size_t n,
+                             fft_norm    norm)
+  {
+    // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+    std::mt19937_64                  draws {n};
+    std::normal_distribution<double> normal;
+    std::vector<R>                   values(2 * n);
+    for (R& v : values) {
+      v = static_cast<R>(normal(draws));
+    }
+    const tensor<R>               x       {{2, n}, values};
+    const tensor<std::complex<R>> half    {numerical::rfft(x, std::nullopt, -1, norm)};
+    const tensor<std::complex<R>> full    {numerical::fft(x, std::nullopt, -1, norm)};
+    const tensor<R>               back    {numerical::irfft(half, n, -1, norm)};
+    const tensor<R>               columns {numerical::irfft(numerical::rfft(numerical::fftshift(x, 0), std::nullopt, 0, norm), 2, 0, norm)};
+    const double                  bound   {64.0 * static_cast<double>(std::numeric_limits<R>::epsilon()) * std::sqrt(static_cast<double>(n))};
+    bool                          good    {half.shape() == (std::vector<std::size_t> {2, (n / 2) + 1})};
+    for (std::size_t r {0}; r < 2; ++r) {
+      for (std::size_t k {0}; k <= n / 2; ++k) {
+        good = good && std::abs(half.data()[(r * ((n / 2) + 1)) + k] - full.data()[(r * n) + k]) < bound * std::sqrt(static_cast<double>(n));
+      }
+      for (std::size_t j {0}; j < n; ++j) {
+        good = good && std::abs(back.data()[(r * n) + j] - values[(r * n) + j]) < bound;
+        good = good && std::abs(columns.data()[(r * n) + j] - values[((1 - r) * n) + j]) < bound;
+      }
+    }
+    return good;
+  }
+} // namespace
+
+// rfft is fft's first n/2 + 1 outputs and irfft undoes it, for every length to 64, both precisions, every scaling,
+// along either kind of axis; irfft reads the imaginary parts of the zero and the last frequency as 0, as NumPy's.
+TEST(rfft_is_the_first_half_of_fft_and_irfft_undoes_it)
+{
+  for (std::size_t n {1}; n <= 64; ++n) {
+    for (const fft_norm norm : {fft_norm::backward, fft_norm::ortho, fft_norm::forward}) {
+      EXPECT(real_transforms_agree<double>(n, norm));
+      EXPECT(real_transforms_agree<float>(n, norm));
+    }
+  }
+  const tensor<std::complex<double>> spectrum  {{3}, std::vector<std::complex<double>> {{1.0, 5.0}, {2.0, -1.0}, {3.0, 7.0}}};
+  const tensor<std::complex<double>> real_ends {{3}, std::vector<std::complex<double>> {{1.0, 0.0}, {2.0, -1.0}, {3.0, 0.0}}};
+  EXPECT(numerical::irfft(spectrum).data() == numerical::irfft(real_ends).data());
+  const tensor<std::complex<double>> real_zero {{3}, std::vector<std::complex<double>> {{1.0, 0.0}, {2.0, -1.0}, {3.0, 7.0}}};
+  EXPECT(numerical::irfft(spectrum, 5).data() == numerical::irfft(real_zero, 5).data()); // an odd n: the zero frequency's alone
+}
+
+// hfft is irfft of the conjugates, ihfft the conjugates of rfft, each with its scaling's direction exchanged.
+TEST(hfft_and_ihfft_are_numpys_definitions)
+{
+  const tensor<std::complex<double>> spectrum   {{4}, std::vector<std::complex<double>> {{1.0, 0.0}, {2.0, -1.0}, {0.5, 3.0}, {3.0, 0.0}}};
+  const tensor<std::complex<double>> conjugates {{4}, std::vector<std::complex<double>> {{1.0, 0.0}, {2.0, 1.0}, {0.5, -3.0}, {3.0, 0.0}}};
+  EXPECT(numerical::hfft(spectrum).data() == numerical::irfft(conjugates, std::nullopt, -1, fft_norm::forward).data());
+  EXPECT(numerical::hfft(spectrum, 7, -1, fft_norm::ortho).data() == numerical::irfft(conjugates, 7, -1, fft_norm::ortho).data());
+  const tensor<double>               x       {{5}, std::vector<double> {1.0, -2.0, 0.5, 4.0, 3.0}};
+  const tensor<std::complex<double>> forward {numerical::rfft(x, std::nullopt, -1, fft_norm::backward)};
+  const tensor<std::complex<double>> inverse {numerical::ihfft(x, std::nullopt, -1, fft_norm::forward)};
+  for (std::size_t k {0}; k < 3; ++k) {
+    EXPECT(inverse.data()[k] == std::conj(forward.data()[k]));
+  }
+  EXPECT(numerical::ihfft(x).data()[0] == std::complex<double>(6.5 / 5.0, -0.0));
+}
+
+// The real transforms' errors, empty tensors, and their plans renewed as the complex ones are.
+TEST(real_transforms_refuse_no_points_and_keep_their_plans)
+{
+  const tensor<double> x {{2, 3}, std::vector<double>(6, 1.0)};
+  EXPECT_THROWS((void)numerical::rfft(x, 0), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::rfft(x, std::nullopt, 2), numerical::dimension_error);
+  const tensor<std::complex<double>> one {{1}, std::vector<std::complex<double>> {1.0}};
+  EXPECT_THROWS((void)numerical::irfft(one), numerical::dimension_error);                                                     // 2·(1 − 1) points
+  EXPECT_THROWS((void)numerical::irfft(tensor<std::complex<double>> {{0}, std::vector<std::complex<double>> {}}), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::hfft(one, std::nullopt, -2), numerical::dimension_error);
+  EXPECT(numerical::rfft(tensor<double> {{0, 4}, std::vector<double> {}}).shape() == (std::vector<std::size_t> {0, 3}));
+  for (std::size_t n {1}; n <= numerical::detail::fft_plans_kept + 8; ++n) {
+    EXPECT(numerical::rfft(tensor<double> {{n}, std::vector<double>(n, 1.0)}).data()[0] == std::complex<double>(static_cast<double>(n), 0.0));
+  }
+}
+
+namespace {
+  // The real transforms of R on the path in use: rfft padded (n past the axis) is fft's first half, irfft padded (more
+  // frequencies asked than given) undoes it, odd and even n; their errors.
+  template <std::floating_point R>
+  bool real_transforms_pad_and_refuse()
+  {
+    const tensor<R> x    {{5}, std::vector<R> {R(1), R(-2), R(0.5), R(4), R(3)}};
+    bool            good {true};
+    for (const std::size_t n : {7UL, 8UL}) {
+      const tensor<std::complex<R>> half {numerical::rfft(x, n)};
+      const tensor<std::complex<R>> full {numerical::fft(x, n)};
+      for (std::size_t k {0}; k <= n / 2; ++k) {
+        good = good && std::abs(half.data()[k] - full.data()[k]) < R(1e-4);
+      }
+      const tensor<R> back {numerical::irfft(half, n + 4)}; // its frequencies padded with zeros
+      good = good && back.shape() == (std::vector<std::size_t> {n + 4});
+    }
+    bool refused {false};
+    try {
+      (void)numerical::rfft(x, 0);
+    }
+    catch (const numerical::dimension_error&) {
+      refused = true;
+    }
+    return good && refused;
+  }
+} // namespace
+
+// On every path this processor runs (the portable one's products apart): padded real transforms, both precisions.
+TEST(real_transforms_pad_on_every_path)
+{
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    EXPECT(real_transforms_pad_and_refuse<double>());
+    EXPECT(real_transforms_pad_and_refuse<float>());
+    EXPECT(real_transforms_agree<double>(12, fft_norm::backward)); // even n
+    EXPECT(real_transforms_agree<float>(9, fft_norm::ortho));      // odd n
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}

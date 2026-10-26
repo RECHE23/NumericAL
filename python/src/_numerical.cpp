@@ -1881,6 +1881,40 @@ any_tensor fftshift_axis(const any_tensor& v, std::size_t axis, bool inverse)
     }, v);
 }
 
+// _rfft(a, n, axis, norm, hermitian) -> Tensor: numpy.fft.rfft (or, hermitian, ihfft) of a real tensor along axis.
+any_tensor rfft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int norm, bool hermitian)
+{
+    const auto scaling {static_cast<numerical::fft_norm>(norm)};
+    return std::visit([&](const auto& t) -> any_tensor {
+        using T = std::remove_cvref_t<decltype(t.data()[0])>;
+        if constexpr (std::is_floating_point_v<T>) {
+            const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
+            const auto                   index {static_cast<std::ptrdiff_t>(axis)};
+            return any_tensor {hermitian ? numerical::ihfft(t, n, index, scaling) : numerical::rfft(t, n, index, scaling)};
+        }
+        else {
+            throw std::invalid_argument("rfft takes a real tensor");
+        }
+    }, v);
+}
+
+// _irfft(a, n, axis, norm, hermitian) -> Tensor: numpy.fft.irfft (or, hermitian, hfft) of a complex tensor along axis.
+any_tensor irfft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int norm, bool hermitian)
+{
+    const auto scaling {static_cast<numerical::fft_norm>(norm)};
+    return std::visit([&](const auto& t) -> any_tensor {
+        using T = std::remove_cvref_t<decltype(t.data()[0])>;
+        if constexpr (numerical::detail::split_complex<T>) {
+            const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
+            const auto                   index {static_cast<std::ptrdiff_t>(axis)};
+            return any_tensor {hermitian ? numerical::hfft(t, n, index, scaling) : numerical::irfft(t, n, index, scaling)};
+        }
+        else {
+            throw std::invalid_argument("irfft takes a complex tensor");
+        }
+    }, v);
+}
+
 any_tensor eigvalsh(const any_tensor& v, bool upper)
 {
     if (shape_of(v).size() < 2) {
@@ -4095,6 +4129,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&eigvals>("_eigvals", "_eigvals(a) -> w\nThe eigenvalues alone of a general square matrix (or stack), as numpy.linalg.eigvals: complex.");
     m.def<&fft_axis>("_fft", "_fft(a, n, axis, norm, inverse) -> Tensor\nnumpy.fft.fft (or ifft) of n points along axis (from 0), norm 0 backward, 1 ortho, 2 forward (see numerical.fft).");
     m.def<&fftshift_axis>("_fftshift", "_fftshift(a, axis, inverse) -> Tensor\nnumpy.fft.fftshift (or ifftshift) along one axis (from 0) (see numerical.fft).");
+    m.def<&rfft_axis>("_rfft", "_rfft(a, n, axis, norm, hermitian) -> Tensor\nnumpy.fft.rfft (or ihfft) of a real tensor along axis (from 0) (see numerical.fft).");
+    m.def<&irfft_axis>("_irfft", "_irfft(a, n, axis, norm, hermitian) -> Tensor\nnumpy.fft.irfft (or hfft) of a complex tensor along axis (from 0) (see numerical.fft).");
     m.def<&eigvalsh>("eigvalsh", "eigvalsh(a, upper) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read, or with upper its upper one).");
     m.def<&matrix_ranks>("_matrix_ranks", "_matrix_ranks(a, rtol, tol, hermitian) -> Tensor\nThe rank of every matrix of a stack, as float64 numbers along its leading axes.");
     m.def<&matrix_rank>("matrix_rank", "matrix_rank(a, rtol, tol, hermitian) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank: its singular values above tol, else above rtol times the largest (None, None: NumPy's default).");
