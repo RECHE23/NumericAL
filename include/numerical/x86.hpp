@@ -2419,27 +2419,27 @@ namespace numerical::detail {
       for (std::size_t q {0}; q < stride; q += width) {
         const R* const       at    {in_p + (2 * q)};
         std::array<held, 16> inner {};
-        #  pragma GCC unroll 16
+        NUMERICAL_UNROLL_TILE
         for (std::size_t j1 {0}; j1 < 4; ++j1) {
           avx2_four_point(avx2_load(at + (j1 * apart)), avx2_load(at + ((j1 + 4) * apart)), avx2_load(at + ((j1 + 8) * apart)),
                           avx2_load(at + ((j1 + 12) * apart)), inner[4 * j1].v, inner[(4 * j1) + 1].v, inner[(4 * j1) + 2].v,
                           inner[(4 * j1) + 3].v);
         }
-        #  pragma GCC unroll 16
+        NUMERICAL_UNROLL_TILE
         for (std::size_t j1 {1}; j1 < 4; ++j1) {
-          #  pragma GCC unroll 16
+          NUMERICAL_UNROLL_TILE
           for (std::size_t k2 {1}; k2 < 4; ++k2) {
             vec&                   value {inner[(4 * j1) + k2].v};
             const std::complex<R>& w     {sixteenths[j1 * k2]};
             value = (j1 * k2) == 4 ? avx2_times_minus_i(value) : avx2_twiddled(avx2_pairs(w.real(), w.real()), avx2_pairs(w.imag(), w.imag()), value);
           }
         }
-        #  pragma GCC unroll 16
+        NUMERICAL_UNROLL_TILE
         for (std::size_t k2 {0}; k2 < 4; ++k2) {
           std::array<held, 4> outputs {};
           avx2_four_point(inner[k2].v, inner[4 + k2].v, inner[8 + k2].v, inner[12 + k2].v, outputs[0].v, outputs[1].v, outputs[2].v,
                           outputs[3].v);
-          #  pragma GCC unroll 16
+          NUMERICAL_UNROLL_TILE
           for (std::size_t k1 {0}; k1 < 4; ++k1) {
             const std::size_t k {(4 * k1) + k2};
             vec               y {outputs[k1].v};

@@ -31,12 +31,12 @@ namespace {
     const std::size_t                 n {x.size()};
     std::vector<std::complex<double>> y(n);
     for (std::size_t k {0}; k < n; ++k) {
-      double_double re {0.0, 0.0};
-      double_double im {0.0, 0.0};
+      double_double re {.hi = 0.0, .lo = 0.0};
+      double_double im {.hi = 0.0, .lo = 0.0};
       for (std::size_t j {0}; j < n; ++j) {
         const auto          parts {numerical::detail::unit_root_parts((j * k) % n, n)};
-        const double_double xr    {x[j].real(), 0.0};
-        const double_double xi    {x[j].imag(), 0.0};
+        const double_double xr    {.hi = x[j].real(), .lo = 0.0};
+        const double_double xi    {.hi = x[j].imag(), .lo = 0.0};
         re = dd_add(re, dd_add(dd_mul(xr, parts.first), dd_negate(dd_mul(xi, parts.second))));
         im = dd_add(im, dd_add(dd_mul(xr, parts.second), dd_mul(xi, parts.first)));
       }
@@ -83,7 +83,7 @@ namespace {
   bool same_bits(const numerical::buffer<C>& x,
                  const numerical::buffer<C>& y)
   {
-    using R = typename C::value_type;
+    using R = C::value_type;
     using U = std::conditional_t<sizeof(R) == 8, std::uint64_t, std::uint32_t>;
     return x.size() == y.size() && std::equal(x.begin(), x.end(), y.begin(), [](const C& p, const C& q) {
                                                 return std::bit_cast<U>(p.real()) == std::bit_cast<U>(q.real()) && std::bit_cast<U>(p.imag()) == std::bit_cast<U>(q.imag());
@@ -96,6 +96,7 @@ namespace {
 // pass of radix 2 before others) and lengths with a prime factor past the largest radix (Bluestein's convolution).
 TEST(fft_is_within_a_fraction_of_epsilon_log_n_of_the_exact_transform)
 {
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
   std::mt19937_64 draws {20261025};
   for (std::size_t n {1}; n <= 4096; n *= 2) {
     EXPECT(relative_error<double>(n, draws) < 0.5);
@@ -133,6 +134,7 @@ TEST(the_twiddle_factors_are_exact_where_their_value_is_and_symmetric)
 // power of two's 1/n exact, so the forward-scaled transform is the backward one's bits times 1/n.
 TEST(ifft_undoes_fft_and_the_scalings_are_numpys)
 {
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
   std::mt19937_64 draws {7};
   for (const std::size_t n : {1UL, 8UL, 32UL, 12UL}) {
     const tensor<std::complex<double>> x {{n}, drawn<double>(n, draws)};
@@ -184,6 +186,7 @@ TEST(fft_takes_numpys_points_and_real_input)
 // empty stack transforms to an empty one of the new shape.
 TEST(a_line_has_the_same_bits_alone_among_others_and_on_any_threads)
 {
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
   std::mt19937_64                          draws  {11};
   const std::size_t                        rows   {6};
   const std::size_t                        cols   {64};
@@ -269,7 +272,7 @@ namespace {
     const tensor<T> x {{3, 4}, values};
     const auto      padded {numerical::fft(x, 8, 0, norm)};
     const auto      cut    {numerical::ifft(x, 2, -1, norm)};
-    using C = typename numerical::detail::fft_complex<T>::type;
+    using C = numerical::detail::fft_complex<T>::type;
     const auto ok {[](const C& p, const C& q) { return std::abs(p - q) < 1e-4F; }};
     bool       good {padded.shape() == (std::vector<std::size_t> {8, 4}) && cut.shape() == (std::vector<std::size_t> {3, 2})};
     for (std::size_t c {0}; c < 4; ++c) {
@@ -311,6 +314,7 @@ TEST(every_path_is_accurate_and_the_fused_ones_agree_to_the_bit)
     if (numerical::limit_gemm_path(path) != path) {
       continue; // a path this processor does not run
     }
+    // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
     std::mt19937_64 draws {3};
     for (std::size_t n {1}; n <= 2048; n *= 2) {
       EXPECT(relative_error<double>(n, draws) < 0.5);
@@ -323,6 +327,7 @@ TEST(every_path_is_accurate_and_the_fused_ones_agree_to_the_bit)
     if (path != numerical::gemm_path::portable) {
       numerical::buffer<std::complex<double>> spectra;
       for (const std::size_t n : {1024UL, 1000UL, 1009UL}) { // radices 4 and 16; mixed; Bluestein's
+        // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
         std::mt19937_64                    same {5};
         const tensor<std::complex<double>> x    {{n}, drawn<double>(n, same)};
         const tensor<std::complex<double>> y    {numerical::fft(x)};
@@ -356,6 +361,7 @@ TEST(every_length_round_trips_on_every_path)
     if (numerical::limit_gemm_path(path) != path) {
       continue; // a path this processor does not run
     }
+    // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
     std::mt19937_64 draws {17};
     for (std::size_t n {1}; n <= 300; ++n) {
       const tensor<std::complex<double>> x       {{n}, drawn<double>(n, draws)};

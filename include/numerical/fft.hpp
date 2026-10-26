@@ -320,14 +320,14 @@ namespace numerical {
     inline constexpr std::size_t fft_largest_radix {61};
 
     /*!
-     * \brief The radix of each Stockham pass of \p n, or none where \p n has a prime factor past \ref fft_largest_radix:
-     *        its powers of two first (4 first, its stride 1, then 16 while 16 points remain, then 4, then 2), then its
-     *        factors 3, 5 and 7, then each other prime in ascending order.
+     * \brief The radix of each Stockham pass of \p n, or none where \p n has a prime factor past \ref fft_largest_radix,
+     *        its powers of two first (4 first, its stride 1, then 16 while 16 points remain, then 4), then its factors 3,
+     *        5 and 7, then each other prime in ascending order, then a lone factor 2 last, where its pass has no factor.
      */
     [[nodiscard]] inline std::vector<std::size_t> fft_radices(std::size_t n)
     {
       std::vector<std::size_t> radices;
-      std::size_t              twos {std::size_t {1} << std::countr_zero(n)};
+      std::size_t              twos {std::size_t {1} << static_cast<unsigned>(std::countr_zero(n))};
       std::size_t              rest {n / twos};
       if (twos >= 4) {
         radices.push_back(4);
@@ -339,9 +339,6 @@ namespace numerical {
       for (; twos >= 4; twos /= 4) {
         radices.push_back(4);
       }
-      if (twos == 2) {
-        radices.push_back(2);
-      }
       for (std::size_t prime {3}; rest > 1; prime += 2) {
         if (prime > fft_largest_radix) {
           return {}; // Bluestein's
@@ -349,6 +346,9 @@ namespace numerical {
         for (; rest % prime == 0; rest /= prime) {
           radices.push_back(prime);
         }
+      }
+      if (twos == 2) {
+        radices.push_back(2); // last: no factor
       }
       return radices;
     }
@@ -383,25 +383,25 @@ namespace numerical {
     template <std::floating_point R>
     struct bluestein_plan
     {
-      std::size_t                        padded;   //!< M: the power of two at least 2n − 1 the convolution runs at.
-      std::vector<std::complex<R>>       chirp;    //!< `e^{−πi j²/n}`, its exponent `j² mod 2n` reduced exactly.
-      std::vector<std::complex<R>>       spectrum; //!< The transform of M points of the chirp's conjugate, wrapped.
-      std::shared_ptr<const fft_plan<R>> inner;    //!< The plan of M points.
+      std::size_t                        padded {0}; //!< M: the power of two at least 2n − 1 the convolution runs at.
+      std::vector<std::complex<R>>       chirp;      //!< `e^{−πi j²/n}`, its exponent `j² mod 2n` reduced exactly.
+      std::vector<std::complex<R>>       spectrum;   //!< The transform of M points of the chirp's conjugate, wrapped.
+      std::shared_ptr<const fft_plan<R>> inner;      //!< The plan of M points.
     };
 
     //! \brief The factors and passes of a transform of one length, built once and shared.
     template <std::floating_point R>
     struct fft_plan
     {
-      std::size_t                       length;     //!< The transform's length.
+      std::size_t                       length {0}; //!< The transform's length.
       std::vector<std::size_t>          radices;    //!< Each Stockham pass' radix (\ref fft_radices).
       std::vector<std::complex<R>>      twiddles;
       //!< Each pass' factors from `p` = 1: its `w^p` run, then its `w^{2p}` run, to its `w^{(r−1)p}` run.
       std::vector<std::complex<R>>      radix_roots;
-      //!< Each pass of a radix other than 3, 4, 5 and 16: `e^{−2πi m/r}` for m below r, the passes in order.
+      //!< Each pass of a prime radix past 5: `e^{−2πi m/r}` for m below r, the passes in order.
       std::array<std::complex<R>, 16>   sixteenths; //!< `e^{−2πi k/16}`: a radix-16 butterfly's own factors.
       std::optional<bluestein_plan<R>>  bluestein;  //!< Where the length has a prime factor past fft_largest_radix.
-      std::size_t                       work;       //!< The working space a transform takes beside its data.
+      std::size_t                       work {0};   //!< The working space a transform takes beside its data.
       small_radix_constants<R>          small;      //!< The radix-3 and radix-5 butterflies' constants.
     };
 
@@ -449,7 +449,7 @@ namespace numerical {
             plan.twiddles.push_back(narrow(roots.root(power * p * stride)));
           }
         }
-        if (radix != 3 && radix != 4 && radix != 5 && radix != 16) {
+        if (radix > 5 && radix != 16) {
           for (std::size_t m {0}; m < radix; ++m) {
             plan.radix_roots.push_back(narrow(unit_root(m, radix)));
           }
@@ -584,21 +584,21 @@ namespace numerical {
         C* const       to   {out + (stride * 16 * p)};
         for (std::size_t q {0}; q < stride; ++q) {
           std::array<C, 16> inner {};
-          #  pragma GCC unroll 16
+          NUMERICAL_UNROLL_BLOCK
           for (std::size_t j1 {0}; j1 < 4; ++j1) {
             four_point(in_p[q + (j1 * apart)], in_p[q + ((j1 + 4) * apart)], in_p[q + ((j1 + 8) * apart)], in_p[q + ((j1 + 12) * apart)],
                        inner.data() + (4 * j1));
-            #  pragma GCC unroll 16
+            NUMERICAL_UNROLL_BLOCK
             for (std::size_t k2 {1}; k2 < 4 && j1 != 0; ++k2) {
               C& value {inner[(4 * j1) + k2]};
               value = (j1 * k2) == 4 ? C {value.imag(), -value.real()} : twiddled<Fused>(sixteenths[j1 * k2], value);
             }
           }
-          #  pragma GCC unroll 16
+          NUMERICAL_UNROLL_BLOCK
           for (std::size_t k2 {0}; k2 < 4; ++k2) {
             std::array<C, 4> outputs {};
             four_point(inner[k2], inner[4 + k2], inner[8 + k2], inner[12 + k2], outputs.data());
-            #  pragma GCC unroll 16
+            NUMERICAL_UNROLL_BLOCK
             for (std::size_t k1 {0}; k1 < 4; ++k1) {
               const std::size_t k {(4 * k1) + k2};
               to[q + (stride * k)] = (p == 0 || k == 0) ? outputs[k1] : twiddled<Fused>(twiddles[((k - 1) * run) + p - 1], outputs[k1]);
@@ -611,7 +611,8 @@ namespace numerical {
     /*!
      * \brief One Stockham pass of any radix \p radix, as \ref radix_four_pass is of 4: butterfly `(p, q)` the `r`-point
      *        transform of its inputs, `X_k = x_0 + Σ_{j ≥ 1} e^{−2πi jk/r} · x_j` in ascending `j` (\p roots; a factor
-     *        of 1 multiplies nothing, one of −1 subtracts), output `k` then times `w^{kp}`, none for `p` = 0 or `k` = 0.
+     *        of 1 multiplies nothing; an odd prime's other roots are none of them −1), output `k` then times `w^{kp}`,
+     *        none for `p` = 0 or `k` = 0.
      *        Inlined into each caller, so that the x86-64 fused one is built for FMA.
      */
     template <bool Fused,
@@ -639,15 +640,7 @@ namespace numerical {
               power += k;
               power -= power >= radix ? radix : 0;
               const C value {in_p[q + (j * apart)]};
-              if (power == 0) {
-                sum += value;
-              }
-              else if (2 * power == radix) { // e^{−πi} = −1: a difference, exact
-                sum -= value;
-              }
-              else {
-                sum += twiddled<Fused>(roots[power], value);
-              }
+              sum += power == 0 ? value : twiddled<Fused>(roots[power], value);
             }
             to[q + (stride * k)] = (p == 0 || k == 0) ? sum : twiddled<Fused>(twiddles[((k - 1) * run) + p - 1], sum);
           }
@@ -836,7 +829,7 @@ namespace numerical {
     /*!
      * \brief The Stockham passes of the \p plan over \p data, \p work as long, the result in \p data: radix 4 by \p four
      *        (\ref radix_four_pass's arguments), 16 by \p sixteen (\ref radix_sixteen_pass's), 2 by \ref radix_two_pass
-     *        where it is the last pass, any other by \p other (\ref any_radix_pass's: 3 and 5 by their own butterflies).
+     *        (always the last pass), any other by \p other (\ref any_radix_pass's: 3 and 5 by their own butterflies).
      */
     template <std::floating_point R,
               typename Four,
@@ -845,9 +838,9 @@ namespace numerical {
     void stockham_passes(const fft_plan<R>& plan,
                          std::complex<R>*   data,
                          std::complex<R>*   work,
-                         Four&&             four,
-                         Sixteen&&          sixteen,
-                         Other&&            other) noexcept
+                         Four               four,
+                         Sixteen            sixteen,
+                         Other              other) noexcept
     {
       const std::size_t      n        {plan.length};
       std::complex<R>*       in       {data};
@@ -863,13 +856,12 @@ namespace numerical {
         else if (radix == 4) {
           four(current, stride, in, out, twiddles);
         }
-        else if (radix == 2 && current == 2) { // the last pass: no factor
+        else if (radix == 2) { // always the last pass (fft_radices): no factor
           radix_two_pass(stride, in, out);
-          roots += radix;
         }
         else {
           other(radix, current, stride, in, out, twiddles, roots, plan.small);
-          roots += (radix == 3 || radix == 5) ? 0 : radix; // their constants are the plan's
+          roots += radix > 5 ? radix : 0; // 3 and 5 take the plan's constants
         }
         twiddles += (radix - 1) * (current / radix - 1);
         current  /= radix;
@@ -888,7 +880,7 @@ namespace numerical {
     }
 
     /*!
-     * \brief Bluestein's transform of the \p plan's length in place in \p data, \p work its \ref fft_plan::work: the
+     * \brief Bluestein's transform of the \p plan's length in place in \p data, \p work its \ref fft_plan::work, the
      *        input times the chirp, padded to M; its transform times the chirp's spectrum; the inverse transform of that
      *        (`conj(fft(conj ·))`, then 1/M, exact), times the chirp. Products as \p Fused. Inlined into each caller.
      */
@@ -932,7 +924,7 @@ namespace numerical {
 #endif
 
     /*!
-     * \brief The forward transform of the \p plan's length, in place in \p data, \p work its \ref fft_plan::work: its
+     * \brief The forward transform of the \p plan's length, in place in \p data, \p work its \ref fft_plan::work, its
      *        Stockham passes, or Bluestein's convolution, the products fused where \p fused (\ref fft_fuses).
      */
     template <std::floating_point R>
@@ -978,7 +970,7 @@ namespace numerical {
       using type = C; //!< The type itself.
     };
 
-    //! \brief The types \ref numerical::fft transforms: `float`, `double` and their complex numbers.
+    //! \brief The types \ref numerical, :fft transforms: `float`, `double` and their complex numbers.
     template <typename T>
     concept fft_input = std::is_same_v<T, float> || std::is_same_v<T, double> || split_complex<T>;
 
