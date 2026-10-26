@@ -264,10 +264,12 @@ check-pins:
 test-gcc:
 	@$(MAKE) --no-print-directory test CXX=g++-14 BUILD=$(BUILD)/gcc
 
-# GCC 14 without the Apple AMX: NEON the default path, as on the aarch64 wheels and CI's linux-arm job. A test that
-# holds on the AMX by default (and on NEON only where it asks for that path) can fail there alone.
+# GCC 14 without the Apple AMX: NEON the default path, as on the aarch64 wheels and CI's linux-arm job, at the wheels'
+# -O2 (GCC's vectoriser fuses a complex product into ARMv8.3's FCMLA there, which this processor has, and not at -O3).
+# A test that holds on the AMX by default (and on NEON only where it asks for that path) can fail there alone.
 test-gcc-neon:
-	$(CMAKE) -S . -B $(BUILD)/gcc-neon -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-DNUMERICAL_NO_AMX
+	$(CMAKE) -S . -B $(BUILD)/gcc-neon -DCMAKE_CXX_COMPILER=g++-14 -DCMAKE_BUILD_TYPE=Release -DCMAKE_CXX_FLAGS=-DNUMERICAL_NO_AMX \
+	    "-DCMAKE_CXX_FLAGS_RELEASE=-O2 -DNDEBUG"
 	$(CMAKE) --build $(BUILD)/gcc-neon --parallel $(JOBS)
 	$(CTEST) --test-dir $(BUILD)/gcc-neon --output-on-failure
 

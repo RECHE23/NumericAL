@@ -279,15 +279,28 @@ namespace numerical {
       std::vector<std::pair<double_double, double_double>> high_; //!< cos and sin of (π/4)·b·m/n, b·m up to n.
     };
 
-    //! \brief `p · q` of complex numbers, each product rounded apart from the sum it enters (statements of their own).
+    //! \brief \p x, held in a register as its rounded value: GCC on arm64 with the complex-arithmetic unit (ARMv8.3's
+    //!        FCMLA: `-mcpu=apple-m1`, Neoverse V1) recognizes `a·b − c·d, a·d + c·b` as a complex product and fuses one
+    //!        product into the other's sum whatever `-ffp-contract` says; elsewhere \p x as it is.
+    template <std::floating_point R>
+    [[nodiscard]] NUMERICAL_ALWAYS_INLINE R rounded_alone(R x) noexcept
+    {
+#if defined(__GNUC__) && !defined(__clang__) && defined(__aarch64__)
+      __asm__ ("" : "+w" (x)); // NOLINT(hicpp-no-assembler): no builtin keeps a value from GCC's complex patterns
+#endif
+      return x;
+    }
+
+    //! \brief `p · q` of complex numbers, each product rounded apart from the sum it enters (statements of their own,
+    //!        \ref rounded_alone).
     template <std::floating_point R>
     [[nodiscard]] NUMERICAL_ALWAYS_INLINE std::complex<R> rounded_product(const std::complex<R>& p,
                                                                           const std::complex<R>& q) noexcept
     {
       const R rr {p.real() * q.real()};
-      const R ii {p.imag() * q.imag()};
+      const R ii {rounded_alone(p.imag() * q.imag())};
       const R ri {p.real() * q.imag()};
-      const R ir {p.imag() * q.real()};
+      const R ir {rounded_alone(p.imag() * q.real())};
       return {rr - ii, ri + ir};
     }
 
