@@ -14,6 +14,7 @@
 #include <random>
 #include <ranges>
 #include <type_traits>
+#include <utility>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -25,18 +26,24 @@ namespace {
   using numerical::detail::double_double;
 
   // The transform of x, its sum taken in double-double arithmetic with double-double roots: exact to some 10⁻³⁰.
+  // The n roots computed once, each term then a product and sums: n² evaluations of the roots' series took a third
+  // of the suite's time.
   std::vector<std::complex<double>> double_double_dft(const std::vector<std::complex<double>>& x)
   {
     using numerical::detail::dd_add;
     using numerical::detail::dd_mul;
     using numerical::detail::dd_negate;
-    const std::size_t                 n {x.size()};
-    std::vector<std::complex<double>> y(n);
+    const std::size_t                                    n {x.size()};
+    std::vector<std::complex<double>>                    y(n);
+    std::vector<std::pair<double_double, double_double>> roots(n);
+    for (std::size_t m {0}; m < n; ++m) {
+      roots[m] = numerical::detail::unit_root_parts(m, n);
+    }
     for (std::size_t k {0}; k < n; ++k) {
       double_double re {.hi = 0.0, .lo = 0.0};
       double_double im {.hi = 0.0, .lo = 0.0};
       for (std::size_t j {0}; j < n; ++j) {
-        const auto          parts {numerical::detail::unit_root_parts((j * k) % n, n)};
+        const auto&         parts {roots[(j * k) % n]};
         const double_double xr    {.hi = x[j].real(), .lo = 0.0};
         const double_double xi    {.hi = x[j].imag(), .lo = 0.0};
         re = dd_add(re, dd_add(dd_mul(xr, parts.first), dd_negate(dd_mul(xi, parts.second))));
