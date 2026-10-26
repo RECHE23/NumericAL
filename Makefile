@@ -135,7 +135,7 @@ coverage-build:
 	$(CMAKE) --build $(COV_DIR) --parallel $(JOBS)
 	rm -f $(COV_DIR)/tests-*.profraw $(COV_DIR)/shard-*.log
 	# One profile per process: a test's forked child counts too, and writes no file over the parent's. COV_SHARDS
-	# processes share the suite (NUMERICAL_TEST_SHARD, tests/main.cpp), each its output in a log of its own, printed
+	# processes share the suite (--shard=i/n, tests/main.cpp), each its output in a log of its own, printed
 	# once all are done; any failing fails the run.
 	@if [ $(COV_SHARDS) -le 1 ]; then \
 	  echo "LLVM_PROFILE_FILE=$(COV_DIR)/tests-%p.profraw $(COV_RUN) $(COV_DIR)/numerical_tests_bin"; \
@@ -143,8 +143,8 @@ coverage-build:
 	else \
 	  pids=""; \
 	  for i in $$(seq 0 $$(($(COV_SHARDS) - 1))); do \
-	    NUMERICAL_TEST_SHARD=$$i/$(COV_SHARDS) LLVM_PROFILE_FILE=$(COV_DIR)/tests-%p.profraw \
-	      $(COV_RUN) $(COV_DIR)/numerical_tests_bin > $(COV_DIR)/shard-$$i.log 2>&1 & pids="$$pids $$!"; \
+	    LLVM_PROFILE_FILE=$(COV_DIR)/tests-%p.profraw \
+	      $(COV_RUN) $(COV_DIR)/numerical_tests_bin --shard=$$i/$(COV_SHARDS) > $(COV_DIR)/shard-$$i.log 2>&1 & pids="$$pids $$!"; \
 	  done; \
 	  status=0; for pid in $$pids; do wait $$pid || status=1; done; \
 	  for i in $$(seq 0 $$(($(COV_SHARDS) - 1))); do echo "── shard $$i of $(COV_SHARDS)"; cat $(COV_DIR)/shard-$$i.log; done; \

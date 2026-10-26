@@ -2,7 +2,7 @@
 #include <charconv>
 #include <cstddef>
 #include <cstdio>
-#include <cstdlib>
+#include <span>
 #include <string_view>
 #include <system_error>
 #include <vector>
@@ -37,15 +37,19 @@ namespace {
   }
 } // namespace
 
-// The tests whose name holds the first argument, or all of them; those of one shard where NUMERICAL_TEST_SHARD names
-// it ("i/n").
+// The tests whose name holds the first argument, or all of them; of one shard alone where that argument is
+// "--shard=i/n", the filter then the second.
 int main(int    argc,
          char** argv)
 {
-  const char* const shard {std::getenv("NUMERICAL_TEST_SHARD")}; // NOLINT(concurrency-mt-unsafe): read before any thread starts
-  if (shard != nullptr && !keep_shard(shard)) {
-    (void)std::fputs("NUMERICAL_TEST_SHARD must be i/n, i below n\n", stderr);
-    return 2;
+  const std::span<char*>      arguments {argv, static_cast<std::size_t>(argc)};
+  constexpr std::string_view  prefix    {"--shard="};
+  if (arguments.size() > 1 && std::string_view {arguments[1]}.starts_with(prefix)) {
+    if (!keep_shard(std::string_view {arguments[1]}.substr(prefix.size()))) {
+      (void)std::fputs("--shard= takes i/n, i below n\n", stderr);
+      return 2;
+    }
+    return test::run_all(arguments.size() > 2 ? std::string_view {arguments[2]} : std::string_view {});
   }
   return test::run_all(argc, argv);
 }
