@@ -40,6 +40,14 @@ A change that can break code is listed under **Breaking** and held for a month's
   of another length no longer waits on it), its roots of unity computed on the threads (M1 Pro, 2²² points 61 → 27 ms,
   10⁶ 14.5 → 6.4 ms; the same roots).
 
+### Changed
+
+- **The eigenvectors of `eig` on the threads**: each vector's triangular solve, its normalisation and the final
+  transpose (the same bits on any number of threads; M1 Pro, order 800: real 284 → 215 ms, complex 968 → 715 ms).
+  `svd`'s `vh()`, the conjugate transpose of a wide matrix, by blocks on the threads; `svdvals` and `eigvalsh` find
+  their scale and copy the matrix by bands on the threads (a wide one by blocks); a complex matrix's finiteness check
+  on the threads, as a real one's. The same bits.
+
 ### Fixed
 
 - **The determinant of a singular matrix whose other pivots overflow** is 0, as documented, not NaN (∞·0): a finite

@@ -765,17 +765,47 @@ namespace numerical {
       }
     }
 
-    //! \brief The conjugate transpose of \p a.
+    /*!
+     * \brief The largest magnitude of \p entry over \p rows rows of \p cols, 1 where it is 0: by bands of rows on the
+     *        threads, each band's largest then the largest of those (a maximum, the same whatever the order).
+     */
+    template <typename Entry>
+    [[nodiscard]] double largest_magnitude(std::size_t  rows,
+                                           std::size_t  cols,
+                                           const Entry& entry)
+    {
+      const std::size_t   bands {(rows + svd_band - 1) / svd_band};
+      std::vector<double> largest(bands, 0.0);
+      parallel_for(bands, memory_element_weight * svd_band * cols, [&](std::size_t band) {
+                     double most {0.0};
+                     for (std::size_t i {band * svd_band}; i < std::min(rows, (band + 1) * svd_band); ++i) {
+                       for (std::size_t j {0}; j < cols; ++j) {
+                         most = std::max(most, static_cast<double>(std::abs(entry(i, j))));
+                       }
+                     }
+                     largest[band] = most;
+                   });
+      const double scale {std::accumulate(largest.begin(), largest.end(), 0.0, [](double x, double y) { return std::max(x, y); })};
+      return scale == 0.0 ? 1.0 : scale;
+    }
+
+    //! \brief The conjugate transpose of \p a, as \ref numerical::transpose copies (by blocks, on the threads).
     template <typename T>
     [[nodiscard]] matrix<T> adjoint(const matrix<T>& a)
     {
-      buffer<T> entries(a.rows() * a.cols(), T {});
-      for (std::size_t i {0}; i < a.rows(); ++i) {
-        for (std::size_t j {0}; j < a.cols(); ++j) {
-          entries[(j * a.rows()) + i] = conj_of(a(i, j));
-        }
-      }
-      return matrix<T> {a.cols(), a.rows(), std::move(entries)};
+      const std::size_t rows  {a.rows()};
+      const std::size_t cols  {a.cols()};
+      buffer<T>         entries(rows * cols);
+      const std::size_t piece {transpose_piece(cols * sizeof(T), rows * sizeof(T))};
+      parallel_for((cols + transpose_tile - 1) / transpose_tile, transpose_tile * rows, [&](std::size_t block) {
+                     const std::size_t j0 {block * transpose_tile};
+                     const std::size_t j1 {std::min(j0 + transpose_tile, cols)};
+                     for (std::size_t i0 {0}; i0 < rows; i0 += transpose_tile) {
+                       transpose_walk(j0, j1, i0, std::min(i0 + transpose_tile, rows), piece,
+                                      [&](std::size_t j, std::size_t i) { entries[(j * rows) + i] = conj_of(a(i, j)); });
+                     }
+                   });
+      return matrix<T> {cols, rows, std::move(entries)};
     }
 
     /*!
@@ -1965,19 +1995,31 @@ namespace numerical {
     const bool        tall {a.rows() >= a.cols()};
     const std::size_t rows {tall ? a.rows() : a.cols()};
     const std::size_t cols {tall ? a.cols() : a.rows()};
-    // Divided by its largest magnitude, as the decomposition is: the sums of squares overflow near 1e155.
-    double scale           {0.0};
-    for (std::size_t i {0}; i < a.rows(); ++i) {
-      for (std::size_t j {0}; j < a.cols(); ++j) {
-        scale = std::max(scale, static_cast<double>(std::abs(a(i, j))));
-      }
+    // Divided by its largest magnitude, as the decomposition is: the sums of squares overflow near 1e155. The largest
+    // found by bands of rows on the threads (a maximum, whatever the order); each entry divided once, copied by bands
+    // of rows, or by blocks where the matrix is read transposed.
+    const double scale   {detail::largest_magnitude(a.rows(), a.cols(), [&a](std::size_t i, std::size_t j) { return a(i, j); })};
+    const T      divisor {detail::from_carried<T>(scale)};
+    buffer<T>    entries(rows * cols);
+    if (tall) {
+      detail::parallel_for((rows + detail::svd_band - 1) / detail::svd_band, detail::memory_element_weight * detail::svd_band * cols, [&](std::size_t band) {
+                             for (std::size_t i {band * detail::svd_band}; i < std::min(rows, (band + 1) * detail::svd_band); ++i) {
+                               for (std::size_t j {0}; j < cols; ++j) {
+                                 entries[(i * cols) + j] = a(i, j) / divisor;
+                               }
+                             }
+                           });
     }
-    scale = scale == 0.0 ? 1.0 : scale;
-    buffer<T> entries(rows * cols, T {});
-    for (std::size_t i {0}; i < rows; ++i) {
-      for (std::size_t j {0}; j < cols; ++j) {
-        entries[(i * cols) + j] = (tall ? a(i, j) : detail::conj_of(a(j, i))) / detail::from_carried<T>(scale);
-      }
+    else {
+      const std::size_t piece {detail::transpose_piece(rows * sizeof(T), cols * sizeof(T))};
+      detail::parallel_for((rows + transpose_tile - 1) / transpose_tile, transpose_tile * cols, [&](std::size_t block) {
+                             const std::size_t i0 {block * transpose_tile};
+                             const std::size_t i1 {std::min(i0 + transpose_tile, rows)};
+                             for (std::size_t j0 {0}; j0 < cols; j0 += transpose_tile) {
+                               detail::transpose_walk(i0, i1, j0, std::min(j0 + transpose_tile, cols), piece,
+                                                      [&](std::size_t i, std::size_t j) { entries[(i * cols) + j] = detail::conj_of(a(j, i)) / divisor; });
+                             }
+                           });
     }
     buffer<T>      r {rows == cols ? std::move(entries) : detail::householder_reflect(std::move(entries), rows, cols).r};
     buffer<double> d {detail::square_singular_values(std::move(r), cols)};
@@ -2004,22 +2046,21 @@ namespace numerical {
       throw dimension_error("symmetric eigenvalues require a square matrix");
     }
     detail::require_finite_lower(a, "symmetric eigenvalues");
-    // Divided by its largest magnitude read, as the decompositions are: a sum of squares overflows near 1e155.
-    double scale {0.0};
-    for (std::size_t i {0}; i < n; ++i) {
-      for (std::size_t j {0}; j < i; ++j) {
-        scale = std::max(scale, static_cast<double>(std::abs(a(i, j))));
-      }
-      scale = std::max(scale, static_cast<double>(std::abs(detail::real_part(a(i, i)))));
-    }
-    scale = scale == 0.0 ? 1.0 : scale;
-    buffer<T> entries(n * n, T {});
-    for (std::size_t i {0}; i < n; ++i) {
-      for (std::size_t j {0}; j < i; ++j) {
-        entries[(i * n) + j] = a(i, j) / detail::from_carried<T>(scale);
-      }
-      entries[(i * n) + i] = detail::from_carried<T>(detail::real_part(a(i, i)) / scale);
-    }
+    // Divided by its largest magnitude read, as the decompositions are: a sum of squares overflows near 1e155. Found
+    // and divided by bands of rows on the threads, each row written whole (its upper part zero).
+    const double scale {detail::largest_magnitude(n, n, [&a](std::size_t i, std::size_t j) {
+                                                    return j < i ? a(i, j) : j == i ? detail::from_carried<T>(detail::real_part(a(i, i))) : T {};
+                                                  })};
+    buffer<T> entries(n * n);
+    detail::parallel_for((n + detail::svd_band - 1) / detail::svd_band, detail::memory_element_weight * detail::svd_band * n, [&](std::size_t band) {
+                           for (std::size_t i {band * detail::svd_band}; i < std::min(n, (band + 1) * detail::svd_band); ++i) {
+                             for (std::size_t j {0}; j < i; ++j) {
+                               entries[(i * n) + j] = a(i, j) / detail::from_carried<T>(scale);
+                             }
+                             entries[(i * n) + i] = detail::from_carried<T>(detail::real_part(a(i, i)) / scale);
+                             std::fill(entries.begin() + static_cast<std::ptrdiff_t>((i * n) + i + 1), entries.begin() + static_cast<std::ptrdiff_t>((i + 1) * n), T {});
+                           }
+                         });
     buffer<double> d(n, double {});
     if (n > 0) {
       buffer<double> off(n, double {});

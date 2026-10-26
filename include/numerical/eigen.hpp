@@ -2884,6 +2884,21 @@ namespace numerical {
       }
     }
 
+    //! \brief A triangular solve's work for \ref parallel_for over the \p n eigenvectors: `k²/2` products for vector `k`,
+    //!        `n²/6` on average.
+    [[nodiscard]] inline std::size_t vector_work(std::size_t n) noexcept
+    {
+      return std::max<std::size_t>(1, (n * n) / 6);
+    }
+
+    //! \brief The eigenvector \p task of \p n solves, the short ones and the long ones in turn (0, n − 1, 1, n − 2, …):
+    //!        each of \ref parallel_for's runs of tasks then as long as another.
+    [[nodiscard]] inline std::size_t balanced_index(std::size_t task,
+                                                    std::size_t n) noexcept
+    {
+      return task % 2 == 0 ? task / 2 : n - 1 - (task / 2);
+    }
+
     /*!
      * \brief The eigenvectors of the complex upper triangular \p t (row-major `n × n`) as the rows of `Xᵀ`: row `k`
      *        is `x` with `(T − t_kk I) x = 0`, `x_k = 1`, zero past `k`, as LAPACK's `ztrevc`.
@@ -2892,17 +2907,18 @@ namespace numerical {
                                                                       std::size_t                         n)
     {
       using C = std::complex<double>;
-      const double           smallest    {std::numeric_limits<double>::min() * (static_cast<double>(n) / schur_ulp)};
-      buffer<C>              xt(n * n, C {});
-      interleaved_components x           {buffer<double>(2 * n, 0.0), buffer<double>(2 * n, 0.0)};
-      for (std::size_t k {0}; k < n; ++k) {
-        const C lambda {t[(k * n) + k]};
-        x.set(k, C {1.0});
-        solve_upward(t, n, k, k, lambda, std::max(schur_ulp * modulus_1(lambda), smallest), x);
-        for (std::size_t l {0}; l <= k; ++l) {
-          xt[(k * n) + l] = x.get(l);
-        }
-      }
+      const double smallest    {std::numeric_limits<double>::min() * (static_cast<double>(n) / schur_ulp)};
+      buffer<C>    xt(n * n, C {});
+      parallel_for(n, vector_work(n), [&](std::size_t task) {
+                     const std::size_t      k {balanced_index(task, n)};
+                     interleaved_components x {buffer<double>(2 * (k + 1), 0.0), buffer<double>(2 * (k + 1), 0.0)};
+                     const C                lambda {t[(k * n) + k]};
+                     x.set(k, C {1.0});
+                     solve_upward(t, n, k, k, lambda, std::max(schur_ulp * modulus_1(lambda), smallest), x);
+                     for (std::size_t l {0}; l <= k; ++l) {
+                       xt[(k * n) + l] = x.get(l);
+                     }
+                   });
       return xt;
     }
 
@@ -2926,31 +2942,32 @@ namespace numerical {
       using C = std::complex<double>;
       const double      smallest {std::numeric_limits<double>::min() * (static_cast<double>(n) / schur_ulp)};
       real_eigenvectors out      {buffer<double>(n * n, 0.0), buffer<double>(n * n, 0.0)};
-      real_components   x        {buffer<double>(n, 0.0)};
-      split_components  y        {buffer<double>(n, 0.0), buffer<double>(n, 0.0)};
-      for (std::size_t k {0}; k < n; ++k) {
-        const double floor  {std::max(schur_ulp * (std::abs(re[k]) + std::abs(im[k])), smallest)};
-        double*      row_re {out.re.data() + (k * n)};
-        double*      row_im {out.im.data() + (k * n)};
-        if (im[k] == 0.0) {
-          x.set(k, 1.0);
-          solve_upward(t, n, k, k, re[k], floor, x);
-          std::copy(x.x.begin(), x.x.begin() + static_cast<std::ptrdiff_t>(k + 1), row_re);
-        }
-        else if (im[k] > 0.0) { // the pair's block is rows k, k + 1
-          const double b {t[(k * n) + k + 1]};
-          const double c {t[((k + 1) * n) + k]};
-          y.set(k, std::abs(b) >= std::abs(c) ? C {1.0} : C {-im[k] / c});
-          y.set(k + 1, std::abs(b) >= std::abs(c) ? C {0.0, im[k] / b} : C {0.0, 1.0});
-          solve_upward(t, n, k, k + 1, C {re[k], im[k]}, floor, y);
-          for (std::size_t l {0}; l <= k + 1; ++l) {
-            row_re[l]     = y.re[l];
-            row_im[l]     = y.im[l];
-            row_re[l + n] = y.re[l];
-            row_im[l + n] = -y.im[l];
-          }
-        }
-      }
+      parallel_for(n, vector_work(n), [&](std::size_t task) {
+                     const std::size_t k      {balanced_index(task, n)};
+                     const double      floor  {std::max(schur_ulp * (std::abs(re[k]) + std::abs(im[k])), smallest)};
+                     double*           row_re {out.re.data() + (k * n)};
+                     double*           row_im {out.im.data() + (k * n)};
+                     if (im[k] == 0.0) {
+                       real_components x {buffer<double>(k + 1, 0.0)};
+                       x.set(k, 1.0);
+                       solve_upward(t, n, k, k, re[k], floor, x);
+                       std::copy(x.x.begin(), x.x.begin() + static_cast<std::ptrdiff_t>(k + 1), row_re);
+                     }
+                     else if (im[k] > 0.0) { // the pair's block is rows k, k + 1; the second's row written here
+                       split_components y {buffer<double>(k + 2, 0.0), buffer<double>(k + 2, 0.0)};
+                       const double     b {t[(k * n) + k + 1]};
+                       const double     c {t[((k + 1) * n) + k]};
+                       y.set(k, std::abs(b) >= std::abs(c) ? C {1.0} : C {-im[k] / c});
+                       y.set(k + 1, std::abs(b) >= std::abs(c) ? C {0.0, im[k] / b} : C {0.0, 1.0});
+                       solve_upward(t, n, k, k + 1, C {re[k], im[k]}, floor, y);
+                       for (std::size_t l {0}; l <= k + 1; ++l) {
+                         row_re[l]     = y.re[l];
+                         row_im[l]     = y.im[l];
+                         row_re[l + n] = y.re[l];
+                         row_im[l + n] = -y.im[l];
+                       }
+                     }
+                   });
       return out;
     }
 
@@ -3059,28 +3076,20 @@ namespace numerical {
       if (!vectors) {
         return;
       }
-      for (std::size_t c {0}; c < n_; ++c) { // Vᵀ ← Vᵀ D, then the exchanges undone, on its columns
-        std::complex<double>* row {vt.data() + (c * n_)};
-        for (std::size_t i {balanced.low}; i < balanced.high; ++i) {
-          row[i] *= balanced.scale[i];
-        }
-        for (std::size_t s {balanced.swaps.size()}; s-- > 0;) {
-          std::swap(row[balanced.swaps[s].first], row[balanced.swaps[s].second]);
-        }
-        finish(row, values_[c], T {});
-      }
-      buffer<std::complex<double>> v(n_ * n_);
-      constexpr std::size_t        tile {32}; // the transpose by tiles: a column of vt read whole per cache line
-      for (std::size_t r0 {0}; r0 < n_; r0 += tile) {
-        for (std::size_t c0 {0}; c0 < n_; c0 += tile) {
-          for (std::size_t r {r0}; r < std::min(r0 + tile, n_); ++r) {
-            for (std::size_t c {c0}; c < std::min(c0 + tile, n_); ++c) {
-              v[(r * n_) + c] = vt[(c * n_) + r];
-            }
-          }
-        }
-      }
-      vectors_ = matrix<std::complex<double>> {n_, n_, std::move(v)};
+      // Vᵀ ← Vᵀ D, then the exchanges undone, on its columns, each row normalised; then a pair's second row, the
+      // first's conjugate. Each row its own, on the threads.
+      detail::parallel_for(n_, detail::memory_element_weight * 4 * n_, [&](std::size_t c) {
+                             std::complex<double>* row {vt.data() + (c * n_)};
+                             for (std::size_t i {balanced.low}; i < balanced.high; ++i) {
+                               row[i] *= balanced.scale[i];
+                             }
+                             for (std::size_t s {balanced.swaps.size()}; s-- > 0;) {
+                               std::swap(row[balanced.swaps[s].first], row[balanced.swaps[s].second]);
+                             }
+                             finish(row, values_[c], T {});
+                           });
+      detail::parallel_for(n_, detail::memory_element_weight * n_, [&](std::size_t c) { conjugate_second(vt.data() + (c * n_), values_[c], T {}); });
+      vectors_ = transpose(matrix<std::complex<double>> {n_, n_, std::move(vt)});
     }
 
     //! \brief The eigenvalues, in the order of the Schur form.
@@ -3111,8 +3120,8 @@ namespace numerical {
   private:
 
     //! \brief Normalises the eigenvector \p row (a row of `Vᵀ`) of a real matrix's eigenvalue \p value, as `dgeev`: a
-    //!        real one to unit norm; a pair's first to unit norm, its largest component real, its second the first's
-    //!        conjugate (the row above).
+    //!        real one to unit norm; a pair's first to unit norm, its largest component real (its second
+    //!        \ref conjugate_second's).
     void finish(std::complex<double>*       row,
                 const std::complex<double>& value,
                 double /*real*/) const
@@ -3123,15 +3132,30 @@ namespace numerical {
           row[r] = std::complex<double> {row[r].real() / norm, 0.0};
         }
       }
-      else if (value.imag() < 0.0) {
+      else if (value.imag() > 0.0) {
+        detail::normalize_vector(row, n_, true);
+      }
+    }
+
+    //! \brief A real matrix's pair's second eigenvector \p row (\p value's imaginary part negative): the first's, the
+    //!        row above, conjugated, once \ref finish has normalised it; nothing for any other.
+    void conjugate_second(std::complex<double>*       row,
+                          const std::complex<double>& value,
+                          double /*real*/) const
+    {
+      if (value.imag() < 0.0) {
         const std::complex<double>* first {row - n_};
         for (std::size_t r {0}; r < n_; ++r) {
           row[r] = std::conj(first[r]);
         }
       }
-      else {
-        detail::normalize_vector(row, n_, true);
-      }
+    }
+
+    //! \brief No pairs in a complex matrix's eigenvectors.
+    void conjugate_second(std::complex<double>* /*row*/,
+                          const std::complex<double>& /*value*/,
+                          const std::complex<double>& /*complex*/) const noexcept
+    {
     }
 
     //! \brief Normalises the eigenvector \p row of a complex matrix, as `zgeev`: to unit norm, its largest component
