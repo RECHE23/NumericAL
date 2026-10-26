@@ -2,12 +2,19 @@
  * \file fft.hpp
  * \brief The discrete Fourier transform of a tensor along an axis, as `numpy.fft.fft` and `numpy.fft.ifft` compute it.
  *
- * A length that is a power of two runs Stockham passes of radix 4 (and one of radix 2 where the exponent is odd), each
- * reading and writing in order; any other length the transform's sum itself, term after term, until its own algorithm
- * lands. The twiddle factors are computed in double-double arithmetic by one fixed sequence of operations, each a sum
- * or an explicit fused multiply-add that no compiler may contract otherwise, then rounded once: the same factors on
- * every machine, whatever its `sin` and `cos`. A butterfly's products are rounded apart from its sums, so a transform
- * has the same bits on every path, any number of threads, alone or among others.
+ * Every length runs in O(n log n). A length whose prime factors are at most 61 runs Stockham passes, each reading and
+ * writing in order, their radices fixed by the length alone (`fft_radices`): its powers of two first (4, then 16 while
+ * 16 points remain, then 4), then 3, 5 and 7, then each other prime, a lone factor 2 last. Radices 3 and 5 take their own
+ * butterflies, a larger prime its r-point sum. A length with a larger prime factor runs Bluestein's convolution over
+ * three transforms of a power of two. The twiddle factors are computed in double-double arithmetic by one fixed sequence
+ * of operations, each a sum or an explicit fused multiply-add that no compiler may contract otherwise, then rounded once:
+ * the same factors on every machine, whatever its `sin` and `cos`.
+ *
+ * Two sets of bits, each the same on every machine and compiler, any number of threads, a line alone or among others,
+ * whatever its axis: the portable path's, whose butterflies round each product apart from its sum (built, as the
+ * library's builds are, with no contraction across statements: `-ffp-contract=on` or `off`), and the vector paths'
+ * (NEON, AMX, AVX2, AVX-512 alike), which fuse them. A change to a length's radices or to a butterfly's arithmetic changes
+ * that length's last bits, and is noted as such.
  */
 #ifndef NUMERICAL_FFT_HPP
 #define NUMERICAL_FFT_HPP

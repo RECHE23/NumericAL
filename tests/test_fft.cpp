@@ -393,3 +393,52 @@ TEST(every_length_round_trips_on_every_path)
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
+
+namespace {
+  // Output k of the transform of x, its sum in double-double arithmetic with double-double roots (one row of
+  // double_double_dft): exact to some 10⁻³⁰ of the sum of the terms' magnitudes.
+  std::complex<double> double_double_bin(const std::vector<std::complex<double>>&  x,
+                                         const numerical::detail::unit_roots&      roots,
+                                         std::size_t                               k)
+  {
+    using numerical::detail::dd_add;
+    using numerical::detail::dd_mul;
+    using numerical::detail::dd_negate;
+    const std::size_t n     {x.size()};
+    double_double     re    {.hi = 0.0, .lo = 0.0};
+    double_double     im    {.hi = 0.0, .lo = 0.0};
+    std::size_t       power {0}; // j·k mod n
+    for (std::size_t j {0}; j < n; ++j) {
+      const auto          parts {roots.parts(power)};
+      const double_double xr    {.hi = x[j].real(), .lo = 0.0};
+      const double_double xi    {.hi = x[j].imag(), .lo = 0.0};
+      re    = dd_add(re, dd_add(dd_mul(xr, parts.first), dd_negate(dd_mul(xi, parts.second))));
+      im    = dd_add(im, dd_add(dd_mul(xr, parts.second), dd_mul(xi, parts.first)));
+      power = (power + k) % n;
+    }
+    return {re.hi, im.hi};
+  }
+} // namespace
+
+// Long transforms, one of each kind of length (radices 4 and 16; 3; 3, 5 and 7; Bluestein's): 16 drawn outputs against
+// their sums in double-double arithmetic, each within 2·ε·log₂ n of the input's norm, as a transform's error grows.
+TEST(long_transforms_are_within_epsilon_log_n_of_their_exact_outputs)
+{
+  for (const std::size_t n : {std::size_t {1} << 20, std::size_t {3} << 18, std::size_t {44100}, std::size_t {20014}}) {
+    // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+    std::mt19937_64                         draws {n};
+    const std::vector<std::complex<double>> x     {drawn<double>(n, draws)};
+    const tensor<std::complex<double>>      got   {numerical::fft(tensor<std::complex<double>> {{n}, x})};
+    const numerical::detail::unit_roots     roots {n};
+    double                                  norm  {0.0};
+    for (const std::complex<double>& v : x) {
+      norm += std::norm(v);
+    }
+    const double                               bound {2.0 * std::numeric_limits<double>::epsilon() * std::log2(static_cast<double>(n)) * std::sqrt(norm)};
+    std::uniform_int_distribution<std::size_t> pick  {0, n - 1};
+    for (int sample {0}; sample < 16; ++sample) {
+      const std::size_t k {pick(draws)};
+      EXPECT(std::abs(got.data()[k] - double_double_bin(x, roots, k)) < bound);
+    }
+  }
+}
