@@ -8,6 +8,19 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **The fast Fourier transform, as `numpy.fft`** (`fft.hpp`; `numerical.fft` in Python): `fft`, `ifft`, `rfft`,
+  `irfft`, `hfft`, `ihfft` and `fftshift` along an axis, in C++; `numerical.fft`'s `fft`, `ifft`, `fft2`, `ifft2`,
+  `fftn`, `ifftn`, `rfft`, `irfft`, `rfft2`, `irfft2`, `rfftn`, `irfftn`, `hfft`, `ihfft`, `fftfreq`, `rfftfreq`,
+  `fftshift` and `ifftshift` with NumPy's points, axes, scalings (`norm`) and errors; `float32` and `complex64` in
+  single precision. Any length: Stockham passes of radices 2, 3, 4, 5, 8 and 16, every other prime to 61 by its own
+  sum, Bluestein's convolution past them; twiddle factors computed in double-double (each the correctly rounded root);
+  a real transform of even length by the complex one of half its length. Within a fraction of ε·log₂ n of the exact
+  transform (RMS). Two sets of bits only, each the same on every machine and compiler: the portable path's, its
+  products rounded apart, and the vector paths' (NEON, AMX, AVX2, AVX-512), one fused complex product; a line has the
+  same bits alone, in a batch and on any threads. Plans kept per length and type (the 32 most recent). Six AVX2 cores,
+  one line: 1000 complex points in 4.3 µs, 1.2–2.0× FFTW's time for complex transforms, rfft 1.7–1.9× faster than fft.
+
 ## 2026.10.38 — 2026-10-25
 
 ### Changed

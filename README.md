@@ -109,6 +109,12 @@ Small and complete, grown measured, honest about what is not yet here:
   `"i,j->ij"` the outer product, `"ij->i"` a row reduction. It takes one or more
   operands and sums over every label absent from the output, in a deterministic
   order.
+- `numerical::fft` (`fft.hpp`) — the discrete Fourier transform along an axis, as `numpy.fft`: `fft`, `ifft`, `rfft`,
+  `irfft`, `hfft`, `ihfft` and `fftshift`, NumPy's points (cut or padded with zeros) and scalings (`fft_norm`). Any
+  length: Stockham passes of radices 2 to 16 and every prime to 61, Bluestein's convolution past them; twiddle factors
+  computed in double-double, so each is the correctly rounded root. Two sets of bits only, each the same on every
+  machine and compiler: the portable path's (products rounded apart) and the vector paths' (NEON, AMX, AVX2 and
+  AVX-512: one fused complex product).
 - Arithmetic on tensors (`tensor_ops.hpp`): `+ - * /` element by element with
   NumPy's broadcasting, `sum`, `mean`, `max`, `min` of every element or along an
   axis (sums by NumPy's pairwise blocks), `reshape`, and `zeros`, `ones`, `full`,
@@ -123,7 +129,7 @@ Small and complete, grown measured, honest about what is not yet here:
   wheels carry it (see *BLAS and LAPACK for other programs*); CMake builds it with `-DNUMERICAL_BUILD_BLAS=ON`.
 
 **Grows in as measured:** sparse storage, banded and LDLᵀ factorisations, the rest of the BLAS/LAPACK interface,
-FFT, numeric autodiff, iterative solvers, numerical integration, arbitrary precision.
+numeric autodiff, iterative solvers, numerical integration, arbitrary precision.
 
 ## Build
 
@@ -184,6 +190,7 @@ numerical.einsum("i,i->", [1, 2, 3], [1, 2, 3])       # dot
 numerical.einsum("ij,jk", a, [[5, 6], [7, 8]])        # implicit output, as NumPy: "ij,jk->ik"
 numerical.einsum("...ij,...jk->...ik", s, t)          # an ellipsis, its axes broadcast, as NumPy's
 numerical.solve(a, [1.0, 1.0])                         # a @ x = b
+numerical.fft.rfft([1.0, 2.0, 3.0, 4.0])               # numpy.fft's names: fft, ifft, fftn, rfft, irfft, fftfreq…
 ```
 
 A failure is a `numerical.LinAlgError`: a `ValueError`, as `numpy.linalg.LinAlgError` is,
