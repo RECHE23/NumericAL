@@ -1,13 +1,14 @@
 name: AVX-512
 
-# The AVX-512 kernels under Intel's emulator, which takes about ten minutes: on a push that touches the x86-64
-# kernels, weekly, on demand, and before every release (RELEASE_CI: make release refuses a HEAD without a green run
-# and prints the command that starts one). A push elsewhere does not wait on it.
+# The AVX-512 kernels under Intel's emulator: on a push that touches the x86-64 kernels, weekly, on demand, and before
+# every release (RELEASE_CI: make release refuses a HEAD without a green run and prints the command that starts one).
+# A push elsewhere does not wait on it. Two jobs side by side, the instrumented suite shared among the runner's cores
+# and the fuzz campaigns, each a run of the emulator.
 on:
   push:
     branches: [main]
     paths: ['include/numerical/x86.hpp', 'include/numerical/gemm.hpp', 'include/numerical/simd.hpp',
-            '.github/workflows/avx512.yml']
+            'include/numerical/fft.hpp', '.github/workflows/avx512.yml']
   schedule:
     - cron: '41 5 * * 0' # weekly, Sunday 05:41 UTC
   workflow_dispatch:
@@ -16,14 +17,44 @@ permissions:
   contents: read
 
 jobs:
-  # The AVX-512 kernels, which no hosted runner is sure to have: the C++ suite and a fuzz campaign under Intel's
-  # Software Development Emulator as a Skylake server, which cpuid then reports. The run fails unless the kernel
-  # in use is "avx512", so an emulator that stopped emulating cannot pass for one.
+  # The AVX-512 kernels, which no hosted runner is sure to have, under Intel's Software Development Emulator as a
+  # Skylake server, which cpuid then reports: the C++ suite, instrumented, every line and function of x86.hpp and
+  # fft.hpp run. The emulator runs one thread at a time: four processes share the suite (COV_SHARDS), one a core.
   avx512:
     runs-on: ubuntu-latest
-    # The emulator's speed is the host's: on a runner without AVX-512 of its own every such instruction is emulated, and
-    # the same run took 10 minutes on one host, 55 on another.
-    timeout-minutes: 120
+    # The emulator's speed is the host's: on a runner without AVX-512 of its own every such instruction is emulated.
+    timeout-minutes: 90
+    env:
+      SDE_URL: https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
+      SDE_SHA256: 94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: RECHE23/sciforge
+          ref: v2026.10.6
+          path: sciforge
+      - name: The host's processor, which sets the emulator's speed
+        run: lscpu | grep -E 'Model name|Flags|^CPU\(s\)' | sed -E 's/(Flags:).*(avx512f).*/\1 … \2 …/'
+      - name: Fetch the emulator
+        run: |
+          curl -sSfL -A 'Mozilla/5.0' -o "$RUNNER_TEMP/sde.tar.xz" "$SDE_URL"
+          echo "$SDE_SHA256  $RUNNER_TEMP/sde.tar.xz" | sha256sum -c -
+          mkdir "$RUNNER_TEMP/sde" && tar -xJf "$RUNNER_TEMP/sde.tar.xz" -C "$RUNNER_TEMP/sde" --strip-components=1
+      # The C++ suite once, instrumented: every test must pass, and every line and function of x86.hpp and fft.hpp
+      # (which the macOS gate's 100 % coverage does not compile) must run, the tests taking every path the emulated
+      # processor has.
+      - name: The C++ suite and every line of the x86-64 kernels, under the emulator
+        run: >
+          make coverage-x86 COV_CXX=clang++-18 LLVM_COV=llvm-cov-18 PROFDATA=llvm-profdata-18
+          SCIFORGE_INCLUDE="$PWD/sciforge/include" SCIFORGE_LINT="$PWD/sciforge/lint"
+          COV_RUN="$RUNNER_TEMP/sde/sde64 -skx --" COV_SHARDS=$(nproc)
+
+  # The fuzz campaigns against NumPy on the AVX-512 kernels, beside the suite. The run fails unless the kernel in use
+  # is "avx512", so an emulator that stopped emulating cannot pass for one.
+  avx512-fuzz:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
     env:
       SDE_URL: https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
       SDE_SHA256: 94e97d623fec54385686e1e7ba65ebc9941748c05ee451423948334892bf2b50
@@ -37,32 +68,27 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.14'
-      - name: The host's processor, which sets the emulator's speed
-        run: lscpu | grep -E 'Model name|Flags' | sed -E 's/(Flags:).*(avx512f).*/\1 … \2 …/'
       - name: Fetch the emulator
         run: |
           curl -sSfL -A 'Mozilla/5.0' -o "$RUNNER_TEMP/sde.tar.xz" "$SDE_URL"
           echo "$SDE_SHA256  $RUNNER_TEMP/sde.tar.xz" | sha256sum -c -
           mkdir "$RUNNER_TEMP/sde" && tar -xJf "$RUNNER_TEMP/sde.tar.xz" -C "$RUNNER_TEMP/sde" --strip-components=1
-      - name: Build the tests and the extension
+      - name: Build the extension
         run: |
-          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DSCIFORGE_INCLUDE_DIR="$PWD/sciforge/include"
-          cmake --build build -j4
           python -m pip install numpy setuptools
           SCIFORGE_INCLUDE="$PWD/sciforge/include" python setup.py -q build_ext --inplace --force
-      - name: A fuzz campaign on the AVX-512 kernels
+      # The two campaigns side by side, one a core; each prints its own report once both are done.
+      - name: Fuzz campaigns on the AVX-512 kernels
         env:
           PYTHONPATH: python
         run: |
           sde="$RUNNER_TEMP/sde/sde64 -skx --"
           path=$($sde python -c 'import numerical; print(numerical.gemm_path())')
           test "$path" = avx512 || { echo "::error::the emulated processor runs the $path kernel, not avx512"; exit 1; }
-          $sde python fuzz/linalg.py --cases 60
-          $sde python fuzz/fft.py --cases 100
-      # The C++ suite once, instrumented: every test must pass, and every line and function of x86.hpp (which the
-      # macOS gate's 100 % coverage does not compile) must run, the tests taking every path the emulated processor has.
-      - name: The C++ suite and every line of the x86-64 kernels, under the emulator
-        run: >
-          make coverage-x86 COV_CXX=clang++-18 LLVM_COV=llvm-cov-18 PROFDATA=llvm-profdata-18
-          SCIFORGE_INCLUDE="$PWD/sciforge/include" SCIFORGE_LINT="$PWD/sciforge/lint"
-          COV_RUN="$RUNNER_TEMP/sde/sde64 -skx --"
+          $sde python fuzz/linalg.py --cases 60 > linalg.log 2>&1 & linalg=$!
+          $sde python fuzz/fft.py --cases 100 > fft.log 2>&1 & fft=$!
+          status=0
+          wait $linalg || status=1
+          wait $fft || status=1
+          cat linalg.log fft.log
+          exit $status

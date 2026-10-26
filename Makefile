@@ -126,14 +126,30 @@ COV_DIR  := $(BUILD)/coverage
 
 # COV_RUN prefixes the test run (an emulator: see coverage-x86).
 COV_RUN ?=
+# COV_SHARDS: the processes the test run is shared among (an emulator runs one thread at a time: see coverage-x86).
+COV_SHARDS ?= 1
 
 coverage-build:
 	$(CMAKE) -S . -B $(COV_DIR) -DNUMERICAL_COVERAGE=ON -DCMAKE_CXX_COMPILER=$(COV_CXX) \
 	    -DSCIFORGE_INCLUDE_DIR=$(abspath $(SCIFORGE_INCLUDE))
 	$(CMAKE) --build $(COV_DIR) --parallel $(JOBS)
-	rm -f $(COV_DIR)/tests-*.profraw
-	# One profile per process: a test's forked child counts too, and writes no file over the parent's.
-	LLVM_PROFILE_FILE=$(COV_DIR)/tests-%p.profraw $(COV_RUN) $(COV_DIR)/numerical_tests_bin
+	rm -f $(COV_DIR)/tests-*.profraw $(COV_DIR)/shard-*.log
+	# One profile per process: a test's forked child counts too, and writes no file over the parent's. COV_SHARDS
+	# processes share the suite (NUMERICAL_TEST_SHARD, tests/main.cpp), each its output in a log of its own, printed
+	# once all are done; any failing fails the run.
+	@if [ $(COV_SHARDS) -le 1 ]; then \
+	  echo "LLVM_PROFILE_FILE=$(COV_DIR)/tests-%p.profraw $(COV_RUN) $(COV_DIR)/numerical_tests_bin"; \
+	  LLVM_PROFILE_FILE=$(COV_DIR)/tests-%p.profraw $(COV_RUN) $(COV_DIR)/numerical_tests_bin; \
+	else \
+	  pids=""; \
+	  for i in $$(seq 0 $$(($(COV_SHARDS) - 1))); do \
+	    NUMERICAL_TEST_SHARD=$$i/$(COV_SHARDS) LLVM_PROFILE_FILE=$(COV_DIR)/tests-%p.profraw \
+	      $(COV_RUN) $(COV_DIR)/numerical_tests_bin > $(COV_DIR)/shard-$$i.log 2>&1 & pids="$$pids $$!"; \
+	  done; \
+	  status=0; for pid in $$pids; do wait $$pid || status=1; done; \
+	  for i in $$(seq 0 $$(($(COV_SHARDS) - 1))); do echo "── shard $$i of $(COV_SHARDS)"; cat $(COV_DIR)/shard-$$i.log; done; \
+	  exit $$status; \
+	fi
 	$(PROFDATA) merge -sparse $(COV_DIR)/tests-*.profraw -o $(COV_DIR)/tests.profdata
 
 coverage: coverage-build
@@ -145,13 +161,14 @@ coverage: coverage-build
 	    cat docs/coverage-style.css >> $(COV_DIR)/html/style.css
 	@echo "HTML coverage report: $(COV_DIR)/html/index.html"
 
-# The x86-64 kernels (x86.hpp), which the macOS gate does not compile, every line and function run: on an x86-64
-# processor with AVX-512, or under COV_RUN (CI: Intel's emulator as a Skylake server), the tests take every path.
+# The x86-64 kernels (x86.hpp, and fft.hpp's lanes), which the macOS gate does not compile, every line and function
+# run: on an x86-64 processor with AVX-512, or under COV_RUN (CI: Intel's emulator as a Skylake server), the tests take
+# every path.
 coverage-x86: coverage-build
 	@$(LLVM_COV) report $(COV_DIR)/numerical_tests_bin -instr-profile=$(COV_DIR)/tests.profdata \
-	    $(CURDIR)/include/numerical/x86.hpp | tee $(COV_DIR)/x86.txt
-	@awk '/^TOTAL/ { found = 1; if ($$6 != 0 || $$9 != 0) { print "coverage-x86: a line or function of x86.hpp never ran"; \
-	    exit 1 } } END { if (!found) { print "coverage-x86: no report for x86.hpp"; exit 1 } }' $(COV_DIR)/x86.txt
+	    $(CURDIR)/include/numerical/x86.hpp $(CURDIR)/include/numerical/fft.hpp | tee $(COV_DIR)/x86.txt
+	@awk '/^TOTAL/ { found = 1; if ($$6 != 0 || $$9 != 0) { print "coverage-x86: a line or function of x86.hpp or fft.hpp never ran"; \
+	    exit 1 } } END { if (!found) { print "coverage-x86: no report for x86.hpp and fft.hpp"; exit 1 } }' $(COV_DIR)/x86.txt
 
 coverage-html:
 	@mkdir -p $(COV_DIR)
