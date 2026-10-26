@@ -900,6 +900,36 @@ namespace numerical {
       std::shared_ptr<const fft_plan<R>> inner;      //!< The plan of M points.
     };
 
+    /*!
+     * \brief The fewest bytes of complex numbers a transform takes in four steps (\ref four_step_plan): fewer stay in
+     *        the caches through the passes of one transform, faster on a thread alone (six AVX2 cores: complex128 2¹⁷
+     *        points 2.9 ms in passes, 3.2 ms in four steps; 2²⁰ points 21.9 against 17.1 ms, 2²² 208 against 80 ms, all
+     *        threads 174 against 48 ms). By the length and the type alone, so that a transform's bits are its own on any
+     *        threads.
+     */
+    inline constexpr std::size_t fft_four_step_least {std::size_t {1} << 24};
+
+    //! \brief The complex numbers past each row of the four steps' working space: rows a power of two of bytes apart
+    //!        fall in a few sets of the first-level cache, a column's elements evicting one another.
+    inline constexpr std::size_t fft_four_step_pad {8};
+
+    /*!
+     * \brief A transform of `n = n1·n2` points in four steps (Bailey's), each a batch of lines the threads share: `x` as
+     *        `n2` rows of `n1`, `x[j1 + n1·j2]`; each of its `n1` columns transformed in place (\ref column_plan, `n2`
+     *        points, a line's transform as \ref transform_axis's along a first axis); each `(k2, j1)` times `w^{j1·k2}`
+     *        (\ref twiddles); each of its `n2` rows transformed (\ref row_plan, `n1` points), `X[k2 + n2·k1]` row
+     *        `k2`'s `k1`; transposed into place. Each element's operations fixed by `n` alone: its bits on any threads.
+     */
+    template <std::floating_point R>
+    struct four_step_plan
+    {
+      std::size_t                        columns {0}; //!< n1: the columns, the points of each row.
+      std::size_t                        rows    {0}; //!< n2: the rows, the points of each column.
+      std::shared_ptr<const fft_plan<R>> column_plan; //!< The plan of `n2` points.
+      std::shared_ptr<const fft_plan<R>> row_plan;    //!< The plan of `n1` points.
+      std::vector<std::complex<R>>       twiddles;    //!< `w^{j1·k2}`, `e^{−2πi j1·k2/n}`, at `k2·n1 + j1`.
+    };
+
     //! \brief The factors and passes of a transform of one length, built once and shared.
     template <std::floating_point R>
     struct fft_plan
@@ -912,6 +942,7 @@ namespace numerical {
       //!< Each pass of a prime radix past 5: `e^{−2πi m/r}` for m below r, the passes in order.
       std::array<std::complex<R>, 16>   sixteenths; //!< `e^{−2πi k/16}`: a radix-16 butterfly's own factors.
       std::optional<bluestein_plan<R>>  bluestein;  //!< Where the length has a prime factor past fft_largest_radix.
+      std::optional<four_step_plan<R>>  four_step;  //!< Where the length is at least fft_four_step_least, in passes.
       std::size_t                       work {0};   //!< The working space a transform takes beside its data.
       small_radix_constants<R>          small;      //!< The radix-3 and radix-5 butterflies' constants.
     };
@@ -920,7 +951,27 @@ namespace numerical {
     void forward_fft(const fft_plan<R>& plan,
                      std::complex<R>*   data,
                      std::complex<R>*   work,
-                     bool               fused) noexcept;
+                     bool               fused);
+
+    /*!
+     * \brief The columns `n1` of a transform of \p n points of \p bytes each in four steps: the largest divisor of `n`
+     *        at most `√n`, `n` of at least \ref fft_four_step_least bytes; else 0, one transform of passes. `n` is taken
+     *        in passes (its prime factors at most fft_largest_radix: make_fft_plan settles Bluestein's lengths first). Such an `n`, 2²⁰ and more, has a divisor from
+     *        16 to `√n` (the product of its smallest prime factors first past 15 is at most 15·61), so that neither side
+     *        is short.
+     */
+    [[nodiscard]] inline std::size_t four_step_columns(std::size_t n,
+                                                       std::size_t bytes)
+    {
+      if (n < fft_four_step_least / bytes) {
+        return 0;
+      }
+      std::size_t columns {static_cast<std::size_t>(std::sqrt(static_cast<double>(n)))}; // ⌊√n⌋: sqrt rounds correctly, n below 2⁵²
+      while (n % columns != 0) {
+        --columns;
+      }
+      return columns;
+    }
 
     //! \brief The \ref fft_plan of length \p n.
     template <std::floating_point R>
@@ -929,7 +980,8 @@ namespace numerical {
       using C = std::complex<R>;
       const unit_roots roots {n};
       const auto       narrow {[](std::complex<double> value) { return C {static_cast<R>(value.real()), static_cast<R>(value.imag())}; }};
-      fft_plan<R>      plan {.length = n, .radices = fft_radices(n), .twiddles = {}, .radix_roots = {}, .sixteenths = {}, .bluestein = {}, .work = n, .small = make_small_radix_constants<R>()};
+      fft_plan<R>      plan {.length = n, .radices = fft_radices(n), .twiddles = {}, .radix_roots = {}, .sixteenths = {}, .bluestein = {},
+                             .four_step = {}, .work = n, .small = make_small_radix_constants<R>()};
       for (std::size_t k {0}; k < 16; ++k) {
         plan.sixteenths[k] = narrow(unit_root(k, 16));
       }
@@ -946,10 +998,26 @@ namespace numerical {
           b.spectrum[j]                               = std::conj(b.chirp[j]);
           b.spectrum[(b.padded - j) % b.padded]       = std::conj(b.chirp[j]);
         }
-        std::vector<C> scratch(b.padded);
+        std::vector<C> scratch(b.inner->work);
         forward_fft(*b.inner, b.spectrum.data(), scratch.data(), false); // the portable arithmetic: the same on every path
         plan.work      = b.padded + b.inner->work;                       // the convolution's sequence, then its transforms' space
         plan.bluestein = std::move(b);
+        return plan;
+      }
+      const std::size_t columns {four_step_columns(n, sizeof(C))};
+      if (columns != 0) {
+        four_step_plan<R> f {.columns = columns, .rows = n / columns, .column_plan = {}, .row_plan = {}, .twiddles = {}};
+        f.column_plan = std::make_shared<const fft_plan<R>>(make_fft_plan<R>(f.rows));
+        f.row_plan    = std::make_shared<const fft_plan<R>>(make_fft_plan<R>(f.columns));
+        f.twiddles.resize(n);
+        for (std::size_t k2 {0}; k2 < f.rows; ++k2) {
+          for (std::size_t j1 {0}; j1 < f.columns; ++j1) {
+            f.twiddles[(k2 * f.columns) + j1] = narrow(roots.root((j1 * k2) % n));
+          }
+        }
+        plan.radices.clear();
+        plan.work      = f.rows * (f.columns + fft_four_step_pad); // the columns' transforms, transposed into place
+        plan.four_step = std::move(f);
         return plan;
       }
       std::size_t current {n};
@@ -1515,7 +1583,7 @@ namespace numerical {
               std::floating_point R>
     NUMERICAL_ALWAYS_INLINE void bluestein_body(const fft_plan<R>& plan,
                                                 std::complex<R>*   data,
-                                                std::complex<R>*   work) noexcept
+                                                std::complex<R>*   work)
     {
       using C = std::complex<R>;
       const bluestein_plan<R>& b     {*plan.bluestein};
@@ -1543,7 +1611,7 @@ namespace numerical {
     template <std::floating_point R>
     NUMERICAL_TARGET("avx2,fma") void bluestein_x86(const fft_plan<R>& plan,
                                                     std::complex<R>*   data,
-                                                    std::complex<R>*   work) noexcept
+                                                    std::complex<R>*   work)
     {
       bluestein_body<true>(plan, data, work);
     }
@@ -1557,6 +1625,58 @@ namespace numerical {
     inline constexpr std::size_t fft_avx512_shortest {256};
 
 #endif
+    //! \brief `t[i] = w[i] · t[i]` for \p count elements, as \p Fused (\ref twiddled). Inlined into each caller.
+    template <bool Fused,
+              std::floating_point R>
+    NUMERICAL_ALWAYS_INLINE void twiddle_run_body(std::complex<R>*       t,
+                                                  const std::complex<R>* w,
+                                                  std::size_t            count) noexcept
+    {
+      for (std::size_t i {0}; i < count; ++i) {
+        t[i] = twiddled<Fused>(w[i], t[i]);
+      }
+    }
+
+#ifdef NUMERICAL_X86_COMPILED
+    //! \brief \ref twiddle_run_body fused, built for AVX2 with FMA: each `std::fma` one instruction.
+    template <std::floating_point R>
+    NUMERICAL_TARGET("avx2,fma") void twiddle_run_x86(std::complex<R>*       t,
+                                                      const std::complex<R>* w,
+                                                      std::size_t            count) noexcept
+    {
+      twiddle_run_body<true>(t, w, count);
+    }
+
+#endif
+
+    //! \brief \ref twiddle_run_body on the path in use.
+    template <std::floating_point R>
+    void twiddle_run(std::complex<R>*       t,
+                     const std::complex<R>* w,
+                     std::size_t            count,
+                     bool                   fused) noexcept
+    {
+      if (!fused) {
+        twiddle_run_body<false>(t, w, count);
+        return;
+      }
+#ifdef NUMERICAL_X86_COMPILED
+      twiddle_run_x86(t, w, count);
+#else
+      twiddle_run_body<true>(t, w, count);
+#endif
+    }
+
+    /*!
+     * \brief The transform of the \p plan's \ref four_step_plan in place in \p data, \p work its \ref fft_plan::work
+     *        (`n`: the columns' transforms, transposed back into \p data), the products fused where \p fused.
+     */
+    template <std::floating_point R>
+    void four_step_fft(const fft_plan<R>& plan,
+                       std::complex<R>*   data,
+                       std::complex<R>*   work,
+                       bool               fused);
+
     /*!
      * \brief The forward transform of the \p plan's length, in place in \p data, \p work its \ref fft_plan::work, its
      *        Stockham passes, or Bluestein's convolution, the products fused where \p fused (\ref fft_fuses).
@@ -1565,8 +1685,12 @@ namespace numerical {
     void forward_fft(const fft_plan<R>& plan,
                      std::complex<R>*   data,
                      std::complex<R>*   work,
-                     bool               fused) noexcept
+                     bool               fused)
     {
+      if (plan.four_step) {
+        four_step_fft(plan, data, work, fused);
+        return;
+      }
       if (plan.bluestein) {
         if (!fused) {
           bluestein_body<false>(plan, data, work);
@@ -1846,6 +1970,107 @@ namespace numerical {
     //!        and written as that many neighbours, where one line at a time took one element of each row.
     inline constexpr std::size_t fft_column_block {8};
 
+    //! \brief \p from, \p rows rows of \p columns (\p apart from one another), transposed into \p to (\p columns rows of
+    //!        \p rows), by tiles that the threads share.
+    template <std::floating_point R>
+    void four_step_transpose(const std::complex<R>* from,
+                             std::size_t            rows,
+                             std::size_t            columns,
+                             std::size_t            apart,
+                             std::complex<R>*       to)
+    {
+      const std::size_t bands {(rows + transpose_tile - 1) / transpose_tile};
+      const std::size_t piece {transpose_piece(apart * sizeof(std::complex<R>), rows * sizeof(std::complex<R>))};
+      parallel_for(bands, transpose_tile * columns, [&](std::size_t band) {
+                     const std::size_t i0 {band * transpose_tile};
+                     transpose_walk(i0, std::min(i0 + transpose_tile, rows), 0, columns, piece, [&](std::size_t i, std::size_t j) {
+                                      to[(j * rows) + i] = from[(i * apart) + j];
+                                    });
+                   });
+    }
+
+    /*!
+     * \brief The transforms of \p plan's length along each of the \p columns columns of \p data into those of \p to
+     *        (\p data's rows of \p columns, \p to's \p to_rows apart, as many as the plan's points): registers of neighbouring columns where they
+     *        fill one (\ref fft_lane_groups), the rest up to \ref fft_column_block of them at a time, each row read and
+     *        written as that many neighbours; the threads share them.
+     */
+    template <std::floating_point R>
+    void columns_fft(const fft_plan<R>&     plan,
+                     const std::complex<R>* data,
+                     std::size_t            columns,
+                     std::complex<R>*       to,
+                     std::size_t            to_rows,
+                     bool                   fused)
+    {
+      using C = std::complex<R>;
+      const std::size_t points   {plan.length};
+      const std::size_t groups   {fft_lane_groups(plan, fused, columns, false)};
+      const std::size_t together {groups * fft_lines_width<R>};
+      const std::size_t blocks   {(columns - together + fft_column_block - 1) / fft_column_block};
+      const std::size_t work     {2 * points * static_cast<std::size_t>(std::bit_width(points))};
+      parallel_for(groups + blocks, work * std::max(fft_column_block, fft_lines_width<R>), [&](std::size_t task) {
+                     if (task < groups) {
+                       const std::size_t column {task * fft_lines_width<R>};
+                       fft_lines_together(plan, data + column, 1, columns, points, to + column, 1, to_rows, false, R(1));
+                       return;
+                     }
+                     const std::size_t first {together + ((task - groups) * fft_column_block)};
+                     const std::size_t width {std::min(fft_column_block, columns - first)};
+                     fft_scratch<C, 3> scratch {plan.work + (width * points)};
+                     C* const          lines {scratch.data() + plan.work};
+                     for (std::size_t k {0}; k < points; ++k) {
+                       for (std::size_t b {0}; b < width; ++b) {
+                         lines[(b * points) + k] = data[(k * columns) + first + b];
+                       }
+                     }
+                     for (std::size_t b {0}; b < width; ++b) {
+                       forward_fft(plan, lines + (b * points), scratch.data(), fused);
+                     }
+                     for (std::size_t k {0}; k < points; ++k) {
+                       for (std::size_t b {0}; b < width; ++b) {
+                         to[(k * to_rows) + first + b] = lines[(b * points) + k];
+                       }
+                     }
+                   });
+    }
+
+    /*!
+     * \brief Each of the \p rows rows of \p data (\p apart from one another) times its run of \p twiddles (each as
+     *        long as the rows), then transformed in place (\p plan's length), the row still in the caches, a row a task:
+     *        rows at least a four-step transform's side, whose passes along a line alone outrun registers of them.
+     */
+    template <std::floating_point R>
+    void twiddled_rows_fft(const fft_plan<R>&     plan,
+                           std::complex<R>*       data,
+                           std::size_t            rows,
+                           std::size_t            apart,
+                           const std::complex<R>* twiddles,
+                           bool                   fused)
+    {
+      const std::size_t points {plan.length};
+      parallel_for(rows, 2 * points * static_cast<std::size_t>(std::bit_width(points)), [&](std::size_t row) {
+                     twiddle_run(data + (row * apart), twiddles + (row * points), points, fused);
+                     const fft_scratch<std::complex<R>, 3> space {plan.work};
+                     forward_fft(plan, data + (row * apart), space.data(), fused);
+                   });
+    }
+
+    template <std::floating_point R>
+    void four_step_fft(const fft_plan<R>& plan,
+                       std::complex<R>*   data,
+                       std::complex<R>*   work,
+                       bool               fused)
+    {
+      const four_step_plan<R>& f  {*plan.four_step};
+      const std::size_t        n1 {f.columns};
+      const std::size_t        n2 {f.rows};
+      const std::size_t        ld {n1 + fft_four_step_pad};
+      columns_fft(*f.column_plan, data, n1, work, ld, fused);                 // work[j1 + ld·k2]
+      twiddled_rows_fft(*f.row_plan, work, n2, ld, f.twiddles.data(), fused); // work[k1 + ld·k2], times w^{j1·k2} first
+      four_step_transpose(work, n2, n1, ld, data);                            // data[k2 + n2·k1]
+    }
+
     /*!
      * \brief The transform of \p a along \p axis, \p n points (the axis cut or padded with zeros to it, as NumPy's),
      *        forward or \p inverse (`conj(fft(conj x))`, exact), scaled for \p norm. Each line gathered, transformed
@@ -2030,7 +2255,7 @@ namespace numerical {
                                                    const R*                x,
                                                    std::complex<R>*        X,
                                                    std::complex<R>*        work,
-                                                   Registers               registers) noexcept
+                                                   Registers               registers)
     {
       using C = std::complex<R>;
       const std::size_t n {plan.length};
@@ -2079,7 +2304,7 @@ namespace numerical {
                                                    R*                      x,
                                                    std::complex<R>*        work,
                                                    R                       scale,
-                                                   Registers               registers) noexcept
+                                                   Registers               registers)
     {
       using C = std::complex<R>;
       const std::size_t n {plan.length};
@@ -2124,7 +2349,7 @@ namespace numerical {
     NUMERICAL_TARGET("avx2,fma") void real_forward_x86(const real_fft_plan<R>& plan,
                                                        const R*                x,
                                                        std::complex<R>*        X,
-                                                       std::complex<R>*        work) noexcept
+                                                       std::complex<R>*        work)
     {
       real_forward_body<true>(plan, x, X, work, avx2_real_forward_registers<R>);
     }
@@ -2135,7 +2360,7 @@ namespace numerical {
                                                        const std::complex<R>*  X,
                                                        R*                      x,
                                                        std::complex<R>*        work,
-                                                       R                       scale) noexcept
+                                                       R                       scale)
     {
       real_inverse_body<true>(plan, X, x, work, scale, avx2_real_inverse_registers<R>);
     }
@@ -2148,7 +2373,7 @@ namespace numerical {
                       const R*                x,
                       std::complex<R>*        X,
                       std::complex<R>*        work,
-                      bool                    fused) noexcept
+                      bool                    fused)
     {
       if (!fused) {
         real_forward_body<false>(plan, x, X, work, no_registers<R>);
@@ -2168,7 +2393,7 @@ namespace numerical {
                       R*                      x,
                       std::complex<R>*        work,
                       R                       scale,
-                      bool                    fused) noexcept
+                      bool                    fused)
     {
       if (!fused) {
         real_inverse_body<false>(plan, X, x, work, scale, no_registers<R>);

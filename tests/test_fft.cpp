@@ -615,6 +615,77 @@ TEST(long_transforms_are_within_epsilon_log_n_of_their_exact_outputs)
   }
 }
 
+namespace {
+  // A transform in four steps (fft_four_step_least bytes and more) of n points of R: 6 outputs within 2·ε·log₂ n·‖x‖ of
+  // the exact ones, and every one of the radix-2 split of two shorter transforms; the same bits on one thread as on all,
+  // and alone as among two lines.
+  template <std::floating_point R>
+  bool four_step_transform_holds(std::size_t n)
+  {
+    using C = std::complex<R>;
+    // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+    std::mt19937_64                   draws {n};
+    std::vector<C>                    x     {drawn<R>(n, draws)};
+    std::vector<std::complex<double>> wide  (n);
+    std::vector<C>                    twice (2 * n);
+    double                            norm  {0.0};
+    for (std::size_t j {0}; j < n; ++j) {
+      wide[j]         = std::complex<double>(x[j]);
+      twice[j]        = x[n - 1 - j];
+      twice[n + j]    = x[j];
+      norm           += std::norm(wide[j]);
+    }
+    numerical::set_max_threads(1);
+    const tensor<C> alone_one                        {numerical::fft(tensor<C> {{n}, x})};
+    numerical::set_max_threads(0);
+    const tensor<C> alone                            {numerical::fft(tensor<C> {{n}, x})};
+    const tensor<C> pair                             {numerical::fft(tensor<C> {{2, n}, twice})};
+    bool            good                             {same_bits(alone.data(), alone_one.data()) &&
+                                                      same_bits(std::vector<C>(pair.data().begin() + static_cast<std::ptrdiff_t>(n), pair.data().end()), alone.data())};
+    const numerical::detail::unit_roots        roots {n};
+    const double                               bound {2.0 * static_cast<double>(std::numeric_limits<R>::epsilon()) * std::log2(static_cast<double>(n)) * std::sqrt(norm)};
+    std::uniform_int_distribution<std::size_t> pick  {0, n - 1};
+    for (int sample {0}; sample < 6; ++sample) {
+      const std::size_t k {pick(draws)};
+      good = good && std::abs(std::complex<double>(alone.data()[k]) - double_double_bin(wide, roots, k)) < bound;
+    }
+    // Every output against the radix-2 split of two transforms of n/2 points (in passes, shorter than four steps take):
+    // X_k = E_k + w^k·O_k, X_{k+n/2} = E_k − w^k·O_k, in double with the exact roots.
+    std::vector<C> even(n / 2);
+    std::vector<C> odd(n / 2);
+    for (std::size_t j {0}; j < n / 2; ++j) {
+      even[j] = x[2 * j];
+      odd[j]  = x[(2 * j) + 1];
+    }
+    const tensor<C> evens {numerical::fft(tensor<C> {{n / 2}, even})};
+    const tensor<C> odds  {numerical::fft(tensor<C> {{n / 2}, odd})};
+    for (std::size_t k {0}; k < n / 2; ++k) {
+      const std::complex<double> product {roots.root(k) * std::complex<double>(odds.data()[k])};
+      good = good && std::abs(std::complex<double>(alone.data()[k]) - (std::complex<double>(evens.data()[k]) + product)) < bound &&
+             std::abs(std::complex<double>(alone.data()[k + (n / 2)]) - (std::complex<double>(evens.data()[k]) - product)) < bound;
+    }
+    return good;
+  }
+} // namespace
+
+// On every path this processor runs: transforms in four steps (2²⁰ and 3·2¹⁹ points of double, 2²¹ of float: a square
+// and an oblong matrix of points; 67·2¹⁴, a prime past the passes', whose Bluestein's convolution takes them) within
+// ε·log₂ n of the exact transform, their bits a line's own on any threads.
+TEST(four_step_transforms_are_exact_to_epsilon_log_n_and_their_own_on_any_threads)
+{
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
+                                          numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) != path) {
+      continue; // a path this processor does not run
+    }
+    EXPECT(four_step_transform_holds<double>(std::size_t {1} << 20));
+    EXPECT(four_step_transform_holds<double>(std::size_t {3} << 19));
+    EXPECT(four_step_transform_holds<float>(std::size_t {1} << 21));
+    EXPECT(four_step_transform_holds<double>(std::size_t {67} << 14)); // Bluestein's, its transforms in four steps
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
+
 // fftshift moves element 0 to the middle along an axis, as numpy.fft.fftshift (j to (j + n/2) mod n), ifftshift moves
 // it back (by −n/2: the two differ on an odd extent); the other axes untouched; an empty axis and a missing one.
 TEST(fftshift_rolls_an_axis_by_half_its_extent)
