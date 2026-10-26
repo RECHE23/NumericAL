@@ -490,10 +490,12 @@ TEST(fft_runs_every_axis_point_and_scaling_in_each_type)
 }
 
 // On every path this processor runs, the transform is as accurate; the fused paths (NEON, AMX, AVX2, AVX-512: each
-// factor's product fused alike) give the same bits as each other, whatever their vectors' width.
+// factor's product fused alike) give the same bits as each other, whatever their vectors' width (float: passes of 3 and
+// 5 at strides a register of AVX-512 fills, 4800 = 4·16·3·5·5 and 10000 = 16·5⁴).
 TEST(every_path_is_accurate_and_the_fused_ones_agree_to_the_bit)
 {
   std::vector<numerical::buffer<std::complex<double>>> fused;
+  std::vector<numerical::buffer<std::complex<float>>>  fused_float;
   for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::neon, numerical::gemm_path::avx2,
                                           numerical::gemm_path::avx512, numerical::gemm_path::amx}) {
     if (numerical::limit_gemm_path(path) != path) {
@@ -519,11 +521,23 @@ TEST(every_path_is_accurate_and_the_fused_ones_agree_to_the_bit)
         spectra.insert(spectra.end(), y.data().begin(), y.data().end());
       }
       fused.push_back(spectra);
+      numerical::buffer<std::complex<float>> spectra_float;
+      for (const std::size_t n : {4800UL, 10000UL}) {
+        // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+        std::mt19937_64                   same {7};
+        const tensor<std::complex<float>> x    {{n}, drawn<float>(n, same)};
+        const tensor<std::complex<float>> y    {numerical::fft(x)};
+        spectra_float.insert(spectra_float.end(), y.data().begin(), y.data().end());
+      }
+      fused_float.push_back(spectra_float);
     }
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
   for (const auto& bits : fused) {
     EXPECT(same_bits(bits, fused.front()));
+  }
+  for (const auto& bits : fused_float) {
+    EXPECT(same_bits(bits, fused_float.front()));
   }
 }
 

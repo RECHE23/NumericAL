@@ -24,7 +24,9 @@ namespace numerical::detail {
 #if defined(NUMERICAL_NEON_COMPILED)
   //! \brief NEON's registers of the transform's kernels.
   struct fft_neon
-  {};
+  {
+    static constexpr bool whole_strides {false}; //!< A stride of `float` may leave a register half filled.
+  };
 
   //! \brief A register of complex numbers of \p R that \p Isa holds, as the kernels pass it (x86.hpp's on x86-64).
   template <typename Isa,
@@ -601,18 +603,20 @@ namespace numerical::detail {
           fft_store(place + (4 * stride), y2);
         }
       }
-      for (; q < stride; ++q) { // a stride narrower than a register
-        const C x0 {in_p[q]};
-        const C x1 {in_p[q + apart]};
-        const C x2 {in_p[q + (2 * apart)]};
-        const C t  {x1 + x2};
-        const C v  {x0 - C {R(0.5) * t.real(), R(0.5) * t.imag()}};
-        const C d  {x1 - x2};
-        const C u  {half_root_three * d.real(), half_root_three * d.imag()};
-        const C iu {-u.imag(), u.real()};
-        to[q]              = x0 + t;
-        to[q + stride]     = p == 0 ? v - iu : fft_fused_product(twiddles[p - 1], v - iu);
-        to[q + 2 * stride] = p == 0 ? v + iu : fft_fused_product(twiddles[run + p - 1], v + iu);
+      if constexpr (!Isa::whole_strides) {
+        for (; q < stride; ++q) { // a stride narrower than a register
+          const C x0 {in_p[q]};
+          const C x1 {in_p[q + apart]};
+          const C x2 {in_p[q + (2 * apart)]};
+          const C t  {x1 + x2};
+          const C v  {x0 - C {R(0.5) * t.real(), R(0.5) * t.imag()}};
+          const C d  {x1 - x2};
+          const C u  {half_root_three * d.real(), half_root_three * d.imag()};
+          const C iu {-u.imag(), u.real()};
+          to[q]              = x0 + t;
+          to[q + stride]     = p == 0 ? v - iu : fft_fused_product(twiddles[p - 1], v - iu);
+          to[q + 2 * stride] = p == 0 ? v + iu : fft_fused_product(twiddles[run + p - 1], v + iu);
+        }
       }
     }
   }
@@ -673,26 +677,28 @@ namespace numerical::detail {
           fft_store_twiddled<Isa>(place + (8 * stride), fft_add(a1, ib1), twiddles, run, p, 4);
         }
       }
-      for (; q < stride; ++q) { // a stride narrower than a register
-        const C                x0  {in_p[q]};
-        const C                x1  {in_p[q + apart]};
-        const C                x2  {in_p[q + (2 * apart)]};
-        const C                x3  {in_p[q + (3 * apart)]};
-        const C                x4  {in_p[q + (4 * apart)]};
-        const C                t1  {x1 + x4};
-        const C                t2  {x2 + x3};
-        const C                t3  {x1 - x4};
-        const C                t4  {x2 - x3};
-        const C                a1  {fft_scaled_add(fft_scaled_add(x0, c1, t1), c2, t2)};
-        const C                a2  {fft_scaled_add(fft_scaled_add(x0, c2, t1), c1, t2)};
-        const C                b1  {fft_scaled_add(C {s1 * t3.real(), s1 * t3.imag()}, s2, t4)};
-        const C                b2  {fft_scaled_add(C {s2 * t3.real(), s2 * t3.imag()}, -s1, t4)};
-        const C                ib1 {-b1.imag(), b1.real()};
-        const C                ib2 {-b2.imag(), b2.real()};
-        const std::array<C, 4> y   {a1 - ib1, a2 - ib2, a2 + ib2, a1 + ib1};
-        to[q] = (x0 + t1) + t2;
-        for (std::size_t j {1}; j < 5; ++j) {
-          to[q + (j * stride)] = p == 0 ? y[j - 1] : fft_fused_product(twiddles[((j - 1) * run) + p - 1], y[j - 1]);
+      if constexpr (!Isa::whole_strides) {
+        for (; q < stride; ++q) { // a stride narrower than a register
+          const C                x0  {in_p[q]};
+          const C                x1  {in_p[q + apart]};
+          const C                x2  {in_p[q + (2 * apart)]};
+          const C                x3  {in_p[q + (3 * apart)]};
+          const C                x4  {in_p[q + (4 * apart)]};
+          const C                t1  {x1 + x4};
+          const C                t2  {x2 + x3};
+          const C                t3  {x1 - x4};
+          const C                t4  {x2 - x3};
+          const C                a1  {fft_scaled_add(fft_scaled_add(x0, c1, t1), c2, t2)};
+          const C                a2  {fft_scaled_add(fft_scaled_add(x0, c2, t1), c1, t2)};
+          const C                b1  {fft_scaled_add(C {s1 * t3.real(), s1 * t3.imag()}, s2, t4)};
+          const C                b2  {fft_scaled_add(C {s2 * t3.real(), s2 * t3.imag()}, -s1, t4)};
+          const C                ib1 {-b1.imag(), b1.real()};
+          const C                ib2 {-b2.imag(), b2.real()};
+          const std::array<C, 4> y   {a1 - ib1, a2 - ib2, a2 + ib2, a1 + ib1};
+          to[q] = (x0 + t1) + t2;
+          for (std::size_t j {1}; j < 5; ++j) {
+            to[q + (j * stride)] = p == 0 ? y[j - 1] : fft_fused_product(twiddles[((j - 1) * run) + p - 1], y[j - 1]);
+          }
         }
       }
     }
