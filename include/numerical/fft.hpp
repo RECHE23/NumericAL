@@ -965,7 +965,16 @@ namespace numerical {
     void forward_fft(const fft_plan<R>& plan,
                      std::complex<R>*   data,
                      std::complex<R>*   work,
-                     bool               fused);
+                     bool               fused,
+                     bool               in_work = false);
+
+    //! \brief Whether a transform under \p plan, its input placed in its working space (forward_fft's `in_work`), ends in
+    //!        its data without a copy: an odd number of Stockham passes, no Bluestein's convolution nor four steps.
+    template <std::floating_point R>
+    [[nodiscard]] bool fft_starts_in_work(const fft_plan<R>& plan) noexcept
+    {
+      return !plan.bluestein && !plan.four_step && plan.radices.size() % 2 == 1;
+    }
 
     /*!
      * \brief The columns `n1` of a transform of \p n points of \p bytes each in four steps: the largest divisor of `n`
@@ -1013,8 +1022,8 @@ namespace numerical {
           b.spectrum[(b.padded - j) % b.padded]       = std::conj(b.chirp[j]);
         }
         std::vector<C> scratch(b.inner->work);
-        forward_fft(*b.inner, b.spectrum.data(), scratch.data(), false); // the portable arithmetic: the same on every path
-        plan.work      = b.padded + b.inner->work;                       // the convolution's sequence, then its transforms' space
+        forward_fft(*b.inner, b.spectrum.data(), scratch.data(), false, false); // the portable arithmetic: the same on every path
+        plan.work      = b.padded + b.inner->work;                              // the convolution's sequence, then its transforms' space
         plan.bluestein = std::move(b);
         return plan;
       }
@@ -1596,6 +1605,8 @@ namespace numerical {
      * \brief The Stockham passes of the \p plan over \p data, \p work as long, the result in \p data: radix 4 by \p four
      *        (\ref radix_four_pass's arguments), 16 by \p sixteen (\ref radix_sixteen_pass's), 2 by \ref radix_two_pass
      *        (always the last pass), any other by \p other (\ref any_radix_pass's: 3 and 5 by their own butterflies).
+     *        The input in \p data, or \p from_work in \p work (`fft_starts_in_work`: an odd number of passes then
+     *        ends in \p data, where from \p data the last pass wrote \p work, copied back).
      */
     template <std::floating_point R,
               typename C,
@@ -1607,11 +1618,12 @@ namespace numerical {
                                                  C*                 work,
                                                  Four               four,
                                                  Sixteen            sixteen,
-                                                 Other              other) noexcept
+                                                 Other              other,
+                                                 bool               from_work = false) noexcept
     {
       const std::size_t      n        {plan.length};
-      C*                     in       {data};
-      C*                     out      {work};
+      C*                     in       {from_work ? work : data};
+      C*                     out      {from_work ? data : work};
       const std::complex<R>* twiddles {plan.twiddles.data()};
       const std::complex<R>* roots    {plan.radix_roots.data()};
       std::size_t            current  {n};
@@ -1663,15 +1675,17 @@ namespace numerical {
       const std::size_t        m     {b.padded};
       const R                  scale {R(1) / static_cast<R>(m)};
       C* const                 a     {work};
+      const bool               ahead {fft_starts_in_work(*b.inner)};
+      C* const                 input {ahead ? work + m : a}; // where the inner transforms read
       for (std::size_t j {0}; j < n; ++j) {
-        a[j] = twiddled<Fused>(b.chirp[j], data[j]);
+        input[j] = twiddled<Fused>(b.chirp[j], data[j]);
       }
-      std::fill(a + n, a + m, C {});
-      forward_fft(*b.inner, a, work + m, Fused);
+      std::fill(input + n, input + m, C {});
+      forward_fft(*b.inner, a, work + m, Fused, ahead);
       for (std::size_t k {0}; k < m; ++k) {
-        a[k] = std::conj(twiddled<Fused>(b.spectrum[k], a[k]));
+        input[k] = std::conj(twiddled<Fused>(b.spectrum[k], a[k]));
       }
-      forward_fft(*b.inner, a, work + m, Fused);
+      forward_fft(*b.inner, a, work + m, Fused, ahead);
       for (std::size_t k {0}; k < n; ++k) {
         const C value {a[k].real() * scale, -a[k].imag() * scale};
         data[k] = twiddled<Fused>(b.chirp[k], value);
@@ -1750,14 +1764,17 @@ namespace numerical {
                        bool               fused);
 
     /*!
-     * \brief The forward transform of the \p plan's length, in place in \p data, \p work its \ref fft_plan::work, its
-     *        Stockham passes, or Bluestein's convolution, the products fused where \p fused (\ref fft_fuses).
+     * \brief The forward transform of the \p plan's length into \p data, \p work its \ref fft_plan::work, its
+     *        Stockham passes, or Bluestein's convolution, or its four steps, the products fused where \p fused
+     *        (\ref fft_fuses): the input in \p data, or in \p work where \p in_work (only where
+     *        \ref fft_starts_in_work).
      */
     template <std::floating_point R>
     void forward_fft(const fft_plan<R>& plan,
                      std::complex<R>*   data,
                      std::complex<R>*   work,
-                     bool               fused)
+                     bool               fused,
+                     bool               in_work)
     {
       if (plan.four_step) {
         four_step_fft(plan, data, work, fused);
@@ -1776,19 +1793,19 @@ namespace numerical {
         return;
       }
       if (!fused) {
-        stockham_passes(plan, data, work, radix_four_pass<false, R>, radix_sixteen_pass<false, R>, any_radix_pass<false, R>);
+        stockham_passes(plan, data, work, radix_four_pass<false, R>, radix_sixteen_pass<false, R>, any_radix_pass<false, R>, in_work);
         return;
       }
 #ifdef NUMERICAL_X86_COMPILED
       if (gemm_path_current() == gemm_path::avx512 && plan.length >= fft_avx512_shortest) {
-        stockham_passes(plan, data, work, avx512_radix_four_pass<R>, avx512_radix_sixteen_pass<R>, any_radix_pass_avx512<R>);
+        stockham_passes(plan, data, work, avx512_radix_four_pass<R>, avx512_radix_sixteen_pass<R>, any_radix_pass_avx512<R>, in_work);
         return;
       }
-      stockham_passes(plan, data, work, avx2_radix_four_pass<R>, avx2_radix_sixteen_pass<R>, any_radix_pass_x86<R>);
+      stockham_passes(plan, data, work, avx2_radix_four_pass<R>, avx2_radix_sixteen_pass<R>, any_radix_pass_x86<R>, in_work);
 #elif defined(NUMERICAL_NEON_COMPILED)
-      stockham_passes(plan, data, work, neon_radix_four_pass<R>, neon_radix_sixteen_pass<R>, any_radix_pass_neon<R>);
+      stockham_passes(plan, data, work, neon_radix_four_pass<R>, neon_radix_sixteen_pass<R>, any_radix_pass_neon<R>, in_work);
 #else
-      stockham_passes(plan, data, work, radix_four_pass<true, R>, radix_sixteen_pass<true, R>, any_radix_pass<true, R>);
+      stockham_passes(plan, data, work, radix_four_pass<true, R>, radix_sixteen_pass<true, R>, any_radix_pass<true, R>, in_work);
 #endif
     }
 
@@ -1863,15 +1880,17 @@ namespace numerical {
                                                     fft_lanes<R>*      lines,
                                                     fft_lanes<R>*      work) noexcept
     {
-      const std::size_t points {plan.length};
+      const std::size_t   points {plan.length};
+      const bool          ahead  {fft_starts_in_work(plan)};
+      fft_lanes<R>* const start  {ahead ? work : lines}; // where the passes read the lines: they end in `lines`
       for (std::size_t k {0}; k < points; ++k) {
         fft_lanes<R> value {};
         if (k < kept) {
           lanes_read(in + (k * in_step), in_line, value.re.v, value.im.v);
         }
-        lines[k] = {value.re, inverse ? -value.im : value.im};
+        start[k] = {value.re, inverse ? -value.im : value.im};
       }
-      stockham_passes(plan, lines, work, lanes_four_pass<R>, lanes_sixteen_pass<R>, lanes_any_radix_pass<R>);
+      stockham_passes(plan, lines, work, lanes_four_pass<R>, lanes_sixteen_pass<R>, lanes_any_radix_pass<R>, ahead);
       for (std::size_t k {0}; k < points; ++k) {
         const fft_lanes<R> value {lines[k].re, inverse ? -lines[k].im : lines[k].im};
         if (scale == R(1)) {
@@ -2187,7 +2206,8 @@ namespace numerical {
                                                        }};
       // A line's work as work_per_thread counts it, about a nanosecond a unit: 2·n·log₂ n (a line of 64 points 0.2 µs,
       // of 1024 4.6 µs, on one arm64 core), so that 64 lines of 64 points stay on one thread.
-      const std::size_t work {2 * points * static_cast<std::size_t>(std::bit_width(points))};
+      const std::size_t work  {2 * points * static_cast<std::size_t>(std::bit_width(points))};
+      const bool        ahead {fft_starts_in_work(*plan)};
       if (walk.inner == 1) { // each line together: transformed where it lies in the output
         const std::size_t groups {fft_lane_groups(*plan, fused, walk.outer, true)};
         const std::size_t first  {groups * fft_lines_width<R>};
@@ -2201,11 +2221,12 @@ namespace numerical {
                        const T* const    in   {from + (line * extent)};
                        C* const       to {out.data() + (line * points)};
                        fft_scratch<C> scratch {plan->work};
+                       C* const       start {ahead ? scratch.data() : to}; // where the passes read the line
                        for (std::size_t k {0}; k < points; ++k) {
                          const C value {k < kept ? C(in[k]) : C {}};
-                         to[k] = inverse ? std::conj(value) : value;
+                         start[k] = inverse ? std::conj(value) : value;
                        }
-                       forward_fft(*plan, to, scratch.data(), fused);
+                       forward_fft(*plan, to, scratch.data(), fused, ahead);
                        if (inverse || scale != R(1)) {
                          std::transform(to, to + points, to, finish);
                        }
@@ -2332,22 +2353,25 @@ namespace numerical {
                                                    Registers               registers)
     {
       using C = std::complex<R>;
-      const std::size_t n {plan.length};
-      const std::size_t h {n / 2};
+      const std::size_t n     {plan.length};
+      const std::size_t h     {n / 2};
+      const bool        ahead {fft_starts_in_work(*plan.complex)}; // the input placed where the passes end in their data
       if (n % 2 == 1) {
-        C* const line {work};
+        C* const line  {work};
+        C* const start {ahead ? work + n : line};
         for (std::size_t j {0}; j < n; ++j) {
-          line[j] = C {x[j], R(0)};
+          start[j] = C {x[j], R(0)};
         }
-        forward_fft(*plan.complex, line, work + n, Fused);
+        forward_fft(*plan.complex, line, work + n, Fused, ahead);
         std::copy(line, line + h + 1, X);
         return;
       }
-      C* const z {work};
+      C* const z     {work};
+      C* const start {ahead ? work + h : z};
       for (std::size_t j {0}; j < h; ++j) {
-        z[j] = C {x[2 * j], x[(2 * j) + 1]};
+        start[j] = C {x[2 * j], x[(2 * j) + 1]};
       }
-      forward_fft(*plan.complex, z, work + h, Fused);
+      forward_fft(*plan.complex, z, work + h, Fused, ahead);
       X[0] = C {z[0].real() + z[0].imag(), R(0)};
       X[h] = C {z[0].real() - z[0].imag(), R(0)};
       for (std::size_t k {registers(h, z, plan.roots.data(), X)}; k < h; ++k) {
@@ -2381,26 +2405,29 @@ namespace numerical {
                                                    Registers               registers)
     {
       using C = std::complex<R>;
-      const std::size_t n {plan.length};
-      const std::size_t h {n / 2};
+      const std::size_t n     {plan.length};
+      const std::size_t h     {n / 2};
+      const bool        ahead {fft_starts_in_work(*plan.complex)}; // the input placed where the passes end in their data
       if (n % 2 == 1) {
-        C* const line {work};
-        line[0] = C {X[0].real(), R(0)};
+        C* const line  {work};
+        C* const start {ahead ? work + n : line};
+        start[0] = C {X[0].real(), R(0)};
         for (std::size_t k {1}; k <= h; ++k) {
-          line[k]     = std::conj(X[k]); // conjugated for conj(fft(conj ·))
-          line[n - k] = X[k];
+          start[k]     = std::conj(X[k]); // conjugated for conj(fft(conj ·))
+          start[n - k] = X[k];
         }
-        forward_fft(*plan.complex, line, work + n, Fused);
+        forward_fft(*plan.complex, line, work + n, Fused, ahead);
         for (std::size_t j {0}; j < n; ++j) {
           x[j] = line[j].real() * scale;
         }
         return;
       }
       C* const z     {work};
+      C* const start {ahead ? work + h : z};
       const C  first {X[0].real(), R(0)};
       const C  last  {X[h].real(), R(0)};
-      z[0] = std::conj(C {(first.real() + last.real()) * R(0.5), (first.real() - last.real()) * R(0.5)});
-      for (std::size_t k {registers(h, X, plan.roots.data(), z)}; k < h; ++k) {
+      start[0] = std::conj(C {(first.real() + last.real()) * R(0.5), (first.real() - last.real()) * R(0.5)});
+      for (std::size_t k {registers(h, X, plan.roots.data(), start)}; k < h; ++k) {
         const C a          {X[k]};
         const C b          {std::conj(X[h - k])};
         const C sum        {a + b};
@@ -2408,9 +2435,9 @@ namespace numerical {
         const C even       {sum.real() * R(0.5), sum.imag() * R(0.5)};
         const C odd        {twiddled<Fused>(std::conj(plan.roots[k]), C {difference.real() * R(0.5), difference.imag() * R(0.5)})};
         const C value      {even.real() - odd.imag(), even.imag() + odd.real()}; // E + i·O
-        z[k] = std::conj(value);
+        start[k] = std::conj(value);
       }
-      forward_fft(*plan.complex, z, work + h, Fused);
+      forward_fft(*plan.complex, z, work + h, Fused, ahead);
       for (std::size_t j {0}; j < h; ++j) {
         x[2 * j]       = z[j].real() * scale;
         x[(2 * j) + 1] = -z[j].imag() * scale;
