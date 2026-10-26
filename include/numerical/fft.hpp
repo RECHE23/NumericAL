@@ -2124,13 +2124,29 @@ namespace numerical {
       four_step_transpose(work, n2, n1, ld, data);                            // data[k2 + n2·k1]
     }
 
+    //! \brief The elements a transform reads where they lie, row-major, of shape `shape`: a tensor's, or an array's
+    //!        a caller lends (the Python binding's NumPy arrays).
+    template <typename T>
+    struct fft_source
+    {
+      const T*                 data;  //!< The first element.
+      std::vector<std::size_t> shape; //!< The extent of each axis.
+    };
+
+    //! \brief \p a's elements, where they lie.
+    template <typename T>
+    [[nodiscard]] fft_source<T> source_of(const tensor<T>& a)
+    {
+      return {a.data().data(), a.shape()};
+    }
+
     /*!
      * \brief The transform of \p a along \p axis, \p n points (the axis cut or padded with zeros to it, as NumPy's),
      *        forward or \p inverse (`conj(fft(conj x))`, exact), scaled for \p norm. Each line gathered, transformed
      *        and scattered on its own, the lines shared among the threads: a line's bits are its own.
      */
     template <fft_input T>
-    [[nodiscard]] tensor<typename fft_complex<T>::type> transform_axis(const tensor<T>&           a,
+    [[nodiscard]] tensor<typename fft_complex<T>::type> transform_axis(const fft_source<T>&       a,
                                                                        std::optional<std::size_t> n,
                                                                        std::ptrdiff_t             axis,
                                                                        fft_norm                   norm,
@@ -2138,17 +2154,17 @@ namespace numerical {
     {
       using C = typename fft_complex<T>::type;
       using R = typename C::value_type;
-      const auto rank {static_cast<std::ptrdiff_t>(a.rank())};
+      const auto rank {static_cast<std::ptrdiff_t>(a.shape.size())};
       if (axis < -rank || axis >= rank) {
         throw dimension_error("fft: axis " + std::to_string(axis) + " is out of bounds for a tensor of rank " + std::to_string(rank));
       }
       const auto        index  {static_cast<std::size_t>(axis < 0 ? axis + rank : axis)};
-      const std::size_t extent {a.shape()[index]};
+      const std::size_t extent {a.shape[index]};
       const std::size_t points {n.value_or(extent)};
       if (points == 0) {
         throw dimension_error("fft: invalid number of data points (0)");
       }
-      std::vector<std::size_t> shape {a.shape()};
+      std::vector<std::size_t> shape {a.shape};
       shape[index] = points;
       const axis_walk walk           {walk_along(shape, index)};
       const R         scale          {fft_scale<R>(norm, inverse, points)};
@@ -2159,7 +2175,7 @@ namespace numerical {
       const std::shared_ptr<const fft_plan<R>> plan  {shared_fft_plan<R>(points)};
       const std::size_t                        kept  {std::min(points, extent)};
       const bool                               fused {fft_fuses()};
-      const T* const                           from  {a.data().data()};
+      const T* const                           from  {a.data};
       const auto                               finish {[&](const C& value) { // conjugated back for the inverse, scaled
                                                          const C v {inverse ? std::conj(value) : value};
                                                          return scale == R(1) ? v : C {v.real() * scale, v.imag() * scale};
@@ -2540,14 +2556,14 @@ namespace numerical {
               typename Out,
               typename C,
               typename Line>
-    [[nodiscard]] tensor<Out> lines_along(const tensor<In>& a,
-                                          std::size_t       index,
-                                          std::size_t       in_points,
-                                          std::size_t       out_points,
-                                          std::size_t       work,
-                                          Line              line)
+    [[nodiscard]] tensor<Out> lines_along(const fft_source<In>& a,
+                                          std::size_t           index,
+                                          std::size_t           in_points,
+                                          std::size_t           out_points,
+                                          std::size_t           work,
+                                          Line                  line)
     {
-      std::vector<std::size_t> shape  {a.shape()};
+      std::vector<std::size_t> shape  {a.shape};
       const std::size_t        extent {shape[index]};
       shape[index] = out_points;
       const axis_walk walk            {walk_along(shape, index)};
@@ -2556,7 +2572,7 @@ namespace numerical {
         return tensor<Out> {std::move(shape), std::move(out)};
       }
       const std::size_t kept {std::min(in_points, extent)};
-      const In* const   from {a.data().data()};
+      const In* const   from {a.data};
       if (walk.inner == 1 && in_points <= extent) { // each line together, none padded: read and written where it lies
         parallel_for(walk.outer, 5 * (in_points + out_points) * static_cast<std::size_t>(std::bit_width(in_points + out_points)),
                      [&](std::size_t number) {
@@ -2606,11 +2622,11 @@ namespace numerical {
      *        conjugate of its transform. Then times \p scale.
      */
     template <std::floating_point R>
-    [[nodiscard]] tensor<std::complex<R>> real_input_transform(const tensor<R>& a,
-                                                               std::size_t      index,
-                                                               std::size_t      points,
-                                                               bool             inverse,
-                                                               R                scale)
+    [[nodiscard]] tensor<std::complex<R>> real_input_transform(const fft_source<R>& a,
+                                                               std::size_t          index,
+                                                               std::size_t          points,
+                                                               bool                 inverse,
+                                                               R                    scale)
     {
       using C = std::complex<R>;
       const bool                                    whole   {four_step_columns(points, sizeof(C)) != 0};
@@ -2638,6 +2654,77 @@ namespace numerical {
                                     }
                                   });
     }
+
+    /*!
+     * \brief `fft` or `ifft` (\p inverse) of the real elements \p a: `fft` of a real tensor's computation, of
+     *        elements a caller lends.
+     */
+    template <std::floating_point T>
+    [[nodiscard]] tensor<std::complex<T>> real_transform_of(const fft_source<T>&       a,
+                                                            std::optional<std::size_t> n,
+                                                            std::ptrdiff_t             axis,
+                                                            fft_norm                   norm,
+                                                            bool                       inverse)
+    {
+      const char* const name   {inverse ? "ifft" : "fft"};
+      const std::size_t index  {fft_axis_index(axis, a.shape.size(), name)};
+      const std::size_t points {n.value_or(a.shape[index])};
+      if (points == 0) {
+        throw dimension_error(std::string {name} + ": invalid number of data points (0)");
+      }
+      return real_input_transform(a, index, points, inverse, fft_scale<T>(norm, inverse, points));
+    }
+
+    //! \brief `rfft`'s computation, of real elements a caller lends.
+    template <std::floating_point T>
+    [[nodiscard]] tensor<std::complex<T>> rfft_of(const fft_source<T>&       a,
+                                                  std::optional<std::size_t> n,
+                                                  std::ptrdiff_t             axis,
+                                                  fft_norm                   norm)
+    {
+      using C = std::complex<T>;
+      const std::size_t index  {fft_axis_index(axis, a.shape.size(), "rfft")};
+      const std::size_t points {n.value_or(a.shape[index])};
+      if (points == 0) {
+        throw dimension_error("rfft: invalid number of data points (0)");
+      }
+      const std::shared_ptr<const real_fft_plan<T>>          plan  {shared_real_fft_plan<T>(points)};
+      const bool                                             fused {fft_fuses()};
+      const T                                                scale {fft_scale<T>(norm, false, points)};
+      const std::size_t                                      half  {points / 2};
+      const std::size_t                                      work  {(points % 2 == 0 ? half : points) + plan->complex->work};
+      return lines_along<T, C, C>(a, index, points, half + 1, work, [&](const T* x, C* spectrum, C* space) {
+                                    real_forward(*plan, x, spectrum, space, fused);
+                                    if (scale != T(1)) {
+                                      std::transform(spectrum, spectrum + half + 1, spectrum, [scale](const C& v) { return C {v.real() * scale, v.imag() * scale}; });
+                                    }
+                                  });
+    }
+
+    //! \brief `irfft`'s computation, of complex elements a caller lends.
+    template <std::floating_point T>
+    [[nodiscard]] tensor<T> irfft_of(const fft_source<std::complex<T>>& a,
+                                     std::optional<std::size_t>         n,
+                                     std::ptrdiff_t                     axis,
+                                     fft_norm                           norm)
+    {
+      using C = std::complex<T>;
+      const std::size_t index  {fft_axis_index(axis, a.shape.size(), "irfft")};
+      const std::size_t extent {a.shape[index]};
+      const std::size_t points {n.value_or(extent == 0 ? 0 : 2 * (extent - 1))};
+      if (points == 0) {
+        throw dimension_error("irfft: invalid number of data points (0)");
+      }
+      const std::shared_ptr<const real_fft_plan<T>>          plan   {shared_real_fft_plan<T>(points)};
+      const bool                                             fused  {fft_fuses()};
+      const T                                                factor {fft_scale<T>(norm, true, points)};
+      const T                                                scale  {points % 2 == 0 ? factor * T(2) : factor}; // an even n's half sums
+      const std::size_t                                      half   {points / 2};
+      const std::size_t                                      work   {(points % 2 == 0 ? half : points) + plan->complex->work};
+      return lines_along<C, T, C>(a, index, half + 1, points, work, [&](const C* spectrum, T* x, C* space) {
+                                    real_inverse(*plan, spectrum, x, space, scale, fused);
+                                  });
+    }
   } // namespace detail
 
   /*!
@@ -2656,7 +2743,7 @@ namespace numerical {
                               std::ptrdiff_t             axis = -1,
                               fft_norm                   norm = fft_norm::backward)
   {
-    return detail::transform_axis(a, n, axis, norm, false);
+    return detail::transform_axis(detail::source_of(a), n, axis, norm, false);
   }
 
   /*!
@@ -2677,12 +2764,7 @@ namespace numerical {
                                             std::ptrdiff_t             axis = -1,
                                             fft_norm                   norm = fft_norm::backward)
   {
-    const std::size_t index  {detail::fft_axis_index(axis, a.rank(), "fft")};
-    const std::size_t points {n.value_or(a.shape()[index])};
-    if (points == 0) {
-      throw dimension_error("fft: invalid number of data points (0)");
-    }
-    return detail::real_input_transform(a, index, points, false, detail::fft_scale<T>(norm, false, points));
+    return detail::real_transform_of(detail::source_of(a), n, axis, norm, false);
   }
 
   /*!
@@ -2702,7 +2784,7 @@ namespace numerical {
                                std::ptrdiff_t             axis = -1,
                                fft_norm                   norm = fft_norm::backward)
   {
-    return detail::transform_axis(a, n, axis, norm, true);
+    return detail::transform_axis(detail::source_of(a), n, axis, norm, true);
   }
 
   /*!
@@ -2721,12 +2803,7 @@ namespace numerical {
                                              std::ptrdiff_t             axis = -1,
                                              fft_norm                   norm = fft_norm::backward)
   {
-    const std::size_t index  {detail::fft_axis_index(axis, a.rank(), "ifft")};
-    const std::size_t points {n.value_or(a.shape()[index])};
-    if (points == 0) {
-      throw dimension_error("ifft: invalid number of data points (0)");
-    }
-    return detail::real_input_transform(a, index, points, true, detail::fft_scale<T>(norm, true, points));
+    return detail::real_transform_of(detail::source_of(a), n, axis, norm, true);
   }
 
   /*!
@@ -2783,23 +2860,7 @@ namespace numerical {
                                              std::ptrdiff_t             axis = -1,
                                              fft_norm                   norm = fft_norm::backward)
   {
-    using C = std::complex<T>;
-    const std::size_t index  {detail::fft_axis_index(axis, a.rank(), "rfft")};
-    const std::size_t points {n.value_or(a.shape()[index])};
-    if (points == 0) {
-      throw dimension_error("rfft: invalid number of data points (0)");
-    }
-    const std::shared_ptr<const detail::real_fft_plan<T>>  plan  {detail::shared_real_fft_plan<T>(points)};
-    const bool                                             fused {detail::fft_fuses()};
-    const T                                                scale {detail::fft_scale<T>(norm, false, points)};
-    const std::size_t                                      half  {points / 2};
-    const std::size_t                                      work  {(points % 2 == 0 ? half : points) + plan->complex->work};
-    return detail::lines_along<T, C, C>(a, index, points, half + 1, work, [&](const T* x, C* spectrum, C* space) {
-                                          detail::real_forward(*plan, x, spectrum, space, fused);
-                                          if (scale != T(1)) {
-                                            std::transform(spectrum, spectrum + half + 1, spectrum, [scale](const C& v) { return C {v.real() * scale, v.imag() * scale}; });
-                                          }
-                                        });
+    return detail::rfft_of(detail::source_of(a), n, axis, norm);
   }
 
   /*!
@@ -2819,22 +2880,7 @@ namespace numerical {
                                 std::ptrdiff_t                 axis = -1,
                                 fft_norm                       norm = fft_norm::backward)
   {
-    using C = std::complex<T>;
-    const std::size_t index  {detail::fft_axis_index(axis, a.rank(), "irfft")};
-    const std::size_t extent {a.shape()[index]};
-    const std::size_t points {n.value_or(extent == 0 ? 0 : 2 * (extent - 1))};
-    if (points == 0) {
-      throw dimension_error("irfft: invalid number of data points (0)");
-    }
-    const std::shared_ptr<const detail::real_fft_plan<T>>  plan   {detail::shared_real_fft_plan<T>(points)};
-    const bool                                             fused  {detail::fft_fuses()};
-    const T                                                factor {detail::fft_scale<T>(norm, true, points)};
-    const T                                                scale  {points % 2 == 0 ? factor * T(2) : factor}; // an even n's half sums
-    const std::size_t                                      half   {points / 2};
-    const std::size_t                                      work   {(points % 2 == 0 ? half : points) + plan->complex->work};
-    return detail::lines_along<C, T, C>(a, index, half + 1, points, work, [&](const C* spectrum, T* x, C* space) {
-                                          detail::real_inverse(*plan, spectrum, x, space, scale, fused);
-                                        });
+    return detail::irfft_of(detail::source_of(a), n, axis, norm);
   }
 
   //! \brief \p norm with its forward and backward exchanged, as NumPy's `hfft` and `ihfft` take it.

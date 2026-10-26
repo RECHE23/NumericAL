@@ -415,5 +415,28 @@ class BorrowedOperands(unittest.TestCase):
         self.same(numerical.solve(a, stacked), numerical.solve(numerical.asarray(a), numerical.asarray(stacked)))
 
 
+    def test_a_transform_reads_the_array_where_it_lies_and_gives_the_tensors_bits(self):
+        import numerical.fft as nfft
+
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+            a = self.operand((6, 20), dtype)
+            for view in (a, a[:, ::3], np.asfortranarray(a)):
+                tensor = numerical.asarray(np.ascontiguousarray(view))
+                functions = [nfft.fft, nfft.ifft, nfft.irfft if np.dtype(dtype).kind == "c" else nfft.rfft]
+                for f in functions:
+                    for axis, n, norm in ((-1, None, None), (0, 5, "ortho"), (1, 31, "forward")):
+                        with self.subTest(dtype=np.dtype(dtype).name, strides=view.strides, function=f.__name__,
+                                          axis=axis, n=n, norm=norm):
+                            self.assert_same(f(view, n=n, axis=axis, norm=norm), f(tensor, n=n, axis=axis, norm=norm))
+        # Not read in place: integers (transformed as float64), a complex rfft (refused), a real irfft (widened).
+        self.assert_same(nfft.fft(np.arange(8)), nfft.fft(numerical.asarray(np.arange(8.0))))
+        with self.assertRaises(TypeError):
+            nfft.rfft(np.ones(4, np.complex128))
+        self.assert_same(nfft.irfft(np.ones(5)), nfft.irfft(numerical.asarray(np.ones(5, np.complex128))))
+        with self.assertRaises(ValueError):
+            nfft.fft(np.ones(4), n=0)
+        with self.assertRaises(IndexError):
+            nfft.fft(np.ones(4), axis=1)
+
 if __name__ == "__main__":
     unittest.main()

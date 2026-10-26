@@ -3227,6 +3227,72 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _borrowed_fft(kind, a, n, axis, norm, inverse) -> Tensor or NotImplemented: a one-axis transform of a Tensor or NumPy
+// array read where it lies (borrow_operand), kind 0 fft (or, inverse, ifft) of real or complex elements, 1 rfft of
+// real ones, 2 irfft of complex ones; the bits of _fft, _rfft and _irfft, which read the elements from a copy.
+// NotImplemented for an operand not so read, or rfft of complex elements and irfft of real ones, which the caller
+// (numerical.fft) refuses or widens. A NumPy array was copied first: 1000 lines of 1024 complex128, 4.1 ms, M1 Pro, 2.9
+// read where they lie.
+PyObject* module_borrowed_fft(PyObject* /*self*/, PyObject* args)
+{
+    int        kind    = 0;
+    PyObject*  obj     = nullptr;
+    Py_ssize_t n       = 0;
+    Py_ssize_t axis    = 0;
+    int        norm    = 0;
+    int        inverse = 0;
+    if (PyArg_ParseTuple(args, "iOnnip", &kind, &obj, &n, &axis, &norm, &inverse) == 0) {
+        return nullptr;
+    }
+    borrowed_operand x;
+    if (!borrow_operand(obj, x)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    const bool complex_elements {x.dtype == 1 || x.dtype == 3};
+    if ((kind == 1 && complex_elements) || (kind == 2 && !complex_elements)) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            std::size_t count {1};
+            for (const std::size_t extent : x.shape) {
+                count *= extent;
+            }
+            const sb::scoped_gil_release unlocked {releases_gil(count + static_cast<std::size_t>(n))};
+            const auto                   points {static_cast<std::size_t>(n)};
+            const auto                   scaling {static_cast<numerical::fft_norm>(norm)};
+            const auto transform = [&]<typename T>(std::type_identity<T>) {
+                const numerical::detail::fft_source<T> source {static_cast<const T*>(x.data), x.shape};
+                if constexpr (numerical::detail::split_complex<T>) {
+                    if (kind == 2) {
+                        result.emplace(numerical::detail::irfft_of(source, points, axis, scaling));
+                    }
+                    else {
+                        result.emplace(numerical::detail::transform_axis(source, points, axis, scaling, inverse != 0));
+                    }
+                }
+                else if (kind == 1) {
+                    result.emplace(numerical::detail::rfft_of(source, points, axis, scaling));
+                }
+                else {
+                    result.emplace(numerical::detail::real_transform_of(source, points, axis, scaling, inverse != 0));
+                }
+            };
+            switch (x.dtype) {
+            case 0: transform(std::type_identity<double> {}); break;
+            case 1: transform(std::type_identity<std::complex<double>> {}); break;
+            case 2: transform(std::type_identity<float> {}); break;
+            default: transform(std::type_identity<std::complex<float>> {}); break;
+            }
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _borrowed_einsum_pair(spec, a, b) -> Tensor or NotImplemented: einsum of two Tensors or C-ordered NumPy arrays of one
 // dtype read where they lie, for an explicit spec whose operands carry each
 // label once, none of them its own alone (numerical::detail::einsum_pair, the path einsum takes for such a pair, so its
@@ -4157,6 +4223,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_unary(name, a) -> Tensor\nexp, log, sqrt, sin, cos, tan, tanh or abs of every element.");
     m.raw("_borrowed_einsum_pair", module_borrowed_einsum_pair, METH_VARARGS,
           "_borrowed_einsum_pair(spec, a, b) -> Tensor or NotImplemented\nTwo operands of one dtype, each label once and none its own, read where they lie.");
+    m.raw("_borrowed_fft", module_borrowed_fft, METH_VARARGS,
+          "_borrowed_fft(kind, a, n, axis, norm, inverse) -> Tensor or NotImplemented\nfft (kind 0), rfft (1) or irfft (2) of an operand read where it lies.");
     m.raw("_borrowed_einsum", module_borrowed_einsum, METH_VARARGS,
           "_borrowed_einsum(spec, x) -> Tensor or NotImplemented\nOne operand summed over a run of its axes, read where it lies.");
     m.raw("_borrowed_unary", module_borrowed_unary, METH_VARARGS,

@@ -47,8 +47,23 @@ def _no_out(out):
         raise TypeError("out is not supported: the transform returns a new Tensor")
 
 
+def _borrowed(kind, a, n, axis, norm, inverse, default_points):
+    """The transform of a NumPy array read where it lies (``_numerical._borrowed_fft``, `kind` 0 fft, 1 rfft, 2
+    irfft), or NotImplemented: `a` is not one, or not one so read."""
+    if isinstance(a, Tensor) or not hasattr(a, "__array_struct__"):
+        return NotImplemented
+    axis = _axis(axis, a.ndim)
+    points = default_points(a.shape[axis]) if n is None else _operator.index(n)
+    if points < 1:
+        raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
+    return _numerical._borrowed_fft(kind, a, points, axis, _norm(norm), inverse)
+
+
 def _transform(a, n, axis, norm, inverse):
     """The one-axis transform of NumPy's `fft` or `ifft`."""
+    result = _borrowed(0, a, n, axis, norm, inverse, lambda extent: extent)
+    if result is not NotImplemented:
+        return result
     tensor = _operand(a)
     axis = _axis(axis, tensor.ndim)
     points = tensor.shape[axis] if n is None else _operator.index(n)
@@ -158,13 +173,15 @@ def rfft(a, n=None, axis=-1, norm=None, out=None):
     """The discrete Fourier transform of real `a` along `axis`, its ``n // 2 + 1`` non-negative frequencies, as
     :func:`numpy.fft.rfft`."""
     _no_out(out)
-    return _real_transform(a, n, axis, norm, False)
+    result = _borrowed(1, a, n, axis, norm, False, lambda extent: extent)
+    return _real_transform(a, n, axis, norm, False) if result is NotImplemented else result
 
 
 def irfft(a, n=None, axis=-1, norm=None, out=None):
     """The inverse of :func:`rfft`, `n` real points (``2 * (m - 1)`` by default), as :func:`numpy.fft.irfft`."""
     _no_out(out)
-    return _real_inverse(a, n, axis, norm, False)
+    result = _borrowed(2, a, n, axis, norm, False, lambda extent: (extent - 1) * 2)
+    return _real_inverse(a, n, axis, norm, False) if result is NotImplemented else result
 
 
 def hfft(a, n=None, axis=-1, norm=None, out=None):

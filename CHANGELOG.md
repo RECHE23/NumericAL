@@ -27,7 +27,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   AVX-512's registers on its path (ten AVX-512 cores, `complex128` 4096 points 14.0 → 9.3 µs, FFTW 10.0); NEON's on
   arm64 (M1 Pro, one line of `complex64` 2.0–2.4× faster, 2²⁰ points 17.9 → 8.3 ms; `complex128` 1.1–1.3×), its
   passes of radix 3, 5 and 8 too (`complex64` 1000 points 4.1 → 2.4 µs, 5⁶ 96 → 62 µs). A real input's `fft` and
-  `ifft` by its real transform and the Hermitian symmetry (M1 Pro, 1000 points 5.0 → 3.0 µs, 65536 640 → 354 µs).
+  `ifft` by its real transform and the Hermitian symmetry (M1 Pro, 1000 points 5.0 → 3.0 µs, 65536 640 → 354 µs); a
+  NumPy array of one of the four dtypes read where it lies, not copied first (1000 lines of 1024 `complex128`
+  4.1 → 2.9 ms).
 
 ## 2026.10.38 — 2026-10-25
 
