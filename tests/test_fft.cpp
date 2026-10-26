@@ -285,6 +285,19 @@ namespace {
         good = good && ok(padded.data()[(r * 4) + c], alone.data()[r]);
       }
     }
+    // Round trips along the lines apart (axis 0) and along the lines together, padded: the input back, zeros past it.
+    const tensor<C> back_columns {numerical::ifft(numerical::fft(x, 8, 0, norm), std::nullopt, 0, norm)};
+    const tensor<C> back_rows    {numerical::ifft(numerical::fft(x, 8, -1, norm), std::nullopt, -1, norm)};
+    for (std::size_t r {0}; r < 8; ++r) {
+      for (std::size_t c {0}; c < 4; ++c) {
+        good = good && ok(back_columns.data()[(r * 4) + c], r < 3 ? C(values[(r * 4) + c]) : C {});
+      }
+    }
+    for (std::size_t r {0}; r < 3; ++r) {
+      for (std::size_t c {0}; c < 8; ++c) {
+        good = good && ok(back_rows.data()[(r * 8) + c], c < 4 ? C(values[(r * 4) + c]) : C {});
+      }
+    }
     for (std::size_t r {0}; r < 3; ++r) {
       const tensor<C> alone {numerical::ifft(tensor<C> {{2}, std::vector<C> {C(values[r * 4]), C(values[(r * 4) + 1])}}, std::nullopt, 0, norm)};
       good = good && ok(cut.data()[r * 2], alone.data()[0]) && ok(cut.data()[(r * 2) + 1], alone.data()[1]);

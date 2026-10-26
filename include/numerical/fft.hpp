@@ -1023,6 +1023,10 @@ namespace numerical {
       C*        data_ {nullptr}; //!< The space in use.
     };
 
+    //! \brief The lines a task of \ref transform_axis takes together along an axis whose lines lie apart: each row read
+    //!        and written as that many neighbours, where one line at a time took one element of each row.
+    inline constexpr std::size_t fft_column_block {8};
+
     /*!
      * \brief The transform of \p a along \p axis, \p n points (the axis cut or padded with zeros to it, as NumPy's),
      *        forward or \p inverse (`conj(fft(conj x))`, exact), scaled for \p norm. Each line gathered, transformed
@@ -1059,24 +1063,53 @@ namespace numerical {
       const std::size_t                        kept  {std::min(points, extent)};
       const bool                               fused {fft_fuses()};
       const T* const                           from  {a.data().data()};
-      parallel_for(walk.outer * walk.inner, 5 * points * static_cast<std::size_t>(std::bit_width(points)), [&](std::size_t line) {
-                     const std::size_t outer {line / walk.inner};
-                     const std::size_t inner {line % walk.inner};
-                     const T* const    in    {from + (outer * extent * walk.inner) + inner};
-                     C* const          to    {out.data() + (outer * points * walk.inner) + inner};
-                     fft_scratch<C>    scratch {plan->work + (walk.inner == 1 ? 0 : points)};
-                     C* const          data  {walk.inner == 1 ? to : scratch.data() + plan->work}; // a line of the output where it lies together
+      const auto                               finish {[&](const C& value) { // conjugated back for the inverse, scaled
+                                                         const C v {inverse ? std::conj(value) : value};
+                                                         return scale == R(1) ? v : C {v.real() * scale, v.imag() * scale};
+                                                       }};
+      const std::size_t work {5 * points * static_cast<std::size_t>(std::bit_width(points))};
+      if (walk.inner == 1) { // each line together: transformed where it lies in the output
+        parallel_for(walk.outer, work, [&](std::size_t line) {
+                       const T* const in {from + (line * extent)};
+                       C* const       to {out.data() + (line * points)};
+                       fft_scratch<C> scratch {plan->work};
+                       for (std::size_t k {0}; k < points; ++k) {
+                         const C value {k < kept ? C(in[k]) : C {}};
+                         to[k] = inverse ? std::conj(value) : value;
+                       }
+                       forward_fft(*plan, to, scratch.data(), fused);
+                       if (inverse || scale != R(1)) {
+                         std::transform(to, to + points, to, finish);
+                       }
+                     });
+        return tensor<C> {std::move(shape), std::move(out)};
+      }
+      // Lines `inner` apart: up to fft_column_block of them at a time, each row read and written as that many
+      // neighbours; fewer where that would leave the threads under four tasks each. A line's bits are its own either way.
+      const std::size_t share  {(walk.outer * walk.inner) / (4 * max_threads())};
+      const std::size_t block  {std::clamp(share, std::size_t {1}, fft_column_block)};
+      const std::size_t blocks {(walk.inner + block - 1) / block};
+      parallel_for(walk.outer * blocks, work * block, [&](std::size_t task) {
+                     const std::size_t outer {task / blocks};
+                     const std::size_t first {(task % blocks) * block};
+                     const std::size_t width {std::min(block, walk.inner - first)};
+                     const T* const    in    {from + (outer * extent * walk.inner) + first};
+                     C* const          to    {out.data() + (outer * points * walk.inner) + first};
+                     fft_scratch<C>    scratch {plan->work + (width * points)};
+                     C* const          lines {scratch.data() + plan->work};
                      for (std::size_t k {0}; k < points; ++k) {
-                       const C value {k < kept ? C(in[k * walk.inner]) : C {}};
-                       data[k] = inverse ? std::conj(value) : value;
+                       for (std::size_t b {0}; b < width; ++b) {
+                         const C value {k < kept ? C(in[(k * walk.inner) + b]) : C {}};
+                         lines[(b * points) + k] = inverse ? std::conj(value) : value;
+                       }
                      }
-                     forward_fft(*plan, data, scratch.data(), fused);
-                     if (data == to && !inverse && scale == R(1)) {
-                       return; // transformed where it lies, nothing to conjugate or scale
+                     for (std::size_t b {0}; b < width; ++b) {
+                       forward_fft(*plan, lines + (b * points), scratch.data(), fused);
                      }
                      for (std::size_t k {0}; k < points; ++k) {
-                       const C value {inverse ? std::conj(data[k]) : data[k]};
-                       to[k * walk.inner] = scale == R(1) ? value : C {value.real() * scale, value.imag() * scale};
+                       for (std::size_t b {0}; b < width; ++b) {
+                         to[(k * walk.inner) + b] = finish(lines[(b * points) + k]);
+                       }
                      }
                    });
       return tensor<C> {std::move(shape), std::move(out)};
