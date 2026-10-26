@@ -36,7 +36,7 @@ RTOL = 1e-7
 ATOL = 1e-9
 
 # Cases whose NumPy-vs-NumericAL sample distributions are drawn as box-plots (the gap, visually).
-BOXPLOT_CASES = {"matmul (256×256)", "solve (64×64)", "eigh (48×48)", "svd (48×32)"}
+BOXPLOT_CASES = {"matmul (256×256)", "solve (64×64)", "eigh (48×48)", "svd (48×32)", "fft (1024)"}
 
 
 # A case is (name, numerical_fn, numpy_fn, verify); `verify(numerical_result,
@@ -118,11 +118,24 @@ def svd_case(name, a):
     return (name, lambda: numerical.svd(t, full_matrices=False), lambda: np.linalg.svd(a, full_matrices=False), verify)
 
 
+def fft_case(name, ours, theirs, x, rtol=1e-12):
+    """A transform of numerical.fft against numpy.fft's of the same name: equal within `rtol` of the largest output
+    (a sum of n terms rounds by about log2(n) units of the dtype's precision)."""
+    t = numerical.asarray(x)
+
+    def verify(numerical_result, numpy_result):
+        got, want = np.asarray(numerical_result), np.asarray(numpy_result)
+        return got.shape == want.shape and np.abs(got - want).max() <= rtol * np.abs(want).max()
+
+    return name, lambda: ours(t), lambda: theirs(x), verify
+
+
 def build_cases():
     r = np.random.default_rng(12345)
     dom = lambda n: r.random((n, n)) + n * np.eye(n)            # diagonally dominant (invertible)
     spd = lambda n: (lambda b: (b @ b.T) + n * np.eye(n))(r.random((n, n)))  # positive-definite
     sym = lambda n: (lambda b: b + b.T)(r.random((n, n)))        # symmetric
+    cplx = lambda shape: r.standard_normal(shape) + 1j * r.standard_normal(shape)  # complex Gaussian
     return [
         einsum_case("dot (n=100k)", "i,i->", r.random(100_000), r.random(100_000)),
         einsum_case("outer (200×200)", "i,j->ij", r.random(200), r.random(200)),
@@ -147,6 +160,19 @@ def build_cases():
         qr_case("qr (64×32)", r.random((64, 32))),
         eigh_case("eigh (48×48)", sym(48)),
         svd_case("svd (48×32)", r.random((48, 32))),
+        fft_case("fft (1024)", numerical.fft.fft, np.fft.fft, cplx(1024)),
+        fft_case("fft (1000)", numerical.fft.fft, np.fft.fft, cplx(1000)),
+        fft_case("fft (1009, Bluestein)", numerical.fft.fft, np.fft.fft, cplx(1009)),
+        fft_case("fft (65536)", numerical.fft.fft, np.fft.fft, cplx(65536)),
+        fft_case("ifft (4096)", numerical.fft.ifft, np.fft.ifft, cplx(4096)),
+        fft_case("fft complex64 (4096)", numerical.fft.fft, np.fft.fft, cplx(4096).astype(np.complex64), rtol=1e-5),
+        fft_case("fft (64×64 lines)", numerical.fft.fft, np.fft.fft, cplx((64, 64))),
+        fft_case("fft axis 0 (1024×64)", lambda t: numerical.fft.fft(t, axis=0), lambda a: np.fft.fft(a, axis=0),
+                 cplx((1024, 64))),
+        fft_case("fft2 (512×512)", numerical.fft.fft2, np.fft.fft2, cplx((512, 512))),
+        fft_case("rfft (4096)", numerical.fft.rfft, np.fft.rfft, r.standard_normal(4096)),
+        fft_case("irfft (2049→4096)", numerical.fft.irfft, np.fft.irfft, cplx(2049)),
+        fft_case("rfft2 (512×512)", numerical.fft.rfft2, np.fft.rfft2, r.standard_normal((512, 512))),
     ]
 
 

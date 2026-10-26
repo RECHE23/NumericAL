@@ -72,6 +72,17 @@ jobs:
             seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
             python fuzz/edges.py --seed "$seed" --cases 5000
           done
+      # The Fourier transforms (fuzz/fft.py: drawn lengths, axes, dtypes, point counts and scalings against numpy.fft,
+      # each line's bits alone, on every path), a fresh seed each campaign; a tenth of the time.
+      - name: Fuzz the Fourier transforms against NumPy
+        env:
+          PYTHONPATH: python
+        run: |
+          end=$(( $(date +%s) + FUZZ_TIME / 10 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
+            python fuzz/fft.py --seed "$seed" --cases 300
+          done
       # Campaigns of 100 cases, each from a fresh seed, until the time is spent; the first finding stops the job.
       - name: Fuzz against NumPy
         env:

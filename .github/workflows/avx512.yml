@@ -58,6 +58,7 @@ jobs:
           path=$($sde python -c 'import numerical; print(numerical.gemm_path())')
           test "$path" = avx512 || { echo "::error::the emulated processor runs the $path kernel, not avx512"; exit 1; }
           $sde python fuzz/linalg.py --cases 60
+          $sde python fuzz/fft.py --cases 100
       # The C++ suite once, instrumented: every test must pass, and every line and function of x86.hpp (which the
       # macOS gate's 100 % coverage does not compile) must run, the tests taking every path the emulated processor has.
       - name: The C++ suite and every line of the x86-64 kernels, under the emulator

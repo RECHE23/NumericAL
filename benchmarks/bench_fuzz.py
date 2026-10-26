@@ -70,6 +70,8 @@ def flops(op, dims):
         "slogdet": (2 / 3) * m ** 3, "inv": 2 * m ** 3, "cholesky": m ** 3 / 3, "qr": 4 * m * n * n,
         "eigh": 9 * m ** 3, "eigvalsh": 4 * m ** 3, "svd": 14 * m * n * n, "svdvals": 4 * m * n * n,
         "lstsq": 14 * m * n * n + 2 * m * n * k, "eig": 25 * m ** 3,
+        "fft": 5 * m * n * math.log2(n + 1), "ifft": 5 * m * n * math.log2(n + 1), "rfft": 2.5 * m * n * math.log2(n + 1),
+        "irfft": 2.5 * m * n * math.log2(n + 1), "fft2": 5 * m * n * math.log2(m * n + 1),
     }[op]
 
 
@@ -79,7 +81,10 @@ OPS = {
     "einsum-each": (1, 2),
     "solve": (3, 2), "det": (2, 1), "slogdet": (1, 1), "inv": (2, 1), "cholesky": (2, 1), "qr": (2, 2),
     "eigh": (2, 1), "eigvalsh": (1, 1), "svd": (2, 2), "svdvals": (1, 2), "lstsq": (2, 3), "eig": (1, 1),
+    "fft": (3, 2), "ifft": (1, 2), "rfft": (2, 2), "irfft": (1, 2), "fft2": (1, 2),
 }
+# The transforms along an axis (numpy.fft's): `m` lines of `n` points, along the last axis or the first.
+FFT_OPS = ("fft", "ifft", "rfft", "irfft")
 # The einsum calls that sum nothing, each element one operand's or a product of two: an outer product, a row or a
 # column broadcast over a matrix's rows, a transpose.
 EACH_SPECS = ("i,j->ij", "ij,j->ij", "ij,i->ij", "ij->ji")
@@ -87,7 +92,7 @@ EACH_SPECS = ("i,j->ij", "ij,j->ij", "ij,i->ij", "ij->ji")
 LIMITS = {"eig": 400}
 # The operations both C++ sides have a function for: Eigen has no einsum, NumericAL's C++ API no matrix norm.
 CPP_NA = {"einsum-product": "no Eigen function", "einsum-reduce": "no Eigen function", "einsum-each": "no Eigen function",
-          "norm": "no NumericAL C++ function"}
+          "norm": "no NumericAL C++ function", **{op: "no Eigen function" for op in FFT_OPS + ("fft2",)}}
 CPP_OPS = tuple(op for op in OPS if op not in CPP_NA)
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORKER = os.path.join(HERE, "fuzz_worker.cpp")
@@ -124,7 +129,8 @@ def draw_case(seed, index, largest, ops):
     return {"index": index, "op": op, "dims": dims, "dtype": weighted(rng, DTYPES), "layout": weighted(rng, LAYOUTS),
             "spec": ["ij->", "ij->i", "ij->j"][int(rng.integers(3))] if op == "einsum-reduce"
             else ["ij,jk->ik", "ij,kj->ik", "ji,jk->ik"][int(rng.integers(3))] if op == "einsum-product"
-            else EACH_SPECS[int(rng.integers(len(EACH_SPECS)))] if op == "einsum-each" else None}
+            else EACH_SPECS[int(rng.integers(len(EACH_SPECS)))] if op == "einsum-each"
+            else ["axis=-1", "axis=0"][int(rng.integers(2))] if op in FFT_OPS else None}
 
 
 def matrix(rng, shape, dtype):
@@ -214,6 +220,20 @@ def build(case):
     elif op == "eig":
         operands = [matrix(rng, (m, m), dtype)]
         ours, theirs = nl.eigvals, np.linalg.eigvals
+    elif op in FFT_OPS:
+        axis = -1 if case["spec"] == "axis=-1" else 0
+        single = dtype in (np.float32, np.complex64)
+        kind = {"rfft": np.float32 if single else np.float64, "irfft": np.complex64 if single else np.complex128}.get(op, dtype)
+        points = (n // 2) + 1 if op == "irfft" else n  # irfft's input: the n/2 + 1 frequencies of n points
+        operands = [matrix(rng, (m, points) if axis == -1 else (points, m), kind)]
+        ours_fn, theirs_fn = getattr(nl.fft, op), getattr(np.fft, op)
+        if op == "irfft":
+            ours, theirs = (lambda a: ours_fn(a, n, axis)), (lambda a: theirs_fn(a, n, axis))
+        else:
+            ours, theirs = (lambda a: ours_fn(a, axis=axis)), (lambda a: theirs_fn(a, axis=axis))
+    elif op == "fft2":
+        operands = [matrix(rng, (m, n), dtype)]
+        ours, theirs = nl.fft.fft2, np.fft.fft2
     else:  # pragma: no cover - every drawn operation is listed above
         raise ValueError(op)
     arrived = [arrive(a, case["layout"]) for a in operands]
