@@ -475,26 +475,6 @@ namespace numerical {
       im = _mm256_shuffle_ps(low, high, 0xDD);
     }
 
-    //! \brief The real numbers at \p at, \p apart from one another (four of them), into \p re, and \p im zeros.
-    NUMERICAL_FFT_LANES_INLINE void lanes_read(const double* at,
-                                               std::size_t   apart,
-                                               __m256d&      re,
-                                               __m256d&      im) noexcept
-    {
-      re = _mm256_setr_pd(at[0], at[apart], at[2 * apart], at[3 * apart]);
-      im = _mm256_setzero_pd();
-    }
-
-    //! \brief \ref lanes_read of eight `float`.
-    NUMERICAL_FFT_LANES_INLINE void lanes_read(const float* at,
-                                               std::size_t  apart,
-                                               __m256&      re,
-                                               __m256&      im) noexcept
-    {
-      re = _mm256_setr_ps(at[0], at[apart], at[2 * apart], at[3 * apart], at[4 * apart], at[5 * apart], at[6 * apart], at[7 * apart]);
-      im = _mm256_setzero_ps();
-    }
-
     //! \brief The complex numbers of parts \p re and \p im stored at \p at, \p apart from one another (four of them).
     NUMERICAL_FFT_LANES_INLINE void lanes_write(std::complex<double>* at,
                                                 std::size_t           apart,
@@ -645,26 +625,6 @@ namespace numerical {
       const float32x4_t  high {vcombine_f32(vld1_f32(from + (4 * apart)), vld1_f32(from + (6 * apart)))}; // r2 i2 r3 i3
       re = vuzp1q_f32(low, high);
       im = vuzp2q_f32(low, high);
-    }
-
-    //! \brief The real numbers at \p at, \p apart from one another (two of them), into \p re, and \p im zeros.
-    NUMERICAL_ALWAYS_INLINE void lanes_read(const double* at,
-                                            std::size_t   apart,
-                                            float64x2_t&  re,
-                                            float64x2_t&  im) noexcept
-    {
-      re = vsetq_lane_f64(at[apart], vdupq_n_f64(at[0]), 1);
-      im = vdupq_n_f64(0.0);
-    }
-
-    //! \brief \ref lanes_read of four `float`.
-    NUMERICAL_ALWAYS_INLINE void lanes_read(const float*  at,
-                                            std::size_t   apart,
-                                            float32x4_t&  re,
-                                            float32x4_t&  im) noexcept
-    {
-      re = vsetq_lane_f32(at[3 * apart], vsetq_lane_f32(at[2 * apart], vsetq_lane_f32(at[apart], vdupq_n_f32(at[0]), 1), 2), 3);
-      im = vdupq_n_f32(0.0F);
     }
 
     //! \brief The complex numbers of parts \p re and \p im stored at \p at, \p apart from one another (two of them).
@@ -2336,6 +2296,55 @@ namespace numerical {
     }
 
     /*!
+     * \brief The first `n/2 + 1` frequencies of the \p n real points \p x into \p X by the complex transform of `n`
+     *        points, the products fused where \p fused: an even `n`'s line holding an infinity or a NaN, which the
+     *        recombination of its pairs would turn into NaN (`∞ − ∞`) where the complex transform carries it.
+     */
+    template <std::floating_point R>
+    NUMERICAL_OUT_OF_LINE void real_forward_whole(std::size_t            n,
+                                                  const R*               x,
+                                                  std::complex<R>*       X,
+                                                  bool                   fused)
+    {
+      using C = std::complex<R>;
+      const std::shared_ptr<const fft_plan<R>> plan {shared_fft_plan<R>(n)};
+      std::vector<C>                           line(n + plan->work);
+      for (std::size_t j {0}; j < n; ++j) {
+        line[j] = C {x[j], R(0)};
+      }
+      forward_fft(*plan, line.data(), line.data() + n, fused);
+      std::copy(line.begin(), line.begin() + static_cast<std::ptrdiff_t>((n / 2) + 1), X);
+    }
+
+    /*!
+     * \brief The \p n real points \p x from the `n/2 + 1` frequencies \p X by the complex transform of `n` points
+     *        (`conj(fft(conj ·))` of the Hermitian spectrum, the imaginary parts of `X_0` and `X_{n/2}` read as 0), times
+     *        \p factor: an even `n`'s spectrum holding an infinity or a NaN (\ref real_forward_whole).
+     */
+    template <std::floating_point R>
+    NUMERICAL_OUT_OF_LINE void real_inverse_whole(std::size_t            n,
+                                                  const std::complex<R>* X,
+                                                  R*                     x,
+                                                  R                      factor,
+                                                  bool                   fused)
+    {
+      using C = std::complex<R>;
+      const std::shared_ptr<const fft_plan<R>> plan {shared_fft_plan<R>(n)};
+      const std::size_t                        h    {n / 2};
+      std::vector<C>                           line(n + plan->work);
+      line[0] = C {X[0].real(), R(0)};
+      line[h] = C {X[h].real(), R(0)};
+      for (std::size_t k {1}; k < h; ++k) {
+        line[k]     = std::conj(X[k]); // conjugated for conj(fft(conj ·))
+        line[n - k] = X[k];
+      }
+      forward_fft(*plan, line.data(), line.data() + n, fused);
+      for (std::size_t j {0}; j < n; ++j) {
+        x[j] = line[j].real() * factor;
+      }
+    }
+
+    /*!
      * \brief The transform of \p n real points \p x (together) into \p X (`n/2 + 1` complex numbers), \p work holding
      *        `n/2 + 1` complex numbers beside the plan's work. An even `n = 2h`: the `h` complex numbers
      *        `x_{2j} + i·x_{2j+1}` transformed, then `X_k = E_k + w^k·O_k`, `E_k = (Z_k + conj Z_{h−k})/2`,
@@ -2366,10 +2375,16 @@ namespace numerical {
         std::copy(line, line + h + 1, X);
         return;
       }
-      C* const z     {work};
-      C* const start {ahead ? work + h : z};
+      C* const z      {work};
+      C* const start  {ahead ? work + h : z};
+      bool     finite {true};
       for (std::size_t j {0}; j < h; ++j) {
         start[j] = C {x[2 * j], x[(2 * j) + 1]};
+        finite   = finite && std::isfinite(x[2 * j]) && std::isfinite(x[(2 * j) + 1]);
+      }
+      if (!finite) {
+        real_forward_whole(n, x, X, Fused);
+        return;
       }
       forward_fft(*plan.complex, z, work + h, Fused, ahead);
       X[0] = C {z[0].real() + z[0].imag(), R(0)};
@@ -2420,6 +2435,14 @@ namespace numerical {
         for (std::size_t j {0}; j < n; ++j) {
           x[j] = line[j].real() * scale;
         }
+        return;
+      }
+      bool finite {std::isfinite(X[0].real()) && std::isfinite(X[h].real())};
+      for (std::size_t k {1}; k < h; ++k) {
+        finite = finite && std::isfinite(X[k].real()) && std::isfinite(X[k].imag());
+      }
+      if (!finite) {
+        real_inverse_whole(n, X, x, scale * R(0.5), Fused); // scale holds the half sums' 2, exact
         return;
       }
       C* const z     {work};
@@ -2574,11 +2597,52 @@ namespace numerical {
       }
       return static_cast<std::size_t>(axis < 0 ? axis + signed_rank : axis);
     }
+
+    /*!
+     * \brief The transform of real \p a along the axis \p index into all `n` frequencies, or the inverse transform where
+     *        \p inverse: each line's real transform (`real_forward`, its `n/2 + 1` non-negative frequencies), the rest
+     *        by Hermitian symmetry, `X_{n−k} = conj X_k`, exactly; a length whose complex transform takes four steps,
+     *        which half of it does not, by that complex transform, on the threads. The inverse of a real line the
+     *        conjugate of its transform. Then times \p scale.
+     */
+    template <std::floating_point R>
+    [[nodiscard]] tensor<std::complex<R>> real_input_transform(const tensor<R>& a,
+                                                               std::size_t      index,
+                                                               std::size_t      points,
+                                                               bool             inverse,
+                                                               R                scale)
+    {
+      using C = std::complex<R>;
+      const bool                                    whole   {four_step_columns(points, sizeof(C)) != 0};
+      const std::shared_ptr<const real_fft_plan<R>> plan    {whole ? nullptr : shared_real_fft_plan<R>(points)};
+      const std::shared_ptr<const fft_plan<R>>      complex {whole ? shared_fft_plan<R>(points) : nullptr};
+      const bool                                    fused   {fft_fuses()};
+      const std::size_t                             half    {points / 2};
+      const std::size_t                             work    {whole ? complex->work : (points % 2 == 0 ? half : points) + plan->complex->work};
+      return lines_along<R, C, C>(a, index, points, points, work, [&](const R* x, C* spectrum, C* space) {
+                                    if (whole) {
+                                      std::transform(x, x + points, spectrum, [](R value) { return C {value, R(0)}; });
+                                      forward_fft(*complex, spectrum, space, fused);
+                                    }
+                                    else {
+                                      real_forward(*plan, x, spectrum, space, fused);
+                                      for (std::size_t k {1}; k < points - half; ++k) {
+                                        spectrum[points - k] = std::conj(spectrum[k]);
+                                      }
+                                    }
+                                    if (inverse || scale != R(1)) {
+                                      std::transform(spectrum, spectrum + points, spectrum, [inverse, scale](const C& v) {
+                                                       const C w {inverse ? std::conj(v) : v};
+                                                       return C {w.real() * scale, w.imag() * scale};
+                                                     });
+                                    }
+                                  });
+    }
   } // namespace detail
 
   /*!
    * \brief The discrete Fourier transform of \p a along \p axis, as `numpy.fft.fft`: `X_k = Σ_j x_j e^{−2πi jk/n}`.
-   * \param[in] a    A tensor of `float`, `double` or their complex numbers; a real one is transformed as complex.
+   * \param[in] a    A tensor of complex `float` or `double` (a real one: the overload of real tensors).
    * \param[in] n    The points transformed: the axis cut to them, or padded with zeros; its extent by default.
    * \param[in] axis The axis transformed, negative from the last (the last by default).
    * \param[in] norm The scaling (\ref fft_norm): none by default.
@@ -2586,12 +2650,39 @@ namespace numerical {
    * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0.
    */
   template <detail::fft_input T>
-  [[nodiscard]] tensor<typename detail::fft_complex<T>::type> fft(const tensor<T>&           a,
-                                                                  std::optional<std::size_t> n    = std::nullopt,
-                                                                  std::ptrdiff_t             axis = -1,
-                                                                  fft_norm                   norm = fft_norm::backward)
+  requires detail::split_complex<T>
+  [[nodiscard]] tensor<T> fft(const tensor<T>&           a,
+                              std::optional<std::size_t> n    = std::nullopt,
+                              std::ptrdiff_t             axis = -1,
+                              fft_norm                   norm = fft_norm::backward)
   {
     return detail::transform_axis(a, n, axis, norm, false);
+  }
+
+  /*!
+   * \brief The discrete Fourier transform of real \p a along \p axis, as `numpy.fft.fft` of a real array: its
+   *        non-negative frequencies by the real transform (`rfft`'s), the others by their Hermitian symmetry,
+   *        `X_{n−k} = conj X_k` exactly; a length whose complex transform takes four steps (`four_step_plan`) as a
+   *        complex one, on the threads.
+   * \param[in] a    A tensor of `float` or `double`.
+   * \param[in] n    The points transformed: the axis cut to them, or padded with zeros; its extent by default.
+   * \param[in] axis The axis transformed, negative from the last (the last by default).
+   * \param[in] norm The scaling (\ref fft_norm): none by default.
+   * \return The complex transform, of `a`'s shape with the axis `n` long.
+   * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<std::complex<T>> fft(const tensor<T>&           a,
+                                            std::optional<std::size_t> n    = std::nullopt,
+                                            std::ptrdiff_t             axis = -1,
+                                            fft_norm                   norm = fft_norm::backward)
+  {
+    const std::size_t index  {detail::fft_axis_index(axis, a.rank(), "fft")};
+    const std::size_t points {n.value_or(a.shape()[index])};
+    if (points == 0) {
+      throw dimension_error("fft: invalid number of data points (0)");
+    }
+    return detail::real_input_transform(a, index, points, false, detail::fft_scale<T>(norm, false, points));
   }
 
   /*!
@@ -2605,12 +2696,37 @@ namespace numerical {
    * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0.
    */
   template <detail::fft_input T>
-  [[nodiscard]] tensor<typename detail::fft_complex<T>::type> ifft(const tensor<T>&           a,
-                                                                   std::optional<std::size_t> n    = std::nullopt,
-                                                                   std::ptrdiff_t             axis = -1,
-                                                                   fft_norm                   norm = fft_norm::backward)
+  requires detail::split_complex<T>
+  [[nodiscard]] tensor<T> ifft(const tensor<T>&           a,
+                               std::optional<std::size_t> n    = std::nullopt,
+                               std::ptrdiff_t             axis = -1,
+                               fft_norm                   norm = fft_norm::backward)
   {
     return detail::transform_axis(a, n, axis, norm, true);
+  }
+
+  /*!
+   * \brief The inverse discrete Fourier transform of real \p a along \p axis, as `numpy.fft.ifft` of a real array: the
+   *        conjugate of its transform (`fft` of a real tensor), scaled as the inverse.
+   * \param[in] a    A tensor of `float` or `double`.
+   * \param[in] n    The points transformed: the axis cut to them, or padded with zeros; its extent by default.
+   * \param[in] axis The axis transformed, negative from the last (the last by default).
+   * \param[in] norm The scaling (\ref fft_norm): 1/n by default.
+   * \return The complex inverse transform, of `a`'s shape with the axis `n` long.
+   * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<std::complex<T>> ifft(const tensor<T>&           a,
+                                             std::optional<std::size_t> n    = std::nullopt,
+                                             std::ptrdiff_t             axis = -1,
+                                             fft_norm                   norm = fft_norm::backward)
+  {
+    const std::size_t index  {detail::fft_axis_index(axis, a.rank(), "ifft")};
+    const std::size_t points {n.value_or(a.shape()[index])};
+    if (points == 0) {
+      throw dimension_error("ifft: invalid number of data points (0)");
+    }
+    return detail::real_input_transform(a, index, points, true, detail::fft_scale<T>(norm, true, points));
   }
 
   /*!

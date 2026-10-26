@@ -1,8 +1,9 @@
 """Discrete Fourier transforms, as :mod:`numpy.fft`: the same names, arguments and results.
 
 Every length runs in O(n log n): Stockham passes of mixed radices, or Bluestein's convolution for a length with a prime
-factor past 61. ``float32`` and ``complex64`` are transformed in single precision, as NumPy 2 does; integers and
-``float64`` as ``complex128``. A transform's bits are the same on any number of threads, a line alone or in a batch,
+factor past 61. ``float32`` and ``complex64`` are transformed in single precision, as NumPy 2 does; integers as
+``float64``. A real input's transform takes its real transform (:func:`rfft`'s) and the conjugates of its frequencies
+for the others. A transform's bits are the same on any number of threads, a line alone or in a batch,
 along any axis; they depend only on the path (portable, or the vector units, NEON, AVX2 and AVX-512 alike).
 """
 

@@ -177,20 +177,60 @@ TEST(ifft_undoes_fft_and_the_scalings_are_numpys)
 
 // n points: the axis cut to them or padded with zeros, as NumPy's; a real tensor transformed as its complex copy,
 // to the bit; float in single precision.
+namespace {
+  // The transform of a real tensor against that of its complex copy, within a few units of R's epsilon times the input's
+  // norm, its frequencies past n/2 the conjugates of those before to the bit; its inverse the conjugate of its transform
+  // over n, to the bit (n a power of two, so 1/n exact).
+  template <std::floating_point R>
+  bool real_input_agrees(const std::vector<R>& values,
+                         std::size_t           points)
+  {
+    using C = std::complex<R>;
+    std::vector<C> copy(values.size());
+    double         norm {0.0};
+    for (std::size_t j {0}; j < values.size(); ++j) {
+      copy[j]  = C {values[j], R(0)};
+      norm    += static_cast<double>(values[j]) * static_cast<double>(values[j]);
+    }
+    const tensor<R> real     {{values.size()}, values};
+    const auto      spectrum {numerical::fft(real, points)};
+    const auto      complex  {numerical::fft(tensor<C> {{values.size()}, copy}, points)};
+    const auto      inverse  {numerical::ifft(real, points)};
+    const double    bound    {8.0 * static_cast<double>(std::numeric_limits<R>::epsilon()) * std::sqrt(norm) * std::max(1.0, std::log2(static_cast<double>(points)))};
+    bool            good     {spectrum.shape() == complex.shape() && spectrum.data()[0].imag() == R(0)};
+    for (std::size_t k {0}; k < points; ++k) {
+      good = good && std::abs(std::complex<double>(spectrum.data()[k] - complex.data()[k])) <= bound;
+      if (2 * k == points) {
+        good = good && spectrum.data()[k].imag() == R(0); // the last frequency of an even n: real
+      }
+      else if (k != 0) {
+        good = good && same_bits(std::vector {spectrum.data()[points - k]}, std::vector {std::conj(spectrum.data()[k])});
+      }
+      const C over_n {std::conj(spectrum.data()[k]) / static_cast<R>(points)};
+      good = good && (std::popcount(points) != 1 || same_bits(std::vector {inverse.data()[k]}, std::vector {over_n}));
+    }
+    return good;
+  }
+} // namespace
+
+// A real input's transform, as NumPy takes it: its real transform and the Hermitian symmetry, within rounding of the
+// complex copy's; cut, padded, of either parity, both precisions; exact where the sums are.
 TEST(fft_takes_numpys_points_and_real_input)
 {
-  const tensor<double>               real   {{5}, std::vector<double> {1.0, -2.0, 0.5, 4.0, 3.0}};
-  const tensor<std::complex<double>> copy   {{5}, std::vector<std::complex<double>> {1.0, -2.0, 0.5, 4.0, 3.0}};
-  EXPECT(same_bits(numerical::fft(real).data(), numerical::fft(copy).data()));
-  const tensor<std::complex<double>> padded {{8}, std::vector<std::complex<double>> {1.0, -2.0, 0.5, 4.0, 3.0, 0.0, 0.0, 0.0}};
-  EXPECT(same_bits(numerical::fft(real, 8).data(), numerical::fft(padded).data()));
-  const tensor<std::complex<double>> cut    {{2}, std::vector<std::complex<double>> {1.0, -2.0}};
-  EXPECT(same_bits(numerical::fft(real, 2).data(), numerical::fft(cut).data()));
+  const std::vector<double> values {1.0, -2.0, 0.5, 4.0, 3.0};
+  for (const std::size_t points : {5UL, 8UL, 2UL, 1UL, 7UL, 16UL}) {
+    EXPECT(real_input_agrees(values, points));
+  }
+  EXPECT(real_input_agrees(std::vector<float> {1.0F, -2.0F, 0.5F, 4.0F, 3.0F, 9.0F}, 6));
+  const tensor<double> real                  {{5}, values};
   EXPECT(numerical::fft(real, 2).data()[1] == std::complex<double>(3.0, 0.0));
   const tensor<float>               single   {{4}, std::vector<float> {1.0F, 2.0F, 3.0F, 4.0F}};
   const tensor<std::complex<float>> spectrum {numerical::fft(single)};
   EXPECT(spectrum.data()[0] == std::complex<float>(10.0F, 0.0F) && spectrum.data()[2] == std::complex<float>(-2.0F, 0.0F));
   EXPECT(numerical::ifft(single).data()[0] == std::complex<float>(2.5F, 0.0F));
+  EXPECT(numerical::fft(real, std::nullopt, 0, numerical::fft_norm::ortho).shape() == (std::vector<std::size_t> {5}));
+  EXPECT_THROWS((void)numerical::fft(real, 0), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::ifft(real, 0), numerical::dimension_error);
 }
 
 // Along any axis of a stack, each line's transform is that line's alone to the bit, on one thread or all of them; an
@@ -409,6 +449,26 @@ TEST(fft_plans_are_kept_and_renewed)
     const tensor<std::complex<double>> spectrum {numerical::fft(ones)};
     EXPECT(std::abs(spectrum.data()[0] - std::complex<double>(static_cast<double>(n), 0.0)) < 1e-12);
   }
+}
+
+// A real transform of an even length whose line holds an infinity takes the complex transform of its points, as
+// NumPy's rfft carries it: [∞, 0, 0, 0] to ∞ at every frequency, where the recombination of its pairs gave ∞ − ∞, NaN;
+// its inverse from a spectrum holding one as well; both precisions.
+TEST(real_transforms_carry_an_infinity_as_the_complex_one)
+{
+  const double                       inf      {std::numeric_limits<double>::infinity()};
+  const tensor<std::complex<double>> spectrum {numerical::rfft(tensor<double> {{4}, std::vector<double> {inf, 0.0, 0.0, 0.0}})};
+  for (const std::complex<double>& value : spectrum.data()) {
+    EXPECT(std::isinf(value.real()) && value.imag() == 0.0);
+  }
+  const tensor<std::complex<float>> single {numerical::rfft(tensor<float> {{2}, std::vector<float> {std::numeric_limits<float>::infinity(), 1.0F}})};
+  EXPECT(std::isinf(single.data()[0].real()) && std::isinf(single.data()[1].real()));
+  const tensor<double> back                {numerical::irfft(tensor<std::complex<double>> {{3}, std::vector<std::complex<double>> {{inf, 0.0}, {0.0, 0.0}, {0.0, 0.0}}})};
+  for (const double value : back.data()) {
+    EXPECT(std::isinf(value));
+  }
+  const tensor<float> narrow {numerical::irfft(tensor<std::complex<float>> {{2}, std::vector<std::complex<float>> {{1.0F, 0.0F}, {std::numeric_limits<float>::infinity(), 0.0F}}})};
+  EXPECT(std::isinf(narrow.data()[0]) && std::isinf(narrow.data()[1]));
 }
 
 // An infinite input is carried, not turned into NaN by a factor of 1: [∞, 0, 0, 0] transforms to ∞ everywhere.
@@ -696,6 +756,15 @@ TEST(four_step_transforms_are_exact_to_epsilon_log_n_and_their_own_on_any_thread
     EXPECT(four_step_transform_holds<double>(std::size_t {3} << 19));
     EXPECT(four_step_transform_holds<float>(std::size_t {1} << 21));
     EXPECT(four_step_transform_holds<double>(std::size_t {67} << 14)); // Bluestein's, its transforms in four steps
+    const std::size_t   n {std::size_t {1} << 20};
+    std::vector<double> real(n);
+    for (std::size_t j {0}; j < n; ++j) {
+      real[j] = static_cast<double>((j * 37) % 101) - 50.0;
+    }
+    std::vector<std::complex<double>> copy(real.begin(), real.end());
+    const auto                        spectrum {numerical::fft(tensor<double> {{n}, real})};
+    const auto                        complex  {numerical::fft(tensor<std::complex<double>> {{n}, copy})};
+    EXPECT(same_bits(spectrum.data(), complex.data())); // a real input of four steps: the complex transform's own bits
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
