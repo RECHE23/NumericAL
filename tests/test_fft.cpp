@@ -339,6 +339,62 @@ TEST(every_line_of_a_batch_has_its_bits_alone_on_every_path)
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
 
+namespace {
+  // One pass of radix r (3 or 5) over `current` points at stride `stride`, by the generic pass of an odd radix and by
+  // the radix's own butterflies, as Fused: the same bits.
+  template <bool Fused,
+            std::floating_point R>
+  bool generic_pass_is_the_butterflys(std::size_t radix,
+                                      std::size_t current,
+                                      std::size_t stride)
+  {
+    using C = std::complex<R>;
+    // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+    std::mt19937_64                  draws {(radix * 7) + current};
+    std::normal_distribution<double> normal;
+    std::vector<C>                   in(current * stride);
+    std::vector<C>                   generic(in.size());
+    std::vector<C>                   own(in.size());
+    std::vector<C>                   twiddles((radix - 1) * (current / radix));
+    std::vector<C>                   roots(radix);
+    for (C& v : in) {
+      v = drawn_value<C>(draws);
+    }
+    for (C& v : twiddles) {
+      v = drawn_value<C>(draws);
+    }
+    for (std::size_t m {0}; m < radix; ++m) {
+      const std::complex<double> root {numerical::detail::unit_root(m, radix)};
+      roots[m] = C {static_cast<R>(root.real()), static_cast<R>(root.imag())};
+    }
+    const auto constants {numerical::detail::make_small_radix_constants<R>()};
+    numerical::detail::any_radix_pass_body<Fused>(radix, current, stride, in.data(), generic.data(), twiddles.data(), roots.data());
+    if (radix == 3) {
+      numerical::detail::radix_three_pass_body<Fused>(current, stride, in.data(), own.data(), twiddles.data(), constants);
+    }
+    else {
+      numerical::detail::radix_five_pass_body<Fused>(current, stride, in.data(), own.data(), twiddles.data(), constants);
+    }
+    return same_bits(generic, own);
+  }
+} // namespace
+
+// The pass of any odd radix computes radices 3 and 5 as their own butterflies do, to the bit, fused or not, past a
+// pass' first butterfly and along a stride: the symmetry of the roots its sums take is theirs.
+TEST(the_generic_pass_gives_radices_three_and_five_their_butterflies_bits)
+{
+  for (const std::size_t radix : {3UL, 5UL}) {
+    for (const std::size_t current : {radix, 3 * radix, 4 * radix * radix}) {
+      for (const std::size_t stride : {1UL, 4UL}) {
+        EXPECT((generic_pass_is_the_butterflys<false, double>(radix, current, stride)));
+        EXPECT((generic_pass_is_the_butterflys<true, double>(radix, current, stride)));
+        EXPECT((generic_pass_is_the_butterflys<false, float>(radix, current, stride)));
+        EXPECT((generic_pass_is_the_butterflys<true, float>(radix, current, stride)));
+      }
+    }
+  }
+}
+
 TEST(fft_plans_are_kept_and_renewed)
 {
   const auto kept {numerical::detail::shared_fft_plan<double>(7)};

@@ -1139,45 +1139,6 @@ namespace numerical {
       radix_sixteen_pass_body<Fused>(current, stride, in, out, twiddles, sixteenths);
     }
 
-    /*!
-     * \brief One Stockham pass of any radix \p radix, as \ref radix_four_pass is of 4: butterfly `(p, q)` the `r`-point
-     *        transform of its inputs, `X_k = x_0 + Σ_{j ≥ 1} e^{−2πi jk/r} · x_j` in ascending `j` (\p roots; a factor
-     *        of 1 multiplies nothing; an odd prime's other roots are none of them −1), output `k` then times `w^{kp}`,
-     *        none for `p` = 0 or `k` = 0.
-     *        Inlined into each caller, so that the x86-64 fused one is built for FMA.
-     */
-    template <bool Fused,
-              typename C>
-    NUMERICAL_ALWAYS_INLINE void any_radix_pass_body(std::size_t          radix,
-                                                     std::size_t          current,
-                                                     std::size_t          stride,
-                                                     const C*             in,
-                                                     C*                   out,
-                                                     const fft_root_t<C>* twiddles,
-                                                     const fft_root_t<C>* roots) noexcept
-    {
-      const std::size_t part  {current / radix};
-      const std::size_t run   {part - 1};
-      const std::size_t apart {stride * part};
-      for (std::size_t p {0}; p < part; ++p) {
-        const C* const in_p {in + (stride * p)};
-        C* const       to   {out + (stride * radix * p)};
-        for (std::size_t q {0}; q < stride; ++q) {
-          for (std::size_t k {0}; k < radix; ++k) {
-            C           sum   {in_p[q]};
-            std::size_t power {0}; // j·k mod r, kept by additions
-            for (std::size_t j {1}; j < radix; ++j) {
-              power += k;
-              power -= power >= radix ? radix : 0;
-              const C value {in_p[q + (j * apart)]};
-              sum += power == 0 ? value : twiddled<Fused>(roots[power], value);
-            }
-            to[q + (stride * k)] = (p == 0 || k == 0) ? sum : twiddled<Fused>(twiddles[((k - 1) * run) + p - 1], sum);
-          }
-        }
-      }
-    }
-
     //! \brief `c · v` of a real \p c and a complex \p v: each part's product, rounded.
     template <std::floating_point R>
     [[nodiscard]] NUMERICAL_ALWAYS_INLINE std::complex<R> scaled(R                      c,
@@ -1230,6 +1191,65 @@ namespace numerical {
     }
 
 #endif
+    /*!
+     * \brief One Stockham pass of an odd radix \p radix, as \ref radix_four_pass is of 4, by the symmetry of its roots
+     *        (\ref radix_five_pass_body's, any odd `r`): `a_j = x_j + x_{r−j}`, `b_j = x_j − x_{r−j}` (`j` from 1 to
+     *        `h = (r − 1)/2`); `X_0 = x_0 + a_1 + … + a_h`, and for `k` from 1 to `h`, `A_k = x_0 + Σ_j cos(2πjk/r)·a_j`,
+     *        `B_k = Σ_j sin(2πjk/r)·b_j`, each sum in ascending `j`, its products fused as \p Fused (`scaled_add`;
+     *        the cosines and sines \p roots' parts, `jk` reduced mod `r` by additions), `X_k = A_k − i·B_k`,
+     *        `X_{r−k} = A_k + i·B_k`; output `k` then times `w^{kp}`, none for `p` = 0. Radices 3 and 5 so computed give
+     *        their own butterflies' bits. Inlined into each caller, so that the x86-64 fused one is built for FMA.
+     */
+    template <bool Fused,
+              typename C>
+    NUMERICAL_ALWAYS_INLINE void any_radix_pass_body(std::size_t          radix,
+                                                     std::size_t          current,
+                                                     std::size_t          stride,
+                                                     const C*             in,
+                                                     C*                   out,
+                                                     const fft_root_t<C>* twiddles,
+                                                     const fft_root_t<C>* roots) noexcept
+    {
+      const std::size_t part  {current / radix};
+      const std::size_t run   {part - 1};
+      const std::size_t apart {stride * part};
+      const std::size_t half  {radix / 2};
+      for (std::size_t p {0}; p < part; ++p) {
+        const C* const in_p {in + (stride * p)};
+        C* const       to   {out + (stride * radix * p)};
+        for (std::size_t q {0}; q < stride; ++q) {
+          std::array<C, fft_largest_radix / 2> sums        {};
+          std::array<C, fft_largest_radix / 2> differences {};
+          const C                              x0          {in_p[q]};
+          C                                    total       {x0};
+          for (std::size_t j {1}; j <= half; ++j) {
+            const C x {in_p[q + (j * apart)]};
+            const C y {in_p[q + ((radix - j) * apart)]};
+            sums[j - 1]        = x + y;
+            differences[j - 1] = x - y;
+            total              = total + sums[j - 1];
+          }
+          to[q] = total;
+          for (std::size_t k {1}; k <= half; ++k) {
+            std::size_t power      {k}; // j·k mod r, kept by additions
+            C           cosines    {scaled_add<Fused>(x0, roots[power].real(), sums[0])};
+            C           sines      {scaled(-roots[power].imag(), differences[0])};
+            for (std::size_t j {2}; j <= half; ++j) {
+              power   += k;
+              power   -= power >= radix ? radix : 0;
+              cosines  = scaled_add<Fused>(cosines, roots[power].real(), sums[j - 1]);
+              sines    = scaled_add<Fused>(sines, -roots[power].imag(), differences[j - 1]);
+            }
+            const C i_sines {-sines.imag(), sines.real()}; // i·B_k, exact
+            const C low     {cosines - i_sines};
+            const C high    {cosines + i_sines};
+            to[q + (stride * k)]           = p == 0 ? low : twiddled<Fused>(twiddles[((k - 1) * run) + p - 1], low);
+            to[q + (stride * (radix - k))] = p == 0 ? high : twiddled<Fused>(twiddles[((radix - k - 1) * run) + p - 1], high);
+          }
+        }
+      }
+    }
+
     /*!
      * \brief One Stockham pass of radix 3, as \ref any_radix_pass_body is of any: `t = x1 + x2`, `v = x0 − t/2` (exact
      *        halving, one rounding), `u = (√3/2)·(x1 − x2)`; `X0 = x0 + t`, `X1 = v − i·u`, `X2 = v + i·u`, then times
