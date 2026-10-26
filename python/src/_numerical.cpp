@@ -1860,6 +1860,27 @@ any_tensor do_eigvalsh(const numerical::tensor<T>& a, bool upper)
 }
 
 // eigvalsh(a, upper) -> Tensor, as numpy.linalg.eigvalsh: the eigenvalues alone, real and ascending.
+// _fft(a, n, axis, norm, inverse) -> Tensor: numpy.fft.fft (or ifft) of n points along axis, norm 0 backward, 1 ortho,
+// 2 forward; float64 to complex128, float32 to complex64, complex as itself. The caller (numerical.fft) checks n and
+// axis as NumPy does.
+any_tensor fft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int norm, bool inverse)
+{
+    const auto scaling {static_cast<numerical::fft_norm>(norm)};
+    return std::visit([&](const auto& t) -> any_tensor {
+        const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
+        const auto                   index {static_cast<std::ptrdiff_t>(axis)};
+        return any_tensor {inverse ? numerical::ifft(t, n, index, scaling) : numerical::fft(t, n, index, scaling)};
+    }, v);
+}
+
+// _fftshift(a, axis, inverse) -> Tensor: numpy.fft.fftshift (or ifftshift) along one axis.
+any_tensor fftshift_axis(const any_tensor& v, std::size_t axis, bool inverse)
+{
+    return std::visit([&](const auto& t) -> any_tensor {
+        return any_tensor {numerical::fftshift(t, static_cast<std::ptrdiff_t>(axis), inverse)};
+    }, v);
+}
+
 any_tensor eigvalsh(const any_tensor& v, bool upper)
 {
     if (shape_of(v).size() < 2) {
@@ -4072,6 +4093,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&matmul_nd>("_matmul_nd", "_matmul_nd(a, b) -> Tensor\nThe matrix product of two stacks of one dtype, their leading axes broadcast, as numpy.matmul.");
     m.def<&eig>("_eig", "_eig(a) -> (w, v)\nThe eigenvalues and right eigenvectors of a general square matrix (or stack), as numpy.linalg.eig: complex, as NumPy 2.5's.");
     m.def<&eigvals>("_eigvals", "_eigvals(a) -> w\nThe eigenvalues alone of a general square matrix (or stack), as numpy.linalg.eigvals: complex.");
+    m.def<&fft_axis>("_fft", "_fft(a, n, axis, norm, inverse) -> Tensor\nnumpy.fft.fft (or ifft) of n points along axis (from 0), norm 0 backward, 1 ortho, 2 forward (see numerical.fft).");
+    m.def<&fftshift_axis>("_fftshift", "_fftshift(a, axis, inverse) -> Tensor\nnumpy.fft.fftshift (or ifftshift) along one axis (from 0) (see numerical.fft).");
     m.def<&eigvalsh>("eigvalsh", "eigvalsh(a, upper) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read, or with upper its upper one).");
     m.def<&matrix_ranks>("_matrix_ranks", "_matrix_ranks(a, rtol, tol, hermitian) -> Tensor\nThe rank of every matrix of a stack, as float64 numbers along its leading axes.");
     m.def<&matrix_rank>("matrix_rank", "matrix_rank(a, rtol, tol, hermitian) -> int\nThe numerical rank of a matrix, as numpy.linalg.matrix_rank: its singular values above tol, else above rtol times the largest (None, None: NumPy's default).");

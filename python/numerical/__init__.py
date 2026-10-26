@@ -1436,3 +1436,5 @@ def power(a, b):
 __all__ += ["diagonal", "matrix_transpose", "tensorsolve", "tensorinv"]
 __all__ += ["sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "eye", "arange", "linspace",
             "exp", "log", "sqrt", "sin", "cos", "tan", "tanh", "absolute", "power"]
+
+from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)

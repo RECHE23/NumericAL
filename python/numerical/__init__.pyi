@@ -2,6 +2,7 @@
 from collections.abc import Sequence
 from typing import Any, Literal, overload
 
+from numerical import fft as fft
 from numerical._numerical import Tensor as Tensor
 from numerical._numerical import error as error
 from numerical._numerical import get_num_threads as get_num_threads

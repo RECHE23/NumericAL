@@ -442,3 +442,20 @@ TEST(long_transforms_are_within_epsilon_log_n_of_their_exact_outputs)
     }
   }
 }
+
+// fftshift moves element 0 to the middle along an axis, as numpy.fft.fftshift (j to (j + n/2) mod n), ifftshift moves
+// it back (by −n/2: the two differ on an odd extent); the other axes untouched; an empty axis and a missing one.
+TEST(fftshift_rolls_an_axis_by_half_its_extent)
+{
+  const tensor<double> odd {{5}, std::vector<double> {0, 1, 2, 3, 4}};
+  EXPECT(numerical::fftshift(odd).data() == (numerical::buffer<double>({3, 4, 0, 1, 2})));
+  EXPECT(numerical::fftshift(odd, 0, true).data() == (numerical::buffer<double>({2, 3, 4, 0, 1})));
+  EXPECT(numerical::fftshift(numerical::fftshift(odd), -1, true) == odd);
+  const tensor<double> grid {{2, 4}, std::vector<double> {0, 1, 2, 3, 4, 5, 6, 7}};
+  EXPECT(numerical::fftshift(grid, 1).data() == (numerical::buffer<double>({2, 3, 0, 1, 6, 7, 4, 5})));
+  EXPECT(numerical::fftshift(grid, -2).data() == (numerical::buffer<double>({4, 5, 6, 7, 0, 1, 2, 3})));
+  EXPECT(numerical::fftshift(tensor<double> {{3, 0}, std::vector<double> {}}, 1).shape() == (std::vector<std::size_t> {3, 0}));
+  EXPECT(numerical::fftshift(tensor<double> {{0, 3}, std::vector<double> {}}, 1).shape() == (std::vector<std::size_t> {0, 3}));
+  EXPECT_THROWS((void)numerical::fftshift(grid, 2), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::fftshift(grid, -3), numerical::dimension_error);
+}

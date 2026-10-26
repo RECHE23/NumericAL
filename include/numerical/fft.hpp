@@ -1159,6 +1159,43 @@ namespace numerical {
   {
     return detail::transform_axis(a, n, axis, norm, true);
   }
+
+  /*!
+   * \brief \p a with its axis \p axis rolled so that its element 0 lands at its middle, as `numpy.fft.fftshift` along
+   *        one axis: element `j` to `(j + n/2) mod n`; or back, as `numpy.fft.ifftshift`, where \p inverse.
+   * \param[in] a       Any tensor.
+   * \param[in] axis    The axis rolled, negative from the last.
+   * \param[in] inverse `ifftshift`'s roll, by `−(n/2)`, where an odd extent makes it differ.
+   * \return The rolled copy, of `a`'s shape.
+   * \throws dimension_error If \p axis is not an axis of \p a.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> fftshift(const tensor<T>& a,
+                                   std::ptrdiff_t   axis    = -1,
+                                   bool             inverse = false)
+  {
+    const auto rank {static_cast<std::ptrdiff_t>(a.rank())};
+    if (axis < -rank || axis >= rank) {
+      throw dimension_error("fftshift: axis " + std::to_string(axis) + " is out of bounds for a tensor of rank " + std::to_string(rank));
+    }
+    const auto              index {static_cast<std::size_t>(axis < 0 ? axis + rank : axis)};
+    const detail::axis_walk walk  {detail::walk_along(a.shape(), index)};
+    const std::size_t       n     {walk.extent};
+    buffer<T>               out(a.data().size());
+    if (out.empty()) { // an empty axis, or an empty one besides it
+      return tensor<T> {a.shape(), std::move(out)};
+    }
+    const std::size_t shift {inverse ? n - (n / 2) : n / 2}; // element j goes to (j + shift) mod n
+    for (std::size_t outer {0}; outer < walk.outer; ++outer) {
+      const T* const from {a.data().data() + (outer * n * walk.inner)};
+      T* const       to   {out.data() + (outer * n * walk.inner)};
+      for (std::size_t j {0}; j < n; ++j) {
+        const std::size_t target {(j + shift) % n};
+        std::copy(from + (j * walk.inner), from + ((j + 1) * walk.inner), to + (target * walk.inner));
+      }
+    }
+    return tensor<T> {a.shape(), std::move(out)};
+  }
 } // namespace numerical
 
 #endif // NUMERICAL_FFT_HPP
