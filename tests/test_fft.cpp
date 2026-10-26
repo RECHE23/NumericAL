@@ -693,11 +693,35 @@ namespace {
   }
 } // namespace
 
-// Long transforms, one of each kind of length (radices 4 and 16; 3; 3, 5 and 7; Bluestein's): 16 drawn outputs against
+// Bluestein's convolution runs at the power of two at least 2n − 1, or at a length of factors 2, 3 and 5 at most 3/5 of
+// it from 1024; a length with a prime factor p past 61, at least 16 times p and 8192 points, in two steps, Bluestein's
+// along the longer side (the rows where p is), a shorter one over its whole length.
+TEST(bluestein_lengths_and_splits_follow_the_lengths_alone)
+{
+  EXPECT(numerical::detail::bluestein_length(67) == 256);    // 135 under 1024
+  EXPECT(numerical::detail::bluestein_length(257) == 540);   // 2²·3³·5 against 1024
+  EXPECT(numerical::detail::bluestein_length(1009) == 2048); // 2025 past 3/5 of 2048
+  EXPECT(numerical::detail::bluestein_length(4099) == 8640);
+  EXPECT(numerical::detail::bluestein_length(10007) == 32768);
+  EXPECT(numerical::detail::largest_prime_factor(2) == 2 && numerical::detail::largest_prime_factor(67UL * 67UL) == 67 &&
+         numerical::detail::largest_prime_factor(1024) == 2 && numerical::detail::largest_prime_factor(3UL * 1009UL) == 1009);
+  const auto shape = [](std::size_t n) {
+                       const auto plan {numerical::detail::shared_fft_plan<double>(n)};
+                       return plan->four_step ? std::pair {plan->four_step->columns, plan->four_step->rows} : std::pair {std::size_t {0}, std::size_t {0}};
+                     };
+  EXPECT(shape(1009UL * 16UL) == (std::pair {std::size_t {1009}, std::size_t {16}}));                              // rows of 1009 points
+  EXPECT(shape(67UL * 128UL) == (std::pair {std::size_t {128}, std::size_t {67}}));                                // columns of 67 points
+  EXPECT(shape(67UL * 64UL).first == 0 && numerical::detail::shared_fft_plan<double>(67UL * 64UL)->bluestein);     // under 8192 points
+  EXPECT(shape(10007UL * 2UL).first == 0 && numerical::detail::shared_fft_plan<double>(10007UL * 2UL)->bluestein); // twice p
+}
+
+// Long transforms, one of each kind of length (radices 4 and 16; 3; 3, 5 and 7; Bluestein's over a power of two, over
+// a length of factors 2, 3 and 5, along the rows of two steps and down their columns): 16 drawn outputs against
 // their sums in double-double arithmetic, each within 2·ε·log₂ n of the input's norm, as a transform's error grows.
 TEST(long_transforms_are_within_epsilon_log_n_of_their_exact_outputs)
 {
-  for (const std::size_t n : {std::size_t {1} << 20, std::size_t {3} << 18, std::size_t {44100}, std::size_t {20014}}) {
+  for (const std::size_t n : {std::size_t {1} << 20, std::size_t {3} << 18, std::size_t {44100}, std::size_t {20014}, std::size_t {4099},
+                              std::size_t {1009UL * 16UL}, std::size_t {67UL * 128UL}}) {
     // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
     std::mt19937_64                         draws {n};
     const std::vector<std::complex<double>> x     {drawn<double>(n, draws)};

@@ -5,8 +5,11 @@
  * Every length runs in O(n log n). A length whose prime factors are at most 61 runs Stockham passes, each reading and
  * writing in order, their radices fixed by the length alone (`fft_radices`): its powers of two first (4, then 16 while
  * 16 points remain, then 4), then 3, 5 and 7, then each other prime, a lone factor 2 last. Radices 3 and 5 take their own
- * butterflies, a larger prime its r-point sum. A length with a larger prime factor runs Bluestein's convolution over
- * three transforms of a power of two. The twiddle factors are computed in double-double arithmetic by one fixed sequence
+ * butterflies, a larger prime its r-point sum. A prime past 61 runs Bluestein's convolution over three transforms of a
+ * power of two, or of a length of factors 2, 3 and 5 at most 3/5 of it (`bluestein_length`). A length of 4 MiB and more
+ * runs in four steps (`four_step_plan`): its columns' transforms, the twiddle factors, its rows'; so does, from 8192
+ * points, a length with a prime factor `p` past 61 and at least 16 times `p` (`fft_split_least`), Bluestein's
+ * convolution then of `p` points alone; a shorter one runs it over the whole length. The twiddle factors are computed in double-double arithmetic by one fixed sequence
  * of operations, each a sum or an explicit fused multiply-add that no compiler may contract otherwise, then rounded once:
  * the same factors on every machine, whatever its `sin` and `cos`.
  *
@@ -868,7 +871,7 @@ namespace numerical {
     template <std::floating_point R>
     struct bluestein_plan
     {
-      std::size_t                        padded {0}; //!< M: the power of two at least 2n − 1 the convolution runs at.
+      std::size_t                        padded {0}; //!< M: the points the convolution runs at (\ref bluestein_length).
       std::vector<std::complex<R>>       chirp;      //!< `e^{−πi j²/n}`, its exponent `j² mod 2n` reduced exactly.
       std::vector<std::complex<R>>       spectrum;   //!< The transform of M points of the chirp's conjugate, wrapped.
       std::shared_ptr<const fft_plan<R>> inner;      //!< The plan of M points.
@@ -897,8 +900,9 @@ namespace numerical {
      * \brief A transform of `n = n1·n2` points in four steps (Bailey's), each a batch of lines the threads share: `x` as
      *        `n2` rows of `n1`, `x[j1 + n1·j2]`; each of its `n1` columns transformed in place (\ref column_plan, `n2`
      *        points, a line's transform as \ref transform_axis's along a first axis); each `(k2, j1)` times `w^{j1·k2}`
-     *        (\ref twiddles); each of its `n2` rows transformed (\ref row_plan, `n1` points), `X[k2 + n2·k1]` row
-     *        `k2`'s `k1`; transposed into place. Each element's operations fixed by `n` alone: its bits on any threads.
+     *        (\ref twiddles); each of its `n2` rows transformed (\ref row_plan, `n1` points) and written down a column
+     *        of the output, `X[k2 + n2·k1]` row `k2`'s `k1`. Each element's operations fixed by `n` alone: its bits on
+     *        any threads.
      */
     template <std::floating_point R>
     struct four_step_plan
@@ -922,7 +926,8 @@ namespace numerical {
       //!< Each pass of a prime radix past 5: `e^{−2πi m/r}` for m below r, the passes in order.
       std::array<std::complex<R>, 16>   sixteenths; //!< `e^{−2πi k/16}`: a radix-16 butterfly's own factors.
       std::optional<bluestein_plan<R>>  bluestein;  //!< Where the length has a prime factor past fft_largest_radix.
-      std::optional<four_step_plan<R>>  four_step;  //!< Where the length is at least fft_four_step_least, in passes.
+      std::optional<four_step_plan<R>>  four_step;
+      //!< Where the length is at least fft_four_step_least, or splits off a prime past fft_largest_radix (fft_split_least).
       std::size_t                       work {0};   //!< The working space a transform takes beside its data.
       small_radix_constants<R>          small;      //!< The radix-3 and radix-5 butterflies' constants.
     };
@@ -963,6 +968,55 @@ namespace numerical {
       return columns;
     }
 
+    /*!
+     * \brief The points of Bluestein's convolution of \p n points: the power of two at least `2n − 1`, or the shortest
+     *        length of factors 2, 3 and 5 at least `2n − 1` where it is at most 3/5 of that power and the power at
+     *        least 1024 (passes of 3 and 5 cost more a point than those of 16: ten AVX-512 cores, 4099 points
+     *        156 µs over 16 384, 95 over 8640; 1009 points 18 µs over 2048, 30 over 2025; 67 points 1.3 µs over 256,
+     *        1.9 over 135).
+     */
+    [[nodiscard]] inline std::size_t bluestein_length(std::size_t n)
+    {
+      const std::size_t least {(2 * n) - 1};
+      const std::size_t power {std::bit_ceil(least)};
+      if (power < 1024) {
+        return power;
+      }
+      std::size_t best {power};
+      for (std::size_t fives {1}; fives < best; fives *= 5) {
+        for (std::size_t odd {fives}; odd < best; odd *= 3) {
+          std::size_t m {odd};
+          while (m < least) {
+            m *= 2;
+          }
+          best = std::min(best, m);
+        }
+      }
+      return 5 * best <= 3 * power ? best : power;
+    }
+
+    /*!
+     * \brief The fewest points of a length with a prime factor `p` past fft_largest_radix, not prime, that takes
+     *        Bluestein's convolution for `p` alone, in two steps (`four_step_plan`: `p` points one way, `n/p` the
+     *        other), `n/p` at least 16: fewer, or fewer than 16 transforms of `p` points, run the convolution over the
+     *        whole length faster (ten AVX-512 cores: 1009·16 points 521 µs whole, 372 in two steps; 67·64 98 against
+     *        109; 67·1024 3.7 against 2.6 ms).
+     */
+    inline constexpr std::size_t fft_split_least {8192};
+
+    //! \brief The largest prime factor of \p n, at least 2.
+    [[nodiscard]] inline std::size_t largest_prime_factor(std::size_t n) noexcept
+    {
+      std::size_t largest {1};
+      for (std::size_t d {2}; d <= n / d; ++d) {
+        while (n % d == 0) {
+          largest  = d;
+          n       /= d;
+        }
+      }
+      return n > 1 ? n : largest;
+    }
+
     //! \brief The \ref fft_plan of length \p n.
     template <std::floating_point R>
     [[nodiscard]] fft_plan<R> make_fft_plan(std::size_t n)
@@ -975,8 +1029,10 @@ namespace numerical {
       for (std::size_t k {0}; k < 16; ++k) {
         plan.sixteenths[k] = narrow(unit_root(k, 16));
       }
-      if (plan.radices.empty() && n > 1) { // Bluestein's: X_k = c_k · Σ_j (x_j c_j) · conj(c_{k−j}), c_j = e^{−πi j²/n}
-        bluestein_plan<R> b       {.padded = std::bit_ceil((2 * n) - 1), .chirp = {}, .spectrum = {}, .inner = {}};
+      const std::size_t rough {plan.radices.empty() && n > 1 ? largest_prime_factor(n) : 0};
+      const bool        split {rough != 0 && rough != n && n / rough >= 16 && n >= fft_split_least};
+      if (rough != 0 && !split) { // Bluestein's: X_k = c_k · Σ_j (x_j c_j) · conj(c_{k−j}), c_j = e^{−πi j²/n}
+        bluestein_plan<R> b       {.padded = bluestein_length(n), .chirp = {}, .spectrum = {}, .inner = {}};
         const unit_roots  doubled {2 * n};
         b.chirp.resize(n);
         for (std::size_t j {0}; j < n; ++j) {
@@ -994,7 +1050,9 @@ namespace numerical {
         plan.bluestein = std::move(b);
         return plan;
       }
-      const std::size_t columns {four_step_columns(n, sizeof(C))};
+      // Bluestein's along the rows where `p` is the longer side, read where they lie, else down the columns: the
+      // columns' transforms gather a few of them at a time, each no longer than √n.
+      const std::size_t columns {split ? std::max(rough, n / rough) : four_step_columns(n, sizeof(C))};
       if (columns != 0) {
         four_step_plan<R> f {.columns = columns, .rows = n / columns, .column_plan = {}, .row_plan = {}, .twiddles = {}};
         f.column_plan = std::make_shared<const fft_plan<R>>(make_fft_plan<R>(f.rows));
@@ -1628,7 +1686,7 @@ namespace numerical {
     /*!
      * \brief Bluestein's transform of the \p plan's length in place in \p data, \p work its \ref fft_plan::work, the
      *        input times the chirp, padded to M; its transform times the chirp's spectrum; the inverse transform of that
-     *        (`conj(fft(conj ·))`, then 1/M, exact), times the chirp. Products as \p Fused. Inlined into each caller.
+     *        (`conj(fft(conj ·))`, then 1/M, exact for a power of two), times the chirp. Products as \p Fused. Inlined into each caller.
      */
     template <bool Fused,
               std::floating_point R>
@@ -1975,7 +2033,7 @@ namespace numerical {
                                               bool               together) noexcept
     {
       const bool fits {together ? plan.length * sizeof(fft_lanes<R>) <= fft_lanes_together_bytes : plan.length <= fft_lanes_longest};
-      return fused && !plan.bluestein && fits ? lines / fft_lines_width<R> : 0;
+      return fused && !plan.bluestein && !plan.four_step && fits ? lines / fft_lines_width<R> : 0;
     }
 
     //! \brief \ref lanes_transform of the lines from \p in into \p out, in this thread's working space.
