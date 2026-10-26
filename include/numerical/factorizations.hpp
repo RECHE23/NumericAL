@@ -63,11 +63,24 @@ namespace numerical {
       return pivot;
     }
 
-    //! \brief \ref pivot_divisor of a complex pivot: its reciprocal.
+    //! \brief A complex pivot as \ref over_pivot takes it: its reciprocal, or, where that would overflow (a subnormal
+    //!        pivot), the pivot itself, divided by.
     template <typename R>
-    [[nodiscard]] std::complex<R> pivot_divisor(const std::complex<R>& pivot)
+    struct complex_divisor
     {
-      return std::complex<R> {1} / pivot;
+      std::complex<R> reciprocal; //!< `1 / pivot`.
+      std::complex<R> pivot;      //!< The pivot.
+      bool            divides;    //!< Whether \ref over_pivot divides by the pivot: its parts under the smallest normal.
+    };
+
+    //! \brief \ref pivot_divisor of a complex pivot: its reciprocal, as zgetf2 takes one at least the smallest normal
+    //!        number in modulus (`sfmin`), and one under it divided by, whose reciprocal would overflow. (A zero pivot
+    //!        never comes here: the factorisation leaves its column, and the solves refuse a singular factor.)
+    template <typename R>
+    [[nodiscard]] complex_divisor<R> pivot_divisor(const std::complex<R>& pivot)
+    {
+      const R largest {std::max(std::abs(pivot.real()), std::abs(pivot.imag()))};
+      return {std::complex<R> {1} / pivot, pivot, largest < std::numeric_limits<R>::min()};
     }
 
     //! \brief \p x over the pivot whose \ref pivot_divisor is \p divisor: the same quotient wherever the LU takes it.
@@ -78,12 +91,13 @@ namespace numerical {
       return x / divisor;
     }
 
-    //! \brief \ref over_pivot of a complex \p x: times the pivot's reciprocal, the product in line.
+    //! \brief \ref over_pivot of a complex \p x: times the pivot's reciprocal, the product in line; over a subnormal
+    //!        pivot itself.
     template <typename R>
-    [[nodiscard]] std::complex<R> over_pivot(const std::complex<R>& x,
-                                             const std::complex<R>& divisor)
+    [[nodiscard]] std::complex<R> over_pivot(const std::complex<R>&    x,
+                                             const complex_divisor<R>& divisor)
     {
-      return operator_times(x, divisor);
+      return divisor.divides ? x / divisor.pivot : operator_times(x, divisor.reciprocal);
     }
 
     //! \brief \p x over a Cholesky factor's diagonal entry \p diagonal, real and positive whatever the scalar.
@@ -629,7 +643,7 @@ namespace numerical {
                                const char*                         what)
     {
       const auto* const parts {reinterpret_cast<const double*>(std::to_address(a.begin()))}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
-      if (!all_finite(parts, 2 * a.rows() * a.cols())) {
+      if (!all_finite_shared(parts, 2 * a.rows() * a.cols())) {
         throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
       }
     }
@@ -683,7 +697,7 @@ namespace numerical {
                                                            const char*                         what)
     {
       const auto* const parts {reinterpret_cast<const double*>(std::to_address(a.begin()))}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
-      if (!all_finite(parts, 2 * a.rows() * a.cols()) && !lower_is_finite(a)) {
+      if (!all_finite_shared(parts, 2 * a.rows() * a.cols()) && !lower_is_finite(a)) {
         throw non_finite_error(std::string {what} + ": the matrix holds an infinite or NaN entry");
       }
     }
@@ -799,6 +813,13 @@ namespace numerical {
       T value {detail::from_carried<T>(sign_)};
       for (std::size_t i {0}; i < n_; ++i) {
         value *= lu_[(i * n_) + i];
+      }
+      if (singular_ && !detail::is_finite_entry(value)) { // a zero pivot times others overflowing: 0·∞, not a NaN
+        value = detail::from_carried<T>(sign_);
+        for (std::size_t i {0}; i < n_; ++i) {
+          const T pivot {lu_[(i * n_) + i]};
+          value *= pivot == T {0} ? pivot : detail::phase_of(pivot); // the product's zero, its sign the pivots'
+        }
       }
       return value;
     }
@@ -1107,7 +1128,7 @@ namespace numerical {
                                const std::size_t last {std::min(first + width, c1)};
                                for (std::size_t i {k1}; i-- > k0;) {
                                  detail::subtract_products(y.data() + (i * cols) + first, lu_.data() + (i * n_) + i + 1, y.data() + ((i + 1) * cols) + first, cols, k1 - (i + 1), last - first);
-                                 const T divisor {detail::pivot_divisor(lu_[(i * n_) + i])};
+                                 const auto divisor {detail::pivot_divisor(lu_[(i * n_) + i])};
                                  for (std::size_t c {first}; c < last; ++c) {
                                    y[(i * cols) + c] = detail::over_pivot(y[(i * cols) + c], divisor);
                                  }
@@ -1157,7 +1178,7 @@ namespace numerical {
                                   if (i + 1 < to) {
                                     detail::subtract_products(y.data() + (i * cols), lu_.data() + (i * n_) + i + 1, y.data() + ((i + 1) * cols), cols, to - (i + 1), cols);
                                   }
-                                  const T divisor {detail::pivot_divisor(lu_[(i * n_) + i])};
+                                  const auto divisor {detail::pivot_divisor(lu_[(i * n_) + i])};
                                   for (std::size_t c {0}; c < cols; ++c) {
                                     y[(i * cols) + c] = detail::over_pivot(y[(i * cols) + c], divisor);
                                   }
@@ -1423,7 +1444,7 @@ namespace numerical {
             std::swap(pivots_[k0 + j], pivots_[k0 + pivot]);
             sign_ = -sign_;
           }
-          const T divisor {detail::pivot_divisor(column[j])};
+          const auto divisor {detail::pivot_divisor(column[j])};
           for (std::size_t r {j + 1}; r < rows; ++r) {
             column[r] = detail::over_pivot(column[r], divisor); // the multiplier, in L's slot
           }

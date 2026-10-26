@@ -148,6 +148,39 @@ TEST(determinant_matches_the_closed_form)
   EXPECT(std::abs(determinant(singular)) < 1e-12);        // a zero pivot ⇒ determinant 0
 }
 
+// A singular matrix whose other pivots overflow together: 0, as its documentation says, where their product times the
+// zero pivot was ∞·0, a NaN; a finite product kept as it was (its zero's sign the pivots').
+TEST(a_singular_determinant_is_zero_where_the_other_pivots_overflow)
+{
+  const matrix<double> a   {{1e200, 0.0, 0.0}, {0.0, 1e200, 0.0}, {0.0, 0.0, 0.0}};
+  const double         det {lu_decomposition<double> {a}.determinant()};
+  EXPECT(det == 0.0 && !std::signbit(det));
+  const matrix<double> b   {{1e200, 0.0, 0.0}, {0.0, -1e200, 0.0}, {0.0, 0.0, 0.0}};
+  EXPECT(std::signbit(lu_decomposition<double> {b}.determinant()));
+  using C = std::complex<double>;
+  const matrix<C> c           {{C {1e200, 0.0}, C {}, C {}}, {C {}, C {0.0, 1e200}, C {}}, {C {}, C {}, C {}}};
+  const C         complex_det {lu_decomposition<C> {c}.determinant()};
+  EXPECT(complex_det.real() == 0.0 && complex_det.imag() == 0.0);
+}
+
+// A complex pivot under the smallest normal number: divided by, its reciprocal (2¹⁰³⁰, past the largest double) not
+// taken, in the factorisation and in both solves; x = (1, 1) exactly.
+TEST(a_subnormal_complex_pivot_divides_where_its_reciprocal_would_overflow)
+{
+  using C = std::complex<double>;
+  const C                     p   {std::ldexp(1.0, -1030), 0.0};
+  const matrix<C>             a   {{p, C {}}, {p, C {1.0, 0.0}}};
+  const lu_decomposition<C>   lu  {a};
+  const numerical::vector<C>  x   {lu.solve(numerical::vector<C> {std::vector<C> {p, p + C {1.0, 0.0}}})};
+  const C                     one {1.0, 0.0};
+  EXPECT(x[0] == one && x[1] == one);
+  const matrix<C> many            {lu.solve(matrix<C> {{p, p}, {p + C {1.0, 0.0}, p + C {1.0, 0.0}}})};
+  EXPECT(many(0, 0) == one && many(1, 1) == one);
+  // A zero pivot: its column left, the determinant 0.
+  const lu_decomposition<C> singular {matrix<C> {{one, one}, {one, one}}};
+  EXPECT(singular.determinant() == C {});
+}
+
 TEST(a_zero_pivot_column_gives_no_terms_not_even_a_signed_zero)
 {
   // Column 1 is zero from its diagonal down: its terms, ±0, would turn column 2's −0 into +0. The unblocked

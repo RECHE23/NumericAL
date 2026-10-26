@@ -40,6 +40,14 @@ A change that can break code is listed under **Breaking** and held for a month's
   of another length no longer waits on it), its roots of unity computed on the threads (M1 Pro, 2²² points 61 → 27 ms,
   10⁶ 14.5 → 6.4 ms; the same roots).
 
+### Fixed
+
+- **The determinant of a singular matrix whose other pivots overflow** is 0, as documented, not NaN (∞·0): a finite
+  product is kept as it was, signed zero included.
+- **A complex LU with a subnormal pivot** (below the smallest normal number) divides by it, as LAPACK's `zgetf2` does,
+  where its reciprocal overflowed to infinity and the factorisation and solves gave NaN; every other pivot keeps its
+  bits.
+
 ## 2026.10.38 — 2026-10-25
 
 ### Changed
