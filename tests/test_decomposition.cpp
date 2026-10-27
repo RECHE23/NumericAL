@@ -281,6 +281,102 @@ TEST(cholesky_solves_and_gives_the_determinant)
   EXPECT_THROWS(chol.solve(vector<double> {1.0, 2.0, 3.0}), numerical::dimension_error); // wrong RHS size
 }
 
+namespace {
+  //! \brief A positive-definite (Hermitian) matrix of order \p n of \p T, and \p cols right-hand sides, drawn.
+  template <typename T>
+  std::pair<matrix<T>, matrix<T>> definite_system(std::size_t n,
+                                                  std::size_t cols,
+                                                  std::size_t seed)
+  {
+    // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+    std::mt19937_64                  g {seed};
+    std::normal_distribution<double> d;
+    const auto                       draw = [&]() -> T {
+                                              if constexpr (std::is_same_v<T, double>) {
+                                                return d(g);
+                                              }
+                                              else {
+                                                return T {d(g), d(g)};
+                                              }
+                                            };
+    std::vector<T> g_entries(n * n);
+    std::vector<T> b_entries(n * cols);
+    for (T& v : g_entries) {
+      v = draw();
+    }
+    for (T& v : b_entries) {
+      v = draw();
+    }
+    std::vector<T> a(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        T sum {i == j ? T(static_cast<double>(n)) : T {}};
+        for (std::size_t k {0}; k < n; ++k) {
+          sum += g_entries[(i * n) + k] * numerical::detail::conj_of(g_entries[(j * n) + k]);
+        }
+        a[(i * n) + j] = sum;
+      }
+    }
+    return {matrix<T> {n, n, a}, matrix<T> {n, cols, b_entries}};
+  }
+
+  //! \brief Whether each column of the Cholesky decomposition's solve of every column at once is its vector solve's,
+  //!        to the bit.
+  template <typename T>
+  bool cholesky_solves_every_column_as_one(std::size_t n,
+                                           std::size_t cols)
+  {
+    const auto [a, b] {definite_system<T>(n, cols, n + cols)};
+    const cholesky_decomposition<T> chol {a};
+    const matrix<T>                 x    {chol.solve(b)};
+    bool                            same {x.rows() == n && x.cols() == cols};
+    for (std::size_t c {0}; same && c < cols; ++c) {
+      std::vector<T> column(n);
+      for (std::size_t i {0}; i < n; ++i) {
+        column[i] = b(i, c);
+      }
+      const vector<T> alone {chol.solve(vector<T> {column})};
+      for (std::size_t i {0}; i < n; ++i) {
+        same = same && x(i, c) == alone[i];
+      }
+    }
+    return same;
+  }
+} // namespace
+
+// The Cholesky and QR decompositions solve every column of B at once: Cholesky's each column its vector solve's bits
+// (one column; nine; forty, the threads sharing them), real and complex; QR's to rounding; their errors as the vector's.
+TEST(cholesky_and_qr_solve_every_right_hand_side_at_once)
+{
+  for (const std::size_t cols : {std::size_t {1}, std::size_t {9}, std::size_t {40}}) {
+    EXPECT(cholesky_solves_every_column_as_one<double>(23, cols));
+    EXPECT(cholesky_solves_every_column_as_one<std::complex<double>>(17, cols));
+  }
+  const auto [a, b] {definite_system<double>(12, 5, 3)};
+  EXPECT_THROWS((void)cholesky(a).solve(matrix<double> {3, 2, std::vector<double>(6, 1.0)}), numerical::dimension_error);
+  const matrix<double> tall {{1.0, 2.0}, {3.0, 4.0}, {5.0, 7.0}, {1.0, 0.0}};
+  const matrix<double> rhs  {{1.0, 0.0, 2.0}, {0.0, 1.0, 1.0}, {2.0, 1.0, 0.0}, {1.0, 1.0, 1.0}};
+  const auto           q    {qr(tall)};
+  const matrix<double> x    {q.solve(rhs)};
+  for (std::size_t c {0}; c < 3; ++c) {
+    const vector<double> alone {q.solve(vector<double> {rhs(0, c), rhs(1, c), rhs(2, c), rhs(3, c)})};
+    EXPECT(std::abs(x(0, c) - alone[0]) < 1e-12 && std::abs(x(1, c) - alone[1]) < 1e-12);
+  }
+  using C = std::complex<double>;
+  const matrix<C> complex_tall {{C {1.0, 1.0}, C {0.0, 2.0}}, {C {2.0, 0.0}, C {1.0, -1.0}}, {C {0.0, 1.0}, C {3.0, 0.0}}};
+  const matrix<C> complex_rhs  {{C {1.0, 0.0}, C {0.0, 1.0}}, {C {2.0, 1.0}, C {1.0, 0.0}}, {C {0.5, 0.0}, C {0.0, -1.0}}};
+  const auto      complex_q    {qr(complex_tall)};
+  const matrix<C> y            {complex_q.solve(complex_rhs)};
+  for (std::size_t c {0}; c < 2; ++c) {
+    const vector<C> alone {complex_q.solve(vector<C> {complex_rhs(0, c), complex_rhs(1, c), complex_rhs(2, c)})};
+    EXPECT(std::abs(y(0, c) - alone[0]) < 1e-12 && std::abs(y(1, c) - alone[1]) < 1e-12);
+  }
+  EXPECT_THROWS((void)q.solve(matrix<double> {3, 1, std::vector<double>(3, 1.0)}), numerical::dimension_error);
+  EXPECT_THROWS((void)qr(transpose(tall)).solve(matrix<double> {2, 1, std::vector<double>(2, 1.0)}), numerical::dimension_error);
+  const matrix<double> deficient {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}};
+  EXPECT_THROWS((void)qr(deficient).solve(matrix<double> {3, 1, std::vector<double>(3, 1.0)}), numerical::singular_matrix_error);
+}
+
 TEST(cholesky_rejects_non_positive_definite_and_non_square)
 {
   const matrix<double> indefinite {{1.0, 2.0}, {2.0, 1.0}}; // det = -3, not positive-definite

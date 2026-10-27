@@ -1729,6 +1729,56 @@ namespace numerical {
       return vector<T> {std::move(x)};
     }
 
+    /*!
+     * \brief Solves `A X = B` for every column of \p b at once: `L Y = B`, then `Lᴴ X = Y`, row by row, each row of the
+     *        solution its column's terms in \ref solve's order (so each column \ref solve's bits), a row of terms
+     *        at a time over the columns; the threads share the columns by slices of 8 and more.
+     * \param[in] b The right-hand sides (`n × k`).
+     * \return `X` (`n × k`).
+     * \throws dimension_error If `b`'s row count differs from the matrix.
+     */
+    [[nodiscard]] matrix<T> solve(const matrix<T>& b) const
+    {
+      if (b.rows() != n_) {
+        throw dimension_error("solve: right-hand side row count differs from the matrix");
+      }
+      const std::size_t cols   {b.cols()};
+      buffer<T>         x(b.begin(), b.end());
+      const std::size_t slices {std::max<std::size_t>(1, std::min(max_threads(), cols / 8))};
+      const std::size_t slice  {(cols + slices - 1) / slices};
+      detail::parallel_for(slices, n_ * n_ * slice, [&](std::size_t s) {
+                             const std::size_t c0 {s * slice};
+                             const std::size_t c1 {std::min(cols, c0 + slice)};
+                             for (std::size_t i {0}; i < n_; ++i) { // forward: L Y = B
+                               T* const row {x.data() + (i * cols)};
+                               for (std::size_t k {0}; k < i; ++k) {
+                                 const T        l     {lower_[(i * n_) + k]};
+                                 const T* const above {x.data() + (k * cols)};
+                                 for (std::size_t c {c0}; c < c1; ++c) {
+                                   row[c] -= l * above[c];
+                                 }
+                               }
+                               for (std::size_t c {c0}; c < c1; ++c) {
+                                 row[c] = detail::over_real_diagonal(row[c], lower_[(i * n_) + i]);
+                               }
+                             }
+                             for (std::size_t i {n_}; i-- > 0;) { // back: Lᴴ X = Y, (Lᴴ)[i][k] = conj(L[k][i])
+                               T* const row {x.data() + (i * cols)};
+                               for (std::size_t k {i + 1}; k < n_; ++k) {
+                                 const T        l     {detail::conj_of(lower_[(k * n_) + i])};
+                                 const T* const below {x.data() + (k * cols)};
+                                 for (std::size_t c {c0}; c < c1; ++c) {
+                                   row[c] -= l * below[c];
+                                 }
+                               }
+                               for (std::size_t c {c0}; c < c1; ++c) {
+                                 row[c] = detail::over_real_diagonal(row[c], lower_[(i * n_) + i]);
+                               }
+                             }
+                           });
+      return matrix<T> {n_, cols, std::move(x)};
+    }
+
     //! \brief The determinant — the product of the squared diagonal of `L` (real, positive).
     [[nodiscard]] T determinant() const
     {
@@ -2749,6 +2799,58 @@ namespace numerical {
         x[i] = sum / r_[(i * cols_) + i];
       }
       return vector<T> {std::move(x)};
+    }
+
+    /*!
+     * \brief The least-squares solutions of `A X ≈ B` (`X = R⁻¹ Qᴴ B`) for a full-rank `A`, every column of \p b at
+     *        once: `Qᴴ B` through the matrix product kernel, then the back substitution by rows of `R` over all the
+     *        columns (each column \ref solve's to rounding: the product sums its terms in another order).
+     * \param[in] b The right-hand sides (`m × k`).
+     * \return `X` (`n × k`).
+     * \throws dimension_error If `b`'s row count differs from the matrix's, or `A` is wide (as \ref solve).
+     * \throws singular_matrix_error If `A` is rank-deficient (as \ref solve).
+     */
+    [[nodiscard]] matrix<T> solve(const matrix<T>& b) const
+    {
+      if (b.rows() != rows_) {
+        throw dimension_error("solve: right-hand side row count differs from the matrix");
+      }
+      if (rows_ < cols_) {
+        throw dimension_error("QR solve: the system is underdetermined (lstsq gives its minimum-norm solution)");
+      }
+      double largest {0.0};
+      for (std::size_t i {0}; i < cols_; ++i) {
+        largest = std::max(largest, static_cast<double>(detail::real_part(r_[(i * cols_) + i])));
+      }
+      const double tolerance {detail::rank_tolerance(largest, rows_, cols_)};
+      for (std::size_t i {0}; i < cols_; ++i) {
+        if (detail::real_part(r_[(i * cols_) + i]) <= tolerance) {
+          throw singular_matrix_error("QR solve: the matrix is rank-deficient (lstsq gives its minimum-norm solution)");
+        }
+      }
+      const std::size_t sides {b.cols()};
+      buffer<T>         q_adjoint(cols_ * rows_); // the first n columns of Q, conjugated, as rows
+      for (std::size_t k {0}; k < rows_; ++k) {
+        for (std::size_t i {0}; i < cols_; ++i) {
+          q_adjoint[(i * rows_) + k] = detail::conj_of(q_[(k * width_) + i]);
+        }
+      }
+      buffer<T> x(cols_ * sides); // Y = Qᴴ B, then X in its place
+      gemm(cols_, sides, rows_, q_adjoint.data(), rows_, std::to_address(b.begin()), sides, x.data(), sides, detail::c_start::zero);
+      for (std::size_t i {cols_}; i-- > 0;) { // back substitution R X = Y, a row of R's terms at a time
+        T* const row {x.data() + (i * sides)};
+        for (std::size_t j {i + 1}; j < cols_; ++j) {
+          const T        r     {r_[(i * cols_) + j]};
+          const T* const below {x.data() + (j * sides)};
+          for (std::size_t c {0}; c < sides; ++c) {
+            row[c] -= r * below[c];
+          }
+        }
+        for (std::size_t c {0}; c < sides; ++c) {
+          row[c] /= r_[(i * cols_) + i];
+        }
+      }
+      return matrix<T> {cols_, sides, std::move(x)};
     }
 
   private:

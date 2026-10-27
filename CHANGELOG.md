@@ -40,6 +40,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   of another length no longer waits on it), its roots of unity computed on the threads (M1 Pro, 2²² points 61 → 27 ms,
   10⁶ 14.5 → 6.4 ms; the same roots).
 
+- **`cholesky_decomposition::solve` and `qr_decomposition::solve` of a matrix** of right-hand sides, every column at
+  once (C++): Cholesky's row by row over the columns, the threads sharing them, each column the vector solve's bits;
+  QR's `Qᴴ B` through the matrix product kernel, then `R`'s back substitution over the columns.
+
 ### Changed
 
 - **The eigenvectors of `eig` on the threads**: each vector's triangular solve, its normalisation and the final
