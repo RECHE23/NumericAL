@@ -609,8 +609,9 @@ namespace numerical {
 
     /*!
      * \brief The singular values of the real upper bidiagonal (\p d, \p e) by implicit-shift QR with
-     *        deflation (LINPACK's `dsvdc`, the Golub–Kahan–Reinsch iteration), the rotations accumulated
-     *        into the rows of \p ut and \p vt.
+     *        deflation (the Golub–Kahan–Reinsch iteration, LINPACK's `dsvdc`), the rotations accumulated
+     *        into the rows of \p ut and \p vt. Each block's bulge is chased from its larger end, as LAPACK's `dbdsqr`
+     *        chases it: from the top only, a block graded up (its small entries first) never converged.
      * \param[in,out] d         The diagonal; on return, the singular values, descending and non-negative.
      * \param[in,out] e         The superdiagonal in `e[0…n-2]`, `e[n-1] = 0`; destroyed.
      * \param[in,out] ut        Row-major `n × n`; on return, row `j` is the left vector of `d[j]`. Empty, with \p vt:
@@ -632,12 +633,66 @@ namespace numerical {
       // at the end, in parallel by columns.
       std::vector<row_operation> on_vt;
       std::vector<row_operation> on_ut;
-      const bool                 record  {!vt.empty()}; // the singular values alone record nothing
-      const double               epsilon {std::numeric_limits<double>::epsilon()};
-      const double               tiny    {std::numeric_limits<double>::min() / epsilon};
-      constexpr std::size_t      none    {std::numeric_limits<std::size_t>::max()};
-      std::size_t                p       {n};
-      std::size_t                steps   {0};
+      const bool                 record      {!vt.empty()}; // the singular values alone record nothing
+      const double               epsilon     {std::numeric_limits<double>::epsilon()};
+      const double               tiny        {std::numeric_limits<double>::min() / epsilon};
+      constexpr std::size_t      none        {std::numeric_limits<std::size_t>::max()};
+      std::size_t                p           {n};
+      std::size_t                steps       {0};
+      bool                       down        {true}; // the direction of the chase, chosen per block
+      std::size_t                chased_top  {n};
+      std::size_t                chased_last {0};
+      // One implicit QR step on the block top…p−1 of the bidiagonal D, E (the entries of d and e as \p at maps their
+      // positions), shifted by the eigenvalue of the trailing 2 × 2 of BᵀB nearer its last diagonal entry: the bulge
+      // chased from top to bottom, its rotations recorded on the right and on the left.
+      const auto qr_step {[&](std::size_t first, std::size_t end, auto&& dd, auto&& ee, auto&& at, std::vector<row_operation>& right,
+                              std::vector<row_operation>& left) {
+                            const double scale {std::max({std::abs(dd(end - 1)), std::abs(dd(end - 2)), std::abs(ee(end - 2)),
+                                                          std::abs(dd(first)), std::abs(ee(first))})};
+                            const double sp    {dd(end - 1) / scale};
+                            const double spm1  {dd(end - 2) / scale};
+                            const double epm1  {ee(end - 2) / scale};
+                            const double sk    {dd(first) / scale};
+                            const double ek    {ee(first) / scale};
+                            const double bb    {(((spm1 + sp) * (spm1 - sp)) + (epm1 * epm1)) / 2.0};
+                            const double cc    {(sp * epm1) * (sp * epm1)};
+                            double       shift {0.0};
+                            if (bb != 0.0 || cc != 0.0) {
+                              shift = std::sqrt((bb * bb) + cc);
+                              shift = cc / (bb < 0.0 ? bb - shift : bb + shift);
+                            }
+                            double f {((sk + sp) * (sk - sp)) + shift};
+                            double g {sk * ek};
+                            for (std::size_t j {first}; j + 1 < end; ++j) {
+                              double t  {rotation_length(f, g)};
+                              double cs {f / t};
+                              double sn {g / t};
+                              if (j != first) {
+                                ee(j - 1) = t;
+                              }
+                              f         = (cs * dd(j)) + (sn * ee(j));
+                              ee(j)     = (cs * ee(j)) - (sn * dd(j));
+                              g         = sn * dd(j + 1);
+                              dd(j + 1) = cs * dd(j + 1);
+                              if (record) {
+                                right.push_back({row_operation::kind::rotate, at(j), at(j + 1), cs, sn});
+                              }
+                              t         = rotation_length(f, g);
+                              cs        = f / t;
+                              sn        = g / t;
+                              dd(j)     = t;
+                              f         = (cs * ee(j)) + (sn * dd(j + 1));
+                              dd(j + 1) = (cs * dd(j + 1)) - (sn * ee(j));
+                              if (j + 2 < end) { // past the block, e is zero and stays so
+                                g         = sn * ee(j + 1);
+                                ee(j + 1) = cs * ee(j + 1);
+                              }
+                              if (record) {
+                                left.push_back({row_operation::kind::rotate, at(j), at(j + 1), cs, sn});
+                              }
+                            }
+                            ee(end - 2) = f;
+                          }};
       while (p > 0) {
         // The largest k < p−1 with a negligible e[k] (none: the loop ran out and wrapped).
         std::size_t k {p - 1};
@@ -713,51 +768,24 @@ namespace numerical {
           throw convergence_error("SVD: the bidiagonal QR iteration did not converge within its steps");
         }
         ++steps;
-        // One implicit QR step on top…p−1, shifted by the eigenvalue of the trailing 2 × 2 of BᵀB nearer
-        // its last diagonal entry.
-        const double scale {std::max({std::abs(d[p - 1]), std::abs(d[p - 2]), std::abs(e[p - 2]), std::abs(d[top]),
-                                      std::abs(e[top])})};
-        const double sp    {d[p - 1] / scale};
-        const double spm1  {d[p - 2] / scale};
-        const double epm1  {e[p - 2] / scale};
-        const double sk    {d[top] / scale};
-        const double ek    {e[top] / scale};
-        const double bb    {(((spm1 + sp) * (spm1 - sp)) + (epm1 * epm1)) / 2.0};
-        const double cc    {(sp * epm1) * (sp * epm1)};
-        double       shift {0.0};
-        if (bb != 0.0 || cc != 0.0) {
-          shift = std::sqrt((bb * bb) + cc);
-          shift = cc / (bb < 0.0 ? bb - shift : bb + shift);
+        if (top > chased_last || p - 1 < chased_top) { // a new block: chase from its larger end
+          down = std::abs(d[top]) >= std::abs(d[p - 1]);
         }
-        double f {((sk + sp) * (sk - sp)) + shift};
-        double g {sk * ek};
-        for (std::size_t j {top}; j + 1 < p; ++j) {
-          double t  {rotation_length(f, g)};
-          double cs {f / t};
-          double sn {g / t};
-          if (j != top) {
-            e[j - 1] = t;
-          }
-          f        = (cs * d[j]) + (sn * e[j]);
-          e[j]     = (cs * e[j]) - (sn * d[j]);
-          g        = sn * d[j + 1];
-          d[j + 1] = cs * d[j + 1];
-          if (record) {
-            on_vt.push_back({row_operation::kind::rotate, j, j + 1, cs, sn});
-          }
-          t        = rotation_length(f, g);
-          cs       = f / t;
-          sn       = g / t;
-          d[j]     = t;
-          f        = (cs * e[j]) + (sn * d[j + 1]);
-          d[j + 1] = (cs * d[j + 1]) - (sn * e[j]);
-          g        = sn * e[j + 1];
-          e[j + 1] = cs * e[j + 1];
-          if (record) {
-            on_ut.push_back({row_operation::kind::rotate, j, j + 1, cs, sn});
-          }
+        chased_top  = top;
+        chased_last = p - 1;
+        if (down) {
+          qr_step(top, p, [&](std::size_t position) -> double& { return d[position]; },
+                  [&](std::size_t position) -> double& { return e[position]; }, [](std::size_t position) { return position; }, on_vt, on_ut);
         }
-        e[p - 2] = f;
+        else {
+          // The step on the block turned end for end (J Bᵀ J, upper bidiagonal again): its rotations on the right are
+          // B's on the left at the mirrored rows, and the other way round.
+          const std::size_t ends {top + p - 1};
+          qr_step(top, p, [&](std::size_t position) -> double& { return d[ends - position]; },
+                  [&](std::size_t position) -> double& { return e[ends - position - 1]; },
+                  [ends](std::size_t position) { return ends - position; },
+                  on_ut, on_vt);
+        }
       }
       if (!vt.empty()) {
         apply_row_operations(vt, n, on_vt);

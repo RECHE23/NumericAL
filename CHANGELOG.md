@@ -83,6 +83,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **A complex LU with a subnormal pivot** (below the smallest normal number) divides by it, as LAPACK's `zgetf2` does,
   where its reciprocal overflowed to infinity and the factorisation and solves gave NaN; every other pivot keeps its
   bits.
+- **The SVD of a matrix graded up** (its bidiagonal small at the top, large at the bottom, as a diagonal from 2⁻⁴¹⁶
+  to 1 in steps of 2²⁶) converges: the bidiagonal QR iteration chases each block's bulge from its larger end, as
+  LAPACK's `dbdsqr` does, where from the top alone it never converged and `svd_decomposition` (divide and conquer,
+  whose small blocks it decomposes, and `bidiagonal_qr`) threw `convergence_error`. The last bits of a decomposition
+  whose block is larger at its bottom change.
 
 ## 2026.10.38 — 2026-10-25
 

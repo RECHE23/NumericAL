@@ -994,6 +994,32 @@ TEST(bidiagonal_qr_converges_in_about_two_steps_per_value)
   EXPECT(total <= 900U);
 }
 
+// A bidiagonal graded up, each diagonal entry 2²⁶ times the one above it: the bulge chased from the top never brought
+// its small entries down (a convergence_error from every method but Jacobi), from its larger end the iteration
+// converges. Graded down, the same. U Σ Vᵀ = A with U and V orthonormal either way.
+TEST(svd_converges_on_a_bidiagonal_graded_either_way)
+{
+  constexpr std::size_t n {17};
+  for (const bool up : {true, false}) {
+    std::vector<double> entries(n * n, 0.0);
+    for (std::size_t i {0}; i < n; ++i) {
+      const int place {static_cast<int>(up ? n - 1 - i : i)};
+      entries[(i * n) + i] = std::ldexp(1.0, -26 * place);
+      if (i + 1 < n) {
+        entries[(i * n) + i + 1] = std::ldexp(1.0, (-26 * place) + (up ? 13 : -13));
+      }
+    }
+    const matrix<double> a {n, n, entries};
+    for (const numerical::svd_method method : svd_methods) {
+      const svd_decomposition s {a, method};
+      EXPECT(approx_equal(reconstruct(s), a, 1e-15));
+      EXPECT(orthonormality_error(s.u()) < 1e-14);
+      EXPECT(orthonormality_error(s.v()) < 1e-14);
+      EXPECT(std::abs((s.singular_values()[n - 1] / 5.9091062713565978771e-126) - 1.0) < 1e-12);
+    }
+  }
+}
+
 // The deflations of the bidiagonal iteration each have a bidiagonal that reaches them: a zero at the end of
 // the block (chased up from two rows away), a zero inside it (the block splits), a negative entry (its sign
 // moves into V), an order to restore, and the two ways the shift's `b` vanishes. A matrix with no column
