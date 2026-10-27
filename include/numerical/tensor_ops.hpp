@@ -1161,14 +1161,22 @@ namespace numerical {
     for (const std::size_t extent : shape) {
       count = detail::checked_mul(count, extent);
     }
-    return tensor<T> {std::move(shape), buffer<T>(count, value)};
+    buffer<T> values(count); // its pages first touched by the threads that fill them
+    detail::parallel_fill(values.data(), count, value);
+    return tensor<T> {std::move(shape), std::move(values)};
   }
 
-  //! \brief A tensor of \p shape full of zeros.
+  //! \brief A tensor of \p shape full of zeros (each thread's share zeroed as the C library zeroes).
   template <typename T>
   [[nodiscard]] tensor<T> zeros(std::vector<std::size_t> shape)
   {
-    return full<T>(std::move(shape), T {});
+    std::size_t count {1};
+    for (const std::size_t extent : shape) {
+      count = detail::checked_mul(count, extent);
+    }
+    buffer<T> values(count);
+    detail::parallel_zero(values.data(), count);
+    return tensor<T> {std::move(shape), std::move(values)};
   }
 
   //! \brief A tensor of \p shape full of ones.

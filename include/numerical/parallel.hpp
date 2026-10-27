@@ -798,6 +798,24 @@ namespace numerical::detail {
                  });
   }
 
+  //! \brief Sets the \p count elements at \p out to \p value, split across the threads as \ref parallel_zero is, a fresh
+  //!        result's pages faulted in by several threads.
+  template <typename T>
+  void parallel_fill(T*          out,
+                     std::size_t count,
+                     const T&    value)
+  {
+    if (count < 2 * (work_per_thread / zero_work)) { // too little to pay for a second thread
+      std::fill(out, out + count, value);
+      return;
+    }
+    const std::size_t piece {fault_chunk<T>(count)};
+    parallel_for((count + piece - 1) / piece, piece * zero_work, [out, count, piece, &value](std::size_t chunk) {
+                   const std::size_t begin {chunk * piece};
+                   std::fill(out + begin, out + std::min(count, begin + piece), value);
+                 });
+  }
+
   /*!
    * \brief Copies the \p count elements at \p in to \p out, split across the threads the work pays for, as
    *        \ref parallel_zero does: a fresh copy's pages are faulted in by several threads, where a sequential copy pays
