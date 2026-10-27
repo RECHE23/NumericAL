@@ -505,6 +505,27 @@ TEST(symmetric_eigen_of_a_diagonal_matrix)
   }
 }
 
+// A diagonal matrix's eigenvalues and singular values exactly its entries: the matrix divided by a power of two, and
+// the values multiplied back by it, exactly, where a division by the largest entry rounded 7/25 and 14/25 and the
+// product back missed 7 and 14.
+TEST(a_diagonal_matrix_decomposes_to_its_entries_exactly)
+{
+  const matrix<double> a {{7.0, 0.0, 0.0}, {0.0, 14.0, 0.0}, {0.0, 0.0, 25.0}};
+  for (const numerical::eigen_method method : eigen_methods) {
+    const symmetric_eigen e {a, method};
+    EXPECT(e.values()[0] == 7.0 && e.values()[1] == 14.0 && e.values()[2] == 25.0);
+  }
+  const vector<double> sigma            {singular_values(a)};
+  EXPECT(sigma[0] == 25.0 && sigma[1] == 14.0 && sigma[2] == 7.0);
+  const vector<double> lambda           {symmetric_eigenvalues(a)};
+  EXPECT(lambda[0] == 7.0 && lambda[1] == 14.0 && lambda[2] == 25.0);
+  const svd_decomposition<double> s     {a};
+  EXPECT(s.singular_values()[0] == 25.0 && s.singular_values()[1] == 14.0 && s.singular_values()[2] == 7.0);
+  const matrix<std::complex<double>> h  {{{7.0, 0.0}, {}, {}}, {{}, {14.0, 0.0}, {}}, {{}, {}, {25.0, 0.0}}};
+  const numerical::hermitian_eigen   he {h};
+  EXPECT(he.values()[0] == 7.0 && he.values()[1] == 14.0 && he.values()[2] == 25.0);
+}
+
 TEST(symmetric_eigen_of_a_dense_matrix)
 {
   const matrix<double> a {{2.0, 1.0}, {1.0, 2.0}};

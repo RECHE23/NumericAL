@@ -766,7 +766,7 @@ namespace numerical {
     }
 
     /*!
-     * \brief The largest magnitude of \p entry over \p rows rows of \p cols, 1 where it is 0: by bands of rows on the
+     * \brief The \ref power_of_two_scale of the largest magnitude of \p entry over \p rows rows of \p cols: by bands of rows on the
      *        threads, each band's largest then the largest of those (a maximum, the same whatever the order).
      */
     template <typename Entry>
@@ -786,7 +786,7 @@ namespace numerical {
                      largest[band] = most;
                    });
       const double scale {std::accumulate(largest.begin(), largest.end(), 0.0, [](double x, double y) { return std::max(x, y); })};
-      return scale == 0.0 ? 1.0 : scale;
+      return power_of_two_scale(scale);
     }
 
     //! \brief The conjugate transpose of \p a, as \ref numerical::transpose copies (by blocks, on the threads).
@@ -1600,9 +1600,7 @@ namespace numerical {
                            });
       // the largest over no band (no row) is 0, as over zeros
       double scale {std::accumulate(largest.begin(), largest.end(), 0.0, [](double x, double y) { return std::max(x, y); })};
-      if (scale == 0.0) {
-        scale = 1.0;
-      }
+      scale = detail::power_of_two_scale(scale);
       buffer<T>         entries(rows * cols);
       T* const          into    {entries.data()};
       const T           divisor {detail::from_carried<T>(scale)};
@@ -1995,9 +1993,9 @@ namespace numerical {
     const bool        tall {a.rows() >= a.cols()};
     const std::size_t rows {tall ? a.rows() : a.cols()};
     const std::size_t cols {tall ? a.cols() : a.rows()};
-    // Divided by its largest magnitude, as the decomposition is: the sums of squares overflow near 1e155. The largest
-    // found by bands of rows on the threads (a maximum, whatever the order); each entry divided once, copied by bands
-    // of rows, or by blocks where the matrix is read transposed.
+    // Divided by the power of two of its largest magnitude, as the decomposition is: the sums of squares overflow near
+    // 1e155. The largest found by bands of rows on the threads (a maximum, whatever the order); each entry divided
+    // once, copied by bands of rows, or by blocks where the matrix is read transposed.
     const double scale   {detail::largest_magnitude(a.rows(), a.cols(), [&a](std::size_t i, std::size_t j) { return a(i, j); })};
     const T      divisor {detail::from_carried<T>(scale)};
     buffer<T>    entries(rows * cols);
@@ -2046,8 +2044,8 @@ namespace numerical {
       throw dimension_error("symmetric eigenvalues require a square matrix");
     }
     detail::require_finite_lower(a, "symmetric eigenvalues");
-    // Divided by its largest magnitude read, as the decompositions are: a sum of squares overflows near 1e155. Found
-    // and divided by bands of rows on the threads, each row written whole (its upper part zero).
+    // Divided by the power of two of its largest magnitude read, as the decompositions are: a sum of squares overflows
+    // near 1e155. Found and divided by bands of rows on the threads, each row written whole (its upper part zero).
     const double scale {detail::largest_magnitude(n, n, [&a](std::size_t i, std::size_t j) {
                                                     return j < i ? a(i, j) : j == i ? detail::from_carried<T>(detail::real_part(a(i, i))) : T {};
                                                   })};

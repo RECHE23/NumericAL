@@ -229,6 +229,16 @@ namespace numerical {
     //! \brief The rows of an SVD's input one thread scales and copies at a time.
     inline constexpr std::size_t svd_band {32};
 
+    /*!
+     * \brief The power of two a decomposition divides a matrix by whose largest magnitude is \p largest: its leading
+     *        bit's, the largest entry then in [1, 2); 1 where \p largest is 0. Dividing and multiplying back by it are
+     *        exact, where a division by the largest itself rounded every entry.
+     */
+    [[nodiscard]] inline double power_of_two_scale(double largest) noexcept
+    {
+      return largest == 0.0 ? 1.0 : std::ldexp(1.0, std::ilogb(largest));
+    }
+
     //! \brief The rows of a Cholesky factor whose upper part one thread zeroes at a time.
     inline constexpr std::size_t zeroed_rows {32};
 
@@ -4522,7 +4532,7 @@ namespace numerical {
         throw dimension_error("symmetric eigendecomposition requires a square matrix");
       }
       detail::require_finite_lower(input, "symmetric eigendecomposition");
-      // Work on the matrix divided by its largest entry: a sum of squares of entries near 1e170
+      // Work on the matrix divided by the power of two of its largest entry: a sum of squares of entries near 1e170
       // overflows and of entries near 1e-170 underflows to 0, and either stops the sweeps before a
       // single rotation. The eigenvalues are scaled back; the eigenvectors do not depend on it.
       double scale {0.0};
@@ -4531,9 +4541,7 @@ namespace numerical {
           scale = std::max(scale, std::abs(input(i, j)));
         }
       }
-      if (scale == 0.0) {
-        scale = 1.0;
-      }
+      scale = detail::power_of_two_scale(scale);
       buffer<double> a(n_ * n_, double   {});
       buffer<double> diagonal(n_, double {});
       if (method == eigen_method::jacobi) {
@@ -4664,7 +4672,7 @@ namespace numerical {
         throw dimension_error("Hermitian eigendecomposition requires a square matrix");
       }
       detail::require_finite_lower(input, "Hermitian eigendecomposition");
-      // Work on the matrix divided by its largest entry, as symmetric_eigen does; the vectors do not depend
+      // Work on the matrix divided by the power of two of its largest entry, as symmetric_eigen does; the vectors do not depend
       // on it. The entries read: the lower triangle, and the diagonal's real part (its imaginary part is ignored,
       // so it scales nothing: an infinite one made every value NaN, a huge one wrong).
       double scale {0.0};
@@ -4674,9 +4682,7 @@ namespace numerical {
         }
         scale = std::max(scale, std::abs(input(i, i).real()));
       }
-      if (scale == 0.0) {
-        scale = 1.0;
-      }
+      scale = detail::power_of_two_scale(scale);
       buffer<std::complex<double>> a(n_ * n_, std::complex<double> {});
       for (std::size_t i {0}; i < n_; ++i) { // the lower triangle alone, a real diagonal: the reduction reads no more
         for (std::size_t j {0}; j <= i; ++j) {

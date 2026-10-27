@@ -48,6 +48,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   their scale and copy the matrix by bands on the threads (a wide one by blocks); a complex matrix's finiteness check
   on the threads, as a real one's. The same bits.
 
+- **`svd`, `svdvals`, `eigh` and `eigvalsh` scale the matrix by a power of two** (its largest entry's), as `eig`
+  already did, where they divided it by its largest entry: the scaling and its undoing are now exact (a diagonal
+  matrix of 7, 14 and 25 gives exactly 7, 14 and 25, where 7/25·25 and 14/25·25 missed); their last bits change.
 ### Fixed
 
 - **The determinant of a singular matrix whose other pivots overflow** is 0, as documented, not NaN (∞·0): a finite
