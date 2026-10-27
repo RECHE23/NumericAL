@@ -70,4 +70,4 @@ six weeks have passed without one, six weekly long fuzzing campaigns green on x8
 
 | Last finding | What | Fixed in |
 | --- | --- | --- |
-| 2026-10-24 | a `long double` QR or Cholesky answered to `double`'s precision, not its own (1419 ε of `long double` at order 12 where 768 are held), found by an audit | 2026.10.36 |
+| 2026-10-27 | `svd` threw `convergence_error` on a matrix whose bidiagonal is graded upward (2⁻⁴¹⁶ to 1 in steps of 2²⁶), and `svdvals` gave 0 for a singular value of 5.3·10⁻³³ beside 1 and 2, found while porting dqds | 2026.10.39 |
