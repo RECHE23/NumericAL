@@ -2741,7 +2741,10 @@ namespace numerical::detail {
     static constexpr std::size_t block_rows      {96};                       //!< The rows of one task, a whole number of tiles.
     static constexpr std::size_t b_in_place_rows {mr};                       //!< One row of tiles, as the vector tile's.
     static constexpr std::size_t speedup         {gemm_kernel_speedup / 16}; //!< A complex multiply-add is four real ones.
-    static constexpr std::size_t serial_below    {1};                        //!< Every product with work shares it.
+    //! Below 70³ multiply-adds, on the caller alone: the threads cost more than they share there, a product taking
+    //! some 25 µs on one thread where they first pay (ten AVX-512 cores, order 48 12.1 µs on one thread, 19.5 on
+    //! two; 64 27.6 and 26.6 on all; 72 36.7 and 32.4).
+    static constexpr std::size_t serial_below    {std::size_t {343000}};
 
     //! \brief Nothing to turn on around a task.
     struct session
@@ -2787,7 +2790,9 @@ namespace numerical::detail {
     static constexpr std::size_t block_rows      {72};                       //!< The rows of one task, a whole number of tiles.
     static constexpr std::size_t b_in_place_rows {mr};                       //!< One row of tiles, as the vector tile's.
     static constexpr std::size_t speedup         {gemm_kernel_speedup / 16}; //!< A complex multiply-add is four real ones.
-    static constexpr std::size_t serial_below    {1};                        //!< Every product with work shares it.
+    //! Below 52³ multiply-adds, on the caller alone, for the reason \ref avx512_complex_tile_kernel's bound gives
+    //! (six AVX2 cores, order 48 18.6 µs on one thread, 21.9 on all; 56 30.1 and 20.8).
+    static constexpr std::size_t serial_below    {std::size_t {140608}};
 
     //! \brief Nothing to turn on around a task.
     struct session
@@ -2832,7 +2837,9 @@ namespace numerical::detail {
     static constexpr std::size_t block_rows      {96};
     static constexpr std::size_t b_in_place_rows {mr};
     static constexpr std::size_t speedup         {gemm_kernel_speedup / 16};
-    static constexpr std::size_t serial_below    {1};
+    //! Below 84³ multiply-adds, on the caller alone, for the reason \ref avx512_complex_tile_kernel's bound gives
+    //! (ten AVX-512 cores, order 64 14.3 µs on one thread, 16.0 on all; 80 27.0 and 27.1; 88 36.7 and 30.7).
+    static constexpr std::size_t serial_below    {std::size_t {592704}};
 
     struct session
     {};
@@ -2873,7 +2880,9 @@ namespace numerical::detail {
     static constexpr std::size_t block_rows      {72};
     static constexpr std::size_t b_in_place_rows {mr};
     static constexpr std::size_t speedup         {gemm_kernel_speedup / 16};
-    static constexpr std::size_t serial_below    {1};
+    //! Below 52³ multiply-adds, on the caller alone, for the reason \ref avx512_complex_tile_kernel's bound gives
+    //! (six AVX2 cores, order 48 9.9 µs on one thread, 11.3 on all; 56 15.2 and 12.8).
+    static constexpr std::size_t serial_below    {std::size_t {140608}};
 
     struct session
     {};

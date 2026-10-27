@@ -18,6 +18,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   `float` as for `double`, moved to `simd.hpp`) and copies it as one block, where each pair of values was checked
   and copied alone. The same bits. One thread, ten AVX-512 cores: 4096 `float32` points 6.2 → 5.2 µs under Clang,
   7.7 → 5.7 µs under GCC; M1 Pro 5.75 → 4.94 µs.
+- **Small complex products on x86-64 stay on the calling thread** (below 70³ multiply-adds of `complex128` and 84³ of
+  `complex64` on the AVX-512 path, 52³ on the AVX2 path), where the threads cost more than they shared: ten AVX-512
+  cores, all threads, order 48 `complex128` 19.9 → 12.1 µs, `complex64` 9.7 → 6.0 µs, order 64 `complex64` 16.0 →
+  14.3 µs; six AVX2 cores, order 48 21.9 → 19.5 µs. The same bits (a product's bits do not depend on its threads).
 
 ## 2026.10.39 — 2026-10-27
 
