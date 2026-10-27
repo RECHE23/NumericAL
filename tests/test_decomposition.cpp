@@ -2785,3 +2785,73 @@ TEST(svd_of_empty_matrices_has_empty_factors)
     }
   }
 }
+
+// A decomposition of an expiring matrix, scaled in its own storage, gives the bits of the decomposition of a constant
+// one: svd of tall, wide and square matrices by each method (complex too), symmetric_eigen by each method (its upper
+// triangle holding values it must not read), eigen_decomposition with its vectors on both sides.
+template <typename T>
+numerical::matrix<T> drawn_matrix(std::size_t rows,
+                                  std::size_t cols,
+                                  unsigned    seed)
+{
+  std::mt19937_64     generator {seed};
+  std::vector<double> parts(2 * rows * cols);
+  for (double& part : parts) {
+    part = std::ldexp(static_cast<double>(generator() >> 11U), -53) - 0.5;
+  }
+  std::vector<T> entries(rows * cols);
+  for (std::size_t e {0}; e < entries.size(); ++e) {
+    if constexpr (numerical::detail::split_complex<T>) {
+      entries[e] = T {parts[2 * e], parts[(2 * e) + 1]};
+    }
+    else {
+      entries[e] = parts[2 * e];
+    }
+  }
+  return numerical::matrix<T> {rows, cols, entries};
+}
+
+template <typename T>
+bool expiring_svd_has_the_bits_of_a_constant_one()
+{
+  bool all {true};
+  for (const auto& [rows, cols] : {std::pair<std::size_t, std::size_t> {9, 5}, {5, 9}, {7, 7}}) {
+    for (const numerical::svd_method method : {numerical::svd_method::divide_and_conquer, numerical::svd_method::bidiagonal_qr, numerical::svd_method::jacobi}) {
+      for (const bool full : {false, true}) {
+        const numerical::matrix<T>            a        {drawn_matrix<T>(rows, cols, 7U)};
+        const numerical::svd_decomposition<T> constant {a, method, full};
+        const numerical::svd_decomposition<T> expiring {drawn_matrix<T>(rows, cols, 7U), method, full};
+        all = all && constant.singular_values() == expiring.singular_values() && constant.u() == expiring.u() && constant.v() == expiring.v();
+      }
+    }
+  }
+  return all;
+}
+
+TEST(a_decomposition_of_an_expiring_matrix_has_the_bits_of_a_constant_one)
+{
+  EXPECT(expiring_svd_has_the_bits_of_a_constant_one<double>());
+  EXPECT(expiring_svd_has_the_bits_of_a_constant_one<std::complex<double>>());
+  constexpr std::size_t           order             {11};
+  std::vector<double>             lower(order * order);
+  const numerical::matrix<double> drawn             {drawn_matrix<double>(order, order, 3U)};
+  for (std::size_t i {0}; i < order; ++i) {
+    for (std::size_t j {0}; j < order; ++j) {
+      lower[(i * order) + j] = j <= i ? drawn(i, j) : 1e300; // above the diagonal: never read
+    }
+  }
+  const numerical::matrix<double> symmetric {order, order, lower};
+  for (const numerical::eigen_method method : {numerical::eigen_method::divide_and_conquer, numerical::eigen_method::tridiagonal_ql, numerical::eigen_method::jacobi}) {
+    const numerical::symmetric_eigen constant {symmetric, method};
+    const numerical::symmetric_eigen expiring {numerical::matrix<double> {symmetric}, method};
+    EXPECT(constant.values() == expiring.values() && constant.vectors() == expiring.vectors());
+  }
+  const numerical::matrix<double>                   square                    {drawn_matrix<double>(13, 13, 5U)};
+  const numerical::eigen_decomposition<double>      constant                  {square, true, true};
+  const numerical::eigen_decomposition<double>      expiring                  {numerical::matrix<double> {square}, true, true};
+  EXPECT(constant.values() == expiring.values() && constant.vectors() == expiring.vectors() && constant.left_vectors() == expiring.left_vectors());
+  const numerical::matrix<std::complex<double>>              complex_square   {drawn_matrix<std::complex<double>>(6, 6, 9U)};
+  const numerical::eigen_decomposition<std::complex<double>> complex_constant {complex_square};
+  const numerical::eigen_decomposition<std::complex<double>> complex_expiring {numerical::matrix<std::complex<double>> {complex_square}};
+  EXPECT(complex_constant.values() == complex_expiring.values() && complex_constant.vectors() == complex_expiring.vectors());
+}

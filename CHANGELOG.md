@@ -26,6 +26,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   (`_asarray_nested`), where Python gathered its values and shape first: M1 Pro, 1000 × 64 floats 53 → 1.4 ms (NumPy
   2.3 ms), 2 × 2 8.4 → 0.44 µs. The same values; anything else (another kind of number, a ragged list, an int past a
   double's range) is read as before, with the same errors.
+- **`svd_decomposition`, `symmetric_eigen` and `eigen_decomposition` of an expiring matrix scale it in its own
+  storage** (`matrix&&` constructors, as LU, Cholesky and QR had), where they copied it first: one matrix less at the
+  peak of `eigh` and `eig` (from Python: `eigh` of order 3000 9.4 → 8.5 times a matrix's size, `eig` of order 2000
+  12.1 → 11.3), and one pass less over the matrix; a wide `svd` takes its adjoint the same way. The peak of `svd`
+  falls later, unchanged. The same bits.
 
 ## 2026.10.39 — 2026-10-27
 

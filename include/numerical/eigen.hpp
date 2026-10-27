@@ -3043,6 +3043,24 @@ namespace numerical {
     explicit eigen_decomposition(const matrix<T>& input,
                                  bool             vectors = true,
                                  bool             left    = false)
+      : eigen_decomposition(matrix<T> {input},
+                            vectors,
+                            left)
+    {}
+
+    /*!
+     * \brief Decomposes \p input in its own storage, an expiring matrix's elements taken over: its scaled copy is
+     *        made in place, one matrix less at the peak.
+     * \param[in] input   A square matrix.
+     * \param[in] vectors Whether to compute the eigenvectors (the eigenvalues alone cost a third as much).
+     * \param[in] left    Whether to compute the left eigenvectors too (\ref left_vectors), from the same Schur form.
+     * \throws dimension_error   If \p input is not square.
+     * \throws non_finite_error  If an entry is infinite or NaN.
+     * \throws convergence_error If the QR iterations did not converge.
+     */
+    explicit eigen_decomposition(matrix<T>&& input,
+                                 bool        vectors = true,
+                                 bool        left    = false)
       : n_(input.rows())
     {
       if (input.cols() != n_) {
@@ -3058,11 +3076,9 @@ namespace numerical {
       // A power of two near the largest magnitude: dividing by it is exact, and keeps the iterations' sums of squares
       // and the back-substitution's growth in range.
       const double   scale        {largest == 0.0 ? 1.0 : std::ldexp(1.0, std::ilogb(largest))};
-      buffer<T>      a(n_ * n_, T {});
-      for (std::size_t i {0}; i < n_; ++i) {
-        for (std::size_t j {0}; j < n_; ++j) {
-          a[(i * n_) + j] = input(i, j) / detail::from_carried<T>(scale);
-        }
+      buffer<T>      a            {std::move(input).elements()};
+      for (T& entry : a) {
+        entry /= detail::from_carried<T>(scale);
       }
       const detail::balancing       balanced {detail::balance(a, n_)};
       const bool                    basis {vectors || left}; // Z, and the whole Schur form, for either side's vectors

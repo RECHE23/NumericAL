@@ -1549,6 +1549,29 @@ namespace numerical {
       }
     }
 
+    /*!
+     * \brief Decomposes \p a in its own storage, an expiring matrix's elements taken over: its scaled copy is
+     *        made in place, one matrix less at the peak.
+     * \param[in] a      The matrix.
+     * \param[in] method The algorithm for `R`.
+     * \param[in] full   Whether `U` and `V` are square (`m × m`, `n × n`), as NumPy's `full_matrices=True`.
+     * \throws non_finite_error If an entry is infinite or NaN.
+     * \throws convergence_error If the iteration does not converge within its bound (not observed).
+     */
+    explicit svd_decomposition(matrix<T>&& a,
+                               svd_method  method = svd_method::divide_and_conquer,
+                               bool        full   = false)
+    {
+      detail::require_finite(a, "SVD");
+      if (a.rows() >= a.cols()) {
+        factor(std::move(a), method, full);
+      }
+      else { // as the constructor of a constant matrix
+        factor(detail::adjoint(a), method, full);
+        std::swap(u_, v_);
+      }
+    }
+
     //! \brief The singular values, descending.
     [[nodiscard]] const vector<double>& singular_values() const noexcept
     {
@@ -1611,13 +1634,36 @@ namespace numerical {
                 svd_method       method,
                 bool             full)
     {
-      const std::size_t rows {a.rows()};
-      const std::size_t cols {a.cols()};
+      factor_scaled(std::to_address(a.begin()), buffer<T>(a.rows() * a.cols()), a.rows(), a.cols(), method, full);
+    }
+
+    //! \brief \ref factor of an expiring matrix, its elements scaled in place.
+    void factor(matrix<T>&& a,
+                svd_method  method,
+                bool        full)
+    {
+      const std::size_t rows    {a.rows()};
+      const std::size_t cols    {a.cols()};
+      buffer<T>         entries {std::move(a).elements()};
+      const T* const    source  {entries.data()};
+      factor_scaled(source, std::move(entries), rows, cols, method, full);
+    }
+
+    /*!
+     * \brief The decomposition of the `rows × cols` matrix at \p source (row-major), its scaled copy written into
+     *        \p entries, which may hold the source itself (each element read before it is written).
+     */
+    void factor_scaled(const T*    source,
+                       buffer<T>   entries,
+                       std::size_t rows,
+                       std::size_t cols,
+                       svd_method  method,
+                       bool        full)
+    {
       // Work on A divided by its largest magnitude: the sums of squares in the sweeps overflow near
       // 1e155 and underflow near 1e-155. The singular values are scaled back; the vectors do not change.
       // Both passes by bands of rows on the threads, bound by the memory: a band's largest magnitude, then the
       // largest of those (exact in any order), then the quotients.
-      const T* const      source {std::to_address(a.begin())};
       const std::size_t   bands  {(rows + detail::svd_band - 1) / detail::svd_band};
       std::vector<double> largest(bands, 0.0);
       detail::parallel_for(bands, detail::memory_element_weight * detail::svd_band * cols, [source, rows, cols, &largest](std::size_t band) {
@@ -1628,9 +1674,8 @@ namespace numerical {
                              largest[band] = most;
                            });
       // the largest over no band (no row) is 0, as over zeros
-      double scale {std::accumulate(largest.begin(), largest.end(), 0.0, [](double x, double y) { return std::max(x, y); })};
+      double scale              {std::accumulate(largest.begin(), largest.end(), 0.0, [](double x, double y) { return std::max(x, y); })};
       scale = detail::power_of_two_scale(scale);
-      buffer<T>         entries(rows * cols);
       T* const          into    {entries.data()};
       const T           divisor {detail::from_carried<T>(scale)};
       detail::parallel_for(bands, detail::memory_element_weight * detail::svd_band * cols, [source, into, rows, cols, divisor](std::size_t band) {

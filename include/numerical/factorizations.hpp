@@ -4584,6 +4584,20 @@ namespace numerical {
      */
     explicit symmetric_eigen(const matrix<double>& input,
                              eigen_method          method = eigen_method::divide_and_conquer)
+      : symmetric_eigen(matrix<double> {input},
+                        method)
+    {}
+
+    /*!
+     * \brief Diagonalises \p input in its own storage, an expiring matrix's elements taken over: its scaled copy is
+     *        made in place, one matrix less at the peak.
+     * \param[in] input  A real symmetric matrix (its lower triangle is read).
+     * \param[in] method The algorithm.
+     * \throws dimension_error   If \p input is not square.
+     * \throws convergence_error If the method did not converge within its bound.
+     */
+    explicit symmetric_eigen(matrix<double>&& input,
+                             eigen_method     method = eigen_method::divide_and_conquer)
       : n_(input.rows())
     {
       if (input.cols() != n_) {
@@ -4600,15 +4614,22 @@ namespace numerical {
         }
       }
       scale = detail::power_of_two_scale(scale);
-      buffer<double> a(n_ * n_, double   {});
+      buffer<double> a                   {std::move(input).elements()};
       buffer<double> diagonal(n_, double {});
+      for (std::size_t i {0}; i < n_; ++i) { // the lower triangle divided; above it, whatever the input held
+        for (std::size_t j {0}; j <= i; ++j) {
+          a[(i * n_) + j] /= scale;
+        }
+      }
       if (method == eigen_method::jacobi) {
         buffer<double>      v(n_ * n_, 0.0);
         double              frobenius_squared {0.0};
         for (std::size_t i {0}; i < n_; ++i) {
           v[(i * n_) + i] = 1.0;
           for (std::size_t j {0}; j < n_; ++j) {
-            a[(i * n_) + j]    = input(std::max(i, j), std::min(i, j)) / scale; // the lower triangle, mirrored
+            if (j > i) {
+              a[(i * n_) + j] = a[(j * n_) + i]; // the lower triangle, mirrored
+            }
             frobenius_squared += a[(i * n_) + j] * a[(i * n_) + j];
           }
         }
@@ -4620,9 +4641,7 @@ namespace numerical {
         return;
       }
       for (std::size_t i {0}; i < n_; ++i) { // the lower triangle alone: the reduction reads nothing above it
-        for (std::size_t j {0}; j <= i; ++j) {
-          a[(i * n_) + j] = input(i, j) / scale;
-        }
+        std::fill(a.begin() + static_cast<std::ptrdiff_t>((i * n_) + i + 1), a.begin() + static_cast<std::ptrdiff_t>((i + 1) * n_), 0.0);
       }
       buffer<double> zt;
       if (n_ > 0) {
