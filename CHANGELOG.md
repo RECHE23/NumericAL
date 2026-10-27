@@ -36,6 +36,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   Wilkinson's W61 the residual `‖T V − V Λ‖` falls from 0.22 to 0.10 `n ε ‖T‖` (LAPACK's `dstevd` 0.098), on a
   random tridiagonal of order 60 from 0.30 to 0.19; ten AVX-512 cores, orders 40 to 1000, the same time. The last
   bits of `eigh` change.
+- **`svd` holds two and a half matrices less at its peak**: the divide and conquer's merge writes the vectors of its
+  arrow in the storage of the gaps the secular equation left (their product formed once in place), and the factored
+  matrix and the bidiagonalisation's bases are freed as soon as they are read no more. Linux, peak rise of a square
+  `svd`: order 1000 18.8 → 16.3 times a matrix's size, 2000 17.9 → 15.4, 3000 14.7 → 12.3. The same bits.
 
 ## 2026.10.39 — 2026-10-27
 

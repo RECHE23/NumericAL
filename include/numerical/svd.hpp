@@ -892,10 +892,8 @@ namespace numerical {
     //!        x86-64 core, 13–20 % on six.
     struct arrow_workspace
     {
-      workspace_buffer below    {}; //!< `poles[j] − roots[i]`, row by root.
-      workspace_buffer above    {}; //!< `poles[j] + roots[i]`.
-      workspace_buffer left     {}; //!< The arrow's left vectors.
-      workspace_buffer right    {}; //!< Its right vectors.
+      workspace_buffer below    {}; //!< `poles[j] − roots[i]`, row by root; then their product with `above`, then the left vectors.
+      workspace_buffer above    {}; //!< `poles[j] + roots[i]`; then the right vectors.
       workspace_buffer new_u    {}; //!< The kept columns of `u` times the left vectors.
       workspace_buffer new_v    {}; //!< The kept columns of `v` times the right vectors.
       workspace_buffer columns  {}; //!< One segment's rows of the kept columns that reach it.
@@ -917,7 +915,7 @@ namespace numerical {
     //! \brief Releases the buffers of \p work longer than \ref kept_workspace.
     inline void release_large_arrow_workspace(arrow_workspace& work)
     {
-      for (workspace_buffer* buffer : {&work.below, &work.above, &work.left, &work.right, &work.new_u, &work.new_v,
+      for (workspace_buffer* buffer : {&work.below, &work.above, &work.new_u, &work.new_v,
                                        &work.columns, &work.factor}) {
         if (buffer->size > kept_workspace) {
           buffer->data.reset();
@@ -1046,8 +1044,13 @@ namespace numerical {
       parallel_for(k, 8 * k, [&](std::size_t i) {
                      roots[i] = singular_secular_root(poles, weights, i, secular_iterations, below + (i * k), above + (i * k));
                    });
-      double* const left  {workspace_of(work.left, k * k)};  // column i: the left vector of roots[i], in the kept columns' basis
-      double* const right {workspace_of(work.right, k * k)}; // and the right one
+      // below[i * k + j] ← (poles[j] − roots[i]) (poles[j] + roots[i]), the product each later use takes: above is free.
+      parallel_for(k, k, [&](std::size_t i) {
+                     for (std::size_t j {0}; j < k; ++j) {
+                       below[(i * k) + j] *= above[(i * k) + j];
+                     }
+                   });
+      double* const squares {below}; // squares[i * k + j] = poles[j]² − roots[i]²
       // Löwner: ẑⱼ² = Πᵢ (σᵢ² − dⱼ²) / Πᵢ≠ⱼ (dᵢ² − dⱼ²), each pole paired with its root, by blocks of poles on every
       // core, each pole's product in ascending order of the roots (a row of the gaps at a time, along the block).
       buffer<double> signed_weights(k, double {});
@@ -1056,12 +1059,12 @@ namespace numerical {
                      const std::size_t                last {std::min(first + lowner_block, k)};
                      std::array<double, lowner_block> product {};
                      for (std::size_t j {first}; j < last; ++j) {
-                       product[j - first] = -below[(j * k) + j] * above[(j * k) + j];
+                       product[j - first] = -squares[(j * k) + j];
                      }
                      for (std::size_t i {0}; i < k; ++i) {
                        for (std::size_t j {first}; j < last; ++j) {
                          if (i != j) {
-                           product[j - first] *= (-below[(i * k) + j] * above[(i * k) + j]) / ((poles[i] - poles[j]) * (poles[i] + poles[j]));
+                           product[j - first] *= -squares[(i * k) + j] / ((poles[i] - poles[j]) * (poles[i] + poles[j]));
                          }
                        }
                      }
@@ -1069,12 +1072,19 @@ namespace numerical {
                        signed_weights[j] = std::copysign(std::sqrt(product[j - first]), weights[j]);
                      }
                    });
-      // The vectors by rows of poles, each on its own core: right[j][i] = ẑⱼ / (dⱼ² − σᵢ²), read a column of the gaps.
+      // The vectors by rows of poles, each on its own core: right[j][i] = ẑⱼ / (dⱼ² − σᵢ²), read a column of the squares,
+      // into above's storage; then the left ones, poles[j] times the right, into the squares' (column i: the vectors of
+      // roots[i], in the kept columns' basis).
+      double* const right {above};
       parallel_for(k, 4 * k, [&](std::size_t j) {
                      for (std::size_t i {0}; i < k; ++i) {
-                       const double ratio {signed_weights[j] / (below[(i * k) + j] * above[(i * k) + j])}; // ẑⱼ / (dⱼ² − σᵢ²)
-                       right[(j * k) + i] = ratio;
-                       left[(j * k) + i]  = j == 0 ? -1.0 : poles[j] * ratio;
+                       right[(j * k) + i] = signed_weights[j] / squares[(i * k) + j]; // ẑⱼ / (dⱼ² − σᵢ²)
+                     }
+                   });
+      double* const left {below};
+      parallel_for(k, k, [&](std::size_t j) {
+                     for (std::size_t i {0}; i < k; ++i) {
+                       left[(j * k) + i] = j == 0 ? -1.0 : poles[j] * right[(j * k) + i];
                      }
                    });
       for (double* const vectors : {left, right}) {
@@ -1695,16 +1705,19 @@ namespace numerical {
         buffer<T>      ut;
         buffer<T>      vt;
         detail::bidiagonalize(factors.r, cols, d, e, ut, vt);
+        factors.r = buffer<T> {}; // read no more: its storage back before the vectors' updates
         if (method == svd_method::bidiagonal_qr) {
           detail::bidiagonal_qr(d, e, ut, vt, cols, detail::svd_qr_steps_per_value * cols);
         }
         else {
           detail::bidiagonal_divide_and_conquer(d, e, ut, vt, cols);
         }
-        buffer<T> left(cols * cols);  // rows of ut and vt are the vectors: made columns
-        buffer<T> right(cols * cols);
+        buffer<T> left(cols * cols); // rows of ut and vt are the vectors: made columns, each freed once copied
         detail::transpose_into(ut.data(), cols, cols, left.data());
+        ut = buffer<T> {};
+        buffer<T> right(cols * cols);
         detail::transpose_into(vt.data(), cols, cols, right.data());
+        vt = buffer<T> {};
         for (double& value : d) {
           value *= scale;
         }
