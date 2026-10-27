@@ -1142,22 +1142,34 @@ PyObject* take_from(const numerical::tensor<T>& t, const std::vector<std::size_t
             out_shape.push_back(counts[a]);
         }
     }
-    numerical::buffer<T>           out;
-    out.reserve(total);
-    std::vector<std::size_t> k(rank, 0);
-    for (std::size_t n = 0; n < total; ++n) {
-        std::size_t offset {0};
-        for (std::size_t a = 0; a < rank; ++a) {
-            offset += static_cast<std::size_t>(static_cast<std::ptrdiff_t>(starts[a])
-                                               + (static_cast<std::ptrdiff_t>(k[a]) * steps[a])) * strides[a];
-        }
-        out.push_back(t.data()[offset]);
-        for (std::size_t a = rank; a-- > 0;) { // the next multi-index, last axis fastest
-            if (++k[a] < counts[a]) {
-                break;
+    numerical::buffer<T> out(total);
+    if (rank == 0) {
+        out[0] = t.data()[0];
+    }
+    else if (total != 0) {
+        // Each row along the last axis from its own index, the other axes' offsets summed for it: a contiguous run
+        // copied as one where the last step is 1, else element by element; the rows on the threads.
+        const std::size_t    last  {rank - 1};
+        const std::size_t    width {counts[last]};
+        const std::ptrdiff_t step  {steps[last]};
+        numerical::detail::parallel_for(total / width, numerical::detail::memory_element_weight * width, [&](std::size_t row) {
+            std::size_t rest   {row};
+            std::size_t offset {starts[last]};
+            for (std::size_t a = last; a-- > 0;) {
+                const std::size_t k {rest % counts[a]};
+                rest   /= counts[a];
+                offset += static_cast<std::size_t>(static_cast<std::ptrdiff_t>(starts[a]) + (static_cast<std::ptrdiff_t>(k) * steps[a])) * strides[a];
             }
-            k[a] = 0;
-        }
+            const T* const from {t.data().data() + offset};
+            T* const       to   {out.data() + (row * width)};
+            if (step == 1) {
+                std::copy(from, from + width, to);
+                return;
+            }
+            for (std::size_t j = 0; j < width; ++j) {
+                to[j] = from[static_cast<std::ptrdiff_t>(j) * step];
+            }
+        });
     }
     if (out_shape.empty()) {
         return from_scalar<T>(out.front());
