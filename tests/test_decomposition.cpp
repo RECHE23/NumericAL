@@ -1082,6 +1082,21 @@ TEST(rank_and_pseudo_inverse_of_a_hermitian_matrix_read_its_lower_triangle)
 // of a rank-deficient or wide system.
 // A matrix right-hand side is one system per column, from one factorisation: each column of the answer is the
 // vector solve of that column.
+// A rank-deficient system's least squares, several right-hand sides at once (the singular value decomposition's
+// coefficients and solution through the matrix product): pinv(a)·b, real and complex; a zero matrix's, zeros.
+TEST(a_rank_deficient_lstsq_of_several_right_hand_sides_is_the_pseudo_inverse_times_them)
+{
+  const matrix<double> a {{1.0, 2.0, 3.0}, {2.0, 4.0, 6.0}, {1.0, 0.0, 1.0}, {0.0, 1.0, 1.0}}; // rank 2: column 3 = 1 + 2
+  const matrix<double> b {{1.0, 0.0, 2.0}, {0.0, 1.0, -1.0}, {3.0, 1.0, 0.0}, {1.0, 2.0, 1.0}};
+  EXPECT(approx_equal(numerical::lstsq(a, b), numerical::pinv(a) * b, 1e-12));
+  using C = std::complex<double>;
+  const matrix<C> z         {{C {1.0, 1.0}, C {2.0, 2.0}}, {C {0.0, 1.0}, C {0.0, 2.0}}, {C {1.0, 0.0}, C {2.0, 0.0}}}; // rank 1
+  const matrix<C> w         {{C {1.0, 0.0}, C {0.0, 1.0}}, {C {2.0, -1.0}, C {1.0, 1.0}}, {C {0.5, 0.0}, C {-1.0, 0.0}}};
+  EXPECT(approx_equal(numerical::lstsq(z, w), numerical::pinv(z) * w, 1e-12));
+  const matrix<double> none {numerical::lstsq(matrix<double> {{0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}, {0.0, 0.0}}, b)};
+  EXPECT(none.rows() == 2 && none.cols() == 3 && std::ranges::all_of(none, [](double v) { return v == 0.0; }));
+}
+
 TEST(solve_and_lstsq_take_one_right_hand_side_per_column)
 {
   const matrix<double> a   {{3.0, 1.0}, {1.0, 2.0}};

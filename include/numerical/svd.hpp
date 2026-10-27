@@ -1906,23 +1906,32 @@ namespace numerical {
                                            std::size_t                 rank,
                                            const matrix<T>&            b)
     {
-      const vector<double>& sigma                {s.singular_values()};
-      const std::size_t     rows                 {s.u().rows()};
-      const std::size_t     cols                 {s.v().rows()};
-      buffer<T>             x(cols * b.cols(), T {});
-      for (std::size_t c {0}; c < b.cols(); ++c) {
-        for (std::size_t d {0}; d < rank; ++d) {
-          T coefficient {}; // (u_dᴴ b_c) / σ_d
-          for (std::size_t i {0}; i < rows; ++i) {
-            coefficient += conj_of(s.u()(i, d)) * b(i, c);
-          }
-          coefficient /= from_carried<T>(sigma[d]);
-          for (std::size_t j {0}; j < cols; ++j) {
-            x[(j * b.cols()) + c] += coefficient * s.v()(j, d);
-          }
+      // Through the matrix product kernel, as inverse_on_kept: the coefficients `Uᴴ B` (each row over its σ), then
+      // `V` times them; summed term by term, each coefficient read U and B a column apart.
+      const vector<double>& sigma {s.singular_values()};
+      const std::size_t     rows  {s.u().rows()};
+      const std::size_t     cols  {s.v().rows()};
+      const std::size_t     sides {b.cols()};
+      buffer<T>             left_adjoint(rank * rows);
+      buffer<T>             right(cols * rank);
+      for (std::size_t d {0}; d < rank; ++d) {
+        for (std::size_t i {0}; i < rows; ++i) {
+          left_adjoint[(d * rows) + i] = conj_of(s.u()(i, d));
+        }
+        for (std::size_t j {0}; j < cols; ++j) {
+          right[(j * rank) + d] = s.v()(j, d);
         }
       }
-      return matrix<T> {cols, b.cols(), std::move(x)};
+      buffer<T> coefficients(rank * sides);
+      gemm(rank, sides, rows, left_adjoint.data(), rows, std::to_address(b.begin()), sides, coefficients.data(), sides, c_start::zero);
+      for (std::size_t d {0}; d < rank; ++d) {
+        for (std::size_t c {0}; c < sides; ++c) {
+          coefficients[(d * sides) + c] /= from_carried<T>(sigma[d]);
+        }
+      }
+      buffer<T> x(cols * sides);
+      gemm(cols, sides, rank, right.data(), rank, coefficients.data(), sides, x.data(), sides, c_start::zero);
+      return matrix<T> {cols, sides, std::move(x)};
     }
   } // namespace detail
 
