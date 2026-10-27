@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **`fft` and `ifft` of a contiguous line load and finish it vectorised** (`fft_load_line`, `fft_finish_line`): the
+  copy into the passes' input, the conjugation of an inverse and the scaling, where each element was copied alone, its
+  bounds and flags reloaded at every element. The same bits. One thread, M1 Pro: 1024 `complex64` points 2.14 →
+  1.56 µs, 4096 `complex128` 15.2 → 13.8 µs; ten AVX-512 cores: 1024 `complex64` 2.38 → 1.44 µs, 4096
+  `complex128` 18.9 → 14.7 µs (FFTW 10.4).
+
 ## 2026.10.39 — 2026-10-27
 
 ### Added

@@ -2248,6 +2248,43 @@ namespace numerical {
     }
 
     /*!
+     * \brief The first \p kept of \p points elements of a line, \p in, into \p to, conjugated where \p inverse, then
+     *        zeros. Its bounds and flags by value: read through a caller's references, each would be loaded again at
+     *        every element, the writes to \p to possibly aliasing them, and the loop would not vectorise.
+     */
+    template <typename C>
+    void fft_load_line(const C   * in,
+                       std::size_t kept,
+                       std::size_t points,
+                       bool        inverse,
+                       C         * to) noexcept
+    {
+      if (inverse) {
+        std::transform(in, in + kept, to, [](const C& value) { return std::conj(value); });
+      }
+      else {
+        std::copy(in, in + kept, to);
+      }
+      std::fill(to + kept, to + points, C {});
+    }
+
+    //! \brief A transformed line of \p points elements, \p line, conjugated back where \p inverse, then times \p scale
+    //!         where it is not 1; by value for the reason \ref fft_load_line gives.
+    template <typename C>
+    void fft_finish_line(C                    * line,
+                         std::size_t            points,
+                         bool                   inverse,
+                         typename C::value_type scale) noexcept
+    {
+      if (inverse) {
+        std::transform(line, line + points, line, [](const C& value) { return std::conj(value); });
+      }
+      if (scale != typename C::value_type(1)) {
+        std::transform(line, line + points, line, [scale](const C& value) { return C {value.real() * scale, value.imag() * scale}; });
+      }
+    }
+
+    /*!
      * \brief The transform of complex \p a along \p axis, \p n points (the axis cut or padded with zeros to it, as
      *        NumPy's), forward or \p inverse (`conj(fft(conj x))`, exact), scaled for \p norm. Each line gathered,
      *        transformed and scattered on its own, the lines shared among the threads: a line's bits are its own. (A
@@ -2316,15 +2353,9 @@ namespace numerical {
                          four_step_fft(*plan, source, to, scratch.data(), fused, inverse, scale);
                          return;
                        }
-                       C* const       start {ahead ? scratch.data() : to}; // where the passes read the line
-                       for (std::size_t k {0}; k < points; ++k) {
-                         const C value {k < kept ? C(in[k]) : C {}};
-                         start[k] = inverse ? std::conj(value) : value;
-                       }
+                       fft_load_line(in, kept, points, inverse, ahead ? scratch.data() : to); // where the passes read it
                        forward_fft(*plan, to, scratch.data(), fused, ahead);
-                       if (inverse || scale != R(1)) {
-                         std::transform(to, to + points, to, finish);
-                       }
+                       fft_finish_line(to, points, inverse, scale);
                      });
         return tensor<C> {std::move(shape), std::move(out)};
       }
