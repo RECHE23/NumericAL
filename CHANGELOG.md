@@ -42,11 +42,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   the factored matrix and the bidiagonalisation's bases are freed as soon as they are read no more. Linux, peak rise
   of a square `svd`: order 1000 19.1 → 12.0 times a matrix's size, 2000 18.0 → 11.5, 3000 14.5 → 9.0; the time the
   same (ten AVX-512 cores, order 1000 on every thread 172 → 164 ms). The same bits.
-- **The QR factorisation looks ahead on x86-64 from three threads**: one task updates the next panel and factorises
-  it while the others update the columns past it, a slice each, where every panel waited for the whole update and
-  the update for every panel. Ten AVX-512 cores, the reflections of order 1024: four threads 22.1 → 16.7 ms, eight
-  19.8 → 14.2 ms; order 512 on four 4.75 → 3.37 ms, 256 1.18 → 0.98 ms; one and two threads as before. The same
-  bits.
+- **The QR factorisation looks ahead from three threads**: one task updates the next panel and factorises it while
+  the others update the columns past it, a slice each, where every panel waited for the whole update and the update
+  for every panel. Ten AVX-512 cores, the reflections of order 1024: four threads 22.1 → 16.7 ms, eight 19.8 →
+  14.2 ms; order 512 on four 4.75 → 3.37 ms, 256 1.18 → 0.98 ms. M1 Pro, order 1024: three threads 19.1 → 14.5 ms,
+  eight 18.3 → 16.7 ms. One and two threads as before. The same bits.
 
 ## 2026.10.39 — 2026-10-27
 

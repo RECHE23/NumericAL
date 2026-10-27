@@ -562,13 +562,19 @@ namespace {
   }
 } // namespace
 
+// On one thread and on all (each layout looks ahead from three); an empty matrix has no reflectors either way.
 TEST(qr_factorises_alike_column_major_and_row_major)
 {
-  EXPECT(qr_layouts_agree<double>(70, 40));
-  EXPECT(qr_layouts_agree<double>(40, 70));
-  EXPECT(qr_layouts_agree<double>(33, 33));
-  EXPECT((qr_layouts_agree<std::complex<double>>(70, 40)));
-  EXPECT((qr_layouts_agree<std::complex<double>>(40, 70)));
+  for (const std::size_t threads : {std::size_t {1}, std::size_t {0}}) {
+    numerical::set_max_threads(threads);
+    EXPECT(qr_layouts_agree<double>(70, 40));
+    EXPECT(qr_layouts_agree<double>(40, 70));
+    EXPECT(qr_layouts_agree<double>(33, 33));
+    EXPECT((qr_layouts_agree<std::complex<double>>(70, 40)));
+    EXPECT((qr_layouts_agree<std::complex<double>>(40, 70)));
+  }
+  EXPECT(qr_layouts_agree<double>(0, 5));
+  EXPECT(qr_layouts_agree<double>(5, 0));
 }
 
 // Householder reflections keep Q orthonormal to rounding however ill-conditioned A is: Hilbert-12

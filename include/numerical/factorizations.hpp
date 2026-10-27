@@ -2426,13 +2426,41 @@ namespace numerical {
         *r = buffer<T>(depth * cols, T {}); // constructed, not assigned: the generic fill of assign took 4 % of qr at order 128
       }
       std::vector<reflector_block<T>> blocks;
-      for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
-        const std::size_t k1 {std::min(k0 + qr_block, depth)};
-        factor_row_major_panel(a, rows, cols, reflectors, taus, k0, k1);
-        blocks.push_back(gather_reflectors(reflectors, k0, k1, rows, &taus));
-        if (k1 < cols) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A
+      if (depth > 0) {
+        factor_row_major_panel(a, rows, cols, reflectors, taus, 0, std::min(qr_block, depth));
+        blocks.push_back(gather_reflectors(reflectors, 0, std::min(qr_block, depth), rows, &taus));
+      }
+      for (std::size_t k1 {std::min(qr_block, depth)}; depth > 0 && k1 < cols;) { // as reflect_in_columns (none if empty)
+        if (k1 >= depth) {
           apply_reflector_block(blocks.back(), true, a, cols, k1, cols);
+          break;
         }
+        const std::size_t n1      {std::min(k1 + qr_block, depth)};
+        const std::size_t threads {max_threads()};
+        if (threads < qr_look_ahead_threads) {
+          apply_reflector_block(blocks.back(), true, a, cols, k1, cols);
+          factor_row_major_panel(a, rows, cols, reflectors, taus, k1, n1);
+          blocks.push_back(gather_reflectors(reflectors, k1, n1, rows, &taus));
+          k1 = n1;
+          continue;
+        }
+        const std::size_t         rest   {cols - n1};
+        const std::size_t         slice  {std::max(qr_update_slice, (rest + threads - 2) / (threads - 1))};
+        const std::size_t         slices {(rest + slice - 1) / slice};
+        const reflector_block<T>& block  {blocks.back()};
+        reflector_block<T>        next   {};
+        parallel_for(1 + slices, rows * slice * qr_block / 4, [&](std::size_t task) {
+                       if (task == 0) {
+                         apply_reflector_block(block, true, a, cols, k1, n1);
+                         factor_row_major_panel(a, rows, cols, reflectors, taus, k1, n1);
+                         next = gather_reflectors(reflectors, k1, n1, rows, &taus);
+                         return;
+                       }
+                       const std::size_t from {n1 + ((task - 1) * slice)};
+                       apply_reflector_block(block, true, a, cols, from, std::min(from + slice, cols));
+                     });
+        blocks.push_back(std::move(next));
+        k1 = n1;
       }
       for (std::size_t i {0}; r != nullptr && i < depth; ++i) {
         for (std::size_t j {i}; j < cols; ++j) {
