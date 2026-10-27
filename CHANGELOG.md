@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **Products of a few rows on arm64 read B where it lies, by blocks of columns on the threads** (`few_rows`, the
+  x86-64 path's, now shared): `double` up to four rows, `float` one row or five to fifteen (below the AMX's sixteen),
+  where the NEON tile packed the whole of B. M1 Pro, every thread: `float` 6 × 200 by 200 × 400 30.9 → 10.9 µs,
+  15 × 300 by 300 × 300 53.0 → 18.4 µs; `double` 4 × 1000 by 1000 × 512 72.2 → 40.4 µs, one row by 400 × 600
+  31.1 → 18.8 µs. On x86-64 a block now weighs four rows' work whatever the rows, so fewer than four take more
+  threads (ten AVX-512 cores, 1 × 400 by 400 × 600 27.4 → 18.1 µs). The same bits.
 - **`fft` and `ifft` of a contiguous line load and finish it vectorised** (`fft_load_line`, `fft_finish_line`): the
   copy into the passes' input, the conjugation of an inverse and the scaling, where each element was copied alone, its
   bounds and flags reloaded at every element. The same bits. One thread, M1 Pro: 1024 `complex64` points 2.14 →
@@ -88,6 +94,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   QR's `Qᴴ B` through the matrix product kernel, then `R`'s back substitution over the columns.
 
 ### Changed
+
+- **Products of a few rows on arm64 read B where it lies, by blocks of columns on the threads** (`few_rows`, the
+  x86-64 path's, now shared): `double` up to four rows, `float` one row or five to fifteen (below the AMX's sixteen),
+  where the NEON tile packed the whole of B. M1 Pro, every thread: `float` 6 × 200 by 200 × 400 30.9 → 10.9 µs,
+  15 × 300 by 300 × 300 53.0 → 18.4 µs; `double` 4 × 1000 by 1000 × 512 72.2 → 40.4 µs, one row by 400 × 600
+  31.1 → 18.8 µs. On x86-64 a block now weighs four rows' work whatever the rows, so fewer than four take more
+  threads (ten AVX-512 cores, 1 × 400 by 400 × 600 27.4 → 18.1 µs). The same bits.
 
 - **The eigenvectors of `eig` on the threads**: each vector's triangular solve, its normalisation and the final
   transpose (the same bits on any number of threads; M1 Pro, order 800: real 284 → 215 ms, complex 968 → 715 ms).

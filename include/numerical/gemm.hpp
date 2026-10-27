@@ -1599,7 +1599,6 @@ namespace numerical::detail {
    */
   inline constexpr std::size_t gemm_rows_work {std::size_t {1} << 20U};
 
-
   /*!
    * \brief The divisor of a block of \ref gemm_rows' rows' multiply-adds as its threads are weighed: on x86-64 its
    *        work itself, so a product of order 64 takes the threads (six AVX2 cores: 11.5 → 7.4 µs; 1000 × 64 by 64 × 5
@@ -3106,6 +3105,55 @@ namespace numerical::detail {
             std::size_t ldc,
             c_start     start = c_start::kept);
 
+  /*!
+   * \brief `C += A·B` (`C = A·B` as \p start says) for \p m rows of A, by groups of at most \ref narrow_group rows and
+   *        blocks of \p Width columns of C, each block its sums in registers over the whole depth with B read where it
+   *        lies (\ref narrow_block), the blocks of every group shared among the threads; the last columns by \ref
+   *        narrow_rows. Each element the fused chain of the tile, rounded as \p Mode says, so its bits.
+   */
+  template <std::size_t Width, term_rounding Mode, typename T>
+  void few_rows(std::size_t m,
+                std::size_t n,
+                std::size_t k,
+                const T*    a,
+                std::size_t lda,
+                const T*    b,
+                std::size_t ldb,
+                T*          c,
+                std::size_t ldc,
+                c_start     start)
+  {
+    static_assert(narrow_group == 4, "the switches below name each count of rows up to narrow_group");
+    const std::size_t groups {(m + narrow_group - 1) / narrow_group};
+    const std::size_t blocks {n / Width};
+    const auto        block_of {[&](std::size_t first, std::size_t j) {
+                                  const T* const    rows {a + (first * lda)};
+                                  T* const          out {c + (first * ldc) + j};
+                                  switch (std::min(narrow_group, m - first)) {
+                                    case 1: narrow_block<1, Width, Mode>(k, rows, lda, b + j, ldb, out, ldc, start); break;
+                                    case 2: narrow_block<2, Width, Mode>(k, rows, lda, b + j, ldb, out, ldc, start); break;
+                                    case 3: narrow_block<3, Width, Mode>(k, rows, lda, b + j, ldb, out, ldc, start); break;
+                                    default: narrow_block<4, Width, Mode>(k, rows, lda, b + j, ldb, out, ldc, start); break;
+                                  }
+                                }};
+    parallel_for(groups * blocks, narrow_group * Width * k, [&](std::size_t task) {
+                   block_of((task / blocks) * narrow_group, (task % blocks) * Width);
+                 });
+    if (n % Width != 0) {
+      const std::size_t j {blocks * Width};
+      for (std::size_t first {0}; first < m; first += narrow_group) {
+        const T* const rows {a + (first * lda)};
+        T* const       out  {c + (first * ldc) + j};
+        switch (std::min(narrow_group, m - first)) {
+          case 1: narrow_rows<1, Mode>(n % Width, k, rows, lda, b + j, ldb, out, ldc, start); break;
+          case 2: narrow_rows<2, Mode>(n % Width, k, rows, lda, b + j, ldb, out, ldc, start); break;
+          case 3: narrow_rows<3, Mode>(n % Width, k, rows, lda, b + j, ldb, out, ldc, start); break;
+          default: narrow_rows<4, Mode>(n % Width, k, rows, lda, b + j, ldb, out, ldc, start); break;
+        }
+      }
+    }
+  }
+
 #ifdef NUMERICAL_X86_COMPILED
   /*!
    * \brief The columns of C one block of \ref few_rows_x86 keeps in registers for \p R rows of A, about a dozen vector
@@ -3115,13 +3163,10 @@ namespace numerical::detail {
   inline constexpr std::size_t few_rows_columns {R == 1 ? 32 : (R == 2 ? 16 : (R == 3 ? 12 : 8))};
 
   /*!
-   * \brief `C += A·B` (`C = A·B` as \p start says) for \p R rows of A, at most \ref narrow_group, on the x86-64 units:
-   *        blocks of \ref few_rows_columns columns of C, each its sums in registers over the whole depth with B read
-   *        where it lies (\ref narrow_block_x86), the blocks shared among the threads; the last columns by \ref
-   *        narrow_rows. Each element the fused chain of the tile and of the rows' blocks, so their bits. The packed
-   *        kernel copied the whole of B for these few rows, and a product by rows of that few took one thread: 1 × 1000
-   *        by 1000 × 512 on six AVX2 cores 173 → 33 µs, on ten AVX-512 cores 131 → 34; 4 × 300 by 300 × 300 26 → 10
-   *        and 30 → 10; one thread 1.3 to 3 times as fast.
+   * \brief \ref few_rows for \p R rows of A, at most \ref narrow_group, on the x86-64 units (\ref narrow_block_x86's
+   *        fused chain), \ref few_rows_columns columns a block. The packed kernel copied the whole of B for these few
+   *        rows, and a product by rows of that few took one thread: 1 × 1000 by 1000 × 512 on six AVX2 cores 173 → 33 µs,
+   *        on ten AVX-512 cores 131 → 34; 4 × 300 by 300 × 300 26 → 10 and 30 → 10; one thread 1.3 to 3 times as fast.
    */
   template <std::size_t R, typename T>
   void few_rows_x86(std::size_t n,
@@ -3134,18 +3179,82 @@ namespace numerical::detail {
                     std::size_t ldc,
                     c_start     start)
   {
-    constexpr std::size_t width  {few_rows_columns<R>};
-    const std::size_t     blocks {n / width};
-    parallel_for(blocks, R * width * k, [&](std::size_t block) {
-                   narrow_block_x86<R, width>(k, a, lda, b + (block * width), ldb, c + (block * width), ldc, start);
-                 });
-    if (n % width != 0) {
-      narrow_rows<R, term_rounding::x86_fused>(n % width, k, a, lda, b + (blocks * width), ldb, c + (blocks * width), ldc, start);
-    }
+    few_rows<few_rows_columns<R>, term_rounding::x86_fused>(R, n, k, a, lda, b, ldb, c, ldc, start);
   }
 
 #endif
 
+#ifdef NUMERICAL_NEON_COMPILED
+  /*!
+   * \brief Whether the NEON and AMX paths run an `m`-row product by \ref few_rows, B read where it lies: `double` up to
+   *        \ref narrow_group rows, `float` one row or more than \ref narrow_group short of the AMX's sixteen, where the
+   *        NEON tile packed the whole of B for a few of its rows. M1 Pro, every thread, against the packed tiles: `double`
+   *        1 × 400 by 400 × 600 1.65 times as fast, 4 × 1000 by 1000 × 512 1.8, 4 × 300 by 300 × 300 1.03; `float` one
+   *        row 1.5, 6 × 200 by 200 × 400 2.8, 15 × 300 by 300 × 300 2.9. `float` of two to four rows, which the NEON tile
+   *        reads in place, and `double` past four, which it runs well, stay on the tiles (0.8 and 0.6–0.9 times as fast
+   *        here).
+   */
+  template <typename T>
+  requires std::same_as<T, float>
+  [[nodiscard]] constexpr bool few_rows_on_arm64(std::size_t m) noexcept
+  {
+    return m == 1 || (m > narrow_group && m < 16);
+  }
+
+  //! \brief \ref few_rows_on_arm64 of `double`: up to \ref narrow_group rows.
+  template <typename T>
+  requires std::same_as<T, double>
+  [[nodiscard]] constexpr bool few_rows_on_arm64(std::size_t m) noexcept
+  {
+    return m <= narrow_group;
+  }
+
+  //! \brief The element types \ref few_rows_on_arm64 decides for.
+  template <typename T>
+  concept few_rows_real = std::same_as<T, float> || std::same_as<T, double>;
+
+  //! \brief The columns of C a block of \ref few_rows keeps in registers on arm64: four NEON registers of each type a row.
+  template <typename T>
+  inline constexpr std::size_t few_rows_neon_columns {std::is_same_v<T, float> ? 16 : 8};
+
+  //! \brief \ref few_rows of a product the NEON and AMX paths take so (\ref few_rows_on_arm64). \return Whether it ran.
+  template <few_rows_real T>
+  [[nodiscard]] bool gemm_few_rows_arm64(std::size_t m,
+                                         std::size_t n,
+                                         std::size_t k,
+                                         const T*    a,
+                                         std::size_t lda,
+                                         const T*    b,
+                                         std::size_t ldb,
+                                         T*          c,
+                                         std::size_t ldc,
+                                         c_start     start)
+  {
+    const gemm_path path {gemm_path_current()};
+    if (n <= gemm_rows_columns || (path != gemm_path::neon && path != gemm_path::amx) || !few_rows_on_arm64<T>(m)) {
+      return false;
+    }
+    few_rows<few_rows_neon_columns<T>, term_rounding::fused>(m, n, k, a, lda, b, ldb, c, ldc, start);
+    return true;
+  }
+
+  //! \brief \ref gemm_few_rows_arm64 of the other element types: never.
+  template <typename T>
+  [[nodiscard]] constexpr bool gemm_few_rows_arm64(std::size_t /*m*/,
+                                                   std::size_t /*n*/,
+                                                   std::size_t /*k*/,
+                                                   const T* /*a*/,
+                                                   std::size_t /*lda*/,
+                                                   const T* /*b*/,
+                                                   std::size_t /*ldb*/,
+                                                   T* /*c*/,
+                                                   std::size_t /*ldc*/,
+                                                   c_start /*start*/) noexcept
+  {
+    return false;
+  }
+
+#endif
 
   //! \brief The columns of B and C, and the depth, of one real product of `gemm_split`: its real operands
   //!         stay a few megabytes whatever the shapes.
@@ -3426,6 +3535,11 @@ namespace numerical::detail {
       gemm_rows(m, n, k, a, lda, b, ldb, c, ldc, start);
       return;
     }
+#ifdef NUMERICAL_NEON_COMPILED
+    if (gemm_few_rows_arm64(m, n, k, a, lda, b, ldb, c, ldc, start)) { // the same bits
+      return;
+    }
+#endif
     if (!gemm_elsewhere(m, n, k, a, lda, b, ldb, c, ldc, start)) {
       gemm_packed<vector_tile_kernel<T>, T>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
     }
