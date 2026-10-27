@@ -88,6 +88,15 @@ A change that can break code is listed under **Breaking** and held for a month's
   LAPACK's `dbdsqr` does, where from the top alone it never converged and `svd_decomposition` (divide and conquer,
   whose small blocks it decomposes, and `bidiagonal_qr`) threw `convergence_error`. The last bits of a decomposition
   whose block is larger at its bottom change.
+- **The singular values alone** (`singular_values`, `svdvals`, `svd(compute_uv=False)`, and those `lstsq` reports
+  beside a QR solution) by the dqds algorithm on the bidiagonal (LAPACK's `dlasq1`, which NumPy's `dgesdd` takes for
+  them), where the implicit-shift QR iteration found them to absolute accuracy only: a bidiagonal's small values to
+  high relative accuracy, as NumPy gives them, where QR took one of 5·10⁻³³ of the largest for zero (the bidiagonal
+  with diagonal 1, superdiagonal 2 and a last entry of 2⁻¹⁰⁰). Where a shifted transform's numbers are not finite
+  (entries 10²⁹⁰ apart), it is retried unshifted and then guarded against overflow, as LAPACK means to: LAPACK's own
+  test of that case never fires, and it returns NaN (so does NumPy on such bidiagonals). The
+  last bits of every singular value change. QR in its place if dqds does not converge within 100 steps per value (not
+  observed).
 
 ## 2026.10.38 — 2026-10-25
 

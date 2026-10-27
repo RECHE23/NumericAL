@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include "dqds.hpp"
 #include "factorizations.hpp"
 
 namespace numerical {
@@ -1908,20 +1909,24 @@ namespace numerical {
     }
 
     /*!
-     * \brief The singular values of the square `n × n` row-major \p b, descending, without its vectors: its Golub–Kahan
-     *        bidiagonal and the implicit-shift QR iteration on it, no basis formed nor rotated.
-     * \throws convergence_error If the iteration does not converge within its bound (not observed).
+     * \brief The singular values of the square `n × n` row-major \p b, descending, without its vectors: those of its
+     *        Golub–Kahan bidiagonal by dqds (\ref dqds_singular_values), no basis formed; by the implicit-shift QR
+     *        iteration (\ref bidiagonal_qr) where dqds does not converge within \p sweeps steps per value.
+     * \throws convergence_error If neither converges within its bound (not observed).
      */
     template <typename T>
     [[nodiscard]] buffer<double> square_singular_values(buffer<T>      b,
-                                                        std::size_t    n)
+                                                        std::size_t    n,
+                                                        qd_index       sweeps = dqds_sweeps)
     {
       buffer<double> d(n, double {});
       buffer<double> e(n, double {});
       buffer<T>      none;
       buffer<T>      none_too;
       bidiagonalize(b, n, d, e, none, none_too, false);
-      bidiagonal_qr(d, e, none, none_too, n, svd_qr_steps_per_value * n);
+      if (!dqds_singular_values(d, e, n, sweeps)) {
+        bidiagonal_qr(d, e, none, none_too, n, svd_qr_steps_per_value * n);
+      }
       return d;
     }
 
@@ -2018,8 +2023,9 @@ namespace numerical {
   /*!
    * \brief The singular values of \p a, descending, without its singular vectors, as
    *        `numpy.linalg.svd(a, compute_uv=False)`: the Householder `R` of a tall `A` (of `Aᴴ` when wide), its
-   *        Golub–Kahan bidiagonal and the implicit-shift QR iteration on it, no basis formed nor rotated. Each value
-   *        to an absolute accuracy of the largest times the machine epsilon, as \ref svd_decomposition's.
+   *        Golub–Kahan bidiagonal and the dqds algorithm on it (LAPACK's `dlasq1`, as `dgesdd` takes it without
+   *        vectors), no basis formed. Each value to an absolute accuracy of the largest times the machine epsilon,
+   *        as \ref svd_decomposition's; those of a bidiagonal `A` each to high relative accuracy.
    * \throws non_finite_error If an entry of \p a is infinite or NaN.
    * \throws convergence_error If the iteration does not converge within its bound (not observed).
    */

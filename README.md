@@ -94,7 +94,8 @@ Small and complete, grown measured, honest about what is not yet here:
   as NumPy's `lstsq` gives it, for any shape and rank (from the SVD), `b` a vector or a
   matrix of right-hand sides (as `solve(a, b)` takes too); `least_squares(a, b)` adds the residuals, the
   rank and the singular values NumPy returns beside it; `pinv(a)` from the same SVD, `singular_values(a)`
-  without the singular vectors (and `matrix_rank(a)` from them), `symmetric_eigenvalues(a)` without the
+  without the singular vectors (by dqds, as LAPACK's `dlasq1`: a bidiagonal's each to high relative accuracy; and
+  `matrix_rank(a)` from them), `symmetric_eigenvalues(a)` without the
   eigenvectors (as NumPy's `eigvalsh`), and `lu_decomposition::log_determinant()` —
   NumPy's `slogdet`, which does not underflow where the determinant does. `lstsq`, `least_squares`, `pinv` and
   `matrix_rank` take a `rank_cutoff`: NumPy's default, `rank_cutoff::relative(r)` (`rcond`, `rtol`) or
