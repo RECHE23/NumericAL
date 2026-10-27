@@ -1302,9 +1302,10 @@ namespace numerical {
 
     /*!
      * \brief The elements of \p data, whose axes carry the labels \p from (extents in \p sizes), laid out row-major
-     *        along the labels \p to, a permutation of \p from that differs from it (so at least one label): an
-     *        odometer over \p to's outer labels, a strided sweep of its last. \p data holds \p count elements, the
-     *        product of the extents.
+     *        along the labels \p to, a permutation of \p from that differs from it (so at least one label): a transpose
+     *        of the last two labels by tiles, each slice of the leading ones; any other row by row of \p to's last
+     *        label, a strided sweep. The threads share the work. \p data holds \p count elements, the product of the
+     *        extents.
      */
     template <typename T>
     [[nodiscard]] buffer<T> permuted(const T*                           data,
@@ -1317,16 +1318,24 @@ namespace numerical {
       if (count == 0) {
         return out;
       }
-      if (to.size() == 2) { // the one permutation of two axes, a transpose: by tiles, each read and written in the cache
-        const std::size_t rows  {sizes.at(from[0])};
-        const std::size_t cols  {sizes.at(from[1])};
-        const std::size_t piece {transpose_piece(cols * sizeof(T), rows * sizeof(T))};
-        parallel_for((rows + transpose_tile - 1) / transpose_tile, transpose_tile * cols, [&](std::size_t block) {
-                       const std::size_t r0 {block * transpose_tile};
-                       const std::size_t r1 {std::min(r0 + transpose_tile, rows)};
+      const std::size_t lead {to.size() - 2}; // the leading axes a transpose of the last two keeps
+      if (to.compare(0, lead, from, 0, lead) == 0) { // the leading labels kept: the last two exchanged, `to` differing from `from`
+        // A transpose of the last two axes, each slice of the leading ones by tiles, each read and written in the cache;
+        // the slices' bands of rows shared among the threads.
+        const std::size_t rows   {sizes.at(from[lead])};
+        const std::size_t cols   {sizes.at(from[lead + 1])};
+        const std::size_t slices {count / (rows * cols)};
+        const std::size_t bands  {(rows + transpose_tile - 1) / transpose_tile};
+        const std::size_t piece  {transpose_piece(cols * sizeof(T), rows * sizeof(T))};
+        parallel_for(slices * bands, transpose_tile * cols, [&](std::size_t task) {
+                       const std::size_t slice {task / bands};
+                       const std::size_t r0    {(task % bands) * transpose_tile};
+                       const std::size_t r1    {std::min(r0 + transpose_tile, rows)};
+                       const T* const    in    {data + (slice * rows * cols)};
+                       T* const          into  {out.data() + (slice * rows * cols)};
                        for (std::size_t c0 {0}; c0 < cols; c0 += transpose_tile) {
                          transpose_walk(r0, r1, c0, std::min(c0 + transpose_tile, cols), piece,
-                                        [&](std::size_t r, std::size_t c) { out[(c * rows) + r] = data[(r * cols) + c]; });
+                                        [&](std::size_t r, std::size_t c) { into[(c * rows) + r] = in[(r * cols) + c]; });
                        }
                      });
         return out;
@@ -1344,23 +1353,21 @@ namespace numerical {
         stride[axis] = source.at(to[axis]);
         extent[axis] = sizes.at(to[axis]);
       }
-      const std::size_t        inner  {extent[rank - 1]};
-      const std::size_t        sweep  {stride[rank - 1]};
-      std::vector<std::size_t> index(rank - 1, 0);
-      std::size_t              offset {0};
-      for (std::size_t row {0}; row < count / inner; ++row) {
-        for (std::size_t i {0}; i < inner; ++i) {
-          out[(row * inner) + i] = data[offset + (i * sweep)];
-        }
-        for (std::size_t axis {rank - 1}; axis-- > 0;) {
-          offset += stride[axis];
-          if (++index[axis] < extent[axis]) {
-            break;
-          }
-          offset      -= stride[axis] * extent[axis];
-          index[axis]  = 0;
-        }
-      }
+      // Each row of the result along its last label from its own index (its outer labels' strides summed), a strided
+      // sweep; the rows shared among the threads.
+      const std::size_t inner {extent[rank - 1]};
+      const std::size_t sweep {stride[rank - 1]};
+      parallel_for(count / inner, memory_element_weight * inner, [&](std::size_t row) {
+                     std::size_t rest   {row};
+                     std::size_t offset {0};
+                     for (std::size_t axis {rank - 1}; axis-- > 0;) {
+                       offset += (rest % extent[axis]) * stride[axis];
+                       rest   /= extent[axis];
+                     }
+                     for (std::size_t i {0}; i < inner; ++i) {
+                       out[(row * inner) + i] = data[offset + (i * sweep)];
+                     }
+                   });
       return out;
     }
 

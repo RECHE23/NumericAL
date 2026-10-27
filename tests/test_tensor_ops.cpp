@@ -882,6 +882,35 @@ TEST(the_deprecated_names_of_numpys_loops_are_their_detail_forms)
   EXPECT(numerical::numpy_square(a).data() == numerical::detail::numpy_square(a, same).data());
   EXPECT(numerical::numpy_reciprocal(a).data() == numerical::detail::numpy_reciprocal(a, same).data());
 }
+// A permutation of three axes, each element where its labels say: the last two exchanged (by tiles, each slice of the
+// first), and two that move the first (row by row of the last label).
+TEST(einsum_permutes_three_axes)
+{
+  const std::size_t   a {3};
+  const std::size_t   b {4};
+  const std::size_t   c {5};
+  std::vector<double> values(a * b * c);
+  for (std::size_t n {0}; n < values.size(); ++n) {
+    values[n] = static_cast<double>(n);
+  }
+  const numerical::tensor<double> t   {{a, b, c}, values};
+  const auto                      ikj {numerical::einsum("ijk->ikj", t)};
+  const auto                      kji {numerical::einsum("ijk->kji", t)};
+  const auto                      jik {numerical::einsum("ijk->jik", t)};
+  bool                            all {ikj.shape() == (std::vector<std::size_t> {a, c, b}) && kji.shape() == (std::vector<std::size_t> {c, b, a}) &&
+                                       jik.shape() == (std::vector<std::size_t> {b, a, c})};
+  for (std::size_t i {0}; i < a; ++i) {
+    for (std::size_t j {0}; j < b; ++j) {
+      for (std::size_t k {0}; k < c; ++k) {
+        const double x {values[(((i * b) + j) * c) + k]};
+        all = all && ikj.data()[(((i * c) + k) * b) + j] == x && kji.data()[(((k * b) + j) * a) + i] == x &&
+              jik.data()[(((j * a) + i) * c) + k] == x;
+      }
+    }
+  }
+  EXPECT(all);
+}
+
 #if defined(__GNUC__)
 #  pragma GCC diagnostic pop
 #elif defined(_MSC_VER)
