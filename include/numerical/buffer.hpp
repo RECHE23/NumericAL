@@ -19,6 +19,15 @@
 
 #include <mutex>
 
+// A function kept out of its callers, in the spelling each compiler takes.
+#if !defined(NUMERICAL_OUT_OF_LINE)
+#  if defined(_MSC_VER) && !defined(__clang__)
+#    define NUMERICAL_OUT_OF_LINE __declspec(noinline)
+#  else
+#    define NUMERICAL_OUT_OF_LINE [[gnu::noinline]] // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
+#  endif
+#endif
+
 #if defined(__linux__)
 #  include <sys/mman.h>
 #endif
@@ -54,6 +63,23 @@ namespace numerical {
         static kept_blocks* const blocks {new kept_blocks}; // NOLINT(cppcoreguidelines-owning-memory): lives as long as the process
         return *blocks;
       }
+
+      kept_blocks() = default;
+
+      //! \brief Frees the blocks still kept.
+      ~kept_blocks()
+      {
+        for (const block& b : kept_) {
+          if (b.start != nullptr) {
+            ::operator delete(b.start, std::align_val_t {alignment});
+          }
+        }
+      }
+
+      kept_blocks(const kept_blocks&)            = delete;
+      kept_blocks& operator=(const kept_blocks&) = delete;
+      kept_blocks(kept_blocks&&)                 = delete;
+      kept_blocks& operator=(kept_blocks&&)      = delete;
 
       //! \brief A kept block of at least \p bytes and under twice as many, its size in \p got; nullptr if none.
       [[nodiscard]] std::byte* take(std::size_t  bytes,
@@ -277,7 +303,7 @@ namespace numerical {
        *        \p at for one past the buffer's bounds (-Warray-bounds), though a buffer of that size never comes here.
        */
       template <typename Kept>
-      [[gnu::noinline]] static void deallocate_kept(T* at) noexcept
+      NUMERICAL_OUT_OF_LINE static void deallocate_kept(T* at) noexcept
       {
         auto* const data   {reinterpret_cast<std::byte*>(at)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the storage's bytes
         std::size_t offset {};
