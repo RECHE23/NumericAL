@@ -38,7 +38,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   cores, one thread: 44 100 points 1.18 → 0.62 ms, 30 030 1.05 → 0.62 ms, 61·256 0.62 → 0.21 ms, `complex64` 4.8×;
   M1 Pro 1.5–2.0×, `complex128` with radix 31 or 61 even). A transform's plan built with no lock held (a transform
   of another length no longer waits on it), its roots of unity computed on the threads (M1 Pro, 2²² points 61 → 27 ms,
-  10⁶ 14.5 → 6.4 ms; the same roots).
+  10⁶ 14.5 → 6.4 ms; the same roots); `fftshift` and `ifftshift` of several axes in one copy that the threads
+  share (`numerical::fftshift(a, axes)`; M1 Pro, two axes of 2048² `complex128` 31.3 → 6.8 ms, 256² 308 → 34 µs).
 
 - **`cholesky_decomposition::solve` and `qr_decomposition::solve` of a matrix** of right-hand sides, every column at
   once (C++): Cholesky's row by row over the columns, the threads sharing them, each column the vector solve's bits;

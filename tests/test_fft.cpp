@@ -857,6 +857,20 @@ TEST(fftshift_rolls_an_axis_by_half_its_extent)
   EXPECT(numerical::fftshift(tensor<double> {{0, 3}, std::vector<double> {}}, 1).shape() == (std::vector<std::size_t> {0, 3}));
   EXPECT_THROWS((void)numerical::fftshift(grid, 2), numerical::dimension_error);
   EXPECT_THROWS((void)numerical::fftshift(grid, -3), numerical::dimension_error);
+  // Several axes in one copy: the rolls of each in turn; an axis given twice rolled twice; none, a copy; a number.
+  std::vector<double> values(std::size_t {60}); // 3 × 4 × 5
+  for (std::size_t j {0}; j < values.size(); ++j) {
+    values[j] = static_cast<double>(j);
+  }
+  const tensor<double> cube {{3, 4, 5}, values};
+  EXPECT(numerical::fftshift(cube, std::vector<std::ptrdiff_t> {0, 2}) == numerical::fftshift(numerical::fftshift(cube, 0), 2));
+  EXPECT(numerical::fftshift(cube, std::vector<std::ptrdiff_t> {-1, 1, 0}, true) ==
+         numerical::fftshift(numerical::fftshift(numerical::fftshift(cube, 2, true), 1, true), 0, true));
+  EXPECT(numerical::fftshift(cube, std::vector<std::ptrdiff_t> {2, 2}) == numerical::fftshift(numerical::fftshift(cube, 2), 2));
+  EXPECT(numerical::fftshift(cube, std::vector<std::ptrdiff_t> {}) == cube);
+  const tensor<double> number {{}, std::vector<double> {7.0}};
+  EXPECT(numerical::fftshift(number, std::vector<std::ptrdiff_t> {}) == number);
+  EXPECT_THROWS((void)numerical::fftshift(cube, std::vector<std::ptrdiff_t> {0, 3}), numerical::dimension_error);
 }
 
 namespace {

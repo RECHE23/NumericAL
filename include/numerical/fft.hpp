@@ -2933,6 +2933,74 @@ namespace numerical {
     return detail::real_transform_of(detail::source_of(a), n, axis, norm, true);
   }
 
+  namespace detail {
+    /*!
+     * \brief \p a rolled along every axis, element `j` of axis `d` to `(j + shifts[d]) mod n_d`, in one copy: each row
+     *        of the result along its last axis read from its source row, in two contiguous pieces; the rows shared
+     *        among the threads.
+     */
+    template <typename T>
+    [[nodiscard]] tensor<T> rolled(const tensor<T>&                a,
+                                   const std::vector<std::size_t>& shifts)
+    {
+      const std::vector<std::size_t>& shape {a.shape()};
+      buffer<T>                       out(a.data().size());
+      if (out.empty() || shape.empty()) { // an empty tensor, or a number: itself
+        std::copy(a.data().begin(), a.data().end(), out.begin());
+        return tensor<T> {shape, std::move(out)};
+      }
+      const std::size_t rank  {shape.size()};
+      const std::size_t last  {shape.back()};
+      const std::size_t rows  {out.size() / last};
+      const std::size_t shift {shifts.back() % last};
+      parallel_for(rows, memory_element_weight * last, [&](std::size_t row) {
+                     std::size_t rest   {row};
+                     std::size_t source {0}; // the source row's first element
+                     std::size_t stride {last};
+                     for (std::size_t d {rank - 1}; d-- > 0;) {
+                       const std::size_t n     {shape[d]};
+                       const std::size_t index {rest % n};
+                       rest   /= n;
+                       source += ((index + n - (shifts[d] % n)) % n) * stride;
+                       stride *= n;
+                     }
+                     const T* const from {a.data().data() + source};
+                     T* const       to   {out.data() + (row * last)};
+                     std::copy(from, from + (last - shift), to + shift); // element j to j + shift
+                     std::copy(from + (last - shift), from + last, to);
+                   });
+      return tensor<T> {shape, std::move(out)};
+    }
+  } // namespace detail
+
+  /*!
+   * \brief \p a with its axes \p axes rolled so that each one's element 0 lands at its middle, as `numpy.fft.fftshift`:
+   *        element `j` of each to `(j + n/2) mod n`, an axis given twice rolled twice; or back, as
+   *        `numpy.fft.ifftshift`, where \p inverse. In one copy, whatever the axes.
+   * \param[in] a       Any tensor.
+   * \param[in] axes    The axes rolled, negative from the last.
+   * \param[in] inverse `ifftshift`'s roll, by `−(n/2)`, where an odd extent makes it differ.
+   * \return The rolled copy, of `a`'s shape.
+   * \throws dimension_error If an axis is not one of \p a.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> fftshift(const tensor<T>&                   a,
+                                   const std::vector<std::ptrdiff_t>& axes,
+                                   bool                               inverse = false)
+  {
+    const auto               rank {static_cast<std::ptrdiff_t>(a.rank())};
+    std::vector<std::size_t> shifts(a.rank(), 0);
+    for (const std::ptrdiff_t axis : axes) {
+      if (axis < -rank || axis >= rank) {
+        throw dimension_error("fftshift: axis " + std::to_string(axis) + " is out of bounds for a tensor of rank " + std::to_string(rank));
+      }
+      const auto        index {static_cast<std::size_t>(axis < 0 ? axis + rank : axis)};
+      const std::size_t n     {a.shape()[index]};
+      shifts[index] += inverse ? n - (n / 2) : n / 2;
+    }
+    return detail::rolled(a, shifts);
+  }
+
   /*!
    * \brief \p a with its axis \p axis rolled so that its element 0 lands at its middle, as `numpy.fft.fftshift` along
    *        one axis: element `j` to `(j + n/2) mod n`; or back, as `numpy.fft.ifftshift`, where \p inverse.
@@ -2947,27 +3015,7 @@ namespace numerical {
                                    std::ptrdiff_t   axis    = -1,
                                    bool             inverse = false)
   {
-    const auto rank {static_cast<std::ptrdiff_t>(a.rank())};
-    if (axis < -rank || axis >= rank) {
-      throw dimension_error("fftshift: axis " + std::to_string(axis) + " is out of bounds for a tensor of rank " + std::to_string(rank));
-    }
-    const auto              index {static_cast<std::size_t>(axis < 0 ? axis + rank : axis)};
-    const detail::axis_walk walk  {detail::walk_along(a.shape(), index)};
-    const std::size_t       n     {walk.extent};
-    buffer<T>               out(a.data().size());
-    if (out.empty()) { // an empty axis, or an empty one besides it
-      return tensor<T> {a.shape(), std::move(out)};
-    }
-    const std::size_t shift {inverse ? n - (n / 2) : n / 2}; // element j goes to (j + shift) mod n
-    for (std::size_t outer {0}; outer < walk.outer; ++outer) {
-      const T* const from {a.data().data() + (outer * n * walk.inner)};
-      T* const       to   {out.data() + (outer * n * walk.inner)};
-      for (std::size_t j {0}; j < n; ++j) {
-        const std::size_t target {(j + shift) % n};
-        std::copy(from + (j * walk.inner), from + ((j + 1) * walk.inner), to + (target * walk.inner));
-      }
-    }
-    return tensor<T> {a.shape(), std::move(out)};
+    return fftshift(a, std::vector<std::ptrdiff_t> {axis}, inverse);
   }
 
   /*!

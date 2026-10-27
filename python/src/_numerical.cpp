@@ -1873,12 +1873,30 @@ any_tensor fft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int no
     }, v);
 }
 
-// _fftshift(a, axis, inverse) -> Tensor: numpy.fft.fftshift (or ifftshift) along one axis.
-any_tensor fftshift_axis(const any_tensor& v, std::size_t axis, bool inverse)
+// _fftshift(a, axes, inverse) -> Tensor: numpy.fft.fftshift (or ifftshift) along each of axes (from 0), in one copy.
+PyObject* module_fftshift(PyObject* /*self*/, PyObject* args)
 {
-    return std::visit([&](const auto& t) -> any_tensor {
-        return any_tensor {numerical::fftshift(t, static_cast<std::ptrdiff_t>(axis), inverse)};
-    }, v);
+    PyObject* obj     = nullptr;
+    PyObject* axes    = nullptr;
+    int       inverse = 0;
+    if (PyArg_ParseTuple(args, "OOp", &obj, &axes, &inverse) == 0) {
+        return nullptr;
+    }
+    const any_tensor* h = as_tensor(obj);
+    if (h == nullptr) {
+        return nullptr;
+    }
+    std::vector<Py_ssize_t> raw;
+    if (!read_integers(axes, raw)) {
+        return nullptr;
+    }
+    std::vector<std::ptrdiff_t> axis_v(raw.begin(), raw.end());
+    try {
+        return std::visit([&](const auto& t) { return wrap(any_tensor {numerical::fftshift(t, axis_v, inverse != 0)}); }, *h);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
 }
 
 // _rfft(a, n, axis, norm, hermitian) -> Tensor: numpy.fft.rfft (or, hermitian, ihfft) of a real tensor along axis.
@@ -4194,7 +4212,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&eig>("_eig", "_eig(a) -> (w, v)\nThe eigenvalues and right eigenvectors of a general square matrix (or stack), as numpy.linalg.eig: complex, as NumPy 2.5's.");
     m.def<&eigvals>("_eigvals", "_eigvals(a) -> w\nThe eigenvalues alone of a general square matrix (or stack), as numpy.linalg.eigvals: complex.");
     m.def<&fft_axis>("_fft", "_fft(a, n, axis, norm, inverse) -> Tensor\nnumpy.fft.fft (or ifft) of n points along axis (from 0), norm 0 backward, 1 ortho, 2 forward (see numerical.fft).");
-    m.def<&fftshift_axis>("_fftshift", "_fftshift(a, axis, inverse) -> Tensor\nnumpy.fft.fftshift (or ifftshift) along one axis (from 0) (see numerical.fft).");
+    m.raw("_fftshift", module_fftshift, METH_VARARGS,
+          "_fftshift(a, axes, inverse) -> Tensor\nnumpy.fft.fftshift (or ifftshift) along each of axes (from 0), in one copy (see numerical.fft).");
     m.def<&rfft_axis>("_rfft", "_rfft(a, n, axis, norm, hermitian) -> Tensor\nnumpy.fft.rfft (or ihfft) of a real tensor along axis (from 0) (see numerical.fft).");
     m.def<&irfft_axis>("_irfft", "_irfft(a, n, axis, norm, hermitian) -> Tensor\nnumpy.fft.irfft (or hfft) of a complex tensor along axis (from 0) (see numerical.fft).");
     m.def<&eigvalsh>("eigvalsh", "eigvalsh(a, upper) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read, or with upper its upper one).");

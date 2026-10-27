@@ -279,9 +279,7 @@ def _shift(x, axes, inverse):
         axes = range(tensor.ndim)
     elif isinstance(axes, int):
         axes = [axes]
-    for axis in axes:
-        tensor = _numerical._fftshift(tensor, _axis(axis, tensor.ndim), inverse)
-    return tensor
+    return _numerical._fftshift(tensor, [_axis(axis, tensor.ndim) for axis in axes], inverse)
 
 
 def fftshift(x, axes=None):
