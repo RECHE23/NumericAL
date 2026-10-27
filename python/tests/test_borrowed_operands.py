@@ -438,5 +438,20 @@ class BorrowedOperands(unittest.TestCase):
         with self.assertRaises(IndexError):
             nfft.fft(np.ones(4), axis=1)
 
+    def test_an_n_dimensional_transform_reads_the_array_where_it_lies_and_gives_the_tensors_bits(self):
+        import numerical.fft as nfft
+
+        for dtype in (np.float64, np.complex128, np.float32, np.complex64, np.int64):
+            a = self.operand((4, 6, 10), dtype) if np.dtype(dtype).kind != "i" else np.arange(240).reshape(4, 6, 10)
+            tensor = numerical.asarray(a if np.dtype(dtype).kind != "i" else a.astype(np.float64))
+            cases = [(nfft.fftn, {}), (nfft.ifft2, {}), (nfft.fftn, {"axes": [0, 2], "s": [5, 7]}), (nfft.fftn, {"axes": []})]
+            if np.dtype(dtype).kind == "f":
+                cases += [(nfft.rfftn, {}), (nfft.rfft2, {"s": [5, 9]})]
+            if np.dtype(dtype).kind == "c":
+                cases += [(nfft.irfftn, {}), (nfft.irfft2, {})]
+            for f, kw in cases:
+                with self.subTest(dtype=np.dtype(dtype).name, function=f.__name__, kw=kw):
+                    self.assert_same(f(a, **kw), f(tensor, **kw))
+
 if __name__ == "__main__":
     unittest.main()

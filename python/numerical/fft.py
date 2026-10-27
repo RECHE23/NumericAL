@@ -99,13 +99,23 @@ def _shape_and_axes(tensor, s, axes):
     return list(s), axes
 
 
+def _lent(a, kinds):
+    """`a` itself where it is a NumPy array of one of the dtype kinds `kinds` (its first transform reads it where it
+    lies, :func:`_borrowed`), else None."""
+    if isinstance(a, Tensor) or not hasattr(a, "__array_struct__") or a.dtype.kind not in kinds:
+        return None
+    return a
+
+
 def _transform_n(a, s, axes, norm, inverse):
-    """NumPy's n-dimensional transform: each axis by the one-axis transform, the last given first."""
-    tensor = _operand(a)
+    """NumPy's n-dimensional transform: each axis by the one-axis transform, the last given first; a NumPy array's
+    first axis read where it lies."""
+    tensor = _lent(a, "fc")
+    tensor = _operand(a) if tensor is None else tensor
     s, axes = _shape_and_axes(tensor, s, axes)
     for points, axis in reversed(list(_builtins.zip(s, axes))):
         tensor = _transform(tensor, points, axis, norm, inverse)
-    return tensor
+    return _operand(a) if tensor is a else tensor
 
 
 def fftn(a, s=None, axes=None, norm=None, out=None):
@@ -211,9 +221,11 @@ def rfftn(a, s=None, axes=None, norm=None, out=None):
     """The n-dimensional transform of real `a`, as :func:`numpy.fft.rfftn`: :func:`rfft` along the last axis, then
     :func:`fft` along the others, the last first."""
     _no_out(out)
-    tensor = _real(a, "rfft_n_even")
+    lent = _lent(a, "f")
+    tensor = _real(a, "rfft_n_even") if lent is None else lent
     s, axes = _real_shape_and_axes(tensor, s, axes, False)
-    tensor = _real_transform(tensor, s[-1], axes[-1], norm, False)
+    first = _borrowed(1, tensor, s[-1], axes[-1], norm, False, None)
+    tensor = _real_transform(tensor, s[-1], axes[-1], norm, False) if first is NotImplemented else first
     for points, axis in reversed(list(_builtins.zip(s[:-1], axes[:-1]))):
         tensor = _transform(tensor, points, axis, norm, False)
     return tensor
@@ -223,7 +235,8 @@ def irfftn(a, s=None, axes=None, norm=None, out=None):
     """The inverse of :func:`rfftn`, as :func:`numpy.fft.irfftn`: :func:`ifft` along each axis but the last, in order,
     then :func:`irfft` along the last."""
     _no_out(out)
-    tensor = _complex(a)
+    lent = _lent(a, "c")
+    tensor = _complex(a) if lent is None else lent
     s, axes = _real_shape_and_axes(tensor, s, axes, True)
     for points, axis in _builtins.zip(s[:-1], axes[:-1]):
         tensor = _transform(tensor, points, axis, norm, True)
