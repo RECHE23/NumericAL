@@ -521,10 +521,12 @@ TEST(qr_is_generic_over_a_complex_scalar)
 namespace {
   // Whether the column-major factorisation (the x86-64 units') and the row-major one (arm64's) of the same rows × cols
   // matrix leave the same R and reflectors in place, and the same blocks' T, to rounding: past one block of reflectors,
-  // tall and wide.
+  // tall and wide. Without \p reflectors (R alone asked): the same R to the bit as with them, and a tall or square
+  // matrix's last block not gathered.
   template <typename T>
   bool qr_layouts_agree(std::size_t rows,
-                        std::size_t cols)
+                        std::size_t cols,
+                        bool        reflectors = true)
   {
     numerical::buffer<T> by_rows(rows * cols);
     numerical::buffer<T> by_columns(rows * cols);
@@ -545,9 +547,21 @@ namespace {
         }
       }
     }
-    const auto row_blocks    {numerical::detail::reflect_in_rows(by_rows, rows, cols)};
-    const auto column_blocks {numerical::detail::reflect_in_columns(by_columns, rows, cols)};
-    bool       agree         {row_blocks.size() == column_blocks.size()};
+    numerical::buffer<T> kept_rows     {by_rows};
+    numerical::buffer<T> kept_columns  {by_columns};
+    const auto           row_blocks    {numerical::detail::reflect_in_rows<T>(by_rows, rows, cols, nullptr, reflectors)};
+    const auto           column_blocks {numerical::detail::reflect_in_columns(by_columns, rows, cols, reflectors)};
+    bool                 agree         {row_blocks.size() == column_blocks.size()};
+    if (!reflectors) { // with them: one block more where the last ends at the last column, and the same R
+      const auto all_rows    {numerical::detail::reflect_in_rows(kept_rows, rows, cols)};
+      const auto all_columns {numerical::detail::reflect_in_columns(kept_columns, rows, cols)};
+      agree = agree && all_rows.size() == row_blocks.size() + (rows >= cols ? 1 : 0) && all_columns.size() == all_rows.size();
+      for (std::size_t i {0}; i < std::min(rows, cols); ++i) {
+        for (std::size_t j {i}; j < cols; ++j) {
+          agree = agree && kept_rows[(i * cols) + j] == by_rows[(i * cols) + j] && kept_columns[(j * rows) + i] == by_columns[(j * rows) + i];
+        }
+      }
+    }
     for (std::size_t i {0}; i < rows; ++i) {
       for (std::size_t j {0}; j < cols; ++j) {
         agree = agree && std::abs(by_rows[(i * cols) + j] - by_columns[(j * rows) + i]) < 1e-12;
@@ -572,6 +586,12 @@ TEST(qr_factorises_alike_column_major_and_row_major)
     EXPECT(qr_layouts_agree<double>(33, 33));
     EXPECT((qr_layouts_agree<std::complex<double>>(70, 40)));
     EXPECT((qr_layouts_agree<std::complex<double>>(40, 70)));
+    // R alone: every panel's block but a tall matrix's last, none of a single panel.
+    EXPECT(qr_layouts_agree<double>(70, 40, false));
+    EXPECT(qr_layouts_agree<double>(40, 70, false));
+    EXPECT(qr_layouts_agree<double>(130, 100, false));
+    EXPECT(qr_layouts_agree<double>(70, 20, false));
+    EXPECT((qr_layouts_agree<std::complex<double>>(70, 40, false)));
   }
   EXPECT(qr_layouts_agree<double>(0, 5));
   EXPECT(qr_layouts_agree<double>(5, 0));

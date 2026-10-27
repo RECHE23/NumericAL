@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`svdvals` and the QR's `R` alone skip the last block of reflectors** (`householder_reflect`'s `reflectors`): a
+  tall or square matrix's last block, which no update reads, is no longer gathered, nor the only block of one of 32
+  columns or fewer. M1 Pro, `svdvals` of 484 × 31 213 → 172 µs, 206 × 20 63 → 48 µs, 23 × 103 55 → 42 µs; ten
+  AVX-512 cores 484 × 31 288 → 205 µs. The same bits.
 - **Products of a few rows on arm64 read B where it lies, by blocks of columns on the threads** (`few_rows`, the
   x86-64 path's, now shared): `double` up to four rows, `float` one row or five to fifteen (below the AMX's sixteen),
   where the NEON tile packed the whole of B. M1 Pro, every thread: `float` 6 × 200 by 200 × 400 30.9 → 10.9 µs,

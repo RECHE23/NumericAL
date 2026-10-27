@@ -2119,7 +2119,7 @@ namespace numerical {
                              }
                            });
     }
-    buffer<T>      r {rows == cols ? std::move(entries) : detail::householder_reflect(std::move(entries), rows, cols).r};
+    buffer<T>      r {rows == cols ? std::move(entries) : detail::householder_reflect(std::move(entries), rows, cols, false).r};
     buffer<double> d {detail::square_singular_values(std::move(r), cols)};
     for (double& value : d) {
       value *= scale;

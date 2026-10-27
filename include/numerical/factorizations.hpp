@@ -2297,22 +2297,26 @@ namespace numerical {
      *        (\ref apply_transposed_reflector_block): the products then have as many rows as there are columns to
      *        update, where the row-major form's first product has the block's 32 (one x86-64 core: 39 ms against 46 for
      *        the updates of order 1000). From \ref qr_look_ahead_threads threads, the next panel is updated and
-     *        factorised by one task while the others update the columns past it, a slice each.
+     *        factorised by one task while the others update the columns past it, a slice each. Where \p reflectors is false
+     *        (`R` alone asked), a block no update reads is not gathered.
      */
     template <typename T>
     [[nodiscard]] std::vector<reflector_block<T>> reflect_in_columns(buffer<T>&  columns,
                                                                      std::size_t rows,
-                                                                     std::size_t cols)
+                                                                     std::size_t cols,
+                                                                     bool        reflectors = true)
     {
       const std::size_t               depth         {std::min(rows, cols)};
-      std::vector<buffer<T>>          reflectors(depth); // w_k on rows k…m-1; empty for the identity
+      std::vector<buffer<T>>          reflections(depth); // w_k on rows k…m-1; empty for the identity
       std::vector<T>                  taus(depth, T {});
       std::vector<reflector_block<T>> blocks;
       if (depth == 0) {
         return blocks;
       }
-      factor_qr_panel(columns.data(), rows, 0, reflectors, taus, 0, std::min(qr_block, depth));
-      blocks.push_back(gather_reflectors(reflectors, 0, std::min(qr_block, depth), rows, &taus));
+      factor_qr_panel(columns.data(), rows, 0, reflections, taus, 0, std::min(qr_block, depth));
+      if (reflectors || std::min(qr_block, depth) < cols) {          // a block no update reads, where R alone is asked: not gathered
+        blocks.push_back(gather_reflectors(reflections, 0, std::min(qr_block, depth), rows, &taus));
+      }
       for (std::size_t k1 {std::min(qr_block, depth)}; k1 < cols;) { // the panels left of k1 factorised, the last not applied
         if (k1 >= depth) { // a wide matrix: its last block on the columns past every panel
           apply_transposed_reflector_block(blocks.back(), columns, rows, k1, cols, true);
@@ -2322,8 +2326,10 @@ namespace numerical {
         const std::size_t threads {max_threads()};
         if (threads < qr_look_ahead_threads) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A, then the next
           apply_transposed_reflector_block(blocks.back(), columns, rows, k1, cols, true);
-          factor_qr_panel(columns.data() + (k1 * rows), rows, 0, reflectors, taus, k1, n1);
-          blocks.push_back(gather_reflectors(reflectors, k1, n1, rows, &taus));
+          factor_qr_panel(columns.data() + (k1 * rows), rows, 0, reflections, taus, k1, n1);
+          if (reflectors || n1 < cols) {
+            blocks.push_back(gather_reflectors(reflections, k1, n1, rows, &taus));
+          }
           k1 = n1;
           continue;
         }
@@ -2337,14 +2343,18 @@ namespace numerical {
         parallel_for(1 + slices, rows * slice * qr_block / 4, [&](std::size_t task) {
                        if (task == 0) {
                          apply_transposed_reflector_block(block, columns, rows, k1, n1, true);
-                         factor_qr_panel(columns.data() + (k1 * rows), rows, 0, reflectors, taus, k1, n1);
-                         next = gather_reflectors(reflectors, k1, n1, rows, &taus);
+                         factor_qr_panel(columns.data() + (k1 * rows), rows, 0, reflections, taus, k1, n1);
+                         if (reflectors || n1 < cols) {
+                           next = gather_reflectors(reflections, k1, n1, rows, &taus);
+                         }
                          return;
                        }
                        const std::size_t from {n1 + ((task - 1) * slice)};
                        apply_transposed_reflector_block(block, columns, rows, from, std::min(from + slice, cols), true);
                      });
-        blocks.push_back(std::move(next));
+        if (reflectors || n1 < cols) {
+          blocks.push_back(std::move(next));
+        }
         k1 = n1;
       }
       return blocks;
@@ -2417,18 +2427,21 @@ namespace numerical {
     [[nodiscard]] std::vector<reflector_block<T>> reflect_in_rows(buffer<T>&  a,
                                                                   std::size_t rows,
                                                                   std::size_t cols,
-                                                                  buffer<T>*  r = nullptr)
+                                                                  buffer<T>*  r          = nullptr,
+                                                                  bool        reflectors = true)
     {
       const std::size_t      depth         {std::min(rows, cols)};
-      std::vector<buffer<T>> reflectors(depth); // w_k on rows k…m-1; empty for the identity
+      std::vector<buffer<T>> reflections(depth); // w_k on rows k…m-1; empty for the identity
       std::vector<T>         taus(depth, T {});
       if (r != nullptr) {
         *r = buffer<T>(depth * cols, T {}); // constructed, not assigned: the generic fill of assign took 4 % of qr at order 128
       }
       std::vector<reflector_block<T>> blocks;
       if (depth > 0) {
-        factor_row_major_panel(a, rows, cols, reflectors, taus, 0, std::min(qr_block, depth));
-        blocks.push_back(gather_reflectors(reflectors, 0, std::min(qr_block, depth), rows, &taus));
+        factor_row_major_panel(a, rows, cols, reflections, taus, 0, std::min(qr_block, depth));
+        if (reflectors || std::min(qr_block, depth) < cols) { // as reflect_in_columns
+          blocks.push_back(gather_reflectors(reflections, 0, std::min(qr_block, depth), rows, &taus));
+        }
       }
       for (std::size_t k1 {std::min(qr_block, depth)}; depth > 0 && k1 < cols;) { // as reflect_in_columns (none if empty)
         if (k1 >= depth) {
@@ -2439,8 +2452,10 @@ namespace numerical {
         const std::size_t threads {max_threads()};
         if (threads < qr_look_ahead_threads) {
           apply_reflector_block(blocks.back(), true, a, cols, k1, cols);
-          factor_row_major_panel(a, rows, cols, reflectors, taus, k1, n1);
-          blocks.push_back(gather_reflectors(reflectors, k1, n1, rows, &taus));
+          factor_row_major_panel(a, rows, cols, reflections, taus, k1, n1);
+          if (reflectors || n1 < cols) {
+            blocks.push_back(gather_reflectors(reflections, k1, n1, rows, &taus));
+          }
           k1 = n1;
           continue;
         }
@@ -2452,14 +2467,18 @@ namespace numerical {
         parallel_for(1 + slices, rows * slice * qr_block / 4, [&](std::size_t task) {
                        if (task == 0) {
                          apply_reflector_block(block, true, a, cols, k1, n1);
-                         factor_row_major_panel(a, rows, cols, reflectors, taus, k1, n1);
-                         next = gather_reflectors(reflectors, k1, n1, rows, &taus);
+                         factor_row_major_panel(a, rows, cols, reflections, taus, k1, n1);
+                         if (reflectors || n1 < cols) {
+                           next = gather_reflectors(reflections, k1, n1, rows, &taus);
+                         }
                          return;
                        }
                        const std::size_t from {n1 + ((task - 1) * slice)};
                        apply_reflector_block(block, true, a, cols, from, std::min(from + slice, cols));
                      });
-        blocks.push_back(std::move(next));
+        if (reflectors || n1 < cols) {
+          blocks.push_back(std::move(next));
+        }
         k1 = n1;
       }
       for (std::size_t i {0}; r != nullptr && i < depth; ++i) {
@@ -2476,18 +2495,20 @@ namespace numerical {
      *        not yet made real (a product with `Qᴴ`, or with `Q` of a block padded with zeros, applies the blocks
      *        instead). \p a is row-major. On the x86-64 units it is transposed in by tiles and factorised column-major
      *        (\ref reflect_in_columns, whose updates' products run faster there: one AVX2 core, order 1000, 39 ms against
-     *        46), elsewhere in place (\ref reflect_in_rows).
+     *        46), elsewhere in place (\ref reflect_in_rows). Where \p reflectors is false, `R` alone is asked: a block no
+     *        update reads is not gathered, and the blocks are not all there.
      */
     template <typename T>
     [[nodiscard]] qr_reflections<T> householder_reflect(buffer<T>   a,
                                                         std::size_t rows,
-                                                        std::size_t cols)
+                                                        std::size_t cols,
+                                                        bool        reflectors = true)
     {
 #ifdef NUMERICAL_X86_COMPILED
       const std::size_t depth {std::min(rows, cols)};
       buffer<T>         columns(rows * cols);
       transpose_into(a.data(), rows, cols, columns.data());
-      qr_reflections<T> out {.r = buffer<T>(depth * cols), .blocks = reflect_in_columns(columns, rows, cols)};
+      qr_reflections<T> out {.r = buffer<T>(depth * cols), .blocks = reflect_in_columns(columns, rows, cols, reflectors)};
       for (std::size_t j0 {0}; j0 < cols; j0 += qr_transpose_tile) { // R, row-major: written whole, zeros below
         for (std::size_t i0 {0}; i0 < depth; i0 += qr_transpose_tile) {
           for (std::size_t i {i0}; i < std::min(i0 + qr_transpose_tile, depth); ++i) {
@@ -2499,7 +2520,7 @@ namespace numerical {
       }
 #else
       qr_reflections<T> out;
-      out.blocks = reflect_in_rows(a, rows, cols, &out.r);
+      out.blocks = reflect_in_rows(a, rows, cols, &out.r, reflectors);
 #endif
       return out;
     }
@@ -2622,7 +2643,7 @@ namespace numerical {
                                           std::size_t cols)
     {
       const std::size_t depth {std::min(rows, cols)};
-      buffer<T>         r     {householder_reflect(std::move(a), rows, cols).r};
+      buffer<T>         r     {householder_reflect(std::move(a), rows, cols, false).r};
       for (std::size_t k {0}; k < depth; ++k) { // as householder_qr rotates R's row k
         const T phase {phase_of(r[(k * cols) + k])};
         for (std::size_t j {k}; j < cols; ++j) {
