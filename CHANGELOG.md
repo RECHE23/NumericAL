@@ -51,6 +51,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`svd`, `svdvals`, `eigh` and `eigvalsh` scale the matrix by a power of two** (its largest entry's), as `eig`
   already did, where they divided it by its largest entry: the scaling and its undoing are now exact (a diagonal
   matrix of 7, 14 and 25 gives exactly 7, 14 and 25, where 7/25·25 and 14/25·25 missed); their last bits change.
+- **`dgeev`'s left eigenvectors from the same Schur form as the right ones** (`eigen_decomposition`'s new
+  `left_vectors()`, as LAPACK's `dtrevc` side L: `S = J Tᴴ J` solved as the right vectors are), where a second
+  decomposition of `Aᵀ` was matched to the eigenvalues by distance: each left vector now belongs to its eigenvalue
+  by construction, a cluster or a multiple eigenvalue included, and `jobvl = 'V'` takes one decomposition, not two.
+  Their last bits change.
 - **A rank-deficient `lstsq` through the matrix product kernel**: its coefficients `Uᴴ B` and its solution `V·(Σ⁺Uᴴ B)`
   (ten AVX-512 cores, order 512, 64 right-hand sides: 212 → 84 ms); its last bits change.
 

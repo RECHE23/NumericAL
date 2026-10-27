@@ -2983,6 +2983,40 @@ namespace numerical {
       }
       return vt;
     }
+
+    /*!
+     * \brief `S = J Tᴴ J` of the upper (quasi-)triangular \p t (row-major `n × n`, `J` the reversal): upper
+     *        (quasi-)triangular again, a 2 × 2 block of standard form one still, its eigenvalues `t`'s conjugated in
+     *        reverse order. A right eigenvector `w` of `S` for `conj λ` gives `J w`, a left one of `t` for `λ`
+     *        (`yᴴ t = λ yᴴ`, LAPACK's `trevc` side `L`).
+     */
+    template <typename T>
+    [[nodiscard]] buffer<T> reversed_adjoint(const buffer<T>& t,
+                                             std::size_t      n)
+    {
+      buffer<T> s(n * n);
+      for (std::size_t p {0}; p < n; ++p) {
+        for (std::size_t q {0}; q < n; ++q) {
+          s[(p * n) + q] = conj_of(t[((n - 1 - q) * n) + (n - 1 - p)]);
+        }
+      }
+      return s;
+    }
+
+    //! \brief Row `j` of the rows \p w (`n × n`) its row `n − 1 − j`, its entries in reverse order: `J` applied to each
+    //!        of \ref reversed_adjoint's vectors, in the order of `t`'s eigenvalues.
+    template <typename T>
+    [[nodiscard]] buffer<T> reversed_rows(const buffer<T>& w,
+                                          std::size_t      n)
+    {
+      buffer<T> out(n * n);
+      for (std::size_t j {0}; j < n; ++j) {
+        for (std::size_t l {0}; l < n; ++l) {
+          out[(j * n) + l] = w[((n - 1 - j) * n) + (n - 1 - l)];
+        }
+      }
+      return out;
+    }
   } // namespace detail
 
   /*!
@@ -3001,12 +3035,14 @@ namespace numerical {
      * \brief Decomposes \p input.
      * \param[in] input   A square matrix.
      * \param[in] vectors Whether to compute the eigenvectors (the eigenvalues alone cost a third as much).
+     * \param[in] left    Whether to compute the left eigenvectors too (\ref left_vectors), from the same Schur form.
      * \throws dimension_error   If \p input is not square.
      * \throws non_finite_error  If an entry is infinite or NaN.
      * \throws convergence_error If the QR iterations did not converge.
      */
     explicit eigen_decomposition(const matrix<T>& input,
-                                 bool             vectors = true)
+                                 bool             vectors = true,
+                                 bool             left    = false)
       : n_(input.rows())
     {
       if (input.cols() != n_) {
@@ -3029,15 +3065,17 @@ namespace numerical {
         }
       }
       const detail::balancing       balanced {detail::balance(a, n_)};
-      buffer<T>                     z {detail::hessenberg(a, n_, balanced.low, balanced.high, vectors)};
+      const bool                    basis {vectors || left}; // Z, and the whole Schur form, for either side's vectors
+      buffer<T>                     z {detail::hessenberg(a, n_, balanced.low, balanced.high, basis)};
       const std::size_t             steps {detail::schur_steps_per_order * std::max<std::size_t>(10, balanced.high - balanced.low)};
       // The whole Schur form past the multishift crossover even for the eigenvalues alone: the sweeps' products then
       // have the same shapes as with the vectors, and the eigenvalues the same bits (2–4 % of the iterations from order
       // 256 on); below it the single-shift iterations give them either way.
-      const bool                    whole  {vectors || balanced.high - balanced.low >= detail::count_of(detail::multishift_from(T {}))};
-      const detail::schur_target<T> target {&a, n_, balanced.low, balanced.high, whole, vectors ? &z : nullptr}; // z is Zᵀ
+      const bool                    whole  {basis || balanced.high - balanced.low >= detail::count_of(detail::multishift_from(T {}))};
+      const detail::schur_target<T> target {&a, n_, balanced.low, balanced.high, whole, basis ? &z : nullptr}; // z is Zᵀ
       buffer<std::complex<double>>  values(n_);
-      buffer<std::complex<double>>  vt;                                                                          // Vᵀ: each vector a row
+      buffer<std::complex<double>>  vt;                                                                        // Vᵀ: each vector a row
+      buffer<std::complex<double>>  ut;                                                                        // Uᵀ: each left vector a row
       if constexpr (std::is_floating_point_v<T>) {
         buffer<double> re(n_, 0.0);
         buffer<double> im(n_, 0.0);
@@ -3049,14 +3087,27 @@ namespace numerical {
           values[i] = std::complex<double> {re[i] * scale, im[i] * scale};
           real_     = real_ && im[i] == 0.0;
         }
+        const auto rows_of = [&](const detail::real_eigenvectors& x) { // Xᵀ to Vᵀ = Xᵀ Zᵀ, complex
+                               const buffer<double>         vre {detail::back_transformed(x.re, z, n_)};
+                               const buffer<double>         vim {real_ ? buffer<double>(n_ * n_, 0.0) : detail::back_transformed(x.im, z, n_)};
+                               buffer<std::complex<double>> rows(n_ * n_);
+                               for (std::size_t e {0}; e < n_ * n_; ++e) {
+                                 rows[e] = std::complex<double> {vre[e], vim[e]};
+                               }
+                               return rows;
+                             };
         if (vectors) {
-          const detail::real_eigenvectors x   {detail::real_vectors(a, re, im, n_)};
-          const buffer<double>            vre {detail::back_transformed(x.re, z, n_)};
-          const buffer<double>            vim {real_ ? buffer<double>(n_ * n_, 0.0) : detail::back_transformed(x.im, z, n_)};
-          vt = buffer<std::complex<double>>(n_ * n_);
-          for (std::size_t e {0}; e < n_ * n_; ++e) {
-            vt[e] = std::complex<double> {vre[e], vim[e]};
+          vt = rows_of(detail::real_vectors(a, re, im, n_));
+        }
+        if (left) { // S's eigenvalues t's reversed and conjugated: a pair's positive part still first
+          buffer<double> reversed_re(n_);
+          buffer<double> reversed_im(n_);
+          for (std::size_t k {0}; k < n_; ++k) {
+            reversed_re[k] = re[n_ - 1 - k];
+            reversed_im[k] = -im[n_ - 1 - k];
           }
+          const detail::real_eigenvectors w {detail::real_vectors(detail::reversed_adjoint(a, n_), reversed_re, reversed_im, n_)};
+          ut = rows_of(detail::real_eigenvectors {detail::reversed_rows(w.re, n_), detail::reversed_rows(w.im, n_)});
         }
       }
       else {
@@ -3071,31 +3122,33 @@ namespace numerical {
         if (vectors) {
           vt = detail::back_transformed(detail::complex_vectors(a, n_), z, n_);
         }
+        if (left) {
+          ut = detail::back_transformed(detail::reversed_rows(detail::complex_vectors(detail::reversed_adjoint(a, n_), n_), n_), z, n_);
+        }
       }
       values_ = vector<std::complex<double>> {std::move(values)};
-      if (!vectors) {
-        return;
+      if (vectors) {
+        vectors_ = finished(std::move(vt), balanced, false);
       }
-      // Vᵀ ← Vᵀ D, then the exchanges undone, on its columns, each row normalised; then a pair's second row, the
-      // first's conjugate. Each row its own, on the threads.
-      detail::parallel_for(n_, detail::memory_element_weight * 4 * n_, [&](std::size_t c) {
-                             std::complex<double>* row {vt.data() + (c * n_)};
-                             for (std::size_t i {balanced.low}; i < balanced.high; ++i) {
-                               row[i] *= balanced.scale[i];
-                             }
-                             for (std::size_t s {balanced.swaps.size()}; s-- > 0;) {
-                               std::swap(row[balanced.swaps[s].first], row[balanced.swaps[s].second]);
-                             }
-                             finish(row, values_[c], T {});
-                           });
-      detail::parallel_for(n_, detail::memory_element_weight * n_, [&](std::size_t c) { conjugate_second(vt.data() + (c * n_), values_[c], T {}); });
-      vectors_ = transpose(matrix<std::complex<double>> {n_, n_, std::move(vt)});
+      if (left) {
+        left_vectors_ = finished(std::move(ut), balanced, true);
+      }
     }
 
     //! \brief The eigenvalues, in the order of the Schur form.
     [[nodiscard]] const vector<std::complex<double>>& values() const noexcept
     {
       return values_;
+    }
+
+    /*!
+     * \brief The left eigenvectors as columns, ordered to match \ref values (empty where they were not computed):
+     *        column `j` is `u` with `uᴴ A = λ_j uᴴ`, of unit norm with its component of largest modulus real, as
+     *        `dgeev`'s `VL`; from the same Schur form as the right ones, so that each matches its eigenvalue.
+     */
+    [[nodiscard]] const matrix<std::complex<double>>& left_vectors() const noexcept
+    {
+      return left_vectors_;
     }
 
     //! \brief The eigenvectors as columns, ordered to match \ref values (empty where they were not computed).
@@ -3167,10 +3220,35 @@ namespace numerical {
       detail::normalize_vector(row, n_, false);
     }
 
-    std::size_t                    n_;           //!< The matrix order.
-    vector<std::complex<double>>   values_;      //!< The eigenvalues.
-    matrix<std::complex<double>>   vectors_;     //!< The eigenvectors as columns.
-    bool                           real_ {true}; //!< Whether all eigenvalues are real.
+    /*!
+     * \brief The vectors of the rows \p rows (each a vector of the balanced matrix) in the input's basis, normalised,
+     *        as columns: `D` undone (a right vector times it, a left one, \p left, over it: `B = D⁻¹ Pᵀ A P D`), then
+     *        the exchanges `P`, each row normalised; then a pair's second row, the first's conjugate. Each row its own,
+     *        on the threads.
+     */
+    [[nodiscard]] matrix<std::complex<double>> finished(buffer<std::complex<double>> rows,
+                                                        const detail::balancing&     balanced,
+                                                        bool                         left) const
+    {
+      detail::parallel_for(n_, detail::memory_element_weight * 4 * n_, [&](std::size_t c) {
+                             std::complex<double>* row {rows.data() + (c * n_)};
+                             for (std::size_t i {balanced.low}; i < balanced.high; ++i) {
+                               row[i] = left ? row[i] / balanced.scale[i] : row[i] * balanced.scale[i];
+                             }
+                             for (std::size_t s {balanced.swaps.size()}; s-- > 0;) {
+                               std::swap(row[balanced.swaps[s].first], row[balanced.swaps[s].second]);
+                             }
+                             finish(row, values_[c], T {});
+                           });
+      detail::parallel_for(n_, detail::memory_element_weight * n_, [&](std::size_t c) { conjugate_second(rows.data() + (c * n_), values_[c], T {}); });
+      return transpose(matrix<std::complex<double>> {n_, n_, std::move(rows)});
+    }
+
+    std::size_t                    n_;            //!< The matrix order.
+    vector<std::complex<double>>   values_;       //!< The eigenvalues.
+    matrix<std::complex<double>>   vectors_;      //!< The eigenvectors as columns.
+    matrix<std::complex<double>>   left_vectors_; //!< The left eigenvectors as columns.
+    bool                           real_ {true};  //!< Whether all eigenvalues are real.
   };
 
   /*!

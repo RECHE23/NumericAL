@@ -21,6 +21,21 @@ namespace {
   using C = std::complex<double>;
   using numerical::detail::lapack_index; // std::ptrdiff_t: long long where long is 32 bits
 
+  //! \brief Whether column \p c of \p v has a real component of the largest modulus, \p most its square: the one
+  //!        LAPACK's normalisation made real, ties among moduli equal to rounding (a cyclic matrix's vectors, every
+  //!        component of modulus 1/√n) taken as such, the rotation having moved their last bits.
+  inline bool real_among_largest(const matrix<C>& v,
+                                 std::size_t      c,
+                                 double           most)
+  {
+    for (std::size_t r {0}; r < v.rows(); ++r) {
+      if (v(r, c).imag() == 0.0 && std::norm(v(r, c)) >= most * (1.0 - 1e-12)) {
+        return true;
+      }
+    }
+    return false;
+  }
+
   //! \brief `|(A V)(r, c) − λ_c V(r, c)|`.
   template <typename T>
   double entry_residual(const matrix<T>&              a,
@@ -35,7 +50,7 @@ namespace {
     return std::abs(sum - (e.values()[c] * e.vectors()(r, c)));
   }
 
-  //! \brief `max |A v − λ v|` over the pairs, relative to `n ‖A‖_max ε`; 1 where a vector is not of unit norm with its
+  //! \brief `max |A v − λ v|` over the pairs, relative to `n ‖A‖_max ε`; infinite where a vector is not of unit norm with its
   //!        largest component real.
   template <typename T>
   double residual(const matrix<T>&              a,
@@ -59,8 +74,44 @@ namespace {
           largest = r;
         }
       }
-      if (std::abs(std::sqrt(norm) - 1.0) > 1e-14 || e.vectors()(largest, c).imag() != 0.0) {
-        return 1.0; // not normalised as LAPACK's
+      if (std::abs(std::sqrt(norm) - 1.0) > 1e-14 || !real_among_largest(e.vectors(), c, std::norm(e.vectors()(largest, c)))) {
+        return std::numeric_limits<double>::infinity(); // not normalised as LAPACK's: no bound holds it
+      }
+    }
+    return worst / (std::max(size, 1e-300) * static_cast<double>(n) * 2.220446049250313e-16);
+  }
+
+  //! \brief `max |uᴴ A − λ uᴴ|` over the left pairs (\ref eigen_decomposition::left_vectors), relative to
+  //!        `n ‖A‖_max ε`; infinite where a vector is not of unit norm with its largest component real.
+  template <typename T>
+  double left_residual(const matrix<T>&              a,
+                       const eigen_decomposition<T>& e)
+  {
+    const std::size_t n    {a.rows()};
+    double            size {0.0};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        size = std::max(size, static_cast<double>(std::abs(a(i, j))));
+      }
+    }
+    const matrix<C>& u     {e.left_vectors()};
+    double           worst {0.0};
+    for (std::size_t c {0}; c < n; ++c) {
+      double      norm    {0.0};
+      std::size_t largest {0};
+      for (std::size_t k {0}; k < n; ++k) {
+        C sum {};
+        for (std::size_t r {0}; r < n; ++r) {
+          sum += std::conj(u(r, c)) * a(r, k);
+        }
+        worst  = std::max(worst, std::abs(sum - (e.values()[c] * std::conj(u(k, c)))));
+        norm  += std::norm(u(k, c));
+        if (std::norm(u(k, c)) > std::norm(u(largest, c))) {
+          largest = k;
+        }
+      }
+      if (std::abs(std::sqrt(norm) - 1.0) > 1e-14 || !real_among_largest(u, c, std::norm(u(largest, c)))) {
+        return std::numeric_limits<double>::infinity(); // not normalised as LAPACK's: no bound holds it
       }
     }
     return worst / (std::max(size, 1e-300) * static_cast<double>(n) * 2.220446049250313e-16);
@@ -124,6 +175,61 @@ TEST(eig_reaches_rounding_on_random_matrices)
       EXPECT_EQ(alone[i], f.values()[i]); // the same Schur form, with or without the vectors
     }
   }
+}
+
+// The left eigenvectors, from the same Schur form as the right ones (S = J Tᴴ J): uᴴ A = λ uᴴ to rounding for each
+// eigenvalue in its place, of unit norm with the largest component real; alone or with the right ones (the same
+// right vectors either way); through a balancing that scales (a graded matrix); a double eigenvalue of two vectors,
+// whose left ones a second decomposition of Aᵀ matched to the eigenvalues by distance alone.
+TEST(eig_left_vectors_match_their_eigenvalues)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64 g {17};
+  for (const std::size_t n : {1U, 2U, 3U, 7U, 16U, 33U}) {
+    const matrix<double>              a    {random_real(n, g)};
+    const eigen_decomposition<double> both {a, true, true};
+    EXPECT(left_residual(a, both) < 10.0 && residual(a, both) < 10.0);
+    const eigen_decomposition<double> left {a, false, true};
+    EXPECT(left_residual(a, left) < 10.0 && left.vectors().rows() == 0);
+    EXPECT(eigen_decomposition<double> {a}.vectors() == both.vectors());
+    const matrix<C>              b       {random_complex(n, g)};
+    const eigen_decomposition<C> complex {b, true, true};
+    EXPECT(left_residual(b, complex) < 10.0 && residual(b, complex) < 10.0);
+  }
+  const matrix<double> base {random_real(6, g)};
+  std::vector<double>  entries(36);
+  for (std::size_t i {0}; i < 6; ++i) {
+    for (std::size_t j {0}; j < 6; ++j) {
+      entries[(i * 6) + j] = base(i, j) * std::ldexp(1.0, 8 * (static_cast<int>(j) - static_cast<int>(i)));
+    }
+  }
+  const matrix<double> graded  {6, 6, entries};
+  // Through a balancing that scales, its residual too small to see beside entries of 2⁴⁰: each left vector against
+  // Aᵀ's right one for the same (simple) eigenvalue, conjugated, equal up to a unit factor.
+  const eigen_decomposition<double> graded_left {graded, false, true};
+  std::vector<double>               transposed(36);
+  for (std::size_t i {0}; i < 6; ++i) {
+    for (std::size_t j {0}; j < 6; ++j) {
+      transposed[(j * 6) + i] = graded(i, j);
+    }
+  }
+  const eigen_decomposition<double> right_of_transpose {matrix<double> {6, 6, transposed}};
+  for (std::size_t c {0}; c < 6; ++c) {
+    std::size_t nearest {0};
+    for (std::size_t p {1}; p < 6; ++p) {
+      if (std::abs(right_of_transpose.values()[p] - graded_left.values()[c]) < std::abs(right_of_transpose.values()[nearest] - graded_left.values()[c])) {
+        nearest = p;
+      }
+    }
+    C overlap {};
+    for (std::size_t r {0}; r < 6; ++r) {
+      overlap += std::conj(graded_left.left_vectors()(r, c)) * std::conj(right_of_transpose.vectors()(r, nearest));
+    }
+    EXPECT(std::abs(std::abs(overlap) - 1.0) < 1e-8);
+  }
+  const matrix<double> s       {{1.0, 2.0, 0.5}, {0.0, 1.0, 3.0}, {2.0, 1.0, 1.0}};
+  const matrix<double> double_ {s * matrix<double> {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 2.0}} *numerical::inverse(s)};
+  EXPECT(left_residual(double_, eigen_decomposition<double> {double_, true, true}) < 100.0);
 }
 
 TEST(eig_of_a_real_matrix_gives_conjugate_pairs)

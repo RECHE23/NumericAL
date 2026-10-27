@@ -1877,29 +1877,25 @@ namespace numerical::blas {
 
   namespace detail {
 
-    //! \brief The eigenvectors \p v (columns, complex) in `dgeev`'s real form, into the column-major \p out: column `j`
-    //!        of a real eigenvalue its vector; of a pair `λ_j`, `λ_{j+1} = conj(λ_j)` (positive imaginary part first)
-    //!        the real and imaginary parts of `λ_j`'s vector; conjugated where \p conjugate (the left vectors).
-    inline void real_form(const matrix<std::complex<double>>&       v,
-                          const vector<std::complex<double>>&       values,
-                          const std::vector<std::size_t>&           column_of,
-                          bool                                      conjugate,
-                          double*                                   out,
-                          std::size_t                               ld)
+    //! \brief The eigenvectors \p v (columns, complex, matching \p values) in `dgeev`'s real form, into the
+    //!        column-major \p out: column `j` of a real eigenvalue its vector; of a pair `λ_j`, `λ_{j+1} = conj(λ_j)`
+    //!        (positive imaginary part first) the real and imaginary parts of `λ_j`'s vector.
+    inline void real_form(const matrix<std::complex<double>>& v,
+                          const vector<std::complex<double>>& values,
+                          double*                             out,
+                          std::size_t                         ld)
     {
-      const std::size_t n    {values.size()};
-      const double      sign {conjugate ? -1.0 : 1.0};
+      const std::size_t n {values.size()};
       for (std::size_t j {0}; j < n; ++j) {
-        const std::size_t c {column_of[j]};
         if (values[j].imag() == 0.0) {
           for (std::size_t i {0}; i < n; ++i) {
-            out[i + (j * ld)] = v(i, c).real();
+            out[i + (j * ld)] = v(i, j).real();
           }
         }
         else if (values[j].imag() > 0.0) {
           for (std::size_t i {0}; i < n; ++i) {
-            out[i + (j * ld)]       = v(i, c).real();
-            out[i + ((j + 1) * ld)] = sign * v(i, c).imag();
+            out[i + (j * ld)]       = v(i, j).real();
+            out[i + ((j + 1) * ld)] = v(i, j).imag();
           }
         }
       }
@@ -1966,36 +1962,17 @@ namespace numerical::blas {
     const auto size {static_cast<std::size_t>(n)};
     try {
       const matrix<double>                      source {size, size, detail::row_major(a, lda, n, n, 1.0)};
-      const eigen_decomposition<double>         eigen  {source, right};
+      const eigen_decomposition<double>         eigen  {source, right, left}; // both sides from one Schur form
       const vector<std::complex<double>>&       values {eigen.values()};
       for (std::size_t j {0}; j < size; ++j) {
         wr[j] = values[j].real();
         wi[j] = values[j].imag();
       }
-      std::vector<std::size_t> same(size);
-      for (std::size_t j {0}; j < size; ++j) {
-        same[j] = j;
-      }
       if (right) {
-        detail::real_form(eigen.vectors(), values, same, false, vr, static_cast<std::size_t>(ldvr));
+        detail::real_form(eigen.vectors(), values, vr, static_cast<std::size_t>(ldvr));
       }
       if (left) {
-        const eigen_decomposition<double> transposed {matrix<double> {size, size, detail::columns_as_rows(a, lda, n, n, 1.0)}, true};
-        // Aᵀ w = λ w is (conj w)ᴴ A = λ (conj w)ᴴ: each eigenvalue's left vector is the conjugate of Aᵀ's right one
-        // for the same eigenvalue, the nearest one not yet taken (a multiple eigenvalue takes its vectors in turn).
-        std::vector<std::size_t> column_of(size);
-        std::vector<bool>        taken(size, false);
-        for (std::size_t j {0}; j < size; ++j) {
-          std::size_t best {size};
-          for (std::size_t p {0}; p < size; ++p) {
-            if (!taken[p] && (best == size || std::abs(transposed.values()[p] - values[j]) < std::abs(transposed.values()[best] - values[j]))) {
-              best = p;
-            }
-          }
-          taken[best]  = true;
-          column_of[j] = best;
-        }
-        detail::real_form(transposed.vectors(), values, column_of, true, vl, static_cast<std::size_t>(ldvl));
+        detail::real_form(eigen.left_vectors(), values, vl, static_cast<std::size_t>(ldvl));
       }
     }
     catch (const non_finite_error&) {
