@@ -887,6 +887,9 @@ namespace numerical {
       }
     }
 
+    //! \brief The rows a task of \ref merge_arrow reorders in place, one row's buffer between them.
+    inline constexpr std::size_t sort_rows {64};
+
     //! \brief The buffers \ref merge_arrow works in, kept by each thread from one join to the next (\ref
     //!        thread_arrow_workspace): mapping their pages anew took 11–16 % of an `svd` of order 64 to 512 on one
     //!        x86-64 core, 13–20 % on six.
@@ -898,8 +901,6 @@ namespace numerical {
       workspace_buffer new_v    {}; //!< The kept columns of `v` times the right vectors.
       workspace_buffer columns  {}; //!< One segment's rows of the kept columns that reach it.
       workspace_buffer factor   {}; //!< The rows of the arrow's vectors for those columns.
-      buffer<double>   sorted_u {}; //!< `u`'s columns by ascending value, swapped with `u`.
-      buffer<double>   sorted_v {}; //!< `v`'s, swapped with `v`.
     };
 
     /*!
@@ -920,11 +921,6 @@ namespace numerical {
         if (buffer->size > kept_workspace) {
           buffer->data.reset();
           buffer->size = 0;
-        }
-      }
-      for (buffer<double>* sorted : {&work.sorted_u, &work.sorted_v}) {
-        if (sorted->capacity() > kept_workspace) {
-          *sorted = buffer<double> {};
         }
       }
     }
@@ -1155,21 +1151,24 @@ namespace numerical {
         source[c] = from[rank[c]];
         d[c]      = values[rank[c]];
       }
-      // Row by row on every core, each row written whole (by columns, each write was a row apart).
-      buffer<double>& sorted_u {work.sorted_u};
-      buffer<double>& sorted_v {work.sorted_v};
-      sorted_u.resize(n * n);              // written whole below
-      sorted_v.assign(v.begin(), v.end()); // the null column, if any, stays last
-      parallel_for(m, n, [&](std::size_t r) { // m ≥ n: the right basis has the rows of both
-                     for (std::size_t c {0}; c < n; ++c) {
-                       if (r < n) {
-                         sorted_u[(r * n) + c] = source[c] < k ? new_u[(r * k) + source[c]] : u[(r * n) + deflated[source[c] - k]];
+      // Row by row on every core, in place: a row of the result reads only that row of the old basis (and of the
+      // product), so each is gathered into a row of its own, then written over it (by columns, each write was a row
+      // apart; a copy of each basis held one matrix more apiece). The right basis's null column, if any, stays last.
+      parallel_for((m + sort_rows - 1) / sort_rows, sort_rows * n, [&](std::size_t block) {
+                     buffer<double> row(n); // written whole for each row
+                     for (std::size_t r {block * sort_rows}; r < std::min(m, (block + 1) * sort_rows); ++r) {
+                       if (r < n) { // m ≥ n: the right basis has the rows of both
+                         for (std::size_t c {0}; c < n; ++c) {
+                           row[c] = source[c] < k ? new_u[(r * k) + source[c]] : u[(r * n) + deflated[source[c] - k]];
+                         }
+                         std::copy(row.begin(), row.end(), u.begin() + static_cast<std::ptrdiff_t>(r * n));
                        }
-                       sorted_v[(r * m) + c] = source[c] < k ? new_v[(r * k) + source[c]] : v[(r * m) + deflated[source[c] - k]];
+                       for (std::size_t c {0}; c < n; ++c) {
+                         row[c] = source[c] < k ? new_v[(r * k) + source[c]] : v[(r * m) + deflated[source[c] - k]];
+                       }
+                       std::copy(row.begin(), row.end(), v.begin() + static_cast<std::ptrdiff_t>(r * m));
                      }
                    });
-      std::swap(u, sorted_u); // the old bases' storage is kept for the next join
-      std::swap(v, sorted_v);
     }
 
     //! \brief The order up to which \ref bidiagonal_divide decomposes by implicit-shift QR.
