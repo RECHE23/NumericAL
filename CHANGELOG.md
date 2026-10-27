@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.39 — 2026-10-27
+
 ### Added
 - **The fast Fourier transform, as `numpy.fft`** (`fft.hpp`; `numerical.fft` in Python): `fft`, `ifft`, `rfft`,
   `irfft`, `hfft`, `ihfft` and `fftshift` along an axis, in C++; `numerical.fft`'s `fft`, `ifft`, `fft2`, `ifft2`,
