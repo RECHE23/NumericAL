@@ -22,6 +22,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   `complex64` on the AVX-512 path, 52³ on the AVX2 path), where the threads cost more than they shared: ten AVX-512
   cores, all threads, order 48 `complex128` 19.9 → 12.1 µs, `complex64` 9.7 → 6.0 µs, order 64 `complex64` 16.0 →
   14.3 µs; six AVX2 cores, order 48 21.9 → 19.5 µs. The same bits (a product's bits do not depend on its threads).
+- **`asarray` of a nested list or tuple of floats, ints and complex numbers reads it in one walk in C**
+  (`_asarray_nested`), where Python gathered its values and shape first: M1 Pro, 1000 × 64 floats 53 → 1.4 ms (NumPy
+  2.3 ms), 2 × 2 8.4 → 0.44 µs. The same values; anything else (another kind of number, a ragged list, an int past a
+  double's range) is read as before, with the same errors.
 
 ## 2026.10.39 — 2026-10-27
 

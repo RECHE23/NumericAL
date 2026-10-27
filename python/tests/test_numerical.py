@@ -530,6 +530,42 @@ class ArrayInterface(unittest.TestCase):
         with self.assertRaises(numerical.error):
             numerical.asarray([1j], dtype="float64")
 
+    def test_a_nested_list_reads_as_the_python_reading_gives(self):
+        # The C walk of floats, ints and complex numbers against asarray's Python reading of the same values; what the
+        # walk leaves to that reading (another kind of number, a ragged list, an int past a double) reads or fails as it did.
+        import fractions
+
+        class Real(float):
+            pass
+
+        cases = [[1, 2, 3], [[1.5, 2], [3, 4]], [], [[], []], [[1, 2j], [3, 4]], ((1, 2), (3, 4)), [True, False],
+                 [[[1]]], [2 ** 70, -0.0], [Real(2.5), 1], [complex(1, -0.0), 2], [fractions.Fraction(1, 3)]]
+        for case in cases:
+            for dtype in (None, "float64", "float32", "complex128", "complex64"):
+                with self.subTest(case=case, dtype=dtype):
+                    values, shape = numerical._nested(case)
+                    slow = numerical._NestedBuffer(values, shape)
+                    try:
+                        want = numerical._asarray(slow, dtype) if dtype else numerical._asarray(slow)
+                    except numerical.error:
+                        with self.assertRaises(numerical.error):
+                            numerical.asarray(case, dtype)
+                        continue
+                    got = numerical.asarray(case, dtype)
+                    self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape))
+                    self.assertEqual(repr(got.tolist()), repr(want.tolist()))
+        self.assertIsNone(numerical._asarray_nested([fractions.Fraction(1, 3)]))
+        self.assertIsNone(numerical._asarray_nested([1, [2]]))
+        self.assertIsNone(numerical._asarray_nested(3.0))
+        with self.assertRaises(numerical.error):
+            numerical._asarray_nested([1.0], "float16")
+        with self.assertRaises(OverflowError):
+            numerical.asarray([2 ** 1100])
+        with self.assertRaises(ValueError):
+            numerical.asarray([1, [2]])
+        with self.assertRaises(ValueError):
+            numerical.asarray([[1, 2], [3, 4, 5]])
+
     def test_asarray_reads_every_numeric_typestr_at_any_stride(self):
         # Without NumPy: an __array_interface__ over a packed buffer of each element type, read through
         # strides that walk it backwards.

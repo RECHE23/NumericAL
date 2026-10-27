@@ -35,7 +35,7 @@ import sys as _sys
 import warnings as _warnings
 
 from numerical import _numerical
-from numerical._numerical import Tensor, asarray as _asarray, error, get_num_threads
+from numerical._numerical import Tensor, asarray as _asarray, _asarray_nested, error, get_num_threads
 from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
@@ -1119,6 +1119,10 @@ def asarray(obj, dtype=None):
     # first: the abstract Number test below took a third of a small einsum's call.
     if type(obj) is Tensor or hasattr(obj, "__array_struct__"):
         return _asarray(obj, dtype) if dtype is not None else _asarray(obj)
+    if isinstance(obj, (list, tuple)):  # floats, ints and complex numbers in one walk in C; anything else read here
+        fast = _asarray_nested(obj, dtype) if dtype is not None else _asarray_nested(obj)
+        if fast is not None:
+            return fast
     if isinstance(obj, (list, tuple)) or (type(obj) not in _NATIVE_NUMBERS and isinstance(obj, _numbers.Number)
                                           and not hasattr(obj, "__array_interface__")):
         values, shape = _nested(obj)

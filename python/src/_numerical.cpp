@@ -3990,6 +3990,133 @@ bool asarray_from_number(PyObject* obj, std::optional<std::size_t> wanted, PyObj
     return true;
 }
 
+// The length of a list or tuple, and its element `i` (borrowed), through the stable ABI's calls.
+Py_ssize_t sequence_length(PyObject* obj)
+{
+    return PyList_Check(obj) != 0 ? PyList_Size(obj) : PyTuple_Size(obj);
+}
+
+PyObject* sequence_item(PyObject* obj, Py_ssize_t i)
+{
+    return PyList_Check(obj) != 0 ? PyList_GetItem(obj, i) : PyTuple_GetItem(obj, i);
+}
+
+// The shape of a nested list or tuple as its first elements say, down to the first that is neither (an empty one
+// ends it with a zero).
+std::vector<std::size_t> nested_shape(PyObject* obj)
+{
+    std::vector<std::size_t> shape;
+    while (PyList_Check(obj) != 0 || PyTuple_Check(obj) != 0) {
+        const Py_ssize_t length {sequence_length(obj)};
+        shape.push_back(static_cast<std::size_t>(length));
+        if (length == 0) {
+            break;
+        }
+        obj = sequence_item(obj, 0);
+    }
+    return shape;
+}
+
+// The numbers of `obj`, at `depth` of `shape`, appended to `values` in C order, `complex_in` set by a complex one;
+// false at the first thing the Python reading would treat otherwise or refuse (a ragged list, a number that is not
+// a float, an int or a complex, an int too large for a double), with no error set.
+bool nested_values(PyObject*                          obj,
+                   const std::vector<std::size_t>&    shape,
+                   std::size_t                        depth,
+                   std::vector<std::complex<double>>& values,
+                   bool&                              complex_in)
+{
+    if (depth < shape.size()) {
+        if ((PyList_Check(obj) == 0 && PyTuple_Check(obj) == 0) || static_cast<std::size_t>(sequence_length(obj)) != shape[depth]) {
+            return false;
+        }
+        for (std::size_t i {0}; i < shape[depth]; ++i) {
+            if (!nested_values(sequence_item(obj, static_cast<Py_ssize_t>(i)), shape, depth + 1, values, complex_in)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (PyComplex_Check(obj) != 0) {
+        complex_in = true;
+        values.emplace_back(PyComplex_RealAsDouble(obj), PyComplex_ImagAsDouble(obj));
+    }
+    else if (PyFloat_Check(obj) != 0 || PyLong_Check(obj) != 0) {
+        values.emplace_back(PyFloat_Check(obj) != 0 ? PyFloat_AsDouble(obj) : PyLong_AsDouble(obj), 0.0);
+    }
+    else {
+        return false;
+    }
+    if (PyErr_Occurred() != nullptr) { // an int too large for a double: the Python reading raises the error
+        PyErr_Clear();
+        return false;
+    }
+    return true;
+}
+
+// _asarray_nested(obj, dtype=None): a nested list or tuple of floats, ints (bools included) and complex numbers as
+// a Tensor, read in one walk (float64, or complex128 where one is complex, as asarray's Python reading gives); None
+// for anything that reading treats otherwise, which then reads it (and raises its errors).
+PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObject* kwds)
+{
+    static const char* keywords[] = {"obj", "dtype", nullptr};
+    PyObject*          obj         = nullptr;
+    const char*        dtype_str   = nullptr;
+    if (PyArg_ParseTupleAndKeywords(args, kwds, "O|z", const_cast<char**>(keywords), &obj, &dtype_str) == 0) {
+        return nullptr;
+    }
+    std::optional<std::size_t> wanted;
+    if (dtype_str != nullptr) {
+        wanted = dtype_index(dtype_str);
+        if (!wanted) {
+            PyErr_SetString(sciforge_module_error(), "asarray: dtype must be 'float64', 'complex128', 'float32' or 'complex64'");
+            return nullptr;
+        }
+    }
+    if (PyList_Check(obj) == 0 && PyTuple_Check(obj) == 0) {
+        Py_RETURN_NONE;
+    }
+    try {
+        std::vector<std::size_t> shape {nested_shape(obj)};
+        std::size_t              total {0};
+        if (!element_count(shape, total)) {
+            Py_RETURN_NONE;
+        }
+        std::vector<std::complex<double>> values;
+        values.reserve(total);
+        bool complex_in {false};
+        if (!nested_values(obj, shape, 0, values, complex_in)) {
+            Py_RETURN_NONE;
+        }
+        std::size_t out {0};
+        if (!output_dtype(element_type {complex_in ? 'c' : 'f', complex_in ? std::size_t {16} : std::size_t {8}, false}, wanted, out)) {
+            return nullptr;
+        }
+        const auto filled {[&values](auto element) {
+            using T = decltype(element);
+            numerical::buffer<T> data(values.size());
+            for (std::size_t i {0}; i < values.size(); ++i) {
+                if constexpr (complex_scalar<T>) {
+                    data[i] = static_cast<T>(values[i]);
+                }
+                else {
+                    data[i] = static_cast<T>(values[i].real());
+                }
+            }
+            return data;
+        }};
+        switch (out) {
+            case 0: return wrap(any_tensor {real_tensor {std::move(shape), filled(double {})}});
+            case 1: return wrap(any_tensor {cplx_tensor {std::move(shape), filled(std::complex<double> {})}});
+            case 2: return wrap(any_tensor {single_tensor {std::move(shape), filled(float {})}});
+            default: return wrap(any_tensor {csingle_tensor {std::move(shape), filled(std::complex<float> {})}});
+        }
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kwds)
 {
     static const char* keywords[] = {"obj", "dtype", nullptr};
@@ -4296,6 +4423,10 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("einsum", module_einsum, METH_VARARGS,
           "einsum(spec, *operands) -> Tensor\n"
           "Einstein summation, e.g. 'ij,jk->ik' (matmul), 'i,i->' (dot), 'ij->ji'.");
+    m.raw("_asarray_nested", reinterpret_cast<PyCFunction>(reinterpret_cast<void*>(module_asarray_nested)),
+          METH_VARARGS | METH_KEYWORDS,
+          "_asarray_nested(obj, dtype=None) -> Tensor | None\n"
+          "A nested list or tuple of floats, ints and complex numbers as a Tensor, or None for anything else.");
     m.raw("asarray", reinterpret_cast<PyCFunction>(reinterpret_cast<void*>(module_asarray)),
           METH_VARARGS | METH_KEYWORDS,
           "asarray(obj, dtype=None) -> Tensor\n"
