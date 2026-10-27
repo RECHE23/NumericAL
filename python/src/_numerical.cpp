@@ -747,13 +747,12 @@ numerical::matrix<T> matrix_from(const numerical::tensor<T>& t)
     return matrix_of_elements(t.data().data(), t.shape()[0], t.shape()[1]);
 }
 
-// A tensor's elements in another scalar type, converted one by one.
+// A tensor's elements in another scalar type, converted one by one, by chunks on the threads (each element the same
+// conversion; the threads touch no Python object, so it runs as it is, whether or not its caller holds the GIL).
 template <typename Out, typename In>
 numerical::tensor<Out> converted(const numerical::tensor<In>& t)
 {
-    numerical::buffer<Out> values(t.size());
-    std::transform(t.data().begin(), t.data().end(), values.begin(), [](const In& x) { return converted<Out>(x); });
-    return numerical::tensor<Out> {t.shape(), std::move(values)};
+    return numerical::detail::parallel_map(t, [](const In& x) { return converted<Out>(x); });
 }
 
 // A float32 or complex64 tensor in double precision, float64 or complex128: the decompositions compute there, and
@@ -2564,23 +2563,33 @@ std::tuple<any_tensor, any_tensor, any_tensor> svd_hermitian(const any_tensor& v
             return std::abs(w.data()[x]) > std::abs(w.data()[y]);
         });
         numerical::buffer<R> s(n);
-        numerical::buffer<T> u(n * n);
-        numerical::buffer<T> vh(n * n);
+        numerical::buffer<R> sign(n);
         for (std::size_t c = 0; c < n; ++c) {
             const R value {w.data()[order[c]]};
-            s[c] = std::abs(value);
-            const R sign {value < R {0} ? R {-1} : R {1}};
-            for (std::size_t r = 0; r < n; ++r) {
-                const T x {vt.data()[(r * n) + order[c]]};
-                u[(r * n) + c]  = x;
-                if constexpr (complex_scalar<T>) {
-                    vh[(c * n) + r] = std::conj(x) * sign;
-                }
-                else {
-                    vh[(c * n) + r] = x * sign;
+            s[c]    = std::abs(value);
+            sign[c] = value < R {0} ? R {-1} : R {1};
+        }
+        numerical::buffer<T> u(n * n);
+        numerical::buffer<T> vh(n * n);
+        // U's rows read V's in the cache, by rows on the threads; Vh, U's columns times their signs and conjugated as
+        // rows, by tiles on the threads.
+        constexpr std::size_t tile {32};
+        numerical::detail::parallel_for(n, numerical::detail::memory_element_weight * n, [&](std::size_t r) {
+            for (std::size_t c = 0; c < n; ++c) {
+                u[(r * n) + c] = vt.data()[(r * n) + order[c]];
+            }
+        });
+        numerical::detail::parallel_for((n + tile - 1) / tile, numerical::detail::memory_element_weight * tile * n, [&](std::size_t block) {
+            const std::size_t c0 {block * tile};
+            const std::size_t c1 {std::min(n, c0 + tile)};
+            for (std::size_t r0 = 0; r0 < n; r0 += tile) {
+                for (std::size_t c = c0; c < c1; ++c) {
+                    for (std::size_t r = r0; r < std::min(n, r0 + tile); ++r) {
+                        vh[(c * n) + r] = numerical::detail::conj_of(vt.data()[(r * n) + order[c]]) * sign[c];
+                    }
                 }
             }
-        }
+        });
         return {tensor_type {{n, n}, std::move(u)}, numerical::tensor<R> {{n}, std::move(s)}, tensor_type {{n, n}, std::move(vh)}};
     }, vectors);
 }
