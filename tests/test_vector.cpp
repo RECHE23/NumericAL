@@ -99,6 +99,71 @@ TEST(shape_mismatch_throws)
   EXPECT_THROWS((dot(vector<int> {1, 2}, vector<int> {1, 2, 3})), numerical::dimension_error);
 }
 
+// A buffer from 1 MiB (under huge pages' bytes on Linux, 32 MiB elsewhere) takes a block of 4 KiB pages kept when it
+// is freed: the next buffer it fits takes it back, its elements written anew, at another offset past the block's
+// start; four blocks kept at most, the oldest freed when a fifth comes; threads asking for them at once each get one.
+TEST(a_freed_buffer_from_one_mib_leaves_its_block_to_the_next)
+{
+  using allocator = numerical::detail::default_init_allocator<double>;
+  using blocks    = numerical::detail::kept_page_blocks;
+  const std::size_t least {numerical::detail::kept_pages_least / sizeof(double)};
+  EXPECT(allocator::on_kept_pages(least) && !allocator::on_kept_pages(least - 1));
+  EXPECT(!allocator::on_kept_pages(numerical::detail::kept_pages_largest / sizeof(double)));
+  EXPECT(!allocator::on_kept_pages(std::numeric_limits<std::size_t>::max() / 4));
+  // Just under the largest, the block's bytes rounded to its pages pass it: freed, not kept. From the largest on,
+  // std::allocator's (on Linux, huge pages).
+  for (const std::size_t edge : {(numerical::detail::kept_pages_largest / sizeof(double)) - 1, numerical::detail::kept_pages_largest / sizeof(double)}) {
+    const numerical::buffer<double> held(edge, 5.0);
+    EXPECT(held[0] == 5.0 && held[edge - 1] == 5.0);
+  }
+  constexpr std::size_t count {((std::size_t {3} << 20U) / sizeof(double)) + 777}; // no other test frees a block this size
+  const auto            start {[](const double* at) { return reinterpret_cast<std::uintptr_t>(at) / blocks::alignment * blocks::alignment; }};
+  std::uintptr_t        before {0};
+  std::uintptr_t        offset {0};
+  {
+    const numerical::buffer<double> a(count, 2.0);
+    before = start(a.data());
+    offset = reinterpret_cast<std::uintptr_t>(a.data()) - before;
+    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(a.data()) % 64, 0U);
+  }
+  const numerical::buffer<double> b(count, 3.0);
+  EXPECT_EQ(start(b.data()), before);
+  EXPECT(reinterpret_cast<std::uintptr_t>(b.data()) - before != offset);
+  EXPECT(b[0] == 3.0 && b[count - 1] == 3.0);
+  // The class itself: four places, the one kept longest freed for a fifth block.
+  const std::size_t       mib {std::size_t {1} << 20U};
+  blocks                  kept;
+  std::size_t             got {0};
+  std::vector<std::byte*> fresh;
+  for (std::size_t k {1}; k <= 5; ++k) {
+    fresh.push_back(static_cast<std::byte*>(::operator new(k * mib, std::align_val_t {blocks::alignment})));
+    EXPECT(kept.keep(fresh.back(), k * mib));
+  }
+  EXPECT(kept.take(mib, got) == nullptr); // the 1 MiB block, kept longest, was freed
+  EXPECT(kept.take(2 * mib, got) == fresh[1] && got == 2 * mib);
+  EXPECT(kept.take(5 * mib, got) == fresh[4]);
+  EXPECT(!kept.keep(fresh[1], blocks::largest));
+  for (std::byte* const at : {fresh[1], fresh[4]}) {
+    ::operator delete(at, std::align_val_t {blocks::alignment});
+  }
+  std::vector<std::thread> threads;
+  std::vector<int>         held(6, 0);
+  for (std::size_t t {0}; t < held.size(); ++t) {
+    threads.emplace_back([&held, t] {
+                           bool whole {true};
+                           for (int round {0}; round < 16; ++round) {
+                             numerical::buffer<double> c(count, static_cast<double>(t));
+                             whole = whole && c[0] == static_cast<double>(t) && c[count - 1] == static_cast<double>(t);
+                           }
+                           held[t] = whole ? 1 : 0;
+                         });
+  }
+  for (std::thread& thread : threads) {
+    thread.join();
+  }
+  EXPECT_EQ(held, (std::vector<int> {1, 1, 1, 1, 1, 1}));
+}
+
 #if defined(__linux__)
 // A buffer of 16 MiB or more asks for huge pages: its data is there in full, written and read back, copied and grown,
 // each one at another offset past its 2 MiB boundary; below, and for a count whose bytes overflow, std::allocator's.
@@ -131,8 +196,8 @@ TEST(freed_huge_page_blocks_are_kept_for_the_next_that_fits)
 {
   using blocks = numerical::detail::kept_huge_blocks;
   const std::size_t mib {std::size_t {1} << 20U};
-  const auto        fresh {[](std::size_t bytes) { return static_cast<std::byte*>(::operator new(bytes, std::align_val_t {blocks::huge_page})); }};
-  const auto        free_block {[](std::byte* at) { ::operator delete(at, std::align_val_t {blocks::huge_page}); }};
+  const auto        fresh {[](std::size_t bytes) { return static_cast<std::byte*>(::operator new(bytes, std::align_val_t {blocks::alignment})); }};
+  const auto        free_block {[](std::byte* at) { ::operator delete(at, std::align_val_t {blocks::alignment}); }};
   blocks            kept;
   std::size_t       got    {0};
   EXPECT(kept.take(4 * mib, got) == nullptr);

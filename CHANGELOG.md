@@ -69,6 +69,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   `T` 143 → 7.8 ms, `dpotrs` 177 → 4.2 ms; ten AVX-512 cores 35 → 4.4, 118 → 6.1, 154 → 3.2 ms); fewer columns as
   before. Their last bits change.
 
+- **Buffers from 1 MiB keep their blocks when freed** (four at most, each under 16 MiB on Linux, where huge pages take
+  over, and under 32 MiB elsewhere): the next buffer one fits takes it back, its pages already in place, where the
+  system allocator handed back fresh ones, each faulted in and zeroed at its first write (M1 Pro: FFT of 4096 lines
+  of 64 points 380 → 182 µs, rfft of 2²⁰ points 3.5 → 2.3 ms, a sum of two vectors of 2²⁰ doubles 375 → 150 µs, the
+  decompositions of order 512 5–10 % faster under Clang; Linux, glibc reusing blocks of one size already, 2–6 %).
+  At most 128 MiB is kept on macOS.
+
 ### Fixed
 
 - **The determinant of a singular matrix whose other pivots overflow** is 0, as documented, not NaN (∞·0): a finite
