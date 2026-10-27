@@ -2855,3 +2855,37 @@ TEST(a_decomposition_of_an_expiring_matrix_has_the_bits_of_a_constant_one)
   const numerical::eigen_decomposition<std::complex<double>> complex_expiring {numerical::matrix<std::complex<double>> {complex_square}};
   EXPECT(complex_constant.values() == complex_expiring.values() && complex_constant.vectors() == complex_expiring.vectors());
 }
+
+// Divide and conquer on Wilkinson's W61 (diagonal |−30|…|30|, ones beside it): its residual ‖T V − V Λ‖_F within
+// 0.15 n ε ‖T‖, LAPACK's dstevd's level (0.098); leaves of 32 rows by QL left it at 0.22, those of 25 (dstedc's
+// smlsiz) at 0.10.
+TEST(divide_and_conquer_holds_lapacks_residual_on_wilkinsons_w61)
+{
+  constexpr std::size_t n {61};
+  std::vector<double>   entries(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    entries[(i * n) + i] = std::abs(static_cast<double>(i) - 30.0);
+    if (i + 1 < n) {
+      entries[(i * n) + i + 1]   = 1.0;
+      entries[((i + 1) * n) + i] = 1.0;
+    }
+  }
+  const numerical::matrix<double>  t       {n, n, entries};
+  const numerical::symmetric_eigen e       {t};
+  long double                      squares {0.0L};
+  for (std::size_t j {0}; j < n; ++j) {
+    for (std::size_t i {0}; i < n; ++i) {
+      // (d_i − λ) v_i first, its difference exact where v_i is large (λ near d_i), then the neighbours times 1.
+      long double r {(static_cast<long double>(t(i, i)) - e.values()[j]) * e.vectors()(i, j)};
+      if (i > 0) {
+        r += e.vectors()(i - 1, j);
+      }
+      if (i + 1 < n) {
+        r += e.vectors()(i + 1, j);
+      }
+      squares += r * r;
+    }
+  }
+  const long double norm {32.0L}; // the largest row sum: 30 + 1 + 1
+  EXPECT(std::sqrt(squares) / (norm * n * std::numeric_limits<double>::epsilon()) < 0.15L);
+}

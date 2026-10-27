@@ -31,6 +31,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   peak of `eigh` and `eig` (from Python: `eigh` of order 3000 9.4 → 8.5 times a matrix's size, `eig` of order 2000
   12.1 → 11.3), and one pass less over the matrix; a wide `svd` takes its adjoint the same way. The peak of `svd`
   falls later, unchanged. The same bits.
+- **The symmetric divide and conquer (`eigh`, `eigvalsh`'s vectors) solves blocks of up to 25 rows by QL**, LAPACK's
+  `dstedc` size, where it took them up to 32: their QL's error, which grows with the block, weighed on the whole. On
+  Wilkinson's W61 the residual `‖T V − V Λ‖` falls from 0.22 to 0.10 `n ε ‖T‖` (LAPACK's `dstevd` 0.098), on a
+  random tridiagonal of order 60 from 0.30 to 0.19; ten AVX-512 cores, orders 40 to 1000, the same time. The last
+  bits of `eigh` change.
 
 ## 2026.10.39 — 2026-10-27
 

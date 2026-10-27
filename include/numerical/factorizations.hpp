@@ -3735,7 +3735,7 @@ namespace numerical {
     }
 
     //! \brief The order up to which \ref tridiagonal_divide_and_conquer diagonalises by implicit QL.
-    inline constexpr std::size_t divide_leaf {32};
+    inline constexpr std::size_t divide_leaf {25};
 
     //! \brief The iterations one root of the secular equation may take: it converges in a few; the bound turns
     //!        a non-convergence into an error instead of a hang.
