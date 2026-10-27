@@ -503,13 +503,13 @@ namespace numerical {
                                          std::size_t      axis,
                                          const Reduce&    reduce)
     {
-      const axis_walk walk                           {walk_along(t.shape(), axis)};
+      const axis_walk walk {walk_along(t.shape(), axis)};
       buffer<T>       out(walk.outer * walk.inner);
-      for (std::size_t o {0}; o < walk.outer; ++o) {
-        for (std::size_t i {0}; i < walk.inner; ++i) {
-          out[(o * walk.inner) + i] = reduce(t.data().data() + (o * walk.extent * walk.inner) + i, walk.extent, walk.inner);
-        }
-      }
+      parallel_for(walk.outer * walk.inner, walk.extent, [&](std::size_t at) { // each line its own, on whichever thread
+                     const std::size_t o {at / walk.inner};
+                     const std::size_t i {at % walk.inner};
+                     out[at] = reduce(t.data().data() + (o * walk.extent * walk.inner) + i, walk.extent, walk.inner);
+                   });
       return tensor<T> {without_axis(t.shape(), axis), std::move(out)};
     }
 
@@ -700,28 +700,34 @@ namespace numerical {
                               return extreme(first, count, stride, larger);
                             });
       }
-      buffer<T>             out(walk.outer * walk.inner);
-      std::vector<unsigned> nan(walk.inner);
-      for (std::size_t o {0}; o < walk.outer; ++o) {
-        const T* const slab {t.data().data() + (o * walk.extent * walk.inner)};
-        T* const       best {out.data() + (o * walk.inner)};
-        std::copy(slab, slab + walk.inner, best);
-        std::fill(nan.begin(), nan.end(), 0U);
-        for (std::size_t e {0}; e < walk.extent; ++e) {
-          const T* const row {slab + (e * walk.inner)};
-          for (std::size_t i {0}; i < walk.inner; ++i) {
-            const T x {row[i]};
-            nan[i]  |= static_cast<unsigned>(std::isnan(x));
-            best[i]  = larger(x, best[i]) ? x : best[i];
-          }
-        }
-        for (std::size_t i {0}; i < walk.inner; ++i) {
-          best[i] = settled_zero(best[i], slab + i, walk.extent, walk.inner, larger);
-          if (nan[i] != 0U) {
-            best[i] = std::numeric_limits<T>::quiet_NaN();
-          }
-        }
-      }
+      // Each slab's runs of extreme_columns columns shared among the threads: each element compared alike by whichever.
+      // Each slab a task, compared row by row along its whole width (a strip of its columns at a time read each row in
+      // pieces, 2.6 times as long on one arm64 thread): each element compared alike by whichever thread.
+      buffer<T>         out(walk.outer * walk.inner);
+      const std::size_t inner  {walk.inner};
+      const std::size_t extent {walk.extent};
+      const T* const    data   {t.data().data()};
+      T* const          into   {out.data()};
+      parallel_for(walk.outer, extent * inner, [ =, &larger](std::size_t o) {
+                     const T* const        slab {data + (o * extent * inner)};
+                     T* const              best {into + (o * inner)};
+                     std::vector<unsigned> nan(inner, 0U);
+                     std::copy(slab, slab + inner, best);
+                     for (std::size_t e {0}; e < extent; ++e) {
+                       const T* const row {slab + (e * inner)};
+                       for (std::size_t i {0}; i < inner; ++i) {
+                         const T x {row[i]};
+                         nan[i]  |= static_cast<unsigned>(std::isnan(x));
+                         best[i]  = larger(x, best[i]) ? x : best[i];
+                       }
+                     }
+                     for (std::size_t i {0}; i < inner; ++i) {
+                       best[i] = settled_zero(best[i], slab + i, extent, inner, larger);
+                       if (nan[i] != 0U) {
+                         best[i] = std::numeric_limits<T>::quiet_NaN();
+                       }
+                     }
+                   });
       return tensor<T> {without_axis(t.shape(), axis), std::move(out)};
     }
   } // namespace detail

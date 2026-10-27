@@ -595,7 +595,8 @@ namespace numerical {
     /*!
      * \brief The pairwise sums of \p outer blocks of \p count rows of \p inner elements (row-major), each
      *        column of a block summed down its rows, into \p out (`outer × inner`): one column at a time where
-     *        \p inner is 1, else by rows (\ref pairwise_sum_rows), the same bits.
+     *        \p inner is 1, else by rows (\ref pairwise_sum_rows), the same bits. The blocks, and their runs of
+     *        \ref pairwise_columns columns, shared among the threads: each sum computed alike by whichever thread.
      */
     template <typename T>
     void pairwise_sums(const T*    data,
@@ -604,16 +605,17 @@ namespace numerical {
                        std::size_t inner,
                        T*          out)
     {
-      for (std::size_t o {0}; o < outer; ++o) {
-        const T* const base {data + (o * count * inner)};
-        if (inner == 1) {
-          out[o] = parallel_pairwise_sum(base, count);
-          continue;
-        }
-        for (std::size_t q {0}; q < inner; q += pairwise_columns) {
-          pairwise_sum_rows(base + q, count, inner, std::min(pairwise_columns, inner - q), out + (o * inner) + q);
-        }
-      }
+      const std::size_t runs {(inner + pairwise_columns - 1) / pairwise_columns}; // a block's runs of columns
+      parallel_for(outer * runs, count * std::min(inner, pairwise_columns), [&](std::size_t task) {
+                     const std::size_t o    {task / runs};
+                     const T* const    base {data + (o * count * inner)};
+                     if (inner == 1) {
+                       out[o] = parallel_pairwise_sum(base, count);
+                       return;
+                     }
+                     const std::size_t q {(task % runs) * pairwise_columns};
+                     pairwise_sum_rows(base + q, count, inner, std::min(pairwise_columns, inner - q), out + (o * inner) + q);
+                   });
     }
 
     //! \brief Is \p ch an ASCII letter (a valid index label)?
