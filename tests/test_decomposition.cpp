@@ -237,23 +237,32 @@ TEST(large_matrices_are_checked_for_non_finite_entries_on_the_threads)
   EXPECT(numerical::lu_decomposition<double> {finite}.determinant() > 0.0);
 }
 
-// A NaN or an infinity is found wherever it lies: in each of the eight lanes a step checks, and in the values past
-// the last whole step; the largest finite value and the smallest subnormal are finite.
-TEST(the_finiteness_check_sees_every_position)
+// A NaN or an infinity is found wherever it lies: in each of the lanes a step checks (eight doubles, sixteen floats),
+// and in the values past the last whole step; the largest finite value and the smallest subnormal are finite.
+template <typename R>
+bool finiteness_check_sees_every_position()
 {
-  for (const std::size_t count : {std::size_t {7}, std::size_t {8}, std::size_t {19}}) {
-    std::vector<double> values(count, 1.5);
-    values.front() = std::numeric_limits<double>::max();
-    values.back()  = -std::numeric_limits<double>::denorm_min();
-    EXPECT(numerical::detail::all_finite(values.data(), count));
+  bool all {true};
+  for (const std::size_t count : {std::size_t {7}, std::size_t {8}, std::size_t {16}, std::size_t {19}, std::size_t {37}}) {
+    std::vector<R> values(count, R(1.5));
+    values.front() = std::numeric_limits<R>::max();
+    values.back()  = -std::numeric_limits<R>::denorm_min();
+    all            = all && numerical::detail::all_finite(values.data(), count);
     for (std::size_t at {0}; at < count; ++at) {
-      for (const double bad : {std::numeric_limits<double>::quiet_NaN(), -std::numeric_limits<double>::infinity()}) {
-        std::vector<double> flawed {values};
+      for (const R bad : {std::numeric_limits<R>::quiet_NaN(), -std::numeric_limits<R>::infinity()}) {
+        std::vector<R> flawed {values};
         flawed[at] = bad;
-        EXPECT(!numerical::detail::all_finite(flawed.data(), count));
+        all        = all && !numerical::detail::all_finite(flawed.data(), count);
       }
     }
   }
+  return all;
+}
+
+TEST(the_finiteness_check_sees_every_position)
+{
+  EXPECT(finiteness_check_sees_every_position<double>());
+  EXPECT(finiteness_check_sees_every_position<float>());
 }
 
 TEST(factorisation_rejects_singular_and_non_square)

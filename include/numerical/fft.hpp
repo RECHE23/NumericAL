@@ -2549,17 +2549,13 @@ namespace numerical {
         std::copy(line, line + h + 1, X);
         return;
       }
-      C* const z      {work};
-      C* const start  {ahead ? work + h : z};
-      bool     finite {true};
-      for (std::size_t j {0}; j < h; ++j) {
-        start[j] = C {x[2 * j], x[(2 * j) + 1]};
-        finite   = finite && std::isfinite(x[2 * j]) && std::isfinite(x[(2 * j) + 1]);
-      }
-      if (!finite) {
+      C* const z     {work};
+      C* const start {ahead ? work + h : z};
+      if (!all_finite(x, n)) {
         real_forward_whole(n, x, X, Fused);
         return;
       }
+      std::copy(x, x + n, reinterpret_cast<R*>(start)); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the pairs (x[2j], x[2j+1]) as complex numbers, a complex number being its two parts ([complex.numbers])
       forward_fft(*plan.complex, z, work + h, Fused, ahead);
       X[0] = C {z[0].real() + z[0].imag(), R(0)};
       X[h] = C {z[0].real() - z[0].imag(), R(0)};

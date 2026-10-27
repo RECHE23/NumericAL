@@ -14,6 +14,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   bounds and flags reloaded at every element. The same bits. One thread, M1 Pro: 1024 `complex64` points 2.14 →
   1.56 µs, 4096 `complex128` 15.2 → 13.8 µs; ten AVX-512 cores: 1024 `complex64` 2.38 → 1.44 µs, 4096
   `complex128` 18.9 → 14.7 µs (FFTW 10.4).
+- **`rfft` of an even length checks its input's finiteness in one vectorised pass** (`detail::all_finite`, now for
+  `float` as for `double`, moved to `simd.hpp`) and copies it as one block, where each pair of values was checked
+  and copied alone. The same bits. One thread, ten AVX-512 cores: 4096 `float32` points 6.2 → 5.2 µs under Clang,
+  7.7 → 5.7 µs under GCC; M1 Pro 5.75 → 4.94 µs.
 
 ## 2026.10.39 — 2026-10-27
 

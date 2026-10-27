@@ -559,50 +559,6 @@ namespace numerical {
     }
 
     /*!
-     * \brief Whether the \p count values at \p x are all finite: a NaN or an infinity has every exponent bit set, the
-     *        one exponent that one more carries into the sign bit. One pass with no early exit and no comparison, an
-     *        integer AND, add and OR (a check per element and an exit at the first was a tenth of an LU of order 128;
-     *        the comparison per element, one M1 Pro core: 6.4 → 8.5 values a nanosecond). Under GCC and Clang eight
-     *        values a step in four vectors of two, whatever the compiler would vectorise: GCC at -O2 (the arm64
-     *        wheels') vectorised the plain loop not at all, at -O3 by one vector (1089 values, one arm64 core: GCC -O2
-     *        541 → 132 ns, -O3 299 → 132, Clang level at 132; one x86-64 core, GCC 13 -O3 271 → 163 ns, Clang 18
-     *        level); a Cholesky factorisation of order 33 lost a fifth of its time to the plain loop under GCC -O2.
-     */
-    [[nodiscard]] inline bool all_finite(const double* x,
-                                         std::size_t   count) noexcept
-    {
-      constexpr std::uint64_t exponent {0x7FF0000000000000ULL};
-      constexpr std::uint64_t carry    {std::uint64_t {1} << 52U};
-      std::uint64_t           flagged  {0};
-      std::size_t             i        {0};
-#if defined(__GNUC__)
-      using pair = std::uint64_t __attribute__((vector_size(16)));
-      constexpr pair exponents {exponent, exponent};
-      constexpr pair carries   {carry, carry};
-      pair           first     {};
-      pair           second    {};
-      pair           third     {};
-      pair           fourth    {};
-      for (; i + 8 <= count; i += 8) {
-        std::array<pair, 4> bits {};
-        std::memcpy(bits.data(), x + i, sizeof(bits));
-        first  |= (bits[0] & exponents) + carries;
-        second |= (bits[1] & exponents) + carries;
-        third  |= (bits[2] & exponents) + carries;
-        fourth |= (bits[3] & exponents) + carries;
-      }
-      const pair all {first | second | third | fourth};
-      flagged = all[0] | all[1];
-#endif
-      for (; i < count; ++i) {
-        std::uint64_t bits {};
-        std::memcpy(&bits, x + i, sizeof(bits));
-        flagged |= (bits & exponent) + carry;
-      }
-      return (flagged >> 63U) == 0;
-    }
-
-    /*!
      * \brief A copy of \p a whose pages the threads fault in (\ref parallel_copy), a decomposition's own storage: the
      *        matrix's copy faulted every one in on the calling thread (order 1000 on one arm64 core 0.64 ms, an eighth
      *        of the Cholesky factorisation; on eight cores 0.28 ms).

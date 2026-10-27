@@ -12,7 +12,9 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
+#include <limits>
 #include <type_traits>
 #include <vector>
 
@@ -1233,6 +1235,66 @@ namespace numerical::detail {
     for (std::size_t i {add_scaled_vectors(y, x, factor, count)}; i < count; ++i) {
       y[i] += operator_times(factor, x[i]);
     }
+  }
+
+#if defined(__GNUC__)
+  //! \brief The 16 bytes of `double` and of `float` bits \ref all_finite checks at once (GCC sets no vector size on a
+  //!        type that depends on a template parameter).
+  using finite_lanes_64 = std::uint64_t __attribute__((vector_size(16)));
+  //! \brief See \ref finite_lanes_64.
+  using finite_lanes_32 = std::uint32_t __attribute__((vector_size(16)));
+#endif
+
+  /*!
+   * \brief Whether the \p count values at \p x are all finite: a NaN or an infinity has every exponent bit set, the
+   *        one exponent that one more carries into the sign bit. One pass with no early exit and no comparison, an
+   *        integer AND, add and OR (a check per element and an exit at the first was a tenth of an LU of order 128;
+   *        the comparison per element, one M1 Pro core: 6.4 → 8.5 values a nanosecond). Under GCC and Clang four
+   *        vectors of 16 bytes a step, whatever the compiler would vectorise: GCC at -O2 (the arm64 wheels')
+   *        vectorised the plain loop not at all, at -O3 by one vector (1089 doubles, one arm64 core: GCC -O2
+   *        541 → 132 ns, -O3 299 → 132, Clang level at 132; one x86-64 core, GCC 13 -O3 271 → 163 ns, Clang 18
+   *        level); a Cholesky factorisation of order 33 lost a fifth of its time to the plain loop under GCC -O2.
+   */
+  template <typename R>
+  requires std::is_same_v<R, double> || std::is_same_v<R, float>
+  [[nodiscard]] bool all_finite(const R*    x,
+                                std::size_t count) noexcept
+  {
+    using bits_t = std::conditional_t<sizeof(R) == 8, std::uint64_t, std::uint32_t>;
+    constexpr unsigned fraction {static_cast<unsigned>(std::numeric_limits<R>::digits - 1)}; // the fraction's bits, below the exponent's
+    constexpr bits_t   carry    {bits_t {1} << fraction};
+    constexpr bits_t   exponent {((bits_t {1} << ((8U * sizeof(R)) - fraction - 1U)) - 1U) << fraction};
+    constexpr unsigned sign     {(8U * sizeof(R)) - 1U};
+    bits_t             flagged  {0};
+    std::size_t        i        {0};
+#if defined(__GNUC__)
+    using lanes = std::conditional_t<sizeof(R) == 8, finite_lanes_64, finite_lanes_32>;
+    constexpr std::size_t width     {16 / sizeof(R)};
+    constexpr lanes       exponents {lanes {} + exponent};
+    constexpr lanes       carries   {lanes {} + carry};
+    lanes                 first     {};
+    lanes                 second    {};
+    lanes                 third     {};
+    lanes                 fourth    {};
+    for (; i + (4 * width) <= count; i += 4 * width) {
+      std::array<lanes, 4> bits {};
+      std::memcpy(bits.data(), x + i, sizeof(bits));
+      first  |= (bits[0] & exponents) + carries;
+      second |= (bits[1] & exponents) + carries;
+      third  |= (bits[2] & exponents) + carries;
+      fourth |= (bits[3] & exponents) + carries;
+    }
+    const lanes all {first | second | third | fourth};
+    for (std::size_t lane {0}; lane < width; ++lane) {
+      flagged |= all[lane];
+    }
+#endif
+    for (; i < count; ++i) {
+      bits_t bits {};
+      std::memcpy(&bits, x + i, sizeof(bits));
+      flagged |= (bits & exponent) + carry;
+    }
+    return (flagged >> sign) == 0;
   }
 } // namespace numerical::detail
 
