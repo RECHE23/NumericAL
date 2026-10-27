@@ -2278,12 +2278,26 @@ namespace numerical {
     };
 
     /*!
+     * \brief The fewest threads for which \ref reflect_in_columns looks ahead, a panel factorised while the threads
+     *        update the columns past it: on two, one thread would update the rest alone (ten AVX-512 cores, order
+     *        1024: 29.4 ms as it is, 36.3 looking ahead), from three a panel no longer waits for the update (four
+     *        threads 22.1 → 16.5 ms, eight 19.8 → 13.9).
+     */
+    inline constexpr std::size_t qr_look_ahead_threads {3};
+
+    //! \brief The fewest columns a task of \ref reflect_in_columns' look-ahead updates: each task repacks the block, which
+    //!        narrow slices pay for too often (fixed slices of 64 columns on one thread, order 1024: 41 → 61 ms; with a
+    //!        slice per thread, a least of 32 or of 64 alike).
+    inline constexpr std::size_t qr_update_slice {32};
+
+    /*!
      * \brief The blocks of reflectors of a Householder QR of the column-major \p columns (\p rows per column, \p cols
      *        columns), factorised in place as LAPACK's `dgeqrf` leaves it: `R` on and above the diagonal, each
      *        reflector's `w₁…` below it. The columns right of a panel take its block as `(I − V T Vᴴ)ᴴ`, held transposed
      *        (\ref apply_transposed_reflector_block): the products then have as many rows as there are columns to
      *        update, where the row-major form's first product has the block's 32 (one x86-64 core: 39 ms against 46 for
-     *        the updates of order 1000).
+     *        the updates of order 1000). From \ref qr_look_ahead_threads threads, the next panel is updated and
+     *        factorised by one task while the others update the columns past it, a slice each.
      */
     template <typename T>
     [[nodiscard]] std::vector<reflector_block<T>> reflect_in_columns(buffer<T>&  columns,
@@ -2294,13 +2308,44 @@ namespace numerical {
       std::vector<buffer<T>>          reflectors(depth); // w_k on rows k…m-1; empty for the identity
       std::vector<T>                  taus(depth, T {});
       std::vector<reflector_block<T>> blocks;
-      for (std::size_t k0 {0}; k0 < depth; k0 += qr_block) {
-        const std::size_t k1 {std::min(k0 + qr_block, depth)};
-        factor_qr_panel(columns.data() + (k0 * rows), rows, 0, reflectors, taus, k0, k1);
-        blocks.push_back(gather_reflectors(reflectors, k0, k1, rows, &taus));
-        if (k1 < cols) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A
+      if (depth == 0) {
+        return blocks;
+      }
+      factor_qr_panel(columns.data(), rows, 0, reflectors, taus, 0, std::min(qr_block, depth));
+      blocks.push_back(gather_reflectors(reflectors, 0, std::min(qr_block, depth), rows, &taus));
+      for (std::size_t k1 {std::min(qr_block, depth)}; k1 < cols;) { // the panels left of k1 factorised, the last not applied
+        if (k1 >= depth) { // a wide matrix: its last block on the columns past every panel
           apply_transposed_reflector_block(blocks.back(), columns, rows, k1, cols, true);
+          break;
         }
+        const std::size_t n1      {std::min(k1 + qr_block, depth)}; // the next panel: columns k1…n1-1
+        const std::size_t threads {max_threads()};
+        if (threads < qr_look_ahead_threads) { // right of the panel: H_{k1-1} … H_{k0} A = (I − V T Vᴴ)ᴴ A, then the next
+          apply_transposed_reflector_block(blocks.back(), columns, rows, k1, cols, true);
+          factor_qr_panel(columns.data() + (k1 * rows), rows, 0, reflectors, taus, k1, n1);
+          blocks.push_back(gather_reflectors(reflectors, k1, n1, rows, &taus));
+          k1 = n1;
+          continue;
+        }
+        // Look-ahead: one task updates the next panel's columns and factorises them while the others update the rest,
+        // a slice of columns each (the same products on fewer columns: the same bits).
+        const std::size_t         rest   {cols - n1};
+        const std::size_t         slice  {std::max(qr_update_slice, (rest + threads - 2) / (threads - 1))};
+        const std::size_t         slices {(rest + slice - 1) / slice};
+        const reflector_block<T>& block  {blocks.back()};
+        reflector_block<T>        next   {};
+        parallel_for(1 + slices, rows * slice * qr_block / 4, [&](std::size_t task) {
+                       if (task == 0) {
+                         apply_transposed_reflector_block(block, columns, rows, k1, n1, true);
+                         factor_qr_panel(columns.data() + (k1 * rows), rows, 0, reflectors, taus, k1, n1);
+                         next = gather_reflectors(reflectors, k1, n1, rows, &taus);
+                         return;
+                       }
+                       const std::size_t from {n1 + ((task - 1) * slice)};
+                       apply_transposed_reflector_block(block, columns, rows, from, std::min(from + slice, cols), true);
+                     });
+        blocks.push_back(std::move(next));
+        k1 = n1;
       }
       return blocks;
     }

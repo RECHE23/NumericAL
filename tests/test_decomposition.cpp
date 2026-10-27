@@ -2889,3 +2889,29 @@ TEST(divide_and_conquer_holds_lapacks_residual_on_wilkinsons_w61)
   const long double norm {32.0L}; // the largest row sum: 30 + 1 + 1
   EXPECT(std::sqrt(squares) / (norm * n * std::numeric_limits<double>::epsilon()) < 0.15L);
 }
+
+// The QR's look-ahead (from three threads, the next panel factorised while the other threads update the columns past
+// it) gives the bits of one thread: tall, wide and square, real and complex, past several panels.
+template <typename T>
+bool qr_has_the_bits_of_one_thread()
+{
+  bool all {true};
+  for (const auto& [rows, cols] : {std::pair<std::size_t, std::size_t> {150, 130}, {90, 170}, {129, 129}, {300, 41}}) {
+    const numerical::matrix<T> a               {drawn_matrix<T>(rows, cols, 21U)};
+    numerical::set_max_threads(1);
+    const numerical::qr_decomposition<T> alone {a};
+    for (const std::size_t threads : {std::size_t {2}, std::size_t {3}, std::size_t {4}, std::size_t {8}}) {
+      numerical::set_max_threads(threads);
+      const numerical::qr_decomposition<T> shared {a};
+      all = all && shared.q() == alone.q() && shared.r() == alone.r();
+    }
+  }
+  numerical::set_max_threads(0);
+  return all;
+}
+
+TEST(the_qr_look_ahead_gives_the_bits_of_one_thread)
+{
+  EXPECT(qr_has_the_bits_of_one_thread<double>());
+  EXPECT(qr_has_the_bits_of_one_thread<std::complex<double>>());
+}
