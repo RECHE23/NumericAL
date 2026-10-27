@@ -1052,6 +1052,113 @@ namespace numerical::blas {
     return 0;
   }
 
+  namespace detail {
+    /*!
+     * \brief The fewest columns of `B` \ref getrs and \ref potrs of `double` solve by `trsm`: fewer take the substitution
+     *        column by column, where trsm's copy of a transposed factor outweighs its blocks (M1 Pro, order 512, one
+     *        column: getrs `T` 280 µs by columns, 1.5 ms by trsm; 16 columns 4.5 ms against 1.8).
+     */
+    inline constexpr std::size_t trsm_columns_least {8};
+
+    //! \brief \ref getrs's solves, each column of `B` by forward then backward substitution (`size × nrhs`, `A`'s
+    //!        factors \p ld apart, `B`'s columns \p ldb apart).
+    template <typename T, typename Index>
+    void getrs_columns(char         trans,
+                       std::size_t  size,
+                       std::size_t  nrhs,
+                       const T*     a,
+                       std::size_t  ld,
+                       const Index* ipiv,
+                       T*           b,
+                       std::size_t  ldb)
+    {
+      const bool conjugate {detail::conjugates(trans)};
+      const auto at        = [&](std::size_t i, std::size_t j) { return a[i + (j * ld)]; };
+      // An element of op(A)'s factor read transposed: conjugated for Aᴴ.
+      const auto across    = [&](std::size_t i, std::size_t j) { return conjugate ? numerical::detail::conj_of(at(i, j)) : at(i, j); };
+      for (std::size_t c {0}; c < nrhs; ++c) {
+        T* const x {b + (c * ldb)};
+        if (!detail::transposes(trans)) { // L U x = P b
+          for (std::size_t i {0}; i < size; ++i) {
+            std::swap(x[i], x[static_cast<std::size_t>(ipiv[i]) - 1]);
+          }
+          for (std::size_t j {0}; j < size; ++j) { // L, unit lower, by columns
+            for (std::size_t i {j + 1}; i < size; ++i) {
+              x[i] -= at(i, j) * x[j];
+            }
+          }
+          for (std::size_t j {size}; j-- > 0;) { // U, by columns
+            x[j] /= at(j, j);
+            for (std::size_t i {0}; i < j; ++i) {
+              x[i] -= at(i, j) * x[j];
+            }
+          }
+          continue;
+        }
+        for (std::size_t i {0}; i < size; ++i) { // Uᵀ (Uᴴ), by rows of U's columns
+          T sum {x[i]};
+          for (std::size_t k {0}; k < i; ++k) {
+            sum -= across(k, i) * x[k];
+          }
+          x[i] = sum / across(i, i);
+        }
+        for (std::size_t i {size}; i-- > 0;) { // Lᵀ (Lᴴ)
+          T sum {x[i]};
+          for (std::size_t k {i + 1}; k < size; ++k) {
+            sum -= across(k, i) * x[k];
+          }
+          x[i] = sum;
+        }
+        for (std::size_t i {size}; i-- > 0;) { // Pᵀ: the interchanges undone in reverse
+          std::swap(x[i], x[static_cast<std::size_t>(ipiv[i]) - 1]);
+        }
+      }
+    }
+
+    /*!
+     * \brief \ref getrs_columns of `double`, as LAPACK's `dgetrs` solves: the interchanges on every column, then the
+     *        two triangles by \ref trsm, by blocks through the matrix product kernel.
+     */
+    template <typename Index>
+    void getrs_columns(char          trans,
+                       std::size_t   size,
+                       std::size_t   nrhs,
+                       const double* a,
+                       std::size_t   ld,
+                       const Index*  ipiv,
+                       double*       b,
+                       std::size_t   ldb)
+    {
+      if (nrhs < trsm_columns_least) { // a few columns: trsm's copy of op(A) outweighs its blocks
+        getrs_columns<double, Index>(trans, size, nrhs, a, ld, ipiv, b, ldb);
+        return;
+      }
+      const auto n        {static_cast<std::ptrdiff_t>(size)};
+      const auto columns  {static_cast<std::ptrdiff_t>(nrhs)};
+      const auto lda      {static_cast<std::ptrdiff_t>(ld)};
+      const auto ldb_     {static_cast<std::ptrdiff_t>(ldb)};
+      const auto exchange = [&](std::size_t i) { // rows i and ipiv[i] of every column
+                              const auto other {static_cast<std::size_t>(ipiv[i]) - 1};
+                              for (std::size_t c {0}; c < nrhs; ++c) {
+                                std::swap(b[i + (c * ldb)], b[other + (c * ldb)]);
+                              }
+                            };
+      if (!transposes(trans)) { // L U X = P B
+        for (std::size_t i {0}; i < size; ++i) {
+          exchange(i);
+        }
+        (void)trsm('L', 'L', 'N', 'U', n, columns, 1.0, a, lda, b, ldb_);
+        (void)trsm('L', 'U', 'N', 'N', n, columns, 1.0, a, lda, b, ldb_);
+        return;
+      }
+      (void)trsm('L', 'U', 'T', 'N', n, columns, 1.0, a, lda, b, ldb_); // Uᵀ, then Lᵀ: Aᵀ X = B (Aᴴ the same, real)
+      (void)trsm('L', 'L', 'T', 'U', n, columns, 1.0, a, lda, b, ldb_);
+      for (std::size_t i {size}; i-- > 0;) { // Pᵀ: the interchanges undone in reverse
+        exchange(i);
+      }
+    }
+  } // namespace detail
+
   template <typename T, typename Index>
   int getrs(char           trans,
             std::ptrdiff_t n,
@@ -1342,49 +1449,64 @@ namespace numerical::blas {
     }
     const auto size {static_cast<std::size_t>(n)};
     const auto ld   {static_cast<std::size_t>(lda)};
-    const bool conjugate {detail::conjugates(trans)};
-    const auto at        = [&](std::size_t i, std::size_t j) { return a[i + (j * ld)]; };
-    // An element of op(A)'s factor read transposed: conjugated for Aᴴ.
-    const auto across    = [&](std::size_t i, std::size_t j) { return conjugate ? numerical::detail::conj_of(at(i, j)) : at(i, j); };
-    for (std::size_t c {0}; c < static_cast<std::size_t>(nrhs); ++c) {
-      T* const x {b + (c * static_cast<std::size_t>(ldb))};
-      if (!detail::transposes(trans)) { // L U x = P b
-        for (std::size_t i {0}; i < size; ++i) {
-          std::swap(x[i], x[static_cast<std::size_t>(ipiv[i]) - 1]);
-        }
-        for (std::size_t j {0}; j < size; ++j) { // L, unit lower, by columns
-          for (std::size_t i {j + 1}; i < size; ++i) {
-            x[i] -= at(i, j) * x[j];
-          }
-        }
-        for (std::size_t j {size}; j-- > 0;) { // U, by columns
-          x[j] /= at(j, j);
-          for (std::size_t i {0}; i < j; ++i) {
-            x[i] -= at(i, j) * x[j];
-          }
-        }
-        continue;
-      }
-      for (std::size_t i {0}; i < size; ++i) { // Uᵀ (Uᴴ), by rows of U's columns
-        T sum {x[i]};
-        for (std::size_t k {0}; k < i; ++k) {
-          sum -= across(k, i) * x[k];
-        }
-        x[i] = sum / across(i, i);
-      }
-      for (std::size_t i {size}; i-- > 0;) { // Lᵀ (Lᴴ)
-        T sum {x[i]};
-        for (std::size_t k {i + 1}; k < size; ++k) {
-          sum -= across(k, i) * x[k];
-        }
-        x[i] = sum;
-      }
-      for (std::size_t i {size}; i-- > 0;) { // Pᵀ: the interchanges undone in reverse
-        std::swap(x[i], x[static_cast<std::size_t>(ipiv[i]) - 1]);
-      }
-    }
+    detail::getrs_columns(trans, size, static_cast<std::size_t>(nrhs), a, ld, ipiv, b, static_cast<std::size_t>(ldb));
     return 0;
   }
+
+  namespace detail {
+    //! \brief \ref potrs's solves, each column of `B` by forward then backward substitution with `L` (\p lower) or
+    //!        `Uᴴ` (`size × nrhs`, the factor's columns \p ld apart, `B`'s \p ldb apart).
+    template <typename T>
+    void potrs_columns(bool        lower,
+                       std::size_t size,
+                       std::size_t nrhs,
+                       const T*    a,
+                       std::size_t ld,
+                       T*          b,
+                       std::size_t ldb)
+    {
+      // L(i, j), i ≥ j: U(j, i) conjugated where U = Lᴴ is stored.
+      const auto l = [&](std::size_t i, std::size_t j) { return lower ? a[i + (j * ld)] : numerical::detail::conj_of(a[j + (i * ld)]); };
+      for (std::size_t c {0}; c < nrhs; ++c) {
+        T* const x {b + (c * ldb)};
+        for (std::size_t i {0}; i < size; ++i) { // L y = b
+          T sum {x[i]};
+          for (std::size_t k {0}; k < i; ++k) {
+            sum -= l(i, k) * x[k];
+          }
+          x[i] = sum / l(i, i);
+        }
+        for (std::size_t i {size}; i-- > 0;) { // Lᴴ x = y
+          T sum {x[i]};
+          for (std::size_t k {i + 1}; k < size; ++k) {
+            sum -= numerical::detail::conj_of(l(k, i)) * x[k];
+          }
+          x[i] = sum / numerical::detail::conj_of(l(i, i));
+        }
+      }
+    }
+
+    //! \brief \ref potrs_columns of `double`, as LAPACK's `dpotrs` solves: the two triangles by \ref trsm, by blocks
+    //!        through the matrix product kernel (`L` then `Lᵀ`, or `Uᵀ` then `U`).
+    inline void potrs_columns(bool          lower,
+                              std::size_t   size,
+                              std::size_t   nrhs,
+                              const double* a,
+                              std::size_t   ld,
+                              double*       b,
+                              std::size_t   ldb)
+    {
+      if (nrhs < trsm_columns_least) { // a few columns: trsm's copy of op(A) outweighs its blocks
+        potrs_columns<double>(lower, size, nrhs, a, ld, b, ldb);
+        return;
+      }
+      const auto n       {static_cast<std::ptrdiff_t>(size)};
+      const auto columns {static_cast<std::ptrdiff_t>(nrhs)};
+      const char uplo    {lower ? 'L' : 'U'};
+      (void)trsm('L', uplo, lower ? 'N' : 'T', 'N', n, columns, 1.0, a, static_cast<std::ptrdiff_t>(ld), b, static_cast<std::ptrdiff_t>(ldb));
+      (void)trsm('L', uplo, lower ? 'T' : 'N', 'N', n, columns, 1.0, a, static_cast<std::ptrdiff_t>(ld), b, static_cast<std::ptrdiff_t>(ldb));
+    }
+  } // namespace detail
 
   /*!
    * \brief `A X = B` from the Cholesky factor of a `dpotrf` (by any implementation), column-major, as LAPACK's
@@ -1419,25 +1541,7 @@ namespace numerical::blas {
     }
     const auto size {static_cast<std::size_t>(n)};
     const auto ld   {static_cast<std::size_t>(lda)};
-    // L(i, j), i ≥ j: U(j, i) conjugated where U = Lᴴ is stored.
-    const auto l = [&](std::size_t i, std::size_t j) { return lower ? a[i + (j * ld)] : numerical::detail::conj_of(a[j + (i * ld)]); };
-    for (std::size_t c {0}; c < static_cast<std::size_t>(nrhs); ++c) {
-      T* const x {b + (c * static_cast<std::size_t>(ldb))};
-      for (std::size_t i {0}; i < size; ++i) { // L y = b
-        T sum {x[i]};
-        for (std::size_t k {0}; k < i; ++k) {
-          sum -= l(i, k) * x[k];
-        }
-        x[i] = sum / l(i, i);
-      }
-      for (std::size_t i {size}; i-- > 0;) { // Lᴴ x = y
-        T sum {x[i]};
-        for (std::size_t k {i + 1}; k < size; ++k) {
-          sum -= numerical::detail::conj_of(l(k, i)) * x[k];
-        }
-        x[i] = sum / numerical::detail::conj_of(l(i, i));
-      }
-    }
+    detail::potrs_columns(lower, size, static_cast<std::size_t>(nrhs), a, ld, b, static_cast<std::size_t>(ldb));
     return 0;
   }
 

@@ -59,6 +59,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **A rank-deficient `lstsq` through the matrix product kernel**: its coefficients `Uᴴ B` and its solution `V·(Σ⁺Uᴴ B)`
   (ten AVX-512 cores, order 512, 64 right-hand sides: 212 → 84 ms); its last bits change.
 
+- **`dgetrs` and `dpotrs` of eight right-hand sides and more by two triangular solves of blocks** (`dtrsm`'s, as
+  LAPACK's), where each column was substituted alone (M1 Pro, order 512, 512 columns: `dgetrs` 36 → 6.3 ms, with
+  `T` 143 → 7.8 ms, `dpotrs` 177 → 4.2 ms; ten AVX-512 cores 35 → 4.4, 118 → 6.1, 154 → 3.2 ms); fewer columns as
+  before. Their last bits change.
+
 ### Fixed
 
 - **The determinant of a singular matrix whose other pivots overflow** is 0, as documented, not NaN (∞·0): a finite

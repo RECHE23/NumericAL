@@ -727,7 +727,8 @@ namespace {
 
   // Whether potrs(uplo) with potrf's factor of an order-n symmetric positive-definite A solves A X = B.
   bool potrs_solves(char        uplo,
-                    std::size_t n)
+                    std::size_t n,
+                    std::size_t nrhs = 2)
   {
     const std::size_t         lda {n};
     const std::vector<double> g   {entries(n * n, 14)};
@@ -741,15 +742,15 @@ namespace {
         a[i + (j * lda)] = sum;
       }
     }
-    const std::vector<double> b      {entries(n * 2, 15)};
+    const std::vector<double> b      {entries(n * nrhs, 15)};
     std::vector<double>       factor {a};
     std::vector<double>       x      {b};
     const auto                size   {static_cast<std::ptrdiff_t>(n)};
-    if (numerical::blas::potrf(uplo, size, factor.data(), size) != 0 || numerical::blas::potrs(uplo, size, 2, factor.data(), size, x.data(), size) != 0) {
+    if (numerical::blas::potrf(uplo, size, factor.data(), size) != 0 || numerical::blas::potrs(uplo, size, static_cast<std::ptrdiff_t>(nrhs), factor.data(), size, x.data(), size) != 0) {
       return false;
     }
     bool same {true};
-    for (std::size_t c {0}; c < 2; ++c) {
+    for (std::size_t c {0}; c < nrhs; ++c) {
       for (std::size_t i {0}; i < n; ++i) {
         double sum {0.0};
         for (std::size_t j {0}; j < n; ++j) {
@@ -811,6 +812,9 @@ TEST(getrs_and_potrs_solve_from_the_factors)
   EXPECT(potrs_solves('L', 9));
   EXPECT(potrs_solves('U', 9));
   EXPECT(potrs_solves('l', 4));
+  // Eight columns and more: the two triangles by trsm, as dgetrs and dpotrs solve them.
+  EXPECT(getrs_solves('N', 40, 9) && getrs_solves('T', 40, 9) && getrs_solves('C', 40, 9));
+  EXPECT(potrs_solves('L', 30, 9) && potrs_solves('U', 30, 9));
   std::vector<double> a(4, 1.0);
   std::vector<int>    ipiv {1, 2};
   EXPECT_EQ(numerical::blas::getrs('X', 2, 1, a.data(), 2, ipiv.data(), a.data(), 2), -1);
