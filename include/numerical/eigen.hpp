@@ -119,13 +119,12 @@ namespace numerical {
     }
 
     /*!
-     * \brief Balances the row-major `n × n` \p a in place, as LAPACK's `dgebal('B')`: rows with no off-diagonal
-     *        entry in the active block go to its bottom and columns with none to its top, each isolating an
-     *        eigenvalue on the diagonal; then each row and column of the remaining block is scaled by a power of two
-     *        until their 2-norms are within a factor of 2, which leaves every entry exact.
+     * \brief Isolates eigenvalues of the row-major `n × n` \p a in place by permutations alone, as LAPACK's
+     *        `dgebal('P')`: rows with no off-diagonal entry in the active block go to its bottom and columns with none
+     *        to its top, each leaving an eigenvalue on the diagonal; a similarity by an orthogonal matrix.
      */
     template <typename T>
-    [[nodiscard]] balancing balance(buffer<T>&  a,
+    [[nodiscard]] balancing isolate(buffer<T>&  a,
                                     std::size_t n)
     {
       balancing out;
@@ -163,6 +162,19 @@ namespace numerical {
           }
         }
       }
+      return out;
+    }
+
+    /*!
+     * \brief Balances the row-major `n × n` \p a in place, as LAPACK's `dgebal('B')`: \ref isolate, then each row and
+     *        column of the remaining block scaled by a power of two until their 2-norms are within a factor of 2,
+     *        which leaves every entry exact.
+     */
+    template <typename T>
+    [[nodiscard]] balancing balance(buffer<T>&  a,
+                                    std::size_t n)
+    {
+      balancing out {isolate(a, n)};
       buffer<T> gathered(out.high - out.low);
       for (bool unbalanced {true}; unbalanced;) {
         unbalanced = false;
@@ -3411,7 +3423,9 @@ namespace numerical {
    * \brief The Schur decomposition `A = Z T Zᴴ` of a square matrix, as `scipy.linalg.schur` (LAPACK's `dgees`/`zgees`):
    *        `Z` orthogonal (unitary), `T` upper quasi-triangular for a real `A` (a complex pair a 2 × 2 block in standard
    *        form, its diagonal equal, its off-diagonal of opposite signs), upper triangular for a complex one; `T`'s
-   *        diagonal (and blocks) holds the eigenvalues. Not balanced: a diagonal scaling would leave `Z` no longer orthogonal (`dgees` only permutes).
+   *        diagonal (and blocks) holds the eigenvalues. Eigenvalues isolated first by permutations (\ref detail::isolate,
+   *        `dgees`'s `dgebal('P')`), which keep `Z` orthogonal and leave a triangular or block-triangular part no
+   *        iteration; no diagonal scaling, which would not.
    * \tparam T `double` or `std::complex<double>`.
    */
   template <typename T>
@@ -3449,12 +3463,19 @@ namespace numerical {
       for (T& entry : a) {
         entry /= detail::from_carried<T>(scale);
       }
-      buffer<T>                     zt {detail::hessenberg(a, n, 0, n, true)};
-      const std::size_t             steps {detail::schur_steps_per_order * std::max<std::size_t>(10, n)};
-      const detail::schur_target<T> target {&a, n, 0, n, true, &zt};
+      const detail::balancing       isolated {detail::isolate(a, n)}; // A' = Pᵀ A P
+      buffer<T>                     zt {detail::hessenberg(a, n, isolated.low, isolated.high, true)};
+      const std::size_t             steps {detail::schur_steps_per_order * std::max<std::size_t>(10, isolated.high - isolated.low)};
+      const detail::schur_target<T> target {&a, n, isolated.low, isolated.high, true, &zt};
       detail::whole_schur_form(target, steps);
-      for (T& entry : a) { // zero below the subdiagonal (the diagonal, complex) as the reduction and the sweeps leave it
+      for (T& entry : a) {                                    // zero below the subdiagonal (the diagonal, complex) as the reduction and the sweeps leave it
         entry *= detail::from_carried<T>(scale);
+      }
+      for (std::size_t s {isolated.swaps.size()}; s-- > 0;) { // Z = P Z': the exchanges undone, the last first, on
+        const auto [i, j] {isolated.swaps[s]};                // the columns of Zᵀ
+        for (std::size_t c {0}; c < n; ++c) {
+          std::swap(zt[(c * n) + i], zt[(c * n) + j]);
+        }
       }
       t_ = matrix<T> {n, n, std::move(a)};
       z_ = transpose(matrix<T> {n, n, std::move(zt)});

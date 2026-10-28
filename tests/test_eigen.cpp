@@ -1136,6 +1136,60 @@ namespace {
   }
 } // namespace
 
+namespace {
+
+  //! \brief Whether the Schur decomposition of `P B Pᵀ`, B of order 12 upper triangular but for a dense block of rows
+  //!        and columns 3 to 8, P a scrambled order, isolates B's six diagonal entries outside the block (10, 11, 12,
+  //!        20, 21, 22) as dgees's dgebal('P') does: each on T's diagonal exactly, as no iteration touches it, and the
+  //!        decomposition otherwise as \ref schur_holds requires.
+  template <typename T>
+  bool isolated_eigenvalues_are_exact()
+  {
+    constexpr std::size_t n {12};
+    std::vector<T>        b(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        const bool block {i >= 3 && i < 9 && j >= 3 && j < 9};
+        if (block || j > i) {
+          b[(i * n) + j] = T(std::sin(1.0 + (0.7 * static_cast<double>((i * n) + j))));
+        }
+      }
+      if (i < 3 || i >= 9) {
+        b[(i * n) + i] = T(i < 3 ? 10.0 + static_cast<double>(i) : 11.0 + static_cast<double>(i));
+      }
+    }
+    std::vector<T> a(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        a[((((5 * i) + 3) % n) * n) + (((5 * j) + 3) % n)] = b[(i * n) + j]; // P B Pᵀ, P sending i to 5i + 3 (mod 12)
+      }
+    }
+    const matrix<T>                         m     {n, n, a};
+    const numerical::schur_decomposition<T> s     {m};
+    bool                                    exact {true};
+    for (const double value : {10.0, 11.0, 12.0, 20.0, 21.0, 22.0}) {
+      bool found {false};
+      for (std::size_t i {0}; i < n; ++i) {
+        found = found || s.t()(i, i) == T(value);
+      }
+      exact = exact && found;
+    }
+    return exact && schur_holds(m);
+  }
+} // namespace
+
+// A triangular matrix is its own Schur form (every eigenvalue isolated, Z = I), and a permuted block-triangular one keeps
+// the eigenvalues its permutation isolates exactly, real and complex, as dgees and zgees.
+TEST(schur_decomposition_isolates_eigenvalues_by_permutations)
+{
+  const matrix<double>                         triangular {{1.0, 2.0, 3.0}, {0.0, 4.0, 5.0}, {0.0, 0.0, 6.0}};
+  const numerical::schur_decomposition<double> s          {triangular};
+  EXPECT(s.t() == triangular);
+  EXPECT((s.z() == matrix<double> {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}}));
+  EXPECT(isolated_eigenvalues_are_exact<double>());
+  EXPECT(isolated_eigenvalues_are_exact<C>());
+}
+
 // The Schur decomposition, as scipy.linalg.schur: random real and complex matrices of orders past the multishift
 // crossovers (100 complex, 200 real), a rotation's pair, a triangular matrix left as it is, a scaled one, the empty and the errors.
 TEST(schur_decomposition_reconstructs_with_an_orthonormal_basis)

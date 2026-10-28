@@ -19,6 +19,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   different beyond their last bits. Real matrices are unchanged. With no square root in the search (the modulus
   was a `hypot` per entry), ten AVX-512 cores: `lu_factor` of complex128 of order 531 8.66 → 6.67 ms, 1000 31.9 →
   24.3 ms.
+- **`schur` isolates eigenvalues by permutations first**, as `dgees` and `zgees` do (`dgebal('P')`: rows and columns
+  with no off-diagonal entry in the active block moved to its ends, a similarity by an orthogonal matrix): the QR
+  iterations run on the block left, so a triangular or block-triangular matrix, permuted or not, takes few or none,
+  and its isolated eigenvalues come out on `T`'s diagonal exactly. Other `T` and `Z` than before (the eigenvalues'
+  order on the diagonal may change), SciPy's on such matrices. M1 Pro, order 500: triangular 22.0 → 1.7 ms, a
+  permuted block-triangular matrix with a dense block of 100 56 → 7.8 ms; a dense one as before.
 
 ### Added
 - **`logm`, as `scipy.linalg.logm`**: the principal logarithm by Al-Mohy and Higham's inverse scaling and squaring
