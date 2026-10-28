@@ -79,6 +79,8 @@ Small and complete, grown measured, honest about what is not yet here:
   symmetric matrix (`A = V Λ Vᵀ`): Householder tridiagonalisation by panels then divide and conquer,
   as LAPACK's `dsyevd` (most of the work in matrix products); implicit QL (`eigen_method::tridiagonal_ql`,
   `dsyev`'s) or cyclic Jacobi rotations (`eigen_method::jacobi`) on request.
+- `symmetric_eigen(a, b)`, `hermitian_eigen(a, b)` — the pencil `A x = λ B x`, `B` positive definite, as
+  `scipy.linalg.eigh(a, b)` (LAPACK's `sygvd`): `B = L Lᴴ`, `L⁻¹ A L⁻ᴴ` diagonalised, the vectors `B`-orthonormal.
 - `numerical::eigen_decomposition<T>` — the eigenvalues and right eigenvectors of a general real or complex
   square matrix, complex either way, as `numpy.linalg.eig` (LAPACK's `dgeev`/`zgeev`: balancing, blocked
   Hessenberg reduction, the multishift QR algorithm with aggressive early deflation); `values()`, `vectors()`,
@@ -225,7 +227,8 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)` (`det`), `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)` (`inv`), `pinv(a, rcond, hermitian)`,
 `matrix_rank(a, tol, hermitian)`, `eigvalsh(a, UPLO)`, `lstsq(a, b, rcond)` → `(x, residuals, rank, s)`,
 `cholesky(a, upper=False)`, `qr(a, mode="reduced")` → `(Q, R)` (`"complete"` as NumPy's, `"r"` → `R` alone),
-`eigh(a, UPLO)` → `(values, vectors)`, `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix
+`eigh(a, UPLO)` → `(values, vectors)` (with `b=`, a positive-definite matrix, the pencil `a x = λ b x` as
+`scipy.linalg.eigh(a, b)`; `eigvalsh(a, b=b)` its values), `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix
 (LAPACK's `dgeev`/`zgeev`: balancing, blocked Hessenberg reduction, multishift QR with aggressive early deflation;
 complex answers whatever the eigenvalues, as NumPy 2.5's, where NumPy before 2.5 made them real where it could; the
 eigenvalues in the Schur form's order, a real matrix's pairs conjugate to the bit; each vector of unit norm, its

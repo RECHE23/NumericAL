@@ -851,6 +851,123 @@ TEST(symmetric_eigen_rejects_non_square)
   EXPECT_THROWS(symmetric_eigen {non_square}, numerical::dimension_error);
 }
 
+namespace {
+
+  //! \brief The pencil `A − λ B` of order \p n, a Hermitian `A` and a well-conditioned positive-definite
+  //!        `B = M Mᴴ + n I`, through \p Eigen: `A X = B X Λ` and `Xᴴ B X = I` to rounding, the values ascending.
+  template <typename Eigen, typename T>
+  bool pencil_holds(std::size_t             n,
+                    numerical::eigen_method method)
+  {
+    std::vector<T> a_entries(n * n);
+    std::vector<T> m_entries(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        const double angle {static_cast<double>((i * n) + j)};
+        if constexpr (std::is_same_v<T, double>) {
+          m_entries[(i * n) + j] = std::sin(1.0 + (0.7 * angle));
+        }
+        else {
+          m_entries[(i * n) + j] = T {std::sin(1.0 + (0.7 * angle)), std::cos(0.3 * angle)};
+        }
+        if (j <= i) {
+          T z {std::cos(2.0 + angle)};
+          if constexpr (!std::is_same_v<T, double>) {
+            z = i == j ? T {std::cos(2.0 + angle)} : T {std::cos(2.0 + angle), std::sin(angle)};
+          }
+          a_entries[(i * n) + j] = z;
+          a_entries[(j * n) + i] = numerical::detail::conj_of(z);
+        }
+      }
+    }
+    std::vector<T> b_entries(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        T sum {i == j ? static_cast<double>(n) : 0.0};
+        for (std::size_t k {0}; k < n; ++k) {
+          sum += m_entries[(i * n) + k] * numerical::detail::conj_of(m_entries[(j * n) + k]);
+        }
+        b_entries[(i * n) + j] = sum;
+      }
+    }
+    const matrix<T>  a        {n, n, a_entries};
+    const matrix<T>  b        {n, n, b_entries};
+    const Eigen      e        {a, b, method};
+    const matrix<T>& x        {e.vectors()};
+    double           residual {0.0};
+    double           gram     {0.0};
+    double           size     {0.0};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t c {0}; c < n; ++c) {
+        T ax  {};
+        T bx  {};
+        T xbx {};
+        for (std::size_t k {0}; k < n; ++k) {
+          ax += a(i, k) * x(k, c);
+          bx += b(i, k) * x(k, c);
+          T column_k {};
+          for (std::size_t l {0}; l < n; ++l) {
+            column_k += b(k, l) * x(l, c);
+          }
+          xbx += numerical::detail::conj_of(x(k, i)) * column_k;
+        }
+        residual = std::max(residual, std::abs(ax - (e.values()[c] * bx)));
+        gram     = std::max(gram, std::abs(xbx - (i == c ? T {1.0} : T {})));
+        size     = std::max({size, std::abs(a(i, c)), std::abs(b(i, c)) * std::abs(e.values()[c])});
+      }
+    }
+    bool ascending {true};
+    for (std::size_t k {1}; k < n; ++k) {
+      ascending = ascending && e.values()[k - 1] <= e.values()[k];
+    }
+    const double bound {64.0 * static_cast<double>(n) * std::numeric_limits<double>::epsilon()};
+    return ascending && residual <= bound * size * static_cast<double>(n) && gram <= bound * static_cast<double>(n);
+  }
+} // namespace
+
+// The pencil A − λ B, as scipy.linalg.eigh(a, b): A X = B X Λ with Xᴴ B X = I, every method, orders past a block of the
+// triangular solves; [[2, 0], [0, 3]] against [[2, 0], [0, 1]] has the values 1 and 3, the vectors (1/√2, 0) and (0, 1);
+// B = I gives the one matrix's values; the upper triangles are not read; the errors.
+TEST(symmetric_and_hermitian_eigen_of_a_definite_pencil)
+{
+  using c = std::complex<double>;
+  using numerical::eigen_method;
+  for (const std::size_t n : {std::size_t {1}, std::size_t {7}, std::size_t {40}, std::size_t {130}}) {
+    for (const eigen_method method : {eigen_method::divide_and_conquer, eigen_method::tridiagonal_ql, eigen_method::jacobi}) {
+      EXPECT((pencil_holds<symmetric_eigen, double>(n, method)));
+    }
+    for (const eigen_method method : {eigen_method::divide_and_conquer, eigen_method::tridiagonal_ql}) {
+      EXPECT((pencil_holds<numerical::hermitian_eigen, c>(n, method)));
+    }
+  }
+  const double          nan {std::numeric_limits<double>::quiet_NaN()};
+  const symmetric_eigen two {matrix<double> {{2.0, nan}, {0.0, 3.0}}, matrix<double> {{2.0, nan}, {0.0, 1.0}}};
+  EXPECT(approx_equal(two.values(), vector<double> {1.0, 3.0}, 1e-15));
+  EXPECT(std::abs(std::abs(two.vectors()(0, 0)) - std::sqrt(0.5)) < 1e-15 && two.vectors()(1, 0) == 0.0);
+         EXPECT(std::abs(std::abs(two.vectors()(1, 1)) - 1.0) < 1e-15 && two.vectors()(0, 1) == 0.0);
+                const matrix<double> a         {{2.0, 1.0, 0.5}, {1.0, 3.0, -1.0}, {0.5, -1.0, 4.0}};
+                const matrix<double> identity  {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+                EXPECT(approx_equal(symmetric_eigen(a, identity).values(), symmetric_eigen {a}.values(), 1e-14));
+  const numerical::hermitian_eigen complex_two {matrix<c> {{c {2.0, 5.0}, c {nan}}, {c {}, c {3.0}}},
+                                                matrix<c> {{c {2.0}, c {nan}}, {c {}, c {1.0, -9.0}}}};
+  EXPECT(approx_equal(complex_two.values(), vector<double> {1.0, 3.0}, 1e-15));
+  // A's diagonal's imaginary part is not read, B coupling the rows: L⁻¹ would carry it off the diagonal.
+  const matrix<c> coupled {{c {4.0}, c {}}, {c {1.0, 2.0}, c {3.0}}};
+  const matrix<c> clean   {{c {2.0}, c {}}, {c {0.5, -1.0}, c {-1.0}}};
+  const matrix<c> noisy   {{c {2.0, 6.0}, c {}}, {c {0.5, -1.0}, c {-1.0, -3.0}}};
+  EXPECT(approx_equal(numerical::hermitian_eigen(noisy, coupled).values(), numerical::hermitian_eigen(clean, coupled).values(), 1e-14));
+  EXPECT((symmetric_eigen {matrix<double> {0, 0, {}}, matrix<double> {0, 0, {}}}.values().size() == 0));
+  EXPECT_THROWS((symmetric_eigen {a, matrix<double> {{1.0, 0.0, 0.0}, {0.0, -1.0, 0.0}, {0.0, 0.0, 1.0}}}),
+                numerical::not_positive_definite_error);
+  EXPECT_THROWS((symmetric_eigen {a, matrix<double> {{1.0, 0.0}, {0.0, 1.0}}}), numerical::dimension_error);
+  EXPECT_THROWS((symmetric_eigen {a, matrix<double> {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}}}), numerical::dimension_error);
+  EXPECT_THROWS((symmetric_eigen {matrix<double> {{1.0, 2.0}}, matrix<double> {{1.0, 2.0}}}), numerical::dimension_error);
+  EXPECT_THROWS((symmetric_eigen {matrix<double> {{1.0, 0.0}, {nan, 1.0}}, matrix<double> {{1.0, 0.0}, {0.0, 1.0}}}),
+                numerical::non_finite_error);
+  EXPECT_THROWS((numerical::hermitian_eigen {matrix<c> {{c {1.0}}}, matrix<c> {{c {1.0}}}, eigen_method::jacobi}),
+                std::invalid_argument);
+}
+
 TEST(svd_reconstructs_with_orthonormal_factors)
 {
   const matrix<double> a        {{1.0, 1.0}, {1.0, 2.0}, {1.0, 3.0}}; // 3×2, full column rank

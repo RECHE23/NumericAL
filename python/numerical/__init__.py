@@ -551,6 +551,8 @@ del _public, _native
 det = determinant
 inv = inverse
 _eigh = _linalg(_numerical.eigh, arrays=1)
+_eigh_pencil = _linalg(_numerical.eigh_pencil, arrays=2)
+_eigvalsh_pencil = _linalg(_numerical.eigvalsh_pencil, arrays=2)
 _svd = _linalg(_numerical.svd, arrays=1)
 _singular_values = _linalg(_numerical._singular_values)
 _svd_hermitian = _linalg(_numerical._svd_hermitian)
@@ -584,22 +586,32 @@ def _tolerance(name, value):
     return float(value)
 
 
-def eigh(a, UPLO="L", *, method="divide_and_conquer"):
+def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer"):
     """The eigenvalues (real, ascending) and eigenvectors (columns) of a real symmetric or complex Hermitian
     matrix, as ``numpy.linalg.eigh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``).
     `method` diagonalises the tridiagonal form: ``"divide_and_conquer"`` (LAPACK's ``dsyevd``/``zheevd``),
     ``"tridiagonal_ql"`` (implicit QL, ``dsyev``'s, the default before 2026.10.4) or ``"jacobi"`` (cyclic Jacobi
-    rotations, real matrices only)."""
+    rotations, real matrices only).
+
+    With `b`, a positive-definite matrix of `a`'s order, the pencil ``a x = λ b x``, as ``scipy.linalg.eigh(a, b)``:
+    ``b = L Lᴴ`` and ``L⁻¹ a L⁻ᴴ`` diagonalised, the vectors ``b``-orthonormal (``Xᴴ b X = I``); each matrix read in
+    the triangle `UPLO` names. Two matrices, not stacks; `b` keyword-only, `UPLO` holding NumPy's place."""
     upper = _upper("eigh", UPLO)
     if method not in _EIGH_METHODS:
         raise ValueError(f"eigh: method {method!r} is none of {_EIGH_METHODS}")
+    if b is not None:
+        return _eigh_pencil(a, b, method, upper)
     return _eigh(a, method, upper)
 
 
-def eigvalsh(a, UPLO="L"):
+def eigvalsh(a, UPLO="L", *, b=None):
     """The eigenvalues alone of a real symmetric or complex Hermitian matrix, real and ascending, as
-    ``numpy.linalg.eigvalsh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``)."""
-    return _eigvalsh(a, _upper("eigvalsh", UPLO))
+    ``numpy.linalg.eigvalsh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``). With `b`,
+    those of the pencil ``a x = λ b x``, as :func:`eigh`'s."""
+    upper = _upper("eigvalsh", UPLO)
+    if b is not None:
+        return _eigvalsh_pencil(a, b, upper)
+    return _eigvalsh(a, upper)
 
 
 def eig(a):

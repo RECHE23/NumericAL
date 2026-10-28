@@ -16,6 +16,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   `CholeskyFactor` (`(c, lower)`) and `cho_solve`, each factor also an object with `.solve(b)`. M1 Pro, 50 solves
   with one matrix of order 500: 88 ms by `solve`, 8.3 ms by `lu_factor` and `lu_solve` (SciPy 3.8 ms); a triangular
   system of order 2000 with one right-hand side 1.95 ms (SciPy 2.16 ms, `solve` 37 ms).
+- **The symmetric-definite pencil `A x = λ B x`** (`scipy.linalg.eigh(a, b)`, LAPACK's `sygvd`):
+  `symmetric_eigen(a, b, method)` and `hermitian_eigen(a, b, method)` in C++, `eigh(a, UPLO, b=b, method=...)` and
+  `eigvalsh(a, UPLO, b=b)` in Python (`b` keyword-only, `UPLO` holding NumPy's place). `B = L Lᴴ`, `L⁻¹ A L⁻ᴴ`
+  diagonalised by the method asked, its vectors `y` the pencil's `L⁻ᴴ y`, `B`-orthonormal; each matrix read in its
+  lower triangle (or upper, `UPLO="U"`), of the diagonal its real part. M1 Pro, order 1000: 155 ms (SciPy 250 ms), the
+  values alone 97 ms (SciPy 1.29 s); order 400 12.5 ms (SciPy 12.9 ms).
 
 ### Changed
 - **`svdvals` and the QR's `R` alone skip the last block of reflectors** (`householder_reflect`'s `reflectors`): a

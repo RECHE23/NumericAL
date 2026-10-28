@@ -4833,6 +4833,78 @@ namespace numerical {
     }
   } // namespace detail
 
+  namespace detail {
+
+    /*!
+     * \brief The pencil `A − λ B` of a Hermitian `A` and a Hermitian positive-definite `B` (each read in its lower
+     *        triangle, of the diagonal its real part) in standard form: `B = L Lᴴ` and `C = L⁻¹ A L⁻ᴴ`, Hermitian, by two
+     *        triangular solves (LAPACK's `sygst`, type 1). `C`'s eigenpairs `(λ, y)` are the pencil's `(λ, L⁻ᴴ y)`, those
+     *        vectors `B`-orthonormal (`Xᴴ B X = I`), as `scipy.linalg.eigh(a, b)`'s.
+     */
+    template <typename T>
+    struct definite_pencil
+    {
+      /*!
+       * \throws dimension_error              If \p a or \p b is not square, or their orders differ.
+       * \throws non_finite_error             If an entry read is infinite or NaN.
+       * \throws not_positive_definite_error  If \p b is not positive definite.
+       */
+      definite_pencil(const matrix<T>& a,
+                      const matrix<T>& b)
+        : factor(checked_factor(a, b)),
+          reduced(standard_form(a, factor))
+      {}
+
+      //! \brief The pencil's eigenvectors from \p v, the columns of `C`'s: `L⁻ᴴ V`.
+      [[nodiscard]] matrix<T> vectors_of(matrix<T>&& v) const
+      {
+        const std::size_t n {factor.rows()};
+        buffer<T>         x {std::move(v).elements()};
+        solve_triangular_in_place(std::to_address(factor.begin()), n, true, triangular_op::adjoint, false, x.data(), n);
+        return matrix<T> {n, n, std::move(x)};
+      }
+
+      matrix<T> factor;  //!< `L`, lower-triangular, `B = L Lᴴ`.
+      matrix<T> reduced; //!< `C = L⁻¹ A L⁻ᴴ`, whole.
+
+    private:
+
+      [[nodiscard]] static matrix<T> checked_factor(const matrix<T>& a,
+                                                    const matrix<T>& b)
+      {
+        if (a.rows() != a.cols() || b.rows() != b.cols() || b.rows() != a.rows()) {
+          throw dimension_error("a definite pencil requires two square matrices of one order");
+        }
+        require_finite_lower(a, "a definite pencil");
+        return cholesky_decomposition<T> {b}.lower();
+      }
+
+      [[nodiscard]] static matrix<T> standard_form(const matrix<T>& a,
+                                                   const matrix<T>& l)
+      {
+        const std::size_t n          {a.rows()};
+        buffer<T>         y(n * n, T {});
+        for (std::size_t i {0}; i < n; ++i) { // A whole from its lower triangle, a real diagonal
+          for (std::size_t j {0}; j < i; ++j) {
+            y[(i * n) + j] = a(i, j);
+            y[(j * n) + i] = conj_of(a(i, j));
+          }
+          y[(i * n) + i] = T {real_part(a(i, i))};
+        }
+        const T* const lower {std::to_address(l.begin())};
+        solve_triangular_in_place(lower, n, true, triangular_op::none, false, y.data(), n); // L⁻¹ A
+        buffer<T> c(n * n, T {});
+        for (std::size_t i {0}; i < n; ++i) { // (L⁻¹ A)ᴴ = A L⁻ᴴ
+          for (std::size_t j {0}; j < n; ++j) {
+            c[(i * n) + j] = conj_of(y[(j * n) + i]);
+          }
+        }
+        solve_triangular_in_place(lower, n, true, triangular_op::none, false, c.data(), n); // L⁻¹ A L⁻ᴴ
+        return matrix<T> {n, n, std::move(c)};
+      }
+    };
+  } // namespace detail
+
   //! \brief How \ref numerical::symmetric_eigen diagonalises.
   enum class eigen_method
   {
@@ -4946,6 +5018,25 @@ namespace numerical {
       vectors_ = matrix<double> {n_, n_, detail::columns_by_value(zt, order, n_)};
     }
 
+    /*!
+     * \brief Diagonalises the pencil `A − λ B`, `A x = λ B x`, as `scipy.linalg.eigh(a, b)`: `B = L Lᴴ` and the
+     *        symmetric `L⁻¹ A L⁻ᴴ` diagonalised, its eigenvectors `y` the pencil's `L⁻ᴴ y`, `B`-orthonormal
+     *        (`Xᵀ B X = I`). Each matrix's lower triangle alone is read.
+     * \param[in] a      A real symmetric matrix.
+     * \param[in] b      A real symmetric positive-definite matrix of its order.
+     * \param[in] method The algorithm for the standard form.
+     * \throws dimension_error              If \p a or \p b is not square, or their orders differ.
+     * \throws non_finite_error             If an entry read is infinite or NaN.
+     * \throws not_positive_definite_error  If \p b is not positive definite.
+     * \throws convergence_error            If the method did not converge within its bound.
+     */
+    symmetric_eigen(const matrix<double>& a,
+                    const matrix<double>& b,
+                    eigen_method          method = eigen_method::divide_and_conquer)
+      : symmetric_eigen(detail::definite_pencil<double> {a, b},
+                        method)
+    {}
+
     //! \brief The eigenvalues, ascending.
     [[nodiscard]] const vector<double>& values() const noexcept
     {
@@ -4965,6 +5056,15 @@ namespace numerical {
     }
 
   private:
+
+    //! \brief The pencil's eigenpairs: its standard form's, the vectors carried back.
+    symmetric_eigen(detail::definite_pencil<double> pencil,
+                    eigen_method                    method)
+      : symmetric_eigen(std::move(pencil.reduced),
+                        method)
+    {
+      vectors_ = pencil.vectors_of(std::move(vectors_));
+    }
 
     //! \brief Sorts the eigenvalues \p diagonal ascending and reorders \p v's columns to match.
     void extract_sorted(const buffer<double>& diagonal,
@@ -5070,6 +5170,26 @@ namespace numerical {
       vectors_ = matrix<std::complex<double>> {n_, n_, detail::columns_by_value(zt, order, n_)};
     }
 
+    /*!
+     * \brief Diagonalises the pencil `A − λ B`, `A x = λ B x`, as `scipy.linalg.eigh(a, b)`: `B = L Lᴴ` and the
+     *        Hermitian `L⁻¹ A L⁻ᴴ` diagonalised, its eigenvectors `y` the pencil's `L⁻ᴴ y`, `B`-orthonormal
+     *        (`Xᴴ B X = I`). Each matrix's lower triangle alone is read, of the diagonal its real part.
+     * \param[in] a      A complex Hermitian matrix.
+     * \param[in] b      A complex Hermitian positive-definite matrix of its order.
+     * \param[in] method The algorithm for the tridiagonal, as for one matrix.
+     * \throws std::invalid_argument        If \p method is \ref eigen_method::jacobi.
+     * \throws dimension_error              If \p a or \p b is not square, or their orders differ.
+     * \throws non_finite_error             If an entry read is infinite or NaN.
+     * \throws not_positive_definite_error  If \p b is not positive definite.
+     * \throws convergence_error            If an iteration did not converge within its bound (not observed).
+     */
+    hermitian_eigen(const matrix<std::complex<double>>& a,
+                    const matrix<std::complex<double>>& b,
+                    eigen_method                        method = eigen_method::divide_and_conquer)
+      : hermitian_eigen(detail::definite_pencil<std::complex<double>> {a, b},
+                        method)
+    {}
+
     //! \brief The eigenvalues, ascending.
     [[nodiscard]] const vector<double>& values() const noexcept
     {
@@ -5089,6 +5209,15 @@ namespace numerical {
     }
 
   private:
+
+    //! \brief The pencil's eigenpairs: its standard form's, the vectors carried back.
+    hermitian_eigen(const detail::definite_pencil<std::complex<double>>& pencil,
+                    eigen_method                                         method)
+      : hermitian_eigen(pencil.reduced,
+                        method)
+    {
+      vectors_ = pencil.vectors_of(std::move(vectors_));
+    }
 
     std::size_t                  n_;       //!< The matrix order.
     vector<double>               values_;  //!< Eigenvalues, ascending.

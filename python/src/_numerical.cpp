@@ -1863,6 +1863,39 @@ any_tensor matrix_ranks(const any_tensor& v, std::optional<double> rtol, std::op
     });
 }
 
+// The pencil (a, b) of eigh and eigvalsh: two square matrices of one dtype, each read in its lower triangle or its upper
+// one, as scipy.linalg.eigh(a, b) reads them.
+void require_pencil(const any_tensor& a, const any_tensor& b, const char* name)
+{
+    if (shape_of(a).size() != 2 || shape_of(b).size() != 2) {
+        throw std::runtime_error(std::string {name} + " with b expects two matrices");
+    }
+    if (a.index() != b.index()) {
+        throw std::runtime_error(std::string {name} + " operands must share one dtype");
+    }
+}
+
+// eigvalsh_pencil(a, b, upper) -> Tensor: the pencil's values alone, its standard form's without vectors.
+template <typename T>
+any_tensor do_eigvalsh_pencil(const numerical::tensor<T>& a, const numerical::tensor<T>& b, bool upper)
+{
+    const sb::scoped_gil_release            unlocked {releases_gil(a.data().size())};
+    const numerical::detail::definite_pencil<T> pencil {lower_read(a, upper), lower_read(b, upper)};
+    return any_tensor {real_tensor {numerical::symmetric_eigenvalues(pencil.reduced)}};
+}
+
+any_tensor eigvalsh_pencil(const any_tensor& a, const any_tensor& b, bool upper)
+{
+    require_pencil(a, b, "eigvalsh");
+    if (is_single(a)) {
+        return narrowed(eigvalsh_pencil(widened(a), widened(b), upper));
+    }
+    if (is_complex(a)) {
+        return do_eigvalsh_pencil<std::complex<double>>(std::get<cplx_tensor>(a), std::get<cplx_tensor>(b), upper);
+    }
+    return do_eigvalsh_pencil<double>(std::get<real_tensor>(a), std::get<real_tensor>(b), upper);
+}
+
 template <typename T>
 any_tensor do_eigvalsh(const numerical::tensor<T>& a, bool upper)
 {
@@ -2340,6 +2373,26 @@ std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& 
     numerical::symmetric_eigen   decomposition {lower_read(a, upper), method};
     return {any_tensor {real_tensor {decomposition.values()}},
             any_tensor {real_tensor {std::move(decomposition).vectors()}}};
+}
+
+// eigh_pencil(a, b, method, upper) -> (values, vectors): A x = λ B x, B positive definite, the vectors B-orthonormal.
+std::tuple<any_tensor, any_tensor> eigh_pencil(const any_tensor& a, const any_tensor& b, const std::string& name, bool upper)
+{
+    using numerical::eigen_method;
+    const eigen_method method {method_named<eigen_method>(name, {{"divide_and_conquer", eigen_method::divide_and_conquer},
+                                                                 {"tridiagonal_ql", eigen_method::tridiagonal_ql},
+                                                                 {"jacobi", eigen_method::jacobi}})};
+    require_pencil(a, b, "eigh");
+    if (is_single(a)) {
+        return narrowed(eigh_pencil(widened(a), widened(b), name, upper));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(shape_of(a)[0] * shape_of(a)[0])};
+    if (is_complex(a)) {
+        numerical::hermitian_eigen decomposition {lower_read(std::get<cplx_tensor>(a), upper), lower_read(std::get<cplx_tensor>(b), upper), method};
+        return {any_tensor {real_tensor {decomposition.values()}}, any_tensor {cplx_tensor {std::move(decomposition).vectors()}}};
+    }
+    numerical::symmetric_eigen decomposition {lower_read(std::get<real_tensor>(a), upper), lower_read(std::get<real_tensor>(b), upper), method};
+    return {any_tensor {real_tensor {decomposition.values()}}, any_tensor {real_tensor {std::move(decomposition).vectors()}}};
 }
 
 template <typename T>
@@ -4523,6 +4576,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&cholesky>("cholesky", "cholesky(a, upper) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite), or with upper the factor U of A = Uᴴ U from its upper triangle.");
     m.def<&qr>("qr", "qr(a, mode) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr: reduced, Q is m×k, R k×n, k = min(m, n); complete, Q is m×m, R m×n.");
     m.def<&qr_r>("qr_r", "qr_r(a) -> R\nqr's R alone, k×n, k = min(m, n), to the bit, Q never formed (numpy.linalg.qr's mode=\"r\").");
+    m.def<&eigh_pencil>("eigh_pencil", "eigh_pencil(a, b, method, upper) -> (values, vectors)\nEigenpairs of the pencil A x = λ B x, A symmetric or Hermitian, B positive definite (ascending values, B-orthonormal vectors), as scipy.linalg.eigh(a, b); each lower triangle read, or with upper each upper one.");
+    m.def<&eigvalsh_pencil>("eigvalsh_pencil", "eigvalsh_pencil(a, b, upper) -> Tensor\nThe eigenvalues alone of the pencil A x = λ B x, ascending.");
     m.def<&eigh>("eigh", "eigh(a, method, upper) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, or with upper its upper one, as numpy.linalg.eigh's UPLO.");
     m.def<&matmul_nd>("_matmul_nd", "_matmul_nd(a, b) -> Tensor\nThe matrix product of two stacks of one dtype, their leading axes broadcast, as numpy.matmul.");
     m.def<&eig>("_eig", "_eig(a) -> (w, v)\nThe eigenvalues and right eigenvectors of a general square matrix (or stack), as numpy.linalg.eig: complex, as NumPy 2.5's.");
