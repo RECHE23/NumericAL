@@ -331,6 +331,21 @@ namespace numerical {
     template <typename T>
     using magnitude_t = decltype(std::abs(std::declval<const T&>()));
 
+    //! \brief The magnitude partial pivoting compares: `|x|` of a real \p x.
+    template <typename T>
+    [[nodiscard]] magnitude_t<T> pivot_magnitude(const T& x)
+    {
+      return std::abs(x);
+    }
+
+    //! \brief The magnitude partial pivoting compares of a complex \p x: `|Re x| + |Im x|`, LAPACK's (`izamax`, `cabs1`),
+    //!        so the same pivots as its `zgetrf`, with no square root.
+    template <typename U>
+    [[nodiscard]] U pivot_magnitude(const std::complex<U>& x)
+    {
+      return std::abs(x.real()) + std::abs(x.imag());
+    }
+
     //! \brief The real type a `T`'s norms, reflector lengths and pivot magnitudes are carried in: `long double` for a
     //!        `long double` scalar, real or complex, whose precision a `double` would cut to its own; `double` otherwise.
     template <typename T>
@@ -712,7 +727,8 @@ namespace numerical {
   } // namespace detail
 
   /*!
-   * \brief An LU factorisation with partial pivoting of a square matrix.
+   * \brief An LU factorisation with partial pivoting of a square matrix: each column's pivot the first entry of the
+   *        largest \ref detail::pivot_magnitude below the diagonal, `|Re| + |Im|` of a complex one, as LAPACK's.
    * \tparam T The scalar element type (a field: `double`, `std::complex<double>`, …).
    *
    * Factorises once on construction; \ref solve, \ref determinant and \ref inverse
@@ -1423,9 +1439,9 @@ namespace numerical {
         for (std::size_t j {first}; j < last; ++j) {
           T           *          column {panel.data() + (j * rows)};
           std::size_t            pivot  {0}; // from row j
-          detail::magnitude_t<T> best   {std::abs(column[j])};
+          detail::magnitude_t<T> best   {detail::pivot_magnitude(column[j])};
           for (std::size_t r {detail::largest_magnitude_vectors(column + j, rows - j, best, pivot)}; r < rows - j; ++r) {
-            const detail::magnitude_t<T> mag {std::abs(column[j + r])};
+            const detail::magnitude_t<T> mag {detail::pivot_magnitude(column[j + r])};
             if (mag > best) {
               best  = mag;
               pivot = r;

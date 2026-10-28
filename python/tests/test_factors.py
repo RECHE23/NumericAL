@@ -160,6 +160,17 @@ class Factorisations(unittest.TestCase):
         # SciPy's pair is read too
         np.testing.assert_allclose(np.asarray(numerical.lu_solve((their_lu, their_piv), b)), np.linalg.solve(a, b), rtol=1e-10)
 
+    @unittest.skipIf(sl is None, "SciPy is not installed")
+    def test_complex_lu_pivots_as_scipy(self):
+        # zgetrf's and cgetrf's pivot: the largest |Re| + |Im|, where the modulus picks another row (3 over 2 + 2i).
+        for dtype in ("complex128", "complex64"):
+            a = _drawn(60, 60, dtype, 11) * 0.25  # every other entry well under both candidates
+            a[0, 0], a[59, 0] = 3.0, 2.0 + 2.0j
+            piv = numerical.lu_factor(a).piv
+            their_piv = sl.lu_factor(a)[1]
+            self.assertEqual(list(piv), list(their_piv))
+            self.assertEqual(piv[0], 59)
+
     def test_lu_errors(self):
         singular = numerical.lu_factor(np.array([[1.0, 2.0], [2.0, 4.0]]))
         with self.assertRaises(numerical.LinAlgError):

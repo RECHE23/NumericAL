@@ -771,6 +771,17 @@ TEST(getrf_factorises_square_tall_and_wide_matrices)
   EXPECT(getrf_factorises(7, 12));    // wide
 }
 
+// A rectangular complex getrf pivots, as zgetf2, on the entry of largest |Re| + |Im|: 2 + 2i (4) over 3 (whose modulus
+// is the larger).
+TEST(a_rectangular_complex_getrf_pivots_on_the_largest_sum_of_the_parts_magnitudes)
+{
+  using C = std::complex<double>;
+  std::vector<int> ipiv(2);
+  std::vector<C>   tall {C {3.0, 0.0}, C {2.0, 2.0}, C {0.5, 0.0}, C {1.0, 0.0}, C {1.0, 0.0}, C {1.0, 0.0}}; // 3 × 2
+  EXPECT_EQ(numerical::blas::getrf(3, 2, tall.data(), 3, ipiv.data()), 0);
+  EXPECT_EQ(ipiv[0], 2);
+}
+
 TEST(getrf_reports_zero_pivots_illegal_arguments_and_carries_a_nan)
 {
   std::vector<int>    ipiv(3);
