@@ -6,6 +6,7 @@
 #include <bit>
 #include <cmath>
 #include <complex>
+#include <cstring>
 #include <cstddef>
 #include <cstdint>
 #include <limits>
@@ -1196,4 +1197,36 @@ TEST(cosine_and_sine_transforms_are_their_sums_and_invert)
   EXPECT_THROWS(dct(tensor<double> {{1}, numerical::buffer<double> {1.0}}, 1), numerical::dimension_error);
   EXPECT_THROWS(dst(four, 2, 0), numerical::dimension_error);
   EXPECT_THROWS(idct(four, 2, std::nullopt, 1), numerical::dimension_error);
+}
+
+// A cosine line run where std::fma is the instruction (run_fused: on x86-64, a function built for AVX2 and FMA) gives the
+// bits of the same line compiled for the base instruction set, each multiply-add rounded once either way, and dct's are
+// those bits: every type, lengths odd and even. On a path whose products are fused (their kernels' own).
+TEST(a_cosine_line_has_the_same_bits_where_fma_is_the_instruction)
+{
+  if (!numerical::detail::fft_fuses()) {
+    return;
+  }
+  for (int type {1}; type <= 4; ++type) {
+    for (const std::size_t n : {std::size_t {9}, std::size_t {1023}, std::size_t {1024}}) {
+      const auto          line   {numerical::detail::shared_cosine_line<double>(type, n)};
+      const std::size_t   length {type == 1 ? 2 * (n - 1) : n};
+      const std::size_t   work   {type == 4 ? line->complex->work : (length % 2 == 0 ? length / 2 : length) + line->real->complex->work};
+      std::vector<double> u(n);
+      for (std::size_t j {0}; j < n; ++j) {
+        u[j] = std::sin(1.0 + (0.7 * static_cast<double>(j)));
+      }
+      std::vector<double>               plain(n);
+      std::vector<double>               fused(n);
+      std::vector<double>               even(length);
+      std::vector<std::complex<double>> spectrum(std::max((length / 2) + 1, 2 * n));
+      std::vector<std::complex<double>> space(work);
+      line->template apply<true>(u.data(), plain.data(), even.data(), spectrum.data(), space.data());
+      numerical::detail::run_fused([&](std::size_t) NUMERICAL_INLINE_LAMBDA { line->template apply<true>(u.data(), fused.data(), even.data(), spectrum.data(), space.data()); });
+      EXPECT(std::memcmp(plain.data(), fused.data(), n * sizeof(double)) == 0);
+      // dct itself, unscaled and unweighted, is the line's values: the products of the path, where it runs them.
+      const tensor<double> y {numerical::dct(tensor<double> {{n}, numerical::buffer<double>(u.begin(), u.end())}, type)};
+      EXPECT(std::memcmp(plain.data(), y.data().data(), n * sizeof(double)) == 0);
+    }
+  }
 }

@@ -110,6 +110,21 @@ namespace numerical::detail {
     return features;
   }
 
+  /*!
+   * \brief `body(index)` in a function built for AVX2 and FMA, where `std::fma` is the instruction: code outside such
+   *        functions targets the base x86-64, on which `std::fma` calls the C library's, a call for each multiply-add,
+   *        which also keeps the loop around it from being vectorised. \p body is inlined into it
+   *        (`NUMERICAL_INLINE_LAMBDA`, and so must be what it calls). Only on a processor with both (\ref
+   *        cpu_features), and for a body whose multiply-adds are all `std::fma`'s: the compiler may contract an
+   *        `x·y + z` there into one. The same values: a fused multiply-add is rounded once, called or not.
+   */
+  template <typename Body>
+  NUMERICAL_TARGET("avx2,fma") void with_fma_instruction(const Body& body,
+                                                         std::size_t index)
+  {
+    body(index);
+  }
+
   //! \brief A 512-bit register as an element of `std::array` (a vector type as a template argument loses its
   //!        alignment attribute).
   struct zmm_register

@@ -3167,17 +3167,19 @@ namespace numerical {
       std::vector<R>                               signs;    //!< Its factor, ±√2.
 
       //! \brief \p y from \p u, \p even (the real transform's points) and \p spectrum its spaces, \p space the plan's;
-      //!        the path's products, \p fused as its kernels' (\ref fft_fuses): taken at each call, as a line is shared.
-      void operator()(const R*         u,
-                      R*               y,
-                      R*               even,
-                      std::complex<R>* spectrum,
-                      std::complex<R>* space,
-                      bool             fused) const
+      //!        the path's products, \p Fused as its kernels' (\ref fft_fuses), taken at each call, as a line is shared.
+      //!        Inlined into its caller, so that one built for FMA takes it whole (`with_fma_instruction`).
+      template <bool Fused>
+      NUMERICAL_ALWAYS_INLINE void apply(const R*         u,
+                                         R*               y,
+                                         R*               even,
+                                         std::complex<R>* spectrum,
+                                         std::complex<R>* space) const
       {
         using C = std::complex<R>;
-        const auto        product = [fused](const C& w, const C& v) { return fused ? fused_product(w, v) : rounded_product(w, v); };
-        const std::size_t h {n / 2};
+        constexpr bool    fused                                                         {Fused};
+        const auto        product = [] (const C& w, const C& v) NUMERICAL_INLINE_LAMBDA { return twiddled<Fused>(w, v); };
+        const std::size_t h                                                             {n / 2};
         if (type == 1) {
           std::copy(u, u + n, even);
           for (std::size_t k {1}; k + 1 < n; ++k) {
@@ -3420,7 +3422,12 @@ namespace numerical {
                                       }
                                     }
                                     else {
-                                      (*lines)(v, y, even.data(), spectrum.data(), space, fused);
+                                      if (fused) { // each product a fused one: where std::fma is the instruction
+                                        run_fused([&](std::size_t) NUMERICAL_INLINE_LAMBDA { lines->template apply<true>(v, y, even.data(), spectrum.data(), space); });
+                                      }
+                                      else {
+                                        lines->template apply<false>(v, y, even.data(), spectrum.data(), space);
+                                      }
                                     }
                                     if (!cosine && computed == 2) {
                                       std::reverse(y, y + points);

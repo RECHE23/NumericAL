@@ -25,6 +25,14 @@
 #  define NUMERICAL_ALWAYS_INLINE [[gnu::always_inline]] inline // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
 #endif
 
+// A lambda inlined into its caller (written after its parameters): a loop's body taken whole into a function built for
+// other instructions (\ref detail::with_fma_instruction).
+#if defined(_MSC_VER) && !defined(__clang__)
+#  define NUMERICAL_INLINE_LAMBDA
+#else
+#  define NUMERICAL_INLINE_LAMBDA __attribute__((always_inline)) // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
+#endif
+
 namespace numerical::detail {
 
   //! \brief The side of the tiles a transposing copy goes by (an `einsum` permutation of two axes, the eigenvectors'

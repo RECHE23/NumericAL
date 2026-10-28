@@ -255,6 +255,20 @@ namespace numerical {
   }
 
   namespace detail {
+    //! \brief `body(0)`, where `std::fma` is the instruction (`with_fma_instruction`) on an x86-64 processor with AVX2
+    //!        and FMA: a body whose multiply-adds are all `std::fma`'s, `NUMERICAL_INLINE_LAMBDA`, as what it calls must be.
+    template <typename Body>
+    void run_fused(const Body& body)
+    {
+#ifdef NUMERICAL_X86_COMPILED
+      if (cpu_features().avx2_fma) {
+        with_fma_instruction(body, 0);
+        return;
+      }
+#endif
+      body(0);
+    }
+
     /*!
      * \brief `op(a, b)` element by element of the row-major \p a (\p a_shape) and \p b (\p b_shape), broadcast against
      *        each other (\ref broadcast_apply's, its operands read where they lie).

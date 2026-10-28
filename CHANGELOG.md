@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **On x86-64, `dct`, `idct`, `dst` and `idst` run each line where `std::fma` is an instruction**: a function built
+  for AVX2 and FMA (`with_fma_instruction`), taken where the processor has them and the path's products are fused,
+  where the wheels' code, built for the base x86-64, called the C library's `fma` for each of the products around the
+  Fourier transform. The same bits (a fused multiply-add is rounded once either way). Ten AVX-512 cores, one thread:
+  DCT-II of 1024 points 6.9 → 5.5 µs, of 4096 24.7 → 19.4 µs; DCT-IV of 1024 7.6 → 4.8 µs, of 4096 25.6 → 16.0 µs.
 - **`dct`, `idct`, `dst` and `idst` keep each length's tables, formed as the Fourier transforms form theirs**: the
   roots `e^{−iπa/d}` from one table of `8n` roots in double-double arithmetic (`unit_roots`), on the threads, where
   each call formed them anew with the system's `cos` and `sin` (which differ between glibc, macOS and Windows); and
