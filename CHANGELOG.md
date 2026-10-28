@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.40 — 2026-10-28
+
 ### Added
 - **`solve_triangular`, and factorisations kept to solve with again** (`scipy.linalg`'s names and signatures):
   `numerical::solve_triangular(a, b, lower, op, unit_diagonal)` in C++, `numerical.solve_triangular(a, b, trans,
