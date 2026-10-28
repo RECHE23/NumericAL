@@ -39,6 +39,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   points 4–5× as fast; one line of 100 000 points 1.5–1.9× SciPy's time and type 4 of 1023 points 3.7×: open targets.
 
 ### Changed
+- **Shallow `double` and `float` products on x86-64 hold each element's sum in a register over the whole depth**
+  (`plain_row_x86`, the plain loop by rows: four vectors of columns at a time, from C or from zero), where each step
+  of the depth read and wrote the row of C again after it was zeroed: ten AVX-512 cores, one thread, 469 × 3 by 3 × 84
+  26 → 13 µs, 42 × 7 by 7 × 453 23.5 → 9.4 µs, 1000 × 5 by 5 × 1000 1085 → 477 µs. The same bits.
 - **A product into a C that holds nothing writes its first panel's tiles fresh on x86-64** (`writes_fresh`: sums
   from zero, C neither zeroed first nor read), where C was zeroed in a pass of its own, then read back by every tile:
   ten AVX-512 cores, 914 × 2 by 2 × 337 `complex128` 519 → 405 µs on one thread, 227 → 142 µs on all. The same bits.

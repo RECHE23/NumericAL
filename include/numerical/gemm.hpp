@@ -1806,21 +1806,110 @@ namespace numerical::detail {
     }
   }
 
-  //! \brief The plain loop's row of \ref gemm_rows in \c term_rounding::x86_fused, built for AVX2 with FMA.
-  template <typename T>
-  NUMERICAL_TARGET("avx2,fma") void plain_row_x86(std::size_t n,
-                                                  std::size_t k,
-                                                  const T*    a,
-                                                  const T*    b,
-                                                  std::size_t ldb,
-                                                  T*          c) noexcept
+  /*!
+   * \brief The plain loop's row of \ref gemm_rows in \c term_rounding::x86_fused, built for AVX2 with FMA: each element's
+   *        sum, from C or from zero as \p start says, held in a register over the whole depth (four vectors of columns
+   *        at a time), where each step of the depth read and wrote the row again; the same fused chain for each element.
+   */
+  NUMERICAL_TARGET("avx2,fma") inline void plain_row_x86(std::size_t    n,
+                                                         std::size_t    k,
+                                                         const double*  a,
+                                                         const double*  b,
+                                                         std::size_t    ldb,
+                                                         double*        c,
+                                                         c_start        start) noexcept
   {
-    for (std::size_t p {0}; p < k; ++p) {
-      const T ap {a[p]};
-      for (std::size_t j {0}; j < n; ++j) {
-        c[j] = std::fma(ap, b[(p * ldb) + j], c[j]);
-      }
+    constexpr std::size_t width {4};
+    const bool            kept  {start == c_start::kept};
+    // A zero depth leaves C as it is: none of its elements read or written.
+    if (k == 0 && kept) {
+      return;
     }
+    std::size_t           j     {0};
+    for (; j + (4 * width) <= n; j += 4 * width) { // four vectors of columns at a time
+      __m256d s0 {kept ? _mm256_loadu_pd(c + j) : _mm256_setzero_pd()};
+      __m256d s1 {kept ? _mm256_loadu_pd(c + j + width) : _mm256_setzero_pd()};
+      __m256d s2 {kept ? _mm256_loadu_pd(c + j + (2 * width)) : _mm256_setzero_pd()};
+      __m256d s3 {kept ? _mm256_loadu_pd(c + j + (3 * width)) : _mm256_setzero_pd()};
+      for (std::size_t p {0}; p < k; ++p) {
+        const __m256d  ap  {_mm256_set1_pd(a[p])};
+        const double * row {b + (p * ldb) + j};
+        s0 = _mm256_fmadd_pd(ap, _mm256_loadu_pd(row), s0);
+        s1 = _mm256_fmadd_pd(ap, _mm256_loadu_pd(row + width), s1);
+        s2 = _mm256_fmadd_pd(ap, _mm256_loadu_pd(row + (2 * width)), s2);
+        s3 = _mm256_fmadd_pd(ap, _mm256_loadu_pd(row + (3 * width)), s3);
+      }
+      _mm256_storeu_pd(c + j, s0);
+      _mm256_storeu_pd(c + j + width, s1);
+      _mm256_storeu_pd(c + j + (2 * width), s2);
+      _mm256_storeu_pd(c + j + (3 * width), s3);
+    }
+    for (; j + width <= n; j += width) {
+      __m256d sum {kept ? _mm256_loadu_pd(c + j) : _mm256_setzero_pd()};
+      for (std::size_t p {0}; p < k; ++p) {
+        sum = _mm256_fmadd_pd(_mm256_set1_pd(a[p]), _mm256_loadu_pd(b + (p * ldb) + j), sum);
+      }
+      _mm256_storeu_pd(c + j, sum);
+    }
+    for (; j < n; ++j) {
+      double sum {kept ? c[j] : double {}};
+      for (std::size_t p {0}; p < k; ++p) {
+        sum = std::fma(a[p], b[(p * ldb) + j], sum);
+      }
+      c[j] = sum;
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the row may be SSE alone
+  }
+
+  //! \brief \ref plain_row_x86 of `float`.
+  NUMERICAL_TARGET("avx2,fma") inline void plain_row_x86(std::size_t   n,
+                                                         std::size_t   k,
+                                                         const float*  a,
+                                                         const float*  b,
+                                                         std::size_t   ldb,
+                                                         float*        c,
+                                                         c_start       start) noexcept
+  {
+    constexpr std::size_t width {8};
+    const bool            kept  {start == c_start::kept};
+    // A zero depth leaves C as it is: none of its elements read or written.
+    if (k == 0 && kept) {
+      return;
+    }
+    std::size_t           j     {0};
+    for (; j + (4 * width) <= n; j += 4 * width) { // four vectors of columns at a time
+      __m256 s0 {kept ? _mm256_loadu_ps(c + j) : _mm256_setzero_ps()};
+      __m256 s1 {kept ? _mm256_loadu_ps(c + j + width) : _mm256_setzero_ps()};
+      __m256 s2 {kept ? _mm256_loadu_ps(c + j + (2 * width)) : _mm256_setzero_ps()};
+      __m256 s3 {kept ? _mm256_loadu_ps(c + j + (3 * width)) : _mm256_setzero_ps()};
+      for (std::size_t p {0}; p < k; ++p) {
+        const __m256  ap  {_mm256_set1_ps(a[p])};
+        const float * row {b + (p * ldb) + j};
+        s0 = _mm256_fmadd_ps(ap, _mm256_loadu_ps(row), s0);
+        s1 = _mm256_fmadd_ps(ap, _mm256_loadu_ps(row + width), s1);
+        s2 = _mm256_fmadd_ps(ap, _mm256_loadu_ps(row + (2 * width)), s2);
+        s3 = _mm256_fmadd_ps(ap, _mm256_loadu_ps(row + (3 * width)), s3);
+      }
+      _mm256_storeu_ps(c + j, s0);
+      _mm256_storeu_ps(c + j + width, s1);
+      _mm256_storeu_ps(c + j + (2 * width), s2);
+      _mm256_storeu_ps(c + j + (3 * width), s3);
+    }
+    for (; j + width <= n; j += width) {
+      __m256 sum {kept ? _mm256_loadu_ps(c + j) : _mm256_setzero_ps()};
+      for (std::size_t p {0}; p < k; ++p) {
+        sum = _mm256_fmadd_ps(_mm256_set1_ps(a[p]), _mm256_loadu_ps(b + (p * ldb) + j), sum);
+      }
+      _mm256_storeu_ps(c + j, sum);
+    }
+    for (; j < n; ++j) {
+      float sum {kept ? c[j] : float {}};
+      for (std::size_t p {0}; p < k; ++p) {
+        sum = std::fma(a[p], b[(p * ldb) + j], sum);
+      }
+      c[j] = sum;
+    }
+    _mm256_zeroupper(); // the upper halves cleared: code past the row may be SSE alone
   }
 
 #endif
@@ -2131,16 +2220,16 @@ namespace numerical::detail {
       return;
     }
     parallel_for(m, k * n / vector_speedup, [&](std::size_t i) {
-                   if (start == c_start::zero) {
-                     zero_block(c, ldc, i, i + 1, 0, n);
-                   }
 #ifdef NUMERICAL_X86_COMPILED
                    if constexpr (Mode == term_rounding::x86_fused) {
-                     plain_row_x86(n, k, a + (i * lda), b, ldb, c + (i * ldc));
+                     plain_row_x86(n, k, a + (i * lda), b, ldb, c + (i * ldc), start); // C zeroed in its sums
                    }
                    else
 #endif
                    {
+                     if (start == c_start::zero) {
+                       zero_block(c, ldc, i, i + 1, 0, n);
+                     }
                      for (std::size_t p {0}; p < k; ++p) {
                        const T aip {a[(i * lda) + p]};
                        for (std::size_t j {0}; j < n; ++j) {
