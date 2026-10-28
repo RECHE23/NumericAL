@@ -3492,7 +3492,7 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
     const bool       permutes {out.size() == in.size()};
     borrowed_operand x;
     if (!letters_once(in) || !letters_once(out) || out.find_first_not_of(in) != std::string::npos
-        || !borrow_operand(obj, x, one_axis || permutes)
+        || !borrow_operand(obj, x, one_axis || permutes, permutes && in.size() == 2)
         || x.shape.size() != in.size()) {
         return Py_NewRef(Py_NotImplemented);
     }
@@ -3520,8 +3520,20 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
                     for (const char label : out) {
                         shape.push_back(sizes.at(label));
                     }
-                    numerical::buffer<T> elements {labels == out ? numerical::buffer<T>(data, data + count)
-                                                                         : numerical::detail::permuted(data, count, labels, out, sizes)};
+                    const bool           apart {x.shape.size() == 2 && x.ld != x.shape[1]}; // a matrix of rows ld apart
+                    numerical::buffer<T> elements;
+                    if (labels != out) {
+                        elements = numerical::detail::permuted(data, count, labels, out, sizes, apart ? x.ld : 0);
+                    }
+                    else if (apart) { // its rows gathered
+                        elements.reserve(count);
+                        for (std::size_t r {0}; r < x.shape[0]; ++r) {
+                            elements.insert(elements.end(), data + (r * x.ld), data + (r * x.ld) + x.shape[1]);
+                        }
+                    }
+                    else {
+                        elements.assign(data, data + count);
+                    }
                     result.emplace(numerical::tensor<T> {std::move(shape), std::move(elements)});
                 }
                 else if (std::optional<numerical::tensor<T>> sums {numerical::detail::sum_over_run(labels, out, x.shape, data)}) {

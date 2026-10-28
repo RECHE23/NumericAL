@@ -39,6 +39,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   points 4–5× as fast; one line of 100 000 points 1.5–1.9× SciPy's time and type 4 of 1023 points 3.7×: open targets.
 
 ### Changed
+- **`einsum` permuting the axes of a NumPy matrix whose rows lie apart reads it where it lies** (every other row of
+  a wider array: `detail::permuted` takes the rows' distance), where one past 65 536 elements was copied first: M1 Pro,
+  `"ij->ji"` of every other row of 620 × 260 52.6 → 32.6 µs.
 - **A complex result is no longer zeroed before it is written** (`buffer<std::complex<R>>(n)` and `resize(n)` leave
   the elements as their memory holds them, as for `double`; `buffer(n, T {})` still zeroes): std::complex's default
   constructor zeroed every element of every complex result first. Ten AVX-512 cores, `matmul` of `complex128`

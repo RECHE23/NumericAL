@@ -252,6 +252,30 @@ TEST(einsum_permutes_by_tiles_and_copies_an_identity)
 }
 
 // A transpose whose rows lie 8 KiB apart, walked by pieces of 8 on every processor (transpose_piece), ragged at both
+// A matrix whose rows lie apart (every other row of a wider one, as a strided NumPy array) transposed from where it
+// lies: each element where the contiguous matrix's transpose puts it, across several tiles and an edge.
+TEST(a_transpose_of_rows_apart_moves_every_element)
+{
+  const std::size_t   rows {70};
+  const std::size_t   cols {45};
+  const std::size_t   ld   {2 * (cols + 3)};
+  std::vector<double> wide(rows * ld, -1.0);
+  for (std::size_t r {0}; r < rows; ++r) {
+    for (std::size_t c {0}; c < cols; ++c) {
+      wide[(r * ld) + c] = static_cast<double>((r * cols) + c) * 0.5;
+    }
+  }
+  const std::map<char, std::size_t> sizes   {{'i', rows}, {'j', cols}};
+  const numerical::buffer<double>   flipped {numerical::detail::permuted(wide.data(), rows * cols, "ij", "ji", sizes, ld)};
+  bool                              same    {flipped.size() == rows * cols};
+  for (std::size_t r {0}; same && r < rows; ++r) {
+    for (std::size_t c {0}; c < cols; ++c) {
+      same = same && flipped[(c * rows) + r] == static_cast<double>((r * cols) + c) * 0.5;
+    }
+  }
+  EXPECT(same);
+}
+
 // edges, through einsum and the matrix's transpose, either way round.
 TEST(a_transpose_of_aliased_rows_moves_every_element)
 {

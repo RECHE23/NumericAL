@@ -169,6 +169,21 @@ class BorrowedOperands(unittest.TestCase):
                         self.assertTrue(np.array_equal(np.asarray(got), np.einsum(spec, x)))
                         self.assertIsNot(numerical._numerical._borrowed_einsum(spec, x), NotImplemented)
 
+    def test_a_permutation_of_a_matrix_of_rows_apart_reads_it_where_it_lies(self):
+        # Every other row of a wider array, small and past what a strided operand is gathered for: transposed and kept,
+        # the elements of its contiguous copy's einsum, read in place.
+        for shape in ((40, 30), (310, 260), (1, 5)):
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                wide = np.zeros((2 * shape[0], shape[1] + 3), dtype=dtype)
+                wide[::2, : shape[1]] = self.operand(shape, dtype)
+                x = wide[::2, : shape[1]]
+                for spec in ("ij->ji", "ij->ij"):
+                    with self.subTest(shape=shape, spec=spec, dtype=np.dtype(dtype).name):
+                        got = numerical.einsum(spec, x)
+                        self.assert_same(got, numerical.einsum(spec, numerical.asarray(np.ascontiguousarray(x))))
+                        self.assertTrue(np.array_equal(np.asarray(got), np.einsum(spec, x)))
+                        self.assertIsNot(numerical._numerical._borrowed_einsum(spec, x), NotImplemented)
+
     def test_a_pair_of_arrays_reads_both_where_they_lie(self):
         # einsum of two NumPy arrays of one dtype, each label once and none an operand's own: the Tensors' result to the
         # bit, read in place (products, broadcasts, batches, a dot, empty extents); a column-major matrix is copied,

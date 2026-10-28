@@ -1305,14 +1305,16 @@ namespace numerical {
      *        along the labels \p to, a permutation of \p from that differs from it (so at least one label): a transpose
      *        of the last two labels by tiles, each slice of the leading ones; any other row by row of \p to's last
      *        label, a strided sweep. The threads share the work. \p data holds \p count elements, the product of the
-     *        extents.
+     *        extents; a matrix (two labels) may have its rows \p ld elements apart (a NumPy array of every other row),
+     *        0 for contiguous ones.
      */
     template <typename T>
     [[nodiscard]] buffer<T> permuted(const T*                           data,
                                      std::size_t                        count,
                                      const std::string&                 from,
                                      const std::string&                 to,
-                                     const std::map<char, std::size_t>& sizes)
+                                     const std::map<char, std::size_t>& sizes,
+                                     std::size_t                        ld = 0)
     {
       buffer<T> out(count); // every element written below
       if (count == 0) {
@@ -1324,6 +1326,7 @@ namespace numerical {
         // the slices' bands of rows shared among the threads.
         const std::size_t rows   {sizes.at(from[lead])};
         const std::size_t cols   {sizes.at(from[lead + 1])};
+        const std::size_t apart  {ld == 0 ? cols : ld}; // the elements between one row of a slice and the next
         const std::size_t slices {count / (rows * cols)};
         const std::size_t bands  {(rows + transpose_tile - 1) / transpose_tile};
         const std::size_t piece  {transpose_piece(cols * sizeof(T), rows * sizeof(T))};
@@ -1331,11 +1334,11 @@ namespace numerical {
                        const std::size_t slice {task / bands};
                        const std::size_t r0    {(task % bands) * transpose_tile};
                        const std::size_t r1    {std::min(r0 + transpose_tile, rows)};
-                       const T* const    in    {data + (slice * rows * cols)};
+                       const T* const    in    {data + (slice * rows * apart)};
                        T* const          into  {out.data() + (slice * rows * cols)};
                        for (std::size_t c0 {0}; c0 < cols; c0 += transpose_tile) {
                          transpose_walk(r0, r1, c0, std::min(c0 + transpose_tile, cols), piece,
-                                        [&](std::size_t r, std::size_t c) { into[(c * rows) + r] = in[(r * cols) + c]; });
+                                        [&](std::size_t r, std::size_t c) { into[(c * rows) + r] = in[(r * apart) + c]; });
                        }
                      });
         return out;
