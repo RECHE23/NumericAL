@@ -2573,6 +2573,32 @@ namespace numerical {
     }
 
     /*!
+     * \brief `P ← Q P` for the `rows × count` row-major \p p, `Q = H₀ H₁ …` the product of the \p blocks' reflectors, the
+     *        last applied first: a basis taken through `Q` without forming `Q`, as LAPACK's `dormqr` applies it where
+     *        `dorgqr` forms it. As \ref form_q_into applies the blocks: on the x86-64 units to the rows of `Pᵀ`
+     *        (\ref apply_transposed_reflector_block), transposed in and out, elsewhere in place (\ref apply_reflector_block).
+     */
+    template <typename T>
+    void apply_q(buffer<T>&                             p,
+                 const std::vector<reflector_block<T>>& blocks,
+                 [[maybe_unused]] std::size_t           rows,
+                 std::size_t                            count)
+    {
+#ifdef NUMERICAL_X86_COMPILED
+      buffer<T> pt(count * rows);
+      transpose_into(p.data(), rows, count, pt.data());
+      for (std::size_t b {blocks.size()}; b-- > 0;) {
+        apply_transposed_reflector_block(blocks[b], pt, rows, 0, count);
+      }
+      transpose_into(pt.data(), count, rows, p.data());
+#else
+      for (std::size_t b {blocks.size()}; b-- > 0;) {
+        apply_reflector_block(blocks[b], false, p, count, 0, count);
+      }
+#endif
+    }
+
+    /*!
      * \brief Factorises the `rows × cols` row-major \p a by Householder reflections, `A = Q R` with
      *        `k = min(rows, cols)`: `Q` is `rows × k` with orthonormal columns and `R` `k × cols` upper
      *        trapezoidal. Each column below the diagonal is reflected onto it, so `Q` is orthonormal to

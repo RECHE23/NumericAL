@@ -13,6 +13,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   tall or square matrix's last block, which no update reads, is no longer gathered, nor the only block of one of 32
   columns or fewer. M1 Pro, `svdvals` of 484 × 31 213 → 172 µs, 206 × 20 63 → 48 µs, 23 × 103 55 → 42 µs; ten
   AVX-512 cores 484 × 31 288 → 205 µs. The same bits.
+- **A non-square `svd`'s `U` is taken through the QR's reflectors** (`detail::apply_q`, as LAPACK's `dormqr`), where
+  `Q` was formed and then multiplied in: a matrix product and a matrix fewer. Six AVX2 cores, one thread: 1000 × 100
+  6.1 → 4.6 ms, 500 × 50 1.3 → 1.1 ms, 2000 × 200 28.1 → 25.4 ms; every thread 1000 × 100 4.7 → 3.9 ms; M1 Pro
+  about the same; Linux, the peak of a 20 000 × 200 `svd` 4.7 → 4.0 times the matrix. The last bits of `U` change.
 - **Products of a few rows on arm64 read B where it lies, by blocks of columns on the threads** (`few_rows`, the
   x86-64 path's, now shared): `double` up to four rows, `float` one row or five to fifteen (below the AMX's sixteen),
   where the NEON tile packed the whole of B. M1 Pro, every thread: `float` 6 × 200 by 200 × 400 30.9 → 10.9 µs,

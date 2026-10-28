@@ -1615,6 +1615,31 @@ namespace numerical {
   private:
 
     /*!
+     * \brief `U = Q [D L; 0]` (`rows × width`): the left vectors \p left of `R` (`cols × cols`), each row times its
+     *        diagonal's phase \p phases (`D`, as \ref detail::householder_qr rotates `Q`), and where `U` is square the
+     *        identity past them, `Q`'s columns past `cols`; `Q` the product of the reflectors \p blocks (\ref detail::apply_q).
+     */
+    [[nodiscard]] static matrix<T> applied_left_vectors(const buffer<T>&                               left,
+                                                        const std::vector<detail::reflector_block<T>>& blocks,
+                                                        const std::vector<T>&                          phases,
+                                                        std::size_t                                    rows,
+                                                        std::size_t                                    cols,
+                                                        std::size_t                                    width)
+    {
+      buffer<T> u(rows * width, T {});
+      for (std::size_t i {0}; i < cols; ++i) {
+        for (std::size_t j {0}; j < cols; ++j) {
+          u[(i * width) + j] = phases[i] * left[(i * cols) + j];
+        }
+      }
+      for (std::size_t i {cols}; i < width; ++i) {
+        u[(i * width) + i] = T {1};
+      }
+      detail::apply_q(u, blocks, rows, width);
+      return matrix<T> {rows, width, std::move(u)};
+    }
+
+    /*!
      * \brief `U` from the Householder \p q (`rows × width`) and the left vectors \p left of `R` (`cols × cols`): `Q`
      *        times them, and when `Q` is complete (`width` = `rows`) its columns past `cols` after them.
      */
@@ -1696,8 +1721,30 @@ namespace numerical {
       // first, its Q formed and multiplied in at the end, took a third of the decomposition's time at order 1024.
       const bool         direct  {rows == cols && method != svd_method::jacobi};
       const std::size_t  width   {full ? rows : cols};
-      detail::thin_qr<T> factors {direct ? detail::thin_qr<T> {.q = {}, .r = std::move(entries)}
-                                         : detail::householder_qr(std::move(entries), rows, cols, full)};
+      // A tall matrix's U is Q times R's, taken through Q's reflectors (applied), where Q formed then multiplied in took
+      // as much work again and held a matrix more (ten AVX-512 cores, one thread, 1000 × 100: 9.8 → 8.4 ms).
+      const bool                              applied {!direct && method != svd_method::jacobi};
+      std::vector<detail::reflector_block<T>> blocks;
+      std::vector<T>                          phases;
+      detail::thin_qr<T>                      factors;
+      if (direct) {
+        factors.r = std::move(entries);
+      }
+      else if (applied) {
+        detail::qr_reflections<T> reflections {detail::householder_reflect(std::move(entries), rows, cols)};
+        blocks    = std::move(reflections.blocks);
+        factors.r = std::move(reflections.r);
+        phases.resize(cols);
+        for (std::size_t k {0}; k < cols; ++k) { // R's diagonal real and non-negative, as householder_qr makes it
+          phases[k] = detail::phase_of(factors.r[(k * cols) + k]);
+          for (std::size_t j {k}; j < cols; ++j) {
+            factors.r[(k * cols) + j] *= detail::conj_of(phases[k]);
+          }
+        }
+      }
+      else {
+        factors = detail::householder_qr(std::move(entries), rows, cols, full);
+      }
       if (method != svd_method::jacobi) {
         buffer<double> d(cols, double {});
         buffer<double> e(cols, double {});
@@ -1721,8 +1768,7 @@ namespace numerical {
           value *= scale;
         }
         singular_values_ = vector<double> {std::move(d)};
-        u_               = direct ? matrix<T> {cols, cols, std::move(left)}
-                                  : left_vectors(std::move(factors.q), std::move(left), rows, cols, width);
+        u_               = direct ? matrix<T> {cols, cols, std::move(left)} : applied_left_vectors(left, blocks, phases, rows, cols, width);
         v_               = matrix<T> {cols, cols, std::move(right)};
         return;
       }
