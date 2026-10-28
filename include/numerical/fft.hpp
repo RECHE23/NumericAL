@@ -3149,8 +3149,10 @@ namespace numerical {
      *        points reordered evens then odds reversed, each frequency turned by \p roots (`e^{−iπk/2n}`), as Makhoul's;
      *        type 3 its inverse, by the inverse real transform; type 4 of an even `n` the complex transform of `n/2`
      *        points, the even ones and the odd ones reversed paired and turned by \p roots (`e^{−iπ(4j+1)/4n}`), each
-     *        frequency by \p turns (`e^{−iπk/n}`); of an odd `n` that of `2n` points, the points turned by \p roots
-     *        (`e^{−iπj/2n}`) then zeros, its first `n` frequencies by \p turns (`e^{−iπ(2k+1)/4n}`).
+     *        frequency by \p turns (`e^{−iπk/n}`); of an odd `n` the complex transform of `n` points, `8n`-th roots split as
+     *        eighth roots times `n`-th ones (`u n + 8 v = 1`, as `n` is odd): the point `2j + 1` (mod `n`) the `j`-th
+     *        times `χ₈(2j + 1) + i χ₋₈(2j + 1)`, each value `±√2` (\p signs) times the real part of one frequency (\p
+     *        picks), `v (2k + 1)` or its opposite (mod `n`), by those characters of `u (2k + 1)`.
      */
     template <std::floating_point R>
     struct cosine_line
@@ -3160,7 +3162,9 @@ namespace numerical {
       std::shared_ptr<const real_fft_plan<R>>      real;     //!< Types 1 to 3.
       std::shared_ptr<const fft_plan<R>>           complex;  //!< Type 4.
       std::vector<std::complex<R>>                 roots;    //!< See above.
-      std::vector<std::complex<R>>                 turns;    //!< Type 4.
+      std::vector<std::complex<R>>                 turns;    //!< Type 4 of an even `n`.
+      std::vector<std::size_t>                     picks;    //!< Type 4 of an odd `n`: the frequency each value is.
+      std::vector<R>                               signs;    //!< Its factor, ±√2.
 
       //! \brief \p y from \p u, \p even (the real transform's points) and \p spectrum its spaces, \p space the plan's;
       //!        the path's products, \p fused as its kernels' (\ref fft_fuses): taken at each call, as a line is shared.
@@ -3223,18 +3227,38 @@ namespace numerical {
             y[n - 1 - (2 * k)] = R(-2) * z.imag();
           }
         }
-        else { // the transform of 2n points of the turned ones padded with zeros, its first n
+        else { // an odd n: one transform of n points, the point 2j + 1 (mod n) the j-th times (χ₈ + i χ₋₈)(2j + 1)
           for (std::size_t j {0}; j < n; ++j) {
-            spectrum[j]     = roots[j] * u[j];
-            spectrum[n + j] = C {};
+            const std::size_t a       {(2 * j) + 1};
+            const std::size_t residue {a % 8};
+            spectrum[a < n ? a : a - n] = C {residue == 1 || residue == 7 ? u[j] : -u[j], residue <= 3 ? u[j] : -u[j]};
           }
           forward_fft(*complex, spectrum, space, fused);
           for (std::size_t k {0}; k < n; ++k) {
-            y[k] = R(2) * product(turns[k], spectrum[k]).real();
+            y[k] = signs[k] * spectrum[picks[k]].real();
           }
         }
       }
     };
+
+    //! \brief The inverse of 8 modulo the odd \p n, in `[0, n)`: by Euclid's algorithm extended.
+    [[nodiscard]] inline std::size_t eighth_inverse(std::size_t n) noexcept
+    {
+      std::int64_t r0 {static_cast<std::int64_t>(n)};
+      std::int64_t r1 {8 % r0};
+      std::int64_t t0 {0};
+      std::int64_t t1 {1};
+      while (r1 != 0) {
+        const std::int64_t q  {r0 / r1};
+        const std::int64_t r2 {r0 - (q * r1)};
+        const std::int64_t t2 {t0 - (q * t1)};
+        r0 = r1;
+        r1 = r2;
+        t0 = t1;
+        t1 = t2;
+      }
+      return static_cast<std::size_t>(((t0 % static_cast<std::int64_t>(n)) + static_cast<std::int64_t>(n)) % static_cast<std::int64_t>(n));
+    }
 
     /*!
      * \brief The \ref cosine_line of \p type on \p n points, its plan and roots formed: each root `e^{−iπa/d}` (`d` of
@@ -3245,21 +3269,37 @@ namespace numerical {
     [[nodiscard]] cosine_line<R> make_cosine_line(int         type,
                                                   std::size_t n)
     {
-      cosine_line<R>   line {type, n, nullptr, nullptr, {}, {}};
+      cosine_line<R>   line {type, n, nullptr, nullptr, {}, {}, {}, {}};
+      if (type == 4 && n % 2 == 1) { // 8v ≡ 1 (mod n), u = (1 − 8v)/n, and the characters of u (2k + 1) mod 8
+        line.complex = shared_fft_plan<R>(n);
+        const std::size_t  v        {eighth_inverse(n)};
+        const auto         u_eighth {static_cast<std::size_t>((((1 - (8 * static_cast<std::int64_t>(v))) / static_cast<std::int64_t>(n)) % 8) + 8) % 8};
+        const R            root_two {std::numbers::sqrt2_v<R>};
+        std::size_t        s        {v % n}; // v (2k + 1) mod n
+        line.picks.resize(n);
+        line.signs.resize(n);
+        for (std::size_t k {0}; k < n; ++k) {
+          const std::size_t b      {((2 * k) + 1) * u_eighth % 8};
+          const bool        cosine {b == 1 || b == 7}; // χ₈(u b) = 1
+          const bool        sine   {b == 1 || b == 3}; // χ₋₈(u b) = 1
+          line.picks[k] = cosine == sine ? (n - s) % n : s;
+          line.signs[k] = cosine ? root_two : -root_two;
+          s             = (s + (2 * v)) % n;
+        }
+        return line;
+      }
       const unit_roots eighths {8 * n};
       const auto       half_turn = [&](std::size_t numerator, std::size_t denominator) { // e^{−iπ·numerator/denominator}
                                      const std::complex<double> root {eighths.root(numerator * (4 * n / denominator))};
                                      return std::complex<R> {static_cast<R>(root.real()), static_cast<R>(root.imag())};
                                    };
-      if (type == 4) {
-        const bool        even  {n % 2 == 0};
-        const std::size_t count {even ? n / 2 : n};
-        line.complex = shared_fft_plan<R>(even ? n / 2 : 2 * n);
-        line.roots.resize(count);
-        line.turns.resize(count);
-        parallel_for(count, fft_root_cost, [&](std::size_t j) {
-                       line.roots[j] = even ? half_turn((4 * j) + 1, 4 * n) : half_turn(j, 2 * n);
-                       line.turns[j] = even ? half_turn(j, n) : half_turn((2 * j) + 1, 4 * n);
+      if (type == 4) { // n even
+        line.complex = shared_fft_plan<R>(n / 2);
+        line.roots.resize(n / 2);
+        line.turns.resize(n / 2);
+        parallel_for(n / 2, fft_root_cost, [&](std::size_t j) {
+                       line.roots[j] = half_turn((4 * j) + 1, 4 * n);
+                       line.turns[j] = half_turn(j, n);
                      });
         return line;
       }
@@ -3342,7 +3382,7 @@ namespace numerical {
       const bool                                  fused     {fft_fuses()}; // the path's, at this call
       const bool                                  odd_one   {!cosine && computed == 1};
       const std::size_t                           length    {odd_one ? 2 * (points + 1) : (computed == 1 ? 2 * (points - 1) : points)};
-      const std::shared_ptr<const cosine_line<R>> lines     {odd_one ? std::make_shared<const cosine_line<R>>(cosine_line<R> {1, points, shared_real_fft_plan<R>(length), nullptr, {}, {}})
+      const std::shared_ptr<const cosine_line<R>> lines     {odd_one ? std::make_shared<const cosine_line<R>>(cosine_line<R> {1, points, shared_real_fft_plan<R>(length), nullptr, {}, {}, {}, {}})
                                                                  : shared_cosine_line<R>(computed, points)};
       const std::size_t work                                {computed == 4 ? lines->complex->work
                                                         : (length % 2 == 0 ? length / 2 : length) + lines->real->complex->work};
