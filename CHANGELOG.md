@@ -39,6 +39,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   points 4–5× as fast; one line of 100 000 points 1.5–1.9× SciPy's time and type 4 of 1023 points 3.7×: open targets.
 
 ### Changed
+- **A product into a C that holds nothing writes its first panel's tiles fresh on x86-64** (`writes_fresh`: sums
+  from zero, C neither zeroed first nor read), where C was zeroed in a pass of its own, then read back by every tile:
+  ten AVX-512 cores, 914 × 2 by 2 × 337 `complex128` 519 → 405 µs on one thread, 227 → 142 µs on all. The same bits.
 - **A complex product of one sliver of columns reads A where it lies on x86-64** (`tile_a_in_place`, B at most eight
   `complex128` columns on the AVX-512 path, four on the AVX2 one, twice as many `complex64`), where A was packed for
   tiles that read each of its elements once: ten AVX-512 cores, 430 × 607 by 607 × 6 `complex128` 495 → 257 µs on one

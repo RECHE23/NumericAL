@@ -2353,12 +2353,59 @@ namespace numerical::detail {
     Kernel::prefetch_rows(c, ldc);
   }
 
+  //! \brief Whether \p Kernel's tiles write C as it holds nothing, their sums from zero (\c Kernel::tile's `fresh`):
+  //!        C then not zeroed first.
+  template <typename Kernel,
+            typename T>
+  inline constexpr bool writes_fresh {requires(const T * x, T * y, std::size_t z) {
+                                        Kernel::tile(z, x, x, z, y, z, z, z, true);
+                                      }};
+
   //! \brief Whether \p Kernel reads A where it lies (\c Kernel::tile_a_in_place).
   template <typename Kernel,
             typename T>
   inline constexpr bool reads_a_in_place {requires(const T * x, T * y, std::size_t z) {
                                             Kernel::tile_a_in_place(z, x, z, z, x, z, y, z, z, z);
                                           }};
+
+  //! \brief Whether \ref gemm_packed packs A for \p Kernel: unless given packed (\p a_packed).
+  template <typename Kernel,
+            typename T>
+  requires (!reads_a_in_place<Kernel, T>)
+  [[nodiscard]] constexpr bool packs_a(const T* a_packed,
+                                       std::size_t /*n*/) noexcept
+  {
+    return a_packed == nullptr;
+  }
+
+  //! \brief \ref packs_a for a kernel that reads A in place: nor where B is one sliver of columns (\p n), which reads
+  //!        each element of A once.
+  template <typename Kernel,
+            typename T>
+  requires reads_a_in_place<Kernel, T>
+  [[nodiscard]] constexpr bool packs_a(const T*    a_packed,
+                                       std::size_t n) noexcept
+  {
+    return a_packed == nullptr && n > Kernel::nr;
+  }
+
+  //! \brief Whether \ref gemm_packed zeroes a C that holds nothing (\p empty) for \p Kernel's tiles to add to.
+  template <typename Kernel,
+            typename T>
+  requires (!writes_fresh<Kernel, T>)
+  [[nodiscard]] constexpr bool zeroes_c(bool empty) noexcept
+  {
+    return empty;
+  }
+
+  //! \brief \ref zeroes_c for tiles that write C fresh: never.
+  template <typename Kernel,
+            typename T>
+  requires writes_fresh<Kernel, T>
+  [[nodiscard]] constexpr bool zeroes_c(bool /*empty*/) noexcept
+  {
+    return false;
+  }
 
   //! \brief The most rows of a task of \p Kernel over a panel of depth \p kc: its block of rows.
   template <typename Kernel>
@@ -2409,12 +2456,10 @@ namespace numerical::detail {
     constexpr std::size_t    nc_max {nr * 128};
     // A read where it lies by a product of one sliver of columns, which reads each of its elements once: packing it
     // cost more than the tiles (430 × 607 by 607 × 6 complex128, half the time).
-    bool                     a_own      {a_packed == nullptr}; // A packed here
-    bool                     a_in_place {false};
-    if constexpr (reads_a_in_place<Kernel, T>) {
-      a_in_place = a_own && n <= nr;
-      a_own      = a_own && !a_in_place;
-    }
+    const bool               a_own      {packs_a<Kernel, T>(a_packed, n)}; // A packed here
+#ifdef NUMERICAL_X86_COMPILED                                              // the complex tiles, the only ones that read A in place
+    const bool               a_in_place {a_packed == nullptr && !a_own};
+#endif
     const std::size_t        a_rows     {((m + mr) - 1) / mr * mr};
     const std::size_t        b_cols     {((std::min(nc_max, n) + nr) - 1) / nr * nr};
     const packing_storage<T> packed     {a_own ? a_rows * std::min(Kernel::depth, k) : 0, b_cols * std::min(Kernel::depth, k)};
@@ -2439,8 +2484,14 @@ namespace numerical::detail {
         const std::size_t task_work  {shared * task_rows * gemm_slivers_per_task * nr * kc / Kernel::speedup};
         // C holding nothing: zeroed by the tasks on threads, each its block before its first panel; else here, at
         // once and before the packing, which its lines would then evict (one AVX-512 thread, order 256: 434 → 428 µs).
-        const bool        zero_tasks {start == c_start::zero && pc == 0 && parallel_threads(task_count * groups, task_work) > 1};
-        if (start == c_start::zero && pc == 0 && !zero_tasks) {
+        // A tile written fresh by the first panel needs C zeroed by no one: one pass over C fewer, and none read.
+        const bool        empty      {start == c_start::zero && pc == 0}; // C holds nothing before this panel's tiles
+        const bool        zeroing    {zeroes_c<Kernel, T>(empty)};        // C to zero before they add to it
+#ifdef NUMERICAL_X86_COMPILED                                             // the x86-64 tiles, the only ones that write C fresh
+        const bool        fresh      {empty && !zeroing};
+#endif
+        const bool        zero_tasks {zeroing && parallel_threads(task_count * groups, task_work) > 1};
+        if (zeroing && !zero_tasks) {
           zero_block(c, ldc, 0, m, jc, jc + nc);
         }
         // One pass packs both: B's groups of slivers first, then A's row blocks.
@@ -2481,13 +2532,20 @@ namespace numerical::detail {
                            }
                            const T* const    b_tile {direct ? b + (pc * ldb) + jc + jr : packed.b() + (jr * kc)};
                            const std::size_t b_ld {direct ? ldb : nr};
+#ifdef NUMERICAL_X86_COMPILED
                            if constexpr (reads_a_in_place<Kernel, T>) {
                              if (a_in_place) {
                                Kernel::tile_a_in_place(kc, A::element(a, lda, ir, pc), A::step(lda), A::across(lda), b_tile, b_ld,
-                                                       c + (ir * ldc) + jc + jr, ldc, std::min(mr, m - ir), std::min(nr, nc - jr));
+                                                       c + (ir * ldc) + jc + jr, ldc, std::min(mr, m - ir), std::min(nr, nc - jr), fresh);
                                continue;
                              }
                            }
+                           if constexpr (writes_fresh<Kernel, T>) {
+                             Kernel::tile(kc, a_tiles + (ir * kc), b_tile, b_ld, c + (ir * ldc) + jc + jr, ldc, std::min(mr, m - ir),
+                                          std::min(nr, nc - jr), fresh);
+                             continue;
+                           }
+#endif
                            Kernel::tile(kc, a_tiles + (ir * kc), b_tile, b_ld, c + (ir * ldc) + jc + jr, ldc, std::min(mr, m - ir),
                                         std::min(nr, nc - jr));
                          }
@@ -2642,9 +2700,10 @@ namespace numerical::detail {
                      double*       c,
                      std::size_t   ldc,
                      std::size_t   rows,
-                     std::size_t   cols) noexcept
+                     std::size_t   cols,
+                     bool          fresh = false) noexcept
     {
-      avx512_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
+      avx512_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols, fresh);
     }
   };
 
@@ -2714,9 +2773,10 @@ namespace numerical::detail {
                      double*       c,
                      std::size_t   ldc,
                      std::size_t   rows,
-                     std::size_t   cols) noexcept
+                     std::size_t   cols,
+                     bool          fresh = false) noexcept
     {
-      avx2_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols);
+      avx2_tile_f64(kc, ap, bp, ldb, c, ldc, rows, cols, fresh);
     }
   };
   //! \brief \ref avx512_tile_kernel for `float` (\ref avx512_tile_f32).
@@ -2754,9 +2814,10 @@ namespace numerical::detail {
                      float*       c,
                      std::size_t  ldc,
                      std::size_t  rows,
-                     std::size_t  cols) noexcept
+                     std::size_t  cols,
+                     bool         fresh = false) noexcept
     {
-      avx512_tile_f32(kc, ap, bp, ldb, c, ldc, rows, cols);
+      avx512_tile_f32(kc, ap, bp, ldb, c, ldc, rows, cols, fresh);
     }
   };
 
@@ -2800,9 +2861,10 @@ namespace numerical::detail {
                      float*       c,
                      std::size_t  ldc,
                      std::size_t  rows,
-                     std::size_t  cols) noexcept
+                     std::size_t  cols,
+                     bool         fresh = false) noexcept
     {
-      avx2_tile_f32(kc, ap, bp, ldb, c, ldc, rows, cols);
+      avx2_tile_f32(kc, ap, bp, ldb, c, ldc, rows, cols, fresh);
     }
   };
 
@@ -2849,9 +2911,10 @@ namespace numerical::detail {
                      std::complex<double>*       c,
                      std::size_t                 ldc,
                      std::size_t                 rows,
-                     std::size_t                 cols) noexcept
+                     std::size_t                 cols,
+                     bool                        fresh = false) noexcept
     {
-      avx512_tile_c64(kc, ap, bp, ldb, c, ldc, rows, cols);
+      avx512_tile_c64(kc, ap, bp, ldb, c, ldc, rows, cols, fresh);
     }
 
     //! \brief \ref tile with A read where it lies (\ref gemm_packed for a product of one sliver of columns): element
@@ -2865,9 +2928,10 @@ namespace numerical::detail {
                                 std::complex<double>      * c,
                                 std::size_t                 ldc,
                                 std::size_t                 rows,
-                                std::size_t                 cols) noexcept
+                                std::size_t                 cols,
+                                bool                        fresh = false) noexcept
     {
-      avx512_tile_c64_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols);
+      avx512_tile_c64_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols, fresh);
     }
   };
 
@@ -2913,9 +2977,10 @@ namespace numerical::detail {
                      std::complex<double>*       c,
                      std::size_t                 ldc,
                      std::size_t                 rows,
-                     std::size_t                 cols) noexcept
+                     std::size_t                 cols,
+                     bool                        fresh = false) noexcept
     {
-      avx2_tile_c64(kc, ap, bp, ldb, c, ldc, rows, cols);
+      avx2_tile_c64(kc, ap, bp, ldb, c, ldc, rows, cols, fresh);
     }
 
     //! \brief \ref tile with A read where it lies (\ref gemm_packed for a product of one sliver of columns): element
@@ -2929,9 +2994,10 @@ namespace numerical::detail {
                                 std::complex<double>      * c,
                                 std::size_t                 ldc,
                                 std::size_t                 rows,
-                                std::size_t                 cols) noexcept
+                                std::size_t                 cols,
+                                bool                        fresh = false) noexcept
     {
-      avx2_tile_c64_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols);
+      avx2_tile_c64_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols, fresh);
     }
   };
   //! \brief \ref avx512_complex_tile_kernel for complex `float` (\ref avx512_full_tile_c32).
@@ -2971,9 +3037,10 @@ namespace numerical::detail {
                      std::complex<float>*       c,
                      std::size_t                ldc,
                      std::size_t                rows,
-                     std::size_t                cols) noexcept
+                     std::size_t                cols,
+                     bool                       fresh = false) noexcept
     {
-      avx512_tile_c32(kc, ap, bp, ldb, c, ldc, rows, cols);
+      avx512_tile_c32(kc, ap, bp, ldb, c, ldc, rows, cols, fresh);
     }
 
     //! \brief \ref tile with A read where it lies (\ref gemm_packed for a product of one sliver of columns): element
@@ -2987,9 +3054,10 @@ namespace numerical::detail {
                                 std::complex<float>      * c,
                                 std::size_t                ldc,
                                 std::size_t                rows,
-                                std::size_t                cols) noexcept
+                                std::size_t                cols,
+                                bool                       fresh = false) noexcept
     {
-      avx512_tile_c32_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols);
+      avx512_tile_c32_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols, fresh);
     }
   };
 
@@ -3030,9 +3098,10 @@ namespace numerical::detail {
                      std::complex<float>*       c,
                      std::size_t                ldc,
                      std::size_t                rows,
-                     std::size_t                cols) noexcept
+                     std::size_t                cols,
+                     bool                       fresh = false) noexcept
     {
-      avx2_tile_c32(kc, ap, bp, ldb, c, ldc, rows, cols);
+      avx2_tile_c32(kc, ap, bp, ldb, c, ldc, rows, cols, fresh);
     }
 
     //! \brief \ref tile with A read where it lies (\ref gemm_packed for a product of one sliver of columns): element
@@ -3046,9 +3115,10 @@ namespace numerical::detail {
                                 std::complex<float>      * c,
                                 std::size_t                ldc,
                                 std::size_t                rows,
-                                std::size_t                cols) noexcept
+                                std::size_t                cols,
+                                bool                       fresh = false) noexcept
     {
-      avx2_tile_c32_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols);
+      avx2_tile_c32_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols, fresh);
     }
   };
 
@@ -3694,7 +3764,8 @@ namespace numerical::detail {
 
   //! \brief A complex product past the plain loop: on the vector tile on the portable path, whole complex products
   //!        summed in order; on the x86-64 complex tiles there; else (arm64) through the real kernel (`gemm_split`).
-  //!        B and A laid out as \p B and \p A say.
+  //!        B and A laid out as \p B and \p A say; \p start what C holds (\ref c_start), the packed paths' to
+  //!        settle, the split's C zeroed first.
   template <typename B,
             typename A,
             split_complex T>
@@ -3706,27 +3777,31 @@ namespace numerical::detail {
                           const T*    b,
                           std::size_t ldb,
                           T*          c,
-                          std::size_t ldc)
+                          std::size_t ldc,
+                          c_start     start = c_start::kept)
   {
     const gemm_path path {gemm_path_current()};
     if (path == gemm_path::portable) {
-      gemm_packed<vector_tile_kernel<T>, T, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<vector_tile_kernel<T>, T, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return;
     }
 #ifdef NUMERICAL_X86_COMPILED
     if (path == gemm_path::avx512) { // a complex tile of its own on the x86-64 units
-      gemm_packed<x86_complex_kernel<T, avx512_complex_tile_kernel, avx512_complex_tile_kernel_f32>, T, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<x86_complex_kernel<T, avx512_complex_tile_kernel, avx512_complex_tile_kernel_f32>, T, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return;
     }
     if (path == gemm_path::avx2) {
-      gemm_packed<x86_complex_kernel<T, avx2_complex_tile_kernel, avx2_complex_tile_kernel_f32>, T, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+      gemm_packed<x86_complex_kernel<T, avx2_complex_tile_kernel, avx2_complex_tile_kernel_f32>, T, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
       return;
     }
 #endif
+    if (start == c_start::zero) { // the split adds to C
+      zero_c(c, ldc, m, n);
+    }
     gemm_split<T, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
   }
 
-  //! \brief \ref gemm_large_complex of row-major operands, C zeroed first where \p start says it holds nothing.
+  //! \brief \ref gemm_large_complex of row-major operands.
   template <split_complex T>
   void gemm_large(std::size_t m,
                   std::size_t n,
@@ -3739,10 +3814,7 @@ namespace numerical::detail {
                   std::size_t ldc,
                   c_start     start = c_start::kept)
   {
-    if (start == c_start::zero) { // its routes add to C
-      zero_c(c, ldc, m, n);
-    }
-    gemm_large_complex<b_rows, a_rows>(m, n, k, a, lda, b, ldb, c, ldc);
+    gemm_large_complex<b_rows, a_rows>(m, n, k, a, lda, b, ldb, c, ldc, start);
   }
 
   /*!

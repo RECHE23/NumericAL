@@ -153,13 +153,14 @@ namespace numerical::detail {
                                                                const double* bp,
                                                                std::size_t   ldb,
                                                                double*       tile,
-                                                               std::size_t   ld) noexcept
+                                                               std::size_t   ld,
+                                                               bool          fresh = false) noexcept
   {
     std::array<zmm_register, Rows * 2> acc {};
     NUMERICAL_UNROLL_TILE
     for (std::size_t i {0}; i < Rows; ++i) {
-      acc[2 * i].v       = _mm512_loadu_pd(tile + (i * ld));
-      acc[(2 * i) + 1].v = _mm512_loadu_pd(tile + (i * ld) + 8);
+      acc[2 * i].v       = fresh ? _mm512_setzero_pd() : _mm512_loadu_pd(tile + (i * ld));
+      acc[(2 * i) + 1].v = fresh ? _mm512_setzero_pd() : _mm512_loadu_pd(tile + (i * ld) + 8);
     }
     NUMERICAL_UNROLL_DEPTH
     for (std::size_t p {0}; p < kc; ++p) {
@@ -189,9 +190,10 @@ namespace numerical::detail {
                               double*       c,
                               std::size_t   ldc,
                               std::size_t   rows,
-                              std::size_t   cols) noexcept
+                              std::size_t   cols,
+                              bool          fresh = false) noexcept
   {
-    through_rows<avx512_mr, avx512_nr>(c, ldc, rows, cols, [&]<std::size_t Rows>(double* tile, std::size_t ld) noexcept { avx512_full_tile_f64<Rows>(kc, ap, bp, ldb, tile, ld); });
+    through_rows<avx512_mr, avx512_nr>(c, ldc, rows, cols, [&]<std::size_t Rows>(double* tile, std::size_t ld) noexcept { avx512_full_tile_f64<Rows>(kc, ap, bp, ldb, tile, ld, fresh); });
   }
 
   //! \brief How far ahead, in `double`s (512 bytes), the AVX2 tile fetches its slivers of A and B.
@@ -207,13 +209,14 @@ namespace numerical::detail {
                                                               const double* bp,
                                                               std::size_t   ldb,
                                                               double*       tile,
-                                                              std::size_t   ld) noexcept
+                                                              std::size_t   ld,
+                                                              bool          fresh = false) noexcept
   {
     std::array<ymm_register, Rows * 2> acc {};
     NUMERICAL_UNROLL_TILE
     for (std::size_t i {0}; i < Rows; ++i) {
-      acc[2 * i].v       = _mm256_loadu_pd(tile + (i * ld));
-      acc[(2 * i) + 1].v = _mm256_loadu_pd(tile + (i * ld) + 4);
+      acc[2 * i].v       = fresh ? _mm256_setzero_pd() : _mm256_loadu_pd(tile + (i * ld));
+      acc[(2 * i) + 1].v = fresh ? _mm256_setzero_pd() : _mm256_loadu_pd(tile + (i * ld) + 4);
     }
     NUMERICAL_UNROLL_DEPTH_AVX2
     for (std::size_t p {0}; p < kc; ++p) {
@@ -247,9 +250,10 @@ namespace numerical::detail {
                             double*       c,
                             std::size_t   ldc,
                             std::size_t   rows,
-                            std::size_t   cols) noexcept
+                            std::size_t   cols,
+                            bool          fresh = false) noexcept
   {
-    through_rows<avx2_mr, avx2_nr>(c, ldc, rows, cols, [&]<std::size_t Rows>(double* tile, std::size_t ld) noexcept { avx2_full_tile_f64<Rows>(kc, ap, bp, ldb, tile, ld); });
+    through_rows<avx2_mr, avx2_nr>(c, ldc, rows, cols, [&]<std::size_t Rows>(double* tile, std::size_t ld) noexcept { avx2_full_tile_f64<Rows>(kc, ap, bp, ldb, tile, ld, fresh); });
   }
 
   //! \brief A 512-bit register of `float` as an element of `std::array`.
@@ -277,13 +281,14 @@ namespace numerical::detail {
                                                                const float* bp,
                                                                std::size_t  ldb,
                                                                float*       tile,
-                                                               std::size_t  ld) noexcept
+                                                               std::size_t  ld,
+                                                               bool         fresh = false) noexcept
   {
     std::array<zmm_register_f32, Rows * 2> acc {};
     NUMERICAL_UNROLL_TILE
     for (std::size_t i {0}; i < Rows; ++i) {
-      acc[2 * i].v       = _mm512_loadu_ps(tile + (i * ld));
-      acc[(2 * i) + 1].v = _mm512_loadu_ps(tile + (i * ld) + 16);
+      acc[2 * i].v       = fresh ? _mm512_setzero_ps() : _mm512_loadu_ps(tile + (i * ld));
+      acc[(2 * i) + 1].v = fresh ? _mm512_setzero_ps() : _mm512_loadu_ps(tile + (i * ld) + 16);
     }
     NUMERICAL_UNROLL_DEPTH
     for (std::size_t p {0}; p < kc; ++p) {
@@ -312,9 +317,10 @@ namespace numerical::detail {
                               float*       c,
                               std::size_t  ldc,
                               std::size_t  rows,
-                              std::size_t  cols) noexcept
+                              std::size_t  cols,
+                              bool         fresh = false) noexcept
   {
-    through_rows<avx512_mr, avx512_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(float* tile, std::size_t ld) noexcept { avx512_full_tile_f32<Rows>(kc, ap, bp, ldb, tile, ld); });
+    through_rows<avx512_mr, avx512_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(float* tile, std::size_t ld) noexcept { avx512_full_tile_f32<Rows>(kc, ap, bp, ldb, tile, ld, fresh); });
   }
 
   //! \brief \ref avx2_full_tile_f64 for `float`: \ref avx2_mr × \ref avx2_nr_f32, 12 accumulators of eight.
@@ -324,13 +330,14 @@ namespace numerical::detail {
                                                               const float* bp,
                                                               std::size_t  ldb,
                                                               float*       tile,
-                                                              std::size_t  ld) noexcept
+                                                              std::size_t  ld,
+                                                              bool         fresh = false) noexcept
   {
     std::array<ymm_register_f32, Rows * 2> acc {};
     NUMERICAL_UNROLL_TILE
     for (std::size_t i {0}; i < Rows; ++i) {
-      acc[2 * i].v       = _mm256_loadu_ps(tile + (i * ld));
-      acc[(2 * i) + 1].v = _mm256_loadu_ps(tile + (i * ld) + 8);
+      acc[2 * i].v       = fresh ? _mm256_setzero_ps() : _mm256_loadu_ps(tile + (i * ld));
+      acc[(2 * i) + 1].v = fresh ? _mm256_setzero_ps() : _mm256_loadu_ps(tile + (i * ld) + 8);
     }
     NUMERICAL_UNROLL_DEPTH_AVX2
     for (std::size_t p {0}; p < kc; ++p) {
@@ -361,9 +368,10 @@ namespace numerical::detail {
                             float*       c,
                             std::size_t  ldc,
                             std::size_t  rows,
-                            std::size_t  cols) noexcept
+                            std::size_t  cols,
+                            bool         fresh = false) noexcept
   {
-    through_rows<avx2_mr, avx2_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(float* tile, std::size_t ld) noexcept { avx2_full_tile_f32<Rows>(kc, ap, bp, ldb, tile, ld); });
+    through_rows<avx2_mr, avx2_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(float* tile, std::size_t ld) noexcept { avx2_full_tile_f32<Rows>(kc, ap, bp, ldb, tile, ld, fresh); });
   }
 
   //! \brief The rows of C one AVX2 complex tile covers.
@@ -387,8 +395,9 @@ namespace numerical::detail {
                                                               std::size_t                 ldb,
                                                               std::complex<double>*       tile,
                                                               std::size_t                 ld,
-                                                              std::size_t                 a_step = avx2_complex_mr,
-                                                              std::size_t                 a_row  = 1) noexcept
+                                                              std::size_t                 a_step                        = avx2_complex_mr,
+                                                              std::size_t                 a_row                         = 1,
+                                                              bool                        fresh                         = false) noexcept
   {
     const std::size_t                             step   {AInPlace ? a_step : avx2_complex_mr}; // A's elements apart from one step to the next
     const std::size_t                             across {AInPlace ? a_row : 1};                // and from one row to the next
@@ -415,8 +424,8 @@ namespace numerical::detail {
       double* const row {c + (2 * i * ld)};
       const __m256d lo  {_mm256_addsub_pd(acc[4 * i].v, _mm256_permute_pd(acc[(4 * i) + 2].v, 0b0101))};
       const __m256d hi  {_mm256_addsub_pd(acc[(4 * i) + 1].v, _mm256_permute_pd(acc[(4 * i) + 3].v, 0b0101))};
-      _mm256_storeu_pd(row, _mm256_add_pd(_mm256_loadu_pd(row), lo));
-      _mm256_storeu_pd(row + 4, _mm256_add_pd(_mm256_loadu_pd(row + 4), hi));
+      _mm256_storeu_pd(row, _mm256_add_pd(fresh ? _mm256_setzero_pd() : _mm256_loadu_pd(row), lo));
+      _mm256_storeu_pd(row + 4, _mm256_add_pd(fresh ? _mm256_setzero_pd() : _mm256_loadu_pd(row + 4), hi));
     }
     _mm256_zeroupper(); // the upper halves cleared: code past the tile may be SSE alone
   }
@@ -430,10 +439,11 @@ namespace numerical::detail {
                             std::complex<double>*       c,
                             std::size_t                 ldc,
                             std::size_t                 rows,
-                            std::size_t                 cols) noexcept
+                            std::size_t                 cols,
+                            bool                        fresh = false) noexcept
   {
     through_rows<avx2_complex_mr, avx2_complex_nr>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<double>* tile, std::size_t ld) noexcept {
-                                                     avx2_full_tile_c64<Rows>(kc, ap, bp, ldb, tile, ld);
+                                                     avx2_full_tile_c64<Rows>(kc, ap, bp, ldb, tile, ld, avx2_complex_mr, 1, fresh);
                                                    });
   }
 
@@ -448,10 +458,11 @@ namespace numerical::detail {
                                        std::complex<double>      * c,
                                        std::size_t                 ldc,
                                        std::size_t                 rows,
-                                       std::size_t                 cols) noexcept
+                                       std::size_t                 cols,
+                                       bool                        fresh = false) noexcept
   {
     through_rows<avx2_complex_mr, avx2_complex_nr>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<double>* tile, std::size_t ld) noexcept {
-                                                     avx2_full_tile_c64<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row);
+                                                     avx2_full_tile_c64<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row, fresh);
                                                    });
   }
 
@@ -474,8 +485,9 @@ namespace numerical::detail {
                                                                std::size_t                 ldb,
                                                                std::complex<double>*       tile,
                                                                std::size_t                 ld,
-                                                               std::size_t                 a_step = avx512_complex_mr,
-                                                               std::size_t                 a_row  = 1) noexcept
+                                                               std::size_t                 a_step                        = avx512_complex_mr,
+                                                               std::size_t                 a_row                         = 1,
+                                                               bool                        fresh                         = false) noexcept
   {
     const std::size_t                               step   {AInPlace ? a_step : avx512_complex_mr}; // A's elements apart from one step to the next
     const std::size_t                               across {AInPlace ? a_row : 1};                  // and from one row to the next
@@ -503,8 +515,8 @@ namespace numerical::detail {
       double* const row {c + (2 * i * ld)};
       const __m512d lo  {_mm512_fmadd_pd(_mm512_permute_pd(acc[(4 * i) + 2].v, 0x55), signs, acc[4 * i].v)};
       const __m512d hi  {_mm512_fmadd_pd(_mm512_permute_pd(acc[(4 * i) + 3].v, 0x55), signs, acc[(4 * i) + 1].v)};
-      _mm512_storeu_pd(row, _mm512_add_pd(_mm512_loadu_pd(row), lo));
-      _mm512_storeu_pd(row + 8, _mm512_add_pd(_mm512_loadu_pd(row + 8), hi));
+      _mm512_storeu_pd(row, _mm512_add_pd(fresh ? _mm512_setzero_pd() : _mm512_loadu_pd(row), lo));
+      _mm512_storeu_pd(row + 8, _mm512_add_pd(fresh ? _mm512_setzero_pd() : _mm512_loadu_pd(row + 8), hi));
     }
   }
 
@@ -516,10 +528,11 @@ namespace numerical::detail {
                               std::complex<double>*       c,
                               std::size_t                 ldc,
                               std::size_t                 rows,
-                              std::size_t                 cols) noexcept
+                              std::size_t                 cols,
+                              bool                        fresh = false) noexcept
   {
     through_rows<avx512_complex_mr, avx512_complex_nr>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<double>* tile, std::size_t ld) noexcept {
-                                                         avx512_full_tile_c64<Rows>(kc, ap, bp, ldb, tile, ld);
+                                                         avx512_full_tile_c64<Rows>(kc, ap, bp, ldb, tile, ld, avx512_complex_mr, 1, fresh);
                                                        });
   }
 
@@ -534,10 +547,11 @@ namespace numerical::detail {
                                          std::complex<double>      * c,
                                          std::size_t                 ldc,
                                          std::size_t                 rows,
-                                         std::size_t                 cols) noexcept
+                                         std::size_t                 cols,
+                                         bool                        fresh = false) noexcept
   {
     through_rows<avx512_complex_mr, avx512_complex_nr>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<double>* tile, std::size_t ld) noexcept {
-                                                         avx512_full_tile_c64<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row);
+                                                         avx512_full_tile_c64<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row, fresh);
                                                        });
   }
 
@@ -556,8 +570,9 @@ namespace numerical::detail {
                                                               std::size_t                ldb,
                                                               std::complex<float>*       tile,
                                                               std::size_t                ld,
-                                                              std::size_t                a_step = avx2_complex_mr,
-                                                              std::size_t                a_row  = 1) noexcept
+                                                              std::size_t                a_step                       = avx2_complex_mr,
+                                                              std::size_t                a_row                        = 1,
+                                                              bool                       fresh                        = false) noexcept
   {
     const std::size_t                                 step   {AInPlace ? a_step : avx2_complex_mr}; // A's elements apart from one step to the next
     const std::size_t                                 across {AInPlace ? a_row : 1};                // and from one row to the next
@@ -584,8 +599,8 @@ namespace numerical::detail {
       float* const row {c + (2 * i * ld)};
       const __m256 lo  {_mm256_addsub_ps(acc[4 * i].v, _mm256_permute_ps(acc[(4 * i) + 2].v, 0xB1))};
       const __m256 hi  {_mm256_addsub_ps(acc[(4 * i) + 1].v, _mm256_permute_ps(acc[(4 * i) + 3].v, 0xB1))};
-      _mm256_storeu_ps(row, _mm256_add_ps(_mm256_loadu_ps(row), lo));
-      _mm256_storeu_ps(row + 8, _mm256_add_ps(_mm256_loadu_ps(row + 8), hi));
+      _mm256_storeu_ps(row, _mm256_add_ps(fresh ? _mm256_setzero_ps() : _mm256_loadu_ps(row), lo));
+      _mm256_storeu_ps(row + 8, _mm256_add_ps(fresh ? _mm256_setzero_ps() : _mm256_loadu_ps(row + 8), hi));
     }
     _mm256_zeroupper(); // the upper halves cleared: code past the tile may be SSE alone
   }
@@ -598,10 +613,11 @@ namespace numerical::detail {
                             std::complex<float>*       c,
                             std::size_t                ldc,
                             std::size_t                rows,
-                            std::size_t                cols) noexcept
+                            std::size_t                cols,
+                            bool                       fresh = false) noexcept
   {
     through_rows<avx2_complex_mr, avx2_complex_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<float>* tile, std::size_t ld) noexcept {
-                                                         avx2_full_tile_c32<Rows>(kc, ap, bp, ldb, tile, ld);
+                                                         avx2_full_tile_c32<Rows>(kc, ap, bp, ldb, tile, ld, avx2_complex_mr, 1, fresh);
                                                        });
   }
 
@@ -616,10 +632,11 @@ namespace numerical::detail {
                                        std::complex<float>      * c,
                                        std::size_t                ldc,
                                        std::size_t                rows,
-                                       std::size_t                cols) noexcept
+                                       std::size_t                cols,
+                                       bool                       fresh = false) noexcept
   {
     through_rows<avx2_complex_mr, avx2_complex_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<float>* tile, std::size_t ld) noexcept {
-                                                         avx2_full_tile_c32<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row);
+                                                         avx2_full_tile_c32<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row, fresh);
                                                        });
   }
 
@@ -636,8 +653,9 @@ namespace numerical::detail {
                                                                std::size_t                ldb,
                                                                std::complex<float>*       tile,
                                                                std::size_t                ld,
-                                                               std::size_t                a_step = avx512_complex_mr,
-                                                               std::size_t                a_row  = 1) noexcept
+                                                               std::size_t                a_step                       = avx512_complex_mr,
+                                                               std::size_t                a_row                        = 1,
+                                                               bool                       fresh                        = false) noexcept
   {
     const std::size_t                                   step   {AInPlace ? a_step : avx512_complex_mr}; // A's elements apart from one step to the next
     const std::size_t                                   across {AInPlace ? a_row : 1};                  // and from one row to the next
@@ -665,8 +683,8 @@ namespace numerical::detail {
       float* const row {c + (2 * i * ld)};
       const __m512 lo  {_mm512_fmadd_ps(_mm512_permute_ps(acc[(4 * i) + 2].v, 0xB1), signs, acc[4 * i].v)};
       const __m512 hi  {_mm512_fmadd_ps(_mm512_permute_ps(acc[(4 * i) + 3].v, 0xB1), signs, acc[(4 * i) + 1].v)};
-      _mm512_storeu_ps(row, _mm512_add_ps(_mm512_loadu_ps(row), lo));
-      _mm512_storeu_ps(row + 16, _mm512_add_ps(_mm512_loadu_ps(row + 16), hi));
+      _mm512_storeu_ps(row, _mm512_add_ps(fresh ? _mm512_setzero_ps() : _mm512_loadu_ps(row), lo));
+      _mm512_storeu_ps(row + 16, _mm512_add_ps(fresh ? _mm512_setzero_ps() : _mm512_loadu_ps(row + 16), hi));
     }
   }
 
@@ -678,10 +696,11 @@ namespace numerical::detail {
                               std::complex<float>*       c,
                               std::size_t                ldc,
                               std::size_t                rows,
-                              std::size_t                cols) noexcept
+                              std::size_t                cols,
+                              bool                       fresh = false) noexcept
   {
     through_rows<avx512_complex_mr, avx512_complex_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<float>* tile, std::size_t ld) noexcept {
-                                                             avx512_full_tile_c32<Rows>(kc, ap, bp, ldb, tile, ld);
+                                                             avx512_full_tile_c32<Rows>(kc, ap, bp, ldb, tile, ld, avx512_complex_mr, 1, fresh);
                                                            });
   }
 
@@ -696,10 +715,11 @@ namespace numerical::detail {
                                          std::complex<float>      * c,
                                          std::size_t                ldc,
                                          std::size_t                rows,
-                                         std::size_t                cols) noexcept
+                                         std::size_t                cols,
+                                         bool                       fresh = false) noexcept
   {
     through_rows<avx512_complex_mr, avx512_complex_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<float>* tile, std::size_t ld) noexcept {
-                                                             avx512_full_tile_c32<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row);
+                                                             avx512_full_tile_c32<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row, fresh);
                                                            });
   }
 
