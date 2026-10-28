@@ -14,7 +14,8 @@ from numerical import _numerical
 from numerical import Tensor, asarray
 
 __all__ = ["fft", "ifft", "fft2", "ifft2", "fftn", "ifftn", "rfft", "irfft", "rfft2", "irfft2", "rfftn", "irfftn", "hfft",
-           "ihfft", "fftfreq", "rfftfreq", "fftshift", "ifftshift"]
+           "ihfft", "fftfreq", "rfftfreq", "fftshift", "ifftshift", "dct", "idct", "dst", "idst", "dctn", "idctn", "dstn",
+           "idstn"]
 
 _NORMS = {None: 0, "backward": 0, "ortho": 1, "forward": 2}
 
@@ -290,3 +291,77 @@ def fftshift(x, axes=None):
 def ifftshift(x, axes=None):
     """The inverse of :func:`fftshift`, as :func:`numpy.fft.ifftshift`."""
     return _shift(x, axes, True)
+
+
+def _trig(x, sine, type, n, axis, norm, orthogonalize, inverse):
+    """One axis of SciPy's dct, idct, dst or idst; integers and booleans as ``float64``."""
+    tensor = _operand(x)
+    axis = _axis(axis, tensor.ndim)
+    points = tensor.shape[axis] if n is None else _operator.index(n)
+    if points < 1:
+        raise ValueError(f"invalid number of data points ({points}) specified")
+    weighted = -1 if orthogonalize is None else int(bool(orthogonalize))
+    try:
+        return _numerical._trig(tensor, sine, _operator.index(type), points, axis, _norm(norm), weighted, inverse)
+    except _numerical.error as caught:
+        raise ValueError(*caught.args) from None
+
+
+def _trig_n(x, sine, type, s, axes, norm, orthogonalize, inverse):
+    """SciPy's n-dimensional dctn, idctn, dstn or idstn: the one-axis transform along each axis."""
+    tensor = _operand(x)
+    if isinstance(axes, int):
+        axes = [axes]
+    if isinstance(s, int):
+        s = [s]
+    s, axes = _shape_and_axes(tensor, s, axes)
+    for points, axis in _builtins.zip(s, axes):
+        tensor = _trig(tensor, sine, type, points, axis, norm, orthogonalize, inverse)
+    return tensor
+
+
+def dct(x, type=2, n=None, axis=-1, norm=None, overwrite_x=False, workers=None, orthogonalize=None):
+    """The discrete cosine transform of `x` along `axis`, as :func:`scipy.fft.dct`: type 1, 2 (the default), 3 or 4,
+    each by a real or complex Fourier transform; `n` points (the axis cut or padded with zeros); `norm` ``"backward"``
+    (none), ``"ortho"`` or ``"forward"``; `orthogonalize` the first (and type 1's last) point and value weighted by
+    √2, by default where `norm` is ``"ortho"``. A complex `x` its real and imaginary parts each. `overwrite_x` and
+    `workers` are accepted and not needed: `x` is never written, and the threads are the library's."""
+    return _trig(x, False, type, n, axis, norm, orthogonalize, False)
+
+
+def idct(x, type=2, n=None, axis=-1, norm=None, overwrite_x=False, workers=None, orthogonalize=None):
+    """The inverse of :func:`dct` of the same `type`, as :func:`scipy.fft.idct`: types 2 and 3 each other's inverse,
+    1 and 4 their own, scaled by ``1/2n`` (``1/2(n - 1)``, type 1) by default."""
+    return _trig(x, False, type, n, axis, norm, orthogonalize, True)
+
+
+def dst(x, type=2, n=None, axis=-1, norm=None, overwrite_x=False, workers=None, orthogonalize=None):
+    """The discrete sine transform of `x` along `axis`, as :func:`scipy.fft.dst` (see :func:`dct`): `orthogonalize`
+    the last point (type 3) or value (type 2) weighted by √2."""
+    return _trig(x, True, type, n, axis, norm, orthogonalize, False)
+
+
+def idst(x, type=2, n=None, axis=-1, norm=None, overwrite_x=False, workers=None, orthogonalize=None):
+    """The inverse of :func:`dst` of the same `type`, as :func:`scipy.fft.idst` (``1/2(n + 1)`` for type 1)."""
+    return _trig(x, True, type, n, axis, norm, orthogonalize, True)
+
+
+def dctn(x, type=2, s=None, axes=None, norm=None, overwrite_x=False, workers=None, orthogonalize=None):
+    """:func:`dct` along each of `axes` (every axis by default), `s` their points, as :func:`scipy.fft.dctn`."""
+    return _trig_n(x, False, type, s, axes, norm, orthogonalize, False)
+
+
+def idctn(x, type=2, s=None, axes=None, norm=None, overwrite_x=False, workers=None, orthogonalize=None):
+    """:func:`idct` along each of `axes`, as :func:`scipy.fft.idctn`."""
+    return _trig_n(x, False, type, s, axes, norm, orthogonalize, True)
+
+
+def dstn(x, type=2, s=None, axes=None, norm=None, overwrite_x=False, workers=None, orthogonalize=None):
+    """:func:`dst` along each of `axes`, as :func:`scipy.fft.dstn`."""
+    return _trig_n(x, True, type, s, axes, norm, orthogonalize, False)
+
+
+def idstn(x, type=2, s=None, axes=None, norm=None, overwrite_x=False, workers=None, orthogonalize=None):
+    """:func:`idst` along each of `axes`, as :func:`scipy.fft.idstn`."""
+    return _trig_n(x, True, type, s, axes, norm, orthogonalize, True)
+

@@ -31,6 +31,7 @@
 #include <cstddef>
 #include <memory>
 #include <mutex>
+#include <numbers>
 #include <optional>
 #include <string>
 #include <type_traits>
@@ -3131,6 +3132,340 @@ namespace numerical {
     buffer<std::complex<T>> conjugated(spectrum.data().size());
     std::transform(spectrum.data().begin(), spectrum.data().end(), conjugated.begin(), [](const std::complex<T>& v) { return std::conj(v); });
     return tensor<std::complex<T>> {spectrum.shape(), std::move(conjugated)};
+  }
+
+  namespace detail {
+
+    //! \brief The family of a real trigonometric transform: `dct`'s or `dst`'s.
+    enum class trig_family : unsigned char
+    {
+      cosine,
+      sine
+    };
+
+    //! \brief `e^{−iπ·numerator/denominator}`, the angle formed in `double`.
+    template <std::floating_point R>
+    [[nodiscard]] std::complex<R> half_turn_root(std::size_t numerator,
+                                                 std::size_t denominator)
+    {
+      const double angle {-std::numbers::pi * static_cast<double>(numerator) / static_cast<double>(denominator)};
+      return std::complex<R> {static_cast<R>(std::cos(angle)), static_cast<R>(std::sin(angle))};
+    }
+
+    /*!
+     * \brief The cosine transforms of `scipy.fft.dct`, unscaled, on one line of \p n points by a Fourier transform:
+     *        type 1 the real transform of the even extension (`2(n − 1)` points); type 2 the real transform of the
+     *        points reordered evens then odds reversed, each frequency turned by \p roots (`e^{−iπk/2n}`), as Makhoul's;
+     *        type 3 its inverse, by the inverse real transform; type 4 of an even `n` the complex transform of `n/2`
+     *        points, the even ones and the odd ones reversed paired and turned by \p roots (`e^{−iπ(4j+1)/4n}`), each
+     *        frequency by \p turns (`e^{−iπk/n}`); of an odd `n` that of `2n` points, the points turned by \p roots
+     *        (`e^{−iπj/2n}`) then zeros, its first `n` frequencies by \p turns (`e^{−iπ(2k+1)/4n}`).
+     */
+    template <std::floating_point R>
+    struct cosine_line
+    {
+      int                                          type;     //!< 1 to 4.
+      std::size_t                                  n;        //!< The points.
+      std::shared_ptr<const real_fft_plan<R>>      real;     //!< Types 1 to 3.
+      std::shared_ptr<const fft_plan<R>>           complex;  //!< Type 4.
+      std::vector<std::complex<R>>                 roots;    //!< See above.
+      std::vector<std::complex<R>>                 turns;    //!< Type 4.
+      bool                                         fused;    //!< The kernels' fused multiply-adds.
+
+      //! \brief \p y from \p u, \p even (the real transform's points) and \p spectrum its spaces, \p space the plan's.
+      void operator()(const R*         u,
+                      R*               y,
+                      R*               even,
+                      std::complex<R>* spectrum,
+                      std::complex<R>* space) const
+      {
+        using C = std::complex<R>;
+        const std::size_t h {n / 2};
+        if (type == 1) {
+          std::copy(u, u + n, even);
+          for (std::size_t k {1}; k + 1 < n; ++k) {
+            even[(2 * (n - 1)) - k] = u[k];
+          }
+          real_forward(*real, even, spectrum, space, fused);
+          for (std::size_t k {0}; k < n; ++k) {
+            y[k] = spectrum[k].real();
+          }
+        }
+        else if (type == 2) {
+          for (std::size_t j {0}; 2 * j < n; ++j) {
+            even[j] = u[2 * j];
+          }
+          for (std::size_t j {0}; (2 * j) + 1 < n; ++j) {
+            even[n - 1 - j] = u[(2 * j) + 1];
+          }
+          real_forward(*real, even, spectrum, space, fused);
+          for (std::size_t k {0}; k <= h; ++k) {
+            const C z {roots[k] * spectrum[k]};
+            y[k] = R(2) * z.real();
+            if (k > 0 && k < n - k) {
+              y[n - k] = R(-2) * z.imag();
+            }
+          }
+        }
+        else if (type == 3) {
+          for (std::size_t k {0}; k <= h; ++k) {
+            spectrum[k] = std::conj(roots[k]) * C {u[k], k == 0 ? R(0) : -u[n - k]} *R(0.5);
+          }
+          real_inverse(*real, spectrum, even, space, n % 2 == 0 ? R(4) : R(2), fused); // twice the whole sum
+          for (std::size_t j {0}; 2 * j < n; ++j) {
+            y[2 * j] = even[j];
+          }
+          for (std::size_t j {0}; (2 * j) + 1 < n; ++j) {
+            y[(2 * j) + 1] = even[n - 1 - j];
+          }
+        }
+        else if (n % 2 == 0) { // the even points and the odd ones reversed as one complex line of n/2
+          for (std::size_t j {0}; j < h; ++j) {
+            spectrum[j] = roots[j] * C {u[2 * j], u[n - 1 - (2 * j)]};
+          }
+          forward_fft(*complex, spectrum, space, fused);
+          for (std::size_t k {0}; k < h; ++k) {
+            const C z {turns[k] * spectrum[k]};
+            y[2 * k]           = R(2) * z.real();
+            y[n - 1 - (2 * k)] = R(-2) * z.imag();
+          }
+        }
+        else { // the transform of 2n points of the turned ones padded with zeros, its first n
+          for (std::size_t j {0}; j < n; ++j) {
+            spectrum[j]     = roots[j] * u[j];
+            spectrum[n + j] = C {};
+          }
+          forward_fft(*complex, spectrum, space, fused);
+          for (std::size_t k {0}; k < n; ++k) {
+            y[k] = R(2) * (turns[k] * spectrum[k]).real();
+          }
+        }
+      }
+    };
+
+    //! \brief The \ref cosine_line of \p type on \p n points, its plan and roots formed.
+    template <std::floating_point R>
+    [[nodiscard]] cosine_line<R> cosine_line_of(int         type,
+                                                std::size_t n)
+    {
+      cosine_line<R> line {type, n, nullptr, nullptr, {}, {}, fft_fuses()};
+      if (type == 4 && n % 2 == 0) {
+        const std::size_t h {n / 2};
+        line.complex = shared_fft_plan<R>(h);
+        line.roots.resize(h);
+        line.turns.resize(h);
+        for (std::size_t j {0}; j < h; ++j) {
+          line.roots[j] = half_turn_root<R>((4 * j) + 1, 4 * n);
+          line.turns[j] = half_turn_root<R>(j, n);
+        }
+        return line;
+      }
+      if (type == 4) {
+        line.complex = shared_fft_plan<R>(2 * n);
+        line.roots.resize(n);
+        line.turns.resize(n);
+        for (std::size_t j {0}; j < n; ++j) {
+          line.roots[j] = half_turn_root<R>(j, 2 * n);
+          line.turns[j] = half_turn_root<R>((2 * j) + 1, 4 * n);
+        }
+        return line;
+      }
+      line.real = shared_real_fft_plan<R>(type == 1 ? 2 * (n - 1) : n);
+      if (type != 1) {
+        line.roots.resize((n / 2) + 1);
+        for (std::size_t k {0}; k <= n / 2; ++k) {
+          line.roots[k] = half_turn_root<R>(k, 2 * n);
+        }
+      }
+      return line;
+    }
+
+    /*!
+     * \brief `dct`, `idct`, `dst` or `idst` (\p family, \p inverse) of \p a along \p axis, as `scipy.fft`'s:
+     *        the type computed (an inverse's of types 2 and 3 the other), on each line of \p n points (the axis cut or
+     *        padded), the sines by the cosines: type 1 the real transform of the odd extension (`2(n + 1)` points), type 2
+     *        the cosines of the points of alternate signs, in reverse order; types 3 and 4 those of the points reversed,
+     *        of alternate signs. Scaled as \p norm says, `orthogonalize` (by default where \p norm is `ortho`) the first or
+     *        last points and values weighted by √2 as SciPy's.
+     */
+    template <std::floating_point R>
+    [[nodiscard]] tensor<R> trig_transform(const tensor<R>&           a,
+                                           trig_family                family,
+                                           int                        type,
+                                           std::optional<std::size_t> n,
+                                           std::ptrdiff_t             axis,
+                                           fft_norm                   norm,
+                                           std::optional<bool>        orthogonalize,
+                                           bool                       inverse)
+    {
+      using C = std::complex<R>;
+      const std::string name {std::string {inverse ? "i" : ""} + (family == trig_family::cosine ? "dct" : "dst")};
+      if (type < 1 || type > 4) {
+        throw std::invalid_argument(name + ": type must be 1, 2, 3 or 4, not " + std::to_string(type));
+      }
+      const fft_source<R> source {source_of(a)};
+      const std::size_t   index  {fft_axis_index(axis, source.shape.size(), name.c_str())};
+      const std::size_t   points {n.value_or(source.shape[index])};
+      if (points == 0 || (family == trig_family::cosine && type == 1 && points < 2)) {
+        throw dimension_error(name + ": invalid number of data points (" + std::to_string(points) + ")");
+      }
+      const int            computed  {inverse && (type == 2 || type == 3) ? 5 - type : type};
+      const bool           cosine    {family == trig_family::cosine};
+      const double         period    {static_cast<double>(type != 1 ? 2 * points : (cosine ? 2 * (points - 1) : 2 * (points + 1)))};
+      const double         factor    {norm == fft_norm::ortho ? 1.0 / std::sqrt(period) : ((norm == fft_norm::forward) != inverse ? 1.0 / period : 1.0)};
+      const R              scale     {static_cast<R>(factor)};
+      const bool           weighted  {orthogonalize.value_or(norm == fft_norm::ortho)};
+      const R              root_two  {std::numbers::sqrt2_v<R>};
+      const bool           odd_one   {!cosine && computed == 1};
+      const std::size_t    length    {odd_one ? 2 * (points + 1) : (computed == 1 ? 2 * (points - 1) : points)};
+      const cosine_line<R> lines     {odd_one ? cosine_line<R> {1, points, shared_real_fft_plan<R>(length), nullptr, {}, {}, fft_fuses()}
+                                          : cosine_line_of<R>(computed, points)};
+      const std::size_t work         {computed == 4 ? lines.complex->work
+                                                        : (length % 2 == 0 ? length / 2 : length) + lines.real->complex->work};
+      return lines_along<R, R, C>(source, index, points, points, work, [&](const R* x, R* y, C* space) {
+                                    fft_scratch<R, 3> u {points};
+                                    fft_scratch<R, 4> even {length};
+                                    fft_scratch<C, 5> spectrum {std::max(length / 2 + 1, 2 * points)};
+                                    R* const          v {u.data()};
+                                    const std::size_t last {points - 1};
+                                    for (std::size_t j {0}; j < points; ++j) { // the sines' order and signs
+                                      const bool reversed {!cosine && computed >= 3};
+                                      const R    value {reversed ? x[last - j] : x[j]};
+                                      v[j] = !cosine && computed == 2 && j % 2 == 1 ? -value : value;
+                                    }
+                                    if (weighted && cosine && (computed == 1 || computed == 3)) {
+                                      v[0] *= root_two;
+                                    }
+                                    if (weighted && cosine && computed == 1) {
+                                      v[last] *= root_two;
+                                    }
+                                    if (weighted && !cosine && computed == 3) {
+                                      v[0] *= root_two; // the last point, reversed
+                                    }
+                                    if (odd_one) {
+                                      R* const e {even.data()};
+                                      e[0]          = R(0);
+                                      e[points + 1] = R(0);
+                                      for (std::size_t j {0}; j < points; ++j) {
+                                        e[1 + j]          = v[j];
+                                        e[length - 1 - j] = -v[j];
+                                      }
+                                      real_forward(*lines.real, e, spectrum.data(), space, lines.fused);
+                                      for (std::size_t k {0}; k < points; ++k) {
+                                        y[k] = -spectrum.data()[k + 1].imag();
+                                      }
+                                    }
+                                    else {
+                                      lines(v, y, even.data(), spectrum.data(), space);
+                                    }
+                                    if (!cosine && computed == 2) {
+                                      std::reverse(y, y + points);
+                                    }
+                                    if (!cosine && computed >= 3) {
+                                      for (std::size_t k {1}; k < points; k += 2) {
+                                        y[k] = -y[k];
+                                      }
+                                    }
+                                    if (weighted && cosine && computed <= 2) {
+                                      y[0] /= root_two;
+                                    }
+                                    if (weighted && cosine && computed == 1) {
+                                      y[last] /= root_two;
+                                    }
+                                    if (weighted && !cosine && computed == 2) {
+                                      y[last] /= root_two;
+                                    }
+                                    if (scale != R(1)) {
+                                      std::transform(y, y + points, y, [scale](R value) { return value * scale; });
+                                    }
+                                  });
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The discrete cosine transform of real \p a along \p axis, as `scipy.fft.dct`: type 2 by default,
+   *        `y_k = 2 Σ_j x_j cos(πk(2j + 1)/2n)`; type 1 `x_0 + (−1)^k x_{n−1} + 2 Σ_{0<j<n−1} x_j cos(πjk/(n − 1))`;
+   *        type 3 `x_0 + 2 Σ_{j>0} x_j cos(πj(2k + 1)/2n)`; type 4 `2 Σ_j x_j cos(π(2j + 1)(2k + 1)/4n)`. By a Fourier
+   *        transform of `n` points (`2(n − 1)` for type 1).
+   * \param[in] a             A tensor of `float` or `double`.
+   * \param[in] type          1, 2, 3 or 4.
+   * \param[in] n             The points: the axis cut to them, or padded with zeros; its extent by default.
+   * \param[in] axis          The axis transformed, negative from the last (the last by default).
+   * \param[in] norm          The scaling: none by default; `ortho` `1/√(2n)` (`1/√(2(n − 1))` for type 1), `forward`
+   *                          its square.
+   * \param[in] orthogonalize The first (type 1 also the last) point and value weighted to make the matrix orthogonal,
+   *                          as SciPy's: by default where \p norm is `ortho`.
+   * \throws std::invalid_argument If \p type is not 1 to 4.
+   * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0 (1 for type 1).
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> dct(const tensor<T>&           a,
+                              int                        type          = 2,
+                              std::optional<std::size_t> n             = std::nullopt,
+                              std::ptrdiff_t             axis          = -1,
+                              fft_norm                   norm          = fft_norm::backward,
+                              std::optional<bool>        orthogonalize = std::nullopt)
+  {
+    return detail::trig_transform(a, detail::trig_family::cosine, type, n, axis, norm, orthogonalize, false);
+  }
+
+  /*!
+   * \brief The inverse of \ref dct of the same \p type, as `scipy.fft.idct`: the transform of type 3 for type 2 and of
+   *        type 2 for type 3 (types 1 and 4 their own), scaled by `1/2n` (`1/2(n − 1)` for type 1) by default.
+   * \copydetails dct
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> idct(const tensor<T>&           a,
+                               int                        type          = 2,
+                               std::optional<std::size_t> n             = std::nullopt,
+                               std::ptrdiff_t             axis          = -1,
+                               fft_norm                   norm          = fft_norm::backward,
+                               std::optional<bool>        orthogonalize = std::nullopt)
+  {
+    return detail::trig_transform(a, detail::trig_family::cosine, type, n, axis, norm, orthogonalize, true);
+  }
+
+  /*!
+   * \brief The discrete sine transform of real \p a along \p axis, as `scipy.fft.dst`: type 2 by default,
+   *        `y_k = 2 Σ_j x_j sin(π(k + 1)(2j + 1)/2n)`; type 1 `2 Σ_j x_j sin(π(j + 1)(k + 1)/(n + 1))`; type 3
+   *        `(−1)^k x_{n−1} + 2 Σ_{j<n−1} x_j sin(π(j + 1)(2k + 1)/2n)`; type 4 `2 Σ_j x_j sin(π(2j + 1)(2k + 1)/4n)`.
+   *        Type 1 by a real Fourier transform of `2(n + 1)` points, the others by \ref dct's.
+   * \param[in] a             A tensor of `float` or `double`.
+   * \param[in] type          1, 2, 3 or 4.
+   * \param[in] n             The points: the axis cut to them, or padded with zeros; its extent by default.
+   * \param[in] axis          The axis transformed, negative from the last (the last by default).
+   * \param[in] norm          The scaling: none by default; `ortho` `1/√(2n)` (`1/√(2(n + 1))` for type 1), `forward`
+   *                          its square.
+   * \param[in] orthogonalize The last point (type 3) or value (type 2) weighted to make the matrix orthogonal, as
+   *                          SciPy's: by default where \p norm is `ortho`.
+   * \throws std::invalid_argument If \p type is not 1 to 4.
+   * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> dst(const tensor<T>&           a,
+                              int                        type          = 2,
+                              std::optional<std::size_t> n             = std::nullopt,
+                              std::ptrdiff_t             axis          = -1,
+                              fft_norm                   norm          = fft_norm::backward,
+                              std::optional<bool>        orthogonalize = std::nullopt)
+  {
+    return detail::trig_transform(a, detail::trig_family::sine, type, n, axis, norm, orthogonalize, false);
+  }
+
+  /*!
+   * \brief The inverse of \ref dst of the same \p type, as `scipy.fft.idst`: the transform of type 3 for type 2 and of
+   *        type 2 for type 3 (types 1 and 4 their own), scaled by `1/2n` (`1/2(n + 1)` for type 1) by default.
+   * \copydetails dst
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> idst(const tensor<T>&           a,
+                               int                        type          = 2,
+                               std::optional<std::size_t> n             = std::nullopt,
+                               std::ptrdiff_t             axis          = -1,
+                               fft_norm                   norm          = fft_norm::backward,
+                               std::optional<bool>        orthogonalize = std::nullopt)
+  {
+    return detail::trig_transform(a, detail::trig_family::sine, type, n, axis, norm, orthogonalize, true);
   }
 } // namespace numerical
 

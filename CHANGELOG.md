@@ -27,6 +27,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   triangular form; the reduction and the iterations of `eig` (multishift with aggressive early deflation past order 200
   real, 100 complex), not balanced, as `dgees` scales none. SciPy's `sort` is not taken. M1 Pro, order 1000: real
   305 ms (SciPy 410 ms), complex 1.02 s (SciPy 2.39 s); order 100 1.96 ms (SciPy 4.46 ms).
+- **The cosine and sine transforms of `scipy.fft`**: `dct`, `idct`, `dst`, `idst` (`fft.hpp`, and `numerical.fft` with
+  `dctn`, `idctn`, `dstn`, `idstn`), types 1 to 4, `n`, `axis`, `norm` and `orthogonalize` as SciPy's (a complex input its
+  real and imaginary parts each; `overwrite_x` and `workers` taken and not needed). DCT-I and DST-I by the real transform
+  of the even or odd extension, DCT-II by Makhoul's reordering and one real transform of `n` points, DCT-III its inverse,
+  DCT-IV by a complex transform of `n/2` points (`2n` for an odd `n`), the sines from the cosines (points reversed or of
+  alternate signs). M1 Pro against SciPy on every core: 1000 lines of 1024 at parity (0.85–1.2×), type 1 of 100 000
+  points 4–5× as fast; one line of 100 000 points 1.5–1.9× SciPy's time and type 4 of 1023 points 3.7×: open targets.
 
 ### Changed
 - **`svdvals` and the QR's `R` alone skip the last block of reflectors** (`householder_reflect`'s `reflectors`): a

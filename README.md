@@ -124,6 +124,9 @@ Small and complete, grown measured, honest about what is not yet here:
   computed in double-double, so each is the correctly rounded root. Two sets of bits only, each the same on every
   machine and compiler: the portable path's (products rounded apart) and the vector paths' (NEON, AMX, AVX2 and
   AVX-512: one fused complex product).
+- `dct`, `idct`, `dst`, `idst` (`fft.hpp`) — the cosine and sine transforms of `scipy.fft`, types 1 to 4, its norms and
+  `orthogonalize`, by the real (types 1 to 3) or complex (type 4) transform: DCT-II by Makhoul's reordering, DCT-III
+  its inverse, the sines from the cosines.
 - Arithmetic on tensors (`tensor_ops.hpp`): `+ - * /` element by element with
   NumPy's broadcasting, `sum`, `mean`, `max`, `min` of every element or along an
   axis (sums by NumPy's pairwise blocks), `reshape`, and `zeros`, `ones`, `full`,
@@ -200,6 +203,7 @@ numerical.einsum("ij,jk", a, [[5, 6], [7, 8]])        # implicit output, as NumP
 numerical.einsum("...ij,...jk->...ik", s, t)          # an ellipsis, its axes broadcast, as NumPy's
 numerical.solve(a, [1.0, 1.0])                         # a @ x = b
 numerical.fft.rfft([1.0, 2.0, 3.0, 4.0])               # numpy.fft's names: fft, ifft, fftn, rfft, irfft, fftfreq…
+numerical.fft.dct([1.0, 2.0, 3.0, 4.0], norm="ortho")  # and scipy.fft's dct, idct, dst, idst, dctn…
 ```
 
 A failure is a `numerical.LinAlgError`: a `ValueError`, as `numpy.linalg.LinAlgError` is,

@@ -1960,6 +1960,36 @@ any_tensor rfft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int n
     }, v);
 }
 
+// _trig(a, sine, type, n, axis, norm, orthogonalize, inverse) -> Tensor: scipy.fft's dct, idct, dst or idst along axis
+// (from 0), orthogonalize -1 for its default; a complex tensor's real and imaginary parts each transformed, as SciPy's.
+any_tensor trig_axis(const any_tensor& v, bool sine, int type, std::size_t n, std::size_t axis, int norm, int orthogonalize, bool inverse)
+{
+    using numerical::detail::trig_family;
+    const auto                scaling {static_cast<numerical::fft_norm>(norm)};
+    const std::optional<bool> weighted {orthogonalize < 0 ? std::nullopt : std::optional<bool> {orthogonalize != 0}};
+    const trig_family         family {sine ? trig_family::sine : trig_family::cosine};
+    const auto                index {static_cast<std::ptrdiff_t>(axis)};
+    return std::visit([&](const auto& t) -> any_tensor {
+        using T = std::remove_cvref_t<decltype(t.data()[0])>;
+        const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
+        if constexpr (std::is_floating_point_v<T>) {
+            return any_tensor {numerical::detail::trig_transform(t, family, type, n, index, scaling, weighted, inverse)};
+        }
+        else {
+            using R = typename T::value_type;
+            const numerical::tensor<R> re {numerical::detail::trig_transform(numerical::detail::parallel_map(t, [](const T& z) { return z.real(); }),
+                                                                             family, type, n, index, scaling, weighted, inverse)};
+            const numerical::tensor<R> im {numerical::detail::trig_transform(numerical::detail::parallel_map(t, [](const T& z) { return z.imag(); }),
+                                                                             family, type, n, index, scaling, weighted, inverse)};
+            numerical::buffer<T>       joined(re.data().size());
+            for (std::size_t e {0}; e < joined.size(); ++e) {
+                joined[e] = T {re.data()[e], im.data()[e]};
+            }
+            return any_tensor {numerical::tensor<T> {re.shape(), std::move(joined)}};
+        }
+    }, v);
+}
+
 // _irfft(a, n, axis, norm, hermitian) -> Tensor: numpy.fft.irfft (or, hermitian, hfft) of a complex tensor along axis.
 any_tensor irfft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int norm, bool hermitian)
 {
@@ -4615,6 +4645,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_fftshift", module_fftshift, METH_VARARGS,
           "_fftshift(a, axes, inverse) -> Tensor\nnumpy.fft.fftshift (or ifftshift) along each of axes (from 0), in one copy (see numerical.fft).");
     m.def<&rfft_axis>("_rfft", "_rfft(a, n, axis, norm, hermitian) -> Tensor\nnumpy.fft.rfft (or ihfft) of a real tensor along axis (from 0) (see numerical.fft).");
+    m.def<&trig_axis>("_trig", "_trig(a, sine, type, n, axis, norm, orthogonalize, inverse) -> Tensor\nscipy.fft.dct, idct, dst or idst along axis (from 0), orthogonalize -1 for its default (see numerical.fft).");
     m.def<&irfft_axis>("_irfft", "_irfft(a, n, axis, norm, hermitian) -> Tensor\nnumpy.fft.irfft (or hfft) of a complex tensor along axis (from 0) (see numerical.fft).");
     m.def<&eigvalsh>("eigvalsh", "eigvalsh(a, upper) -> Tensor\nThe eigenvalues alone of a real symmetric or complex Hermitian matrix, ascending, as numpy.linalg.eigvalsh (its lower triangle is read, or with upper its upper one).");
     m.def<&matrix_ranks>("_matrix_ranks", "_matrix_ranks(a, rtol, tol, hermitian) -> Tensor\nThe rank of every matrix of a stack, as float64 numbers along its leading axes.");

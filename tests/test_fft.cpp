@@ -1045,3 +1045,152 @@ TEST(real_transforms_pad_on_every_path)
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
 }
+
+namespace {
+
+  //! \brief The unscaled transform of \p x (sines where \p sine) of \p type by its sum, in long double.
+  std::vector<double> trig_sum(bool                       sine,
+                               int                        type,
+                               const std::vector<double>& x)
+  {
+    const std::size_t   n  {x.size()};
+    const long double   pi {std::numbers::pi_v<long double>};
+    std::vector<double> y(n);
+    for (std::size_t k {0}; k < n; ++k) {
+      long double total {0.0L};
+      for (std::size_t j {0}; j < n; ++j) {
+        const long double value {x[j]};
+        const auto        jj    {static_cast<long double>(j)};
+        const auto        kk    {static_cast<long double>(k)};
+        const auto        nn    {static_cast<long double>(n)};
+        long double       term  {};
+        if (!sine) {
+          if (type == 1) {
+            term = value * std::cos(pi * jj * kk / (nn - 1)) * (j == 0 || j == n - 1 ? 1.0L : 2.0L);
+          }
+          else if (type == 2) {
+            term = 2 * value * std::cos(pi * kk * ((2 * jj) + 1) / (2 * nn));
+          }
+          else if (type == 3) {
+            term = j == 0 ? value : 2 * value * std::cos(pi * jj * ((2 * kk) + 1) / (2 * nn));
+          }
+          else {
+            term = 2 * value * std::cos(pi * ((2 * jj) + 1) * ((2 * kk) + 1) / (4 * nn));
+          }
+        }
+        else if (type == 1) {
+          term = 2 * value * std::sin(pi * (jj + 1) * (kk + 1) / (nn + 1));
+        }
+        else if (type == 2) {
+          term = 2 * value * std::sin(pi * (kk + 1) * ((2 * jj) + 1) / (2 * nn));
+        }
+        else if (type == 3) {
+          const long double sign {k % 2 == 0 ? 1.0L : -1.0L};
+          term = j == n - 1 ? sign * value : 2 * value * std::sin(pi * (jj + 1) * ((2 * kk) + 1) / (2 * nn));
+        }
+        else {
+          term = 2 * value * std::sin(pi * ((2 * jj) + 1) * ((2 * kk) + 1) / (4 * nn));
+        }
+        total += term;
+      }
+      y[k] = static_cast<double>(total);
+    }
+    return y;
+  }
+} // namespace
+
+// The cosine and sine transforms of scipy.fft, every type: each its sum to 32 n ε on lengths odd and even, a power of
+// two and not (DCT-IV's even and odd forms), and the inverse undoing it; float; along a first axis (lines gathered) and
+// padded; each norm, orthogonalize on and off; the errors.
+TEST(cosine_and_sine_transforms_are_their_sums_and_invert)
+{
+  using numerical::dct;
+  using numerical::dst;
+  using numerical::idct;
+  using numerical::idst;
+  double worst {0.0};
+  double back  {0.0};
+  for (const std::size_t n : {std::size_t {1}, std::size_t {2}, std::size_t {3}, std::size_t {8}, std::size_t {9}, std::size_t {30},
+                              std::size_t {97}, std::size_t {128}}) {
+    std::vector<double> x(n);
+    for (std::size_t j {0}; j < n; ++j) {
+      x[j] = std::sin(1.0 + (0.7 * static_cast<double>(j)));
+    }
+    const tensor<double> line {{n}, numerical::buffer<double>(x.begin(), x.end())};
+    for (const bool sine : {false, true}) {
+      for (int type {1}; type <= 4; ++type) {
+        if (!sine && type == 1 && n < 2) {
+          continue;
+        }
+        const tensor<double>      y        {sine ? dst(line, type) : dct(line, type)};
+        const tensor<double>      x_again  {sine ? idst(y, type) : idct(y, type)};
+        const std::vector<double> expected {trig_sum(sine, type, x)};
+        double                    size     {1.0};
+        for (const double value : expected) {
+          size = std::max(size, std::abs(value));
+        }
+        for (std::size_t k {0}; k < n; ++k) {
+          worst = std::max(worst, std::abs(y.data()[k] - expected[k]) / (size * static_cast<double>(n)));
+          back  = std::max(back, std::abs(x_again.data()[k] - x[k]) / static_cast<double>(n));
+        }
+      }
+    }
+  }
+  EXPECT(worst < 32 * std::numeric_limits<double>::epsilon());
+  EXPECT(back < 32 * std::numeric_limits<double>::epsilon());
+  // Along the first axis of a 9 × 2 tensor, padded to 12: each column its own line's transform, cut and padded.
+  const std::vector<double> column {1.0, -2.0, 0.5, 3.0, 0.25, -1.0, 2.0, 0.0, 1.5};
+  numerical::buffer<double> pairs(18);
+  for (std::size_t j {0}; j < 9; ++j) {
+    pairs[2 * j]       = column[j];
+    pairs[(2 * j) + 1] = -column[j];
+  }
+  const tensor<double> two_columns {{9, 2}, std::move(pairs)};
+  std::vector<double>  padded(column);
+  padded.resize(12, 0.0);
+  for (int type {1}; type <= 4; ++type) {
+    const tensor<double>      along    {dst(two_columns, type, 12, 0)};
+    const std::vector<double> expected {trig_sum(true, type, padded)};
+    for (std::size_t k {0}; k < 12; ++k) {
+      EXPECT(std::abs(along.data()[2 * k] - expected[k]) < 1e-13 && std::abs(along.data()[(2 * k) + 1] + expected[k]) < 1e-13);
+    }
+  }
+  // The scalings: ortho by 1/√(2n) with the first value weighted (DCT-II), forward by 1/2n, and orthogonalize alone.
+  const tensor<double>      four       {{4}, numerical::buffer<double> {1.0, 2.0, 3.0, 4.0}};
+  const std::vector<double> plain      {trig_sum(false, 2, {1.0, 2.0, 3.0, 4.0})};
+  const tensor<double>      ortho      {dct(four, 2, std::nullopt, -1, fft_norm::ortho)};
+  const tensor<double>      forward    {dct(four, 2, std::nullopt, -1, fft_norm::forward)};
+  const tensor<double>      weighted   {dct(four, 2, std::nullopt, -1, fft_norm::backward, true)};
+  const tensor<double>      unweighted {dct(four, 2, std::nullopt, -1, fft_norm::ortho, false)};
+  EXPECT(std::abs(ortho.data()[0] - (plain[0] / std::sqrt(2.0) / std::sqrt(8.0))) < 1e-14);
+  EXPECT(std::abs(ortho.data()[1] - (plain[1] / std::sqrt(8.0))) < 1e-14);
+  EXPECT(std::abs(forward.data()[1] - (plain[1] / 8.0)) < 1e-14);
+  EXPECT(std::abs(weighted.data()[0] - (plain[0] / std::sqrt(2.0))) < 1e-14 && std::abs(weighted.data()[1] - plain[1]) < 1e-14);
+  EXPECT(std::abs(unweighted.data()[0] - (plain[0] / std::sqrt(8.0))) < 1e-14);
+  // An orthonormal pair: ortho's inverse undoes it, for every family and type, the weighted ends (DCT-I's both, DCT-III's
+  // first, DST-II's and DST-III's last) included.
+  for (const bool sine : {false, true}) {
+    for (int type {1}; type <= 4; ++type) {
+      const tensor<double> y          {sine ? dst(four, type, std::nullopt, -1, fft_norm::ortho) : dct(four, type, std::nullopt, -1, fft_norm::ortho)};
+      const tensor<double> again      {sine ? idst(y, type, std::nullopt, -1, fft_norm::ortho) : idct(y, type, std::nullopt, -1, fft_norm::ortho)};
+      double               energy_in  {0.0};
+      double               energy_out {0.0};
+      for (std::size_t k {0}; k < 4; ++k) {
+        EXPECT(std::abs(again.data()[k] - four.data()[k]) < 1e-14);
+        energy_in  += four.data()[k] * four.data()[k];
+        energy_out += y.data()[k] * y.data()[k];
+      }
+      EXPECT(std::abs(energy_in - energy_out) < 1e-12); // orthogonal: the norm kept
+    }
+  }
+  const tensor<float> single      {{5}, numerical::buffer<float> {1.0F, -1.0F, 2.0F, 0.5F, 3.0F}};
+  const tensor<float> single_back {idct(dct(single, 4), 4)};
+  for (std::size_t k {0}; k < 5; ++k) {
+    EXPECT(std::abs(single_back.data()[k] - single.data()[k]) < 1e-5F);
+  }
+  EXPECT_THROWS(dct(four, 0), std::invalid_argument);
+  EXPECT_THROWS(dst(four, 5), std::invalid_argument);
+  EXPECT_THROWS(dct(tensor<double> {{1}, numerical::buffer<double> {1.0}}, 1), numerical::dimension_error);
+  EXPECT_THROWS(dst(four, 2, 0), numerical::dimension_error);
+  EXPECT_THROWS(idct(four, 2, std::nullopt, 1), numerical::dimension_error);
+}

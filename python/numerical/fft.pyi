@@ -4,7 +4,8 @@ from typing import Any, Literal
 from numerical._numerical import Tensor
 
 __all__ = ["fft", "ifft", "fft2", "ifft2", "fftn", "ifftn", "rfft", "irfft", "rfft2", "irfft2", "rfftn", "irfftn", "hfft",
-           "ihfft", "fftfreq", "rfftfreq", "fftshift", "ifftshift"]
+           "ihfft", "fftfreq", "rfftfreq", "fftshift", "ifftshift", "dct", "idct", "dst", "idst", "dctn", "idctn", "dstn",
+           "idstn"]
 
 _Norm = Literal["backward", "ortho", "forward"] | None
 
@@ -34,3 +35,23 @@ def rfft2(a: Any, s: Sequence[int] | None = None, axes: Sequence[int] = (-2, -1)
           out: None = None) -> Tensor: ...
 def irfft2(a: Any, s: Sequence[int] | None = None, axes: Sequence[int] = (-2, -1), norm: _Norm = None,
            out: None = None) -> Tensor: ...
+def dct(x: Any, type: int = 2, n: int | None = None, axis: int = -1, norm: _Norm = None, overwrite_x: bool = False,
+        workers: int | None = None, orthogonalize: bool | None = None) -> Tensor: ...
+def idct(x: Any, type: int = 2, n: int | None = None, axis: int = -1, norm: _Norm = None, overwrite_x: bool = False,
+         workers: int | None = None, orthogonalize: bool | None = None) -> Tensor: ...
+def dst(x: Any, type: int = 2, n: int | None = None, axis: int = -1, norm: _Norm = None, overwrite_x: bool = False,
+        workers: int | None = None, orthogonalize: bool | None = None) -> Tensor: ...
+def idst(x: Any, type: int = 2, n: int | None = None, axis: int = -1, norm: _Norm = None, overwrite_x: bool = False,
+         workers: int | None = None, orthogonalize: bool | None = None) -> Tensor: ...
+def dctn(x: Any, type: int = 2, s: int | Sequence[int] | None = None, axes: int | Sequence[int] | None = None,
+         norm: _Norm = None, overwrite_x: bool = False, workers: int | None = None,
+         orthogonalize: bool | None = None) -> Tensor: ...
+def idctn(x: Any, type: int = 2, s: int | Sequence[int] | None = None, axes: int | Sequence[int] | None = None,
+          norm: _Norm = None, overwrite_x: bool = False, workers: int | None = None,
+          orthogonalize: bool | None = None) -> Tensor: ...
+def dstn(x: Any, type: int = 2, s: int | Sequence[int] | None = None, axes: int | Sequence[int] | None = None,
+         norm: _Norm = None, overwrite_x: bool = False, workers: int | None = None,
+         orthogonalize: bool | None = None) -> Tensor: ...
+def idstn(x: Any, type: int = 2, s: int | Sequence[int] | None = None, axes: int | Sequence[int] | None = None,
+          norm: _Norm = None, overwrite_x: bool = False, workers: int | None = None,
+          orthogonalize: bool | None = None) -> Tensor: ...
