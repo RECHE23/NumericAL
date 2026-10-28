@@ -13,18 +13,18 @@ A change that can break code is listed under **Breaking** and held for a month's
   roots `e^{−iπa/d}` from one table of `8n` roots in double-double arithmetic (`unit_roots`), on the threads, where
   each call formed them anew with the system's `cos` and `sin` (which differ between glibc, macOS and Windows); and
   their complex products as the path's kernels form them (fused on the vector paths), where `std::complex`'s left it
-  to the compiler. Other bits than before, the same on every platform for a path. M1 Pro: DCT-II of 1024 points 6.9
-  → 4.3 µs (SciPy 6.7), of 100 000 806 → 522 µs (SciPy 535); DCT-IV of 1024 10.3 → 3.7 µs (SciPy 6.9), of 100 000
-  1214 → 411 µs (SciPy 604); DCT-II of 1000 lines of 1024 1.74 → 0.93 ms (SciPy 3.0).
+  to the compiler. Other bits than before, the same on every platform for a path. M1 Pro: DCT-II of 1024 points 6.5
+  → 4.0 µs (SciPy 6.2), of 100 000 736 → 467 µs (SciPy 483); DCT-IV of 1024 9.7 → 3.5 µs (SciPy 6.4), of 100 000
+  1045 → 340 µs (SciPy 527); DCT-II of 1000 lines of 1024 0.69 → 0.63 ms (SciPy 2.6).
 - **A DCT-IV or DST-IV of an odd length takes one Fourier transform of its own length**, where it took one of twice
   its length, half of it zeros: as `n` is odd, the `8n`-th roots split into eighth roots, two signs on the points and
   one on the values (the characters of `2j + 1` and `2k + 1` modulo 8), times `n`-th roots, a permutation of the
-  points and of the frequencies. Other bits than before. M1 Pro, 1023 points 22.2 → 11.6 µs (SciPy 9.1).
+  points and of the frequencies. Other bits than before. M1 Pro, 1023 points 20.9 → 11.5 µs (SciPy 8.3).
 - **`solve_triangular` and `lu_solve` check their operands in one vectorised pass**, where every entry of the
   triangle was tested one at a time, and `lu_solve` checks its factor once rather than in each of its two solves: the
   whole matrix at once, then the triangle entry by entry only where that finds an infinity or a NaN (the other
-  triangle may hold anything, as before). M1 Pro: `lu_solve` of order 500 155 → 83 µs (SciPy 74), 2000 2.64 → 1.69
-  ms (SciPy 1.57); `solve_triangular` 500 76 → 46 µs (SciPy 72), 2000 1.39 → 0.83 ms (SciPy 2.0). An overflow between
+  triangle may hold anything, as before). M1 Pro: `lu_solve` of order 500 152 → 82 µs (SciPy 72), 2000 2.62 → 1.62
+  ms (SciPy 1.50); `solve_triangular` 500 73 → 45 µs (SciPy 70), 2000 1.38 → 0.81 ms (SciPy 1.89). An overflow between
   `lu_solve`'s two solves is now the result's (`inf`, and NaN where `0 · ∞`), as SciPy's, where it raised that the
   right-hand side held an infinite entry. A matrix both singular and holding a NaN raises the NaN's error.
 - **A complex vector times a Fortran-ordered matrix (`x @ B`) runs at the vector speed of a C-ordered one on x86-64**
