@@ -8,6 +8,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+from concurrent.futures import ThreadPoolExecutor
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
@@ -95,12 +96,27 @@ class build_ext_with_blas(build_ext):
     system's; numerical.blas_library() gives its path."""
 
     def build_extensions(self):
+        self._compile_sources_in_parallel()
         self.cxx_args = list(compile_args)  # the extension's, and the library's in run()
         if sys.platform != "win32" and self._compiles_with(ordered_reductions_off):
             self.cxx_args += ordered_reductions_off
         for extension in self.extensions:
             extension.extra_compile_args = self.cxx_args
         super().build_extensions()
+
+    def _compile_sources_in_parallel(self):
+        """Compiles an extension's sources side by side, one compiler each, where setuptools compiles them one after
+        another: the binding is split into units by family so that its build takes several cores."""
+        one_by_one = self.compiler.compile
+
+        def compile(sources, *args, **kwargs):
+            if len(sources) < 2:
+                return one_by_one(sources, *args, **kwargs)
+            with ThreadPoolExecutor(max_workers=min(len(sources), os.cpu_count() or 1)) as pool:
+                objects = pool.map(lambda source: one_by_one([source], *args, **kwargs), sources)
+                return [path for built in objects for path in built]
+
+        self.compiler.compile = compile
 
     def _compiles_with(self, flags):
         """Whether the extensions' compiler builds a translation unit with `flags`."""
@@ -135,7 +151,10 @@ setup(
     ext_modules=[
         Extension(
             "numerical._numerical",
-            sources=["python/src/_numerical.cpp"],
+            # The binding by family, its helpers in binding.hpp: units a few cores compile side by side.
+            sources=[os.path.join("python", "src", name + ".cpp")
+                     for name in ("_numerical", "linalg", "eigen", "fft", "elementwise", "products")],
+            depends=[os.path.join("python", "src", "binding.hpp")],
             include_dirs=["include", _sciforge_include()],
             extra_compile_args=compile_args,
             extra_link_args=link_args,

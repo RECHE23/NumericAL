@@ -2,7 +2,7 @@
 # reads (the headers the binding compiles against) and the tests that check it, never a
 # compiled extension left in the tree.
 graft include
-recursive-include python/src *.cpp
+recursive-include python/src *.cpp *.hpp
 include blas/numerical_blas.cpp blas/numerical_blas.hpp blas/numerical_blas.map
 include python/numerical/py.typed python/numerical/__init__.pyi python/numerical/_numerical.pyi
 recursive-include python/tests *.py
