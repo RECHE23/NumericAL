@@ -4232,6 +4232,51 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _borrowed_solve_triangular(a, b, lower, trans, unit) -> Tensor or NotImplemented: solve_triangular of a square
+// float64 or complex128 NumPy array read where it lies (borrow_operand), b a Tensor or NumPy array of its dtype, rank 1
+// or 2, its rows a's, copied once into the answer the solve overwrites. NotImplemented for anything else (a Tensor a,
+// single precision, a shape or dtype the converting path rejects), the caller then converting: the same answer and
+// the same errors either way. A NumPy a was copied into a Tensor first: order 4000 with 64 columns, M1 Pro, 14.7 ms
+// where the solve takes 9.9.
+PyObject* module_borrowed_solve_triangular(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* a     = nullptr;
+    PyObject* b     = nullptr;
+    int       lower = 0;
+    int       trans = 0;
+    int       unit  = 0;
+    if (PyArg_ParseTuple(args, "OOpip", &a, &b, &lower, &trans, &unit) == 0) {
+        return nullptr;
+    }
+    borrowed_operand matrix;
+    const bool       tensor {PyObject_TypeCheck(a, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0};
+    if (tensor || !borrow_operand(a, matrix) || matrix.dtype > 1 || matrix.shape.size() != 2 || matrix.shape[0] != matrix.shape[1]) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    const std::size_t n {matrix.shape[0]};
+    borrowed_operand  right;
+    if (!borrow_operand(b, right) || right.dtype != matrix.dtype || right.shape.empty() || right.shape.size() > 2 || right.shape[0] != n) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    const std::size_t k {right.shape.size() == 1 ? 1 : right.shape[1]};
+    const auto solve = [&]<typename T>(std::type_identity<T>) -> PyObject* {
+        const numerical::triangular_op op {triangular_op_of(trans)};
+        const T* const                 first {static_cast<const T*>(right.data)};
+        numerical::buffer<T>           x(first, first + (n * k));
+        {
+            const sb::scoped_gil_release unlocked {releases_gil((n * n) + (n * k))};
+            numerical::detail::solve_triangular_in_place(static_cast<const T*>(matrix.data), n, lower != 0, op, unit != 0, x.data(), k);
+        }
+        return wrap(any_tensor {numerical::tensor<T> {right.shape, std::move(x)}});
+    };
+    try {
+        return matrix.dtype == 0 ? solve(std::type_identity<double> {}) : solve(std::type_identity<std::complex<double>> {});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // A Python float, int (bool included) or complex as a rank-0 tensor of the requested dtype, into `*result`;
 // false for anything else, with no error set.
 bool asarray_from_number(PyObject* obj, std::optional<std::size_t> wanted, PyObject** result)
@@ -4699,6 +4744,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_borrowed_linalg", module_borrowed_linalg, METH_VARARGS,
           "_borrowed_linalg(name, a, b=None) -> the answer or NotImplemented\ncholesky, solve, determinant, slogdet or "
           "inverse of a NumPy array read where it lies.");
+    m.raw("_borrowed_solve_triangular", module_borrowed_solve_triangular, METH_VARARGS,
+          "_borrowed_solve_triangular(a, b, lower, trans, unit) -> Tensor or NotImplemented\nsolve_triangular of a "
+          "NumPy array read where it lies.");
     m.raw("_borrowed_product", module_borrowed_product, METH_VARARGS,
           "_borrowed_product(a, b) -> Tensor, number or NotImplemented\nThe product of two operands read where they lie.");
     m.raw("_set_matmul_fallback", module_set_matmul_fallback, METH_O,

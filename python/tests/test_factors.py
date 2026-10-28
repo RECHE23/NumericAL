@@ -52,6 +52,43 @@ class TriangularSolves(unittest.TestCase):
                 ours = np.asarray(numerical.solve_triangular(a, b, trans=trans, lower=lower))
                 np.testing.assert_allclose(ours, sl.solve_triangular(a, b, trans=trans, lower=lower), rtol=1e-12, atol=1e-14)
 
+    def test_every_form_of_the_operands_gives_the_same_bits(self):
+        # a NumPy a read where it lies, or converted: a Tensor, a Fortran-ordered or strided a, b a list, a Tensor, a
+        # strided b too large to gather, b of another dtype
+        for dtype in ("float64", "complex128"):
+            n = 300
+            a = _drawn(n, n, dtype, 6) + n * np.eye(n, dtype=dtype)
+            b = _drawn(n, 260, dtype, 7)
+            spread = np.zeros((n, 2 * n), dtype=dtype)
+            spread[:, ::2] = a
+            for lower in (True, False):
+                for trans in (0, 1, 2):
+                    expected = np.asarray(numerical.solve_triangular(a, b, trans=trans, lower=lower))
+                    for left, right in ((numerical.asarray(a), b), (np.asfortranarray(a), b), (a, numerical.asarray(b)),
+                                        (a, np.asfortranarray(b)), (a, b.tolist() if dtype == "float64" else b),
+                                        (spread[:, ::2], b)):
+                        x = np.asarray(numerical.solve_triangular(left, right, trans=trans, lower=lower))
+                        self.assertTrue(np.array_equal(x, expected))
+                    column = np.asarray(numerical.solve_triangular(a, b[:, 3], trans=trans, lower=lower))
+                    self.assertTrue(np.array_equal(column, np.asarray(numerical.solve_triangular(a, b[:, 3].copy(), trans=trans, lower=lower))))
+        # an integer b beside a float64 a, and an empty system
+        a = np.array([[2.0, 0.0], [1.0, 4.0]])
+        self.assertEqual(np.asarray(numerical.solve_triangular(a, np.array([2, 5]), lower=True)).tolist(), [1.0, 1.0])
+        self.assertEqual(np.asarray(numerical.solve_triangular(np.zeros((0, 0)), np.zeros(0))).shape, (0,))
+        # the errors of an array read where it lies
+        with self.assertRaisesRegex(numerical.LinAlgError, "singular matrix: resolution failed at diagonal 2"):
+            numerical.solve_triangular(np.array([[2.0, 0.0], [1.0, 0.0]]), np.array([1.0, 2.0]), lower=True)
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.solve_triangular(np.array([[1.0, 0.0], [np.inf, 1.0]]), np.array([1.0, 2.0]), lower=True)
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.solve_triangular(np.eye(2), np.array([1.0, np.nan]))
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.solve_triangular(np.eye(2), np.ones(3))
+        # a complex b beside a real a: both complex, as SciPy's
+        mixed = np.asarray(numerical.solve_triangular(np.array([[2.0, 0.0], [1.0, 4.0]]), np.array([2.0j, 1.0 + 1.0j]), lower=True))
+        self.assertEqual(mixed.dtype, np.complex128)
+        self.assertEqual(mixed.tolist(), [1.0j, 0.25])
+
     def test_errors(self):
         a = np.array([[2.0, 0.0, 0.0], [1.0, 0.0, 0.0], [4.0, 5.0, 6.0]])
         with self.assertRaisesRegex(numerical.LinAlgError, "singular matrix: resolution failed at diagonal 2"):

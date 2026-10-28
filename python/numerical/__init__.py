@@ -673,7 +673,14 @@ def solve_triangular(a, b, trans=0, lower=False, unit_diagonal=False, overwrite_
             as SciPy's), an entry read is infinite or NaN, or the shapes do not fit.
     """
     del overwrite_b, check_finite
-    return _solve_triangular(a, b, bool(lower), _trans(trans), bool(unit_diagonal))
+    operation = _trans(trans)
+    try:  # a NumPy array read where it lies
+        result = _numerical._borrowed_solve_triangular(a, b, bool(lower), operation, bool(unit_diagonal))
+    except error as caught:
+        raise LinAlgError(*caught.args) from None
+    if result is not NotImplemented:
+        return result
+    return _solve_triangular(a, b, bool(lower), operation, bool(unit_diagonal))
 
 
 class LUFactor(tuple):

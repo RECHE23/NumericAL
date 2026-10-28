@@ -17,7 +17,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   with one matrix of order 500: 88 ms by `solve`, 8.3 ms by `lu_factor` and `lu_solve` (SciPy 3.8 ms); a triangular
   system of order 2000 with one right-hand side 1.95 ms (SciPy 2.16 ms, `solve` 37 ms). Many right-hand sides by halves,
   as a recursive `trsm` (one matrix product as deep as each half), the columns by blocks of 64 on the threads, the
-  transpose read in place: order 1000 with 1000 columns 4.3 ms (SciPy 4.2 ms), transposed 4.9 ms (SciPy 4.3 ms).
+  transpose read in place, and a NumPy `a` (float64 or complex128, C order) where it lies: order 1000 with 1000
+  columns 3.8 ms (SciPy 4.4 ms), transposed 4.6 ms (SciPy 4.1 ms), order 4000 with 64 columns 9.7 ms (SciPy 8.8 ms).
 - **The symmetric-definite pencil `A x = λ B x`** (`scipy.linalg.eigh(a, b)`, LAPACK's `sygvd`):
   `symmetric_eigen(a, b, method)` and `hermitian_eigen(a, b, method)` in C++, `eigh(a, UPLO, b=b, method=...)` and
   `eigvalsh(a, UPLO, b=b)` in Python (`b` keyword-only, `UPLO` holding NumPy's place). `B = L Lᴴ`, `L⁻¹ A L⁻ᴴ`
