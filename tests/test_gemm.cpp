@@ -795,6 +795,61 @@ TEST(a_product_of_a_few_columns_gives_the_wide_products_bits)
   EXPECT(on_every_path([] { return a_few_columns_give_the_wide_products_bits<std::complex<float>>(); }));
 }
 
+namespace
+{
+  // Products of one to four rows (on x86-64, complex ones stream B's rows, three and four rows past few_rows_complex_least
+  // elements of B) give the rows of a product of eleven (the tiles), A, B and C each a block of a wider matrix, C kept
+  // or zeroed first; B of 300 × 260, several panels of depth.
+  template <typename T>
+  bool a_few_rows_give_a_tall_products_bits()
+  {
+    const std::size_t m   {11};
+    const std::size_t k   {300};
+    const std::size_t n   {260};
+    const std::size_t lda {k + 5};
+    const std::size_t ldb {n + 3};
+    const std::size_t ldc {n + 7};
+    std::vector<T>    a(m * lda);
+    std::vector<T>    b(k * ldb);
+    std::vector<T>    start(m * ldc);
+    for (std::size_t e {0}; e < a.size(); ++e) {
+      a[e] = entry<T>((e * 13) + 1) / T {7};
+    }
+    for (std::size_t e {0}; e < b.size(); ++e) {
+      b[e] = entry<T>((e * 5) + 2) / T {3};
+    }
+    for (std::size_t e {0}; e < start.size(); ++e) {
+      start[e] = entry<T>(e) / T {11};
+    }
+    bool same {true};
+    for (const auto begin : {numerical::detail::c_start::kept, numerical::detail::c_start::zero}) {
+      std::vector<T> tall {start};
+      numerical::detail::gemm(m, n, k, a.data(), lda, b.data(), ldb, tall.data(), ldc, begin);
+      for (std::size_t rows {1}; rows <= 4; ++rows) {
+        for (const std::size_t first : {std::size_t {0}, m - rows}) {
+          std::vector<T> few {start};
+          numerical::detail::gemm(rows, n, k, a.data() + (first * lda), lda, b.data(), ldb, few.data() + (first * ldc), ldc, begin);
+          for (std::size_t i {0}; i < m; ++i) {
+            for (std::size_t j {0}; j < ldc; ++j) {
+              const bool computed {i >= first && i < first + rows && j < n};
+              same = same && few[(i * ldc) + j] == (computed ? tall[(i * ldc) + j] : start[(i * ldc) + j]);
+            }
+          }
+        }
+      }
+    }
+    return same;
+  }
+} // namespace
+
+TEST(a_product_of_a_few_rows_gives_a_tall_products_bits)
+{
+  EXPECT(on_every_path([] { return a_few_rows_give_a_tall_products_bits<double>(); }));
+  EXPECT(on_every_path([] { return a_few_rows_give_a_tall_products_bits<float>(); }));
+  EXPECT(on_every_path([] { return a_few_rows_give_a_tall_products_bits<std::complex<double>>(); }));
+  EXPECT(on_every_path([] { return a_few_rows_give_a_tall_products_bits<std::complex<float>>(); }));
+}
+
 TEST(a_product_cut_by_its_rows_gives_the_same_bits)
 {
   EXPECT(on_every_path([] { return rows_cut_anywhere_give_the_same_bits<double>(); }));

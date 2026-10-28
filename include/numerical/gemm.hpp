@@ -3480,6 +3480,193 @@ namespace numerical::detail {
     few_rows<few_rows_columns<R>, term_rounding::x86_fused>(R, n, k, a, lda, b, ldb, c, ldc, start);
   }
 
+  /*!
+   * \brief The fewest elements of B for which \ref few_rows_complex_x86 takes three or four rows of A (one or two it
+   *        takes always): below, B in the caches, the tiles' sums in registers beat sums that each row reads and writes
+   *        back (ten AVX-512 cores, four rows of `complex128` by 16 × 1000 8.9 µs by the tiles, 14.6 streamed; by
+   *        583 × 406 189 and 91 µs on every thread).
+   */
+  inline constexpr std::size_t few_rows_complex_least {std::size_t {1} << 16};
+
+  //! \brief The most columns of C one task of \ref few_rows_complex_x86 takes for \p R rows: its sums 16 KiB of `double`.
+  template <std::size_t R>
+  inline constexpr std::size_t few_rows_complex_columns {R <= 2 ? 256 : 128};
+
+  /*!
+   * \brief \p R rows of C, \p w columns from the first of \p c, `+= A·B` in panels of \p depth as the complex tile of
+   *        \p Isa sums them (\ref avx2_full_tile_c64): each element's `Re a · b` and `Im a · b` from zero by fused
+   *        multiply-adds in ascending order of the depth, then `C + (Re a · b + i Im a · b)`, C read only past the first
+   *        panel where \p start says it holds nothing. The sums lie in \p sums (`2 R` arrays of `2 w` parts) while B's
+   *        rows stream through, two steps of the depth at a time, where a tile read B's rows 128 bytes at a time.
+   */
+  template <typename Isa,
+            std::size_t R,
+            typename Z>
+  NUMERICAL_ALWAYS_INLINE void few_rows_complex_chunk(std::size_t                    depth,
+                                                      std::size_t                    w,
+                                                      std::size_t                    k,
+                                                      const Z*                       a,
+                                                      std::size_t                    lda,
+                                                      const Z*                       b,
+                                                      std::size_t                    ldb,
+                                                      Z*                             c,
+                                                      std::size_t                    ldc,
+                                                      c_start                        start,
+                                                      typename Z::value_type*        sums) noexcept
+  {
+    using P   = typename Z::value_type;
+    using vec = fft_reg<Isa, P>;
+    constexpr Isa         isa   {};
+    constexpr std::size_t width {sizeof(vec) / sizeof(P)};       // parts in a register
+    const std::size_t     parts {2 * w};
+    const std::size_t     whole {parts - (parts % width)};
+    const auto* const     bs    {reinterpret_cast<const P*>(b)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex number is the array of its two parts ([complex.numbers])
+    const auto* const     as    {reinterpret_cast<const P*>(a)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    auto* const           cs    {reinterpret_cast<P*>(c)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    const auto            real_sums {[&](std::size_t r) noexcept { return sums + (2 * r * parts); }};
+    const auto            imaginary_sums {[&](std::size_t r) noexcept { return sums + (((2 * r) + 1) * parts); }};
+    for (std::size_t pc {0}; pc < k; pc += depth) {
+      const std::size_t kc {std::min(depth, k - pc)};
+      std::fill(sums, sums + (2 * R * parts), P {});
+      std::size_t p        {0};
+      for (; p + 2 <= kc; p += 2) { // two steps of the depth to each pass over the sums
+        const P* const row0 {bs + (2 * (pc + p) * ldb)};
+        const P* const row1 {row0 + (2 * ldb)};
+        for (std::size_t r {0}; r < R; ++r) {
+          const P* const ar  {as + (2 * ((r * lda) + pc + p))};
+          const vec      re0 {fft_splat(isa, ar[0])};
+          const vec      im0 {fft_splat(isa, ar[1])};
+          const vec      re1 {fft_splat(isa, ar[2])};
+          const vec      im1 {fft_splat(isa, ar[3])};
+          P* const       rs  {real_sums(r)};
+          P* const       is  {imaginary_sums(r)};
+          for (std::size_t j {0}; j < whole; j += width) {
+            const vec v0 {fft_load(isa, row0 + j)};
+            const vec v1 {fft_load(isa, row1 + j)};
+            fft_store(rs + j, fft_fused(re1, v1, fft_fused(re0, v0, fft_load(isa, rs + j))));
+            fft_store(is + j, fft_fused(im1, v1, fft_fused(im0, v0, fft_load(isa, is + j))));
+          }
+          for (std::size_t j {whole}; j < parts; ++j) {
+            rs[j] = std::fma(ar[2], row1[j], std::fma(ar[0], row0[j], rs[j]));
+            is[j] = std::fma(ar[3], row1[j], std::fma(ar[1], row0[j], is[j]));
+          }
+        }
+      }
+      if (p < kc) { // the panel's last step
+        const P* const row0 {bs + (2 * (pc + p) * ldb)};
+        for (std::size_t r {0}; r < R; ++r) {
+          const P* const ar  {as + (2 * ((r * lda) + pc + p))};
+          const vec      re0 {fft_splat(isa, ar[0])};
+          const vec      im0 {fft_splat(isa, ar[1])};
+          P* const       rs  {real_sums(r)};
+          P* const       is  {imaginary_sums(r)};
+          for (std::size_t j {0}; j < whole; j += width) {
+            const vec v0 {fft_load(isa, row0 + j)};
+            fft_store(rs + j, fft_fused(re0, v0, fft_load(isa, rs + j)));
+            fft_store(is + j, fft_fused(im0, v0, fft_load(isa, is + j)));
+          }
+          for (std::size_t j {whole}; j < parts; ++j) {
+            rs[j] = std::fma(ar[0], row0[j], rs[j]);
+            is[j] = std::fma(ar[1], row0[j], is[j]);
+          }
+        }
+      }
+      const bool fresh {start == c_start::zero && pc == 0}; // C holds nothing yet: 0 + the sum, as the tile stores it
+      const vec  zero  {fft_splat(isa, P {})};
+      for (std::size_t r {0}; r < R; ++r) {
+        const P* const rs  {real_sums(r)};
+        const P* const is  {imaginary_sums(r)};
+        P* const       out {cs + (2 * r * ldc)};
+        for (std::size_t j {0}; j < whole; j += width) {
+          const vec sum {fft_add(fft_load(isa, rs + j), fft_times_i(fft_load(isa, is + j)))};
+          fft_store(out + j, fft_add(fresh ? zero : fft_load(isa, out + j), sum));
+        }
+        for (std::size_t j {whole}; j < parts; j += 2) {
+          const P real_part      {rs[j] - is[j + 1]};
+          const P imaginary_part {rs[j + 1] + is[j]};
+          out[j]     = (fresh ? P {} : out[j]) + real_part;
+          out[j + 1] = (fresh ? P {} : out[j + 1]) + imaginary_part;
+        }
+      }
+    }
+  }
+
+  //! \brief \ref few_rows_complex_chunk built for AVX2 with FMA, its sums on the stack.
+  template <std::size_t R,
+            typename Z>
+  NUMERICAL_TARGET("avx2,fma") void few_rows_complex_avx2(std::size_t depth,
+                                                          std::size_t w,
+                                                          std::size_t k,
+                                                          const Z*    a,
+                                                          std::size_t lda,
+                                                          const Z*    b,
+                                                          std::size_t ldb,
+                                                          Z*          c,
+                                                          std::size_t ldc,
+                                                          c_start     start) noexcept
+  {
+    alignas(64) std::array<typename Z::value_type, 4 * R * few_rows_complex_columns<R>> sums; // NOLINT(cppcoreguidelines-pro-type-member-init,hicpp-member-init): each panel zeroes the parts it sums
+    few_rows_complex_chunk<fft_avx2, R>(depth, w, k, a, lda, b, ldb, c, ldc, start, sums.data());
+    _mm256_zeroupper();                                                                       // the upper halves cleared: code past the chunk may be SSE alone
+  }
+
+  //! \brief \ref few_rows_complex_chunk built for AVX-512, its sums on the stack.
+  template <std::size_t R,
+            typename Z>
+  NUMERICAL_TARGET("avx512f,avx2,fma") void few_rows_complex_avx512(std::size_t depth,
+                                                                    std::size_t w,
+                                                                    std::size_t k,
+                                                                    const Z*    a,
+                                                                    std::size_t lda,
+                                                                    const Z*    b,
+                                                                    std::size_t ldb,
+                                                                    Z*          c,
+                                                                    std::size_t ldc,
+                                                                    c_start     start) noexcept
+  {
+    alignas(64) std::array<typename Z::value_type, 4 * R * few_rows_complex_columns<R>> sums; // NOLINT(cppcoreguidelines-pro-type-member-init,hicpp-member-init): each panel zeroes the parts it sums
+    few_rows_complex_chunk<fft_avx512, R>(depth, w, k, a, lda, b, ldb, c, ldc, start, sums.data());
+    _mm256_zeroupper();                                                                       // the upper halves cleared: code past the chunk may be SSE alone
+  }
+
+  /*!
+   * \brief A complex product of \p R rows of A, at most \ref narrow_group, on the x86-64 units, the complex tile's sums
+   *        in its panels (\ref few_rows_complex_chunk, so its bits): the columns of C by chunks on the threads, each
+   *        streaming B's rows, where the packed tiles read B down slivers of columns and kept a product this small on one
+   *        thread. Ten AVX-512 cores, one row of `complex128` by 583 × 406: 137 µs on one thread whatever the threads,
+   *        now 98 on one and 43 on all; by 2000 × 2000 11.5 and 1.9 ms, now 6.2 and 1.05.
+   */
+  template <std::size_t R,
+            split_complex Z>
+  void few_rows_complex_x86(std::size_t n,
+                            std::size_t k,
+                            const Z*    a,
+                            std::size_t lda,
+                            const Z*    b,
+                            std::size_t ldb,
+                            Z*          c,
+                            std::size_t ldc,
+                            c_start     start)
+  {
+    constexpr bool        doubles {std::is_same_v<Z, std::complex<double>>};
+    const bool            wide    {gemm_path_current() == gemm_path::avx512};
+    const std::size_t     depth   {doubles ? avx512_complex_tile_kernel::depth : avx512_complex_tile_kernel_f32::depth};
+    // A chunk a thread at least, of whole registers' columns, and at most what the stack holds of sums.
+    const std::size_t     share   {(n + max_threads() - 1) / max_threads()};
+    const std::size_t     width   {std::clamp((share + 15) / 16 * 16, std::size_t {64}, few_rows_complex_columns<R>)};
+    const std::size_t     chunks  {(n + width - 1) / width};
+    parallel_for(chunks, 4 * R * width * k, [&](std::size_t t) {
+                   const std::size_t j {t * width};
+                   const std::size_t w {std::min(width, n - j)};
+                   if (wide) {
+                     few_rows_complex_avx512<R>(depth, w, k, a, lda, b + j, ldb, c + j, ldc, start);
+                   }
+                   else {
+                     few_rows_complex_avx2<R>(depth, w, k, a, lda, b + j, ldb, c + j, ldc, start);
+                   }
+                 });
+  }
+
 #endif
 
 #ifdef NUMERICAL_NEON_COMPILED
@@ -3945,6 +4132,18 @@ namespace numerical::detail {
   {
     if constexpr (split_complex<T>) {
       if (gemm_path_current() != gemm_path::portable) {
+#ifdef NUMERICAL_X86_COMPILED
+        if (const gemm_path path {gemm_path_current()}; m != 0 && (m <= 2 || (m <= narrow_group && k * n >= few_rows_complex_least)) && n != 0 && k != 0
+            && (path == gemm_path::avx2 || path == gemm_path::avx512)) {
+          static_assert(narrow_group == 4, "the switch below names each count of rows up to narrow_group");
+          switch (m) { // a few rows, B's rows streamed by chunks of columns on the threads: the tile's bits
+            case 1: few_rows_complex_x86<1>(n, k, a, lda, b, ldb, c, ldc, start); return;
+            case 2: few_rows_complex_x86<2>(n, k, a, lda, b, ldb, c, ldc, start); return;
+            case 3: few_rows_complex_x86<3>(n, k, a, lda, b, ldb, c, ldc, start); return;
+            default: few_rows_complex_x86<4>(n, k, a, lda, b, ldb, c, ldc, start); return;
+          }
+        }
+#endif
         if (m != 0 && n != 0 && k != 0) {
           gemm_large(m, n, k, a, lda, b, ldb, c, ldc, start);
         }

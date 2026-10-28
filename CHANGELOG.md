@@ -39,6 +39,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   points 4–5× as fast; one line of 100 000 points 1.5–1.9× SciPy's time and type 4 of 1023 points 3.7×: open targets.
 
 ### Changed
+- **Complex products of a few rows on x86-64 stream B's rows, by chunks of columns on the threads**
+  (`few_rows_complex_x86`: one or two rows always, three or four past 65 536 elements of B), where the packed tiles read
+  B down slivers of columns and kept a product of under 70³ multiply-adds on one thread. Ten AVX-512 cores, one row of
+  `complex128` by 583 × 406 155 → 136 µs on one thread, 257 → 53 µs on all; of `complex64` 111 → 25 µs on all; by
+  2000 × 2000 14.6 → 6.8 ms and 2.15 → 1.37 ms; two rows by 583 × 406 161 → 65 µs, four 189 → 91 µs on all. The
+  same bits: each panel's sums as the complex tile forms them.
 - **Shallow `double` and `float` products on x86-64 hold each element's sum in a register over the whole depth**
   (`plain_row_x86`, the plain loop by rows: four vectors of columns at a time, from C or from zero), where each step
   of the depth read and wrote the row of C again after it was zeroed: ten AVX-512 cores, one thread, 469 × 3 by 3 × 84
