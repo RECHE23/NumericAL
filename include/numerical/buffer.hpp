@@ -9,8 +9,11 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <complex>
+#include <concepts>
 #include <cstddef>
 #include <cstring>
+#include <limits>
 #include <new>
 #include <memory>
 #include <type_traits>
@@ -173,6 +176,14 @@ namespace numerical {
      */
     inline constexpr std::size_t kept_pages_least {std::size_t {1} << 20U};
 
+    //! \brief Whether \p T is a `std::complex` of a floating-point type.
+    template <typename T>
+    inline constexpr bool is_complex_number {false};
+
+    //! \brief \ref is_complex_number of `std::complex<R>`.
+    template <std::floating_point R>
+    inline constexpr bool is_complex_number<std::complex<R>> {true};
+
     /*!
      * \brief The allocator of \ref numerical::buffer. An element constructed with no value is default-initialised, so a
      *        `double` keeps whatever its memory held, where std::allocator zeroes it; one constructed with a value is
@@ -318,9 +329,25 @@ namespace numerical {
 
       //! \brief Default-initialises the element at \p at.
       template <typename U>
+      requires (!is_complex_number<U>)
       void construct(U* at) noexcept(std::is_nothrow_default_constructible_v<U>)
       {
         ::new (static_cast<void*>(at)) U;
+      }
+
+      //! \brief \ref construct of a complex number, whose default constructor zeroes: left as its memory holds it, as a
+      //!        `double` is (an implicit-lifetime type: trivial copies and destructor), so that a complex result written
+      //!        in full is written once (a `complex128` product of 914 × 337 spent 172 of its 414 µs zeroing it). Built
+      //!        without NDEBUG, it holds NaN parts instead, so that code that relied on zeros fails.
+      template <typename U>
+      requires is_complex_number<U>
+      void construct([[maybe_unused]] U* at) noexcept
+      {
+#ifndef NDEBUG
+        const typename U::value_type                nan   {std::numeric_limits<typename U::value_type>::quiet_NaN()};
+        const std::array<typename U::value_type, 2> parts {nan, nan};
+        std::memcpy(static_cast<void*>(at), parts.data(), sizeof(parts)); // its two parts ([complex.numbers])
+#endif
       }
 
       //! \brief Constructs the element at \p at from \p args.
@@ -347,7 +374,7 @@ namespace numerical {
 
   /*!
    * \brief The storage of \ref vector, \ref matrix and \ref tensor, namely a std::vector whose `buffer<T>(n)` and `resize(n)`
-   *        leave a `double` uninitialised, for a result about to be written in full. `buffer<T>(n, T {})` zeroes, as
+   *        leave a `double` or a complex number uninitialised, for a result about to be written in full. `buffer<T>(n, T {})` zeroes, as
    *        `std::vector<T>(n)` does.
    */
   template <typename T>
