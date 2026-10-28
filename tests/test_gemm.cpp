@@ -994,6 +994,65 @@ TEST(a_product_into_c_gives_the_bits_of_c_zeroed_then_added)
                        }));
 }
 
+namespace
+{
+  // gemm_bt, gemm_at and gemm_atbt (`which` 0, 1, 2) with c_start::zero into a C of stale values: gemm's product into
+  // a zeroed C, to the bit.
+  template <typename T>
+  bool transposed_operands_into_stale_c(std::size_t m,
+                                        std::size_t n,
+                                        std::size_t k,
+                                        int         which)
+  {
+    const std::size_t ldbt {k + 3};
+    const std::size_t ldat {m + 2};
+    std::vector<T>    a(m * k);
+    std::vector<T>    at(k * ldat, T(-5));
+    std::vector<T>    b(k * n);
+    std::vector<T>    bt(n * ldbt, T(-7));
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t p {0}; p < k; ++p) {
+        a[(i * k) + p]     = entry<T>((i * k) + p);
+        at[(p * ldat) + i] = a[(i * k) + p];
+      }
+    }
+    for (std::size_t p {0}; p < k; ++p) {
+      for (std::size_t j {0}; j < n; ++j) {
+        b[(p * n) + j]     = entry<T>((p * 7) + (j * 11) + 3);
+        bt[(j * ldbt) + p] = b[(p * n) + j];
+      }
+    }
+    std::vector<T> want(m * n, T {});
+    std::vector<T> got(m * n, stale<T>());
+    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, want.data(), n);
+    constexpr auto zero {numerical::detail::c_start::zero};
+    if (which == 0) {
+      numerical::detail::gemm_bt(m, n, k, a.data(), k, bt.data(), ldbt, got.data(), n, zero);
+    }
+    else if (which == 1) {
+      numerical::detail::gemm_at(m, n, k, at.data(), ldat, b.data(), n, got.data(), n, zero);
+    }
+    else {
+      numerical::detail::gemm_atbt(m, n, k, at.data(), ldat, bt.data(), ldbt, got.data(), n, zero);
+    }
+    return got == want;
+  }
+} // namespace
+
+// Each layout into a C that holds nothing: the plain loop, the tiles (C written fresh by the complex ones on x86-64),
+// several panels, an empty depth (C zeroed), every type and path.
+TEST(transposed_operands_into_a_c_that_holds_nothing_give_gemm_s_bits)
+{
+  for (const int which : {0, 1, 2}) {
+    for (const auto& [m, n, k] : {std::array<std::size_t, 3> {3, 4, 5}, {914, 37, 2}, {129, 101, 300}, {31, 15, 40}, {6, 9, 0}}) {
+      EXPECT(on_every_path([&] { return transposed_operands_into_stale_c<double>(m, n, k, which); }));
+      EXPECT(on_every_path([&] { return transposed_operands_into_stale_c<float>(m, n, k, which); }));
+      EXPECT(on_every_path([&] { return transposed_operands_into_stale_c<std::complex<double>>(m, n, k, which); }));
+      EXPECT(on_every_path([&] { return transposed_operands_into_stale_c<std::complex<float>>(m, n, k, which); }));
+    }
+  }
+}
+
 // A zero dimension leaves C as it is, whichever it is (the decompositions call it so when nothing is left).
 TEST(an_empty_dimension_leaves_c_unchanged)
 {

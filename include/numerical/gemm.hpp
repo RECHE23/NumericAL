@@ -4237,7 +4237,8 @@ namespace numerical::detail {
    *        `transb`, a NumPy array in Fortran order) needs no copy of it. The tiles are \ref gemm's, the operands
    *        packed (or, through `gemm_split`, copied into their parts) from where they lie, and so are the bits; a
    *        product \ref gemm runs in the plain loop copies a transposed operand row-major and runs there, small as it
-   *        is.
+   *        is. \p start says what C holds (\ref c_start): the complex tiles write C fresh where it holds nothing; the
+   *        other routes zero it first.
    */
   template <typename A,
             typename B,
@@ -4250,15 +4251,22 @@ namespace numerical::detail {
                     const T*    b,
                     std::size_t ldb,
                     T*          c,
-                    std::size_t ldc)
+                    std::size_t ldc,
+                    c_start     start = c_start::kept)
   {
     if constexpr (split_complex<T>) {
       if (gemm_path_current() != gemm_path::portable) {
         if (m != 0 && n != 0 && k != 0) {
-          gemm_large_complex<B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+          gemm_large_complex<B, A>(m, n, k, a, lda, b, ldb, c, ldc, start);
+        }
+        else if (start == c_start::zero) {
+          zero_c(c, ldc, m, n);
         }
         return;
       }
+    }
+    if (start == c_start::zero) { // these routes add to C
+      zero_c(c, ldc, m, n);
     }
     if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
       buffer<T>      a_rows_copy;
@@ -4283,9 +4291,10 @@ namespace numerical::detail {
                const T*    bt,
                std::size_t ldbt,
                T*          c,
-               std::size_t ldc)
+               std::size_t ldc,
+               c_start     start = c_start::kept)
   {
-    gemm_layouts<a_rows, b_transposed>(m, n, k, a, lda, bt, ldbt, c, ldc);
+    gemm_layouts<a_rows, b_transposed>(m, n, k, a, lda, bt, ldbt, c, ldc, start);
   }
 
   //! \brief \ref gemm_layouts with A given as `Aᵀ` (\p at, `k × m`, \p ldat apart).
@@ -4298,9 +4307,10 @@ namespace numerical::detail {
                const T*    b,
                std::size_t ldb,
                T*          c,
-               std::size_t ldc)
+               std::size_t ldc,
+               c_start     start = c_start::kept)
   {
-    gemm_layouts<a_transposed, b_rows>(m, n, k, at, ldat, b, ldb, c, ldc);
+    gemm_layouts<a_transposed, b_rows>(m, n, k, at, ldat, b, ldb, c, ldc, start);
   }
 
   //! \brief \ref gemm_layouts with both operands given as their transposes.
@@ -4313,9 +4323,10 @@ namespace numerical::detail {
                  const T*    bt,
                  std::size_t ldbt,
                  T*          c,
-                 std::size_t ldc)
+                 std::size_t ldc,
+                 c_start     start = c_start::kept)
   {
-    gemm_layouts<a_transposed, b_transposed>(m, n, k, at, ldat, bt, ldbt, c, ldc);
+    gemm_layouts<a_transposed, b_transposed>(m, n, k, at, ldat, bt, ldbt, c, ldc, start);
   }
 
   //! \brief The tile a product's left operand is packed for (\ref numerical::detail::pack_left): \c plain where it is not packed.

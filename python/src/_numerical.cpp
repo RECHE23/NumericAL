@@ -4007,24 +4007,24 @@ std::optional<PyObject*> borrowed_transposed_product(const borrowed_operand& lef
             const sb::scoped_gil_release unlocked {releases_gil((m * k) + (k * n))};
             const auto product = [&]<typename T>(std::type_identity<T>) {
                 numerical::buffer<T> c(m * n);
-                numerical::detail::parallel_zero(c.data(), c.size()); // gemm adds to C
                 const auto* const a {static_cast<const T*>(left.data)};
                 const auto* const b {static_cast<const T*>(right.data)};
                 if constexpr (std::is_same_v<T, double>) {
                     if (gram_product(left, right, m, k)) {
+                        numerical::detail::parallel_zero(c.data(), c.size()); // the triangle's product adds to C
                         gram_triangle_mirrored(a, left.ld, left.transposed, m, k, c.data());
                         result.emplace(numerical::tensor<T> {{m, n}, std::move(c)});
                         return;
                     }
                 }
                 if (left.transposed && right.transposed) {
-                    numerical::detail::gemm_atbt(m, n, k, a, left.ld, b, right.ld, c.data(), n);
+                    numerical::detail::gemm_atbt(m, n, k, a, left.ld, b, right.ld, c.data(), n, numerical::detail::c_start::zero); // C written whole, from nothing
                 }
                 else if (left.transposed) {
-                    numerical::detail::gemm_at(m, n, k, a, left.ld, b, right.ld, c.data(), n);
+                    numerical::detail::gemm_at(m, n, k, a, left.ld, b, right.ld, c.data(), n, numerical::detail::c_start::zero); // C written whole, from nothing
                 }
                 else {
-                    numerical::detail::gemm_bt(m, n, k, a, left.ld, b, right.ld, c.data(), n);
+                    numerical::detail::gemm_bt(m, n, k, a, left.ld, b, right.ld, c.data(), n, numerical::detail::c_start::zero); // C written whole, from nothing
                 }
                 result.emplace(numerical::tensor<T> {{m, n}, std::move(c)});
             };

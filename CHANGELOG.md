@@ -39,6 +39,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   points 4–5× as fast; one line of 100 000 points 1.5–1.9× SciPy's time and type 4 of 1023 points 3.7×: open targets.
 
 ### Changed
+- **A product of NumPy arrays in Fortran order writes C fresh** (`gemm_at`, `gemm_bt`, `gemm_atbt` take `c_start`; the
+  complex tiles write a C that holds nothing without reading it), where C was zeroed first: ten AVX-512 cores,
+  914 × 2 by 2 × 337 `complex128` in Fortran order 592 → 520 µs. The same bits.
 - **Complex products of a few rows on x86-64 stream B's rows, by chunks of columns on the threads**
   (`few_rows_complex_x86`: one or two rows always, three or four past 65 536 elements of B), where the packed tiles read
   B down slivers of columns and kept a product of under 70³ multiply-adds on one thread. Ten AVX-512 cores, one row of
