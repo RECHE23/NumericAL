@@ -1311,6 +1311,32 @@ namespace numerical::detail {
       Kernel::pack_a(a + (i0 * lda) + p0, lda, rows, kc, out);
     }
 
+#ifdef NUMERICAL_X86_COMPILED // the complex tiles that read A in place
+    //! \brief Element `(i, p)` of A where it lies, and the elements between one step of the depth and the next, and
+    //!        between one row and the next (\ref gemm_packed's A read in place).
+    template <typename T>
+    [[nodiscard]] static const T* element(const T*    a,
+                                          std::size_t lda,
+                                          std::size_t i,
+                                          std::size_t p) noexcept
+    {
+      return a + (i * lda) + p;
+    }
+
+    //! \brief \ref element's elements between one step of the depth and the next.
+    [[nodiscard]] static constexpr std::size_t step(std::size_t /*lda*/) noexcept
+    {
+      return 1;
+    }
+
+    //! \brief \ref element's elements between one row and the next.
+    [[nodiscard]] static constexpr std::size_t across(std::size_t lda) noexcept
+    {
+      return lda;
+    }
+
+#endif
+
     //! \brief A row-major for the plain loop: itself.
     template <typename T>
     [[nodiscard]] static const T* rows_of(const T*     a,
@@ -1351,6 +1377,31 @@ namespace numerical::detail {
     {
       gemm_pack_at<Kernel::mr>(at + (p0 * ldat) + i0, ldat, rows, kc, out);
     }
+
+#ifdef NUMERICAL_X86_COMPILED // the complex tiles that read A in place
+    //! \brief Element `(i, p)` of A where it lies, in its transpose \p at (\ref a_rows::element).
+    template <typename T>
+    [[nodiscard]] static const T* element(const T*    at,
+                                          std::size_t ldat,
+                                          std::size_t i,
+                                          std::size_t p) noexcept
+    {
+      return at + (p * ldat) + i;
+    }
+
+    //! \brief \ref element's elements between one step of the depth and the next.
+    [[nodiscard]] static constexpr std::size_t step(std::size_t ldat) noexcept
+    {
+      return ldat;
+    }
+
+    //! \brief \ref element's elements between one row and the next.
+    [[nodiscard]] static constexpr std::size_t across(std::size_t /*ldat*/) noexcept
+    {
+      return 1;
+    }
+
+#endif
 
     //! \brief A row-major for the plain loop, copied from \p at into \p scratch.
     template <typename T>
@@ -2302,6 +2353,13 @@ namespace numerical::detail {
     Kernel::prefetch_rows(c, ldc);
   }
 
+  //! \brief Whether \p Kernel reads A where it lies (\c Kernel::tile_a_in_place).
+  template <typename Kernel,
+            typename T>
+  inline constexpr bool reads_a_in_place {requires(const T * x, T * y, std::size_t z) {
+                                            Kernel::tile_a_in_place(z, x, z, z, x, z, y, z, z, z);
+                                          }};
+
   //! \brief The most rows of a task of \p Kernel over a panel of depth \p kc: its block of rows.
   template <typename Kernel>
   [[nodiscard]] constexpr std::size_t task_rows_cap(std::size_t /*kc*/) noexcept
@@ -2349,12 +2407,20 @@ namespace numerical::detail {
     constexpr std::size_t    mr     {Kernel::mr};
     constexpr std::size_t    nr     {Kernel::nr};
     constexpr std::size_t    nc_max {nr * 128};
-    const std::size_t        a_rows {((m + mr) - 1) / mr * mr};
-    const std::size_t        b_cols {((std::min(nc_max, n) + nr) - 1) / nr * nr};
-    const packing_storage<T> packed {a_packed != nullptr ? 0 : a_rows * std::min(Kernel::depth, k), b_cols * std::min(Kernel::depth, k)};
-    const std::size_t        a_blocks {a_packed != nullptr ? 0 : ((m + Kernel::block_rows) - 1) / Kernel::block_rows};
-    const T* const           a_tiles  {a_packed != nullptr ? a_packed : packed.a()};
-    const std::size_t        shared   {gemm_shares<Kernel>(m, n, k) ? 1U : 0U}; // a weight of zero starts no thread
+    // A read where it lies by a product of one sliver of columns, which reads each of its elements once: packing it
+    // cost more than the tiles (430 × 607 by 607 × 6 complex128, half the time).
+    bool                     a_own      {a_packed == nullptr}; // A packed here
+    bool                     a_in_place {false};
+    if constexpr (reads_a_in_place<Kernel, T>) {
+      a_in_place = a_own && n <= nr;
+      a_own      = a_own && !a_in_place;
+    }
+    const std::size_t        a_rows     {((m + mr) - 1) / mr * mr};
+    const std::size_t        b_cols     {((std::min(nc_max, n) + nr) - 1) / nr * nr};
+    const packing_storage<T> packed     {a_own ? a_rows * std::min(Kernel::depth, k) : 0, b_cols * std::min(Kernel::depth, k)};
+    const std::size_t        a_blocks   {a_own ? ((m + Kernel::block_rows) - 1) / Kernel::block_rows : 0};
+    const T* const           a_tiles    {a_packed != nullptr ? a_packed : packed.a()};
+    const std::size_t        shared     {gemm_shares<Kernel>(m, n, k) ? 1U : 0U}; // a weight of zero starts no thread
     // B's whole slivers unpacked: rows close enough, or few enough rows of A whatever B's stride
     // (Kernel::b_in_place_rows), where the kernel reads B in place at all.
     const bool               in_place {B::template in_place<Kernel>(ldb) || (m <= Kernel::b_in_place_rows && B::template in_place<Kernel>(1))};
@@ -2413,8 +2479,17 @@ namespace numerical::detail {
                            if (ir + mr < ic_end) { // the next row's tile of C, while this one computes
                              prefetch_next_row<Kernel>(c + ((ir + mr) * ldc) + jc + jr, ldc);
                            }
-                           Kernel::tile(kc, a_tiles + (ir * kc), direct ? b + (pc * ldb) + jc + jr : packed.b() + (jr * kc),
-                                        direct ? ldb : nr, c + (ir * ldc) + jc + jr, ldc, std::min(mr, m - ir), std::min(nr, nc - jr));
+                           const T* const    b_tile {direct ? b + (pc * ldb) + jc + jr : packed.b() + (jr * kc)};
+                           const std::size_t b_ld {direct ? ldb : nr};
+                           if constexpr (reads_a_in_place<Kernel, T>) {
+                             if (a_in_place) {
+                               Kernel::tile_a_in_place(kc, A::element(a, lda, ir, pc), A::step(lda), A::across(lda), b_tile, b_ld,
+                                                       c + (ir * ldc) + jc + jr, ldc, std::min(mr, m - ir), std::min(nr, nc - jr));
+                               continue;
+                             }
+                           }
+                           Kernel::tile(kc, a_tiles + (ir * kc), b_tile, b_ld, c + (ir * ldc) + jc + jr, ldc, std::min(mr, m - ir),
+                                        std::min(nr, nc - jr));
                          }
                        }
                      });
@@ -2778,6 +2853,22 @@ namespace numerical::detail {
     {
       avx512_tile_c64(kc, ap, bp, ldb, c, ldc, rows, cols);
     }
+
+    //! \brief \ref tile with A read where it lies (\ref gemm_packed for a product of one sliver of columns): element
+    //!        `(i, p)` of the tile's rows at `a[(p · a_step) + (i · a_row)]`.
+    static void tile_a_in_place(std::size_t                 kc,
+                                const std::complex<double>* a,
+                                std::size_t                 a_step,
+                                std::size_t                 a_row,
+                                const std::complex<double>* bp,
+                                std::size_t                 ldb,
+                                std::complex<double>      * c,
+                                std::size_t                 ldc,
+                                std::size_t                 rows,
+                                std::size_t                 cols) noexcept
+    {
+      avx512_tile_c64_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols);
+    }
   };
 
   //! \brief The AVX2 complex tile (\ref avx2_full_tile_c64).
@@ -2826,6 +2917,22 @@ namespace numerical::detail {
     {
       avx2_tile_c64(kc, ap, bp, ldb, c, ldc, rows, cols);
     }
+
+    //! \brief \ref tile with A read where it lies (\ref gemm_packed for a product of one sliver of columns): element
+    //!        `(i, p)` of the tile's rows at `a[(p · a_step) + (i · a_row)]`.
+    static void tile_a_in_place(std::size_t                 kc,
+                                const std::complex<double>* a,
+                                std::size_t                 a_step,
+                                std::size_t                 a_row,
+                                const std::complex<double>* bp,
+                                std::size_t                 ldb,
+                                std::complex<double>      * c,
+                                std::size_t                 ldc,
+                                std::size_t                 rows,
+                                std::size_t                 cols) noexcept
+    {
+      avx2_tile_c64_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols);
+    }
   };
   //! \brief \ref avx512_complex_tile_kernel for complex `float` (\ref avx512_full_tile_c32).
   struct avx512_complex_tile_kernel_f32
@@ -2867,6 +2974,22 @@ namespace numerical::detail {
                      std::size_t                cols) noexcept
     {
       avx512_tile_c32(kc, ap, bp, ldb, c, ldc, rows, cols);
+    }
+
+    //! \brief \ref tile with A read where it lies (\ref gemm_packed for a product of one sliver of columns): element
+    //!        `(i, p)` of the tile's rows at `a[(p · a_step) + (i · a_row)]`.
+    static void tile_a_in_place(std::size_t                kc,
+                                const std::complex<float>* a,
+                                std::size_t                a_step,
+                                std::size_t                a_row,
+                                const std::complex<float>* bp,
+                                std::size_t                ldb,
+                                std::complex<float>      * c,
+                                std::size_t                ldc,
+                                std::size_t                rows,
+                                std::size_t                cols) noexcept
+    {
+      avx512_tile_c32_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols);
     }
   };
 
@@ -2910,6 +3033,22 @@ namespace numerical::detail {
                      std::size_t                cols) noexcept
     {
       avx2_tile_c32(kc, ap, bp, ldb, c, ldc, rows, cols);
+    }
+
+    //! \brief \ref tile with A read where it lies (\ref gemm_packed for a product of one sliver of columns): element
+    //!        `(i, p)` of the tile's rows at `a[(p · a_step) + (i · a_row)]`.
+    static void tile_a_in_place(std::size_t                kc,
+                                const std::complex<float>* a,
+                                std::size_t                a_step,
+                                std::size_t                a_row,
+                                const std::complex<float>* bp,
+                                std::size_t                ldb,
+                                std::complex<float>      * c,
+                                std::size_t                ldc,
+                                std::size_t                rows,
+                                std::size_t                cols) noexcept
+    {
+      avx2_tile_c32_a_in_place(kc, a, a_step, a_row, bp, ldb, c, ldc, rows, cols);
     }
   };
 

@@ -896,7 +896,8 @@ namespace numerical::detail {
    * \brief \ref through_edge for a tile \p full computes for any count of its rows up to \p Rows, its template
    *        argument: a tile of its whole \p Cols columns and fewer rows computed in C itself, those rows alone (one
    *        row of complex products had six rows' multiply-adds computed through a whole tile); any other through a
-   *        whole one, as through_edge. Each element of C has the same operations either way.
+   *        copy, as through_edge, its rows alone computed there too. Each element of C has the same operations
+   *        either way.
    */
   template <std::size_t Rows,
             std::size_t Cols,
@@ -912,7 +913,7 @@ namespace numerical::detail {
       rows_of_tile<Rows>(rows, c, ldc, full);
       return;
     }
-    through_edge<Rows, Cols>(c, ldc, rows, cols, [&](T* tile, std::size_t ld) noexcept { full.template operator()<Rows>(tile, ld); });
+    through_edge<Rows, Cols>(c, ldc, rows, cols, [&](T* tile, std::size_t ld) noexcept { rows_of_tile<Rows>(rows, tile, ld, full); });
   }
 
   //! \brief No leading elements in vectors, for a type no native vector holds.

@@ -379,26 +379,31 @@ namespace numerical::detail {
    *        their sum `Re a · b + i Im a · b` is formed once, by exchanging the second's parts and subtracting or
    *        adding them (`addsub`).
    */
-  template <std::size_t Rows = avx2_complex_mr>
+  template <std::size_t Rows = avx2_complex_mr,
+            bool        AInPlace = false>
   NUMERICAL_TARGET("avx2,fma") inline void avx2_full_tile_c64(std::size_t                 kc,
                                                               const std::complex<double>* ap,
                                                               const std::complex<double>* bp,
                                                               std::size_t                 ldb,
                                                               std::complex<double>*       tile,
-                                                              std::size_t                 ld) noexcept
+                                                              std::size_t                 ld,
+                                                              std::size_t                 a_step = avx2_complex_mr,
+                                                              std::size_t                 a_row  = 1) noexcept
   {
-    const auto* const                             a   {reinterpret_cast<const double*>(ap)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
-    const auto* const                             b   {reinterpret_cast<const double*>(bp)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    auto* const                                   c   {reinterpret_cast<double*>(tile)};     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    std::array<ymm_register, Rows * 4>            acc {};
+    const std::size_t                             step   {AInPlace ? a_step : avx2_complex_mr}; // A's elements apart from one step to the next
+    const std::size_t                             across {AInPlace ? a_row : 1};                // and from one row to the next
+    const auto* const                             a      {reinterpret_cast<const double*>(ap)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+    const auto* const                             b      {reinterpret_cast<const double*>(bp)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    auto* const                                   c      {reinterpret_cast<double*>(tile)};     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    std::array<ymm_register, Rows * 4>            acc    {};
     NUMERICAL_UNROLL_DEPTH
     for (std::size_t p {0}; p < kc; ++p) {
       const __m256d b0 {_mm256_loadu_pd(b + (2 * p * ldb))};
       const __m256d b1 {_mm256_loadu_pd(b + (2 * p * ldb) + 4)};
       NUMERICAL_UNROLL_TILE
       for (std::size_t i {0}; i < Rows; ++i) {
-        const __m256d re {_mm256_broadcast_sd(a + (2 * ((p * avx2_complex_mr) + i)))};
-        const __m256d im {_mm256_broadcast_sd(a + (2 * ((p * avx2_complex_mr) + i)) + 1)};
+        const __m256d re {_mm256_broadcast_sd(a + (2 * ((p * step) + (i * across))))};
+        const __m256d im {_mm256_broadcast_sd(a + (2 * ((p * step) + (i * across))) + 1)};
         acc[4 * i].v       = _mm256_fmadd_pd(re, b0, acc[4 * i].v);
         acc[(4 * i) + 1].v = _mm256_fmadd_pd(re, b1, acc[(4 * i) + 1].v);
         acc[(4 * i) + 2].v = _mm256_fmadd_pd(im, b0, acc[(4 * i) + 2].v);
@@ -432,6 +437,24 @@ namespace numerical::detail {
                                                    });
   }
 
+  //! \brief \ref avx2_tile_c64 with A read where it lies: element `(i, p)` of the tile's rows at `a[(p · a_step) + (i · a_row)]`,
+  //!        its rows alone computed (no row past A's last is read).
+  inline void avx2_tile_c64_a_in_place(std::size_t                 kc,
+                                       const std::complex<double>* a,
+                                       std::size_t                 a_step,
+                                       std::size_t                 a_row,
+                                       const std::complex<double>* bp,
+                                       std::size_t                 ldb,
+                                       std::complex<double>      * c,
+                                       std::size_t                 ldc,
+                                       std::size_t                 rows,
+                                       std::size_t                 cols) noexcept
+  {
+    through_rows<avx2_complex_mr, avx2_complex_nr>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<double>* tile, std::size_t ld) noexcept {
+                                                     avx2_full_tile_c64<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row);
+                                                   });
+  }
+
   //! \brief The rows of C one AVX-512 complex tile covers.
   inline constexpr std::size_t avx512_complex_mr {6};
 
@@ -443,26 +466,31 @@ namespace numerical::detail {
    *        24 accumulators of eight `double`; with no `addsub` there, the second's exchanged parts are added times
    *        `(−1, 1, …)` by one fused multiply-add, as exact.
    */
-  template <std::size_t Rows = avx512_complex_mr>
+  template <std::size_t Rows = avx512_complex_mr,
+            bool        AInPlace = false>
   NUMERICAL_TARGET("avx512f") inline void avx512_full_tile_c64(std::size_t                 kc,
                                                                const std::complex<double>* ap,
                                                                const std::complex<double>* bp,
                                                                std::size_t                 ldb,
                                                                std::complex<double>*       tile,
-                                                               std::size_t                 ld) noexcept
+                                                               std::size_t                 ld,
+                                                               std::size_t                 a_step = avx512_complex_mr,
+                                                               std::size_t                 a_row  = 1) noexcept
   {
-    const auto* const                               a   {reinterpret_cast<const double*>(ap)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
-    const auto* const                               b   {reinterpret_cast<const double*>(bp)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    auto* const                                     c   {reinterpret_cast<double*>(tile)};     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    std::array<zmm_register, Rows * 4>              acc {};
+    const std::size_t                               step   {AInPlace ? a_step : avx512_complex_mr}; // A's elements apart from one step to the next
+    const std::size_t                               across {AInPlace ? a_row : 1};                  // and from one row to the next
+    const auto* const                               a      {reinterpret_cast<const double*>(ap)};   // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+    const auto* const                               b      {reinterpret_cast<const double*>(bp)};   // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    auto* const                                     c      {reinterpret_cast<double*>(tile)};       // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    std::array<zmm_register, Rows * 4>              acc    {};
     NUMERICAL_UNROLL_DEPTH
     for (std::size_t p {0}; p < kc; ++p) {
       const __m512d b0 {_mm512_loadu_pd(b + (2 * p * ldb))};
       const __m512d b1 {_mm512_loadu_pd(b + (2 * p * ldb) + 8)};
       NUMERICAL_UNROLL_TILE
       for (std::size_t i {0}; i < Rows; ++i) {
-        const __m512d re {_mm512_set1_pd(a[2 * ((p * avx512_complex_mr) + i)])};
-        const __m512d im {_mm512_set1_pd(a[(2 * ((p * avx512_complex_mr) + i)) + 1])};
+        const __m512d re {_mm512_set1_pd(a[2 * ((p * step) + (i * across))])};
+        const __m512d im {_mm512_set1_pd(a[(2 * ((p * step) + (i * across))) + 1])};
         acc[4 * i].v       = _mm512_fmadd_pd(re, b0, acc[4 * i].v);
         acc[(4 * i) + 1].v = _mm512_fmadd_pd(re, b1, acc[(4 * i) + 1].v);
         acc[(4 * i) + 2].v = _mm512_fmadd_pd(im, b0, acc[(4 * i) + 2].v);
@@ -495,6 +523,24 @@ namespace numerical::detail {
                                                        });
   }
 
+  //! \brief \ref avx512_tile_c64 with A read where it lies: element `(i, p)` of the tile's rows at `a[(p · a_step) + (i · a_row)]`,
+  //!        its rows alone computed (no row past A's last is read).
+  inline void avx512_tile_c64_a_in_place(std::size_t                 kc,
+                                         const std::complex<double>* a,
+                                         std::size_t                 a_step,
+                                         std::size_t                 a_row,
+                                         const std::complex<double>* bp,
+                                         std::size_t                 ldb,
+                                         std::complex<double>      * c,
+                                         std::size_t                 ldc,
+                                         std::size_t                 rows,
+                                         std::size_t                 cols) noexcept
+  {
+    through_rows<avx512_complex_mr, avx512_complex_nr>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<double>* tile, std::size_t ld) noexcept {
+                                                         avx512_full_tile_c64<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row);
+                                                       });
+  }
+
   //! \brief The columns of C one AVX2 complex `float` tile covers: two registers of four `std::complex<float>`.
   inline constexpr std::size_t avx2_complex_nr_f32 {8};
 
@@ -502,26 +548,31 @@ namespace numerical::detail {
    * \brief \ref avx2_full_tile_c64 for complex `float`: \ref avx2_complex_mr × \ref avx2_complex_nr_f32, 12
    *        accumulators of eight `float`, the same arithmetic.
    */
-  template <std::size_t Rows = avx2_complex_mr>
+  template <std::size_t Rows = avx2_complex_mr,
+            bool        AInPlace = false>
   NUMERICAL_TARGET("avx2,fma") inline void avx2_full_tile_c32(std::size_t                kc,
                                                               const std::complex<float>* ap,
                                                               const std::complex<float>* bp,
                                                               std::size_t                ldb,
                                                               std::complex<float>*       tile,
-                                                              std::size_t                ld) noexcept
+                                                              std::size_t                ld,
+                                                              std::size_t                a_step = avx2_complex_mr,
+                                                              std::size_t                a_row  = 1) noexcept
   {
-    const auto* const                                 a   {reinterpret_cast<const float*>(ap)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee of [complex.numbers]
-    const auto* const                                 b   {reinterpret_cast<const float*>(bp)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    auto* const                                       c   {reinterpret_cast<float*>(tile)};     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    std::array<ymm_register_f32, Rows * 4>            acc {};
+    const std::size_t                                 step   {AInPlace ? a_step : avx2_complex_mr}; // A's elements apart from one step to the next
+    const std::size_t                                 across {AInPlace ? a_row : 1};                // and from one row to the next
+    const auto* const                                 a      {reinterpret_cast<const float*>(ap)};  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee of [complex.numbers]
+    const auto* const                                 b      {reinterpret_cast<const float*>(bp)};  // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    auto* const                                       c      {reinterpret_cast<float*>(tile)};      // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    std::array<ymm_register_f32, Rows * 4>            acc    {};
     NUMERICAL_UNROLL_DEPTH
     for (std::size_t p {0}; p < kc; ++p) {
       const __m256 b0 {_mm256_loadu_ps(b + (2 * p * ldb))};
       const __m256 b1 {_mm256_loadu_ps(b + (2 * p * ldb) + 8)};
       NUMERICAL_UNROLL_TILE
       for (std::size_t i {0}; i < Rows; ++i) {
-        const __m256 re {_mm256_broadcast_ss(a + (2 * ((p * avx2_complex_mr) + i)))};
-        const __m256 im {_mm256_broadcast_ss(a + (2 * ((p * avx2_complex_mr) + i)) + 1)};
+        const __m256 re {_mm256_broadcast_ss(a + (2 * ((p * step) + (i * across))))};
+        const __m256 im {_mm256_broadcast_ss(a + (2 * ((p * step) + (i * across))) + 1)};
         acc[4 * i].v       = _mm256_fmadd_ps(re, b0, acc[4 * i].v);
         acc[(4 * i) + 1].v = _mm256_fmadd_ps(re, b1, acc[(4 * i) + 1].v);
         acc[(4 * i) + 2].v = _mm256_fmadd_ps(im, b0, acc[(4 * i) + 2].v);
@@ -554,31 +605,54 @@ namespace numerical::detail {
                                                        });
   }
 
+  //! \brief \ref avx2_tile_c32 with A read where it lies: element `(i, p)` of the tile's rows at `a[(p · a_step) + (i · a_row)]`,
+  //!        its rows alone computed (no row past A's last is read).
+  inline void avx2_tile_c32_a_in_place(std::size_t                kc,
+                                       const std::complex<float>* a,
+                                       std::size_t                a_step,
+                                       std::size_t                a_row,
+                                       const std::complex<float>* bp,
+                                       std::size_t                ldb,
+                                       std::complex<float>      * c,
+                                       std::size_t                ldc,
+                                       std::size_t                rows,
+                                       std::size_t                cols) noexcept
+  {
+    through_rows<avx2_complex_mr, avx2_complex_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<float>* tile, std::size_t ld) noexcept {
+                                                         avx2_full_tile_c32<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row);
+                                                       });
+  }
+
   //! \brief The columns of C one AVX-512 complex `float` tile covers: two registers of eight `std::complex<float>`.
   inline constexpr std::size_t avx512_complex_nr_f32 {16};
 
   //! \brief \ref avx512_full_tile_c64 for complex `float`: \ref avx512_complex_mr × \ref avx512_complex_nr_f32, 24
   //!        accumulators of sixteen `float`, the same arithmetic.
-  template <std::size_t Rows = avx512_complex_mr>
+  template <std::size_t Rows = avx512_complex_mr,
+            bool        AInPlace = false>
   NUMERICAL_TARGET("avx512f") inline void avx512_full_tile_c32(std::size_t                kc,
                                                                const std::complex<float>* ap,
                                                                const std::complex<float>* bp,
                                                                std::size_t                ldb,
                                                                std::complex<float>*       tile,
-                                                               std::size_t                ld) noexcept
+                                                               std::size_t                ld,
+                                                               std::size_t                a_step = avx512_complex_mr,
+                                                               std::size_t                a_row  = 1) noexcept
   {
-    const auto* const                                   a   {reinterpret_cast<const float*>(ap)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee of [complex.numbers]
-    const auto* const                                   b   {reinterpret_cast<const float*>(bp)}; // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    auto* const                                         c   {reinterpret_cast<float*>(tile)};     // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
-    std::array<zmm_register_f32, Rows * 4>              acc {};
+    const std::size_t                                   step   {AInPlace ? a_step : avx512_complex_mr}; // A's elements apart from one step to the next
+    const std::size_t                                   across {AInPlace ? a_row : 1};                  // and from one row to the next
+    const auto* const                                   a      {reinterpret_cast<const float*>(ap)};    // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee of [complex.numbers]
+    const auto* const                                   b      {reinterpret_cast<const float*>(bp)};    // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    auto* const                                         c      {reinterpret_cast<float*>(tile)};        // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the same
+    std::array<zmm_register_f32, Rows * 4>              acc    {};
     NUMERICAL_UNROLL_DEPTH
     for (std::size_t p {0}; p < kc; ++p) {
       const __m512 b0 {_mm512_loadu_ps(b + (2 * p * ldb))};
       const __m512 b1 {_mm512_loadu_ps(b + (2 * p * ldb) + 16)};
       NUMERICAL_UNROLL_TILE
       for (std::size_t i {0}; i < Rows; ++i) {
-        const __m512 re {_mm512_set1_ps(a[2 * ((p * avx512_complex_mr) + i)])};
-        const __m512 im {_mm512_set1_ps(a[(2 * ((p * avx512_complex_mr) + i)) + 1])};
+        const __m512 re {_mm512_set1_ps(a[2 * ((p * step) + (i * across))])};
+        const __m512 im {_mm512_set1_ps(a[(2 * ((p * step) + (i * across))) + 1])};
         acc[4 * i].v       = _mm512_fmadd_ps(re, b0, acc[4 * i].v);
         acc[(4 * i) + 1].v = _mm512_fmadd_ps(re, b1, acc[(4 * i) + 1].v);
         acc[(4 * i) + 2].v = _mm512_fmadd_ps(im, b0, acc[(4 * i) + 2].v);
@@ -608,6 +682,24 @@ namespace numerical::detail {
   {
     through_rows<avx512_complex_mr, avx512_complex_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<float>* tile, std::size_t ld) noexcept {
                                                              avx512_full_tile_c32<Rows>(kc, ap, bp, ldb, tile, ld);
+                                                           });
+  }
+
+  //! \brief \ref avx512_tile_c32 with A read where it lies: element `(i, p)` of the tile's rows at `a[(p · a_step) + (i · a_row)]`,
+  //!        its rows alone computed (no row past A's last is read).
+  inline void avx512_tile_c32_a_in_place(std::size_t                kc,
+                                         const std::complex<float>* a,
+                                         std::size_t                a_step,
+                                         std::size_t                a_row,
+                                         const std::complex<float>* bp,
+                                         std::size_t                ldb,
+                                         std::complex<float>      * c,
+                                         std::size_t                ldc,
+                                         std::size_t                rows,
+                                         std::size_t                cols) noexcept
+  {
+    through_rows<avx512_complex_mr, avx512_complex_nr_f32>(c, ldc, rows, cols, [&]<std::size_t Rows>(std::complex<float>* tile, std::size_t ld) noexcept {
+                                                             avx512_full_tile_c32<Rows, true>(kc, a, bp, ldb, tile, ld, a_step, a_row);
                                                            });
   }
 

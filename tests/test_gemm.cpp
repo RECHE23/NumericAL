@@ -740,6 +740,61 @@ namespace
   }
 } // namespace
 
+namespace
+{
+  // A product of a few columns of B, A row-major or given as its transpose (a sliver of columns: A read where it lies
+  // on the x86-64 complex tiles), gives the columns of the wider product, whose A is packed: rows short of a tile,
+  // several panels of depth.
+  template <typename T>
+  bool a_few_columns_give_the_wide_products_bits()
+  {
+    const std::size_t m    {29};
+    const std::size_t k    {300};
+    const std::size_t wide {40};
+    const std::size_t ldat {m + 3};
+    std::vector<T>    a(m * k);
+    std::vector<T>    at(k * ldat, T(-5));
+    std::vector<T>    b(k * wide);
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t p {0}; p < k; ++p) {
+        a[(i * k) + p]     = entry<T>((i * 13) + (p * 3) + 1) / T {7};
+        at[(p * ldat) + i] = a[(i * k) + p];
+      }
+    }
+    for (std::size_t e {0}; e < b.size(); ++e) {
+      b[e] = entry<T>((e * 5) + 2) / T {3};
+    }
+    std::vector<T> whole(m * wide);
+    for (std::size_t e {0}; e < whole.size(); ++e) {
+      whole[e] = entry<T>(e) / T {11};
+    }
+    const std::vector<T> start {whole};
+    numerical::detail::gemm(m, wide, k, a.data(), k, b.data(), wide, whole.data(), wide);
+    bool same                  {true};
+    for (std::size_t n {1}; n <= 17; ++n) {
+      std::vector<T> rows       {start};
+      std::vector<T> transposed {start};
+      numerical::detail::gemm(m, n, k, a.data(), k, b.data(), wide, rows.data(), wide);
+      numerical::detail::gemm_at(m, n, k, at.data(), ldat, b.data(), wide, transposed.data(), wide);
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < wide; ++j) {
+          const T expected {j < n ? whole[(i * wide) + j] : start[(i * wide) + j]};
+          same = same && rows[(i * wide) + j] == expected && transposed[(i * wide) + j] == expected;
+        }
+      }
+    }
+    return same;
+  }
+} // namespace
+
+TEST(a_product_of_a_few_columns_gives_the_wide_products_bits)
+{
+  EXPECT(on_every_path([] { return a_few_columns_give_the_wide_products_bits<double>(); }));
+  EXPECT(on_every_path([] { return a_few_columns_give_the_wide_products_bits<float>(); }));
+  EXPECT(on_every_path([] { return a_few_columns_give_the_wide_products_bits<std::complex<double>>(); }));
+  EXPECT(on_every_path([] { return a_few_columns_give_the_wide_products_bits<std::complex<float>>(); }));
+}
+
 TEST(a_product_cut_by_its_rows_gives_the_same_bits)
 {
   EXPECT(on_every_path([] { return rows_cut_anywhere_give_the_same_bits<double>(); }));
