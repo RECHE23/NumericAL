@@ -8,6 +8,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **`solve_triangular`, and factorisations kept to solve with again** (`scipy.linalg`'s names and signatures):
+  `numerical::solve_triangular(a, b, lower, op, unit_diagonal)` in C++, `numerical.solve_triangular(a, b, trans,
+  lower, unit_diagonal)` in Python, for `A`, `Aᵀ` or `Aᴴ`, the other triangle never read; `lu_factor` → `LUFactor`
+  (the pair `(lu, piv)` with LAPACK's interchanges, SciPy's to the index) and `lu_solve`, `cho_factor` →
+  `CholeskyFactor` (`(c, lower)`) and `cho_solve`, each factor also an object with `.solve(b)`. M1 Pro, 50 solves
+  with one matrix of order 500: 88 ms by `solve`, 8.3 ms by `lu_factor` and `lu_solve` (SciPy 3.8 ms); a triangular
+  system of order 2000 with one right-hand side 1.95 ms (SciPy 2.16 ms, `solve` 37 ms).
+
 ### Changed
 - **`svdvals` and the QR's `R` alone skip the last block of reflectors** (`householder_reflect`'s `reflectors`): a
   tall or square matrix's last block, which no update reads, is no longer gathered, nor the only block of one of 32

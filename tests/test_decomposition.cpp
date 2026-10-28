@@ -2828,10 +2828,11 @@ numerical::matrix<T> drawn_matrix(std::size_t rows,
   std::vector<T> entries(rows * cols);
   for (std::size_t e {0}; e < entries.size(); ++e) {
     if constexpr (numerical::detail::split_complex<T>) {
-      entries[e] = T {parts[2 * e], parts[(2 * e) + 1]};
+      using R    = T::value_type;
+      entries[e] = T {static_cast<R>(parts[2 * e]), static_cast<R>(parts[(2 * e) + 1])};
     }
     else {
-      entries[e] = parts[2 * e];
+      entries[e] = static_cast<T>(parts[2 * e]);
     }
   }
   return numerical::matrix<T> {rows, cols, entries};
@@ -2940,4 +2941,125 @@ TEST(the_qr_look_ahead_gives_the_bits_of_one_thread)
 {
   EXPECT(qr_has_the_bits_of_one_thread<double>());
   EXPECT(qr_has_the_bits_of_one_thread<std::complex<double>>());
+}
+
+// solve_triangular: op(A) X = B to rounding for every triangle, operation and diagonal, real and complex, single and
+// double, orders past one block of rows (64) and several right-hand sides; the other triangle never read (a NaN there
+// changes nothing); a zero on the diagonal named by its row, as SciPy's message; the errors of shape and of NaN.
+template <typename T>
+bool triangular_solves_hold()
+{
+  using R = decltype(std::abs(T {}));
+  bool all {true};
+  for (const std::size_t n : {std::size_t {1}, std::size_t {5}, std::size_t {64}, std::size_t {65}, std::size_t {130}}) {
+    for (const std::size_t k : {std::size_t {1}, std::size_t {3}, std::size_t {70}}) {
+      for (const bool lower : {true, false}) {
+        for (const numerical::triangular_op op : {numerical::triangular_op::none, numerical::triangular_op::transpose, numerical::triangular_op::adjoint}) {
+          for (const bool unit : {false, true}) {
+            const numerical::matrix<T> drawn {drawn_matrix<T>(n, n, 13U)};
+            std::vector<T>             entries(n * n);
+            for (std::size_t i {0}; i < n; ++i) {
+              for (std::size_t j {0}; j < n; ++j) {
+                const bool outside {lower ? j > i : j < i};
+                entries[(i * n) + j] = outside ? T(std::numeric_limits<R>::quiet_NaN()) : drawn(i, j) + (i == j ? T(R(n)) : T {}); // never read; well conditioned
+              }
+            }
+            const numerical::matrix<T> a     {n, n, entries};
+            const numerical::matrix<T> b     {drawn_matrix<T>(n, k, 17U)};
+            const numerical::matrix<T> x     {numerical::solve_triangular(a, b, lower, op, unit)};
+            double                     worst {0.0};
+            for (std::size_t i {0}; i < n; ++i) {
+              for (std::size_t c {0}; c < k; ++c) {
+                T sum {};
+                for (std::size_t j {0}; j < n; ++j) {
+                  const std::size_t r      {op == numerical::triangular_op::none ? i : j};
+                  const std::size_t s      {op == numerical::triangular_op::none ? j : i};
+                  const bool        inside {lower ? s <= r : s >= r};
+                  if (!inside) {
+                    continue;
+                  }
+                  T entry {r == s && unit ? T(1) : a(r, s)};
+                  if (op == numerical::triangular_op::adjoint) {
+                    entry = numerical::detail::conj_of(entry);
+                  }
+                  sum += entry * x(j, c);
+                }
+                worst = std::max(worst, static_cast<double>(std::abs(sum - b(i, c))));
+              }
+            }
+            double largest {1.0}; // a unit diagonal lets X grow: the residual bound scales with it
+            for (std::size_t e {0}; e < n * k; ++e) {
+              largest = std::max(largest, static_cast<double>(std::abs(*(x.begin() + static_cast<std::ptrdiff_t>(e)))));
+            }
+            all = all && worst < 64.0 * static_cast<double>(n) * largest * static_cast<double>(std::numeric_limits<R>::epsilon());
+          }
+        }
+      }
+    }
+  }
+  return all;
+}
+
+namespace {
+
+  //! \brief The errors of solve_triangular in \p T: a zero on the diagonal (none with a unit diagonal), an infinite or NaN
+  //!        entry of the triangle read or of the right-hand side, not one of the triangle left unread.
+  template <typename T>
+  bool triangular_errors_hold()
+  {
+    const T                    nan       {static_cast<T>(std::numeric_limits<double>::quiet_NaN())};
+    const numerical::matrix<T> singular  {2, 2, std::vector<T> {T {2}, T {}, T {1}, T {}}};
+    const numerical::matrix<T> rhs       {2, 1, std::vector<T> {T {2}, T {1}}};
+    const numerical::matrix<T> lower_nan {2, 2, std::vector<T> {T {1}, T {}, nan, T {1}}};
+    const numerical::matrix<T> rhs_nan   {2, 1, std::vector<T> {T {1}, nan}};
+    bool                       held      {true};
+    try {
+      (void)numerical::solve_triangular(singular, rhs, true);
+      held = false;
+    }
+    catch (const numerical::singular_matrix_error&) {}
+    const numerical::matrix<T> unit {numerical::solve_triangular(singular, rhs, true, numerical::triangular_op::none, true)};
+    held = held && unit(0, 0) == T {2} && unit(1, 0) == T {-1};
+    try {
+      (void)numerical::solve_triangular(lower_nan, rhs, true);
+      held = false;
+    }
+    catch (const numerical::non_finite_error&) {}
+    try {
+      (void)numerical::solve_triangular(singular, rhs_nan, true, numerical::triangular_op::none, true);
+      held = false;
+    }
+    catch (const numerical::non_finite_error&) {}
+    return held && numerical::solve_triangular(lower_nan, rhs, false).rows() == 2;
+  }
+} // namespace
+
+TEST(solve_triangular_solves_every_triangle_and_operation)
+{
+  EXPECT(triangular_errors_hold<double>());
+  EXPECT(triangular_errors_hold<float>());
+  EXPECT(triangular_errors_hold<std::complex<double>>());
+  EXPECT(triangular_solves_hold<double>());
+  EXPECT(triangular_solves_hold<float>());
+  EXPECT(triangular_solves_hold<std::complex<double>>());
+  const auto                      ones {[](std::size_t rows, std::size_t cols) { return numerical::matrix<double> {rows, cols, std::vector<double>(rows * cols, 1.0)}; }};
+  const numerical::matrix<double> a {3, 3, std::vector<double> {2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 4.0, 5.0, 6.0}};
+  const numerical::vector<double> b {std::vector<double> {2.0, 1.0, 3.0}};
+  EXPECT_THROWS(numerical::solve_triangular(a, b, true), numerical::singular_matrix_error);
+  try {
+    (void)numerical::solve_triangular(a, b, true);
+  }
+  catch (const numerical::singular_matrix_error& error) {
+    EXPECT(std::string {error.what()} == "singular matrix: resolution failed at diagonal 2");
+  }
+  const numerical::vector<double> unit {numerical::solve_triangular(a, b, true, numerical::triangular_op::none, true)};
+  EXPECT(unit[0] == 2.0 && unit[1] == -1.0 && unit[2] == 3.0 - 8.0 + 5.0);
+  EXPECT_THROWS(numerical::solve_triangular(ones(2, 3), ones(2, 1), true), numerical::dimension_error);
+  EXPECT_THROWS(numerical::solve_triangular(ones(2, 2), ones(3, 1), true), numerical::dimension_error);
+  numerical::matrix<double> with_nan {2, 2, std::vector<double> {1.0, 0.0, std::numeric_limits<double>::quiet_NaN(), 1.0}};
+  EXPECT_THROWS(numerical::solve_triangular(with_nan, ones(2, 1), true), numerical::non_finite_error);
+  EXPECT(numerical::solve_triangular(with_nan, numerical::matrix<double> {2, 1, std::vector<double> {1.0, 2.0}}, false).cols() == 1);
+  EXPECT_THROWS(numerical::solve_triangular(numerical::matrix<double> {2, 2, std::vector<double> {1.0, 0.0, 0.0, 1.0}},
+                                            numerical::matrix<double> {2, 1, std::vector<double> {1.0, std::numeric_limits<double>::infinity()}}, true),
+                numerical::non_finite_error);
 }

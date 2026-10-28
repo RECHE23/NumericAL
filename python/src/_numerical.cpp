@@ -2087,6 +2087,171 @@ any_tensor cholesky(const any_tensor& v, bool upper)
     return do_cholesky<double>(std::get<real_tensor>(v), upper);
 }
 
+// The triangular operation of SciPy's `trans`: 0 as A lies, 1 transposed, 2 conjugate-transposed.
+numerical::triangular_op triangular_op_of(int trans)
+{
+    if (trans < 0 || trans > 2) {
+        throw std::invalid_argument("trans must be 0, 1 or 2 ('N', 'T' or 'C')");
+    }
+    return trans == 0 ? numerical::triangular_op::none : (trans == 1 ? numerical::triangular_op::transpose : numerical::triangular_op::adjoint);
+}
+
+// op(A) X = B for the triangle of `a` (a's dtype `b`'s), B a vector or a matrix: numerical::solve_triangular.
+template <typename T>
+any_tensor do_solve_triangular(const numerical::tensor<T>& a, const numerical::tensor<T>& b, bool lower, numerical::triangular_op op, bool unit)
+{
+    const sb::scoped_gil_release unlocked {releases_gil(a.data().size() + b.data().size())};
+    const std::size_t            n {a.shape()[0]};
+    if (b.shape()[0] != n) {
+        throw numerical::dimension_error("solve_triangular: right-hand side row count differs from the matrix");
+    }
+    const std::size_t    k {b.shape().size() == 1 ? 1 : b.shape()[1]};
+    numerical::buffer<T> x(b.data().begin(), b.data().end());
+    numerical::detail::solve_triangular_in_place(a.data().data(), n, lower, op, unit, x.data(), k); // a read where it lies
+    return any_tensor {numerical::tensor<T> {b.shape(), std::move(x)}};
+}
+
+// solve_triangular(a, b, lower, trans, unit) -> Tensor, as scipy.linalg.solve_triangular: a square, b a vector or a
+// matrix of a's dtype; single precision solved in double and rounded, as the other solves.
+any_tensor solve_triangular(const any_tensor& a, const any_tensor& b, bool lower, int trans, bool unit)
+{
+    const numerical::triangular_op op {triangular_op_of(trans)};
+    if (shape_of(a).size() != 2 || shape_of(a)[0] != shape_of(a)[1]) {
+        throw std::runtime_error("solve_triangular: expected a square matrix");
+    }
+    if (shape_of(b).empty() || shape_of(b).size() > 2) {
+        throw std::runtime_error("solve_triangular: b must be a vector or a matrix");
+    }
+    if (a.index() != b.index()) {
+        throw std::runtime_error("solve_triangular operands must share one dtype");
+    }
+    if (is_single(a)) {
+        return narrowed(solve_triangular(widened(a), widened(b), lower, trans, unit));
+    }
+    if (is_complex(a)) {
+        return do_solve_triangular<std::complex<double>>(std::get<cplx_tensor>(a), std::get<cplx_tensor>(b), lower, op, unit);
+    }
+    return do_solve_triangular<double>(std::get<real_tensor>(a), std::get<real_tensor>(b), lower, op, unit);
+}
+
+// lu_factor(a) -> (lu, piv), as scipy.linalg.lu_factor: L (its unit diagonal not stored) and U in one matrix, and
+// LAPACK's interchanges, row i swapped with row piv[i] in turn, from the factorisation's permutation (row i of P A is
+// row pivots[i] of A). A singular matrix factorises (a zero on U's diagonal), as SciPy's.
+template <typename T>
+std::tuple<any_tensor, std::vector<std::size_t>> do_lu_factor(const numerical::tensor<T>& a)
+{
+    const sb::scoped_gil_release           unlocked {releases_gil(a.data().size())};
+    const numerical::lu_decomposition<T>   lu {matrix_from(a)};
+    const std::vector<std::size_t>&        pivots {lu.pivots()};
+    const std::size_t                      n {pivots.size()};
+    std::vector<std::size_t>               at(n);    // the original row at each position, as the swaps leave them
+    std::vector<std::size_t>               where(n); // the position of each original row
+    std::vector<std::size_t>               swaps(n);
+    for (std::size_t i {0}; i < n; ++i) {
+        at[i]    = i;
+        where[i] = i;
+    }
+    for (std::size_t i {0}; i < n; ++i) {
+        const std::size_t j {where[pivots[i]]};
+        swaps[i] = j;
+        std::swap(at[i], at[j]);
+        where[at[i]] = i;
+        where[at[j]] = j;
+    }
+    return {any_tensor {numerical::tensor<T> {lu.factors()}}, swaps};
+}
+
+std::tuple<any_tensor, std::vector<std::size_t>> lu_factor(const any_tensor& a)
+{
+    if (shape_of(a).size() != 2 || shape_of(a)[0] != shape_of(a)[1]) {
+        throw std::runtime_error("lu_factor: expected a square matrix");
+    }
+    if (is_single(a)) {
+        auto [lu, swaps] {lu_factor(widened(a))};
+        return {narrowed(lu), swaps};
+    }
+    if (is_complex(a)) {
+        return do_lu_factor<std::complex<double>>(std::get<cplx_tensor>(a));
+    }
+    return do_lu_factor<double>(std::get<real_tensor>(a));
+}
+
+// The rows of `x` (n × k, row-major) swapped as LAPACK's interchanges say, row i with row swaps[i], in turn from the
+// first, or from the last where `backward`.
+template <typename T>
+void interchanged(numerical::buffer<T>& x, std::size_t k, const std::vector<std::size_t>& swaps, bool backward)
+{
+    const std::size_t n {swaps.size()};
+    for (std::size_t step {0}; step < n; ++step) {
+        const std::size_t i {backward ? n - 1 - step : step};
+        if (swaps[i] != i) {
+            std::swap_ranges(x.begin() + static_cast<std::ptrdiff_t>(i * k), x.begin() + static_cast<std::ptrdiff_t>((i + 1) * k),
+                             x.begin() + static_cast<std::ptrdiff_t>(swaps[i] * k));
+        }
+    }
+}
+
+template <typename T>
+any_tensor do_lu_solve(const numerical::tensor<T>& lu, const std::vector<std::size_t>& swaps, const numerical::tensor<T>& b, numerical::triangular_op op)
+{
+    const sb::scoped_gil_release unlocked {releases_gil(lu.data().size() + b.data().size())};
+    const T* const               factors {lu.data().data()}; // read where it lies
+    const std::size_t            n {swaps.size()};
+    const std::size_t            k {b.shape().size() == 1 ? 1 : b.shape()[1]};
+    numerical::buffer<T>         x(b.data().begin(), b.data().end());
+    if (op == numerical::triangular_op::none) { // P A = L U: x = U⁻¹ L⁻¹ P b
+        interchanged(x, k, swaps, false);
+        numerical::detail::solve_triangular_in_place(factors, n, true, op, true, x.data(), k);
+        numerical::detail::solve_triangular_in_place(factors, n, false, op, false, x.data(), k);
+    }
+    else { // Aᵀ = Uᵀ Lᵀ P: x = Pᵀ L⁻ᵀ U⁻ᵀ b (conjugated for the adjoint)
+        numerical::detail::solve_triangular_in_place(factors, n, false, op, false, x.data(), k);
+        numerical::detail::solve_triangular_in_place(factors, n, true, op, true, x.data(), k);
+        interchanged(x, k, swaps, true);
+    }
+    return any_tensor {numerical::tensor<T> {b.shape(), std::move(x)}};
+}
+
+// lu_solve(lu, piv, b, trans) -> Tensor, as scipy.linalg.lu_solve((lu, piv), b, trans): `piv` a sequence of LAPACK's
+// interchanges (lu_factor's), each in [0, n); a zero on U's diagonal raises, where SciPy's divides by it.
+any_tensor lu_solve(const any_tensor& lu, PyObject* piv, const any_tensor& b, int trans)
+{
+    const numerical::triangular_op op {triangular_op_of(trans)};
+    if (shape_of(lu).size() != 2 || shape_of(lu)[0] != shape_of(lu)[1]) {
+        throw std::runtime_error("lu_solve: expected a square lu");
+    }
+    const std::size_t n {shape_of(lu)[0]};
+    if (shape_of(b).empty() || shape_of(b).size() > 2 || shape_of(b)[0] != n) {
+        throw std::runtime_error("lu_solve: b must be a vector or a matrix of the factor's row count");
+    }
+    if (lu.index() != b.index()) {
+        throw std::runtime_error("lu_solve operands must share one dtype");
+    }
+    const Py_ssize_t length {PySequence_Size(piv)};
+    if (length < 0 || static_cast<std::size_t>(length) != n) {
+        PyErr_Clear();
+        throw std::runtime_error("lu_solve: piv must be a sequence of the factor's row count");
+    }
+    std::vector<std::size_t> swaps(n);
+    for (std::size_t i {0}; i < n; ++i) {
+        PyObject* const  item {PySequence_GetItem(piv, static_cast<Py_ssize_t>(i))}; // new ref
+        const Py_ssize_t value {item != nullptr ? PyNumber_AsSsize_t(item, nullptr) : -1};
+        Py_XDECREF(item);
+        if (PyErr_Occurred() != nullptr || value < 0 || static_cast<std::size_t>(value) >= n) {
+            PyErr_Clear();
+            throw std::runtime_error("lu_solve: piv holds an interchange outside [0, n)");
+        }
+        swaps[i] = static_cast<std::size_t>(value);
+    }
+    if (is_single(lu)) {
+        return narrowed(lu_solve(widened(lu), piv, widened(b), trans));
+    }
+    if (is_complex(lu)) {
+        return do_lu_solve<std::complex<double>>(std::get<cplx_tensor>(lu), swaps, std::get<cplx_tensor>(b), op);
+    }
+    return do_lu_solve<double>(std::get<real_tensor>(lu), swaps, std::get<real_tensor>(b), op);
+}
+
 // An eigen_method, svd_method or qr_mode by its enumerator's name.
 template <typename Method>
 Method method_named(std::string_view name, std::initializer_list<std::pair<std::string_view, Method>> methods)
@@ -4352,6 +4517,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
     m.def<&lstsq>("lstsq", "lstsq(a, b, rtol) -> (x, residuals, rank, s)\nThe minimum-norm least-squares solution of a @ x ≈ b with its residual sums of squares, the rank and the singular values of a, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
+    m.def<&solve_triangular>("solve_triangular", "solve_triangular(a, b, lower, trans, unit) -> Tensor\nop(A) X = B for the lower or upper triangle of a, op by trans (0 A, 1 Aᵀ, 2 Aᴴ), its diagonal ones where unit.");
+    m.def<&lu_factor>("lu_factor", "lu_factor(a) -> (Tensor, list)\nL and U in one matrix, and LAPACK's row interchanges.");
+    m.def<&lu_solve>("lu_solve", "lu_solve(lu, piv, b, trans) -> Tensor\nThe solution of A x = b (trans 0), Aᵀ x = b (1) or Aᴴ x = b (2) from lu_factor's factors.");
     m.def<&cholesky>("cholesky", "cholesky(a, upper) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite), or with upper the factor U of A = Uᴴ U from its upper triangle.");
     m.def<&qr>("qr", "qr(a, mode) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr: reduced, Q is m×k, R k×n, k = min(m, n); complete, Q is m×m, R m×n.");
     m.def<&qr_r>("qr_r", "qr_r(a) -> R\nqr's R alone, k×n, k = min(m, n), to the bit, Q never formed (numpy.linalg.qr's mode=\"r\").");

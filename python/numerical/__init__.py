@@ -45,6 +45,7 @@ __all__ = [
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config", "blas_library",
+    "solve_triangular", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
 ]
 
 
@@ -621,6 +622,141 @@ def cholesky(a, /, *, upper=False):
     ``a = L @ L.conj().T``, read from the lower triangle; with ``upper=True``, the upper `U` with ``a = U.conj().T @ U``,
     read from the upper triangle."""
     return _borrowed("cholesky", lambda x, flag: _cholesky(x, flag), a, bool(upper))
+
+
+_solve_triangular = _linalg(_numerical.solve_triangular, arrays=2)
+_lu_factor = _linalg(_numerical.lu_factor, arrays=1)
+_TRANS = {0: 0, 1: 1, 2: 2, "N": 0, "T": 1, "C": 2}
+
+
+def _trans(trans):
+    """SciPy's `trans` as 0, 1 or 2: an integer or ``'N'``, ``'T'``, ``'C'``."""
+    try:
+        return _TRANS[trans]
+    except (KeyError, TypeError):
+        raise ValueError(f"trans must be 0, 1, 2, 'N', 'T' or 'C', not {trans!r}") from None
+
+
+def solve_triangular(a, b, trans=0, lower=False, unit_diagonal=False, overwrite_b=False, check_finite=True):
+    """The solution `x` of ``a @ x = b`` for a triangular `a`, as ``scipy.linalg.solve_triangular``: its `lower`
+    triangle, or by default its upper one, is read and the other never; ``trans`` 1 (``'T'``) solves
+    ``a.T @ x = b`` and 2 (``'C'``) ``a.conj().T @ x = b``; with ``unit_diagonal`` the diagonal is taken as ones.
+    `b` is a vector or a matrix of right-hand sides. ``n² k`` operations where :func:`solve` factorises `a` first.
+    `overwrite_b` is accepted and ignored (a Tensor is never written through); `check_finite` too, an infinite or
+    NaN entry raising always.
+
+    Raises:
+        LinAlgError: if a diagonal entry read is zero ("singular matrix: resolution failed at diagonal i", 1-based,
+            as SciPy's), an entry read is infinite or NaN, or the shapes do not fit.
+    """
+    del overwrite_b, check_finite
+    return _solve_triangular(a, b, bool(lower), _trans(trans), bool(unit_diagonal))
+
+
+class LUFactor(tuple):
+    """:func:`lu_factor`'s answer: the pair ``(lu, piv)`` SciPy's ``lu_factor`` returns, unpacked the same way, and
+    the factorisation itself: ``f.solve(b)`` is ``lu_solve(f, b)``."""
+
+    __slots__ = ()
+
+    def __new__(cls, lu, piv):
+        return super().__new__(cls, (lu, piv))
+
+    @property
+    def lu(self):
+        """`L` (its unit diagonal not stored) and `U` in one matrix."""
+        return self[0]
+
+    @property
+    def piv(self):
+        """LAPACK's row interchanges: row ``i`` swapped with row ``piv[i]``, in turn from the first."""
+        return self[1]
+
+    def solve(self, b, trans=0):
+        """:func:`lu_solve` with this factorisation."""
+        return lu_solve(self, b, trans)
+
+
+def lu_factor(a, overwrite_a=False, check_finite=True):
+    """The pivoted LU factorisation ``P a = L U`` of a square matrix, as ``scipy.linalg.lu_factor``: a
+    :class:`LUFactor`, the pair ``(lu, piv)`` with `L` (unit diagonal not stored) and `U` in one matrix and LAPACK's
+    row interchanges (a tuple of ints, where SciPy's is an integer array), to solve many systems with one
+    factorisation (:func:`lu_solve`). A singular matrix factorises, a zero on `U`'s diagonal, as SciPy's (which warns).
+
+    Raises:
+        LinAlgError: if `a` is not square or holds an infinite or NaN entry.
+    """
+    del overwrite_a, check_finite
+    lu, piv = _lu_factor(a)
+    return LUFactor(lu, tuple(piv))
+
+
+def lu_solve(lu_and_piv, b, trans=0, overwrite_b=False, check_finite=True):
+    """The solution of ``a @ x = b`` (``trans`` 0), ``a.T @ x = b`` (1, ``'T'``) or ``a.conj().T @ x = b`` (2,
+    ``'C'``) from :func:`lu_factor`'s ``(lu, piv)`` (or any such pair), as ``scipy.linalg.lu_solve``: ``n² k``
+    operations. A zero on `U`'s diagonal raises, where SciPy's divides by it.
+
+    Raises:
+        LinAlgError: for a zero on `U`'s diagonal, an infinite or NaN entry, or shapes that do not fit.
+    """
+    del overwrite_b, check_finite
+    lu, piv = lu_and_piv
+    lu = lu if isinstance(lu, Tensor) else asarray(lu)
+    b = b if isinstance(b, Tensor) else asarray(b)
+    if lu.dtype != b.dtype:
+        dtype = _promoted((lu.dtype, b.dtype))
+        lu, b = asarray(lu, dtype), asarray(b, dtype)
+    try:
+        return _numerical.lu_solve(lu, piv, b, _trans(trans))
+    except error as caught:
+        raise LinAlgError(*caught.args) from None
+
+
+class CholeskyFactor(tuple):
+    """:func:`cho_factor`'s answer: the pair ``(c, lower)`` SciPy's ``cho_factor`` returns, unpacked the same way,
+    and the factorisation itself: ``f.solve(b)`` is ``cho_solve(f, b)``."""
+
+    __slots__ = ()
+
+    def __new__(cls, c, lower):
+        return super().__new__(cls, (c, lower))
+
+    @property
+    def c(self):
+        """The factor: `L` in the lower triangle where :attr:`lower`, else `U` in the upper one, zeros elsewhere."""
+        return self[0]
+
+    @property
+    def lower(self):
+        """Whether :attr:`c` holds `L` (``a = L Lᴴ``), else `U` (``a = Uᴴ U``)."""
+        return self[1]
+
+    def solve(self, b):
+        """:func:`cho_solve` with this factorisation."""
+        return cho_solve(self, b)
+
+
+def cho_factor(a, lower=False, overwrite_a=False, check_finite=True):
+    """The Cholesky factorisation of a Hermitian positive-definite matrix, as ``scipy.linalg.cho_factor``: a
+    :class:`CholeskyFactor`, the pair ``(c, lower)``, `c` the upper factor `U` (``a = Uᴴ U``) read from `a`'s upper
+    triangle, or with ``lower`` the lower `L` (``a = L Lᴴ``) from its lower one; the other triangle zeros, where SciPy's
+    leaves whatever `a` held there. For :func:`cho_solve`.
+
+    Raises:
+        LinAlgError: if `a` is not positive definite, not square, or holds an infinite or NaN entry.
+    """
+    del overwrite_a, check_finite
+    return CholeskyFactor(cholesky(a, upper=not lower), bool(lower))
+
+
+def cho_solve(c_and_lower, b, overwrite_b=False, check_finite=True):
+    """The solution of ``a @ x = b`` from :func:`cho_factor`'s ``(c, lower)``, as ``scipy.linalg.cho_solve``: two
+    triangular solves (:func:`solve_triangular`), ``2 n² k`` operations; only `c`'s triangle is read."""
+    del overwrite_b, check_finite
+    c, lower = c_and_lower
+    if lower:
+        return solve_triangular(c, solve_triangular(c, b, lower=True), trans=2, lower=True)
+    return solve_triangular(c, solve_triangular(c, b, trans=2, lower=False), lower=False)
 
 
 def lstsq(a, b, rcond=None):

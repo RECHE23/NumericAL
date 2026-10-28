@@ -1578,6 +1578,168 @@ namespace numerical {
     return lu_decomposition<T> {std::move(a)}.inverse();
   }
 
+  //! \brief How `solve_triangular` reads its matrix: as it lies, transposed, or conjugate-transposed (SciPy's `trans`
+  //!        0, 1 and 2).
+  enum class triangular_op : unsigned char
+  {
+    none,      //!< `A X = B`.
+    transpose, //!< `Aᵀ X = B`.
+    adjoint    //!< `Aᴴ X = B`.
+  };
+
+  namespace detail {
+
+    //! \brief The rows a block of \ref triangular_rows solves one by one before the rows past it take its terms at once.
+    inline constexpr std::size_t triangular_block {64};
+
+    /*!
+     * \brief `A X = B` in place in \p x (`n × k`, row-major), for the `n × n` row-major triangle of \p a, its \p lower
+     *        one or its upper one (the other never read), its diagonal taken as ones where \p unit: by blocks of
+     *        \ref triangular_block rows from the first (lower) or the last (upper), a block's rows one after another,
+     *        each a row of terms at a time over the columns, then the block's terms out of every row still to solve
+     *        through the matrix product kernel; one column by a dot product of each row with the unknowns solved.
+     */
+    template <typename T>
+    void triangular_rows(const T*    a,
+                         std::size_t n,
+                         bool        lower,
+                         bool        unit,
+                         T*          x,
+                         std::size_t k)
+    {
+      if (k == 1) { // one column: each unknown its row's dot product with those solved, the row read where it runs
+        for (std::size_t step {0}; step < n; ++step) {
+          const std::size_t i     {lower ? step : n - 1 - step};
+          const std::size_t from  {lower ? 0 : i + 1};
+          const std::size_t count {lower ? i : n - i - 1};
+          const T           value {x[i] - dot_product(a + (i * n) + from, x + from, count)};
+          x[i] = unit ? value : value / a[(i * n) + i];
+        }
+        return;
+      }
+      buffer<T> minus(triangular_block * k); // a block's solution, negated: the product adds it to the rows past it
+      for (std::size_t done {0}; done < n; done += triangular_block) {
+        const std::size_t width {std::min(triangular_block, n - done)};
+        const std::size_t first {lower ? done : n - done - width};
+        for (std::size_t step {0}; step < width; ++step) {
+          const std::size_t i    {lower ? first + step : first + width - 1 - step};
+          T* const          row  {x + (i * k)};
+          const std::size_t from {lower ? first : i + 1};
+          const std::size_t to   {lower ? i : first + width};
+          for (std::size_t j {from}; j < to; ++j) {
+            subtract_product(row, x + (j * k), a[(i * n) + j], k);
+          }
+          if (!unit) {
+            const T diagonal {a[(i * n) + i]};
+            for (std::size_t c {0}; c < k; ++c) {
+              row[c] /= diagonal;
+            }
+          }
+        }
+        const std::size_t rest_first {lower ? first + width : 0};
+        const std::size_t rest       {lower ? n - rest_first : first};
+        if (rest > 0) {
+          for (std::size_t e {0}; e < width * k; ++e) {
+            minus[e] = -x[(first * k) + e];
+          }
+          gemm(rest, k, width, a + (rest_first * n) + first, n, minus.data(), k, x + (rest_first * k), k);
+        }
+      }
+    }
+  } // namespace detail
+
+  namespace detail {
+
+    /*!
+     * \brief \ref numerical::solve_triangular on the `n × n` row-major \p a, in place in \p x (`n × k`, row-major):
+     *        the triangle checked and, as it lies, read where it lies; transposed or conjugate-transposed, copied so
+     *        first (the other triangle zero), then solved the other way.
+     */
+    template <typename T>
+    void solve_triangular_in_place(const T*      a,
+                                   std::size_t   n,
+                                   bool          lower,
+                                   triangular_op op,
+                                   bool          unit_diagonal,
+                                   T*            x,
+                                   std::size_t   k)
+    {
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {lower ? 0 : i}; j < (lower ? i + 1 : n); ++j) {
+          if (!is_finite_entry(a[(i * n) + j])) {
+            throw non_finite_error("solve_triangular: the matrix holds an infinite or NaN entry");
+          }
+        }
+        if (!unit_diagonal && a[(i * n) + i] == T {}) {
+          throw singular_matrix_error("singular matrix: resolution failed at diagonal " + std::to_string(i + 1));
+        }
+      }
+      for (std::size_t e {0}; e < n * k; ++e) {
+        if (!is_finite_entry(x[e])) {
+          throw non_finite_error("solve_triangular: the right-hand side holds an infinite or NaN entry");
+        }
+      }
+      if (op == triangular_op::none) {
+        triangular_rows(a, n, lower, unit_diagonal, x, k);
+        return;
+      }
+      buffer<T> triangle(n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {lower ? 0 : i}; j < (lower ? i + 1 : n); ++j) {
+          triangle[(j * n) + i] = op == triangular_op::adjoint ? conj_of(a[(i * n) + j]) : a[(i * n) + j];
+        }
+      }
+      triangular_rows(triangle.data(), n, !lower, unit_diagonal, x, k);
+    }
+  } // namespace detail
+
+  /*!
+   * \brief Solves `A X = B`, `Aᵀ X = B` or `Aᴴ X = B` (\p op) for a triangular `A`, as `scipy.linalg.solve_triangular`:
+   *        its \p lower triangle or its upper one is read, the other never, and its diagonal as ones where
+   *        \p unit_diagonal. By substitution, a block's rows by rows of terms and the rows past it through the matrix
+   *        product kernel: `n² k` multiply-adds, where `solve` factorises `A` first.
+   * \param[in] a             The square matrix (`n × n`).
+   * \param[in] b             The right-hand sides (`n × k`).
+   * \param[in] lower         Whether `A` is lower triangular, else upper.
+   * \param[in] op            `A` as it lies, transposed or conjugate-transposed.
+   * \param[in] unit_diagonal Whether `A`'s diagonal is taken as ones (not read).
+   * \return `X` (`n × k`).
+   * \throws dimension_error       If `a` is not square or `b`'s row count differs from it.
+   * \throws non_finite_error      If an entry of `a`'s triangle or of `b` is infinite or NaN.
+   * \throws singular_matrix_error If a diagonal entry read is zero (SciPy's message, its 1-based row).
+   */
+  template <typename T>
+  [[nodiscard]] matrix<T> solve_triangular(const matrix<T>& a,
+                                           matrix<T>        b,
+                                           bool             lower,
+                                           triangular_op    op            = triangular_op::none,
+                                           bool             unit_diagonal = false)
+  {
+    const std::size_t n {a.rows()};
+    if (a.cols() != n) {
+      throw dimension_error("solve_triangular: expected a square matrix");
+    }
+    if (b.rows() != n) {
+      throw dimension_error("solve_triangular: right-hand side row count differs from the matrix");
+    }
+    const std::size_t k {b.cols()};
+    buffer<T>         x {std::move(b).elements()};
+    detail::solve_triangular_in_place(std::to_address(a.begin()), n, lower, op, unit_diagonal, x.data(), k);
+    return matrix<T> {n, k, std::move(x)};
+  }
+
+  //! \brief \ref solve_triangular of one right-hand side.
+  template <typename T>
+  [[nodiscard]] vector<T> solve_triangular(const matrix<T>& a,
+                                           const vector<T>& b,
+                                           bool             lower,
+                                           triangular_op    op            = triangular_op::none,
+                                           bool             unit_diagonal = false)
+  {
+    matrix<T> column {solve_triangular(a, matrix<T> {b.size(), 1, buffer<T>(b.begin(), b.end())}, lower, op, unit_diagonal)};
+    return vector<T> {std::move(column).elements()};
+  }
+
   //! \brief Thrown when a Cholesky factorisation finds the matrix not positive-definite.
   class not_positive_definite_error : public std::runtime_error
   {

@@ -90,6 +90,9 @@ Small and complete, grown measured, honest about what is not yet here:
   (`svd_method::jacobi`, which gives every singular value to high relative accuracy) on request. `singular_values()` (descending), `u()` (`m × k`), `v()` (`n × k`) and
   `vh()`, with `k = min(m, n)` (`full = true`: `u()` `m × m` and `v()` `n × n`, the thin factors extended
   by an orthonormal basis of the complement); `U` and `V` stay orthonormal for a rank-deficient `A`.
+- `numerical::solve_triangular(a, b, lower, op, unit_diagonal)` — `A X = B`, `Aᵀ X = B` or `Aᴴ X = B`
+  (`triangular_op`) for a triangular `A`, as SciPy's `solve_triangular`: its lower or upper triangle read, the other
+  never; `n² k` operations, where `solve` factorises first.
 - `numerical::lstsq(a, b)` — the minimum-norm least-squares solution of `A x ≈ b`,
   as NumPy's `lstsq` gives it, for any shape and rank (from the SVD), `b` a vector or a
   matrix of right-hand sides (as `solve(a, b)` takes too); `least_squares(a, b)` adds the residuals, the
@@ -236,6 +239,11 @@ and answers in the input's: a float32 or complex64 matrix is decomposed in doubl
 to single, where NumPy's LAPACK computes in single (so they are as accurate as single precision holds, and the default
 tolerances are float32's epsilon, as NumPy's). `eigh` of a complex Hermitian matrix gives real values and complex
 vectors.
+From `scipy.linalg`, with its signatures: `solve_triangular(a, b, trans=0, lower=False, unit_diagonal=False)`;
+`lu_factor(a)` → an `LUFactor`, the pair `(lu, piv)` SciPy returns (LAPACK's interchanges, a tuple of ints) with
+`.solve(b)`, and `lu_solve((lu, piv), b, trans=0)`; `cho_factor(a, lower=False)` → a `CholeskyFactor`, `(c, lower)`,
+and `cho_solve((c, lower), b)`: one factorisation, then `n² k` per solve. Their differences: a zero on `U`'s diagonal
+raises in `lu_solve`, where SciPy's divides by it, and `cho_factor` leaves zeros in the triangle it does not use.
 Every one but `lstsq` (2-D in NumPy too) takes a stack of matrices, `(..., m, n)`, as NumPy's: each matrix answers
 as it does alone, to the bit, and the answers stack along the leading axes (`det` and `slogdet` give tensors, a stack's
 `matrix_rank` nested integers); `solve` broadcasts the leading axes of `a` and `b` as NumPy 2 does, `b` a vector only
