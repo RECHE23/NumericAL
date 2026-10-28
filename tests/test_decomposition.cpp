@@ -3159,6 +3159,16 @@ TEST(solve_triangular_solves_every_triangle_and_operation)
   EXPECT(triangular_solves_hold<double>());
   EXPECT(triangular_solves_hold<float>());
   EXPECT(triangular_solves_hold<std::complex<double>>());
+  // The columns' blocks on the threads (300 columns) and the products' threads (40): the bits of one thread.
+  for (const std::size_t k : {std::size_t {300}, std::size_t {40}}) {
+    const numerical::matrix<double> a      {drawn_matrix<double>(150, 150, 3U)};
+    const numerical::matrix<double> b      {drawn_matrix<double>(150, k, 4U)};
+    numerical::set_max_threads(1);
+    const numerical::matrix<double> alone  {numerical::solve_triangular(a, b, true)};
+    numerical::set_max_threads(0);
+    const numerical::matrix<double> shared {numerical::solve_triangular(a, b, true)};
+    EXPECT(std::equal(alone.begin(), alone.end(), shared.begin()));
+  }
   const auto                      ones {[](std::size_t rows, std::size_t cols) { return numerical::matrix<double> {rows, cols, std::vector<double>(rows * cols, 1.0)}; }};
   const numerical::matrix<double> a {3, 3, std::vector<double> {2.0, 0.0, 0.0, 1.0, 0.0, 0.0, 4.0, 5.0, 6.0}};
   const numerical::vector<double> b {std::vector<double> {2.0, 1.0, 3.0}};

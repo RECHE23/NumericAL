@@ -1589,25 +1589,97 @@ namespace numerical {
 
   namespace detail {
 
-    //! \brief The rows a block of \ref triangular_rows solves one by one before the rows past it take its terms at once.
-    inline constexpr std::size_t triangular_block {64};
+    //! \brief The rows \ref triangular_halves solves one by one; past them, by halves of a multiple of them.
+    inline constexpr std::size_t triangular_block {32};
+
+    //! \brief The columns of the right-hand sides a thread takes in \ref triangular_halves' rows one by one.
+    inline constexpr std::size_t triangular_slice {64};
 
     /*!
      * \brief `A X = B` in place in \p x (`n × k`, row-major), for the `n × n` row-major triangle of \p a, its \p lower
-     *        one or its upper one (the other never read), its diagonal taken as ones where \p unit: by blocks of
-     *        \ref triangular_block rows from the first (lower) or the last (upper), a block's rows one after another,
-     *        each a row of terms at a time over the columns, then the block's terms out of every row still to solve
-     *        through the matrix product kernel; one column by a dot product of each row with the unknowns solved.
+     *        one or its upper one (the other never read), its diagonal taken as ones where \p unit: by halves
+     *        (\ref triangular_halves), each half's terms out of the other by one matrix product as deep as it, as a
+     *        recursive `trsm`; one column by a dot product of each row with the unknowns solved.
+     */
+    /*!
+     * \brief Rows \p first to \p last of the triangular solve of \ref triangular_rows (`M` lower where \p lower, `M` the
+     *        `n × n` row-major \p a or, \p transposed, its transpose read in place), the terms of the rows outside them
+     *        already taken: up to \ref triangular_block rows one by one, a row of terms at a time; past them by halves,
+     *        the half solved first taken from the other by one matrix product as deep as the half, then the other half
+     *        solved. \p x holds \p k columns, its rows \p ldx apart; \p minus a half's solution negated.
+     */
+    template <typename T>
+    void triangular_halves(const T*    a,
+                           std::size_t n,
+                           bool        lower,
+                           bool        transposed,
+                           bool        unit,
+                           T*          x,
+                           std::size_t ldx,
+                           std::size_t k,
+                           std::size_t first,
+                           std::size_t last,
+                           T*          minus)
+    {
+      const std::size_t width {last - first};
+      if (width <= triangular_block) {
+        for (std::size_t step {0}; step < width; ++step) {
+          const std::size_t i    {lower ? first + step : last - 1 - step};
+          T* const          row  {x + (i * ldx)};
+          const std::size_t from {lower ? first : i + 1};
+          const std::size_t to   {lower ? i : last};
+          for (std::size_t j {from}; j < to; ++j) {
+            subtract_product(row, x + (j * ldx), transposed ? a[(j * n) + i] : a[(i * n) + j], k);
+          }
+          if (!unit) {
+            const T diagonal {a[(i * n) + i]};
+            for (std::size_t c {0}; c < k; ++c) {
+              row[c] /= diagonal;
+            }
+          }
+        }
+        return;
+      }
+      const std::size_t middle       {first + (((width / 2) + triangular_block - 1) / triangular_block * triangular_block)};
+      const std::size_t solved_first {lower ? first : middle}; // the half solved first
+      const std::size_t solved_last  {lower ? middle : last};
+      const std::size_t other_first  {lower ? middle : first};
+      const std::size_t other_last   {lower ? last : middle};
+      triangular_halves(a, n, lower, transposed, unit, x, ldx, k, solved_first, solved_last, minus);
+      const std::size_t depth        {solved_last - solved_first};
+      for (std::size_t r {0}; r < depth; ++r) {
+        for (std::size_t c {0}; c < k; ++c) {
+          minus[(r * k) + c] = -x[((solved_first + r) * ldx) + c];
+        }
+      }
+      const std::size_t rows {other_last - other_first};
+      if (transposed) { // M's block is the transpose of a's block at (solved, other)
+        gemm_at(rows, k, depth, a + (solved_first * n) + other_first, n, minus, k, x + (other_first * ldx), ldx);
+      }
+      else {
+        gemm(rows, k, depth, a + (other_first * n) + solved_first, n, minus, k, x + (other_first * ldx), ldx);
+      }
+      triangular_halves(a, n, lower, transposed, unit, x, ldx, k, other_first, other_last, minus);
+    }
+
+    /*!
+     * \brief `M X = B` in place in \p x (`n × k`, row-major) for `M` the `n × n` row-major \p a or, \p transposed, its
+     *        transpose, read in place; \p lower whether \p a (not `M`) is lower-triangular, the other triangle never
+     *        read, its diagonal taken as ones where \p unit. By halves (\ref triangular_halves), as a recursive `trsm`,
+     *        the columns by blocks of \ref triangular_slice on the threads; one column of `M = a` by a dot product of
+     *        each row with the unknowns solved, of `M = aᵀ` by a sweep, each unknown solved taken from the others by
+     *        its row of \p a.
      */
     template <typename T>
     void triangular_rows(const T*    a,
                          std::size_t n,
                          bool        lower,
+                         bool        transposed,
                          bool        unit,
                          T*          x,
                          std::size_t k)
     {
-      if (k == 1) { // one column: each unknown its row's dot product with those solved, the row read where it runs
+      if (k == 1 && !transposed) { // each unknown its row's dot product with those solved, the row read where it runs
         for (std::size_t step {0}; step < n; ++step) {
           const std::size_t i     {lower ? step : n - 1 - step};
           const std::size_t from  {lower ? 0 : i + 1};
@@ -1617,34 +1689,31 @@ namespace numerical {
         }
         return;
       }
-      buffer<T> minus(triangular_block * k); // a block's solution, negated: the product adds it to the rows past it
-      for (std::size_t done {0}; done < n; done += triangular_block) {
-        const std::size_t width {std::min(triangular_block, n - done)};
-        const std::size_t first {lower ? done : n - done - width};
-        for (std::size_t step {0}; step < width; ++step) {
-          const std::size_t i    {lower ? first + step : first + width - 1 - step};
-          T* const          row  {x + (i * k)};
-          const std::size_t from {lower ? first : i + 1};
-          const std::size_t to   {lower ? i : first + width};
-          for (std::size_t j {from}; j < to; ++j) {
-            subtract_product(row, x + (j * k), a[(i * n) + j], k);
-          }
+      if (k == 1) { // aᵀ: each unknown solved, then its terms out of the rest along its row of a
+        for (std::size_t step {0}; step < n; ++step) {
+          const std::size_t j {lower ? n - 1 - step : step};
           if (!unit) {
-            const T diagonal {a[(i * n) + i]};
-            for (std::size_t c {0}; c < k; ++c) {
-              row[c] /= diagonal;
-            }
+            x[j] /= a[(j * n) + j];
           }
+          const std::size_t from {lower ? 0 : j + 1};
+          subtract_product(x + from, a + (j * n) + from, x[j], lower ? j : n - j - 1);
         }
-        const std::size_t rest_first {lower ? first + width : 0};
-        const std::size_t rest       {lower ? n - rest_first : first};
-        if (rest > 0) {
-          for (std::size_t e {0}; e < width * k; ++e) {
-            minus[e] = -x[(first * k) + e];
-          }
-          gemm(rest, k, width, a + (rest_first * n) + first, n, minus.data(), k, x + (rest_first * k), k);
-        }
+        return;
       }
+      const bool m_lower {lower != transposed};
+      if (k <= triangular_slice) {                               // one block of columns: the products take the threads
+        buffer<T> minus((((n + 1) / 2) + triangular_block) * k); // a half's solution, negated
+        triangular_halves(a, n, m_lower, transposed, unit, x, k, k, 0, n, minus.data());
+        return;
+      }
+      // The columns apart, a block of them to a thread, each solved by halves: the same operations on each element
+      // whatever the threads.
+      parallel_for((k + triangular_slice - 1) / triangular_slice, n * n * triangular_slice / 2, [&](std::size_t block) {
+                     const std::size_t start {block * triangular_slice};
+                     const std::size_t count {std::min(triangular_slice, k - start)};
+                     buffer<T>         minus((((n + 1) / 2) + triangular_block) * count); // a half's solution, negated
+                     triangular_halves(a, n, m_lower, transposed, unit, x + start, k, count, 0, n, minus.data());
+                   });
     }
   } // namespace detail
 
@@ -1652,8 +1721,8 @@ namespace numerical {
 
     /*!
      * \brief \ref numerical::solve_triangular on the `n × n` row-major \p a, in place in \p x (`n × k`, row-major):
-     *        the triangle checked and, as it lies, read where it lies; transposed or conjugate-transposed, copied so
-     *        first (the other triangle zero), then solved the other way.
+     *        the triangle checked, then read where it lies, transposed in place; the adjoint by the transpose on the
+     *        conjugates (`Aᴴ X = B` is `Aᵀ conj X = conj B`).
      */
     template <typename T>
     void solve_triangular_in_place(const T*      a,
@@ -1679,17 +1748,14 @@ namespace numerical {
           throw non_finite_error("solve_triangular: the right-hand side holds an infinite or NaN entry");
         }
       }
-      if (op == triangular_op::none) {
-        triangular_rows(a, n, lower, unit_diagonal, x, k);
-        return;
+      const bool adjoint {op == triangular_op::adjoint}; // a real one's conjugates are itself
+      if (adjoint) {
+        std::transform(x, x + (n * k), x, [](const T& value) { return conj_of(value); });
       }
-      buffer<T> triangle(n * n, T {});
-      for (std::size_t i {0}; i < n; ++i) {
-        for (std::size_t j {lower ? 0 : i}; j < (lower ? i + 1 : n); ++j) {
-          triangle[(j * n) + i] = op == triangular_op::adjoint ? conj_of(a[(i * n) + j]) : a[(i * n) + j];
-        }
+      triangular_rows(a, n, lower, op != triangular_op::none, unit_diagonal, x, k);
+      if (adjoint) {
+        std::transform(x, x + (n * k), x, [](const T& value) { return conj_of(value); });
       }
-      triangular_rows(triangle.data(), n, !lower, unit_diagonal, x, k);
     }
   } // namespace detail
 
