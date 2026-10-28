@@ -670,6 +670,10 @@ namespace numerical {
     //! \brief The columns a thread takes of a vector times a matrix: each of its rows added to them in order.
     inline constexpr std::size_t vector_chunk {128};
 
+    //! \brief The real multiply-adds of a term `a · b` of `T`, as \ref parallel_for counts work: four for a complex one.
+    template <typename T>
+    inline constexpr std::size_t term_work {is_complex_number<T> ? 4 : 1};
+
     //! \brief The columns of B one task of \ref vector_times_columns sums together: their sums' chains interleaved,
     //!        each waiting on its own last addition.
     inline constexpr std::size_t strided_columns {8};
@@ -735,7 +739,7 @@ namespace numerical {
     {
       static_assert(strided_columns == 8, "the switch below names each narrower last group");
       buffer<T> y(cols);
-      parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
+      parallel_for((cols + vector_chunk - 1) / vector_chunk, term_work<T> * inner * vector_chunk, [&](std::size_t chunk) {
                      const std::size_t last {std::min((chunk + 1) * vector_chunk, cols)};
                      std::size_t j {chunk * vector_chunk};
                      for (; j + strided_columns <= last; j += strided_columns) {
@@ -1067,7 +1071,7 @@ namespace numerical {
       const std::size_t share {(cols + max_threads() - 1) / max_threads()};
       const std::size_t width {std::clamp(((share + complex_row_columns - 1) / complex_row_columns) * complex_row_columns, complex_row_columns, vector_chunk)};
       buffer<C>         y(cols);
-      parallel_for((cols + width - 1) / width, inner * width, [&](std::size_t chunk) {
+      parallel_for((cols + width - 1) / width, term_work<C> * inner * width, [&](std::size_t chunk) {
                      const std::size_t first {chunk * width};
                      const std::size_t last {std::min(first + width, cols)};
 #ifdef NUMERICAL_X86_COMPILED
@@ -1244,7 +1248,7 @@ namespace numerical {
           return tensor<T> {std::move(out_shape), vector_times_columns(a, b, ldb, 1, inner, cols)};
         }
         buffer<T> y(cols, T {});
-        parallel_for((cols + vector_chunk - 1) / vector_chunk, inner * vector_chunk, [&](std::size_t chunk) {
+        parallel_for((cols + vector_chunk - 1) / vector_chunk, term_work<T> * inner * vector_chunk, [&](std::size_t chunk) {
                        const std::size_t first {chunk * vector_chunk};
                        const std::size_t count {std::min(vector_chunk, cols - first)};
                        add_row_terms(y.data() + first, a, b + first, ldb, inner, count);

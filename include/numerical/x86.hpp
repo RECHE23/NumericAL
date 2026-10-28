@@ -2184,13 +2184,32 @@ namespace numerical::detail {
     return _mm256_add_ps(sum, _mm256_addsub_ps(re, _mm256_permute_ps(im, 0xB1)));
   }
 
+  //! \brief The complex numbers at \p at and \p apart parts on (two of them), their parts interleaved: a register of
+  //!        complex numbers from as many columns whose elements lie together.
+  NUMERICAL_TARGET("avx2,fma") inline __m256d avx2_complex_columns(const double* at,
+                                                                   std::size_t   apart) noexcept
+  {
+    return _mm256_insertf128_pd(_mm256_castpd128_pd256(_mm_loadu_pd(at)), _mm_loadu_pd(at + apart), 1);
+  }
+
+  //! \brief \ref avx2_complex_columns of `float`: four complex numbers, \p apart parts from one to the next.
+  NUMERICAL_TARGET("avx2,fma") inline __m256 avx2_complex_columns(const float* at,
+                                                                  std::size_t  apart) noexcept
+  {
+    const auto pair {[](const float* lo, const float* hi) {
+                       return _mm_castpd_ps(_mm_loadh_pd(_mm_load_sd(reinterpret_cast<const double*>(lo)), reinterpret_cast<const double*>(hi))); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): a complex float's two parts loaded as 64 bits, unaligned loads
+                     }};
+    return _mm256_insertf128_ps(_mm256_castps128_ps256(pair(at, at + apart)), pair(at + (2 * apart), at + (3 * apart)), 1);
+  }
+
   /*!
    * \brief The complex vector \p x (\p inner elements) times columns `0` to \p count of B, into \p y, each element
    *        summed as the complex tiles sum it (\ref avx2_full_tile_c64, \ref avx512_full_tile_c64 and their `_c32`):
    *        by panels of \p depth, `Re x · B` and `Im x · B` from zero, one fused multiply-add a part and a term, then
    *        `Re x·Re B − Im x·Im B` and `Re x·Im B + Im x·Re B` added to the element, from +0. Every operand's parts
-   *        interleaved; the parts of B's element `[k][j]` at `b + 2 · ((k · row_step) + (j · column_step))`: with
-   *        \p column_step 1, a row's columns by registers, else a column at a time.
+   *        interleaved; the parts of B's element `[k][j]` at `b + 2 · ((k · row_step) + (j · column_step))`: a row's
+   *        columns by registers, read where they lie with \p column_step 1, else each register's complex numbers from
+   *        as many columns (\ref avx2_complex_columns).
    */
   template <typename R>
   NUMERICAL_TARGET("avx2,fma") inline void avx2_complex_row_panels(const R*    x,
@@ -2212,16 +2231,16 @@ namespace numerical::detail {
       const std::size_t end   {std::min(pc + depth, inner)};
       const bool        first {pc == 0};                // y holds nothing before the first panel
       std::size_t       p     {0};
-      for (; column_step == 1 && p + tile <= parts; p += tile) {
+      for (; p + tile <= parts; p += tile) {
         std::array<held, 4> re {};
         std::array<held, 4> im {};
         for (std::size_t k {pc}; k < end; ++k) {
-          const R* const row {b + (2 * k * row_step) + p};
+          const R* const row {b + (2 * k * row_step) + (p * column_step)};
           const vec      xr  {avx2_pairs(x[2 * k], x[2 * k])};
           const vec      xi  {avx2_pairs(x[(2 * k) + 1], x[(2 * k) + 1])};
           NUMERICAL_UNROLL_TILE
           for (std::size_t t {0}; t < 4; ++t) {
-            const vec bv {avx2_load(row + (t * width))};
+            const vec bv {column_step == 1 ? avx2_load(row + (t * width)) : avx2_complex_columns(row + (t * width * column_step), 2 * column_step)};
             re[t].v = avx2_fused(xr, bv, re[t].v);
             im[t].v = avx2_fused(xi, bv, im[t].v);
           }
@@ -2231,7 +2250,7 @@ namespace numerical::detail {
           avx2_store(at, avx2_crossed_sum(first ? zero.v : avx2_load(at), re[t].v, im[t].v));
         }
       }
-      for (; p < parts; p += 2) { // the columns past whole registers, or each column: the same terms, one at a time
+      for (; p < parts; p += 2) { // the columns past whole registers: the same terms, one at a time
         const R* const col {b + (p * column_step)};
         R              rr  {0};
         R              ri  {0};

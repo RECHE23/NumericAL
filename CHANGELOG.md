@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **A complex vector times a Fortran-ordered matrix (`x @ B`) runs at the vector speed of a C-ordered one on x86-64**
+  (each register's complex numbers loaded from as many columns, where one column at a time was summed by scalar
+  multiply-adds), and **a complex vector times any matrix takes as many threads as its work pays for** (a complex term
+  counted as the four real multiply-adds it is: a product of 406 × 583 ran on three). The same bits. Ten AVX-512
+  cores, one row of complex64 by 406 × 583 in Fortran order 84 → 16 µs, complex128 91 → 26 µs (NumPy 8 and 11);
+  C-ordered complex64 30 → 17 µs.
+
 ## 2026.10.40 — 2026-10-28
 
 ### Added

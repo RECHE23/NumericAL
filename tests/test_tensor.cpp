@@ -385,11 +385,13 @@ namespace {
   }
 
   // canonical_product of `a` (inner) and the row-major B, and vector_times_transposed of `a` and B given as its
-  // transpose (cols × inner, rows padded), to the bit: the bits of `a`'s row in a product of a matrix by B. Some terms
-  // a signed zero, a subnormal number or an infinity.
+  // transpose (cols × inner, rows padded), to the bit: the bits of `a`'s row in a product of a matrix by B. With
+  // `specials`, some terms a signed zero, a subnormal number or an infinity (then most sums are infinite or NaN past a
+  // few rows: without them every sum is finite, so a column summed in another's place shows).
   template <typename T>
   bool vector_products_are_a_row_of_a_product(std::size_t inner,
-                                              std::size_t cols)
+                                              std::size_t cols,
+                                              bool        specials = true)
   {
     using R = decltype(std::abs(T {})); // the parts' type
     const auto        part {[](double value) { return static_cast<R>(value); }};
@@ -402,11 +404,11 @@ namespace {
       if constexpr (!std::is_floating_point_v<T>) {
         a[k] += T(R {0}, part(std::cos(static_cast<double>(k) * 1.3)));
       }
-      if (k % 29 == 5) {
+      if (specials && k % 29 == 5) {
         a[k] = T(std::numeric_limits<R>::infinity());
       }
       if constexpr (!std::is_floating_point_v<T>) {
-        if (k % 31 == 7) {
+        if (specials && k % 31 == 7) {
           a[k] = T(R {1}, std::numeric_limits<R>::infinity());
         }
       }
@@ -415,18 +417,20 @@ namespace {
         if constexpr (!std::is_floating_point_v<T>) {
           value += T(R {0}, part(std::sin(static_cast<double>(j + k))));
         }
-        if ((k + j) % 17 == 0) {
-          value = T(R(-0.0));
-        }
-        else if ((k + (2 * j)) % 19 == 0) {
-          value *= T(std::numeric_limits<R>::denorm_min() * R(1024));
-        }
-        else if ((k + (3 * j)) % 23 == 0) {
-          value = T(-std::numeric_limits<R>::infinity());
-        }
-        else if constexpr (!std::is_floating_point_v<T>) {
-          if ((k + (5 * j)) % 37 == 0) {
-            value = T(R {2}, std::numeric_limits<R>::infinity());
+        if (specials) {
+          if ((k + j) % 17 == 0) {
+            value = T(R(-0.0));
+          }
+          else if ((k + (2 * j)) % 19 == 0) {
+            value *= T(std::numeric_limits<R>::denorm_min() * R(1024));
+          }
+          else if ((k + (3 * j)) % 23 == 0) {
+            value = T(-std::numeric_limits<R>::infinity());
+          }
+          else if constexpr (!std::is_floating_point_v<T>) {
+            if ((k + (5 * j)) % 37 == 0) {
+              value = T(R {2}, std::numeric_limits<R>::infinity());
+            }
           }
         }
         b[(k * cols) + j]   = value;
@@ -524,6 +528,12 @@ TEST(a_vector_times_a_matrix_is_its_row_of_a_product)
       EXPECT(vector_products_are_a_row_of_a_product<float>(inner, cols));
       EXPECT(vector_products_are_a_row_of_a_product<std::complex<double>>(inner, cols));
       EXPECT(vector_products_are_a_row_of_a_product<std::complex<float>>(inner, cols));
+      if (inner > 5) { // past the specials' first row: the same shape with finite sums
+        EXPECT(vector_products_are_a_row_of_a_product<double>(inner, cols, false));
+        EXPECT(vector_products_are_a_row_of_a_product<float>(inner, cols, false));
+        EXPECT(vector_products_are_a_row_of_a_product<std::complex<double>>(inner, cols, false));
+        EXPECT(vector_products_are_a_row_of_a_product<std::complex<float>>(inner, cols, false));
+      }
     }
   }
   (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
