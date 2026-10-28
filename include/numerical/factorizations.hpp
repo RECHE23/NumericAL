@@ -1719,6 +1719,93 @@ namespace numerical {
 
   namespace detail {
 
+    //! \brief Whether the \p count elements at \p x are finite, one at a time: a type no vectorised pass takes.
+    template <typename T>
+    [[nodiscard]] bool elements_finite(const T*    x,
+                                       std::size_t count)
+    {
+      return std::all_of(x, x + count, [](const T& value) { return is_finite_entry(value); });
+    }
+
+    //! \brief \ref elements_finite of `double`: \ref all_finite_shared, vectorised.
+    [[nodiscard]] inline bool elements_finite(const double* x,
+                                              std::size_t   count)
+    {
+      return all_finite_shared(x, count);
+    }
+
+    //! \brief The same for `std::complex<double>`, whose array holds its parts in order ([complex.numbers]).
+    [[nodiscard]] inline bool elements_finite(const std::complex<double>* x,
+                                              std::size_t                 count)
+    {
+      return all_finite_shared(reinterpret_cast<const double*>(x), 2 * count); // NOLINT(cppcoreguidelines-pro-type-reinterpret-cast): the layout guarantee above
+    }
+
+    //! \brief Whether the triangle of the row-major `n × n` \p a a solve reads (the diagonal with it) is finite, entry
+    //!        by entry: the rare road of \ref require_finite_triangle, where the whole matrix is not.
+    template <typename T>
+    NUMERICAL_OUT_OF_LINE bool triangle_is_finite(const T*    a,
+                                                  std::size_t n,
+                                                  bool        lower)
+    {
+      for (std::size_t i {0}; i < n; ++i) {
+        const T* const row {a + (i * n)};
+        if (!(lower ? elements_finite(row, i + 1) : elements_finite(row + i, n - i))) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    /*!
+     * \brief Refuses an infinite or NaN entry of the triangle of \p a a triangular solve reads, or of its right-hand
+     *        side \p x (\p count elements): one vectorised pass over the whole matrix, then the triangle entry by entry
+     *        only where that pass finds one (the other triangle may hold anything); the right-hand side in one pass.
+     * \throws non_finite_error If an entry read is infinite or NaN.
+     */
+    template <typename T>
+    void require_finite_triangle(const T*    a,
+                                 std::size_t n,
+                                 bool        lower,
+                                 const T*    x,
+                                 std::size_t count)
+    {
+      if (!elements_finite(a, n * n) && !triangle_is_finite(a, n, lower)) {
+        throw non_finite_error("solve_triangular: the matrix holds an infinite or NaN entry");
+      }
+      if (!elements_finite(x, count)) {
+        throw non_finite_error("solve_triangular: the right-hand side holds an infinite or NaN entry");
+      }
+    }
+
+    /*!
+     * \brief \ref solve_triangular_in_place of a triangle and a right-hand side known finite (\ref
+     *        require_finite_triangle, or a check that covered them): a zero on the diagonal still refused.
+     */
+    template <typename T>
+    void solve_finite_triangular_in_place(const T*      a,
+                                          std::size_t   n,
+                                          bool          lower,
+                                          triangular_op op,
+                                          bool          unit_diagonal,
+                                          T*            x,
+                                          std::size_t   k)
+    {
+      for (std::size_t i {0}; i < n && !unit_diagonal; ++i) {
+        if (a[(i * n) + i] == T {}) {
+          throw singular_matrix_error("singular matrix: resolution failed at diagonal " + std::to_string(i + 1));
+        }
+      }
+      const bool adjoint {op == triangular_op::adjoint}; // a real one's conjugates are itself
+      if (adjoint) {
+        std::transform(x, x + (n * k), x, [](const T& value) { return conj_of(value); });
+      }
+      triangular_rows(a, n, lower, op != triangular_op::none, unit_diagonal, x, k);
+      if (adjoint) {
+        std::transform(x, x + (n * k), x, [](const T& value) { return conj_of(value); });
+      }
+    }
+
     /*!
      * \brief \ref numerical::solve_triangular on the `n × n` row-major \p a, in place in \p x (`n × k`, row-major):
      *        the triangle checked, then read where it lies, transposed in place; the adjoint by the transpose on the
@@ -1733,29 +1820,8 @@ namespace numerical {
                                    T*            x,
                                    std::size_t   k)
     {
-      for (std::size_t i {0}; i < n; ++i) {
-        for (std::size_t j {lower ? 0 : i}; j < (lower ? i + 1 : n); ++j) {
-          if (!is_finite_entry(a[(i * n) + j])) {
-            throw non_finite_error("solve_triangular: the matrix holds an infinite or NaN entry");
-          }
-        }
-        if (!unit_diagonal && a[(i * n) + i] == T {}) {
-          throw singular_matrix_error("singular matrix: resolution failed at diagonal " + std::to_string(i + 1));
-        }
-      }
-      for (std::size_t e {0}; e < n * k; ++e) {
-        if (!is_finite_entry(x[e])) {
-          throw non_finite_error("solve_triangular: the right-hand side holds an infinite or NaN entry");
-        }
-      }
-      const bool adjoint {op == triangular_op::adjoint}; // a real one's conjugates are itself
-      if (adjoint) {
-        std::transform(x, x + (n * k), x, [](const T& value) { return conj_of(value); });
-      }
-      triangular_rows(a, n, lower, op != triangular_op::none, unit_diagonal, x, k);
-      if (adjoint) {
-        std::transform(x, x + (n * k), x, [](const T& value) { return conj_of(value); });
-      }
+      require_finite_triangle(a, n, lower, x, n * k);
+      solve_finite_triangular_in_place(a, n, lower, op, unit_diagonal, x, k);
     }
   } // namespace detail
 

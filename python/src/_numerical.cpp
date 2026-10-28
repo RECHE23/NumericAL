@@ -2262,14 +2262,22 @@ any_tensor do_lu_solve(const numerical::tensor<T>& lu, const std::vector<std::si
     const std::size_t            n {swaps.size()};
     const std::size_t            k {b.shape().size() == 1 ? 1 : b.shape()[1]};
     numerical::buffer<T>         x(b.data().begin(), b.data().end());
+    // L's strict lower triangle and U's upper one are the whole factor: checked once, in one vectorised pass, with b;
+    // an overflow between the two solves is the result's, as in a solve.
+    if (!numerical::detail::elements_finite(factors, n * n)) {
+        throw numerical::non_finite_error("lu_solve: the factor holds an infinite or NaN entry");
+    }
+    if (!numerical::detail::elements_finite(x.data(), x.size())) {
+        throw numerical::non_finite_error("lu_solve: the right-hand side holds an infinite or NaN entry");
+    }
     if (op == numerical::triangular_op::none) { // P A = L U: x = U⁻¹ L⁻¹ P b
         interchanged(x, k, swaps, false);
-        numerical::detail::solve_triangular_in_place(factors, n, true, op, true, x.data(), k);
-        numerical::detail::solve_triangular_in_place(factors, n, false, op, false, x.data(), k);
+        numerical::detail::solve_finite_triangular_in_place(factors, n, true, op, true, x.data(), k);
+        numerical::detail::solve_finite_triangular_in_place(factors, n, false, op, false, x.data(), k);
     }
     else { // Aᵀ = Uᵀ Lᵀ P: x = Pᵀ L⁻ᵀ U⁻ᵀ b (conjugated for the adjoint)
-        numerical::detail::solve_triangular_in_place(factors, n, false, op, false, x.data(), k);
-        numerical::detail::solve_triangular_in_place(factors, n, true, op, true, x.data(), k);
+        numerical::detail::solve_finite_triangular_in_place(factors, n, false, op, false, x.data(), k);
+        numerical::detail::solve_finite_triangular_in_place(factors, n, true, op, true, x.data(), k);
         interchanged(x, k, swaps, true);
     }
     return any_tensor {numerical::tensor<T> {b.shape(), std::move(x)}};

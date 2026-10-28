@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`solve_triangular` and `lu_solve` check their operands in one vectorised pass**, where every entry of the
+  triangle was tested one at a time, and `lu_solve` checks its factor once rather than in each of its two solves: the
+  whole matrix at once, then the triangle entry by entry only where that finds an infinity or a NaN (the other
+  triangle may hold anything, as before). M1 Pro: `lu_solve` of order 500 155 → 83 µs (SciPy 74), 2000 2.64 → 1.69
+  ms (SciPy 1.57); `solve_triangular` 500 76 → 46 µs (SciPy 72), 2000 1.39 → 0.83 ms (SciPy 2.0). An overflow between
+  `lu_solve`'s two solves is now the result's (`inf`, and NaN where `0 · ∞`), as SciPy's, where it raised that the
+  right-hand side held an infinite entry. A matrix both singular and holding a NaN raises the NaN's error.
 - **A complex vector times a Fortran-ordered matrix (`x @ B`) runs at the vector speed of a C-ordered one on x86-64**
   (each register's complex numbers loaded from as many columns, where one column at a time was summed by scalar
   multiply-adds), and **a complex vector times any matrix takes as many threads as its work pays for** (a complex term

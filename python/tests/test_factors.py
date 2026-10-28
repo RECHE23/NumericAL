@@ -162,6 +162,22 @@ class Factorisations(unittest.TestCase):
             numerical.lu_solve((np.eye(2), (0, 1)), [1.0, 2.0], trans=3)
         x = numerical.lu_solve((np.eye(2), (0, 1)), numerical.asarray([1.0, 2.0], "complex128"))
         self.assertEqual(x.dtype, "complex128")
+        # An infinite or NaN entry of the factor (either triangle) or of b, refused before any solve.
+        for lu, b in ((np.array([[1.0, np.nan], [0.0, 1.0]]), [1.0, 2.0]), (np.array([[1.0, 0.0], [np.inf, 1.0]]), [1.0, 2.0]),
+                      (np.eye(2), [1.0, np.nan])):
+            with self.assertRaises(numerical.LinAlgError) as caught:
+                numerical.lu_solve((lu, (0, 1)), b)
+            self.assertIn("infinite or NaN", str(caught.exception))
+
+    @unittest.skipIf(sl is None, "SciPy is not installed")
+    def test_lu_solve_overflow_between_its_solves_is_the_result(self):
+        # L y = b overflows (1e308 + 1e308) though the factor and b are finite: the infinity carried to x (and 0 · ∞ = NaN
+        # above it), as SciPy.
+        f = numerical.lu_factor(np.array([[1.0, 0.0], [-1.0, 1.0]]))
+        b = np.array([1e308, 1e308])
+        x = np.asarray(numerical.lu_solve(f, b))
+        np.testing.assert_array_equal(x, sl.lu_solve(sl.lu_factor(np.array([[1.0, 0.0], [-1.0, 1.0]])), b))  # [nan, inf]
+        self.assertEqual(x[1], np.inf)
 
     def test_cholesky_factor_and_solve(self):
         for dtype in ("float64", "complex128", "float32", "complex64"):
