@@ -22,6 +22,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   diagonalised by the method asked, its vectors `y` the pencil's `L⁻ᴴ y`, `B`-orthonormal; each matrix read in its
   lower triangle (or upper, `UPLO="U"`), of the diagonal its real part. M1 Pro, order 1000: 155 ms (SciPy 250 ms), the
   values alone 97 ms (SciPy 1.29 s); order 400 12.5 ms (SciPy 12.9 ms).
+- **The Schur decomposition** `A = Z T Zᴴ` (`scipy.linalg.schur`, LAPACK's `dgees`/`zgees`): `schur_decomposition<T>`
+  in C++ (`t()`, `z()`), `schur(a, output="real")` → `(T, Z)` in Python, `"complex"` (`"c"`) giving a real matrix's
+  triangular form; the reduction and the iterations of `eig` (multishift with aggressive early deflation past order 200
+  real, 100 complex), not balanced, as `dgees` scales none. SciPy's `sort` is not taken. M1 Pro, order 1000: real
+  305 ms (SciPy 410 ms), complex 1.02 s (SciPy 2.39 s); order 100 1.96 ms (SciPy 4.46 ms).
 
 ### Changed
 - **`svdvals` and the QR's `R` alone skip the last block of reflectors** (`householder_reflect`'s `reflectors`): a

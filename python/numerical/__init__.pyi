@@ -22,7 +22,7 @@ __all__ = [
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config", "blas_library",
-    "solve_triangular", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
+    "schur", "solve_triangular", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
     "sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "eye", "arange", "linspace",
     "exp", "log", "sqrt", "sin", "cos", "tan", "tanh", "absolute", "power",
     "diagonal", "matrix_transpose", "tensorsolve", "tensorinv",
@@ -56,6 +56,7 @@ def eigvals(a: _ArrayLike) -> Tensor: ...
 def matrix_rank(
     A: _ArrayLike, tol: float | None = None, hermitian: bool = False, *, rtol: float | None = None
 ) -> int | list[Any]: ...
+def schur(a: _ArrayLike, output: Literal["real", "r", "complex", "c"] = "real") -> tuple[Tensor, Tensor]: ...
 def cholesky(a: _ArrayLike, /, *, upper: bool = False) -> Tensor: ...
 _Trans = Literal[0, 1, 2, "N", "T", "C"]
 def solve_triangular(a: _ArrayLike, b: _ArrayLike, trans: _Trans = 0, lower: bool = False, unit_diagonal: bool = False,

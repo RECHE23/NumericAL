@@ -3267,6 +3267,109 @@ namespace numerical {
     bool                           real_ {true};  //!< Whether all eigenvalues are real.
   };
 
+  namespace detail {
+
+    //! \brief The real Schur form of the whole of \p t (its eigenvalues not kept), \p steps its iterations' bound.
+    inline void whole_schur_form(const schur_target<double>& t,
+                                 std::size_t                 steps)
+    {
+      buffer<double> re(t.n, 0.0);
+      buffer<double> im(t.n, 0.0);
+      schur_form(t, re, im, steps);
+    }
+
+    //! \brief The complex Schur form likewise.
+    inline void whole_schur_form(const schur_target<std::complex<double>>& t,
+                                 std::size_t                               steps)
+    {
+      buffer<std::complex<double>> values(t.n);
+      schur_form(t, values, steps);
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The Schur decomposition `A = Z T Zᴴ` of a square matrix, as `scipy.linalg.schur` (LAPACK's `dgees`/`zgees`):
+   *        `Z` orthogonal (unitary), `T` upper quasi-triangular for a real `A` (a complex pair a 2 × 2 block in standard
+   *        form, its diagonal equal, its off-diagonal of opposite signs), upper triangular for a complex one; `T`'s
+   *        diagonal (and blocks) holds the eigenvalues. Not balanced: a diagonal scaling would leave `Z` no longer orthogonal (`dgees` only permutes).
+   * \tparam T `double` or `std::complex<double>`.
+   */
+  template <typename T>
+  class schur_decomposition
+  {
+  public:
+
+    /*!
+     * \brief Decomposes \p input.
+     * \throws dimension_error   If \p input is not square.
+     * \throws non_finite_error  If an entry is infinite or NaN.
+     * \throws convergence_error If the QR iterations did not converge.
+     */
+    explicit schur_decomposition(const matrix<T>& input)
+      : schur_decomposition(matrix<T> {input})
+    {}
+
+    //! \brief Decomposes \p input in its own storage, an expiring matrix's elements taken over.
+    explicit schur_decomposition(matrix<T>&& input)
+    {
+      const std::size_t n {input.rows()};
+      if (input.cols() != n) {
+        throw dimension_error("Schur decomposition requires a square matrix");
+      }
+      detail::require_finite(input, "Schur decomposition");
+      double largest {0.0};
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          largest = std::max(largest, detail::largest_part(input(i, j)));
+        }
+      }
+      // A power of two: the division exact, the iterations' sums of squares in range.
+      const double scale {largest == 0.0 ? 1.0 : std::ldexp(1.0, std::ilogb(largest))};
+      buffer<T>    a     {std::move(input).elements()};
+      for (T& entry : a) {
+        entry /= detail::from_carried<T>(scale);
+      }
+      buffer<T>                     zt {detail::hessenberg(a, n, 0, n, true)};
+      const std::size_t             steps {detail::schur_steps_per_order * std::max<std::size_t>(10, n)};
+      const detail::schur_target<T> target {&a, n, 0, n, true, &zt};
+      detail::whole_schur_form(target, steps);
+      for (T& entry : a) { // zero below the subdiagonal (the diagonal, complex) as the reduction and the sweeps leave it
+        entry *= detail::from_carried<T>(scale);
+      }
+      t_ = matrix<T> {n, n, std::move(a)};
+      z_ = transpose(matrix<T> {n, n, std::move(zt)});
+    }
+
+    //! \brief `T`, upper quasi-triangular (real) or triangular (complex).
+    [[nodiscard]] const matrix<T>& t() const& noexcept
+    {
+      return t_;
+    }
+
+    //! \brief `T`, moved out of an expiring decomposition.
+    [[nodiscard]] matrix<T> t() &&
+    {
+      return std::move(t_);
+    }
+
+    //! \brief `Z`, the Schur vectors as columns.
+    [[nodiscard]] const matrix<T>& z() const& noexcept
+    {
+      return z_;
+    }
+
+    //! \brief `Z`, moved out of an expiring decomposition.
+    [[nodiscard]] matrix<T> z() &&
+    {
+      return std::move(z_);
+    }
+
+  private:
+
+    matrix<T> t_; //!< The Schur form.
+    matrix<T> z_; //!< The Schur vectors.
+  };
+
   /*!
    * \brief The eigenvalues alone of the square \p a, as `numpy.linalg.eigvals`.
    * \throws dimension_error   If \p a is not square.

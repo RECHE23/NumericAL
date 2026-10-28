@@ -8,6 +8,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <limits>
 #include <random>
 #include <vector>
 
@@ -1059,4 +1060,109 @@ TEST(a_nearly_real_pair_below_a_chain_of_its_real_part)
   for (std::size_t c {0}; c < n; ++c) {
     EXPECT(std::isfinite(e.vectors()(0, c).real()) && std::isfinite(e.vectors()(0, c).imag()));
   }
+}
+
+namespace {
+
+  //! \brief Whether the Schur decomposition of \p a holds: `A = Z T Zᴴ` and `Zᴴ Z = I` to `64 n ε`, `T` zero below its
+  //!        subdiagonal, a real `T`'s 2 × 2 blocks in standard form and a complex `T` triangular, and its eigenvalues
+  //!        those of \ref eigen_decomposition (as sets).
+  template <typename T>
+  bool schur_holds(const matrix<T>& a)
+  {
+    const std::size_t                         n             {a.rows()};
+    const numerical::schur_decomposition<T>   s             {a};
+    const matrix<T>&                          t             {s.t()};
+    const matrix<T>&                          z             {s.z()};
+    double                                    residual      {0.0};
+    double                                    orthogonality {0.0};
+    double                                    size          {0.0};
+    std::vector<T>                            zt(n * n); // Z T
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t k {0}; k < n; ++k) {
+        for (std::size_t l {0}; l < n; ++l) {
+          zt[(i * n) + l] += z(i, k) * t(k, l);
+        }
+      }
+    }
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        T sum  {};
+        T gram {};
+        for (std::size_t k {0}; k < n; ++k) {
+          sum  += zt[(i * n) + k] * numerical::detail::conj_of(z(j, k));
+          gram += numerical::detail::conj_of(z(k, i)) * z(k, j);
+        }
+        residual      = std::max(residual, std::abs(sum - a(i, j)));
+        orthogonality = std::max(orthogonality, std::abs(gram - (i == j ? T {1.0} : T {})));
+        size          = std::max(size, std::abs(a(i, j)));
+      }
+    }
+    bool                  shaped {true};
+    std::vector<C>        values;
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j + 1 < i; ++j) {
+        shaped = shaped && t(i, j) == T {};
+      }
+    }
+    for (std::size_t i {0}; i < n; ++i) {
+      if constexpr (std::is_same_v<T, double>) {
+        if (i + 1 < n && t(i + 1, i) != 0.0) { // a pair: equal diagonal, off-diagonal of opposite signs
+          shaped = shaped && t(i, i) == t(i + 1, i + 1) && t(i, i + 1) * t(i + 1, i) < 0.0 && (i + 2 >= n || t(i + 2, i + 1) == 0.0);
+          const double imaginary {std::sqrt(-t(i, i + 1) * t(i + 1, i))};
+          values.emplace_back(t(i, i), imaginary);
+          values.emplace_back(t(i, i), -imaginary);
+          ++i;
+          continue;
+        }
+        values.emplace_back(t(i, i));
+      }
+      else {
+        shaped = shaped && (i + 1 >= n || t(i + 1, i) == T {});
+        values.push_back(t(i, i));
+      }
+    }
+    const auto                 by_parts = [](const C& x, const C& y) { return x.real() < y.real() || (x.real() == y.real() && x.imag() < y.imag()); };
+    const numerical::vector<C> computed {numerical::eigenvalues(a)};
+    std::vector<C>             expected(computed.begin(), computed.end());
+    std::sort(values.begin(), values.end(), by_parts);
+    std::sort(expected.begin(), expected.end(), by_parts);
+    double apart {0.0};
+    for (std::size_t k {0}; k < n; ++k) {
+      apart = std::max(apart, std::abs(values[k] - expected[k]));
+    }
+    const double bound {64.0 * static_cast<double>(std::max<std::size_t>(n, 1)) * std::numeric_limits<double>::epsilon()};
+    return shaped && residual <= bound * size && orthogonality <= bound && apart <= 1e-9 * std::max(size, 1.0);
+  }
+} // namespace
+
+// The Schur decomposition, as scipy.linalg.schur: random real and complex matrices of orders past the multishift
+// crossovers (100 complex, 200 real), a rotation's pair, a triangular matrix left as it is, a scaled one, the empty and the errors.
+TEST(schur_decomposition_reconstructs_with_an_orthonormal_basis)
+{
+  for (const std::size_t n : {std::size_t {1}, std::size_t {2}, std::size_t {5}, std::size_t {40}, std::size_t {130}, std::size_t {210}}) {
+    std::vector<double> real_entries(n * n);
+    std::vector<C>      complex_entries(n * n);
+    for (std::size_t e {0}; e < n * n; ++e) {
+      real_entries[e]    = std::sin(1.0 + (0.7 * static_cast<double>(e)));
+      complex_entries[e] = C {std::sin(1.0 + (0.7 * static_cast<double>(e))), std::cos(0.3 * static_cast<double>(e))};
+    }
+    EXPECT(schur_holds(matrix<double> {n, n, real_entries}));
+    EXPECT(schur_holds(matrix<C> {n, n, complex_entries}));
+  }
+  const matrix<double> rotation {{0.0, -2.0}, {2.0, 0.0}}; // ±2i: one 2 × 2 block
+  EXPECT(schur_holds(rotation));
+  EXPECT((numerical::schur_decomposition<double> {rotation}.t()(1, 0) != 0.0));
+         const matrix<double> triangular {{1.0, 2.0, 3.0}, {0.0, 4.0, 5.0}, {0.0, 0.0, 6.0}};
+         EXPECT(schur_holds(triangular));
+  EXPECT(schur_holds(matrix<double> {{1e200, 3e199}, {-2e199, 5e199}}));
+  EXPECT(schur_holds(matrix<double> {{0.0, 0.0}, {0.0, 0.0}}));
+  EXPECT((numerical::schur_decomposition<double> {matrix<double> {0, 0, {}}}.t().rows() == 0));
+  const matrix<C> pair {{C {1.0, 1.0}, C {2.0}}, {C {0.0, -1.0}, C {3.0}}};
+  const matrix<C> z    {numerical::schur_decomposition<C> {pair}.z()}; // each moved out of an expiring decomposition
+  const matrix<C> t    {numerical::schur_decomposition<C> {pair}.t()};
+  EXPECT(z.rows() == 2 && t.rows() == 2 && t(1, 0) == C {});
+  EXPECT_THROWS((numerical::schur_decomposition<double> {matrix<double> {{1.0, 2.0}}}), numerical::dimension_error);
+  EXPECT_THROWS((numerical::schur_decomposition<double> {matrix<double> {{std::numeric_limits<double>::quiet_NaN()}}}),
+                numerical::non_finite_error);
 }

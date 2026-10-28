@@ -2375,6 +2375,34 @@ std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& 
             any_tensor {real_tensor {std::move(decomposition).vectors()}}};
 }
 
+// schur(a, complex_output) -> (T, Z), as scipy.linalg.schur: A = Z T Zᴴ, T quasi-triangular for a real matrix
+// (complex_output: the complex Schur form of it, T triangular), triangular for a complex one.
+template <typename T>
+std::tuple<any_tensor, any_tensor> do_schur(numerical::matrix<T>&& a)
+{
+    numerical::schur_decomposition<T> s {std::move(a)};
+    numerical::matrix<T>              z {std::move(s).z()};
+    return {any_tensor {numerical::tensor<T> {std::move(s).t()}}, any_tensor {numerical::tensor<T> {std::move(z)}}};
+}
+
+std::tuple<any_tensor, any_tensor> schur(const any_tensor& v, bool complex_output)
+{
+    if (shape_of(v).size() != 2 || shape_of(v)[0] != shape_of(v)[1]) {
+        throw std::runtime_error("schur: expected a square matrix");
+    }
+    if (is_single(v)) {
+        return narrowed(schur(widened(v), complex_output));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(shape_of(v)[0] * shape_of(v)[0])};
+    if (is_complex(v)) {
+        return do_schur(matrix_from(std::get<cplx_tensor>(v)));
+    }
+    if (complex_output) {
+        return do_schur(matrix_from(converted<std::complex<double>>(std::get<real_tensor>(v))));
+    }
+    return do_schur(matrix_from(std::get<real_tensor>(v)));
+}
+
 // eigh_pencil(a, b, method, upper) -> (values, vectors): A x = λ B x, B positive definite, the vectors B-orthonormal.
 std::tuple<any_tensor, any_tensor> eigh_pencil(const any_tensor& a, const any_tensor& b, const std::string& name, bool upper)
 {
@@ -4576,6 +4604,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&cholesky>("cholesky", "cholesky(a, upper) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite), or with upper the factor U of A = Uᴴ U from its upper triangle.");
     m.def<&qr>("qr", "qr(a, mode) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr: reduced, Q is m×k, R k×n, k = min(m, n); complete, Q is m×m, R m×n.");
     m.def<&qr_r>("qr_r", "qr_r(a) -> R\nqr's R alone, k×n, k = min(m, n), to the bit, Q never formed (numpy.linalg.qr's mode=\"r\").");
+    m.def<&schur>("schur", "schur(a, complex_output) -> (T, Z)\nThe Schur decomposition A = Z T Zᴴ, as scipy.linalg.schur: T quasi-triangular for a real matrix (triangular with complex_output, or for a complex one), Z orthogonal or unitary.");
     m.def<&eigh_pencil>("eigh_pencil", "eigh_pencil(a, b, method, upper) -> (values, vectors)\nEigenpairs of the pencil A x = λ B x, A symmetric or Hermitian, B positive definite (ascending values, B-orthonormal vectors), as scipy.linalg.eigh(a, b); each lower triangle read, or with upper each upper one.");
     m.def<&eigvalsh_pencil>("eigvalsh_pencil", "eigvalsh_pencil(a, b, upper) -> Tensor\nThe eigenvalues alone of the pencil A x = λ B x, ascending.");
     m.def<&eigh>("eigh", "eigh(a, method, upper) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, or with upper its upper one, as numpy.linalg.eigh's UPLO.");

@@ -45,7 +45,7 @@ __all__ = [
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config", "blas_library",
-    "solve_triangular", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
+    "schur", "solve_triangular", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
 ]
 
 
@@ -558,6 +558,7 @@ _singular_values = _linalg(_numerical._singular_values)
 _svd_hermitian = _linalg(_numerical._svd_hermitian)
 _matmul_nd = _linalg(_numerical._matmul_nd)
 _eig = _linalg(_numerical._eig)
+_schur = _linalg(_numerical.schur, arrays=1)
 _eigvals = _linalg(_numerical._eigvals)
 _QR_MODES = ("reduced", "complete", "r")
 _EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
@@ -627,6 +628,16 @@ def eigvals(a):
     """The eigenvalues alone of a general square matrix, or of each of a stack, as ``numpy.linalg.eigvals``: complex
     whatever they are, as NumPy 2.5's; the same values as ``eig``'s, to the bit."""
     return _eigvals(a)
+
+
+def schur(a, output="real"):
+    """The Schur decomposition ``a = Z @ T @ Z.conj().T`` of a square matrix, as ``scipy.linalg.schur``: `Z`
+    orthogonal (unitary), `T` upper quasi-triangular for a real matrix (a complex pair a 2 × 2 block, its diagonal
+    equal), upper triangular with ``output="complex"`` (``"c"``) or for a complex matrix. Returns ``(T, Z)``. Not
+    balanced, as LAPACK's ``dgees``; SciPy's `sort` is not taken."""
+    if output not in ("real", "r", "complex", "c"):
+        raise ValueError(f"schur: output must be 'real' or 'complex', not {output!r}")
+    return _schur(a, output in ("complex", "c"))
 
 
 def cholesky(a, /, *, upper=False):
