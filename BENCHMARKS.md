@@ -130,6 +130,9 @@ cases.
 | 29f239f (2026.10.38 and fifty-two changes; twenty-two operations, the FFT's four added) | M1 Pro, NumPy 2.4.2 on Accelerate | 1.51× [1.43–1.58] | 76 % |
 | 29f239f (twenty-two operations) | six AVX2 cores, NumPy 2.5.4 on OpenBLAS | 1.57× [1.47–1.66] | 74 % |
 | 29f239f (twenty-two operations) | ten AVX-512 cores, NumPy 2.5.4 on OpenBLAS | 1.84× [1.73–1.94] | 82 % |
+| 5a13c5c (2026.10.39 and twenty-seven changes) | M1 Pro, NumPy 2.4.2 on Accelerate | 1.56× [1.49–1.64] | 78 % |
+| 5a13c5c | six AVX2 cores, NumPy 2.5.4 on OpenBLAS | 1.62× [1.52–1.70] | 75 % |
+| 5a13c5c | ten AVX-512 cores, NumPy 2.5.4 on OpenBLAS | 1.97× [1.86–2.08] | 85 % |
 
 Under load the gap widens: NumPy's OpenBLAS threads wait for cores the busy processes hold, where NumericAL's pool
 runs no more threads than it is given. From a10f188 the draw adds `einsum-each` (calls that sum nothing), whose
