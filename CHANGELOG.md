@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`dct`, `idct`, `dst` and `idst` keep each length's tables, formed as the Fourier transforms form theirs**: the
+  roots `e^{−iπa/d}` from one table of `8n` roots in double-double arithmetic (`unit_roots`), on the threads, where
+  each call formed them anew with the system's `cos` and `sin` (which differ between glibc, macOS and Windows); and
+  their complex products as the path's kernels form them (fused on the vector paths), where `std::complex`'s left it
+  to the compiler. Other bits than before, the same on every platform for a path. M1 Pro: DCT-II of 1024 points 6.9
+  → 4.3 µs (SciPy 6.7), of 100 000 806 → 522 µs (SciPy 535); DCT-IV of 1024 10.3 → 3.7 µs (SciPy 6.9), of 100 000
+  1214 → 411 µs (SciPy 604); DCT-II of 1000 lines of 1024 1.74 → 0.93 ms (SciPy 3.0).
 - **`solve_triangular` and `lu_solve` check their operands in one vectorised pass**, where every entry of the
   triangle was tested one at a time, and `lu_solve` checks its factor once rather than in each of its two solves: the
   whole matrix at once, then the triangle entry by entry only where that finds an infinity or a NaN (the other

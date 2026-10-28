@@ -1110,28 +1110,31 @@ TEST(cosine_and_sine_transforms_are_their_sums_and_invert)
   using numerical::idst;
   double worst {0.0};
   double back  {0.0};
-  for (const std::size_t n : {std::size_t {1}, std::size_t {2}, std::size_t {3}, std::size_t {8}, std::size_t {9}, std::size_t {30},
-                              std::size_t {97}, std::size_t {128}}) {
-    std::vector<double> x(n);
-    for (std::size_t j {0}; j < n; ++j) {
-      x[j] = std::sin(1.0 + (0.7 * static_cast<double>(j)));
-    }
-    const tensor<double> line {{n}, numerical::buffer<double>(x.begin(), x.end())};
-    for (const bool sine : {false, true}) {
-      for (int type {1}; type <= 4; ++type) {
-        if (!sine && type == 1 && n < 2) {
-          continue;
-        }
-        const tensor<double>      y        {sine ? dst(line, type) : dct(line, type)};
-        const tensor<double>      x_again  {sine ? idst(y, type) : idct(y, type)};
-        const std::vector<double> expected {trig_sum(sine, type, x)};
-        double                    size     {1.0};
-        for (const double value : expected) {
-          size = std::max(size, std::abs(value));
-        }
-        for (std::size_t k {0}; k < n; ++k) {
-          worst = std::max(worst, std::abs(y.data()[k] - expected[k]) / (size * static_cast<double>(n)));
-          back  = std::max(back, std::abs(x_again.data()[k] - x[k]) / static_cast<double>(n));
+  for (const numerical::gemm_path path : {numerical::gemm_path::portable, numerical::gemm_path::amx}) { // each path's products, a line shared
+    (void)numerical::limit_gemm_path(path);
+    for (const std::size_t n : {std::size_t {1}, std::size_t {2}, std::size_t {3}, std::size_t {8}, std::size_t {9}, std::size_t {30},
+                                std::size_t {97}, std::size_t {128}}) {
+      std::vector<double> x(n);
+      for (std::size_t j {0}; j < n; ++j) {
+        x[j] = std::sin(1.0 + (0.7 * static_cast<double>(j)));
+      }
+      const tensor<double> line {{n}, numerical::buffer<double>(x.begin(), x.end())};
+      for (const bool sine : {false, true}) {
+        for (int type {1}; type <= 4; ++type) {
+          if (!sine && type == 1 && n < 2) {
+            continue;
+          }
+          const tensor<double>      y        {sine ? dst(line, type) : dct(line, type)};
+          const tensor<double>      x_again  {sine ? idst(y, type) : idct(y, type)};
+          const std::vector<double> expected {trig_sum(sine, type, x)};
+          double                    size     {1.0};
+          for (const double value : expected) {
+            size = std::max(size, std::abs(value));
+          }
+          for (std::size_t k {0}; k < n; ++k) {
+            worst = std::max(worst, std::abs(y.data()[k] - expected[k]) / (size * static_cast<double>(n)));
+            back  = std::max(back, std::abs(x_again.data()[k] - x[k]) / static_cast<double>(n));
+          }
         }
       }
     }
