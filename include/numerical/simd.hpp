@@ -874,6 +874,47 @@ namespace numerical::detail {
     }
   }
 
+  //! \brief \p full's tile of its first \p R rows, or of \p rows of them where fewer (\ref through_rows).
+  template <std::size_t R,
+            typename T,
+            typename Full>
+  void rows_of_tile(std::size_t rows,
+                    T*          c,
+                    std::size_t ldc,
+                    Full&       full) noexcept
+  {
+    if constexpr (R > 1) {
+      if (rows < R) {
+        rows_of_tile<R - 1>(rows, c, ldc, full);
+        return;
+      }
+    }
+    full.template operator()<R>(c, ldc);
+  }
+
+  /*!
+   * \brief \ref through_edge for a tile \p full computes for any count of its rows up to \p Rows, its template
+   *        argument: a tile of its whole \p Cols columns and fewer rows computed in C itself, those rows alone (one
+   *        row of complex products had six rows' multiply-adds computed through a whole tile); any other through a
+   *        whole one, as through_edge. Each element of C has the same operations either way.
+   */
+  template <std::size_t Rows,
+            std::size_t Cols,
+            typename T,
+            typename Full>
+  void through_rows(T*          c,
+                    std::size_t ldc,
+                    std::size_t rows,
+                    std::size_t cols,
+                    Full        full) noexcept
+  {
+    if (cols == Cols) {
+      rows_of_tile<Rows>(rows, c, ldc, full);
+      return;
+    }
+    through_edge<Rows, Cols>(c, ldc, rows, cols, [&](T* tile, std::size_t ld) noexcept { full.template operator()<Rows>(tile, ld); });
+  }
+
   //! \brief No leading elements in vectors, for a type no native vector holds.
   template <typename T>
   std::size_t subtract_scaled_vectors(T* /*y*/,

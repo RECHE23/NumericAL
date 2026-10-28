@@ -705,6 +705,49 @@ namespace {
   }
 } // namespace
 
+namespace
+{
+  // The pieces run a few rows, a tile short of rows (each count up to the widest tile's twelve) and whole tiles in
+  // turn: every element of C the same as in the whole product.
+  template <typename T>
+  bool rows_cut_anywhere_give_the_same_bits()
+  {
+    const std::size_t m {30};
+    const std::size_t k {64};
+    const std::size_t n {131};
+    std::vector<T>    a(m * k);
+    std::vector<T>    b(k * n);
+    std::vector<T>    start(m * n);
+    for (std::size_t i {0}; i < a.size(); ++i) {
+      a[i] = entry<T>((i * 13) + 1) / T {7};
+    }
+    for (std::size_t i {0}; i < b.size(); ++i) {
+      b[i] = entry<T>((i * 5) + 2) / T {3};
+    }
+    for (std::size_t i {0}; i < start.size(); ++i) {
+      start[i] = entry<T>(i) / T {11};
+    }
+    std::vector<T> whole {start};
+    numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, whole.data(), n);
+    bool same            {true};
+    for (std::size_t cut {1}; cut < m; ++cut) {
+      std::vector<T> pieces {start};
+      numerical::detail::gemm(cut, n, k, a.data(), k, b.data(), n, pieces.data(), n);
+      numerical::detail::gemm(m - cut, n, k, a.data() + (cut * k), k, b.data(), n, pieces.data() + (cut * n), n);
+      same = same && pieces == whole;
+    }
+    return same;
+  }
+} // namespace
+
+TEST(a_product_cut_by_its_rows_gives_the_same_bits)
+{
+  EXPECT(on_every_path([] { return rows_cut_anywhere_give_the_same_bits<double>(); }));
+  EXPECT(on_every_path([] { return rows_cut_anywhere_give_the_same_bits<float>(); }));
+  EXPECT(on_every_path([] { return rows_cut_anywhere_give_the_same_bits<std::complex<double>>(); }));
+  EXPECT(on_every_path([] { return rows_cut_anywhere_give_the_same_bits<std::complex<float>>(); }));
+}
+
 TEST(a_product_cut_by_its_columns_gives_the_same_bits)
 {
   EXPECT(on_every_path([] { return columns_cut_anywhere_give_the_same_bits<double>(); }));

@@ -39,6 +39,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   points 4–5× as fast; one line of 100 000 points 1.5–1.9× SciPy's time and type 4 of 1023 points 3.7×: open targets.
 
 ### Changed
+- **A product's last tile short of rows computes those rows alone on x86-64** (`through_rows`, each tile templated on
+  its rows), where it computed a whole tile into a copy (six rows of complex products, twelve of real ones): one row
+  of `complex128` by 583 × 406 497 → 157 µs, of `complex64` 188 → 80 µs (ten AVX-512 cores, one thread); two rows
+  503 → 180 µs. The same bits.
 - **`svdvals` and the QR's `R` alone skip the last block of reflectors** (`householder_reflect`'s `reflectors`): a
   tall or square matrix's last block, which no update reads, is no longer gathered, nor the only block of one of 32
   columns or fewer. M1 Pro, `svdvals` of 484 × 31 213 → 172 µs, 206 × 20 63 → 48 µs, 23 × 103 55 → 42 µs; ten
