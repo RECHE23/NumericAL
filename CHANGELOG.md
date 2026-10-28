@@ -12,6 +12,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **NumPy's loops over tensors leave the public namespace**: `numpy_loops`, `numpy_wheel_loops`, `numpy_multiply`,
   `numpy_divide`, `numpy_power`, `numpy_square`, `numpy_reciprocal` and `numpy_absolute`, deprecated since
   2026.10.36, are now in `numerical::detail` alone.
+- **A complex LU pivots as LAPACK's does**, on the entry of largest `|Re| + |Im|` (`izamax`), where the modulus
+  chose: `lu_decomposition`, `solve`, `inv`, `det`, `lu_factor` and the `zgetrf`/`cgetrf` of `numerical_blas` now
+  interchange the rows `zgetrf` does, so `lu_factor`'s `piv` is SciPy's for complex matrices too. A column whose two
+  largest entries differ in that order (3 and 2 + 2i) factorises on another row: other factors, and results
+  different beyond their last bits. Real matrices are unchanged. With no square root in the search (the modulus
+  was a `hypot` per entry), ten AVX-512 cores: `lu_factor` of complex128 of order 531 8.66 → 6.67 ms, 1000 31.9 →
+  24.3 ms.
 
 ### Added
 - **`logm`, as `scipy.linalg.logm`**: the principal logarithm by Al-Mohy and Higham's inverse scaling and squaring

@@ -182,6 +182,34 @@ TEST(a_subnormal_complex_pivot_divides_where_its_reciprocal_would_overflow)
   EXPECT(singular.determinant() == C {});
 }
 
+namespace {
+  // The row an LU of order n pivots its first column on, the column 3 in row 0, 2 + 2i in the last, and smaller
+  // entries between: |Re| + |Im| (LAPACK's izamax) picks 2 + 2i (4 against 3), the modulus would pick 3 (2.83 against 3).
+  template <typename R>
+  std::size_t first_complex_pivot(std::size_t n)
+  {
+    using C = std::complex<R>;
+    std::vector<C> entries(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        entries[(i * n) + j] = C {static_cast<R>(i == j ? 8.0 : 0.25 / static_cast<double>(1 + i + j)), static_cast<R>(0.125)};
+      }
+    }
+    entries[0]           = C {R {3}, R {0}};
+    entries[(n - 1) * n] = C {R {2}, R {2}};
+    return lu_decomposition<C> {matrix<C> {n, n, entries}}.pivots()[0];
+  }
+} // namespace
+
+// A complex column pivots on its entry of largest |Re| + |Im|, as LAPACK's zgetrf and cgetrf: the same rows interchanged.
+TEST(a_complex_lu_pivots_on_the_largest_sum_of_the_parts_magnitudes)
+{
+  for (const std::size_t n : {std::size_t {3}, std::size_t {100}}) {
+    EXPECT_EQ(first_complex_pivot<double>(n), n - 1);
+    EXPECT_EQ(first_complex_pivot<float>(n), n - 1);
+  }
+}
+
 TEST(a_zero_pivot_column_gives_no_terms_not_even_a_signed_zero)
 {
   // Column 1 is zero from its diagonal down: its terms, ±0, would turn column 2's −0 into +0. The unblocked
@@ -1759,6 +1787,18 @@ namespace {
     }
   }
 
+  // The magnitude partial pivoting compares, LAPACK's: |x| of a real x, |Re x| + |Im x| of a complex one (izamax).
+  template <typename T>
+  auto pivot_size(const T& x)
+  {
+    if constexpr (std::is_floating_point_v<T>) {
+      return std::abs(x);
+    }
+    else {
+      return std::abs(x.real()) + std::abs(x.imag());
+    }
+  }
+
   template <typename T>
   std::pair<T, std::vector<T>> unblocked_lu_solve(std::size_t    n,
                                                   std::vector<T> a,
@@ -1768,7 +1808,7 @@ namespace {
     for (std::size_t k {0}; k < n; ++k) {
       std::size_t pivot {k};
       for (std::size_t r {k + 1}; r < n; ++r) {
-        if (std::abs(a[(r * n) + k]) > std::abs(a[(pivot * n) + k])) {
+        if (pivot_size(a[(r * n) + k]) > pivot_size(a[(pivot * n) + k])) {
           pivot = r;
         }
       }

@@ -429,7 +429,7 @@ namespace numerical::blas {
         T* const    column {a + (j * lda)};
         std::size_t pivot  {j};
         for (std::size_t i {j + 1}; i < m; ++i) {
-          if (std::abs(column[i]) > std::abs(column[pivot])) {
+          if (numerical::detail::pivot_magnitude(column[i]) > numerical::detail::pivot_magnitude(column[pivot])) { // izamax's |Re| + |Im| of a complex one
             pivot = i;
           }
         }
