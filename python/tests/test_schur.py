@@ -127,6 +127,22 @@ class Schur(unittest.TestCase):
                     self.assertLess(nearest.max(), 1e-9 * np.abs(theirs).max())
                     self.assertLess(np.abs(np.sort(np.abs(ours)) - np.sort(np.abs(theirs))).max(), 1e-9 * np.abs(theirs).max())
 
+    @unittest.skipIf(sl is None, "SciPy is not installed")
+    def test_isolated_eigenvalues_as_scipy(self):
+        # A triangular matrix is its own Schur form, Z the identity, as dgees's permutations leave it; a permuted
+        # triangular one gives the diagonal SciPy gives, in its order.
+        for dtype in ("float64", "complex128"):
+            a = np.triu(_drawn(7, dtype, 3)) + np.diag(np.arange(1.0, 8.0))
+            t, z = (np.asarray(m) for m in numerical.schur(a))
+            self.assertTrue(np.array_equal(t, a))
+            self.assertTrue(np.array_equal(z, np.eye(7)))
+            order = np.array([3, 6, 0, 5, 1, 4, 2])
+            permuted = a[np.ix_(order, order)]
+            t, z = (np.asarray(m) for m in numerical.schur(permuted))
+            expected_t = sl.schur(permuted)[0]
+            self.assertTrue(np.array_equal(np.diag(t), np.diag(expected_t)))
+            self.assertLess(np.abs(z @ t @ z.conj().T - permuted).max(), 1e-12 * np.abs(a).max() * 7)
+
 
     @unittest.skipIf(sl is None, "SciPy is not installed")
     def test_sort_moves_the_selected_eigenvalues_first_as_scipy(self):

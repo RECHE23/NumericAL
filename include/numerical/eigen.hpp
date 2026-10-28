@@ -205,6 +205,17 @@ namespace numerical {
     }
 
     /*!
+     * \brief Isolates eigenvalues of the row-major `n × n` \p a in place by permutations alone, as LAPACK's
+     *        `dgebal('P')`: \ref balance without its scaling, a similarity by an orthogonal matrix.
+     */
+    template <typename T>
+    [[nodiscard]] balancing isolate(buffer<T>&  a,
+                                    std::size_t n)
+    {
+      return balance(a, n, true, false);
+    }
+
+    /*!
      * \brief Reduces the active block `low … high − 1` of the balanced row-major `n × n` \p a to upper Hessenberg form
      *        by Householder reflections one column at a time, as LAPACK's `dgehd2`: `A = Q H Qᴴ`, the entries below the subdiagonal set
      *        to zero.
@@ -3454,7 +3465,9 @@ namespace numerical {
    * \brief The Schur decomposition `A = Z T Zᴴ` of a square matrix, as `scipy.linalg.schur` (LAPACK's `dgees`/`zgees`):
    *        `Z` orthogonal (unitary), `T` upper quasi-triangular for a real `A` (a complex pair a 2 × 2 block in standard
    *        form, its diagonal equal, its off-diagonal of opposite signs), upper triangular for a complex one; `T`'s
-   *        diagonal (and blocks) holds the eigenvalues. Not balanced: a diagonal scaling would leave `Z` no longer orthogonal (`dgees` only permutes).
+   *        diagonal (and blocks) holds the eigenvalues. Eigenvalues isolated first by permutations (\ref detail::isolate,
+   *        `dgees`'s `dgebal('P')`), which keep `Z` orthogonal and leave a triangular or block-triangular part no
+   *        iteration; no diagonal scaling, which would not.
    * \tparam T `double` or `std::complex<double>`.
    */
   template <typename T>
@@ -3492,12 +3505,19 @@ namespace numerical {
       for (T& entry : a) {
         entry /= detail::from_carried<T>(scale);
       }
-      buffer<T>                     zt {detail::hessenberg(a, n, 0, n, true)};
-      const std::size_t             steps {detail::schur_steps_per_order * std::max<std::size_t>(10, n)};
-      const detail::schur_target<T> target {&a, n, 0, n, true, &zt};
+      const detail::balancing       isolated {detail::isolate(a, n)}; // A' = Pᵀ A P
+      buffer<T>                     zt {detail::hessenberg(a, n, isolated.low, isolated.high, true)};
+      const std::size_t             steps {detail::schur_steps_per_order * std::max<std::size_t>(10, isolated.high - isolated.low)};
+      const detail::schur_target<T> target {&a, n, isolated.low, isolated.high, true, &zt};
       detail::whole_schur_form(target, steps);
-      for (T& entry : a) { // zero below the subdiagonal (the diagonal, complex) as the reduction and the sweeps leave it
+      for (T& entry : a) {                                    // zero below the subdiagonal (the diagonal, complex) as the reduction and the sweeps leave it
         entry *= detail::from_carried<T>(scale);
+      }
+      for (std::size_t s {isolated.swaps.size()}; s-- > 0;) { // Z = P Z': the exchanges undone, the last first, on
+        const auto [i, j] {isolated.swaps[s]};                // the columns of Zᵀ
+        for (std::size_t c {0}; c < n; ++c) {
+          std::swap(zt[(c * n) + i], zt[(c * n) + j]);
+        }
       }
       t_ = matrix<T> {n, n, std::move(a)};
       z_ = transpose(matrix<T> {n, n, std::move(zt)});
