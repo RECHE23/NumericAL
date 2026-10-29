@@ -90,6 +90,8 @@ Small and complete, grown measured, honest about what is not yet here:
   triangular for a complex one, `z()` orthogonal or unitary; `values()` in `T`'s order; given a predicate on the
   eigenvalues, or by `sort(select)` and `reorder(chosen)` afterwards, those selected moved to the leading block
   (LAPACK's `trsen`, MATLAB's `ordschur`), `leading()` their count.
+- `numerical::pivoted_qr_decomposition<T>` — `A P = Q R` with column pivoting, as `scipy.linalg.qr(a, pivoting=True)`
+  (LAPACK's `geqp3`), `R`'s diagonal revealing the rank.
 - `numerical::solve_banded(l, u, ab, b)` and `numerical::solveh_banded(ab, b, lower)` — banded systems in LAPACK's
   diagonal-ordered form, as `scipy.linalg`'s (`gbsv`, `pbsv`); `numerical::solve_toeplitz(c, r, b)` (Levinson's
   recursion) and `numerical::solve_circulant(c, b)` (the Fourier transform); the matrices `toeplitz`, `hankel`,

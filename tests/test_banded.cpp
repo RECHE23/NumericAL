@@ -274,3 +274,101 @@ TEST(structured_matrices_are_scipys)
   EXPECT((blocks == matrix<double> {{1.0, 2.0, 0.0, 0.0}, {3.0, 4.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 5.0}}));
   EXPECT(numerical::block_diag(std::vector<matrix<double>> {}).rows() == 0);
 }
+
+namespace {
+
+  //! \brief Whether pivoted QR of \p a holds: `A P = Q R` to rounding, `Q`'s columns orthonormal, `R` upper trapezoidal
+  //!        with a real, non-negative diagonal that does not grow, `P` a permutation.
+  template <typename T>
+  bool pivoted_qr_holds(const matrix<T>&   a,
+                        numerical::qr_mode mode)
+  {
+    const numerical::pivoted_qr_decomposition<T> f     {a, mode};
+    const matrix<T>&                             q     {f.q()};
+    const matrix<T>&                             r     {f.r()};
+    const std::vector<std::size_t>&              p     {f.permutation()};
+    const std::size_t                            m     {a.rows()};
+    const std::size_t                            n     {a.cols()};
+    std::vector<bool>                            seen(n, false);
+    bool                                         holds {p.size() == n && q.rows() == m && r.cols() == n && q.cols() == r.rows()};
+    for (const std::size_t origin : p) {
+      holds                         = holds && origin < n && !seen[origin];
+      seen[origin < n ? origin : 0] = true;
+    }
+    double size {1.0};
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        size = std::max(size, std::abs(a(i, j)));
+      }
+    }
+    for (std::size_t i {0}; holds && i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        T value {};
+        for (std::size_t t {0}; t < r.rows(); ++t) {
+          value += q(i, t) * r(t, j);
+        }
+        holds = holds && std::abs(value - a(i, p[j])) < 1e-13 * size * static_cast<double>(n + 1);
+      }
+    }
+    for (std::size_t i {0}; holds && i < q.cols(); ++i) {
+      for (std::size_t j {0}; j < q.cols(); ++j) {
+        T dot {};
+        for (std::size_t t {0}; t < m; ++t) {
+          dot += numerical::detail::conj_of(q(t, i)) * q(t, j);
+        }
+        holds = holds && std::abs(dot - (i == j ? T {1.0} : T {})) < 1e-13 * static_cast<double>(m);
+      }
+    }
+    for (std::size_t i {0}; holds && i < r.rows(); ++i) {
+      for (std::size_t j {0}; j < std::min(i, n); ++j) {
+        holds = holds && r(i, j) == T {};
+      }
+      if (i < std::min(m, n)) {
+        holds = holds && std::imag(r(i, i)) == 0.0 && std::real(r(i, i)) >= 0.0;
+        holds = holds && (i == 0 || std::abs(r(i, i)) <= std::abs(r(i - 1, i - 1)) * (1.0 + 1e-12));
+      }
+    }
+    return holds;
+  }
+} // namespace
+
+// QR with column pivoting, as scipy.linalg.qr(a, pivoting=True): square, tall and wide, real and complex, reduced and
+// complete; a rank-deficient matrix's rank on R's diagonal (its norms downdated until the downdate has lost too much,
+// then recomputed); a zero matrix; SciPy's permutation on a small example.
+TEST(pivoted_qr_reveals_the_rank)
+{
+  using numerical::qr_mode;
+  for (const auto& [m, n] : {std::pair<std::size_t, std::size_t> {1, 1}, {6, 6}, {9, 4}, {4, 9}, {40, 30}}) {
+    std::uint64_t       state {(m * 13) + n};
+    std::vector<double> real(m * n);
+    std::vector<C>      complex(m * n);
+    for (std::size_t e {0}; e < m * n; ++e) {
+      real[e]    = drawn(state);
+      complex[e] = drawn_scalar<C>(state);
+    }
+    for (const qr_mode mode : {qr_mode::reduced, qr_mode::complete}) {
+      EXPECT(pivoted_qr_holds(matrix<double> {m, n, real}, mode));
+      EXPECT(pivoted_qr_holds(matrix<C> {m, n, complex}, mode));
+    }
+  }
+  std::vector<double> low(20 * 12); // rank 3: three columns' combinations
+  std::uint64_t       state {5};
+  std::vector<double> basis(20 * 3);
+  for (double& value : basis) {
+    value = drawn(state);
+  }
+  for (std::size_t i {0}; i < 20; ++i) {
+    for (std::size_t j {0}; j < 12; ++j) {
+      low[(i * 12) + j] = basis[(i * 3) + (j % 3)] * static_cast<double>(j + 1) + (j % 4 == 3 ? basis[(i * 3) + 1] : 0.0);
+    }
+  }
+  const matrix<double>                              deficient {20, 12, low};
+  const numerical::pivoted_qr_decomposition<double> f         {deficient};
+  EXPECT(pivoted_qr_holds(deficient, qr_mode::reduced));
+  EXPECT(f.r()(2, 2) > 1e-8 && f.r()(3, 3) < 1e-12 * f.r()(0, 0));
+         EXPECT(pivoted_qr_holds(matrix<double> {3, 2, std::vector<double>(6, 0.0)}, qr_mode::complete));
+  const numerical::pivoted_qr_decomposition<double> example {matrix<double> {{1, 2, 3}, {4, 5, 6}, {7, 8, 10}, {1, 0, 1}}};
+  EXPECT((example.permutation() == std::vector<std::size_t> {2, 0, 1}));
+  EXPECT(std::abs(example.r()(0, 0) - 12.08304597) < 1e-8);
+         EXPECT_THROWS((numerical::pivoted_qr_decomposition<double> {matrix<double> {{std::numeric_limits<double>::quiet_NaN()}}}), numerical::non_finite_error);
+}

@@ -45,6 +45,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&solve_circulant>("solve_circulant", "solve_circulant(c, b, least_squares, tol) -> Tensor\nThe solution of a circulant system by the FFT, as scipy.linalg.solve_circulant.");
     m.def<&structured>("_structured", "_structured(c, r, kind) -> Tensor\nToeplitz (0), Hankel (1) or circulant (2) matrix of vectors of one dtype, as scipy.linalg's.");
     m.raw("_block_diag", module_block_diag, METH_VARARGS, "_block_diag(blocks) -> Tensor\nThe block diagonal matrix of matrices of one dtype, as scipy.linalg.block_diag.");
+    m.def<&qr_pivoted>("qr_pivoted", "qr_pivoted(a, complete) -> (Q, R, P)\nQR with column pivoting, A[:, P] = Q R, as scipy.linalg.qr(a, pivoting=True).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
     m.def<&solve_sylvester>("solve_sylvester", "solve_sylvester(a, b, q) -> Tensor\nX of A X + X B = Q, as scipy.linalg.solve_sylvester (Bartels-Stewart).");
     m.def<&sqrtm>("sqrtm", "sqrtm(a) -> Tensor\nThe principal matrix square root, as scipy.linalg.sqrtm (a stack's matrices each).");

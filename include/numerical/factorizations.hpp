@@ -3295,6 +3295,190 @@ namespace numerical {
     return qr_decomposition<T> {a};
   }
 
+  namespace detail {
+
+    //! \brief The 2-norm of the entries of column \p j of the row-major \p a (row stride \p n) from row \p r0 to row
+    //!        \p m, scaled by the largest so no square overflows or underflows.
+    template <typename T>
+    [[nodiscard]] double column_norm(const buffer<T>& a,
+                                     std::size_t      n,
+                                     std::size_t      j,
+                                     std::size_t      r0,
+                                     std::size_t      m)
+    {
+      double largest {0.0};
+      for (std::size_t i {r0}; i < m; ++i) {
+        largest = std::max(largest, std::abs(a[(i * n) + j]));
+      }
+      if (largest == 0.0) {
+        return 0.0;
+      }
+      double sum {0.0};
+      for (std::size_t i {r0}; i < m; ++i) {
+        const double scaled {std::abs(a[(i * n) + j]) / largest};
+        sum += scaled * scaled;
+      }
+      return largest * std::sqrt(sum);
+    }
+  } // namespace detail
+
+  /*!
+   * \brief A QR factorisation with column pivoting `A P = Q R` of an `m × n` matrix, as `scipy.linalg.qr(a,
+   *        pivoting=True)` (LAPACK's `geqp3`): at each step the column of largest remaining norm moved first, so `R`'s
+   *        diagonal does not grow in modulus down the diagonal and reveals `A`'s numerical rank; the norms downdated
+   *        as LAPACK's `laqp2` downdates them, recomputed where the downdate has lost too much (`√ε`). Householder
+   *        reflectors as `larfg` forms them; `R`'s diagonal then made real and non-negative, as \ref qr_decomposition's
+   *        (`Q`'s columns taking the phases), where LAPACK's may be negative.
+   */
+  template <typename T>
+  class pivoted_qr_decomposition
+  {
+  public:
+
+    /*!
+     * \brief Factorises \p a: `Q` `m × k` and `R` `k × n` (`k = min(m, n)`), or `Q` `m × m` and `R` `m × n`
+     *        (\p mode complete).
+     * \throws non_finite_error If an entry is infinite or NaN.
+     */
+    explicit pivoted_qr_decomposition(const matrix<T>& a,
+                                      qr_mode          mode = qr_mode::reduced)
+    {
+      const std::size_t m {a.rows()};
+      const std::size_t n {a.cols()};
+      const std::size_t k {std::min(m, n)};
+      detail::require_finite(a, "pivoted QR");
+      buffer<T>      w(a.begin(), a.end());
+      buffer<double> current(n);
+      buffer<double> reference(n);
+      permutation_.resize(n);
+      for (std::size_t j {0}; j < n; ++j) {
+        permutation_[j] = j;
+        current[j]      = detail::column_norm(w, n, j, 0, m);
+        reference[j]    = current[j];
+      }
+      const double             tolerance {std::sqrt(std::numeric_limits<double>::epsilon())};
+      std::vector<buffer<T>>   reflectors(k);
+      std::vector<T>           taus(k);
+      for (std::size_t step {0}; step < k; ++step) {
+        const std::size_t pivot {static_cast<std::size_t>(std::max_element(current.begin() + static_cast<std::ptrdiff_t>(step), current.end()) - current.begin())};
+        if (pivot != step) {
+          for (std::size_t i {0}; i < m; ++i) {
+            std::swap(w[(i * n) + step], w[(i * n) + pivot]);
+          }
+          std::swap(permutation_[step], permutation_[pivot]);
+          std::swap(current[step], current[pivot]);
+          std::swap(reference[step], reference[pivot]);
+        }
+        buffer<T> v(m - step);
+        for (std::size_t i {step}; i < m; ++i) {
+          v[i - step] = w[(i * n) + step];
+        }
+        // The identity where nothing lies below the diagonal and the diagonal is real (a zero column among them), as
+        // the QR's panel takes it: larfg would divide by a zero β.
+        const T    alpha    {v[0]};
+        const bool identity {detail::scaled_norm(v.data() + 1, v.size() - 1) == 0 && alpha == detail::from_carried<T>(detail::real_part(alpha))};
+        T          tau      {};
+        if (identity) {
+          std::fill(v.begin(), v.end(), T {});
+          v[0] = T {1};
+        }
+        else {
+          const auto [beta, factor] {detail::larfg_in_place(v)};
+          tau                  = factor;
+          w[(step * n) + step] = beta;
+          for (std::size_t i {step + 1}; i < m; ++i) {
+            w[(i * n) + step] = T {};
+          }
+        }
+        for (std::size_t j {step + 1}; j < n; ++j) { // Hᴴ = I − τ̄ v vᴴ on the columns right of the pivot
+          T dot {};
+          for (std::size_t i {step}; i < m; ++i) {
+            dot += detail::conj_of(v[i - step]) * w[(i * n) + j];
+          }
+          const T scale {detail::conj_of(tau) * dot};
+          for (std::size_t i {step}; i < m; ++i) {
+            w[(i * n) + j] -= v[i - step] * scale;
+          }
+          if (current[j] != 0.0) { // LAPACK's downdate of the norm by the entry the reflection took into row step
+            const double ratio {std::abs(w[(step * n) + j]) / current[j]};
+            const double left  {std::max(0.0, (1.0 + ratio) * (1.0 - ratio))};
+            const double drift {left * (current[j] / reference[j]) * (current[j] / reference[j])};
+            if (drift <= tolerance) {
+              current[j]   = detail::column_norm(w, n, j, step + 1, m);
+              reference[j] = current[j];
+            }
+            else {
+              current[j] *= std::sqrt(left);
+            }
+          }
+        }
+        reflectors[step] = std::move(v);
+        taus[step]       = tau;
+      }
+      const std::size_t rows          {mode == qr_mode::complete ? m : k};
+      buffer<T>         r(rows * n, T {});
+      std::copy_n(w.begin(), rows * n, r.begin());
+      buffer<T> q(m * rows, T         {});
+      for (std::size_t i {0}; i < rows; ++i) {
+        q[(i * rows) + i] = T {1};
+      }
+      for (std::size_t back {k}; back > 0; --back) { // Q = H₀ H₁ … applied to the identity's columns, the last first
+        const std::size_t step {back - 1};
+        const buffer<T>&  v    {reflectors[step]};
+        for (std::size_t c {0}; c < rows; ++c) {
+          T dot {};
+          for (std::size_t i {step}; i < m; ++i) {
+            dot += detail::conj_of(v[i - step]) * q[(i * rows) + c];
+          }
+          const T scale {taus[step] * dot};
+          for (std::size_t i {step}; i < m; ++i) {
+            q[(i * rows) + c] -= v[i - step] * scale;
+          }
+        }
+      }
+      for (std::size_t i {0}; i < k; ++i) { // R's diagonal real and non-negative, Q's column i taking the phase
+        const double modulus {std::abs(r[(i * n) + i])};
+        if (modulus == 0.0) {
+          continue;
+        }
+        const T phase {r[(i * n) + i] / T {modulus}};
+        for (std::size_t j {i}; j < n; ++j) {
+          r[(i * n) + j] *= detail::conj_of(phase);
+        }
+        r[(i * n) + i] = T {modulus};
+        for (std::size_t row {0}; row < m; ++row) {
+          q[(row * rows) + i] *= phase;
+        }
+      }
+      q_ = matrix<T> {m, rows, std::move(q)};
+      r_ = matrix<T> {rows, n, std::move(r)};
+    }
+
+    //! \brief `Q`, orthonormal columns: `m × k`, or `m × m` complete.
+    [[nodiscard]] const matrix<T>& q() const noexcept
+    {
+      return q_;
+    }
+
+    //! \brief `R`, upper trapezoidal, its diagonal real, non-negative and not increasing: `k × n`, or `m × n`.
+    [[nodiscard]] const matrix<T>& r() const noexcept
+    {
+      return r_;
+    }
+
+    //! \brief The column permutation: column `j` of `A P` is column `permutation()[j]` of `A`, as SciPy's `P`.
+    [[nodiscard]] const std::vector<std::size_t>& permutation() const noexcept
+    {
+      return permutation_;
+    }
+
+  private:
+
+    matrix<T>                q_;           //!< Q.
+    matrix<T>                r_;           //!< R.
+    std::vector<std::size_t> permutation_; //!< P, by its columns' origins.
+  };
+
   /*!
    * \brief The factor `R` of the QR decomposition of an `m × n` matrix, `k × n`, `k = min(m, n)`: \ref qr_decomposition's
    *        `R` to the bit, `Q` never formed.

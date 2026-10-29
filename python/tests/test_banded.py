@@ -158,5 +158,32 @@ class Constructors(unittest.TestCase):
                 bad()
 
 
+@unittest.skipIf(np is None, "NumPy is not installed")
+class PivotedQR(unittest.TestCase):
+    def test_against_scipy(self):
+        # SciPy's permutation and R up to the signs of its rows (ours real and non-negative on the diagonal); every mode
+        rng = np.random.default_rng(9)
+        for shape in ((5, 5), (8, 3), (3, 8), (1, 1)):
+            for complex_entries in (False, True):
+                a = rng.standard_normal(shape) + (1j * rng.standard_normal(shape) if complex_entries else 0)
+                k = min(shape)
+                q, r, p = numerical.qr(a, pivoting=True)
+                q, r = np.asarray(q), np.asarray(r)
+                self.assertEqual((q.shape, r.shape), ((shape[0], k), (k, shape[1])))
+                np.testing.assert_allclose(q @ r, a[:, list(p)], atol=1e-13)
+                np.testing.assert_allclose(q.conj().T @ q, np.eye(k), atol=1e-13)
+                self.assertTrue(np.all(np.diag(r).real >= 0) and np.all(np.diag(r).imag == 0))
+                if sl is not None:
+                    _, r_s, p_s = sl.qr(a, pivoting=True, mode="economic")
+                    self.assertEqual(list(p), list(p_s))
+                    np.testing.assert_allclose(np.abs(r), np.abs(r_s), atol=1e-12)
+                q_full, r_full, p_full = numerical.qr(a, "complete", pivoting=True)
+                self.assertEqual((np.asarray(q_full).shape, np.asarray(r_full).shape), ((shape[0], shape[0]), shape))
+                r_only, p_only = numerical.qr(a, "r", pivoting=True)
+                np.testing.assert_allclose(np.asarray(r_only), r, atol=1e-14)
+                self.assertEqual(p_only, p)
+        self.assertEqual(numerical.qr(np.eye(2, dtype=np.float32), pivoting=True)[1].dtype, "float32")
+
+
 if __name__ == "__main__":
     unittest.main()

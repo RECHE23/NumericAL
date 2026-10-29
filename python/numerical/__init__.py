@@ -557,6 +557,7 @@ inv = inverse
 
 
 _expm = _linalg(_numerical.expm, arrays=1)
+_qr_pivoted = _linalg(_numerical.qr_pivoted, arrays=1)
 _solve_banded = _linalg(_numerical.solve_banded, arrays=2)
 _solveh_banded = _linalg(_numerical.solveh_banded, arrays=2)
 _solve_toeplitz = _linalg(_numerical.solve_toeplitz, arrays=3)
@@ -1163,12 +1164,21 @@ def svd(a, full_matrices=True, compute_uv=True, hermitian=False, *, method="divi
     return _svd(a, method, bool(full_matrices))
 
 
-def qr(a, mode="reduced"):
+def qr(a, mode="reduced", *, pivoting=False):
     """``(Q, R)`` with ``a = Q @ R``, as ``numpy.linalg.qr``: for an m×n `a` and k = min(m, n), `Q` is m×k with
     orthonormal columns and `R` k×n upper trapezoidal (``mode="reduced"``, the default); `Q` m×m and `R` m×n
-    (``"complete"``); `R` alone, k×n (``"r"``). `R`'s diagonal is real and non-negative."""
+    (``"complete"``); `R` alone, k×n (``"r"``). `R`'s diagonal is real and non-negative.
+
+    With ``pivoting=True``, as ``scipy.linalg.qr(a, pivoting=True)`` (LAPACK's ``geqp3``): ``a[:, P] = Q @ R`` with the
+    column of largest remaining norm taken at each step, so that `R`'s diagonal does not grow down it and reveals the
+    numerical rank; ``(Q, R, P)``, or ``(R, P)`` for ``"r"``, `P` a tuple of the columns' origins (SciPy's an integer
+    array; its modes ``"economic"`` and ``"full"`` are ``"reduced"`` and ``"complete"`` here). `R`'s diagonal is real
+    and non-negative here too, where LAPACK's may be negative."""
     if mode not in _QR_MODES:
         raise ValueError(f"qr: mode {mode!r} is none of {_QR_MODES} (the LAPACK reflectors of \"raw\" are not offered)")
+    if pivoting:
+        q, r, p = _qr_pivoted(a, mode == "complete")
+        return (r, tuple(p)) if mode == "r" else (q, r, tuple(p))
     if mode == "r":
         return _qr_r(a)
     return _qr(a, mode)

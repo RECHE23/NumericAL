@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`qr(a, mode, pivoting=True)`, as `scipy.linalg.qr`'s**: the QR factorisation with column pivoting (LAPACK's
+  `geqp3`), `a[:, P] = Q @ R`, the column of largest remaining norm first so that `R`'s diagonal reveals the numerical
+  rank, the norms downdated as LAPACK's; `(Q, R, P)` or `(R, P)`, `P` a tuple, SciPy's permutation, `R`'s diagonal
+  real and non-negative as `qr`'s. In C++, `numerical::pivoted_qr_decomposition`.
 - **`toeplitz`, `hankel`, `circulant` and `block_diag`, as `scipy.linalg`'s**: the structured matrices, of vectors (or
   matrices) promoted to one dtype as NumPy does, integers as `float64`; SciPy's batches of them are not taken. In
   C++, `numerical::toeplitz`, `hankel`, `circulant` and `block_diag` (`banded.hpp`).

@@ -417,6 +417,31 @@ PyObject* module_block_diag(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// qr_pivoted(a, complete) -> (Q, R, P), as scipy.linalg.qr(a, pivoting=True): P the columns' origins.
+std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> qr_pivoted(const any_tensor& a, bool complete)
+{
+    if (shape_of(a).size() != 2) {
+        throw std::runtime_error("qr with pivoting expects a matrix");
+    }
+    if (is_single(a)) {
+        auto [q, r, p] {qr_pivoted(widened(a), complete)};
+        return {narrowed(q), narrowed(r), std::move(p)};
+    }
+    const numerical::qr_mode     mode {complete ? numerical::qr_mode::complete : numerical::qr_mode::reduced};
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 8)};
+    return std::visit([&](const auto& t) -> std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> {
+                          using tensor_type = std::decay_t<decltype(t)>;
+                          using T           = element_of_t<tensor_type>;
+                          if constexpr (std::is_same_v<T, double> || std::is_same_v<T, std::complex<double>>) {
+                              const numerical::pivoted_qr_decomposition<T> f {matrix_from(t), mode};
+                              return {any_tensor {tensor_type {f.q()}}, any_tensor {tensor_type {f.r()}}, f.permutation()};
+                          }
+                          else {
+                              throw std::runtime_error("qr with pivoting: single precision is widened first");
+                          }
+                      }, a);
+}
+
 // lstsq(a, b, rtol) -> (x, residuals, rank, s), as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one
 // right-hand side per column).
 lstsq_result lstsq(const any_tensor& a, const any_tensor& b, std::optional<double> rtol)

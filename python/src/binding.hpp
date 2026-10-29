@@ -1376,6 +1376,9 @@ any_tensor do_inverse(const numerical::tensor<T>& a)
 // inverse(a) -> Tensor (the matrix inverse).
 any_tensor inverse(const any_tensor& v); // in linalg.cpp
 
+// qr_pivoted(a, complete) -> (Q, R, P), as scipy.linalg.qr(a, pivoting=True).
+std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> qr_pivoted(const any_tensor& a, bool complete); // in linalg.cpp
+
 // structured(c, r, kind) -> Tensor: toeplitz (kind 0), hankel (1) or circulant (2), as scipy.linalg's.
 any_tensor structured(const any_tensor& c, const any_tensor& r, int kind); // in linalg.cpp
 
