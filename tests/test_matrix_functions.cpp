@@ -448,3 +448,22 @@ TEST(expm_moduli_keep_to_the_range_of_their_squares)
   EXPECT((numerical::detail::entry_moduli(buffer<double> {-2.0, 3.0}) == buffer<double> {2.0, 3.0}));
   EXPECT(numerical::detail::one_norm(buffer<C> {C {3.0, 4.0}, C {}, C {0.0, 1.0}, C {1.0}}, 2) == 6.0);
 }
+
+// A real form's 2 × 2 blocks scaled before their eigenvalue (b·c past √DBL_MAX overflowed, the rotation NaN): logm and
+// the complex square root of matrices from 10⁻³⁰⁰ to 10³⁰⁰ with a pair of complex eigenvalues; log(s R) = ln s I + π/2 R
+// for the rotation R by a quarter turn. A triangular form whose square roots are not finite refused, not iterated for
+// ever.
+TEST(logm_and_sqrtm_hold_at_extreme_scales)
+{
+  for (const double s : {1e-300, 1e-200, 1e150, 1e160, 1e200, 1e300}) {
+    const matrix<double> rotation {{0.0, -s}, {s, 0.0}};
+    const double         half_pi  {std::numbers::pi / 2.0};
+    const matrix<C>      want     {{C {std::log(s)}, C {-half_pi}}, {C {half_pi}, C {std::log(s)}}};
+    EXPECT(relative_gap(numerical::logm(rotation).log, want) < 1e-14);
+    const matrix<double> pair     {{-s, 0.5 * s}, {-0.5 * s, -s}};
+    const matrix<C>      root     {numerical::complex_sqrtm(pair)};
+    EXPECT(relative_gap(root * root, numerical::detail::as_complex(pair)) < 1e-14);
+  }
+  const numerical::buffer<C> broken {C {4.0}, C {std::numeric_limits<double>::quiet_NaN()}, C {}, C {9.0}};
+  EXPECT_THROWS(static_cast<void>(numerical::detail::inverse_squaring(broken, 2)), numerical::convergence_error);
+}

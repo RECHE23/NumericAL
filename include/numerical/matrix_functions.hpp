@@ -924,15 +924,21 @@ namespace numerical {
         if (below == C {}) {
           continue;
         }
-        const C a         {tc[((m - 1) * n) + m - 1]};
-        const C b         {tc[((m - 1) * n) + m]};
-        const C d         {tc[(m * n) + m]};
+        // the block scaled by a power of two near its largest entry: b·c can neither overflow (an entry past √DBL_MAX)
+        // nor vanish, and the rotation, a ratio, is unchanged (a power of two rounds nothing)
+        const double largest {std::max({std::abs(tc[((m - 1) * n) + m - 1]), std::abs(tc[((m - 1) * n) + m]), std::abs(tc[(m * n) + m]),
+                                        std::abs(below)})};
+        const double scale   {std::ldexp(1.0, -std::ilogb(largest))};
+        const C      a       {tc[((m - 1) * n) + m - 1] * scale};
+        const C      b       {tc[((m - 1) * n) + m] * scale};
+        const C      d       {tc[(m * n) + m] * scale};
+        const C      c_s     {below * scale};
         // the first eigenvalue of the block less its last diagonal entry, as rsf2csf's mu[0]
-        const C      half {(a - d) / 2.0};
-        const C      mu   {half + complex_sqrt((half * half) + (b * below))};
-        const double r    {std::hypot(std::abs(mu), std::abs(below))};
-        const C      c    {mu / r};
-        const C      sn   {below / r};
+        const C      half    {(a - d) / 2.0};
+        const C      mu      {half + complex_sqrt((half * half) + (b * c_s))};
+        const double r       {std::hypot(std::abs(mu), std::abs(c_s))};
+        const C      c       {mu / r};
+        const C      sn      {c_s / r};
         for (std::size_t j {m - 1}; j < n; ++j) { // G = [c̄ s; −s c] on rows m − 1 and m
           const C upper {tc[((m - 1) * n) + j]};
           const C lower {tc[(m * n) + j]};
@@ -1335,6 +1341,9 @@ namespace numerical {
         }
         const double d4 {shifted_power_norm(t, n, 4)};
         const double a3 {std::max(d3, d4)};
+        if (!std::isfinite(a3)) { // NaN compares false with every bound: the roots would go on for ever
+          throw convergence_error("logm: the square roots of the triangular form are not finite");
+        }
         if (a3 <= log_pade_bound(7)) {
           std::size_t j1 {3};
           while (a3 > log_pade_bound(j1)) {
@@ -1468,7 +1477,8 @@ namespace numerical {
    * \tparam T `double` or `std::complex<double>`.
    * \throws dimension_error   If \p a is not square.
    * \throws non_finite_error  If an entry is infinite or NaN.
-   * \throws convergence_error If the Schur form's iterations did not converge.
+   * \throws convergence_error If the Schur form's iterations did not converge, or the square roots of its triangular form
+   *                           are not finite.
    */
   template <typename T>
   requires std::same_as<T, double> || std::same_as<T, std::complex<double>>

@@ -84,6 +84,27 @@ class Riccati(unittest.TestCase):
         z = numerical.solve_continuous_are([[-1.0]], [[1.0]], np.array([[3.0 + 0j]]), [[1.0]])
         self.assertEqual(z.dtype, "complex128")
 
+    def test_single_precision_hermitian_at_its_precision(self):
+        # complex64 q and r Hermitian to float32's rounding (a product B Bᴴ formed in it) accepted, as SciPy checks them
+        # at their own precision; one off by more refused
+        rng = np.random.default_rng(31)
+        for m, n in ((9, 8), (24, 5), (55, 1)):
+            b0 = (rng.standard_normal((m, m)) + 1j * rng.standard_normal((m, m))).astype(np.complex64)
+            q = (b0 @ b0.conj().T / m + np.eye(m)).astype(np.complex64)
+            r0 = (rng.standard_normal((n, n)) + 1j * rng.standard_normal((n, n))).astype(np.complex64)
+            r = (r0 @ r0.conj().T / n + np.eye(n)).astype(np.complex64)
+            a = (rng.standard_normal((m, m)) / np.sqrt(m) - 1.5 * np.eye(m)).astype(np.complex64)
+            b = rng.standard_normal((m, n)).astype(np.complex64)
+            x = numerical.solve_continuous_are(a, b, q, r)
+            self.assertEqual(x.dtype, "complex64")
+            y = numerical.solve_discrete_are((a + 1.5 * np.eye(m, dtype=np.complex64)) / 2, b, q, r)
+            self.assertEqual(y.dtype, "complex64")
+        skewed = np.eye(2, dtype=np.complex64)
+        skewed[0, 1] = 1e-3
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.solve_continuous_are(-np.eye(2, dtype=np.complex64), np.ones((2, 1), np.complex64), skewed,
+                                           np.eye(1, dtype=np.complex64))
+
     def test_balancing_scales_e(self):
         # SciPy 1.18 answers this one with residuals 3 (continuous) and 2 (discrete)
         a = np.array([[3.0, -3.0], [-1.0, -1.0]])

@@ -944,8 +944,25 @@ def solve_discrete_lyapunov(a, q, method=None):
 _MACHINE_EPSILON = {"float64": 2.220446049250313e-16, "float32": 1.1920928955078125e-07}  # complex's parts share them
 
 
+def _single_hermitian(x, name):
+    """A single-precision `q` or `r` checked Hermitian as SciPy checks it, at its own precision (``‖X − Xᴴ‖₁`` within
+    100 float32 spacings of ``‖X‖₁``), then made exactly so, ``(X + Xᴴ) / 2``: the double solver its widened values go
+    to checks at double's spacing, which float32 rounding passes."""
+    size = float(norm(x, 1))
+    spacing = 2.0 ** (_math.frexp(size)[1] - 24) if size > 0 else 2.0 ** -149
+    if float(norm(x - _adjoint(x), 1)) > 100 * spacing:
+        raise LinAlgError(f"Matrix {name} should be symmetric/hermitian.")
+    return (x + _adjoint(x)) / 2
+
+
 def _are(a, b, q, r, e, s, balanced, discrete):
-    """The native Riccati solver: `e` and `s` absent passed as `a` with their flags clear."""
+    """The native Riccati solver: `e` and `s` absent passed as `a` with their flags clear; single-precision `q` and `r`
+    checked Hermitian at their own precision."""
+    a, b, q, r = (x if isinstance(x, Tensor) else asarray(x) for x in (a, b, q, r))
+    given = [x if x is None or isinstance(x, Tensor) else asarray(x) for x in (e, s)]
+    if all(x.dtype in ("float32", "complex64") for x in [a, b, q, r] + [g for g in given if g is not None]):
+        q, r = _single_hermitian(q, "q"), _single_hermitian(r, "r")
+    e, s = given
     flags = (1 if discrete else 0) | (0 if e is None else 2) | (0 if s is None else 4) | (8 if balanced else 0)
     return _riccati(a, b, q, r, a if e is None else e, a if s is None else s, flags)
 

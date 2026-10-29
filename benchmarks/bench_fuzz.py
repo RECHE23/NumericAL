@@ -347,20 +347,22 @@ def build_scipy(case):
     elif op == "solve_discrete_lyapunov":
         operands = [(random(m, m) / (2 * math.sqrt(m))).astype(dtype), spd(m)]  # spectral radius about 1/2
         ours, theirs = nl.solve_discrete_lyapunov, sl.solve_discrete_lyapunov
-    elif op in ("solve_continuous_are", "solve_discrete_are"):
-        operands = [(random(m, m) / math.sqrt(m)).astype(dtype), random(m, n), spd(m), spd(n)]
+    elif op in ("solve_continuous_are", "solve_discrete_are"):  # A stable (Hurwitz, or of spectral radius about ½):
+        # stabilisable whatever B, so a stabilising solution exists
+        a = random(m, m) / math.sqrt(m) - 1.5 * np.eye(m) if op == "solve_continuous_are" else random(m, m) / (2 * math.sqrt(m))
+        operands = [a.astype(dtype), random(m, n), spd(m), spd(n)]
         ours, theirs = getattr(nl, op), getattr(sl, op)
     elif op == "solve_banded":
         half = n
         ab = random(2 * half + 1, m)
-        ab[half] += 2 * (2 * half + 1)  # diagonally dominant: no pivot near zero
+        ab[half] += 1 + 2 * np.abs(ab).max() * (2 * half)  # strictly diagonally dominant: nonsingular, no pivot near zero
         operands = [ab.astype(dtype), random(m)]
         ours = lambda a, b: nl.solve_banded((half, half), a, b)  # noqa: E731
         theirs = lambda a, b: sl.solve_banded((half, half), a, b)  # noqa: E731
     elif op == "solveh_banded":
         half = n
         ab = random(half + 1, m)
-        ab[half] = np.abs(ab[half].real) + 2 * (half + 1)  # a real, dominant diagonal: positive definite
+        ab[half] = 1 + 2 * half * np.abs(ab).max()  # a real diagonal past each row's off-diagonal moduli: positive definite
         operands = [ab.astype(dtype), random(m)]
         ours, theirs = nl.solveh_banded, sl.solveh_banded
     elif op == "solve_toeplitz":
