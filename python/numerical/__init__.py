@@ -40,7 +40,9 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "det", "slogdet", "inverse", "inv", "expm", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eig",
+    "determinant", "det", "slogdet", "inverse", "inv", "expm", "solve_sylvester",
+    "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov", "lstsq", "pinv", "matrix_rank",
+    "cholesky", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
@@ -553,6 +555,7 @@ inv = inverse
 
 
 _expm = _linalg(_numerical.expm, arrays=1)
+_solve_sylvester = _linalg(_numerical.solve_sylvester, arrays=3)
 
 
 def expm(A):
@@ -579,6 +582,66 @@ _eigvals = _linalg(_numerical._eigvals)
 _QR_MODES = ("reduced", "complete", "r")
 _EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
 _SVD_METHODS = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
+
+
+def solve_sylvester(a, b, q):
+    """The solution `X` of the Sylvester equation ``A X + X B = Q``, as ``scipy.linalg.solve_sylvester``: Bartels and
+    Stewart's method, the Schur forms of `a` and `b` and the triangular equation between them solved by blocks
+    (LAPACK's ``trsyl``); complex where an operand is. Where `a` and ``-b`` share an eigenvalue there is no unique
+    solution, and the answer grows as LAPACK's does.
+
+    Raises:
+        LinAlgError: if `a` or `b` is not square, `q` is not ``a.shape[0] × b.shape[0]``, or an entry is infinite or
+            NaN.
+    """
+    return _solve_sylvester(a, b, q)
+
+
+def _adjoint(a):
+    """`a`'s conjugate transpose (its transpose where real)."""
+    return conj(a.T) if a.dtype.startswith("complex") else a.T
+
+
+def solve_continuous_lyapunov(a, q):
+    """The solution `X` of ``A X + X Aᴴ = Q``, as ``scipy.linalg.solve_continuous_lyapunov``: the Sylvester equation
+    with ``b = a.conj().T`` (:func:`solve_sylvester`)."""
+    a = a if isinstance(a, Tensor) else asarray(a)
+    if a.ndim != 2:
+        raise LinAlgError("solve_continuous_lyapunov: a must be a square matrix")
+    return solve_sylvester(a, _adjoint(a), q)
+
+
+solve_lyapunov = solve_continuous_lyapunov
+
+
+def solve_discrete_lyapunov(a, q, method=None):
+    """The solution `X` of ``A X Aᴴ − X + Q = 0``, as ``scipy.linalg.solve_discrete_lyapunov``: ``method="direct"``
+    (by default below order 10, as SciPy's) solves the Kronecker system ``(I − A ⊗ conj(A)) vec(X) = vec(Q)``,
+    ``"bilinear"`` (from order 10) the continuous equation the bilinear transformation gives, ``Bᴴ X + X B = −C`` for
+    ``B = (Aᴴ − I)(Aᴴ + I)⁻¹`` and ``C = 2 (A + I)⁻¹ Q (Aᴴ + I)⁻¹``.
+
+    Raises:
+        LinAlgError: if `a` is not square or `q` not of its shape, an entry is infinite or NaN, or ``I − A ⊗ conj(A)``
+            (direct) or ``A + I`` (bilinear) is singular.
+        ValueError: for another `method`.
+    """
+    a = a if isinstance(a, Tensor) else asarray(a)
+    q = q if isinstance(q, Tensor) else asarray(q)
+    if a.ndim != 2 or a.shape[0] != a.shape[1] or q.shape != a.shape:
+        raise LinAlgError("solve_discrete_lyapunov: a must be square and q of its shape")
+    n = a.shape[0]
+    if method is None:
+        method = "direct" if n < 10 else "bilinear"
+    if method == "direct":
+        kron = einsum("ij,kl->ikjl", a, conj(a) if a.dtype.startswith("complex") else a).reshape((n * n, n * n))
+        return solve(eye(n * n, kron.dtype) - kron, q.reshape((n * n,))).reshape((n, n))
+    if method == "bilinear":
+        identity = eye(n, a.dtype)
+        a_h_inverse = inverse(_adjoint(a) + identity)
+        b = (_adjoint(a) - identity) @ a_h_inverse
+        c = 2 * ((inverse(a + identity) @ q) @ a_h_inverse)
+        return solve_continuous_lyapunov(_adjoint(b), -c)
+    raise ValueError(f"Unknown solver {method}")
 
 
 _MACHINE_EPSILON = {"float64": 2.220446049250313e-16, "float32": 1.1920928955078125e-07}  # complex's parts share them

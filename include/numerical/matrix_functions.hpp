@@ -1,6 +1,7 @@
 /*!
  * \file matrix_functions.hpp
- * \brief Functions of a square matrix: the exponential, by scaling and squaring of a Padé approximant.
+ * \brief Functions of a square matrix and the matrix equations solved through Schur forms: the exponential, by
+ *        scaling and squaring of a Padé approximant; the Sylvester equation `A X + X B = Q`, as Bartels and Stewart.
  */
 #ifndef NUMERICAL_MATRIX_FUNCTIONS_HPP
 #define NUMERICAL_MATRIX_FUNCTIONS_HPP
@@ -11,9 +12,10 @@
 #include <complex>
 #include <concepts>
 #include <cstddef>
+#include <limits>
 #include <utility>
 
-#include "decomposition.hpp"
+#include "eigen.hpp"
 
 namespace numerical {
 
@@ -287,6 +289,212 @@ namespace numerical {
       }
     }
     return finish(std::move(x));
+  }
+
+  namespace detail {
+
+    //! \brief `Mᴴ`: the transpose, conjugated.
+    template <typename T>
+    [[nodiscard]] matrix<T> adjoint_of(const matrix<T>& m)
+    {
+      buffer<T> out(m.rows() * m.cols());
+      for (std::size_t i {0}; i < m.rows(); ++i) {
+        for (std::size_t j {0}; j < m.cols(); ++j) {
+          out[(j * m.rows()) + i] = conj_of(m(i, j));
+        }
+      }
+      return matrix<T> {m.cols(), m.rows(), std::move(out)};
+    }
+
+    //! \brief The order of the diagonal block of the upper quasi-triangular \p t (`n × n`, row-major) that starts at
+    //!        \p k: 2 where the entry below its diagonal is nonzero (a real Schur form's pair).
+    [[nodiscard]] inline std::size_t schur_block(const buffer<double>& t,
+                                                 std::size_t           n,
+                                                 std::size_t           k)
+    {
+      return k + 1 < n && t[((k + 1) * n) + k] != 0.0 ? 2 : 1;
+    }
+
+    //! \brief The same for a complex Schur form, triangular: 1.
+    [[nodiscard]] inline std::size_t schur_block(const buffer<std::complex<double>>& /*t*/,
+                                                 std::size_t /*n*/,
+                                                 std::size_t /*k*/)
+    {
+      return 1;
+    }
+
+    /*!
+     * \brief The \p rows × \p cols `y` of `R y + y S = c` (each at most 2, row-major in \p c, overwritten) for the
+     *        diagonal blocks \p r (row stride \p ldr) and \p s (row stride \p lds): the Kronecker system of order
+     *        `rows · cols` by Gaussian elimination with complete pivoting, a pivot under \p smin taken as \p smin, as
+     *        LAPACK's `dlasy2` perturbs one (the eigenvalues of `R` and `−S` close).
+     */
+    template <typename T>
+    void small_sylvester_block(const T*    r,
+                               std::size_t ldr,
+                               const T*    s,
+                               std::size_t lds,
+                               std::size_t rows,
+                               std::size_t cols,
+                               T*          c,
+                               std::size_t ldc,
+                               double      smin)
+    {
+      const std::size_t               size  {rows * cols};
+      std::array<std::array<T, 4>, 4> k     {};
+      std::array<T, 4>                rhs   {};
+      std::array<std::size_t, 4>      order {0, 1, 2, 3}; // the unknown in each column after the column swaps
+      for (std::size_t i {0}; i < rows; ++i) {
+        for (std::size_t j {0}; j < cols; ++j) {
+          const std::size_t e {(i * cols) + j};
+          rhs[e] = c[(i * ldc) + j];
+          for (std::size_t p {0}; p < rows; ++p) {
+            k[e][(p * cols) + j] += r[(i * ldr) + p];
+          }
+          for (std::size_t q {0}; q < cols; ++q) {
+            k[e][(i * cols) + q] += s[(q * lds) + j];
+          }
+        }
+      }
+      for (std::size_t step {0}; step < size; ++step) {
+        std::size_t pivot_row {step};
+        std::size_t pivot_col {step};
+        double      largest   {-1.0};
+        for (std::size_t i {step}; i < size; ++i) {
+          for (std::size_t j {step}; j < size; ++j) {
+            if (std::abs(k[i][j]) > largest) {
+              largest   = std::abs(k[i][j]);
+              pivot_row = i;
+              pivot_col = j;
+            }
+          }
+        }
+        std::swap(k[step], k[pivot_row]);
+        std::swap(rhs[step], rhs[pivot_row]);
+        for (std::size_t i {0}; i < size; ++i) {
+          std::swap(k[i][step], k[i][pivot_col]);
+        }
+        std::swap(order[step], order[pivot_col]);
+        if (std::abs(k[step][step]) < smin) {
+          k[step][step] = T {smin};
+        }
+        for (std::size_t i {step + 1}; i < size; ++i) {
+          const T factor {k[i][step] / k[step][step]};
+          for (std::size_t j {step}; j < size; ++j) {
+            k[i][j] -= factor * k[step][j];
+          }
+          rhs[i] -= factor * rhs[step];
+        }
+      }
+      std::array<T, 4> y {};
+      for (std::size_t back {size}; back > 0; --back) {
+        const std::size_t i     {back - 1};
+        T                 value {rhs[i]};
+        for (std::size_t j {i + 1}; j < size; ++j) {
+          value -= k[i][j] * y[j];
+        }
+        y[i] = value / k[i][i];
+      }
+      for (std::size_t e {0}; e < size; ++e) {
+        const std::size_t unknown {order[e]};
+        c[((unknown / cols) * ldc) + (unknown % cols)] = y[e];
+      }
+    }
+
+    /*!
+     * \brief `Y` of `R Y + Y S = F` in place in \p f (`m × n`, row-major) for the upper quasi-triangular (real) or
+     *        triangular (complex) \p r (`m × m`) and \p s (`n × n`), as LAPACK's `trsyl` (no transposes, `+`): by
+     *        blocks of columns of `S` from the first, each first relieved of the columns solved before it through the
+     *        matrix product, then by blocks of rows of `R` from the last, each a system of at most four unknowns
+     *        (\ref small_sylvester_block), `R` and `−S` close in an eigenvalue perturbing its pivot as `trsyl` does.
+     */
+    template <typename T>
+    void triangular_sylvester(const buffer<T>& r,
+                              std::size_t      m,
+                              const buffer<T>& s,
+                              std::size_t      n,
+                              buffer<T>&       f)
+    {
+      double largest {0.0};
+      for (const T& entry : r) {
+        largest = std::max(largest, std::abs(entry));
+      }
+      for (const T& entry : s) {
+        largest = std::max(largest, std::abs(entry));
+      }
+      const double smin {std::max(std::numeric_limits<double>::epsilon() * largest, std::numeric_limits<double>::min())};
+      buffer<T>    minus_s;
+      buffer<T>    columns; // Y's columns of the block, each contiguous
+      for (std::size_t l {0}; l < n;) {
+        const std::size_t nl {schur_block(s, n, l)};
+        if (l > 0) { // F(:, l…) −= Y(:, 0…l) S(0…l, l…)
+          minus_s.resize(l * nl);
+          for (std::size_t q {0}; q < l; ++q) {
+            for (std::size_t j {0}; j < nl; ++j) {
+              minus_s[(q * nl) + j] = -s[(q * n) + l + j];
+            }
+          }
+          gemm(m, nl, l, f.data(), n, minus_s.data(), nl, f.data() + l, n);
+        }
+        columns.resize(nl * m);
+        for (std::size_t end {m}; end > 0;) {
+          const std::size_t kb {end >= 2 && schur_block(r, m, end - 2) == 2 ? std::size_t {2} : std::size_t {1}};
+          const std::size_t k0 {end - kb};
+          for (std::size_t i {k0}; i < end; ++i) { // F(k, l) −= R(k, end…m) Y(end…m, l)
+            for (std::size_t j {0}; j < nl; ++j) {
+              f[(i * n) + l + j] -= dot_product(r.data() + (i * m) + end, columns.data() + (j * m) + end, m - end);
+            }
+          }
+          small_sylvester_block(r.data() + (k0 * m) + k0, m, s.data() + (l * n) + l, n, kb, nl, f.data() + (k0 * n) + l, n, smin);
+          for (std::size_t i {k0}; i < end; ++i) {
+            for (std::size_t j {0}; j < nl; ++j) {
+              columns[(j * m) + i] = f[(i * n) + l + j];
+            }
+          }
+          end = k0;
+        }
+        l += nl;
+      }
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The solution `X` (`m × n`) of the Sylvester equation `A X + X B = Q`, as `scipy.linalg.solve_sylvester`:
+   *        by Bartels and Stewart's method, the Schur forms `A = U R Uᴴ` and `B = V S Vᴴ` (\ref schur_decomposition),
+   *        `R Y + Y S = Uᴴ Q V` solved by blocks (LAPACK's `trsyl`), then `X = U Y Vᴴ`. Real throughout for real
+   *        operands (`R` and `S` quasi-triangular), complex where any is. Where `A` and `−B` share an eigenvalue the
+   *        equation has no unique solution: a pivot below the rounding of the forms is perturbed, as LAPACK's, and the
+   *        answer grows accordingly.
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws dimension_error   If \p a or \p b is not square or \p q is not `m × n`.
+   * \throws non_finite_error  If an entry is infinite or NaN.
+   * \throws convergence_error If a Schur form's iterations did not converge.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] matrix<T> solve_sylvester(const matrix<T>& a,
+                                          const matrix<T>& b,
+                                          const matrix<T>& q)
+  {
+    const std::size_t m {a.rows()};
+    const std::size_t n {b.rows()};
+    if (a.cols() != m || b.cols() != n || q.rows() != m || q.cols() != n) {
+      throw dimension_error("solve_sylvester requires a square a (m × m), a square b (n × n) and q (m × n)");
+    }
+    detail::require_finite(a, "solve_sylvester");
+    detail::require_finite(b, "solve_sylvester");
+    detail::require_finite(q, "solve_sylvester");
+    if (m == 0 || n == 0) {
+      return matrix<T> {m, n, buffer<T>(m * n, T {})};
+    }
+    const schur_decomposition<T> left  {a};
+    const schur_decomposition<T> right {b};
+    const matrix<T>&             u     {left.z()};
+    const matrix<T>&             v     {right.z()};
+    matrix<T>                    f     {detail::adjoint_of(u) * q * v};
+    buffer<T>                    y     {std::move(f).elements()};
+    detail::triangular_sylvester(buffer<T>(left.t().begin(), left.t().end()), m, buffer<T>(right.t().begin(), right.t().end()), n, y);
+    return u * matrix<T> {m, n, std::move(y)} *detail::adjoint_of(v);
   }
 } // namespace numerical
 

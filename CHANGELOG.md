@@ -9,6 +9,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`solve_sylvester`, `solve_continuous_lyapunov` (and `solve_lyapunov`) and `solve_discrete_lyapunov`, as
+  `scipy.linalg`'s**: `A X + X B = Q` by Bartels and Stewart's method, the Schur forms of `A` and `B` and the
+  triangular equation between them solved by blocks as LAPACK's `trsyl` (a pivot perturbed where `A` and `−B` share
+  an eigenvalue, as LAPACK's); `A X + X Aᴴ = Q` through it; `A X Aᴴ − X + Q = 0` directly by its Kronecker system
+  below order 10 and through the bilinear transformation from it, as SciPy's. Real throughout for real operands,
+  complex where one is; single precision computed in double. SciPy's `solve_sylvester` of a complex `a` and a real
+  `b` answers off by the size of the solution (it pairs `b`'s quasi-triangular form with the complex solver); ours
+  solves it. In C++, `numerical::solve_sylvester`.
 - **`expm`, as `scipy.linalg.expm`**: the matrix exponential of a square matrix or of each of a stack's, by scaling
   and squaring of a Padé approximant of degree 3 to 13 as Al-Mohy and Higham's algorithm (2009), SciPy's: the degree
   and the squarings from the exact norms of `A²` to `A¹⁰` and the approximant's backward error bound (squarings added

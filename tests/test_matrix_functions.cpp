@@ -133,3 +133,78 @@ TEST(expm_refuses_what_it_cannot_take)
   EXPECT_THROWS(static_cast<void>(numerical::expm(matrix<double> {{std::numeric_limits<double>::quiet_NaN()}})), numerical::non_finite_error);
   EXPECT_THROWS(static_cast<void>(numerical::expm(matrix<C> {{C {std::numeric_limits<double>::infinity()}}})), numerical::non_finite_error);
 }
+
+namespace {
+
+  //! \brief `‖A X + X B − Q‖ / (‖A‖ ‖X‖ + ‖X‖ ‖B‖ + ‖Q‖)` (largest moduli) for \p x = solve_sylvester(a, b, q).
+  template <typename T>
+  double sylvester_residual(const matrix<T>& a,
+                            const matrix<T>& b,
+                            const matrix<T>& q,
+                            const matrix<T>& x)
+  {
+    const matrix<T> r {(a * x) + (x * b)};
+    const auto      largest = [](const matrix<T>& m) {
+                                double value {0.0};
+                                for (std::size_t i {0}; i < m.rows(); ++i) {
+                                  for (std::size_t j {0}; j < m.cols(); ++j) {
+                                    value = std::max(value, std::abs(m(i, j)));
+                                  }
+                                }
+                                return value;
+                              };
+    return largest(r - q) / ((largest(a) * largest(x)) + (largest(x) * largest(b)) + largest(q));
+  }
+
+  //! \brief An `rows × cols` matrix of `sin` and `cos` of its entries' index, offset by \p seed.
+  template <typename T>
+  matrix<T> trigonometric(std::size_t rows,
+                          std::size_t cols,
+                          double      seed)
+  {
+    std::vector<T> entries(rows * cols);
+    for (std::size_t e {0}; e < entries.size(); ++e) {
+      const double angle {seed + (0.7 * static_cast<double>(e))};
+      if constexpr (std::is_same_v<T, double>) {
+        entries[e] = std::sin(angle);
+      }
+      else {
+        entries[e] = T {std::sin(angle), std::cos(1.3 * angle)};
+      }
+    }
+    return matrix<T> {rows, cols, entries};
+  }
+} // namespace
+
+// A X + X B = Q, as scipy.linalg.solve_sylvester: real matrices (their Schur forms with 2 × 2 blocks, R's and S's) and
+// complex ones, square and not, to rounding; a scalar equation; A and −B sharing an eigenvalue, a pivot perturbed as
+// LAPACK's trsyl and the answer large but finite; empty operands; the refusals.
+TEST(solve_sylvester_solves_the_equation)
+{
+  for (const auto& [m, n] : {std::pair<std::size_t, std::size_t> {1, 1}, {2, 3}, {7, 5}, {30, 40}}) {
+    const matrix<double> a {trigonometric<double>(m, m, 1.0)};
+    const matrix<double> b {trigonometric<double>(n, n, 2.0)};
+    const matrix<double> q {trigonometric<double>(m, n, 3.0)};
+    EXPECT(sylvester_residual(a, b, q, numerical::solve_sylvester(a, b, q)) < 1e-14);
+    const matrix<C> ac     {trigonometric<C>(m, m, 1.0)};
+    const matrix<C> bc     {trigonometric<C>(n, n, 2.0)};
+    const matrix<C> qc     {trigonometric<C>(m, n, 3.0)};
+    EXPECT(sylvester_residual(ac, bc, qc, numerical::solve_sylvester(ac, bc, qc)) < 1e-14);
+  }
+  EXPECT((numerical::solve_sylvester(matrix<double> {{2.0}}, matrix<double> {{3.0}}, matrix<double> {{10.0}}) == matrix<double> {{2.0}}));
+  const matrix<double> shared {numerical::solve_sylvester(matrix<double> {{1.0}}, matrix<double> {{-1.0}}, matrix<double> {{1.0}})};
+  EXPECT(std::isfinite(shared(0, 0)) && std::abs(shared(0, 0)) > 1e12);
+  EXPECT(numerical::solve_sylvester(matrix<double> {0, 0, std::vector<double> {}}, matrix<double> {{1.0}}, matrix<double> {0, 1, std::vector<double> {}}).rows() == 0);
+  EXPECT(numerical::solve_sylvester(matrix<double> {{1.0}}, matrix<double> {0, 0, std::vector<double> {}}, matrix<double> {1, 0, std::vector<double> {}}).cols() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_sylvester(matrix<double> {{1.0, 2.0}}, matrix<double> {{1.0}}, matrix<double> {{1.0}})),
+                numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_sylvester(matrix<double> {{1.0}}, matrix<double> {{1.0}}, matrix<double> {{1.0, 2.0}})),
+                numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_sylvester(matrix<double> {{1.0}}, matrix<double> {{1.0, 2.0}}, matrix<double> {{1.0}})),
+                numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_sylvester(matrix<double> {{1.0}}, matrix<double> {{1.0}}, matrix<double> {{1.0}, {2.0}})),
+                numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_sylvester(matrix<double> {{1.0}}, matrix<double> {{std::numeric_limits<double>::quiet_NaN()}},
+                                                             matrix<double> {{1.0}})),
+                numerical::non_finite_error);
+}

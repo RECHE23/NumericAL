@@ -195,6 +195,28 @@ any_tensor expm(const any_tensor& v)
     return any_tensor {real_tensor {numerical::expm(matrix_from(std::get<real_tensor>(v)))}};
 }
 
+// solve_sylvester(a, b, q) -> Tensor, as scipy.linalg.solve_sylvester: X of A X + X B = Q, one dtype (the caller
+// promotes), single precision computed in double.
+any_tensor solve_sylvester(const any_tensor& a, const any_tensor& b, const any_tensor& q)
+{
+    if (shape_of(a).size() != 2 || shape_of(b).size() != 2 || shape_of(q).size() != 2) {
+        throw std::runtime_error("solve_sylvester expects matrices");
+    }
+    if (a.index() != b.index() || a.index() != q.index()) {
+        throw std::runtime_error("solve_sylvester operands must share one dtype");
+    }
+    if (is_single(a)) {
+        return narrowed(solve_sylvester(widened(a), widened(b), widened(q)));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 8)};
+    if (is_complex(a)) {
+        return any_tensor {cplx_tensor {numerical::solve_sylvester(matrix_from(std::get<cplx_tensor>(a)), matrix_from(std::get<cplx_tensor>(b)),
+                                                                   matrix_from(std::get<cplx_tensor>(q)))}};
+    }
+    return any_tensor {real_tensor {numerical::solve_sylvester(matrix_from(std::get<real_tensor>(a)), matrix_from(std::get<real_tensor>(b)),
+                                                               matrix_from(std::get<real_tensor>(q)))}};
+}
+
 // lstsq(a, b, rtol) -> (x, residuals, rank, s), as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one
 // right-hand side per column).
 lstsq_result lstsq(const any_tensor& a, const any_tensor& b, std::optional<double> rtol)
