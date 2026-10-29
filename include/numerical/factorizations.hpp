@@ -2295,24 +2295,26 @@ namespace numerical {
     };
 
     /*!
-     * \brief Applies `I − 2 v vᴴ` from the left to the rows `first…first+|v|-1` of a row-major array, on its
-     *        columns `from…cols-1`.
+     * \brief Applies `I − s v vᴴ` from the left (\p s 2 for a unit `v`) to the rows `first…first+|v|-1` of a
+     *        row-major array, on its columns `from…cols-1`.
      *
      * Row by row: the projection `w = vᴴ A` accumulates one contiguous row at a time, then each row takes
-     * `−2 vᵢ w`. A column-by-column walk strides by `cols` on every access and runs several times slower. The
+     * `−s vᵢ w`. A column-by-column walk strides by `cols` on every access and runs several times slower. The
      * columns are independent, so chunks of them run in parallel, each element's arithmetic in the same order.
      * \param[in,out] a     The array, `cols` entries per row.
      * \param[in]     cols  Its row length.
-     * \param[in]     v     The unit reflector.
+     * \param[in]     v     The reflector (unit where \p s is 2).
      * \param[in]     first The first row it acts on.
      * \param[in]     from  The first column it acts on.
+     * \param[in]     s     The reflector's factor.
      */
     template <typename T>
     void reflect_rows(buffer<T>&            a,
                       std::size_t           cols,
                       const buffer<T>&      v,
                       std::size_t           first,
-                      std::size_t           from)
+                      std::size_t           from,
+                      const T&              s = T {2})
     {
       constexpr std::size_t width {64};
       const std::size_t     span  {cols - from};
@@ -2326,7 +2328,7 @@ namespace numerical {
                        add_product(w.data(), weight, row, count);
                      }
                      for (std::size_t i {0}; i < v.size(); ++i) {
-                       const T scale {static_cast<T>(2) * v[i]};
+                       const T scale {s * v[i]};
                        T*      row   {a.data() + ((first + i) * cols) + start};
                        subtract_product(row, scale, w.data(), count);
                      }
@@ -2493,6 +2495,28 @@ namespace numerical {
     }
 
     /*!
+     * \brief The reflector LAPACK's `dlarfg` (`zlarfg`) forms of \p w, in place: `H = I − τ w wᴴ` with `w₀ = 1` and
+     *        `Hᴴ x = β e₁`, `β` real, of the sign opposite to `Re x₀`. Exact inputs stay exact where LAPACK's do (`e₂`
+     *        reflected onto `e₁`: `w = (1, 1)`, `τ = 1`, where a unit `v` holds `1/√2`, rounded). For an `x` with
+     *        something below `x₀`, or `x₀` complex (the identity otherwise, which the caller keeps).
+     * \return `β` (as `T`, its imaginary part 0) and `τ`.
+     */
+    template <typename T>
+    [[nodiscard]] std::pair<T, T> larfg_in_place(buffer<T>& w)
+    {
+      const carried_t<T> factor {rescale_tiny(w)}; // w, τ and the signs the same at any scale; β scaled back
+      const T            alpha  {w[0]};
+      const carried_t<T> beta   {-std::copysign(scaled_norm(w), detail::real_part(alpha))};
+      const T            tau    {(detail::from_carried<T>(beta) - alpha) / detail::from_carried<T>(beta)};
+      const T            scale  {T {1} / (alpha - detail::from_carried<T>(beta))}; // |α − β| ≥ ‖x‖: no cancellation
+      w[0] = T {1};
+      for (std::size_t r {1}; r < w.size(); ++r) {
+        w[r] *= scale;
+      }
+      return {detail::from_carried<T>(beta / factor), tau};
+    }
+
+    /*!
      * \brief Applies `I − s v vᴴ` from the left (\p s 2 for a unit `v`) to the columns `from…to-1` of the
      *        column-major \p panel (\p height rows per column), on its rows `first…first+|v|-1`: each column a dot
      *        product with `v`, then `v` scaled out of it, both along the column at unit stride.
@@ -2542,21 +2566,13 @@ namespace numerical {
         const std::size_t  c      {k - k0};
         T* const           x      {panel + (c * ld) + (k - top)};
         buffer<T>          w(x, x + (ld + top - k));
-        const carried_t<T> factor {rescale_tiny(w)}; // w, τ and the signs the same at any scale; β scaled back
         const T            alpha  {w[0]};
-        const carried_t<T> below  {scaled_norm(w.data() + 1, w.size() - 1)};
-        if (below == 0 && alpha == detail::from_carried<T>(detail::real_part(alpha))) {
+        if (scaled_norm(w.data() + 1, w.size() - 1) == 0 && alpha == detail::from_carried<T>(detail::real_part(alpha))) {
           continue; // the identity: nothing below the diagonal, and the diagonal real
         }
-        const carried_t<T> beta  {-std::copysign(scaled_norm(w), detail::real_part(alpha))};
-        const T            tau   {(detail::from_carried<T>(beta) - alpha) / detail::from_carried<T>(beta)};
-        const T            scale {T {1} / (alpha - detail::from_carried<T>(beta))}; // |α − β| ≥ ‖x‖: no cancellation
-        w[0] = T {1};
-        for (std::size_t r {1}; r < w.size(); ++r) {
-          w[r] *= scale;
-        }
+        const auto [beta, tau] {larfg_in_place(w)};
         reflect_columns(panel, ld, w, k - top, c + 1, k1 - k0, conj_of(tau)); // Hᴴ on the panel's columns past k
-        x[0] = detail::from_carried<T>(beta / factor);
+        x[0] = beta;
         std::copy(w.begin() + 1, w.end(), x + 1);
         reflectors[k] = std::move(w);
         taus[k]       = tau;

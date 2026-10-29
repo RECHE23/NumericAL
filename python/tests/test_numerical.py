@@ -1086,6 +1086,19 @@ class LinalgVsNumpy(unittest.TestCase):
             self.assertTrue(np.allclose((u * s) @ vh, a))
             self.assertTrue(np.allclose(s, np.linalg.svd(a, compute_uv=False)))
 
+    def test_svdvals_of_exact_ranks_are_lapacks(self):
+        # Exactly rank-deficient matrices whose reflections LAPACK's dlarfg leaves exact: NumPy's values to the bit,
+        # their zeros exact (Julia's cond(·, 2) of [0 0; 1 1] Inf), below and past the blocked reduction's crossover.
+        ones = np.ones((5, 5))
+        ones[0] = 0.0
+        cases = [np.array([[0.0, 0.0], [1.0, 1.0]]), ones, np.array([[0, 0], [1, 1j]])]
+        for n in (130, 200):
+            b = np.eye(n)
+            b[0, 0], b[1, 0], b[1, 1] = 0.0, 1.0, 1.0
+            cases.append(b)
+        for a in cases:
+            self.assertTrue(np.array_equal(np.asarray(numerical.svdvals(a)), np.linalg.svd(a, compute_uv=False)))
+
     def test_svd_keeps_small_singular_values(self):
         # sigma down to 1e-12 under random rotations, against numpy (which uses LAPACK's gesdd).
         rng = np.random.default_rng(3)

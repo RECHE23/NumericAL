@@ -5,7 +5,11 @@ name: Julia
 on:
   push:
     branches: [main]
-    paths: ['blas/**', 'include/numerical/blas.hpp', 'setup.py', '.github/workflows/julia.yml']
+    # numerical_blas answers through the decompositions too: a change to one of them starts the job (svdvals' exact
+    # zeros were lost in svd.hpp, which the job did not watch).
+    paths: ['blas/**', 'include/numerical/blas.hpp', 'include/numerical/svd.hpp', 'include/numerical/dqds.hpp',
+            'include/numerical/factorizations.hpp', 'include/numerical/eigen.hpp', 'include/numerical/decomposition.hpp',
+            'setup.py', '.github/workflows/julia.yml']
   schedule:
     - cron: '17 6 * * 0' # weekly, Sunday 06:17 UTC
   workflow_dispatch:

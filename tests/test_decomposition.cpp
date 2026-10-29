@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numbers>
 #include <random>
 #include <stdexcept>
 #include <string>
@@ -996,6 +997,38 @@ TEST(svd_handles_a_rank_deficient_matrix)
     EXPECT(approx_equal(z.singular_values(), vector<double> {1.0, 0.0, 0.0}));
     EXPECT(orthonormality_error(z.u()) < 1e-14);
     EXPECT(orthonormality_error(z.v()) < 1e-14);
+  }
+}
+
+namespace {
+  // The singular values of [[0, 0], [1, 1]], alone or as the top of an identity of order n (n − 1 ones then), and of
+  // its complex form [[0, 0], [1, i]]: √2 and an exact 0, as LAPACK's dlarfg reflectors leave them (its first
+  // reflection exact: w = (1, 1), τ = 1, where a unit reflector held 1/√2, rounded, and left 1.3e-16 for the 0).
+  template <typename T>
+  bool exact_zero_as_lapack(std::size_t n,
+                            const T&    corner)
+  {
+    std::vector<T> entries(n * n, T {});
+    for (std::size_t i {2}; i < n; ++i) {
+      entries[(i * n) + i] = T {1.0};
+    }
+    entries[n]     = T {1.0};
+    entries[n + 1] = corner;
+    const matrix<T>                 a      {n, n, entries};
+    const numerical::vector<double> alone  {numerical::singular_values(a)};
+    const svd_decomposition<T>      s      {a};
+    const bool                      values {alone[0] == std::numbers::sqrt2 && alone[n - 1] == 0.0};
+    return values && s.singular_values()[0] == std::numbers::sqrt2 && s.singular_values()[n - 1] == 0.0;
+  }
+} // namespace
+
+// An exactly rank-deficient matrix keeps the exact zero LAPACK keeps (Julia's cond(·, 2) of [0 0; 1 1] is Inf), by
+// the unblocked reduction and past its crossover by the blocked one, real and complex.
+TEST(singular_values_keep_the_exact_zero_lapack_keeps)
+{
+  for (const std::size_t n : {std::size_t {2}, std::size_t {5}, std::size_t {130}}) {
+    EXPECT(exact_zero_as_lapack<double>(n, 1.0));
+    EXPECT(exact_zero_as_lapack<std::complex<double>>(n, std::complex<double> {0.0, 1.0}));
   }
 }
 

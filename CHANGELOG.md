@@ -39,6 +39,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   cores, one row of complex64 by 406 × 583 in Fortran order 84 → 16 µs, complex128 91 → 26 µs (NumPy 8 and 11);
   C-ordered complex64 30 → 17 µs.
 
+### Fixed
+- **The singular values of an exactly rank-deficient matrix keep the exact zeros LAPACK keeps**: `svdvals` of
+  `[[0, 0], [1, 1]]` was `[√2, 1.3e-16]` (LAPACK `[√2, 0]`), so Julia's `cond(·, 2)` through `numerical_blas` came out
+  finite. The bidiagonal reduction's reflectors are now LAPACK's (`dlarfg`'s `I − τ w wᴴ`, `w₀ = 1`), as the QR's are
+  since 2026.10.21, where unit reflectors rounded `1/√2` on exact inputs: since 2026.10.39 the singular values alone
+  come from dqds, which keeps every relative digit of the bidiagonal, the rounding's too. `svd` and `svdvals` change in
+  their last bits; on these matrices they are LAPACK's to the bit.
 ## 2026.10.40 — 2026-10-28
 
 ### Added

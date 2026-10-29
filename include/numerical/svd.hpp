@@ -170,6 +170,8 @@ namespace numerical {
      *        kernel, as QR's `Q` is, or a reflector at a time below \ref bidiagonal_basis_crossover.
      * \param[in]  left        The left reflector of each step (acting from its row), empty where none.
      * \param[in]  right       The right reflector of each step (acting from the column past it), likewise.
+     * \param[in]  left_tau    Each left reflector's `τ` (`I − τ w wᴴ`, \ref larfg_in_place).
+     * \param[in]  right_tau   Each right reflector's.
      * \param[in]  left_phase  The unit phase each row took.
      * \param[in]  right_phase The unit phase each column past the diagonal took.
      * \param[in]  n           The order.
@@ -179,6 +181,8 @@ namespace numerical {
     template <typename T>
     void form_bidiagonal_bases(const std::vector<buffer<T>>&      left,
                                std::vector<buffer<T>>             right,
+                               const std::vector<T>&              left_tau,
+                               const std::vector<T>&              right_tau,
                                const buffer<T>&                   left_phase,
                                const buffer<T>&                   right_phase,
                                std::size_t                        n,
@@ -196,20 +200,22 @@ namespace numerical {
         vt[(k * n) + k] = k == 0 ? T {1} : right_phase[k - 1];
       }
       std::vector<buffer<T>> shifted(n); // right[k] acts from row k+1: as reflector k+1 of a QR
+      std::vector<T>         shifted_tau(n, T {});
       for (std::size_t k {0}; k + 1 < n; ++k) {
-        shifted[k + 1] = std::move(right[k]);
+        shifted[k + 1]     = std::move(right[k]);
+        shifted_tau[k + 1] = right_tau[k];
       }
       if (n < bidiagonal_basis_crossover) { // a reflector at a time, the last first, as LAPACK's dorg2r
         for (std::size_t k {n}; k-- > 0;) {
-          reflect_columns(ut.data(), n, left[k], k, k, n);
-          reflect_columns(vt.data(), n, shifted[k], k, k, n);
+          reflect_columns(ut.data(), n, left[k], k, k, n, left_tau[k]);
+          reflect_columns(vt.data(), n, shifted[k], k, k, n, shifted_tau[k]);
         }
         return;
       }
       for (std::size_t k1 {n}; k1 > 0;) { // blocks of qr_block reflectors, the last first
         const std::size_t k0 {(k1 - 1) / qr_block * qr_block};
-        apply_transposed_reflector_block(gather_reflectors(left, k0, k1, n), ut, n, k0, n);
-        apply_transposed_reflector_block(gather_reflectors(shifted, k0, k1, n), vt, n, k0, n);
+        apply_transposed_reflector_block(gather_reflectors(left, k0, k1, n, &left_tau), ut, n, k0, n);
+        apply_transposed_reflector_block(gather_reflectors(shifted, k0, k1, n, &shifted_tau), vt, n, k0, n);
         k1 = k0;
       }
     }
@@ -244,24 +250,6 @@ namespace numerical {
                                  bool                 form = true);
 
     /*!
-     * \brief The unit Householder vector `v` with `(I − 2 v vᴴ) x = β e₁`, in place of \p x.
-     * \return `β = −phase(x₀) ‖x‖` (`−sign(x₀) ‖x‖` for a real `x`).
-     */
-    template <typename T>
-    [[nodiscard]] T householder_in_place(buffer<T>& x)
-    {
-      const auto   up     {rescale_tiny(x)}; // the reflector is the same at any scale; β is scaled back
-      const T      norm   {from_carried<T>(scaled_norm(x))};
-      const T      beta   {-phase_of(x[0]) * norm};
-      x[0] -= beta;
-      const T    length   {from_carried<T>(scaled_norm(x))};
-      for (T& element : x) {
-        element /= length;
-      }
-      return beta / from_carried<T>(up);
-    }
-
-    /*!
      * \brief Reduces the square `n × n` row-major \p b to upper-bidiagonal form, `B = U_b D V_bᴴ`, by panels
      *        of \ref bidiagonal_block reflections from each side, as LAPACK's `dgebrd` and `dlabrd` (`zgebrd`,
      *        `zlabrd`): the matrix a panel's later steps see is `B − V Ȳᵀ − X Ūᵀ` (`V`, `U` the reflectors, `Y`, `X`
@@ -294,6 +282,8 @@ namespace numerical {
       }
       std::vector<buffer<T>>      left(n);               // the left reflector of step k, on rows k…, empty where none was needed
       std::vector<buffer<T>>      right(n);              // the right reflector of step k, on columns k+1…, likewise
+      std::vector<T>              left_tau(n, T {});     // each one's τ, as LAPACK's dlarfg forms them (larfg_in_place)
+      std::vector<T>              right_tau(n, T {});
       buffer<T>                   left_phase(n, T {1});  // row k times it puts |d_k| on the diagonal (1: a real T)
       buffer<T>                   right_phase(n, T {1}); // column k + 1 times it puts |e_k| above
       const auto                  nonzero {[](const T& value) { return value != T {}; }};
@@ -349,7 +339,7 @@ namespace numerical {
           }
           buffer<T> x(column, column + (n - k));
           if (std::any_of(x.begin() + 1, x.end(), nonzero)) { // something below the diagonal to reflect
-            const T beta {householder_in_place(x)};
+            const auto [beta, tau] {larfg_in_place(x)};       // Hᴴ = I − τ̄ w wᴴ from the left, as LAPACK's dlabrd
             if constexpr (complex_entries) {
               d[k]          = static_cast<double>(std::abs(beta));
               left_phase[k] = conj_of(phase_of(beta));
@@ -357,7 +347,8 @@ namespace numerical {
             else {
               d[k] = static_cast<double>(beta);
             }
-            // y = 2 (B − V Yᵀ − X Uᵀ)ᵀ v on the columns past k: Bᵀ v by contiguous rows, then the panel's terms.
+            // y = τ (B − V Yᵀ − X Uᵀ)ᴴ v on the columns past k, held conjugated: Bᵀ v̄ by contiguous rows, then the
+            // panel's terms, times τ̄.
             buffer<T> by_vx(2 * i, T {});  // Vᵀ v and Xᵀ v over the earlier steps, interleaved as their rows
             buffer<T> conjugate(x.size()); // v̄: Bᴴ v as the terms of (Bᵀ v̄) (v itself for a real T)
             std::transform(x.begin(), x.end(), conjugate.begin(), [](const T& value) { return conj_of(value); });
@@ -379,11 +370,12 @@ namespace numerical {
                            subtract_products(sum.data(), minus.data(), b.data() + (k * n) + first, n, n - k, count);
                            subtract_products(sum.data(), by_vx.data(), y_row(0, first), n, 2 * i, count);
                            for (std::size_t c {0}; c < count; ++c) {
-                             *y_row(i, first + c) = static_cast<T>(2) * sum[c];
+                             *y_row(i, first + c) = conj_of(tau) * sum[c];
                            }
                          });
             std::copy(x.begin(), x.end(), v_row(i, k));
-            left[k] = std::move(x);
+            left[k]     = std::move(x);
+            left_tau[k] = tau;
           }
           else if constexpr (complex_entries) {
             d[k]          = static_cast<double>(std::abs(x[0]));
@@ -411,7 +403,7 @@ namespace numerical {
             }
           }
           if (std::any_of(y.begin() + 1, y.end(), nonzero)) { // something past the superdiagonal to reflect
-            const T beta {householder_in_place(y)};
+            const auto [beta, tau] {larfg_in_place(y)};       // B ← B (I − τ u uᴴ), as LAPACK's dlabrd
             if constexpr (complex_entries) { // the row's entry is β̄: its phase's conjugate turns it to |β|
               e[k]           = static_cast<double>(std::abs(beta));
               right_phase[k] = phase_of(beta);
@@ -419,7 +411,7 @@ namespace numerical {
             else {
               e[k] = static_cast<double>(beta);
             }
-            // x = 2 (B − V Yᵀ − X Uᵀ) u on the rows past k: B u by rows, then the panel's terms.
+            // x = τ (B − V Yᵀ − X Uᵀ) u on the rows past k: B u by rows, then the panel's terms.
             const std::size_t rows          {n - k - 1};
             buffer<T>         by_y(i + 1, T {}); // Yᵀ u over this and the earlier steps, Uᵀ u over the earlier
             buffer<T>         by_u(i, T     {});
@@ -452,7 +444,7 @@ namespace numerical {
                              subtract_products(moved.data() + first, by_y.data(), v_row(0, k + 1 + first), 2 * n, i + 1, count);
                              subtract_products(moved.data() + first, by_u.data(), x_row(0, k + 1 + first), 2 * n, i, count);
                              for (std::size_t r {first}; r < first + count; ++r) {
-                               *x_row(i, k + 1 + r) = static_cast<T>(2) * moved[r];
+                               *x_row(i, k + 1 + r) = tau * moved[r];
                              }
                              if (next != nullptr) {
                                subtract_products(next + first, next_factors.data(), v_row(0, k + 1 + first), n, 2 * i, count);
@@ -475,12 +467,13 @@ namespace numerical {
               subtract_products(moved.data(), by_y.data(), v_row(0, k + 1), 2 * n, i + 1, rows);
               subtract_products(moved.data(), by_u.data(), x_row(0, k + 1), 2 * n, i, rows);
               for (std::size_t r {0}; r < rows; ++r) {
-                *x_row(i, k + 1 + r) = static_cast<T>(2) * moved[r];
+                *x_row(i, k + 1 + r) = tau * moved[r];
               }
             }
 
             std::transform(y.begin(), y.end(), u_row(i, k + 1), [](const T& value) { return conj_of(value); }); // Ū
-            right[k] = std::move(y);
+            right[k]     = std::move(y);
+            right_tau[k] = tau;
           }
           else if constexpr (complex_entries) {                                                                 // y₀ the entry's conjugate
             e[k]           = static_cast<double>(std::abs(y[0]));
@@ -507,7 +500,7 @@ namespace numerical {
       }
       e[n - 1] = 0.0;
       if (form) {
-        form_bidiagonal_bases(left, std::move(right), left_phase, right_phase, n, ut, vt);
+        form_bidiagonal_bases(left, std::move(right), left_tau, right_tau, left_phase, right_phase, n, ut, vt);
       }
     }
 
@@ -536,26 +529,21 @@ namespace numerical {
     {
       std::vector<buffer<T>>      left(n);  // the left reflector of step k, empty where none was needed
       std::vector<buffer<T>>      right(n); // the right reflector acting on columns k+1…, likewise
-      buffer<T>                   left_phase(n, T {1});
+      std::vector<T>              left_tau(n, T    {});
+      std::vector<T>              right_tau(n, T   {});
+      buffer<T>                   left_phase(n, T  {1});
       buffer<T>                   right_phase(n, T {1});
-      const auto                  reflector {[](buffer<T>& v) {       // unit v with (I − 2 v vᴴ) x ∥ e₁
-                                               (void)rescale_tiny(v); // the same reflector at any scale
-                                               const auto norm {scaled_norm(v)};
-                                               v[0] += phase_of(v[0]) * detail::from_carried<T>(norm);
-                                               const auto length {detail::from_carried<T>(scaled_norm(v))};
-                                               for (T & element : v) {
-                                                 element /= length;
-                                               }
-                                             }};
       for (std::size_t k {0}; k < n; ++k) {
         buffer<T> x(n - k, T {}); // column k from the diagonal down
         for (std::size_t i {k}; i < n; ++i) {
           x[i - k] = b[(i * n) + k];
         }
-        if (scaled_norm(x.data() + 1, x.size() - 1) > 0.0) {
-          reflector(x);
-          reflect_rows(b, n, x, k, k);
-          left[k] = std::move(x);
+        if (scaled_norm(x.data() + 1, x.size() - 1) > 0.0) { // as LAPACK's dgebd2: Hᴴ = I − τ̄ w wᴴ from the left
+          const auto [beta, tau] {larfg_in_place(x)};
+          reflect_rows(b, n, x, k, k + 1, conj_of(tau));
+          b[(k * n) + k] = beta;
+          left[k]        = std::move(x);
+          left_tau[k]    = tau;
         }
         left_phase[k] = conj_of(phase_of(b[(k * n) + k])); // row k times it puts |b_kk| on the diagonal
         for (std::size_t j {k}; j < n; ++j) {
@@ -570,15 +558,17 @@ namespace numerical {
           y[j - k - 1] = conj_of(b[(k * n) + j]);
         }
         if (y.size() > 1 && scaled_norm(y.data() + 1, y.size() - 1) > 0.0) {
-          reflector(y);
-          parallel_for(n - k, 2 * y.size(), [&](std::size_t r) { // row ← row (I − 2 y yᴴ); rows above k are zero there
-                         T*      row   {b.data() + ((k + r) * n) + k + 1};
-                         const T scale {static_cast<T>(2) * dot_product(row, y.data(), y.size())};
+          const auto [beta, tau] {larfg_in_place(y)};
+          parallel_for(n - k - 1, 2 * y.size(), [&](std::size_t r) { // row ← row (I − τ y yᴴ); rows above k are zero there
+                         T*      row   {b.data() + ((k + 1 + r) * n) + k + 1};
+                         const T scale {tau * dot_product(row, y.data(), y.size())};
                          for (std::size_t j {0}; j < y.size(); ++j) {
                            row[j] -= scale * conj_of(y[j]);
                          }
                        });
-          right[k] = std::move(y);
+          b[(k * n) + k + 1] = beta; // row k is β e₁ past the diagonal: the rest is read no more
+          right[k]           = std::move(y);
+          right_tau[k]       = tau;
         }
         right_phase[k] = conj_of(phase_of(b[(k * n) + k + 1])); // column k+1 times it: |b_k,k+1| above
         for (std::size_t i {k}; i < n; ++i) {
@@ -590,7 +580,7 @@ namespace numerical {
         e[n - 1] = 0.0;
       }
       if (form) {
-        form_bidiagonal_bases(left, std::move(right), left_phase, right_phase, n, ut, vt);
+        form_bidiagonal_bases(left, std::move(right), left_tau, right_tau, left_phase, right_phase, n, ut, vt);
       }
     }
 
