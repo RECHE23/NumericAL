@@ -93,5 +93,32 @@ class Sqrtm(unittest.TestCase):
                 numerical.sqrtm(bad)
 
 
+@unittest.skipIf(np is None, "NumPy is not installed")
+class Polar(unittest.TestCase):
+    def test_factors(self):
+        # a = u p (right) or p u (left), u with orthonormal columns or rows, p Hermitian positive semidefinite; against
+        # SciPy where installed; square, tall and wide, real and complex
+        rng = np.random.default_rng(8)
+        for shape in ((4, 4), (5, 3), (3, 5), (1, 1)):
+            for complex_entries in (False, True):
+                a = rng.standard_normal(shape)
+                if complex_entries:
+                    a = a + 1j * rng.standard_normal(shape)
+                for side in ("right", "left"):
+                    with self.subTest(shape=shape, complex_entries=complex_entries, side=side):
+                        u, p = (np.asarray(t) for t in numerical.polar(a, side))
+                        np.testing.assert_allclose(u @ p if side == "right" else p @ u, a, atol=1e-13)
+                        np.testing.assert_allclose(p, p.conj().T, atol=1e-13)
+                        self.assertGreaterEqual(np.linalg.eigvalsh(p).min(), -1e-12)
+                        if sl is not None:
+                            u_s, p_s = sl.polar(a, side)
+                            np.testing.assert_allclose(u, u_s, atol=1e-13)
+                            np.testing.assert_allclose(p, p_s, atol=1e-13)
+        with self.assertRaises(ValueError):
+            numerical.polar(np.eye(2), "top")
+        with self.assertRaises(ValueError):
+            numerical.polar(np.ones(3))
+
+
 if __name__ == "__main__":
     unittest.main()

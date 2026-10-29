@@ -40,7 +40,7 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "det", "slogdet", "inverse", "inv", "expm", "sqrtm", "solve_sylvester",
+    "determinant", "det", "slogdet", "inverse", "inv", "expm", "sqrtm", "polar", "solve_sylvester",
     "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov", "lstsq", "pinv", "matrix_rank",
     "cholesky", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
@@ -597,6 +597,28 @@ def sqrtm(A):
         LinAlgError: if `A` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
     """
     return _sqrtm(A)
+
+
+def polar(a, side="right"):
+    """The polar decomposition of a matrix, as ``scipy.linalg.polar``: ``(u, p)`` with ``a = u p`` (``side="right"``)
+    or ``a = p u`` (``"left"``), `u` with orthonormal columns (rows, for a wide `a`), `p` Hermitian positive
+    semidefinite: from the singular value decomposition ``a = W Σ Vᴴ`` (``full_matrices=False``), ``u = W Vᴴ`` and
+    ``p = V Σ Vᴴ`` (right) or ``W Σ Wᴴ`` (left), as SciPy computes them.
+
+    Raises:
+        ValueError: if `a` is not a matrix or `side` is neither ``"right"`` nor ``"left"``.
+        LinAlgError: if `a` holds an infinite or NaN entry.
+    """
+    if side not in ("right", "left"):
+        raise ValueError("`side` must be either 'right' or 'left'")
+    a = a if isinstance(a, Tensor) else asarray(a)
+    if a.ndim != 2:
+        raise ValueError("`a` must be a 2-D array.")
+    w, s, vh = svd(a, full_matrices=False)
+    u = w @ vh
+    if side == "right":
+        return u, (_adjoint(vh) * s) @ vh
+    return u, (w * s) @ _adjoint(w)
 
 
 def solve_sylvester(a, b, q):

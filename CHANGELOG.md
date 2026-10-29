@@ -9,6 +9,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`polar`, as `scipy.linalg.polar`**: `a = u p` (or `p u`, `side="left"`) from the singular value decomposition, as
+  SciPy forms it.
 - **`sqrtm`, as `scipy.linalg.sqrtm`**: the principal square root of a square matrix or of each of a stack's, by the
   Schur method: in real arithmetic for a real matrix (Higham, 1987; a complex pair's 2 × 2 block by its own real
   root), real unless the matrix has a real eigenvalue below 0, then complex from its real Schur form made complex
