@@ -521,16 +521,41 @@ namespace numerical {
     h[0] = c[1] / diagonal;
     buffer<T> numerator(k);
     for (std::size_t m {1}; m < n; ++m) { // the system of order m + 1 from that of order m
-      T denominator {-diagonal};
-      for (std::size_t col {0}; col < k; ++col) {
-        numerator[col] = -b(m, col);
-      }
-      for (std::size_t j {0}; j < m; ++j) {
-        const T entry {c[m - j]};
-        for (std::size_t col {0}; col < k; ++col) {
-          numerator[col] += entry * x[(j * k) + col];
+      // every sum of the step in one pass, each in its own order, in locals (an element of a buffer is stored and loaded
+      // back at each term, its address possibly x's): the same bits; g's and h's three unused at the last step
+      const bool grows         {m + 1 < n};
+      T          denominator   {-diagonal};
+      T          g_numerator   {grows ? -r[m + 1] : T {}};
+      T          h_numerator   {grows ? -c[m + 1] : T {}};
+      T          g_denominator {-diagonal};
+      if (k == 1) {
+        T sum {-b(m, 0)};
+        for (std::size_t j {0}; j < m; ++j) {
+          const T entry {c[m - j]};
+          const T other {r[m - j]};
+          sum           += entry * x[j];
+          denominator   += entry * g[m - 1 - j];
+          g_numerator   += other * g[j];
+          h_numerator   += entry * h[j];
+          g_denominator += other * h[m - 1 - j];
         }
-        denominator += entry * g[m - 1 - j];
+        numerator[0] = sum;
+      }
+      else {
+        for (std::size_t col {0}; col < k; ++col) {
+          numerator[col] = -b(m, col);
+        }
+        for (std::size_t j {0}; j < m; ++j) {
+          const T entry {c[m - j]};
+          const T other {r[m - j]};
+          for (std::size_t col {0}; col < k; ++col) {
+            numerator[col] += entry * x[(j * k) + col];
+          }
+          denominator   += entry * g[m - 1 - j];
+          g_numerator   += other * g[j];
+          h_numerator   += entry * h[j];
+          g_denominator += other * h[m - 1 - j];
+        }
       }
       if (denominator == T {}) {
         throw singular();
@@ -543,16 +568,8 @@ namespace numerical {
           x[(j * k) + col] -= x[(m * k) + col] * g[m - 1 - j];
         }
       }
-      if (m + 1 == n) {
+      if (!grows) {
         break;
-      }
-      T g_numerator   {-r[m + 1]};
-      T h_numerator   {-c[m + 1]};
-      T g_denominator {-diagonal};
-      for (std::size_t j {0}; j < m; ++j) {
-        g_numerator   += r[m - j] * g[j];
-        h_numerator   += c[m - j] * h[j];
-        g_denominator += r[m - j] * h[m - 1 - j];
       }
       if (g_denominator == T {}) {
         throw singular();

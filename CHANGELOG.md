@@ -32,6 +32,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   the Riccati pencil's deflation `Q₂ᴴ [H J]` by the matrix product**, where scalar loops went down columns: order 204
   12.0 → 0.5 ms for `Qᴴ A`. M1 Pro, `solve_continuous_are` with `m = 100`, `n = 4`: 151 → 123 ms; `m = 32` 6.5 → 5.6
   ms. Other last bits.
+- **`solve_toeplitz` takes the five sums of each step of Levinson's recursion in one pass, in locals**, where two
+  passes summed into a buffer the compiler stored and reloaded at each term: the same bits. Order 500, one right-hand
+  side, M1 Pro: 775 → 333 µs (Clang), 695 → 251 µs (GCC 14); SciPy 1.18 445 µs.
 - **`sqrtm`, `logm` and `funm` read their triangular recurrences' columns contiguously** (a copy of the column being
   solved), where they went down a row-major matrix: the same sums in the same order. Order 384: `logm` 220 → 202 ms,
   `funm` 133 → 126 ms. The same bits under Clang; under GCC, which fused the square root's multiply-subtract in one
