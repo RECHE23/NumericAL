@@ -48,6 +48,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&qr_pivoted>("qr_pivoted", "qr_pivoted(a, complete) -> (Q, R, P)\nQR with column pivoting, A[:, P] = Q R, as scipy.linalg.qr(a, pivoting=True).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
     m.def<&solve_sylvester>("solve_sylvester", "solve_sylvester(a, b, q) -> Tensor\nX of A X + X B = Q, as scipy.linalg.solve_sylvester (Bartels-Stewart).");
+    m.def<&riccati>("riccati", "riccati(a, b, q, r, e, s, flags) -> Tensor\nThe stabilising solution of an algebraic Riccati equation, as scipy.linalg.solve_continuous_are (flags & 1 clear) or solve_discrete_are; e where flags & 2, s where flags & 4, balanced where flags & 8.");
     m.def<&sqrtm>("sqrtm", "sqrtm(a) -> Tensor\nThe principal matrix square root, as scipy.linalg.sqrtm (a stack's matrices each).");
     m.def<&expm>("expm", "expm(a) -> Tensor\nThe matrix exponential, as scipy.linalg.expm (a stack's matrices each).");
     m.def<&lstsq>("lstsq", "lstsq(a, b, rtol) -> (x, residuals, rank, s)\nThe minimum-norm least-squares solution of a @ x ≈ b with its residual sums of squares, the rank and the singular values of a, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");

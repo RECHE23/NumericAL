@@ -9,6 +9,18 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`solve_continuous_are` and `solve_discrete_are`, as `scipy.linalg`'s**: the stabilising solutions of the
+  continuous and discrete algebraic Riccati equations, with `e` and `s` as SciPy takes them, by SciPy's method (the
+  extended Hamiltonian or symplectic pencil, balanced unless `balanced=False`, deflated, its stable deflating subspace
+  from the generalized Schur form sorted with the left half-plane or the inside of the unit circle first; `R` never
+  inverted), complex where an operand is. With `e` and balancing, SciPy 1.18 forms the solution with the unscaled `e`
+  and answers a wrong one or raises (scipy/scipy#26555); here `e` is scaled as the pencil is. A discrete equation
+  whose pencil has its eigenvalues on the unit circle is refused also for `m = 1`, where SciPy's symmetry check, in
+  real arithmetic, cannot fail. In C++, `numerical::solve_continuous_are` and `solve_discrete_are` (`generalized.hpp`).
+- **C++: `numerical::generalized_schur`**, the generalized Schur decomposition of a complex pencil as
+  `scipy.linalg.qz(…, output="complex")` (LAPACK's `zgges`: Hessenberg-triangular reduction, single-shift QZ
+  iterations with exceptional shifts, infinite eigenvalues split off), and its reordering as `ordqz` (`ztgsen`, an
+  exchange refused as `ztgex2` refuses it).
 - **`qr(a, mode, pivoting=True)`, as `scipy.linalg.qr`'s**: the QR factorisation with column pivoting (LAPACK's
   `geqp3`), `a[:, P] = Q @ R`, the column of largest remaining norm first so that `R`'s diagonal reveals the numerical
   rank, the norms downdated as LAPACK's; `(Q, R, P)` or `(R, P)`, `P` a tuple, SciPy's permutation, `R`'s diagonal

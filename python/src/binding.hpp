@@ -1400,6 +1400,11 @@ any_tensor sqrtm(const any_tensor& v); // in linalg.cpp
 // solve_sylvester(a, b, q) -> Tensor, as scipy.linalg.solve_sylvester (A X + X B = Q).
 any_tensor solve_sylvester(const any_tensor& a, const any_tensor& b, const any_tensor& q); // in linalg.cpp
 
+// riccati(a, b, q, r, e, s, flags) -> Tensor, as scipy.linalg.solve_continuous_are or solve_discrete_are (flags: 1
+// discrete, 2 with e, 4 with s, 8 balanced).
+any_tensor riccati(const any_tensor& a, const any_tensor& b, const any_tensor& q, const any_tensor& r, const any_tensor& e,
+                   const any_tensor& s, std::size_t flags); // in linalg.cpp
+
 // The least-squares solution with what numpy.linalg.lstsq returns beside it: x (rank-1 for a rank-1 b), the residual
 // sums of squares (empty unless a is tall and of full column rank), the rank and the singular values.
 using lstsq_result = std::tuple<any_tensor, any_tensor, std::size_t, any_tensor>;

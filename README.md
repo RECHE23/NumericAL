@@ -102,6 +102,14 @@ Small and complete, grown measured, honest about what is not yet here:
   matrix with no real eigenvalue below 0; `complex_sqrtm` the complex one of a real matrix).
 - `numerical::solve_sylvester(a, b, q)` — `A X + X B = Q`, as `scipy.linalg.solve_sylvester` (Bartels and Stewart's
   method, the triangular equation by blocks as LAPACK's `trsyl`).
+- `numerical::generalized_schur` — the generalized Schur decomposition of a complex pencil, `A = Q S Zᴴ` and
+  `B = Q T Zᴴ` with `S` and `T` triangular, as `scipy.linalg.qz(a, b, output="complex")` (LAPACK's `zgges`: QZ
+  iterations with single shifts), reordered as `ordqz` (`ztgsen`'s exchanges, refused where they would not keep the
+  pencil triangular).
+- `numerical::solve_continuous_are(a, b, q, r, e, s)` and `solve_discrete_are` — the stabilising solutions of the
+  algebraic Riccati equations, as `scipy.linalg`'s (the extended pencil, balanced, its stable deflating subspace from
+  the sorted generalized Schur form; with `e`, the balancing scales it as it scales the pencil, where SciPy 1.18 does
+  not, scipy/scipy#26555).
 - `numerical::svd_decomposition<T>` — the singular value decomposition `A = U Σ Vᴴ`
   of a real or complex `m × n` matrix, any shape: a Householder QR, then Golub–Kahan
   bidiagonalisation of `R` (by panels, for a real one) and divide and conquer, as LAPACK's `dgesdd`;
@@ -254,8 +262,9 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `expm(a)` and `sqrtm(a)` as `scipy.linalg`'s (a
 stack's matrices each), `polar(a, side)`, `solve_banded((l, u), ab, b)`, `solveh_banded(ab, b, lower=False)`,
 `solve_toeplitz(c_or_cr, b)`, `solve_circulant(c, b, singular)`, `toeplitz`, `hankel`, `circulant`, `block_diag`,
-`solve_sylvester(a, b, q)`, `solve_continuous_lyapunov(a, q)` and
-`solve_discrete_lyapunov(a, q, method)` as `scipy.linalg`'s, `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix
+`solve_sylvester(a, b, q)`, `solve_continuous_lyapunov(a, q)`,
+`solve_discrete_lyapunov(a, q, method)`, `solve_continuous_are(a, b, q, r, e, s, balanced)` and
+`solve_discrete_are(a, b, q, r, e, s, balanced)` as `scipy.linalg`'s, `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix
 (LAPACK's `dgeev`/`zgeev`: balancing, blocked Hessenberg reduction, multishift QR with aggressive early deflation;
 complex answers whatever the eigenvalues, as NumPy 2.5's, where NumPy before 2.5 made them real where it could; the
 eigenvalues in the Schur form's order, a real matrix's pairs conjugate to the bit; each vector of unit norm, its

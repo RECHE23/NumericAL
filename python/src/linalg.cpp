@@ -256,6 +256,51 @@ any_tensor solve_sylvester(const any_tensor& a, const any_tensor& b, const any_t
 
 namespace {
 
+    // The Riccati solver \p flags picks, e and s passed on only where their flags are set.
+    template <typename T>
+    any_tensor riccati_of(const any_tensor& a, const any_tensor& b, const any_tensor& q, const any_tensor& r, const any_tensor& e,
+                          const any_tensor& s, std::size_t flags)
+    {
+        const numerical::matrix<T> ea {matrix_from(std::get<numerical::tensor<T>>(e))};
+        const numerical::matrix<T> sa {matrix_from(std::get<numerical::tensor<T>>(s))};
+        const numerical::matrix<T>* ep {(flags & 2U) != 0 ? &ea : nullptr};
+        const numerical::matrix<T>* sp {(flags & 4U) != 0 ? &sa : nullptr};
+        const bool                  balanced {(flags & 8U) != 0};
+        const auto                  operand = [](const any_tensor& v) { return matrix_from(std::get<numerical::tensor<T>>(v)); };
+        if ((flags & 1U) != 0) {
+            return any_tensor {numerical::tensor<T> {numerical::solve_discrete_are(operand(a), operand(b), operand(q), operand(r), ep, sp, balanced)}};
+        }
+        return any_tensor {numerical::tensor<T> {numerical::solve_continuous_are(operand(a), operand(b), operand(q), operand(r), ep, sp, balanced)}};
+    }
+} // namespace
+
+// riccati(a, b, q, r, e, s, flags) -> Tensor, as scipy.linalg.solve_continuous_are (flags & 1 clear) or
+// solve_discrete_are (set): e taken where flags & 2, s where flags & 4 (the caller passes some matrix of the dtype in
+// their place otherwise), the pencil balanced where flags & 8; one dtype (the caller promotes), single precision
+// computed in double.
+any_tensor riccati(const any_tensor& a, const any_tensor& b, const any_tensor& q, const any_tensor& r, const any_tensor& e,
+                   const any_tensor& s, std::size_t flags)
+{
+    for (const any_tensor* operand : {&a, &b, &q, &r, &e, &s}) {
+        if (shape_of(*operand).size() != 2) {
+            throw std::runtime_error("solve_continuous_are and solve_discrete_are expect matrices");
+        }
+        if (operand->index() != a.index()) {
+            throw std::runtime_error("solve_continuous_are and solve_discrete_are operands must share one dtype");
+        }
+    }
+    if (is_single(a)) {
+        return narrowed(riccati(widened(a), widened(b), widened(q), widened(r), widened(e), widened(s), flags));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 64)};
+    if (is_complex(a)) {
+        return riccati_of<std::complex<double>>(a, b, q, r, e, s, flags);
+    }
+    return riccati_of<double>(a, b, q, r, e, s, flags);
+}
+
+namespace {
+
     // b as a matrix of right-hand sides (a vector one column), and back to its rank.
     template <typename T>
     numerical::matrix<T> right_hand_sides(const numerical::tensor<T>& b)

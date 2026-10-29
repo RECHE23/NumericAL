@@ -19,6 +19,7 @@
 #include "decomposition.hpp"
 #include "eigen.hpp"
 #include "fft.hpp"
+#include "generalized.hpp"
 #include "matrix.hpp"
 #include "matrix_functions.hpp"
 #include "tensor.hpp"

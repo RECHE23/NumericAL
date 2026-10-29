@@ -43,7 +43,8 @@ __all__ = [
     "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "solve_toeplitz", "solve_circulant",
     "toeplitz", "hankel", "circulant", "block_diag",
     "expm", "sqrtm", "polar",
-    "solve_sylvester", "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov", "lstsq", "pinv",
+    "solve_sylvester", "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov",
+    "solve_continuous_are", "solve_discrete_are", "lstsq", "pinv",
     "matrix_rank", "cholesky", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
@@ -563,6 +564,7 @@ _solveh_banded = _linalg(_numerical.solveh_banded, arrays=2)
 _solve_toeplitz = _linalg(_numerical.solve_toeplitz, arrays=3)
 _solve_circulant = _linalg(_numerical.solve_circulant, arrays=2)
 _solve_sylvester = _linalg(_numerical.solve_sylvester, arrays=3)
+_riccati = _linalg(_numerical.riccati, arrays=6)
 _sqrtm = _linalg(_numerical.sqrtm, arrays=1)
 
 
@@ -828,6 +830,43 @@ def solve_discrete_lyapunov(a, q, method=None):
 
 
 _MACHINE_EPSILON = {"float64": 2.220446049250313e-16, "float32": 1.1920928955078125e-07}  # complex's parts share them
+
+
+def _are(a, b, q, r, e, s, balanced, discrete):
+    """The native Riccati solver: `e` and `s` absent passed as `a` with their flags clear."""
+    flags = (1 if discrete else 0) | (0 if e is None else 2) | (0 if s is None else 4) | (8 if balanced else 0)
+    return _riccati(a, b, q, r, a if e is None else e, a if s is None else s, flags)
+
+
+def solve_continuous_are(a, b, q, r, e=None, s=None, balanced=True):
+    """The stabilising solution `X` of the continuous algebraic Riccati equation
+    ``Aᴴ X E + Eᴴ X A − (Eᴴ X B + S) R⁻¹ (Bᴴ X E + Sᴴ) + Q = 0`` (``E = I`` and ``S = 0`` when `e` and `s` are
+    None), as ``scipy.linalg.solve_continuous_are``: the extended Hamiltonian pencil, balanced unless `balanced` is
+    false, its stable deflating subspace from the generalized Schur form sorted with the left half-plane first, `R`
+    never inverted. Complex where an operand is. With `e`, the balancing scales `e` as it scales the pencil (SciPy
+    1.18 does not, and answers a wrong `X` or raises there when the balancing is not trivial: scipy/scipy#26555).
+
+    Raises:
+        LinAlgError: if a shape is not ``a`` m×m, ``b`` m×n, ``q`` m×m, ``r`` n×n, ``e`` m×m, ``s`` m×n (m, n ≥ 1),
+            an entry is infinite or NaN, `q` or `r` is not Hermitian, `e` is numerically singular, there is no finite
+            solution, or the pencil has eigenvalues too close to the imaginary axis.
+    """
+    return _are(a, b, q, r, e, s, balanced, False)
+
+
+def solve_discrete_are(a, b, q, r, e=None, s=None, balanced=True):
+    """The stabilising solution `X` of the discrete algebraic Riccati equation
+    ``Aᴴ X A − Eᴴ X E − (Aᴴ X B + S) (R + Bᴴ X B)⁻¹ (Bᴴ X A + Sᴴ) + Q = 0`` (``E = I`` and ``S = 0`` when `e` and `s`
+    are None), as ``scipy.linalg.solve_discrete_are``: the extended symplectic pencil, balanced unless `balanced` is
+    false, its stable deflating subspace from the generalized Schur form sorted with the inside of the unit circle
+    first, nothing inverted. Complex where an operand is; with `e`, the balancing scales it as
+    :func:`solve_continuous_are`'s. A pencil with eigenvalues on the unit circle is refused also where SciPy, in real
+    arithmetic with ``m = 1``, answers.
+
+    Raises:
+        LinAlgError: as :func:`solve_continuous_are`'s, the eigenvalues too close to the unit circle.
+    """
+    return _are(a, b, q, r, e, s, balanced, True)
 
 
 def _upper(name, UPLO):
