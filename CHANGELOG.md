@@ -44,6 +44,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   (Windows x86, NumPy 2.2).
 
 ### Breaking
+- **The factorisations and solvers require a floating-point field** (`numerical::field`, `concepts.hpp`: `float`,
+  `double`, `long double` or a `std::complex` of one): `lu_decomposition`, `cholesky_decomposition`, `qr_decomposition`,
+  `pivoted_qr_decomposition`, `svd_decomposition`, `eigen_decomposition`, `schur_decomposition`, and `solve`,
+  `determinant`, `inverse`, `solve_triangular`, `cholesky`, `lstsq`, `pinv`, `matrix_rank`, `singular_values`,
+  `symmetric_eigenvalues` and `eigenvalues`. An integer matrix compiled and was factorised in integer division
+  (`determinant(matrix<int> {{2, 1}, {1, 2}})` was 4, `solve` of it 0, its Cholesky factor's √2 was 1); it is now
+  refused at compile time, by the concept's name. Integer matrices still add and multiply.
 - **NumPy's loops over tensors leave the public namespace**: `numpy_loops`, `numpy_wheel_loops`, `numpy_multiply`,
   `numpy_divide`, `numpy_power`, `numpy_square`, `numpy_reciprocal` and `numpy_absolute`, deprecated since
   2026.10.36, are now in `numerical::detail` alone.

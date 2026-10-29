@@ -30,6 +30,7 @@
 #include <utility>
 #include <vector>
 
+#include "concepts.hpp"
 #include "decomposition.hpp"
 
 namespace numerical {
@@ -3082,7 +3083,7 @@ namespace numerical {
    * whether a real matrix's are all real). Column `j` of \ref vectors is the eigenvector of \ref values `[j]`,
    * `A V = V Λ`, each of unit norm with its component of largest modulus real.
    */
-  template <typename T>
+  template <field T>
   class eigen_decomposition
   {
   public:
@@ -3470,7 +3471,7 @@ namespace numerical {
    *        iteration; no diagonal scaling, which would not.
    * \tparam T `double` or `std::complex<double>`.
    */
-  template <typename T>
+  template <field T>
   class schur_decomposition
   {
   public:
@@ -3656,7 +3657,7 @@ namespace numerical {
    * \throws non_finite_error  If an entry is infinite or NaN.
    * \throws convergence_error If the QR iterations did not converge.
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] vector<std::complex<double>> eigenvalues(const matrix<T>& a)
   {
     return eigen_decomposition<T> {a, false}.values();

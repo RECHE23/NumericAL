@@ -29,6 +29,7 @@
 #include <utility>
 #include <vector>
 
+#include "concepts.hpp"
 #include "dqds.hpp"
 #include "factorizations.hpp"
 
@@ -1521,7 +1522,7 @@ namespace numerical {
    * Full (`full` true, NumPy's `full_matrices=True`), `U` is `m × m` and `V` `n × n`: the columns past `k` are an
    * orthonormal basis of the complement, the rest of the complete Householder `Q` of the larger side.
    */
-  template <typename T>
+  template <field T>
   class svd_decomposition
   {
   public:
@@ -2075,7 +2076,7 @@ namespace numerical {
    * \throws dimension_error If `b`'s size differs from the row count.
    * \throws non_finite_error If an entry of \p a is infinite or NaN.
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] vector<T> lstsq(const matrix<T>& a,
                                 const vector<T>& b,
                                 rank_cutoff      cutoff = {})
@@ -2097,7 +2098,7 @@ namespace numerical {
    * \throws dimension_error If `b`'s row count differs from `a`'s.
    * \throws non_finite_error If an entry of \p a is infinite or NaN.
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] matrix<T> lstsq(const matrix<T>& a,
                                 const matrix<T>& b,
                                 rank_cutoff      cutoff = {})
@@ -2122,7 +2123,7 @@ namespace numerical {
    * \throws non_finite_error If an entry of \p a is infinite or NaN.
    * \throws convergence_error If the iteration does not converge within its bound (not observed).
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] vector<double> singular_values(const matrix<T>& a)
   {
     detail::require_finite(a, "singular values");
@@ -2172,7 +2173,7 @@ namespace numerical {
    * \throws non_finite_error  If an entry read is infinite or NaN.
    * \throws convergence_error If the iteration does not converge within its bound (not observed).
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] vector<double> symmetric_eigenvalues(const matrix<T>& a)
   {
     const std::size_t n {a.rows()};
@@ -2614,7 +2615,7 @@ namespace numerical {
    * \throws dimension_error  If \p hermitian and \p a is not square.
    * \throws non_finite_error If an entry read is infinite or NaN.
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] std::size_t matrix_rank(const matrix<T>& a,
                                         rank_cutoff      cutoff    = {},
                                         bool             hermitian = false)
@@ -2640,7 +2641,7 @@ namespace numerical {
    * \throws dimension_error  If \p hermitian and \p a is not square.
    * \throws non_finite_error If an entry read is infinite or NaN.
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] matrix<T> pinv(const matrix<T>& a,
                                rank_cutoff      cutoff    = {},
                                bool             hermitian = false)
