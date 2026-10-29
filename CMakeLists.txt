@@ -59,6 +59,12 @@ target_include_directories(numerical INTERFACE
     $<INSTALL_INTERFACE:include>)
 target_compile_features(numerical INTERFACE cxx_std_20)
 target_link_libraries(numerical INTERFACE Threads::Threads)
+# GCC's default -ffp-contract=fast fuses multiply-adds across statements as its passes find them, so one loop's
+# vectorised and scalar versions can round an element differently from one call to the next; the headers want
+# -ffp-contract=on (Clang's default, the wheels'), given to every GCC consumer. A consumer that sets the target property
+# NUMERICAL_FP_CONTRACT_OFF (the test binary, which wants no fusion at all) is left to its own flag.
+target_compile_options(numerical INTERFACE
+    $<$<AND:$<CXX_COMPILER_ID:GNU>,$<NOT:$<BOOL:$<TARGET_PROPERTY:NUMERICAL_FP_CONTRACT_OFF>>>>:-ffp-contract=on>)
 
 # The optional BLAS/LAPACK library: dgemm_, dgesv_ and dpotrf_ with the Fortran calling convention, over NumericAL's
 # kernels (blas/numerical_blas.cpp), for a program linked against BLAS and LAPACK or a switch such as FlexiBLAS.
@@ -156,6 +162,7 @@ else()
     # so a per-file flag would not reach the copy that runs. MSVC does not fuse under its default /fp:precise. The
     # Python suite runs the wheels' flags.
     target_compile_options(numerical_tests_bin PRIVATE -ffp-contract=off)
+    set_target_properties(numerical_tests_bin PROPERTIES NUMERICAL_FP_CONTRACT_OFF ON)
 endif()
 
 if(NUMERICAL_SANITIZE)

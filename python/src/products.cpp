@@ -85,7 +85,9 @@ PyObject* tensor_matmul(PyObject* self, PyObject* other)
         }
         const std::size_t ranks[2] {shape_of(*a).size(), shape_of(*b).size()};
         static constexpr std::array<std::array<const char*, 2>, 2> specs {{{"i,i->", "i,ij->j"}, {"ij,j->i", "ij,jk->ik"}}};
-        if (a->index() == b->index() && ranks[0] >= 1 && ranks[0] <= 2 && ranks[1] >= 1 && ranks[1] <= 2) {
+        // inner dimensions that differ go to the fallback, which says so with both shapes
+        if (a->index() == b->index() && ranks[0] >= 1 && ranks[0] <= 2 && ranks[1] >= 1 && ranks[1] <= 2
+            && shape_of(*a).back() == shape_of(*b).front()) {
             const std::string spec {specs.at(ranks[0] - 1).at(ranks[1] - 1)};
             try {
                 std::optional<any_tensor> result;

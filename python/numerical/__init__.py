@@ -381,12 +381,26 @@ def _transpose(self):
 _MATMUL = {(1, 1): "i,i->", (2, 1): "ij,j->i", (1, 2): "i,ij->j", (2, 2): "ij,jk->ik"}
 
 
+def _matmul_shapes(a_shape, b_shape):
+    """Refuses the product of operands of shapes `a_shape` and `b_shape` whose inner dimensions differ, naming both: a's
+    last against b's first (a vector) or second to last."""
+    a_shape, b_shape = tuple(a_shape), tuple(b_shape)
+    if not a_shape or not b_shape:
+        raise LinAlgError("matmul: a rank-0 operand has no matrix to multiply (multiply it with *)")
+    inner = b_shape[0] if len(b_shape) == 1 else b_shape[-2]
+    if a_shape[-1] != inner:
+        def text(shape):
+            return " × ".join(str(d) for d in shape)
+        across = "rows" if len(b_shape) > 1 else "entries"
+        raise LinAlgError(f"matmul: a is {text(a_shape)} and b is {text(b_shape)}: a's {a_shape[-1]} columns do not match "
+                          f"b's {inner} {across}")
+
+
 def _matmul(self, other):
     """``a @ b`` as NumPy's matmul: vectors and matrices, and stacks of matrices along leading axes broadcast against
     each other (a number for two vectors); the dtypes promoted as NumPy promotes them."""
     other = other if isinstance(other, Tensor) else asarray(other)
-    if not self.shape or not other.shape:
-        raise LinAlgError("matmul: a rank-0 operand has no matrix to multiply (multiply it with *)")
+    _matmul_shapes(self.shape, other.shape)
     dtype = _promoted((self.dtype, other.dtype))
     a, b = (t if t.dtype == dtype else asarray(t, dtype=dtype) for t in (self, other))
     spec = _MATMUL.get((len(a.shape), len(b.shape)))
@@ -402,6 +416,9 @@ def _matmul(self, other):
 def matmul(x1, x2, /):
     """The matrix product of `x1` and `x2`, as ``numpy.matmul`` (and ``x1 @ x2``): stacks of matrices along leading axes
     broadcast against each other, a vector a row first and a column second, two vectors their dot product."""
+    shapes = (getattr(x1, "shape", None), getattr(x2, "shape", None))
+    if shapes[0] is not None and shapes[1] is not None:
+        _matmul_shapes(*shapes)
     product = _numerical._borrowed_product(x1, x2)  # Tensors and NumPy arrays read where they lie, when they can be
     return _tensor(x1)._matmul(x2) if product is NotImplemented else product  # else as ``@``
 
@@ -479,6 +496,17 @@ def array_equal(a, b):
 
 
 Tensor.__getitem__ = _getitem
+
+
+def _setitem(self, key, value):
+    """A Tensor is immutable (its buffer may be shared with others and with NumPy, without a copy): writing into one
+    raises, saying how to build the changed one instead."""
+    del key, value
+    raise TypeError("a numerical.Tensor is immutable (its data may be shared without a copy): build a new one, for "
+                    "instance from a NumPy array (numpy.array(t), changed, then numerical.asarray), or by an expression")
+
+
+Tensor.__setitem__ = _setitem
 Tensor.__len__ = _len
 Tensor.__iter__ = _iter
 Tensor.T = property(_transpose)

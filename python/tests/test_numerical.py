@@ -1194,5 +1194,29 @@ class Threads(unittest.TestCase):
                              env=env, capture_output=True, text=True, check=True)
         self.assertEqual(out.stdout.strip(), "1")
 
+
+class FirstGestures(unittest.TestCase):
+    def test_a_mismatched_product_names_both_shapes(self):
+        a = numerical.Tensor([1.0] * 6, shape=(2, 3))
+        for left, right, words in ((a, a, "a is 2 × 3 and b is 2 × 3: a's 3 columns do not match b's 2 rows"),
+                                   (a, numerical.Tensor([1.0, 2.0]), "b's 2 entries")):
+            with self.subTest(words=words):
+                with self.assertRaises(numerical.LinAlgError) as caught:
+                    left @ right
+                self.assertIn(words, str(caught.exception))
+                with self.assertRaises(numerical.LinAlgError) as caught:
+                    numerical.matmul(left, right)
+                self.assertIn(words, str(caught.exception))
+        if np is not None:
+            with self.assertRaises(numerical.LinAlgError) as caught:
+                numerical.matmul(np.ones((4, 5)), np.ones((4, 5)))
+            self.assertIn("a is 4 × 5 and b is 4 × 5", str(caught.exception))
+
+    def test_writing_into_a_tensor_says_why_not(self):
+        t = numerical.Tensor([1.0, 2.0])
+        with self.assertRaises(TypeError) as caught:
+            t[0] = 5.0
+        self.assertIn("immutable", str(caught.exception))
+
 if __name__ == "__main__":
     unittest.main()

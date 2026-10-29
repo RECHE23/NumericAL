@@ -171,8 +171,8 @@ Small and complete, grown measured, honest about what is not yet here:
   routines under a program linked against BLAS and LAPACK (`LD_PRELOAD`) or a switch such as FlexiBLAS. The Linux
   wheels carry it (see *BLAS and LAPACK for other programs*); CMake builds it with `-DNUMERICAL_BUILD_BLAS=ON`.
 
-**Grows in as measured:** sparse storage, banded and LDLᵀ factorisations, the rest of the BLAS/LAPACK interface,
-numeric autodiff, iterative solvers, numerical integration, arbitrary precision.
+**Grows in as measured:** sparse storage, a real QZ, the rest of the BLAS/LAPACK interface, numeric autodiff,
+iterative solvers, numerical integration, arbitrary precision.
 
 ## Build
 
