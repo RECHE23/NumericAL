@@ -90,6 +90,22 @@ A change that can break code is listed under **Breaking** and held for a month's
   `schur` also takes SciPy's `lwork`, `overwrite_a` and `check_finite`, which it does not need.
 
 ### Changed
+- **A product of mismatched operands names both shapes** (`matmul: a is 2 × 3 and b is 2 × 3: a's 3 columns do not
+  match b's 2 rows`), from `@` and `numerical.matmul`, where it said `einsum: inconsistent extent for a repeated
+  label`; **writing into a `Tensor`** (`t[0] = 1`) raises a `TypeError` that says it is immutable and how to build a
+  changed one, where it was an `AttributeError`.
+- **`expm` of a complex matrix** forms the moduli of `A` once for the backward error bound of every degree it tries
+  (each `|aᵢⱼ|` a `hypot`, recomputed for each of up to 79 steps): order 131 on six AVX2 cores 12.6 → 5.3 ms. The norms
+  may move by a unit in the last place.
+- **CMake: the `numerical` target gives GCC consumers `-ffp-contract=on`**, the flag the headers want for the wheels'
+  bits (a consumer that wants no fusion sets the target property `NUMERICAL_FP_CONTRACT_OFF`). PyPI: links to the
+  documentation and the release notes, a classifier per Python version, `Typing :: Typed`.
+- **Development**: `make check-push` builds and runs the tests as CI's linux-arm job does (`make ci-arm-gcc`, Ubuntu
+  24.04's g++ 13 on arm64 in a container); `make bench-fuzz FAMILY=scipy` draws the scipy.linalg functions against
+  SciPy, and `make bench-python` adds a SciPy section, both apart from the NumPy figures BENCHMARKS.md follows;
+  `make fuzz-scipy` (in `make check-release` and the weekly long run) judges 18 scipy.linalg functions by their
+  backward error against SciPy's, and the matrix functions, `schur`, `polar`, `ldl`, `qr` with pivoting, Sylvester and
+  Lyapunov at scales 1e200 and 1e-200.
 - **`eigh(a, b)` and `eigvalsh(a, b)` of order 2048 and more (3072 complex) reduce the pencil to standard form by
   blocks, as LAPACK's `sygst`**: `L⁻¹ A L⁻ᴴ` in some `n³` operations on its lower triangle, where two whole triangular
   solves took `2 n³`. Other last bits there; below, the two solves as before, faster on many threads. The reduction
@@ -151,6 +167,16 @@ A change that can break code is listed under **Breaking** and held for a month's
   C-ordered complex64 30 → 17 µs.
 
 ### Fixed
+- **`logm` and `sqrtm` of a matrix with entries past √DBL_MAX ≈ 1.3e154**: `logm` never returned (a finite input
+  hung the caller) and the complex `sqrtm` was NaN. A real Schur form's 2 × 2 blocks are now scaled by a power of two
+  before their eigenvalue is taken (`b·c` overflowed, the rotation came out NaN); the same bits wherever nothing
+  overflowed. Both are right from 1e-300 to 1e300, and `logm` refuses (`LinAlgError`) a triangular form whose square
+  roots are not finite rather than iterate for ever.
+- **`solve_continuous_are` and `solve_discrete_are` of `complex64` operands** checked `q` and `r` Hermitian at
+  double precision's spacing, and refused a `q` formed as `B Bᴴ` in single precision that SciPy accepts: they are
+  checked at their own precision, as SciPy's.
+- **GCC 13 builds with `-Werror`** (Ubuntu 24.04 on arm64, at `-O3`) stopped on a `-Warray-bounds` in `ldl.hpp` on a
+  path that cannot run.
 - **The singular values of an exactly rank-deficient matrix keep the exact zeros LAPACK keeps**: `svdvals` of
   `[[0, 0], [1, 1]]` was `[√2, 1.3e-16]` (LAPACK `[√2, 0]`), so Julia's `cond(·, 2)` through `numerical_blas` came out
   finite. The bidiagonal reduction's reflectors are now LAPACK's (`dlarfg`'s `I − τ w wᴴ`, `w₀ = 1`), as the QR's are
