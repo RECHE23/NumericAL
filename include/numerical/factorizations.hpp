@@ -3360,7 +3360,12 @@ namespace numerical {
       const double           tolerance {std::sqrt(std::numeric_limits<double>::epsilon())};
       std::vector<buffer<T>> reflectors(k);
       std::vector<T>         taus(k);
-      for (std::size_t step {0}; step < k; ++step) {
+      const std::size_t      top   {k > pivoted_qr_crossover ? k - pivoted_qr_crossover : 0};
+      std::size_t            start {0};
+      while (start < top) {
+        start += factor_block(w, m, n, start, std::min(pivoted_qr_block, top - start), current, reference, reflectors, taus);
+      }
+      for (std::size_t step {start}; step < k; ++step) {
         const std::size_t pivot {static_cast<std::size_t>(std::max_element(current.begin() + static_cast<std::ptrdiff_t>(step), current.end()) - current.begin())};
         T* const          head  {w.data() + (step * m)};
         if (pivot != step) {
@@ -3388,13 +3393,13 @@ namespace numerical {
         for (std::size_t j {step + 1}; j < n; ++j) { // Hᴴ = I − τ̄ v vᴴ on the columns right of the pivot
           T* const column {w.data() + (j * m)};
           T        dot    {};
-          for (std::size_t i {step}; i < m; ++i) {
-            dot += detail::conj_of(v[i - step]) * column[i];
+          if constexpr (std::is_same_v<T, double>) {
+            dot = detail::dot_product(v.data(), column + step, m - step);
           }
-          const T scale {detail::conj_of(tau) * dot};
-          for (std::size_t i {step}; i < m; ++i) {
-            column[i] -= v[i - step] * scale;
+          else {
+            dot = detail::conjugate_dot_product(v.data(), column + step, m - step);
           }
+          detail::subtract_product(column + step, detail::conj_of(tau) * dot, v.data(), m - step);
           if (current[j] != 0.0) { // LAPACK's downdate of the norm by the entry the reflection took into row step
             const double ratio {std::abs(column[step]) / current[j]};
             const double left  {std::max(0.0, (1.0 + ratio) * (1.0 - ratio))};
@@ -3418,31 +3423,12 @@ namespace numerical {
           r[(i * n) + j] = w[(j * m) + i];
         }
       }
-      buffer<T> qc(m * rows, T {}); // Q by columns, as the reflections go down them
-      for (std::size_t i {0}; i < rows; ++i) {
-        qc[(i * m) + i] = T {1};
+      std::vector<detail::reflector_block<T>> blocks; // Q = H₀ H₁ …, formed by blocks as the QR's
+      for (std::size_t k0 {0}; k0 < k; k0 += pivoted_qr_block) {
+        blocks.push_back(detail::gather_reflectors(reflectors, k0, std::min(k0 + pivoted_qr_block, k), m, &taus));
       }
-      for (std::size_t back {k}; back > 0; --back) { // Q = H₀ H₁ … applied to the identity's columns, the last first
-        const std::size_t step {back - 1};
-        const buffer<T>&  v    {reflectors[step]};
-        for (std::size_t c {0}; c < rows; ++c) {
-          T* const column {qc.data() + (c * m)};
-          T        dot    {};
-          for (std::size_t i {step}; i < m; ++i) {
-            dot += detail::conj_of(v[i - step]) * column[i];
-          }
-          const T scale {taus[step] * dot};
-          for (std::size_t i {step}; i < m; ++i) {
-            column[i] -= v[i - step] * scale;
-          }
-        }
-      }
-      buffer<T> q(m * rows);
-      for (std::size_t i {0}; i < m; ++i) {
-        for (std::size_t c {0}; c < rows; ++c) {
-          q[(i * rows) + c] = qc[(c * m) + i];
-        }
-      }
+      buffer<T> q;
+      detail::form_q_into(q, blocks, m, 0, rows, false);
       for (std::size_t i {0}; i < k; ++i) { // R's diagonal real and non-negative, Q's column i taking the phase
         const double modulus {std::abs(r[(i * n) + i])};
         if (modulus == 0.0) {
@@ -3480,6 +3466,135 @@ namespace numerical {
     }
 
   private:
+
+    static constexpr std::size_t pivoted_qr_block     {32};  //!< `geqp3`'s block of columns (`NB`).
+    static constexpr std::size_t pivoted_qr_crossover {128}; //!< The columns `geqp3` leaves to the unblocked steps (`NX`).
+
+    /*!
+     * \brief Up to \p width steps from column \p start of the column-major `m × n` \p w, as LAPACK's `laqps`: the
+     *        reflections kept aside in `F` (`A ← A − V Fᴴ`, `F(j, ·) = τ A(:, j)ᴴ v` less the earlier reflectors'
+     *        share), each step's pivot column and pivot row brought up to date alone, the rest of the matrix by one
+     *        product at the end; a column whose norm downdate lost too much (`√ε`) ends the block, its norm recomputed
+     *        after the product. \return The steps taken.
+     */
+    std::size_t factor_block(buffer<T>&              w,
+                             std::size_t             m,
+                             std::size_t             n,
+                             std::size_t             start,
+                             std::size_t             width,
+                             buffer<double>&         current,
+                             buffer<double>&         reference,
+                             std::vector<buffer<T>>& reflectors,
+                             std::vector<T>&         taus)
+    {
+      const double             tolerance                    {std::sqrt(std::numeric_limits<double>::epsilon())};
+      const std::size_t        cols                         {n - start};
+      buffer<T>                f(cols * pivoted_qr_block, T {}); // F by rows: F(j, t) at f[j·block + t], j from start
+      buffer<T>                coefficients(pivoted_qr_block);
+      std::vector<std::size_t> deferred;
+      std::size_t              done {0};
+      const auto               row_of_f = [&f](std::size_t j) { return f.data() + (j * pivoted_qr_block); };
+      while (done < width && deferred.empty()) {
+        const std::size_t kk    {done};
+        const std::size_t step  {start + kk};
+        const std::size_t pivot {static_cast<std::size_t>(std::max_element(current.begin() + static_cast<std::ptrdiff_t>(step), current.end()) - current.begin())};
+        T* const          head  {w.data() + (step * m)};
+        if (pivot != step) {
+          std::swap_ranges(head, head + m, w.data() + (pivot * m));
+          std::swap_ranges(row_of_f(kk), row_of_f(kk) + kk, row_of_f(pivot - start));
+          std::swap(permutation_[step], permutation_[pivot]);
+          std::swap(current[step], current[pivot]);
+          std::swap(reference[step], reference[pivot]);
+        }
+        if (kk > 0) { // the column's share of the earlier reflections: A(step:, step) −= V(step:, ·) F(kk, ·)ᴴ
+          for (std::size_t t {0}; t < kk; ++t) {
+            coefficients[t] = detail::conj_of(row_of_f(kk)[t]);
+          }
+          detail::subtract_products(head + step, coefficients.data(), w.data() + (start * m) + step, m, kk, m - step);
+        }
+        buffer<T>  v(head + step, head + m);
+        const T    alpha    {v[0]};
+        const bool identity {detail::scaled_norm(v.data() + 1, v.size() - 1) == 0 && alpha == detail::from_carried<T>(detail::real_part(alpha))};
+        T          tau      {};
+        T          diagonal {alpha};
+        if (identity) {
+          std::fill(v.begin(), v.end(), T {});
+          v[0] = T {1};
+        }
+        else {
+          const auto [beta, factor] {detail::larfg_in_place(v)};
+          tau      = factor;
+          diagonal = beta;
+        }
+        std::copy(v.begin(), v.end(), head + step); // v in place (its 1 on the diagonal) while the block lasts
+        const auto conjugate_dot = [&v, m, step](const T* column) { // A(step:, j)ᴴ v, vectorised
+                                     if constexpr (std::is_same_v<T, double>) {
+                                       return detail::dot_product(column + step, v.data(), m - step);
+                                     }
+                                     else {
+                                       return detail::conjugate_dot_product(column + step, v.data(), m - step);
+                                     }
+                                   };
+        for (std::size_t j {kk + 1}; j < cols; ++j) { // F(j, kk) = τ A(step:, j)ᴴ v
+          row_of_f(j)[kk] = tau * conjugate_dot(w.data() + ((start + j) * m));
+        }
+        for (std::size_t j {0}; j <= kk; ++j) {
+          row_of_f(j)[kk] = T {};
+        }
+        if (kk > 0) { // less the earlier reflectors' share: F(·, kk) += F(·, 0:kk) (−τ V(step:, 0:kk)ᴴ v)
+          for (std::size_t t {0}; t < kk; ++t) {
+            coefficients[t] = -tau * conjugate_dot(w.data() + ((start + t) * m));
+          }
+          for (std::size_t j {0}; j < cols; ++j) {
+            T sum {};
+            for (std::size_t t {0}; t < kk; ++t) {
+              sum += row_of_f(j)[t] * coefficients[t];
+            }
+            row_of_f(j)[kk] += sum;
+          }
+        }
+        for (std::size_t j {kk + 1}; j < cols; ++j) { // the pivot row: A(step, j) −= A(step, start:step+1) F(j, 0:kk+1)ᴴ
+          T sum {};
+          for (std::size_t t {0}; t <= kk; ++t) {
+            sum += w[((start + t) * m) + step] * detail::conj_of(row_of_f(j)[t]);
+          }
+          w[((start + j) * m) + step] -= sum;
+        }
+        for (std::size_t j {step + 1}; j < n; ++j) { // the norms downdated as laqp2's; one that lost too much waits
+          if (current[j] != 0.0) {                     // for the product (the blocks end 128 columns before the last)
+            const double ratio {std::abs(w[(j * m) + step]) / current[j]};
+            const double left  {std::max(0.0, (1.0 + ratio) * (1.0 - ratio))};
+            const double drift {left * (current[j] / reference[j]) * (current[j] / reference[j])};
+            if (drift <= tolerance) {
+              deferred.push_back(j);
+            }
+            else {
+              current[j] *= std::sqrt(left);
+            }
+          }
+        }
+        head[step]       = diagonal;
+        reflectors[step] = std::move(v);
+        taus[step]       = tau;
+        ++done;
+      }
+      const std::size_t below {start + done}; // the rows below the block's, the columns right of it: A −= V Fᴴ
+      for (std::size_t j {done}; j < cols; ++j) {
+        for (std::size_t t {0}; t < done; ++t) {
+          coefficients[t] = detail::conj_of(row_of_f(j)[t]);
+        }
+        detail::subtract_products(w.data() + ((start + j) * m) + below, coefficients.data(), w.data() + (start * m) + below, m, done, m - below);
+      }
+      for (std::size_t t {0}; t < done; ++t) { // R below the diagonal: the reflectors are kept apart
+        T* const column {w.data() + ((start + t) * m)};
+        std::fill(column + start + t + 1, column + m, T {});
+      }
+      for (const std::size_t j : deferred) {
+        current[j]   = detail::contiguous_norm(w.data() + (j * m) + below, m - below);
+        reference[j] = current[j];
+      }
+      return done;
+    }
 
     matrix<T>                q_;           //!< Q.
     matrix<T>                r_;           //!< R.

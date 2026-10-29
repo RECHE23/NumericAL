@@ -382,6 +382,39 @@ TEST(pivoted_qr_reveals_the_rank)
   EXPECT(f.r()(2, 2) > 1e-8 && f.r()(3, 3) < 1e-12 * f.r()(0, 0));
          EXPECT(pivoted_qr_holds(matrix<double> {3, 2, std::vector<double>(6, 0.0)}, qr_mode::complete));
   EXPECT(pivoted_qr_holds(matrix<C> {3, 2, std::vector<C>(6, C {})}, qr_mode::complete)); // a real diagonal, nothing below
+  // past 128 columns, blocks of 32 as geqp3's laqps: a full matrix; one of rank 40 (its downdates lose everything after
+  // the 40th step, the block ends, the norms recomputed); one whose last 220 columns are 0 (reflections the identity)
+  for (const auto& [m, n] : {std::pair<std::size_t, std::size_t> {300, 200}, {170, 260}}) {
+    std::uint64_t       draws {m + n};
+    std::vector<double> real(m * n);
+    std::vector<C>      complex(m * n);
+    for (std::size_t e {0}; e < m * n; ++e) {
+      real[e]    = drawn(draws);
+      complex[e] = drawn_scalar<C>(draws);
+    }
+    for (const qr_mode mode : {qr_mode::reduced, qr_mode::complete}) {
+      EXPECT(pivoted_qr_holds(matrix<double> {m, n, real}, mode));
+      EXPECT(pivoted_qr_holds(matrix<C> {m, n, complex}, mode));
+    }
+  }
+  std::vector<double> wide_basis(std::size_t {300} *40);
+  for (double& value : wide_basis) {
+    value = drawn(state);
+  }
+  std::vector<double> rank_forty(std::size_t {300} *260);
+  std::vector<double> zero_tail(std::size_t  {300} *260, 0.0);
+  for (std::size_t i {0}; i < 300; ++i) {
+    for (std::size_t j {0}; j < 260; ++j) {
+      rank_forty[(i * 260) + j] = wide_basis[(i * 40) + (j % 40)] * (1.0 + (0.01 * static_cast<double>(j)));
+    }
+    for (std::size_t j {0}; j < 40; ++j) {
+      zero_tail[(i * 260) + j] = wide_basis[(i * 40) + j];
+    }
+  }
+  const numerical::pivoted_qr_decomposition<double> forty {matrix<double> {300, 260, rank_forty}};
+  EXPECT(pivoted_qr_holds(matrix<double> {300, 260, rank_forty}, qr_mode::reduced));
+  EXPECT(forty.r()(39, 39) > 1e-8 && forty.r()(40, 40) < 1e-12 * forty.r()(0, 0));
+         EXPECT(pivoted_qr_holds(matrix<double> {300, 260, zero_tail}, qr_mode::reduced));
   const numerical::pivoted_qr_decomposition<double> example {matrix<double> {{1, 2, 3}, {4, 5, 6}, {7, 8, 10}, {1, 0, 1}}};
   EXPECT((example.permutation() == std::vector<std::size_t> {2, 0, 1}));
   EXPECT(std::abs(example.r()(0, 0) - 12.08304597) < 1e-8);
