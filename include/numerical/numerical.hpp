@@ -20,6 +20,7 @@
 #include "eigen.hpp"
 #include "fft.hpp"
 #include "generalized.hpp"
+#include "ldl.hpp"
 #include "matrix.hpp"
 #include "matrix_functions.hpp"
 #include "tensor.hpp"

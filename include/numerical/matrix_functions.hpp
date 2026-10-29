@@ -13,9 +13,12 @@
 #include <complex>
 #include <concepts>
 #include <cstddef>
+#include <functional>
 #include <limits>
+#include <numbers>
 #include <optional>
 #include <stdexcept>
+#include <tuple>
 #include <utility>
 #include <vector>
 
@@ -504,6 +507,263 @@ namespace numerical {
 
   namespace detail {
 
+    //! \brief `‖A‖₁` bounds of the `[m/m]` Padé approximants of the Fréchet derivative of the exponential, for `m` from
+    //!        1 to 20, as Al-Mohy and Higham's table 6.1 (2009) and SciPy's `ell_table_61`.
+    [[nodiscard]] inline double frechet_bound(std::size_t m)
+    {
+      static constexpr std::array<double, 21> table {0.0,    2.11e-8, 3.56e-4, 1.08e-2, 6.49e-2, 2.00e-1, 4.37e-1, 7.83e-1, 1.23e0, 1.78e0, 2.42e0,
+                                                     3.13e0, 3.90e0,  4.74e0,  5.63e0,  6.56e0,  7.52e0,  8.53e0,  9.56e0, 1.06e1, 1.17e1};
+      return table[m];
+    }
+
+    //! \brief `into += coefficient · term` over the `n × n` buffers.
+    template <typename T>
+    void add_scaled(buffer<T>&       into,
+                    const buffer<T>& term,
+                    double           coefficient)
+    {
+      for (std::size_t e {0}; e < into.size(); ++e) {
+        into[e] += T {coefficient} *term[e];
+      }
+    }
+
+    //! \brief `P Q + Q P` of `n × n` buffers.
+    template <typename T>
+    [[nodiscard]] buffer<T> both_products(const buffer<T>& p,
+                                          const buffer<T>& q,
+                                          std::size_t      n)
+    {
+      buffer<T>       sum   {square_product(p, q, n)};
+      const buffer<T> other {square_product(q, p, n)};
+      for (std::size_t e {0}; e < sum.size(); ++e) {
+        sum[e] += other[e];
+      }
+      return sum;
+    }
+
+    /*!
+     * \brief `e^A` and its Fréchet derivative `L(A, E)` from the `[m/m]` Padé approximant, as Al-Mohy and Higham's
+     *        algorithm 6.4 (2009) and SciPy's `expm_frechet_algo_64`: `U`, `V` and their derivatives `Lu`, `Lv` along
+     *        \p e (`M₂ = A E + E A`, `M₄ = A² M₂ + M₂ A²`, `M₆ = A⁴ M₂ + M₄ A²`, `M₈ = A⁴ M₄ + M₄ A⁴`), each sum from
+     *        its highest term, then `R = (V − U)⁻¹ (U + V)` and `L = (V − U)⁻¹ (Lu + Lv + (Lu − Lv) R)` by one LU
+     *        factorisation; for `m = 13`, \p a and \p e already scaled, `A⁶`'s nesting as \ref pade_approximant's.
+     */
+    template <typename T>
+    [[nodiscard]] std::pair<buffer<T>, buffer<T>> frechet_pade(const buffer<T>& a,
+                                                               const buffer<T>& e,
+                                                               std::size_t      n,
+                                                               std::size_t      m)
+    {
+      const double* const b                 {pade_coefficients(m)};
+      buffer<T>           identity(n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) {
+        identity[(i * n) + i] = T {1.0};
+      }
+      const buffer<T> a2    {square_product(a, a, n)};
+      const buffer<T> m2    {both_products(a, e, n)};
+      const buffer<T> a4    {square_product(a2, a2, n)};
+      const buffer<T> m4    {both_products(a2, m2, n)};
+      const buffer<T> a6    {square_product(a2, a4, n)};
+      buffer<T>       m6    {square_product(a4, m2, n)};
+      add_scaled(m6, square_product(m4, a2, n), 1.0);
+      buffer<T> w(n * n, T  {}); // U = A W
+      buffer<T> v(n * n, T  {});
+      buffer<T> lw(n * n, T {}); // Lu = A Lw + E W
+      buffer<T> lv(n * n, T {});
+      if (m == 13) {
+        buffer<T> w1(n * n, T  {});
+        buffer<T> z1(n * n, T  {});
+        buffer<T> lw1(n * n, T {});
+        buffer<T> lz1(n * n, T {});
+        add_scaled(w1, a6, b[13]);
+        add_scaled(w1, a4, b[11]);
+        add_scaled(w1, a2, b[9]);
+        add_scaled(z1, a6, b[12]);
+        add_scaled(z1, a4, b[10]);
+        add_scaled(z1, a2, b[8]);
+        add_scaled(lw1, m6, b[13]);
+        add_scaled(lw1, m4, b[11]);
+        add_scaled(lw1, m2, b[9]);
+        add_scaled(lz1, m6, b[12]);
+        add_scaled(lz1, m4, b[10]);
+        add_scaled(lz1, m2, b[8]);
+        w  = square_product(a6, w1, n);
+        v  = square_product(a6, z1, n);
+        lw = square_product(a6, lw1, n);
+        add_scaled(lw, square_product(m6, w1, n), 1.0);
+        add_scaled(lv, square_product(a6, lz1, n), 1.0);
+        add_scaled(lv, square_product(m6, z1, n), 1.0);
+        const auto lower_terms = [&](const buffer<T>& power, const buffer<T>& derivative, std::size_t k) { // W₂, Z₂, Lw₂, Lz₂
+                                   add_scaled(w, power, b[k + 1]);
+                                   add_scaled(v, power, b[k]);
+                                   add_scaled(lw, derivative, b[k + 1]);
+                                   add_scaled(lv, derivative, b[k]);
+                                 };
+        lower_terms(a6, m6, 6);
+        lower_terms(a4, m4, 4);
+        lower_terms(a2, m2, 2);
+      }
+      else {
+        const buffer<T>                       a8          {square_product(a4, a4, n)};
+        const buffer<T>                       m8          {both_products(a4, m4, n)};
+        const std::array<const buffer<T>*, 4> powers      {&a2, &a4, &a6, &a8};
+        const std::array<const buffer<T>*, 4> derivatives {&m2, &m4, &m6, &m8};
+        for (std::size_t k {m - 1}; k >= 2; k -= 2) { // b_{k+1} A^k into W, b_k A^k into V, from the highest
+          add_scaled(w, *powers[(k / 2) - 1], b[k + 1]);
+          add_scaled(v, *powers[(k / 2) - 1], b[k]);
+          add_scaled(lw, *derivatives[(k / 2) - 1], b[k + 1]);
+          add_scaled(lv, *derivatives[(k / 2) - 1], b[k]);
+        }
+      }
+      add_scaled(w, identity, b[1]);
+      add_scaled(v, identity, b[0]);
+      const buffer<T> u  {square_product(a, w, n)};
+      buffer<T>       lu {square_product(a, lw, n)};
+      add_scaled(lu, square_product(e, w, n), 1.0);
+      buffer<T> numerator(n * n);
+      buffer<T> denominator(n * n);
+      for (std::size_t k {0}; k < n * n; ++k) {
+        numerator[k]   = u[k] + v[k];
+        denominator[k] = v[k] - u[k];
+      }
+      const lu_decomposition<T> factor {matrix<T> {n, n, std::move(denominator)}};
+      buffer<T>                 r      {factor.solve(matrix<T> {n, n, std::move(numerator)}).elements()};
+      buffer<T>                 difference(n * n);
+      for (std::size_t k {0}; k < n * n; ++k) {
+        difference[k] = lu[k] - lv[k];
+      }
+      buffer<T> derivative_terms {square_product(difference, r, n)};
+      for (std::size_t k {0}; k < n * n; ++k) {
+        derivative_terms[k] = lu[k] + lv[k] + derivative_terms[k];
+      }
+      buffer<T> l {factor.solve(matrix<T> {n, n, std::move(derivative_terms)}).elements()};
+      return {std::move(r), std::move(l)};
+    }
+  } // namespace detail
+
+  //! \brief How `expm_frechet` computes: Al-Mohy and Higham's algorithm (SciPy's `"SPS"`), or the exponential of the
+  //!        block matrix `[[A, E], [0, A]]` (`"blockEnlarge"`).
+  enum class frechet_method
+  {
+    scaling_pade_squaring, //!< Al-Mohy and Higham's algorithm 6.4.
+    block_enlarge          //!< `expm` of the `2n × 2n` block matrix.
+  };
+
+  /*!
+   * \brief `e^A` and the Fréchet derivative `L(A, E)` of the exponential at \p a along \p e, as
+   *        `scipy.linalg.expm_frechet`: by default Al-Mohy and Higham's algorithm 6.4 (2009) as SciPy's: the `[m/m]`
+   *        Padé approximant (`m` 3, 5, 7 or 9) where `‖A‖₁` is within its bound, else `m = 13` on `2⁻ˢ A` and
+   *        `2⁻ˢ E`, `s = ⌈log₂(‖A‖₁ / 4.74)⌉`, then `s` squarings `L ← R L + L R`, `R ← R²`; or the exponential of
+   *        `[[A, E], [0, A]]`, whose blocks are `e^A` and `L(A, E)`.
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws dimension_error  If \p a or \p e is not square or their orders differ.
+   * \throws non_finite_error If an entry is infinite or NaN.
+   * \throws singular_matrix_error If the approximant's denominator is singular.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] std::pair<matrix<T>, matrix<T>> expm_frechet(const matrix<T>& a,
+                                                             const matrix<T>& e,
+                                                             frechet_method   method = frechet_method::scaling_pade_squaring)
+  {
+    const std::size_t n {a.rows()};
+    if (a.cols() != n || e.rows() != n || e.cols() != n) {
+      throw dimension_error("expm_frechet requires square matrices a and e of one order");
+    }
+    detail::require_finite(a, "expm_frechet");
+    detail::require_finite(e, "expm_frechet");
+    if (n == 0) {
+      return {matrix<T> {0, 0, buffer<T> {}}, matrix<T> {0, 0, buffer<T> {}}};
+    }
+    if (method == frechet_method::block_enlarge) {
+      buffer<T> block(4 * n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          block[(i * 2 * n) + j]           = a(i, j);
+          block[(i * 2 * n) + n + j]       = e(i, j);
+          block[((n + i) * 2 * n) + n + j] = a(i, j);
+        }
+      }
+      const matrix<T> x {expm(matrix<T> {2 * n, 2 * n, std::move(block)})};
+      buffer<T>       top(n * n);
+      buffer<T>       right(n * n);
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          top[(i * n) + j]   = x(i, j);
+          right[(i * n) + j] = x(i, n + j);
+        }
+      }
+      return {matrix<T> {n, n, std::move(top)}, matrix<T> {n, n, std::move(right)}};
+    }
+    buffer<T>    a0(a.begin(), a.end());
+    buffer<T>    e0(e.begin(), e.end());
+    const double norm {detail::one_norm(a0, n)};
+    for (const std::size_t m : {std::size_t {3}, std::size_t {5}, std::size_t {7}, std::size_t {9}}) {
+      if (norm <= detail::frechet_bound(m)) {
+        auto [r, l] {detail::frechet_pade(a0, e0, n, m)};
+        return {matrix<T> {n, n, std::move(r)}, matrix<T> {n, n, std::move(l)}};
+      }
+    }
+    const int s {std::max(0, static_cast<int>(std::ceil(std::log2(norm / detail::frechet_bound(13)))))};
+    for (std::size_t k {0}; k < n * n; ++k) {
+      a0[k] *= T {std::ldexp(1.0, -s)};
+      e0[k] *= T {std::ldexp(1.0, -s)};
+    }
+    auto [r, l] {detail::frechet_pade(a0, e0, n, 13)};
+    for (int k {0}; k < s; ++k) {
+      l = detail::both_products(r, l, n);
+      r = detail::square_product(r, r, n);
+    }
+    return {matrix<T> {n, n, std::move(r)}, matrix<T> {n, n, std::move(l)}};
+  }
+
+  /*!
+   * \brief The relative condition number of the exponential at \p a in the Frobenius norm, as `scipy.linalg.expm_cond`:
+   *        `‖K‖₂ ‖A‖_F / ‖e^A‖_F`, `K` the `n² × n²` Kronecker form of the Fréchet derivative (its column `i n + j`
+   *        the column-major `vec` of `L(A, eᵢ eⱼᵀ)`), `‖K‖₂` its largest singular value.
+   *        An empty matrix's is 0.
+   * \throws dimension_error  If \p a is not square.
+   * \throws non_finite_error If an entry is infinite or NaN.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] double expm_cond(const matrix<T>& a)
+  {
+    const std::size_t n {a.rows()};
+    if (a.cols() != n) {
+      throw dimension_error("expm_cond requires a square matrix");
+    }
+    detail::require_finite(a, "expm_cond");
+    if (n == 0) { // no direction to perturb along
+      return 0.0;
+    }
+    const std::size_t columns {n * n};
+    buffer<T>         k(columns * columns);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        buffer<T> unit(columns, T {});
+        unit[(i * n) + j] = T {1.0};
+        const matrix<T>   l       {expm_frechet(a, matrix<T> {n, n, std::move(unit)}).second};
+        for (std::size_t q {0}; q < n; ++q) { // vec, column-major: entry (p, q) at q n + p
+          for (std::size_t p {0}; p < n; ++p) {
+            k[(((q * n) + p) * columns) + (i * n) + j] = l(p, q);
+          }
+        }
+      }
+    }
+    const auto frobenius = [](const matrix<T>& m) {
+                             double sum {0.0};
+                             for (const T& x : m) {
+                               sum += std::norm(x);
+                             }
+                             return std::sqrt(sum);
+                           };
+    const double kronecker {singular_values(matrix<T> {columns, columns, std::move(k)})[0]};
+    return kronecker * frobenius(a) / frobenius(expm(a));
+  }
+
+  namespace detail {
+
     /*!
      * \brief The off-diagonal blocks of the square root \p r (`n × n`, row-major) of the upper (quasi-)triangular \p t,
      *        its diagonal blocks already in \p r, column of blocks by column, each block row from the last: `R_ii X +
@@ -744,6 +1004,455 @@ namespace numerical {
       throw std::domain_error("sqrtm: a real eigenvalue below 0, whose principal square root is complex");
     }
     return std::move(*root);
+  }
+
+  /*!
+   * \brief A function of a square matrix from its complex Schur form, as `scipy.linalg.funm` forms it: `f(A)` and the
+   *        estimate of its relative error.
+   */
+  struct funm_result
+  {
+    matrix<std::complex<double>> f;           //!< `f(A)`, complex (SciPy's real part where `A` is real and it is negligible).
+    double                       error {0.0}; //!< `‖err‖₁ / ‖A‖₁` estimated as SciPy's: `min(1, max(ε, ε ‖strict triu T‖₁ / δ))`.
+  };
+
+  namespace detail {
+
+    //! \brief A real matrix's complex Schur form as `scipy.linalg.funm` takes it: the real form made complex (`rsf2csf`).
+    [[nodiscard]] inline std::pair<matrix<std::complex<double>>, matrix<std::complex<double>>> function_schur_form(const matrix<double>& a)
+    {
+      const schur_decomposition<double> s {a};
+      return complex_schur_form(s.t(), s.z());
+    }
+
+    //! \brief A complex matrix's Schur form.
+    [[nodiscard]] inline std::pair<matrix<std::complex<double>>, matrix<std::complex<double>>> function_schur_form(const matrix<std::complex<double>>& a)
+    {
+      const schur_decomposition<std::complex<double>> s {a};
+      return {s.t(), s.z()};
+    }
+  } // namespace detail
+
+  /*!
+   * \brief `f(A)` from the complex Schur form `A = Z T Zᴴ` and `f` at `T`'s diagonal (\p values), as `scipy.linalg.funm`
+   *        completes it: Parlett's recurrence (Golub and Van Loan's algorithm 11.1.1) on `F`, a superdiagonal at a time,
+   *        `F(i, j) = (T(i, j) (F(j, j) − F(i, i)) + Σ T(i, k) F(k, j) − Σ F(i, k) T(k, j)) / (T(j, j) − T(i, i))` (not
+   *        divided where two diagonal entries are equal, as SciPy's, the error estimate then 1), then `Z F Zᴴ`; `δ` the
+   *        smallest `|T(j, j) − T(i, i)|` met (or `|T(0, 0)|`, `ε` where 0).
+   * \throws dimension_error If \p t and \p z are not square of one order or \p values does not hold `n` entries.
+   */
+  [[nodiscard]] inline funm_result funm_from_schur(const matrix<std::complex<double>>&      t,
+                                                   const matrix<std::complex<double>>&      z,
+                                                   const std::vector<std::complex<double>>& values)
+  {
+    using C = std::complex<double>;
+    const std::size_t n {t.rows()};
+    if (t.cols() != n || z.rows() != n || z.cols() != n || values.size() != n) {
+      throw dimension_error("funm requires a square Schur form T, Z of its order and one value per eigenvalue");
+    }
+    const double tolerance {std::numeric_limits<double>::epsilon()};
+    if (n == 0) {
+      return {matrix<C> {0, 0, buffer<C> {}}, tolerance};
+    }
+    buffer<C> f(n * n, C {});
+    for (std::size_t i {0}; i < n; ++i) {
+      f[(i * n) + i] = values[i];
+    }
+    double smallest {std::abs(t(0, 0))};
+    for (std::size_t p {1}; p < n; ++p) {
+      for (std::size_t i {0}; i + p < n; ++i) {
+        const std::size_t j     {i + p};
+        C                 sum   {t(i, j) * (f[(j * n) + j] - f[(i * n) + i])};
+        C                 left  {};
+        C                 right {};
+        for (std::size_t k {i + 1}; k < j; ++k) {
+          left  += t(i, k) * f[(k * n) + j];
+          right += f[(i * n) + k] * t(k, j);
+        }
+        sum += left - right;
+        const C gap {t(j, j) - t(i, i)};
+        if (gap != C {}) {
+          sum /= gap;
+        }
+        f[(i * n) + j] = sum;
+        smallest       = std::min(smallest, std::abs(gap));
+      }
+    }
+    smallest = smallest == 0.0 ? tolerance : smallest;
+    double upper {0.0}; // ‖strict upper triangle of T‖₁
+    for (std::size_t j {1}; j < n; ++j) {
+      double column {0.0};
+      for (std::size_t i {0}; i < j; ++i) {
+        column += std::abs(t(i, j));
+      }
+      upper = std::max(upper, column);
+    }
+    const matrix<C> result {z * matrix<C> {n, n, std::move(f)} *detail::adjoint_of(z)};
+    double          error  {std::min(1.0, std::max(tolerance, (tolerance / smallest) * upper))};
+    for (const C& x : result) { // x − x is 0 for a finite part and NaN for an infinite or NaN one, without overflow
+      error = (x.real() - x.real()) + (x.imag() - x.imag()) == 0.0 ? error : std::numeric_limits<double>::infinity();
+    }
+    return {result, error};
+  }
+
+  /*!
+   * \brief A function of a square matrix, as `scipy.linalg.funm`: the Schur form (a real matrix's real form made complex
+   *        as `rsf2csf`), \p f at its diagonal, called once with the eigenvalues in the form's order and returning one
+   *        value each, then \ref funm_from_schur. Accurate where the eigenvalues are well apart (the estimate says how).
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws dimension_error   If \p a is not square, or \p f does not return one value per eigenvalue.
+   * \throws non_finite_error  If an entry is infinite or NaN.
+   * \throws convergence_error If the Schur form's iterations did not converge.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] funm_result funm(const matrix<T>&                                                                                  a,
+                                 const std::function<std::vector<std::complex<double>>(const std::vector<std::complex<double>>&)>& f)
+  {
+    if (a.rows() != a.cols()) {
+      throw dimension_error("funm requires a square matrix");
+    }
+    detail::require_finite(a, "funm");
+    const auto [t, z] {detail::function_schur_form(a)};
+    std::vector<std::complex<double>> diagonal(t.rows());
+    for (std::size_t i {0}; i < t.rows(); ++i) {
+      diagonal[i] = t(i, i);
+    }
+    return funm_from_schur(t, z, f(diagonal));
+  }
+
+  /*!
+   * \brief The principal logarithm of a square matrix with what SciPy warns of: `log A` (complex), and whether `A`'s
+   *        triangular form was exactly singular (its zero diagonal entries taken as `10⁻²⁰`, as SciPy's) or nearly
+   *        (a diagonal entry below `10⁻²⁰` in modulus).
+   */
+  struct logm_result
+  {
+    matrix<std::complex<double>> log;                      //!< `log A`.
+    bool                         exactly_singular {false}; //!< A zero diagonal entry of the triangular form was replaced.
+    bool                         nearly_singular  {false}; //!< A diagonal entry of the triangular form is below `10⁻²⁰`.
+  };
+
+  namespace detail {
+
+    //! \brief The bounds `θ_m` of the `[m/m]` Padé approximant of `log(I + X)` (Al-Mohy and Higham's table 2.1, 2012),
+    //!        `m` from 1 to 7.
+    [[nodiscard]] inline double log_pade_bound(std::size_t m)
+    {
+      static constexpr std::array<double, 8> theta {0.0, 1.59e-5, 2.31e-3, 1.94e-2, 6.21e-2, 1.28e-1, 2.06e-1, 2.88e-1};
+      return theta[m];
+    }
+
+    //! \brief `ceil((Im z − π) / 2π)`, the unwinding number of `z` (SciPy's `_unwindk`).
+    [[nodiscard]] inline double unwinding(const std::complex<double>& z)
+    {
+      return std::ceil((z.imag() - std::numbers::pi) / (2.0 * std::numbers::pi));
+    }
+
+    /*!
+     * \brief `a^(1/2^k) − 1` without the cancellation of the subtraction, as SciPy's `_briggs_helper_function` (Al-Mohy
+     *        and Higham's algorithm 2, 2012): `(a − 1) / Π (1 + a^(1/2^j))`, a first square root taken where `arg a ≥
+     *        π/2`.
+     */
+    [[nodiscard]] inline std::complex<double> briggs(std::complex<double> a,
+                                                     std::size_t          k)
+    {
+      using C = std::complex<double>;
+      if (k == 0) {
+        return a - C {1.0};
+      }
+      if (k == 1) {
+        return complex_sqrt(a) - C {1.0};
+      }
+      std::size_t remaining {k};
+      if (std::arg(a) >= std::numbers::pi / 2.0) {
+        a = complex_sqrt(a);
+        --remaining;
+      }
+      const C z0 {a - C {1.0}};
+      a = complex_sqrt(a);
+      C product  {C {1.0} + a};
+      for (std::size_t j {1}; j < remaining; ++j) {
+        a        = complex_sqrt(a);
+        product *= C {1.0} + a;
+      }
+      return z0 / product;
+    }
+
+    //! \brief The superdiagonal entry of `T^p` for the 2 × 2 upper triangular `[[l1, t12], [0, l2]]`, as SciPy's
+    //!         `_fractional_power_superdiag_entry` (Higham and Lin's equation 5.5, 2011).
+    [[nodiscard]] inline std::complex<double> fractional_power_superdiagonal(const std::complex<double>& l1,
+                                                                             const std::complex<double>& l2,
+                                                                             const std::complex<double>& t12,
+                                                                             double                      p)
+    {
+      using C = std::complex<double>;
+      if (l1 == l2) {
+        return t12 * p * complex_exp((p - 1.0) * complex_log(l1));
+      }
+      if (std::abs(l2 - l1) > std::abs(l1 + l2) / 2.0) {
+        return t12 * (complex_exp(p * complex_log(l2)) - complex_exp(p * complex_log(l1))) / (l2 - l1);
+      }
+      const C      z {(l2 - l1) / (l2 + l1)};
+      const C      log1 {complex_log(l1)};
+      const C      log2 {complex_log(l2)};
+      const C      scaled {t12 * complex_exp((p / 2.0) * (log2 + log1))};
+      const double u {unwinding(log2 - log1)};
+      const C      b {p * (complex_atanh(z) + (std::numbers::pi * C {0.0, 1.0} *u))};
+      return scaled * (C {2.0} *complex_sinh(b) / (l2 - l1));
+    }
+
+    //! \brief The superdiagonal entry of `log T` for the 2 × 2 upper triangular `[[l1, t12], [0, l2]]`, as SciPy's
+    //!         `_logm_superdiag_entry`.
+    [[nodiscard]] inline std::complex<double> log_superdiagonal(const std::complex<double>& l1,
+                                                                const std::complex<double>& l2,
+                                                                const std::complex<double>& t12)
+    {
+      using C = std::complex<double>;
+      if (l1 == l2) {
+        return t12 / l1;
+      }
+      if (std::abs(l2 - l1) > std::abs(l1 + l2) / 2.0) {
+        return t12 * (complex_log(l2) - complex_log(l1)) / (l2 - l1);
+      }
+      const C      z {(l2 - l1) / (l2 + l1)};
+      const double u {unwinding(complex_log(l2) - complex_log(l1))};
+      return t12 * C {2.0} *(complex_atanh(z) + (std::numbers::pi * C {0.0, 1.0} *u)) / (l2 - l1);
+    }
+
+    //! \brief `‖(T − I)ᵖ‖₁^(1/p)` of the upper triangular `n × n` \p t, exactly (SciPy estimates it, `onenormest`).
+    [[nodiscard]] inline double shifted_power_norm(const buffer<std::complex<double>>& t,
+                                                   std::size_t                         n,
+                                                   std::size_t                         p)
+    {
+      buffer<std::complex<double>> shifted {t};
+      for (std::size_t i {0}; i < n; ++i) {
+        shifted[(i * n) + i] -= std::complex<double> {1.0};
+      }
+      buffer<std::complex<double>> power {shifted};
+      for (std::size_t k {1}; k < p; ++k) {
+        power = square_product(power, shifted, n);
+      }
+      return std::pow(one_norm(power, n), 1.0 / static_cast<double>(p));
+    }
+
+    //! \brief Whether `log` has its principal branch at every diagonal entry of \p t (none real and at most 0).
+    [[nodiscard]] inline bool principal_branch(const buffer<std::complex<double>>& t,
+                                               std::size_t                         n)
+    {
+      for (std::size_t i {0}; i < n; ++i) {
+        const std::complex<double> lambda {t[(i * n) + i]};
+        if (!(lambda.real() > 0.0 || lambda.imag() != 0.0)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    /*!
+     * \brief Al-Mohy and Higham's inverse scaling and squaring (2012, algorithm 4.1) on the upper triangular \p t0, as
+     *        SciPy's `_inverse_squaring_helper`: `s` square roots of `T` until `T − I` is small enough for the `[m/m]`
+     *        Padé approximant of `log(I + X)` (`m` from 1 to 7), the norms `‖(T − I)ᵖ‖₁^(1/p)` exact; `R = T − I` with
+     *        its diagonal and superdiagonal recomputed without cancellation where the principal branch exists.
+     * \return `R`, `s` and `m`.
+     */
+    [[nodiscard]] inline std::tuple<buffer<std::complex<double>>, std::size_t, std::size_t> inverse_squaring(const buffer<std::complex<double>>& t0,
+                                                                                                             std::size_t                         n)
+    {
+      using C = std::complex<double>;
+      std::size_t s0 {0};
+      buffer<C>   diagonal(n);
+      for (std::size_t i {0}; i < n; ++i) {
+        diagonal[i] = t0[(i * n) + i];
+      }
+      const auto far = [&diagonal]() {
+                         double largest {0.0};
+                         for (const C& d : diagonal) {
+                           largest = std::max(largest, std::abs(d - C {1.0}));
+                         }
+                         return largest > log_pade_bound(7);
+                       };
+      while (far()) {
+        for (C& d : diagonal) {
+          d = complex_sqrt(d);
+        }
+        ++s0;
+      }
+      const auto root = [n](const buffer<C>& t) {
+                          return buffer<C> {complex_square_root(matrix<C> {n, n, buffer<C> {t}}, nullptr).elements()};
+                        };
+      buffer<C> t {t0};
+      for (std::size_t i {0}; i < s0; ++i) {
+        t = root(t);
+      }
+      std::size_t  s  {s0};
+      double       d3 {shifted_power_norm(t, n, 3)};
+      const double a2 {std::max(shifted_power_norm(t, n, 2), d3)};
+      std::size_t  m  {a2 <= log_pade_bound(1) ? std::size_t {1} : (a2 <= log_pade_bound(2) ? std::size_t {2} : std::size_t {0})};
+      while (m == 0) {
+        if (s > s0) {
+          d3 = shifted_power_norm(t, n, 3);
+        }
+        const double d4 {shifted_power_norm(t, n, 4)};
+        const double a3 {std::max(d3, d4)};
+        if (a3 <= log_pade_bound(7)) {
+          std::size_t j1 {3};
+          while (a3 > log_pade_bound(j1)) {
+            ++j1;
+          }
+          if (j1 <= 6) {
+            m = j1;
+            break;
+          }
+          // a square root about halves a3, so one in (θ₆, θ₇] falls to θ₆ or below: the paper's cap of two such roots
+          // (SciPy's k < 2) is never reached
+          if (a3 / 2.0 <= log_pade_bound(5)) {
+            t = root(t);
+            ++s;
+            continue;
+          }
+        }
+        const double d5  {shifted_power_norm(t, n, 5)};
+        const double eta {std::min(a3, std::max(d4, d5))};
+        m = eta <= log_pade_bound(6) ? std::size_t {6} : (eta <= log_pade_bound(7) ? std::size_t {7} : std::size_t {0});
+        if (m == 0) {
+          t = root(t);
+          ++s;
+        }
+      }
+      for (std::size_t i {0}; i < n; ++i) {
+        t[(i * n) + i] -= C {1.0};
+      }
+      if (principal_branch(t0, n)) {
+        const double p {std::ldexp(1.0, -static_cast<int>(s))};
+        for (std::size_t j {0}; j < n; ++j) {
+          t[(j * n) + j] = briggs(t0[(j * n) + j], s);
+          if (j + 1 < n) {
+            t[(j * n) + j + 1] = fractional_power_superdiagonal(t0[(j * n) + j], t0[((j + 1) * n) + j + 1], t0[(j * n) + j + 1], p);
+          }
+        }
+      }
+      return {std::move(t), s, m};
+    }
+
+    /*!
+     * \brief The logarithm of the upper triangular \p t0 (no zero on its diagonal), as SciPy's `_logm_triu`: `R`, `s`
+     *        and `m` by \ref inverse_squaring, `U = 2ˢ Σ αₖ (I + βₖ R)⁻¹ R` (the `[m/m]` Padé approximant as the
+     *        partial fractions of `m`-point Gauss–Legendre quadrature on [0, 1], SciPy's nodes and weights), then the
+     *        diagonal `log λᵢ` and the superdiagonal recomputed exactly where the principal branch exists.
+     */
+    [[nodiscard]] inline buffer<std::complex<double>> triangular_log(const buffer<std::complex<double>>& t0,
+                                                                     std::size_t                         n)
+    {
+      using C = std::complex<double>;
+      static constexpr std::array<std::array<double, 7>, 7> nodes {{
+        {0.5},
+        {0.21132486540518708, 0.7886751345948129},
+        {0.1127016653792583, 0.5, 0.8872983346207417},
+        {0.06943184420297371, 0.33000947820757187, 0.6699905217924281, 0.9305681557970262},
+        {0.04691007703066802, 0.23076534494715845, 0.5, 0.7692346550528415, 0.9530899229693319},
+        {0.033765242898423975, 0.16939530676686776, 0.3806904069584015, 0.6193095930415985, 0.8306046932331322, 0.966234757101576},
+        {0.0254460438286207, 0.12923440720030277, 0.2970774243113014, 0.5, 0.7029225756886985, 0.8707655927996972, 0.9745539561713793}}};
+      static constexpr std::array<std::array<double, 7>, 7> weights {{
+        {1.0},
+        {0.5, 0.5},
+        {0.2777777777777779, 0.44444444444444414, 0.2777777777777779},
+        {0.17392742256872679, 0.3260725774312732, 0.3260725774312732, 0.17392742256872679},
+        {0.11846344252809478, 0.2393143352496831, 0.2844444444444443, 0.2393143352496831, 0.11846344252809478},
+        {0.08566224618958473, 0.1803807865240696, 0.2339569672863457, 0.2339569672863457, 0.1803807865240696, 0.08566224618958473},
+        {0.06474248308443482, 0.13985269574463827, 0.19091502525255954, 0.20897959183673465, 0.19091502525255954, 0.13985269574463827,
+         0.06474248308443482}}};
+      auto [r, s, m] {inverse_squaring(t0, n)};
+      buffer<C> u(n * n, C {});
+      for (std::size_t q {0}; q < m; ++q) {
+        const double alpha {weights[m - 1][q]};
+        const double beta  {nodes[m - 1][q]};
+        buffer<C>    shifted(n * n);
+        buffer<C>    x(n * n);
+        for (std::size_t e {0}; e < n * n; ++e) {
+          shifted[e] = beta * r[e];
+          x[e]       = alpha * r[e];
+        }
+        for (std::size_t i {0}; i < n; ++i) {
+          shifted[(i * n) + i] += C {1.0};
+        }
+        solve_triangular_in_place(shifted.data(), n, false, triangular_op::none, false, x.data(), n);
+        for (std::size_t e {0}; e < n * n; ++e) {
+          u[e] += x[e];
+        }
+      }
+      const double power {std::ldexp(1.0, static_cast<int>(s))};
+      for (C& x : u) {
+        x *= power;
+      }
+      if (principal_branch(t0, n)) {
+        for (std::size_t i {0}; i < n; ++i) {
+          u[(i * n) + i] = complex_log(t0[(i * n) + i]);
+          if (i + 1 < n) {
+            u[(i * n) + i + 1] = log_superdiagonal(t0[(i * n) + i], t0[((i + 1) * n) + i + 1], t0[(i * n) + i + 1]);
+          }
+        }
+      }
+      return u;
+    }
+
+    //! \brief The triangular form \p t made nonsingular as SciPy's `_logm_force_nonsingular_triangular_matrix`: a zero
+    //!         diagonal entry replaced by `10⁻²⁰`. \return Whether one was (exactly singular), and whether one was
+    //!         below `10⁻²⁰` otherwise (nearly singular).
+    [[nodiscard]] inline std::pair<bool, bool> force_nonsingular(buffer<std::complex<double>>& t,
+                                                                 std::size_t                   n)
+    {
+      constexpr double tiny  {1e-20};
+      bool             exact {false};
+      bool             near  {false};
+      for (std::size_t i {0}; i < n; ++i) {
+        const std::complex<double>& d {t[(i * n) + i]};
+        exact = exact || std::abs(d) == 0.0;
+        near  = near || std::abs(d) < tiny;
+      }
+      if (exact) {
+        for (std::size_t i {0}; i < n; ++i) {
+          t[(i * n) + i] = std::abs(t[(i * n) + i]) == 0.0 ? std::complex<double> {tiny} : t[(i * n) + i];
+        }
+      }
+      return {exact, near && !exact};
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The principal logarithm of a square matrix, as `scipy.linalg.logm`: an upper triangular `A` directly, else
+   *        its Schur form `A = Z T Zᴴ` (a real matrix's real form made complex) and `Z log(T) Zᴴ`; `log T` by Al-Mohy and
+   *        Higham's inverse scaling and squaring (2012) as SciPy's `_logm_triu`, the norms that choose the square roots
+   *        and the degree exact where SciPy estimates them. A zero eigenvalue is taken as `10⁻²⁰` (no logarithm exists
+   *        there), as SciPy's, and reported; complex, SciPy's real part where `A` is real and it is negligible.
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws dimension_error   If \p a is not square.
+   * \throws non_finite_error  If an entry is infinite or NaN.
+   * \throws convergence_error If the Schur form's iterations did not converge.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] logm_result logm(const matrix<T>& a)
+  {
+    using C = std::complex<double>;
+    const std::size_t n {a.rows()};
+    if (a.cols() != n) {
+      throw dimension_error("logm requires a square matrix");
+    }
+    detail::require_finite(a, "logm");
+    if (n == 0) {
+      return {matrix<C> {0, 0, buffer<C> {}}, false, false};
+    }
+    if (detail::upper_triangular(a)) {
+      buffer<C> t(a.begin(), a.end());
+      const auto [exact, near] {detail::force_nonsingular(t, n)};
+      return {matrix<C> {n, n, detail::triangular_log(t, n)}, exact, near};
+    }
+    const auto [form, z] {detail::function_schur_form(a)};
+    buffer<C> t(form.begin(), form.end());
+    const auto [exact, near] {detail::force_nonsingular(t, n)};
+    const matrix<C> u {n, n, detail::triangular_log(t, n)};
+    return {z * u * detail::adjoint_of(z), exact, near};
   }
 } // namespace numerical
 

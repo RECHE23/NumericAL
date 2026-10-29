@@ -195,6 +195,137 @@ any_tensor expm(const any_tensor& v)
     return any_tensor {real_tensor {numerical::expm(matrix_from(std::get<real_tensor>(v)))}};
 }
 
+// expm_frechet(a, e, block) -> (expm(a), L(a, e)), as scipy.linalg.expm_frechet ("SPS", or "blockEnlarge" where
+// block): one dtype (the caller promotes), single precision computed in double.
+std::tuple<any_tensor, any_tensor> expm_frechet(const any_tensor& a, const any_tensor& e, bool block)
+{
+    if (shape_of(a).size() != 2 || shape_of(e).size() != 2) {
+        throw std::runtime_error("expm_frechet expects matrices (SciPy's batches are not taken)");
+    }
+    if (a.index() != e.index()) {
+        throw std::runtime_error("expm_frechet operands must share one dtype");
+    }
+    if (is_single(a)) {
+        auto [x, l] {expm_frechet(widened(a), widened(e), block)};
+        return {narrowed(x), narrowed(l)};
+    }
+    const numerical::frechet_method method {block ? numerical::frechet_method::block_enlarge : numerical::frechet_method::scaling_pade_squaring};
+    const sb::scoped_gil_release    unlocked {releases_gil(count_of(a) * 8)};
+    if (is_complex(a)) {
+        auto [x, l] {numerical::expm_frechet(matrix_from(std::get<cplx_tensor>(a)), matrix_from(std::get<cplx_tensor>(e)), method)};
+        return {any_tensor {cplx_tensor {std::move(x)}}, any_tensor {cplx_tensor {std::move(l)}}};
+    }
+    auto [x, l] {numerical::expm_frechet(matrix_from(std::get<real_tensor>(a)), matrix_from(std::get<real_tensor>(e)), method)};
+    return {any_tensor {real_tensor {std::move(x)}}, any_tensor {real_tensor {std::move(l)}}};
+}
+
+// expm_cond(a) -> float, as scipy.linalg.expm_cond: the exponential's relative condition number in the Frobenius norm.
+double expm_cond(const any_tensor& a)
+{
+    if (shape_of(a).size() != 2) {
+        throw std::runtime_error("expm_cond expects a matrix (SciPy's batches are not taken)");
+    }
+    if (is_single(a)) {
+        return expm_cond(widened(a));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * count_of(a) * 8)};
+    if (is_complex(a)) {
+        return numerical::expm_cond(matrix_from(std::get<cplx_tensor>(a)));
+    }
+    return numerical::expm_cond(matrix_from(std::get<real_tensor>(a)));
+}
+
+// funm_schur(a) -> (T, Z), the complex Schur form scipy.linalg.funm takes (a real matrix's real form made complex);
+// complex128 whatever the dtype.
+std::tuple<any_tensor, any_tensor> funm_schur(const any_tensor& a)
+{
+    if (shape_of(a).size() != 2) {
+        throw std::runtime_error("funm expects a matrix");
+    }
+    if (is_single(a)) {
+        return funm_schur(widened(a));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 8)};
+    const auto [t, z] {is_complex(a) ? numerical::detail::function_schur_form(matrix_from(std::get<cplx_tensor>(a)))
+                                     : numerical::detail::function_schur_form(matrix_from(std::get<real_tensor>(a)))};
+    return {any_tensor {cplx_tensor {t}}, any_tensor {cplx_tensor {z}}};
+}
+
+// funm_parlett(t, z, values, real) -> (F, err), as scipy.linalg.funm completes the Schur form: values f at T's
+// diagonal (complex128); F real where real (a real matrix) and every imaginary part is within 1e6 ε of 0 (SciPy's
+// _maybe_real).
+std::tuple<any_tensor, double> funm_parlett(const any_tensor& t, const any_tensor& z, const any_tensor& values, bool real)
+{
+    if (!is_complex(t) || !is_complex(z) || !is_complex(values) || is_single(t) || is_single(z) || is_single(values)) {
+        throw std::runtime_error("funm_parlett takes complex128 tensors");
+    }
+    const auto&                            v {std::get<cplx_tensor>(values).data()};
+    const std::vector<std::complex<double>> diagonal(v.begin(), v.end());
+    const sb::scoped_gil_release           unlocked {releases_gil(count_of(t) * 8)};
+    numerical::funm_result                 r {numerical::funm_from_schur(matrix_from(std::get<cplx_tensor>(t)), matrix_from(std::get<cplx_tensor>(z)), diagonal)};
+    const double                           tolerance {1e6 * std::numeric_limits<double>::epsilon()};
+    const bool negligible {std::all_of(r.f.begin(), r.f.end(), [tolerance](const std::complex<double>& x) { return std::abs(x.imag()) <= tolerance; })};
+    if (real && negligible) {
+        numerical::buffer<double> parts(r.f.rows() * r.f.cols());
+        std::transform(r.f.begin(), r.f.end(), parts.begin(), [](const std::complex<double>& x) { return x.real(); });
+        return {any_tensor {real_tensor {numerical::matrix<double> {r.f.rows(), r.f.cols(), std::move(parts)}}}, r.error};
+    }
+    return {any_tensor {cplx_tensor {std::move(r.f)}}, r.error};
+}
+
+namespace {
+
+    // ‖x‖₁, the largest column sum of moduli.
+    template <typename T>
+    double matrix_one_norm(const numerical::matrix<T>& x)
+    {
+        std::vector<double> sums(x.cols(), 0.0);
+        for (std::size_t i {0}; i < x.rows(); ++i) {
+            for (std::size_t j {0}; j < x.cols(); ++j) {
+                sums[j] += std::abs(x(i, j));
+            }
+        }
+        return sums.empty() ? 0.0 : *std::max_element(sums.begin(), sums.end());
+    }
+
+    // logm of one matrix as scipy.linalg.logm answers: F (real where a is and its imaginary parts are within 1e6 ε of
+    // 0, SciPy's _maybe_real), ‖expm(F) − A‖₁ / ‖A‖₁, and the triangular form's singularity.
+    template <typename T>
+    std::tuple<any_tensor, double, bool, bool> logm_of(const numerical::matrix<T>& a)
+    {
+        const numerical::logm_result r {numerical::logm(a)};
+        numerical::matrix<std::complex<double>> as_complex {a.rows(), a.cols(), numerical::buffer<std::complex<double>>(a.begin(), a.end())};
+        const double error {matrix_one_norm(numerical::expm(r.log) - as_complex) / matrix_one_norm(as_complex)};
+        const double tolerance {1e6 * std::numeric_limits<double>::epsilon()};
+        const bool   negligible {std::all_of(r.log.begin(), r.log.end(), [tolerance](const std::complex<double>& x) { return std::abs(x.imag()) <= tolerance; })};
+        if (std::is_same_v<T, double> && negligible) {
+            numerical::buffer<double> parts(r.log.rows() * r.log.cols());
+            std::transform(r.log.begin(), r.log.end(), parts.begin(), [](const std::complex<double>& x) { return x.real(); });
+            return {any_tensor {real_tensor {numerical::matrix<double> {r.log.rows(), r.log.cols(), std::move(parts)}}}, error, r.exactly_singular,
+                    r.nearly_singular};
+        }
+        return {any_tensor {cplx_tensor {r.log}}, error, r.exactly_singular, r.nearly_singular};
+    }
+} // namespace
+
+// logm(a) -> (F, err, exactly_singular, nearly_singular), as scipy.linalg.logm of one matrix (the caller takes a
+// stack's one at a time): single precision computed in double.
+std::tuple<any_tensor, double, bool, bool> logm(const any_tensor& a)
+{
+    if (shape_of(a).size() != 2) {
+        throw std::runtime_error("logm expects a matrix");
+    }
+    if (is_single(a)) {
+        auto [f, error, exact, near] {logm(widened(a))};
+        return {narrowed(f), error, exact, near};
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 8)};
+    if (is_complex(a)) {
+        return logm_of(matrix_from(std::get<cplx_tensor>(a)));
+    }
+    return logm_of(matrix_from(std::get<real_tensor>(a)));
+}
+
 // sqrtm(a) -> Tensor, as scipy.linalg.sqrtm: the principal square root of a square matrix or of each of a stack's; a
 // real operand's real where every matrix has one, else the whole complex (a real eigenvalue below 0 anywhere).
 any_tensor sqrtm(const any_tensor& v)
@@ -483,6 +614,36 @@ std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> qr_pivoted(const an
                           }
                           else {
                               throw std::runtime_error("qr with pivoting: single precision is widened first");
+                          }
+                      }, a);
+}
+
+// ldl(a, lower, hermitian) -> (lu, d, perm, ignored), as scipy.linalg.ldl: ignored where a Hermitian complex matrix's
+// diagonal has an imaginary part (SciPy's ComplexWarning); single precision computed in double.
+std::tuple<any_tensor, any_tensor, std::vector<std::size_t>, bool> ldl(const any_tensor& a, bool lower, bool hermitian)
+{
+    if (shape_of(a).size() != 2) {
+        throw std::runtime_error("ldl expects a matrix");
+    }
+    if (is_single(a)) {
+        auto [l, d, p, ignored] {ldl(widened(a), lower, hermitian)};
+        return {narrowed(l), narrowed(d), std::move(p), ignored};
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 8)};
+    return std::visit([&](const auto& t) -> std::tuple<any_tensor, any_tensor, std::vector<std::size_t>, bool> {
+                          using tensor_type = std::decay_t<decltype(t)>;
+                          using T           = element_of_t<tensor_type>;
+                          if constexpr (std::is_same_v<T, double> || std::is_same_v<T, std::complex<double>>) {
+                              const numerical::matrix<T>               m {matrix_from(t)};
+                              const numerical::ldl_decomposition<T>    f {m, lower, hermitian};
+                              bool                                     ignored {false};
+                              for (std::size_t i {0}; i < m.rows() && i < m.cols(); ++i) {
+                                  ignored = ignored || (hermitian && std::imag(m(i, i)) != 0.0);
+                              }
+                              return {any_tensor {tensor_type {f.factor()}}, any_tensor {tensor_type {f.d()}}, f.permutation(), ignored};
+                          }
+                          else {
+                              throw std::runtime_error("ldl: single precision is widened first");
                           }
                       }, a);
 }

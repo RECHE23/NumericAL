@@ -1379,6 +1379,10 @@ any_tensor inverse(const any_tensor& v); // in linalg.cpp
 // qr_pivoted(a, complete) -> (Q, R, P), as scipy.linalg.qr(a, pivoting=True).
 std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> qr_pivoted(const any_tensor& a, bool complete); // in linalg.cpp
 
+// ldl(a, lower, hermitian) -> (lu, d, perm, ignored), as scipy.linalg.ldl (ignored: a Hermitian diagonal's imaginary
+// parts were set aside).
+std::tuple<any_tensor, any_tensor, std::vector<std::size_t>, bool> ldl(const any_tensor& a, bool lower, bool hermitian); // in linalg.cpp
+
 // structured(c, r, kind) -> Tensor: toeplitz (kind 0), hankel (1) or circulant (2), as scipy.linalg's.
 any_tensor structured(const any_tensor& c, const any_tensor& r, int kind); // in linalg.cpp
 
@@ -1393,6 +1397,18 @@ any_tensor solve_circulant(const any_tensor& c, const any_tensor& b, bool least_
 
 // expm(a) -> Tensor, as scipy.linalg.expm (a stack's matrices each).
 any_tensor expm(const any_tensor& v); // in linalg.cpp
+
+// expm_frechet(a, e, block) -> (expm(a), L(a, e)) and expm_cond(a) -> float, as scipy.linalg's.
+std::tuple<any_tensor, any_tensor> expm_frechet(const any_tensor& a, const any_tensor& e, bool block); // in linalg.cpp
+double                             expm_cond(const any_tensor& a);                                     // in linalg.cpp
+
+// funm_schur(a) -> (T, Z) and funm_parlett(t, z, values, real) -> (F, err): scipy.linalg.funm's two halves, its
+// function called between them in Python.
+std::tuple<any_tensor, any_tensor> funm_schur(const any_tensor& a);                                                    // in linalg.cpp
+std::tuple<any_tensor, double>     funm_parlett(const any_tensor& t, const any_tensor& z, const any_tensor& values, bool real); // in linalg.cpp
+
+// logm(a) -> (F, err, exactly_singular, nearly_singular), as scipy.linalg.logm of one matrix.
+std::tuple<any_tensor, double, bool, bool> logm(const any_tensor& a); // in linalg.cpp
 
 // sqrtm(a) -> Tensor, as scipy.linalg.sqrtm (real where every matrix has a real principal root, else complex).
 any_tensor sqrtm(const any_tensor& v); // in linalg.cpp

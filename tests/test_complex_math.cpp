@@ -5,6 +5,8 @@
 #include <complex>
 #include <limits>
 #include <numbers>
+#include <utility>
+#include <vector>
 
 #include <sciforge/test/framework.hpp>
 #include "numerical/numerical.hpp"
@@ -246,6 +248,49 @@ namespace {
     ok = ok && numerical::pow(t, deeper).shape() == std::vector<std::size_t> {1, 2};
     return ok;
   }
+
+  // atanh through each of glibc's branches against the value to 200 bits: |1 + z|² / |1 − z|² at least ½ (log1p) and
+  // below it (log); 1 − |z|² by the plain products, inside |z| ≥ 1 and near the unit circle (x² + y² − 1); y below ε/2;
+  // x = ±1 with y below ε²; past 16/ε; and Annex G's zeros, infinities and NaNs.
+  template <typename R>
+  bool inverse_tangents_hold()
+  {
+    using C = std::complex<R>;
+    const R                                    inf {std::numeric_limits<R>::infinity()};
+    const R                                    nan {std::numeric_limits<R>::quiet_NaN()};
+    const R                                    half_pi {std::numbers::pi_v<R> / R {2}};
+    const auto                                 v = [](double x) { return static_cast<R>(x); }; // the references rounded to R
+    const std::vector<std::pair<C, C>>         finite {
+      {C {v(0.3), v(0.2)}, C {v(0.2957499202364143), v(0.21547449370018826)}},
+      {C {v(-0.5), v(0.1)}, C {v(-0.5406096153127009), v(0.1319818618128523)}},
+      {C {v(0.8), v(0.3)}, C {v(0.8107982831297268), v(0.573971200330978)}},
+      {C {v(-0.6), v(-0.6)}, C {v(-0.4313775209217136), v(-0.6707821967589506)}},
+      {C {v(2.0), v(0.1)}, C {v(0.5470961851917696), v(1.5376224984884392)}},
+      {C {v(0.5), v(1e-17)}, C {v(0.5493061443340549), v(1.3333333333333335e-17)}},
+      {C {v(1.0), v(1e-40)}, C {v(46.39827545016089), v(0.7853981633974483)}},
+      {C {v(-1.0), v(-1e-40)}, C {v(-46.39827545016089), v(-0.7853981633974483)}},
+      {C {v(1e+20), v(0.5)}, C {v(1e-20), v(1.5707963267948966)}},
+      {C {v(0.5), v(1e+20)}, C {v(5e-41), v(1.5707963267948966)}},
+      {C {v(1e+20), v(1e+20)}, C {v(5e-21), v(1.5707963267948966)}},
+      {C {v(0.25), v(-3.0)}, C {v(0.024865198382659503), v(-1.2509114353815838)}},
+      {C {v(1.0), v(0.5)}, C {v(0.708303336014054), v(0.9078874949608804)}},
+      {C {v(0.0), v(2.0)}, C {v(0.0), v(1.1071487177940904)}}};
+    bool ok {true};
+    for (const auto& [z, want] : finite) {
+      ok = ok && near(numerical::detail::complex_atanh(z), want);
+    }
+    const C zero {numerical::detail::complex_atanh(C {R {-0.0}, R {0.0}})};
+    ok = ok && zero.real() == R {0} && std::signbit(zero.real()) && zero.imag() == R {0};
+    ok = ok && numerical::detail::complex_atanh(C {inf, R {1}}) == C {R {0}, half_pi};
+    ok = ok && numerical::detail::complex_atanh(C {R {1}, -inf}) == C {R {0}, -half_pi};
+    const C infinite_nan {numerical::detail::complex_atanh(C {-inf, nan})};
+    ok = ok && infinite_nan.real() == R {0} && std::signbit(infinite_nan.real()) && std::isnan(infinite_nan.imag());
+    const C zero_nan     {numerical::detail::complex_atanh(C {R {0}, nan})};
+    ok = ok && zero_nan.real() == R {0} && std::isnan(zero_nan.imag());
+    ok = ok && both_nan(numerical::detail::complex_atanh(C {nan, R {1}}));
+    ok = ok && both_nan(numerical::detail::complex_atanh(C {R {1}, nan}));
+    return ok;
+  }
 } // namespace
 
 TEST(complex_exponentials_as_glibc_computes_them)
@@ -270,6 +315,12 @@ TEST(complex_logarithms_as_glibc_computes_them)
 {
   EXPECT(logarithms_hold<double>());
   EXPECT(logarithms_hold<float>());
+}
+
+TEST(complex_inverse_hyperbolic_tangents_as_glibc_computes_them)
+{
+  EXPECT(inverse_tangents_hold<double>());
+  EXPECT(inverse_tangents_hold<float>());
 }
 
 TEST(tensors_take_each_element_s_elementary_function)

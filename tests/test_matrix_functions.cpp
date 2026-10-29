@@ -1,11 +1,14 @@
 // expm against closed forms: a diagonal, a rotation, a nilpotent block, a scalar times the identity, an upper triangular
 // matrix with equal and distinct diagonal entries, and a symmetric matrix of large norm through its eigenvalues; each
-// degree of the approximant and the squarings, the backward error bound's extra squarings, the refusals.
+// degree of the approximant and the squarings, the backward error bound's extra squarings, the refusals. The Fréchet
+// derivative of the exponential and its condition number, Sylvester's equation, the square root, and funm.
 
+#include <algorithm>
 #include <cmath>
 #include <complex>
 #include <cstddef>
 #include <limits>
+#include <numbers>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -262,4 +265,173 @@ TEST(sqrtm_squares_back)
   EXPECT_THROWS(static_cast<void>(numerical::sqrtm(matrix<double> {{std::numeric_limits<double>::infinity()}})), numerical::non_finite_error);
   EXPECT_THROWS(static_cast<void>(numerical::sqrtm(matrix<C> {{C {std::numeric_limits<double>::quiet_NaN()}}})), numerical::non_finite_error);
   EXPECT_THROWS(static_cast<void>(numerical::complex_sqrtm(matrix<double> {{std::numeric_limits<double>::quiet_NaN()}})), numerical::non_finite_error);
+}
+
+namespace {
+
+  //! \brief Whether `expm_frechet(a, e)` holds for \p a and \p e (`n × n`): `expm(a)` beside it, a central difference
+  //!        of expm within \p tolerance, and the block matrix's exponential the same.
+  template <typename T>
+  bool frechet_holds(const matrix<T>& a,
+                     const matrix<T>& e,
+                     double           tolerance)
+  {
+    const auto [x, l] {numerical::expm_frechet(a, e)};
+    double     largest {1.0};
+    for (const T& v : a) {
+      largest = std::max(largest, std::abs(v));
+    }
+    const double    h          {1e-6 * largest};
+    const matrix<T> difference {T {1.0 / (2.0 * h)} *(numerical::expm(a + (T {h} *e)) - numerical::expm(a - (T {h} *e)))};
+    const auto [xb, lb] {numerical::expm_frechet(a, e, numerical::frechet_method::block_enlarge)};
+    return relative_gap(x, numerical::expm(a)) < 1e-13 && relative_gap(l, difference) < tolerance && relative_gap(xb, x) < 1e-12
+           && relative_gap(lb, l) < 1e-11;
+  }
+} // namespace
+
+// The Fréchet derivative of the exponential, as scipy.linalg.expm_frechet: a central difference of expm, real and
+// complex, at norms taking each degree (3, 5, 7, 9) and 13 without and with squarings; expm itself beside it; the
+// block matrix's exponential the same; empty operands; the refusals.
+TEST(expm_frechet_is_the_derivative)
+{
+  for (const double scale : {1e-3, 0.03, 0.15, 0.35, 1.0, 20.0}) {
+    EXPECT(frechet_holds(scale * trigonometric<double>(4, 4, 1.0), trigonometric<double>(4, 4, 2.0), 1e-5));
+    EXPECT(frechet_holds(C {scale} *trigonometric<C>(4, 4, 1.0), trigonometric<C>(4, 4, 2.0), 1e-5));
+  }
+  const matrix<C> empty_c {0, 0, std::vector<C> {}};
+  EXPECT(numerical::expm_frechet(empty_c, empty_c).second.rows() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_frechet(matrix<C> {{C {1.0}, C {2.0}}}, matrix<C> {{C {1.0}, C {2.0}}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_frechet(matrix<C> {{C {1.0}}}, matrix<C> {{C {1.0}, C {2.0}}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_frechet(matrix<C> {{C {1.0}}}, matrix<C> {{C {1.0}}, {C {2.0}}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_frechet(matrix<C> {{C {1.0}}}, matrix<C> {{C {std::numeric_limits<double>::quiet_NaN()}}})),
+                numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_frechet(matrix<C> {{C {std::numeric_limits<double>::infinity()}}}, matrix<C> {{C {1.0}}})),
+                numerical::non_finite_error);
+  const matrix<double> empty {0, 0, std::vector<double> {}};
+  EXPECT(numerical::expm_frechet(empty, empty).second.rows() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_frechet(matrix<double> {{1.0, 2.0}}, matrix<double> {{1.0, 2.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_frechet(matrix<double> {{1.0}}, matrix<double> {{1.0, 2.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_frechet(matrix<double> {{1.0}}, matrix<double> {{1.0}, {2.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_frechet(matrix<double> {{1.0}}, matrix<double> {{std::numeric_limits<double>::quiet_NaN()}})),
+                numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_frechet(matrix<double> {{std::numeric_limits<double>::infinity()}}, matrix<double> {{1.0}})),
+                numerical::non_finite_error);
+}
+
+// The exponential's condition number, as scipy.linalg.expm_cond: a scalar's |a|; a diagonal matrix's from the divided
+// differences of e^x (K diagonal, its entries (e^a − e^b) / (a − b) and e^a); complex; an empty matrix's 0; refusals.
+TEST(expm_cond_of_closed_forms)
+{
+  EXPECT(std::abs(numerical::expm_cond(matrix<double> {{2.0}}) - 2.0) < 1e-14);
+  EXPECT(std::abs(numerical::expm_cond(matrix<C> {{C {0.0, 3.0}}}) - 3.0) < 1e-14);
+  const double gap {(std::exp(2.0) - std::numbers::e) / 1.0};
+  const double k {std::max({std::numbers::e, std::exp(2.0), gap})};
+  const double expected {k * std::sqrt(5.0) / std::sqrt(std::exp(2.0) + std::exp(4.0))};
+  EXPECT(std::abs(numerical::expm_cond(matrix<double> {{1.0, 0.0}, {0.0, 2.0}}) - expected) < 1e-13 * expected);
+  EXPECT(numerical::expm_cond(matrix<double> {0, 0, std::vector<double> {}}) == 0.0);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_cond(matrix<double> {{1.0, 2.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_cond(matrix<double> {{std::numeric_limits<double>::quiet_NaN()}})), numerical::non_finite_error);
+}
+
+// A function of a matrix by its Schur form and Parlett's recurrence, as scipy.linalg.funm: x² is A² (SciPy's example),
+// e^x is expm with a small error estimate, a complex matrix's; a repeated eigenvalue (a zero denominator, left
+// undivided as SciPy's) estimated at 1; an infinite value at infinity; an empty matrix; the refusals, f's count of values
+// among them.
+TEST(funm_by_parlett)
+{
+  using values = std::vector<C>;
+  const auto square = [](const values& x) {
+                        values y(x.size());
+                        std::ranges::transform(x, y.begin(), [](const C& z) { return z * z; });
+                        return y;
+                      };
+  const auto exponential = [](const values& x) {
+                             values y(x.size());
+                             std::ranges::transform(x, y.begin(), [](const C& z) { return std::exp(z); });
+                             return y;
+                           };
+  const matrix<double>         a       {{1.0, 3.0}, {1.0, 4.0}};
+  const numerical::funm_result squared {numerical::funm(a, square)};
+  EXPECT(relative_gap(squared.f, numerical::detail::as_complex(a * a)) < 1e-14 && squared.error < 1e-14);
+  const matrix<double>         b       {trigonometric<double>(6, 6, 1.0) + matrix<double> {{1.0, 0.0, 0.0, 0.0, 0.0, 0.0}, {0.0, 2.0, 0.0, 0.0, 0.0, 0.0},
+                                          {0.0, 0.0, 3.0, 0.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 4.0, 0.0, 0.0},
+                                          {0.0, 0.0, 0.0, 0.0, 5.0, 0.0}, {0.0, 0.0, 0.0, 0.0, 0.0, 6.0}}};
+  const numerical::funm_result exp_b {numerical::funm(b, exponential)};
+  EXPECT(relative_gap(exp_b.f, numerical::detail::as_complex(numerical::expm(b))) < 1e3 * exp_b.error && exp_b.error < 1e-12);
+  const matrix<C>              c {trigonometric<C>(5, 5, 2.0)};
+  EXPECT(relative_gap(numerical::funm(c, exponential).f, numerical::expm(c)) < 1e-10);
+  const numerical::funm_result jordan {numerical::funm(matrix<double> {{2.0, 1.0}, {0.0, 2.0}}, exponential)};
+  EXPECT(jordan.error == 1.0);
+  const auto                   reciprocal = [](const values& x) {
+                                              values y(x.size());
+                                              std::ranges::transform(x, y.begin(), [](const C& z) { return C {1.0} / z.real(); });
+                                              return y;
+                                            };
+  EXPECT(std::isinf(numerical::funm(matrix<double> {{0.0, 1.0}, {0.0, 3.0}}, reciprocal).error));
+  EXPECT(numerical::funm(matrix<double> {0, 0, std::vector<double> {}}, exponential).f.rows() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::funm(matrix<double> {{1.0, 2.0}}, exponential)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::funm(matrix<C> {{C {std::numeric_limits<double>::quiet_NaN()}}}, exponential)), numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::funm(matrix<double> {{1.0}}, [](const values&) { return values {}; })), numerical::dimension_error);
+  const matrix<C> one {{C {1.0}}};
+  EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(matrix<C> {{C {1.0}, C {2.0}}}, one, values {C {1.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(one, matrix<C> {{C {1.0}, C {2.0}}}, values {C {1.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(one, matrix<C> {{C {1.0}}, {C {2.0}}}, values {C {1.0}})), numerical::dimension_error);
+}
+
+namespace {
+
+  //! \brief Whether `expm(logm(a))` is \p a within \p tolerance (relative to its largest entry).
+  template <typename T>
+  bool logm_inverts(const matrix<T>& a,
+                    double           tolerance)
+  {
+    const numerical::logm_result r {numerical::logm(a)};
+    return relative_gap(numerical::expm(r.log), numerical::detail::as_complex(a)) < tolerance && !r.exactly_singular && !r.nearly_singular;
+  }
+} // namespace
+
+// The principal logarithm, as scipy.linalg.logm: expm undoes it for real and complex matrices of every scale (the
+// square roots and the Padé degrees each takes), real ones with complex pairs and with negative eigenvalues (a complex
+// logarithm), upper triangular ones (no Schur form), near the identity (degrees 1 and 2); closed forms: a Jordan block
+// (equal eigenvalues), -I (iπ I), eigenvalues close together and across the negative real axis (the unwinding number);
+// zero and tiny eigenvalues reported; the refusals.
+TEST(logm_inverts_expm)
+{
+  const matrix<double> identity3 {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}};
+  for (const double scale : {1e-9, 1e-4, 1e-2, 0.1, 0.5, 2.0, 10.0, 1e3}) {
+    for (const std::size_t n : {std::size_t {1}, std::size_t {3}, std::size_t {8}}) {
+      matrix<double>      a {trigonometric<double>(n, n, 1.0)};
+      std::vector<double> shifted(a.begin(), a.end());
+      for (std::size_t i {0}; i < n; ++i) {
+        shifted[(i * n) + i] += 2.0 + static_cast<double>(i);
+      }
+      const matrix<double> b {scale * matrix<double> {n, n, shifted}};
+      EXPECT(logm_inverts(b, 1e-12));
+    }
+    EXPECT(logm_inverts(identity3 + (scale * trigonometric<double>(3, 3, 4.0)), 1e-10));
+    EXPECT(logm_inverts(C {scale} *(trigonometric<C>(4, 4, 2.0) + C {0.0, 1.0} *numerical::detail::as_complex(trigonometric<double>(4, 4, 3.0))), 1e-11));
+  }
+  const matrix<double> rotation   {{0.0, -2.0}, {2.0, 0.0}}; // eigenvalues ±2i
+  EXPECT(logm_inverts(rotation, 1e-14));
+  const matrix<double> negative   {{-2.0, 1.0, 0.0}, {0.5, -3.0, 0.2}, {0.0, 0.1, 4.0}};
+  EXPECT(logm_inverts(negative, 1e-13));
+  const matrix<double> triangular {{2.0, 1.0, 3.0}, {0.0, 3.0, 1.0}, {0.0, 0.0, 0.5}};
+  EXPECT(logm_inverts(triangular, 1e-14));
+  EXPECT(logm_inverts(matrix<double> {{-2.0, 1.0}, {0.0, 3.0}}, 1e-14));
+  const numerical::logm_result jordan {numerical::logm(matrix<double> {{2.0, 1.0}, {0.0, 2.0}})};
+  EXPECT(relative_gap(jordan.log, matrix<C> {{C {std::log(2.0)}, C {0.5}}, {C {}, C {std::log(2.0)}}}) < 1e-15);
+  const numerical::logm_result minus  {numerical::logm(matrix<double> {{-1.0, 0.0}, {0.0, -1.0}})};
+  EXPECT(relative_gap(minus.log, matrix<C> {{C {0.0, std::numbers::pi}, C {}}, {C {}, C {0.0, std::numbers::pi}}}) < 1e-15);
+  EXPECT(logm_inverts(matrix<double> {{1.0, 1.0}, {0.0, 1.0001}}, 1e-14));
+  const C l1 {-1.0, 0.01};
+  const C l2 {-1.0, -0.01};
+  EXPECT(logm_inverts(matrix<C> {{l1, C {1.0}}, {C {}, l2}}, 1e-13));
+  EXPECT(logm_inverts(matrix<C> {{C {-1.0, 0.5}, C {2.0}}, {C {}, C {-1.0, 0.5}}}, 1e-13));
+  const numerical::logm_result zero {numerical::logm(matrix<double> {{0.0, 1.0}, {0.0, 1.0}})};
+  EXPECT(zero.exactly_singular && !zero.nearly_singular);
+  const numerical::logm_result tiny {numerical::logm(matrix<double> {{1e-25, 0.0}, {0.0, 1.0}})};
+  EXPECT(tiny.nearly_singular && !tiny.exactly_singular);
+  EXPECT(numerical::logm(matrix<double> {0, 0, std::vector<double> {}}).log.rows() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::logm(matrix<double> {{1.0, 2.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::logm(matrix<C> {{C {std::numeric_limits<double>::quiet_NaN()}}})), numerical::non_finite_error);
 }

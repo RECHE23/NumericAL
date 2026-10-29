@@ -42,10 +42,11 @@ __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "solve_toeplitz", "solve_circulant",
     "toeplitz", "hankel", "circulant", "block_diag",
-    "expm", "sqrtm", "polar",
+    "expm", "expm_frechet", "expm_cond", "funm", "logm", "LogmRankWarning", "LogmExactlySingularWarning",
+    "LogmNearlySingularWarning", "sqrtm", "polar",
     "solve_sylvester", "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov",
     "solve_continuous_are", "solve_discrete_are", "lstsq", "pinv",
-    "matrix_rank", "cholesky", "qr", "eig",
+    "matrix_rank", "cholesky", "ldl", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
@@ -558,7 +559,12 @@ inv = inverse
 
 
 _expm = _linalg(_numerical.expm, arrays=1)
+_expm_frechet = _linalg(_numerical.expm_frechet, arrays=2)
+_expm_cond = _linalg(_numerical.expm_cond, arrays=1)
+_funm_schur = _linalg(_numerical.funm_schur, arrays=1)
+_logm = _linalg(_numerical.logm, arrays=1)
 _qr_pivoted = _linalg(_numerical.qr_pivoted, arrays=1)
+_ldl = _linalg(_numerical.ldl, arrays=1)
 _solve_banded = _linalg(_numerical.solve_banded, arrays=2)
 _solveh_banded = _linalg(_numerical.solveh_banded, arrays=2)
 _solve_toeplitz = _linalg(_numerical.solve_toeplitz, arrays=3)
@@ -717,6 +723,112 @@ def expm(A):
         LinAlgError: if `A` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
     """
     return _expm(A)
+
+
+def expm_frechet(A, E, method=None, compute_expm=True, check_finite=True):
+    """The Fréchet derivative of the matrix exponential at `A` along `E`, as ``scipy.linalg.expm_frechet``:
+    ``(expm(A), L)``, or `L` alone where `compute_expm` is false. ``method=None`` or ``"SPS"`` is Al-Mohy and Higham's
+    algorithm 6.4 (2009) as SciPy's: the Padé approximant of degree 3, 5, 7 or 9 where ``‖A‖₁`` is within its bound,
+    else of degree 13 on ``2⁻ˢ A``, then `s` squarings of the pair; ``"blockEnlarge"`` the exponential of the block
+    matrix ``[[A, E], [0, A]]``, whose blocks are ``expm(A)`` and `L`. Matrices only (SciPy's batches are not taken);
+    `check_finite` is accepted and not needed.
+
+    Raises:
+        LinAlgError: if `A` or `E` is not square, their shapes differ, or an entry is infinite or NaN.
+        ValueError: for another `method`.
+    """
+    del check_finite
+    if method not in (None, "SPS", "blockEnlarge"):
+        raise ValueError(f"Unknown implementation {method}")
+    x, l = _expm_frechet(A, E, method == "blockEnlarge")
+    return (x, l) if compute_expm else l
+
+
+def funm(A, func, disp=True):
+    """A function of a square matrix, as ``scipy.linalg.funm``: the Schur form ``A = Z T Zᴴ`` (a real matrix's real
+    form made complex), `func` called once with `T`'s diagonal (a NumPy array where NumPy is installed, else a
+    :class:`Tensor`; it returns one value per entry), then Parlett's recurrence for the rest of ``f(T)`` and
+    ``Z f(T) Zᴴ``; real where `A` is and the imaginary parts are negligible. Accurate where the eigenvalues are well
+    apart: with ``disp=True`` (the default) a likely inaccurate result is reported on standard output, as SciPy's;
+    with ``disp=False`` ``(F, err)`` is returned, `err` the estimate of ``‖error‖₁ / ‖A‖₁``.
+
+    Raises:
+        LinAlgError: if `A` is not square or holds an infinite or NaN entry, or `func` does not return one value per
+            eigenvalue.
+    """
+    A = A if isinstance(A, Tensor) else asarray(A)
+    t, z = _funm_schur(A)
+    eigenvalues = [complex(x) for x in _flat(diagonal(t).tolist())] if t.size else []
+    try:
+        import numpy as _np
+    except ImportError:  # pragma: no cover
+        argument = asarray(eigenvalues, "complex128")
+    else:
+        argument = _np.array(eigenvalues, dtype=complex)
+    values = [complex(x) for x in _flat(asarray(func(argument)).tolist())] if eigenvalues else []
+    values = asarray(values, "complex128")
+    try:
+        f, err = _numerical.funm_parlett(t, z, values, not A.dtype.startswith("complex"))
+    except error as caught:
+        raise LinAlgError(*caught.args) from None
+    if A.dtype in ("float32", "complex64"):
+        f = asarray(f, "float32" if f.dtype == "float64" else "complex64")
+    if disp:
+        if err > 1000 * 2.220446049250313e-16:
+            print("funm result may be inaccurate, approximate err =", err)
+        return f
+    return f, err
+
+
+class LogmRankWarning(UserWarning):
+    """A warning of :func:`logm` about a singular or nearly singular matrix, as SciPy's."""
+
+
+class LogmExactlySingularWarning(LogmRankWarning):
+    """:func:`logm` met a zero eigenvalue (no logarithm exists; it was taken as 1e-20), as SciPy's."""
+
+
+class LogmNearlySingularWarning(LogmRankWarning):
+    """:func:`logm` met an eigenvalue below 1e-20 in modulus, as SciPy's."""
+
+
+def logm(A):
+    """The principal matrix logarithm, as ``scipy.linalg.logm``: an upper triangular `A` directly, else its Schur form
+    (a real matrix's real form made complex) and ``Z log(T) Zᴴ``, ``log T`` by Al-Mohy and Higham's inverse scaling
+    and squaring (2012); the norms that choose the square roots and the Padé degree are exact where SciPy estimates
+    them (``onenormest``). Real where `A` is and the imaginary parts are negligible; a stack's matrices each (complex
+    for all where any is). Warns as SciPy does: :class:`LogmExactlySingularWarning` where an eigenvalue is 0 (taken as
+    1e-20), :class:`LogmNearlySingularWarning` where one is below 1e-20, and a ``RuntimeWarning`` where
+    ``‖expm(F) − A‖₁ / ‖A‖₁`` is not below 1000 ε.
+
+    Raises:
+        LinAlgError: if `A` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
+    """
+    A = A if isinstance(A, Tensor) else asarray(A)
+    if A.ndim > 2:
+        parts = [logm(A[i]) for i in range(A.shape[0])]
+        dtype = _promoted([part.dtype for part in parts]) if parts else A.dtype
+        return asarray([part.tolist() for part in parts], dtype) if parts else A
+    f, err, exact, near = _logm(A)
+    if exact:
+        _warnings.warn("The logm input matrix is exactly singular.", LogmExactlySingularWarning, stacklevel=2)
+    elif near:
+        _warnings.warn("The logm input matrix may be nearly singular.", LogmNearlySingularWarning, stacklevel=2)
+    if not (err < 1000 * 2.220446049250313e-16):  # NaN too
+        _warnings.warn(f"logm result may be inaccurate, approximate err = {err}", RuntimeWarning, stacklevel=2)
+    return f
+
+
+def expm_cond(A, check_finite=True):
+    """The relative condition number of the matrix exponential in the Frobenius norm, as ``scipy.linalg.expm_cond``:
+    ``‖K‖₂ ‖A‖_F / ‖expm(A)‖_F``, `K` the ``n² × n²`` Kronecker form of the Fréchet derivative (one
+    :func:`expm_frechet` a column). Matrices only; `check_finite` is accepted and not needed.
+
+    Raises:
+        LinAlgError: if `A` is not square or holds an infinite or NaN entry.
+    """
+    del check_finite
+    return _expm_cond(A)
 _eigh = _linalg(_numerical.eigh, arrays=1)
 _eigh_pencil = _linalg(_numerical.eigh_pencil, arrays=2)
 _eigvalsh_pencil = _linalg(_numerical.eigvalsh_pencil, arrays=2)
@@ -1201,6 +1313,35 @@ def svd(a, full_matrices=True, compute_uv=True, hermitian=False, *, method="divi
     if not compute_uv:
         return _singular_values(a)
     return _svd(a, method, bool(full_matrices))
+
+
+def ldl(A, lower=True, hermitian=True, overwrite_a=False, check_finite=True):
+    """The symmetric indefinite factorisation of a symmetric or Hermitian matrix, as ``scipy.linalg.ldl``:
+    ``A = lu @ d @ lu.conj().T`` (``lu.T`` where `hermitian` is false, a complex symmetric `A`), Bunch and Kaufman's
+    diagonal pivoting (LAPACK's ``sytf2`` and ``hetf2``) on the lower triangle, or on the upper with ``lower=False``;
+    only that triangle is read. Returns ``(lu, d, perm)``: `d` block diagonal with blocks of order 1 and 2, ``lu[perm]``
+    triangular with a unit diagonal, `perm` a tuple (SciPy's an integer array). A Hermitian matrix's diagonal
+    imaginary parts are ignored with a ``ComplexWarning``, as SciPy's. `overwrite_a` and `check_finite` are accepted
+    and not needed.
+
+    Raises:
+        LinAlgError: if `A` is not square or holds an infinite or NaN entry.
+    """
+    del overwrite_a, check_finite
+    lu, d, perm, ignored = _ldl(A, bool(lower), bool(hermitian))
+    if ignored:
+        _warnings.warn("scipy.linalg.ldl():\nThe imaginary parts of the diagonal are ignored. Use \"hermitian=False\" for "
+                       "factorization of complex symmetric arrays.", _complex_warning(), stacklevel=2)
+    return lu, d, tuple(perm)
+
+
+def _complex_warning():
+    """NumPy's ``ComplexWarning`` where NumPy is installed, else :class:`RuntimeWarning` (its base)."""
+    try:
+        from numpy.exceptions import ComplexWarning
+    except ImportError:  # pragma: no cover
+        return RuntimeWarning
+    return ComplexWarning
 
 
 def qr(a, mode="reduced", *, pivoting=False):

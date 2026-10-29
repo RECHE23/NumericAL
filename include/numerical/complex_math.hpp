@@ -666,6 +666,83 @@ namespace numerical::detail {
     }
     return {re, std::copysign(im, y)};
   }
+
+  /*!
+   * \brief `atanh(z)`, as glibc's `catanh`: C's Annex G for the infinities and NaNs; `π/2` and the reciprocal past
+   *        `16/ε`; else the real part `log(|1 + z|² / |1 − z|²) / 4` (by `log1p(4x / |1 − z|²)` where the quotient is
+   *        at least ½), the imaginary part `atan2(2y, 1 − |z|²) / 2`, `1 − |z|²` from \ref unit_circle_offset where it
+   *        cancels.
+   */
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_atanh(const std::complex<R>& z)
+  {
+    const R      x        {z.real()};
+    const R      y        {z.imag()};
+    const R      half_pi  {std::numbers::pi_v<R> / R {2}};
+    const R      eps      {std::numeric_limits<R>::epsilon()};
+    const bool   x_finite {std::isfinite(x)};
+    const bool   y_finite {std::isfinite(y)};
+    if (!x_finite || !y_finite) {
+      if (std::isinf(y)) {
+        return {std::copysign(R {0}, x), std::copysign(half_pi, y)};
+      }
+      if (std::isinf(x) || x == R {0}) { // y NaN where x is 0
+        return {std::copysign(R {0}, x), y_finite ? std::copysign(half_pi, y) : std::numeric_limits<R>::quiet_NaN()};
+      }
+      return {std::numeric_limits<R>::quiet_NaN(), std::numeric_limits<R>::quiet_NaN()};
+    }
+    if (x == R {0} && y == R {0}) {
+      return z;
+    }
+    if (std::abs(x) >= R {16} / eps || std::abs(y) >= R {16} / eps) {
+      R re {};
+      if (std::abs(y) <= R {1}) {
+        re = R {1} / x;
+      }
+      else if (std::abs(x) <= R {1}) {
+        re = x / y / y;
+      }
+      else {
+        const R h {std::hypot(x / R {2}, y / R {2})};
+        re = x / h / h / R {4};
+      }
+      return {re, std::copysign(half_pi, y)};
+    }
+    R re {};
+    if (std::abs(x) == R {1} && std::abs(y) < eps * eps) {
+      re = std::copysign(R {0.5}, x) * (std::numbers::ln2_v<R> - std::log(std::abs(y)));
+    }
+    else {
+      const R i2    {std::abs(y) >= eps * eps ? y * y : R {0}};
+      const R plus  {R {1} + x};
+      const R minus {R {1} - x};
+      const R num   {libm_add_product(i2, plus, plus)};
+      const R den   {libm_add_product(i2, minus, minus)};
+      const R f     {num / den};
+      if (f < R {0.5}) {
+        re = R {0.25} *std::log(f);
+      }
+      else {
+        const R four_x {R {4} *x};
+        re = R {0.25} *std::log1p(four_x / den);
+      }
+    }
+    const R absx {std::max(std::abs(x), std::abs(y))};
+    const R absy {std::min(std::abs(x), std::abs(y))};
+    R       den  {};
+    if (absy < eps / R {2}) {
+      const R product {(R {1} - absx) * (R {1} + absx)};
+      den = product == R {0} ? R {0} : product; // +0 for −0, as glibc's
+    }
+    else if (absx >= R {1} || (absx < R {0.75} && absy < R {0.5})) {
+      den = libm_sum_of_products(R {1} - absx, R {1} + absx, -absy, absy);
+    }
+    else {
+      den = -unit_circle_offset(absx, absy);
+    }
+    const R twice_y {R {2} *y};
+    return {re, R {0.5} *std::atan2(twice_y, den)};
+  }
 } // namespace numerical::detail
 
 #endif // NUMERICAL_COMPLEX_MATH_HPP

@@ -90,6 +90,9 @@ Small and complete, grown measured, honest about what is not yet here:
   triangular for a complex one, `z()` orthogonal or unitary; `values()` in `T`'s order; given a predicate on the
   eigenvalues, or by `sort(select)` and `reorder(chosen)` afterwards, those selected moved to the leading block
   (LAPACK's `trsen`, MATLAB's `ordschur`), `leading()` their count.
+- `numerical::ldl_decomposition<T>` — the symmetric indefinite factorisation `A = L D Lᴴ` (or `L D Lᵀ`) of a
+  symmetric or Hermitian matrix, as `scipy.linalg.ldl` (Bunch and Kaufman's pivoting, LAPACK's `sytf2`/`hetf2`; `D`
+  with blocks of order 1 and 2), from either triangle.
 - `numerical::pivoted_qr_decomposition<T>` — `A P = Q R` with column pivoting, as `scipy.linalg.qr(a, pivoting=True)`
   (LAPACK's `geqp3`), `R`'s diagonal revealing the rank.
 - `numerical::solve_banded(l, u, ab, b)` and `numerical::solveh_banded(ab, b, lower)` — banded systems in LAPACK's
@@ -98,6 +101,12 @@ Small and complete, grown measured, honest about what is not yet here:
   `circulant` and `block_diag`.
 - `numerical::expm(a)` — the matrix exponential, as `scipy.linalg.expm` (Al-Mohy and Higham's scaling and squaring
   of a Padé approximant, 2009).
+- `numerical::expm_frechet(a, e)` and `expm_cond(a)` — the Fréchet derivative of the exponential and its condition
+  number, as `scipy.linalg`'s (Al-Mohy and Higham's algorithm, 2009, or the exponential of `[[A, E], [0, A]]`).
+- `numerical::logm(a)` — the principal logarithm, as `scipy.linalg.logm` (inverse scaling and squaring, Al-Mohy and
+  Higham 2012, on the Schur form; the norms exact where SciPy estimates them).
+- `numerical::funm(a, f)` — a function of a matrix by its Schur form and Parlett's recurrence, as `scipy.linalg.funm`,
+  with SciPy's error estimate.
 - `numerical::sqrtm(a)` — the principal square root, as `scipy.linalg.sqrtm` (the Schur method, real for a real
   matrix with no real eigenvalue below 0; `complex_sqrtm` the complex one of a real matrix).
 - `numerical::solve_sylvester(a, b, q)` — `A X + X B = Q`, as `scipy.linalg.solve_sylvester` (Bartels and Stewart's
@@ -255,12 +264,12 @@ and its magnitude NumPy's own.
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)` (`det`), `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)` (`inv`), `pinv(a, rcond, hermitian)`,
 `matrix_rank(a, tol, hermitian)`, `eigvalsh(a, UPLO)`, `lstsq(a, b, rcond)` → `(x, residuals, rank, s)`,
-`cholesky(a, upper=False)`, `qr(a, mode="reduced")` → `(Q, R)` (`"complete"` as NumPy's, `"r"` → `R` alone),
+`cholesky(a, upper=False)`, `ldl(A, lower, hermitian)` → `(lu, d, perm)` as `scipy.linalg.ldl`, `qr(a, mode="reduced")` → `(Q, R)` (`"complete"` as NumPy's, `"r"` → `R` alone),
 `eigh(a, UPLO)` → `(values, vectors)` (with `b=`, a positive-definite matrix, the pencil `a x = λ b x` as
 `scipy.linalg.eigh(a, b)`; `eigvalsh(a, b=b)` its values), `schur(a, output="real")` → `(T, Z)` as
 `scipy.linalg.schur` (`"complex"` the triangular form of a real matrix; with `sort=` `"lhp"`, `"rhp"`, `"iuc"`,
-`"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `expm(a)` and `sqrtm(a)` as `scipy.linalg`'s (a
-stack's matrices each), `polar(a, side)`, `solve_banded((l, u), ab, b)`, `solveh_banded(ab, b, lower=False)`,
+`"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `expm(a)`, `logm(a)` and `sqrtm(a)` as `scipy.linalg`'s (a
+stack's matrices each), `expm_frechet(A, E, method, compute_expm)`, `expm_cond(A)`, `funm(A, func, disp)`, `polar(a, side)`, `solve_banded((l, u), ab, b)`, `solveh_banded(ab, b, lower=False)`,
 `solve_toeplitz(c_or_cr, b)`, `solve_circulant(c, b, singular)`, `toeplitz`, `hankel`, `circulant`, `block_diag`,
 `solve_sylvester(a, b, q)`, `solve_continuous_lyapunov(a, q)`,
 `solve_discrete_lyapunov(a, q, method)`, `solve_continuous_are(a, b, q, r, e, s, balanced)` and

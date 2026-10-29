@@ -9,6 +9,27 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`logm`, as `scipy.linalg.logm`**: the principal logarithm by Al-Mohy and Higham's inverse scaling and squaring
+  (2012) on the Schur form (an upper triangular matrix directly), as SciPy's `_logm_triu`: square roots until the
+  Padé approximant of degree 1 to 7 suffices, its partial fractions by Gauss–Legendre quadrature, the diagonal and the
+  superdiagonal written exactly; the norms of `(T − I)ᵖ` exact where SciPy estimates them; real where `A` is and the
+  imaginary parts are negligible; stacks; SciPy 1.18's warnings (`LogmExactlySingularWarning`,
+  `LogmNearlySingularWarning`, and a `RuntimeWarning` where `expm` does not give `A` back). In C++, `numerical::logm`.
+- **`funm`, as `scipy.linalg.funm`**: a function of a matrix by its Schur form (a real matrix's made complex) and
+  Parlett's recurrence, the callable called once with the eigenvalues, SciPy's error estimate (`disp`). In C++,
+  `numerical::funm` (a `std::function` of the eigenvalues) and `funm_from_schur`.
+- **`expm_frechet` and `expm_cond`, as `scipy.linalg`'s**: the Fréchet derivative of the exponential by Al-Mohy and
+  Higham's algorithm 6.4 (2009) as SciPy's (`"SPS"`), or by the exponential of `[[A, E], [0, A]]` (`"blockEnlarge"`);
+  the exponential's relative condition number from the derivative's Kronecker form. In C++, `numerical::expm_frechet`
+  (`frechet_method`) and `numerical::expm_cond`.
+- **C++: `detail::complex_atanh`**, `atanh` of a complex number as glibc's `catanh` (libc++'s loses digits for a small
+  argument, which `logm`'s superdiagonal of two close eigenvalues meets).
+- **`ldl`, as `scipy.linalg.ldl`**: the symmetric indefinite factorisation of a real symmetric, complex Hermitian or
+  complex symmetric matrix (`hermitian=False`), `A = L D Lᴴ` (`L D Lᵀ`), by Bunch and Kaufman's diagonal pivoting as
+  LAPACK's `sytf2` and `hetf2` (the pivots SciPy's up to order 64, where its `sytrf` is `sytf2`; its blocked panels
+  beyond choose the same pivots but for ties of rounding), from the lower or the upper triangle; `(lu, d, perm)` as
+  SciPy forms them, `perm` a tuple; a Hermitian diagonal's imaginary parts ignored with SciPy's `ComplexWarning`. In
+  C++, `numerical::ldl_decomposition` (`ldl.hpp`).
 - **`solve_continuous_are` and `solve_discrete_are`, as `scipy.linalg`'s**: the stabilising solutions of the
   continuous and discrete algebraic Riccati equations, with `e` and `s` as SciPy takes them, by SciPy's method (the
   extended Hamiltonian or symplectic pencil, balanced unless `balanced=False`, deflated, its stable deflating subspace

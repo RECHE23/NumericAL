@@ -46,11 +46,17 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&structured>("_structured", "_structured(c, r, kind) -> Tensor\nToeplitz (0), Hankel (1) or circulant (2) matrix of vectors of one dtype, as scipy.linalg's.");
     m.raw("_block_diag", module_block_diag, METH_VARARGS, "_block_diag(blocks) -> Tensor\nThe block diagonal matrix of matrices of one dtype, as scipy.linalg.block_diag.");
     m.def<&qr_pivoted>("qr_pivoted", "qr_pivoted(a, complete) -> (Q, R, P)\nQR with column pivoting, A[:, P] = Q R, as scipy.linalg.qr(a, pivoting=True).");
+    m.def<&ldl>("ldl", "ldl(a, lower, hermitian) -> (lu, d, perm, ignored)\nThe symmetric indefinite factorisation A = L D Lᴴ (Lᵀ), as scipy.linalg.ldl (Bunch-Kaufman pivoting); ignored where a Hermitian diagonal's imaginary parts were set aside.");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
     m.def<&solve_sylvester>("solve_sylvester", "solve_sylvester(a, b, q) -> Tensor\nX of A X + X B = Q, as scipy.linalg.solve_sylvester (Bartels-Stewart).");
     m.def<&riccati>("riccati", "riccati(a, b, q, r, e, s, flags) -> Tensor\nThe stabilising solution of an algebraic Riccati equation, as scipy.linalg.solve_continuous_are (flags & 1 clear) or solve_discrete_are; e where flags & 2, s where flags & 4, balanced where flags & 8.");
     m.def<&sqrtm>("sqrtm", "sqrtm(a) -> Tensor\nThe principal matrix square root, as scipy.linalg.sqrtm (a stack's matrices each).");
     m.def<&expm>("expm", "expm(a) -> Tensor\nThe matrix exponential, as scipy.linalg.expm (a stack's matrices each).");
+    m.def<&expm_frechet>("expm_frechet", "expm_frechet(a, e, block) -> (Tensor, Tensor)\nexpm(a) and the Frechet derivative of the exponential at a along e, as scipy.linalg.expm_frechet (Al-Mohy and Higham's algorithm, or the exponential of [[a, e], [0, a]] where block).");
+    m.def<&expm_cond>("expm_cond", "expm_cond(a) -> float\nThe exponential's relative condition number in the Frobenius norm, as scipy.linalg.expm_cond.");
+    m.def<&funm_schur>("funm_schur", "funm_schur(a) -> (T, Z)\nThe complex Schur form scipy.linalg.funm takes: a real matrix's real form made complex (rsf2csf).");
+    m.def<&funm_parlett>("funm_parlett", "funm_parlett(t, z, values, real) -> (F, err)\nf(A) from its Schur form and f at the diagonal by Parlett's recurrence, as scipy.linalg.funm completes it; F real where real and its imaginary parts are negligible.");
+    m.def<&logm>("logm", "logm(a) -> (F, err, exactly_singular, nearly_singular)\nThe principal matrix logarithm, as scipy.linalg.logm (inverse scaling and squaring), with its error estimate and the triangular form's singularity.");
     m.def<&lstsq>("lstsq", "lstsq(a, b, rtol) -> (x, residuals, rank, s)\nThe minimum-norm least-squares solution of a @ x ≈ b with its residual sums of squares, the rank and the singular values of a, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&solve_triangular>("solve_triangular", "solve_triangular(a, b, lower, trans, unit) -> Tensor\nop(A) X = B for the lower or upper triangle of a, op by trans (0 A, 1 Aᵀ, 2 Aᴴ), its diagonal ones where unit.");
     m.def<&lu_factor>("lu_factor", "lu_factor(a) -> (Tensor, list)\nL and U in one matrix, and LAPACK's row interchanges.");
