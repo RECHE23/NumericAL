@@ -33,6 +33,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   in real arithmetic for real operands, where the extended pencil of order `2m + n` went through the complex QZ; then
   Newton's step as before. Six AVX2 cores, GCC, `m = 256`, `n = 64`: 6.4 s → 0.39 s; `m = 64` 99 → 17 ms; residuals
   alike (graded `A` too). With `e`, or an ill-conditioned `r`, the pencil as SciPy. Other last bits.
+- **`qr(a, pivoting=True)` factorises a copy stored by columns**, where every step went down the columns of a
+  row-major matrix (the norms, the reflections, the exchanges, and `Q`'s formation): the same operations in the same
+  order, so the same bits. Order 1024 on one AVX2 core, GCC: 4.95 → 1.56 s; 256 64 → 24 ms.
 - **The generalized Schur form (`generalized_schur`, `solve_continuous_are`, `solve_discrete_are`) forms `Qᴴ A` and
   the Riccati pencil's deflation `Q₂ᴴ [H J]` by the matrix product**, where scalar loops went down columns: order 204
   12.0 → 0.5 ms for `Qᴴ A`. M1 Pro, `solve_continuous_are` with `m = 100`, `n = 4`: 151 → 123 ms; `m = 32` 6.5 → 5.6

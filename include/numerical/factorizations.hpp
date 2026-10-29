@@ -3297,25 +3297,21 @@ namespace numerical {
 
   namespace detail {
 
-    //! \brief The 2-norm of the entries of column \p j of the row-major \p a (row stride \p n) from row \p r0 to row
-    //!        \p m, scaled by the largest so no square overflows or underflows.
+    //! \brief The 2-norm of the \p count entries at \p x, scaled by the largest so no square overflows or underflows.
     template <typename T>
-    [[nodiscard]] double column_norm(const buffer<T>& a,
-                                     std::size_t      n,
-                                     std::size_t      j,
-                                     std::size_t      r0,
-                                     std::size_t      m)
+    [[nodiscard]] double contiguous_norm(const T*    x,
+                                         std::size_t count)
     {
       double largest {0.0};
-      for (std::size_t i {r0}; i < m; ++i) {
-        largest = std::max(largest, std::abs(a[(i * n) + j]));
+      for (std::size_t i {0}; i < count; ++i) {
+        largest = std::max(largest, std::abs(x[i]));
       }
       if (largest == 0.0) {
         return 0.0;
       }
       double sum {0.0};
-      for (std::size_t i {r0}; i < m; ++i) {
-        const double scaled {std::abs(a[(i * n) + j]) / largest};
+      for (std::size_t i {0}; i < count; ++i) {
+        const double scaled {std::abs(x[i]) / largest};
         sum += scaled * scaled;
       }
       return largest * std::sqrt(sum);
@@ -3347,32 +3343,33 @@ namespace numerical {
       const std::size_t n {a.cols()};
       const std::size_t k {std::min(m, n)};
       detail::require_finite(a, "pivoted QR");
-      buffer<T>      w(a.begin(), a.end());
+      buffer<T> w(m * n); // by columns, each contiguous: the steps' sums, updates and exchanges go down them
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          w[(j * m) + i] = a(i, j);
+        }
+      }
       buffer<double> current(n);
       buffer<double> reference(n);
       permutation_.resize(n);
       for (std::size_t j {0}; j < n; ++j) {
         permutation_[j] = j;
-        current[j]      = detail::column_norm(w, n, j, 0, m);
+        current[j]      = detail::contiguous_norm(w.data() + (j * m), m);
         reference[j]    = current[j];
       }
-      const double             tolerance {std::sqrt(std::numeric_limits<double>::epsilon())};
-      std::vector<buffer<T>>   reflectors(k);
-      std::vector<T>           taus(k);
+      const double           tolerance {std::sqrt(std::numeric_limits<double>::epsilon())};
+      std::vector<buffer<T>> reflectors(k);
+      std::vector<T>         taus(k);
       for (std::size_t step {0}; step < k; ++step) {
         const std::size_t pivot {static_cast<std::size_t>(std::max_element(current.begin() + static_cast<std::ptrdiff_t>(step), current.end()) - current.begin())};
+        T* const          head  {w.data() + (step * m)};
         if (pivot != step) {
-          for (std::size_t i {0}; i < m; ++i) {
-            std::swap(w[(i * n) + step], w[(i * n) + pivot]);
-          }
+          std::swap_ranges(head, head + m, w.data() + (pivot * m));
           std::swap(permutation_[step], permutation_[pivot]);
           std::swap(current[step], current[pivot]);
           std::swap(reference[step], reference[pivot]);
         }
-        buffer<T> v(m - step);
-        for (std::size_t i {step}; i < m; ++i) {
-          v[i - step] = w[(i * n) + step];
-        }
+        buffer<T> v(head + step, head + m);
         // The identity where nothing lies below the diagonal and the diagonal is real (a zero column among them), as
         // the QR's panel takes it: larfg would divide by a zero β.
         const T    alpha    {v[0]};
@@ -3384,27 +3381,26 @@ namespace numerical {
         }
         else {
           const auto [beta, factor] {detail::larfg_in_place(v)};
-          tau                  = factor;
-          w[(step * n) + step] = beta;
-          for (std::size_t i {step + 1}; i < m; ++i) {
-            w[(i * n) + step] = T {};
-          }
+          tau        = factor;
+          head[step] = beta;
+          std::fill(head + step + 1, head + m, T {});
         }
         for (std::size_t j {step + 1}; j < n; ++j) { // Hᴴ = I − τ̄ v vᴴ on the columns right of the pivot
-          T dot {};
+          T* const column {w.data() + (j * m)};
+          T        dot    {};
           for (std::size_t i {step}; i < m; ++i) {
-            dot += detail::conj_of(v[i - step]) * w[(i * n) + j];
+            dot += detail::conj_of(v[i - step]) * column[i];
           }
           const T scale {detail::conj_of(tau) * dot};
           for (std::size_t i {step}; i < m; ++i) {
-            w[(i * n) + j] -= v[i - step] * scale;
+            column[i] -= v[i - step] * scale;
           }
           if (current[j] != 0.0) { // LAPACK's downdate of the norm by the entry the reflection took into row step
-            const double ratio {std::abs(w[(step * n) + j]) / current[j]};
+            const double ratio {std::abs(column[step]) / current[j]};
             const double left  {std::max(0.0, (1.0 + ratio) * (1.0 - ratio))};
             const double drift {left * (current[j] / reference[j]) * (current[j] / reference[j])};
             if (drift <= tolerance) {
-              current[j]   = detail::column_norm(w, n, j, step + 1, m);
+              current[j]   = detail::contiguous_norm(column + step + 1, m - step - 1);
               reference[j] = current[j];
             }
             else {
@@ -3417,23 +3413,34 @@ namespace numerical {
       }
       const std::size_t rows          {mode == qr_mode::complete ? m : k};
       buffer<T>         r(rows * n, T {});
-      std::copy_n(w.begin(), rows * n, r.begin());
-      buffer<T> q(m * rows, T         {});
       for (std::size_t i {0}; i < rows; ++i) {
-        q[(i * rows) + i] = T {1};
+        for (std::size_t j {0}; j < n; ++j) {
+          r[(i * n) + j] = w[(j * m) + i];
+        }
+      }
+      buffer<T> qc(m * rows, T {}); // Q by columns, as the reflections go down them
+      for (std::size_t i {0}; i < rows; ++i) {
+        qc[(i * m) + i] = T {1};
       }
       for (std::size_t back {k}; back > 0; --back) { // Q = H₀ H₁ … applied to the identity's columns, the last first
         const std::size_t step {back - 1};
         const buffer<T>&  v    {reflectors[step]};
         for (std::size_t c {0}; c < rows; ++c) {
-          T dot {};
+          T* const column {qc.data() + (c * m)};
+          T        dot    {};
           for (std::size_t i {step}; i < m; ++i) {
-            dot += detail::conj_of(v[i - step]) * q[(i * rows) + c];
+            dot += detail::conj_of(v[i - step]) * column[i];
           }
           const T scale {taus[step] * dot};
           for (std::size_t i {step}; i < m; ++i) {
-            q[(i * rows) + c] -= v[i - step] * scale;
+            column[i] -= v[i - step] * scale;
           }
+        }
+      }
+      buffer<T> q(m * rows);
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t c {0}; c < rows; ++c) {
+          q[(i * rows) + c] = qc[(c * m) + i];
         }
       }
       for (std::size_t i {0}; i < k; ++i) { // R's diagonal real and non-negative, Q's column i taking the phase
