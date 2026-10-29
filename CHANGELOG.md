@@ -9,6 +9,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`eigh`, `eigvalsh` and their complex forms run each step's product with the reduced matrix longest rows first**:
+  its tasks of 32 rows, of 528 terms for the first and some `32 m` for the last, went to the threads in that order,
+  and the last left one thread working alone. The same bits. Ten AVX-512 cores, order 2000: `eigvalsh` 193 → 182 ms,
+  `eigh` 352 → 335 ms, complex 871 → 822 ms; M1 Pro, eight threads: `eigvalsh` 254 → 235 ms, complex 719 → 673 ms.
 - **The LU of orders up to some 1000 on several threads synchronises its threads once a panel where it did twice**:
   each block of the trailing update beside the next panel solves its own rows of `U₁₂` before taking its product,
   where all of them were solved first in a parallel loop of their own (from 512 trailing columns, and on one thread,

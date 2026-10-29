@@ -3543,7 +3543,10 @@ namespace numerical {
         }
       }
 #endif
-      parallel_for(tasks, rows_per_task * m * symmetric_row_speedup<T>(), [&](std::size_t task) {
+      // The tasks of the longest rows first: the threads take the indices in order, and the last rows' task, of some
+      // 32 m terms where the first's has 528, left one thread working alone at the end.
+      parallel_for(tasks, rows_per_task * m * symmetric_row_speedup<T>(), [&](std::size_t index) {
+                     const std::size_t task {tasks - 1 - index};
                      const std::size_t first {task * rows_per_task};
                      const std::size_t last {std::min(first + rows_per_task, m)};
                      T*                own {scratch.data() + (task * m)};
@@ -3696,11 +3699,12 @@ namespace numerical {
                                          factors[2 * p]       = conjugate_dot(corrections + (((2 * p) + 1) * ldc), v, m);
                                          factors[(2 * p) + 1] = conjugate_dot(corrections + ((2 * p) * ldc), v, m);
                                        };
-      parallel_for(tasks + (share ? pairs : 0), rows_per_task * m * symmetric_row_speedup<T>(), [&](std::size_t task) {
-                     if (task >= tasks) { // a pair of coefficients: an earlier step's w and v against v
-                       coefficients(task - tasks);
+      parallel_for(tasks + (share ? pairs : 0), rows_per_task * m * symmetric_row_speedup<T>(), [&](std::size_t index) {
+                     if (index >= tasks) { // a pair of coefficients: an earlier step's w and v against v
+                       coefficients(index - tasks);
                        return;
                      }
+                     const std::size_t task {tasks - 1 - index}; // the longest rows first, as hermitian_product
                      const std::size_t first {task * rows_per_task};
                      const std::size_t last {std::min(first + rows_per_task, m)};
                      T*                own {scratch.data() + (task * m)};
