@@ -416,10 +416,13 @@ def _matmul(self, other):
 def matmul(x1, x2, /):
     """The matrix product of `x1` and `x2`, as ``numpy.matmul`` (and ``x1 @ x2``): stacks of matrices along leading axes
     broadcast against each other, a vector a row first and a column second, two vectors their dot product."""
-    shapes = (getattr(x1, "shape", None), getattr(x2, "shape", None))
-    if shapes[0] is not None and shapes[1] is not None:
-        _matmul_shapes(*shapes)
-    product = _numerical._borrowed_product(x1, x2)  # Tensors and NumPy arrays read where they lie, when they can be
+    try:
+        product = _numerical._borrowed_product(x1, x2)  # Tensors and NumPy arrays read where they lie, when they can be
+    except error as caught:  # shapes that do not fit, said with both (checked here only, off the products' path)
+        shapes = (getattr(x1, "shape", None), getattr(x2, "shape", None))
+        if shapes[0] is not None and shapes[1] is not None:
+            _matmul_shapes(*shapes)
+        raise LinAlgError(*caught.args) from None
     return _tensor(x1)._matmul(x2) if product is NotImplemented else product  # else as ``@``
 
 
