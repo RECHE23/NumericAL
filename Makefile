@@ -308,13 +308,14 @@ bench-python: python
 	$(PYRUN) benchmarks/bench.py
 
 # Drawn cases versus NumPy: operations, shapes on a log scale, dtypes and operand layouts, each library timed in a
-# process of its own; the distribution of the ratios and the worst cases (CASES=, SEED=, LARGEST=).
+# process of its own; the distribution of the ratios and the worst cases (CASES=, SEED=, LARGEST=). FAMILY=scipy draws
+# scipy.linalg's functions against SciPy instead, a population of its own.
 # Defaults of its own, as fuzz-linalg keeps its own for CASES and SEED. EIGEN= (or EIGEN_INCLUDE=), Eigen's include
 # directory, adds Eigen against NumericAL from C++ (benchmarks/fuzz_worker.cpp); EIGEN_FLAGS= adds to Eigen's worker's
 # flags, EIGEN_OPENMP=1 builds it with OpenMP, NUMERICAL_THREADS= caps NumericAL's C++ worker's threads.
 EIGEN_DIR := $(or $(EIGEN),$(EIGEN_INCLUDE))
 bench-fuzz: python
-	$(PYRUN) benchmarks/bench_fuzz.py --cases $(or $(CASES),300) --seed $(or $(SEED),20261021) \
+	$(PYRUN) benchmarks/bench_fuzz.py --cases $(or $(CASES),300) --seed $(or $(SEED),20261021) $(if $(FAMILY),--family $(FAMILY)) \
 	    --largest $(or $(LARGEST),1024) --json $(BUILD)/bench-fuzz.json \
 	    $(if $(EIGEN_DIR),--eigen '$(EIGEN_DIR)') $(if $(EIGEN_FLAGS),'--eigen-flags=$(EIGEN_FLAGS)') \
 	    $(if $(EIGEN_OPENMP),--eigen-openmp) $(if $(NUMERICAL_THREADS),--numerical-threads $(NUMERICAL_THREADS))

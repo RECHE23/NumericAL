@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""NumericAL vs NumPy — differential validation + performance.
+"""NumericAL vs NumPy (and SciPy's linalg, where SciPy is installed) — differential validation + performance.
 
 Each case first checks that NumericAL's result equals NumPy's within a tolerance
 (a fast wrong answer is not a benchmark win); only matching cases are timed.
@@ -176,50 +176,123 @@ def build_cases():
     ]
 
 
-def main():
-    print(f"NumericAL {numerical.__version__} vs NumPy {np.__version__} "
-          f"(Python {sys.version.split()[0]})\n")
-    header = f"{'case':<26} {'NumPy':>11} {'NumericAL':>11} {'ratio':>10}"
+def build_scipy_cases(sl):
+    """scipy.linalg's functions NumericAL answers, against SciPy, at fixed sizes: compared directly where the answer
+    is unique, by reconstruction where it is not (LDLᴴ, the Schur form, QR with pivoting)."""
+    r = np.random.default_rng(54321)
+    near = lambda n: np.eye(n) + r.standard_normal((n, n)) / (2 * np.sqrt(n))  # eigenvalues near 1
+    shifted = lambda n: r.standard_normal((n, n)) + (n / 2 + 1) * np.eye(n)    # right half-plane, apart
+    spd = lambda n: (lambda b: b @ b.T / n + np.eye(n))(r.standard_normal((n, n)))
+    sym = lambda n: (lambda b: (b + b.T) / 2)(r.standard_normal((n, n)))
+
+    def case(name, ours, theirs, *arrays, verify=values_match):
+        operands = [numerical.asarray(a) for a in arrays]
+        return name, (lambda: ours(*operands)), (lambda: theirs(*arrays)), verify
+
+    def rebuilt(product, want):
+        return lambda got, _: np.allclose(product(*(np.asarray(x) for x in got[:2])), want, rtol=RTOL, atol=ATOL)
+
+    ldl_a, schur_a, qr_a = sym(64), r.standard_normal((64, 64)), r.standard_normal((64, 32))
+    band = r.standard_normal((7, 1000))
+    band[3] += 14.0
+    hband = r.standard_normal((4, 1000))
+    hband[3] = np.abs(hband[3]) + 8.0
+    toeplitz_c, toeplitz_r = r.standard_normal(500), r.standard_normal(500)
+    toeplitz_c[0] = toeplitz_r[0] = 1000.0
+    circulant = r.standard_normal(1024)
+    circulant[0] += 2048.0
+    funm_exp = lambda f: (lambda a: f(a, np.exp))  # noqa: E731
+    return [
+        case("expm (64×64)", numerical.expm, sl.expm, r.standard_normal((64, 64)) / 8),
+        case("logm (64×64)", numerical.logm, sl.logm, near(64)),
+        case("sqrtm (64×64)", numerical.sqrtm, sl.sqrtm, near(64)),
+        case("funm exp (32×32)", funm_exp(numerical.funm), funm_exp(sl.funm), near(32)),
+        case("expm_frechet (48×48)", lambda a, e: numerical.expm_frechet(a, e, compute_expm=False),
+             lambda a, e: sl.expm_frechet(a, e, compute_expm=False), r.standard_normal((48, 48)) / 7, r.standard_normal((48, 48))),
+        case("ldl (64×64)", numerical.ldl, sl.ldl, ldl_a, verify=rebuilt(lambda lu, d: lu @ d @ lu.T, ldl_a)),
+        case("schur (64×64)", numerical.schur, sl.schur, schur_a, verify=rebuilt(lambda t, z: z @ t @ z.T, schur_a)),
+        case("qr pivoting (64×32)", lambda a: numerical.qr(a, pivoting=True), lambda a: sl.qr(a, pivoting=True, mode="economic"),
+             qr_a, verify=lambda got, _: np.allclose(np.asarray(got[0]) @ np.asarray(got[1]), qr_a[:, list(got[2])], rtol=RTOL, atol=ATOL)),
+        case("polar (48×48)", numerical.polar, sl.polar, shifted(48),
+             verify=lambda got, want: all(np.allclose(np.asarray(x), y, rtol=RTOL, atol=ATOL) for x, y in zip(got, want))),
+        case("sylvester (48, 32)", numerical.solve_sylvester, sl.solve_sylvester, shifted(48), shifted(32), r.standard_normal((48, 32))),
+        case("lyapunov (48×48)", numerical.solve_continuous_lyapunov, sl.solve_continuous_lyapunov, shifted(48), spd(48)),
+        case("discrete lyapunov (32)", numerical.solve_discrete_lyapunov, sl.solve_discrete_lyapunov,
+             r.standard_normal((32, 32)) / 12, spd(32)),
+        case("continuous are (32, 4)", numerical.solve_continuous_are, sl.solve_continuous_are,
+             r.standard_normal((32, 32)) / 6, r.standard_normal((32, 4)), spd(32), spd(4)),
+        case("discrete are (32, 4)", numerical.solve_discrete_are, sl.solve_discrete_are,
+             r.standard_normal((32, 32)) / 6, r.standard_normal((32, 4)), spd(32), spd(4)),
+        case("solve_banded (1000, 3+3)", lambda ab, b: numerical.solve_banded((3, 3), ab, b),
+             lambda ab, b: sl.solve_banded((3, 3), ab, b), band, r.standard_normal(1000)),
+        case("solveh_banded (1000, 3)", numerical.solveh_banded, sl.solveh_banded, hband, r.standard_normal(1000)),
+        case("solve_toeplitz (500)", lambda c, rr, b: numerical.solve_toeplitz((c, rr), b),
+             lambda c, rr, b: sl.solve_toeplitz((c, rr), b), toeplitz_c, toeplitz_r, r.standard_normal(500)),
+        case("solve_circulant (1024)", numerical.solve_circulant, sl.solve_circulant, circulant, r.standard_normal(1024)),
+        case("solve_triangular (256, 8)", numerical.solve_triangular, sl.solve_triangular,
+             np.triu(r.standard_normal((256, 256))) + 256 * np.eye(256), r.standard_normal((256, 8))),
+        case("eigh(a, b) values (64)", lambda a, b: numerical.eigh(a, b=b)[0], lambda a, b: sl.eigh(a, b)[0], sym(64), spd(64)),
+    ]
+
+
+def run(cases, reference):
+    """Each case checked against `reference` then timed; the lines, the verdict, and the cases whose samples are
+    drawn. Returns whether every case matched."""
+    header = f"{'case':<26} {reference:>11} {'NumericAL':>11} {'ratio':>10}"
     print(header)
     print("-" * len(header))
-
-    cases = []      # one compare() Case per case (subject = NumericAL, reference = NumPy)
+    compared = []
     matched = 0
-    boxplots = []   # (name, numpy_samples, numerical_samples) for the shortlisted cases
-    for name, numerical_fn, numpy_fn, verify in build_cases():
-        # `verify(numerical_result, numpy_result) -> bool` is the equal callable: the gate stays
-        # here (allclose within tolerance / factorisation reconstruction), never in the core.
-        case = compare(name, numerical_fn, numpy_fn, verify)
-        cases.append(case)
+    boxplots = []
+    for name, numerical_fn, reference_fn, verify in cases:
+        case = compare(name, numerical_fn, reference_fn, verify)
+        compared.append(case)
         if case.extra["mismatch"]:
             print(f"{name:<26} RESULT MISMATCH — correctness failure")
             continue
         matched += 1
-        sc_samples = case.samples                      # subject = NumericAL
-        np_samples = case.extra["reference_samples"]   # reference = NumPy
+        sc_samples = case.samples
+        ref_samples = case.extra["reference_samples"]
         t_sc = median_iqr(sc_samples)[0]
-        t_np = median_iqr(np_samples)[0]
-        print(f"{name:<26} {fmt(t_np, 8)} {fmt(t_sc, 8)} {t_np / t_sc:9.4f}x")
+        t_ref = median_iqr(ref_samples)[0]
+        print(f"{name:<26} {fmt(t_ref, 8)} {fmt(t_sc, 8)} {t_ref / t_sc:9.4f}x")
         if name in BOXPLOT_CASES:
-            boxplots.append((name, np_samples, sc_samples))
-
+            boxplots.append((name, ref_samples, sc_samples))
     print("-" * len(header))
-    print(f"all {matched} timed cases matched NumPy within rtol={RTOL}, atol={ATOL}")
+    print(f"all {matched} timed cases matched {reference} within rtol={RTOL}, atol={ATOL}")
+    result = verdict(compared, subject_label="NumericAL")
+    if result.classification != "no-data":
+        print(f"geometric-mean ratio ({reference}/NumericAL): {result.text}")
+    return result.passed, boxplots
+
+
+def main():
+    print(f"NumericAL {numerical.__version__} vs NumPy {np.__version__} "
+          f"(Python {sys.version.split()[0]})\n")
     # The CI-aware aggregate (NumPy/NumericAL): faster, slower, equivalent or indecisive, as its confidence interval
     # says; only a result mismatch fails.
-    result = verdict(cases, subject_label="NumericAL")
-    if result.classification != "no-data":
-        print(f"geometric-mean ratio (NumPy/NumericAL): {result.text}")
-
+    passed, boxplots = run(build_cases(), "NumPy")
     if boxplots:
         print("\nper-call time distributions — NumPy vs NumericAL (left = faster):")
         for name, np_samples, sc_samples in boxplots:
             print(f"  {name}:")
             print(ascii_boxplot([np_samples, sc_samples], ["NumPy", "NumericAL"], width=42))
 
+    # scipy.linalg's functions, against SciPy where it is installed: a section and a verdict of their own, the NumPy
+    # aggregate above unchanged.
+    try:
+        import scipy
+        import scipy.linalg as sl
+    except ImportError:  # pragma: no cover - SciPy is optional
+        print("\n(SciPy is not installed: scipy.linalg's functions are not compared)")
+    else:
+        print(f"\nscipy.linalg's functions against SciPy {scipy.__version__}\n")
+        scipy_passed, _ = run(build_scipy_cases(sl), "SciPy")
+        passed = passed and scipy_passed
+
     print("\nNumPy dispatches to its BLAS/LAPACK; NumericAL runs its own kernels, in C++, without one. "
           "Correctness within\ntolerance is the pass criterion; a small case's ratio moves between runs.")
-    sys.exit(0 if result.passed else 1)
+    sys.exit(0 if passed else 1)
 
 
 if __name__ == "__main__":

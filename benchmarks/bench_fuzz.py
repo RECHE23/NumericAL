@@ -72,6 +72,13 @@ def flops(op, dims):
         "lstsq": 14 * m * n * n + 2 * m * n * k, "eig": 25 * m ** 3,
         "fft": 5 * m * n * math.log2(n + 1), "ifft": 5 * m * n * math.log2(n + 1), "rfft": 2.5 * m * n * math.log2(n + 1),
         "irfft": 2.5 * m * n * math.log2(n + 1), "fft2": 5 * m * n * math.log2(m * n + 1),
+        "expm": 20 * m ** 3, "logm": 60 * m ** 3, "sqrtm": 30 * m ** 3, "funm": 30 * m ** 3, "expm_frechet": 40 * m ** 3,
+        "ldl": m ** 3 / 3, "schur": 25 * m ** 3, "qr-pivoting": 4 * m * n * n, "polar": 14 * m ** 3,
+        "solve_sylvester": 25 * (m ** 3 + n ** 3) + 2 * m * n * (m + n), "solve_continuous_lyapunov": 60 * m ** 3,
+        "solve_discrete_lyapunov": 2 * m ** 6 if m <= 24 else 120 * m ** 3, "solve_continuous_are": 400 * (m + n) ** 3,
+        "solve_discrete_are": 400 * (m + n) ** 3, "solve_banded": 6 * m * n * n + 4 * m * n,
+        "solveh_banded": 2 * m * n * n + 4 * m * n, "solve_toeplitz": 4 * m * m, "solve_circulant": 15 * m * math.log2(m + 1),
+        "solve_triangular": m * m * max(n, 1), "eigh-generalized": 14 * m ** 3,
     }[op]
 
 
@@ -90,6 +97,25 @@ FFT_OPS = ("fft", "ifft", "rfft", "irfft")
 EACH_SPECS = ("i,j->ij", "ij,j->ij", "ij,i->ij", "ij->ji")
 # Orders past which a drawn eig is not worth its time against the others.
 LIMITS = {"eig": 400}
+
+# The SciPy family (--family scipy): scipy.linalg's functions NumericAL answers, against SciPy, a population of its own
+# (the NumPy family's draw, the one BENCHMARKS.md follows, is left as it was). Weights and dimensions as OPS's: a
+# matrix order, and for the equations and the band systems a second dimension (inputs, columns, half-bandwidth).
+SCIPY_OPS = {
+    "expm": (2, 1), "logm": (2, 1), "sqrtm": (2, 1), "funm": (1, 1), "expm_frechet": (1, 1),
+    "ldl": (2, 1), "schur": (2, 1), "qr-pivoting": (2, 2), "polar": (1, 1),
+    "solve_sylvester": (2, 2), "solve_continuous_lyapunov": (1, 1), "solve_discrete_lyapunov": (1, 1),
+    "solve_continuous_are": (2, 2), "solve_discrete_are": (2, 2),
+    "solve_banded": (2, 2), "solveh_banded": (1, 2), "solve_toeplitz": (2, 1), "solve_circulant": (1, 1),
+    "solve_triangular": (2, 2), "eigh-generalized": (2, 1),
+}
+# Orders past which a drawn case costs more than the rest of the draw: the pencils of order 2m + n, the Schur-based
+# functions, the Kronecker-free but dense Sylvester solves.
+SCIPY_LIMITS = {"solve_continuous_are": 300, "solve_discrete_are": 300, "logm": 600, "sqrtm": 600, "funm": 600,
+                "expm_frechet": 600, "schur": 800, "solve_sylvester": 600, "solve_continuous_lyapunov": 600,
+                "solve_discrete_lyapunov": 400}
+# scipy.linalg works in double and single precision alike; the drawn dtypes as the NumPy family's.
+SCIPY_DTYPES = DTYPES
 # The operations both C++ sides have a function for: Eigen has no einsum, NumericAL's C++ API no matrix norm.
 CPP_NA = {"einsum-product": "no Eigen function", "einsum-reduce": "no Eigen function", "einsum-each": "no Eigen function",
           "norm": "no NumericAL C++ function", **{op: "no Eigen function" for op in FFT_OPS + ("fft2",)}}
@@ -113,8 +139,10 @@ def log_size(rng, largest):
     return max(1, int(round(math.exp(rng.uniform(0.0, math.log(largest + 0.5))))))
 
 
-def draw_case(seed, index, largest, ops):
+def draw_case(seed, index, largest, ops, family="numpy"):
     """Case `index` of the run seeded `seed`: the same in every process."""
+    if family == "scipy":
+        return draw_scipy_case(seed, index, largest, ops)
     rng = np.random.default_rng([seed, index])
     op = weighted(rng, [(name, OPS[name][0]) for name in ops])
     dims = [min(log_size(rng, largest), LIMITS.get(op, largest)) for _ in range(OPS[op][1])]
@@ -131,6 +159,25 @@ def draw_case(seed, index, largest, ops):
             else ["ij,jk->ik", "ij,kj->ik", "ji,jk->ik"][int(rng.integers(3))] if op == "einsum-product"
             else EACH_SPECS[int(rng.integers(len(EACH_SPECS)))] if op == "einsum-each"
             else ["axis=-1", "axis=0"][int(rng.integers(2))] if op in FFT_OPS else None}
+
+
+def draw_scipy_case(seed, index, largest, ops):
+    """Case `index` of the SciPy family's run seeded `seed`: its operation, order (and second dimension), dtype and
+    layout; a second dimension is the inputs of a Riccati equation (a few), a band's half-width (below the order), the
+    columns of a right-hand side (a few) or a Sylvester equation's second order."""
+    rng = np.random.default_rng([seed, index, 0x5c1])
+    op = weighted(rng, [(name, SCIPY_OPS[name][0]) for name in ops])
+    dims = [min(log_size(rng, largest), SCIPY_LIMITS.get(op, largest)) for _ in range(SCIPY_OPS[op][1])]
+    if op in ("solve_continuous_are", "solve_discrete_are"):
+        dims[1] = 1 + dims[1] % min(8, dims[0])
+    elif op in ("solve_banded", "solveh_banded"):
+        dims[1] = dims[1] % max(1, min(dims[0], 33))
+    elif op == "solve_triangular":
+        dims[1] = 1 + dims[1] % 17
+    while flops(op, dims) > BUDGET:
+        dims = [max(1, int(d * 0.8)) for d in dims]
+    return {"index": index, "op": op, "dims": dims, "dtype": weighted(rng, SCIPY_DTYPES),
+            "layout": weighted(rng, LAYOUTS), "spec": None}
 
 
 def matrix(rng, shape, dtype):
@@ -241,6 +288,140 @@ def build(case):
     return (lambda: ours(*ours_in)), (lambda: theirs(*arrived)), operands
 
 
+def build_scipy(case):
+    """The SciPy family's case: its operands, built so that the answer is well defined (well-conditioned matrices,
+    spectra clear of the branch cuts and of each other's negatives, stabilisable Riccati equations, diagonally dominant
+    band and Toeplitz systems), and its two calls: (numerical_call, scipy_call, operands)."""
+    import scipy.linalg as sl
+    rng = np.random.default_rng([case["index"], 0x5eed])
+    op, dims, dtype = case["op"], case["dims"], np.dtype(case["dtype"])
+    m = dims[0]
+    n = dims[1] if len(dims) > 1 else m
+
+    def random(*shape):
+        return matrix(rng, shape, dtype)
+
+    def near_identity(order):  # eigenvalues within about 1 of 1: off the negative axis, apart enough
+        return (np.eye(order) + random(order, order) / (2 * math.sqrt(order))).astype(dtype)
+
+    def hermitian(order):
+        b = random(order, order)
+        return ((b + b.conj().T) / 2).astype(dtype)
+
+    def spd(order):
+        b = random(order, order)
+        return (b @ b.conj().T / order + np.eye(order)).astype(dtype)
+
+    def shifted(order):  # eigenvalues near `order` / 2 on the right of the imaginary axis
+        return (random(order, order) + (order / 2 + 1) * np.eye(order)).astype(dtype)
+
+    if op in ("expm", "logm", "sqrtm"):
+        operands = [near_identity(m) if op != "expm" else (random(m, m) * 10.0 ** rng.uniform(-3, 0.5) / math.sqrt(m)).astype(dtype)]
+        ours, theirs = getattr(nl, op), getattr(sl, op)
+    elif op == "funm":
+        operands = [near_identity(m)]
+        ours, theirs = (lambda a: nl.funm(a, np.exp, disp=False)), (lambda a: sl.funm(a, np.exp, disp=False))
+    elif op == "expm_frechet":
+        operands = [(random(m, m) / math.sqrt(m)).astype(dtype), random(m, m)]
+        ours = lambda a, e: nl.expm_frechet(a, e, compute_expm=False)  # noqa: E731
+        theirs = lambda a, e: sl.expm_frechet(a, e, compute_expm=False)  # noqa: E731
+    elif op == "ldl":
+        operands = [hermitian(m)]
+        ours, theirs = nl.ldl, sl.ldl
+    elif op == "schur":
+        operands = [random(m, m)]
+        ours, theirs = nl.schur, sl.schur
+    elif op == "qr-pivoting":
+        operands = [random(m, n)]
+        ours = lambda a: nl.qr(a, pivoting=True)  # noqa: E731
+        theirs = lambda a: sl.qr(a, pivoting=True, mode="economic")  # noqa: E731
+    elif op == "polar":
+        operands = [shifted(m)]
+        ours, theirs = nl.polar, sl.polar
+    elif op == "solve_sylvester":
+        operands = [shifted(m), shifted(n), random(m, n)]
+        ours, theirs = nl.solve_sylvester, sl.solve_sylvester
+    elif op == "solve_continuous_lyapunov":
+        operands = [shifted(m), spd(m)]
+        ours, theirs = nl.solve_continuous_lyapunov, sl.solve_continuous_lyapunov
+    elif op == "solve_discrete_lyapunov":
+        operands = [(random(m, m) / (2 * math.sqrt(m))).astype(dtype), spd(m)]  # spectral radius about 1/2
+        ours, theirs = nl.solve_discrete_lyapunov, sl.solve_discrete_lyapunov
+    elif op in ("solve_continuous_are", "solve_discrete_are"):
+        operands = [(random(m, m) / math.sqrt(m)).astype(dtype), random(m, n), spd(m), spd(n)]
+        ours, theirs = getattr(nl, op), getattr(sl, op)
+    elif op == "solve_banded":
+        half = n
+        ab = random(2 * half + 1, m)
+        ab[half] += 2 * (2 * half + 1)  # diagonally dominant: no pivot near zero
+        operands = [ab.astype(dtype), random(m)]
+        ours = lambda a, b: nl.solve_banded((half, half), a, b)  # noqa: E731
+        theirs = lambda a, b: sl.solve_banded((half, half), a, b)  # noqa: E731
+    elif op == "solveh_banded":
+        half = n
+        ab = random(half + 1, m)
+        ab[half] = np.abs(ab[half].real) + 2 * (half + 1)  # a real, dominant diagonal: positive definite
+        operands = [ab.astype(dtype), random(m)]
+        ours, theirs = nl.solveh_banded, sl.solveh_banded
+    elif op == "solve_toeplitz":
+        c, r = random(m), random(m)
+        c[0] = r[0] = 2 * m  # diagonally dominant: every leading minor nonsingular
+        operands = [c.astype(dtype), r.astype(dtype), random(m)]
+        ours = lambda c, r, b: nl.solve_toeplitz((c, r), b)  # noqa: E731
+        theirs = lambda c, r, b: sl.solve_toeplitz((c, r), b)  # noqa: E731
+    elif op == "solve_circulant":
+        c = random(m)
+        c[0] += 2 * m  # its eigenvalues (c's transform) clear of 0
+        operands = [c.astype(dtype), random(m)]
+        ours, theirs = nl.solve_circulant, sl.solve_circulant
+    elif op == "solve_triangular":
+        operands = [(np.triu(random(m, m)) + m * np.eye(m)).astype(dtype), random(m, n)]
+        ours = lambda a, b: nl.solve_triangular(a, b)  # noqa: E731
+        theirs = lambda a, b: sl.solve_triangular(a, b)  # noqa: E731
+    elif op == "eigh-generalized":
+        operands = [hermitian(m), spd(m)]
+        ours = lambda a, b: nl.eigh(a, b=b)  # noqa: E731
+        theirs = lambda a, b: sl.eigh(a, b)  # noqa: E731
+    else:  # pragma: no cover - every drawn operation is listed above
+        raise ValueError(op)
+    arrived = [arrive(a, case["layout"]) for a in operands]
+    ours_in = [nl.asarray(a) for a in arrived] if case["layout"] == "tensor" else arrived
+    return (lambda: ours(*ours_in)), (lambda: theirs(*arrived)), operands
+
+
+def agrees_scipy(case, ours, theirs, operands):
+    """Whether NumericAL's answer is SciPy's within the dtype's tolerance (wider where the problem's conditioning
+    grows: the matrix functions and equations), or by what defines it where it is not unique (LDLᴴ, the Schur form,
+    QR with pivoting: their reconstruction)."""
+    op, dims = case["op"], case["dims"]
+    tol = tolerance(case["dtype"], max(dims))
+    a = np.asarray(operands[0]).astype(complex)
+    if op == "ldl":
+        lu, d, perm = (np.asarray(x) for x in ours)
+        triangle = lu[list(perm)]
+        return relative(lu @ d @ lu.conj().T, a) < tol * 10 and np.allclose(np.diag(triangle), 1) \
+            and np.allclose(triangle, np.tril(triangle))
+    if op == "schur":
+        t, z = (np.asarray(x) for x in ours)
+        return relative(z @ t @ z.conj().T, a) < tol * 10 and np.all(np.tril(t, -2) == 0)
+    if op == "qr-pivoting":
+        q, r, p = ours
+        q, r = np.asarray(q), np.asarray(r)
+        return relative(q @ r, a[:, list(p)]) < tol * 10 and np.allclose(r, np.triu(r))
+    if op == "polar":
+        return all(relative(x, y) < tol * 10 for x, y in zip(ours, theirs))
+    if op == "eigh-generalized":
+        values, vectors = (np.asarray(x) for x in ours)
+        b = np.asarray(operands[1]).astype(complex)
+        return relative(values, theirs[0]) < tol * 10 and relative(a @ vectors, (b @ vectors) * values) < tol * 100
+    if op == "funm":
+        (f, err), (want, their_err) = ours, theirs
+        return relative(f, want) < max(tol * 10, 1e3 * max(err, their_err))
+    widened = op in ("logm", "sqrtm", "expm_frechet", "solve_sylvester", "solve_continuous_lyapunov",
+                     "solve_discrete_lyapunov", "solve_continuous_are", "solve_discrete_are")
+    return relative(ours, theirs) < tol * (100 if widened else 10)
+
+
 def tolerance(dtype, order):
     """The relative gap two stable algorithms' answers may show: a few units of the dtype's precision, growing with
     the order."""
@@ -307,15 +488,15 @@ def side_main(args):
     """One library's times for every case, as JSON on the standard output."""
     times = {}
     for case in cases_of(args):
-        ours, theirs, _ = build(case)
+        ours, theirs, _ = (build_scipy if args.family == "scipy" else build)(case)
         times[case["index"]] = fastest(ours if args.side == "numerical" else theirs, args.rounds)
     json.dump(times, sys.stdout)
 
 
 def cases_of(args):
-    ops = args.ops.split(",") if args.ops else list(OPS)
+    ops = args.ops.split(",") if args.ops else list(SCIPY_OPS if args.family == "scipy" else OPS)
     indices = [int(i) for i in args.only.split(",")] if args.only else range(args.cases)
-    return [draw_case(args.seed, i, args.largest, ops) for i in indices]
+    return [draw_case(args.seed, i, args.largest, ops, args.family) for i in indices]
 
 
 def band(case):
@@ -446,7 +627,10 @@ def main():
     parser.add_argument("--seed", type=int, default=20261021)
     parser.add_argument("--largest", type=int, default=1024)
     parser.add_argument("--rounds", type=int, default=5, help="batches per case in each pass")
-    parser.add_argument("--ops", default="", help="a comma-separated subset of: " + ", ".join(OPS))
+    parser.add_argument("--family", choices=("numpy", "scipy"), default="numpy",
+                        help="numpy (the default): NumPy's operations against NumPy; scipy: scipy.linalg's against SciPy")
+    parser.add_argument("--ops", default="", help="a comma-separated subset of: " + ", ".join(OPS)
+                        + "; with --family scipy, of: " + ", ".join(SCIPY_OPS))
     parser.add_argument("--only", default="", help="comma-separated case indices (to reproduce a reported case)")
     parser.add_argument("--worst", type=int, default=20)
     parser.add_argument("--json", default="", help="write every case and its times here")
@@ -461,6 +645,9 @@ def main():
     if args.side:
         side_main(args)
         return 0
+    if args.family == "scipy" and args.eigen:
+        print("--eigen compares NumPy's operations from C++: not with --family scipy")
+        return 2
     if not args.eigen:
         return compare(args, None)
     include = os.path.expanduser(args.eigen)
@@ -489,7 +676,7 @@ def compare(args, cpp):
     their operands) adds the comparison of Eigen with NumericAL from C++."""
     cases = cases_of(args)
     child = [sys.executable, __file__, "--seed", str(args.seed), "--largest", str(args.largest), "--rounds",
-             str(args.rounds), "--cases", str(args.cases)] + (["--ops", args.ops] if args.ops else []) \
+             str(args.rounds), "--cases", str(args.cases), "--family", args.family] + (["--ops", args.ops] if args.ops else []) \
         + (["--only", args.only] if args.only else [])
     sides = {"numerical": child + ["--side", "numerical"], "numpy": child + ["--side", "numpy"]}
     if cpp:
@@ -506,7 +693,13 @@ def compare(args, cpp):
                 previous = best[side].get(int(index), math.inf)
                 best[side][int(index)] = min(previous, seconds)
 
-    print(f"NumericAL {nl.__version__} ({nl.gemm_path()}, {nl.get_num_threads()} threads) vs NumPy {np.__version__}, "
+    scipy = args.family == "scipy"
+    if scipy:
+        import scipy as scipy_module
+        reference = f"SciPy {scipy_module.__version__} (NumPy {np.__version__})"
+    else:
+        reference = f"NumPy {np.__version__}"
+    print(f"NumericAL {nl.__version__} ({nl.gemm_path()}, {nl.get_num_threads()} threads) vs {reference}, "
           f"Python {platform.python_version()}, {platform.machine()}")
     if cpp:
         cpp["info"], cpp["described"] = {}, {}
@@ -529,11 +722,11 @@ def compare(args, cpp):
 
     rows, divergent, cpp_rows, cpp_divergent = [], [], [], []
     for case in cases:
-        ours_fn, theirs_fn, operands = build(case)
+        ours_fn, theirs_fn, operands = (build_scipy if scipy else build)(case)
         theirs = None
         try:
             theirs = theirs_fn()
-            ok = agrees(case, ours_fn(), theirs, operands)
+            ok = (agrees_scipy if scipy else agrees)(case, ours_fn(), theirs, operands)
         except Exception as caught:  # an exception where NumPy answers is a divergence too
             ok = False
             case["error"] = repr(caught)
@@ -551,14 +744,17 @@ def compare(args, cpp):
                 cpp_rows.append(dict(case, numerical_cpp=t_ours, eigen=t_eigen, eigen_ratio=t_eigen / t_ours))
 
     if divergent:
-        print(f"\n{len(divergent)} case(s) where NumericAL's answer is not NumPy's (not timed):")
+        print(f"\n{len(divergent)} case(s) where NumericAL's answer is not {'SciPy' if scipy else 'NumPy'}'s (not timed):")
         for case in divergent:
             print(f"  #{case['index']} {case['op']} {case['dims']} {case['dtype']} {case['layout']} "
                   f"{case.get('spec') or ''} {case.get('error', '')}")
     if not rows:
         return 1
 
-    report(rows, "NumPy/NumericAL", "NumPy", "ratio", "numerical", "numpy", args)
+    if scipy:
+        report(rows, "SciPy/NumericAL", "SciPy", "ratio", "numerical", "numpy", args, " --family scipy")
+    else:
+        report(rows, "NumPy/NumericAL", "NumPy", "ratio", "numerical", "numpy", args)
 
     cpp_failed = False
     if cpp:
@@ -580,8 +776,10 @@ def compare(args, cpp):
                    reproduce, layouts=False)
 
     if args.json:
-        summary = dict(seed=args.seed, largest=args.largest, numerical=nl.__version__, numpy=np.__version__,
-                       machine=platform.machine(), rows=rows, divergent=divergent)
+        summary = dict(seed=args.seed, largest=args.largest, family=args.family, numerical=nl.__version__,
+                       numpy=np.__version__, machine=platform.machine(), rows=rows, divergent=divergent)
+        if scipy:
+            summary["scipy"] = scipy_module.__version__
         if cpp:
             summary.update(cpp=cpp["info"], cpp_rows=cpp_rows, cpp_na=na, cpp_divergent=cpp_divergent)
         with open(args.json, "w") as out:

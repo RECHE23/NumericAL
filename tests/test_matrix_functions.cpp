@@ -435,3 +435,16 @@ TEST(logm_inverts_expm)
   EXPECT_THROWS(static_cast<void>(numerical::logm(matrix<double> {{1.0, 2.0}})), numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::logm(matrix<C> {{C {std::numeric_limits<double>::quiet_NaN()}}})), numerical::non_finite_error);
 }
+
+// The moduli the norms of expm take: √(x² + y²) where the largest part is within [2⁻⁵⁰⁰, 2⁵⁰⁰], hypot outside it, where
+// a square would overflow (3e300 + 4e300 i, 5e300) or vanish (3e-310 + 4e-310 i, 5e-310); a real entry's |x|.
+TEST(expm_moduli_keep_to_the_range_of_their_squares)
+{
+  using numerical::buffer;
+  EXPECT((numerical::detail::entry_moduli(buffer<C> {C {3.0, 4.0}, C {0.0, -1.0}}) == buffer<double> {5.0, 1.0}));
+  EXPECT((numerical::detail::entry_moduli(buffer<C> {C {3e300, 4e300}, C {1.0}}) == buffer<double> {std::abs(C {3e300, 4e300}), 1.0}));
+  EXPECT(numerical::detail::entry_moduli(buffer<C> {C {3e-310, 4e-310}})[0] == std::abs(C {3e-310, 4e-310}));
+  EXPECT(numerical::detail::entry_moduli(buffer<C> {C {3e-310, 4e-310}})[0] > 0.0);
+  EXPECT((numerical::detail::entry_moduli(buffer<double> {-2.0, 3.0}) == buffer<double> {2.0, 3.0}));
+  EXPECT(numerical::detail::one_norm(buffer<C> {C {3.0, 4.0}, C {}, C {0.0, 1.0}, C {1.0}}, 2) == 6.0);
+}

@@ -29,27 +29,66 @@ namespace numerical {
 
   namespace detail {
 
-    //! \brief The 1-norm of the `n × n` row-major \p a (`n` from 1): its largest column sum of moduli.
-    template <typename T>
-    [[nodiscard]] double one_norm(const buffer<T>& a,
-                                  std::size_t      n)
+    //! \brief The moduli of a real matrix's entries.
+    [[nodiscard]] inline buffer<double> entry_moduli(const buffer<double>& a)
+    {
+      buffer<double> moduli(a.size());
+      std::transform(a.begin(), a.end(), moduli.begin(), [](double x) { return std::abs(x); });
+      return moduli;
+    }
+
+    /*!
+     * \brief The moduli of a complex matrix's entries: `√(x² + y²)`, which vectorises, where the largest part lies in
+     *        [2⁻⁵⁰⁰, 2⁵⁰⁰] (no square overflows; one that underflows is of an entry below 2⁻⁵⁰⁰ times the largest's,
+     *        nothing to a norm); `hypot` otherwise, as `std::abs` takes it.
+     */
+    [[nodiscard]] inline buffer<double> entry_moduli(const buffer<std::complex<double>>& a)
+    {
+      double largest {0.0};
+      for (const std::complex<double>& z : a) {
+        largest = std::max({largest, std::abs(z.real()), std::abs(z.imag())});
+      }
+      buffer<double> moduli(a.size());
+      if (largest >= std::ldexp(1.0, -500) && largest <= std::ldexp(1.0, 500)) {
+        std::transform(a.begin(), a.end(), moduli.begin(), [](const std::complex<double>& z) {
+                         const double square {z.real() * z.real()};
+                         return std::sqrt(square + (z.imag() * z.imag()));
+                       });
+      }
+      else {
+        std::transform(a.begin(), a.end(), moduli.begin(), [](const std::complex<double>& z) { return std::abs(z); });
+      }
+      return moduli;
+    }
+
+    //! \brief The 1-norm of the `n × n` row-major matrix whose entries' moduli are \p moduli (`n` from 1): its largest
+    //!         column sum.
+    [[nodiscard]] inline double column_sum_norm(const buffer<double>& moduli,
+                                                std::size_t           n)
     {
       buffer<double> sums(n, 0.0);
       for (std::size_t i {0}; i < n; ++i) {
         for (std::size_t j {0}; j < n; ++j) {
-          sums[j] += std::abs(a[(i * n) + j]);
+          sums[j] += moduli[(i * n) + j];
         }
       }
       return *std::max_element(sums.begin(), sums.end());
     }
 
-    //! \brief `‖ |A|ᵖ ‖₁` of the `n × n` row-major \p a (`n` from 1) times \p scale, exactly: the row `1ᵀ |scale A|ᵖ` by \p p products of a
-    //!        vector and `|A|`, a matrix of moduli's norm its largest entry.
+    //! \brief The 1-norm of the `n × n` row-major \p a (`n` from 1): its largest column sum of moduli.
     template <typename T>
-    [[nodiscard]] double modulus_power_norm(const buffer<T>& a,
-                                            std::size_t      n,
-                                            std::size_t      p,
-                                            double           scale)
+    [[nodiscard]] double one_norm(const buffer<T>& a,
+                                  std::size_t      n)
+    {
+      return column_sum_norm(entry_moduli(a), n);
+    }
+
+    //! \brief `‖ |A|ᵖ ‖₁` of the `n × n` row-major \p moduli `|A|` (`n` from 1) times \p scale, exactly: the row
+    //!        `1ᵀ |scale A|ᵖ` by \p p products of a vector and `|A|`, a matrix of moduli's norm its largest entry.
+    [[nodiscard]] inline double modulus_power_norm(const buffer<double>& moduli,
+                                                   std::size_t           n,
+                                                   std::size_t           p,
+                                                   double                scale)
     {
       buffer<double> row(n, 1.0);
       buffer<double> next(n, 0.0);
@@ -57,7 +96,7 @@ namespace numerical {
         std::fill(next.begin(), next.end(), 0.0);
         for (std::size_t i {0}; i < n; ++i) {
           for (std::size_t j {0}; j < n; ++j) {
-            next[j] += row[i] * std::abs(a[(i * n) + j]) * scale;
+            next[j] += row[i] * moduli[(i * n) + j] * scale;
           }
         }
         std::swap(row, next);
@@ -100,14 +139,14 @@ namespace numerical {
     /*!
      * \brief Al-Mohy and Higham's `ℓ(A, m)` (2009): the squarings to add so that the `[m/m]` approximant's backward error
      *        bound, from the leading term of its series `|c₂ₘ₊₁| ‖ |A|²ᵐ⁺¹ ‖₁ / ‖A‖₁`, falls below the unit roundoff;
-     *        \p a times \p scale (a power of two), its norms exact.
+     *        `A` times \p scale (a power of two), its norms exact, from its \p moduli (`|A|`, formed once for every
+     *        degree tried: a complex entry's modulus is a `hypot`).
      */
-    template <typename T>
-    [[nodiscard]] std::size_t extra_squarings(const buffer<T>& a,
-                                              std::size_t      n,
-                                              std::size_t      m,
-                                              double           scale,
-                                              double           norm)
+    [[nodiscard]] inline std::size_t extra_squarings(const buffer<double>& moduli,
+                                                     std::size_t           n,
+                                                     std::size_t           m,
+                                                     double                scale,
+                                                     double                norm)
     {
       const auto   order       {static_cast<double>(m)}; // c = (m!)² / ((2m)! (2m + 1)!), by the logarithms of the factorials
       const double c           {std::exp((2.0 * std::lgamma(order + 1.0)) - std::lgamma((2.0 * order) + 1.0) - std::lgamma((2.0 * order) + 2.0))};
@@ -115,7 +154,7 @@ namespace numerical {
       if (scaled_norm == 0.0) {
         return 0;
       }
-      const double alpha {c * modulus_power_norm(a, n, (2 * m) + 1, scale) / scaled_norm};
+      const double alpha {c * modulus_power_norm(moduli, n, (2 * m) + 1, scale) / scaled_norm};
       const double unit {std::ldexp(1.0, -53)};
       if (alpha <= unit) {
         return 0;
@@ -247,7 +286,8 @@ namespace numerical {
         triangular = triangular && a0[(i * n) + j] == T {};
       }
     }
-    const double                    norm {detail::one_norm(a0, n)};
+    const buffer<double>            moduli {detail::entry_moduli(a0)};
+    const double                    norm {detail::column_sum_norm(moduli, n)};
     buffer<T>                       a2 {detail::square_product(a0, a0, n)};
     buffer<T>                       a4 {detail::square_product(a2, a2, n)};
     buffer<T>                       a6 {detail::square_product(a4, a2, n)};
@@ -258,26 +298,26 @@ namespace numerical {
                                            5.371920351148152e0};
     const auto                      finish = [&](buffer<T> x) { return matrix<T> {n, n, std::move(x)}; };
     std::array<const buffer<T>*, 4> powers {&a2, &a4, &a6, nullptr};
-    if (eta1 <= theta[0] && detail::extra_squarings(a0, n, 3, 1.0, norm) == 0) {
+    if (eta1 <= theta[0] && detail::extra_squarings(moduli, n, 3, 1.0, norm) == 0) {
       return finish(detail::pade_approximant(a0, powers, n, 3));
     }
-    if (eta1 <= theta[1] && detail::extra_squarings(a0, n, 5, 1.0, norm) == 0) {
+    if (eta1 <= theta[1] && detail::extra_squarings(moduli, n, 5, 1.0, norm) == 0) {
       return finish(detail::pade_approximant(a0, powers, n, 5));
     }
     const buffer<T> a8 {detail::square_product(a4, a4, n)};
     powers[3] = &a8;
     const double d8    {std::pow(detail::one_norm(a8, n), 1.0 / 8.0)};
     const double eta3  {std::max(d6, d8)};
-    if (eta3 <= theta[2] && detail::extra_squarings(a0, n, 7, 1.0, norm) == 0) {
+    if (eta3 <= theta[2] && detail::extra_squarings(moduli, n, 7, 1.0, norm) == 0) {
       return finish(detail::pade_approximant(a0, powers, n, 7));
     }
-    if (eta3 <= theta[3] && detail::extra_squarings(a0, n, 9, 1.0, norm) == 0) {
+    if (eta3 <= theta[3] && detail::extra_squarings(moduli, n, 9, 1.0, norm) == 0) {
       return finish(detail::pade_approximant(a0, powers, n, 9));
     }
     const double d10  {std::pow(detail::one_norm(detail::square_product(a4, a6, n), n), 1.0 / 10.0)};
     const double eta5 {std::min(eta3, std::max(d8, d10))};
     std::size_t  s    {eta5 <= theta[4] ? 0 : static_cast<std::size_t>(std::ceil(std::log2(eta5 / theta[4])))};
-    s += detail::extra_squarings(a0, n, 13, std::ldexp(1.0, -static_cast<int>(s)), norm);
+    s += detail::extra_squarings(moduli, n, 13, std::ldexp(1.0, -static_cast<int>(s)), norm);
     const int power   {static_cast<int>(s)};
     buffer<T> scaled  {a0};
     for (std::size_t e {0}; e < n * n; ++e) {
