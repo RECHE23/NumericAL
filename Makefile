@@ -36,7 +36,7 @@ SCIFORGE_INCLUDE ?= ../sciforge/include
 SCIFORGE_LINT ?= ../sciforge/lint
 FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
-.PHONY: check-pins all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
+.PHONY: check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
         python python-test python-stubtest fuzz-linalg fuzz-edges fuzz-fft bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
@@ -64,7 +64,7 @@ help:
 	@echo "  make fuzz-fft     Fourier transforms vs NumPy over drawn lengths, axes, dtypes and scalings, every path (CASES=, SEED=)"
 	@echo "  make version-check  Assert pyproject = __init__ = CMake-derived version"
 	@echo "  make check-commit  Before each commit: format, the suite under coverage at 100 % (~2 min)"
-	@echo "  make check-push    Before each push: the above, g++-14, sanitizers, MISRA, lint, doc, Python (~6 min)"
+	@echo "  make check-push    Before each push: the above, g++-14, CI's arm64 g++ 13, sanitizers, MISRA, lint, doc, Python"
 	@echo "  make check-release Before each release: the above, bench-diff against the last release, the fuzzers"
 	@echo "  make full-local-gate  The push tier, by its former name"
 	@echo "  make bench-python Differential validation + perf vs NumPy"
@@ -264,6 +264,20 @@ check-pins:
 # lint warning or any coverage dimension below 100%. If an incremental coverage build
 # is ever suspect, `rm -rf $(COV_DIR)` first to force a clean re-measure.
 # The steps of the verification tiers (make/quality.mk, below) that take arguments, as targets of their own.
+# CI's linux-arm job here: its compiler, Ubuntu 24.04's g++ 13 on arm64, building and running the tests as CMake does
+# there (Release, CMakeLists' warnings as errors). Its -Warray-bounds and kin depend on what that version inlines at -O3:
+# g++-14, and the gcc:13 image's 13.4, flagged nothing the job failed on. The image (g++, cmake, make) is built once.
+CI_ARM_IMAGE ?= numerical-ci-arm-gcc:24.04
+ci-arm-gcc:
+	@command -v docker >/dev/null || { echo "ci-arm-gcc: docker is required (CI's linux-arm compiler runs in a container)"; exit 1; }
+	@docker image inspect $(CI_ARM_IMAGE) >/dev/null 2>&1 || \
+	  printf 'FROM ubuntu:24.04\nRUN apt-get update -qq && apt-get install -y -qq --no-install-recommends g++ cmake make && rm -rf /var/lib/apt/lists/*\n' \
+	  | docker build --platform linux/arm64 -q -t $(CI_ARM_IMAGE) - >/dev/null
+	docker run --rm --platform linux/arm64 -v "$(CURDIR)":/src:ro -v "$(abspath $(SCIFORGE_INCLUDE))":/sciforge/include:ro $(CI_ARM_IMAGE) \
+	  bash -c 'cmake -S /src -B /tmp/b -DCMAKE_BUILD_TYPE=Release -DSCIFORGE_INCLUDE_DIR=/sciforge/include > /dev/null \
+	           && cmake --build /tmp/b --target numerical_tests_bin -j "$$(nproc)" 2>&1 | grep -vE "^\[ *[0-9]+%\]" ; test "$${PIPESTATUS[0]}" -eq 0 \
+	           && ctest --test-dir /tmp/b --output-on-failure | tail -n 3'
+
 test-gcc:
 	@$(MAKE) --no-print-directory test CXX=g++-14 BUILD=$(BUILD)/gcc
 
@@ -363,7 +377,7 @@ clean:
 # checkout without the sibling (CI pins its own SciForge) still runs every other target.
 SCIFORGE_MAKE    ?= ../sciforge/make
 QUALITY_COMMIT   := format-check coverage-gate
-QUALITY_PUSH     := version-check check-pins test test-gcc test-gcc-neon sanitize tsan misra doc-no-coverage python-test bench-diff-selftest \
+QUALITY_PUSH     := version-check check-pins test test-gcc test-gcc-neon ci-arm-gcc sanitize tsan misra doc-no-coverage python-test bench-diff-selftest \
                     stubtest-gate lint-gate
 QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges fuzz-fft
 -include $(SCIFORGE_MAKE)/quality.mk
