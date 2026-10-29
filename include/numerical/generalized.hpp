@@ -108,16 +108,8 @@ namespace numerical {
       qz_form                                form;
       form.n = n;
       form.t = buffer<C>(r.begin(), r.end());
-      form.s = buffer<C>(n * n); // Qᴴ A
-      for (std::size_t i {0}; i < n; ++i) {
-        for (std::size_t j {0}; j < n; ++j) {
-          C value {};
-          for (std::size_t k {0}; k < n; ++k) {
-            value += std::conj(q(k, i)) * a(k, j);
-          }
-          form.s[(i * n) + j] = value;
-        }
-      }
+      const matrix<C> s {adjoint_of(q) * a};
+      form.s = buffer<C>(s.begin(), s.end());
       form.q = buffer<C>(q.begin(), q.end());
       form.z = buffer<C>(n * n, C {});
       for (std::size_t i {0}; i < n; ++i) {
@@ -798,18 +790,16 @@ namespace numerical {
         std::copy_n(h.data() + (i * order) + (2 * m), n, last.data() + (i * n));
       }
       const matrix<C> deflation       {qr_decomposition<C> {matrix<C> {order, n, std::move(last)}, qr_mode::complete}.q()};
-      buffer<C>       h2(4 * m * m, C {});
-      buffer<C>       j2(4 * m * m, C {});
-      for (std::size_t i {0}; i < 2 * m; ++i) {
-        for (std::size_t t {0}; t < order; ++t) {
-          const C w {std::conj(deflation(t, n + i))};
-          for (std::size_t k {0}; k < 2 * m; ++k) {
-            h2[(i * 2 * m) + k] += w * h[(t * order) + k];
-            j2[(i * 2 * m) + k] += w * j[(t * order) + k];
-          }
-        }
+      buffer<C>       kept(order * 2 * m); // the columns past the first n: Q₂
+      buffer<C>       h_left(order * 2 * m);
+      buffer<C>       j_left(order * 2 * m);
+      for (std::size_t t {0}; t < order; ++t) {
+        std::copy_n(&deflation(t, n), 2 * m, kept.data() + (t * 2 * m));
+        std::copy_n(h.data() + (t * order), 2 * m, h_left.data() + (t * 2 * m));
+        std::copy_n(j.data() + (t * order), 2 * m, j_left.data() + (t * 2 * m));
       }
-      generalized_schur pencil {matrix<C> {2 * m, 2 * m, std::move(h2)}, matrix<C> {2 * m, 2 * m, std::move(j2)}};
+      const matrix<C>   q2     {adjoint_of(matrix<C> {order, 2 * m, std::move(kept)})};
+      generalized_schur pencil {q2 * matrix<C> {order, 2 * m, std::move(h_left)}, q2 * matrix<C> {order, 2 * m, std::move(j_left)}};
       if (continuous) {
         pencil.sort([](const C& alpha, const C& beta) { return (alpha * std::conj(beta)).real() < 0.0; });
       }
@@ -817,13 +807,20 @@ namespace numerical {
         pencil.sort([](const C& alpha, const C& beta) { return std::abs(alpha) < std::abs(beta); });
       }
       matrix<C> u {pencil.z()};
-      if (terms.e != nullptr) {
-        buffer<C> stacked(2 * m * m, C {});
+      if (terms.e != nullptr) { // [D₁ E D₁⁻¹ U₀₀; U₁₀], E scaled as the balancing scaled the pencil
+        buffer<C> scaled_e(m * m);
+        buffer<C> upper(m * m);
+        for (std::size_t i {0}; i < m; ++i) {
+          for (std::size_t t {0}; t < m; ++t) {
+            scaled_e[(i * m) + t] = (*terms.e)(i, t) * (scale[i] / scale[t]);
+            upper[(i * m) + t]    = u(i, t);
+          }
+        }
+        const matrix<C> top {matrix<C> {m, m, std::move(scaled_e)} *matrix<C> {m, m, std::move(upper)}};
+        buffer<C>       stacked(2 * m * m);
+        std::copy(top.begin(), top.end(), stacked.begin());
         for (std::size_t i {0}; i < m; ++i) {
           for (std::size_t k {0}; k < m; ++k) {
-            for (std::size_t t {0}; t < m; ++t) {
-              stacked[(i * m) + k] += (*terms.e)(i, t) * (scale[i] / scale[t]) * u(t, k);
-            }
             stacked[((m + i) * m) + k] = u(m + i, k);
           }
         }

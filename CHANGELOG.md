@@ -20,6 +20,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   square roots), where the general band LU and band Cholesky made one call per entry: SciPy 1.18's answers byte for
   byte on 600 random systems, real and complex (other last bits than before). Order 10 000 on the M1 Pro:
   `solve_banded` 233 → 164 µs, `solveh_banded` 318 → 154 µs.
+- **The generalized Schur form (`generalized_schur`, `solve_continuous_are`, `solve_discrete_are`) forms `Qᴴ A` and
+  the Riccati pencil's deflation `Q₂ᴴ [H J]` by the matrix product**, where scalar loops went down columns: order 204
+  12.0 → 0.5 ms for `Qᴴ A`. M1 Pro, `solve_continuous_are` with `m = 100`, `n = 4`: 151 → 123 ms; `m = 32` 6.5 → 5.6
+  ms. Other last bits.
 - **`sqrtm`, `logm` and `funm` read their triangular recurrences' columns contiguously** (a copy of the column being
   solved), where they went down a row-major matrix: the same sums in the same order. Order 384: `logm` 220 → 202 ms,
   `funm` 133 → 126 ms. The same bits under Clang; under GCC, which fused the square root's multiply-subtract in one
