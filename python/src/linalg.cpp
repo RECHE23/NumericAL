@@ -63,7 +63,7 @@ PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
         }
         std::optional<any_tensor> value; // a single-precision matrix's rounded to its precision, as a stack's
         {
-            const sb::scoped_gil_release unlocked {releases_gil(count_of(*h))};
+            const sb::scoped_gil_release unlocked {releases_gil_cubic(count_of(*h))};
             value.emplace(determinant_tensor(*h));
         }
         return std::visit([](const auto& t) { return from_scalar(t.data()[0]); }, *value);
@@ -95,7 +95,7 @@ PyObject* module_slogdet(PyObject* /*self*/, PyObject* args)
         }
         std::optional<std::tuple<any_tensor, any_tensor>> value; // as determinant's
         {
-            const sb::scoped_gil_release unlocked {releases_gil(count_of(*h))};
+            const sb::scoped_gil_release unlocked {releases_gil_cubic(count_of(*h))};
             value.emplace(slogdet_tensors(*h));
         }
         const auto scalar {[](const any_tensor& v) { return std::visit([](const auto& t) { return from_scalar(t.data()[0]); }, v); }};
@@ -871,7 +871,7 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
         const auto factor = [&]<typename T>(std::type_identity<T>) -> PyObject* {
             std::optional<any_tensor> l;
             {
-                const sb::scoped_gil_release unlocked {releases_gil(order * order)};
+                const sb::scoped_gil_release unlocked {releases_gil_cubic(order * order)};
                 l.emplace(cholesky_copied(lower_read(matrix_of_elements(static_cast<const T*>(matrix.data), order, order), upper != 0), upper != 0));
             }
             return wrap(std::move(*l));
@@ -908,7 +908,7 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
         if (operation == "solve") {
             std::optional<any_tensor> x;
             {
-                const sb::scoped_gil_release unlocked {releases_gil(n * n)};
+                const sb::scoped_gil_release unlocked {releases_gil_cubic(n * n)};
                 x.emplace(solve_copied(matrix_of_elements(static_cast<const T*>(left.data), n, n), *rhs));
             }
             return wrap(std::move(*x));
@@ -916,7 +916,7 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
         if (operation == "inverse") {
             std::optional<numerical::tensor<T>> inverse;
             {
-                const sb::scoped_gil_release unlocked {releases_gil(n * n)};
+                const sb::scoped_gil_release unlocked {releases_gil_cubic(n * n)};
                 inverse.emplace(numerical::inverse(matrix_of_elements(static_cast<const T*>(left.data), n, n)));
             }
             return wrap(any_tensor {std::move(*inverse)});
@@ -924,7 +924,7 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
         if (operation == "determinant") {
             std::optional<T> value;
             {
-                const sb::scoped_gil_release unlocked {releases_gil(n * n)};
+                const sb::scoped_gil_release unlocked {releases_gil_cubic(n * n)};
                 value.emplace(numerical::determinant(matrix_of_elements(static_cast<const T*>(left.data), n, n)));
             }
             return from_scalar(*value);
@@ -932,7 +932,7 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
         if (operation == "slogdet") {
             std::optional<std::pair<T, double>> value;
             {
-                const sb::scoped_gil_release unlocked {releases_gil(n * n)};
+                const sb::scoped_gil_release unlocked {releases_gil_cubic(n * n)};
                 value.emplace(numerical::lu_decomposition<T> {matrix_of_elements(static_cast<const T*>(left.data), n, n)}.log_determinant());
             }
             PyObject* sign {from_scalar(value->first)}; // new ref

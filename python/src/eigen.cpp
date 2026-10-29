@@ -53,13 +53,13 @@ std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& 
     }
     if (is_complex(v)) {
         const cplx_tensor&               a = std::get<cplx_tensor>(v);
-        const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
+        const sb::scoped_gil_release     unlocked {releases_gil_cubic(a.data().size())};
         numerical::hermitian_eigen   decomposition {lower_read(a, upper), method};
         return {any_tensor {real_tensor {decomposition.values()}},
                 any_tensor {cplx_tensor {std::move(decomposition).vectors()}}};
     }
     const real_tensor&               a = std::get<real_tensor>(v);
-    const sb::scoped_gil_release     unlocked {releases_gil(a.data().size())};
+    const sb::scoped_gil_release     unlocked {releases_gil_cubic(a.data().size())};
     numerical::symmetric_eigen   decomposition {lower_read(a, upper), method};
     return {any_tensor {real_tensor {decomposition.values()}},
             any_tensor {real_tensor {std::move(decomposition).vectors()}}};
@@ -73,7 +73,7 @@ std::tuple<any_tensor, any_tensor> schur(const any_tensor& v, bool complex_outpu
     if (is_single(v)) {
         return narrowed(schur(widened(v), complex_output));
     }
-    const sb::scoped_gil_release unlocked {releases_gil(shape_of(v)[0] * shape_of(v)[0])};
+    const sb::scoped_gil_release unlocked {releases_gil_cubic(shape_of(v)[0] * shape_of(v)[0])};
     if (is_complex(v)) {
         return do_schur(matrix_from(std::get<cplx_tensor>(v)));
     }
@@ -122,7 +122,7 @@ namespace {
     {
         std::optional<numerical::schur_decomposition<T>> s;
         {
-            const sb::scoped_gil_release unlocked {releases_gil(a.rows() * a.rows())};
+            const sb::scoped_gil_release unlocked {releases_gil_cubic(a.rows() * a.rows())};
             s.emplace(std::move(a));
         }
         const std::size_t    sdim {s->sort(select)}; // the GIL held: a callable may be called
@@ -162,7 +162,7 @@ std::tuple<any_tensor, any_tensor> eigh_pencil(const any_tensor& a, const any_te
     if (is_single(a)) {
         return narrowed(eigh_pencil(widened(a), widened(b), name, upper));
     }
-    const sb::scoped_gil_release unlocked {releases_gil(shape_of(a)[0] * shape_of(a)[0])};
+    const sb::scoped_gil_release unlocked {releases_gil_cubic(shape_of(a)[0] * shape_of(a)[0])};
     if (is_complex(a)) {
         numerical::hermitian_eigen decomposition {lower_read(std::get<cplx_tensor>(a), upper), lower_read(std::get<cplx_tensor>(b), upper), method};
         return {any_tensor {real_tensor {decomposition.values()}}, any_tensor {cplx_tensor {std::move(decomposition).vectors()}}};
@@ -207,11 +207,11 @@ any_tensor singular_values(const any_tensor& v)
     }
     if (is_complex(v)) {
         const cplx_tensor&           a = std::get<cplx_tensor>(v);
-        const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+        const sb::scoped_gil_release unlocked {releases_gil_cubic(a.data().size())};
         return any_tensor {real_tensor {numerical::singular_values(matrix_from(a))}};
     }
     const real_tensor&           a = std::get<real_tensor>(v);
-    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+    const sb::scoped_gil_release unlocked {releases_gil_cubic(a.data().size())};
     return any_tensor {real_tensor {numerical::singular_values(matrix_from(a))}};
 }
 

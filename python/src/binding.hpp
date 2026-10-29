@@ -578,6 +578,15 @@ inline bool releases_gil(std::size_t elements)
     return elements >= std::size_t {4096} && !gil_released;
 }
 
+// Whether a decomposition of a matrix of this many elements releases the GIL: its work grows as their 3/2 power (n³ for
+// n × n), so from about 47 × 47 (n³ past 10⁵) the computation outweighs a wait for the GIL. Counted in elements, a
+// 50 × 50 eigh computed 0.2 ms holding it, and four Python threads calling it gained nothing (NumPy's, 2.2 times).
+inline bool releases_gil_cubic(std::size_t elements)
+{
+    const auto count {static_cast<double>(elements)};
+    return count * std::sqrt(count) >= 1e5 && !gil_released;
+}
+
 // Marks the calling thread's computations as running without the GIL, for its lifetime.
 class without_gil
 {
@@ -857,7 +866,7 @@ any_tensor solve_copied(numerical::matrix<T> a, const numerical::tensor<T>& b)
 template <typename T>
 any_tensor do_solve(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
 {
-    const sb::scoped_gil_release unlocked {releases_gil(a.data().size())};
+    const sb::scoped_gil_release unlocked {releases_gil_cubic(a.data().size())};
     return solve_copied(matrix_from(a), b);
 }
 

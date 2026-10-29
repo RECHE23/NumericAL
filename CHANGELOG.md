@@ -35,6 +35,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`solve_toeplitz` takes the five sums of each step of Levinson's recursion in one pass, in locals**, where two
   passes summed into a buffer the compiler stored and reloaded at each term: the same bits. Order 500, one right-hand
   side, M1 Pro: 775 → 333 µs (Clang), 695 → 251 µs (GCC 14); SciPy 1.18 445 µs.
+- **Python: the decompositions release the GIL by their work**, from about 47 × 47 (`n³` past 10⁵), where a count of
+  4096 elements held it to 64 × 64: four Python threads calling `eigh` of order 50 ran 1.0 times as fast as one, now
+  4.0 times (`solve` 1.25 → 3.6; six AVX2 cores). `eigh`, `eigvalsh`, `eig`, `schur`, `svdvals`, `solve`, `inv`,
+  `det`, `slogdet`, `cholesky` and the pencils.
 - **`sqrtm`, `logm` and `funm` read their triangular recurrences' columns contiguously** (a copy of the column being
   solved), where they went down a row-major matrix: the same sums in the same order. Order 384: `logm` 220 → 202 ms,
   `funm` 133 → 126 ms. The same bits under Clang; under GCC, which fused the square root's multiply-subtract in one
