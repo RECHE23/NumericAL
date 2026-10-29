@@ -133,6 +133,9 @@ cases.
 | 5a13c5c (2026.10.39 and twenty-seven changes) | M1 Pro, NumPy 2.4.2 on Accelerate | 1.56× [1.49–1.64] | 78 % |
 | 5a13c5c | six AVX2 cores, NumPy 2.5.4 on OpenBLAS | 1.62× [1.52–1.70] | 75 % |
 | 5a13c5c | ten AVX-512 cores, NumPy 2.5.4 on OpenBLAS | 1.97× [1.86–2.08] | 85 % |
+| 93d623a (2026.11.0: 2026.10.41 and five changes) | M1 Pro, NumPy 2.4.2 on Accelerate | 1.54× [1.47–1.61] | 78 % |
+| 93d623a | six AVX2 cores, NumPy 2.5.4 on OpenBLAS | 1.66× [1.56–1.75] | 77 % |
+| 93d623a | ten AVX-512 cores, NumPy 2.5.4 on OpenBLAS | 1.95× [1.84–2.05] | 85 % |
 
 Under load the gap widens: NumPy's OpenBLAS threads wait for cores the busy processes hold, where NumericAL's pool
 runs no more threads than it is given. From a10f188 the draw adds `einsum-each` (calls that sum nothing), whose
