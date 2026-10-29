@@ -15,6 +15,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`expm` forms `A¹⁰` only where it can change the number of squarings** (Al-Mohy and Higham's `η₅ = min(η₃,
   max(d₈, d₁₀))` is `η₃` where `η₃ ≤ θ₁₃` or `d₈ ≥ d₆`): one product of order `n` fewer in most cases of degree 13, the
   same bits. Order 400 on one AVX-512 core 25.0 → 23.0 ms.
+- **`solve_banded` of one sub- and one superdiagonal, and `solveh_banded` of one off-diagonal, take LAPACK's `gtsv`
+  and `ptsv`, as SciPy does** (Gaussian elimination with partial pivoting on the three diagonals; `L D Lᴴ` without
+  square roots), where the general band LU and band Cholesky made one call per entry: SciPy 1.18's answers byte for
+  byte on 600 random systems, real and complex (other last bits than before). Order 10 000 on the M1 Pro:
+  `solve_banded` 233 → 164 µs, `solveh_banded` 318 → 154 µs.
 - **`sqrtm`, `logm` and `funm` read their triangular recurrences' columns contiguously** (a copy of the column being
   solved), where they went down a row-major matrix: the same sums in the same order. Order 384: `logm` 220 → 202 ms,
   `funm` 133 → 126 ms. The same bits under Clang; under GCC, which fused the square root's multiply-subtract in one

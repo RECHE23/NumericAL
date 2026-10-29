@@ -1,6 +1,6 @@
 // solve_banded and solveh_banded against the dense solve of the same matrices: bands of every shape (none below or
-// above the diagonal, one each, wider ones), real and complex, vectors and matrices of right-hand sides, pivoting and
-// not; a singular band, a band not positive definite, the shapes refused.
+// above the diagonal, one each — LAPACK's gtsv and ptsv, as SciPy — wider ones), real and complex, vectors and matrices
+// of right-hand sides, pivoting and not; a singular band, a band not positive definite, the shapes refused.
 
 #include <cmath>
 #include <complex>
@@ -120,7 +120,8 @@ namespace {
 
 TEST(solve_banded_is_the_dense_solve)
 {
-  for (const auto& [n, lower, upper] : {std::array<std::size_t, 3> {1, 0, 0}, {5, 1, 2}, {30, 3, 1}, {40, 1, 1}, {12, 0, 2}, {12, 2, 0}, {60, 4, 5}}) {
+  for (const auto& [n, lower, upper] :
+       {std::array<std::size_t, 3> {1, 0, 0}, {5, 1, 2}, {30, 3, 1}, {40, 1, 1}, {1, 1, 1}, {2, 1, 1}, {3, 1, 1}, {12, 0, 2}, {12, 2, 0}, {60, 4, 5}}) {
     for (const bool dominant : {false, true}) { // dominant: no interchange; not: some
       EXPECT((band_agrees<double>(n, lower, upper, 1, dominant)));
       EXPECT((band_agrees<double>(n, lower, upper, 3, dominant)));
@@ -132,6 +133,18 @@ TEST(solve_banded_is_the_dense_solve)
   EXPECT(std::abs(x(2, 0) + 4.0) < 1e-14);
   EXPECT_THROWS(static_cast<void>(numerical::solve_banded(1, 0, matrix<double> {{1.0, 0.0}, {1.0, 0.0}}, matrix<double> {2, 1, std::vector<double> {1.0, 1.0}})),
                 numerical::singular_matrix_error);
+  // one sub- and one superdiagonal (gtsv): rows exchanged at the last step ([[1, 1], [2, 1]]) and before it; a zero
+  // pivot with a zero below it, and one the elimination leaves last ([[1, 1], [1, 1]]); no row at all
+  const matrix<double> two   {numerical::solve_banded(1, 1, matrix<double> {{0.0, 1.0}, {1.0, 1.0}, {2.0, 0.0}}, matrix<double> {2, 1, std::vector<double> {2.0, 3.0}})};
+  EXPECT(std::abs(two(0, 0) - 1.0) < 1e-15 && std::abs(two(1, 0) - 1.0) < 1e-15);
+  const matrix<double> three {numerical::solve_banded(1, 1, matrix<double> {{0.0, 1.0, 1.0}, {1.0, 1.0, 1.0}, {2.0, 2.0, 0.0}},
+                                                      matrix<double> {3, 1, std::vector<double> {2.0, 4.0, 3.0}})};
+  EXPECT(std::abs(three(0, 0) - 1.0) < 1e-15 && std::abs(three(1, 0) - 1.0) < 1e-15 && std::abs(three(2, 0) - 1.0) < 1e-15);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_banded(1, 1, matrix<double> {{0.0, 1.0}, {0.0, 1.0}, {0.0, 0.0}}, matrix<double> {2, 1, std::vector<double> {1.0, 1.0}})),
+                numerical::singular_matrix_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_banded(1, 1, matrix<double> {{0.0, 1.0}, {1.0, 1.0}, {1.0, 0.0}}, matrix<double> {2, 1, std::vector<double> {1.0, 1.0}})),
+                numerical::singular_matrix_error);
+  EXPECT(numerical::solve_banded(1, 1, matrix<double> {3, 0, std::vector<double> {}}, matrix<double> {0, 1, std::vector<double> {}}).rows() == 0);
   EXPECT_THROWS(static_cast<void>(numerical::solve_banded(1, 1, example, matrix<double> {5, 1, std::vector<double>(5, 1.0)})), numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::solve_banded(1, 2, example, matrix<double> {4, 1, std::vector<double>(4, 1.0)})), numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::solve_banded(1, 2, example, matrix<double> {5, 1, std::vector<double>(5, std::numeric_limits<double>::infinity())})),
@@ -140,12 +153,13 @@ TEST(solve_banded_is_the_dense_solve)
 
 TEST(solveh_banded_is_the_dense_solve)
 {
-  for (const auto& [n, kd] : {std::pair<std::size_t, std::size_t> {1, 0}, {6, 2}, {30, 3}, {10, 1}, {5, 0}}) {
+  for (const auto& [n, kd] : {std::pair<std::size_t, std::size_t> {1, 0}, {6, 2}, {30, 3}, {10, 1}, {1, 1}, {5, 0}}) {
     EXPECT((hermitian_band_agrees<double>(n, kd)));
     EXPECT((hermitian_band_agrees<C>(n, kd)));
   }
   EXPECT_THROWS(static_cast<void>(numerical::solveh_banded(matrix<double> {{0.0, 1.0}, {1.0, -1.0}}, matrix<double> {2, 1, std::vector<double> {1.0, 1.0}})),
                 numerical::not_positive_definite_error);
+  EXPECT(numerical::solveh_banded(matrix<double> {2, 0, std::vector<double> {}}, matrix<double> {0, 1, std::vector<double> {}}).rows() == 0);
   EXPECT_THROWS(static_cast<void>(numerical::solveh_banded(matrix<double> {0, 3, std::vector<double> {}}, matrix<double> {3, 1, std::vector<double>(3, 1.0)})),
                 numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::solveh_banded(matrix<double> {{1.0, 1.0}}, matrix<double> {3, 1, std::vector<double>(3, 1.0)})), numerical::dimension_error);

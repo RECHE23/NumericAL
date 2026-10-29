@@ -609,7 +609,7 @@ def solve_banded(l_and_u, ab, b, overwrite_ab=False, overwrite_b=False, check_fi
     """The solution `x` of ``a x = b`` for a banded `a` of `l` subdiagonals and `u` superdiagonals, as
     ``scipy.linalg.solve_banded``: `ab` its diagonal-ordered form, ``(l + u + 1, n)``, ``ab[u + i - j, j] = a[i, j]``
     (its corners not read); `b` a vector or a matrix of right-hand sides. The LU factorisation with partial pivoting
-    in LAPACK's band storage (``gbsv``), ``O(n l (l + u))`` operations. `overwrite_ab`, `overwrite_b` and
+    in LAPACK's band storage (``gbsv``), ``O(n l (l + u))`` operations; for ``l = u = 1``, ``gtsv``, as SciPy. `overwrite_ab`, `overwrite_b` and
     `check_finite` are accepted and not needed: an infinite or NaN entry raises always.
 
     Raises:
@@ -632,7 +632,8 @@ def solveh_banded(ab, b, overwrite_ab=False, overwrite_b=False, lower=False, che
     """The solution `x` of ``a x = b`` for a Hermitian positive-definite banded `a`, as
     ``scipy.linalg.solveh_banded``: `ab` its upper diagonal-ordered form, ``(u + 1, n)``, ``ab[u + i - j, j] = a[i,
     j]`` for ``i <= j``, or with `lower` its lower one, ``ab[i - j, j] = a[i, j]`` for ``i >= j`` (the diagonal's
-    imaginary part and the corners not read). The band's Cholesky factor (LAPACK's ``pbsv``). `overwrite_ab`,
+    imaginary part and the corners not read). The band's Cholesky factor (LAPACK's ``pbsv``); for one off-diagonal,
+    ``L D Lᴴ`` (``ptsv``), as SciPy. `overwrite_ab`,
     `overwrite_b` and `check_finite` are accepted and not needed.
 
     Raises:

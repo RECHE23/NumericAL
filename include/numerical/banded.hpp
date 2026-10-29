@@ -1,8 +1,8 @@
 /*!
  * \file banded.hpp
  * \brief Structured systems: banded matrices, in LAPACK's diagonal-ordered storage, the general band by its LU
- *        factorisation with partial pivoting (`gbsv`), the Hermitian positive-definite band by its Cholesky factor
- *        (`pbsv`); Toeplitz matrices by Levinson's recursion; circulant matrices by the Fourier transform. And the
+ *        factorisation with partial pivoting (`gbsv`, `gtsv` for three diagonals), the Hermitian positive-definite
+ *        band by its Cholesky factor (`pbsv`, `ptsv`'s `L D Lᴴ` for three); Toeplitz matrices by Levinson's recursion; circulant matrices by the Fourier transform. And the
  *        structured matrices themselves, as `scipy.linalg` forms them: Toeplitz, circulant, Hankel, block diagonal.
  */
 #ifndef NUMERICAL_BANDED_HPP
@@ -200,6 +200,146 @@ namespace numerical {
       }
     }
 
+    //! \brief LAPACK's measure of a tridiagonal pivot: `|x|` (`dgtsv`).
+    [[nodiscard]] inline double tridiagonal_size(double x)
+    {
+      return std::abs(x);
+    }
+
+    //! \brief LAPACK's measure of a complex tridiagonal pivot, `CABS1`: `|Re z| + |Im z|` (`zgtsv`).
+    [[nodiscard]] inline double tridiagonal_size(const std::complex<double>& z)
+    {
+      return std::abs(z.real()) + std::abs(z.imag());
+    }
+
+    /*!
+     * \brief The \p k right-hand sides of \p b (`n × k`, row-major) solved in place against the tridiagonal matrix of
+     *        subdiagonal \p dl, diagonal \p d and superdiagonal \p du (`n − 1`, `n`, `n − 1` entries, overwritten), as
+     *        LAPACK's `gtsv`, which `scipy.linalg.solve_banded` calls for one sub- and one superdiagonal: Gaussian
+     *        elimination with partial pivoting, row `i + 1` exchanged with row `i` where its subdiagonal entry is the
+     *        larger (\p dl then holding the second superdiagonal the exchange brings), then back substitution.
+     * \throws singular_matrix_error If a pivot is zero.
+     */
+    template <typename T>
+    void tridiagonal_solve(buffer<T>&  dl,
+                           buffer<T>&  d,
+                           buffer<T>&  du,
+                           buffer<T>&  b,
+                           std::size_t n,
+                           std::size_t k)
+    {
+      for (std::size_t i {0}; i + 1 < n; ++i) {
+        T* const here {b.data() + (i * k)};
+        T* const next {b.data() + ((i + 1) * k)};
+        if (tridiagonal_size(d[i]) >= tridiagonal_size(dl[i])) {
+          if (d[i] == T {}) {
+            throw singular_matrix_error("singular matrix");
+          }
+          const T fact {dl[i] / d[i]};
+          d[i + 1] = d[i + 1] - (fact * du[i]);
+          for (std::size_t c {0}; c < k; ++c) {
+            next[c] = next[c] - (fact * here[c]);
+          }
+          dl[i] = T {};
+        }
+        else {
+          const T fact     {d[i] / dl[i]};
+          d[i]                 = dl[i];
+          const T diagonal {d[i + 1]};
+          d[i + 1] = du[i] - (fact * diagonal);
+          if (i + 2 < n) {
+            dl[i]     = du[i + 1];
+            du[i + 1] = -fact * dl[i];
+          }
+          du[i] = diagonal;
+          for (std::size_t c {0}; c < k; ++c) {
+            const T top {here[c]};
+            here[c] = next[c];
+            next[c] = top - (fact * next[c]);
+          }
+        }
+      }
+      if (d[n - 1] == T {}) {
+        throw singular_matrix_error("singular matrix");
+      }
+      for (std::size_t c {0}; c < k; ++c) {
+        b[((n - 1) * k) + c] = b[((n - 1) * k) + c] / d[n - 1];
+      }
+      if (n > 1) {
+        for (std::size_t c {0}; c < k; ++c) {
+          b[((n - 2) * k) + c] = (b[((n - 2) * k) + c] - (du[n - 2] * b[((n - 1) * k) + c])) / d[n - 2];
+        }
+      }
+      for (std::size_t i {n - std::min<std::size_t>(n, 2)}; i-- > 0;) {
+        for (std::size_t c {0}; c < k; ++c) {
+          b[(i * k) + c] = (b[(i * k) + c] - (du[i] * b[((i + 1) * k) + c]) - (dl[i] * b[((i + 2) * k) + c])) / d[i];
+        }
+      }
+    }
+
+    /*!
+     * \brief The \p k right-hand sides of \p b (`n × k`, row-major) solved in place against the Hermitian positive
+     *        definite tridiagonal matrix of real diagonal \p d and subdiagonal \p e (`n` and `n − 1` entries,
+     *        overwritten), as LAPACK's `ptsv`, which `scipy.linalg.solveh_banded` calls for one off-diagonal: `A = L D
+     *        Lᴴ` (`pttrf`, `e` becoming `L`'s subdiagonal), then `L`, `D` and `Lᴴ` in turn (`ptts2`).
+     * \throws not_positive_definite_error If a pivot of `D` is not positive.
+     */
+    template <typename T>
+    void positive_tridiagonal_solve(buffer<double>& d,
+                                    buffer<T>&      e,
+                                    buffer<T>&      b,
+                                    std::size_t     n,
+                                    std::size_t     k)
+    {
+      for (std::size_t i {0}; i < n; ++i) {
+        if (!(d[i] > 0.0)) {
+          throw not_positive_definite_error("solveh_banded: the matrix is not positive definite (leading minor " + std::to_string(i + 1) + ")");
+        }
+        if (i + 1 < n) {
+          if constexpr (std::is_same_v<T, double>) {
+            const double ei {e[i]};
+            e[i]     = ei / d[i];
+            d[i + 1] = d[i + 1] - (e[i] * ei);
+          }
+          else {
+            const double real {e[i].real()};
+            const double imag {e[i].imag()};
+            const double f    {real / d[i]};
+            const double g    {imag / d[i]};
+            e[i]     = T {f, g};
+            d[i + 1] = d[i + 1] - (f * real) - (g * imag);
+          }
+        }
+      }
+      for (std::size_t i {1}; i < n; ++i) {
+        for (std::size_t c {0}; c < k; ++c) {
+          b[(i * k) + c] = b[(i * k) + c] - (b[((i - 1) * k) + c] * e[i - 1]);
+        }
+      }
+      if constexpr (std::is_same_v<T, double>) {
+        for (std::size_t c {0}; c < k; ++c) {
+          b[((n - 1) * k) + c] = b[((n - 1) * k) + c] / d[n - 1];
+        }
+        for (std::size_t i {n - 1}; i-- > 0;) {
+          for (std::size_t c {0}; c < k; ++c) {
+            b[(i * k) + c] = (b[(i * k) + c] / d[i]) - (b[((i + 1) * k) + c] * e[i]);
+          }
+        }
+      }
+      else {
+        for (std::size_t i {0}; i < n; ++i) {
+          for (std::size_t c {0}; c < k; ++c) {
+            b[(i * k) + c] = b[(i * k) + c] / d[i];
+          }
+        }
+        for (std::size_t i {n - 1}; i-- > 0;) {
+          for (std::size_t c {0}; c < k; ++c) {
+            b[(i * k) + c] = b[(i * k) + c] - (b[((i + 1) * k) + c] * std::conj(e[i]));
+          }
+        }
+      }
+    }
+
     //! \brief A complex value as a real result takes it: its real part (the imaginary part rounding's alone).
     [[nodiscard]] inline double taken_as(const std::complex<double>& z,
                                          std::type_identity<double> /*result*/)
@@ -236,7 +376,8 @@ namespace numerical {
    * \brief The solution `X` of `A X = B` for the `n × n` band `A` of \p lower subdiagonals and \p upper superdiagonals,
    *        given as `scipy.linalg.solve_banded` takes it: \p ab of `lower + upper + 1` rows and `n` columns,
    *        `ab[upper + i − j][j] = A(i, j)` (its corners, outside the matrix, not read). By the LU factorisation with
-   *        partial pivoting in LAPACK's band storage (`gbsv`): `O(n · lower · (lower + upper))` operations.
+   *        partial pivoting in LAPACK's band storage (`gbsv`): `O(n · lower · (lower + upper))` operations; one
+   *        sub- and one superdiagonal by \ref detail::tridiagonal_solve (`gtsv`), as SciPy.
    * \tparam T `double` or `std::complex<double>`.
    * \throws dimension_error       If \p ab has not `lower + upper + 1` rows or \p b not `n` rows.
    * \throws non_finite_error      If an entry is infinite or NaN.
@@ -251,6 +392,21 @@ namespace numerical {
   {
     detail::require_band(ab, lower + upper + 1, b, "solve_banded");
     const std::size_t        n    {ab.cols()};
+    if (lower == 1 && upper == 1 && n > 0) { // gtsv, as SciPy
+      buffer<T> dl(n - 1);
+      buffer<T> d(n);
+      buffer<T> du(n - 1);
+      for (std::size_t j {0}; j < n; ++j) {
+        d[j] = ab(1, j);
+        if (j + 1 < n) {
+          du[j] = ab(0, j + 1);
+          dl[j] = ab(2, j);
+        }
+      }
+      buffer<T> x(b.begin(), b.end());
+      detail::tridiagonal_solve(dl, d, du, x, n, b.cols());
+      return matrix<T> {b.rows(), b.cols(), std::move(x)};
+    }
     const std::size_t        ldab {(2 * lower) + upper + 1};
     detail::band_storage<T>  work {buffer<T>(ldab * n, T {}), ldab};
     for (std::size_t r {0}; r < lower + upper + 1; ++r) {
@@ -269,7 +425,8 @@ namespace numerical {
    * \brief The solution `X` of `A X = B` for the Hermitian positive-definite band `A`, given as
    *        `scipy.linalg.solveh_banded` takes it: \p ab of `kd + 1` rows and `n` columns, its upper form
    *        `ab[kd + i − j][j] = A(i, j)` for `i ≤ j` or, \p lower_form, its lower `ab[i − j][j] = A(i, j)` for `i ≥ j`
-   *        (the diagonal's imaginary part, and the corners, not read). By the band's Cholesky factor (LAPACK's `pbsv`).
+   *        (the diagonal's imaginary part, and the corners, not read). By the band's Cholesky factor (LAPACK's `pbsv`);
+   *        one off-diagonal by \ref detail::positive_tridiagonal_solve (`ptsv`), as SciPy.
    * \tparam T `double` or `std::complex<double>`.
    * \throws dimension_error              If \p b has not `n` rows, or \p ab has no row.
    * \throws non_finite_error             If an entry is infinite or NaN.
@@ -287,6 +444,19 @@ namespace numerical {
     const std::size_t kd         {ab.rows() - 1};
     detail::require_band(ab, kd + 1, b, "solveh_banded");
     const std::size_t       n    {ab.cols()};
+    if (kd == 1 && n > 0) { // ptsv, as SciPy: the diagonal's real part, the subdiagonal (the superdiagonal conjugated)
+      buffer<double> d(n);
+      buffer<T>      e(n - 1);
+      for (std::size_t j {0}; j < n; ++j) {
+        d[j] = std::real(lower_form ? ab(0, j) : ab(1, j));
+        if (j + 1 < n) {
+          e[j] = lower_form ? ab(1, j) : detail::conj_of(ab(0, j + 1));
+        }
+      }
+      buffer<T> x(b.begin(), b.end());
+      detail::positive_tridiagonal_solve(d, e, x, n, b.cols());
+      return matrix<T> {b.rows(), b.cols(), std::move(x)};
+    }
     detail::band_storage<T> work {buffer<T>((kd + 1) * n, T {}), kd + 1};
     for (std::size_t j {0}; j < n; ++j) {
       for (std::size_t i {j > kd ? j - kd : 0}; i <= j; ++i) { // A(i, j), i ≤ j, from either form
