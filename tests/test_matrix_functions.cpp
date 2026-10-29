@@ -130,6 +130,17 @@ TEST(expm_adds_the_squarings_the_backward_error_bound_asks)
   EXPECT(std::abs(image(0, 1) - corner) < 1e-11 * corner);
 }
 
+// The degree-13 cases: η₃ ≤ θ₁₃ (3 I, no squaring whatever ‖A¹⁰‖), d₈ ≥ d₆ (6 I: every dₚ is 6) and d₈ < d₆ with η₃ past
+// θ₁₃ (5 I plus a nilpotent 200, ‖Aᵖ‖₁ = 5ᵖ (1 + 40 p)), where A¹⁰ is formed for η₅.
+TEST(expm_forms_the_tenth_power_only_where_it_decides)
+{
+  for (const double c : {3.0, 6.0}) {
+    EXPECT(relative_gap(numerical::expm(matrix<double> {{c, 0.0}, {0.0, c}}), matrix<double> {{std::exp(c), 0.0}, {0.0, std::exp(c)}}) < 1e-14);
+  }
+  const double e5 {std::exp(5.0)};
+  EXPECT(relative_gap(numerical::expm(matrix<double> {{5.0, 200.0}, {0.0, 5.0}}), matrix<double> {{e5, 200.0 * e5}, {0.0, e5}}) < 1e-14);
+}
+
 TEST(expm_refuses_what_it_cannot_take)
 {
   EXPECT_THROWS(static_cast<void>(numerical::expm(matrix<double> {{1.0, 2.0}})), numerical::dimension_error);

@@ -12,6 +12,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`ldl` updates the trailing matrix row by row**, the rows being contiguous, where it went down the columns: the same
   operations on each entry in the same order, so the same bits. Order 1024 on one AVX-512 core, GCC: real 588 → 77 ms,
   complex 716 → 232 ms; order 256 5.4 → 1.8 ms; order 64 as before.
+- **`expm` forms `A¹⁰` only where it can change the number of squarings** (Al-Mohy and Higham's `η₅ = min(η₃,
+  max(d₈, d₁₀))` is `η₃` where `η₃ ≤ θ₁₃` or `d₈ ≥ d₆`): one product of order `n` fewer in most cases of degree 13, the
+  same bits. Order 400 on one AVX-512 core 25.0 → 23.0 ms.
+- **`sqrtm`, `logm` and `funm` read their triangular recurrences' columns contiguously** (a copy of the column being
+  solved), where they went down a row-major matrix: the same sums in the same order. Order 384: `logm` 220 → 202 ms,
+  `funm` 133 → 126 ms. The same bits under Clang; under GCC, which fused the square root's multiply-subtract in one
+  loop and not the other, the real `sqrtm` now fuses it as Clang always did (other last bits there).
 
 ### Fixed
 - **`solve_continuous_are` of a badly scaled equation** (a graded `A`, eigenvalues from 10⁻⁶ to 10⁶) lost up to 470

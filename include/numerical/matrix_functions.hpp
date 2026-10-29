@@ -314,8 +314,9 @@ namespace numerical {
     if (eta3 <= theta[3] && detail::extra_squarings(moduli, n, 9, 1.0, norm) == 0) {
       return finish(detail::pade_approximant(a0, powers, n, 9));
     }
-    const double d10  {std::pow(detail::one_norm(detail::square_product(a4, a6, n), n), 1.0 / 10.0)};
-    const double eta5 {std::min(eta3, std::max(d8, d10))};
+    // η₅ = min(η₃, max(d₈, d₁₀)) is η₃ where η₃ ≤ θ₁₃ (s = 0 whatever d₁₀) or d₈ ≥ η₃: A¹⁰ formed only otherwise
+    const auto   d10  = [&] { return std::pow(detail::one_norm(detail::square_product(a4, a6, n), n), 1.0 / 10.0); };
+    const double eta5 {eta3 <= theta[4] || d8 >= eta3 ? eta3 : std::min(eta3, std::max(d8, d10()))};
     std::size_t  s    {eta5 <= theta[4] ? 0 : static_cast<std::size_t>(std::ceil(std::log2(eta5 / theta[4])))};
     s += detail::extra_squarings(moduli, n, 13, std::ldexp(1.0, -static_cast<int>(s)), norm);
     const int power   {static_cast<int>(s)};
@@ -819,6 +820,7 @@ namespace numerical {
                              const std::vector<std::size_t>& starts)
     {
       const std::size_t blocks {starts.size()};
+      buffer<T>         columns(2 * n); // the block column's entries above its diagonal block, by column: contiguous
       for (std::size_t bj {0}; bj < blocks; ++bj) {
         const std::size_t j0 {starts[bj]};
         const std::size_t nj {(bj + 1 < blocks ? starts[bj + 1] : n) - j0};
@@ -828,22 +830,26 @@ namespace numerical {
           std::array<T, 4>  c  {};
           for (std::size_t i {0}; i < ni; ++i) {
             for (std::size_t j {0}; j < nj; ++j) {
-              T value {t[((i0 + i) * n) + j0 + j]};
+              T              value  {t[((i0 + i) * n) + j0 + j]};
+              const T* const row    {r.data() + ((i0 + i) * n)};
+              const T* const column {columns.data() + (j * n)};
               for (std::size_t k {starts[bi]}; k < j0; ++k) {
-                value -= r[((i0 + i) * n) + k] * r[(k * n) + j0 + j];
+                value -= row[k] * column[k];
               }
               c[(i * nj) + j] = value;
             }
           }
           if (ni == 1 && nj == 1) {
             const T sum {r[(i0 * n) + i0] + r[(j0 * n) + j0]};
-            r[(i0 * n) + j0] = sum == T {} && c[0] == T {} ? T {} : c[0] / sum;
-            continue;
+            c[0] = sum == T {} && c[0] == T {} ? T {} : c[0] / sum;
           }
-          small_sylvester_block(r.data() + (i0 * n) + i0, n, r.data() + (j0 * n) + j0, n, ni, nj, c.data(), nj, 0.0);
+          else {
+            small_sylvester_block(r.data() + (i0 * n) + i0, n, r.data() + (j0 * n) + j0, n, ni, nj, c.data(), nj, 0.0);
+          }
           for (std::size_t i {0}; i < ni; ++i) {
             for (std::size_t j {0}; j < nj; ++j) {
               r[((i0 + i) * n) + j0 + j] = c[(i * nj) + j];
+              columns[(j * n) + i0 + i]  = c[(i * nj) + j];
             }
           }
         }
@@ -1104,6 +1110,14 @@ namespace numerical {
     for (std::size_t i {0}; i < n; ++i) {
       f[(i * n) + i] = values[i];
     }
+    buffer<C> tc(n * n); // T and F by columns: the recurrence's sums contiguous along both operands
+    buffer<C> fc(n * n, C {});
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        tc[(j * n) + i] = t(i, j);
+      }
+      fc[(i * n) + i] = values[i];
+    }
     double smallest {std::abs(t(0, 0))};
     for (std::size_t p {1}; p < n; ++p) {
       for (std::size_t i {0}; i + p < n; ++i) {
@@ -1111,17 +1125,22 @@ namespace numerical {
         C                 sum   {t(i, j) * (f[(j * n) + j] - f[(i * n) + i])};
         C                 left  {};
         C                 right {};
+        const C* const    t_row {&t(i, 0)};
+        const C* const    f_row {f.data() + (i * n)};
+        const C* const    t_col {tc.data() + (j * n)};
+        const C* const    f_col {fc.data() + (j * n)};
         for (std::size_t k {i + 1}; k < j; ++k) {
-          left  += t(i, k) * f[(k * n) + j];
-          right += f[(i * n) + k] * t(k, j);
+          left  += t_row[k] * f_col[k];
+          right += f_row[k] * t_col[k];
         }
         sum += left - right;
         const C gap {t(j, j) - t(i, i)};
         if (gap != C {}) {
           sum /= gap;
         }
-        f[(i * n) + j] = sum;
-        smallest       = std::min(smallest, std::abs(gap));
+        f[(i * n) + j]  = sum;
+        fc[(j * n) + i] = sum;
+        smallest        = std::min(smallest, std::abs(gap));
       }
     }
     smallest = smallest == 0.0 ? tolerance : smallest;
