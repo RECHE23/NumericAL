@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.41 — 2026-10-29
+
 ### Added
 - **`logm`, as `scipy.linalg.logm`**: the principal logarithm by Al-Mohy and Higham's inverse scaling and squaring
   (2012) on the Schur form (an upper triangular matrix directly), as SciPy's `_logm_triu`: square roots until the
