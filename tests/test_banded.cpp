@@ -351,15 +351,15 @@ TEST(pivoted_qr_reveals_the_rank)
       EXPECT(pivoted_qr_holds(matrix<C> {m, n, complex}, mode));
     }
   }
-  std::vector<double> low(20 * 12); // rank 3: three columns' combinations
-  std::uint64_t       state {5};
-  std::vector<double> basis(20 * 3);
+  std::vector<double> low(std::size_t   {20} *12); // rank 3: three columns' combinations
+  std::uint64_t       state             {5};
+  std::vector<double> basis(std::size_t {20} *3);
   for (double& value : basis) {
     value = drawn(state);
   }
   for (std::size_t i {0}; i < 20; ++i) {
     for (std::size_t j {0}; j < 12; ++j) {
-      low[(i * 12) + j] = basis[(i * 3) + (j % 3)] * static_cast<double>(j + 1) + (j % 4 == 3 ? basis[(i * 3) + 1] : 0.0);
+      low[(i * 12) + j] = (basis[(i * 3) + (j % 3)] * static_cast<double>(j + 1)) + (j % 4 == 3 ? basis[(i * 3) + 1] : 0.0);
     }
   }
   const matrix<double>                              deficient {20, 12, low};
@@ -367,6 +367,7 @@ TEST(pivoted_qr_reveals_the_rank)
   EXPECT(pivoted_qr_holds(deficient, qr_mode::reduced));
   EXPECT(f.r()(2, 2) > 1e-8 && f.r()(3, 3) < 1e-12 * f.r()(0, 0));
          EXPECT(pivoted_qr_holds(matrix<double> {3, 2, std::vector<double>(6, 0.0)}, qr_mode::complete));
+  EXPECT(pivoted_qr_holds(matrix<C> {3, 2, std::vector<C>(6, C {})}, qr_mode::complete)); // a real diagonal, nothing below
   const numerical::pivoted_qr_decomposition<double> example {matrix<double> {{1, 2, 3}, {4, 5, 6}, {7, 8, 10}, {1, 0, 1}}};
   EXPECT((example.permutation() == std::vector<std::size_t> {2, 0, 1}));
   EXPECT(std::abs(example.r()(0, 0) - 12.08304597) < 1e-8);
