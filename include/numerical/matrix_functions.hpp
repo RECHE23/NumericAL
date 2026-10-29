@@ -18,6 +18,7 @@
 #include <numbers>
 #include <optional>
 #include <stdexcept>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
@@ -1202,10 +1203,16 @@ namespace numerical {
 
     //! \brief The bounds `θ_m` of the `[m/m]` Padé approximant of `log(I + X)` (Al-Mohy and Higham's table 2.1, 2012),
     //!        `m` from 1 to 7.
+    inline constexpr std::array<double, 8> log_pade_bounds {0.0, 1.59e-5, 2.31e-3, 1.94e-2, 6.21e-2, 1.28e-1, 2.06e-1, 2.88e-1};
+
+    //! \brief The bounds `θ_m` of the `[m/m]` Padé approximant of `(I − X)ᵗ` (Higham and Lin's table 3.1, 2013, as
+    //!        SciPy's `_remainder_matrix_power_triu`), `m` from 1 to 7.
+    inline constexpr std::array<double, 8> power_pade_bounds {0.0, 1.51e-5, 2.24e-3, 1.88e-2, 6.04e-2, 1.24e-1, 2.00e-1, 2.79e-1};
+
+    //! \brief `θ_m` of \ref log_pade_bounds.
     [[nodiscard]] inline double log_pade_bound(std::size_t m)
     {
-      static constexpr std::array<double, 8> theta {0.0, 1.59e-5, 2.31e-3, 1.94e-2, 6.21e-2, 1.28e-1, 2.06e-1, 2.88e-1};
-      return theta[m];
+      return log_pade_bounds[m];
     }
 
     //! \brief `ceil((Im z − π) / 2π)`, the unwinding number of `z` (SciPy's `_unwindk`).
@@ -1317,25 +1324,28 @@ namespace numerical {
     /*!
      * \brief Al-Mohy and Higham's inverse scaling and squaring (2012, algorithm 4.1) on the upper triangular \p t0, as
      *        SciPy's `_inverse_squaring_helper`: `s` square roots of `T` until `T − I` is small enough for the `[m/m]`
-     *        Padé approximant of `log(I + X)` (`m` from 1 to 7), the norms `‖(T − I)ᵖ‖₁^(1/p)` exact; `R = T − I` with
+     *        Padé approximant whose bounds are \p theta (`log(I + X)`'s, or `(I − X)ᵗ`'s; `m` from 1 to 7), the norms `‖(T − I)ᵖ‖₁^(1/p)` exact; `R = T − I` with
      *        its diagonal and superdiagonal recomputed without cancellation where the principal branch exists.
      * \return `R`, `s` and `m`.
      */
     [[nodiscard]] inline std::tuple<buffer<std::complex<double>>, std::size_t, std::size_t> inverse_squaring(const buffer<std::complex<double>>& t0,
-                                                                                                             std::size_t                         n)
+                                                                                                             std::size_t                         n,
+                                                                                                             const std::array<double, 8>&        theta                  = log_pade_bounds,
+                                                                                                             const char                        * name                   = "logm")
     {
       using C = std::complex<double>;
+      const auto  bound = [&theta](std::size_t m) { return theta[m]; };
       std::size_t s0 {0};
       buffer<C>   diagonal(n);
       for (std::size_t i {0}; i < n; ++i) {
         diagonal[i] = t0[(i * n) + i];
       }
-      const auto far = [&diagonal]() {
+      const auto far = [&diagonal, &bound]() {
                          double largest {0.0};
                          for (const C& d : diagonal) {
                            largest = std::max(largest, std::abs(d - C {1.0}));
                          }
-                         return largest > log_pade_bound(7);
+                         return largest > bound(7);
                        };
       while (far()) {
         for (C& d : diagonal) {
@@ -1353,7 +1363,7 @@ namespace numerical {
       std::size_t  s  {s0};
       double       d3 {shifted_power_norm(t, n, 3)};
       const double a2 {std::max(shifted_power_norm(t, n, 2), d3)};
-      std::size_t  m  {a2 <= log_pade_bound(1) ? std::size_t {1} : (a2 <= log_pade_bound(2) ? std::size_t {2} : std::size_t {0})};
+      std::size_t  m  {a2 <= bound(1) ? std::size_t {1} : (a2 <= bound(2) ? std::size_t {2} : std::size_t {0})};
       while (m == 0) {
         if (s > s0) {
           d3 = shifted_power_norm(t, n, 3);
@@ -1361,11 +1371,11 @@ namespace numerical {
         const double d4 {shifted_power_norm(t, n, 4)};
         const double a3 {std::max(d3, d4)};
         if (!std::isfinite(a3)) { // NaN compares false with every bound: the roots would go on for ever
-          throw convergence_error("logm: the square roots of the triangular form are not finite");
+          throw convergence_error(std::string {name} + ": the square roots of the triangular form are not finite");
         }
-        if (a3 <= log_pade_bound(7)) {
+        if (a3 <= bound(7)) {
           std::size_t j1 {3};
-          while (a3 > log_pade_bound(j1)) {
+          while (a3 > bound(j1)) {
             ++j1;
           }
           if (j1 <= 6) {
@@ -1374,7 +1384,7 @@ namespace numerical {
           }
           // a square root about halves a3, so one in (θ₆, θ₇] falls to θ₆ or below: the paper's cap of two such roots
           // (SciPy's k < 2) is never reached
-          if (a3 / 2.0 <= log_pade_bound(5)) {
+          if (a3 / 2.0 <= bound(5)) {
             t = root(t);
             ++s;
             continue;
@@ -1382,7 +1392,7 @@ namespace numerical {
         }
         const double d5  {shifted_power_norm(t, n, 5)};
         const double eta {std::min(a3, std::max(d4, d5))};
-        m = eta <= log_pade_bound(6) ? std::size_t {6} : (eta <= log_pade_bound(7) ? std::size_t {7} : std::size_t {0});
+        m = eta <= bound(6) ? std::size_t {6} : (eta <= bound(7) ? std::size_t {7} : std::size_t {0});
         if (m == 0) {
           t = root(t);
           ++s;
@@ -1486,6 +1496,240 @@ namespace numerical {
       return {exact, near && !exact};
     }
   } // namespace detail
+
+  namespace detail {
+
+    //! \brief \p a itself: already complex.
+    [[nodiscard]] inline const matrix<std::complex<double>>& as_complex(const matrix<std::complex<double>>& a)
+    {
+      return a;
+    }
+
+    //! \brief \p a's entries as complex numbers.
+    [[nodiscard]] inline matrix<std::complex<double>> as_complex(const matrix<double>& a)
+    {
+      return matrix<std::complex<double>> {a.rows(), a.cols(), buffer<std::complex<double>>(a.begin(), a.end())};
+    }
+
+    //! \brief `z` to the real power \p p, principal: `exp(p log z)` (0 for `z = 0` and `p > 0`).
+    [[nodiscard]] inline std::complex<double> principal_power(const std::complex<double>& z,
+                                                              double                      p)
+    {
+      return complex_exp(p * complex_log(z));
+    }
+
+    //! \brief The coefficient `cᵢ` (`i ≥ 1`) of the continued fraction of `(1 − x)ᵗ`, as SciPy's
+    //!        `_fractional_power_pade_constant` (Higham and Lin, 2011, equation 4.1).
+    [[nodiscard]] inline double power_pade_constant(std::size_t i,
+                                                    double      t)
+    {
+      if (i == 1) {
+        return -t;
+      }
+      if (i % 2 == 0) {
+        const double j {static_cast<double>(i) / 2.0}; // i even: exact
+        return (t - j) / (2.0 * ((2.0 * j) - 1.0));
+      }
+      const double j {(static_cast<double>(i) - 1.0) / 2.0}; // i odd: exact
+      return (-j - t) / (2.0 * ((2.0 * j) + 1.0));
+    }
+
+    /*!
+     * \brief The `[m/m]` Padé approximant of `(I − X)ᵗ` for the upper triangular \p x, as SciPy's
+     *        `_fractional_power_pade`: its continued fraction from the bottom, `Y = c₂ₘ X`, then `Y = (I + Y)⁻¹ cⱼ X`
+     *        for `j = 2m − 1, …, 1`, and `I + Y`.
+     */
+    [[nodiscard]] inline buffer<std::complex<double>> power_pade(const buffer<std::complex<double>>& x,
+                                                                 std::size_t                         n,
+                                                                 double                              t,
+                                                                 std::size_t                         m)
+    {
+      using C = std::complex<double>;
+      buffer<C> y(n * n);
+      for (std::size_t e {0}; e < n * n; ++e) {
+        y[e] = x[e] * power_pade_constant(2 * m, t);
+      }
+      for (std::size_t j {(2 * m) - 1}; j >= 1; --j) {
+        buffer<C> rhs(n * n);
+        for (std::size_t e {0}; e < n * n; ++e) {
+          rhs[e] = x[e] * power_pade_constant(j, t);
+        }
+        for (std::size_t i {0}; i < n; ++i) {
+          y[(i * n) + i] += C {1.0};
+        }
+        solve_triangular_in_place(y.data(), n, false, triangular_op::none, false, rhs.data(), n);
+        y = std::move(rhs);
+      }
+      for (std::size_t i {0}; i < n; ++i) {
+        y[(i * n) + i] += C {1.0};
+      }
+      return y;
+    }
+
+    /*!
+     * \brief `T^t` (`−1 < t < 1`) of the upper triangular \p t0 (no zero on its diagonal), as SciPy's
+     *        `_remainder_matrix_power_triu` (Higham and Lin's Schur–Padé algorithm, 2013): a diagonal `T` entry by entry;
+     *        else `R = T^(1/2ˢ) − I` and `m` by \ref inverse_squaring with the bounds of `(I − X)ᵗ`, the `[m/m]` Padé
+     *        approximant at `−R`, then `s` squarings. Where the principal branch exists, the diagonal `λᵢ^(t/2ⁱ)` and the
+     *        superdiagonal (\ref fractional_power_superdiagonal) are written exactly after each squaring, as Higham and
+     *        Lin's algorithm 5.1 does (SciPy writes them before the first squaring only).
+     */
+    [[nodiscard]] inline buffer<std::complex<double>> triangular_power(const buffer<std::complex<double>>& t0,
+                                                                       std::size_t                         n,
+                                                                       double                              t)
+    {
+      using C = std::complex<double>;
+      bool diagonal {true};
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {i + 1}; j < n; ++j) {
+          diagonal = diagonal && t0[(i * n) + j] == C {};
+        }
+      }
+      if (diagonal) {
+        buffer<C> u(n * n, C {});
+        for (std::size_t i {0}; i < n; ++i) {
+          u[(i * n) + i] = principal_power(t0[(i * n) + i], t);
+        }
+        return u;
+      }
+      auto [r, s, m] {inverse_squaring(t0, n, power_pade_bounds, "fractional_matrix_power")};
+      for (C& x : r) {
+        x = -x;
+      }
+      buffer<C>  u     {power_pade(r, n, t, m)};
+      const bool exact {principal_branch(t0, n)};
+      for (std::size_t i {s + 1}; i-- > 0;) {
+        if (i < s) {
+          u = square_product(u, u, n);
+        }
+        if (exact) {
+          const double p {std::ldexp(t, -static_cast<int>(i))};
+          for (std::size_t j {0}; j < n; ++j) {
+            u[(j * n) + j] = principal_power(t0[(j * n) + j], p);
+            if (j + 1 < n) {
+              u[(j * n) + j + 1] = fractional_power_superdiagonal(t0[(j * n) + j], t0[((j + 1) * n) + j + 1], t0[(j * n) + j + 1], p);
+            }
+          }
+        }
+      }
+      return u;
+    }
+
+    //! \brief `A^t` (`−1 < t < 1`) by the Schur form, as SciPy's `_remainder_matrix_power`: an upper triangular `A`
+    //!        directly, else `Z T^t Zᴴ`; none where the triangular form has a zero on its diagonal.
+    template <typename T>
+    [[nodiscard]] std::optional<matrix<std::complex<double>>> remainder_power(const matrix<T>& a,
+                                                                              double           t)
+    {
+      using C = std::complex<double>;
+      const std::size_t n          {a.rows()};
+      const bool        triangular {upper_triangular(a)};
+      matrix<C>         form;
+      matrix<C>         z;
+      if (triangular) {
+        form = as_complex(a);
+      }
+      else {
+        std::tie(form, z) = function_schur_form(a);
+      }
+      for (std::size_t i {0}; i < n; ++i) {
+        if (form(i, i) == C {}) {
+          return std::nullopt;
+        }
+      }
+      matrix<C> u {n, n, triangular_power(buffer<C>(form.begin(), form.end()), n, t)};
+      if (triangular) {
+        return u;
+      }
+      return z * u * adjoint_of(z);
+    }
+
+    //! \brief \p a to the integer power \p e (a finite whole number) by repeated squaring, as
+    //!        `numpy.linalg.matrix_power`: the identity for 0, the inverse's powers for `e < 0`.
+    template <typename T>
+    [[nodiscard]] matrix<T> integer_power(const matrix<T>& a,
+                                          double           e)
+    {
+      const std::size_t        n      {a.rows()};
+      matrix<T>                square {e < 0.0 ? inverse(a) : a};
+      std::optional<matrix<T>> result;
+      for (double k {std::abs(e)}; k > 0.0;) {
+        if (std::fmod(k, 2.0) == 1.0) {
+          result = result ? *result * square : square;
+        }
+        k = std::floor(k / 2.0);
+        if (k > 0.0) {
+          square = square * square;
+        }
+      }
+      if (result) {
+        return *result;
+      }
+      buffer<T> unit(n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) {
+        unit[(i * n) + i] = T {1.0};
+      }
+      return matrix<T> {n, n, std::move(unit)};
+    }
+  } // namespace detail
+
+  /*!
+   * \brief `A^p` for a real \p p, as `scipy.linalg.fractional_matrix_power`: a whole \p p by repeated squaring;
+   *        else `A^a A^b` with `a` the floor or the ceiling of \p p, chosen by `A`'s condition as SciPy chooses it, and
+   *        `A^b` (`|b| < 1`) by Higham and Lin's Schur–Padé algorithm (2013) on the Schur form. Where the triangular form
+   *        has a zero on its diagonal (`A` singular), a positive \p p falls back to \ref funm of `x^(p − ⌊p⌋)`, as
+   *        SciPy's; a negative one has no answer and is refused (SciPy returns a matrix of NaN). Complex: a real
+   *        matrix's power may be complex.
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws dimension_error       If \p a is not square.
+   * \throws non_finite_error      If an entry is infinite or NaN.
+   * \throws std::invalid_argument If \p p is infinite or NaN.
+   * \throws singular_matrix_error If \p p is negative and \p a singular.
+   * \throws convergence_error     If a Schur form's iterations did not converge, or the square roots of its
+   *                               triangular form are not finite.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] matrix<std::complex<double>> fractional_matrix_power(const matrix<T>& a,
+                                                                     double           p)
+  {
+    using C = std::complex<double>;
+    const std::size_t n {a.rows()};
+    if (a.cols() != n) {
+      throw dimension_error("fractional_matrix_power requires a square matrix");
+    }
+    detail::require_finite(a, "fractional_matrix_power");
+    if (!std::isfinite(p)) {
+      throw std::invalid_argument("fractional_matrix_power: the power must be finite");
+    }
+    if (n == 0) {
+      return matrix<C> {0, 0, buffer<C> {}};
+    }
+    if (p == std::floor(p)) {
+      return detail::as_complex(detail::integer_power(a, p));
+    }
+    const vector<double> sigma {singular_values(a)};
+    if (sigma[n - 1] != 0.0) {
+      const double k2 {sigma[0] / sigma[n - 1]}; // the condition chooses between ⌊p⌋ and ⌈p⌉, as SciPy's
+      const double p1 {p - std::floor(p)};
+      const double p2 {p - std::ceil(p)};
+      const bool   below {p1 * std::pow(k2, 1.0 - p1) <= -p2 * k2};
+      const double whole {below ? std::floor(p) : std::ceil(p)};
+      if (const auto remainder {detail::remainder_power(a, below ? p1 : p2)}) {
+        return detail::as_complex(detail::integer_power(a, whole)) * *remainder;
+      }
+    }
+    if (p < 0.0) {
+      throw singular_matrix_error("fractional_matrix_power: a negative power of a singular matrix");
+    }
+    const double fraction {p - std::floor(p)};
+    const auto   power = [fraction](const std::vector<C>& values) {
+                           std::vector<C> powers(values.size());
+                           std::transform(values.begin(), values.end(), powers.begin(), [fraction](const C& z) { return detail::principal_power(z, fraction); });
+                           return powers;
+                         };
+    return detail::as_complex(detail::integer_power(a, std::floor(p))) * funm(a, power).f;
+  }
 
   /*!
    * \brief The principal logarithm of a square matrix, as `scipy.linalg.logm`: an upper triangular `A` directly, else

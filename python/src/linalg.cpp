@@ -326,6 +326,28 @@ std::tuple<any_tensor, double, bool, bool> logm(const any_tensor& a)
     return logm_of(matrix_from(std::get<real_tensor>(a)));
 }
 
+// fractional_matrix_power(a, p) -> Tensor, as scipy.linalg.fractional_matrix_power: complex, or real where a is and
+// every imaginary part is 0 (the real Schur path SciPy keeps real); single precision computed in double.
+any_tensor fractional_matrix_power(const any_tensor& a, double p)
+{
+    if (shape_of(a).size() != 2) {
+        throw std::runtime_error("fractional_matrix_power expects a matrix");
+    }
+    if (is_single(a)) {
+        return narrowed(fractional_matrix_power(widened(a), p));
+    }
+    const sb::scoped_gil_release           unlocked {releases_gil(count_of(a) * 8)};
+    numerical::matrix<std::complex<double>> power {is_complex(a) ? numerical::fractional_matrix_power(matrix_from(std::get<cplx_tensor>(a)), p)
+                                                                 : numerical::fractional_matrix_power(matrix_from(std::get<real_tensor>(a)), p)};
+    const bool real {!is_complex(a) && std::all_of(power.begin(), power.end(), [](const std::complex<double>& x) { return x.imag() == 0.0; })};
+    if (real) {
+        numerical::buffer<double> parts(power.rows() * power.cols());
+        std::transform(power.begin(), power.end(), parts.begin(), [](const std::complex<double>& x) { return x.real(); });
+        return any_tensor {real_tensor {numerical::matrix<double> {power.rows(), power.cols(), std::move(parts)}}};
+    }
+    return any_tensor {cplx_tensor {std::move(power)}};
+}
+
 // sqrtm(a) -> Tensor, as scipy.linalg.sqrtm: the principal square root of a square matrix or of each of a stack's; a
 // real operand's real where every matrix has one, else the whole complex (a real eigenvalue below 0 anywhere).
 any_tensor sqrtm(const any_tensor& v)

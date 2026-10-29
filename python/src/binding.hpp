@@ -1410,6 +1410,9 @@ std::tuple<any_tensor, double>     funm_parlett(const any_tensor& t, const any_t
 // logm(a) -> (F, err, exactly_singular, nearly_singular), as scipy.linalg.logm of one matrix.
 std::tuple<any_tensor, double, bool, bool> logm(const any_tensor& a); // in linalg.cpp
 
+// fractional_matrix_power(a, p) -> Tensor, as scipy.linalg.fractional_matrix_power.
+any_tensor fractional_matrix_power(const any_tensor& a, double p); // in linalg.cpp
+
 // sqrtm(a) -> Tensor, as scipy.linalg.sqrtm (real where every matrix has a real principal root, else complex).
 any_tensor sqrtm(const any_tensor& v); // in linalg.cpp
 

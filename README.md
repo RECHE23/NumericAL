@@ -105,6 +105,8 @@ Small and complete, grown measured, honest about what is not yet here:
   number, as `scipy.linalg`'s (Al-Mohy and Higham's algorithm, 2009, or the exponential of `[[A, E], [0, A]]`).
 - `numerical::logm(a)` — the principal logarithm, as `scipy.linalg.logm` (inverse scaling and squaring, Al-Mohy and
   Higham 2012, on the Schur form; the norms exact where SciPy estimates them).
+- `numerical::fractional_matrix_power(a, p)` — `A` to a real power, as `scipy.linalg.fractional_matrix_power` (Higham
+  and Lin's Schur–Padé algorithm, 2013).
 - `numerical::funm(a, f)` — a function of a matrix by its Schur form and Parlett's recurrence, as `scipy.linalg.funm`,
   with SciPy's error estimate.
 - `numerical::sqrtm(a)` — the principal square root, as `scipy.linalg.sqrtm` (the Schur method, real for a real
@@ -269,7 +271,7 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `scipy.linalg.eigh(a, b)`; `eigvalsh(a, b=b)` its values), `schur(a, output="real")` → `(T, Z)` as
 `scipy.linalg.schur` (`"complex"` the triangular form of a real matrix; with `sort=` `"lhp"`, `"rhp"`, `"iuc"`,
 `"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `expm(a)`, `logm(a)` and `sqrtm(a)` as `scipy.linalg`'s (a
-stack's matrices each), `expm_frechet(A, E, method, compute_expm)`, `expm_cond(A)`, `funm(A, func, disp)`, `polar(a, side)`, `solve_banded((l, u), ab, b)`, `solveh_banded(ab, b, lower=False)`,
+stack's matrices each), `expm_frechet(A, E, method, compute_expm)`, `expm_cond(A)`, `fractional_matrix_power(A, t)`, `funm(A, func, disp)`, `polar(a, side)`, `solve_banded((l, u), ab, b)`, `solveh_banded(ab, b, lower=False)`,
 `solve_toeplitz(c_or_cr, b)`, `solve_circulant(c, b, singular)`, `toeplitz`, `hankel`, `circulant`, `block_diag`,
 `solve_sylvester(a, b, q)`, `solve_continuous_lyapunov(a, q)`,
 `solve_discrete_lyapunov(a, q, method)`, `solve_continuous_are(a, b, q, r, e, s, balanced)` and

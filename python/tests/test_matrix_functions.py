@@ -285,3 +285,39 @@ class Logm(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipIf(np is None, "NumPy is not installed")
+class FractionalMatrixPower(unittest.TestCase):
+    def test_inverts_whole_powers(self):
+        a = np.array([[4.0, 1.0, 0.5], [0.3, 3.0, 0.2], [0.1, 0.4, 2.0]])
+        for k in (2, 3, 4):
+            x = np.asarray(numerical.fractional_matrix_power(a, 1.0 / k))
+            self.assertEqual(x.dtype, np.float64)  # real eigenvalues above 0: real
+            self.assertLess(np.abs(np.linalg.matrix_power(x, k) - a).max(), 1e-13)
+        negative = np.array([[-2.0, 1.0], [0.0, 3.0]])
+        root = np.asarray(numerical.fractional_matrix_power(negative, 0.5))
+        self.assertEqual(root.dtype, np.complex128)
+        self.assertLess(np.abs(root @ root - negative).max(), 1e-13)  # no principal branch: no exact diagonal
+        single = np.asarray(numerical.fractional_matrix_power(a.astype(np.float32), 0.5))
+        self.assertEqual(single.dtype, np.float32)
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.fractional_matrix_power([[0.0, 1.0], [0.0, 4.0]], -0.5)  # a negative power of a singular matrix
+        with self.assertRaises(ValueError):
+            numerical.fractional_matrix_power(a, float("nan"))
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.fractional_matrix_power([[1.0, 2.0]], 0.5)
+
+    @unittest.skipIf(sl is None, "SciPy is not installed")
+    def test_against_scipy(self):
+        rng = np.random.default_rng(11)
+        for n in (1, 2, 5, 20):
+            for p in (0.5, -0.5, 1.3, 2.7, -1.25, 3.0, 1.0 / 3.0):
+                for cplx in (False, True):
+                    a = rng.standard_normal((n, n)) / math.sqrt(n) + 2.0 * np.eye(n)
+                    if cplx:
+                        a = a + 1j * rng.standard_normal((n, n)) / math.sqrt(n)
+                    with self.subTest(n=n, p=p, cplx=cplx):
+                        ours = np.asarray(numerical.fractional_matrix_power(a, p))
+                        theirs = sl.fractional_matrix_power(a, p)
+                        self.assertLess(np.abs(ours - theirs).max() / np.abs(theirs).max(), 1e-12)

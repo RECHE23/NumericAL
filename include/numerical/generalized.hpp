@@ -930,18 +930,6 @@ namespace numerical {
 
   namespace detail {
 
-    //! \brief \p a itself: already complex.
-    [[nodiscard]] inline const matrix<std::complex<double>>& as_complex(const matrix<std::complex<double>>& a)
-    {
-      return a;
-    }
-
-    //! \brief \p a's entries as complex numbers.
-    [[nodiscard]] inline matrix<std::complex<double>> as_complex(const matrix<double>& a)
-    {
-      return matrix<std::complex<double>> {a.rows(), a.cols(), buffer<std::complex<double>>(a.begin(), a.end())};
-    }
-
     //! \brief \p x itself, for complex operands \p like.
     [[nodiscard]] inline matrix<std::complex<double>> answer_like(matrix<std::complex<double>>&& x,
                                                                   const matrix<std::complex<double>>& /*like*/)

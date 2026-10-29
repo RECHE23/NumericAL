@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **`fractional_matrix_power`, as `scipy.linalg.fractional_matrix_power`**: `A` to a real power, a whole one by
+  repeated squaring, else `A^a A^b` (`a` the floor or the ceiling as `A`'s condition chooses it, as SciPy's) with `A^b`
+  by Higham and Lin's Schur–Padé algorithm (2013) on the Schur form; the diagonal and superdiagonal written exactly
+  after each squaring, as the paper's algorithm 5.1 (SciPy writes them before the first squaring only). A singular `A`
+  falls back to `funm` for a positive power, as SciPy's; a negative power of it raises (SciPy answers NaN). Real where
+  `A` is and every imaginary part is 0. In C++, `numerical::fractional_matrix_power`.
+
 ### Changed
 - **`ldl` updates the trailing matrix row by row**, the rows being contiguous, where it went down the columns: the same
   operations on each entry in the same order, so the same bits. Order 1024 on one AVX-512 core, GCC: real 588 → 77 ms,

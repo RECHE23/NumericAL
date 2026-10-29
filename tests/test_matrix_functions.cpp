@@ -9,6 +9,7 @@
 #include <cstddef>
 #include <limits>
 #include <numbers>
+#include <stdexcept>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -477,4 +478,60 @@ TEST(logm_and_sqrtm_hold_at_extreme_scales)
   }
   const numerical::buffer<C> broken {C {4.0}, C {std::numeric_limits<double>::quiet_NaN()}, C {}, C {9.0}};
   EXPECT_THROWS(static_cast<void>(numerical::detail::inverse_squaring(broken, 2)), numerical::convergence_error);
+}
+
+namespace {
+
+  //! \brief `x` to the whole power \p k, complex.
+  matrix<C> whole_power(const matrix<C>& x,
+                        int              k)
+  {
+    matrix<C> result {x};
+    for (int i {1}; i < k; ++i) {
+      result = result * x;
+    }
+    return result;
+  }
+} // namespace
+
+// Fractional powers: (A^(1/k))^k = A for k = 2, 3 and 4, of a dense real matrix (by its Schur form), an upper
+// triangular one, a diagonal one, a complex one, one with a negative eigenvalue (no principal branch there: no
+// diagonal written exactly); A^p A^(−p) = I with p from the floor (1.3) and from the ceiling (2.7) of the condition's
+// choice; whole powers by repeated squaring (0, 3, −2); a singular A by funm (its smallest singular value 0, and a
+// zero on its triangular form's diagonal behind a nonzero one), a negative power of it refused; the refusals.
+TEST(fractional_matrix_power_inverts_whole_powers)
+{
+  const auto           complex_of = [](const matrix<double>& a) { return numerical::detail::as_complex(a); };
+  const matrix<double> dense      {{4.0, 1.0, 0.5}, {0.3, 3.0, 0.2}, {0.1, 0.4, 2.0}};
+  const matrix<double> triangular {{4.0, 1.0, 0.5}, {0.0, 3.0, 0.2}, {0.0, 0.0, 2.0}};
+  const matrix<double> diagonal   {{4.0, 0.0}, {0.0, 9.0}};
+  const matrix<C>      complex    {{C {2.0, 1.0}, C {0.5, -0.3}}, {C {0.2, 0.1}, C {3.0, -0.5}}};
+  const matrix<double> negative   {{-2.0, 1.0}, {0.0, 3.0}};
+  for (const int k : {2, 3, 4}) {
+    const double p {1.0 / k};
+    EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(dense, p), k), complex_of(dense)) < 1e-14);
+    EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(triangular, p), k), complex_of(triangular)) < 1e-14);
+    EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(diagonal, p), k), complex_of(diagonal)) < 1e-14);
+    EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(complex, p), k), complex) < 1e-14);
+    EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(negative, p), k), complex_of(negative)) < 1e-13); // no exact diagonal there
+  }
+  const matrix<C> identity {{C {1.0}, C {}, C {}}, {C {}, C {1.0}, C {}}, {C {}, C {}, C {1.0}}};
+  for (const double p : {1.3, 2.7, -1.25}) {
+    EXPECT(relative_gap(numerical::fractional_matrix_power(dense, p) * numerical::fractional_matrix_power(dense, -p), identity) < 1e-14);
+  }
+  EXPECT(relative_gap(numerical::fractional_matrix_power(dense, 0.0), identity) == 0.0);
+  EXPECT(relative_gap(numerical::fractional_matrix_power(dense, 3.0), complex_of(dense * dense * dense)) < 1e-15);
+  EXPECT(relative_gap(numerical::fractional_matrix_power(dense, -2.0) * complex_of(dense * dense), identity) < 1e-14);
+  const matrix<double> zero_eigenvalue {{0.0, 0.0}, {0.0, 4.0}};
+  EXPECT(relative_gap(numerical::fractional_matrix_power(zero_eigenvalue, 1.5), matrix<C> {{C {}, C {}}, {C {}, C {8.0}}}) < 1e-15);
+  const matrix<double> zero_first      {{0.0, 1.0}, {0.0, 4.0}}; // T(0, 0) = 0: no Schur–Padé, funm of x^0.5
+  const matrix<C>      root            {numerical::fractional_matrix_power(zero_first, 0.5)};
+  EXPECT(relative_gap(root * root, complex_of(zero_first)) < 1e-14);
+  EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(zero_first, -0.5)), numerical::singular_matrix_error);
+  EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(zero_eigenvalue, -0.5)), numerical::singular_matrix_error);
+  EXPECT(numerical::fractional_matrix_power(matrix<double> {0, 0, std::vector<double> {}}, 0.5).rows() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(matrix<double> {{1.0, 2.0}}, 0.5)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(matrix<double> {{std::numeric_limits<double>::quiet_NaN()}}, 0.5)),
+                numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(dense, std::numeric_limits<double>::infinity())), std::invalid_argument);
 }

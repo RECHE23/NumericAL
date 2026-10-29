@@ -42,7 +42,7 @@ __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "solve_toeplitz", "solve_circulant",
     "toeplitz", "hankel", "circulant", "block_diag",
-    "expm", "expm_frechet", "expm_cond", "funm", "logm", "LogmRankWarning", "LogmExactlySingularWarning",
+    "expm", "expm_frechet", "expm_cond", "fractional_matrix_power", "funm", "logm", "LogmRankWarning", "LogmExactlySingularWarning",
     "LogmNearlySingularWarning", "sqrtm", "polar",
     "solve_sylvester", "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov",
     "solve_continuous_are", "solve_discrete_are", "lstsq", "pinv",
@@ -594,6 +594,7 @@ _expm_frechet = _linalg(_numerical.expm_frechet, arrays=2)
 _expm_cond = _linalg(_numerical.expm_cond, arrays=1)
 _funm_schur = _linalg(_numerical.funm_schur, arrays=1)
 _logm = _linalg(_numerical.logm, arrays=1)
+_fractional_matrix_power = _linalg(_numerical.fractional_matrix_power, arrays=1)
 _qr_pivoted = _linalg(_numerical.qr_pivoted, arrays=1)
 _ldl = _linalg(_numerical.ldl, arrays=1)
 _solve_banded = _linalg(_numerical.solve_banded, arrays=2)
@@ -849,6 +850,24 @@ def logm(A):
     if not (err < 1000 * 2.220446049250313e-16):  # NaN too
         _warnings.warn(f"logm result may be inaccurate, approximate err = {err}", RuntimeWarning, stacklevel=2)
     return f
+
+
+def fractional_matrix_power(A, t):
+    """`A` to the real power `t`, as ``scipy.linalg.fractional_matrix_power``: a whole `t` by repeated squaring; else
+    ``A^a A^b``, `a` the floor or the ceiling of `t` as `A`'s condition chooses it, ``A^b`` (``|b| < 1``) by Higham and
+    Lin's Schur–Padé algorithm (2013) on the Schur form, the diagonal and superdiagonal written exactly after each
+    squaring (SciPy writes them before the first only). Where `A` is singular, a positive `t` falls back to
+    :func:`funm`, as SciPy's; a negative one raises (SciPy answers a matrix of NaN). Real where `A` is and every
+    imaginary part is 0, else complex.
+
+    Raises:
+        LinAlgError: if `A` is not square, holds an infinite or NaN entry, or is singular for a negative `t`.
+        ValueError: if `t` is infinite or NaN.
+    """
+    t = float(t)
+    if not _math.isfinite(t):
+        raise ValueError("fractional_matrix_power: the power must be finite")
+    return _fractional_matrix_power(A, t)
 
 
 def expm_cond(A, check_finite=True):
