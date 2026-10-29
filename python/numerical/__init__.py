@@ -40,7 +40,8 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "expm", "sqrtm", "polar",
+    "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "solve_toeplitz", "solve_circulant",
+    "expm", "sqrtm", "polar",
     "solve_sylvester", "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov", "lstsq", "pinv",
     "matrix_rank", "cholesky", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
@@ -557,6 +558,8 @@ inv = inverse
 _expm = _linalg(_numerical.expm, arrays=1)
 _solve_banded = _linalg(_numerical.solve_banded, arrays=2)
 _solveh_banded = _linalg(_numerical.solveh_banded, arrays=2)
+_solve_toeplitz = _linalg(_numerical.solve_toeplitz, arrays=3)
+_solve_circulant = _linalg(_numerical.solve_circulant, arrays=2)
 _solve_sylvester = _linalg(_numerical.solve_sylvester, arrays=3)
 _sqrtm = _linalg(_numerical.sqrtm, arrays=1)
 
@@ -601,6 +604,55 @@ def solveh_banded(ab, b, overwrite_ab=False, overwrite_b=False, lower=False, che
     if ab.ndim != 2 or ab.shape[0] == 0 or b.ndim not in (1, 2) or b.shape[0] != ab.shape[1]:
         raise ValueError("shapes of ab and b are not compatible.")
     return _solveh_banded(ab, b, bool(lower))
+
+
+def solve_toeplitz(c_or_cr, b, check_finite=True):
+    """The solution `x` of ``T x = b`` for a Toeplitz `T`, as ``scipy.linalg.solve_toeplitz``: `c_or_cr` its first
+    column `c`, or the pair ``(c, r)`` of its first column and first row (``r[0]`` not read; ``r = c.conj()`` by
+    default, a Hermitian `T`); `b` a vector or a matrix of right-hand sides. Levinson's recursion, ``O(n²)`` a column
+    where a dense solve takes ``n³ / 3``: every leading principal minor must be nonsingular, and it may lose accuracy
+    unless `T` is well-conditioned and symmetric positive definite, as SciPy's. `check_finite` is accepted and not
+    needed.
+
+    Raises:
+        ValueError: if `c` and `r` differ in length or `b` has not as many rows.
+        LinAlgError: if a leading principal minor is singular or an entry is infinite or NaN.
+    """
+    del check_finite
+    if isinstance(c_or_cr, tuple):
+        c, r = c_or_cr
+        c = c if isinstance(c, Tensor) else asarray(c)
+        r = r if isinstance(r, Tensor) else asarray(r)
+    else:
+        c = c_or_cr if isinstance(c_or_cr, Tensor) else asarray(c_or_cr)
+        r = conj(c) if c.dtype.startswith("complex") else c
+    b = b if isinstance(b, Tensor) else asarray(b)
+    c, r = c.reshape((c.size,)), r.reshape((r.size,))
+    if r.shape != c.shape or b.ndim not in (1, 2) or b.shape[0] != c.shape[0]:
+        raise ValueError("Incompatible c, r and b shapes.")
+    return _solve_toeplitz(c, r, b)
+
+
+def solve_circulant(c, b, singular="raise", tol=None, caxis=-1, baxis=0, outaxis=0):
+    """The solution `x` of ``C x = b`` for the circulant `C` of first column `c`, as ``scipy.linalg.solve_circulant``:
+    the Fourier transform diagonalises it, ``x = ifft(fft(b) / fft(c))``, ``O(n log n)`` a column. An eigenvalue
+    ``fft(c)`` of modulus at most `tol` (by default ``n eps max |fft(c)|``) makes `C` near singular: ``singular="raise"``
+    refuses it, ``"lstsq"`` leaves those terms out (the minimum-norm least-squares solution). Real `c` and `b` give a
+    real `x`. `c` a vector and `b` a vector or a matrix of right-hand sides by rows (SciPy's default axes alone).
+
+    Raises:
+        ValueError: for another `singular`, axes or shapes.
+        LinAlgError: if `C` is near singular under ``"raise"``, or an entry is infinite or NaN.
+    """
+    if singular not in ("raise", "lstsq"):
+        raise ValueError("singular must be 'raise' or 'lstsq'")
+    if caxis not in (-1, 0) or baxis != 0 or outaxis != 0:
+        raise ValueError("solve_circulant takes c's only axis, b's first and the solution's first")
+    c = c if isinstance(c, Tensor) else asarray(c)
+    b = b if isinstance(b, Tensor) else asarray(b)
+    if c.ndim != 1 or b.ndim not in (1, 2) or b.shape[0] != c.shape[0]:
+        raise ValueError(f"Shapes of c {c.shape} and b {b.shape} are incompatible")
+    return _solve_circulant(c, b, singular == "lstsq", -1.0 if tol is None else float(tol))
 
 
 def expm(A):

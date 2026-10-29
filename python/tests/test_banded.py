@@ -84,5 +84,47 @@ class Banded(unittest.TestCase):
             numerical.solveh_banded(np.ones((2, 3)), np.ones(4))
 
 
+@unittest.skipIf(np is None, "NumPy is not installed")
+class Structured(unittest.TestCase):
+    def test_solve_toeplitz_and_circulant(self):
+        rng = np.random.default_rng(4)
+        for n in (1, 2, 7, 40):
+            for complex_entries in (False, True):
+                c = rng.standard_normal(n) + (1j * rng.standard_normal(n) if complex_entries else 0)
+                r = rng.standard_normal(n) + (1j * rng.standard_normal(n) if complex_entries else 0)
+                c[0] += n
+                r[0] = c[0]
+                toeplitz = np.array([[c[i - j] if i >= j else r[j - i] for j in range(n)] for i in range(n)])
+                hermitian = np.array([[c[i - j] if i >= j else np.conj(c[j - i]) for j in range(n)] for i in range(n)])
+                circulant = np.array([[c[(i - j) % n] for j in range(n)] for i in range(n)])
+                for b in (rng.standard_normal(n), rng.standard_normal((n, 2))):
+                    with self.subTest(n=n, complex_entries=complex_entries, rank=b.ndim):
+                        x = np.asarray(numerical.solve_toeplitz((c, r), b))
+                        np.testing.assert_allclose(toeplitz @ x, b, atol=1e-12)
+                        if not complex_entries or n > 1:  # a complex 1 × 1 Hermitian Toeplitz needs a real c[0]
+                            x = np.asarray(numerical.solve_toeplitz(c.real if n == 1 else c, b))
+                            np.testing.assert_allclose((hermitian.real if n == 1 else hermitian) @ x, b, atol=1e-12)
+                        y = np.asarray(numerical.solve_circulant(c, b))
+                        self.assertEqual(y.shape, b.shape)
+                        np.testing.assert_allclose(circulant @ y, b, atol=1e-12)
+                        if sl is not None:
+                            np.testing.assert_allclose(np.asarray(numerical.solve_toeplitz((c, r), b)), sl.solve_toeplitz((c, r), b), atol=1e-12)
+                            np.testing.assert_allclose(y, sl.solve_circulant(c, b), atol=1e-12)
+                            self.assertEqual(y.dtype, sl.solve_circulant(c, b).dtype)
+        least = np.asarray(numerical.solve_circulant([1, 1, 0, 0], [1, 2, 3, 4], singular="lstsq"))
+        np.testing.assert_allclose(least, [0.25, 1.25, 2.25, 1.25])
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.solve_circulant([1, 1, 0, 0], [1, 2, 3, 4])
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.solve_toeplitz(([0.0, 1.0], [0.0, 1.0]), [1.0, 2.0])
+        for bad in (lambda: numerical.solve_circulant([1, 2], [1, 2], singular="other"),
+                    lambda: numerical.solve_circulant([1, 2], [1, 2], baxis=1),
+                    lambda: numerical.solve_circulant([1, 2], [1, 2, 3]),
+                    lambda: numerical.solve_toeplitz(([1, 2], [1]), [1, 2]),
+                    lambda: numerical.solve_toeplitz([1, 2], [1, 2, 3])):
+            with self.assertRaises(ValueError):
+                bad()
+
+
 if __name__ == "__main__":
     unittest.main()

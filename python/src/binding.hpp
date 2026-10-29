@@ -1379,6 +1379,8 @@ any_tensor inverse(const any_tensor& v); // in linalg.cpp
 // solve_banded(ab, b, lower, upper) -> Tensor and solveh_banded(ab, b, lower) -> Tensor, as scipy.linalg's.
 any_tensor solve_banded(const any_tensor& ab, const any_tensor& b, std::size_t lower, std::size_t upper); // in linalg.cpp
 any_tensor solveh_banded(const any_tensor& ab, const any_tensor& b, bool lower);                         // in linalg.cpp
+any_tensor solve_toeplitz(const any_tensor& c, const any_tensor& r, const any_tensor& b);              // in linalg.cpp
+any_tensor solve_circulant(const any_tensor& c, const any_tensor& b, bool least_squares, double tol);     // in linalg.cpp
 
 // expm(a) -> Tensor, as scipy.linalg.expm (a stack's matrices each).
 any_tensor expm(const any_tensor& v); // in linalg.cpp

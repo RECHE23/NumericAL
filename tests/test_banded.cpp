@@ -150,3 +150,108 @@ TEST(solveh_banded_is_the_dense_solve)
                 numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::solveh_banded(matrix<double> {{1.0, 1.0}}, matrix<double> {3, 1, std::vector<double>(3, 1.0)})), numerical::dimension_error);
 }
+
+namespace {
+
+  //! \brief A Toeplitz system of order \p n (first column and row drawn, the diagonal \p n past them) by
+  //!        solve_toeplitz and by the dense solve.
+  template <typename T>
+  bool toeplitz_agrees(std::size_t n,
+                       std::size_t k)
+  {
+    std::uint64_t  state {(n * 3) + k};
+    std::vector<T> c(n);
+    std::vector<T> r(n);
+    for (std::size_t i {0}; i < n; ++i) {
+      c[i] = drawn_scalar<T>(state);
+      r[i] = drawn_scalar<T>(state);
+    }
+    c[0] += T {static_cast<double>(n)};
+    r[0]  = T {1e300}; // not read
+    std::vector<T> dense(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        dense[(i * n) + j] = i >= j ? c[i - j] : r[j - i];
+      }
+    }
+    std::vector<T> rhs(n * k);
+    for (T& value : rhs) {
+      value = drawn_scalar<T>(state);
+    }
+    const matrix<T> b {n, k, rhs};
+    return gap(numerical::solve_toeplitz(numerical::vector<T> {c}, numerical::vector<T> {r}, b), numerical::solve(matrix<T> {n, n, dense}, b)) < 1e-13;
+  }
+
+  //! \brief A circulant system of order \p n by solve_circulant and by the dense solve.
+  template <typename T>
+  bool circulant_agrees(std::size_t n)
+  {
+    std::uint64_t  state {(n * 5) + 1};
+    std::vector<T> c(n);
+    for (T& value : c) {
+      value = drawn_scalar<T>(state);
+    }
+    c[0] += T {static_cast<double>(n)};
+    std::vector<T> dense(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        dense[(i * n) + j] = c[(i + n - j) % n];
+      }
+    }
+    std::vector<T> rhs(n * 2);
+    for (T& value : rhs) {
+      value = drawn_scalar<T>(state);
+    }
+    const matrix<T> b {n, 2, rhs};
+    return gap(numerical::solve_circulant(numerical::vector<T> {c}, b), numerical::solve(matrix<T> {n, n, dense}, b)) < 1e-13;
+  }
+} // namespace
+
+// Levinson's recursion against the dense solve, orders 1 to 40, real and complex, one and several right-hand sides;
+// a singular leading minor refused (though T is not singular), at the first step and later; the refusals.
+TEST(solve_toeplitz_is_the_dense_solve)
+{
+  for (const std::size_t n : {std::size_t {1}, std::size_t {2}, std::size_t {3}, std::size_t {7}, std::size_t {40}}) {
+    EXPECT((toeplitz_agrees<double>(n, 1)));
+    EXPECT((toeplitz_agrees<double>(n, 3)));
+    EXPECT((toeplitz_agrees<C>(n, 2)));
+  }
+  const auto           vec = [](const std::vector<double>& values) { return numerical::vector<double> {values}; };
+  const matrix<double> b  {2, 1, std::vector<double> {1.0, 2.0}};
+  EXPECT_THROWS(static_cast<void>(numerical::solve_toeplitz(vec({0.0, 1.0}), vec({0.0, 1.0}), b)), numerical::singular_matrix_error);            // [[0, 1], [1, 0]]
+  const matrix<double> b3 {3, 1, std::vector<double> {1.0, 2.0, 3.0}};
+  EXPECT_THROWS(static_cast<void>(numerical::solve_toeplitz(vec({1.0, 1.0, 0.5}), vec({1.0, 1.0, 2.0}), b3)), numerical::singular_matrix_error); // [[1, 1], [1, 1]] leads
+  EXPECT_THROWS(static_cast<void>(numerical::solve_toeplitz(vec({-2.0, 0.5, 1.0, -2.0}), vec({-2.0, 2.0, 0.0, 1.0}), matrix<double> {4, 1, std::vector<double>(4, 1.0)})),
+                numerical::singular_matrix_error);                                                                                               // a backward denominator of zero
+  EXPECT(numerical::solve_toeplitz(vec({}), vec({}), matrix<double> {0, 2, std::vector<double> {}}).cols() == 2);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_toeplitz(vec({1.0, 2.0}), vec({1.0}), b)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_toeplitz(vec({1.0}), vec({1.0}), b)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_toeplitz(vec({1.0, std::numeric_limits<double>::quiet_NaN()}), vec({1.0, 2.0}), b)), numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_toeplitz(vec({1.0, 2.0}), vec({1.0, std::numeric_limits<double>::infinity()}), b)), numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_toeplitz(vec({1.0, 2.0}), vec({1.0, 2.0}), matrix<double> {2, 1, std::vector<double> {1.0, std::numeric_limits<double>::quiet_NaN()}})),
+                numerical::non_finite_error);
+}
+
+// The circulant system by the Fourier transform against the dense solve; a singular circulant refused, or its least
+// squares (SciPy's example), a tolerance given; real inputs giving a real answer; the refusals.
+TEST(solve_circulant_is_the_dense_solve)
+{
+  for (const std::size_t n : {std::size_t {1}, std::size_t {2}, std::size_t {7}, std::size_t {40}}) {
+    EXPECT(circulant_agrees<double>(n));
+    EXPECT(circulant_agrees<C>(n));
+  }
+  const numerical::vector<double> singular {std::vector<double> {1.0, 1.0, 0.0, 0.0}};
+  const matrix<double>            b        {4, 1, std::vector<double> {1.0, 2.0, 3.0, 4.0}};
+  EXPECT_THROWS(static_cast<void>(numerical::solve_circulant(singular, b)), numerical::singular_matrix_error);
+  const matrix<double> least               {numerical::solve_circulant(singular, b, true)};
+  EXPECT(gap(least, matrix<double> {4, 1, std::vector<double> {0.25, 1.25, 2.25, 1.25}}) < 1e-14);
+  const matrix<double> loose               {numerical::solve_circulant(numerical::vector<double> {std::vector<double> {2.0, 2.0, 5.0}}, matrix<double> {3, 1, std::vector<double> {1.0, 2.0, 3.0}}, true, 10.0)};
+  EXPECT(loose(0, 0) == 0.0 && loose(1, 0) == 0.0); // every eigenvalue under the tolerance: all left out
+  EXPECT(numerical::solve_circulant(numerical::vector<double> {std::vector<double> {}}, matrix<double> {0, 1, std::vector<double> {}}).rows() == 0);
+  EXPECT(numerical::solve_circulant(numerical::vector<double> {std::vector<double> {1.0}}, matrix<double> {1, 0, std::vector<double> {}}).cols() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_circulant(singular, matrix<double> {3, 1, std::vector<double>(3, 1.0)})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_circulant(numerical::vector<double> {std::vector<double> {1.0, std::numeric_limits<double>::infinity()}}, matrix<double> {2, 1, std::vector<double>(2, 1.0)})),
+                numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_circulant(numerical::vector<double> {std::vector<double> {1.0, 2.0}}, matrix<double> {2, 1, std::vector<double> {1.0, std::numeric_limits<double>::quiet_NaN()}})),
+                numerical::non_finite_error);
+}

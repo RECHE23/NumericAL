@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`solve_toeplitz` and `solve_circulant`, as `scipy.linalg`'s**: a Toeplitz system by Levinson's recursion (SciPy's,
+  real ones to the bit), `O(n²)` a right-hand side, given its first column and row (or the column alone, Hermitian);
+  a circulant one by the Fourier transform, `O(n log n)`, refusing a near-singular circulant or, with
+  `singular="lstsq"`, leaving its null eigenvalues out. In C++, `numerical::solve_toeplitz` and
+  `numerical::solve_circulant` (`banded.hpp`).
 - **`solve_banded` and `solveh_banded`, as `scipy.linalg`'s**: a banded system given in LAPACK's diagonal-ordered
   form, by the band's LU factorisation with partial pivoting (`gbsv`: `O(n l (l + u))` operations where a dense
   solve takes `n³ / 3`), and a Hermitian positive-definite one, from its upper or lower form, by the band's Cholesky

@@ -289,6 +289,50 @@ any_tensor solve_banded(const any_tensor& ab, const any_tensor& b, std::size_t l
     return shaped_like(numerical::solve_banded(lower, upper, matrix_from(std::get<real_tensor>(ab)), right_hand_sides(std::get<real_tensor>(b))), b);
 }
 
+// solve_toeplitz(c, r, b) -> Tensor, as scipy.linalg.solve_toeplitz((c, r), b): c and r vectors, b a vector or a
+// matrix, one dtype (the caller promotes); single precision computed in double.
+any_tensor solve_toeplitz(const any_tensor& c, const any_tensor& r, const any_tensor& b)
+{
+    if (shape_of(c).size() != 1 || shape_of(r).size() != 1 || shape_of(b).empty() || shape_of(b).size() > 2 || c.index() != r.index()
+        || c.index() != b.index()) {
+        throw std::runtime_error("solve_toeplitz expects vectors c and r and a vector or matrix b of one dtype");
+    }
+    if (is_single(c)) {
+        return narrowed(solve_toeplitz(widened(c), widened(r), widened(b)));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(c) * count_of(b))};
+    if (is_complex(c)) {
+        return shaped_like(numerical::solve_toeplitz(numerical::vector<std::complex<double>> {std::get<cplx_tensor>(c).data()},
+                                                     numerical::vector<std::complex<double>> {std::get<cplx_tensor>(r).data()},
+                                                     right_hand_sides(std::get<cplx_tensor>(b))),
+                           b);
+    }
+    return shaped_like(numerical::solve_toeplitz(numerical::vector<double> {std::get<real_tensor>(c).data()}, numerical::vector<double> {std::get<real_tensor>(r).data()},
+                                                 right_hand_sides(std::get<real_tensor>(b))),
+                       b);
+}
+
+// solve_circulant(c, b, least_squares, tol) -> Tensor, as scipy.linalg.solve_circulant(c, b, singular, tol): tol
+// negative for its default.
+any_tensor solve_circulant(const any_tensor& c, const any_tensor& b, bool least_squares, double tol)
+{
+    if (shape_of(c).size() != 1 || shape_of(b).empty() || shape_of(b).size() > 2 || c.index() != b.index()) {
+        throw std::runtime_error("solve_circulant expects a vector c and a vector or matrix b of one dtype");
+    }
+    if (is_single(c)) {
+        return narrowed(solve_circulant(widened(c), widened(b), least_squares, tol));
+    }
+    const std::optional<double>  bound {tol < 0.0 ? std::nullopt : std::optional<double> {tol}};
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(b) * 8)};
+    if (is_complex(c)) {
+        return shaped_like(numerical::solve_circulant(numerical::vector<std::complex<double>> {std::get<cplx_tensor>(c).data()}, right_hand_sides(std::get<cplx_tensor>(b)),
+                                                      least_squares, bound),
+                           b);
+    }
+    return shaped_like(numerical::solve_circulant(numerical::vector<double> {std::get<real_tensor>(c).data()}, right_hand_sides(std::get<real_tensor>(b)), least_squares, bound),
+                       b);
+}
+
 // solveh_banded(ab, b, lower) -> Tensor, as scipy.linalg.solveh_banded(ab, b, lower=lower).
 any_tensor solveh_banded(const any_tensor& ab, const any_tensor& b, bool lower)
 {

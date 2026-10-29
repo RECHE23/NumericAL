@@ -1,7 +1,8 @@
 /*!
  * \file banded.hpp
- * \brief Systems of banded matrices, in LAPACK's diagonal-ordered storage: the general band by its LU factorisation
- *        with partial pivoting (`gbsv`), the Hermitian positive-definite band by its Cholesky factor (`pbsv`).
+ * \brief Structured systems: banded matrices, in LAPACK's diagonal-ordered storage, the general band by its LU
+ *        factorisation with partial pivoting (`gbsv`), the Hermitian positive-definite band by its Cholesky factor
+ *        (`pbsv`); Toeplitz matrices by Levinson's recursion; circulant matrices by the Fourier transform.
  */
 #ifndef NUMERICAL_BANDED_HPP
 #define NUMERICAL_BANDED_HPP
@@ -11,11 +12,15 @@
 #include <complex>
 #include <concepts>
 #include <cstddef>
+#include <limits>
+#include <optional>
 #include <string>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
 #include "factorizations.hpp"
+#include "fft.hpp"
 
 namespace numerical {
 
@@ -194,6 +199,20 @@ namespace numerical {
       }
     }
 
+    //! \brief A complex value as a real result takes it: its real part (the imaginary part rounding's alone).
+    [[nodiscard]] inline double taken_as(const std::complex<double>& z,
+                                         std::type_identity<double> /*result*/)
+    {
+      return z.real();
+    }
+
+    //! \brief A complex value as a complex result takes it: whole.
+    [[nodiscard]] inline std::complex<double> taken_as(const std::complex<double>& z,
+                                                       std::type_identity<std::complex<double>> /*result*/)
+    {
+      return z;
+    }
+
     //! \brief Refuses a band that is not \p rows × `n` and right-hand sides not of `n` rows.
     template <typename T>
     void require_band(const matrix<T>&   ab,
@@ -277,6 +296,179 @@ namespace numerical {
     buffer<T> x(b.begin(), b.end());
     detail::band_cholesky_solve(work, n, kd, x, b.cols());
     return matrix<T> {b.rows(), b.cols(), std::move(x)};
+  }
+
+  /*!
+   * \brief The solution `X` of `T X = B` for the `n × n` Toeplitz `T` of first column \p c and first row \p r (`T(i, j)
+   *        = c[i − j]` for `i ≥ j`, `r[j − i]` above; `r[0]` not read), as `scipy.linalg.solve_toeplitz`: Levinson's
+   *        recursion as Numerical Recipes' `toeplz` (which SciPy's follows), every right-hand side at once, `O(n²)`
+   *        operations a column: the solutions of the leading principal systems grown by one row at a time, the
+   *        forward and backward vectors `g` and `h` beside them. It needs every leading principal minor nonsingular
+   *        (not only `T`), and like all Levinson recursions it is stable for a well-conditioned symmetric positive
+   *        definite `T` and may lose accuracy otherwise.
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws dimension_error       If \p c and \p r differ in length or \p b has not `n` rows.
+   * \throws non_finite_error      If an entry is infinite or NaN.
+   * \throws singular_matrix_error If a leading principal minor is singular (SciPy's "Singular principal minor").
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] matrix<T> solve_toeplitz(const vector<T>& c,
+                                         const vector<T>& r,
+                                         const matrix<T>& b)
+  {
+    const std::size_t n {c.size()};
+    if (r.size() != n || b.rows() != n) {
+      throw dimension_error("solve_toeplitz: c and r must be of b's row count");
+    }
+    detail::require_finite(b, "solve_toeplitz");
+    for (std::size_t i {0}; i < n; ++i) {
+      if (!detail::is_finite_entry(c[i]) || (i > 0 && !detail::is_finite_entry(r[i]))) {
+        throw non_finite_error("solve_toeplitz: an entry of c or r is infinite or NaN");
+      }
+    }
+    const std::size_t k {b.cols()};
+    if (n == 0) {
+      return matrix<T> {0, k, buffer<T> {}};
+    }
+    // R[n − 1 + i − j] = T(i, j), from 0: R[n − 1 − m] = r[m], R[n − 1 + m] = c[m]
+    const auto  at = [&](std::size_t index) { return index >= n - 1 ? c[index - (n - 1)] : r[(n - 1) - index]; };
+    const auto  singular = [] { return singular_matrix_error("solve_toeplitz: singular principal minor"); };
+    const T     diagonal {at(n - 1)};
+    if (diagonal == T {}) {
+      throw singular();
+    }
+    buffer<T> x(n * k, T {});
+    for (std::size_t col {0}; col < k; ++col) {
+      x[col] = b(0, col) / diagonal;
+    }
+    if (n == 1) {
+      return matrix<T> {1, k, std::move(x)};
+    }
+    buffer<T> g(n, T {});
+    buffer<T> h(n, T {});
+    g[0] = at(n - 2) / diagonal;
+    h[0] = at(n) / diagonal;
+    buffer<T> numerator(k);
+    for (std::size_t m {1}; m < n; ++m) { // the system of order m + 1 from that of order m
+      T denominator {-diagonal};
+      for (std::size_t col {0}; col < k; ++col) {
+        numerator[col] = -b(m, col);
+      }
+      for (std::size_t j {0}; j < m; ++j) {
+        const T entry {at(n - 1 + m - j)};
+        for (std::size_t col {0}; col < k; ++col) {
+          numerator[col] += entry * x[(j * k) + col];
+        }
+        denominator += entry * g[m - 1 - j];
+      }
+      if (denominator == T {}) {
+        throw singular();
+      }
+      for (std::size_t col {0}; col < k; ++col) {
+        x[(m * k) + col] = numerator[col] / denominator;
+      }
+      for (std::size_t j {0}; j < m; ++j) {
+        for (std::size_t col {0}; col < k; ++col) {
+          x[(j * k) + col] -= x[(m * k) + col] * g[m - 1 - j];
+        }
+      }
+      if (m + 1 == n) {
+        break;
+      }
+      T g_numerator   {-at(n - 2 - m)};
+      T h_numerator   {-at(n + m)};
+      T g_denominator {-diagonal};
+      for (std::size_t j {0}; j < m; ++j) {
+        g_numerator   += at(n - 1 + j - m) * g[j];
+        h_numerator   += at(n - 1 + m - j) * h[j];
+        g_denominator += at(n - 1 + j - m) * h[m - 1 - j];
+      }
+      if (g_denominator == T {}) {
+        throw singular();
+      }
+      g[m] = g_numerator / g_denominator;
+      h[m] = h_numerator / denominator;
+      const T forward  {g[m]};
+      const T backward {h[m]};
+      for (std::size_t j {0}, last {m - 1}; j <= last; ++j, --last) { // the pairs (j, m − 1 − j) from the ends in
+        const T g_first {g[j]};
+        const T g_last  {g[last]};
+        const T h_first {h[j]};
+        const T h_last  {h[last]};
+        g[j]    = g_first - (forward * h_last);
+        g[last] = g_last - (forward * h_first);
+        h[j]    = h_first - (backward * g_last);
+        h[last] = h_last - (backward * g_first);
+        if (last == 0) {
+          break;
+        }
+      }
+    }
+    return matrix<T> {n, k, std::move(x)};
+  }
+
+  /*!
+   * \brief The solution `X` of `C X = B` for the `n × n` circulant `C` of first column \p c (`C(i, j) = c[(i − j) mod
+   *        n]`), as `scipy.linalg.solve_circulant`: the Fourier transform diagonalises it, `X = F⁻¹ (F B / F c)`,
+   *        `O(n log n)` a column. An eigenvalue `F c` of modulus at most \p tol (by default `n ε max |F c|`, as
+   *        `numpy.linalg.matrix_rank` judges) makes `C` near singular: refused, or with \p least_squares its terms
+   *        left out (the minimum-norm least-squares solution, SciPy's `singular="lstsq"`). Real `c` and `b` give a
+   *        real `X` (the transform's real part, as SciPy's).
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws dimension_error       If \p b has not `n` rows.
+   * \throws non_finite_error      If an entry is infinite or NaN.
+   * \throws singular_matrix_error If `C` is near singular and \p least_squares is not set.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] matrix<T> solve_circulant(const vector<T>&      c,
+                                          const matrix<T>&      b,
+                                          bool                  least_squares = false,
+                                          std::optional<double> tol           = std::nullopt)
+  {
+    using C = std::complex<double>;
+    const std::size_t n {c.size()};
+    const std::size_t k {b.cols()};
+    if (b.rows() != n) {
+      throw dimension_error("solve_circulant: b must have as many rows as c has entries");
+    }
+    detail::require_finite(b, "solve_circulant");
+    for (std::size_t i {0}; i < n; ++i) {
+      if (!detail::is_finite_entry(c[i])) {
+        throw non_finite_error("solve_circulant: an entry of c is infinite or NaN");
+      }
+    }
+    if (n == 0 || k == 0) {
+      return matrix<T> {n, k, buffer<T>(n * k, T {})};
+    }
+    const tensor<C> eigenvalues {fft(tensor<T> {{n}, buffer<T>(c.begin(), c.end())})};
+    double          largest     {0.0};
+    for (const C& value : eigenvalues.data()) {
+      largest = std::max(largest, std::abs(value));
+    }
+    const double threshold {tol.value_or(largest * static_cast<double>(n) * std::numeric_limits<double>::epsilon())};
+    bool         near      {false};
+    for (const C& value : eigenvalues.data()) {
+      near = near || std::abs(value) <= threshold;
+    }
+    if (near && !least_squares) {
+      throw singular_matrix_error("solve_circulant: near singular circulant matrix");
+    }
+    const tensor<C> transformed {fft(tensor<T> {{n, k}, buffer<T>(b.begin(), b.end())}, std::nullopt, 0)};
+    buffer<C>       quotients(n * k);
+    for (std::size_t i {0}; i < n; ++i) {
+      const C value {eigenvalues.data()[i]};
+      for (std::size_t col {0}; col < k; ++col) {
+        quotients[(i * k) + col] = std::abs(value) <= threshold ? C {} : transformed.data()[(i * k) + col] / value;
+      }
+    }
+    const tensor<C> x {ifft(tensor<C> {{n, k}, std::move(quotients)}, std::nullopt, 0)};
+    buffer<T>       out(n * k);
+    for (std::size_t e {0}; e < n * k; ++e) {
+      out[e] = detail::taken_as(x.data()[e], std::type_identity<T> {});
+    }
+    return matrix<T> {n, k, std::move(out)};
   }
 } // namespace numerical
 
