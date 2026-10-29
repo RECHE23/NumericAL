@@ -16,6 +16,7 @@
 #include "amx.hpp"
 #include "banded.hpp"
 #include "blas.hpp"
+#include "concepts.hpp"
 #include "decomposition.hpp"
 #include "eigen.hpp"
 #include "fft.hpp"

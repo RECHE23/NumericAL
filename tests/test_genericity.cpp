@@ -303,3 +303,27 @@ TEST(every_decomposition_answers_for_complex_long_double)
 {
   EXPECT(every_decomposition_answers<std::complex<long double>>());
 }
+
+// The factorisations and solvers take a floating-point field: an integer matrix, which they would factorise in integer
+// division (determinant([[2, 1], [1, 2]]) was 4, its Cholesky factor's √2 was 1), is refused at compile time by name.
+static_assert(numerical::field<float> && numerical::field<double> && numerical::field<long double>);
+static_assert(numerical::field<std::complex<float>> && numerical::field<std::complex<double>> && numerical::field<std::complex<long double>>);
+static_assert(!numerical::field<int> && !numerical::field<long> && !numerical::field<std::complex<int>> && !numerical::field<bool>);
+namespace {
+
+  template <typename T>
+  constexpr bool factorises {requires(numerical::matrix<T> m, numerical::vector<T> v) {
+                               numerical::determinant(m);
+                               numerical::solve(m, v);
+                               numerical::lu_decomposition<T> {m};
+                               numerical::cholesky_decomposition<T> {m};
+                             }};
+} // namespace
+
+static_assert(!factorises<int> && !factorises<long> && factorises<double> && factorises<std::complex<float>>);
+
+TEST(integer_matrices_still_multiply)
+{
+  const numerical::matrix<int> a {{2, 1}, {1, 2}};
+  EXPECT((a * a == numerical::matrix<int> {{5, 4}, {4, 5}}));
+}

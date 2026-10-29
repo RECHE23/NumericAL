@@ -44,6 +44,7 @@
 #include <utility>
 #include <vector>
 
+#include "concepts.hpp"
 #include "matrix.hpp"
 #include "simd.hpp"
 #include "parallel.hpp"
@@ -727,7 +728,7 @@ namespace numerical {
    * then reuse the factors. Built for the common case of one matrix and several
    * right-hand sides.
    */
-  template <typename T>
+  template <field T>
   class lu_decomposition
   {
   public:
@@ -1584,7 +1585,7 @@ namespace numerical {
    * \throws dimension_error If `a` is not square or `b`'s size differs from it.
    * \throws singular_matrix_error If `a` is singular.
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] vector<T> solve(matrix<T>        a,
                                 const vector<T>& b)
   {
@@ -1600,7 +1601,7 @@ namespace numerical {
    * \throws dimension_error If `a` is not square or `b`'s row count differs from it.
    * \throws singular_matrix_error If `a` is singular.
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] matrix<T> solve(matrix<T>        a,
                                 const matrix<T>& b)
   {
@@ -1608,7 +1609,7 @@ namespace numerical {
   }
 
   //! \brief The determinant of a square matrix. \throws dimension_error If not square.
-  template <typename T>
+  template <field T>
   [[nodiscard]] T determinant(matrix<T> a)
   {
     return lu_decomposition<T> {std::move(a)}.determinant();
@@ -1621,7 +1622,7 @@ namespace numerical {
    * \throws dimension_error If `a` is not square.
    * \throws singular_matrix_error If `a` is singular.
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] matrix<T> inverse(matrix<T> a)
   {
     return lu_decomposition<T> {std::move(a)}.inverse();
@@ -1895,7 +1896,7 @@ namespace numerical {
    * \throws non_finite_error      If an entry of `a`'s triangle or of `b` is infinite or NaN.
    * \throws singular_matrix_error If a diagonal entry read is zero (SciPy's message, its 1-based row).
    */
-  template <typename T>
+  template <field T>
   [[nodiscard]] matrix<T> solve_triangular(const matrix<T>& a,
                                            matrix<T>        b,
                                            bool             lower,
@@ -1916,7 +1917,7 @@ namespace numerical {
   }
 
   //! \brief \ref solve_triangular of one right-hand side.
-  template <typename T>
+  template <field T>
   [[nodiscard]] vector<T> solve_triangular(const matrix<T>& a,
                                            const vector<T>& b,
                                            bool             lower,
@@ -1959,7 +1960,7 @@ namespace numerical {
    * cannot be singular. A matrix that is not positive-definite throws
    * \ref not_positive_definite_error.
    */
-  template <typename T>
+  template <field T>
   class cholesky_decomposition
   {
   public:
@@ -2332,7 +2333,7 @@ namespace numerical {
   };
 
   //! \brief Cholesky-factorises a Hermitian positive-definite matrix. \see cholesky_decomposition
-  template <typename T>
+  template <field T>
   [[nodiscard]] cholesky_decomposition<T> cholesky(matrix<T> a)
   {
     return cholesky_decomposition<T> {std::move(a)};
@@ -3140,7 +3141,7 @@ namespace numerical {
    * `A x ≈ b` for a full-column-rank `A` (`m ≥ n`); for a rank-deficient or wide one, \ref numerical::lstsq
    * gives the minimum-norm solution.
    */
-  template <typename T>
+  template <field T>
   class qr_decomposition
   {
   public:
@@ -3346,7 +3347,7 @@ namespace numerical {
    *        reflectors as `larfg` forms them; `R`'s diagonal then made real and non-negative, as \ref qr_decomposition's
    *        (`Q`'s columns taking the phases), where LAPACK's may be negative.
    */
-  template <typename T>
+  template <field T>
   class pivoted_qr_decomposition
   {
   public:
