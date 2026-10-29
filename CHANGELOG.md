@@ -8,6 +8,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **`ldl` updates the trailing matrix row by row**, the rows being contiguous, where it went down the columns: the same
+  operations on each entry in the same order, so the same bits. Order 1024 on one AVX-512 core, GCC: real 588 → 77 ms,
+  complex 716 → 232 ms; order 256 5.4 → 1.8 ms; order 64 as before.
+
 ### Fixed
 - **`solve_continuous_are` of a badly scaled equation** (a graded `A`, eigenvalues from 10⁻⁶ to 10⁶) lost up to 470
   times more precision than SciPy in some 3 % of such equations, the generalized Schur form of the complex pencil

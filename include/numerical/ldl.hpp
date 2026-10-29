@@ -79,22 +79,27 @@ namespace numerical {
 
     /*!
      * \brief The trailing matrix's update by a pivot of order 1 at \p k, as `sytf2` (`syr`, then `L`'s column scaled):
-     *        `A ← A − x xᵀ / d` on and below the diagonal, `x / d` into column \p k; the arithmetic of \p T.
+     *        `A ← A − x xᵀ / d` on and below the diagonal, `x / d` into column \p k; the arithmetic of \p T. Row by row
+     *        (`a` is row-major), each entry's one operation as `syr`'s column by column: the factors `−x_j / d` first, in
+     *        \p w (`n` entries).
      */
     template <typename T>
     void symmetric_rank_one(buffer<T>&  a,
                             std::size_t n,
-                            std::size_t k)
+                            std::size_t k,
+                            buffer<T>&  w)
     {
       const T r {T {1.0} / a[(k * n) + k]};
       for (std::size_t j {k + 1}; j < n; ++j) {
-        const T factor {-r * a[(j * n) + k]};
-        for (std::size_t i {j}; i < n; ++i) {
-          a[(i * n) + j] += a[(i * n) + k] * factor;
-        }
+        w[j] = -r * a[(j * n) + k];
       }
       for (std::size_t i {k + 1}; i < n; ++i) {
-        a[(i * n) + k] *= r;
+        const T  x   {a[(i * n) + k]};
+        T* const row {a.data() + (i * n)};
+        for (std::size_t j {k + 1}; j <= i; ++j) {
+          row[j] += x * w[j];
+        }
+        row[k] = x * r;
       }
     }
 
@@ -102,43 +107,54 @@ namespace numerical {
     //!        diagonal kept real.
     inline void hermitian_rank_one(buffer<std::complex<double>>& a,
                                    std::size_t                   n,
-                                   std::size_t                   k)
+                                   std::size_t                   k,
+                                   buffer<std::complex<double>>& w)
     {
+      using C = std::complex<double>;
       const double r {1.0 / a[(k * n) + k].real()};
       for (std::size_t j {k + 1}; j < n; ++j) {
-        const std::complex<double> factor {-r * std::conj(a[(j * n) + k])};
-        a[(j * n) + j] = std::complex<double> {a[(j * n) + j].real() + (a[(j * n) + k] * factor).real()};
-        for (std::size_t i {j + 1}; i < n; ++i) {
-          a[(i * n) + j] += a[(i * n) + k] * factor;
-        }
+        w[j] = -r * std::conj(a[(j * n) + k]);
       }
       for (std::size_t i {k + 1}; i < n; ++i) {
-        a[(i * n) + k] *= r;
+        const C  x   {a[(i * n) + k]};
+        C* const row {a.data() + (i * n)};
+        for (std::size_t j {k + 1}; j < i; ++j) {
+          row[j] += x * w[j];
+        }
+        row[i] = C {row[i].real() + (x * w[i]).real()};
+        row[k] = x * r;
       }
     }
 
     /*!
      * \brief The trailing matrix's update by a pivot of order 2 at rows \p k and \p k + 1, as `sytf2`: `D21` scaled out,
      *        `W = [x y] D⁻¹` from `D11 / D21`, `D22 / D21` and `t = 1 / (D11 D22 / D21² − 1)`, `A ← A − [x y] Wᵀ`, `W`
-     *        into the two columns; the arithmetic of \p T.
+     *        into the two columns; the arithmetic of \p T. Row by row, `W` first, in \p w (`2n` entries), each row's
+     *        `x` and `y` read before its two entries of `W` replace them.
      */
     template <typename T>
     void symmetric_rank_two(buffer<T>&  a,
                             std::size_t n,
-                            std::size_t k)
+                            std::size_t k,
+                            buffer<T>&  w)
     {
       const T d21 {a[((k + 1) * n) + k]};
       const T d11 {a[((k + 1) * n) + k + 1] / d21};
       const T d22 {a[(k * n) + k] / d21};
       const T t   {T {1.0} / ((d11 * d22) - T {1.0})};
       for (std::size_t j {k + 2}; j < n; ++j) {
-        const T wk   {t * (((d11 * a[(j * n) + k]) - a[(j * n) + k + 1]) / d21)};
-        const T wkp1 {t * (((d22 * a[(j * n) + k + 1]) - a[(j * n) + k]) / d21)};
-        for (std::size_t i {j}; i < n; ++i) {
-          a[(i * n) + j] = a[(i * n) + j] - (a[(i * n) + k] * wk) - (a[(i * n) + k + 1] * wkp1);
+        w[2 * j]       = t * (((d11 * a[(j * n) + k]) - a[(j * n) + k + 1]) / d21);
+        w[(2 * j) + 1] = t * (((d22 * a[(j * n) + k + 1]) - a[(j * n) + k]) / d21);
+      }
+      for (std::size_t i {k + 2}; i < n; ++i) {
+        T* const row {a.data() + (i * n)};
+        const T  x   {row[k]};
+        const T  y   {row[k + 1]};
+        for (std::size_t j {k + 2}; j <= i; ++j) {
+          row[j] = row[j] - (x * w[2 * j]) - (y * w[(2 * j) + 1]);
         }
-        a[(j * n) + k]     = wk;
-        a[(j * n) + k + 1] = wkp1;
+        row[k]     = w[2 * i];
+        row[k + 1] = w[(2 * i) + 1];
       }
     }
 
@@ -146,7 +162,8 @@ namespace numerical {
     //!         conjugates where `Aᴴ` has them, the diagonal kept real.
     inline void hermitian_rank_two(buffer<std::complex<double>>& a,
                                    std::size_t                   n,
-                                   std::size_t                   k)
+                                   std::size_t                   k,
+                                   buffer<std::complex<double>>& w)
     {
       using C = std::complex<double>;
       const C      below {a[((k + 1) * n) + k]};
@@ -156,14 +173,19 @@ namespace numerical {
       const double t     {1.0 / ((d11 * d22) - 1.0)};
       const C      d21   {below / d};
       for (std::size_t j {k + 2}; j < n; ++j) {
-        const C wk   {t * (((d11 * a[(j * n) + k]) - (d21 * a[(j * n) + k + 1])) / d)};
-        const C wkp1 {t * (((d22 * a[(j * n) + k + 1]) - (std::conj(d21) * a[(j * n) + k])) / d)};
-        for (std::size_t i {j}; i < n; ++i) {
-          a[(i * n) + j] = a[(i * n) + j] - (a[(i * n) + k] * std::conj(wk)) - (a[(i * n) + k + 1] * std::conj(wkp1));
+        w[2 * j]       = t * (((d11 * a[(j * n) + k]) - (d21 * a[(j * n) + k + 1])) / d);
+        w[(2 * j) + 1] = t * (((d22 * a[(j * n) + k + 1]) - (std::conj(d21) * a[(j * n) + k])) / d);
+      }
+      for (std::size_t i {k + 2}; i < n; ++i) {
+        C* const row {a.data() + (i * n)};
+        const C  x   {row[k]};
+        const C  y   {row[k + 1]};
+        for (std::size_t j {k + 2}; j <= i; ++j) {
+          row[j] = row[j] - (x * std::conj(w[2 * j])) - (y * std::conj(w[(2 * j) + 1]));
         }
-        a[(j * n) + k]     = wk;
-        a[(j * n) + k + 1] = wkp1;
-        a[(j * n) + j]     = C {a[(j * n) + j].real()};
+        row[k]     = w[2 * i];
+        row[k + 1] = w[(2 * i) + 1];
+        row[i]     = C {row[i].real()};
       }
     }
 
@@ -172,13 +194,14 @@ namespace numerical {
                                 std::size_t     n,
                                 std::size_t     k,
                                 std::size_t     step,
-                                bool /*hermitian*/)
+                                bool /*hermitian*/,
+                                buffer<double>& w)
     {
       if (step == 1) {
-        symmetric_rank_one(a, n, k);
+        symmetric_rank_one(a, n, k, w);
       }
       else {
-        symmetric_rank_two(a, n, k);
+        symmetric_rank_two(a, n, k, w);
       }
     }
 
@@ -187,21 +210,22 @@ namespace numerical {
                                 std::size_t                   n,
                                 std::size_t                   k,
                                 std::size_t                   step,
-                                bool                          hermitian)
+                                bool                          hermitian,
+                                buffer<std::complex<double>>& w)
     {
       if (step == 1) {
         if (hermitian) {
-          hermitian_rank_one(a, n, k);
+          hermitian_rank_one(a, n, k, w);
         }
         else {
-          symmetric_rank_one(a, n, k);
+          symmetric_rank_one(a, n, k, w);
         }
       }
       else if (hermitian) {
-        hermitian_rank_two(a, n, k);
+        hermitian_rank_two(a, n, k, w);
       }
       else {
-        symmetric_rank_two(a, n, k);
+        symmetric_rank_two(a, n, k, w);
       }
     }
 
@@ -223,6 +247,7 @@ namespace numerical {
     {
       const double                alpha {(1.0 + std::sqrt(17.0)) / 8.0};
       std::vector<std::ptrdiff_t> pivots(n);
+      buffer<T>                   w(2 * n); // the rank updates' factors
       const auto                  at = [&a, n](std::size_t i, std::size_t j) -> T& { return a[(i * n) + j]; };
       for (std::size_t k {0}; k < n;) {
         std::size_t  step   {1};
@@ -277,7 +302,7 @@ namespace numerical {
             at(k, k)   = diagonal_kept(at(k, k), hermitian);
             at(kk, kk) = diagonal_kept(at(kk, kk), hermitian);
           }
-          eliminate_pivot(a, n, k, step, hermitian);
+          eliminate_pivot(a, n, k, step, hermitian, w);
         }
         const auto origin {static_cast<std::ptrdiff_t>(pivot + 1)};
         pivots[k] = step == 1 ? origin : -origin;
