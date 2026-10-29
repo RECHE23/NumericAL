@@ -107,8 +107,10 @@ Small and complete, grown measured, honest about what is not yet here:
   Higham 2012, on the Schur form; the norms exact where SciPy estimates them).
 - `numerical::fractional_matrix_power(a, p)` — `A` to a real power, as `scipy.linalg.fractional_matrix_power` (Higham
   and Lin's Schur–Padé algorithm, 2013).
-- `numerical::funm(a, f)` — a function of a matrix by its Schur form and Parlett's recurrence, as `scipy.linalg.funm`,
-  with SciPy's error estimate.
+- `numerical::funm(a, f)` — a function of a matrix, as `scipy.linalg.funm`: Parlett's recurrence on the Schur form
+  where the eigenvalues are well apart (SciPy's error estimate); where they gather, Davies and Higham's Schur–Parlett
+  algorithm with each cluster by Cauchy's integral (`f` then also evaluated on circles about them); a Hermitian
+  matrix by its eigendecomposition. `plan_funm` and `finish_funm` split it around the evaluation of `f`.
 - `numerical::sqrtm(a)` — the principal square root, as `scipy.linalg.sqrtm` (the Schur method, real for a real
   matrix with no real eigenvalue below 0; `complex_sqrtm` the complex one of a real matrix).
 - `numerical::solve_sylvester(a, b, q)` — `A X + X B = Q`, as `scipy.linalg.solve_sylvester` (Bartels and Stewart's

@@ -187,6 +187,15 @@ class ExpmFrechet(unittest.TestCase):
             numerical.expm_cond(np.ones((2, 3)))
 
 
+def _cosm_closed_form(n, lam):
+    """cos of the Jordan block of order n at lam: cos⁽ᵏ⁾(lam) / k! on the k-th superdiagonal."""
+    derivatives = [math.cos(lam), -math.sin(lam), -math.cos(lam), math.sin(lam)]
+    out = np.zeros((n, n))
+    for k in range(n):
+        out += np.diag([derivatives[k % 4] / math.factorial(k)] * (n - k), k)
+    return out
+
+
 @unittest.skipIf(np is None, "NumPy is not installed")
 class Funm(unittest.TestCase):
     def test_closed_forms(self):
@@ -203,9 +212,12 @@ class Funm(unittest.TestCase):
         root = numerical.funm(np.diag([-4.0, 9.0]), np.sqrt)
         self.assertEqual(root.dtype, "complex128")
         np.testing.assert_allclose(np.asarray(root), np.diag([2j, 3.0]), atol=1e-15)
-        jordan = np.array([[2.0, 1.0], [0.0, 2.0]])
-        _, err = numerical.funm(jordan, np.exp, disp=False)
-        self.assertEqual(err, 1.0)
+        jordan = np.array([[2.0, 1.0], [0.0, 2.0]])  # a repeated eigenvalue: Cauchy's integral on its block
+        f, err = numerical.funm(jordan, np.exp, disp=False)
+        np.testing.assert_allclose(np.asarray(f), np.exp(2.0) * np.array([[1.0, 1.0], [0.0, 1.0]]), rtol=1e-14)
+        self.assertLess(err, 1e-15)
+        cosine = numerical.funm(np.diag([2.0] * 8) + np.diag([1.0] * 7, 1), np.cos)  # SciPy's is off by 0.9
+        self.assertLess(np.abs(np.asarray(cosine) - _cosm_closed_form(8, 2.0)).max(), 1e-14)
         single = numerical.funm(np.eye(2, dtype=np.float32), np.exp)
         self.assertEqual(single.dtype, "float32")
         with self.assertRaises(numerical.LinAlgError):

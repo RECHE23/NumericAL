@@ -1411,10 +1411,11 @@ any_tensor expm(const any_tensor& v); // in linalg.cpp
 std::tuple<any_tensor, any_tensor> expm_frechet(const any_tensor& a, const any_tensor& e, bool block); // in linalg.cpp
 double                             expm_cond(const any_tensor& a);                                     // in linalg.cpp
 
-// funm_schur(a) -> (T, Z) and funm_parlett(t, z, values, real) -> (F, err): scipy.linalg.funm's two halves, its
-// function called between them in Python.
-std::tuple<any_tensor, any_tensor> funm_schur(const any_tensor& a);                                                    // in linalg.cpp
-std::tuple<any_tensor, double>     funm_parlett(const any_tensor& t, const any_tensor& z, const any_tensor& values, bool real); // in linalg.cpp
+// funm_plan(a) -> (T, Z, points, hermitian) and funm_finish(t, z, points, images, hermitian, real) -> (F, err):
+// scipy.linalg.funm's two halves, its function called between them in Python.
+std::tuple<any_tensor, any_tensor, any_tensor, bool> funm_plan(const any_tensor& a); // in linalg.cpp
+std::tuple<any_tensor, double> funm_finish(const any_tensor& t, const any_tensor& z, const any_tensor& points, const any_tensor& images, bool hermitian,
+                                           bool real); // in linalg.cpp
 
 // logm(a) -> (F, err, exactly_singular, nearly_singular), as scipy.linalg.logm of one matrix.
 std::tuple<any_tensor, double, bool, bool> logm(const any_tensor& a); // in linalg.cpp

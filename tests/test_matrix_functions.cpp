@@ -373,8 +373,9 @@ TEST(funm_by_parlett)
   EXPECT(relative_gap(exp_b.f, numerical::detail::as_complex(numerical::expm(b))) < 1e3 * exp_b.error && exp_b.error < 1e-12);
   const matrix<C>              c {trigonometric<C>(5, 5, 2.0)};
   EXPECT(relative_gap(numerical::funm(c, exponential).f, numerical::expm(c)) < 1e-10);
-  const numerical::funm_result jordan {numerical::funm(matrix<double> {{2.0, 1.0}, {0.0, 2.0}}, exponential)};
-  EXPECT(jordan.error == 1.0);
+  const matrix<double>         block  {{2.0, 1.0}, {0.0, 2.0}}; // a repeated eigenvalue: Cauchy's integral on its block
+  const numerical::funm_result jordan {numerical::funm(block, exponential)};
+  EXPECT(relative_gap(jordan.f, numerical::detail::as_complex(numerical::expm(block))) < 1e-15 && jordan.error < 1e-15);
   const auto                   reciprocal = [](const values& x) {
                                               values y(x.size());
                                               std::ranges::transform(x, y.begin(), [](const C& z) { return C {1.0} / z.real(); });
@@ -388,8 +389,11 @@ TEST(funm_by_parlett)
   const matrix<C> one {{C {1.0}}};
   EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(matrix<C> {{C {1.0}, C {2.0}}}, one, values {C {1.0}})), numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(one, one, values {})), numerical::dimension_error);
-  const matrix<C> none {0, 0, std::vector<C> {}};
+  const matrix<C> none         {0, 0, std::vector<C> {}};
   EXPECT(numerical::funm_from_schur(none, none, values {}).f.rows() == 0);
+  const matrix<C> repeated     {{C {2.0}, C {1.0}}, {C {}, C {2.0}}}; // Parlett's recurrence at a repeated eigenvalue: no division
+  const matrix<C> identity_two {{C {1.0}, C {}}, {C {}, C {1.0}}};
+  EXPECT(numerical::funm_from_schur(repeated, identity_two, values {C {std::exp(2.0)}, C {std::exp(2.0)}}).error == 1.0);
   EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(one, matrix<C> {{C {1.0}, C {2.0}}}, values {C {1.0}})), numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(one, matrix<C> {{C {1.0}}, {C {2.0}}}, values {C {1.0}})), numerical::dimension_error);
 }
@@ -630,4 +634,48 @@ TEST(hermitian_matrix_functions_take_the_eigendecomposition)
   EXPECT(!numerical::detail::exactly_hermitian(matrix<double> {{1.0, 2.0}, {3.0, 1.0}}));
   EXPECT(numerical::sqrtm(matrix<double> {0, 0, std::vector<double> {}}).rows() == 0);
   EXPECT(numerical::sqrtm(matrix<C> {0, 0, std::vector<C> {}}).rows() == 0);
+}
+
+// funm where eigenvalues gather (within 10⁻³ of the largest, or of 1): the Schur form reordered by clusters, each
+// cluster's block by Cauchy's integral on a circle (64 trapezoidal points, the even 32's the estimate), the blocks above
+// by the block recurrence. Jordan blocks (exp, cos), eigenvalues 10⁻⁸ apart, a cluster beside a single eigenvalue
+// (its circle kept off it), a similarity of a Jordan block, all within a few ε of the exponential; f identically 0 on
+// a cluster; f not finite at an eigenvalue (∞), a circle over f's singularity (its diagonal not f's: 1); f's values
+// not one per point refused.
+TEST(funm_of_gathered_eigenvalues_takes_cauchys_integral)
+{
+  using values = std::vector<C>;
+  const auto map = [](auto g) {
+                     return [g](const values& x) {
+                              values y(x.size());
+                              std::ranges::transform(x, y.begin(), g);
+                              return y;
+                            };
+                   };
+  const auto exponential = map([](const C& z) { return std::exp(z); });
+  const auto jordan      = [](std::size_t n, double lambda) {
+                             std::vector<double> entries(n * n, 0.0);
+                             for (std::size_t i {0}; i < n; ++i) {
+                               entries[(i * n) + i] = lambda;
+                               if (i + 1 < n) {
+                                 entries[(i * n) + i + 1] = 1.0;
+                               }
+                             }
+                             return matrix<double> {n, n, entries};
+                           };
+  for (const auto& a : {jordan(4, 0.5), jordan(8, 2.0), matrix<double> {{1.0, 1.0, 0.5}, {0.0, 1.0 + 1e-8, 1.0}, {0.0, 0.0, 1.0 + 2e-8}},
+                        matrix<double> {{1.0, 1.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0005}}, matrix<double> {{3.0, 1.0, 2.0}, {0.0, 1.0, 1.0}, {0.0, 0.0, 1.0}}, matrix<double> {{1.0, 1.0, 2.0}, {0.0, 1.0, 1.0}, {0.0, 0.0, 3.0}}}) {
+    const numerical::funm_result r {numerical::funm(a, exponential)};
+    EXPECT(relative_gap(r.f, numerical::detail::as_complex(numerical::expm(a))) < 1e-14 && r.error < 1e-14);
+  }
+  const matrix<double> q       {{1, 2, 0, 1, 0}, {0, 1, 3, 0, 1}, {1, 0, 1, 2, 0}, {2, 1, 0, 1, 1}, {0, 1, 1, 0, 2}};
+  const matrix<double> similar {q * jordan(5, 0.5) * numerical::inverse(q)};
+  EXPECT(relative_gap(numerical::funm(similar, exponential).f, numerical::detail::as_complex(numerical::expm(similar))) < 1e-13);
+  const matrix<C> cosine {numerical::funm(jordan(8, 2.0), map([](const C& z) { return std::cos(z); })).f};
+  const matrix<C> i_j    {C {0.0, 1.0} *numerical::detail::as_complex(jordan(8, 2.0))};
+  EXPECT(relative_gap(C {2.0} *cosine, numerical::expm(i_j) + numerical::expm(C {-1.0} *i_j)) < 1e-14);
+  EXPECT(numerical::funm(jordan(3, 1.0), map([](const C&) { return C {}; })).error < 1e-15);
+  EXPECT(std::isinf(numerical::funm(jordan(3, 0.0), map([](const C& z) { return C {1.0} / z; })).error));
+  EXPECT(numerical::funm(jordan(3, 0.05), map([](const C& z) { return std::log(z); })).error == 1.0);
+  EXPECT_THROWS(static_cast<void>(numerical::funm(jordan(3, 1.0), [](const values&) { return values {C {1.0}}; })), numerical::dimension_error);
 }

@@ -1272,12 +1272,375 @@ namespace numerical {
     return {result, error};
   }
 
+  namespace detail {
+
+    //! \brief The clusters of \p values joined where two lie within \p delta (transitively), numbered by their first
+    //!        member's place.
+    [[nodiscard]] inline std::vector<std::size_t> eigenvalue_clusters(const std::vector<std::complex<double>>& values,
+                                                                      double                                   delta)
+    {
+      const std::size_t        n {values.size()};
+      std::vector<std::size_t> id(n);
+      for (std::size_t i {0}; i < n; ++i) {
+        id[i] = i;
+      }
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {i + 1}; j < n; ++j) {
+          if (std::abs(values[i] - values[j]) <= delta && id[j] != id[i]) { // j's cluster joins i's
+            const std::size_t from {id[j]};
+            const std::size_t to   {id[i]};
+            for (std::size_t& k : id) {
+              k = k == from ? to : k;
+            }
+          }
+        }
+      }
+      std::vector<std::size_t> label(n, n);
+      std::size_t              next {0};
+      for (std::size_t i {0}; i < n; ++i) {
+        if (label[id[i]] == n) {
+          label[id[i]] = next++;
+        }
+        id[i] = label[id[i]];
+      }
+      return id;
+    }
+
+    //! \brief The clusters' bound: eigenvalues within `10⁻³` of the largest modulus (or of 1) gather.
+    [[nodiscard]] inline double cluster_bound(const std::vector<std::complex<double>>& values)
+    {
+      double scale {1.0};
+      for (const std::complex<double>& v : values) {
+        scale = std::max(scale, std::abs(v));
+      }
+      return 1e-3 * scale;
+    }
+
+    //! \brief The diagonal of the square \p t.
+    [[nodiscard]] inline std::vector<std::complex<double>> diagonal_of(const matrix<std::complex<double>>& t)
+    {
+      std::vector<std::complex<double>> values(t.rows());
+      for (std::size_t i {0}; i < t.rows(); ++i) {
+        values[i] = t(i, i);
+      }
+      return values;
+    }
+
+    //! \brief The circles of Cauchy's integral about the clusters of the reordered Schur form \p t (each a run of its
+    //!        diagonal): the runs' starts (and `n`), and each run's centre and radius (0 for a single eigenvalue).
+    struct cluster_circles
+    {
+      std::vector<std::size_t>          starts;  //!< Each run's first place, then `n`.
+      std::vector<std::complex<double>> centres; //!< Each run's eigenvalues' mean.
+      std::vector<double>               radii;   //!< Each run's circle's radius; 0 for a single eigenvalue.
+    };
+
+    //! \brief The trapezoidal rule's points on each circle of Cauchy's integral.
+    inline constexpr std::size_t contour_points {64};
+
+    /*!
+     * \brief \ref cluster_circles of the Schur form \p t whose clusters are runs of its diagonal: a circle about each
+     *        cluster of two or more, its radius the cluster's spread plus a margin as wide as the spread, the cluster
+     *        bound, or the block's coupling (its largest entry above the diagonal: the resolvent's terms `‖N‖ᵏ / rᵏ⁺¹`
+     *        then stay near `1/r` and cancel without loss), half the way to the nearest other eigenvalue at most.
+     */
+    [[nodiscard]] inline cluster_circles circles_of(const matrix<std::complex<double>>& t)
+    {
+      using C = std::complex<double>;
+      const std::size_t              n       {t.rows()};
+      const std::vector<C>           values  {diagonal_of(t)};
+      const double                   delta   {cluster_bound(values)};
+      const std::vector<std::size_t> cluster {eigenvalue_clusters(values, delta)};
+      cluster_circles                circles;
+      for (std::size_t i {0}; i < n; ++i) {
+        if (i == 0 || cluster[i] != cluster[i - 1]) {
+          circles.starts.push_back(i);
+        }
+      }
+      const std::size_t blocks {circles.starts.size()};
+      circles.starts.push_back(n);
+      circles.centres.assign(blocks, C {});
+      circles.radii.assign(blocks, 0.0);
+      for (std::size_t b {0}; b < blocks; ++b) {
+        const std::size_t first {circles.starts[b]};
+        const std::size_t last  {circles.starts[b + 1]};
+        if (last - first == 1) {
+          continue;
+        }
+        C centre {};
+        for (std::size_t i {first}; i < last; ++i) {
+          centre += values[i];
+        }
+        centre /= static_cast<double>(last - first);
+        double spread   {0.0};
+        double outside  {std::numeric_limits<double>::infinity()};
+        double coupling {0.0};
+        for (std::size_t i {0}; i < n; ++i) {
+          const bool   member   {i >= first && i < last};
+          const double distance {std::abs(values[i] - centre)};
+          spread  = member ? std::max(spread, distance) : spread;
+          outside = member ? outside : std::min(outside, distance);
+          for (std::size_t j {i + 1}; member && j < last; ++j) {
+            coupling = std::max(coupling, std::abs(t(i, j)));
+          }
+        }
+        circles.centres[b] = centre;
+        circles.radii[b]   = spread + std::min(std::max({spread, delta, coupling}), (outside - spread) / 2.0);
+      }
+      return circles;
+    }
+
+    /*!
+     * \brief Reorders the complex Schur form \p t, \p z so each cluster of eigenvalues (\ref eigenvalue_clusters, within
+     *        \ref cluster_bound) is a run of the diagonal, each in turn moved to the first place past those placed.
+     *        \return Whether any cluster holds two or more eigenvalues (none moved otherwise).
+     */
+    [[nodiscard]] inline bool gather_clusters(matrix<std::complex<double>>& t,
+                                              matrix<std::complex<double>>& z)
+    {
+      using C = std::complex<double>;
+      const std::size_t              n      {t.rows()};
+      std::vector<C>                 values {diagonal_of(t)};
+      const double                   delta  {cluster_bound(values)};
+      const std::vector<std::size_t> first  {eigenvalue_clusters(values, delta)};
+      if (*std::max_element(first.begin(), first.end()) + 1 == n) { // every cluster a single eigenvalue (n ≥ 1: an empty matrix is Hermitian)
+        return false;
+      }
+      buffer<C>   form(t.begin(), t.end());
+      buffer<C>   zt     {transpose(z).elements()};
+      std::size_t placed {0};
+      while (placed < n) {
+        for (std::size_t i {0}; i < n; ++i) {
+          values[i] = form[(i * n) + i];
+        }
+        const std::vector<std::size_t> cluster {eigenvalue_clusters(values, delta)};
+        std::vector<bool>              chosen(n);
+        for (std::size_t i {0}; i < n; ++i) {
+          chosen[i] = i < placed || cluster[i] == cluster[placed];
+        }
+        placed = move_leading(form, zt, n, chosen);
+      }
+      t = matrix<C> {n, n, std::move(form)};
+      z = transpose(matrix<C> {n, n, std::move(zt)});
+      return true;
+    }
+
+    /*!
+     * \brief `f(T)` of the Schur form \p t with clusters as runs of its diagonal, from \p images, `f` at the eigenvalues
+     *        then at each cluster's circle (\ref circles_of), as Davies and Higham's Schur–Parlett algorithm (2003):
+     *        each cluster's block by Cauchy's integral `(1/2πi) ∮ f(z) (zI − T)⁻¹ dz`, the trapezoidal rule at
+     *        \ref contour_points points (Hale, Higham and Trefethen, 2008), its 32 even points' result and its diagonal
+     *        against `f` at the eigenvalues the estimate of its error, where Davies and Higham's Taylor series wants
+     *        `f`'s derivatives; the blocks above the diagonal by the block recurrence, a triangular Sylvester equation
+     *        each. The estimate: SciPy's for Parlett's recurrence with the clusters' separation, at least the
+     *        integrals'; ∞ where `f` or the result is not finite. \return `f(T)` and the estimate.
+     */
+    [[nodiscard]] inline std::pair<buffer<std::complex<double>>, double> clustered_function(const matrix<std::complex<double>>&      t,
+                                                                                            const std::vector<std::complex<double>>& images)
+    {
+      using C = std::complex<double>;
+      const std::size_t     n             {t.rows()};
+      const cluster_circles circles       {circles_of(t)};
+      const std::size_t     blocks        {circles.radii.size()};
+      buffer<C>             fx(n * n, C   {});
+      double                contour_error {0.0};
+      std::size_t           next          {n}; // the next circle's first image
+      for (std::size_t b {0}; b < blocks; ++b) {
+        const std::size_t first {circles.starts[b]};
+        const std::size_t p     {circles.starts[b + 1] - first};
+        if (p == 1) {
+          fx[(first * n) + first] = images[first];
+          continue;
+        }
+        buffer<C> whole(p * p, C {});
+        buffer<C> half(p * p, C  {});
+        for (std::size_t k {0}; k < contour_points; ++k) {
+          const C   point            {circles.centres[b] + std::polar(circles.radii[b], 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(contour_points))};
+          buffer<C> shifted(p * p, C {});
+          buffer<C> inverse(p * p, C {});
+          for (std::size_t i {0}; i < p; ++i) {
+            for (std::size_t j {i}; j < p; ++j) {
+              shifted[(i * p) + j] = (i == j ? point : C {}) - t(first + i, first + j);
+            }
+            inverse[(i * p) + i] = C {1.0};
+          }
+          solve_triangular_in_place(shifted.data(), p, false, triangular_op::none, false, inverse.data(), p);
+          const C weight {images[next + k] * (point - circles.centres[b])};
+          for (std::size_t e {0}; e < p * p; ++e) {
+            whole[e] += weight * inverse[e];
+            half[e]  += k % 2 == 0 ? weight * inverse[e] : C {};
+          }
+        }
+        next += contour_points;
+        double size {0.0};
+        double gap  {0.0};
+        for (std::size_t e {0}; e < p * p; ++e) {
+          whole[e] /= static_cast<double>(contour_points);
+          half[e]  /= static_cast<double>(contour_points) / 2.0;
+          size      = std::max(size, std::abs(whole[e]));
+          gap       = std::max(gap, std::abs(whole[e] - half[e]));
+        }
+        for (std::size_t i {0}; i < p; ++i) { // a singularity of f in the disk (no answer there) breaks the diagonal
+          gap = std::max(gap, std::abs(whole[(i * p) + i] - images[first + i]));
+        }
+        contour_error = std::max(contour_error, size > 0.0 ? gap / size : gap);
+        for (std::size_t i {0}; i < p; ++i) {
+          std::copy_n(whole.data() + (i * p), p, fx.data() + ((first + i) * n) + first);
+        }
+      }
+      double separation {std::numeric_limits<double>::infinity()};
+      for (std::size_t d {1}; d < blocks; ++d) { // the block recurrence, a block superdiagonal at a time
+        for (std::size_t bi {0}; bi + d < blocks; ++bi) {
+          const std::size_t bj             {bi + d};
+          const std::size_t i0             {circles.starts[bi]};
+          const std::size_t pi             {circles.starts[bi + 1] - i0};
+          const std::size_t j0             {circles.starts[bj]};
+          const std::size_t pj             {circles.starts[bj + 1] - j0};
+          buffer<C>         rhs(pi * pj, C {}); // F_ii T_ij − T_ij F_jj + Σ (F_ik T_kj − T_ik F_kj), F_ij still 0
+          for (std::size_t i {0}; i < pi; ++i) {
+            for (std::size_t j {0}; j < pj; ++j) {
+              C sum {};
+              for (std::size_t q {i0}; q < j0 + pj; ++q) {
+                sum += (fx[((i0 + i) * n) + q] * t(q, j0 + j)) - (t(i0 + i, q) * fx[(q * n) + j0 + j]);
+              }
+              rhs[(i * pj) + j] = sum;
+              separation        = std::min(separation, std::abs(t(i0 + i, i0 + i) - t(j0 + j, j0 + j)));
+            }
+          }
+          buffer<C> left(pi * pi);
+          buffer<C> right(pj * pj);
+          for (std::size_t i {0}; i < pi; ++i) {
+            for (std::size_t j {0}; j < pi; ++j) {
+              left[(i * pi) + j] = t(i0 + i, i0 + j);
+            }
+          }
+          for (std::size_t i {0}; i < pj; ++i) {
+            for (std::size_t j {0}; j < pj; ++j) {
+              right[(i * pj) + j] = -t(j0 + i, j0 + j);
+            }
+          }
+          triangular_sylvester(left, pi, right, pj, rhs);
+          for (std::size_t i {0}; i < pi; ++i) {
+            std::copy_n(rhs.data() + (i * pj), pj, fx.data() + ((i0 + i) * n) + j0);
+          }
+        }
+      }
+      double upper {0.0}; // ‖strict upper triangle of T‖₁, as funm_from_schur's estimate
+      for (std::size_t j {1}; j < n; ++j) {
+        double column {0.0};
+        for (std::size_t i {0}; i < j; ++i) {
+          column += std::abs(t(i, j));
+        }
+        upper = std::max(upper, column);
+      }
+      const double tolerance {std::numeric_limits<double>::epsilon()};
+      return {std::move(fx), std::min(1.0, std::max({tolerance, (tolerance / separation) * upper, contour_error}))};
+    }
+  } // namespace detail
+
   /*!
-   * \brief A function of a square matrix, as `scipy.linalg.funm`: the Schur form (a real matrix's real form made complex
-   *        as `rsf2csf`), \p f at its diagonal, called once with the eigenvalues in the form's order and returning one
-   *        value each, then \ref funm_from_schur. Accurate where the eigenvalues are well apart (the estimate says how).
+   * \brief Where \ref funm wants `f`, and the forms it completes: a Hermitian `A`'s eigendecomposition (\p t `Λ`, \p z
+   *        `V`); else its complex Schur form (a real matrix's real form made complex, as `rsf2csf`), reordered so the
+   *        eigenvalues within `10⁻³` of the largest modulus (or of 1) gather in runs. \p points: the eigenvalues in
+   *        the form's order, then \ref detail::contour_points on the circle about each run of two or more.
+   */
+  struct funm_plan
+  {
+    matrix<std::complex<double>>      t;                 //!< `T` (`Λ`, for a Hermitian `A`).
+    matrix<std::complex<double>>      z;                 //!< `Z` (`V`).
+    std::vector<std::complex<double>> points;            //!< Where `f` is wanted.
+    bool                              hermitian {false}; //!< Whether `A` was Hermitian, `T` then `Λ`.
+  };
+
+  /*!
+   * \brief The \ref funm_plan of \p a: `f` is then wanted at its points, and \ref finish_funm completes `f(A)`.
    * \tparam T `double` or `std::complex<double>`.
-   * \throws dimension_error   If \p a is not square, or \p f does not return one value per eigenvalue.
+   * \throws dimension_error   If \p a is not square.
+   * \throws non_finite_error  If an entry is infinite or NaN.
+   * \throws convergence_error If the Schur form's iterations did not converge.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] funm_plan plan_funm(const matrix<T>& a)
+  {
+    using C = std::complex<double>;
+    if (a.rows() != a.cols()) {
+      throw dimension_error("funm requires a square matrix");
+    }
+    detail::require_finite(a, "funm");
+    const std::size_t n {a.rows()};
+    funm_plan         plan;
+    if (detail::exactly_hermitian(a)) {
+      const auto [values, vectors] {detail::hermitian_system(a)};
+      buffer<C> diagonal(n * n, C {});
+      for (std::size_t i {0}; i < n; ++i) {
+        diagonal[(i * n) + i] = C {values[i]};
+      }
+      plan.t         = matrix<C> {n, n, std::move(diagonal)};
+      plan.z         = matrix<C> {n, n, buffer<C>(vectors.begin(), vectors.end())};
+      plan.points    = detail::diagonal_of(plan.t);
+      plan.hermitian = true;
+      return plan;
+    }
+    std::tie(plan.t, plan.z) = detail::function_schur_form(a);
+    plan.points              = detail::diagonal_of(plan.t);
+    if (detail::gather_clusters(plan.t, plan.z)) {
+      plan.points                                 = detail::diagonal_of(plan.t);
+      const detail::cluster_circles circles {detail::circles_of(plan.t)};
+      for (std::size_t b {0}; b < circles.radii.size(); ++b) {
+        for (std::size_t k {0}; circles.radii[b] > 0.0 && k < detail::contour_points; ++k) {
+          plan.points.push_back(circles.centres[b] + std::polar(circles.radii[b], 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(detail::contour_points)));
+        }
+      }
+    }
+    return plan;
+  }
+
+  /*!
+   * \brief `f(A)` from its \ref funm_plan and \p images, `f` at the plan's points: a Hermitian `A`'s `V f(Λ) Vᴴ`, its
+   *        estimate `ε`; where eigenvalues gather, Davies and Higham's Schur–Parlett algorithm with each cluster by
+   *        Cauchy's integral (\ref detail::clustered_function); else Parlett's recurrence, as SciPy's
+   *        (\ref funm_from_schur). The estimate ∞ where `f` at an eigenvalue, or the result, is not finite.
+   * \throws dimension_error If \p images does not hold one value per point.
+   */
+  [[nodiscard]] inline funm_result finish_funm(const funm_plan&                         plan,
+                                               const std::vector<std::complex<double>>& images)
+  {
+    using C = std::complex<double>;
+    const std::size_t n {plan.t.rows()};
+    if (images.size() != plan.points.size()) {
+      throw dimension_error("funm requires a square Schur form T, Z of its order and one value per eigenvalue");
+    }
+    const std::vector<C> at_eigenvalues(images.begin(), images.begin() + static_cast<std::ptrdiff_t>(n));
+    if (!plan.hermitian && images.size() == n) {
+      return funm_from_schur(plan.t, plan.z, at_eigenvalues);
+    }
+    matrix<C> x;
+    double    error {std::numeric_limits<double>::epsilon()};
+    if (plan.hermitian) {
+      x = detail::spectral<C>(plan.z, at_eigenvalues, false);
+    }
+    else {
+      auto [f_of_t, estimate] {detail::clustered_function(plan.t, images)};
+      x     = plan.z * matrix<C> {n, n, std::move(f_of_t)} *detail::adjoint_of(plan.z);
+      error = estimate;
+    }
+    for (const C& entry : x) {
+      error = detail::is_finite_entry(entry) ? error : std::numeric_limits<double>::infinity();
+    }
+    for (const C& image : at_eigenvalues) { // f not finite on the spectrum: no f(A), whatever the circles gave
+      error = detail::is_finite_entry(image) ? error : std::numeric_limits<double>::infinity();
+    }
+    return {std::move(x), error};
+  }
+
+  /*!
+   * \brief A function of a square matrix, as `scipy.linalg.funm`: \ref plan_funm, \p f called once with the plan's
+   *        points (the eigenvalues, then the circles' where eigenvalues gather) returning one value each, then
+   *        \ref finish_funm. \p f must be analytic on each circle's disk. Accurate where the eigenvalues are well apart
+   *        or gather tightly; between, Parlett's recurrence (the estimate says how).
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws dimension_error   If \p a is not square, or \p f does not return one value per point.
    * \throws non_finite_error  If an entry is infinite or NaN.
    * \throws convergence_error If the Schur form's iterations did not converge.
    */
@@ -1286,30 +1649,8 @@ namespace numerical {
   [[nodiscard]] funm_result funm(const matrix<T>&                                                                                  a,
                                  const std::function<std::vector<std::complex<double>>(const std::vector<std::complex<double>>&)>& f)
   {
-    if (a.rows() != a.cols()) {
-      throw dimension_error("funm requires a square matrix");
-    }
-    detail::require_finite(a, "funm");
-    if (detail::exactly_hermitian(a)) { // a diagonal Schur form: no recurrence, SciPy's estimate ε (or ∞, not finite)
-      const auto [values, vectors] {detail::hermitian_system(a)};
-      const std::vector<std::complex<double>> eigenvalues(values.begin(), values.end());
-      const std::vector<std::complex<double>> images {f(eigenvalues)};
-      if (images.size() != eigenvalues.size()) {
-        throw dimension_error("funm requires a square Schur form T, Z of its order and one value per eigenvalue");
-      }
-      const matrix<std::complex<double>>      x     {detail::spectral<std::complex<double>>(vectors, images, false)};
-      double                                  error {std::numeric_limits<double>::epsilon()};
-      for (const std::complex<double>& entry : x) {
-        error = detail::is_finite_entry(entry) ? error : std::numeric_limits<double>::infinity();
-      }
-      return {x, error};
-    }
-    const auto [t, z] {detail::function_schur_form(a)};
-    std::vector<std::complex<double>> diagonal(t.rows());
-    for (std::size_t i {0}; i < t.rows(); ++i) {
-      diagonal[i] = t(i, i);
-    }
-    return funm_from_schur(t, z, f(diagonal));
+    const funm_plan plan {plan_funm(a)};
+    return finish_funm(plan, f(plan.points));
   }
 
   /*!

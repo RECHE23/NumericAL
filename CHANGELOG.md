@@ -62,6 +62,16 @@ A change that can break code is listed under **Breaking** and held for a month's
   loop and not the other, the real `sqrtm` now fuses it as Clang always did (other last bits there).
 
 ### Fixed
+- **`funm` of a matrix whose eigenvalues gather** (a Jordan block, eigenvalues 10⁻⁸ apart) was wrong, as SciPy's is,
+  Parlett's recurrence dividing by their differences (an estimate of 1 said so): `funm(cos)` of a Jordan block of
+  order 8 was off by 0.9 (SciPy's too), `exp` of three eigenvalues 10⁻⁸ apart by 10⁻² relatively. Where eigenvalues
+  lie within 10⁻³ of the largest modulus (or of 1), Davies and Higham's Schur–Parlett algorithm now runs: the Schur
+  form reordered by clusters, each cluster's block by Cauchy's integral on a circle about it (64 trapezoidal points,
+  Hale, Higham and Trefethen's evaluation, which needs no derivative of `f`), the blocks above by the block recurrence;
+  those cases now within 1 to 12 ε. `f` is then also called on the circles' points, after the eigenvalues, and must be
+  analytic on their disks: a singularity there (log about 0) makes the circle's diagonal disagree with `f` at the
+  eigenvalues, and the estimate 1. Well-separated eigenvalues keep Parlett's recurrence, SciPy's bits. The Python
+  `funm` takes this path, and the Hermitian one, through `plan_funm` and `finish_funm`.
 - **`solve_continuous_are` of a badly scaled equation** (a graded `A`, eigenvalues from 10⁻⁶ to 10⁶) lost up to 470
   times more precision than SciPy in some 3 % of such equations, the generalized Schur form of the complex pencil
   losing digits that SciPy's real one keeps (`make fuzz-scipy` failed on about one seed in three). The answer now takes

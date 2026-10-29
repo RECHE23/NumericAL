@@ -235,35 +235,42 @@ double expm_cond(const any_tensor& a)
     return numerical::expm_cond(matrix_from(std::get<real_tensor>(a)));
 }
 
-// funm_schur(a) -> (T, Z), the complex Schur form scipy.linalg.funm takes (a real matrix's real form made complex);
-// complex128 whatever the dtype.
-std::tuple<any_tensor, any_tensor> funm_schur(const any_tensor& a)
+// funm_plan(a) -> (T, Z, points, hermitian): numerical::plan_funm's forms and the points where funm wants f (the
+// eigenvalues, then the circles about gathered ones); complex128 whatever the dtype.
+std::tuple<any_tensor, any_tensor, any_tensor, bool> funm_plan(const any_tensor& a)
 {
     if (shape_of(a).size() != 2) {
         throw std::runtime_error("funm expects a matrix");
     }
     if (is_single(a)) {
-        return funm_schur(widened(a));
+        return funm_plan(widened(a));
     }
-    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 8)};
-    const auto [t, z] {is_complex(a) ? numerical::detail::function_schur_form(matrix_from(std::get<cplx_tensor>(a)))
-                                     : numerical::detail::function_schur_form(matrix_from(std::get<real_tensor>(a)))};
-    return {any_tensor {cplx_tensor {t}}, any_tensor {cplx_tensor {z}}};
+    const sb::scoped_gil_release unlocked {releases_gil_cubic(count_of(a))};
+    numerical::funm_plan         plan {is_complex(a) ? numerical::plan_funm(matrix_from(std::get<cplx_tensor>(a)))
+                                                     : numerical::plan_funm(matrix_from(std::get<real_tensor>(a)))};
+    numerical::buffer<std::complex<double>> points(plan.points.begin(), plan.points.end());
+    const std::size_t                       count {points.size()};
+    return {any_tensor {cplx_tensor {std::move(plan.t)}}, any_tensor {cplx_tensor {std::move(plan.z)}},
+            any_tensor {cplx_tensor {numerical::tensor<std::complex<double>> {{count}, std::move(points)}}}, plan.hermitian};
 }
 
-// funm_parlett(t, z, values, real) -> (F, err), as scipy.linalg.funm completes the Schur form: values f at T's
-// diagonal (complex128); F real where real (a real matrix) and every imaginary part is within 1e6 ε of 0 (SciPy's
+// funm_finish(t, z, points, images, hermitian, real) -> (F, err), numerical::finish_funm of funm_plan's forms and f at
+// its points (complex128); F real where real (a real matrix) and every imaginary part is within 1e6 ε of 0 (SciPy's
 // _maybe_real).
-std::tuple<any_tensor, double> funm_parlett(const any_tensor& t, const any_tensor& z, const any_tensor& values, bool real)
+std::tuple<any_tensor, double> funm_finish(const any_tensor& t, const any_tensor& z, const any_tensor& points, const any_tensor& images,
+                                           bool hermitian, bool real)
 {
-    if (!is_complex(t) || !is_complex(z) || !is_complex(values) || is_single(t) || is_single(z) || is_single(values)) {
-        throw std::runtime_error("funm_parlett takes complex128 tensors");
+    if (!is_complex(t) || !is_complex(z) || !is_complex(points) || !is_complex(images) || is_single(t) || is_single(z) || is_single(points)
+        || is_single(images)) {
+        throw std::runtime_error("funm_finish takes complex128 tensors");
     }
-    const auto&                            v {std::get<cplx_tensor>(values).data()};
-    const std::vector<std::complex<double>> diagonal(v.begin(), v.end());
-    const sb::scoped_gil_release           unlocked {releases_gil(count_of(t) * 8)};
-    numerical::funm_result                 r {numerical::funm_from_schur(matrix_from(std::get<cplx_tensor>(t)), matrix_from(std::get<cplx_tensor>(z)), diagonal)};
-    const double                           tolerance {1e6 * std::numeric_limits<double>::epsilon()};
+    const auto&          p {std::get<cplx_tensor>(points).data()};
+    const auto&          v {std::get<cplx_tensor>(images).data()};
+    numerical::funm_plan plan {matrix_from(std::get<cplx_tensor>(t)), matrix_from(std::get<cplx_tensor>(z)),
+                               std::vector<std::complex<double>>(p.begin(), p.end()), hermitian};
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(t) * 8)};
+    numerical::funm_result r {numerical::finish_funm(plan, std::vector<std::complex<double>>(v.begin(), v.end()))};
+    const double           tolerance {1e6 * std::numeric_limits<double>::epsilon()};
     const bool negligible {std::all_of(r.f.begin(), r.f.end(), [tolerance](const std::complex<double>& x) { return std::abs(x.imag()) <= tolerance; })};
     if (real && negligible) {
         numerical::buffer<double> parts(r.f.rows() * r.f.cols());
