@@ -254,6 +254,57 @@ any_tensor solve_sylvester(const any_tensor& a, const any_tensor& b, const any_t
                                                                matrix_from(std::get<real_tensor>(q)))}};
 }
 
+namespace {
+
+    // b as a matrix of right-hand sides (a vector one column), and back to its rank.
+    template <typename T>
+    numerical::matrix<T> right_hand_sides(const numerical::tensor<T>& b)
+    {
+        const std::size_t rows {shape_of(any_tensor {b})[0]};
+        const std::size_t cols {b.shape().size() == 1 ? 1 : b.shape()[1]};
+        return numerical::matrix<T> {rows, cols, numerical::buffer<T>(b.data().begin(), b.data().end())};
+    }
+
+    template <typename T>
+    any_tensor shaped_like(numerical::matrix<T>&& x, const any_tensor& b)
+    {
+        return any_tensor {numerical::tensor<T> {shape_of(b), std::move(x).elements()}};
+    }
+} // namespace
+
+// solve_banded(ab, b, lower, upper) -> Tensor, as scipy.linalg.solve_banded((lower, upper), ab, b): ab and b of one
+// dtype (the caller promotes), b a vector or a matrix of right-hand sides; single precision computed in double.
+any_tensor solve_banded(const any_tensor& ab, const any_tensor& b, std::size_t lower, std::size_t upper)
+{
+    if (shape_of(ab).size() != 2 || shape_of(b).empty() || shape_of(b).size() > 2 || ab.index() != b.index()) {
+        throw std::runtime_error("solve_banded expects a band matrix and a vector or matrix of one dtype");
+    }
+    if (is_single(ab)) {
+        return narrowed(solve_banded(widened(ab), widened(b), lower, upper));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(ab) * (lower + 1))};
+    if (is_complex(ab)) {
+        return shaped_like(numerical::solve_banded(lower, upper, matrix_from(std::get<cplx_tensor>(ab)), right_hand_sides(std::get<cplx_tensor>(b))), b);
+    }
+    return shaped_like(numerical::solve_banded(lower, upper, matrix_from(std::get<real_tensor>(ab)), right_hand_sides(std::get<real_tensor>(b))), b);
+}
+
+// solveh_banded(ab, b, lower) -> Tensor, as scipy.linalg.solveh_banded(ab, b, lower=lower).
+any_tensor solveh_banded(const any_tensor& ab, const any_tensor& b, bool lower)
+{
+    if (shape_of(ab).size() != 2 || shape_of(b).empty() || shape_of(b).size() > 2 || ab.index() != b.index()) {
+        throw std::runtime_error("solveh_banded expects a band matrix and a vector or matrix of one dtype");
+    }
+    if (is_single(ab)) {
+        return narrowed(solveh_banded(widened(ab), widened(b), lower));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(ab) * shape_of(ab)[0])};
+    if (is_complex(ab)) {
+        return shaped_like(numerical::solveh_banded(matrix_from(std::get<cplx_tensor>(ab)), right_hand_sides(std::get<cplx_tensor>(b)), lower), b);
+    }
+    return shaped_like(numerical::solveh_banded(matrix_from(std::get<real_tensor>(ab)), right_hand_sides(std::get<real_tensor>(b)), lower), b);
+}
+
 // lstsq(a, b, rtol) -> (x, residuals, rank, s), as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one
 // right-hand side per column).
 lstsq_result lstsq(const any_tensor& a, const any_tensor& b, std::optional<double> rtol)

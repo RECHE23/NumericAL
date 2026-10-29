@@ -14,6 +14,7 @@
 #define NUMERICAL_NUMERICAL_HPP
 
 #include "amx.hpp"
+#include "banded.hpp"
 #include "blas.hpp"
 #include "decomposition.hpp"
 #include "eigen.hpp"

@@ -90,6 +90,8 @@ Small and complete, grown measured, honest about what is not yet here:
   triangular for a complex one, `z()` orthogonal or unitary; `values()` in `T`'s order; given a predicate on the
   eigenvalues, or by `sort(select)` and `reorder(chosen)` afterwards, those selected moved to the leading block
   (LAPACK's `trsen`, MATLAB's `ordschur`), `leading()` their count.
+- `numerical::solve_banded(l, u, ab, b)` and `numerical::solveh_banded(ab, b, lower)` — banded systems in LAPACK's
+  diagonal-ordered form, as `scipy.linalg`'s (`gbsv`, `pbsv`).
 - `numerical::expm(a)` — the matrix exponential, as `scipy.linalg.expm` (Al-Mohy and Higham's scaling and squaring
   of a Padé approximant, 2009).
 - `numerical::sqrtm(a)` — the principal square root, as `scipy.linalg.sqrtm` (the Schur method, real for a real
@@ -246,7 +248,8 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `scipy.linalg.eigh(a, b)`; `eigvalsh(a, b=b)` its values), `schur(a, output="real")` → `(T, Z)` as
 `scipy.linalg.schur` (`"complex"` the triangular form of a real matrix; with `sort=` `"lhp"`, `"rhp"`, `"iuc"`,
 `"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `expm(a)` and `sqrtm(a)` as `scipy.linalg`'s (a
-stack's matrices each), `polar(a, side)`, `solve_sylvester(a, b, q)`, `solve_continuous_lyapunov(a, q)` and
+stack's matrices each), `polar(a, side)`, `solve_banded((l, u), ab, b)`, `solveh_banded(ab, b, lower=False)`,
+`solve_sylvester(a, b, q)`, `solve_continuous_lyapunov(a, q)` and
 `solve_discrete_lyapunov(a, q, method)` as `scipy.linalg`'s, `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix
 (LAPACK's `dgeev`/`zgeev`: balancing, blocked Hessenberg reduction, multishift QR with aggressive early deflation;
 complex answers whatever the eigenvalues, as NumPy 2.5's, where NumPy before 2.5 made them real where it could; the

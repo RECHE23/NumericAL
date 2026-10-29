@@ -40,9 +40,9 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "det", "slogdet", "inverse", "inv", "expm", "sqrtm", "polar", "solve_sylvester",
-    "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov", "lstsq", "pinv", "matrix_rank",
-    "cholesky", "qr", "eig",
+    "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "expm", "sqrtm", "polar",
+    "solve_sylvester", "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov", "lstsq", "pinv",
+    "matrix_rank", "cholesky", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
@@ -555,8 +555,52 @@ inv = inverse
 
 
 _expm = _linalg(_numerical.expm, arrays=1)
+_solve_banded = _linalg(_numerical.solve_banded, arrays=2)
+_solveh_banded = _linalg(_numerical.solveh_banded, arrays=2)
 _solve_sylvester = _linalg(_numerical.solve_sylvester, arrays=3)
 _sqrtm = _linalg(_numerical.sqrtm, arrays=1)
+
+
+def solve_banded(l_and_u, ab, b, overwrite_ab=False, overwrite_b=False, check_finite=True):
+    """The solution `x` of ``a x = b`` for a banded `a` of `l` subdiagonals and `u` superdiagonals, as
+    ``scipy.linalg.solve_banded``: `ab` its diagonal-ordered form, ``(l + u + 1, n)``, ``ab[u + i - j, j] = a[i, j]``
+    (its corners not read); `b` a vector or a matrix of right-hand sides. The LU factorisation with partial pivoting
+    in LAPACK's band storage (``gbsv``), ``O(n l (l + u))`` operations. `overwrite_ab`, `overwrite_b` and
+    `check_finite` are accepted and not needed: an infinite or NaN entry raises always.
+
+    Raises:
+        ValueError: if `ab` has not ``l + u + 1`` rows or `b` not as many rows as `ab` has columns.
+        LinAlgError: if `a` is singular or an entry is infinite or NaN.
+    """
+    del overwrite_ab, overwrite_b, check_finite
+    lower, upper = (_operator.index(count) for count in l_and_u)
+    ab = ab if isinstance(ab, Tensor) else asarray(ab)
+    b = b if isinstance(b, Tensor) else asarray(b)
+    if lower < 0 or upper < 0 or ab.ndim != 2 or ab.shape[0] != lower + upper + 1:
+        raise ValueError(f"invalid values for the number of lower and upper diagonals: l+u+1 ({lower + upper + 1}) "
+                         f"does not equal ab.shape[0] ({ab.shape[0] if ab.ndim else 0})")
+    if b.ndim not in (1, 2) or b.shape[0] != ab.shape[1]:
+        raise ValueError("shapes of ab and b are not compatible.")
+    return _solve_banded(ab, b, lower, upper)
+
+
+def solveh_banded(ab, b, overwrite_ab=False, overwrite_b=False, lower=False, check_finite=True):
+    """The solution `x` of ``a x = b`` for a Hermitian positive-definite banded `a`, as
+    ``scipy.linalg.solveh_banded``: `ab` its upper diagonal-ordered form, ``(u + 1, n)``, ``ab[u + i - j, j] = a[i,
+    j]`` for ``i <= j``, or with `lower` its lower one, ``ab[i - j, j] = a[i, j]`` for ``i >= j`` (the diagonal's
+    imaginary part and the corners not read). The band's Cholesky factor (LAPACK's ``pbsv``). `overwrite_ab`,
+    `overwrite_b` and `check_finite` are accepted and not needed.
+
+    Raises:
+        ValueError: if `b` has not as many rows as `ab` has columns.
+        LinAlgError: if `a` is not positive definite or an entry is infinite or NaN.
+    """
+    del overwrite_ab, overwrite_b, check_finite
+    ab = ab if isinstance(ab, Tensor) else asarray(ab)
+    b = b if isinstance(b, Tensor) else asarray(b)
+    if ab.ndim != 2 or ab.shape[0] == 0 or b.ndim not in (1, 2) or b.shape[0] != ab.shape[1]:
+        raise ValueError("shapes of ab and b are not compatible.")
+    return _solveh_banded(ab, b, bool(lower))
 
 
 def expm(A):

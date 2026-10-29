@@ -39,6 +39,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&gemm_path_code>("_gemm_path", "_gemm_path() -> int\nThe path code float64 matrix products take.");
     m.def<&amx_probed>("_amx_probed", "_amx_probed() -> bool\nWhether the AMX's self-test has run in this process.");
     m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
+    m.def<&solve_banded>("solve_banded", "solve_banded(ab, b, lower, upper) -> Tensor\nThe solution of a banded system, as scipy.linalg.solve_banded (LAPACK's gbsv).");
+    m.def<&solveh_banded>("solveh_banded", "solveh_banded(ab, b, lower) -> Tensor\nThe solution of a Hermitian positive-definite banded system, as scipy.linalg.solveh_banded (LAPACK's pbsv).");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
     m.def<&solve_sylvester>("solve_sylvester", "solve_sylvester(a, b, q) -> Tensor\nX of A X + X B = Q, as scipy.linalg.solve_sylvester (Bartels-Stewart).");
     m.def<&sqrtm>("sqrtm", "sqrtm(a) -> Tensor\nThe principal matrix square root, as scipy.linalg.sqrtm (a stack's matrices each).");

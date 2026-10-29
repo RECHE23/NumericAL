@@ -17,9 +17,9 @@ _ArrayLike = Any
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "det", "slogdet", "inverse", "inv", "expm", "sqrtm", "polar", "solve_sylvester",
-    "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov", "lstsq", "pinv", "matrix_rank",
-    "cholesky", "qr", "eig",
+    "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "expm", "sqrtm", "polar",
+    "solve_sylvester", "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov", "lstsq", "pinv",
+    "matrix_rank", "cholesky", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
@@ -67,6 +67,10 @@ def schur(a: _ArrayLike, output: Literal["real", "r", "complex", "c"] = "real", 
           check_finite: bool = True) -> tuple[Tensor, Tensor, int]: ...
 def cholesky(a: _ArrayLike, /, *, upper: bool = False) -> Tensor: ...
 _Trans = Literal[0, 1, 2, "N", "T", "C"]
+def solve_banded(l_and_u: tuple[int, int], ab: _ArrayLike, b: _ArrayLike, overwrite_ab: bool = False, overwrite_b: bool = False,
+                 check_finite: bool = True) -> Tensor: ...
+def solveh_banded(ab: _ArrayLike, b: _ArrayLike, overwrite_ab: bool = False, overwrite_b: bool = False, lower: bool = False,
+                  check_finite: bool = True) -> Tensor: ...
 def expm(A: _ArrayLike) -> Tensor: ...
 def sqrtm(A: _ArrayLike) -> Tensor: ...
 def polar(a: _ArrayLike, side: Literal["right", "left"] = "right") -> tuple[Tensor, Tensor]: ...

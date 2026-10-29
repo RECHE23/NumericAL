@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`solve_banded` and `solveh_banded`, as `scipy.linalg`'s**: a banded system given in LAPACK's diagonal-ordered
+  form, by the band's LU factorisation with partial pivoting (`gbsv`: `O(n l (l + u))` operations where a dense
+  solve takes `n³ / 3`), and a Hermitian positive-definite one, from its upper or lower form, by the band's Cholesky
+  factor (`pbsv`); a vector or a matrix of right-hand sides. Within rounding of SciPy's (which fails on a complex
+  `1 × 1` band with a real `b`). In C++, `numerical::solve_banded` and `numerical::solveh_banded` (`banded.hpp`).
 - **`polar`, as `scipy.linalg.polar`**: `a = u p` (or `p u`, `side="left"`) from the singular value decomposition, as
   SciPy forms it.
 - **`sqrtm`, as `scipy.linalg.sqrtm`**: the principal square root of a square matrix or of each of a stack's, by the
