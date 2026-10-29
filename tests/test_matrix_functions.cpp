@@ -208,3 +208,58 @@ TEST(solve_sylvester_solves_the_equation)
                                                              matrix<double> {{1.0}})),
                 numerical::non_finite_error);
 }
+
+// The principal square root, as scipy.linalg.sqrtm: X² = A for a symmetric positive-definite matrix, a general real
+// one with complex pairs (a rotation's root the half rotation), a complex one; a real eigenvalue below 0 refused in
+// real arithmetic and its root +i √|λ| in complex; no root (a zero in a Jordan block) infinite there, the zero matrix's
+// zero, an upper triangular matrix its own Schur form, an empty one empty; the refusals.
+TEST(sqrtm_squares_back)
+{
+  const auto squares = []<typename T>(const matrix<T>& a, const matrix<T>& x) { return relative_gap(x * x, a) < 1e-13; };
+  for (const std::size_t n : {std::size_t {1}, std::size_t {5}, std::size_t {30}}) {
+    const matrix<double> m {trigonometric<double>(n, n, 1.0)};
+    std::vector<double>  eye(n * n, 0.0);
+    for (std::size_t i {0}; i < n; ++i) {
+      eye[(i * n) + i] = 1.0;
+    }
+    const matrix<double> identity {n, n, eye};
+    const matrix<double> spd      {(m * numerical::transpose(m)) + identity};
+    EXPECT(squares(spd, numerical::sqrtm(spd)));
+    const matrix<double> shifted  {m + (3.0 * identity)}; // complex pairs, none below 0
+    EXPECT(squares(shifted, numerical::sqrtm(shifted)));
+    std::vector<C> shift(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      shift[(i * n) + i] = C {3.0};
+    }
+    const matrix<C> complex {trigonometric<C>(n, n, 2.0) + matrix<C> {n, n, shift}}; // away from singular (its root ill-conditioned there)
+    EXPECT(squares(complex, numerical::sqrtm(complex)));
+  }
+  const double         half     {std::sqrt(0.5)};
+  const matrix<double> rotation {{0.0, -1.0}, {1.0, 0.0}};
+  EXPECT(relative_gap(numerical::sqrtm(rotation), matrix<double> {{half, -half}, {half, half}}) < 1e-15);
+  const matrix<double> negative {{-4.0, 1.0}, {0.0, -9.0}};
+  EXPECT_THROWS(static_cast<void>(numerical::sqrtm(negative)), std::domain_error);
+  EXPECT((numerical::complex_sqrtm(negative) == matrix<C> {{C {0.0, 2.0}, C {0.0, -0.2}}, {C {}, C {0.0, 3.0}}}));
+  const matrix<double> pair_below {{-1.0, 2.0, 0.5}, {-3.0, -1.0, 1.0}, {0.0, 0.0, -2.0}}; // a pair and -2 (rsf2csf)
+  const matrix<C>      root       {numerical::complex_sqrtm(pair_below)};
+  std::vector<C>       entries(9);
+  for (std::size_t i {0}; i < 3; ++i) {
+    for (std::size_t j {0}; j < 3; ++j) {
+      entries[(i * 3) + j] = C {pair_below(i, j)};
+    }
+  }
+  EXPECT(relative_gap(root * root, matrix<C> {3, 3, entries}) < 1e-14);
+  const matrix<double> jordan {numerical::sqrtm(matrix<double> {{0.0, 1.0}, {0.0, 0.0}})};
+  EXPECT(jordan(0, 0) == 0.0 && std::isinf(jordan(0, 1)) && jordan(1, 0) == 0.0 && jordan(1, 1) == 0.0);
+  EXPECT((numerical::sqrtm(matrix<double> {2, 2, std::vector<double>(4, 0.0)}) == matrix<double> {2, 2, std::vector<double>(4, 0.0)}));
+  EXPECT((numerical::sqrtm(matrix<double> {{4.0, 0.0}, {0.0, 9.0}}) == matrix<double> {{2.0, 0.0}, {0.0, 3.0}}));
+  EXPECT((numerical::sqrtm(matrix<C> {{C {-1.0}}}) == matrix<C> {{C {0.0, 1.0}}}));
+  EXPECT(numerical::sqrtm(matrix<double> {0, 0, std::vector<double> {}}).rows() == 0);
+  EXPECT(numerical::complex_sqrtm(matrix<double> {0, 0, std::vector<double> {}}).rows() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::sqrtm(matrix<double> {{1.0, 2.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::sqrtm(matrix<C> {{C {1.0}, C {2.0}}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::complex_sqrtm(matrix<double> {{1.0, 2.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::sqrtm(matrix<double> {{std::numeric_limits<double>::infinity()}})), numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::sqrtm(matrix<C> {{C {std::numeric_limits<double>::quiet_NaN()}}})), numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::complex_sqrtm(matrix<double> {{std::numeric_limits<double>::quiet_NaN()}})), numerical::non_finite_error);
+}

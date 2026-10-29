@@ -40,7 +40,7 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "det", "slogdet", "inverse", "inv", "expm", "solve_sylvester",
+    "determinant", "det", "slogdet", "inverse", "inv", "expm", "sqrtm", "solve_sylvester",
     "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov", "lstsq", "pinv", "matrix_rank",
     "cholesky", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
@@ -556,6 +556,7 @@ inv = inverse
 
 _expm = _linalg(_numerical.expm, arrays=1)
 _solve_sylvester = _linalg(_numerical.solve_sylvester, arrays=3)
+_sqrtm = _linalg(_numerical.sqrtm, arrays=1)
 
 
 def expm(A):
@@ -582,6 +583,20 @@ _eigvals = _linalg(_numerical._eigvals)
 _QR_MODES = ("reduced", "complete", "r")
 _EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
 _SVD_METHODS = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
+
+
+def sqrtm(A):
+    """The principal square root `X` of a square matrix (``X @ X = A``, its eigenvalues of nonnegative real part), as
+    ``scipy.linalg.sqrtm``: of each matrix of a stack (``(..., n, n)``); integers and booleans as ``float64``. By the
+    Schur method, in real arithmetic for a real matrix (Higham, 1987), whose root is real unless it has a real
+    eigenvalue below 0, then complex (for a whole stack); where there is no square root (a zero eigenvalue in a Jordan
+    block), the entries that would need one infinite, as SciPy's. SciPy's deprecated `disp` and `blocksize` are not
+    taken.
+
+    Raises:
+        LinAlgError: if `A` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
+    """
+    return _sqrtm(A)
 
 
 def solve_sylvester(a, b, q):

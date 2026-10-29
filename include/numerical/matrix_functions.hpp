@@ -1,7 +1,8 @@
 /*!
  * \file matrix_functions.hpp
  * \brief Functions of a square matrix and the matrix equations solved through Schur forms: the exponential, by
- *        scaling and squaring of a Padé approximant; the Sylvester equation `A X + X B = Q`, as Bartels and Stewart.
+ *        scaling and squaring of a Padé approximant; the principal square root, by the Schur method; the Sylvester
+ *        equation `A X + X B = Q`, as Bartels and Stewart.
  */
 #ifndef NUMERICAL_MATRIX_FUNCTIONS_HPP
 #define NUMERICAL_MATRIX_FUNCTIONS_HPP
@@ -13,8 +14,12 @@
 #include <concepts>
 #include <cstddef>
 #include <limits>
+#include <optional>
+#include <stdexcept>
 #include <utility>
+#include <vector>
 
+#include "complex_math.hpp"
 #include "eigen.hpp"
 
 namespace numerical {
@@ -495,6 +500,250 @@ namespace numerical {
     buffer<T>                    y     {std::move(f).elements()};
     detail::triangular_sylvester(buffer<T>(left.t().begin(), left.t().end()), m, buffer<T>(right.t().begin(), right.t().end()), n, y);
     return u * matrix<T> {m, n, std::move(y)} *detail::adjoint_of(v);
+  }
+
+  namespace detail {
+
+    /*!
+     * \brief The off-diagonal blocks of the square root \p r (`n × n`, row-major) of the upper (quasi-)triangular \p t,
+     *        its diagonal blocks already in \p r, column of blocks by column, each block row from the last: `R_ii X +
+     *        X R_jj = T_ij − Σ R_ik R_kj` (Higham, 1987), between two scalars `x = c / (r_ii + r_jj)`, a zero over a
+     *        zero taken as 0 and a nonzero over a zero as infinite (no root there, as SciPy answers), else the small
+     *        Sylvester system of the blocks (\ref small_sylvester_block; principal roots of eigenvalues off the
+     *        negative axis never sum to 0 there).
+     */
+    template <typename T>
+    void square_root_columns(const buffer<T>&                t,
+                             buffer<T>&                      r,
+                             std::size_t                     n,
+                             const std::vector<std::size_t>& starts)
+    {
+      const std::size_t blocks {starts.size()};
+      for (std::size_t bj {0}; bj < blocks; ++bj) {
+        const std::size_t j0 {starts[bj]};
+        const std::size_t nj {(bj + 1 < blocks ? starts[bj + 1] : n) - j0};
+        for (std::size_t bi {bj}; bi > 0; --bi) {
+          const std::size_t i0 {starts[bi - 1]};
+          const std::size_t ni {starts[bi] - i0};
+          std::array<T, 4>  c  {};
+          for (std::size_t i {0}; i < ni; ++i) {
+            for (std::size_t j {0}; j < nj; ++j) {
+              T value {t[((i0 + i) * n) + j0 + j]};
+              for (std::size_t k {starts[bi]}; k < j0; ++k) {
+                value -= r[((i0 + i) * n) + k] * r[(k * n) + j0 + j];
+              }
+              c[(i * nj) + j] = value;
+            }
+          }
+          if (ni == 1 && nj == 1) {
+            const T sum {r[(i0 * n) + i0] + r[(j0 * n) + j0]};
+            r[(i0 * n) + j0] = sum == T {} && c[0] == T {} ? T {} : c[0] / sum;
+            continue;
+          }
+          small_sylvester_block(r.data() + (i0 * n) + i0, n, r.data() + (j0 * n) + j0, n, ni, nj, c.data(), nj, 0.0);
+          for (std::size_t i {0}; i < ni; ++i) {
+            for (std::size_t j {0}; j < nj; ++j) {
+              r[((i0 + i) * n) + j0 + j] = c[(i * nj) + j];
+            }
+          }
+        }
+      }
+    }
+
+    /*!
+     * \brief The real principal square root of the real \p a from its real Schur form (Higham, 1987), or none where
+     *        `a` has a real eigenvalue below 0 (its principal root complex): a 1 × 1 block's root `√t`, a 2 × 2 block
+     *        `[θ b; c θ]` of eigenvalues `θ ± iμ` the root `α I + (T − θ I) / 2α` for `α + iβ = √(θ + iμ)`.
+     */
+    [[nodiscard]] inline std::optional<matrix<double>> real_square_root(const matrix<double>& form,
+                                                                        const matrix<double>* z)
+    {
+      const std::size_t        n {form.rows()};
+      const buffer<double>     t(form.begin(), form.end());
+      buffer<double>           r(n * n, 0.0);
+      std::vector<std::size_t> starts;
+      for (std::size_t k {0}; k < n; k += schur_block(t, n, k)) {
+        starts.push_back(k);
+        if (schur_block(t, n, k) == 1) {
+          if (t[(k * n) + k] < 0.0) {
+            return std::nullopt;
+          }
+          r[(k * n) + k] = std::sqrt(t[(k * n) + k]);
+          continue;
+        }
+        const double theta {t[(k * n) + k]};
+        const double mu    {std::sqrt(std::abs(t[(k * n) + k + 1])) * std::sqrt(std::abs(t[((k + 1) * n) + k]))};
+        const double alpha {complex_sqrt(std::complex<double> {theta, mu}).real()};
+        r[(k * n) + k]             = alpha;
+        r[((k + 1) * n) + k + 1]   = alpha;
+        r[(k * n) + k + 1]         = t[(k * n) + k + 1] / (2.0 * alpha);
+        r[((k + 1) * n) + k]       = t[((k + 1) * n) + k] / (2.0 * alpha);
+      }
+      square_root_columns(t, r, n, starts);
+      const matrix<double>                           root {n, n, std::move(r)};
+      return z == nullptr ? root : *z * root       * transpose(*z);
+    }
+
+    //! \brief The principal square root of a complex matrix from its Schur form: `√t_ii` on the diagonal, the rest by
+    //!        \ref square_root_columns.
+    [[nodiscard]] inline matrix<std::complex<double>> complex_square_root(const matrix<std::complex<double>>& form,
+                                                                          const matrix<std::complex<double>>* z)
+    {
+      const std::size_t                  n                             {form.rows()};
+      const buffer<std::complex<double>> t(form.begin(), form.end());
+      buffer<std::complex<double>>       r(n * n, std::complex<double> {});
+      std::vector<std::size_t>           starts(n);
+      for (std::size_t k {0}; k < n; ++k) {
+        starts[k]      = k;
+        r[(k * n) + k] = complex_sqrt(t[(k * n) + k]); // csqrt's, exact on the axes as NumPy's and SciPy's
+      }
+      square_root_columns(t, r, n, starts);
+      const matrix<std::complex<double>>             root {n, n, std::move(r)};
+      return z == nullptr ? root : *z * root       * adjoint_of(*z);
+    }
+
+    /*!
+     * \brief The complex Schur form of a real one, as SciPy's `rsf2csf`: each 2 × 2 block of \p t (a conjugate pair)
+     *        triangularised by a unitary rotation of its two rows and columns, the columns of \p z turning with it;
+     *        a real eigenvalue's diagonal entry kept exactly real. \return `(T, Z)` complex.
+     */
+    [[nodiscard]] inline std::pair<matrix<std::complex<double>>, matrix<std::complex<double>>> complex_schur_form(const matrix<double>& t,
+                                                                                                                  const matrix<double>& z)
+    {
+      using C = std::complex<double>;
+      const std::size_t n {t.rows()};
+      buffer<C>         tc(n * n);
+      buffer<C>         zc(n * n);
+      for (std::size_t e {0}; e < n * n; ++e) {
+        tc[e] = C {t.begin()[static_cast<std::ptrdiff_t>(e)]};
+        zc[e] = C {z.begin()[static_cast<std::ptrdiff_t>(e)]};
+      }
+      for (std::size_t k {n}; k > 1; --k) { // the rows m = k − 1 from the last to the second
+        const std::size_t m     {k - 1};
+        const C           below {tc[(m * n) + m - 1]};
+        if (below == C {}) {
+          continue;
+        }
+        const C a         {tc[((m - 1) * n) + m - 1]};
+        const C b         {tc[((m - 1) * n) + m]};
+        const C d         {tc[(m * n) + m]};
+        // the first eigenvalue of the block less its last diagonal entry, as rsf2csf's mu[0]
+        const C      half {(a - d) / 2.0};
+        const C      mu   {half + complex_sqrt((half * half) + (b * below))};
+        const double r    {std::hypot(std::abs(mu), std::abs(below))};
+        const C      c    {mu / r};
+        const C      sn   {below / r};
+        for (std::size_t j {m - 1}; j < n; ++j) { // G = [c̄ s; −s c] on rows m − 1 and m
+          const C upper {tc[((m - 1) * n) + j]};
+          const C lower {tc[(m * n) + j]};
+          tc[((m - 1) * n) + j] = (std::conj(c) * upper) + (sn * lower);
+          tc[(m * n) + j]       = (-sn * upper) + (c * lower);
+        }
+        for (std::size_t i {0}; i <= m; ++i) { // · Gᴴ on columns m − 1 and m
+          const C left  {tc[(i * n) + m - 1]};
+          const C right {tc[(i * n) + m]};
+          tc[(i * n) + m - 1] = (c * left) + (std::conj(sn) * right);
+          tc[(i * n) + m]     = (-sn * left) + (std::conj(c) * right);
+        }
+        for (std::size_t i {0}; i < n; ++i) {
+          const C left  {zc[(i * n) + m - 1]};
+          const C right {zc[(i * n) + m]};
+          zc[(i * n) + m - 1] = (c * left) + (std::conj(sn) * right);
+          zc[(i * n) + m]     = (-sn * left) + (std::conj(c) * right);
+        }
+        tc[(m * n) + m - 1] = C {};
+      }
+      return {matrix<C> {n, n, std::move(tc)}, matrix<C> {n, n, std::move(zc)}};
+    }
+
+    //! \brief Whether the square \p a is upper triangular: its Schur form as it stands, `Z = I` (as SciPy takes it, so
+    //!        an infinite entry of the root reaches no other).
+    template <typename T>
+    [[nodiscard]] bool upper_triangular(const matrix<T>& a)
+    {
+      for (std::size_t i {1}; i < a.rows(); ++i) {
+        for (std::size_t j {0}; j < i; ++j) {
+          if (a(i, j) != T {}) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The principal square root `X` of a complex square matrix (`X² = A`, its eigenvalues of nonnegative real
+   *        part), as `scipy.linalg.sqrtm`: by the Schur method, `A = Z T Zᴴ`, the triangular `R² = T` column by column
+   *        (Björck and Hammarling), `X = Z R Zᴴ`. Where `A` has no square root (a zero eigenvalue in a Jordan block)
+   *        the entries that would need one are infinite, as SciPy's.
+   * \throws dimension_error   If \p a is not square.
+   * \throws non_finite_error  If an entry is infinite or NaN.
+   * \throws convergence_error If the Schur form's iterations did not converge.
+   */
+  [[nodiscard]] inline matrix<std::complex<double>> sqrtm(const matrix<std::complex<double>>& a)
+  {
+    if (a.rows() != a.cols()) {
+      throw dimension_error("sqrtm requires a square matrix");
+    }
+    detail::require_finite(a, "sqrtm");
+    if (detail::upper_triangular(a)) {
+      return detail::complex_square_root(a, nullptr);
+    }
+    const schur_decomposition<std::complex<double>> s {a};
+    return detail::complex_square_root(s.t(), &s.z());
+  }
+
+  /*!
+   * \brief The complex principal square root of a real square matrix, as `scipy.linalg.sqrtm` answers one with a real
+   *        eigenvalue below 0: from its real Schur form made complex (SciPy's `rsf2csf`), its real eigenvalues exactly
+   *        real, so each root of one below 0 is `+i √|λ|`.
+   * \throws dimension_error   If \p a is not square.
+   * \throws non_finite_error  If an entry is infinite or NaN.
+   * \throws convergence_error If the Schur form's iterations did not converge.
+   */
+  [[nodiscard]] inline matrix<std::complex<double>> complex_sqrtm(const matrix<double>& a)
+  {
+    if (a.rows() != a.cols()) {
+      throw dimension_error("sqrtm requires a square matrix");
+    }
+    detail::require_finite(a, "sqrtm");
+    if (detail::upper_triangular(a)) {
+      const matrix<std::complex<double>> form {detail::complex_schur_form(a, a).first};
+      return detail::complex_square_root(form, nullptr);
+    }
+    const schur_decomposition<double> s {a};
+    const auto [t, z] {detail::complex_schur_form(s.t(), s.z())};
+    return detail::complex_square_root(t, &z);
+  }
+
+  /*!
+   * \brief The real principal square root of a real square matrix, as `scipy.linalg.sqrtm` answers one: in real
+   *        arithmetic on its real Schur form (Higham, 1987), a complex pair's block by its own real root.
+   * \throws dimension_error   If \p a is not square.
+   * \throws non_finite_error  If an entry is infinite or NaN.
+   * \throws std::domain_error If \p a has a real eigenvalue below 0: its principal root is complex
+   *                           (\ref complex_sqrtm).
+   * \throws convergence_error If the Schur form's iterations did not converge.
+   */
+  [[nodiscard]] inline matrix<double> sqrtm(const matrix<double>& a)
+  {
+    if (a.rows() != a.cols()) {
+      throw dimension_error("sqrtm requires a square matrix");
+    }
+    detail::require_finite(a, "sqrtm");
+    std::optional<matrix<double>> root;
+    if (detail::upper_triangular(a)) {
+      root = detail::real_square_root(a, nullptr);
+    }
+    else {
+      const schur_decomposition<double> s {a};
+      root = detail::real_square_root(s.t(), &s.z());
+    }
+    if (!root) {
+      throw std::domain_error("sqrtm: a real eigenvalue below 0, whose principal square root is complex");
+    }
+    return std::move(*root);
   }
 } // namespace numerical
 

@@ -195,6 +195,43 @@ any_tensor expm(const any_tensor& v)
     return any_tensor {real_tensor {numerical::expm(matrix_from(std::get<real_tensor>(v)))}};
 }
 
+// sqrtm(a) -> Tensor, as scipy.linalg.sqrtm: the principal square root of a square matrix or of each of a stack's; a
+// real operand's real where every matrix has one, else the whole complex (a real eigenvalue below 0 anywhere).
+any_tensor sqrtm(const any_tensor& v)
+{
+    if (shape_of(v).size() < 2 || shape_of(v)[shape_of(v).size() - 1] != shape_of(v)[shape_of(v).size() - 2]) {
+        throw std::runtime_error("sqrtm expects a square matrix or a stack of them");
+    }
+    if (is_single(v)) {
+        return narrowed(sqrtm(widened(v)));
+    }
+    if (!is_complex(v)) {
+        const auto real_root = [](const any_tensor& m) { return any_tensor {real_tensor {numerical::sqrtm(matrix_from(std::get<real_tensor>(m)))}}; };
+        const auto complex_root = [](const any_tensor& m) {
+            return any_tensor {cplx_tensor {numerical::complex_sqrtm(matrix_from(std::get<real_tensor>(m)))}};
+        };
+        try {
+            if (shape_of(v).size() > 2) {
+                return over_stack<any_tensor>(v, real_root);
+            }
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(v) * 8)};
+            return real_root(v);
+        }
+        catch (const std::domain_error&) { // a real eigenvalue below 0: every matrix's complex root, as SciPy's
+            if (shape_of(v).size() > 2) {
+                return over_stack<any_tensor>(v, complex_root);
+            }
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(v) * 8)};
+            return complex_root(v);
+        }
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<any_tensor>(v, [](const any_tensor& m) { return sqrtm(m); });
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(v) * 8)};
+    return any_tensor {cplx_tensor {numerical::sqrtm(matrix_from(std::get<cplx_tensor>(v)))}};
+}
+
 // solve_sylvester(a, b, q) -> Tensor, as scipy.linalg.solve_sylvester: X of A X + X B = Q, one dtype (the caller
 // promotes), single precision computed in double.
 any_tensor solve_sylvester(const any_tensor& a, const any_tensor& b, const any_tensor& q)

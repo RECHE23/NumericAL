@@ -1379,6 +1379,9 @@ any_tensor inverse(const any_tensor& v); // in linalg.cpp
 // expm(a) -> Tensor, as scipy.linalg.expm (a stack's matrices each).
 any_tensor expm(const any_tensor& v); // in linalg.cpp
 
+// sqrtm(a) -> Tensor, as scipy.linalg.sqrtm (real where every matrix has a real principal root, else complex).
+any_tensor sqrtm(const any_tensor& v); // in linalg.cpp
+
 // solve_sylvester(a, b, q) -> Tensor, as scipy.linalg.solve_sylvester (A X + X B = Q).
 any_tensor solve_sylvester(const any_tensor& a, const any_tensor& b, const any_tensor& q); // in linalg.cpp
 

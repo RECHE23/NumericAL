@@ -54,5 +54,44 @@ class Expm(unittest.TestCase):
             numerical.expm([[1.0, float("nan")], [0.0, 1.0]])
 
 
+@unittest.skipIf(np is None, "NumPy is not installed")
+class Sqrtm(unittest.TestCase):
+    @unittest.skipIf(sl is None, "SciPy is not installed")
+    def test_against_scipy(self):
+        # positive definite, general (complex pairs), complex, with real eigenvalues below 0 (a complex root, +i √|λ|
+        # as SciPy's), in single precision, and stacks of each (complex for all where any needs it)
+        rng = np.random.default_rng(3)
+        for n in (1, 2, 5, 30):
+            for kind in ("definite", "general", "complex", "negative"):
+                a = rng.standard_normal((n, n))
+                if kind == "definite":
+                    a = a @ a.T + np.eye(n)
+                elif kind == "complex":
+                    a = a + 1j * rng.standard_normal((n, n))
+                elif kind == "negative":
+                    a = -(a @ a.T + np.eye(n))
+                with self.subTest(n=n, kind=kind):
+                    ours = np.asarray(numerical.sqrtm(a))
+                    theirs = sl.sqrtm(a)
+                    self.assertEqual(ours.dtype, theirs.dtype)
+                    self.assertLess(np.abs(ours - theirs).max(), 1e-11 * np.abs(theirs).max())
+                    single = numerical.sqrtm(a.astype(np.complex64 if kind == "complex" else np.float32))
+                    self.assertEqual(np.asarray(single).dtype, sl.sqrtm(a.astype(np.complex64 if kind == "complex" else np.float32)).dtype)
+        stack = np.stack([np.eye(3) * 4.0, -np.eye(3)])
+        np.testing.assert_array_equal(np.asarray(numerical.sqrtm(stack)), sl.sqrtm(stack))
+        stack = np.stack([np.eye(3) * 4.0, np.eye(3)])
+        self.assertEqual(np.asarray(numerical.sqrtm(stack)).dtype, np.float64)
+
+    def test_edges_and_refusals(self):
+        jordan = np.asarray(numerical.sqrtm([[0.0, 1.0], [0.0, 0.0]]))
+        self.assertTrue(np.isinf(jordan[0, 1]) and jordan[0, 0] == 0.0 and jordan[1, 1] == 0.0)
+        self.assertEqual(np.asarray(numerical.sqrtm(np.zeros((2, 2)))).tolist(), [[0.0, 0.0], [0.0, 0.0]])
+        self.assertEqual(np.asarray(numerical.sqrtm([[4]])).tolist(), [[2.0]])
+        self.assertEqual(np.asarray(numerical.sqrtm(np.zeros((0, 0)))).shape, (0, 0))
+        for bad in (np.ones((2, 3)), np.ones(3), [[float("inf")]]):
+            with self.assertRaises(numerical.LinAlgError):
+                numerical.sqrtm(bad)
+
+
 if __name__ == "__main__":
     unittest.main()

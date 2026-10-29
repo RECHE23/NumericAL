@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`sqrtm`, as `scipy.linalg.sqrtm`**: the principal square root of a square matrix or of each of a stack's, by the
+  Schur method: in real arithmetic for a real matrix (Higham, 1987; a complex pair's 2 × 2 block by its own real
+  root), real unless the matrix has a real eigenvalue below 0, then complex from its real Schur form made complex
+  (SciPy's `rsf2csf`), so that root is `+i √|λ|` as SciPy's (a whole stack complex where one matrix needs it);
+  where there is no root (a zero in a Jordan block) the entries that need one infinite, as SciPy's. Within 3e-14 of
+  SciPy's values, its dtypes. In C++, `numerical::sqrtm` (real, refusing a real eigenvalue below 0, or complex) and
+  `numerical::complex_sqrtm` of a real matrix.
 - **`solve_sylvester`, `solve_continuous_lyapunov` (and `solve_lyapunov`) and `solve_discrete_lyapunov`, as
   `scipy.linalg`'s**: `A X + X B = Q` by Bartels and Stewart's method, the Schur forms of `A` and `B` and the
   triangular equation between them solved by blocks as LAPACK's `trsyl` (a pivot perturbed where `A` and `−B` share

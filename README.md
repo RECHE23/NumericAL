@@ -92,6 +92,8 @@ Small and complete, grown measured, honest about what is not yet here:
   (LAPACK's `trsen`, MATLAB's `ordschur`), `leading()` their count.
 - `numerical::expm(a)` — the matrix exponential, as `scipy.linalg.expm` (Al-Mohy and Higham's scaling and squaring
   of a Padé approximant, 2009).
+- `numerical::sqrtm(a)` — the principal square root, as `scipy.linalg.sqrtm` (the Schur method, real for a real
+  matrix with no real eigenvalue below 0; `complex_sqrtm` the complex one of a real matrix).
 - `numerical::solve_sylvester(a, b, q)` — `A X + X B = Q`, as `scipy.linalg.solve_sylvester` (Bartels and Stewart's
   method, the triangular equation by blocks as LAPACK's `trsyl`).
 - `numerical::svd_decomposition<T>` — the singular value decomposition `A = U Σ Vᴴ`
@@ -243,7 +245,7 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `eigh(a, UPLO)` → `(values, vectors)` (with `b=`, a positive-definite matrix, the pencil `a x = λ b x` as
 `scipy.linalg.eigh(a, b)`; `eigvalsh(a, b=b)` its values), `schur(a, output="real")` → `(T, Z)` as
 `scipy.linalg.schur` (`"complex"` the triangular form of a real matrix; with `sort=` `"lhp"`, `"rhp"`, `"iuc"`,
-`"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `expm(a)` as `scipy.linalg.expm` (a
+`"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `expm(a)` and `sqrtm(a)` as `scipy.linalg`'s (a
 stack's matrices each), `solve_sylvester(a, b, q)`, `solve_continuous_lyapunov(a, q)` and
 `solve_discrete_lyapunov(a, q, method)` as `scipy.linalg`'s, `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix
 (LAPACK's `dgeev`/`zgeev`: balancing, blocked Hessenberg reduction, multishift QR with aggressive early deflation;
