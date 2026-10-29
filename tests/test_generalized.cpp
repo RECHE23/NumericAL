@@ -464,6 +464,28 @@ TEST(riccati_balancing_scales_e)
   EXPECT(discrete_residual(c, numerical::detail::as_complex(y), true, false) < 1e-14);
 }
 
+// A graded A (eigenvalues near −2.6·10⁸ and −6.2·10⁸, X near 10⁻⁹): the generalized Schur form's answer has a
+// residual of 1.3·10⁻⁷ of its terms (SciPy 1.18's 9.8·10⁻⁹, its real QZ's), one step of Newton's method brings it to
+// rounding. An exact answer (Q = 0, X = 0) is kept: the step does not lower a zero residual. An X near 2·10¹⁵⁴ (A = 10¹⁵⁴
+// unstable) is kept as the Schur method gives it: its residual's terms overflow, and no step is taken.
+TEST(riccati_continuous_takes_a_step_of_newton)
+{
+  riccati_case<C> c {.a = matrix<C> {{C {-2.5723633516085407e+08}, C {4.4375165314791058e-04}},
+                       {C {1.2072959802483012e+03}, C {-6.2102344766426814e+08}}},
+                     .b = matrix<C> {{C {0.44663486401116476}}, {C {0.285525462894814}}},
+                     .q = matrix<C> {{C {2.998057577496829}, C {0.5524690732831364}}, {C {0.5524690732831364}, C {3.127499944446211}}},
+                     .r = matrix<C> {{C {1.0528016657039019}}},
+                     .e = identity<C>(2),
+                     .s = matrix<C> {{C {}}, {C {}}}};
+  const matrix<double> x {numerical::solve_continuous_are(real_of(c.a), real_of(c.b), real_of(c.q), real_of(c.r))};
+  EXPECT(continuous_residual(c, numerical::detail::as_complex(x), false, false) < 4.0 * std::numeric_limits<double>::epsilon());
+  using M = matrix<double>;
+  const M zero {numerical::solve_continuous_are(M {{-1.0, 0.5}, {0.0, -2.0}}, M {{1.0}, {1.0}}, M {{0.0, 0.0}, {0.0, 0.0}}, M {{1.0}})};
+  EXPECT((zero == M {{0.0, 0.0}, {0.0, 0.0}}));
+  const M huge {numerical::solve_continuous_are(M {{1e154}}, M {{1.0}}, M {{1.0}}, M {{1.0}})};
+  EXPECT(std::abs((huge(0, 0) / 2e154) - 1.0) < 1e-15);
+}
+
 // No stabilising solution: an unstable mode B cannot reach (U₀₀ singular, exactly where the mode is decoupled), and a negative Q putting the pencil's two
 // eigenvalues on the imaginary axis (±i√2) or the unit circle (a conjugate pair): whichever the sort takes, its
 // eigenvector is complex and U₀₀ᴴ U₁₀ not Hermitian (SciPy 1.18's discrete solver, in real arithmetic, answers 1 + √2
@@ -527,6 +549,9 @@ TEST(riccati_equations_refuse_what_they_cannot_take)
   const matrix<C> inputs     {{C {1.0}}, {C {0.5, 0.5}}};
   EXPECT(numerical::solve_continuous_are(C {-1.0} *identity<C>(2), inputs, hermitian, identity<C>(1)).rows() == 2);
   EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_are(C {-1.0} *identity<C>(2), inputs, transposed, identity<C>(1))), std::invalid_argument);
+  // the continuous equation's R⁻¹: a numerically singular r refused as SciPy refuses it, a zero one too
+  EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_are(-1.0 * two, two, two, M {{1.0, 2.0}, {2.0, 4.0}})), std::invalid_argument);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_are(-1.0 * two, two, two, M {{0.0, 0.0}, {0.0, 0.0}})), std::invalid_argument);
 }
 
 // The scaling of dgebal('S') at the edges of the range: a zero row or column left alone; scales stopped where the

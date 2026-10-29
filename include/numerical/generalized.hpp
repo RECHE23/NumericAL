@@ -14,6 +14,7 @@
 #include <concepts>
 #include <cstddef>
 #include <functional>
+#include <initializer_list>
 #include <limits>
 #include <optional>
 #include <stdexcept>
@@ -865,6 +866,69 @@ namespace numerical {
       }
       return matrix<C> {m, m, std::move(out)};
     }
+
+    /*!
+     * \brief The residual `Aᴴ X E + Eᴴ X A − (Eᴴ X B + S) R⁻¹ (Bᴴ X E + Sᴴ) + Q` of the continuous equation at the
+     *        Hermitian \p x, and the closed loop `A − B K`, `K = R⁻¹ (Bᴴ X E + Sᴴ)`, into \p closed.
+     */
+    [[nodiscard]] inline matrix<std::complex<double>> continuous_residual(const riccati_terms&                terms,
+                                                                          const matrix<std::complex<double>>& x,
+                                                                          matrix<std::complex<double>>&       closed)
+    {
+      using C = std::complex<double>;
+      const matrix<C> xe       {terms.e != nullptr ? x * *terms.e : x};
+      matrix<C>       coupling {adjoint_of(terms.b) * xe};
+      if (terms.s != nullptr) {
+        coupling = coupling + adjoint_of(*terms.s);
+      }
+      const matrix<C> gain    {solve(terms.r, coupling)}; // r nonsingular: checked as SciPy checks it
+      const matrix<C> product {adjoint_of(terms.a) * xe};
+      closed = terms.a - (terms.b * gain);
+      return ((product + adjoint_of(product)) - (adjoint_of(coupling) * gain)) + terms.q;
+    }
+
+    //! \brief Whether every entry of the matrices \p xs is finite.
+    [[nodiscard]] inline bool entries_finite(std::initializer_list<const matrix<std::complex<double>>*> xs)
+    {
+      return std::all_of(xs.begin(), xs.end(), [](const matrix<std::complex<double>>* x) {
+                           return std::all_of(x->begin(), x->end(), [](const std::complex<double>& z) { return is_finite_entry(z); });
+                         });
+    }
+
+    /*!
+     * \brief One step of Newton's method on the continuous equation from the Schur method's \p x (Kleinman, 1968), in
+     *        its correction form: `A_Kᴴ Δ E + Eᴴ Δ A_K = −Res(X)` for the closed loop `A_K` (\ref continuous_residual),
+     *        a Lyapunov equation solved for `Y = Eᴴ Δ E` as `Fᴴ Y + Y F = −Res(X)`, `F = E⁻¹ A_K`; `X + Δ` kept only
+     *        where its residual's 1-norm is smaller. The generalized Schur form of a badly scaled equation (a graded
+     *        `A`) loses digits that a step from a solution so near the stabilising one gains back.
+     */
+    [[nodiscard]] inline matrix<std::complex<double>> newton_refined(const riccati_terms&           terms,
+                                                                     matrix<std::complex<double>>&& x)
+    {
+      using C = std::complex<double>;
+      matrix<C>       closed;
+      const matrix<C> residual {continuous_residual(terms, x, closed)};
+      const matrix<C> f        {terms.e != nullptr ? solve(*terms.e, closed) : closed};
+      if (!entries_finite({&residual, &f})) { // a term past the doubles (an X near 1e154): no step, the solver refuses it
+        return std::move(x);
+      }
+      const matrix<C> y     {solve_sylvester(adjoint_of(f), f, C {-1.0} *residual)};
+      const matrix<C> delta {terms.e != nullptr ? adjoint_of(solve(adjoint_of(*terms.e), adjoint_of(solve(adjoint_of(*terms.e), y))))
+                                                : y};
+      const std::size_t m   {x.rows()};
+      buffer<C>         stepped(m * m);
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t k {0}; k < m; ++k) {
+          stepped[(i * m) + k] = x(i, k) + ((delta(i, k) + std::conj(delta(k, i))) / 2.0);
+        }
+      }
+      matrix<C> refined {m, m, std::move(stepped)};
+      matrix<C> unused;
+      if (norm_one(continuous_residual(terms, refined, unused)) < norm_one(residual)) {
+        return refined;
+      }
+      return std::move(x);
+    }
   } // namespace detail
 
   namespace detail {
@@ -947,6 +1011,12 @@ namespace numerical {
       const auto& cr {as_complex(r)};
       require_hermitian(cq, "q");
       require_hermitian(cr, "r");
+      if (continuous) { // R⁻¹ is the equation's: SciPy refuses a numerically singular r
+        const vector<double> sigma {singular_values(cr)};
+        if (!(sigma[n - 1] >= std::numeric_limits<double>::epsilon() * norm_one(cr)) || sigma[n - 1] == 0.0) {
+          throw std::invalid_argument("Matrix r is numerically singular.");
+        }
+      }
       std::optional<matrix<std::complex<double>>> ce;
       std::optional<matrix<std::complex<double>>> cs;
       if (e != nullptr) {
@@ -959,8 +1029,12 @@ namespace numerical {
       if (s != nullptr) {
         cs.emplace(as_complex(*s));
       }
-      const riccati_terms terms {ca, cb, cq, cr, ce ? &*ce : nullptr, cs ? &*cs : nullptr};
-      return answer_like(riccati(terms, continuous, balanced), a);
+      const riccati_terms          terms {ca, cb, cq, cr, ce ? &*ce : nullptr, cs ? &*cs : nullptr};
+      matrix<std::complex<double>> x     {riccati(terms, continuous, balanced)};
+      if (continuous) {
+        x = newton_refined(terms, std::move(x));
+      }
+      return answer_like(std::move(x), a);
     }
   } // namespace detail
 

@@ -8,6 +8,16 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+- **`solve_continuous_are` of a badly scaled equation** (a graded `A`, eigenvalues from 10⁻⁶ to 10⁶) lost up to 470
+  times more precision than SciPy in some 3 % of such equations, the generalized Schur form of the complex pencil
+  losing digits that SciPy's real one keeps (`make fuzz-scipy` failed on about one seed in three). The answer now takes
+  one step of Newton's method (Kleinman, 1968: a Lyapunov equation in the closed loop, far cheaper than the pencil's
+  QZ), kept only where it lowers the residual: an equation with eigenvalues near −2.6·10⁸ and −6.2·10⁸, residual
+  1.3·10⁻⁷ of its terms (SciPy's 9.8·10⁻⁹), now 4·10⁻¹⁷. Other last bits for every continuous equation; the discrete
+  one is unchanged. A numerically singular `r` is refused, as SciPy refuses it (the equation is in `R⁻¹`), where the
+  pencil reported eigenvalues near the imaginary axis.
+
 ## 2026.10.41 — 2026-10-29
 
 ### Added

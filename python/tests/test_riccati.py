@@ -116,6 +116,17 @@ class Riccati(unittest.TestCase):
         y = np.asarray(numerical.solve_discrete_are(a, b, q, r, e=e))
         self.assertLess(_discrete_residual(a, b, q, r, e, s, y), 1e-14)
 
+    def test_graded_continuous_equation(self):
+        # the generalized Schur form's answer has a residual of 1.3e-7 of its terms (SciPy 1.18's 9.8e-9); a step of
+        # Newton's method brings it to rounding
+        a = np.array([[-2.5723633516085407e+08, 4.4375165314791058e-04],
+                      [1.2072959802483012e+03, -6.2102344766426814e+08]])
+        b = np.array([[0.44663486401116476], [0.285525462894814]])
+        q = np.array([[2.998057577496829, 0.5524690732831364], [0.5524690732831364, 3.127499944446211]])
+        r = np.array([[1.0528016657039019]])
+        x = np.asarray(numerical.solve_continuous_are(a, b, q, r))
+        self.assertLess(_continuous_residual(a, b, q, r, np.eye(2), np.zeros((2, 1)), x), 4 * np.finfo(float).eps)
+
     def test_refusals(self):
         for solver in (numerical.solve_continuous_are, numerical.solve_discrete_are):
             for bad in (([[1.0, 2.0]], [[1.0]], [[1.0]], [[1.0]]),                       # a not square
@@ -130,6 +141,9 @@ class Riccati(unittest.TestCase):
                 solver(np.eye(2), [[1.0], [0.0]], np.eye(2), [[1.0]], e=[[1.0, 2.0], [2.0, 4.0]])
             with self.assertRaises(numerical.LinAlgError):  # s of other shape
                 solver(np.eye(2), [[1.0], [0.0]], np.eye(2), [[1.0]], s=np.eye(2))
+        for r in ([[1.0, 2.0], [2.0, 4.0]], np.zeros((2, 2))):  # the continuous equation's R⁻¹, as SciPy refuses it
+            with self.assertRaises(numerical.LinAlgError):
+                numerical.solve_continuous_are(-np.eye(2), np.eye(2), np.eye(2), r)
         with self.assertRaises(numerical.LinAlgError):  # an unstable mode b cannot reach, decoupled (q zero there)
             numerical.solve_continuous_are([[1.0]], [[0.0]], [[0.0]], [[1.0]])
         with self.assertRaises(numerical.LinAlgError):
