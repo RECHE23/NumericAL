@@ -349,6 +349,74 @@ any_tensor solveh_banded(const any_tensor& ab, const any_tensor& b, bool lower)
     return shaped_like(numerical::solveh_banded(matrix_from(std::get<real_tensor>(ab)), right_hand_sides(std::get<real_tensor>(b)), lower), b);
 }
 
+// toeplitz(c, r), hankel(c, r) and circulant(c) -> Tensor, as scipy.linalg's: vectors of one dtype (the caller
+// promotes), any of the four.
+any_tensor structured(const any_tensor& c, const any_tensor& r, int kind)
+{
+    if (shape_of(c).size() != 1 || shape_of(r).size() != 1 || c.index() != r.index()) {
+        throw std::runtime_error("toeplitz, hankel and circulant expect vectors of one dtype");
+    }
+    return std::visit([&](const auto& column) -> any_tensor {
+                          using tensor_type = std::decay_t<decltype(column)>;
+                          using T           = element_of_t<tensor_type>;
+                          const numerical::vector<T> first {column.data()};
+                          const numerical::vector<T> row {std::get<tensor_type>(r).data()};
+                          switch (kind) {
+                          case 0: return any_tensor {tensor_type {numerical::toeplitz(first, row)}};
+                          case 1: return any_tensor {tensor_type {numerical::hankel(first, row)}};
+                          default: return any_tensor {tensor_type {numerical::circulant(first)}};
+                          }
+                      }, c);
+}
+
+// _block_diag(blocks) -> Tensor, as scipy.linalg.block_diag: matrices of one dtype (the caller promotes).
+PyObject* module_block_diag(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* seq = nullptr;
+    if (PyArg_ParseTuple(args, "O", &seq) == 0) {
+        return nullptr;
+    }
+    const Py_ssize_t count {PySequence_Size(seq)};
+    if (count <= 0) {
+        if (count == 0) {
+            PyErr_SetString(PyExc_ValueError, "_block_diag: at least one matrix");
+        }
+        return nullptr;
+    }
+    std::vector<const any_tensor*> parts;
+    for (Py_ssize_t i = 0; i < count; ++i) {
+        PyObject* item = PySequence_GetItem(seq, i); // new ref; the sequence keeps the tensor alive
+        if (item == nullptr) {
+            return nullptr;
+        }
+        const any_tensor* part = as_tensor(item);
+        Py_DECREF(item);
+        if (part == nullptr) {
+            return nullptr;
+        }
+        if (shape_of(*part).size() != 2 || (!parts.empty() && part->index() != parts.front()->index())) {
+            PyErr_SetString(sciforge_module_error(), "_block_diag: matrices of one dtype");
+            return nullptr;
+        }
+        parts.push_back(part);
+    }
+    try {
+        return std::visit([&](const auto& first) {
+            using tensor_type = std::decay_t<decltype(first)>;
+            using T           = element_of_t<tensor_type>;
+            std::vector<numerical::matrix<T>> blocks;
+            blocks.reserve(parts.size());
+            for (const any_tensor* part : parts) {
+                blocks.push_back(matrix_from(std::get<tensor_type>(*part)));
+            }
+            return wrap(any_tensor {tensor_type {numerical::block_diag(blocks)}});
+        }, *parts.front());
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // lstsq(a, b, rtol) -> (x, residuals, rank, s), as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one
 // right-hand side per column).
 lstsq_result lstsq(const any_tensor& a, const any_tensor& b, std::optional<double> rtol)

@@ -2,7 +2,8 @@
  * \file banded.hpp
  * \brief Structured systems: banded matrices, in LAPACK's diagonal-ordered storage, the general band by its LU
  *        factorisation with partial pivoting (`gbsv`), the Hermitian positive-definite band by its Cholesky factor
- *        (`pbsv`); Toeplitz matrices by Levinson's recursion; circulant matrices by the Fourier transform.
+ *        (`pbsv`); Toeplitz matrices by Levinson's recursion; circulant matrices by the Fourier transform. And the
+ *        structured matrices themselves, as `scipy.linalg` forms them: Toeplitz, circulant, Hankel, block diagonal.
  */
 #ifndef NUMERICAL_BANDED_HPP
 #define NUMERICAL_BANDED_HPP
@@ -469,6 +470,83 @@ namespace numerical {
       out[e] = detail::taken_as(x.data()[e], std::type_identity<T> {});
     }
     return matrix<T> {n, k, std::move(out)};
+  }
+
+  /*!
+   * \brief The `m × n` Toeplitz matrix of first column \p c (`m` entries) and first row \p r (`n`), as
+   *        `scipy.linalg.toeplitz`: `T(i, j) = c[i − j]` for `i ≥ j`, `r[j − i]` above (`r[0]` not read).
+   */
+  template <typename T>
+  [[nodiscard]] matrix<T> toeplitz(const vector<T>& c,
+                                   const vector<T>& r)
+  {
+    const std::size_t m {c.size()};
+    const std::size_t n {r.size()};
+    buffer<T>         out(m * n);
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        out[(i * n) + j] = i >= j ? c[i - j] : r[j - i];
+      }
+    }
+    return matrix<T> {m, n, std::move(out)};
+  }
+
+  //! \brief The `n × n` circulant matrix of first column \p c, as `scipy.linalg.circulant`: `C(i, j) = c[(i − j) mod n]`.
+  template <typename T>
+  [[nodiscard]] matrix<T> circulant(const vector<T>& c)
+  {
+    const std::size_t n {c.size()};
+    buffer<T>         out(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        out[(i * n) + j] = c[(i + n - j) % n];
+      }
+    }
+    return matrix<T> {n, n, std::move(out)};
+  }
+
+  /*!
+   * \brief The `m × n` Hankel matrix of first column \p c (`m` entries) and last row \p r (`n`), as
+   *        `scipy.linalg.hankel`: `H(i, j) = c[i + j]` while `i + j < m`, `r[i + j − m + 1]` past it (`r[0]` not read).
+   */
+  template <typename T>
+  [[nodiscard]] matrix<T> hankel(const vector<T>& c,
+                                 const vector<T>& r)
+  {
+    const std::size_t m {c.size()};
+    const std::size_t n {r.size()};
+    buffer<T>         out(m * n);
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        out[(i * n) + j] = i + j < m ? c[i + j] : r[i + j + 1 - m];
+      }
+    }
+    return matrix<T> {m, n, std::move(out)};
+  }
+
+  //! \brief The block diagonal matrix of \p blocks, in order, as `scipy.linalg.block_diag`: zeros off the blocks.
+  template <typename T>
+  [[nodiscard]] matrix<T> block_diag(const std::vector<matrix<T>>& blocks)
+  {
+    std::size_t rows {0};
+    std::size_t cols {0};
+    for (const matrix<T>& block : blocks) {
+      rows += block.rows();
+      cols += block.cols();
+    }
+    buffer<T>   out(rows * cols, T {});
+    std::size_t r0                 {0};
+    std::size_t c0                 {0};
+    for (const matrix<T>& block : blocks) {
+      for (std::size_t i {0}; i < block.rows(); ++i) {
+        for (std::size_t j {0}; j < block.cols(); ++j) {
+          out[((r0 + i) * cols) + c0 + j] = block(i, j);
+        }
+      }
+      r0 += block.rows();
+      c0 += block.cols();
+    }
+    return matrix<T> {rows, cols, std::move(out)};
   }
 } // namespace numerical
 

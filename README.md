@@ -92,7 +92,8 @@ Small and complete, grown measured, honest about what is not yet here:
   (LAPACK's `trsen`, MATLAB's `ordschur`), `leading()` their count.
 - `numerical::solve_banded(l, u, ab, b)` and `numerical::solveh_banded(ab, b, lower)` — banded systems in LAPACK's
   diagonal-ordered form, as `scipy.linalg`'s (`gbsv`, `pbsv`); `numerical::solve_toeplitz(c, r, b)` (Levinson's
-  recursion) and `numerical::solve_circulant(c, b)` (the Fourier transform).
+  recursion) and `numerical::solve_circulant(c, b)` (the Fourier transform); the matrices `toeplitz`, `hankel`,
+  `circulant` and `block_diag`.
 - `numerical::expm(a)` — the matrix exponential, as `scipy.linalg.expm` (Al-Mohy and Higham's scaling and squaring
   of a Padé approximant, 2009).
 - `numerical::sqrtm(a)` — the principal square root, as `scipy.linalg.sqrtm` (the Schur method, real for a real
@@ -250,7 +251,7 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `scipy.linalg.schur` (`"complex"` the triangular form of a real matrix; with `sort=` `"lhp"`, `"rhp"`, `"iuc"`,
 `"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `expm(a)` and `sqrtm(a)` as `scipy.linalg`'s (a
 stack's matrices each), `polar(a, side)`, `solve_banded((l, u), ab, b)`, `solveh_banded(ab, b, lower=False)`,
-`solve_toeplitz(c_or_cr, b)`, `solve_circulant(c, b, singular)`,
+`solve_toeplitz(c_or_cr, b)`, `solve_circulant(c, b, singular)`, `toeplitz`, `hankel`, `circulant`, `block_diag`,
 `solve_sylvester(a, b, q)`, `solve_continuous_lyapunov(a, q)` and
 `solve_discrete_lyapunov(a, q, method)` as `scipy.linalg`'s, `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix
 (LAPACK's `dgeev`/`zgeev`: balancing, blocked Hessenberg reduction, multishift QR with aggressive early deflation;

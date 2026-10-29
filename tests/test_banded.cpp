@@ -255,3 +255,22 @@ TEST(solve_circulant_is_the_dense_solve)
   EXPECT_THROWS(static_cast<void>(numerical::solve_circulant(numerical::vector<double> {std::vector<double> {1.0, 2.0}}, matrix<double> {2, 1, std::vector<double> {1.0, std::numeric_limits<double>::quiet_NaN()}})),
                 numerical::non_finite_error);
 }
+
+// The structured matrices as scipy.linalg forms them: a Toeplitz matrix of column and row (r[0] not read), square and
+// not; a Hankel matrix (its last row from r's second entry); a circulant; a block diagonal matrix, an empty block
+// among them and none at all.
+TEST(structured_matrices_are_scipys)
+{
+  const numerical::vector<double> c {std::vector<double> {1.0, 2.0, 3.0}};
+  const numerical::vector<double> r {std::vector<double> {9.0, 4.0, 5.0, 6.0}};
+  EXPECT((numerical::toeplitz(c, r) == matrix<double> {{1.0, 4.0, 5.0, 6.0}, {2.0, 1.0, 4.0, 5.0}, {3.0, 2.0, 1.0, 4.0}}));
+  EXPECT((numerical::toeplitz(c, c) == matrix<double> {{1.0, 2.0, 3.0}, {2.0, 1.0, 2.0}, {3.0, 2.0, 1.0}}));
+  EXPECT((numerical::hankel(c, r) == matrix<double> {{1.0, 2.0, 3.0, 4.0}, {2.0, 3.0, 4.0, 5.0}, {3.0, 4.0, 5.0, 6.0}}));
+  EXPECT((numerical::circulant(c) == matrix<double> {{1.0, 3.0, 2.0}, {2.0, 1.0, 3.0}, {3.0, 2.0, 1.0}}));
+  const matrix<C> complex     {numerical::circulant(numerical::vector<C> {std::vector<C> {C {0.0, 1.0}, C {2.0}}})};
+  EXPECT((complex == matrix<C> {{C {0.0, 1.0}, C {2.0}}, {C {2.0}, C {0.0, 1.0}}}));
+  const matrix<double> blocks {numerical::block_diag(std::vector<matrix<double>> {matrix<double> {{1.0, 2.0}, {3.0, 4.0}}, matrix<double> {0, 1, std::vector<double> {}},
+                                                                                  matrix<double> {{5.0}}})};
+  EXPECT((blocks == matrix<double> {{1.0, 2.0, 0.0, 0.0}, {3.0, 4.0, 0.0, 0.0}, {0.0, 0.0, 0.0, 5.0}}));
+  EXPECT(numerical::block_diag(std::vector<matrix<double>> {}).rows() == 0);
+}

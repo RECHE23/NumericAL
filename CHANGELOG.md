@@ -9,6 +9,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`toeplitz`, `hankel`, `circulant` and `block_diag`, as `scipy.linalg`'s**: the structured matrices, of vectors (or
+  matrices) promoted to one dtype as NumPy does, integers as `float64`; SciPy's batches of them are not taken. In
+  C++, `numerical::toeplitz`, `hankel`, `circulant` and `block_diag` (`banded.hpp`).
 - **`solve_toeplitz` and `solve_circulant`, as `scipy.linalg`'s**: a Toeplitz system by Levinson's recursion (SciPy's,
   real ones to the bit), `O(n²)` a right-hand side, given its first column and row (or the column alone, Hermitian);
   a circulant one by the Fourier transform, `O(n log n)`, refusing a near-singular circulant or, with

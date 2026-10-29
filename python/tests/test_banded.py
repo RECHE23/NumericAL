@@ -39,7 +39,7 @@ class Banded(unittest.TestCase):
                         x = np.asarray(numerical.solve_banded((lower, upper), ab, b))
                         self.assertEqual(x.shape, b.shape)
                         np.testing.assert_allclose(a @ x, b, atol=1e-10 * np.abs(x).max())
-                        if sl is not None and not (n == 1 and complex_entries):  # SciPy's 1 × 1 path casts a complex quotient into b's float
+                        if sl is not None and n > 1:  # SciPy's 1 × 1 shortcut casts a complex quotient into b's float, and 1.11's reads a row past ab
                             np.testing.assert_allclose(x, sl.solve_banded((lower, upper), ab, b), rtol=1e-10, atol=1e-12)
         single = numerical.solve_banded((1, 1), np.array([[0, 1], [2, 2], [1, 0]], np.float32), np.ones(2, np.float32))
         self.assertEqual(single.dtype, "float32")
@@ -122,6 +122,38 @@ class Structured(unittest.TestCase):
                     lambda: numerical.solve_circulant([1, 2], [1, 2, 3]),
                     lambda: numerical.solve_toeplitz(([1, 2], [1]), [1, 2]),
                     lambda: numerical.solve_toeplitz([1, 2], [1, 2, 3])):
+            with self.assertRaises(ValueError):
+                bad()
+
+
+@unittest.skipIf(np is None, "NumPy is not installed")
+class Constructors(unittest.TestCase):
+    def test_against_scipy(self):
+        expected = {
+            ("toeplitz", (1, 2, 3), None): [[1, 2, 3], [2, 1, 2], [3, 2, 1]],
+            ("toeplitz", (1, 2, 3), (9, 4, 5, 6)): [[1, 4, 5, 6], [2, 1, 4, 5], [3, 2, 1, 4]],
+            ("hankel", (1, 2, 3), None): [[1, 2, 3], [2, 3, 0], [3, 0, 0]],
+            ("hankel", (1, 2, 3), (9, 4, 5, 6)): [[1, 2, 3, 4], [2, 3, 4, 5], [3, 4, 5, 6]],
+        }
+        for (name, c, r), want in expected.items():
+            got = getattr(numerical, name)(c, r)
+            self.assertEqual(np.asarray(got).tolist(), want)
+            if sl is not None:
+                self.assertEqual(np.asarray(got).tolist(), getattr(sl, name)(c, r).tolist())
+        self.assertEqual(np.asarray(numerical.circulant([1, 2, 3])).tolist(), [[1, 3, 2], [2, 1, 3], [3, 2, 1]])
+        hermitian = np.asarray(numerical.toeplitz([1, 2j, 3]))
+        np.testing.assert_array_equal(hermitian, hermitian.conj().T)
+        self.assertEqual(numerical.toeplitz(np.arange(3, dtype=np.float32)).dtype, "float32")
+        self.assertEqual(numerical.toeplitz([1.0, 2.0], [1.0, 3j]).dtype, "complex128")
+        self.assertEqual(np.asarray(numerical.toeplitz(3.0)).tolist(), [[3.0]])
+        blocks = np.asarray(numerical.block_diag([[1, 2], [3, 4]], 5, [6, 7], np.eye(1) * 1j))
+        self.assertEqual(blocks.shape, (5, 6))
+        self.assertEqual(blocks.dtype, np.complex128)
+        if sl is not None:
+            np.testing.assert_array_equal(blocks, sl.block_diag([[1, 2], [3, 4]], 5, [6, 7], np.eye(1) * 1j))
+        self.assertEqual(np.asarray(numerical.block_diag()).shape, (1, 0))
+        for bad in (lambda: numerical.toeplitz(np.ones((2, 2))), lambda: numerical.circulant(np.ones((2, 2))),
+                    lambda: numerical.block_diag(np.ones((2, 2, 2)))):
             with self.assertRaises(ValueError):
                 bad()
 

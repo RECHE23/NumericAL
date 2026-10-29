@@ -1376,6 +1376,12 @@ any_tensor do_inverse(const numerical::tensor<T>& a)
 // inverse(a) -> Tensor (the matrix inverse).
 any_tensor inverse(const any_tensor& v); // in linalg.cpp
 
+// structured(c, r, kind) -> Tensor: toeplitz (kind 0), hankel (1) or circulant (2), as scipy.linalg's.
+any_tensor structured(const any_tensor& c, const any_tensor& r, int kind); // in linalg.cpp
+
+// _block_diag(blocks) -> Tensor, as scipy.linalg.block_diag (matrices of one dtype).
+PyObject* module_block_diag(PyObject* /*self*/, PyObject* args); // in linalg.cpp
+
 // solve_banded(ab, b, lower, upper) -> Tensor and solveh_banded(ab, b, lower) -> Tensor, as scipy.linalg's.
 any_tensor solve_banded(const any_tensor& ab, const any_tensor& b, std::size_t lower, std::size_t upper); // in linalg.cpp
 any_tensor solveh_banded(const any_tensor& ab, const any_tensor& b, bool lower);                         // in linalg.cpp

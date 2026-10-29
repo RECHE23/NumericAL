@@ -41,6 +41,7 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "solve_toeplitz", "solve_circulant",
+    "toeplitz", "hankel", "circulant", "block_diag",
     "expm", "sqrtm", "polar",
     "solve_sylvester", "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov", "lstsq", "pinv",
     "matrix_rank", "cholesky", "qr", "eig",
@@ -653,6 +654,54 @@ def solve_circulant(c, b, singular="raise", tol=None, caxis=-1, baxis=0, outaxis
     if c.ndim != 1 or b.ndim not in (1, 2) or b.shape[0] != c.shape[0]:
         raise ValueError(f"Shapes of c {c.shape} and b {b.shape} are incompatible")
     return _solve_circulant(c, b, singular == "lstsq", -1.0 if tol is None else float(tol))
+
+
+def _vectors(name, *values):
+    """`values` as vectors (a number as one entry) of one dtype, as NumPy promotes them."""
+    tensors = [value if isinstance(value, Tensor) else asarray(value) for value in values]
+    if any(tensor.ndim > 1 for tensor in tensors):
+        raise ValueError(f"{name} takes vectors: SciPy's batches of them are not taken")
+    tensors = [tensor.reshape((tensor.size,)) for tensor in tensors]
+    dtype = _promoted([tensor.dtype for tensor in tensors])
+    return [tensor if tensor.dtype == dtype else asarray(tensor, dtype) for tensor in tensors]
+
+
+def toeplitz(c, r=None):
+    """The Toeplitz matrix of first column `c` and first row `r`, as ``scipy.linalg.toeplitz``: ``T[i, j] = c[i - j]``
+    for ``i >= j``, ``r[j - i]`` above (``r[0]`` not read); ``r = conj(c)`` by default, a Hermitian matrix. Integers
+    and booleans as ``float64``."""
+    if r is None:
+        (c,) = _vectors("toeplitz", c)
+        r = conj(c) if c.dtype.startswith("complex") else c
+    c, r = _vectors("toeplitz", c, r)
+    return _numerical._structured(c, r, 0)
+
+
+def hankel(c, r=None):
+    """The Hankel matrix of first column `c` and last row `r`, as ``scipy.linalg.hankel``: ``H[i, j] = c[i + j]``
+    while ``i + j < len(c)``, ``r[i + j - len(c) + 1]`` past it (``r[0]`` not read); `r` zeros by default."""
+    if r is None:
+        (c,) = _vectors("hankel", c)
+        r = zeros(c.shape, c.dtype)
+    c, r = _vectors("hankel", c, r)
+    return _numerical._structured(c, r, 1)
+
+
+def circulant(c):
+    """The circulant matrix of first column `c`, as ``scipy.linalg.circulant``: ``C[i, j] = c[(i - j) % n]``."""
+    (c,) = _vectors("circulant", c)
+    return _numerical._structured(c, c, 2)
+
+
+def block_diag(*arrs):
+    """The block diagonal matrix of `arrs`, in order, as ``scipy.linalg.block_diag``: each a matrix (a vector one row,
+    a number one entry), zeros off the blocks, one dtype as NumPy promotes them; none gives a ``1 × 0`` matrix."""
+    tensors = [arr if isinstance(arr, Tensor) else asarray(arr) for arr in (arrs or ([],))]
+    if any(tensor.ndim > 2 for tensor in tensors):
+        raise ValueError("block_diag takes matrices: SciPy's batches of them are not taken")
+    tensors = [tensor.reshape((1, tensor.size)) if tensor.ndim < 2 else tensor for tensor in tensors]
+    dtype = _promoted([tensor.dtype for tensor in tensors])
+    return _numerical._block_diag([tensor if tensor.dtype == dtype else asarray(tensor, dtype) for tensor in tensors])
 
 
 def expm(A):
