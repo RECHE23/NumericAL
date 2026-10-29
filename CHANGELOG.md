@@ -38,6 +38,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   pivot column and row brought up to date alone, the rest by one product, a column whose norm downdate lost too much
   ending the block); the sums vectorised; `Q` formed by blocks of reflectors, as the QR's. The pivots are the same but
   past the numerical rank; other last bits. Order 1024 on one AVX2 core, GCC: 4.92 s → 0.20 s; 300 41 → 12 ms.
+- **`logm`, `sqrtm`, `funm` and `expm` of a Hermitian matrix** (symmetric, if real, to the bit) take `V f(Λ) Vᴴ` from
+  one eigendecomposition (`eigh`), as Armadillo's `expmat_sym`, `logmat_sympd` and `sqrtmat_sympd`, where the Schur
+  form, square roots, Padé approximants or Parlett's recurrence ran; the result Hermitian where `f(Λ)` is real.
+  `funm` is then right whatever the eigenvalues (a Hermitian matrix is always diagonalisable), its estimate `ε`.
+  `expm` from order 64 (below, its Padé path is faster); `logm` keeps its general path where an eigenvalue is below
+  10⁻²⁰ (SciPy's singular cases). Six AVX2 cores, positive definite, order 512: `logm` 418 → 30 ms, `sqrtm` 153 → 21
+  ms, `expm` 45 → 26 ms; order 128: 13.2 → 1.7, 7.8 → 1.4, 2.4 → 1.4 ms. Other last bits for Hermitian inputs.
 - **The generalized Schur form (`generalized_schur`, `solve_continuous_are`, `solve_discrete_are`) forms `Qᴴ A` and
   the Riccati pencil's deflation `Q₂ᴴ [H J]` by the matrix product**, where scalar loops went down columns: order 204
   12.0 → 0.5 ms for `Qᴴ A`. M1 Pro, `solve_continuous_are` with `m = 100`, `n = 4`: 151 → 123 ms; `m = 32` 6.5 → 5.6

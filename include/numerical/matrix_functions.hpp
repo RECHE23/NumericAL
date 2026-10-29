@@ -256,14 +256,85 @@ namespace numerical {
         }
       }
     }
+
+    //! \brief Whether \p a is Hermitian to the bit (symmetric where real), its diagonal real: a function of it is then
+    //!        `V f(Λ) Vᴴ` from one eigendecomposition (Armadillo's `expmat_sym`, `logmat_sympd`, `sqrtmat_sympd`).
+    template <typename T>
+    [[nodiscard]] bool exactly_hermitian(const matrix<T>& a)
+    {
+      const std::size_t n {a.rows()};
+      for (std::size_t i {0}; i < n; ++i) {
+        if (a(i, i) != conj_of(a(i, i))) {
+          return false;
+        }
+        for (std::size_t j {0}; j < i; ++j) {
+          if (a(i, j) != conj_of(a(j, i))) {
+            return false;
+          }
+        }
+      }
+      return true;
+    }
+
+    //! \brief The eigenvalues (ascending) and orthonormal eigenvectors of the real symmetric \p a.
+    [[nodiscard]] inline std::pair<vector<double>, matrix<double>> hermitian_system(const matrix<double>& a)
+    {
+      symmetric_eigen e      {a};
+      vector<double>  values {e.values()};
+      return {std::move(values), std::move(e).vectors()};
+    }
+
+    //! \brief The eigenvalues (ascending) and orthonormal eigenvectors of the complex Hermitian \p a.
+    [[nodiscard]] inline std::pair<vector<double>, matrix<std::complex<double>>> hermitian_system(const matrix<std::complex<double>>& a)
+    {
+      hermitian_eigen e      {a};
+      vector<double>  values {e.values()};
+      return {std::move(values), std::move(e).vectors()};
+    }
+
+    /*!
+     * \brief `V diag(f) Vᴴ` in the arithmetic of \p R (`double` only for real \p v and \p f), the eigenvectors \p v
+     *        orthonormal: one product. Made Hermitian to the bit where \p hermitian (every `f` real).
+     */
+    template <typename R, typename T>
+    [[nodiscard]] matrix<R> spectral(const matrix<T>&      v,
+                                     const std::vector<R>& f,
+                                     bool                  hermitian)
+    {
+      const std::size_t n {v.rows()};
+      buffer<R>         scaled(n * n);
+      buffer<R>         adjoint(n * n);
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t k {0}; k < n; ++k) {
+          scaled[(i * n) + k]  = R {v(i, k)} *f[k];
+          adjoint[(k * n) + i] = conj_of(R {v(i, k)});
+        }
+      }
+      matrix<R> x {matrix<R> {n, n, std::move(scaled)} *matrix<R> {n, n, std::move(adjoint)}};
+      if (!hermitian) {
+        return x;
+      }
+      buffer<R> out(n * n);
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t k {0}; k < n; ++k) {
+          out[(i * n) + k] = (x(i, k) + conj_of(x(k, i))) / 2.0;
+        }
+      }
+      return matrix<R> {n, n, std::move(out)};
+    }
   } // namespace detail
+
+  //! \brief The order from which \ref expm of a Hermitian matrix takes its eigendecomposition (below, the Padé path is
+  //!        faster: an order-32 \ref symmetric_eigen costs more than the few products of a small Padé degree).
+  inline constexpr std::size_t hermitian_expm_least {64};
 
   /*!
    * \brief The exponential `e^A` of a square matrix, as `scipy.linalg.expm`: scaling and squaring of a Padé
    *        approximant, as Al-Mohy and Higham's algorithm (2009): the degree 3, 5, 7, 9 or 13 and the squarings `s`
    *        chosen from `‖A^{2k}‖₁^{1/2k}` (exact, `A²`, `A⁴` and `A⁶` formed, `A⁸` and `A¹⁰` where needed) and the
    *        approximant's backward error bound (`ℓ`), then `r(2⁻ˢ A)` squared `s` times; an upper triangular `A`'s
-   *        diagonal and first superdiagonal written exactly at each squaring.
+   *        diagonal and first superdiagonal written exactly at each squaring. A Hermitian `A` (to the bit) of order
+   *        \ref hermitian_expm_least or more: `V e^Λ Vᴴ` from its eigendecomposition.
    * \tparam T `double` or `std::complex<double>` (the degrees' bounds are double precision's).
    * \throws dimension_error   If \p a is not square.
    * \throws non_finite_error  If an entry is infinite or NaN.
@@ -279,6 +350,14 @@ namespace numerical {
     detail::require_finite(a, "expm");
     if (n == 0) {
       return matrix<T> {0, 0, buffer<T> {}};
+    }
+    if (n >= hermitian_expm_least && detail::exactly_hermitian(a)) { // one eigendecomposition: below, the Padé path is faster
+      const auto [values, vectors] {detail::hermitian_system(a)};
+      std::vector<T> powers(n);
+      for (std::size_t k {0}; k < n; ++k) {
+        powers[k] = T {std::exp(values[k])};
+      }
+      return detail::spectral<T>(vectors, powers, true);
     }
     const buffer<T> a0(a.begin(), a.end());
     bool            triangular {true};
@@ -985,6 +1064,21 @@ namespace numerical {
     }
   } // namespace detail
 
+  namespace detail {
+
+    //! \brief The principal square root of the Hermitian \p a, `V √Λ Vᴴ`: Hermitian where no eigenvalue is below 0.
+    template <typename T>
+    [[nodiscard]] matrix<std::complex<double>> hermitian_root(const matrix<T>& a)
+    {
+      const auto [values, vectors] {hermitian_system(a)};
+      std::vector<std::complex<double>> roots(values.size());
+      for (std::size_t k {0}; k < roots.size(); ++k) {
+        roots[k] = complex_sqrt(std::complex<double> {values[k]});
+      }
+      return spectral<std::complex<double>>(vectors, roots, values.size() == 0 || values[0] >= 0.0);
+    }
+  } // namespace detail
+
   /*!
    * \brief The principal square root `X` of a complex square matrix (`X² = A`, its eigenvalues of nonnegative real
    *        part), as `scipy.linalg.sqrtm`: by the Schur method, `A = Z T Zᴴ`, the triangular `R² = T` column by column
@@ -1000,6 +1094,9 @@ namespace numerical {
       throw dimension_error("sqrtm requires a square matrix");
     }
     detail::require_finite(a, "sqrtm");
+    if (detail::exactly_hermitian(a)) {
+      return detail::hermitian_root(a);
+    }
     if (detail::upper_triangular(a)) {
       return detail::complex_square_root(a, nullptr);
     }
@@ -1021,6 +1118,9 @@ namespace numerical {
       throw dimension_error("sqrtm requires a square matrix");
     }
     detail::require_finite(a, "sqrtm");
+    if (detail::exactly_hermitian(a)) {
+      return detail::hermitian_root(a);
+    }
     if (detail::upper_triangular(a)) {
       const matrix<std::complex<double>> form {detail::complex_schur_form(a, a).first};
       return detail::complex_square_root(form, nullptr);
@@ -1046,6 +1146,17 @@ namespace numerical {
     }
     detail::require_finite(a, "sqrtm");
     std::optional<matrix<double>> root;
+    if (detail::exactly_hermitian(a)) {
+      const auto [values, vectors] {detail::hermitian_system(a)};
+      if (values.size() > 0 && values[0] < 0.0) {
+        throw std::domain_error("sqrtm: a real eigenvalue below 0, whose principal square root is complex");
+      }
+      std::vector<double> roots(values.size());
+      for (std::size_t k {0}; k < roots.size(); ++k) {
+        roots[k] = std::sqrt(values[k]);
+      }
+      return detail::spectral<double>(vectors, roots, true);
+    }
     if (detail::upper_triangular(a)) {
       root = detail::real_square_root(a, nullptr);
     }
@@ -1179,6 +1290,20 @@ namespace numerical {
       throw dimension_error("funm requires a square matrix");
     }
     detail::require_finite(a, "funm");
+    if (detail::exactly_hermitian(a)) { // a diagonal Schur form: no recurrence, SciPy's estimate ε (or ∞, not finite)
+      const auto [values, vectors] {detail::hermitian_system(a)};
+      const std::vector<std::complex<double>> eigenvalues(values.begin(), values.end());
+      const std::vector<std::complex<double>> images {f(eigenvalues)};
+      if (images.size() != eigenvalues.size()) {
+        throw dimension_error("funm requires a square Schur form T, Z of its order and one value per eigenvalue");
+      }
+      const matrix<std::complex<double>>      x     {detail::spectral<std::complex<double>>(vectors, images, false)};
+      double                                  error {std::numeric_limits<double>::epsilon()};
+      for (const std::complex<double>& entry : x) {
+        error = detail::is_finite_entry(entry) ? error : std::numeric_limits<double>::infinity();
+      }
+      return {x, error};
+    }
     const auto [t, z] {detail::function_schur_form(a)};
     std::vector<std::complex<double>> diagonal(t.rows());
     for (std::size_t i {0}; i < t.rows(); ++i) {
@@ -1755,6 +1880,18 @@ namespace numerical {
     detail::require_finite(a, "logm");
     if (n == 0) {
       return {matrix<C> {0, 0, buffer<C> {}}, false, false};
+    }
+    if (detail::exactly_hermitian(a)) { // V log(Λ) Vᴴ, unless an eigenvalue is below 10⁻²⁰ (SciPy's singular cases)
+      const auto [values, vectors] {detail::hermitian_system(a)};
+      std::vector<C> logs(n);
+      bool           regular {true};
+      for (std::size_t k {0}; k < n; ++k) {
+        regular = regular && std::abs(values[k]) >= 1e-20;
+        logs[k] = detail::complex_log(C {values[k]});
+      }
+      if (regular) {
+        return {detail::spectral<C>(vectors, logs, values[0] > 0.0), false, false};
+      }
     }
     if (detail::upper_triangular(a)) {
       buffer<C> t(a.begin(), a.end());

@@ -10,6 +10,7 @@
 #include <limits>
 #include <numbers>
 #include <stdexcept>
+#include <type_traits>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -534,4 +535,71 @@ TEST(fractional_matrix_power_inverts_whole_powers)
   EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(matrix<double> {{std::numeric_limits<double>::quiet_NaN()}}, 0.5)),
                 numerical::non_finite_error);
   EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(dense, std::numeric_limits<double>::infinity())), std::invalid_argument);
+}
+
+namespace {
+
+  //! \brief A symmetric (Hermitian, for complex) matrix of order \p n, its eigenvalues from 1 to about 1 + \p n / 4.
+  template <typename T>
+  matrix<T> hermitian_drawn(std::size_t n,
+                            double      shift)
+  {
+    std::vector<T> entries(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j <= i; ++j) {
+        const double re    {std::sin(static_cast<double>((i * 7) + (j * 3)))};
+        T            value {re / std::sqrt(static_cast<double>(n))};
+        if constexpr (std::is_same_v<T, C>) {
+          value += C {0.0, i == j ? 0.0 : std::cos(static_cast<double>(i + (2 * j))) / std::sqrt(static_cast<double>(n))};
+        }
+        entries[(i * n) + j] = i == j ? T {shift + std::abs(re)} : value;
+        entries[(j * n) + i] = numerical::detail::conj_of(entries[(i * n) + j]);
+      }
+    }
+    return matrix<T> {n, n, entries};
+  }
+} // namespace
+
+// A Hermitian matrix (to the bit) by its eigendecomposition, V f(Λ) Vᴴ: expm from order 64 (e^A e^−A = I; below, the
+// Padé path), logm and sqrtm (expm(logm A) = A, (√A)² = A, Hermitian results), real and complex; a negative eigenvalue
+// (a complex logarithm and root, the real sqrtm refused); an eigenvalue 0 left to the general logm (SciPy's singular
+// cases, flagged); funm of x ↦ 1/x at 0 (an infinite estimate); a diagonal with an imaginary part, and an asymmetric
+// entry, not taken as Hermitian; order 0.
+TEST(hermitian_matrix_functions_take_the_eigendecomposition)
+{
+  for (const std::size_t n : {std::size_t {5}, std::size_t {80}}) {
+    const matrix<double> a {hermitian_drawn<double>(n, 3.0)};
+    const matrix<C>      h {hermitian_drawn<C>(n, 3.0)};
+    EXPECT(relative_gap(numerical::detail::as_complex(numerical::expm(a) * numerical::expm(-1.0 * a)),
+                        numerical::detail::as_complex(numerical::expm(matrix<double> {n, n, std::vector<double>(n * n, 0.0)})))
+           < 1e-12);
+    EXPECT(relative_gap(numerical::expm(h) * numerical::expm(C {-1.0} *h), numerical::expm(matrix<C> {n, n, std::vector<C>(n * n, C {})})) < 1e-12);
+    EXPECT(logm_inverts(a, 1e-12));
+    EXPECT(logm_inverts(h, 1e-12));
+    const matrix<double> root {numerical::sqrtm(a)};
+    EXPECT(relative_gap(numerical::detail::as_complex(root * root), numerical::detail::as_complex(a)) < 1e-13);
+    EXPECT((root == numerical::transpose(root)));
+    const matrix<C> complex_root {numerical::sqrtm(h)};
+    EXPECT(relative_gap(complex_root * complex_root, h) < 1e-13);
+    EXPECT(relative_gap(numerical::complex_sqrtm(a) * numerical::complex_sqrtm(a), numerical::detail::as_complex(a)) < 1e-13);
+  }
+  const matrix<double> indefinite {{-1.0, 0.5}, {0.5, 2.0}};
+  const matrix<C>      root       {numerical::complex_sqrtm(indefinite)};
+  EXPECT(relative_gap(root * root, numerical::detail::as_complex(indefinite)) < 1e-14);
+  EXPECT(logm_inverts(indefinite, 1e-13));
+  EXPECT_THROWS(static_cast<void>(numerical::sqrtm(indefinite)), std::domain_error);
+  const matrix<double>         singular {{0.0, 0.0}, {0.0, 1.0}};
+  const numerical::logm_result zero     {numerical::logm(singular)};
+  EXPECT(zero.exactly_singular);
+  const auto reciprocal = [](const std::vector<C>& x) {
+                            std::vector<C> y(x.size());
+                            std::ranges::transform(x, y.begin(), [](const C& z) { return C {1.0} / z; });
+                            return y;
+                          };
+  EXPECT(std::isinf(numerical::funm(singular, reciprocal).error));
+  EXPECT(numerical::funm(matrix<double> {{2.0, 1.0}, {1.0, 3.0}}, reciprocal).error == std::numeric_limits<double>::epsilon());
+  EXPECT(!numerical::detail::exactly_hermitian(matrix<C> {{C {1.0, 1.0}}}));
+  EXPECT(!numerical::detail::exactly_hermitian(matrix<double> {{1.0, 2.0}, {3.0, 1.0}}));
+  EXPECT(numerical::sqrtm(matrix<double> {0, 0, std::vector<double> {}}).rows() == 0);
+  EXPECT(numerical::sqrtm(matrix<C> {0, 0, std::vector<C> {}}).rows() == 0);
 }
