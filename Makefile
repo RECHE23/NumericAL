@@ -126,8 +126,10 @@ COV_DIR  := $(BUILD)/coverage
 
 # COV_RUN prefixes the test run (an emulator: see coverage-x86).
 COV_RUN ?=
-# COV_SHARDS: the processes the test run is shared among (an emulator runs one thread at a time: see coverage-x86).
-COV_SHARDS ?= 1
+# COV_SHARDS: the processes the test run is shared among, each with its own pool (an emulator runs one thread at a
+# time: see coverage-x86): one left most cores idle through the suite's serial tests (M1 Pro, eight cores: one 1371 s,
+# four 923, six 689, eight 831).
+COV_SHARDS ?= 6
 
 coverage-build:
 	$(CMAKE) -S . -B $(COV_DIR) -DNUMERICAL_COVERAGE=ON -DCMAKE_CXX_COMPILER=$(COV_CXX) \
