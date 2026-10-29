@@ -386,8 +386,10 @@ namespace numerical {
           ++visited;
           continue;
         }
+        // a block of order 2 never starts on the last row it is read from, so the partner row exists; at() lets a
+        // compiler that inlines a matrix of order 1 see it as well
         const std::size_t partner {lower ? index + 1 : index - 1};
-        swaps[partner]                     = swaps[static_cast<std::size_t>(-value - 1)];
+        swaps.at(partner)                  = swaps[static_cast<std::size_t>(-value - 1)];
         blocks[lower ? index : partner]    = 2;
         visited                           += 2;
       }
