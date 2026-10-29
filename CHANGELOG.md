@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **The LU of orders up to some 1000 on several threads synchronises its threads once a panel where it did twice**:
+  each block of the trailing update beside the next panel solves its own rows of `U₁₂` before taking its product,
+  where all of them were solved first in a parallel loop of their own (from 512 trailing columns, and on one thread,
+  as before). The same bits. Ten AVX-512 cores, order 531: 2.24 → 2.09 ms, complex 7.01 → 6.89 ms; four, complex 300
+  1.88 → 1.70 ms; six AVX2 cores, complex 200 1.00 → 0.87 ms; M1 Pro, four threads, 300 0.48 → 0.42 ms, complex 531
+  8.56 → 7.59 ms.
 - **`lu_solve` and `cho_solve` read their operands where they lie and copy the right-hand side once**: the factor and
   `b` as Tensors or NumPy arrays (strided ones too), the interchanges of a tuple or list read directly, in one call
   from Python where `cho_solve` took two `solve_triangular`s, each a conversion, a copy and a check of the triangle;

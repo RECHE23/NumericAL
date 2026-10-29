@@ -184,6 +184,11 @@ namespace numerical {
     //!        longer (order 2048 on six x86-64 cores, 9 %); a narrower one leaves threads idle while the panel runs.
     inline constexpr std::size_t lu_lookahead_columns {1024};
 
+    //! \brief The trailing columns at most past which each block of the update beside the panel solves its own rows of
+    //!        U₁₂: a wider update keeps every thread busy past the panel, and its rows solved on all of them first ran
+    //!        faster than on the workers alone (order 1000 on four AVX2 cores, 2 %).
+    inline constexpr std::size_t lu_fused_columns {512};
+
     //! \brief The multiply-adds of an LU's trailing update one of the tile's dependent ones stands for, as threads are
     //!        weighed (\ref gemm_kernel_speedup): the AMX tile's, on arm64; the AVX tiles' quarter of it on x86-64,
     //!        where the update of order 256 waited on one thread (six cores: 690 → 622 µs, 1024: 12.5 → 12.1 ms).
@@ -1263,13 +1268,13 @@ namespace numerical {
       buffer<T>   packing;
       std::size_t end {first_end};
       for (std::size_t k0 {0}; end < n_;) {
-        const std::size_t next       {std::min(end + block_, n_)};
-        solve_panel_rows(k0, end);
+        const std::size_t next             {std::min(end + block_, n_)};
         negated_block_into(minus_l, end, n_, k0, end);
-        const detail::packed_left<T> left {detail::pack_left(n_ - end, block_, end - k0, minus_l.data(), end - k0, packing)};
-        update_columns(left, k0, end, next);
-        const std::size_t right           {n_ - next};
+        const detail::packed_left<T> left  {detail::pack_left(n_ - end, block_, end - k0, minus_l.data(), end - k0, packing)};
+        const std::size_t            right {n_ - next};
         if (right > detail::lu_lookahead_columns) { // one product of the whole trailing block, then the panel
+          solve_panel_rows(k0, end);
+          update_columns(left, k0, end, next);
           update_columns(left, k0, next, n_);
           factorize_panel(panel, end, next);
           k0  = end;
@@ -1284,10 +1289,29 @@ namespace numerical {
         const std::size_t width   {std::max(block_, (right + (2 * helpers) - 1) / (2 * helpers))};
         const std::size_t blocks  {(right + width - 1) / width};
         swap_limit_ = next;
-        detail::parallel_for_beside(blocks, (n_ - end) * width * (end - k0) / detail::lu_update_speedup,
+        // The next panel's columns first, their update shared among the threads; then, where the blocks right of it
+        // run beside the panel, each block solves its rows of U₁₂ and takes its update on one thread, one parallel loop
+        // a panel where the rows of U₁₂ were solved in one of their own (order 531 on ten AVX-512 cores: 2.24 → 2.09 ms):
+        // the columns of a block depend on no other's, and the rows they read from the panel's L are above every swap
+        // the next panel makes. On one thread, all of U₁₂ first (in that order, orders 200 and 300 on one AVX-512 core:
+        // 4 to 5 %).
+        const std::size_t per_block {((n_ - end) * width * (end - k0) / detail::lu_update_speedup) + ((end - k0) * (end - k0) * width / 2)};
+        const bool        fused     {right <= detail::lu_fused_columns && detail::parallel_threads(blocks, per_block) >= 2};
+        if (fused) {
+          solve_columns(k0, end, end, next);
+        }
+        else {
+          solve_panel_rows(k0, end);
+        }
+        update_columns(left, k0, end, next);
+        detail::parallel_for_beside(blocks, per_block,
                                     [&](std::size_t block) {
                                       const std::size_t first {next + (block * width)};
-                                      update_columns(left, k0, first, std::min(first + width, n_));
+                                      const std::size_t last {std::min(first + width, n_)};
+                                      if (fused) {
+                                        solve_columns(k0, end, first, last);
+                                      }
+                                      update_columns(left, k0, first, last);
                                     },
                                     [&] { factorize_panel(panel, end, next); });
         swap_limit_ = n_;
@@ -1498,11 +1522,20 @@ namespace numerical {
       const std::size_t     blocks {((n_ - end) + width - 1) / width};
       detail::parallel_for(blocks, (end - k0) * (end - k0) * width / 2, [&](std::size_t block) {
                              const std::size_t first {end + (block * width)};
-                             const std::size_t last {std::min(first + width, n_)};
-                             for (std::size_t i {k0 + 1}; i < end; ++i) {
-                               detail::subtract_products(lu_.data() + (i * n_) + first, lu_.data() + (i * n_) + k0, lu_.data() + (k0 * n_) + first, n_, i - k0, last - first);
-                             }
+                             solve_columns(k0, end, first, std::min(first + width, n_));
                            });
+    }
+
+    //! \brief The rows `[k0, end)` of U₁₂ on the columns `[first, last)`, against the panel's unit-lower L: each
+    //!        column's elements those of the whole rows' solve, whatever the columns around it.
+    void solve_columns(std::size_t k0,
+                       std::size_t end,
+                       std::size_t first,
+                       std::size_t last)
+    {
+      for (std::size_t i {k0 + 1}; i < end; ++i) {
+        detail::subtract_products(lu_.data() + (i * n_) + first, lu_.data() + (i * n_) + k0, lu_.data() + (k0 * n_) + first, n_, i - k0, last - first);
+      }
     }
 
     //! \brief `A₂₂ −= L₂₁ U₁₂` on the trailing columns `[c0, c1)`, as `A₂₂ += (−L₂₁) U₁₂` through the matrix product

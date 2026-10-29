@@ -2009,6 +2009,37 @@ TEST(lu_looks_ahead_one_panel_with_the_same_factors)
   EXPECT(residual < 1e-8);
 }
 
+// Each block of the update beside the panel solves its own rows of U₁₂ up to lu_fused_columns trailing columns, and
+// all of them are solved first past it and on one thread: the same factors and pivots, to the bit, on one thread as
+// on all, real and complex, an order with panels on either side of the bound and one within it.
+TEST(lu_solving_u12_by_blocks_gives_the_same_bits_on_one_thread_as_on_all)
+{
+  const auto same = []<typename T>(T /*type*/, std::size_t n) {
+                      std::vector<T> entries(n * n);
+                      std::uint64_t  state {n};
+                      for (T& x : entries) {
+                        if constexpr (std::is_same_v<T, double>) {
+                          x = next_uniform(state);
+                        }
+                        else {
+                          const double re {next_uniform(state)};
+                          x = T {re, next_uniform(state)};
+                        }
+                      }
+                      const matrix<T> a                        {n, n, entries};
+                      numerical::set_max_threads(1);
+                      const numerical::lu_decomposition<T> one {a};
+                      numerical::set_max_threads(0);
+                      const numerical::lu_decomposition<T> all {a};
+                      return one.factors() == all.factors() && one.pivots() == all.pivots();
+                    };
+  const std::size_t past {numerical::detail::lu_fused_columns + (2 * numerical::detail::lu_block_for(numerical::detail::lu_fused_columns)) + 5};
+  EXPECT(same(0.0, past));
+  EXPECT(same(0.0, 300));
+  EXPECT(same(std::complex<double> {}, past));
+  EXPECT(same(std::complex<double> {}, 300));
+}
+
 // The divide and conquer of eigh and of the SVD solves blocks of its tree on separate threads, each on one thread
 // below a depth and the joins above it a level at a time; on one thread it is the recursion's order. Every block
 // takes the same inputs either way: the same values and vectors, to the bit. Past eight threads' worth of leaves, so
