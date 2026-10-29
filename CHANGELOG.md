@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **`schur(a, sort=...)`, as `scipy.linalg.schur`'s**: the eigenvalues a selection holds moved to the leading block
+  of `T`, `(T, Z, sdim)` returned, `sdim` their count; `"lhp"`, `"rhp"`, `"iuc"`, `"ouc"` or a callable (the real
+  and imaginary parts of each eigenvalue for a real `T`, the eigenvalue for a complex one), a real pair moved, and
+  counted twice, where either of its two is selected; LAPACK's `gees` and `trsen` (MATLAB's `ordschur`). In C++,
+  `schur_decomposition`'s constructor taking a predicate, `sort`, `reorder` (a choice per eigenvalue) and `values`.
+  `schur` also takes SciPy's `lwork`, `overwrite_a` and `check_finite`, which it does not need.
+
 ### Changed
 - **`eigh(a, b)` and `eigvalsh(a, b)` of order 2048 and more (3072 complex) reduce the pencil to standard form by
   blocks, as LAPACK's `sygst`**: `L⁻¹ A L⁻ᴴ` in some `n³` operations on its lower triangle, where two whole triangular

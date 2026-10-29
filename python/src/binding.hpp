@@ -1588,6 +1588,10 @@ std::tuple<any_tensor, any_tensor> do_schur(numerical::matrix<T>&& a)
 
 std::tuple<any_tensor, any_tensor> schur(const any_tensor& v, bool complex_output); // in eigen.cpp
 
+// schur_sorted(a, complex_output, kind, callback) -> (T, Z, sdim): schur with the eigenvalues SciPy's sort selects (kind
+// 0 to 3 "lhp", "rhp", "iuc", "ouc", 4 the callable) moved to the leading block, as LAPACK's gees.
+std::tuple<any_tensor, any_tensor, std::size_t> schur_sorted(const any_tensor& v, bool complex_output, int kind, PyObject* callback); // in eigen.cpp
+
 // eigh_pencil(a, b, method, upper) -> (values, vectors): A x = λ B x, B positive definite, the vectors B-orthonormal.
 std::tuple<any_tensor, any_tensor> eigh_pencil(const any_tensor& a, const any_tensor& b, const std::string& name, bool upper); // in eigen.cpp
 

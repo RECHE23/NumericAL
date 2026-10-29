@@ -1,5 +1,5 @@
 """NumericAL — a generic, header-only numerical library, exposed to Python (see the module's docstring)."""
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any, Literal, overload
 
 from numerical import fft as fft
@@ -56,7 +56,13 @@ def eigvals(a: _ArrayLike) -> Tensor: ...
 def matrix_rank(
     A: _ArrayLike, tol: float | None = None, hermitian: bool = False, *, rtol: float | None = None
 ) -> int | list[Any]: ...
-def schur(a: _ArrayLike, output: Literal["real", "r", "complex", "c"] = "real") -> tuple[Tensor, Tensor]: ...
+@overload
+def schur(a: _ArrayLike, output: Literal["real", "r", "complex", "c"] = "real", lwork: int | None = None,
+          overwrite_a: bool = False, sort: None = None, check_finite: bool = True) -> tuple[Tensor, Tensor]: ...
+@overload
+def schur(a: _ArrayLike, output: Literal["real", "r", "complex", "c"] = "real", lwork: int | None = None,
+          overwrite_a: bool = False, *, sort: Literal["lhp", "rhp", "iuc", "ouc"] | Callable[..., Any],
+          check_finite: bool = True) -> tuple[Tensor, Tensor, int]: ...
 def cholesky(a: _ArrayLike, /, *, upper: bool = False) -> Tensor: ...
 _Trans = Literal[0, 1, 2, "N", "T", "C"]
 def solve_triangular(a: _ArrayLike, b: _ArrayLike, trans: _Trans = 0, lower: bool = False, unit_diagonal: bool = False,

@@ -21,8 +21,10 @@
 #include <array>
 #include <cmath>
 #include <complex>
+#include <concepts>
 #include <cstddef>
 #include <exception>
+#include <functional>
 #include <limits>
 #include <type_traits>
 #include <utility>
@@ -3287,6 +3289,124 @@ namespace numerical {
     }
   } // namespace detail
 
+  namespace detail {
+
+    //! \brief The eigenvalues of the real quasi-triangular \p t (`n × n`, row-major), in its order: a 2 × 2 block of
+    //!        standard form `[a b; c a]` the pair `a ± i √|b| √|c|`, as LAPACK's `dlanv2` gives them, the first positive.
+    [[nodiscard]] inline std::vector<std::complex<double>> schur_values(const double* t,
+                                                                        std::size_t   n)
+    {
+      std::vector<std::complex<double>> values(n);
+      for (std::size_t k {0}; k < n; ++k) {
+        const double a {t[(k * n) + k]};
+        if (k + 1 < n && t[((k + 1) * n) + k] != 0.0) {
+          const double im {std::sqrt(std::abs(t[(k * n) + k + 1])) * std::sqrt(std::abs(t[((k + 1) * n) + k]))};
+          values[k]     = std::complex<double> {a, im};
+          values[k + 1] = std::complex<double> {a, -im};
+          ++k;
+        }
+        else {
+          values[k] = std::complex<double> {a, 0.0};
+        }
+      }
+      return values;
+    }
+
+    //! \brief The eigenvalues of the complex upper triangular \p t: its diagonal.
+    [[nodiscard]] inline std::vector<std::complex<double>> schur_values(const std::complex<double>* t,
+                                                                        std::size_t                 n)
+    {
+      std::vector<std::complex<double>> values(n);
+      for (std::size_t k {0}; k < n; ++k) {
+        values[k] = t[(k * n) + k];
+      }
+      return values;
+    }
+
+    //! \brief A choice among eigenvalues, as `scipy.linalg.schur`'s `sort` makes it: true where one is to lead.
+    using eigenvalue_selection = std::function<bool (const std::complex<double>&)>;
+
+    //! \brief A complex upper triangular form's diagonal blocks: each of order 1.
+    [[nodiscard]] inline lapack_index block_order(one_based<std::complex<double>> /*t*/,
+                                                  lapack_index /*n*/,
+                                                  lapack_index /*j*/)
+    {
+      return 1;
+    }
+
+    //! \brief The count of a complex Schur form's sort, as `zgees` takes `trsen`'s: the eigenvalues it \p moved.
+    [[nodiscard]] inline std::size_t selected_leading(const std::vector<std::complex<double>>& /*after*/,
+                                                      const eigenvalue_selection& /*select*/,
+                                                      std::size_t moved,
+                                                      std::type_identity<std::complex<double>> /*form*/)
+    {
+      return moved;
+    }
+
+    /*!
+     * \brief The count of a real Schur form's sort, as `dgees` checks the order the exchanges left, from the
+     *        eigenvalues as they now stand (\p after): a pair selected where either of its two is, counted twice.
+     * \throws convergence_error If a selected eigenvalue follows one not selected (`dgees`'s `info` `n + 2`).
+     */
+    [[nodiscard]] inline std::size_t selected_leading(const std::vector<std::complex<double>>& after,
+                                                      const eigenvalue_selection&              select,
+                                                      std::size_t /*moved*/,
+                                                      std::type_identity<double> /*form*/)
+    {
+      std::size_t count {0};
+      bool        last  {true};
+      for (std::size_t k {0}; k < after.size(); ++k) {
+        bool       current {select(after[k])};
+        const bool pair    {after[k].imag() != 0.0};
+        if (pair) {
+          current = current || select(after[k + 1]);
+        }
+        if (current && !last) {
+          throw convergence_error("Schur form: leading eigenvalues do not satisfy the selection");
+        }
+        count += current ? (pair ? 2 : 1) : 0;
+        last   = current;
+        k     += pair ? 1 : 0;
+      }
+      return count;
+    }
+
+    /*!
+     * \brief Moves the eigenvalues of the Schur form \p t whose entries of \p chosen are set to its leading block,
+     *        the rows of \p qt (`Zᵀ`) turning with it, in their order, as LAPACK's `trsen` (`dtrexc` or `ztrexc`): each
+     *        chosen block in turn to the first place past those already moved; a real pair moves where either of its
+     *        two is chosen. \return the eigenvalues moved.
+     * \throws convergence_error If an exchange was refused (the blocks too close to separate), as `trsen`'s `info`.
+     */
+    template <typename T>
+    std::size_t move_leading(buffer<T>&               t,
+                             buffer<T>&               qt,
+                             std::size_t              n,
+                             const std::vector<bool>& chosen)
+    {
+      const one_based<T> at    {t.data(), static_cast<lapack_index>(n)};
+      const one_based<T> rows  {qt.data(), static_cast<lapack_index>(n)};
+      const auto         order {static_cast<lapack_index>(n)};
+      lapack_index       moved {0};
+      for (lapack_index k {1}; k <= order; ++k) {
+        bool               take {chosen[count_of(k - 1)]};
+        const lapack_index size {block_order(at, order, k)};
+        if (size == 2) {
+          take = take || chosen[count_of(k)];
+        }
+        if (take) {
+          lapack_index place {moved + 1};
+          if (k != place && !reorder(at, rows, order, k, place)) {
+            throw convergence_error("Schur form: eigenvalues could not be separated for reordering");
+          }
+          moved += size;
+        }
+        k += size - 1;
+      }
+      return count_of(moved);
+    }
+  } // namespace detail
+
   /*!
    * \brief The Schur decomposition `A = Z T Zᴴ` of a square matrix, as `scipy.linalg.schur` (LAPACK's `dgees`/`zgees`):
    *        `Z` orthogonal (unitary), `T` upper quasi-triangular for a real `A` (a complex pair a 2 × 2 block in standard
@@ -3340,6 +3460,79 @@ namespace numerical {
       z_ = transpose(matrix<T> {n, n, std::move(zt)});
     }
 
+    /*!
+     * \brief Decomposes \p input, then moves the eigenvalues for which \p select holds to the leading block of `T`
+     *        (\ref sort), as `scipy.linalg.schur(a, sort=...)` (LAPACK's `dgees`/`zgees` with a selection).
+     * \throws dimension_error   If \p input is not square.
+     * \throws non_finite_error  If an entry is infinite or NaN.
+     * \throws convergence_error If the QR iterations did not converge, or as \ref sort.
+     */
+    template <typename Select>
+    requires std::predicate<Select&, const std::complex<double>&>
+    schur_decomposition(const matrix<T>& input,
+                        Select           select)
+      : schur_decomposition(sorted(schur_decomposition {matrix<T> {input}}, detail::eigenvalue_selection {std::move(select)}))
+    {}
+
+    //! \brief The eigenvalues, in `T`'s order: its diagonal, a real 2 × 2 block a conjugate pair, the positive first.
+    [[nodiscard]] std::vector<std::complex<double>> values() const
+    {
+      return detail::schur_values(std::to_address(t_.begin()), t_.rows());
+    }
+
+    /*!
+     * \brief Moves the eigenvalues whose entries of \p chosen (one per eigenvalue, in \ref values's order) are set to
+     *        the leading block of `T`, in their order, `Z` turning with them, as LAPACK's `trsen` (MATLAB's
+     *        `ordschur`): a real conjugate pair moves where either of its two is chosen. `A = Z T Zᴴ` still holds.
+     * \return The eigenvalues moved.
+     * \throws dimension_error   If \p chosen does not hold one entry per eigenvalue.
+     * \throws convergence_error If two blocks were too close to exchange.
+     */
+    std::size_t reorder(const std::vector<bool>& chosen)
+    {
+      const std::size_t n {t_.rows()};
+      if (chosen.size() != n) {
+        throw dimension_error("Schur reordering requires one choice per eigenvalue");
+      }
+      buffer<T>         t     {std::move(t_).elements()};
+      buffer<T>         zt    {transpose(z_).elements()};
+      std::size_t       moved {0};
+      try {
+        moved = detail::move_leading(t, zt, n, chosen);
+      }
+      catch (...) {
+        t_ = matrix<T> {n, n, std::move(t)};
+        z_ = transpose(matrix<T> {n, n, std::move(zt)});
+        throw;
+      }
+      t_ = matrix<T> {n, n, std::move(t)};
+      z_ = transpose(matrix<T> {n, n, std::move(zt)});
+      return moved;
+    }
+
+    /*!
+     * \brief The eigenvalues for which \p select holds moved to the leading block (\ref reorder), as `dgees`/`zgees`
+     *        sort them: \return their count, `sdim`, a real pair counted twice where either of its two is selected.
+     * \throws convergence_error If two blocks were too close to exchange, or (real) the rounding of the exchanges left
+     *                           a selected eigenvalue past one not selected, as `dgees`'s `info` `n + 1` and `n + 2`.
+     */
+    std::size_t sort(const detail::eigenvalue_selection& select)
+    {
+      const std::vector<std::complex<double>> before {values()};
+      std::vector<bool>                       chosen(before.size());
+      for (std::size_t k {0}; k < before.size(); ++k) {
+        chosen[k] = select(before[k]);
+      }
+      const std::size_t moved {reorder(chosen)};
+      return detail::selected_leading(values(), select, moved, std::type_identity<T> {});
+    }
+
+    //! \brief The eigenvalues the selecting constructor moved to the leading block (its `sdim`); 0 otherwise.
+    [[nodiscard]] std::size_t leading() const noexcept
+    {
+      return leading_;
+    }
+
     //! \brief `T`, upper quasi-triangular (real) or triangular (complex).
     [[nodiscard]] const matrix<T>& t() const& noexcept
     {
@@ -3366,8 +3559,32 @@ namespace numerical {
 
   private:
 
-    matrix<T> t_; //!< The Schur form.
-    matrix<T> z_; //!< The Schur vectors.
+    //! \brief A decomposition and the count its sort moved first.
+    struct sorted_form
+    {
+      matrix<T>   t;       //!< The Schur form.
+      matrix<T>   z;       //!< The Schur vectors.
+      std::size_t leading; //!< The eigenvalues moved first.
+    };
+
+    //! \brief \p s sorted by \p select (\ref sort), taken apart for the constructor that holds the count.
+    [[nodiscard]] static sorted_form sorted(schur_decomposition                 s,
+                                            const detail::eigenvalue_selection& select)
+    {
+      const std::size_t leading {s.sort(select)};
+      return {std::move(s.t_), std::move(s.z_), leading};
+    }
+
+    //! \brief The decomposition \p form holds.
+    explicit schur_decomposition(sorted_form form)
+      : t_(std::move(form.t)),
+        z_(std::move(form.z)),
+        leading_(form.leading)
+    {}
+
+    matrix<T>   t_;           //!< The Schur form.
+    matrix<T>   z_;           //!< The Schur vectors.
+    std::size_t leading_ {0}; //!< The eigenvalues the selecting constructor moved first.
   };
 
   /*!

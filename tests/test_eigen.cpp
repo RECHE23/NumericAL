@@ -1166,3 +1166,180 @@ TEST(schur_decomposition_reconstructs_with_an_orthonormal_basis)
   EXPECT_THROWS((numerical::schur_decomposition<double> {matrix<double> {{std::numeric_limits<double>::quiet_NaN()}}}),
                 numerical::non_finite_error);
 }
+
+namespace {
+
+  //! \brief Whether \p s still decomposes \p a (`A = Z T Zᴴ`, `Z` unitary, to rounding), its first \p sdim eigenvalues
+  //!        the ones \p chosen holds and the rest not, a real `T` quasi-triangular, a complex one triangular.
+  template <typename T, typename Chosen>
+  bool sorted_schur_holds(const matrix<T>&                         a,
+                          const numerical::schur_decomposition<T>& s,
+                          std::size_t                              sdim,
+                          Chosen                                   chosen)
+  {
+    const std::size_t n             {a.rows()};
+    const matrix<T>&  t             {s.t()};
+    const matrix<T>&  z             {s.z()};
+    double            residual      {0.0};
+    double            orthogonality {0.0};
+    double            size          {0.0};
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        T sum  {};
+        T gram {};
+        for (std::size_t k {0}; k < n; ++k) {
+          for (std::size_t l {0}; l < n; ++l) {
+            sum += z(i, k) * t(k, l) * numerical::detail::conj_of(z(j, l));
+          }
+          gram += numerical::detail::conj_of(z(k, i)) * z(k, j);
+        }
+        residual      = std::max(residual, std::abs(sum - a(i, j)));
+        orthogonality = std::max(orthogonality, std::abs(gram - (i == j ? T {1.0} : T {})));
+        size          = std::max(size, std::abs(a(i, j)));
+      }
+    }
+    bool                 ordered {true};
+    const std::vector<C> values  {s.values()};
+    for (std::size_t k {0}; k < n; ++k) {
+      ordered = ordered && chosen(values[k]) == (k < sdim);
+      for (std::size_t j {0}; j + 1 < k; ++j) {
+        ordered = ordered && t(k, j) == T {};
+      }
+    }
+    const double                          bound {64.0 * static_cast<double>(n) * std::numeric_limits<double>::epsilon()};
+    return ordered && residual <= bound * std::max(size, 1.0) && orthogonality <= bound;
+  }
+} // namespace
+
+namespace {
+
+  /*!
+   * \brief A matrix of order \p n whose eigenvalues lie clear of the selections' boundaries (real parts from 0.2 and
+   *        moduli from 0.2 off 0 and 1, as rounding moves none across): `H T₀ H` for the Householder reflection `H` of
+   *        a fixed vector and `T₀` upper (quasi-)triangular, its diagonal cycling through −2.5, −0.5 ± 0.5i, 0.4,
+   *        0.2 ± 2i, −0.3 (a real `T` the pairs as 2 × 2 blocks `[a ω; −ω a]`, 3 where a block would not fit), each
+   *        cycle's moved off the last's away from the boundaries: distinct, so well conditioned.
+   */
+  template <typename T>
+  matrix<T> clear_of_boundaries(std::size_t n)
+  {
+    std::vector<T> t0(n * n, T {});
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {i + 1}; j < n; ++j) {
+        t0[(i * n) + j] = T {0.1 * std::sin(static_cast<double>(i + (2 * j)))};
+      }
+    }
+    // per slot: the real part and its step a cycle, the imaginary part (a pair where nonzero) and its step
+    constexpr std::array<std::array<double, 4>, 6> slots {{{-2.5, -0.05, 0.0, 0.0},
+      {-0.5, -0.01, 0.5, -0.01},
+      {3.0, 0.05, 0.0, 0.0},
+      {0.4, 0.02, 0.0, 0.0},
+      {0.2, 0.05, 2.0, 0.05},
+      {-0.3, -0.02, 0.0, 0.0}}};
+    for (std::size_t i {0}; i < n; ++i) {
+      const std::size_t              cycle {i / 6}; // each cycle's values off the last's, away from the boundaries
+      const double                   c     {static_cast<double>(cycle)};
+      const std::array<double, 4>&   slot  {slots[i % 6]};
+      const bool                     pair  {slot[2] != 0.0};
+      const double                   re    {slot[0] + (slot[1] * c)};
+      const double                   im    {slot[2] + (slot[3] * c)};
+      if constexpr (std::is_same_v<T, double>) {
+        if (pair && i + 1 < n) {
+          t0[(i * n) + i]           = re;
+          t0[(i * n) + i + 1]       = im;
+          t0[((i + 1) * n) + i]     = -im;
+          t0[((i + 1) * n) + i + 1] = re;
+          ++i;
+          continue;
+        }
+        t0[(i * n) + i] = pair ? slots[2][0] + (slots[2][1] * c) : re;
+      }
+      else {
+        t0[(i * n) + i] = pair ? T {re, im} : T {re};
+      }
+    }
+    std::vector<T> v(n);
+    double         square {0.0};
+    for (std::size_t i {0}; i < n; ++i) {
+      v[i] = T {0.5 + std::sin(1.0 + static_cast<double>(i))};
+      if constexpr (!std::is_same_v<T, double>) {
+        v[i] += T {0.0, std::cos(static_cast<double>(i))};
+      }
+      square += std::norm(v[i]);
+    }
+    std::vector<T> h(n * n); // I − 2 v vᴴ / vᴴ v
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        h[(i * n) + j] = (i == j ? T {1.0} : T {}) - (T {2.0 / square} *v[i] * numerical::detail::conj_of(v[j]));
+      }
+    }
+    std::vector<T> a(n * n, T {});
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        for (std::size_t k {0}; k < n; ++k) {
+          for (std::size_t l {0}; l < n; ++l) {
+            a[(i * n) + j] += h[(i * n) + k] * t0[(k * n) + l] * h[(l * n) + j];
+          }
+        }
+      }
+    }
+    return matrix<T> {n, n, a};
+  }
+} // namespace
+
+// The eigenvalues a selection holds moved to the leading block of T, as scipy.linalg.schur(a, sort=...) (LAPACK's
+// gees): its four selections by half plane and unit circle, real and complex, on matrices whose eigenvalues lie clear of
+// the boundaries; a real pair moved, and counted twice, where either of its two is chosen; values() in T's order.
+TEST(a_sorted_schur_form_leads_with_the_selected_eigenvalues)
+{
+  for (const std::size_t n : {std::size_t {1}, std::size_t {6}, std::size_t {20}}) {
+    const matrix<double> real {clear_of_boundaries<double>(n)};
+    const matrix<C>      complex {clear_of_boundaries<C>(n)};
+    const auto           check = [&]<typename T>(const matrix<T>& a, auto chosen) {
+                                   const numerical::schur_decomposition<T> s {a, chosen};
+                                   return sorted_schur_holds(a, s, s.leading(), chosen);
+                                 };
+    for (const auto& chosen : std::vector<bool (*)(const C&)> {[](const C& z) { return z.real() < 0.0; }, [](const C& z) { return z.real() >= 0.0; },
+                                                               [](const C& z) { return std::abs(z) <= 1.0; }, [](const C& z) { return std::abs(z) > 1.0; }}) {
+      EXPECT(check(real, chosen));
+      EXPECT(check(complex, chosen));
+    }
+  }
+  // ±2i over 3: the pair chosen by its second eigenvalue alone still moves whole, and counts twice.
+  const matrix<double>                   rotation {{3.0, 1.0, 0.5}, {0.0, 0.0, -2.0}, {0.0, 2.0, 0.0}};
+  const auto                             second   {[](const C& z) { return z.imag() < 0.0; }};
+  numerical::schur_decomposition<double> s        {rotation};
+  EXPECT_EQ(s.sort(second), std::size_t {2});
+  EXPECT(sorted_schur_holds(rotation, s, 2, [](const C& z) { return z.imag() != 0.0; }));
+  EXPECT(s.values()[0].imag() > 0.0 && s.values()[1] == std::conj(s.values()[0]));
+  EXPECT_EQ(s.reorder(std::vector<bool> {false, false, true}), std::size_t {1}); // 3 back to the front
+  EXPECT(s.values()[0] == C {3.0});
+  EXPECT_THROWS(s.reorder(std::vector<bool> {true}), numerical::dimension_error);
+  EXPECT_EQ((numerical::schur_decomposition<double> {matrix<double> {0, 0, {}}, second}.leading()), std::size_t {0});
+}
+
+// Two blocks too close to exchange (the pair of 1 ± 6e-6 i above that of 1.0000043 ± 1.4e-5 i) refuse the move, as
+// trsen's info: the decomposition stays one. A selection the exchanges' rounding no longer meets past an eigenvalue not
+// selected (here a selection that answers otherwise the second time) is refused as dgees's info n + 2.
+TEST(a_sorted_schur_form_refuses_what_it_cannot_order)
+{
+  const std::vector<double> close {1, 2.9258991580319096, -0.99582361335424341, 0.6660776232485035, -3.4177527863695918e-11, 1, -0.63530008058277909,
+                                   0.22425311739723819, 0, 0, 1.0000043005630168, 0.68529066378232517, 0, 0, -2.0478021681892508e-10, 1.0000043005630168};
+  numerical::buffer<double> t     {close.begin(), close.end()};
+  numerical::buffer<double> qt(16, 0.0);
+  for (std::size_t i {0}; i < 4; ++i) {
+    qt[(i * 4) + i] = 1.0;
+  }
+  EXPECT_THROWS(numerical::detail::move_leading(t, qt, 4, std::vector<bool> {false, false, true, true}), numerical::convergence_error);
+  const matrix<double>                   a {4, 4, close};
+  numerical::schur_decomposition<double> s {a};
+  const std::vector<C>                   values {s.values()};
+  const C                                last {values[3]};
+  const auto                             lower {[&](const C& z) { return z.imag() != 0.0 && std::abs(z.real() - last.real()) < 1e-12; }};
+  EXPECT_THROWS(static_cast<void>(s.sort(lower)), numerical::convergence_error);
+  EXPECT(sorted_schur_holds(a, s, 0, [](const C& /*z*/) { return false; }));
+  std::size_t                            calls  {0};
+  const auto                             fickle {[&calls](const C& /*z*/) { return calls++ != 2; }}; // the second pass: false, then true
+  numerical::schur_decomposition<double> d      {matrix<double> {{1.0, 0.0}, {0.0, 2.0}}};
+  EXPECT_THROWS(static_cast<void>(d.sort(fickle)), numerical::convergence_error);
+}

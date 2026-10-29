@@ -83,6 +83,74 @@ std::tuple<any_tensor, any_tensor> schur(const any_tensor& v, bool complex_outpu
     return do_schur(matrix_from(std::get<real_tensor>(v)));
 }
 
+namespace {
+
+    // scipy.linalg.schur's sort: kind 0 to 3 "lhp" (Re z < 0), "rhp" (Re z ≥ 0), "iuc" (|z| ≤ 1), "ouc" (|z| > 1), 4
+    // the Python callable `callback`, called with (Re z, Im z) for a real Schur form and with z for a complex one, as
+    // SciPy calls it; its truth taken, its exception passed on.
+    struct schur_selection
+    {
+        int       kind;
+        PyObject* callback;
+        bool      real_form;
+
+        bool operator()(const std::complex<double>& z) const
+        {
+            switch (kind) {
+            case 0: return z.real() < 0.0;
+            case 1: return z.real() >= 0.0;
+            case 2: return std::abs(z) <= 1.0;
+            case 3: return std::abs(z) > 1.0;
+            default: break;
+            }
+            PyObject* const answer {real_form ? PyObject_CallFunction(callback, "dd", z.real(), z.imag())
+                                              : PyObject_CallFunction(callback, "D", &z)}; // new ref
+            if (answer == nullptr) {
+                throw sb::error_already_set {};
+            }
+            const int truth {PyObject_IsTrue(answer)};
+            Py_DECREF(answer);
+            if (truth < 0) {
+                throw sb::error_already_set {};
+            }
+            return truth != 0;
+        }
+    };
+
+    template <typename T>
+    std::tuple<any_tensor, any_tensor, std::size_t> sorted_schur(numerical::matrix<T>&& a, schur_selection select)
+    {
+        std::optional<numerical::schur_decomposition<T>> s;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(a.rows() * a.rows())};
+            s.emplace(std::move(a));
+        }
+        const std::size_t    sdim {s->sort(select)}; // the GIL held: a callable may be called
+        numerical::matrix<T> z {std::move(*s).z()};
+        return {any_tensor {numerical::tensor<T> {std::move(*s).t()}}, any_tensor {numerical::tensor<T> {std::move(z)}}, sdim};
+    }
+} // namespace
+
+std::tuple<any_tensor, any_tensor, std::size_t> schur_sorted(const any_tensor& v, bool complex_output, int kind, PyObject* callback)
+{
+    if (shape_of(v).size() != 2 || shape_of(v)[0] != shape_of(v)[1]) {
+        throw std::runtime_error("schur: expected a square matrix");
+    }
+    if (is_single(v)) {
+        auto [t, z, sdim] {schur_sorted(widened(v), complex_output, kind, callback)};
+        return {narrowed(t), narrowed(z), sdim};
+    }
+    const bool real_form {!is_complex(v) && !complex_output};
+    const schur_selection select {kind, callback, real_form};
+    if (is_complex(v)) {
+        return sorted_schur(matrix_from(std::get<cplx_tensor>(v)), select);
+    }
+    if (complex_output) {
+        return sorted_schur(matrix_from(converted<std::complex<double>>(std::get<real_tensor>(v))), select);
+    }
+    return sorted_schur(matrix_from(std::get<real_tensor>(v)), select);
+}
+
 // eigh_pencil(a, b, method, upper) -> (values, vectors): A x = λ B x, B positive definite, the vectors B-orthonormal.
 std::tuple<any_tensor, any_tensor> eigh_pencil(const any_tensor& a, const any_tensor& b, const std::string& name, bool upper)
 {

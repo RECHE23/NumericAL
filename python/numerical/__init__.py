@@ -559,6 +559,7 @@ _svd_hermitian = _linalg(_numerical._svd_hermitian)
 _matmul_nd = _linalg(_numerical._matmul_nd)
 _eig = _linalg(_numerical._eig)
 _schur = _linalg(_numerical.schur, arrays=1)
+_schur_sorted = _linalg(_numerical.schur_sorted, arrays=1)
 _eigvals = _linalg(_numerical._eigvals)
 _QR_MODES = ("reduced", "complete", "r")
 _EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
@@ -630,14 +631,39 @@ def eigvals(a):
     return _eigvals(a)
 
 
-def schur(a, output="real"):
+_SCHUR_SORTS = {"lhp": 0, "rhp": 1, "iuc": 2, "ouc": 3}
+
+
+def schur(a, output="real", lwork=None, overwrite_a=False, sort=None, check_finite=True):
     """The Schur decomposition ``a = Z @ T @ Z.conj().T`` of a square matrix, as ``scipy.linalg.schur``: `Z`
     orthogonal (unitary), `T` upper quasi-triangular for a real matrix (a complex pair a 2 × 2 block, its diagonal
     equal), upper triangular with ``output="complex"`` (``"c"``) or for a complex matrix. Returns ``(T, Z)``. Not
-    balanced, as LAPACK's ``dgees``; SciPy's `sort` is not taken."""
+    balanced, as LAPACK's ``dgees``.
+
+    With `sort`, the eigenvalues it selects are moved to the leading block of `T` and ``(T, Z, sdim)`` returned,
+    `sdim` their count: ``"lhp"`` (real part below 0), ``"rhp"`` (at or above 0), ``"iuc"`` (modulus at most 1),
+    ``"ouc"`` (above 1), or a callable, given the real and imaginary parts of each eigenvalue for a real `T` and the
+    eigenvalue for a complex one; a complex pair moves, and counts twice, where either of its two is selected.
+    `lwork`, `overwrite_a` and `check_finite` are accepted and not needed.
+
+    Raises:
+        LinAlgError: if `a` is not square, holds an infinite or NaN entry, two blocks cannot be exchanged, or the
+            exchanges' rounding leaves a selected eigenvalue after one not selected (real).
+        ValueError: for another `output` or `sort`.
+    """
+    del lwork, overwrite_a, check_finite
     if output not in ("real", "r", "complex", "c"):
         raise ValueError(f"schur: output must be 'real' or 'complex', not {output!r}")
-    return _schur(a, output in ("complex", "c"))
+    complex_output = output in ("complex", "c")
+    if sort is None:
+        return _schur(a, complex_output)
+    if callable(sort):
+        kind, callback = 4, sort
+    elif isinstance(sort, str) and sort in _SCHUR_SORTS:
+        kind, callback = _SCHUR_SORTS[sort], None
+    else:
+        raise ValueError("'sort' parameter must either be 'None', or a callable, or one of ('lhp','rhp','iuc','ouc')")
+    return _schur_sorted(a, complex_output, kind, callback)
 
 
 def cholesky(a, /, *, upper=False):
