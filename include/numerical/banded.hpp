@@ -332,10 +332,9 @@ namespace numerical {
     if (n == 0) {
       return matrix<T> {0, k, buffer<T> {}};
     }
-    // R[n − 1 + i − j] = T(i, j), from 0: R[n − 1 − m] = r[m], R[n − 1 + m] = c[m]
-    const auto  at = [&](std::size_t index) { return index >= n - 1 ? c[index - (n - 1)] : r[(n - 1) - index]; };
+    // T(i, j) = c[i − j] on and below the diagonal, r[j − i] above: the recursion's entries c[m − j] and r[m − j]
     const auto  singular = [] { return singular_matrix_error("solve_toeplitz: singular principal minor"); };
-    const T     diagonal {at(n - 1)};
+    const T     diagonal {c[0]};
     if (diagonal == T {}) {
       throw singular();
     }
@@ -348,8 +347,8 @@ namespace numerical {
     }
     buffer<T> g(n, T {});
     buffer<T> h(n, T {});
-    g[0] = at(n - 2) / diagonal;
-    h[0] = at(n) / diagonal;
+    g[0] = r[1] / diagonal;
+    h[0] = c[1] / diagonal;
     buffer<T> numerator(k);
     for (std::size_t m {1}; m < n; ++m) { // the system of order m + 1 from that of order m
       T denominator {-diagonal};
@@ -357,7 +356,7 @@ namespace numerical {
         numerator[col] = -b(m, col);
       }
       for (std::size_t j {0}; j < m; ++j) {
-        const T entry {at(n - 1 + m - j)};
+        const T entry {c[m - j]};
         for (std::size_t col {0}; col < k; ++col) {
           numerator[col] += entry * x[(j * k) + col];
         }
@@ -377,13 +376,13 @@ namespace numerical {
       if (m + 1 == n) {
         break;
       }
-      T g_numerator   {-at(n - 2 - m)};
-      T h_numerator   {-at(n + m)};
+      T g_numerator   {-r[m + 1]};
+      T h_numerator   {-c[m + 1]};
       T g_denominator {-diagonal};
       for (std::size_t j {0}; j < m; ++j) {
-        g_numerator   += at(n - 1 + j - m) * g[j];
-        h_numerator   += at(n - 1 + m - j) * h[j];
-        g_denominator += at(n - 1 + j - m) * h[m - 1 - j];
+        g_numerator   += r[m - j] * g[j];
+        h_numerator   += c[m - j] * h[j];
+        g_denominator += r[m - j] * h[m - 1 - j];
       }
       if (g_denominator == T {}) {
         throw singular();
