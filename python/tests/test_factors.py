@@ -194,6 +194,64 @@ class Factorisations(unittest.TestCase):
                 self.assertLess(np.max(np.abs(a @ x - b)), tolerance * 20)
                 self.assertTrue(np.array_equal(x, np.asarray(f.solve(b))))
 
+    def test_factor_solves_read_any_operand_with_the_same_bits(self):
+        # Tensors and NumPy arrays (strided ones too), tuples, lists and integer arrays of interchanges, all one answer:
+        # lu_solve's whichever way its operands come, cho_solve's that of its two triangular solves.
+        for dtype in ("float64", "complex128"):
+            a = _drawn(40, 40, dtype, 21)
+            whole = _drawn(40, 6, dtype, 22)
+            lu, piv = numerical.lu_factor(a)
+            lus = (lu, np.asarray(lu), np.asfortranarray(np.asarray(lu)))
+            pivs = (piv, list(piv), np.asarray(piv, dtype=np.int32))
+            bs = (whole, whole[:, ::2], whole[:, 0], numerical.asarray(whole))
+            for trans in (0, 1, 2):
+                for b in bs:
+                    first = np.asarray(numerical.lu_solve((lu, piv), b, trans))
+                    for each_lu in lus:
+                        for each_piv in pivs:
+                            got = np.asarray(numerical.lu_solve((each_lu, each_piv), b, trans))
+                            self.assertTrue(np.array_equal(got, first), (dtype, trans))
+            spd = a @ a.conj().T + 40 * np.eye(40, dtype=dtype)
+            for lower in (False, True):
+                c, _ = numerical.cho_factor(spd, lower=lower)
+                for b in bs:
+                    if lower:
+                        two = numerical.solve_triangular(c, numerical.solve_triangular(c, b, lower=True), trans=2, lower=True)
+                    else:
+                        two = numerical.solve_triangular(c, numerical.solve_triangular(c, b, trans=2), lower=False)
+                    for each_c in (c, np.asarray(c), np.asfortranarray(np.asarray(c))):
+                        got = np.asarray(numerical.cho_solve((each_c, lower), b))
+                        self.assertTrue(np.array_equal(got, np.asarray(two)), (dtype, lower))
+
+    def test_cho_solve_errors_and_the_triangle_read(self):
+        # The other triangle may hold anything; the one read and b are refused infinite or NaN; a zero on the diagonal
+        # is singular; shapes are checked.
+        lower = np.array([[2.0, np.nan], [1.0, 3.0]])
+        x = np.asarray(numerical.cho_solve((lower, True), [2.0, 1.0]))
+        np.testing.assert_allclose(np.array([[2.0, 0.0], [1.0, 3.0]]) @ np.array([[2.0, 1.0], [0.0, 3.0]]) @ x, [2.0, 1.0])
+        for c, flag, b in ((np.array([[2.0, 0.0], [np.inf, 3.0]]), True, [1.0, 1.0]), (np.array([[2.0, np.nan], [0.0, 3.0]]), False, [1.0, 1.0]),
+                           (np.eye(2), True, [1.0, np.nan])):
+            with self.assertRaises(numerical.LinAlgError) as caught:
+                numerical.cho_solve((c, flag), b)
+            self.assertIn("infinite or NaN", str(caught.exception))
+        with self.assertRaises(numerical.LinAlgError) as caught:
+            numerical.cho_solve((np.array([[1.0, 0.0], [1.0, 0.0]]), True), [1.0, 1.0])
+        self.assertIn("singular", str(caught.exception))
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.cho_solve((np.eye(2), True), [1.0, 2.0, 3.0])
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.cho_solve((np.ones((2, 3)), True), [1.0, 2.0])
+        mixed = numerical.cho_solve((np.eye(2), True), numerical.asarray([1.0, 2.0], "complex128"))
+        self.assertEqual(mixed.dtype, "complex128")
+
+    @unittest.skipIf(sl is None, "SciPy is not installed")
+    def test_cho_solve_overflow_between_its_solves_is_the_result(self):
+        # L y = b overflows (1e308 + 1e308) though the factor and b are finite: the infinity carried to x, as SciPy.
+        c = np.array([[1.0, 0.0], [-1.0, 1.0]])
+        b = np.array([1e308, 1e308])
+        x = np.asarray(numerical.cho_solve((c, True), b))
+        np.testing.assert_array_equal(x, sl.cho_solve((c, True), b))
+
     @unittest.skipIf(sl is None, "SciPy is not installed")
     def test_cholesky_against_scipy(self):
         m = _drawn(15, 15, "float64", 13)

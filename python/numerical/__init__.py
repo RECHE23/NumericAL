@@ -731,13 +731,20 @@ def lu_solve(lu_and_piv, b, trans=0, overwrite_b=False, check_finite=True):
     """
     del overwrite_b, check_finite
     lu, piv = lu_and_piv
+    operation = _trans(trans)
+    try:  # Tensors and NumPy arrays read where they lie, b copied once
+        result = _numerical._borrowed_factor_solve(lu, piv, b, False, operation)
+    except error as caught:
+        raise LinAlgError(*caught.args) from None
+    if result is not NotImplemented:
+        return result
     lu = lu if isinstance(lu, Tensor) else asarray(lu)
     b = b if isinstance(b, Tensor) else asarray(b)
     if lu.dtype != b.dtype:
         dtype = _promoted((lu.dtype, b.dtype))
         lu, b = asarray(lu, dtype), asarray(b, dtype)
     try:
-        return _numerical.lu_solve(lu, piv, b, _trans(trans))
+        return _numerical.lu_solve(lu, piv, b, operation)
     except error as caught:
         raise LinAlgError(*caught.args) from None
 
@@ -781,9 +788,20 @@ def cho_factor(a, lower=False, overwrite_a=False, check_finite=True):
 
 def cho_solve(c_and_lower, b, overwrite_b=False, check_finite=True):
     """The solution of ``a @ x = b`` from :func:`cho_factor`'s ``(c, lower)``, as ``scipy.linalg.cho_solve``: two
-    triangular solves (:func:`solve_triangular`), ``2 n² k`` operations; only `c`'s triangle is read."""
+    triangular solves (:func:`solve_triangular`'s bits), ``2 n² k`` operations; only `c`'s triangle is read, checked
+    once with `b`, and an overflow between the two solves is the result's.
+
+    Raises:
+        LinAlgError: for a zero on `c`'s diagonal, an infinite or NaN entry, or shapes that do not fit.
+    """
     del overwrite_b, check_finite
     c, lower = c_and_lower
+    try:  # Tensors and NumPy arrays read where they lie, b copied once
+        result = _numerical._borrowed_factor_solve(c, None, b, bool(lower), 0)
+    except error as caught:
+        raise LinAlgError(*caught.args) from None
+    if result is not NotImplemented:
+        return result
     if lower:
         return solve_triangular(c, solve_triangular(c, b, lower=True), trans=2, lower=True)
     return solve_triangular(c, solve_triangular(c, b, trans=2, lower=False), lower=False)

@@ -3346,15 +3346,15 @@ namespace numerical {
     }
 
     /*!
-     * \brief `dct`, `idct`, `dst` or `idst` (\p family, \p inverse) of \p a along \p axis, as `scipy.fft`'s:
+     * \brief `dct`, `idct`, `dst` or `idst` (\p family, \p inverse) of \p source along \p axis, as `scipy.fft`'s:
      *        the type computed (an inverse's of types 2 and 3 the other), on each line of \p n points (the axis cut or
      *        padded), the sines by the cosines: type 1 the real transform of the odd extension (`2(n + 1)` points), type 2
      *        the cosines of the points of alternate signs, in reverse order; types 3 and 4 those of the points reversed,
      *        of alternate signs. Scaled as \p norm says, `orthogonalize` (by default where \p norm is `ortho`) the first or
-     *        last points and values weighted by √2 as SciPy's.
+     *        last points and values weighted by √2 as SciPy's. The elements of \p source are read where they lie.
      */
     template <std::floating_point R>
-    [[nodiscard]] tensor<R> trig_transform(const tensor<R>&           a,
+    [[nodiscard]] tensor<R> trig_transform(const fft_source<R>&       source,
                                            trig_family                family,
                                            int                        type,
                                            std::optional<std::size_t> n,
@@ -3368,7 +3368,6 @@ namespace numerical {
       if (type < 1 || type > 4) {
         throw std::invalid_argument(name + ": type must be 1, 2, 3 or 4, not " + std::to_string(type));
       }
-      const fft_source<R> source {source_of(a)};
       const std::size_t   index  {fft_axis_index(axis, source.shape.size(), name.c_str())};
       const std::size_t   points {n.value_or(source.shape[index])};
       if (points == 0 || (family == trig_family::cosine && type == 1 && points < 2)) {
@@ -3450,6 +3449,20 @@ namespace numerical {
                                       std::transform(y, y + points, y, [scale](R value) { return value * scale; });
                                     }
                                   });
+    }
+
+    //! \brief \ref trig_transform of the tensor \p a.
+    template <std::floating_point R>
+    [[nodiscard]] tensor<R> trig_transform(const tensor<R>&           a,
+                                           trig_family                family,
+                                           int                        type,
+                                           std::optional<std::size_t> n,
+                                           std::ptrdiff_t             axis,
+                                           fft_norm                   norm,
+                                           std::optional<bool>        orthogonalize,
+                                           bool                       inverse)
+    {
+      return trig_transform(source_of(a), family, type, n, axis, norm, orthogonalize, inverse);
     }
   } // namespace detail
 

@@ -294,22 +294,32 @@ def ifftshift(x, axes=None):
 
 
 def _trig(x, sine, type, n, axis, norm, orthogonalize, inverse):
-    """One axis of SciPy's dct, idct, dst or idst; integers and booleans as ``float64``."""
-    tensor = _operand(x)
+    """One axis of SciPy's dct, idct, dst or idst; integers and booleans as ``float64``. A NumPy array of real
+    elements is read where it lies (``_numerical._borrowed_trig``), anything else converted first."""
+    lent = _lent(x, "f")
+    borrowed = lent is not None
+    tensor = lent if borrowed else _operand(x)
     axis = _axis(axis, tensor.ndim)
     points = tensor.shape[axis] if n is None else _operator.index(n)
     if points < 1:
         raise ValueError(f"invalid number of data points ({points}) specified")
     weighted = -1 if orthogonalize is None else int(bool(orthogonalize))
     try:
+        if borrowed:
+            result = _numerical._borrowed_trig(tensor, sine, _operator.index(type), points, axis, _norm(norm), weighted, inverse)
+            if result is not NotImplemented:
+                return result
+            tensor = _operand(x)
         return _numerical._trig(tensor, sine, _operator.index(type), points, axis, _norm(norm), weighted, inverse)
     except _numerical.error as caught:
         raise ValueError(*caught.args) from None
 
 
 def _trig_n(x, sine, type, s, axes, norm, orthogonalize, inverse):
-    """SciPy's n-dimensional dctn, idctn, dstn or idstn: the one-axis transform along each axis."""
-    tensor = _operand(x)
+    """SciPy's n-dimensional dctn, idctn, dstn or idstn: the one-axis transform along each axis, the first reading a
+    NumPy array where it lies (:func:`_trig`)."""
+    lent = _lent(x, "f")
+    tensor = lent if lent is not None else _operand(x)
     if isinstance(axes, int):
         axes = [axes]
     if isinstance(s, int):
@@ -317,7 +327,7 @@ def _trig_n(x, sine, type, s, axes, norm, orthogonalize, inverse):
     s, axes = _shape_and_axes(tensor, s, axes)
     for points, axis in _builtins.zip(s, axes):
         tensor = _trig(tensor, sine, type, points, axis, norm, orthogonalize, inverse)
-    return tensor
+    return _operand(tensor)
 
 
 def dct(x, type=2, n=None, axis=-1, norm=None, overwrite_x=False, workers=None, orthogonalize=None):

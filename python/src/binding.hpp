@@ -1492,14 +1492,15 @@ void interchanged(numerical::buffer<T>& x, std::size_t k, const std::vector<std:
     }
 }
 
+// lu_solve on the factor `factors` (n × n, row-major, n the interchanges') and the right-hand sides `b` (of `shape`,
+// its rows n), both read where they lie: b copied once, into the answer the two solves overwrite.
 template <typename T>
-any_tensor do_lu_solve(const numerical::tensor<T>& lu, const std::vector<std::size_t>& swaps, const numerical::tensor<T>& b, numerical::triangular_op op)
+any_tensor lu_solved(const T* factors, const std::vector<std::size_t>& swaps, const T* b, const std::vector<std::size_t>& shape, numerical::triangular_op op)
 {
-    const sb::scoped_gil_release unlocked {releases_gil(lu.data().size() + b.data().size())};
-    const T* const               factors {lu.data().data()}; // read where it lies
     const std::size_t            n {swaps.size()};
-    const std::size_t            k {b.shape().size() == 1 ? 1 : b.shape()[1]};
-    numerical::buffer<T>         x(b.data().begin(), b.data().end());
+    const std::size_t            k {shape.size() == 1 ? 1 : shape[1]};
+    numerical::buffer<T>         x(b, b + (n * k));
+    const sb::scoped_gil_release unlocked {releases_gil((n * n) + (n * k))};
     // L's strict lower triangle and U's upper one are the whole factor: checked once, in one vectorised pass, with b;
     // an overflow between the two solves is the result's, as in a solve.
     if (!numerical::detail::elements_finite(factors, n * n)) {
@@ -1518,7 +1519,26 @@ any_tensor do_lu_solve(const numerical::tensor<T>& lu, const std::vector<std::si
         numerical::detail::solve_finite_triangular_in_place(factors, n, true, op, true, x.data(), k);
         interchanged(x, k, swaps, true);
     }
-    return any_tensor {numerical::tensor<T> {b.shape(), std::move(x)}};
+    return any_tensor {numerical::tensor<T> {shape, std::move(x)}};
+}
+
+// cho_solve on the factor `factor` (n × n, row-major: L in its lower triangle where `lower`, else U in its upper one,
+// the other triangle never read) and the right-hand sides `b` (of `shape`, its rows n), both read where they lie: b
+// copied once, the triangle and b checked once, as the first of the two solves checks them; an overflow between the
+// two solves is the result's, as in lu_solved.
+template <typename T>
+any_tensor cho_solved(const T* factor, bool lower, const T* b, const std::vector<std::size_t>& shape)
+{
+    const std::size_t            n {shape[0]};
+    const std::size_t            k {shape.size() == 1 ? 1 : shape[1]};
+    numerical::buffer<T>         x(b, b + (n * k));
+    const sb::scoped_gil_release unlocked {releases_gil((n * n) + (n * k))};
+    constexpr auto               none {numerical::triangular_op::none};
+    constexpr auto               adjoint {numerical::triangular_op::adjoint};
+    numerical::detail::require_finite_triangle(factor, n, lower, x.data(), x.size());
+    numerical::detail::solve_finite_triangular_in_place(factor, n, lower, lower ? none : adjoint, false, x.data(), k); // L y = b, Uᴴ y = b
+    numerical::detail::solve_finite_triangular_in_place(factor, n, lower, lower ? adjoint : none, false, x.data(), k); // Lᴴ x = y, U x = y
+    return any_tensor {numerical::tensor<T> {shape, std::move(x)}};
 }
 
 // lu_solve(lu, piv, b, trans) -> Tensor, as scipy.linalg.lu_solve((lu, piv), b, trans): `piv` a sequence of LAPACK's
@@ -2423,6 +2443,11 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args); // in prod
 // read where they lie.
 PyObject* module_borrowed_fft(PyObject* /*self*/, PyObject* args); // in fft.cpp
 
+// _borrowed_trig(a, sine, type, n, axis, norm, orthogonalize, inverse) -> Tensor or NotImplemented: _trig of a Tensor or
+// NumPy array of real elements read where it lies (borrow_operand), its bits; NotImplemented for an operand not so
+// read, or of complex elements, which the caller converts.
+PyObject* module_borrowed_trig(PyObject* /*self*/, PyObject* args); // in fft.cpp
+
 // _borrowed_einsum_pair(spec, a, b) -> Tensor or NotImplemented: einsum of two Tensors or C-ordered NumPy arrays of one
 // dtype read where they lie, for an explicit spec whose operands carry each
 // label once, none of them its own alone (numerical::detail::einsum_pair, the path einsum takes for such a pair, so its
@@ -2714,6 +2739,11 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args); // in lina
 // the same errors either way. A NumPy a was copied into a Tensor first: order 4000 with 64 columns, M1 Pro, 14.7 ms
 // where the solve takes 9.9.
 PyObject* module_borrowed_solve_triangular(PyObject* /*self*/, PyObject* args); // in linalg.cpp
+
+// _borrowed_factor_solve(factor, piv, b, lower, trans) -> Tensor or NotImplemented: lu_solve (piv a sequence of
+// interchanges) or cho_solve (piv None) of a float64 or complex128 factor and right-hand sides, each a Tensor or a NumPy
+// array read where it lies, b copied once; NotImplemented for anything else, the caller then converting.
+PyObject* module_borrowed_factor_solve(PyObject* /*self*/, PyObject* args); // in linalg.cpp
 
 // A Python float, int (bool included) or complex as a rank-0 tensor of the requested dtype, into `*result`;
 // false for anything else, with no error set.

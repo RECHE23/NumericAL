@@ -88,6 +88,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_borrowed_einsum_pair(spec, a, b) -> Tensor or NotImplemented\nTwo operands of one dtype, each label once and none its own, read where they lie.");
     m.raw("_borrowed_fft", module_borrowed_fft, METH_VARARGS,
           "_borrowed_fft(kind, a, n, axis, norm, inverse) -> Tensor or NotImplemented\nfft (kind 0), rfft (1) or irfft (2) of an operand read where it lies.");
+    m.raw("_borrowed_trig", module_borrowed_trig, METH_VARARGS,
+          "_borrowed_trig(a, sine, type, n, axis, norm, orthogonalize, inverse) -> Tensor or NotImplemented\ndct, idct, dst or "
+          "idst of real elements read where they lie.");
     m.raw("_borrowed_einsum", module_borrowed_einsum, METH_VARARGS,
           "_borrowed_einsum(spec, x) -> Tensor or NotImplemented\nOne operand summed over a run of its axes, read where it lies.");
     m.raw("_borrowed_unary", module_borrowed_unary, METH_VARARGS,
@@ -115,6 +118,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_borrowed_solve_triangular", module_borrowed_solve_triangular, METH_VARARGS,
           "_borrowed_solve_triangular(a, b, lower, trans, unit) -> Tensor or NotImplemented\nsolve_triangular of a "
           "NumPy array read where it lies.");
+    m.raw("_borrowed_factor_solve", module_borrowed_factor_solve, METH_VARARGS,
+          "_borrowed_factor_solve(factor, piv, b, lower, trans) -> Tensor or NotImplemented\nlu_solve (piv a sequence) "
+          "or cho_solve (piv None) of operands read where they lie.");
     m.raw("_borrowed_product", module_borrowed_product, METH_VARARGS,
           "_borrowed_product(a, b) -> Tensor, number or NotImplemented\nThe product of two operands read where they lie.");
     m.raw("_set_matmul_fallback", module_set_matmul_fallback, METH_O,

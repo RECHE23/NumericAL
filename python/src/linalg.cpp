@@ -253,6 +253,34 @@ std::tuple<any_tensor, std::vector<std::size_t>> lu_factor(const any_tensor& a)
     return do_lu_factor<double>(std::get<real_tensor>(a));
 }
 
+// LAPACK's interchanges in `piv` (a tuple or list of ints read directly, any other sequence item by item), n of them,
+// each in [0, n), into `swaps`; false, no error set, for anything else.
+bool interchanges_of(PyObject* piv, std::size_t n, std::vector<std::size_t>& swaps)
+{
+    const bool       tuple {PyTuple_Check(piv) != 0};
+    const bool       list {PyList_Check(piv) != 0};
+    const Py_ssize_t length {tuple ? PyTuple_Size(piv) : list ? PyList_Size(piv) : PySequence_Size(piv)};
+    if (length < 0 || static_cast<std::size_t>(length) != n) {
+        PyErr_Clear();
+        return false;
+    }
+    swaps.resize(n);
+    for (std::size_t i {0}; i < n; ++i) {
+        const auto       at {static_cast<Py_ssize_t>(i)};
+        PyObject* const  item {tuple  ? Py_XNewRef(PyTuple_GetItem(piv, at))
+                               : list ? Py_XNewRef(PyList_GetItem(piv, at))
+                                      : PySequence_GetItem(piv, at)}; // new ref
+        const Py_ssize_t value {item == nullptr ? -1 : PyLong_Check(item) != 0 ? PyLong_AsSsize_t(item) : PyNumber_AsSsize_t(item, nullptr)};
+        Py_XDECREF(item);
+        if (PyErr_Occurred() != nullptr || value < 0 || static_cast<std::size_t>(value) >= n) {
+            PyErr_Clear();
+            return false;
+        }
+        swaps[i] = static_cast<std::size_t>(value);
+    }
+    return true;
+}
+
 // lu_solve(lu, piv, b, trans) -> Tensor, as scipy.linalg.lu_solve((lu, piv), b, trans): `piv` a sequence of LAPACK's
 // interchanges (lu_factor's), each in [0, n); a zero on U's diagonal raises, where SciPy's divides by it.
 any_tensor lu_solve(const any_tensor& lu, PyObject* piv, const any_tensor& b, int trans)
@@ -268,29 +296,17 @@ any_tensor lu_solve(const any_tensor& lu, PyObject* piv, const any_tensor& b, in
     if (lu.index() != b.index()) {
         throw std::runtime_error("lu_solve operands must share one dtype");
     }
-    const Py_ssize_t length {PySequence_Size(piv)};
-    if (length < 0 || static_cast<std::size_t>(length) != n) {
-        PyErr_Clear();
-        throw std::runtime_error("lu_solve: piv must be a sequence of the factor's row count");
-    }
-    std::vector<std::size_t> swaps(n);
-    for (std::size_t i {0}; i < n; ++i) {
-        PyObject* const  item {PySequence_GetItem(piv, static_cast<Py_ssize_t>(i))}; // new ref
-        const Py_ssize_t value {item != nullptr ? PyNumber_AsSsize_t(item, nullptr) : -1};
-        Py_XDECREF(item);
-        if (PyErr_Occurred() != nullptr || value < 0 || static_cast<std::size_t>(value) >= n) {
-            PyErr_Clear();
-            throw std::runtime_error("lu_solve: piv holds an interchange outside [0, n)");
-        }
-        swaps[i] = static_cast<std::size_t>(value);
+    std::vector<std::size_t> swaps;
+    if (!interchanges_of(piv, n, swaps)) {
+        throw std::runtime_error("lu_solve: piv must be a sequence of the factor's row count, each interchange in [0, n)");
     }
     if (is_single(lu)) {
         return narrowed(lu_solve(widened(lu), piv, widened(b), trans));
     }
     if (is_complex(lu)) {
-        return do_lu_solve<std::complex<double>>(std::get<cplx_tensor>(lu), swaps, std::get<cplx_tensor>(b), op);
+        return lu_solved(std::get<cplx_tensor>(lu).data().data(), swaps, std::get<cplx_tensor>(b).data().data(), shape_of(b), op);
     }
-    return do_lu_solve<double>(std::get<real_tensor>(lu), swaps, std::get<real_tensor>(b), op);
+    return lu_solved(std::get<real_tensor>(lu).data().data(), swaps, std::get<real_tensor>(b).data().data(), shape_of(b), op);
 }
 
 // qr(a, mode) -> (Q, R), mode "reduced" or "complete", through the tuple-caster.
@@ -477,6 +493,47 @@ PyObject* module_borrowed_solve_triangular(PyObject* /*self*/, PyObject* args)
             numerical::detail::solve_triangular_in_place(static_cast<const T*>(matrix.data), n, lower != 0, op, unit != 0, x.data(), k);
         }
         return wrap(any_tensor {numerical::tensor<T> {right.shape, std::move(x)}});
+    };
+    try {
+        return matrix.dtype == 0 ? solve(std::type_identity<double> {}) : solve(std::type_identity<std::complex<double>> {});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _borrowed_factor_solve(factor, piv, b, lower, trans) -> Tensor or NotImplemented: lu_solve (piv a sequence of
+// interchanges) or cho_solve (piv None, `lower` the factor's triangle) of a float64 or complex128 factor and right-hand
+// sides, each a Tensor or a NumPy array read where it lies (borrow_operand), b copied once into the answer. NotImplemented
+// for anything else (single precision, mixed dtypes, a shape or piv the converting path rejects), the caller then
+// converting: the same answer and the same errors either way.
+PyObject* module_borrowed_factor_solve(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* a     = nullptr;
+    PyObject* piv   = nullptr;
+    PyObject* b     = nullptr;
+    int       lower = 0;
+    int       trans = 0;
+    if (PyArg_ParseTuple(args, "OOOpi", &a, &piv, &b, &lower, &trans) == 0) {
+        return nullptr;
+    }
+    borrowed_operand matrix;
+    if (!borrow_operand(a, matrix) || matrix.dtype > 1 || matrix.shape.size() != 2 || matrix.shape[0] != matrix.shape[1]) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    const std::size_t n {matrix.shape[0]};
+    borrowed_operand  right;
+    if (!borrow_operand(b, right) || right.dtype != matrix.dtype || right.shape.empty() || right.shape.size() > 2 || right.shape[0] != n) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    std::vector<std::size_t> swaps;
+    if (piv != Py_None && !interchanges_of(piv, n, swaps)) {
+        Py_RETURN_NOTIMPLEMENTED;
+    }
+    const auto solve = [&]<typename T>(std::type_identity<T>) -> PyObject* {
+        const T* const factor {static_cast<const T*>(matrix.data)};
+        const T* const rhs {static_cast<const T*>(right.data)};
+        return wrap(piv == Py_None ? cho_solved(factor, lower != 0, rhs, right.shape) : lu_solved(factor, swaps, rhs, right.shape, triangular_op_of(trans)));
     };
     try {
         return matrix.dtype == 0 ? solve(std::type_identity<double> {}) : solve(std::type_identity<std::complex<double>> {});

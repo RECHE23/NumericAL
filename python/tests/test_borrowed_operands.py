@@ -468,5 +468,31 @@ class BorrowedOperands(unittest.TestCase):
                 with self.subTest(dtype=np.dtype(dtype).name, function=f.__name__, kw=kw):
                     self.assert_same(f(a, **kw), f(tensor, **kw))
 
+    def test_a_trigonometric_transform_reads_the_array_where_it_lies_and_gives_the_tensors_bits(self):
+        import numerical.fft as nfft
+
+        functions = (nfft.dct, nfft.idct, nfft.dst, nfft.idst)
+        for dtype in (np.float64, np.float32, np.complex128, np.int64):
+            a = self.operand((6, 20), dtype) if np.dtype(dtype).kind != "i" else np.arange(120).reshape(6, 20)
+            for view in (a, a[:, ::3], np.asfortranarray(a)):
+                tensor = numerical.asarray(np.ascontiguousarray(view) if np.dtype(dtype).kind != "i" else view.astype(np.float64))
+                for f in functions:
+                    for type, axis, n, norm, orthogonalize in ((2, -1, None, None, None), (1, 0, 5, "ortho", None),
+                                                               (3, 1, 31, "forward", True), (4, 1, 7, None, False)):
+                        with self.subTest(dtype=np.dtype(dtype).name, strides=view.strides, function=f.__name__, type=type,
+                                          axis=axis, n=n, norm=norm):
+                            self.assert_same(f(view, type=type, n=n, axis=axis, norm=norm, orthogonalize=orthogonalize),
+                                             f(tensor, type=type, n=n, axis=axis, norm=norm, orthogonalize=orthogonalize))
+            for f, kw in ((nfft.dctn, {}), (nfft.idstn, {"axes": [0], "s": [9]}), (nfft.dctn, {"axes": []})):
+                with self.subTest(dtype=np.dtype(dtype).name, function=f.__name__, kw=kw):
+                    tensor = numerical.asarray(a if np.dtype(dtype).kind != "i" else a.astype(np.float64))
+                    self.assert_same(f(a, **kw), f(tensor, **kw))
+        with self.assertRaises(ValueError):
+            nfft.dct(np.ones(4), type=5)
+        with self.assertRaises(ValueError):
+            nfft.dct(np.ones(1), type=1)
+        with self.assertRaises(IndexError):
+            nfft.dst(np.ones(4), axis=1)
+
 if __name__ == "__main__":
     unittest.main()

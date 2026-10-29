@@ -9,6 +9,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`lu_solve` and `cho_solve` read their operands where they lie and copy the right-hand side once**: the factor and
+  `b` as Tensors or NumPy arrays (strided ones too), the interchanges of a tuple or list read directly, in one call
+  from Python where `cho_solve` took two `solve_triangular`s, each a conversion, a copy and a check of the triangle;
+  `cho_solve` now checks the triangle and `b` once, and an overflow between its two solves is the result's, as
+  `lu_solve`'s and SciPy's. The same bits. M1 Pro, NumPy right-hand sides: `cho_solve` of order 8 2.7 → 0.6 µs (SciPy
+  5.7), 200 26 → 19 µs (SciPy 22), 1000 316 → 260 µs (SciPy 391); `lu_solve` of order 8 1.1 → 0.7 µs (SciPy 5.3).
+- **`dct`, `idct`, `dst` and `idst` read a real NumPy array where it lies** (and `dctn` and the others, along their
+  first axis), as the Fourier transforms do, where it was copied into a Tensor first. The same bits. M1 Pro, DCT-II
+  of 1000 lines of 64 points 72 → 49 µs, of 1024 points 0.70 → 0.61 ms (SciPy 2.6).
 - **On x86-64, `dct`, `idct`, `dst` and `idst` run each line where `std::fma` is an instruction**: a function built
   for AVX2 and FMA (`with_fma_instruction`), taken where the processor has them and the path's products are fused,
   where the wheels' code, built for the base x86-64, called the C library's `fma` for each of the products around the

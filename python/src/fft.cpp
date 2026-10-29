@@ -174,4 +174,55 @@ PyObject* module_borrowed_fft(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _borrowed_trig(a, sine, type, n, axis, norm, orthogonalize, inverse) -> Tensor or NotImplemented: _trig of a Tensor or
+// NumPy array of real elements read where it lies (borrow_operand), its bits. NotImplemented for an operand not so read,
+// or of complex elements, which the caller converts.
+PyObject* module_borrowed_trig(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  obj           = nullptr;
+    int        sine          = 0;
+    int        type          = 0;
+    Py_ssize_t n             = 0;
+    Py_ssize_t axis          = 0;
+    int        norm          = 0;
+    int        orthogonalize = 0;
+    int        inverse       = 0;
+    if (PyArg_ParseTuple(args, "Opinniip", &obj, &sine, &type, &n, &axis, &norm, &orthogonalize, &inverse) == 0) {
+        return nullptr;
+    }
+    borrowed_operand x;
+    if (!borrow_operand(obj, x) || x.dtype == 1 || x.dtype == 3) {
+        return Py_NewRef(Py_NotImplemented);
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            std::size_t count {1};
+            for (const std::size_t extent : x.shape) {
+                count *= extent;
+            }
+            using numerical::detail::trig_family;
+            const sb::scoped_gil_release unlocked {releases_gil(count + static_cast<std::size_t>(n))};
+            const auto                   scaling {static_cast<numerical::fft_norm>(norm)};
+            const std::optional<bool>    weighted {orthogonalize < 0 ? std::nullopt : std::optional<bool> {orthogonalize != 0}};
+            const trig_family            family {sine != 0 ? trig_family::sine : trig_family::cosine};
+            const auto transform = [&]<typename R>(std::type_identity<R>) {
+                const numerical::detail::fft_source<R> source {static_cast<const R*>(x.data), x.shape};
+                result.emplace(numerical::detail::trig_transform(source, family, type, static_cast<std::size_t>(n), static_cast<std::ptrdiff_t>(axis), scaling,
+                                                                 weighted, inverse != 0));
+            };
+            if (x.dtype == 0) {
+                transform(std::type_identity<double> {});
+            }
+            else {
+                transform(std::type_identity<float> {});
+            }
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 } // namespace numerical_binding
