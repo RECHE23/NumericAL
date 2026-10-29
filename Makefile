@@ -38,7 +38,7 @@ FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
-        python python-test python-stubtest fuzz-linalg fuzz-edges fuzz-fft bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
+        python python-test python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
 .DEFAULT_GOAL := help
 
@@ -237,6 +237,12 @@ fuzz-edges: python
 fuzz-fft: python
 	$(PYRUN) fuzz/fft.py --cases $(or $(CASES),300) $(if $(SEED),--seed $(SEED),)
 
+# scipy.linalg's functions against SciPy (fuzz/scipy_linalg.py), then the extreme scales, each call in a process of its
+# own; SciPy required.
+fuzz-scipy: python
+	$(PYRUN) fuzz/scipy_linalg.py --cases $(or $(CASES),600) $(if $(SEED),--seed $(SEED),)
+	$(PYRUN) fuzz/scipy_linalg.py --huge
+
 # Version-consistency gate: pyproject.toml is the single source of truth — `make
 # release` bumps __init__.py from it, CMakeLists.txt derives it. Asserts the three
 # agree and that CMake still DERIVES (no hardcoded literal that could drift; the
@@ -380,7 +386,7 @@ SCIFORGE_MAKE    ?= ../sciforge/make
 QUALITY_COMMIT   := format-check coverage-gate
 QUALITY_PUSH     := version-check check-pins test test-gcc test-gcc-neon ci-arm-gcc sanitize tsan misra doc-no-coverage python-test bench-diff-selftest \
                     stubtest-gate lint-gate
-QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges fuzz-fft
+QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges fuzz-fft fuzz-scipy
 -include $(SCIFORGE_MAKE)/quality.mk
 
 # The calendar release every SciForge project cuts (the sibling checkout's make/release.mk): bench-diff against the last
