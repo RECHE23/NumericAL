@@ -28,6 +28,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   square roots), where the general band LU and band Cholesky made one call per entry: SciPy 1.18's answers byte for
   byte on 600 random systems, real and complex (other last bits than before). Order 10 000 on the M1 Pro:
   `solve_banded` 233 → 164 µs, `solveh_banded` 318 → 154 µs.
+- **`solve_continuous_are` without `e` and with a well-conditioned `r` (condition below `1/√ε`) takes the Schur form of
+  the Hamiltonian `[[Ã, −G], [−Q̃, −Ãᴴ]]`** (Laub, 1979; `G = B R⁻¹ Bᴴ`, the cross term `s` folded into `Ã` and `Q̃`),
+  in real arithmetic for real operands, where the extended pencil of order `2m + n` went through the complex QZ; then
+  Newton's step as before. Six AVX2 cores, GCC, `m = 256`, `n = 64`: 6.4 s → 0.39 s; `m = 64` 99 → 17 ms; residuals
+  alike (graded `A` too). With `e`, or an ill-conditioned `r`, the pencil as SciPy. Other last bits.
 - **The generalized Schur form (`generalized_schur`, `solve_continuous_are`, `solve_discrete_are`) forms `Qᴴ A` and
   the Riccati pencil's deflation `Q₂ᴴ [H J]` by the matrix product**, where scalar loops went down columns: order 204
   12.0 → 0.5 ms for `Qᴴ A`. M1 Pro, `solve_continuous_are` with `m = 100`, `n = 4`: 151 → 123 ms; `m = 32` 6.5 → 5.6

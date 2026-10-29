@@ -651,7 +651,8 @@ namespace numerical {
     }
 
     //! \brief The 1-norm of \p a: its largest column sum of moduli.
-    [[nodiscard]] inline double norm_one(const matrix<std::complex<double>>& a)
+    template <typename T>
+    [[nodiscard]] double norm_one(const matrix<T>& a)
     {
       double largest {0.0};
       for (std::size_t j {0}; j < a.cols(); ++j) {
@@ -674,6 +675,40 @@ namespace numerical {
       const matrix<std::complex<double>>* e;
       const matrix<std::complex<double>>* s;
     };
+
+    /*!
+     * \brief `X = U₂₁ U₁₁⁻¹` from the `m` leading Schur vectors' halves \p top (`U₁₁`) and \p bottom (`U₂₁`) of a Riccati
+     *        equation's Hamiltonian (\p continuous) or symplectic matrix or pencil, as SciPy's checks have it.
+     * \throws singular_matrix_error If `U₁₁` is numerically singular (the condition of its LU factor `U` past `1/ε`, as
+     *                               SciPy's): no finite stabilising solution.
+     * \throws convergence_error     If `U₁₁ᴴ U₂₁` is not Hermitian: the eigenvalues too close to the imaginary axis (the
+     *                               unit circle).
+     */
+    template <typename T>
+    [[nodiscard]] matrix<T> stabilising_solution(const matrix<T>& top,
+                                                 const matrix<T>& bottom,
+                                                 bool             continuous)
+    {
+      const std::size_t m              {top.rows()};
+      const matrix<T>   factors        {lu_decomposition<T> {top}.factors()};
+      buffer<T>         upper(m * m, T {});
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t k {i}; k < m; ++k) {
+          upper[(i * m) + k] = factors(i, k);
+        }
+      }
+      const vector<double> sigma {singular_values(matrix<T> {m, m, std::move(upper)})};
+      if (!(sigma[m - 1] > std::numeric_limits<double>::epsilon() * sigma[0])) { // 1/cond ≤ ε, as SciPy (a zero U too)
+        throw singular_matrix_error("Failed to find a finite solution.");
+      }
+      const matrix<T> product   {adjoint_of(top) * bottom};
+      const double    tolerance {std::max(std::ldexp(1.0, -43), 0.1 * norm_one(product))};
+      if (!(norm_one(product - adjoint_of(product)) <= tolerance)) {
+        throw convergence_error(continuous ? "The associated Hamiltonian pencil has eigenvalues too close to the imaginary axis"
+                                           : "The associated symplectic pencil has eigenvalues too close to the unit circle");
+      }
+      return adjoint_of(solve(adjoint_of(top), adjoint_of(bottom)));
+    }
 
     /*!
      * \brief The extended pencil `(H, J)` of order `2m + n` of SciPy's `solve_continuous_are` (\p continuous) or
@@ -834,28 +869,8 @@ namespace numerical {
           u10[(i * m) + k] = u(m + i, k);
         }
       }
-      const matrix<C> top            {m, m, std::move(u00)};
-      const matrix<C> bottom         {m, m, std::move(u10)};
-      const matrix<C> factors        {lu_decomposition<C> {top}.factors()};
-      buffer<C>       upper(m * m, C {});
-      for (std::size_t i {0}; i < m; ++i) {
-        for (std::size_t k {i}; k < m; ++k) {
-          upper[(i * m) + k] = factors(i, k);
-        }
-      }
-      const vector<double> sigma {singular_values(matrix<C> {m, m, std::move(upper)})};
-      if (!(sigma[m - 1] > std::numeric_limits<double>::epsilon() * sigma[0])) { // 1/cond ≤ ε, as SciPy (a zero U too)
-        throw singular_matrix_error("Failed to find a finite solution.");
-      }
-      const matrix<C> x         {adjoint_of(solve(adjoint_of(top), adjoint_of(bottom)))};
-      const matrix<C> product   {adjoint_of(top) * bottom};
-      const double    tolerance {std::max(std::ldexp(1.0, -43), 0.1 * norm_one(product))};
-      if (!(norm_one(product - adjoint_of(product)) <= tolerance)) {
-        throw convergence_error(continuous
-                                  ? "The associated Hamiltonian pencil has eigenvalues too close to the imaginary axis"
-                                  : "The associated symplectic pencil has eigenvalues too close to the unit circle");
-      }
-      buffer<C> out(m * m);
+      const matrix<C> x {stabilising_solution(matrix<C> {m, m, std::move(u00)}, matrix<C> {m, m, std::move(u10)}, continuous)};
+      buffer<C>       out(m * m);
       for (std::size_t i {0}; i < m; ++i) {
         for (std::size_t k {0}; k < m; ++k) {
           out[(i * m) + k] = (x(i, k) + std::conj(x(k, i))) * (scale[i] * scale[k] / 2.0);
@@ -961,6 +976,69 @@ namespace numerical {
     }
 
     /*!
+     * \brief The stabilising solution of the continuous equation without `E` from the Schur form of the Hamiltonian
+     *        `H = [[Ã, −G], [−Q̃, −Ãᴴ]]` (Laub, 1979), `G = B R⁻¹ Bᴴ`, `Ã = A − B R⁻¹ Sᴴ` and `Q̃ = Q − S R⁻¹ Sᴴ` in the
+     *        arithmetic of \p T (a real `H`'s real Schur form): its eigenvalues in the left half-plane moved first,
+     *        `X = U₂₁ U₁₁⁻¹` from their `m` Schur vectors, made Hermitian. A Schur form of order `2m` by multishift QR
+     *        where the pencil's QZ takes order `2m + n`.
+     * \throws singular_matrix_error If `U₁₁` is numerically singular (\ref stabilising_solution).
+     * \throws convergence_error     If the left half-plane holds other than `m` eigenvalues, or as
+     *                               \ref stabilising_solution says (eigenvalues on or too close to the imaginary axis).
+     */
+    template <typename T>
+    [[nodiscard]] matrix<T> hamiltonian_riccati(const matrix<T>& a,
+                                                const matrix<T>& b,
+                                                const matrix<T>& q,
+                                                const matrix<T>& r,
+                                                const matrix<T>* s)
+    {
+      const std::size_t m      {a.rows()};
+      const matrix<T>   g      {b * solve(r, adjoint_of(b))};
+      matrix<T>         shift  {a};
+      matrix<T>         weight {q};
+      if (s != nullptr) {
+        const matrix<T> cross {solve(r, adjoint_of(*s))}; // R⁻¹ Sᴴ
+        shift  = a - (b * cross);
+        weight = q - (*s * cross);
+      }
+      const std::size_t order {2 * m};
+      buffer<T>         h(order * order);
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < m; ++j) {
+          h[(i * order) + j]           = shift(i, j);
+          h[(i * order) + m + j]       = -(g(i, j) + conj_of(g(j, i))) / 2.0;
+          h[((m + i) * order) + j]     = -(weight(i, j) + conj_of(weight(j, i))) / 2.0;
+          h[((m + i) * order) + m + j] = -conj_of(shift(j, i));
+        }
+      }
+      schur_decomposition<T>                  form   {matrix<T> {order, order, std::move(h)}};
+      const std::vector<std::complex<double>> values {form.values()};
+      std::vector<bool>                       chosen(order);
+      for (std::size_t k {0}; k < order; ++k) {
+        chosen[k] = values[k].real() < 0.0;
+      }
+      if (form.reorder(chosen) != m) {
+        throw convergence_error("The associated Hamiltonian matrix has eigenvalues too close to the imaginary axis");
+      }
+      buffer<T> u11(m * m);
+      buffer<T> u21(m * m);
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t k {0}; k < m; ++k) {
+          u11[(i * m) + k] = form.z()(i, k);
+          u21[(i * m) + k] = form.z()(m + i, k);
+        }
+      }
+      const matrix<T> x {stabilising_solution(matrix<T> {m, m, std::move(u11)}, matrix<T> {m, m, std::move(u21)}, true)};
+      buffer<T>       out(m * m);
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t k {0}; k < m; ++k) {
+          out[(i * m) + k] = (x(i, k) + conj_of(x(k, i))) / 2.0;
+        }
+      }
+      return matrix<T> {m, m, std::move(out)};
+    }
+
+    /*!
      * \brief The checks of SciPy's `_are_validate_args`, then \ref riccati on complex operands, the answer real for
      *        real ones.
      */
@@ -996,11 +1074,14 @@ namespace numerical {
       const auto& cr {as_complex(r)};
       require_hermitian(cq, "q");
       require_hermitian(cr, "r");
+      bool hamiltonian {false};
       if (continuous) { // R⁻¹ is the equation's: SciPy refuses a numerically singular r
         const vector<double> sigma {singular_values(cr)};
         if (!(sigma[n - 1] >= std::numeric_limits<double>::epsilon() * norm_one(cr)) || sigma[n - 1] == 0.0) {
           throw std::invalid_argument("Matrix r is numerically singular.");
         }
+        // a well-conditioned R (within √ε of singular) and no E: the Hamiltonian's Schur form, else the pencil's
+        hamiltonian = e == nullptr && sigma[n - 1] >= std::sqrt(std::numeric_limits<double>::epsilon()) * sigma[0];
       }
       std::optional<matrix<std::complex<double>>> ce;
       std::optional<matrix<std::complex<double>>> cs;
@@ -1015,7 +1096,7 @@ namespace numerical {
         cs.emplace(as_complex(*s));
       }
       const riccati_terms          terms {ca, cb, cq, cr, ce ? &*ce : nullptr, cs ? &*cs : nullptr};
-      matrix<std::complex<double>> x     {riccati(terms, continuous, balanced)};
+      matrix<std::complex<double>> x     {hamiltonian ? as_complex(hamiltonian_riccati(a, b, q, r, s)) : riccati(terms, continuous, balanced)};
       if (continuous) {
         x = newton_refined(terms, std::move(x));
       }
@@ -1026,8 +1107,11 @@ namespace numerical {
   /*!
    * \brief The stabilising solution `X` of the continuous algebraic Riccati equation `Aᴴ X E + Eᴴ X A − (Eᴴ X B + S)
    *        R⁻¹ (Bᴴ X E + Sᴴ) + Q = 0` (`E = I` and `S = 0` when \p e and \p s are null), as
-   *        `scipy.linalg.solve_continuous_are`: the eigenvalues of the extended Hamiltonian pencil in the left
-   *        half-plane moved first in its generalized Schur form (\ref generalized_schur), `R` never inverted.
+   *        `scipy.linalg.solve_continuous_are`: without \p e and with `R` well-conditioned (its condition below
+   *        `1/√ε`), the Schur form of the Hamiltonian `[[Ã, −G], [−Q̃, −Ãᴴ]]` (Laub, 1979, in real arithmetic for real
+   *        operands); else, as SciPy, the eigenvalues of the extended Hamiltonian pencil in the left half-plane moved
+   *        first in its generalized Schur form (\ref generalized_schur), `R` never inverted. Then one step of
+   *        Newton's method, kept where it lowers the residual.
    * \param[in] a        `m × m`.
    * \param[in] b        `m × n`.
    * \param[in] q        `m × m`, Hermitian.

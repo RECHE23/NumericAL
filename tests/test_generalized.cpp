@@ -484,6 +484,15 @@ TEST(riccati_continuous_takes_a_step_of_newton)
   EXPECT((zero == M {{0.0, 0.0}, {0.0, 0.0}}));
   const M huge {numerical::solve_continuous_are(M {{1e154}}, M {{1.0}}, M {{1.0}}, M {{1.0}})};
   EXPECT(std::abs((huge(0, 0) / 2e154) - 1.0) < 1e-15);
+  // an R of condition 10¹⁰, past 1/√ε: the extended pencil, not the Hamiltonian (whose G = B R⁻¹ Bᴴ would lose it)
+  riccati_case<C> stiff {.a = matrix<C> {{C {-1.0}, C {0.5}}, {C {0.0}, C {-2.0}}},
+                         .b = matrix<C> {{C {1.0}, C {0.0}}, {C {0.0}, C {1.0}}},
+                         .q = matrix<C> {{C {1.0}, C {0.0}}, {C {0.0}, C {1.0}}},
+                         .r = matrix<C> {{C {1.0}, C {0.0}}, {C {0.0}, C {1e-10}}},
+                         .e = identity<C>(2),
+                         .s = matrix<C> {{C {}, C {}}, {C {}, C {}}}};
+  const matrix<double> y {numerical::solve_continuous_are(real_of(stiff.a), real_of(stiff.b), real_of(stiff.q), real_of(stiff.r))};
+  EXPECT(continuous_residual(stiff, numerical::detail::as_complex(y), false, false) < 1e-14);
 }
 
 // No stabilising solution: an unstable mode B cannot reach (U₀₀ singular, exactly where the mode is decoupled), and a negative Q putting the pencil's two
