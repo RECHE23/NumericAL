@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`eigh(a, b)` and `eigvalsh(a, b)` of order 2048 and more (3072 complex) reduce the pencil to standard form by
+  blocks, as LAPACK's `sygst`**: `L⁻¹ A L⁻ᴴ` in some `n³` operations on its lower triangle, where two whole triangular
+  solves took `2 n³`. Other last bits there; below, the two solves as before, faster on many threads. The reduction
+  at order 3072: six AVX2 cores 683 → 335 ms (complex 1749 → 884), ten AVX-512 cores 423 → 224 ms (complex 900 →
+  528), M1 Pro 204 → 161 ms (complex 724 → 684).
 - **A triangular solve of several right-hand sides takes each row's terms in one pass** (`solve_triangular`,
   `lu_solve`, `cho_solve`, the factorisations' solves): the rows of a block up to 32 subtract their terms from the
   unknowns held in registers, where each term was its own pass over the row. The same bits in `double` and complex;

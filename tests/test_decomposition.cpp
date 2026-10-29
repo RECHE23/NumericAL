@@ -2040,6 +2040,76 @@ TEST(lu_solving_u12_by_blocks_gives_the_same_bits_on_one_thread_as_on_all)
   EXPECT(same(std::complex<double> {}, 300));
 }
 
+// The pencil's standard form by blocks (detail::reduce_pencil, from pencil_reduction_least) against the two whole
+// triangular solves, to rounding, on its lower triangle, the upper left as it was; pencil_standard_form either way,
+// whole and Hermitian, the solves' to the bit. One block, a block and a column, a last block of six rows (the rank-2k
+// update by rows), whole blocks, real and complex.
+TEST(a_pencil_reduced_by_blocks_is_the_two_solves)
+{
+  const auto agrees = []<typename T>(T /*type*/, std::size_t n) {
+                        std::uint64_t  state {n + 3};
+                        std::vector<T> m(n * n);
+                        std::vector<T> a(n * n);
+                        for (std::size_t i {0}; i < n * n; ++i) {
+                          if constexpr (std::is_same_v<T, double>) {
+                            m[i] = next_uniform(state);
+                            a[i] = next_uniform(state);
+                          }
+                          else {
+                            const double re    {next_uniform(state)};
+                            m[i] = T {re, next_uniform(state)};
+                            const double other {next_uniform(state)};
+                            a[i] = T {other, next_uniform(state)};
+                          }
+                        }
+                        std::vector<T> b(n * n);
+                        for (std::size_t i {0}; i < n; ++i) {
+                          for (std::size_t j {0}; j < n; ++j) {
+                            T sum {i == j ? static_cast<double>(n) : 0.0};
+                            for (std::size_t k {0}; k < n; ++k) {
+                              sum += m[(i * n) + k] * numerical::detail::conj_of(m[(j * n) + k]);
+                            }
+                            b[(i * n) + j] = sum;
+                          }
+                        }
+                        const matrix<T>      l                 {numerical::cholesky_decomposition<T> {matrix<T> {n, n, b}}.lower()};
+                        const T* const       lower             {std::to_address(l.begin())};
+                        numerical::buffer<T> triangle(n * n, T {});
+                        std::vector<T>       blocked(n * n, T  {std::numeric_limits<double>::quiet_NaN()});
+                        for (std::size_t i {0}; i < n; ++i) {
+                          for (std::size_t j {0}; j <= i; ++j) {
+                            triangle[(i * n) + j] = i == j ? T {numerical::detail::real_part(a[(i * n) + j])} : a[(i * n) + j];
+                            blocked[(i * n) + j]  = triangle[(i * n) + j];
+                          }
+                        }
+                        const numerical::buffer<T> solves {numerical::detail::pencil_standard_form(triangle, lower, n, false)};
+                        const numerical::buffer<T> blocks {numerical::detail::pencil_standard_form(triangle, lower, n, true)};
+                        numerical::detail::reduce_pencil(blocked.data(), lower, n);
+                        double error                      {0.0};
+                        double size                       {0.0};
+                        bool   upper                      {true};
+                        bool   whole                      {true};
+                        for (std::size_t i {0}; i < n; ++i) {
+                          for (std::size_t j {0}; j < n; ++j) {
+                            error = std::max(error, std::abs(blocks[(i * n) + j] - solves[(i * n) + j]));
+                            size  = std::max(size, std::abs(solves[(i * n) + j]));
+                            if (j <= i) {
+                              whole = whole && blocked[(i * n) + j] == blocks[(i * n) + j]
+                                      && blocks[(j * n) + i] == numerical::detail::conj_of(blocks[(i * n) + j]);
+                            }
+                            else {
+                              upper = upper && std::isnan(std::abs(blocked[(i * n) + j]));
+                            }
+                          }
+                        }
+                        return upper && whole && error <= 64.0 * static_cast<double>(n) * std::numeric_limits<double>::epsilon() * size;
+                      };
+  for (const std::size_t n : {std::size_t {0}, std::size_t {1}, std::size_t {64}, std::size_t {65}, std::size_t {70}, std::size_t {128}, std::size_t {200}}) {
+    EXPECT(agrees(0.0, n));
+    EXPECT(agrees(std::complex<double> {}, n));
+  }
+}
+
 // The divide and conquer of eigh and of the SVD solves blocks of its tree on separate threads, each on one thread
 // below a depth and the joins above it a level at a time; on one thread it is the recursion's order. Every block
 // takes the same inputs either way: the same values and vectors, to the bit. Past eight threads' worth of leaves, so

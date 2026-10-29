@@ -5026,11 +5026,226 @@ namespace numerical {
 
   namespace detail {
 
+    //! \brief The columns \ref reduce_pencil reduces a block at a time, as LAPACK's `sygst` by its block size.
+    inline constexpr std::size_t pencil_block {64};
+
+
+    /*!
+     * \brief The lower triangle of the `n × n` \p c (row stride \p ldc) taken to `L⁻¹ C L⁻ᴴ` for the lower-triangular
+     *        \p l (row stride \p ldl), one column after another, as LAPACK's `sygs2` (type 1): each diagonal element
+     *        divided by `L`'s squared, the column below it scaled, corrected by half of it twice around the rank-2 update
+     *        of the rest, then solved against the rest of `L`. \p c's other triangle is neither read nor written.
+     */
+    template <typename T>
+    void reduce_pencil_columns(T*          c,
+                               std::size_t ldc,
+                               const T*    l,
+                               std::size_t ldl,
+                               std::size_t n)
+    {
+      buffer<T> x(n); // the column below the diagonal, conjugated, then solved
+      buffer<T> y(n); // L's, conjugated
+      for (std::size_t k {0}; k < n; ++k) {
+        const auto bkk      {real_part(l[(k * ldl) + k])};
+        const auto akk      {real_part(c[(k * ldc) + k]) / (bkk * bkk)};
+        c[(k * ldc) + k] = T {akk};
+        const auto inverse  {static_cast<carried_t<T>>(1) / bkk};
+        const T    half_akk {static_cast<carried_t<T>>(-0.5) * akk};
+        for (std::size_t i {k + 1}; i < n; ++i) {
+          c[(i * ldc) + k] = (c[(i * ldc) + k] * T {inverse}) + (half_akk * l[(i * ldl) + k]);
+          x[i]             = conj_of(c[(i * ldc) + k]);
+          y[i]             = conj_of(l[(i * ldl) + k]);
+        }
+        for (std::size_t i {k + 1}; i < n; ++i) { // C₂₂ −= x yᴴ + y xᴴ, x the column, y L's, row by row to the diagonal
+          T* const row {c + (i * ldc)};
+          subtract_product(row + k + 1, c[(i * ldc) + k], y.data() + k + 1, i - k);
+          subtract_product(row + k + 1, l[(i * ldl) + k], x.data() + k + 1, i - k);
+        }
+        for (std::size_t i {k + 1}; i < n; ++i) { // L₂₂ z = x, by forward substitution, the column gathered
+          x[i]             = c[(i * ldc) + k] + (half_akk * l[(i * ldl) + k]);
+          x[i]             = (x[i] - dot_product(l + (i * ldl) + k + 1, x.data() + k + 1, i - k - 1)) / l[(i * ldl) + i];
+          c[(i * ldc) + k] = x[i];
+        }
+      }
+    }
+
+    /*!
+     * \brief `C += A·B` on the lower triangle of the `m × m` \p c (row stride \p ldc), \p a `m × depth` and \p b
+     *        `depth × m` row-major, \p depth two blocks of \ref pencil_block (past \ref gemm_min_depth), where the
+     *        matrix product kernel packs a product of that size: on the triangle's tiles alone (\ref gemm_triangle).
+     *        \return whether it ran; a scalar other than `double` never does here.
+     */
+    template <typename T>
+    [[nodiscard]] bool lower_triangle_product(std::size_t /*m*/,
+                                              std::size_t /*depth*/,
+                                              const T* /*a*/,
+                                              const T* /*b*/,
+                                              T* /*c*/,
+                                              std::size_t /*ldc*/)
+    {
+      return false;
+    }
+
+    //! \brief \ref lower_triangle_product for `double`.
+    [[nodiscard]] inline bool lower_triangle_product(std::size_t   m,
+                                                     std::size_t   depth,
+                                                     const double* a,
+                                                     const double* b,
+                                                     double*       c,
+                                                     std::size_t   ldc)
+    {
+      static_assert(2 * pencil_block >= gemm_min_depth);
+      if (m * m < ((gemm_packed_threshold + depth) - 1) / depth) {
+        return false;
+      }
+      gemm_triangle<a_rows, b_rows>(m, depth, a, depth, b, m, c, ldc, true);
+      return true;
+    }
+
+    /*!
+     * \brief The lower triangle of the Hermitian `n × n` \p c (row-major) taken to `L⁻¹ C L⁻ᴴ` for the lower-triangular
+     *        \p l (`n × n`, row-major), as LAPACK's `sygst` (type 1, lower) by blocks of \ref pencil_block columns: a
+     *        block's diagonal by \ref reduce_pencil_columns; the rows below it solved against its `L₁₁ᴴ` from the right,
+     *        corrected by half of `L₂₁ C₁₁` twice around the trailing rank-2k update `C₂₂ −= C₂₁ L₂₁ᴴ + L₂₁ C₂₁ᴴ` (its lower
+     *        triangle); once every block is through, each one's rows solved against its `L₂₂`, the blocks on the
+     *        threads together. Some `n³` operations where two whole triangular solves took `2 n³`.
+     *        \p c's other triangle is neither read nor written.
+     */
+    template <typename T>
+    void reduce_pencil(T*          c,
+                       const T*    l,
+                       std::size_t n)
+    {
+      buffer<T> half(pencil_block * pencil_block);
+      buffer<T> diagonal(pencil_block * pencil_block);
+      buffer<T> turned;
+      buffer<T> left;
+      buffer<T> right;
+      for (std::size_t k0 {0};; k0 += pencil_block) { // to the last block, whose rows below are none
+        const std::size_t kb {std::min(pencil_block, n - k0)};
+        const std::size_t k1 {k0 + kb};
+        const std::size_t m  {n - k1};
+        reduce_pencil_columns(c + (k0 * n) + k0, n, l + (k0 * n) + k0, n, kb);
+        if (m == 0) {
+          break;
+        }
+        T* const       c21 {c + (k1 * n) + k0};
+        const T* const l21 {l + (k1 * n) + k0};
+        // C₂₁ L₁₁⁻ᴴ: the rows of C₂₁ conjugated as columns, L₁₁ X = C₂₁ᴴ, turned back.
+        for (std::size_t i {0}; i < kb; ++i) {
+          for (std::size_t j {0}; j <= i; ++j) {
+            diagonal[(i * kb) + j] = l[((k0 + i) * n) + k0 + j];
+          }
+          std::fill(diagonal.begin() + static_cast<std::ptrdiff_t>((i * kb) + i + 1), diagonal.begin() + static_cast<std::ptrdiff_t>((i + 1) * kb), T {});
+        }
+        turned.resize(kb * m);
+        for (std::size_t r {0}; r < m; ++r) {
+          for (std::size_t q {0}; q < kb; ++q) {
+            turned[(q * m) + r] = conj_of(c21[(r * n) + q]);
+          }
+        }
+        triangular_rows(diagonal.data(), kb, true, false, false, turned.data(), m);
+        for (std::size_t r {0}; r < m; ++r) {
+          for (std::size_t q {0}; q < kb; ++q) {
+            c21[(r * n) + q] = conj_of(turned[(q * m) + r]);
+          }
+        }
+        // −½ C₁₁, whole from its lower triangle.
+        for (std::size_t i {0}; i < kb; ++i) {
+          for (std::size_t j {0}; j < i; ++j) {
+            const T value {static_cast<carried_t<T>>(-0.5) * c[((k0 + i) * n) + k0 + j]};
+            half[(i * kb) + j] = value;
+            half[(j * kb) + i] = conj_of(value);
+          }
+          half[(i * kb) + i] = T {static_cast<carried_t<T>>(-0.5) * real_part(c[((k0 + i) * n) + k0 + i])};
+        }
+        gemm(m, kb, kb, l21, n, half.data(), kb, c21, n);
+        // C₂₂ −= C₂₁ L₂₁ᴴ + L₂₁ C₂₁ᴴ on the lower triangle: [−C₂₁ −L₂₁] [L₂₁ᴴ; C₂₁ᴴ].
+        const std::size_t depth {2 * kb};
+        left.resize(m * depth);
+        right.resize(depth * m);
+        for (std::size_t r {0}; r < m; ++r) {
+          for (std::size_t q {0}; q < kb; ++q) {
+            left[(r * depth) + q]      = -c21[(r * n) + q];
+            left[(r * depth) + kb + q] = -l21[(r * n) + q];
+            right[(q * m) + r]         = conj_of(l21[(r * n) + q]);
+            right[((kb + q) * m) + r]  = conj_of(c21[(r * n) + q]);
+          }
+        }
+        T* const   c22  {c + (k1 * n) + k1};
+        const bool done {lower_triangle_product(m, depth, left.data(), right.data(), c22, n)};
+        for (std::size_t r0 {0}; !done && r0 < m; r0 += tridiagonal_band) {
+          const std::size_t rows {std::min(tridiagonal_band, m - r0)};
+          gemm(rows, r0 + rows, depth, left.data() + (r0 * depth), depth, right.data(), m, c22 + (r0 * n), n);
+        }
+        gemm(m, kb, kb, l21, n, half.data(), kb, c21, n);
+      }
+      // Each block's L₂₂⁻¹ C₂₁, L₂₂ read where it lies: a block's rows below it are its own once the rank-2k update
+      // has read them, so the blocks are solved together, the largest first, each on one thread.
+      const std::size_t below {(std::max(n, std::size_t {1}) - 1) / pencil_block}; // the blocks with rows below them
+      parallel_for(below, n * n * pencil_block / 2, [&](std::size_t index) {
+                     const std::size_t k0 {index * pencil_block};
+                     const std::size_t k1 {k0 + pencil_block};
+                     const std::size_t m  {n - k1};
+                     buffer<T>         minus((((m + 1) / 2) + triangular_block) * pencil_block);
+                     triangular_halves(l + (k1 * n) + k1, n, true, false, false, c + (k1 * n) + k0, n, pencil_block, 0, m, minus.data());
+                   });
+    }
+
+    /*!
+     * \brief The order from which a pencil's standard form is reduced by blocks (\ref reduce_pencil): half the
+     *        operations of two whole triangular solves, but a block at a time, where the two solves share their
+     *        columns among the threads whole. Below it the solves ran faster: ten AVX-512 cores up to order 1100 or
+     *        so, six AVX2 cores up to 500, the M1 Pro (its products on AMX) up to some 2000 real and 2500 complex. From
+     *        it: order 3072, six AVX2 cores 683 → 335 ms (complex 1749 → 884), ten AVX-512 cores 423 → 224 ms (complex
+     *        900 → 528), M1 Pro 204 → 161 ms (complex 724 → 684). One order whatever the threads: the bits of `C` do
+     *        not depend on their number.
+     */
+    template <typename T>
+    inline constexpr std::size_t pencil_reduction_least {is_complex_number<T> ? 3072 : 2048};
+
+    /*!
+     * \brief `C = L⁻¹ A L⁻ᴴ` whole, \p y holding `A`'s lower triangle (`n × n`, row-major, the diagonal real) and
+     *        \p lower `L`: by blocks (\ref reduce_pencil, `C`'s lower triangle, then its upper from it) where
+     *        \p blocks, else by two whole triangular solves, `L⁻¹ A` and `L⁻¹ (L⁻¹ A)ᴴ`.
+     */
+    template <typename T>
+    [[nodiscard]] buffer<T> pencil_standard_form(buffer<T>   y,
+                                                 const T*    lower,
+                                                 std::size_t n,
+                                                 bool        blocks)
+    {
+      if (blocks) {
+        reduce_pencil(y.data(), lower, n);
+        for (std::size_t i {0}; i < n; ++i) {
+          for (std::size_t j {0}; j < i; ++j) {
+            y[(j * n) + i] = conj_of(y[(i * n) + j]);
+          }
+        }
+        return y;
+      }
+      for (std::size_t i {0}; i < n; ++i) { // A whole
+        for (std::size_t j {0}; j < i; ++j) {
+          y[(j * n) + i] = conj_of(y[(i * n) + j]);
+        }
+      }
+      solve_triangular_in_place(lower, n, true, triangular_op::none, false, y.data(), n); // L⁻¹ A
+      buffer<T> c(n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) { // (L⁻¹ A)ᴴ = A L⁻ᴴ
+        for (std::size_t j {0}; j < n; ++j) {
+          c[(i * n) + j] = conj_of(y[(j * n) + i]);
+        }
+      }
+      solve_triangular_in_place(lower, n, true, triangular_op::none, false, c.data(), n); // L⁻¹ A L⁻ᴴ
+      return c;
+    }
+
     /*!
      * \brief The pencil `A − λ B` of a Hermitian `A` and a Hermitian positive-definite `B` (each read in its lower
-     *        triangle, of the diagonal its real part) in standard form: `B = L Lᴴ` and `C = L⁻¹ A L⁻ᴴ`, Hermitian, by two
-     *        triangular solves (LAPACK's `sygst`, type 1). `C`'s eigenpairs `(λ, y)` are the pencil's `(λ, L⁻ᴴ y)`, those
-     *        vectors `B`-orthonormal (`Xᴴ B X = I`), as `scipy.linalg.eigh(a, b)`'s.
+     *        triangle, of the diagonal its real part) in standard form: `B = L Lᴴ` and `C = L⁻¹ A L⁻ᴴ`, Hermitian, as
+     *        LAPACK's `sygst` (type 1) forms it from \ref pencil_reduction_least, by two triangular solves below
+     *        (\ref pencil_standard_form). `C`'s eigenpairs `(λ, y)` are the pencil's
+     *        `(λ, L⁻ᴴ y)`, those vectors `B`-orthonormal (`Xᴴ B X = I`), as `scipy.linalg.eigh(a, b)`'s.
      */
     template <typename T>
     struct definite_pencil
@@ -5075,23 +5290,13 @@ namespace numerical {
       {
         const std::size_t n          {a.rows()};
         buffer<T>         y(n * n, T {});
-        for (std::size_t i {0}; i < n; ++i) { // A whole from its lower triangle, a real diagonal
+        for (std::size_t i {0}; i < n; ++i) { // A's lower triangle, a real diagonal
           for (std::size_t j {0}; j < i; ++j) {
             y[(i * n) + j] = a(i, j);
-            y[(j * n) + i] = conj_of(a(i, j));
           }
           y[(i * n) + i] = T {real_part(a(i, i))};
         }
-        const T* const lower {std::to_address(l.begin())};
-        solve_triangular_in_place(lower, n, true, triangular_op::none, false, y.data(), n); // L⁻¹ A
-        buffer<T> c(n * n, T {});
-        for (std::size_t i {0}; i < n; ++i) { // (L⁻¹ A)ᴴ = A L⁻ᴴ
-          for (std::size_t j {0}; j < n; ++j) {
-            c[(i * n) + j] = conj_of(y[(j * n) + i]);
-          }
-        }
-        solve_triangular_in_place(lower, n, true, triangular_op::none, false, c.data(), n); // L⁻¹ A L⁻ᴴ
-        return matrix<T> {n, n, std::move(c)};
+        return matrix<T> {n, n, pencil_standard_form(std::move(y), std::to_address(l.begin()), n, n >= pencil_reduction_least<T>)};
       }
     };
   } // namespace detail
