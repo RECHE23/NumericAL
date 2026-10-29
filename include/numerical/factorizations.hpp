@@ -1656,14 +1656,20 @@ namespace numerical {
     {
       const std::size_t width {last - first};
       if (width <= triangular_block) {
+        std::array<T, triangular_block> terms {}; // a column of a, gathered, where M is its transpose
         for (std::size_t step {0}; step < width; ++step) {
           const std::size_t i    {lower ? first + step : last - 1 - step};
           T* const          row  {x + (i * ldx)};
           const std::size_t from {lower ? first : i + 1};
           const std::size_t to   {lower ? i : last};
-          for (std::size_t j {from}; j < to; ++j) {
-            subtract_product(row, x + (j * ldx), transposed ? a[(j * n) + i] : a[(i * n) + j], k);
+          const T*          f    {a + (i * n) + from};
+          if (transposed) {
+            for (std::size_t j {from}; j < to; ++j) {
+              terms[j - from] = a[(j * n) + i];
+            }
+            f = terms.data();
           }
+          subtract_products(row, f, x + (from * ldx), ldx, to - from, k); // the terms in order, in registers
           if (!unit) {
             const T diagonal {a[(i * n) + i]};
             for (std::size_t c {0}; c < k; ++c) {

@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **A triangular solve of several right-hand sides takes each row's terms in one pass** (`solve_triangular`,
+  `lu_solve`, `cho_solve`, the factorisations' solves): the rows of a block up to 32 subtract their terms from the
+  unknowns held in registers, where each term was its own pass over the row. The same bits in `double` and complex;
+  in `float`, compiled with `-ffp-contract=on`, the last bits of some elements. Order 200, 16 right-hand sides: six
+  AVX2 cores 46 → 31 µs, complex 139 → 113 µs; ten AVX-512 cores, complex 117 → 84 µs; M1 Pro 34 → 22 µs; order 50,
+  four right-hand sides, M1 Pro 3.1 → 1.3 µs.
 - **`eigh`, `eigvalsh` and their complex forms run each step's product with the reduced matrix longest rows first**:
   its tasks of 32 rows, of 528 terms for the first and some `32 m` for the last, went to the threads in that order,
   and the last left one thread working alone. The same bits. Ten AVX-512 cores, order 2000: `eigvalsh` 193 → 182 ms,
