@@ -19,6 +19,7 @@
 #include "eigen.hpp"
 #include "fft.hpp"
 #include "matrix.hpp"
+#include "matrix_functions.hpp"
 #include "tensor.hpp"
 #include "tensor_ops.hpp"
 #include "vector.hpp"

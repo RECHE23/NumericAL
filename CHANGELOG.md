@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`expm`, as `scipy.linalg.expm`**: the matrix exponential of a square matrix or of each of a stack's, by scaling
+  and squaring of a Padé approximant of degree 3 to 13 as Al-Mohy and Higham's algorithm (2009), SciPy's: the degree
+  and the squarings from the exact norms of `A²` to `A¹⁰` and the approximant's backward error bound (squarings added
+  for a matrix far from normal), an upper triangular matrix's diagonal and superdiagonal exact at each squaring.
+  Within rounding of SciPy's values; single precision computed in double (SciPy's single overflows to NaN where the
+  double does not); an infinite or NaN entry raises, where SciPy returns NaNs. In C++, `numerical::expm`.
 - **`schur(a, sort=...)`, as `scipy.linalg.schur`'s**: the eigenvalues a selection holds moved to the leading block
   of `T`, `(T, Z, sdim)` returned, `sdim` their count; `"lhp"`, `"rhp"`, `"iuc"`, `"ouc"` or a callable (the real
   and imaginary parts of each eigenvalue for a real `T`, the eigenvalue for a complex one), a real pair moved, and

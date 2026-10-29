@@ -1376,6 +1376,9 @@ any_tensor do_inverse(const numerical::tensor<T>& a)
 // inverse(a) -> Tensor (the matrix inverse).
 any_tensor inverse(const any_tensor& v); // in linalg.cpp
 
+// expm(a) -> Tensor, as scipy.linalg.expm (a stack's matrices each).
+any_tensor expm(const any_tensor& v); // in linalg.cpp
+
 // The least-squares solution with what numpy.linalg.lstsq returns beside it: x (rank-1 for a rank-1 b), the residual
 // sums of squares (empty unless a is tall and of full column rank), the rank and the singular values.
 using lstsq_result = std::tuple<any_tensor, any_tensor, std::size_t, any_tensor>;

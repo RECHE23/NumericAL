@@ -17,7 +17,7 @@ _ArrayLike = Any
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "det", "slogdet", "inverse", "inv", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eig",
+    "determinant", "det", "slogdet", "inverse", "inv", "expm", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
@@ -65,6 +65,7 @@ def schur(a: _ArrayLike, output: Literal["real", "r", "complex", "c"] = "real", 
           check_finite: bool = True) -> tuple[Tensor, Tensor, int]: ...
 def cholesky(a: _ArrayLike, /, *, upper: bool = False) -> Tensor: ...
 _Trans = Literal[0, 1, 2, "N", "T", "C"]
+def expm(A: _ArrayLike) -> Tensor: ...
 def solve_triangular(a: _ArrayLike, b: _ArrayLike, trans: _Trans = 0, lower: bool = False, unit_diagonal: bool = False,
                      overwrite_b: bool = False, check_finite: bool = True) -> Tensor: ...
 class LUFactor(tuple[Tensor, tuple[int, ...]]):

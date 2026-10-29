@@ -176,6 +176,25 @@ any_tensor inverse(const any_tensor& v)
     return do_inverse<double>(std::get<real_tensor>(v));
 }
 
+// expm(a) -> Tensor, as scipy.linalg.expm: the exponential of a square matrix or of each of a stack's.
+any_tensor expm(const any_tensor& v)
+{
+    if (shape_of(v).size() < 2 || shape_of(v)[shape_of(v).size() - 1] != shape_of(v)[shape_of(v).size() - 2]) {
+        throw std::runtime_error("expm expects a square matrix or a stack of them");
+    }
+    if (shape_of(v).size() > 2) {
+        return over_stack<any_tensor>(v, [&](const any_tensor& m) { return expm(m); });
+    }
+    if (is_single(v)) {
+        return narrowed(expm(widened(v)));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(v) * 8)};
+    if (is_complex(v)) {
+        return any_tensor {cplx_tensor {numerical::expm(matrix_from(std::get<cplx_tensor>(v)))}};
+    }
+    return any_tensor {real_tensor {numerical::expm(matrix_from(std::get<real_tensor>(v)))}};
+}
+
 // lstsq(a, b, rtol) -> (x, residuals, rank, s), as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one
 // right-hand side per column).
 lstsq_result lstsq(const any_tensor& a, const any_tensor& b, std::optional<double> rtol)

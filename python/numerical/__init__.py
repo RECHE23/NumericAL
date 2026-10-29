@@ -40,7 +40,7 @@ from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
-    "determinant", "det", "slogdet", "inverse", "inv", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eig",
+    "determinant", "det", "slogdet", "inverse", "inv", "expm", "lstsq", "pinv", "matrix_rank", "cholesky", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
@@ -550,6 +550,21 @@ del _public, _native
 
 det = determinant
 inv = inverse
+
+
+_expm = _linalg(_numerical.expm, arrays=1)
+
+
+def expm(A):
+    """The matrix exponential ``e^A``, as ``scipy.linalg.expm``: of a square matrix, or of each matrix of a stack
+    (``(..., n, n)``); integers and booleans as ``float64``. Scaling and squaring of a Padé approximant of degree 3 to
+    13, as Al-Mohy and Higham's algorithm (2009) that SciPy follows: the same values to rounding, not to the bit. An
+    infinite or NaN entry raises, where SciPy returns NaNs.
+
+    Raises:
+        LinAlgError: if `A` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
+    """
+    return _expm(A)
 _eigh = _linalg(_numerical.eigh, arrays=1)
 _eigh_pencil = _linalg(_numerical.eigh_pencil, arrays=2)
 _eigvalsh_pencil = _linalg(_numerical.eigvalsh_pencil, arrays=2)

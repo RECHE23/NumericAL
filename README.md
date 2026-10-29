@@ -90,6 +90,8 @@ Small and complete, grown measured, honest about what is not yet here:
   triangular for a complex one, `z()` orthogonal or unitary; `values()` in `T`'s order; given a predicate on the
   eigenvalues, or by `sort(select)` and `reorder(chosen)` afterwards, those selected moved to the leading block
   (LAPACK's `trsen`, MATLAB's `ordschur`), `leading()` their count.
+- `numerical::expm(a)` — the matrix exponential, as `scipy.linalg.expm` (Al-Mohy and Higham's scaling and squaring
+  of a Padé approximant, 2009).
 - `numerical::svd_decomposition<T>` — the singular value decomposition `A = U Σ Vᴴ`
   of a real or complex `m × n` matrix, any shape: a Householder QR, then Golub–Kahan
   bidiagonalisation of `R` (by panels, for a real one) and divide and conquer, as LAPACK's `dgesdd`;
@@ -239,7 +241,8 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `eigh(a, UPLO)` → `(values, vectors)` (with `b=`, a positive-definite matrix, the pencil `a x = λ b x` as
 `scipy.linalg.eigh(a, b)`; `eigvalsh(a, b=b)` its values), `schur(a, output="real")` → `(T, Z)` as
 `scipy.linalg.schur` (`"complex"` the triangular form of a real matrix; with `sort=` `"lhp"`, `"rhp"`, `"iuc"`,
-`"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix
+`"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `expm(a)` as `scipy.linalg.expm` (a
+stack's matrices each), `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix
 (LAPACK's `dgeev`/`zgeev`: balancing, blocked Hessenberg reduction, multishift QR with aggressive early deflation;
 complex answers whatever the eigenvalues, as NumPy 2.5's, where NumPy before 2.5 made them real where it could; the
 eigenvalues in the Schur form's order, a real matrix's pairs conjugate to the bit; each vector of unit norm, its
