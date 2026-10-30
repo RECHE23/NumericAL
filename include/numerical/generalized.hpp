@@ -1858,7 +1858,9 @@ namespace numerical {
         t  = small_product(t, false, qrq, true, m);
         ir = small_product(qrq, false, ir, false, m);
       }
-      for (std::size_t i {0}; i < m; ++i) { // T's below its diagonal; S's below the blocks kept for the strong test
+      // T's below its diagonal (S's below the blocks kept for the strong test), over the whole 4 × 4, whose rows and
+      // columns past m are zero: bounded by m, GCC 13 cannot tell the rows stay within it (-Warray-bounds)
+      for (std::size_t i {1}; i < 4; ++i) {
         for (std::size_t j {0}; j < i; ++j) {
           t(i, j) = 0.0;
         }
