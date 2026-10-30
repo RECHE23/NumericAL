@@ -18,10 +18,10 @@ jobs:
   # Lint (format + MISRA) via SciForge's reusable spine: pins clang-tidy-18 and runs
   # this repo's make format-check / misra against the shared lint/ config. NumericAL is a leaf — no dependency siblings.
   lint:
-    uses: RECHE23/sciforge/.github/workflows/lint-cpp.yml@v2026.10.6
+    uses: RECHE23/sciforge/.github/workflows/lint-cpp.yml@v2026.10.7
     with:
       deps: '[]'
-      sciforge-ref: v2026.10.6
+      sciforge-ref: v2026.10.7
       runner-mode: hosted
 
   # POSIX + CMake build via SciForge's reusable build spine: the Makefile under
@@ -30,24 +30,24 @@ jobs:
   # — matching NumericAL's prior coverage exactly (macOS is the local gate, off in CI).
   # NumericAL is a leaf (no dependency siblings, so no ci-pat).
   build:
-    uses: RECHE23/sciforge/.github/workflows/build-cpp.yml@v2026.10.6
+    uses: RECHE23/sciforge/.github/workflows/build-cpp.yml@v2026.10.7
     with:
       deps: '[]'
-      sciforge-ref: v2026.10.6
+      sciforge-ref: v2026.10.7
       runner-mode: hosted
       enable-windows-msvc: true
       enable-arm: true
 
   # The abi3 binding + the zero-copy interop round-trips against NumPy, via SciForge's
   # reusable spine. NumericAL is a leaf (deps='[]'); its exact prior coverage is
-  # {linux, Windows} x {3.10, 3.14} (macOS off — the local gate). NumPy is
+  # {linux, Windows} x {3.10, 3.14, 3.14t, 3.15} (macOS off — the local gate; 3.14t free-threaded). NumPy is
   # pre-installed for the interop round-trips. The stubs are checked against the runtime (stubtest) before the
   # unit tests, with mypy pinned as SciLex pins it.
   python:
-    uses: RECHE23/sciforge/.github/workflows/python-cpp.yml@v2026.10.6
+    uses: RECHE23/sciforge/.github/workflows/python-cpp.yml@v2026.10.7
     with:
-      python-versions: '["3.10","3.14"]'
-      sciforge-ref: v2026.10.6
+      python-versions: '["3.10","3.14","3.14t","3.15"]'
+      sciforge-ref: v2026.10.7
       deps: '[]'
       test-cmd: 'python -m pip install mypy==2.3.0 && python -m mypy.stubtest numerical && python -m unittest discover -s python/tests'
       runner-mode: hosted
@@ -66,7 +66,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: RECHE23/sciforge
-          ref: v2026.10.6
+          ref: v2026.10.7
           path: sciforge
       - name: Install the system's NumPy and SciPy, build the wheel and install it beside them
         run: |
@@ -140,7 +140,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: RECHE23/sciforge
-          ref: v2026.10.6
+          ref: v2026.10.7
           path: sciforge
       - uses: actions/setup-python@v6
         with:

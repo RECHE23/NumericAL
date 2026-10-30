@@ -224,7 +224,8 @@ target_link_libraries(app PRIVATE numerical::numerical)
 pip install numeric-al        # the distribution is numeric-al; the module is numerical
 ```
 
-A CPython binding (stable ABI, one `cp310` abi3 wheel serves 3.10+) exposes the
+A CPython binding (stable ABI, one `cp310` abi3 wheel serves 3.10+; a free-threaded 3.14t or 3.15t takes its own
+wheel and runs without the GIL) exposes the
 unifying object `numerical.Tensor` (rank-1 a vector, rank-2 a matrix, rank-0 a
 scalar; `float64`, `complex128`, `float32` or `complex64`) and the algebra over it. Every function takes a
 `Tensor` or anything `asarray` reads — a NumPy array, a nested list, a number:

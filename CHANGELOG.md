@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **Free-threaded CPython (3.14t, 3.15t)**: wheels of their own (no stable ABI there), the module running without
+  the GIL (SciForge's binding declares it), so Python threads call NumericAL in parallel: `eigh` of order 50 on four
+  threads 3.5 times one thread's work in the time. CI tests 3.14t and 3.15 beside 3.10 and 3.14; the classifiers say
+  3.15 and free threading (beta). Tested: CPython 3.14.6t, the GIL still disabled after the import, the 290 tests,
+  and eight threads calling 27 functions 300 times each with byte-identical answers.
+
+### Added
 - **`fractional_matrix_power`, as `scipy.linalg.fractional_matrix_power`**: `A` to a real power, a whole one by
   repeated squaring, else `A^a A^b` (`a` the floor or the ceiling as `A`'s condition chooses it, as SciPy's) with `A^b`
   by Higham and Lin's Schur–Padé algorithm (2013) on the Schur form; the diagonal and superdiagonal written exactly

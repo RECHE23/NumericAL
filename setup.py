@@ -7,6 +7,7 @@ import platform
 import shutil
 import subprocess
 import sys
+import sysconfig
 import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
@@ -57,12 +58,18 @@ class build_py_with_headers(build_py):
                 shutil.copy2(os.path.join(src, name), os.path.join(dst, name))
 
 
+# A free-threaded CPython (3.14t, 3.15t) has no limited API: its wheel is built against its own version, the module
+# declaring that it runs without the GIL (SciForge's binding). Every other CPython takes the one cp310-abi3 wheel.
+FREE_THREADED = bool(sysconfig.get_config_var("Py_GIL_DISABLED"))
+
+
 class abi3_wheel(bdist_wheel):
-    """Forces the stable-ABI tag so one cp310-abi3 wheel serves CPython 3.10+."""
+    """Forces the stable-ABI tag so one cp310-abi3 wheel serves CPython 3.10+ (not a free-threaded one)."""
 
     def finalize_options(self):
         super().finalize_options()
-        self.py_limited_api = "cp310"
+        if not FREE_THREADED:
+            self.py_limited_api = "cp310"
 
 
 if sys.platform == "win32":
@@ -158,8 +165,8 @@ setup(
             include_dirs=["include", _sciforge_include()],
             extra_compile_args=compile_args,
             extra_link_args=link_args,
-            define_macros=[("Py_LIMITED_API", "0x030A0000")],
-            py_limited_api=True,
+            define_macros=[] if FREE_THREADED else [("Py_LIMITED_API", "0x030A0000")],
+            py_limited_api=not FREE_THREADED,
         )
     ],
 )

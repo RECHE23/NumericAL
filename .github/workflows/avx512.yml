@@ -32,7 +32,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: RECHE23/sciforge
-          ref: v2026.10.6
+          ref: v2026.10.7
           path: sciforge
       - name: The host's processor, which sets the emulator's speed
         run: lscpu | grep -E 'Model name|Flags|^CPU\(s\)' | sed -E 's/(Flags:).*(avx512f).*/\1 … \2 …/'
@@ -63,7 +63,7 @@ jobs:
       - uses: actions/checkout@v6
         with:
           repository: RECHE23/sciforge
-          ref: v2026.10.6
+          ref: v2026.10.7
           path: sciforge
       - uses: actions/setup-python@v6
         with:

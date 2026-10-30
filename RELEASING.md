@@ -5,8 +5,8 @@ resets each month, the first release of a month is `.0` (PEP 440 drops leading
 zeros, so `2026.6.1`, never `2026.06.001`) — bumps it in `pyproject.toml` and
 `python/numerical/__init__.py`, then commits, tags and pushes from a clean `main`.
 Pushing the tag drives `release.yml`, which checks the tag matches the version,
-builds the abi3 wheels (Linux x86-64/aarch64, macOS universal, Windows) and the
-sdist, and publishes to PyPI via Trusted Publishing (OIDC, no stored secret).
+builds the abi3 wheels and the free-threaded 3.14t and 3.15t ones (Linux x86-64/aarch64, macOS universal,
+Windows) and the sdist, and publishes to PyPI via Trusted Publishing (OIDC, no stored secret).
 
 One-time PyPI setup (before the first release): create a
 [Trusted Publisher](https://docs.pypi.org/trusted-publishers/) for the project
