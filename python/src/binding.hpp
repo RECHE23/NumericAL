@@ -1219,6 +1219,13 @@ PyObject* take_from(const numerical::tensor<T>& t, const std::vector<std::size_t
 // Python side resolves every key to these per-axis ranges (the bounds are its job; the copy is this one's).
 PyObject* module_take(PyObject* /*self*/, PyObject* args); // in products.cpp
 
+// _tobytes(t) -> bytes: the elements, row-major, in this machine's byte order (a bool one byte, 0 or 1).
+PyObject* module_tobytes(PyObject* /*self*/, PyObject* obj); // in products.cpp
+
+// _frombytes(data, shape, dtype, swapped) -> Tensor: the tensor _tobytes gave `data` for, each element's bytes (each
+// part's, for a complex one) reversed where `swapped` (written in the other byte order).
+PyObject* module_frombytes(PyObject* /*self*/, PyObject* args); // in products.cpp
+
 // _permute(t, order) -> Tensor: the tensor with its axes in `order` (a permutation of them), as numpy.transpose: a copy,
 // element by element, of any dtype (einsum, which permutes the others, has no bool arithmetic).
 PyObject* module_permute(PyObject* /*self*/, PyObject* args); // in products.cpp
@@ -1369,8 +1376,8 @@ PyObject* unary_on(std::string_view name, const numerical::tensor<T>& t)
 {
     using numerical::detail::parallel_map;
     if (name != "exp" && name != "log" && name != "sqrt" && name != "sin" && name != "cos" && name != "tan"
-        && name != "tanh" && name != "conj" && name != "abs") {
-        PyErr_SetString(PyExc_ValueError, "_unary: name is exp, log, sqrt, sin, cos, tan, tanh, abs or conj");
+        && name != "tanh" && name != "conj" && name != "abs" && name != "real" && name != "imag") {
+        PyErr_SetString(PyExc_ValueError, "_unary: name is exp, log, sqrt, sin, cos, tan, tanh, abs, conj, real or imag");
         return nullptr;
     }
     const numerical::detail::numpy_loops loops {numpy_loops_beside()}; // read while the GIL is held
@@ -1405,6 +1412,12 @@ PyObject* unary_on(std::string_view name, const numerical::tensor<T>& t)
             else {
                 result.emplace(t);
             }
+        }
+        else if (name == "real") { // of the parts' precision; a real tensor's own elements
+            result.emplace(parallel_map(t, [](const T& x) { return static_cast<real_of_t<T>>(std::real(x)); }));
+        }
+        else if (name == "imag") { // a real tensor's zeros
+            result.emplace(parallel_map(t, [](const T& x) { return static_cast<real_of_t<T>>(std::imag(x)); }));
         }
         else if constexpr (numerical::detail::split_complex<T>) { // abs: NumPy's absolute, by its vector loop
             result.emplace(numerical::detail::numpy_absolute(t, loops));

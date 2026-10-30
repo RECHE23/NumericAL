@@ -90,6 +90,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     // asarray (returns the same object when the dtype matches — Py_NewRef identity).
     m.raw("determinant", module_determinant, METH_VARARGS,
           "determinant(a) -> number\nThe determinant of a square matrix (float or complex).");
+    m.raw("_tobytes", module_tobytes, METH_O, "_tobytes(t) -> bytes\nThe elements, row-major, in this machine's byte order.");
+    m.raw("_frombytes", module_frombytes, METH_VARARGS,
+          "_frombytes(data, shape, dtype, swapped) -> Tensor\nThe tensor of _tobytes's bytes, swapped from the other byte order.");
     m.raw("_permute", module_permute, METH_VARARGS,
           "_permute(t, order) -> Tensor\nThe tensor with its axes in order (a permutation), a copy of any dtype.");
     m.raw("_take", module_take, METH_VARARGS,
@@ -113,7 +116,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_equal", module_equal, METH_VARARGS,
           "_equal(a, b) -> bool\nWhether two tensors of one dtype and size hold equal elements (a NaN equals nothing).");
     m.raw("_unary", module_unary, METH_VARARGS,
-          "_unary(name, a) -> Tensor\nexp, log, sqrt, sin, cos, tan, tanh or abs of every element.");
+          "_unary(name, a) -> Tensor\nexp, log, sqrt, sin, cos, tan, tanh, abs, conj, real or imag of every element.");
     m.raw("_borrowed_einsum_pair", module_borrowed_einsum_pair, METH_VARARGS,
           "_borrowed_einsum_pair(spec, a, b) -> Tensor or NotImplemented\nTwo operands of one dtype, each label once and none its own, read where they lie.");
     m.raw("_borrowed_fft", module_borrowed_fft, METH_VARARGS,

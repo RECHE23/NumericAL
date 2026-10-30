@@ -2319,7 +2319,160 @@ def power(a, b):
     return _native(_numerical._binary, "^", a, b)
 
 
-__all__ += ["diagonal", "matrix_transpose", "tensorsolve", "tensorinv"]
+def real(x, /):
+    """The real part of every element, of the parts' precision, as ``numpy.real``; a real or bool tensor itself."""
+    x = _tensor(x)
+    return _numerical._unary("real", x) if x.dtype.startswith("complex") else x
+
+
+def imag(x, /):
+    """The imaginary part of every element, of the parts' precision, as ``numpy.imag``; zeros of a real or bool
+    tensor's dtype."""
+    x = _tensor(x)
+    return _numerical._unary("imag", x) if x.dtype.startswith("complex") else zeros(x.shape, x.dtype)
+
+
+def transpose(a, axes=None):
+    """`a` with its axes in the order `axes` (a permutation of them, negative ones counted from the end), reversed
+    by default, as ``numpy.transpose``: a copy."""
+    a = _tensor(a)
+    if axes is None:
+        return a.T
+    rank = len(a.shape)
+    order = [_operator.index(axis) for axis in axes]
+    order = [axis + rank if axis < 0 else axis for axis in order]
+    if sorted(order) != list(range(rank)):
+        raise ValueError(f"transpose: axes {tuple(axes)} are not a permutation of a rank-{rank} tensor's")
+    return _permuted(a, order) if order != list(range(rank)) else a
+
+
+def squeeze(a, axis=None):
+    """`a` without its axes of extent 1, or without the ones `axis` names (an integer or a tuple), as
+    ``numpy.squeeze``.
+
+    Raises:
+        ValueError: if an axis `axis` names has another extent.
+    """
+    a = _tensor(a)
+    shape = a.shape
+    if axis is None:
+        drop = {k for k, extent in enumerate(shape) if extent == 1}
+    else:
+        drop = set(_resolved_axes(a, axis, "squeeze"))
+        if _builtins.any(shape[k] != 1 for k in drop):
+            raise ValueError("squeeze: cannot select an axis to squeeze out which has size not equal to one")
+    return reshape(a, tuple(extent for k, extent in enumerate(shape) if k not in drop)) if drop else a
+
+
+def _rebuilt(data, shape, dtype, byteorder):
+    """The Tensor a pickle holds (:meth:`Tensor.__reduce__`): its elements' bytes, written in `byteorder`."""
+    return _numerical._frombytes(data, shape, dtype, byteorder != _sys.byteorder)
+
+
+def _moved_last(t, axis1, axis2, name):
+    """`t` with its axes `axis1` and `axis2` moved last, in that order, the others kept in theirs."""
+    rank = len(t.shape)
+    if rank < 2:
+        raise _ShapeError(f"{name}: a tensor of rank 2 at least")
+    first, second = _resolved_axes(t, (axis1, axis2), name)
+    order = [k for k in range(rank) if k not in (first, second)] + [first, second]
+    return _permuted(t, order) if order != list(range(rank)) else t
+
+
+def _diagonal_method(self, offset=0, axis1=0, axis2=1):
+    """The `offset` diagonal of the matrices the axes `axis1` and `axis2` hold, as ``ndarray.diagonal``: along the
+    other axes' end."""
+    return diagonal(_moved_last(self, axis1, axis2, "diagonal"), offset=offset)
+
+
+def _trace_method(self, offset=0, axis1=0, axis2=1, dtype=None, out=None):
+    """The sum of the `offset` diagonal of the matrices the axes `axis1` and `axis2` hold, as ``ndarray.trace``."""
+    if out is not None:
+        raise TypeError("trace: a Tensor takes no `out` (it is never written into)")
+    return trace(_moved_last(self, axis1, axis2, "trace"), offset=offset,
+                 dtype=None if dtype is None else _dtype_name(dtype))
+
+
+def _dot(self, b):
+    """``ndarray.dot``: the matrix product for vectors and matrices, else the sum over the last axis of `self` and
+    the second to last of `b` (its only one for a vector)."""
+    b = _tensor(b)
+    if len(self.shape) <= 2 and len(b.shape) <= 2 and self.shape and b.shape:
+        return _matmul(self, b)
+    if not self.shape or not b.shape:
+        return self * b
+    return tensordot(self, b, axes=([len(self.shape) - 1], [_builtins.max(len(b.shape) - 2, 0)]))
+
+
+def _item(self, *args):
+    """The one element of a one-element tensor, or the element at a flat index or a multi-index, as a Python
+    number, as ``ndarray.item``."""
+    if not args:
+        if self.size != 1:
+            raise ValueError("can only convert an array of size 1 to a Python scalar")
+        return reshape(self, -1)[0]
+    if len(args) == 1 and not isinstance(args[0], tuple):
+        index = _operator.index(args[0])
+        if not -self.size <= index < self.size:
+            raise IndexError(f"index {index} is out of bounds for size {self.size}")
+        return reshape(self, -1)[index]
+    return self[args[0] if len(args) == 1 else args]
+
+
+def _swapaxes(self, axis1, axis2):
+    """`self` with its axes `axis1` and `axis2` exchanged, as ``ndarray.swapaxes``: a copy."""
+    rank = len(self.shape)
+    first, second = (_resolved_axes(self, axis, "swapaxes")[0] for axis in (axis1, axis2))
+    order = list(range(rank))
+    order[first], order[second] = second, first
+    return _permuted(self, order) if first != second else self
+
+
+def _to_device(self, device, /, *, stream=None):
+    """The tensor itself on the CPU, the only device a Tensor has (the array API's ``to_device``)."""
+    del stream
+    if device != "cpu":
+        raise ValueError(f"to_device: a Tensor lives on the CPU, not {device!r}")
+    return self
+
+
+def _contains(self, value):
+    """``value in t``: whether an element equals `value`, as NumPy's ``(t == value).any()``."""
+    return bool((self == value).any())
+
+
+_ITEMSIZE = {"float64": 8, "complex128": 16, "float32": 4, "complex64": 8, "bool": 1}
+
+Tensor.__reduce__ = lambda self: (_rebuilt, (_numerical._tobytes(self), self.shape, self.dtype, _sys.byteorder))
+Tensor.__copy__ = lambda self: self  # a Tensor is never written into: itself is its copy
+Tensor.__deepcopy__ = lambda self, memo: self
+Tensor.copy = lambda self: self
+Tensor.copy.__doc__ = """The tensor itself, as ``ndarray.copy`` would give: a Tensor is never written into."""
+Tensor.tobytes = lambda self: _numerical._tobytes(self)
+Tensor.tobytes.__doc__ = """The elements' bytes, row-major, in this machine's byte order, as ``ndarray.tobytes``."""
+Tensor.transpose = lambda self, *axes: transpose(self, axes[0] if len(axes) == 1 and not isinstance(axes[0], int)
+                                                  else (axes or None))
+Tensor.swapaxes = _swapaxes
+Tensor.mT = property(matrix_transpose)
+Tensor.flatten = Tensor.ravel = lambda self: reshape(self, -1)
+Tensor.squeeze = lambda self, axis=None: squeeze(self, axis)
+Tensor.squeeze.__doc__ = squeeze.__doc__
+Tensor.item = _item
+Tensor.real = property(real)
+Tensor.imag = property(imag)
+Tensor.conj = Tensor.conjugate = lambda self: conj(self)
+Tensor.conj.__doc__ = conj.__doc__
+Tensor.diagonal = _diagonal_method
+Tensor.trace = _trace_method
+Tensor.dot = _dot
+Tensor.itemsize = property(lambda self: _ITEMSIZE[self.dtype])
+Tensor.nbytes = property(lambda self: _ITEMSIZE[self.dtype] * self.size)
+Tensor.device = property(lambda self: "cpu")
+Tensor.to_device = _to_device
+Tensor.__contains__ = _contains
+
+
+__all__ += ["diagonal", "matrix_transpose", "tensorsolve", "tensorinv", "real", "imag", "transpose", "squeeze"]
 __all__ += ["any", "all", "astype", "where", "isnan", "isinf", "isfinite", "equal", "not_equal", "less", "less_equal",
             "greater", "greater_equal", "logical_and", "logical_or", "logical_xor", "logical_not"]
 __all__ += ["sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "eye", "arange", "linspace",

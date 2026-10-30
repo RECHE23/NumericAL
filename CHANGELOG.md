@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **Python: a Tensor's ndarray methods.** A Tensor pickles (its elements' bytes, every bit kept, read back in the
+  other byte order too) and copies (itself: it is never written into); `transpose(*axes)`, `swapaxes`, `mT`,
+  `squeeze`, `ravel`, `flatten`, `real`, `imag`, `conj`, `diagonal` and `trace` along any two axes, `dot`, `item`,
+  `tobytes`, `x in t`, `itemsize`, `nbytes`, `device` and `to_device("cpu")`, as NumPy's; and the functions `real`,
+  `imag`, `transpose` and `squeeze`. Tested against NumPy 2.5 over the five dtypes, every pickle protocol.
 - **Python: a `bool` dtype.** The comparisons of two tensors, or of a tensor and a number or an array, give a bool
   Tensor element by element, broadcast as NumPy's (they raised `TypeError`); `&`, `|`, `^`, `~`, `where`, `isnan`,
   `isinf`, `isfinite`, `any`, `all`, `astype`, and NumPy's `equal`, `less`, `logical_and` and their kin. A mask beside a

@@ -186,6 +186,71 @@ PyObject* module_take(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _tobytes(t) -> bytes.
+PyObject* module_tobytes(PyObject* /*self*/, PyObject* obj)
+{
+    const any_tensor* h = as_tensor(obj);
+    if (h == nullptr) {
+        return nullptr;
+    }
+    const std::size_t bytes {std::visit([](const auto& t) { return t.size() * sizeof(element_of_t<std::decay_t<decltype(t)>>); }, *h)};
+    return PyBytes_FromStringAndSize(static_cast<const char*>(data_of(*h)), static_cast<Py_ssize_t>(bytes));
+}
+
+// _frombytes(data, shape, dtype, swapped) -> Tensor.
+PyObject* module_frombytes(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*   data      = nullptr;
+    PyObject*   shape_obj = nullptr;
+    const char* name      = nullptr;
+    int         swapped   = 0;
+    if (PyArg_ParseTuple(args, "SOsp", &data, &shape_obj, &name, &swapped) == 0) {
+        return nullptr;
+    }
+    const std::optional<std::size_t> dtype {dtype_named(name)};
+    std::vector<std::size_t>         shape;
+    if (!dtype || !read_shape(shape_obj, shape)) {
+        return nullptr;
+    }
+    try {
+        const std::size_t count {numerical::detail::element_count(shape.begin(), shape.end())};
+        const auto        rebuilt = [&]<typename T>(std::type_identity<T>) -> PyObject* {
+            if (static_cast<std::size_t>(PyBytes_Size(data)) != numerical::detail::checked_mul(count, sizeof(T))) {
+                PyErr_SetString(PyExc_ValueError, "_frombytes: the bytes are not the shape's elements");
+                return nullptr;
+            }
+            numerical::buffer<T> values(count);
+            const auto* const    source {reinterpret_cast<const unsigned char*>(PyBytes_AsString(data))};
+            if constexpr (std::is_same_v<T, boolean>) { // any byte but 0 a true, as NumPy reads a bool
+                for (std::size_t i = 0; i < count; ++i) {
+                    values[i] = boolean {source[i] != 0};
+                }
+            }
+            else if (count != 0) {
+                std::memcpy(values.data(), source, count * sizeof(T));
+                if (swapped != 0) {
+                    constexpr std::size_t part {complex_scalar<T> ? sizeof(T) / 2 : sizeof(T)};
+                    auto* const           bytes {reinterpret_cast<unsigned char*>(values.data())};
+                    for (std::size_t at = 0; at < count * sizeof(T); at += part) {
+                        std::reverse(bytes + at, bytes + at + part);
+                    }
+                }
+            }
+            return wrap(any_tensor {numerical::tensor<T> {std::move(shape), std::move(values)}});
+        };
+        switch (*dtype) {
+            case 0: return rebuilt(std::type_identity<double> {});
+            case 1: return rebuilt(std::type_identity<std::complex<double>> {});
+            case 2: return rebuilt(std::type_identity<float> {});
+            case 3: return rebuilt(std::type_identity<std::complex<float>> {});
+            default: return rebuilt(std::type_identity<boolean> {});
+        }
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _permute(t, order) -> Tensor.
 PyObject* module_permute(PyObject* /*self*/, PyObject* args)
 {
