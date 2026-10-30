@@ -3297,6 +3297,22 @@ namespace numerical {
 
   namespace detail {
 
+    //! \brief `Σ x[i] y[i]`, vectorised (\ref dot_product): `xᴴ y` for real numbers.
+    [[nodiscard]] inline double adjoint_dot(const double* x,
+                                            const double* y,
+                                            std::size_t   count)
+    {
+      return dot_product(x, y, count);
+    }
+
+    //! \brief `Σ conj(x[i]) y[i]`, vectorised (\ref conjugate_dot_product): `xᴴ y`.
+    [[nodiscard]] inline std::complex<double> adjoint_dot(const std::complex<double>* x,
+                                                          const std::complex<double>* y,
+                                                          std::size_t                 count)
+    {
+      return conjugate_dot_product(x, y, count);
+    }
+
     //! \brief The 2-norm of the \p count entries at \p x, scaled by the largest so no square overflows or underflows.
     template <typename T>
     [[nodiscard]] double contiguous_norm(const T*    x,
@@ -3392,13 +3408,7 @@ namespace numerical {
         }
         for (std::size_t j {step + 1}; j < n; ++j) { // Hᴴ = I − τ̄ v vᴴ on the columns right of the pivot
           T* const column {w.data() + (j * m)};
-          T        dot    {};
-          if constexpr (std::is_same_v<T, double>) {
-            dot = detail::dot_product(v.data(), column + step, m - step);
-          }
-          else {
-            dot = detail::conjugate_dot_product(v.data(), column + step, m - step);
-          }
+          const T  dot    {detail::adjoint_dot(v.data(), column + step, m - step)};
           detail::subtract_product(column + step, detail::conj_of(tau) * dot, v.data(), m - step);
           if (current[j] != 0.0) { // LAPACK's downdate of the norm by the entry the reflection took into row step
             const double ratio {std::abs(column[step]) / current[j]};
@@ -3528,14 +3538,9 @@ namespace numerical {
         }
         std::copy(v.begin(), v.end(), head + step); // v in place (its 1 on the diagonal) while the block lasts
         const auto conjugate_dot = [&v, m, step](const T* column) { // A(step:, j)ᴴ v, vectorised
-                                     if constexpr (std::is_same_v<T, double>) {
-                                       return detail::dot_product(column + step, v.data(), m - step);
-                                     }
-                                     else {
-                                       return detail::conjugate_dot_product(column + step, v.data(), m - step);
-                                     }
+                                     return detail::adjoint_dot(column + step, v.data(), m - step);
                                    };
-        for (std::size_t j {kk + 1}; j < cols; ++j) { // F(j, kk) = τ A(step:, j)ᴴ v
+        for (std::size_t j {kk + 1}; j < cols; ++j) {               // F(j, kk) = τ A(step:, j)ᴴ v
           row_of_f(j)[kk] = tau * conjugate_dot(w.data() + ((start + j) * m));
         }
         for (std::size_t j {0}; j <= kk; ++j) {

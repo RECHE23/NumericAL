@@ -160,6 +160,8 @@ TEST(solveh_banded_is_the_dense_solve)
   EXPECT_THROWS(static_cast<void>(numerical::solveh_banded(matrix<double> {{0.0, 1.0}, {1.0, -1.0}}, matrix<double> {2, 1, std::vector<double> {1.0, 1.0}})),
                 numerical::not_positive_definite_error);
   EXPECT(numerical::solveh_banded(matrix<double> {2, 0, std::vector<double> {}}, matrix<double> {0, 1, std::vector<double> {}}).rows() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::solveh_banded(matrix<double> {{0.0, 0.0, 2.0}, {0.0, 3.0, 1.0}, {1.0, 1.0, 1.0}}, matrix<double> {3, 1, std::vector<double>(3, 1.0)})),
+                numerical::not_positive_definite_error); // two off-diagonals: the band's Cholesky refuses it
   EXPECT_THROWS(static_cast<void>(numerical::solveh_banded(matrix<double> {0, 3, std::vector<double> {}}, matrix<double> {3, 1, std::vector<double>(3, 1.0)})),
                 numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::solveh_banded(matrix<double> {{1.0, 1.0}}, matrix<double> {3, 1, std::vector<double>(3, 1.0)})), numerical::dimension_error);
@@ -415,6 +417,30 @@ TEST(pivoted_qr_reveals_the_rank)
   EXPECT(pivoted_qr_holds(matrix<double> {300, 260, rank_forty}, qr_mode::reduced));
   EXPECT(forty.r()(39, 39) > 1e-8 && forty.r()(40, 40) < 1e-12 * forty.r()(0, 0));
          EXPECT(pivoted_qr_holds(matrix<double> {300, 260, zero_tail}, qr_mode::reduced));
+  std::vector<C> complex_tail(std::size_t {300} *260, C {});
+  for (std::size_t i {0}; i < 300; ++i) {
+    for (std::size_t j {0}; j < 40; ++j) {
+      complex_tail[(i * 260) + j] = C {wide_basis[(i * 40) + j], 0.5 * wide_basis[(((i + 1) % 300) * 40) + j]};
+    }
+  }
+  EXPECT(pivoted_qr_holds(matrix<C> {300, 260, complex_tail}, qr_mode::reduced));
+  std::vector<C> complex_forty(std::size_t {300} *260); // rank 40, complex: its downdates lose all, the block ends
+  for (std::size_t i {0}; i < 300; ++i) {
+    for (std::size_t j {0}; j < 260; ++j) {
+      complex_forty[(i * 260) + j] = C {rank_forty[(i * 260) + j], 0.5 * rank_forty[(((i + 7) % 300) * 260) + j]};
+    }
+  }
+  const numerical::pivoted_qr_decomposition<C> complex_rank {matrix<C> {300, 260, complex_forty}};
+  EXPECT(pivoted_qr_holds(matrix<C> {300, 260, complex_forty}, qr_mode::reduced));
+  EXPECT(std::abs(complex_rank.r()(39, 39)) > 1e-8 && std::abs(complex_rank.r()(40, 40)) < 1e-12 * std::abs(complex_rank.r()(0, 0)));
+         std::vector<C> triangular(std::size_t {300} *260, C {}); // upper triangular, its diagonal dominant and not real
+  for (std::size_t i {0}; i < 260; ++i) {
+    triangular[(i * 260) + i] = C {0.0, 1000.0 - static_cast<double>(i)};
+    for (std::size_t j {i + 1}; j < 260; ++j) {
+      triangular[(i * 260) + j] = C {1e-3 * drawn(state), 0.0};
+    }
+  }
+  EXPECT(pivoted_qr_holds(matrix<C> {300, 260, triangular}, qr_mode::reduced));
   const numerical::pivoted_qr_decomposition<double> example {matrix<double> {{1, 2, 3}, {4, 5, 6}, {7, 8, 10}, {1, 0, 1}}};
   EXPECT((example.permutation() == std::vector<std::size_t> {2, 0, 1}));
   EXPECT(std::abs(example.r()(0, 0) - 12.08304597) < 1e-8);

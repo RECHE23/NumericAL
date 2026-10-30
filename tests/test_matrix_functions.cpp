@@ -387,6 +387,9 @@ TEST(funm_by_parlett)
   EXPECT_THROWS(static_cast<void>(numerical::funm(matrix<double> {{1.0}}, [](const values&) { return values {}; })), numerical::dimension_error);
   const matrix<C> one {{C {1.0}}};
   EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(matrix<C> {{C {1.0}, C {2.0}}}, one, values {C {1.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(one, one, values {})), numerical::dimension_error);
+  const matrix<C> none {0, 0, std::vector<C> {}};
+  EXPECT(numerical::funm_from_schur(none, none, values {}).f.rows() == 0);
   EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(one, matrix<C> {{C {1.0}, C {2.0}}}, values {C {1.0}})), numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::funm_from_schur(one, matrix<C> {{C {1.0}}, {C {2.0}}}, values {C {1.0}})), numerical::dimension_error);
 }
@@ -525,7 +528,9 @@ TEST(fractional_matrix_power_inverts_whole_powers)
   EXPECT(relative_gap(numerical::fractional_matrix_power(dense, -2.0) * complex_of(dense * dense), identity) < 1e-14);
   const matrix<double> zero_eigenvalue {{0.0, 0.0}, {0.0, 4.0}};
   EXPECT(relative_gap(numerical::fractional_matrix_power(zero_eigenvalue, 1.5), matrix<C> {{C {}, C {}}, {C {}, C {8.0}}}) < 1e-15);
-  const matrix<double> zero_first      {{0.0, 1.0}, {0.0, 4.0}}; // T(0, 0) = 0: no Schur–Padé, funm of x^0.5
+  const matrix<double> rank_one        {{3.0, 1.0}, {3.0, 1.0}};                                               // its smallest singular value 3e-16, its Schur form's 0 exact
+  EXPECT(relative_gap(numerical::fractional_matrix_power(rank_one, 0.5), complex_of(0.5 * rank_one)) < 1e-15); // A² = 4A
+  const matrix<double> zero_first      {{0.0, 1.0}, {0.0, 4.0}};                                               // T(0, 0) = 0: no Schur–Padé, funm of x^0.5
   const matrix<C>      root            {numerical::fractional_matrix_power(zero_first, 0.5)};
   EXPECT(relative_gap(root * root, complex_of(zero_first)) < 1e-14);
   EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(zero_first, -0.5)), numerical::singular_matrix_error);
@@ -583,8 +588,31 @@ TEST(hermitian_matrix_functions_take_the_eigendecomposition)
     EXPECT(relative_gap(complex_root * complex_root, h) < 1e-13);
     EXPECT(relative_gap(numerical::complex_sqrtm(a) * numerical::complex_sqrtm(a), numerical::detail::as_complex(a)) < 1e-13);
   }
-  const matrix<double> indefinite {{-1.0, 0.5}, {0.5, 2.0}};
-  const matrix<C>      root       {numerical::complex_sqrtm(indefinite)};
+  std::vector<double> lopsided(std::size_t {80} *80, 0.0); // order 80, not symmetric: the Padé path
+  for (std::size_t i {0}; i < 80; ++i) {
+    lopsided[(i * 80) + i]              = 0.5;
+    lopsided[(i * 80) + ((i + 1) % 80)] = 0.25;
+  }
+  const matrix<double> shift {80, 80, lopsided};
+  EXPECT(relative_gap(numerical::detail::as_complex(numerical::expm(shift) * numerical::expm(-1.0 * shift)),
+                      numerical::detail::as_complex(numerical::expm(matrix<double> {80, 80, std::vector<double>(std::size_t {80} *80, 0.0)})))
+         < 1e-12);
+  std::vector<C> cyclic(std::size_t {130} *130, C {}); // complex, its diagonal real, not Hermitian: Padé, a solve of 130 columns
+  for (std::size_t i {0}; i < 130; ++i) {
+    cyclic[(i * 130) + i]               = C {0.5};
+    cyclic[(i * 130) + ((i + 1) % 130)] = C {0.0, 0.25};
+  }
+  const matrix<C> turn {130, 130, cyclic};
+  EXPECT(!numerical::detail::exactly_hermitian(turn));
+  EXPECT(relative_gap(numerical::expm(turn) * numerical::expm(C {-1.0} *turn), numerical::expm(matrix<C> {130, 130, std::vector<C>(std::size_t {130} *130, C {})})) < 1e-12);
+  const matrix<double> idempotent {{0.0, 0.0, 1.0}, {0.0, 0.0, 0.0}, {0.0, 0.0, 1.0}}; // A² = A: its root, 0 over 0 inside
+  EXPECT(relative_gap(numerical::detail::as_complex(numerical::sqrtm(idempotent)), numerical::detail::as_complex(idempotent)) < 1e-15);
+  EXPECT(relative_gap(numerical::complex_sqrtm(idempotent), numerical::detail::as_complex(idempotent)) < 1e-15);
+  const matrix<double> indefinite           {{-1.0, 0.5}, {0.5, 2.0}};
+  const matrix<C>      hermitian_indefinite {{C {-1.0}, C {0.5, 0.5}}, {C {0.5, -0.5}, C {2.0}}};
+  const matrix<C>      complex_root         {numerical::sqrtm(hermitian_indefinite)};
+  EXPECT(relative_gap(complex_root * complex_root, hermitian_indefinite) < 1e-14);
+  const matrix<C>      root                 {numerical::complex_sqrtm(indefinite)};
   EXPECT(relative_gap(root * root, numerical::detail::as_complex(indefinite)) < 1e-14);
   EXPECT(logm_inverts(indefinite, 1e-13));
   EXPECT_THROWS(static_cast<void>(numerical::sqrtm(indefinite)), std::domain_error);

@@ -277,6 +277,65 @@ namespace numerical {
       }
     }
 
+    //! \brief `pttrf`'s step for a real tridiagonal: `e ← e / d`, \return `next − e·e_old`, the next pivot.
+    [[nodiscard]] inline double positive_pivot_step(double  d,
+                                                    double& e,
+                                                    double  next)
+    {
+      const double ei {e};
+      e = ei / d;
+      return next - (e * ei);
+    }
+
+    //! \brief `zpttrf`'s step for a complex one: `e ← e / d` by parts, \return `next − f·Re e − g·Im e`.
+    [[nodiscard]] inline double positive_pivot_step(double                d,
+                                                    std::complex<double>& e,
+                                                    double                next)
+    {
+      const double real {e.real()};
+      const double imag {e.imag()};
+      const double f    {real / d};
+      const double g    {imag / d};
+      e = std::complex<double> {f, g};
+      return next - (f * real) - (g * imag);
+    }
+
+    //! \brief `dptts2`'s last two passes, after `L`: `D` and `Lᵀ` in one, `b ← b / d − b_next e` from the end.
+    inline void positive_back_substitution(const buffer<double>& d,
+                                           const buffer<double>& e,
+                                           buffer<double>&       b,
+                                           std::size_t           n,
+                                           std::size_t           k)
+    {
+      for (std::size_t c {0}; c < k; ++c) {
+        b[((n - 1) * k) + c] = b[((n - 1) * k) + c] / d[n - 1];
+      }
+      for (std::size_t i {n - 1}; i-- > 0;) {
+        for (std::size_t c {0}; c < k; ++c) {
+          b[(i * k) + c] = (b[(i * k) + c] / d[i]) - (b[((i + 1) * k) + c] * e[i]);
+        }
+      }
+    }
+
+    //! \brief `zptts2`'s (lower): `D`, then `Lᴴ`, `b ← b − b_next conj(e)` from the end.
+    inline void positive_back_substitution(const buffer<double>&               d,
+                                           const buffer<std::complex<double>>& e,
+                                           buffer<std::complex<double>>&       b,
+                                           std::size_t                         n,
+                                           std::size_t                         k)
+    {
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t c {0}; c < k; ++c) {
+          b[(i * k) + c] = b[(i * k) + c] / d[i];
+        }
+      }
+      for (std::size_t i {n - 1}; i-- > 0;) {
+        for (std::size_t c {0}; c < k; ++c) {
+          b[(i * k) + c] = b[(i * k) + c] - (b[((i + 1) * k) + c] * std::conj(e[i]));
+        }
+      }
+    }
+
     /*!
      * \brief The \p k right-hand sides of \p b (`n × k`, row-major) solved in place against the Hermitian positive
      *        definite tridiagonal matrix of real diagonal \p d and subdiagonal \p e (`n` and `n − 1` entries,
@@ -296,19 +355,7 @@ namespace numerical {
           throw not_positive_definite_error("solveh_banded: the matrix is not positive definite (leading minor " + std::to_string(i + 1) + ")");
         }
         if (i + 1 < n) {
-          if constexpr (std::is_same_v<T, double>) {
-            const double ei {e[i]};
-            e[i]     = ei / d[i];
-            d[i + 1] = d[i + 1] - (e[i] * ei);
-          }
-          else {
-            const double real {e[i].real()};
-            const double imag {e[i].imag()};
-            const double f    {real / d[i]};
-            const double g    {imag / d[i]};
-            e[i]     = T {f, g};
-            d[i + 1] = d[i + 1] - (f * real) - (g * imag);
-          }
+          d[i + 1] = positive_pivot_step(d[i], e[i], d[i + 1]);
         }
       }
       for (std::size_t i {1}; i < n; ++i) {
@@ -316,28 +363,7 @@ namespace numerical {
           b[(i * k) + c] = b[(i * k) + c] - (b[((i - 1) * k) + c] * e[i - 1]);
         }
       }
-      if constexpr (std::is_same_v<T, double>) {
-        for (std::size_t c {0}; c < k; ++c) {
-          b[((n - 1) * k) + c] = b[((n - 1) * k) + c] / d[n - 1];
-        }
-        for (std::size_t i {n - 1}; i-- > 0;) {
-          for (std::size_t c {0}; c < k; ++c) {
-            b[(i * k) + c] = (b[(i * k) + c] / d[i]) - (b[((i + 1) * k) + c] * e[i]);
-          }
-        }
-      }
-      else {
-        for (std::size_t i {0}; i < n; ++i) {
-          for (std::size_t c {0}; c < k; ++c) {
-            b[(i * k) + c] = b[(i * k) + c] / d[i];
-          }
-        }
-        for (std::size_t i {n - 1}; i-- > 0;) {
-          for (std::size_t c {0}; c < k; ++c) {
-            b[(i * k) + c] = b[(i * k) + c] - (b[((i + 1) * k) + c] * std::conj(e[i]));
-          }
-        }
-      }
+      positive_back_substitution(d, e, b, n, k);
     }
 
     //! \brief A complex value as a real result takes it: its real part (the imaginary part rounding's alone).

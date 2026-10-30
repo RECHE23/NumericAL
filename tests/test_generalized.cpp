@@ -511,6 +511,8 @@ TEST(riccati_equations_without_a_stabilising_solution_are_refused)
   EXPECT_THROWS(static_cast<void>(numerical::solve_discrete_are(M {{2.0, 0.0}, {0.0, 0.5}}, M {{0.0}, {1.0}}, other, M {{1.0}})),
                 numerical::singular_matrix_error);
   for (const double q : {-0.5, -2.0}) {
+    const M unit {{1.0}};
+    EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_are(M {{0.0}}, M {{1.0}}, M {{q}}, M {{1.0}}, &unit)), numerical::convergence_error); // the pencil
     EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_are(M {{0.0}}, M {{1.0}}, M {{q}}, M {{1.0}})), numerical::convergence_error);
     EXPECT_THROWS(static_cast<void>(numerical::solve_discrete_are(M {{1.0}}, M {{1.0}}, M {{q}}, M {{1.0}})), numerical::convergence_error);
   }

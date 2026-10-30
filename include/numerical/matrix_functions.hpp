@@ -1075,7 +1075,7 @@ namespace numerical {
       for (std::size_t k {0}; k < roots.size(); ++k) {
         roots[k] = complex_sqrt(std::complex<double> {values[k]});
       }
-      return spectral<std::complex<double>>(vectors, roots, values.size() == 0 || values[0] >= 0.0);
+      return spectral<std::complex<double>>(vectors, roots, std::all_of(values.begin(), values.end(), [](double v) { return v >= 0.0; }));
     }
   } // namespace detail
 
@@ -1148,7 +1148,7 @@ namespace numerical {
     std::optional<matrix<double>> root;
     if (detail::exactly_hermitian(a)) {
       const auto [values, vectors] {detail::hermitian_system(a)};
-      if (values.size() > 0 && values[0] < 0.0) {
+      if (!std::all_of(values.begin(), values.end(), [](double v) { return v >= 0.0; })) {
         throw std::domain_error("sqrtm: a real eigenvalue below 0, whose principal square root is complex");
       }
       std::vector<double> roots(values.size());
@@ -1334,11 +1334,6 @@ namespace numerical {
     //!        SciPy's `_remainder_matrix_power_triu`), `m` from 1 to 7.
     inline constexpr std::array<double, 8> power_pade_bounds {0.0, 1.51e-5, 2.24e-3, 1.88e-2, 6.04e-2, 1.24e-1, 2.00e-1, 2.79e-1};
 
-    //! \brief `θ_m` of \ref log_pade_bounds.
-    [[nodiscard]] inline double log_pade_bound(std::size_t m)
-    {
-      return log_pade_bounds[m];
-    }
 
     //! \brief `ceil((Im z − π) / 2π)`, the unwinding number of `z` (SciPy's `_unwindk`).
     [[nodiscard]] inline double unwinding(const std::complex<double>& z)
