@@ -493,14 +493,14 @@ namespace {
                                           const std::vector<double>& t)
   {
     numerical::detail::real_qz_form f;
-    f.n = n;
-    f.s = numerical::buffer<double>(s.begin(), s.end());
-    f.t = numerical::buffer<double>(t.begin(), t.end());
-    f.q = numerical::buffer<double>(n * n, 0.0);
+    f.n  = n;
+    f.s  = numerical::buffer<double>(s.begin(), s.end());
+    f.t  = numerical::buffer<double>(t.begin(), t.end());
+    f.qt = numerical::buffer<double>(n * n, 0.0);
     for (std::size_t i {0}; i < n; ++i) {
-      f.q[(i * n) + i] = 1.0;
+      f.qt[(i * n) + i] = 1.0;
     }
-    f.z = f.q;
+    f.zt = f.qt;
     return f;
   }
 
@@ -512,8 +512,8 @@ namespace {
                      double                                 tolerance)
   {
     const std::size_t                                                                                          n {f.n};
-    const matrix<double>                                                                                       q {n, n, f.q};
-    const matrix<double>                                                                                       z {n, n, f.z};
+    const matrix<double>                                                                                       q {numerical::transpose(matrix<double> {n, n, f.qt})};
+    const matrix<double>                                                                                       z {numerical::transpose(matrix<double> {n, n, f.zt})};
     const matrix<double>                                                                                       a {n, n, s};
     const matrix<double>                                                                                       b {n, n, t};
     bool                                                                                                       fine {largest_entry((q * matrix<double> {n, n, f.s} *numerical::transpose(z)) - a) <= tolerance * largest_entry(a)};
@@ -542,8 +542,8 @@ TEST(real_qz_iteration_takes_extreme_ratios)
       const auto                      values {numerical::detail::real_qz_iteration(f, 30 * n)};
       EXPECT(values.size() == n);
       // the form against the pencil: Q S Zᵀ = A, Q T Zᵀ = B
-      const matrix<double> q {n, n, f.q};
-      const matrix<double> z {n, n, f.z};
+      const matrix<double> q {numerical::transpose(matrix<double> {n, n, f.qt})};
+      const matrix<double> z {numerical::transpose(matrix<double> {n, n, f.zt})};
       EXPECT(largest_entry((q * matrix<double> {n, n, f.s} *numerical::transpose(z)) - matrix<double> {n, n, shift}) <= 1e-13 * 1e300);
       EXPECT(largest_entry((q * matrix<double> {n, n, f.t} *numerical::transpose(z)) - matrix<double> {n, n, *b}) <= 1e-13 * largest_entry(matrix<double> {n, n, *b}));
     }

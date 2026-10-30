@@ -329,11 +329,11 @@ TEST(generalized_schur_exchange_refused_by_the_strong_test)
      C {-6.9181806678442579e-209}, C {6.8993726162757166e-274}}};
   for (const std::vector<C>& c : blocks) {
     numerical::detail::qz_form f;
-    f.n = 2;
-    f.s = numerical::buffer<C> {c[0], c[1], C {}, c[2]};
-    f.t = numerical::buffer<C> {c[3], c[4], C {}, c[5]};
-    f.q = numerical::buffer<C> {C {1.0}, C {}, C {}, C {1.0}};
-    f.z = f.q;
+    f.n  = 2;
+    f.s  = numerical::buffer<C> {c[0], c[1], C {}, c[2]};
+    f.t  = numerical::buffer<C> {c[3], c[4], C {}, c[5]};
+    f.qt = numerical::buffer<C> {C {1.0}, C {}, C {}, C {1.0}};
+    f.zt = f.qt;
     const numerical::buffer<C> s {f.s};
     const numerical::buffer<C> t {f.t};
     EXPECT(!numerical::detail::exchange_pencil_diagonal(f, 1));

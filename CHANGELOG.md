@@ -49,6 +49,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   `keepdims` for `any` and `all`; the other calls' time unchanged (a 4 × 4 `sum` 492 ns, `+` 857).
 
 ### Changed
+- **The QZ algorithm twice as fast, the same bits**: `Q` and `Z` are kept transposed through the reduction, the
+  iteration and the reordering, so that each rotation and reflection runs along contiguous memory where it strode
+  across rows. Real (`qz`, `ordqz`, `real_generalized_schur`): order 256 369 → 188 ms, 512 3.73 → 1.77 s (SciPy
+  1.17's `dgges` 2.05 s); complex: order 128 63 → 29 ms, 256 678 → 309 ms (arm64, Clang; GCC alike).
 - **`tanm`, `tanhm` and `eigh_tridiagonal(select=…)` faster, the same bits**: `tanm` and `tanhm` compute the
   exponentials `cosm` and `sinm` (`coshm` and `sinhm`) both take once (order 200, real 15.9 → 7.8 ms, complex
   33.4 → 17.3 ms); `eigh_tridiagonal` keeps the selected eigenvalues and vectors by one slice, the selection being

@@ -39,15 +39,15 @@ namespace numerical {
 
     /*!
      * \brief A complex pencil in generalized Schur form being formed: `S` and `T` (`n × n`, row-major) with
-     *        `A = Q S Zᴴ` and `B = Q T Zᴴ`, \ref q and \ref z unitary.
+     *        `A = Q S Zᴴ` and `B = Q T Zᴴ`, `Q` and `Z` unitary (\ref qt, \ref zt).
      */
     struct qz_form
     {
       std::size_t                  n {0}; //!< The order.
       buffer<std::complex<double>> s;     //!< `S`, upper Hessenberg, then triangular.
       buffer<std::complex<double>> t;     //!< `T`, upper triangular.
-      buffer<std::complex<double>> q;     //!< `Q`, by rows.
-      buffer<std::complex<double>> z;     //!< `Z`, by rows.
+      buffer<std::complex<double>> qt;    //!< `Qᵀ` by rows: `Q`'s columns, each contiguous for the rotations.
+      buffer<std::complex<double>> zt;    //!< `Zᵀ` by rows.
 
       //! \brief `S(i, j)`, from 1.
       [[nodiscard]] std::complex<double>& h(std::size_t i,
@@ -90,6 +90,18 @@ namespace numerical {
       {
         rotate_pair(m.data() + ((first - 1) * n) + (j - 1), m.data() + ((first - 1) * n) + (k - 1), last - first + 1, n, c, sine);
       }
+
+      //! \brief Columns \p j and \p k (from 1) of `Q` or `Z` whole, rows \p j and \p k of \p mt, its transpose:
+      //!        \ref rotate_columns's arithmetic, each column contiguous.
+      static void rotate_vectors(buffer<std::complex<double>>& mt,
+                                 std::size_t                   n,
+                                 std::size_t                   j,
+                                 std::size_t                   k,
+                                 double                        c,
+                                 const std::complex<double>&   sine)
+      {
+        rotate_pair(mt.data() + ((j - 1) * n), mt.data() + ((k - 1) * n), n, 1, c, sine);
+      }
     };
 
     /*!
@@ -109,12 +121,13 @@ namespace numerical {
       qz_form                                form;
       form.n = n;
       form.t = buffer<C>(r.begin(), r.end());
-      const matrix<C> s {adjoint_of(q) * a};
+      const matrix<C> s  {adjoint_of(q) * a};
       form.s = buffer<C>(s.begin(), s.end());
-      form.q = buffer<C>(q.begin(), q.end());
-      form.z = buffer<C>(n * n, C {});
+      const matrix<C> qt {transpose(q)};
+      form.qt = buffer<C>(qt.begin(), qt.end());
+      form.zt = buffer<C>(n * n, C {});
       for (std::size_t i {0}; i < n; ++i) {
-        form.z[(i * n) + i] = C {1.0};
+        form.zt[(i * n) + i] = C {1.0};
       }
       for (std::size_t column {1}; column + 2 <= n; ++column) {
         for (std::size_t row {n}; row >= column + 2; --row) {
@@ -124,14 +137,14 @@ namespace numerical {
           form.h(row, column)     = C {};
           qz_form::rotate_rows(form.s, n, row - 1, column + 1, n, g.c, g.s);
           qz_form::rotate_rows(form.t, n, row - 1, row - 1, n, g.c, g.s);
-          qz_form::rotate_columns(form.q, n, row - 1, row, 1, n, g.c, std::conj(g.s));
+          qz_form::rotate_vectors(form.qt, n, row - 1, row, g.c, std::conj(g.s));
           // columns row and row − 1 take out the fill B(row, row − 1)
           const plane_rotation<C> h {givens(form.b(row, row), form.b(row, row - 1))};
           form.b(row, row)     = h.r;
           form.b(row, row - 1) = C {};
           qz_form::rotate_columns(form.s, n, row, row - 1, 1, n, h.c, h.s);
           qz_form::rotate_columns(form.t, n, row, row - 1, 1, row - 1, h.c, h.s);
-          qz_form::rotate_columns(form.z, n, row, row - 1, 1, n, h.c, h.s);
+          qz_form::rotate_vectors(form.zt, n, row, row - 1, h.c, h.s);
         }
       }
       return form;
@@ -155,7 +168,7 @@ namespace numerical {
           f.h(i, j) *= sign;
         }
         for (std::size_t i {1}; i <= n; ++i) {
-          f.z[((i - 1) * n) + (j - 1)] *= sign;
+          f.zt[((j - 1) * n) + (i - 1)] *= sign;
         }
       }
       else {
@@ -207,7 +220,7 @@ namespace numerical {
       const auto   rotation_left = [&](std::size_t row, std::size_t first, double c, const C& sine) { // rows row, row + 1 of S and T
                                      qz_form::rotate_rows(f.s, n, row, first, n, c, sine);
                                      qz_form::rotate_rows(f.t, n, row, first, n, c, sine);
-                                     qz_form::rotate_columns(f.q, n, row, row + 1, 1, n, c, std::conj(sine));
+                                     qz_form::rotate_vectors(f.qt, n, row, row + 1, c, std::conj(sine));
                                    };
       for (std::size_t jiter {0}; jiter < steps; ++jiter) {
         // the case to take: 0 a QZ step on ifirst…ilast, 1 T(ilast, ilast) zero, 2 a 1 × 1 block split at ilast
@@ -247,7 +260,7 @@ namespace numerical {
                   f.h(jch + 1, jch) = C {};
                   qz_form::rotate_rows(f.s, n, jch, jch + 1, n, g.c, g.s);
                   qz_form::rotate_rows(f.t, n, jch, jch + 1, n, g.c, g.s);
-                  qz_form::rotate_columns(f.q, n, jch, jch + 1, 1, n, g.c, std::conj(g.s));
+                  qz_form::rotate_vectors(f.qt, n, jch, jch + 1, g.c, std::conj(g.s));
                   if (ilazr2) {
                     f.h(jch, jch - 1) *= g.c;
                   }
@@ -277,13 +290,13 @@ namespace numerical {
                 f.b(jch + 1, jch + 1) = C {};
                 qz_form::rotate_rows(f.t, n, jch, jch + 2, n, g.c, g.s);
                 qz_form::rotate_rows(f.s, n, jch, jch - 1, n, g.c, g.s);
-                qz_form::rotate_columns(f.q, n, jch, jch + 1, 1, n, g.c, std::conj(g.s));
+                qz_form::rotate_vectors(f.qt, n, jch, jch + 1, g.c, std::conj(g.s));
                 const plane_rotation<C> h {givens(f.h(jch + 1, jch), f.h(jch + 1, jch - 1))};
                 f.h(jch + 1, jch)     = h.r;
                 f.h(jch + 1, jch - 1) = C {};
                 qz_form::rotate_columns(f.s, n, jch, jch - 1, 1, jch, h.c, h.s);
                 qz_form::rotate_columns(f.t, n, jch, jch - 1, 1, jch - 1, h.c, h.s);
-                qz_form::rotate_columns(f.z, n, jch, jch - 1, 1, n, h.c, h.s);
+                qz_form::rotate_vectors(f.zt, n, jch, jch - 1, h.c, h.s);
               }
               action = 1;
               break;
@@ -301,7 +314,7 @@ namespace numerical {
           f.h(ilast, ilast - 1) = C {};
           qz_form::rotate_columns(f.s, n, ilast, ilast - 1, 1, ilast - 1, g.c, g.s);
           qz_form::rotate_columns(f.t, n, ilast, ilast - 1, 1, ilast - 1, g.c, g.s);
-          qz_form::rotate_columns(f.z, n, ilast, ilast - 1, 1, n, g.c, g.s);
+          qz_form::rotate_vectors(f.zt, n, ilast, ilast - 1, g.c, g.s);
           action = 2;
         }
         if (action == 2) { // a 1 × 1 block: its eigenvalue, then the next block
@@ -386,7 +399,7 @@ namespace numerical {
           f.b(j + 1, j)     = C {};
           qz_form::rotate_columns(f.s, n, j + 1, j, 1, std::min(j + 2, ilast), g.c, g.s);
           qz_form::rotate_columns(f.t, n, j + 1, j, 1, j, g.c, g.s);
-          qz_form::rotate_columns(f.z, n, j + 1, j, 1, n, g.c, g.s);
+          qz_form::rotate_vectors(f.zt, n, j + 1, j, g.c, g.s);
         }
       }
       throw convergence_error("QZ: the iterations did not converge (zhgeqz's info)");
@@ -450,10 +463,10 @@ namespace numerical {
       }
       qz_form::rotate_columns(f.s, n, j, j + 1, 1, j + 1, z.c, zs);
       qz_form::rotate_columns(f.t, n, j, j + 1, 1, j + 1, z.c, zs);
-      qz_form::rotate_columns(f.z, n, j, j + 1, 1, n, z.c, zs);
+      qz_form::rotate_vectors(f.zt, n, j, j + 1, z.c, zs);
       qz_form::rotate_rows(f.s, n, j, j, n, q.c, q.s);
       qz_form::rotate_rows(f.t, n, j, j, n, q.c, q.s);
-      qz_form::rotate_columns(f.q, n, j, j + 1, 1, n, q.c, std::conj(q.s));
+      qz_form::rotate_vectors(f.qt, n, j, j + 1, q.c, std::conj(q.s));
       f.h(j + 1, j) = C {};
       f.b(j + 1, j) = C {};
       return true;
@@ -461,15 +474,15 @@ namespace numerical {
 
     /*!
      * \brief A real pencil in generalized real Schur form being formed: `S` and `T` (`n × n`, row-major) with
-     *        `A = Q S Zᵀ` and `B = Q T Zᵀ`, \ref q and \ref z orthogonal.
+     *        `A = Q S Zᵀ` and `B = Q T Zᵀ`, `Q` and `Z` orthogonal (\ref qt, \ref zt).
      */
     struct real_qz_form
     {
       std::size_t    n {0}; //!< The order.
       buffer<double> s;     //!< `S`, upper Hessenberg, then quasi-triangular.
       buffer<double> t;     //!< `T`, upper triangular.
-      buffer<double> q;     //!< `Q`, by rows.
-      buffer<double> z;     //!< `Z`, by rows.
+      buffer<double> qt;    //!< `Qᵀ` by rows: `Q`'s columns, each contiguous for the rotations and reflections.
+      buffer<double> zt;    //!< `Zᵀ` by rows.
 
       //! \brief `S(i, j)`, from 1.
       [[nodiscard]] double& h(std::size_t i,
@@ -961,12 +974,14 @@ namespace numerical {
           f.b(j + 1, jc) -= temp2 * t2;
           f.b(j + 2, jc) -= temp2 * t3;
         }
-        for (std::size_t r {0}; r < n; ++r) { // Q's columns j … j + 2
-          double* const row  {f.q.data() + (r * n) + (j - 1)};
-          const double  temp {row[0] + (v[1] * row[1]) + (v[2] * row[2])};
-          row[0] -= temp * tau;
-          row[1] -= temp * t2;
-          row[2] -= temp * t3;
+        double* const q0 {f.qt.data() + ((j - 1) * n)}; // Q's columns j … j + 2, rows of Qᵀ
+        double* const q1 {q0 + n};
+        double* const q2 {q1 + n};
+        for (std::size_t r {0}; r < n; ++r) {
+          const double temp {q0[r] + (v[1] * q1[r]) + (v[2] * q2[r])};
+          q0[r] -= temp * tau;
+          q1[r] -= temp * t2;
+          q2[r] -= temp * t3;
         }
         // the reflection of columns j … j + 2 that takes T(j + 1 … j + 2, j) out: from the null vector of T's 2 × 2 below
         bool         ilpivt {false};
@@ -1046,7 +1061,15 @@ namespace numerical {
                                        };
         reflect_columns(f.s, 1, std::min(j + 3, ilast));
         reflect_columns(f.t, 1, j + 2);
-        reflect_columns(f.z, 1, n);
+        double* const z0 {f.zt.data() + ((j - 1) * n)}; // Z's columns j … j + 2, rows of Zᵀ
+        double* const z1 {z0 + n};
+        double* const z2 {z1 + n};
+        for (std::size_t r {0}; r < n; ++r) {
+          const double temp {z0[r] + (w2 * z1[r]) + (w3 * z2[r])};
+          z0[r] -= temp * tau2;
+          z1[r] -= temp * c2;
+          z2[r] -= temp * c3;
+        }
         f.b(j + 1, j) = 0.0;
         f.b(j + 2, j) = 0.0;
       }
@@ -1057,13 +1080,13 @@ namespace numerical {
       f.h(j + 1, j - 1) = 0.0;
       form::rotate_rows(f.s, n, j, j + 1, j, n, g.c, g.s);
       form::rotate_rows(f.t, n, j, j + 1, j, n, g.c, g.s);
-      form::rotate_columns(f.q, n, j, j + 1, 1, n, g.c, g.s);
+      form::rotate_rows(f.qt, n, j, j + 1, 1, n, g.c, g.s);
       const plane_rotation<double> h {givens(f.b(j + 1, j + 1), f.b(j + 1, j))};
       f.b(j + 1, j + 1) = h.r;
       f.b(j + 1, j)     = 0.0;
       form::rotate_columns(f.s, n, j + 1, j, 1, ilast, h.c, h.s);
       form::rotate_columns(f.t, n, j + 1, j, 1, ilast - 1, h.c, h.s);
-      form::rotate_columns(f.z, n, j + 1, j, 1, n, h.c, h.s);
+      form::rotate_rows(f.zt, n, j + 1, j, 1, n, h.c, h.s);
     }
 
     /*!
@@ -1082,12 +1105,13 @@ namespace numerical {
       real_qz_form                   form;
       form.n = n;
       form.t = buffer<double>(r.begin(), r.end());
-      const matrix<double> s {transpose(q) * a};
+      const matrix<double> s  {transpose(q) * a};
       form.s = buffer<double>(s.begin(), s.end());
-      form.q = buffer<double>(q.begin(), q.end());
-      form.z = buffer<double>(n * n, 0.0);
+      const matrix<double> qt {transpose(q)};
+      form.qt = buffer<double>(qt.begin(), qt.end());
+      form.zt = buffer<double>(n * n, 0.0);
       for (std::size_t i {0}; i < n; ++i) {
-        form.z[(i * n) + i] = 1.0;
+        form.zt[(i * n) + i] = 1.0;
         for (std::size_t j {0}; j < i; ++j) { // R's zeros below its diagonal, as the factorisation leaves them
           form.t[(i * n) + j] = 0.0;
         }
@@ -1100,14 +1124,14 @@ namespace numerical {
           form.h(row, column)     = 0.0;
           real_qz_form::rotate_rows(form.s, n, row - 1, row, column + 1, n, g.c, g.s);
           real_qz_form::rotate_rows(form.t, n, row - 1, row, row - 1, n, g.c, g.s);
-          real_qz_form::rotate_columns(form.q, n, row - 1, row, 1, n, g.c, g.s);
+          real_qz_form::rotate_rows(form.qt, n, row - 1, row, 1, n, g.c, g.s);
           // columns row and row − 1 take out the fill B(row, row − 1)
           const plane_rotation<double> h {givens(form.b(row, row), form.b(row, row - 1))};
           form.b(row, row)     = h.r;
           form.b(row, row - 1) = 0.0;
           real_qz_form::rotate_columns(form.s, n, row, row - 1, 1, n, h.c, h.s);
           real_qz_form::rotate_columns(form.t, n, row, row - 1, 1, row - 1, h.c, h.s);
-          real_qz_form::rotate_columns(form.z, n, row, row - 1, 1, n, h.c, h.s);
+          real_qz_form::rotate_rows(form.zt, n, row, row - 1, 1, n, h.c, h.s);
         }
       }
       return form;
@@ -1161,7 +1185,7 @@ namespace numerical {
                                       f.b(i, j) = -f.b(i, j);
                                     }
                                     for (std::size_t i {0}; i < n; ++i) {
-                                      f.z[(i * n) + (j - 1)] = -f.z[(i * n) + (j - 1)];
+                                      f.zt[((j - 1) * n) + i] = -f.zt[((j - 1) * n) + i];
                                     }
                                   }
                                   values[j - 1] = {f.h(j, j), 0.0, f.b(j, j)};
@@ -1214,7 +1238,7 @@ namespace numerical {
                   f.h(jch + 1, jch) = 0.0;
                   form::rotate_rows(f.s, n, jch, jch + 1, jch + 1, n, g.c, g.s);
                   form::rotate_rows(f.t, n, jch, jch + 1, jch + 1, n, g.c, g.s);
-                  form::rotate_columns(f.q, n, jch, jch + 1, 1, n, g.c, g.s);
+                  form::rotate_rows(f.qt, n, jch, jch + 1, 1, n, g.c, g.s);
                   if (ilazr2) {
                     f.h(jch, jch - 1) *= g.c;
                   }
@@ -1246,13 +1270,13 @@ namespace numerical {
                   form::rotate_rows(f.t, n, jch, jch + 1, jch + 2, n, g.c, g.s);
                 }
                 form::rotate_rows(f.s, n, jch, jch + 1, jch - 1, n, g.c, g.s);
-                form::rotate_columns(f.q, n, jch, jch + 1, 1, n, g.c, g.s);
+                form::rotate_rows(f.qt, n, jch, jch + 1, 1, n, g.c, g.s);
                 const plane_rotation<double> h {givens(f.h(jch + 1, jch), f.h(jch + 1, jch - 1))};
                 f.h(jch + 1, jch)     = h.r;
                 f.h(jch + 1, jch - 1) = 0.0;
                 form::rotate_columns(f.s, n, jch, jch - 1, 1, jch, h.c, h.s);
                 form::rotate_columns(f.t, n, jch, jch - 1, 1, jch - 1, h.c, h.s); // jch ≥ 2: j = 1 sets ilazro
-                form::rotate_columns(f.z, n, jch, jch - 1, 1, n, h.c, h.s);
+                form::rotate_rows(f.zt, n, jch, jch - 1, 1, n, h.c, h.s);
               }
               action = 1;
               break;
@@ -1270,7 +1294,7 @@ namespace numerical {
           f.h(ilast, ilast - 1) = 0.0;
           form::rotate_columns(f.s, n, ilast, ilast - 1, 1, ilast - 1, g.c, g.s);
           form::rotate_columns(f.t, n, ilast, ilast - 1, 1, ilast - 1, g.c, g.s);
-          form::rotate_columns(f.z, n, ilast, ilast - 1, 1, n, g.c, g.s);
+          form::rotate_rows(f.zt, n, ilast, ilast - 1, 1, n, g.c, g.s);
           action = 2;
         }
         if (action == 2) {
@@ -1346,13 +1370,13 @@ namespace numerical {
             }
             form::rotate_rows(f.s, n, j, j + 1, j, n, c, sine);
             form::rotate_rows(f.t, n, j, j + 1, j, n, c, sine);
-            form::rotate_columns(f.q, n, j, j + 1, 1, n, c, sine);
+            form::rotate_rows(f.qt, n, j, j + 1, 1, n, c, sine);
             const plane_rotation<double> g {givens(f.b(j + 1, j + 1), f.b(j + 1, j))};
             f.b(j + 1, j + 1) = g.r;
             f.b(j + 1, j)     = 0.0;
             form::rotate_columns(f.s, n, j + 1, j, 1, std::min(j + 2, ilast), g.c, g.s);
             form::rotate_columns(f.t, n, j + 1, j, 1, j, g.c, g.s);
-            form::rotate_columns(f.z, n, j + 1, j, 1, n, g.c, g.s);
+            form::rotate_rows(f.zt, n, j + 1, j, 1, n, g.c, g.s);
           }
           continue;
         }
@@ -1374,8 +1398,8 @@ namespace numerical {
           if (ilast > 2) {
             form::rotate_columns(f.t, n, ilast - 1, ilast, 1, ilast - 2, svd.csr, svd.snr);
           }
-          form::rotate_columns(f.q, n, ilast - 1, ilast, 1, n, svd.csl, svd.snl);
-          form::rotate_columns(f.z, n, ilast - 1, ilast, 1, n, svd.csr, svd.snr);
+          form::rotate_rows(f.qt, n, ilast - 1, ilast, 1, n, svd.csl, svd.snl);
+          form::rotate_rows(f.zt, n, ilast - 1, ilast, 1, n, svd.csr, svd.snr);
           f.b(ilast - 1, ilast - 1) = b11;
           f.b(ilast - 1, ilast)     = 0.0;
           f.b(ilast, ilast - 1)     = 0.0;
@@ -1386,7 +1410,7 @@ namespace numerical {
               f.b(i, ilast) = -f.b(i, ilast);
             }
             for (std::size_t i {0}; i < n; ++i) {
-              f.z[(i * n) + (ilast - 1)] = -f.z[(i * n) + (ilast - 1)];
+              f.zt[((ilast - 1) * n) + i] = -f.zt[((ilast - 1) * n) + i];
             }
             b22 = -b22;
           }
@@ -1989,18 +2013,21 @@ namespace numerical {
       right_times(f.t, j1 - 1);
       left_times(f.s);
       left_times(f.t);
-      right_times(f.z, n);
-      for (std::size_t row {1}; row <= n; ++row) { // Q ← Q LI
-        std::array<double, 4> v {};
-        for (std::size_t c {0}; c < m; ++c) {
-          for (std::size_t k {0}; k < m; ++k) {
-            v[c] += f.q[((row - 1) * n) + (j1 - 1 + k)] * li(k, c);
-          }
-        }
-        for (std::size_t c {0}; c < m; ++c) {
-          f.q[((row - 1) * n) + (j1 - 1 + c)] = v[c];
-        }
-      }
+      const auto times_transposed = [&](buffer<double>& xt, const small_square& factor) { // X ← X F on Xᵀ's rows j1 …
+                                      for (std::size_t row {1}; row <= n; ++row) {
+                                        std::array<double, 4> v {};
+                                        for (std::size_t c {0}; c < m; ++c) {
+                                          for (std::size_t k {0}; k < m; ++k) {
+                                            v[c] += xt[((j1 - 1 + k) * n) + (row - 1)] * factor(k, c);
+                                          }
+                                        }
+                                        for (std::size_t c {0}; c < m; ++c) {
+                                          xt[((j1 - 1 + c) * n) + (row - 1)] = v[c];
+                                        }
+                                      }
+                                    };
+      times_transposed(f.zt, ir);
+      times_transposed(f.qt, li);
       return true;
     }
 
@@ -2084,9 +2111,9 @@ namespace numerical {
         }
         if (std::signbit(f.b(k, k))) {
           for (std::size_t i {1}; i <= n; ++i) {
-            f.h(k, i)                    = -f.h(k, i);
-            f.b(k, i)                    = -f.b(k, i);
-            f.q[((i - 1) * n) + (k - 1)] = -f.q[((i - 1) * n) + (k - 1)];
+            f.h(k, i)                     = -f.h(k, i);
+            f.b(k, i)                     = -f.b(k, i);
+            f.qt[((k - 1) * n) + (i - 1)] = -f.qt[((k - 1) * n) + (i - 1)];
           }
         }
         values[k - 1] = {f.h(k, k), 0.0, f.b(k, k)};
@@ -2199,13 +2226,13 @@ namespace numerical {
     //! \brief `Q`, unitary: `A = Q S Zᴴ`.
     [[nodiscard]] matrix<std::complex<double>> q() const
     {
-      return matrix<std::complex<double>> {form_.n, form_.n, form_.q};
+      return transpose(matrix<std::complex<double>> {form_.n, form_.n, form_.qt});
     }
 
     //! \brief `Z`, unitary.
     [[nodiscard]] matrix<std::complex<double>> z() const
     {
-      return matrix<std::complex<double>> {form_.n, form_.n, form_.z};
+      return transpose(matrix<std::complex<double>> {form_.n, form_.n, form_.zt});
     }
 
     //! \brief The eigenvalues as `(α, β)`, in the diagonals' order: `α = S(k, k)`, `β = T(k, k)`.
@@ -2338,13 +2365,13 @@ namespace numerical {
     //! \brief `Q`, orthogonal: `A = Q S Zᵀ`.
     [[nodiscard]] matrix<double> q() const
     {
-      return matrix<double> {form_.n, form_.n, form_.q};
+      return transpose(matrix<double> {form_.n, form_.n, form_.qt});
     }
 
     //! \brief `Z`, orthogonal.
     [[nodiscard]] matrix<double> z() const
     {
-      return matrix<double> {form_.n, form_.n, form_.z};
+      return transpose(matrix<double> {form_.n, form_.n, form_.zt});
     }
 
     //! \brief The eigenvalues as `(αr, αi, β)`, in the diagonal's order.
