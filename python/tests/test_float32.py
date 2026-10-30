@@ -1,7 +1,8 @@
 """float32 and complex64 kept as they are, as NumPy keeps them: read, stored, exchanged, promoted, computed and
 returned in single precision. Element-wise arithmetic and square roots are IEEE operations, the same to the bit as
 NumPy's; the decompositions compute in double precision and round their answers to the input's precision, so they are
-as accurate as a single-precision answer can be, where NumPy's LAPACK computes in single precision. Skipped when NumPy
+as accurate as a single-precision answer can be, where NumPy's LAPACK computes in single precision; solve, inverse,
+cholesky, lu_factor and lu_solve of a float32 matrix of order 500 or more compute in single precision, as NumPy's. Skipped when NumPy
 is not importable (CI installs it).
 """
 import unittest
@@ -179,6 +180,38 @@ class SinglePrecisionLinearAlgebra(unittest.TestCase):
         want = np.linalg.lstsq(self.tall.astype(float), np.ones(9), rcond=None)
         self.close(x, want[0], "float32")
         self.assertEqual((residuals.dtype, rank, s.dtype), ("float32", 4, "float32"))
+
+    def test_large_float32_factorisations_compute_in_single_precision(self):
+        # From order 500, solve, inverse, cholesky, lu_factor and lu_solve factorise in float32, as NumPy's LAPACK: the
+        # answers float32 and backward stable at that precision (residuals within 20 n ε of float32 and above double's).
+        rng = np.random.default_rng(11)
+        n = 500
+        a = rng.standard_normal((n, n)).astype(np.float32)
+        spd = (a @ a.T + n * np.eye(n)).astype(np.float32)
+        b = rng.standard_normal((n, 3)).astype(np.float32)
+        w, wb = a.astype(np.float64), b.astype(np.float64)
+
+        def backward(x, matrix, rhs):
+            x = np.asarray(x).astype(np.float64)
+            return np.linalg.norm(matrix.astype(np.float64) @ x - rhs, 1) / (np.linalg.norm(matrix.astype(np.float64), 1) * np.linalg.norm(x, 1))
+
+        x = numerical.solve(a, b)
+        self.assertEqual(x.dtype, "float32")
+        self.assertLess(backward(x, a, wb), 20 * n * EPS32)
+        self.assertGreater(backward(x, a, wb), 1e3 * np.finfo(np.float64).eps)  # single precision, not double rounded
+        inverse = numerical.inverse(a)
+        self.assertEqual(inverse.dtype, "float32")
+        self.assertLess(backward(inverse, a, np.eye(n)), 20 * n * EPS32)
+        lower = np.asarray(numerical.cholesky(spd))
+        self.assertEqual(lower.dtype, np.float32)
+        self.assertLess(np.linalg.norm(lower.astype(np.float64) @ lower.T.astype(np.float64) - spd, 1) / np.linalg.norm(spd.astype(np.float64), 1), 20 * n * EPS32)
+        lu, piv = numerical.lu_factor(a)
+        self.assertEqual(lu.dtype, "float32")
+        y = numerical.lu_solve((lu, piv), b)
+        self.assertEqual(y.dtype, "float32")
+        self.assertLess(backward(y, a, wb), 20 * n * EPS32)
+        small = a[:499, :499]
+        self.assertLess(backward(numerical.solve(small, b[:499]), small, wb[:499]), 4 * EPS32)  # below 500: double, rounded
 
     def test_det_and_slogdet_of_single_precision_are_the_double_answer_rounded(self):
         # The single-precision matrix's values in double, the answer rounded to single, to the bit (a plain number).

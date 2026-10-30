@@ -673,6 +673,17 @@ inline any_tensor widened(const any_tensor& v)
     return v;
 }
 
+// A float32 matrix of at least this order is factorised in single precision, as NumPy's and SciPy's LAPACK does it: the
+// factorisation's time dominates there, and single precision halves it (an LU of order 2000 2.2 times faster on one
+// core); below it the binding's time does, and double precision gives the answer to within an ulp of float32.
+inline constexpr std::size_t native_single_least {500};
+
+// Whether \p v is a float32 matrix that \ref native_single_least sends to single-precision arithmetic.
+inline bool native_single(const any_tensor& v)
+{
+    return std::holds_alternative<single_tensor>(v) && shape_of(v).size() == 2 && shape_of(v)[0] >= native_single_least;
+}
+
 // A float64 or complex128 answer rounded to float32 or complex64 (a single-precision input's dtype, as NumPy's
 // linalg returns it); an integer (a rank) as it is.
 inline any_tensor narrowed(const any_tensor& v)

@@ -46,6 +46,9 @@ any_tensor solve(const any_tensor& a, const any_tensor& b)
                               });
                           }, a);
     }
+    if (native_single(a)) {
+        return do_solve<float>(std::get<single_tensor>(a), std::get<single_tensor>(b));
+    }
     if (is_single(a)) {
         return narrowed(solve(widened(a), widened(b)));
     }
@@ -181,6 +184,9 @@ any_tensor inverse(const any_tensor& v)
     if (shape_of(v).size() > 2) {
         const stack_shape s {stack_of(v)};
         return over_stack_into(v, {s.rows, s.cols}, [](auto&& m) { return numerical::inverse(std::move(m)); });
+    }
+    if (native_single(v)) {
+        return do_inverse<float>(std::get<single_tensor>(v));
     }
     if (is_single(v)) {
         return narrowed(inverse(widened(v)));
@@ -740,6 +746,9 @@ any_tensor cholesky(const any_tensor& v, bool upper)
             return upper ? numerical::detail::adjoint(lower) : lower;
         });
     }
+    if (native_single(v)) {
+        return do_cholesky<float>(std::get<single_tensor>(v), upper);
+    }
     if (is_single(v)) {
         return narrowed(cholesky(widened(v), upper));
     }
@@ -750,7 +759,7 @@ any_tensor cholesky(const any_tensor& v, bool upper)
 }
 
 // solve_triangular(a, b, lower, trans, unit) -> Tensor, as scipy.linalg.solve_triangular: a square, b a vector or a
-// matrix of a's dtype; single precision solved in double and rounded, as the other solves.
+// matrix of a's dtype; single precision solved in double and rounded.
 any_tensor solve_triangular(const any_tensor& a, const any_tensor& b, bool lower, int trans, bool unit)
 {
     const numerical::triangular_op op {triangular_op_of(trans)};
@@ -776,6 +785,9 @@ std::tuple<any_tensor, std::vector<std::size_t>> lu_factor(const any_tensor& a)
 {
     if (shape_of(a).size() != 2 || shape_of(a)[0] != shape_of(a)[1]) {
         throw std::runtime_error("lu_factor: expected a square matrix");
+    }
+    if (native_single(a)) {
+        return do_lu_factor<float>(std::get<single_tensor>(a));
     }
     if (is_single(a)) {
         auto [lu, swaps] {lu_factor(widened(a))};
@@ -833,6 +845,9 @@ any_tensor lu_solve(const any_tensor& lu, PyObject* piv, const any_tensor& b, in
     std::vector<std::size_t> swaps;
     if (!interchanges_of(piv, n, swaps)) {
         throw std::runtime_error("lu_solve: piv must be a sequence of the factor's row count, each interchange in [0, n)");
+    }
+    if (native_single(lu)) {
+        return lu_solved(std::get<single_tensor>(lu).data().data(), swaps, std::get<single_tensor>(b).data().data(), shape_of(b), op);
     }
     if (is_single(lu)) {
         return narrowed(lu_solve(widened(lu), piv, widened(b), trans));

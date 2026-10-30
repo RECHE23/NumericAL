@@ -289,8 +289,10 @@ eigendecomposition, the singular values the eigenvalues' magnitudes), `svdvals(a
 `UPLO="U"` and `upper=True` read the upper triangle, `rcond`/`rtol` cut the singular values relative to the
 largest and `tol` absolutely, `hermitian=True` takes the eigendecomposition. Every one accepts the four dtypes
 and answers in the input's: a float32 or complex64 matrix is decomposed in double precision and its answers rounded
-to single, where NumPy's LAPACK computes in single (so they are as accurate as single precision holds, and the default
-tolerances are float32's epsilon, as NumPy's). `eigh` of a complex Hermitian matrix gives real values and complex
+to single (so they are as accurate as single precision holds, and the default tolerances are float32's epsilon, as
+NumPy's), except that `solve`, `inv`, `cholesky`, `lu_factor` and `lu_solve` factorise a float32 matrix of order 500
+or more in single precision, as NumPy's LAPACK does at every order: there the factorisation's time dominates and single
+precision halves it, its answers backward stable at float32's precision. `eigh` of a complex Hermitian matrix gives real values and complex
 vectors.
 From `scipy.linalg`, with its signatures: `solve_triangular(a, b, trans=0, lower=False, unit_diagonal=False)`;
 `lu_factor(a)` → an `LUFactor`, the pair `(lu, piv)` SciPy returns (LAPACK's interchanges, a tuple of ints) with

@@ -32,6 +32,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   `A` is and every imaginary part is 0. In C++, `numerical::fractional_matrix_power`.
 
 ### Changed
+- **float32 factorisations in single precision from order 500**: `solve`, `inv`, `cholesky`, `lu_factor` and
+  `lu_solve` of a float32 matrix of order 500 or more factorise in float32, as NumPy's and SciPy's LAPACK does, where
+  they computed in double and rounded; below 500, and every other function, as before (the double answer rounded).
+  Backward stable at float32's precision. One core of an M-series Mac, order 2000: solve 51 → 24 ms, inv 139 → 58 ms,
+  cholesky 27 → 16 ms, lu_factor 51 → 22 ms; order 500 1.6 → 1.2, 3.5 → 2.1, 0.8 → 0.7, 1.6 → 1.1 ms.
 - **`logm` keeps real arithmetic** where `A` is real and its real Schur form triangular with no eigenvalue below 0 (an
   upper triangular `A` with no negative diagonal entry, or every eigenvalue real and at least 0), as SciPy's, where it
   made the form complex; the error estimate exponentiates the real `F` as SciPy's does. The powers whose norms choose
