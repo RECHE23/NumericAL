@@ -23,10 +23,10 @@ class Comparisons(unittest.TestCase):
     def setUp(self):
         self.rng = np.random.default_rng(20261030)
 
-    def values(self, shape, dtype=np.float64):
+    def values(self, shape, dtype=None):
         """Elements drawn from SPECIAL and a few small integers, so that pairs often tie."""
         pool = np.array(SPECIAL + [2.0, 3.0])
-        return self.rng.choice(pool, size=shape).astype(dtype)
+        return self.rng.choice(pool, size=shape).astype(np.float64 if dtype is None else dtype)
 
     def check(self, got, expected):
         self.assertIsInstance(got, numerical.Tensor)

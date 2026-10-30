@@ -23,7 +23,8 @@ class Decompositions(unittest.TestCase):
     def setUp(self):
         self.rng = np.random.default_rng(20261108)
 
-    def matrix(self, n, dtype=np.float64, m=None):
+    def matrix(self, n, dtype=None, m=None):
+        dtype = np.float64 if dtype is None else dtype
         a = self.rng.standard_normal((n, m or n))
         if np.dtype(dtype).kind == "c":
             a = a + 1j * self.rng.standard_normal((n, m or n))
