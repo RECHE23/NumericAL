@@ -143,14 +143,15 @@ namespace numerical {
      * \throws not_positive_definite_error If a diagonal entry is not positive when reached.
      */
     template <typename T>
-    void band_cholesky(band_storage<T>& ab,
-                       std::size_t      n,
-                       std::size_t      kd)
+    void band_cholesky(band_storage<T>&   ab,
+                       std::size_t        n,
+                       std::size_t        kd,
+                       const std::string& name)
     {
       for (std::size_t j {1}; j <= n; ++j) {
         const double ajj {std::real(ab(kd + 1, j))};
         if (!(ajj > 0.0)) {
-          throw not_positive_definite_error("solveh_banded: the matrix is not positive definite (leading minor " + std::to_string(j) + ")");
+          throw not_positive_definite_error(name + ": the matrix is not positive definite (leading minor " + std::to_string(j) + ")");
         }
         const double root    {std::sqrt(ajj)};
         ab(kd + 1, j) = T {root};
@@ -447,6 +448,25 @@ namespace numerical {
     return matrix<T> {b.rows(), b.cols(), std::move(x)};
   }
 
+  namespace detail {
+    //! \brief The upper band of `kd` superdiagonals of the band \p ab in either of `scipy.linalg`'s forms (\ref
+    //!        solveh_banded), `AB(kd + 1 + i − j, j) = A(i, j)` for `i ≤ j`, as \ref band_cholesky takes it.
+    template <typename T>
+    [[nodiscard]] band_storage<T> upper_band(const matrix<T>& ab,
+                                             bool             lower_form)
+    {
+      const std::size_t kd   {ab.rows() - 1};
+      const std::size_t n    {ab.cols()};
+      band_storage<T>   work {buffer<T>((kd + 1) * n, T {}), kd + 1};
+      for (std::size_t j {0}; j < n; ++j) {
+        for (std::size_t i {j > kd ? j - kd : 0}; i <= j; ++i) {
+          work(kd + 1 + i - j, j + 1) = lower_form ? conj_of(ab(j - i, i)) : ab(kd + i - j, j);
+        }
+      }
+      return work;
+    }
+  } // namespace detail
+
   /*!
    * \brief The solution `X` of `A X = B` for the Hermitian positive-definite band `A`, given as
    *        `scipy.linalg.solveh_banded` takes it: \p ab of `kd + 1` rows and `n` columns, its upper form
@@ -483,15 +503,67 @@ namespace numerical {
       detail::positive_tridiagonal_solve(d, e, x, n, b.cols());
       return matrix<T> {b.rows(), b.cols(), std::move(x)};
     }
-    detail::band_storage<T> work {buffer<T>((kd + 1) * n, T {}), kd + 1};
-    for (std::size_t j {0}; j < n; ++j) {
-      for (std::size_t i {j > kd ? j - kd : 0}; i <= j; ++i) { // A(i, j), i ≤ j, from either form
-        work(kd + 1 + i - j, j + 1) = lower_form ? detail::conj_of(ab(j - i, i)) : ab(kd + i - j, j);
-      }
-    }
-    detail::band_cholesky(work, n, kd);
+    detail::band_storage<T> work {detail::upper_band(ab, lower_form)};
+    detail::band_cholesky(work, n, kd, "solveh_banded");
     buffer<T> x(b.begin(), b.end());
     detail::band_cholesky_solve(work, n, kd, x, b.cols());
+    return matrix<T> {b.rows(), b.cols(), std::move(x)};
+  }
+
+  /*!
+   * \brief The Cholesky factor of the Hermitian positive-definite band \p ab, as `scipy.linalg.cholesky_banded`
+   *        (LAPACK's `pbtrf`): in \p ab's own form, `U` (`A = Uᴴ U`) in the upper one, `L = Uᴴ` (`A = L Lᴴ`) with
+   *        \p lower_form, the corners outside the band as \p ab has them.
+   * \throws dimension_error             If \p ab has no row.
+   * \throws non_finite_error            If an entry is infinite or NaN.
+   * \throws not_positive_definite_error If `A` is not positive definite.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] matrix<T> cholesky_banded(const matrix<T>& ab,
+                                          bool             lower_form = false)
+  {
+    if (ab.rows() == 0) {
+      throw dimension_error("cholesky_banded: the band must have at least one row");
+    }
+    detail::require_finite(ab, "cholesky_banded");
+    const std::size_t       kd   {ab.rows() - 1};
+    const std::size_t       n    {ab.cols()};
+    detail::band_storage<T> work {detail::upper_band(ab, lower_form)};
+    detail::band_cholesky(work, n, kd, "cholesky_banded");
+    buffer<T> out(ab.begin(), ab.end());
+    for (std::size_t j {0}; j < n; ++j) {
+      for (std::size_t i {j > kd ? j - kd : 0}; i <= j; ++i) { // U(i, j), or L(j, i) = conj(U(i, j))
+        if (lower_form) {
+          out[((j - i) * n) + i] = detail::conj_of(work(kd + 1 + i - j, j + 1));
+        }
+        else {
+          out[((kd + i - j) * n) + j] = work(kd + 1 + i - j, j + 1);
+        }
+      }
+    }
+    return matrix<T> {kd + 1, n, std::move(out)};
+  }
+
+  /*!
+   * \brief The solution `X` of `A X = B` from \ref cholesky_banded's factor \p cb of `A`, as
+   *        `scipy.linalg.cho_solve_banded((cb, lower_form), b)` (LAPACK's `pbtrs`).
+   * \throws dimension_error  If \p cb has no row, or \p b has not as many rows as \p cb has columns.
+   * \throws non_finite_error If an entry is infinite or NaN.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] matrix<T> cho_solve_banded(const matrix<T>& cb,
+                                           const matrix<T>& b,
+                                           bool             lower_form = false)
+  {
+    if (cb.rows() == 0) {
+      throw dimension_error("cho_solve_banded: the band must have at least one row");
+    }
+    detail::require_band(cb, cb.rows(), b, "cho_solve_banded");
+    detail::band_storage<T> work {detail::upper_band(cb, lower_form)};
+    buffer<T>               x(b.begin(), b.end());
+    detail::band_cholesky_solve(work, cb.cols(), cb.rows() - 1, x, b.cols());
     return matrix<T> {b.rows(), b.cols(), std::move(x)};
   }
 

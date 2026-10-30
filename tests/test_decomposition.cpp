@@ -3022,6 +3022,65 @@ TEST(symmetric_eigenvalues_alone_are_the_decompositions)
   EXPECT_THROWS(numerical::symmetric_eigenvalues(matrix<double> {{1.0, 0.0}, {std::nan(""), 1.0}}), numerical::non_finite_error);
 }
 
+// A symmetric tridiagonal's eigenvalues alone and with their vectors are the dense matrix's, at orders on both sides of
+// the divide-and-conquer leaf and at scales past the range of squares; the vectors orthonormal and each its value's.
+TEST(tridiagonal_eigen_is_the_dense_matrix_s)
+{
+  // Fixed seed: the matrices are part of the test, so a failure names the same one every run.
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937_64                  generator {29};
+  std::normal_distribution<double> normal;
+  for (const double scale : {1.0, 1e300, 1e-300}) {
+    for (const std::size_t n : {std::size_t {1}, std::size_t {2}, std::size_t {7}, std::size_t {60}, std::size_t {130}}) {
+      std::vector<double> d(n);
+      std::vector<double> e(n - 1);
+      std::vector<double> dense(n * n, 0.0);
+      for (std::size_t i {0}; i < n; ++i) {
+        d[i]                 = scale * normal(generator);
+        dense[(i * n) + i]   = d[i];
+        if (i + 1 < n) {
+          e[i]                     = scale * normal(generator);
+          dense[(i * n) + i + 1]   = e[i];
+          dense[((i + 1) * n) + i] = e[i];
+        }
+      }
+      const vector<double> expected {numerical::symmetric_eigenvalues(matrix<double>(n, n, dense))};
+      const vector<double> alone    {numerical::tridiagonal_eigenvalues(vector<double> {d}, vector<double> {e})};
+      const auto [values, vectors] {numerical::tridiagonal_eigen(vector<double> {d}, vector<double> {e})};
+      const double tolerance        {1e-12 * static_cast<double>(n) * std::max(std::abs(expected[0]), std::abs(expected[n - 1]))};
+      for (std::size_t j {0}; j < n; ++j) {
+        EXPECT(std::abs(alone[j] - expected[j]) <= tolerance);
+        EXPECT(std::abs(values[j] - expected[j]) <= tolerance);
+        EXPECT(j == 0 || (alone[j - 1] <= alone[j] && values[j - 1] <= values[j]));
+        for (std::size_t r {0}; r < n; ++r) { // (T v)_r − λ v_r, and vᵀ w over the other columns
+          double residual {(d[r] * vectors(r, j)) - (values[j] * vectors(r, j))};
+          residual += r > 0 ? e[r - 1] * vectors(r - 1, j) : 0.0;
+          residual += r + 1 < n ? e[r] * vectors(r + 1, j) : 0.0;
+          EXPECT(std::abs(residual) <= tolerance);
+        }
+        for (std::size_t k {0}; k < n; ++k) {
+          double dot {0.0};
+          for (std::size_t r {0}; r < n; ++r) {
+            dot += vectors(r, j) * vectors(r, k);
+          }
+          EXPECT(std::abs(dot - (j == k ? 1.0 : 0.0)) <= 1e-12 * static_cast<double>(n));
+        }
+      }
+    }
+  }
+  EXPECT(numerical::tridiagonal_eigenvalues(vector<double> {std::vector<double> {}}, vector<double> {std::vector<double> {}}).size() == 0);
+  EXPECT(numerical::tridiagonal_eigen(vector<double> {std::vector<double> {}}, vector<double> {std::vector<double> {}}).second.rows() == 0);
+  const vector<double> zero {numerical::tridiagonal_eigenvalues(vector<double> {std::vector<double> {0.0, 0.0}}, vector<double> {std::vector<double> {0.0}})};
+  EXPECT(zero[0] == 0.0 && zero[1] == 0.0);
+  EXPECT_THROWS(numerical::tridiagonal_eigenvalues(vector<double> {std::vector<double> {1.0, 2.0}}, vector<double> {std::vector<double> {1.0, 2.0}}),
+                numerical::dimension_error);
+  EXPECT_THROWS(numerical::tridiagonal_eigen(vector<double> {std::vector<double> {}}, vector<double> {std::vector<double> {1.0}}), numerical::dimension_error);
+  EXPECT_THROWS(numerical::tridiagonal_eigenvalues(vector<double> {std::vector<double> {1.0, std::nan("")}}, vector<double> {std::vector<double> {1.0}}),
+                numerical::non_finite_error);
+  EXPECT_THROWS(numerical::tridiagonal_eigen(vector<double> {std::vector<double> {1.0, 2.0}}, vector<double> {std::vector<double> {INFINITY}}),
+                numerical::non_finite_error);
+}
+
 TEST(singular_values_alone_are_the_decompositions)
 {
   // Fixed seed: the matrices are part of the test, so a failure names the same one every run.

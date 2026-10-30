@@ -588,6 +588,150 @@ any_tensor solveh_banded(const any_tensor& ab, const any_tensor& b, bool lower)
     return shaped_like(numerical::solveh_banded(matrix_from(std::get<real_tensor>(ab)), right_hand_sides(std::get<real_tensor>(b)), lower), b);
 }
 
+// cholesky_banded(ab, lower) -> Tensor and cho_solve_banded(cb, b, lower) -> Tensor, as scipy.linalg's: one dtype
+// (the caller promotes), single precision computed in double.
+any_tensor cholesky_banded(const any_tensor& ab, bool lower)
+{
+    if (shape_of(ab).size() != 2) {
+        throw std::runtime_error("cholesky_banded expects a band matrix");
+    }
+    if (is_single(ab)) {
+        return narrowed(cholesky_banded(widened(ab), lower));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(ab) * shape_of(ab)[0])};
+    if (is_complex(ab)) {
+        return any_tensor {cplx_tensor {numerical::cholesky_banded(matrix_from(std::get<cplx_tensor>(ab)), lower)}};
+    }
+    return any_tensor {real_tensor {numerical::cholesky_banded(matrix_from(std::get<real_tensor>(ab)), lower)}};
+}
+
+any_tensor cho_solve_banded(const any_tensor& cb, const any_tensor& b, bool lower)
+{
+    if (shape_of(cb).size() != 2 || shape_of(b).empty() || shape_of(b).size() > 2 || cb.index() != b.index()) {
+        throw std::runtime_error("cho_solve_banded expects a band factor and a vector or matrix of one dtype");
+    }
+    if (is_single(cb)) {
+        return narrowed(cho_solve_banded(widened(cb), widened(b), lower));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(cb) * shape_of(cb)[0])};
+    if (is_complex(cb)) {
+        return shaped_like(numerical::cho_solve_banded(matrix_from(std::get<cplx_tensor>(cb)), right_hand_sides(std::get<cplx_tensor>(b)), lower), b);
+    }
+    return shaped_like(numerical::cho_solve_banded(matrix_from(std::get<real_tensor>(cb)), right_hand_sides(std::get<real_tensor>(b)), lower), b);
+}
+
+namespace {
+
+    template <typename T>
+    std::tuple<any_tensor, any_tensor> hessenberg_of(const numerical::tensor<T>& t, bool calc_q)
+    {
+        const std::size_t    n {t.shape()[0]};
+        numerical::matrix<T> m {matrix_from(t)};
+        numerical::detail::require_finite(m, "hessenberg");
+        numerical::buffer<T> h {std::move(m).elements()};
+        numerical::buffer<T> qt;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil_cubic(n * n)};
+            qt = numerical::detail::hessenberg(h, n, 0, n, calc_q);
+            for (std::size_t i {2}; i < n; ++i) { // below the subdiagonal: zero, as SciPy's triu(h, -1)
+                std::fill(h.begin() + static_cast<std::ptrdiff_t>(i * n), h.begin() + static_cast<std::ptrdiff_t>((i * n) + i - 1), T {});
+            }
+        }
+        numerical::tensor<T> q {{0, 0}, numerical::buffer<T> {}};
+        if (calc_q) {
+            q = numerical::tensor<T> {numerical::transpose(numerical::matrix<T> {n, n, std::move(qt)})};
+        }
+        return {any_tensor {numerical::tensor<T> {{n, n}, std::move(h)}}, any_tensor {std::move(q)}};
+    }
+
+    template <typename T>
+    std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> balance_of(const numerical::tensor<T>& t, bool permute, bool scale)
+    {
+        numerical::balanced_matrix<T> balanced {numerical::matrix_balance(matrix_from(t), permute, scale)};
+        return {any_tensor {numerical::tensor<T> {std::move(balanced.b)}}, any_tensor {real_tensor {balanced.scale}}, std::move(balanced.permutation)};
+    }
+} // namespace
+
+// hessenberg(a, calc_q) -> (H, Q), as scipy.linalg.hessenberg(a, calc_q=True): A = Q H Qᴴ by Householder reflections
+// (LAPACK's gehrd, unbalanced, as SciPy's), H's entries below its subdiagonal zero; Q 0 × 0 without calc_q.
+std::tuple<any_tensor, any_tensor> hessenberg(const any_tensor& a, bool calc_q)
+{
+    const std::vector<std::size_t>& shape {shape_of(a)};
+    if (shape.size() != 2 || shape[0] != shape[1]) {
+        throw std::runtime_error("hessenberg: expected square matrix");
+    }
+    if (is_single(a)) {
+        return narrowed(hessenberg(widened(a), calc_q));
+    }
+    if (is_complex(a)) {
+        return hessenberg_of(std::get<cplx_tensor>(a), calc_q);
+    }
+    return hessenberg_of(std::get<real_tensor>(a), calc_q);
+}
+
+// matrix_balance(a, permute, scale) -> (B, scaling, permutation), as scipy.linalg.matrix_balance(a, permute, scale,
+// separate=True): B = T⁻¹ A T, T = P D, P e_c = e_{permutation[c]}; the scaling float64 whatever the input, as SciPy's.
+std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> matrix_balance(const any_tensor& a, bool permute, bool scale)
+{
+    if (shape_of(a).size() != 2) {
+        throw std::runtime_error("matrix_balance: The data matrix for balancing should be square.");
+    }
+    if (is_single(a)) {
+        auto [b, scaling, permutation] {matrix_balance(widened(a), permute, scale)};
+        return {narrowed(b), std::move(scaling), std::move(permutation)};
+    }
+    if (is_complex(a)) {
+        return balance_of(std::get<cplx_tensor>(a), permute, scale);
+    }
+    return balance_of(std::get<real_tensor>(a), permute, scale);
+}
+
+// tridiagonal_eigen(d, e, vectors) -> (w, v), as scipy.linalg.eigh_tridiagonal (and eigvalsh_tridiagonal without
+// vectors, v then 0 × 0): float64 vectors (the caller converts), the eigenvalues ascending.
+std::tuple<any_tensor, any_tensor> tridiagonal_eigen(const any_tensor& d, const any_tensor& e, bool vectors)
+{
+    if (shape_of(d).size() != 1 || shape_of(e).size() != 1 || !std::holds_alternative<real_tensor>(d) || !std::holds_alternative<real_tensor>(e)) {
+        throw std::runtime_error("eigh_tridiagonal: d and e are real vectors");
+    }
+    const numerical::vector<double> diagonal {std::get<real_tensor>(d).data()};
+    const numerical::vector<double> off {std::get<real_tensor>(e).data()};
+    const sb::scoped_gil_release    unlocked {releases_gil_cubic(diagonal.size() * diagonal.size())};
+    if (!vectors) {
+        return {any_tensor {real_tensor {numerical::tridiagonal_eigenvalues(diagonal, off)}}, any_tensor {real_tensor {{0, 0}, numerical::buffer<double> {}}}};
+    }
+    auto [values, basis] {numerical::tridiagonal_eigen(diagonal, off)};
+    return {any_tensor {real_tensor {values}}, any_tensor {real_tensor {std::move(basis)}}};
+}
+
+// rsf2csf(T, Z) -> (T, Z), as scipy.linalg.rsf2csf: the real Schur form made complex, each 2 × 2 block triangularised
+// by a rotation (detail::complex_schur_form), a subdiagonal entry within eps of its neighbours' magnitudes set to 0
+// first, as SciPy's; real T and Z of one dtype (the caller promotes), single precision computed in double.
+std::tuple<any_tensor, any_tensor> rsf2csf(const any_tensor& t, const any_tensor& z)
+{
+    const std::vector<std::size_t>& shape {shape_of(t)};
+    if (shape.size() != 2 || shape[0] != shape[1] || shape_of(z) != shape || t.index() != z.index() || is_complex(t)) {
+        throw std::runtime_error("rsf2csf: T and Z are real square matrices of one shape and dtype");
+    }
+    if (is_single(t)) {
+        auto [tc, zc] {rsf2csf(widened(t), widened(z))};
+        return {narrowed(tc), narrowed(zc)};
+    }
+    const numerical::matrix<double> given {matrix_from(std::get<real_tensor>(t))};
+    const numerical::matrix<double> basis {matrix_from(std::get<real_tensor>(z))};
+    numerical::detail::require_finite(given, "rsf2csf");
+    numerical::detail::require_finite(basis, "rsf2csf");
+    const std::size_t         n {shape[0]};
+    const double              eps {std::numeric_limits<double>::epsilon()};
+    numerical::buffer<double> form(given.begin(), given.end());
+    for (std::size_t m {1}; m < n; ++m) {
+        if (!(std::abs(form[(m * n) + m - 1]) > eps * (std::abs(form[((m - 1) * n) + m - 1]) + std::abs(form[(m * n) + m])))) {
+            form[(m * n) + m - 1] = 0.0;
+        }
+    }
+    auto [tc, zc] {numerical::detail::complex_schur_form(numerical::matrix<double> {n, n, std::move(form)}, basis)};
+    return {any_tensor {cplx_tensor {std::move(tc)}}, any_tensor {cplx_tensor {std::move(zc)}}};
+}
+
 // toeplitz(c, r), hankel(c, r) and circulant(c) -> Tensor, as scipy.linalg's: vectors of one dtype (the caller
 // promotes), any of the four.
 any_tensor structured(const any_tensor& c, const any_tensor& r, int kind)

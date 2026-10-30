@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **Python: nine more of `scipy.linalg`'s decompositions**: `hessenberg` (Householder, `gehrd`), `matrix_balance`
+  (`gebal`, with or without the permutation and the scaling; SciPy's answer to the bit), `eigh_tridiagonal` and
+  `eigvalsh_tridiagonal` (divide and conquer, `stevd`, SciPy's default, by value or index ranges), `cholesky_banded`
+  and `cho_solve_banded` (`pbtrf`, `pbtrs`), `rsf2csf`, `rq` (from the QR factorisation of the reversed adjoint) and
+  `cdf2rdf`. C++: `numerical::tridiagonal_eigenvalues`, `tridiagonal_eigen`, `matrix_balance`, `cholesky_banded` and
+  `cho_solve_banded`. Tested against SciPy 1.17 by the defining identities and, where the factor is unique (up to the
+  phases a Hessenberg form or an RQ factorisation leaves), entry by entry.
 - **Python: 30 more of `scipy.linalg`'s names**: the special matrices `hilbert`, `invhilbert`, `pascal`, `invpascal`,
   `hadamard`, `helmert`, `leslie`, `companion`, `fiedler`, `fiedler_companion`, `convolution_matrix`, `dft`,
   `khatri_rao` and `diagsvd`; `bandwidth`, `issymmetric` and `ishermitian`; `null_space`, `orth`, `subspace_angles`,

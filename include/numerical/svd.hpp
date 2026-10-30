@@ -2209,6 +2209,88 @@ namespace numerical {
     return vector<double> {std::move(d)};
   }
 
+  namespace detail {
+    //! \brief The diagonal \p d and off-diagonal \p e of a symmetric tridiagonal matrix divided by the power of two of
+    //!        their largest magnitude (returned), `e` padded with a 0 to `d`'s length, as the QL iteration takes them.
+    //! \throws dimension_error  If \p e has not one entry fewer than \p d (none for an empty \p d).
+    //! \throws non_finite_error If an entry is infinite or NaN.
+    [[nodiscard]] inline double scaled_tridiagonal(const vector<double>& d,
+                                                   const vector<double>& e,
+                                                   buffer<double>&       diagonal,
+                                                   buffer<double>&       off)
+    {
+      const std::size_t n {d.size()};
+      if (e.size() + 1 != std::max<std::size_t>(n, 1)) {
+        throw dimension_error("tridiagonal eigenvalues: the off-diagonal has one entry fewer than the diagonal");
+      }
+      double largest {0.0};
+      for (std::size_t i {0}; i < n; ++i) {
+        const double off_entry {i + 1 < n ? e[i] : 0.0};
+        if (!std::isfinite(d[i]) || !std::isfinite(off_entry)) {
+          throw non_finite_error("tridiagonal eigenvalues: an entry is infinite or NaN");
+        }
+        largest = std::max({largest, std::abs(d[i]), std::abs(off_entry)});
+      }
+      const double scale {power_of_two_scale(largest)};
+      diagonal.assign(n, 0.0);
+      off.assign(n, 0.0);
+      for (std::size_t i {0}; i < n; ++i) {
+        diagonal[i] = d[i] / scale;
+        off[i]      = i + 1 < n ? e[i] / scale : 0.0;
+      }
+      return scale;
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The eigenvalues of the real symmetric tridiagonal matrix of diagonal \p d and off-diagonal \p e, ascending,
+   *        as `scipy.linalg.eigvalsh_tridiagonal`: the implicit QL iteration, no rotation kept, on the matrix divided by
+   *        the power of two of its largest magnitude (as \ref symmetric_eigenvalues runs it on the tridiagonal it forms).
+   * \throws dimension_error   If \p e has not one entry fewer than \p d (none for an empty \p d).
+   * \throws non_finite_error  If an entry is infinite or NaN.
+   * \throws convergence_error If the iteration does not converge within its bound (not observed).
+   */
+  [[nodiscard]] inline vector<double> tridiagonal_eigenvalues(const vector<double>& d,
+                                                              const vector<double>& e)
+  {
+    buffer<double> diagonal;
+    buffer<double> off;
+    const double   scale {detail::scaled_tridiagonal(d, e, diagonal, off)};
+    buffer<double> none;
+    detail::tridiagonal_ql(diagonal, off, none, d.size(), detail::ql_steps_per_value * d.size());
+    std::sort(diagonal.begin(), diagonal.end());
+    for (double& value : diagonal) {
+      value *= scale;
+    }
+    return vector<double> {std::move(diagonal)};
+  }
+
+  /*!
+   * \brief The eigenvalues, ascending, and the orthonormal eigenvectors (the columns, in their order) of the real
+   *        symmetric tridiagonal matrix of diagonal \p d and off-diagonal \p e, as `scipy.linalg.eigh_tridiagonal`:
+   *        divide and conquer (LAPACK's `dstedc`, the eigenvectors by matrix products), the implicit QL iteration up to
+   *        its leaves' order, on the matrix divided by the power of two of its largest magnitude.
+   * \throws dimension_error   If \p e has not one entry fewer than \p d (none for an empty \p d).
+   * \throws non_finite_error  If an entry is infinite or NaN.
+   * \throws convergence_error If an iteration does not converge within its bound (not observed).
+   */
+  [[nodiscard]] inline std::pair<vector<double>, matrix<double>> tridiagonal_eigen(const vector<double>& d,
+                                                                                   const vector<double>& e)
+  {
+    const std::size_t n {d.size()};
+    buffer<double>    diagonal;
+    buffer<double>    off;
+    const double      scale {detail::scaled_tridiagonal(d, e, diagonal, off)};
+    buffer<double>    q;
+    if (n > 0) {
+      detail::divide_and_conquer(diagonal.data(), off.data(), n, q);
+    }
+    for (double& value : diagonal) {
+      value *= scale;
+    }
+    return {vector<double> {std::move(diagonal)}, matrix<double> {n, n, std::move(q)}};
+  }
+
   //! \brief A least-squares solution and what `numpy.linalg.lstsq` reports beside it (\ref least_squares).
   template <typename T>
   struct least_squares_solution

@@ -122,16 +122,19 @@ namespace numerical {
      * \brief Balances the row-major `n × n` \p a in place, as LAPACK's `dgebal('B')`: rows with no off-diagonal
      *        entry in the active block go to its bottom and columns with none to its top, each isolating an
      *        eigenvalue on the diagonal; then each row and column of the remaining block is scaled by a power of two
-     *        until their 2-norms are within a factor of 2, which leaves every entry exact.
+     *        until their 2-norms are within a factor of 2, which leaves every entry exact. Without \p permute no row
+     *        moves (the block is the whole matrix), without \p scale none is scaled: `dgebal`'s `'S'` and `'P'`.
      */
     template <typename T>
     [[nodiscard]] balancing balance(buffer<T>&  a,
-                                    std::size_t n)
+                                    std::size_t n,
+                                    bool        permute = true,
+                                    bool        scale   = true)
     {
       balancing out;
       out.scale = buffer<double>(n, 1.0);
       out.high  = n;
-      for (bool moved {true}; moved;) {
+      for (bool moved {permute}; moved;) {
         moved = false;
         for (std::size_t i {out.high}; i-- > out.low;) {
           bool alone {true};
@@ -147,7 +150,7 @@ namespace numerical {
           }
         }
       }
-      for (bool moved {true}; moved;) {
+      for (bool moved {permute}; moved;) {
         moved = false;
         for (std::size_t j {out.low}; j < out.high; ++j) {
           bool alone {true};
@@ -164,7 +167,7 @@ namespace numerical {
         }
       }
       buffer<T> gathered(out.high - out.low);
-      for (bool unbalanced {true}; unbalanced;) {
+      for (bool unbalanced {scale}; unbalanced;) {
         unbalanced = false;
         for (std::size_t i {out.low}; i < out.high; ++i) {
           for (std::size_t k {out.low}; k < out.high; ++k) { // the column gathered: scaled_norm's sums run contiguous
@@ -3020,6 +3023,46 @@ namespace numerical {
       return out;
     }
   } // namespace detail
+
+  //! \brief A matrix balanced, `B = T⁻¹ A T` with `T = P D` (\ref matrix_balance).
+  template <typename T>
+  struct balanced_matrix
+  {
+    matrix<T>                b;           //!< The balanced matrix.
+    vector<double>           scale;       //!< The diagonal of `D`, powers of two (1 outside the scaled block).
+    std::vector<std::size_t> permutation; //!< `P e_c = e_{permutation[c]}`.
+  };
+
+  /*!
+   * \brief The square \p a balanced, as `scipy.linalg.matrix_balance(a, permute, scale, separate=True)` (LAPACK's
+   *        `dgebal`): `B = T⁻¹ A T`, `T = P D` a permutation (\p permute: rows and columns isolating an eigenvalue
+   *        moved to the ends) times powers of two (\p scale: the remaining block's rows and columns brought within a
+   *        factor of 2 of each other in norm), so every entry of `B` is an entry of `A` scaled exactly.
+   * \throws dimension_error  If \p a is not square.
+   * \throws non_finite_error If an entry is infinite or NaN.
+   */
+  template <typename T>
+  [[nodiscard]] balanced_matrix<T> matrix_balance(const matrix<T>& a,
+                                                  bool             permute = true,
+                                                  bool             scale   = true)
+  {
+    const std::size_t n {a.rows()};
+    if (a.cols() != n) {
+      throw dimension_error("matrix_balance: the matrix is not square");
+    }
+    detail::require_finite(a, "matrix_balance");
+    buffer<T>                  b        {a.begin(), a.end()};
+    const detail::balancing    balanced {detail::balance(b, n, permute, scale)};
+    std::vector<std::size_t>   permutation(n);
+    for (std::size_t c {0}; c < n; ++c) { // P = S₁ S₂ … S_k, the swaps in the order applied: the last first on e_c
+      std::size_t at {c};
+      for (auto swap {balanced.swaps.rbegin()}; swap != balanced.swaps.rend(); ++swap) {
+        at = at == swap->first ? swap->second : at == swap->second ? swap->first : at;
+      }
+      permutation[c] = at;
+    }
+    return {matrix<T> {n, n, std::move(b)}, vector<double> {balanced.scale}, std::move(permutation)};
+  }
 
   /*!
    * \brief The eigenvalues, and optionally the right eigenvectors, of a general square matrix, as `numpy.linalg.eig`.

@@ -2936,4 +2936,267 @@ __all__ += ["LinAlgWarning", "hilbert", "invhilbert", "pascal", "invpascal", "ha
             "issymmetric", "ishermitian", "null_space", "orth", "subspace_angles", "orthogonal_procrustes", "pinvh",
             "cosm", "sinm", "tanm", "coshm", "sinhm", "tanhm", "signm"]
 
+
+# --- scipy.linalg: Hessenberg, balancing, tridiagonal eigenproblems, banded Cholesky, RQ and the real-complex forms ---
+
+_cholesky_banded = _linalg(_numerical.cholesky_banded, arrays=1)
+_cho_solve_banded = _linalg(_numerical.cho_solve_banded, arrays=2)
+_hessenberg = _linalg(_numerical.hessenberg, arrays=1)
+_matrix_balance = _linalg(_numerical.matrix_balance, arrays=1)
+_tridiagonal_eigen = _linalg(_numerical.tridiagonal_eigen)
+_rsf2csf = _linalg(_numerical.rsf2csf, arrays=2)
+
+
+def hessenberg(a, calc_q=False, overwrite_a=False, check_finite=True):
+    """The upper Hessenberg form `H` of the square `a`, ``A = Q H Qᴴ``, and with `calc_q` the unitary `Q`, as
+    ``scipy.linalg.hessenberg`` (Householder reflections, LAPACK's ``gehrd``, no balancing); a matrix of order 2 or
+    less is its own, `Q` the float64 identity, as SciPy's. `overwrite_a` and `check_finite` are accepted and not
+    needed: an infinite or NaN entry raises always.
+
+    Raises:
+        ValueError: if `a` is not square or holds an infinite or NaN entry.
+    """
+    del overwrite_a, check_finite
+    a = _tensor(a)
+    if len(a.shape) != 2 or a.shape[0] != a.shape[1]:
+        raise ValueError("expected square matrix")
+    if a.shape[0] <= 2:
+        if not _builtins.all(_math.isfinite(abs(x)) for x in _flat(a.tolist())):
+            raise ValueError("array must not contain infs or NaNs")
+        return (a, eye(a.shape[0])) if calc_q else a
+    h, q = _hessenberg(a, bool(calc_q))
+    return (h, q) if calc_q else h
+
+
+def matrix_balance(A, permute=True, scale=True, separate=False, overwrite_a=False):
+    """The square `A` balanced, ``B = T⁻¹ A T`` with ``T = P D`` a permutation (`permute`) times powers of two
+    (`scale`), and `T`, as ``scipy.linalg.matrix_balance`` (LAPACK's ``gebal``): every entry of `B` an entry of `A`
+    scaled exactly. With `separate`, ``(scaling, permutation)`` in place of `T`, the permutation a list of
+    integers.
+
+    Raises:
+        ValueError: if `A` is not square or holds an infinite or NaN entry.
+    """
+    del overwrite_a
+    A = _tensor(A)
+    if len(A.shape) == 1:
+        A = reshape(A, (1, -1))
+    if len(A.shape) != 2 or A.shape[0] != A.shape[1]:
+        raise ValueError("The data matrix for balancing should be square.")
+    n = A.shape[0]
+    B, scaling, permutation = _matrix_balance(A, bool(permute), bool(scale))
+    if separate:
+        return B, (scaling, list(permutation))
+    rows = reshape(arange(n), (n, 1))
+    return B, where(rows == asarray([float(p) for p in permutation]) if n else rows == 0.0,
+                    reshape(scaling, (1, n)), 0.0)
+
+
+_SELECT = {"a": 0, "all": 0, 0: 0, "v": 1, "value": 1, 1: 1, "i": 2, "index": 2, 2: 2}
+
+
+def eigh_tridiagonal(d, e, eigvals_only=False, select="a", select_range=None, check_finite=True, tol=0.0,
+                     lapack_driver="auto"):
+    """The eigenvalues, ascending, and with them the orthonormal eigenvectors (columns) of the real symmetric
+    tridiagonal matrix of diagonal `d` and off-diagonal `e`, as ``scipy.linalg.eigh_tridiagonal``: every one by divide
+    and conquer (LAPACK's ``stevd``, SciPy's default), or those in the half-open interval ``(vl, vu]`` of
+    ``select="v"``, or those of the indices ``il … iu`` of ``select="i"``. `tol` and the drivers are accepted (the
+    answer is ``stevd``'s whichever is named, within each driver's rules); `check_finite` too: an infinite or NaN
+    entry raises always.
+
+    Raises:
+        ValueError: if `d` and `e` are not vectors of lengths n and n − 1, `select` or `select_range` is invalid, a
+            driver is named outside its rules, or an entry is infinite or NaN.
+        TypeError: if `d` or `e` is complex.
+    """
+    del check_finite, tol
+    d, e = _tensor(d), _tensor(e)
+    for check in (d, e):
+        if len(check.shape) != 1:
+            raise ValueError("expected a 1-D array")
+        if check.dtype.startswith("complex"):
+            raise TypeError("Only real arrays currently supported")
+    if d.size != e.size + 1:
+        raise ValueError(f"d ({d.size}) must have one more element than e ({e.size})")
+    try:
+        kind = _SELECT[select.lower() if isinstance(select, str) else select]
+    except (KeyError, TypeError):
+        raise ValueError("invalid argument for select") from None
+    if kind:
+        bounds = list(_flat(asarray(select_range).tolist())) if select_range is not None else []
+        if len(bounds) != 2 or bounds[1] < bounds[0]:
+            raise ValueError("select_range must be a 2-element array-like in nondecreasing order")
+        if kind == 2:
+            if not _builtins.all(isinstance(b, int) or float(b).is_integer() for b in bounds) or \
+                    not _builtins.all(isinstance(b, _numbers.Integral) for b in select_range):
+                raise ValueError("when using select=\"i\", select_range must contain integers")
+            if _builtins.min(bounds) < 0 or _builtins.max(bounds) >= d.size:
+                raise ValueError("select_range out of bounds")
+    if not isinstance(lapack_driver, str):
+        raise TypeError("lapack_driver must be str")
+    drivers = ("auto", "stemr", "sterf", "stebz", "stev", "stevd")
+    if lapack_driver not in drivers:
+        raise ValueError(f"lapack_driver must be one of {drivers}, got {lapack_driver}")
+    if lapack_driver in ("sterf", "stev", "stevd") and kind:
+        raise ValueError(f'{lapack_driver} can only be used when select == "a"')
+    if lapack_driver == "sterf" and not eigvals_only:
+        raise ValueError("sterf can only be used when eigvals_only is True")
+    single = d.dtype == "float32" and e.dtype == "float32"
+    w, v = _tridiagonal_eigen(asarray(d, "float64"), asarray(e, "float64"), not eigvals_only)
+    if kind:
+        values = w.tolist()
+        if kind == 1:
+            kept = [k for k, value in enumerate(values) if bounds[0] < value <= bounds[1]]
+        else:
+            kept = list(range(int(bounds[0]), int(bounds[1]) + 1))
+        w = asarray([values[k] for k in kept]) if kept else zeros((0,))
+        if not eigvals_only:
+            v = transpose(asarray([v[:, k].tolist() for k in kept])) if kept else zeros((d.size, 0))
+    if single:
+        w = asarray(w, "float32")
+        v = v if eigvals_only else asarray(v, "float32")
+    return w if eigvals_only else (w, v)
+
+
+def eigvalsh_tridiagonal(d, e, select="a", select_range=None, check_finite=True, tol=0.0, lapack_driver="auto"):
+    """The eigenvalues alone of the real symmetric tridiagonal matrix of diagonal `d` and off-diagonal `e`, ascending,
+    as ``scipy.linalg.eigvalsh_tridiagonal`` (:func:`eigh_tridiagonal` with ``eigvals_only=True``)."""
+    return eigh_tridiagonal(d, e, eigvals_only=True, select=select, select_range=select_range,
+                            check_finite=check_finite, tol=tol, lapack_driver=lapack_driver)
+
+
+def cholesky_banded(ab, overwrite_ab=False, lower=False, check_finite=True):
+    """The Cholesky factor of the Hermitian positive-definite band `ab`, in its own form, as
+    ``scipy.linalg.cholesky_banded`` (LAPACK's ``pbtrf``): ``U`` (``A = Uᴴ U``) of the upper form, ``L``
+    (``A = L Lᴴ``) of the lower one; the corners outside the band as `ab` has them.
+
+    Raises:
+        LinAlgError: if `A` is not positive definite or an entry is infinite or NaN.
+    """
+    del overwrite_ab, check_finite
+    return _cholesky_banded(ab, bool(lower))
+
+
+def cho_solve_banded(cb_and_lower, b, overwrite_b=False, check_finite=True):
+    """The solution `x` of ``A x = b`` from :func:`cholesky_banded`'s ``(cb, lower)``, as
+    ``scipy.linalg.cho_solve_banded`` (LAPACK's ``pbtrs``).
+
+    Raises:
+        ValueError: if `b` has not as many rows as `cb` has columns.
+        LinAlgError: if an entry is infinite or NaN.
+    """
+    del overwrite_b, check_finite
+    cb, lower = cb_and_lower
+    return _cho_solve_banded(cb, b, bool(lower))
+
+
+def rsf2csf(T, Z, check_finite=True):
+    """The complex Schur form ``(T, Z)`` of the real one, as ``scipy.linalg.rsf2csf``: each 2 × 2 block of `T` (a
+    conjugate pair) triangularised by a unitary rotation of its rows and columns, `Z`'s columns turning with it; a
+    subdiagonal entry within ``eps`` of its diagonal neighbours' magnitudes is taken as 0.
+
+    Raises:
+        ValueError: if `T` and `Z` are not square matrices of one shape, or an entry is infinite or NaN.
+    """
+    del check_finite
+    T, Z = _same_dtype(T, Z)
+    for name, X in (("Z", Z), ("T", T)):
+        if len(X.shape) != 2 or X.shape[0] != X.shape[1]:
+            raise ValueError(f"Input '{name}' must be square.")
+    if T.shape[0] != Z.shape[0]:
+        raise ValueError(f"Input array shapes must match: Z: {Z.shape} vs. T: {T.shape}")
+    if T.dtype.startswith("complex"):
+        raise ValueError("rsf2csf: T and Z are a real Schur form (real matrices)")
+    return _rsf2csf(T, Z)
+
+
+def _flipped(t, axis):
+    """`t` with its rows (``axis=0``) or columns (``axis=1``) in reverse order."""
+    return t[::-1] if axis == 0 else t[:, ::-1]
+
+
+def rq(a, overwrite_a=False, lwork=None, mode="full", check_finite=True):
+    """The RQ factorisation ``A = R Q`` of the `M × N` `a`, `R` upper trapezoidal (its triangle at the right) and `Q`
+    unitary, as ``scipy.linalg.rq`` (LAPACK's ``gerqf``): from the QR factorisation of ``(J A)ᴴ``, `J` the reversal,
+    ``R = J R₁ᴴ J`` and ``Q = J Q₁ᴴ``. ``mode="r"`` gives `R` alone, ``"economic"`` `R` ``M × K`` and `Q` ``K × N``,
+    ``K = min(M, N)``.
+
+    Raises:
+        ValueError: if `mode` is not one of these, `a` is not a matrix or holds an infinite or NaN entry.
+    """
+    del overwrite_a, lwork, check_finite
+    if mode not in ("full", "r", "economic"):
+        raise ValueError("Mode argument should be one of ['full', 'r', 'economic']")
+    a = _tensor(a)
+    if len(a.shape) != 2:
+        raise ValueError("expected matrix")
+    M, N = a.shape
+    economic = mode == "economic" and N >= M
+    b = conj(matrix_transpose(_flipped(a, 0)))  # (J A)ᴴ, N × M
+    q1, r1 = qr(b, mode="reduced" if economic else "complete")
+    r = _flipped(_flipped(conj(matrix_transpose(r1)), 0), 1)
+    q = _flipped(conj(matrix_transpose(q1)), 0)
+    return r if mode == "r" else (r, q)
+
+
+def cdf2rdf(w, v):
+    """The real block-diagonal eigenvalues and real eigenvectors of a real matrix from its complex ones `w` and `v`
+    (``A v = v diag(w)``, conjugate pairs adjacent), as ``scipy.linalg.cdf2rdf``: ``A vr = vr wr``, each pair a
+    2 × 2 block ``[[re, im], [-im, re]]``; over a stack's leading axes.
+
+    Raises:
+        ValueError: if the shapes do not match or a complex eigenvalue is not in a conjugate pair.
+    """
+    w, v = _tensor(w), _tensor(v)
+    if len(w.shape) < 1:
+        raise ValueError("expected w to be at least 1D")
+    if len(v.shape) < 2:
+        raise ValueError("expected v to be at least 2D")
+    if len(v.shape) != len(w.shape) + 1:
+        raise ValueError("expected eigenvectors array to have exactly one dimension more than eigenvalues array")
+    n = w.shape[-1]
+    if v.shape[-2] != v.shape[-1]:
+        raise ValueError("expected v to be a square matrix or stacked square matrices: v.shape[-2] = v.shape[-1]")
+    if v.shape[-1] != n:
+        raise ValueError("expected the same number of eigenvalues as eigenvectors")
+    batch = w.shape[:-1]
+    count = _math.prod(batch)
+    flat_w = reshape(w, (count, n))
+    flat_v = reshape(v, (count, n, n))
+    blocks, vectors = [], []
+    i, j = _grid(n)
+    for k in range(count):
+        values = [complex(x) for x in flat_w[k].tolist()] if n else []
+        complex_at = [m for m, x in enumerate(values) if x.imag != 0]
+        if len(complex_at) % 2:
+            raise ValueError("expected complex-conjugate pairs of eigenvalues")
+        partner = list(range(n))
+        role = [0.0] * n  # 1 the first of a pair, -1 the second
+        for first, second in zip(complex_at[0::2], complex_at[1::2]):
+            partner[first], partner[second] = second, first
+            role[first], role[second] = 1.0, -1.0
+        partner_col = reshape(asarray([float(p) for p in partner]), (n, 1))
+        role_col = reshape(asarray(role), (n, 1))
+        real_row = reshape(asarray([x.real for x in values]), (1, n))
+        imag_col = reshape(asarray([x.imag for x in values]), (n, 1))
+        paired = (j == partner_col) & (role_col != 0.0)
+        blocks.append(where(i == j, real_row, where(paired, imag_col, 0.0)))
+        diagonal = where(role_col > 0.0, 0.5j, where(role_col < 0.0, 0.5 + 0j, 1.0 + 0j))
+        off = where(role_col > 0.0, 0.5 + 0j, -0.5j)
+        u = where(i == j, diagonal, where(paired, off, 0j))
+        vectors.append(real(flat_v[k] @ u))
+    if not batch:
+        return blocks[0], vectors[0]
+    return (reshape(_stacked_first(blocks), batch + (n, n)), reshape(_stacked_first(vectors), batch + (n, n)))
+
+
+def _stacked_first(parts):
+    """The tensors `parts` (one shape) along a new first axis."""
+    columns = _numerical._stack_last([reshape(part, (-1,)) for part in parts])  # (size, count)
+    return reshape(matrix_transpose(columns), (len(parts),) + parts[0].shape)
+
+
+__all__ += ["hessenberg", "matrix_balance", "eigh_tridiagonal", "eigvalsh_tridiagonal", "cholesky_banded",
+            "cho_solve_banded", "rsf2csf", "rq", "cdf2rdf"]
+
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)

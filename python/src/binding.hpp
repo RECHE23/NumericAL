@@ -1712,6 +1712,15 @@ PyObject* module_block_diag(PyObject* /*self*/, PyObject* args); // in linalg.cp
 // solve_banded(ab, b, lower, upper) -> Tensor and solveh_banded(ab, b, lower) -> Tensor, as scipy.linalg's.
 any_tensor solve_banded(const any_tensor& ab, const any_tensor& b, std::size_t lower, std::size_t upper); // in linalg.cpp
 any_tensor solveh_banded(const any_tensor& ab, const any_tensor& b, bool lower);                         // in linalg.cpp
+any_tensor cholesky_banded(const any_tensor& ab, bool lower);                                             // in linalg.cpp
+any_tensor cho_solve_banded(const any_tensor& cb, const any_tensor& b, bool lower);                       // in linalg.cpp
+
+// hessenberg(a, calc_q) -> (H, Q), matrix_balance(a, permute, scale) -> (B, scaling, permutation),
+// tridiagonal_eigen(d, e, vectors) -> (w, v) and rsf2csf(T, Z) -> (T, Z), as scipy.linalg's.
+std::tuple<any_tensor, any_tensor> hessenberg(const any_tensor& a, bool calc_q);                                                 // in linalg.cpp
+std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> matrix_balance(const any_tensor& a, bool permute, bool scale);       // in linalg.cpp
+std::tuple<any_tensor, any_tensor> tridiagonal_eigen(const any_tensor& d, const any_tensor& e, bool vectors);                    // in linalg.cpp
+std::tuple<any_tensor, any_tensor> rsf2csf(const any_tensor& t, const any_tensor& z);                                            // in linalg.cpp
 any_tensor solve_toeplitz(const any_tensor& c, const any_tensor& r, const any_tensor& b);              // in linalg.cpp
 any_tensor solve_circulant(const any_tensor& c, const any_tensor& b, bool least_squares, double tol);     // in linalg.cpp
 

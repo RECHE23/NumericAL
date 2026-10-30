@@ -1343,3 +1343,59 @@ TEST(a_sorted_schur_form_refuses_what_it_cannot_order)
   numerical::schur_decomposition<double> d      {matrix<double> {{1.0, 0.0}, {0.0, 2.0}}};
   EXPECT_THROWS(static_cast<void>(d.sort(fickle)), numerical::convergence_error);
 }
+
+// matrix_balance: B = T⁻¹ A T exactly, T = P D, B[i][j] = A[p(i)][p(j)] d_j / d_i, for a matrix whose rows and columns
+// isolate eigenvalues at both ends and whose middle block is graded over 2⁶⁰, real and complex, with and without each of
+// the permutation and the scaling; the scaling brings the block's row and column norms within a factor of 4.
+TEST(matrix_balance_is_an_exact_similarity)
+{
+  // The middle rows 1 … 3 graded; row 4 and column 0 have no off-diagonal entry in their block (an isolated
+  // eigenvalue each, moved to the ends), row 2 none at all after them.
+  const matrix<double> a {{1.0, 0x1p30, 3.0, 0x1p-30, 5.0},
+    {0.0, 2.0, 0x1p40, 1.0, 7.0},
+    {0.0, 0x1p-40, 3.0, 2.0, 1.0},
+    {0.0, 1.0, 0x1p-20, 4.0, 2.0},
+    {0.0, 0.0, 0.0, 0.0, 5.0}};
+  const matrix<C>      h {{C {1.0, 1.0}, C {0x1p30, 0.0}, 3.0, 1.0, 5.0},
+    {0.0, 2.0, C {0.0, 0x1p40}, 1.0, 7.0},
+    {0.0, 0x1p-40, 3.0, 2.0, 1.0},
+    {0.0, 1.0, C {0x1p-20, 1.0}, 4.0, 2.0},
+    {0.0, 0.0, 0.0, 0.0, 5.0}};
+  const auto check {[](const auto& x, bool permute, bool scale) {
+                      const std::size_t n {x.rows()};
+                      auto              balanced {numerical::matrix_balance(x, permute, scale)};
+                      std::vector<bool> seen(n, false);
+                      for (std::size_t c {0}; c < n; ++c) {
+                        seen[balanced.permutation[c]] = true;
+                        EXPECT(permute || balanced.permutation[c] == c);
+                        EXPECT(scale || balanced.scale[c] == 1.0);
+                        EXPECT(std::exp2(std::ilogb(balanced.scale[c])) == balanced.scale[c]); // a power of two
+                      }
+                      EXPECT(std::ranges::find(seen, false) == seen.end());
+                      for (std::size_t i {0}; i < n; ++i) {
+                        for (std::size_t j {0}; j < n; ++j) {
+                          const auto expected {x(balanced.permutation[i], balanced.permutation[j]) * balanced.scale[j] / balanced.scale[i]};
+                          EXPECT(balanced.b(i, j) == expected);
+                        }
+                      }
+                      return balanced;
+                    }};
+  for (const bool permute : {true, false}) {
+    for (const bool scale : {true, false}) {
+      const auto real {check(a, permute, scale)};
+      (void)check(h, permute, scale);
+      if (permute) { // column 0 isolates an eigenvalue at the top, row 4 at the bottom
+        EXPECT(real.permutation[0] == 0 && real.permutation[4] == 4);
+      }
+    }
+  }
+  const auto graded {numerical::matrix_balance(a, false, true)};
+  EXPECT(graded.scale[1] != 1.0 || graded.scale[2] != 1.0 || graded.scale[3] != 1.0);
+  // Row 1's only nonzero entries off its block's diagonal: a permutation that moves it, its swap's other index too.
+  const matrix<double> moved   {{2.0, 1.0, 0.0}, {0.0, 3.0, 0.0}, {4.0, 5.0, 6.0}};
+  const auto           swapped {numerical::matrix_balance(moved)};
+  EXPECT(swapped.permutation != (std::vector<std::size_t> {0, 1, 2}));
+  EXPECT_THROWS(numerical::matrix_balance(matrix<double> {{1.0, 2.0}}), numerical::dimension_error);
+  EXPECT_THROWS(numerical::matrix_balance(matrix<double> {{1.0, std::nan("")}, {0.0, 1.0}}), numerical::non_finite_error);
+  EXPECT(numerical::matrix_balance(matrix<double>(0, 0, std::vector<double> {})).permutation.empty());
+}

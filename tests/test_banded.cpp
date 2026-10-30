@@ -111,10 +111,21 @@ namespace {
     for (T& value : rhs) {
       value = drawn_scalar<T>(state);
     }
-    const matrix<T> b {n, 2, rhs};
-    const matrix<T> x {numerical::solve(matrix<T> {n, n, dense}, b)};
+    const matrix<T> b            {n, 2, rhs};
+    const matrix<T> x            {numerical::solve(matrix<T> {n, n, dense}, b)};
+    // The factor in either form, its corners as given, solves as the band does
+    const matrix<T> upper_factor {numerical::cholesky_banded(matrix<T> {kd + 1, n, upper_form})};
+    const matrix<T> lower_factor {numerical::cholesky_banded(matrix<T> {kd + 1, n, lower_form}, true)};
+    bool            corners      {true};
+    for (std::size_t r {0}; r < kd; ++r) {
+      for (std::size_t c {0}; c < std::min(n, kd - r); ++c) {
+        corners = corners && upper_factor(r, c) == T {1e300} && lower_factor(kd - r, n - 1 - c) == T {1e300};
+      }
+    }
     return gap(numerical::solveh_banded(matrix<T> {kd + 1, n, upper_form}, b), x) < 1e-12
-           && gap(numerical::solveh_banded(matrix<T> {kd + 1, n, lower_form}, b, true), x) < 1e-12;
+           && gap(numerical::solveh_banded(matrix<T> {kd + 1, n, lower_form}, b, true), x) < 1e-12
+           && gap(numerical::cho_solve_banded(upper_factor, b), x) < 1e-12 && gap(numerical::cho_solve_banded(lower_factor, b, true), x) < 1e-12
+           && corners;
   }
 } // namespace
 
@@ -165,6 +176,12 @@ TEST(solveh_banded_is_the_dense_solve)
   EXPECT_THROWS(static_cast<void>(numerical::solveh_banded(matrix<double> {0, 3, std::vector<double> {}}, matrix<double> {3, 1, std::vector<double>(3, 1.0)})),
                 numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::solveh_banded(matrix<double> {{1.0, 1.0}}, matrix<double> {3, 1, std::vector<double>(3, 1.0)})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::cholesky_banded(matrix<double> {{0.0, 1.0}, {1.0, -1.0}})), numerical::not_positive_definite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::cholesky_banded(matrix<double> {0, 3, std::vector<double> {}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::cholesky_banded(matrix<double> {{0.0, std::nan("")}, {1.0, 1.0}})), numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::cho_solve_banded(matrix<double> {0, 3, std::vector<double> {}}, matrix<double> {3, 1, std::vector<double>(3, 1.0)})),
+                numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::cho_solve_banded(matrix<double> {{1.0, 1.0}}, matrix<double> {3, 1, std::vector<double>(3, 1.0)})), numerical::dimension_error);
 }
 
 namespace {
