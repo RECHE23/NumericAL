@@ -174,13 +174,9 @@ class PythonProtocol(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises((IndexError, TypeError)):
                 t[key]
 
-    def test_comparison_raises_until_it_is_element_wise(self):
-        t = numerical.ones(2)
-        for compare in (operator.eq, operator.ne, operator.lt, operator.le, operator.gt, operator.ge):
-            with self.subTest(compare=compare.__name__), self.assertRaises(TypeError):
-                compare(t, t)
+    def test_a_tensor_is_unhashable(self):  # equality is element-wise, as a NumPy array's
         with self.assertRaises(TypeError):
-            hash(t)
+            hash(numerical.ones(2))
 
     def test_array_equal_as_numpy(self):
         a = [[1.0, 2.0], [3.0, 4.0]]

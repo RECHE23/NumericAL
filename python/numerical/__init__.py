@@ -1,8 +1,8 @@
 r"""NumericAL — a generic, header-only numerical library, exposed to Python.
 
 The one object is :class:`Tensor` — an N-dimensional, row-major array of
-``float64``, ``complex128``, ``float32`` or ``complex64`` (rank-1 is a vector, rank-2 a matrix, rank-0 a
-scalar). The algebra over it is reached through module functions, which take a
+``float64``, ``complex128``, ``float32``, ``complex64`` or ``bool`` (rank-1 is a vector, rank-2 a matrix, rank-0 a
+scalar; ``bool`` the answer of a comparison, a mask). The algebra over it is reached through module functions, which take a
 Tensor or anything :func:`asarray` reads (a NumPy array, a nested list, a number):
 
     import numerical
@@ -200,7 +200,7 @@ class _NestedBuffer:
     same reader as an array (real values as float64, complex ones as complex128)."""
 
     def __init__(self, values, shape):
-        is_complex = any(isinstance(value, complex) or (isinstance(value, _numbers.Complex)
+        is_complex = _builtins.any(isinstance(value, complex) or (isinstance(value, _numbers.Complex)
                                                          and not isinstance(value, _numbers.Real))
                          for value in values)
         flat = []
@@ -230,14 +230,18 @@ def _nested(obj):
     raise TypeError(f"asarray: a nested list holds numbers, not {type(obj).__name__}")
 
 
-_DTYPES = ("float64", "complex128", "float32", "complex64")
+_DTYPES = ("float64", "complex128", "float32", "complex64", "bool")
 _SINGLE = ("float32", "complex64")
 
 
 def _promoted(dtypes):
-    """NumPy's result dtype of tensors of `dtypes`: complex where one is, single precision only where all are."""
-    single = all(dtype in _SINGLE for dtype in dtypes)
-    if any(dtype.startswith("complex") for dtype in dtypes):
+    """NumPy's result dtype of tensors of `dtypes`: complex where one is, single precision only where all are; a bool
+    one takes the others' dtype, and bools alone stay bool."""
+    dtypes = [dtype for dtype in dtypes if dtype != "bool"]
+    if not dtypes:
+        return "bool"
+    single = _builtins.all(dtype in _SINGLE for dtype in dtypes)
+    if _builtins.any(dtype.startswith("complex") for dtype in dtypes):
         return "complex64" if single else "complex128"
     return "float32" if single else "float64"
 
@@ -248,7 +252,10 @@ def _weak(value):
 
 
 def _beside_weak(dtype, value):
-    """The dtype of a tensor of `dtype` beside the Python number `value`: its own, complex for a complex `value`."""
+    """The dtype of a tensor of `dtype` beside the Python number `value`: its own, complex for a complex `value`; a
+    bool tensor's beside a bool, else the number's own (float64 for an int, as :func:`asarray` reads one)."""
+    if dtype == "bool":
+        return "bool" if isinstance(value, bool) else "complex128" if isinstance(value, complex) else "float64"
     if isinstance(value, complex) and not dtype.startswith("complex"):
         return "complex64" if dtype in _SINGLE else "complex128"
     return dtype
@@ -284,7 +291,7 @@ def _getitem(self, key):
     if not isinstance(key, tuple):
         key = (key,)
     shape = self.shape
-    if any(k is Ellipsis for k in key) or any(k is None for k in key):
+    if _builtins.any(k is Ellipsis for k in key) or _builtins.any(k is None for k in key):
         return _getitem_extended(self, key)
     if len(key) > len(shape):
         raise IndexError(f"too many indices for a tensor of rank {len(shape)}: {len(key)} were given")
@@ -327,7 +334,7 @@ def _getitem_extended(self, key):
         expanded += [slice(None)] * (len(self.shape) - named) if k is Ellipsis else [k]
     plain = tuple(k for k in expanded if k is not None)
     picked = _getitem(self, plain) if plain else self
-    if not any(k is None for k in expanded):
+    if not _builtins.any(k is None for k in expanded):
         return picked
     out, axis = [], 0  # the result's extents: a slice keeps its axis, an integer drops one, a None adds 1
     picked_shape = picked.shape if isinstance(picked, Tensor) else ()
@@ -375,7 +382,10 @@ def _transpose(self):
     rank = len(self.shape)
     if rank >= len(_REVERSALS):
         _labels(rank, "T")  # raises
-    return _numerical.einsum(_REVERSALS[rank], self)
+    try:
+        return _numerical.einsum(_REVERSALS[rank], self)
+    except TypeError:  # a bool tensor, which einsum's arithmetic refuses: its elements moved alone
+        return _numerical._permute(self, range(rank - 1, -1, -1))
 
 
 _MATMUL = {(1, 1): "i,i->", (2, 1): "ij,j->i", (1, 2): "i,ij->j", (2, 2): "ij,jk->ik"}
@@ -454,9 +464,51 @@ def _scalar(convert):
     return method
 
 
-def _uncomparable(self, other):
-    raise TypeError("tensors have no element-wise comparison yet: numerical.array_equal(a, b) compares two "
-                    "tensors whole")
+def _comparison(op):
+    """The Tensor method for the comparison `op` ("<", "<=", "==", "!=", ">", ">="), element-wise and broadcast as
+    NumPy's, a bool tensor; the operands promoted as for arithmetic. Anything :func:`asarray` cannot read is
+    NotImplemented (so ``t == None`` is False, as Python decides)."""
+
+    def method(self, other):
+        if type(other) is Tensor and other.dtype == self.dtype:
+            a, b = self, other
+        else:
+            try:
+                a, b = _same_dtype(self, other)
+            except (TypeError, error):
+                return NotImplemented
+        return _native(_numerical._compare, op, a, b)
+
+    return method
+
+
+def _boolean(value):
+    """`value` as a bool Tensor: a Tensor, or what :func:`asarray` reads, of bools (a NumPy bool array, a Python bool, a
+    nested list of them); None for anything else, which the logical operators leave to the other operand."""
+    if isinstance(value, Tensor):
+        return value if value.dtype == "bool" else None
+    if isinstance(value, bool) or str(getattr(value, "dtype", "")) == "bool":
+        return asarray(value, "bool")
+    if isinstance(value, (list, tuple)):
+        try:
+            values, _ = _nested(value)
+        except (TypeError, ValueError):
+            return None
+        return asarray(value, "bool") if _builtins.all(isinstance(v, bool) for v in values) else None
+    return None
+
+
+def _logical(op, reflected=False):
+    """The Tensor method for ``&``, ``|`` or ``^`` (`op`) of bool tensors, broadcast; NotImplemented for another
+    operand or dtype, as Python then raises TypeError (NumPy's bitwise operators take no float)."""
+
+    def method(self, other):
+        a, b = _boolean(self), _boolean(other)
+        if a is None or b is None:
+            return NotImplemented
+        return _native(_numerical._logical, op, *((b, a) if reflected else (a, b)))
+
+    return method
 
 
 _REPR_EDGE = 3        # elements kept at each end of a summarised axis
@@ -478,7 +530,7 @@ def _summary(t, prefix, shape):
 def _format(nested, indent):
     if not isinstance(nested, list):
         return "..." if nested is Ellipsis else repr(nested)
-    if not any(isinstance(item, list) for item in nested):
+    if not _builtins.any(isinstance(item, list) for item in nested):
         return "[" + ", ".join(_format(item, indent) for item in nested) + "]"
     return "[" + (",\n" + " " * (indent + 1)).join(_format(item, indent + 1) for item in nested) + "]"
 
@@ -521,9 +573,15 @@ Tensor.__float__ = _scalar(float)
 Tensor.__complex__ = _scalar(complex)
 Tensor.__int__ = _scalar(int)
 Tensor.__repr__ = _repr
-for _name in ("__eq__", "__ne__", "__lt__", "__le__", "__gt__", "__ge__"):
-    setattr(Tensor, _name, _uncomparable)
-Tensor.__hash__ = None  # unhashable, as a NumPy array: equality will be element-wise
+for _name, _op in (("__eq__", "=="), ("__ne__", "!="), ("__lt__", "<"), ("__le__", "<="), ("__gt__", ">"),
+                  ("__ge__", ">=")):
+    setattr(Tensor, _name, _comparison(_op))
+for _name, _op in (("and", "&"), ("or", "|"), ("xor", "^")):
+    setattr(Tensor, f"__{_name}__", _logical(_op))
+    setattr(Tensor, f"__r{_name}__", _logical(_op, reflected=True))
+del _name, _op
+Tensor.__invert__ = lambda self: _numerical._invert(self)
+Tensor.__hash__ = None  # unhashable, as a NumPy array: equality is element-wise
 
 _cholesky = _linalg(_numerical.cholesky, arrays=1)
 _determinant = _linalg(_numerical.determinant)
@@ -701,7 +759,7 @@ def solve_circulant(c, b, singular="raise", tol=None, caxis=-1, baxis=0, outaxis
 def _vectors(name, *values):
     """`values` as vectors (a number as one entry) of one dtype, as NumPy promotes them."""
     tensors = [value if isinstance(value, Tensor) else asarray(value) for value in values]
-    if any(tensor.ndim > 1 for tensor in tensors):
+    if _builtins.any(tensor.ndim > 1 for tensor in tensors):
         raise ValueError(f"{name} takes vectors: SciPy's batches of them are not taken")
     tensors = [tensor.reshape((tensor.size,)) for tensor in tensors]
     dtype = _promoted([tensor.dtype for tensor in tensors])
@@ -739,7 +797,7 @@ def block_diag(*arrs):
     """The block diagonal matrix of `arrs`, in order, as ``scipy.linalg.block_diag``: each a matrix (a vector one row,
     a number one entry), zeros off the blocks, one dtype as NumPy promotes them; none gives a ``1 × 0`` matrix."""
     tensors = [arr if isinstance(arr, Tensor) else asarray(arr) for arr in (arrs or ([],))]
-    if any(tensor.ndim > 2 for tensor in tensors):
+    if _builtins.any(tensor.ndim > 2 for tensor in tensors):
         raise ValueError("block_diag takes matrices: SciPy's batches of them are not taken")
     tensors = [tensor.reshape((1, tensor.size)) if tensor.ndim < 2 else tensor for tensor in tensors]
     dtype = _promoted([tensor.dtype for tensor in tensors])
@@ -1015,7 +1073,7 @@ def _are(a, b, q, r, e, s, balanced, discrete):
     checked Hermitian at their own precision."""
     a, b, q, r = (x if isinstance(x, Tensor) else asarray(x) for x in (a, b, q, r))
     given = [x if x is None or isinstance(x, Tensor) else asarray(x) for x in (e, s)]
-    if all(x.dtype in ("float32", "complex64") for x in [a, b, q, r] + [g for g in given if g is not None]):
+    if _builtins.all(x.dtype in ("float32", "complex64") for x in [a, b, q, r] + [g for g in given if g is not None]):
         q, r = _single_hermitian(q, "q"), _single_hermitian(r, "r")
     e, s = given
     flags = (1 if discrete else 0) | (0 if e is None else 2) | (0 if s is None else 4) | (8 if balanced else 0)
@@ -1354,7 +1412,7 @@ def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):
         A = asarray(A)
     if A.ndim < 2:  # NumPy's: a vector or a number is of rank 1 unless all zero
         values = A.tolist()
-        return int(any(value != 0 for value in (values if A.ndim == 1 else [values])))
+        return int(_builtins.any(value != 0 for value in (values if A.ndim == 1 else [values])))
     if A.ndim > 2:  # a stack: its ranks, integers nested along its leading axes (NumPy's an integer array)
         return _as_integers(_matrix_ranks(A, rtol, tol, bool(hermitian)).tolist())
     return _matrix_rank(A, rtol, tol, bool(hermitian))
@@ -1462,9 +1520,12 @@ def _resolved_axes(t, axis, name):
 
 
 def _permuted(t, order):
-    """`t` with its axes in `order` (a permutation): through einsum, which copies."""
+    """`t` with its axes in `order` (a permutation): through einsum, which copies; a bool one's elements moved alone."""
     letters = _labels(len(t.shape), "permute")
-    return _numerical.einsum(f"{letters}->{''.join(letters[a] for a in order)}", t)
+    try:
+        return _numerical.einsum(f"{letters}->{''.join(letters[a] for a in order)}", t)
+    except TypeError:  # a bool tensor, which einsum's arithmetic refuses
+        return _numerical._permute(t, order)
 
 
 def _matmul_stack(a, b):
@@ -1501,7 +1562,7 @@ def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
             return plain
     x = _tensor(x)
     order, axes = _vector_order(ord), list(_resolved_axes(x, axis, "vector_norm"))
-    if order == -_math.inf and any(x.shape[a] == 0 for a in axes):  # the smallest of nothing, as NumPy's minimum
+    if order == -_math.inf and _builtins.any(x.shape[a] == 0 for a in axes):  # the smallest of nothing, as NumPy's minimum
         raise ValueError("vector_norm: ord=-inf over no element has no value (a minimum of nothing)")
     return _native(_numerical._vector_norm, x, order, axes, bool(keepdims))
 
@@ -1659,7 +1720,7 @@ def multi_dot(arrays, *, out=None):
         operands[0] = reshape(operands[0], (1, operands[0].shape[0]))
     if last_vector:
         operands[-1] = reshape(operands[-1], (operands[-1].shape[0], 1))
-    if any(len(operand.shape) != 2 for operand in operands):
+    if _builtins.any(len(operand.shape) != 2 for operand in operands):
         raise LinAlgError("multi_dot: matrices, the first and last of which may be vectors")
     split = _chain_order([operand.shape for operand in operands])
 
@@ -1812,7 +1873,7 @@ def tensordot(x1, x2, /, *, axes=2):
         left, right = list(range(len(a.shape) - count, len(a.shape))), list(range(count))
     left = [k + len(a.shape) if k < 0 else k for k in left]
     right = [k + len(b.shape) if k < 0 else k for k in right]
-    if len(left) != len(right) or any(a.shape[i] != b.shape[j] for i, j in zip(left, right)):
+    if len(left) != len(right) or _builtins.any(a.shape[i] != b.shape[j] for i, j in zip(left, right)):
         raise ValueError("tensordot: the contracted axes do not match")
     labels = _labels(len(a.shape) + len(b.shape), "tensordot")
     letters_a = list(labels[:len(a.shape)])
@@ -1838,9 +1899,9 @@ def asarray(obj, dtype=None):
     """A :class:`Tensor` from `obj`: a Tensor (the same object when `dtype` matches), an object with an
     ``__array_interface__`` (NumPy: bool, integer, float32/64 and complex64/128 elements, any strides),
     a nested list or tuple of numbers, or a number (rank 0). `dtype` is ``"float64"``, ``"complex128"``,
-    ``"float32"`` or ``"complex64"``; by default an array's own for float32, complex64 and complex128, else
-    float64 (bool and integers included), and complex128 for a complex number or list. A complex input is never
-    cast to a real dtype (that would discard the imaginary part).
+    ``"float32"``, ``"complex64"`` or ``"bool"`` (true where nonzero); by default an array's own for float32,
+    complex64 and complex128, else float64 (bool and integers included), and complex128 for a complex number or list.
+    A complex input is never cast to a real dtype (that would discard the imaginary part).
 
     Raises:
         ValueError: if a nested list is not rectangular.
@@ -1947,8 +2008,8 @@ def _arithmetic(op, reflected=False):
                 return _native(_numerical._power_shortcut, shortcut, self)
         if kind is Tensor and other.dtype == self.dtype:  # nothing to promote: the common cases, straight through
             a, b = self, other
-        elif kind is float or kind is int:  # a real Python number is weak: it takes the tensor's dtype
-            a, b = self, asarray(other, self.dtype)
+        elif (kind is float or kind is int) and (dtype := self.dtype) != "bool":  # a real Python number is weak: it
+            a, b = self, asarray(other, dtype)                                     # takes the tensor's dtype
         else:
             try:
                 a, b = _same_dtype(self, other)
@@ -2015,8 +2076,8 @@ def _reduction(op, doc):
         if not keepdims:
             return result
         shape = tuple(1 if k in axes else a.shape[k] for k in range(rank))  # each reduced axis kept with extent 1
-        if not isinstance(result, Tensor):
-            return full(shape, result, a.dtype)
+        if not isinstance(result, Tensor):  # a bool's dtype its own (any, all; a mask's max), a mask's sum float64
+            return full(shape, result, None if isinstance(result, bool) or a.dtype == "bool" else a.dtype)
         return reshape(result, shape)
 
     reduce.__name__ = op
@@ -2032,6 +2093,10 @@ max = _reduction("max", """The largest element, or the largest along `axis`, as 
 dtypes only (a complex one has no order).""")
 min = _reduction("min", """The smallest element, or the smallest along `axis`, as ``numpy.min``; a NaN wins. Real
 dtypes only.""")
+any = _reduction("any", """Whether any element is true (nonzero), or any along `axis` (a bool Tensor without it), as
+``numpy.any``.""")
+all = _reduction("all", """Whether every element is true (nonzero), or every one along `axis` (a bool Tensor without
+it), as ``numpy.all``.""")
 def _dtype_name(dtype):
     """A dtype's name as a Tensor takes it: a string as it is, ``numpy.float64`` or ``numpy.dtype("float32")`` by name."""
     if isinstance(dtype, str):
@@ -2060,6 +2125,8 @@ Tensor.sum = _reduction_method(sum)
 Tensor.mean = _reduction_method(mean)
 Tensor.max = _reduction_method(max)
 Tensor.min = _reduction_method(min)
+Tensor.any = _reduction_method(any)
+Tensor.all = _reduction_method(all)
 
 
 def _shape(shape):
@@ -2091,20 +2158,21 @@ Tensor.reshape = lambda self, *shape: reshape(self, shape[0] if len(shape) == 1 
 
 
 def _dtype_of(dtype, value=0.0):
-    """`dtype` checked, one of float64, complex128, float32 and complex64; ``None``: complex128 for a complex
-    `value`, else float64, as NumPy infers it."""
+    """`dtype` checked, one of float64, complex128, float32, complex64 and bool; ``None``: complex128 for a complex
+    `value`, bool for a bool one, else float64, as NumPy infers it."""
     if dtype is None:
-        return "complex128" if isinstance(value, complex) else "float64"
+        return "complex128" if isinstance(value, complex) else "bool" if isinstance(value, bool) else "float64"
+    dtype = _dtype_name(dtype)
     if dtype not in _DTYPES:
         raise ValueError(f"dtype must be one of {_DTYPES}, not {dtype!r}")
-    if not dtype.startswith("complex") and isinstance(value, complex):
+    if dtype in ("float64", "float32") and isinstance(value, complex):
         raise TypeError(f"full: a complex value does not fit a {dtype} tensor")
     return dtype
 
 
 def full(shape, value, dtype=None):
-    """A Tensor of `shape` whose every element is `value`, as ``numpy.full``; complex128 for a complex value and
-    float64 otherwise unless `dtype` says (float64, complex128, float32 or complex64)."""
+    """A Tensor of `shape` whose every element is `value`, as ``numpy.full``; complex128 for a complex value, bool for
+    a bool one and float64 otherwise unless `dtype` says (float64, complex128, float32, complex64 or bool)."""
     return _native(_numerical._full, _shape(shape), value, _dtype_of(dtype, value))
 
 
@@ -2161,6 +2229,88 @@ absolute = _elementwise("abs", "The magnitude of every element, real of the same
 absolute.__name__ = "absolute"
 
 
+def astype(x, dtype, /):
+    """`x` in `dtype` (float64, complex128, float32, complex64 or bool), as ``numpy.astype``: a bool is 0 or 1, a number
+    is true where it is nonzero (either part of a complex one); a complex `x` has no real dtype (its imaginary part
+    would be lost). The same Tensor when it has `dtype` already: a Tensor is never written into."""
+    return asarray(x, _dtype_name(dtype))
+
+
+Tensor.astype = lambda self, dtype: asarray(self, _dtype_name(dtype))
+Tensor.astype.__doc__ = astype.__doc__
+
+
+def where(condition, x, y, /):
+    """`x`'s element where `condition` holds, else `y`'s, the three broadcast, as ``numpy.where``: `condition` a bool
+    Tensor or what :func:`asarray` reads (a number true where nonzero); `x` and `y` promoted to one dtype, the
+    answer's, as arithmetic promotes them."""
+    condition = condition if isinstance(condition, Tensor) else asarray(condition)
+    if condition.dtype != "bool":
+        condition = asarray(condition, "bool")
+    x, y = _same_dtype(x, y)
+    return _native(_numerical._where, condition, x, y)
+
+
+def _classifier(name, doc):
+    def function(x, /):
+        return _numerical._classify(name, x if isinstance(x, Tensor) else asarray(x))
+
+    function.__name__ = name
+    function.__doc__ = doc
+    return function
+
+
+isnan = _classifier("isnan", "Whether each element is a NaN (either part of a complex one), as ``numpy.isnan``: a "
+                             "bool Tensor.")
+isinf = _classifier("isinf", "Whether each element is infinite (either part of a complex one), as ``numpy.isinf``: "
+                             "a bool Tensor.")
+isfinite = _classifier("isfinite", "Whether each element is finite (both parts of a complex one), as "
+                                   "``numpy.isfinite``: a bool Tensor.")
+
+
+def _compared(op, name):
+    def function(x1, x2, /):
+        return _comparison(op)(x1 if isinstance(x1, Tensor) else asarray(x1), x2)
+
+    function.__name__ = name
+    function.__doc__ = f"``x1 {op} x2`` element by element, broadcast, as ``numpy.{name}``: a bool Tensor."
+    return function
+
+
+equal = _compared("==", "equal")
+not_equal = _compared("!=", "not_equal")
+less = _compared("<", "less")
+less_equal = _compared("<=", "less_equal")
+greater = _compared(">", "greater")
+greater_equal = _compared(">=", "greater_equal")
+
+
+def _truth(x):
+    """`x` as a bool Tensor, true where it is nonzero, as NumPy's logical functions read their operands."""
+    x = x if isinstance(x, Tensor) else asarray(x)
+    return x if x.dtype == "bool" else asarray(x, "bool")
+
+
+def logical_and(x1, x2, /):
+    """Whether both elements are true (nonzero), element by element, broadcast, as ``numpy.logical_and``."""
+    return _native(_numerical._logical, "&", _truth(x1), _truth(x2))
+
+
+def logical_or(x1, x2, /):
+    """Whether either element is true (nonzero), element by element, broadcast, as ``numpy.logical_or``."""
+    return _native(_numerical._logical, "|", _truth(x1), _truth(x2))
+
+
+def logical_xor(x1, x2, /):
+    """Whether exactly one element is true (nonzero), element by element, broadcast, as ``numpy.logical_xor``."""
+    return _native(_numerical._logical, "^", _truth(x1), _truth(x2))
+
+
+def logical_not(x, /):
+    """Whether each element is false (zero), as ``numpy.logical_not``."""
+    return _numerical._invert(_truth(x))
+
+
 def power(a, b):
     """`a` to the power `b` element by element, broadcast, as ``numpy.power``."""
     a, b = _same_dtype(a, b)
@@ -2170,6 +2320,8 @@ def power(a, b):
 
 
 __all__ += ["diagonal", "matrix_transpose", "tensorsolve", "tensorinv"]
+__all__ += ["any", "all", "astype", "where", "isnan", "isinf", "isfinite", "equal", "not_equal", "less", "less_equal",
+            "greater", "greater_equal", "logical_and", "logical_or", "logical_xor", "logical_not"]
 __all__ += ["sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "eye", "arange", "linspace",
             "exp", "log", "sqrt", "sin", "cos", "tan", "tanh", "absolute", "power"]
 

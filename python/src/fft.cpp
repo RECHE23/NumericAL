@@ -11,7 +11,7 @@ namespace numerical_binding {
 any_tensor fft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int norm, bool inverse)
 {
     const auto scaling {static_cast<numerical::fft_norm>(norm)};
-    return std::visit([&](const auto& t) -> any_tensor {
+    return visit_numeric([&](const auto& t) -> any_tensor {
         const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
         const auto                   index {static_cast<std::ptrdiff_t>(axis)};
         return any_tensor {inverse ? numerical::ifft(t, n, index, scaling) : numerical::fft(t, n, index, scaling)};
@@ -27,7 +27,7 @@ PyObject* module_fftshift(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "OOp", &obj, &axes, &inverse) == 0) {
         return nullptr;
     }
-    const any_tensor* h = as_tensor(obj);
+    const any_tensor* h = numeric_tensor(obj);
     if (h == nullptr) {
         return nullptr;
     }
@@ -37,7 +37,7 @@ PyObject* module_fftshift(PyObject* /*self*/, PyObject* args)
     }
     std::vector<std::ptrdiff_t> axis_v(raw.begin(), raw.end());
     try {
-        return std::visit([&](const auto& t) { return wrap(any_tensor {numerical::fftshift(t, axis_v, inverse != 0)}); }, *h);
+        return visit_numeric([&](const auto& t) { return wrap(any_tensor {numerical::fftshift(t, axis_v, inverse != 0)}); }, *h);
     }
     catch (...) {
         return set_cpp_error();
@@ -48,7 +48,7 @@ PyObject* module_fftshift(PyObject* /*self*/, PyObject* args)
 any_tensor rfft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int norm, bool hermitian)
 {
     const auto scaling {static_cast<numerical::fft_norm>(norm)};
-    return std::visit([&](const auto& t) -> any_tensor {
+    return visit_numeric([&](const auto& t) -> any_tensor {
         using T = std::remove_cvref_t<decltype(t.data()[0])>;
         if constexpr (std::is_floating_point_v<T>) {
             const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
@@ -70,7 +70,7 @@ any_tensor trig_axis(const any_tensor& v, bool sine, int type, std::size_t n, st
     const std::optional<bool> weighted {orthogonalize < 0 ? std::nullopt : std::optional<bool> {orthogonalize != 0}};
     const trig_family         family {sine ? trig_family::sine : trig_family::cosine};
     const auto                index {static_cast<std::ptrdiff_t>(axis)};
-    return std::visit([&](const auto& t) -> any_tensor {
+    return visit_numeric([&](const auto& t) -> any_tensor {
         using T = std::remove_cvref_t<decltype(t.data()[0])>;
         const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};
         if constexpr (std::is_floating_point_v<T>) {
@@ -95,7 +95,7 @@ any_tensor trig_axis(const any_tensor& v, bool sine, int type, std::size_t n, st
 any_tensor irfft_axis(const any_tensor& v, std::size_t n, std::size_t axis, int norm, bool hermitian)
 {
     const auto scaling {static_cast<numerical::fft_norm>(norm)};
-    return std::visit([&](const auto& t) -> any_tensor {
+    return visit_numeric([&](const auto& t) -> any_tensor {
         using T = std::remove_cvref_t<decltype(t.data()[0])>;
         if constexpr (numerical::detail::split_complex<T>) {
             const sb::scoped_gil_release unlocked {releases_gil(t.data().size() + n)};

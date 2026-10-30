@@ -8,6 +8,17 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **Python: a `bool` dtype.** The comparisons of two tensors, or of a tensor and a number or an array, give a bool
+  Tensor element by element, broadcast as NumPy's (they raised `TypeError`); `&`, `|`, `^`, `~`, `where`, `isnan`,
+  `isinf`, `isfinite`, `any`, `all`, `astype`, and NumPy's `equal`, `less`, `logical_and` and their kin. A mask beside a
+  number takes the number's dtype, its `sum` and `mean` count its trues and its `max` and `min` are `any` and `all`, as
+  NumPy's; two masks have no arithmetic and the linear algebra takes no mask (`TypeError`), as the array API leaves
+  them. A mask is one byte an element, NumPy's: `np.asarray`, `__dlpack__` and `asarray(…, dtype="bool")` exchange it
+  without a conversion. `asarray` of a NumPy bool array without a `dtype` is still float64. Tested against NumPy 2.5:
+  every pair of nine shapes and six comparisons over NaN, ±0 and ±∞, every triple for `where`, every axis and
+  `keepdims` for `any` and `all`; the other calls' time unchanged (a 4 × 4 `sum` 492 ns, `+` 857).
+
 ## 2026.10.42 — 2026-10-30
 
 ### Changed

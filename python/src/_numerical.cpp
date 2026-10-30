@@ -26,7 +26,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     .def_prop_ro<&get_shape>("shape", "The size of each axis, as a tuple.")
     .def_prop_ro<&get_ndim>("ndim", "The number of axes.")
     .def_prop_ro<&get_size>("size", "The total number of elements.")
-    .def_prop_ro<&get_dtype>("dtype", "'float64' or 'complex128'.")
+    .def_prop_ro<&get_dtype>("dtype", "'float64', 'complex128', 'float32', 'complex64' or 'bool'.")
     .def_prop_ro<&get_array_interface>("__array_interface__",
                                        "NumPy array-interface (v3) describing the shared, read-only buffer.");
     // The 7 linear-algebra functions whose args/return are caster-able -> m.def.
@@ -90,6 +90,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     // asarray (returns the same object when the dtype matches — Py_NewRef identity).
     m.raw("determinant", module_determinant, METH_VARARGS,
           "determinant(a) -> number\nThe determinant of a square matrix (float or complex).");
+    m.raw("_permute", module_permute, METH_VARARGS,
+          "_permute(t, order) -> Tensor\nThe tensor with its axes in order (a permutation), a copy of any dtype.");
     m.raw("_take", module_take, METH_VARARGS,
           "_take(t, starts, steps, counts, keep) -> Tensor or number\nThe strided copy behind Tensor.__getitem__.");
     m.raw("_power_shortcut", module_power_shortcut, METH_VARARGS,
@@ -99,6 +101,15 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_stack_last", module_stack_last, METH_VARARGS,
           "_stack_last(parts) -> Tensor\nTensors of one shape and dtype side by side along a new last axis (a copy).");
     m.raw("_negate", module_negate, METH_VARARGS, "_negate(a) -> Tensor\nElement-wise negation.");
+    m.raw("_compare", module_compare, METH_VARARGS,
+          "_compare(op, a, b) -> Tensor\nElement-wise a op b (op one of < <= == != > >=), broadcast; one dtype; bool.");
+    m.raw("_logical", module_logical, METH_VARARGS,
+          "_logical(op, a, b) -> Tensor\nElement-wise a & b, a | b or a ^ b of bool tensors, broadcast.");
+    m.raw("_invert", module_invert, METH_VARARGS, "_invert(a) -> Tensor\nElement-wise negation of a bool tensor.");
+    m.raw("_where", module_where, METH_VARARGS,
+          "_where(condition, x, y) -> Tensor\nx where the bool condition holds, else y, the three broadcast.");
+    m.raw("_classify", module_classify, METH_VARARGS,
+          "_classify(name, a) -> Tensor\nisnan, isinf or isfinite of every element, as a bool tensor.");
     m.raw("_equal", module_equal, METH_VARARGS,
           "_equal(a, b) -> bool\nWhether two tensors of one dtype and size hold equal elements (a NaN equals nothing).");
     m.raw("_unary", module_unary, METH_VARARGS,
@@ -121,7 +132,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_vector_norm", module_vector_norm, METH_VARARGS,
           "_vector_norm(x, ord, axes, keepdims) -> Tensor or number\nThe ord norm over the given axes, as numpy.linalg.vector_norm, without overflow.");
     m.raw("_reduce", module_reduce, METH_VARARGS,
-          "_reduce(op, a, axis) -> number or Tensor\nsum, mean, max or min of every element (axis -1) or along an axis.");
+          "_reduce(op, a, axis) -> number or Tensor\nsum, mean, max, min, any or all of every element (axis -1) or along an axis.");
     m.raw("_reshape", module_reshape, METH_VARARGS, "_reshape(a, shape) -> Tensor\nThe elements under another shape.");
     m.raw("_full", module_full, METH_VARARGS, "_full(shape, value, dtype) -> Tensor\nA tensor of one value.");
     m.raw("_eye", module_eye, METH_VARARGS, "_eye(n, dtype) -> Tensor\nThe n×n identity.");
@@ -156,5 +167,5 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "asarray(obj, dtype=None) -> Tensor\n"
           "A Tensor (converted if dtype differs), or a copy of a C-contiguous array via\n"
           "__array_interface__. dtype is honoured: real->complex128 widens (zero imaginary\n"
-          "part); complex128->float64 is refused.");
+          "part); complex128->float64 is refused; bool is a number's truth.");
 }

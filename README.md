@@ -227,7 +227,7 @@ pip install numeric-al        # the distribution is numeric-al; the module is nu
 A CPython binding (stable ABI, one `cp310` abi3 wheel serves 3.10+; a free-threaded 3.14t or 3.15t takes its own
 wheel and runs without the GIL) exposes the
 unifying object `numerical.Tensor` (rank-1 a vector, rank-2 a matrix, rank-0 a
-scalar; `float64`, `complex128`, `float32` or `complex64`) and the algebra over it. Every function takes a
+scalar; `float64`, `complex128`, `float32`, `complex64`, or `bool` for a comparison's answer) and the algebra over it. Every function takes a
 `Tensor` or anything `asarray` reads — a NumPy array, a nested list, a number:
 
 ```python
@@ -253,7 +253,18 @@ t = numerical.arange(6).reshape(2, 3)
 t.sum(), t.mean(axis=0), t.max(axis=-1), t.sum(axis=(0, 1), keepdims=True)
 numerical.zeros((2, 2)), numerical.eye(3), numerical.linspace(0, 1, 5)
 numerical.exp(t), numerical.sqrt(t), abs(t), t ** 2
+mask = (t > 1) & ~numerical.isnan(t)                     # a bool Tensor, broadcast as NumPy's
+numerical.where(mask, t, 0.0), mask.any(axis=0), mask.sum(), mask.astype("float64")
 ```
+
+A comparison (`< <= == != > >=`, `numerical.less` and the rest) gives a `bool` Tensor, element by element, a NaN
+unequal to everything, as NumPy's; a complex tensor compares with `==` and `!=` only. `&`, `|`, `^` and `~` take bool
+tensors (`logical_and` and the rest any, read as NumPy reads them: nonzero is true), `where` picks between two
+operands promoted as arithmetic promotes them, `isnan`, `isinf` and `isfinite` classify, and `any`, `all` reduce as
+`sum` does. A mask beside a number takes the number's dtype (`mask * t`), and its `sum` and `mean` count its trues, as
+NumPy's; two masks have no arithmetic, and neither has a mask in the linear algebra (a `TypeError` names
+`astype("float64")`), as the array API leaves them: `asarray` still reads a NumPy bool array into float64, unless
+`dtype="bool"` asks.
 
 Shapes that do not broadcast raise a `ValueError` worded as NumPy's. `max` and `min` take
 real dtypes only (NumPy orders complex numbers lexicographically; NumericAL does not order them); `max` gives +0 and `min`
@@ -333,7 +344,7 @@ byte order, at any strides (a transposed, sliced or reversed view) — as well a
 tuple of numbers and a plain number (rank 0): a float32, complex64 or complex128 array as it is, anything else into
 float64 (complex128 for a complex list or number), or into the `dtype` asked; a complex input is never cast to a
 real dtype. `matmul` and `@` read a NumPy array where it lies, with no copy, when it is row-major, contiguous, aligned,
-in this machine's byte order and of one of the four dtypes, the other operand of the same dtype (a product of
+in this machine's byte order and of one of the four numeric dtypes, the other operand of the same dtype (a product of
 order 512 by a vector: 231 → 18 µs); `solve`, `det`, `slogdet` and `inv` read a square float64 or complex128 array so
 too, into the one copy their factorisation takes. Any other array is copied first, with the same answer. NumericAL makes
 no views: `einsum("ij->ji", a)` returns a new tensor where NumPy returns a view of `a` (a copy, faster than NumPy's

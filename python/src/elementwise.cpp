@@ -25,7 +25,7 @@ PyObject* module_binary(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     try {
-        return std::visit([&](const auto& x) { return binary_on(op[0], x, std::get<std::decay_t<decltype(x)>>(*b)); }, *a);
+        return visit_numeric([&](const auto& x) { return binary_on(op[0], x, std::get<std::decay_t<decltype(x)>>(*b)); }, *a);
     }
     catch (...) {
         return set_cpp_error();
@@ -44,12 +44,12 @@ PyObject* module_power_shortcut(PyObject* /*self*/, PyObject* args)
         PyErr_SetString(PyExc_ValueError, "_power_shortcut: kind is 2, r or h");
         return nullptr;
     }
-    const any_tensor* a = as_tensor(x);
+    const any_tensor* a = numeric_tensor(x);
     if (a == nullptr) {
         return nullptr;
     }
     try {
-        return std::visit([&](const auto& t) { return power_shortcut_on(kind[0], t); }, *a);
+        return visit_numeric([&](const auto& t) { return power_shortcut_on(kind[0], t); }, *a);
     }
     catch (...) {
         return set_cpp_error();
@@ -63,12 +63,12 @@ PyObject* module_negate(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "O", &x) == 0) {
         return nullptr;
     }
-    const any_tensor* a = as_tensor(x);
+    const any_tensor* a = numeric_tensor(x);
     if (a == nullptr) {
         return nullptr;
     }
     try { // an allocation the system refuses is a Python exception, not an abort
-        return std::visit([](const auto& t) { return wrap(any_tensor {-t}); }, *a);
+        return visit_numeric([](const auto& t) { return wrap(any_tensor {-t}); }, *a);
     }
     catch (...) {
         return set_cpp_error();
@@ -100,6 +100,242 @@ PyObject* module_equal(PyObject* /*self*/, PyObject* args)
     return Py_NewRef(equal ? Py_True : Py_False);
 }
 
+// _compare(op, a, b) -> bool Tensor.
+PyObject* module_compare(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    PyObject*   y  = nullptr;
+    if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
+        return nullptr;
+    }
+    static constexpr std::array<std::string_view, 6> names {"<", "<=", "==", "!=", ">", ">="};
+    const auto found {std::find(names.begin(), names.end(), std::string_view {op})};
+    if (found == names.end()) {
+        PyErr_SetString(PyExc_ValueError, "_compare: op is one of < <= == != > >=");
+        return nullptr;
+    }
+    const auto        which {static_cast<std::size_t>(found - names.begin())};
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    if (a->index() != b->index()) {
+        PyErr_SetString(sciforge_module_error(), "_compare: the operands differ in dtype");
+        return nullptr;
+    }
+    if (is_complex(*a) && which != 2 && which != 3) {
+        PyErr_SetString(PyExc_TypeError, "a complex tensor has no order: compare with == or !=, or compare the real parts");
+        return nullptr;
+    }
+    try {
+        std::optional<bool_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(std::max(count_of(*a), count_of(*b)))};
+            std::visit([&](const auto& p) {
+                using tensor_type = std::decay_t<decltype(p)>;
+                using T           = element_of_t<tensor_type>;
+                const T* const u {p.data().data()};
+                const T* const v {std::get<tensor_type>(*b).data().data()};
+                const std::array shapes {p.shape(), shape_of(*b)};
+                const auto       compared {[&](const auto& relation) {
+                    result.emplace(broadcast_elements<boolean>(shapes, [&](const std::array<std::size_t, 2>& at) {
+                        if constexpr (std::is_same_v<T, boolean>) {
+                            return boolean {relation(u[at[0]].value, v[at[1]].value)};
+                        }
+                        else {
+                            return boolean {relation(u[at[0]], v[at[1]])};
+                        }
+                    }));
+                }};
+                switch (which) {
+                    case 2: compared(std::equal_to<> {}); break;
+                    case 3: compared(std::not_equal_to<> {}); break;
+                    default:
+                        if constexpr (!complex_scalar<T>) {
+                            switch (which) {
+                                case 0: compared(std::less<> {}); break;
+                                case 1: compared(std::less_equal<> {}); break;
+                                case 4: compared(std::greater<> {}); break;
+                                default: compared(std::greater_equal<> {}); break;
+                            }
+                        }
+                        break;
+                }
+            }, *a);
+        }
+        return wrap(any_tensor {std::move(*result)});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// The bool tensor of a Tensor argument, or nullptr with TypeError set for another dtype (numerical.error for
+// anything else, as as_tensor).
+inline const bool_tensor* bool_operand(PyObject* obj, const char* name)
+{
+    const any_tensor* v = as_tensor(obj);
+    if (v == nullptr) {
+        return nullptr;
+    }
+    if (!is_bool(*v)) {
+        PyErr_Format(PyExc_TypeError, "%s takes bool tensors, not %s: compare first, as t != 0", name, dtype_name(*v));
+        return nullptr;
+    }
+    return &std::get<bool_tensor>(*v);
+}
+
+// _logical(op, a, b) -> bool Tensor.
+PyObject* module_logical(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    PyObject*   y  = nullptr;
+    if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
+        return nullptr;
+    }
+    const std::string_view name {op};
+    if (name != "&" && name != "|" && name != "^") {
+        PyErr_SetString(PyExc_ValueError, "_logical: op is one of & | ^");
+        return nullptr;
+    }
+    const bool_tensor* a = bool_operand(x, op);
+    const bool_tensor* b = a == nullptr ? nullptr : bool_operand(y, op);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    try {
+        const boolean* const u {a->data().data()};
+        const boolean* const v {b->data().data()};
+        const std::array     shapes {a->shape(), b->shape()};
+        std::optional<bool_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(std::max(a->size(), b->size()))};
+            result.emplace(broadcast_elements<boolean>(shapes, [&](const std::array<std::size_t, 2>& at) {
+                const bool p {u[at[0]].value};
+                const bool q {v[at[1]].value};
+                return boolean {name == "&" ? (p && q) : name == "|" ? (p || q) : (p != q)};
+            }));
+        }
+        return wrap(any_tensor {std::move(*result)});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _invert(a) -> bool Tensor.
+PyObject* module_invert(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x = nullptr;
+    if (PyArg_ParseTuple(args, "O", &x) == 0) {
+        return nullptr;
+    }
+    const bool_tensor* a = bool_operand(x, "~");
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        return wrap(any_tensor {numerical::detail::parallel_map(*a, [](const boolean& p) { return boolean {!p.value}; })});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _where(condition, x, y) -> Tensor.
+PyObject* module_where(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* c_obj = nullptr;
+    PyObject* x_obj = nullptr;
+    PyObject* y_obj = nullptr;
+    if (PyArg_ParseTuple(args, "OOO", &c_obj, &x_obj, &y_obj) == 0) {
+        return nullptr;
+    }
+    const bool_tensor* c = bool_operand(c_obj, "where's condition");
+    const any_tensor*  x = c == nullptr ? nullptr : as_tensor(x_obj);
+    const any_tensor*  y = x == nullptr ? nullptr : as_tensor(y_obj);
+    if (y == nullptr) {
+        return nullptr;
+    }
+    if (x->index() != y->index()) {
+        PyErr_SetString(sciforge_module_error(), "_where: x and y differ in dtype");
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(std::max({c->size(), count_of(*x), count_of(*y)}))};
+            std::visit([&](const auto& p) {
+                using tensor_type = std::decay_t<decltype(p)>;
+                using T           = element_of_t<tensor_type>;
+                const boolean* const holds {c->data().data()};
+                const T* const       u {p.data().data()};
+                const T* const       v {std::get<tensor_type>(*y).data().data()};
+                const std::array     shapes {c->shape(), p.shape(), shape_of(*y)};
+                result.emplace(broadcast_elements<T>(shapes, [&](const std::array<std::size_t, 3>& at) {
+                    return holds[at[0]].value ? u[at[1]] : v[at[2]];
+                }));
+            }, *x);
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _classify(name, a) -> bool Tensor.
+PyObject* module_classify(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    if (PyArg_ParseTuple(args, "sO", &op, &x) == 0) {
+        return nullptr;
+    }
+    const std::string_view name {op};
+    if (name != "isnan" && name != "isinf" && name != "isfinite") {
+        PyErr_SetString(PyExc_ValueError, "_classify: name is isnan, isinf or isfinite");
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        return wrap(any_tensor {std::visit([&](const auto& t) {
+            using T = element_of_t<std::decay_t<decltype(t)>>;
+            return numerical::detail::parallel_map(t, [name](const T& value) {
+                if constexpr (std::is_same_v<T, boolean>) {
+                    return boolean {name == "isfinite"};
+                }
+                else {
+                    const auto parts {[&](const auto& test) {
+                        if constexpr (complex_scalar<T>) {
+                            return test(value.real()) || test(value.imag());
+                        }
+                        else {
+                            return test(value);
+                        }
+                    }};
+                    if (name == "isnan") {
+                        return boolean {parts([](auto part) { return std::isnan(part); })};
+                    }
+                    if (name == "isinf") {
+                        return boolean {parts([](auto part) { return std::isinf(part); })};
+                    }
+                    return boolean {!parts([](auto part) { return !std::isfinite(part); })};
+                }
+            });
+        }, *a)});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _unary(name, a) -> Tensor: the function `name` of every element.
 PyObject* module_unary(PyObject* /*self*/, PyObject* args)
 {
@@ -108,12 +344,12 @@ PyObject* module_unary(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "sO", &name, &x) == 0) {
         return nullptr;
     }
-    const any_tensor* a = as_tensor(x);
+    const any_tensor* a = numeric_tensor(x);
     if (a == nullptr) {
         return nullptr;
     }
     try { // an allocation the system refuses is a Python exception, not an abort
-        return std::visit([&](const auto& t) { return unary_on(name, t); }, *a);
+        return visit_numeric([&](const auto& t) { return unary_on(name, t); }, *a);
     }
     catch (...) {
         return set_cpp_error();
@@ -130,16 +366,39 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "sOn", &op, &x, &axis) == 0) {
         return nullptr;
     }
-    const any_tensor* a = as_tensor(x);
+    const std::string_view name {op};
+    const any_tensor*      a = as_tensor(x);
     if (a == nullptr) {
         return nullptr;
     }
-    const std::string_view name {op};
+    const bool truth {name == "any" || name == "all"};
     try {
-        if (name == "sum" || name == "mean") {
-            return std::visit([&](const auto& t) { return sum_or_mean(name == "mean", t, axis); }, *a);
+        if (truth || is_bool(*a)) {
+            // any and all of a number's truth (NumPy's: nonzero), or a mask's: the sum and the mean count its trues, its
+            // maximum is any and its minimum all, of which an empty one has none (as of numbers)
+            if (!is_bool(*a)) {
+                return truth_of(name == "any", visit_numeric([](const auto& t) { return converted<boolean>(t); }, *a), axis);
+            }
+            const bool_tensor& mask {std::get<bool_tensor>(*a)};
+            if (truth) {
+                return truth_of(name == "any", mask, axis);
+            }
+            if (name == "sum" || name == "mean") {
+                return sum_or_mean(name == "mean", converted<double>(mask), axis);
+            }
+            if (name == "max" || name == "min") {
+                const bool empty {axis < 0 ? mask.size() == 0
+                                           : static_cast<std::size_t>(axis) < mask.rank() && mask.shape()[static_cast<std::size_t>(axis)] == 0};
+                if (empty) {
+                    throw numerical::dimension_error("a zero-size reduction to a maximum or a minimum has no identity");
+                }
+                return truth_of(name == "max", mask, axis);
+            }
         }
-        if (name == "max" || name == "min") {
+        else if (name == "sum" || name == "mean") {
+            return visit_numeric([&](const auto& t) { return sum_or_mean(name == "mean", t, axis); }, *a);
+        }
+        else if (name == "max" || name == "min") {
             if (is_complex(*a)) {
                 PyErr_SetString(PyExc_TypeError, "max and min take a real tensor: a complex one has no order");
                 return nullptr;
@@ -149,7 +408,7 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
             }
             return extreme_of(name == "max", std::get<real_tensor>(*a), axis);
         }
-        PyErr_SetString(PyExc_ValueError, "_reduce: op is sum, mean, max or min");
+        PyErr_SetString(PyExc_ValueError, "_reduce: op is sum, mean, max, min, any or all");
         return nullptr;
     }
     catch (...) {
@@ -169,7 +428,7 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "OdOp", &obj, &ord, &axes_obj, &keepdims) == 0) {
         return nullptr;
     }
-    const any_tensor*       h = as_tensor(obj);
+    const any_tensor*       h = numeric_tensor(obj);
     std::vector<Py_ssize_t> axes;
     if (h == nullptr || !read_integers(axes_obj, axes)) {
         return nullptr;
@@ -214,7 +473,7 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
         }
         if (ord == 2.0 && trailing) {
             numerical::buffer<double> out(kept_count, 0.0);
-            std::visit([&](const auto& t) {
+            visit_numeric([&](const auto& t) {
                 for (std::size_t k = 0; k < kept_count; ++k) {
                     const auto* const run {t.data().data() + (k * reduced_count)};
                     if (const std::optional<double> plain {plain_two_norm(run, reduced_count)}) {
@@ -232,7 +491,7 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
             any_tensor result {real_tensor {std::move(out_shape), std::move(out)}};
             return wrap(is_single(*h) ? narrowed(result) : std::move(result));
         }
-        const auto magnitudes {std::visit([](const auto& t) {
+        const auto magnitudes {visit_numeric([](const auto& t) {
                                               std::vector<double> m(t.size());
                                               std::transform(t.data().begin(), t.data().end(), m.begin(), [](const auto& x) {
                                                   return static_cast<double>(std::abs(x));

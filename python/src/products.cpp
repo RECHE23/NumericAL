@@ -30,7 +30,7 @@ PyObject* module_einsum(PyObject* /*self*/, PyObject* args)
     holders.reserve(static_cast<std::size_t>(count - 1));
     std::size_t elements {0};
     for (Py_ssize_t i = 1; i < count; ++i) {
-        const any_tensor* h = as_tensor(PyTuple_GetItem(args, i));
+        const any_tensor* h = numeric_tensor(PyTuple_GetItem(args, i));
         if (h == nullptr) {
             return nullptr;
         }
@@ -47,7 +47,7 @@ PyObject* module_einsum(PyObject* /*self*/, PyObject* args)
         std::optional<any_tensor> result;
         {
             const sb::scoped_gil_release unlocked {releases_gil(elements)};
-            std::visit([&](const auto& first) {
+            visit_numeric([&](const auto& first) {
                            using tensor_type = std::decay_t<decltype(first)>;
                            std::vector<const tensor_type*> operands;
                            operands.reserve(holders.size());
@@ -86,21 +86,21 @@ PyObject* tensor_matmul(PyObject* self, PyObject* other)
         const std::size_t ranks[2] {shape_of(*a).size(), shape_of(*b).size()};
         static constexpr std::array<std::array<const char*, 2>, 2> specs {{{"i,i->", "i,ij->j"}, {"ij,j->i", "ij,jk->ik"}}};
         // inner dimensions that differ go to the fallback, which says so with both shapes
-        if (a->index() == b->index() && ranks[0] >= 1 && ranks[0] <= 2 && ranks[1] >= 1 && ranks[1] <= 2
+        if (a->index() == b->index() && !is_bool(*a) && ranks[0] >= 1 && ranks[0] <= 2 && ranks[1] >= 1 && ranks[1] <= 2
             && shape_of(*a).back() == shape_of(*b).front()) {
             const std::string spec {specs.at(ranks[0] - 1).at(ranks[1] - 1)};
             try {
                 std::optional<any_tensor> result;
                 {
                     const sb::scoped_gil_release unlocked {releases_gil(count_of(*a) + count_of(*b))};
-                    std::visit([&](const auto& x) {
+                    visit_numeric([&](const auto& x) {
                                    using tensor_type = std::decay_t<decltype(x)>;
                                    const std::vector<const tensor_type*> operands {&x, &std::get<tensor_type>(*b)};
                                    result.emplace(numerical::detail::einsum_impl<element_of_t<tensor_type>>(spec, operands));
                                }, *a);
                 }
                 if (ranks[0] == 1 && ranks[1] == 1) { // two vectors give a number, as NumPy's
-                    return std::visit([](const auto& t) { return from_scalar(t.data()[0]); }, *result);
+                    return visit_numeric([](const auto& t) { return from_scalar(t.data()[0]); }, *result);
                 }
                 return wrap(std::move(*result));
             }
@@ -126,7 +126,7 @@ any_tensor matmul_nd(const any_tensor& a, const any_tensor& b)
         throw std::runtime_error("_matmul_nd: the operands share one dtype");
     }
     const sb::scoped_gil_release unlocked {releases_gil(count_of(a) + count_of(b))};
-    return std::visit([&](const auto& x) -> any_tensor {
+    return visit_numeric([&](const auto& x) -> any_tensor {
                           using tensor_type = std::decay_t<decltype(x)>;
                           return numerical::matmul(x, std::get<tensor_type>(b));
                       }, a);
@@ -180,6 +180,73 @@ PyObject* module_take(PyObject* /*self*/, PyObject* args)
     }
     try {
         return std::visit([&](const auto& t) { return take_from(t, start_v, step_v, count_v, keep_v); }, *h);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _permute(t, order) -> Tensor.
+PyObject* module_permute(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* obj   = nullptr;
+    PyObject* order = nullptr;
+    if (PyArg_ParseTuple(args, "OO", &obj, &order) == 0) {
+        return nullptr;
+    }
+    const any_tensor*       h = as_tensor(obj);
+    std::vector<Py_ssize_t> axes;
+    if (h == nullptr || !read_integers(order, axes)) {
+        return nullptr;
+    }
+    const std::vector<std::size_t>& shape {shape_of(*h)};
+    const std::size_t               rank {shape.size()};
+    std::vector<bool>               seen(rank, false);
+    const auto                      permutes {[&] {
+        for (const Py_ssize_t axis : axes) {
+            if (axis < 0 || static_cast<std::size_t>(axis) >= rank || seen[static_cast<std::size_t>(axis)]) {
+                return false;
+            }
+            seen[static_cast<std::size_t>(axis)] = true;
+        }
+        return axes.size() == rank;
+    }};
+    if (!permutes()) {
+        PyErr_SetString(sciforge_module_error(), "_permute: the order is a permutation of the tensor's axes");
+        return nullptr;
+    }
+    std::vector<std::size_t> strides(rank, 1);
+    for (std::size_t a = rank; a-- > 1;) {
+        strides[a - 1] = strides[a] * shape[a];
+    }
+    std::vector<std::size_t> out_shape(rank);
+    std::vector<std::size_t> from(rank); // the source stride of each output axis
+    for (std::size_t k = 0; k < rank; ++k) {
+        out_shape[k] = shape[static_cast<std::size_t>(axes[k])];
+        from[k]      = strides[static_cast<std::size_t>(axes[k])];
+    }
+    try {
+        return std::visit([&](const auto& t) {
+            using T = element_of_t<std::decay_t<decltype(t)>>;
+            const T* const       data {t.data().data()};
+            const std::size_t    count {t.size()};
+            numerical::buffer<T> out(count);
+            const std::size_t    inner {rank == 0 ? 1 : out_shape[rank - 1]};
+            const std::size_t    step {rank == 0 ? 0 : from[rank - 1]};
+            const std::size_t    rows {inner == 0 ? 0 : count / inner};
+            numerical::detail::parallel_for(rows, numerical::detail::memory_element_weight * inner, [&](std::size_t row) {
+                std::size_t offset {0};
+                for (std::size_t a = rank == 0 ? 0 : rank - 1, rest = row; a-- > 0;) {
+                    offset += (rest % out_shape[a]) * from[a];
+                    rest   /= out_shape[a];
+                }
+                T* const to {out.data() + (row * inner)};
+                for (std::size_t i = 0; i < inner; ++i) {
+                    to[i] = data[offset + (i * step)];
+                }
+            });
+            return wrap(any_tensor {numerical::tensor<T> {std::move(out_shape), std::move(out)}});
+        }, *h);
     }
     catch (...) {
         return set_cpp_error();
@@ -286,7 +353,8 @@ PyObject* module_full(PyObject* /*self*/, PyObject* args)
             case 0: return wrap(any_tensor {numerical::full(std::move(shape), re)});
             case 1: return wrap(any_tensor {numerical::full(std::move(shape), std::complex<double> {re, im})});
             case 2: return wrap(any_tensor {numerical::full(std::move(shape), static_cast<float>(re))});
-            default: return wrap(any_tensor {numerical::full(std::move(shape), std::complex<float> {static_cast<float>(re), static_cast<float>(im)})});
+            case 3: return wrap(any_tensor {numerical::full(std::move(shape), std::complex<float> {static_cast<float>(re), static_cast<float>(im)})});
+            default: return wrap(any_tensor {numerical::full(std::move(shape), converted<boolean>(std::complex<double> {re, im}))});
         }
     }
     catch (...) {
@@ -316,7 +384,14 @@ PyObject* module_eye(PyObject* /*self*/, PyObject* args)
             case 0: return wrap(any_tensor {numerical::eye<double>(order)});
             case 1: return wrap(any_tensor {numerical::eye<std::complex<double>>(order)});
             case 2: return wrap(any_tensor {numerical::eye<float>(order)});
-            default: return wrap(any_tensor {numerical::eye<std::complex<float>>(order)});
+            case 3: return wrap(any_tensor {numerical::eye<std::complex<float>>(order)});
+            default: {
+                numerical::buffer<boolean> diagonal(numerical::detail::checked_mul(order, order), boolean {false});
+                for (std::size_t i = 0; i < order; ++i) {
+                    diagonal[(i * order) + i] = boolean {true};
+                }
+                return wrap(any_tensor {bool_tensor {{order, order}, std::move(diagonal)}});
+            }
         }
     }
     catch (...) {

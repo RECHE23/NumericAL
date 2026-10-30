@@ -68,12 +68,27 @@ using real_tensor    = numerical::tensor<double>;
 using cplx_tensor    = numerical::tensor<std::complex<double>>;
 using single_tensor  = numerical::tensor<float>;
 using csingle_tensor = numerical::tensor<std::complex<float>>;
-// float64, complex128, float32, complex64: the index is the dtype (dtype_names).
-using any_tensor = std::variant<real_tensor, cplx_tensor, single_tensor, csingle_tensor>;
+// A bool element in one byte that the storage holds as itself: std::vector<bool>, numerical::buffer<bool>'s, packs
+// bits and has no data() for NumPy and DLPack to read.
+struct boolean
+{
+    bool value;
+
+    friend bool operator==(boolean, boolean) = default;
+};
+using bool_tensor    = numerical::tensor<boolean>;
+// float64, complex128, float32, complex64, bool: the index is the dtype (dtype_names).
+using any_tensor = std::variant<real_tensor, cplx_tensor, single_tensor, csingle_tensor, bool_tensor>;
+
+// The variant index of the bool dtype: comparisons' answers and masks, outside the arithmetic.
+constexpr std::size_t bool_index {4};
+
+// A bool element is NumPy's and DLPack's one byte, 0 or 1, so that both read the buffer where it lies.
+static_assert(sizeof(boolean) == 1 && sizeof(bool) == 1);
 
 // The dtypes by variant index, and the array-interface type codes of their elements.
-constexpr std::array<const char*, 4> dtype_names {"float64", "complex128", "float32", "complex64"};
-constexpr std::array<const char*, 4> type_codes {"f8", "c16", "f4", "c8"};
+constexpr std::array<const char*, 5> dtype_names {"float64", "complex128", "float32", "complex64", "bool"};
+constexpr std::array<const char*, 5> type_codes {"f8", "c16", "f4", "c8", "b1"};
 
 // The variant index of a dtype's name, or nothing.
 inline std::optional<std::size_t> dtype_index(std::string_view name)
@@ -124,6 +139,7 @@ inline PyObject* set_cpp_error() { return sb::set_cpp_error(sciforge_module_erro
 constexpr int          kDLCPU     = 1;
 constexpr std::uint8_t kDLFloat   = 2;
 constexpr std::uint8_t kDLComplex = 5;
+constexpr std::uint8_t kDLBool    = 6;
 
 struct DLDevice
 {
@@ -185,7 +201,27 @@ inline bool is_complex(const any_tensor& v)
 // Whether a tensor holds single-precision elements, float32 or complex64.
 inline bool is_single(const any_tensor& v)
 {
-    return v.index() >= 2;
+    return v.index() == 2 || v.index() == 3;
+}
+
+// Whether a tensor holds bool elements.
+inline bool is_bool(const any_tensor& v)
+{
+    return v.index() == bool_index;
+}
+
+// `f(t)` of the float or complex tensor `v` holds, as std::visit, never instantiated for a bool one: the arithmetic
+// has no bool elements, and every caller takes \ref numeric_tensor's (or caster<any_tensor>'s) refusal first.
+template <typename F>
+decltype(auto) visit_numeric(F&& f, const any_tensor& v)
+{
+    switch (v.index()) {
+        case 0: return std::forward<F>(f)(std::get<real_tensor>(v));
+        case 1: return std::forward<F>(f)(std::get<cplx_tensor>(v));
+        case 2: return std::forward<F>(f)(std::get<single_tensor>(v));
+        case 3: return std::forward<F>(f)(std::get<csingle_tensor>(v));
+        default: throw std::logic_error("a bool tensor reached the arithmetic");
+    }
 }
 
 inline const char* dtype_name(const any_tensor& v)
@@ -202,7 +238,7 @@ inline char byte_order()
 
 inline std::string typestr_of(const any_tensor& v)
 {
-    std::string out(1, byte_order());
+    std::string out(1, is_bool(v) ? '|' : byte_order()); // one byte: no order
     out += type_codes.at(v.index());
     return out;
 }
@@ -232,6 +268,18 @@ inline PyObject* wrap(any_tensor value)
     return sb::class_wrap<any_tensor>(std::move(value));
 }
 
+// The float or complex tensor of a Tensor argument, or nullptr with an error set: numerical.error for anything else
+// (as \ref as_tensor), TypeError for a bool one, whose elements no arithmetic takes.
+inline any_tensor* numeric_tensor(PyObject* obj)
+{
+    any_tensor* v = as_tensor(obj);
+    if (v != nullptr && is_bool(*v)) {
+        PyErr_SetString(PyExc_TypeError, "a bool tensor has no arithmetic: convert it first, as t.astype(\"float64\")");
+        return nullptr;
+    }
+    return v;
+}
+
 // --- reading Python data into typed buffers --------------------------------
 template <typename T>
 T to_scalar(PyObject* item);
@@ -252,6 +300,12 @@ template <>
 inline std::complex<float> to_scalar<std::complex<float>>(PyObject* item)
 {
     return {static_cast<float>(PyComplex_RealAsDouble(item)), static_cast<float>(PyComplex_ImagAsDouble(item))};
+}
+
+template <>
+inline boolean to_scalar<boolean>(PyObject* item)
+{
+    return boolean {PyObject_IsTrue(item) == 1}; // -1 with an error set, which the caller reads
 }
 
 template <>
@@ -290,6 +344,12 @@ inline PyObject* from_scalar<std::complex<float>>(std::complex<float> value)
     return PyComplex_FromDoubles(static_cast<double>(value.real()), static_cast<double>(value.imag()));
 }
 
+template <>
+inline PyObject* from_scalar<boolean>(boolean value)
+{
+    return PyBool_FromLong(value.value ? 1 : 0);
+}
+
 template <typename T>
 bool read_buffer(PyObject* sequence, numerical::buffer<T>& out)
 {
@@ -318,7 +378,13 @@ bool read_buffer(PyObject* sequence, numerical::buffer<T>& out)
 template <typename Out, typename In>
 Out converted(const In& x)
 {
-    if constexpr (complex_scalar<Out>) {
+    if constexpr (std::is_same_v<In, boolean>) {
+        return converted<Out>(x.value);
+    }
+    else if constexpr (std::is_same_v<Out, boolean>) { // NumPy's: a nonzero number (either part of a complex one) is true
+        return boolean {x != In {}};
+    }
+    else if constexpr (complex_scalar<Out>) {
         using R = typename Out::value_type;
         if constexpr (complex_scalar<In>) {
             return Out {static_cast<R>(x.real()), static_cast<R>(x.imag())};
@@ -392,7 +458,8 @@ inline any_tensor tensor_factory(PyObject*                 data,
         case 1: return build_any<std::complex<double>>(data, shape);
         case 2: return build_any<float>(data, shape);
         case 3: return build_any<std::complex<float>>(data, shape);
-        default: throw std::runtime_error("dtype must be 'float64', 'complex128', 'float32' or 'complex64'");
+        case 4: return build_any<boolean>(data, shape);
+        default: throw std::runtime_error("dtype must be 'float64', 'complex128', 'float32', 'complex64' or 'bool'");
     }
 }
 
@@ -507,8 +574,8 @@ inline PyObject* tensor_dlpack(PyObject* self, PyObject* /*args*/, PyObject* /*k
     managed->dl_tensor.data        = const_cast<void*>(data_of(*h));
     managed->dl_tensor.device      = DLDevice {kDLCPU, 0};
     managed->dl_tensor.ndim        = ndim;
-    const auto bits                = static_cast<std::uint8_t>((is_single(*h) ? 32 : 64) * (is_complex(*h) ? 2 : 1));
-    managed->dl_tensor.dtype       = DLDataType {is_complex(*h) ? kDLComplex : kDLFloat, bits, 1};
+    const auto bits                = static_cast<std::uint8_t>(is_bool(*h) ? 8 : (is_single(*h) ? 32 : 64) * (is_complex(*h) ? 2 : 1));
+    managed->dl_tensor.dtype       = DLDataType {is_bool(*h) ? kDLBool : is_complex(*h) ? kDLComplex : kDLFloat, bits, 1};
     managed->dl_tensor.shape       = axes;
     managed->dl_tensor.strides     = nullptr; // compact, row-major
     managed->dl_tensor.byte_offset = 0;
@@ -741,7 +808,7 @@ inline stack_shape stack_of(const any_tensor& v)
 // Matrix `i` of the stack `v` (its last two axes `rows` × `cols`), a rank-2 tensor of its dtype.
 inline any_tensor matrix_of(const any_tensor& v, std::size_t rows, std::size_t cols, std::size_t i)
 {
-    return std::visit([&](const auto& t) -> any_tensor {
+    return visit_numeric([&](const auto& t) -> any_tensor {
                           using T = element_of_t<std::decay_t<decltype(t)>>;
                           const auto first {t.data().begin() + static_cast<std::ptrdiff_t>(i * rows * cols)};
                           return numerical::tensor<T> {{rows, cols}, numerical::buffer<T>(first, first + static_cast<std::ptrdiff_t>(rows * cols))};
@@ -752,7 +819,7 @@ inline any_tensor matrix_of(const any_tensor& v, std::size_t rows, std::size_t c
 // dtypes from those of a matrix every function takes.
 inline any_tensor identity_like(const any_tensor& v, std::size_t rows, std::size_t cols)
 {
-    return std::visit([&](const auto& t) -> any_tensor {
+    return visit_numeric([&](const auto& t) -> any_tensor {
                           using T = element_of_t<std::decay_t<decltype(t)>>;
                           numerical::buffer<T> values(rows * cols, T {});
                           for (std::size_t d = 0; d < std::min(rows, cols); ++d) {
@@ -767,7 +834,7 @@ inline any_tensor identity_like(const any_tensor& v, std::size_t rows, std::size
 inline any_tensor stacked(const std::vector<any_tensor>& parts, const std::vector<std::size_t>& batch, const any_tensor& probe)
 {
     const any_tensor& first {parts.empty() ? probe : parts.front()};
-    return std::visit([&](const auto& t) -> any_tensor {
+    return visit_numeric([&](const auto& t) -> any_tensor {
                           using tensor_type = std::decay_t<decltype(t)>;
                           using T           = element_of_t<tensor_type>;
                           std::vector<std::size_t> shape {batch};
@@ -905,7 +972,7 @@ any_tensor over_stack_into(const any_tensor& v, const std::vector<std::size_t>& 
         return narrowed(over_stack_into(widened(v), item, kernel));
     }
     const stack_shape s {stack_of(v)};
-    return std::visit([&](const auto& t) -> any_tensor {
+    return visit_numeric([&](const auto& t) -> any_tensor {
                           using T = element_of_t<std::decay_t<decltype(t)>>;
                           return into_batch<T>(s.batch, s.count, std::max(s.rows, s.cols), t.data().size(), item, [&](std::size_t i, T* out) {
                               const auto answer {kernel(matrix_at(t.data(), s.rows, s.cols, i))};
@@ -1152,6 +1219,10 @@ PyObject* take_from(const numerical::tensor<T>& t, const std::vector<std::size_t
 // Python side resolves every key to these per-axis ranges (the bounds are its job; the copy is this one's).
 PyObject* module_take(PyObject* /*self*/, PyObject* args); // in products.cpp
 
+// _permute(t, order) -> Tensor: the tensor with its axes in `order` (a permutation of them), as numpy.transpose: a copy,
+// element by element, of any dtype (einsum, which permutes the others, has no bool arithmetic).
+PyObject* module_permute(PyObject* /*self*/, PyObject* args); // in products.cpp
+
 // --- element-wise arithmetic, reductions, reshaping and creation (tensor_ops.hpp) ----------------------
 // The Python side promotes the operands to one dtype and resolves negative axes and a -1 extent; these take
 // what it hands over and refuse anything else.
@@ -1159,8 +1230,8 @@ PyObject* module_take(PyObject* /*self*/, PyObject* args); // in products.cpp
 // Two tensors of one dtype, or an error set and nullptr.
 inline bool same_dtype_pair(PyObject* x, PyObject* y, const any_tensor*& a, const any_tensor*& b)
 {
-    a = as_tensor(x);
-    b = a == nullptr ? nullptr : as_tensor(y);
+    a = numeric_tensor(x);
+    b = a == nullptr ? nullptr : numeric_tensor(y);
     if (b == nullptr) {
         return false;
     }
@@ -1368,9 +1439,109 @@ PyObject* extreme_of(bool largest, const numerical::tensor<T>& t, Py_ssize_t axi
     return wrap(any_tensor {largest ? numerical::max(t, a) : numerical::min(t, a)});
 }
 
-// _reduce(op, a, axis) -> number or Tensor: op one of "sum", "mean", "max", "min"; axis -1 for every
-// element (a number), else a non-negative axis (a Tensor without it). max and min take float64 only.
+// Whether any (`any`) or every element of the bool tensor `t` is true: of all of them (axis -1, a Python bool), else
+// along `axis` (a bool tensor without it).
+inline PyObject* truth_of(bool any, const bool_tensor& t, Py_ssize_t axis)
+{
+    const boolean* const            data {t.data().data()};
+    const std::vector<std::size_t>& shape {t.shape()};
+    if (axis < 0) {
+        const auto found {std::find(data, data + t.size(), boolean {any})};
+        return from_scalar(boolean {(found != data + t.size()) == any});
+    }
+    const auto a {static_cast<std::size_t>(axis)};
+    if (a >= shape.size()) {
+        throw numerical::dimension_error("any/all: the axis is past the tensor's rank");
+    }
+    const std::size_t        extent {shape[a]};
+    const std::size_t        inner {numerical::detail::element_count(shape.begin() + static_cast<std::ptrdiff_t>(a) + 1, shape.end())};
+    std::vector<std::size_t> kept {shape};
+    kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(a));
+    const std::size_t          count {numerical::detail::element_count(kept.begin(), kept.end())};
+    numerical::buffer<boolean> out(count, boolean {!any});
+    for (std::size_t k = 0; k < count; ++k) { // an element kept: every axis of it, so `inner`, at least 1
+        const std::size_t outer {k / inner};
+        const std::size_t within {k % inner};
+        for (std::size_t j = 0; j < extent; ++j) {
+            if (data[(((outer * extent) + j) * inner) + within].value == any) {
+                out[k] = boolean {any};
+                break;
+            }
+        }
+    }
+    return wrap(any_tensor {bool_tensor {std::move(kept), std::move(out)}});
+}
+
+// _reduce(op, a, axis) -> number or Tensor: op one of "sum", "mean", "max", "min" of a float or complex tensor, or
+// "any", "all" of a bool one; axis -1 for every element (a number), else a non-negative axis (a Tensor without it).
+// max and min take a real tensor only.
 PyObject* module_reduce(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// `element(at)` for every element of the shape `shapes` broadcast to, as NumPy broadcasts them, `at` the offset of
+// that element in each operand's row-major elements (an axis of extent 1, or a missing one, repeated): by rows, the
+// rows on the threads, each one's offsets set from its index and stepped along it.
+template <typename R, std::size_t N, typename Element>
+numerical::tensor<R> broadcast_elements(const std::array<std::vector<std::size_t>, N>& shapes, const Element& element)
+{
+    std::vector<std::size_t> shape {shapes[0]};
+    for (std::size_t k = 1; k < N; ++k) {
+        shape = numerical::broadcast_shape(shape, shapes[k]);
+    }
+    const std::size_t                       rank {shape.size()};
+    std::array<std::vector<std::size_t>, N> strides;
+    std::array<std::size_t, N>              step {};
+    for (std::size_t k = 0; k < N; ++k) {
+        strides[k] = numerical::detail::broadcast_strides(shapes[k], rank);
+        step[k]    = rank == 0 ? 0 : strides[k][rank - 1];
+    }
+    const std::size_t    count {numerical::detail::element_count(shape.begin(), shape.end())};
+    numerical::buffer<R> out(count);
+    if (count == 0) {
+        return numerical::tensor<R> {std::move(shape), std::move(out)};
+    }
+    const std::size_t inner {rank == 0 ? 1 : shape[rank - 1]};
+    const std::size_t rows {count / inner};
+    const std::size_t rows_per_task {std::max<std::size_t>(1, numerical::detail::elementwise_chunk / inner)};
+    numerical::detail::parallel_for((rows + rows_per_task - 1) / rows_per_task, rows_per_task * inner, [&](std::size_t task) {
+        const std::size_t last {std::min(rows, (task + 1) * rows_per_task)};
+        for (std::size_t row = task * rows_per_task; row < last; ++row) {
+            std::array<std::size_t, N> at {};
+            for (std::size_t axis = rank == 0 ? 0 : rank - 1, rest = row; axis-- > 0;) {
+                const std::size_t index {rest % shape[axis]};
+                rest /= shape[axis];
+                for (std::size_t k = 0; k < N; ++k) {
+                    at[k] += index * strides[k][axis];
+                }
+            }
+            R* const to {out.data() + (row * inner)};
+            for (std::size_t i = 0; i < inner; ++i) {
+                to[i] = element(at);
+                for (std::size_t k = 0; k < N; ++k) {
+                    at[k] += step[k];
+                }
+            }
+        }
+    });
+    return numerical::tensor<R> {std::move(shape), std::move(out)};
+}
+
+// _compare(op, a, b) -> bool Tensor: a op b element by element, broadcast, op one of < <= == != > >=, two tensors
+// of one dtype; a complex one has no order (== and != alone), a NaN compares unequal to everything.
+PyObject* module_compare(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _logical(op, a, b) -> bool Tensor: a & b, a | b or a ^ b (op "&", "|", "^") of two bool tensors, broadcast.
+PyObject* module_logical(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _invert(a) -> bool Tensor: the negation of every element of a bool tensor.
+PyObject* module_invert(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _where(condition, x, y) -> Tensor: x's element where the bool condition holds, else y's, the three broadcast; x and
+// y of one dtype, the answer's.
+PyObject* module_where(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _classify(name, a) -> bool Tensor: isnan, isinf or isfinite of every element (a complex one's by either part: NaN
+// or infinite where one is, finite where both are); every bool is finite.
+PyObject* module_classify(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
 // _reshape(a, shape) -> Tensor.
 PyObject* module_reshape(PyObject* /*self*/, PyObject* args); // in products.cpp
@@ -1380,7 +1551,7 @@ inline std::optional<std::size_t> dtype_named(const char* name)
 {
     const std::optional<std::size_t> index {dtype_index(name)};
     if (!index) {
-        PyErr_SetString(PyExc_ValueError, "dtype is 'float64', 'complex128', 'float32' or 'complex64'");
+        PyErr_SetString(PyExc_ValueError, "dtype is 'float64', 'complex128', 'float32', 'complex64' or 'bool'");
     }
     return index;
 }
@@ -2018,7 +2189,7 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args); // in elementw
 inline std::tuple<any_tensor, any_tensor, any_tensor> svd_hermitian(const any_tensor& v)
 {
     const auto [values, vectors] {eigh(v, "divide_and_conquer", false)};
-    return std::visit([&](const auto& vt) -> std::tuple<any_tensor, any_tensor, any_tensor> {
+    return visit_numeric([&](const auto& vt) -> std::tuple<any_tensor, any_tensor, any_tensor> {
         using tensor_type = std::decay_t<decltype(vt)>;
         using T           = element_of_t<tensor_type>;
         using R           = real_of_t<T>;
@@ -2110,8 +2281,8 @@ any_tensor eigvals(const any_tensor& v); // in eigen.cpp
 // asarray(obj, dtype=None): an existing Tensor (returned as-is when its dtype already matches, else converted), or a
 // copy built from obj's elements (__array_struct__ or __array_interface__, any strides). The dtype is the requested
 // one, else the source's own for float32, complex64 and complex128, else float64: a real source becomes complex with a
-// zero imaginary part, either precision becomes the other, and a complex source asked as a real dtype is refused (it
-// would discard the imaginary part).
+// zero imaginary part, either precision becomes the other, bool is a number's truth (nonzero) and 0 or 1 as a number,
+// and a complex source asked as a real dtype is refused (it would discard the imaginary part).
 // An element type asarray reads from an __array_interface__ typestr: a byte order ('<', '>', '=' native,
 // or '|' where order does not apply), a kind (b bool, i signed, u unsigned, f float, c complex) and a size.
 struct element_type
@@ -2221,7 +2392,7 @@ void gather_typed(const unsigned char*           base,
                     const unsigned char* const column {base + (static_cast<Py_ssize_t>(c) * step)};
                     for (std::size_t r = r0; r < std::min(r0 + tile, rows); ++r) {
                         if constexpr (std::is_same_v<Src, bool>) {
-                            out[(r * inner) + c] = static_cast<Out>(column[r] != 0 ? 1.0 : 0.0);
+                            out[(r * inner) + c] = converted<Out>(column[r] != 0);
                         }
                         else {
                             out[(r * inner) + c] = converted<Out>(read_scalar<Src>(column + (r * sizeof(Src))));
@@ -2260,13 +2431,13 @@ void gather_typed(const unsigned char*           base,
                 offset += static_cast<Py_ssize_t>(index[axis]) * strides[axis];
             }
             const unsigned char* at {base + offset};
-            if (step == static_cast<Py_ssize_t>(sizeof(Src)) && std::is_same_v<Src, Out>) {
+            if (step == static_cast<Py_ssize_t>(sizeof(Src)) && (std::is_same_v<Src, Out> || (std::is_same_v<Src, bool> && std::is_same_v<Out, boolean>))) {
                 std::memcpy(to, at, inner * sizeof(Src)); // a contiguous run of the output's own type
             }
             else {
                 for (std::size_t i = 0; i < inner; ++i) {
                     if constexpr (std::is_same_v<Src, bool>) {
-                        to[i] = static_cast<Out>(at[static_cast<Py_ssize_t>(i) * step] != 0 ? 1.0 : 0.0);
+                        to[i] = converted<Out>(at[static_cast<Py_ssize_t>(i) * step] != 0);
                     }
                     else {
                         to[i] = converted<Out>(read_scalar<Src>(at + (static_cast<Py_ssize_t>(i) * step)));
@@ -2319,8 +2490,8 @@ bool gather(const unsigned char*           base,
                 gather_typed<double>(base, shape, strides, out);
             }
             return true;
-        default: // 'c': only into a complex output (a complex source never reaches a real one)
-            if constexpr (complex_scalar<Out>) {
+        default: // 'c': only into a complex or a bool output (a complex source never reaches a real one)
+            if constexpr (complex_scalar<Out> || std::is_same_v<Out, boolean>) {
                 if (type.size == 8) {
                     gather_typed<std::complex<float>>(base, shape, strides, out);
                 }
@@ -2366,8 +2537,8 @@ any_tensor elements_as(const unsigned char*            base,
             offset += static_cast<Py_ssize_t>(index[axis]) * strides[axis];
         }
         const std::complex<double> value {read_element(base + offset, element)};
-        if constexpr (complex_scalar<Out>) {
-            values[n] = static_cast<Out>(value);
+        if constexpr (complex_scalar<Out> || std::is_same_v<Out, boolean>) {
+            values[n] = converted<Out>(value);
         }
         else {
             values[n] = static_cast<Out>(value.real());
@@ -2394,7 +2565,8 @@ inline PyObject* tensor_from_elements(const unsigned char*            base,
             case 0: return wrap(elements_as<double>(base, shape, strides, total, element));
             case 1: return wrap(elements_as<std::complex<double>>(base, shape, strides, total, element));
             case 2: return wrap(elements_as<float>(base, shape, strides, total, element));
-            default: return wrap(elements_as<std::complex<float>>(base, shape, strides, total, element));
+            case 3: return wrap(elements_as<std::complex<float>>(base, shape, strides, total, element));
+            default: return wrap(elements_as<boolean>(base, shape, strides, total, element));
         }
     }
     catch (...) {
@@ -2565,7 +2737,7 @@ inline bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = 
 {
     if (PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
         const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
-        if (v == nullptr) {
+        if (v == nullptr || is_bool(*v)) { // a bool one: the converting path refuses it
             return false;
         }
         out.owner = Py_NewRef(obj);
@@ -2887,7 +3059,7 @@ inline std::optional<PyObject*> borrowed_product(PyObject* a, PyObject* b)
             }
         }
         if (ranks[0] == 1 && ranks[1] == 1) { // two vectors give a number, as NumPy's
-            return std::visit([](const auto& t) { return from_scalar(t.data()[0]); }, *result);
+            return visit_numeric([](const auto& t) { return from_scalar(t.data()[0]); }, *result);
         }
         return wrap(std::move(*result));
     }
@@ -2959,7 +3131,8 @@ inline bool asarray_from_number(PyObject* obj, std::optional<std::size_t> wanted
             case 0: *result = wrap(any_tensor {real_tensor {{}, numerical::buffer<double> {value.real()}}}); break;
             case 1: *result = wrap(any_tensor {cplx_tensor {{}, numerical::buffer<std::complex<double>> {value}}}); break;
             case 2: *result = wrap(any_tensor {single_tensor {{}, numerical::buffer<float> {static_cast<float>(value.real())}}}); break;
-            default: *result = wrap(any_tensor {csingle_tensor {{}, numerical::buffer<std::complex<float>> {static_cast<std::complex<float>>(value)}}}); break;
+            case 3: *result = wrap(any_tensor {csingle_tensor {{}, numerical::buffer<std::complex<float>> {static_cast<std::complex<float>>(value)}}}); break;
+            default: *result = wrap(any_tensor {bool_tensor {{}, numerical::buffer<boolean> {converted<boolean>(value)}}}); break;
         }
     }
     catch (...) {
@@ -3047,7 +3220,7 @@ inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObj
     if (dtype_str != nullptr) {
         wanted = dtype_index(dtype_str);
         if (!wanted) {
-            PyErr_SetString(sciforge_module_error(), "asarray: dtype must be 'float64', 'complex128', 'float32' or 'complex64'");
+            PyErr_SetString(sciforge_module_error(), "asarray: dtype must be 'float64', 'complex128', 'float32', 'complex64' or 'bool'");
             return nullptr;
         }
     }
@@ -3074,8 +3247,8 @@ inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObj
             using T = decltype(element);
             numerical::buffer<T> data(values.size());
             for (std::size_t i {0}; i < values.size(); ++i) {
-                if constexpr (complex_scalar<T>) {
-                    data[i] = static_cast<T>(values[i]);
+                if constexpr (complex_scalar<T> || std::is_same_v<T, boolean>) {
+                    data[i] = converted<T>(values[i]);
                 }
                 else {
                     data[i] = static_cast<T>(values[i].real());
@@ -3087,7 +3260,8 @@ inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObj
             case 0: return wrap(any_tensor {real_tensor {std::move(shape), filled(double {})}});
             case 1: return wrap(any_tensor {cplx_tensor {std::move(shape), filled(std::complex<double> {})}});
             case 2: return wrap(any_tensor {single_tensor {std::move(shape), filled(float {})}});
-            default: return wrap(any_tensor {csingle_tensor {std::move(shape), filled(std::complex<float> {})}});
+            case 3: return wrap(any_tensor {csingle_tensor {std::move(shape), filled(std::complex<float> {})}});
+            default: return wrap(any_tensor {bool_tensor {std::move(shape), filled(boolean {})}});
         }
     }
     catch (...) {
@@ -3111,7 +3285,7 @@ inline PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kw
         wanted = dtype_index(dtype_str);
         if (!wanted) {
             PyErr_SetString(sciforge_module_error(),
-                            "asarray: dtype must be 'float64', 'complex128', 'float32' or 'complex64'");
+                            "asarray: dtype must be 'float64', 'complex128', 'float32', 'complex64' or 'bool'");
             return nullptr;
         }
     }
@@ -3129,14 +3303,15 @@ inline PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kw
                             "asarray: refusing to cast a complex tensor to a real dtype (discards the imaginary part)");
             return nullptr;
         }
-        try { // another precision, or real to complex with a zero imaginary part
+        try { // another precision, real to complex with a zero imaginary part, or bool to and from a number
             return wrap(std::visit([&](const auto& t) -> any_tensor {
                                        using T = element_of_t<std::decay_t<decltype(t)>>;
                                        switch (*wanted) {
                                            case 0: if constexpr (!complex_scalar<T>) { return any_tensor {converted<double>(t)}; } break;
                                            case 1: return any_tensor {converted<std::complex<double>>(t)};
                                            case 2: if constexpr (!complex_scalar<T>) { return any_tensor {converted<float>(t)}; } break;
-                                           default: return any_tensor {converted<std::complex<float>>(t)};
+                                           case 3: return any_tensor {converted<std::complex<float>>(t)};
+                                           default: return any_tensor {converted<boolean>(t)};
                                        }
                                        return t; // unreachable: a complex source asked as a real dtype is refused above
                                    }, *h));
@@ -3292,7 +3467,26 @@ inline bool amx_probed()
 
 } // namespace numerical_binding
 
-// caster<any_tensor> <-> the numerical.Tensor heap type: the m.def functions take and return Tensors through it.
-SCIFORGE_WRAPPED(numerical_binding::any_tensor)
+// caster<any_tensor> <-> the numerical.Tensor heap type: the m.def functions take and return Tensors through it. Every
+// one of them computes, so a bool tensor is refused there (TypeError), as numeric_tensor refuses it for the .raw ones;
+// the Tensor's own methods and properties unwrap it themselves, bool included.
+namespace sciforge::binding {
+template <>
+struct caster<numerical_binding::any_tensor>
+{
+    static numerical_binding::any_tensor& from_python(PyObject* obj)
+    {
+        numerical_binding::any_tensor& v = class_unwrap<numerical_binding::any_tensor>(obj);
+        if (numerical_binding::is_bool(v)) {
+            throw cast_error("a bool tensor has no arithmetic: convert it first, as t.astype(\"float64\")");
+        }
+        return v;
+    }
+    static PyObject* to_python(numerical_binding::any_tensor value)
+    {
+        return class_wrap<numerical_binding::any_tensor>(std::move(value));
+    }
+};
+} // namespace sciforge::binding
 
 #endif // NUMERICAL_PYTHON_BINDING_HPP

@@ -29,7 +29,7 @@ any_tensor solve(const any_tensor& a, const any_tensor& b)
             return narrowed(solve(widened(a), widened(b)));
         }
         const std::vector<std::size_t> item {vector_b ? std::vector<std::size_t> {sa.rows} : std::vector<std::size_t> {sa.rows, b_cols}};
-        return std::visit([&](const auto& ta) -> any_tensor {
+        return visit_numeric([&](const auto& ta) -> any_tensor {
                               using tensor_type = std::decay_t<decltype(ta)>;
                               using T           = element_of_t<tensor_type>;
                               const auto& tb {std::get<tensor_type>(b)};
@@ -66,7 +66,7 @@ PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "O", &obj) == 0) {
         return nullptr;
     }
-    const any_tensor* h = as_tensor(obj);
+    const any_tensor* h = numeric_tensor(obj);
     if (h == nullptr) {
         return nullptr;
     }
@@ -83,7 +83,7 @@ PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
             const sb::scoped_gil_release unlocked {releases_gil_cubic(count_of(*h))};
             value.emplace(determinant_tensor(*h));
         }
-        return std::visit([](const auto& t) { return from_scalar(t.data()[0]); }, *value);
+        return visit_numeric([](const auto& t) { return from_scalar(t.data()[0]); }, *value);
     }
     catch (...) {
         return set_cpp_error();
@@ -97,7 +97,7 @@ PyObject* module_slogdet(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "O", &obj) == 0) {
         return nullptr;
     }
-    const any_tensor* h = as_tensor(obj);
+    const any_tensor* h = numeric_tensor(obj);
     if (h == nullptr) {
         return nullptr;
     }
@@ -115,12 +115,12 @@ PyObject* module_slogdet(PyObject* /*self*/, PyObject* args)
             const sb::scoped_gil_release unlocked {releases_gil_cubic(count_of(*h))};
             value.emplace(slogdet_tensors(*h));
         }
-        const auto scalar {[](const any_tensor& v) { return std::visit([](const auto& t) { return from_scalar(t.data()[0]); }, v); }};
+        const auto scalar {[](const any_tensor& v) { return visit_numeric([](const auto& t) { return from_scalar(t.data()[0]); }, v); }};
         PyObject* sign {scalar(std::get<0>(*value))}; // new ref
         if (sign == nullptr) {
             return nullptr;
         }
-        const double logarithm {std::visit([](const auto& t) { return static_cast<double>(std::real(t.data()[0])); }, std::get<1>(*value))};
+        const double logarithm {visit_numeric([](const auto& t) { return static_cast<double>(std::real(t.data()[0])); }, std::get<1>(*value))};
         return Py_BuildValue("(Nd)", sign, logarithm); // N: the tuple takes the reference
     }
     catch (...) {
@@ -595,7 +595,7 @@ any_tensor structured(const any_tensor& c, const any_tensor& r, int kind)
     if (shape_of(c).size() != 1 || shape_of(r).size() != 1 || c.index() != r.index()) {
         throw std::runtime_error("toeplitz, hankel and circulant expect vectors of one dtype");
     }
-    return std::visit([&](const auto& column) -> any_tensor {
+    return visit_numeric([&](const auto& column) -> any_tensor {
                           using tensor_type = std::decay_t<decltype(column)>;
                           using T           = element_of_t<tensor_type>;
                           const numerical::vector<T> first {column.data()};
@@ -628,7 +628,7 @@ PyObject* module_block_diag(PyObject* /*self*/, PyObject* args)
         if (item == nullptr) {
             return nullptr;
         }
-        const any_tensor* part = as_tensor(item);
+        const any_tensor* part = numeric_tensor(item);
         Py_DECREF(item);
         if (part == nullptr) {
             return nullptr;
@@ -640,7 +640,7 @@ PyObject* module_block_diag(PyObject* /*self*/, PyObject* args)
         parts.push_back(part);
     }
     try {
-        return std::visit([&](const auto& first) {
+        return visit_numeric([&](const auto& first) {
             using tensor_type = std::decay_t<decltype(first)>;
             using T           = element_of_t<tensor_type>;
             std::vector<numerical::matrix<T>> blocks;
@@ -668,7 +668,7 @@ std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> qr_pivoted(const an
     }
     const numerical::qr_mode     mode {complete ? numerical::qr_mode::complete : numerical::qr_mode::reduced};
     const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 8)};
-    return std::visit([&](const auto& t) -> std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> {
+    return visit_numeric([&](const auto& t) -> std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> {
                           using tensor_type = std::decay_t<decltype(t)>;
                           using T           = element_of_t<tensor_type>;
                           if constexpr (std::is_same_v<T, double> || std::is_same_v<T, std::complex<double>>) {
@@ -693,7 +693,7 @@ std::tuple<any_tensor, any_tensor, std::vector<std::size_t>, bool> ldl(const any
         return {narrowed(l), narrowed(d), std::move(p), ignored};
     }
     const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 8)};
-    return std::visit([&](const auto& t) -> std::tuple<any_tensor, any_tensor, std::vector<std::size_t>, bool> {
+    return visit_numeric([&](const auto& t) -> std::tuple<any_tensor, any_tensor, std::vector<std::size_t>, bool> {
                           using tensor_type = std::decay_t<decltype(t)>;
                           using T           = element_of_t<tensor_type>;
                           if constexpr (std::is_same_v<T, double> || std::is_same_v<T, std::complex<double>>) {
