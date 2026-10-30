@@ -383,9 +383,11 @@ clean:
 # The verification tiers every SciForge project shares (the sibling checkout's make/quality.mk). Optional, so a
 # checkout without the sibling (CI pins its own SciForge) still runs every other target.
 SCIFORGE_MAKE    ?= ../sciforge/make
-QUALITY_COMMIT   := format-check coverage-gate
-QUALITY_PUSH     := version-check check-pins test test-gcc test-gcc-neon ci-arm-gcc sanitize tsan misra doc-no-coverage python-test bench-diff-selftest \
-                    stubtest-gate lint-gate
+# Cheapest first, so a slip in a comment or a stub fails in seconds, not after the suites: Doxygen before coverage, the
+# static checks (MISRA, the stubs, lint) before the builds and runs.
+QUALITY_COMMIT   := format-check doc-no-coverage coverage-gate
+QUALITY_PUSH     := version-check check-pins misra stubtest-gate lint-gate bench-diff-selftest python-test test test-gcc test-gcc-neon \
+                    ci-arm-gcc sanitize tsan
 QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges fuzz-fft fuzz-scipy
 -include $(SCIFORGE_MAKE)/quality.mk
 
