@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.42 — 2026-10-30
+
 ### Changed
 - **Python: a stack of small matrices costs what its computation costs.** `inv`, `solve`, `det`, `slogdet`,
   `cholesky` and `eigh` of a stack write each matrix's answer straight into the output, where each built a tensor,
