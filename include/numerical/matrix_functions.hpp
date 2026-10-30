@@ -970,21 +970,104 @@ namespace numerical {
       return z == nullptr ? root : *z * root       * transpose(*z);
     }
 
-    //! \brief The principal square root of a complex matrix from its Schur form: `√t_ii` on the diagonal, the rest by
-    //!        \ref square_root_columns.
+    //! \brief `√x` of a real \p x at least 0.
+    [[nodiscard]] inline double scalar_sqrt(double x)
+    {
+      return std::sqrt(x);
+    }
+
+    //! \brief csqrt's `√z`, exact on the axes as NumPy's and SciPy's.
+    [[nodiscard]] inline std::complex<double> scalar_sqrt(const std::complex<double>& z)
+    {
+      return complex_sqrt(z);
+    }
+
+    //! \brief The principal square root of the upper triangular `n × n` row-major \p t (no real eigenvalue below 0
+    //!        where `T` is real), entry by entry: `√t_ii` on the diagonal, the rest by \ref square_root_columns.
+    template <typename T>
+    [[nodiscard]] buffer<T> pointwise_square_root(const buffer<T>& t,
+                                                  std::size_t      n)
+    {
+      buffer<T>                r(n * n, T {});
+      std::vector<std::size_t> starts(n);
+      for (std::size_t k {0}; k < n; ++k) {
+        starts[k]      = k;
+        r[(k * n) + k] = scalar_sqrt(t[(k * n) + k]);
+      }
+      square_root_columns(t, r, n, starts);
+      return r;
+    }
+
+    //! \brief The order of the diagonal blocks of \ref triangular_square_root (SciPy's `_sqrtm_triu`'s).
+    inline constexpr std::size_t square_root_block {64};
+
+    /*!
+     * \brief The principal square root of the upper triangular `n × n` row-major \p t (no real eigenvalue below 0
+     *        where `T` is real): \ref pointwise_square_root up to \ref square_root_block or where a diagonal entry is 0
+     *        (a zero over a zero taken as 0 there); else by blocks (Deadman, Higham and Ralha, 2013, as SciPy's
+     *        `_sqrtm_triu`): each diagonal block's root entry by entry, then each block column from the diagonal up,
+     *        `R_ii X + X R_jj = T_ij − R_i,(i+1…j−1) R_(i+1…j−1),j`, the product by \ref gemm and the Sylvester equation by
+     *        \ref triangular_sylvester (`R_ii + R_jj` has no eigenvalue at 0: principal roots of nonzero eigenvalues).
+     */
+    template <typename T>
+    [[nodiscard]] buffer<T> triangular_square_root(const buffer<T>& t,
+                                                   std::size_t      n)
+    {
+      bool singular {false};
+      for (std::size_t k {0}; k < n; ++k) {
+        singular = singular || t[(k * n) + k] == T {};
+      }
+      if (n <= square_root_block || singular) {
+        return pointwise_square_root(t, n);
+      }
+      const std::size_t      blocks {(n + square_root_block - 1) / square_root_block};
+      const auto             start  = [n, blocks](std::size_t b) { return b == blocks ? n : b * square_root_block; };
+      std::vector<buffer<T>> roots(blocks); // R_bb, contiguous
+      buffer<T>              r(n * n, T {});
+      for (std::size_t b {0}; b < blocks; ++b) {
+        const std::size_t b0 {start(b)};
+        const std::size_t nb {start(b + 1) - b0};
+        buffer<T>         block(nb * nb);
+        for (std::size_t i {0}; i < nb; ++i) {
+          std::copy_n(t.data() + ((b0 + i) * n) + b0, nb, block.data() + (i * nb));
+        }
+        roots[b] = pointwise_square_root(block, nb);
+        for (std::size_t i {0}; i < nb; ++i) {
+          std::copy_n(roots[b].data() + (i * nb), nb, r.data() + ((b0 + i) * n) + b0);
+        }
+      }
+      buffer<T> f;
+      buffer<T> product;
+      for (std::size_t bj {1}; bj < blocks; ++bj) {
+        const std::size_t j0 {start(bj)};
+        const std::size_t nj {start(bj + 1) - j0};
+        for (std::size_t bi {bj}; bi > 0; --bi) {
+          const std::size_t i0 {start(bi - 1)};
+          const std::size_t ni {start(bi) - i0};
+          f.resize(ni * nj);
+          product.resize(ni * nj);
+          gemm(ni, nj, j0 - start(bi), r.data() + (i0 * n) + start(bi), n, r.data() + (start(bi) * n) + j0, n, product.data(), nj, c_start::zero);
+          for (std::size_t i {0}; i < ni; ++i) {
+            for (std::size_t j {0}; j < nj; ++j) {
+              f[(i * nj) + j] = t[((i0 + i) * n) + j0 + j] - product[(i * nj) + j];
+            }
+          }
+          triangular_sylvester(roots[bi - 1], ni, roots[bj], nj, f);
+          for (std::size_t i {0}; i < ni; ++i) {
+            std::copy_n(f.data() + (i * nj), nj, r.data() + ((i0 + i) * n) + j0);
+          }
+        }
+      }
+      return r;
+    }
+
+    //! \brief The principal square root of a complex matrix from its Schur form (\ref triangular_square_root).
     [[nodiscard]] inline matrix<std::complex<double>> complex_square_root(const matrix<std::complex<double>>& form,
                                                                           const matrix<std::complex<double>>* z)
     {
-      const std::size_t                  n                             {form.rows()};
-      const buffer<std::complex<double>> t(form.begin(), form.end());
-      buffer<std::complex<double>>       r(n * n, std::complex<double> {});
-      std::vector<std::size_t>           starts(n);
-      for (std::size_t k {0}; k < n; ++k) {
-        starts[k]      = k;
-        r[(k * n) + k] = complex_sqrt(t[(k * n) + k]); // csqrt's, exact on the axes as NumPy's and SciPy's
-      }
-      square_root_columns(t, r, n, starts);
-      const matrix<std::complex<double>>             root {n, n, std::move(r)};
+      const std::size_t                              n                             {form.rows()};
+      const buffer<std::complex<double>>             t(form.begin(), form.end());
+      const matrix<std::complex<double>>             root                          {n, n, triangular_square_root(t, n)};
       return z == nullptr ? root : *z * root       * adjoint_of(*z);
     }
 
@@ -1753,20 +1836,107 @@ namespace numerical {
       return t12 * C {2.0} *(complex_atanh(z) + (std::numbers::pi * C {0.0, 1.0} *u)) / (l2 - l1);
     }
 
-    //! \brief `‖(T − I)ᵖ‖₁^(1/p)` of the upper triangular `n × n` \p t, exactly (SciPy estimates it, `onenormest`).
-    [[nodiscard]] inline double shifted_power_norm(const buffer<std::complex<double>>& t,
-                                                   std::size_t                         n,
-                                                   std::size_t                         p)
+    //! \brief \ref briggs of a real \p a above 0: `(a − 1) / Π (1 + a^(1/2^j))`, for `k = 1` too (where `√a − 1`
+    //!        would cancel).
+    [[nodiscard]] inline double briggs(double      a,
+                                       std::size_t k)
     {
-      buffer<std::complex<double>> shifted {t};
-      for (std::size_t i {0}; i < n; ++i) {
-        shifted[(i * n) + i] -= std::complex<double> {1.0};
+      if (k == 0) {
+        return a - 1.0;
       }
-      buffer<std::complex<double>> power {shifted};
-      for (std::size_t k {1}; k < p; ++k) {
-        power = square_product(power, shifted, n);
+      const double z0 {a - 1.0};
+      a = std::sqrt(a);
+      double product  {1.0 + a};
+      for (std::size_t j {1}; j < k; ++j) {
+        a        = std::sqrt(a);
+        product *= 1.0 + a;
       }
-      return std::pow(one_norm(power, n), 1.0 / static_cast<double>(p));
+      return z0 / product;
+    }
+
+    //! \brief \ref fractional_power_superdiagonal of real \p l1 and \p l2 above 0 (the unwinding number 0).
+    [[nodiscard]] inline double fractional_power_superdiagonal(double l1,
+                                                               double l2,
+                                                               double t12,
+                                                               double p)
+    {
+      if (l1 == l2) {
+        return t12 * p * std::exp((p - 1.0) * std::log(l1));
+      }
+      if (std::abs(l2 - l1) > std::abs(l1 + l2) / 2.0) {
+        return t12 * (std::exp(p * std::log(l2)) - std::exp(p * std::log(l1))) / (l2 - l1);
+      }
+      const double scaled {t12 * std::exp((p / 2.0) * (std::log(l2) + std::log(l1)))};
+      return scaled * (2.0 * std::sinh(p * std::atanh((l2 - l1) / (l2 + l1))) / (l2 - l1));
+    }
+
+    //! \brief \ref log_superdiagonal of real \p l1 and \p l2 above 0 (the unwinding number 0).
+    [[nodiscard]] inline double log_superdiagonal(double l1,
+                                                  double l2,
+                                                  double t12)
+    {
+      if (l1 == l2) {
+        return t12 / l1;
+      }
+      if (std::abs(l2 - l1) > std::abs(l1 + l2) / 2.0) {
+        return t12 * (std::log(l2) - std::log(l1)) / (l2 - l1);
+      }
+      return t12 * 2.0 * std::atanh((l2 - l1) / (l2 + l1)) / (l2 - l1);
+    }
+
+    //! \brief `log x` of a real \p x above 0.
+    [[nodiscard]] inline double scalar_log(double x)
+    {
+      return std::log(x);
+    }
+
+    //! \brief \ref complex_log of \p z.
+    [[nodiscard]] inline std::complex<double> scalar_log(const std::complex<double>& z)
+    {
+      return complex_log(z);
+    }
+
+    /*!
+     * \brief `‖(T − I)ᵖ‖₁^(1/p)` of the upper triangular `n × n` \p t, `p` from 2, exactly (SciPy estimates them,
+     *        `onenormest`): each power the one before times `T − I`, formed once whatever order the norms are asked in.
+     */
+    template <typename T>
+    class shifted_power_norms
+    {
+    public:
+
+      shifted_power_norms(const buffer<T>& t,
+                          std::size_t      n) : shifted_ {t}, n_ {n}
+      {
+        for (std::size_t i {0}; i < n; ++i) {
+          shifted_[(i * n) + i] -= T {1.0};
+        }
+        power_ = shifted_;
+      }
+
+      [[nodiscard]] double operator()(std::size_t p)
+      {
+        while (norms_.size() + 1 < p) {
+          power_ = square_product(power_, shifted_, n_);
+          norms_.push_back(one_norm(power_, n_));
+        }
+        return std::pow(norms_[p - 2], 1.0 / static_cast<double>(p));
+      }
+
+    private:
+
+      buffer<T>           shifted_;
+      buffer<T>           power_;
+      std::size_t         n_;
+      std::vector<double> norms_; //!< `‖(T − I)ᵖ‖₁` for `p` from 2.
+    };
+
+    //! \brief `log` has its principal branch at every diagonal entry of a real triangular form \ref logm keeps real:
+    //!        none below 0, and its zeros taken as `10⁻²⁰` (\ref force_nonsingular).
+    [[nodiscard]] inline bool principal_branch(const buffer<double>& /*t*/,
+                                               std::size_t /*n*/)
+    {
+      return true;
     }
 
     //! \brief Whether `log` has its principal branch at every diagonal entry of \p t (none real and at most 0).
@@ -1789,47 +1959,42 @@ namespace numerical {
      *        its diagonal and superdiagonal recomputed without cancellation where the principal branch exists.
      * \return `R`, `s` and `m`.
      */
-    [[nodiscard]] inline std::tuple<buffer<std::complex<double>>, std::size_t, std::size_t> inverse_squaring(const buffer<std::complex<double>>& t0,
-                                                                                                             std::size_t                         n,
-                                                                                                             const std::array<double, 8>&        theta                  = log_pade_bounds,
-                                                                                                             const char                        * name                   = "logm")
+    template <typename T>
+    [[nodiscard]] std::tuple<buffer<T>, std::size_t, std::size_t> inverse_squaring(const buffer<T>&             t0,
+                                                                                   std::size_t                  n,
+                                                                                   const std::array<double, 8>& theta = log_pade_bounds,
+                                                                                   const char*                  name  = "logm")
     {
-      using C = std::complex<double>;
       const auto  bound = [&theta](std::size_t m) { return theta[m]; };
       std::size_t s0 {0};
-      buffer<C>   diagonal(n);
+      buffer<T>   diagonal(n);
       for (std::size_t i {0}; i < n; ++i) {
         diagonal[i] = t0[(i * n) + i];
       }
       const auto far = [&diagonal, &bound]() {
                          double largest {0.0};
-                         for (const C& d : diagonal) {
-                           largest = std::max(largest, std::abs(d - C {1.0}));
+                         for (const T& d : diagonal) {
+                           largest = std::max(largest, std::abs(d - T {1.0}));
                          }
                          return largest > bound(7);
                        };
       while (far()) {
-        for (C& d : diagonal) {
-          d = complex_sqrt(d);
+        for (T& d : diagonal) {
+          d = scalar_sqrt(d);
         }
         ++s0;
       }
-      const auto root = [n](const buffer<C>& t) {
-                          return buffer<C> {complex_square_root(matrix<C> {n, n, buffer<C> {t}}, nullptr).elements()};
-                        };
-      buffer<C> t {t0};
+      buffer<T> t {t0};
       for (std::size_t i {0}; i < s0; ++i) {
-        t = root(t);
+        t = triangular_square_root(t, n);
       }
-      std::size_t  s  {s0};
-      double       d3 {shifted_power_norm(t, n, 3)};
-      const double a2 {std::max(shifted_power_norm(t, n, 2), d3)};
-      std::size_t  m  {a2 <= bound(1) ? std::size_t {1} : (a2 <= bound(2) ? std::size_t {2} : std::size_t {0})};
+      std::size_t            s     {s0};
+      shifted_power_norms<T> norms {t, n};
+      const double           a2    {std::max(norms(2), norms(3))};
+      std::size_t            m     {a2 <= bound(1) ? std::size_t {1} : (a2 <= bound(2) ? std::size_t {2} : std::size_t {0})};
       while (m == 0) {
-        if (s > s0) {
-          d3 = shifted_power_norm(t, n, 3);
-        }
-        const double d4 {shifted_power_norm(t, n, 4)};
+        const double d3 {norms(3)};
+        const double d4 {norms(4)};
         const double a3 {std::max(d3, d4)};
         if (!std::isfinite(a3)) { // NaN compares false with every bound: the roots would go on for ever
           throw convergence_error(std::string {name} + ": the square roots of the triangular form are not finite");
@@ -1846,21 +2011,23 @@ namespace numerical {
           // a square root about halves a3, so one in (θ₆, θ₇] falls to θ₆ or below: the paper's cap of two such roots
           // (SciPy's k < 2) is never reached
           if (a3 / 2.0 <= bound(5)) {
-            t = root(t);
+            t     = triangular_square_root(t, n);
+            norms = shifted_power_norms<T> {t, n};
             ++s;
             continue;
           }
         }
-        const double d5  {shifted_power_norm(t, n, 5)};
+        const double d5  {norms(5)};
         const double eta {std::min(a3, std::max(d4, d5))};
         m = eta <= bound(6) ? std::size_t {6} : (eta <= bound(7) ? std::size_t {7} : std::size_t {0});
         if (m == 0) {
-          t = root(t);
+          t     = triangular_square_root(t, n);
+          norms = shifted_power_norms<T> {t, n};
           ++s;
         }
       }
       for (std::size_t i {0}; i < n; ++i) {
-        t[(i * n) + i] -= C {1.0};
+        t[(i * n) + i] -= T {1.0};
       }
       if (principal_branch(t0, n)) {
         const double p {std::ldexp(1.0, -static_cast<int>(s))};
@@ -1880,10 +2047,10 @@ namespace numerical {
      *        partial fractions of `m`-point Gauss–Legendre quadrature on [0, 1], SciPy's nodes and weights), then the
      *        diagonal `log λᵢ` and the superdiagonal recomputed exactly where the principal branch exists.
      */
-    [[nodiscard]] inline buffer<std::complex<double>> triangular_log(const buffer<std::complex<double>>& t0,
-                                                                     std::size_t                         n)
+    template <typename T>
+    [[nodiscard]] buffer<T> triangular_log(const buffer<T>& t0,
+                                           std::size_t      n)
     {
-      using C = std::complex<double>;
       static constexpr std::array<std::array<double, 7>, 7> nodes {{
         {0.5},
         {0.21132486540518708, 0.7886751345948129},
@@ -1902,18 +2069,18 @@ namespace numerical {
         {0.06474248308443482, 0.13985269574463827, 0.19091502525255954, 0.20897959183673465, 0.19091502525255954, 0.13985269574463827,
          0.06474248308443482}}};
       auto [r, s, m] {inverse_squaring(t0, n)};
-      buffer<C> u(n * n, C {});
+      buffer<T> u(n * n, T {});
       for (std::size_t q {0}; q < m; ++q) {
         const double alpha {weights[m - 1][q]};
         const double beta  {nodes[m - 1][q]};
-        buffer<C>    shifted(n * n);
-        buffer<C>    x(n * n);
+        buffer<T>    shifted(n * n);
+        buffer<T>    x(n * n);
         for (std::size_t e {0}; e < n * n; ++e) {
           shifted[e] = beta * r[e];
           x[e]       = alpha * r[e];
         }
         for (std::size_t i {0}; i < n; ++i) {
-          shifted[(i * n) + i] += C {1.0};
+          shifted[(i * n) + i] += T {1.0};
         }
         solve_triangular_in_place(shifted.data(), n, false, triangular_op::none, false, x.data(), n);
         for (std::size_t e {0}; e < n * n; ++e) {
@@ -1921,12 +2088,12 @@ namespace numerical {
         }
       }
       const double power {std::ldexp(1.0, static_cast<int>(s))};
-      for (C& x : u) {
+      for (T& x : u) {
         x *= power;
       }
       if (principal_branch(t0, n)) {
         for (std::size_t i {0}; i < n; ++i) {
-          u[(i * n) + i] = complex_log(t0[(i * n) + i]);
+          u[(i * n) + i] = scalar_log(t0[(i * n) + i]);
           if (i + 1 < n) {
             u[(i * n) + i + 1] = log_superdiagonal(t0[(i * n) + i], t0[((i + 1) * n) + i + 1], t0[(i * n) + i + 1]);
           }
@@ -1938,20 +2105,21 @@ namespace numerical {
     //! \brief The triangular form \p t made nonsingular as SciPy's `_logm_force_nonsingular_triangular_matrix`: a zero
     //!         diagonal entry replaced by `10⁻²⁰`. \return Whether one was (exactly singular), and whether one was
     //!         below `10⁻²⁰` otherwise (nearly singular).
-    [[nodiscard]] inline std::pair<bool, bool> force_nonsingular(buffer<std::complex<double>>& t,
-                                                                 std::size_t                   n)
+    template <typename T>
+    [[nodiscard]] std::pair<bool, bool> force_nonsingular(buffer<T>&  t,
+                                                          std::size_t n)
     {
       constexpr double tiny  {1e-20};
       bool             exact {false};
       bool             near  {false};
       for (std::size_t i {0}; i < n; ++i) {
-        const std::complex<double>& d {t[(i * n) + i]};
+        const T& d {t[(i * n) + i]};
         exact = exact || std::abs(d) == 0.0;
         near  = near || std::abs(d) < tiny;
       }
       if (exact) {
         for (std::size_t i {0}; i < n; ++i) {
-          t[(i * n) + i] = std::abs(t[(i * n) + i]) == 0.0 ? std::complex<double> {tiny} : t[(i * n) + i];
+          t[(i * n) + i] = std::abs(t[(i * n) + i]) == 0.0 ? T {tiny} : t[(i * n) + i];
         }
       }
       return {exact, near && !exact};
@@ -2192,10 +2360,70 @@ namespace numerical {
     return detail::as_complex(detail::integer_power(a, std::floor(p))) * funm(a, power).f;
   }
 
+  namespace detail {
+
+    //! \brief `log A` from the upper triangular `n × n` \p t of `A = Z T Zᴴ` (\p z, or none where `T` is `A`), its
+    //!        zero diagonal entries taken as `10⁻²⁰` (\ref force_nonsingular).
+    template <typename T>
+    [[nodiscard]] logm_result schur_logm(buffer<T>        t,
+                                         std::size_t      n,
+                                         const matrix<T>* z)
+    {
+      const auto [exact, near] {force_nonsingular(t, n)};
+      const matrix<T> u {n, n, triangular_log(t, n)};
+      return {as_complex(z == nullptr ? u : *z * u * adjoint_of(*z)), exact, near};
+    }
+
+    //! \brief Whether no diagonal entry of \p t is below 0.
+    [[nodiscard]] inline bool nonnegative_diagonal(const matrix<double>& t)
+    {
+      for (std::size_t i {0}; i < t.rows(); ++i) {
+        if (t(i, i) < 0.0) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    //! \brief \ref logm of a complex matrix past its Hermitian path: an upper triangular one directly, else its Schur
+    //!        form's.
+    [[nodiscard]] inline logm_result general_logm(const matrix<std::complex<double>>& a)
+    {
+      using C = std::complex<double>;
+      if (upper_triangular(a)) {
+        return schur_logm<C>(buffer<C>(a.begin(), a.end()), a.rows(), nullptr);
+      }
+      const schur_decomposition<C> s {a};
+      return schur_logm(buffer<C>(s.t().begin(), s.t().end()), a.rows(), &s.z());
+    }
+
+    //! \brief \ref logm of a real matrix past its Hermitian path: in real arithmetic where its real Schur form (or the
+    //!        matrix, upper triangular) is triangular with no diagonal entry below 0, as SciPy's (`_logm`,
+    //!        `_logm_triu`), else in the complex form (`rsf2csf`).
+    [[nodiscard]] inline logm_result general_logm(const matrix<double>& a)
+    {
+      using C = std::complex<double>;
+      if (upper_triangular(a)) {
+        if (nonnegative_diagonal(a)) {
+          return schur_logm<double>(buffer<double>(a.begin(), a.end()), a.rows(), nullptr);
+        }
+        return schur_logm<C>(buffer<C>(a.begin(), a.end()), a.rows(), nullptr);
+      }
+      const schur_decomposition<double> s {a};
+      if (upper_triangular(s.t()) && nonnegative_diagonal(s.t())) {
+        return schur_logm(buffer<double>(s.t().begin(), s.t().end()), a.rows(), &s.z());
+      }
+      const auto [form, z] {complex_schur_form(s.t(), s.z())};
+      return schur_logm(buffer<C>(form.begin(), form.end()), a.rows(), &z);
+    }
+  } // namespace detail
+
   /*!
    * \brief The principal logarithm of a square matrix, as `scipy.linalg.logm`: an upper triangular `A` directly, else
-   *        its Schur form `A = Z T Zᴴ` (a real matrix's real form made complex) and `Z log(T) Zᴴ`; `log T` by Al-Mohy and
-   *        Higham's inverse scaling and squaring (2012) as SciPy's `_logm_triu`, the norms that choose the square roots
+   *        its Schur form `A = Z T Zᴴ` and `Z log(T) Zᴴ`: in real arithmetic where `A` is real and its real Schur form
+   *        triangular with no eigenvalue below 0, else in the complex form (the real one made complex), as SciPy's.
+   *        `log T` by Al-Mohy and Higham's inverse scaling and squaring (2012) as SciPy's `_logm_triu`, the norms that
+   *        choose the square roots
    *        and the degree exact where SciPy estimates them. A zero eigenvalue is taken as `10⁻²⁰` (no logarithm exists
    *        there), as SciPy's, and reported; complex, SciPy's real part where `A` is real and it is negligible.
    * \tparam T `double` or `std::complex<double>`.
@@ -2229,16 +2457,7 @@ namespace numerical {
         return {detail::spectral<C>(vectors, logs, values[0] > 0.0), false, false};
       }
     }
-    if (detail::upper_triangular(a)) {
-      buffer<C> t(a.begin(), a.end());
-      const auto [exact, near] {detail::force_nonsingular(t, n)};
-      return {matrix<C> {n, n, detail::triangular_log(t, n)}, exact, near};
-    }
-    const auto [form, z] {detail::function_schur_form(a)};
-    buffer<C> t(form.begin(), form.end());
-    const auto [exact, near] {detail::force_nonsingular(t, n)};
-    const matrix<C> u {n, n, detail::triangular_log(t, n)};
-    return {z * u * detail::adjoint_of(z), exact, near};
+    return detail::general_logm(a);
   }
 } // namespace numerical
 

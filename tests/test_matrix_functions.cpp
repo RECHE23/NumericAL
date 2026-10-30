@@ -429,6 +429,7 @@ TEST(logm_inverts_expm)
       EXPECT(logm_inverts(b, 1e-12));
     }
     EXPECT(logm_inverts(identity3 + (scale * trigonometric<double>(3, 3, 4.0)), 1e-10));
+    EXPECT(logm_inverts(numerical::detail::as_complex(identity3) + (C {0.0, scale} *trigonometric<C>(3, 3, 4.0)), 1e-10));
     EXPECT(logm_inverts(C {scale} *(trigonometric<C>(4, 4, 2.0) + C {0.0, 1.0} *numerical::detail::as_complex(trigonometric<double>(4, 4, 3.0))), 1e-11));
   }
   const matrix<double> rotation   {{0.0, -2.0}, {2.0, 0.0}}; // eigenvalues ±2i
@@ -447,6 +448,7 @@ TEST(logm_inverts_expm)
   const C l2 {-1.0, -0.01};
   EXPECT(logm_inverts(matrix<C> {{l1, C {1.0}}, {C {}, l2}}, 1e-13));
   EXPECT(logm_inverts(matrix<C> {{C {-1.0, 0.5}, C {2.0}}, {C {}, C {-1.0, 0.5}}}, 1e-13));
+  EXPECT(logm_inverts(matrix<C> {{C {1.3, 0.05}, C {0.01}}, {C {}, C {1.29, 0.05}}}, 1e-14)); // one square root
   const numerical::logm_result zero {numerical::logm(matrix<double> {{0.0, 1.0}, {0.0, 1.0}})};
   EXPECT(zero.exactly_singular && !zero.nearly_singular);
   const numerical::logm_result tiny {numerical::logm(matrix<double> {{1e-25, 0.0}, {0.0, 1.0}})};
@@ -454,6 +456,58 @@ TEST(logm_inverts_expm)
   EXPECT(numerical::logm(matrix<double> {0, 0, std::vector<double> {}}).log.rows() == 0);
   EXPECT_THROWS(static_cast<void>(numerical::logm(matrix<double> {{1.0, 2.0}})), numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::logm(matrix<C> {{C {std::numeric_limits<double>::quiet_NaN()}}})), numerical::non_finite_error);
+}
+
+// A real matrix whose real Schur form is triangular with no eigenvalue below 0 (dense or upper triangular, orders 2 to
+// 150, past the square root's blocks of 64, eigenvalues spread, repeated, clustered about 1 and one 0) keeps real
+// arithmetic: its logarithm's imaginary parts exactly 0 and its real parts the complex path's, and exp(log A) = A. The
+// complex path's blocked square roots: a complex matrix of order 100, and a triangular one of order 70 with a zero on
+// its diagonal (entry by entry there).
+TEST(logm_keeps_real_arithmetic)
+{
+  for (const std::size_t n : {std::size_t {2}, std::size_t {9}, std::size_t {65}, std::size_t {150}}) {
+    const matrix<double> mix {trigonometric<double>(n, n, 1.0)};
+    std::vector<double>  spread(n * n, 0.0);
+    std::vector<double>  repeated(n * n, 0.0);
+    std::vector<double>  clustered(n * n, 0.0);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {i}; j < n; ++j) {
+        const double off {i == j ? 0.0 : mix(i, j) / static_cast<double>(n)};
+        spread[(i * n) + j]    = off;
+        repeated[(i * n) + j]  = off;
+        clustered[(i * n) + j] = off;
+      }
+      spread[(i * n) + i]    = 0.5 + (3.0 * static_cast<double>(i) / static_cast<double>(n));
+      repeated[(i * n) + i]  = i % 2 == 0 ? 1.0 : 2.0;
+      clustered[(i * n) + i] = 1.0 + (1e-4 * static_cast<double>(i % 3));
+    }
+    const matrix<double> similar {mix + (static_cast<double>(n) * matrix<double> {n, n, std::vector<double>(spread)})};
+    for (const matrix<double>& a : {matrix<double> {n, n, spread}, matrix<double> {n, n, repeated}, matrix<double> {n, n, clustered},
+                                    numerical::solve(similar, matrix<double> {n, n, spread} *similar)}) {
+      const matrix<C> real_path {numerical::logm(a).log};
+      EXPECT(std::ranges::all_of(real_path, [](const C& x) { return x.imag() == 0.0; }));
+      EXPECT(relative_gap(real_path, numerical::logm(numerical::detail::as_complex(a)).log) < 1e-12);
+      EXPECT(logm_inverts(a, 1e-12));
+    }
+  }
+  const matrix<double>         zero_first {{0.0, 1.0, 2.0}, {0.0, 2.0, 1.0}, {0.0, 0.0, 3.0}};
+  const numerical::logm_result singular   {numerical::logm(zero_first)};
+  EXPECT(singular.exactly_singular && std::ranges::all_of(singular.log, [](const C& x) { return x.imag() == 0.0; }));
+  const matrix<C>      dense              {trigonometric<C>(100, 100, 2.0) + (C {0.0, 1.0} *numerical::detail::as_complex(trigonometric<double>(100, 100, 3.0)))};
+  numerical::buffer<C> shift(10000, C     {});
+  numerical::buffer<C> upper(4900, C      {});
+  for (std::size_t i {0}; i < 100; ++i) {
+    shift[(i * 100) + i] = C {12.0};
+  }
+  EXPECT(logm_inverts(dense + matrix<C> {100, 100, shift}, 1e-11));
+  for (std::size_t i {0}; i < 70; ++i) {
+    for (std::size_t j {i}; j < 70; ++j) {
+      upper[(i * 70) + j] = i == j ? C {i == 30 ? 0.0 : 1.0 + (static_cast<double>(i) / 10.0), i == 30 ? 0.0 : 0.5} : C {1.0 / static_cast<double>(1 + j - i)};
+    }
+  }
+  const matrix<C> triangular {70, 70, std::move(upper)};
+  const matrix<C> root       {numerical::sqrtm(triangular)};
+  EXPECT(relative_gap(root * root, triangular) < 1e-12);
 }
 
 // The moduli the norms of expm take: √(x² + y²) where the largest part is within [2⁻⁵⁰⁰, 2⁵⁰⁰], hypot outside it, where

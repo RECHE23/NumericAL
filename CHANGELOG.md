@@ -32,6 +32,15 @@ A change that can break code is listed under **Breaking** and held for a month's
   `A` is and every imaginary part is 0. In C++, `numerical::fractional_matrix_power`.
 
 ### Changed
+- **`logm` keeps real arithmetic** where `A` is real and its real Schur form triangular with no eigenvalue below 0 (an
+  upper triangular `A` with no negative diagonal entry, or every eigenvalue real and at least 0), as SciPy's, where it
+  made the form complex; the error estimate exponentiates the real `F` as SciPy's does. The powers whose norms choose
+  the square roots are formed once each (`‖(T − I)ᵖ‖₁` for `p` = 2 to 5 took up to ten products a root), and the
+  triangular square roots of `logm` and of the complex `sqrtm` go by blocks of 64 past order 64 (Deadman, Higham and
+  Ralha's, as SciPy's `_sqrtm_triu`): each diagonal block entry by entry, the rest by products and triangular Sylvester
+  equations, where every entry was a dot product in turn. One core of an M-series Mac, order 512 against SciPy 1.18:
+  triangular 368 → 67 ms (SciPy 59), real eigenvalues 681 → 188 ms (242), complex pairs 437 → 287 ms (471); order 64
+  1.9 → 0.4 ms (1.3). The logarithm agrees with the complex path's within 1e-12 and its imaginary parts are exactly 0.
 - **`ldl` updates the trailing matrix row by row**, the rows being contiguous, where it went down the columns: the same
   operations on each entry in the same order, so the same bits. Order 1024 on one AVX-512 core, GCC: real 588 → 77 ms,
   complex 716 → 232 ms; order 256 5.4 → 1.8 ms; order 64 as before.

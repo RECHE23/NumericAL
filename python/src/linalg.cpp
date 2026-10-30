@@ -310,23 +310,36 @@ namespace {
         return sums.empty() ? 0.0 : *std::max_element(sums.begin(), sums.end());
     }
 
-    // logm of one matrix as scipy.linalg.logm answers: F (real where a is and its imaginary parts are within 1e6 ε of
-    // 0, SciPy's _maybe_real), ‖expm(F) − A‖₁ / ‖A‖₁, and the triangular form's singularity.
+    // (F, ‖expm(F) − A‖₁ / ‖A‖₁, singularity) in F's arithmetic, as scipy.linalg.logm forms it.
     template <typename T>
-    std::tuple<any_tensor, double, bool, bool> logm_of(const numerical::matrix<T>& a)
+    std::tuple<any_tensor, double, bool, bool> logm_answer(const numerical::matrix<T>& a,
+                                                           numerical::matrix<T>        f,
+                                                           const numerical::logm_result& r)
     {
-        const numerical::logm_result r {numerical::logm(a)};
-        numerical::matrix<std::complex<double>> as_complex {a.rows(), a.cols(), numerical::buffer<std::complex<double>>(a.begin(), a.end())};
-        const double error {matrix_one_norm(numerical::expm(r.log) - as_complex) / matrix_one_norm(as_complex)};
+        const double error {matrix_one_norm(numerical::expm(f) - a) / matrix_one_norm(a)};
+        return {any_tensor {numerical::tensor<T> {std::move(f)}}, error, r.exactly_singular, r.nearly_singular};
+    }
+
+    // logm of one complex matrix, as scipy.linalg.logm answers.
+    std::tuple<any_tensor, double, bool, bool> logm_of(const numerical::matrix<std::complex<double>>& a)
+    {
+        numerical::logm_result r {numerical::logm(a)};
+        numerical::matrix<std::complex<double>> f {std::move(r.log)};
+        return logm_answer(a, std::move(f), r);
+    }
+
+    // logm of one real matrix: F real where its imaginary parts are within 1e6 ε of 0 (SciPy's _maybe_real).
+    std::tuple<any_tensor, double, bool, bool> logm_of(const numerical::matrix<double>& a)
+    {
+        numerical::logm_result r {numerical::logm(a)};
         const double tolerance {1e6 * std::numeric_limits<double>::epsilon()};
-        const bool   negligible {std::all_of(r.log.begin(), r.log.end(), [tolerance](const std::complex<double>& x) { return std::abs(x.imag()) <= tolerance; })};
-        if (std::is_same_v<T, double> && negligible) {
+        if (std::all_of(r.log.begin(), r.log.end(), [tolerance](const std::complex<double>& x) { return std::abs(x.imag()) <= tolerance; })) {
             numerical::buffer<double> parts(r.log.rows() * r.log.cols());
             std::transform(r.log.begin(), r.log.end(), parts.begin(), [](const std::complex<double>& x) { return x.real(); });
-            return {any_tensor {real_tensor {numerical::matrix<double> {r.log.rows(), r.log.cols(), std::move(parts)}}}, error, r.exactly_singular,
-                    r.nearly_singular};
+            return logm_answer(a, numerical::matrix<double> {r.log.rows(), r.log.cols(), std::move(parts)}, r);
         }
-        return {any_tensor {cplx_tensor {r.log}}, error, r.exactly_singular, r.nearly_singular};
+        numerical::matrix<std::complex<double>> f {std::move(r.log)};
+        return logm_answer(numerical::matrix<std::complex<double>> {a.rows(), a.cols(), numerical::buffer<std::complex<double>>(a.begin(), a.end())}, std::move(f), r);
     }
 } // namespace
 
