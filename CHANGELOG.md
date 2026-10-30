@@ -54,6 +54,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **NumPy's loops over tensors leave the public namespace**: `numpy_loops`, `numpy_wheel_loops`, `numpy_multiply`,
   `numpy_divide`, `numpy_power`, `numpy_square`, `numpy_reciprocal` and `numpy_absolute`, deprecated since
   2026.10.36, are now in `numerical::detail` alone.
+- **A complex band LU pivots as LAPACK's `gbtf2` does**, on the entry of largest `|Re| + |Im|` (`izamax`), where the
+  modulus chose: `solve_banded` of complex bands of two or more sub- or superdiagonals interchanges the rows SciPy's
+  `gbsv` does, as the dense LU now does. A column whose largest entries differ in that order factorises on another
+  row: results different beyond their last bits. Real bands, and the tridiagonal ones (`gtsv`, already so), are
+  unchanged.
 - **A complex LU pivots as LAPACK's does**, on the entry of largest `|Re| + |Im|` (`izamax`), where the modulus
   chose: `lu_decomposition`, `solve`, `inv`, `det`, `lu_factor` and the `zgetrf`/`cgetrf` of `numerical_blas` now
   interchange the rows `zgetrf` does, so `lu_factor`'s `piv` is SciPy's for complex matrices too. A column whose two

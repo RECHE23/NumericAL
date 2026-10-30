@@ -45,9 +45,10 @@ namespace numerical {
     /*!
      * \brief The LU factorisation with partial pivoting of the `n × n` band of \p kl subdiagonals and \p ku
      *        superdiagonals in \p ab (`2 kl + ku + 1` rows, the band from row `kl + 1`, the rows above for the fill
-     *        the interchanges bring), in place, as LAPACK's `gbtf2`: each column's pivot the entry of largest modulus
-     *        (the first of them) within the band below the diagonal, its row swapped to the reach of the rows it
-     *        touches, the multipliers below and the rank-1 update right of it. \p pivots (from 1) the rows swapped.
+     *        the interchanges bring), in place, as LAPACK's `gbtf2`: each column's pivot the entry of largest
+     *        \ref pivot_magnitude (`|Re| + |Im|` for complex numbers, as `izamax`; the first of them) within the band
+     *        below the diagonal, its row swapped to the reach of the rows it touches, the multipliers below and the
+     *        rank-1 update right of it. \p pivots (from 1) the rows swapped.
      * \throws singular_matrix_error If a pivot is zero (`gbtf2`'s `info`; LAPACK goes on, SciPy then raises).
      */
     template <typename T>
@@ -68,10 +69,10 @@ namespace numerical {
         }
         const std::size_t km      {std::min(kl, n - j)};
         std::size_t       jp      {1};
-        double            largest {std::abs(ab(kv + 1, j))};
+        double            largest {pivot_magnitude(ab(kv + 1, j))};
         for (std::size_t r {2}; r <= km + 1; ++r) {
-          if (std::abs(ab(kv + r, j)) > largest) {
-            largest = std::abs(ab(kv + r, j));
+          if (pivot_magnitude(ab(kv + r, j)) > largest) {
+            largest = pivot_magnitude(ab(kv + r, j));
             jp      = r;
           }
         }
@@ -201,18 +202,6 @@ namespace numerical {
       }
     }
 
-    //! \brief LAPACK's measure of a tridiagonal pivot: `|x|` (`dgtsv`).
-    [[nodiscard]] inline double tridiagonal_size(double x)
-    {
-      return std::abs(x);
-    }
-
-    //! \brief LAPACK's measure of a complex tridiagonal pivot, `CABS1`: `|Re z| + |Im z|` (`zgtsv`).
-    [[nodiscard]] inline double tridiagonal_size(const std::complex<double>& z)
-    {
-      return std::abs(z.real()) + std::abs(z.imag());
-    }
-
     /*!
      * \brief The \p k right-hand sides of \p b (`n × k`, row-major) solved in place against the tridiagonal matrix of
      *        subdiagonal \p dl, diagonal \p d and superdiagonal \p du (`n − 1`, `n`, `n − 1` entries, overwritten), as
@@ -232,7 +221,7 @@ namespace numerical {
       for (std::size_t i {0}; i + 1 < n; ++i) {
         T* const here {b.data() + (i * k)};
         T* const next {b.data() + ((i + 1) * k)};
-        if (tridiagonal_size(d[i]) >= tridiagonal_size(dl[i])) {
+        if (pivot_magnitude(d[i]) >= pivot_magnitude(dl[i])) {
           if (d[i] == T {}) {
             throw singular_matrix_error("singular matrix");
           }
