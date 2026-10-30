@@ -91,8 +91,8 @@ Small and complete, grown measured, honest about what is not yet here:
   eigenvalues, or by `sort(select)` and `reorder(chosen)` afterwards, those selected moved to the leading block
   (LAPACK's `trsen`, MATLAB's `ordschur`), `leading()` their count.
 - `numerical::ldl_decomposition<T>` — the symmetric indefinite factorisation `A = L D Lᴴ` (or `L D Lᵀ`) of a
-  symmetric or Hermitian matrix, as `scipy.linalg.ldl` (Bunch and Kaufman's pivoting, LAPACK's `sytf2`/`hetf2`; `D`
-  with blocks of order 1 and 2), from either triangle.
+  symmetric or Hermitian matrix, as `scipy.linalg.ldl` (Bunch and Kaufman's pivoting, LAPACK's `sytrf`/`hetrf`, by
+  panels from order 384; `D` with blocks of order 1 and 2), from either triangle.
 - `numerical::pivoted_qr_decomposition<T>` — `A P = Q R` with column pivoting, as `scipy.linalg.qr(a, pivoting=True)`
   (LAPACK's `geqp3`), `R`'s diagonal revealing the rank.
 - `numerical::solve_banded(l, u, ab, b)` and `numerical::solveh_banded(ab, b, lower)` — banded systems in LAPACK's

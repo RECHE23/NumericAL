@@ -48,6 +48,15 @@ A change that can break code is listed under **Breaking** and held for a month's
   every pair of nine shapes and six comparisons over NaN, ±0 and ±∞, every triple for `where`, every axis and
   `keepdims` for `any` and `all`; the other calls' time unchanged (a 4 × 4 `sum` 492 ns, `+` 857).
 
+### Changed
+- **`ldl` by panels from order 384, as LAPACK's `sytrf` and `hetrf`**: 64 columns at a time with their updates
+  deferred (`lasyf`, `lahef`), then the trailing block's update as one matrix product, where every step updated it
+  whole. Order 1000 37 → 18 ms, 2000 297 → 86 ms (SciPy's 81 ms; arm64, real); the same pivots as the unblocked steps
+  and the factors within rounding of them. Tested: the panels against the unblocked steps at orders 70 to 141, real,
+  complex Hermitian and complex symmetric, both triangles' tie orders, a matrix of ties with zero columns at the
+  panel's edge, and an overflow; against SciPy 1.17 over 90 matrices of orders 383 to 513, the structure (pivots and
+  blocks) as before.
+
 ### Fixed
 - **The complex generalized Schur decomposition scales its operands into range, as `zgges`**: a `B` past 10¹⁵⁴ (the
   square root of the range) overflowed the norms' squares and left `Q T Zᴴ` 45 % from `B`; now within rounding from

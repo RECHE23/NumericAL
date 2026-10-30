@@ -1448,8 +1448,8 @@ def svd(a, full_matrices=True, compute_uv=True, hermitian=False, *, method="divi
 def ldl(A, lower=True, hermitian=True, overwrite_a=False, check_finite=True):
     """The symmetric indefinite factorisation of a symmetric or Hermitian matrix, as ``scipy.linalg.ldl``:
     ``A = lu @ d @ lu.conj().T`` (``lu.T`` where `hermitian` is false, a complex symmetric `A`), Bunch and Kaufman's
-    diagonal pivoting (LAPACK's ``sytf2`` and ``hetf2``) on the lower triangle, or on the upper with ``lower=False``;
-    only that triangle is read. Returns ``(lu, d, perm)``: `d` block diagonal with blocks of order 1 and 2, ``lu[perm]``
+    diagonal pivoting (LAPACK's ``sytrf`` and ``hetrf``, by panels from order 384) on the lower triangle, or on the
+    upper with ``lower=False``; only that triangle is read. Returns ``(lu, d, perm)``: `d` block diagonal with blocks of order 1 and 2, ``lu[perm]``
     triangular with a unit diagonal, `perm` a tuple (SciPy's an integer array). A Hermitian matrix's diagonal
     imaginary parts are ignored with a ``ComplexWarning``, as SciPy's. `overwrite_a` and `check_finite` are accepted
     and not needed.
