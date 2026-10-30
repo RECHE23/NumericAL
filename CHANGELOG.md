@@ -9,6 +9,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **Python: 30 more of `scipy.linalg`'s names**: the special matrices `hilbert`, `invhilbert`, `pascal`, `invpascal`,
+  `hadamard`, `helmert`, `leslie`, `companion`, `fiedler`, `fiedler_companion`, `convolution_matrix`, `dft`,
+  `khatri_rao` and `diagsvd`; `bandwidth`, `issymmetric` and `ishermitian`; `null_space`, `orth`, `subspace_angles`,
+  `orthogonal_procrustes` and `pinvh`; `cosm`, `sinm`, `tanm`, `coshm`, `sinhm`, `tanhm` and `signm`; and
+  `LinAlgWarning`. SciPy's algorithms over NumericAL's decompositions; where SciPy's exact matrices are integers
+  (`invhilbert`, `pascal`, `invpascal`, `hadamard`) these are float64, each entry computed exactly and rounded once.
+  Tested against SciPy 1.17: the special matrices to the bit, the subspaces by their projectors, the rest within
+  1e-11 (float32 1e-4).
 - **Python: a Tensor's ndarray methods.** A Tensor pickles (its elements' bytes, every bit kept, read back in the
   other byte order too) and copies (itself: it is never written into); `transpose(*axes)`, `swapaxes`, `mT`,
   `squeeze`, `ravel`, `flatten`, `real`, `imag`, `conj`, `diagonal` and `trace` along any two axes, `dot`, `item`,

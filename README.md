@@ -287,6 +287,11 @@ The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `"ouc"` or a callable, → `(T, Z, sdim)`, the selected eigenvalues leading), `expm(a)`, `logm(a)` and `sqrtm(a)` as `scipy.linalg`'s (a
 stack's matrices each), `expm_frechet(A, E, method, compute_expm)`, `expm_cond(A)`, `fractional_matrix_power(A, t)`, `funm(A, func, disp)`, `polar(a, side)`, `solve_banded((l, u), ab, b)`, `solveh_banded(ab, b, lower=False)`,
 `solve_toeplitz(c_or_cr, b)`, `solve_circulant(c, b, singular)`, `toeplitz`, `hankel`, `circulant`, `block_diag`,
+the special matrices `hilbert`, `invhilbert`, `pascal`, `invpascal`, `hadamard`, `helmert`, `leslie`, `companion`,
+`fiedler`, `fiedler_companion`, `convolution_matrix`, `dft`, `khatri_rao` and `diagsvd` (float64 where SciPy's exact
+ones are integers: each entry computed exactly, rounded once), `bandwidth`, `issymmetric`, `ishermitian`,
+`null_space`, `orth`, `subspace_angles`, `orthogonal_procrustes`, `pinvh`, `cosm`, `sinm`, `tanm`, `coshm`, `sinhm`,
+`tanhm`, `signm`,
 `solve_sylvester(a, b, q)`, `solve_continuous_lyapunov(a, q)`,
 `solve_discrete_lyapunov(a, q, method)`, `solve_continuous_are(a, b, q, r, e, s, balanced)` and
 `solve_discrete_are(a, b, q, r, e, s, balanced)` as `scipy.linalg`'s, `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix

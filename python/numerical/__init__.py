@@ -2098,9 +2098,12 @@ any = _reduction("any", """Whether any element is true (nonzero), or any along `
 all = _reduction("all", """Whether every element is true (nonzero), or every one along `axis` (a bool Tensor without
 it), as ``numpy.all``.""")
 def _dtype_name(dtype):
-    """A dtype's name as a Tensor takes it: a string as it is, ``numpy.float64`` or ``numpy.dtype("float32")`` by name."""
+    """A dtype's name as a Tensor takes it: a string as it is, ``numpy.float64`` or ``numpy.dtype("float32")`` by name,
+    Python's ``float``, ``complex`` and ``bool`` as NumPy names them."""
     if isinstance(dtype, str):
         return dtype
+    if dtype in (float, complex, bool):
+        return {float: "float64", complex: "complex128", bool: "bool"}[dtype]
     return getattr(dtype, "__name__", None) or str(dtype)
 
 
@@ -2477,5 +2480,460 @@ __all__ += ["any", "all", "astype", "where", "isnan", "isinf", "isfinite", "equa
             "greater", "greater_equal", "logical_and", "logical_or", "logical_xor", "logical_not"]
 __all__ += ["sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "eye", "arange", "linspace",
             "exp", "log", "sqrt", "sin", "cos", "tan", "tanh", "absolute", "power"]
+
+
+# --- scipy.linalg: special matrices, structure, subspaces and matrix functions over the decompositions ------------
+
+
+class LinAlgWarning(RuntimeWarning):
+    """The warning ``scipy.linalg.LinAlgWarning`` names: an ill-conditioned operation whose answer may be
+    inaccurate."""
+
+
+def _grid(n):
+    """The row and column indices of an `n × n` matrix, a column and a row of float64, to broadcast."""
+    k = arange(n)
+    return reshape(k, (n, 1)), k
+
+
+def hilbert(n):
+    """The `n × n` Hilbert matrix, ``H[i, j] = 1 / (i + j + 1)``, as ``scipy.linalg.hilbert``."""
+    n = _operator.index(n)
+    values = 1.0 / (1.0 + arange(_builtins.max(2 * n - 1, 0)))
+    return hankel(values[:n], values[_builtins.max(n - 1, 0):]) if n else zeros((0, 0))
+
+
+def _exact(rows, n):
+    """The float64 `n × n` matrix of the Python integers `rows` (a function of i and j), each rounded once."""
+    return asarray([[float(rows(i, j)) for j in range(n)] for i in range(n)]) if n else zeros((0, 0))
+
+
+def invhilbert(n, exact=False):
+    """The inverse of the `n × n` Hilbert matrix, as ``scipy.linalg.invhilbert``: its integer entries computed
+    exactly and each rounded once to float64 (SciPy rounds the binomials it multiplies where `exact` is false, and
+    gives integers where it is true; float64 holds them exactly up to 2**53, about `n = 14`)."""
+    del exact
+    n = _operator.index(n)
+    comb = _math.comb
+    return _exact(lambda i, j: (-1) ** (i + j) * (i + j + 1) * comb(n + i, n - j - 1) * comb(n + j, n - i - 1)
+                  * comb(i + j, _builtins.min(i, j)) ** 2, n)
+
+
+def _pascal_kind(kind):
+    if kind not in ("symmetric", "lower", "upper"):
+        raise ValueError("kind must be 'symmetric', 'lower', or 'upper'")
+
+
+def pascal(n, kind="symmetric", exact=True):
+    """The `n × n` Pascal matrix, as ``scipy.linalg.pascal``: binomial coefficients, ``lower`` ``C(i, j)``, ``upper``
+    its transpose, ``symmetric`` ``C(i + j, i)``; float64, each entry exact and rounded once (exact integers up to
+    2**53)."""
+    del exact
+    _pascal_kind(kind)
+    n = _operator.index(n)
+    comb = _math.comb
+    if kind == "lower":
+        return _exact(lambda i, j: comb(i, j), n)
+    if kind == "upper":
+        return _exact(lambda i, j: comb(j, i), n)
+    return _exact(lambda i, j: comb(i + j, i), n)
+
+
+def invpascal(n, kind="symmetric", exact=True):
+    """The inverse of the `n × n` Pascal matrix, as ``scipy.linalg.invpascal``: float64, each entry exact and
+    rounded once."""
+    del exact
+    _pascal_kind(kind)
+    n = _operator.index(n)
+    comb = _math.comb
+    if kind == "lower":
+        return _exact(lambda i, j: (-1) ** (i - j) * comb(i, j), n)
+    if kind == "upper":
+        return _exact(lambda i, j: (-1) ** (j - i) * comb(j, i), n)
+
+    def symmetric(i, j):
+        i, j = _builtins.max(i, j), _builtins.min(i, j)
+        return (-1) ** (i - j) * _builtins.sum(comb(i + k, k) * comb(i + k, i + k - j) for k in range(n - i))
+
+    return _exact(symmetric, n)
+
+
+def hadamard(n, dtype="float64"):
+    """The `n × n` Hadamard matrix of Sylvester's construction (`n` a power of 2), as ``scipy.linalg.hadamard``: its
+    ±1 entries in `dtype` (float64 by default, where SciPy's is an integer)."""
+    n = _operator.index(n)
+    if n < 1 or n & (n - 1):
+        raise ValueError("n must be an positive integer, and n must be a power of 2")
+    dtype = _dtype_of(None if dtype in (int, "int", "int64") else dtype)
+    h = ones((1, 1), dtype)
+    sylvester = asarray([[1.0, 1.0], [1.0, -1.0]], dtype)
+    while h.shape[0] < n:
+        size = 2 * h.shape[0]
+        h = reshape(einsum("ij,kl->ikjl", sylvester, h), (size, size))
+    return h
+
+
+def helmert(n, full=False):
+    """The `n × n` Helmert matrix, or its last `n - 1` rows unless `full`, as ``scipy.linalg.helmert``."""
+    n = _operator.index(n)
+    i, j = _grid(n)
+    h = where(i > j, 1.0, 0.0) - where(i == j, i, 0.0)
+    d = arange(n) * arange(1, n + 1)
+    first = (arange(n) == 0)
+    h = where(reshape(first, (n, 1)), 1.0, h)
+    d = where(first, float(n), d)
+    h = h / reshape(sqrt(d), (n, 1))
+    return h if full else h[1:]
+
+
+def leslie(f, s):
+    """The Leslie matrix of fecundities `f` and survival rates `s` (one fewer), as ``scipy.linalg.leslie``: `f` its
+    first row, `s` its subdiagonal."""
+    f, s = _same_dtype(f, s)
+    if len(f.shape) != 1 or len(s.shape) != 1 or f.shape[0] != s.shape[0] + 1:
+        raise ValueError("Incorrect lengths for f and s. The length of s along the last axis must be one less than "
+                         "the length of f.")
+    if s.shape[0] == 0:
+        raise ValueError("The length of s must be at least 1.")
+    n = f.shape[0]
+    i, j = _grid(n)
+    survival = asarray(s.tolist() + [0.0], f.dtype)  # s[j] under column j, nothing under the last
+    below = where(i == j + 1, reshape(survival, (1, n)), zeros((1, n), f.dtype))
+    return where(i == 0, reshape(f, (1, n)), below)
+
+
+def companion(a):
+    """The companion matrix of the polynomial of coefficients `a` (highest degree first), as
+    ``scipy.linalg.companion``: ``-a[1:] / a[0]`` its first row, ones on its subdiagonal."""
+    (a,) = _vectors("companion", a)
+    n = a.shape[0]
+    if n < 2:
+        raise ValueError("The length of `a` along the last axis must be at least 2.")
+    if a[0] == 0:
+        raise ValueError("The first coefficient(s) of `a` (i.e. elements of `a[..., 0]`) must not be zero.")
+    first = -a[1:] / (1.0 * a[0])
+    i, j = _grid(n - 1)
+    return where(i == 0, reshape(first, (1, n - 1)), where(i == j + 1, 1.0, 0.0).astype(first.dtype))
+
+
+def fiedler(a):
+    """The symmetric Fiedler matrix of `a`, ``F[i, j] = |a[i] - a[j]|``, as ``scipy.linalg.fiedler`` (along the last
+    axis of a stack)."""
+    a = _tensor(a)
+    if not a.shape:
+        a = reshape(a, (1,))
+    if a.size == 0:
+        return zeros((0,))
+    if a.size == 1:
+        return zeros((1, 1))
+    return absolute(a[..., :, None] - a[..., None, :])
+
+
+def fiedler_companion(a):
+    """The Fiedler companion matrix of the polynomial of coefficients `a` (highest degree first), as
+    ``scipy.linalg.fiedler_companion``: pentadiagonal, its eigenvalues the polynomial's roots."""
+    (a,) = _vectors("fiedler_companion", a)
+    if a.size <= 2:
+        return asarray([[-(a[-1] / a[0])]], a.dtype) if a.size == 2 else zeros((0,), a.dtype)
+    if a[0] == 0:
+        raise ValueError("Leading coefficient is zero.")
+    dtype = a.dtype
+    a = (a / a[0]).tolist()
+    n = len(a) - 1
+    c = [[0.0] * n for _ in range(n)]
+    for i, j in zip(range(3, n, 2), range(1, n - 2, 2)):
+        c[i][j] = 1.0
+    for i, j, k in zip(range(2, n, 2), range(1, n - 1, 2), range(3, n + 1, 2)):
+        c[i][j] = -a[k]
+    for i, j in zip(range(0, n - 2, 2), range(2, n, 2)):
+        c[i][j] = 1.0
+    for i, j, k in zip(range(0, n - 1, 2), range(1, n, 2), range(2, n + 1, 2)):
+        c[i][j] = -a[k]
+    c[0][0], c[1][0] = -a[1], 1.0
+    return asarray(c, dtype)
+
+
+def convolution_matrix(a, n, mode="full"):
+    """The Toeplitz matrix whose product with a vector of length `n` is its convolution with `a`, as
+    ``scipy.linalg.convolution_matrix``: ``full`` (``len(a) + n - 1`` rows), ``same`` (``max(n, len(a))``) or
+    ``valid`` (``max(n, len(a)) - min(n, len(a)) + 1``)."""
+    n = _operator.index(n)
+    if n <= 0:
+        raise ValueError("n must be a positive integer.")
+    (a,) = _vectors("convolution_matrix", a)
+    if a.size == 0:
+        raise ValueError("len(a) must be at least 1.")
+    if mode not in ("full", "valid", "same"):
+        raise ValueError("'mode' argument must be one of ('full', 'valid', 'same')")
+    values, zero = a.tolist(), 0.0
+    az = values + [zero] * (n - 1)
+    raz = values[::-1] + [zero] * (n - 1)
+    if mode == "full":
+        col0, row0 = az, raz[-n:]
+    else:
+        trim = _builtins.min(n, len(values)) - 1
+        tb = trim // 2 if mode == "same" else trim
+        te = trim - tb if mode == "same" else trim
+        col0, row0 = az[tb:len(az) - te], raz[len(raz) - n - tb:len(raz) - tb]
+    return toeplitz(asarray(col0, a.dtype), asarray(row0, a.dtype))
+
+
+def dft(n, scale=None):
+    """The `n × n` discrete Fourier transform matrix, ``exp(-2πi jk / n)``, as ``scipy.linalg.dft``: divided by
+    ``sqrt(n)`` (``scale="sqrtn"``) or `n` (``"n"``)."""
+    if scale not in (None, "sqrtn", "n"):
+        raise ValueError(f"scale must be None, 'sqrtn', or 'n'; {scale!r} is not valid.")
+    n = _operator.index(n)
+    omegas = reshape(exp(-2j * _math.pi * arange(n) / n), (n, 1))
+    m = omegas ** arange(n)
+    if scale == "sqrtn":
+        m = m / _math.sqrt(n)
+    elif scale == "n":
+        m = m / n
+    return m
+
+
+def khatri_rao(a, b):
+    """The column-wise Kronecker product of `a` (m × k) and `b` (p × k), ``(m p) × k``, as
+    ``scipy.linalg.khatri_rao``."""
+    a, b = _same_dtype(a, b)
+    if len(a.shape) != 2 or len(b.shape) != 2:
+        raise ValueError("The both arrays should be 2-dimensional.")
+    if a.shape[1] != b.shape[1]:
+        raise ValueError("The number of columns for both arrays should be equal.")
+    return reshape(a[:, None, :] * b[None, :, :], (a.shape[0] * b.shape[0], a.shape[1]))
+
+
+def diagsvd(s, M, N):
+    """The `M × N` matrix of the singular values `s` on its diagonal, as ``scipy.linalg.diagsvd`` (`s` of length `M`
+    or `N`)."""
+    (s,) = _vectors("diagsvd", s)
+    M, N, k = _operator.index(M), _operator.index(N), s.shape[0]
+    if k not in (M, N):
+        raise ValueError("Length of s must be M or N.")
+    i, j = _grid(_builtins.max(M, N))
+    square = where(i == j, reshape(asarray(s.tolist() + [0.0] * (_builtins.max(M, N) - k), s.dtype), (1, -1)),
+                   zeros((1, 1), s.dtype))
+    return square[:M, :N]
+
+
+def bandwidth(a):
+    """The lower and upper bandwidths of the matrix `a` (the farthest diagonals below and above the main one holding
+    a nonzero entry, 0 where none), as ``scipy.linalg.bandwidth``."""
+    a = _tensor(a)
+    if len(a.shape) != 2:
+        raise ValueError("Input array must be a 2D array.")
+    rows, cols = a.shape
+    i, j = reshape(arange(rows), (rows, 1)), arange(cols)
+    nonzero = a != 0
+    lower = max(where(nonzero, i - j, 0.0)) if a.size else 0.0
+    upper = max(where(nonzero, j - i, 0.0)) if a.size else 0.0
+    return int(lower), int(upper)
+
+
+def _symmetric(a, atol, rtol, hermitian):
+    a = _tensor(a)
+    if len(a.shape) != 2 or a.shape[0] != a.shape[1]:
+        raise ValueError("Input array must be square.")
+    other = matrix_transpose(a)
+    if hermitian and a.dtype.startswith("complex"):
+        other = conj(other)
+    if atol is None and rtol is None:
+        return bool(all(a == other))
+    return bool(all(absolute(a - other) <= (0.0 if atol is None else atol)
+                    + (0.0 if rtol is None else rtol) * absolute(other)))
+
+
+def issymmetric(a, atol=None, rtol=None):
+    """Whether the square matrix `a` equals its transpose: exactly, or within ``atol + rtol |aᵀ|`` where a tolerance is
+    given, as ``scipy.linalg.issymmetric``."""
+    return _symmetric(a, atol, rtol, False)
+
+
+def ishermitian(a, atol=None, rtol=None):
+    """Whether the square matrix `a` equals its conjugate transpose: exactly, or within ``atol + rtol |aᴴ|`` where a
+    tolerance is given, as ``scipy.linalg.ishermitian``."""
+    return _symmetric(a, atol, rtol, True)
+
+
+_EPSILON = {"float64": 2.0 ** -52, "complex128": 2.0 ** -52, "float32": 2.0 ** -23, "complex64": 2.0 ** -23}
+
+
+def null_space(A, rcond=None, *, overwrite_a=False, check_finite=True, lapack_driver="gesdd"):
+    """An orthonormal basis of the null space of `A` (its columns), as ``scipy.linalg.null_space``: the right singular
+    vectors of the singular values at most `rcond` times the largest (``eps max(M, N)`` by default)."""
+    del overwrite_a, check_finite, lapack_driver
+    u, s, vh = svd(A, full_matrices=True)
+    M, N = u.shape[0], vh.shape[1]
+    if rcond is None:
+        rcond = _EPSILON[s.dtype] * _builtins.max(M, N)
+    tol = (max(s) if s.size else 0.0) * rcond
+    num = _builtins.sum(1 for value in s.tolist() if value > tol)
+    return conj(matrix_transpose(vh[num:, :]))
+
+
+def orth(A, rcond=None):
+    """An orthonormal basis of the range of `A` (its columns), as ``scipy.linalg.orth``: the left singular vectors of
+    the singular values above `rcond` times the largest (``eps max(M, N)`` by default)."""
+    u, s, vh = svd(A, full_matrices=False)
+    M, N = u.shape[0], vh.shape[1]
+    if rcond is None:
+        rcond = _EPSILON[s.dtype] * _builtins.max(M, N)
+    tol = (max(s) if s.size else 0.0) * rcond
+    num = _builtins.sum(1 for value in s.tolist() if value > tol)
+    return u[:, :num]
+
+
+def subspace_angles(A, B):
+    """The principal angles between the column spaces of `A` and `B`, largest first, as
+    ``scipy.linalg.subspace_angles`` (Knyazev and Argentati's algorithm, the sines for the small angles)."""
+    A, B = _tensor(A), _tensor(B)
+    if len(A.shape) != 2:
+        raise ValueError(f"expected 2D array, got shape {A.shape}")
+    QA = orth(A)
+    if len(B.shape) != 2:
+        raise ValueError(f"expected 2D array, got shape {B.shape}")
+    if B.shape[0] != QA.shape[0]:
+        raise ValueError(f"A and B must have the same number of rows, got {QA.shape[0]} and {B.shape[0]}")
+    QB = orth(B)
+    QA_H_QB = conj(matrix_transpose(QA)) @ QB
+    sigma = svdvals(QA_H_QB).tolist()
+    if QA.shape[1] >= QB.shape[1]:
+        B = QB - QA @ QA_H_QB
+    else:
+        B = QA - QB @ conj(matrix_transpose(QA_H_QB))
+    mask = [value ** 2 >= 0.5 for value in sigma]
+    sines = svdvals(B).tolist() if _builtins.any(mask) else [0.0] * len(sigma)
+    theta = [_math.asin(_builtins.min(_builtins.max(sines[k], -1.0), 1.0)) if mask[k]
+             else _math.acos(_builtins.min(_builtins.max(sigma[::-1][k], -1.0), 1.0)) for k in range(len(sigma))]
+    return asarray(theta)
+
+
+def orthogonal_procrustes(A, B, check_finite=True):
+    """The unitary `R` nearest to mapping `A` onto `B` (minimising ``‖A R − B‖_F``) and the sum of the singular values
+    of ``Aᴴ B``, as ``scipy.linalg.orthogonal_procrustes``."""
+    del check_finite
+    A, B = _same_dtype(A, B)
+    if len(A.shape) != 2:
+        raise ValueError(f"expected ndim to be 2, but observed {len(A.shape)}")
+    if A.shape != B.shape:
+        raise ValueError(f"the shapes of A and B differ ({A.shape} vs {B.shape})")
+    u, w, vt = svd(matrix_transpose(matrix_transpose(B) @ conj(A)))
+    return u @ vt, sum(w)
+
+
+def pinvh(a, atol=None, rtol=None, lower=True, return_rank=False, check_finite=True):
+    """The pseudo-inverse of the Hermitian matrix `a` from its eigendecomposition, as ``scipy.linalg.pinvh``: the
+    eigenvalues above ``atol + rtol max|λ|`` inverted (``rtol`` ``max(M, N) eps`` by default), with the rank where
+    `return_rank`."""
+    del check_finite
+    a = _tensor(a)
+    s, u = eigh(a, UPLO="L" if lower else "U")
+    values = s.tolist()
+    largest = _builtins.max((abs(v) for v in values), default=0.0)
+    atol = 0.0 if atol is None else atol
+    rtol = _builtins.max(a.shape) * _EPSILON[u.dtype] if rtol is None else rtol
+    if atol < 0.0 or rtol < 0.0:
+        raise ValueError("atol and rtol values must be positive.")
+    kept = absolute(s) > atol + largest * rtol
+    inverted = where(kept, 1.0 / where(kept, s, 1.0), 0.0)  # a dropped eigenvalue's column weighs nothing
+    B = (u * inverted.astype(u.dtype)) @ conj(matrix_transpose(u))
+    return (B, int(sum(kept))) if return_rank else B
+
+
+def _maybe_real(A, B):
+    """`B` real where `A` is and `B`'s imaginary parts are within SciPy's tolerance of 0, as ``_maybe_real``."""
+    if not A.dtype.startswith("complex") and B.dtype.startswith("complex"):
+        tol = 1e3 * 2.0 ** -23 if B.dtype == "complex64" else 1e6 * 2.0 ** -52
+        if all(absolute(B.imag) <= tol):
+            return B.real
+    return B
+
+
+def _square(name, A):
+    A = _tensor(A)
+    if len(A.shape) != 2 or A.shape[0] != A.shape[1]:
+        raise ValueError(f"{name}: expected a square matrix")
+    return A
+
+
+def cosm(A):
+    """The matrix cosine, as ``scipy.linalg.cosm``: the real part of ``expm(iA)`` for a real `A`."""
+    A = _square("cosm", A)
+    if A.dtype.startswith("complex"):
+        return 0.5 * (expm(1j * A) + expm(-1j * A))
+    return expm(1j * A).real
+
+
+def sinm(A):
+    """The matrix sine, as ``scipy.linalg.sinm``: the imaginary part of ``expm(iA)`` for a real `A`."""
+    A = _square("sinm", A)
+    if A.dtype.startswith("complex"):
+        return -0.5j * (expm(1j * A) - expm(-1j * A))
+    return expm(1j * A).imag
+
+
+def tanm(A):
+    """The matrix tangent, ``cosm(A)⁻¹ sinm(A)``, as ``scipy.linalg.tanm``."""
+    A = _square("tanm", A)
+    return _maybe_real(A, solve(cosm(A), sinm(A)))
+
+
+def coshm(A):
+    """The matrix hyperbolic cosine, ``(expm(A) + expm(-A)) / 2``, as ``scipy.linalg.coshm``."""
+    A = _square("coshm", A)
+    return _maybe_real(A, 0.5 * (expm(A) + expm(-A)))
+
+
+def sinhm(A):
+    """The matrix hyperbolic sine, ``(expm(A) − expm(-A)) / 2``, as ``scipy.linalg.sinhm``."""
+    A = _square("sinhm", A)
+    return _maybe_real(A, 0.5 * (expm(A) - expm(-A)))
+
+
+def tanhm(A):
+    """The matrix hyperbolic tangent, ``coshm(A)⁻¹ sinhm(A)``, as ``scipy.linalg.tanhm``."""
+    A = _square("tanhm", A)
+    return _maybe_real(A, solve(coshm(A), sinhm(A)))
+
+
+def signm(A, disp=True):
+    """The matrix sign function, as ``scipy.linalg.signm``: :func:`funm` of the sign of each eigenvalue's real part
+    (0 within ``1e3 eps`` of the largest), then, where its error estimate passes ``1e3 eps``, Newton's iteration
+    ``S ← (S + S⁻¹) / 2`` from `A` shifted by half the reciprocal of its largest singular value; with ``disp=False``
+    the estimate beside the answer."""
+    A = _square("signm", A)
+
+    def rounded_sign(x):  # SciPy's: 0 where |Re λ| is not past c, NumPy's complex maximum ordering (Re, then Im)
+        values = [complex(v) for v in _flat(asarray(x).tolist())]
+        c = 1e3 * 2.0 ** -52 * _builtins.max(values, key=lambda v: (v.real, v.imag))
+        return [(1.0 if v.real > 0 else -1.0) if (abs(v.real), 0.0) > (c.real, c.imag) else 0.0 for v in values]
+
+    result, errest = funm(A, rounded_sign, disp=False)
+    errtol = 1e3 * (2.0 ** -23 if result.dtype in _SINGLE else 2.0 ** -52)
+    if errest < errtol:
+        return result if disp else (result, errest)
+    vals = svdvals(A)
+    c = 0.5 / max(vals)
+    S0 = A + c * eye(A.shape[0], A.dtype)
+    prev_errest = errest
+    for _ in range(100):
+        S0 = 0.5 * (S0 + inv(S0))
+        Pp = 0.5 * (S0 @ S0 + S0)
+        errest = norm(Pp @ Pp - Pp, 1)
+        if errest < errtol or prev_errest == errest:
+            break
+        prev_errest = errest
+    if disp:
+        if not _math.isfinite(errest) or errest >= errtol:
+            print("signm result may be inaccurate, approximate err =", errest)
+        return S0
+    return S0, errest
+
+
+__all__ += ["LinAlgWarning", "hilbert", "invhilbert", "pascal", "invpascal", "hadamard", "helmert", "leslie", "companion",
+            "fiedler", "fiedler_companion", "convolution_matrix", "dft", "khatri_rao", "diagsvd", "bandwidth",
+            "issymmetric", "ishermitian", "null_space", "orth", "subspace_angles", "orthogonal_procrustes", "pinvh",
+            "cosm", "sinm", "tanm", "coshm", "sinhm", "tanhm", "signm"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)
