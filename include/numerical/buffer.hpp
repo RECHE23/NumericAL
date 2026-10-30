@@ -268,9 +268,13 @@ namespace numerical {
 #endif
         if (on_kept_pages(n)) {
           constexpr std::size_t           page   {kept_page_blocks::alignment};
+          // The block's size from the widest offset, whatever this one's: a count of elements then always asks for one
+          // size of block, so a buffer takes the block one of its size freed (sized from its own offset, a colour of 8
+          // or more took a page more than one below it, and found no kept block that fitted).
+          constexpr std::size_t           widest {64 + ((page_colours - 1) * 256)};
           static std::atomic<std::size_t> colour {0};
           const std::size_t               offset {64 + ((colour.fetch_add(1) % page_colours) * 256)};
-          std::size_t                     bytes  {((offset + (n * sizeof(T))) + page - 1) / page * page};
+          std::size_t                     bytes  {((widest + (n * sizeof(T))) + page - 1) / page * page};
           std::byte*                      start  {kept_page_blocks::shared().take(bytes, bytes)};
           if (start == nullptr) {
             start = static_cast<std::byte*>(::operator new(bytes, std::align_val_t {page}));

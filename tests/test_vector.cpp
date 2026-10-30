@@ -118,18 +118,22 @@ TEST(a_freed_buffer_from_one_mib_leaves_its_block_to_the_next)
   }
   constexpr std::size_t count {((std::size_t {3} << 20U) / sizeof(double)) + 777}; // no other test frees a block this size
   const auto            start {[](const double* at) { return reinterpret_cast<std::uintptr_t>(at) / blocks::alignment * blocks::alignment; }};
-  std::uintptr_t        before {0};
-  std::uintptr_t        offset {0};
-  {
-    const numerical::buffer<double> a(count, 2.0);
-    before = start(a.data());
-    offset = reinterpret_cast<std::uintptr_t>(a.data()) - before;
-    EXPECT_EQ(reinterpret_cast<std::uintptr_t>(a.data()) % 64, 0U);
+  // Each of the 16 colours in turn, the 17th the first again: a buffer of one count takes the block freed whatever the
+  // two offsets (sized from its own, this count's block grew a page from colour 8 on, and missed).
+  for (std::size_t round {0}; round <= allocator::page_colours; ++round) {
+    std::uintptr_t before {0};
+    std::uintptr_t offset {0};
+    {
+      const numerical::buffer<double> a(count, 2.0);
+      before = start(a.data());
+      offset = reinterpret_cast<std::uintptr_t>(a.data()) - before;
+      EXPECT_EQ(reinterpret_cast<std::uintptr_t>(a.data()) % 64, 0U);
+    }
+    const numerical::buffer<double> b(count, 3.0);
+    EXPECT_EQ(start(b.data()), before);
+    EXPECT(reinterpret_cast<std::uintptr_t>(b.data()) - before != offset);
+    EXPECT(b[0] == 3.0 && b[count - 1] == 3.0);
   }
-  const numerical::buffer<double> b(count, 3.0);
-  EXPECT_EQ(start(b.data()), before);
-  EXPECT(reinterpret_cast<std::uintptr_t>(b.data()) - before != offset);
-  EXPECT(b[0] == 3.0 && b[count - 1] == 3.0);
   // The class itself: four places, the one kept longest freed for a fifth block.
   const std::size_t       mib {std::size_t {1} << 20U};
   blocks                  kept;
