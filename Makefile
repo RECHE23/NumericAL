@@ -36,7 +36,7 @@ SCIFORGE_INCLUDE ?= ../sciforge/include
 SCIFORGE_LINT ?= ../sciforge/lint
 FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
-.PHONY: check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
+.PHONY: actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
         python python-test python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
@@ -213,6 +213,11 @@ format:
 format-check:
 	uncrustify -c $(SCIFORGE_LINT)/uncrustify.cfg --check $(FORMAT_FILES)
 
+# The workflows' syntax, expressions and run scripts (shellcheck): a workflow that does not parse runs nothing on its
+# event, so a broken release.yml publishes nothing for a tag.
+actionlint:
+	actionlint .github/workflows/*.yml
+
 # Python binding (CPython Limited API, abi3 — built in place for development).
 # --force: build_ext tracks the .cpp, not the headers it includes, and would relink a stale object.
 python:
@@ -385,7 +390,7 @@ clean:
 SCIFORGE_MAKE    ?= ../sciforge/make
 # Cheapest first, so a slip in a comment or a stub fails in seconds, not after the suites: Doxygen before coverage, the
 # static checks (MISRA, the stubs, lint) before the builds and runs.
-QUALITY_COMMIT   := format-check doc-no-coverage coverage-gate
+QUALITY_COMMIT   := format-check actionlint doc-no-coverage coverage-gate
 QUALITY_PUSH     := version-check check-pins misra stubtest-gate lint-gate bench-diff-selftest python-test test test-gcc test-gcc-neon \
                     ci-arm-gcc sanitize tsan
 QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges fuzz-fft fuzz-scipy

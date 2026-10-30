@@ -48,7 +48,7 @@ jobs:
         run: >
           make coverage-x86 COV_CXX=clang++-18 LLVM_COV=llvm-cov-18 PROFDATA=llvm-profdata-18
           SCIFORGE_INCLUDE="$PWD/sciforge/include" SCIFORGE_LINT="$PWD/sciforge/lint"
-          COV_RUN="$RUNNER_TEMP/sde/sde64 -skx --" COV_SHARDS=$(nproc)
+          COV_RUN="$RUNNER_TEMP/sde/sde64 -skx --" COV_SHARDS="$(nproc)"
 
   # The fuzz campaigns against NumPy on the AVX-512 kernels, beside the suite. The run fails unless the kernel in use
   # is "avx512", so an emulator that stopped emulating cannot pass for one.
