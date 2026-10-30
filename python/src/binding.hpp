@@ -833,6 +833,76 @@ Result over_stack(const any_tensor& v, F f)
                               [&] { return f(identity_like(v, s.rows, s.cols)); });
 }
 
+// `each(i)` for each of the `count` items of a batch: the GIL released once around them all, the items to the threads
+// together where their matrices are no larger than `stack_order` or there are as many as threads, else one at a time,
+// each with the threads (over_batch's policy).
+template <typename Each>
+void for_batch(std::size_t count, std::size_t order, std::size_t elements, Each each)
+{
+    const sb::scoped_gil_release unlocked {releases_gil(elements)};
+    const without_gil            inside;
+    if (order <= stack_order || count >= numerical::max_threads()) {
+        numerical::detail::parallel_for(count, (order * order * order) + stack_item_work, [&](std::size_t i) {
+            const without_gil worker;
+            each(i);
+        });
+    }
+    else {
+        for (std::size_t i = 0; i < count; ++i) {
+            each(i);
+        }
+    }
+}
+
+// The shape `batch` + `item`.
+inline std::vector<std::size_t> batch_shape(const std::vector<std::size_t>& batch, const std::vector<std::size_t>& item)
+{
+    std::vector<std::size_t> shape {batch};
+    shape.insert(shape.end(), item.begin(), item.end());
+    return shape;
+}
+
+// `write(i, out)` for each of the `count` items of a batch of leading axes `batch` (for_batch), item `i` writing its
+// answer (`item` its shape) at `out` in one output of T: no tensor, variant or copy per item, which cost a 2 × 2 inverse
+// 400 ns against its 170 of computing. over_batch's answers to the bit.
+template <typename T, typename Write>
+any_tensor into_batch(const std::vector<std::size_t>& batch, std::size_t count, std::size_t order, std::size_t elements,
+                      const std::vector<std::size_t>& item, Write write)
+{
+    const std::size_t    per {numerical::detail::element_count(item.begin(), item.end())};
+    numerical::buffer<T> out(count * per);
+    for_batch(count, order, elements, [&](std::size_t i) { write(i, out.data() + (i * per)); });
+    return any_tensor {numerical::tensor<T> {batch_shape(batch, item), std::move(out)}};
+}
+
+// Matrix `i` (`rows` × `cols`) of the data of a stack, as the numerical::matrix its one-matrix path builds.
+template <typename T>
+numerical::matrix<T> matrix_at(const numerical::buffer<T>& data, std::size_t rows, std::size_t cols, std::size_t i)
+{
+    const auto first {data.begin() + static_cast<std::ptrdiff_t>(i * rows * cols)};
+    return numerical::matrix<T> {rows, cols, numerical::buffer<T>(first, first + static_cast<std::ptrdiff_t>(rows * cols))};
+}
+
+// `kernel(m)` of every matrix `m` (a numerical::matrix of its dtype) of the double or complex stack `v` (rank > 2), each
+// answer (a range of `item`'s element count: a matrix, an array of one scalar) written into one output (into_batch):
+// the same numerical calls as one matrix's path, so the same bits. A single-precision stack is widened, and its
+// answers narrowed, whole.
+template <typename Kernel>
+any_tensor over_stack_into(const any_tensor& v, const std::vector<std::size_t>& item, Kernel kernel)
+{
+    if (is_single(v)) {
+        return narrowed(over_stack_into(widened(v), item, kernel));
+    }
+    const stack_shape s {stack_of(v)};
+    return std::visit([&](const auto& t) -> any_tensor {
+                          using T = element_of_t<std::decay_t<decltype(t)>>;
+                          return into_batch<T>(s.batch, s.count, std::max(s.rows, s.cols), t.data().size(), item, [&](std::size_t i, T* out) {
+                              const auto answer {kernel(matrix_at(t.data(), s.rows, s.cols, i))};
+                              std::copy(answer.begin(), answer.end(), out);
+                          });
+                      }, v);
+}
+
 // The relative cutoff of a float32 or complex64 matrix's rank where neither tolerance is given: NumPy's default at
 // float32's epsilon (its LAPACK computes in it), where the double default would count its rounding as rank.
 inline std::optional<double> single_rtol(const any_tensor& a, std::optional<double> rtol, std::optional<double> tol)
@@ -937,6 +1007,28 @@ inline std::tuple<any_tensor, any_tensor> slogdet_tensors(const any_tensor& m)
         return {real_tensor {{}, numerical::buffer<double> {sign}}, real_tensor {{}, numerical::buffer<double> {logarithm}}};
     };
     return is_single(m) ? narrowed(of(widened(m))) : of(m);
+}
+
+
+// slogdet_tensors of every matrix of the stack `m` (rank > 2), the signs and logarithms written into two outputs
+// (for_batch): no tensors per matrix, the one-matrix path's calls and bits; single precision widened and narrowed whole.
+inline std::tuple<any_tensor, any_tensor> slogdet_stack(const any_tensor& m)
+{
+    if (is_single(m)) {
+        return narrowed(slogdet_stack(widened(m)));
+    }
+    const auto of = [&m]<typename T>(const numerical::tensor<T>& t) -> std::tuple<any_tensor, any_tensor> {
+        const stack_shape         s {stack_of(m)};
+        numerical::buffer<T>      signs(s.count);
+        numerical::buffer<double> logarithms(s.count);
+        for_batch(s.count, std::max(s.rows, s.cols), t.data().size(), [&](std::size_t i) {
+            const auto [sign, logarithm] {numerical::lu_decomposition<T> {matrix_at(t.data(), s.rows, s.cols, i)}.log_determinant()};
+            signs[i]      = sign;
+            logarithms[i] = logarithm;
+        });
+        return {any_tensor {numerical::tensor<T> {s.batch, std::move(signs)}}, any_tensor {real_tensor {s.batch, std::move(logarithms)}}};
+    };
+    return is_complex(m) ? of(std::get<cplx_tensor>(m)) : of(std::get<real_tensor>(m));
 }
 
 // determinant(a) -> float or complex: a dtype-dependent scalar (a variant return no single

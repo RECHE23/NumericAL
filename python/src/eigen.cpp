@@ -34,6 +34,29 @@ any_tensor eigvalsh(const any_tensor& v, bool upper)
     return do_eigvalsh<double>(std::get<real_tensor>(v), upper);
 }
 
+namespace {
+
+    // eigh of every matrix of the double or complex stack `t`, its values and vectors written into the two outputs
+    // (for_batch): no tensor per matrix, the one-matrix path's calls and bits.
+    template <typename T>
+    std::tuple<any_tensor, any_tensor> eigh_stack(const numerical::tensor<T>& t, numerical::eigen_method method, bool upper)
+    {
+        using decomposition_type = std::conditional_t<std::is_same_v<T, double>, numerical::symmetric_eigen, numerical::hermitian_eigen>;
+        const stack_shape         s {stack_of(any_tensor {t})};
+        const std::size_t         n {s.rows};
+        numerical::buffer<double> values(s.count * n);
+        numerical::buffer<T>      vectors(s.count * n * n);
+        for_batch(s.count, std::max(s.rows, s.cols), t.data().size(), [&](std::size_t i) {
+            decomposition_type decomposition {lower_read(matrix_at(t.data(), s.rows, s.cols, i), upper), method};
+            std::copy(decomposition.values().begin(), decomposition.values().end(), values.begin() + static_cast<std::ptrdiff_t>(i * n));
+            const auto basis {std::move(decomposition).vectors()};
+            std::copy(basis.begin(), basis.end(), vectors.begin() + static_cast<std::ptrdiff_t>(i * n * n));
+        });
+        return {any_tensor {real_tensor {batch_shape(s.batch, {n}), std::move(values)}},
+                any_tensor {numerical::tensor<T> {batch_shape(s.batch, {n, n}), std::move(vectors)}}};
+    }
+} // namespace
+
 // eigh(a, method, upper) -> (eigenvalues, eigenvectors) for a real symmetric or a complex Hermitian matrix: the values
 // are real; its lower triangle is read, or its upper one.
 std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& name, bool upper)
@@ -45,11 +68,11 @@ std::tuple<any_tensor, any_tensor> eigh(const any_tensor& v, const std::string& 
     if (shape_of(v).size() < 2) {
         throw std::runtime_error("eigh expects a matrix or a stack of matrices (rank ≥ 2)");
     }
-    if (shape_of(v).size() > 2) {
-        return over_stack<std::tuple<any_tensor, any_tensor>>(v, [&](const any_tensor& m) { return eigh(m, name, upper); });
-    }
     if (is_single(v)) {
         return narrowed(eigh(widened(v), name, upper));
+    }
+    if (shape_of(v).size() > 2) {
+        return is_complex(v) ? eigh_stack(std::get<cplx_tensor>(v), method, upper) : eigh_stack(std::get<real_tensor>(v), method, upper);
     }
     if (is_complex(v)) {
         const cplx_tensor&               a = std::get<cplx_tensor>(v);

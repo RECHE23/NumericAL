@@ -25,12 +25,26 @@ any_tensor solve(const any_tensor& a, const any_tensor& b)
         const std::size_t              count {numerical::detail::element_count(batch.begin(), batch.end())};
         const std::size_t b_rows {vector_b ? 0 : shape_of(b)[rank_b - 2]};
         const std::size_t b_cols {shape_of(b).back()};
-        const auto        right_side {[&](std::size_t i) {
-            return vector_b ? b : matrix_of(b, b_rows, b_cols, broadcast_index(i, batch, own_b));
-        }};
-        return over_batch<any_tensor>(batch, count, sa.rows, count_of(a) + count_of(b),
-                                      [&](std::size_t i) { return solve(matrix_of(a, sa.rows, sa.cols, broadcast_index(i, batch, sa.batch)), right_side(i)); },
-                                      [&] { return solve(identity_like(a, sa.rows, sa.cols), vector_b ? b : identity_like(b, b_rows, b_cols)); });
+        if (is_single(a)) {
+            return narrowed(solve(widened(a), widened(b)));
+        }
+        const std::vector<std::size_t> item {vector_b ? std::vector<std::size_t> {sa.rows} : std::vector<std::size_t> {sa.rows, b_cols}};
+        return std::visit([&](const auto& ta) -> any_tensor {
+                              using tensor_type = std::decay_t<decltype(ta)>;
+                              using T           = element_of_t<tensor_type>;
+                              const auto& tb {std::get<tensor_type>(b)};
+                              return into_batch<T>(batch, count, sa.rows, count_of(a) + count_of(b), item, [&](std::size_t i, T* out) {
+                                  const numerical::lu_decomposition<T> factored {matrix_at(ta.data(), sa.rows, sa.cols, broadcast_index(i, batch, sa.batch))};
+                                  if (vector_b) {
+                                      const numerical::vector<T> x {factored.solve(numerical::vector<T> {tb.data()})};
+                                      std::copy(x.begin(), x.end(), out);
+                                  }
+                                  else {
+                                      const numerical::matrix<T> x {factored.solve(matrix_at(tb.data(), b_rows, b_cols, broadcast_index(i, batch, own_b)))};
+                                      std::copy(x.begin(), x.end(), out);
+                                  }
+                              });
+                          }, a);
     }
     if (is_single(a)) {
         return narrowed(solve(widened(a), widened(b)));
@@ -59,7 +73,7 @@ PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
     }
     try {
         if (shape_of(*h).size() > 2) {
-            return wrap(over_stack<any_tensor>(*h, determinant_tensor));
+            return wrap(over_stack_into(*h, {}, [](auto&& m) { return std::array {numerical::determinant(m)}; }));
         }
         std::optional<any_tensor> value; // a single-precision matrix's rounded to its precision, as a stack's
         {
@@ -90,7 +104,7 @@ PyObject* module_slogdet(PyObject* /*self*/, PyObject* args)
     }
     try {
         if (shape_of(*h).size() > 2) {
-            auto [sign, logarithm] {over_stack<std::tuple<any_tensor, any_tensor>>(*h, slogdet_tensors)};
+            auto [sign, logarithm] {slogdet_stack(*h)};
             return Py_BuildValue("(NN)", wrap(std::move(sign)), wrap(std::move(logarithm)));
         }
         std::optional<std::tuple<any_tensor, any_tensor>> value; // as determinant's
@@ -165,7 +179,8 @@ any_tensor inverse(const any_tensor& v)
         throw std::runtime_error("inverse expects a matrix or a stack of matrices (rank ≥ 2)");
     }
     if (shape_of(v).size() > 2) {
-        return over_stack<any_tensor>(v, [&](const any_tensor& m) { return inverse(m); });
+        const stack_shape s {stack_of(v)};
+        return over_stack_into(v, {s.rows, s.cols}, [](auto&& m) { return numerical::inverse(std::move(m)); });
     }
     if (is_single(v)) {
         return narrowed(inverse(widened(v)));
@@ -705,7 +720,12 @@ any_tensor cholesky(const any_tensor& v, bool upper)
         throw std::runtime_error("cholesky expects a matrix or a stack of matrices (rank ≥ 2)");
     }
     if (shape_of(v).size() > 2) {
-        return over_stack<any_tensor>(v, [&](const any_tensor& m) { return cholesky(m, upper); });
+        const stack_shape s {stack_of(v)};
+        return over_stack_into(v, {s.rows, s.cols}, [upper](auto&& m) {
+            using T = std::decay_t<decltype(*m.begin())>;
+            auto lower {numerical::cholesky_decomposition<T> {lower_read(std::move(m), upper)}.lower()};
+            return upper ? numerical::detail::adjoint(lower) : lower;
+        });
     }
     if (is_single(v)) {
         return narrowed(cholesky(widened(v), upper));

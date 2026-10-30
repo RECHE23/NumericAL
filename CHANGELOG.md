@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **Python: a stack of small matrices costs what its computation costs.** `inv`, `solve`, `det`, `slogdet`,
+  `cholesky` and `eigh` of a stack write each matrix's answer straight into the output, where each built a tensor,
+  a variant and a copy (a 2 × 2 inverse's 170 ns of computing came to 580): the same calls, the same bits. Six AVX2
+  cores, one thread, a stack of 100 000, against NumPy 2.5: order 2 `inv` 581 → 293 ns (NumPy 225), `solve` 685 →
+  278 (156), `det` 320 → 158 (128), `cholesky` 357 → 100 (89), `eigh` 1880 → 1020 (442); from order 3 or 4 at
+  NumPy's level or below, but `eigh` (1.3 times at 4).
+
 ### Added
 - **Free-threaded CPython (3.14t, 3.15t)**: wheels of their own (no stable ABI there), the module running without
   the GIL (SciForge's binding declares it), so Python threads call NumericAL in parallel: `eigh` of order 50 on four
