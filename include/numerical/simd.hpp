@@ -631,9 +631,9 @@ namespace numerical::detail {
       return 1;
     }
     const mask                magnitude {~std::bit_cast<mask>(T {-0.0} - lane {})}; // every bit but the sign's
-    std::array<lane, ways>    top;
+    std::array<lane, ways>    top       {};
     std::array<mask, ways>    where     {};                                         // index 0 in every lane
-    std::array<mask, ways>    next;                                                 // each chain's next indices
+    std::array<mask, ways>    next      {};                                         // each chain's next indices
     for (std::size_t w {0}; w < ways; ++w) {
       top[w] = best - lane {}; // best in every lane
       for (std::size_t k {0}; k < width; ++k) {

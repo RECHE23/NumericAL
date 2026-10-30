@@ -32,6 +32,15 @@ A change that can break code is listed under **Breaking** and held for a month's
   `A` is and every imaginary part is 0. In C++, `numerical::fractional_matrix_power`.
 
 ### Changed
+- **`solve` of a float64 system of order 2000 or more as LAPACK's `dsgesv`**, with at most one right-hand side for 64
+  rows: the LU factorisation in float32, the answer corrected in float64 by its residual until every column meets
+  `dsgesv`'s bound (`‖r‖∞ ≤ ‖x‖∞ ‖A‖∞ ε √n`), its residuals at float64's level, the answer the direct solve's to
+  rounding. Each operand goes to float32 scaled by a power of two, so none overflows where `dsgesv` falls back; a
+  correction must divide the residual by 8, so a matrix too ill-conditioned for float32 falls back to the float64
+  factorisation after a few (where `dsgesv` would run 30). Order 2000, four right-hand sides: 1.2 times faster on every
+  thread of an M-series Mac or of six x86-64 cores, 1.3 to 1.4 times on one core; order 3000 1.3 to 1.6 times. In C++,
+  `numerical::detail::mixed_precision_solve`. A float32 solve of a few right-hand sides takes the rows' path the
+  float64 one takes (order 3000, four columns, one arm64 core: 5.9 → 2.1 ms).
 - **float32 factorisations in single precision from order 500**: `solve`, `inv`, `cholesky`, `lu_factor` and
   `lu_solve` of a float32 matrix of order 500 or more factorise in float32, as NumPy's and SciPy's LAPACK does, where
   they computed in double and rounded; below 500, and every other function, as before (the double answer rounded).

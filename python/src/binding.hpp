@@ -952,6 +952,29 @@ any_tensor do_solve(const numerical::tensor<T>& a, const numerical::tensor<T>& b
     return solve_copied(matrix_from(a), b);
 }
 
+// A float64 system of at least this order, with at most one right-hand side for 64 rows, is solved as LAPACK's dsgesv
+// (numerical::detail::mixed_precision_solve): the factorisation in float32, the answer refined to double's accuracy
+// (order 2000, four right-hand sides: 1.2 times faster on every thread of an M-series Mac or of six x86-64 cores, 1.4 on
+// one; order 1000 was 0.8 times on every thread). Each correction costs a product and a solve of n² k, hence the few
+// right-hand sides; a matrix too ill-conditioned for float32 falls back to the double factorisation.
+inline constexpr std::size_t mixed_precision_least {2000};
+
+inline any_tensor do_solve_mixed(const real_tensor& a, const real_tensor& b)
+{
+    const std::size_t n {a.shape()[0]};
+    const std::size_t k {b.shape().size() == 1 ? 1 : b.shape()[1]};
+    if (n < mixed_precision_least || a.shape()[1] != n || b.shape()[0] != n || k * 64 > n) {
+        return do_solve<double>(a, b);
+    }
+    const sb::scoped_gil_release unlocked {releases_gil_cubic(a.data().size())};
+    std::optional<numerical::matrix<double>> x {
+        numerical::detail::mixed_precision_solve(matrix_from(a), numerical::matrix<double> {n, k, numerical::buffer<double>(b.data().begin(), b.data().end())})};
+    if (x) {
+        return any_tensor {real_tensor {b.shape(), std::move(*x).elements()}};
+    }
+    return solve_copied(matrix_from(a), b);
+}
+
 // The leading axes two stacks' answers take: `x` and `y` right-aligned, an axis of 1 (or a missing one) taking the
 // other's extent, as NumPy broadcasts them.
 inline std::vector<std::size_t> broadcast_batch(const std::vector<std::size_t>& x, const std::vector<std::size_t>& y)

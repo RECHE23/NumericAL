@@ -217,6 +217,60 @@ TEST(inverse_of_a_large_matrix)
   EXPECT(approx_equal(a * inverse(a), identity));
 }
 
+// LAPACK's dsgesv: a float32 factorisation refined in double gives the double solve's answer to rounding, residuals
+// at double's level, whatever the scale (operands of 10³⁰⁰ and 10⁻³⁰⁰, past float32's range, scaled by powers of two),
+// for one right-hand side or several (order 3, past four entries' chains by one). None where an entry of A or B is not
+// finite, A is singular in float32, A is too ill-conditioned for float32 (a Hilbert matrix of order 10, condition
+// 1.6e13: the corrections stall), or the solution overflows (its residual infinite, or NaN by 0 · ∞).
+TEST(mixed_precision_solve_refines_a_float32_factorisation)
+{
+  using numerical::detail::mixed_precision_solve;
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+  std::mt19937_64                        generator {5};
+  std::uniform_real_distribution<double> uniform   {-1.0, 1.0};
+  for (const std::size_t n : {std::size_t {3}, std::size_t {70}}) {
+    std::vector<double> entries(n * n);
+    std::vector<double> right(n * 2);
+    for (double& x : entries) {
+      x = uniform(generator);
+    }
+    for (double& x : right) {
+      x = uniform(generator);
+    }
+    for (const double scale : {1.0, 1e300, 1e-300}) {
+      const matrix<double> a      {scale * matrix<double> {n, n, entries}};
+      const matrix<double> b      {n, 2, right};
+      const auto           x      {mixed_precision_solve(a, b)};
+      const matrix<double> direct {lu_decomposition<double> {a}.solve(b)};
+      double               gap    {0.0};
+      double               size   {0.0};
+      for (std::size_t i {0}; i < n * 2; ++i) {
+        gap  = std::max(gap, std::abs((x->begin())[static_cast<std::ptrdiff_t>(i)] - direct.begin()[static_cast<std::ptrdiff_t>(i)]));
+        size = std::max(size, std::abs(direct.begin()[static_cast<std::ptrdiff_t>(i)]));
+      }
+      EXPECT(gap < 1e-12 * size);
+      const matrix<double> r {b - (a * *x)};
+      EXPECT(numerical::detail::residual_ratio(*x, r) < 1e-15 * scale * static_cast<double>(n));
+    }
+  }
+  constexpr double     infinity {std::numeric_limits<double>::infinity()};
+  constexpr double     nan      {std::numeric_limits<double>::quiet_NaN()};
+  const matrix<double> one      {{1.0}};
+  EXPECT(!mixed_precision_solve(matrix<double> {{infinity}}, one));
+  EXPECT(!mixed_precision_solve(one, matrix<double> {{infinity}}));
+  EXPECT(!mixed_precision_solve(matrix<double> {{1.0, 1.0}, {1.0, 1.0}}, matrix<double> {{1.0}, {2.0}}));
+  EXPECT(!mixed_precision_solve(one, matrix<double> {{nan}}));
+  EXPECT(!mixed_precision_solve(matrix<double> {{1e-10, 0.0}, {0.0, 1e-10}}, matrix<double> {{1e300}, {1e300}})); // 0 · ∞
+  EXPECT(!mixed_precision_solve(matrix<double> {{1e-10}}, matrix<double> {{1e300}}));                             // r = −∞
+  std::vector<double> hilbert(100);
+  for (std::size_t i {0}; i < 10; ++i) {
+    for (std::size_t j {0}; j < 10; ++j) {
+      hilbert[(i * 10) + j] = 1.0 / static_cast<double>(i + j + 1);
+    }
+  }
+  EXPECT(!mixed_precision_solve(matrix<double> {10, 10, hilbert}, matrix<double> {10, 1, std::vector<double>(10, 1.0)}));
+}
+
 TEST(large_matrices_are_checked_for_non_finite_entries_on_the_threads)
 {
   // Past two chunks of the shared check: a NaN in the triangle read is refused, one above it alone is not read.

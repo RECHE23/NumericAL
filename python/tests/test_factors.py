@@ -111,6 +111,22 @@ class TriangularSolves(unittest.TestCase):
 
 @unittest.skipIf(np is None, "NumPy is not installed")
 class Factorisations(unittest.TestCase):
+    def test_a_large_float64_solve_refines_a_float32_factorisation(self):
+        # From order 2000 with few right-hand sides, solve factorises in float32 and refines in float64 (LAPACK's
+        # dsgesv): residuals at float64's level, the direct solve's answer to rounding; a matrix too ill-conditioned for
+        # float32 (columns graded over 12 decades) falls back to the float64 factorisation, as accurate.
+        n = 2000
+        a = _drawn(n, n, "float64", 21)
+        graded = a * np.logspace(0, -12, n)
+        b = _drawn(n, 3, "float64", 22)
+        for matrix in (a, graded):
+            for rhs in (b, b[:, 0]):
+                x = np.asarray(numerical.solve(matrix, rhs))
+                direct = np.linalg.solve(matrix, rhs)
+                residual = np.abs(matrix @ x - rhs).max() / (np.abs(matrix).sum(axis=1).max() * np.abs(x).max())
+                self.assertLess(residual, 4 * np.sqrt(n) * np.finfo(float).eps)
+                self.assertLess(np.abs(x - direct).max() / np.abs(direct).max(), 1e-6 if matrix is graded else 1e-11)
+
     def test_lu_factor_and_solve(self):
         for dtype in ("float64", "complex128", "float32", "complex64"):
             tolerance = 1e-10 if dtype in ("float64", "complex128") else 1e-3

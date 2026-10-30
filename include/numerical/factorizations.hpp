@@ -703,6 +703,14 @@ namespace numerical {
     }
   } // namespace detail
 
+  namespace detail {
+
+    //! \brief Whether a solve of `T` goes by rows of real terms (\ref lu_decomposition's `solve_narrow`): `double` and
+    //!        `float`.
+    template <typename T>
+    inline constexpr bool real_rows {std::is_same_v<T, double> || std::is_same_v<T, float>};
+  } // namespace detail
+
   /*!
    * \brief An LU factorisation with partial pivoting of a square matrix.
    * \tparam T The scalar element type (a field: `double`, `std::complex<double>`, …).
@@ -991,10 +999,12 @@ namespace numerical {
                     std::size_t     cols,
                     bool            lower = false) const
     {
-      if constexpr (std::is_same_v<T, double>) { // there subtract_products holds its row in registers through the terms
+      if constexpr (detail::real_rows<T>) {
         // The rows beat the blocked passes on the x86-64 units at any order (the portable path's products there fuse
         // nothing, the rows would), and at any order elsewhere, by groups (arm64, four columns: order 256 0.65 times the
-        // blocked passes' time under Clang, 0.45 under GCC; order 1024 on every thread 0.91 and 0.62).
+        // blocked passes' time under Clang, 0.45 under GCC; order 1024 on every thread 0.91 and 0.62); in float, where
+        // the blocked passes copy each block of the factor negated for a product of four columns, order 3000 on one
+        // arm64 core 5.9 → 2.1 ms.
 #ifdef NUMERICAL_X86_COMPILED
         const bool narrow {!lower && !y.empty() && cols <= detail::narrow_solve && detail::gemm_path_current() != gemm_path::portable};
 #else
@@ -1559,6 +1569,120 @@ namespace numerical {
     std::vector<std::pair<std::size_t, std::size_t>> deferred_swaps_;                   //!< Swaps left for the columns past it.
     std::vector<std::pair<std::size_t, std::size_t>> left_swaps_;                       //!< Swaps left for the columns before their panel.
   };
+
+  namespace detail {
+
+    /*!
+     * \brief The finite \p m times `2⁻ᵉ` in single precision, `2ᵉ` the least power of two above its largest
+     *        magnitude: every entry below 1 in magnitude, so none overflows `float`, and the scaling exact. \return
+     *        The matrix and `e`.
+     */
+    [[nodiscard]] inline std::pair<matrix<float>, int> scaled_to_float(const matrix<double>& m)
+    {
+      const double*     x     {std::to_address(m.begin())};
+      const std::size_t count {m.rows() * m.cols()};
+      double            l0    {0.0}; // four chains: a maximum is exact in any order
+      double            l1    {0.0};
+      double            l2    {0.0};
+      double            l3    {0.0};
+      std::size_t       i     {0};
+      for (; i + 4 <= count; i += 4) {
+        l0 = std::max(l0, std::abs(x[i]));
+        l1 = std::max(l1, std::abs(x[i + 1]));
+        l2 = std::max(l2, std::abs(x[i + 2]));
+        l3 = std::max(l3, std::abs(x[i + 3]));
+      }
+      for (; i < count; ++i) {
+        l0 = std::max(l0, std::abs(x[i]));
+      }
+      int exponent {0};
+      static_cast<void>(std::frexp(std::max(std::max(l0, l1), std::max(l2, l3)), &exponent));
+      exponent = std::max(exponent, -1021); // 2⁻ᵉ finite: entries below 2⁻¹⁰²¹ vanish in single precision whatever the scale
+      const double  scale {std::ldexp(1.0, -exponent)};
+      buffer<float> out(count);
+      std::transform(m.begin(), m.end(), out.begin(), [scale](double v) { return static_cast<float>(v * scale); });
+      return {matrix<float> {m.rows(), m.cols(), std::move(out)}, exponent};
+    }
+
+    //! \brief The largest of `‖r‖∞ / ‖x‖∞` over the columns of the residual \p r and the solution \p x (LAPACK's
+    //!        `dsgesv` compares each with `‖A‖∞ ε √n`); NaN, which no bound meets, where an entry of \p r is not finite.
+    [[nodiscard]] inline double residual_ratio(const matrix<double>& x,
+                                               const matrix<double>& r)
+    {
+      // An infinity or a NaN of the solution reaches the residual: no column of A is zero (A is not singular).
+      if (!all_finite(std::to_address(r.begin()), r.rows() * r.cols())) {
+        return std::numeric_limits<double>::quiet_NaN();
+      }
+      double ratio {0.0};
+      for (std::size_t j {0}; j < x.cols(); ++j) {
+        double x_norm {0.0};
+        double r_norm {0.0};
+        for (std::size_t i {0}; i < x.rows(); ++i) {
+          x_norm = std::max(x_norm, std::abs(x(i, j)));
+          r_norm = std::max(r_norm, std::abs(r(i, j)));
+        }
+        ratio = std::max(ratio, r_norm / x_norm);
+      }
+      return ratio;
+    }
+
+    /*!
+     * \brief `X` of `A X = B` (`A` square, `B` of its rows) as LAPACK's `dsgesv`: `A` factorised in single precision, its solution corrected in
+     *        double precision by the residual `R = B − A X` (each correction a single-precision solve of `A D = R`)
+     *        until every column meets `‖R‖∞ ≤ ‖X‖∞ ‖A‖∞ ε √n` (`ε` double's unit roundoff). Each operand goes to
+     *        single precision scaled by a power of two (\ref scaled_to_float): none overflows, where `dsgesv` falls
+     *        back. A correction must divide the largest `‖R‖∞ / ‖X‖∞` by 8 at least, which bounds their count (about
+     *        a dozen from single precision to the bound) where `dsgesv` allows 30: an `A` too ill-conditioned for
+     *        single precision converges slowly or not at all, and the double factorisation is then the faster.
+     *        The single factorisation costs half the double one's; each correction a product and a solve of `n² k`.
+     * \return `X`, or none where an entry of `A` or `B` is not finite, `A` is singular in single precision, or a
+     *         correction falls short: the caller solves in double (and meets what the double solve meets).
+     */
+    [[nodiscard]] inline std::optional<matrix<double>> mixed_precision_solve(const matrix<double>& a,
+                                                                             const matrix<double>& b)
+    {
+      const std::size_t n      {a.rows()};
+      double            a_norm {0.0};
+      for (auto row = a.begin(); row != a.end(); row += static_cast<std::ptrdiff_t>(n)) {
+        std::array<double, 4> sums {}; // four chains: the bound needs no particular rounding of the sum
+        for (std::size_t j {0}; j < n; ++j) {
+          sums[j % 4] += std::abs(row[static_cast<std::ptrdiff_t>(j)]);
+        }
+        a_norm = std::max(a_norm, (sums[0] + sums[1]) + (sums[2] + sums[3]));
+      }
+      if (!all_finite(std::to_address(a.begin()), n * n) || !all_finite(std::to_address(b.begin()), b.rows() * b.cols())) {
+        return std::nullopt;
+      }
+      const double bound                     {a_norm * (std::numeric_limits<double>::epsilon() / 2.0) * std::sqrt(static_cast<double>(n))};
+      auto [single_a, a_exponent] {scaled_to_float(a)};
+      const lu_decomposition<float> factored {std::move(single_a)};
+      if (factored.singular()) {
+        return std::nullopt;
+      }
+      const auto solved = [&factored, a_exponent](std::pair<matrix<float>, int> rhs) { // A⁻¹ times the unscaled rhs
+                            const matrix<float> y    {factored.solve(std::move(rhs.first))};
+                            const double        up   {std::ldexp(1.0, rhs.second)};
+                            const double        down {std::ldexp(1.0, -a_exponent)};
+                            buffer<double>      out(y.rows() * y.cols());
+                            std::transform(y.begin(), y.end(), out.begin(), [up, down](float v) { return (static_cast<double>(v) * up) * down; });
+                            return matrix<double> {y.rows(), y.cols(), std::move(out)};
+                          };
+      matrix<double> x        {solved(scaled_to_float(b))};
+      matrix<double> r        {b - (a * x)};
+      double         ratio    {residual_ratio(x, r)};
+      double         previous {std::numeric_limits<double>::infinity()};
+      while (!(ratio <= bound)) {
+        if (!(ratio <= previous / 8.0)) { // the last correction fell short, or the residual is not finite
+          return std::nullopt;
+        }
+        previous = ratio;
+        x        = x + solved(scaled_to_float(r));
+        r        = b - (a * x);
+        ratio    = residual_ratio(x, r);
+      }
+      return x;
+    }
+  } // namespace detail
 
   /*!
    * \brief Solves the linear system `A x = b` for a square `A`.

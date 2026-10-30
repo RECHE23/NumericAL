@@ -55,7 +55,7 @@ any_tensor solve(const any_tensor& a, const any_tensor& b)
     if (is_complex(a)) {
         return do_solve<std::complex<double>>(std::get<cplx_tensor>(a), std::get<cplx_tensor>(b));
     }
-    return do_solve<double>(std::get<real_tensor>(a), std::get<real_tensor>(b));
+    return do_solve_mixed(std::get<real_tensor>(a), std::get<real_tensor>(b));
 }
 
 // determinant(a) -> float or complex: a dtype-dependent scalar (a variant return no single
