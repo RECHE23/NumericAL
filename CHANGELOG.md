@@ -18,10 +18,6 @@ A change that can break code is listed under **Breaking** and held for a month's
   1.17 (orders 1 to 40, real, complex and float32, both outputs, the five selections) and, in C++, every branch of the
   iteration, the 2 × 2 helpers and the exchanges (pencils found by searches at scales 10±³⁰⁰).
 
-### Fixed
-- **The complex generalized Schur decomposition scales its operands into range, as `zgges`**: a `B` past 10¹⁵⁴ (the
-  square root of the range) overflowed the norms' squares and left `Q T Zᴴ` 45 % from `B`; now within rounding from
-  10⁻³⁰⁸ to 10³⁰⁷, as the real one.
 - **Python: nine more of `scipy.linalg`'s decompositions**: `hessenberg` (Householder, `gehrd`), `matrix_balance`
   (`gebal`, with or without the permutation and the scaling; SciPy's answer to the bit), `eigh_tridiagonal` and
   `eigvalsh_tridiagonal` (divide and conquer, `stevd`, SciPy's default, by value or index ranges), `cholesky_banded`
@@ -51,6 +47,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   without a conversion. `asarray` of a NumPy bool array without a `dtype` is still float64. Tested against NumPy 2.5:
   every pair of nine shapes and six comparisons over NaN, ±0 and ±∞, every triple for `where`, every axis and
   `keepdims` for `any` and `all`; the other calls' time unchanged (a 4 × 4 `sum` 492 ns, `+` 857).
+
+### Fixed
+- **The complex generalized Schur decomposition scales its operands into range, as `zgges`**: a `B` past 10¹⁵⁴ (the
+  square root of the range) overflowed the norms' squares and left `Q T Zᴴ` 45 % from `B`; now within rounding from
+  10⁻³⁰⁸ to 10³⁰⁷, as the real one.
 
 ## 2026.10.42 — 2026-10-30
 

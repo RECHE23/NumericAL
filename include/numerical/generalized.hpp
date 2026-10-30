@@ -2962,6 +2962,8 @@ namespace numerical {
       }
       const riccati_terms          terms {ca, cb, cq, cr, ce ? &*ce : nullptr, cs ? &*cs : nullptr};
       matrix<std::complex<double>> x     {hamiltonian ? as_complex(hamiltonian_riccati(a, b, q, r, s)) : riccati(terms, continuous, balanced)};
+      // the discrete equation takes no step of Newton's (Hewer's): its residual, rounded at ε ‖A‖² ‖X‖ where the
+      // continuous one is at ε ‖A‖ ‖X‖, steers the step away from X wherever A is large or graded
       if (continuous) {
         x = newton_refined(terms, std::move(x));
       }
