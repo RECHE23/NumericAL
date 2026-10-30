@@ -1721,6 +1721,10 @@ std::tuple<any_tensor, any_tensor> hessenberg(const any_tensor& a, bool calc_q);
 std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> matrix_balance(const any_tensor& a, bool permute, bool scale);       // in linalg.cpp
 std::tuple<any_tensor, any_tensor> tridiagonal_eigen(const any_tensor& d, const any_tensor& e, bool vectors);                    // in linalg.cpp
 std::tuple<any_tensor, any_tensor> rsf2csf(const any_tensor& t, const any_tensor& z);                                            // in linalg.cpp
+
+// qz(a, b, complex_output, select) -> (S, T, alpha, beta, Q, Z), as scipy.linalg.qz and ordqz.
+std::tuple<any_tensor, any_tensor, any_tensor, any_tensor, any_tensor, any_tensor> qz(const any_tensor& a, const any_tensor& b, bool complex_output,
+                                                                                      PyObject* select); // in eigen.cpp
 any_tensor solve_toeplitz(const any_tensor& c, const any_tensor& r, const any_tensor& b);              // in linalg.cpp
 any_tensor solve_circulant(const any_tensor& c, const any_tensor& b, bool least_squares, double tol);     // in linalg.cpp
 

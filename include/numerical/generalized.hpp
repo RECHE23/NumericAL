@@ -1,8 +1,9 @@
 /*!
  * \file generalized.hpp
- * \brief The generalized Schur decomposition (QZ) of a complex pencil `A − λ B`, as LAPACK's `zgges`: the reduction to
- *        Hessenberg-triangular form (`zgghrd`), the single-shift QZ iteration (`zhgeqz`), and the reordering of its
- *        eigenvalues by exchanges of adjacent ones (`ztgexc`, `ztgsen`).
+ * \brief The generalized Schur decomposition (QZ) of a pencil `A − λ B`, as LAPACK's `zgges` and `dgges`: the operands
+ *        scaled into range, the reduction to Hessenberg-triangular form (`zgghrd`, `dgghrd`), the QZ iteration (`zhgeqz`
+ *        single-shift, `dhgeqz` double-shift with 2 × 2 blocks for conjugate pairs), and the reordering of the
+ *        eigenvalues by exchanges of adjacent blocks (`ztgexc`/`ztgsen`, `dtgexc`/`dtgex2`/`dtgsen`).
  */
 #ifndef NUMERICAL_GENERALIZED_HPP
 #define NUMERICAL_GENERALIZED_HPP
@@ -457,13 +458,1689 @@ namespace numerical {
       f.b(j + 1, j) = C {};
       return true;
     }
+
+    /*!
+     * \brief A real pencil in generalized real Schur form being formed: `S` and `T` (`n × n`, row-major) with
+     *        `A = Q S Zᵀ` and `B = Q T Zᵀ`, \ref q and \ref z orthogonal.
+     */
+    struct real_qz_form
+    {
+      std::size_t    n {0}; //!< The order.
+      buffer<double> s;     //!< `S`, upper Hessenberg, then quasi-triangular.
+      buffer<double> t;     //!< `T`, upper triangular.
+      buffer<double> q;     //!< `Q`, by rows.
+      buffer<double> z;     //!< `Z`, by rows.
+
+      //! \brief `S(i, j)`, from 1.
+      [[nodiscard]] double& h(std::size_t i,
+                              std::size_t j)
+      {
+        return s[((i - 1) * n) + (j - 1)];
+      }
+
+      //! \brief `T(i, j)`, from 1.
+      [[nodiscard]] double& b(std::size_t i,
+                              std::size_t j)
+      {
+        return t[((i - 1) * n) + (j - 1)];
+      }
+
+      //! \brief LAPACK's `drot` on rows \p i and \p k (from 1) of \p m over the columns \p first … \p last:
+      //!        `x ← c x + s y`, `y ← c y − s x`, `x` row \p i.
+      static void rotate_rows(buffer<double>& m,
+                              std::size_t     n,
+                              std::size_t     i,
+                              std::size_t     k,
+                              std::size_t     first,
+                              std::size_t     last,
+                              double          c,
+                              double          sine)
+      {
+        for (std::size_t j {first}; j <= last; ++j) {
+          double&      x {m[((i - 1) * n) + (j - 1)]};
+          double&      y {m[((k - 1) * n) + (j - 1)]};
+          const double t {(c * x) + (sine * y)};
+          y = (c * y) - (sine * x);
+          x = t;
+        }
+      }
+
+      //! \brief LAPACK's `drot` on columns \p j and \p k (from 1) of \p m over the rows \p first … \p last:
+      //!        `x ← c x + s y`, `y ← c y − s x`, `x` column \p j.
+      static void rotate_columns(buffer<double>& m,
+                                 std::size_t     n,
+                                 std::size_t     j,
+                                 std::size_t     k,
+                                 std::size_t     first,
+                                 std::size_t     last,
+                                 double          c,
+                                 double          sine)
+      {
+        for (std::size_t i {first}; i <= last; ++i) {
+          double&      x {m[((i - 1) * n) + (j - 1)]};
+          double&      y {m[((i - 1) * n) + (k - 1)]};
+          const double t {(c * x) + (sine * y)};
+          y = (c * y) - (sine * x);
+          x = t;
+        }
+      }
+    };
+
+    //! \brief The singular value decomposition of the upper triangular `[f g; 0 h]` (\ref svd_of_triangle).
+    struct triangle_svd
+    {
+      double ssmin {0.0}; //!< The smaller singular value, signed.
+      double ssmax {0.0}; //!< The larger, signed.
+      double snr   {0.0}; //!< The right rotation's sine.
+      double csr   {1.0}; //!< Its cosine.
+      double snl   {0.0}; //!< The left rotation's sine.
+      double csl   {1.0}; //!< Its cosine.
+    };
+
+    /*!
+     * \brief The SVD of the upper triangular `[f g; 0 h]`, as LAPACK's `dlasv2`: `[csl snl; −snl csl] [f g; 0 h]
+     *        [csr −snr; snr csr] = diag(ssmax, ssmin)`, `|ssmax| ≥ |ssmin|`, each accurate to a few ulps.
+     */
+    [[nodiscard]] inline triangle_svd svd_of_triangle(double f,
+                                                      double g,
+                                                      double h)
+    {
+      double     ft   {f};
+      double     fa   {std::abs(ft)};
+      double     ht   {h};
+      double     ha   {std::abs(h)};
+      int        pmax {1};
+      const bool swap {ha > fa};
+      if (swap) {
+        pmax = 3;
+        std::swap(ft, ht);
+        std::swap(fa, ha);
+      }
+      const double gt    {g};
+      const double ga    {std::abs(gt)};
+      double       ssmin {0.0};
+      double       ssmax {0.0};
+      double       clt   {1.0};
+      double       crt   {1.0};
+      double       slt   {0.0};
+      double       srt   {0.0};
+      if (ga == 0.0) {
+        ssmin = ha;
+        ssmax = fa;
+      }
+      else {
+        bool gasmal {true};
+        if (ga > fa) {
+          pmax = 2;
+          if (fa / ga < std::numeric_limits<double>::epsilon()) {
+            gasmal = false;
+            ssmax  = ga;
+            ssmin  = ha > 1.0 ? fa / (ga / ha) : (fa / ga) * ha;
+            clt    = 1.0;
+            slt    = ht / gt;
+            srt    = 1.0;
+            crt    = ft / gt;
+          }
+        }
+        if (gasmal) {
+          const double d  {fa - ha};
+          double       l  {d == fa ? 1.0 : d / fa};
+          const double m  {gt / ft};
+          double       t  {2.0 - l};
+          const double mm {m * m};
+          const double tt {t * t};
+          const double s  {std::sqrt(tt + mm)};
+          const double r  {l == 0.0 ? std::abs(m) : std::sqrt((l * l) + mm)};
+          const double a  {0.5 * (s + r)};
+          ssmin = ha / a;
+          ssmax = fa * a;
+          if (mm == 0.0) {
+            t = l == 0.0 ? std::copysign(2.0, ft) * std::copysign(1.0, gt) : (gt / std::copysign(d, ft)) + (m / t);
+          }
+          else {
+            t = ((m / (s + t)) + (m / (r + l))) * (1.0 + a);
+          }
+          l   = std::sqrt((t * t) + 4.0);
+          crt = 2.0 / l;
+          srt = t / l;
+          clt = (crt + (srt * m)) / a;
+          slt = (ht / ft) * srt / a;
+        }
+      }
+      triangle_svd out;
+      if (swap) {
+        out.csl = srt;
+        out.snl = crt;
+        out.csr = slt;
+        out.snr = clt;
+      }
+      else {
+        out.csl = clt;
+        out.snl = slt;
+        out.csr = crt;
+        out.snr = srt;
+      }
+      double tsign {1.0};
+      if (pmax == 1) {
+        tsign = std::copysign(1.0, out.csr) * std::copysign(1.0, out.csl) * std::copysign(1.0, f);
+      }
+      else if (pmax == 2) {
+        tsign = std::copysign(1.0, out.snr) * std::copysign(1.0, out.csl) * std::copysign(1.0, g);
+      }
+      else {
+        tsign = std::copysign(1.0, out.snr) * std::copysign(1.0, out.snl) * std::copysign(1.0, h);
+      }
+      out.ssmax = std::copysign(ssmax, tsign);
+      out.ssmin = std::copysign(ssmin, tsign * std::copysign(1.0, f) * std::copysign(1.0, h));
+      return out;
+    }
+
+    //! \brief The eigenvalues of a 2 × 2 pencil, scaled (\ref pencil_eigenvalues): `wr1 / scale1` and `wr2 / scale2`, or
+    //!        the pair `(wr1 ± i wi) / scale1`.
+    struct pencil_pair
+    {
+      double scale1 {1.0}; //!< The first's scale.
+      double scale2 {1.0}; //!< The second's.
+      double wr1    {0.0}; //!< The first's scaled real part.
+      double wr2    {0.0}; //!< The second's.
+      double wi     {0.0}; //!< The pair's scaled imaginary part, non-negative; 0 for real ones.
+    };
+
+    //! \brief The bounds of `dlag2`'s `WSIZE` (\ref pencil_wsize), fixed by the pencil's scales.
+    struct pencil_bounds
+    {
+      double floor {0.0}; //!< The divisor's least value.
+      double c2    {0.0}; //!< `safmin · max(1, bnorm)`.
+      double c3    {0.0}; //!< `bsize · safmin`.
+      double c4    {0.0}; //!< The divisor's cap before the eigenvalue's own size.
+      double c5    {0.0}; //!< The eigenvalue's least size counted.
+    };
+
+    //! \brief `dlag2`'s `WSIZE`: the divisor that keeps an eigenvalue of magnitude \p w in range.
+    [[nodiscard]] inline double pencil_wsize(const pencil_bounds& b,
+                                             double               w) noexcept
+    {
+      constexpr double fuzzy1 {1.0 + 1.0e-5};
+      return std::max(b.floor, std::max(fuzzy1 * ((w * b.c2) + b.c3), std::min(b.c4, 0.5 * std::max(w, b.c5))));
+    }
+
+    /*!
+     * \brief The eigenvalues of the pencil `A − w B`, `A` (\p a11 \p a12 / \p a21 \p a22) and the upper triangular
+     *        `B` (\p b11 \p b12 / 0 \p b22), as LAPACK's `dlag2`, with scalings that keep `scale · w` from overflowing
+     *        or underflowing; a diagonal entry of `B` below \p safmin's square root times its largest perturbed up to it.
+     */
+    [[nodiscard]] inline pencil_pair pencil_eigenvalues(double a11,
+                                                        double a12,
+                                                        double a21,
+                                                        double a22,
+                                                        double b11,
+                                                        double b12,
+                                                        double b22,
+                                                        double safmin)
+    {
+      const double     rtmin  {std::sqrt(safmin)};
+      const double     rtmax  {1.0 / rtmin};
+      const double     safmax {1.0 / safmin};
+      const double     anorm  {std::max({std::abs(a11) + std::abs(a21), std::abs(a12) + std::abs(a22), safmin})};
+      const double     ascale {1.0 / anorm};
+      a11 *= ascale;
+      a21 *= ascale;
+      a12 *= ascale;
+      a22 *= ascale;
+      const double bmin {rtmin * std::max({std::abs(b11), std::abs(b12), std::abs(b22), rtmin})};
+      if (std::abs(b11) < bmin) {
+        b11 = std::copysign(bmin, b11);
+      }
+      if (std::abs(b22) < bmin) {
+        b22 = std::copysign(bmin, b22);
+      }
+      const double bnorm  {std::max({std::abs(b11), std::abs(b12) + std::abs(b22), safmin})};
+      const double bsize  {std::max(std::abs(b11), std::abs(b22))};
+      const double bscale {1.0 / bsize};
+      b11 *= bscale;
+      b12 *= bscale;
+      b22 *= bscale;
+      const double binv11 {1.0 / b11};
+      const double binv22 {1.0 / b22};
+      const double s1     {a11 * binv11};
+      const double s2     {a22 * binv22};
+      double       as12   {0.0};
+      double       ss     {0.0};
+      double       abi22  {0.0};
+      double       pp     {0.0};
+      double       shift  {0.0};
+      if (std::abs(s1) <= std::abs(s2)) {
+        as12  = a12 - (s1 * b12);
+        const double as22 {a22 - (s1 * b22)};
+        ss    = a21 * (binv11 * binv22);
+        abi22 = (as22 * binv22) - (ss * b12);
+        pp    = 0.5 * abi22;
+        shift = s1;
+      }
+      else {
+        as12  = a12 - (s2 * b12);
+        const double as11 {a11 - (s2 * b11)};
+        ss    = a21 * (binv11 * binv22);
+        abi22 = -ss * b12;
+        pp    = 0.5 * ((as11 * binv11) + abi22);
+        shift = s2;
+      }
+      const double qq    {ss * as12};
+      double       discr {0.0};
+      double       r     {0.0};
+      if (std::abs(pp * rtmin) >= 1.0) {
+        discr = ((rtmin * pp) * (rtmin * pp)) + (qq * safmin);
+        r     = std::sqrt(std::abs(discr)) * rtmax;
+      }
+      else if ((pp * pp) + std::abs(qq) <= safmin) {
+        discr = ((rtmax * pp) * (rtmax * pp)) + (qq * safmax);
+        r     = std::sqrt(std::abs(discr)) * rtmin;
+      }
+      else {
+        discr = (pp * pp) + qq;
+        r     = std::sqrt(std::abs(discr));
+      }
+      pencil_pair out;
+      if (discr >= 0.0) { // dlag2 also takes r = 0, which is discr = 0: no square root above underflows to 0
+        const double sum    {pp + std::copysign(r, pp)};
+        const double diff   {pp - std::copysign(r, pp)};
+        const double wbig   {shift + sum};
+        double       wsmall {shift + diff};
+        if (0.5 * std::abs(wbig) > std::max(std::abs(wsmall), safmin)) {
+          const double wdet {((a11 * a22) - (a12 * a21)) * (binv11 * binv22)};
+          wsmall = wdet / wbig;
+        }
+        if (pp > abi22) {
+          out.wr1 = std::min(wbig, wsmall);
+          out.wr2 = std::max(wbig, wsmall);
+        }
+        else {
+          out.wr1 = std::max(wbig, wsmall);
+          out.wr2 = std::min(wbig, wsmall);
+        }
+        out.wi = 0.0;
+      }
+      else {
+        out.wr1 = shift + pp;
+        out.wr2 = out.wr1;
+        out.wi  = r;
+      }
+      const double        c1 {bsize * (safmin * std::max(1.0, ascale))};
+      const double        c2 {safmin * std::max(1.0, bnorm)};
+      const double        c3     {bsize * safmin};
+      const double        c4     {ascale <= 1.0 && bsize <= 1.0 ? std::min(1.0, (ascale / safmin) * bsize) : 1.0};
+      const double        c5     {ascale <= 1.0 || bsize <= 1.0 ? std::min(1.0, ascale * bsize) : 1.0};
+      const pencil_bounds bounds {.floor = std::max(safmin, c1), .c2 = c2, .c3 = c3, .c4 = c4, .c5 = c5};
+      const double        wabs   {std::abs(out.wr1) + std::abs(out.wi)};
+      double              wsize  {pencil_wsize(bounds, wabs)};
+      if (wsize != 1.0) {
+        const double wscale {1.0 / wsize};
+        out.scale1 = wsize > 1.0 ? (std::max(ascale, bsize) * wscale) * std::min(ascale, bsize) : (std::min(ascale, bsize) * wscale) * std::max(ascale, bsize);
+        out.wr1   *= wscale;
+        if (out.wi != 0.0) {
+          out.wi     *= wscale;
+          out.wr2     = out.wr1;
+          out.scale2  = out.scale1;
+        }
+      }
+      else {
+        out.scale1 = ascale * bsize;
+        out.scale2 = out.scale1;
+      }
+      if (out.wi == 0.0) {
+        wsize = pencil_wsize(bounds, std::abs(out.wr2));
+        if (wsize != 1.0) {
+          const double wscale {1.0 / wsize};
+          out.scale2 = wsize > 1.0 ? (std::max(ascale, bsize) * wscale) * std::min(ascale, bsize) : (std::min(ascale, bsize) * wscale) * std::max(ascale, bsize);
+          out.wr2   *= wscale;
+        }
+        else {
+          out.scale2 = ascale * bsize;
+        }
+      }
+      return out;
+    }
+
+    //! \brief A generalized eigenvalue `(αr + i αi) / β` of a real pencil, as LAPACK's `dgges` gives it.
+    struct real_pencil_value
+    {
+      double alphar {0.0}; //!< The real part of `α`.
+      double alphai {0.0}; //!< Its imaginary part: of opposite signs within a conjugate pair, the first positive.
+      double beta   {0.0}; //!< `β ≥ 0`, 0 for an infinite eigenvalue.
+    };
+
+    //! \brief `√(x² + y² + z²)` without overflow, LAPACK's `dlapy3`.
+    [[nodiscard]] inline double hypot3(double x,
+                                       double y,
+                                       double z)
+    {
+      return std::hypot(std::hypot(x, y), z);
+    }
+
+    /*!
+     * \brief The conjugate pair of the standardized 2 × 2 block ending at \p ilast of \p f (`T` diagonal, \p b11 and
+     *        \p b22), as `dhgeqz` computes `α` and `β` from \p pair (`dlag2`'s): `β` the norms of the diagonal of `T`
+     *        after the complex rotations that would triangularise the block, `α = (wr ± i wi) β / scale`.
+     */
+    [[nodiscard]] inline std::pair<real_pencil_value, real_pencil_value> pair_values(real_qz_form&      f,
+                                                                                     std::size_t        ilast,
+                                                                                     const pencil_pair& pair,
+                                                                                     double             b11,
+                                                                                     double             b22)
+    {
+      const double safmin {std::numeric_limits<double>::min()};
+      const double s1     {pair.scale1};
+      const double wr     {pair.wr1};
+      const double wi     {pair.wi};
+      const double s1inv  {1.0 / s1};
+      const double a11    {f.h(ilast - 1, ilast - 1)};
+      const double a21    {f.h(ilast, ilast - 1)};
+      const double a12    {f.h(ilast - 1, ilast)};
+      const double a22    {f.h(ilast, ilast)};
+      const double c11r   {(s1 * a11) - (wr * b11)};
+      const double c11i   {-wi * b11};
+      const double c12    {s1 * a12};
+      const double c21    {s1 * a21};
+      const double c22r   {(s1 * a22) - (wr * b22)};
+      const double c22i   {-wi * b22};
+      double       cz     {0.0};
+      double       szr    {0.0};
+      double       szi    {0.0};
+      if (std::abs(c11r) + std::abs(c11i) + std::abs(c12) > std::abs(c21) + std::abs(c22r) + std::abs(c22i)) {
+        const double t1 {hypot3(c12, c11r, c11i)};
+        cz  = c12 / t1;
+        szr = -c11r / t1;
+        szi = -c11i / t1;
+      }
+      else {
+        cz = std::hypot(c22r, c22i);
+        if (cz <= safmin) {
+          cz  = 0.0;
+          szr = 1.0;
+          szi = 0.0;
+        }
+        else {
+          const double tempr {c22r / cz};
+          const double tempi {c22i / cz};
+          const double t1    {std::hypot(cz, c21)};
+          cz /= t1;
+          szr = -c21 * tempr / t1;
+          szi = c21 * tempi / t1;
+        }
+      }
+      const double an   {std::abs(a11) + std::abs(a12) + std::abs(a21) + std::abs(a22)};
+      const double bn   {std::abs(b11) + std::abs(b22)};
+      const double wabs {std::abs(wr) + std::abs(wi)};
+      double       cq   {0.0};
+      double       sqr  {0.0};
+      double       sqi  {0.0};
+      if (s1 * an > wabs * bn) {
+        cq  = cz * b11;
+        sqr = szr * b22;
+        sqi = -szi * b22;
+      }
+      else {
+        const double a1r {(cz * a11) + (szr * a12)};
+        const double a1i {szi * a12};
+        const double a2r {(cz * a21) + (szr * a22)};
+        const double a2i {szi * a22};
+        cq = std::hypot(a1r, a1i);
+        if (cq <= safmin) {
+          cq  = 0.0;
+          sqr = 1.0;
+          sqi = 0.0;
+        }
+        else {
+          const double tempr {a1r / cq};
+          const double tempi {a1i / cq};
+          sqr = (tempr * a2r) + (tempi * a2i);
+          sqi = (tempi * a2r) - (tempr * a2i);
+        }
+      }
+      const double t1 {hypot3(cq, sqr, sqi)};
+      cq  /= t1;
+      sqr /= t1;
+      sqi /= t1;
+      const double tempr {(sqr * szr) - (sqi * szi)};
+      const double tempi {(sqr * szi) + (sqi * szr)};
+      const double b1a   {std::hypot((cq * cz * b11) + (tempr * b22), tempi * b22)};
+      const double b2a   {std::hypot((cq * cz * b22) + (tempr * b11), -tempi * b11)};
+      return {real_pencil_value {(wr * b1a) * s1inv, (wi * b1a) * s1inv, b1a}, real_pencil_value {(wr * b2a) * s1inv, -(wi * b2a) * s1inv, b2a}};
+    }
+
+    /*!
+     * \brief One double-shift QZ sweep (Moler and Stewart) on rows and columns \p ifirst … \p ilast of \p f, as
+     *        `dhgeqz`'s: the shifts the eigenvalues of the trailing 2 × 2 of `S T⁻¹` and its leading one's first column,
+     *        the bulge chased by reflections of three rows (`dlarfg`) and of three columns (from the null vector of
+     *        `T`'s 2 × 2 below the bulge), a rotation pair for the last step.
+     */
+    inline void double_shift_sweep(real_qz_form& f,
+                                   std::size_t   ifirst,
+                                   std::size_t   ilast,
+                                   double        ascale,
+                                   double        bscale,
+                                   double        safmin)
+    {
+      using form = real_qz_form;
+      const std::size_t n     {f.n};
+      const double      ad11  {(ascale * f.h(ilast - 1, ilast - 1)) / (bscale * f.b(ilast - 1, ilast - 1))};
+      const double      ad21  {(ascale * f.h(ilast, ilast - 1)) / (bscale * f.b(ilast - 1, ilast - 1))};
+      const double      ad12  {(ascale * f.h(ilast - 1, ilast)) / (bscale * f.b(ilast, ilast))};
+      const double      ad22  {(ascale * f.h(ilast, ilast)) / (bscale * f.b(ilast, ilast))};
+      const double      u12   {f.b(ilast - 1, ilast) / f.b(ilast, ilast)};
+      const double      ad11l {(ascale * f.h(ifirst, ifirst)) / (bscale * f.b(ifirst, ifirst))};
+      const double      ad21l {(ascale * f.h(ifirst + 1, ifirst)) / (bscale * f.b(ifirst, ifirst))};
+      const double      ad12l {(ascale * f.h(ifirst, ifirst + 1)) / (bscale * f.b(ifirst + 1, ifirst + 1))};
+      const double      ad22l {(ascale * f.h(ifirst + 1, ifirst + 1)) / (bscale * f.b(ifirst + 1, ifirst + 1))};
+      const double      ad32l {(ascale * f.h(ifirst + 2, ifirst + 1)) / (bscale * f.b(ifirst + 1, ifirst + 1))};
+      const double      u12l  {f.b(ifirst, ifirst + 1) / f.b(ifirst + 1, ifirst + 1)};
+      double            v[3]  {((ad11 - ad11l) * (ad22 - ad11l)) - (ad12 * ad21) + (ad21 * u12 * ad11l) + ((ad12l - (ad11l * u12l)) * ad21l),
+                               ((ad22l - ad11l) - (ad21l * u12l) - (ad11 - ad11l) - (ad22 - ad11l) + (ad21 * u12)) * ad21l, ad32l * ad21l};
+      double            tau   {small_reflector(v, 3)};
+      v[0] = 1.0;
+      for (std::size_t j {ifirst}; j + 2 <= ilast; ++j) {
+        if (j > ifirst) {
+          v[0]              = f.h(j, j - 1);
+          v[1]              = f.h(j + 1, j - 1);
+          v[2]              = f.h(j + 2, j - 1);
+          tau               = small_reflector(v, 3);
+          f.h(j, j - 1)     = v[0];
+          v[0]              = 1.0;
+          f.h(j + 1, j - 1) = 0.0;
+          f.h(j + 2, j - 1) = 0.0;
+        }
+        const double t2 {tau * v[1]};
+        const double t3 {tau * v[2]};
+        for (std::size_t jc {j}; jc <= n; ++jc) { // the reflection of rows j … j + 2 of S and T
+          const double temp {f.h(j, jc) + (v[1] * f.h(j + 1, jc)) + (v[2] * f.h(j + 2, jc))};
+          f.h(j, jc)     -= temp * tau;
+          f.h(j + 1, jc) -= temp * t2;
+          f.h(j + 2, jc) -= temp * t3;
+          const double temp2 {f.b(j, jc) + (v[1] * f.b(j + 1, jc)) + (v[2] * f.b(j + 2, jc))};
+          f.b(j, jc)     -= temp2 * tau;
+          f.b(j + 1, jc) -= temp2 * t2;
+          f.b(j + 2, jc) -= temp2 * t3;
+        }
+        for (std::size_t r {0}; r < n; ++r) { // Q's columns j … j + 2
+          double* const row  {f.q.data() + (r * n) + (j - 1)};
+          const double  temp {row[0] + (v[1] * row[1]) + (v[2] * row[2])};
+          row[0] -= temp * tau;
+          row[1] -= temp * t2;
+          row[2] -= temp * t3;
+        }
+        // the reflection of columns j … j + 2 that takes T(j + 1 … j + 2, j) out: from the null vector of T's 2 × 2 below
+        bool         ilpivt {false};
+        double       scale  {1.0};
+        double       u1     {1.0};
+        double       u2     {0.0};
+        const double top    {std::max(std::abs(f.b(j + 1, j + 1)), std::abs(f.b(j + 1, j + 2)))};
+        const double bottom {std::max(std::abs(f.b(j + 2, j + 1)), std::abs(f.b(j + 2, j + 2)))};
+        if (std::max(top, bottom) < safmin) {
+          scale = 0.0;
+          u1    = 1.0;
+          u2    = 0.0;
+        }
+        else {
+          double w11 {0.0};
+          double w21 {0.0};
+          double w12 {0.0};
+          double w22 {0.0};
+          if (top >= bottom) {
+            w11 = f.b(j + 1, j + 1);
+            w21 = f.b(j + 2, j + 1);
+            w12 = f.b(j + 1, j + 2);
+            w22 = f.b(j + 2, j + 2);
+            u1  = f.b(j + 1, j);
+            u2  = f.b(j + 2, j);
+          }
+          else {
+            w21 = f.b(j + 1, j + 1);
+            w11 = f.b(j + 2, j + 1);
+            w22 = f.b(j + 1, j + 2);
+            w12 = f.b(j + 2, j + 2);
+            u2  = f.b(j + 1, j);
+            u1  = f.b(j + 2, j);
+          }
+          if (std::abs(w12) > std::abs(w11)) {
+            ilpivt = true;
+            std::swap(w11, w12);
+            std::swap(w21, w22);
+          }
+          const double ratio {w21 / w11};
+          u2  -= ratio * u1;
+          w22 -= ratio * w12;
+          if (std::abs(w22) < safmin) {
+            scale = 0.0;
+            u2    = 1.0;
+            u1    = -w12 / w11;
+          }
+          else {
+            if (std::abs(w22) < std::abs(u2)) {
+              scale = std::abs(w22 / u2);
+            }
+            if (std::abs(w11) < std::abs(u1)) {
+              scale = std::min(scale, std::abs(w11 / u1));
+            }
+            u2 = (scale * u2) / w22;
+            u1 = ((scale * u1) - (w12 * u2)) / w11;
+          }
+        }
+        if (ilpivt) {
+          std::swap(u1, u2);
+        }
+        const double t1  {std::sqrt((scale * scale) + (u1 * u1) + (u2 * u2))};
+        const double tau2 {1.0 + (scale / t1)};
+        const double vs  {-1.0 / (scale + t1)};
+        const double w2  {vs * u1};
+        const double w3  {vs * u2};
+        const double c2  {tau2 * w2};
+        const double c3  {tau2 * w3};
+        const auto   reflect_columns = [&](buffer<double>& m, std::size_t first, std::size_t last) {
+                                         for (std::size_t r {first}; r <= last; ++r) {
+                                           double* const row  {m.data() + ((r - 1) * n) + (j - 1)};
+                                           const double  temp {row[0] + (w2 * row[1]) + (w3 * row[2])};
+                                           row[0] -= temp * tau2;
+                                           row[1] -= temp * c2;
+                                           row[2] -= temp * c3;
+                                         }
+                                       };
+        reflect_columns(f.s, 1, std::min(j + 3, ilast));
+        reflect_columns(f.t, 1, j + 2);
+        reflect_columns(f.z, 1, n);
+        f.b(j + 1, j) = 0.0;
+        f.b(j + 2, j) = 0.0;
+      }
+      // the last step: rotations of rows ilast − 1, ilast and of their columns
+      const std::size_t            j {ilast - 1};
+      const plane_rotation<double> g {givens(f.h(j, j - 1), f.h(j + 1, j - 1))};
+      f.h(j, j - 1)     = g.r;
+      f.h(j + 1, j - 1) = 0.0;
+      form::rotate_rows(f.s, n, j, j + 1, j, n, g.c, g.s);
+      form::rotate_rows(f.t, n, j, j + 1, j, n, g.c, g.s);
+      form::rotate_columns(f.q, n, j, j + 1, 1, n, g.c, g.s);
+      const plane_rotation<double> h {givens(f.b(j + 1, j + 1), f.b(j + 1, j))};
+      f.b(j + 1, j + 1) = h.r;
+      f.b(j + 1, j)     = 0.0;
+      form::rotate_columns(f.s, n, j + 1, j, 1, ilast, h.c, h.s);
+      form::rotate_columns(f.t, n, j + 1, j, 1, ilast - 1, h.c, h.s);
+      form::rotate_columns(f.z, n, j + 1, j, 1, n, h.c, h.s);
+    }
+
+    /*!
+     * \brief The real \p a and \p b to Hessenberg-triangular form, as LAPACK's `dgges` begins: `B = Q R` by the QR
+     *        factorisation, `A ← Qᵀ A`, then `dgghrd`: each column of `A` from the first cleared below its subdiagonal
+     *        from the bottom by rotations of rows, the fill each leaves below `B`'s diagonal taken out by a rotation of
+     *        columns; `Q` and `Z` accumulating them.
+     */
+    [[nodiscard]] inline real_qz_form real_hessenberg_triangular(const matrix<double>& a,
+                                                                 const matrix<double>& b)
+    {
+      const std::size_t              n      {a.rows()};
+      const qr_decomposition<double> factor {b, qr_mode::complete};
+      const matrix<double>           q      {factor.q()};
+      const matrix<double>           r      {factor.r()};
+      real_qz_form                   form;
+      form.n = n;
+      form.t = buffer<double>(r.begin(), r.end());
+      const matrix<double> s {transpose(q) * a};
+      form.s = buffer<double>(s.begin(), s.end());
+      form.q = buffer<double>(q.begin(), q.end());
+      form.z = buffer<double>(n * n, 0.0);
+      for (std::size_t i {0}; i < n; ++i) {
+        form.z[(i * n) + i] = 1.0;
+        for (std::size_t j {0}; j < i; ++j) { // R's zeros below its diagonal, as the factorisation leaves them
+          form.t[(i * n) + j] = 0.0;
+        }
+      }
+      for (std::size_t column {1}; column + 2 <= n; ++column) {
+        for (std::size_t row {n}; row >= column + 2; --row) {
+          // rows row − 1 and row take out A(row, column)
+          const plane_rotation<double> g {givens(form.h(row - 1, column), form.h(row, column))};
+          form.h(row - 1, column) = g.r;
+          form.h(row, column)     = 0.0;
+          real_qz_form::rotate_rows(form.s, n, row - 1, row, column + 1, n, g.c, g.s);
+          real_qz_form::rotate_rows(form.t, n, row - 1, row, row - 1, n, g.c, g.s);
+          real_qz_form::rotate_columns(form.q, n, row - 1, row, 1, n, g.c, g.s);
+          // columns row and row − 1 take out the fill B(row, row − 1)
+          const plane_rotation<double> h {givens(form.b(row, row), form.b(row, row - 1))};
+          form.b(row, row)     = h.r;
+          form.b(row, row - 1) = 0.0;
+          real_qz_form::rotate_columns(form.s, n, row, row - 1, 1, n, h.c, h.s);
+          real_qz_form::rotate_columns(form.t, n, row, row - 1, 1, row - 1, h.c, h.s);
+          real_qz_form::rotate_columns(form.z, n, row, row - 1, 1, n, h.c, h.s);
+        }
+      }
+      return form;
+    }
+
+    /*!
+     * \brief The Hessenberg-triangular \p f to generalized real Schur form, as LAPACK's `dhgeqz` (Schur form, `Q` and
+     *        `Z` updated): double-shift QZ sweeps (Moler and Stewart) on the active block, the shifts the eigenvalues of
+     *        its trailing 2 × 2 (`dlag2`; a single shift where they are real, an exceptional one every tenth
+     *        iteration), a negligible subdiagonal entry of `S` splitting it, a negligible diagonal entry of `T` chased
+     *        to split off an infinite eigenvalue; a 2 × 2 block of a conjugate pair standardized with `T` diagonal and
+     *        positive (`dlasv2`), every `T(j, j)` non-negative. \p steps bounds the iterations (`dhgeqz`'s `30 n`).
+     * \return The eigenvalues, in the diagonal's order.
+     * \throws convergence_error If the iterations did not converge within \p steps (`dhgeqz`'s `info`).
+     */
+    [[nodiscard]] inline std::vector<real_pencil_value> real_qz_iteration(real_qz_form& f,
+                                                                          std::size_t   steps)
+    {
+      using form = real_qz_form;
+      const std::size_t              n {f.n};
+      std::vector<real_pencil_value> values(n);
+      if (n == 0) {
+        return values;
+      }
+      constexpr double safety {1.0e2};
+      const double     safmin {std::numeric_limits<double>::min()};
+      const double     safmax {1.0 / safmin};
+      const double     ulp    {std::numeric_limits<double>::epsilon()};
+      double           anorm  {0.0};
+      double           bnorm  {0.0};
+      for (std::size_t i {1}; i <= n; ++i) { // dlanhs('F'): the Hessenberg part of each
+        for (std::size_t j {i > 1 ? i - 1 : 1}; j <= n; ++j) {
+          anorm = std::hypot(anorm, f.h(i, j));
+          bnorm = std::hypot(bnorm, f.b(i, j));
+        }
+      }
+      const double atol   {std::max(safmin, ulp * anorm)};
+      const double btol   {std::max(safmin, ulp * bnorm)};
+      const double ascale {1.0 / std::max(safmin, anorm)};
+      const double bscale {1.0 / std::max(safmin, bnorm)};
+      const double maxit  {static_cast<double>(steps)};
+      std::size_t  ilast  {n};
+      std::size_t  ifirst {1};
+      std::size_t  iiter  {0};
+      double       eshift {0.0};
+      // a 1 × 1 block at ilast: T(ilast, ilast) made non-negative, the eigenvalue recorded
+      const auto   one_by_one = [&](std::size_t j) {
+                                  if (f.b(j, j) < 0.0) {
+                                    for (std::size_t i {1}; i <= j; ++i) {
+                                      f.h(i, j) = -f.h(i, j);
+                                      f.b(i, j) = -f.b(i, j);
+                                    }
+                                    for (std::size_t i {0}; i < n; ++i) {
+                                      f.z[(i * n) + (j - 1)] = -f.z[(i * n) + (j - 1)];
+                                    }
+                                  }
+                                  values[j - 1] = {f.h(j, j), 0.0, f.b(j, j)};
+                                };
+      const auto   negligible_below = [&](std::size_t j) { // S(j, j − 1) against its diagonal neighbours
+                                        return std::abs(f.h(j, j - 1)) <= std::max(safmin, ulp * (std::abs(f.h(j, j)) + std::abs(f.h(j - 1, j - 1))));
+                                      };
+      for (std::size_t jiter {0}; jiter < steps; ++jiter) {
+        // 0 a QZ step on ifirst…ilast; 1 T(ilast, ilast) zero (label 70); 2 a 1 × 1 block at ilast (label 80)
+        int action {0};
+        if (ilast == 1) {
+          action = 2;
+        }
+        else if (negligible_below(ilast)) {
+          f.h(ilast, ilast - 1) = 0.0;
+          action                = 2;
+        }
+        else if (std::abs(f.b(ilast, ilast)) <= btol) {
+          f.b(ilast, ilast) = 0.0;
+          action            = 1;
+        }
+        else {
+          for (std::size_t j {ilast - 1};; --j) { // every case ends the search at j = 1 at the latest
+            bool ilazro {false};
+            if (j == 1) {
+              ilazro = true;
+            }
+            else if (negligible_below(j)) {
+              f.h(j, j - 1) = 0.0;
+              ilazro        = true;
+            }
+            if (std::abs(f.b(j, j)) < btol) {
+              f.b(j, j) = 0.0;
+              bool ilazr2 {false};
+              if (!ilazro) {
+                double       temp  {std::abs(f.h(j, j - 1))};
+                double       temp2 {std::abs(f.h(j, j))};
+                const double tempr {std::max(temp, temp2)};
+                if (tempr < 1.0) { // tempr > 0: S(j, j − 1) was found not negligible (dhgeqz also asks it)
+                  temp  /= tempr;
+                  temp2 /= tempr;
+                }
+                ilazr2 = temp * (ascale * std::abs(f.h(j + 1, j))) <= temp2 * (ascale * atol);
+              }
+              if (ilazro || ilazr2) { // split a 1 × 1 block off at the top, the zero of T chased down
+                bool settled {false};
+                for (std::size_t jch {j}; jch < ilast; ++jch) {
+                  const plane_rotation<double> g {givens(f.h(jch, jch), f.h(jch + 1, jch))};
+                  f.h(jch, jch)     = g.r;
+                  f.h(jch + 1, jch) = 0.0;
+                  form::rotate_rows(f.s, n, jch, jch + 1, jch + 1, n, g.c, g.s);
+                  form::rotate_rows(f.t, n, jch, jch + 1, jch + 1, n, g.c, g.s);
+                  form::rotate_columns(f.q, n, jch, jch + 1, 1, n, g.c, g.s);
+                  if (ilazr2) {
+                    f.h(jch, jch - 1) *= g.c;
+                  }
+                  ilazr2 = false;
+                  if (std::abs(f.b(jch + 1, jch + 1)) >= btol) {
+                    if (jch + 1 >= ilast) {
+                      action = 2;
+                    }
+                    else {
+                      ifirst = jch + 1;
+                      action = 0;
+                    }
+                    settled = true;
+                    break;
+                  }
+                  f.b(jch + 1, jch + 1) = 0.0;
+                }
+                if (!settled) {
+                  action = 1;
+                }
+                break;
+              }
+              // only T(j, j) zero: chase it to T(ilast, ilast)
+              for (std::size_t jch {j}; jch < ilast; ++jch) {
+                const plane_rotation<double> g {givens(f.b(jch, jch + 1), f.b(jch + 1, jch + 1))};
+                f.b(jch, jch + 1)     = g.r;
+                f.b(jch + 1, jch + 1) = 0.0;
+                if (jch + 1 < n) {
+                  form::rotate_rows(f.t, n, jch, jch + 1, jch + 2, n, g.c, g.s);
+                }
+                form::rotate_rows(f.s, n, jch, jch + 1, jch - 1, n, g.c, g.s);
+                form::rotate_columns(f.q, n, jch, jch + 1, 1, n, g.c, g.s);
+                const plane_rotation<double> h {givens(f.h(jch + 1, jch), f.h(jch + 1, jch - 1))};
+                f.h(jch + 1, jch)     = h.r;
+                f.h(jch + 1, jch - 1) = 0.0;
+                form::rotate_columns(f.s, n, jch, jch - 1, 1, jch, h.c, h.s);
+                form::rotate_columns(f.t, n, jch, jch - 1, 1, jch - 1, h.c, h.s); // jch ≥ 2: j = 1 sets ilazro
+                form::rotate_columns(f.z, n, jch, jch - 1, 1, n, h.c, h.s);
+              }
+              action = 1;
+              break;
+            }
+            if (ilazro) { // only S's subdivision: a QZ step on j…ilast
+              ifirst = j;
+              action = 0;
+              break;
+            }
+          }
+        }
+        if (action == 1) { // T(ilast, ilast) zero: clear S(ilast, ilast − 1) to split a 1 × 1 block
+          const plane_rotation<double> g {givens(f.h(ilast, ilast), f.h(ilast, ilast - 1))};
+          f.h(ilast, ilast)     = g.r;
+          f.h(ilast, ilast - 1) = 0.0;
+          form::rotate_columns(f.s, n, ilast, ilast - 1, 1, ilast - 1, g.c, g.s);
+          form::rotate_columns(f.t, n, ilast, ilast - 1, 1, ilast - 1, g.c, g.s);
+          form::rotate_columns(f.z, n, ilast, ilast - 1, 1, n, g.c, g.s);
+          action = 2;
+        }
+        if (action == 2) {
+          one_by_one(ilast);
+          if (ilast == 1) {
+            return values;
+          }
+          --ilast;
+          iiter  = 0;
+          eshift = 0.0;
+          continue;
+        }
+        // a QZ step on ifirst…ilast (label 110)
+        ++iiter;
+        double s1             {1.0};
+        double wr             {0.0};
+        bool   complex_shifts {false};
+        if (iiter % 10 == 0) { // exceptional
+          if ((maxit * safmin) * std::abs(f.h(ilast, ilast - 1)) < std::abs(f.b(ilast - 1, ilast - 1))) {
+            eshift = f.h(ilast, ilast - 1) / f.b(ilast - 1, ilast - 1);
+          }
+          else {
+            eshift += 1.0 / (safmin * maxit);
+          }
+          s1 = 1.0;
+          wr = eshift;
+        }
+        else {
+          pencil_pair shifts {pencil_eigenvalues(f.h(ilast - 1, ilast - 1), f.h(ilast - 1, ilast), f.h(ilast, ilast - 1), f.h(ilast, ilast),
+                                                 f.b(ilast - 1, ilast - 1), f.b(ilast - 1, ilast), f.b(ilast, ilast), safmin * safety)};
+          if (std::abs(((shifts.wr1 / shifts.scale1) * f.b(ilast, ilast)) - f.h(ilast, ilast))
+              > std::abs(((shifts.wr2 / shifts.scale2) * f.b(ilast, ilast)) - f.h(ilast, ilast))) {
+            std::swap(shifts.wr1, shifts.wr2);
+            std::swap(shifts.scale1, shifts.scale2);
+          }
+          s1             = shifts.scale1;
+          wr             = shifts.wr1;
+          complex_shifts = shifts.wi != 0.0;
+        }
+        if (!complex_shifts) { // a single real shift: the implicit sweep of rotations
+          double       temp  {std::min(ascale, 1.0) * (0.5 * safmax)};
+          double       scale {s1 > temp ? temp / s1 : 1.0};
+          temp = std::min(bscale, 1.0) * (0.5 * safmax);
+          if (std::abs(wr) > temp) {
+            scale = std::min(scale, temp / std::abs(wr));
+          }
+          s1 *= scale;
+          wr *= scale;
+          std::size_t istart {ifirst};
+          for (std::size_t j {ilast - 1}; j > ifirst; --j) { // two consecutive small subdiagonal entries
+            double       small  {std::abs(s1 * f.h(j, j - 1))};
+            double       diag   {std::abs((s1 * f.h(j, j)) - (wr * f.b(j, j)))};
+            const double tempr  {std::max(small, diag)};
+            if (tempr < 1.0) { // dhgeqz also asks tempr ≠ 0, where both stay 0 and the test holds: as here past safmin
+              small /= std::max(tempr, std::numeric_limits<double>::min());
+              diag  /= std::max(tempr, std::numeric_limits<double>::min());
+            }
+            if (std::abs((ascale * f.h(j + 1, j)) * small) <= (ascale * atol) * diag) {
+              istart = j;
+              break;
+            }
+          }
+          const plane_rotation<double> first {givens((s1 * f.h(istart, istart)) - (wr * f.b(istart, istart)), s1 * f.h(istart + 1, istart))};
+          double                       c     {first.c};
+          double                       sine  {first.s};
+          for (std::size_t j {istart}; j < ilast; ++j) {
+            if (j > istart) {
+              const plane_rotation<double> g {givens(f.h(j, j - 1), f.h(j + 1, j - 1))};
+              f.h(j, j - 1)     = g.r;
+              f.h(j + 1, j - 1) = 0.0;
+              c                 = g.c;
+              sine              = g.s;
+            }
+            form::rotate_rows(f.s, n, j, j + 1, j, n, c, sine);
+            form::rotate_rows(f.t, n, j, j + 1, j, n, c, sine);
+            form::rotate_columns(f.q, n, j, j + 1, 1, n, c, sine);
+            const plane_rotation<double> g {givens(f.b(j + 1, j + 1), f.b(j + 1, j))};
+            f.b(j + 1, j + 1) = g.r;
+            f.b(j + 1, j)     = 0.0;
+            form::rotate_columns(f.s, n, j + 1, j, 1, std::min(j + 2, ilast), g.c, g.s);
+            form::rotate_columns(f.t, n, j + 1, j, 1, j, g.c, g.s);
+            form::rotate_columns(f.z, n, j + 1, j, 1, n, g.c, g.s);
+          }
+          continue;
+        }
+        if (ifirst + 1 == ilast) { // label 200: a 2 × 2 block of a conjugate pair, standardized and split off
+          triangle_svd svd {svd_of_triangle(f.b(ilast - 1, ilast - 1), f.b(ilast - 1, ilast), f.b(ilast, ilast))};
+          double       b22 {svd.ssmin};
+          double       b11 {svd.ssmax};
+          if (b11 < 0.0) {
+            svd.csr = -svd.csr;
+            svd.snr = -svd.snr;
+            b11     = -b11;
+            b22     = -b22;
+          }
+          form::rotate_rows(f.s, n, ilast - 1, ilast, ilast - 1, n, svd.csl, svd.snl);
+          form::rotate_columns(f.s, n, ilast - 1, ilast, 1, ilast, svd.csr, svd.snr);
+          if (ilast < n) {
+            form::rotate_rows(f.t, n, ilast - 1, ilast, ilast + 1, n, svd.csl, svd.snl);
+          }
+          if (ilast > 2) {
+            form::rotate_columns(f.t, n, ilast - 1, ilast, 1, ilast - 2, svd.csr, svd.snr);
+          }
+          form::rotate_columns(f.q, n, ilast - 1, ilast, 1, n, svd.csl, svd.snl);
+          form::rotate_columns(f.z, n, ilast - 1, ilast, 1, n, svd.csr, svd.snr);
+          f.b(ilast - 1, ilast - 1) = b11;
+          f.b(ilast - 1, ilast)     = 0.0;
+          f.b(ilast, ilast - 1)     = 0.0;
+          f.b(ilast, ilast)         = b22;
+          if (b22 < 0.0) {
+            for (std::size_t i {1}; i <= ilast; ++i) {
+              f.h(i, ilast) = -f.h(i, ilast);
+              f.b(i, ilast) = -f.b(i, ilast);
+            }
+            for (std::size_t i {0}; i < n; ++i) {
+              f.z[(i * n) + (ilast - 1)] = -f.z[(i * n) + (ilast - 1)];
+            }
+            b22 = -b22;
+          }
+          const pencil_pair pair {pencil_eigenvalues(f.h(ilast - 1, ilast - 1), f.h(ilast - 1, ilast), f.h(ilast, ilast - 1), f.h(ilast, ilast),
+                                                     f.b(ilast - 1, ilast - 1), f.b(ilast - 1, ilast), f.b(ilast, ilast), safmin * safety)};
+          if (pair.wi == 0.0) { // real after all: the next iteration splits the block
+            continue;
+          }
+          const auto [first_value, second_value] {pair_values(f, ilast, pair, b11, b22)};
+          values[ilast - 2] = first_value;
+          values[ilast - 1] = second_value;
+          ilast             = ifirst - 1;
+          if (ilast == 0) {
+            return values;
+          }
+          iiter  = 0;
+          eshift = 0.0;
+          continue;
+        }
+        double_shift_sweep(f, ifirst, ilast, ascale, bscale, safmin);
+      }
+      throw convergence_error("QZ: the iterations did not converge (dhgeqz's info)");
+    }
+
+    //! \brief A square of order 4 at most, row-major in a fixed stride: the blocks `dtgex2` exchanges and its transforms.
+    struct small_square
+    {
+      std::array<double, 16> e {}; //!< The entries, `(i, j)` at `4 i + j`.
+
+      //! \brief The entry `(i, j)`, from 0.
+      [[nodiscard]] double& operator()(std::size_t i,
+                                       std::size_t j)
+      {
+        return e[(i * 4) + j];
+      }
+
+      //! \brief The entry `(i, j)`, from 0.
+      [[nodiscard]] double operator()(std::size_t i,
+                                      std::size_t j) const
+      {
+        return e[(i * 4) + j];
+      }
+
+      //! \brief The identity of order \p m.
+      [[nodiscard]] static small_square identity(std::size_t m)
+      {
+        small_square out;
+        for (std::size_t i {0}; i < m; ++i) {
+          out(i, i) = 1.0;
+        }
+        return out;
+      }
+    };
+
+    //! \brief `op(x) op(y)` of order \p m, `op` the transpose where \p tx (\p ty).
+    [[nodiscard]] inline small_square small_product(const small_square& x,
+                                                    bool                tx,
+                                                    const small_square& y,
+                                                    bool                ty,
+                                                    std::size_t         m)
+    {
+      small_square out;
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < m; ++j) {
+          double sum {0.0};
+          for (std::size_t k {0}; k < m; ++k) {
+            sum += (tx ? x(k, i) : x(i, k)) * (ty ? y(j, k) : y(k, j));
+          }
+          out(i, j) = sum;
+        }
+      }
+      return out;
+    }
+
+    //! \brief The Frobenius norm of rows \p r0 … \p r1 − 1 and columns \p c0 … \p c1 − 1 of \p x.
+    [[nodiscard]] inline double small_norm(const small_square& x,
+                                           std::size_t         r0,
+                                           std::size_t         r1,
+                                           std::size_t         c0,
+                                           std::size_t         c1)
+    {
+      double norm {0.0};
+      for (std::size_t i {r0}; i < r1; ++i) {
+        for (std::size_t j {c0}; j < c1; ++j) {
+          norm = std::hypot(norm, x(i, j));
+        }
+      }
+      return norm;
+    }
+
+    /*!
+     * \brief The orthogonal `Q` (order \p m) of the Householder QR factorisation of the first \p k columns of \p x
+     *        (`m × k`, `k ≤ m`), as LAPACK's `dgeqr2` then `dorg2r`: its first \p k columns span theirs, `Qᵀ x` upper
+     *        trapezoidal.
+     */
+    [[nodiscard]] inline small_square small_qr(small_square x,
+                                               std::size_t  m,
+                                               std::size_t  k)
+    {
+      small_square q {small_square::identity(m)};
+      for (std::size_t j {0}; j < k; ++j) {
+        double rest {0.0};
+        for (std::size_t i {j + 1}; i < m; ++i) {
+          rest = std::hypot(rest, x(i, j));
+        }
+        if (rest == 0.0) {
+          continue;
+        }
+        const double          alpha {x(j, j)};
+        const double          beta  {-std::copysign(std::hypot(alpha, rest), alpha)};
+        const double          tau   {(beta - alpha) / beta};
+        std::array<double, 4> v     {};
+        v[j] = 1.0;
+        for (std::size_t i {j + 1}; i < m; ++i) {
+          v[i] = x(i, j) / (alpha - beta);
+        }
+        for (std::size_t c {j}; c < m; ++c) { // x ← (I − τ v vᵀ) x
+          double dot {0.0};
+          for (std::size_t i {j}; i < m; ++i) {
+            dot += v[i] * x(i, c);
+          }
+          for (std::size_t i {j}; i < m; ++i) {
+            x(i, c) -= tau * v[i] * dot;
+          }
+        }
+        for (std::size_t r {0}; r < m; ++r) { // Q ← Q (I − τ v vᵀ)
+          double dot {0.0};
+          for (std::size_t i {j}; i < m; ++i) {
+            dot += q(r, i) * v[i];
+          }
+          for (std::size_t i {j}; i < m; ++i) {
+            q(r, i) -= tau * dot * v[i];
+          }
+        }
+      }
+      return q;
+    }
+
+    //! \brief The rotations `dlagv2` applies to a 2 × 2 pencil: `[csl snl; −snl csl] (A, B) [csr −snr; snr csr]`.
+    struct pencil_rotations
+    {
+      double csl {1.0}; //!< The left cosine.
+      double snl {0.0}; //!< The left sine.
+      double csr {1.0}; //!< The right cosine.
+      double snr {0.0}; //!< The right sine.
+    };
+
+    /*!
+     * \brief The 2 × 2 pencil (\p a, \p b), `b` upper triangular, standardized, as LAPACK's `dlagv2`: two real eigenvalues
+     *        made triangular, a complex pair left with `b` diagonal and positive; both changed in place.
+     */
+    [[nodiscard]] inline pencil_rotations standardize_pencil(std::array<std::array<double, 2>, 2>& a,
+                                                             std::array<std::array<double, 2>, 2>& b)
+    {
+      const double safmin {std::numeric_limits<double>::min()};
+      const double ulp    {std::numeric_limits<double>::epsilon()};
+      const double anorm  {std::max({std::abs(a[0][0]) + std::abs(a[1][0]), std::abs(a[0][1]) + std::abs(a[1][1]), safmin})};
+      const double bnorm  {std::max({std::abs(b[0][0]), std::abs(b[0][1]) + std::abs(b[1][1]), safmin})};
+      for (auto& row : a) {
+        for (double& x : row) {
+          x *= 1.0 / anorm;
+        }
+      }
+      b[0][0] *= 1.0 / bnorm;
+      b[0][1] *= 1.0 / bnorm;
+      b[1][1] *= 1.0 / bnorm;
+      // rows by (c, s): row 0 ← c row 0 + s row 1, row 1 ← c row 1 − s row 0; columns likewise
+      const auto rows    = [](std::array<std::array<double, 2>, 2>& m, double c, double s) {
+                             for (std::size_t j {0}; j < 2; ++j) {
+                               const double t {(c * m[0][j]) + (s * m[1][j])};
+                               m[1][j] = (c * m[1][j]) - (s * m[0][j]);
+                               m[0][j] = t;
+                             }
+                           };
+      const auto columns = [](std::array<std::array<double, 2>, 2>& m, double c, double s) {
+                             for (std::size_t i {0}; i < 2; ++i) {
+                               const double t {(c * m[i][0]) + (s * m[i][1])};
+                               m[i][1] = (c * m[i][1]) - (s * m[i][0]);
+                               m[i][0] = t;
+                             }
+                           };
+      pencil_rotations out;
+      if (std::abs(a[1][0]) <= ulp) {
+        a[1][0] = 0.0;
+        b[1][0] = 0.0;
+      }
+      else if (std::abs(b[0][0]) <= ulp) {
+        const plane_rotation<double> g {givens(a[0][0], a[1][0])};
+        out.csl = g.c;
+        out.snl = g.s;
+        rows(a, out.csl, out.snl);
+        rows(b, out.csl, out.snl);
+        a[1][0] = 0.0;
+        b[0][0] = 0.0;
+        b[1][0] = 0.0;
+      }
+      else if (std::abs(b[1][1]) <= ulp) {
+        const plane_rotation<double> g {givens(a[1][1], a[1][0])};
+        out.csr = g.c;
+        out.snr = -g.s;
+        columns(a, out.csr, out.snr);
+        columns(b, out.csr, out.snr);
+        a[1][0] = 0.0;
+        b[1][0] = 0.0;
+        b[1][1] = 0.0;
+      }
+      else {
+        const pencil_pair pair {pencil_eigenvalues(a[0][0], a[0][1], a[1][0], a[1][1], b[0][0], b[0][1], b[1][1], safmin)};
+        if (pair.wi == 0.0) {
+          const double                 h1 {(pair.scale1 * a[0][0]) - (pair.wr1 * b[0][0])};
+          const double                 h2 {(pair.scale1 * a[0][1]) - (pair.wr1 * b[0][1])};
+          const double                 h3 {(pair.scale1 * a[1][1]) - (pair.wr1 * b[1][1])};
+          const double                 rr {std::hypot(h1, h2)};
+          const double                 qq {std::hypot(pair.scale1 * a[1][0], h3)};
+          const plane_rotation<double> g  {rr > qq ? givens(h2, h1) : givens(h3, pair.scale1 * a[1][0])};
+          out.csr = g.c;
+          out.snr = -g.s;
+          columns(a, out.csr, out.snr);
+          columns(b, out.csr, out.snr);
+          const double                 ha {std::max(std::abs(a[0][0]) + std::abs(a[0][1]), std::abs(a[1][0]) + std::abs(a[1][1]))};
+          const double                 hb {std::max(std::abs(b[0][0]) + std::abs(b[0][1]), std::abs(b[1][0]) + std::abs(b[1][1]))};
+          const plane_rotation<double> h  {pair.scale1 * ha >= std::abs(pair.wr1) * hb ? givens(b[0][0], b[1][0]) : givens(a[0][0], a[1][0])};
+          out.csl = h.c;
+          out.snl = h.s;
+          rows(a, out.csl, out.snl);
+          rows(b, out.csl, out.snl);
+          a[1][0] = 0.0;
+          b[1][0] = 0.0;
+        }
+        else {
+          const triangle_svd svd {svd_of_triangle(b[0][0], b[0][1], b[1][1])};
+          out.csl = svd.csl;
+          out.snl = svd.snl;
+          out.csr = svd.csr;
+          out.snr = svd.snr;
+          rows(a, out.csl, out.snl);
+          rows(b, out.csl, out.snl);
+          columns(a, out.csr, out.snr);
+          columns(b, out.csr, out.snr);
+          b[1][0] = 0.0;
+          b[0][1] = 0.0;
+        }
+      }
+      for (auto& row : a) {
+        for (double& x : row) {
+          x *= anorm;
+        }
+      }
+      for (auto& row : b) {
+        for (double& x : row) {
+          x *= bnorm;
+        }
+      }
+      return out;
+    }
+
+    /*!
+     * \brief The solution `(R, L)` (`n1 × n2` each) of the generalized Sylvester equations `S₁₁ R − L S₂₂ = S₁₂`,
+     *        `T₁₁ R − L T₂₂ = T₁₂` of the `m × m` blocks of \p s and \p t (`m = n1 + n2`), as LAPACK's `dtgsy2` solves
+     *        them: by elimination with complete pivoting of their Kronecker form; nothing where a pivot falls below
+     *        `ε` times the largest entry (`dgetc2` would perturb it, and `dtgex2` then refuses the exchange).
+     */
+    [[nodiscard]] inline std::optional<std::pair<small_square, small_square>> generalized_sylvester(const small_square& s,
+                                                                                                    const small_square& t,
+                                                                                                    std::size_t         n1,
+                                                                                                    std::size_t         n2)
+    {
+      const std::size_t                    k    {n1 * n2};
+      const std::size_t                    size {2 * k};
+      std::array<std::array<double, 9>, 8> z    {}; // the system and its right-hand side, column size
+      for (std::size_t i {0}; i < n1; ++i) {
+        for (std::size_t j {0}; j < n2; ++j) {
+          const std::size_t row {(i * n2) + j};
+          for (std::size_t p {0}; p < n1; ++p) { // S₁₁ R and T₁₁ R
+            z[row][(p * n2) + j]     += s(i, p);
+            z[row + k][(p * n2) + j] += t(i, p);
+          }
+          for (std::size_t q {0}; q < n2; ++q) { // − L S₂₂ and − L T₂₂
+            z[row][k + (i * n2) + q]     -= s(n1 + q, n1 + j);
+            z[row + k][k + (i * n2) + q] -= t(n1 + q, n1 + j);
+          }
+          z[row][size]     = s(i, n1 + j);
+          z[row + k][size] = t(i, n1 + j);
+        }
+      }
+      double largest {0.0};
+      for (std::size_t r {0}; r < size; ++r) {
+        for (std::size_t c {0}; c < size; ++c) {
+          largest = std::max(largest, std::abs(z[r][c]));
+        }
+      }
+      const double               smin  {std::max(std::numeric_limits<double>::epsilon() * largest, std::numeric_limits<double>::min() / std::numeric_limits<double>::epsilon())};
+      std::array<std::size_t, 8> order {};
+      for (std::size_t c {0}; c < size; ++c) {
+        order[c] = c;
+      }
+      for (std::size_t p {0}; p < size; ++p) { // complete pivoting, as dgetc2
+        std::size_t pr {p};
+        std::size_t pc {p};
+        for (std::size_t r {p}; r < size; ++r) {
+          for (std::size_t c {p}; c < size; ++c) {
+            if (std::abs(z[r][c]) > std::abs(z[pr][pc])) {
+              pr = r;
+              pc = c;
+            }
+          }
+        }
+        if (!(std::abs(z[pr][pc]) >= smin)) {
+          return std::nullopt;
+        }
+        std::swap(z[p], z[pr]);
+        for (std::size_t r {0}; r < size; ++r) {
+          std::swap(z[r][p], z[r][pc]);
+        }
+        std::swap(order[p], order[pc]);
+        for (std::size_t r {p + 1}; r < size; ++r) {
+          const double factor {z[r][p] / z[p][p]};
+          for (std::size_t c {p}; c <= size; ++c) {
+            z[r][c] -= factor * z[p][c];
+          }
+        }
+      }
+      std::array<double, 8> x {};
+      for (std::size_t p {size}; p-- > 0;) {
+        double sum {z[p][size]};
+        for (std::size_t c {p + 1}; c < size; ++c) {
+          sum -= z[p][c] * x[c];
+        }
+        x[p] = sum / z[p][p];
+      }
+      small_square r;
+      small_square l;
+      for (std::size_t c {0}; c < size; ++c) {
+        const std::size_t unknown {order[c]};
+        if (!std::isfinite(x[c])) {
+          return std::nullopt;
+        }
+        if (unknown < k) {
+          r(unknown / n2, unknown % n2) = x[c];
+        }
+        else {
+          l((unknown - k) / n2, (unknown - k) % n2) = x[c];
+        }
+      }
+      return std::pair {r, l};
+    }
+
+    //! \brief An exchange of two diagonal blocks as \ref exchange_real_blocks plans it: the blocks after it, and the
+    //!        transforms of rows and columns, `S' = LIᵀ S IR` (`IR` the columns' transform).
+    struct block_exchange
+    {
+      small_square s;  //!< The `m × m` block of `S` after the exchange.
+      small_square t;  //!< Of `T`.
+      small_square li; //!< The rows' transform: `S' = LIᵀ S IR`, `Q ← Q LI`.
+      small_square ir; //!< The columns': `Z ← Z IR`.
+    };
+
+    /*!
+     * \brief Two 1 × 1 blocks' exchange, as LAPACK's `dtgex2` makes it: columns turned onto the second eigenvalue's right
+     *        eigenvector, then rows back to triangular, the rotation from `S`'s new first column where `|S₂₂ T₁₁| ≥ |S₁₁
+     *        T₂₂|`, else `T`'s. Nothing where the new subdiagonal entries pass \p thresha and \p threshb (the weak test).
+     */
+    [[nodiscard]] inline std::optional<block_exchange> plan_single_exchange(small_square s,
+                                                                            small_square t,
+                                                                            double       thresha,
+                                                                            double       threshb)
+    {
+      const double                 ff {(s(1, 1) * t(0, 0)) - (t(1, 1) * s(0, 0))};
+      const double                 gg {(s(1, 1) * t(0, 1)) - (t(1, 1) * s(0, 1))};
+      const double                 sa {std::abs(s(1, 1)) * std::abs(t(0, 0))};
+      const double                 sb {std::abs(s(0, 0)) * std::abs(t(1, 1))};
+      const plane_rotation<double> z  {givens(ff, gg)}; // dtgex2's IR(1, 2) = c, IR(1, 1) = s: columns by (s, −c)
+      small_square                 ir;
+      ir(0, 0) = z.s;
+      ir(1, 0) = -z.c;
+      ir(0, 1) = z.c;
+      ir(1, 1) = z.s;
+      s        = small_product(s, false, ir, false, 2);
+      t        = small_product(t, false, ir, false, 2);
+      const plane_rotation<double> q {sa >= sb ? givens(s(0, 0), s(1, 0)) : givens(t(0, 0), t(1, 0))};
+      small_square                 li; // rows by (c, s): S' = LIᵀ S
+      li(0, 0) = q.c;
+      li(1, 0) = q.s;
+      li(0, 1) = -q.s;
+      li(1, 1) = q.c;
+      s        = small_product(li, true, s, false, 2);
+      t        = small_product(li, true, t, false, 2);
+      if (!(std::abs(s(1, 0)) <= thresha && std::abs(t(1, 0)) <= threshb)) { // NaN fails it
+        return std::nullopt;
+      }
+      return block_exchange {s, t, li, ir}; // the entries below the diagonal, within the weak test's bounds, kept for the strong one
+    }
+
+    /*!
+     * \brief The exchange of blocks of orders \p n1 and \p n2 (one of them 2), as LAPACK's `dtgex2` makes it: orthogonal
+     *        bases of the deflating subspaces the generalized Sylvester equations give (\ref generalized_sylvester), `T`
+     *        made triangular again by an RQ or a QR factorisation (the one that leaves the smaller block below `S`'s
+     *        diagonal), each 2 × 2 block standardized (\ref standardize_pencil). Nothing where the equations have no
+     *        solution or that block passes \p thresha (the weak test).
+     */
+    [[nodiscard]] inline std::optional<block_exchange> plan_block_exchange(small_square s,
+                                                                           small_square t,
+                                                                           std::size_t  n1,
+                                                                           std::size_t  n2,
+                                                                           double       thresha)
+    {
+      const std::size_t                                          m      {n1 + n2};
+      const std::optional<std::pair<small_square, small_square>> solved {generalized_sylvester(s, t, n1, n2)};
+      if (!solved) {
+        return std::nullopt;
+      }
+      const auto& [r, l] {*solved};
+      small_square lbasis; // [−L; I] (m × n2)
+      for (std::size_t j {0}; j < n2; ++j) {
+        for (std::size_t i {0}; i < n1; ++i) {
+          lbasis(i, j) = -l(i, j);
+        }
+        lbasis(n1 + j, j) = 1.0;
+      }
+      small_square li {small_qr(lbasis, m, n2)}; // its first n2 columns span [−L; I]
+      small_square rbasis;                       // [I R]ᵀ (m × n1)
+      for (std::size_t i {0}; i < n1; ++i) {
+        rbasis(i, i) = 1.0;
+        for (std::size_t j {0}; j < n2; ++j) {
+          rbasis(n1 + j, i) = r(i, j);
+        }
+      }
+      const small_square qn {small_qr(rbasis, m, n1)};
+      small_square       ir; // by rows: the last n1 span those of [I R], the first n2 their complement
+      for (std::size_t c {0}; c < m; ++c) {
+        for (std::size_t i {0}; i < n1; ++i) {
+          ir(n2 + i, c) = qn(c, i);
+        }
+        for (std::size_t i {0}; i < n2; ++i) {
+          ir(i, c) = qn(c, n1 + i);
+        }
+      }
+      s = small_product(small_product(li, true, s, false, m), false, ir, true, m);
+      t = small_product(small_product(li, true, t, false, m), false, ir, true, m);
+      // T triangular again: by RQ (T = R Q: S ← S Qᵀ, IR ← Q IR) or by QR (T = Q R: S ← Qᵀ S, LI ← LI Q)
+      small_square flipped; // J Tᵀ J, whose QR gives T's RQ
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < m; ++j) {
+          flipped(i, j) = t(m - 1 - j, m - 1 - i);
+        }
+      }
+      const small_square qf {small_qr(flipped, m, m)};
+      small_square       qrq; // Q of T = R Q: J Q_fᵀ J
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < m; ++j) {
+          qrq(i, j) = qf(m - 1 - j, m - 1 - i);
+        }
+      }
+      const small_square qt     {small_qr(t, m, m)};
+      const small_square s_rq   {small_product(s, false, qrq, true, m)};
+      const small_square s_qr   {small_product(qt, true, s, false, m)};
+      const double       brqa21 {small_norm(s_rq, n2, m, 0, n2)};
+      const double       bqra21 {small_norm(s_qr, n2, m, 0, n2)};
+      if (bqra21 <= brqa21 && bqra21 <= thresha) {
+        s  = s_qr;
+        t  = small_product(qt, true, t, false, m);
+        li = small_product(li, false, qt, false, m);
+      }
+      else if (!(brqa21 < thresha)) { // NaN fails it
+        return std::nullopt;
+      }
+      else {
+        s  = s_rq;
+        t  = small_product(t, false, qrq, true, m);
+        ir = small_product(qrq, false, ir, false, m);
+      }
+      for (std::size_t i {0}; i < m; ++i) { // T's below its diagonal; S's below the blocks kept for the strong test
+        for (std::size_t j {0}; j < i; ++j) {
+          t(i, j) = 0.0;
+        }
+      }
+      // each 2 × 2 block standardized: the left rotations gathered in `left` (its transpose applied), the right in `right`
+      small_square left {small_square::identity(m)};
+      small_square right {small_square::identity(m)};
+      const auto   standardize_at = [&](std::size_t at) {
+                                      std::array<std::array<double, 2>, 2> a {{{s(at, at), s(at, at + 1)}, {s(at + 1, at), s(at + 1, at + 1)}}};
+                                      std::array<std::array<double, 2>, 2> b {{{t(at, at), t(at, at + 1)}, {t(at + 1, at), t(at + 1, at + 1)}}};
+                                      const pencil_rotations               g {standardize_pencil(a, b)};
+                                      for (std::size_t i {0}; i < 2; ++i) {
+                                        for (std::size_t j {0}; j < 2; ++j) {
+                                          s(at + i, at + j) = a[i][j];
+                                          t(at + i, at + j) = b[i][j];
+                                        }
+                                      }
+                                      left(at, at)          = g.csl;
+                                      left(at + 1, at)      = g.snl;
+                                      left(at, at + 1)      = -g.snl;
+                                      left(at + 1, at + 1)  = g.csl;
+                                      right(at, at)         = g.csr;
+                                      right(at + 1, at)     = g.snr;
+                                      right(at, at + 1)     = -g.snr;
+                                      right(at + 1, at + 1) = g.csr;
+                                    };
+      if (n2 > 1) {
+        standardize_at(0);
+      }
+      if (n1 > 1) {
+        standardize_at(n2);
+      }
+      // the block between them: leftᵀ on its rows, right on its columns
+      const small_square s_rest {small_product(small_product(left, true, s, false, m), false, right, false, m)};
+      const small_square t_rest {small_product(small_product(left, true, t, false, m), false, right, false, m)};
+      for (std::size_t i {0}; i < n2; ++i) {
+        for (std::size_t j {n2}; j < m; ++j) {
+          s(i, j) = s_rest(i, j);
+          t(i, j) = t_rest(i, j);
+        }
+      }
+      return block_exchange {s, t, small_product(li, false, left, false, m), small_product(ir, true, right, false, m)};
+    }
+
+    /*!
+     * \brief Exchanges the adjacent diagonal blocks of orders \p n1 and \p n2 (1 or 2) at \p j1 (from 1) of the real
+     *        generalized Schur form \p f, as LAPACK's `dtgex2`: planned by \ref plan_single_exchange or \ref
+     *        plan_block_exchange, then refused unless the blocks rebuilt from the transforms, `LI S' IRᵀ`, are within
+     *        `20 ε` of the originals' norms (the strong test, after the 2 × 2 blocks' standardization where `dtgex2`
+     *        makes it before: their rotations' rounding more); else the entries below the new blocks set to 0 and the
+     *        rows and columns of `S`, `T`, `Q` and `Z` turned.
+     * \return Whether the exchange was made, \p f unchanged where not.
+     */
+    [[nodiscard]] inline bool exchange_real_blocks(real_qz_form& f,
+                                                   std::size_t   j1,
+                                                   std::size_t   n1,
+                                                   std::size_t   n2)
+    {
+      const std::size_t n {f.n};
+      const std::size_t m {n1 + n2};
+      small_square      s;
+      small_square      t;
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < m; ++j) {
+          s(i, j) = f.h(j1 + i, j1 + j);
+          t(i, j) = f.b(j1 + i, j1 + j);
+        }
+      }
+      const double                        eps     {std::numeric_limits<double>::epsilon()};
+      const double                        smlnum  {std::numeric_limits<double>::min() / eps};
+      const double                        thresha {std::max(20.0 * eps * small_norm(s, 0, m, 0, m), smlnum)};
+      const double                        threshb {std::max(20.0 * eps * small_norm(t, 0, m, 0, m), smlnum)};
+      const std::optional<block_exchange> plan    {m == 2 ? plan_single_exchange(s, t, thresha, threshb) : plan_block_exchange(s, t, n1, n2, thresha)};
+      if (!plan) {
+        return false;
+      }
+      for (const bool of_s : {true, false}) { // the strong test
+        const small_square rebuilt {small_product(small_product(plan->li, false, of_s ? plan->s : plan->t, false, m), false, plan->ir, true, m)};
+        small_square       gap;
+        for (std::size_t i {0}; i < m; ++i) {
+          for (std::size_t j {0}; j < m; ++j) {
+            gap(i, j) = rebuilt(i, j) - (of_s ? s(i, j) : t(i, j));
+          }
+        }
+        if (!(small_norm(gap, 0, m, 0, m) <= (of_s ? thresha : threshb))) {
+          return false;
+        }
+      }
+      const small_square& li   {plan->li};
+      const small_square& ir   {plan->ir};
+      const std::size_t   lead {m == 2 ? 1 : n2}; // the new leading block's order
+      for (std::size_t i {0}; i < m; ++i) {
+        for (std::size_t j {0}; j < m; ++j) {
+          const bool below {i >= lead && j < lead};
+          f.h(j1 + i, j1 + j) = below ? 0.0 : plan->s(i, j);
+          f.b(j1 + i, j1 + j) = below ? 0.0 : plan->t(i, j);
+        }
+      }
+      const auto right_times = [&](buffer<double>& x, std::size_t rows_last) { // columns j1 … of rows 1 … rows_last
+                                 for (std::size_t row {1}; row <= rows_last; ++row) {
+                                   std::array<double, 4> v {};
+                                   for (std::size_t c {0}; c < m; ++c) {
+                                     for (std::size_t k {0}; k < m; ++k) {
+                                       v[c] += x[((row - 1) * n) + (j1 - 1 + k)] * ir(k, c);
+                                     }
+                                   }
+                                   for (std::size_t c {0}; c < m; ++c) {
+                                     x[((row - 1) * n) + (j1 - 1 + c)] = v[c];
+                                   }
+                                 }
+                               };
+      const auto left_times = [&](buffer<double>& x) { // LIᵀ on rows j1 … of the columns past the blocks
+                                for (std::size_t col {j1 + m}; col <= n; ++col) {
+                                  std::array<double, 4> v {};
+                                  for (std::size_t r2 {0}; r2 < m; ++r2) {
+                                    for (std::size_t k {0}; k < m; ++k) {
+                                      v[r2] += li(k, r2) * x[((j1 - 1 + k) * n) + (col - 1)];
+                                    }
+                                  }
+                                  for (std::size_t r2 {0}; r2 < m; ++r2) {
+                                    x[((j1 - 1 + r2) * n) + (col - 1)] = v[r2];
+                                  }
+                                }
+                              };
+      right_times(f.s, j1 - 1);
+      right_times(f.t, j1 - 1);
+      left_times(f.s);
+      left_times(f.t);
+      right_times(f.z, n);
+      for (std::size_t row {1}; row <= n; ++row) { // Q ← Q LI
+        std::array<double, 4> v {};
+        for (std::size_t c {0}; c < m; ++c) {
+          for (std::size_t k {0}; k < m; ++k) {
+            v[c] += f.q[((row - 1) * n) + (j1 - 1 + k)] * li(k, c);
+          }
+        }
+        for (std::size_t c {0}; c < m; ++c) {
+          f.q[((row - 1) * n) + (j1 - 1 + c)] = v[c];
+        }
+      }
+      return true;
+    }
+
+    //! \brief \ref exchange_real_blocks, a refusal thrown as \ref real_generalized_schur::reorder reports it.
+    inline void exchange_or_refuse(real_qz_form& f,
+                                   std::size_t   j1,
+                                   std::size_t   n1,
+                                   std::size_t   n2)
+    {
+      if (!exchange_real_blocks(f, j1, n1, n2)) {
+        throw convergence_error("generalized Schur form: eigenvalues could not be separated for reordering");
+      }
+    }
+
+    /*!
+     * \brief Moves the diagonal block at \p ifst (from 1) of the real generalized Schur form \p f up to \p ilst, as LAPACK's
+     *        `dtgexc` does it upwards: exchanged with each block above in turn (\ref exchange_real_blocks), a 2 × 2 block
+     *        that splits on the way moved as its two 1 × 1 ones; \p ifst and \p ilst taken to the first row of their
+     *        blocks.
+     * \throws convergence_error If an exchange is refused (\ref exchange_or_refuse); \p f then partly moved.
+     */
+    inline void move_real_block_up(real_qz_form& f,
+                                   std::size_t   ifst,
+                                   std::size_t   ilst)
+    {
+      const std::size_t n {f.n};
+      if (ifst > 1 && f.h(ifst, ifst - 1) != 0.0) {
+        --ifst;
+      }
+      std::size_t nbf {ifst < n && f.h(ifst + 1, ifst) != 0.0 ? std::size_t {2} : std::size_t {1}};
+      if (ilst > 1 && f.h(ilst, ilst - 1) != 0.0) {
+        --ilst;
+      }
+      std::size_t here {ifst};
+      while (here > ilst) {
+        const std::size_t nbnext {here >= 3 && f.h(here - 1, here - 2) != 0.0 ? std::size_t {2} : std::size_t {1}};
+        if (nbf != 3) {
+          exchange_or_refuse(f, here - nbnext, nbnext, nbf);
+          here -= nbnext;
+          if (nbf == 2 && f.h(here + 1, here) == 0.0) { // the block split in two real eigenvalues
+            nbf = 3;
+          }
+          continue;
+        }
+        // two 1 × 1 blocks, here and here + 1: the upper one past the block above, then the lower one
+        exchange_or_refuse(f, here - nbnext, nbnext, 1);
+        if (nbnext == 1) {
+          exchange_or_refuse(f, here, 1, 1);
+          --here;
+        }
+        else if (f.h(here, here - 1) != 0.0) {
+          exchange_or_refuse(f, here - 1, 2, 1);
+          here -= 2;
+        }
+        else { // the block above split in passing: its two halves past the lower one in turn
+          exchange_or_refuse(f, here, 1, 1);
+          --here;
+          exchange_or_refuse(f, here, 1, 1);
+          --here;
+        }
+      }
+    }
+
+    /*!
+     * \brief The eigenvalues of the real generalized Schur form \p f after a reordering, as LAPACK's `dtgsen` gives them:
+     *        a 2 × 2 block's pair by `dlag2` (`β` its scale), a 1 × 1 block's from its diagonal, `T(k, k)` made
+     *        non-negative (row `k` of `S` and `T` and column `k` of `Q` negated).
+     */
+    [[nodiscard]] inline std::vector<real_pencil_value> real_values(real_qz_form& f)
+    {
+      const std::size_t              n {f.n};
+      std::vector<real_pencil_value> values(n);
+      for (std::size_t k {1}; k <= n; ++k) {
+        if (k < n && f.h(k + 1, k) != 0.0) {
+          const pencil_pair pair {pencil_eigenvalues(f.h(k, k), f.h(k, k + 1), f.h(k + 1, k), f.h(k + 1, k + 1), f.b(k, k), f.b(k, k + 1), f.b(k + 1, k + 1),
+                                                     std::numeric_limits<double>::min())};
+          values[k - 1] = {pair.wr1, pair.wi, pair.scale1};
+          values[k]     = {pair.wr2, -pair.wi, pair.scale2};
+          ++k;
+          continue;
+        }
+        if (std::signbit(f.b(k, k))) {
+          for (std::size_t i {1}; i <= n; ++i) {
+            f.h(k, i)                    = -f.h(k, i);
+            f.b(k, i)                    = -f.b(k, i);
+            f.q[((i - 1) * n) + (k - 1)] = -f.q[((i - 1) * n) + (k - 1)];
+          }
+        }
+        values[k - 1] = {f.h(k, k), 0.0, f.b(k, k)};
+      }
+      return values;
+    }
+  } // namespace detail
+
+  namespace detail {
+    /*!
+     * \brief \p m brought into the range `[√safmin / ε, ε / √safmin]` of its largest magnitude where it lies outside,
+     *        as LAPACK's `xgges` scales `A` and `B` before the QZ iterations (their norms' squares, the shifts and the
+     *        rotations stay in range): the matrix, and the factor that takes the scaled one back (1 where none).
+     */
+    template <typename T>
+    [[nodiscard]] std::pair<matrix<T>, double> pencil_operand_in_range(const matrix<T>& m)
+    {
+      const double smlnum {std::sqrt(std::numeric_limits<double>::min()) / std::numeric_limits<double>::epsilon()};
+      const double bignum {1.0 / smlnum};
+      double       norm   {0.0};
+      for (const T& x : m) {
+        norm = std::max(norm, static_cast<double>(std::abs(x)));
+      }
+      const double to {norm > 0.0 && norm < smlnum ? smlnum : norm > bignum ? bignum : norm};
+      if (to == norm) {
+        return {m, 1.0};
+      }
+      const double factor {to / norm};
+      buffer<T>    entries(m.begin(), m.end());
+      for (T& x : entries) {
+        x *= factor;
+      }
+      return {matrix<T> {m.rows(), m.cols(), std::move(entries)}, norm / to};
+    }
+
+    //! \brief The entries of \p m multiplied by \p factor, `n × n` row-major (the scaled form taken back).
+    template <typename T>
+    [[nodiscard]] matrix<T> scaled_back(const buffer<T>& m,
+                                        std::size_t      n,
+                                        double           factor)
+    {
+      buffer<T> entries {m};
+      for (T& x : entries) {
+        x *= factor;
+      }
+      return matrix<T> {n, n, std::move(entries)};
+    }
   } // namespace detail
 
   /*!
    * \brief The generalized Schur decomposition of a complex pencil `A − λ B`, `A = Q S Zᴴ` and `B = Q T Zᴴ`, as
    *        `scipy.linalg.qz(a, b, output="complex")` (LAPACK's `zgges`): `Q` and `Z` unitary, `S` and `T` upper
    *        triangular, `T`'s diagonal real and non-negative; the generalized eigenvalues `α_k / β_k` on the diagonals
-   *        (`β_k = 0` an infinite one). Reordered as `scipy.linalg.ordqz` by \ref sort or \ref reorder.
+   *        (`β_k = 0` an infinite one). Reordered as `scipy.linalg.ordqz` by \ref sort or \ref reorder. Each operand is
+   *        first brought into the range `[√safmin / ε, ε / √safmin]` of its largest magnitude where it lies outside, as
+   *        `zgges` scales it, and the form and the eigenvalues taken back.
    */
   class generalized_schur
   {
@@ -496,20 +2173,25 @@ namespace numerical {
       }
       detail::require_finite(a, "generalized Schur decomposition");
       detail::require_finite(b, "generalized Schur decomposition");
-      form_   = detail::hessenberg_triangular(a, b);
-      values_ = detail::qz_iteration(form_, steps);
+      // as zgges: each operand within the range of its largest magnitude, S and T and the eigenvalues taken back
+      const auto [scaled_a, a_back] {detail::pencil_operand_in_range(a)};
+      const auto [scaled_b, b_back] {detail::pencil_operand_in_range(b)};
+      a_back_ = a_back;
+      b_back_ = b_back;
+      form_   = detail::hessenberg_triangular(scaled_a, scaled_b);
+      values_ = unscaled(detail::qz_iteration(form_, steps));
     }
 
     //! \brief `S`, upper triangular.
     [[nodiscard]] matrix<std::complex<double>> s() const
     {
-      return matrix<std::complex<double>> {form_.n, form_.n, form_.s};
+      return detail::scaled_back(form_.s, form_.n, a_back_);
     }
 
     //! \brief `T`, upper triangular, its diagonal real and non-negative.
     [[nodiscard]] matrix<std::complex<double>> t() const
     {
-      return matrix<std::complex<double>> {form_.n, form_.n, form_.t};
+      return detail::scaled_back(form_.t, form_.n, b_back_);
     }
 
     //! \brief `Q`, unitary: `A = Q S Zᴴ`.
@@ -557,10 +2239,12 @@ namespace numerical {
         }
         ++moved;
       }
+      std::vector<std::pair<std::complex<double>, std::complex<double>>> standardized(n);
       for (std::size_t k {1}; k <= n; ++k) {
-        values_[k - 1] = detail::standardize(work, k);
+        standardized[k - 1] = detail::standardize(work, k);
       }
-      form_ = std::move(work);
+      values_ = unscaled(std::move(standardized));
+      form_   = std::move(work);
       return moved;
     }
 
@@ -577,8 +2261,187 @@ namespace numerical {
 
   private:
 
-    detail::qz_form                                                    form_;   //!< S, T, Q and Z.
-    std::vector<std::pair<std::complex<double>, std::complex<double>>> values_; //!< The eigenvalues as (α, β).
+    //! \brief The eigenvalues of the scaled form \p raw taken back: `α` by `A`'s factor, `β` by `B`'s.
+    [[nodiscard]] std::vector<std::pair<std::complex<double>, std::complex<double>>> unscaled(
+      std::vector<std::pair<std::complex<double>, std::complex<double>>> raw) const
+    {
+      for (auto& [alpha, beta] : raw) {
+        alpha *= a_back_;
+        beta  *= b_back_;
+      }
+      return raw;
+    }
+
+    detail::qz_form                                                    form_;         //!< S, T, Q and Z, of the scaled pencil.
+    std::vector<std::pair<std::complex<double>, std::complex<double>>> values_;       //!< The eigenvalues as (α, β).
+    double                                                             a_back_ {1.0}; //!< The factor taking S back to A's scale.
+    double                                                             b_back_ {1.0}; //!< T's.
+  };
+
+  /*!
+   * \brief The generalized real Schur decomposition of a real pencil `A − λ B`, `A = Q S Zᵀ` and `B = Q T Zᵀ`, as
+   *        `scipy.linalg.qz(a, b)` (LAPACK's `dgges`): `Q` and `Z` orthogonal, `T` upper triangular with a non-negative
+   *        diagonal, `S` quasi-triangular, a 2 × 2 diagonal block for each conjugate pair of eigenvalues, `T` diagonal
+   *        and positive there; the eigenvalues `(αr + i αi) / β` (`β = 0` an infinite one).
+   */
+  class real_generalized_schur
+  {
+  public:
+
+    /*!
+     * \brief Decomposes the pencil of \p a and \p b.
+     * \throws dimension_error   If \p a or \p b is not square or their orders differ.
+     * \throws non_finite_error  If an entry is infinite or NaN.
+     * \throws convergence_error If the QZ iterations did not converge.
+     */
+    real_generalized_schur(const matrix<double>& a,
+                           const matrix<double>& b)
+      : real_generalized_schur(a,
+                               b,
+                               30 * std::max<std::size_t>(a.rows(), 1))
+    {}
+
+    //! \brief Decomposes the pencil within \p steps QZ iterations (`dhgeqz`'s bound `30 n` by default).
+    real_generalized_schur(const matrix<double>& a,
+                           const matrix<double>& b,
+                           std::size_t           steps)
+    {
+      const std::size_t n {a.rows()};
+      if (a.cols() != n || b.rows() != n || b.cols() != n) {
+        throw dimension_error("the generalized Schur decomposition requires two square matrices of one order");
+      }
+      detail::require_finite(a, "generalized Schur decomposition");
+      detail::require_finite(b, "generalized Schur decomposition");
+      // as dgges: each operand within the range of its largest magnitude, S and T and the eigenvalues taken back
+      const auto [scaled_a, a_back] {detail::pencil_operand_in_range(a)};
+      const auto [scaled_b, b_back] {detail::pencil_operand_in_range(b)};
+      a_back_ = a_back;
+      b_back_ = b_back;
+      form_   = detail::real_hessenberg_triangular(scaled_a, scaled_b);
+      values_ = unscaled(detail::real_qz_iteration(form_, steps));
+    }
+
+    //! \brief `S`, quasi-triangular.
+    [[nodiscard]] matrix<double> s() const
+    {
+      return detail::scaled_back(form_.s, form_.n, a_back_);
+    }
+
+    //! \brief `T`, upper triangular, its diagonal non-negative.
+    [[nodiscard]] matrix<double> t() const
+    {
+      return detail::scaled_back(form_.t, form_.n, b_back_);
+    }
+
+    //! \brief `Q`, orthogonal: `A = Q S Zᵀ`.
+    [[nodiscard]] matrix<double> q() const
+    {
+      return matrix<double> {form_.n, form_.n, form_.q};
+    }
+
+    //! \brief `Z`, orthogonal.
+    [[nodiscard]] matrix<double> z() const
+    {
+      return matrix<double> {form_.n, form_.n, form_.z};
+    }
+
+    //! \brief The eigenvalues as `(αr, αi, β)`, in the diagonal's order.
+    [[nodiscard]] const std::vector<detail::real_pencil_value>& values() const noexcept
+    {
+      return values_;
+    }
+
+    //! \brief The selection `scipy.linalg.ordqz` takes: true for `(α, β)` to lead, `α = αr + i αi`.
+    using selection = std::function<bool (const std::complex<double>&, const std::complex<double>&)>;
+
+    /*!
+     * \brief Moves the eigenvalues whose entries of \p chosen are set to the leading diagonal places, in their order, as
+     *        LAPACK's `dtgsen` (by `dtgexc`'s exchanges of blocks), a conjugate pair moved together where either of its
+     *        two is chosen; `Q` and `Z` turning with them, the eigenvalues recomputed as `dtgsen` gives them.
+     *        \return The eigenvalues moved.
+     * \throws dimension_error   If \p chosen does not hold one entry per eigenvalue.
+     * \throws convergence_error If an exchange is refused (`dtgex2`'s tests: two eigenvalues too close to separate);
+     *                           the decomposition is then unchanged.
+     */
+    std::size_t reorder(const std::vector<bool>& chosen)
+    {
+      const std::size_t n {form_.n};
+      if (chosen.size() != n) {
+        throw dimension_error("generalized Schur reordering requires one choice per eigenvalue");
+      }
+      detail::real_qz_form work  {form_};
+      std::size_t          moved {0};
+      for (std::size_t k {1}; k <= n; ++k) {
+        const bool pair {k < n && work.h(k + 1, k) != 0.0};
+        if (chosen[k - 1] || (pair && chosen[k])) {
+          detail::move_real_block_up(work, k, moved + 1);
+          moved += pair ? 2 : 1;
+        }
+        k += pair ? 1 : 0;
+      }
+      values_ = unscaled(detail::real_values(work));
+      form_   = std::move(work);
+      return moved;
+    }
+
+    //! \brief The eigenvalues \p select holds moved first (\ref reorder), as `scipy.linalg.ordqz(…, sort=…)` sorts
+    //!        them. \return Their count.
+    std::size_t sort(const selection& select)
+    {
+      std::vector<bool> chosen(values_.size());
+      for (std::size_t k {0}; k < values_.size(); ++k) {
+        chosen[k] = select(std::complex<double> {values_[k].alphar, values_[k].alphai}, std::complex<double> {values_[k].beta});
+      }
+      return reorder(chosen);
+    }
+
+  private:
+
+    /*!
+     * \brief The eigenvalues of the scaled form \p raw taken back, as `dgges` takes them: `α` by `A`'s factor, `β` by
+     *        `B`'s; a conjugate pair whose `α` or `β` would leave the range first rescaled as a whole (its ratio kept) to
+     *        the size of its block's entries. A pair of `αr = 0` takes the second test (`dgges` divides by it).
+     */
+    [[nodiscard]] std::vector<detail::real_pencil_value> unscaled(std::vector<detail::real_pencil_value> raw) const
+    {
+      const double safmin {std::numeric_limits<double>::min()};
+      const double safmax {1.0 / safmin};
+      const auto   rescale = [](detail::real_pencil_value& v, double w) {
+                               v.beta   *= w;
+                               v.alphar *= w;
+                               v.alphai *= w;
+                             };
+      const std::size_t n {form_.n};
+      for (std::size_t i {0}; i < raw.size(); ++i) {
+        detail::real_pencil_value& v {raw[i]};
+        if (v.alphai == 0.0) {
+          continue;
+        }
+        const double s_ii {form_.s[(i * n) + i]};
+        if (a_back_ != 1.0) {
+          if (v.alphar != 0.0 && ((v.alphar / safmax) > (1.0 / a_back_) || (safmin / v.alphar) > a_back_)) {
+            rescale(v, std::abs(s_ii / v.alphar));
+          }
+          else if ((v.alphai / safmax) > (1.0 / a_back_) || (safmin / v.alphai) > a_back_) { // αi > 0: the pair's first
+            rescale(v, std::abs(form_.s[(i * n) + i + 1] / v.alphai));
+          }
+        }
+        if (b_back_ != 1.0 && ((v.beta / safmax) > (1.0 / b_back_) || (safmin / v.beta) > b_back_)) {
+          rescale(v, std::abs(form_.t[(i * n) + i] / v.beta));
+        }
+      }
+      for (detail::real_pencil_value& v : raw) {
+        v.alphar *= a_back_;
+        v.alphai *= a_back_;
+        v.beta   *= b_back_;
+      }
+      return raw;
+    }
+
+    detail::real_qz_form                   form_;         //!< S, T, Q and Z, of the scaled pencil.
+    std::vector<detail::real_pencil_value> values_;       //!< The eigenvalues.
+    double                                 a_back_ {1.0}; //!< The factor taking S back to A's scale.
+    double                                 b_back_ {1.0}; //!< T's.
   };
 
   namespace detail {

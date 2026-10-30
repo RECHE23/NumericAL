@@ -2939,6 +2939,91 @@ __all__ += ["LinAlgWarning", "hilbert", "invhilbert", "pascal", "invpascal", "ha
 
 # --- scipy.linalg: Hessenberg, balancing, tridiagonal eigenproblems, banded Cholesky, RQ and the real-complex forms ---
 
+_qz = _linalg(_numerical.qz, arrays=2)
+
+
+def _qz_output(output):
+    if output not in ("real", "complex", "r", "c"):
+        raise ValueError("argument must be 'real', or 'complex'")
+    return output in ("complex", "c")
+
+
+def qz(A, B, output="real", lwork=None, sort=None, overwrite_a=False, overwrite_b=False, check_finite=True):
+    """The generalized Schur decomposition of the pencil ``(A, B)``, ``A = Q AA Zᴴ`` and ``B = Q BB Zᴴ``, as
+    ``scipy.linalg.qz`` (LAPACK's ``xgges``): `Q` and `Z` orthogonal (unitary), `BB` upper triangular with a
+    non-negative diagonal, `AA` quasi-triangular for a real pencil (a 2 × 2 block for each conjugate pair of
+    eigenvalues, `BB` diagonal there) and triangular with ``output="complex"`` or for a complex one. The operands are
+    first scaled into range as ``xgges`` scales them. Returns ``(AA, BB, Q, Z)``. `lwork`, `overwrite_a`, `overwrite_b`
+    and `check_finite` are accepted and not needed.
+
+    Raises:
+        ValueError: if `sort` is given (as SciPy, which leaves it to :func:`ordqz`) or `output` is another.
+        LinAlgError: if `A` and `B` are not square and of one order, an entry is infinite or NaN, or the iterations do
+            not converge.
+    """
+    del lwork, overwrite_a, overwrite_b, check_finite
+    if sort is not None:
+        raise ValueError("The 'sort' input of qz() has to be None and will be removed in a future release. Use ordqz instead.")
+    AA, BB, _, _, Q, Z = _qz(A, B, _qz_output(output), None)
+    return AA, BB, Q, Z
+
+
+def _lhp(x, y):
+    return y != 0 and (x / y).real < 0.0
+
+
+def _rhp(x, y):
+    return y != 0 and (x / y).real > 0.0
+
+
+def _iuc(x, y):
+    return y != 0 and abs(x / y) < 1.0
+
+
+def _ouc(x, y):
+    return x != 0 if y == 0 else abs(x / y) > 1.0
+
+
+_ORDQZ_SORTS = {"lhp": _lhp, "rhp": _rhp, "iuc": _iuc, "ouc": _ouc}
+
+
+def _ordqz_select(sort):
+    """The selection the native ordqz calls with the eigenvalues' `alpha` and `beta` (Tensors): one of SciPy's four,
+    taken element by element as SciPy's (a zero β none of them but "ouc", which takes a nonzero α over it), or the
+    callable `sort` given them as NumPy arrays where NumPy is installed, as SciPy gives them."""
+    if callable(sort):
+        def select(alpha, beta):
+            try:
+                import numpy as np
+            except ImportError:  # pragma: no cover
+                chosen = sort(alpha, beta)
+            else:
+                chosen = np.asarray(sort(np.asarray(alpha), np.asarray(beta))).tolist()
+            return _flat(asarray(chosen).tolist()) if isinstance(chosen, Tensor) else list(chosen)
+        return select
+    if not isinstance(sort, str) or sort not in _ORDQZ_SORTS:
+        raise ValueError("sort parameter must be None, a callable, or one of ('lhp','rhp','iuc','ouc')")
+    test = _ORDQZ_SORTS[sort]
+    return lambda alpha, beta: [test(complex(x), complex(y)) for x, y in zip(alpha.tolist(), beta.tolist())]
+
+
+def ordqz(A, B, sort="lhp", output="real", overwrite_a=False, overwrite_b=False, check_finite=True):
+    """The generalized Schur decomposition of :func:`qz` with the eigenvalues `sort` selects moved to the leading
+    block, as ``scipy.linalg.ordqz`` (LAPACK's ``xgges`` then ``xtgsen``): ``"lhp"`` (real part of α / β below 0),
+    ``"rhp"`` (above 0), ``"iuc"`` (modulus below 1), ``"ouc"`` (above 1, an infinite one included), or a callable
+    given the arrays `alpha` and `beta` and returning one truth per eigenvalue; a conjugate pair moved whole where
+    either of its two is selected. Returns ``(AA, BB, alpha, beta, Q, Z)``, the eigenvalues ``alpha / beta`` (`alpha`
+    complex, `beta` real for a real pencil's real form).
+
+    Raises:
+        ValueError: for another `sort` or `output`; LinAlgError (a ValueError) if two blocks cannot be exchanged, or
+            as :func:`qz`.
+    """
+    del overwrite_a, overwrite_b, check_finite
+    complex_output = _qz_output(output)
+    return _qz(A, B, complex_output, _ordqz_select(sort))
+
+
 _cholesky_banded = _linalg(_numerical.cholesky_banded, arrays=1)
 _cho_solve_banded = _linalg(_numerical.cho_solve_banded, arrays=2)
 _hessenberg = _linalg(_numerical.hessenberg, arrays=1)
@@ -3197,6 +3282,6 @@ def _stacked_first(parts):
 
 
 __all__ += ["hessenberg", "matrix_balance", "eigh_tridiagonal", "eigvalsh_tridiagonal", "cholesky_banded",
-            "cho_solve_banded", "rsf2csf", "rq", "cdf2rdf"]
+            "cho_solve_banded", "rsf2csf", "rq", "cdf2rdf", "qz", "ordqz"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)

@@ -174,6 +174,123 @@ std::tuple<any_tensor, any_tensor, std::size_t> schur_sorted(const any_tensor& v
     return sorted_schur(matrix_from(std::get<real_tensor>(v)), select);
 }
 
+namespace {
+
+    using pencil_answer = std::tuple<any_tensor, any_tensor, any_tensor, any_tensor, any_tensor, any_tensor>;
+
+    //! The choices `select(alpha, beta)` (a Python callable) makes of the eigenvalues, one truth per entry of what it
+    //! returns, called with the GIL held.
+    std::vector<bool> selected(PyObject* select, any_tensor alpha, any_tensor beta)
+    {
+        PyObject* const alpha_object {wrap(std::move(alpha))};
+        PyObject* const beta_object {alpha_object == nullptr ? nullptr : wrap(std::move(beta))};
+        PyObject* const answer {beta_object == nullptr ? nullptr : PyObject_CallFunctionObjArgs(select, alpha_object, beta_object, nullptr)};
+        Py_XDECREF(alpha_object);
+        Py_XDECREF(beta_object);
+        PyObject* const items {answer == nullptr ? nullptr : PySequence_Fast(answer, "ordqz: sort returns one truth per eigenvalue")};
+        Py_XDECREF(answer);
+        if (items == nullptr) {
+            throw sb::error_already_set {};
+        }
+        std::vector<bool> chosen(static_cast<std::size_t>(PySequence_Size(items)));
+        for (std::size_t k {0}; k < chosen.size(); ++k) {
+            PyObject* const item {PySequence_GetItem(items, static_cast<Py_ssize_t>(k))}; // new ref
+            const int       truth {item == nullptr ? -1 : PyObject_IsTrue(item)};
+            Py_XDECREF(item);
+            if (truth < 0) {
+                Py_DECREF(items);
+                throw sb::error_already_set {};
+            }
+            chosen[k] = truth != 0;
+        }
+        Py_DECREF(items);
+        return chosen;
+    }
+
+    // The generalized Schur form of a complex pencil, reordered where `select` is a callable.
+    pencil_answer complex_qz(numerical::matrix<std::complex<double>>&& a, numerical::matrix<std::complex<double>>&& b, PyObject* select)
+    {
+        using C = std::complex<double>;
+        std::optional<numerical::generalized_schur> d;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil_cubic(a.rows() * a.rows())};
+            d.emplace(a, b);
+        }
+        const auto values_of = [&] {
+            numerical::buffer<C> alpha(d->values().size());
+            numerical::buffer<C> beta(d->values().size());
+            for (std::size_t k {0}; k < alpha.size(); ++k) {
+                alpha[k] = d->values()[k].first;
+                beta[k]  = d->values()[k].second;
+            }
+            return std::pair {any_tensor {cplx_tensor {{alpha.size()}, std::move(alpha)}}, any_tensor {cplx_tensor {{beta.size()}, std::move(beta)}}};
+        };
+        if (select != Py_None) {
+            auto [alpha, beta] {values_of()};
+            const std::vector<bool> chosen {selected(select, std::move(alpha), std::move(beta))};
+            if (chosen.size() != d->values().size()) {
+                throw std::runtime_error("ordqz: sort returns one truth per eigenvalue");
+            }
+            static_cast<void>(d->reorder(chosen));
+        }
+        auto [alpha, beta] {values_of()};
+        return {any_tensor {cplx_tensor {d->s()}}, any_tensor {cplx_tensor {d->t()}}, std::move(alpha), std::move(beta), any_tensor {cplx_tensor {d->q()}},
+                any_tensor {cplx_tensor {d->z()}}};
+    }
+
+    // The generalized real Schur form, reordered where `select` is a callable; alpha complex, beta real.
+    pencil_answer real_qz(numerical::matrix<double>&& a, numerical::matrix<double>&& b, PyObject* select)
+    {
+        std::optional<numerical::real_generalized_schur> d;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil_cubic(a.rows() * a.rows())};
+            d.emplace(a, b);
+        }
+        const auto values_of = [&] {
+            numerical::buffer<std::complex<double>> alpha(d->values().size());
+            numerical::buffer<double>               beta(d->values().size());
+            for (std::size_t k {0}; k < alpha.size(); ++k) {
+                alpha[k] = {d->values()[k].alphar, d->values()[k].alphai};
+                beta[k]  = d->values()[k].beta;
+            }
+            return std::pair {any_tensor {cplx_tensor {{alpha.size()}, std::move(alpha)}}, any_tensor {real_tensor {{beta.size()}, std::move(beta)}}};
+        };
+        if (select != Py_None) {
+            auto [alpha, beta] {values_of()};
+            const std::vector<bool> chosen {selected(select, std::move(alpha), std::move(beta))};
+            if (chosen.size() != d->values().size()) {
+                throw std::runtime_error("ordqz: sort returns one truth per eigenvalue");
+            }
+            static_cast<void>(d->reorder(chosen));
+        }
+        auto [alpha, beta] {values_of()};
+        return {any_tensor {real_tensor {d->s()}}, any_tensor {real_tensor {d->t()}}, std::move(alpha), std::move(beta), any_tensor {real_tensor {d->q()}},
+                any_tensor {real_tensor {d->z()}}};
+    }
+} // namespace
+
+// qz(a, b, complex_output, select) -> (S, T, alpha, beta, Q, Z), as scipy.linalg.qz and ordqz: the generalized (real)
+// Schur form, reordered by `select(alpha, beta)` where it is a callable (None: not reordered); a real pencil's in real
+// arithmetic unless complex_output; single precision computed in double and rounded.
+std::tuple<any_tensor, any_tensor, any_tensor, any_tensor, any_tensor, any_tensor> qz(const any_tensor& a, const any_tensor& b, bool complex_output, PyObject* select)
+{
+    const std::vector<std::size_t>& shape {shape_of(a)};
+    if (shape.size() != 2 || shape[0] != shape[1] || shape_of(b) != shape || a.index() != b.index()) {
+        throw std::runtime_error("qz: Array dimensions must be square and agree");
+    }
+    if (is_single(a)) {
+        return narrowed(qz(widened(a), widened(b), complex_output, select));
+    }
+    if (is_complex(a)) {
+        return complex_qz(matrix_from(std::get<cplx_tensor>(a)), matrix_from(std::get<cplx_tensor>(b)), select);
+    }
+    if (complex_output) {
+        return complex_qz(matrix_from(converted<std::complex<double>>(std::get<real_tensor>(a))), matrix_from(converted<std::complex<double>>(std::get<real_tensor>(b))),
+                          select);
+    }
+    return real_qz(matrix_from(std::get<real_tensor>(a)), matrix_from(std::get<real_tensor>(b)), select);
+}
+
 // eigh_pencil(a, b, method, upper) -> (values, vectors): A x = λ B x, B positive definite, the vectors B-orthonormal.
 std::tuple<any_tensor, any_tensor> eigh_pencil(const any_tensor& a, const any_tensor& b, const std::string& name, bool upper)
 {

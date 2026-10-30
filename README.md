@@ -292,7 +292,8 @@ the special matrices `hilbert`, `invhilbert`, `pascal`, `invpascal`, `hadamard`,
 ones are integers: each entry computed exactly, rounded once), `bandwidth`, `issymmetric`, `ishermitian`,
 `null_space`, `orth`, `subspace_angles`, `orthogonal_procrustes`, `pinvh`, `cosm`, `sinm`, `tanm`, `coshm`, `sinhm`,
 `tanhm`, `signm`, `hessenberg`, `matrix_balance`, `eigh_tridiagonal`, `eigvalsh_tridiagonal`, `cholesky_banded`,
-`cho_solve_banded`, `rsf2csf`, `rq`, `cdf2rdf`,
+`cho_solve_banded`, `rsf2csf`, `rq`, `cdf2rdf`, `qz` and `ordqz` (the real generalized Schur form, as `dgges`/`dtgsen`, or the
+complex one),
 `solve_sylvester(a, b, q)`, `solve_continuous_lyapunov(a, q)`,
 `solve_discrete_lyapunov(a, q, method)`, `solve_continuous_are(a, b, q, r, e, s, balanced)` and
 `solve_discrete_are(a, b, q, r, e, s, balanced)` as `scipy.linalg`'s, `eig(a)` → `(values, vectors)` and `eigvals(a)` of a general square matrix

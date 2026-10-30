@@ -9,6 +9,19 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`qz` and `ordqz`, as `scipy.linalg`'s, and the real QZ algorithm.** C++: `numerical::real_generalized_schur`, LAPACK's
+  `dgges`: the operands scaled into range, `dgghrd`, `dhgeqz`'s double-shift iteration (2 × 2 blocks for conjugate pairs,
+  `T` diagonal and positive there, infinite eigenvalues where `B` is singular), and its reordering (`dtgsen` by
+  `dtgexc`/`dtgex2`'s exchanges of 1 × 1 and 2 × 2 blocks, refused as LAPACK refuses them); the eigenvalues
+  `(αr + i αi) / β` as `dgges` gives them. Python: `qz(A, B, output)` and `ordqz(A, B, sort, output)` with SciPy's four
+  sorts and a callable given the arrays `alpha` and `beta`, real and complex forms, single precision. Tested against SciPy
+  1.17 (orders 1 to 40, real, complex and float32, both outputs, the five selections) and, in C++, every branch of the
+  iteration, the 2 × 2 helpers and the exchanges (pencils found by searches at scales 10±³⁰⁰).
+
+### Fixed
+- **The complex generalized Schur decomposition scales its operands into range, as `zgges`**: a `B` past 10¹⁵⁴ (the
+  square root of the range) overflowed the norms' squares and left `Q T Zᴴ` 45 % from `B`; now within rounding from
+  10⁻³⁰⁸ to 10³⁰⁷, as the real one.
 - **Python: nine more of `scipy.linalg`'s decompositions**: `hessenberg` (Householder, `gehrd`), `matrix_balance`
   (`gebal`, with or without the permutation and the scaling; SciPy's answer to the bit), `eigh_tridiagonal` and
   `eigvalsh_tridiagonal` (divide and conquer, `stevd`, SciPy's default, by value or index ranges), `cholesky_banded`

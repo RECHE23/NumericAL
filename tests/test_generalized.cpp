@@ -235,17 +235,37 @@ TEST(generalized_schur_reorders)
 }
 
 // An exchange whose rotations do not keep the blocks apart is refused (LAPACK's ztgex2 tests, NaN failing them), the
-// decomposition left as it was: entries whose products overflow, as LAPACK refuses them.
+// decomposition left as it was: entries of scales 10²⁰⁰ apart (found by a search), refused at any common scale.
 TEST(generalized_schur_refuses_an_unstable_exchange)
 {
-  const matrix<C>              a {{C {1e200}, C {1e200}}, {C {}, C {2e200}}};
-  const matrix<C>              b {{C {1e200}, C {3e199}}, {C {}, C {1e200}}};
+  const matrix<C>              a {{C {4.0433738246568382e-290}, C {-4.1728728744498313e-195}}, {C {}, C {-7.7732712242752404e-158}}};
+  const matrix<C>              b {{C {-1.3394732758970938e-222}, C {-2.3968178730587086e-295}}, {C {}, C {-7.9217174196872459e-184}}};
   numerical::generalized_schur d {a, b};
   const matrix<C>              s {d.s()};
   const matrix<C>              z {d.z()};
   EXPECT_THROWS(static_cast<void>(d.reorder(std::vector<bool> {false, true})), numerical::convergence_error);
   EXPECT((d.s() == s) && (d.z() == z));
   EXPECT(decomposes(d, a, b, 1e-15));
+}
+
+// A pencil whose entries lie past the square root of the range, either way: brought into it as zgges does, S, T and
+// the eigenvalues taken back; the products within rounding of A and B themselves (unscaled, an overflow of the norms'
+// squares had left B's 45 % off).
+TEST(generalized_schur_scales_as_zgges)
+{
+  for (const double scale : {1e-300, 3e-308, 1e300, 1e307}) {
+    for (const bool on_b : {false, true}) {
+      const matrix<C>                    a {C {on_b ? 1.0 : scale} *trigonometric(9, 9, 1.0, true)};
+      const matrix<C>                    b {C {on_b ? scale : 1.0} *(trigonometric(9, 9, 2.0, true) + (C {3.0} *identity<C>(9)))};
+      const numerical::generalized_schur d {a, b};
+      const auto                         adjoint = [](const matrix<C>& m) { return numerical::detail::adjoint_of(m); };
+      EXPECT(largest((d.q() * d.s() * adjoint(d.z())) - a) <= 1e-13 * largest(a));
+      EXPECT(largest((d.q() * d.t() * adjoint(d.z())) - b) <= 1e-13 * largest(b));
+      for (std::size_t k {0}; k < 9; ++k) {
+        EXPECT(d.values()[k].first == d.s()(k, k) && d.values()[k].second == d.t()(k, k));
+      }
+    }
+  }
 }
 
 // The deflations of zhgeqz: a zero of T at the top chased down to the bottom, T's corner cancelled on the way (A's
@@ -286,9 +306,9 @@ TEST(generalized_schur_deflates_as_zhgeqz)
   EXPECT(decomposes(numerical::generalized_schur {a, b}, a, b, 1e-13));
 }
 
-// ztgex2's tests on blocks of widely different scales: S's new subdiagonal small but not the rotations' rebuilding of
-// it (the strong test), the same of T, and T's new subdiagonal not small where S's is (the weak test); the pencil left
-// as it was.
+// ztgex2's tests on blocks of widely different scales (found by searches): S's new subdiagonal small but not the
+// rotations' rebuilding of it (the strong test), the same of T, S's new subdiagonal not small, and T's not where S's is
+// (the weak test); the pencil left as it was.
 TEST(generalized_schur_exchange_refused_by_the_strong_test)
 {
   const std::vector<std::vector<C>> blocks {
@@ -300,7 +320,13 @@ TEST(generalized_schur_exchange_refused_by_the_strong_test)
      C {2.7553991424053377e-280, 3.0573459930565973e-280}, C {5.2767074943069092e-59, -1.8613206037500929e-58},
      C {-5.6155289535791438e-18, -2.1634029033105651e-17}},
     {C {2.4031823726337465e-135}, C {4.9206202281730338e-98, -2.9828187753186243e-98}, C {7.7043445286263324e-64},
-     C {7.292612240243964e-259}, C {1.1830952176537991e-251}, C {6.3618424291582671e-269}}};
+     C {7.292612240243964e-259}, C {1.1830952176537991e-251}, C {6.3618424291582671e-269}},
+    // S's new subdiagonal not small (the weak test on S)
+    {C {-2.1070735516868428e-73}, C {-6.2852733730141101e+150}, C {9.4030832948394708e+207}, C {1.6521185955162518e+196},
+     C {-1.7831359330900348e+218}, C {2.150972062082325e+156}},
+    // S's new subdiagonal small, T's not (the weak test on T alone)
+    {C {7.6312369938252286e-134}, C {-4.6471336851529855e-128}, C {-3.0993675071219111e-103}, C {3.0857879948018701e-221},
+     C {-6.9181806678442579e-209}, C {6.8993726162757166e-274}}};
   for (const std::vector<C>& c : blocks) {
     numerical::detail::qz_form f;
     f.n = 2;
