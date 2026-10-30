@@ -49,6 +49,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   `keepdims` for `any` and `all`; the other calls' time unchanged (a 4 × 4 `sum` 492 ns, `+` 857).
 
 ### Changed
+- **`tanm`, `tanhm` and `eigh_tridiagonal(select=…)` faster, the same bits**: `tanm` and `tanhm` compute the
+  exponentials `cosm` and `sinm` (`coshm` and `sinhm`) both take once (order 200, real 15.9 → 7.8 ms, complex
+  33.4 → 17.3 ms); `eigh_tridiagonal` keeps the selected eigenvalues and vectors by one slice, the selection being
+  contiguous in ascending order, where it rebuilt them through Python lists (order 2000, 1401 of them: 110 → 12 ms).
+  `logm` and `fractional_matrix_power` reuse their buffers across quadrature nodes and Padé steps. Every answer as
+  before to the bit (155 comparisons over real, complex and float32 operands of orders 1 to 50).
 - **`ldl` by panels from order 384, as LAPACK's `sytrf` and `hetrf`**: 64 columns at a time with their updates
   deferred (`lasyf`, `lahef`), then the trailing block's update as one matrix product, where every step updated it
   whole. Order 1000 37 → 18 ms, 2000 297 → 86 ms (SciPy's 81 ms; arm64, real); the same pivots as the unblocked steps

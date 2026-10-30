@@ -2874,9 +2874,14 @@ def sinm(A):
 
 
 def tanm(A):
-    """The matrix tangent, ``cosm(A)⁻¹ sinm(A)``, as ``scipy.linalg.tanm``."""
+    """The matrix tangent, ``cosm(A)⁻¹ sinm(A)``, as ``scipy.linalg.tanm``: the exponentials :func:`cosm` and
+    :func:`sinm` take, computed once for both."""
     A = _square("tanm", A)
-    return _maybe_real(A, solve(cosm(A), sinm(A)))
+    if A.dtype.startswith("complex"):
+        ep, em = expm(1j * A), expm(-1j * A)
+        return _maybe_real(A, solve(0.5 * (ep + em), -0.5j * (ep - em)))
+    e = expm(1j * A)
+    return _maybe_real(A, solve(e.real, e.imag))
 
 
 def coshm(A):
@@ -2892,9 +2897,11 @@ def sinhm(A):
 
 
 def tanhm(A):
-    """The matrix hyperbolic tangent, ``coshm(A)⁻¹ sinhm(A)``, as ``scipy.linalg.tanhm``."""
+    """The matrix hyperbolic tangent, ``coshm(A)⁻¹ sinhm(A)``, as ``scipy.linalg.tanhm``: the exponentials
+    :func:`coshm` and :func:`sinhm` take, computed once for both."""
     A = _square("tanhm", A)
-    return _maybe_real(A, solve(coshm(A), sinhm(A)))
+    ep, em = expm(A), expm(-A)
+    return _maybe_real(A, solve(_maybe_real(A, 0.5 * (ep + em)), _maybe_real(A, 0.5 * (ep - em))))
 
 
 def signm(A, disp=True):
@@ -3134,9 +3141,10 @@ def eigh_tridiagonal(d, e, eigvals_only=False, select="a", select_range=None, ch
             kept = [k for k, value in enumerate(values) if bounds[0] < value <= bounds[1]]
         else:
             kept = list(range(int(bounds[0]), int(bounds[1]) + 1))
-        w = asarray([values[k] for k in kept]) if kept else zeros((0,))
+        # w ascending: the kept indices run from kept[0] to kept[-1]
+        w = w[kept[0]:kept[-1] + 1] if kept else zeros((0,))
         if not eigvals_only:
-            v = transpose(asarray([v[:, k].tolist() for k in kept])) if kept else zeros((d.size, 0))
+            v = v[:, kept[0]:kept[-1] + 1] if kept else zeros((d.size, 0))
     if single:
         w = asarray(w, "float32")
         v = v if eigvals_only else asarray(v, "float32")

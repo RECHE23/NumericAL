@@ -2070,21 +2070,21 @@ namespace numerical {
          0.06474248308443482}}};
       auto [r, s, m] {inverse_squaring(t0, n)};
       buffer<T> u(n * n, T {});
+      buffer<T> shifted(n * n); // each node's I + β R and α R, written whole
+      buffer<T> term(n * n);
       for (std::size_t q {0}; q < m; ++q) {
         const double alpha {weights[m - 1][q]};
         const double beta  {nodes[m - 1][q]};
-        buffer<T>    shifted(n * n);
-        buffer<T>    x(n * n);
         for (std::size_t e {0}; e < n * n; ++e) {
           shifted[e] = beta * r[e];
-          x[e]       = alpha * r[e];
+          term[e]    = alpha * r[e];
         }
         for (std::size_t i {0}; i < n; ++i) {
           shifted[(i * n) + i] += T {1.0};
         }
-        solve_triangular_in_place(shifted.data(), n, false, triangular_op::none, false, x.data(), n);
+        solve_triangular_in_place(shifted.data(), n, false, triangular_op::none, false, term.data(), n);
         for (std::size_t e {0}; e < n * n; ++e) {
-          u[e] += x[e];
+          u[e] += term[e];
         }
       }
       const double power {std::ldexp(1.0, static_cast<int>(s))};
@@ -2178,8 +2178,8 @@ namespace numerical {
       for (std::size_t e {0}; e < n * n; ++e) {
         y[e] = x[e] * power_pade_constant(2 * m, t);
       }
+      buffer<C> rhs(n * n); // each step's cⱼ X, written whole, then Y's
       for (std::size_t j {(2 * m) - 1}; j >= 1; --j) {
-        buffer<C> rhs(n * n);
         for (std::size_t e {0}; e < n * n; ++e) {
           rhs[e] = x[e] * power_pade_constant(j, t);
         }
@@ -2187,7 +2187,7 @@ namespace numerical {
           y[(i * n) + i] += C {1.0};
         }
         solve_triangular_in_place(y.data(), n, false, triangular_op::none, false, rhs.data(), n);
-        y = std::move(rhs);
+        std::swap(y, rhs);
       }
       for (std::size_t i {0}; i < n; ++i) {
         y[(i * n) + i] += C {1.0};
