@@ -44,6 +44,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   (Windows x86, NumPy 2.2).
 
 ### Breaking
+- **`asarray` keeps bools bool, as NumPy's**: a NumPy bool array (or a bool scalar of NumPy's), a Python `bool`, and a
+  nested list of bools alone become a `bool` Tensor where they became float64 (`asarray(np.array([True]))` was
+  `[1.0]`). A function that computes still reads such an array-like as float64, as NumPy's arithmetic and linear
+  algebra do (`inv(np.eye(2, dtype=bool))`, `exp`, `sum`, `fft`, `solve` as before); one that moves elements
+  (`concatenate`, `stack`, `tril`, `triu`, `diag`, `diagonal`, `transpose`, `reshape`, `squeeze`, `real`, `imag`,
+  `conj`) keeps it bool, as NumPy's, and `trace` counts its trues. A bool Tensor given to a function that computes is refused as before.
 - **The factorisations and solvers require a floating-point field** (`numerical::field`, `concepts.hpp`: `float`,
   `double`, `long double` or a `std::complex` of one): `lu_decomposition`, `cholesky_decomposition`, `qr_decomposition`,
   `pivoted_qr_decomposition`, `svd_decomposition`, `eigen_decomposition`, `schur_decomposition`, and `solve`,

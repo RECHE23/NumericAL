@@ -272,8 +272,10 @@ tensors (`logical_and` and the rest any, read as NumPy reads them: nonzero is tr
 operands promoted as arithmetic promotes them, `isnan`, `isinf` and `isfinite` classify, and `any`, `all` reduce as
 `sum` does. A mask beside a number takes the number's dtype (`mask * t`), and its `sum` and `mean` count its trues, as
 NumPy's; two masks have no arithmetic, and neither has a mask in the linear algebra (a `TypeError` names
-`astype("float64")`), as the array API leaves them: `asarray` still reads a NumPy bool array into float64, unless
-`dtype="bool"` asks.
+`astype("float64")`), as the array API leaves them. `asarray` keeps a NumPy bool array, a bool and a list of bools
+bool, as NumPy's; a function that computes reads such an array-like as float64 (`inv(np.eye(2, dtype=bool))`), as
+NumPy's arithmetic and linear algebra do, and one that moves elements (`concatenate`, `tril`, `transpose`) keeps it
+bool.
 
 Shapes that do not broadcast raise a `ValueError` worded as NumPy's. `max` and `min` take
 real dtypes only (NumPy orders complex numbers lexicographically; NumericAL does not order them); `max` gives +0 and `min`
@@ -358,8 +360,8 @@ numerical.asarray(np.eye(3))   # the other direction (a copy)
 
 `asarray` copies any NumPy array — bool, integer, float32/64 or complex64/128 elements, in either
 byte order, at any strides (a transposed, sliced or reversed view) — as well as a nested list or
-tuple of numbers and a plain number (rank 0): a float32, complex64 or complex128 array as it is, anything else into
-float64 (complex128 for a complex list or number), or into the `dtype` asked; a complex input is never cast to a
+tuple of numbers and a plain number (rank 0): a float32, complex64, complex128 or bool array as it is, anything else
+into float64 (complex128 for a complex list or number, bool for bools alone), or into the `dtype` asked; a complex input is never cast to a
 real dtype. `matmul` and `@` read a NumPy array where it lies, with no copy, when it is row-major, contiguous, aligned,
 in this machine's byte order and of one of the four numeric dtypes, the other operand of the same dtype (a product of
 order 512 by a vector: 231 → 18 µs); `solve`, `det`, `slogdet` and `inv` read a square float64 or complex128 array so

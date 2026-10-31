@@ -2709,9 +2709,18 @@ inline bool element_count(const std::vector<std::size_t>& shape, std::size_t& to
 // for a complex source asked as a real dtype.
 inline bool output_dtype(const element_type& element, std::optional<std::size_t> wanted, std::size_t& out)
 {
-    const std::size_t own {element.kind == 'c' ? (element.size == 8 ? std::size_t {3} : std::size_t {1})
-                           : element.kind == 'f' && element.size == 4 ? std::size_t {2}
-                                                                      : std::size_t {0}};
+    // An element's own dtype, as NumPy keeps it: complex64 and complex128, float32, bool; float64 for the rest
+    // (float64 itself and the integers, which have no dtype here).
+    std::size_t own {0};
+    if (element.kind == 'c') {
+        own = element.size == 8 ? 3 : 1;
+    }
+    else if (element.kind == 'f' && element.size == 4) {
+        own = 2;
+    }
+    else if (element.kind == 'b') {
+        own = 4;
+    }
     out = wanted.value_or(own);
     if (element.kind == 'c' && (out == 0 || out == 2)) {
         PyErr_SetString(sciforge_module_error(),
@@ -2719,6 +2728,19 @@ inline bool output_dtype(const element_type& element, std::optional<std::size_t>
         return false;
     }
     return true;
+}
+
+// The element type of Python numbers read as an array: complex128 where one is complex, bool where all are bools,
+// float64 otherwise.
+inline element_type number_element(bool complex_in, bool bools)
+{
+    if (complex_in) {
+        return {'c', 16, false};
+    }
+    if (bools) {
+        return {'b', 1, false};
+    }
+    return {'f', 8, false};
 }
 
 // obj's elements through its __array_struct__ capsule (NumPy arrays and scalars), into `*result`; false when obj
@@ -3218,7 +3240,7 @@ inline bool asarray_from_number(PyObject* obj, std::optional<std::size_t> wanted
         *result = nullptr;
         return true;
     }
-    const element_type element {complex_in ? 'c' : 'f', complex_in ? std::size_t {16} : std::size_t {8}, false};
+    const element_type element {number_element(complex_in, PyBool_Check(obj) != 0)};
     std::size_t        out {0};
     if (!output_dtype(element, wanted, out)) {
         *result = nullptr;
@@ -3266,26 +3288,29 @@ inline std::vector<std::size_t> nested_shape(PyObject* obj)
     return shape;
 }
 
-// The numbers of `obj`, at `depth` of `shape`, appended to `values` in C order, `complex_in` set by a complex one;
-// false at the first thing the Python reading would treat otherwise or refuse (a ragged list, a number that is not
-// a float, an int or a complex, an int too large for a double), with no error set.
+// The numbers of `obj`, at `depth` of `shape`, appended to `values` in C order, `complex_in` set by a complex one and
+// `all_bool` cleared by one that is not a bool; false at the first thing the Python reading would treat otherwise or
+// refuse (a ragged list, a number that is not a float, an int or a complex, an int too large for a double), with no
+// error set.
 inline bool nested_values(PyObject*                          obj,
                    const std::vector<std::size_t>&    shape,
                    std::size_t                        depth,
                    std::vector<std::complex<double>>& values,
-                   bool&                              complex_in)
+                   bool&                              complex_in,
+                   bool&                              all_bool)
 {
     if (depth < shape.size()) {
         if ((PyList_Check(obj) == 0 && PyTuple_Check(obj) == 0) || static_cast<std::size_t>(sequence_length(obj)) != shape[depth]) {
             return false;
         }
         for (std::size_t i {0}; i < shape[depth]; ++i) {
-            if (!nested_values(sequence_item(obj, static_cast<Py_ssize_t>(i)), shape, depth + 1, values, complex_in)) {
+            if (!nested_values(sequence_item(obj, static_cast<Py_ssize_t>(i)), shape, depth + 1, values, complex_in, all_bool)) {
                 return false;
             }
         }
         return true;
     }
+    all_bool = all_bool && PyBool_Check(obj) != 0;
     if (PyComplex_Check(obj) != 0) {
         complex_in = true;
         values.emplace_back(PyComplex_RealAsDouble(obj), PyComplex_ImagAsDouble(obj));
@@ -3303,8 +3328,8 @@ inline bool nested_values(PyObject*                          obj,
     return true;
 }
 
-// _asarray_nested(obj, dtype=None): a nested list or tuple of floats, ints (bools included) and complex numbers as
-// a Tensor, read in one walk (float64, or complex128 where one is complex, as asarray's Python reading gives); None
+// _asarray_nested(obj, dtype=None): a nested list or tuple of floats, ints, bools and complex numbers as a Tensor, read
+// in one walk (float64, complex128 where one is complex, bool where all are, as NumPy's); None
 // for anything that reading treats otherwise, which then reads it (and raises its errors).
 inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObject* kwds)
 {
@@ -3334,11 +3359,14 @@ inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObj
         std::vector<std::complex<double>> values;
         values.reserve(total);
         bool complex_in {false};
-        if (!nested_values(obj, shape, 0, values, complex_in)) {
+        bool all_bool {true};
+        if (!nested_values(obj, shape, 0, values, complex_in, all_bool)) {
             Py_RETURN_NONE;
         }
+        // Bools alone, at least one, are a bool array, as NumPy's; an empty list float64.
+        const bool  bools {all_bool && !values.empty()};
         std::size_t out {0};
-        if (!output_dtype(element_type {complex_in ? 'c' : 'f', complex_in ? std::size_t {16} : std::size_t {8}, false}, wanted, out)) {
+        if (!output_dtype(number_element(complex_in, bools), wanted, out)) {
             return nullptr;
         }
         const auto filled {[&values](auto element) {

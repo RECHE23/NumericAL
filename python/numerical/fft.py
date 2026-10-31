@@ -11,7 +11,7 @@ import builtins as _builtins
 import operator as _operator
 
 from numerical import _numerical
-from numerical import Tensor, asarray
+from numerical import Tensor, asarray, _read
 
 __all__ = ["fft", "ifft", "fft2", "ifft2", "fftn", "ifftn", "rfft", "irfft", "rfft2", "irfft2", "rfftn", "irfftn", "hfft",
            "ihfft", "fftfreq", "rfftfreq", "fftshift", "ifftshift", "dct", "idct", "dst", "idst", "dctn", "idctn", "dstn",
@@ -30,7 +30,7 @@ def _norm(norm):
 def _operand(a):
     """`a` as a Tensor: a NumPy array, a nested list or a number through :func:`asarray`, integers and booleans as
     ``float64`` (NumPy transforms them as ``complex128``)."""
-    tensor = a if isinstance(a, Tensor) else asarray(a)
+    tensor = a if isinstance(a, Tensor) else _read(a)
     return tensor
 
 

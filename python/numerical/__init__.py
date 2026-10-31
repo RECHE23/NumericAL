@@ -196,10 +196,15 @@ def get_config():
 
 
 class _NestedBuffer:
-    """Doubles in C order behind an ``__array_interface__``: how a nested list or a scalar reaches the
-    same reader as an array (real values as float64, complex ones as complex128)."""
+    """Numbers in C order behind an ``__array_interface__``: how a nested list or a scalar reaches the
+    same reader as an array (real values as float64, complex ones as complex128, bools alone as bool)."""
 
     def __init__(self, values, shape):
+        if values and _builtins.all(isinstance(value, bool) for value in values):
+            self._data = _array.array("B", values)
+            self.__array_interface__ = {"version": 3, "typestr": "|b1", "shape": tuple(shape),
+                                        "data": (self._data.buffer_info()[0], True)}
+            return
         is_complex = _builtins.any(isinstance(value, complex) or (isinstance(value, _numbers.Complex)
                                                          and not isinstance(value, _numbers.Real))
                          for value in values)
@@ -270,7 +275,7 @@ def _linalg(native, arrays=None):
     @_functools.wraps(native)
     def call(*args):
         count = len(args) if arrays is None else arrays
-        operands = [arg if isinstance(arg, (Tensor, str)) else asarray(arg) for arg in args[:count]]
+        operands = [arg if isinstance(arg, (Tensor, str)) else _read(arg) for arg in args[:count]]
         tensors = [operand for operand in operands if isinstance(operand, Tensor)]
         if len({tensor.dtype for tensor in tensors}) > 1:
             dtype = _promoted([tensor.dtype for tensor in tensors])
@@ -605,7 +610,7 @@ def _matmul_shapes(a_shape, b_shape):
 def _matmul(self, other):
     """``a @ b`` as NumPy's matmul: vectors and matrices, and stacks of matrices along leading axes broadcast against
     each other (a number for two vectors); the dtypes promoted as NumPy promotes them."""
-    other = other if isinstance(other, Tensor) else asarray(other)
+    other = other if isinstance(other, Tensor) else _read(other)
     _matmul_shapes(self.shape, other.shape)
     dtype = _promoted((self.dtype, other.dtype))
     a, b = (t if t.dtype == dtype else asarray(t, dtype=dtype) for t in (self, other))
@@ -629,11 +634,11 @@ def matmul(x1, x2, /):
         if shapes[0] is not None and shapes[1] is not None:
             _matmul_shapes(*shapes)
         raise LinAlgError(*caught.args) from None
-    return _tensor(x1)._matmul(x2) if product is NotImplemented else product  # else as ``@``
+    return _operand(x1)._matmul(x2) if product is NotImplemented else product  # else as ``@``
 
 
 def _rmatmul(self, other):
-    return _matmul(asarray(other), self)
+    return _matmul(_read(other), self)
 
 
 def _flat(nested):
@@ -872,8 +877,8 @@ def solve_banded(l_and_u, ab, b, overwrite_ab=False, overwrite_b=False, check_fi
     """
     del overwrite_ab, overwrite_b, check_finite
     lower, upper = (_operator.index(count) for count in l_and_u)
-    ab = ab if isinstance(ab, Tensor) else asarray(ab)
-    b = b if isinstance(b, Tensor) else asarray(b)
+    ab = ab if isinstance(ab, Tensor) else _read(ab)
+    b = b if isinstance(b, Tensor) else _read(b)
     if lower < 0 or upper < 0 or ab.ndim != 2 or ab.shape[0] != lower + upper + 1:
         raise ValueError(f"invalid values for the number of lower and upper diagonals: l+u+1 ({lower + upper + 1}) "
                          f"does not equal ab.shape[0] ({ab.shape[0] if ab.ndim else 0})")
@@ -895,8 +900,8 @@ def solveh_banded(ab, b, overwrite_ab=False, overwrite_b=False, lower=False, che
         LinAlgError: if `a` is not positive definite or an entry is infinite or NaN.
     """
     del overwrite_ab, overwrite_b, check_finite
-    ab = ab if isinstance(ab, Tensor) else asarray(ab)
-    b = b if isinstance(b, Tensor) else asarray(b)
+    ab = ab if isinstance(ab, Tensor) else _read(ab)
+    b = b if isinstance(b, Tensor) else _read(b)
     if ab.ndim != 2 or ab.shape[0] == 0 or b.ndim not in (1, 2) or b.shape[0] != ab.shape[1]:
         raise ValueError("shapes of ab and b are not compatible.")
     return _solveh_banded(ab, b, bool(lower))
@@ -917,12 +922,12 @@ def solve_toeplitz(c_or_cr, b, check_finite=True):
     del check_finite
     if isinstance(c_or_cr, tuple):
         c, r = c_or_cr
-        c = c if isinstance(c, Tensor) else asarray(c)
-        r = r if isinstance(r, Tensor) else asarray(r)
+        c = c if isinstance(c, Tensor) else _read(c)
+        r = r if isinstance(r, Tensor) else _read(r)
     else:
-        c = c_or_cr if isinstance(c_or_cr, Tensor) else asarray(c_or_cr)
+        c = c_or_cr if isinstance(c_or_cr, Tensor) else _read(c_or_cr)
         r = conj(c) if c.dtype.startswith("complex") else c
-    b = b if isinstance(b, Tensor) else asarray(b)
+    b = b if isinstance(b, Tensor) else _read(b)
     c, r = c.reshape((c.size,)), r.reshape((r.size,))
     if r.shape != c.shape or b.ndim not in (1, 2) or b.shape[0] != c.shape[0]:
         raise ValueError("Incompatible c, r and b shapes.")
@@ -944,8 +949,8 @@ def solve_circulant(c, b, singular="raise", tol=None, caxis=-1, baxis=0, outaxis
         raise ValueError("singular must be 'raise' or 'lstsq'")
     if caxis not in (-1, 0) or baxis != 0 or outaxis != 0:
         raise ValueError("solve_circulant takes c's only axis, b's first and the solution's first")
-    c = c if isinstance(c, Tensor) else asarray(c)
-    b = b if isinstance(b, Tensor) else asarray(b)
+    c = c if isinstance(c, Tensor) else _read(c)
+    b = b if isinstance(b, Tensor) else _read(b)
     if c.ndim != 1 or b.ndim not in (1, 2) or b.shape[0] != c.shape[0]:
         raise ValueError(f"Shapes of c {c.shape} and b {b.shape} are incompatible")
     return _solve_circulant(c, b, singular == "lstsq", -1.0 if tol is None else float(tol))
@@ -953,7 +958,7 @@ def solve_circulant(c, b, singular="raise", tol=None, caxis=-1, baxis=0, outaxis
 
 def _vectors(name, *values):
     """`values` as vectors (a number as one entry) of one dtype, as NumPy promotes them."""
-    tensors = [value if isinstance(value, Tensor) else asarray(value) for value in values]
+    tensors = [value if isinstance(value, Tensor) else _read(value) for value in values]
     if _builtins.any(tensor.ndim > 1 for tensor in tensors):
         raise ValueError(f"{name} takes vectors: SciPy's batches of them are not taken")
     tensors = [tensor.reshape((tensor.size,)) for tensor in tensors]
@@ -991,7 +996,7 @@ def circulant(c):
 def block_diag(*arrs):
     """The block diagonal matrix of `arrs`, in order, as ``scipy.linalg.block_diag``: each a matrix (a vector one row,
     a number one entry), zeros off the blocks, one dtype as NumPy promotes them; none gives a ``1 × 0`` matrix."""
-    tensors = [arr if isinstance(arr, Tensor) else asarray(arr) for arr in (arrs or ([],))]
+    tensors = [arr if isinstance(arr, Tensor) else _read(arr) for arr in (arrs or ([],))]
     if _builtins.any(tensor.ndim > 2 for tensor in tensors):
         raise ValueError("block_diag takes matrices: SciPy's batches of them are not taken")
     tensors = [tensor.reshape((1, tensor.size)) if tensor.ndim < 2 else tensor for tensor in tensors]
@@ -1048,7 +1053,7 @@ def funm(A, func, disp=True):
         LinAlgError: if `A` is not square or holds an infinite or NaN entry, or `func` does not return one value per
             point.
     """
-    A = A if isinstance(A, Tensor) else asarray(A)
+    A = A if isinstance(A, Tensor) else _read(A)
     try:
         import numpy as _np
     except ImportError:  # pragma: no cover
@@ -1056,7 +1061,7 @@ def funm(A, func, disp=True):
 
     def evaluate(points):  # f at the points funm asks for: a NumPy array of them where NumPy is installed
         argument = _np.asarray(points) if _np is not None else points
-        values = [complex(x) for x in _flat(asarray(func(argument)).tolist())]
+        values = [complex(x) for x in _flat(_read(func(argument)).tolist())]
         return asarray(values, "complex128") if values else zeros((0,), "complex128")
 
     try:
@@ -1096,7 +1101,7 @@ def logm(A):
     Raises:
         LinAlgError: if `A` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
     """
-    A = A if isinstance(A, Tensor) else asarray(A)
+    A = A if isinstance(A, Tensor) else _read(A)
     if A.ndim > 2:
         parts = [logm(A[i]) for i in range(A.shape[0])]
         dtype = _promoted([part.dtype for part in parts]) if parts else A.dtype
@@ -1195,7 +1200,7 @@ def polar(a, side="right"):
     """
     if side not in ("right", "left"):
         raise ValueError("`side` must be either 'right' or 'left'")
-    a = a if isinstance(a, Tensor) else asarray(a)
+    a = a if isinstance(a, Tensor) else _read(a)
     if a.ndim != 2:
         raise ValueError("`a` must be a 2-D array.")
     w, s, vh = svd(a, full_matrices=False)
@@ -1226,7 +1231,7 @@ def _adjoint(a):
 def solve_continuous_lyapunov(a, q):
     """The solution `X` of ``A X + X Aᴴ = Q``, as ``scipy.linalg.solve_continuous_lyapunov``: the Sylvester equation
     with ``b = a.conj().T`` (:func:`solve_sylvester`)."""
-    a = a if isinstance(a, Tensor) else asarray(a)
+    a = a if isinstance(a, Tensor) else _read(a)
     if a.ndim != 2:
         raise LinAlgError("solve_continuous_lyapunov: a must be a square matrix")
     return solve_sylvester(a, _adjoint(a), q)
@@ -1246,8 +1251,8 @@ def solve_discrete_lyapunov(a, q, method=None):
             (direct) or ``A + I`` (bilinear) is singular.
         ValueError: for another `method`.
     """
-    a = a if isinstance(a, Tensor) else asarray(a)
-    q = q if isinstance(q, Tensor) else asarray(q)
+    a = a if isinstance(a, Tensor) else _read(a)
+    q = q if isinstance(q, Tensor) else _read(q)
     if a.ndim != 2 or a.shape[0] != a.shape[1] or q.shape != a.shape:
         raise LinAlgError("solve_discrete_lyapunov: a must be square and q of its shape")
     n = a.shape[0]
@@ -1282,8 +1287,8 @@ def _single_hermitian(x, name):
 def _are(a, b, q, r, e, s, balanced, discrete):
     """The native Riccati solver: `e` and `s` absent passed as `a` with their flags clear; single-precision `q` and `r`
     checked Hermitian at their own precision."""
-    a, b, q, r = (x if isinstance(x, Tensor) else asarray(x) for x in (a, b, q, r))
-    given = [x if x is None or isinstance(x, Tensor) else asarray(x) for x in (e, s)]
+    a, b, q, r = (x if isinstance(x, Tensor) else _read(x) for x in (a, b, q, r))
+    given = [x if x is None or isinstance(x, Tensor) else _read(x) for x in (e, s)]
     if _builtins.all(x.dtype in ("float32", "complex64") for x in [a, b, q, r] + [g for g in given if g is not None]):
         q, r = _single_hermitian(q, "q"), _single_hermitian(r, "r")
     e, s = given
@@ -1388,7 +1393,7 @@ def eig(a, b=None, left=False, right=True, overwrite_a=False, overwrite_b=False,
     del overwrite_a, overwrite_b, check_finite
     if b is None and not left and right and not homogeneous_eigvals:
         return _eig(a)
-    a = _tensor(a)
+    a = _operand(a)
     if b is None:
         if left:
             w, vl, vr = _eig_left(a)
@@ -1399,7 +1404,7 @@ def eig(a, b=None, left=False, right=True, overwrite_a=False, overwrite_b=False,
         if homogeneous_eigvals:
             w = stack([w, ones(w.shape, w.dtype)])
     else:
-        b = _tensor(b)
+        b = _operand(b)
         if len(a.shape) != 2 or len(b.shape) != 2 or a.shape[0] != a.shape[1]:
             raise ValueError("expected square matrix")
         if a.shape != b.shape:
@@ -1537,7 +1542,7 @@ def lu(a, permute_l=False, overwrite_a=False, check_finite=True, p_indices=False
         LinAlgError: if `a` is not a matrix or holds an infinite or NaN entry.
     """
     del overwrite_a, check_finite
-    a = _tensor(a)
+    a = _operand(a)
     rows, lower, upper = _lu_full(a)
     where = [0] * len(rows)  # where row r of a lies in L U: P's inverse
     for i, r in enumerate(rows):
@@ -1582,8 +1587,8 @@ def lu_solve(lu_and_piv, b, trans=0, overwrite_b=False, check_finite=True):
         raise LinAlgError(*caught.args) from None
     if result is not NotImplemented:
         return result
-    lu = lu if isinstance(lu, Tensor) else asarray(lu)
-    b = b if isinstance(b, Tensor) else asarray(b)
+    lu = lu if isinstance(lu, Tensor) else _read(lu)
+    b = b if isinstance(b, Tensor) else _read(b)
     if lu.dtype != b.dtype:
         dtype = _promoted((lu.dtype, b.dtype))
         lu, b = asarray(lu, dtype), asarray(b, dtype)
@@ -1658,8 +1663,8 @@ def lstsq(a, b, rcond=None):
     (``None``) machine epsilon times max(m, n), NumPy's; a negative `rcond` is machine epsilon, as LAPACK's. The
     epsilon is the operands' precision's (float32's for float32 and complex64)."""
     rcond = _tolerance("lstsq", rcond)
-    a = a if isinstance(a, Tensor) else asarray(a)
-    b = b if isinstance(b, Tensor) else asarray(b)
+    a = a if isinstance(a, Tensor) else _read(a)
+    b = b if isinstance(b, Tensor) else _read(b)
     if rcond is not None and rcond < 0:
         rcond = _MACHINE_EPSILON["float32" if _promoted((a.dtype, b.dtype)) in _SINGLE else "float64"]
     return _lstsq(a, b, rcond)
@@ -1685,7 +1690,7 @@ def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):
         raise ValueError("matrix_rank: tol and rtol can't be both set")
     tol, rtol = _tolerance("matrix_rank", tol), _tolerance("matrix_rank", rtol)
     if not isinstance(A, Tensor):
-        A = asarray(A)
+        A = _read(A)
     if A.ndim < 2:  # NumPy's: a vector or a number is of rank 1 unless all zero
         values = A.tolist()
         return int(_builtins.any(value != 0 for value in (values if A.ndim == 1 else [values])))
@@ -1771,7 +1776,13 @@ def qr(a, mode="reduced", *, pivoting=False):
 
 
 def _tensor(x):
+    """`x` as a Tensor for a function that moves elements: :func:`asarray`'s, a bool array-like kept bool, as NumPy's."""
     return x if isinstance(x, Tensor) else asarray(x)
+
+
+def _operand(x):
+    """`x` as a Tensor for a function that computes on it: :func:`_read`'s."""
+    return x if isinstance(x, Tensor) else _read(x)
 
 
 def _number_if_scalar(t):
@@ -1842,7 +1853,7 @@ def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
         plain = _numerical._borrowed_norm(x)  # read where it lies: a NumPy array is not copied
         if plain is not NotImplemented:
             return plain
-    x = _tensor(x)
+    x = _operand(x)
     order, axes = _vector_order(ord), list(_resolved_axes(x, axis, "vector_norm"))
     if order == -_math.inf and _builtins.any(x.shape[a] == 0 for a in axes):  # the smallest of nothing, as NumPy's minimum
         raise ValueError("vector_norm: ord=-inf over no element has no value (a minimum of nothing)")
@@ -1881,7 +1892,7 @@ def matrix_norm(x, /, *, keepdims=False, ord="fro"):
     ``"fro"`` (Frobenius, without overflow), ``"nuc"`` (the sum of the singular values), 2 and -2 (the largest and the
     smallest singular value), 1 and -1 (the largest and smallest column sum of magnitudes), ``inf`` and ``-inf``
     (row sums)."""
-    x = _tensor(x)
+    x = _operand(x)
     if len(x.shape) < 2:
         raise LinAlgError("matrix_norm: a matrix or a stack of matrices (rank ≥ 2)")
     rank = len(x.shape)
@@ -1896,7 +1907,7 @@ def norm(x, ord=None, axis=None, keepdims=False):
         plain = _numerical._borrowed_norm(x)  # every element's 2-norm, a NumPy array read where it lies
         if plain is not NotImplemented:
             return plain
-    x = _tensor(x)
+    x = _operand(x)
     rank = len(x.shape)
     if axis is None:
         if ord is None:
@@ -1918,7 +1929,7 @@ def cond(x, p=None):
     """The condition number of a matrix or of every matrix of a stack in the `p` norm, as ``numpy.linalg.cond``: for
     None, 2 and -2 the ratio of the extreme singular values (infinite for a singular matrix), else
     ``norm(x, p) * norm(inv(x), p)`` (infinite where `x` is singular)."""
-    x = _tensor(x)
+    x = _operand(x)
     if len(x.shape) < 2:
         raise LinAlgError("cond: a matrix or a stack of matrices (rank ≥ 2)")
     if 0 in x.shape[-2:]:  # as NumPy's
@@ -1942,7 +1953,7 @@ def cond(x, p=None):
         except LinAlgError:
             return _math.inf
     stack = reshape(x, (-1,) + tuple(x.shape[-2:]))
-    return reshape(asarray([cond(stack[i], p) for i in range(stack.shape[0])]), tuple(x.shape[:-2]))
+    return reshape(_read([cond(stack[i], p) for i in range(stack.shape[0])]), tuple(x.shape[:-2]))
 
 
 def _paired(x, y, f):
@@ -1953,7 +1964,7 @@ def _paired(x, y, f):
 def matrix_power(a, n):
     """`a` to the integer power `n` by repeated squaring, as ``numpy.linalg.matrix_power``: the identity for 0, the
     inverse's powers for a negative `n`; a matrix or a stack of square matrices."""
-    a = _tensor(a)
+    a = _operand(a)
     n = _operator.index(n)
     if len(a.shape) < 2 or a.shape[-1] != a.shape[-2]:
         raise LinAlgError("matrix_power: a square matrix or a stack of them")
@@ -1994,7 +2005,7 @@ def multi_dot(arrays, *, out=None):
     vector (a row), the last a vector (a column). `out` is not taken."""
     if out is not None:
         raise TypeError("multi_dot: out= is not taken; the product is returned")
-    operands = [_tensor(array) for array in arrays]
+    operands = [_operand(array) for array in arrays]
     if len(operands) < 2:
         raise ValueError("multi_dot: at least two arrays")
     first_vector, last_vector = len(operands[0].shape) == 1, len(operands[-1].shape) == 1
@@ -2094,7 +2105,7 @@ def tensorsolve(a, b, axes=None):
 def tensorinv(a, ind=2):
     """The inverse of `a` read as a matrix of its first `ind` axes by the others, as ``numpy.linalg.tensorinv``:
     ``tensordot(tensorinv(a, ind), a, ind)`` is the identity of `a`'s trailing axes."""
-    a = _tensor(a)
+    a = _operand(a)
     ind = _operator.index(ind)
     if ind <= 0:
         raise ValueError("tensorinv: ind must be a positive integer")
@@ -2133,7 +2144,7 @@ def cross(x1, x2, /, *, axis=-1):
     def part(t, i):
         return t[(slice(None),) * (len(t.shape) - 1) + (i,)]
 
-    components = [_tensor(c) for c in (part(a, 1) * part(b, 2) - part(a, 2) * part(b, 1),
+    components = [_operand(c) for c in (part(a, 1) * part(b, 2) - part(a, 2) * part(b, 1),
                                        part(a, 2) * part(b, 0) - part(a, 0) * part(b, 2),
                                        part(a, 0) * part(b, 1) - part(a, 1) * part(b, 0))]
     # side by side, copied: products with unit vectors multiplied an infinite component by their zeros (NaN elsewhere)
@@ -2186,7 +2197,8 @@ def asarray(obj, dtype=None):
     ``__array_interface__`` (NumPy: bool, integer, float32/64 and complex64/128 elements, any strides),
     a nested list or tuple of numbers, or a number (rank 0). `dtype` is ``"float64"``, ``"complex128"``,
     ``"float32"``, ``"complex64"`` or ``"bool"`` (true where nonzero); by default an array's own for float32,
-    complex64 and complex128, else float64 (bool and integers included), and complex128 for a complex number or list.
+    complex64, complex128 and bool, else float64 (integers included); complex128 for a complex number or a list with
+    one, bool for a bool or a list of bools alone, as NumPy's.
     A complex input is never cast to a real dtype (that would discard the imaginary part).
 
     Raises:
@@ -2213,6 +2225,15 @@ def asarray(obj, dtype=None):
     return _asarray(obj, dtype) if dtype is not None else _asarray(obj)
 
 
+def _read(obj, dtype=None):
+    """:func:`asarray` for an operand computed on: without a `dtype`, a bool array-like (not a bool Tensor) read as
+    float64, as NumPy's arithmetic and linear algebra compute on one (a bool Tensor has no arithmetic)."""
+    tensor = asarray(obj, dtype)
+    if dtype is None and tensor.dtype == "bool" and not isinstance(obj, Tensor):
+        return asarray(tensor, "float64")
+    return tensor
+
+
 class _UnreadableError(error, TypeError):
     """An object :func:`asarray` cannot read: a ``TypeError`` as NumPy raises, and a :class:`numerical.error`."""
 
@@ -2236,8 +2257,8 @@ def _same_dtype(a, b):
     tensors to the dtype both fit (:func:`_promoted`); a Python number keeps the tensor's precision, made complex
     only by a complex number (``float32 + 2.0`` is float32)."""
     weak_a, weak_b = _weak(a) and not _weak(b), _weak(b) and not _weak(a)
-    tensor_a = a if isinstance(a, Tensor) else asarray(a)
-    tensor_b = b if isinstance(b, Tensor) else asarray(b)
+    tensor_a = a if isinstance(a, Tensor) else _read(a)
+    tensor_b = b if isinstance(b, Tensor) else _read(b)
     if weak_a:
         dtype = _beside_weak(tensor_b.dtype, a)
     elif weak_b:
@@ -2342,7 +2363,7 @@ def _reduction(op, doc):
             whole = _numerical._borrowed_reduce(op, a)  # every element of a NumPy array read where it lies
             if whole is not NotImplemented:
                 return whole
-        a = a if isinstance(a, Tensor) else asarray(a)
+        a = a if isinstance(a, Tensor) else _read(a)
         rank = len(a.shape)
         if isinstance(axis, tuple):  # several axes: moved last and run together, one native reduction over them
             axes = _resolved_axes(a, axis, op)
@@ -2500,7 +2521,7 @@ def _elementwise(name, doc):
             mapped = _numerical._borrowed_unary(name, a)  # a NumPy array read where it lies
             if mapped is not NotImplemented:
                 return mapped
-        return _numerical._unary(name, a if isinstance(a, Tensor) else asarray(a))
+        return _numerical._unary(name, a if isinstance(a, Tensor) else _read(a))
 
     function.__name__ = name
     function.__doc__ = doc
@@ -2533,7 +2554,7 @@ def where(condition, x, y, /):
     """`x`'s element where `condition` holds, else `y`'s, the three broadcast, as ``numpy.where``: `condition` a bool
     Tensor or what :func:`asarray` reads (a number true where nonzero); `x` and `y` promoted to one dtype, the
     answer's, as arithmetic promotes them."""
-    condition = condition if isinstance(condition, Tensor) else asarray(condition)
+    condition = condition if isinstance(condition, Tensor) else _read(condition)
     if condition.dtype != "bool":
         condition = asarray(condition, "bool")
     x, y = _same_dtype(x, y)
@@ -2542,7 +2563,7 @@ def where(condition, x, y, /):
 
 def _classifier(name, doc):
     def function(x, /):
-        return _numerical._classify(name, x if isinstance(x, Tensor) else asarray(x))
+        return _numerical._classify(name, x if isinstance(x, Tensor) else _read(x))
 
     function.__name__ = name
     function.__doc__ = doc
@@ -2559,7 +2580,7 @@ isfinite = _classifier("isfinite", "Whether each element is finite (both parts o
 
 def _compared(op, name):
     def function(x1, x2, /):
-        return _comparison(op)(x1 if isinstance(x1, Tensor) else asarray(x1), x2)
+        return _comparison(op)(x1 if isinstance(x1, Tensor) else _read(x1), x2)
 
     function.__name__ = name
     function.__doc__ = f"``x1 {op} x2`` element by element, broadcast, as ``numpy.{name}``: a bool Tensor."
@@ -2576,7 +2597,7 @@ greater_equal = _compared(">=", "greater_equal")
 
 def _truth(x):
     """`x` as a bool Tensor, true where it is nonzero, as NumPy's logical functions read their operands."""
-    x = x if isinstance(x, Tensor) else asarray(x)
+    x = x if isinstance(x, Tensor) else _read(x)
     return x if x.dtype == "bool" else asarray(x, "bool")
 
 
@@ -2685,7 +2706,7 @@ def _trace_method(self, offset=0, axis1=0, axis2=1, dtype=None, out=None):
 def _dot(self, b):
     """``ndarray.dot``: the matrix product for vectors and matrices, else the sum over the last axis of `self` and
     the second to last of `b` (its only one for a vector)."""
-    b = _tensor(b)
+    b = _operand(b)
     if len(self.shape) <= 2 and len(b.shape) <= 2 and self.shape and b.shape:
         return _matmul(self, b)
     if not self.shape or not b.shape:
@@ -2791,7 +2812,7 @@ def hilbert(n):
 
 def _exact(rows, n):
     """The float64 `n × n` matrix of the Python integers `rows` (a function of i and j), each rounded once."""
-    return asarray([[float(rows(i, j)) for j in range(n)] for i in range(n)]) if n else zeros((0, 0))
+    return _read([[float(rows(i, j)) for j in range(n)] for i in range(n)]) if n else zeros((0, 0))
 
 
 def invhilbert(n, exact=False):
@@ -2905,7 +2926,7 @@ def companion(a):
 def fiedler(a):
     """The symmetric Fiedler matrix of `a`, ``F[i, j] = |a[i] - a[j]|``, as ``scipy.linalg.fiedler`` (along the last
     axis of a stack)."""
-    a = _tensor(a)
+    a = _operand(a)
     if not a.shape:
         a = reshape(a, (1,))
     if a.size == 0:
@@ -3006,7 +3027,7 @@ def diagsvd(s, M, N):
 def bandwidth(a):
     """The lower and upper bandwidths of the matrix `a` (the farthest diagonals below and above the main one holding
     a nonzero entry, 0 where none), as ``scipy.linalg.bandwidth``."""
-    a = _tensor(a)
+    a = _operand(a)
     if len(a.shape) != 2:
         raise ValueError("Input array must be a 2D array.")
     rows, cols = a.shape
@@ -3018,7 +3039,7 @@ def bandwidth(a):
 
 
 def _symmetric(a, atol, rtol, hermitian):
-    a = _tensor(a)
+    a = _operand(a)
     if len(a.shape) != 2 or a.shape[0] != a.shape[1]:
         raise ValueError("Input array must be square.")
     other = matrix_transpose(a)
@@ -3073,7 +3094,7 @@ def orth(A, rcond=None):
 def subspace_angles(A, B):
     """The principal angles between the column spaces of `A` and `B`, largest first, as
     ``scipy.linalg.subspace_angles`` (Knyazev and Argentati's algorithm, the sines for the small angles)."""
-    A, B = _tensor(A), _tensor(B)
+    A, B = _operand(A), _operand(B)
     if len(A.shape) != 2:
         raise ValueError(f"expected 2D array, got shape {A.shape}")
     QA = orth(A)
@@ -3094,7 +3115,7 @@ def subspace_angles(A, B):
     sines = svdvals(B).tolist() if _builtins.any(mask) else [0.0] * len(sigma)
     theta = [_math.asin(_builtins.min(_builtins.max(sines[k], -1.0), 1.0)) if mask[k]
              else _math.acos(_builtins.min(_builtins.max(sigma[::-1][k], -1.0), 1.0)) for k in range(len(sigma))]
-    return asarray(theta)
+    return _read(theta)
 
 
 def orthogonal_procrustes(A, B, check_finite=True):
@@ -3115,7 +3136,7 @@ def pinvh(a, atol=None, rtol=None, lower=True, return_rank=False, check_finite=T
     eigenvalues above ``atol + rtol max|λ|`` inverted (``rtol`` ``max(M, N) eps`` by default), with the rank where
     `return_rank`."""
     del check_finite
-    a = _tensor(a)
+    a = _operand(a)
     s, u = eigh(a, UPLO="L" if lower else "U")
     values = s.tolist()
     largest = _builtins.max((abs(v) for v in values), default=0.0)
@@ -3139,7 +3160,7 @@ def _maybe_real(A, B):
 
 
 def _square(name, A):
-    A = _tensor(A)
+    A = _operand(A)
     if len(A.shape) != 2 or A.shape[0] != A.shape[1]:
         raise ValueError(f"{name}: expected a square matrix")
     return A
@@ -3200,7 +3221,7 @@ def signm(A, disp=True):
     A = _square("signm", A)
 
     def rounded_sign(x):  # SciPy's: 0 where |Re λ| is not past c, NumPy's complex maximum ordering (Re, then Im)
-        values = [complex(v) for v in _flat(asarray(x).tolist())]
+        values = [complex(v) for v in _flat(_read(x).tolist())]
         c = 1e3 * 2.0 ** -52 * _builtins.max(values, key=lambda v: (v.real, v.imag))
         return [(1.0 if v.real > 0 else -1.0) if (abs(v.real), 0.0) > (c.real, c.imag) else 0.0 for v in values]
 
@@ -3294,7 +3315,7 @@ def _ordqz_select(sort):
                 chosen = sort(alpha, beta)
             else:
                 chosen = np.asarray(sort(np.asarray(alpha), np.asarray(beta))).tolist()
-            return _flat(asarray(chosen).tolist()) if isinstance(chosen, Tensor) else list(chosen)
+            return _flat(_read(chosen).tolist()) if isinstance(chosen, Tensor) else list(chosen)
         return select
     if not isinstance(sort, str) or sort not in _ORDQZ_SORTS:
         raise ValueError("sort parameter must be None, a callable, or one of ('lhp','rhp','iuc','ouc')")
@@ -3338,7 +3359,7 @@ def hessenberg(a, calc_q=False, overwrite_a=False, check_finite=True):
         ValueError: if `a` is not square or holds an infinite or NaN entry.
     """
     del overwrite_a, check_finite
-    a = _tensor(a)
+    a = _operand(a)
     if len(a.shape) != 2 or a.shape[0] != a.shape[1]:
         raise ValueError("expected square matrix")
     if a.shape[0] <= 2:
@@ -3359,7 +3380,7 @@ def matrix_balance(A, permute=True, scale=True, separate=False, overwrite_a=Fals
         ValueError: if `A` is not square or holds an infinite or NaN entry.
     """
     del overwrite_a
-    A = _tensor(A)
+    A = _operand(A)
     if len(A.shape) == 1:
         A = reshape(A, (1, -1))
     if len(A.shape) != 2 or A.shape[0] != A.shape[1]:
@@ -3369,7 +3390,7 @@ def matrix_balance(A, permute=True, scale=True, separate=False, overwrite_a=Fals
     if separate:
         return B, (scaling, list(permutation))
     rows = reshape(arange(n), (n, 1))
-    return B, where(rows == asarray([float(p) for p in permutation]) if n else rows == 0.0,
+    return B, where(rows == _read([float(p) for p in permutation]) if n else rows == 0.0,
                     reshape(scaling, (1, n)), 0.0)
 
 
@@ -3391,7 +3412,7 @@ def eigh_tridiagonal(d, e, eigvals_only=False, select="a", select_range=None, ch
         TypeError: if `d` or `e` is complex.
     """
     del check_finite, tol
-    d, e = _tensor(d), _tensor(e)
+    d, e = _operand(d), _operand(e)
     for check in (d, e):
         if len(check.shape) != 1:
             raise ValueError("expected a 1-D array")
@@ -3404,7 +3425,7 @@ def eigh_tridiagonal(d, e, eigvals_only=False, select="a", select_range=None, ch
     except (KeyError, TypeError):
         raise ValueError("invalid argument for select") from None
     if kind:
-        bounds = list(_flat(asarray(select_range).tolist())) if select_range is not None else []
+        bounds = list(_flat(_read(select_range).tolist())) if select_range is not None else []
         if len(bounds) != 2 or bounds[1] < bounds[0]:
             raise ValueError("select_range must be a 2-element array-like in nondecreasing order")
         if kind == 2:
@@ -3512,7 +3533,7 @@ def rq(a, overwrite_a=False, lwork=None, mode="full", check_finite=True):
     del overwrite_a, lwork, check_finite
     if mode not in ("full", "r", "economic"):
         raise ValueError("Mode argument should be one of ['full', 'r', 'economic']")
-    a = _tensor(a)
+    a = _operand(a)
     if len(a.shape) != 2:
         raise ValueError("expected matrix")
     M, N = a.shape
@@ -3532,7 +3553,7 @@ def cdf2rdf(w, v):
     Raises:
         ValueError: if the shapes do not match or a complex eigenvalue is not in a conjugate pair.
     """
-    w, v = _tensor(w), _tensor(v)
+    w, v = _operand(w), _operand(v)
     if len(w.shape) < 1:
         raise ValueError("expected w to be at least 1D")
     if len(v.shape) < 2:
@@ -3560,10 +3581,10 @@ def cdf2rdf(w, v):
         for first, second in zip(complex_at[0::2], complex_at[1::2]):
             partner[first], partner[second] = second, first
             role[first], role[second] = 1.0, -1.0
-        partner_col = reshape(asarray([float(p) for p in partner]), (n, 1))
-        role_col = reshape(asarray(role), (n, 1))
-        real_row = reshape(asarray([x.real for x in values]), (1, n))
-        imag_col = reshape(asarray([x.imag for x in values]), (n, 1))
+        partner_col = reshape(_read([float(p) for p in partner]), (n, 1))
+        role_col = reshape(_read(role), (n, 1))
+        real_row = reshape(_read([x.real for x in values]), (1, n))
+        imag_col = reshape(_read([x.imag for x in values]), (n, 1))
         paired = (j == partner_col) & (role_col != 0.0)
         blocks.append(where(i == j, real_row, where(paired, imag_col, 0.0)))
         diagonal = where(role_col > 0.0, 0.5j, where(role_col < 0.0, 0.5 + 0j, 1.0 + 0j))
@@ -3710,7 +3731,7 @@ def diag(v, k=0):
 def kron(a, b):
     """The Kronecker product, as ``numpy.kron``: blocks ``a[i, j] * b`` (over every axis, the shorter shape led by
     ones)."""
-    a, b = _tensor(a), _tensor(b)
+    a, b = _operand(a), _operand(b)
     rank = _builtins.max(len(a.shape), len(b.shape))
     sa = (1,) * (rank - len(a.shape)) + a.shape
     sb = (1,) * (rank - len(b.shape)) + b.shape

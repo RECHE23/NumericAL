@@ -47,7 +47,7 @@ class SinglePrecisionStorage(unittest.TestCase):
             for real in ("float32", "float64"):
                 with self.assertRaises(numerical.error):
                     numerical.asarray(source, real)
-        self.assertEqual(numerical.asarray(np.int16([1, 2])).dtype, "float64")  # integers and bools: float64, as before
+        self.assertEqual(numerical.asarray(np.int16([1, 2])).dtype, "float64")  # integers: float64, no integer dtype
 
     def test_constructors_take_the_four_dtypes(self):
         for dtype in DTYPES:

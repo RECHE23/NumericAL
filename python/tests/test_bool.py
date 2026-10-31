@@ -300,9 +300,53 @@ class Conversions(unittest.TestCase):
         self.assertEqual(mask.__array_interface__["typestr"], "|b1")
         strided = x[:, ::-1].T  # neither C nor Fortran order
         self.assertTrue(np.array_equal(np.asarray(numerical.asarray(strided, "bool")), strided))
-        # by default a NumPy bool array is read as float64, as before the bool dtype: the linear algebra takes it
-        self.assertEqual(numerical.asarray(x).dtype, "float64")
         self.assertEqual(numerical.inv(np.eye(2, dtype=bool)).tolist(), [[1.0, 0.0], [0.0, 1.0]])
+
+    def test_asarray_keeps_bools_bool_as_numpy(self):
+        x = np.array([[True, False], [False, True]])
+        for source in (x, x.tolist(), True, np.True_, [True], ((False,),), x[:, ::-1].T):
+            with self.subTest(source=source):
+                got = numerical.asarray(source)
+                self.assertEqual(got.dtype, "bool")
+                self.assertTrue(np.array_equal(np.asarray(got), np.asarray(source)))
+        for source, dtype in (([], "float64"), ([True, 1], "float64"), ([True, 2.5], "float64"), ([True, 1j], "complex128"),
+                              (1, "float64"), (np.int8([1]), "float64")):
+            with self.subTest(source=source):
+                self.assertEqual(numerical.asarray(source).dtype, dtype)
+                self.assertEqual(numerical.asarray(source).dtype, str(np.asarray(source).dtype)
+                                 if np.asarray(source).dtype.kind not in "iu" else "float64")
+
+    def test_a_bool_array_like_is_computed_on_as_float64(self):
+        # A function that computes reads a bool array-like as float64, as NumPy's arithmetic and linear algebra do;
+        # a bool Tensor has no arithmetic and is refused there.
+        x = np.array([[True, False], [True, True]])
+        for name, call in (("inv", lambda a: numerical.inv(a)), ("solve", lambda a: numerical.solve(a, [1.0, 2.0])),
+                           ("det", lambda a: numerical.det(a)), ("exp", lambda a: numerical.exp(a)),
+                           ("norm", lambda a: numerical.norm(a)), ("matmul", lambda a: numerical.matmul(a, a)),
+                           ("fft", lambda a: numerical.fft.fft(a)), ("kron", lambda a: numerical.kron(a, [[2.0]])),
+                           ("sum", lambda a: numerical.sum(a)), ("expm", lambda a: numerical.expm(a))):
+            with self.subTest(name=name):
+                expected = np.asarray(call(x.astype(float)))
+                for source in (x, x.tolist()):
+                    self.assertTrue(np.allclose(np.asarray(call(source)), expected))
+        with self.assertRaisesRegex(TypeError, "bool tensor has no arithmetic"):
+            numerical.inv(numerical.asarray(x))
+
+    def test_a_bool_array_like_is_moved_as_bool(self):
+        # A function that moves elements keeps a bool array-like bool, as NumPy's.
+        x = np.array([[True, False, True], [False, False, True]])
+        for name, call, expected in (("concatenate", lambda a: numerical.concatenate([a, a]), np.concatenate([x, x])),
+                                     ("stack", lambda a: numerical.stack([a, a]), np.stack([x, x])),
+                                     ("tril", lambda a: numerical.tril(a), np.tril(x)),
+                                     ("triu", lambda a: numerical.triu(a, 1), np.triu(x, 1)),
+                                     ("transpose", lambda a: numerical.transpose(a), x.T),
+                                     ("reshape", lambda a: numerical.reshape(a, (3, 2)), x.reshape(3, 2)),
+                                     ("squeeze", lambda a: numerical.squeeze(a[None]), x),
+                                     ("diagonal", lambda a: numerical.diagonal(a), np.diagonal(x))):
+            with self.subTest(name=name):
+                got = call(x)
+                self.assertEqual(got.dtype, "bool")
+                self.assertTrue(np.array_equal(np.asarray(got), expected))
 
     def test_a_mask_is_indexed_reshaped_and_transposed_as_any_tensor(self):
         x = np.array([[[True, False], [False, False]], [[True, True], [False, True]]])
