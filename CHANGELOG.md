@@ -80,6 +80,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   blocks) as before.
 
 ### Fixed
+- **`funm` gathers eigenvalues within 10⁻² of the largest modulus (10⁻³ before)**: Parlett's recurrence divided by
+  gaps of 0.003 to 0.01 and lost 10¹¹ to 10¹³ ε there (order 8, against references to 40 digits), its estimate
+  saying 10⁻¹³; such clusters now go by Cauchy's integral, within 4 ε. Wider gaps still lose (0.03: 4·10⁶ ε), and an
+  evenly spread spectrum too (64 eigenvalues on [0.05, 1]); Davies and Higham's 0.1 would gather those but a random
+  matrix's whole spectrum with them, whose single integral loses as much.
 - **`subspace_angles` takes the small angles by their sines**: its mask, built as SciPy builds it over the cosines in
   the other order, sent them through the arccosine (an angle of 10⁻⁸ answered 0, two shared directions' angles 3·10⁻⁸
   where they are 0); now within 10⁻¹⁵ there.

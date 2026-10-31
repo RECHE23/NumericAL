@@ -697,10 +697,11 @@ TEST(hermitian_matrix_functions_take_the_eigendecomposition)
   EXPECT(numerical::sqrtm(matrix<C> {0, 0, std::vector<C> {}}).rows() == 0);
 }
 
-// funm where eigenvalues gather (within 10⁻³ of the largest, or of 1): the Schur form reordered by clusters, each
+// funm where eigenvalues gather (within 10⁻² of the largest, or of 1): the Schur form reordered by clusters, each
 // cluster's block by Cauchy's integral on a circle (64 trapezoidal points, the even 32's the estimate), the blocks above
 // by the block recurrence. Jordan blocks (exp, cos), eigenvalues 10⁻⁸ apart, a cluster beside a single eigenvalue
-// (its circle kept off it), a similarity of a Jordan block, all within a few ε of the exponential; f identically 0 on
+// (its circle kept off it), a similarity of a Jordan block, eigenvalues 0.003 and 0.009 apart (Parlett's recurrence lost
+// 10¹¹ ε there), all within a few ε of the exponential; f identically 0 on
 // a cluster; f not finite at an eigenvalue (∞), a circle over f's singularity (its diagonal not f's: 1); f's values
 // not one per point refused.
 TEST(funm_of_gathered_eigenvalues_takes_cauchys_integral)
@@ -728,6 +729,17 @@ TEST(funm_of_gathered_eigenvalues_takes_cauchys_integral)
                         matrix<double> {{1.0, 1.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0005}}, matrix<double> {{3.0, 1.0, 2.0}, {0.0, 1.0, 1.0}, {0.0, 0.0, 1.0}}, matrix<double> {{1.0, 1.0, 2.0}, {0.0, 1.0, 1.0}, {0.0, 0.0, 3.0}}}) {
     const numerical::funm_result r {numerical::funm(a, exponential)};
     EXPECT(relative_gap(r.f, numerical::detail::as_complex(numerical::expm(a))) < 1e-14 && r.error < 1e-14);
+  }
+  for (const double gap : {0.003, 0.009}) { // eigenvalues 1 + k gap, within the bound: one cluster, no recurrence by gap
+    std::vector<double> entries(64, 0.0);
+    for (std::size_t i {0}; i < 8; ++i) {
+      entries[(i * 8) + i] = 1.0 + (gap * static_cast<double>(i));
+      for (std::size_t j {i + 1}; j < 8; ++j) {
+        entries[(i * 8) + j] = std::sin(1.0 + static_cast<double>((i * 8) + j));
+      }
+    }
+    const matrix<double> a {8, 8, entries};
+    EXPECT(relative_gap(numerical::funm(a, exponential).f, numerical::detail::as_complex(numerical::expm(a))) < 1e-14);
   }
   const matrix<double> q       {{1, 2, 0, 1, 0}, {0, 1, 3, 0, 1}, {1, 0, 1, 2, 0}, {2, 1, 0, 1, 1}, {0, 1, 1, 0, 2}};
   const matrix<double> similar {q * jordan(5, 0.5) * numerical::inverse(q)};

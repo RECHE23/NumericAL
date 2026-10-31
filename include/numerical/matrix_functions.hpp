@@ -1389,14 +1389,17 @@ namespace numerical {
       return id;
     }
 
-    //! \brief The clusters' bound: eigenvalues within `10⁻³` of the largest modulus (or of 1) gather.
+    //! \brief The clusters' bound: eigenvalues within `10⁻²` of the largest modulus (or of 1) gather. Parlett's
+    //!        recurrence divides by their gaps: at `10⁻³` gaps of 0.003 to 0.01 lost 10¹¹ to 10¹³ ε (order 8, against
+    //!        references to 40 digits); Davies and Higham's 0.1, relative here, gathers a dense spectrum into one block
+    //!        whose Cauchy integral loses as much (a random order 128, 10¹³ ε).
     [[nodiscard]] inline double cluster_bound(const std::vector<std::complex<double>>& values)
     {
       double scale {1.0};
       for (const std::complex<double>& v : values) {
         scale = std::max(scale, std::abs(v));
       }
-      return 1e-3 * scale;
+      return 1e-2 * scale;
     }
 
     //! \brief The diagonal of the square \p t.
@@ -1624,7 +1627,7 @@ namespace numerical {
   /*!
    * \brief Where \ref funm wants `f`, and the forms it completes: a Hermitian `A`'s eigendecomposition (\p t `Λ`, \p z
    *        `V`); else its complex Schur form (a real matrix's real form made complex, as `rsf2csf`), reordered so the
-   *        eigenvalues within `10⁻³` of the largest modulus (or of 1) gather in runs. \p points: the eigenvalues in
+   *        eigenvalues within `10⁻²` of the largest modulus (or of 1) gather in runs. \p points: the eigenvalues in
    *        the form's order, then \ref detail::contour_points on the circle about each run of two or more.
    */
   struct funm_plan
