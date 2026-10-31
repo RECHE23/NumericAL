@@ -1003,10 +1003,50 @@ any_tensor solve_for(const numerical::tensor<T>& b, VectorSolver by_vector, Matr
     return any_tensor {numerical::tensor<T> {{answer.size()}, numerical::buffer<T>(answer.begin(), answer.end())}};
 }
 
+// A triangular `a` (zeros below its diagonal, or above it) solved by substitution, as SciPy's solve detects it, where
+// the LU took n³/3: order 1000 upper 37 → 2 ms. The scan stops at a general matrix's first entry off the triangles. A
+// zero on the diagonal is refused as the factorisation refuses an exactly singular matrix, and an entry not finite as
+// it refuses one. None where `a` is neither triangle.
+template <typename T>
+std::optional<any_tensor> solve_triangle(const numerical::matrix<T>& a, const numerical::tensor<T>& b)
+{
+    const std::size_t n {a.rows()};
+    if (a.cols() != n || b.shape().empty() || b.shape()[0] != n) {
+        return std::nullopt; // the factorisation's checks say what is wrong
+    }
+    const T*   at {std::to_address(a.begin())};
+    bool       upper {true};
+    bool       lower {true};
+    for (std::size_t i {1}; i < n && (upper || lower); ++i) {
+        for (std::size_t j {0}; j < i && (upper || lower); ++j) {
+            upper = upper && at[(i * n) + j] == T {};
+            lower = lower && at[(j * n) + i] == T {};
+        }
+    }
+    if (!upper && !lower) {
+        return std::nullopt;
+    }
+    if (!std::all_of(a.begin(), a.end(), [](const T& x) { return numerical::detail::is_finite_entry(x); })) {
+        throw numerical::non_finite_error("LU decomposition: the matrix holds an infinite or NaN entry");
+    }
+    for (std::size_t i {0}; i < n; ++i) {
+        if (at[(i * n) + i] == T {}) {
+            throw numerical::singular_matrix_error("solve: matrix is singular");
+        }
+    }
+    const std::size_t    k {b.shape().size() == 1 ? 1 : b.shape()[1]};
+    numerical::buffer<T> x(b.data().begin(), b.data().end());
+    numerical::detail::solve_triangular_in_place(at, n, lower, numerical::triangular_op::none, false, x.data(), k);
+    return any_tensor {numerical::tensor<T> {b.shape(), std::move(x)}};
+}
+
 // A solved for b, `a` the copy of A the factorisation takes in place.
 template <typename T>
 any_tensor solve_copied(numerical::matrix<T> a, const numerical::tensor<T>& b)
 {
+    if (auto triangle {solve_triangle(a, b)}) {
+        return std::move(*triangle);
+    }
     const numerical::lu_decomposition<T> factored {std::move(a)};
     return solve_for(b, [&factored](const numerical::vector<T>& rhs) { return factored.solve(rhs); },
                      [&factored](numerical::matrix<T>&& rhs) { return factored.solve(std::move(rhs)); });
@@ -1026,20 +1066,34 @@ any_tensor do_solve(const numerical::tensor<T>& a, const numerical::tensor<T>& b
 // right-hand sides; a matrix too ill-conditioned for float32 falls back to the double factorisation.
 inline constexpr std::size_t mixed_precision_least {2000};
 
-inline any_tensor do_solve_mixed(const real_tensor& a, const real_tensor& b)
+// A float64 system, A the n × n row-major \p source (read, never written), solved as do_solve_mixed says: the one path
+// whatever holds A, a Tensor or a NumPy array read where it lies.
+inline any_tensor solve_mixed(const double* source, std::size_t n, const real_tensor& b)
 {
-    const std::size_t n {a.shape()[0]};
+    const auto        copy = [source, n] { return matrix_of_elements(source, n, n); };
     const std::size_t k {b.shape().size() == 1 ? 1 : b.shape()[1]};
-    if (n < mixed_precision_least || a.shape()[1] != n || b.shape()[0] != n || k * 64 > n) {
-        return do_solve<double>(a, b);
+    if (n < mixed_precision_least || b.shape()[0] != n || k * 64 > n) {
+        return solve_copied(copy(), b);
     }
-    const sb::scoped_gil_release unlocked {releases_gil_cubic(a.data().size())};
+    numerical::matrix<double> a {copy()};
+    if (auto triangle {solve_triangle(a, b)}) { // substitution before any factorisation
+        return std::move(*triangle);
+    }
     std::optional<numerical::matrix<double>> x {
-        numerical::detail::mixed_precision_solve(matrix_from(a), numerical::matrix<double> {n, k, numerical::buffer<double>(b.data().begin(), b.data().end())})};
+        numerical::detail::mixed_precision_solve(std::move(a), numerical::matrix<double> {n, k, numerical::buffer<double>(b.data().begin(), b.data().end())})};
     if (x) {
         return any_tensor {real_tensor {b.shape(), std::move(*x).elements()}};
     }
-    return solve_copied(matrix_from(a), b);
+    return solve_copied(copy(), b);
+}
+
+inline any_tensor do_solve_mixed(const real_tensor& a, const real_tensor& b)
+{
+    if (a.shape()[1] != a.shape()[0]) {
+        return do_solve<double>(a, b); // the factorisation's refusal
+    }
+    const sb::scoped_gil_release unlocked {releases_gil_cubic(a.data().size())};
+    return solve_mixed(a.data().data(), a.shape()[0], b);
 }
 
 // The leading axes two stacks' answers take: `x` and `y` right-aligned, an axis of 1 (or a missing one) taking the

@@ -394,6 +394,40 @@ class Solve(unittest.TestCase):
         with self.assertRaises(numerical.error):
             numerical.solve(a, numerical.Tensor([1, 2]))
 
+    def test_a_triangular_matrix_is_solved_by_substitution(self):
+        # upper, lower and diagonal: substitution, the answer within rounding; a zero on the diagonal singular and an
+        # entry not finite refused, as the factorisation refuses them (a lower one's zero pivot too, which it may miss)
+        upper = numerical.Tensor([2, 1, -1, 0, 3, 2, 0, 0, 4], shape=(3, 3))
+        lower = numerical.matrix_transpose(upper)
+        diagonal = numerical.Tensor([2, 0, 0, 0, 4, 0, 0, 0, 8], shape=(3, 3))
+        b = numerical.Tensor([1.0, 2.0, 3.0])
+        for a in (upper, lower, diagonal):
+            with self.subTest(a=a.tolist()):
+                x = numerical.solve(a, b)
+                for got, want in zip((a @ x).tolist(), b.tolist()):
+                    self.assertAlmostEqual(got, want, delta=1e-15)
+        self.assertEqual(numerical.solve(diagonal, b).tolist(), [0.5, 0.5, 0.375])  # exact
+        for singular in (numerical.Tensor([2, 1, 1, 0, 0, 1, 0, 0, 4], shape=(3, 3)),
+                         numerical.Tensor([2, 0, 0, 1, 0, 0, 1, 1, 4], shape=(3, 3))):
+            with self.subTest(singular=singular.tolist()), self.assertRaises(numerical.LinAlgError):
+                numerical.solve(singular, b)
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.solve(numerical.Tensor([1, float("nan"), 0, 1], shape=(2, 2)), numerical.Tensor([1.0, 1.0]))
+
+    @unittest.skipIf(np is None, "NumPy not installed")
+    def test_numpy_arrays_and_tensors_take_one_path(self):
+        # from order 2000 a float64 system is solved in mixed precision whatever holds it; a triangle by substitution
+        rng = np.random.default_rng(5)
+        for n, structure in ((2000, None), (2000, np.triu), (300, np.tril), (300, None)):
+            a = rng.standard_normal((n, n)) + np.sqrt(n) * np.eye(n)
+            a = structure(a) if structure else a
+            b = rng.standard_normal((n, 2))
+            with self.subTest(n=n, structure=structure):
+                from_numpy = np.asarray(numerical.solve(a, b))
+                from_tensor = np.asarray(numerical.solve(numerical.asarray(a), numerical.asarray(b)))
+                self.assertTrue(np.array_equal(from_numpy, from_tensor))
+                self.assertLess(np.abs(a @ from_numpy - b).max(), 1e-12 * np.abs(a).max() * np.abs(from_numpy).max())
+
 
 class NonFinite(unittest.TestCase):
     """Every decomposition refuses an infinite or NaN entry where it starts, rather than stop at once

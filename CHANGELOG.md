@@ -49,6 +49,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   `keepdims` for `any` and `all`; the other calls' time unchanged (a 4 × 4 `sum` 492 ns, `+` 857).
 
 ### Changed
+- **`solve` of a triangular matrix by substitution**, as SciPy's `solve` detects one: order 2000 45 → 5 ms (upper or
+  lower), 500 2.1 → 0.4 ms; a general matrix's scan stops at its first entry off the triangles, its answer the same
+  bits. A zero on the diagonal is refused as singular, where the factorisation of a lower triangle could pivot past it.
+  **A NumPy array takes the Tensor's path**: from order 2000 its float64 system is solved in mixed precision too (it
+  was factorised directly, 147 against 116 ms at order 3000, and its answer differed from the Tensor's).
 - **`fractional_matrix_power` of a symmetric or Hermitian matrix with p > 0 by one eigendecomposition**, `V Λᵖ Vᴴ`,
   where it took a singular value decomposition, a Schur form and a Padé approximant: order 200 43 → 3.5 ms, 500
   296 → 23 ms (arm64). Against references to 50 digits (96 matrices of orders 2 to 30: definite, indefinite, condition

@@ -1108,7 +1108,12 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
             std::optional<any_tensor> x;
             {
                 const sb::scoped_gil_release unlocked {releases_gil_cubic(n * n)};
-                x.emplace(solve_copied(matrix_of_elements(static_cast<const T*>(left.data), n, n), *rhs));
+                if constexpr (std::is_same_v<T, double>) { // the Tensor path's: mixed precision from order 2000
+                    x.emplace(solve_mixed(static_cast<const double*>(left.data), n, *rhs));
+                }
+                else {
+                    x.emplace(solve_copied(matrix_of_elements(static_cast<const T*>(left.data), n, n), *rhs));
+                }
             }
             return wrap(std::move(*x));
         }
