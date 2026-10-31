@@ -9,6 +9,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`eig(a, b)` and `eigvals(a, b)` of a real pencil by the real QZ**, as SciPy's `dggev`, where both went by the
+  complex one: `eigvals` order 300 319 → 77 ms (SciPy 1.17 82 ms), `eig` 461 → 89 ms (161 ms), with the left vectors
+  too 100 ms (234 ms); `eig`'s values and `eigvals`' the same bits. C++: `generalized_eigenvectors` of a
+  `real_generalized_schur`: each 2 × 2 block of `S` and `T` made triangular by two unitary rotations carried through
+  `Q` and `Z`, then the complex back substitution. Every pencil's back substitutions run on the threads and the basis
+  meets them in one product: complex `eig(a, b)` order 300 348 ms (SciPy 732 ms). Against SciPy over 400 real pencils
+  (orders 1 to 40, `B` singular, entries scaled by 10¹⁵⁰ and 10⁻¹⁵⁰): the values matched, the residuals within
+  2·10⁻¹⁵ of the operands.
 - **`lu` builds `P` and `P L` by indexing**, `eye(m)[:, rows]` and `L[where]`, where it built `P` from m² Python
   floats and `P L` by stacking m rows: order 1000 52 → 13 ms (`permute_l` 19 → 13 ms; SciPy 10 ms), the same answers.
 - **`eigvalsh_tridiagonal(select=…)` bisects on the threads, the same bits**: each eigenvalue's bisection runs on its

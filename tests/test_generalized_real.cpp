@@ -720,3 +720,47 @@ TEST(real_qz_moves_blocks_up)
   EXPECT(check(5, {2.0, 1.0, 0.3, 0.2, 0.1, 1.0, 2.0, 0.4, 0.1, 0.2, 0.0, 0.0, 5.0, 0.3, 0.2, 0.0, 0.0, 0.0, 7.0, 1.0, 0.0, 0.0, 0.0, 1.0, 7.0}, 4, 1,
                {6.0, 8.0}));
 }
+
+// A real pencil's eigenvectors (each 2 × 2 block made triangular, then the complex back substitution): right ones with
+// A v = λ B v and left ones with yᴴ A = λ yᴴ B, of unit 2-norm, a finite eigenvalue's within rounding, an infinite
+// one's with B v = 0 (yᴴ B = 0); conjugate pairs and real eigenvalues mixed, B singular, orders 1 to 30.
+TEST(real_pencil_eigenvectors)
+{
+  const auto check = [](const matrix<double>& a, const matrix<double>& b) {
+                       const numerical::real_generalized_schur d     {a, b};
+                       const std::size_t                       n     {a.rows()};
+                       const double                            scale {largest_entry(a) + largest_entry(b)};
+                       for (const bool left : {false, true}) {
+                         const matrix<C> v {numerical::generalized_eigenvectors(d, left)};
+                         for (std::size_t k {0}; k < n; ++k) {
+                           const numerical::detail::real_pencil_value& value    {d.values()[k]};
+                           const C                                     alpha    {value.alphar, value.alphai};
+                           double                                      norm     {0.0};
+                           double                                      residual {0.0};
+                           for (std::size_t r {0}; r < n; ++r) {
+                             norm = std::hypot(norm, std::abs(v(r, k)));
+                             C sum {};
+                             for (std::size_t j {0}; j < n; ++j) { // (β A − α B) v, or yᴴ (β A − α B) for a left one
+                               const C x {left ? std::conj(v(j, k)) : v(j, k)};
+                               sum += ((value.beta * (left ? a(j, r) : a(r, j))) - (alpha * (left ? b(j, r) : b(r, j)))) * x;
+                             }
+                             residual = std::max(residual, std::abs(sum));
+                           }
+                           EXPECT(std::abs(norm - 1.0) < 1e-14);
+                           EXPECT(residual < 1e-13 * scale * std::max(1.0, std::abs(C {value.beta}) + std::abs(alpha)));
+                         }
+                       }
+                     };
+  for (const std::size_t n : {std::size_t {1}, std::size_t {2}, std::size_t {5}, std::size_t {12}, std::size_t {30}}) {
+    check(waves(n, 1.0), waves(n, 2.0) + (3.0 * unit(n)));
+    check(waves(n, 3.0), waves(n, 5.0));
+    std::vector<double>  singular(n * n);
+    const matrix<double> full {waves(n, 6.0)};
+    for (std::size_t e {0}; e < singular.size(); ++e) {
+      singular[e] = e % n == 0 ? 0.0 : full.begin()[static_cast<std::ptrdiff_t>(e)]; // B's first column zero
+    }
+    check(waves(n, 7.0), matrix<double> {n, n, singular});
+  }
+  // A rotation by 90° against I: one conjugate pair ±i, its block's two rows of equal size
+  check(matrix<double> {{0.0, -1.0}, {1.0, 0.0}}, unit(2));
+}

@@ -400,7 +400,8 @@ std::tuple<any_tensor, any_tensor, any_tensor> eig_left(const any_tensor& v)
 }
 
 // _geneig(a, b, left, right) -> (alpha, beta, vl, vr): the generalized eigenvalues (α, β) of the pencil of two square
-// matrices of one order by the complex QZ (numerical::generalized_schur) and, as asked, its left and right
+// matrices of one order by the QZ algorithm (real_generalized_schur for a real pencil, as SciPy's dggev, else
+// generalized_schur) and, as asked, its left and right
 // eigenvectors (numerical::generalized_eigenvectors, unit 2-norm), as scipy.linalg.eig(a, b): complex, in the input's
 // precision; a vector not asked for 0 × 0.
 std::tuple<any_tensor, any_tensor, any_tensor, any_tensor> geneig(const any_tensor& a, const any_tensor& b, bool left, bool right)
@@ -413,6 +414,23 @@ std::tuple<any_tensor, any_tensor, any_tensor, any_tensor> geneig(const any_tens
         return {narrowed(std::move(alpha)), narrowed(std::move(beta)), narrowed(std::move(vl)), narrowed(std::move(vr))};
     }
     using C = std::complex<double>;
+    if (!is_complex(a) && !is_complex(b)) { // a real pencil: the real QZ, as SciPy's dggev
+        const numerical::matrix<double>      ra {matrix_from(std::get<real_tensor>(is_single(a) ? widened(a) : a))};
+        const numerical::matrix<double>      rb {matrix_from(std::get<real_tensor>(is_single(b) ? widened(b) : b))};
+        const sb::scoped_gil_release         unlocked {releases_gil_cubic(ra.rows() * ra.rows())};
+        const numerical::real_generalized_schur d {ra, rb};
+        const std::size_t                    n {ra.rows()};
+        numerical::buffer<C>                 alpha(n);
+        numerical::buffer<C>                 beta(n);
+        for (std::size_t k {0}; k < n; ++k) {
+            alpha[k] = C {d.values()[k].alphar, d.values()[k].alphai};
+            beta[k]  = C {d.values()[k].beta, 0.0};
+        }
+        const auto real_vectors = [&](bool wanted, bool of_left) {
+            return wanted ? any_tensor {cplx_tensor {numerical::generalized_eigenvectors(d, of_left)}} : any_tensor {cplx_tensor {{0, 0}, numerical::buffer<C> {}}};
+        };
+        return {any_tensor {cplx_tensor {{n}, std::move(alpha)}}, any_tensor {cplx_tensor {{n}, std::move(beta)}}, real_vectors(left, true), real_vectors(right, false)};
+    }
     const auto as_complex = [](const any_tensor& x) {
         return is_complex(x) ? matrix_from(std::get<cplx_tensor>(is_single(x) ? widened(x) : x))
                              : numerical::detail::as_complex(matrix_from(std::get<real_tensor>(is_single(x) ? widened(x) : x)));

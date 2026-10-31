@@ -2307,6 +2307,82 @@ namespace numerical {
     double                                                             b_back_ {1.0}; //!< T's.
   };
 
+  namespace detail {
+
+    /*!
+     * \brief The right (or, where \p left, the left) eigenvectors of the triangular pencil `(s, t)` whose diagonal is
+     *        \p values, as LAPACK's `ztgevc`: for each `(α, β)`, `x` with `(β S − α T) x = 0` and `x_k = 1` by back
+     *        substitution (`yᴴ (β S − α T) = 0` forward for a left one), then `basis x` made of unit 2-norm; a diagonal
+     *        entry of `β S − α T` below `ε (|β| ‖S‖ + |α| ‖T‖)` taken as that bound (`SMIN`), and `α` and `β` both zero
+     *        (a singular pencil) given the unit vector of its place. The substitutions on the threads, each on its own;
+     *        the basis applied to their nonzero parts by one product.
+     * \return The vectors as columns.
+     */
+    [[nodiscard]] inline matrix<std::complex<double>> triangular_pencil_vectors(const matrix<std::complex<double>>&                                       s,
+                                                                                const matrix<std::complex<double>>&                                       t,
+                                                                                const std::vector<std::pair<std::complex<double>, std::complex<double>>>& values,
+                                                                                const matrix<std::complex<double>>&                                       basis,
+                                                                                bool                                                                      left)
+    {
+      using C = std::complex<double>;
+      const std::size_t n      {s.rows()};
+      double            s_norm {0.0};
+      double            t_norm {0.0};
+      for (const C& x : s) {
+        s_norm = std::max(s_norm, std::abs(x));
+      }
+      for (const C& x : t) {
+        t_norm = std::max(t_norm, std::abs(x));
+      }
+      buffer<C> solved(n * n, C {}); // column k the substitution's x: rows 0 … k for a right vector, k … n − 1 a left
+      parallel_for(n, n * n / 2, [&](std::size_t k) {
+                     const C alpha {values[k].first};
+                     const C beta  {values[k].second};
+                     C*      x     {solved.data() + k}; // x[i] at x + i n
+                     x[k * n] = C {1.0};
+                     if (std::abs(alpha) <= std::numeric_limits<double>::min() && std::abs(beta) <= std::numeric_limits<double>::min()) {
+                       return;
+                     }
+                     const double smallest {std::numeric_limits<double>::epsilon() * ((std::abs(beta) * s_norm) + (std::abs(alpha) * t_norm))};
+                     const auto   entry = [&](std::size_t i, std::size_t j) { return (beta * s(i, j)) - (alpha * t(i, j)); }; // β S − α T
+                     const auto   pivot = [&](std::size_t i) {
+                                            const C m {entry(i, i)};
+                                            return std::abs(m) < smallest ? C {smallest} : m;
+                                          };
+                     if (!left) { // rows k − 1 … 0 of the upper triangular system
+                       for (std::size_t i {k}; i-- > 0;) {
+                         C sum {};
+                         for (std::size_t j {i + 1}; j <= k; ++j) {
+                           sum += entry(i, j) * x[j * n];
+                         }
+                         x[i * n] = -sum / pivot(i);
+                       }
+                     }
+                     else { // yᴴ M = 0: (Mᴴ y)_i = 0 for i > k, Mᴴ lower triangular
+                       for (std::size_t i {k + 1}; i < n; ++i) {
+                         C sum {};
+                         for (std::size_t j {k}; j < i; ++j) {
+                           sum += std::conj(entry(j, i)) * x[j * n];
+                         }
+                         x[i * n] = -sum / std::conj(pivot(i));
+                       }
+                     }
+                   });
+      const matrix<C> product {basis * matrix<C> {n, n, std::move(solved)}}; // the zeros of each x add nothing
+      buffer<C>       out(product.begin(), product.end());
+      for (std::size_t k {0}; k < n; ++k) {
+        double norm {0.0};
+        for (std::size_t r {0}; r < n; ++r) {
+          norm = std::hypot(norm, std::abs(out[(r * n) + k]));
+        }
+        for (std::size_t r {0}; r < n; ++r) {
+          out[(r * n) + k] /= norm;
+        }
+      }
+      return matrix<C> {n, n, std::move(out)};
+    }
+  } // namespace detail
+
   /*!
    * \brief The right (or, where \p left, the left) eigenvectors of the pencil \p d decomposes, as LAPACK's `ztgevc` and
    *        `scipy.linalg.eig(a, b)`: for each eigenvalue `(α, β)` in the diagonals' order, `x` with `(β S − α T) x = 0`
@@ -2319,64 +2395,7 @@ namespace numerical {
   [[nodiscard]] inline matrix<std::complex<double>> generalized_eigenvectors(const generalized_schur& d,
                                                                              bool                     left)
   {
-    using C = std::complex<double>;
-    const matrix<C>   s      {d.s()};
-    const matrix<C>   t      {d.t()};
-    const matrix<C>   basis  {left ? d.q() : d.z()};
-    const std::size_t n      {s.rows()};
-    double            s_norm {0.0};
-    double            t_norm {0.0};
-    for (const C& x : s) {
-      s_norm = std::max(s_norm, std::abs(x));
-    }
-    for (const C& x : t) {
-      t_norm = std::max(t_norm, std::abs(x));
-    }
-    buffer<C> out(n * n, C {});
-    for (std::size_t k {0}; k < n; ++k) {
-      const C        alpha  {d.values()[k].first};
-      const C        beta   {d.values()[k].second};
-      std::vector<C> x(n, C {});
-      x[k] = C {1.0};
-      if (std::abs(alpha) > std::numeric_limits<double>::min() || std::abs(beta) > std::numeric_limits<double>::min()) {
-        const double smallest {std::numeric_limits<double>::epsilon() * ((std::abs(beta) * s_norm) + (std::abs(alpha) * t_norm))};
-        const auto   entry = [&](std::size_t i, std::size_t j) { return (beta * s(i, j)) - (alpha * t(i, j)); }; // β S − α T
-        const auto   pivot = [&](std::size_t i) {
-                               const C m {entry(i, i)};
-                               return std::abs(m) < smallest ? C {smallest} : m;
-                             };
-        if (!left) { // rows k − 1 … 0 of the upper triangular system
-          for (std::size_t i {k}; i-- > 0;) {
-            C sum {};
-            for (std::size_t j {i + 1}; j <= k; ++j) {
-              sum += entry(i, j) * x[j];
-            }
-            x[i] = -sum / pivot(i);
-          }
-        }
-        else { // yᴴ M = 0: (Mᴴ y)_i = 0 for i > k, Mᴴ lower triangular
-          for (std::size_t i {k + 1}; i < n; ++i) {
-            C sum {};
-            for (std::size_t j {k}; j < i; ++j) {
-              sum += std::conj(entry(j, i)) * x[j];
-            }
-            x[i] = -sum / std::conj(pivot(i));
-          }
-        }
-      }
-      double         norm   {0.0};
-      std::vector<C> v(n, C {});
-      for (std::size_t r {0}; r < n; ++r) {
-        for (std::size_t j {0}; j < n; ++j) {
-          v[r] += basis(r, j) * x[j];
-        }
-        norm = std::hypot(norm, std::abs(v[r]));
-      }
-      for (std::size_t r {0}; r < n; ++r) {
-        out[(r * n) + k] = v[r] / norm;
-      }
-    }
-    return matrix<C> {n, n, std::move(out)};
+    return detail::triangular_pencil_vectors(d.s(), d.t(), d.values(), left ? d.q() : d.z(), left);
   }
 
   /*!
@@ -2544,6 +2563,85 @@ namespace numerical {
     double                                 a_back_ {1.0}; //!< The factor taking S back to A's scale.
     double                                 b_back_ {1.0}; //!< T's.
   };
+
+  /*!
+   * \brief The right (or, where \p left, the left) eigenvectors of the real pencil \p d decomposes, complex, as
+   *        `scipy.linalg.eig(a, b)` gives them for a real pencil (each of unit 2-norm): each 2 × 2 block of `S` and `T`
+   *        made triangular first by unitary rotations from both sides (the left one along `T v`, the right one along
+   *        the block's eigenvector `v`), carried through `S`, `T`, `Q` and `Z`, then the complex pencil's vectors
+   *        (\ref generalized_eigenvectors). The columns in the diagonals' order, as \p d's values.
+   */
+  [[nodiscard]] inline matrix<std::complex<double>> generalized_eigenvectors(const real_generalized_schur& d,
+                                                                             bool                          left)
+  {
+    using C = std::complex<double>;
+    const matrix<double> real_s     {d.s()};
+    const matrix<double> real_t     {d.t()};
+    const matrix<double> real_basis {left ? d.q() : d.z()};
+    const std::size_t    n          {real_s.rows()};
+    buffer<C>            s(real_s.begin(), real_s.end()); // row-major, S(i, j) at i n + j
+    buffer<C>            t(real_t.begin(), real_t.end());
+    buffer<C>            basis(real_basis.begin(), real_basis.end());
+    // Rows k and k + 1 of m, from column k, by Uᴴ for U = [u, (−ū1, ū0)].
+    const auto rows_by = [n](buffer<C>& m, std::size_t k, const C& u0, const C& u1) {
+                           for (std::size_t j {k}; j < n; ++j) {
+                             const C a {m[(k * n) + j]};
+                             const C b {m[((k + 1) * n) + j]};
+                             m[(k * n) + j]       = (std::conj(u0) * a) + (std::conj(u1) * b);
+                             m[((k + 1) * n) + j] = (-u1 * a) + (u0 * b);
+                           }
+                         };
+    // Columns k and k + 1 of m's first `rows` rows by V = [v, (−v̄1, v̄0)].
+    const auto columns_by = [n](buffer<C>& m, std::size_t k, std::size_t rows, const C& v0, const C& v1) {
+                              for (std::size_t i {0}; i < rows; ++i) {
+                                const C a {m[(i * n) + k]};
+                                const C b {m[(i * n) + k + 1]};
+                                m[(i * n) + k]     = (a * v0) + (b * v1);
+                                m[(i * n) + k + 1] = (-a * std::conj(v1)) + (b * std::conj(v0));
+                              }
+                            };
+    std::size_t k {0};
+    while (k + 1 < n) {
+      if (s[((k + 1) * n) + k] == C {}) { // a real eigenvalue's 1 × 1 block
+        ++k;
+        continue;
+      }
+      // (S_b − λ T_b) v = 0 by the larger row of the 2 × 2 block; u along T_b v, which S_b v is λ times
+      const detail::real_pencil_value& value {d.values()[k]};
+      const C                          lambda {C {value.alphar, value.alphai} / value.beta};
+      const auto                       m = [&](std::size_t i, std::size_t j) { return s[(i * n) + j] - (lambda * t[(i * n) + j]); };
+      const bool                       upper  {std::hypot(std::abs(m(k, k)), std::abs(m(k, k + 1))) >= std::hypot(std::abs(m(k + 1, k)), std::abs(m(k + 1, k + 1)))};
+      C                                v0     {upper ? m(k, k + 1) : m(k + 1, k + 1)};
+      C                                v1     {upper ? -m(k, k) : -m(k + 1, k)};
+      const double                     v_norm {std::hypot(std::abs(v0), std::abs(v1))};
+      v0 /= v_norm;
+      v1 /= v_norm;
+      C            u0     {(t[(k * n) + k] * v0) + (t[(k * n) + k + 1] * v1)};
+      C            u1     {t[((k + 1) * n) + k + 1] * v1};
+      const double u_norm {std::hypot(std::abs(u0), std::abs(u1))};
+      u0 /= u_norm;
+      u1 /= u_norm;
+      rows_by(s, k, u0, u1);
+      rows_by(t, k, u0, u1);
+      columns_by(s, k, k + 2, v0, v1);
+      columns_by(t, k, k + 2, v0, v1);
+      s[((k + 1) * n) + k] = C {};
+      t[((k + 1) * n) + k] = C {};
+      if (left) {
+        columns_by(basis, k, n, u0, u1);
+      }
+      else {
+        columns_by(basis, k, n, v0, v1);
+      }
+      k += 2;
+    }
+    std::vector<std::pair<C, C>> diagonal(n);
+    for (std::size_t i {0}; i < n; ++i) {
+      diagonal[i] = {s[(i * n) + i], t[(i * n) + i]};
+    }
+    return detail::triangular_pencil_vectors(matrix<C> {n, n, std::move(s)}, matrix<C> {n, n, std::move(t)}, diagonal,
+                                             matrix<C> {n, n, std::move(basis)}, left);
+  }
 
   namespace detail {
 
