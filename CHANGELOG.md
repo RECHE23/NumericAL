@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.43 — 2026-10-31
+
 ### Added
 - **`qz` and `ordqz`, as `scipy.linalg`'s, and the real QZ algorithm.** C++: `numerical::real_generalized_schur`, LAPACK's
   `dgges`: the operands scaled into range, `dgghrd`, `dhgeqz`'s double-shift iteration (2 × 2 blocks for conjugate pairs,

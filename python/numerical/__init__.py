@@ -62,7 +62,7 @@ class LinAlgError(error, ValueError):
     :class:`numerical.error`, so code catching that keeps working."""
 
 
-__version__ = "2026.10.42"
+__version__ = "2026.10.43"
 
 def set_num_threads(n):
     """Cap the threads a kernel uses at `n`, the caller's included; ``0`` lifts the cap. At ``1`` no thread is
