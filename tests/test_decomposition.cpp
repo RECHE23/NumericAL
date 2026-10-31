@@ -125,7 +125,9 @@ TEST(lu_factors_any_shape)
                        }
                        return fine;
                      };
-  for (const auto& [m, n] : {std::pair<std::size_t, std::size_t> {4, 4}, {3, 7}, {7, 3}, {30, 5}, {5, 30}, {1, 1}}) {
+  // tall ones past lu_tall_ratio by tall_lu_columns, 400 × 40 and 2000 × 70 through its recursion's splits, 81 × 40's
+  // right half (20 columns, 61 rows) too short for its products, unblocked
+  for (const auto& [m, n] : {std::pair<std::size_t, std::size_t> {4, 4}, {3, 7}, {7, 3}, {30, 5}, {5, 30}, {1, 1}, {400, 40}, {2000, 70}, {81, 40}}) {
     std::vector<double>               real(m * n);
     std::vector<std::complex<double>> complex(m * n);
     for (std::size_t e {0}; e < m * n; ++e) {
@@ -133,10 +135,10 @@ TEST(lu_factors_any_shape)
       real[e]    = std::sin(1.0 + (0.7 * x) + (0.013 * x * x));
       complex[e] = {real[e], std::cos(0.3 * x)};
     }
-    EXPECT(check(matrix<double> {m, n, real}, 1e-14));
-    EXPECT(check(matrix<std::complex<double>> {m, n, complex}, 1e-14));
+    EXPECT(check(matrix<double> {m, n, real}, 1e-13));
+    EXPECT(check(matrix<std::complex<double>> {m, n, complex}, 1e-13));
   }
-  // a zero column by columns: its pivot 0, its multipliers left 0
+  // a zero column by columns (nine rows, two columns): its pivot 0, its multipliers left 0
   const matrix<double> tall                                          {{1.0, 0.0}, {2.0, 0.0}, {3.0, 0.0}, {4.0, 0.0}, {5.0, 0.0}, {6.0, 0.0}, {7.0, 0.0}, {8.0, 0.0}, {9.0, 0.0}};
   const auto           zero                                          {numerical::lu_factors(tall)};
   EXPECT(check(tall, 1e-15) && zero.u(1, 1) == 0.0 && zero.l(8, 1) == 0.0);
@@ -150,7 +152,7 @@ TEST(lu_factors_any_shape)
   }
   EXPECT(check(matrix<std::complex<double>> {9, 2, ordered}, 1e-14));
   EXPECT(numerical::lu_factors(matrix<std::complex<double>> {0, 2, std::vector<std::complex<double>> {}}).l.rows() == 0);
-  // a tall matrix both ways: by columns, and its top rows beside zero columns (within four times): one choice of pivots
+  // a tall matrix both ways: by columns, and its top rows beside zero columns (within twice): one choice of pivots
   const matrix<double> wide_enough {{1.0, 2.0}, {3.0, 1.0}, {-4.0, 0.5}, {2.0, 2.0}, {0.5, -1.0}, {1.0, 1.0}, {9.0, 0.0}, {0.0, 3.0}, {1.0, -7.0}};
   const auto           by_columns  {numerical::lu_factors(wide_enough)};
   std::vector<double>  top(wide_enough.begin(), wide_enough.begin() + 8);

@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **`lu` of a wide or a tall matrix by blocks**: a wide matrix's `U` columns past its square part by the blocked
+  triangular solve, where a row-by-row loop ran on one thread (500 × 2000: 40 → 6.4 ms, SciPy 1.17 9.2 ms); a matrix
+  more than twice as tall as wide by `dgetrf2`'s recursion over its columns, a product for each half's update (5000 ×
+  200: 84 → 7.8 ms, SciPy 10.7 ms; 100 000 × 20 at SciPy's 15 ms), where past four times as tall it went column by
+  column, and from twice to four times as tall it factorised the square beside zero columns (`m³ / 3`: 1500 × 250
+  21 → 3.6 ms). P SciPy's and L within 10⁻¹³ of it over the shapes.
 - **`eig(a, b)` and `eigvals(a, b)` of a real pencil by the real QZ**, as SciPy's `dggev`, where both went by the
   complex one: `eigvals` order 300 319 → 77 ms (SciPy 1.17 82 ms), `eig` 461 → 89 ms (161 ms), with the left vectors
   too 100 ms (234 ms); `eig`'s values and `eigvals`' the same bits. C++: `generalized_eigenvectors` of a
