@@ -3603,6 +3603,7 @@ namespace numerical {
 
     static constexpr std::size_t pivoted_qr_block     {32};  //!< `geqp3`'s block of columns (`NB`).
     static constexpr std::size_t pivoted_qr_crossover {128}; //!< The columns `geqp3` leaves to the unblocked steps (`NX`).
+    static constexpr std::size_t pivoted_qr_band      {16};  //!< The columns one thread takes of a block's updates.
 
     /*!
      * \brief Up to \p width steps from column \p start of the column-major `m × n` \p w, as LAPACK's `laqps`: the
@@ -3664,9 +3665,15 @@ namespace numerical {
         const auto conjugate_dot = [&v, m, step](const T* column) { // A(step:, j)ᴴ v, vectorised
                                      return detail::adjoint_dot(column + step, v.data(), m - step);
                                    };
-        for (std::size_t j {kk + 1}; j < cols; ++j) {               // F(j, kk) = τ A(step:, j)ᴴ v
-          row_of_f(j)[kk] = tau * conjugate_dot(w.data() + ((start + j) * m));
-        }
+        // F(j, kk) = τ A(step:, j)ᴴ v, each column its own dot product: by bands of columns on the threads
+        const std::size_t later {cols - (kk + 1)};
+        detail::parallel_for((later + pivoted_qr_band - 1) / pivoted_qr_band, (m - step) * pivoted_qr_band, [&](std::size_t band) {
+                               const std::size_t first {kk + 1 + (band * pivoted_qr_band)};
+                               const std::size_t last {std::min(cols, first + pivoted_qr_band)};
+                               for (std::size_t j {first}; j < last; ++j) {
+                                 row_of_f(j)[kk] = tau * conjugate_dot(w.data() + ((start + j) * m));
+                               }
+                             });
         for (std::size_t j {0}; j <= kk; ++j) {
           row_of_f(j)[kk] = T {};
         }
@@ -3708,12 +3715,18 @@ namespace numerical {
         ++done;
       }
       const std::size_t below {start + done}; // the rows below the block's, the columns right of it: A −= V Fᴴ
-      for (std::size_t j {done}; j < cols; ++j) {
-        for (std::size_t t {0}; t < done; ++t) {
-          coefficients[t] = detail::conj_of(row_of_f(j)[t]);
-        }
-        detail::subtract_products(w.data() + ((start + j) * m) + below, coefficients.data(), w.data() + (start * m) + below, m, done, m - below);
-      }
+      const std::size_t right {cols - done};  // each column on its own: by bands of columns on the threads
+      detail::parallel_for((right + pivoted_qr_band - 1) / pivoted_qr_band, (m - below) * done * pivoted_qr_band, [&](std::size_t band) {
+                             std::array<T, pivoted_qr_block> terms {};
+                             const std::size_t                first {done + (band * pivoted_qr_band)};
+                             const std::size_t                last {std::min(cols, first + pivoted_qr_band)};
+                             for (std::size_t j {first}; j < last; ++j) {
+                               for (std::size_t t {0}; t < done; ++t) {
+                                 terms[t] = detail::conj_of(row_of_f(j)[t]);
+                               }
+                               detail::subtract_products(w.data() + ((start + j) * m) + below, terms.data(), w.data() + (start * m) + below, m, done, m - below);
+                             }
+                           });
       for (std::size_t t {0}; t < done; ++t) { // R below the diagonal: the reflectors are kept apart
         T* const column {w.data() + ((start + t) * m)};
         std::fill(column + start + t + 1, column + m, T {});

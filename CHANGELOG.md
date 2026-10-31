@@ -54,6 +54,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   bits. A zero on the diagonal is refused as singular, where the factorisation of a lower triangle could pivot past it.
   **A NumPy array takes the Tensor's path**: from order 2000 its float64 system is solved in mixed precision too (it
   was factorised directly, 147 against 116 ms at order 3000, and its answer differed from the Tensor's).
+- **The pivoted QR's block updates on the threads, the same bits**: each column's share of a block's reflections and
+  its dot product with each new reflector go by bands of 16 columns on the threads, where one thread ran them all
+  (order 1024 real 190 → 145 ms, order 513 complex 85 → 57 ms; arm64).
 - **`fractional_matrix_power` of a symmetric or Hermitian matrix with p > 0 by one eigendecomposition**, `V Λᵖ Vᴴ`,
   where it took a singular value decomposition, a Schur form and a Padé approximant: order 200 43 → 3.5 ms, 500
   296 → 23 ms (arm64). Against references to 50 digits (96 matrices of orders 2 to 30: definite, indefinite, condition
