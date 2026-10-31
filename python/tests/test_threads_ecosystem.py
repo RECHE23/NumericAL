@@ -19,9 +19,12 @@ def run(code, **environment):
 class Environment(unittest.TestCase):
     def test_omp_num_threads_when_numerical_s_is_absent(self):
         count = "import numerical; print(numerical.get_num_threads())"
-        self.assertEqual(run(count, OMP_NUM_THREADS="3"), "3")
-        self.assertEqual(run(count, OMP_NUM_THREADS="3,2"), "3")  # nested levels: the outermost
-        self.assertEqual(run(count, OMP_NUM_THREADS="3", NUMERICAL_NUM_THREADS="2"), "2")
+        # What a cap of k gives on this machine (at most its hardware threads: a CI runner may have two)
+        capped = {k: run(f"import numerical; numerical.set_num_threads({k}); print(numerical.get_num_threads())")
+                  for k in (2, 3)}
+        self.assertEqual(run(count, OMP_NUM_THREADS="3"), capped[3])
+        self.assertEqual(run(count, OMP_NUM_THREADS="3,2"), capped[3])  # nested levels: the outermost
+        self.assertEqual(run(count, OMP_NUM_THREADS="3", NUMERICAL_NUM_THREADS="2"), capped[2])
         default = run(count)
         for ignored in ("x", "0", " ", "-1"):
             with self.subTest(value=ignored):
