@@ -560,7 +560,8 @@ namespace {
 // triangular one, a diagonal one, a complex one, one with a negative eigenvalue (no principal branch there: no
 // diagonal written exactly); A^p A^(−p) = I with p from the floor (1.3) and from the ceiling (2.7) of the condition's
 // choice; whole powers by repeated squaring (0, 3, −2); a singular A by funm (its smallest singular value 0, and a
-// zero on its triangular form's diagonal behind a nonzero one), a negative power of it refused; the refusals.
+// zero on its triangular form's diagonal behind a nonzero one), a negative power of it refused; a symmetric A with
+// p > 0 by its eigendecomposition (the diagonal one, an indefinite one); the refusals.
 TEST(fractional_matrix_power_inverts_whole_powers)
 {
   const auto           complex_of = [](const matrix<double>& a) { return numerical::detail::as_complex(a); };
@@ -584,6 +585,12 @@ TEST(fractional_matrix_power_inverts_whole_powers)
   EXPECT(relative_gap(numerical::fractional_matrix_power(dense, 0.0), identity) == 0.0);
   EXPECT(relative_gap(numerical::fractional_matrix_power(dense, 3.0), complex_of(dense * dense * dense)) < 1e-15);
   EXPECT(relative_gap(numerical::fractional_matrix_power(dense, -2.0) * complex_of(dense * dense), identity) < 1e-14);
+  const matrix<double> indefinite      {{1.0, 2.0}, {2.0, 1.0}}; // symmetric, eigenvalues 3 and −1: V Λᵖ Vᴴ, complex
+  EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(indefinite, 0.5), 2), complex_of(indefinite)) < 1e-15);
+  // a diagonal triangular form entry by entry: a negative power (no eigendecomposition then), a complex diagonal
+  EXPECT(relative_gap(numerical::fractional_matrix_power(diagonal, -0.5), matrix<C> {{C {0.5}, C {}}, {C {}, C {1.0 / 3.0}}}) < 1e-15);
+  const matrix<C> complex_diagonal     {{C {0.0, 4.0}, C {}}, {C {}, C {9.0}}};
+  EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(complex_diagonal, 0.5), 2), complex_diagonal) < 1e-15);
   const matrix<double> zero_eigenvalue {{0.0, 0.0}, {0.0, 4.0}};
   EXPECT(relative_gap(numerical::fractional_matrix_power(zero_eigenvalue, 1.5), matrix<C> {{C {}, C {}}, {C {}, C {8.0}}}) < 1e-15);
   const matrix<double> rank_one        {{3.0, 1.0}, {3.0, 1.0}};                                               // its smallest singular value 3e-16, its Schur form's 0 exact

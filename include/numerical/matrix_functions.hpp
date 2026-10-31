@@ -2304,11 +2304,12 @@ namespace numerical {
 
   /*!
    * \brief `A^p` for a real \p p, as `scipy.linalg.fractional_matrix_power`: a whole \p p by repeated squaring;
-   *        else `A^a A^b` with `a` the floor or the ceiling of \p p, chosen by `A`'s condition as SciPy chooses it, and
-   *        `A^b` (`|b| < 1`) by Higham and Lin's Schur–Padé algorithm (2013) on the Schur form. Where the triangular form
-   *        has a zero on its diagonal (`A` singular), a positive \p p falls back to \ref funm of `x^(p − ⌊p⌋)`, as
-   *        SciPy's; a negative one has no answer and is refused (SciPy returns a matrix of NaN). Complex: a real
-   *        matrix's power may be complex.
+   *        for \p p > 0, an exactly Hermitian (real symmetric) `A` by one eigendecomposition, `V Λᵖ Vᴴ` (Hermitian where no
+   *        eigenvalue is below 0); else `A^a A^b` with `a` the floor or the ceiling of \p p, chosen by `A`'s condition as SciPy
+   *        chooses it, and `A^b` (`|b| < 1`) by Higham and Lin's Schur–Padé algorithm (2013) on the Schur form. Where
+   *        the triangular form has a zero on its diagonal (`A` singular), a positive \p p falls back to \ref funm of
+   *        `x^(p − ⌊p⌋)`, as SciPy's; a negative one has no answer and is refused (SciPy returns a matrix of NaN).
+   *        Complex: a real matrix's power may be complex.
    * \tparam T `double` or `std::complex<double>`.
    * \throws dimension_error       If \p a is not square.
    * \throws non_finite_error      If an entry is infinite or NaN.
@@ -2336,6 +2337,16 @@ namespace numerical {
     }
     if (p == std::floor(p)) {
       return detail::as_complex(detail::integer_power(a, p));
+    }
+    // V Λᵖ Vᴴ from one eigendecomposition, a negative eigenvalue's power complex; for p > 0 only: an eigenvalue's
+    // absolute error ε ‖A‖ grows by the condition under a negative power (60 times the Schur–Padé path's error seen)
+    if (p > 0.0 && detail::exactly_hermitian(a)) {
+      const auto [values, vectors] {detail::hermitian_system(a)};
+      std::vector<C> powers(values.size());
+      for (std::size_t k {0}; k < powers.size(); ++k) {
+        powers[k] = detail::principal_power(C {values[k]}, p);
+      }
+      return detail::spectral<C>(vectors, powers, std::all_of(values.begin(), values.end(), [](double v) { return v >= 0.0; }));
     }
     const vector<double> sigma {singular_values(a)};
     if (sigma[n - 1] != 0.0) {

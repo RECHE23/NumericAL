@@ -49,6 +49,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   `keepdims` for `any` and `all`; the other calls' time unchanged (a 4 × 4 `sum` 492 ns, `+` 857).
 
 ### Changed
+- **`fractional_matrix_power` of a symmetric or Hermitian matrix with p > 0 by one eigendecomposition**, `V Λᵖ Vᴴ`,
+  where it took a singular value decomposition, a Schur form and a Padé approximant: order 200 43 → 3.5 ms, 500
+  296 → 23 ms (arm64). Against references to 50 digits (96 matrices of orders 2 to 30: definite, indefinite, condition
+  10⁸, complex Hermitian; p from −1.6 to 2.5), median error 2.1·10⁻¹⁵ → 1.8·10⁻¹⁵, the worst unchanged. A negative p
+  keeps the Schur–Padé path: an eigenvalue's absolute error grows by the condition under it (60 times the error seen).
 - **`solve_discrete_are`, and `solve_continuous_are` with `e` (or an `r` too ill-conditioned for the Hamiltonian),
   in real arithmetic for real operands**: the extended pencil's real QZ (`dgges`, as SciPy's) where the complex one
   ran: m = 256 2.70 → 1.59 s discrete, 3.13 → 1.82 s continuous with `e` (Clang; GCC 2.69 → 1.41 s, 3.20 → 1.65 s).
