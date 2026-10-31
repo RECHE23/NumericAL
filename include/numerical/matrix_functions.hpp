@@ -1418,6 +1418,48 @@ namespace numerical {
       return share * scale;
     }
 
+    /*!
+     * \brief Whether the clusters of \p values within \p share are sound for \ref circles_of, each cluster's farthest
+     *        eigenvalue nearer its centre than every other one (no circle about it could keep the others out else), read from the values alone, before
+     *        \ref gather_clusters reorders a Schur form for them: a random matrix's spectrum chains into clusters no
+     *        circle separates, whose reordering \ref funm then gave up for the finer share (order 256: 12.7 of 41 ms).
+     *        \p values not empty.
+     */
+    [[nodiscard]] inline bool clusters_separate(const std::vector<std::complex<double>>& values,
+                                                double                                   share)
+    {
+      const std::vector<std::size_t>    cluster {eigenvalue_clusters(values, cluster_bound(values, share))};
+      const std::size_t                 count   {*std::ranges::max_element(cluster) + 1};
+      std::vector<std::complex<double>> centre(count);
+      std::vector<std::size_t>          members(count, 0);
+      for (std::size_t i {0}; i < values.size(); ++i) {
+        centre[cluster[i]] += values[i];
+        ++members[cluster[i]];
+      }
+      for (std::size_t c {0}; c < count; ++c) {
+        centre[c] /= static_cast<double>(members[c]);
+      }
+      std::vector<double> spread(count, 0.0);
+      std::vector<double> outside(count, std::numeric_limits<double>::infinity());
+      for (std::size_t c {0}; c < count; ++c) {
+        for (std::size_t i {0}; members[c] > 1 && i < values.size(); ++i) {
+          const double distance {std::abs(values[i] - centre[c])};
+          if (cluster[i] == c) {
+            spread[c] = std::max(spread[c], distance);
+          }
+          else {
+            outside[c] = std::min(outside[c], distance);
+          }
+        }
+      }
+      for (std::size_t c {0}; c < count; ++c) {
+        if (!(outside[c] > spread[c])) {
+          return false;
+        }
+      }
+      return true;
+    }
+
     //! \brief The diagonal of the square \p t.
     [[nodiscard]] inline std::vector<std::complex<double>> diagonal_of(const matrix<std::complex<double>>& t)
     {
@@ -1432,10 +1474,9 @@ namespace numerical {
     //!        diagonal): the runs' starts (and `n`), and each run's centre and radius (0 for a single eigenvalue).
     struct cluster_circles
     {
-      std::vector<std::size_t>          starts;       //!< Each run's first place, then `n`.
-      std::vector<std::complex<double>> centres;      //!< Each run's eigenvalues' mean.
-      std::vector<double>               radii;        //!< Each run's circle's radius; 0 for a single eigenvalue.
-      bool                              sound {true}; //!< Whether each circle keeps the other runs' eigenvalues out.
+      std::vector<std::size_t>          starts;  //!< Each run's first place, then `n`.
+      std::vector<std::complex<double>> centres; //!< Each run's eigenvalues' mean.
+      std::vector<double>               radii;   //!< Each run's circle's radius; 0 for a single eigenvalue.
     };
 
     //! \brief The trapezoidal rule's points on each circle of Cauchy's integral.
@@ -1498,9 +1539,6 @@ namespace numerical {
         }
         circles.centres[b] = centre;
         circles.radii[b]   = spread + std::min(std::max({spread, delta, coupling}), (outside - spread) / 2.0);
-        if (!(outside > spread)) { // another run's eigenvalue lies nearer the centre than this run's farthest
-          circles.sound = false;
-        }
       }
       return circles;
     }
@@ -1861,6 +1899,9 @@ namespace numerical {
     }
     std::tie(plan.t, plan.z) = detail::function_schur_form(a);
     plan.points              = detail::diagonal_of(plan.t);
+    if (!detail::clusters_separate(plan.points, plan.share)) { // chained clusters no circle separates: the finer share
+      plan.share = detail::cluster_share_fine;
+    }
     if (detail::gather_clusters(plan.t, plan.z, plan.share)) {
       plan.points                                 = detail::diagonal_of(plan.t);
       const detail::cluster_circles           circles {detail::circles_of(plan.t, plan.share)};
@@ -2048,12 +2089,10 @@ namespace numerical {
                              return detail::funm_answer(plan.z * matrix<C> {n, n, std::move(f_of_t)} *detail::adjoint_of(plan.z),
                                                         std::min(1.0, std::max(estimate, contour_error)), std::move(errors), at_eigenvalues);
                            };
-    const funm_plan plan {plan_funm(a)};
-    if (!plan.counts.empty() && !detail::circles_of(plan.t, plan.share).sound) { // chained clusters no circle separates
-      return evaluated(regathered(plan, detail::cluster_share_fine));
-    }
-    funm_result best {evaluated(plan)};
-    if (best.error > detail::funm_fallback_error && !best.contours.empty()) { // clusters, and an estimate past it
+    const funm_plan plan {plan_funm(a)}; // its share the finer where the clusters chain (detail::clusters_separate)
+    funm_result     best {evaluated(plan)};
+    // clusters, and an estimate past it, at the coarser share
+    if (plan.share != detail::cluster_share_fine && best.error > detail::funm_fallback_error && !best.contours.empty()) {
       funm_result fine {evaluated(regathered(plan, detail::cluster_share_fine))};
       if (fine.error < best.error) {
         best = std::move(fine);

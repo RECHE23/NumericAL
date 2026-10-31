@@ -23,6 +23,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   matrix's diagonal is taken real at every order, where SciPy's 1 × 1 case divides by the complex entry.
 
 ### Changed
+- **`funm` decides its clusters' share before reordering the Schur form**: whether each cluster within 0.1 of the
+  largest modulus keeps the other eigenvalues out of its circle depends on the eigenvalues alone, so a random matrix's
+  chained clusters go to the finer share at once, where the form was reordered for the coarser one, then again: order
+  256 41 → 28 ms (SciPy 1.17 43 ms), the same answers' accuracy.
 - **`~m` on the bytes, `asarray` and the products of a NumPy array by interned attribute names**: `~` of 10⁷ bools
   0.17 ms (NumPy 1.0); an array's `__array_struct__` and `__array_interface__` are looked up by names made once, where
   each call made a new string (the type cache's lock under free threading).
