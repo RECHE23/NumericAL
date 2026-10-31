@@ -77,7 +77,7 @@ jobs:
         with:
           path: dist
           merge-multiple: true
-      - uses: pypa/gh-action-pypi-publish@v1.14.0
+      - uses: pypa/gh-action-pypi-publish@v1.14.3
 
   # The GitHub /releases page for the tag: its notes are the annotated tag's message, which make release
   # writes from the CHANGELOG's section (a lightweight tag falls back to GitHub's generated notes), and
