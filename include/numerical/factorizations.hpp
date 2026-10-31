@@ -5059,7 +5059,8 @@ namespace numerical {
      */
     [[nodiscard]] inline merge_workspace& thread_workspace()
     {
-      thread_local merge_workspace work;
+      thread_local merge_workspace             work;
+      [[maybe_unused]] thread_local const bool registered {on_release([] { work = merge_workspace {}; })};
       return work;
     }
 

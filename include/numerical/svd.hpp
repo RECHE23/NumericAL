@@ -900,7 +900,8 @@ namespace numerical {
      */
     [[nodiscard]] inline arrow_workspace& thread_arrow_workspace()
     {
-      thread_local arrow_workspace work;
+      thread_local arrow_workspace             work;
+      [[maybe_unused]] thread_local const bool registered {on_release([] { work = arrow_workspace {}; })};
       return work;
     }
 

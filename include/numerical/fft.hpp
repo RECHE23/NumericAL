@@ -2013,7 +2013,8 @@ namespace numerical {
           data_ = own_.data();
           return;
         }
-        thread_local buffer<C> kept;
+        thread_local buffer<C>                   kept;
+        [[maybe_unused]] thread_local const bool registered {on_release([] { kept = buffer<C> {}; })};
         if (kept.size() < count) {
           kept.resize(count); // the most this thread has needed, up to fft_scratch_kept
         }

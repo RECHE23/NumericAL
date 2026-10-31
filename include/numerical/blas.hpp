@@ -51,7 +51,8 @@ namespace numerical::blas {
     //! \brief The storage of \ref syrk's operand copy this thread keeps between calls.
     [[nodiscard]] inline buffer<double>& syrk_operand() noexcept
     {
-      thread_local buffer<double> storage;
+      thread_local buffer<double>              storage;
+      [[maybe_unused]] thread_local const bool registered {numerical::detail::on_release([] { storage = buffer<double> {}; })};
       return storage;
     }
 
@@ -153,7 +154,8 @@ namespace numerical::blas {
     template <typename T>
     [[nodiscard]] buffer<T>& kept_storage(std::size_t slot) noexcept
     {
-      thread_local std::array<buffer<T>, 2> kept;
+      thread_local std::array<buffer<T>, 2>    kept;
+      [[maybe_unused]] thread_local const bool registered {numerical::detail::on_release([] { kept = std::array<buffer<T>, 2> {}; })};
       return kept[slot];
     }
 

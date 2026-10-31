@@ -36,7 +36,7 @@ import warnings as _warnings
 
 from numerical import _numerical
 from numerical._numerical import Tensor, asarray as _asarray, _asarray_nested, error, get_num_threads
-from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads
+from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads, release_memory
 
 __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
@@ -49,7 +49,7 @@ __all__ = [
     "matrix_rank", "cholesky", "ldl", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
-    "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
+    "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path", "release_memory",
     "get_include", "get_config", "blas_library",
     "schur", "solve_triangular", "lu", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
 ]

@@ -2379,7 +2379,8 @@ namespace numerical::detail {
     //! \brief The storage this thread keeps between products.
     [[nodiscard]] static buffer<T>& kept() noexcept
     {
-      thread_local buffer<T> storage;
+      thread_local buffer<T>                   storage;
+      [[maybe_unused]] thread_local const bool registered {on_release([] { storage = buffer<T> {}; })};
       return storage;
     }
 
@@ -3824,7 +3825,8 @@ namespace numerical::detail {
   template <typename R>
   [[nodiscard]] split_operands<R>& split_storage()
   {
-    thread_local split_operands<R> kept;
+    thread_local split_operands<R>           kept;
+    [[maybe_unused]] thread_local const bool registered {on_release([] { kept = split_operands<R> {}; })};
     return kept;
   }
 

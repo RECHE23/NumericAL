@@ -36,6 +36,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     .def_prop_ro<&get_array_interface>("__array_interface__",
                                        "NumPy array-interface (v3) describing the shared, read-only buffer.");
     // The 7 linear-algebra functions whose args/return are caster-able -> m.def.
+    m.def<&release_memory>("release_memory",
+                           "release_memory()\nFree the workspaces NumericAL keeps between calls: the calling thread's and the thread pool's,\nthen the blocks kept for reuse (as oneMKL's mkl_free_buffers). Another thread's stay, its own to free.");
     m.def<&set_num_threads>("_set_num_threads",
                             "_set_num_threads(n)\nCap the threads a kernel uses at n (see numerical.set_num_threads).");
     m.def<&set_numpy_loops>("_set_numpy_loops",

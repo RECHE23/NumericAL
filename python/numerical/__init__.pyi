@@ -6,6 +6,7 @@ from numerical import fft as fft
 from numerical._numerical import Tensor as Tensor
 from numerical._numerical import error as error
 from numerical._numerical import get_num_threads as get_num_threads
+from numerical._numerical import release_memory as release_memory
 
 _Dtype = Literal["float64", "complex128", "float32", "complex64", "bool"]
 _Number = float | complex | bool
@@ -27,7 +28,7 @@ __all__ = [
     "matrix_rank", "cholesky", "ldl", "qr", "eig",
     "eigvals", "eigh", "eigvalsh", "svd", "svdvals", "norm", "vector_norm", "matrix_norm", "cond", "matrix_power", "multi_dot",
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
-    "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
+    "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path", "release_memory",
     "get_include", "get_config", "blas_library",
     "schur", "solve_triangular", "lu", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
     "sum", "mean", "max", "min", "any", "all", "astype", "where", "isnan", "isinf", "isfinite", "equal", "not_equal",

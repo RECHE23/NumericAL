@@ -3757,6 +3757,13 @@ inline PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kw
 }
 
 
+// release_memory(): numerical::release_memory, the GIL released while it waits for the pool's workers.
+inline void release_memory()
+{
+    const sb::scoped_gil_release unlocked {true};
+    numerical::release_memory();
+}
+
 // set_num_threads(n): numerical::set_max_threads; a negative count is refused by the size_t conversion.
 inline void set_num_threads(std::size_t threads)
 {

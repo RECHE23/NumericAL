@@ -39,6 +39,49 @@ namespace numerical {
 
   namespace detail {
 
+    //! \brief The most workspaces a thread registers (\ref on_release): one per kind, scalar type and slot, a few dozen
+    //!        where every type is used (the C++ tests' thread: 34), so that registering allocates nothing (their
+    //!        accessors throw nothing).
+    inline constexpr std::size_t thread_release_places {256};
+
+    //! \brief The calling thread's steps that empty the workspaces it keeps between calls, each registered by the
+    //!        workspace when the thread first makes it (\ref on_release), and their count.
+    struct thread_release_steps
+    {
+      std::array<void (*)(), thread_release_places> steps {};  //!< The steps, in their order of registration.
+      std::size_t                                   count {0}; //!< How many.
+    };
+
+    //! \brief The calling thread's \ref thread_release_steps.
+    [[nodiscard]] inline thread_release_steps& thread_releases() noexcept
+    {
+      thread_local thread_release_steps steps;
+      return steps;
+    }
+
+    //! \brief Registers \p step among the calling thread's \ref thread_releases, while a place is left (a workspace past
+    //!        them is not freed by \ref release_thread_memory). \return Whether it was, for a `thread_local`'s
+    //!        initialiser beside the workspace it empties.
+    inline bool on_release(void (*step)()) noexcept
+    {
+      thread_release_steps& registered {thread_releases()};
+      if (registered.count == thread_release_places) {
+        return false;
+      }
+      registered.steps[registered.count] = step;
+      ++registered.count;
+      return true;
+    }
+
+    //! \brief Empties every workspace the calling thread keeps between calls: its \ref thread_releases, in turn.
+    inline void release_thread_memory()
+    {
+      const thread_release_steps& registered {thread_releases()};
+      for (std::size_t i {0}; i < registered.count; ++i) {
+        registered.steps[i]();
+      }
+    }
+
     /*!
      * \brief Blocks freed and kept for the next buffer that fits one: a fresh block's pages are each faulted in and
      *        zeroed by the system at their first write, on the thread that writes it (glibc hands a large freed block
@@ -133,6 +176,21 @@ namespace numerical {
                             std::align_val_t {alignment});
         }
         return true;
+      }
+
+      //! \brief Frees every block kept (\ref numerical::release_memory).
+      void clear() noexcept
+      {
+        std::array<block, Places> freed {};
+        {
+          const std::lock_guard<std::mutex> held {lock_};
+          freed = std::exchange(kept_, std::array<block, Places> {});
+        }
+        for (const block& b : freed) {
+          if (b.start != nullptr) {
+            ::operator delete(b.start, std::align_val_t {alignment});
+          }
+        }
       }
 
     private:

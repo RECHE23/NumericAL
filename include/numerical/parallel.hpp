@@ -425,9 +425,45 @@ namespace numerical::detail {
       static thread_pool* const pool {[] {
                                         auto* const started {new thread_pool {}};
                                         started->start();
+                                        instance().store(started);
                                         return started;
                                       }()};
       return *pool;
+    }
+
+    //! \brief The pool if \ref shared has started it, else nullptr (asking starts nothing).
+    [[nodiscard]] static thread_pool* started() noexcept
+    {
+      return instance().load();
+    }
+
+    /*!
+     * \brief Runs \p release on every worker, each on its own thread between two runs, never inside one, and waits until
+     *        all have, or \p wait has passed. \return Whether all have (a forked child, whose parent's workers are not
+     *        its own: true, none to wait for).
+     */
+    bool release_on_workers(void (                   *release )(),
+                            std::chrono::milliseconds wait)
+    {
+      if (owner_ != current_process()) {
+        return true;
+      }
+      const std::lock_guard<std::mutex> one    {release_lock_}; // one request at a time
+      std::size_t                       target {0};
+      {
+        const std::lock_guard<std::mutex> held {lock_};
+        release_.store(release);
+        target = (releases_.fetch_add(1) + 1) * workers_; // every worker acknowledges each request once
+      }
+      for (const std::unique_ptr<worker_bell>& bell : bells_) {
+        { const std::lock_guard<std::mutex> held {bell->lock}; }
+        bell->rung.notify_one();
+      }
+      const std::chrono::steady_clock::time_point until {std::chrono::steady_clock::now() + wait};
+      while (released_.load() < target && std::chrono::steady_clock::now() < until) {
+        std::this_thread::yield();
+      }
+      return released_.load() >= target;
     }
 
     /*!
@@ -525,6 +561,13 @@ namespace numerical::detail {
 
     thread_pool() = default;
 
+    //! \brief The started pool, nullptr before.
+    [[nodiscard]] static std::atomic<thread_pool*>& instance() noexcept
+    {
+      static std::atomic<thread_pool*> pool {nullptr};
+      return pool;
+    }
+
     /*!
      * \brief Starts the workers (after construction: each uses the pool), `worker_cores`: on Linux one per core,
      *        pinned there. Free to move, as a caller is, two threads at times shared one core's hyperthreads (a
@@ -558,13 +601,14 @@ namespace numerical::detail {
     //!        out, waits for the next.
     [[noreturn]] void serve(worker_bell& bell)
     {
-      [[maybe_unused]] const std::size_t core {bell.core};
-      std::size_t                        seen {0};
+      [[maybe_unused]] const std::size_t core     {bell.core};
+      std::size_t                        seen     {0};
+      std::size_t                        released {0};    // the release requests this worker has served
 #if defined(__linux__)
-      bool spin                               {true}; // the worker that sat a run out sleeps till the next: polling, it slowed its core's caller
+      bool spin                                   {true}; // the worker that sat a run out sleeps till the next: polling, it slowed its core's caller
 #endif
       for (;;) {
-        const auto started {[this, &seen] { return generation_.load() != seen; }};
+        const auto started {[this, &seen, &released] { return generation_.load() != seen || releases_.load() != released; }};
 #if defined(__linux__)
         if (spin) {
           spin_until(started);
@@ -577,6 +621,14 @@ namespace numerical::detail {
           std::unique_lock<std::mutex> held {bell.lock};
           bell.rung.wait(held, started);
           bell.asleep.store(false);
+        }
+        if (const std::size_t requested {releases_.load()}; requested != released) { // between runs: its workspaces go
+          release_.load()();
+          released_.fetch_add(requested - released);
+          released = requested;
+        }
+        if (generation_.load() == seen) { // woken for a release alone
+          continue;
         }
         std::shared_ptr<pool_job> job;
         {
@@ -604,16 +656,20 @@ namespace numerical::detail {
       }
     }
 
-    std::mutex                                lock_;               //!< Guards current_ and generation_.
-    std::vector<std::unique_ptr<worker_bell>> bells_;              //!< Each worker's, set before it starts.
-    std::shared_ptr<pool_job>                 current_;            //!< The latest run.
-    std::atomic<std::size_t>                  generation_ {0};     //!< Counts the runs (polled without the lock).
-    std::atomic<bool>                         busy_       {false}; //!< Whether a run holds the pool.
-    std::size_t                               workers_    {0};     //!< The threads started.
+    std::mutex                                lock_;                 //!< Guards current_ and generation_.
+    std::vector<std::unique_ptr<worker_bell>> bells_;                //!< Each worker's, set before it starts.
+    std::shared_ptr<pool_job>                 current_;              //!< The latest run.
+    std::atomic<std::size_t>                  generation_ {0};       //!< Counts the runs (polled without the lock).
+    std::atomic<bool>                         busy_       {false};   //!< Whether a run holds the pool.
+    std::mutex                                release_lock_;         //!< One release request at a time.
+    std::atomic<void (*)()>                   release_    {nullptr}; //!< What a release request runs on each worker.
+    std::atomic<std::size_t>                  releases_   {0};       //!< Counts the release requests.
+    std::atomic<std::size_t>                  released_   {0};       //!< Counts the workers' acknowledgements.
+    std::size_t                               workers_    {0};       //!< The threads started.
 #if defined(__linux__)
-    std::vector<std::size_t> processor_cores_;                     //!< Each processor's core (`processor_cores`), set before the workers start.
+    std::vector<std::size_t> processor_cores_;                       //!< Each processor's core (`processor_cores`), set before the workers start.
 #endif
-    long                      owner_      {current_process()};     //!< The process whose threads they are.
+    long                      owner_      {current_process()};       //!< The process whose threads they are.
   };
 
   //! \brief The most threads a parallel_for uses (0: as many as the pool has), set by \ref numerical::set_max_threads.

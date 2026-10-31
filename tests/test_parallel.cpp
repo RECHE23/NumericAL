@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
+#include "numerical/numerical.hpp"
 #include "numerical/parallel.hpp"
 
 #if !defined(_WIN32)
@@ -49,6 +50,49 @@ namespace {
   }
 } // namespace
 #endif
+
+// release_memory empties the workspaces the caller and every worker keep: a product's packing, filled on the threads,
+// is empty on each thread a run lands on after it. A request that may not wait returns at once.
+TEST(release_memory_empties_every_thread_s_workspaces)
+{
+  const std::size_t                     n {384};
+  const numerical::matrix<double>       a {n, n, std::vector<double>(n * n, 0.5)};
+  const auto                            capacities = [] {
+                                                       std::vector<std::size_t> seen(256, 0);
+                                                       numerical::detail::parallel_for(seen.size(), std::size_t {1} << 20, [&seen](std::size_t i) {
+                                                                                         seen[i] = numerical::detail::packing_storage<double>::kept().capacity();
+                                                                                       });
+                                                       return *std::ranges::max_element(seen);
+                                                     };
+  static_cast<void>(a * a);
+  EXPECT(capacities() > 0 || numerical::max_threads() == 1); // some thread keeps its packing
+  numerical::release_memory();
+  EXPECT(capacities() == 0);
+  EXPECT(numerical::detail::packing_storage<double>::kept().capacity() == 0);
+  std::this_thread::sleep_for(std::chrono::milliseconds {5}); // the workers asleep: none answers within no time
+  static_cast<void>(numerical::detail::thread_pool::shared().release_on_workers(&numerical::detail::release_thread_memory, std::chrono::milliseconds {0}));
+  numerical::release_memory();                                // twice in a row, the second with nothing left
+  EXPECT(capacities() == 0);
+  static_cast<void>(a * a);                                   // without a pool (never started there): the caller's own alone
+  numerical::detail::release_memory_on(nullptr);
+  EXPECT(numerical::detail::packing_storage<double>::kept().capacity() == 0);
+}
+
+// A thread's registry of workspaces to empty holds them all with room to spare, and refuses a step past its places
+// (a fresh thread's, filled with steps that do nothing).
+TEST(a_thread_registers_its_workspaces_within_its_places)
+{
+  EXPECT(numerical::detail::thread_releases().count < numerical::detail::thread_release_places / 2);
+  bool refused {false};
+  std::thread {[&refused] {
+                 for (std::size_t i {0}; i < numerical::detail::thread_release_places; ++i) {
+                   static_cast<void>(numerical::detail::on_release(+[] {}));
+                 }
+                 refused = !numerical::detail::on_release(+[] {});
+                 numerical::detail::release_thread_memory();
+               }}.join();
+  EXPECT(refused);
+}
 
 TEST(parallel_for_runs_every_index_once)
 {
@@ -558,6 +602,10 @@ TEST(a_forked_child_runs_its_kernels_alone)
       const auto nothing {[](const void*, std::size_t, std::size_t) {}};
       if (numerical::detail::thread_pool::shared().try_run(nothing, nullptr, 1, 1, 1, 1)) {
         end_child(2);
+      }
+      // nor waits for them to release their workspaces: none of them is its own
+      if (!numerical::detail::thread_pool::shared().release_on_workers(+[] {}, std::chrono::milliseconds {0})) {
+        end_child(3);
       }
       // On the stack: an allocator need not be safe to call in a child forked among threads (the address
       // sanitizer's is not), and the kernel itself allocates nothing here.

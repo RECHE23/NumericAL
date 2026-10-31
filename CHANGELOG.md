@@ -9,6 +9,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`release_memory()`, as oneMKL's `mkl_free_buffers`**: the workspaces NumericAL keeps between calls given back —
+  the calling thread's, each pool worker's (emptied on its own thread between two runs, never inside one; a pool never
+  started left alone), the blocks kept for reuse, then the allocator's free pages (`malloc_trim`, on each worker's
+  arena too; `malloc_zone_pressure_relief`; `_heapmin`). A session of nine operations of order 1500 under glibc: on
+  one thread 148 → 2 MB, on eight 210 → 34 MB (3 MB with `MALLOC_ARENA_MAX=1`). Each thread's workspaces register
+  their emptying when the thread first makes them, so none is missed and no thread touches another's.
 - **NumericAL among other libraries' threads**: `OMP_NUM_THREADS` is read at import when `NUMERICAL_NUM_THREADS` is
   absent (its first count, as OpenBLAS reads it), so joblib's workers, which set it, cap NumericAL too; and NumericAL is
   a threadpoolctl library (`user_api="blas"`, `internal_api="numerical"`): `threadpool_limits` (scikit-learn, joblib)
