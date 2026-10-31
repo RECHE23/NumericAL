@@ -49,6 +49,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   `keepdims` for `any` and `all`; the other calls' time unchanged (a 4 × 4 `sum` 492 ns, `+` 857).
 
 ### Changed
+- **`solve_discrete_are`, and `solve_continuous_are` with `e` (or an `r` too ill-conditioned for the Hamiltonian),
+  in real arithmetic for real operands**: the extended pencil's real QZ (`dgges`, as SciPy's) where the complex one
+  ran: m = 256 2.70 → 1.59 s discrete, 3.13 → 1.82 s continuous with `e` (Clang; GCC 2.69 → 1.41 s, 3.20 → 1.65 s).
+  The answers' errors against references to 50 digits as before (184 discrete and 202 continuous equations: medians
+  3.7·10⁻¹⁵ → 3.3·10⁻¹⁵ and 2.5·10⁻¹⁶ → 2.6·10⁻¹⁶). A pencil whose stable half holds other than m eigenvalues is
+  refused (`LinAlgError`, eigenvalues too close to the boundary): a real pencil's conjugate pair on the unit circle
+  moves whole, and the symmetry test alone would pass it (SciPy answers 1 + √2 there for a 1 × 1 equation).
 - **The QZ algorithm twice as fast, the same bits**: `Q` and `Z` are kept transposed through the reduction, the
   iteration and the reordering, so that each rotation and reflection runs along contiguous memory where it strode
   across rows. Real (`qz`, `ordqz`, `real_generalized_schur`): order 256 369 → 188 ms, 512 3.73 → 1.77 s (SciPy

@@ -2557,16 +2557,28 @@ namespace numerical {
       return largest;
     }
 
-    //! \brief The operands of an algebraic Riccati equation, `e` and `s` absent when null.
-    struct riccati_terms
+    //! \brief The operands of an algebraic Riccati equation in the arithmetic of \p T, `e` and `s` absent when null.
+    template <typename T>
+    struct riccati_operands
     {
-      const matrix<std::complex<double>>& a;
-      const matrix<std::complex<double>>& b;
-      const matrix<std::complex<double>>& q;
-      const matrix<std::complex<double>>& r;
-      const matrix<std::complex<double>>* e;
-      const matrix<std::complex<double>>* s;
+      const matrix<T>& a;
+      const matrix<T>& b;
+      const matrix<T>& q;
+      const matrix<T>& r;
+      const matrix<T>* e;
+      const matrix<T>* s;
     };
+
+    //! \brief The operands of an algebraic Riccati equation as complex matrices (the residuals and Newton's step).
+    using riccati_terms = riccati_operands<std::complex<double>>;
+
+    //! \brief Refuses a Riccati equation whose pencil has eigenvalues on (or too close to) the boundary.
+    //! \throws convergence_error Always.
+    [[noreturn]] inline void refuse_boundary(bool continuous)
+    {
+      throw convergence_error(continuous ? "The associated Hamiltonian pencil has eigenvalues too close to the imaginary axis"
+                                         : "The associated symplectic pencil has eigenvalues too close to the unit circle");
+    }
 
     /*!
      * \brief `X = U₂₁ U₁₁⁻¹` from the `m` leading Schur vectors' halves \p top (`U₁₁`) and \p bottom (`U₂₁`) of a Riccati
@@ -2596,8 +2608,7 @@ namespace numerical {
       const matrix<T> product   {adjoint_of(top) * bottom};
       const double    tolerance {std::max(std::ldexp(1.0, -43), 0.1 * norm_one(product))};
       if (!(norm_one(product - adjoint_of(product)) <= tolerance)) {
-        throw convergence_error(continuous ? "The associated Hamiltonian pencil has eigenvalues too close to the imaginary axis"
-                                           : "The associated symplectic pencil has eigenvalues too close to the unit circle");
+        refuse_boundary(continuous);
       }
       return adjoint_of(solve(adjoint_of(top), adjoint_of(bottom)));
     }
@@ -2606,11 +2617,11 @@ namespace numerical {
      * \brief The extended pencil `(H, J)` of order `2m + n` of SciPy's `solve_continuous_are` (\p continuous) or
      *        `solve_discrete_are`, row-major.
      */
-    [[nodiscard]] inline std::pair<buffer<std::complex<double>>, buffer<std::complex<double>>>
-    riccati_pencil(const riccati_terms& terms,
-                   bool                 continuous)
+    template <typename T>
+    [[nodiscard]] std::pair<buffer<T>, buffer<T>> riccati_pencil(const riccati_operands<T>& terms,
+                                                                 bool                       continuous)
     {
-      using C = std::complex<double>;
+      using C = T;
       const std::size_t m {terms.a.rows()};
       const std::size_t n {terms.b.cols()};
       const std::size_t order {(2 * m) + n};
@@ -2624,20 +2635,20 @@ namespace numerical {
           h[(i * order) + k]           = terms.a(i, k);
           h[((m + i) * order) + k]     = -terms.q(i, k);
           j[(i * order) + k]           = e_at(i, k);
-          h[((m + i) * order) + m + k] = continuous ? -std::conj(terms.a(k, i)) : std::conj(e_at(k, i));
-          j[((m + i) * order) + m + k] = continuous ? std::conj(e_at(k, i)) : std::conj(terms.a(k, i));
+          h[((m + i) * order) + m + k] = continuous ? -conj_of(terms.a(k, i)) : conj_of(e_at(k, i));
+          j[((m + i) * order) + m + k] = continuous ? conj_of(e_at(k, i)) : conj_of(terms.a(k, i));
         }
         for (std::size_t k {0}; k < n; ++k) {
           h[(i * order) + (2 * m) + k] = terms.b(i, k);
           if (continuous) {
-            h[(((2 * m) + k) * order) + m + i] = std::conj(terms.b(i, k));
+            h[(((2 * m) + k) * order) + m + i] = conj_of(terms.b(i, k));
           }
           else {
-            j[(((2 * m) + k) * order) + m + i] = -std::conj(terms.b(i, k));
+            j[(((2 * m) + k) * order) + m + i] = -conj_of(terms.b(i, k));
           }
           if (terms.s != nullptr) {
             h[((m + i) * order) + (2 * m) + k] = -(*terms.s)(i, k);
-            h[(((2 * m) + k) * order) + i]     = std::conj((*terms.s)(i, k));
+            h[(((2 * m) + k) * order) + i]     = conj_of((*terms.s)(i, k));
           }
         }
       }
@@ -2655,10 +2666,11 @@ namespace numerical {
      *        (Benner's symplectic constraint), the pencil scaled to `D⁻¹ (H, J) D`.
      * \return The scales `D`, all 1 when the scaling found none.
      */
-    [[nodiscard]] inline buffer<double> balance_pencil(buffer<std::complex<double>>& h,
-                                                       buffer<std::complex<double>>& j,
-                                                       std::size_t                   m,
-                                                       std::size_t                   order)
+    template <typename T>
+    [[nodiscard]] buffer<double> balance_pencil(buffer<T>&  h,
+                                                buffer<T>&  j,
+                                                std::size_t m,
+                                                std::size_t order)
     {
       buffer<double> magnitudes(order * order, 0.0);
       for (std::size_t i {0}; i < order; ++i) {
@@ -2702,11 +2714,13 @@ namespace numerical {
      * \throws convergence_error     If `U₀₀ᴴ U₁₀` is not Hermitian: the pencil's eigenvalues too close to the imaginary
      *                               axis (the unit circle).
      */
-    [[nodiscard]] inline matrix<std::complex<double>> riccati(const riccati_terms& terms,
-                                                              bool                 continuous,
-                                                              bool                 balanced)
+    template <typename T>
+    [[nodiscard]] matrix<T> riccati(const riccati_operands<T>& terms,
+                                    bool                       continuous,
+                                    bool                       balanced)
     {
-      using C = std::complex<double>;
+      using C    = T;
+      using form = std::conditional_t<std::is_same_v<T, double>, real_generalized_schur, generalized_schur>;
       const std::size_t m        {terms.a.rows()};
       const std::size_t n        {terms.b.cols()};
       const std::size_t order    {(2 * m) + n};
@@ -2726,15 +2740,18 @@ namespace numerical {
         std::copy_n(j.data() + (t * order), 2 * m, j_left.data() + (t * 2 * m));
       }
       const matrix<C>   q2     {adjoint_of(matrix<C> {order, 2 * m, std::move(kept)})};
-      generalized_schur pencil {q2 * matrix<C> {order, 2 * m, std::move(h_left)}, q2 * matrix<C> {order, 2 * m, std::move(j_left)}};
-      if (continuous) {
-        pencil.sort([](const C& alpha, const C& beta) { return (alpha * std::conj(beta)).real() < 0.0; });
-      }
-      else {
-        pencil.sort([](const C& alpha, const C& beta) { return std::abs(alpha) < std::abs(beta); });
+      form              pencil {q2 * matrix<C> {order, 2 * m, std::move(h_left)}, q2 * matrix<C> {order, 2 * m, std::move(j_left)}};
+      const std::size_t chosen {continuous ? pencil.sort([](const std::complex<double>& alpha, const std::complex<double>& beta) {
+                                                           return (alpha * std::conj(beta)).real() < 0.0;
+                                                         })
+                                           : pencil.sort([](const std::complex<double>& alpha, const std::complex<double>& beta) {
+                                                           return std::abs(alpha) < std::abs(beta);
+                                                         })};
+      if (chosen != m) {             // a stable half of other than m eigenvalues: some on the boundary, where a real pencil's
+        refuse_boundary(continuous); // conjugate pair moves whole and its basis passes the symmetry test
       }
       matrix<C> u {pencil.z()};
-      if (terms.e != nullptr) { // [D₁ E D₁⁻¹ U₀₀; U₁₀], E scaled as the balancing scaled the pencil
+      if (terms.e != nullptr) {      // [D₁ E D₁⁻¹ U₀₀; U₁₀], E scaled as the balancing scaled the pencil
         buffer<C> scaled_e(m * m);
         buffer<C> upper(m * m);
         for (std::size_t i {0}; i < m; ++i) {
@@ -2765,7 +2782,7 @@ namespace numerical {
       buffer<C>       out(m * m);
       for (std::size_t i {0}; i < m; ++i) {
         for (std::size_t k {0}; k < m; ++k) {
-          out[(i * m) + k] = (x(i, k) + std::conj(x(k, i))) * (scale[i] * scale[k] / 2.0);
+          out[(i * m) + k] = (x(i, k) + conj_of(x(k, i))) * (scale[i] * scale[k] / 2.0);
         }
       }
       return matrix<C> {m, m, std::move(out)};
@@ -2988,7 +3005,9 @@ namespace numerical {
         cs.emplace(as_complex(*s));
       }
       const riccati_terms          terms {ca, cb, cq, cr, ce ? &*ce : nullptr, cs ? &*cs : nullptr};
-      matrix<std::complex<double>> x     {hamiltonian ? as_complex(hamiltonian_riccati(a, b, q, r, s)) : riccati(terms, continuous, balanced)};
+      // a real equation's pencil in real arithmetic, real_generalized_schur's double shifts, as SciPy's dgges
+      matrix<std::complex<double>> x     {hamiltonian ? as_complex(hamiltonian_riccati(a, b, q, r, s))
+                                                      : as_complex(riccati(riccati_operands<T> {a, b, q, r, e, s}, continuous, balanced))};
       // the discrete equation takes no step of Newton's (Hewer's): its residual, rounded at ε ‖A‖² ‖X‖ where the
       // continuous one is at ε ‖A‖ ‖X‖, steers the step away from X wherever A is large or graded
       if (continuous) {

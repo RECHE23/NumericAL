@@ -522,15 +522,19 @@ TEST(riccati_continuous_takes_a_step_of_newton)
 }
 
 // No stabilising solution: an unstable mode B cannot reach (U₀₀ singular, exactly where the mode is decoupled), and a negative Q putting the pencil's two
-// eigenvalues on the imaginary axis (±i√2) or the unit circle (a conjugate pair): whichever the sort takes, its
-// eigenvector is complex and U₀₀ᴴ U₁₀ not Hermitian (SciPy 1.18's discrete solver, in real arithmetic, answers 1 + √2
-// there for every Q < 0: a 1 × 1 real product is always symmetric).
+// eigenvalues on the imaginary axis (±i√2) or the unit circle (a conjugate pair): a real pencil's pair moves whole, so
+// that the sort takes 0 or 2 eigenvalues, not 1; a complex one's takes 1, whose eigenvector is complex and U₀₀ᴴ U₁₀ not
+// Hermitian (SciPy 1.18's discrete solver, in real arithmetic, answers 1 + √2 there for every Q < 0: a 1 × 1 real
+// product is always symmetric).
 TEST(riccati_equations_without_a_stabilising_solution_are_refused)
 {
   using M = matrix<double>;
   // an unstable mode decoupled from the rest (B and Q zero there): the pencil diagonal there, U₀₀ exactly singular
   EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_are(M {{1.0}}, M {{0.0}}, M {{0.0}}, M {{1.0}})), numerical::singular_matrix_error);
   EXPECT_THROWS(static_cast<void>(numerical::solve_discrete_are(M {{2.0}}, M {{0.0}}, M {{0.0}}, M {{1.0}})), numerical::singular_matrix_error);
+  const matrix<C> unit_c {{C {1.0}}};
+  EXPECT_THROWS(static_cast<void>(numerical::solve_discrete_are(matrix<C> {{C {2.0}}}, matrix<C> {{C {}}}, matrix<C> {{C {}}}, unit_c)),
+                numerical::singular_matrix_error); // complex: U₀₀ singular there too
   const M other {{0.0, 0.0}, {0.0, 1.0}};
   EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_are(M {{1.0, 0.0}, {0.0, -1.0}}, M {{0.0}, {1.0}}, other, M {{1.0}})),
                 numerical::singular_matrix_error);
@@ -541,6 +545,10 @@ TEST(riccati_equations_without_a_stabilising_solution_are_refused)
     EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_are(M {{0.0}}, M {{1.0}}, M {{q}}, M {{1.0}}, &unit)), numerical::convergence_error); // the pencil
     EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_are(M {{0.0}}, M {{1.0}}, M {{q}}, M {{1.0}})), numerical::convergence_error);
     EXPECT_THROWS(static_cast<void>(numerical::solve_discrete_are(M {{1.0}}, M {{1.0}}, M {{q}}, M {{1.0}})), numerical::convergence_error);
+    // complex: one eigenvalue of the pair taken, its eigenvector's halves failing the symmetry test
+    const matrix<C> one {{C {1.0}}};
+    EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_are(matrix<C> {{C {}}}, one, matrix<C> {{C {q}}}, one, &one)), numerical::convergence_error);
+    EXPECT_THROWS(static_cast<void>(numerical::solve_discrete_are(one, one, matrix<C> {{C {q}}}, one)), numerical::convergence_error);
   }
 }
 
