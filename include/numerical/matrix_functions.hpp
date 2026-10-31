@@ -15,6 +15,7 @@
 #include <cstddef>
 #include <functional>
 #include <limits>
+#include <numeric>
 #include <numbers>
 #include <optional>
 #include <stdexcept>
@@ -1261,6 +1262,7 @@ namespace numerical {
   {
     matrix<std::complex<double>> f;           //!< `f(A)`, complex (SciPy's real part where `A` is real and it is negligible).
     double                       error {0.0}; //!< `‖err‖₁ / ‖A‖₁` estimated as SciPy's: `min(1, max(ε, ε ‖strict triu T‖₁ / δ))`.
+    std::vector<double>          contours;    //!< Each circle's integral's own estimate (half its points against all).
   };
 
   namespace detail {
@@ -1299,7 +1301,7 @@ namespace numerical {
     }
     const double tolerance {std::numeric_limits<double>::epsilon()};
     if (n == 0) {
-      return {matrix<C> {0, 0, buffer<C> {}}, tolerance};
+      return {matrix<C> {0, 0, buffer<C> {}}, tolerance, {}};
     }
     buffer<C> f(n * n, C {});
     for (std::size_t i {0}; i < n; ++i) {
@@ -1352,7 +1354,7 @@ namespace numerical {
     for (const C& x : result) { // x − x is 0 for a finite part and NaN for an infinite or NaN one, without overflow
       error = (x.real() - x.real()) + (x.imag() - x.imag()) == 0.0 ? error : std::numeric_limits<double>::infinity();
     }
-    return {result, error};
+    return {result, error, {}};
   }
 
   namespace detail {
@@ -1389,17 +1391,31 @@ namespace numerical {
       return id;
     }
 
-    //! \brief The clusters' bound: eigenvalues within `10⁻²` of the largest modulus (or of 1) gather. Parlett's
-    //!        recurrence divides by their gaps: at `10⁻³` gaps of 0.003 to 0.01 lost 10¹¹ to 10¹³ ε (order 8, against
-    //!        references to 40 digits); Davies and Higham's 0.1, relative here, gathers a dense spectrum into one block
-    //!        whose Cauchy integral loses as much (a random order 128, 10¹³ ε).
-    [[nodiscard]] inline double cluster_bound(const std::vector<std::complex<double>>& values)
+    //! \brief The share of the largest modulus (or of 1) within which eigenvalues gather (\ref cluster_bound): Davies
+    //!        and Higham's 0.1, relative here.
+    inline constexpr double cluster_share {0.1};
+
+    //! \brief The finer share \ref funm falls back to where clusters at \ref cluster_share leave its estimate past
+    //!        \ref funm_fallback_error, or where, chained into irregular shapes (a random matrix's spectrum), a
+    //!        cluster's circle about its centre reaches another's eigenvalues, and no count of points helps (order 192:
+    //!        error 1.4).
+    inline constexpr double cluster_share_fine {0.01};
+
+    //! \brief The estimate past which \ref funm tries the finer clusters (SciPy reports a result past it inaccurate).
+    inline constexpr double funm_fallback_error {1e3 * std::numeric_limits<double>::epsilon()};
+
+    //! \brief The clusters' bound: eigenvalues within \p share of the largest modulus (or of 1) gather (\ref cluster_share,
+    //!        Davies and Higham's bound, relative here). Parlett's recurrence divides by the gaps between clusters: under it, gaps of 0.003 to
+    //!        0.03 and an evenly spread spectrum lost 10⁶ to 10¹³ ε; a cluster's Cauchy integral takes as many points
+    //!        as its estimate asks (\ref contour_points_most), a random matrix's whole spectrum among them.
+    [[nodiscard]] inline double cluster_bound(const std::vector<std::complex<double>>& values,
+                                              double                                   share)
     {
       double scale {1.0};
       for (const std::complex<double>& v : values) {
         scale = std::max(scale, std::abs(v));
       }
-      return 1e-2 * scale;
+      return share * scale;
     }
 
     //! \brief The diagonal of the square \p t.
@@ -1416,13 +1432,22 @@ namespace numerical {
     //!        diagonal): the runs' starts (and `n`), and each run's centre and radius (0 for a single eigenvalue).
     struct cluster_circles
     {
-      std::vector<std::size_t>          starts;  //!< Each run's first place, then `n`.
-      std::vector<std::complex<double>> centres; //!< Each run's eigenvalues' mean.
-      std::vector<double>               radii;   //!< Each run's circle's radius; 0 for a single eigenvalue.
+      std::vector<std::size_t>          starts;       //!< Each run's first place, then `n`.
+      std::vector<std::complex<double>> centres;      //!< Each run's eigenvalues' mean.
+      std::vector<double>               radii;        //!< Each run's circle's radius; 0 for a single eigenvalue.
+      bool                              sound {true}; //!< Whether each circle keeps the other runs' eigenvalues out.
     };
 
     //! \brief The trapezoidal rule's points on each circle of Cauchy's integral.
     inline constexpr std::size_t contour_points {64};
+
+    //! \brief The most points on one cluster's circle: \ref funm doubles them from \ref contour_points while the
+    //!        integrals' estimate passes \ref contour_tolerance and halves at least (the trapezoidal rule converges
+    //!        geometrically on a circle: a cluster of 128 eigenvalues of a random matrix took 512 to 25 ε).
+    inline constexpr std::size_t contour_points_most {4096};
+
+    //! \brief The integrals' estimate below which \ref funm takes no more points.
+    inline constexpr double contour_tolerance {32.0 * std::numeric_limits<double>::epsilon()};
 
     /*!
      * \brief \ref cluster_circles of the Schur form \p t whose clusters are runs of its diagonal: a circle about each
@@ -1430,12 +1455,13 @@ namespace numerical {
      *        bound, or the block's coupling (its largest entry above the diagonal: the resolvent's terms `‖N‖ᵏ / rᵏ⁺¹`
      *        then stay near `1/r` and cancel without loss), half the way to the nearest other eigenvalue at most.
      */
-    [[nodiscard]] inline cluster_circles circles_of(const matrix<std::complex<double>>& t)
+    [[nodiscard]] inline cluster_circles circles_of(const matrix<std::complex<double>>& t,
+                                                    double                              share)
     {
       using C = std::complex<double>;
       const std::size_t              n       {t.rows()};
       const std::vector<C>           values  {diagonal_of(t)};
-      const double                   delta   {cluster_bound(values)};
+      const double                   delta   {cluster_bound(values, share)};
       const std::vector<std::size_t> cluster {eigenvalue_clusters(values, delta)};
       cluster_circles                circles;
       for (std::size_t i {0}; i < n; ++i) {
@@ -1472,8 +1498,36 @@ namespace numerical {
         }
         circles.centres[b] = centre;
         circles.radii[b]   = spread + std::min(std::max({spread, delta, coupling}), (outside - spread) / 2.0);
+        if (!(outside > spread)) { // another run's eigenvalue lies nearer the centre than this run's farthest
+          circles.sound = false;
+        }
       }
       return circles;
+    }
+
+    //! \brief The points to start each circle of \p circles about a cluster of two or more with:
+    //!        \ref contour_points, \ref funm doubling those its integral's estimate asks more of.
+    [[nodiscard]] inline std::vector<std::size_t> starting_points(const cluster_circles& circles)
+    {
+      return std::vector<std::size_t>(static_cast<std::size_t>(std::ranges::count_if(circles.radii, [](double r) { return r > 0.0; })), contour_points);
+    }
+
+    //! \brief The points of \p circles, \p counts on the circles about clusters of two or more in turn, after one
+    //!        another.
+    [[nodiscard]] inline std::vector<std::complex<double>> circle_points(const cluster_circles&          circles,
+                                                                         const std::vector<std::size_t>& counts)
+    {
+      std::vector<std::complex<double>> points;
+      std::size_t                       drawn {0};
+      for (std::size_t b {0}; b < circles.radii.size(); ++b) {
+        if (circles.radii[b] > 0.0) {
+          const std::size_t count {counts.at(drawn++)};
+          for (std::size_t k {0}; k < count; ++k) {
+            points.push_back(circles.centres[b] + std::polar(circles.radii[b], 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(count)));
+          }
+        }
+      }
+      return points;
     }
 
     /*!
@@ -1482,12 +1536,13 @@ namespace numerical {
      *        \return Whether any cluster holds two or more eigenvalues (none moved otherwise).
      */
     [[nodiscard]] inline bool gather_clusters(matrix<std::complex<double>>& t,
-                                              matrix<std::complex<double>>& z)
+                                              matrix<std::complex<double>>& z,
+                                              double                        share)
     {
       using C = std::complex<double>;
       const std::size_t              n      {t.rows()};
       std::vector<C>                 values {diagonal_of(t)};
-      const double                   delta  {cluster_bound(values)};
+      const double                   delta  {cluster_bound(values, share)};
       const std::vector<std::size_t> first  {eigenvalue_clusters(values, delta)};
       if (*std::max_element(first.begin(), first.end()) + 1 == n) { // every cluster a single eigenvalue (n ≥ 1: an empty matrix is Hermitian)
         return false;
@@ -1512,71 +1567,113 @@ namespace numerical {
     }
 
     /*!
-     * \brief `f(T)` of the Schur form \p t with clusters as runs of its diagonal, from \p images, `f` at the eigenvalues
-     *        then at each cluster's circle (\ref circles_of), as Davies and Higham's Schur–Parlett algorithm (2003):
-     *        each cluster's block by Cauchy's integral `(1/2πi) ∮ f(z) (zI − T)⁻¹ dz`, the trapezoidal rule at
-     *        \ref contour_points points (Hale, Higham and Trefethen, 2008), its 32 even points' result and its diagonal
-     *        against `f` at the eigenvalues the estimate of its error, where Davies and Higham's Taylor series wants
-     *        `f`'s derivatives; the blocks above the diagonal by the block recurrence, a triangular Sylvester equation
-     *        each. The estimate: SciPy's for Parlett's recurrence with the clusters' separation, at least the
-     *        integrals'; ∞ where `f` or the result is not finite. \return `f(T)` and the estimate.
+     * \brief Adds to \p sum, for the points `k = from, from + step, … < count` of the grid of \p count points on the
+     *        circle (\p centre, \p radius), `f(z_k) (z_k − c) (z_k I − T_b)⁻¹`, `T_b` the `p × p` block of \p t from
+     *        \p first and `f(z_k)` the next of \p images in turn: the trapezoidal rule's terms of Cauchy's integral
+     *        `(1/2πi) ∮ f(z) (zI − T_b)⁻¹ dz` (Hale, Higham and Trefethen, 2008), times the count.
      */
-    [[nodiscard]] inline std::pair<buffer<std::complex<double>>, double> clustered_function(const matrix<std::complex<double>>&      t,
-                                                                                            const std::vector<std::complex<double>>& images)
+    inline void add_circle_terms(const matrix<std::complex<double>>& t,
+                                 std::size_t                         first,
+                                 std::size_t                         p,
+                                 std::complex<double>                centre,
+                                 double                              radius,
+                                 std::size_t                         count,
+                                 std::size_t                         from,
+                                 std::size_t                         step,
+                                 const std::complex<double>*         images,
+                                 buffer<std::complex<double>>&       sum)
     {
       using C = std::complex<double>;
-      const std::size_t     n             {t.rows()};
-      const cluster_circles circles       {circles_of(t)};
-      const std::size_t     blocks        {circles.radii.size()};
-      buffer<C>             fx(n * n, C   {});
-      double                contour_error {0.0};
-      std::size_t           next          {n}; // the next circle's first image
-      for (std::size_t b {0}; b < blocks; ++b) {
+      buffer<C> shifted(p * p, C {}); // each point's zI − T_b and its inverse, rewritten whole at each point
+      buffer<C> inverse(p * p, C {});
+      for (std::size_t k {from}; k < count; k += step) {
+        const C point {centre + std::polar(radius, 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(count))};
+        std::fill(inverse.begin(), inverse.end(), C {});
+        for (std::size_t i {0}; i < p; ++i) {
+          for (std::size_t j {i}; j < p; ++j) {
+            shifted[(i * p) + j] = (i == j ? point : C {}) - t(first + i, first + j);
+          }
+          inverse[(i * p) + i] = C {1.0};
+        }
+        solve_triangular_in_place(shifted.data(), p, false, triangular_op::none, false, inverse.data(), p);
+        const C weight {*images++ * (point - centre)};
+        for (std::size_t e {0}; e < p * p; ++e) {
+          sum[e] += weight * inverse[e];
+        }
+      }
+    }
+
+    //! \brief The points `k = from, from + step, … < count` of the grid of \p count points on the circle (\p centre,
+    //!        \p radius), in turn.
+    [[nodiscard]] inline std::vector<std::complex<double>> grid_points(std::complex<double> centre,
+                                                                       double               radius,
+                                                                       std::size_t          count,
+                                                                       std::size_t          from,
+                                                                       std::size_t          step)
+    {
+      std::vector<std::complex<double>> points;
+      for (std::size_t k {from}; k < count; k += step) {
+        points.push_back(centre + std::polar(radius, 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(count)));
+      }
+      return points;
+    }
+
+    /*!
+     * \brief A circle's integral from its rule's sum over \p count points, \p whole, and over the even ones,
+     *        \p half (each divided by its count here), and its own estimate: the two rules' largest difference, and
+     *        the diagonal's against \p diagonal (`f` at the cluster's eigenvalues: a singularity of `f` in the disk
+     *        breaks it), relative to the integral's largest entry.
+     */
+    [[nodiscard]] inline double circle_integral(buffer<std::complex<double>>&       whole,
+                                                buffer<std::complex<double>>&       half,
+                                                std::size_t                         p,
+                                                std::size_t                         count,
+                                                const std::complex<double>*         diagonal)
+    {
+      double size {0.0};
+      double gap  {0.0};
+      for (std::size_t e {0}; e < p * p; ++e) {
+        whole[e] /= static_cast<double>(count);
+        half[e]  /= static_cast<double>(count) / 2.0;
+        size      = std::max(size, std::abs(whole[e]));
+        gap       = std::max(gap, std::abs(whole[e] - half[e]));
+      }
+      for (std::size_t i {0}; i < p; ++i) {
+        gap = std::max(gap, std::abs(whole[(i * p) + i] - diagonal[i]));
+      }
+      return size > 0.0 ? gap / size : gap;
+    }
+
+    /*!
+     * \brief `f(T)` of the Schur form \p t with clusters as runs of its diagonal (\p circles), each cluster's block
+     *        given in \p blocks (its circle's integral, the clusters of one eigenvalue none) and `f` at the
+     *        eigenvalues in \p at_eigenvalues: Davies and Higham's Schur–Parlett algorithm (2003), the blocks above
+     *        the diagonal by the block recurrence, a triangular Sylvester equation each. \return `f(T)` and SciPy's
+     *        estimate for Parlett's recurrence with the clusters' separation.
+     */
+    [[nodiscard]] inline std::pair<buffer<std::complex<double>>, double> assembled_function(const matrix<std::complex<double>>&              t,
+                                                                                            const cluster_circles&                           circles,
+                                                                                            const std::vector<buffer<std::complex<double>>>& blocks,
+                                                                                            const std::vector<std::complex<double>>&         at_eigenvalues)
+    {
+      using C = std::complex<double>;
+      const std::size_t n           {t.rows()};
+      const std::size_t count       {circles.radii.size()};
+      buffer<C>         fx(n * n, C {});
+      for (std::size_t b {0}; b < count; ++b) {
         const std::size_t first {circles.starts[b]};
         const std::size_t p     {circles.starts[b + 1] - first};
         if (p == 1) {
-          fx[(first * n) + first] = images[first];
+          fx[(first * n) + first] = at_eigenvalues[first];
           continue;
         }
-        buffer<C> whole(p * p, C {});
-        buffer<C> half(p * p, C  {});
-        for (std::size_t k {0}; k < contour_points; ++k) {
-          const C   point            {circles.centres[b] + std::polar(circles.radii[b], 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(contour_points))};
-          buffer<C> shifted(p * p, C {});
-          buffer<C> inverse(p * p, C {});
-          for (std::size_t i {0}; i < p; ++i) {
-            for (std::size_t j {i}; j < p; ++j) {
-              shifted[(i * p) + j] = (i == j ? point : C {}) - t(first + i, first + j);
-            }
-            inverse[(i * p) + i] = C {1.0};
-          }
-          solve_triangular_in_place(shifted.data(), p, false, triangular_op::none, false, inverse.data(), p);
-          const C weight {images[next + k] * (point - circles.centres[b])};
-          for (std::size_t e {0}; e < p * p; ++e) {
-            whole[e] += weight * inverse[e];
-            half[e]  += k % 2 == 0 ? weight * inverse[e] : C {};
-          }
-        }
-        next += contour_points;
-        double size {0.0};
-        double gap  {0.0};
-        for (std::size_t e {0}; e < p * p; ++e) {
-          whole[e] /= static_cast<double>(contour_points);
-          half[e]  /= static_cast<double>(contour_points) / 2.0;
-          size      = std::max(size, std::abs(whole[e]));
-          gap       = std::max(gap, std::abs(whole[e] - half[e]));
-        }
-        for (std::size_t i {0}; i < p; ++i) { // a singularity of f in the disk (no answer there) breaks the diagonal
-          gap = std::max(gap, std::abs(whole[(i * p) + i] - images[first + i]));
-        }
-        contour_error = std::max(contour_error, size > 0.0 ? gap / size : gap);
         for (std::size_t i {0}; i < p; ++i) {
-          std::copy_n(whole.data() + (i * p), p, fx.data() + ((first + i) * n) + first);
+          std::copy_n(blocks[b].data() + (i * p), p, fx.data() + ((first + i) * n) + first);
         }
       }
       double separation {std::numeric_limits<double>::infinity()};
-      for (std::size_t d {1}; d < blocks; ++d) { // the block recurrence, a block superdiagonal at a time
-        for (std::size_t bi {0}; bi + d < blocks; ++bi) {
+      for (std::size_t d {1}; d < count; ++d) { // the block recurrence, a block superdiagonal at a time
+        for (std::size_t bi {0}; bi + d < count; ++bi) {
           const std::size_t bj             {bi + d};
           const std::size_t i0             {circles.starts[bi]};
           const std::size_t pi             {circles.starts[bi + 1] - i0};
@@ -1620,7 +1717,77 @@ namespace numerical {
         upper = std::max(upper, column);
       }
       const double tolerance {std::numeric_limits<double>::epsilon()};
-      return {std::move(fx), std::min(1.0, std::max({tolerance, (tolerance / separation) * upper, contour_error}))};
+      return {std::move(fx), std::min(1.0, std::max(tolerance, (tolerance / separation) * upper))};
+    }
+
+    /*!
+     * \brief `f(T)` of the Schur form \p t with clusters within \p share as runs of its diagonal, from \p images, `f`
+     *        at the eigenvalues then at each cluster's circle (\ref circles_of), \p counts points each: each cluster's
+     *        block by its integral (\ref add_circle_terms, its even points' rule beside for the estimate,
+     *        \ref circle_integral), the rest by \ref assembled_function. \return `f(T)`, the estimate (the larger of the
+     *        recurrence's and the integrals'), and each circle's.
+     * \throws dimension_error If \p images does not hold one value per eigenvalue and \p counts per circle, even.
+     */
+    [[nodiscard]] inline std::tuple<buffer<std::complex<double>>, double, std::vector<double>> clustered_function(const matrix<std::complex<double>>&      t,
+                                                                                                                  const std::vector<std::complex<double>>& images,
+                                                                                                                  double                                   share,
+                                                                                                                  const std::vector<std::size_t>&          counts)
+    {
+      using C = std::complex<double>;
+      const std::size_t     n       {t.rows()};
+      const cluster_circles circles {circles_of(t, share)};
+      const std::size_t     drawn   {static_cast<std::size_t>(std::ranges::count_if(circles.radii, [](double r) { return r > 0.0; }))};
+      const bool            even    {std::ranges::all_of(counts, [](std::size_t c) { return c >= 2 && c % 2 == 0; })};
+      if (counts.size() != drawn || !even || images.size() - n != std::accumulate(counts.begin(), counts.end(), std::size_t {0})) {
+        throw dimension_error("funm requires one value per eigenvalue and an even count on each circle");
+      }
+      std::vector<buffer<C>> blocks(circles.radii.size());
+      std::vector<double>    contours;
+      std::size_t            next {n}; // the next circle's first image
+      for (std::size_t b {0}; b < circles.radii.size(); ++b) {
+        const std::size_t first {circles.starts[b]};
+        const std::size_t p     {circles.starts[b + 1] - first};
+        if (p == 1) {
+          continue;
+        }
+        const std::size_t count         {counts[contours.size()]};
+        buffer<C>         half(p * p, C {}); // the even points', then all of them
+        buffer<C>         odd(p * p, C  {});
+        std::vector<C>    even_images;
+        std::vector<C>    odd_images;
+        for (std::size_t k {0}; k < count; ++k) {
+          (k % 2 == 0 ? even_images : odd_images).push_back(images[next + k]);
+        }
+        add_circle_terms(t, first, p, circles.centres[b], circles.radii[b], count, 0, 2, even_images.data(), half);
+        add_circle_terms(t, first, p, circles.centres[b], circles.radii[b], count, 1, 2, odd_images.data(), odd);
+        buffer<C> whole(p * p);
+        for (std::size_t e {0}; e < p * p; ++e) {
+          whole[e] = half[e] + odd[e];
+        }
+        contours.push_back(circle_integral(whole, half, p, count, images.data() + first));
+        blocks[b] = std::move(whole);
+        next     += count;
+      }
+      const std::vector<C> at_eigenvalues(images.begin(), images.begin() + static_cast<std::ptrdiff_t>(n));
+      auto [fx, estimate] {assembled_function(t, circles, blocks, at_eigenvalues)};
+      const double contour_error {*std::ranges::max_element(contours)}; // a circle at least: images past the eigenvalues
+      return {std::move(fx), std::min(1.0, std::max(estimate, contour_error)), std::move(contours)};
+    }
+
+    //! \brief \p x with its estimate \p error, ∞ where an entry of \p x or `f` at an eigenvalue (\p at_eigenvalues) is not
+    //!        finite (no f(A) then, whatever the circles gave), and the circles' estimates \p contours.
+    [[nodiscard]] inline funm_result funm_answer(matrix<std::complex<double>>&&            x,
+                                                 double                                    error,
+                                                 std::vector<double>&&                     contours,
+                                                 const std::vector<std::complex<double>>&  at_eigenvalues)
+    {
+      for (const std::complex<double>& entry : x) {
+        error = is_finite_entry(entry) ? error : std::numeric_limits<double>::infinity();
+      }
+      for (const std::complex<double>& image : at_eigenvalues) {
+        error = is_finite_entry(image) ? error : std::numeric_limits<double>::infinity();
+      }
+      return {std::move(x), error, std::move(contours)};
     }
   } // namespace detail
 
@@ -1632,10 +1799,12 @@ namespace numerical {
    */
   struct funm_plan
   {
-    matrix<std::complex<double>>      t;                 //!< `T` (`Λ`, for a Hermitian `A`).
-    matrix<std::complex<double>>      z;                 //!< `Z` (`V`).
-    std::vector<std::complex<double>> points;            //!< Where `f` is wanted.
-    bool                              hermitian {false}; //!< Whether `A` was Hermitian, `T` then `Λ`.
+    matrix<std::complex<double>>      t;                                 //!< `T` (`Λ`, for a Hermitian `A`).
+    matrix<std::complex<double>>      z;                                 //!< `Z` (`V`).
+    std::vector<std::complex<double>> points;                            //!< Where `f` is wanted.
+    bool                              hermitian {false};                 //!< Whether `A` was Hermitian, `T` then `Λ`.
+    double                            share     {detail::cluster_share}; //!< The clusters' bound's share (\ref detail::cluster_bound).
+    std::vector<std::size_t>          counts;                            //!< The points on each circle, in the circles' order.
   };
 
   /*!
@@ -1670,14 +1839,12 @@ namespace numerical {
     }
     std::tie(plan.t, plan.z) = detail::function_schur_form(a);
     plan.points              = detail::diagonal_of(plan.t);
-    if (detail::gather_clusters(plan.t, plan.z)) {
+    if (detail::gather_clusters(plan.t, plan.z, plan.share)) {
       plan.points                                 = detail::diagonal_of(plan.t);
-      const detail::cluster_circles circles {detail::circles_of(plan.t)};
-      for (std::size_t b {0}; b < circles.radii.size(); ++b) {
-        for (std::size_t k {0}; circles.radii[b] > 0.0 && k < detail::contour_points; ++k) {
-          plan.points.push_back(circles.centres[b] + std::polar(circles.radii[b], 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(detail::contour_points)));
-        }
-      }
+      const detail::cluster_circles           circles {detail::circles_of(plan.t, plan.share)};
+      plan.counts = detail::starting_points(circles);
+      const std::vector<std::complex<double>> around  {detail::circle_points(circles, plan.counts)};
+      plan.points.insert(plan.points.end(), around.begin(), around.end());
     }
     return plan;
   }
@@ -1694,30 +1861,56 @@ namespace numerical {
   {
     using C = std::complex<double>;
     const std::size_t n {plan.t.rows()};
-    if (images.size() != plan.points.size()) {
+    if (images.size() != plan.points.size() || images.size() < n) { // the eigenvalues' values at least
       throw dimension_error("funm requires a square Schur form T, Z of its order and one value per eigenvalue");
     }
     const std::vector<C> at_eigenvalues(images.begin(), images.begin() + static_cast<std::ptrdiff_t>(n));
     if (!plan.hermitian && images.size() == n) {
       return funm_from_schur(plan.t, plan.z, at_eigenvalues);
     }
-    matrix<C> x;
-    double    error {std::numeric_limits<double>::epsilon()};
+    matrix<C>           x;
+    double              error {std::numeric_limits<double>::epsilon()};
+    std::vector<double> contours;
     if (plan.hermitian) {
       x = detail::spectral<C>(plan.z, at_eigenvalues, false);
     }
     else {
-      auto [f_of_t, estimate] {detail::clustered_function(plan.t, images)};
-      x     = plan.z * matrix<C> {n, n, std::move(f_of_t)} *detail::adjoint_of(plan.z);
-      error = estimate;
+      auto [f_of_t, estimate, integrals] {detail::clustered_function(plan.t, images, plan.share, plan.counts)};
+      x        = plan.z * matrix<C> {n, n, std::move(f_of_t)} *detail::adjoint_of(plan.z);
+      error    = estimate;
+      contours = std::move(integrals);
     }
-    for (const C& entry : x) {
-      error = detail::is_finite_entry(entry) ? error : std::numeric_limits<double>::infinity();
+    return detail::funm_answer(std::move(x), error, std::move(contours), at_eigenvalues);
+  }
+
+  /*!
+   * \brief The points where \ref finish_funm wants `f` for \p plan (not Hermitian) with its circles' counts: its
+   *        eigenvalues, then each circle's.
+   */
+  [[nodiscard]] inline std::vector<std::complex<double>> funm_points(const funm_plan& plan)
+  {
+    std::vector<std::complex<double>>       points {detail::diagonal_of(plan.t)};
+    const std::vector<std::complex<double>> around {detail::circle_points(detail::circles_of(plan.t, plan.share), plan.counts)};
+    points.insert(points.end(), around.begin(), around.end());
+    return points;
+  }
+
+  /*!
+   * \brief \p plan (not Hermitian) with its eigenvalues gathered anew within \p share of the largest modulus (or of
+   *        1): its Schur form reordered by the finer clusters (the same form, their runs moved), its points the
+   *        eigenvalues, then \ref detail::contour_points on each circle where clusters remain.
+   */
+  [[nodiscard]] inline funm_plan regathered(funm_plan plan,
+                                            double    share)
+  {
+    plan.share  = share;
+    plan.counts = {};
+    plan.points = detail::diagonal_of(plan.t);
+    if (detail::gather_clusters(plan.t, plan.z, share)) {
+      plan.counts = detail::starting_points(detail::circles_of(plan.t, share));
+      plan.points = funm_points(plan);
     }
-    for (const C& image : at_eigenvalues) { // f not finite on the spectrum: no f(A), whatever the circles gave
-      error = detail::is_finite_entry(image) ? error : std::numeric_limits<double>::infinity();
-    }
-    return {std::move(x), error};
+    return plan;
   }
 
   /*!
@@ -1735,8 +1928,116 @@ namespace numerical {
   [[nodiscard]] funm_result funm(const matrix<T>&                                                                                  a,
                                  const std::function<std::vector<std::complex<double>>(const std::vector<std::complex<double>>&)>& f)
   {
+    using C = std::complex<double>;
+    // each circle whose integral falls short of contour_tolerance takes twice the points while it gains at least half:
+    // the grid of 2P points is that of P and the P between, so only those are new (f there, and their resolvents)
+    const auto evaluated = [&f](const funm_plan& plan) {
+                             const std::vector<C> images {f(plan.points)};
+                             const std::size_t    n      {plan.t.rows()};
+                             if (plan.hermitian || plan.counts.empty() || images.size() != plan.points.size()) {
+                               return finish_funm(plan, images);
+                             }
+                             const detail::cluster_circles circles {detail::circles_of(plan.t, plan.share)};
+                             std::vector<std::size_t>      at;     // each circle's block
+                             std::vector<buffer<C>>        sums;   // its rule's sum over all its points so far
+                             std::vector<buffer<C>>        halves; // over the even ones
+                             for (std::size_t b {0}; b < circles.radii.size(); ++b) {
+                               if (circles.radii[b] > 0.0) {
+                                 at.push_back(b);
+                               }
+                             }
+                             std::size_t next {n};
+                             for (std::size_t c {0}; c < at.size(); ++c) {
+                               const std::size_t b {at[c]};
+                               const std::size_t p {circles.starts[b + 1] - circles.starts[b]};
+                               std::vector<C>    even_images;
+                               std::vector<C>    odd_images;
+                               for (std::size_t k {0}; k < plan.counts[c]; ++k) {
+                                 (k % 2 == 0 ? even_images : odd_images).push_back(images[next + k]);
+                               }
+                               next += plan.counts[c];
+                               buffer<C> half(p * p, C {});
+                               buffer<C> odd(p * p, C  {});
+                               detail::add_circle_terms(plan.t, circles.starts[b], p, circles.centres[b], circles.radii[b], plan.counts[c], 0, 2, even_images.data(), half);
+                               detail::add_circle_terms(plan.t, circles.starts[b], p, circles.centres[b], circles.radii[b], plan.counts[c], 1, 2, odd_images.data(), odd);
+                               for (std::size_t e {0}; e < p * p; ++e) {
+                                 odd[e] += half[e];
+                               }
+                               sums.push_back(std::move(odd));
+                               halves.push_back(std::move(half));
+                             }
+                             std::vector<std::size_t> counts {plan.counts};
+                             std::vector<double>      errors(at.size());
+                             std::vector<bool>        settled(at.size(), false);
+                             std::vector<buffer<C>>   blocks(circles.radii.size());
+                             const auto               integrals = [&] { // each block from its sums, and its estimate
+                                                                    for (std::size_t c {0}; c < at.size(); ++c) {
+                                                                      const std::size_t b     {at[c]};
+                                                                      const std::size_t p     {circles.starts[b + 1] - circles.starts[b]};
+                                                                      buffer<C>         whole {sums[c]};
+                                                                      buffer<C>         half  {halves[c]};
+                                                                      errors[c] = detail::circle_integral(whole, half, p, counts[c], images.data() + circles.starts[b]);
+                                                                      blocks[b] = std::move(whole);
+                                                                    }
+                                                                  };
+                             integrals();
+                             for (;;) {
+                               std::vector<C>           points;
+                               std::vector<std::size_t> refined;
+                               for (std::size_t c {0}; c < at.size(); ++c) {
+                                 if (!settled[c] && errors[c] > detail::contour_tolerance && 2 * counts[c] <= detail::contour_points_most) {
+                                   const std::vector<C> fresh {detail::grid_points(circles.centres[at[c]], circles.radii[at[c]], 2 * counts[c], 1, 2)};
+                                   points.insert(points.end(), fresh.begin(), fresh.end());
+                                   refined.push_back(c);
+                                 }
+                                 else {
+                                   settled[c] = true;
+                                 }
+                               }
+                               if (refined.empty()) {
+                                 break;
+                               }
+                               const std::vector<C> fresh_images {f(points)};
+                               if (fresh_images.size() != points.size()) {
+                                 throw dimension_error("funm requires f to return one value per point");
+                               }
+                               const std::vector<double> before {errors};
+                               std::size_t               offset {0};
+                               for (const std::size_t c : refined) {
+                                 const std::size_t b              {at[c]};
+                                 const std::size_t p              {circles.starts[b + 1] - circles.starts[b]};
+                                 buffer<C>         added(p * p, C {});
+                                 detail::add_circle_terms(plan.t, circles.starts[b], p, circles.centres[b], circles.radii[b], 2 * counts[c], 1, 2, fresh_images.data() + offset, added);
+                                 offset   += counts[c];
+                                 halves[c] = sums[c];
+                                 for (std::size_t e {0}; e < p * p; ++e) {
+                                   sums[c][e] += added[e];
+                                 }
+                                 counts[c] *= 2;
+                               }
+                               integrals();
+                               for (const std::size_t c : refined) {
+                                 settled[c] = !(errors[c] < 0.5 * before[c]);
+                               }
+                             }
+                             const std::vector<C> at_eigenvalues(images.begin(), images.begin() + static_cast<std::ptrdiff_t>(n));
+                             auto [f_of_t, estimate] {detail::assembled_function(plan.t, circles, blocks, at_eigenvalues)};
+                             const double contour_error {*std::ranges::max_element(errors)};
+                             return detail::funm_answer(plan.z * matrix<C> {n, n, std::move(f_of_t)} *detail::adjoint_of(plan.z),
+                                                        std::min(1.0, std::max(estimate, contour_error)), std::move(errors), at_eigenvalues);
+                           };
     const funm_plan plan {plan_funm(a)};
-    return finish_funm(plan, f(plan.points));
+    if (!plan.counts.empty() && !detail::circles_of(plan.t, plan.share).sound) { // chained clusters no circle separates
+      return evaluated(regathered(plan, detail::cluster_share_fine));
+    }
+    funm_result best {evaluated(plan)};
+    if (best.error > detail::funm_fallback_error && !best.contours.empty()) { // clusters, and an estimate past it
+      funm_result fine {evaluated(regathered(plan, detail::cluster_share_fine))};
+      if (fine.error < best.error) {
+        best = std::move(fine);
+      }
+    }
+    return best;
   }
 
   /*!

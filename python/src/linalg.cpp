@@ -256,49 +256,50 @@ double expm_cond(const any_tensor& a)
     return numerical::expm_cond(matrix_from(std::get<real_tensor>(a)));
 }
 
-// funm_plan(a) -> (T, Z, points, hermitian): numerical::plan_funm's forms and the points where funm wants f (the
-// eigenvalues, then the circles about gathered ones); complex128 whatever the dtype.
-std::tuple<any_tensor, any_tensor, any_tensor, bool> funm_plan(const any_tensor& a)
+// funm_call(a, evaluate) -> (F, err): numerical::funm of the matrix a (single precision in double, the caller narrows),
+// f evaluated by `evaluate` (a Python callable taking a complex128 Tensor of points and returning one complex128 Tensor
+// of values), called with the GIL held, as many times as the circles about gathered eigenvalues ask points of; F real
+// where a is and every imaginary part is within 1e6 ε of 0 (SciPy's _maybe_real).
+std::tuple<any_tensor, double> funm_call(const any_tensor& a, PyObject* evaluate)
 {
     if (shape_of(a).size() != 2) {
         throw std::runtime_error("funm expects a matrix");
     }
     if (is_single(a)) {
-        return funm_plan(widened(a));
+        return funm_call(widened(a), evaluate);
     }
-    const sb::scoped_gil_release unlocked {releases_gil_cubic(count_of(a))};
-    numerical::funm_plan         plan {is_complex(a) ? numerical::plan_funm(matrix_from(std::get<cplx_tensor>(a)))
-                                                     : numerical::plan_funm(matrix_from(std::get<real_tensor>(a)))};
-    numerical::buffer<std::complex<double>> points(plan.points.begin(), plan.points.end());
-    const std::size_t                       count {points.size()};
-    return {any_tensor {cplx_tensor {std::move(plan.t)}}, any_tensor {cplx_tensor {std::move(plan.z)}},
-            any_tensor {cplx_tensor {numerical::tensor<std::complex<double>> {{count}, std::move(points)}}}, plan.hermitian};
-}
-
-// funm_finish(t, z, points, images, hermitian, real) -> (F, err), numerical::finish_funm of funm_plan's forms and f at
-// its points (complex128); F real where real (a real matrix) and every imaginary part is within 1e6 ε of 0 (SciPy's
-// _maybe_real).
-std::tuple<any_tensor, double> funm_finish(const any_tensor& t, const any_tensor& z, const any_tensor& points, const any_tensor& images,
-                                           bool hermitian, bool real)
-{
-    if (!is_complex(t) || !is_complex(z) || !is_complex(points) || !is_complex(images) || is_single(t) || is_single(z) || is_single(points)
-        || is_single(images)) {
-        throw std::runtime_error("funm_finish takes complex128 tensors");
-    }
-    const auto&          p {std::get<cplx_tensor>(points).data()};
-    const auto&          v {std::get<cplx_tensor>(images).data()};
-    numerical::funm_plan plan {matrix_from(std::get<cplx_tensor>(t)), matrix_from(std::get<cplx_tensor>(z)),
-                               std::vector<std::complex<double>>(p.begin(), p.end()), hermitian};
-    const sb::scoped_gil_release unlocked {releases_gil(count_of(t) * 8)};
-    numerical::funm_result r {numerical::finish_funm(plan, std::vector<std::complex<double>>(v.begin(), v.end()))};
-    const double           tolerance {1e6 * std::numeric_limits<double>::epsilon()};
-    const bool negligible {std::all_of(r.f.begin(), r.f.end(), [tolerance](const std::complex<double>& x) { return std::abs(x.imag()) <= tolerance; })};
-    if (real && negligible) {
+    using C = std::complex<double>;
+    const auto f = [evaluate](const std::vector<C>& points) -> std::vector<C> {
+        if (points.empty()) {
+            return {};
+        }
+        PyObject* const argument {wrap(any_tensor {cplx_tensor {numerical::tensor<C> {{points.size()}, numerical::buffer<C>(points.begin(), points.end())}}})};
+        PyObject* const answer {argument == nullptr ? nullptr : PyObject_CallFunctionObjArgs(evaluate, argument, nullptr)};
+        Py_XDECREF(argument);
+        const any_tensor* const values {answer == nullptr ? nullptr : as_tensor(answer)};
+        if (values == nullptr) {
+            Py_XDECREF(answer);
+            throw sb::error_already_set {};
+        }
+        if (!std::holds_alternative<cplx_tensor>(*values)) {
+            Py_DECREF(answer);
+            throw std::runtime_error("funm: the values of f are complex128");
+        }
+        const auto&    data {std::get<cplx_tensor>(*values).data()};
+        std::vector<C> out(data.begin(), data.end());
+        Py_DECREF(answer);
+        return out;
+    };
+    const numerical::funm_result r {is_complex(a) ? numerical::funm(matrix_from(std::get<cplx_tensor>(a)), f)
+                                                  : numerical::funm(matrix_from(std::get<real_tensor>(a)), f)};
+    const double tolerance {1e6 * std::numeric_limits<double>::epsilon()};
+    const bool   negligible {std::all_of(r.f.begin(), r.f.end(), [tolerance](const C& x) { return std::abs(x.imag()) <= tolerance; })};
+    if (!is_complex(a) && negligible) {
         numerical::buffer<double> parts(r.f.rows() * r.f.cols());
-        std::transform(r.f.begin(), r.f.end(), parts.begin(), [](const std::complex<double>& x) { return x.real(); });
+        std::transform(r.f.begin(), r.f.end(), parts.begin(), [](const C& x) { return x.real(); });
         return {any_tensor {real_tensor {numerical::matrix<double> {r.f.rows(), r.f.cols(), std::move(parts)}}}, r.error};
     }
-    return {any_tensor {cplx_tensor {std::move(r.f)}}, r.error};
+    return {any_tensor {cplx_tensor {numerical::matrix<C> {r.f}}}, r.error};
 }
 
 namespace {

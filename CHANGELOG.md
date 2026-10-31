@@ -14,6 +14,18 @@ A change that can break code is listed under **Breaking** and held for a month's
   one copy of each part. Tested against NumPy 2.5 over shapes, axes, offsets and every pair of dtypes (370 cases),
   and the refusals.
 
+### Fixed
+- **`funm` exact where eigenvalues lie 0.01 to 0.1 apart, or spread evenly**: Parlett's recurrence divided by their gaps
+  and lost 10⁶ to 10¹³ ε there (gaps of 0.03 at order 8: 4·10⁶ ε; 64 eigenvalues on [0.05, 1]: 10¹³ ε), its estimate
+  saying 10⁻¹³. Eigenvalues within 0.1 of the largest modulus now gather (Davies and Higham's bound, relative), each
+  cluster's Cauchy integral taking more points on its circle while its own estimate asks and halves (up to 4096, only
+  the new ones evaluated), and where no circle keeps another cluster's eigenvalues out, or the estimate stays past
+  10³ ε, the clusters within 0.01 instead. Against references to 40 digits over 36 matrices (gaps 10⁻⁴ to 0.1, spectra
+  in a disk, on a line and wide, random orders 96 and 128; exp and sin): every one within 60 ε, its estimate at most
+  10⁻¹³. A random matrix: order 128 5 → 16 ms, 256 28 → 43 ms (SciPy 1.17 12 and 48 ms). Python's `funm` calls `func`
+  as often as asked, the C++ calling back. C++: `finish_funm` refuses images fewer than the eigenvalues (it read past
+  them); `funm_plan` carries its clusters' share and circles' counts, `funm_points` and `regathered` remake its points.
+
 ## 2026.10.43 — 2026-10-31
 
 ### Added

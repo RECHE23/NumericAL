@@ -697,6 +697,99 @@ TEST(hermitian_matrix_functions_take_the_eigendecomposition)
   EXPECT(numerical::sqrtm(matrix<C> {0, 0, std::vector<C> {}}).rows() == 0);
 }
 
+// funm's clusters within 0.1 and their circles' points as their integrals ask: gaps of 0.03 (Parlett's recurrence lost
+// 4·10⁶ ε there), an evenly spread spectrum (64 eigenvalues on [0.05, 1]: 10¹³ ε), a random matrix's cluster of 17
+// that wants 1024 points; chained clusters no circle separates (order 44) taken within 0.01 at once; a pole of f
+// between two eigenvalues 0.06 apart, inside their circle, answered within 0.01 (Parlett's recurrence there); f
+// whose circle values make each integral's estimate halve at each doubling, up to the most points; f answering
+// other than one value per point when asked for more, refused; a plan's counts other than its circles', refused.
+TEST(funm_takes_the_points_its_integrals_ask)
+{
+  using values = std::vector<C>;
+  const auto exponential = [](const values& x) {
+                             values y(x.size());
+                             std::ranges::transform(x, y.begin(), [](const C& z) { return std::exp(z); });
+                             return y;
+                           };
+  const auto sine_matrix = [](std::size_t n) { // a random-like matrix of spectral radius about 2
+                             std::vector<double> entries(n * n);
+                             for (std::size_t e {0}; e < n * n; ++e) {
+                               const double k {static_cast<double>(e)};
+                               entries[e] = std::sin(1.0 + (0.7 * k) + (0.013 * k * k)) * 2.0 / std::sqrt(static_cast<double>(n));
+                             }
+                             return matrix<double> {n, n, entries};
+                           };
+  std::vector<double> gaps(64, 0.0);
+  for (std::size_t i {0}; i < 8; ++i) {
+    gaps[(i * 8) + i] = 1.0 + (0.03 * static_cast<double>(i));
+    for (std::size_t j {i + 1}; j < 8; ++j) {
+      gaps[(i * 8) + j] = std::sin(1.0 + static_cast<double>((i * 8) + j));
+    }
+  }
+  const std::size_t   m {64};
+  std::vector<double> line(m * m, 0.0); // eigenvalues 0.05 … 1 on the diagonal of an upper triangle
+  for (std::size_t i {0}; i < m; ++i) {
+    line[(i * m) + i] = 0.05 + (0.95 * static_cast<double>(i) / static_cast<double>(m - 1));
+    for (std::size_t j {i + 1}; j < m; ++j) {
+      line[(i * m) + j] = 0.3 * std::sin(static_cast<double>((i * m) + j));
+    }
+  }
+  for (const matrix<double>& a : {matrix<double> {8, 8, gaps}, matrix<double> {m, m, line}, sine_matrix(96), sine_matrix(44)}) {
+    const numerical::funm_result r {numerical::funm(a, exponential)};
+    EXPECT(relative_gap(r.f, numerical::detail::as_complex(numerical::expm(a))) < 1e-13 && r.error < 1e-12);
+  }
+  const matrix<double>         pair    {{1.0, 1.0}, {0.0, 1.06}};
+  const C                      pole    {1.03};
+  const numerical::funm_result inverse {numerical::funm(pair, [pole](const values& x) {
+                                                          values y(x.size());
+                                                          std::ranges::transform(x, y.begin(), [pole](const C& z) { return C {1.0} / (z - pole); });
+                                                          return y;
+                                                        })};
+  EXPECT(relative_gap(inverse.f, numerical::detail::as_complex(numerical::inverse(matrix<double> {{1.0 - 1.03, 1.0}, {0.0, 1.06 - 1.03}}))) < 1e-14);
+  const matrix<double> close {{1.0, 1.0}, {0.0, 1.001}};
+  std::size_t          calls {0};
+  std::size_t          asked {0};
+  const auto           noisy = [&](const values& x) { // the first call's circle values 1 % low, then exact
+                                 values y {exponential(x)};
+                                 for (std::size_t k {calls == 0 ? 2 : y.size()}; k < y.size(); ++k) {
+                                   y[k] *= 0.99;
+                                 }
+                                 ++calls;
+                                 asked += x.size();
+                                 return y;
+                               };
+  const numerical::funm_result capped {numerical::funm(close, noisy)};
+  EXPECT(asked >= 2 + numerical::detail::contour_points_most && relative_gap(capped.f, numerical::detail::as_complex(numerical::expm(close))) < 1e-14);
+  std::size_t later                   {0};
+  EXPECT_THROWS(static_cast<void>(numerical::funm(sine_matrix(96), [&](const values& x) { return ++later == 1 ? exponential(x) : values {C {1.0}}; })),
+                numerical::dimension_error);
+  // the plan and its points by hand, finished at once (the one pass of each circle's 64 points); Parlett's recurrence
+  // through every superdiagonal of eigenvalues well apart
+  const matrix<double>       mixed   {{1.0, 1.0, 0.5}, {0.0, 1.001, 1.0}, {0.0, 0.0, 3.0}}; // a cluster and one eigenvalue alone
+  const numerical::funm_plan by_hand {numerical::plan_funm(mixed)};
+  EXPECT(relative_gap(numerical::finish_funm(by_hand, exponential(by_hand.points)).f, numerical::detail::as_complex(numerical::expm(mixed))) < 1e-14);
+  const matrix<double> apart         {{1.0, 0.5, 0.25, 0.125}, {0.0, 2.0, 0.5, 0.25}, {0.0, 0.0, 3.0, 0.5}, {0.0, 0.0, 0.0, 4.0}};
+  EXPECT(relative_gap(numerical::funm(apart, exponential).f, numerical::detail::as_complex(numerical::expm(apart))) < 1e-14);
+  numerical::funm_plan plan          {numerical::plan_funm(sine_matrix(96))};
+  plan.counts.push_back(64);
+  EXPECT_THROWS(static_cast<void>(numerical::finish_funm(plan, exponential(plan.points))), numerical::dimension_error);
+  // a plan's counts or points other than its circles': an odd count, none, a sum the points do not hold, fewer
+  // points than eigenvalues
+  const matrix<double> two {{1.0, 1.0, 0.5, 0.2}, {0.0, 1.001, 1.0, 0.5}, {0.0, 0.0, 3.0, 1.0}, {0.0, 0.0, 0.0, 3.001}}; // two clusters
+  for (const std::size_t count : {std::size_t {3}, std::size_t {0}}) { // the other circle's points kept
+    numerical::funm_plan edited {numerical::plan_funm(two)};
+    edited.counts[0] = count;
+    edited.points    = numerical::funm_points(edited);
+    EXPECT_THROWS(static_cast<void>(numerical::finish_funm(edited, exponential(edited.points))), numerical::dimension_error);
+  }
+  numerical::funm_plan stale {numerical::plan_funm(mixed)};
+  stale.counts[0] = 128; // its points still 64 on the circle
+  EXPECT_THROWS(static_cast<void>(numerical::finish_funm(stale, exponential(stale.points))), numerical::dimension_error);
+  numerical::funm_plan empty {numerical::plan_funm(mixed)};
+  empty.points.clear();
+  EXPECT_THROWS(static_cast<void>(numerical::finish_funm(empty, values {})), numerical::dimension_error);
+}
+
 // funm where eigenvalues gather (within 10⁻² of the largest, or of 1): the Schur form reordered by clusters, each
 // cluster's block by Cauchy's integral on a circle (64 trapezoidal points, the even 32's the estimate), the blocks above
 // by the block recurrence. Jordan blocks (exp, cos), eigenvalues 10⁻⁸ apart, a cluster beside a single eigenvalue

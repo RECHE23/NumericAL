@@ -650,7 +650,6 @@ inv = inverse
 _expm = _linalg(_numerical.expm, arrays=1)
 _expm_frechet = _linalg(_numerical.expm_frechet, arrays=2)
 _expm_cond = _linalg(_numerical.expm_cond, arrays=1)
-_funm_plan = _linalg(_numerical.funm_plan, arrays=1)
 _logm = _linalg(_numerical.logm, arrays=1)
 _fractional_matrix_power = _linalg(_numerical.fractional_matrix_power, arrays=1)
 _qr_pivoted = _linalg(_numerical.qr_pivoted, arrays=1)
@@ -837,12 +836,14 @@ def expm_frechet(A, E, method=None, compute_expm=True, check_finite=True):
 
 def funm(A, func, disp=True):
     """A function of a square matrix, as ``scipy.linalg.funm``: the Schur form ``A = Z T Zᴴ`` (a real matrix's real
-    form made complex), `func` called once with `T`'s diagonal (a NumPy array where NumPy is installed, else a
+    form made complex), `func` called with `T`'s diagonal (a NumPy array where NumPy is installed, else a
     :class:`Tensor`; it returns one value per entry), then Parlett's recurrence for the rest of ``f(T)`` and
-    ``Z f(T) Zᴴ``; real where `A` is and the imaginary parts are negligible. Where eigenvalues gather (within 1e-3 of
+    ``Z f(T) Zᴴ``; real where `A` is and the imaginary parts are negligible. Where eigenvalues gather (within 0.1 of
     the largest modulus, or of 1), Davies and Higham's Schur–Parlett algorithm: the Schur form reordered by clusters,
-    each cluster's block by Cauchy's integral on a circle about it (`func` then also gets those circles' points, after
-    the eigenvalues: it must be analytic on their disks), the rest by the block recurrence. A Hermitian `A`:
+    each cluster's block by Cauchy's integral on a circle about it (`func` is then called again with those circles'
+    points, more of them where an integral's own estimate asks: it must be analytic on their disks), the rest by the
+    block recurrence; where no circle can keep the other clusters out, or the estimate stays past ``1e3 eps``, the
+    clusters within 0.01 instead. A Hermitian `A`:
     ``V f(Λ) Vᴴ`` from its eigendecomposition. With ``disp=True`` (the default) a likely inaccurate result is reported
     on standard output, as SciPy's; with ``disp=False`` ``(F, err)`` is returned, `err` the estimate of
     ``‖error‖₁ / ‖A‖₁``.
@@ -852,18 +853,18 @@ def funm(A, func, disp=True):
             point.
     """
     A = A if isinstance(A, Tensor) else asarray(A)
-    t, z, points, hermitian = _funm_plan(A)
-    arguments = [complex(x) for x in _flat(points.tolist())] if points.size else []
     try:
         import numpy as _np
     except ImportError:  # pragma: no cover
-        argument = asarray(arguments, "complex128")
-    else:
-        argument = _np.array(arguments, dtype=complex)
-    values = [complex(x) for x in _flat(asarray(func(argument)).tolist())] if arguments else []
-    values = asarray(values, "complex128")
+        _np = None
+
+    def evaluate(points):  # f at the points funm asks for: a NumPy array of them where NumPy is installed
+        argument = _np.asarray(points) if _np is not None else points
+        values = [complex(x) for x in _flat(asarray(func(argument)).tolist())]
+        return asarray(values, "complex128") if values else zeros((0,), "complex128")
+
     try:
-        f, err = _numerical.funm_finish(t, z, points, values, hermitian, not A.dtype.startswith("complex"))
+        f, err = _numerical.funm_call(A, evaluate)
     except error as caught:
         raise LinAlgError(*caught.args) from None
     if A.dtype in ("float32", "complex64"):
