@@ -29,7 +29,7 @@ __all__ = [
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config", "blas_library",
-    "schur", "solve_triangular", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
+    "schur", "solve_triangular", "lu", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
     "sum", "mean", "max", "min", "any", "all", "astype", "where", "isnan", "isinf", "isfinite", "equal", "not_equal",
     "less", "less_equal", "greater", "greater_equal", "logical_and", "logical_or", "logical_xor", "logical_not",
     "reshape", "full", "zeros", "ones", "eye", "arange", "linspace",
@@ -134,6 +134,7 @@ class LUFactor(tuple[Tensor, tuple[int, ...]]):
     @property
     def piv(self) -> tuple[int, ...]: ...
     def solve(self, b: _ArrayLike, trans: _Trans = 0) -> Tensor: ...
+def lu(a: _ArrayLike, permute_l: bool = False, overwrite_a: bool = False, check_finite: bool = True, p_indices: bool = False) -> Any: ...
 def lu_factor(a: _ArrayLike, overwrite_a: bool = False, check_finite: bool = True) -> LUFactor: ...
 def lu_solve(lu_and_piv: tuple[_ArrayLike, Sequence[int]], b: _ArrayLike, trans: _Trans = 0, overwrite_b: bool = False,
              check_finite: bool = True) -> Tensor: ...

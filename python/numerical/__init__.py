@@ -51,7 +51,7 @@ __all__ = [
     "trace", "outer", "cross", "tensordot", "vecdot", "conj", "conjugate", "matmul",
     "array_equal", "set_num_threads", "get_num_threads", "gemm_path", "limit_gemm_path",
     "get_include", "get_config", "blas_library",
-    "schur", "solve_triangular", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
+    "schur", "solve_triangular", "lu", "lu_factor", "lu_solve", "cho_factor", "cho_solve", "LUFactor", "CholeskyFactor",
 ]
 
 
@@ -1271,6 +1271,7 @@ def cholesky(a, /, *, upper=False):
 
 _solve_triangular = _linalg(_numerical.solve_triangular, arrays=2)
 _lu_factor = _linalg(_numerical.lu_factor, arrays=1)
+_lu_full = _linalg(_numerical.lu_full, arrays=1)
 _TRANS = {0: 0, 1: 1, 2: 2, "N": 0, "T": 1, "C": 2}
 
 
@@ -1327,6 +1328,32 @@ class LUFactor(tuple):
     def solve(self, b, trans=0):
         """:func:`lu_solve` with this factorisation."""
         return lu_solve(self, b, trans)
+
+
+def lu(a, permute_l=False, overwrite_a=False, check_finite=True, p_indices=False):
+    """The pivoted LU factorisation ``a = P @ L @ U`` of an m × n matrix, as ``scipy.linalg.lu``: `L` m × k lower
+    trapezoidal with a unit diagonal, `U` k × n upper trapezoidal, ``k = min(m, n)``; `P` the m × m permutation matrix,
+    or with ``p_indices=True`` the rows themselves (``a == L[P] @ U``, an int list where SciPy's is an array); with
+    ``permute_l=True`` the pair ``(P @ L, U)``. A singular matrix factorises (a zero pivot leaves its column of `L`
+    zero). `overwrite_a` and `check_finite` are accepted (an infinite or NaN entry raises always).
+
+    Raises:
+        LinAlgError: if `a` is not a matrix or holds an infinite or NaN entry.
+    """
+    del overwrite_a, check_finite
+    a = _tensor(a)
+    rows, lower, upper = _lu_full(a)
+    where = [0] * len(rows)  # where row r of a lies in L U: P's inverse
+    for i, r in enumerate(rows):
+        where[r] = i
+    if permute_l:
+        return (stack([lower[i] for i in where]) if a.size else lower), upper
+    if p_indices:
+        return (where if a.size else []), lower, upper
+    dtype = "float32" if a.dtype in _SINGLE else "float64"
+    m = len(rows) if a.size else 0  # SciPy's P of an empty matrix is 0 × 0 whatever its rows
+    p = asarray([[1.0 if rows[j] == i else 0.0 for j in range(m)] for i in range(m)], dtype) if m else zeros((0, 0), dtype)
+    return p, lower, upper
 
 
 def lu_factor(a, overwrite_a=False, check_finite=True):

@@ -1914,6 +1914,9 @@ std::tuple<any_tensor, std::vector<std::size_t>> do_lu_factor(const numerical::t
 
 std::tuple<any_tensor, std::vector<std::size_t>> lu_factor(const any_tensor& a); // in linalg.cpp
 
+// lu_full(a) -> (rows, L, U), numerical::lu_factors of an m × n matrix, as scipy.linalg.lu needs it.
+std::tuple<std::vector<std::size_t>, any_tensor, any_tensor> lu_full(const any_tensor& a); // in linalg.cpp
+
 // The rows of `x` (n × k, row-major) swapped as LAPACK's interchanges say, row i with row swaps[i], in turn from the
 // first, or from the last where `backward`.
 template <typename T>

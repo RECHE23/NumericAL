@@ -74,6 +74,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&lstsq>("lstsq", "lstsq(a, b, rtol) -> (x, residuals, rank, s)\nThe minimum-norm least-squares solution of a @ x ≈ b with its residual sums of squares, the rank and the singular values of a, as numpy.linalg.lstsq (SVD; a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&solve_triangular>("solve_triangular", "solve_triangular(a, b, lower, trans, unit) -> Tensor\nop(A) X = B for the lower or upper triangle of a, op by trans (0 A, 1 Aᵀ, 2 Aᴴ), its diagonal ones where unit.");
     m.def<&lu_factor>("lu_factor", "lu_factor(a) -> (Tensor, list)\nL and U in one matrix, and LAPACK's row interchanges.");
+    m.def<&lu_full>("lu_full", "lu_full(a) -> (rows, L, U)\nThe pivoted LU factorisation of an m × n matrix, as scipy.linalg.lu: row i of L @ U is row rows[i] of a.");
     m.def<&lu_solve>("lu_solve", "lu_solve(lu, piv, b, trans) -> Tensor\nThe solution of A x = b (trans 0), Aᵀ x = b (1) or Aᴴ x = b (2) from lu_factor's factors.");
     m.def<&cholesky>("cholesky", "cholesky(a, upper) -> Tensor\nThe lower factor L of A = L Lᴴ (Hermitian positive-definite), or with upper the factor U of A = Uᴴ U from its upper triangle.");
     m.def<&qr>("qr", "qr(a, mode) -> (Q, R)\nThe QR factorisation of an m×n matrix, as numpy.linalg.qr: reduced, Q is m×k, R k×n, k = min(m, n); complete, Q is m×m, R m×n.");

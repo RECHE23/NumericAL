@@ -287,7 +287,8 @@ and its magnitude NumPy's own.
 The decomposition layer is exposed too (a `numpy.linalg`-style surface):
 `determinant(a)` (`det`), `slogdet(a)` → `(sign, logabsdet)`, `inverse(a)` (`inv`), `pinv(a, rcond, hermitian)`,
 `matrix_rank(a, tol, hermitian)`, `eigvalsh(a, UPLO)`, `lstsq(a, b, rcond)` → `(x, residuals, rank, s)`,
-`cholesky(a, upper=False)`, `ldl(A, lower, hermitian)` → `(lu, d, perm)` as `scipy.linalg.ldl`, `qr(a, mode="reduced")` → `(Q, R)` (`"complete"` as NumPy's, `"r"` → `R` alone),
+`cholesky(a, upper=False)`, `lu(a, permute_l, p_indices)` → `(P, L, U)` as `scipy.linalg.lu` (any shape),
+`ldl(A, lower, hermitian)` → `(lu, d, perm)` as `scipy.linalg.ldl`, `qr(a, mode="reduced")` → `(Q, R)` (`"complete"` as NumPy's, `"r"` → `R` alone),
 `eigh(a, UPLO)` → `(values, vectors)` (with `b=`, a positive-definite matrix, the pencil `a x = λ b x` as
 `scipy.linalg.eigh(a, b)`; `eigvalsh(a, b=b)` its values), `schur(a, output="real")` → `(T, Z)` as
 `scipy.linalg.schur` (`"complex"` the triangular form of a real matrix; with `sort=` `"lhp"`, `"rhp"`, `"iuc"`,

@@ -96,6 +96,71 @@ namespace {
 } // namespace
 
 // The reduction's spelled-out complex corrections are subtract_products' to the bit on finite parts: the same
+// The pivoted LU of an m × n matrix (lu_factors): rows[i] of A is row i of L U within rounding, L unit lower trapezoidal
+// and U upper, for square, wide (the square part, U's other columns by L⁻¹), tall within four times as many rows as
+// columns (beside zero columns) and taller (by columns), real and complex; a zero pivot by columns left in L; the
+// pivots of the blocked and the column factorisations the same; empty matrices.
+TEST(lu_factors_any_shape)
+{
+  const auto check = [](const auto& a, double tolerance) {
+                       using T = std::decay_t<decltype(a(0, 0))>;
+                       const auto        f       {numerical::lu_factors(a)};
+                       const std::size_t m       {a.rows()};
+                       const std::size_t n       {a.cols()};
+                       const std::size_t k       {std::min(m, n)};
+                       bool              fine    {f.l.rows() == m && f.l.cols() == k && f.u.rows() == k && f.u.cols() == n};
+                       const matrix<T>   product {f.l * f.u};
+                       for (std::size_t i {0}; i < m && fine; ++i) {
+                         for (std::size_t j {0}; j < n; ++j) {
+                           fine = fine && std::abs(product(i, j) - a(f.rows[i], j)) <= tolerance;
+                         }
+                         for (std::size_t j {i}; j < k; ++j) {
+                           fine = fine && f.l(i, j) == (i == j ? T {1} : T {});
+                         }
+                       }
+                       for (std::size_t i {0}; i < k && fine; ++i) {
+                         for (std::size_t j {0}; j < i; ++j) {
+                           fine = fine && f.u(i, j) == T {};
+                         }
+                       }
+                       return fine;
+                     };
+  for (const auto& [m, n] : {std::pair<std::size_t, std::size_t> {4, 4}, {3, 7}, {7, 3}, {30, 5}, {5, 30}, {1, 1}}) {
+    std::vector<double>               real(m * n);
+    std::vector<std::complex<double>> complex(m * n);
+    for (std::size_t e {0}; e < m * n; ++e) {
+      const double x {static_cast<double>(e)};
+      real[e]    = std::sin(1.0 + (0.7 * x) + (0.013 * x * x));
+      complex[e] = {real[e], std::cos(0.3 * x)};
+    }
+    EXPECT(check(matrix<double> {m, n, real}, 1e-14));
+    EXPECT(check(matrix<std::complex<double>> {m, n, complex}, 1e-14));
+  }
+  // a zero column by columns: its pivot 0, its multipliers left 0
+  const matrix<double> tall                                          {{1.0, 0.0}, {2.0, 0.0}, {3.0, 0.0}, {4.0, 0.0}, {5.0, 0.0}, {6.0, 0.0}, {7.0, 0.0}, {8.0, 0.0}, {9.0, 0.0}};
+  const auto           zero                                          {numerical::lu_factors(tall)};
+  EXPECT(check(tall, 1e-15) && zero.u(1, 1) == 0.0 && zero.l(8, 1) == 0.0);
+  const matrix<std::complex<double>> complex_tall                    {numerical::detail::as_complex(tall)};
+  const auto                         complex_zero                    {numerical::lu_factors(complex_tall)};
+  EXPECT(check(complex_tall, 1e-15) && complex_zero.u(1, 1) == 0.0);
+  std::vector<std::complex<double>> ordered(18, std::complex<double> {}); // pivots in place: no row exchanged
+  for (std::size_t i {0}; i < 9; ++i) {
+    ordered[i * 2]       = {9.0 - static_cast<double>(i), 0.0};
+    ordered[(i * 2) + 1] = {i == 1 ? 5.0 : 0.0, 0.0};
+  }
+  EXPECT(check(matrix<std::complex<double>> {9, 2, ordered}, 1e-14));
+  EXPECT(numerical::lu_factors(matrix<std::complex<double>> {0, 2, std::vector<std::complex<double>> {}}).l.rows() == 0);
+  // a tall matrix both ways: by columns, and its top rows beside zero columns (within four times): one choice of pivots
+  const matrix<double> wide_enough {{1.0, 2.0}, {3.0, 1.0}, {-4.0, 0.5}, {2.0, 2.0}, {0.5, -1.0}, {1.0, 1.0}, {9.0, 0.0}, {0.0, 3.0}, {1.0, -7.0}};
+  const auto           by_columns  {numerical::lu_factors(wide_enough)};
+  std::vector<double>  top(wide_enough.begin(), wide_enough.begin() + 8);
+  const auto           blocked     {numerical::lu_factors(matrix<double> {4, 2, top})};
+  EXPECT(by_columns.rows[0] == 6 && blocked.rows[0] == 2);
+  EXPECT(numerical::lu_factors(matrix<double> {0, 3, std::vector<double> {}}).u.cols() == 3);
+  EXPECT(numerical::lu_factors(matrix<double> {3, 0, std::vector<double> {}}).l.rows() == 3);
+  EXPECT_THROWS(static_cast<void>(numerical::lu_factors(matrix<double> {{std::nan("")}})), numerical::non_finite_error);
+}
+
 // statements, without the operator's rescue of a NaN product, which finite parts never take.
 TEST(the_reduction_s_corrections_are_subtract_products)
 {

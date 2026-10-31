@@ -1684,6 +1684,142 @@ namespace numerical {
     }
   } // namespace detail
 
+  //! \brief The pivoted LU factorisation of an `m × n` matrix (\ref lu_factors): `A = P L U`.
+  template <typename T>
+  struct rectangular_lu
+  {
+    std::vector<std::size_t> rows; //!< Row `i` of `P⁻¹ A = L U` is row `rows[i]` of `A`.
+    matrix<T>                l;    //!< `m × k` (`k = min(m, n)`), lower trapezoidal with a unit diagonal.
+    matrix<T>                u;    //!< `k × n`, upper trapezoidal.
+  };
+
+  namespace detail {
+
+    //! \brief The rows of \p lu (`rows × cols` row-major, `L` below its diagonal, `U` on and above) as `L`, its first
+    //!        \p k columns (unit diagonal), and `U`, its first \p k rows.
+    template <typename T>
+    [[nodiscard]] std::pair<matrix<T>, matrix<T>> split_lu(const T*    lu,
+                                                           std::size_t rows,
+                                                           std::size_t cols,
+                                                           std::size_t k)
+    {
+      buffer<T> l(rows * k, T {});
+      buffer<T> u(k * cols, T {});
+      for (std::size_t i {0}; i < rows; ++i) {
+        for (std::size_t j {0}; j < k; ++j) {
+          l[(i * k) + j] = i == j ? T {1} : (j < i ? lu[(i * cols) + j] : T {});
+        }
+      }
+      for (std::size_t i {0}; i < k; ++i) {
+        for (std::size_t j {i}; j < cols; ++j) {
+          u[(i * cols) + j] = lu[(i * cols) + j];
+        }
+      }
+      return {matrix<T> {rows, k, std::move(l)}, matrix<T> {k, cols, std::move(u)}};
+    }
+
+    //! \brief The order past which \ref lu_factors factorises a tall matrix by columns (LAPACK's `getf2`): its rows
+    //!        more than this many times its columns, the square the blocked factorisation would take costs `m³ / 3`
+    //!        against the columns' `m n²`.
+    inline constexpr std::size_t lu_tall_ratio {4};
+  } // namespace detail
+
+  /*!
+   * \brief The pivoted LU factorisation `A = P L U` of an `m × n` matrix, as `scipy.linalg.lu`: `L` `m × k` lower
+   *        trapezoidal with a unit diagonal, `U` `k × n` upper trapezoidal, `k = min(m, n)`, rows chosen by partial
+   *        pivoting as \ref lu_decomposition chooses them. A wide matrix's square part by \ref lu_decomposition and `U`'s
+   *        other columns by `L⁻¹ P A`; a tall one by \ref lu_decomposition of it beside zero columns (its first `n`
+   *        columns factorised alike), or by columns (`getf2`) where it is more than \ref detail::lu_tall_ratio times as
+   *        tall as wide. A zero pivot leaves its column of `L` zero, as LAPACK's.
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws non_finite_error If an entry is infinite or NaN.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] rectangular_lu<T> lu_factors(const matrix<T>& a)
+  {
+    const std::size_t m {a.rows()};
+    const std::size_t n {a.cols()};
+    const std::size_t k {std::min(m, n)};
+    detail::require_finite(a, "LU decomposition");
+    std::vector<std::size_t> identity(m);
+    std::iota(identity.begin(), identity.end(), std::size_t {0});
+    if (k == 0) {
+      return {std::move(identity), matrix<T> {m, k, buffer<T>(m * k)}, matrix<T> {k, n, buffer<T>(k * n)}};
+    }
+    if (m <= n) { // the square part's factorisation; U's other columns L⁻¹ (its rows in the pivoted order)
+      buffer<T> square(m * m);
+      for (std::size_t i {0}; i < m; ++i) {
+        std::copy_n(&a(i, 0), m, square.data() + (i * m));
+      }
+      const lu_decomposition<T> f  {matrix<T> {m, m, std::move(square)}};
+      const matrix<T>           lu {f.factors()};
+      buffer<T>                 combined(m * n);
+      for (std::size_t i {0}; i < m; ++i) {
+        std::copy_n(&lu(i, 0), m, combined.data() + (i * n));
+      }
+      if (n > m) {
+        buffer<T> rest(m * (n - m));
+        for (std::size_t i {0}; i < m; ++i) {
+          std::copy_n(&a(f.pivots()[i], m), n - m, rest.data() + (i * (n - m)));
+        }
+        for (std::size_t i {1}; i < m; ++i) { // L's unit lower triangle, forward: row i less L(i, j) row j
+          T* const row {rest.data() + (i * (n - m))};
+          for (std::size_t j {0}; j < i; ++j) {
+            const T  factor {lu(i, j)};
+            const T* above  {rest.data() + (j * (n - m))};
+            for (std::size_t c {0}; c < n - m; ++c) {
+              row[c] -= factor * above[c];
+            }
+          }
+        }
+        for (std::size_t i {0}; i < m; ++i) {
+          std::copy_n(rest.data() + (i * (n - m)), n - m, combined.data() + (i * n) + m);
+        }
+      }
+      auto [l, u] {detail::split_lu(combined.data(), m, n, k)};
+      return {f.pivots(), std::move(l), std::move(u)};
+    }
+    if (m <= detail::lu_tall_ratio * n) { // beside zero columns, square
+      buffer<T> padded(m * m, T {});
+      for (std::size_t i {0}; i < m; ++i) {
+        std::copy_n(&a(i, 0), n, padded.data() + (i * m));
+      }
+      const lu_decomposition<T> f  {matrix<T> {m, m, std::move(padded)}};
+      const matrix<T>           lu {f.factors()};
+      auto [l, u] {detail::split_lu(std::to_address(lu.begin()), m, m, k)};
+      buffer<T> top(k * n); // U's first n columns
+      for (std::size_t i {0}; i < k; ++i) {
+        std::copy_n(&u(i, 0), n, top.data() + (i * n));
+      }
+      return {f.pivots(), std::move(l), matrix<T> {k, n, std::move(top)}};
+    }
+    buffer<T> w(a.begin(), a.end()); // by columns, as getf2: the pivot, the multipliers, the rank-one update
+    for (std::size_t j {0}; j < n; ++j) {
+      std::size_t pivot {j};
+      for (std::size_t i {j + 1}; i < m; ++i) {
+        pivot = std::abs(w[(i * n) + j]) > std::abs(w[(pivot * n) + j]) ? i : pivot;
+      }
+      if (pivot != j) {
+        std::swap_ranges(w.data() + (j * n), w.data() + ((j + 1) * n), w.data() + (pivot * n));
+        std::swap(identity[j], identity[pivot]);
+      }
+      const T diagonal {w[(j * n) + j]};
+      if (diagonal == T {}) {
+        continue; // a zero column below the diagonal: nothing to eliminate
+      }
+      for (std::size_t i {j + 1}; i < m; ++i) {
+        T* const row {w.data() + (i * n)};
+        row[j] /= diagonal;
+        for (std::size_t c {j + 1}; c < n; ++c) {
+          row[c] -= row[j] * w[(j * n) + c];
+        }
+      }
+    }
+    auto [l, u] {detail::split_lu(w.data(), m, n, k)};
+    return {std::move(identity), std::move(l), std::move(u)};
+  }
+
   /*!
    * \brief Solves the linear system `A x = b` for a square `A`.
    * \param[in] a The square coefficient matrix.

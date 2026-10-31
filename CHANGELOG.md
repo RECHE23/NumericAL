@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`lu`, as `scipy.linalg.lu`**: `a = P @ L @ U` of an m × n matrix, `L` m × k unit lower trapezoidal and `U` k × n
+  (`k = min(m, n)`), with `permute_l` and `p_indices`; P, L and U SciPy's for a real matrix (a complex one pivots by
+  modulus, LAPACK's `izamax` by |re| + |im|). C++: `numerical::lu_factors(a)`: a wide matrix's square part by the
+  blocked LU and U's other columns by L⁻¹, a tall one beside zero columns (up to four times as tall as wide) or by
+  columns (`getf2`). Tested against SciPy 1.17 over seven shapes, real and complex, singular and empty matrices.
 - **`eig` and `eigvals` take `scipy.linalg`'s arguments**: `left` (the left eigenvectors from the same Schur form, as
   `geev`'s), `right`, `b` (the generalized problem `a v = w b v` by the complex QZ, `w = α / β` with ∞ and NaN where
   SciPy puts them, each vector of unit 2-norm as SciPy normalises `ggev`'s), `homogeneous_eigvals`, and the

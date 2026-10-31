@@ -958,6 +958,25 @@ any_tensor solve_triangular(const any_tensor& a, const any_tensor& b, bool lower
     return do_solve_triangular<double>(std::get<real_tensor>(a), std::get<real_tensor>(b), lower, op, unit);
 }
 
+// lu_full(a) -> (rows, L, U): numerical::lu_factors of an m × n matrix, as scipy.linalg.lu needs it: row i of L U is
+// row rows[i] of a; single precision computed in double and rounded.
+std::tuple<std::vector<std::size_t>, any_tensor, any_tensor> lu_full(const any_tensor& a)
+{
+    if (shape_of(a).size() != 2) {
+        throw std::runtime_error("lu: expected a matrix");
+    }
+    if (is_single(a)) {
+        auto [rows, l, u] {lu_full(widened(a))};
+        return {std::move(rows), narrowed(std::move(l)), narrowed(std::move(u))};
+    }
+    const auto factored = [](const auto& t) -> std::tuple<std::vector<std::size_t>, any_tensor, any_tensor> {
+        const sb::scoped_gil_release unlocked {releases_gil_cubic(t.data().size())};
+        auto                         f {numerical::lu_factors(matrix_from(t))};
+        return {std::move(f.rows), any_tensor {std::decay_t<decltype(t)> {std::move(f.l)}}, any_tensor {std::decay_t<decltype(t)> {std::move(f.u)}}};
+    };
+    return is_complex(a) ? factored(std::get<cplx_tensor>(a)) : factored(std::get<real_tensor>(a));
+}
+
 std::tuple<any_tensor, std::vector<std::size_t>> lu_factor(const any_tensor& a)
 {
     if (shape_of(a).size() != 2 || shape_of(a)[0] != shape_of(a)[1]) {
