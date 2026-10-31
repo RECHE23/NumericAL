@@ -2263,6 +2263,13 @@ inline double norm_of(const std::vector<double>& values, double ord)
     if (std::isinf(ord)) {
         return ord > 0 ? largest : smallest;
     }
+    if (ord == 1.0) { // the plain sum: its partial sums grow to the answer, so none overflows where it is finite
+        double sum {0.0};
+        for (const double value : values) {
+            sum += value;
+        }
+        return sum;
+    }
     const double scale {ord > 0 ? largest : smallest};
     if (scale == 0.0 || std::isinf(scale)) {
         return scale; // a zero (or infinite) largest for p > 0, a zero (or infinite) smallest for p < 0
@@ -2270,9 +2277,9 @@ inline double norm_of(const std::vector<double>& values, double ord)
     double sum {0.0};
     for (const double value : values) {
         const double ratio {value / scale};
-        sum += ord == 2.0 ? ratio * ratio : (ord == 1.0 ? ratio : std::pow(ratio, ord));
+        sum += ord == 2.0 ? ratio * ratio : std::pow(ratio, ord);
     }
-    return scale * (ord == 2.0 ? std::sqrt(sum) : (ord == 1.0 ? sum : std::pow(sum, 1.0 / ord)));
+    return scale * (ord == 2.0 ? std::sqrt(sum) : std::pow(sum, 1.0 / ord));
 }
 
 // The parts whose squares plain_two_norm sums as one block: fixed, so the sum does not depend on the threads; as many

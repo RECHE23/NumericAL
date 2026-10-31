@@ -15,7 +15,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   contiguous condition one row on the threads (a vector of 10⁶: 1.0 → 0.27 ms); `sum` and `mean` of a mask count its
   trues, with no float64 copy (10⁷: 3.9 → 0.18 ms, 2.3); `any` and `all` of numbers read them in place, the first
   that decides ending the scan (`all` of 10⁷: 1.04 → 0.78 ms, 3.8), along an axis row by row on the threads;
-  `vector_norm` and `matrix_norm` along axes on the threads without a copy of the magnitudes (`ord=1` 14.8 → 2.1 ms).
+  `vector_norm` and `matrix_norm` along axes on the threads without a copy of the magnitudes, along an axis that is
+  not the last row by row over bands of columns, the order 1 a plain sum (no division by the largest, which only
+  rounded): `vector_norm(ord=1, axis=0)` 14.8 → 0.34 ms (1.0), `ord=2` 0.44 ms (1.0), `matrix_norm(ord=1)` 0.36 ms
+  (1.0).
 - **`lu` of a wide or a tall matrix by blocks**: a wide matrix's `U` columns past its square part by the blocked
   triangular solve, where a row-by-row loop ran on one thread (500 × 2000: 40 → 6.4 ms, SciPy 1.17 9.2 ms); a matrix
   more than twice as tall as wide by `dgetrf2`'s recursion over its columns, a product for each half's update (5000 ×

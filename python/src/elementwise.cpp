@@ -497,6 +497,63 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
             any_tensor result {real_tensor {std::move(out_shape), std::move(out)}};
             return wrap(is_single(*h) ? narrowed(result) : std::move(result));
         }
+        // One axis that is not the last, of order 1, 2 or ±∞: the lines along it accumulated row by row over bands of
+        // 256 of the positions after it (contiguous), the bands on the threads, where gathering each line strode across
+        // the rows. A 2-norm whose sum of squares leaves [2^-900, ∞) is the scaled one of its gathered line, as below.
+        if (axes.size() == 1 && static_cast<std::size_t>(axes[0]) + 1 < shape.size() && kept_count != 0
+            && (ord == 1.0 || ord == 2.0 || std::isinf(ord))) {
+            const numerical::detail::axis_walk walk {numerical::detail::walk_along(shape, static_cast<std::size_t>(axes[0]))};
+            numerical::buffer<double>          out(kept_count, 0.0);
+            visit_numeric([&](const auto& t) {
+                const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+                constexpr std::size_t        band {256};
+                const std::size_t            per_outer {(walk.inner + band - 1) / band};
+                numerical::detail::parallel_for(walk.outer * per_outer, band * walk.extent, [&](std::size_t task) {
+                    const std::size_t outer {task / per_outer};
+                    const std::size_t first {(task % per_outer) * band};
+                    const std::size_t last {std::min(walk.inner, first + band)};
+                    double* const     to {out.data() + (outer * walk.inner)};
+                    const bool        largest {ord > 0.0};
+                    for (std::size_t w = first; w < last; ++w) {
+                        to[w] = std::isinf(ord) ? (largest ? 0.0 : std::numeric_limits<double>::infinity()) : 0.0;
+                    }
+                    for (std::size_t j = 0; j < walk.extent; ++j) {
+                        const auto* const row {t.data().data() + (((outer * walk.extent) + j) * walk.inner)};
+                        for (std::size_t w = first; w < last; ++w) {
+                            const auto magnitude {static_cast<double>(std::abs(row[w]))};
+                            if (ord == 1.0) {
+                                to[w] += magnitude;
+                            }
+                            else if (ord == 2.0) {
+                                add_square(to[w], magnitude);
+                            }
+                            else if (std::isnan(magnitude) || std::isnan(to[w])) { // a NaN stays
+                                to[w] = std::numeric_limits<double>::quiet_NaN();
+                            }
+                            else {
+                                to[w] = largest ? std::max(to[w], magnitude) : std::min(to[w], magnitude);
+                            }
+                        }
+                    }
+                    for (std::size_t w = first; w < last && ord == 2.0; ++w) {
+                        if (const std::optional<double> plain {root_of_squares(to[w])}) {
+                            to[w] = *plain;
+                            continue;
+                        }
+                        std::vector<double> values(walk.extent);
+                        for (std::size_t j = 0; j < walk.extent; ++j) {
+                            values[j] = static_cast<double>(std::abs(t.data().data()[(((outer * walk.extent) + j) * walk.inner) + w]));
+                        }
+                        to[w] = norm_of(values, ord);
+                    }
+                });
+            }, *h);
+            if (out_shape.empty() && keepdims == 0) {
+                return PyFloat_FromDouble(is_single(*h) ? static_cast<double>(static_cast<float>(out[0])) : out[0]);
+            }
+            any_tensor result {real_tensor {std::move(out_shape), std::move(out)}};
+            return wrap(is_single(*h) ? narrowed(result) : std::move(result));
+        }
         // The offset of a multi-index over the axes `which` (kept or reduced) of position `n` in their C order.
         const auto offset_of {[&](std::size_t n, bool which) {
             std::size_t offset {0};
