@@ -79,9 +79,10 @@ class AssumeA(unittest.TestCase):
         b = np.ones(2)
         for a, structure in ((np.zeros((2, 2)), "gen"), (np.zeros((2, 2)), "sym"), (np.zeros((2, 2)), "tridiagonal"),
                              (np.array([[2.0, 0.0], [0.0, 0.0]]), "diagonal"), (np.array([[1.0, 2.0], [2.0, 1.0]]), "pos"),
-                             (np.zeros((2, 2)), "banded"), (np.array([[1.0, 0.0], [5.0, 0.0]]), "lower triangular")):
+                             (np.zeros((2, 2)), "banded"), (np.array([[1.0, 0.0], [5.0, 0.0]]), "lower triangular"),
+                             (np.array([[-2.0]]), "pos")):  # order 1 as every order, where SciPy's divides (scipy#26580)
             with self.subTest(structure=structure), self.assertRaises(numerical.LinAlgError):
-                numerical.solve(a, b, assume_a=structure)
+                numerical.solve(a, b[:a.shape[0]], assume_a=structure)
         with self.assertRaisesRegex(ValueError, "not a recognized matrix structure"):
             numerical.solve(np.eye(2), b, assume_a="nope")
         with self.assertRaisesRegex(ValueError, "not a recognized matrix structure"):

@@ -18,6 +18,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   matrix's diagonal is taken real at every order, where SciPy's 1 × 1 case divides by the complex entry.
 
 ### Changed
+- **`funm`'s Cauchy integrals on the threads, the same bits**: each circle's points' inverses `(z I − T_b)⁻¹` in
+  batches on the threads, their terms then added in the points' order, the upper triangles alone: 64 eigenvalues
+  spread evenly 17.6 → 4.8 ms, 128 59 → 19 ms, eight clusters of 32 at order 256 187 → 111 ms (eight threads, arm64).
 - **`bandwidth` scans each row from its edges to its first nonzero entry, on the threads**, where it built three
   `n × n` temporaries: order 2000 6.4 → 0.9 ms (SciPy 2.7 ms). It counts a tall matrix's entry in its last column below
   the diagonal, which SciPy 1.17's misses (a 4 × 3 matrix with one at (3, 2): (1, 0), SciPy (0, 0)).

@@ -1566,6 +1566,10 @@ namespace numerical {
       return true;
     }
 
+    //! \brief The elements of one batch of \ref add_circle_terms's points (their `p × p` inverses, and as many of their
+    //!        shifted blocks): 2²⁰, 16 MiB each, and at least one point.
+    inline constexpr std::size_t funm_batch_elements {std::size_t {1} << 20};
+
     /*!
      * \brief Adds to \p sum, for the points `k = from, from + step, … < count` of the grid of \p count points on the
      *        circle (\p centre, \p radius), `f(z_k) (z_k − c) (z_k I − T_b)⁻¹`, `T_b` the `p × p` block of \p t from
@@ -1584,21 +1588,39 @@ namespace numerical {
                                  buffer<std::complex<double>>&       sum)
     {
       using C = std::complex<double>;
-      buffer<C> shifted(p * p, C {}); // each point's zI − T_b and its inverse, rewritten whole at each point
-      buffer<C> inverse(p * p, C {});
-      for (std::size_t k {from}; k < count; k += step) {
-        const C point {centre + std::polar(radius, 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(count))};
-        std::fill(inverse.begin(), inverse.end(), C {});
-        for (std::size_t i {0}; i < p; ++i) {
-          for (std::size_t j {i}; j < p; ++j) {
-            shifted[(i * p) + j] = (i == j ? point : C {}) - t(first + i, first + j);
+      // The points' inverses in batches on the threads (each point's own buffers), then their terms added in the
+      // points' order: the same bits on any number of threads. Only the upper triangle: an upper triangular matrix's
+      // inverse is upper triangular, and the sum's lower part stays the zero it starts as.
+      const std::size_t terms {((count - from) + step - 1) / step}; // from < count: a grid of 64 points or more
+      const std::size_t batch {std::clamp<std::size_t>(funm_batch_elements / std::max<std::size_t>(1, p * p), 1, std::max<std::size_t>(1, terms))};
+      buffer<C>         inverses(batch * p * p);
+      buffer<C>         shifted(batch * p * p);
+      for (std::size_t done {0}; done < terms; done += batch) {
+        const std::size_t now {std::min(batch, terms - done)};
+        parallel_for(now, p * p * p, [&](std::size_t b) {
+                       const std::size_t k {from + ((done + b) * step)};
+                       const C           point {centre + std::polar(radius, 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(count))};
+                       C* const          a {shifted.data() + (b * p * p)};
+                       C* const          x {inverses.data() + (b * p * p)};
+                       std::fill(x, x + (p * p), C {});
+                       for (std::size_t i {0}; i < p; ++i) {
+                         for (std::size_t j {i}; j < p; ++j) {
+                           a[(i * p) + j] = (i == j ? point : C {}) - t(first + i, first + j);
+                         }
+                         x[(i * p) + i] = C {1.0};
+                       }
+                       solve_triangular_in_place(a, p, false, triangular_op::none, false, x, p);
+                     });
+        for (std::size_t b {0}; b < now; ++b) {
+          const std::size_t k      {from + ((done + b) * step)};
+          const C           point  {centre + std::polar(radius, 2.0 * std::numbers::pi * static_cast<double>(k) / static_cast<double>(count))};
+          const C           weight {*images++ * (point - centre)};
+          const C* const    x      {inverses.data() + (b * p * p)};
+          for (std::size_t i {0}; i < p; ++i) {
+            for (std::size_t j {i}; j < p; ++j) {
+              sum[(i * p) + j] += weight * x[(i * p) + j];
+            }
           }
-          inverse[(i * p) + i] = C {1.0};
-        }
-        solve_triangular_in_place(shifted.data(), p, false, triangular_op::none, false, inverse.data(), p);
-        const C weight {*images++ * (point - centre)};
-        for (std::size_t e {0}; e < p * p; ++e) {
-          sum[e] += weight * inverse[e];
         }
       }
     }
