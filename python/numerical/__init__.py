@@ -823,8 +823,81 @@ def _borrowed(name, convert, *operands):
     return convert(*operands) if result is NotImplemented else result
 
 
-def solve(a, b, /):
-    return _borrowed("solve", _solve, a, b)
+# scipy.linalg.solve's structures, by every name it takes for each.
+_STRUCTURES = {"general": "gen", "gen": "gen", "diagonal": "diagonal", "tridiagonal": "tridiagonal", "banded": "banded",
+               "upper triangular": "upper", "lower triangular": "lower", "symmetric": "sym", "sym": "sym",
+               "hermitian": "her", "her": "her", "positive definite": "pos", "pos": "pos"}
+
+
+def solve(a, b, /, lower=False, overwrite_a=False, overwrite_b=False, check_finite=True, assume_a=None,
+          transposed=False):
+    """The solution `x` of ``a @ x = b``. Without ``assume_a`` or ``transposed``, NumPy's ``numpy.linalg.solve`` (a
+    triangular `a` detected and solved by substitution, else the LU factorisation; a stack of systems broadcast). With
+    them, ``scipy.linalg.solve``'s: ``assume_a`` names `a`'s structure and its solver, ``"diagonal"`` (a division),
+    ``"tridiagonal"`` and ``"banded"`` (the band LU, of the bandwidth `a` has), ``"upper triangular"`` and
+    ``"lower triangular"`` (substitution), ``"sym"``, ``"her"`` (the matrix read from one triangle, by default the upper
+    one, ``lower`` the lower; a Hermitian one's diagonal taken real; then the LU, which here outruns the symmetric
+    indefinite factorisation), ``"pos"`` (Cholesky's, from that triangle) or ``"gen"``; ``transposed`` solves
+    ``a.T @ x = b`` (``NotImplementedError`` for a complex `a`, as SciPy's). A singular `a`, or one not positive
+    definite for ``"pos"``, raises :class:`LinAlgError`. ``overwrite_a``, ``overwrite_b`` and ``check_finite`` are
+    accepted for SciPy's signature: `a` and `b` are never written, and a NaN or an infinity always raises."""
+    del overwrite_a, overwrite_b, check_finite
+    if assume_a is None and not transposed:
+        return _borrowed("solve", _solve, a, b)
+    structure = "gen" if assume_a is None else _STRUCTURES.get(assume_a) if isinstance(assume_a, str) else None
+    if structure is None:
+        raise ValueError(f"{assume_a} is not a recognized matrix structure")
+    a, b = _operand(a), _operand(b)
+    if transposed and a.dtype in ("complex128", "complex64"):
+        raise NotImplementedError("solve cannot solve a.T @ x = b or a.conj().T @ x = b for a complex a, as SciPy's")
+    if transposed and structure not in ("sym", "her", "pos"):  # those are their transposes (a real `a` here)
+        a = a.mT
+        structure = {"upper": "lower", "lower": "upper"}.get(structure, structure)
+    return _stacked_solve(a, b, structure, lower)
+
+
+def _stacked_solve(a, b, structure, lower):
+    """:func:`_structured_solve` of each system of the stack `a` in turn, as SciPy's: `b` a vector or a matrix (`n`
+    rows) they share, or one per system (of `a`'s rank)."""
+    if len(a.shape) <= 2:
+        return _structured_solve(a, b, structure, lower)
+    if len(b.shape) <= 2:
+        return stack([_stacked_solve(a[i], b, structure, lower) for i in range(a.shape[0])])
+    if len(b.shape) != len(a.shape) or b.shape[0] != a.shape[0]:
+        raise LinAlgError(f"solve: b of shape {b.shape} fits no system of the stack of shape {a.shape}")
+    return stack([_stacked_solve(a[i], b[i], structure, lower) for i in range(a.shape[0])])
+
+
+def _structured_solve(a, b, structure, lower):
+    """:func:`solve` of one system of the `structure` :data:`_STRUCTURES` names."""
+    if len(a.shape) != 2 or a.shape[0] != a.shape[1]:
+        raise LinAlgError(f"solve: a is a square matrix, not of shape {a.shape}")
+    n = a.shape[0]
+    if structure == "gen":
+        return _borrowed("solve", _solve, a, b)
+    if structure in ("upper", "lower"):
+        return solve_triangular(a, b, lower=structure == "lower")
+    if structure == "pos":
+        return cho_solve(cho_factor(a, lower=lower), b)
+    if structure == "diagonal":
+        d = diagonal(a)
+        if not all(d != 0.0):
+            raise LinAlgError("solve: a singular matrix (a zero on the diagonal)")
+        return b / (d if len(b.shape) == 1 else reshape(d, (n, 1)))
+    if structure in ("tridiagonal", "banded"):
+        below, above = (1, 1) if structure == "tridiagonal" else bandwidth(a)
+        zero = zeros((1,), a.dtype)
+        rows = []  # row above - k of LAPACK's band storage: the diagonal at offset k, shifted to its columns
+        for k in range(above, -below - 1, -1):
+            band = diagonal(a, offset=k) if n > abs(k) else zeros((0,), a.dtype)
+            pad = [zero] * _builtins.min(abs(k), n)
+            rows.append(concatenate(pad + [band] if k > 0 else [band] + pad) if k else band)
+        return solve_banded((below, above), stack(rows) if rows else zeros((0, n), a.dtype), b)
+    # sym and her: the matrix of one triangle, its other the transpose (conjugate, Hermitian), a Hermitian diagonal real
+    strict = tril(a, -1) if lower else triu(a, 1)
+    mirror = strict.mT if structure == "sym" else conj(strict).mT
+    middle = diagonal(a) if structure == "sym" or a.dtype in ("float64", "float32") else asarray(real(diagonal(a)), a.dtype)
+    return _borrowed("solve", _solve, strict + mirror + diag(middle), b)
 
 
 def determinant(a, /):
@@ -3027,15 +3100,7 @@ def diagsvd(s, M, N):
 def bandwidth(a):
     """The lower and upper bandwidths of the matrix `a` (the farthest diagonals below and above the main one holding
     a nonzero entry, 0 where none), as ``scipy.linalg.bandwidth``."""
-    a = _operand(a)
-    if len(a.shape) != 2:
-        raise ValueError("Input array must be a 2D array.")
-    rows, cols = a.shape
-    i, j = reshape(arange(rows), (rows, 1)), arange(cols)
-    nonzero = a != 0
-    lower = max(where(nonzero, i - j, 0.0)) if a.size else 0.0
-    upper = max(where(nonzero, j - i, 0.0)) if a.size else 0.0
-    return int(lower), int(upper)
+    return _numerical._bandwidth(_tensor(a))
 
 
 def _symmetric(a, atol, rtol, hermitian):

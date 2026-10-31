@@ -113,6 +113,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_permute(t, order) -> Tensor\nThe tensor with its axes in order (a permutation), a copy of any dtype.");
     m.raw("_take", module_take, METH_VARARGS,
           "_take(t, starts, steps, counts, keep) -> Tensor or number\nThe strided copy behind Tensor.__getitem__.");
+    m.raw("_bandwidth", module_bandwidth, METH_O, "_bandwidth(a) -> (lower, upper)\nThe matrix's lower and upper bandwidths.");
     m.raw("_gather", module_gather, METH_VARARGS,
           "_gather(t, groups, shape) -> Tensor\nThe elements at every sum of one offset per group: the advanced indexing.");
     m.raw("_true_offsets", module_true_offsets, METH_VARARGS,

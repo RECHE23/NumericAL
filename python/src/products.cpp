@@ -385,6 +385,52 @@ PyObject* module_true_offsets(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _bandwidth(a) -> (lower, upper).
+PyObject* module_bandwidth(PyObject* /*self*/, PyObject* obj)
+{
+    const any_tensor* h = as_tensor(obj);
+    if (h == nullptr) {
+        return nullptr;
+    }
+    if (shape_of(*h).size() != 2) {
+        PyErr_SetString(PyExc_ValueError, "Input array must be a 2D array.");
+        return nullptr;
+    }
+    const std::size_t rows {shape_of(*h)[0]};
+    const std::size_t cols {shape_of(*h)[1]};
+    std::vector<std::size_t> below(rows, 0);
+    std::vector<std::size_t> above(rows, 0);
+    try {
+        const sb::scoped_gil_release unlocked {releases_gil(rows * cols)};
+        std::visit([&](const auto& t) {
+            using T = element_of_t<std::decay_t<decltype(t)>>;
+            const T* const data {t.data().data()};
+            // Each row from its edges inwards to its diagonal, stopping at its first nonzero entry from either side.
+            numerical::detail::parallel_for(rows, cols, [&](std::size_t i) {
+                const T* const row {data + (i * cols)};
+                for (std::size_t j = 0; j < std::min(i, cols); ++j) {
+                    if (truth(row[j])) {
+                        below[i] = i - j;
+                        break;
+                    }
+                }
+                for (std::size_t j = cols; j-- > i + 1;) {
+                    if (truth(row[j])) {
+                        above[i] = j - i;
+                        break;
+                    }
+                }
+            });
+        }, *h);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+    const std::size_t lower {rows == 0 ? 0 : *std::max_element(below.begin(), below.end())};
+    const std::size_t upper {rows == 0 ? 0 : *std::max_element(above.begin(), above.end())};
+    return Py_BuildValue("nn", static_cast<Py_ssize_t>(lower), static_cast<Py_ssize_t>(upper));
+}
+
 // _tobytes(t) -> bytes.
 PyObject* module_tobytes(PyObject* /*self*/, PyObject* obj)
 {

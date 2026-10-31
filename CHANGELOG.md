@@ -8,7 +8,19 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **`solve` takes `scipy.linalg.solve`'s arguments**: `assume_a` (`"diagonal"`, `"tridiagonal"`, `"banded"`, `"upper
+  triangular"`, `"lower triangular"`, `"sym"`, `"her"`, `"pos"`, `"gen"`, and their long names), `lower` (the triangle
+  `"sym"`, `"her"` and `"pos"` read), `transposed`, and the `overwrite_*` and `check_finite` flags; stacks with a
+  shared or a per-system `b`. Without them, NumPy's `solve` as before. Order 2000, four right-hand sides (SciPy 1.17's
+  in brackets): `"pos"` by Cholesky's 29 ms (50), `"sym"` 48 ms (103, the LU outrunning the symmetric indefinite
+  factorisation here), `"tridiagonal"` 2.4 ms (12), `"banded"` 2.9 ms (3.3), `"diagonal"` 1.0 ms (12). A Hermitian
+  matrix's diagonal is taken real at every order, where SciPy's 1 × 1 case divides by the complex entry.
+
 ### Changed
+- **`bandwidth` scans each row from its edges to its first nonzero entry, on the threads**, where it built three
+  `n × n` temporaries: order 2000 6.4 → 0.9 ms (SciPy 2.7 ms). It counts a tall matrix's entry in its last column below
+  the diagonal, which SciPy 1.17's misses (a 4 × 3 matrix with one at (3, 2): (1, 0), SciPy (0, 0)).
 - **Masks and comparisons faster, the same answers** (a 1000 × 1000 matrix, eight threads, arm64; NumPy 2.4's in
   brackets): `m & n`, `|` and `^` 0.22 → 0.02 ms (0.04) on the bytes, by the loops `+` and `*` take
   (`detail::broadcast_into`, now of any result type), as the comparisons (`x < column` 0.13 → 0.06 ms); `where` of a

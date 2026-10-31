@@ -78,6 +78,23 @@ class Structure(unittest.TestCase):
             a = np.triu(np.tril(rng.standard_normal((rows, cols)), upper), -lower)
             with self.subTest(shape=(rows, cols), band=(lower, upper)):
                 self.assertEqual(numerical.bandwidth(a), sl.bandwidth(a))
+        # sparse matrices of every dtype: square ones against SciPy, tall and wide against the definition (SciPy 1.17
+        # misses a tall matrix's entry in its last column below the diagonal: (0, 0) for a 4 × 3 one at (3, 2))
+        for shape in ((1, 1), (4, 4), (50, 50), (7, 3), (3, 7), (0, 3), (3, 0)):
+            for _ in range(10):
+                a = rng.standard_normal(shape) * (rng.random(shape) < 0.1)
+                rows, cols = np.nonzero(a)
+                defined = (int(max(rows - cols, default=0)), int(max(cols - rows, default=0)))
+                defined = (max(defined[0], 0), max(defined[1], 0))
+                for x in (a, a * 1j, a != 0):
+                    with self.subTest(shape=shape, dtype=x.dtype):
+                        self.assertEqual(numerical.bandwidth(x), defined)
+                        if shape[0] == shape[1]:
+                            self.assertEqual(numerical.bandwidth(x), sl.bandwidth(x))
+        self.assertEqual(sl.bandwidth(np.array([[0.0] * 3] * 3 + [[0.0, 0.0, 1.0]])), (0, 0))  # SciPy's, as above
+        self.assertEqual(numerical.bandwidth(np.array([[0.0] * 3] * 3 + [[0.0, 0.0, 1.0]])), (1, 0))
+        with self.assertRaises(ValueError):
+            numerical.bandwidth(np.ones(3))
         s = rng.standard_normal((4, 4))
         s = s + s.T
         h = s + 1j * (np.triu(s, 1) - np.triu(s, 1).T)

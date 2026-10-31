@@ -1284,6 +1284,10 @@ PyObject* module_gather(PyObject* /*self*/, PyObject* args); // in products.cpp
 // their coordinates along one axis.
 PyObject* module_true_offsets(PyObject* /*self*/, PyObject* args); // in products.cpp
 
+// _bandwidth(a) -> (lower, upper): the farthest diagonals below and above the main one of the matrix `a` (any dtype) that
+// hold a nonzero entry (0 where none), as scipy.linalg.bandwidth.
+PyObject* module_bandwidth(PyObject* /*self*/, PyObject* obj); // in products.cpp
+
 // _tobytes(t) -> bytes: the elements, row-major, in this machine's byte order (a bool one byte, 0 or 1).
 PyObject* module_tobytes(PyObject* /*self*/, PyObject* obj); // in products.cpp
 
