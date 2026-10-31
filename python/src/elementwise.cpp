@@ -136,16 +136,14 @@ PyObject* module_compare(PyObject* /*self*/, PyObject* args)
             std::visit([&](const auto& p) {
                 using tensor_type = std::decay_t<decltype(p)>;
                 using T           = element_of_t<tensor_type>;
-                const T* const u {p.data().data()};
-                const T* const v {std::get<tensor_type>(*b).data().data()};
-                const std::array shapes {p.shape(), shape_of(*b)};
-                const auto       compared {[&](const auto& relation) {
-                    result.emplace(broadcast_elements<boolean>(shapes, [&](const std::array<std::size_t, 2>& at) {
+                const tensor_type& q {std::get<tensor_type>(*b)};
+                const auto         compared {[&](const auto& relation) { // broadcast_into's loops, the relation inlined in each
+                    result.emplace(numerical::detail::broadcast_into(p.data().data(), p.shape(), q.data().data(), q.shape(), [&relation](const T& x, const T& y) {
                         if constexpr (std::is_same_v<T, boolean>) {
-                            return boolean {relation(u[at[0]].value, v[at[1]].value)};
+                            return boolean {relation(x.value, y.value)};
                         }
                         else {
-                            return boolean {relation(u[at[0]], v[at[1]])};
+                            return boolean {relation(x, y)};
                         }
                     }));
                 }};
@@ -207,17 +205,24 @@ PyObject* module_logical(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     try {
-        const boolean* const u {a->data().data()};
-        const boolean* const v {b->data().data()};
-        const std::array     shapes {a->shape(), b->shape()};
         std::optional<bool_tensor> result;
         {
             const sb::scoped_gil_release unlocked {releases_gil(std::max(a->size(), b->size()))};
-            result.emplace(broadcast_elements<boolean>(shapes, [&](const std::array<std::size_t, 2>& at) {
-                const bool p {u[at[0]].value};
-                const bool q {v[at[1]].value};
-                return boolean {name == "&" ? (p && q) : name == "|" ? (p || q) : (p != q)};
-            }));
+            // The operator chosen once, outside the loops; on the bytes (each 0 or 1), which vectorise as such.
+            const auto applied {[&](const auto& bits) {
+                result.emplace(numerical::detail::broadcast_into(a->data().data(), a->shape(), b->data().data(), b->shape(), [&bits](boolean p, boolean q) {
+                    return boolean {bits(static_cast<unsigned char>(p.value), static_cast<unsigned char>(q.value)) != 0};
+                }));
+            }};
+            if (name == "&") {
+                applied(std::bit_and<> {});
+            }
+            else if (name == "|") {
+                applied(std::bit_or<> {});
+            }
+            else {
+                applied(std::bit_xor<> {});
+            }
         }
         return wrap(any_tensor {std::move(*result)});
     }
@@ -377,14 +382,14 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
             // any and all of a number's truth (NumPy's: nonzero), or a mask's: the sum and the mean count its trues, its
             // maximum is any and its minimum all, of which an empty one has none (as of numbers)
             if (!is_bool(*a)) {
-                return truth_of(name == "any", visit_numeric([](const auto& t) { return converted<boolean>(t); }, *a), axis);
+                return visit_numeric([&](const auto& t) { return truth_of(name == "any", t, axis); }, *a);
             }
             const bool_tensor& mask {std::get<bool_tensor>(*a)};
             if (truth) {
                 return truth_of(name == "any", mask, axis);
             }
             if (name == "sum" || name == "mean") {
-                return sum_or_mean(name == "mean", converted<double>(mask), axis);
+                return counted_trues(name == "mean", mask, axis);
             }
             if (name == "max" || name == "min") {
                 const bool empty {axis < 0 ? mask.size() == 0
@@ -474,16 +479,17 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
         if (ord == 2.0 && trailing) {
             numerical::buffer<double> out(kept_count, 0.0);
             visit_numeric([&](const auto& t) {
-                for (std::size_t k = 0; k < kept_count; ++k) {
+                const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+                numerical::detail::parallel_for(kept_count, reduced_count, [&](std::size_t k) { // each position its own run
                     const auto* const run {t.data().data() + (k * reduced_count)};
                     if (const std::optional<double> plain {plain_two_norm(run, reduced_count)}) {
                         out[k] = *plain;
-                        continue;
+                        return;
                     }
                     std::vector<double> values(reduced_count);
                     std::transform(run, run + reduced_count, values.begin(), [](const auto& x) { return static_cast<double>(std::abs(x)); });
                     out[k] = norm_of(values, ord);
-                }
+                });
             }, *h);
             if (out_shape.empty() && keepdims == 0) {
                 return PyFloat_FromDouble(is_single(*h) ? static_cast<double>(static_cast<float>(out[0])) : out[0]);
@@ -491,13 +497,6 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
             any_tensor result {real_tensor {std::move(out_shape), std::move(out)}};
             return wrap(is_single(*h) ? narrowed(result) : std::move(result));
         }
-        const auto magnitudes {visit_numeric([](const auto& t) {
-                                              std::vector<double> m(t.size());
-                                              std::transform(t.data().begin(), t.data().end(), m.begin(), [](const auto& x) {
-                                                  return static_cast<double>(std::abs(x));
-                                              });
-                                              return m;
-                                          }, *h)};
         // The offset of a multi-index over the axes `which` (kept or reduced) of position `n` in their C order.
         const auto offset_of {[&](std::size_t n, bool which) {
             std::size_t offset {0};
@@ -509,15 +508,24 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
             }
             return offset;
         }};
-        numerical::buffer<double> out(kept_count, 0.0);
-        std::vector<double>       values(reduced_count);
-        for (std::size_t k = 0; k < kept_count; ++k) {
-            const std::size_t base {offset_of(k, false)};
-            for (std::size_t r = 0; r < reduced_count; ++r) {
-                values[r] = magnitudes[base + offset_of(r, true)];
-            }
-            out[k] = norm_of(values, ord);
+        // Each kept position's magnitudes gathered where they lie (the reduced offsets computed once), its norm on the
+        // threads.
+        std::vector<std::size_t> within(kept_count == 0 ? 0 : reduced_count);
+        for (std::size_t r = 0; r < within.size(); ++r) {
+            within[r] = offset_of(r, true);
         }
+        numerical::buffer<double> out(kept_count, 0.0);
+        visit_numeric([&](const auto& t) {
+            const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+            numerical::detail::parallel_for(kept_count, reduced_count, [&](std::size_t k) {
+                const auto* const   base {t.data().data() + offset_of(k, false)};
+                std::vector<double> values(reduced_count);
+                for (std::size_t r = 0; r < reduced_count; ++r) {
+                    values[r] = static_cast<double>(std::abs(base[within[r]]));
+                }
+                out[k] = norm_of(values, ord);
+            });
+        }, *h);
         if (out_shape.empty() && keepdims == 0) {
             return PyFloat_FromDouble(is_single(*h) ? static_cast<double>(static_cast<float>(out[0])) : out[0]);
         }

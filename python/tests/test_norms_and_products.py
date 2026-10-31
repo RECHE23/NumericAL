@@ -16,6 +16,19 @@ except ImportError:
 
 @unittest.skipIf(np is None, "NumPy is not importable")
 class NormsAndProducts(unittest.TestCase):
+    def test_an_empty_norm_of_a_negative_order_is_infinite(self):
+        # NumPy's: a sum of no terms, 0, to the power 1 / ord; 0 for a non-negative order
+        for shape, axis in (((0, 3), 0), ((3, 0), 1), ((0,), None), ((2, 0, 2), (1,))):
+            empty = numerical.zeros(shape)
+            with self.assertRaises(ValueError):  # -inf: a minimum of nothing, refused as NumPy refuses it
+                numerical.vector_norm(empty, ord=-math.inf, axis=axis)
+            for order, expected in ((-1, math.inf), (-2.5, math.inf), (0, 0.0), (1, 0.0), (2, 0.0)):
+                with self.subTest(shape=shape, order=order):
+                    got = numerical.vector_norm(empty, ord=order, axis=axis)
+                    values = got.tolist() if isinstance(got, numerical.Tensor) else [got]
+                    flat = values if not values or not isinstance(values[0], list) else [v for row in values for v in row]
+                    self.assertTrue(all(v == expected for v in flat))
+
     def setUp(self):
         self.rng = np.random.default_rng(4)
         self.a = self.rng.standard_normal((4, 5))

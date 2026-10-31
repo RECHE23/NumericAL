@@ -33,6 +33,7 @@
 #include <sciforge/binding/module.hpp>
 
 #include <algorithm>
+#include <atomic>
 #include <cctype>
 #include <cmath>
 #include <complex>
@@ -1518,15 +1519,61 @@ PyObject* extreme_of(bool largest, const numerical::tensor<T>& t, Py_ssize_t axi
     return wrap(any_tensor {largest ? numerical::max(t, a) : numerical::min(t, a)});
 }
 
-// Whether any (`any`) or every element of the bool tensor `t` is true: of all of them (axis -1, a Python bool), else
-// along `axis` (a bool tensor without it).
-inline PyObject* truth_of(bool any, const bool_tensor& t, Py_ssize_t axis)
+// The truth of one element, as NumPy's: a mask's own, a number's where nonzero (a NaN true, a complex number where
+// either part is nonzero).
+template <typename T>
+bool truth(const T& x)
 {
-    const boolean* const            data {t.data().data()};
+    if constexpr (std::is_same_v<T, boolean>) {
+        return x.value;
+    }
+    else {
+        return x != T {};
+    }
+}
+
+// The tasks of a walk along an axis (outer × inner, the axis between): each a run of up to elementwise_chunk of one
+// outer index's inner indices, whose lines along the axis a task walks row by row, contiguous.
+struct line_tasks
+{
+    std::size_t per_outer; // the runs of one outer index
+    std::size_t run;       // the inner indices of a run
+
+    explicit line_tasks(std::size_t inner)
+        : per_outer {inner == 0 ? 0 : (inner + numerical::detail::elementwise_chunk - 1) / numerical::detail::elementwise_chunk},
+          run {numerical::detail::elementwise_chunk}
+    {}
+};
+
+// Whether any (`any`) or every element of `t` is true (truth): of all of them (axis -1, a Python bool, the first that
+// decides ending the scan), else along `axis` (a bool tensor without it), each line read row by row on the threads.
+template <typename T>
+PyObject* truth_of(bool any, const numerical::tensor<T>& t, Py_ssize_t axis)
+{
+    const T* const                  data {t.data().data()};
     const std::vector<std::size_t>& shape {t.shape()};
-    if (axis < 0) {
-        const auto found {std::find(data, data + t.size(), boolean {any})};
-        return from_scalar(boolean {(found != data + t.size()) == any});
+    if (axis < 0) { // chunks on the threads, each skipped once one has found an element that decides
+        std::atomic<bool> found {false};
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+            const std::size_t            n {t.size()};
+            const std::size_t            chunks {(n + numerical::detail::elementwise_chunk - 1) / numerical::detail::elementwise_chunk};
+            numerical::detail::parallel_for(chunks, numerical::detail::elementwise_chunk, [&](std::size_t c) {
+                if (found.load(std::memory_order_relaxed)) {
+                    return;
+                }
+                const std::size_t first {c * numerical::detail::elementwise_chunk};
+                const std::size_t last {std::min(n, first + numerical::detail::elementwise_chunk)};
+                unsigned decides {0}; // no exit inside a chunk, a bitwise or: the loop vectorises
+                for (std::size_t i = first; i < last; ++i) {
+                    decides |= truth(data[i]) == any ? 1U : 0U;
+                }
+                if (decides != 0) {
+                    found.store(true, std::memory_order_relaxed);
+                }
+            });
+        }
+        return from_scalar(boolean {found.load() == any});
     }
     const auto a {static_cast<std::size_t>(axis)};
     if (a >= shape.size()) {
@@ -1537,18 +1584,83 @@ inline PyObject* truth_of(bool any, const bool_tensor& t, Py_ssize_t axis)
     std::vector<std::size_t> kept {shape};
     kept.erase(kept.begin() + static_cast<std::ptrdiff_t>(a));
     const std::size_t          count {numerical::detail::element_count(kept.begin(), kept.end())};
-    numerical::buffer<boolean> out(count, boolean {!any});
-    for (std::size_t k = 0; k < count; ++k) { // an element kept: every axis of it, so `inner`, at least 1
-        const std::size_t outer {k / inner};
-        const std::size_t within {k % inner};
-        for (std::size_t j = 0; j < extent; ++j) {
-            if (data[(((outer * extent) + j) * inner) + within].value == any) {
-                out[k] = boolean {any};
-                break;
+    numerical::buffer<boolean> out(count, boolean {false}); // whether an element that decides was found, then the answer
+    if (count != 0) {
+        const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+        const line_tasks             tasks {inner};
+        numerical::detail::parallel_for(count / inner * tasks.per_outer, tasks.run * extent, [&](std::size_t task) {
+            const std::size_t outer {task / tasks.per_outer};
+            const std::size_t first {(task % tasks.per_outer) * tasks.run};
+            const std::size_t last {std::min(inner, first + tasks.run)};
+            boolean* const    to {out.data() + (outer * inner)};
+            std::size_t       open {last - first}; // the lines of the run no element has decided yet
+            for (std::size_t j = 0; j < extent && open != 0; ++j) {
+                const T* const row {data + (((outer * extent) + j) * inner)};
+                for (std::size_t w = first; w < last; ++w) {
+                    if (!to[w].value && truth(row[w]) == any) {
+                        to[w] = boolean {true};
+                        --open;
+                    }
+                }
             }
-        }
+            for (std::size_t w = first; w < last; ++w) { // any: one true found; all: none false found
+                to[w] = boolean {to[w].value == any};
+            }
+        });
     }
     return wrap(any_tensor {bool_tensor {std::move(kept), std::move(out)}});
+}
+
+// The trues of the mask `t` counted, all of them (axis -1, a number) or along `axis` (a float64 Tensor without it), or
+// their mean: the sum and the mean of the mask as float64, to the bit (each count exact, divided as numerical::mean
+// divides), with no float64 copy of it; the counts on the threads.
+inline PyObject* counted_trues(bool mean, const bool_tensor& t, Py_ssize_t axis)
+{
+    const boolean* const data {t.data().data()};
+    if (axis < 0) {
+        const std::size_t        n {t.size()};
+        const std::size_t        chunks {(n + numerical::detail::elementwise_chunk - 1) / numerical::detail::elementwise_chunk};
+        std::vector<std::size_t> partial(chunks, 0);
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(n)};
+            numerical::detail::parallel_for(chunks, numerical::detail::elementwise_chunk, [&](std::size_t c) {
+                const std::size_t first {c * numerical::detail::elementwise_chunk};
+                const std::size_t last {std::min(n, first + numerical::detail::elementwise_chunk)};
+                std::size_t       trues {0};
+                for (std::size_t i = first; i < last; ++i) {
+                    trues += data[i].value ? 1U : 0U;
+                }
+                partial[c] = trues;
+            });
+        }
+        const auto total {static_cast<double>(std::accumulate(partial.begin(), partial.end(), std::size_t {0}))};
+        return from_scalar<double>(mean ? numerical::detail::divided_by_count(total, n) : total);
+    }
+    const auto                     a {static_cast<std::size_t>(axis)};
+    const numerical::detail::axis_walk walk {numerical::detail::walk_along(t.shape(), a)};
+    numerical::buffer<double>      out(walk.outer * walk.inner, 0.0);
+    if (!out.empty()) {
+        const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+        const line_tasks             tasks {walk.inner};
+        numerical::detail::parallel_for(walk.outer * tasks.per_outer, tasks.run * walk.extent, [&](std::size_t task) {
+            const std::size_t outer {task / tasks.per_outer};
+            const std::size_t first {(task % tasks.per_outer) * tasks.run};
+            const std::size_t last {std::min(walk.inner, first + tasks.run)};
+            double* const     to {out.data() + (outer * walk.inner)};
+            for (std::size_t j = 0; j < walk.extent; ++j) {
+                const boolean* const row {data + (((outer * walk.extent) + j) * walk.inner)};
+                for (std::size_t w = first; w < last; ++w) {
+                    to[w] += row[w].value ? 1.0 : 0.0;
+                }
+            }
+            if (mean) {
+                for (std::size_t w = first; w < last; ++w) {
+                    to[w] = numerical::detail::divided_by_count(to[w], walk.extent);
+                }
+            }
+        });
+    }
+    return wrap(any_tensor {real_tensor {numerical::detail::without_axis(t.shape(), a), std::move(out)}});
 }
 
 // _reduce(op, a, axis) -> number or Tensor: op one of "sum", "mean", "max", "min" of a float or complex tensor, or
@@ -1566,41 +1678,107 @@ numerical::tensor<R> broadcast_elements(const std::array<std::vector<std::size_t
     for (std::size_t k = 1; k < N; ++k) {
         shape = numerical::broadcast_shape(shape, shapes[k]);
     }
-    const std::size_t                       rank {shape.size()};
-    std::array<std::vector<std::size_t>, N> strides;
-    std::array<std::size_t, N>              step {};
+    const std::size_t                       full_rank {shape.size()};
+    std::array<std::vector<std::size_t>, N> full_strides;
     for (std::size_t k = 0; k < N; ++k) {
-        strides[k] = numerical::detail::broadcast_strides(shapes[k], rank);
-        step[k]    = rank == 0 ? 0 : strides[k][rank - 1];
+        full_strides[k] = numerical::detail::broadcast_strides(shapes[k], full_rank);
     }
     const std::size_t    count {numerical::detail::element_count(shape.begin(), shape.end())};
     numerical::buffer<R> out(count);
     if (count == 0) {
         return numerical::tensor<R> {std::move(shape), std::move(out)};
     }
-    const std::size_t inner {rank == 0 ? 1 : shape[rank - 1]};
-    const std::size_t rows {count / inner};
-    const std::size_t rows_per_task {std::max<std::size_t>(1, numerical::detail::elementwise_chunk / inner)};
-    numerical::detail::parallel_for((rows + rows_per_task - 1) / rows_per_task, rows_per_task * inner, [&](std::size_t task) {
-        const std::size_t last {std::min(rows, (task + 1) * rows_per_task)};
-        for (std::size_t row = task * rows_per_task; row < last; ++row) {
-            std::array<std::size_t, N> at {};
-            for (std::size_t axis = rank == 0 ? 0 : rank - 1, rest = row; axis-- > 0;) {
-                const std::size_t index {rest % shape[axis]};
-                rest /= shape[axis];
-                for (std::size_t k = 0; k < N; ++k) {
-                    at[k] += index * strides[k][axis];
-                }
+    // Axes of extent 1 left out, and neighbours that every operand steps through as one (its stride along the outer the
+    // inner's times the inner's extent, 0 for both where broadcast) merged: a contiguous tensor is one long row.
+    std::vector<std::size_t>                dims;
+    std::array<std::vector<std::size_t>, N> strides;
+    for (std::size_t axis = 0; axis < full_rank; ++axis) {
+        if (shape[axis] == 1) {
+            continue;
+        }
+        bool merges {!dims.empty()};
+        for (std::size_t k = 0; k < N && merges; ++k) {
+            merges = strides[k].back() == full_strides[k][axis] * shape[axis];
+        }
+        if (merges) {
+            dims.back() *= shape[axis];
+            for (std::size_t k = 0; k < N; ++k) {
+                strides[k].back() = full_strides[k][axis];
             }
-            R* const to {out.data() + (row * inner)};
-            for (std::size_t i = 0; i < inner; ++i) {
+            continue;
+        }
+        dims.push_back(shape[axis]);
+        for (std::size_t k = 0; k < N; ++k) {
+            strides[k].push_back(full_strides[k][axis]);
+        }
+    }
+    const std::size_t          rank {dims.size()};
+    std::array<std::size_t, N> step {};
+    unsigned                   ones {0}; // bit k set where operand k steps by 1 along a row, every step 0 or 1 else all set
+    bool                       plain {true};
+    for (std::size_t k = 0; k < N; ++k) {
+        step[k] = rank == 0 ? 0 : strides[k][rank - 1];
+        plain   = plain && step[k] <= 1;
+        ones   |= step[k] == 1 ? (1U << k) : 0U;
+    }
+    // Tasks of whole rows where rows are short, of pieces of one row where long (a contiguous tensor is one row).
+    const std::size_t inner {rank == 0 ? 1 : dims[rank - 1]};
+    const std::size_t rows {count / inner};
+    const std::size_t piece {std::min(inner, numerical::detail::elementwise_chunk)};
+    const std::size_t pieces {(inner + piece - 1) / piece};
+    const std::size_t rows_per_task {pieces > 1 ? 1 : std::max<std::size_t>(1, numerical::detail::elementwise_chunk / inner)};
+    // A run with every operand's step known at compile time (0 or 1): the loop the compiler vectorises.
+    const auto run_of = [&]<unsigned Ones>(std::integral_constant<unsigned, Ones>, std::array<std::size_t, N> at, R* to, std::size_t length) {
+        for (std::size_t i = 0; i < length; ++i) {
+            to[i] = element(at);
+            for (std::size_t k = 0; k < N; ++k) {
+                at[k] += (Ones >> k) & 1U;
+            }
+        }
+    };
+    const auto run = [&](std::size_t row, std::size_t begin, std::size_t length) {
+        std::array<std::size_t, N> at {};
+        for (std::size_t axis = rank == 0 ? 0 : rank - 1, rest = row; axis-- > 0;) {
+            const std::size_t index {rest % dims[axis]};
+            rest /= dims[axis];
+            for (std::size_t k = 0; k < N; ++k) {
+                at[k] += index * strides[k][axis];
+            }
+        }
+        for (std::size_t k = 0; k < N; ++k) {
+            at[k] += begin * step[k];
+        }
+        R* const to {out.data() + (row * inner) + begin};
+        if (!plain) {
+            for (std::size_t i = 0; i < length; ++i) {
                 to[i] = element(at);
                 for (std::size_t k = 0; k < N; ++k) {
                     at[k] += step[k];
                 }
             }
+            return;
         }
-    });
+        [&]<unsigned... Masks>(std::integer_sequence<unsigned, Masks...>) {
+            static_cast<void>(((ones == Masks ? (run_of(std::integral_constant<unsigned, Masks> {}, at, to, length), true) : false) || ...));
+        }(std::make_integer_sequence<unsigned, 1U << N> {});
+    };
+    if (pieces > 1) { // each piece in runs of 1024 (at arm64, a run of the whole piece took 15 % longer)
+        numerical::detail::parallel_for(rows * pieces, piece, [&](std::size_t task) {
+            const std::size_t begin {(task % pieces) * piece};
+            const std::size_t end {std::min(inner, begin + piece)};
+            for (std::size_t from = begin; from < end; from += 1024) {
+                run(task / pieces, from, std::min<std::size_t>(1024, end - from));
+            }
+        });
+    }
+    else {
+        numerical::detail::parallel_for((rows + rows_per_task - 1) / rows_per_task, rows_per_task * inner, [&](std::size_t task) {
+            const std::size_t last {std::min(rows, (task + 1) * rows_per_task)};
+            for (std::size_t row = task * rows_per_task; row < last; ++row) {
+                run(row, 0, inner);
+            }
+        });
+    }
     return numerical::tensor<R> {std::move(shape), std::move(out)};
 }
 
@@ -2067,8 +2245,8 @@ any_tensor singular_values(const any_tensor& v); // in eigen.cpp
 // other order NaN.
 inline double norm_of(const std::vector<double>& values, double ord)
 {
-    if (values.empty()) {
-        return ord == -std::numeric_limits<double>::infinity() ? std::numeric_limits<double>::infinity() : 0.0;
+    if (values.empty()) { // NumPy's: a sum of no terms, 0, to the power 1 / ord: infinite for a negative order
+        return ord < 0.0 ? std::numeric_limits<double>::infinity() : 0.0;
     }
     if (ord == 0.0) { // how many are not zero, a NaN among them (it is not zero), as NumPy's count
         return static_cast<double>(std::count_if(values.begin(), values.end(), [](double value) { return value != 0.0; }));

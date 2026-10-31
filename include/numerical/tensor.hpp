@@ -34,6 +34,7 @@
 #include <stdexcept>
 #include <string>
 #include <string_view>
+#include <type_traits>
 #include <utility>
 #include <vector>
 
@@ -271,12 +272,13 @@ namespace numerical {
 
     /*!
      * \brief `op(a, b)` element by element of the row-major \p a (\p a_shape) and \p b (\p b_shape), broadcast against
-     *        each other (\ref broadcast_apply's, its operands read where they lie).
+     *        each other (\ref broadcast_apply's, its operands read where they lie), in `op`'s result type `R`.
      * \throws dimension_error If the shapes do not broadcast.
      */
     template <typename T,
-              typename Op>
-    [[nodiscard]] tensor<T> broadcast_into(const T*                        a,
+              typename Op,
+              typename R = std::invoke_result_t<const Op&, const T&, const T&>>
+    [[nodiscard]] tensor<R> broadcast_into(const T*                        a,
                                            const std::vector<std::size_t>& a_shape,
                                            const T*                        b,
                                            const std::vector<std::size_t>& b_shape,
@@ -284,23 +286,23 @@ namespace numerical {
     {
       if (a_shape == b_shape) {
         const std::size_t size   {detail::element_count(a_shape.begin(), a_shape.end())};
-        buffer<T>         out(size);
+        buffer<R>         out(size);
         const std::size_t chunks {(size + detail::elementwise_chunk - 1) / detail::elementwise_chunk};
         detail::parallel_for(chunks, detail::elementwise_chunk, [&](std::size_t c) {
                                const std::size_t first {c * detail::elementwise_chunk};
                                const std::size_t last {std::min(first + detail::elementwise_chunk, size)};
                                std::transform(a + first, a + last, b + first, out.data() + first, op);
                              });
-        return tensor<T> {a_shape, std::move(out)};
+        return tensor<R> {a_shape, std::move(out)};
       }
       std::vector<std::size_t>       shape     {broadcast_shape(a_shape, b_shape)};
       const std::size_t              full_rank {shape.size()};
       const std::vector<std::size_t> full_sa   {detail::broadcast_strides(a_shape, full_rank)};
       const std::vector<std::size_t> full_sb   {detail::broadcast_strides(b_shape, full_rank)};
       const std::size_t              count     {detail::element_count(shape.begin(), shape.end())};
-      buffer<T>                      out(count); // every element written below
+      buffer<R>                      out(count); // every element written below
       if (count == 0) {
-        return tensor<T> {std::move(shape), std::move(out)};
+        return tensor<R> {std::move(shape), std::move(out)};
       }
       // Neighbouring axes each operand steps through as one (its stride on the outer the inner's times the inner's
       // extent, a broadcast axis 0 on both) run as one axis: the same elements in the same order.
@@ -346,7 +348,7 @@ namespace numerical {
                                const bool        a_repeats {sa[0] == 0};
                                const T* const    row_of    {a_repeats ? a : b};
                                const T* const    whole     {(a_repeats ? b : a) + (first * inner)};
-                               T* const          po        {out.data() + (first * inner)};
+                               R* const          po        {out.data() + (first * inner)};
                                const std::size_t span      {((64 + inner - 1) / inner) * inner};
                                std::array<T, 96> repeated {};
                                for (std::size_t i {0}; i < span; ++i) {
@@ -375,7 +377,7 @@ namespace numerical {
                                const bool        a_spreads {step_a == 0};
                                const T* const    column    {(a_spreads ? a : b) + first};
                                const T* const    whole     {(a_spreads ? b : a) + (first * inner)};
-                               T* const          po        {out.data() + (first * inner)};
+                               R* const          po        {out.data() + (first * inner)};
                                const std::size_t run       {256 / inner};
                                std::array<T, 256> spread {};
                                for (std::size_t from {0}; from < last - first; from += run) {
@@ -384,7 +386,7 @@ namespace numerical {
                                    std::fill_n(spread.data() + (r * inner), inner, column[from + r]);
                                  }
                                  const T* const w {whole + (from * inner)};
-                                 T* const       o {po + (from * inner)};
+                                 R* const       o {po + (from * inner)};
                                  if (a_spreads) {
                                    for (std::size_t i {0}; i < n * inner; ++i) {
                                      o[i] = op(spread[i], w[i]);
@@ -401,7 +403,7 @@ namespace numerical {
                              for (std::size_t row {first}; row < last; ++row) {
                                const T* const pa {a + ia};
                                const T* const pb {b + ib};
-                               T* const       po {out.data() + (row * inner)};
+                               R* const       po {out.data() + (row * inner)};
                                if (step_a == 1 && step_b == 1) {
                                  for (std::size_t i {0}; i < inner; ++i) {
                                    po[i] = op(pa[i], pb[i]);
@@ -435,7 +437,7 @@ namespace numerical {
                                }
                              }
                            });
-      return tensor<T> {std::move(shape), std::move(out)};
+      return tensor<R> {std::move(shape), std::move(out)};
     }
   }    // namespace detail
 

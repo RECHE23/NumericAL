@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Changed
+- **Masks and comparisons faster, the same answers** (a 1000 × 1000 matrix, eight threads, arm64; NumPy 2.4's in
+  brackets): `m & n`, `|` and `^` 0.22 → 0.02 ms (0.04) on the bytes, by the loops `+` and `*` take
+  (`detail::broadcast_into`, now of any result type), as the comparisons (`x < column` 0.13 → 0.06 ms); `where` of a
+  contiguous condition one row on the threads (a vector of 10⁶: 1.0 → 0.27 ms); `sum` and `mean` of a mask count its
+  trues, with no float64 copy (10⁷: 3.9 → 0.18 ms, 2.3); `any` and `all` of numbers read them in place, the first
+  that decides ending the scan (`all` of 10⁷: 1.04 → 0.78 ms, 3.8), along an axis row by row on the threads;
+  `vector_norm` and `matrix_norm` along axes on the threads without a copy of the magnitudes (`ord=1` 14.8 → 2.1 ms).
 - **`lu` of a wide or a tall matrix by blocks**: a wide matrix's `U` columns past its square part by the blocked
   triangular solve, where a row-by-row loop ran on one thread (500 × 2000: 40 → 6.4 ms, SciPy 1.17 9.2 ms); a matrix
   more than twice as tall as wide by `dgetrf2`'s recursion over its columns, a product for each half's update (5000 ×
@@ -29,6 +36,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   own, and bisection keeps the selection up to `n p / 32` eigenvalues on `p` threads (`n / 32` before), past which
   the QL iteration's whole spectrum takes it. Ten of order 16000 53 → 10 ms, 500 2.68 → 0.41 s, 2000 of them by the
   QL 3.1 → 1.6 s (SciPy 1.17: 56 ms, 2.53 s, 9.7 s; eight threads, arm64).
+
+### Fixed
+- **`vector_norm` of an empty run of a negative order is infinite**, as NumPy's (a sum of no terms, 0, to the power
+  1 / ord), where it answered 0; `ord=-inf` over no element still raises, as NumPy's.
 
 ## 2026.10.45 — 2026-10-31
 
