@@ -1538,8 +1538,14 @@ def _matmul_stack(a, b):
 
 
 def conj(x):
-    """The complex conjugate of every element, as ``numpy.conj``; a real tensor's own elements."""
-    return _numerical._unary("conj", _tensor(x))
+    """The complex conjugate of every element, as ``numpy.conj``; a real or bool tensor's own elements."""
+    x = _tensor(x)
+    try:
+        return _numerical._unary("conj", x)
+    except TypeError:
+        if x.dtype == "bool":  # the identity, as NumPy's
+            return x
+        raise
 
 
 conjugate = conj
@@ -1740,10 +1746,12 @@ def multi_dot(arrays, *, out=None):
 def trace(x, /, *, offset=0, dtype=None):
     """The sum of the `offset` diagonal of a matrix or of every matrix of a stack (its last two axes), as
     ``numpy.linalg.trace``: above the main diagonal for a positive `offset`, below for a negative one; in `dtype` when
-    given."""
+    given. A bool tensor's trace counts its trues, a float64 as :func:`sum`'s (NumPy's an integer)."""
     x = _tensor(x)
     if len(x.shape) < 2:
         raise _ShapeError("trace: a matrix or a stack of matrices (rank ≥ 2)")
+    if x.dtype == "bool":
+        x = asarray(x, "float64")
     offset = _operator.index(offset)
     rows, cols = x.shape[-2:]
     r0, c0 = _builtins.max(-offset, 0), _builtins.max(offset, 0)
@@ -1775,6 +1783,8 @@ def diagonal(x, /, *, offset=0):
     labels = _labels(len(x.shape) - 1, "diagonal")
     batch, along = labels[:-1], labels[-1]
     block = x[(slice(None),) * (len(x.shape) - 2) + (slice(r0, r0 + length), slice(c0, c0 + length))]
+    if x.dtype == "bool":  # its entries, through float64 exactly
+        return asarray(_numerical.einsum(f"{batch}{along}{along}->{batch}{along}", asarray(block, "float64")), "bool")
     return _numerical.einsum(f"{batch}{along}{along}->{batch}{along}", block)
 
 
@@ -2802,7 +2812,9 @@ def subspace_angles(A, B):
         B = QB - QA @ QA_H_QB
     else:
         B = QA - QB @ conj(matrix_transpose(QA_H_QB))
-    mask = [value ** 2 >= 0.5 for value in sigma]
+    # the angles come largest first, their cosines sigma smallest first: angle k's cosine is sigma[::-1][k] (SciPy
+    # builds the mask on sigma unreversed and sends the small angles through the arccosine)
+    mask = [value ** 2 >= 0.5 for value in reversed(sigma)]
     sines = svdvals(B).tolist() if _builtins.any(mask) else [0.0] * len(sigma)
     theta = [_math.asin(_builtins.min(_builtins.max(sines[k], -1.0), 1.0)) if mask[k]
              else _math.acos(_builtins.min(_builtins.max(sigma[::-1][k], -1.0), 1.0)) for k in range(len(sigma))]

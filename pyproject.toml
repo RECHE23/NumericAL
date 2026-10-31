@@ -3,7 +3,7 @@
 # python/. The C++ library itself is header-only and needs none of this — see the
 # Makefile and CMakeLists.txt for the C++ workflows.
 [build-system]
-requires = ["setuptools>=77", "sciforge-build>=2026.10.3"]
+requires = ["setuptools>=77", "sciforge-build>=2026.10.7"]
 build-backend = "setuptools.build_meta"
 
 [project]

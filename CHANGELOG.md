@@ -80,6 +80,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   blocks) as before.
 
 ### Fixed
+- **`subspace_angles` takes the small angles by their sines**: its mask, built as SciPy builds it over the cosines in
+  the other order, sent them through the arccosine (an angle of 10⁻⁸ answered 0, two shared directions' angles 3·10⁻⁸
+  where they are 0); now within 10⁻¹⁵ there.
+- **A bool tensor's `diagonal`, `trace` and `conj`** answer (a bool diagonal, the trues counted as a float64, itself)
+  where they raised `TypeError`.
+- **A free-threaded build needs SciForge 2026.10.7**: `sciforge-build>=2026.10.7` (2026.10.3 before), and the module
+  fails to compile against an older one, which let CPython 3.14t re-enable the GIL at import with a warning alone.
 - **The complex generalized Schur decomposition scales its operands into range, as `zgges`**: a `B` past 10¹⁵⁴ (the
   square root of the range) overflowed the norms' squares and left `Q T Zᴴ` 45 % from `B`; now within rounding from
   10⁻³⁰⁸ to 10³⁰⁷, as the real one.

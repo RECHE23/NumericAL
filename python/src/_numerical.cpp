@@ -3,6 +3,12 @@
 
 #include "binding.hpp"
 
+// A free-threaded CPython re-enables the GIL at import, with a warning alone, for a module that does not declare it
+// unused: SciForge before 2026.10.7 (no SCIFORGE_BINDING_NO_GIL) never declares it.
+#if defined(Py_GIL_DISABLED) && !defined(SCIFORGE_BINDING_NO_GIL)
+#error "a free-threaded build needs SciForge 2026.10.7 or later (sciforge-build>=2026.10.7)"
+#endif
+
 using namespace numerical_binding; // NOLINT(google-build-using-namespace): the registration names every function
 
 SCIFORGE_MODULE(_numerical, "numerical.error", m)

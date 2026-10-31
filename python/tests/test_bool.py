@@ -317,6 +317,21 @@ class Conversions(unittest.TestCase):
         self.assertFalse(numerical.array_equal(mask, ~x))
         self.assertIs(bool(numerical.asarray([True], "bool")), True)
 
+    def test_a_masks_diagonal_conjugate_and_trace_as_numpy(self):
+        x = np.array([[[True, False, True], [False, True, False]], [[False, False, True], [True, True, True]]])
+        mask = numerical.asarray(x, "bool")
+        for offset in (-2, -1, 0, 1, 2, 5):
+            with self.subTest(offset=offset):
+                got = numerical.diagonal(mask, offset=offset)
+                self.assertEqual(got.dtype, "bool")
+                self.assertEqual(got.tolist(), np.linalg.diagonal(x, offset=offset).tolist())
+                self.assertEqual(mask.diagonal(offset, 1, 2).tolist(), x.diagonal(offset, 1, 2).tolist())
+                trace = numerical.trace(mask, offset=offset)  # the trues counted, as a float64 (sum's convention)
+                self.assertEqual(trace.dtype, "float64")
+                self.assertEqual(trace.tolist(), np.linalg.trace(x, offset=offset).astype(float).tolist())
+        self.assertIs(numerical.conj(mask), mask)
+        self.assertEqual(mask.conj().tolist(), x.tolist())
+
 
 @unittest.skipIf(np is None, "NumPy not installed")
 class KeptOutOfTheArithmetic(unittest.TestCase):

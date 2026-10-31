@@ -120,6 +120,15 @@ class Subspaces(unittest.TestCase):
         a = self.rng.standard_normal((5, 2))
         self.assertTrue(np.allclose(np.asarray(numerical.subspace_angles(a, a @ [[1.0, 2.0], [0.0, 1.0]])), 0.0,
                                     atol=1e-14))  # one space: small angles by their sines
+        # the angles largest first and their sines aligned: a space sharing two directions and a small angle (SciPy
+        # 1.18 sends the small ones through the arccosine: 0 for 1e-8, its shared directions' angles at 2e-8)
+        q, _ = np.linalg.qr(self.rng.standard_normal((6, 4)))
+        for theta in (1e-8, 1e-6):
+            third = np.cos(theta) * q[:, 2] + np.sin(theta) * q[:, 3]
+            with self.subTest(theta=theta):
+                angles = np.asarray(numerical.subspace_angles(q[:, :3], np.column_stack([q[:, 0], q[:, 1], third])))
+                self.assertLess(abs(angles[0] - theta), 1e-6 * theta)
+                self.assertTrue(np.all(np.abs(angles[1:]) <= 1e-15))
 
     def test_procrustes_and_pinvh_as_scipy(self):
         for n, cplx in [(4, False), (5, True)]:
