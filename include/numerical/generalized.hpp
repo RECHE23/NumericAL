@@ -2621,14 +2621,13 @@ namespace numerical {
     [[nodiscard]] std::pair<buffer<T>, buffer<T>> riccati_pencil(const riccati_operands<T>& terms,
                                                                  bool                       continuous)
     {
-      using C = T;
       const std::size_t m {terms.a.rows()};
       const std::size_t n {terms.b.cols()};
       const std::size_t order {(2 * m) + n};
-      buffer<C>         h(order * order, C {});
-      buffer<C>         j(order * order, C {});
+      buffer<T>         h(order * order, T {});
+      buffer<T>         j(order * order, T {});
       const auto        e_at = [&terms](std::size_t row, std::size_t col) {
-                                 return terms.e != nullptr ? (*terms.e)(row, col) : C {row == col ? 1.0 : 0.0};
+                                 return terms.e != nullptr ? (*terms.e)(row, col) : T {row == col ? 1.0 : 0.0};
                                };
       for (std::size_t i {0}; i < m; ++i) {
         for (std::size_t k {0}; k < m; ++k) {
@@ -2719,28 +2718,27 @@ namespace numerical {
                                     bool                       continuous,
                                     bool                       balanced)
     {
-      using C    = T;
       using form = std::conditional_t<std::is_same_v<T, double>, real_generalized_schur, generalized_schur>;
       const std::size_t m        {terms.a.rows()};
       const std::size_t n        {terms.b.cols()};
       const std::size_t order    {(2 * m) + n};
       auto [h, j] = riccati_pencil(terms, continuous);
       const buffer<double> scale {balanced ? balance_pencil(h, j, m, order) : buffer<double>(order, 1.0)};
-      buffer<C>            last(order * n);
+      buffer<T>            last(order * n);
       for (std::size_t i {0}; i < order; ++i) {
         std::copy_n(h.data() + (i * order) + (2 * m), n, last.data() + (i * n));
       }
-      const matrix<C> deflation       {qr_decomposition<C> {matrix<C> {order, n, std::move(last)}, qr_mode::complete}.q()};
-      buffer<C>       kept(order * 2 * m); // the columns past the first n: Q₂
-      buffer<C>       h_left(order * 2 * m);
-      buffer<C>       j_left(order * 2 * m);
+      const matrix<T> deflation       {qr_decomposition<T> {matrix<T> {order, n, std::move(last)}, qr_mode::complete}.q()};
+      buffer<T>       kept(order * 2 * m); // the columns past the first n: Q₂
+      buffer<T>       h_left(order * 2 * m);
+      buffer<T>       j_left(order * 2 * m);
       for (std::size_t t {0}; t < order; ++t) {
         std::copy_n(&deflation(t, n), 2 * m, kept.data() + (t * 2 * m));
         std::copy_n(h.data() + (t * order), 2 * m, h_left.data() + (t * 2 * m));
         std::copy_n(j.data() + (t * order), 2 * m, j_left.data() + (t * 2 * m));
       }
-      const matrix<C>   q2     {adjoint_of(matrix<C> {order, 2 * m, std::move(kept)})};
-      form              pencil {q2 * matrix<C> {order, 2 * m, std::move(h_left)}, q2 * matrix<C> {order, 2 * m, std::move(j_left)}};
+      const matrix<T>   q2     {adjoint_of(matrix<T> {order, 2 * m, std::move(kept)})};
+      form              pencil {q2 * matrix<T> {order, 2 * m, std::move(h_left)}, q2 * matrix<T> {order, 2 * m, std::move(j_left)}};
       const std::size_t chosen {continuous ? pencil.sort([](const std::complex<double>& alpha, const std::complex<double>& beta) {
                                                            return (alpha * std::conj(beta)).real() < 0.0;
                                                          })
@@ -2750,42 +2748,42 @@ namespace numerical {
       if (chosen != m) {             // a stable half of other than m eigenvalues: some on the boundary, where a real pencil's
         refuse_boundary(continuous); // conjugate pair moves whole and its basis passes the symmetry test
       }
-      matrix<C> u {pencil.z()};
+      matrix<T> u {pencil.z()};
       if (terms.e != nullptr) {      // [D₁ E D₁⁻¹ U₀₀; U₁₀], E scaled as the balancing scaled the pencil
-        buffer<C> scaled_e(m * m);
-        buffer<C> upper(m * m);
+        buffer<T> scaled_e(m * m);
+        buffer<T> upper(m * m);
         for (std::size_t i {0}; i < m; ++i) {
           for (std::size_t t {0}; t < m; ++t) {
             scaled_e[(i * m) + t] = (*terms.e)(i, t) * (scale[i] / scale[t]);
             upper[(i * m) + t]    = u(i, t);
           }
         }
-        const matrix<C> top {matrix<C> {m, m, std::move(scaled_e)} *matrix<C> {m, m, std::move(upper)}};
-        buffer<C>       stacked(2 * m * m);
+        const matrix<T> top {matrix<T> {m, m, std::move(scaled_e)} *matrix<T> {m, m, std::move(upper)}};
+        buffer<T>       stacked(2 * m * m);
         std::copy(top.begin(), top.end(), stacked.begin());
         for (std::size_t i {0}; i < m; ++i) {
           for (std::size_t k {0}; k < m; ++k) {
             stacked[((m + i) * m) + k] = u(m + i, k);
           }
         }
-        u = qr_decomposition<C> {matrix<C> {2 * m, m, std::move(stacked)}, qr_mode::complete}.q();
+        u = qr_decomposition<T> {matrix<T> {2 * m, m, std::move(stacked)}, qr_mode::complete}.q();
       }
-      buffer<C> u00(m * m);
-      buffer<C> u10(m * m);
+      buffer<T> u00(m * m);
+      buffer<T> u10(m * m);
       for (std::size_t i {0}; i < m; ++i) {
         for (std::size_t k {0}; k < m; ++k) {
           u00[(i * m) + k] = u(i, k);
           u10[(i * m) + k] = u(m + i, k);
         }
       }
-      const matrix<C> x {stabilising_solution(matrix<C> {m, m, std::move(u00)}, matrix<C> {m, m, std::move(u10)}, continuous)};
-      buffer<C>       out(m * m);
+      const matrix<T> x {stabilising_solution(matrix<T> {m, m, std::move(u00)}, matrix<T> {m, m, std::move(u10)}, continuous)};
+      buffer<T>       out(m * m);
       for (std::size_t i {0}; i < m; ++i) {
         for (std::size_t k {0}; k < m; ++k) {
           out[(i * m) + k] = (x(i, k) + conj_of(x(k, i))) * (scale[i] * scale[k] / 2.0);
         }
       }
-      return matrix<C> {m, m, std::move(out)};
+      return matrix<T> {m, m, std::move(out)};
     }
 
     /*!
