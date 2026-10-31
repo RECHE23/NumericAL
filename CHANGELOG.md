@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.45 — 2026-10-31
+
 ### Added
 - **A Tensor takes NumPy's advanced indexing**: integer lists and arrays (`t[[2, 0]]`, `t[:, idx]`, `t[rows, cols]`)
   and bool masks of any rank (a list, a NumPy array, a bool Tensor, a lone bool: `t[t > 0]`), mixed with integers,
