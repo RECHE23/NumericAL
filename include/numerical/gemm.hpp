@@ -3317,6 +3317,36 @@ namespace numerical::detail {
     gemm_packed_triangle<vector_tile_kernel<double>, double, B, A>(n, k, a, lda, b, ldb, c, ldc, lower);
   }
 
+  /*!
+   * \brief The triangle of the `float` product `C = A·B` (\ref gemm_packed_triangle) on the float tile of the path in
+   *        use, A and B laid out as \p A and \p B say: the single-precision factorisations' trailing updates.
+   */
+  template <typename A,
+            typename B>
+  void gemm_triangle(std::size_t  n,
+                     std::size_t  k,
+                     const float* a,
+                     std::size_t  lda,
+                     const float* b,
+                     std::size_t  ldb,
+                     float*       c,
+                     std::size_t  ldc,
+                     bool         lower)
+  {
+#ifdef NUMERICAL_X86_COMPILED
+    const gemm_path path {gemm_path_current()};
+    if (path == gemm_path::avx512) {
+      gemm_packed_triangle<avx512_tile_kernel_f32, float, B, A>(n, k, a, lda, b, ldb, c, ldc, lower);
+      return;
+    }
+    if (path == gemm_path::avx2) {
+      gemm_packed_triangle<avx2_tile_kernel_f32, float, B, A>(n, k, a, lda, b, ldb, c, ldc, lower);
+      return;
+    }
+#endif
+    gemm_packed_triangle<vector_tile_kernel<float>, float, B, A>(n, k, a, lda, b, ldb, c, ldc, lower);
+  }
+
   //! \brief \ref gemm_double_elsewhere of a row-major B.
   [[nodiscard]] inline bool gemm_elsewhere(std::size_t   m,
                                            std::size_t   n,

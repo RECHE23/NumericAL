@@ -57,6 +57,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **The pivoted QR's block updates on the threads, the same bits**: each column's share of a block's reflections and
   its dot product with each new reflector go by bands of 16 columns on the threads, where one thread ran them all
   (order 1024 real 190 → 145 ms, order 513 complex 85 → 57 ms; arm64).
+- **The float32 Cholesky factorisation on x86-64 updates its trailing block on the float tiles**: the triangle's
+  product (`gemm_triangle`) took doubles only, and a float matrix's update ran on the blocks' narrow kernel, near the
+  double's time. Order 2000 14.9 → 9.8 ms on AVX-512, 13.0 → 9.8 ms on AVX2 (1000: 3.4 → 2.8 and 2.65 → 2.03 ms); the
+  residuals as before. arm64 keeps the blocks, faster there.
 - **`fractional_matrix_power` of a symmetric or Hermitian matrix with p > 0 by one eigendecomposition**, `V Λᵖ Vᴴ`,
   where it took a singular value decomposition, a Schur form and a Padé approximant: order 200 43 → 3.5 ms, 500
   296 → 23 ms (arm64). Against references to 50 digits (96 matrices of orders 2 to 30: definite, indefinite, condition

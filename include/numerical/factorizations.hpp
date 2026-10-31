@@ -2401,10 +2401,11 @@ namespace numerical {
 #ifdef NUMERICAL_X86_COMPILED
       // On the x86-64 units a real product the kernel packs runs on the triangle's tiles alone (detail::gemm_triangle,
       // each element the tiles' sum below), where the blocks below computed the part of each diagonal block past the
-      // diagonal: six AVX2 cores, order 500 787 → 721 µs. On arm64 the blocks stay, faster there (all cores, order 500:
+      // diagonal: six AVX2 cores, order 500 787 → 721 µs; a float one on the float tiles, where the blocks' narrow
+      // kernel held it near the double's time. On arm64 the blocks stay, faster there (all cores, order 500:
       // 0.85 ms, by the triangle 1.03: the AMX takes −L₂₁ packed once for every block). A smaller or complex product by
       // the blocks.
-      if constexpr (std::is_same_v<T, double>) {
+      if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
         if (depth >= detail::gemm_min_depth && rows * rows >= ((detail::gemm_packed_threshold + depth) - 1) / depth) {
           detail::gemm_triangle<detail::a_rows, detail::b_rows>(rows, depth, lower_.data() + (end * n_) + k0, n_, minus_adjoint.data(), rows,
                                                                 lower_.data() + (end * n_) + end, n_, true);
