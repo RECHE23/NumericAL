@@ -52,6 +52,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&hessenberg>("hessenberg", "hessenberg(a, calc_q) -> (H, Q)\nThe Hessenberg form A = Q H Qᴴ, as scipy.linalg.hessenberg (LAPACK's gehrd); Q 0 × 0 without calc_q.");
     m.def<&matrix_balance>("matrix_balance", "matrix_balance(a, permute, scale) -> (B, scaling, permutation)\nA balanced, B = T⁻¹ A T, T = P D, as scipy.linalg.matrix_balance(separate=True) (LAPACK's gebal).");
     m.def<&tridiagonal_eigen>("tridiagonal_eigen", "tridiagonal_eigen(d, e, vectors) -> (w, v)\nThe eigenvalues (ascending) and eigenvectors of a real symmetric tridiagonal, as scipy.linalg.eigh_tridiagonal; v 0 × 0 without vectors.");
+    m.def<&tridiagonal_select>("tridiagonal_select", "tridiagonal_select(d, e, by_value, a, b) -> Tensor\nThe eigenvalues of indices a to b (or in (a, b] where by_value) of a real symmetric tridiagonal, ascending, as scipy.linalg.eigvalsh_tridiagonal with a selection.");
     m.def<&qz>("qz", "qz(a, b, complex_output, select) -> (S, T, alpha, beta, Q, Z)\nThe generalized Schur form A = Q S Zᴴ, B = Q T Zᴴ, as scipy.linalg.qz (LAPACK's xgges), reordered by select(alpha, beta) as scipy.linalg.ordqz where it is a callable.");
     m.def<&rsf2csf>("rsf2csf", "rsf2csf(T, Z) -> (T, Z)\nA real Schur form made complex, as scipy.linalg.rsf2csf.");
     m.def<&solve_toeplitz>("solve_toeplitz", "solve_toeplitz(c, r, b) -> Tensor\nThe solution of a Toeplitz system by Levinson's recursion, as scipy.linalg.solve_toeplitz.");

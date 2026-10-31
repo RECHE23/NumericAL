@@ -3023,7 +3023,9 @@ TEST(symmetric_eigenvalues_alone_are_the_decompositions)
 }
 
 // A symmetric tridiagonal's eigenvalues alone and with their vectors are the dense matrix's, at orders on both sides of
-// the divide-and-conquer leaf and at scales past the range of squares; the vectors orthonormal and each its value's.
+// the divide-and-conquer leaf and at scales past the range of squares; the vectors orthonormal and each its value's. Its
+// last two thirds by bisection, and their indices from a range of values, as dstebz selects them; the zero matrix's
+// interval bisected down to adjacent doubles, a zero pivot of Sturm's sequence, an empty range, bad indices refused.
 TEST(tridiagonal_eigen_is_the_dense_matrix_s)
 {
   // Fixed seed: the matrices are part of the test, so a failure names the same one every run.
@@ -3046,10 +3048,15 @@ TEST(tridiagonal_eigen_is_the_dense_matrix_s)
       }
       const vector<double> expected {numerical::symmetric_eigenvalues(matrix<double>(n, n, dense))};
       const vector<double> alone    {numerical::tridiagonal_eigenvalues(vector<double> {d}, vector<double> {e})};
+      const vector<double> chosen   {numerical::tridiagonal_eigenvalues(vector<double> {d}, vector<double> {e}, n / 3, n - 1)}; // by bisection
+      const double         below    {n / 3 == 0 ? expected[0] - scale : (expected[(n / 3) - 1] + expected[n / 3]) / 2.0};       // between neighbours
+      const auto [first, last] {numerical::tridiagonal_eigenvalue_range(vector<double> {d}, vector<double> {e}, below, expected[n - 1] + scale)};
+      EXPECT(std::cmp_equal(first, n / 3) && std::cmp_equal(last, n - 1));
       const auto [values, vectors] {numerical::tridiagonal_eigen(vector<double> {d}, vector<double> {e})};
       const double tolerance        {1e-12 * static_cast<double>(n) * std::max(std::abs(expected[0]), std::abs(expected[n - 1]))};
       for (std::size_t j {0}; j < n; ++j) {
         EXPECT(std::abs(alone[j] - expected[j]) <= tolerance);
+        EXPECT(j < n / 3 || std::abs(chosen[j - (n / 3)] - expected[j]) <= tolerance);
         EXPECT(std::abs(values[j] - expected[j]) <= tolerance);
         EXPECT(j == 0 || (alone[j - 1] <= alone[j] && values[j - 1] <= values[j]));
         for (std::size_t r {0}; r < n; ++r) { // (T v)_r − λ v_r, and vᵀ w over the other columns
@@ -3072,6 +3079,17 @@ TEST(tridiagonal_eigen_is_the_dense_matrix_s)
   EXPECT(numerical::tridiagonal_eigen(vector<double> {std::vector<double> {}}, vector<double> {std::vector<double> {}}).second.rows() == 0);
   const vector<double> zero {numerical::tridiagonal_eigenvalues(vector<double> {std::vector<double> {0.0, 0.0}}, vector<double> {std::vector<double> {0.0}})};
   EXPECT(zero[0] == 0.0 && zero[1] == 0.0);
+  // bisection of the zero matrix's interval of 4 pivmin down to adjacent doubles; a zero pivot taken as −pivmin
+  const vector<double> zero_chosen {numerical::tridiagonal_eigenvalues(vector<double> {std::vector<double> {0.0, 0.0}}, vector<double> {std::vector<double> {0.0}}, 0, 1)};
+  EXPECT(std::abs(zero_chosen[0]) <= 1e-300 && std::abs(zero_chosen[1]) <= 1e-300);
+  const vector<double> pivot       {numerical::tridiagonal_eigenvalues(vector<double> {std::vector<double> {1.0, 1.0}}, vector<double> {std::vector<double> {1.0}}, 0, 0)};
+  EXPECT(std::abs(pivot[0]) <= 1e-15); // eigenvalues 0 and 2: Sturm's count at x = 1 meets a zero pivot
+  const auto [none_first, none_last] {numerical::tridiagonal_eigenvalue_range(vector<double> {std::vector<double> {1.0, 3.0}}, vector<double> {std::vector<double> {0.0}}, 1.5, 2.5)};
+  EXPECT(none_last < none_first);
+  const auto [empty_first, empty_last] {numerical::tridiagonal_eigenvalue_range(vector<double> {std::vector<double> {}}, vector<double> {std::vector<double> {}}, 0.0, 1.0)};
+  EXPECT(empty_last < empty_first);
+  EXPECT_THROWS(numerical::tridiagonal_eigenvalues(vector<double> {std::vector<double> {1.0, 2.0}}, vector<double> {std::vector<double> {0.0}}, 1, 0), numerical::dimension_error);
+  EXPECT_THROWS(numerical::tridiagonal_eigenvalues(vector<double> {std::vector<double> {1.0, 2.0}}, vector<double> {std::vector<double> {0.0}}, 0, 2), numerical::dimension_error);
   EXPECT_THROWS(numerical::tridiagonal_eigenvalues(vector<double> {std::vector<double> {1.0, 2.0}}, vector<double> {std::vector<double> {1.0, 2.0}}),
                 numerical::dimension_error);
   EXPECT_THROWS(numerical::tridiagonal_eigen(vector<double> {std::vector<double> {}}, vector<double> {std::vector<double> {1.0}}), numerical::dimension_error);

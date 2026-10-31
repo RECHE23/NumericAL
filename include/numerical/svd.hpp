@@ -2265,6 +2265,121 @@ namespace numerical {
     return vector<double> {std::move(diagonal)};
   }
 
+  namespace detail {
+
+    //! \brief The number of eigenvalues below \p x of the symmetric tridiagonal of diagonal \p d and squared
+    //!        off-diagonal \p e2 (`n` and `n − 1` entries), by Sturm's sequence: the negative pivots of `T − x I`, a
+    //!        pivot smaller than \p pivmin taken as `−pivmin`, as LAPACK's `dlaebz`.
+    [[nodiscard]] inline std::size_t sturm_count(const double* d,
+                                                 const double* e2,
+                                                 std::size_t   n,
+                                                 double        x,
+                                                 double        pivmin)
+    {
+      std::size_t count {0};
+      double      q     {d[0] - x};
+      for (std::size_t i {0};; ++i) {
+        if (std::abs(q) < pivmin) {
+          q = -pivmin;
+        }
+        count += q < 0.0 ? 1 : 0;
+        if (i + 1 == n) {
+          return count;
+        }
+        q = (d[i + 1] - x) - (e2[i] / q);
+      }
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The eigenvalues of indices \p first to \p last (ascending, from 0) of the real symmetric tridiagonal matrix
+   *        of diagonal \p d and off-diagonal \p e, as LAPACK's `dstebz` (`scipy.linalg.eigvalsh_tridiagonal` with a
+   *        selection): each by bisection of Gershgorin's interval on Sturm's counts, to `ε ‖T‖` (LAPACK's tolerance
+   *        when none is given), on the matrix divided by the power of two of its largest magnitude. `n k` operations a
+   *        bisection step where the QL iteration takes `n²` for all.
+   * \throws dimension_error  If \p e has not one entry fewer than \p d, or \p first > \p last or \p last ≥ `n`.
+   * \throws non_finite_error If an entry is infinite or NaN.
+   */
+  [[nodiscard]] inline vector<double> tridiagonal_eigenvalues(const vector<double>& d,
+                                                              const vector<double>& e,
+                                                              std::size_t           first,
+                                                              std::size_t           last)
+  {
+    buffer<double>    diagonal;
+    buffer<double>    off;
+    const double      scale {detail::scaled_tridiagonal(d, e, diagonal, off)};
+    const std::size_t n     {d.size()};
+    if (first > last || last >= n) {
+      throw dimension_error("tridiagonal_eigenvalues: the indices must satisfy first ≤ last < n");
+    }
+    constexpr double ulp     {std::numeric_limits<double>::epsilon()};
+    constexpr double safmin  {std::numeric_limits<double>::min()};
+    buffer<double>   e2(n, 0.0);
+    double           largest {0.0};
+    for (std::size_t i {0}; i + 1 < n; ++i) {
+      e2[i]   = off[i] * off[i];
+      largest = std::max(largest, e2[i]);
+    }
+    const double pivmin {safmin * std::max(1.0, largest)};
+    double       low  {diagonal[0]};
+    double       high {diagonal[0]};
+    for (std::size_t i {0}; i < n; ++i) { // Gershgorin's discs
+      const double radius {(i > 0 ? std::abs(off[i - 1]) : 0.0) + (i + 1 < n ? std::abs(off[i]) : 0.0)};
+      low  = std::min(low, diagonal[i] - radius);
+      high = std::max(high, diagonal[i] + radius);
+    }
+    const double norm  {std::max(std::abs(low), std::abs(high))};
+    const double slack {(2.1 * ulp * norm * static_cast<double>(n)) + (2.0 * pivmin)};
+    low  -= slack;
+    high += slack;
+    const double   tolerance {ulp * norm};
+    buffer<double> out(last - first + 1);
+    for (std::size_t j {first}; j <= last; ++j) {
+      double lo {low};
+      double hi {high};
+      // past two spacings of the doubles there (at most ε |x| for a normal x, the least subnormal below), so that the
+      // middle always lies strictly inside
+      while (hi - lo > std::max({tolerance, 2.0 * ulp * std::max(std::abs(lo), std::abs(hi)), 2.0 * std::numeric_limits<double>::denorm_min()})) {
+        const double middle {0.5 * (lo + hi)};
+        (detail::sturm_count(diagonal.data(), e2.data(), n, middle, pivmin) > j ? hi : lo) = middle;
+      }
+      out[j - first] = 0.5 * (lo + hi) * scale;
+    }
+    return vector<double> {std::move(out)};
+  }
+
+  /*!
+   * \brief The indices `[first, last]` (ascending, from 0) of the eigenvalues in `(low, high]` of the real symmetric
+   *        tridiagonal matrix of diagonal \p d and off-diagonal \p e, by Sturm's counts (`last < first` where none
+   *        lies there), as `dstebz` selects them with a range.
+   * \throws dimension_error  If \p e has not one entry fewer than \p d.
+   * \throws non_finite_error If an entry is infinite or NaN.
+   */
+  [[nodiscard]] inline std::pair<std::ptrdiff_t, std::ptrdiff_t> tridiagonal_eigenvalue_range(const vector<double>& d,
+                                                                                              const vector<double>& e,
+                                                                                              double                low,
+                                                                                              double                high)
+  {
+    buffer<double>    diagonal;
+    buffer<double>    off;
+    const double      scale {detail::scaled_tridiagonal(d, e, diagonal, off)};
+    const std::size_t n     {d.size()};
+    if (n == 0) {
+      return {0, -1};
+    }
+    buffer<double> e2(n, 0.0);
+    double         largest {0.0};
+    for (std::size_t i {0}; i + 1 < n; ++i) {
+      e2[i]   = off[i] * off[i];
+      largest = std::max(largest, e2[i]);
+    }
+    const double pivmin {std::numeric_limits<double>::min() * std::max(1.0, largest)};
+    const auto   at_most = [&](double x) { // the eigenvalues ≤ x: those below the next double
+                             return detail::sturm_count(diagonal.data(), e2.data(), n, std::nextafter(x / scale, std::numeric_limits<double>::infinity()), pivmin);
+                           };
+    return {static_cast<std::ptrdiff_t>(at_most(low)), static_cast<std::ptrdiff_t>(at_most(high)) - 1};
+  }
+
   /*!
    * \brief The eigenvalues, ascending, and the orthonormal eigenvectors (the columns, in their order) of the real
    *        symmetric tridiagonal matrix of diagonal \p d and off-diagonal \p e, as `scipy.linalg.eigh_tridiagonal`:

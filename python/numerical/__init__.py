@@ -3048,6 +3048,7 @@ _cho_solve_banded = _linalg(_numerical.cho_solve_banded, arrays=2)
 _hessenberg = _linalg(_numerical.hessenberg, arrays=1)
 _matrix_balance = _linalg(_numerical.matrix_balance, arrays=1)
 _tridiagonal_eigen = _linalg(_numerical.tridiagonal_eigen)
+_tridiagonal_select = _linalg(_numerical.tridiagonal_select)
 _rsf2csf = _linalg(_numerical.rsf2csf, arrays=2)
 
 
@@ -3146,6 +3147,9 @@ def eigh_tridiagonal(d, e, eigvals_only=False, select="a", select_range=None, ch
     if lapack_driver == "sterf" and not eigvals_only:
         raise ValueError("sterf can only be used when eigvals_only is True")
     single = d.dtype == "float32" and e.dtype == "float32"
+    if kind and eigvals_only:  # bisection for a few of them (dstebz, SciPy's driver there)
+        w = _tridiagonal_select(asarray(d, "float64"), asarray(e, "float64"), kind == 1, float(bounds[0]), float(bounds[1]))
+        return asarray(w, "float32") if single else w
     w, v = _tridiagonal_eigen(asarray(d, "float64"), asarray(e, "float64"), not eigvals_only)
     if kind:
         values = w.tolist()

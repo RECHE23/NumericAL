@@ -49,6 +49,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   `keepdims` for `any` and `all`; the other calls' time unchanged (a 4 × 4 `sum` 492 ns, `+` 857).
 
 ### Changed
+- **`eigvalsh_tridiagonal` with a selection of a few eigenvalues by bisection**, as LAPACK's `dstebz` (SciPy's driver
+  there): Sturm's counts on Gershgorin's interval, `n k` a step where the QL iteration took `n²` for the whole spectrum.
+  Ten of order 4000 217 → 13 ms (SciPy 15 ms), of order 16000 3.0 s → 53 ms; past n / 32 of them, the QL as before.
+  C++: `tridiagonal_eigenvalues(d, e, first, last)` and `tridiagonal_eigenvalue_range(d, e, low, high)`.
 - **`solve` of a triangular matrix by substitution**, as SciPy's `solve` detects one: order 2000 45 → 5 ms (upper or
   lower), 500 2.1 → 0.4 ms; a general matrix's scan stops at its first entry off the triangles, its answer the same
   bits. A zero on the diagonal is refused as singular, where the factorisation of a lower triangle could pivot past it.

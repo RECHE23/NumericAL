@@ -1774,6 +1774,8 @@ any_tensor cho_solve_banded(const any_tensor& cb, const any_tensor& b, bool lowe
 std::tuple<any_tensor, any_tensor> hessenberg(const any_tensor& a, bool calc_q);                                                 // in linalg.cpp
 std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> matrix_balance(const any_tensor& a, bool permute, bool scale);       // in linalg.cpp
 std::tuple<any_tensor, any_tensor> tridiagonal_eigen(const any_tensor& d, const any_tensor& e, bool vectors);                    // in linalg.cpp
+// tridiagonal_select(d, e, by_value, a, b) -> w, the selected eigenvalues alone (indices a … b, or values in (a, b]).
+any_tensor tridiagonal_select(const any_tensor& d, const any_tensor& e, bool by_value, double a, double b); // in linalg.cpp
 std::tuple<any_tensor, any_tensor> rsf2csf(const any_tensor& t, const any_tensor& z);                                            // in linalg.cpp
 
 // qz(a, b, complex_output, select) -> (S, T, alpha, beta, Q, Z), as scipy.linalg.qz and ordqz.

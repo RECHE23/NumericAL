@@ -703,6 +703,38 @@ std::tuple<any_tensor, any_tensor> tridiagonal_eigen(const any_tensor& d, const 
     return {any_tensor {real_tensor {values}}, any_tensor {real_tensor {std::move(basis)}}};
 }
 
+// tridiagonal_select(d, e, by_value, a, b) -> w: the eigenvalues of indices a … b, or in (a, b] where by_value, of
+// the real symmetric tridiagonal, ascending, as scipy.linalg.eigvalsh_tridiagonal with a selection: bisection on
+// Sturm's counts (dstebz) for up to n / tridiagonal_bisection_share of them, the QL iteration's whole spectrum past:
+// k bisections cost k n per step, the QL n² for all (arm64: the two even near k = n / 25 at orders 1000 to 16000).
+constexpr std::size_t tridiagonal_bisection_share {32};
+
+any_tensor tridiagonal_select(const any_tensor& d, const any_tensor& e, bool by_value, double a, double b)
+{
+    if (shape_of(d).size() != 1 || shape_of(e).size() != 1 || !std::holds_alternative<real_tensor>(d) || !std::holds_alternative<real_tensor>(e)) {
+        throw std::runtime_error("eigvalsh_tridiagonal: d and e are real vectors");
+    }
+    const numerical::vector<double> diagonal {std::get<real_tensor>(d).data()};
+    const numerical::vector<double> off {std::get<real_tensor>(e).data()};
+    const std::size_t               n {diagonal.size()};
+    const sb::scoped_gil_release    unlocked {releases_gil_cubic(n * n)};
+    std::ptrdiff_t                  first {static_cast<std::ptrdiff_t>(a)};
+    std::ptrdiff_t                  last {static_cast<std::ptrdiff_t>(b)};
+    if (by_value) {
+        std::tie(first, last) = numerical::tridiagonal_eigenvalue_range(diagonal, off, a, b);
+    }
+    if (last < first) {
+        return any_tensor {real_tensor {{0}, numerical::buffer<double> {}}};
+    }
+    const auto from {static_cast<std::size_t>(first)};
+    const auto to {static_cast<std::size_t>(last)};
+    if ((to - from + 1) * tridiagonal_bisection_share <= n) {
+        return any_tensor {real_tensor {numerical::tridiagonal_eigenvalues(diagonal, off, from, to)}};
+    }
+    const numerical::vector<double> all {numerical::tridiagonal_eigenvalues(diagonal, off)};
+    return any_tensor {real_tensor {numerical::vector<double> {numerical::buffer<double>(all.begin() + first, all.begin() + last + 1)}}};
+}
+
 // rsf2csf(T, Z) -> (T, Z), as scipy.linalg.rsf2csf: the real Schur form made complex, each 2 × 2 block triangularised
 // by a rotation (detail::complex_schur_form), a subdiagonal entry within eps of its neighbours' magnitudes set to 0
 // first, as SciPy's; real T and Z of one dtype (the caller promotes), single precision computed in double.

@@ -96,6 +96,14 @@ class Decompositions(unittest.TestCase):
                     self.assertTrue(_close(t @ np.asarray(v_sel), np.asarray(v_sel) * np.asarray(w_sel)))
         w32 = numerical.eigvalsh_tridiagonal(np.ones(3, np.float32), np.ones(2, np.float32))
         self.assertEqual(w32.dtype, "float32")
+        # a few of many by bisection (dstebz, as SciPy's driver there), indices and a range of values
+        d, e = self.rng.standard_normal(2000), self.rng.standard_normal(1999)
+        for select, select_range in (("i", (0, 9)), ("i", (1500, 1530)), ("v", (-0.05, 0.05))):
+            with self.subTest(select=select, select_range=select_range):
+                got = numerical.eigvalsh_tridiagonal(d, e, select=select, select_range=select_range)
+                self.assertTrue(_close(got, sl.eigvalsh_tridiagonal(d, e, select=select, select_range=select_range)))
+        got32 = numerical.eigvalsh_tridiagonal(d.astype(np.float32), e.astype(np.float32), select="i", select_range=(3, 5))
+        self.assertEqual(got32.dtype, "float32")
         for call, error in ((lambda: numerical.eigh_tridiagonal([1.0, 2.0], [1.0, 2.0]), ValueError),
                             (lambda: numerical.eigh_tridiagonal([1j, 2.0], [1.0]), TypeError),
                             (lambda: numerical.eigh_tridiagonal([1.0, 2.0], [1.0], select="x"), ValueError),
