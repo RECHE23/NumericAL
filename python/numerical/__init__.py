@@ -1543,13 +1543,12 @@ def lu(a, permute_l=False, overwrite_a=False, check_finite=True, p_indices=False
     for i, r in enumerate(rows):
         where[r] = i
     if permute_l:
-        return (stack([lower[i] for i in where]) if a.size else lower), upper
+        return (lower[where] if a.size else lower), upper
     if p_indices:
         return (where if a.size else []), lower, upper
     dtype = "float32" if a.dtype in _SINGLE else "float64"
     m = len(rows) if a.size else 0  # SciPy's P of an empty matrix is 0 × 0 whatever its rows
-    p = asarray([[1.0 if rows[j] == i else 0.0 for j in range(m)] for i in range(m)], dtype) if m else zeros((0, 0), dtype)
-    return p, lower, upper
+    return (eye(m, dtype=dtype)[:, rows] if m else zeros((0, 0), dtype)), lower, upper  # P[i, j] = 1 where rows[j] == i
 
 
 def lu_factor(a, overwrite_a=False, check_finite=True):
