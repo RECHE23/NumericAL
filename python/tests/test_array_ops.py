@@ -168,12 +168,6 @@ class PythonProtocol(unittest.TestCase):
             with self.subTest(convert=convert.__name__), self.assertRaisesRegex(TypeError, "rank-0"):
                 convert(numerical.ones(1))
 
-    def test_a_boolean_is_not_an_index(self):
-        t = numerical.asarray([[1.0, 2.0], [3.0, 4.0]])
-        for key in (True, False, np.True_, (0, True)):
-            with self.subTest(key=key), self.assertRaises((IndexError, TypeError)):
-                t[key]
-
     def test_a_tensor_is_unhashable(self):  # equality is element-wise, as a NumPy array's
         with self.assertRaises(TypeError):
             hash(numerical.ones(2))

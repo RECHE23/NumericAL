@@ -186,6 +186,205 @@ PyObject* module_take(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// A group of _gather's offsets: a bytes object's int64 values (this machine's byte order), read where they lie, or a
+// tuple (start, step, count)'s progression, held here.
+struct offset_group
+{
+    std::vector<std::int64_t> held;
+    const char*               bytes {nullptr};
+    std::size_t               count {0};
+
+    [[nodiscard]] std::int64_t operator[](std::size_t k) const
+    {
+        std::int64_t value {0};
+        std::memcpy(&value, bytes + (k * sizeof(std::int64_t)), sizeof(std::int64_t)); // bytes need not be aligned
+        return value;
+    }
+};
+
+// `group` read from `obj`, or false with an error set.
+bool read_offsets(PyObject* obj, offset_group& group)
+{
+    if (PyTuple_Check(obj) != 0) {
+        std::vector<Py_ssize_t> progression;
+        if (!read_integers(obj, progression)) {
+            return false;
+        }
+        if (progression.size() != 3 || progression[2] < 0) {
+            PyErr_SetString(sciforge_module_error(), "_gather: a progression is (start, step, count), count >= 0");
+            return false;
+        }
+        group.held.resize(static_cast<std::size_t>(progression[2]));
+        for (std::size_t k = 0; k < group.held.size(); ++k) {
+            group.held[k] = static_cast<std::int64_t>(progression[0]) + (static_cast<std::int64_t>(k) * static_cast<std::int64_t>(progression[1]));
+        }
+        group.bytes = reinterpret_cast<const char*>(group.held.data());
+        group.count = group.held.size();
+        return true;
+    }
+    char*      data {nullptr};
+    Py_ssize_t size {0};
+    if (PyBytes_AsStringAndSize(obj, &data, &size) < 0) {
+        return false;
+    }
+    if (size % static_cast<Py_ssize_t>(sizeof(std::int64_t)) != 0) {
+        PyErr_SetString(sciforge_module_error(), "_gather: a group's bytes are not whole int64 values");
+        return false;
+    }
+    group.bytes = data;
+    group.count = static_cast<std::size_t>(size) / sizeof(std::int64_t);
+    return true;
+}
+
+// _gather(t, groups, shape) -> Tensor.
+PyObject* module_gather(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* obj       = nullptr;
+    PyObject* groups    = nullptr;
+    PyObject* shape_obj = nullptr;
+    if (PyArg_ParseTuple(args, "OOO", &obj, &groups, &shape_obj) == 0) {
+        return nullptr;
+    }
+    const any_tensor*        h = as_tensor(obj);
+    std::vector<std::size_t> shape;
+    if (h == nullptr || !read_shape(shape_obj, shape)) {
+        return nullptr;
+    }
+    const Py_ssize_t group_count {PySequence_Size(groups)};
+    if (group_count < 1) {
+        if (group_count == 0) {
+            PyErr_SetString(sciforge_module_error(), "_gather: at least one group");
+        }
+        return nullptr;
+    }
+    // The bytes groups point into their objects, which the list holds through the call (a tuple's items, a list's
+    // until someone changes it: the Python side passes a list no one else sees).
+    std::vector<offset_group> offsets(static_cast<std::size_t>(group_count));
+    for (Py_ssize_t g = 0; g < group_count; ++g) {
+        PyObject* const item {PySequence_GetItem(groups, g)}; // new ref
+        if (item == nullptr) {
+            return nullptr;
+        }
+        const bool read {read_offsets(item, offsets[static_cast<std::size_t>(g)])};
+        Py_DECREF(item);
+        if (!read) {
+            return nullptr;
+        }
+    }
+    try {
+        std::size_t total {1};
+        for (const offset_group& group : offsets) {
+            total = numerical::detail::checked_mul(total, group.count);
+        }
+        if (total != numerical::detail::element_count(shape.begin(), shape.end())) {
+            PyErr_SetString(sciforge_module_error(), "_gather: the groups' sizes do not make the shape's elements");
+            return nullptr;
+        }
+        // Every element's offset is one value of each group summed, so the largest sum is the groups' largest values'.
+        if (total != 0) {
+            const auto   size {static_cast<std::int64_t>(count_of(*h))};
+            std::int64_t most {0};
+            for (const offset_group& group : offsets) {
+                std::int64_t low {group[0]};
+                std::int64_t high {low};
+                for (std::size_t k = 1; k < group.count; ++k) {
+                    low  = std::min(low, group[k]);
+                    high = std::max(high, group[k]);
+                }
+                if (low < 0 || high >= size - most) {
+                    PyErr_SetString(PyExc_IndexError, "_gather: an offset leaves the tensor");
+                    return nullptr;
+                }
+                most += high;
+            }
+        }
+        return std::visit([&](const auto& t) -> PyObject* {
+            using T = element_of_t<std::decay_t<decltype(t)>>;
+            numerical::buffer<T> out(total);
+            if (total != 0) {
+                // A row per value of every group but the last, its offset theirs summed, cut in pieces of the last
+                // group's values; the pieces on the threads.
+                const sb::scoped_gil_release unlocked {releases_gil(total)};
+                constexpr std::size_t        piece {4096};
+                const offset_group&          last   {offsets.back()};
+                const std::size_t            width  {last.count};
+                const std::size_t            pieces {(width + piece - 1) / piece};
+                const std::size_t            outer  {offsets.size() - 1};
+                numerical::detail::parallel_for(total / width * pieces, numerical::detail::memory_element_weight * std::min(width, piece), [&](std::size_t task) {
+                    const std::size_t row   {task / pieces};
+                    const std::size_t begin {(task % pieces) * piece};
+                    const std::size_t end   {std::min(width, begin + piece)};
+                    std::size_t       rest  {row};
+                    std::int64_t      base  {0};
+                    for (std::size_t g = outer; g-- > 0;) {
+                        base += offsets[g][rest % offsets[g].count];
+                        rest /= offsets[g].count;
+                    }
+                    const T* const from {t.data().data() + base};
+                    T* const       to   {out.data() + (row * width)};
+                    for (std::size_t j = begin; j < end; ++j) {
+                        to[j] = from[last[j]];
+                    }
+                });
+            }
+            return wrap(any_tensor {numerical::tensor<T> {std::move(shape), std::move(out)}});
+        }, *h);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _true_offsets(mask, strides) -> bytes.
+PyObject* module_true_offsets(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* obj     = nullptr;
+    PyObject* strides = nullptr;
+    if (PyArg_ParseTuple(args, "OO", &obj, &strides) == 0) {
+        return nullptr;
+    }
+    const any_tensor*       h = as_tensor(obj);
+    std::vector<Py_ssize_t> stride_raw;
+    if (h == nullptr || !read_integers(strides, stride_raw)) {
+        return nullptr;
+    }
+    if (!is_bool(*h)) {
+        PyErr_SetString(sciforge_module_error(), "_true_offsets: the mask is a bool tensor");
+        return nullptr;
+    }
+    const bool_tensor&              mask {std::get<bool_tensor>(*h)};
+    const std::vector<std::size_t>& shape {mask.shape()};
+    if (stride_raw.size() != shape.size()) {
+        PyErr_SetString(sciforge_module_error(), "_true_offsets: one stride per axis");
+        return nullptr;
+    }
+    try {
+        // The coordinates counted up in C order alongside the flat index, the offset kept as their strides' sum.
+        std::vector<std::int64_t> out;
+        out.reserve(static_cast<std::size_t>(std::count_if(mask.data().begin(), mask.data().end(), [](boolean b) { return b.value; })));
+        std::vector<std::size_t> at(shape.size(), 0);
+        std::int64_t              offset {0};
+        for (const boolean element : mask.data()) {
+            if (element.value) {
+                out.push_back(offset);
+            }
+            for (std::size_t a = shape.size(); a-- > 0;) {
+                offset += stride_raw[a];
+                if (++at[a] < shape[a]) {
+                    break;
+                }
+                offset -= static_cast<std::int64_t>(shape[a]) * stride_raw[a];
+                at[a] = 0;
+            }
+        }
+        return PyBytes_FromStringAndSize(reinterpret_cast<const char*>(out.data()),
+                                         static_cast<Py_ssize_t>(out.size() * sizeof(std::int64_t)));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _tobytes(t) -> bytes.
 PyObject* module_tobytes(PyObject* /*self*/, PyObject* obj)
 {

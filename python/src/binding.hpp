@@ -1273,6 +1273,16 @@ PyObject* take_from(const numerical::tensor<T>& t, const std::vector<std::size_t
 // Python side resolves every key to these per-axis ranges (the bounds are its job; the copy is this one's).
 PyObject* module_take(PyObject* /*self*/, PyObject* args); // in products.cpp
 
+// _gather(t, groups, shape) -> Tensor: the advanced indexing behind Tensor.__getitem__. Each group is a bytes object of
+// int64 element offsets into t (row-major), or a tuple (start, step, count) for start + k step, k < count; and the result, of `shape`, holds at [i0, i1, ...] the element at the sum of
+// group 0's i0-th offset, group 1's i1-th, ...: the Python side folds the key's every axis into these groups.
+PyObject* module_gather(PyObject* /*self*/, PyObject* args); // in products.cpp
+
+// _true_offsets(mask, strides) -> bytes: the int64 sum of coordinate times stride, axis by axis, of each true element of
+// the bool tensor `mask` in C order: its elements' offsets in a tensor of those strides, or (one stride 1, the others 0)
+// their coordinates along one axis.
+PyObject* module_true_offsets(PyObject* /*self*/, PyObject* args); // in products.cpp
+
 // _tobytes(t) -> bytes: the elements, row-major, in this machine's byte order (a bool one byte, 0 or 1).
 PyObject* module_tobytes(PyObject* /*self*/, PyObject* obj); // in products.cpp
 

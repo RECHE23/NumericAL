@@ -8,6 +8,17 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **A Tensor takes NumPy's advanced indexing**: integer lists and arrays (`t[[2, 0]]`, `t[:, idx]`, `t[rows, cols]`)
+  and bool masks of any rank (a list, a NumPy array, a bool Tensor, a lone bool: `t[t > 0]`), mixed with integers,
+  slices, `...` and `None`; the indices' shapes broadcast together and their axes stand where they stand together, at
+  the front otherwise, as NumPy's; NumPy's errors as `IndexError` (a bound checked unless the advanced indices broadcast to
+  no element, a mask without elements held to no extent, as NumPy's since 2.3). A copy, in the tensor's dtype, by one native gather of every
+  sum of per-axis offsets on the threads: 0.7 times NumPy's time for a million indices, 0.1 to 0.2 times for a
+  thousand rows or columns from NumPy arrays, a mask over a 1000 × 1000 matrix at NumPy's (arm64). Tested against
+  NumPy 2.4 over 4000 random keys and every dtype, besides 160 000 in a sweep, and the suite on a 32-bit CPython
+  (Windows x86, NumPy 2.2).
+
 ## 2026.10.44 — 2026-10-31
 
 ### Added

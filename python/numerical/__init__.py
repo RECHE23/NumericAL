@@ -287,10 +287,16 @@ def _getitem(self, key):
     """``t[i]``, ``t[i, j]``, ``t[1:5:2, ::-1]``: integers drop an axis, slices keep one, missing trailing
     indices take a whole axis, as NumPy's basic indexing; a negative index counts from the end. All integers
     give a number, anything else a Tensor (a copy: a Tensor is never written through, so it reads as NumPy's
-    view would)."""
+    view would). An integer or bool array in the key (a list, a NumPy array, a bool Tensor, a lone bool) makes it
+    NumPy's advanced indexing (:func:`_getitem_advanced`)."""
     if not isinstance(key, tuple):
         key = (key,)
     shape = self.shape
+    if not _builtins.all(type(k) is int or type(k) is slice for k in key):
+        arrays = [None if k is None or k is Ellipsis or type(k) is int or type(k) is slice else _index_array(k)
+                  for k in key]
+        if _builtins.any(array is not None for array in arrays):
+            return _getitem_advanced(self, key, arrays)
     if _builtins.any(k is Ellipsis for k in key) or _builtins.any(k is None for k in key):
         return _getitem_extended(self, key)
     if len(key) > len(shape):
@@ -305,10 +311,6 @@ def _getitem(self, key):
             counts.append(len(span))
             keep.append(1)
             continue
-        if isinstance(index, bool) or (type(index).__module__ == "numpy" and type(index).__name__ in ("bool", "bool_")):
-            # operator.index(True) is 1 (and numpy.True_ is 1 before NumPy 2.5), but NumPy reads a boolean as a
-            # mask, which a Tensor does not take.
-            raise IndexError("boolean indexing is not supported: index with integers or slices")
         position = _operator.index(index)
         if position < 0:
             position += extent
@@ -319,6 +321,200 @@ def _getitem(self, key):
         counts.append(1)
         keep.append(0)
     return _numerical._take(self, starts, steps, counts, keep)
+
+
+def _index_array(index):
+    """An index NumPy reads as an array: ``("mask", t)`` for a bool one (a bool Tensor, a NumPy bool array, a list of
+    bools, a lone bool, whose mask has rank 0), ``("ints", values, shape)`` for integers (a list or a NumPy integer array,
+    its values in C order); None for an integer, a slice, ``...`` or ``None``. Any other array raises IndexError, as
+    NumPy's (a float one included)."""
+    if isinstance(index, bool) or (type(index).__module__ == "numpy" and type(index).__name__ in ("bool", "bool_")):
+        return "mask", asarray(bool(index), "bool")  # before an integer: operator.index(True) is 1
+    if isinstance(index, Tensor):
+        if index.dtype != "bool":
+            raise IndexError(f"arrays used as indices must be of integer (or boolean) type, not {index.dtype}")
+        return "mask", index
+    if isinstance(index, (list, tuple)):
+        try:
+            values, shape = _nested(index)
+        except (TypeError, ValueError) as failure:
+            raise IndexError(f"an index list holds integers or bools, in a rectangular nesting: {failure}") from None
+        if values and _builtins.all(isinstance(v, bool) for v in values):
+            return "mask", asarray(index, "bool")
+        if not _builtins.all(isinstance(v, _numbers.Integral) for v in values):
+            raise IndexError("arrays used as indices must be of integer (or boolean) type")
+        return "ints", [int(v) for v in values], shape
+    if type(index).__name__ == "ndarray" and getattr(index, "ndim", 0) > 0:
+        kind = index.dtype.kind
+        if kind == "b":
+            return "mask", asarray(index, "bool")
+        if kind not in "iu":
+            raise IndexError(f"arrays used as indices must be of integer (or boolean) type, not {index.dtype}")
+        return "ints", index.ravel(), tuple(index.shape)
+    if type(index).__name__ == "ndarray" and index.dtype.kind == "b":  # a rank-0 bool array, as a lone bool
+        return "mask", asarray(bool(index), "bool")
+    return None
+
+
+def _broadcast_shape(shapes):
+    """The shape the advanced indices' `shapes` broadcast to, as NumPy's; IndexError where they do not."""
+    rank = _builtins.max(len(shape) for shape in shapes)
+    out = []
+    for extents in zip(*((1,) * (rank - len(shape)) + tuple(shape) for shape in shapes)):
+        wide = {extent for extent in extents if extent != 1}
+        if len(wide) > 1:
+            raise IndexError("shape mismatch: indexing arrays could not be broadcast together with shapes "
+                             + " ".join(str(tuple(shape)) for shape in shapes))
+        out.append(wide.pop() if wide else 1)
+    return tuple(out)
+
+
+def _broadcast_offsets(parts, out):
+    """The sum of the advanced indices' offsets ``(values, shape)``, each broadcast to the shape `out`."""
+    if _builtins.all(len(values) == len(parts[0][0]) for values, _ in parts) and len(parts[0][0]) == _math.prod(out):
+        return [_builtins.sum(column) for column in zip(*(values for values, _ in parts))]  # no axis broadcast
+    total = _math.prod(out)
+    summed = [0] * total
+    for values, shape in parts:
+        steps, step = [], 1  # each axis' step in this part's values, 0 where it is broadcast
+        for extent in reversed((1,) * (len(out) - len(shape)) + tuple(shape)):
+            steps.append(step if extent != 1 else 0)
+            step *= extent
+        steps.reverse()
+        for flat in range(total):
+            rest, at = flat, 0
+            for axis in range(len(out) - 1, -1, -1):
+                at += (rest % out[axis]) * steps[axis]
+                rest //= out[axis]
+            summed[flat] += values[at]
+    return summed
+
+
+_NATIVE_INT64 = ("<" if _sys.byteorder == "little" else ">") + "i8"  # NumPy's dtype.str of this machine's int64
+
+
+def _offsets_bytes(parts, extents):
+    """The advanced indices' offsets ``(values, shape)`` summed over their broadcast shape `extents`, as int64 bytes for
+    :func:`_numerical._gather`; the values bytes (a mask's), a NumPy array (an integer array's) or a list."""
+    if len(parts) == 1:
+        values = parts[0][0]
+        if isinstance(values, bytes):
+            return values
+        return _array.array("q", values).tobytes() if isinstance(values, list) else values.tobytes()
+    arrays = [values for values, _ in parts if type(values).__name__ == "ndarray"]
+    if arrays:  # NumPy's broadcasting, one of its arrays being an index
+        numpy = _sys.modules[type(arrays[0]).__module__.split(".")[0]]
+        summed = numpy.zeros(extents, _NATIVE_INT64)
+        for values, shape in parts:
+            summed += numpy.frombuffer(values, _NATIVE_INT64).reshape(shape) if isinstance(values, bytes) \
+                else numpy.asarray(values, _NATIVE_INT64).reshape(shape)
+        return summed.tobytes()
+    lists = [(_array.array("q", values) if isinstance(values, bytes) else values, shape) for values, shape in parts]
+    return _array.array("q", _broadcast_offsets(lists, extents)).tobytes()
+
+
+def _bounded_offsets(values, extent, axis, stride):
+    """The offsets of the integers `values` along an axis of `extent` and `stride`, a negative one counted from the end;
+    IndexError for one outside the axis, in NumPy's words."""
+    if type(values).__name__ == "ndarray":  # NumPy's own arithmetic, at its speed
+        if values.size and (values.max() >= extent or values.min() < -extent):
+            value = values[(values >= extent) | (values < -extent)][0]
+            raise IndexError(f"index {value} is out of bounds for axis {axis} with size {extent}")
+        if values.dtype.str == _NATIVE_INT64 and stride == 1 and (not values.size or values.min() >= 0):
+            return values  # the offsets themselves
+        at = values.astype(_NATIVE_INT64)
+        at[at < 0] += extent
+        return at * stride
+    offsets = []
+    for value in values:
+        at = value + extent if value < 0 else value
+        if not 0 <= at < extent:
+            raise IndexError(f"index {value} is out of bounds for axis {axis} with size {extent}")
+        offsets.append(at * stride)
+    return offsets
+
+
+def _axes_taken(entry):
+    """How many of the tensor's axes an index entry of :func:`_getitem_advanced` takes: a mask its rank, ``None`` and
+    ``...`` none (``...`` stands for the rest), any other one."""
+    if entry[0] == "mask":
+        return len(entry[1].shape)
+    if entry[1] is None or entry[1] is Ellipsis:
+        return 0
+    return 1
+
+
+def _getitem_advanced(self, key, arrays):
+    """``t[[0, 2]]``, ``t[mask]``, ``t[:, [1, 0], 2]``: NumPy's advanced indexing. Every integer or bool array, and
+    every integer beside one, is an advanced index: their shapes broadcast together (a bool mask counts as the
+    coordinates of its true elements, a lone bool as a mask of rank 0 over a new axis), and the result has that shape
+    where the advanced indices stand when they stand together, at the front otherwise, the other indices' axes as basic
+    indexing gives them. A copy, as NumPy's."""
+    shape = self.shape
+    entries = []
+    for index, array in zip(key, arrays):
+        if array is not None:
+            entries.append(array)
+        elif index is None or index is Ellipsis or isinstance(index, slice):
+            entries.append(("basic", index))
+        else:
+            entries.append(("int", _operator.index(index)))
+    if _builtins.sum(1 for kind, index, *_ in entries if index is Ellipsis) > 1:
+        raise IndexError("an index can only have a single ellipsis ('...')")
+    used = _builtins.sum(_axes_taken(entry) for entry in entries)
+    if used > len(shape):
+        raise IndexError(f"too many indices for a tensor of rank {len(shape)}: {used} were given")
+    expanded = []
+    for entry in entries:
+        expanded += [("basic", slice(None))] * (len(shape) - used) if entry[1] is Ellipsis else [entry]
+    if not _builtins.any(entry[1] is Ellipsis for entry in entries):
+        expanded += [("basic", slice(None))] * (len(shape) - used)
+    strides = [_math.prod(shape[axis + 1:]) for axis in range(len(shape))]
+    slots, parts, positions, axis = [], [], [], 0
+    for position, entry in enumerate(expanded):
+        kind, index = entry[0], entry[1]
+        if kind == "basic" and index is None:
+            slots.append(((0, 0, 1), 1))
+        elif kind == "basic":
+            span = range(*index.indices(shape[axis]))
+            slots.append(((span.start * strides[axis], span.step * strides[axis], len(span)), len(span)))
+            axis += 1
+        elif kind == "mask":
+            rank = len(index.shape)
+            for along, (extent, size) in enumerate(zip(shape[axis:axis + rank], index.shape), axis):
+                if extent != size and index.size != 0:  # NumPy holds a mask without elements to no extent
+                    raise IndexError(f"boolean index did not match indexed tensor along axis {along}; size of axis is "
+                                     f"{extent} but size of corresponding boolean axis is {size}")
+            offsets = _numerical._true_offsets(index, strides[axis:axis + rank])
+            parts.append((offsets, (len(offsets) // 8,)))
+            positions.append(position)
+            axis += rank
+        else:
+            if kind == "int":  # NumPy checks an integer's bound at once, an array's only for a result with elements
+                parts.append((_bounded_offsets([index], shape[axis], axis, strides[axis]), ()))
+            else:
+                parts.append((index, entry[2], axis))
+            positions.append(position)
+            axis += 1
+    extents = _broadcast_shape([part[1] for part in parts])
+    if _math.prod(extents) == 0:  # NumPy checks no bound then
+        block = (b"", extents)
+    else:
+        parts = [part if len(part) == 2 else (_bounded_offsets(part[0], shape[part[2]], part[2], strides[part[2]]),
+                                              part[1]) for part in parts]
+        block = (_offsets_bytes(parts, extents), extents)
+    together = positions == list(range(positions[0], positions[0] + len(positions)))
+    first = positions[0] if together else 0
+    groups, out_shape, slot = [], [], iter(slots)
+    for position in range(len(expanded)):
+        if position == first:
+            groups.append(block[0])
+            out_shape += block[1]
+        if position not in positions:
+            offsets, extent = next(slot)
+            groups.append(offsets)
+            out_shape.append(extent)
+    return _numerical._gather(self, groups, out_shape)
 
 
 def _getitem_extended(self, key):

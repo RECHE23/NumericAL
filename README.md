@@ -250,7 +250,8 @@ numerical.fft.dct([1.0, 2.0, 3.0, 4.0], norm="ortho")  # and scipy.fft's dct, id
 ```
 
 A failure is a `numerical.LinAlgError`: a `ValueError`, as `numpy.linalg.LinAlgError` is,
-and a `numerical.error`. A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`, `t[..., 0]`, `t[None, i]`), iterates, transposes
+and a `numerical.error`. A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`, `t[..., 0]`, `t[None, i]`, `t[[2, 0]]`, `t[:, [1, 0], 2]`,
+`t[t > 0]`), iterates, transposes
 (`t.T`) and multiplies (`a @ b`, `numerical.matmul`) as a NumPy array does, stacks of matrices along leading axes
 broadcast against each other, and computes as one:
 
