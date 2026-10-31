@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **`eig` and `eigvals` take `scipy.linalg`'s arguments**: `left` (the left eigenvectors from the same Schur form, as
+  `geev`'s), `right`, `b` (the generalized problem `a v = w b v` by the complex QZ, `w = α / β` with ∞ and NaN where
+  SciPy puts them, each vector of unit 2-norm as SciPy normalises `ggev`'s), `homogeneous_eigvals`, and the
+  `overwrite_*` and `check_finite` flags; NumPy's `eig(a)` unchanged. The vectors are complex always (SciPy's are real
+  for a real matrix with real eigenvalues). C++: `numerical::generalized_eigenvectors(d, left)` (`ztgevc`'s back
+  substitution). Tested against SciPy 1.17 at orders 1 to 30, real and complex, a singular B (∞) and a singular
+  pencil (NaN).
 - **Python: NumPy's `concatenate` (and the Array API's `concat`), `stack`, `vstack`, `hstack`, `tril`, `triu`, `diag`
   and `kron`**: the arrays in the dtype they all fit (NumPy's promotion), a bool tensor kept bool; `concatenate` native,
   one copy of each part. Tested against NumPy 2.5 over shapes, axes, offsets and every pair of dtypes (370 cases),

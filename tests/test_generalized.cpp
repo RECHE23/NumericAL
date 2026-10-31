@@ -341,6 +341,62 @@ TEST(generalized_schur_exchange_refused_by_the_strong_test)
   }
 }
 
+// The pencil's eigenvectors (ztgevc's, unit 2-norm): (β A − α B) v = 0 and uᴴ (β A − α B) = 0 within rounding for
+// pencils of orders 1 to 30, a singular B among them (an infinite eigenvalue); a repeated eigenvalue (its pivots below
+// the floor, taken as it); a singular pencil (A and B sharing a null vector: α = β = 0), its vector its place's.
+TEST(generalized_eigenvectors_solve_the_pencil)
+{
+  for (const std::size_t n : {std::size_t {1}, std::size_t {5}, std::size_t {30}}) {
+    for (const bool singular : {false, true}) {
+      const matrix<C> a {trigonometric(n, n, 1.0, true)};
+      matrix<C>       b {trigonometric(n, n, 2.0, true) + (C {3.0} *identity<C>(n))};
+      if (singular && n > 1) {
+        std::vector<C> entries(b.begin(), b.end());
+        for (std::size_t i {0}; i < n; ++i) {
+          entries[(i * n) + 1] = C {};
+        }
+        b = matrix<C> {n, n, entries};
+      }
+      const numerical::generalized_schur d     {a, b};
+      const matrix<C>                    right {numerical::generalized_eigenvectors(d, false)};
+      const matrix<C>                    left  {numerical::generalized_eigenvectors(d, true)};
+      for (std::size_t k {0}; k < n; ++k) {
+        const auto [alpha, beta] {d.values()[k]};
+        const double scale  {std::abs(alpha) + std::abs(beta)};
+        double       norm_r {0.0};
+        double       norm_l {0.0};
+        for (std::size_t i {0}; i < n; ++i) {
+          C r {};
+          C l {};
+          for (std::size_t j {0}; j < n; ++j) {
+            r += ((beta * a(i, j)) - (alpha * b(i, j))) * right(j, k);
+            l += std::conj(left(j, k)) * ((beta * a(j, i)) - (alpha * b(j, i)));
+          }
+          EXPECT(std::abs(r) <= 1e-13 * scale && std::abs(l) <= 1e-13 * scale);
+          norm_r = std::hypot(norm_r, std::abs(right(i, k)));
+          norm_l = std::hypot(norm_l, std::abs(left(i, k)));
+        }
+        EXPECT(std::abs(norm_r - 1.0) <= 1e-14 && std::abs(norm_l - 1.0) <= 1e-14);
+      }
+    }
+  }
+  const matrix<C>                    twice    {{C {2.0}, C {1.0}}, {C {}, C {2.0}}}; // 2 twice: its pivot 0, the floor taken
+  const numerical::generalized_schur repeated {twice, identity<C>(2)};
+  for (const bool side : {false, true}) {
+    const matrix<C> v {numerical::generalized_eigenvectors(repeated, side)};
+    EXPECT(std::isfinite(std::abs(v(0, 1))) && std::isfinite(std::abs(v(1, 1))));
+  }
+  const matrix<C>                    zero_value  {{C {0.0}, C {1.0}}, {C {}, C {1.0}}}; // α = 0, β = 1: the eigenvalue 0
+  const matrix<C>                    null_vector {numerical::generalized_eigenvectors(numerical::generalized_schur {zero_value, identity<C>(2)}, false)};
+  EXPECT(std::abs(std::hypot(std::abs(null_vector(0, 0)), std::abs(null_vector(1, 0))) - 1.0) <= 1e-15);
+  const matrix<C>                    a0          {{C {1.0}, C {}}, {C {}, C {}}};       // e₂ in both null spaces: α = β = 0 there
+  const numerical::generalized_schur pencil      {a0, a0};
+  const matrix<C>                    v           {numerical::generalized_eigenvectors(pencil, false)};
+  for (std::size_t k {0}; k < 2; ++k) {
+    EXPECT(std::abs(std::hypot(std::abs(v(0, k)), std::abs(v(1, k))) - 1.0) <= 1e-15);
+  }
+}
+
 // The refusals of the decomposition.
 TEST(generalized_schur_refuses_what_it_cannot_take)
 {

@@ -954,6 +954,20 @@ _eig = _linalg(_numerical._eig)
 _schur = _linalg(_numerical.schur, arrays=1)
 _schur_sorted = _linalg(_numerical.schur_sorted, arrays=1)
 _eigvals = _linalg(_numerical._eigvals)
+_eig_left = _linalg(_numerical._eig_left, arrays=1)
+_geneig = _linalg(_numerical._geneig, arrays=2)
+
+
+def _eigenvalues_of(alpha, beta, homogeneous):
+    """``alpha / beta`` as ``scipy.linalg``'s ``_make_eigvals`` gives them: ∞ where only β is 0, NaN where both are
+    (complex NaN where an α is not real); the pair ``(alpha, beta)`` stacked where `homogeneous`."""
+    if homogeneous:
+        return stack([alpha, beta])
+    alphas, betas = alpha.tolist(), beta.tolist()
+    real = _builtins.all(complex(x).imag == 0 for x in alphas)
+    values = [complex(x) / complex(y) if y != 0 else complex(_math.inf, 0) if x != 0
+              else complex(_math.nan, 0 if real else _math.nan) for x, y in zip(alphas, betas)]
+    return asarray(values, alpha.dtype)
 _QR_MODES = ("reduced", "complete", "r")
 _EIGH_METHODS = ("divide_and_conquer", "tridiagonal_ql", "jacobi")
 _SVD_METHODS = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
@@ -1159,19 +1173,58 @@ def eigvalsh(a, UPLO="L", *, b=None):
     return _eigvalsh(a, upper)
 
 
-def eig(a):
+def eig(a, b=None, left=False, right=True, overwrite_a=False, overwrite_b=False, check_finite=True,
+        homogeneous_eigvals=False):
     """The eigenvalues and right eigenvectors (columns) of a general square matrix, or of each of a stack, as
     ``numpy.linalg.eig``: ``a @ v[:, j] == w[j] * v[:, j]``, each vector of unit norm with its component of largest
     modulus real. Complex whatever the eigenvalues, as NumPy 2.5's (complex64 for a single-precision matrix); in the
     order LAPACK's ``dgeev`` and ``zgeev`` give them (balancing, Hessenberg reduction, shifted QR), a real matrix's
-    conjugate pairs together, the positive imaginary part first."""
-    return _eig(a)
+    conjugate pairs together, the positive imaginary part first.
+
+    With ``scipy.linalg.eig``'s arguments (a matrix): `left` the left eigenvectors too (``vl[:, j].conj() @ a ==
+    w[j] * vl[:, j].conj()``, as ``geev``'s), `right` False for none of the right ones, `b` the generalized problem
+    ``a @ v = w * b @ v`` by the complex QZ (``w = alpha / beta``, ∞ where only β is 0, NaN where both are; each vector
+    of unit 2-norm, as SciPy normalises ``ggev``'s), `homogeneous_eigvals` the pairs ``(alpha, beta)`` stacked; the
+    answer ``w``, ``(w, vl)``, ``(w, vr)`` or ``(w, vl, vr)`` as SciPy's. The vectors are complex always, where SciPy's
+    are real for a real matrix with real eigenvalues. `overwrite_a`, `overwrite_b` and `check_finite` are accepted (an
+    infinite or NaN entry raises always).
+    """
+    del overwrite_a, overwrite_b, check_finite
+    if b is None and not left and right and not homogeneous_eigvals:
+        return _eig(a)
+    a = _tensor(a)
+    if b is None:
+        if left:
+            w, vl, vr = _eig_left(a)
+        elif right:
+            (w, vr), vl = _eig(a), None
+        else:
+            w, vl, vr = _eigvals(a), None, None
+        if homogeneous_eigvals:
+            w = stack([w, ones(w.shape, w.dtype)])
+    else:
+        b = _tensor(b)
+        if len(a.shape) != 2 or len(b.shape) != 2 or a.shape[0] != a.shape[1]:
+            raise ValueError("expected square matrix")
+        if a.shape != b.shape:
+            raise ValueError("a and b must have the same shape")
+        alpha, beta, vl, vr = _geneig(a, b, left, right)
+        w = _eigenvalues_of(alpha, beta, homogeneous_eigvals)
+    if not (left or right):
+        return w
+    if left:
+        return (w, vl, vr) if right else (w, vl)
+    return w, vr
 
 
-def eigvals(a):
+def eigvals(a, b=None, overwrite_a=False, check_finite=True, homogeneous_eigvals=False):
     """The eigenvalues alone of a general square matrix, or of each of a stack, as ``numpy.linalg.eigvals``: complex
-    whatever they are, as NumPy 2.5's; the same values as ``eig``'s, to the bit."""
-    return _eigvals(a)
+    whatever they are, as NumPy 2.5's; the same values as ``eig``'s, to the bit. With ``scipy.linalg.eigvals``'s
+    arguments: `b` the generalized problem's (:func:`eig`'s), `homogeneous_eigvals` the pairs ``(alpha, beta)``."""
+    del overwrite_a, check_finite
+    if b is None and not homogeneous_eigvals:
+        return _eigvals(a)
+    return eig(a, b, left=False, right=False, homogeneous_eigvals=homogeneous_eigvals)
 
 
 _SCHUR_SORTS = {"lhp": 0, "rhp": 1, "iuc": 2, "ouc": 3}

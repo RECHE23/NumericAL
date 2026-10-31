@@ -123,6 +123,8 @@ Small and complete, grown measured, honest about what is not yet here:
   `B = Q T Zᵀ` with `S` quasi-triangular (2 × 2 blocks for conjugate pairs) and `T` triangular, as
   `scipy.linalg.qz(a, b)` (LAPACK's `dgges`: the operands scaled into range, `dhgeqz`'s double shifts), reordered as
   `ordqz` (`dtgsen`'s exchanges of 1 × 1 and 2 × 2 blocks, refused as LAPACK refuses them).
+- `numerical::generalized_eigenvectors(d, left)` — the right (or left) eigenvectors of a complex pencil from its
+  generalized Schur form, as LAPACK's `ztgevc` and `scipy.linalg.eig(a, b)` (unit 2-norm).
 - `numerical::solve_continuous_are(a, b, q, r, e, s)` and `solve_discrete_are` — the stabilising solutions of the
   algebraic Riccati equations, as `scipy.linalg`'s (the extended pencil, balanced, its stable deflating subspace from
   the sorted generalized Schur form, real for real operands; with `e`, the balancing scales it as it scales the pencil, where SciPy 1.18 does

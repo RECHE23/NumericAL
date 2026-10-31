@@ -86,6 +86,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&matmul_nd>("_matmul_nd", "_matmul_nd(a, b) -> Tensor\nThe matrix product of two stacks of one dtype, their leading axes broadcast, as numpy.matmul.");
     m.def<&eig>("_eig", "_eig(a) -> (w, v)\nThe eigenvalues and right eigenvectors of a general square matrix (or stack), as numpy.linalg.eig: complex, as NumPy 2.5's.");
     m.def<&eigvals>("_eigvals", "_eigvals(a) -> w\nThe eigenvalues alone of a general square matrix (or stack), as numpy.linalg.eigvals: complex.");
+    m.def<&eig_left>("_eig_left", "_eig_left(a) -> (w, vl, vr)\nThe eigenvalues and the left and right eigenvectors of a square matrix, as scipy.linalg.eig(a, left=True): complex.");
+    m.def<&geneig>("_geneig", "_geneig(a, b, left, right) -> (alpha, beta, vl, vr)\nThe generalized eigenvalues (alpha, beta) of a pencil by the complex QZ and its left and right eigenvectors as asked (unit 2-norm; 0 x 0 otherwise), as scipy.linalg.eig(a, b).");
     m.def<&fft_axis>("_fft", "_fft(a, n, axis, norm, inverse) -> Tensor\nnumpy.fft.fft (or ifft) of n points along axis (from 0), norm 0 backward, 1 ortho, 2 forward (see numerical.fft).");
     m.raw("_fftshift", module_fftshift, METH_VARARGS,
           "_fftshift(a, axes, inverse) -> Tensor\nnumpy.fft.fftshift (or ifftshift) along each of axes (from 0), in one copy (see numerical.fft).");

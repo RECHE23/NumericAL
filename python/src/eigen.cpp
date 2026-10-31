@@ -379,4 +379,59 @@ any_tensor eigvals(const any_tensor& v)
     return std::get<0>(eig_of(v, false));
 }
 
+// _eig_left(a) -> (w, vl, vr): the eigenvalues with the left and right eigenvectors of a square matrix, as
+// scipy.linalg.eig(a, left=True): complex, in the input's precision.
+std::tuple<any_tensor, any_tensor, any_tensor> eig_left(const any_tensor& v)
+{
+    if (shape_of(v).size() != 2 || shape_of(v)[0] != shape_of(v)[1]) {
+        throw std::runtime_error("eig expects a square matrix");
+    }
+    if (is_single(v)) {
+        auto [w, vl, vr] {eig_left(widened(v))};
+        return {narrowed(std::move(w)), narrowed(std::move(vl)), narrowed(std::move(vr))};
+    }
+    const auto decomposed = [](const auto& a) -> std::tuple<any_tensor, any_tensor, any_tensor> {
+        using T = element_of_t<std::decay_t<decltype(a)>>;
+        const sb::scoped_gil_release      unlocked {releases_gil_cubic(a.data().size())};
+        numerical::eigen_decomposition<T> d {matrix_from(a), true, true};
+        return {any_tensor {cplx_tensor {d.values()}}, any_tensor {cplx_tensor {d.left_vectors()}}, any_tensor {cplx_tensor {d.vectors()}}};
+    };
+    return is_complex(v) ? decomposed(std::get<cplx_tensor>(v)) : decomposed(std::get<real_tensor>(v));
+}
+
+// _geneig(a, b, left, right) -> (alpha, beta, vl, vr): the generalized eigenvalues (α, β) of the pencil of two square
+// matrices of one order by the complex QZ (numerical::generalized_schur) and, as asked, its left and right
+// eigenvectors (numerical::generalized_eigenvectors, unit 2-norm), as scipy.linalg.eig(a, b): complex, in the input's
+// precision; a vector not asked for 0 × 0.
+std::tuple<any_tensor, any_tensor, any_tensor, any_tensor> geneig(const any_tensor& a, const any_tensor& b, bool left, bool right)
+{
+    if (shape_of(a).size() != 2 || shape_of(a)[0] != shape_of(a)[1] || shape_of(b) != shape_of(a)) {
+        throw std::runtime_error("eig: a and b must be square matrices of one order");
+    }
+    if (is_single(a) && is_single(b)) {
+        auto [alpha, beta, vl, vr] {geneig(widened(a), widened(b), left, right)};
+        return {narrowed(std::move(alpha)), narrowed(std::move(beta)), narrowed(std::move(vl)), narrowed(std::move(vr))};
+    }
+    using C = std::complex<double>;
+    const auto as_complex = [](const any_tensor& x) {
+        return is_complex(x) ? matrix_from(std::get<cplx_tensor>(is_single(x) ? widened(x) : x))
+                             : numerical::detail::as_complex(matrix_from(std::get<real_tensor>(is_single(x) ? widened(x) : x)));
+    };
+    const numerical::matrix<C>        ca {as_complex(a)};
+    const numerical::matrix<C>        cb {as_complex(b)};
+    const sb::scoped_gil_release      unlocked {releases_gil_cubic(ca.rows() * ca.rows())};
+    const numerical::generalized_schur d {ca, cb};
+    const std::size_t                 n {ca.rows()};
+    numerical::buffer<C>              alpha(n);
+    numerical::buffer<C>              beta(n);
+    for (std::size_t k {0}; k < n; ++k) {
+        alpha[k] = d.values()[k].first;
+        beta[k]  = d.values()[k].second;
+    }
+    const auto vectors = [&](bool wanted, bool of_left) {
+        return wanted ? any_tensor {cplx_tensor {numerical::generalized_eigenvectors(d, of_left)}} : any_tensor {cplx_tensor {{0, 0}, numerical::buffer<C> {}}};
+    };
+    return {any_tensor {cplx_tensor {{n}, std::move(alpha)}}, any_tensor {cplx_tensor {{n}, std::move(beta)}}, vectors(left, true), vectors(right, false)};
+}
+
 } // namespace numerical_binding

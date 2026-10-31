@@ -2359,6 +2359,10 @@ std::tuple<any_tensor, any_tensor> eig(const any_tensor& v); // in eigen.cpp
 // _eigvals(a) -> w, as numpy.linalg.eigvals.
 any_tensor eigvals(const any_tensor& v); // in eigen.cpp
 
+// _eig_left(a) -> (w, vl, vr) and _geneig(a, b, left, right) -> (alpha, beta, vl, vr), as scipy.linalg.eig's.
+std::tuple<any_tensor, any_tensor, any_tensor>             eig_left(const any_tensor& v);                                            // in eigen.cpp
+std::tuple<any_tensor, any_tensor, any_tensor, any_tensor> geneig(const any_tensor& a, const any_tensor& b, bool left, bool right); // in eigen.cpp
+
 // asarray(obj, dtype=None): an existing Tensor (returned as-is when its dtype already matches, else converted), or a
 // copy built from obj's elements (__array_struct__ or __array_interface__, any strides). The dtype is the requested
 // one, else the source's own for float32, complex64 and complex128, else float64: a real source becomes complex with a

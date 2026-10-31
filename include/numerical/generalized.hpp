@@ -2308,6 +2308,78 @@ namespace numerical {
   };
 
   /*!
+   * \brief The right (or, where \p left, the left) eigenvectors of the pencil \p d decomposes, as LAPACK's `ztgevc` and
+   *        `scipy.linalg.eig(a, b)`: for each eigenvalue `(α, β)` in the diagonals' order, `x` with `(β S − α T) x = 0`
+   *        and `x_k = 1` by back substitution (`yᴴ (β S − α T) = 0` forward for a left one), then `Z x` (`Q y`) made of
+   *        unit 2-norm, as SciPy normalises `ggev`'s; a diagonal entry of `β S − α T` below `ε (|β| ‖S‖ + |α| ‖T‖)` taken
+   *        as that bound (`ztgevc`'s `SMIN`), and an eigenvalue with `α` and `β` both zero (a singular pencil) given the
+   *        unit vector of its place, as `ztgevc` gives it.
+   * \return The vectors as columns.
+   */
+  [[nodiscard]] inline matrix<std::complex<double>> generalized_eigenvectors(const generalized_schur& d,
+                                                                             bool                     left)
+  {
+    using C = std::complex<double>;
+    const matrix<C>   s      {d.s()};
+    const matrix<C>   t      {d.t()};
+    const matrix<C>   basis  {left ? d.q() : d.z()};
+    const std::size_t n      {s.rows()};
+    double            s_norm {0.0};
+    double            t_norm {0.0};
+    for (const C& x : s) {
+      s_norm = std::max(s_norm, std::abs(x));
+    }
+    for (const C& x : t) {
+      t_norm = std::max(t_norm, std::abs(x));
+    }
+    buffer<C> out(n * n, C {});
+    for (std::size_t k {0}; k < n; ++k) {
+      const C        alpha  {d.values()[k].first};
+      const C        beta   {d.values()[k].second};
+      std::vector<C> x(n, C {});
+      x[k] = C {1.0};
+      if (std::abs(alpha) > std::numeric_limits<double>::min() || std::abs(beta) > std::numeric_limits<double>::min()) {
+        const double smallest {std::numeric_limits<double>::epsilon() * ((std::abs(beta) * s_norm) + (std::abs(alpha) * t_norm))};
+        const auto   entry = [&](std::size_t i, std::size_t j) { return (beta * s(i, j)) - (alpha * t(i, j)); }; // β S − α T
+        const auto   pivot = [&](std::size_t i) {
+                               const C m {entry(i, i)};
+                               return std::abs(m) < smallest ? C {smallest} : m;
+                             };
+        if (!left) { // rows k − 1 … 0 of the upper triangular system
+          for (std::size_t i {k}; i-- > 0;) {
+            C sum {};
+            for (std::size_t j {i + 1}; j <= k; ++j) {
+              sum += entry(i, j) * x[j];
+            }
+            x[i] = -sum / pivot(i);
+          }
+        }
+        else { // yᴴ M = 0: (Mᴴ y)_i = 0 for i > k, Mᴴ lower triangular
+          for (std::size_t i {k + 1}; i < n; ++i) {
+            C sum {};
+            for (std::size_t j {k}; j < i; ++j) {
+              sum += std::conj(entry(j, i)) * x[j];
+            }
+            x[i] = -sum / std::conj(pivot(i));
+          }
+        }
+      }
+      double         norm   {0.0};
+      std::vector<C> v(n, C {});
+      for (std::size_t r {0}; r < n; ++r) {
+        for (std::size_t j {0}; j < n; ++j) {
+          v[r] += basis(r, j) * x[j];
+        }
+        norm = std::hypot(norm, std::abs(v[r]));
+      }
+      for (std::size_t r {0}; r < n; ++r) {
+        out[(r * n) + k] = v[r] / norm;
+      }
+    }
+    return matrix<C> {n, n, std::move(out)};
+  }
+
+  /*!
    * \brief The generalized real Schur decomposition of a real pencil `A − λ B`, `A = Q S Zᵀ` and `B = Q T Zᵀ`, as
    *        `scipy.linalg.qz(a, b)` (LAPACK's `dgges`): `Q` and `Z` orthogonal, `T` upper triangular with a non-negative
    *        diagonal, `S` quasi-triangular, a 2 × 2 diagonal block for each conjugate pair of eigenvalues, `T` diagonal
