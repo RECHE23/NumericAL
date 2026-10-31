@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.10.44 — 2026-10-31
+
 ### Added
 - **`lu`, as `scipy.linalg.lu`**: `a = P @ L @ U` of an m × n matrix, `L` m × k unit lower trapezoidal and `U` k × n
   (`k = min(m, n)`), with `permute_l` and `p_indices`; P, L and U SciPy's for a real matrix (a complex one pivots by
