@@ -344,7 +344,8 @@ class KeptOutOfTheArithmetic(unittest.TestCase):
                 expected = op(x, other)
                 with self.subTest(other=other, op=op.__name__):
                     got = op(mask, other)
-                    self.assertEqual(got.dtype, str(expected.dtype) if expected.dtype != np.int64 else "float64")
+                    # NumPy's integer (int64, or int32 under a 32-bit CPython or NumPy 1 on Windows) is float64 here
+                    self.assertEqual(got.dtype, str(expected.dtype) if expected.dtype.kind not in "iu" else "float64")
                     self.assertTrue(np.array_equal(np.asarray(got), expected, equal_nan=True))
 
     def test_two_masks_and_the_functions_refuse(self):
