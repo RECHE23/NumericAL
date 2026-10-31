@@ -2,9 +2,11 @@
 // statements, over native vectors or not; the dot product sums every term; recorded row operations applied by
 // runs equal them applied one by one.
 #include <array>
+#include <bit>
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <utility>
 #include <random>
@@ -619,4 +621,111 @@ TEST(complex_add_product_gives_each_element_the_same_arithmetic)
                      };
   EXPECT(holds(std::complex<double> {}));
   EXPECT(holds(std::complex<float> {}));
+}
+
+#ifdef NUMERICAL_X86_COMPILED
+namespace {
+
+  // Entries that round in every sum (not small integers): two kernels agree to the bit only if they sum in one order.
+  template <typename T>
+  std::vector<T> rounding(std::size_t count,
+                          double      seed)
+  {
+    std::vector<T> x(count);
+    for (std::size_t i {0}; i < count; ++i) {
+      const double k {static_cast<double>(i)};
+      x[i] = static_cast<T>(std::sin(seed + (0.37 * k) + (0.011 * k * k)) * std::exp(std::cos(1.3 * k)));
+    }
+    return x;
+  }
+
+  bool same_bits(double a,
+                 double b)
+  {
+    return std::bit_cast<std::uint64_t>(a) == std::bit_cast<std::uint64_t>(b);
+  }
+
+  bool same_bits(float a,
+                 float b)
+  {
+    return std::bit_cast<std::uint32_t>(a) == std::bit_cast<std::uint32_t>(b);
+  }
+
+  bool same_bits(std::complex<double> a,
+                 std::complex<double> b)
+  {
+    return same_bits(a.real(), b.real()) && same_bits(a.imag(), b.imag());
+  }
+
+  bool same_bits(const std::vector<double>& a,
+                 const std::vector<double>& b)
+  {
+    bool same {a.size() == b.size()};
+    for (std::size_t i {0}; same && i < a.size(); ++i) {
+      same = same_bits(a[i], b[i]);
+    }
+    return same;
+  }
+} // namespace
+#endif
+
+// The AVX2 kernels sum in AVX-512's order (lanes_sum's tree, the same blocks): the same bits from either unit, so
+// from any x86-64 processor with AVX2. Lengths about the blocks' edges, entries that round.
+TEST(the_avx2_and_avx512_kernels_give_the_same_bits)
+{
+#ifdef NUMERICAL_X86_COMPILED
+  if (!numerical::detail::cpu_features().avx512f || !numerical::detail::cpu_features().avx2_fma) {
+    return;
+  }
+  using numerical::detail::avx2_dot;
+  using numerical::detail::avx512_dot;
+  for (const std::size_t n : {std::size_t {0}, std::size_t {1}, std::size_t {31}, std::size_t {32}, std::size_t {33},
+                              std::size_t {63}, std::size_t {64}, std::size_t {65}, std::size_t {200}, std::size_t {1037}}) {
+    const std::vector<double> x {rounding<double>(n, 0.1)};
+    const std::vector<double> y {rounding<double>(n, 0.7)};
+    EXPECT(same_bits(avx2_dot(x.data(), y.data(), n), avx512_dot(x.data(), y.data(), n)));
+    const std::vector<float> xf {rounding<float>(n, 0.2)};
+    const std::vector<float> yf {rounding<float>(n, 0.9)};
+    EXPECT(same_bits(avx2_dot(xf.data(), yf.data(), n), avx512_dot(xf.data(), yf.data(), n)));
+    std::vector<double> out2    {rounding<double>(n, 1.5)};
+    std::vector<double> out5    {out2};
+    EXPECT(same_bits(numerical::detail::avx2_symmetric_row(x.data(), y.data(), 0.3, out2.data(), n),
+                     numerical::detail::avx512_symmetric_row(x.data(), y.data(), 0.3, out5.data(), n)));
+    EXPECT(same_bits(out2, out5));
+    const std::vector<double> z   {rounding<double>(2 * n, 2.1)};
+    const std::vector<double> w   {rounding<double>(2 * n, 2.9)};
+    std::vector<double>       zo2 {rounding<double>(2 * n, 3.3)};
+    std::vector<double>       zo5 {zo2};
+    EXPECT(same_bits(numerical::detail::avx2_hermitian_row(z.data(), w.data(), 0.4, -0.6, zo2.data(), n),
+                     numerical::detail::avx512_hermitian_row(z.data(), w.data(), 0.4, -0.6, zo5.data(), n)));
+    EXPECT(same_bits(zo2, zo5));
+    const std::size_t   rows_n {n + numerical::detail::symmetric_row_group + 2};
+    std::vector<double> rows   {rounding<double>(numerical::detail::symmetric_row_group * rows_n, 4.4)};
+    std::vector<double> v      {rounding<double>(rows_n, 5.1)};
+    std::vector<double> ro2    {rounding<double>(rows_n, 6.2)};
+    std::vector<double> ro5    {ro2};
+    const auto          sums2  {numerical::detail::avx2_symmetric_rows(rows.data(), rows_n, v.data(), ro2.data(), n)};
+    const auto          sums5  {numerical::detail::avx512_symmetric_rows(rows.data(), rows_n, v.data(), ro5.data(), n)};
+    EXPECT(same_bits(std::vector<double>(sums2.begin(), sums2.end()), std::vector<double>(sums5.begin(), sums5.end())));
+    EXPECT(same_bits(ro2, ro5));
+  }
+  // The tree in scalar statements is the registers' (the finish of the column-major products' partial sums): 32
+  // elements times ones put one in each lane of the four registers' worth, which both kernels then sum by the tree.
+  const std::vector<double> lanes {rounding<double>(32, 7.7)};
+  const std::vector<double> ones(32, 1.0);
+  double                    tree  {0.0};
+  for (std::size_t l {0}; l < 4; ++l) {
+    tree += numerical::detail::lanes_sum(lanes.data() + (8 * l), 1);
+  }
+  EXPECT(same_bits(avx2_dot(lanes.data(), ones.data(), 32), tree));
+  EXPECT(same_bits(avx512_dot(lanes.data(), ones.data(), 32), tree));
+  const std::vector<float> lanes_f {rounding<float>(64, 8.8)};
+  const std::vector<float> ones_f(64, 1.0F);
+  float                    tree_f  {0.0F};
+  for (std::size_t l {0}; l < 4; ++l) {
+    tree_f += numerical::detail::lanes_sum(lanes_f.data() + (16 * l), 1);
+  }
+  EXPECT(same_bits(avx2_dot(lanes_f.data(), ones_f.data(), 64), tree_f));
+  EXPECT(same_bits(avx512_dot(lanes_f.data(), ones_f.data(), 64), tree_f));
+#endif
 }

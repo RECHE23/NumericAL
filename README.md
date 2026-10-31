@@ -451,9 +451,12 @@ headers has a pool and a cap of its own.
 
 `numerical.limit_gemm_path(name)` (C++: `limit_gemm_path`), or `NUMERICAL_GEMM` at import, caps the kernel at
 `name` or a more portable one. Every element of a product is summed in ascending order of the depth on any
-number of threads, so a result is the same, to the bit, whatever the thread count; across kernels it differs in
-the last bits, since the NEON, AVX and AMX kernels fuse each multiply-add and the portable one rounds as the
-compiler does (under the wheels' `-ffp-contract=on`, Clang fuses `c + a·b` there and GCC does not). Past the portable kernel, a complex product runs as one real product of twice the order, `[Re A | −Im A]`
+number of threads, so a result is the same, to the bit, whatever the thread count. The AVX2 and AVX-512 kernels
+also sum in one order (the dot products, the symmetric and Hermitian rows and the products' tiles alike, each block
+of lanes by one written tree), so one build gives the same bits on every x86-64 processor with AVX2, with or without
+AVX-512 (41 functions checked byte for byte, from `matmul` and `solve` to `eigh`, `svd`, `eig`, `qz` and `logm`).
+Across other kernels a result differs in the last bits, since the NEON, AVX and AMX kernels fuse each multiply-add
+and the portable one rounds as the compiler does (under the wheels' `-ffp-contract=on`, Clang fuses `c + a·b` there and GCC does not). Past the portable kernel, a complex product runs as one real product of twice the order, `[Re A | −Im A]`
 times `[[Re B, Im B], [Im B, −Re B]]` (by blocks), on that kernel and its threads: each element then sums the
 products of A's real parts, then those of its imaginary parts, where the portable kernel sums whole complex
 products in order.
@@ -473,8 +476,9 @@ fast or faster (0.94×), Cholesky, QR and `eigh` within 1.0–1.2×, `svd` and `
 
 Floating-point accuracy is documented, never claimed exact where it cannot be: every decomposition is backward
 stable, checked against its defining property and against NumPy within bounds of the order times the machine
-epsilon. A result is the same, to the bit, on any number of threads; between kernels and processors it may
-differ in the last bits (see Threads and kernels). Same gate bar as the rest of the ecosystem: 100% coverage,
+epsilon. A result is the same, to the bit, on any number of threads, and on any x86-64 processor with AVX2 or
+AVX-512 for one build; between other kernels and processors it may differ in the last bits (see Threads and
+kernels). Same gate bar as the rest of the ecosystem: 100% coverage,
 clang **and** g++-14, lint, format, MISRA-oriented analysis and sanitizers green.
 
 ### Accuracy, function by function

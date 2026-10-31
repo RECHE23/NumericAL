@@ -739,6 +739,61 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief The sum of the eight `double` lanes of one AVX-512 register's worth, \p lo its lanes 0 to 3 and \p hi 4 to 7,
+   *        by the one tree both units write out, `((v0 + v4) + (v2 + v6)) + ((v1 + v5) + (v3 + v7))`: a block's sum the
+   *        same bits on AVX2 and AVX-512, and under every compiler (`_mm512_reduce_add_pd` orders its additions as the
+   *        compiler pleases).
+   */
+  NUMERICAL_TARGET("avx2") inline double lanes_sum(__m256d lo,
+                                                   __m256d hi) noexcept
+  {
+    const __m256d pairs {_mm256_add_pd(lo, hi)};                                                      // v_k + v_(k+4)
+    const __m128d quads {_mm_add_pd(_mm256_castpd256_pd128(pairs), _mm256_extractf128_pd(pairs, 1))}; // + v_(k+2)…
+    return _mm_cvtsd_f64(_mm_add_sd(quads, _mm_unpackhi_pd(quads, quads)));
+  }
+
+  //! \brief \ref lanes_sum of one AVX-512 register.
+  NUMERICAL_TARGET("avx512f") inline double lanes_sum(__m512d v) noexcept
+  {
+    return lanes_sum(_mm512_castpd512_pd256(v), _mm512_extractf64x4_pd(v, 1));
+  }
+
+  /*!
+   * \brief The sum of the sixteen `float` lanes of one AVX-512 register's worth, \p lo its lanes 0 to 7 and \p hi 8 to
+   *        15: `p_k = v_k + v_(k+8)`, then `((p0 + p4) + (p2 + p6)) + ((p1 + p5) + (p3 + p7))`, on both units.
+   */
+  NUMERICAL_TARGET("avx2") inline float lanes_sum(__m256 lo,
+                                                  __m256 hi) noexcept
+  {
+    const __m256 pairs {_mm256_add_ps(lo, hi)};                                                      // p_k
+    const __m128 quads {_mm_add_ps(_mm256_castps256_ps128(pairs), _mm256_extractf128_ps(pairs, 1))}; // p_k + p_(k+4)
+    const __m128 twos  {_mm_add_ps(quads, _mm_movehl_ps(quads, quads))};                             // + p_(k+2)…
+    return _mm_cvtss_f32(_mm_add_ss(twos, _mm_shuffle_ps(twos, twos, 0x55)));
+  }
+
+  //! \brief \ref lanes_sum of one AVX-512 register of `float`.
+  NUMERICAL_TARGET("avx512f") inline float lanes_sum(__m512 v) noexcept
+  {
+    return lanes_sum(_mm512_castps512_ps256(v), _mm256_castpd_ps(_mm512_extractf64x4_pd(_mm512_castps_pd(v), 1)));
+  }
+
+  //! \brief \ref lanes_sum of eight `double`s \p apart from \p lane, in scalar statements: the same tree, so its bits.
+  inline double lanes_sum(const double* lane,
+                          std::size_t   apart) noexcept
+  {
+    const auto v {[&](std::size_t k) { return lane[k * apart]; }};
+    return ((v(0) + v(4)) + (v(2) + v(6))) + ((v(1) + v(5)) + (v(3) + v(7)));
+  }
+
+  //! \brief \ref lanes_sum of sixteen `float`s \p apart from \p lane, in scalar statements: the same tree.
+  inline float lanes_sum(const float* lane,
+                         std::size_t  apart) noexcept
+  {
+    const auto p {[&](std::size_t k) { return lane[k * apart] + lane[(k + 8) * apart]; }};
+    return ((p(0) + p(4)) + (p(2) + p(6))) + ((p(1) + p(5)) + (p(3) + p(7)));
+  }
+
+  /*!
    * \brief `Σ row[i] · v[i]`, and `out[i] += row[i] · f`, for \p count elements in one pass over \p row (see
    *        \ref symmetric_row): four accumulators of eight `double`, each a chain of fused multiply-adds, summed
    *        in a fixed order, as is the remainder.
@@ -764,7 +819,7 @@ namespace numerical::detail {
     }
     double total {0.0};
     for (std::size_t l {0}; l < lanes; ++l) {
-      total += _mm512_reduce_add_pd(sum[l].v);
+      total += lanes_sum(sum[l].v);
     }
     for (std::size_t i {done}; i < count; ++i) {
       total  += row[i] * v[i];
@@ -774,18 +829,19 @@ namespace numerical::detail {
     return total;
   }
 
-  //! \brief \ref avx512_symmetric_row with four accumulators of four `double` (AVX2 with FMA).
+  //! \brief \ref avx512_symmetric_row on AVX2 with FMA: eight accumulators of four `double`, two for each of
+  //!        AVX-512's, summed as it sums them (\ref lanes_sum), so its bits.
   NUMERICAL_TARGET("avx2,fma") inline double avx2_symmetric_row(const double* row,
                                                                 const double* v,
                                                                 double        f,
                                                                 double*       out,
                                                                 std::size_t   count) noexcept
   {
-    constexpr std::size_t           width {4};
-    constexpr std::size_t           lanes {4};
-    const __m256d                   splat {_mm256_set1_pd(f)};
-    std::array<ymm_register, lanes> sum   {};
-    const std::size_t               done  {count - (count % (width * lanes))};
+    constexpr std::size_t               width {4};
+    constexpr std::size_t               lanes {8};
+    const __m256d                       splat {_mm256_set1_pd(f)};
+    std::array<ymm_register, lanes>     sum   {};
+    const std::size_t                   done  {count - (count % (width * lanes))};
     for (std::size_t i {0}; i < done; i += width * lanes) {
       NUMERICAL_UNROLL_TILE
       for (std::size_t l {0}; l < lanes; ++l) {
@@ -795,10 +851,8 @@ namespace numerical::detail {
       }
     }
     double total {0.0};
-    for (std::size_t l {0}; l < lanes; ++l) {
-      alignas(32) std::array<double, width> part {}; // a register stored whole: some compilers store it aligned
-      _mm256_storeu_pd(part.data(), sum[l].v);
-      total += (part[0] + part[1]) + (part[2] + part[3]);
+    for (std::size_t l {0}; l < lanes; l += 2) {
+      total += lanes_sum(sum[l].v, sum[l + 1].v);
     }
     for (std::size_t i {done}; i < count; ++i) {
       total  += row[i] * v[i];
@@ -838,42 +892,49 @@ namespace numerical::detail {
     }
     std::array<double, symmetric_row_group> sums {};
     for (std::size_t r {0}; r < symmetric_row_group; ++r) {
-      sums[r] = _mm512_reduce_add_pd(sum[r].v);
+      sums[r] = lanes_sum(sum[r].v);
     }
     _mm256_zeroupper(); // the upper halves cleared: the tail may be SSE alone
     return symmetric_rows_tail(rows, n, v, out, i, done, sums);
   }
 
-  //! \brief \ref avx512_symmetric_rows by four columns (AVX2 with FMA).
+  //! \brief \ref avx512_symmetric_rows on AVX2 with FMA: the columns by eight in two halves, each row's sum two
+  //!        accumulators summed as AVX-512's one (\ref lanes_sum), so its bits.
   NUMERICAL_TARGET("avx2,fma") inline std::array<double, symmetric_row_group> avx2_symmetric_rows(const double* rows,
                                                                                                   std::size_t   n,
                                                                                                   const double* v,
                                                                                                   double*       out,
                                                                                                   std::size_t   i) noexcept
   {
-    constexpr std::size_t                         width {4};
-    std::array<ymm_register, symmetric_row_group> sum   {};
+    constexpr std::size_t                         width {8};
+    constexpr std::size_t                         half  {4};
+    std::array<ymm_register, symmetric_row_group> low   {};
+    std::array<ymm_register, symmetric_row_group> high  {};
     std::array<ymm_register, symmetric_row_group> splat {};
     for (std::size_t r {0}; r < symmetric_row_group; ++r) {
       splat[r].v = _mm256_set1_pd(v[i + r]);
     }
     const std::size_t done {i - (i % width)};
     for (std::size_t j {0}; j < done; j += width) {
-      const __m256d vv {_mm256_loadu_pd(v + j)};
-      __m256d       ov {_mm256_loadu_pd(out + j)};
+      const __m256d vl {_mm256_loadu_pd(v + j)};
+      const __m256d vh {_mm256_loadu_pd(v + j + half)};
+      __m256d       ol {_mm256_loadu_pd(out + j)};
+      __m256d       oh {_mm256_loadu_pd(out + j + half)};
       NUMERICAL_UNROLL_TILE
       for (std::size_t r {0}; r < symmetric_row_group; ++r) {
-        const __m256d rv {_mm256_loadu_pd(rows + (r * n) + j)};
-        sum[r].v = _mm256_fmadd_pd(rv, vv, sum[r].v);
-        ov       = _mm256_fmadd_pd(rv, splat[r].v, ov);
+        const __m256d rl {_mm256_loadu_pd(rows + (r * n) + j)};
+        const __m256d rh {_mm256_loadu_pd(rows + (r * n) + j + half)};
+        low[r].v  = _mm256_fmadd_pd(rl, vl, low[r].v);
+        high[r].v = _mm256_fmadd_pd(rh, vh, high[r].v);
+        ol        = _mm256_fmadd_pd(rl, splat[r].v, ol);
+        oh        = _mm256_fmadd_pd(rh, splat[r].v, oh);
       }
-      _mm256_storeu_pd(out + j, ov);
+      _mm256_storeu_pd(out + j, ol);
+      _mm256_storeu_pd(out + j + half, oh);
     }
     std::array<double, symmetric_row_group> sums {};
     for (std::size_t r {0}; r < symmetric_row_group; ++r) {
-      alignas(32) std::array<double, width> part {}; // a register stored whole: some compilers store it aligned
-      _mm256_storeu_pd(part.data(), sum[r].v);
-      sums[r] = (part[0] + part[1]) + (part[2] + part[3]);
+      sums[r] = lanes_sum(low[r].v, high[r].v);
     }
     _mm256_zeroupper(); // the upper halves cleared: the tail may be SSE alone
     return symmetric_rows_tail(rows, n, v, out, i, done, sums);
@@ -1243,7 +1304,8 @@ namespace numerical::detail {
     return std::complex<double> {re, im};
   }
 
-  //! \brief \ref avx512_hermitian_row on AVX2 with FMA: two numbers a register.
+  //! \brief \ref avx512_hermitian_row on AVX2 with FMA: four numbers a step in two registers, the lanes of
+  //!        AVX-512's one, summed as it sums them, so its bits.
   NUMERICAL_TARGET("avx2,fma") inline std::complex<double> avx2_hermitian_row(const double* row,
                                                                               const double* v,
                                                                               double        vr,
@@ -1251,28 +1313,37 @@ namespace numerical::detail {
                                                                               double*       out,
                                                                               std::size_t   count) noexcept
   {
-    const __m256d real   {_mm256_set_pd(-vr, vr, -vr, vr)};
-    const __m256d imag   {_mm256_set1_pd(vi)};
-    __m256d       same   {_mm256_setzero_pd()};
-    __m256d       across {_mm256_setzero_pd()};
-    std::size_t   j      {0};
-    for (; j + 2 <= count; j += 2) {
-      const __m256d r {_mm256_loadu_pd(row + (2 * j))};
-      const __m256d x {_mm256_loadu_pd(v + (2 * j))};
-      const __m256d s {_mm256_permute_pd(r, 0x5)};
-      __m256d       o {_mm256_loadu_pd(out + (2 * j))};
-      o      = _mm256_fmadd_pd(real, r, o);
-      o      = _mm256_fmadd_pd(imag, s, o);
-      same   = _mm256_fmadd_pd(r, x, same);
-      across = _mm256_fmadd_pd(s, x, across);
-      _mm256_storeu_pd(out + (2 * j), o);
+    const __m256d               real   {_mm256_set_pd(-vr, vr, -vr, vr)};
+    const __m256d               imag   {_mm256_set1_pd(vi)};
+    std::array<ymm_register, 2> same   {};
+    std::array<ymm_register, 2> across {};
+    std::size_t                 j      {0};
+    for (; j + 4 <= count; j += 4) {
+      for (std::size_t h {0}; h < 2; ++h) {
+        const std::size_t at {2 * (j + (2 * h))};
+        const __m256d     r  {_mm256_loadu_pd(row + at)};
+        const __m256d     x  {_mm256_loadu_pd(v + at)};
+        const __m256d     s  {_mm256_permute_pd(r, 0x5)};
+        __m256d           o  {_mm256_loadu_pd(out + at)};
+        o           = _mm256_fmadd_pd(real, r, o);
+        o           = _mm256_fmadd_pd(imag, s, o);
+        same[h].v   = _mm256_fmadd_pd(r, x, same[h].v);
+        across[h].v = _mm256_fmadd_pd(s, x, across[h].v);
+        _mm256_storeu_pd(out + at, o);
+      }
     }
-    alignas(32) std::array<double, 4> lanes_same   {}; // registers stored whole, aligned (as above)
-    alignas(32) std::array<double, 4> lanes_across {};
-    _mm256_storeu_pd(lanes_same.data(), same);
-    _mm256_storeu_pd(lanes_across.data(), across);
-    double re {(lanes_same[0] - lanes_same[1]) + (lanes_same[2] - lanes_same[3])};
-    double im {(lanes_across[0] + lanes_across[1]) + (lanes_across[2] + lanes_across[3])};
+    alignas(64) std::array<double, 8> lanes_same   {}; // registers stored whole, aligned (as above)
+    alignas(64) std::array<double, 8> lanes_across {};
+    for (std::size_t h {0}; h < 2; ++h) {
+      _mm256_storeu_pd(lanes_same.data() + (4 * h), same[h].v);
+      _mm256_storeu_pd(lanes_across.data() + (4 * h), across[h].v);
+    }
+    double re {0.0};
+    double im {0.0};
+    for (std::size_t l {0}; l < 8; l += 2) {
+      re += lanes_same[l] - lanes_same[l + 1];
+      im += lanes_across[l] + lanes_across[l + 1];
+    }
     for (; j < count; ++j) {
       const double rr {row[2 * j]};
       const double ri {row[(2 * j) + 1]};
@@ -1521,7 +1592,7 @@ namespace numerical::detail {
     }
     double total {0.0};
     for (std::size_t l {0}; done != 0 && l < lanes; ++l) { // none summed: +0 left as it is
-      total += _mm512_reduce_add_pd(sum[l].v);
+      total += lanes_sum(sum[l].v);
     }
     return total;
   }
@@ -1540,13 +1611,14 @@ namespace numerical::detail {
     return total;
   }
 
-  //! \brief \ref avx512_dot_blocks with four accumulators of four `double` (AVX2 with FMA), \p done a multiple of 16.
+  //! \brief \ref avx512_dot_blocks on AVX2 with FMA: eight accumulators of four `double`, two for each of AVX-512's,
+  //!        summed as it sums them (\ref lanes_sum), so its bits; \p done a multiple of 32.
   NUMERICAL_TARGET("avx2,fma") inline double avx2_dot_blocks(const double* x,
                                                              const double* y,
                                                              std::size_t   done) noexcept
   {
     constexpr std::size_t           width {4};
-    constexpr std::size_t           lanes {4};
+    constexpr std::size_t           lanes {8};
     std::array<ymm_register, lanes> sum   {};
     for (std::size_t i {0}; i < done; i += width * lanes) {
       NUMERICAL_UNROLL_TILE
@@ -1555,20 +1627,18 @@ namespace numerical::detail {
       }
     }
     double total {0.0};
-    for (std::size_t l {0}; done != 0 && l < lanes; ++l) { // none summed: +0 left as it is
-      alignas(32) std::array<double, width> part {};       // a register stored whole: some compilers store it aligned
-      _mm256_storeu_pd(part.data(), sum[l].v);
-      total += (part[0] + part[1]) + (part[2] + part[3]);
+    for (std::size_t l {0}; done != 0 && l < lanes; l += 2) { // none summed: +0 left as it is
+      total += lanes_sum(sum[l].v, sum[l + 1].v);
     }
     return total;
   }
 
-  //! \brief \ref avx512_dot on AVX2 with FMA: blocks of 16 (\ref avx2_dot_blocks), then the remainder in order.
+  //! \brief \ref avx512_dot on AVX2 with FMA: blocks of 32 (\ref avx2_dot_blocks), then the remainder in order.
   NUMERICAL_TARGET("avx2,fma") inline double avx2_dot(const double* x,
                                                       const double* y,
                                                       std::size_t   count) noexcept
   {
-    const std::size_t done  {count - (count % 16)};
+    const std::size_t done  {count - (count % 32)};
     double            total {avx2_dot_blocks(x, y, done)};
     for (std::size_t i {done}; i < count; ++i) {
       total += x[i] * y[i];
@@ -1594,7 +1664,7 @@ namespace numerical::detail {
     }
     float total {0.0F};
     for (std::size_t l {0}; done != 0 && l < lanes; ++l) { // none summed: +0 left as it is
-      total += _mm512_reduce_add_ps(sum[l].v);
+      total += lanes_sum(sum[l].v);
     }
     return total;
   }
@@ -1613,14 +1683,14 @@ namespace numerical::detail {
     return total;
   }
 
-  //! \brief \ref avx2_dot_blocks of `float`: four accumulators of eight, \p done a multiple of 32, each register's eight
-  //!        summed as a tree of pairs.
+  //! \brief \ref avx2_dot_blocks of `float`: eight accumulators of eight, two for each of AVX-512's sixteen, summed as
+  //!        it sums them (\ref lanes_sum), so its bits; \p done a multiple of 64.
   NUMERICAL_TARGET("avx2,fma") inline float avx2_dot_blocks(const float* x,
                                                             const float* y,
                                                             std::size_t  done) noexcept
   {
     constexpr std::size_t               width {8};
-    constexpr std::size_t               lanes {4};
+    constexpr std::size_t               lanes {8};
     std::array<ymm_register_f32, lanes> sum   {};
     for (std::size_t i {0}; i < done; i += width * lanes) {
       NUMERICAL_UNROLL_TILE
@@ -1629,20 +1699,18 @@ namespace numerical::detail {
       }
     }
     float total {0.0F};
-    for (std::size_t l {0}; done != 0 && l < lanes; ++l) { // none summed: +0 left as it is
-      alignas(32) std::array<float, width> part {};        // a register stored whole: some compilers store it aligned
-      _mm256_storeu_ps(part.data(), sum[l].v);
-      total += ((part[0] + part[1]) + (part[2] + part[3])) + ((part[4] + part[5]) + (part[6] + part[7]));
+    for (std::size_t l {0}; done != 0 && l < lanes; l += 2) { // none summed: +0 left as it is
+      total += lanes_sum(sum[l].v, sum[l + 1].v);
     }
     return total;
   }
 
-  //! \brief \ref avx2_dot of `float`: its blocks of 32, then the remainder added in order.
+  //! \brief \ref avx2_dot of `float`: its blocks of 64, then the remainder added in order.
   NUMERICAL_TARGET("avx2,fma") inline float avx2_dot(const float* x,
                                                      const float* y,
                                                      std::size_t  count) noexcept
   {
-    const std::size_t done  {count - (count % 32)};
+    const std::size_t done  {count - (count % 64)};
     float             total {avx2_dot_blocks(x, y, done)};
     for (std::size_t i {done}; i < count; ++i) {
       total += x[i] * y[i];
@@ -1652,7 +1720,7 @@ namespace numerical::detail {
   }
 
   /*!
-   * \brief The partial sums \ref avx2_dot_blocks (\p Partials 16) or \ref avx512_dot_blocks (32) keep for each of
+   * \brief The partial sums \ref avx2_dot_blocks and \ref avx512_dot_blocks (\p Partials 32) keep for each of
    *        \p rows rows of the column-major \p a (column `j` at `a + j · lda`) times \p x, over its first \p done
    *        columns (a multiple of \p Partials): element `j` of a row into its partial `j mod Partials` by one fused
    *        multiply-add, in ascending order, as the kernels' lanes take it; \p sums (`Partials × rows`, partial `p` of row
@@ -1682,61 +1750,26 @@ namespace numerical::detail {
   }
 
   /*!
-   * \brief \ref avx2_dot of each row of the column-major \p a with \p x, into \p y, from \ref avx2_column_partials'
-   *        sixteen partial sums: each vector's four summed as \ref avx2_dot_blocks sums them, the vectors in order from +0
-   *        (none: +0), then the columns past \p done added in order by the same statement as the kernel's, so its
-   *        bits.
+   * \brief \ref avx2_dot (or \ref avx512_dot) of each row of the column-major \p a with \p x, into \p y, from
+   *        \ref avx2_column_partials' thirty-two partial sums: each block of eight summed by \ref lanes_sum's tree, as
+   *        both kernels sum a register's worth, the blocks in order from +0 (none: +0), then the columns past \p done
+   *        added in order by the same statement as the kernels', so their bits.
    */
-  NUMERICAL_TARGET("avx2,fma") inline void avx2_columns_finish(const double* a,
-                                                               std::size_t   lda,
-                                                               std::size_t   rows,
-                                                               std::size_t   done,
-                                                               std::size_t   cols,
-                                                               const double* x,
-                                                               const double* sums,
-                                                               double*       y) noexcept
-  {
-    constexpr std::size_t width {4};
-    constexpr std::size_t lanes {4};
-    for (std::size_t r {0}; r < rows; ++r) {
-      double total {0.0};
-      for (std::size_t l {0}; done != 0 && l < lanes; ++l) {
-        const double* const part {sums + (l * width * rows) + r}; // partial l·width + k of row r at part[k · rows]
-        total += (part[0] + part[rows]) + (part[2 * rows] + part[3 * rows]);
-      }
-      y[r] = total;
-    }
-    for (std::size_t j {done}; j < cols; ++j) {
-      const double* const col {a + (j * lda)};
-      for (std::size_t r {0}; r < rows; ++r) {
-        y[r] += col[r] * x[j];
-      }
-    }
-  }
-
-  /*!
-   * \brief \ref avx2_columns_finish for \ref avx512_dot: thirty-two partial sums, each register's eight by the kernel's
-   *        own reduction (`_mm512_reduce_add_pd`), the registers in order from +0, then the remainder in order.
-   */
-  NUMERICAL_TARGET("avx512f") inline void avx512_columns_finish(const double* a,
-                                                                std::size_t   lda,
-                                                                std::size_t   rows,
-                                                                std::size_t   done,
-                                                                std::size_t   cols,
-                                                                const double* x,
-                                                                const double* sums,
-                                                                double*       y) noexcept
+  inline void columns_finish(const double* a,
+                             std::size_t   lda,
+                             std::size_t   rows,
+                             std::size_t   done,
+                             std::size_t   cols,
+                             const double* x,
+                             const double* sums,
+                             double*       y) noexcept
   {
     constexpr std::size_t width {8};
     constexpr std::size_t lanes {4};
     for (std::size_t r {0}; r < rows; ++r) {
       double total {0.0};
       for (std::size_t l {0}; done != 0 && l < lanes; ++l) {
-        alignas(64) std::array<double, width> part {};
-        for (std::size_t k {0}; k < width; ++k) {
-          part[k] = sums[(((l * width) + k) * rows) + r];
-        }
-        total += _mm512_reduce_add_pd(_mm512_load_pd(part.data()));
+        total += lanes_sum(sums + (l * width * rows) + r, rows); // partial l·width + k of row r at k · rows from there
       }
       y[r] = total;
     }
@@ -1746,11 +1779,10 @@ namespace numerical::detail {
         y[r] += col[r] * x[j];
       }
     }
-    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
   /*!
-   * \brief The partial sums `avx2_dot_blocks` (\p Partials 32) or `avx512_dot_blocks` (64) of `float` keep for each of
+   * \brief The partial sums `avx2_dot_blocks` and `avx512_dot_blocks` of `float` (\p Partials 64) keep for each of
    *        \p rows rows of the column-major \p a times \p x, over its first \p done columns: as the `double` form, eight
    *        rows a vector.
    */
@@ -1777,58 +1809,22 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
-  //! \brief `avx2_dot` of `float` of each row of the column-major \p a with \p x, into \p y, from
-  //!        \ref avx2_column_partials' thirty-two partial sums: each vector's eight summed as `avx2_dot_blocks` sums
-  //!        them, the vectors in order from +0 (none: +0), then the columns past \p done in order, so its bits.
-  NUMERICAL_TARGET("avx2,fma") inline void avx2_columns_finish(const float* a,
-                                                               std::size_t  lda,
-                                                               std::size_t  rows,
-                                                               std::size_t  done,
-                                                               std::size_t  cols,
-                                                               const float* x,
-                                                               const float* sums,
-                                                               float*       y) noexcept
-  {
-    constexpr std::size_t width {8};
-    constexpr std::size_t lanes {4};
-    for (std::size_t r {0}; r < rows; ++r) {
-      float total {0.0F};
-      for (std::size_t l {0}; done != 0 && l < lanes; ++l) {
-        const float* const part {sums + (l * width * rows) + r}; // partial l·width + k of row r at part[k · rows]
-        total += ((part[0] + part[rows]) + (part[2 * rows] + part[3 * rows]))
-                 + ((part[4 * rows] + part[5 * rows]) + (part[6 * rows] + part[7 * rows]));
-      }
-      y[r] = total;
-    }
-    for (std::size_t j {done}; j < cols; ++j) {
-      const float* const col {a + (j * lda)};
-      for (std::size_t r {0}; r < rows; ++r) {
-        y[r] += col[r] * x[j];
-      }
-    }
-  }
-
-  //! \brief \ref avx2_columns_finish for `avx512_dot` of `float`: sixty-four partial sums, each register's sixteen by
-  //!        the kernel's own `_mm512_reduce_add_ps`.
-  NUMERICAL_TARGET("avx512f") inline void avx512_columns_finish(const float* a,
-                                                                std::size_t  lda,
-                                                                std::size_t  rows,
-                                                                std::size_t  done,
-                                                                std::size_t  cols,
-                                                                const float* x,
-                                                                const float* sums,
-                                                                float*       y) noexcept
+  //! \brief \ref columns_finish of `float`: sixty-four partial sums, each block of sixteen by \ref lanes_sum's tree.
+  inline void columns_finish(const float* a,
+                             std::size_t  lda,
+                             std::size_t  rows,
+                             std::size_t  done,
+                             std::size_t  cols,
+                             const float* x,
+                             const float* sums,
+                             float*       y) noexcept
   {
     constexpr std::size_t width {16};
     constexpr std::size_t lanes {4};
     for (std::size_t r {0}; r < rows; ++r) {
       float total {0.0F};
       for (std::size_t l {0}; done != 0 && l < lanes; ++l) {
-        alignas(64) std::array<float, width> part {};
-        for (std::size_t k {0}; k < width; ++k) {
-          part[k] = sums[(((l * width) + k) * rows) + r];
-        }
-        total += _mm512_reduce_add_ps(_mm512_load_ps(part.data()));
+        total += lanes_sum(sums + (l * width * rows) + r, rows);
       }
       y[r] = total;
     }
@@ -1838,7 +1834,6 @@ namespace numerical::detail {
         y[r] += col[r] * x[j];
       }
     }
-    _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
   /*!

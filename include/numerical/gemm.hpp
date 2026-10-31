@@ -836,7 +836,7 @@ namespace numerical::detail {
       return;
     }
     if (path == gemm_path::avx2) {
-      interleaved_row_dots<double, 16, avx2_dot_blocks>(m, ld, rows, x, count, out);
+      interleaved_row_dots<double, 32, avx2_dot_blocks>(m, ld, rows, x, count, out);
       return;
     }
 #endif
@@ -859,7 +859,7 @@ namespace numerical::detail {
       return;
     }
     if (path == gemm_path::avx2) {
-      interleaved_row_dots<float, 32, avx2_dot_blocks>(m, ld, rows, x, count, out);
+      interleaved_row_dots<float, 64, avx2_dot_blocks>(m, ld, rows, x, count, out);
       return;
     }
 #endif
@@ -4737,23 +4737,15 @@ namespace numerical::detail {
     if ((path != gemm_path::avx2 && path != gemm_path::avx512) || cols > dot_chunk) {
       return false;
     }
-    constexpr std::size_t narrow   {128 / sizeof(T)}; // the AVX2 kernel's partial sums: four registers of 32 bytes
-    const bool            wide     {path == gemm_path::avx512};
-    const std::size_t     partials {wide ? 2 * narrow : narrow};
+    constexpr std::size_t partials {256 / sizeof(T)}; // both kernels' partial sums: four AVX-512 registers' worth
     const std::size_t     done     {cols - (cols % partials)};
     parallel_for((rows + column_rows - 1) / column_rows, column_rows * cols * matrix_vector_weight, [&](std::size_t block) {
                    const std::size_t first  {block * column_rows};
                    const std::size_t height {std::min(column_rows, rows - first)};
                    buffer<T>         sums(partials * height, T {});
                    const T* const    part {a + first};
-                   if (wide) {
-                     avx2_column_partials<2 * narrow>(part, lda, height, done, x, sums.data());
-                     avx512_columns_finish(part, lda, height, done, cols, x, sums.data(), y + first);
-                   }
-                   else {
-                     avx2_column_partials<narrow>(part, lda, height, done, x, sums.data());
-                     avx2_columns_finish(part, lda, height, done, cols, x, sums.data(), y + first);
-                   }
+                   avx2_column_partials<partials>(part, lda, height, done, x, sums.data());
+                   columns_finish(part, lda, height, done, cols, x, sums.data(), y + first);
                  });
     return true;
 #elif defined(__GNUC__)

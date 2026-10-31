@@ -23,6 +23,14 @@ A change that can break code is listed under **Breaking** and held for a month's
   matrix's diagonal is taken real at every order, where SciPy's 1 × 1 case divides by the complex entry.
 
 ### Changed
+- **The same bits on every x86-64 processor with AVX2, with or without AVX-512**: the AVX2 kernels sum in AVX-512's
+  order, eight registers of four for its four of eight, the same blocks (32 `double`s, 64 `float`s), and each block
+  of lanes, on either unit, by one written tree, `((v0 + v4) + (v2 + v6)) + ((v1 + v5) + (v3 + v7))`
+  (`_mm512_reduce_add_pd` ordered its additions as the compiler pleased): dot products, matrix–vector products,
+  symmetric and Hermitian rows, column-major products' partial sums. One build gave the same bits from both units
+  for 15 of 41 functions; now for all 41 (`matmul`, `solve`, `lu`, `cholesky`, `qr`, `eigh`, `svd`, `eig`,
+  `eig(a, b)`, `qz`, `hessenberg`, `schur`, `expm`, `logm`, `sqrtm`, `pinv`…), at the same speed (six AVX-512 cores,
+  order 500, within the noise both ways).
 - **`funm` decides its clusters' share before reordering the Schur form**: whether each cluster within 0.1 of the
   largest modulus keeps the other eigenvalues out of its circle depends on the eigenvalues alone, so a random matrix's
   chained clusters go to the finer share at once, where the form was reordered for the coarser one, then again: order
