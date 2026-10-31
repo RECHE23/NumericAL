@@ -2106,9 +2106,9 @@ namespace numerical {
         for (std::size_t j {first}; j < last; ++j) {
           T* const       column {panel + (j * m)};
           std::size_t    pivot  {0}; // from row j
-          magnitude_t<T> best   {std::abs(column[j])};
+          magnitude_t<T> best   {pivot_magnitude(column[j])};
           for (std::size_t r {largest_magnitude_vectors(column + j, m - j, best, pivot)}; r < m - j; ++r) {
-            const magnitude_t<T> mag {std::abs(column[j + r])};
+            const magnitude_t<T> mag {pivot_magnitude(column[j + r])};
             if (mag > best) {
               best  = mag;
               pivot = r;

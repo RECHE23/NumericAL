@@ -277,6 +277,19 @@ TEST(a_complex_lu_pivots_on_the_largest_sum_of_the_parts_magnitudes)
   }
 }
 
+// lu_factors pivots alike on every path: a matrix more than lu_tall_ratio times as tall as wide (tall_lu_columns), a less
+// tall one (beside zero columns) and a wide one (its square part).
+TEST(lu_factors_pivots_a_complex_column_as_izamax)
+{
+  using C = std::complex<double>;
+  for (const auto& [m, n] : {std::pair<std::size_t, std::size_t> {12, 2}, {4, 2}, {3, 5}}) {
+    std::vector<C> entries(m * n, C {0.25, 0.125});
+    entries[0]           = C {3.0, 0.0};
+    entries[(m - 1) * n] = C {2.0, 2.0};
+    EXPECT_EQ(numerical::lu_factors(matrix<C> {m, n, entries}).rows[0], m - 1);
+  }
+}
+
 TEST(a_zero_pivot_column_gives_no_terms_not_even_a_signed_zero)
 {
   // Column 1 is zero from its diagonal down: its terms, ±0, would turn column 2's −0 into +0. The unblocked
