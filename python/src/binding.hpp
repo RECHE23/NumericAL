@@ -1417,6 +1417,8 @@ PyObject* module_power_shortcut(PyObject* /*self*/, PyObject* args); // in eleme
 // new last axis, as numpy.stack(parts, axis=-1): a copy, element by element, where assembling them by products with
 // unit vectors multiplied each by zeros (an infinite part made the others NaN).
 PyObject* module_stack_last(PyObject* /*self*/, PyObject* args); // in products.cpp
+// _concatenate(parts, axis) -> Tensor: one dtype and rank, one shape but along axis, joined along it.
+PyObject* module_concatenate(PyObject* /*self*/, PyObject* args); // in products.cpp
 
 // _negate(a) -> Tensor.
 PyObject* module_negate(PyObject* /*self*/, PyObject* args); // in elementwise.cpp

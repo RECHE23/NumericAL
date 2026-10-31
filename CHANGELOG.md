@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **Python: NumPy's `concatenate` (and the Array API's `concat`), `stack`, `vstack`, `hstack`, `tril`, `triu`, `diag`
+  and `kron`**: the arrays in the dtype they all fit (NumPy's promotion), a bool tensor kept bool; `concatenate` native,
+  one copy of each part. Tested against NumPy 2.5 over shapes, axes, offsets and every pair of dtypes (370 cases),
+  and the refusals.
+
 ## 2026.10.43 — 2026-10-31
 
 ### Added

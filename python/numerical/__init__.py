@@ -3308,4 +3308,141 @@ def _stacked_first(parts):
 __all__ += ["hessenberg", "matrix_balance", "eigh_tridiagonal", "eigvalsh_tridiagonal", "cholesky_banded",
             "cho_solve_banded", "rsf2csf", "rq", "cdf2rdf", "qz", "ordqz"]
 
+# --- NumPy's assembly and triangles: concatenate, stack, vstack, hstack, tril, triu, diag, kron ---
+
+
+def _joined(arrays, name):
+    """The tensors of `arrays` in the dtype they all fit (NumPy's promotion, :func:`_promoted`)."""
+    if isinstance(arrays, (Tensor, str)) or not hasattr(arrays, "__iter__"):
+        raise TypeError(f"{name}: a sequence of arrays")
+    tensors = [_tensor(x) for x in arrays]
+    if not tensors:
+        raise ValueError("need at least one array to concatenate")
+    dtype = _promoted([t.dtype for t in tensors])
+    return [t if t.dtype == dtype else asarray(t, dtype) for t in tensors]
+
+
+def concatenate(arrays, /, axis=0):
+    """The arrays one after the other along `axis` (every other axis of one extent), as ``numpy.concatenate``; with
+    ``axis=None`` each flattened first. The result in the dtype they all fit, as NumPy promotes them.
+
+    Raises:
+        ValueError: if there is no array, one is rank 0, the axis is out of their rank, or the other axes differ.
+    """
+    tensors = _joined(arrays, "concatenate")
+    if axis is None:
+        tensors, axis = [reshape(t, (-1,)) for t in tensors], 0
+    rank = len(tensors[0].shape)
+    if rank == 0:
+        raise ValueError("zero-dimensional arrays cannot be concatenated")
+    axis = _operator.index(axis)
+    if not -rank <= axis < rank:
+        raise ValueError(f"axis {axis} is out of bounds for array of dimension {rank}")
+    if _builtins.any(len(t.shape) != rank for t in tensors):
+        raise ValueError("all the input arrays must have same number of dimensions")
+    return _numerical._concatenate(tensors, axis % rank)
+
+
+concat = concatenate
+
+
+def stack(arrays, /, axis=0):
+    """The arrays (one shape) along a new axis `axis` of the result, as ``numpy.stack``.
+
+    Raises:
+        ValueError: if there is no array, their shapes differ, or the axis is out of the result's rank.
+    """
+    tensors = _joined(arrays, "stack")
+    shape = tensors[0].shape
+    if _builtins.any(t.shape != shape for t in tensors):
+        raise ValueError("all input arrays must have the same shape")
+    rank = len(shape) + 1
+    axis = _operator.index(axis)
+    if not -rank <= axis < rank:
+        raise ValueError(f"axis {axis} is out of bounds for array of dimension {rank}")
+    axis %= rank
+    expanded = shape[:axis] + (1,) + shape[axis:]
+    return _numerical._concatenate([reshape(t, expanded) for t in tensors], axis)
+
+
+def vstack(tup):
+    """The arrays row-wise, as ``numpy.vstack``: a vector as a row (1 × n), along the first axis."""
+    tensors = _joined(tup, "vstack")
+    return concatenate([reshape(t, (1, t.shape[0] if t.shape else 1)) if len(t.shape) < 2 else t for t in tensors], axis=0)
+
+
+def hstack(tup):
+    """The arrays column-wise, as ``numpy.hstack``: vectors one after the other, else along the second axis."""
+    tensors = _joined(tup, "hstack")
+    tensors = [reshape(t, (1,)) if len(t.shape) == 0 else t for t in tensors]
+    return concatenate(tensors, axis=0 if len(tensors[0].shape) == 1 else 1)
+
+
+def _band_mask(shape, k, lower):
+    """True on and below the `k` diagonal (above where not `lower`) of matrices of the last two axes of `shape`."""
+    rows, cols = shape[-2], shape[-1]
+    i = reshape(arange(rows), (rows, 1))
+    j = reshape(arange(cols), (1, cols))
+    return (j - i <= k) if lower else (j - i >= k)
+
+
+def _triangle(m, k, lower, name):
+    m = _tensor(m)
+    k = _operator.index(k)
+    if len(m.shape) == 0:
+        raise ValueError(f"{name}: the input must be at least 1-D")
+    shape = m.shape
+    if len(shape) == 1:  # NumPy's: the vector as every row of a square
+        m, shape = reshape(m, (1, shape[0])), (shape[0], shape[0])
+    return where(_band_mask(shape, k, lower), m, False if m.dtype == "bool" else 0.0)
+
+
+def tril(m, k=0):
+    """The matrices of `m` (its last two axes) zero above their `k` diagonal, as ``numpy.tril`` (a vector broadcast to
+    a square first, as NumPy's)."""
+    return _triangle(m, k, True, "tril")
+
+
+def triu(m, k=0):
+    """The matrices of `m` (its last two axes) zero below their `k` diagonal, as ``numpy.triu``."""
+    return _triangle(m, k, False, "triu")
+
+
+def diag(v, k=0):
+    """``numpy.diag``: a matrix with the vector `v` on its `k` diagonal (above the main one for k > 0), or a matrix's
+    `k` diagonal as a vector (a copy).
+
+    Raises:
+        ValueError: if `v` is neither a vector nor a matrix.
+    """
+    v = _tensor(v)
+    k = _operator.index(k)
+    if len(v.shape) == 2:
+        return diagonal(v, offset=k)
+    if len(v.shape) != 1:
+        raise ValueError("Input must be 1- or 2-d.")
+    n = v.shape[0] + _builtins.abs(k)
+    if v.shape[0] == 0:
+        return zeros((n, n), v.dtype)
+    zero = zeros((_builtins.abs(k),), v.dtype)
+    column = concatenate([v, zero] if k >= 0 else [zero, v])  # row i's value: v[i] (k ≥ 0) or v[i + k]
+    i = reshape(arange(n), (n, 1))
+    j = reshape(arange(n), (1, n))
+    return where(j - i == k, reshape(column, (n, 1)), False if v.dtype == "bool" else 0.0)
+
+
+def kron(a, b):
+    """The Kronecker product, as ``numpy.kron``: blocks ``a[i, j] * b`` (over every axis, the shorter shape led by
+    ones)."""
+    a, b = _tensor(a), _tensor(b)
+    rank = _builtins.max(len(a.shape), len(b.shape))
+    sa = (1,) * (rank - len(a.shape)) + a.shape
+    sb = (1,) * (rank - len(b.shape)) + b.shape
+    a = reshape(a, tuple(x for pair in zip(sa, (1,) * rank) for x in pair))
+    b = reshape(b, tuple(x for pair in zip((1,) * rank, sb) for x in pair))
+    return reshape(a * b, tuple(x * y for x, y in zip(sa, sb)))
+
+
+__all__ += ["concatenate", "concat", "stack", "vstack", "hstack", "tril", "triu", "diag", "kron"]
+
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)

@@ -117,6 +117,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_binary(op, a, b) -> Tensor\nElement-wise a op b (op one of + - * /), broadcast; one dtype.");
     m.raw("_stack_last", module_stack_last, METH_VARARGS,
           "_stack_last(parts) -> Tensor\nTensors of one shape and dtype side by side along a new last axis (a copy).");
+    m.raw("_concatenate", module_concatenate, METH_VARARGS,
+          "_concatenate(parts, axis) -> Tensor\nTensors of one dtype and rank, one shape but along axis, one after the other along it (a copy).");
     m.raw("_negate", module_negate, METH_VARARGS, "_negate(a) -> Tensor\nElement-wise negation.");
     m.raw("_compare", module_compare, METH_VARARGS,
           "_compare(op, a, b) -> Tensor\nElement-wise a op b (op one of < <= == != > >=), broadcast; one dtype; bool.");

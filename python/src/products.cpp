@@ -373,6 +373,81 @@ PyObject* module_stack_last(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _concatenate(parts, axis) -> Tensor: tensors of one dtype and rank, of one shape but along `axis`, one after the
+// other along it (a copy), as numpy.concatenate once the caller has promoted them to one dtype.
+PyObject* module_concatenate(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  seq  = nullptr;
+    Py_ssize_t axis = 0;
+    if (PyArg_ParseTuple(args, "On", &seq, &axis) == 0) {
+        return nullptr;
+    }
+    const Py_ssize_t count = PySequence_Size(seq);
+    if (count <= 0) {
+        if (count == 0) {
+            PyErr_SetString(PyExc_ValueError, "need at least one array to concatenate");
+        }
+        return nullptr;
+    }
+    std::vector<const any_tensor*> parts;
+    for (Py_ssize_t i = 0; i < count; ++i) {
+        PyObject* item = PySequence_GetItem(seq, i); // new ref; the sequence keeps the tensor alive
+        if (item == nullptr) {
+            return nullptr;
+        }
+        const any_tensor* part = as_tensor(item);
+        Py_DECREF(item);
+        if (part == nullptr) {
+            return nullptr;
+        }
+        parts.push_back(part);
+    }
+    const std::vector<std::size_t>& first_shape {shape_of(*parts.front())};
+    const auto                      rank {static_cast<Py_ssize_t>(first_shape.size())};
+    if (axis < 0 || axis >= rank) {
+        PyErr_SetString(PyExc_ValueError, "_concatenate: the axis is out of the tensors' rank");
+        return nullptr;
+    }
+    const auto  along {static_cast<std::size_t>(axis)};
+    std::size_t total {0};
+    for (const any_tensor* part : parts) {
+        const std::vector<std::size_t>& shape {shape_of(*part)};
+        bool                            fits {part->index() == parts.front()->index() && shape.size() == first_shape.size()};
+        for (std::size_t d = 0; fits && d < shape.size(); ++d) {
+            fits = d == along || shape[d] == first_shape[d];
+        }
+        if (!fits) {
+            PyErr_SetString(PyExc_ValueError, "all the input array dimensions except for the concatenation axis must match exactly");
+            return nullptr;
+        }
+        total += shape[along];
+    }
+    try {
+        return std::visit([&](const auto& first) {
+            using tensor_type = std::decay_t<decltype(first)>;
+            using T           = std::remove_cvref_t<decltype(first.data()[0])>;
+            const std::size_t outer {numerical::detail::element_count(first_shape.begin(), first_shape.begin() + axis)};
+            const std::size_t inner {numerical::detail::element_count(first_shape.begin() + axis + 1, first_shape.end())};
+            std::vector<std::size_t> shape {first_shape};
+            shape[along] = total;
+            numerical::buffer<T> out(numerical::detail::checked_mul(numerical::detail::checked_mul(outer, total), inner));
+            std::size_t          offset {0}; // where each part's run starts in a row of the output
+            for (const any_tensor* part : parts) {
+                const auto&       values {std::get<tensor_type>(*part).data()};
+                const std::size_t run {shape_of(*part)[along] * inner};
+                for (std::size_t o = 0; o < outer; ++o) {
+                    std::copy_n(values.begin() + static_cast<std::ptrdiff_t>(o * run), run, out.begin() + static_cast<std::ptrdiff_t>((o * total * inner) + offset));
+                }
+                offset += run;
+            }
+            return wrap(any_tensor {tensor_type {std::move(shape), std::move(out)}});
+        }, *parts.front());
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _reshape(a, shape) -> Tensor.
 PyObject* module_reshape(PyObject* /*self*/, PyObject* args)
 {

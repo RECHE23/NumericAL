@@ -169,7 +169,8 @@ Small and complete, grown measured, honest about what is not yet here:
 - Arithmetic on tensors (`tensor_ops.hpp`): `+ - * /` element by element with
   NumPy's broadcasting, `sum`, `mean`, `max`, `min` of every element or along an
   axis (sums by NumPy's pairwise blocks), `reshape`, and `zeros`, `ones`, `full`,
-  `eye`, `arange`, `linspace`.
+  `eye`, `arange`, `linspace`; in Python, NumPy's `concatenate` (`concat`), `stack`, `vstack`, `hstack`, `tril`,
+  `triu`, `diag` and `kron`.
 
 - `numerical::blas` (`blas.hpp`) — `dot`, `gemm` (of `float`, `double` and their complex numbers), `syrk`, `gemv`,
   `trsm`, `gesv`, `getrf`, `getrs`, `potrf` and `potrs` (the last five, as `gemm`, of `float`, `double` and their
