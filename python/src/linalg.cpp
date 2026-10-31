@@ -706,8 +706,9 @@ std::tuple<any_tensor, any_tensor> tridiagonal_eigen(const any_tensor& d, const 
 
 // tridiagonal_select(d, e, by_value, a, b) -> w: the eigenvalues of indices a … b, or in (a, b] where by_value, of
 // the real symmetric tridiagonal, ascending, as scipy.linalg.eigvalsh_tridiagonal with a selection: bisection on
-// Sturm's counts (dstebz) for up to n / tridiagonal_bisection_share of them, the QL iteration's whole spectrum past:
-// k bisections cost k n per step, the QL n² for all (arm64: the two even near k = n / 25 at orders 1000 to 16000).
+// Sturm's counts (dstebz) for up to n p / tridiagonal_bisection_share of them on p threads, the QL iteration's whole
+// spectrum past: k bisections cost k n per step shared out to the threads, the QL n² for all on one (arm64: the two
+// even near k = n / 25 on one thread, n / 4.5 on eight, at orders 1000 to 16000).
 constexpr std::size_t tridiagonal_bisection_share {32};
 
 any_tensor tridiagonal_select(const any_tensor& d, const any_tensor& e, bool by_value, double a, double b)
@@ -729,7 +730,8 @@ any_tensor tridiagonal_select(const any_tensor& d, const any_tensor& e, bool by_
     }
     const auto from {static_cast<std::size_t>(first)};
     const auto to {static_cast<std::size_t>(last)};
-    if ((to - from + 1) * tridiagonal_bisection_share <= n) {
+    const std::size_t count {to - from + 1};
+    if (count * tridiagonal_bisection_share <= n * numerical::detail::parallel_threads(count, numerical::detail::sturm_bisection_work * n)) {
         return any_tensor {real_tensor {numerical::tridiagonal_eigenvalues(diagonal, off, from, to)}};
     }
     const numerical::vector<double> all {numerical::tridiagonal_eigenvalues(diagonal, off)};

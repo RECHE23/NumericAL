@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **`lu` builds `P` and `P L` by indexing**, `eye(m)[:, rows]` and `L[where]`, where it built `P` from m² Python
+  floats and `P L` by stacking m rows: order 1000 52 → 13 ms (`permute_l` 19 → 13 ms; SciPy 10 ms), the same answers.
+- **`eigvalsh_tridiagonal(select=…)` bisects on the threads, the same bits**: each eigenvalue's bisection runs on its
+  own, and bisection keeps the selection up to `n p / 32` eigenvalues on `p` threads (`n / 32` before), past which
+  the QL iteration's whole spectrum takes it. Ten of order 16000 53 → 10 ms, 500 2.68 → 0.41 s, 2000 of them by the
+  QL 3.1 → 1.6 s (SciPy 1.17: 56 ms, 2.53 s, 9.7 s; eight threads, arm64).
+
 ## 2026.10.45 — 2026-10-31
 
 ### Added

@@ -2267,6 +2267,10 @@ namespace numerical {
 
   namespace detail {
 
+    //! \brief One eigenvalue's bisection in \ref parallel_for's units per order of the matrix: some 60 halvings, each a
+    //!        Sturm count whose step divides (some four multiply-adds).
+    inline constexpr std::size_t sturm_bisection_work {256};
+
     //! \brief The number of eigenvalues below \p x of the symmetric tridiagonal of diagonal \p d and squared
     //!        off-diagonal \p e2 (`n` and `n − 1` entries), by Sturm's sequence: the negative pivots of `T − x I`, a
     //!        pivot smaller than \p pivmin taken as `−pivmin`, as LAPACK's `dlaebz`.
@@ -2334,17 +2338,19 @@ namespace numerical {
     high += slack;
     const double   tolerance {ulp * norm};
     buffer<double> out(last - first + 1);
-    for (std::size_t j {first}; j <= last; ++j) {
-      double lo {low};
-      double hi {high};
-      // past two spacings of the doubles there (at most ε |x| for a normal x, the least subnormal below), so that the
-      // middle always lies strictly inside
-      while (hi - lo > std::max({tolerance, 2.0 * ulp * std::max(std::abs(lo), std::abs(hi)), 2.0 * std::numeric_limits<double>::denorm_min()})) {
-        const double middle {0.5 * (lo + hi)};
-        (detail::sturm_count(diagonal.data(), e2.data(), n, middle, pivmin) > j ? hi : lo) = middle;
-      }
-      out[j - first] = 0.5 * (lo + hi) * scale;
-    }
+    // Each eigenvalue's bisection from the same interval, on its own: the same bits on any number of threads.
+    detail::parallel_for(last - first + 1, detail::sturm_bisection_work * n, [&](std::size_t index) {
+                           const std::size_t j {first + index};
+                           double            lo {low};
+                           double            hi {high};
+                           // past two spacings of the doubles there (at most ε |x| for a normal x, the least subnormal below), so that the
+                           // middle always lies strictly inside
+                           while (hi - lo > std::max({tolerance, 2.0 * ulp * std::max(std::abs(lo), std::abs(hi)), 2.0 * std::numeric_limits<double>::denorm_min()})) {
+                             const double middle {0.5 * (lo + hi)};
+                             (detail::sturm_count(diagonal.data(), e2.data(), n, middle, pivmin) > j ? hi : lo) = middle;
+                           }
+                           out[index] = 0.5 * (lo + hi) * scale;
+                         });
     return vector<double> {std::move(out)};
   }
 
