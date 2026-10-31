@@ -74,10 +74,13 @@ def set_num_threads(n):
 
 
 def _environment_threads():
-    """NUMERICAL_NUM_THREADS, read once at import: a count of threads, or None (with a warning if it is not one)."""
+    """NUMERICAL_NUM_THREADS, read once at import: a count of threads, or None (with a warning if it is not one).
+    Without it, OMP_NUM_THREADS's first count, as OpenBLAS reads it (joblib and loky set it in their workers), a value
+    that is not one ignored."""
     value = _os.environ.get("NUMERICAL_NUM_THREADS", "").strip()
     if not value:
-        return None
+        first = _os.environ.get("OMP_NUM_THREADS", "").split(",")[0].strip()
+        return int(first) if first.isascii() and first.isdigit() and int(first) > 0 else None
     if value.isascii() and value.isdigit():
         return int(value)
     _warnings.warn(f"NUMERICAL_NUM_THREADS={value!r} is not a count of threads; ignored", RuntimeWarning, stacklevel=2)
@@ -3808,3 +3811,55 @@ def kron(a, b):
 __all__ += ["concatenate", "concat", "stack", "vstack", "hstack", "tril", "triu", "diag", "kron"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)
+
+
+def _register_threadpoolctl(threadpoolctl):
+    """NumericAL's thread pool as a threadpoolctl library (``user_api="blas"``), so that ``threadpool_limits`` (joblib,
+    scikit-learn) caps it and ``threadpool_info`` lists it."""
+
+    class _Controller(threadpoolctl.LibController):
+        user_api = "blas"
+        internal_api = "numerical"
+        filename_prefixes = ("_numerical",)
+
+        def get_num_threads(self):
+            return get_num_threads()
+
+        def set_num_threads(self, num_threads):
+            set_num_threads(num_threads)
+
+        def get_version(self):
+            return __version__
+
+    threadpoolctl.register(_Controller)
+
+
+class _ThreadpoolctlHook:
+    """A finder on ``sys.meta_path`` that registers NumericAL with threadpoolctl once something imports it: importing it
+    here would cost an import of NumericAL twice over (9 ms against 4 to 5). It finds nothing itself; it wraps the
+    loader the other finders find."""
+
+    @staticmethod
+    def find_spec(name, path=None, target=None):
+        if name != "threadpoolctl":
+            return None
+        _sys.meta_path.remove(_ThreadpoolctlHook)  # once, and not for its own search below
+        import importlib.util as _util
+        spec = _util.find_spec(name)
+        if spec is None or spec.loader is None:
+            return spec
+        loader = spec.loader
+        run = loader.exec_module
+
+        def exec_module(module):
+            run(module)
+            _register_threadpoolctl(module)
+
+        loader.exec_module = exec_module
+        return spec
+
+
+if "threadpoolctl" in _sys.modules:
+    _register_threadpoolctl(_sys.modules["threadpoolctl"])
+else:
+    _sys.meta_path.insert(0, _ThreadpoolctlHook)

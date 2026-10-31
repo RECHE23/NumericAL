@@ -2932,11 +2932,23 @@ inline element_type number_element(bool complex_in, bool bools)
     return {'f', 8, false};
 }
 
+// An attribute name made once, interned (immortal): a lookup by it is the type cache's, where PyObject_GetAttrString
+// makes a new string each call (0.6 µs, and under free threading the shared cache's lock).
+inline constexpr char array_struct_name[] {"__array_struct__"};
+inline constexpr char array_interface_name[] {"__array_interface__"};
+
+template <const char* Name>
+PyObject* interned_name()
+{
+    static PyObject* const name {PyUnicode_InternFromString(Name)};
+    return name;
+}
+
 // obj's elements through its __array_struct__ capsule (NumPy arrays and scalars), into `*result`; false when obj
 // has none (or not version 2), with no error set, so the caller reads __array_interface__ instead.
 inline bool asarray_from_struct(PyObject* obj, std::optional<std::size_t> wanted, PyObject** result)
 {
-    PyObject* capsule = PyObject_GetAttrString(obj, "__array_struct__"); // new ref
+    PyObject* capsule = PyObject_GetAttr(obj, interned_name<array_struct_name>()); // new ref
     if (capsule == nullptr) {
         PyErr_Clear();
         return false;
@@ -3056,7 +3068,7 @@ inline bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = 
         out.ld    = out.shape.empty() ? 0 : out.shape.back();
         return true;
     }
-    PyObject* capsule = PyObject_GetAttrString(obj, "__array_struct__"); // new ref
+    PyObject* capsule = PyObject_GetAttr(obj, interned_name<array_struct_name>()); // new ref
     if (capsule == nullptr) {
         PyErr_Clear();
         return false;
@@ -3641,7 +3653,7 @@ inline PyObject* module_asarray(PyObject* /*self*/, PyObject* args, PyObject* kw
         return fast;
     }
 
-    PyObject* ai = PyObject_GetAttrString(obj, "__array_interface__"); // new ref
+    PyObject* ai = PyObject_GetAttr(obj, interned_name<array_interface_name>()); // new ref
     if (ai == nullptr) {
         PyErr_SetString(sciforge_module_error(), "asarray: object exposes no __array_interface__");
         return nullptr;

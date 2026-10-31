@@ -243,7 +243,13 @@ PyObject* module_invert(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     try {
-        return wrap(any_tensor {numerical::detail::parallel_map(*a, [](const boolean& p) { return boolean {!p.value}; })});
+        std::optional<bool_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(a->size())};
+            // on the bytes (each 0 or 1), which vectorises as such
+            result.emplace(numerical::detail::parallel_map(*a, [](boolean p) { return boolean {(static_cast<unsigned char>(p.value) ^ 1U) != 0}; }));
+        }
+        return wrap(any_tensor {std::move(*result)});
     }
     catch (...) {
         return set_cpp_error();

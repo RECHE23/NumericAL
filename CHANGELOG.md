@@ -9,6 +9,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **NumericAL among other libraries' threads**: `OMP_NUM_THREADS` is read at import when `NUMERICAL_NUM_THREADS` is
+  absent (its first count, as OpenBLAS reads it), so joblib's workers, which set it, cap NumericAL too; and NumericAL is
+  a threadpoolctl library (`user_api="blas"`, `internal_api="numerical"`): `threadpool_limits` (scikit-learn, joblib)
+  caps it and `threadpool_info` lists it, registered when threadpoolctl is imported, before or after NumericAL, which
+  never imports it itself (9 ms, twice its own import).
 - **`solve` takes `scipy.linalg.solve`'s arguments**: `assume_a` (`"diagonal"`, `"tridiagonal"`, `"banded"`, `"upper
   triangular"`, `"lower triangular"`, `"sym"`, `"her"`, `"pos"`, `"gen"`, and their long names), `lower` (the triangle
   `"sym"`, `"her"` and `"pos"` read), `transposed`, and the `overwrite_*` and `check_finite` flags; stacks with a
@@ -18,6 +23,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   matrix's diagonal is taken real at every order, where SciPy's 1 × 1 case divides by the complex entry.
 
 ### Changed
+- **`~m` on the bytes, `asarray` and the products of a NumPy array by interned attribute names**: `~` of 10⁷ bools
+  0.17 ms (NumPy 1.0); an array's `__array_struct__` and `__array_interface__` are looked up by names made once, where
+  each call made a new string (the type cache's lock under free threading).
 - **`funm`'s Cauchy integrals on the threads, the same bits**: each circle's points' inverses `(z I − T_b)⁻¹` in
   batches on the threads, their terms then added in the points' order, the upper triangles alone: 64 eigenvalues
   spread evenly 17.6 → 4.8 ms, 128 59 → 19 ms, eight clusters of 32 at order 256 187 → 111 ms (eight threads, arm64).

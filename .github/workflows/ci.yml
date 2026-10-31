@@ -49,7 +49,7 @@ jobs:
       python-versions: '["3.10","3.14","3.14t","3.15"]'
       sciforge-ref: v2026.10.7
       deps: '[]'
-      test-cmd: 'python -m pip install mypy==2.3.0 && python -m mypy.stubtest numerical && python -m unittest discover -s python/tests'
+      test-cmd: 'python -m pip install mypy==2.3.0 threadpoolctl==3.7.0 && python -m mypy.stubtest numerical && python -m unittest discover -s python/tests'
       runner-mode: hosted
       enable-windows: true
       pre-install: numpy
