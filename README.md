@@ -119,9 +119,13 @@ Small and complete, grown measured, honest about what is not yet here:
   `B = Q T Zᴴ` with `S` and `T` triangular, as `scipy.linalg.qz(a, b, output="complex")` (LAPACK's `zgges`: QZ
   iterations with single shifts), reordered as `ordqz` (`ztgsen`'s exchanges, refused where they would not keep the
   pencil triangular).
+- `numerical::real_generalized_schur` — the generalized real Schur decomposition of a real pencil, `A = Q S Zᵀ` and
+  `B = Q T Zᵀ` with `S` quasi-triangular (2 × 2 blocks for conjugate pairs) and `T` triangular, as
+  `scipy.linalg.qz(a, b)` (LAPACK's `dgges`: the operands scaled into range, `dhgeqz`'s double shifts), reordered as
+  `ordqz` (`dtgsen`'s exchanges of 1 × 1 and 2 × 2 blocks, refused as LAPACK refuses them).
 - `numerical::solve_continuous_are(a, b, q, r, e, s)` and `solve_discrete_are` — the stabilising solutions of the
   algebraic Riccati equations, as `scipy.linalg`'s (the extended pencil, balanced, its stable deflating subspace from
-  the sorted generalized Schur form; with `e`, the balancing scales it as it scales the pencil, where SciPy 1.18 does
+  the sorted generalized Schur form, real for real operands; with `e`, the balancing scales it as it scales the pencil, where SciPy 1.18 does
   not, scipy/scipy#26555).
 - `numerical::svd_decomposition<T>` — the singular value decomposition `A = U Σ Vᴴ`
   of a real or complex `m × n` matrix, any shape: a Householder QR, then Golub–Kahan
@@ -175,7 +179,7 @@ Small and complete, grown measured, honest about what is not yet here:
   routines under a program linked against BLAS and LAPACK (`LD_PRELOAD`) or a switch such as FlexiBLAS. The Linux
   wheels carry it (see *BLAS and LAPACK for other programs*); CMake builds it with `-DNUMERICAL_BUILD_BLAS=ON`.
 
-**Grows in as measured:** sparse storage, a real QZ, the rest of the BLAS/LAPACK interface, numeric autodiff,
+**Grows in as measured:** sparse storage, the rest of the BLAS/LAPACK interface, numeric autodiff,
 iterative solvers, numerical integration, arbitrary precision.
 
 ## Build
