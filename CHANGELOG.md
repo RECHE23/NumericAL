@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.0 — 2026-11-01
+
 ### Added
 - **`release_memory()`, as oneMKL's `mkl_free_buffers`**: the workspaces NumericAL keeps between calls given back —
   the calling thread's, each pool worker's (emptied on its own thread between two runs, never inside one; a pool never
