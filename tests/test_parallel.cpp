@@ -658,6 +658,7 @@ TEST(environment_threads_reads_numerical_then_omp)
 {
   EXPECT(numerical::environment_threads(nullptr, nullptr) == 0);
   EXPECT(numerical::environment_threads(" 3 ", "8") == 3);
+  EXPECT(numerical::environment_threads("\t5\t", nullptr) == 5);
   EXPECT(numerical::environment_threads("", "4,2") == 4);
   EXPECT(numerical::environment_threads("  ", " 6 , 1") == 6);
   EXPECT(numerical::environment_threads(nullptr, "2") == 2);

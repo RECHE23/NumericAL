@@ -916,11 +916,16 @@ namespace numerical {
   [[nodiscard]] inline std::size_t environment_threads(const char* numerical,
                                                        const char* omp) noexcept
   {
-    const auto trimmed = [](std::string_view text) {
-                           const std::size_t first {text.find_first_not_of(" \t")};
-                           return first == std::string_view::npos ? std::string_view {} : text.substr(first, text.find_last_not_of(" \t") - first + 1);
+    const auto trimmed = [](std::string_view text) noexcept {
+                           while (!text.empty() && (text.front() == ' ' || text.front() == '\t')) {
+                             text.remove_prefix(1);
+                           }
+                           while (!text.empty() && (text.back() == ' ' || text.back() == '\t')) {
+                             text.remove_suffix(1);
+                           }
+                           return text;
                          };
-    const auto count = [](std::string_view digits) {
+    const auto count = [](std::string_view digits) noexcept {
                          std::size_t value {0};
                          for (const char c : digits) {
                            if (c < '0' || c > '9') {
@@ -935,7 +940,7 @@ namespace numerical {
       return count(own);
     }
     const std::string_view list {omp == nullptr ? "" : omp};
-    return count(trimmed(list.substr(0, list.find(','))));
+    return count(trimmed(std::string_view {list.data(), std::min(list.size(), list.find(','))}));
   }
 
   //! \brief The threads a kernel may use: the cap if one is set, else the hardware threads (starting none).
