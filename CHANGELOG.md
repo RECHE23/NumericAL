@@ -8,6 +8,20 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+- **`funm`'s estimate bounds its error far from normality**: Parlett's recurrence (and its block form between
+  clusters) divides by separations that fall far below the eigenvalues' gaps where `T`'s blocks are far from normal,
+  growing its roundings and the clusters' integrals' errors by their inverse; SciPy's estimate, `ε ‖strict upper T‖₁`
+  over the smallest gap, misses it. The estimate is now the recurrence run again on those errors (each integral's two
+  rules' difference and its sum's rounding, each product's rounding), never below SciPy's: eight clusters of 32 at
+  order 256 (spread 0.02, upper triangle of deviation 0.3), an error of 10⁻⁴ estimated 2·10⁻⁴ (7·10⁻¹³ before);
+  eigenvalues 0.27 apart at order 16 with entries of deviation 5, 2·10⁻¹¹ estimated 5·10⁻¹¹ (6·10⁻¹⁴, SciPy's
+  too). A dishonest estimate also chose between the two shares of clusters: `sin` of the order-256 matrix came back
+  wrong by 10⁻² estimated 7·10⁻¹³, and is now right to 7·10⁻⁵, as estimated. Each integral's estimate counts its
+  sum's rounding (`ε` times its terms' moduli), which cancels where the resolvents dwarf the integral. The
+  recurrence's products of blocks of 8 × 8 and more by `gemm`: order 512 in eight clusters 290 → 250 ms; a random
+  matrix 0.99 → 1.07 s (128: 10.6 → 12.7 ms), the estimate's own cost.
+
 ## 2026.11.0 — 2026-11-01
 
 ### Added

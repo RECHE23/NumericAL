@@ -225,6 +225,23 @@ class Funm(unittest.TestCase):
         with self.assertRaises(numerical.LinAlgError):
             numerical.funm(np.eye(3), lambda x: x[:2])
 
+    def test_estimate_bounds_the_error(self):
+        # far from normality Parlett's recurrence grows the errors SciPy's estimate misses: eight clusters of 16
+        # (spread 0.02, centres on [-2, 2]) under a strict upper triangle of deviation 0.3, and eigenvalues 0.27
+        # apart under one of deviation 5; the estimate bounds the error against expm, and is reported
+        rng = np.random.default_rng(17)
+        clustered = np.repeat(np.linspace(-2.0, 2.0, 8), 16) + rng.uniform(-0.01, 0.01, 128)
+        for diagonal, deviation in ((rng.permutation(clustered), 0.3), (rng.permutation(np.linspace(-2.0, 2.0, 16)), 5.0)):
+            n = diagonal.size
+            q, _ = np.linalg.qr(rng.standard_normal((n, n)))
+            a = q @ (np.diag(diagonal) + np.triu(deviation * rng.standard_normal((n, n)), 1)) @ q.T
+            f, err = numerical.funm(a, np.exp, disp=False)
+            expected = np.asarray(numerical.expm(a))
+            error = np.abs(np.asarray(f) - expected).sum(axis=0).max() / np.abs(expected).sum(axis=0).max()
+            self.assertGreater(error, 1000 * np.finfo(float).eps)
+            self.assertGreaterEqual(err, error)
+            self.assertLess(err, 1000 * error)
+
     @unittest.skipIf(sl is None, "SciPy is not installed")
     def test_against_scipy(self):
         rng = np.random.default_rng(15)

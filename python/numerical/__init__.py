@@ -1201,7 +1201,8 @@ def funm(A, func, disp=True):
     clusters within 0.01 instead. A Hermitian `A`:
     ``V f(Λ) Vᴴ`` from its eigendecomposition. With ``disp=True`` (the default) a likely inaccurate result is reported
     on standard output, as SciPy's; with ``disp=False`` ``(F, err)`` is returned, `err` the estimate of
-    ``‖error‖₁ / ‖A‖₁``.
+    ``‖error‖₁ / ‖A‖₁``: the recurrence run again on its own roundings and the integrals' errors, never below SciPy's
+    (which far from normality can say 10⁻¹³ of an error of 10⁻²).
 
     Raises:
         LinAlgError: if `A` is not square or holds an infinite or NaN entry, or `func` does not return one value per

@@ -791,6 +791,7 @@ TEST(funm_takes_the_points_its_integrals_ask)
   EXPECT_THROWS(static_cast<void>(numerical::finish_funm(empty, values {})), numerical::dimension_error);
 }
 
+
 // funm where eigenvalues gather (within 10⁻² of the largest, or of 1): the Schur form reordered by clusters, each
 // cluster's block by Cauchy's integral on a circle (64 trapezoidal points, the even 32's the estimate), the blocks above
 // by the block recurrence. Jordan blocks (exp, cos), eigenvalues 10⁻⁸ apart, a cluster beside a single eigenvalue
@@ -919,4 +920,45 @@ TEST(expm_multiply_is_expm_times_b)
                 numerical::non_finite_error);
   std::vector<double> nan(9, std::numeric_limits<double>::quiet_NaN());
   EXPECT_THROWS(static_cast<void>(numerical::expm_multiply(matrix<double> {3, 3, nan}, b)), numerical::non_finite_error);
+}
+
+// funm's estimate bounds its error where Parlett's recurrence grows it far from normality, against expm: eight clusters
+// of 16 at order 128 (centres on [−2, 2], each spread over 0.02, the strict upper triangle's entries of deviation
+// 0.3), whose integrals are right to 10⁻¹³ and whose blocks above them are not (SciPy's estimate said 8·10⁻¹⁴ of an
+// error of 4·10⁻¹²), reported past SciPy's 10³ ε; and eigenvalues 0.27 apart at order 16 with entries of deviation 5,
+// Parlett's recurrence alone, where SciPy's said 6·10⁻¹⁴ of 2·10⁻¹¹.
+TEST(funm_estimate_bounds_its_error)
+{
+  using values = std::vector<C>;
+  const auto exponential = [](const values& x) {
+                             values y(x.size());
+                             std::ranges::transform(x, y.begin(), [](const C& z) { return std::exp(z); });
+                             return y;
+                           };
+  const auto triangle = [](std::size_t n, const std::vector<double>& diagonal, double deviation, std::uint64_t seed) {
+                          const matrix<double> drawn {drawn_matrix<double>(n, n, deviation * std::numbers::sqrt3, seed)};
+                          std::vector<double>  entries(n * n, 0.0);
+                          for (std::size_t i {0}; i < n; ++i) {
+                            entries[(i * n) + i] = diagonal[i];
+                            for (std::size_t j {i + 1}; j < n; ++j) {
+                              entries[(i * n) + j] = drawn(i, j);
+                            }
+                          }
+                          return matrix<double> {n, n, entries};
+                        };
+  const std::size_t    n      {128};
+  const matrix<double> spread {drawn_matrix<double>(n, 1, 0.01, 21)};
+  std::vector<double>  clustered(n);
+  for (std::size_t i {0}; i < n; ++i) { // the clusters interleaved along the diagonal: the Schur form reordered
+    clustered[i] = -2.0 + ((4.0 / 7.0) * static_cast<double>((i * 5) % 8)) + spread(i, 0);
+  }
+  std::vector<double> apart(16);
+  for (std::size_t i {0}; i < 16; ++i) {
+    apart[i] = -2.0 + ((4.0 / 15.0) * static_cast<double>((i * 7) % 16));
+  }
+  for (const matrix<double>& a : {triangle(n, clustered, 0.3, 22), triangle(16, apart, 5.0, 23)}) {
+    const numerical::funm_result r     {numerical::funm(a, exponential)};
+    const double                 error {relative_gap(r.f, numerical::detail::as_complex(numerical::expm(a)))};
+    EXPECT(error > 1e3 * std::numeric_limits<double>::epsilon() && r.error >= error && r.error < 1e3 * error);
+  }
 }

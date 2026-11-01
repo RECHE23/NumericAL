@@ -1506,6 +1506,167 @@ namespace numerical {
     return std::move(*root);
   }
 
+  namespace detail {
+
+    //! \brief A direction of unit modulus for the rounding of entry \p place of an estimate's model, fixed and
+    //!        varying from one entry to the next.
+    [[nodiscard]] inline std::complex<double> rounding_direction(std::size_t place)
+    {
+      // the turn a Weyl sequence's fraction (the golden ratio's), well spread for consecutive places
+      const std::uint64_t fraction {(static_cast<std::uint64_t>(place) + 1) * std::uint64_t {0x9E3779B97F4A7C15}};
+      return std::polar(1.0, 2.0 * std::numbers::pi * std::ldexp(static_cast<double>(fraction >> 11), -53));
+    }
+
+    //! \brief The blocks' size (`rows × columns`) from which \ref solve_upper_blocks forms a block's terms by
+    //!        `gemm`: below it, a call costs more than its sums (a random matrix's clusters, most of one eigenvalue).
+    inline constexpr std::size_t upper_block_product_least {64};
+
+    inline void solve_upper_blocks(const matrix<std::complex<double>>& t,
+                                   const std::vector<std::size_t>&     starts,
+                                   buffer<std::complex<double>>&       x,
+                                   const std::complex<double>*         sources)
+    {
+      using C = std::complex<double>;
+      const std::size_t n     {t.rows()};
+      const std::size_t count {starts.size() - 1};
+      buffer<C>         form(n * n);    // T by rows, for the products
+      buffer<C>         columns(n * n); // T by columns, and X: the small blocks' sums contiguous along both operands
+      buffer<C>         x_columns(n * n);
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          form[(i * n) + j]      = t(i, j);
+          columns[(j * n) + i]   = t(i, j);
+          x_columns[(j * n) + i] = x[(i * n) + j];
+        }
+      }
+      buffer<C> rhs;
+      buffer<C> product;
+      buffer<C> left;
+      buffer<C> right;
+      for (std::size_t d {1}; d < count; ++d) {
+        for (std::size_t bi {0}; bi + d < count; ++bi) {
+          const std::size_t bj    {bi + d};
+          const std::size_t i0    {starts[bi]};
+          const std::size_t pi    {starts[bi + 1] - i0};
+          const std::size_t j0    {starts[bj]};
+          const std::size_t pj    {starts[bj + 1] - j0};
+          const std::size_t depth {j0 + pj - i0}; // X_ij still 0 among its terms
+          rhs.resize(pi * pj);
+          product.resize(pi * pj);
+          if (pi * pj >= upper_block_product_least) {
+            gemm(pi, pj, depth, x.data() + (i0 * n) + i0, n, form.data() + (i0 * n) + j0, n, rhs.data(), pj, c_start::zero);
+            gemm(pi, pj, depth, form.data() + (i0 * n) + i0, n, x.data() + (i0 * n) + j0, n, product.data(), pj, c_start::zero);
+          }
+          else {
+            for (std::size_t i {0}; i < pi; ++i) {
+              for (std::size_t j {0}; j < pj; ++j) {
+                C              forward  {};
+                C              backward {};
+                const C* const x_row    {x.data() + ((i0 + i) * n)};
+                const C* const t_row    {form.data() + ((i0 + i) * n)};
+                const C* const t_column {columns.data() + ((j0 + j) * n)};
+                const C* const x_column {x_columns.data() + ((j0 + j) * n)};
+                for (std::size_t q {i0}; q < j0 + pj; ++q) {
+                  forward  += x_row[q] * t_column[q];
+                  backward += t_row[q] * x_column[q];
+                }
+                rhs[(i * pj) + j]     = forward;
+                product[(i * pj) + j] = backward;
+              }
+            }
+          }
+          for (std::size_t i {0}; i < pi; ++i) {
+            for (std::size_t j {0}; j < pj; ++j) {
+              const C source {sources == nullptr ? C {} : sources[((i0 + i) * n) + j0 + j]};
+              rhs[(i * pj) + j] = (rhs[(i * pj) + j] - product[(i * pj) + j]) + source;
+            }
+          }
+          left.resize(pi * pi);
+          right.resize(pj * pj);
+          for (std::size_t i {0}; i < pi; ++i) {
+            std::copy_n(form.data() + ((i0 + i) * n) + i0, pi, left.data() + (i * pi));
+          }
+          for (std::size_t i {0}; i < pj; ++i) {
+            for (std::size_t j {0}; j < pj; ++j) {
+              right[(i * pj) + j] = -form[((j0 + i) * n) + j0 + j];
+            }
+          }
+          triangular_sylvester(left, pi, right, pj, rhs);
+          for (std::size_t i {0}; i < pi; ++i) {
+            for (std::size_t j {0}; j < pj; ++j) {
+              x[((i0 + i) * n) + j0 + j]         = rhs[(i * pj) + j];
+              x_columns[((j0 + j) * n) + i0 + i] = rhs[(i * pj) + j];
+            }
+          }
+        }
+      }
+    }
+
+    /*!
+     * \brief The error of `f(T)`, \p fx, from the block recurrence (\ref solve_upper_blocks) over the runs \p starts
+     *        of \p t's diagonal, relative to its largest entry: the recurrence run again on the error alone, from its
+     *        diagonal blocks' errors (\p error, `n × n`, its diagonal blocks set: \ref circle_error for a cluster,
+     *        `f`'s rounding for one eigenvalue), each entry above them with its rounding as a source,
+     *        `ε (Σ |F_ik| |T_kj| + |T_ik| |F_kj|)` over the products that form it (the moduli as `|re| + |im|`), in a
+     *        direction of its own (\ref rounding_direction). Where clusters are far from normal, the separation of
+     *        their blocks falls far below their eigenvalues' gaps and the recurrence grows the diagonal blocks' errors
+     *        and its own roundings by its inverse: eight clusters of 32 at order 256 (spread 0.01, `T`'s strict upper
+     *        triangle 0.3 N(0, 1)), integrals right to 10⁻¹¹ each and `f(T)` wrong by 10⁻⁴ above them (by 10⁻⁶ from
+     *        the roundings alone, a recurrence in 30 digits from the same blocks shows), where SciPy's estimate,
+     *        `ε ‖strict upper T‖₁` over the smallest gap, said 7·10⁻¹³; this one says 2·10⁻⁴.
+     */
+    [[nodiscard]] inline double recurrence_error(const matrix<std::complex<double>>& t,
+                                                 const std::vector<std::size_t>&     starts,
+                                                 const buffer<std::complex<double>>& fx,
+                                                 buffer<std::complex<double>>        error)
+    {
+      using C = std::complex<double>;
+      const std::size_t n {t.rows()};
+      buffer<double>    t_moduli(n * n);
+      buffer<double>    f_moduli(n * n);
+      double            size {0.0};
+      for (std::size_t e {0}; e < n * n; ++e) {
+        t_moduli[e] = std::abs(t(e / n, e % n).real()) + std::abs(t(e / n, e % n).imag());
+        f_moduli[e] = std::abs(fx[e].real()) + std::abs(fx[e].imag());
+        size        = std::max(size, std::abs(fx[e]));
+      }
+      buffer<double> moduli(n * n); // |F| |T| + |T| |F|: the products' moduli each entry above sums (both upper triangular)
+      gemm(n, n, n, f_moduli.data(), n, t_moduli.data(), n, moduli.data(), n, c_start::zero);
+      gemm(n, n, n, t_moduli.data(), n, f_moduli.data(), n, moduli.data(), n, c_start::kept);
+      buffer<C> sources(n * n, C {});
+      for (std::size_t b {0}; b + 1 < starts.size(); ++b) {
+        for (std::size_t i {starts[b]}; i < starts[b + 1]; ++i) {
+          for (std::size_t j {starts[b + 1]}; j < n; ++j) {
+            sources[(i * n) + j] = std::numeric_limits<double>::epsilon() * moduli[(i * n) + j] * rounding_direction((i * n) + j);
+          }
+        }
+      }
+      solve_upper_blocks(t, starts, error, sources.data());
+      double largest {0.0};
+      for (const C& entry : error) {
+        largest = std::max(largest, std::abs(entry));
+      }
+      return largest / std::max(size, std::numeric_limits<double>::min());
+    }
+
+    //! \brief SciPy's estimate for Parlett's recurrence on \p t: `min(1, max(ε, ε ‖strict upper T‖₁ / δ))`, `δ`
+    //!        \p smallest (`ε` where 0).
+    [[nodiscard]] inline double parlett_estimate(const matrix<std::complex<double>>& t,
+                                                 double                              smallest)
+    {
+      const double tolerance {std::numeric_limits<double>::epsilon()};
+      double       upper     {0.0}; // ‖strict upper triangle of T‖₁
+      for (std::size_t j {1}; j < t.rows(); ++j) {
+        double column {0.0};
+        for (std::size_t i {0}; i < j; ++i) {
+          column += std::abs(t(i, j));
+        }
+        upper = std::max(upper, column);
+      }
+      return std::min(1.0, std::max(tolerance, (tolerance / (smallest == 0.0 ? tolerance : smallest)) * upper));
+    }
+  } // namespace detail
+
   /*!
    * \brief A function of a square matrix from its complex Schur form, as `scipy.linalg.funm` forms it: `f(A)` and the
    *        estimate of its relative error.
@@ -1513,7 +1674,7 @@ namespace numerical {
   struct funm_result
   {
     matrix<std::complex<double>> f;           //!< `f(A)`, complex (SciPy's real part where `A` is real and it is negligible).
-    double                       error {0.0}; //!< `‖err‖₁ / ‖A‖₁` estimated as SciPy's: `min(1, max(ε, ε ‖strict triu T‖₁ / δ))`.
+    double                       error {0.0}; //!< `‖err‖₁ / ‖A‖₁` estimated: Parlett's recurrence run again on its errors (\ref detail::recurrence_error), never below SciPy's `min(1, max(ε, ε ‖strict triu T‖₁ / δ))`.
     std::vector<double>          contours;    //!< Each circle's integral's own estimate (half its points against all).
   };
 
@@ -1538,8 +1699,10 @@ namespace numerical {
    * \brief `f(A)` from the complex Schur form `A = Z T Zᴴ` and `f` at `T`'s diagonal (\p values), as `scipy.linalg.funm`
    *        completes it: Parlett's recurrence (Golub and Van Loan's algorithm 11.1.1) on `F`, a superdiagonal at a time,
    *        `F(i, j) = (T(i, j) (F(j, j) − F(i, i)) + Σ T(i, k) F(k, j) − Σ F(i, k) T(k, j)) / (T(j, j) − T(i, i))` (not
-   *        divided where two diagonal entries are equal, as SciPy's, the error estimate then 1), then `Z F Zᴴ`; `δ` the
-   *        smallest `|T(j, j) − T(i, i)|` met (or `|T(0, 0)|`, `ε` where 0).
+   *        divided where two diagonal entries are equal, as SciPy's, the error estimate then 1), then `Z F Zᴴ`. The
+   *        estimate: the recurrence run again on its roundings (\ref detail::recurrence_error), or SciPy's where larger,
+   *        `δ` the smallest `|T(j, j) − T(i, i)|` met (or `|T(0, 0)|`, `ε` where 0); SciPy's alone said 6·10⁻¹⁴ of an
+   *        error of 2·10⁻¹¹ (order 16, eigenvalues 0.27 apart, `T`'s strict upper triangle 5 N(0, 1)).
    * \throws dimension_error If \p t and \p z are not square of one order or \p values does not hold `n` entries.
    */
   [[nodiscard]] inline funm_result funm_from_schur(const matrix<std::complex<double>>&      t,
@@ -1592,17 +1755,15 @@ namespace numerical {
         smallest        = std::min(smallest, std::abs(gap));
       }
     }
-    smallest = smallest == 0.0 ? tolerance : smallest;
-    double upper {0.0}; // ‖strict upper triangle of T‖₁
-    for (std::size_t j {1}; j < n; ++j) {
-      double column {0.0};
-      for (std::size_t i {0}; i < j; ++i) {
-        column += std::abs(t(i, j));
-      }
-      upper = std::max(upper, column);
+    buffer<C> rounding(n * n, C {}); // f at each eigenvalue, rounded
+    for (std::size_t i {0}; i < n; ++i) {
+      rounding[(i * n) + i] = tolerance * values[i] * detail::rounding_direction(i);
     }
-    const matrix<C> result {z * matrix<C> {n, n, std::move(f)} *detail::adjoint_of(z)};
-    double          error  {std::min(1.0, std::max(tolerance, (tolerance / smallest) * upper))};
+    std::vector<std::size_t> places(n + 1);
+    std::iota(places.begin(), places.end(), std::size_t {0});
+    const double    recurrence {detail::recurrence_error(t, places, f, std::move(rounding))};
+    const matrix<C> result     {z * matrix<C> {n, n, std::move(f)} *detail::adjoint_of(z)};
+    double          error      {std::min(1.0, std::max(detail::parlett_estimate(t, smallest), recurrence))};
     for (const C& x : result) { // x − x is 0 for a finite part and NaN for an infinite or NaN one, without overflow
       error = (x.real() - x.real()) + (x.imag() - x.imag()) == 0.0 ? error : std::numeric_limits<double>::infinity();
     }
@@ -1875,7 +2036,8 @@ namespace numerical {
                                  std::size_t                         from,
                                  std::size_t                         step,
                                  const std::complex<double>*         images,
-                                 buffer<std::complex<double>>&       sum)
+                                 buffer<std::complex<double>>&       sum,
+                                 buffer<double>&                     moduli)
     {
       using C = std::complex<double>;
       // The points' inverses in batches on the threads (each point's own buffers), then their terms added in the
@@ -1908,7 +2070,9 @@ namespace numerical {
           const C* const    x      {inverses.data() + (b * p * p)};
           for (std::size_t i {0}; i < p; ++i) {
             for (std::size_t j {i}; j < p; ++j) {
-              sum[(i * p) + j] += weight * x[(i * p) + j];
+              const C term {weight * x[(i * p) + j]};
+              sum[(i * p) + j]    += term;
+              moduli[(i * p) + j] += std::abs(term.real()) + std::abs(term.imag());
             }
           }
         }
@@ -1932,104 +2096,104 @@ namespace numerical {
 
     /*!
      * \brief A circle's integral from its rule's sum over \p count points, \p whole, and over the even ones,
-     *        \p half (each divided by its count here), and its own estimate: the two rules' largest difference, and
-     *        the diagonal's against \p diagonal (`f` at the cluster's eigenvalues: a singularity of `f` in the disk
-     *        breaks it), relative to the integral's largest entry.
+     *        \p half (each divided by its count here), and its own estimate, relative to the integral's largest entry:
+     *        the two rules' largest difference, the diagonal's against \p diagonal (`f` at the cluster's eigenvalues: a
+     *        singularity of `f` in the disk breaks it), and the sum's rounding, `ε` times its terms' moduli (\p moduli,
+     *        summed over the \p count points). A cluster far from normal has resolvents on its circle whose terms
+     *        cancel to an integral orders below them (eight clusters of 32 at order 256: an integral wrong by
+     *        2·10⁻⁴ where the rules agreed to 4·10⁻¹¹); more points do not bring those digits back.
      */
     [[nodiscard]] inline double circle_integral(buffer<std::complex<double>>&       whole,
                                                 buffer<std::complex<double>>&       half,
+                                                const buffer<double>&               moduli,
                                                 std::size_t                         p,
                                                 std::size_t                         count,
                                                 const std::complex<double>*         diagonal)
     {
-      double size {0.0};
-      double gap  {0.0};
+      double size     {0.0};
+      double gap      {0.0};
+      double rounding {0.0};
       for (std::size_t e {0}; e < p * p; ++e) {
         whole[e] /= static_cast<double>(count);
         half[e]  /= static_cast<double>(count) / 2.0;
         size      = std::max(size, std::abs(whole[e]));
         gap       = std::max(gap, std::abs(whole[e] - half[e]));
+        rounding  = std::max(rounding, moduli[e]);
       }
       for (std::size_t i {0}; i < p; ++i) {
         gap = std::max(gap, std::abs(whole[(i * p) + i] - diagonal[i]));
       }
+      gap = std::max(gap, std::numeric_limits<double>::epsilon() * rounding / static_cast<double>(count));
       return size > 0.0 ? gap / size : gap;
     }
 
     /*!
+     * \brief The error of a circle's integral \p whole as \ref recurrence_error carries it above the diagonal: the
+     *        two rules' difference (`whole − half`, a function of the block as its integral's error is), and its sum's
+     *        rounding, `ε` times its terms' moduli (\p moduli, summed over the \p count points), each entry in a
+     *        direction of its own. \p whole and \p half as \ref circle_integral leaves them (`p × p`).
+     */
+    [[nodiscard]] inline buffer<std::complex<double>> circle_error(const buffer<std::complex<double>>& whole,
+                                                                   const buffer<std::complex<double>>& half,
+                                                                   const buffer<double>&               moduli,
+                                                                   std::size_t                         count)
+    {
+      buffer<std::complex<double>> error(whole.size());
+      for (std::size_t e {0}; e < whole.size(); ++e) {
+        error[e] = (whole[e] - half[e]) + (std::numeric_limits<double>::epsilon() * (moduli[e] / static_cast<double>(count)) * rounding_direction(e));
+      }
+      return error;
+    }
+
+    /*!
+     * \brief The blocks of \p x above its diagonal (`n × n`, row-major, its diagonal blocks given) by the block
+     *        recurrence of Davies and Higham's Schur–Parlett algorithm, a block superdiagonal at a time:
+     *        `T_ii X_ij − X_ij T_jj = X_ii T_ij − T_ij X_jj + Σ (X_ik T_kj − T_ik X_kj) + S_ij`, a triangular Sylvester
+     *        equation each, the clusters as runs of \p t's diagonal (\p starts, each run's first place, then `n`), and
+     *        `S` \p sources (`n × n`), or none where null.
+     */
+    /*!
      * \brief `f(T)` of the Schur form \p t with clusters as runs of its diagonal (\p circles), each cluster's block
-     *        given in \p blocks (its circle's integral, the clusters of one eigenvalue none) and `f` at the
-     *        eigenvalues in \p at_eigenvalues: Davies and Higham's Schur–Parlett algorithm (2003), the blocks above
-     *        the diagonal by the block recurrence, a triangular Sylvester equation each. \return `f(T)` and SciPy's
-     *        estimate for Parlett's recurrence with the clusters' separation.
+     *        given in \p blocks (its circle's integral, the clusters of one eigenvalue none) with its estimate in
+     *        \p contours (in the circles' order), and `f` at the eigenvalues in \p at_eigenvalues: Davies and Higham's
+     *        Schur–Parlett algorithm (2003), the blocks above the diagonal by the block recurrence
+     *        (\ref solve_upper_blocks). \return `f(T)` and its estimate (\ref recurrence_error).
      */
     [[nodiscard]] inline std::pair<buffer<std::complex<double>>, double> assembled_function(const matrix<std::complex<double>>&              t,
                                                                                             const cluster_circles&                           circles,
                                                                                             const std::vector<buffer<std::complex<double>>>& blocks,
+                                                                                            const std::vector<buffer<std::complex<double>>>& errors,
                                                                                             const std::vector<std::complex<double>>&         at_eigenvalues)
     {
       using C = std::complex<double>;
-      const std::size_t n           {t.rows()};
-      const std::size_t count       {circles.radii.size()};
-      buffer<C>         fx(n * n, C {});
+      const std::size_t n              {t.rows()};
+      const std::size_t count          {circles.radii.size()};
+      buffer<C>         fx(n * n, C    {});
+      buffer<C>         error(n * n, C {}); // the diagonal blocks' errors, as recurrence_error starts from them
       for (std::size_t b {0}; b < count; ++b) {
         const std::size_t first {circles.starts[b]};
         const std::size_t p     {circles.starts[b + 1] - first};
         if (p == 1) {
-          fx[(first * n) + first] = at_eigenvalues[first];
+          fx[(first * n) + first]    = at_eigenvalues[first];
+          error[(first * n) + first] = std::numeric_limits<double>::epsilon() * at_eigenvalues[first] * rounding_direction(first);
           continue;
         }
         for (std::size_t i {0}; i < p; ++i) {
           std::copy_n(blocks[b].data() + (i * p), p, fx.data() + ((first + i) * n) + first);
+          std::copy_n(errors[b].data() + (i * p), p, error.data() + ((first + i) * n) + first);
         }
       }
-      double separation {std::numeric_limits<double>::infinity()};
-      for (std::size_t d {1}; d < count; ++d) { // the block recurrence, a block superdiagonal at a time
-        for (std::size_t bi {0}; bi + d < count; ++bi) {
-          const std::size_t bj             {bi + d};
-          const std::size_t i0             {circles.starts[bi]};
-          const std::size_t pi             {circles.starts[bi + 1] - i0};
-          const std::size_t j0             {circles.starts[bj]};
-          const std::size_t pj             {circles.starts[bj + 1] - j0};
-          buffer<C>         rhs(pi * pj, C {}); // F_ii T_ij − T_ij F_jj + Σ (F_ik T_kj − T_ik F_kj), F_ij still 0
-          for (std::size_t i {0}; i < pi; ++i) {
-            for (std::size_t j {0}; j < pj; ++j) {
-              C sum {};
-              for (std::size_t q {i0}; q < j0 + pj; ++q) {
-                sum += (fx[((i0 + i) * n) + q] * t(q, j0 + j)) - (t(i0 + i, q) * fx[(q * n) + j0 + j]);
-              }
-              rhs[(i * pj) + j] = sum;
-              separation        = std::min(separation, std::abs(t(i0 + i, i0 + i) - t(j0 + j, j0 + j)));
-            }
-          }
-          buffer<C> left(pi * pi);
-          buffer<C> right(pj * pj);
-          for (std::size_t i {0}; i < pi; ++i) {
-            for (std::size_t j {0}; j < pi; ++j) {
-              left[(i * pi) + j] = t(i0 + i, i0 + j);
-            }
-          }
-          for (std::size_t i {0}; i < pj; ++i) {
-            for (std::size_t j {0}; j < pj; ++j) {
-              right[(i * pj) + j] = -t(j0 + i, j0 + j);
-            }
-          }
-          triangular_sylvester(left, pi, right, pj, rhs);
-          for (std::size_t i {0}; i < pi; ++i) {
-            std::copy_n(rhs.data() + (i * pj), pj, fx.data() + ((i0 + i) * n) + j0);
+      double separation {std::numeric_limits<double>::infinity()}; // the smallest gap between two clusters' eigenvalues
+      for (std::size_t b {0}; b < count; ++b) {
+        for (std::size_t i {circles.starts[b]}; i < circles.starts[b + 1]; ++i) {
+          for (std::size_t j {circles.starts[b + 1]}; j < n; ++j) {
+            separation = std::min(separation, std::abs(t(i, i) - t(j, j)));
           }
         }
       }
-      double upper {0.0}; // ‖strict upper triangle of T‖₁, as funm_from_schur's estimate
-      for (std::size_t j {1}; j < n; ++j) {
-        double column {0.0};
-        for (std::size_t i {0}; i < j; ++i) {
-          column += std::abs(t(i, j));
-        }
-        upper = std::max(upper, column);
-      }
-      const double tolerance {std::numeric_limits<double>::epsilon()};
-      return {std::move(fx), std::min(1.0, std::max(tolerance, (tolerance / separation) * upper))};
+      solve_upper_blocks(t, circles.starts, fx, nullptr);
+      const double estimate {recurrence_error(t, circles.starts, fx, std::move(error))};
+      return {std::move(fx), std::min(1.0, std::max(parlett_estimate(t, separation), estimate))};
     }
 
     /*!
@@ -2054,8 +2218,9 @@ namespace numerical {
         throw dimension_error("funm requires one value per eigenvalue and an even count on each circle");
       }
       std::vector<buffer<C>> blocks(circles.radii.size());
+      std::vector<buffer<C>> errors(circles.radii.size()); // each block's, as assembled_function carries them
       std::vector<double>    contours;
-      std::size_t            next {n}; // the next circle's first image
+      std::size_t            next {n};                     // the next circle's first image
       for (std::size_t b {0}; b < circles.radii.size(); ++b) {
         const std::size_t first {circles.starts[b]};
         const std::size_t p     {circles.starts[b + 1] - first};
@@ -2070,18 +2235,20 @@ namespace numerical {
         for (std::size_t k {0}; k < count; ++k) {
           (k % 2 == 0 ? even_images : odd_images).push_back(images[next + k]);
         }
-        add_circle_terms(t, first, p, circles.centres[b], circles.radii[b], count, 0, 2, even_images.data(), half);
-        add_circle_terms(t, first, p, circles.centres[b], circles.radii[b], count, 1, 2, odd_images.data(), odd);
+        buffer<double>    moduli(p * p, 0.0);
+        add_circle_terms(t, first, p, circles.centres[b], circles.radii[b], count, 0, 2, even_images.data(), half, moduli);
+        add_circle_terms(t, first, p, circles.centres[b], circles.radii[b], count, 1, 2, odd_images.data(), odd, moduli);
         buffer<C> whole(p * p);
         for (std::size_t e {0}; e < p * p; ++e) {
           whole[e] = half[e] + odd[e];
         }
-        contours.push_back(circle_integral(whole, half, p, count, images.data() + first));
+        contours.push_back(circle_integral(whole, half, moduli, p, count, images.data() + first));
+        errors[b] = circle_error(whole, half, moduli, count);
         blocks[b] = std::move(whole);
         next     += count;
       }
       const std::vector<C> at_eigenvalues(images.begin(), images.begin() + static_cast<std::ptrdiff_t>(n));
-      auto [fx, estimate] {assembled_function(t, circles, blocks, at_eigenvalues)};
+      auto [fx, estimate] {assembled_function(t, circles, blocks, errors, at_eigenvalues)};
       const double contour_error {*std::ranges::max_element(contours)}; // a circle at least: images past the eigenvalues
       return {std::move(fx), std::min(1.0, std::max(estimate, contour_error)), std::move(contours)};
     }
@@ -2256,6 +2423,7 @@ namespace numerical {
                              std::vector<std::size_t>      at;     // each circle's block
                              std::vector<buffer<C>>        sums;   // its rule's sum over all its points so far
                              std::vector<buffer<C>>        halves; // over the even ones
+                             std::vector<buffer<double>>   moduli; // its terms' moduli, summed
                              for (std::size_t b {0}; b < circles.radii.size(); ++b) {
                                if (circles.radii[b] > 0.0) {
                                  at.push_back(b);
@@ -2271,10 +2439,12 @@ namespace numerical {
                                  (k % 2 == 0 ? even_images : odd_images).push_back(images[next + k]);
                                }
                                next += plan.counts[c];
-                               buffer<C> half(p * p, C {});
-                               buffer<C> odd(p * p, C  {});
-                               detail::add_circle_terms(plan.t, circles.starts[b], p, circles.centres[b], circles.radii[b], plan.counts[c], 0, 2, even_images.data(), half);
-                               detail::add_circle_terms(plan.t, circles.starts[b], p, circles.centres[b], circles.radii[b], plan.counts[c], 1, 2, odd_images.data(), odd);
+                               buffer<C>      half(p * p, C {});
+                               buffer<C>      odd(p * p, C  {});
+                               buffer<double> sizes(p * p, 0.0);
+                               detail::add_circle_terms(plan.t, circles.starts[b], p, circles.centres[b], circles.radii[b], plan.counts[c], 0, 2, even_images.data(), half, sizes);
+                               detail::add_circle_terms(plan.t, circles.starts[b], p, circles.centres[b], circles.radii[b], plan.counts[c], 1, 2, odd_images.data(), odd, sizes);
+                               moduli.push_back(std::move(sizes));
                                for (std::size_t e {0}; e < p * p; ++e) {
                                  odd[e] += half[e];
                                }
@@ -2285,14 +2455,16 @@ namespace numerical {
                              std::vector<double>      errors(at.size());
                              std::vector<bool>        settled(at.size(), false);
                              std::vector<buffer<C>>   blocks(circles.radii.size());
+                             std::vector<buffer<C>>   block_errors(circles.radii.size());
                              const auto               integrals = [&] { // each block from its sums, and its estimate
                                                                     for (std::size_t c {0}; c < at.size(); ++c) {
                                                                       const std::size_t b     {at[c]};
                                                                       const std::size_t p     {circles.starts[b + 1] - circles.starts[b]};
                                                                       buffer<C>         whole {sums[c]};
                                                                       buffer<C>         half  {halves[c]};
-                                                                      errors[c] = detail::circle_integral(whole, half, p, counts[c], images.data() + circles.starts[b]);
-                                                                      blocks[b] = std::move(whole);
+                                                                      errors[c]       = detail::circle_integral(whole, half, moduli[c], p, counts[c], images.data() + circles.starts[b]);
+                                                                      block_errors[b] = detail::circle_error(whole, half, moduli[c], counts[c]);
+                                                                      blocks[b]       = std::move(whole);
                                                                     }
                                                                   };
                              integrals();
@@ -2322,7 +2494,7 @@ namespace numerical {
                                  const std::size_t b              {at[c]};
                                  const std::size_t p              {circles.starts[b + 1] - circles.starts[b]};
                                  buffer<C>         added(p * p, C {});
-                                 detail::add_circle_terms(plan.t, circles.starts[b], p, circles.centres[b], circles.radii[b], 2 * counts[c], 1, 2, fresh_images.data() + offset, added);
+                                 detail::add_circle_terms(plan.t, circles.starts[b], p, circles.centres[b], circles.radii[b], 2 * counts[c], 1, 2, fresh_images.data() + offset, added, moduli[c]);
                                  offset   += counts[c];
                                  halves[c] = sums[c];
                                  for (std::size_t e {0}; e < p * p; ++e) {
@@ -2336,7 +2508,7 @@ namespace numerical {
                                }
                              }
                              const std::vector<C> at_eigenvalues(images.begin(), images.begin() + static_cast<std::ptrdiff_t>(n));
-                             auto [f_of_t, estimate] {detail::assembled_function(plan.t, circles, blocks, at_eigenvalues)};
+                             auto [f_of_t, estimate] {detail::assembled_function(plan.t, circles, blocks, block_errors, at_eigenvalues)};
                              const double contour_error {*std::ranges::max_element(errors)};
                              return detail::funm_answer(plan.z * matrix<C> {n, n, std::move(f_of_t)} *detail::adjoint_of(plan.z),
                                                         std::min(1.0, std::max(estimate, contour_error)), std::move(errors), at_eigenvalues);
