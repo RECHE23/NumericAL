@@ -65,9 +65,12 @@ TEST(release_memory_empties_every_thread_s_workspaces)
                                                                                        });
                                                        return *std::ranges::max_element(seen);
                                                      };
-  static_cast<void>(a * a);
-  EXPECT(capacities() > 0 || numerical::max_threads() == 1); // some thread keeps its packing
-  std::vector<double> c(9, 0.0);                             // syrk's copy of α A, kept by the calling thread
+  numerical::set_max_threads(1);
+  static_cast<void>(a * a);      // on the calling thread alone, which keeps its packing whatever the workers do
+  numerical::set_max_threads(0);
+  EXPECT(numerical::detail::packing_storage<double>::kept().capacity() > 0);
+  static_cast<void>(a * a);      // and on the threads
+  std::vector<double> c(9, 0.0); // syrk's copy of α A, kept by the calling thread
   EXPECT(numerical::blas::syrk('L', 'N', 3, 3, 2.0, std::vector<double>(9, 1.0).data(), 3, 0.0, c.data(), 3) == 0);
   EXPECT(numerical::blas::detail::syrk_operand().capacity() > 0);
   numerical::release_memory();
@@ -647,3 +650,20 @@ TEST(a_forked_child_runs_its_kernels_alone)
   EXPECT(every_child_completed);
 }
 #endif
+
+// The environment's cap as the Python package and OpenBLAS read it: NUMERICAL_NUM_THREADS first (blanks around it),
+// then OMP_NUM_THREADS's first count; neither, a blank, a value that is not a count (a sign, a word), or OMP's 0: no
+// cap; past 2³¹, 2³¹.
+TEST(environment_threads_reads_numerical_then_omp)
+{
+  EXPECT(numerical::environment_threads(nullptr, nullptr) == 0);
+  EXPECT(numerical::environment_threads(" 3 ", "8") == 3);
+  EXPECT(numerical::environment_threads("", "4,2") == 4);
+  EXPECT(numerical::environment_threads("  ", " 6 , 1") == 6);
+  EXPECT(numerical::environment_threads(nullptr, "2") == 2);
+  EXPECT(numerical::environment_threads("two", "4") == 0);
+  EXPECT(numerical::environment_threads("-1", "4") == 0);
+  EXPECT(numerical::environment_threads(nullptr, "0") == 0);
+  EXPECT(numerical::environment_threads(nullptr, "x,4") == 0);
+  EXPECT(numerical::environment_threads("99999999999999999999", nullptr) == (std::size_t {1} << 31U));
+}

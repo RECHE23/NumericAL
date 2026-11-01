@@ -17,6 +17,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   48 671 → 422 µs (696), 256 36 → 22 ms (42); residuals alike.
 - **`svd` of a few columns**: a bidiagonal leaf without an extra column multiplied its right vectors by the identity
   (`n³` products); it takes them as they are. 48 × 32 on arm64 191 → 139 µs (NumPy 141).
+- **`numerical_blas` capped by the environment**: at load it reads `NUMERICAL_NUM_THREADS`, else `OMP_NUM_THREADS`'s
+  first count, as the Python package and OpenBLAS read them (`numerical::environment_threads`); preloaded in place
+  of OpenBLAS under a joblib worker or with `OMP_NUM_THREADS=1`, it ran on every core.
 
 ### Fixed
 - **The same bits on any number of threads where the compiler's baseline has FMA**: GCC fuses a scalar `y − f·x`
@@ -47,6 +50,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   and a time whose bound passes 2⁻⁴⁰ of its action is computed from `B` again: 3.5·10⁻¹⁴. A well-conditioned
   sequence pays the estimate (order 200, 50 times, 10.5 → 14.3 ms; SciPy 25), the hard one its recomputed times
   (18.5 → 39 ms).
+- `release_memory`'s test reads the calling thread's packing after a product on it alone, where it took the
+  workers' from a run on the threads, which a loaded machine could run on the caller alone (a coverage shard among
+  six).
 - Tests no longer pin SciPy 1.17's answers: `bandwidth` of a tall matrix against the definition (SciPy 1.18 fixed
   its own), an eigenvalue subset's bound between two eigenvalues for every order (at order 4 it fell on the largest),
   and `expm_multiply`'s times against `expm(t A) @ B` rather than against SciPy's error.

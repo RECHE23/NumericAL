@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstdio>
+#include <cstdlib>
 #include <exception>
 
 #include "numerical/blas.hpp"
@@ -26,6 +27,13 @@ namespace {
       (void)std::fprintf(stderr, " ** On entry to %s parameter number %2d had an illegal value\n", name, static_cast<int>(position)); // NOLINT(cppcoreguidelines-pro-type-vararg): the reference's message
     }
   }
+
+  //! \brief The library's threads capped at load as the environment asks (numerical::environment_threads): a
+  //!        program that preloads it in place of OpenBLAS, or a worker joblib starts, keeps the count it set.
+  [[maybe_unused]] const bool environment_capped {[] {
+                                                    numerical::set_max_threads(numerical::environment_threads(std::getenv("NUMERICAL_NUM_THREADS"), std::getenv("OMP_NUM_THREADS")));
+                                                    return true;
+                                                  }()};
 
   //! \brief A failure no argument explains (memory exhausted): reported, the call then returns.
   void report_failure(const char* name) noexcept

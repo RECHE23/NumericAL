@@ -907,6 +907,37 @@ namespace numerical {
     detail::thread_cap().store(threads);
   }
 
+  /*!
+   * \brief The cap of threads the environment asks for, as the Python package and OpenBLAS read it: \p numerical
+   *        (`NUMERICAL_NUM_THREADS`'s value) where it is set and not blank, else the first count of \p omp
+   *        (`OMP_NUM_THREADS`'s, which joblib and loky set in their workers); null for an unset variable. 0 (no cap)
+   *        where neither gives a count, or for one that is not a run of digits; above 2³¹, 2³¹.
+   */
+  [[nodiscard]] inline std::size_t environment_threads(const char* numerical,
+                                                       const char* omp) noexcept
+  {
+    const auto trimmed = [](std::string_view text) {
+                           const std::size_t first {text.find_first_not_of(" \t")};
+                           return first == std::string_view::npos ? std::string_view {} : text.substr(first, text.find_last_not_of(" \t") - first + 1);
+                         };
+    const auto count = [](std::string_view digits) {
+                         std::size_t value {0};
+                         for (const char c : digits) {
+                           if (c < '0' || c > '9') {
+                             return std::size_t {0};
+                           }
+                           value = std::min<std::size_t>((value * 10) + static_cast<std::size_t>(c - '0'), std::size_t {1} << 31U);
+                         }
+                         return value;
+                       };
+    const std::string_view own {trimmed(numerical == nullptr ? "" : numerical)};
+    if (!own.empty()) {
+      return count(own);
+    }
+    const std::string_view list {omp == nullptr ? "" : omp};
+    return count(trimmed(list.substr(0, list.find(','))));
+  }
+
   //! \brief The threads a kernel may use: the cap if one is set, else the hardware threads (starting none).
   [[nodiscard]] inline std::size_t max_threads()
   {
