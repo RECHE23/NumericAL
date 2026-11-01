@@ -1672,6 +1672,34 @@ inline PyObject* counted_trues(bool mean, const bool_tensor& t, Py_ssize_t axis)
 // max and min take a real tensor only.
 PyObject* module_reduce(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
+// A run of `length` elements from `at` with every operand's step known at compile time, operand k's 1 where bit k of
+// Ones is set, else 0: the loop the compiler vectorises. Each element's offsets are computed from the run's start (MSVC
+// 14.44's link-time code generation fails, an internal compiler error, on offsets advanced in place).
+template <unsigned Ones, typename R, std::size_t N, typename Element>
+void run_of_steps(const Element& element, std::array<std::size_t, N> at, R* to, std::size_t length)
+{
+    for (std::size_t i = 0; i < length; ++i) {
+        std::array<std::size_t, N> here {at};
+        for (std::size_t k = 0; k < N; ++k) {
+            here[k] += ((Ones >> k) & 1U) * i;
+        }
+        to[i] = element(here);
+    }
+}
+
+// run_of_steps for the steps `ones` gives at run time, from Ones up.
+template <unsigned Ones, typename R, std::size_t N, typename Element>
+void stepped_run(unsigned ones, const Element& element, const std::array<std::size_t, N>& at, R* to, std::size_t length)
+{
+    if constexpr (Ones < (1U << N)) {
+        if (ones == Ones) {
+            run_of_steps<Ones>(element, at, to, length);
+            return;
+        }
+        stepped_run<Ones + 1>(ones, element, at, to, length);
+    }
+}
+
 // `element(at)` for every element of the shape `shapes` broadcast to, as NumPy broadcasts them, `at` the offset of
 // that element in each operand's row-major elements (an axis of extent 1, or a missing one, repeated): by rows, the
 // rows on the threads, each one's offsets set from its index and stepped along it.
@@ -1731,15 +1759,6 @@ numerical::tensor<R> broadcast_elements(const std::array<std::vector<std::size_t
     const std::size_t piece {std::min(inner, numerical::detail::elementwise_chunk)};
     const std::size_t pieces {(inner + piece - 1) / piece};
     const std::size_t rows_per_task {pieces > 1 ? 1 : std::max<std::size_t>(1, numerical::detail::elementwise_chunk / inner)};
-    // A run with every operand's step known at compile time (0 or 1): the loop the compiler vectorises.
-    const auto run_of = [&]<unsigned Ones>(std::integral_constant<unsigned, Ones>, std::array<std::size_t, N> at, R* to, std::size_t length) {
-        for (std::size_t i = 0; i < length; ++i) {
-            to[i] = element(at);
-            for (std::size_t k = 0; k < N; ++k) {
-                at[k] += (Ones >> k) & 1U;
-            }
-        }
-    };
     const auto run = [&](std::size_t row, std::size_t begin, std::size_t length) {
         std::array<std::size_t, N> at {};
         for (std::size_t axis = rank == 0 ? 0 : rank - 1, rest = row; axis-- > 0;) {
@@ -1762,9 +1781,7 @@ numerical::tensor<R> broadcast_elements(const std::array<std::vector<std::size_t
             }
             return;
         }
-        [&]<unsigned... Masks>(std::integer_sequence<unsigned, Masks...>) {
-            static_cast<void>(((ones == Masks ? (run_of(std::integral_constant<unsigned, Masks> {}, at, to, length), true) : false) || ...));
-        }(std::make_integer_sequence<unsigned, 1U << N> {});
+        stepped_run<0>(ones, element, at, to, length);
     };
     if (pieces > 1) { // each piece in runs of 1024 (at arm64, a run of the whole piece took 15 % longer)
         numerical::detail::parallel_for(rows * pieces, piece, [&](std::size_t task) {

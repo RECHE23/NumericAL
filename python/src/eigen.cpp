@@ -223,7 +223,8 @@ namespace {
                 alpha[k] = d->values()[k].first;
                 beta[k]  = d->values()[k].second;
             }
-            return std::pair {any_tensor {cplx_tensor {{alpha.size()}, std::move(alpha)}}, any_tensor {cplx_tensor {{beta.size()}, std::move(beta)}}};
+            const std::size_t n {alpha.size()}; // read before the moves: MSVC evaluates a braced list's elements out of order
+            return std::pair {any_tensor {cplx_tensor {{n}, std::move(alpha)}}, any_tensor {cplx_tensor {{n}, std::move(beta)}}};
         };
         if (select != Py_None) {
             auto [alpha, beta] {values_of()};
@@ -253,7 +254,8 @@ namespace {
                 alpha[k] = {d->values()[k].alphar, d->values()[k].alphai};
                 beta[k]  = d->values()[k].beta;
             }
-            return std::pair {any_tensor {cplx_tensor {{alpha.size()}, std::move(alpha)}}, any_tensor {real_tensor {{beta.size()}, std::move(beta)}}};
+            const std::size_t n {alpha.size()}; // read before the moves, as above
+            return std::pair {any_tensor {cplx_tensor {{n}, std::move(alpha)}}, any_tensor {real_tensor {{n}, std::move(beta)}}};
         };
         if (select != Py_None) {
             auto [alpha, beta] {values_of()};
