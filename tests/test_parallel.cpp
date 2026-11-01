@@ -53,7 +53,7 @@ namespace {
 #endif
 
 // release_memory empties the workspaces the caller and every worker keep: a product's packing, filled on the threads,
-// is empty on each thread a run lands on after it. A request that may not wait returns at once.
+// is empty on each thread a run lands on after it. A request that may not wait fails while a worker is held in a run.
 TEST(release_memory_empties_every_thread_s_workspaces)
 {
   const std::size_t                     n {384};
@@ -74,8 +74,24 @@ TEST(release_memory_empties_every_thread_s_workspaces)
   EXPECT(capacities() == 0);
   EXPECT(numerical::detail::packing_storage<double>::kept().capacity() == 0);
   EXPECT(numerical::blas::detail::syrk_operand().capacity() == 0);
-  std::this_thread::sleep_for(std::chrono::milliseconds {5}); // the workers asleep: none answers within no time
-  static_cast<void>(numerical::detail::thread_pool::shared().release_on_workers(&numerical::detail::release_thread_memory, std::chrono::milliseconds {0}));
+  if (numerical::max_threads() > 1) { // a worker held in a run answers no request within no time
+    std::atomic<std::size_t> entered {0};
+    std::atomic<bool>        go      {false};
+    std::thread              runner  {[&] {
+                                        numerical::detail::parallel_for(4 * numerical::max_threads(), std::size_t {1} << 30, [&](std::size_t) {
+                                                                          ++entered;
+                                                                          while (!go.load()) {
+                                                                            std::this_thread::yield();
+                                                                          }
+                                                                        });
+                                      }};
+    while (entered.load() < 2) { // the runner's thread and a worker at least
+      std::this_thread::yield();
+    }
+    EXPECT(!numerical::detail::thread_pool::shared().release_on_workers(&numerical::detail::release_thread_memory, std::chrono::milliseconds {0}));
+    go.store(true);
+    runner.join();
+  }
   numerical::release_memory();                                // twice in a row, the second with nothing left
   EXPECT(capacities() == 0);
   static_cast<void>(a * a);                                   // without a pool (never started there): the caller's own alone
