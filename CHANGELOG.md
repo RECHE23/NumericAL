@@ -25,6 +25,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   raised `TypeError` or "truth value of an array is ambiguous" (`eigh(a, b)`) now answers as SciPy's.
 
 ### Changed
+- **`det` and `slogdet` of a float32 matrix of order 500 or more in single precision**, as `solve`, `inv` and
+  `lu_factor` do from that order (NumPy's `sgetrf`): they computed in double and rounded, slower than float64. Order
+  1000 on arm64: 4.4 ms (float64 6.5, NumPy's float32 6.7).
 - **`solve_continuous_lyapunov` from one Schur form**: `A = U R Uᴴ` gives `Aᴴ = U Rᴴ Uᴴ` too, where `solve_sylvester`
   with `b = Aᴴ` formed a second form; `R Y + Y Rᴴ = Uᴴ Q U` is solved by blocks with the order reversed (`J Rᴴ J` is
   upper triangular), as LAPACK's `trsyl` with `'C'` (C++: `numerical::solve_continuous_lyapunov`). The bilinear

@@ -1146,6 +1146,9 @@ inline any_tensor determinant_tensor(const any_tensor& m)
                    ? any_tensor {cplx_tensor {{}, numerical::buffer<std::complex<double>> {numerical::determinant(matrix_from(std::get<cplx_tensor>(wide)))}}}
                    : any_tensor {real_tensor {{}, numerical::buffer<double> {numerical::determinant(matrix_from(std::get<real_tensor>(wide)))}}};
     };
+    if (native_single(m)) { // a float32 matrix of order 500 or more: its LU in single precision, as NumPy's sgetrf
+        return any_tensor {single_tensor {{}, numerical::buffer<float> {numerical::determinant(matrix_from(std::get<single_tensor>(m)))}}};
+    }
     return is_single(m) ? narrowed(of(widened(m))) : of(m);
 }
 
@@ -1162,6 +1165,10 @@ inline std::tuple<any_tensor, any_tensor> slogdet_tensors(const any_tensor& m)
         const auto [sign, logarithm] {numerical::lu_decomposition<double> {matrix_from(std::get<real_tensor>(wide))}.log_determinant()};
         return {real_tensor {{}, numerical::buffer<double> {sign}}, real_tensor {{}, numerical::buffer<double> {logarithm}}};
     };
+    if (native_single(m)) { // as determinant_tensor: float32 from order 500 in single precision, its logarithm too
+        const auto [sign, logarithm] {numerical::lu_decomposition<float> {matrix_from(std::get<single_tensor>(m))}.log_determinant()};
+        return {single_tensor {{}, numerical::buffer<float> {sign}}, single_tensor {{}, numerical::buffer<float> {static_cast<float>(logarithm)}}};
+    }
     return is_single(m) ? narrowed(of(widened(m))) : of(m);
 }
 

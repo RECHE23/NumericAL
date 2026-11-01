@@ -2,8 +2,8 @@
 returned in single precision. Element-wise arithmetic and square roots are IEEE operations, the same to the bit as
 NumPy's; the decompositions compute in double precision and round their answers to the input's precision, so they are
 as accurate as a single-precision answer can be, where NumPy's LAPACK computes in single precision; solve, inverse,
-cholesky, lu_factor and lu_solve of a float32 matrix of order 500 or more compute in single precision, as NumPy's. Skipped when NumPy
-is not importable (CI installs it).
+cholesky, lu_factor, lu_solve, det and slogdet of a float32 matrix of order 500 or more compute in single precision, as
+NumPy's. Skipped when NumPy is not importable (CI installs it).
 """
 import unittest
 
@@ -182,8 +182,9 @@ class SinglePrecisionLinearAlgebra(unittest.TestCase):
         self.assertEqual((residuals.dtype, rank, s.dtype), ("float32", 4, "float32"))
 
     def test_large_float32_factorisations_compute_in_single_precision(self):
-        # From order 500, solve, inverse, cholesky, lu_factor and lu_solve factorise in float32, as NumPy's LAPACK: the
-        # answers float32 and backward stable at that precision (residuals within 20 n ε of float32 and above double's).
+        # From order 500, solve, inverse, cholesky, lu_factor, lu_solve, det and slogdet factorise in float32, as NumPy's
+        # LAPACK: the answers float32 and backward stable at that precision (residuals within 20 n ε of float32 and above
+        # double's).
         rng = np.random.default_rng(11)
         n = 500
         a = rng.standard_normal((n, n)).astype(np.float32)
@@ -212,6 +213,14 @@ class SinglePrecisionLinearAlgebra(unittest.TestCase):
         self.assertLess(backward(y, a, wb), 20 * n * EPS32)
         small = a[:499, :499]
         self.assertLess(backward(numerical.solve(small, b[:499]), small, wb[:499]), 4 * EPS32)  # below 500: double, rounded
+        near = (np.eye(n) + 0.01 * a).astype(np.float32)  # a determinant float32 holds (a's own overflows it)
+        exact = np.linalg.det(near.astype(np.float64))
+        determinant = numerical.det(near)
+        self.assertIsInstance(determinant, float)
+        self.assertLess(abs(determinant - exact), 20 * n * EPS32 * abs(exact))
+        sign, logarithm = numerical.slogdet(near)
+        self.assertEqual(sign, float(np.sign(exact)))
+        self.assertLess(abs(logarithm - np.log(abs(exact))), 20 * n * EPS32)
 
     def test_det_and_slogdet_of_single_precision_are_the_double_answer_rounded(self):
         # The single-precision matrix's values in double, the answer rounded to single, to the bit (a plain number).
