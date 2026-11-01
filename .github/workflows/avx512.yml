@@ -20,8 +20,9 @@ jobs:
   # The AVX-512 kernels, which no hosted runner is sure to have, under Intel's Software Development Emulator as a
   # Skylake server, which cpuid then reports: the C++ suite, instrumented, every line and function of x86.hpp and
   # fft.hpp run. The emulator runs one thread at a time: four processes share the suite (COV_SHARDS), one a core.
+  # Ubuntu 24.04 by name: the jobs pin Clang 18 and its llvm-cov, which ubuntu-latest (26.04 from 2026-11-01) lacks.
   avx512:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     # The emulator's speed is the host's: on a runner without AVX-512 of its own every such instruction is emulated.
     timeout-minutes: 90
     env:
@@ -56,7 +57,7 @@ jobs:
   # for FMA, as GCC 14 does and Ubuntu's GCC 13 does not: a kernel and a helper built for different units then round
   # differently, which only such a build shows.
   avx512-fuzz:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     timeout-minutes: 60
     env:
       SDE_URL: https://downloadmirror.intel.com/924984/sde-external-10.13.1-2026-07-28-lin.tar.xz
