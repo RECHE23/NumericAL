@@ -70,6 +70,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&solve_sylvester>("solve_sylvester", "solve_sylvester(a, b, q) -> Tensor\nX of A X + X B = Q, as scipy.linalg.solve_sylvester (Bartels-Stewart).");
     m.def<&riccati>("riccati", "riccati(a, b, q, r, e, s, flags) -> Tensor\nThe stabilising solution of an algebraic Riccati equation, as scipy.linalg.solve_continuous_are (flags & 1 clear) or solve_discrete_are; e where flags & 2, s where flags & 4, balanced where flags & 8.");
     m.def<&sqrtm>("sqrtm", "sqrtm(a) -> Tensor\nThe principal matrix square root, as scipy.linalg.sqrtm (a stack's matrices each).");
+    m.def<&expm_multiply>("expm_multiply", "expm_multiply(a, b, t) -> Tensor\ne^{tA} B without forming e^{tA}, as scipy.sparse.linalg.expm_multiply at one time (Al-Mohy and Higham's algorithm 3.2).");
     m.def<&expm>("expm", "expm(a) -> Tensor\nThe matrix exponential, as scipy.linalg.expm (a stack's matrices each).");
     m.def<&expm_frechet>("expm_frechet", "expm_frechet(a, e, block) -> (Tensor, Tensor)\nexpm(a) and the Frechet derivative of the exponential at a along e, as scipy.linalg.expm_frechet (Al-Mohy and Higham's algorithm, or the exponential of [[a, e], [0, a]] where block).");
     m.def<&expm_cond>("expm_cond", "expm_cond(a) -> float\nThe exponential's relative condition number in the Frobenius norm, as scipy.linalg.expm_cond.");

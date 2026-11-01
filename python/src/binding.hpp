@@ -2012,6 +2012,8 @@ any_tensor solve_circulant(const any_tensor& c, const any_tensor& b, bool least_
 
 // expm(a) -> Tensor, as scipy.linalg.expm (a stack's matrices each).
 any_tensor expm(const any_tensor& v); // in linalg.cpp
+// expm_multiply(a, b, t) -> Tensor: e^{tA} B without e^{tA} (numerical::expm_multiply).
+any_tensor expm_multiply(const any_tensor& a, const any_tensor& b, double t); // in linalg.cpp
 
 // expm_frechet(a, e, block) -> (expm(a), L(a, e)) and expm_cond(a) -> float, as scipy.linalg's.
 std::tuple<any_tensor, any_tensor> expm_frechet(const any_tensor& a, const any_tensor& e, bool block); // in linalg.cpp

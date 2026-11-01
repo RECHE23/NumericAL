@@ -1,4 +1,4 @@
-"""expm, expm_frechet, expm_cond, funm, logm, sqrtm and polar against scipy.linalg where it is installed, and against closed
+"""expm, expm_multiply, expm_frechet, expm_cond, funm, logm, sqrtm and polar against scipy.linalg where it is installed, and against closed
 forms everywhere."""
 
 import math
@@ -293,6 +293,62 @@ class Logm(unittest.TestCase):
                     theirs = sl.logm(a)
                 self.assertEqual(ours.dtype, theirs.dtype)
                 np.testing.assert_allclose(ours, theirs, rtol=0, atol=1e-11 * max(1.0, np.abs(theirs).max()))
+
+
+@unittest.skipIf(sl is None, "SciPy is not installed")
+class ExpmMultiply(unittest.TestCase):
+    """expm_multiply against scipy.sparse.linalg.expm_multiply: one time and a sequence of times (linspace's
+    arguments), real and complex, vectors and matrices; the refusals."""
+
+    def setUp(self):
+        self.rng = np.random.default_rng(1101)
+
+    def test_as_scipy(self):
+        from scipy.sparse.linalg import expm_multiply
+        for n, scale, shape, complex_ in ((1, 1.0, (1,), False), (6, 0.5, (6,), False), (50, 8.0, (50, 3), False),
+                                          (30, 3.0, (30,), True), (120, 30.0, (120, 2), False)):
+            a = self.rng.standard_normal((n, n)) * scale / np.sqrt(n)
+            if complex_:
+                a = a + 1j * self.rng.standard_normal((n, n)) * scale / np.sqrt(n)
+            b = self.rng.standard_normal(shape)
+            for kwargs in ({}, {"start": 0.0, "stop": 1.5, "num": 4}, {"start": -0.2, "stop": 1.0, "num": 3, "endpoint": False},
+                           {"start": 0.2, "stop": 0.9}):
+                with self.subTest(n=n, complex=complex_, kwargs=kwargs):
+                    expected = expm_multiply(a, b, **kwargs)
+                    got = np.asarray(numerical.expm_multiply(a, b, **kwargs))
+                    self.assertEqual(got.shape, expected.shape)
+                    if not kwargs:
+                        np.testing.assert_allclose(got, expected, rtol=1e-11, atol=1e-12 * np.abs(expected).max())
+                        continue
+                    # times stepped from one another, as SciPy's: each against expm(t A) @ B, within SciPy's own error
+                    times = np.linspace(kwargs["start"], kwargs["stop"], kwargs.get("num", 50), endpoint=kwargs.get("endpoint", True))
+                    for k, t in enumerate(times):
+                        exact = sl.expm(t * a) @ b
+                        size = np.abs(exact).max()
+                        ours, theirs = np.abs(got[k] - exact).max(), np.abs(expected[k] - exact).max()
+                        self.assertLessEqual(ours, max(1e-11 * size, 10 * theirs), msg=f"t={t}")
+
+    def test_each_time_against_expm(self):
+        """Each time's action expm(t A) @ B's to rounding where the action does not shrink by orders between times."""
+        a = self.rng.standard_normal((40, 40)) * 2.0 / np.sqrt(40)
+        b = self.rng.standard_normal((40, 2))
+        times = np.linspace(0.0, 2.0, 7)
+        got = np.asarray(numerical.expm_multiply(a, b, start=0.0, stop=2.0, num=7))
+        for k, t in enumerate(times):
+            expected = sl.expm(t * a) @ b
+            np.testing.assert_allclose(got[k], expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
+
+    def test_single_precision_and_refusals(self):
+        a = np.eye(3, dtype=np.float32)
+        got = np.asarray(numerical.expm_multiply(a, np.ones(3, dtype=np.float32)))
+        self.assertEqual(got.dtype, np.float32)
+        np.testing.assert_allclose(got, np.full(3, math.e), rtol=1e-6)
+        with self.assertRaises(ValueError):
+            numerical.expm_multiply(a, np.ones(3), start=0, stop=1, num=1)
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.expm_multiply(np.ones((2, 3)), np.ones(2))
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.expm_multiply(np.eye(2), np.ones(3))
 
 
 if __name__ == "__main__":

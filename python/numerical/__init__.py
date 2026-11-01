@@ -42,7 +42,7 @@ __all__ = [
     "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
     "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "solve_toeplitz", "solve_circulant",
     "toeplitz", "hankel", "circulant", "block_diag",
-    "expm", "expm_frechet", "expm_cond", "fractional_matrix_power", "funm", "logm", "LogmRankWarning", "LogmExactlySingularWarning",
+    "expm", "expm_multiply", "expm_frechet", "expm_cond", "fractional_matrix_power", "funm", "logm", "LogmRankWarning", "LogmExactlySingularWarning",
     "LogmNearlySingularWarning", "sqrtm", "polar",
     "solve_sylvester", "solve_continuous_lyapunov", "solve_lyapunov", "solve_discrete_lyapunov",
     "solve_continuous_are", "solve_discrete_are", "lstsq", "pinv",
@@ -952,6 +952,7 @@ inv = inverse
 
 
 _expm = _linalg(_numerical.expm, arrays=1)
+_expm_multiply = _linalg(_numerical.expm_multiply, arrays=2)
 _expm_frechet = _linalg(_numerical.expm_frechet, arrays=2)
 _expm_cond = _linalg(_numerical.expm_cond, arrays=1)
 _logm = _linalg(_numerical.logm, arrays=1)
@@ -1120,6 +1121,53 @@ def expm(A):
         LinAlgError: if `A` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
     """
     return _expm(A)
+
+
+def expm_multiply(A, B, start=None, stop=None, num=None, endpoint=None, traceA=None):
+    """``e^{tA} B`` without forming ``e^{tA}``, as ``scipy.sparse.linalg.expm_multiply``: at ``t = 1``, or at each of
+    the times ``numpy.linspace(start, stop, num, endpoint)`` gives (``start``, ``stop``, ``num`` and ``endpoint`` as
+    ``linspace`` takes them, at least two times), stacked along a first axis. Al-Mohy and Higham's algorithm 3.2
+    (2011), as SciPy's: `A` less its trace over `n`, then `s` steps of at most `m` terms of the Taylor series, each a
+    product of `A` by `B`'s block, `m` and `s` the fewest products for double's unit roundoff; the times after the
+    first each a step ``h`` from the one before, as SciPy's (its algorithm 5.2): where the action shrinks by orders of
+    magnitude from one time to the next (a negative time, a nonnormal `A`), the later times lose as many digits, and
+    one call per time keeps them. `A` dense; `traceA` is accepted (the trace is exact here).
+
+    Raises:
+        LinAlgError: if `A` is not square, `B` not a vector or matrix of its rows, or an entry is infinite or NaN.
+        ValueError: for fewer than two times.
+    """
+    del traceA
+    if start is None and stop is None and num is None and endpoint is None:
+        return _expm_multiply(A, B, 1.0)
+    linspace = {"retstep": True}
+    if num is not None:
+        linspace["num"] = num
+    if endpoint is not None:
+        linspace["endpoint"] = endpoint
+    times, step = _linspace_times(start, stop, linspace)
+    if len(times) < 2:
+        raise ValueError("at least two time points are required")
+    actions = [_expm_multiply(A, B, float(times[0]))]
+    for _ in times[1:]:
+        actions.append(_expm_multiply(A, actions[-1], float(step)))
+    return stack(actions)
+
+
+def _linspace_times(start, stop, options):
+    """``numpy.linspace(start, stop, **options)``'s times and step as Python floats, without NumPy: num 50 and the
+    endpoint included by default."""
+    num = _operator.index(options.get("num", 50))
+    endpoint = bool(options.get("endpoint", True))
+    if num < 0:
+        raise ValueError(f"Number of samples, {num}, must be non-negative.")
+    start, stop = float(start), float(stop)
+    div = (num - 1) if endpoint else num
+    step = (stop - start) / div if div > 0 else _math.nan
+    times = [start + (i * step) for i in range(num)] if div > 0 else [start] * num
+    if endpoint and num > 1:
+        times[-1] = stop
+    return times, step
 
 
 def expm_frechet(A, E, method=None, compute_expm=True, check_finite=True):

@@ -458,6 +458,222 @@ namespace numerical {
 
   namespace detail {
 
+    //! \brief Al-Mohy and Higham's `θ_m` (2011, table 3.1, double precision): the 1-norm of `t A` up to which `m`
+    //!        terms of the Taylor series of `e^{tA} B`, taken `s` times, stay within the unit roundoff, for the `m` the
+    //!        selection tries (SciPy's, from 1 to 30, then by fives to 55).
+    struct taylor_bound
+    {
+      std::size_t m;     //!< The terms.
+      double      theta; //!< `θ_m`.
+    };
+
+    //! \brief The table of \ref taylor_bound, `m` ascending.
+    inline constexpr std::array<taylor_bound, 35> taylor_bounds {{{1, 2.29e-16},
+      {2, 2.58e-8},
+      {3, 1.39e-5},
+      {4, 3.40e-4},
+      {5, 2.40e-3},
+      {6, 9.07e-3},
+      {7, 2.38e-2},
+      {8, 5.00e-2},
+      {9, 8.96e-2},
+      {10, 1.44e-1},
+      {11, 2.14e-1},
+      {12, 3.00e-1},
+      {13, 4.00e-1},
+      {14, 5.14e-1},
+      {15, 6.41e-1},
+      {16, 7.81e-1},
+      {17, 9.31e-1},
+      {18, 1.09},
+      {19, 1.26},
+      {20, 1.44},
+      {21, 1.62},
+      {22, 1.82},
+      {23, 2.01},
+      {24, 2.22},
+      {25, 2.43},
+      {26, 2.64},
+      {27, 2.86},
+      {28, 3.08},
+      {29, 3.31},
+      {30, 3.54},
+      {35, 4.7},
+      {40, 6.0},
+      {45, 7.2},
+      {50, 8.5},
+      {55, 9.9}}};
+
+    //! \brief The terms `m` and the steps `s` of \ref expm_multiply.
+    struct taylor_plan
+    {
+      std::size_t terms; //!< `m*`.
+      std::size_t steps; //!< `s`.
+    };
+
+    /*!
+     * \brief Al-Mohy and Higham's code fragment 3.1 (2011), as SciPy's `_fragment_3_1` (`m_max` 55, `ℓ` 2): the `m` and
+     *        `s` of least cost `m s` for `t A` of 1-norm \p norm and \p columns columns of `B`. Where condition 3.13
+     *        holds (`‖tA‖₁` small for the columns), `s = ⌈‖tA‖₁ / θ_m⌉`; else `s = ⌈α_p / θ_m⌉` over the `p` from 2 to
+     *        8 and the `m` from `p (p − 1) − 1`, `α_p = max(d_p, d_{p+1})`, `d_p` \p power_norm(p) (an estimate of
+     *        `‖(tA)ᵖ‖₁^{1/p}`), at least one step.
+     */
+    [[nodiscard]] inline taylor_plan plan_taylor(double                                    norm,
+                                                 std::size_t                               columns,
+                                                 const std::function<double(std::size_t)>& power_norm)
+    {
+      constexpr std::size_t most_terms {55};
+      constexpr std::size_t most_power {8}; // the largest p with p (p − 1) ≤ m_max + 1
+      constexpr double      ell {2.0};
+      taylor_plan           best {0, 0};
+      const auto            consider = [&best](std::size_t m, double ratio) {
+                                         const auto s {static_cast<std::size_t>(std::ceil(ratio))};
+                                         if (best.terms == 0 || m * s < best.terms * best.steps) {
+                                           best = {m, s};
+                                         }
+                                       };
+      const double condition {2.0 * ell * static_cast<double>(most_power * (most_power + 3)) * taylor_bounds.back().theta
+                              / static_cast<double>(columns * most_terms)};
+      if (norm <= condition) {
+        for (const taylor_bound& bound : taylor_bounds) {
+          consider(bound.m, norm / bound.theta);
+        }
+        return best;
+      }
+      std::vector<double> d(most_power + 2, 0.0); // d[p], estimated once each
+      const auto          alpha = [&](std::size_t p) {
+                                    for (const std::size_t q : {p, p + 1}) {
+                                      if (d[q] == 0.0) {
+                                        d[q] = power_norm(q);
+                                      }
+                                    }
+                                    return std::max(d[p], d[p + 1]);
+                                  };
+      for (std::size_t p {2}; p <= most_power; ++p) {
+        for (const taylor_bound& bound : taylor_bounds) {
+          if (bound.m + 1 >= p * (p - 1)) {
+            consider(bound.m, alpha(p) / bound.theta);
+          }
+        }
+      }
+      best.steps = std::max<std::size_t>(best.steps, 1);
+      return best;
+    }
+
+    //! \brief The largest row sum of moduli of the `n × k` row-major \p x (`‖X‖∞`).
+    template <typename T>
+    [[nodiscard]] double row_sum_norm(const buffer<T>& x,
+                                      std::size_t      n,
+                                      std::size_t      k)
+    {
+      double largest {0.0};
+      for (std::size_t i {0}; i < n; ++i) {
+        double sum {0.0};
+        for (std::size_t j {0}; j < k; ++j) {
+          sum += std::abs(x[(i * k) + j]);
+        }
+        largest = std::max(largest, sum);
+      }
+      return largest;
+    }
+  } // namespace detail
+
+  /*!
+   * \brief `e^{tA} B` without forming `e^{tA}`, as `scipy.sparse.linalg.expm_multiply`: Al-Mohy and Higham's algorithm
+   *        3.2 (2011). `A` less `μ I`, `μ` its trace over `n`; then `s` steps, each `m` terms at most of the Taylor
+   *        series of `e^{tA/s}` on the step's start, each term one product of `A` by the `n × k` block (the matrix
+   *        product kernel), the series stopped where its last two terms fall under the unit roundoff of the sum; each
+   *        step times `e^{tμ/s}`. `m` and `s` the least products for the unit roundoff (\ref detail::plan_taylor), the
+   *        norms of `A`'s powers estimated through products with vectors (\ref detail::one_norm_estimate). Some
+   *        `m s` products of `n² k` where `e^{tA}` takes `n³` several times: the few columns' case.
+   * \param[in] a The square matrix.
+   * \param[in] b The block it acts on (`n × k`).
+   * \param[in] t The time.
+   * \return `e^{tA} B` (`n × k`).
+   * \throws dimension_error  If \p a is not square or \p b has not its rows.
+   * \throws non_finite_error If an entry of \p a or \p b, or \p t, is infinite or NaN.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] matrix<T> expm_multiply(const matrix<T>& a,
+                                        const matrix<T>& b,
+                                        double           t = 1.0)
+  {
+    const std::size_t n {a.rows()};
+    if (a.cols() != n || b.rows() != n) {
+      throw dimension_error("expm_multiply: a square matrix and a block of its rows");
+    }
+    detail::require_finite(a, "expm_multiply");
+    detail::require_finite(b, "expm_multiply");
+    if (!std::isfinite(t)) {
+      throw non_finite_error("expm_multiply: the time is infinite or NaN");
+    }
+    const std::size_t k     {b.cols()};
+    buffer<T>         shifted(a.begin(), a.end());
+    T                 trace {};
+    for (std::size_t i {0}; i < n; ++i) {
+      trace += shifted[(i * n) + i];
+    }
+    const T mu {n == 0 ? T {} : trace / T {static_cast<double>(n)}};
+    for (std::size_t i {0}; i < n; ++i) {
+      shifted[(i * n) + i] -= mu;
+    }
+    const double        norm {n == 0 ? 0.0 : std::abs(t) * detail::one_norm(shifted, n)}; // ‖tA‖₁
+    detail::taylor_plan plan {0, 1};
+    if (norm != 0.0 && k != 0) {
+      buffer<T> adjoint(n * n); // Aᴴ, for the estimates' products with Aᴴ
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          adjoint[(j * n) + i] = detail::conj_of(shifted[(i * n) + j]);
+        }
+      }
+      const double scale {std::abs(t)};
+      plan = detail::plan_taylor(norm, k, [&](std::size_t p) { // ‖(tA)ᵖ‖₁^{1/p}, estimated
+                                   buffer<T>    product(n);
+                                   const double estimate {detail::one_norm_estimate<T>(n, [&](T* x, bool conjugate_transposed) {
+                                                                                         for (std::size_t r {0}; r < p; ++r) {
+                                                                                           detail::matrix_times_vector((conjugate_transposed ? adjoint : shifted).data(), n, n, n, x, product.data());
+                                                                                           std::copy(product.begin(), product.end(), x);
+                                                                                         }
+                                                                                       })};
+                                   return scale * std::pow(estimate, 1.0 / static_cast<double>(p));
+                                 });
+    }
+    constexpr double tol {0x1.0p-53};
+    buffer<T>        f(b.begin(), b.end());
+    buffer<T>        term(b.begin(), b.end());
+    buffer<T>        next(n * k);
+    const T          eta {std::exp(T {t} *mu / T {static_cast<double>(plan.steps)})};
+    for (std::size_t step {0}; step < plan.steps; ++step) {
+      double c1 {detail::row_sum_norm(term, n, k)};
+      for (std::size_t j {0}; j < plan.terms; ++j) {
+        if (k == 1) { // the matrix–vector kernel: a one-column product's tiles take twice its time
+          detail::matrix_times_vector(shifted.data(), n, n, n, term.data(), next.data());
+        }
+        else {
+          gemm(n, k, n, shifted.data(), n, term.data(), k, next.data(), k, detail::c_start::zero);
+        }
+        const T coefficient {t / static_cast<double>(plan.steps * (j + 1))};
+        for (std::size_t e {0}; e < n * k; ++e) {
+          term[e] = coefficient * next[e];
+          f[e]   += term[e];
+        }
+        const double c2 {detail::row_sum_norm(term, n, k)};
+        if (c1 + c2 <= tol * detail::row_sum_norm(f, n, k)) {
+          break;
+        }
+        c1 = c2;
+      }
+      for (T& value : f) {
+        value *= eta;
+      }
+      term = f;
+    }
+    return matrix<T> {n, k, std::move(f)};
+  }
+
+  namespace detail {
+
     //! \brief `Mᴴ`: the transpose, conjugated.
     template <typename T>
     [[nodiscard]] matrix<T> adjoint_of(const matrix<T>& m)

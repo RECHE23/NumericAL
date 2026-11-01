@@ -27,6 +27,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   in brackets): `"pos"` by Cholesky's 29 ms (50), `"sym"` 48 ms (103, the LU outrunning the symmetric indefinite
   factorisation here), `"tridiagonal"` 2.4 ms (12), `"banded"` 2.9 ms (3.3), `"diagonal"` 1.0 ms (12). A Hermitian
   matrix's diagonal is taken real at every order, where SciPy's 1 × 1 case divides by the complex entry.
+- **`expm_multiply`, as `scipy.sparse.linalg.expm_multiply`**: `e^{tA} B` without forming `e^{tA}`, at one time or
+  along `linspace`'s times (each a step from the one before, as SciPy's), by Al-Mohy and Higham's algorithm 3.2: `A`
+  less its trace's share, then `s` steps of at most `m` Taylor terms, each a product by `B`'s block, `m` and `s` the
+  fewest products for the unit roundoff, the norms of `A`'s powers estimated through products with vectors. Order
+  2000, `‖A‖₁` near 2 and 8, one and 16 columns: 65–295 ms on one thread against SciPy's 99–396, 31–141 on four
+  against 88–370, and 5 to 23 times `expm(A) @ B`. In C++: `expm_multiply`.
 - **`eigh` and `eigvalsh` take `subset_by_index` and `subset_by_value`, as `scipy.linalg.eigh`'s**: some eigenpairs
   of a matrix (or a pencil, with `b`) from its tridiagonal form, the eigenvalues by bisection and the eigenvectors by
   inverse iteration (LAPACK's `dstebz` and `dstein`: `n` operations a solve, a cluster's vectors orthogonalised

@@ -7,6 +7,7 @@
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <numbers>
 #include <stdexcept>
@@ -844,4 +845,78 @@ TEST(funm_of_gathered_eigenvalues_takes_cauchys_integral)
   EXPECT(std::isinf(numerical::funm(jordan(3, 0.0), map([](const C& z) { return C {1.0} / z; })).error));
   EXPECT(numerical::funm(jordan(3, 0.05), map([](const C& z) { return std::log(z); })).error == 1.0);
   EXPECT_THROWS(static_cast<void>(numerical::funm(jordan(3, 1.0), [](const values&) { return values {C {1.0}}; })), numerical::dimension_error);
+}
+
+namespace {
+
+  //! \brief An `rows × cols` matrix of pseudo-random entries in [−scale, scale) (complex parts for a complex `T`).
+  template <typename T>
+  matrix<T> drawn_matrix(std::size_t   rows,
+                         std::size_t   cols,
+                         double        scale,
+                         std::uint64_t seed)
+  {
+    std::uint64_t  state {seed};
+    const auto     draw = [&state, scale] {
+                            state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+                            return scale * ((static_cast<double>(state >> 11U) * 0x1.0p-52) - 1.0);
+                          };
+    std::vector<T> entries(rows * cols);
+    for (T& entry : entries) {
+      if constexpr (std::is_same_v<T, double>) {
+        entry = draw();
+      }
+      else {
+        const double re {draw()};
+        entry = T {re, draw()};
+      }
+    }
+    return matrix<T> {rows, cols, entries};
+  }
+
+  //! \brief `t A`.
+  template <typename T>
+  matrix<T> scaled_by(const matrix<T>& a,
+                      double           t)
+  {
+    std::vector<T> entries(a.begin(), a.end());
+    for (T& entry : entries) {
+      entry *= t;
+    }
+    return matrix<T> {a.rows(), a.cols(), entries};
+  }
+} // namespace
+
+// e^{tA} B without e^{tA}: expm(t A) B's to rounding for real and complex matrices of small and large norm (the
+// exact norm's plan and the estimated powers'), one and several columns, a negative time; a multiple of the identity
+// (the trace shift leaves nothing), a zero time, empty shapes; the refusals.
+TEST(expm_multiply_is_expm_times_b)
+{
+  bool close {true};
+  for (const double scale : {0.05, 1.0, 12.0}) {
+    for (const std::size_t k : {std::size_t {1}, std::size_t {3}}) {
+      const matrix<double> a {drawn_matrix<double>(40, 40, scale, 7)};
+      const matrix<double> b {drawn_matrix<double>(40, k, 1.0, 11)};
+      for (const double t : {1.0, -0.7}) {
+        close = close && relative_gap(numerical::expm_multiply(a, b, t), numerical::expm(scaled_by(a, t)) * b) < 1e-12;
+      }
+    }
+  }
+  const matrix<C> c {drawn_matrix<C>(20, 20, 3.0, 5)};
+  const matrix<C> v {drawn_matrix<C>(20, 2, 1.0, 9)};
+  close = close && relative_gap(numerical::expm_multiply(c, v, 0.4), numerical::expm(scaled_by(c, 0.4)) * v) < 1e-12;
+  EXPECT(close);
+  std::vector<double> diagonal(9, 0.0);
+  diagonal[0] = diagonal[4] = diagonal[8] = 2.5;
+  const matrix<double> b {drawn_matrix<double>(3, 2, 1.0, 3)};
+  EXPECT(relative_gap(numerical::expm_multiply(matrix<double> {3, 3, diagonal}, b), scaled_by(b, std::exp(2.5))) < 1e-15);
+  EXPECT(relative_gap(numerical::expm_multiply(drawn_matrix<double>(3, 3, 1.0, 1), b, 0.0), b) == 0.0);
+  EXPECT(numerical::expm_multiply(matrix<double> {0, 0, std::vector<double> {}}, matrix<double> {0, 2, std::vector<double> {}}).cols() == 2);
+  EXPECT(numerical::expm_multiply(drawn_matrix<double>(4, 4, 1.0, 2), matrix<double> {4, 0, std::vector<double> {}}).cols() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_multiply(drawn_matrix<double>(3, 4, 1.0, 2), b)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_multiply(drawn_matrix<double>(4, 4, 1.0, 2), b)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::expm_multiply(drawn_matrix<double>(3, 3, 1.0, 2), b, std::numeric_limits<double>::infinity())),
+                numerical::non_finite_error);
+  std::vector<double> nan(9, std::numeric_limits<double>::quiet_NaN());
+  EXPECT_THROWS(static_cast<void>(numerical::expm_multiply(matrix<double> {3, 3, nan}, b)), numerical::non_finite_error);
 }

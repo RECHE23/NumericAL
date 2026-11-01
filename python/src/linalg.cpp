@@ -529,6 +529,23 @@ any_tensor solve_banded(const any_tensor& ab, const any_tensor& b, std::size_t l
     return shaped_like(numerical::solve_banded(lower, upper, matrix_from(std::get<real_tensor>(ab)), right_hand_sides(std::get<real_tensor>(b))), b);
 }
 
+// expm_multiply(a, b, t) -> Tensor, as scipy.sparse.linalg.expm_multiply at one time: e^{tA} B for the square a and
+// b a vector or a matrix of its rows, of one dtype (the caller promotes); single precision computed in double.
+any_tensor expm_multiply(const any_tensor& a, const any_tensor& b, double t)
+{
+    if (shape_of(a).size() != 2 || shape_of(b).empty() || shape_of(b).size() > 2 || a.index() != b.index()) {
+        throw std::runtime_error("expm_multiply expects a square matrix and a vector or matrix of one dtype");
+    }
+    if (is_single(a)) {
+        return narrowed(expm_multiply(widened(a), widened(b), t));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 8)};
+    if (is_complex(a)) {
+        return shaped_like(numerical::expm_multiply(matrix_from(std::get<cplx_tensor>(a)), right_hand_sides(std::get<cplx_tensor>(b)), t), b);
+    }
+    return shaped_like(numerical::expm_multiply(matrix_from(std::get<real_tensor>(a)), right_hand_sides(std::get<real_tensor>(b)), t), b);
+}
+
 // solve_toeplitz(c, r, b) -> Tensor, as scipy.linalg.solve_toeplitz((c, r), b): c and r vectors, b a vector or a
 // matrix, one dtype (the caller promotes); single precision computed in double.
 any_tensor solve_toeplitz(const any_tensor& c, const any_tensor& r, const any_tensor& b)
