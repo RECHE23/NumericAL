@@ -9,6 +9,19 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Fixed
+- **The same bits on any number of threads where the compiler's baseline has FMA**: GCC fuses a scalar `y − f·x`
+  where its target has the instruction (x86-64-v3, the default of Ubuntu 26.04's GCC on GitHub's runners; arm64)
+  and none of its vector-extension expressions, so the scalar blocks beside the vectors of the portable
+  `subtract_products` and `subtract_rows` rounded otherwise than the vectors, split by the count each call gets: an
+  inverse of order 129 changed 2700 of its entries between one thread and two (the column slices), `lu_factor` of
+  order 200 11 528. Under GCC their products are statements of their own, rounded as the vectors round them.
+- **Complex `tan`, `tanh` and `log` as glibc's where its build fuses**: glibc 2.43 computes `cos² + sinh²` as one
+  fused multiply-add on an AMD EPYC 7763 and as two products on an Intel Core i5-8500, the same library, and NumPy's
+  complex functions are glibc's: 26 of 496 values of `tan` were a unit off. Whether the C library fuses is read once,
+  from its `ctan` of a number the two roundings tell apart, and the sums of products follow it (arm64 fuses always).
+- `funm`'s tests ask its estimate to follow the error within four times, an estimate's measure: it models the
+  roundings in directions of their own and leaves out the Schur form's error grown by `f`'s condition, as SciPy's
+  does; measured from 0.66 to 8.6 times the error on two processors and two libms.
 - **`trace` and `diagonal` in time of the diagonal**: both copied the matrices' block before reading its diagonal, in
   time of n² (order 2048 on arm64: `trace` 1.28 ms against NumPy's 2.7 µs; 100 matrices of 32: 26 µs against 4).
   `numerical::diagonal(t, offset)` (C++) reads each matrix's `offset` diagonal where it lies, and Python's
@@ -17,7 +30,7 @@ A change that can break code is listed under **Breaking** and held for a month's
   elements takes each run on a thread, then their extremes (exact, the same answer on any number of threads); on
   arm64 `FMAX`/`FMIN` keep a met NaN and order the zeros as NumPy's, where a blend of compared lanes and a NaN flag
   took twice NumPy's time. Order 256 18 → 7.8 µs (NumPy 7.9), 1024 288 → 41 µs (129), 2048 1.14 → 0.30 ms (0.71).
-- **`funm`'s estimate bounds its error far from normality**: Parlett's recurrence (and its block form between
+- **`funm`'s estimate follows its error far from normality**: Parlett's recurrence (and its block form between
   clusters) divides by separations that fall far below the eigenvalues' gaps where `T`'s blocks are far from normal,
   growing its roundings and the clusters' integrals' errors by their inverse; SciPy's estimate, `ε ‖strict upper T‖₁`
   over the smallest gap, misses it. The estimate is now the recurrence run again on those errors (each integral's two

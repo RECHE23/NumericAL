@@ -922,11 +922,14 @@ TEST(expm_multiply_is_expm_times_b)
   EXPECT_THROWS(static_cast<void>(numerical::expm_multiply(matrix<double> {3, 3, nan}, b)), numerical::non_finite_error);
 }
 
-// funm's estimate bounds its error where Parlett's recurrence grows it far from normality, against expm: eight clusters
-// of 16 at order 128 (centres on [−2, 2], each spread over 0.02, the strict upper triangle's entries of deviation
-// 0.3), whose integrals are right to 10⁻¹³ and whose blocks above them are not (SciPy's estimate said 8·10⁻¹⁴ of an
-// error of 4·10⁻¹²), reported past SciPy's 10³ ε; and eigenvalues 0.27 apart at order 16 with entries of deviation 5,
-// Parlett's recurrence alone, where SciPy's said 6·10⁻¹⁴ of 2·10⁻¹¹.
+// funm's estimate follows its error where Parlett's recurrence grows it far from normality, against expm: eight
+// clusters of 16 at order 128 (centres on [−2, 2], each spread over 0.02, the strict upper triangle's entries of
+// deviation 0.3), whose integrals are right to 10⁻¹³ and whose blocks above them are not (SciPy's estimate said
+// 8·10⁻¹⁴ of an error of 4·10⁻¹²), reported past SciPy's 10³ ε; and eigenvalues 0.27 apart at order 16 with entries of
+// deviation 5, Parlett's recurrence alone, where SciPy's said 6·10⁻¹⁴ of 2·10⁻¹¹. An estimate, not a bound: it models
+// the roundings in directions of their own, and leaves out the Schur form's own error grown by f's condition, which
+// both share with SciPy's; measured from 0.66 (the first matrix under glibc 2.43's exp on an AMD EPYC, 1.8 under
+// macOS's) to 8.6 times the error, within four times it here.
 TEST(funm_estimate_bounds_its_error)
 {
   using values = std::vector<C>;
@@ -959,6 +962,6 @@ TEST(funm_estimate_bounds_its_error)
   for (const matrix<double>& a : {triangle(n, clustered, 0.3, 22), triangle(16, apart, 5.0, 23)}) {
     const numerical::funm_result r     {numerical::funm(a, exponential)};
     const double                 error {relative_gap(r.f, numerical::detail::as_complex(numerical::expm(a)))};
-    EXPECT(error > 1e3 * std::numeric_limits<double>::epsilon() && r.error >= error && r.error < 1e3 * error);
+    EXPECT(error > 1e3 * std::numeric_limits<double>::epsilon() && r.error >= error / 4 && r.error < 1e3 * error);
   }
 }

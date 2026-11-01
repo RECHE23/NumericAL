@@ -1108,6 +1108,28 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief `held − factor · x` for the scalar blocks beside GCC's vectors, rounded as those vectors round it: under GCC
+   *        the product a statement of its own, since GCC fuses no multiply-add of its vectors but contracts a scalar
+   *        expression where its target has the instruction (an x86-64-v3 baseline, the default of Ubuntu 26.04's GCC
+   *        on GitHub's runners, or arm64), and a row would then be rounded two ways, split by the count each call
+   *        gets (an inverse of order 129 by column slices on two threads: 2700 of its entries changed). Elsewhere the
+   *        expression as written, as the compiler rounds it (Clang vectorises these blocks itself, with no vectors of
+   *        ours beside them).
+   */
+  template <typename T>
+  [[nodiscard]] NUMERICAL_ALWAYS_INLINE T less_product(T        held,
+                                                       const T& factor,
+                                                       const T& x)
+  {
+#if defined(__GNUC__) && !defined(__clang__)
+    const T product {factor * x};
+    return held - product;
+#else
+    return held - (factor * x);
+#endif
+  }
+
+  /*!
    * \brief `y[i] -= Σₜ f[t] · x[(t · ldx) + i]` for \p count elements of \p y, \p terms rows of \p x apart by \p ldx:
    *        \ref subtract_product for each term in ascending order, so each element is computed as that sequence of
    *        calls computes it. For `double`, gemm.hpp's overload holds the elements in registers through the terms.
@@ -1155,7 +1177,7 @@ namespace numerical::detail {
                               const T        factor {f[t]};
                               const T* const row    {x + (t * ldx) + i};
                               for (std::size_t u {0}; u < Width; ++u) {
-                                held[u] -= factor * row[u];
+                                held[u] = less_product(held[u], factor, row[u]);
                               }
                             }
                             std::copy_n(held.begin(), Width, y + i);
@@ -1199,7 +1221,7 @@ namespace numerical::detail {
                                           for (std::size_t r {0}; r < product_rows; ++r) {
                                             const T factor {f[(r * ldf) + t]};
                                             for (std::size_t u {0}; u < Width; ++u) {
-                                              held[r][u] -= factor * row[u];
+                                              held[r][u] = less_product(held[r][u], factor, row[u]);
                                             }
                                           }
                                         }

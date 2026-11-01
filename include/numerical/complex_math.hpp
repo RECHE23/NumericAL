@@ -31,37 +31,6 @@ namespace numerical::detail {
   template <std::floating_point R>
   inline constexpr R half_exp_bound {static_cast<R>(static_cast<int>(static_cast<R>(std::numeric_limits<R>::max_exponent - 1) * std::numbers::ln2_v<R> / R {2}))};
 
-  //! \brief `a·b + c·d` as the GNU C library's build computes it: `fma(a, b, c·d)` on arm64, where GCC contracts it
-  //!        (FMA is in the baseline); each product rounded on x86-64, whose baseline has no FMA.
-  template <std::floating_point R>
-  [[nodiscard]] R libm_sum_of_products(R a,
-                                       R b,
-                                       R c,
-                                       R d)
-  {
-    const R second {c * d};
-#if defined(__aarch64__) || defined(_M_ARM64)
-    return std::fma(a, b, second);
-#else
-    const R first {a * b};
-    return first + second;
-#endif
-  }
-
-  //! \brief `s + a·b` as glibc's build computes `s += a·b`: fused on arm64, as \ref libm_sum_of_products.
-  template <std::floating_point R>
-  [[nodiscard]] R libm_add_product(R s,
-                                   R a,
-                                   R b)
-  {
-#if defined(__aarch64__) || defined(_M_ARM64)
-    return std::fma(a, b, s);
-#else
-    const R product {a * b};
-    return s + product;
-#endif
-  }
-
   //! \brief `sin` and `cos` of \p x together, as glibc's complex functions take them: its `sincos` under glibc (whose
   //!        single-precision one strayed from `sinf` and `cosf` by a unit in the last place before 2.29), the system's
   //!        `__sincos` on macOS (a compiler may fuse a `sin` and a `cos` into it where it inlines them, and it strays
@@ -92,6 +61,74 @@ namespace numerical::detail {
 #else
     sine   = std::sin(x);
     cosine = std::cos(x);
+#endif
+  }
+
+  /*!
+   * \brief Whether the C library's complex functions fuse their sums of products, `a·b + c·d` as `fma(a, b, c·d)`,
+   *        off arm64 (where FMA is in every build's baseline, and they do): under glibc as its build does, read once from
+   *        its `ctan` of a number whose `cos² + sinh²` the two round apart. glibc 2.43 fuses there on an AMD EPYC 7763
+   *        (GitHub's Ubuntu 26.04 runners) and not on an Intel Core i5-8500, the same library; NumPy's complex
+   *        functions are glibc's. Elsewhere no.
+   */
+#if !defined(__aarch64__) && !defined(_M_ARM64)
+  [[nodiscard]] inline bool libm_fuses() noexcept
+  {
+#  if defined(__GLIBC__) && defined(_GLIBCXX_USE_C99_COMPLEX) && _GLIBCXX_USE_C99_COMPLEX
+    static const bool fused {[] {
+                               volatile double re {0.00028503236970950325};     // read at run time: no folding of the call
+                               volatile double im {-0.7408643619401744};
+                               const std::complex<double> z      {re, im};
+                               const std::complex<double> answer {std::tan(z)}; // libstdc++'s: glibc's ctan
+                               double                     sine {};
+                               double                     cosine {};
+                               sine_and_cosine(z.real(), sine, cosine);
+                               const double sinh_y {std::sinh(z.imag())};
+                               const double den    {std::fma(sinh_y, sinh_y, cosine * cosine)};
+                               return answer == std::complex<double> {(sine * cosine) / den, (sinh_y * std::cosh(z.imag())) / den};
+                             }()};
+    return fused;
+#  else
+    return false;
+#  endif
+  }
+
+#endif
+
+  //! \brief `a·b + c·d` as the C library's build computes it: `fma(a, b, c·d)` where it fuses (\ref libm_fuses), each
+  //!        product rounded elsewhere.
+  template <std::floating_point R>
+  [[nodiscard]] R libm_sum_of_products(R a,
+                                       R b,
+                                       R c,
+                                       R d)
+  {
+    const R second {c * d};
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return std::fma(a, b, second);
+#else
+    if (libm_fuses()) {
+      return std::fma(a, b, second);
+    }
+    const R first {a * b};
+    return first + second;
+#endif
+  }
+
+  //! \brief `s + a·b` as the C library's build computes `s += a·b`: fused where it fuses, as \ref libm_sum_of_products.
+  template <std::floating_point R>
+  [[nodiscard]] R libm_add_product(R s,
+                                   R a,
+                                   R b)
+  {
+#if defined(__aarch64__) || defined(_M_ARM64)
+    return std::fma(a, b, s);
+#else
+    if (libm_fuses()) {
+      return std::fma(a, b, s);
+    }
+    const R product {a * b};
+    return s + product;
 #endif
   }
 
