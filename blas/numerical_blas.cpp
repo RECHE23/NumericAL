@@ -30,7 +30,9 @@ namespace {
 
   //! \brief The library's threads capped at load as the environment asks (numerical::environment_threads): a
   //!        program that preloads it in place of OpenBLAS, or a worker joblib starts, keeps the count it set.
-  [[maybe_unused]] const bool environment_capped {[] {
+  // NOLINTNEXTLINE(bugprone-throwing-static-initialization): the initializer is a noexcept call; nothing leaves it
+  [[maybe_unused]] const bool environment_capped {[]() noexcept {
+                                                    // NOLINTNEXTLINE(concurrency-mt-unsafe): read at load, before any thread of the library
                                                     numerical::set_max_threads(numerical::environment_threads(std::getenv("NUMERICAL_NUM_THREADS"), std::getenv("OMP_NUM_THREADS")));
                                                     return true;
                                                   }()};
