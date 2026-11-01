@@ -91,7 +91,6 @@ class Structure(unittest.TestCase):
                         self.assertEqual(numerical.bandwidth(x), defined)
                         if shape[0] == shape[1]:
                             self.assertEqual(numerical.bandwidth(x), sl.bandwidth(x))
-        self.assertEqual(sl.bandwidth(np.array([[0.0] * 3] * 3 + [[0.0, 0.0, 1.0]])), (0, 0))  # SciPy's, as above
         self.assertEqual(numerical.bandwidth(np.array([[0.0] * 3] * 3 + [[0.0, 0.0, 1.0]])), (1, 0))
         with self.assertRaises(ValueError):
             numerical.bandwidth(np.ones(3))

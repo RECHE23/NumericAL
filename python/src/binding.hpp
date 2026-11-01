@@ -2034,6 +2034,8 @@ any_tensor sqrtm(const any_tensor& v); // in linalg.cpp
 
 // solve_sylvester(a, b, q) -> Tensor, as scipy.linalg.solve_sylvester (A X + X B = Q).
 any_tensor solve_sylvester(const any_tensor& a, const any_tensor& b, const any_tensor& q); // in linalg.cpp
+// solve_continuous_lyapunov(a, q) -> Tensor, as scipy.linalg.solve_continuous_lyapunov (A X + X Aᴴ = Q).
+any_tensor solve_continuous_lyapunov(const any_tensor& a, const any_tensor& q); // in linalg.cpp
 
 // riccati(a, b, q, r, e, s, flags) -> Tensor, as scipy.linalg.solve_continuous_are or solve_discrete_are (flags: 1
 // discrete, 2 with e, 4 with s, 8 balanced).

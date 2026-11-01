@@ -878,6 +878,54 @@ namespace numerical {
     return u * matrix<T> {m, n, std::move(y)} *detail::adjoint_of(v);
   }
 
+  /*!
+   * \brief The solution `X` of the continuous Lyapunov equation `A X + X Aᴴ = Q`, as
+   *        `scipy.linalg.solve_continuous_lyapunov`: one Schur form `A = U R Uᴴ`, whose adjoint `Aᴴ = U Rᴴ Uᴴ` it also
+   *        gives (\ref solve_sylvester with `b = Aᴴ` formed a second one, twice the time), then
+   *        `R Y + Y Rᴴ = Uᴴ Q U` and `X = U Y Uᴴ`. `Rᴴ` is lower triangular: with `J` the order reversed,
+   *        `J Rᴴ J` is upper (quasi-)triangular, so `R (Y J) + (Y J)(J Rᴴ J) = (Uᴴ Q U) J` is solved by blocks as
+   *        LAPACK's `trsyl`. Real throughout for real operands, complex where either is.
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws dimension_error   If \p a is not square or \p q not of its shape.
+   * \throws non_finite_error  If an entry is infinite or NaN.
+   * \throws convergence_error If the Schur form's iterations did not converge.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] matrix<T> solve_continuous_lyapunov(const matrix<T>& a,
+                                                    const matrix<T>& q)
+  {
+    const std::size_t n {a.rows()};
+    if (a.cols() != n || q.rows() != n || q.cols() != n) {
+      throw dimension_error("solve_continuous_lyapunov requires a square a and q of its shape");
+    }
+    detail::require_finite(a, "solve_continuous_lyapunov");
+    detail::require_finite(q, "solve_continuous_lyapunov");
+    if (n == 0) {
+      return matrix<T> {0, 0, buffer<T> {}};
+    }
+    const schur_decomposition<T> form {a};
+    const matrix<T>&             u    {form.z()};
+    const matrix<T>&             r    {form.t()};
+    const matrix<T>              f    {detail::adjoint_of(u) * q * u};
+    buffer<T>                    y(n * n);        // (Uᴴ Q U) J, then Y J
+    buffer<T>                    reversed(n * n); // J Rᴴ J
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        y[(i * n) + j]        = f(i, n - 1 - j);
+        reversed[(i * n) + j] = detail::conj_of(r(n - 1 - j, n - 1 - i));
+      }
+    }
+    detail::triangular_sylvester(buffer<T>(r.begin(), r.end()), n, reversed, n, y);
+    buffer<T> x(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        x[(i * n) + j] = y[(i * n) + n - 1 - j];
+      }
+    }
+    return u * matrix<T> {n, n, std::move(x)} *detail::adjoint_of(u);
+  }
+
   namespace detail {
 
     //! \brief `‖A‖₁` bounds of the `[m/m]` Padé approximants of the Fréchet derivative of the exponential, for `m` from

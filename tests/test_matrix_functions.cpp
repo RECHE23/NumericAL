@@ -226,6 +226,41 @@ TEST(solve_sylvester_solves_the_equation)
                 numerical::non_finite_error);
 }
 
+// A X + X Aᴴ = Q from one Schur form, as scipy.linalg.solve_continuous_lyapunov: real (2 × 2 blocks in R, so in
+// J Rᴴ J) and complex, to rounding and to solve_sylvester with b = Aᴴ; empty; the refusals.
+TEST(solve_continuous_lyapunov_takes_one_schur_form)
+{
+  const auto shifted = []<typename T>(const matrix<T>& m) {
+                         std::vector<T> entries(m.begin(), m.end());
+                         for (std::size_t i {0}; i < m.rows(); ++i) {
+                           entries[(i * m.rows()) + i] += T {1.0};
+                         }
+                         return matrix<T> {m.rows(), m.rows(), entries};
+                       };
+  for (const std::size_t n : {std::size_t {1}, std::size_t {2}, std::size_t {7}, std::size_t {40}}) {
+    // A shifted by I: its trigonometric part is of rank 2, and λᵢ + conj(λⱼ) of its zero eigenvalues would vanish
+    const matrix<double> a {shifted(trigonometric<double>(n, n, 1.0))};
+    const matrix<double> q {trigonometric<double>(n, n, 3.0)};
+    const matrix<double> x {numerical::solve_continuous_lyapunov(a, q)};
+    EXPECT(sylvester_residual(a, numerical::detail::adjoint_of(a), q, x) < 1e-14);
+    EXPECT(relative_gap(x, numerical::solve_sylvester(a, numerical::detail::adjoint_of(a), q)) < 1e-12);
+    const matrix<C> ac {shifted(trigonometric<C>(n, n, 1.0))};
+    const matrix<C> qc {trigonometric<C>(n, n, 3.0)};
+    const matrix<C> xc {numerical::solve_continuous_lyapunov(ac, qc)};
+    EXPECT(sylvester_residual(ac, numerical::detail::adjoint_of(ac), qc, xc) < 1e-14);
+    EXPECT(relative_gap(xc, numerical::solve_sylvester(ac, numerical::detail::adjoint_of(ac), qc)) < 1e-12);
+  }
+  EXPECT(numerical::solve_continuous_lyapunov(matrix<double> {0, 0, std::vector<double> {}}, matrix<double> {0, 0, std::vector<double> {}}).rows() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_lyapunov(matrix<double> {{1.0, 2.0}}, matrix<double> {{1.0, 2.0}})),
+                numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_lyapunov(matrix<double> {{1.0}}, matrix<double> {{1.0, 2.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_lyapunov(matrix<double> {{1.0}}, matrix<double> {{1.0}, {2.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_lyapunov(matrix<double> {{std::numeric_limits<double>::quiet_NaN()}}, matrix<double> {{1.0}})),
+                numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_continuous_lyapunov(matrix<double> {{1.0}}, matrix<double> {{std::numeric_limits<double>::infinity()}})),
+                numerical::non_finite_error);
+}
+
 // The principal square root, as scipy.linalg.sqrtm: X² = A for a symmetric positive-definite matrix, a general real
 // one with complex pairs (a rotation's root the half rotation), a complex one; a real eigenvalue below 0 refused in
 // real arithmetic and its root +i √|λ| in complex; no root (a zero in a Jordan block) infinite there, the zero matrix's

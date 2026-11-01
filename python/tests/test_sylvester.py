@@ -75,6 +75,8 @@ class Sylvester(unittest.TestCase):
                 numerical.solve_discrete_lyapunov(*bad)
         with self.assertRaises(numerical.LinAlgError):
             numerical.solve_continuous_lyapunov(np.ones(3), np.eye(3))
+        with self.assertRaises(numerical.LinAlgError):  # A + I singular: the bilinear transformation has none
+            numerical.solve_discrete_lyapunov(-np.eye(10), np.eye(10), "bilinear")
 
 
 if __name__ == "__main__":

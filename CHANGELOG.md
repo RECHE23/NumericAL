@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **`solve_continuous_lyapunov` from one Schur form**: `A = U R Uᴴ` gives `Aᴴ = U Rᴴ Uᴴ` too, where `solve_sylvester`
+  with `b = Aᴴ` formed a second form; `R Y + Y Rᴴ = Uᴴ Q U` is solved by blocks with the order reversed (`J Rᴴ J` is
+  upper triangular), as LAPACK's `trsyl` with `'C'` (C++: `numerical::solve_continuous_lyapunov`). The bilinear
+  `solve_discrete_lyapunov` factors `A + I` once (`(Aᴴ + I)⁻¹` is its inverse's adjoint) where it inverted `A + I`
+  and `Aᴴ + I`. On arm64 (SciPy 1.17 in brackets): continuous 48 746 → 446 µs (756), 256 44 → 26 ms (52); discrete
+  48 671 → 422 µs (696), 256 36 → 22 ms (42); residuals alike.
 ### Fixed
 - **The same bits on any number of threads where the compiler's baseline has FMA**: GCC fuses a scalar `y − f·x`
   where its target has the instruction (x86-64-v3, the default of Ubuntu 26.04's GCC on GitHub's runners; arm64)
@@ -30,6 +37,16 @@ A change that can break code is listed under **Breaking** and held for a month's
   elements takes each run on a thread, then their extremes (exact, the same answer on any number of threads); on
   arm64 `FMAX`/`FMIN` keep a met NaN and order the zeros as NumPy's, where a blend of compared lanes and a NaN flag
   took twice NumPy's time. Order 256 18 → 7.8 µs (NumPy 7.9), 1024 288 → 41 µs (129), 2048 1.14 → 0.30 ms (0.71).
+- **`expm_multiply` over a sequence of times keeps its digits**: each time a step from the one before, as SciPy's,
+  carries the earlier action's rounding grown by `e^{hA}`, which far from normality or from a negative time is orders
+  above the action (from t = −0.2 on matrices of order 60 and 120, ‖A‖ near 30√n: 8·10⁻¹⁰ against `expm(t A) @ B`,
+  SciPy's 7·10⁻¹⁰). The error the steps carry is now bounded with `‖e^{hA}‖₁` estimated once (as `onenormest`),
+  and a time whose bound passes 2⁻⁴⁰ of its action is computed from `B` again: 3.5·10⁻¹⁴. A well-conditioned
+  sequence pays the estimate (order 200, 50 times, 10.5 → 14.3 ms; SciPy 25), the hard one its recomputed times
+  (18.5 → 39 ms).
+- Tests no longer pin SciPy 1.17's answers: `bandwidth` of a tall matrix against the definition (SciPy 1.18 fixed
+  its own), an eigenvalue subset's bound between two eigenvalues for every order (at order 4 it fell on the largest),
+  and `expm_multiply`'s times against `expm(t A) @ B` rather than against SciPy's error.
 - **`funm`'s estimate follows its error far from normality**: Parlett's recurrence (and its block form between
   clusters) divides by separations that fall far below the eigenvalues' gaps where `T`'s blocks are far from normal,
   growing its roundings and the clusters' integrals' errors by their inverse; SciPy's estimate, `ε ‖strict upper T‖₁`

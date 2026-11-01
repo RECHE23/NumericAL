@@ -68,6 +68,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&ldl>("ldl", "ldl(a, lower, hermitian) -> (lu, d, perm, ignored)\nThe symmetric indefinite factorisation A = L D Lᴴ (Lᵀ), as scipy.linalg.ldl (Bunch-Kaufman pivoting); ignored where a Hermitian diagonal's imaginary parts were set aside.");
     m.def<&inverse>("inverse", "inverse(a) -> Tensor\nThe inverse of a square matrix.");
     m.def<&solve_sylvester>("solve_sylvester", "solve_sylvester(a, b, q) -> Tensor\nX of A X + X B = Q, as scipy.linalg.solve_sylvester (Bartels-Stewart).");
+    m.def<&solve_continuous_lyapunov>("solve_continuous_lyapunov", "solve_continuous_lyapunov(a, q) -> Tensor\nX of A X + X Aᴴ = Q, as scipy.linalg.solve_continuous_lyapunov (one Schur form).");
     m.def<&riccati>("riccati", "riccati(a, b, q, r, e, s, flags) -> Tensor\nThe stabilising solution of an algebraic Riccati equation, as scipy.linalg.solve_continuous_are (flags & 1 clear) or solve_discrete_are; e where flags & 2, s where flags & 4, balanced where flags & 8.");
     m.def<&sqrtm>("sqrtm", "sqrtm(a) -> Tensor\nThe principal matrix square root, as scipy.linalg.sqrtm (a stack's matrices each).");
     m.def<&expm_multiply>("expm_multiply", "expm_multiply(a, b, t) -> Tensor\ne^{tA} B without forming e^{tA}, as scipy.sparse.linalg.expm_multiply at one time (Al-Mohy and Higham's algorithm 3.2).");

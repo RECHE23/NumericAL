@@ -449,6 +449,26 @@ any_tensor solve_sylvester(const any_tensor& a, const any_tensor& b, const any_t
                                                                matrix_from(std::get<real_tensor>(q)))}};
 }
 
+// solve_continuous_lyapunov(a, q) -> Tensor, as scipy.linalg.solve_continuous_lyapunov: X of A X + X Aᴴ = Q from one
+// Schur form, one dtype (the caller promotes), single precision computed in double.
+any_tensor solve_continuous_lyapunov(const any_tensor& a, const any_tensor& q)
+{
+    if (shape_of(a).size() != 2 || shape_of(q).size() != 2) {
+        throw std::runtime_error("solve_continuous_lyapunov expects matrices");
+    }
+    if (a.index() != q.index()) {
+        throw std::runtime_error("solve_continuous_lyapunov operands must share one dtype");
+    }
+    if (is_single(a)) {
+        return narrowed(solve_continuous_lyapunov(widened(a), widened(q)));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) * 8)};
+    if (is_complex(a)) {
+        return any_tensor {cplx_tensor {numerical::solve_continuous_lyapunov(matrix_from(std::get<cplx_tensor>(a)), matrix_from(std::get<cplx_tensor>(q)))}};
+    }
+    return any_tensor {real_tensor {numerical::solve_continuous_lyapunov(matrix_from(std::get<real_tensor>(a)), matrix_from(std::get<real_tensor>(q)))}};
+}
+
 namespace {
 
     // The Riccati solver \p flags picks, e and s passed on only where their flags are set.

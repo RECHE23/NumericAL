@@ -967,6 +967,7 @@ _solveh_banded = _linalg(_numerical.solveh_banded, arrays=2)
 _solve_toeplitz = _linalg(_numerical.solve_toeplitz, arrays=3)
 _solve_circulant = _linalg(_numerical.solve_circulant, arrays=2)
 _solve_sylvester = _linalg(_numerical.solve_sylvester, arrays=3)
+_solve_continuous_lyapunov = _linalg(_numerical.solve_continuous_lyapunov, arrays=2)
 _riccati = _linalg(_numerical.riccati, arrays=6)
 _sqrtm = _linalg(_numerical.sqrtm, arrays=1)
 
@@ -1129,9 +1130,11 @@ def expm_multiply(A, B, start=None, stop=None, num=None, endpoint=None, traceA=N
     ``linspace`` takes them, at least two times), stacked along a first axis. Al-Mohy and Higham's algorithm 3.2
     (2011), as SciPy's: `A` less its trace over `n`, then `s` steps of at most `m` terms of the Taylor series, each a
     product of `A` by `B`'s block, `m` and `s` the fewest products for double's unit roundoff; the times after the
-    first each a step ``h`` from the one before, as SciPy's (its algorithm 5.2): where the action shrinks by orders of
-    magnitude from one time to the next (a negative time, a nonnormal `A`), the later times lose as many digits, and
-    one call per time keeps them. `A` dense; `traceA` is accepted (the trace is exact here).
+    first each a step ``h`` from the one before, as SciPy's (its algorithm 5.2), except where the error the steps
+    carry, grown at most ``‖e^{hA}‖₁`` times by each (estimated once, as ``onenormest``), would pass ``2⁻⁴⁰`` of the
+    action: that time is computed from `B` again and the steps go on from it. Where `A` is far from normal or the time
+    negative, the steps alone lose digits by orders (SciPy's: 7·10⁻¹⁰ where each time from `B` is right to 10⁻¹⁵).
+    `A` dense; `traceA` is accepted (the trace is exact here).
 
     Raises:
         LinAlgError: if `A` is not square, `B` not a vector or matrix of its rows, or an entry is infinite or NaN.
@@ -1148,10 +1151,60 @@ def expm_multiply(A, B, start=None, stop=None, num=None, endpoint=None, traceA=N
     times, step = _linspace_times(start, stop, linspace)
     if len(times) < 2:
         raise ValueError("at least two time points are required")
+    A = A if isinstance(A, Tensor) else _read(A)
+    B = B if isinstance(B, Tensor) else _read(B)
     actions = [_expm_multiply(A, B, float(times[0]))]
-    for _ in times[1:]:
-        actions.append(_expm_multiply(A, actions[-1], float(step)))
+    growth = _step_growth(A, float(step))  # ‖e^{hA}‖₁, estimated: how a step grows the rounding it carries
+    carried = _EXPM_MULTIPLY_UNIT * _column_norm(actions[0])  # the error the steps carry, bounded
+    for t in times[1:]:
+        last = actions[-1]
+        action = _expm_multiply(A, last, float(step))
+        carried = growth * (carried + _EXPM_MULTIPLY_UNIT * _column_norm(last))
+        if carried > _EXPM_MULTIPLY_KEPT * _column_norm(action):  # the steps' rounding grown past it: from B
+            action = _expm_multiply(A, B, float(t))
+            carried = _EXPM_MULTIPLY_UNIT * _column_norm(action)
+        actions.append(action)
     return stack(actions)
+
+
+_EXPM_MULTIPLY_UNIT = 2.0**-53  # double's unit roundoff
+_EXPM_MULTIPLY_KEPT = 2.0**-40  # the error bound relative to an action past which a time is computed from B again
+
+
+def _column_norm(x):
+    """``‖x‖₁`` of a vector, or the largest column sum of moduli of a matrix (0 for none)."""
+    if not x.size:
+        return 0.0
+    sums = sum(absolute(x), axis=0)
+    return float(sums) if len(x.shape) == 1 else float(max(sums))
+
+
+def _step_growth(A, h):
+    """``‖e^{hA}‖₁`` estimated as Hager and Higham's ``onenormest`` (LAPACK's ``lacn2``), from products of ``e^{hA}``
+    and its adjoint with vectors (:func:`_expm_multiply`), at most five rounds: a step of a sequence of times grows
+    the error it carries by at most this."""
+    n = A.shape[0]
+    if n == 0:
+        return 0.0
+    adjoint = _adjoint(A)
+    complex_ = A.dtype.startswith("complex")
+    x = full((n,), 1.0 / n, A.dtype)
+    estimate = 0.0
+    for _ in range(5):
+        y = _expm_multiply(A, x, h)
+        estimate = _builtins.max(estimate, _column_norm(y))
+        values = y.tolist()
+        signs = [v / abs(v) if v != 0 else 1.0 for v in values] if complex_ else [1.0 if v >= 0 else -1.0 for v in values]
+        z = _expm_multiply(adjoint, asarray(signs, A.dtype), h).tolist()
+        moduli = [abs(v) for v in z]
+        j = moduli.index(_builtins.max(moduli))
+        here = _builtins.sum((complex(zi).conjugate() * xi).real for zi, xi in zip(z, x.tolist()))
+        if moduli[j] <= here:
+            break
+        unit = [0.0] * n
+        unit[j] = 1.0
+        x = asarray(unit, A.dtype)
+    return estimate
 
 
 def _linspace_times(start, stop, options):
@@ -1387,12 +1440,14 @@ def _adjoint(a):
 
 
 def solve_continuous_lyapunov(a, q):
-    """The solution `X` of ``A X + X Aᴴ = Q``, as ``scipy.linalg.solve_continuous_lyapunov``: the Sylvester equation
-    with ``b = a.conj().T`` (:func:`solve_sylvester`)."""
-    a = a if isinstance(a, Tensor) else _read(a)
-    if a.ndim != 2:
-        raise LinAlgError("solve_continuous_lyapunov: a must be a square matrix")
-    return solve_sylvester(a, _adjoint(a), q)
+    """The solution `X` of ``A X + X Aᴴ = Q``, as ``scipy.linalg.solve_continuous_lyapunov``: one Schur form
+    ``A = U R Uᴴ``, which gives ``Aᴴ = U Rᴴ Uᴴ`` too, then ``R Y + Y Rᴴ = Uᴴ Q U`` by blocks (LAPACK's ``trsyl``) and
+    ``X = U Y Uᴴ``; complex where an operand is.
+
+    Raises:
+        LinAlgError: if `a` is not square, `q` not of its shape, or an entry is infinite or NaN.
+    """
+    return _solve_continuous_lyapunov(a, q)
 
 
 solve_lyapunov = solve_continuous_lyapunov
@@ -1402,7 +1457,7 @@ def solve_discrete_lyapunov(a, q, method=None):
     """The solution `X` of ``A X Aᴴ − X + Q = 0``, as ``scipy.linalg.solve_discrete_lyapunov``: ``method="direct"``
     (by default below order 10, as SciPy's) solves the Kronecker system ``(I − A ⊗ conj(A)) vec(X) = vec(Q)``,
     ``"bilinear"`` (from order 10) the continuous equation the bilinear transformation gives, ``Bᴴ X + X B = −C`` for
-    ``B = (Aᴴ − I)(Aᴴ + I)⁻¹`` and ``C = 2 (A + I)⁻¹ Q (Aᴴ + I)⁻¹``.
+    ``B = (Aᴴ − I)(Aᴴ + I)⁻¹`` and ``C = 2 (A + I)⁻¹ Q (Aᴴ + I)⁻¹``, from one LU factorisation of ``A + I``.
 
     Raises:
         LinAlgError: if `a` is not square or `q` not of its shape, an entry is infinite or NaN, or ``I − A ⊗ conj(A)``
@@ -1419,12 +1474,12 @@ def solve_discrete_lyapunov(a, q, method=None):
     if method == "direct":
         kron = einsum("ij,kl->ikjl", a, conj(a) if a.dtype.startswith("complex") else a).reshape((n * n, n * n))
         return solve(eye(n * n, kron.dtype) - kron, q.reshape((n * n,))).reshape((n, n))
-    if method == "bilinear":
+    if method == "bilinear":  # one factorisation of A + I: (Aᴴ + I)⁻¹ is its inverse's adjoint
         identity = eye(n, a.dtype)
-        a_h_inverse = inverse(_adjoint(a) + identity)
-        b = (_adjoint(a) - identity) @ a_h_inverse
-        c = 2 * ((inverse(a + identity) @ q) @ a_h_inverse)
-        return solve_continuous_lyapunov(_adjoint(b), -c)
+        factor = lu_factor(a + identity)
+        left = lu_solve(factor, q)  # (A + I)⁻¹ Q
+        c = 2 * _adjoint(lu_solve(factor, _adjoint(left)))  # (A + I)⁻¹ Q (Aᴴ + I)⁻¹
+        return solve_continuous_lyapunov(lu_solve(factor, a - identity), -c)  # Bᴴ = (A + I)⁻¹ (A − I)
     raise ValueError(f"Unknown solver {method}")
 
 

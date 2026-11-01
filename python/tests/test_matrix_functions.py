@@ -338,13 +338,12 @@ class ExpmMultiply(unittest.TestCase):
                     if not kwargs:
                         np.testing.assert_allclose(got, expected, rtol=1e-11, atol=1e-12 * np.abs(expected).max())
                         continue
-                    # times stepped from one another, as SciPy's: each against expm(t A) @ B, within SciPy's own error
+                    # each time against expm(t A) @ B, whatever SciPy's own error there (its steps lose digits where
+                    # the action shrinks by orders; a time from B again keeps them here)
                     times = np.linspace(kwargs["start"], kwargs["stop"], kwargs.get("num", 50), endpoint=kwargs.get("endpoint", True))
                     for k, t in enumerate(times):
                         exact = sl.expm(t * a) @ b
-                        size = np.abs(exact).max()
-                        ours, theirs = np.abs(got[k] - exact).max(), np.abs(expected[k] - exact).max()
-                        self.assertLessEqual(ours, max(1e-11 * size, 10 * theirs), msg=f"t={t}")
+                        self.assertLessEqual(np.abs(got[k] - exact).max(), 1e-12 * np.abs(exact).max(), msg=f"t={t}")
 
     def test_each_time_against_expm(self):
         """Each time's action expm(t A) @ B's to rounding where the action does not shrink by orders between times."""
@@ -355,6 +354,19 @@ class ExpmMultiply(unittest.TestCase):
         for k, t in enumerate(times):
             expected = sl.expm(t * a) @ b
             np.testing.assert_allclose(got[k], expected, rtol=1e-12, atol=1e-12 * np.abs(expected).max())
+
+    @unittest.skipIf(sl is None, "SciPy is not installed")
+    def test_times_where_the_action_shrinks(self):
+        """A large ‖A‖ from a negative time: the action shrinks by orders from one time to the next, and each time
+        stays to rounding against expm(t A) @ B (stepped from the one before alone, as SciPy's, they lost 10⁵ ε)."""
+        rng = np.random.default_rng(8)
+        for n in (60, 120):
+            a = rng.standard_normal((n, n)) * 30.0 / np.sqrt(n)
+            b = rng.standard_normal((n, 2))
+            got = np.asarray(numerical.expm_multiply(a, b, start=-0.2, stop=1.0, num=7))
+            for k, t in enumerate(np.linspace(-0.2, 1.0, 7)):
+                exact = sl.expm(t * a) @ b
+                self.assertLessEqual(np.abs(got[k] - exact).max(), 1e-12 * np.abs(exact).max(), msg=f"n={n} t={t}")
 
     def test_single_precision_and_refusals(self):
         a = np.eye(3, dtype=np.float32)

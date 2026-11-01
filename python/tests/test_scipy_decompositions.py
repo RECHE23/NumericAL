@@ -221,7 +221,7 @@ class EigenSubsets(unittest.TestCase):
             kwargs = ({"subset_by_index": [0, min(n - 1, 4)]} if select == "index"
                       else {"subset_by_index": [n - 1, n - 1]} if select == "top"
                       else {"subset_by_value": [spectrum[0] - 1.0,  # between two eigenvalues: no rounding at the edge
-                                                (spectrum[min(n - 1, 5)] + spectrum[min(n - 1, 6)]) / 2 if n > 1 else spectrum[0] + 1.0]})
+                                                (spectrum[min(n - 2, 5)] + spectrum[min(n - 2, 5) + 1]) / 2 if n > 1 else spectrum[0] + 1.0]})
             with self.subTest(n=n, complex=complex_, upper=upper, select=select):
                 expected = sl.eigh(a, lower=not upper, **kwargs)[0]
                 w, v = numerical.eigh(a, "U" if upper else "L", **kwargs)
