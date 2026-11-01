@@ -38,6 +38,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   `triangular_reciprocal_condition` and `solve_banded_conditioned`.
 
 ### Changed
+- **`expm`, `cosm`, `sinm`, `expm_frechet` and `fractional_matrix_power` map fewer fresh pages**: each product writes
+  its result on the threads that compute it, whatever the storage held (`c_start::zero`), where a zeroed buffer was
+  filled on the calling thread first; the squarings alternate between two buffers; the Padé approximant of degree 13
+  holds three working matrices where it held five, and each matrix is freed once read for the last time, so the blocks
+  kept for reuse serve the same call. The same bits. `expm` of order 1024 under glibc: 18 450 page faults per call →
+  11 570. Six x86-64 cores, eight threads: `expm` of order 256 −22 %, `cosm` −18 %, order 1024 `expm` −6 %,
+  `expm_frechet` −17 %; one thread −2 to −11 %. M-series: within the noise to −10 %.
 - **The same bits on every x86-64 processor with AVX2, with or without AVX-512**: the AVX2 kernels sum in AVX-512's
   order, eight registers of four for its four of eight, the same blocks (32 `double`s, 64 `float`s), and each block
   of lanes, on either unit, by one written tree, `((v0 + v4) + (v2 + v6)) + ((v1 + v5) + (v3 + v7))`

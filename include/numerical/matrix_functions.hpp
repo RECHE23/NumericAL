@@ -106,15 +106,39 @@ namespace numerical {
       return *std::max_element(row.begin(), row.end());
     }
 
-    //! \brief The `n × n` product `A B` of row-major operands.
+    //! \brief The `n × n` product `A B` of row-major operands into \p c, whatever it held (its elements not read, as
+    //!        many made as needed): `C = A·B`, each part of it zeroed by the thread that computes it (\ref c_start::zero),
+    //!        where a zeroed buffer was filled on the calling thread first. \p c is neither operand.
+    template <typename T>
+    void square_product_into(const buffer<T>& a,
+                             const buffer<T>& b,
+                             std::size_t      n,
+                             buffer<T>&       c)
+    {
+      c.resize(n * n);
+      gemm(n, n, n, a.data(), n, b.data(), n, c.data(), n, c_start::zero);
+    }
+
+    //! \brief The `n × n` product `A B` of row-major operands (\ref square_product_into, into storage of its own).
     template <typename T>
     [[nodiscard]] buffer<T> square_product(const buffer<T>& a,
                                            const buffer<T>& b,
                                            std::size_t      n)
     {
-      buffer<T> c(n * n, T {});
-      gemm(n, n, n, a.data(), n, b.data(), n, c.data(), n);
+      buffer<T> c;
+      square_product_into(a, b, n, c);
       return c;
+    }
+
+    //! \brief \p x squared \p count times, the products alternating between its storage and \p spare's (resized as
+    //!        needed): no fresh `n × n` mapped and faulted in per squaring.
+    template <typename T>
+    void square_in_place(buffer<T>&  x,
+                         buffer<T>&  spare,
+                         std::size_t n)
+    {
+      square_product_into(x, x, n, spare);
+      std::swap(x, spare);
     }
 
     //! \brief The coefficients `b₀ … b_m` of the `[m/m]` Padé approximant of the exponential, as Higham's (2005).
@@ -176,8 +200,9 @@ namespace numerical {
                                              std::size_t                            m)
     {
       const double* const b {pade_coefficients(m)};
-      buffer<T>           odd(n * n, T {});  // the sum U is A times
-      buffer<T>           even(n * n, T {}); // V
+      buffer<T>           odd;   // the sum U is A times
+      buffer<T>           even;  // V
+      buffer<T>           spare; // a buffer free for U, where one is
       const auto          add = [&](buffer<T>& into, const buffer<T>& power, double coefficient) {
                                   for (std::size_t e {0}; e < n * n; ++e) {
                                     into[e] += T {coefficient} *power[e];
@@ -195,8 +220,10 @@ namespace numerical {
         add(high_even, a6, b[12]);
         add(high_even, a4, b[10]);
         add(high_even, a2, b[8]);
-        odd  = square_product(a6, high_odd, n);
-        even = square_product(a6, high_even, n);
+        square_product_into(a6, high_odd, n, odd);
+        square_product_into(a6, high_even, n, high_odd); // V's sum where U's high terms were
+        even  = std::move(high_odd);
+        spare = std::move(high_even);                    // U's storage, below
         add(odd, a6, b[7]);
         add(odd, a4, b[5]);
         add(odd, a2, b[3]);
@@ -205,6 +232,8 @@ namespace numerical {
         add(even, a2, b[2]);
       }
       else {
+        odd.assign(n * n, T {});
+        even.assign(n * n, T {});
         for (std::size_t k {2}; k < m; k += 2) { // b_{k+1} A^k into U's sum, b_k A^k into V
           add(odd, *powers[(k / 2) - 1], b[k + 1]);
           add(even, *powers[(k / 2) - 1], b[k]);
@@ -214,15 +243,16 @@ namespace numerical {
         odd[(i * n) + i]  += T {b[1]};
         even[(i * n) + i] += T {b[0]};
       }
-      const buffer<T> u {square_product(a, odd, n)};
-      buffer<T>       numerator(n * n);
-      buffer<T>       denominator(n * n);
-      for (std::size_t e {0}; e < n * n; ++e) {
-        numerator[e]   = even[e] + u[e];
-        denominator[e] = even[e] - u[e];
+      buffer<T> u {std::move(spare)};
+      square_product_into(a, odd, n, u);
+      odd = buffer<T> {};                       // its block kept for the next buffer (the squarings')
+      for (std::size_t e {0}; e < n * n; ++e) { // V + U where U was, V − U where V was
+        const T v {even[e]};
+        even[e] = v - u[e];
+        u[e]    = v + u[e];
       }
-      const lu_decomposition<T> lu {matrix<T> {n, n, std::move(denominator)}};
-      return lu.solve(matrix<T> {n, n, std::move(numerator)}).elements();
+      const lu_decomposition<T> lu {matrix<T> {n, n, std::move(even)}};
+      return lu.solve(matrix<T> {n, n, std::move(u)}).elements();
     }
 
     //! \brief `sinh(x) / x`, 1 at 0, by its series where `x` is small.
@@ -360,14 +390,14 @@ namespace numerical {
       }
       return detail::spectral<T>(vectors, powers, true);
     }
-    const buffer<T> a0(a.begin(), a.end());
+    buffer<T>       a0(a.begin(), a.end());
     bool            triangular {true};
     for (std::size_t i {1}; i < n && triangular; ++i) {
       for (std::size_t j {0}; j < i; ++j) {
         triangular = triangular && a0[(i * n) + j] == T {};
       }
     }
-    const buffer<double>            moduli {detail::entry_moduli(a0)};
+    buffer<double>                  moduli {detail::entry_moduli(a0)};
     const double                    norm {detail::column_sum_norm(moduli, n)};
     buffer<T>                       a2 {detail::square_product(a0, a0, n)};
     buffer<T>                       a4 {detail::square_product(a2, a2, n)};
@@ -385,7 +415,7 @@ namespace numerical {
     if (eta1 <= theta[1] && detail::extra_squarings(moduli, n, 5, 1.0, norm) == 0) {
       return finish(detail::pade_approximant(a0, powers, n, 5));
     }
-    const buffer<T> a8 {detail::square_product(a4, a4, n)};
+    buffer<T> a8       {detail::square_product(a4, a4, n)};
     powers[3] = &a8;
     const double d8    {std::pow(detail::one_norm(a8, n), 1.0 / 8.0)};
     const double eta3  {std::max(d6, d8)};
@@ -400,8 +430,12 @@ namespace numerical {
     const double eta5 {eta3 <= theta[4] || d8 >= eta3 ? eta3 : std::min(eta3, std::max(d8, d10()))};
     std::size_t  s    {eta5 <= theta[4] ? 0 : static_cast<std::size_t>(std::ceil(std::log2(eta5 / theta[4])))};
     s += detail::extra_squarings(moduli, n, 13, std::ldexp(1.0, -static_cast<int>(s)), norm);
-    const int power   {static_cast<int>(s)};
-    buffer<T> scaled  {a0};
+    // Each buffer freed once read for the last time: its block kept for the next of its size, in this call
+    moduli = buffer<double> {};
+    a8     = buffer<T> {};
+    const int       power   {static_cast<int>(s)};
+    const buffer<T> bands   {triangular ? a0 : buffer<T> {}}; // a triangle's exact bands read A after
+    buffer<T>       scaled  {std::move(a0)};
     for (std::size_t e {0}; e < n * n; ++e) {
       scaled[e] *= T {std::ldexp(1.0, -power)};
       a2[e]     *= T {std::ldexp(1.0, -2 * power)};
@@ -410,12 +444,13 @@ namespace numerical {
     }
     buffer<T> x {detail::pade_approximant(scaled, powers, n, 13)};
     if (triangular) {
-      detail::exact_triangular_bands(x, a0, n, std::ldexp(1.0, -power));
+      detail::exact_triangular_bands(x, bands, n, std::ldexp(1.0, -power));
     }
+    buffer<T> spare;
     for (int j {power - 1}; j >= 0; --j) {
-      x = detail::square_product(x, x, n);
+      detail::square_in_place(x, spare, n);
       if (triangular) {
-        detail::exact_triangular_bands(x, a0, n, std::ldexp(1.0, -j));
+        detail::exact_triangular_bands(x, bands, n, std::ldexp(1.0, -j));
       }
     }
     return finish(std::move(x));
@@ -832,9 +867,10 @@ namespace numerical {
       e0[k] *= T {std::ldexp(1.0, -s)};
     }
     auto [r, l] {detail::frechet_pade(a0, e0, n, 13)};
+    buffer<T> spare;
     for (int k {0}; k < s; ++k) {
       l = detail::both_products(r, l, n);
-      r = detail::square_product(r, r, n);
+      detail::square_in_place(r, spare, n);
     }
     return {matrix<T> {n, n, std::move(r)}, matrix<T> {n, n, std::move(l)}};
   }
@@ -2282,7 +2318,8 @@ namespace numerical {
       [[nodiscard]] double operator()(std::size_t p)
       {
         while (norms_.size() + 1 < p) {
-          power_ = square_product(power_, shifted_, n_);
+          square_product_into(power_, shifted_, n_, spare_);
+          std::swap(power_, spare_);
           norms_.push_back(one_norm(power_, n_));
         }
         return std::pow(norms_[p - 2], 1.0 / static_cast<double>(p));
@@ -2292,6 +2329,7 @@ namespace numerical {
 
       buffer<T>           shifted_;
       buffer<T>           power_;
+      buffer<T>           spare_; // the next power's storage, the one before's once swapped
       std::size_t         n_;
       std::vector<double> norms_; //!< `‖(T − I)ᵖ‖₁` for `p` from 2.
     };
@@ -2591,10 +2629,11 @@ namespace numerical {
         x = -x;
       }
       buffer<C>  u     {power_pade(r, n, t, m)};
+      buffer<C>  spare;
       const bool exact {principal_branch(t0, n)};
       for (std::size_t i {s + 1}; i-- > 0;) {
         if (i < s) {
-          u = square_product(u, u, n);
+          square_in_place(u, spare, n);
         }
         if (exact) {
           const double p {std::ldexp(t, -static_cast<int>(i))};
