@@ -916,8 +916,8 @@ def _structured_solve(a, b, structure, lower, level):
         zero = zeros((1,), a.dtype)
         rows = []  # row above - k of LAPACK's band storage: the diagonal at offset k, shifted to its columns
         for k in range(above, -below - 1, -1):
-            band = diagonal(a, offset=k) if n > abs(k) else zeros((0,), a.dtype)
-            pad = [zero] * _builtins.min(abs(k), n)
+            band = diagonal(a, offset=k) if n > _builtins.abs(k) else zeros((0,), a.dtype)
+            pad = [zero] * _builtins.min(_builtins.abs(k), n)
             rows.append(concatenate(pad + [band] if k > 0 else [band] + pad) if k else band)
         x, rcond = _solve_banded_conditioned(stack(rows), b, below, above)
         return _conditioned(x, rcond, a.dtype, level + 1)
@@ -1196,9 +1196,9 @@ def _step_growth(A, h):
         y = _expm_multiply(A, x, h)
         estimate = _builtins.max(estimate, _column_norm(y))
         values = y.tolist()
-        signs = [v / abs(v) if v != 0 else 1.0 for v in values] if complex_ else [1.0 if v >= 0 else -1.0 for v in values]
+        signs = [v / _builtins.abs(v) if v != 0 else 1.0 for v in values] if complex_ else [1.0 if v >= 0 else -1.0 for v in values]
         z = _expm_multiply(adjoint, asarray(signs, A.dtype), h).tolist()
-        moduli = [abs(v) for v in z]
+        moduli = [_builtins.abs(v) for v in z]
         j = moduli.index(_builtins.max(moduli))
         here = _builtins.sum((complex(zi).conjugate() * xi).real for zi, xi in zip(z, x.tolist()))
         if moduli[j] <= here:
@@ -2004,7 +2004,7 @@ def pinv(a, rcond=None, hermitian=False, *, rtol=None, atol=None, return_rank=Fa
     a = _operand(a)
     if len(a.shape) != 2:
         raise LinAlgError("pinv: atol and return_rank take a matrix")
-    values = [abs(v) for v in (eigvalsh(a) if hermitian else svdvals(a)).tolist()]
+    values = [_builtins.abs(v) for v in (eigvalsh(a) if hermitian else svdvals(a)).tolist()]
     largest = _builtins.max(values, default=0.0)
     if relative is None:
         relative = 0.0 if atol else _builtins.max(a.shape) * _MACHINE_EPSILON["float32" if a.dtype in _SINGLE else "float64"]
@@ -3463,7 +3463,7 @@ def pinvh(a, atol=None, rtol=None, lower=True, return_rank=False, check_finite=T
     a = _operand(a)
     s, u = eigh(a, UPLO="L" if lower else "U")
     values = s.tolist()
-    largest = _builtins.max((abs(v) for v in values), default=0.0)
+    largest = _builtins.max((_builtins.abs(v) for v in values), default=0.0)
     atol = 0.0 if atol is None else atol
     rtol = _builtins.max(a.shape) * _EPSILON[u.dtype] if rtol is None else rtol
     if atol < 0.0 or rtol < 0.0:
@@ -3547,7 +3547,7 @@ def signm(A, disp=True):
     def rounded_sign(x):  # SciPy's: 0 where |Re λ| is not past c, NumPy's complex maximum ordering (Re, then Im)
         values = [complex(v) for v in _flat(_read(x).tolist())]
         c = 1e3 * 2.0 ** -52 * _builtins.max(values, key=lambda v: (v.real, v.imag))
-        return [(1.0 if v.real > 0 else -1.0) if (abs(v.real), 0.0) > (c.real, c.imag) else 0.0 for v in values]
+        return [(1.0 if v.real > 0 else -1.0) if (_builtins.abs(v.real), 0.0) > (c.real, c.imag) else 0.0 for v in values]
 
     result, errest = funm(A, rounded_sign, disp=False)
     errtol = 1e3 * (2.0 ** -23 if result.dtype in _SINGLE else 2.0 ** -52)
@@ -3617,11 +3617,11 @@ def _rhp(x, y):
 
 
 def _iuc(x, y):
-    return y != 0 and abs(x / y) < 1.0
+    return y != 0 and _builtins.abs(x / y) < 1.0
 
 
 def _ouc(x, y):
-    return x != 0 if y == 0 else abs(x / y) > 1.0
+    return x != 0 if y == 0 else _builtins.abs(x / y) > 1.0
 
 
 _ORDQZ_SORTS = {"lhp": _lhp, "rhp": _rhp, "iuc": _iuc, "ouc": _ouc}
@@ -3687,7 +3687,7 @@ def hessenberg(a, calc_q=False, overwrite_a=False, check_finite=True):
     if len(a.shape) != 2 or a.shape[0] != a.shape[1]:
         raise ValueError("expected square matrix")
     if a.shape[0] <= 2:
-        if not _builtins.all(_math.isfinite(abs(x)) for x in _flat(a.tolist())):
+        if not _builtins.all(_math.isfinite(_builtins.abs(x)) for x in _flat(a.tolist())):
             raise ValueError("array must not contain infs or NaNs")
         return (a, eye(a.shape[0])) if calc_q else a
     h, q = _hessenberg(a, bool(calc_q))
@@ -4057,6 +4057,329 @@ def kron(a, b):
 
 
 __all__ += ["concatenate", "concat", "stack", "vstack", "hstack", "tril", "triu", "diag", "kron"]
+
+
+# --- NumPy's root functions composed of the natives above: shapes, element-wise comparisons, products, spreads ---
+
+
+abs = absolute  # numpy.abs, numpy.absolute's other name
+
+
+def negative(x, /):
+    """``-x`` element-wise, as ``numpy.negative`` (a bool tensor refused, as NumPy's)."""
+    x = _tensor(x)
+    if x.dtype == "bool":
+        raise TypeError("The numpy boolean negative, the `-` operator, is not supported, use the `~` operator or the "
+                        "logical_not function instead.")
+    return -x
+
+
+def positive(x, /):
+    """`x` itself, as ``numpy.positive`` (a Tensor is never written, so it needs no copy)."""
+    x = _tensor(x)
+    if x.dtype == "bool":
+        raise TypeError("The numpy boolean positive is not supported")
+    return x
+
+
+def square(x, /):
+    """``x * x`` element-wise, as ``numpy.square``."""
+    x = _operand(x)
+    return x * x
+
+
+def divide(x1, x2, /):
+    """``x1 / x2`` element-wise, as ``numpy.divide`` (``numpy.true_divide``)."""
+    if not isinstance(x1, (Tensor, _numbers.Number)):
+        x1 = _operand(x1)
+    if not isinstance(x2, (Tensor, _numbers.Number)):
+        x2 = _operand(x2)
+    if not isinstance(x1, Tensor) and not isinstance(x2, Tensor):
+        x1 = _operand(x1)
+    return x1 / x2
+
+
+true_divide = divide
+
+
+def _like(a, shape, dtype):
+    """The shape and dtype of a ``*_like`` function: `a`'s unless given."""
+    a = a if isinstance(a, Tensor) else _tensor(a)
+    return (a.shape if shape is None else _shape(shape)), (a.dtype if dtype is None else dtype)
+
+
+def zeros_like(a, dtype=None, shape=None):
+    """Zeros of `a`'s shape and dtype (or those given), as ``numpy.zeros_like``."""
+    shape, dtype = _like(a, shape, dtype)
+    return zeros(shape, dtype)
+
+
+def ones_like(a, dtype=None, shape=None):
+    """Ones of `a`'s shape and dtype (or those given), as ``numpy.ones_like``."""
+    shape, dtype = _like(a, shape, dtype)
+    return ones(shape, dtype)
+
+
+def empty_like(a, dtype=None, shape=None):
+    """A tensor of `a`'s shape and dtype (or those given), as ``numpy.empty_like``; its elements zeros here, where
+    NumPy's are whatever the memory held."""
+    shape, dtype = _like(a, shape, dtype)
+    return zeros(shape, dtype)
+
+
+def full_like(a, fill_value, dtype=None, shape=None):
+    """`fill_value` in `a`'s shape and dtype (or those given), as ``numpy.full_like``."""
+    shape, dtype = _like(a, shape, dtype)
+    return full(shape, fill_value, dtype)
+
+
+def copy(a):
+    """`a` as a Tensor, as ``numpy.copy``: an array-like read into one; a Tensor itself, never written, so it serves
+    as its own copy."""
+    return a if isinstance(a, Tensor) else _tensor(a)
+
+
+def ravel(a):
+    """The elements of `a` in row-major order as a vector, as ``numpy.ravel``."""
+    return reshape(_tensor(a), (-1,))
+
+
+def _normalized_axes(axes, rank, name):
+    """`axes` (an integer or a sequence) as distinct non-negative axes of a rank-`rank` result."""
+    axes = (axes,) if isinstance(axes, _numbers.Integral) else tuple(axes)
+    resolved = []
+    for axis in axes:
+        axis = _operator.index(axis)
+        if not -rank <= axis < rank:
+            raise _ShapeError(f"{name}: axis {axis} is out of bounds for array of dimension {rank}")
+        resolved.append(axis % rank)
+    if len(set(resolved)) != len(resolved):
+        raise ValueError("repeated axis")
+    return resolved
+
+
+def expand_dims(a, axis):
+    """`a` with an axis of extent 1 inserted at each of `axis` (an integer or a tuple, in the result's numbering),
+    as ``numpy.expand_dims``."""
+    a = _tensor(a)
+    rank = len(a.shape) + (1 if isinstance(axis, _numbers.Integral) else len(tuple(axis)))
+    inserted = set(_normalized_axes(axis, rank, "expand_dims"))
+    extents = iter(a.shape)
+    return reshape(a, tuple(1 if k in inserted else next(extents) for k in range(rank)))
+
+
+def _at_least(rank, arrays, shape_of):
+    tensors = [_tensor(a) for a in arrays]
+    shaped = [t if len(t.shape) >= rank else reshape(t, shape_of(t.shape)) for t in tensors]
+    return shaped[0] if len(shaped) == 1 else shaped
+
+
+def atleast_1d(*arys):
+    """Each array with at least one axis (a number a vector of one), as ``numpy.atleast_1d``: one tensor for one
+    argument, else a list."""
+    return _at_least(1, arys, lambda shape: (1,))
+
+
+def atleast_2d(*arys):
+    """Each array with at least two axes (a vector a row), as ``numpy.atleast_2d``."""
+    return _at_least(2, arys, lambda shape: (1,) * (2 - len(shape)) + shape)
+
+
+def atleast_3d(*arys):
+    """Each array with at least three axes, as ``numpy.atleast_3d``: a vector of n ``(1, n, 1)``, a matrix
+    ``(m, n, 1)``."""
+    return _at_least(3, arys, lambda shape: {0: (1, 1, 1), 1: (1,) + shape + (1,), 2: shape + (1,)}[len(shape)])
+
+
+def flip(m, axis=None):
+    """`m` with its elements in reverse order along `axis` (an integer, a tuple, or None for every axis), as
+    ``numpy.flip``."""
+    m = _tensor(m)
+    rank = len(m.shape)
+    axes = range(rank) if axis is None else _normalized_axes(axis, rank, "flip")
+    if not rank:
+        return m
+    return m[tuple(slice(None, None, -1) if k in axes else slice(None) for k in range(rank))]
+
+
+def flipud(m):
+    """`m` upside down (its first axis reversed), as ``numpy.flipud``."""
+    m = _tensor(m)
+    if len(m.shape) < 1:
+        raise ValueError("Input must be >= 1-d.")
+    return flip(m, 0)
+
+
+def fliplr(m):
+    """`m` left to right (its second axis reversed), as ``numpy.fliplr``."""
+    m = _tensor(m)
+    if len(m.shape) < 2:
+        raise ValueError("Input must be >= 2-d.")
+    return flip(m, 1)
+
+
+def swapaxes(a, axis1, axis2):
+    """`a` with the axes `axis1` and `axis2` exchanged, as ``numpy.swapaxes``."""
+    a = _tensor(a)
+    rank = len(a.shape)
+    i, j = (_normalized_axes(axis, rank, "swapaxes")[0] for axis in (axis1, axis2))
+    order = list(range(rank))
+    order[i], order[j] = order[j], order[i]
+    return a if i == j else transpose(a, order)
+
+
+def moveaxis(a, source, destination):
+    """`a` with the axes `source` moved to the places `destination` (integers or sequences of one length), the others
+    in their order, as ``numpy.moveaxis``."""
+    a = _tensor(a)
+    rank = len(a.shape)
+    source = _normalized_axes(source, rank, "moveaxis")
+    destination = _normalized_axes(destination, rank, "moveaxis")
+    if len(source) != len(destination):
+        raise ValueError("`source` and `destination` arguments must have the same number of elements")
+    order = [k for k in range(rank) if k not in source]
+    for place, axis in sorted(zip(destination, source)):
+        order.insert(place, axis)
+    return transpose(a, order)
+
+
+def column_stack(tup):
+    """Vectors as columns and matrices as they are, side by side, as ``numpy.column_stack``."""
+    tensors = _joined(tup, "column_stack")
+    return concatenate([reshape(t, (t.shape[0], 1)) if len(t.shape) < 2 else t for t in tensors], axis=1)
+
+
+def _ordered(name, x1, x2):
+    """`x1` and `x2` of one real dtype for an element-wise order (a complex one refused: no order here)."""
+    x1, x2 = _same_dtype(x1, x2)
+    if x1.dtype.startswith("complex"):
+        raise TypeError(f"{name}: complex numbers are not ordered here (NumPy orders them by real, then imaginary part)")
+    return x1, x2
+
+
+def maximum(x1, x2, /):
+    """The larger of `x1` and `x2` element-wise, broadcast, as ``numpy.maximum``: a NaN wins (the first's where
+    both), and +0 over −0 whatever their order, as IEEE 754-2019's maximum (NumPy's on arm64, and :func:`max`'s).
+    Real dtypes."""
+    x1, x2 = _ordered("maximum", x1, x2)
+    zeros = logical_and(equal(x1, x2), equal(x1, 0))  # x1 + x2: +0 where either is +0, −0 where both are −0
+    larger = where(greater(x1, x2), x1, where(zeros, x1 + x2, x2))
+    return where(isnan(x1), x1, where(isnan(x2), x2, larger))
+
+
+def minimum(x1, x2, /):
+    """The smaller of `x1` and `x2` element-wise, broadcast, as ``numpy.minimum``: a NaN wins (the first's where
+    both), and −0 under +0 whatever their order, as IEEE 754-2019's minimum. Real dtypes."""
+    x1, x2 = _ordered("minimum", x1, x2)
+    zeros = logical_and(equal(x1, x2), equal(x1, 0))  # −(−x1 − x2): −0 where either is −0, +0 where both are +0
+    smaller = where(less(x1, x2), x1, where(zeros, -(-x1 - x2), x2))
+    return where(isnan(x1), x1, where(isnan(x2), x2, smaller))
+
+
+def clip(a, a_min=None, a_max=None):
+    """`a` limited to ``[a_min, a_max]`` element-wise, as ``numpy.clip``: ``minimum(maximum(a, a_min), a_max)``, either
+    bound None for none (not both). A NaN in `a` stays."""
+    if a_min is None and a_max is None:
+        raise ValueError("One of max or min must be given")
+    a = _operand(a)
+    if a_min is not None:
+        a = maximum(a, a_min)
+    return a if a_max is None else minimum(a, a_max)
+
+
+def isclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    """Where ``|a − b| ≤ atol + rtol |b|`` element-wise, as ``numpy.isclose``: infinities close only to themselves,
+    NaNs to nothing unless `equal_nan`."""
+    a, b = _same_dtype(a, b)
+    close = logical_and(less_equal(absolute(a - b), atol + rtol * absolute(b)), isfinite(b))
+    close = logical_or(close, equal(a, b))
+    if equal_nan:
+        close = logical_or(close, logical_and(isnan(a), isnan(b)))
+    return close
+
+
+def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
+    """Whether every pair is close (:func:`isclose`), as ``numpy.allclose``."""
+    return bool(all(isclose(a, b, rtol, atol, equal_nan)))
+
+
+def dot(a, b):
+    """The dot product, as ``numpy.dot``: a number times an array; two vectors' sum of products; a matrix product;
+    for more axes the sum over `a`'s last axis and `b`'s second-to-last."""
+    a, b = _operand(a), _operand(b)
+    ra, rb = len(a.shape), len(b.shape)
+    if ra == 0 or rb == 0:
+        return a * b
+    if rb == 1:
+        letters = _labels(ra, "dot")
+        return _number_if_scalar(einsum(f"{letters},{letters[-1]}->{letters[:-1]}", a, b))
+    letters = _labels(ra + rb - 1, "dot")
+    summed = letters[-1]  # a's last axis and b's second-to-last
+    batch, last = letters[ra - 1:ra + rb - 3], letters[ra + rb - 3]
+    return einsum(f"{letters[:ra - 1]}{summed},{batch}{summed}{last}->{letters[:ra - 1]}{batch}{last}", a, b)
+
+
+def inner(a, b, /):
+    """The sum of products over the last axes of `a` and `b`, as ``numpy.inner``: a number times an array where one
+    is a number."""
+    a, b = _operand(a), _operand(b)
+    ra, rb = len(a.shape), len(b.shape)
+    if ra == 0 or rb == 0:
+        return a * b
+    letters = _labels(ra + rb - 1, "inner")
+    left = letters[:ra]
+    right = letters[ra:ra + rb - 1] + letters[ra - 1]
+    return _number_if_scalar(einsum(f"{left},{right}->{left[:-1]}{right[:-1]}", a, b))
+
+
+def vdot(a, b, /):
+    """The sum of ``conj(a) · b`` over both arrays flattened, as ``numpy.vdot``."""
+    a, b = ravel(_operand(a)), ravel(_operand(b))
+    if a.shape != b.shape:
+        raise ValueError("cannot reshape array: vdot requires arrays of one size")
+    return _number_if_scalar(einsum("i,i->", conj(a), b))
+
+
+def ptp(a, axis=None, keepdims=False):
+    """The range, maximum less minimum, over every element or along `axis`, as ``numpy.ptp``."""
+    a = _operand(a)
+    return max(a, axis=axis, keepdims=keepdims) - min(a, axis=axis, keepdims=keepdims)
+
+
+def var(a, axis=None, dtype=None, ddof=0, keepdims=False):
+    """The variance, ``Σ |x − mean|² / (N − ddof)`` over every element or along `axis`, as ``numpy.var``: real, of
+    `a`'s precision (a complex one's parts' squares summed); `dtype` the one to compute in."""
+    a = _operand(a)
+    if dtype is not None:
+        a = asarray(a, dtype)
+    if a.dtype == "bool":
+        a = asarray(a, "float64")
+    axes = _resolved_axes(a, axis, "var")
+    count = _math.prod(a.shape[k] for k in axes)
+    deviation = a - mean(a, axis=axis, keepdims=True)
+    squares = real(deviation * conj(deviation)) if a.dtype.startswith("complex") else deviation * deviation
+    total = sum(squares, axis=axis, keepdims=keepdims)
+    divisor = _builtins.max(count - ddof, 0)
+    if divisor == 0:
+        _warnings.warn("Degrees of freedom <= 0 for slice", RuntimeWarning, stacklevel=2)
+    return total / divisor if divisor else total * _math.nan
+
+
+def std(a, axis=None, dtype=None, ddof=0, keepdims=False):
+    """The standard deviation, the square root of :func:`var`, as ``numpy.std``."""
+    variance = var(a, axis=axis, dtype=dtype, ddof=ddof, keepdims=keepdims)
+    return _math.sqrt(variance) if isinstance(variance, _numbers.Number) else sqrt(variance)
+
+
+for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot"):  # NumPy's methods of these names, where Tensor has none
+    if not hasattr(Tensor, _name):
+        setattr(Tensor, _name, (lambda function: lambda self, *args, **kwargs: function(self, *args, **kwargs))(globals()[_name]))
+del _name
+
+__all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "zeros_like", "ones_like", "empty_like",
+            "full_like", "copy", "ravel", "expand_dims", "atleast_1d", "atleast_2d", "atleast_3d", "flip", "flipud",
+            "fliplr", "swapaxes", "moveaxis", "column_stack", "maximum", "minimum", "clip", "isclose", "allclose", "dot",
+            "inner", "vdot", "ptp", "var", "std"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)
 

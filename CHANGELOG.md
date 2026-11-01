@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **NumPy's root functions, a first set**: `abs`, `negative`, `positive`, `square`, `divide` (`true_divide`),
+  `zeros_like`, `ones_like`, `empty_like`, `full_like`, `copy`, `ravel`, `expand_dims`, `atleast_1d`, `atleast_2d`,
+  `atleast_3d`, `flip`, `flipud`, `fliplr`, `swapaxes`, `moveaxis`, `column_stack`, `maximum`, `minimum`, `clip`,
+  `isclose`, `allclose`, `dot`, `inner`, `vdot`, `ptp`, `var` and `std` (and `Tensor.clip`, `ptp`, `var`, `std`),
+  each as NumPy's and composed of the natives (broadcast arithmetic, `where`, slicing, `einsum`, the reductions).
+  `maximum` and `minimum` keep a NaN and order the zeros as IEEE 754-2019 (as `max` and NumPy on arm64); complex
+  numbers are not ordered here (NumPy orders them by real, then imaginary part).
 - **`scipy.linalg`'s arguments where its names are NumPy's too**: `eigh(a, b)` and `eigvalsh(a, b)` with SciPy's `b`
   in NumPy's `UPLO` place (a string there stays `UPLO`), `lower`, `eigvals_only`, `driver` (`"ev"` the implicit QL,
   `"evd"` and the others divide and conquer), `type` 1, and the `overwrite_*` and `check_finite` flags;
