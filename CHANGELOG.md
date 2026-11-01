@@ -15,6 +15,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   `solve_discrete_lyapunov` factors `A + I` once (`(Aᴴ + I)⁻¹` is its inverse's adjoint) where it inverted `A + I`
   and `Aᴴ + I`. On arm64 (SciPy 1.17 in brackets): continuous 48 746 → 446 µs (756), 256 44 → 26 ms (52); discrete
   48 671 → 422 µs (696), 256 36 → 22 ms (42); residuals alike.
+- **`svd` of a few columns**: a bidiagonal leaf without an extra column multiplied its right vectors by the identity
+  (`n³` products); it takes them as they are. 48 × 32 on arm64 191 → 139 µs (NumPy 141).
+
 ### Fixed
 - **The same bits on any number of threads where the compiler's baseline has FMA**: GCC fuses a scalar `y − f·x`
   where its target has the instruction (x86-64-v3, the default of Ubuntu 26.04's GCC on GitHub's runners; arm64)

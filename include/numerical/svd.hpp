@@ -1282,8 +1282,8 @@ namespace numerical {
         ut[(i * n) + i] = 1.0;
         vt[(i * n) + i] = 1.0;
       }
-      bidiagonal_qr(diagonal, super, ut, vt, n, svd_qr_steps_per_value * n);   // descending
-      buffer<double> rotated(v);
+      bidiagonal_qr(diagonal, super, ut, vt, n, svd_qr_steps_per_value * n); // descending
+      const buffer<double> rotated {extra == 1 ? v : buffer<double> {}};     // G; without an extra column, the identity
       for (std::size_t c {0}; c < n; ++c) {
         const std::size_t source {n - 1 - c};
         sigma[c] = diagonal[source];
@@ -1291,8 +1291,8 @@ namespace numerical {
           u[(r * n) + c] = ut[(source * n) + r];
         }
         for (std::size_t r {0}; r < m; ++r) {   // G times B''s right vector
-          double sum {0.0};
-          for (std::size_t t {0}; t < n; ++t) {
+          double sum {extra == 1 ? 0.0 : vt[(source * n) + r]};
+          for (std::size_t t {0}; extra == 1 && t < n; ++t) {
             sum += rotated[(r * m) + t] * vt[(source * n) + t];
           }
           v[(r * m) + c] = sum;
