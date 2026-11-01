@@ -84,11 +84,12 @@ class NumpyRoot(unittest.TestCase):
         self.same(numerical.true_divide(2.0, y), np.true_divide(2.0, y))
         self.same(numerical.divide(x, 2.0), np.divide(x, 2.0))
         self.same(numerical.divide(x.tolist(), y.tolist()), np.divide(x, y))
-        for function, expected in ((numerical.maximum, np.maximum), (numerical.minimum, np.minimum)):
+        zeros = (x == 0) & (y == 0)  # their signs as IEEE 754-2019 orders them; NumPy's are its platform's (x86: y's)
+        for function, expected, negative_zero in ((numerical.maximum, np.maximum, np.signbit(x) & np.signbit(y)),
+                                                  (numerical.minimum, np.minimum, np.signbit(x) | np.signbit(y))):
             got = np.asarray(function(x, y))
-            want = expected(x, y)
-            self.same(got, want)
-            np.testing.assert_array_equal(np.signbit(got), np.signbit(want))
+            self.same(got, expected(x, y))
+            np.testing.assert_array_equal(np.signbit(got)[zeros], negative_zero[zeros])
             self.same(function(x, 0.25), expected(x, 0.25))
         self.same(numerical.clip(x, -0.5, 0.5), np.clip(x, -0.5, 0.5))
         self.same(numerical.clip(x, None, 0.5), np.clip(x, None, 0.5))
