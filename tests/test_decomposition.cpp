@@ -3804,3 +3804,219 @@ TEST(the_one_norm_estimate_s_climb)
   EXPECT(zero_entry == 3.0);
   EXPECT(one_norm_estimate<C>(1, [](C* x, bool) { x[0] *= C {0.0, -4.0}; }) == 4.0);
 }
+
+namespace {
+
+  //! \brief Whether \p v's columns are orthonormal and eigenvectors of \p a for \p w, to \p tolerance times `n ‖A‖`.
+  template <typename T>
+  bool eigenpairs_hold(const matrix<T>&      a,
+                       const vector<double>& w,
+                       const matrix<T>&      v,
+                       double                tolerance)
+  {
+    const std::size_t n    {a.rows()};
+    const std::size_t k    {v.cols()};
+    double            size {1.0};
+    for (const T& entry : a) {
+      size = std::max(size, std::abs(entry));
+    }
+    double residual   {0.0};
+    double orthogonal {0.0};
+    for (std::size_t j {0}; j < k; ++j) {
+      for (std::size_t i {0}; i < n; ++i) {
+        T row {};
+        for (std::size_t l {0}; l < n; ++l) {
+          row += a(i, l) * v(l, j);
+        }
+        residual = std::max(residual, std::abs(row - (w[j] * v(i, j))));
+      }
+      for (std::size_t p {0}; p < k; ++p) {
+        T dot {};
+        for (std::size_t i {0}; i < n; ++i) {
+          dot += numerical::detail::conj_of(v(i, p)) * v(i, j);
+        }
+        orthogonal = std::max(orthogonal, std::abs(dot - T {p == j ? 1.0 : 0.0}));
+      }
+    }
+    const double bound {tolerance * static_cast<double>(std::max<std::size_t>(n, 1)) * std::numeric_limits<double>::epsilon()};
+    return residual <= bound * size && orthogonal <= bound;
+  }
+
+  //! \brief `Q diag(d) Qᵀ` for the orthogonal Q of a random matrix's QR.
+  matrix<double> with_spectrum(const std::vector<double>& d,
+                               std::mt19937_64&           engine)
+  {
+    const std::size_t   n {d.size()};
+    const auto          q {qr(normal_matrix<double>(n, engine)).q()};
+    std::vector<double> entries(n * n, 0.0);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        for (std::size_t l {0}; l < n; ++l) {
+          entries[(i * n) + j] += q(i, l) * d[l] * q(j, l);
+        }
+      }
+    }
+    return matrix<double> {n, n, entries};
+  }
+} // namespace
+
+// Some eigenpairs of a Hermitian matrix by bisection and inverse iteration: those of random real and complex matrices,
+// the whole spectrum's to the bit in their values (the same bisection) and eigenpairs to rounding; a multiple
+// eigenvalue, a tight cluster, one too large to iterate together (the whole spectrum's vectors), Wilkinson's close
+// pairs; by value, an empty interval; values alone.
+TEST(hermitian_eigen_subset_finds_some_eigenpairs)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+  std::mt19937_64 engine {20261101};
+  const auto      symmetric = [&](std::size_t n) {
+                                const matrix<double> g {normal_matrix<double>(n, engine)};
+                                return g + transpose(g);
+                              };
+  bool fine {true};
+  for (const std::size_t n : {1U, 2U, 5U, 40U, 130U}) {
+    const matrix<double> a                  {symmetric(n)};
+    const auto           part               {numerical::hermitian_eigen_subset(a, 0, std::min<std::size_t>(n - 1, 9))};
+    const vector<double> all                {numerical::symmetric_eigenvalues(a)};
+    fine = fine && eigenpairs_hold(a, part.values, part.vectors, 64.0) && std::abs(part.values[0] - all[0]) <= 1e-13 * std::abs(all[n - 1] - all[0] + 1.0);
+    const matrix<std::complex<double>>  c   {gram_plus_identity(normal_matrix<std::complex<double>>(n, engine))};
+    const auto                          top {numerical::hermitian_eigen_subset(c, n - 1, n - 1)};
+    fine = fine && eigenpairs_hold(c, top.values, top.vectors, 64.0);
+  }
+  EXPECT(fine);
+  std::vector<double> spectrum(120);
+  for (std::size_t i {0}; i < 120; ++i) { // a 30-fold eigenvalue, then a cluster of 80 within 10⁻¹⁰, then spread
+    const double spread {i < 110 ? 2.0 + (1e-10 * static_cast<double>(i)) : static_cast<double>(i)};
+    spectrum[i] = i < 30 ? 1.0 : spread;
+  }
+  const matrix<double> clustered            {with_spectrum(spectrum, engine)};
+  const auto           multiple             {numerical::hermitian_eigen_subset(clustered, 0, 39)};
+  EXPECT(eigenpairs_hold(clustered, multiple.values, multiple.vectors, 64.0));
+  const auto large                          {numerical::hermitian_eigen_subset(clustered, 30, 115)}; // 80 in one cluster: past what iterates together
+  EXPECT(eigenpairs_hold(clustered, large.values, large.vectors, 64.0) && large.vectors.cols() == 86);
+  std::vector<double> wilkinson(std::size_t {21} *21, 0.0);                                          // W₂₁⁺: pairs within 10⁻¹⁴ at its top
+  for (std::size_t i {0}; i < 21; ++i) {
+    wilkinson[(i * 21) + i] = std::abs(static_cast<double>(i) - 10.0);
+    if (i + 1 < 21) {
+      wilkinson[(i * 21) + i + 1]   = 1.0;
+      wilkinson[((i + 1) * 21) + i] = 1.0;
+    }
+  }
+  const matrix<double> w21     {21, 21, wilkinson};
+  const auto           pairs   {numerical::hermitian_eigen_subset(w21, 15, 20)};
+  EXPECT(eigenpairs_hold(w21, pairs.values, pairs.vectors, 64.0));
+  const matrix<double> a       {symmetric(30)};
+  const vector<double> all     {numerical::symmetric_eigenvalues(a)};
+  const auto           between {numerical::hermitian_eigen_subset_by_value(a, (all[3] + all[4]) / 2, (all[7] + all[8]) / 2)}; // λ₄ … λ₇, the bounds between eigenvalues
+  EXPECT(between.values.size() == 4 && eigenpairs_hold(a, between.values, between.vectors, 64.0));
+  const auto none              {numerical::hermitian_eigen_subset_by_value(a, all[29] + 1.0, all[29] + 2.0)};
+  EXPECT(none.values.size() == 0 && none.vectors.rows() == 30 && none.vectors.cols() == 0);
+  const auto values_alone      {numerical::hermitian_eigen_subset(a, 2, 4, false)};
+  const auto with_vectors      {numerical::hermitian_eigen_subset(a, 2, 4)}; // the same bisection: the same values
+  EXPECT(values_alone.values.size() == 3 && values_alone.vectors.cols() == 0 && values_alone.values[0] == with_vectors.values[0]
+         && values_alone.values[2] == with_vectors.values[2]);
+  const auto empty {numerical::hermitian_eigen_subset_by_value(matrix<double> {0, 0, std::vector<double> {}}, -1.0, 1.0)};
+  EXPECT(empty.values.size() == 0);
+  EXPECT_THROWS(static_cast<void>(numerical::hermitian_eigen_subset(a, 4, 2)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::hermitian_eigen_subset(a, 0, 30)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::hermitian_eigen_subset_by_value(matrix<double> {2, 3, std::vector<double>(6, 1.0)}, 0.0, 1.0)), numerical::dimension_error);
+}
+
+// The eigenvectors of a tridiagonal for given eigenvalues: the bisection's, to rounding; a cluster too large to
+// iterate together, the whole spectrum's nearest, each its own column; too few solves refused; the refusals.
+TEST(tridiagonal_eigenvectors_by_inverse_iteration)
+{
+  const std::size_t   n {50};
+  std::vector<double> d(n);
+  std::vector<double> e(n - 1);
+  for (std::size_t i {0}; i < n; ++i) {
+    d[i] = std::sin(static_cast<double>(i));
+    if (i + 1 < n) {
+      e[i] = 1.0 + std::cos(static_cast<double>(i));
+    }
+  }
+  std::vector<double> dense(n * n, 0.0);
+  for (std::size_t i {0}; i < n; ++i) {
+    dense[(i * n) + i] = d[i];
+    if (i + 1 < n) {
+      dense[(i * n) + i + 1]   = e[i];
+      dense[((i + 1) * n) + i] = e[i];
+    }
+  }
+  const matrix<double> t        {n, n, dense};
+  const vector<double> diagonal {d};
+  const vector<double> off      {e};
+  const vector<double> some     {numerical::tridiagonal_eigenvalues(diagonal, off, 10, 19)};
+  EXPECT(eigenpairs_hold(t, some, numerical::tridiagonal_eigenvectors(diagonal, off, some), 64.0));
+  // A cluster past what iterates together (69 within 10⁻¹² and the top one far): the whole spectrum's nearest
+  std::vector<double> flat_d(80, 1.0);
+  std::vector<double> flat_e(79, 1e-13);
+  flat_d[79] = 3.0;
+  const vector<double> flat_diagonal {flat_d};
+  const vector<double> flat_off      {flat_e};
+  const vector<double> flat_all      {numerical::tridiagonal_eigenvalues(flat_diagonal, flat_off)};
+  std::vector<double>  wanted(flat_all.begin() + 10, flat_all.end());
+  wanted.back() += 1.0; // above every eigenvalue: the last column
+  std::vector<double> flat_dense(std::size_t {80} *80, 0.0);
+  for (std::size_t i {0}; i < 80; ++i) {
+    flat_dense[(i * 80) + i] = flat_d[i];
+    if (i + 1 < 80) {
+      flat_dense[(i * 80) + i + 1]   = 1e-13;
+      flat_dense[((i + 1) * 80) + i] = 1e-13;
+    }
+  }
+  const matrix<double> flat_vectors {numerical::tridiagonal_eigenvectors(flat_diagonal, flat_off, vector<double> {wanted})};
+  wanted.back() -= 1.0;
+  EXPECT(eigenpairs_hold(matrix<double> {80, 80, flat_dense}, vector<double> {wanted}, flat_vectors, 64.0));
+  // A diagonal (no off-diagonal to pivot on) whose shift is one of its entries: a zero pivot moved by the tolerance
+  const vector<double> twice   {std::vector<double> {1.0, 1.0}};
+  const matrix<double> axes    {numerical::tridiagonal_eigenvectors(vector<double> {std::vector<double> {1.0, 1.0, 3.0}}, vector<double> {std::vector<double> {0.0, 0.0}}, twice)};
+  EXPECT(eigenpairs_hold(matrix<double> {3, 3, std::vector<double> {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 3.0}}, twice, axes, 64.0));
+  const matrix<double> nothing {numerical::tridiagonal_eigenvectors(vector<double> {std::vector<double> {}}, vector<double> {std::vector<double> {}},
+                                                                    vector<double> {std::vector<double> {}})};
+  EXPECT(nothing.rows() == 0 && nothing.cols() == 0);
+  // A shift far from a tiny matrix's spectrum: the iterate never grows to √(0.1 / n), so no vector converges
+  numerical::buffer<double> far;
+  EXPECT(!numerical::detail::inverse_iteration(numerical::buffer<double> {1e-6, 2e-6, 3e-6}, numerical::buffer<double> {1e-7, 1e-7}, 3,
+                                               numerical::buffer<double> {1.0}, far));
+  // Too few solves to converge: refused, z not set
+  numerical::buffer<double> z;
+  EXPECT(!numerical::detail::inverse_iteration(numerical::buffer<double>(d.begin(), d.end()), numerical::buffer<double>(e.begin(), e.end()), n,
+                                               numerical::buffer<double>(some.begin(), some.end()), z, 1));
+  const matrix<double> one {numerical::tridiagonal_eigenvectors(vector<double> {std::vector<double> {2.0}}, vector<double> {std::vector<double> {}},
+                                                                vector<double> {std::vector<double> {2.0}})};
+  EXPECT(one.rows() == 1 && one.cols() == 1 && one(0, 0) == 1.0);
+  EXPECT_THROWS(static_cast<void>(numerical::tridiagonal_eigenvectors(diagonal, off, vector<double> {std::vector<double> {2.0, 1.0}})), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::tridiagonal_eigenvectors(diagonal, off, vector<double> {std::vector<double> {std::numeric_limits<double>::quiet_NaN()}})),
+                numerical::non_finite_error);
+  EXPECT_THROWS(static_cast<void>(numerical::tridiagonal_eigenvectors(vector<double> {std::vector<double> {1.0}}, vector<double> {std::vector<double> {}},
+                                                                      vector<double> {std::vector<double> {1.0, 1.0}})),
+                numerical::dimension_error);
+}
+
+// dlagts' guards on a pivot: zero (moved by the tolerance, which is ε where every factor is zero), one whose quotient
+// would overflow (moved), and a subnormal one the quotient survives (both scaled up).
+TEST(the_shifted_tridiagonal_solve_guards_its_pivots)
+{
+  using numerical::detail::shifted_tridiagonal;
+  using numerical::detail::solve_shifted_tridiagonal;
+  shifted_tridiagonal zero {.a = {0.0}, .b = {}, .c = {}, .d = {0.0}, .swapped = {false}};
+  double              y    {1.0};
+  double              tol  {0.0};
+  solve_shifted_tridiagonal(zero, 1, &y, tol);
+  EXPECT(tol == std::numeric_limits<double>::epsilon() && std::isfinite(y) && y != 0.0);
+  shifted_tridiagonal overflowing {.a = {1e-300}, .b = {}, .c = {}, .d = {0.0}, .swapped = {false}};
+  double              big         {1e10};
+  tol = 1e-300;
+  solve_shifted_tridiagonal(overflowing, 1, &big, tol);
+  EXPECT(std::isfinite(big));
+  shifted_tridiagonal tiny  {.a = {1e-310}, .b = {}, .c = {}, .d = {0.0}, .swapped = {false}}; // a subnormal pivot the quotient would overflow: moved
+  double              large {1e10};
+  tol = 1e-300;
+  solve_shifted_tridiagonal(tiny, 1, &large, tol);
+  EXPECT(std::isfinite(large));
+  shifted_tridiagonal subnormal {.a = {1e-310}, .b = {}, .c = {}, .d = {0.0}, .swapped = {false}};
+  double              small     {1e-300};
+  tol = 1.0;
+  solve_shifted_tridiagonal(subnormal, 1, &small, tol);
+  EXPECT(std::abs((small * 1e-310) - 1e-300) <= 1e-312);
+}

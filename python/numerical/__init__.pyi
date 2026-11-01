@@ -1,5 +1,5 @@
 """NumericAL — a generic, header-only numerical library, exposed to Python (see the module's docstring)."""
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Iterable, Sequence
 from typing import Any, Literal, overload
 
 from numerical import fft as fft
@@ -66,7 +66,8 @@ inv = inverse
 _Uplo = Literal["L", "U", "l", "u"]
 def lstsq(a: _ArrayLike, b: _ArrayLike, rcond: float | None = None) -> tuple[Tensor, Tensor, int, Tensor]: ...
 def pinv(a: _ArrayLike, rcond: float | None = None, hermitian: bool = False, *, rtol: float | None = None) -> Tensor: ...
-def eigvalsh(a: _ArrayLike, UPLO: _Uplo = "L", *, b: _ArrayLike | None = None) -> Tensor: ...
+def eigvalsh(a: _ArrayLike, UPLO: _Uplo = "L", *, b: _ArrayLike | None = None, subset_by_index: Iterable[int] | None = None,
+             subset_by_value: Iterable[float] | None = None) -> Tensor: ...
 def eig(a: _ArrayLike, b: _ArrayLike | None = None, left: bool = False, right: bool = True, overwrite_a: bool = False,
         overwrite_b: bool = False, check_finite: bool = True, homogeneous_eigvals: bool = False) -> Any: ...
 def matmul(x1: _ArrayLike, x2: _ArrayLike, /) -> Any: ...
@@ -165,6 +166,8 @@ def eigh(
     *,
     b: _ArrayLike | None = None,
     method: Literal["divide_and_conquer", "tridiagonal_ql", "jacobi"] = "divide_and_conquer",
+    subset_by_index: Iterable[int] | None = None,
+    subset_by_value: Iterable[float] | None = None,
 ) -> tuple[Tensor, Tensor]: ...
 _SvdMethod = Literal["divide_and_conquer", "bidiagonal_qr", "jacobi"]
 @overload

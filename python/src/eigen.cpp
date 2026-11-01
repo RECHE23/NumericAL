@@ -313,6 +313,76 @@ std::tuple<any_tensor, any_tensor> eigh_pencil(const any_tensor& a, const any_te
     return {any_tensor {real_tensor {decomposition.values()}}, any_tensor {real_tensor {std::move(decomposition).vectors()}}};
 }
 
+namespace {
+
+    // The subset hermitian_eigen_subset finds in `a` (by_value: the eigenvalues in (low, high]; else the indices low
+    // to high), and the pencil's vectors from its standard form's where `pencil` is given.
+    template <typename T>
+    std::tuple<any_tensor, any_tensor> subset_of(const numerical::matrix<T>& a, const numerical::detail::definite_pencil<T>* pencil, bool by_value, double low,
+                                                 double high, bool vectors)
+    {
+        numerical::eigen_subset<T> found {by_value ? numerical::hermitian_eigen_subset_by_value(a, low, high, vectors)
+                                                   : numerical::hermitian_eigen_subset(a, static_cast<std::size_t>(low), static_cast<std::size_t>(high), vectors)};
+        numerical::matrix<T>       basis {std::move(found.vectors)};
+        if (pencil != nullptr && vectors) {
+            basis = pencil->vectors_of(std::move(basis));
+        }
+        return {any_tensor {real_tensor {std::move(found.values)}}, any_tensor {numerical::tensor<T> {std::move(basis)}}};
+    }
+} // namespace
+
+// eigh_subset(a, by_value, low, high, vectors, upper) -> (values, vectors), as scipy.linalg.eigh(a,
+// subset_by_index=[low, high]) or (by_value) subset_by_value=[low, high]: tridiagonal form, bisection, inverse
+// iteration (numerical::hermitian_eigen_subset); the vectors n × 0 without `vectors`. Indices given as doubles, whole.
+std::tuple<any_tensor, any_tensor> eigh_subset(const any_tensor& a, bool by_value, double low, double high, bool vectors, bool upper)
+{
+    if (shape_of(a).size() != 2) {
+        throw std::runtime_error("eigh with a subset expects a matrix");
+    }
+    if (is_single(a)) {
+        return narrowed(eigh_subset(widened(a), by_value, low, high, vectors, upper));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil_cubic(count_of(a))};
+    if (is_complex(a)) {
+        return subset_of(lower_read(std::get<cplx_tensor>(a), upper), static_cast<const numerical::detail::definite_pencil<std::complex<double>>*>(nullptr), by_value,
+                         low, high, vectors);
+    }
+    return subset_of(lower_read(std::get<real_tensor>(a), upper), static_cast<const numerical::detail::definite_pencil<double>*>(nullptr), by_value, low, high, vectors);
+}
+
+// eigh_pencil_subset(a, b, by_value, low, high, vectors, upper) -> (values, vectors): eigh_subset of the pencil
+// A x = λ B x, B positive definite: its standard form's subset (numerical::detail::definite_pencil), the vectors
+// B-orthonormal, as scipy.linalg.eigh(a, b, subset_by_index=…).
+std::tuple<any_tensor, any_tensor> eigh_pencil_subset(const any_tensor& a, const any_tensor& b, bool by_value, double low, double high, bool vectors, bool upper)
+{
+    require_pencil(a, b, "eigh");
+    if (is_single(a)) {
+        return narrowed(eigh_pencil_subset(widened(a), widened(b), by_value, low, high, vectors, upper));
+    }
+    const sb::scoped_gil_release unlocked {releases_gil_cubic(count_of(a))};
+    if (is_complex(a)) {
+        const numerical::detail::definite_pencil<std::complex<double>> pencil {lower_read(std::get<cplx_tensor>(a), upper), lower_read(std::get<cplx_tensor>(b), upper)};
+        return subset_of(pencil.reduced, &pencil, by_value, low, high, vectors);
+    }
+    const numerical::detail::definite_pencil<double> pencil {lower_read(std::get<real_tensor>(a), upper), lower_read(std::get<real_tensor>(b), upper)};
+    return subset_of(pencil.reduced, &pencil, by_value, low, high, vectors);
+}
+
+// tridiagonal_vectors(d, e, w) -> v: the eigenvectors of the real symmetric tridiagonal for its eigenvalues w
+// (ascending), by inverse iteration (numerical::tridiagonal_eigenvectors), as scipy.linalg.eigh_tridiagonal's dstein.
+any_tensor tridiagonal_vectors(const any_tensor& d, const any_tensor& e, const any_tensor& w)
+{
+    if (shape_of(d).size() != 1 || shape_of(e).size() != 1 || shape_of(w).size() != 1 || !std::holds_alternative<real_tensor>(d)
+        || !std::holds_alternative<real_tensor>(e) || !std::holds_alternative<real_tensor>(w)) {
+        throw std::runtime_error("eigh_tridiagonal: d, e and the eigenvalues are real vectors");
+    }
+    const numerical::vector<double> diagonal {std::get<real_tensor>(d).data()};
+    const numerical::vector<double> off {std::get<real_tensor>(e).data()};
+    const numerical::vector<double> values {std::get<real_tensor>(w).data()};
+    const sb::scoped_gil_release    unlocked {releases_gil(diagonal.size() * (values.size() + 1) * 64)};
+    return any_tensor {real_tensor {numerical::tridiagonal_eigenvectors(diagonal, off, values)}};
+}
+
 // svd(a, method, full) -> (U, singular_values, Vh) for an m×n matrix, as numpy.linalg.svd(a, full_matrices=full).
 std::tuple<any_tensor, any_tensor, any_tensor> svd(const any_tensor& v, const std::string& name, bool full)
 {

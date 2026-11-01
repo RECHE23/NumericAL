@@ -1,4 +1,5 @@
-"""scipy.linalg's hessenberg, matrix_balance, eigh_tridiagonal and eigvalsh_tridiagonal, cholesky_banded and
+"""scipy.linalg's hessenberg, matrix_balance, eigh_tridiagonal and eigvalsh_tridiagonal, eigh's and eigvalsh's subsets,
+cholesky_banded and
 cho_solve_banded, rsf2csf, rq and cdf2rdf against SciPy's own: by their defining identities and, where the factor is
 unique, entry by entry. Deterministic; skipped when SciPy is not importable (CI installs it)."""
 import itertools
@@ -190,6 +191,85 @@ class Decompositions(unittest.TestCase):
         self.assertTrue(_close(wr, wr_expected) and _close(vr, vr_expected))
         with self.assertRaises(ValueError):
             numerical.cdf2rdf(np.array([1j, 2.0]), np.eye(2))
+
+
+@unittest.skipIf(sl is None, "SciPy not installed")
+class EigenSubsets(unittest.TestCase):
+    """eigh's and eigvalsh's subset_by_index and subset_by_value against SciPy's: the same eigenvalues to rounding,
+    eigenvectors orthonormal with residuals at rounding, for real and complex matrices, either triangle, a pencil, and
+    float32; SciPy's refusals."""
+
+    def setUp(self):
+        self.rng = np.random.default_rng(20261101)
+
+    def hermitian(self, n, complex_=False):
+        a = self.rng.standard_normal((n, n)) + (1j * self.rng.standard_normal((n, n)) if complex_ else 0)
+        return a + a.conj().T
+
+    def assert_eigenpairs(self, a, w, v, b=None):
+        w, v = np.asarray(w), np.asarray(v)
+        b = np.eye(a.shape[0]) if b is None else b
+        scale = max(1.0, np.abs(a).max()) * a.shape[0] * 1e-14
+        np.testing.assert_allclose(a @ v, (b @ v) * w, atol=scale)
+        np.testing.assert_allclose(v.conj().T @ b @ v, np.eye(v.shape[1]), atol=a.shape[0] * 1e-14)
+
+    def test_as_scipy(self):
+        for n, complex_, upper, select in itertools.product((1, 4, 60), (False, True), (False, True),
+                                                            ("index", "value", "top")):
+            a = self.hermitian(n, complex_)
+            spectrum = sl.eigvalsh(a)
+            kwargs = ({"subset_by_index": [0, min(n - 1, 4)]} if select == "index"
+                      else {"subset_by_index": [n - 1, n - 1]} if select == "top"
+                      else {"subset_by_value": [spectrum[0] - 1.0,  # between two eigenvalues: no rounding at the edge
+                                                (spectrum[min(n - 1, 5)] + spectrum[min(n - 1, 6)]) / 2 if n > 1 else spectrum[0] + 1.0]})
+            with self.subTest(n=n, complex=complex_, upper=upper, select=select):
+                expected = sl.eigh(a, lower=not upper, **kwargs)[0]
+                w, v = numerical.eigh(a, "U" if upper else "L", **kwargs)
+                np.testing.assert_allclose(np.asarray(w), expected, atol=n * 1e-14 * np.abs(spectrum).max())
+                self.assert_eigenpairs(a, w, v)
+                np.testing.assert_allclose(np.asarray(numerical.eigvalsh(a, "U" if upper else "L", **kwargs)), np.asarray(w), rtol=0, atol=0)
+
+    def test_a_pencil(self):
+        n = 30
+        a = self.hermitian(n)
+        g = self.rng.standard_normal((n, n))
+        b = g @ g.T + n * np.eye(n)
+        w, v = numerical.eigh(a, b=b, subset_by_index=[2, 6])
+        np.testing.assert_allclose(np.asarray(w), sl.eigh(a, b, subset_by_index=[2, 6])[0], atol=1e-12)
+        self.assert_eigenpairs(a, w, v, b)
+        np.testing.assert_allclose(np.asarray(numerical.eigvalsh(a, b=b, subset_by_index=[2, 6])), np.asarray(w), rtol=0, atol=0)
+
+    def test_single_precision_and_empty(self):
+        a = self.hermitian(20).astype(np.float32)
+        w, v = numerical.eigh(a, subset_by_index=[0, 2])
+        self.assertEqual((np.asarray(w).dtype, np.asarray(v).dtype), (np.float32, np.float32))
+        np.testing.assert_allclose(np.asarray(w), sl.eigh(a, subset_by_index=[0, 2])[0], rtol=1e-4, atol=1e-4)
+        w, v = numerical.eigh(a, subset_by_value=[1e6, 2e6])  # none there
+        self.assertEqual((np.asarray(w).shape, np.asarray(v).shape), ((0,), (20, 0)))
+
+    def test_refusals_as_scipy(self):
+        a = self.hermitian(5)
+        for kwargs in ({"subset_by_index": [3, 2]}, {"subset_by_index": [0, 5]}, {"subset_by_index": [-1, 2]},
+                       {"subset_by_value": [2.0, 1.0]}, {"subset_by_index": [0, 1], "subset_by_value": [0.0, 1.0]}):
+            with self.subTest(kwargs=kwargs):
+                with self.assertRaises(ValueError) as expected:
+                    sl.eigh(a, **kwargs)
+                with self.assertRaises(ValueError) as got:
+                    numerical.eigh(a, **kwargs)
+                self.assertEqual(str(got.exception), str(expected.exception))
+        with self.assertRaises(numerical.LinAlgError):
+            numerical.eigh(np.ones((2, 3, 3)), subset_by_index=[0, 1])
+
+    def test_tridiagonal_selection_vectors(self):
+        """eigh_tridiagonal's selected eigenvectors, by inverse iteration, against the whole spectrum's."""
+        n = 200
+        d, e = self.rng.standard_normal(n), self.rng.standard_normal(n - 1)
+        t = np.diag(d) + np.diag(e, 1) + np.diag(e, -1)
+        for select, select_range in (("i", (10, 30)), ("v", (-0.5, 0.5))):
+            with self.subTest(select=select):
+                w, v = numerical.eigh_tridiagonal(d, e, select=select, select_range=select_range)
+                np.testing.assert_allclose(np.asarray(w), sl.eigh_tridiagonal(d, e, select=select, select_range=select_range, eigvals_only=True), atol=1e-13)
+                self.assert_eigenpairs(t, w, v)
 
 
 if __name__ == "__main__":

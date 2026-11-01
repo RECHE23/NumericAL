@@ -1252,6 +1252,9 @@ def expm_cond(A, check_finite=True):
     return _expm_cond(A)
 _eigh = _linalg(_numerical.eigh, arrays=1)
 _eigh_pencil = _linalg(_numerical.eigh_pencil, arrays=2)
+_eigh_subset = _linalg(_numerical.eigh_subset, arrays=1)
+_tridiagonal_vectors = _linalg(_numerical.tridiagonal_vectors, arrays=3)
+_eigh_pencil_subset = _linalg(_numerical.eigh_pencil_subset, arrays=2)
 _eigvalsh_pencil = _linalg(_numerical.eigvalsh_pencil, arrays=2)
 _svd = _linalg(_numerical.svd, arrays=1)
 _singular_values = _linalg(_numerical._singular_values)
@@ -1452,7 +1455,31 @@ def _tolerance(name, value):
     return float(value)
 
 
-def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer"):
+def _subset(name, a, subset_by_index, subset_by_value):
+    """``(by_value, low, high)`` for :func:`eigh`'s and :func:`eigvalsh`'s subsets, checked as ``scipy.linalg.eigh``
+    checks them, or None for the whole spectrum; `a` read for its order."""
+    if subset_by_index is None and subset_by_value is None:
+        return None
+    if subset_by_index is not None and subset_by_value is not None:
+        raise ValueError("Either index or value subset can be requested.")
+    a = _operand(a)
+    if a.ndim != 2 or a.shape[0] != a.shape[1]:
+        raise LinAlgError(f"{name}: a subset of the spectrum of a square matrix, not of shape {a.shape}")
+    n = a.shape[0]
+    if subset_by_index is not None:
+        lo, hi = (int(x) for x in subset_by_index)
+        if not 0 <= lo <= hi < n:
+            raise ValueError("Requested eigenvalue indices are not valid. "
+                             f"Valid range is [0, {n - 1}] and start <= end, but start={lo}, end={hi} is given")
+        return False, float(lo), float(hi)
+    lo, hi = subset_by_value
+    if not -_math.inf <= lo < hi <= _math.inf:
+        raise ValueError("Requested eigenvalue bounds are not valid. "
+                         f"Valid range is (-inf, inf) and low < high, but low={lo}, high={hi} is given")
+    return True, float(lo), float(hi)
+
+
+def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer", subset_by_index=None, subset_by_value=None):
     """The eigenvalues (real, ascending) and eigenvectors (columns) of a real symmetric or complex Hermitian
     matrix, as ``numpy.linalg.eigh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``).
     `method` diagonalises the tridiagonal form: ``"divide_and_conquer"`` (LAPACK's ``dsyevd``/``zheevd``),
@@ -1461,20 +1488,35 @@ def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer"):
 
     With `b`, a positive-definite matrix of `a`'s order, the pencil ``a x = λ b x``, as ``scipy.linalg.eigh(a, b)``:
     ``b = L Lᴴ`` and ``L⁻¹ a L⁻ᴴ`` diagonalised, the vectors ``b``-orthonormal (``Xᴴ b X = I``); each matrix read in
-    the triangle `UPLO` names. Two matrices, not stacks; `b` keyword-only, `UPLO` holding NumPy's place."""
+    the triangle `UPLO` names. Two matrices, not stacks; `b` keyword-only, `UPLO` holding NumPy's place.
+
+    ``subset_by_index=[lo, hi]`` gives the eigenpairs of indices ``lo`` to ``hi`` (ascending, from 0), and
+    ``subset_by_value=[low, high]`` those of the eigenvalues in ``(low, high]``, as ``scipy.linalg.eigh``'s: the
+    tridiagonal form, the eigenvalues by bisection, the vectors by inverse iteration (LAPACK's ``dstebz`` and
+    ``dstein``), ``n² k`` operations past the reduction for ``k`` of them, where `method` takes ``n³`` and more for
+    all; a matrix (and `b`), not a stack."""
     upper = _upper("eigh", UPLO)
     if method not in _EIGH_METHODS:
         raise ValueError(f"eigh: method {method!r} is none of {_EIGH_METHODS}")
+    subset = _subset("eigh", a, subset_by_index, subset_by_value)
+    if subset is not None:
+        return (_eigh_pencil_subset(a, b, *subset, True, upper) if b is not None
+                else _eigh_subset(a, *subset, True, upper))
     if b is not None:
         return _eigh_pencil(a, b, method, upper)
     return _eigh(a, method, upper)
 
 
-def eigvalsh(a, UPLO="L", *, b=None):
+def eigvalsh(a, UPLO="L", *, b=None, subset_by_index=None, subset_by_value=None):
     """The eigenvalues alone of a real symmetric or complex Hermitian matrix, real and ascending, as
     ``numpy.linalg.eigvalsh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``). With `b`,
-    those of the pencil ``a x = λ b x``, as :func:`eigh`'s."""
+    those of the pencil ``a x = λ b x``, as :func:`eigh`'s. ``subset_by_index`` and ``subset_by_value`` as
+    :func:`eigh`'s, by bisection on the tridiagonal form alone."""
     upper = _upper("eigvalsh", UPLO)
+    subset = _subset("eigvalsh", a, subset_by_index, subset_by_value)
+    if subset is not None:
+        return (_eigh_pencil_subset(a, b, *subset, False, upper) if b is not None
+                else _eigh_subset(a, *subset, False, upper))[0]
     if b is not None:
         return _eigvalsh_pencil(a, b, upper)
     return _eigvalsh(a, upper)
@@ -3500,9 +3542,10 @@ def eigh_tridiagonal(d, e, eigvals_only=False, select="a", select_range=None, ch
     """The eigenvalues, ascending, and with them the orthonormal eigenvectors (columns) of the real symmetric
     tridiagonal matrix of diagonal `d` and off-diagonal `e`, as ``scipy.linalg.eigh_tridiagonal``: every one by divide
     and conquer (LAPACK's ``stevd``, SciPy's default), or those in the half-open interval ``(vl, vu]`` of
-    ``select="v"``, or those of the indices ``il … iu`` of ``select="i"``. `tol` and the drivers are accepted (the
-    answer is ``stevd``'s whichever is named, within each driver's rules); `check_finite` too: an infinite or NaN
-    entry raises always.
+    ``select="v"``, or those of the indices ``il … iu`` of ``select="i"``, by bisection (``stebz``, or the whole
+    spectrum's QL iteration where they are many) and their vectors by inverse iteration (``stein``). `tol` and the
+    drivers are accepted (the answer is the same whichever is named, within each driver's rules); `check_finite` too:
+    an infinite or NaN entry raises always.
 
     Raises:
         ValueError: if `d` and `e` are not vectors of lengths n and n − 1, `select` or `select_range` is invalid, a
@@ -3542,20 +3585,11 @@ def eigh_tridiagonal(d, e, eigvals_only=False, select="a", select_range=None, ch
     if lapack_driver == "sterf" and not eigvals_only:
         raise ValueError("sterf can only be used when eigvals_only is True")
     single = d.dtype == "float32" and e.dtype == "float32"
-    if kind and eigvals_only:  # bisection for a few of them (dstebz, SciPy's driver there)
+    if kind:  # bisection for a few of them (dstebz), their vectors by inverse iteration (dstein)
         w = _tridiagonal_select(asarray(d, "float64"), asarray(e, "float64"), kind == 1, float(bounds[0]), float(bounds[1]))
-        return asarray(w, "float32") if single else w
-    w, v = _tridiagonal_eigen(asarray(d, "float64"), asarray(e, "float64"), not eigvals_only)
-    if kind:
-        values = w.tolist()
-        if kind == 1:
-            kept = [k for k, value in enumerate(values) if bounds[0] < value <= bounds[1]]
-        else:
-            kept = list(range(int(bounds[0]), int(bounds[1]) + 1))
-        # w ascending: the kept indices run from kept[0] to kept[-1]
-        w = w[kept[0]:kept[-1] + 1] if kept else zeros((0,))
-        if not eigvals_only:
-            v = v[:, kept[0]:kept[-1] + 1] if kept else zeros((d.size, 0))
+        v = None if eigvals_only else _tridiagonal_vectors(asarray(d, "float64"), asarray(e, "float64"), w)
+    else:
+        w, v = _tridiagonal_eigen(asarray(d, "float64"), asarray(e, "float64"), not eigvals_only)
     if single:
         w = asarray(w, "float32")
         v = v if eigvals_only else asarray(v, "float32")

@@ -1983,6 +1983,14 @@ any_tensor cho_solve_banded(const any_tensor& cb, const any_tensor& b, bool lowe
 // solve_conditioned(a, b) -> (x, rcond), factor_condition(factor, a, kind, lower) -> rcond and
 // solve_banded_conditioned(ab, b, lower, upper) -> (x, rcond): scipy.linalg.solve's solutions and reciprocal condition
 // numbers (LAPACK's gecon, pocon, trcon, gbcon).
+// eigh_subset(a, by_value, low, high, vectors, upper), eigh_pencil_subset(a, b, …) -> (values, vectors) and
+// tridiagonal_vectors(d, e, w) -> v: some eigenpairs, as scipy.linalg.eigh(subset_by_index / subset_by_value) and
+// eigh_tridiagonal(select) find them.
+std::tuple<any_tensor, any_tensor> eigh_subset(const any_tensor& a, bool by_value, double low, double high, bool vectors, bool upper); // in eigen.cpp
+std::tuple<any_tensor, any_tensor> eigh_pencil_subset(const any_tensor& a, const any_tensor& b, bool by_value, double low, double high, bool vectors,
+                                                      bool upper);                                                               // in eigen.cpp
+any_tensor                         tridiagonal_vectors(const any_tensor& d, const any_tensor& e, const any_tensor& w);           // in eigen.cpp
+
 std::tuple<any_tensor, double> solve_conditioned(const any_tensor& a, const any_tensor& b);                                       // in linalg.cpp
 double                         factor_condition(const any_tensor& factor, const any_tensor& a, int kind, bool lower);             // in linalg.cpp
 std::tuple<any_tensor, double> solve_banded_conditioned(const any_tensor& ab, const any_tensor& b, std::size_t lower, std::size_t upper); // in linalg.cpp

@@ -27,6 +27,14 @@ A change that can break code is listed under **Breaking** and held for a month's
   in brackets): `"pos"` by Cholesky's 29 ms (50), `"sym"` 48 ms (103, the LU outrunning the symmetric indefinite
   factorisation here), `"tridiagonal"` 2.4 ms (12), `"banded"` 2.9 ms (3.3), `"diagonal"` 1.0 ms (12). A Hermitian
   matrix's diagonal is taken real at every order, where SciPy's 1 × 1 case divides by the complex entry.
+- **`eigh` and `eigvalsh` take `subset_by_index` and `subset_by_value`, as `scipy.linalg.eigh`'s**: some eigenpairs
+  of a matrix (or a pencil, with `b`) from its tridiagonal form, the eigenvalues by bisection and the eigenvectors by
+  inverse iteration (LAPACK's `dstebz` and `dstein`: `n` operations a solve, a cluster's vectors orthogonalised
+  together), taken back through the reflections for those columns alone; a cluster past 64 eigenvalues, or an
+  iterate that does not converge, takes the whole spectrum's vectors. Ten eigenpairs of order 2000: 502 ms on one
+  thread against `eigh`'s 904 (SciPy's subset 687), 276 ms on four against 505 (SciPy's 1369); the values alone cost
+  `eigvalsh`'s. `eigh_tridiagonal`'s selection takes its vectors by inverse iteration too, where it computed every
+  one. In C++: `hermitian_eigen_subset`, `hermitian_eigen_subset_by_value` and `tridiagonal_eigenvectors`.
 - **`solve` with `assume_a` warns of an ill-conditioned system, as SciPy's**: the reciprocal condition number
   `1 / (‖A‖₁ ‖A⁻¹‖₁)`, the inverse's norm estimated from the factorisation already made (Hager's method, LAPACK's
   `dlacn2`: `gecon` from the LU, `pocon` from Cholesky's, `trcon` of a triangle, `gbcon` from the band LU; a diagonal's

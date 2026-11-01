@@ -4913,17 +4913,19 @@ namespace numerical {
     }
 
     /*!
-     * \brief The rows of \p at, vectors in the tridiagonal's basis, taken to the matrix's: `at ← at Mᵀ = at Dᴴ Qᵀ`,
-     *        column j times `conj(δⱼ)`, then the blocks of reflectors from the last back on every row, as LAPACK's
-     *        `dormtr`: two thirds of the operations of forming `M` (\ref tridiagonal_basis) and multiplying by it.
+     * \brief The \p rows rows of \p at (`n` columns, every row by default), vectors in the tridiagonal's basis, taken
+     *        to the matrix's: `at ← at Mᵀ = at Dᴴ Qᵀ`, column j times `conj(δⱼ)`, then the blocks of reflectors from the
+     *        last back on every row, as LAPACK's `dormtr`: two thirds of the operations of forming `M` (\ref
+     *        tridiagonal_basis) and multiplying by it.
      */
     template <typename T>
     void to_matrix_basis(const tridiagonal_reduction<T>& reduction,
                          buffer<T>&                      at,
-                         std::size_t                     n)
+                         std::size_t                     n,
+                         std::size_t                     rows)
     {
       if constexpr (!std::is_floating_point_v<T>) { // a real reduction's phases are all 1
-        parallel_for(n, n, [&](std::size_t i) {
+        parallel_for(rows, n, [&](std::size_t i) {
                        for (std::size_t j {0}; j < n; ++j) {
                          at[(i * n) + j] *= conj_of(reduction.delta[j]);
                        }
@@ -4931,9 +4933,18 @@ namespace numerical {
       }
       for (std::size_t k1 {n}; k1 > 1;) {
         const std::size_t k0 {k1 - std::min(k1 - 1, qr_block)};
-        apply_transposed_reflector_block(gather_reflectors(reduction.reflectors, k0, k1, n), at, n, 0, n);
+        apply_transposed_reflector_block(gather_reflectors(reduction.reflectors, k0, k1, n), at, n, 0, rows);
         k1 = k0;
       }
+    }
+
+    //! \brief \ref to_matrix_basis of all `n` rows.
+    template <typename T>
+    void to_matrix_basis(const tridiagonal_reduction<T>& reduction,
+                         buffer<T>&                      at,
+                         std::size_t                     n)
+    {
+      to_matrix_basis(reduction, at, n, n);
     }
 
     //! \brief One operation of \ref tridiagonal_ql or \ref bidiagonal_qr on the rows of a vector matrix,
@@ -6210,13 +6221,14 @@ namespace numerical {
           reduced(standard_form(a, factor))
       {}
 
-      //! \brief The pencil's eigenvectors from \p v, the columns of `C`'s: `L⁻ᴴ V`.
+      //! \brief The pencil's eigenvectors from \p v, columns of `C`'s (all or some): `L⁻ᴴ V`.
       [[nodiscard]] matrix<T> vectors_of(matrix<T>&& v) const
       {
         const std::size_t n {factor.rows()};
+        const std::size_t k {v.cols()};
         buffer<T>         x {std::move(v).elements()};
-        solve_triangular_in_place(std::to_address(factor.begin()), n, true, triangular_op::adjoint, false, x.data(), n);
-        return matrix<T> {n, n, std::move(x)};
+        solve_triangular_in_place(std::to_address(factor.begin()), n, true, triangular_op::adjoint, false, x.data(), k);
+        return matrix<T> {n, k, std::move(x)};
       }
 
       matrix<T> factor;  //!< `L`, lower-triangular, `B = L Lᴴ`.

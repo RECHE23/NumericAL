@@ -13,6 +13,7 @@
 #include <bit>
 #include <cmath>
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
+#include <concepts>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -2388,6 +2389,318 @@ namespace numerical {
     return {static_cast<std::ptrdiff_t>(at_most(low)), static_cast<std::ptrdiff_t>(at_most(high)) - 1};
   }
 
+  namespace detail {
+
+    //! \brief The factors of `T − λ I` for a symmetric tridiagonal `T`, as LAPACK's `dlagtf` leaves them: `P (T − λ I)
+    //!        = L U`, `U` of diagonal \ref a and two superdiagonals \ref b and \ref d, `L`'s multipliers in \ref c, the
+    //!        row interchanges in \ref swapped.
+    struct shifted_tridiagonal
+    {
+      buffer<double>    a;       //!< `U`'s diagonal.
+      buffer<double>    b;       //!< `U`'s first superdiagonal.
+      buffer<double>    c;       //!< `L`'s multipliers.
+      buffer<double>    d;       //!< `U`'s second superdiagonal.
+      std::vector<bool> swapped; //!< Whether rows `k` and `k + 1` were interchanged at step `k`.
+    };
+
+    /*!
+     * \brief Factorises `T − λ I`, \p n from 2, `T` of diagonal \p diagonal and off-diagonal \p off, with partial
+     *        pivoting as LAPACK's `dlagtf`: at each step the row of the larger entry relative to its row's size (the
+     *        first where they tie).
+     */
+    inline void factor_shifted_tridiagonal(const double*        diagonal,
+                                           const double*        off,
+                                           std::size_t          n,
+                                           double               lambda,
+                                           shifted_tridiagonal& f)
+    {
+      f.a.assign(diagonal, diagonal + n);
+      f.b.assign(off, off + n - 1);
+      f.c.assign(off, off + n - 1);
+      f.d.assign(n, 0.0);
+      f.swapped.assign(n, false);
+      f.a[0] -= lambda;
+      double scale1 {std::abs(f.a[0]) + std::abs(f.b[0])};
+      for (std::size_t k {0}; k + 1 < n; ++k) {
+        f.a[k + 1] -= lambda;
+        double scale2 {std::abs(f.c[k]) + std::abs(f.a[k + 1])};
+        if (k + 2 < n) {
+          scale2 += std::abs(f.b[k + 1]);
+        }
+        const double piv1 {f.a[k] == 0.0 ? 0.0 : std::abs(f.a[k]) / scale1};
+        if (f.c[k] == 0.0 || std::abs(f.c[k]) / scale2 <= piv1) { // no interchange
+          scale1 = scale2;
+          if (f.c[k] != 0.0) {
+            f.c[k]     /= f.a[k];
+            f.a[k + 1] -= f.c[k] * f.b[k];
+          }
+          continue;
+        }
+        f.swapped[k] = true; // row k + 1 above row k
+        const double multiplier {f.a[k] / f.c[k]};
+        f.a[k] = f.c[k];
+        const double below      {f.a[k + 1]};
+        f.a[k + 1] = f.b[k] - (multiplier * below);
+        if (k + 2 < n) {
+          f.d[k]     = f.b[k + 1];
+          f.b[k + 1] = -multiplier * f.d[k];
+        }
+        f.b[k] = below;
+        f.c[k] = multiplier;
+      }
+    }
+
+    /*!
+     * \brief Solves `(T − λ I) x = y` in place in \p y from \ref factor_shifted_tridiagonal's factors, as LAPACK's
+     *        `dlagts` (job −1): a pivot that would overflow the quotient, or is zero, moved away from zero by \p tol,
+     *        then by twice as much, until it does not; \p tol, where 0, set first to `ε` times the factors' largest
+     *        magnitude (`ε` itself if that is 0), for the next solves.
+     */
+    inline void solve_shifted_tridiagonal(const shifted_tridiagonal& f,
+                                          std::size_t                n,
+                                          double*                    y,
+                                          double&                    tol)
+    {
+      constexpr double eps    {std::numeric_limits<double>::epsilon()};
+      constexpr double least  {std::numeric_limits<double>::min()};
+      constexpr double bignum {1.0 / least};
+      if (tol <= 0.0) {
+        tol = std::abs(f.a[0]);
+        for (std::size_t k {1}; k < n; ++k) {
+          tol = std::max({tol, std::abs(f.a[k]), std::abs(f.b[k - 1]), k >= 2 ? std::abs(f.d[k - 2]) : 0.0});
+        }
+        tol = tol == 0.0 ? eps : tol * eps;
+      }
+      for (std::size_t k {1}; k < n; ++k) { // P and L
+        if (f.swapped[k - 1]) {
+          const double above {y[k - 1]};
+          y[k - 1] = y[k];
+          y[k]     = above - (f.c[k - 1] * y[k]);
+        }
+        else {
+          y[k] -= f.c[k - 1] * y[k - 1];
+        }
+      }
+      for (std::size_t k {n}; k-- > 0;) { // U, a pivot too small for the quotient moved away from zero
+        double temp {y[k]};
+        if (k + 1 < n) {
+          temp -= f.b[k] * y[k + 1];
+        }
+        if (k + 2 < n) {
+          temp -= f.d[k] * y[k + 2];
+        }
+        double ak   {f.a[k]};
+        double pert {std::copysign(tol, ak)};
+        for (;;) {
+          const double absak {std::abs(ak)};
+          if (absak >= 1.0 || (absak >= least && std::abs(temp) <= absak * bignum)) {
+            break;
+          }
+          if (absak >= least || absak == 0.0 || std::abs(temp) * least > absak) {
+            ak   += pert;
+            pert *= 2.0;
+            continue;
+          }
+          temp *= bignum; // a subnormal pivot the quotient survives: both scaled up
+          ak   *= bignum;
+          break;
+        }
+        y[k] = temp / ak;
+      }
+    }
+
+    //! \brief A start vector of \p n entries in `[−1, 1)` for \ref tridiagonal_eigenvectors' eigenvalue \p index, its
+    //!        own draw (splitmix64 from the index), so that each vector is the same on any number of threads.
+    inline void start_vector(std::size_t index,
+                             double*     x,
+                             std::size_t n) noexcept
+    {
+      std::uint64_t state {0x9e3779b97f4a7c15ULL * (static_cast<std::uint64_t>(index) + 1)};
+      for (std::size_t i {0}; i < n; ++i) {
+        state += 0x9e3779b97f4a7c15ULL;
+        std::uint64_t z {state};
+        z    = (z ^ (z >> 30U)) * 0xbf58476d1ce4e5b9ULL;
+        z    = (z ^ (z >> 27U)) * 0x94d049bb133111ebULL;
+        z   ^= z >> 31U;
+        x[i] = (static_cast<double>(z >> 11U) * 0x1.0p-52) - 1.0;
+      }
+    }
+
+    //! \brief The most eigenvalues \ref tridiagonal_eigenvectors reorthogonalises together: a larger cluster's vectors
+    //!        come from the whole spectrum's divide and conquer, `n k²` reorthogonalisation passing its `n³`'s share.
+    inline constexpr std::size_t inverse_iteration_cluster_most {64};
+
+    /*!
+     * \brief The eigenvectors (rows of \p z, `k × n`) of the symmetric tridiagonal of diagonal \p diagonal and
+     *        off-diagonal \p off (`n` from 2) for its eigenvalues \p values (`k`, ascending), as LAPACK's `dstein`:
+     *        inverse iteration from a random vector, each solve of `T − λ I` scaled so that the iterate's largest entry
+     *        reaches `√(0.1 / n)` once the eigenvector dominates, then two more; an eigenvalue within `10 ε |λ|` of the
+     *        one before moved up to that distance; the vectors of eigenvalues within `10⁻³ ‖T‖₁` of one another (a
+     *        cluster) orthogonalised against the cluster's earlier ones at each step. The clusters on the threads.
+     * \param[in]  diagonal    `T`'s diagonal.
+     * \param[in]  off         `T`'s off-diagonal (its first `n − 1` entries read).
+     * \param[in]  n           The order.
+     * \param[in]  values      The eigenvalues, ascending.
+     * \param[out] z           The eigenvectors as rows.
+     * \param[in]  most_solves The solves allowed a vector, `dstein`'s five by default.
+     * \return Whether every vector converged within \p most_solves and every cluster had at most
+     *         \ref inverse_iteration_cluster_most eigenvalues: if not, \p z holds nothing to use.
+     */
+    inline bool inverse_iteration(const buffer<double>& diagonal,
+                                  const buffer<double>& off,
+                                  std::size_t           n,
+                                  const buffer<double>& values,
+                                  buffer<double>&       z,
+                                  std::size_t           most_solves = 5)
+    {
+      constexpr std::size_t extra       {2};
+      constexpr double      eps         {std::numeric_limits<double>::epsilon()};
+      const std::size_t     k           {values.size()};
+      double                one_norm    {0.0};
+      for (std::size_t i {0}; i < n; ++i) {
+        one_norm = std::max(one_norm, std::abs(diagonal[i]) + (i > 0 ? std::abs(off[i - 1]) : 0.0) + (i + 1 < n ? std::abs(off[i]) : 0.0));
+      }
+      const double             cluster_gap {1e-3 * one_norm};
+      const double             growth      {std::sqrt(0.1 / static_cast<double>(n))};
+      buffer<double>           shifts(k);
+      std::vector<std::size_t> starts; // each cluster's first eigenvalue, then k
+      for (std::size_t j {0}; j < k; ++j) {
+        shifts[j] = values[j];
+        if (j > 0 && shifts[j] - shifts[j - 1] < 10.0 * std::abs(eps * shifts[j])) {
+          shifts[j] = shifts[j - 1] + (10.0 * std::abs(eps * shifts[j]));
+        }
+        if (j == 0 || std::abs(shifts[j] - shifts[j - 1]) > cluster_gap) {
+          starts.push_back(j);
+        }
+      }
+      starts.push_back(k);
+      for (std::size_t c {0}; c + 1 < starts.size(); ++c) {
+        if (starts[c + 1] - starts[c] > inverse_iteration_cluster_most) {
+          return false;
+        }
+      }
+      z.resize(k * n);
+      std::atomic<bool> converged {true};
+      const std::size_t clusters  {starts.size() - 1};
+      parallel_for(clusters, (k / clusters) * n * 64, [&](std::size_t c) { // some ten operations an entry a solve
+                     shifted_tridiagonal f;
+                     for (std::size_t j {starts[c]}; j < starts[c + 1]; ++j) {
+                       double* const x {z.data() + (j * n)};
+                       start_vector(j, x, n);
+                       factor_shifted_tridiagonal(diagonal.data(), off.data(), n, shifts[j], f);
+                       double      tol {0.0};
+                       std::size_t checks {0};
+                       bool        done {false};
+                       for (std::size_t solve {0}; solve < most_solves && !done; ++solve) {
+                         double sum {0.0};
+                         for (std::size_t i {0}; i < n; ++i) {
+                           sum += std::abs(x[i]);
+                         }
+                         const double scale {static_cast<double>(n) * one_norm * std::max(eps, std::abs(f.a[n - 1])) / sum};
+                         for (std::size_t i {0}; i < n; ++i) {
+                           x[i] *= scale;
+                         }
+                         solve_shifted_tridiagonal(f, n, x, tol);
+                         for (std::size_t p {starts[c]}; p < j; ++p) { // against the cluster's vectors so far
+                           const double* const v {z.data() + (p * n)};
+                           double              dot {0.0};
+                           for (std::size_t i {0}; i < n; ++i) {
+                             dot += x[i] * v[i];
+                           }
+                           for (std::size_t i {0}; i < n; ++i) {
+                             x[i] -= dot * v[i];
+                           }
+                         }
+                         double largest {0.0};
+                         for (std::size_t i {0}; i < n; ++i) {
+                           largest = std::max(largest, std::abs(x[i]));
+                         }
+                         checks += largest >= growth ? 1 : 0;
+                         done    = checks > extra;
+                       }
+                       if (!done) {
+                         converged.store(false, std::memory_order_relaxed);
+                       }
+                       double      squares {0.0};
+                       std::size_t at      {0};
+                       for (std::size_t i {0}; i < n; ++i) {
+                         squares += x[i] * x[i];
+                         at       = std::abs(x[i]) > std::abs(x[at]) ? i : at;
+                       }
+                       const double unit {(x[at] < 0.0 ? -1.0 : 1.0) / std::sqrt(squares)}; // its largest entry positive, as dstein
+                       for (std::size_t i {0}; i < n; ++i) {
+                         x[i] *= unit;
+                       }
+                     }
+                   });
+      return converged.load();
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The orthonormal eigenvectors (the columns, in their order) of the real symmetric tridiagonal matrix of
+   *        diagonal \p d and off-diagonal \p e for the eigenvalues \p values, ascending (from \ref
+   *        tridiagonal_eigenvalues with indices, say), as LAPACK's `dstein`: inverse iteration (\ref
+   *        detail::inverse_iteration), some `n` operations a solve for each, where all the eigenvectors take `n³`; on
+   *        the matrix divided by the power of two of its largest magnitude. Where an iterate does not converge or a
+   *        cluster is too large, the vectors are the whole spectrum's (\ref tridiagonal_eigen) of the eigenvalues
+   *        nearest.
+   * \throws dimension_error  If \p e has not one entry fewer than \p d, or \p values are not ascending.
+   * \throws non_finite_error If an entry is infinite or NaN.
+   */
+  [[nodiscard]] inline matrix<double> tridiagonal_eigenvectors(const vector<double>& d,
+                                                               const vector<double>& e,
+                                                               const vector<double>& values)
+  {
+    buffer<double>    diagonal;
+    buffer<double>    off;
+    const double      scale {detail::scaled_tridiagonal(d, e, diagonal, off)};
+    const std::size_t n     {d.size()};
+    const std::size_t k     {values.size()};
+    if (k > n) {
+      throw dimension_error("tridiagonal_eigenvectors: at most n eigenvalues");
+    }
+    buffer<double> shifted(k);
+    for (std::size_t j {0}; j < k; ++j) {
+      if (!std::isfinite(values[j])) {
+        throw non_finite_error("tridiagonal_eigenvectors: an eigenvalue is infinite or NaN");
+      }
+      if (j > 0 && values[j] < values[j - 1]) {
+        throw dimension_error("tridiagonal_eigenvectors: the eigenvalues must be ascending");
+      }
+      shifted[j] = values[j] / scale;
+    }
+    buffer<double> z;
+    if (n == 1) {
+      z.assign(k, 1.0);
+    }
+    else if (n > 1 && !detail::inverse_iteration(diagonal, off, n, shifted, z)) { // the whole spectrum's nearest
+      buffer<double> all {diagonal};
+      buffer<double> q;
+      detail::divide_and_conquer(all.data(), off.data(), n, q);
+      z.resize(k * n);
+      std::size_t next {0}; // the first column not taken: each eigenvalue its own, ascending, as near as leaves room
+      for (std::size_t j {0}; j < k; ++j) {
+        auto column {static_cast<std::size_t>(std::lower_bound(all.begin() + static_cast<std::ptrdiff_t>(next), all.end(), shifted[j]) - all.begin())};
+        if (column > next && (column == n || shifted[j] - all[column - 1] <= all[column] - shifted[j])) {
+          --column;
+        }
+        column = std::min(column, n - (k - j));
+        next   = column + 1;
+        for (std::size_t i {0}; i < n; ++i) {
+          z[(j * n) + i] = q[(i * n) + column];
+        }
+      }
+    }
+    buffer<double> columns(n * k);
+    for (std::size_t j {0}; j < k; ++j) {
+      for (std::size_t i {0}; i < n; ++i) {
+        columns[(i * k) + j] = z[(j * n) + i];
+      }
+    }
+    return matrix<double> {n, k, std::move(columns)};
+  }
+
   /*!
    * \brief The eigenvalues, ascending, and the orthonormal eigenvectors (the columns, in their order) of the real
    *        symmetric tridiagonal matrix of diagonal \p d and off-diagonal \p e, as `scipy.linalg.eigh_tridiagonal`:
@@ -2412,6 +2725,137 @@ namespace numerical {
       value *= scale;
     }
     return {vector<double> {std::move(diagonal)}, matrix<double> {n, n, std::move(q)}};
+  }
+
+  //! \brief Some eigenvalues of a Hermitian matrix and their eigenvectors (\ref hermitian_eigen_subset).
+  template <typename T>
+  struct eigen_subset
+  {
+    vector<double> values;  //!< Ascending.
+    matrix<T>      vectors; //!< `n × k`, orthonormal, a column an eigenvalue in its order (`n × 0` without vectors).
+  };
+
+  namespace detail {
+
+    /*!
+     * \brief \ref hermitian_eigen_subset of the indices \p select gives from the tridiagonal form's diagonal and
+     *        off-diagonal and the matrix's scale (`[first, last]`, `last < first` for none), its vectors where \p
+     *        vectors. \p select behind one type: one instance per `T`.
+     */
+    template <typename T>
+    [[nodiscard]] eigen_subset<T> hermitian_subset(
+      const matrix<T>&                                                                                                      a,
+      const std::function<std::pair<std::ptrdiff_t, std::ptrdiff_t>(const vector<double>&, const vector<double>&, double)>& select,
+      bool                                                                                                                  vectors,
+      const std::string&                                                                                                    name)
+    {
+      const std::size_t n {a.rows()};
+      if (a.cols() != n) {
+        throw dimension_error(name + ": expected a square matrix");
+      }
+      require_finite_lower(a, name.c_str());
+      double largest {0.0};
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j <= i; ++j) {
+          largest = std::max(largest, static_cast<double>(std::abs(a(i, j))));
+        }
+      }
+      const double scale         {power_of_two_scale(largest)};
+      buffer<T>    work(n * n, T {});
+      for (std::size_t i {0}; i < n; ++i) { // the lower triangle divided, nothing above it
+        for (std::size_t j {0}; j <= i; ++j) {
+          work[(i * n) + j] = a(i, j) / T {scale};
+        }
+      }
+      buffer<double>                 diagonal(n, 0.0);
+      buffer<double>                 off(n, 0.0);
+      const tridiagonal_reduction<T> reduction {n > 0 ? tridiagonalize(work, n, diagonal, off) : tridiagonal_reduction<T> {}};
+      work = buffer<T> {};
+      const vector<double> d                   {buffer<double> {diagonal}};
+      const vector<double> e                   {buffer<double>(off.begin(), off.begin() + static_cast<std::ptrdiff_t>(n > 0 ? n - 1 : 0))};
+      const auto [first, last] {select(d, e, scale)};
+      if (last < first) {
+        return {vector<double> {buffer<double> {}}, matrix<T> {n, 0, buffer<T> {}}};
+      }
+      const auto           from  {static_cast<std::size_t>(first)};
+      const auto           k     {static_cast<std::size_t>(last - first + 1)};
+      const vector<double> found {tridiagonal_eigenvalues(d, e, from, static_cast<std::size_t>(last))};
+      buffer<double>       values(found.begin(), found.end());
+      buffer<double>       scaled(k);
+      std::transform(values.begin(), values.end(), scaled.begin(), [scale](double value) { return value * scale; });
+      if (!vectors) {
+        return {vector<double> {std::move(scaled)}, matrix<T> {n, 0, buffer<T> {}}};
+      }
+      buffer<double> z;
+      if (n == 1) {
+        z.assign(1, 1.0);
+      }
+      else if (!inverse_iteration(diagonal, off, n, values, z)) { // the whole spectrum's
+        buffer<double> q;
+        divide_and_conquer(diagonal.data(), off.data(), n, q);
+        z.resize(k * n);
+        for (std::size_t j {0}; j < k; ++j) {
+          for (std::size_t i {0}; i < n; ++i) {
+            z[(j * n) + i] = q[(i * n) + from + j];
+          }
+        }
+      }
+      buffer<T> rows(z.begin(), z.end()); // the vectors as rows, k × n, in T's basis, then the matrix's
+      to_matrix_basis(reduction, rows, n, k);
+      buffer<T> columns(n * k);
+      for (std::size_t j {0}; j < k; ++j) {
+        for (std::size_t i {0}; i < n; ++i) {
+          columns[(i * k) + j] = rows[(j * n) + i];
+        }
+      }
+      return {vector<double> {std::move(scaled)}, matrix<T> {n, k, std::move(columns)}};
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The eigenvalues of indices \p first to \p last (ascending, from 0) of the real symmetric or complex
+   *        Hermitian \p a, its lower triangle read, and their eigenvectors where \p vectors, as
+   *        `scipy.linalg.eigh(a, subset_by_index=[first, last])`: the tridiagonal form (LAPACK's `sytrd`, `hetrd`), the
+   *        eigenvalues by bisection (\ref tridiagonal_eigenvalues, `stebz`), the vectors by inverse iteration (\ref
+   *        detail::inverse_iteration, `stein`) taken back through the reflections (`ormtr`, `unmtr`): past the
+   *        reduction, `n² k` operations where the whole spectrum's vectors take `n³` and more. On the matrix divided by
+   *        the power of two of its largest magnitude. Where an iterate does not converge or a cluster of eigenvalues is
+   *        too large, the vectors are the whole spectrum's by divide and conquer.
+   * \throws dimension_error  If \p a is not square, or \p first > \p last or \p last ≥ `n`.
+   * \throws non_finite_error If an entry of the lower triangle is infinite or NaN.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] eigen_subset<T> hermitian_eigen_subset(const matrix<T>& a,
+                                                       std::size_t      first,
+                                                       std::size_t      last,
+                                                       bool             vectors = true)
+  {
+    if (first > last || last >= a.rows()) {
+      throw dimension_error("hermitian_eigen_subset: the indices must satisfy first ≤ last < n");
+    }
+    return detail::hermitian_subset<T>(a, [first, last](const vector<double>&, const vector<double>&, double) {
+                                         return std::pair {static_cast<std::ptrdiff_t>(first), static_cast<std::ptrdiff_t>(last)};
+                                       }, vectors, "hermitian_eigen_subset");
+  }
+
+  /*!
+   * \brief \ref hermitian_eigen_subset of the eigenvalues in `(low, high]`, as `scipy.linalg.eigh(a,
+   *        subset_by_value=[low, high])`: their indices by Sturm's counts on the tridiagonal form (\ref
+   *        tridiagonal_eigenvalue_range); none, the vectors `n × 0`.
+   * \throws dimension_error  If \p a is not square.
+   * \throws non_finite_error If an entry of the lower triangle is infinite or NaN.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] eigen_subset<T> hermitian_eigen_subset_by_value(const matrix<T>& a,
+                                                                double           low,
+                                                                double           high,
+                                                                bool             vectors = true)
+  {
+    return detail::hermitian_subset<T>(a, [low, high](const vector<double>& d, const vector<double>& e, double scale) {
+                                         return tridiagonal_eigenvalue_range(d, e, low / scale, high / scale);
+                                       }, vectors, "hermitian_eigen_subset_by_value");
   }
 
   //! \brief A least-squares solution and what `numpy.linalg.lstsq` reports beside it (\ref least_squares).
