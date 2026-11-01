@@ -28,12 +28,62 @@ namespace {
     }
   }
 
+  //! \brief An environment variable's value, or null where it is unset: MSVC's `_dupenv_s` copy, freed with it (its
+  //!        `getenv` deprecated), `getenv` elsewhere, read at load before any thread of the library.
+  class environment_value
+  {
+  public:
+
+#if defined(_MSC_VER)
+    explicit environment_value(const char* name) noexcept
+    {
+      std::size_t size {0};
+      if (_dupenv_s(&text_, &size, name) != 0) {
+        text_ = nullptr;
+      }
+    }
+
+#else
+    explicit environment_value(const char* name) noexcept
+      : text_(std::getenv(name)) // NOLINT(concurrency-mt-unsafe): read at load, before any thread of the library
+    {}
+
+#endif
+
+    environment_value(const environment_value&)            = delete;
+    environment_value(environment_value&&)                 = delete;
+    environment_value& operator=(const environment_value&) = delete;
+    environment_value& operator=(environment_value&&)      = delete;
+
+    ~environment_value()
+    {
+#if defined(_MSC_VER)
+      std::free(text_); // NOLINT(cppcoreguidelines-no-malloc): _dupenv_s's allocation
+#endif
+    }
+
+    //! \brief The value, or null.
+    [[nodiscard]] const char* text() const noexcept
+    {
+      return text_;
+    }
+
+  private:
+
+#if defined(_MSC_VER)
+    char* text_ {nullptr};
+#else
+    const char* text_ {nullptr};
+#endif
+  };
+
   //! \brief The library's threads capped at load as the environment asks (numerical::environment_threads): a
   //!        program that preloads it in place of OpenBLAS, or a worker joblib starts, keeps the count it set.
   // NOLINTNEXTLINE(bugprone-throwing-static-initialization): the initializer is a noexcept call; nothing leaves it
   [[maybe_unused]] const bool environment_capped {[]() noexcept {
-                                                    // NOLINTNEXTLINE(concurrency-mt-unsafe): read at load, before any thread of the library
-                                                    numerical::set_max_threads(numerical::environment_threads(std::getenv("NUMERICAL_NUM_THREADS"), std::getenv("OMP_NUM_THREADS")));
+                                                    const environment_value own {"NUMERICAL_NUM_THREADS"};
+                                                    const environment_value omp {"OMP_NUM_THREADS"};
+                                                    numerical::set_max_threads(numerical::environment_threads(own.text(), omp.text()));
                                                     return true;
                                                   }()};
 
