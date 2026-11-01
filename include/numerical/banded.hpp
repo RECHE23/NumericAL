@@ -138,6 +138,39 @@ namespace numerical {
     }
 
     /*!
+     * \brief One right-hand side \p x (\p n entries) solved in place against the adjoint of \ref band_lu's factors,
+     *        `Aᴴ x = b`, as LAPACK's `gbtrs` (conjugate transpose): `Uᴴ`, a band of `kl + ku` subdiagonals, by forward
+     *        substitution, then `Lᴴ` and the interchanges column by column from the last.
+     */
+    template <typename T>
+    void band_lu_solve_adjoint(band_storage<T>&                ab,
+                               std::size_t                     n,
+                               std::size_t                     kl,
+                               std::size_t                     ku,
+                               const std::vector<std::size_t>& pivots,
+                               T*                              x)
+    {
+      const std::size_t kd {ku + kl + 1};
+      for (std::size_t j {1}; j <= n; ++j) {
+        const std::size_t first {j > kl + ku ? j - kl - ku : 1};
+        for (std::size_t i {first}; i < j; ++i) {
+          x[j - 1] -= conj_of(ab(kd + i - j, j)) * x[i - 1];
+        }
+        x[j - 1] /= conj_of(ab(kd, j));
+      }
+      for (std::size_t j {n}; j-- > 1;) {
+        const std::size_t lm {std::min(kl, n - j)};
+        for (std::size_t r {1}; r <= lm; ++r) {
+          x[j - 1] -= conj_of(ab(kd + r, j)) * x[j - 1 + r];
+        }
+        const std::size_t l {pivots[j - 1]};
+        if (l != j) {
+          std::swap(x[l - 1], x[j - 1]);
+        }
+      }
+    }
+
+    /*!
      * \brief The Cholesky factor `U` (`A = Uᴴ U`) of the Hermitian positive-definite band of \p kd superdiagonals in
      *        \p ab (`kd + 1` rows, `AB(kd + 1 + i − j, j) = A(i, j)`), in place, as LAPACK's `pbtf2` (upper): each
      *        diagonal entry's square root, the row right of it scaled, the trailing band less its outer product.
@@ -435,6 +468,64 @@ namespace numerical {
     buffer<T> x(b.begin(), b.end());
     detail::band_lu_solve(work, n, lower, upper, pivots, x, b.cols());
     return matrix<T> {b.rows(), b.cols(), std::move(x)};
+  }
+
+  //! \brief A solution and the reciprocal condition number of its system (\ref solve_banded_conditioned).
+  template <typename T>
+  struct conditioned_solution
+  {
+    matrix<T> x;                    //!< The solution.
+    double    reciprocal_condition; //!< `1 / (‖A‖₁ ‖A⁻¹‖₁)`, `‖A⁻¹‖₁` estimated.
+  };
+
+  /*!
+   * \brief \ref solve_banded with the reciprocal condition number of the band, as `scipy.linalg.solve` takes them from
+   *        LAPACK's `gbsv` and `gbcon`: the band's LU factorisation for any band (`gtsv`'s partial pivoting for three
+   *        diagonals), `‖A‖₁` its largest column sum of moduli, `‖A⁻¹‖₁` estimated from the factors (Hager's method,
+   *        a few solves of `O(n (lower + upper))` each), so within a small factor of the exact.
+   * \tparam T `double` or `std::complex<double>`.
+   * \throws dimension_error       If \p ab has not `lower + upper + 1` rows or \p b not `n` rows.
+   * \throws non_finite_error      If an entry is infinite or NaN.
+   * \throws singular_matrix_error If a pivot is zero.
+   */
+  template <typename T>
+  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  [[nodiscard]] conditioned_solution<T> solve_banded_conditioned(std::size_t      lower,
+                                                                 std::size_t      upper,
+                                                                 const matrix<T>& ab,
+                                                                 const matrix<T>& b)
+  {
+    detail::require_band(ab, lower + upper + 1, b, "solve_banded");
+    const std::size_t        n        {ab.cols()};
+    const std::size_t        ldab     {(2 * lower) + upper + 1};
+    detail::band_storage<T>  work     {buffer<T>(ldab * n, T {}), ldab};
+    double                   one_norm {0.0};
+    for (std::size_t j {0}; j < n; ++j) { // column j holds rows j − upper … j + lower of A
+      double column {0.0};
+      for (std::size_t r {upper > j ? upper - j : 0}; r < std::min(lower + upper + 1, upper + n - j); ++r) {
+        column += std::abs(ab(r, j));
+      }
+      one_norm = std::max(one_norm, column);
+    }
+    for (std::size_t r {0}; r < lower + upper + 1; ++r) {
+      for (std::size_t j {0}; j < n; ++j) {
+        work(lower + r + 1, j + 1) = ab(r, j);
+      }
+    }
+    std::vector<std::size_t> pivots;
+    detail::band_lu(work, n, lower, upper, pivots);
+    buffer<T> x(b.begin(), b.end());
+    detail::band_lu_solve(work, n, lower, upper, pivots, x, b.cols());
+    const double reciprocal {detail::reciprocal_condition<T>(n, one_norm, [&](T* v, bool adjoint) {
+                                                               if (adjoint) {
+                                                                 detail::band_lu_solve_adjoint(work, n, lower, upper, pivots, v);
+                                                                 return;
+                                                               }
+                                                               buffer<T> column(v, v + n);
+                                                               detail::band_lu_solve(work, n, lower, upper, pivots, column, 1);
+                                                               std::copy(column.begin(), column.end(), v);
+                                                             })};
+    return {matrix<T> {b.rows(), b.cols(), std::move(x)}, reciprocal};
   }
 
   namespace detail {

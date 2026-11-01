@@ -623,6 +623,121 @@ any_tensor cho_solve_banded(const any_tensor& cb, const any_tensor& b, bool lowe
 
 namespace {
 
+    // The 1-norm of the n × n row-major `a`, its largest column sum of moduli; of the Hermitian matrix of its lower
+    // triangle (or upper, not `lower`) where `hermitian`.
+    template <typename T>
+    double one_norm_of(const T* a, std::size_t n, bool hermitian = false, bool lower = true)
+    {
+        std::vector<double> sums(n, 0.0);
+        for (std::size_t i {0}; i < n; ++i) {
+            for (std::size_t j {0}; j < n; ++j) {
+                const bool read {!hermitian || i == j || (i > j) == lower};
+                const T    value {read ? a[(i * n) + j] : a[(j * n) + i]};
+                sums[j] += static_cast<double>(std::abs(value));
+            }
+        }
+        return n == 0 ? 0.0 : *std::max_element(sums.begin(), sums.end());
+    }
+
+    template <typename T>
+    std::tuple<any_tensor, double> solved_conditioned(const numerical::tensor<T>& a, const numerical::tensor<T>& b)
+    {
+        const sb::scoped_gil_release         unlocked {releases_gil_cubic(a.data().size())};
+        const double                         one_norm {one_norm_of(a.data().data(), a.shape()[0])};
+        const numerical::lu_decomposition<T> factored {matrix_from(a)};
+        any_tensor                           x {solve_for(b, [&factored](const numerical::vector<T>& rhs) { return factored.solve(rhs); },
+                                                          [&factored](numerical::matrix<T>&& rhs) { return factored.solve(std::move(rhs)); })};
+        return {std::move(x), factored.reciprocal_condition(one_norm)};
+    }
+} // namespace
+
+// solve_conditioned(a, b) -> (x, rcond), as scipy.linalg.solve(a, b, assume_a="gen") takes them from LAPACK's gesv
+// and gecon: the LU factorisation of the square a, b a vector or a matrix of its rows, one dtype (the caller promotes);
+// rcond 1 / (‖a‖₁ ‖a⁻¹‖₁), the inverse's norm estimated from the factors. A float32 matrix of native_single_least
+// rows and more in float32, a smaller one in double, and a float64 one of mixed_precision_least rows and few right-hand
+// sides in mixed precision, as solve.
+std::tuple<any_tensor, double> solve_conditioned(const any_tensor& a, const any_tensor& b)
+{
+    const std::vector<std::size_t>& shape {shape_of(a)};
+    if (shape.size() != 2 || shape[0] != shape[1] || shape_of(b).empty() || shape_of(b).size() > 2 || shape_of(b)[0] != shape[0]
+        || a.index() != b.index()) {
+        throw std::runtime_error("solve: a square matrix and a vector or matrix of its rows, of one dtype");
+    }
+    if (native_single(a)) {
+        return solved_conditioned(std::get<single_tensor>(a), std::get<single_tensor>(b));
+    }
+    if (is_single(a)) {
+        auto [x, rcond] {solve_conditioned(widened(a), widened(b))};
+        return {narrowed(x), rcond};
+    }
+    if (is_complex(a)) {
+        return solved_conditioned(std::get<cplx_tensor>(a), std::get<cplx_tensor>(b));
+    }
+    const auto&       ta {std::get<real_tensor>(a)};
+    const auto&       tb {std::get<real_tensor>(b)};
+    const std::size_t n {shape[0]};
+    const std::size_t k {shape_of(b).size() == 1 ? 1 : shape_of(b)[1]};
+    if (n >= mixed_precision_least && k * 64 <= n) { // as solve's: the estimate from the single-precision factors
+        const sb::scoped_gil_release              unlocked {releases_gil_cubic(n * n)};
+        double                                    rcond {0.0};
+        std::optional<numerical::matrix<double>> x {numerical::detail::mixed_precision_solve(matrix_from(ta), numerical::matrix<double> {n, k, numerical::buffer<double>(tb.data().begin(), tb.data().end())}, &rcond)};
+        if (x) {
+            return {any_tensor {real_tensor {tb.shape(), std::move(*x).elements()}}, rcond};
+        }
+    }
+    return solved_conditioned(ta, tb);
+}
+
+// factor_condition(factor, a, kind, lower) -> rcond, the reciprocal condition number 1 / (‖A‖₁ ‖A⁻¹‖₁) of a
+// square matrix of one dtype as scipy.linalg.solve estimates it: kind 0, A = L Lᴴ (lower) or Uᴴ U from cho_factor's
+// factor, ‖A‖₁ of the Hermitian matrix of a's triangle (LAPACK's pocon); kind 1, the triangle of a itself, factor
+// unread (trcon).
+double factor_condition(const any_tensor& factor, const any_tensor& a, int kind, bool lower)
+{
+    const std::vector<std::size_t>& shape {shape_of(a)};
+    if (shape.size() != 2 || shape[0] != shape[1] || shape_of(factor) != shape || factor.index() != a.index() || kind < 0 || kind > 1) {
+        throw std::runtime_error("factor_condition: a square matrix and its factor, of one dtype");
+    }
+    if (is_single(a)) {
+        return factor_condition(widened(factor), widened(a), kind, lower);
+    }
+    const std::size_t            n {shape[0]};
+    const sb::scoped_gil_release unlocked {releases_gil(n * n)};
+    return visit_numeric([&](const auto& ta) -> double {
+        const auto* const at {ta.data().data()};
+        if (kind == 1) {
+            numerical::detail::require_finite_triangle(at, n, lower, at, 0);
+            return numerical::detail::triangular_reciprocal_condition(at, n, lower);
+        }
+        const auto* const factored {std::get<std::decay_t<decltype(ta)>>(factor).data().data()};
+        numerical::detail::require_finite_triangle(factored, n, lower, at, 0);
+        return numerical::detail::cholesky_reciprocal_condition(factored, n, lower, one_norm_of(at, n, true, lower));
+    }, a);
+}
+
+// solve_banded_conditioned(ab, b, lower, upper) -> (x, rcond), as scipy.linalg.solve(a, b, assume_a="banded") takes
+// them from LAPACK's gbsv and gbcon: solve_banded's operands, rcond 1 / (‖A‖₁ ‖A⁻¹‖₁) estimated from the band's
+// factors; single precision computed in double.
+std::tuple<any_tensor, double> solve_banded_conditioned(const any_tensor& ab, const any_tensor& b, std::size_t lower, std::size_t upper)
+{
+    if (shape_of(ab).size() != 2 || shape_of(b).empty() || shape_of(b).size() > 2 || ab.index() != b.index()) {
+        throw std::runtime_error("solve_banded expects a band matrix and a vector or matrix of one dtype");
+    }
+    if (is_single(ab)) {
+        auto [x, rcond] {solve_banded_conditioned(widened(ab), widened(b), lower, upper)};
+        return {narrowed(x), rcond};
+    }
+    const sb::scoped_gil_release unlocked {releases_gil(count_of(ab) * (lower + 1))};
+    if (is_complex(ab)) {
+        auto [x, rcond] {numerical::solve_banded_conditioned(lower, upper, matrix_from(std::get<cplx_tensor>(ab)), right_hand_sides(std::get<cplx_tensor>(b)))};
+        return {shaped_like(std::move(x), b), rcond};
+    }
+    auto [x, rcond] {numerical::solve_banded_conditioned(lower, upper, matrix_from(std::get<real_tensor>(ab)), right_hand_sides(std::get<real_tensor>(b)))};
+    return {shaped_like(std::move(x), b), rcond};
+}
+
+namespace {
+
     template <typename T>
     std::tuple<any_tensor, any_tensor> hessenberg_of(const numerical::tensor<T>& t, bool calc_q)
     {

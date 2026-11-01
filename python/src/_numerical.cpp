@@ -48,6 +48,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&amx_probed>("_amx_probed", "_amx_probed() -> bool\nWhether the AMX's self-test has run in this process.");
     m.def<&solve>("solve", "solve(a, b) -> Tensor\nSolve the linear system a @ x = b (a rank-2; b rank-1, or rank-2 with one right-hand side per column).");
     m.def<&solve_banded>("solve_banded", "solve_banded(ab, b, lower, upper) -> Tensor\nThe solution of a banded system, as scipy.linalg.solve_banded (LAPACK's gbsv; gtsv for three diagonals).");
+    m.def<&solve_conditioned>("solve_conditioned", "solve_conditioned(a, b) -> (Tensor, float)\nThe solution of a @ x = b by the LU factorisation and its reciprocal condition number, estimated (LAPACK's gesv and gecon), as scipy.linalg.solve(assume_a='gen') takes them.");
+    m.def<&factor_condition>("factor_condition", "factor_condition(factor, a, kind, lower) -> float\nThe reciprocal condition number of a, estimated: kind 0 from its Cholesky factor (pocon), kind 1 of its triangle (trcon).");
+    m.def<&solve_banded_conditioned>("solve_banded_conditioned", "solve_banded_conditioned(ab, b, lower, upper) -> (Tensor, float)\nsolve_banded by the band LU and its reciprocal condition number, estimated (LAPACK's gbsv and gbcon).");
     m.def<&solveh_banded>("solveh_banded", "solveh_banded(ab, b, lower) -> Tensor\nThe solution of a Hermitian positive-definite banded system, as scipy.linalg.solveh_banded (LAPACK's pbsv; ptsv for three diagonals).");
     m.def<&cholesky_banded>("cholesky_banded", "cholesky_banded(ab, lower) -> Tensor\nThe Cholesky factor of a Hermitian positive-definite band in its own form, as scipy.linalg.cholesky_banded (LAPACK's pbtrf).");
     m.def<&cho_solve_banded>("cho_solve_banded", "cho_solve_banded(cb, b, lower) -> Tensor\nThe solution of A x = b from cholesky_banded's factor, as scipy.linalg.cho_solve_banded (LAPACK's pbtrs).");

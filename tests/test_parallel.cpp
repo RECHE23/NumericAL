@@ -20,6 +20,7 @@
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
+#include "numerical/blas.hpp"
 #include "numerical/numerical.hpp"
 #include "numerical/parallel.hpp"
 
@@ -66,9 +67,13 @@ TEST(release_memory_empties_every_thread_s_workspaces)
                                                      };
   static_cast<void>(a * a);
   EXPECT(capacities() > 0 || numerical::max_threads() == 1); // some thread keeps its packing
+  std::vector<double> c(9, 0.0);                             // syrk's copy of α A, kept by the calling thread
+  EXPECT(numerical::blas::syrk('L', 'N', 3, 3, 2.0, std::vector<double>(9, 1.0).data(), 3, 0.0, c.data(), 3) == 0);
+  EXPECT(numerical::blas::detail::syrk_operand().capacity() > 0);
   numerical::release_memory();
   EXPECT(capacities() == 0);
   EXPECT(numerical::detail::packing_storage<double>::kept().capacity() == 0);
+  EXPECT(numerical::blas::detail::syrk_operand().capacity() == 0);
   std::this_thread::sleep_for(std::chrono::milliseconds {5}); // the workers asleep: none answers within no time
   static_cast<void>(numerical::detail::thread_pool::shared().release_on_workers(&numerical::detail::release_thread_memory, std::chrono::milliseconds {0}));
   numerical::release_memory();                                // twice in a row, the second with nothing left

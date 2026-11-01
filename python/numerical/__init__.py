@@ -841,7 +841,10 @@ def solve(a, b, /, lower=False, overwrite_a=False, overwrite_b=False, check_fini
     ``"lower triangular"`` (substitution), ``"sym"``, ``"her"`` (the matrix read from one triangle, by default the upper
     one, ``lower`` the lower; a Hermitian one's diagonal taken real; then the LU, which here outruns the symmetric
     indefinite factorisation), ``"pos"`` (Cholesky's, from that triangle) or ``"gen"``; ``transposed`` solves
-    ``a.T @ x = b`` (``NotImplementedError`` for a complex `a`, as SciPy's). A singular `a`, or one not positive
+    ``a.T @ x = b`` (``NotImplementedError`` for a complex `a`, as SciPy's). With them too, SciPy's reciprocal
+    condition number ``1 / (‖a‖₁ ‖a⁻¹‖₁)``, the inverse's norm estimated from the factorisation (LAPACK's ``gecon``,
+    ``pocon``, ``trcon``, ``gbcon``; a diagonal's exact), under half the machine epsilon warns
+    (:class:`LinAlgWarning`: the answer may have no correct digit). A singular `a`, or one not positive
     definite for ``"pos"``, raises :class:`LinAlgError`. ``overwrite_a``, ``overwrite_b`` and ``check_finite`` are
     accepted for SciPy's signature: `a` and `b` are never written, and a NaN or an infinity always raises."""
     del overwrite_a, overwrite_b, check_finite
@@ -856,37 +859,58 @@ def solve(a, b, /, lower=False, overwrite_a=False, overwrite_b=False, check_fini
     if transposed and structure not in ("sym", "her", "pos"):  # those are their transposes (a real `a` here)
         a = a.mT
         structure = {"upper": "lower", "lower": "upper"}.get(structure, structure)
-    return _stacked_solve(a, b, structure, lower)
+    return _stacked_solve(a, b, structure, lower, 3)
 
 
-def _stacked_solve(a, b, structure, lower):
+def _stacked_solve(a, b, structure, lower, level):
     """:func:`_structured_solve` of each system of the stack `a` in turn, as SciPy's: `b` a vector or a matrix (`n`
-    rows) they share, or one per system (of `a`'s rank)."""
+    rows) they share, or one per system (of `a`'s rank). `level` the frames from here to the caller of :func:`solve`
+    (minus the warning's own), to point a warning there."""
     if len(a.shape) <= 2:
-        return _structured_solve(a, b, structure, lower)
+        return _structured_solve(a, b, structure, lower, level + 1)
     if len(b.shape) <= 2:
-        return stack([_stacked_solve(a[i], b, structure, lower) for i in range(a.shape[0])])
+        return stack([_stacked_solve(a[i], b, structure, lower, level + 1) for i in range(a.shape[0])])
     if len(b.shape) != len(a.shape) or b.shape[0] != a.shape[0]:
         raise LinAlgError(f"solve: b of shape {b.shape} fits no system of the stack of shape {a.shape}")
-    return stack([_stacked_solve(a[i], b[i], structure, lower) for i in range(a.shape[0])])
+    return stack([_stacked_solve(a[i], b[i], structure, lower, level + 1) for i in range(a.shape[0])])
 
 
-def _structured_solve(a, b, structure, lower):
-    """:func:`solve` of one system of the `structure` :data:`_STRUCTURES` names."""
+def _conditioned(x, rcond, dtype, level):
+    """`x`, the solution of a system whose reciprocal condition number is `rcond`, as SciPy's ``solve`` judges it:
+    under half the machine epsilon of `dtype` (LAPACK's ``lamch('E')``), 0 included (an exactly singular matrix raised
+    before), warns (:class:`LinAlgWarning`) at the caller, `level` frames up."""
+    if not rcond >= _MACHINE_EPSILON["float32" if dtype in _SINGLE else "float64"] / 2.0:
+        _warnings.warn(f"Ill-conditioned matrix (rcond={rcond:.6g}): result may not be accurate.", LinAlgWarning,
+                       stacklevel=level)
+    return x
+
+
+def _structured_solve(a, b, structure, lower, level):
+    """:func:`solve` of one system of the `structure` :data:`_STRUCTURES` names, with its reciprocal condition number
+    (:func:`_conditioned`)."""
     if len(a.shape) != 2 or a.shape[0] != a.shape[1]:
         raise LinAlgError(f"solve: a is a square matrix, not of shape {a.shape}")
     n = a.shape[0]
-    if structure == "gen":
+    a, b = _operand(a), _operand(b)
+    if a.dtype != b.dtype:
+        dtype = _promoted((a.dtype, b.dtype))
+        a, b = asarray(a, dtype), asarray(b, dtype)
+    if n == 0 or b.size == 0:
         return _borrowed("solve", _solve, a, b)
     if structure in ("upper", "lower"):
-        return solve_triangular(a, b, lower=structure == "lower")
+        x = solve_triangular(a, b, lower=structure == "lower")
+        return _conditioned(x, _factor_condition(a, a, 1, structure == "lower"), a.dtype, level + 1)
     if structure == "pos":
-        return cho_solve(cho_factor(a, lower=lower), b)
+        factor = cho_factor(a, lower=lower)
+        x = cho_solve(factor, b)
+        return _conditioned(x, _factor_condition(factor.c, a, 0, bool(lower)), a.dtype, level + 1)
     if structure == "diagonal":
         d = diagonal(a)
         if not all(d != 0.0):
             raise LinAlgError("solve: a singular matrix (a zero on the diagonal)")
-        return b / (d if len(b.shape) == 1 else reshape(d, (n, 1)))
+        moduli = absolute(d)
+        x = b / (d if len(b.shape) == 1 else reshape(d, (n, 1)))
+        return _conditioned(x, float(min(moduli)) / float(max(moduli)), a.dtype, level + 1)
     if structure in ("tridiagonal", "banded"):
         below, above = (1, 1) if structure == "tridiagonal" else bandwidth(a)
         zero = zeros((1,), a.dtype)
@@ -895,12 +919,15 @@ def _structured_solve(a, b, structure, lower):
             band = diagonal(a, offset=k) if n > abs(k) else zeros((0,), a.dtype)
             pad = [zero] * _builtins.min(abs(k), n)
             rows.append(concatenate(pad + [band] if k > 0 else [band] + pad) if k else band)
-        return solve_banded((below, above), stack(rows) if rows else zeros((0, n), a.dtype), b)
-    # sym and her: the matrix of one triangle, its other the transpose (conjugate, Hermitian), a Hermitian diagonal real
-    strict = tril(a, -1) if lower else triu(a, 1)
-    mirror = strict.mT if structure == "sym" else conj(strict).mT
-    middle = diagonal(a) if structure == "sym" or a.dtype in ("float64", "float32") else asarray(real(diagonal(a)), a.dtype)
-    return _borrowed("solve", _solve, strict + mirror + diag(middle), b)
+        x, rcond = _solve_banded_conditioned(stack(rows), b, below, above)
+        return _conditioned(x, rcond, a.dtype, level + 1)
+    if structure in ("sym", "her"):  # the matrix of one triangle, its other the transpose (conjugate, Hermitian), a Hermitian diagonal real
+        strict = tril(a, -1) if lower else triu(a, 1)
+        mirror = strict.mT if structure == "sym" else conj(strict).mT
+        middle = diagonal(a) if structure == "sym" or a.dtype in ("float64", "float32") else asarray(real(diagonal(a)), a.dtype)
+        a = strict + mirror + diag(middle)
+    x, rcond = _solve_conditioned(a, b)
+    return _conditioned(x, rcond, a.dtype, level + 1)
 
 
 def determinant(a, /):
@@ -932,6 +959,9 @@ _fractional_matrix_power = _linalg(_numerical.fractional_matrix_power, arrays=1)
 _qr_pivoted = _linalg(_numerical.qr_pivoted, arrays=1)
 _ldl = _linalg(_numerical.ldl, arrays=1)
 _solve_banded = _linalg(_numerical.solve_banded, arrays=2)
+_solve_banded_conditioned = _linalg(_numerical.solve_banded_conditioned, arrays=2)
+_solve_conditioned = _linalg(_numerical.solve_conditioned, arrays=2)
+_factor_condition = _linalg(_numerical.factor_condition, arrays=2)
 _solveh_banded = _linalg(_numerical.solveh_banded, arrays=2)
 _solve_toeplitz = _linalg(_numerical.solve_toeplitz, arrays=3)
 _solve_circulant = _linalg(_numerical.solve_circulant, arrays=2)

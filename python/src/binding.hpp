@@ -1980,6 +1980,13 @@ any_tensor solveh_banded(const any_tensor& ab, const any_tensor& b, bool lower);
 any_tensor cholesky_banded(const any_tensor& ab, bool lower);                                             // in linalg.cpp
 any_tensor cho_solve_banded(const any_tensor& cb, const any_tensor& b, bool lower);                       // in linalg.cpp
 
+// solve_conditioned(a, b) -> (x, rcond), factor_condition(factor, a, kind, lower) -> rcond and
+// solve_banded_conditioned(ab, b, lower, upper) -> (x, rcond): scipy.linalg.solve's solutions and reciprocal condition
+// numbers (LAPACK's gecon, pocon, trcon, gbcon).
+std::tuple<any_tensor, double> solve_conditioned(const any_tensor& a, const any_tensor& b);                                       // in linalg.cpp
+double                         factor_condition(const any_tensor& factor, const any_tensor& a, int kind, bool lower);             // in linalg.cpp
+std::tuple<any_tensor, double> solve_banded_conditioned(const any_tensor& ab, const any_tensor& b, std::size_t lower, std::size_t upper); // in linalg.cpp
+
 // hessenberg(a, calc_q) -> (H, Q), matrix_balance(a, permute, scale) -> (B, scaling, permutation),
 // tridiagonal_eigen(d, e, vectors) -> (w, v) and rsf2csf(T, Z) -> (T, Z), as scipy.linalg's.
 std::tuple<any_tensor, any_tensor> hessenberg(const any_tensor& a, bool calc_q);                                                 // in linalg.cpp

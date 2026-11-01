@@ -359,6 +359,19 @@ TEST(mixed_precision_solve_refines_a_float32_factorisation)
       EXPECT(gap < 1e-12 * size);
       const matrix<double> r {b - (a * *x)};
       EXPECT(numerical::detail::residual_ratio(*x, r) < 1e-15 * scale * static_cast<double>(n));
+      // The reciprocal condition number from the single factors of the scaled A: the double factors' to 1 %
+      double         rcond {0.0};
+      const auto     again {mixed_precision_solve(a, b, &rcond)};
+      double         norm  {0.0};
+      for (std::size_t j {0}; j < n; ++j) {
+        double column {0.0};
+        for (std::size_t i {0}; i < n; ++i) {
+          column += std::abs(a(i, j));
+        }
+        norm = std::max(norm, column);
+      }
+      const double exact {lu_decomposition<double> {a}.reciprocal_condition(norm)};
+      EXPECT(again && std::abs(rcond - exact) < 0.01 * exact);
     }
   }
   constexpr double     infinity {std::numeric_limits<double>::infinity()};
@@ -3574,4 +3587,220 @@ TEST(solve_triangular_solves_every_triangle_and_operation)
   EXPECT_THROWS(numerical::solve_triangular(numerical::matrix<double> {2, 2, std::vector<double> {1.0, 0.0, 0.0, 1.0}},
                                             numerical::matrix<double> {2, 1, std::vector<double> {1.0, std::numeric_limits<double>::infinity()}}, true),
                 numerical::non_finite_error);
+}
+
+namespace {
+
+  //! \brief `‖A‖₁`, the largest column sum of moduli of \p a.
+  template <typename T>
+  double column_norm(const matrix<T>& a)
+  {
+    double largest {0.0};
+    for (std::size_t j {0}; j < a.cols(); ++j) {
+      double sum {0.0};
+      for (std::size_t i {0}; i < a.rows(); ++i) {
+        sum += std::abs(a(i, j));
+      }
+      largest = std::max(largest, sum);
+    }
+    return largest;
+  }
+
+  //! \brief A random `n × n` matrix of normal entries (normal parts for a complex `T`).
+  template <typename T>
+  matrix<T> normal_matrix(std::size_t      n,
+                          std::mt19937_64& engine)
+  {
+    std::normal_distribution<double> normal {};
+    std::vector<T>                   a(n * n);
+    for (T& entry : a) {
+      if constexpr (std::is_same_v<T, double>) {
+        entry = normal(engine);
+      }
+      else {
+        const double re {normal(engine)};
+        entry = T {re, normal(engine)};
+      }
+    }
+    return matrix<T> {n, n, a};
+  }
+
+  //! \brief The identity of order \p n.
+  template <typename T>
+  matrix<T> identity(std::size_t n)
+  {
+    std::vector<T> one(n * n, T {});
+    for (std::size_t i {0}; i < n; ++i) {
+      one[(i * n) + i] = T {1};
+    }
+    return matrix<T> {n, n, one};
+  }
+
+  //! \brief `A Aᴴ + I`, Hermitian positive definite.
+  template <typename T>
+  matrix<T> gram_plus_identity(const matrix<T>& a)
+  {
+    const std::size_t n          {a.rows()};
+    std::vector<T>    h(n * n, T {});
+    for (std::size_t i {0}; i < n; ++i) {
+      h[(i * n) + i] = T {1};
+      for (std::size_t j {0}; j < n; ++j) {
+        for (std::size_t k {0}; k < n; ++k) {
+          h[(i * n) + j] += a(i, k) * numerical::detail::conj_of(a(j, k));
+        }
+      }
+    }
+    return matrix<T> {n, n, h};
+  }
+
+  //! \brief The upper triangle of \p a, \p shift added to its diagonal.
+  template <typename T>
+  matrix<T> shifted_upper(const matrix<T>& a,
+                          double           shift)
+  {
+    const std::size_t n          {a.rows()};
+    std::vector<T>    u(n * n, T {});
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {i}; j < n; ++j) {
+        u[(i * n) + j] = a(i, j) + (i == j ? T {shift} : T {});
+      }
+    }
+    return matrix<T> {n, n, u};
+  }
+
+  //! \brief Whether \p estimate, a reciprocal condition number from an estimate of `‖A⁻¹‖₁` (a lower bound of it),
+  //!        lies between the exact \p exact and three times it, as Hager's estimate does in practice.
+  bool within_three(double estimate,
+                    double exact)
+  {
+    return estimate >= exact * (1.0 - 1e-10) && estimate <= 3.0 * exact;
+  }
+} // namespace
+
+// The reciprocal condition numbers of random matrices, real and complex, from the LU factors (gecon), from a Hermitian
+// one's Cholesky factor (pocon) and of a triangle (trcon): the exact one's, 1 / (‖A‖₁ ‖A⁻¹‖₁), to a factor of 3.
+TEST(the_reciprocal_condition_numbers_bound_the_exact_ones)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed): a fixed draw, the same on every run
+  std::mt19937_64 engine {20261031};
+  const auto      check = [&]<typename T>(std::type_identity<T>) {
+                            bool fine {true};
+                            for (const std::size_t n : {1U, 2U, 3U, 7U, 20U, 40U}) {
+                              const matrix<T> a          {normal_matrix<T>(n, engine)};
+                              const double    exact      {1.0 / (column_norm(a) * column_norm(inverse(a)))};
+                              fine = fine && within_three(lu_decomposition<T> {a}.reciprocal_condition(column_norm(a)), exact);
+                              const matrix<T> h          {gram_plus_identity(a)};
+                              const double    exact_h    {1.0 / (column_norm(h) * column_norm(inverse(h)))};
+                              fine = fine && within_three(cholesky_decomposition<T> {h}.reciprocal_condition(column_norm(h)), exact_h);
+                              const matrix<T> l          {cholesky_decomposition<T> {h}.lower()}; // the same from U = Lᴴ in the upper triangle
+                              std::vector<T>  u(n * n, T {});
+                              for (std::size_t i {0}; i < n; ++i) {
+                                for (std::size_t k {0}; k <= i; ++k) {
+                                  u[(k * n) + i] = numerical::detail::conj_of(l(i, k));
+                                }
+                              }
+                              fine = fine && within_three(numerical::detail::cholesky_reciprocal_condition(u.data(), n, false, column_norm(h)), exact_h);
+                              const matrix<T> upper   {shifted_upper(a, static_cast<double>(n))};
+                              const double    exact_u {1.0 / (column_norm(upper) * column_norm(inverse(upper)))};
+                              fine = fine && within_three(numerical::triangular_reciprocal_condition(upper, false), exact_u);
+                              fine = fine && within_three(numerical::triangular_reciprocal_condition(transpose(upper), true), 1.0 / (column_norm(transpose(upper)) * column_norm(inverse(transpose(upper)))));
+                            }
+                            return fine;
+                          };
+  EXPECT(check(std::type_identity<double> {}));
+  EXPECT(check(std::type_identity<std::complex<double>> {}));
+  // Hilbert's matrix of order 12: about 3.7e-17 (κ₁ = 2.7e16), the estimate exact here.
+  std::vector<double> entries(144);
+  for (std::size_t i {0}; i < 12; ++i) {
+    for (std::size_t j {0}; j < 12; ++j) {
+      entries[(i * 12) + j] = 1.0 / static_cast<double>(i + j + 1);
+    }
+  }
+  const matrix<double> hilbert {12, 12, entries};
+  const double         rcond   {lu_decomposition<double> {hilbert}.reciprocal_condition(column_norm(hilbert))};
+  EXPECT(rcond > 1e-17 && rcond < 1e-16);
+}
+
+// The ends of the estimate: an empty matrix 1, a singular one or a zero norm 0, a zero on a triangle's diagonal 0; a
+// triangle not square, or with an infinite entry, refused.
+TEST(the_reciprocal_condition_number_s_ends)
+{
+  const matrix<double> empty    {0, 0, std::vector<double> {}};
+  const matrix<double> singular {2, 2, std::vector<double> {1.0, 2.0, 2.0, 4.0}};
+  EXPECT(lu_decomposition<double> {empty}.reciprocal_condition(0.0) == 1.0);
+  EXPECT(lu_decomposition<double> {singular}.reciprocal_condition(6.0) == 0.0);
+  EXPECT(lu_decomposition<double> {identity<double>(3)}.reciprocal_condition(0.0) == 0.0);
+  EXPECT(lu_decomposition<double> {identity<double>(3)}.reciprocal_condition(1.0) == 1.0);
+  EXPECT(numerical::triangular_reciprocal_condition(matrix<double> {2, 2, std::vector<double> {1.0, 5.0, 0.0, 0.0}}, false) == 0.0);
+  EXPECT(numerical::triangular_reciprocal_condition(matrix<double> {0, 0, std::vector<double> {}}, true) == 1.0);
+  EXPECT_THROWS(static_cast<void>(numerical::triangular_reciprocal_condition(matrix<double> {2, 3, std::vector<double>(6, 1.0)}, true)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::triangular_reciprocal_condition(matrix<double> {2, 2, std::vector<double> {1.0, 0.0, std::numeric_limits<double>::infinity(), 1.0}}, true)),
+                numerical::non_finite_error);
+  // The upper triangle alone read: an infinity below it is never seen.
+  EXPECT(numerical::triangular_reciprocal_condition(matrix<double> {2, 2, std::vector<double> {1.0, 0.0, std::numeric_limits<double>::infinity(), 1.0}}, false) == 1.0);
+}
+
+// The climb of the estimate on operators made to take each of its turns: a real operator whose sign vectors never
+// repeat and whose estimate grows climbs five times and stops; one whose estimate falls stops at once; one product
+// overflowing, wherever it falls, answers infinity; a complex product's zero entry takes the sign 1.
+TEST(the_one_norm_estimate_s_climb)
+{
+  using numerical::detail::one_norm_estimate;
+  constexpr std::size_t n {4};
+  std::size_t           forward {0};     // B's products so far
+  std::size_t           backward {0};    // Bᴴ's
+  std::size_t           calls {0};
+  std::size_t           overflow_at {0}; // the product that overflows (from 1), 0 for none
+  const auto            climber = [&](double* x, bool adjoint) {
+                                    ++calls;
+                                    if (adjoint) {
+                                      ++backward;
+                                      for (std::size_t i {0}; i < n; ++i) {
+                                        x[i] = i == backward % n ? 2.0 : 1.0; // the largest entry moves each time
+                                      }
+                                    }
+                                    else {
+                                      ++forward;
+                                      const double sign {forward % 2 == 0 ? 1.0 : -1.0}; // the signs flip each time, the sums grow
+                                      for (std::size_t i {0}; i < n; ++i) {
+                                        x[i] = static_cast<double>(forward) * sign * (i % 2 == 0 ? 1.0 : -1.0);
+                                      }
+                                    }
+                                    if (calls == overflow_at) {
+                                      x[0] = std::numeric_limits<double>::infinity();
+                                    }
+                                  };
+  const double climbed {one_norm_estimate<double>(n, climber)};
+  EXPECT(forward == 6 && backward == 5); // the first two products, four climbs of two, the last climb's limit, the alternating one
+  EXPECT(climbed == 5.0 * n);
+  const std::size_t total      {calls};
+  bool              overflowed {true};
+  for (overflow_at = 1; overflow_at <= total; ++overflow_at) {
+    forward    = 0;
+    backward   = 0;
+    calls      = 0;
+    overflowed = overflowed && std::isinf(one_norm_estimate<double>(n, climber));
+  }
+  EXPECT(overflowed);
+  std::size_t  falls  {0};
+  const double fallen {one_norm_estimate<double>(n, [&](double* x, bool adjoint) {
+                                                   falls += adjoint ? 0 : 1;
+                                                   for (std::size_t i {0}; i < n; ++i) { // the second product smaller than the first, its signs others
+                                                     const double alternating {i % 2 == 0 ? 1.0 : -1.0};
+                                                     const double straight {falls == 1 ? 3.0 : alternating};
+                                                     const double peak {i == 2 ? 2.0 : 1.0};
+                                                     x[i] = adjoint ? peak : straight;
+                                                   }
+                                                 })};
+  EXPECT(fallen == 4.0 && falls == 3); // the fallen sum kept, as dlacn2 keeps it (both are lower bounds of ‖B‖₁)
+  using C = std::complex<double>;
+  const double zero_entry {one_norm_estimate<C>(3, [](C* x, bool adjoint) {
+                                                  if (!adjoint) {
+                                                    x[0] = C {0.0, 2.0};
+                                                    x[1] = C {};
+                                                    x[2] = C {1.0, 0.0};
+                                                  }
+                                                })};
+  EXPECT(zero_entry == 3.0);
+  EXPECT(one_norm_estimate<C>(1, [](C* x, bool) { x[0] *= C {0.0, -4.0}; }) == 4.0);
 }

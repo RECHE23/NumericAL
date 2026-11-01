@@ -77,8 +77,27 @@ namespace {
     for (T& value : rhs) {
       value = drawn_scalar<T>(state);
     }
-    const matrix<T> b {n, k, rhs};
-    return gap(numerical::solve_banded(lower, upper, matrix<T> {lower + upper + 1, n, band}, b), numerical::solve(matrix<T> {n, n, dense}, b)) < 1e-12;
+    const matrix<T> b                                     {n, k, rhs};
+    const matrix<T> a                                     {n, n, dense};
+    const matrix<T> x                                     {numerical::solve(a, b)};
+    // With the condition number: the band's LU for any band, its rcond within a factor of 3 of the exact (gbcon's)
+    const numerical::conditioned_solution<T> conditioned  {numerical::solve_banded_conditioned(lower, upper, matrix<T> {lower + upper + 1, n, band}, b)};
+    const matrix<T>                          inverse      {numerical::inverse(a)};
+    double                                   norm         {0.0};
+    double                                   inverse_norm {0.0};
+    for (std::size_t j {0}; j < n; ++j) {
+      double column         {0.0};
+      double inverse_column {0.0};
+      for (std::size_t i {0}; i < n; ++i) {
+        column         += std::abs(a(i, j));
+        inverse_column += std::abs(inverse(i, j));
+      }
+      norm         = std::max(norm, column);
+      inverse_norm = std::max(inverse_norm, inverse_column);
+    }
+    const double exact {1.0 / (norm * inverse_norm)};
+    return gap(numerical::solve_banded(lower, upper, matrix<T> {lower + upper + 1, n, band}, b), x) < 1e-12 && gap(conditioned.x, x) < 1e-12
+           && conditioned.reciprocal_condition >= exact * (1.0 - 1e-10) && conditioned.reciprocal_condition <= 3.0 * exact;
   }
 
   //! \brief A Hermitian positive-definite band of \p kd diagonals each side, by solveh_banded from its upper and its
@@ -156,6 +175,9 @@ TEST(solve_banded_is_the_dense_solve)
   EXPECT_THROWS(static_cast<void>(numerical::solve_banded(1, 1, matrix<double> {{0.0, 1.0}, {1.0, 1.0}, {1.0, 0.0}}, matrix<double> {2, 1, std::vector<double> {1.0, 1.0}})),
                 numerical::singular_matrix_error);
   EXPECT(numerical::solve_banded(1, 1, matrix<double> {3, 0, std::vector<double> {}}, matrix<double> {0, 1, std::vector<double> {}}).rows() == 0);
+  EXPECT(numerical::solve_banded_conditioned(1, 1, matrix<double> {3, 0, std::vector<double> {}}, matrix<double> {0, 1, std::vector<double> {}}).reciprocal_condition == 1.0);
+  EXPECT_THROWS(static_cast<void>(numerical::solve_banded_conditioned(1, 0, matrix<double> {{1.0, 0.0}, {1.0, 0.0}}, matrix<double> {2, 1, std::vector<double> {1.0, 1.0}})),
+                numerical::singular_matrix_error);
   EXPECT_THROWS(static_cast<void>(numerical::solve_banded(1, 1, example, matrix<double> {5, 1, std::vector<double>(5, 1.0)})), numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::solve_banded(1, 2, example, matrix<double> {4, 1, std::vector<double>(4, 1.0)})), numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::solve_banded(1, 2, example, matrix<double> {5, 1, std::vector<double>(5, std::numeric_limits<double>::infinity())})),

@@ -27,6 +27,7 @@
 #include <atomic>
 #include <bit>
 #include <cmath>
+#include <concepts>
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
 #include <cstddef>
 #include <cstdint>
@@ -1000,6 +1001,17 @@ namespace numerical {
       return singular_;
     }
 
+    /*!
+     * \brief The reciprocal condition number `1 / (‖A‖₁ ‖A⁻¹‖₁)` of the factorised matrix, as LAPACK's `gecon`: `‖A⁻¹‖₁`
+     *        estimated from the factors (Hager's method, a few solves of `n²` each), so within a small factor of the
+     *        exact; the caller gives `‖A‖₁`, the largest column sum of moduli of `A`, which the factors no longer hold.
+     *        Under the machine epsilon, a solve's answer may have no correct digit.
+     * \param[in] one_norm `‖A‖₁`.
+     * \return The estimate: 1 for an empty matrix; 0 for a singular one, a zero `one_norm`, or an estimate that
+     *         overflows.
+     */
+    [[nodiscard]] double reciprocal_condition(double one_norm) const;
+
   private:
 
     //! \brief Performs the pivoted elimination, filling \ref lu_ and \ref pivots_.
@@ -1652,11 +1664,18 @@ namespace numerical {
      *        a dozen from single precision to the bound) where `dsgesv` allows 30: an `A` too ill-conditioned for
      *        single precision converges slowly or not at all, and the double factorisation is then the faster.
      *        The single factorisation costs half the double one's; each correction a product and a solve of `n² k`.
+     * \param[in]  a                    `A`, square.
+     * \param[in]  b                    `B`, of `A`'s rows.
+     * \param[out] reciprocal_condition Where given, set with `X`: `A`'s reciprocal condition number estimated from
+     *         the single-precision factors (\ref lu_decomposition::reciprocal_condition). The corrections converged, so
+     *         `‖A⁻¹‖ ‖E‖` is under 1 for the factors' error `E`, of order single precision's unit roundoff times `‖A‖`:
+     *         the estimate is the double factors' to a small factor, and far above double's unit roundoff.
      * \return `X`, or none where an entry of `A` or `B` is not finite, `A` is singular in single precision, or a
      *         correction falls short: the caller solves in double (and meets what the double solve meets).
      */
     [[nodiscard]] inline std::optional<matrix<double>> mixed_precision_solve(const matrix<double>& a,
-                                                                             const matrix<double>& b)
+                                                                             const matrix<double>& b,
+                                                                             double*               reciprocal_condition = nullptr)
     {
       const std::size_t n      {a.rows()};
       double            a_norm {0.0};
@@ -1696,6 +1715,15 @@ namespace numerical {
         x        = x + solved(scaled_to_float(r));
         r        = b - (a * x);
         ratio    = residual_ratio(x, r);
+      }
+      if (reciprocal_condition != nullptr) { // the scaled A's ‖·‖₁, its condition A's
+        std::vector<double> sums(n, 0.0);
+        for (std::size_t i {0}; i < n; ++i) {
+          for (std::size_t j {0}; j < n; ++j) {
+            sums[j] += std::abs(a(i, j));
+          }
+        }
+        *reciprocal_condition = factored.reciprocal_condition(std::ldexp(*std::max_element(sums.begin(), sums.end()), -a_exponent));
       }
       return x;
     }
@@ -2003,7 +2031,262 @@ namespace numerical {
       require_finite_triangle(a, n, lower, x, n * k);
       solve_finite_triangular_in_place(a, n, lower, op, unit_diagonal, x, k);
     }
+
+    //! \brief A real entry's sign for \ref one_norm_estimate's sign vectors, `dlacn2`'s: 1 from zero up, else −1;
+    //!        \p sign set to it.
+    template <std::floating_point R>
+    [[nodiscard]] R sign_entry(R    x,
+                               int& sign) noexcept
+    {
+      sign = x >= R {} ? 1 : -1;
+      return static_cast<R>(sign);
+    }
+
+    //! \brief A complex entry's unit-modulus sign, `zlacn2`'s: `x / |x|`, 1 where `|x|` is not past the least normal
+    //!        number; \p sign 0, a complex climb having no sign vector to repeat.
+    template <std::floating_point R>
+    [[nodiscard]] std::complex<R> sign_entry(std::complex<R> x,
+                                             int&            sign) noexcept
+    {
+      sign = 0;
+      const R modulus {std::abs(x)};
+      return modulus > std::numeric_limits<R>::min() ? x / modulus : std::complex<R> {1};
+    }
+
+    //! \brief Whether a real entry's sign is \p sign (\ref sign_entry's), as `dlacn2` finds a sign vector repeated.
+    template <std::floating_point R>
+    [[nodiscard]] bool same_sign(R   x,
+                                 int sign) noexcept
+    {
+      return (x >= R {} ? 1 : -1) == sign;
+    }
+
+    //! \brief A complex entry's sign never repeats (`zlacn2` has no such test).
+    template <std::floating_point R>
+    [[nodiscard]] bool same_sign(std::complex<R> /*x*/,
+                                 int /*sign*/) noexcept
+    {
+      return false;
+    }
+
+    //! \brief Whether the climb's last column \p last is as large as the new largest entry \p largest, so it stops:
+    //!        `dlacn2` compares the real entry itself with the largest modulus.
+    template <std::floating_point R>
+    [[nodiscard]] bool climb_ends(R last,
+                                  R largest) noexcept
+    {
+      return last == std::abs(largest);
+    }
+
+    //! \brief \ref climb_ends of complex entries, as `zlacn2`: their moduli.
+    template <std::floating_point R>
+    [[nodiscard]] bool climb_ends(std::complex<R> last,
+                                  std::complex<R> largest) noexcept
+    {
+      return std::abs(last) == std::abs(largest);
+    }
+
+    /*!
+     * \brief An estimate of `‖B‖₁` for the `n × n` operator \p apply gives, as LAPACK's `dlacn2` and `zlacn2` (Hager's
+     *        method, Higham's refinements): `apply(x, false)` overwrites the \p n entries at `x` with `B x`,
+     *        `apply(x, true)` with `Bᴴ x`. Products on sign vectors (unit-modulus ones for complex `T`) climb to a
+     *        column of large norm, at most five each way; one more on `(−1)ⁱ (1 + i / (n − 1))` guards against the
+     *        operators that fool the climb. A lower bound, rarely short of `‖B‖₁` by more than a factor of 3 (Higham,
+     *        *Accuracy and Stability of Numerical Algorithms*, 2002, §15.3); infinity where a product overflows.
+     * \param[in] n     The order of `B` (from 1).
+     * \param[in] apply The products: `apply(T* x, bool adjoint)`, behind one type, so one estimate per `T` whatever
+     *                  the operator (each product costs `n` operations at the least, the call through it nothing).
+     * \return The estimate.
+     */
+    template <typename T>
+    [[nodiscard]] double one_norm_estimate(std::size_t                           n,
+                                           const std::function<void(T*, bool)>&  apply)
+    {
+      constexpr std::size_t most_climbs {5};
+      buffer<T>             x(n, T {static_cast<decltype(std::abs(T {}))>(1.0 / static_cast<double>(n))});
+      std::vector<int>      signs(n, 0); // a real climb's last sign vector
+      const auto            product = [&](bool adjoint) {
+                                        apply(x.data(), adjoint);
+                                        return elements_finite(x.data(), n);
+                                      };
+      const auto sum = [&] {
+                         double total {0.0};
+                         for (const T& value : x) {
+                           total += static_cast<double>(std::abs(value));
+                         }
+                         return total;
+                       };
+      const auto largest_at = [&] { // the first of the largest moduli, as idamax and izmax1
+                                std::size_t at {0};
+                                for (std::size_t i {1}; i < n; ++i) {
+                                  if (std::abs(x[i]) > std::abs(x[at])) {
+                                    at = i;
+                                  }
+                                }
+                                return at;
+                              };
+      const auto to_signs = [&] {
+                              for (std::size_t i {0}; i < n; ++i) {
+                                x[i] = sign_entry(x[i], signs[i]);
+                              }
+                            };
+      if (!product(false)) {
+        return std::numeric_limits<double>::infinity();
+      }
+      if (n == 1) {
+        return static_cast<double>(std::abs(x[0]));
+      }
+      double estimate {sum()};
+      to_signs();
+      if (!product(true)) {
+        return std::numeric_limits<double>::infinity();
+      }
+      std::size_t j {largest_at()};
+      for (std::size_t climb {2};; ++climb) {
+        std::fill(x.begin(), x.end(), T {});
+        x[j] = T {1};
+        if (!product(false)) {
+          return std::numeric_limits<double>::infinity();
+        }
+        const double previous {estimate};
+        estimate = sum();
+        bool repeated         {true}; // a real climb's signs as before: it has converged
+        for (std::size_t i {0}; i < n && repeated; ++i) {
+          repeated = same_sign(x[i], signs[i]);
+        }
+        if (repeated || estimate <= previous) {
+          break;
+        }
+        to_signs();
+        if (!product(true)) {
+          return std::numeric_limits<double>::infinity();
+        }
+        const std::size_t last {j};
+        j = largest_at();
+        if (climb_ends(x[last], x[j]) || climb >= most_climbs) {
+          break;
+        }
+      }
+      for (std::size_t i {0}; i < n; ++i) { // the alternating vector, of growing moduli
+        const double magnitude {1.0 + (static_cast<double>(i) / static_cast<double>(n - 1))};
+        x[i] = T {static_cast<decltype(std::abs(T {}))>(i % 2 == 0 ? magnitude : -magnitude)};
+      }
+      if (!product(false)) {
+        return std::numeric_limits<double>::infinity();
+      }
+      return std::max(estimate, 2.0 * (sum() / static_cast<double>(3 * n)));
+    }
+
+    //! \brief The reciprocal condition number `1 / (‖A‖₁ ‖A⁻¹‖₁)` of `A` from \p one_norm, `‖A‖₁`, and an estimate of
+    //!        `‖A⁻¹‖₁` by \ref one_norm_estimate over \p apply, as LAPACK's `*con` routines end: 1 for an empty matrix,
+    //!        0 for a zero one, and 0 where the estimate overflows.
+    template <typename T>
+    [[nodiscard]] double reciprocal_condition(std::size_t                           n,
+                                              double                                one_norm,
+                                              const std::function<void(T*, bool)>&  apply)
+    {
+      if (n == 0) {
+        return 1.0;
+      }
+      if (one_norm == 0.0) {
+        return 0.0;
+      }
+      return (1.0 / one_norm_estimate<T>(n, apply)) / one_norm;
+    }
+
+    /*!
+     * \brief \ref reciprocal_condition of `A = P⁻¹ L U` from the `n × n` row-major \p lu (`L` below the diagonal, its
+     *        unit diagonal not stored, `U` on and above it) and \p one_norm, `‖A‖₁`, as LAPACK's `gecon`: `A⁻¹`'s products
+     *        `U⁻¹ L⁻¹` and `L⁻ᴴ U⁻ᴴ` (the permutation leaves 1-norms alone). 0 where `U` has a zero on its diagonal.
+     */
+    template <typename T>
+    [[nodiscard]] double lu_reciprocal_condition(const T*    lu,
+                                                 std::size_t n,
+                                                 double      one_norm)
+    {
+      for (std::size_t i {0}; i < n; ++i) {
+        if (lu[(i * n) + i] == T {}) {
+          return 0.0;
+        }
+      }
+      return reciprocal_condition<T>(n, one_norm, [lu, n](T* x, bool adjoint) {
+                                       const triangular_op op {adjoint ? triangular_op::adjoint : triangular_op::none};
+                                       solve_finite_triangular_in_place(lu, n, !adjoint, op, !adjoint, x, 1);
+                                       solve_finite_triangular_in_place(lu, n, adjoint, op, adjoint, x, 1);
+                                     });
+    }
+
+    /*!
+     * \brief \ref reciprocal_condition of `A = L Lᴴ` or `Uᴴ U` from its Cholesky factor, `L` in the \p lower triangle
+     *        of the `n × n` row-major \p factor or `U` in its upper one, and \p one_norm, `‖A‖₁`, as LAPACK's `pocon`:
+     *        `A⁻¹` its own adjoint, the two products one.
+     */
+    template <typename T>
+    [[nodiscard]] double cholesky_reciprocal_condition(const T*    factor,
+                                                       std::size_t n,
+                                                       bool        lower,
+                                                       double      one_norm)
+    {
+      return reciprocal_condition<T>(n, one_norm, [factor, n, lower](T* x, bool /*adjoint*/) {
+                                       solve_finite_triangular_in_place(factor, n, lower, lower ? triangular_op::none : triangular_op::adjoint, false, x, 1);
+                                       solve_finite_triangular_in_place(factor, n, lower, lower ? triangular_op::adjoint : triangular_op::none, false, x, 1);
+                                     });
+    }
+
+    /*!
+     * \brief \ref reciprocal_condition of the triangular `A`, the \p lower triangle of the `n × n` row-major \p a or its
+     *        upper one, as LAPACK's `trcon` (1-norm): `‖A‖₁` the triangle's largest column sum of moduli, `A⁻¹`'s
+     *        products by substitution. 0 where the diagonal holds a zero.
+     */
+    template <typename T>
+    [[nodiscard]] double triangular_reciprocal_condition(const T*    a,
+                                                         std::size_t n,
+                                                         bool        lower)
+    {
+      std::vector<double> sums(n, 0.0);
+      for (std::size_t i {0}; i < n; ++i) {
+        if (a[(i * n) + i] == T {}) {
+          return 0.0;
+        }
+        for (std::size_t j {lower ? 0 : i}; j <= (lower ? i : n - 1); ++j) {
+          sums[j] += static_cast<double>(std::abs(a[(i * n) + j]));
+        }
+      }
+      const double one_norm {n == 0 ? 0.0 : *std::max_element(sums.begin(), sums.end())};
+      return reciprocal_condition<T>(n, one_norm, [a, n, lower](T* x, bool adjoint) {
+                                       solve_finite_triangular_in_place(a, n, lower, adjoint ? triangular_op::adjoint : triangular_op::none, false, x, 1);
+                                     });
+    }
   } // namespace detail
+
+  template <field T>
+  double lu_decomposition<T>::reciprocal_condition(double one_norm) const
+  {
+    return detail::lu_reciprocal_condition(lu_.data(), n_, one_norm);
+  }
+
+  /*!
+   * \brief The reciprocal condition number `1 / (‖A‖₁ ‖A⁻¹‖₁)` of a triangular matrix, as LAPACK's `trcon` (1-norm):
+   *        its \p lower triangle or its upper one read, the other never; `‖A⁻¹‖₁` estimated by substitutions (Hager's
+   *        method), so within a small factor of the exact.
+   * \param[in] a     The square matrix.
+   * \param[in] lower Whether `A` is lower triangular, else upper.
+   * \return The estimate: 1 for an empty matrix; 0 for a zero on the diagonal or an estimate that overflows.
+   * \throws dimension_error  If \p a is not square.
+   * \throws non_finite_error If an entry of its triangle is infinite or NaN.
+   */
+  template <field T>
+  [[nodiscard]] double triangular_reciprocal_condition(const matrix<T>& a,
+                                                       bool             lower)
+  {
+    const std::size_t n {a.rows()};
+    if (a.cols() != n) {
+      throw dimension_error("triangular_reciprocal_condition: expected a square matrix");
+    }
+    const T* const at {std::to_address(a.begin())};
+    detail::require_finite_triangle(at, n, lower, at, 0);
+    return detail::triangular_reciprocal_condition(at, n, lower);
+  }
 
   /*!
    * \brief Solves `A X = B`, `Aᵀ X = B` or `Aᴴ X = B` (\p op) for a triangular `A`, as `scipy.linalg.solve_triangular`:
@@ -2404,6 +2687,18 @@ namespace numerical {
         value *= lower_[(i * n_) + i] * lower_[(i * n_) + i];
       }
       return value;
+    }
+
+    /*!
+     * \brief The reciprocal condition number `1 / (‖A‖₁ ‖A⁻¹‖₁)` of the factorised matrix, as LAPACK's `pocon`:
+     *        `‖A⁻¹‖₁` estimated from `L` (Hager's method, a few solves of `n²` each), so within a small factor of the
+     *        exact; the caller gives `‖A‖₁`. Under the machine epsilon, a solve's answer may have no correct digit.
+     * \param[in] one_norm `‖A‖₁`, the largest column sum of moduli of `A`.
+     * \return The estimate: 1 for an empty matrix; 0 for a zero `one_norm` or an estimate that overflows.
+     */
+    [[nodiscard]] double reciprocal_condition(double one_norm) const
+    {
+      return detail::cholesky_reciprocal_condition(lower_.data(), n_, true, one_norm);
     }
 
   private:

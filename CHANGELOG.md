@@ -27,6 +27,15 @@ A change that can break code is listed under **Breaking** and held for a month's
   in brackets): `"pos"` by Cholesky's 29 ms (50), `"sym"` 48 ms (103, the LU outrunning the symmetric indefinite
   factorisation here), `"tridiagonal"` 2.4 ms (12), `"banded"` 2.9 ms (3.3), `"diagonal"` 1.0 ms (12). A Hermitian
   matrix's diagonal is taken real at every order, where SciPy's 1 × 1 case divides by the complex entry.
+- **`solve` with `assume_a` warns of an ill-conditioned system, as SciPy's**: the reciprocal condition number
+  `1 / (‖A‖₁ ‖A⁻¹‖₁)`, the inverse's norm estimated from the factorisation already made (Hager's method, LAPACK's
+  `dlacn2`: `gecon` from the LU, `pocon` from Cholesky's, `trcon` of a triangle, `gbcon` from the band LU; a diagonal's
+  exact), under half the machine epsilon gives `LinAlgWarning` at the caller's line; 0 included, which warns and
+  answers as SciPy 1.17's does. `hilbert(14)` warned nowhere, its answer wrong by 100 %. The estimate is LAPACK's to
+  rounding; from order 2000 the mixed-precision solve estimates from its single-precision factors. Order 3000, one
+  right-hand side: 139 ms against `solve`'s 126 (SciPy's 160). Without `assume_a`, NumPy's `solve` warns of nothing,
+  as NumPy's. In C++: `lu_decomposition::reciprocal_condition`, `cholesky_decomposition::reciprocal_condition`,
+  `triangular_reciprocal_condition` and `solve_banded_conditioned`.
 
 ### Changed
 - **The same bits on every x86-64 processor with AVX2, with or without AVX-512**: the AVX2 kernels sum in AVX-512's
@@ -84,6 +93,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 ### Fixed
 - **`vector_norm` of an empty run of a negative order is infinite**, as NumPy's (a sum of no terms, 0, to the power
   1 / ord), where it answered 0; `ord=-inf` over no element still raises, as NumPy's.
+- **`qz` and `eig(a, b)`'s eigenvalues under MSVC**: the size read before the values were moved (MSVC evaluates a
+  braced list's elements out of order), where `qz` raised "data size does not match the shape" in the Windows wheels;
+  and MSVC 14.44, whose link-time code generation stopped on an internal error in the broadcast comparisons, builds the
+  sdist again.
 
 ## 2026.10.45 — 2026-10-31
 
