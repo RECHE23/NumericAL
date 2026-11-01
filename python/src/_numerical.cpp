@@ -169,6 +169,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_reduce", module_reduce, METH_VARARGS,
           "_reduce(op, a, axis) -> number or Tensor\nsum, mean, max, min, any or all of every element (axis -1) or along an axis.");
     m.raw("_reshape", module_reshape, METH_VARARGS, "_reshape(a, shape) -> Tensor\nThe elements under another shape.");
+    m.raw("_diagonal", module_diagonal, METH_VARARGS,
+          "_diagonal(a, offset) -> Tensor\nThe offset diagonal of each matrix of a (its last two axes), read where it lies.");
     m.raw("_full", module_full, METH_VARARGS, "_full(shape, value, dtype) -> Tensor\nA tensor of one value.");
     m.raw("_eye", module_eye, METH_VARARGS, "_eye(n, dtype) -> Tensor\nThe n×n identity.");
     m.raw("_arange", module_arange, METH_VARARGS, "_arange(start, stop, step) -> Tensor\nAs numpy.arange (float64).");

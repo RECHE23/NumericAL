@@ -714,6 +714,26 @@ PyObject* module_reshape(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _diagonal(a, offset) -> the offset diagonal of each matrix of a, read where it lies.
+PyObject* module_diagonal(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  x      = nullptr;
+    Py_ssize_t offset = 0;
+    if (PyArg_ParseTuple(args, "On", &x, &offset) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        return std::visit([&](const auto& t) { return wrap(any_tensor {numerical::diagonal(t, offset)}); }, *a);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _full(shape, value, dtype) -> Tensor of that dtype.
 PyObject* module_full(PyObject* /*self*/, PyObject* args)
 {

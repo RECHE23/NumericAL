@@ -564,6 +564,106 @@ namespace numerical {
 
 #endif
 
+#ifdef NUMERICAL_NEON_COMPILED
+    //! \brief arm64's lane-wise `FMAX`: a NaN where one is met, +0 over −0.
+    [[nodiscard]] inline float64x2_t lane_extreme(float64x2_t x,
+                                                  float64x2_t y,
+                                                  const std::greater<double>& /*larger*/) noexcept
+    {
+      return vmaxq_f64(x, y);
+    }
+
+    //! \brief arm64's lane-wise `FMIN`: a NaN where one is met, −0 under +0.
+    [[nodiscard]] inline float64x2_t lane_extreme(float64x2_t x,
+                                                  float64x2_t y,
+                                                  const std::less<double>& /*smaller*/) noexcept
+    {
+      return vminq_f64(x, y);
+    }
+
+    //! \brief \ref lane_extreme for `float`'s lanes.
+    [[nodiscard]] inline float32x4_t lane_extreme(float32x4_t x,
+                                                  float32x4_t y,
+                                                  const std::greater<float>& /*larger*/) noexcept
+    {
+      return vmaxq_f32(x, y);
+    }
+
+    //! \brief \ref lane_extreme for `float`'s lanes.
+    [[nodiscard]] inline float32x4_t lane_extreme(float32x4_t x,
+                                                  float32x4_t y,
+                                                  const std::less<float>& /*smaller*/) noexcept
+    {
+      return vminq_f32(x, y);
+    }
+
+    //! \brief The extreme across a vector's lanes (`FMAXV`, a NaN where one is).
+    [[nodiscard]] inline double across_lanes(float64x2_t x,
+                                             const std::greater<double>& /*larger*/) noexcept
+    {
+      return vmaxvq_f64(x);
+    }
+
+    //! \brief The extreme across a vector's lanes (`FMINV`).
+    [[nodiscard]] inline double across_lanes(float64x2_t x,
+                                             const std::less<double>& /*smaller*/) noexcept
+    {
+      return vminvq_f64(x);
+    }
+
+    //! \brief \ref across_lanes for `float`'s lanes.
+    [[nodiscard]] inline float across_lanes(float32x4_t x,
+                                            const std::greater<float>& /*larger*/) noexcept
+    {
+      return vmaxvq_f32(x);
+    }
+
+    //! \brief \ref across_lanes for `float`'s lanes.
+    [[nodiscard]] inline float across_lanes(float32x4_t x,
+                                            const std::less<float>& /*smaller*/) noexcept
+    {
+      return vminvq_f32(x);
+    }
+
+    /*!
+     * \brief The largest (\p larger is `std::greater`) or smallest of the whole blocks of four registers of \p count
+     *        elements from \p first, into \p result and \p nan (set: whether a NaN was met), by arm64's `FMAX` and
+     *        `FMIN`: they take a NaN where one is met and order the zeros as IEEE 754-2019's maximum and minimum, so
+     *        the NaN needs no comparison of its own (a blend of compared lanes took twice NumPy's time).
+     *        \return The elements done.
+     */
+    template <typename T,
+              typename Order>
+    [[nodiscard]] std::size_t neon_extreme(const T*     first,
+                                           std::size_t  count,
+                                           T&           result,
+                                           bool&        nan,
+                                           const Order& larger) noexcept
+    {
+      constexpr std::size_t width {16 / sizeof(T)}; // a register's lanes
+      constexpr std::size_t block {4 * width};
+      const std::size_t     done  {count - (count % block)};
+      if (done == 0) {
+        return 0;
+      }
+      auto b0 {neon_load(first)};
+      auto b1 {neon_load(first + width)};
+      auto b2 {neon_load(first + (2 * width))};
+      auto b3 {neon_load(first + (3 * width))};
+      for (std::size_t i {block}; i < done; i += block) {
+        b0 = lane_extreme(b0, neon_load(first + i), larger);
+        b1 = lane_extreme(b1, neon_load(first + i + width), larger);
+        b2 = lane_extreme(b2, neon_load(first + i + (2 * width)), larger);
+        b3 = lane_extreme(b3, neon_load(first + i + (3 * width)), larger);
+      }
+      const T value {across_lanes(lane_extreme(lane_extreme(b0, b1, larger), lane_extreme(b2, b3, larger), larger), larger)};
+      nan    = std::isnan(value);
+      result = larger(value, result) ? value : result;
+      return done;
+    }
+
+#endif
+
     /*!
      * \brief The largest (\p larger is `std::greater`) or smallest of \p count contiguous elements, or a NaN if
      *        one is among them, as NumPy's: the comparisons run without a branch over native vectors (or eight
@@ -578,7 +678,10 @@ namespace numerical {
       T              result   {first[0]};
       bool           nan      {false};
       std::size_t    done     {0};
-#ifdef NUMERICAL_X86_COMPILED
+#if defined(NUMERICAL_NEON_COMPILED)
+      done = neon_extreme(first, count, result, nan, larger);
+#else
+#  ifdef NUMERICAL_X86_COMPILED
       bool           wide     {false}; // the leading elements done by AVX2's wider vectors
       if constexpr (std::is_same_v<T, double> || std::is_same_v<T, float>) {
         // The processor's AVX2, where the baseline build's vectors hold half as many: the same answer, whatever the
@@ -588,16 +691,16 @@ namespace numerical {
           wide = true;
         }
       }
-#endif
-#if defined(__GNUC__)
+#  endif
+#  if defined(__GNUC__)
       using lane = typename native_vector<T>::type;
       constexpr std::size_t width {native_vector_bytes / sizeof(T)};
       constexpr std::size_t lanes {4}; // independent vectors, so no comparison waits on the one before it
-#  ifdef NUMERICAL_X86_COMPILED
+#    ifdef NUMERICAL_X86_COMPILED
       if (!wide && count >= width * lanes) {
-#  else
+#    else
       if (count >= width * lanes) {
-#  endif
+#    endif
         using mask = decltype(lane {} > lane {}); // all ones in a lane where a comparison holds
         std::array<lane, lanes> best {};
         std::array<mask, lanes> nans {};
@@ -624,6 +727,7 @@ namespace numerical {
           }
         }
       }
+#  endif
 #endif
       std::array<T, 8>        best {};
       std::array<unsigned, 8> nans {};
@@ -638,6 +742,29 @@ namespace numerical {
         result = larger(best[l], result) ? best[l] : result;
       }
       return nan ? std::numeric_limits<T>::quiet_NaN() : result;
+    }
+
+    /*!
+     * \brief \ref contiguous_extreme of \p count elements on the threads: runs of \ref pairwise_leaf each its own,
+     *        then their extremes'. Exact whatever the runs (a maximum rounds nothing), so the same answer on any
+     *        number of threads. Four runs or fewer: on the caller, as \ref parallel_pairwise_sum.
+     */
+    template <typename T,
+              typename Order>
+    [[nodiscard]] T parallel_extreme(const T*     first,
+                                     std::size_t  count,
+                                     const Order& larger)
+    {
+      if (count <= 4 * pairwise_leaf) {
+        return contiguous_extreme(first, count, larger);
+      }
+      const std::size_t runs {(count + pairwise_leaf - 1) / pairwise_leaf};
+      buffer<T>         each(runs);
+      parallel_for(runs, pairwise_leaf, [&](std::size_t r) {
+                     const std::size_t start {r * pairwise_leaf};
+                     each[r] = contiguous_extreme(first + start, std::min(pairwise_leaf, count - start), larger);
+                   });
+      return contiguous_extreme(each.data(), runs, larger);
     }
 
     //! \brief The largest (\p larger is `std::greater`) or smallest element of a line.
@@ -655,7 +782,7 @@ namespace numerical {
         if (stride == 1) {
           // A contiguous line: the comparison without a branch (so it vectorises) and the NaN tracked apart,
           // a NaN anywhere is the answer, as NumPy's.
-          return settled_zero(contiguous_extreme(first, count, larger), first, count, 1, larger);
+          return settled_zero(parallel_extreme(first, count, larger), first, count, 1, larger);
         }
       }
       T best {first[0]};
@@ -1088,6 +1215,43 @@ namespace numerical {
                             + detail::shape_text(shape));
     }
     return tensor<T> {std::move(shape), t.data()};
+  }
+
+  /*!
+   * \brief The \p offset diagonal of each matrix of \p t (its last two axes), as `numpy.linalg.diagonal`: above the
+   *        main diagonal for a positive \p offset, below for a negative one, read where it lies (no copy of the
+   *        matrices); the batch's shape, then the diagonal's length (0 where \p offset passes the matrix).
+   * \throws dimension_error If \p t has fewer than two axes.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> diagonal(const tensor<T>& t,
+                                   std::ptrdiff_t   offset)
+  {
+    const std::vector<std::size_t>& shape {t.shape()};
+    if (shape.size() < 2) {
+      throw dimension_error("diagonal: a matrix or a stack of matrices (rank >= 2)");
+    }
+    const std::size_t rows      {shape[shape.size() - 2]};
+    const std::size_t cols      {shape[shape.size() - 1]};
+    const std::size_t magnitude {offset < 0 ? std::size_t {0} - static_cast<std::size_t>(offset) : static_cast<std::size_t>(offset)};
+    const std::size_t r0        {offset < 0 ? magnitude : 0};
+    const std::size_t c0        {offset < 0 ? 0 : magnitude};
+    const std::size_t length    {r0 < rows && c0 < cols ? std::min(rows - r0, cols - c0) : 0};
+    std::size_t       batch     {1};
+    for (std::size_t axis {0}; axis + 2 < shape.size(); ++axis) {
+      batch = detail::checked_mul(batch, shape[axis]);
+    }
+    std::vector<std::size_t> out(shape.begin(), shape.end() - 2);
+    out.push_back(length);
+    buffer<T>      values(batch * length);
+    const T* const data {t.data().data()};
+    for (std::size_t b {0}; b < batch; ++b) {
+      const T* const first {data + (b * rows * cols) + (r0 * cols) + c0};
+      for (std::size_t i {0}; i < length; ++i) {
+        values[(b * length) + i] = first[i * (cols + 1)];
+      }
+    }
+    return tensor<T> {std::move(out), std::move(values)};
   }
 
   //! \brief A tensor of \p shape with every element \p value.

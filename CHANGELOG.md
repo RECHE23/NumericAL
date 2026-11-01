@@ -9,6 +9,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Fixed
+- **`trace` and `diagonal` in time of the diagonal**: both copied the matrices' block before reading its diagonal, in
+  time of n² (order 2048 on arm64: `trace` 1.28 ms against NumPy's 2.7 µs; 100 matrices of 32: 26 µs against 4).
+  `numerical::diagonal(t, offset)` (C++) reads each matrix's `offset` diagonal where it lies, and Python's
+  `diagonal`, `trace` and `Tensor.diagonal`/`trace` take it: 5.5 µs and 5.7 µs.
+- **`max` and `min` on the threads, and by arm64's `FMAX`/`FMIN`**: a contiguous reduction past four runs of 2¹⁵
+  elements takes each run on a thread, then their extremes (exact, the same answer on any number of threads); on
+  arm64 `FMAX`/`FMIN` keep a met NaN and order the zeros as NumPy's, where a blend of compared lanes and a NaN flag
+  took twice NumPy's time. Order 256 18 → 7.8 µs (NumPy 7.9), 1024 288 → 41 µs (129), 2048 1.14 → 0.30 ms (0.71).
 - **`funm`'s estimate bounds its error far from normality**: Parlett's recurrence (and its block form between
   clusters) divides by separations that fall far below the eigenvalues' gaps where `T`'s blocks are far from normal,
   growing its roundings and the clusters' integrals' errors by their inverse; SciPy's estimate, `ε ‖strict upper T‖₁`

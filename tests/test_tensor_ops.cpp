@@ -227,8 +227,12 @@ TEST(element_wise_functions_by_chunks_are_the_sequential_map_s)
     reals[i]     = 1.5 + std::sin(static_cast<double>(i)); // positive: each logarithm finite
     complexes[i] = cplx {reals[i], std::cos(static_cast<double>(i))};
   }
-  const numerical::tensor<double> r       {{count}, std::move(reals)};
-  const numerical::tensor<cplx>   z       {{count}, std::move(complexes)};
+  const numerical::tensor<double> r            {{count}, std::move(reals)};
+  const numerical::tensor<cplx>   z            {{count}, std::move(complexes)};
+  const tensor<double>            zero_largest {{3}, {-1.0, -0.0, -2.0}}; // a zero the extreme among nonzero elements
+  const tensor<double>            zero_least   {{3}, {1.0, 0.0, 2.0}};
+  EXPECT(numerical::max(zero_largest) == 0.0 && std::signbit(numerical::max(zero_largest)));
+  EXPECT(numerical::min(zero_least) == 0.0 && !std::signbit(numerical::min(zero_least)));
   const std::size_t               threads {numerical::max_threads()};
   for (const std::size_t n : {std::size_t {1}, threads}) {
     numerical::set_max_threads(n);
@@ -238,7 +242,7 @@ TEST(element_wise_functions_by_chunks_are_the_sequential_map_s)
     EXPECT(-z == numerical::map(z, [](const cplx& x) { return -x; }));
     EXPECT(numerical::detail::numpy_absolute(z) == numerical::map(z, [](const cplx& x) { return numerical::detail::numpy_absolute(x, numerical::detail::numpy_wheel_loops().products); }));
   }
-  numerical::set_max_threads(threads);
+  numerical::set_max_threads(0); // the default again
 }
 
 // NumPy's complex magnitude: an infinite part makes it infinite whatever the other, NaN, and a NaN part then NaN;
@@ -885,4 +889,49 @@ TEST(einsum_permutes_three_axes)
     }
   }
   EXPECT(all);
+}
+
+// The offset diagonal of each matrix, read where it lies: the main one, above and below, a rectangle's, a stack's, an
+// offset past the matrix (empty), and a vector refused.
+TEST(diagonal_reads_each_matrix_s_offset_diagonal)
+{
+  const tensor<double> grid {counting({3, 4})};
+  EXPECT(numerical::diagonal(grid, 0).data() == (numerical::buffer<double> {0.0, 5.0, 10.0}));
+  EXPECT(numerical::diagonal(grid, 1).data() == (numerical::buffer<double> {1.0, 6.0, 11.0}));
+  EXPECT(numerical::diagonal(grid, -1).data() == (numerical::buffer<double> {4.0, 9.0}));
+  EXPECT(numerical::diagonal(grid, 3).data() == (numerical::buffer<double> {3.0}));
+  const tensor<double> stack {counting({2, 2, 3})};
+  const tensor<double> both  {numerical::diagonal(stack, 0)};
+  EXPECT(both.shape() == (shape {2, 2}) && both.data() == (numerical::buffer<double> {0.0, 4.0, 6.0, 10.0}));
+  EXPECT(numerical::diagonal(grid, 4).shape() == (shape {0}));
+  EXPECT(numerical::diagonal(grid, -3).shape() == (shape {0}));
+  EXPECT_THROWS((void)numerical::diagonal(counting({3}), 0), numerical::dimension_error);
+}
+
+// A contiguous extreme past four runs of 2¹⁵ elements, each run on a thread: the largest in the last run, the
+// smallest in the first, a NaN in a middle run, and zeros of both signs alone; the same answers on one thread.
+TEST(a_long_extreme_is_the_same_on_the_threads)
+{
+  const std::size_t         count {(5 * (std::size_t {1} << 15U)) + 7};
+  numerical::buffer<double> values(count);
+  for (std::size_t i {0}; i < count; ++i) {
+    values[i] = std::sin(static_cast<double>(i));
+  }
+  values[count - 3] = 2.0;
+  values[11]        = -2.0;
+  const tensor<double>      line     {{count}, values};
+  numerical::buffer<double> with_nan {values};
+  with_nan[(3 * (std::size_t {1} << 15U)) + 5] = std::numeric_limits<double>::quiet_NaN();
+  const tensor<double>      nan_line {{count}, with_nan};
+  numerical::buffer<double> zeros(count, -0.0);
+  zeros[count / 2] = 0.0;
+  const tensor<double> zero_line {{count}, zeros};
+  const std::size_t    threads   {numerical::max_threads()};
+  for (const std::size_t limit : {threads, std::size_t {1}}) {
+    numerical::set_max_threads(limit);
+    EXPECT(numerical::max(line) == 2.0 && numerical::min(line) == -2.0);
+    EXPECT(std::isnan(numerical::max(nan_line)) && std::isnan(numerical::min(nan_line)));
+    EXPECT(!std::signbit(numerical::max(zero_line)) && std::signbit(numerical::min(zero_line)));
+  }
+  numerical::set_max_threads(0); // the default again
 }

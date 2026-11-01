@@ -2236,17 +2236,12 @@ def trace(x, /, *, offset=0, dtype=None):
         raise _ShapeError("trace: a matrix or a stack of matrices (rank ≥ 2)")
     if x.dtype == "bool":
         x = asarray(x, "float64")
-    offset = _operator.index(offset)
-    rows, cols = x.shape[-2:]
-    r0, c0 = _builtins.max(-offset, 0), _builtins.max(offset, 0)
-    length = _builtins.max(_builtins.min(rows - r0, cols - c0), 0)
-    labels = _labels(len(x.shape) - 1, "trace")  # the batch's, then the diagonal's, apart from them
-    batch, diagonal = labels[:-1], labels[-1]
-    if length == 0:
-        result = zeros(tuple(x.shape[:-2]), x.dtype)
+    along = diagonal(x, offset=offset)
+    labels = _labels(len(along.shape), "trace")  # the batch's, then the diagonal's
+    if along.shape[-1] == 0:
+        result = zeros(tuple(along.shape[:-1]), x.dtype)
     else:
-        block = x[(slice(None),) * (len(x.shape) - 2) + (slice(r0, r0 + length), slice(c0, c0 + length))]
-        result = _numerical.einsum(f"{batch}{diagonal}{diagonal}->{batch}", block)
+        result = _numerical.einsum(f"{labels}->{labels[:-1]}", along)
     if dtype is not None:
         result = asarray(result, dtype)
     return _number_if_scalar(result)
@@ -2254,22 +2249,14 @@ def trace(x, /, *, offset=0, dtype=None):
 
 def diagonal(x, /, *, offset=0):
     """The `offset` diagonal of a matrix or of every matrix of a stack (its last two axes), as
-    ``numpy.linalg.diagonal``: above the main diagonal for a positive `offset`, below for a negative one."""
+    ``numpy.linalg.diagonal``: above the main diagonal for a positive `offset`, below for a negative one; read where
+    it lies, in time of its length."""
     x = _tensor(x)
     if len(x.shape) < 2:
         raise _ShapeError("diagonal: a matrix or a stack of matrices (rank ≥ 2)")
-    offset = _operator.index(offset)
     rows, cols = x.shape[-2:]
-    r0, c0 = _builtins.max(-offset, 0), _builtins.max(offset, 0)
-    length = _builtins.max(_builtins.min(rows - r0, cols - c0), 0)
-    if length == 0:
-        return zeros(tuple(x.shape[:-2]) + (0,), x.dtype)
-    labels = _labels(len(x.shape) - 1, "diagonal")
-    batch, along = labels[:-1], labels[-1]
-    block = x[(slice(None),) * (len(x.shape) - 2) + (slice(r0, r0 + length), slice(c0, c0 + length))]
-    if x.dtype == "bool":  # its entries, through float64 exactly
-        return asarray(_numerical.einsum(f"{batch}{along}{along}->{batch}{along}", asarray(block, "float64")), "bool")
-    return _numerical.einsum(f"{batch}{along}{along}->{batch}{along}", block)
+    offset = _builtins.max(_builtins.min(_operator.index(offset), cols), -rows)  # past the matrix: empty alike
+    return _numerical._diagonal(x, offset)
 
 
 def matrix_transpose(x, /):

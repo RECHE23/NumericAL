@@ -1823,6 +1823,7 @@ PyObject* module_classify(PyObject* /*self*/, PyObject* args); // in elementwise
 
 // _reshape(a, shape) -> Tensor.
 PyObject* module_reshape(PyObject* /*self*/, PyObject* args); // in products.cpp
+PyObject* module_diagonal(PyObject* /*self*/, PyObject* args); // in products.cpp
 
 // The variant index of the dtype named by `name`, or nothing with ValueError set.
 inline std::optional<std::size_t> dtype_named(const char* name)
