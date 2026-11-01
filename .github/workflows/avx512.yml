@@ -50,8 +50,11 @@ jobs:
           SCIFORGE_INCLUDE="$PWD/sciforge/include" SCIFORGE_LINT="$PWD/sciforge/lint"
           COV_RUN="$RUNNER_TEMP/sde/sde64 -skx --" COV_SHARDS="$(nproc)"
 
-  # The fuzz campaigns against NumPy on the AVX-512 kernels, beside the suite. The run fails unless the kernel in use
-  # is "avx512", so an emulator that stopped emulating cannot pass for one.
+  # The fuzz campaigns against NumPy on the AVX-512 kernels, beside the suite, and the binding's tests of bits there.
+  # The run fails unless the kernel in use is "avx512", so an emulator that stopped emulating cannot pass for one. The
+  # extension is Clang's, which contracts a multiply-add under the wheels' -ffp-contract=on where a function is built
+  # for FMA, as GCC 14 does and Ubuntu's GCC 13 does not: a kernel and a helper built for different units then round
+  # differently, which only such a build shows.
   avx512-fuzz:
     runs-on: ubuntu-latest
     timeout-minutes: 60
@@ -74,9 +77,20 @@ jobs:
           echo "$SDE_SHA256  $RUNNER_TEMP/sde.tar.xz" | sha256sum -c -
           mkdir "$RUNNER_TEMP/sde" && tar -xJf "$RUNNER_TEMP/sde.tar.xz" -C "$RUNNER_TEMP/sde" --strip-components=1
       - name: Build the extension
+        env:
+          CC: clang-18
+          CXX: clang++-18
         run: |
           python -m pip install numpy setuptools
           SCIFORGE_INCLUDE="$PWD/sciforge/include" python setup.py -q build_ext --inplace --force
+      # The same bits by any road on the AVX-512 kernels: a transposed operand's product and its copy's, the AVX2 and
+      # AVX-512 kernels' sums.
+      - name: The binding's tests of bits on the AVX-512 kernels
+        env:
+          PYTHONPATH: ${{ github.workspace }}/python
+        working-directory: python/tests
+        run: |
+          "$RUNNER_TEMP/sde/sde64" -skx -- python -m unittest test_borrowed_operands test_isa_bits
       # The two campaigns side by side, one a core; each prints its own report once both are done.
       - name: Fuzz campaigns on the AVX-512 kernels
         env:
