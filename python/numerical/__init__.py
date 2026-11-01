@@ -930,7 +930,8 @@ def _structured_solve(a, b, structure, lower, level):
     return _conditioned(x, rcond, a.dtype, level + 1)
 
 
-def determinant(a, /):
+def determinant(a, /, *, overwrite_a=False, check_finite=True):
+    del overwrite_a, check_finite  # scipy.linalg.det's: an infinite or NaN entry raises always
     return _borrowed("determinant", _determinant, a)
 
 
@@ -938,7 +939,8 @@ def slogdet(a, /):
     return _borrowed("slogdet", _slogdet, a)
 
 
-def inverse(a, /):
+def inverse(a, /, *, overwrite_a=False, check_finite=True):
+    del overwrite_a, check_finite  # scipy.linalg.inv's: an infinite or NaN entry raises always
     return _borrowed("inverse", _inverse, a)
 
 
@@ -1583,7 +1585,8 @@ def _subset(name, a, subset_by_index, subset_by_value):
     return True, float(lo), float(hi)
 
 
-def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer", subset_by_index=None, subset_by_value=None):
+def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer", subset_by_index=None, subset_by_value=None, lower=None,
+         eigvals_only=False, overwrite_a=False, overwrite_b=False, type=1, check_finite=True, driver=None):
     """The eigenvalues (real, ascending) and eigenvectors (columns) of a real symmetric or complex Hermitian
     matrix, as ``numpy.linalg.eigh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``).
     `method` diagonalises the tridiagonal form: ``"divide_and_conquer"`` (LAPACK's ``dsyevd``/``zheevd``),
@@ -1598,25 +1601,70 @@ def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer", subset_by_index=No
     ``subset_by_value=[low, high]`` those of the eigenvalues in ``(low, high]``, as ``scipy.linalg.eigh``'s: the
     tridiagonal form, the eigenvalues by bisection, the vectors by inverse iteration (LAPACK's ``dstebz`` and
     ``dstein``), ``n² k`` operations past the reduction for ``k`` of them, where `method` takes ``n³`` and more for
-    all; a matrix (and `b`), not a stack."""
+    all; a matrix (and `b`), not a stack.
+
+    ``scipy.linalg.eigh``'s arguments are taken too: `b` as the second positional argument (a matrix, where `UPLO` is a
+    string), ``lower`` (``UPLO`` ``"L"`` or ``"U"``), ``eigvals_only`` (the eigenvalues alone), ``driver`` (``"ev"``
+    the implicit QL, ``"evd"`` and SciPy's others divide and conquer, or the subset's bisection where one is asked),
+    and ``overwrite_a``, ``overwrite_b`` and ``check_finite`` (an infinite or NaN entry raises always). ``type`` 1
+    only: ``a b x = λ x`` and ``b a x = λ x`` are not offered."""
+    UPLO, b = _scipy_pencil("eigh", UPLO, b, lower, type)
     upper = _upper("eigh", UPLO)
+    method = _eigh_driver(driver, method)
+    del overwrite_a, overwrite_b, check_finite
     if method not in _EIGH_METHODS:
         raise ValueError(f"eigh: method {method!r} is none of {_EIGH_METHODS}")
     subset = _subset("eigh", a, subset_by_index, subset_by_value)
     if subset is not None:
-        return (_eigh_pencil_subset(a, b, *subset, True, upper) if b is not None
-                else _eigh_subset(a, *subset, True, upper))
+        pairs = (_eigh_pencil_subset(a, b, *subset, not eigvals_only, upper) if b is not None
+                 else _eigh_subset(a, *subset, not eigvals_only, upper))
+        return pairs[0] if eigvals_only else pairs
+    if eigvals_only:
+        return _eigvalsh_pencil(a, b, upper) if b is not None else _eigvalsh(a, upper)
     if b is not None:
         return _eigh_pencil(a, b, method, upper)
     return _eigh(a, method, upper)
 
 
-def eigvalsh(a, UPLO="L", *, b=None, subset_by_index=None, subset_by_value=None):
+_EIGH_DRIVERS = {"ev": "tridiagonal_ql", "evd": "divide_and_conquer", "evr": "divide_and_conquer",
+                 "evx": "divide_and_conquer", "gv": "tridiagonal_ql", "gvd": "divide_and_conquer",
+                 "gvx": "divide_and_conquer"}
+
+
+def _eigh_driver(driver, method):
+    """``scipy.linalg.eigh``'s `driver` as a `method` (None keeps `method`)."""
+    if driver is None:
+        return method
+    if driver not in _EIGH_DRIVERS:
+        raise ValueError(f"driver must be one of {tuple(_EIGH_DRIVERS)}, not {driver!r}")
+    return _EIGH_DRIVERS[driver]
+
+
+def _scipy_pencil(name, UPLO, b, lower, type):
+    """`UPLO` and `b` from NumPy's or SciPy's arguments: a second positional argument that is not a string is
+    SciPy's `b`; `lower` names the triangle; `type` must be 1."""
+    if type != 1:
+        raise ValueError(f"{name}: type {type!r}: only type 1 (a x = λ b x) is offered")
+    if UPLO is not None and not isinstance(UPLO, str):
+        if b is not None:
+            raise TypeError(f"{name}: b given twice (as the second argument and by name)")
+        UPLO, b = "L", UPLO
+    if lower is not None:
+        UPLO = "L" if lower else "U"
+    return UPLO, b
+
+
+def eigvalsh(a, UPLO="L", *, b=None, subset_by_index=None, subset_by_value=None, lower=None, overwrite_a=False,
+             overwrite_b=False, type=1, check_finite=True, driver=None):
     """The eigenvalues alone of a real symmetric or complex Hermitian matrix, real and ascending, as
     ``numpy.linalg.eigvalsh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``). With `b`,
     those of the pencil ``a x = λ b x``, as :func:`eigh`'s. ``subset_by_index`` and ``subset_by_value`` as
-    :func:`eigh`'s, by bisection on the tridiagonal form alone."""
+    :func:`eigh`'s, by bisection on the tridiagonal form alone. ``scipy.linalg.eigvalsh``'s arguments as
+    :func:`eigh` takes them (`b` positional, ``lower``, ``driver``, ``type`` 1)."""
+    UPLO, b = _scipy_pencil("eigvalsh", UPLO, b, lower, type)
     upper = _upper("eigvalsh", UPLO)
+    _eigh_driver(driver, None)
+    del overwrite_a, overwrite_b, check_finite
     subset = _subset("eigvalsh", a, subset_by_index, subset_by_value)
     if subset is not None:
         return (_eigh_pencil_subset(a, b, *subset, False, upper) if b is not None
@@ -1715,10 +1763,15 @@ def schur(a, output="real", lwork=None, overwrite_a=False, sort=None, check_fini
     return _schur_sorted(a, complex_output, kind, callback)
 
 
-def cholesky(a, /, *, upper=False):
+def cholesky(a, /, *, upper=False, lower=None, overwrite_a=False, check_finite=True):
     """The Cholesky factor of a Hermitian positive-definite matrix, as ``numpy.linalg.cholesky``: the lower `L` with
     ``a = L @ L.conj().T``, read from the lower triangle; with ``upper=True``, the upper `U` with ``a = U.conj().T @ U``,
-    read from the upper triangle."""
+    read from the upper triangle.
+    ``scipy.linalg.cholesky``'s ``lower`` is taken (``upper`` its negation), and its ``overwrite_a`` and
+    ``check_finite``; NumPy's default stays, the lower factor, where SciPy's is the upper one."""
+    if lower is not None:
+        upper = not lower
+    del overwrite_a, check_finite
     return _borrowed("cholesky", lambda x, flag: _cholesky(x, flag), a, bool(upper))
 
 
@@ -1908,12 +1961,21 @@ def cho_solve(c_and_lower, b, overwrite_b=False, check_finite=True):
     return solve_triangular(c, solve_triangular(c, b, trans=2, lower=False), lower=False)
 
 
-def lstsq(a, b, rcond=None):
+def lstsq(a, b, rcond=None, *, cond=None, overwrite_a=False, overwrite_b=False, check_finite=True, lapack_driver=None):
     """``(x, residuals, rank, s)``, as ``numpy.linalg.lstsq``: the minimum-norm least-squares solution of
     ``a @ x ≈ b``, the residual sums of squares (for a tall `a` of full column rank, else empty), the rank and the
     singular values of `a`. A singular value at or under `rcond` times the largest counts as zero: by default
     (``None``) machine epsilon times max(m, n), NumPy's; a negative `rcond` is machine epsilon, as LAPACK's. The
-    epsilon is the operands' precision's (float32's for float32 and complex64)."""
+    epsilon is the operands' precision's (float32's for float32 and complex64). ``scipy.linalg.lstsq``'s ``cond`` is
+    `rcond` by its name (not both), and its ``lapack_driver`` (``"gelsd"``, ``"gelsy"``, ``"gelss"``: the SVD here),
+    ``overwrite_a``, ``overwrite_b`` and ``check_finite`` are taken."""
+    del overwrite_a, overwrite_b, check_finite
+    if lapack_driver not in (None, "gelsd", "gelsy", "gelss"):
+        raise ValueError(f"LAPACK driver {lapack_driver!r} is not found")
+    if cond is not None:
+        if rcond is not None:
+            raise ValueError("lstsq: rcond and cond can't be both set")
+        rcond = cond
     rcond = _tolerance("lstsq", rcond)
     a = a if isinstance(a, Tensor) else _read(a)
     b = b if isinstance(b, Tensor) else _read(b)
@@ -1922,15 +1984,36 @@ def lstsq(a, b, rcond=None):
     return _lstsq(a, b, rcond)
 
 
-def pinv(a, rcond=None, hermitian=False, *, rtol=None):
+def pinv(a, rcond=None, hermitian=False, *, rtol=None, atol=None, return_rank=False, check_finite=True):
     """The Moore–Penrose pseudo-inverse, as ``numpy.linalg.pinv``: a singular value at or under `rcond` (or `rtol`,
     its NumPy 2 name; not both) times the largest counts as zero, by default machine epsilon times max(m, n). With
     ``hermitian=True`` `a` is taken as real symmetric or complex Hermitian, its lower triangle read, and the
     pseudo-inverse comes from its eigendecomposition, cheaper. A negative or NaN tolerance raises, where NumPy's
-    result is infinite or NaN."""
+    result is infinite or NaN.
+
+    ``scipy.linalg.pinv``'s ``atol`` (an absolute bound: a singular value at or under ``max(atol, rtol σ₁)`` counts
+    as zero, `rtol` then 0 by default, as SciPy's) and ``return_rank`` (the pair ``(pinv, rank)``) are taken, and its
+    ``check_finite``."""
+    del check_finite
     if rcond is not None and rtol is not None:
         raise ValueError("pinv: rtol and rcond can't be both set")
-    return _pinv(a, _tolerance("pinv", rcond if rcond is not None else rtol), bool(hermitian))
+    relative = _tolerance("pinv", rcond if rcond is not None else rtol)
+    atol = _tolerance("pinv", atol)
+    if atol is None and not return_rank:
+        return _pinv(a, relative, bool(hermitian))
+    a = _operand(a)
+    if len(a.shape) != 2:
+        raise LinAlgError("pinv: atol and return_rank take a matrix")
+    values = [abs(v) for v in (eigvalsh(a) if hermitian else svdvals(a)).tolist()]
+    largest = _builtins.max(values, default=0.0)
+    if relative is None:
+        relative = 0.0 if atol else _builtins.max(a.shape) * _MACHINE_EPSILON["float32" if a.dtype in _SINGLE else "float64"]
+    cutoff = _builtins.max(atol or 0.0, relative * largest)
+    # the relative bound pinv applies, the absolute one folded in (a zero matrix: any)
+    inverse_ = _pinv(a, cutoff / largest if largest > 0 else relative, bool(hermitian))
+    if not return_rank:
+        return inverse_
+    return inverse_, _builtins.sum(1 for v in values if v > cutoff)
 
 
 def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):
@@ -1956,7 +2039,8 @@ def _as_integers(nested):
     return [_as_integers(item) for item in nested] if isinstance(nested, list) else int(nested)
 
 
-def svd(a, full_matrices=True, compute_uv=True, hermitian=False, *, method="divide_and_conquer"):
+def svd(a, full_matrices=True, compute_uv=True, hermitian=False, *, method="divide_and_conquer", overwrite_a=False,
+        check_finite=True, lapack_driver=None):
     """``(U, S, Vh)`` with ``a = U @ diag(S) @ Vh``, the singular values descending, as ``numpy.linalg.svd``: for an
     m×n `a`, `U` is m×m and `Vh` n×n (``full_matrices=True``, NumPy's default: the columns past min(m, n) an
     orthonormal basis of the complement), or m×k and k×n, k = min(m, n) (``full_matrices=False``); the singular values
@@ -1968,6 +2052,11 @@ def svd(a, full_matrices=True, compute_uv=True, hermitian=False, *, method="divi
     if isinstance(full_matrices, str):
         raise TypeError("svd: the second argument is full_matrices, as in NumPy; give the method by name, "
                         f"svd(a, method={full_matrices!r})")
+    del overwrite_a, check_finite
+    if lapack_driver is not None:  # scipy.linalg.svd's
+        if lapack_driver not in ("gesdd", "gesvd"):
+            raise ValueError(f'lapack_driver must be "gesdd" or "gesvd", not "{lapack_driver}"')
+        method = "divide_and_conquer" if lapack_driver == "gesdd" else "bidiagonal_qr"
     if method not in _SVD_METHODS:
         raise ValueError(f"svd: method {method!r} is none of {_SVD_METHODS}")
     if hermitian:
@@ -2007,7 +2096,7 @@ def _complex_warning():
     return ComplexWarning
 
 
-def qr(a, mode="reduced", *, pivoting=False):
+def qr(a, mode="reduced", *, pivoting=False, overwrite_a=False, lwork=None, check_finite=True):
     """``(Q, R)`` with ``a = Q @ R``, as ``numpy.linalg.qr``: for an m×n `a` and k = min(m, n), `Q` is m×k with
     orthonormal columns and `R` k×n upper trapezoidal (``mode="reduced"``, the default); `Q` m×m and `R` m×n
     (``"complete"``); `R` alone, k×n (``"r"``). `R`'s diagonal is real and non-negative.
@@ -2016,7 +2105,11 @@ def qr(a, mode="reduced", *, pivoting=False):
     column of largest remaining norm taken at each step, so that `R`'s diagonal does not grow down it and reveals the
     numerical rank; ``(Q, R, P)``, or ``(R, P)`` for ``"r"``, `P` a tuple of the columns' origins (SciPy's an integer
     array; its modes ``"economic"`` and ``"full"`` are ``"reduced"`` and ``"complete"`` here). `R`'s diagonal is real
-    and non-negative here too, where LAPACK's may be negative."""
+    and non-negative here too, where LAPACK's may be negative. SciPy's mode names ``"economic"`` and ``"full"`` are
+    taken as ``"reduced"`` and ``"complete"`` (NumPy's default stays, the reduced one), and its ``overwrite_a``,
+    ``lwork`` and ``check_finite``."""
+    del overwrite_a, lwork, check_finite
+    mode = {"economic": "reduced", "full": "complete"}.get(mode, mode)
     if mode not in _QR_MODES:
         raise ValueError(f"qr: mode {mode!r} is none of {_QR_MODES} (the LAPACK reflectors of \"raw\" are not offered)")
     if pivoting:

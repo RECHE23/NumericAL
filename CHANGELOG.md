@@ -8,6 +8,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **`scipy.linalg`'s arguments where its names are NumPy's too**: `eigh(a, b)` and `eigvalsh(a, b)` with SciPy's `b`
+  in NumPy's `UPLO` place (a string there stays `UPLO`), `lower`, `eigvals_only`, `driver` (`"ev"` the implicit QL,
+  `"evd"` and the others divide and conquer), `type` 1, and the `overwrite_*` and `check_finite` flags;
+  `cholesky(a, lower=…)`; `qr`'s `"economic"` and `"full"` modes; `svd`'s `lapack_driver` (`"gesdd"`, `"gesvd"`);
+  `lstsq`'s `cond` and `lapack_driver`; `pinv`'s `atol` and `return_rank`; `inv` and `det`'s flags. NumPy's
+  defaults stay where the two disagree (`cholesky`'s lower factor, `qr`'s reduced form). A ported SciPy call that
+  raised `TypeError` or "truth value of an array is ambiguous" (`eigh(a, b)`) now answers as SciPy's.
+
 ### Changed
 - **`solve_continuous_lyapunov` from one Schur form**: `A = U R Uᴴ` gives `Aᴴ = U Rᴴ Uᴴ` too, where `solve_sylvester`
   with `b = Aᴴ` formed a second form; `R Y + Y Rᴴ = Uᴴ Q U` is solved by blocks with the order reversed (`J Rᴴ J` is

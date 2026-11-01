@@ -58,16 +58,26 @@ def asarray(obj: _ArrayLike, dtype: _Dtype | None = None) -> Tensor: ...
 def einsum(subscripts: str, /, *operands: _ArrayLike) -> Tensor: ...
 def solve(a: _ArrayLike, b: _ArrayLike, /, lower: bool = False, overwrite_a: bool = False, overwrite_b: bool = False,
           check_finite: bool = True, assume_a: str | None = None, transposed: bool = False) -> Tensor: ...
-def determinant(a: _ArrayLike, /) -> _Number | Tensor: ...
+def determinant(a: _ArrayLike, /, *, overwrite_a: bool = False, check_finite: bool = True) -> _Number | Tensor: ...
 det = determinant
 def slogdet(a: _ArrayLike, /) -> tuple[_Number, float] | tuple[Tensor, Tensor]: ...
-def inverse(a: _ArrayLike, /) -> Tensor: ...
+def inverse(a: _ArrayLike, /, *, overwrite_a: bool = False, check_finite: bool = True) -> Tensor: ...
 inv = inverse
 _Uplo = Literal["L", "U", "l", "u"]
-def lstsq(a: _ArrayLike, b: _ArrayLike, rcond: float | None = None) -> tuple[Tensor, Tensor, int, Tensor]: ...
-def pinv(a: _ArrayLike, rcond: float | None = None, hermitian: bool = False, *, rtol: float | None = None) -> Tensor: ...
-def eigvalsh(a: _ArrayLike, UPLO: _Uplo = "L", *, b: _ArrayLike | None = None, subset_by_index: Iterable[int] | None = None,
-             subset_by_value: Iterable[float] | None = None) -> Tensor: ...
+def lstsq(a: _ArrayLike, b: _ArrayLike, rcond: float | None = None, *, cond: float | None = None, overwrite_a: bool = False,
+          overwrite_b: bool = False, check_finite: bool = True,
+          lapack_driver: Literal["gelsd", "gelsy", "gelss"] | None = None) -> tuple[Tensor, Tensor, int, Tensor]: ...
+@overload
+def pinv(a: _ArrayLike, rcond: float | None = None, hermitian: bool = False, *, rtol: float | None = None,
+         atol: float | None = None, return_rank: Literal[False] = False, check_finite: bool = True) -> Tensor: ...
+@overload
+def pinv(a: _ArrayLike, rcond: float | None = None, hermitian: bool = False, *, rtol: float | None = None,
+         atol: float | None = None, return_rank: Literal[True], check_finite: bool = True) -> tuple[Tensor, int]: ...
+_EighDriver = Literal["ev", "evd", "evr", "evx", "gv", "gvd", "gvx"]
+def eigvalsh(a: _ArrayLike, UPLO: _Uplo | _ArrayLike = "L", *, b: _ArrayLike | None = None,
+             subset_by_index: Iterable[int] | None = None, subset_by_value: Iterable[float] | None = None,
+             lower: bool | None = None, overwrite_a: bool = False, overwrite_b: bool = False, type: int = 1,
+             check_finite: bool = True, driver: _EighDriver | None = None) -> Tensor: ...
 def eig(a: _ArrayLike, b: _ArrayLike | None = None, left: bool = False, right: bool = True, overwrite_a: bool = False,
         overwrite_b: bool = False, check_finite: bool = True, homogeneous_eigvals: bool = False) -> Any: ...
 def matmul(x1: _ArrayLike, x2: _ArrayLike, /) -> Any: ...
@@ -83,7 +93,8 @@ def schur(a: _ArrayLike, output: Literal["real", "r", "complex", "c"] = "real", 
 def schur(a: _ArrayLike, output: Literal["real", "r", "complex", "c"] = "real", lwork: int | None = None,
           overwrite_a: bool = False, *, sort: Literal["lhp", "rhp", "iuc", "ouc"] | Callable[..., Any],
           check_finite: bool = True) -> tuple[Tensor, Tensor, int]: ...
-def cholesky(a: _ArrayLike, /, *, upper: bool = False) -> Tensor: ...
+def cholesky(a: _ArrayLike, /, *, upper: bool = False, lower: bool | None = None, overwrite_a: bool = False,
+             check_finite: bool = True) -> Tensor: ...
 _Trans = Literal[0, 1, 2, "N", "T", "C"]
 def solve_banded(l_and_u: tuple[int, int], ab: _ArrayLike, b: _ArrayLike, overwrite_ab: bool = False, overwrite_b: bool = False,
                  check_finite: bool = True) -> Tensor: ...
@@ -155,22 +166,51 @@ def cho_solve(c_and_lower: tuple[_ArrayLike, bool], b: _ArrayLike, overwrite_b: 
 def ldl(A: _ArrayLike, lower: bool = True, hermitian: bool = True, overwrite_a: bool = False,
         check_finite: bool = True) -> tuple[Tensor, Tensor, tuple[int, ...]]: ...
 @overload
-def qr(a: _ArrayLike, mode: Literal["reduced", "complete"] = "reduced", *, pivoting: Literal[False] = False) -> tuple[Tensor, Tensor]: ...
+def qr(a: _ArrayLike, mode: Literal["reduced", "complete", "economic", "full"] = "reduced", *, pivoting: Literal[False] = False,
+       overwrite_a: bool = False, lwork: int | None = None, check_finite: bool = True) -> tuple[Tensor, Tensor]: ...
 @overload
-def qr(a: _ArrayLike, mode: Literal["r"], *, pivoting: Literal[False] = False) -> Tensor: ...
+def qr(a: _ArrayLike, mode: Literal["r"], *, pivoting: Literal[False] = False, overwrite_a: bool = False,
+       lwork: int | None = None, check_finite: bool = True) -> Tensor: ...
 @overload
-def qr(a: _ArrayLike, mode: Literal["reduced", "complete"] = "reduced", *, pivoting: Literal[True]) -> tuple[Tensor, Tensor, tuple[int, ...]]: ...
+def qr(a: _ArrayLike, mode: Literal["reduced", "complete", "economic", "full"] = "reduced", *, pivoting: Literal[True],
+       overwrite_a: bool = False, lwork: int | None = None, check_finite: bool = True) -> tuple[Tensor, Tensor, tuple[int, ...]]: ...
 @overload
-def qr(a: _ArrayLike, mode: Literal["r"], *, pivoting: Literal[True]) -> tuple[Tensor, tuple[int, ...]]: ...
+def qr(a: _ArrayLike, mode: Literal["r"], *, pivoting: Literal[True], overwrite_a: bool = False, lwork: int | None = None,
+       check_finite: bool = True) -> tuple[Tensor, tuple[int, ...]]: ...
+@overload
 def eigh(
     a: _ArrayLike,
-    UPLO: _Uplo = "L",
+    UPLO: _Uplo | _ArrayLike = "L",
     *,
     b: _ArrayLike | None = None,
     method: Literal["divide_and_conquer", "tridiagonal_ql", "jacobi"] = "divide_and_conquer",
     subset_by_index: Iterable[int] | None = None,
     subset_by_value: Iterable[float] | None = None,
+    lower: bool | None = None,
+    eigvals_only: Literal[False] = False,
+    overwrite_a: bool = False,
+    overwrite_b: bool = False,
+    type: int = 1,
+    check_finite: bool = True,
+    driver: _EighDriver | None = None,
 ) -> tuple[Tensor, Tensor]: ...
+@overload
+def eigh(
+    a: _ArrayLike,
+    UPLO: _Uplo | _ArrayLike = "L",
+    *,
+    b: _ArrayLike | None = None,
+    method: Literal["divide_and_conquer", "tridiagonal_ql", "jacobi"] = "divide_and_conquer",
+    subset_by_index: Iterable[int] | None = None,
+    subset_by_value: Iterable[float] | None = None,
+    lower: bool | None = None,
+    eigvals_only: Literal[True],
+    overwrite_a: bool = False,
+    overwrite_b: bool = False,
+    type: int = 1,
+    check_finite: bool = True,
+    driver: _EighDriver | None = None,
+) -> Tensor: ...
 _SvdMethod = Literal["divide_and_conquer", "bidiagonal_qr", "jacobi"]
 @overload
 def svd(
@@ -180,6 +220,9 @@ def svd(
     hermitian: bool = False,
     *,
     method: _SvdMethod = "divide_and_conquer",
+    overwrite_a: bool = False,
+    check_finite: bool = True,
+    lapack_driver: Literal["gesdd", "gesvd"] | None = None,
 ) -> tuple[Tensor, Tensor, Tensor]: ...
 @overload
 def svd(
@@ -189,6 +232,9 @@ def svd(
     hermitian: bool = False,
     *,
     method: _SvdMethod = "divide_and_conquer",
+    overwrite_a: bool = False,
+    check_finite: bool = True,
+    lapack_driver: Literal["gesdd", "gesvd"] | None = None,
 ) -> Tensor: ...
 @overload
 def svd(
@@ -198,6 +244,9 @@ def svd(
     compute_uv: Literal[False],
     hermitian: bool = False,
     method: _SvdMethod = "divide_and_conquer",
+    overwrite_a: bool = False,
+    check_finite: bool = True,
+    lapack_driver: Literal["gesdd", "gesvd"] | None = None,
 ) -> Tensor: ...
 _Order = float | Literal["fro", "nuc"] | None
 def svdvals(x: _ArrayLike, /) -> Tensor: ...
