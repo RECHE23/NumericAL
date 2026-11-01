@@ -76,10 +76,10 @@ namespace numerical::detail {
   {
 #  if defined(__GLIBC__) && defined(_GLIBCXX_USE_C99_COMPLEX) && _GLIBCXX_USE_C99_COMPLEX
     static const bool fused {[] {
-                               volatile double re {0.00028503236970950325};     // read at run time: no folding of the call
-                               volatile double im {-0.7408643619401744};
+                               const volatile double re {0.00028503236970950325}; // read at run time: no folding of the call
+                               const volatile double im {-0.7408643619401744};
                                const std::complex<double> z      {re, im};
-                               const std::complex<double> answer {std::tan(z)}; // libstdc++'s: glibc's ctan
+                               const std::complex<double> answer {std::tan(z)};   // libstdc++'s: glibc's ctan
                                double                     sine {};
                                double                     cosine {};
                                sine_and_cosine(z.real(), sine, cosine);
