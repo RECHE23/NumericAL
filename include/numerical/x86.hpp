@@ -1753,16 +1753,18 @@ namespace numerical::detail {
    * \brief \ref avx2_dot (or \ref avx512_dot) of each row of the column-major \p a with \p x, into \p y, from
    *        \ref avx2_column_partials' thirty-two partial sums: each block of eight summed by \ref lanes_sum's tree, as
    *        both kernels sum a register's worth, the blocks in order from +0 (none: +0), then the columns past \p done
-   *        added in order by the same statement as the kernels', so their bits.
+   *        added in order by the same statement as the kernels', so their bits. Built for FMA as the kernels are: a
+   *        compiler that contracts their `total += x · y` (Clang and GCC 14 under `-ffp-contract=on`, the wheels')
+   *        contracts this one too, where built for any x86-64 it could not.
    */
-  inline void columns_finish(const double* a,
-                             std::size_t   lda,
-                             std::size_t   rows,
-                             std::size_t   done,
-                             std::size_t   cols,
-                             const double* x,
-                             const double* sums,
-                             double*       y) noexcept
+  NUMERICAL_TARGET("avx2,fma") inline void columns_finish(const double* a,
+                                                          std::size_t   lda,
+                                                          std::size_t   rows,
+                                                          std::size_t   done,
+                                                          std::size_t   cols,
+                                                          const double* x,
+                                                          const double* sums,
+                                                          double*       y) noexcept
   {
     constexpr std::size_t width {8};
     constexpr std::size_t lanes {4};
@@ -1809,15 +1811,16 @@ namespace numerical::detail {
     _mm256_zeroupper(); // the upper halves cleared: code past the kernel may be SSE alone
   }
 
-  //! \brief \ref columns_finish of `float`: sixty-four partial sums, each block of sixteen by \ref lanes_sum's tree.
-  inline void columns_finish(const float* a,
-                             std::size_t  lda,
-                             std::size_t  rows,
-                             std::size_t  done,
-                             std::size_t  cols,
-                             const float* x,
-                             const float* sums,
-                             float*       y) noexcept
+  //! \brief \ref columns_finish of `float`: sixty-four partial sums, each block of sixteen by \ref lanes_sum's tree,
+  //!        built for FMA as the kernels are.
+  NUMERICAL_TARGET("avx2,fma") inline void columns_finish(const float* a,
+                                                          std::size_t  lda,
+                                                          std::size_t  rows,
+                                                          std::size_t  done,
+                                                          std::size_t  cols,
+                                                          const float* x,
+                                                          const float* sums,
+                                                          float*       y) noexcept
   {
     constexpr std::size_t width {16};
     constexpr std::size_t lanes {4};
