@@ -1064,6 +1064,75 @@ TEST(sort_of_long_lines_among_the_threads)
   numerical::set_max_threads(0);
 }
 
+// A signed integer's +, −, ·, negation, sums, products and running ones wrap modulo 2⁶⁴ as NumPy's integers (where
+// C++'s signed overflow is undefined): the same bits whatever the order or the threads. Integers sort ascending.
+TEST(signed_integers_wrap_as_numpy)
+{
+  using big = std::int64_t;
+  const big            top    {std::numeric_limits<big>::max()};
+  const big            bottom {std::numeric_limits<big>::min()};
+  const tensor<big>    edges  {{3}, {top, bottom, 3}};
+  const tensor<big>    ones   {{3}, {1, 1, 2}};
+  EXPECT((edges + ones).data() == (numerical::buffer<big> {bottom, bottom + 1, 5}));
+  EXPECT((edges - ones).data() == (numerical::buffer<big> {top - 1, top, 1}));
+  EXPECT((edges * tensor<big> {{3}, {2, 2, -4}}).data() == (numerical::buffer<big> {-2, 0, -12}));
+  EXPECT((-edges).data() == (numerical::buffer<big> {-top, bottom, -3}));
+  EXPECT(numerical::sum(edges) == 2 && numerical::prod(edges) == bottom); // top + bottom + 3; top · bottom · 3 wraps
+  EXPECT(numerical::sum(tensor<big> {{2, 2}, {top, 1, 1, 2}}, 0).data() == (numerical::buffer<big> {bottom, 3}));
+  EXPECT(numerical::prod(tensor<big> {{2, 2}, {top, 3, 2, 5}}, 0).data() == (numerical::buffer<big> {-2, 15}));
+  EXPECT(numerical::cumsum(edges, 0).data() == (numerical::buffer<big> {top, -1, 2}));
+  EXPECT(numerical::cumprod(edges, 0).data() == (numerical::buffer<big> {top, bottom, bottom}));
+  // Many elements, summed in chunks on the threads: the wrapped total in any order.
+  const std::size_t      n        {std::size_t {1} << 18};
+  numerical::buffer<big> many(n);
+  std::uint64_t          expected {0};
+  for (std::size_t k {0}; k < n; ++k) {
+    many[k]   = static_cast<big>((k * 0x9E3779B97F4A7C15ULL) ^ (k << 7));
+    expected += static_cast<std::uint64_t>(many[k]);
+  }
+  const tensor<big> line {{n}, std::move(many)};
+  EXPECT(numerical::sum(line) == static_cast<big>(expected));
+  EXPECT(numerical::sum(tensor<big> {{0}, numerical::buffer<big> {}}) == 0);
+  const tensor<short> narrow {{2}, {30000, 30000}}; // promoted through unsigned int, no signed product
+  EXPECT((narrow * narrow).data()[0] == static_cast<short>(900000000U & 0xFFFFU) && numerical::sum(narrow) == static_cast<short>(60000));
+  // Sorted ascending, alone or among the threads (the merge's integer order).
+  numerical::buffer<big> shuffled(n);
+  for (std::size_t k {0}; k < n; ++k) {
+    shuffled[k] = static_cast<big>((k * 2654435761U) % 1000) - 500;
+  }
+  std::vector<big>  want(shuffled.begin(), shuffled.end());
+  std::ranges::sort(want);
+  const tensor<big> sorted {numerical::sort(tensor<big> {{n}, std::move(shuffled)}, 0)};
+  EXPECT(std::ranges::equal(sorted.data(), want));
+  EXPECT(numerical::sort(tensor<big> {{2, 2}, {4, -1, 0, 2}}, 1).data() == (numerical::buffer<big> {-1, 4, 0, 2}));
+}
+
+// floor_divide and remainder as NumPy's: the quotient floored and the remainder of the divisor's sign. A real by zero
+// a / b and fmod's NaN; a zero quotient or remainder of its sign; the quotient snapped to the nearest integer. A signed
+// integer by zero 0 and 0, the most negative by −1 itself (wrapped), 0 remainder.
+TEST(floor_divide_and_remainder_as_numpy)
+{
+  const double         inf {std::numeric_limits<double>::infinity()};
+  const tensor<double> a   {{11}, {9.142325629204539, 7.0, -7.0, 7.0, 6.0, -6.0, 0.5, -0.5, 1.0, -0.0, 6.0}};
+  const tensor<double> b   {{11}, {0.1, 2.0, 2.0, -2.0, 3.0, 3.0, 2.0, 2.0, 0.0, 2.0, -3.0}};
+  const tensor<double> q   {numerical::floor_divide(a, b)};
+  const tensor<double> r   {numerical::remainder(a, b)};
+  EXPECT(q.data()[0] == 91.0 && r.data()[0] == 0.04232562920453822); // (a − mod) / b just under 91: snapped up
+  EXPECT(q.data()[1] == 3.0 && r.data()[1] == 1.0 && q.data()[2] == -4.0 && r.data()[2] == 1.0);
+  EXPECT(q.data()[3] == -4.0 && r.data()[3] == -1.0 && q.data()[4] == 2.0 && r.data()[4] == 0.0 && !std::signbit(r.data()[4]));
+  EXPECT(q.data()[5] == -2.0 && r.data()[5] == 0.0 && q.data()[6] == 0.0 && !std::signbit(q.data()[6]) && r.data()[6] == 0.5);
+  EXPECT(q.data()[7] == -1.0 && r.data()[7] == 1.5 && q.data()[8] == inf && std::isnan(r.data()[8]));
+  EXPECT(q.data()[9] == 0.0 && std::signbit(q.data()[9]) && r.data()[9] == 0.0 && !std::signbit(r.data()[9]));
+  EXPECT(q.data()[10] == -2.0 && r.data()[10] == 0.0 && std::signbit(r.data()[10])); // a zero remainder of b's sign
+  using big = std::int64_t;
+  const big         bottom {std::numeric_limits<big>::min()};
+  const tensor<big> x      {{8}, {7, -7, 7, -7, 6, 5, bottom, -9}};
+  const tensor<big> y      {{8}, {2, 2, -2, -2, 3, 0, -1, -1}};
+  EXPECT(numerical::floor_divide(x, y).data() == (numerical::buffer<big> {3, -4, -4, 3, 2, 0, bottom, 9}));
+  EXPECT(numerical::remainder(x, y).data() == (numerical::buffer<big> {1, 1, -1, -1, 0, 0, 0, 0}));
+  EXPECT(numerical::remainder(tensor<float> {{1}, {-7.0F}}, tensor<float> {{1}, {2.0F}}).data()[0] == 1.0F);
+}
+
 // round to decimal places as numpy.round: half to even through the scaled value; a value already exact to the places
 // kept (no product to overflow); a finite value 0 where 10⁻ᵈ overflows, a NaN or an infinity as it is; a float past
 // 10³⁸ places through double; a complex number's parts apart.

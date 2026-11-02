@@ -1398,14 +1398,28 @@ PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::ten
             case '-': result.emplace(a - b); break;
             case '*': result.emplace(product_as_numpy(a, b, loops)); break;
             case '^': result.emplace(power_as_numpy(a, b, loops)); break;
+            case '|':
+                if constexpr (!numerical::detail::split_complex<T>) {
+                    result.emplace(numerical::floor_divide(a, b));
+                }
+                break;
+            case '%':
+                if constexpr (!numerical::detail::split_complex<T>) {
+                    result.emplace(numerical::remainder(a, b));
+                }
+                break;
             default: result.emplace(quotient_as_numpy(a, b, loops)); break;
         }
+    }
+    if (!result) { // a complex floor division or remainder, which NumPy does not define either
+        PyErr_SetString(PyExc_TypeError, "a complex tensor has no floor division or remainder");
+        return nullptr;
     }
     return wrap(std::move(*result));
 }
 
-// _binary(op, a, b) -> Tensor: a op b element by element, broadcast as NumPy's; op one of "+-*/", or "^"
-// for a ** b.
+// _binary(op, a, b) -> Tensor: a op b element by element, broadcast as NumPy's; op one of "+-*/", "^" for a ** b,
+// "|" for a // b and "%" for a % b.
 PyObject* module_binary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
 // A complex tensor to the Python integer 2 or -1, or the float 0.5, as NumPy takes an array there: its square (the

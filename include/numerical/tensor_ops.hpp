@@ -1048,12 +1048,66 @@ namespace numerical {
     return detail::parallel_map(a, [](const T& x) { return detail::root(x); });
   }
 
-  //! \brief Element-wise sum, broadcast. \throws dimension_error If the shapes do not broadcast.
+  namespace detail {
+    //! \brief The element operations of \p T the tensor operators apply: the standard ones.
+    template <typename T>
+    struct arithmetic {
+      using plus       = std::plus<T>;       //!< `a + b`.
+      using minus      = std::minus<T>;      //!< `a - b`.
+      using multiplies = std::multiplies<T>; //!< `a · b`.
+      using negate     = std::negate<T>;     //!< `-a`.
+    };
+
+    //! \brief A signed integer's operations through its unsigned type, so that an overflow wraps modulo 2ⁿ as
+    //!        NumPy's integers do (two's complement) where the signed operation is undefined.
+    template <std::signed_integral T>
+    struct arithmetic<T> {
+      using unsigned_type = std::make_unsigned_t<decltype(T {} + 0U)>; //!< Wide enough that no promotion is signed.
+
+      //! \brief `a + b`, wrapped.
+      struct plus {
+        [[nodiscard]] T operator()(T a,
+                                   T b) const noexcept
+        {
+          return static_cast<T>(static_cast<unsigned_type>(a) + static_cast<unsigned_type>(b));
+        }
+      };
+
+      //! \brief `a - b`, wrapped.
+      struct minus {
+        [[nodiscard]] T operator()(T a,
+                                   T b) const noexcept
+        {
+          return static_cast<T>(static_cast<unsigned_type>(a) - static_cast<unsigned_type>(b));
+        }
+      };
+
+      //! \brief `a · b`, wrapped.
+      struct multiplies {
+        [[nodiscard]] T operator()(T a,
+                                   T b) const noexcept
+        {
+          return static_cast<T>(static_cast<unsigned_type>(a) * static_cast<unsigned_type>(b));
+        }
+      };
+
+      //! \brief `-a`, wrapped (the most negative value its own negation).
+      struct negate {
+        [[nodiscard]] T operator()(T a) const noexcept
+        {
+          return static_cast<T>(unsigned_type {0} - static_cast<unsigned_type>(a));
+        }
+      };
+    };
+  } // namespace detail
+
+  //! \brief Element-wise sum, broadcast (a signed integer's wrapped, \ref detail::arithmetic). \throws dimension_error
+  //!        If the shapes do not broadcast.
   template <typename T>
   [[nodiscard]] tensor<T> operator+(const tensor<T>& a,
                                     const tensor<T>& b)
   {
-    return broadcast_apply(a, b, std::plus<T> {});
+    return broadcast_apply(a, b, typename detail::arithmetic<T>::plus {});
   }
 
   namespace detail {
@@ -1192,7 +1246,7 @@ namespace numerical {
   [[nodiscard]] tensor<T> operator-(const tensor<T>& a,
                                     const tensor<T>& b)
   {
-    return broadcast_apply(a, b, std::minus<T> {});
+    return broadcast_apply(a, b, typename detail::arithmetic<T>::minus {});
   }
 
   //! \brief Element-wise product, broadcast. \throws dimension_error If the shapes do not broadcast.
@@ -1200,7 +1254,7 @@ namespace numerical {
   [[nodiscard]] tensor<T> operator*(const tensor<T>& a,
                                     const tensor<T>& b)
   {
-    return broadcast_apply(a, b, std::multiplies<T> {});
+    return broadcast_apply(a, b, typename detail::arithmetic<T>::multiplies {});
   }
 
   //! \brief Element-wise quotient, broadcast. \throws dimension_error If the shapes do not broadcast.
@@ -1211,11 +1265,88 @@ namespace numerical {
     return broadcast_apply(a, b, std::divides<T> {});
   }
 
+  namespace detail {
+    /*!
+     * \brief `a // b` and `a % b` of reals as NumPy's `divmod` computes them (Python's: the quotient floored, the
+     *        remainder of \p b's sign): `fmod` first, the quotient `(a − mod) / b` adjusted by the remainder's sign and
+     *        snapped to the nearest integer, a zero of the right sign. \p b zero: `a / b` and `fmod(a, b)`.
+     */
+    template <std::floating_point T>
+    [[nodiscard]] std::pair<T, T> floor_divmod(T a,
+                                               T b) noexcept
+    {
+      T mod {std::fmod(a, b)};
+      if (b == T {0}) {
+        return {a / b, mod};
+      }
+      T quotient {(a - mod) / b};
+      if (mod != T {0}) {
+        if ((b < T {0}) != (mod < T {0})) {
+          mod      += b;
+          quotient -= T {1};
+        }
+      }
+      else {
+        mod = std::copysign(T {0}, b);
+      }
+      if (quotient == T {0}) {
+        return {std::copysign(T {0}, a / b), mod};
+      }
+      T floored {std::floor(quotient)};
+      if (quotient - floored > T {0.5}) {
+        floored += T {1};
+      }
+      return {floored, mod};
+    }
+
+    /*!
+     * \brief `a // b` and `a % b` of signed integers as NumPy's: the quotient floored, the remainder of \p b's sign; by
+     *        zero both 0 (NumPy's answer, beside its warning), and the most negative value by −1 its own negation (0
+     *        remainder), wrapped where C++'s would be undefined.
+     */
+    template <std::signed_integral T>
+    [[nodiscard]] std::pair<T, T> floor_divmod(T a,
+                                               T b) noexcept
+    {
+      if (b == T {0}) {
+        return {T {0}, T {0}};
+      }
+      if (b == T {-1}) {
+        return {typename arithmetic<T>::negate {}(a), T {0}};
+      }
+      T quotient {static_cast<T>(a / b)};
+      T mod      {static_cast<T>(a % b)};
+      if (mod != T {0} && ((mod < T {0}) != (b < T {0}))) {
+        quotient = static_cast<T>(quotient - T {1});
+        mod      = static_cast<T>(mod + b);
+      }
+      return {quotient, mod};
+    }
+  } // namespace detail
+
+  //! \brief `a // b` element by element, broadcast, as `numpy.floor_divide` (\ref detail::floor_divmod).
+  //!        \throws dimension_error If the shapes do not broadcast.
+  template <typename T>
+  [[nodiscard]] tensor<T> floor_divide(const tensor<T>& a,
+                                       const tensor<T>& b)
+  {
+    return broadcast_apply(a, b, [](T x, T y) { return detail::floor_divmod(x, y).first; });
+  }
+
+  //! \brief `a % b` element by element, broadcast, as `numpy.remainder` (Python's: of \p b's sign; a real by zero
+  //!        `fmod`'s NaN, \ref detail::floor_divmod). \throws dimension_error If the shapes do not broadcast.
+  template <typename T>
+  [[nodiscard]] tensor<T> remainder(const tensor<T>& a,
+                                    const tensor<T>& b)
+  {
+    return broadcast_apply(a, b, [](T x, T y) { return detail::floor_divmod(x, y).second; });
+  }
+
   //! \brief Element-wise negation.
   template <typename T>
   [[nodiscard]] tensor<T> operator-(const tensor<T>& a)
   {
-    return detail::parallel_map(a, std::negate<T> {});
+    return detail::parallel_map(a, typename detail::arithmetic<T>::negate {});
   }
 
   //! \brief `f(x)` for every element, in a tensor of the same shape and of `f`'s result type.
@@ -1276,6 +1407,47 @@ namespace numerical {
     return tensor<T> {detail::without_axis(t.shape(), axis), std::move(out)};
   }
 
+  //! \brief The sum of every element of a signed integer tensor, wrapped modulo 2ⁿ as NumPy's (in any order the same
+  //!        bits: the unsigned sum is associative), by chunks on the threads where they are many.
+  template <std::signed_integral T>
+  [[nodiscard]] T sum(const tensor<T>& t)
+  {
+    using unsigned_type = typename detail::arithmetic<T>::unsigned_type;
+    const T* const             data   {t.data().data()};
+    const std::size_t          count  {t.size()};
+    const std::size_t          chunks {(count + detail::elementwise_chunk - 1) / detail::elementwise_chunk};
+    std::vector<unsigned_type> partial(chunks, 0);
+    detail::parallel_for(chunks, detail::elementwise_chunk, [&](std::size_t c) {
+                           const std::size_t last {std::min((c + 1) * detail::elementwise_chunk, count)};
+                           unsigned_type     total {0};
+                           for (std::size_t i {c * detail::elementwise_chunk}; i < last; ++i) {
+                             total += static_cast<unsigned_type>(data[i]);
+                           }
+                           partial[c] = total;
+                         });
+    unsigned_type total {0};
+    for (const unsigned_type part : partial) {
+      total += part;
+    }
+    return static_cast<T>(total);
+  }
+
+  //! \brief The sums along \p axis of a signed integer tensor, wrapped modulo 2ⁿ as NumPy's. \throws dimension_error If
+  //!        \p axis is not an axis.
+  template <std::signed_integral T>
+  [[nodiscard]] tensor<T> sum(const tensor<T>& t,
+                              std::size_t      axis)
+  {
+    return detail::reduce_along(t, axis, [](const T* first, std::size_t count, std::size_t stride) {
+                                  const typename detail::arithmetic<T>::plus plus {};
+                                  T                                          total {0};
+                                  for (std::size_t i {0}; i < count; ++i) {
+                                    total = plus(total, first[i * stride]);
+                                  }
+                                  return total;
+                                });
+  }
+
   /*!
    * \brief The mean of every element. An empty tensor's mean is NaN, as NumPy's (which also warns).
    */
@@ -1320,9 +1492,10 @@ namespace numerical {
   template <typename T>
   [[nodiscard]] T prod(const tensor<T>& t)
   {
-    T product {1};
+    const typename detail::arithmetic<T>::multiplies times   {};
+    T                                                product {1};
     for (const T& x : t.data()) {
-      product *= x;
+      product = times(product, x);
     }
     return product;
   }
@@ -1333,9 +1506,10 @@ namespace numerical {
                                std::size_t      axis)
   {
     return detail::reduce_along(t, axis, [](const T* first, std::size_t count, std::size_t stride) {
-                                  T product {1};
+                                  const typename detail::arithmetic<T>::multiplies times {};
+                                  T                                                product {1};
                                   for (std::size_t i {0}; i < count; ++i) {
-                                    product *= first[i * stride];
+                                    product = times(product, first[i * stride]);
                                   }
                                   return product;
                                 });
@@ -1375,6 +1549,14 @@ namespace numerical {
       return std::isnan(b) ? !std::isnan(a) : a < b;
     }
 
+    //! \brief Whether \p a sorts before \p b as integers sort: ascending.
+    template <std::integral T>
+    [[nodiscard]] bool sorts_before(T a,
+                                    T b) noexcept
+    {
+      return a < b;
+    }
+
     //! \brief Whether \p a sorts before \p b as NumPy sorts complex numbers: by the real parts, then the imaginary
     //!        parts, each with NaNs last.
     template <split_complex C>
@@ -1392,7 +1574,7 @@ namespace numerical {
   [[nodiscard]] tensor<T> cumsum(const tensor<T>& t,
                                  std::size_t      axis)
   {
-    return detail::scan_along(t, axis, std::plus<T> {});
+    return detail::scan_along(t, axis, typename detail::arithmetic<T>::plus {});
   }
 
   //! \brief The running products along \p axis, in order, as `numpy.cumprod`. \throws dimension_error If \p axis is
@@ -1401,7 +1583,7 @@ namespace numerical {
   [[nodiscard]] tensor<T> cumprod(const tensor<T>& t,
                                   std::size_t      axis)
   {
-    return detail::scan_along(t, axis, std::multiplies<T> {});
+    return detail::scan_along(t, axis, typename detail::arithmetic<T>::multiplies {});
   }
 
   namespace detail {
@@ -1413,6 +1595,14 @@ namespace numerical {
     {
       T* const numbers_end {std::stable_partition(first, last, [](T x) { return !std::isnan(x); })};
       std::stable_sort(first, numbers_end);
+    }
+
+    //! \brief Sorts `[first, last)` stably as integers sort.
+    template <std::integral T>
+    void sort_run(T* first,
+                  T* last)
+    {
+      std::stable_sort(first, last);
     }
 
     //! \brief Sorts `[first, last)` stably as \ref sorts_before orders complex numbers.

@@ -63,6 +63,10 @@ Element-wise arithmetic
 .. autofunction:: numerical.square
 .. autofunction:: numerical.divide
 .. autofunction:: numerical.true_divide
+.. autofunction:: numerical.floor_divide
+.. autofunction:: numerical.remainder
+.. autofunction:: numerical.mod
+.. autofunction:: numerical.divmod
 .. autofunction:: numerical.power
 .. autofunction:: numerical.maximum
 .. autofunction:: numerical.minimum

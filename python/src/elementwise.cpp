@@ -17,8 +17,8 @@ PyObject* module_binary(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
         return nullptr;
     }
-    if (std::string_view {op}.size() != 1 || std::string_view {"+-*/^"}.find(op[0]) == std::string_view::npos) {
-        PyErr_SetString(PyExc_ValueError, "_binary: op is one of + - * / ^ (power)");
+    if (std::string_view {op}.size() != 1 || std::string_view {"+-*/^|%"}.find(op[0]) == std::string_view::npos) {
+        PyErr_SetString(PyExc_ValueError, "_binary: op is one of + - * / ^ (power) | (floor division) %");
         return nullptr;
     }
     const any_tensor* a = nullptr;

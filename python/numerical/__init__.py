@@ -3431,7 +3431,7 @@ def _numpy_loops():
 
 
 def _arithmetic(op, reflected=False):
-    """The Tensor method for `op` ("+", "-", "*", "/", or "^" for ``**``), element-wise and broadcast as NumPy's; a reflected
+    """The Tensor method for `op` ("+", "-", "*", "/", "^" for ``**``, "|" for ``//``, "%"), element-wise and broadcast as NumPy's; a reflected
     one (``2 - t``) puts the other operand first. Anything :func:`asarray` cannot read is NotImplemented."""
 
     def method(self, other):
@@ -3477,6 +3477,12 @@ Tensor.__truediv__ = _arithmetic("/")
 Tensor.__rtruediv__ = _arithmetic("/", reflected=True)
 Tensor.__pow__ = _arithmetic("^")
 Tensor.__rpow__ = _arithmetic("^", reflected=True)
+Tensor.__floordiv__ = _arithmetic("|")
+Tensor.__rfloordiv__ = _arithmetic("|", reflected=True)
+Tensor.__mod__ = _arithmetic("%")
+Tensor.__rmod__ = _arithmetic("%", reflected=True)
+Tensor.__divmod__ = lambda self, other: (self // other, self % other)
+Tensor.__rdivmod__ = lambda self, other: (other // self, other % self)
 Tensor.__abs__ = lambda self: absolute(self)
 Tensor.__neg__ = lambda self: _numerical._negate(self)
 Tensor.__pos__ = lambda self: self
@@ -5308,6 +5314,55 @@ def divide(x1, x2, /):
 true_divide = divide
 
 
+def _binary_function(operator):
+    """``operator(x1, x2)`` of NumPy's binary function: through the Tensor operator, an operand that is neither a
+    Tensor nor a number read first (one of the two at least a Tensor)."""
+    def function(x1, x2, /):
+        if not isinstance(x1, (Tensor, _numbers.Number)):
+            x1 = _operand(x1)
+        if not isinstance(x2, (Tensor, _numbers.Number)):
+            x2 = _operand(x2)
+        if not isinstance(x1, Tensor) and not isinstance(x2, Tensor):
+            x1 = _operand(x1)
+        return operator(x1, x2)
+
+    return function
+
+
+def floor_divide(x1, x2, /):
+    """``x1 // x2`` element-wise, the quotient floored, as ``numpy.floor_divide``: NumPy's ``divmod`` for reals (by
+    zero ``x1 / x2``: ±inf or NaN). Real dtypes, as NumPy's.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.floor_divide(numerical.asarray([7.0, -7.0]), 2)
+        numerical.Tensor([3.0, -4.0], dtype=float64)
+    """
+    return _floor_divide(x1, x2)
+
+
+def remainder(x1, x2, /):
+    """``x1 % x2`` element-wise, of `x2`'s sign as Python's, as ``numpy.remainder`` (``numpy.mod``): NumPy's ``divmod``
+    for reals (by zero NaN). Real dtypes, as NumPy's.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.remainder(numerical.asarray([7.0, -7.0]), 2)
+        numerical.Tensor([1.0, 1.0], dtype=float64)
+    """
+    return _remainder(x1, x2)
+
+
+def divmod(x1, x2, /):  # noqa: A001 (numpy.divmod's name)
+    """``(x1 // x2, x1 % x2)`` element-wise, as ``numpy.divmod``."""
+    return floor_divide(x1, x2), remainder(x1, x2)
+
+
+_floor_divide = _binary_function(_operator.floordiv)
+_remainder = _binary_function(_operator.mod)
+mod = remainder
+
+
 def _like(a, shape, dtype):
     """The shape and dtype of a ``*_like`` function: `a`'s unless given."""
     a = a if isinstance(a, Tensor) else _tensor(a)
@@ -5727,7 +5782,8 @@ for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot", "prod", "cumsum", 
         setattr(Tensor, _name, (lambda function: lambda self, *args, **kwargs: function(self, *args, **kwargs))(globals()[_name]))
 del _name
 
-__all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "zeros_like", "ones_like", "empty_like",
+__all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "floor_divide", "remainder", "mod",
+            "divmod", "zeros_like", "ones_like", "empty_like",
             "full_like", "copy", "ravel", "expand_dims", "atleast_1d", "atleast_2d", "atleast_3d", "flip", "flipud",
             "fliplr", "swapaxes", "moveaxis", "column_stack", "maximum", "minimum", "clip", "isclose", "allclose", "dot",
             "inner", "vdot", "ptp", "var", "std", "floor", "ceil", "trunc", "rint", "sign", "arcsin", "arccos", "arctan",

@@ -94,6 +94,33 @@ class NumpyWave2(unittest.TestCase):
         with self.assertRaises(TypeError):
             numerical.floor(np.array([1j]))
 
+    def test_floor_division_and_remainder(self):
+        a = self.rng.standard_normal(2000) * 10
+        b = self.rng.standard_normal(2000) * 3
+        a[::50], b[::70], a[::90], b[::110], a[::130], a[1::40] = 0.0, 0.0, np.inf, -np.inf, np.nan, -0.0
+        for dtype in (np.float64, np.float32):
+            x, y = a.astype(dtype), b.astype(dtype)
+            with np.errstate(all="ignore"):
+                for name in ("floor_divide", "remainder"):
+                    with self.subTest(name=name, dtype=dtype):
+                        got, want = np.asarray(getattr(numerical, name)(x, y)), getattr(np, name)(x, y)
+                        self.same(got, want)
+                        np.testing.assert_array_equal(np.signbit(got), np.signbit(want))  # zeros of the right sign
+                with self.subTest(operators=dtype):
+                    t, u = numerical.asarray(x), numerical.asarray(y)
+                    self.same(t // u, x // y)
+                    self.same(t % u, x % y)
+                    self.same(t // 2, x // 2)
+                    self.same(3 % t, 3 % x)
+                    self.same(divmod(t, u)[1], np.divmod(x, y)[1])
+                    self.same(numerical.divmod(x, y)[0], np.divmod(x, y)[0])
+        self.assertIs(numerical.mod, numerical.remainder)
+        self.same(divmod(2.5, numerical.asarray([2.0]))[0], np.array([1.0]))
+        with self.assertRaises(TypeError):
+            numerical.asarray([1j]) // 2
+        with self.assertRaises(TypeError):
+            numerical.remainder(np.array([1j]), 2)
+
     def test_products_and_running_sums(self):
         a = self.rng.uniform(0.5, 1.5, (3, 4, 5))
         self.assertAlmostEqual(numerical.prod(a) / np.prod(a), 1.0, places=13)

@@ -10,6 +10,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Added
 - **`numerical::round(t, decimals)`** in C++ (real and complex tensors), which `numerical.round` now calls.
+- **Floor division and remainder**: `t // u`, `t % u`, `divmod(t, u)` and `numerical.floor_divide`, `remainder`
+  (`mod`) and `divmod`, as NumPy's for real dtypes (its `divmod`: the quotient floored, the remainder of the
+  divisor's sign, a zero of the right sign, by zero ±inf or NaN), to NumPy's bits; in C++ `numerical::floor_divide`
+  and `numerical::remainder`, signed integers too (Python's rules; by zero 0, as NumPy).
 
 ### Changed
 - **`sort` of a long line among the threads**: pieces sorted apart, then merged in pairs, to the bits of one stable
@@ -31,6 +35,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   overflows (it raised `OverflowError`; NumPy's answers NaN), and a float32 past 10³⁸ places rounds through float64
   (NaN before).
 - **`sort` of a bool tensor or array**, False before True, as NumPy's; it raised `TypeError`.
+- **C++: a signed integer tensor's `+`, `-`, `*`, negation, `sum`, `prod`, `cumsum` and `cumprod` wrap** modulo 2ⁿ,
+  as NumPy's integers, through the unsigned type: an overflow was undefined behaviour. An integer tensor sorts
+  (`numerical::sort` took real and complex ones alone).
 - **A dtype given as a Python or NumPy type**: `asarray(x, dtype=numpy.float32)`, `dtype=float` and
   `dtype=numpy.dtype("complex64")` raised `TypeError` (the binding took a name alone); they read as that dtype, as
   every other function's `dtype` already did. `t.sum(dtype=numpy.dtype("float64"))` raised `KeyError`: a NumPy dtype
