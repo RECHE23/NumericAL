@@ -658,6 +658,9 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
             if (is_single(*a)) {
                 return extreme_of(name == "max", std::get<single_tensor>(*a), axis);
             }
+            if (is_int(*a)) {
+                return extreme_of(name == "max", std::get<int_tensor>(*a), axis);
+            }
             return extreme_of(name == "max", std::get<real_tensor>(*a), axis);
         }
         PyErr_SetString(PyExc_ValueError, "_reduce: op is sum, mean, max, min, any or all");

@@ -1,15 +1,19 @@
 # Tensors and dtypes
 
 A {class}`numerical.Tensor` is an immutable array of one dtype: rank 0 a scalar, rank 1 a vector, rank 2 a matrix,
-and stacks of matrices along leading axes. Its dtypes are `float64`, `complex128`, `float32`, `complex64`, and `bool`
-for a comparison's answer.
+and stacks of matrices along leading axes. Its dtypes are `float64`, `complex128`, `float32`, `complex64`, `bool`
+for a comparison's answer, and `int64`, which `dtype="int64"` (or `int`) asks for: read exactly, past 2⁵³ too, it
+compares, selects, reshapes, concatenates, indexes, and finds its largest and smallest elements; its arithmetic and
+reductions arrive with 2026.12.0, when integers are read as int64 by default.
 
 ## Reading arrays
 
 {func}`numerical.asarray` copies any NumPy array (bool, integer, float32 or float64, complex64 or complex128, in
 either byte order, at any strides), a nested list or tuple of numbers, or a number: a float32, complex64, complex128
 or bool array as it is, anything else into float64 (complex128 for a complex list or number, bool for bools alone),
-or into the `dtype` asked. A complex input is never cast to a real dtype.
+or into the `dtype` asked. A complex input is never cast to a real dtype. Into int64, a real is truncated toward
+zero, as NumPy's, and NaN, an infinity or a value outside int64's range is refused (`ValueError`, `OverflowError`),
+as Python's `int()` refuses them, where NumPy's answer depends on the processor.
 
 ```pycon
 >>> import numerical
@@ -19,6 +23,8 @@ or into the `dtype` asked. A complex input is never cast to a real dtype.
 'complex128'
 >>> numerical.asarray([True, False]).dtype
 'bool'
+>>> numerical.asarray([2**62 + 1, -3], dtype="int64")
+numerical.Tensor([4611686018427387905, -3], dtype=int64)
 ```
 
 `matmul` and `@` read a NumPy array where it lies, without a copy, when it is row-major, contiguous, aligned, in this

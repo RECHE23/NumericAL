@@ -488,7 +488,8 @@ PyObject* module_frombytes(PyObject* /*self*/, PyObject* args)
             case 1: return rebuilt(std::type_identity<std::complex<double>> {});
             case 2: return rebuilt(std::type_identity<float> {});
             case 3: return rebuilt(std::type_identity<std::complex<float>> {});
-            default: return rebuilt(std::type_identity<boolean> {});
+            case 4: return rebuilt(std::type_identity<boolean> {});
+            default: return rebuilt(std::type_identity<std::int64_t> {});
         }
     }
     catch (...) {
@@ -748,6 +749,33 @@ PyObject* module_full(PyObject* /*self*/, PyObject* args)
     if (!dtype || !read_shape(seq, shape)) {
         return nullptr;
     }
+    if (*dtype == int_index) { // an int as itself, exactly; a real truncated toward zero, as NumPy's
+        std::int64_t element {0};
+        if (PyLong_Check(value) != 0) {
+            element = PyLong_AsLongLong(value);
+            if (PyErr_Occurred() != nullptr) {
+                return nullptr;
+            }
+        }
+        else {
+            const double real {PyFloat_AsDouble(value)};
+            if (PyErr_Occurred() != nullptr) {
+                return nullptr;
+            }
+            try {
+                element = converted<std::int64_t>(real);
+            }
+            catch (...) {
+                return set_conversion_error();
+            }
+        }
+        try {
+            return wrap(any_tensor {numerical::full(std::move(shape), element)});
+        }
+        catch (...) {
+            return set_cpp_error();
+        }
+    }
     const double re = PyComplex_RealAsDouble(value); // the Limited API has no Py_complex accessor
     const double im = PyComplex_ImagAsDouble(value);
     if (PyErr_Occurred() != nullptr) {
@@ -759,7 +787,7 @@ PyObject* module_full(PyObject* /*self*/, PyObject* args)
             case 1: return wrap(any_tensor {numerical::full(std::move(shape), std::complex<double> {re, im})});
             case 2: return wrap(any_tensor {numerical::full(std::move(shape), static_cast<float>(re))});
             case 3: return wrap(any_tensor {numerical::full(std::move(shape), std::complex<float> {static_cast<float>(re), static_cast<float>(im)})});
-            default: return wrap(any_tensor {numerical::full(std::move(shape), converted<boolean>(std::complex<double> {re, im}))});
+            default: return wrap(any_tensor {numerical::full(std::move(shape), converted<boolean>(std::complex<double> {re, im}))}); // bool: int64 above
         }
     }
     catch (...) {
@@ -790,6 +818,7 @@ PyObject* module_eye(PyObject* /*self*/, PyObject* args)
             case 1: return wrap(any_tensor {numerical::eye<std::complex<double>>(order)});
             case 2: return wrap(any_tensor {numerical::eye<float>(order)});
             case 3: return wrap(any_tensor {numerical::eye<std::complex<float>>(order)});
+            case 5: return wrap(any_tensor {numerical::eye<std::int64_t>(order)});
             default: {
                 numerical::buffer<boolean> diagonal(numerical::detail::checked_mul(order, order), boolean {false});
                 for (std::size_t i = 0; i < order; ++i) {

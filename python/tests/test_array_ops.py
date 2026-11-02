@@ -146,7 +146,7 @@ class ShapesAndCreation(unittest.TestCase):
             with self.subTest(reduction_dtype=given):
                 self.assertEqual(tensor.sum(dtype=given), 3.0)
                 self.assertIs(type(tensor.sum(dtype=given)), kind)
-        for given in (np.int64, np.dtype("float16"), np.dtype("U3")):
+        for given in (np.int32, np.dtype("float16"), np.dtype("U3")):
             with self.subTest(dtype=given), self.assertRaises(TypeError):
                 numerical.asarray([1.0], dtype=given)
 

@@ -9,6 +9,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **An int64 dtype**, asked by `dtype="int64"` (or `int`, `numpy.int64`): Python integers, nested lists and NumPy's
+  integer arrays (either byte order, any strides) read exactly, past 2⁵³ too; `astype`, `zeros`, `ones`, `full`,
+  `eye` and `Tensor(..., dtype="int64")`; exported through `__array_interface__`, DLPack and pickle, as Python
+  integers by `tolist` and indexing. It compares, selects (`where`), moves (indexing, reshape, transpose,
+  concatenate) and finds its `max` and `min`; beside a float or complex operand it promotes as NumPy 2's (float64,
+  complex128). A real converted to int64 is truncated toward zero; NaN or an infinity raises `ValueError`, a value
+  outside int64's range `OverflowError` (NumPy's answer depends on the processor). Integers are still read as
+  float64 by default, and an int64 tensor's own arithmetic and reductions raise `TypeError`: both arrive with
+  2026.12.0.
 - **`numerical::round(t, decimals)`** in C++ (real and complex tensors), which `numerical.round` now calls.
 - **Floor division and remainder**: `t // u`, `t % u`, `divmod(t, u)` and `numerical.floor_divide`, `remainder`
   (`mod`) and `divmod`, as NumPy's for real dtypes (its `divmod`: the quotient floored, the remainder of the

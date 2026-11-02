@@ -637,7 +637,7 @@ class ArrayInterface(unittest.TestCase):
         # A TypeError as NumPy raises, and the numerical.error and ValueError raised before, for each kind of operand
         # (each takes its own way to C) and each kind of dtype that names none a Tensor offers.
         for obj in (numerical.Tensor([1.0]), [1.0], (1.0, 2.0), 2.0):
-            for dtype in ("float16", "int64", "f8", "", 3, object, str):
+            for dtype in ("float16", "int32", "f8", "", 3, object, str):
                 with self.subTest(obj=obj, dtype=dtype):
                     with self.assertRaises(TypeError) as caught:
                         numerical.asarray(obj, dtype=dtype)

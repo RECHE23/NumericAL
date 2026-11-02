@@ -8,7 +8,7 @@ from numerical._numerical import error as error
 from numerical._numerical import get_num_threads as get_num_threads
 from numerical._numerical import release_memory as release_memory
 
-_Dtype = Literal["float64", "complex128", "float32", "complex64", "bool"]
+_Dtype = Literal["float64", "complex128", "float32", "complex64", "bool", "int64"]
 #: A dtype argument: its name, or the Python or NumPy type of that name (`float`, `numpy.float32`); a
 #: `numpy.dtype` passes at run time too.
 _DtypeLike = _Dtype | type

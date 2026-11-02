@@ -220,12 +220,19 @@ def get_config():
 
 class _NestedBuffer:
     """Numbers in C order behind an ``__array_interface__``: how a nested list or a scalar reaches the
-    same reader as an array (real values as float64, complex ones as complex128, bools alone as bool)."""
+    same reader as an array (real values as float64, complex ones as complex128, bools alone as bool, integers
+    that int64 holds as int64, exactly, which the reader takes as float64 unless int64 is asked)."""
 
     def __init__(self, values, shape):
+        order = "<" if _sys.byteorder == "little" else ">"
         if values and _builtins.all(isinstance(value, bool) for value in values):
             self._data = _array.array("B", values)
             self.__array_interface__ = {"version": 3, "typestr": "|b1", "shape": tuple(shape),
+                                        "data": (self._data.buffer_info()[0], True)}
+            return
+        if values and _builtins.all(isinstance(value, _numbers.Integral) and -2**63 <= value < 2**63 for value in values):
+            self._data = _array.array("q", [int(value) for value in values])
+            self.__array_interface__ = {"version": 3, "typestr": order + "i8", "shape": tuple(shape),
                                         "data": (self._data.buffer_info()[0], True)}
             return
         is_complex = _builtins.any(isinstance(value, complex) or (isinstance(value, _numbers.Complex)
@@ -239,7 +246,6 @@ class _NestedBuffer:
             else:
                 flat.append(float(value))
         self._data = _array.array("d", flat)
-        order = "<" if _sys.byteorder == "little" else ">"
         self.__array_interface__ = {"version": 3, "typestr": order + ("c16" if is_complex else "f8"),
                                     "shape": tuple(shape), "data": (self._data.buffer_info()[0], True)}
 
@@ -258,17 +264,21 @@ def _nested(obj):
     raise TypeError(f"asarray: a nested list holds numbers, not {type(obj).__name__}")
 
 
-_DTYPES = ("float64", "complex128", "float32", "complex64", "bool")
+_DTYPES = ("float64", "complex128", "float32", "complex64", "bool", "int64")
 _SINGLE = ("float32", "complex64")
 
 
 def _promoted(dtypes):
     """NumPy's result dtype of tensors of `dtypes`: complex where one is, single precision only where all are; a bool
-    one takes the others' dtype, and bools alone stay bool."""
+    one takes the others' dtype, and bools alone stay bool; int64 alone (bools beside) stays int64, beside a float or
+    complex dtype the double precision of its kind (int64 and float32: float64, as NumPy's)."""
     dtypes = [dtype for dtype in dtypes if dtype != "bool"]
     if not dtypes:
         return "bool"
-    single = _builtins.all(dtype in _SINGLE for dtype in dtypes)
+    numbers = [dtype for dtype in dtypes if dtype != "int64"]
+    if not numbers:
+        return "int64"
+    single = len(numbers) == len(dtypes) and _builtins.all(dtype in _SINGLE for dtype in numbers)
     if _builtins.any(dtype.startswith("complex") for dtype in dtypes):
         return "complex64" if single else "complex128"
     return "float32" if single else "float64"
@@ -281,9 +291,12 @@ def _weak(value):
 
 def _beside_weak(dtype, value):
     """The dtype of a tensor of `dtype` beside the Python number `value`: its own, complex for a complex `value`; a
-    bool tensor's beside a bool, else the number's own (float64 for an int, as :func:`asarray` reads one)."""
+    bool tensor's beside a bool, else the number's own (float64 for an int, as :func:`asarray` reads one); an int64
+    tensor's beside an int, float64 beside a float."""
     if dtype == "bool":
         return "bool" if isinstance(value, bool) else "complex128" if isinstance(value, complex) else "float64"
+    if dtype == "int64" and not isinstance(value, int):
+        return "complex128" if isinstance(value, complex) else "float64"
     if isinstance(value, complex) and not dtype.startswith("complex"):
         return "complex64" if dtype in _SINGLE else "complex128"
     return dtype
@@ -3451,8 +3464,8 @@ def _arithmetic(op, reflected=False):
                 return _native(_numerical._power_shortcut, shortcut, self)
         if kind is Tensor and other.dtype == self.dtype:  # nothing to promote: the common cases, straight through
             a, b = self, other
-        elif (kind is float or kind is int) and (dtype := self.dtype) != "bool":  # a real Python number is weak: it
-            a, b = self, asarray(other, dtype)                                     # takes the tensor's dtype
+        elif (kind is int or kind is float) and (dtype := self.dtype) != "bool" and (kind is int or dtype != "int64"):
+            a, b = self, asarray(other, dtype)  # a real Python number is weak: it takes the tensor's dtype
         else:
             try:
                 a, b = _same_dtype(self, other)
@@ -3643,7 +3656,7 @@ def _dtype_name(dtype):
     if isinstance(dtype, str):
         return dtype
     # By identity: a NumPy dtype compares equal to the Python type it stands for, numpy.dtype("float64") == float.
-    for python_type, name in ((float, "float64"), (complex, "complex128"), (bool, "bool")):
+    for python_type, name in ((float, "float64"), (complex, "complex128"), (bool, "bool"), (int, "int64")):
         if dtype is python_type:
             return name
     name = getattr(dtype, "__name__", None) or str(dtype)
@@ -4208,7 +4221,7 @@ def _contains(self, value):
     return bool((self == value).any())
 
 
-_ITEMSIZE = {"float64": 8, "complex128": 16, "float32": 4, "complex64": 8, "bool": 1}
+_ITEMSIZE = {"float64": 8, "complex128": 16, "float32": 4, "complex64": 8, "bool": 1, "int64": 8}
 
 Tensor.__reduce__ = lambda self: (_rebuilt, (_numerical._tobytes(self), self.shape, self.dtype, _sys.byteorder))
 Tensor.__copy__ = lambda self: self  # a Tensor is never written into: itself is its copy

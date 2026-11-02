@@ -2,7 +2,7 @@
 from collections.abc import Callable, Iterator, Sequence
 from typing import Any, ClassVar, Literal, NoReturn, final
 
-_Dtype = Literal["float64", "complex128", "float32", "complex64", "bool"]
+_Dtype = Literal["float64", "complex128", "float32", "complex64", "bool", "int64"]
 _Number = float | complex | bool
 _Shape = tuple[int, ...]
 

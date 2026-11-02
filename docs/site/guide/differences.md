@@ -54,8 +54,11 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
 
 ## What is not there yet
 
-- **Integer dtypes.** NumPy's integer arrays are read as float64, and the index functions (`argmax` along an axis,
-  `argsort`, `nonzero`, `searchsorted`) are missing; an int64 dtype arrives with 2026.12.0.
+- **Integer dtypes.** NumPy's integer arrays are read as float64 unless `dtype="int64"` is asked; an int64 tensor
+  compares, selects, moves and finds its extremes, and its arithmetic and reductions, integers read as int64 by
+  default, and the index functions (`argmax` along an axis, `argsort`, `nonzero`, `searchsorted`) arrive with
+  2026.12.0. A real converted to int64 that it cannot hold (NaN, an infinity, a value out of range) raises, as
+  Python's `int()`; NumPy's answer depends on the processor.
 - **Views and assignment.** A `Tensor` is immutable: no `t[i] = x`, and no operation returns a view of another tensor.
 - **Complex ordering.** `max`, `min`, `maximum`, `minimum` and `clip` take real dtypes only; NumPy orders complex
   numbers by real, then imaginary part (`sort` does too).
