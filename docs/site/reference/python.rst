@@ -149,6 +149,14 @@ Reductions, scans and sorting
 .. autofunction:: numerical.std
 .. autofunction:: numerical.sort
 .. autofunction:: numerical.diff
+.. autofunction:: numerical.argmax
+.. autofunction:: numerical.argmin
+.. autofunction:: numerical.argsort
+.. autofunction:: numerical.nonzero
+.. autofunction:: numerical.flatnonzero
+.. autofunction:: numerical.argwhere
+.. autofunction:: numerical.count_nonzero
+.. autofunction:: numerical.searchsorted
 .. autofunction:: numerical.trace
 
 Products

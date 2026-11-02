@@ -1586,6 +1586,23 @@ PyObject* module_concatenate(PyObject* /*self*/, PyObject* args); // in products
 PyObject* module_negate(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_extreme_pair(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_axis_op(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _arg_extreme(largest, a, axis) -> int or Tensor: numerical::argmax (largest) or argmin of a float or int64 tensor,
+// every element (axis -1, a Python int) or along a non-negative axis (an int64 Tensor).
+PyObject* module_arg_extreme(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _argsort(a, axis) -> Tensor: numerical::argsort of a float, complex or int64 tensor along a non-negative axis.
+PyObject* module_argsort(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _nonzero(a) -> tuple of Tensors: numerical::nonzero of any tensor, one int64 Tensor per axis.
+PyObject* module_nonzero(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _count_nonzero(a, axis) -> int or Tensor: the nonzero elements of any tensor, every one (axis -1) or along an axis.
+PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
+// _searchsorted(a, v, right) -> Tensor: numerical::searchsorted of a sorted vector and values of one dtype (float,
+// complex or int64).
+PyObject* module_searchsorted(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_real_unary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_round(PyObject* /*self*/, PyObject* args);      // in elementwise.cpp
 

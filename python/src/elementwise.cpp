@@ -276,6 +276,151 @@ PyObject* module_real_unary(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _arg_extreme(largest, a, axis) -> int or Tensor.
+PyObject* module_arg_extreme(PyObject* /*self*/, PyObject* args)
+{
+    int        largest = 0;
+    PyObject*  x       = nullptr;
+    Py_ssize_t axis    = -1;
+    if (PyArg_ParseTuple(args, "pOn", &largest, &x, &axis) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = arithmetic_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    if (is_complex(*a)) {
+        PyErr_SetString(PyExc_TypeError, "argmax and argmin take a real tensor: a complex one has no order here");
+        return nullptr;
+    }
+    try {
+        const auto extreme = [&](const auto& t) -> PyObject* {
+            if (axis < 0) {
+                return PyLong_FromLongLong(largest != 0 ? numerical::argmax(t) : numerical::argmin(t));
+            }
+            const auto along {static_cast<std::size_t>(axis)};
+            return wrap(any_tensor {largest != 0 ? numerical::argmax(t, along) : numerical::argmin(t, along)});
+        };
+        if (const auto* integers {std::get_if<int_tensor>(a)}) {
+            return extreme(*integers);
+        }
+        if (const auto* single {std::get_if<single_tensor>(a)}) {
+            return extreme(*single);
+        }
+        return extreme(std::get<real_tensor>(*a));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _argsort(a, axis) -> Tensor.
+PyObject* module_argsort(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  x    = nullptr;
+    Py_ssize_t axis = 0;
+    if (PyArg_ParseTuple(args, "On", &x, &axis) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = arithmetic_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            result.emplace(visit_arithmetic([axis](const auto& t) { return any_tensor {numerical::argsort(t, static_cast<std::size_t>(axis))}; }, *a));
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _nonzero(a) -> tuple of Tensors.
+PyObject* module_nonzero(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x = nullptr;
+    if (PyArg_ParseTuple(args, "O", &x) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        const std::vector<int_tensor> indices {std::visit([](const auto& t) { return numerical::nonzero(t); }, *a)};
+        PyObject* tuple {PyTuple_New(static_cast<Py_ssize_t>(indices.size()))};
+        if (tuple == nullptr) {
+            return nullptr;
+        }
+        for (std::size_t k {0}; k < indices.size(); ++k) {
+            PyObject* along {wrap(any_tensor {indices[k]})};
+            if (along == nullptr) {
+                Py_DECREF(tuple);
+                return nullptr;
+            }
+            PyTuple_SetItem(tuple, static_cast<Py_ssize_t>(k), along); // steals the reference
+        }
+        return tuple;
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _count_nonzero(a, axis) -> int or Tensor.
+PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  x    = nullptr;
+    Py_ssize_t axis = -1;
+    if (PyArg_ParseTuple(args, "On", &x, &axis) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        return std::visit([axis](const auto& t) -> PyObject* {
+                              using T = element_of_t<std::decay_t<decltype(t)>>;
+                              if (axis < 0) {
+                                  return PyLong_FromSize_t(static_cast<std::size_t>(std::ranges::count_if(t.data(), [](const T& value) { return value != T {}; })));
+                              }
+                              return wrap(any_tensor {numerical::count_nonzero(t, static_cast<std::size_t>(axis))});
+                          }, *a);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _searchsorted(a, v, right) -> Tensor.
+PyObject* module_searchsorted(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x     = nullptr;
+    PyObject* y     = nullptr;
+    int       right = 0;
+    if (PyArg_ParseTuple(args, "OOp", &x, &y, &right) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = nullptr;
+    const any_tensor* v = nullptr;
+    if (!same_dtype_pair(x, y, a, v)) {
+        return nullptr;
+    }
+    try {
+        return visit_arithmetic([&](const auto& sorted) {
+                                    return wrap(any_tensor {numerical::searchsorted(sorted, std::get<std::decay_t<decltype(sorted)>>(*v), right != 0)});
+                                }, *a);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _round(a, decimals) -> Tensor: numerical::round of a float or complex tensor (decimals clamped by the caller).
 PyObject* module_round(PyObject* /*self*/, PyObject* args)
 {

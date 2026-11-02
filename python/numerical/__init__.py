@@ -372,6 +372,8 @@ def _index_array(index):
     if isinstance(index, bool) or (type(index).__module__ == "numpy" and type(index).__name__ in ("bool", "bool_")):
         return "mask", asarray(bool(index), "bool")  # before an integer: operator.index(True) is 1
     if isinstance(index, Tensor):
+        if index.dtype == "int64":
+            return "ints", reshape(index, (-1,)).tolist(), index.shape
         if index.dtype != "bool":
             raise IndexError(f"arrays used as indices must be of integer (or boolean) type, not {index.dtype}")
         return "mask", index
@@ -5799,6 +5801,129 @@ def sort(a, axis=-1, kind=None, stable=None):
     return _along("sort", a, axis)
 
 
+def _ordered_operand(a, name):
+    """`a` as a Tensor to order: a bool one as int64 (False before True), a complex one refused where `name` takes a
+    real order alone (argmax, argmin)."""
+    a = _tensor(a)
+    if a.dtype == "bool":
+        a = asarray(a, "int64")
+    return a
+
+
+def _arg_extreme(largest, a, axis, keepdims, name):
+    a = _ordered_operand(a, name)
+    if axis is None:
+        index = _native(_numerical._arg_extreme, largest, a, -1)
+        return full((1,) * len(a.shape), index, "int64") if keepdims else index
+    axis = _axis(a, axis)
+    result = _native(_numerical._arg_extreme, largest, a, axis)
+    return reshape(result, tuple(1 if k == axis else e for k, e in enumerate(a.shape))) if keepdims else result
+
+
+def argmax(a, axis=None, keepdims=False):
+    """The index of the largest element, flat (a Python int) or along `axis` (an int64 Tensor), as ``numpy.argmax``:
+    the first of equal ones, the first NaN where there is one. Real and int64 dtypes, bool as 0 and 1.
+
+    Raises:
+        ValueError: if `a` (or the axis) is empty.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.argmax(numerical.asarray([[1.0, 5.0], [7.0, 2.0]]), axis=1)
+        numerical.Tensor([1, 0], dtype=int64)
+    """
+    return _arg_extreme(True, a, axis, keepdims, "argmax")
+
+
+def argmin(a, axis=None, keepdims=False):
+    """The index of the smallest element, flat or along `axis`, as ``numpy.argmin``: the first of equal ones, the
+    first NaN where there is one."""
+    return _arg_extreme(False, a, axis, keepdims, "argmin")
+
+
+def argsort(a, axis=-1, kind=None, stable=None):
+    """The indices that sort `a` along `axis` (every element flattened where None), as ``numpy.argsort``: an int64
+    Tensor, ascending, NaNs last, equal elements by index whatever `kind` (NumPy's ``kind="stable"``).
+
+    Examples:
+        >>> import numerical
+        >>> numerical.argsort(numerical.asarray([3.0, 1.0, 2.0]))
+        numerical.Tensor([1, 2, 0], dtype=int64)
+    """
+    del kind, stable
+    a = _ordered_operand(a, "argsort")
+    if axis is None:
+        return _native(_numerical._argsort, reshape(a, (-1,)), 0)
+    return _native(_numerical._argsort, a, _axis(a, axis))
+
+
+def nonzero(a):
+    """The indices of the nonzero (true) elements, one int64 Tensor per axis, in C order, as ``numpy.nonzero``: a NaN
+    is nonzero, as is a complex number either part of which is.
+
+    Raises:
+        ValueError: for a rank-0 `a`, as NumPy 2's.
+    """
+    a = _tensor(a)
+    if not a.shape:
+        raise ValueError("Calling nonzero on 0d arrays is not allowed. Use np.atleast_1d(scalar).nonzero() instead.")
+    return _numerical._nonzero(a)
+
+
+def flatnonzero(a):
+    """The flat indices of the nonzero elements, an int64 Tensor, as ``numpy.flatnonzero``."""
+    return nonzero(ravel(a))[0]
+
+
+def argwhere(a):
+    """The indices of the nonzero elements, one row each of `a`'s rank, as ``numpy.argwhere``: an int64 Tensor of
+    shape ``(N, a.ndim)``."""
+    a = _tensor(a)
+    if not a.shape:
+        return zeros((int(bool(a[()])), 0), "int64")
+    return stack(_numerical._nonzero(a), axis=1)
+
+
+def count_nonzero(a, axis=None, *, keepdims=False):
+    """The number of nonzero elements, of every element (a Python int) or along `axis` (an int64 Tensor; a tuple of
+    axes for several), as ``numpy.count_nonzero``."""
+    a = _tensor(a)
+    if axis is None and not keepdims:
+        return _numerical._count_nonzero(a, -1)
+    axes = _resolved_axes(a, axis, "count_nonzero")
+    if not axes:
+        return asarray(a != 0, "int64") if a.dtype != "bool" else asarray(a, "int64")
+    counted = _native(_numerical._count_nonzero, a, axes[-1])
+    for k in sorted(axes[:-1], reverse=True):
+        counted = sum(counted, axis=k)
+    if keepdims:
+        counted = reshape(counted, tuple(1 if k in axes else e for k, e in enumerate(a.shape)))
+    return _number_if_scalar(counted) if not keepdims and len(axes) == len(a.shape) else counted
+
+
+def searchsorted(a, v, side="left", sorter=None):
+    """Where each element of `v` would go in the sorted vector `a` to keep it sorted, as ``numpy.searchsorted``: the
+    first such place (`side` "left") or the last ("right"), NaNs ordered last; `sorter` the indices that sort `a`
+    (:func:`argsort`'s). A Python int for a number `v`, else an int64 Tensor of its shape.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.searchsorted(numerical.asarray([1.0, 2.0, 2.0, 3.0]), [2.0, 0.5], side="right")
+        numerical.Tensor([3, 0], dtype=int64)
+    """
+    if side not in ("left", "right"):
+        raise ValueError(f"side must be 'left' or 'right' (got {side!r})")
+    a = _ordered_operand(a, "searchsorted")
+    if len(a.shape) != 1:
+        raise ValueError("object too deep for desired array")
+    if sorter is not None:
+        a = a[asarray(sorter, "int64")]
+    number = isinstance(v, _numbers.Number)
+    a, v = _same_dtype(a, v)
+    found = _native(_numerical._searchsorted, a, v, side == "right")
+    return found[()] if number else found
+
+
 def diff(a, n=1, axis=-1):
     """The `n`-th differences along `axis`, ``a[1:] − a[:-1]`` repeated, as ``numpy.diff``."""
     a = _operand(a)
@@ -5816,7 +5941,9 @@ def diff(a, n=1, axis=-1):
     return a
 
 
-for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot", "prod", "cumsum", "cumprod", "round"):  # NumPy's methods of these names, where Tensor has none
+Tensor.nonzero = lambda self: nonzero(self)
+for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot", "prod", "cumsum", "cumprod", "round", "argmax", "argmin",
+              "argsort", "searchsorted"):  # NumPy's methods of these names, where Tensor has none
     if not hasattr(Tensor, _name):
         setattr(Tensor, _name, (lambda function: lambda self, *args, **kwargs: function(self, *args, **kwargs))(globals()[_name]))
 del _name
@@ -5827,7 +5954,8 @@ __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "f
             "fliplr", "swapaxes", "moveaxis", "column_stack", "maximum", "minimum", "clip", "isclose", "allclose", "dot",
             "inner", "vdot", "ptp", "var", "std", "floor", "ceil", "trunc", "rint", "sign", "arcsin", "arccos", "arctan",
             "sinh", "cosh", "arcsinh", "arccosh", "arctanh", "log2", "log10", "log1p", "expm1", "cbrt", "deg2rad",
-            "rad2deg", "radians", "degrees", "round", "around", "prod", "cumsum", "cumprod", "sort", "diff"]
+            "rad2deg", "radians", "degrees", "round", "around", "prod", "cumsum", "cumprod", "sort", "diff", "argmax",
+            "argmin", "argsort", "nonzero", "flatnonzero", "argwhere", "count_nonzero", "searchsorted"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)
 

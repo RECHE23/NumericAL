@@ -21,6 +21,7 @@
 #include <cstring>
 #include <functional>
 #include <limits>
+#include <numeric>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -1668,20 +1669,25 @@ namespace numerical {
 
     /*!
      * \brief Sorts the \p count elements at \p data stably in \p pieces, a power of four, among the threads: each piece
-     *        sorted apart, then the pieces merged in pairs, round after round, between \p data and a scratch buffer
+     *        sorted apart by \p sort_piece, then the pieces merged in pairs by \p less (the order \p sort_piece sorts
+     *        by), round after round, between \p data and a scratch buffer
      *        (`std::merge` takes the first piece's element of two equal ones, so the merge keeps their order). The
      *        rounds are even in number, so the last writes \p data.
      */
-    template <typename T>
-    void parallel_sort_run(T*          data,
-                           std::size_t count,
-                           std::size_t pieces)
+    template <typename T,
+              typename SortRun,
+              typename Less>
+    void parallel_sort_run(T*             data,
+                           std::size_t    count,
+                           std::size_t    pieces,
+                           const SortRun& sort_piece,
+                           const Less&    less)
     {
       std::vector<std::size_t> bounds(pieces + 1);
       for (std::size_t k {0}; k <= pieces; ++k) {
         bounds[k] = (count / pieces * k) + (std::min(k, count % pieces));
       }
-      parallel_for(pieces, count / pieces * 16, [&](std::size_t k) { sort_run(data + bounds[k], data + bounds[k + 1]); });
+      parallel_for(pieces, count / pieces * 16, [&](std::size_t k) { sort_piece(data + bounds[k], data + bounds[k + 1]); });
       buffer<T> scratch(count);
       T*        from {data};
       T*        to   {scratch.data()};
@@ -1691,8 +1697,7 @@ namespace numerical {
                        const std::size_t first  {bounds[pair * 2 * width]};
                        const std::size_t middle {bounds[std::min((pair * 2 * width) + width, pieces)]};
                        const std::size_t last   {bounds[std::min((pair + 1) * 2 * width, pieces)]};
-                       std::merge(from + first, from + middle, from + middle, from + last, to + first,
-                                  [](const T& a, const T& b) { return sorts_before(a, b); });
+                       std::merge(from + first, from + middle, from + middle, from + last, to + first, less);
                      });
         std::swap(from, to);
       }
@@ -1737,7 +1742,8 @@ namespace numerical {
       for (std::size_t line {0}; line < lines; ++line) {
         T* const run {walk.inner == 1 ? out.data() + (line * walk.extent) : line_buffer.data()};
         gather(line, run);
-        detail::parallel_sort_run(run, walk.extent, pieces);
+        detail::parallel_sort_run(run, walk.extent, pieces, [](T* first, T* last) { detail::sort_run(first, last); },
+                                  [](const T& a, const T& b) { return detail::sorts_before(a, b); });
         if (walk.inner != 1) {
           scatter(line, run);
         }
@@ -1757,6 +1763,264 @@ namespace numerical {
                            scatter(line, run.data());
                          });
     return tensor<T> {t.shape(), std::move(out)};
+  }
+
+  /*!
+   * \brief The indices that sort the elements along \p axis, as `numpy.argsort` (its `kind="stable"`): of each line,
+   *        in the order \ref sort puts its elements, equal ones by index. A long line is sorted among the threads
+   *        (\ref detail::parallel_sort_run). \throws dimension_error If \p axis is not an axis.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<std::int64_t> argsort(const tensor<T>& t,
+                                             std::size_t      axis)
+  {
+    const detail::axis_walk walk {detail::walk_along(t.shape(), axis)};
+    const std::size_t       lines {walk.outer * walk.inner};
+    buffer<std::int64_t>    out(t.size());
+    const T* const          in {t.data().data()};
+    const std::size_t       threads {detail::parallel_threads(walk.extent, 16)};
+    const bool              shared {threads >= 2 && detail::parallel_threads(lines, walk.extent * 16) * 2 <= threads};
+    const auto              order_line {[&](std::size_t line, std::size_t pieces) {
+                                          const std::size_t first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
+                                          const auto        value {[&](std::int64_t k) -> const T& {
+                                                                     return in[first + (static_cast<std::size_t>(k) * walk.inner)];
+                                                                   }};
+                                          const auto        less {[&](std::int64_t a, std::int64_t b) { return detail::sorts_before(value(a), value(b)); }};
+                                          buffer<std::int64_t> order(walk.extent);
+                                          std::iota(order.begin(), order.end(), std::int64_t {0});
+                                          if (pieces > 1) {
+                                            detail::parallel_sort_run(order.data(), walk.extent, pieces,
+                                                                      [&less](std::int64_t* from, std::int64_t* to) { std::stable_sort(from, to, less); }, less);
+                                          }
+                                          else {
+                                            std::stable_sort(order.begin(), order.end(), less);
+                                          }
+                                          for (std::size_t k {0}; k < walk.extent; ++k) {
+                                            out[first + (k * walk.inner)] = order[k];
+                                          }
+                                        }};
+    if (shared) {
+      std::size_t pieces {4};
+      while (pieces < threads) {
+        pieces *= 4;
+      }
+      for (std::size_t line {0}; line < lines; ++line) {
+        order_line(line, pieces);
+      }
+    }
+    else {
+      detail::parallel_for(lines, walk.extent * 16, [&](std::size_t line) { order_line(line, 1); });
+    }
+    return tensor<std::int64_t> {t.shape(), std::move(out)};
+  }
+
+  namespace detail {
+    //! \brief A real's NaN, which wins `numpy.argmax` and `numpy.argmin`.
+    template <std::floating_point T>
+    [[nodiscard]] bool wins_any_order(T x) noexcept
+    {
+      return std::isnan(x);
+    }
+
+    //! \brief An integer's: none.
+    template <std::integral T>
+    [[nodiscard]] bool wins_any_order(T /*x*/) noexcept
+    {
+      return false;
+    }
+
+    //! \brief The index of the first largest (\p larger `std::greater`) or smallest element of a line of \p count at
+    //!        stride \p stride, as NumPy's: the first NaN where there is one.
+    template <typename T,
+              typename Order>
+    [[nodiscard]] std::int64_t extreme_index(const T*     first,
+                                             std::size_t  count,
+                                             std::size_t  stride,
+                                             const Order& larger)
+    {
+      std::size_t best {0};
+      for (std::size_t i {0}; i < count; ++i) {
+        const T& x {first[i * stride]};
+        if (wins_any_order(x)) {
+          return static_cast<std::int64_t>(i);
+        }
+        if (larger(x, first[best * stride])) {
+          best = i;
+        }
+      }
+      return static_cast<std::int64_t>(best);
+    }
+
+    //! \brief \ref argmax or \ref argmin along \p axis by \p larger.
+    template <typename T,
+              typename Order>
+    [[nodiscard]] tensor<std::int64_t> extreme_indices(const tensor<T>& t,
+                                                       std::size_t      axis,
+                                                       const Order&     larger)
+    {
+      const axis_walk walk {walk_along(t.shape(), axis)};
+      if (walk.extent == 0) {
+        throw dimension_error("attempt to get argmax or argmin of an empty sequence");
+      }
+      buffer<std::int64_t> out(walk.outer * walk.inner);
+      const T* const       in {t.data().data()};
+      parallel_for(walk.outer * walk.inner, walk.extent, [&](std::size_t line) {
+                     const std::size_t first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
+                     out[line] = extreme_index(in + first, walk.extent, walk.inner, larger);
+                   });
+      return tensor<std::int64_t> {without_axis(t.shape(), axis), std::move(out)};
+    }
+
+    //! \brief \ref extreme_index of the \p count contiguous elements at \p first, by chunks on the threads: each chunk's
+    //!        own, then the first of the chunks' (a NaN's chunk wins at once, the earliest of equal ones otherwise).
+    template <typename T,
+              typename Order>
+    [[nodiscard]] std::int64_t parallel_extreme_index(const T*     first,
+                                                      std::size_t  count,
+                                                      const Order& larger)
+    {
+      const std::size_t         chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
+      std::vector<std::int64_t> best(chunks);
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t start {c * elementwise_chunk};
+                     best[c] = static_cast<std::int64_t>(start) + extreme_index(first + start, std::min(elementwise_chunk, count - start), 1, larger);
+                   });
+      std::int64_t winner {best[0]};
+      for (const std::int64_t candidate : best) {
+        const T& x {first[candidate]};
+        if (wins_any_order(x)) {
+          return candidate; // the earliest chunk's NaN: chunks are in order
+        }
+        if (larger(x, first[winner])) {
+          winner = candidate;
+        }
+      }
+      return winner;
+    }
+  } // namespace detail
+
+  //! \brief The flat index of the first largest element, as `numpy.argmax` (the first NaN where there is one).
+  //!        \throws dimension_error If \p t is empty.
+  template <typename T>
+  [[nodiscard]] std::int64_t argmax(const tensor<T>& t)
+  {
+    if (t.size() == 0) {
+      throw dimension_error("attempt to get argmax of an empty sequence");
+    }
+    return detail::parallel_extreme_index(t.data().data(), t.size(), std::greater<T> {});
+  }
+
+  //! \brief The flat index of the first smallest element, as `numpy.argmin` (the first NaN where there is one).
+  //!        \throws dimension_error If \p t is empty.
+  template <typename T>
+  [[nodiscard]] std::int64_t argmin(const tensor<T>& t)
+  {
+    if (t.size() == 0) {
+      throw dimension_error("attempt to get argmin of an empty sequence");
+    }
+    return detail::parallel_extreme_index(t.data().data(), t.size(), std::less<T> {});
+  }
+
+  //! \brief The index of the first largest element of every line along \p axis, as `numpy.argmax`. \throws
+  //!        dimension_error If \p axis is not an axis, or is empty.
+  template <typename T>
+  [[nodiscard]] tensor<std::int64_t> argmax(const tensor<T>& t,
+                                            std::size_t      axis)
+  {
+    return detail::extreme_indices(t, axis, std::greater<T> {});
+  }
+
+  //! \brief The index of the first smallest element of every line along \p axis, as `numpy.argmin`. \throws
+  //!        dimension_error If \p axis is not an axis, or is empty.
+  template <typename T>
+  [[nodiscard]] tensor<std::int64_t> argmin(const tensor<T>& t,
+                                            std::size_t      axis)
+  {
+    return detail::extreme_indices(t, axis, std::less<T> {});
+  }
+
+  /*!
+   * \brief The indices of the nonzero elements (`x != T {}`: a NaN is one), one tensor per axis, in C order, as
+   *        `numpy.nonzero`: by chunks on the threads, each chunk's counted, then its flat places written at its
+   *        offset, then each axis' index of every place.
+   */
+  template <typename T>
+  [[nodiscard]] std::vector<tensor<std::int64_t>> nonzero(const tensor<T>& t)
+  {
+    const std::vector<std::size_t>& shape  {t.shape()};
+    const T* const                  data   {t.data().data()};
+    const std::size_t               count  {t.size()};
+    const std::size_t               chunk  {detail::elementwise_chunk};
+    const std::size_t               chunks {(count + chunk - 1) / chunk};
+    std::vector<std::size_t>        offsets(chunks + 1, 0);
+    detail::parallel_for(chunks, chunk, [&](std::size_t c) {
+                           const std::size_t last {std::min((c + 1) * chunk, count)};
+                           offsets[c + 1] = static_cast<std::size_t>(std::count_if(data + (c * chunk), data + last, [](const T& x) { return x != T {}; }));
+                         });
+    std::partial_sum(offsets.begin(), offsets.end(), offsets.begin());
+    const std::size_t   found {offsets.back()};
+    buffer<std::size_t> places(found);
+    detail::parallel_for(chunks, chunk, [&](std::size_t c) {
+                           const std::size_t last {std::min((c + 1) * chunk, count)};
+                           std::size_t       at {offsets[c]};
+                           for (std::size_t k {c * chunk}; k < last; ++k) {
+                             if (data[k] != T {}) {
+                               places[at++] = k;
+                             }
+                           }
+                         });
+    std::vector<tensor<std::int64_t>> indices;
+    indices.reserve(shape.size());
+    std::size_t stride {count};
+    for (const std::size_t extent : shape) {
+      if (found == 0) { // nothing found, an empty extent maybe: no place to divide
+        indices.emplace_back(std::vector<std::size_t> {0}, buffer<std::int64_t> {});
+        continue;
+      }
+      stride /= extent;
+      indices.push_back(detail::parallel_map(places.data(), {found}, [stride, extent](std::size_t place) {
+                                               return static_cast<std::int64_t>((place / stride) % extent);
+                                             }));
+    }
+    return indices;
+  }
+
+  //! \brief The number of nonzero elements (`x != T {}`) along \p axis, as `numpy.count_nonzero`. \throws
+  //!        dimension_error If \p axis is not an axis.
+  template <typename T>
+  [[nodiscard]] tensor<std::int64_t> count_nonzero(const tensor<T>& t,
+                                                   std::size_t      axis)
+  {
+    return detail::reduce_along(map(t, [](const T& x) { return static_cast<std::int64_t>(x != T {}); }), axis,
+                                [](const std::int64_t* first, std::size_t count, std::size_t stride) {
+                                  std::int64_t total {0};
+                                  for (std::size_t i {0}; i < count; ++i) {
+                                    total += first[i * stride];
+                                  }
+                                  return total;
+                                });
+  }
+
+  /*!
+   * \brief Where each element of \p v would go in the sorted line \p a to keep it sorted, as `numpy.searchsorted`: the
+   *        first such place (\p right false) or the last, in \ref detail::sorts_before's order (NaNs last).
+   *        \throws dimension_error If \p a is not a vector.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<std::int64_t> searchsorted(const tensor<T>& a,
+                                                  const tensor<T>& v,
+                                                  bool             right = false)
+  {
+    if (a.rank() != 1) {
+      throw dimension_error("searchsorted: a sorted vector");
+    }
+    const T* const first {a.data().data()};
+    const T* const last {first + a.size()};
+    const auto     less {[](const T& x, const T& y) { return detail::sorts_before(x, y); }};
+    return detail::parallel_map(v, [&](const T& x) {
+                                  const T* const at {right ? std::upper_bound(first, last, x, less) : std::lower_bound(first, last, x, less)};
+                                  return static_cast<std::int64_t>(at - first);
+                                });
   }
 
   //! \brief The largest elements along \p axis. \throws dimension_error If \p axis is not an axis or is empty.

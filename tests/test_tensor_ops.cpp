@@ -8,6 +8,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <limits>
+#include <numeric>
 #include <string>
 #include <vector>
 
@@ -1140,6 +1141,90 @@ TEST(floor_divide_and_remainder_as_numpy)
   EXPECT(numerical::floor_divide(x, y).data() == (numerical::buffer<big> {3, -4, -4, 3, 2, 0, bottom, 9}));
   EXPECT(numerical::remainder(x, y).data() == (numerical::buffer<big> {1, 1, -1, -1, 0, 0, 0, 0}));
   EXPECT(numerical::remainder(tensor<float> {{1}, {-7.0F}}, tensor<float> {{1}, {2.0F}}).data()[0] == 1.0F);
+}
+
+// The index functions as NumPy's, in int64: argmax and argmin the first extreme (the first NaN where there is one),
+// flat or along an axis, on the threads by chunks; argsort stable, a long line among the threads; nonzero by axis,
+// count_nonzero along an axis, searchsorted's first or last place (NaNs last).
+TEST(index_functions_as_numpy)
+{
+  using big = std::int64_t;
+  const double         nan  {std::numeric_limits<double>::quiet_NaN()};
+  const tensor<double> grid {{2, 3}, {3.0, 1.0, 3.0, 2.0, nan, 5.0}};
+  EXPECT(numerical::argmax(grid) == 4 && numerical::argmin(grid) == 4); // the NaN
+  EXPECT(numerical::argmax(grid, 0).data() == (numerical::buffer<big> {0, 1, 1}));
+  EXPECT(numerical::argmin(grid, 1).data() == (numerical::buffer<big> {1, 1}));
+  const tensor<big> ints {{5}, {2, 7, -1, 7, -1}};
+  EXPECT(numerical::argmax(ints) == 1 && numerical::argmin(ints) == 2); // the first of equal ones
+  EXPECT_THROWS((void)numerical::argmax(tensor<double> {{0}, numerical::buffer<double> {}}), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::argmin(tensor<double> {{0}, numerical::buffer<double> {}}), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::argmax(tensor<double> {{2, 0}, numerical::buffer<double> {}}, 1), numerical::dimension_error);
+  // Many elements, by chunks: a later chunk's larger one, an earlier chunk's equal one, an early NaN.
+  const std::size_t      n {std::size_t {1} << 17};
+  numerical::buffer<big> many(n, 0);
+  many[5]     = 9;
+  many[n - 3] = 9;
+  many[n - 2] = 10;
+  many[70000] = -4;
+  const tensor<big> line {{n}, std::move(many)};
+  EXPECT(numerical::argmax(line) == static_cast<big>(n - 2) && numerical::argmin(line) == 70000);
+  numerical::buffer<double> reals(n, 1.0);
+  reals[100]   = 2.0;
+  reals[50000] = 2.0;
+  EXPECT(numerical::argmax(tensor<double> {{n}, numerical::buffer<double>(reals)}) == 100);
+  reals[20000] = 0.5; // a later chunk's smaller one: found past the first chunk; then a NaN's chunk, which wins
+  EXPECT(numerical::argmin(tensor<double> {{n}, numerical::buffer<double>(reals)}) == 20000);
+  reals[40000] = nan;
+  reals[90000] = nan;
+  EXPECT(numerical::argmin(tensor<double> {{n}, std::move(reals)}) == 40000);
+  // argsort: equal elements by index, NaNs last; along either axis; a long line among the threads.
+  EXPECT(numerical::argsort(grid, 1).data() == (numerical::buffer<big> {1, 0, 2, 0, 2, 1}));
+  EXPECT(numerical::argsort(grid, 0).data() == (numerical::buffer<big> {1, 0, 0, 0, 1, 1}));
+  numerical::buffer<double> shuffled(n);
+  for (std::size_t k {0}; k < n; ++k) {
+    shuffled[k] = static_cast<double>((k * 2654435761U) % 1000);
+  }
+  shuffled[3] = nan;
+  std::vector<big> want(n);
+  std::iota(want.begin(), want.end(), big {0});
+  std::ranges::stable_sort(want, [&](big a, big b) {
+                             return numerical::detail::sorts_before(shuffled[static_cast<std::size_t>(a)], shuffled[static_cast<std::size_t>(b)]);
+                           });
+  const tensor<big> order {numerical::argsort(tensor<double> {{n}, std::move(shuffled)}, 0)};
+  EXPECT(std::ranges::equal(order.data(), want) && order.data()[n - 1] == 3);
+  // Lines enough for the threads, each long: one to a task.
+  const std::size_t         rows  {16};
+  const std::size_t         width {std::size_t {1} << 14};
+  numerical::buffer<double> wide(rows * width);
+  for (std::size_t k {0}; k < wide.size(); ++k) {
+    wide[k] = static_cast<double>((k * 40503U) % 977);
+  }
+  const tensor<big> each    {numerical::argsort(tensor<double> {{rows, width}, numerical::buffer<double>(wide)}, 1)};
+  bool              ordered {true};
+  for (std::size_t r {0}; r < rows; ++r) {
+    for (std::size_t k {1}; k < width; ++k) {
+      const double before {wide[(r * width) + static_cast<std::size_t>(each.data()[(r * width) + k - 1])]};
+      const double after  {wide[(r * width) + static_cast<std::size_t>(each.data()[(r * width) + k])]};
+      ordered = ordered && (before < after || (before == after && each.data()[(r * width) + k - 1] < each.data()[(r * width) + k]));
+    }
+  }
+  EXPECT(ordered);
+  using cplx = std::complex<double>;
+  EXPECT(numerical::argsort(tensor<cplx> {{3}, {cplx {1.0, 2.0}, cplx {1.0, -1.0}, cplx {0.0, 9.0}}}, 0).data() == (numerical::buffer<big> {2, 1, 0}));
+  // nonzero by axis; none at all (an empty extent too); count_nonzero along an axis.
+  const std::vector<tensor<big>> places {numerical::nonzero(tensor<double> {{2, 3}, {0.0, 1.0, 0.0, nan, 0.0, -2.0}})};
+  EXPECT(places.size() == 2 && places[0].data() == (numerical::buffer<big> {0, 1, 1}) && places[1].data() == (numerical::buffer<big> {1, 0, 2}));
+  const std::vector<tensor<big>> none   {numerical::nonzero(tensor<double> {{2, 0}, numerical::buffer<double> {}})};
+  EXPECT(none.size() == 2 && none[0].size() == 0 && none[1].size() == 0);
+  EXPECT(numerical::nonzero(tensor<big> {{3}, {0, 0, 0}})[0].size() == 0);
+  EXPECT(numerical::count_nonzero(grid, 1).data() == (numerical::buffer<big> {3, 3}));
+  EXPECT(numerical::count_nonzero(tensor<big> {{2, 2}, {0, 1, 0, 0}}, 0).data() == (numerical::buffer<big> {0, 1}));
+  // searchsorted: the first or the last place, NaNs last; a vector only.
+  const tensor<double> sorted {{4}, {1.0, 2.0, 2.0, nan}};
+  const tensor<double> values {{3}, {2.0, nan, 0.5}};
+  EXPECT(numerical::searchsorted(sorted, values).data() == (numerical::buffer<big> {1, 3, 0}));
+  EXPECT(numerical::searchsorted(sorted, values, true).data() == (numerical::buffer<big> {3, 4, 0}));
+  EXPECT_THROWS((void)numerical::searchsorted(grid, values), numerical::dimension_error);
 }
 
 // round to decimal places as numpy.round: half to even through the scaled value; a value already exact to the places

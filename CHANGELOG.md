@@ -9,6 +9,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 ## Unreleased
 
 ### Added
+- **The index functions, in int64**: `argmax` and `argmin` (flat, a Python int, or along an axis, with `keepdims`; the
+  first of equal ones, the first NaN where there is one), `argsort` (stable, NaNs last; a long line sorted among the
+  threads), `nonzero`, `flatnonzero`, `argwhere`, `count_nonzero` (along one axis or several) and `searchsorted`
+  (either side, `sorter`), as NumPy's, and the Tensor methods `argmax`, `argmin`, `argsort`, `nonzero` and
+  `searchsorted`; in C++ `numerical::argmax`, `argmin`, `argsort`, `nonzero`, `count_nonzero` and `searchsorted`.
+  An int64 Tensor indexes (`t[numerical.argsort(t)]`). 10⁶ doubles, M1 Pro: `argsort` 56 ms (NumPy 84, its stable
+  sort 100), flat `argmax` 0.60 ms (0.67); 10⁵ values placed in 10⁶ by `searchsorted` 31 ms (54).
 - **An int64 dtype**, asked by `dtype="int64"` (or `int`, `numpy.int64`): Python integers, nested lists and NumPy's
   integer arrays (either byte order, any strides) read exactly, past 2⁵³ too; `astype`, `zeros`, `ones`, `full`,
   `eye` and `Tensor(..., dtype="int64")`; exported through `__array_interface__`, DLPack and pickle, as Python
