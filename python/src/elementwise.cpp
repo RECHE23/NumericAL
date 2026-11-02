@@ -198,6 +198,38 @@ namespace {
         const auto  found {std::find_if(table.begin(), table.end(), [name](const auto& entry) { return entry.first == name; })};
         return found == table.end() ? nullptr : found->second;
     }
+
+    //! The real function \p name (one of real_functions<R>) of every element at \p data, of shape \p shape. Those
+    //! the compiler maps to an instruction or two (a rounding, a product, a comparison) each go through a lambda of
+    //! their own, which the loop inlines and vectorises (10^5 floors 96 µs through the pointer, 17 so); the others,
+    //! calls to C's library, through the pointer.
+    template <typename R>
+    numerical::tensor<R> real_map(std::string_view name, const R* data, const std::vector<std::size_t>& shape)
+    {
+        using numerical::detail::parallel_map;
+        if (name == "floor") {
+            return parallel_map(data, shape, [](R x) { return std::floor(x); });
+        }
+        if (name == "ceil") {
+            return parallel_map(data, shape, [](R x) { return std::ceil(x); });
+        }
+        if (name == "trunc") {
+            return parallel_map(data, shape, [](R x) { return std::trunc(x); });
+        }
+        if (name == "rint") {
+            return parallel_map(data, shape, [](R x) { return std::nearbyint(x); });
+        }
+        if (name == "sign") {
+            return parallel_map(data, shape, [](R x) { return sign_of(x); });
+        }
+        if (name == "deg2rad") {
+            return parallel_map(data, shape, [](R x) { return x * (std::numbers::pi_v<R> / R {180}); });
+        }
+        if (name == "rad2deg") {
+            return parallel_map(data, shape, [](R x) { return x * (R {180} / std::numbers::pi_v<R>); });
+        }
+        return parallel_map(data, shape, real_function<R>(name));
+    }
 } // namespace
 
 // _real_unary(name, a) -> Tensor: the real elementary function name of every element of a float64 or float32 tensor,
@@ -210,9 +242,7 @@ PyObject* module_real_unary(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     const std::string_view name {op};
-    double (*const wide_function)(double) {real_function<double>(name)};
-    float (*const single_function)(float) {real_function<float>(name)};
-    if (wide_function == nullptr) {
+    if (real_function<double>(name) == nullptr) {
         PyErr_SetString(PyExc_ValueError, "_real_unary: an unknown function");
         return nullptr;
     }
@@ -225,15 +255,40 @@ PyObject* module_real_unary(PyObject* /*self*/, PyObject* args)
         {
             const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
             if (const auto* wide {std::get_if<real_tensor>(a)}) {
-                result.emplace(numerical::detail::parallel_map(*wide, wide_function));
+                result.emplace(real_map(name, wide->data().data(), wide->shape()));
             }
             else if (const auto* single {std::get_if<single_tensor>(a)}) {
-                result.emplace(numerical::detail::parallel_map(*single, single_function));
+                result.emplace(real_map(name, single->data().data(), single->shape()));
             }
         }
         if (!result) {
             PyErr_SetString(PyExc_TypeError, "_real_unary: a float64 or float32 tensor");
             return nullptr;
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _round(a, decimals) -> Tensor: numerical::round of a float or complex tensor (decimals clamped by the caller).
+PyObject* module_round(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x        = nullptr;
+    int       decimals = 0;
+    if (PyArg_ParseTuple(args, "Oi", &x, &decimals) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = numeric_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            result.emplace(visit_numeric([decimals](const auto& t) { return any_tensor {numerical::round(t, decimals)}; }, *a));
         }
         return wrap(std::move(*result));
     }
@@ -880,7 +935,7 @@ PyObject* module_borrowed_reduce(PyObject* /*self*/, PyObject* args)
 }
 
 // _borrowed_unary(name, x) -> Tensor or NotImplemented: exp, log, sqrt, sin, cos, tan, tanh of every element of a NumPy
-// array read where it lies (borrow_operand), or abs of a real one, by the element functions numerical::exp and the
+// array read where it lies (borrow_operand), or abs or a real function (real_map) of a real one, by the element functions numerical::exp and the
 // rest map over a Tensor (detail::parallel_map), so its answer to the bit; NotImplemented for any other operand or name
 // (abs of a complex array goes through NumPy's loop, conj through its Tensor), which the converting path takes. The
 // array was copied into a Tensor first: 10^6 doubles' exp 2.63 ms, 1.06 from a Tensor.
@@ -892,10 +947,11 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     const std::string_view name {op};
-    const bool             known {name == "exp" || name == "log" || name == "sqrt" || name == "sin" || name == "cos" || name == "tan"
-                                  || name == "tanh" || name == "abs"};
+    const bool             real_only {real_function<double>(name) != nullptr};
+    const bool             known {real_only || name == "exp" || name == "log" || name == "sqrt" || name == "sin" || name == "cos"
+                                  || name == "tan" || name == "tanh" || name == "abs"};
     borrowed_operand       x;
-    if (!known || !borrow_operand(obj, x) || (name == "abs" && (x.dtype == 1 || x.dtype == 3))) {
+    if (!known || !borrow_operand(obj, x) || ((name == "abs" || real_only) && (x.dtype == 1 || x.dtype == 3))) {
         return Py_NewRef(Py_NotImplemented);
     }
     std::size_t count {1};
@@ -909,6 +965,12 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
             const auto map = [&]<typename T>(std::type_identity<T>) {
                 namespace d = numerical::detail;
                 const T* const data {static_cast<const T*>(x.data)};
+                if constexpr (!complex_scalar<T>) {
+                    if (real_only) {
+                        result.emplace(real_map(name, data, x.shape));
+                        return;
+                    }
+                }
                 if (name == "exp") {
                     result.emplace(d::parallel_map(data, x.shape, [](const T& v) { return d::elementary_exp(v); }));
                 }

@@ -1,10 +1,12 @@
 // Element-wise arithmetic with broadcasting, reductions, reshaping and creation of tensors, each against
 // NumPy's definition of it.
 #include <algorithm>
+#include <bit>
 #include <functional>
 #include <cmath>
 #include <complex>
 #include <cstddef>
+#include <cstdint>
 #include <limits>
 #include <string>
 #include <vector>
@@ -1009,4 +1011,89 @@ TEST(prod_cumulative_sums_and_sort_along_an_axis)
   const tensor<float> single   {{3}, {2.0F, -1.0F, 0.5F}};
   EXPECT(numerical::sort(single, 0).data()[0] == -1.0F && numerical::cumsum(single, 0).data()[2] == 1.5F);
   EXPECT_THROWS((void)numerical::cumsum(grid, 2), numerical::dimension_error);
+}
+
+// A line long enough for the threads sorts in pieces merged in pairs, to the bits of one stable sort: equal values
+// (zeros of either sign among them) in their order, NaNs last in theirs. Alone, or two lines along the last axis or
+// along the first, with the threads' default and with two (four pieces, one merge round fewer).
+TEST(sort_of_long_lines_among_the_threads)
+{
+  const std::size_t   n     {std::size_t {1} << 17};
+  std::vector<double> values(2 * n);
+  std::uint64_t       state {12345};
+  for (std::size_t k {0}; k < values.size(); ++k) {
+    state     = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+    values[k] = static_cast<double>(static_cast<std::int64_t>(state >> 54) - 512); // 1024 values, each many times
+    if (k % 97 == 0) {
+      values[k] = std::numeric_limits<double>::quiet_NaN();
+    }
+    else if (values[k] == 0.0 && k % 2 == 0) {
+      values[k] = -0.0;
+    }
+  }
+  const auto stably_sorted {[](std::vector<double> line) {
+                              std::ranges::stable_sort(line, [](double a, double b) { return numerical::detail::sorts_before(a, b); });
+                              return line;
+                            }};
+  const auto same_bits {[](const double* got, const std::vector<double>& want, std::size_t stride) {
+                          for (std::size_t k {0}; k < want.size(); ++k) {
+                            if (std::bit_cast<std::uint64_t>(got[k * stride]) != std::bit_cast<std::uint64_t>(want[k])) {
+                              return false;
+                            }
+                          }
+                          return true;
+                        }};
+  const std::vector<double> first(values.begin(), values.begin() + static_cast<std::ptrdiff_t>(n));
+  const std::vector<double> second(values.begin() + static_cast<std::ptrdiff_t>(n), values.end());
+  const std::vector<double> first_sorted  {stably_sorted(first)};
+  const std::vector<double> second_sorted {stably_sorted(second)};
+  for (const std::size_t threads : {std::size_t {0}, std::size_t {2}}) {
+    numerical::set_max_threads(threads);
+    const tensor<double> line {numerical::sort(tensor<double> {{n}, numerical::buffer<double>(first.begin(), first.end())}, 0)};
+    EXPECT(same_bits(line.data().data(), first_sorted, 1));
+    const tensor<double> rows {numerical::sort(tensor<double> {{2, n}, numerical::buffer<double>(values.begin(), values.end())}, 1)};
+    EXPECT(same_bits(rows.data().data(), first_sorted, 1) && same_bits(rows.data().data() + n, second_sorted, 1));
+    numerical::buffer<double> interleaved(2 * n);
+    for (std::size_t k {0}; k < n; ++k) {
+      interleaved[2 * k]       = first[k];
+      interleaved[(2 * k) + 1] = second[k];
+    }
+    const tensor<double> columns {numerical::sort(tensor<double> {{n, 2}, std::move(interleaved)}, 0)};
+    EXPECT(same_bits(columns.data().data(), first_sorted, 2) && same_bits(columns.data().data() + 1, second_sorted, 2));
+  }
+  numerical::set_max_threads(0);
+}
+
+// round to decimal places as numpy.round: half to even through the scaled value; a value already exact to the places
+// kept (no product to overflow); a finite value 0 where 10⁻ᵈ overflows, a NaN or an infinity as it is; a float past
+// 10³⁸ places through double; a complex number's parts apart.
+TEST(round_to_decimal_places)
+{
+  const double         inf      {std::numeric_limits<double>::infinity()};
+  const double         nan      {std::numeric_limits<double>::quiet_NaN()};
+  const tensor<double> halves   {{4}, {1.25, 1.35, 2.5, -0.5}};
+  EXPECT(numerical::round(halves, 1).data() == (numerical::buffer<double> {12.0 / 10.0, 14.0 / 10.0, 2.5, -0.5}));
+  const tensor<double> whole    {numerical::round(halves)};
+  EXPECT(whole.data()[0] == 1.0 && whole.data()[1] == 1.0 && whole.data()[2] == 2.0 && std::signbit(whole.data()[3]));
+  const tensor<double> tens     {{3}, {1250.0, 1350.0, -49.0}};
+  const tensor<double> hundreds {numerical::round(tens, -2)};
+  EXPECT(hundreds.data()[0] == 1200.0 && hundreds.data()[1] == 1400.0 && hundreds.data()[2] == 0.0 && std::signbit(hundreds.data()[2]));
+  const tensor<double> edges    {{4}, {1e307, inf, nan, 0.125}};
+  const tensor<double> places   {numerical::round(edges, 2)};
+  EXPECT(places.data()[0] == 1e307 && places.data()[1] == inf && std::isnan(places.data()[2]) && places.data()[3] == 0.12);
+  const tensor<double> far      {{4}, {1.5, -2.25, inf, 0.0}};
+  EXPECT(numerical::round(far, 400).data() == far.data()); // 10⁴⁰⁰ overflows: every value its own rounding
+  const tensor<double> none     {numerical::round(edges, -400)};
+  EXPECT(none.data()[0] == 0.0 && none.data()[1] == inf && std::isnan(none.data()[2]) && none.data()[3] == 0.0);
+  EXPECT(std::signbit(numerical::round(tensor<double> {{1}, {-5.0}}, -400).data()[0]));
+  const tensor<float> single {{3}, {1.25F, 1.234e-39F, 3e-39F}};
+  EXPECT(numerical::round(single, 1).data()[0] == 12.0F / 10.0F);
+  const tensor<float> tiny   {numerical::round(single, 40)};
+  EXPECT(tiny.data()[0] == 1.25F && tiny.data()[1] == static_cast<float>(12.0 / 1e40) && tiny.data()[2] == 3e-39F);
+  EXPECT(numerical::round(single, 38).data()[2] == 0.0F);
+  using cplx = std::complex<double>;
+  const tensor<cplx> parts                 {numerical::round(tensor<cplx> {{2}, {cplx {1.26, -2.34}, cplx {nan, 0.5}}}, 1)};
+  EXPECT(parts.data()[0] == cplx(13.0 / 10.0, -23.0 / 10.0) && std::isnan(parts.data()[1].real()) && parts.data()[1].imag() == 0.5);
+  const tensor<std::complex<float>> narrow {numerical::round(tensor<std::complex<float>> {{1}, {std::complex<float> {2.5F, 1e-39F}}}, 40)};
+  EXPECT(narrow.data()[0] == std::complex<float>(2.5F, static_cast<float>(1e-39)));
 }

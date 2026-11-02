@@ -8,13 +8,29 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **`numerical::round(t, decimals)`** in C++ (real and complex tensors), which `numerical.round` now calls.
+
 ### Changed
+- **`sort` of a long line among the threads**: pieces sorted apart, then merged in pairs, to the bits of one stable
+  sort; a real line's NaNs set apart first, so the rest compares by `<` alone; a line along the last axis sorted where
+  it lies in the result. 10^6 doubles 91 → 20 ms (NumPy 36), 1000 × 1000 along either axis 7.1 → 5.3 ms (NumPy 19–20).
+- **`floor`, `ceil`, `trunc`, `rint`, `sign`, `deg2rad` and `rad2deg` inlined and vectorised** (each through a loop of
+  its own, where a pointer called them once an element): 10^5 doubles 96 → 17 µs, NumPy's speed or better at every
+  size. The real functions read a NumPy array where it lies, without a copy into a Tensor first.
 - **A dtype a Tensor does not offer raises `TypeError`**, as NumPy raises for a dtype it does not understand, from
   `asarray`, `astype`, the creation functions (`zeros`, `ones`, `full`, `eye`, the `*_like` ones) and the
   reductions' `dtype`. The error is also a `numerical.error` (as `asarray` raised) and a `ValueError` (as the
   creation functions raised), so code that caught either still catches it.
 
 ### Fixed
+- **`round` of a complex tensor** rounds the real and imaginary parts apart, as NumPy's; it raised `TypeError`.
+- **`round` to many places is exact**: a value whose ulp is coarser than the places is its own rounding and is kept,
+  where the product by 10ᵈ (NumPy's way, which `round` followed) rounded off a last bit (`round(x, 15)` of a value
+  near 10: one in a hundred moved) or overflowed (`round(1e307, 2)`: inf). A finite value rounds to 0 where 10⁻ᵈ
+  overflows (it raised `OverflowError`; NumPy's answers NaN), and a float32 past 10³⁸ places rounds through float64
+  (NaN before).
+- **`sort` of a bool tensor or array**, False before True, as NumPy's; it raised `TypeError`.
 - **A dtype given as a Python or NumPy type**: `asarray(x, dtype=numpy.float32)`, `dtype=float` and
   `dtype=numpy.dtype("complex64")` raised `TypeError` (the binding took a name alone); they read as that dtype, as
   every other function's `dtype` already did. `t.sum(dtype=numpy.dtype("float64"))` raised `KeyError`: a NumPy dtype

@@ -1447,6 +1447,7 @@ PyObject* module_negate(PyObject* /*self*/, PyObject* args); // in elementwise.c
 PyObject* module_extreme_pair(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_axis_op(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_real_unary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+PyObject* module_round(PyObject* /*self*/, PyObject* args);      // in elementwise.cpp
 
 // _equal(a, b) -> bool: whether two tensors of one dtype and one size hold equal elements, in order (a NaN equals
 // nothing). The caller checks the shapes and promotes the dtypes.

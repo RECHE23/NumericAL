@@ -1115,6 +1115,78 @@ namespace numerical {
     return broadcast_apply(a, b, [](T x, T y) { return detail::ieee_minimum(x, y); });
   }
 
+  namespace detail {
+    /*!
+     * \brief A real of type \p R rounded to \p decimals places, half to even, as `numpy.round`: `nearbyint(x · 10ᵈ) / 10ᵈ`
+     *        (`nearbyint(x / 10⁻ᵈ) · 10⁻ᵈ` for a negative `d`), computed in \p C.
+     *
+     * An `x` of magnitude 2ᵖ · 10⁻ᵈ or more (p the digits of \p R's significand) has an ulp coarser than the places:
+     * its decimal rounding lies within half a place of it, nearer than any other value, so it is kept. Its product by
+     * 10ᵈ, which NumPy's computes, can round off its last bit or overflow (`round(1e307, 2)`); below, the product is
+     * under 2ᵖ. A finite `x` rounds to ±0 where 10⁻ᵈ overflows \p C.
+     */
+    template <std::floating_point R,
+              std::floating_point C>
+    struct decimal_rounding {
+      int decimals;   //!< The places; fewer than none round to tens, hundreds and so on.
+      C   scale;      //!< 10 to the magnitude of \ref decimals, in \p C.
+      C   exact_from; //!< The magnitude from which a value is its own rounding (\ref decimals above 0).
+
+      explicit decimal_rounding(int places) noexcept
+        : decimals {places}
+          , scale {std::pow(C {10}, static_cast<C>(places < 0 ? -places : places))}
+          , exact_from {std::ldexp(C {1}, std::numeric_limits<R>::digits) / scale}
+      {}
+
+      [[nodiscard]] R operator()(R x) const noexcept
+      {
+        const C wide {static_cast<C>(x)};
+        if (decimals > 0) {
+          return std::fabs(wide) < exact_from ? static_cast<R>(std::nearbyint(wide * scale) / scale) : x;
+        }
+        if (std::isinf(scale)) {
+          return std::isfinite(x) ? std::copysign(R {0}, x) : x;
+        }
+        return static_cast<R>(std::nearbyint(wide / scale) * scale);
+      }
+    };
+
+    //! \brief `f(rounding)` with the \ref decimal_rounding of \p R to \p decimals places: in \p R, as NumPy's, but in
+    //!        double for a float whose 10ᵈ overflows it (a float under 2²⁴ · 10⁻ᵈ still has places to round there).
+    template <std::floating_point R,
+              typename F>
+    [[nodiscard]] auto with_decimal_rounding(int      decimals,
+                                             const F& f)
+    {
+      if constexpr (std::is_same_v<R, float>) {
+        if (decimals > std::numeric_limits<float>::max_exponent10) {
+          return f(decimal_rounding<float, double> {decimals});
+        }
+      }
+      return f(decimal_rounding<R, R> {decimals});
+    }
+  } // namespace detail
+
+  //! \brief Every element rounded to \p decimals places (tens, hundreds for a negative one), half to even, as
+  //!        `numpy.round`; a value already exact to those places is kept (\ref detail::decimal_rounding).
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> round(const tensor<T>& a,
+                                int              decimals = 0)
+  {
+    return detail::with_decimal_rounding<T>(decimals, [&a](const auto& rounding) { return detail::parallel_map(a, rounding); });
+  }
+
+  //! \brief Every element's real and imaginary parts rounded to \p decimals places apart, as `numpy.round` of a
+  //!        complex array.
+  template <detail::split_complex C>
+  [[nodiscard]] tensor<C> round(const tensor<C>& a,
+                                int              decimals = 0)
+  {
+    return detail::with_decimal_rounding<typename C::value_type>(decimals, [&a](const auto& rounding) {
+                                                                   return detail::parallel_map(a, [&rounding](const C& z) { return C {rounding(z.real()), rounding(z.imag())}; });
+                                                                 });
+  }
+
   //! \brief Element-wise difference, broadcast. \throws dimension_error If the shapes do not broadcast.
   template <typename T>
   [[nodiscard]] tensor<T> operator-(const tensor<T>& a,
@@ -1332,9 +1404,64 @@ namespace numerical {
     return detail::scan_along(t, axis, std::multiplies<T> {});
   }
 
+  namespace detail {
+    //! \brief Sorts `[first, last)` stably as \ref sorts_before orders reals: the NaNs moved behind the rest in their
+    //!        order first, the rest by `<`, which tests for no NaN.
+    template <std::floating_point T>
+    void sort_run(T* first,
+                  T* last)
+    {
+      T* const numbers_end {std::stable_partition(first, last, [](T x) { return !std::isnan(x); })};
+      std::stable_sort(first, numbers_end);
+    }
+
+    //! \brief Sorts `[first, last)` stably as \ref sorts_before orders complex numbers.
+    template <split_complex C>
+    void sort_run(C* first,
+                  C* last)
+    {
+      std::stable_sort(first, last, [](const C& a, const C& b) { return sorts_before(a, b); });
+    }
+
+    /*!
+     * \brief Sorts the \p count elements at \p data stably in \p pieces, a power of four, among the threads: each piece
+     *        sorted apart, then the pieces merged in pairs, round after round, between \p data and a scratch buffer
+     *        (`std::merge` takes the first piece's element of two equal ones, so the merge keeps their order). The
+     *        rounds are even in number, so the last writes \p data.
+     */
+    template <typename T>
+    void parallel_sort_run(T*          data,
+                           std::size_t count,
+                           std::size_t pieces)
+    {
+      std::vector<std::size_t> bounds(pieces + 1);
+      for (std::size_t k {0}; k <= pieces; ++k) {
+        bounds[k] = (count / pieces * k) + (std::min(k, count % pieces));
+      }
+      parallel_for(pieces, count / pieces * 16, [&](std::size_t k) { sort_run(data + bounds[k], data + bounds[k + 1]); });
+      buffer<T> scratch(count);
+      T*        from {data};
+      T*        to   {scratch.data()};
+      for (std::size_t width {1}; width < pieces; width *= 2) {
+        const std::size_t pairs {(pieces + (2 * width) - 1) / (2 * width)};
+        parallel_for(pairs, count / pairs, [&](std::size_t pair) {
+                       const std::size_t first  {bounds[pair * 2 * width]};
+                       const std::size_t middle {bounds[std::min((pair * 2 * width) + width, pieces)]};
+                       const std::size_t last   {bounds[std::min((pair + 1) * 2 * width, pieces)]};
+                       std::merge(from + first, from + middle, from + middle, from + last, to + first,
+                                  [](const T& a, const T& b) { return sorts_before(a, b); });
+                     });
+        std::swap(from, to);
+      }
+    }
+  } // namespace detail
+
   /*!
    * \brief The elements sorted along \p axis, as `numpy.sort`: ascending, NaNs last, equal elements in their order
    *        (NumPy's `kind="stable"`; its default sort may order equal ones otherwise, which only a sign of zero shows).
+   *
+   * Lines enough for the threads are sorted one to a task; fewer, each is sorted in turn among the threads
+   * (\ref detail::parallel_sort_run). A line along the last axis is sorted where it lies in the result.
    * \throws dimension_error If \p axis is not an axis.
    */
   template <typename T>
@@ -1342,20 +1469,49 @@ namespace numerical {
                                std::size_t      axis)
   {
     const detail::axis_walk walk {detail::walk_along(t.shape(), axis)};
+    const std::size_t       lines {walk.outer * walk.inner};
     buffer<T>               out(t.size());
     const T* const          in   {t.data().data()};
-    detail::parallel_for(walk.outer * walk.inner, walk.extent * 16, [&](std::size_t at) {
-                           const std::size_t o     {at / walk.inner};
-                           const std::size_t i     {at % walk.inner};
-                           const std::size_t first {(o * walk.extent * walk.inner) + i};
-                           std::vector<T>    line(walk.extent);
-                           for (std::size_t k {0}; k < walk.extent; ++k) {
-                             line[k] = in[first + (k * walk.inner)];
+    const auto              gather {[&](std::size_t line, T* into) {
+                                      const std::size_t first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
+                                      for (std::size_t k {0}; k < walk.extent; ++k) {
+                                        into[k] = in[first + (k * walk.inner)];
+                                      }
+                                    }};
+    const auto              scatter {[&](std::size_t line, const T* from) {
+                                       const std::size_t first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
+                                       for (std::size_t k {0}; k < walk.extent; ++k) {
+                                         out[first + (k * walk.inner)] = from[k];
+                                       }
+                                     }};
+    const std::size_t       threads {detail::parallel_threads(walk.extent, 16)};
+    if (threads >= 2 && detail::parallel_threads(lines, walk.extent * 16) * 2 <= threads) {
+      std::size_t pieces {4};
+      while (pieces < threads) {
+        pieces *= 4;
+      }
+      buffer<T> line_buffer(walk.inner == 1 ? 0 : walk.extent);
+      for (std::size_t line {0}; line < lines; ++line) {
+        T* const run {walk.inner == 1 ? out.data() + (line * walk.extent) : line_buffer.data()};
+        gather(line, run);
+        detail::parallel_sort_run(run, walk.extent, pieces);
+        if (walk.inner != 1) {
+          scatter(line, run);
+        }
+      }
+      return tensor<T> {t.shape(), std::move(out)};
+    }
+    detail::parallel_for(lines, walk.extent * 16, [&](std::size_t line) {
+                           if (walk.inner == 1) {
+                             T* const run {out.data() + (line * walk.extent)};
+                             gather(line, run);
+                             detail::sort_run(run, run + walk.extent);
+                             return;
                            }
-                           std::stable_sort(line.begin(), line.end(), [](const T& a, const T& b) { return detail::sorts_before(a, b); });
-                           for (std::size_t k {0}; k < walk.extent; ++k) {
-                             out[first + (k * walk.inner)] = line[k];
-                           }
+                           buffer<T> run(walk.extent);
+                           gather(line, run.data());
+                           detail::sort_run(run.data(), run.data() + walk.extent);
+                           scatter(line, run.data());
                          });
     return tensor<T> {t.shape(), std::move(out)};
   }

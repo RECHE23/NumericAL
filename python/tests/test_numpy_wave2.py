@@ -55,6 +55,44 @@ class NumpyWave2(unittest.TestCase):
                 self.same(numerical.round(y, decimals), np.round(y, decimals))
         self.assertIs(numerical.around, numerical.round)
         self.same(numerical.asarray(y).round(1), y.round(1))
+        for dtype in (np.float64, np.float32, np.complex128, np.complex64):  # a complex number's parts apart
+            with self.subTest(dtype=dtype):
+                value = (y + 1j * y[::-1] if dtype in (np.complex128, np.complex64) else y).astype(dtype)
+                self.same(numerical.round(value, 1), np.round(value, 1))
+
+    def test_rounding_to_far_places_is_exact(self):
+        # Where NumPy's product by 10ᵈ rounds off a last bit or overflows, NumPy's answer is not the nearest value to
+        # the decimal rounding; ours is, a value already exact to the places being its own rounding.
+        from decimal import Decimal, ROUND_HALF_EVEN, localcontext
+        y = self.rng.standard_normal(300) * 100
+        for decimals in (15, 17, 20):
+            got = np.asarray(numerical.round(y, decimals))
+            with localcontext() as context:
+                context.prec = 400
+                exact = [float(Decimal(v).quantize(Decimal(1).scaleb(-decimals), rounding=ROUND_HALF_EVEN)) for v in y]
+            self.same(got, np.array(exact))
+            self.assertTrue(np.any(np.round(y, decimals) != got))  # where NumPy's misses
+        self.same(numerical.round(np.array([1e307, -1e308]), 2), np.array([1e307, -1e308]))  # NumPy's: inf
+        far = np.array([1.5, -2.25, np.inf, -np.inf, np.nan, -0.0])
+        self.same(numerical.round(far, 400), far)
+        self.same(numerical.round(far, 10**30), far)
+        down = np.asarray(numerical.round(far, -400))  # every finite value to a zero of its sign (NumPy's: NaN)
+        self.same(down, np.array([0.0, -0.0, np.inf, -np.inf, np.nan, -0.0]))
+        np.testing.assert_array_equal(np.signbit(down), [False, True, False, True, False, True])
+        single = np.array([1.5, 1.234e-39, 3e-39], dtype=np.float32)  # past 10³⁸, through double
+        self.same(numerical.round(single, 40), np.array([1.5, 1.2e-39, 3e-39], dtype=np.float32))
+        self.same(numerical.round(np.array([True, False]), 0), np.array([1.0, 0.0]))
+
+    def test_real_functions_read_a_numpy_array_where_it_lies(self):
+        x = self.rng.standard_normal(3000)
+        x[::9] = np.nan
+        for name in ("floor", "ceil", "trunc", "rint", "sign", "deg2rad", "rad2deg", "arctan", "cbrt", "expm1"):
+            for array in (x, x.astype(np.float32), x[::3], x.reshape(30, 100).T):
+                with self.subTest(name=name, dtype=array.dtype, contiguous=array.flags.c_contiguous):
+                    self.same(getattr(numerical, name)(array), getattr(numerical, name)(numerical.asarray(array)))
+        self.same(numerical.floor(np.array([True, False])), np.array([1.0, 0.0]))  # a bool array read as float64
+        with self.assertRaises(TypeError):
+            numerical.floor(np.array([1j]))
 
     def test_products_and_running_sums(self):
         a = self.rng.uniform(0.5, 1.5, (3, 4, 5))
@@ -84,6 +122,16 @@ class NumpyWave2(unittest.TestCase):
         z = np.array([1 + 2j, 1 - 1j, np.nan + 0j, 0 + 5j, -1 + 0j])
         self.same(numerical.sort(z), np.sort(z))
         self.same(numerical.sort(a.astype(np.float32)), np.sort(a.astype(np.float32)))
+        mask = self.rng.random((5, 6)) > 0.5
+        for axis in (None, 0, -1):
+            with self.subTest(mask_axis=axis):
+                self.same(numerical.sort(mask, axis=axis), np.sort(mask, axis=axis))
+                self.same(numerical.sort(numerical.asarray(mask), axis=axis), np.sort(mask, axis=axis))
+        long = self.rng.standard_normal(300_000)  # sorted among the threads
+        long[::97] = np.nan
+        long[::89] = -0.0
+        long[1::89] = 0.0
+        self.assertEqual(np.asarray(numerical.sort(long)).tobytes(), np.sort(long, kind="stable").tobytes())
         for n, axis in ((1, -1), (2, -1), (1, 0), (0, 1), (3, 1)):
             with self.subTest(n=n, axis=axis):
                 self.same(numerical.diff(a, n=n, axis=axis), np.diff(a, n=n, axis=axis))

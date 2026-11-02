@@ -5602,6 +5602,10 @@ def std(a, axis=None, dtype=None, ddof=0, keepdims=False):
 
 def _real_function(name, doc):
     def function(x, /):
+        if not isinstance(x, Tensor):
+            mapped = _numerical._borrowed_unary(name, x)  # a real NumPy array read where it lies
+            if mapped is not NotImplemented:
+                return mapped
         x = _operand(x)
         if x.dtype.startswith("complex"):
             raise TypeError(f"{name}: real numbers only here (NumPy's takes complex ones too)")
@@ -5637,17 +5641,16 @@ degrees = rad2deg
 
 
 def round(a, decimals=0):  # noqa: A001 (numpy.round's name)
-    """Every element rounded to `decimals` places, half to even, as ``numpy.round``: through ``rint(a · 10ᵈ) / 10ᵈ``
-    (``· 10⁻ᵈ`` for a negative `decimals`), NumPy's own way, with its rounding of the scaled value."""
+    """Every element rounded to `decimals` places (tens, hundreds for a negative one), half to even, as
+    ``numpy.round``: ``rint(a · 10ᵈ) / 10ᵈ`` (``· 10⁻ᵈ`` for a negative `decimals`), NumPy's own way, with its
+    rounding of the scaled value; a complex number's parts apart. A value already exact to those places (its ulp
+    coarser than them) is kept, where NumPy's product can overflow (``round(1e307, 2)``: inf) or move its last bit,
+    and a finite value rounds to 0 where ``10⁻ᵈ`` overflows (NumPy's: NaN)."""
     decimals = _operator.index(decimals)
     a = _operand(a)
-    if decimals == 0:
-        return rint(a)
-    if decimals > 0:
-        scale = 10.0 ** decimals
-        return rint(a * scale) / scale
-    scale = 10.0 ** -decimals
-    return rint(a / scale) * scale
+    if a.dtype == "bool":
+        a = asarray(a, "float64")
+    return _numerical._round(a, _builtins.max(-400, _builtins.min(decimals, 400)))  # past ±400, any dtype's answer is the same
 
 
 around = round
@@ -5693,9 +5696,12 @@ def cumprod(a, axis=None):
 
 def sort(a, axis=-1, kind=None, stable=None):
     """The elements sorted along `axis` (every element flattened where None), as ``numpy.sort``: ascending, NaNs
-    last, a complex number by its real part then its imaginary part; equal elements keep their order whatever `kind`
+    last, a complex number by its real part then its imaginary part, False before True; equal elements keep their order whatever `kind`
     (NumPy's default sort may order them otherwise, which only a zero's sign or a NaN's payload shows)."""
     del kind, stable
+    a = _tensor(a)
+    if a.dtype == "bool":  # False before True: sorted as 0 and 1, which keeps no other element to tell apart
+        return asarray(_along("sort", asarray(a, "float64"), axis), "bool")
     return _along("sort", a, axis)
 
 
