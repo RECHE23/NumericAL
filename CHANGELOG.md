@@ -8,6 +8,25 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **NumPy's root functions, a second set**: `prod` (C++ `numerical::prod`, in order, as NumPy multiplies), `cumsum`,
+  `cumprod` (C++ `cumsum`, `cumprod`: each line in order, on the threads), `sort` (C++ `sort`: ascending, NaNs last,
+  complex numbers by real then imaginary part, equal elements kept in order), `diff`, `round` (`around`: NumPy's
+  `rint(a · 10ᵈ) / 10ᵈ`), and the real elementary functions `floor`, `ceil`, `trunc`, `rint`, `sign`, `arcsin`,
+  `arccos`, `arctan`, `sinh`, `cosh`, `arcsinh`, `arccosh`, `arctanh`, `log2`, `log10`, `log1p`, `expm1`, `cbrt`,
+  `deg2rad` (`radians`) and `rad2deg` (`degrees`), C's functions on float64 and float32 (within an ulp or two of
+  NumPy's, which differ by platform); `Tensor.prod`, `cumsum`, `cumprod` and `round`.
+- **NumPy's and SciPy's classes for NumericAL's errors and warnings**: where NumPy is loaded, a `LinAlgError` is
+  also a `numpy.linalg.LinAlgError` (SciPy's is the same class), so `except np.linalg.LinAlgError` catches it; where
+  `scipy.linalg` is loaded, the ill-conditioning warning is also a `scipy.linalg.LinAlgWarning`, so a filter set on
+  it takes NumericAL's. NumericAL imports neither; its own classes keep working, and a pickled error comes back as
+  one.
+
+### Fixed
+- **`lstsq` called SciPy's way** (`cond` or `lapack_driver` given) returns a vector `b`'s residue as SciPy does, a
+  number, where it gave NumPy's one-element tensor. NumPy's call is unchanged.
+- **`det`'s stub** names its answer `float | complex | Tensor`, as it is.
+
 ### Changed
 - **`maximum`, `minimum` and `clip` in one pass**: `numerical::maximum` and `minimum` (C++), broadcast, a NaN
   winning and the zeros ordered as IEEE 754-2019, a number mapped over the tensor; Python's composed ten temporaries

@@ -981,3 +981,32 @@ TEST(einsum_takes_a_diagonal_and_its_pairwise_sum)
   EXPECT(numerical::einsum("iii->", counting({2, 2, 2})).data()[0] == 0.0 + 7.0);                        // a label thrice: the general loop
   EXPECT(numerical::einsum("->", tensor<double> {std::vector<std::size_t> {}, {2.5}}).data()[0] == 2.5); // rank 0
 }
+
+// prod in order (an empty one 1), along an axis; cumsum and cumprod in order along an axis; sort along an axis,
+// ascending with NaNs last and equal elements in their order, complex numbers by real then imaginary part.
+TEST(prod_cumulative_sums_and_sort_along_an_axis)
+{
+  const tensor<double> grid {{2, 3}, {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}};
+  EXPECT(numerical::prod(grid) == 720.0 && numerical::prod(numerical::zeros<double>({0})) == 1.0);
+  EXPECT(numerical::prod(grid, 0).data() == (numerical::buffer<double> {4.0, 10.0, 18.0}));
+  EXPECT(numerical::prod(grid, 1).data() == (numerical::buffer<double> {6.0, 120.0}));
+  EXPECT(numerical::cumsum(grid, 1).data() == (numerical::buffer<double> {1.0, 3.0, 6.0, 4.0, 9.0, 15.0}));
+  EXPECT(numerical::cumsum(grid, 0).data() == (numerical::buffer<double> {1.0, 2.0, 3.0, 5.0, 7.0, 9.0}));
+  EXPECT(numerical::cumprod(grid, 1).data() == (numerical::buffer<double> {1.0, 2.0, 6.0, 4.0, 20.0, 120.0}));
+  const double         nan   {std::numeric_limits<double>::quiet_NaN()};
+  const tensor<double> mixed {{2, 4}, {3.0, nan, -1.0, 2.0, 0.0, -0.0, 5.0, -2.0}};
+  const tensor<double> rows  {numerical::sort(mixed, 1)};
+  EXPECT(rows.data()[0] == -1.0 && rows.data()[2] == 3.0 && std::isnan(rows.data()[3]));
+  EXPECT(rows.data()[4] == -2.0 && !std::signbit(rows.data()[5]) && std::signbit(rows.data()[6]) && rows.data()[7] == 5.0); // 0, −0 kept
+  EXPECT(numerical::sort(mixed, 0).data()[1] == -0.0 && std::isnan(numerical::sort(mixed, 0).data()[5]));
+  using cplx = std::complex<double>;
+  const tensor<cplx> complex_line {{4}, {cplx {1.0, 2.0}, cplx {1.0, -1.0}, cplx {nan, 0.0}, cplx {0.0, 5.0}}};
+  const tensor<cplx> sorted       {numerical::sort(complex_line, 0)};
+  EXPECT(sorted.data()[0] == cplx(0.0, 5.0) && sorted.data()[1] == cplx(1.0, -1.0) && sorted.data()[2] == cplx(1.0, 2.0));
+  EXPECT(std::isnan(sorted.data()[3].real()));
+  const tensor<cplx> imaginary {{3}, {cplx {1.0, nan}, cplx {1.0, 1.0}, cplx {1.0, 1.0}}}; // a NaN imaginary part last
+  EXPECT(std::isnan(numerical::sort(imaginary, 0).data()[2].imag()));
+  const tensor<float> single   {{3}, {2.0F, -1.0F, 0.5F}};
+  EXPECT(numerical::sort(single, 0).data()[0] == -1.0F && numerical::cumsum(single, 0).data()[2] == 1.5F);
+  EXPECT_THROWS((void)numerical::cumsum(grid, 2), numerical::dimension_error);
+}

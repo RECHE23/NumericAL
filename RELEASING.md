@@ -70,4 +70,4 @@ six weeks have passed without one, six weekly long fuzzing campaigns green on x8
 
 | Last finding | What | Fixed in |
 | --- | --- | --- |
-| 2026-10-27 | `svd` threw `convergence_error` on a matrix whose bidiagonal is graded upward (2⁻⁴¹⁶ to 1 in steps of 2²⁶), and `svdvals` gave 0 for a singular value of 5.3·10⁻³³ beside 1 and 2, found while porting dqds | 2026.10.39 |
+| 2026-11-01 | `funm`'s error estimate missed the growth of Parlett's recurrence far from normality (7·10⁻¹³ said of an error of 10⁻⁴), and chose by it a share of clusters whose `sin` was wrong by 10⁻²; built for x86-64-v3 (Ubuntu 26.04's GCC default), the portable LU and inverse changed their bits with the number of threads | 2026.11.1 |

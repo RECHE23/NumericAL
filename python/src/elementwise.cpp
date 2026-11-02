@@ -1,6 +1,8 @@
 // NumericAL — Python extension module: the element-wise arithmetic and functions, the reductions and the norms (their
 // helpers in binding.hpp).
 
+#include <numbers>
+
 #include "binding.hpp"
 
 namespace numerical_binding {
@@ -86,6 +88,151 @@ PyObject* module_extreme_pair(PyObject* /*self*/, PyObject* args)
         }
         if (!result) {
             PyErr_SetString(PyExc_TypeError, "_extreme_pair: two float64 or two float32 tensors");
+            return nullptr;
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _axis_op(name, a, axis) -> number or Tensor, as NumPy's: "prod" (axis -1: every element, a number), or along a
+// non-negative axis "prod", "cumsum", "cumprod" or "sort" (ascending, NaNs last, equal elements in their order).
+PyObject* module_axis_op(PyObject* /*self*/, PyObject* args)
+{
+    const char* op   = nullptr;
+    PyObject*   x    = nullptr;
+    Py_ssize_t  axis = -1;
+    if (PyArg_ParseTuple(args, "sOn", &op, &x, &axis) == 0) {
+        return nullptr;
+    }
+    const std::string_view name {op};
+    if (name != "prod" && name != "cumsum" && name != "cumprod" && name != "sort") {
+        PyErr_SetString(PyExc_ValueError, "_axis_op: name is prod, cumsum, cumprod or sort");
+        return nullptr;
+    }
+    const any_tensor* a = numeric_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        return visit_numeric([&](const auto& t) -> PyObject* {
+                                 if (axis < 0) {
+                                     if (name != "prod") {
+                                         PyErr_SetString(PyExc_ValueError, "_axis_op: an axis for cumsum, cumprod and sort");
+                                         return nullptr;
+                                     }
+                                     return from_scalar(numerical::prod(t));
+                                 }
+                                 const auto                along {static_cast<std::size_t>(axis)};
+                                 std::optional<any_tensor> result;
+                                 {
+                                     const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+                                     if (name == "prod") {
+                                         result.emplace(numerical::prod(t, along));
+                                     }
+                                     else if (name == "cumsum") {
+                                         result.emplace(numerical::cumsum(t, along));
+                                     }
+                                     else if (name == "cumprod") {
+                                         result.emplace(numerical::cumprod(t, along));
+                                     }
+                                     else {
+                                         result.emplace(numerical::sort(t, along));
+                                     }
+                                 }
+                                 return wrap(std::move(*result));
+                             }, *a);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+namespace {
+    //! NumPy's sign of a real: ±1, +0 for either zero, a NaN as it is.
+    template <typename R>
+    R sign_of(R x)
+    {
+        if (x > R {0}) {
+            return R {1};
+        }
+        if (x < R {0}) {
+            return R {-1};
+        }
+        return x == R {0} ? R {0} : x;
+    }
+
+    //! The real elementary functions by NumPy's names, C's where it has one (rint: half to even, as numpy.rint and
+    //! numpy.round; deg2rad and rad2deg NumPy's products by π/180 and 180/π).
+    template <typename R>
+    const std::array<std::pair<std::string_view, R (*)(R)>, 20> real_functions {{
+        {"floor", [](R x) { return std::floor(x); }},
+        {"ceil", [](R x) { return std::ceil(x); }},
+        {"trunc", [](R x) { return std::trunc(x); }},
+        {"rint", [](R x) { return std::nearbyint(x); }},
+        {"sign", &sign_of<R>},
+        {"arcsin", [](R x) { return std::asin(x); }},
+        {"arccos", [](R x) { return std::acos(x); }},
+        {"arctan", [](R x) { return std::atan(x); }},
+        {"sinh", [](R x) { return std::sinh(x); }},
+        {"cosh", [](R x) { return std::cosh(x); }},
+        {"arcsinh", [](R x) { return std::asinh(x); }},
+        {"arccosh", [](R x) { return std::acosh(x); }},
+        {"arctanh", [](R x) { return std::atanh(x); }},
+        {"log2", [](R x) { return std::log2(x); }},
+        {"log10", [](R x) { return std::log10(x); }},
+        {"log1p", [](R x) { return std::log1p(x); }},
+        {"expm1", [](R x) { return std::expm1(x); }},
+        {"cbrt", [](R x) { return std::cbrt(x); }},
+        {"deg2rad", [](R x) { return x * (std::numbers::pi_v<R> / R {180}); }},
+        {"rad2deg", [](R x) { return x * (R {180} / std::numbers::pi_v<R>); }},
+    }};
+
+    //! The function \p name of real_functions<R>, or null.
+    template <typename R>
+    R (*real_function(std::string_view name))(R)
+    {
+        const auto& table {real_functions<R>};
+        const auto  found {std::find_if(table.begin(), table.end(), [name](const auto& entry) { return entry.first == name; })};
+        return found == table.end() ? nullptr : found->second;
+    }
+} // namespace
+
+// _real_unary(name, a) -> Tensor: the real elementary function name of every element of a float64 or float32 tensor,
+// as NumPy's (C's functions: within an ulp or two of NumPy's own, which differ by platform).
+PyObject* module_real_unary(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    if (PyArg_ParseTuple(args, "sO", &op, &x) == 0) {
+        return nullptr;
+    }
+    const std::string_view name {op};
+    double (*const wide_function)(double) {real_function<double>(name)};
+    float (*const single_function)(float) {real_function<float>(name)};
+    if (wide_function == nullptr) {
+        PyErr_SetString(PyExc_ValueError, "_real_unary: an unknown function");
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            if (const auto* wide {std::get_if<real_tensor>(a)}) {
+                result.emplace(numerical::detail::parallel_map(*wide, wide_function));
+            }
+            else if (const auto* single {std::get_if<single_tensor>(a)}) {
+                result.emplace(numerical::detail::parallel_map(*single, single_function));
+            }
+        }
+        if (!result) {
+            PyErr_SetString(PyExc_TypeError, "_real_unary: a float64 or float32 tensor");
             return nullptr;
         }
         return wrap(std::move(*result));

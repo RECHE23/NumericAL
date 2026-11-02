@@ -1241,6 +1241,125 @@ namespace numerical {
     return detail::extreme(t.data().data(), t.size(), 1, std::less<T> {});
   }
 
+  /*!
+   * \brief The product of every element, in order (`numpy.prod`'s, whose multiplications are sequential: only its sums
+   *        pair). An empty tensor's is 1.
+   */
+  template <typename T>
+  [[nodiscard]] T prod(const tensor<T>& t)
+  {
+    T product {1};
+    for (const T& x : t.data()) {
+      product *= x;
+    }
+    return product;
+  }
+
+  //! \brief The products along \p axis, each line in order. \throws dimension_error If \p axis is not an axis.
+  template <typename T>
+  [[nodiscard]] tensor<T> prod(const tensor<T>& t,
+                               std::size_t      axis)
+  {
+    return detail::reduce_along(t, axis, [](const T* first, std::size_t count, std::size_t stride) {
+                                  T product {1};
+                                  for (std::size_t i {0}; i < count; ++i) {
+                                    product *= first[i * stride];
+                                  }
+                                  return product;
+                                });
+  }
+
+  namespace detail {
+
+    //! \brief Each line of \p t along \p axis replaced by its running \p step (`x₀`, `step(x₀, x₁)`, …), in order.
+    template <typename T,
+              typename Step>
+    [[nodiscard]] tensor<T> scan_along(const tensor<T>& t,
+                                       std::size_t      axis,
+                                       const Step&      step)
+    {
+      const axis_walk walk {walk_along(t.shape(), axis)};
+      buffer<T>       out(t.size());
+      const T* const  in   {t.data().data()};
+      parallel_for(walk.outer * walk.inner, walk.extent, [&](std::size_t at) { // each line its own
+                     const std::size_t o     {at / walk.inner};
+                     const std::size_t i     {at % walk.inner};
+                     const std::size_t first {(o * walk.extent * walk.inner) + i};
+                     T                 running {};
+                     for (std::size_t k {0}; k < walk.extent; ++k) {
+                       const std::size_t place {first + (k * walk.inner)};
+                       running    = k == 0 ? in[place] : step(running, in[place]);
+                       out[place] = running;
+                     }
+                   });
+      return tensor<T> {t.shape(), std::move(out)};
+    }
+
+    //! \brief Whether \p a sorts before \p b as NumPy sorts reals: ascending, NaNs last.
+    template <std::floating_point T>
+    [[nodiscard]] bool sorts_before(T a,
+                                    T b) noexcept
+    {
+      return std::isnan(b) ? !std::isnan(a) : a < b;
+    }
+
+    //! \brief Whether \p a sorts before \p b as NumPy sorts complex numbers: by the real parts, then the imaginary
+    //!        parts, each with NaNs last.
+    template <split_complex C>
+    [[nodiscard]] bool sorts_before(const C& a,
+                                    const C& b) noexcept
+    {
+      const bool before {sorts_before(a.real(), b.real())};
+      return before || (!sorts_before(b.real(), a.real()) && sorts_before(a.imag(), b.imag()));
+    }
+  } // namespace detail
+
+  //! \brief The running sums along \p axis, in order, as `numpy.cumsum`. \throws dimension_error If \p axis is not an
+  //!        axis.
+  template <typename T>
+  [[nodiscard]] tensor<T> cumsum(const tensor<T>& t,
+                                 std::size_t      axis)
+  {
+    return detail::scan_along(t, axis, std::plus<T> {});
+  }
+
+  //! \brief The running products along \p axis, in order, as `numpy.cumprod`. \throws dimension_error If \p axis is
+  //!        not an axis.
+  template <typename T>
+  [[nodiscard]] tensor<T> cumprod(const tensor<T>& t,
+                                  std::size_t      axis)
+  {
+    return detail::scan_along(t, axis, std::multiplies<T> {});
+  }
+
+  /*!
+   * \brief The elements sorted along \p axis, as `numpy.sort`: ascending, NaNs last, equal elements in their order
+   *        (NumPy's `kind="stable"`; its default sort may order equal ones otherwise, which only a sign of zero shows).
+   * \throws dimension_error If \p axis is not an axis.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> sort(const tensor<T>& t,
+                               std::size_t      axis)
+  {
+    const detail::axis_walk walk {detail::walk_along(t.shape(), axis)};
+    buffer<T>               out(t.size());
+    const T* const          in   {t.data().data()};
+    detail::parallel_for(walk.outer * walk.inner, walk.extent * 16, [&](std::size_t at) {
+                           const std::size_t o     {at / walk.inner};
+                           const std::size_t i     {at % walk.inner};
+                           const std::size_t first {(o * walk.extent * walk.inner) + i};
+                           std::vector<T>    line(walk.extent);
+                           for (std::size_t k {0}; k < walk.extent; ++k) {
+                             line[k] = in[first + (k * walk.inner)];
+                           }
+                           std::stable_sort(line.begin(), line.end(), [](const T& a, const T& b) { return detail::sorts_before(a, b); });
+                           for (std::size_t k {0}; k < walk.extent; ++k) {
+                             out[first + (k * walk.inner)] = line[k];
+                           }
+                         });
+    return tensor<T> {t.shape(), std::move(out)};
+  }
+
   //! \brief The largest elements along \p axis. \throws dimension_error If \p axis is not an axis or is empty.
   template <std::totally_ordered T>
   [[nodiscard]] tensor<T> max(const tensor<T>& t,

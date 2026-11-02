@@ -139,6 +139,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_negate", module_negate, METH_VARARGS, "_negate(a) -> Tensor\nElement-wise negation.");
     m.raw("_extreme_pair", module_extreme_pair, METH_VARARGS,
           "_extreme_pair(larger, a, b) -> Tensor\nnumpy.maximum (larger) or numpy.minimum of two real tensors of one dtype, broadcast.");
+    m.raw("_axis_op", module_axis_op, METH_VARARGS, "_axis_op(name, a, axis) -> number or Tensor\nprod, cumsum, cumprod or sort along an axis.");
+    m.raw("_real_unary", module_real_unary, METH_VARARGS, "_real_unary(name, a) -> Tensor\nA real elementary function of every element.");
     m.raw("_compare", module_compare, METH_VARARGS,
           "_compare(op, a, b) -> Tensor\nElement-wise a op b (op one of < <= == != > >=), broadcast; one dtype; bool.");
     m.raw("_logical", module_logical, METH_VARARGS,

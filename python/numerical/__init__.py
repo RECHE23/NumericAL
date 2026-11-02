@@ -59,7 +59,27 @@ class LinAlgError(error, ValueError):
     """Raised by the linear-algebra functions when they cannot compute their answer: a singular matrix, one
     not positive definite, an infinite or NaN entry, an iteration that did not converge, or an operand of the
     wrong shape. As ``numpy.linalg.LinAlgError`` it is a :class:`ValueError`; it is also a
-    :class:`numerical.error`, so code catching that keeps working."""
+    :class:`numerical.error`, so code catching that keeps working. Where NumPy is loaded, it is also a
+    ``numpy.linalg.LinAlgError`` (and so SciPy's, the same class): code written for them catches it as theirs,
+    without NumericAL importing NumPy."""
+
+    def __new__(cls, *args, **kwargs):
+        if cls is LinAlgError:
+            numpy_linalg = _sys.modules.get("numpy.linalg")
+            if numpy_linalg is not None and isinstance(getattr(numpy_linalg, "LinAlgError", None), type):
+                cls = _beside(LinAlgError, numpy_linalg.LinAlgError)
+        return super().__new__(cls, *args, **kwargs)
+
+
+@_functools.cache
+def _beside(ours, theirs):
+    """A subclass of NumericAL's class `ours` and of NumPy's or SciPy's `theirs`, made once; pickled as `ours`, the
+    name it is found by (unpickled where NumPy is loaded, it is this subclass again)."""
+    def reduce(self):
+        return (ours, self.args) + ((self.__dict__,) if self.__dict__ else ())
+
+    return type(ours.__name__, (ours, theirs),
+                {"__module__": ours.__module__, "__doc__": ours.__doc__, "__reduce__": reduce})
 
 
 __version__ = "2026.11.1"
@@ -880,7 +900,7 @@ def _conditioned(x, rcond, dtype, level):
     under half the machine epsilon of `dtype` (LAPACK's ``lamch('E')``), 0 included (an exactly singular matrix raised
     before), warns (:class:`LinAlgWarning`) at the caller, `level` frames up."""
     if not rcond >= _MACHINE_EPSILON["float32" if dtype in _SINGLE else "float64"] / 2.0:
-        _warnings.warn(f"Ill-conditioned matrix (rcond={rcond:.6g}): result may not be accurate.", LinAlgWarning,
+        _warnings.warn(f"Ill-conditioned matrix (rcond={rcond:.6g}): result may not be accurate.", _linalg_warning(),
                        stacklevel=level)
     return x
 
@@ -1981,7 +2001,11 @@ def lstsq(a, b, rcond=None, *, cond=None, overwrite_a=False, overwrite_b=False, 
     b = b if isinstance(b, Tensor) else _read(b)
     if rcond is not None and rcond < 0:
         rcond = _MACHINE_EPSILON["float32" if _promoted((a.dtype, b.dtype)) in _SINGLE else "float64"]
-    return _lstsq(a, b, rcond)
+    answer = _lstsq(a, b, rcond)
+    if (cond is not None or lapack_driver is not None) and len(b.shape) == 1 and answer[1].shape == (1,):
+        x, residuals, rank, values = answer  # a SciPy-style call: SciPy's residue of a vector b is a number
+        return x, float(residuals.tolist()[0]), rank, values
+    return answer
 
 
 def pinv(a, rcond=None, hermitian=False, *, rtol=None, atol=None, return_rank=False, check_finite=True):
@@ -3126,7 +3150,16 @@ __all__ += ["sum", "mean", "max", "min", "reshape", "full", "zeros", "ones", "ey
 
 class LinAlgWarning(RuntimeWarning):
     """The warning ``scipy.linalg.LinAlgWarning`` names: an ill-conditioned operation whose answer may be
-    inaccurate."""
+    inaccurate. Where SciPy's linalg is loaded, the warning issued is also a ``scipy.linalg.LinAlgWarning``, so a
+    filter set on SciPy's class takes it."""
+
+
+def _linalg_warning():
+    """The category NumericAL warns of an ill-conditioned operation with: :class:`LinAlgWarning`, beside SciPy's
+    where ``scipy.linalg`` is loaded."""
+    scipy_linalg = _sys.modules.get("scipy.linalg")
+    theirs = getattr(scipy_linalg, "LinAlgWarning", None) if scipy_linalg is not None else None
+    return _beside(LinAlgWarning, theirs) if isinstance(theirs, type) else LinAlgWarning
 
 
 def _grid(n):
@@ -4371,7 +4404,123 @@ def std(a, axis=None, dtype=None, ddof=0, keepdims=False):
     return _math.sqrt(variance) if isinstance(variance, _numbers.Number) else sqrt(variance)
 
 
-for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot"):  # NumPy's methods of these names, where Tensor has none
+def _real_function(name, doc):
+    def function(x, /):
+        x = _operand(x)
+        if x.dtype.startswith("complex"):
+            raise TypeError(f"{name}: real numbers only here (NumPy's takes complex ones too)")
+        return _numerical._real_unary(name, x)
+
+    function.__name__ = name
+    function.__doc__ = doc + " Real dtypes; C's function where it has one, within an ulp or two of NumPy's own."
+    return function
+
+
+floor = _real_function("floor", "The largest integer at or below every element, as ``numpy.floor``.")
+ceil = _real_function("ceil", "The smallest integer at or above every element, as ``numpy.ceil``.")
+trunc = _real_function("trunc", "Every element rounded toward zero, as ``numpy.trunc``.")
+rint = _real_function("rint", "Every element rounded to the nearest integer, half to even, as ``numpy.rint``.")
+sign = _real_function("sign", "−1, 0 or 1 by every element's sign (+0 for either zero, a NaN kept), as ``numpy.sign``.")
+arcsin = _real_function("arcsin", "The inverse sine of every element, as ``numpy.arcsin``.")
+arccos = _real_function("arccos", "The inverse cosine of every element, as ``numpy.arccos``.")
+arctan = _real_function("arctan", "The inverse tangent of every element, as ``numpy.arctan``.")
+sinh = _real_function("sinh", "The hyperbolic sine of every element, as ``numpy.sinh``.")
+cosh = _real_function("cosh", "The hyperbolic cosine of every element, as ``numpy.cosh``.")
+arcsinh = _real_function("arcsinh", "The inverse hyperbolic sine of every element, as ``numpy.arcsinh``.")
+arccosh = _real_function("arccosh", "The inverse hyperbolic cosine of every element, as ``numpy.arccosh``.")
+arctanh = _real_function("arctanh", "The inverse hyperbolic tangent of every element, as ``numpy.arctanh``.")
+log2 = _real_function("log2", "The base-2 logarithm of every element, as ``numpy.log2``.")
+log10 = _real_function("log10", "The base-10 logarithm of every element, as ``numpy.log10``.")
+log1p = _real_function("log1p", "``log(1 + x)`` of every element, accurate near 0, as ``numpy.log1p``.")
+expm1 = _real_function("expm1", "``exp(x) − 1`` of every element, accurate near 0, as ``numpy.expm1``.")
+cbrt = _real_function("cbrt", "The cube root of every element, as ``numpy.cbrt``.")
+deg2rad = _real_function("deg2rad", "Every element in degrees to radians, ``x · π/180``, as ``numpy.deg2rad``.")
+rad2deg = _real_function("rad2deg", "Every element in radians to degrees, ``x · 180/π``, as ``numpy.rad2deg``.")
+radians = deg2rad
+degrees = rad2deg
+
+
+def round(a, decimals=0):  # noqa: A001 (numpy.round's name)
+    """Every element rounded to `decimals` places, half to even, as ``numpy.round``: through ``rint(a · 10ᵈ) / 10ᵈ``
+    (``· 10⁻ᵈ`` for a negative `decimals`), NumPy's own way, with its rounding of the scaled value."""
+    decimals = _operator.index(decimals)
+    a = _operand(a)
+    if decimals == 0:
+        return rint(a)
+    if decimals > 0:
+        scale = 10.0 ** decimals
+        return rint(a * scale) / scale
+    scale = 10.0 ** -decimals
+    return rint(a / scale) * scale
+
+
+around = round
+
+
+def _along(name, a, axis):
+    """The native along-axis operation `name` of `a`: every element flattened where `axis` is None."""
+    a = _operand(a)
+    if axis is None:
+        return _native(_numerical._axis_op, name, reshape(a, (-1,)), 0)
+    return _native(_numerical._axis_op, name, a, _axis(a, axis))
+
+
+def prod(a, axis=None, keepdims=False):
+    """The product of every element (a number), or the products along `axis`, as ``numpy.prod``: in order (NumPy's
+    multiplications are not paired as its sums are). An empty one's is 1."""
+    a = _operand(a)
+    if a.dtype == "bool":
+        a = asarray(a, "float64")
+    if axis is None:
+        result = _numerical._axis_op("prod", a, -1)
+        return full((1,) * len(a.shape), result, a.dtype) if keepdims else result
+    axes = _resolved_axes(a, axis, "prod")
+    result = a
+    for k in sorted(axes, reverse=True):
+        result = _native(_numerical._axis_op, "prod", result, k)
+    if keepdims:
+        result = reshape(result, tuple(1 if k in axes else a.shape[k] for k in range(len(a.shape))))
+    return result
+
+
+def cumsum(a, axis=None):
+    """The running sums along `axis` (every element flattened where None), in order, as ``numpy.cumsum``."""
+    a = _operand(a)
+    return _along("cumsum", asarray(a, "float64") if a.dtype == "bool" else a, axis)
+
+
+def cumprod(a, axis=None):
+    """The running products along `axis` (every element flattened where None), in order, as ``numpy.cumprod``."""
+    a = _operand(a)
+    return _along("cumprod", asarray(a, "float64") if a.dtype == "bool" else a, axis)
+
+
+def sort(a, axis=-1, kind=None, stable=None):
+    """The elements sorted along `axis` (every element flattened where None), as ``numpy.sort``: ascending, NaNs
+    last, a complex number by its real part then its imaginary part; equal elements keep their order whatever `kind`
+    (NumPy's default sort may order them otherwise, which only a zero's sign or a NaN's payload shows)."""
+    del kind, stable
+    return _along("sort", a, axis)
+
+
+def diff(a, n=1, axis=-1):
+    """The `n`-th differences along `axis`, ``a[1:] − a[:-1]`` repeated, as ``numpy.diff``."""
+    a = _operand(a)
+    n = _operator.index(n)
+    if n < 0:
+        raise ValueError(f"order must be non-negative but got {n}")
+    if not a.shape:
+        raise ValueError("diff requires input that is at least one dimensional")
+    axis = _axis(a, axis)
+    rank = len(a.shape)
+    for _ in range(n):
+        upper = tuple(slice(1, None) if k == axis else slice(None) for k in range(rank))
+        lower = tuple(slice(None, -1) if k == axis else slice(None) for k in range(rank))
+        a = a[upper] - a[lower]
+    return a
+
+
+for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot", "prod", "cumsum", "cumprod", "round"):  # NumPy's methods of these names, where Tensor has none
     if not hasattr(Tensor, _name):
         setattr(Tensor, _name, (lambda function: lambda self, *args, **kwargs: function(self, *args, **kwargs))(globals()[_name]))
 del _name
@@ -4379,7 +4528,9 @@ del _name
 __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "zeros_like", "ones_like", "empty_like",
             "full_like", "copy", "ravel", "expand_dims", "atleast_1d", "atleast_2d", "atleast_3d", "flip", "flipud",
             "fliplr", "swapaxes", "moveaxis", "column_stack", "maximum", "minimum", "clip", "isclose", "allclose", "dot",
-            "inner", "vdot", "ptp", "var", "std"]
+            "inner", "vdot", "ptp", "var", "std", "floor", "ceil", "trunc", "rint", "sign", "arcsin", "arccos", "arctan",
+            "sinh", "cosh", "arcsinh", "arccosh", "arctanh", "log2", "log10", "log1p", "expm1", "cbrt", "deg2rad",
+            "rad2deg", "radians", "degrees", "round", "around", "prod", "cumsum", "cumprod", "sort", "diff"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)
 
