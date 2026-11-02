@@ -1,12 +1,14 @@
 name: Docs
 
-# The API reference (Doxygen: the headers, the README and BENCHMARKS.md), built and published to GitHub Pages on every
-# push to the default branch. Ubuntu 24.04's Doxygen (1.9.8), every warning fatal (the Doxyfile's WARN_AS_ERROR): a
-# newer one resolved references 1.9.8 refused, so the runner is named, not `ubuntu-latest`.
+# The site (the Sphinx guides and references at the root, the Doxygen API reference under api/), built and published
+# to GitHub Pages on every push to the default branch. Ubuntu 24.04's Doxygen (1.9.8), every warning fatal (the
+# Doxyfile's WARN_AS_ERROR): a newer one resolved references 1.9.8 refused, so the runner is named, not
+# `ubuntu-latest`. The Python reference imports the built extension, so the job builds it.
 on:
   push:
     branches: [main]
-    paths: ['include/**', 'README.md', 'BENCHMARKS.md', 'docs/**', 'Doxyfile', '.github/workflows/docs.yml']
+    paths: ['include/**', 'python/**', 'README.md', 'BENCHMARKS.md', 'docs/**', 'tools/check_site_*.py', 'Doxyfile',
+            'Makefile', '.github/workflows/docs.yml']
   workflow_dispatch: {}
 
 permissions:
@@ -22,17 +24,31 @@ concurrency:
 jobs:
   build:
     runs-on: ubuntu-24.04
-    timeout-minutes: 20
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
+        with:
+          path: NumericAL
+      - uses: actions/checkout@v6
+        with:
+          repository: RECHE23/sciforge
+          ref: v2026.10.7
+          path: sciforge
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.14'
       - name: Install Doxygen and Graphviz
         run: sudo apt-get update && sudo apt-get install -y doxygen graphviz
-      - name: Build the reference
-        run: mkdir -p build/doc && doxygen Doxyfile  # make doc-no-coverage, without the Makefile's SciForge sibling
+      - name: Install the extension's build backend (the Python reference imports the built module)
+        run: python -m pip install setuptools
+      - name: The site's gate (every Sphinx warning fatal, every public name listed, every shown example run)
+        run: make -C NumericAL docs-site-gate
+      - name: Build the site (guides and references, the Doxygen reference under api/)
+        run: make -C NumericAL docs-site
       - uses: actions/configure-pages@v6
       - uses: actions/upload-pages-artifact@v5
         with:
-          path: build/doc/html
+          path: NumericAL/build/site/html
 
   deploy:
     needs: build

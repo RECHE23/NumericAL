@@ -1,0 +1,18 @@
+# Pinned toolchain for docs/site (Sphinx + Breathe + pydata-sphinx-theme) -- the same pins as
+# the sites of REAL and SciLex, so the ecosystem's sites build with one toolchain.
+# Exact pins, not floating ranges: a docs-site build must reproduce identically on
+# every machine and in CI (the Docs workflow), the same discipline as
+# check-pins/version-check for the rest of the repo. Bump deliberately, in its own
+# commit, verified against `make docs-site-gate`.
+#
+# Install into an isolated venv -- never the system/site interpreter:
+#   make docs-venv   (build/.venv-docs)
+#
+# Breathe (Doxygen-XML -> Sphinx bridge) requires Doxygen >= 1.9.2; the Doxyfile's
+# GENERATE_XML is the producer this chain consumes.
+sphinx==9.1.0
+pydata-sphinx-theme==0.20.0
+myst-parser==5.1.0
+breathe==4.36.0
+sphinx-design==0.7.0
+sphinx-copybutton==0.5.2

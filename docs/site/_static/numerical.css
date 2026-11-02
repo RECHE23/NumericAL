@@ -1,0 +1,15 @@
+/* NumericAL site accents over pydata-sphinx-theme: an ink-blue primary, tabular figures in tables. */
+html[data-theme="light"] {
+  --pst-color-primary: #2f4f8a;
+  --pst-color-secondary: #8a4f1c;
+}
+html[data-theme="dark"] {
+  --pst-color-primary: #8fb0eb;
+  --pst-color-secondary: #e0a46a;
+}
+table {
+  font-variant-numeric: tabular-nums;
+}
+.sd-card-title {
+  font-weight: 600;
+}

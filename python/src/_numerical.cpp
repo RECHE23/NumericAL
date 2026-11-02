@@ -182,7 +182,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_linspace", module_linspace, METH_VARARGS,
           "_linspace(start, stop, num) -> Tensor\nAs numpy.linspace with the end point (float64).");
     m.raw("slogdet", module_slogdet, METH_VARARGS,
-          "slogdet(a) -> (sign, logabsdet)\nThe sign and the natural log of |det(a)|, as numpy.linalg.slogdet; it\n"
+          "slogdet(a) -> (sign, logabsdet)\nThe sign and the natural log of abs(det(a)), as numpy.linalg.slogdet; it\n"
           "does not underflow or overflow where determinant(a) does.");
     m.raw("_borrowed_linalg", module_borrowed_linalg, METH_VARARGS,
           "_borrowed_linalg(name, a, b=None) -> the answer or NotImplemented\ncholesky, solve, determinant, slogdet or "

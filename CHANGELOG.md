@@ -21,6 +21,11 @@ These changes can break code or change bits; they arrive with December's first r
   `DeprecationWarning` on the old one, and replaces it at the next month's first release.
 
 ### Added
+- **A documentation site** (<https://reche23.github.io/NumericAL/>, Sphinx with pydata-sphinx-theme, as REAL's and
+  SciLex's): getting started, guides to tensors and dtypes, the linear algebra, reproducibility and threads,
+  accuracy and the BLAS ABI, a page of differences from NumPy and SciPy, and the Python and C++ references; the
+  Doxygen reference moves under `api/`. `make docs-site-gate` (in `check-push`) fails on any Sphinx warning, on a
+  public name the reference leaves out, and on a shown example whose result differs.
 - **NumPy's root functions, a second set**: `prod` (C++ `numerical::prod`, in order, as NumPy multiplies), `cumsum`,
   `cumprod` (C++ `cumsum`, `cumprod`: each line in order, on the threads), `sort` (C++ `sort`: ascending, NaNs last,
   complex numbers by real then imaginary part, equal elements kept in order), `diff`, `round` (`around`: NumPy's

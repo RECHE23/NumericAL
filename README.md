@@ -9,7 +9,8 @@ one of the Algorithmic Libraries of the [SciForge](https://github.com/RECHE23/sc
 NumericAL computes with concrete numeric structures (vectors, matrices, tensors) and knows nothing of expressions
 or of any symbolic layer; the tools built on top of it own that.
 
-The API reference, generated from the headers: <https://reche23.github.io/NumericAL/>.
+The documentation, with guides, the Python and C++ references and a page of differences from NumPy and SciPy:
+<https://reche23.github.io/NumericAL/> (the Doxygen reference of every header under `api/`).
 
 ## Scope and non-goals
 
