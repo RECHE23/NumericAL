@@ -26,6 +26,10 @@ These changes can break code or change bits; they arrive with December's first r
   accuracy and the BLAS ABI, a page of differences from NumPy and SciPy, and the Python and C++ references; the
   Doxygen reference moves under `api/`. `make docs-site-gate` (in `check-push`) fails on any Sphinx warning, on a
   public name the reference leaves out, and on a shown example whose result differs.
+- **Google-style docstrings** (`Args`, `Returns`, `Raises`, `Examples`) for the 53 most used functions, from
+  `asarray`, `solve` and `eigh` to `einsum` and the reductions; their 189 examples run as doctests in the Python
+  suite. `solve`, `det`, `inv`, `slogdet` and `einsum` show their own documentation, where they showed the native
+  functions' one-line summaries (`solve`'s without its stacks and SciPy's `assume_a`).
 - **NumPy's root functions, a second set**: `prod` (C++ `numerical::prod`, in order, as NumPy multiplies), `cumsum`,
   `cumprod` (C++ `cumsum`, `cumprod`: each line in order, on the threads), `sort` (C++ `sort`: ascending, NaNs last,
   complex numbers by real then imaginary part, equal elements kept in order), `diff`, `round` (`around`: NumPy's

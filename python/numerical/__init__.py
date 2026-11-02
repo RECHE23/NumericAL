@@ -648,8 +648,32 @@ def _matmul(self, other):
 
 
 def matmul(x1, x2, /):
-    """The matrix product of `x1` and `x2`, as ``numpy.matmul`` (and ``x1 @ x2``): stacks of matrices along leading axes
-    broadcast against each other, a vector a row first and a column second, two vectors their dot product."""
+    """The matrix product of `x1` and `x2`, as ``numpy.matmul`` (and ``x1 @ x2``).
+
+    Stacks of matrices along leading axes broadcast against each other, a vector a row first and a column second, two
+    vectors their dot product. The dtypes are promoted as NumPy promotes them; a bool operand is read as float64.
+
+    Args:
+        x1: The left operand, a Tensor or an array-like of rank 1 or more.
+        x2: The right operand, a Tensor or an array-like of rank 1 or more.
+
+    Returns:
+        Tensor | float | complex: The product; a number for two vectors.
+
+    Raises:
+        LinAlgError: if an operand is of rank 0 or the inner dimensions differ (the message names both shapes).
+        TypeError: if an operand is nothing :func:`asarray` reads.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.matmul([[1, 2], [3, 4]], [[5, 6], [7, 8]])
+        numerical.Tensor([[19.0, 22.0],
+                          [43.0, 50.0]], dtype=float64)
+        >>> numerical.matmul([1, 2], [3, 4])
+        11.0
+        >>> numerical.matmul(numerical.zeros((3, 2, 2)), numerical.eye(2)).shape
+        (3, 2, 2)
+    """
     try:
         product = _numerical._borrowed_product(x1, x2)  # Tensors and NumPy arrays read where they lie, when they can be
     except error as caught:  # shapes that do not fit, said with both (checked here only, off the products' path)
@@ -823,8 +847,38 @@ _solve = _linalg(_numerical.solve)
 
 
 # The public functions over the native ones, with the signatures their stubs give, so that stubtest holds the stubs to
-# them (a native function taking *args has none to compare); each keeps the native one's documentation.
+# them (a native function taking *args has none to compare).
 def einsum(subscripts, /, *operands):
+    """Einstein summation over the operands, as ``numpy.einsum``: ``"ij,jk->ik"`` (a matrix product), ``"i,i->"``
+    (a dot product), ``"ij->ji"`` (a transpose), ``"ii->i"`` (a diagonal).
+
+    Without ``->`` the output takes the labels that appear once, in alphabetical order, as NumPy's; ``...`` stands for
+    the axes no label names. The operands are brought to one dtype as NumPy promotes them (complex where one is,
+    single precision only where all are); a bool array-like is read as float64, a bool Tensor refused.
+
+    Args:
+        subscripts: The labels of each operand's axes, comma-separated, then optionally ``->`` and the output's: at
+            most the 52 ASCII letters.
+        *operands: The Tensors or array-likes (NumPy arrays, nested lists, numbers), one per comma-separated term.
+
+    Returns:
+        Tensor: The summed product, of rank 0 for a full contraction.
+
+    Raises:
+        LinAlgError: if the subscripts do not parse, their terms are not one per operand, an operand's rank does not
+            match its subscripts, or a repeated label has two extents.
+        TypeError: if `subscripts` is not a string, or an operand is a bool Tensor or nothing :func:`asarray` reads.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.einsum("ij,jk->ik", [[1, 0], [0, 2]], [[1, 2], [3, 4]])
+        numerical.Tensor([[1.0, 2.0],
+                          [6.0, 8.0]], dtype=float64)
+        >>> numerical.einsum("i,i->", [1, 2, 3], [1, 2, 3])
+        numerical.Tensor(14.0, dtype=float64)
+        >>> numerical.einsum("ii->i", [[1, 2], [3, 4]])
+        numerical.Tensor([1.0, 4.0], dtype=float64)
+    """
     if len(operands) == 1 and isinstance(subscripts, str):
         summed = _numerical._borrowed_einsum(subscripts, operands[0])  # a run of axes summed where the operand lies
         if summed is not NotImplemented:
@@ -854,19 +908,50 @@ _STRUCTURES = {"general": "gen", "gen": "gen", "diagonal": "diagonal", "tridiago
 
 def solve(a, b, /, lower=False, overwrite_a=False, overwrite_b=False, check_finite=True, assume_a=None,
           transposed=False):
-    """The solution `x` of ``a @ x = b``. Without ``assume_a`` or ``transposed``, NumPy's ``numpy.linalg.solve`` (a
-    triangular `a` detected and solved by substitution, else the LU factorisation; a stack of systems broadcast). With
-    them, ``scipy.linalg.solve``'s: ``assume_a`` names `a`'s structure and its solver, ``"diagonal"`` (a division),
-    ``"tridiagonal"`` and ``"banded"`` (the band LU, of the bandwidth `a` has), ``"upper triangular"`` and
-    ``"lower triangular"`` (substitution), ``"sym"``, ``"her"`` (the matrix read from one triangle, by default the upper
-    one, ``lower`` the lower; a Hermitian one's diagonal taken real; then the LU, which here outruns the symmetric
-    indefinite factorisation), ``"pos"`` (Cholesky's, from that triangle) or ``"gen"``; ``transposed`` solves
-    ``a.T @ x = b`` (``NotImplementedError`` for a complex `a`, as SciPy's). With them too, SciPy's reciprocal
-    condition number ``1 / (‖a‖₁ ‖a⁻¹‖₁)``, the inverse's norm estimated from the factorisation (LAPACK's ``gecon``,
-    ``pocon``, ``trcon``, ``gbcon``; a diagonal's exact), under half the machine epsilon warns
-    (:class:`LinAlgWarning`: the answer may have no correct digit). A singular `a`, or one not positive
-    definite for ``"pos"``, raises :class:`LinAlgError`. ``overwrite_a``, ``overwrite_b`` and ``check_finite`` are
-    accepted for SciPy's signature: `a` and `b` are never written, and a NaN or an infinity always raises."""
+    """The solution `x` of ``a @ x = b``, as ``numpy.linalg.solve``, or ``scipy.linalg.solve`` with its arguments.
+
+    Without `assume_a` or `transposed`, NumPy's ``numpy.linalg.solve``: a triangular `a` detected and solved by
+    substitution, else the LU factorisation; a stack of systems broadcast. With them, ``scipy.linalg.solve``'s:
+    `assume_a` names `a`'s structure and its solver, and SciPy's reciprocal condition number
+    ``1 / (‖a‖₁ ‖a⁻¹‖₁)``, the inverse's norm estimated from the factorisation (LAPACK's ``gecon``, ``pocon``,
+    ``trcon``, ``gbcon``; a diagonal's exact), under half the machine epsilon warns (:class:`LinAlgWarning`: the
+    answer may have no correct digit). `a` and `b` are never written, and a NaN or an infinity always raises.
+
+    Args:
+        a: The square matrix, or a stack of them (``(..., n, n)``): a Tensor or an array-like.
+        b: The right-hand side: a vector or a matrix of right-hand sides (one per column), or a stack of them.
+        lower: With `assume_a` ``"sym"``, ``"her"`` or ``"pos"``, read `a` from its lower triangle rather than its
+            upper one.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        overwrite_b: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+        assume_a: `a`'s structure, as SciPy names it: ``"diagonal"`` (a division), ``"tridiagonal"`` and
+            ``"banded"`` (the band LU, of the bandwidth `a` has), ``"upper triangular"`` and ``"lower triangular"``
+            (substitution), ``"sym"``, ``"her"`` (the matrix read from one triangle, by default the upper one,
+            `lower` the lower; a Hermitian one's diagonal taken real; then the LU, which here outruns the symmetric
+            indefinite factorisation), ``"pos"`` (Cholesky's, from that triangle) or ``"gen"``; SciPy's long names
+            (``"general"``, ``"symmetric"``, ``"hermitian"``, ``"positive definite"``) too.
+        transposed: Solve ``a.T @ x = b``.
+
+    Returns:
+        Tensor: `x`, of `b`'s shape (broadcast over a stack), in the dtype `a` and `b` promote to.
+
+    Raises:
+        LinAlgError: if `a` is singular, not positive definite for ``"pos"``, not square, holds an infinite or NaN
+            entry, or `b` does not fit it.
+        ValueError: if `assume_a` names no structure.
+        NotImplementedError: for `transposed` with a complex `a`, as SciPy's.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.solve([[2.0, 0.0], [0.0, 4.0]], [2.0, 2.0])
+        numerical.Tensor([1.0, 0.5], dtype=float64)
+        >>> numerical.solve([[4.0, 0.0], [0.0, 2.0]], [[4.0, 8.0], [2.0, 2.0]])
+        numerical.Tensor([[1.0, 2.0],
+                          [1.0, 1.0]], dtype=float64)
+        >>> numerical.solve([[2.0, 0.0], [1.0, 4.0]], [2.0, 9.0], assume_a="lower triangular")
+        numerical.Tensor([1.0, 2.0], dtype=float64)
+    """
     del overwrite_a, overwrite_b, check_finite
     if assume_a is None and not transposed:
         return _borrowed("solve", _solve, a, b)
@@ -951,23 +1036,87 @@ def _structured_solve(a, b, structure, lower, level):
 
 
 def determinant(a, /, *, overwrite_a=False, check_finite=True):
+    """The determinant of a square matrix or a stack of them, as ``numpy.linalg.det`` and ``scipy.linalg.det``.
+
+    From the LU factorisation with partial pivoting. A singular matrix's determinant is 0, not an error.
+
+    Args:
+        a: The square matrix, or a stack of them (``(..., n, n)``): a Tensor or an array-like, real or complex.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+
+    Returns:
+        float | complex | Tensor: The determinant, a number (complex for a complex matrix); for a stack, a Tensor of
+        the stack's leading shape.
+
+    Raises:
+        LinAlgError: if `a` is not a square matrix (or a stack of them) or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.det([[2.0, 0.0], [0.0, 4.0]])
+        8.0
+        >>> numerical.det([[1, 2], [3, 4]])
+        -2.0
+        >>> numerical.det([[[2.0, 0.0], [0.0, 4.0]], [[1.0, 0.0], [0.0, 3.0]]])
+        numerical.Tensor([8.0, 3.0], dtype=float64)
+    """
     del overwrite_a, check_finite  # scipy.linalg.det's: an infinite or NaN entry raises always
     return _borrowed("determinant", _determinant, a)
 
 
 def slogdet(a, /):
+    """The sign and the natural logarithm of the absolute value of the determinant, as ``numpy.linalg.slogdet``.
+
+    It does not underflow or overflow where :func:`determinant` does: the determinant is ``sign * exp(logabsdet)``.
+
+    Args:
+        a: The square matrix, or a stack of them (``(..., n, n)``): a Tensor or an array-like, real or complex.
+
+    Returns:
+        tuple: ``(sign, logabsdet)``. For a real matrix `sign` is 1.0, -1.0 or 0.0 (a singular matrix, whose
+        `logabsdet` is ``-inf``); for a complex one, a complex number of modulus 1. For a stack, two Tensors of the
+        stack's leading shape.
+
+    Raises:
+        LinAlgError: if `a` is not a square matrix (or a stack of them) or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.slogdet([[-1.0, 0.0], [0.0, 1.0]])
+        (-1.0, 0.0)
+        >>> numerical.slogdet([[0.0, 0.0], [0.0, 4.0]])
+        (0.0, -inf)
+    """
     return _borrowed("slogdet", _slogdet, a)
 
 
 def inverse(a, /, *, overwrite_a=False, check_finite=True):
+    """The inverse of a square matrix, or of each matrix of a stack, as ``numpy.linalg.inv`` and ``scipy.linalg.inv``.
+
+    Args:
+        a: The square matrix, or a stack of them (``(..., n, n)``): a Tensor or an array-like, real or complex.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+
+    Returns:
+        Tensor: The inverse, of `a`'s shape and dtype (float64 for integers or bools).
+
+    Raises:
+        LinAlgError: if `a` is singular, not a square matrix (or a stack of them), or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.inv([[2.0, 0.0], [0.0, 4.0]])
+        numerical.Tensor([[0.5, 0.0],
+                          [0.0, 0.25]], dtype=float64)
+        >>> numerical.inv([[1.0, 1.0], [0.0, 1.0]])
+        numerical.Tensor([[1.0, -1.0],
+                          [0.0, 1.0]], dtype=float64)
+    """
     del overwrite_a, check_finite  # scipy.linalg.inv's: an infinite or NaN entry raises always
     return _borrowed("inverse", _inverse, a)
 
-
-for _public, _native in ((einsum, _numerical.einsum), (solve, _numerical.solve), (determinant, _numerical.determinant),
-                         (slogdet, _numerical.slogdet), (inverse, _numerical.inverse)):
-    _public.__doc__ = _native.__doc__
-del _public, _native
 
 det = determinant
 inv = inverse
@@ -1135,13 +1284,29 @@ def block_diag(*arrs):
 
 
 def expm(A):
-    """The matrix exponential ``e^A``, as ``scipy.linalg.expm``: of a square matrix, or of each matrix of a stack
-    (``(..., n, n)``); integers and booleans as ``float64``. Scaling and squaring of a Padé approximant of degree 3 to
-    13, as Al-Mohy and Higham's algorithm (2009) that SciPy follows: the same values to rounding, not to the bit. An
-    infinite or NaN entry raises, where SciPy returns NaNs.
+    """The matrix exponential ``e^A``, as ``scipy.linalg.expm``.
+
+    Scaling and squaring of a Padé approximant of degree 3 to 13, as Al-Mohy and Higham's algorithm (2009) that SciPy
+    follows: the same values to rounding, not to the bit. An infinite or NaN entry raises, where SciPy returns NaNs.
+
+    Args:
+        A: The square matrix, or a stack of them (``(..., n, n)``): a Tensor or an array-like; integers and booleans
+            as ``float64``.
+
+    Returns:
+        Tensor: ``e^A``, of `A`'s shape and dtype.
 
     Raises:
         LinAlgError: if `A` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.expm([[0.0, 0.0], [0.0, 0.0]])
+        numerical.Tensor([[1.0, 0.0],
+                          [0.0, 1.0]], dtype=float64)
+        >>> numerical.expm([[0.0, 1.0], [0.0, 0.0]])
+        numerical.Tensor([[1.0, 1.0],
+                          [0.0, 1.0]], dtype=float64)
     """
     return _expm(A)
 
@@ -1265,23 +1430,38 @@ def expm_frechet(A, E, method=None, compute_expm=True, check_finite=True):
 
 
 def funm(A, func, disp=True):
-    """A function of a square matrix, as ``scipy.linalg.funm``: the Schur form ``A = Z T Zᴴ`` (a real matrix's real
-    form made complex), `func` called with `T`'s diagonal (a NumPy array where NumPy is installed, else a
-    :class:`Tensor`; it returns one value per entry), then Parlett's recurrence for the rest of ``f(T)`` and
-    ``Z f(T) Zᴴ``; real where `A` is and the imaginary parts are negligible. Where eigenvalues gather (within 0.1 of
-    the largest modulus, or of 1), Davies and Higham's Schur–Parlett algorithm: the Schur form reordered by clusters,
-    each cluster's block by Cauchy's integral on a circle about it (`func` is then called again with those circles'
+    """A function of a square matrix, as ``scipy.linalg.funm``.
+
+    The Schur form ``A = Z T Zᴴ`` (a real matrix's real form made complex), `func` called with `T`'s diagonal, then
+    Parlett's recurrence for the rest of ``f(T)`` and ``Z f(T) Zᴴ``. Where eigenvalues gather (within 0.1 of the
+    largest modulus, or of 1), Davies and Higham's Schur–Parlett algorithm: the Schur form reordered by clusters, each
+    cluster's block by Cauchy's integral on a circle about it (`func` is then called again with those circles'
     points, more of them where an integral's own estimate asks: it must be analytic on their disks), the rest by the
     block recurrence; where no circle can keep the other clusters out, or the estimate stays past ``1e3 eps``, the
-    clusters within 0.01 instead. A Hermitian `A`:
-    ``V f(Λ) Vᴴ`` from its eigendecomposition. With ``disp=True`` (the default) a likely inaccurate result is reported
-    on standard output, as SciPy's; with ``disp=False`` ``(F, err)`` is returned, `err` the estimate of
-    ``‖error‖₁ / ‖A‖₁``: the recurrence run again on its own roundings and the integrals' errors, never below SciPy's
-    (which far from normality can say 10⁻¹³ of an error of 10⁻²).
+    clusters within 0.01 instead. A Hermitian `A`: ``V f(Λ) Vᴴ`` from its eigendecomposition.
+
+    Args:
+        A: The square matrix: a Tensor or an array-like.
+        func: The scalar function, called with an array of points (a NumPy array where NumPy is installed, else a
+            :class:`Tensor`); it returns one value per point.
+        disp: With true (the default) a likely inaccurate result (an estimate past ``1000 eps``) is reported on standard
+            output, as SciPy's; with false the estimate is returned with the result.
+
+    Returns:
+        Tensor | tuple: ``f(A)``, real where `A` is and the imaginary parts are negligible, single precision for a
+        single-precision `A`. With ``disp=False``, ``(F, err)``, `err` the estimate of ``‖error‖₁ / ‖A‖₁``: the
+        recurrence run again on its own roundings and the integrals' errors, never below SciPy's (which far from
+        normality can say 10⁻¹³ of an error of 10⁻²).
 
     Raises:
-        LinAlgError: if `A` is not square or holds an infinite or NaN entry, or `func` does not return one value per
-            point.
+        LinAlgError: if `A` is not a square matrix or holds an infinite or NaN entry, or `func` does not return one
+            value per point.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.funm([[1.0, 0.0], [0.0, 4.0]], lambda x: x * x)
+        numerical.Tensor([[1.0, 0.0],
+                          [0.0, 16.0]], dtype=float64)
     """
     A = A if isinstance(A, Tensor) else _read(A)
     try:
@@ -1320,16 +1500,29 @@ class LogmNearlySingularWarning(LogmRankWarning):
 
 
 def logm(A):
-    """The principal matrix logarithm, as ``scipy.linalg.logm``: an upper triangular `A` directly, else its Schur form
-    (a real matrix's real form made complex) and ``Z log(T) Zᴴ``, ``log T`` by Al-Mohy and Higham's inverse scaling
-    and squaring (2012); the norms that choose the square roots and the Padé degree are exact where SciPy estimates
-    them (``onenormest``). Real where `A` is and the imaginary parts are negligible; a stack's matrices each (complex
-    for all where any is). Warns as SciPy does: :class:`LogmExactlySingularWarning` where an eigenvalue is 0 (taken as
-    1e-20), :class:`LogmNearlySingularWarning` where one is below 1e-20, and a ``RuntimeWarning`` where
-    ``‖expm(F) − A‖₁ / ‖A‖₁`` is not below 1000 ε.
+    """The principal matrix logarithm, as ``scipy.linalg.logm``.
+
+    An upper triangular `A` directly, else its Schur form (a real matrix's real form made complex) and
+    ``Z log(T) Zᴴ``, ``log T`` by Al-Mohy and Higham's inverse scaling and squaring (2012); the norms that choose the
+    square roots and the Padé degree are exact where SciPy estimates them (``onenormest``). Warns as SciPy does:
+    :class:`LogmExactlySingularWarning` where an eigenvalue is 0 (taken as 1e-20), :class:`LogmNearlySingularWarning`
+    where one is below 1e-20, and a ``RuntimeWarning`` where ``‖expm(F) − A‖₁ / ‖A‖₁`` is not below 1000 ε.
+
+    Args:
+        A: The square matrix, or a stack of them (``(..., n, n)``): a Tensor or an array-like.
+
+    Returns:
+        Tensor: The logarithm, real where `A` is and the imaginary parts are negligible, else complex; a stack's
+        matrices each (complex for all where any is).
 
     Raises:
         LinAlgError: if `A` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.logm([[1.0, 1.0], [0.0, 1.0]])
+        numerical.Tensor([[0.0, 1.0],
+                          [0.0, 0.0]], dtype=float64)
     """
     A = A if isinstance(A, Tensor) else _read(A)
     if A.ndim > 2:
@@ -1408,15 +1601,31 @@ _SVD_METHODS = ("divide_and_conquer", "bidiagonal_qr", "jacobi")
 
 
 def sqrtm(A):
-    """The principal square root `X` of a square matrix (``X @ X = A``, its eigenvalues of nonnegative real part), as
-    ``scipy.linalg.sqrtm``: of each matrix of a stack (``(..., n, n)``); integers and booleans as ``float64``. By the
-    Schur method, in real arithmetic for a real matrix (Higham, 1987), whose root is real unless it has a real
-    eigenvalue below 0, then complex (for a whole stack); where there is no square root (a zero eigenvalue in a Jordan
-    block), the entries that would need one infinite, as SciPy's. SciPy's deprecated `disp` and `blocksize` are not
-    taken.
+    """The principal square root `X` of a square matrix, as ``scipy.linalg.sqrtm``.
+
+    ``X @ X = A``, its eigenvalues of nonnegative real part. By the Schur method, in real arithmetic for a real matrix
+    (Higham, 1987), whose root is real unless it has a real eigenvalue below 0, then complex (for a whole stack); where
+    there is no square root (a zero eigenvalue in a Jordan block), the entries that would need one infinite, as
+    SciPy's. SciPy's deprecated `disp` and `blocksize` are not taken.
+
+    Args:
+        A: The square matrix, or a stack of them (``(..., n, n)``): a Tensor or an array-like; integers and booleans
+            as ``float64``.
+
+    Returns:
+        Tensor: `X`, of `A`'s shape: real or complex as above.
 
     Raises:
         LinAlgError: if `A` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.sqrtm([[4.0, 0.0], [0.0, 9.0]])
+        numerical.Tensor([[2.0, 0.0],
+                          [0.0, 3.0]], dtype=float64)
+        >>> numerical.sqrtm([[-4.0, 0.0], [0.0, 9.0]])
+        numerical.Tensor([[2j, 0j],
+                          [0j, (3+0j)]], dtype=complex128)
     """
     return _sqrtm(A)
 
@@ -1607,27 +1816,63 @@ def _subset(name, a, subset_by_index, subset_by_value):
 
 def eigh(a, UPLO="L", *, b=None, method="divide_and_conquer", subset_by_index=None, subset_by_value=None, lower=None,
          eigvals_only=False, overwrite_a=False, overwrite_b=False, type=1, check_finite=True, driver=None):
-    """The eigenvalues (real, ascending) and eigenvectors (columns) of a real symmetric or complex Hermitian
-    matrix, as ``numpy.linalg.eigh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``).
-    `method` diagonalises the tridiagonal form: ``"divide_and_conquer"`` (LAPACK's ``dsyevd``/``zheevd``),
-    ``"tridiagonal_ql"`` (implicit QL, ``dsyev``'s, the default before 2026.10.4) or ``"jacobi"`` (cyclic Jacobi
-    rotations, real matrices only).
+    """The eigenvalues and eigenvectors of a real symmetric or complex Hermitian matrix, as ``numpy.linalg.eigh``.
 
-    With `b`, a positive-definite matrix of `a`'s order, the pencil ``a x = λ b x``, as ``scipy.linalg.eigh(a, b)``:
-    ``b = L Lᴴ`` and ``L⁻¹ a L⁻ᴴ`` diagonalised, the vectors ``b``-orthonormal (``Xᴴ b X = I``); each matrix read in
-    the triangle `UPLO` names. Two matrices, not stacks; `b` keyword-only, `UPLO` holding NumPy's place.
+    The eigenvalues are real and ascending, the eigenvectors the columns of the second matrix. With `b`, a
+    positive-definite matrix of `a`'s order, the pencil ``a x = λ b x``, as ``scipy.linalg.eigh(a, b)``: ``b = L Lᴴ``
+    and ``L⁻¹ a L⁻ᴴ`` diagonalised, the vectors ``b``-orthonormal (``Xᴴ b X = I``); each matrix read in the triangle
+    `UPLO` names. Two matrices, not stacks; `b` keyword-only, `UPLO` holding NumPy's place.
 
-    ``subset_by_index=[lo, hi]`` gives the eigenpairs of indices ``lo`` to ``hi`` (ascending, from 0), and
-    ``subset_by_value=[low, high]`` those of the eigenvalues in ``(low, high]``, as ``scipy.linalg.eigh``'s: the
+    A subset of the spectrum (`subset_by_index` or `subset_by_value`, as ``scipy.linalg.eigh``'s) comes from the
     tridiagonal form, the eigenvalues by bisection, the vectors by inverse iteration (LAPACK's ``dstebz`` and
-    ``dstein``), ``n² k`` operations past the reduction for ``k`` of them, where `method` takes ``n³`` and more for
-    all; a matrix (and `b`), not a stack.
+    ``dstein``): ``n² k`` operations past the reduction for ``k`` of them, where `method` takes ``n³`` and more for
+    all; a matrix (and `b`), not a stack. With `eigvals_only` or a subset, `method` is checked but not used.
 
-    ``scipy.linalg.eigh``'s arguments are taken too: `b` as the second positional argument (a matrix, where `UPLO` is a
-    string), ``lower`` (``UPLO`` ``"L"`` or ``"U"``), ``eigvals_only`` (the eigenvalues alone), ``driver`` (``"ev"``
-    the implicit QL, ``"evd"`` and SciPy's others divide and conquer, or the subset's bisection where one is asked),
-    and ``overwrite_a``, ``overwrite_b`` and ``check_finite`` (an infinite or NaN entry raises always). ``type`` 1
-    only: ``a b x = λ x`` and ``b a x = λ x`` are not offered."""
+    ``scipy.linalg.eigh``'s arguments are taken too: `b` as the second positional argument (a matrix, where `UPLO` is
+    a string), `lower`, `eigvals_only`, `driver`, `type` 1 only (``a b x = λ x`` and ``b a x = λ x`` are not offered),
+    and `overwrite_a`, `overwrite_b` and `check_finite`.
+
+    Args:
+        a: The symmetric or Hermitian matrix, or a stack of them (``(..., n, n)``) without `b` or a subset: a Tensor
+            or an array-like. Only the triangle `UPLO` names is read.
+        UPLO: ``"L"`` (the default) reads the lower triangle, ``"U"`` the upper one, in either case. A matrix there is
+            SciPy's `b`.
+        b: The positive-definite matrix of the pencil ``a x = λ b x``, of `a`'s order.
+        method: How the tridiagonal form is diagonalised: ``"divide_and_conquer"`` (LAPACK's ``dsyevd``/``zheevd``),
+            ``"tridiagonal_ql"`` (implicit QL, ``dsyev``'s) or ``"jacobi"`` (cyclic Jacobi rotations, real matrices
+            only).
+        subset_by_index: ``[lo, hi]``: the eigenpairs of indices ``lo`` to ``hi`` (ascending, from 0).
+        subset_by_value: ``[low, high]``: the eigenpairs of the eigenvalues in ``(low, high]``.
+        lower: SciPy's name for the triangle: true for ``UPLO="L"``, false for ``"U"``; it overrides `UPLO`.
+        eigvals_only: Return the eigenvalues alone.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        overwrite_b: Accepted for SciPy's signature; ignored.
+        type: SciPy's problem type: 1 only (``a x = λ b x``).
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+        driver: SciPy's driver, as a `method`: ``"ev"`` and ``"gv"`` the implicit QL, ``"evd"`` and SciPy's others
+            divide and conquer, or the subset's bisection where one is asked.
+
+    Returns:
+        tuple | Tensor: ``(w, v)``: `w` the eigenvalues, real, of `a`'s precision; `v` the eigenvectors as columns, of
+        `a`'s dtype (float64 for integers or bools). `w` alone with `eigvals_only`.
+
+    Raises:
+        LinAlgError: if `a` is not square, holds an infinite or NaN entry, `b` is not positive definite or not of
+            `a`'s order, or ``"jacobi"`` is asked of a complex matrix.
+        ValueError: for a `UPLO`, `method`, `driver` or `type` not offered, both subsets, or a subset out of range.
+        TypeError: if a method's name is given as the second argument, or `b` is given twice.
+
+    Examples:
+        >>> import numerical
+        >>> w, v = numerical.eigh([[2.0, 0.0], [0.0, 1.0]])
+        >>> w
+        numerical.Tensor([1.0, 2.0], dtype=float64)
+        >>> v
+        numerical.Tensor([[0.0, 1.0],
+                          [1.0, 0.0]], dtype=float64)
+        >>> numerical.eigh([[2.0, 0.0], [0.0, 1.0]], b=[[4.0, 0.0], [0.0, 1.0]], eigvals_only=True)
+        numerical.Tensor([0.5, 1.0], dtype=float64)
+    """
     UPLO, b = _scipy_pencil("eigh", UPLO, b, lower, type)
     upper = _upper("eigh", UPLO)
     method = _eigh_driver(driver, method)
@@ -1676,11 +1921,43 @@ def _scipy_pencil(name, UPLO, b, lower, type):
 
 def eigvalsh(a, UPLO="L", *, b=None, subset_by_index=None, subset_by_value=None, lower=None, overwrite_a=False,
              overwrite_b=False, type=1, check_finite=True, driver=None):
-    """The eigenvalues alone of a real symmetric or complex Hermitian matrix, real and ascending, as
-    ``numpy.linalg.eigvalsh``: its lower triangle is read (``UPLO="L"``), or its upper one (``"U"``). With `b`,
-    those of the pencil ``a x = λ b x``, as :func:`eigh`'s. ``subset_by_index`` and ``subset_by_value`` as
-    :func:`eigh`'s, by bisection on the tridiagonal form alone. ``scipy.linalg.eigvalsh``'s arguments as
-    :func:`eigh` takes them (`b` positional, ``lower``, ``driver``, ``type`` 1)."""
+    """The eigenvalues alone of a real symmetric or complex Hermitian matrix, as ``numpy.linalg.eigvalsh``.
+
+    Real and ascending. With `b`, those of the pencil ``a x = λ b x``, as :func:`eigh`'s. A subset (`subset_by_index`
+    or `subset_by_value`, as :func:`eigh`'s) by bisection on the tridiagonal form alone. ``scipy.linalg.eigvalsh``'s
+    arguments as :func:`eigh` takes them.
+
+    Args:
+        a: The symmetric or Hermitian matrix, or a stack of them (``(..., n, n)``) without `b` or a subset: a Tensor
+            or an array-like. Only the triangle `UPLO` names is read.
+        UPLO: ``"L"`` (the default) reads the lower triangle, ``"U"`` the upper one, in either case. A matrix there is
+            SciPy's `b`.
+        b: The positive-definite matrix of the pencil ``a x = λ b x``, of `a`'s order.
+        subset_by_index: ``[lo, hi]``: the eigenvalues of indices ``lo`` to ``hi`` (ascending, from 0).
+        subset_by_value: ``[low, high]``: the eigenvalues in ``(low, high]``.
+        lower: SciPy's name for the triangle: true for ``UPLO="L"``, false for ``"U"``; it overrides `UPLO`.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        overwrite_b: Accepted for SciPy's signature; ignored.
+        type: SciPy's problem type: 1 only (``a x = λ b x``).
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+        driver: SciPy's driver: checked against :func:`eigh`'s names, it does not change the computation.
+
+    Returns:
+        Tensor: The eigenvalues, real, of `a`'s precision; for a stack, one row per matrix.
+
+    Raises:
+        LinAlgError: if `a` is not square, holds an infinite or NaN entry, or `b` is not positive definite or not of
+            `a`'s order.
+        ValueError: for a `UPLO`, `driver` or `type` not offered, both subsets, or a subset out of range.
+        TypeError: if a method's name is given as the second argument, or `b` is given twice.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.eigvalsh([[2.0, 7.0], [0.0, 1.0]])
+        numerical.Tensor([1.0, 2.0], dtype=float64)
+        >>> numerical.eigvalsh([[2.0, 0.0], [7.0, 1.0]], "U")
+        numerical.Tensor([1.0, 2.0], dtype=float64)
+    """
     UPLO, b = _scipy_pencil("eigvalsh", UPLO, b, lower, type)
     upper = _upper("eigvalsh", UPLO)
     _eigh_driver(driver, None)
@@ -1696,19 +1973,45 @@ def eigvalsh(a, UPLO="L", *, b=None, subset_by_index=None, subset_by_value=None,
 
 def eig(a, b=None, left=False, right=True, overwrite_a=False, overwrite_b=False, check_finite=True,
         homogeneous_eigvals=False):
-    """The eigenvalues and right eigenvectors (columns) of a general square matrix, or of each of a stack, as
-    ``numpy.linalg.eig``: ``a @ v[:, j] == w[j] * v[:, j]``, each vector of unit norm with its component of largest
-    modulus real. Complex whatever the eigenvalues, as NumPy 2.5's (complex64 for a single-precision matrix); in the
-    order LAPACK's ``dgeev`` and ``zgeev`` give them (balancing, Hessenberg reduction, shifted QR), a real matrix's
-    conjugate pairs together, the positive imaginary part first.
+    """The eigenvalues and right eigenvectors of a general square matrix or a stack of them, as ``numpy.linalg.eig``.
 
-    With ``scipy.linalg.eig``'s arguments (a matrix): `left` the left eigenvectors too (``vl[:, j].conj() @ a ==
-    w[j] * vl[:, j].conj()``, as ``geev``'s), `right` False for none of the right ones, `b` the generalized problem
-    ``a @ v = w * b @ v`` by the complex QZ (``w = alpha / beta``, ∞ where only β is 0, NaN where both are; each vector
-    of unit 2-norm, as SciPy normalises ``ggev``'s), `homogeneous_eigvals` the pairs ``(alpha, beta)`` stacked; the
+    ``a @ v[:, j] == w[j] * v[:, j]``, each vector of unit norm with its component of largest modulus real. Complex
+    whatever the eigenvalues, as NumPy 2.5's (complex64 for a single-precision matrix); in the order LAPACK's ``dgeev``
+    and ``zgeev`` give them (balancing, Hessenberg reduction, shifted QR), a real matrix's conjugate pairs together, the
+    positive imaginary part first.
+
+    With ``scipy.linalg.eig``'s arguments (a matrix, not a stack): `left`, `right`, `b` and `homogeneous_eigvals`, the
     answer ``w``, ``(w, vl)``, ``(w, vr)`` or ``(w, vl, vr)`` as SciPy's. The vectors are complex always, where SciPy's
-    are real for a real matrix with real eigenvalues. `overwrite_a`, `overwrite_b` and `check_finite` are accepted (an
-    infinite or NaN entry raises always).
+    are real for a real matrix with real eigenvalues.
+
+    Args:
+        a: The square matrix, or a stack of them (``(..., n, n)``) with NumPy's arguments alone: a Tensor or an
+            array-like.
+        b: The generalized problem ``a @ v = w * b @ v``, by the complex QZ: ``w = alpha / beta``, ∞ where only β is 0,
+            NaN where both are; each vector of unit 2-norm, as SciPy normalises ``ggev``'s. A matrix of `a`'s shape.
+        left: Return the left eigenvectors too (``vl[:, j].conj() @ a == w[j] * vl[:, j].conj()``, as ``geev``'s).
+        right: Return the right eigenvectors (the default); false for none of them.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        overwrite_b: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+        homogeneous_eigvals: Return the eigenvalues as the pairs ``(alpha, beta)`` stacked (a ``(2, n)`` Tensor; β 1
+            without `b`).
+
+    Returns:
+        tuple | Tensor: ``(w, v)`` by default: `w` the eigenvalues, `v` the eigenvectors as columns, both complex. With
+        SciPy's arguments, ``w``, ``(w, vl)``, ``(w, vr)`` or ``(w, vl, vr)``.
+
+    Raises:
+        LinAlgError: if `a` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
+        ValueError: if, with `b`, `a` is not a square matrix or `b` is not of its shape.
+
+    Examples:
+        >>> import numerical
+        >>> w, v = numerical.eig([[2.0, 0.0], [0.0, 1.0]])
+        >>> w
+        numerical.Tensor([(2+0j), (1+0j)], dtype=complex128)
+        >>> numerical.eig([[0.0, -1.0], [1.0, 0.0]], right=False)
+        numerical.Tensor([1j, -1j], dtype=complex128)
     """
     del overwrite_a, overwrite_b, check_finite
     if b is None and not left and right and not homogeneous_eigvals:
@@ -1739,9 +2042,32 @@ def eig(a, b=None, left=False, right=True, overwrite_a=False, overwrite_b=False,
 
 
 def eigvals(a, b=None, overwrite_a=False, check_finite=True, homogeneous_eigvals=False):
-    """The eigenvalues alone of a general square matrix, or of each of a stack, as ``numpy.linalg.eigvals``: complex
-    whatever they are, as NumPy 2.5's; the same values as ``eig``'s, to the bit. With ``scipy.linalg.eigvals``'s
-    arguments: `b` the generalized problem's (:func:`eig`'s), `homogeneous_eigvals` the pairs ``(alpha, beta)``."""
+    """The eigenvalues alone of a general square matrix, or of each of a stack, as ``numpy.linalg.eigvals``.
+
+    Complex whatever they are, as NumPy 2.5's; the same values as :func:`eig`'s, to the bit.
+
+    Args:
+        a: The square matrix, or a stack of them (``(..., n, n)``) without `b` or `homogeneous_eigvals`: a Tensor or
+            an array-like.
+        b: The generalized problem's matrix, as ``scipy.linalg.eigvals`` (:func:`eig`'s).
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+        homogeneous_eigvals: Return the pairs ``(alpha, beta)`` stacked, as :func:`eig`'s.
+
+    Returns:
+        Tensor: The eigenvalues, complex (complex64 for a single-precision matrix); for a stack, one row per matrix.
+
+    Raises:
+        LinAlgError: if `a` is not square (or a stack of square matrices) or holds an infinite or NaN entry.
+        ValueError: if, with `b`, `a` is not a square matrix or `b` is not of its shape.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.eigvals([[0.0, -1.0], [1.0, 0.0]])
+        numerical.Tensor([1j, -1j], dtype=complex128)
+        >>> numerical.eigvals([[2.0, 0.0], [0.0, 3.0]], b=[[1.0, 0.0], [0.0, 0.0]])
+        numerical.Tensor([(2+0j), (inf+0j)], dtype=complex128)
+    """
     del overwrite_a, check_finite
     if b is None and not homogeneous_eigvals:
         return _eigvals(a)
@@ -1784,11 +2110,34 @@ def schur(a, output="real", lwork=None, overwrite_a=False, sort=None, check_fini
 
 
 def cholesky(a, /, *, upper=False, lower=None, overwrite_a=False, check_finite=True):
-    """The Cholesky factor of a Hermitian positive-definite matrix, as ``numpy.linalg.cholesky``: the lower `L` with
-    ``a = L @ L.conj().T``, read from the lower triangle; with ``upper=True``, the upper `U` with ``a = U.conj().T @ U``,
-    read from the upper triangle.
-    ``scipy.linalg.cholesky``'s ``lower`` is taken (``upper`` its negation), and its ``overwrite_a`` and
-    ``check_finite``; NumPy's default stays, the lower factor, where SciPy's is the upper one."""
+    """The Cholesky factor of a Hermitian positive-definite matrix, as ``numpy.linalg.cholesky``.
+
+    The lower `L` with ``a = L @ L.conj().T``, read from the lower triangle, or the upper `U` with
+    ``a = U.conj().T @ U``, read from the upper triangle. NumPy's default stays, the lower factor, where
+    ``scipy.linalg.cholesky``'s is the upper one.
+
+    Args:
+        a: The Hermitian positive-definite matrix, or a stack of them (``(..., n, n)``): a Tensor or an array-like.
+        upper: Return the upper factor `U`.
+        lower: ``scipy.linalg.cholesky``'s: the negation of `upper`, which it overrides.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+
+    Returns:
+        Tensor: The factor, of `a`'s shape and dtype (float64 for integers or bools), zeros in its other triangle.
+
+    Raises:
+        LinAlgError: if `a` is not positive definite, not square, or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.cholesky([[4.0, 2.0], [2.0, 5.0]])
+        numerical.Tensor([[2.0, 0.0],
+                          [1.0, 2.0]], dtype=float64)
+        >>> numerical.cholesky([[4.0, 2.0], [2.0, 5.0]], upper=True)
+        numerical.Tensor([[2.0, 1.0],
+                          [0.0, 2.0]], dtype=float64)
+    """
     if lower is not None:
         upper = not lower
     del overwrite_a, check_finite
@@ -1810,16 +2159,36 @@ def _trans(trans):
 
 
 def solve_triangular(a, b, trans=0, lower=False, unit_diagonal=False, overwrite_b=False, check_finite=True):
-    """The solution `x` of ``a @ x = b`` for a triangular `a`, as ``scipy.linalg.solve_triangular``: its `lower`
-    triangle, or by default its upper one, is read and the other never; ``trans`` 1 (``'T'``) solves
-    ``a.T @ x = b`` and 2 (``'C'``) ``a.conj().T @ x = b``; with ``unit_diagonal`` the diagonal is taken as ones.
-    `b` is a vector or a matrix of right-hand sides. ``n² k`` operations where :func:`solve` factorises `a` first.
-    `overwrite_b` is accepted and ignored (a Tensor is never written through); `check_finite` too, an infinite or
-    NaN entry raising always.
+    """The solution `x` of ``a @ x = b`` for a triangular `a`, as ``scipy.linalg.solve_triangular``.
+
+    The triangle `lower` names is read and the other never. ``n² k`` operations where :func:`solve` factorises `a`
+    first.
+
+    Args:
+        a: The triangular square matrix: a Tensor or an array-like.
+        b: The right-hand side: a vector or a matrix of right-hand sides.
+        trans: 0 (``'N'``) solves ``a @ x = b``, 1 (``'T'``) ``a.T @ x = b``, 2 (``'C'``) ``a.conj().T @ x = b``.
+        lower: Read the lower triangle; by default the upper one.
+        unit_diagonal: Take the diagonal as ones (it is not read).
+        overwrite_b: Accepted for SciPy's signature; ignored (a Tensor is never written through).
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+
+    Returns:
+        Tensor: `x`, of `b`'s shape.
 
     Raises:
         LinAlgError: if a diagonal entry read is zero ("singular matrix: resolution failed at diagonal i", 1-based,
             as SciPy's), an entry read is infinite or NaN, or the shapes do not fit.
+        ValueError: for another `trans`.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.solve_triangular([[2.0, 1.0], [0.0, 4.0]], [4.0, 8.0])
+        numerical.Tensor([1.0, 2.0], dtype=float64)
+        >>> numerical.solve_triangular([[2.0, 0.0], [1.0, 4.0]], [2.0, 9.0], lower=True)
+        numerical.Tensor([1.0, 2.0], dtype=float64)
+        >>> numerical.solve_triangular([[1.0, 0.0], [1.0, 1.0]], [1.0, 2.0], lower=True, unit_diagonal=True)
+        numerical.Tensor([1.0, 1.0], dtype=float64)
     """
     del overwrite_b, check_finite
     operation = _trans(trans)
@@ -1857,14 +2226,36 @@ class LUFactor(tuple):
 
 
 def lu(a, permute_l=False, overwrite_a=False, check_finite=True, p_indices=False):
-    """The pivoted LU factorisation ``a = P @ L @ U`` of an m × n matrix, as ``scipy.linalg.lu``: `L` m × k lower
-    trapezoidal with a unit diagonal, `U` k × n upper trapezoidal, ``k = min(m, n)``; `P` the m × m permutation matrix,
-    or with ``p_indices=True`` the rows themselves (``a == L[P] @ U``, an int list where SciPy's is an array); with
-    ``permute_l=True`` the pair ``(P @ L, U)``. A singular matrix factorises (a zero pivot leaves its column of `L`
-    zero). `overwrite_a` and `check_finite` are accepted (an infinite or NaN entry raises always).
+    """The pivoted LU factorisation ``a = P @ L @ U`` of an m × n matrix, as ``scipy.linalg.lu``.
+
+    A singular matrix factorises (a zero pivot leaves its column of `L` zero).
+
+    Args:
+        a: The m × n matrix: a Tensor or an array-like.
+        permute_l: Return the pair ``(P @ L, U)``.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+        p_indices: Return the rows themselves in place of `P` (``a == L[P] @ U``, an int list where SciPy's is an
+            array).
+
+    Returns:
+        tuple: ``(P, L, U)``: `P` the m × m permutation matrix (real, of `a`'s precision), `L` m × k lower trapezoidal
+        with a unit diagonal, `U` k × n upper trapezoidal, ``k = min(m, n)``. ``(P @ L, U)`` with `permute_l`.
 
     Raises:
         LinAlgError: if `a` is not a matrix or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> p, l, u = numerical.lu([[0.0, 1.0], [2.0, 0.0]])
+        >>> p
+        numerical.Tensor([[0.0, 1.0],
+                          [1.0, 0.0]], dtype=float64)
+        >>> u
+        numerical.Tensor([[2.0, 0.0],
+                          [0.0, 1.0]], dtype=float64)
+        >>> numerical.lu([[0.0, 1.0], [2.0, 0.0]], p_indices=True)[0]
+        [1, 0]
     """
     del overwrite_a, check_finite
     a = _operand(a)
@@ -1882,13 +2273,31 @@ def lu(a, permute_l=False, overwrite_a=False, check_finite=True, p_indices=False
 
 
 def lu_factor(a, overwrite_a=False, check_finite=True):
-    """The pivoted LU factorisation ``P a = L U`` of a square matrix, as ``scipy.linalg.lu_factor``: a
-    :class:`LUFactor`, the pair ``(lu, piv)`` with `L` (unit diagonal not stored) and `U` in one matrix and LAPACK's
-    row interchanges (a tuple of ints, where SciPy's is an integer array), to solve many systems with one
-    factorisation (:func:`lu_solve`). A singular matrix factorises, a zero on `U`'s diagonal, as SciPy's (which warns).
+    """The pivoted LU factorisation ``P a = L U`` of a square matrix, as ``scipy.linalg.lu_factor``.
+
+    To solve many systems with one factorisation (:func:`lu_solve`). A singular matrix factorises, a zero on `U`'s
+    diagonal, as SciPy's (which warns).
+
+    Args:
+        a: The square matrix: a Tensor or an array-like.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+
+    Returns:
+        LUFactor: The pair ``(lu, piv)``: `L` (unit diagonal not stored) and `U` in one matrix, and LAPACK's row
+        interchanges (a tuple of ints, where SciPy's is an integer array).
 
     Raises:
         LinAlgError: if `a` is not square or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> lu, piv = numerical.lu_factor([[0.0, 1.0], [2.0, 0.0]])
+        >>> lu
+        numerical.Tensor([[2.0, 0.0],
+                          [0.0, 1.0]], dtype=float64)
+        >>> piv
+        (1, 1)
     """
     del overwrite_a, check_finite
     lu, piv = _lu_factor(a)
@@ -1896,12 +2305,31 @@ def lu_factor(a, overwrite_a=False, check_finite=True):
 
 
 def lu_solve(lu_and_piv, b, trans=0, overwrite_b=False, check_finite=True):
-    """The solution of ``a @ x = b`` (``trans`` 0), ``a.T @ x = b`` (1, ``'T'``) or ``a.conj().T @ x = b`` (2,
-    ``'C'``) from :func:`lu_factor`'s ``(lu, piv)`` (or any such pair), as ``scipy.linalg.lu_solve``: ``n² k``
-    operations. A zero on `U`'s diagonal raises, where SciPy's divides by it.
+    """The solution of a system from :func:`lu_factor`'s factorisation, as ``scipy.linalg.lu_solve``.
+
+    ``n² k`` operations. A zero on `U`'s diagonal raises, where SciPy's divides by it.
+
+    Args:
+        lu_and_piv: :func:`lu_factor`'s ``(lu, piv)``, or any such pair.
+        b: The right-hand side: a vector or a matrix of right-hand sides.
+        trans: 0 (``'N'``) solves ``a @ x = b``, 1 (``'T'``) ``a.T @ x = b``, 2 (``'C'``) ``a.conj().T @ x = b``.
+        overwrite_b: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+
+    Returns:
+        Tensor: `x`, of `b`'s shape, in the dtype `lu` and `b` promote to.
 
     Raises:
         LinAlgError: for a zero on `U`'s diagonal, an infinite or NaN entry, or shapes that do not fit.
+        ValueError: for another `trans`.
+
+    Examples:
+        >>> import numerical
+        >>> factor = numerical.lu_factor([[0.0, 1.0], [2.0, 0.0]])
+        >>> numerical.lu_solve(factor, [1.0, 4.0])
+        numerical.Tensor([2.0, 1.0], dtype=float64)
+        >>> numerical.lu_solve(numerical.lu_factor([[1.0, 2.0], [0.0, 4.0]]), [1.0, 4.0], trans=1)
+        numerical.Tensor([1.0, 0.5], dtype=float64)
     """
     del overwrite_b, check_finite
     lu, piv = lu_and_piv
@@ -1948,25 +2376,56 @@ class CholeskyFactor(tuple):
 
 
 def cho_factor(a, lower=False, overwrite_a=False, check_finite=True):
-    """The Cholesky factorisation of a Hermitian positive-definite matrix, as ``scipy.linalg.cho_factor``: a
-    :class:`CholeskyFactor`, the pair ``(c, lower)``, `c` the upper factor `U` (``a = Uᴴ U``) read from `a`'s upper
-    triangle, or with ``lower`` the lower `L` (``a = L Lᴴ``) from its lower one; the other triangle zeros, where SciPy's
-    leaves whatever `a` held there. For :func:`cho_solve`.
+    """The Cholesky factorisation of a Hermitian positive-definite matrix, as ``scipy.linalg.cho_factor``.
+
+    For :func:`cho_solve`. The other triangle of the factor is zeros, where SciPy's leaves whatever `a` held there.
+
+    Args:
+        a: The Hermitian positive-definite matrix: a Tensor or an array-like.
+        lower: Return the lower factor `L` (``a = L Lᴴ``) read from `a`'s lower triangle; by default the upper `U`
+            (``a = Uᴴ U``) read from its upper one.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+
+    Returns:
+        CholeskyFactor: The pair ``(c, lower)``: `c` the factor, `lower` a bool.
 
     Raises:
         LinAlgError: if `a` is not positive definite, not square, or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.cho_factor([[4.0, 2.0], [2.0, 5.0]])
+        (numerical.Tensor([[2.0, 1.0],
+                          [0.0, 2.0]], dtype=float64), False)
     """
     del overwrite_a, check_finite
     return CholeskyFactor(cholesky(a, upper=not lower), bool(lower))
 
 
 def cho_solve(c_and_lower, b, overwrite_b=False, check_finite=True):
-    """The solution of ``a @ x = b`` from :func:`cho_factor`'s ``(c, lower)``, as ``scipy.linalg.cho_solve``: two
-    triangular solves (:func:`solve_triangular`'s bits), ``2 n² k`` operations; only `c`'s triangle is read, checked
-    once with `b`, and an overflow between the two solves is the result's.
+    """The solution of ``a @ x = b`` from :func:`cho_factor`'s factorisation, as ``scipy.linalg.cho_solve``.
+
+    Two triangular solves (:func:`solve_triangular`'s bits), ``2 n² k`` operations; only `c`'s triangle is read,
+    checked once with `b`, and an overflow between the two solves is the result's.
+
+    Args:
+        c_and_lower: :func:`cho_factor`'s ``(c, lower)``, or any such pair.
+        b: The right-hand side: a vector or a matrix of right-hand sides.
+        overwrite_b: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+
+    Returns:
+        Tensor: `x`, of `b`'s shape.
 
     Raises:
         LinAlgError: for a zero on `c`'s diagonal, an infinite or NaN entry, or shapes that do not fit.
+
+    Examples:
+        >>> import numerical
+        >>> factor = numerical.cho_factor([[4.0, 2.0], [2.0, 5.0]])
+        >>> numerical.cho_solve(factor, [6.0, 12.0])
+        numerical.Tensor([0.375, 2.25], dtype=float64)
     """
     del overwrite_b, check_finite
     c, lower = c_and_lower
@@ -1982,13 +2441,41 @@ def cho_solve(c_and_lower, b, overwrite_b=False, check_finite=True):
 
 
 def lstsq(a, b, rcond=None, *, cond=None, overwrite_a=False, overwrite_b=False, check_finite=True, lapack_driver=None):
-    """``(x, residuals, rank, s)``, as ``numpy.linalg.lstsq``: the minimum-norm least-squares solution of
-    ``a @ x ≈ b``, the residual sums of squares (for a tall `a` of full column rank, else empty), the rank and the
-    singular values of `a`. A singular value at or under `rcond` times the largest counts as zero: by default
-    (``None``) machine epsilon times max(m, n), NumPy's; a negative `rcond` is machine epsilon, as LAPACK's. The
-    epsilon is the operands' precision's (float32's for float32 and complex64). ``scipy.linalg.lstsq``'s ``cond`` is
-    `rcond` by its name (not both), and its ``lapack_driver`` (``"gelsd"``, ``"gelsy"``, ``"gelss"``: the SVD here),
-    ``overwrite_a``, ``overwrite_b`` and ``check_finite`` are taken."""
+    """The minimum-norm least-squares solution of ``a @ x ≈ b``, as ``numpy.linalg.lstsq``.
+
+    A singular value at or under `rcond` times the largest counts as zero. The epsilon is the operands' precision's
+    (float32's for float32 and complex64). ``scipy.linalg.lstsq``'s arguments are taken; the SVD solves whichever
+    driver is named.
+
+    Args:
+        a: The m×n matrix: a Tensor or an array-like.
+        b: The right-hand side: a vector of m entries, or an m×k matrix of right-hand sides.
+        rcond: The relative cutoff: by default (``None``) machine epsilon times max(m, n), NumPy's; a negative `rcond`
+            is machine epsilon, as LAPACK's.
+        cond: ``scipy.linalg.lstsq``'s name for `rcond` (not both).
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        overwrite_b: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored.
+        lapack_driver: ``"gelsd"``, ``"gelsy"`` or ``"gelss"``, as SciPy's: the SVD here, whichever.
+
+    Returns:
+        tuple: ``(x, residuals, rank, s)``: the solution (a Tensor), the residual sums of squares (a Tensor, for a tall
+        `a` of full column rank, else empty), the rank (an int) and the singular values of `a` (a Tensor). With `cond`
+        or `lapack_driver` (a SciPy-style call) and a vector `b`, the residual is a number, as SciPy's.
+
+    Raises:
+        LinAlgError: if `a` is not a matrix, `b` does not fit it, an entry is infinite or NaN, or the tolerance is NaN.
+        ValueError: if both `rcond` and `cond` are given, or for another `lapack_driver`.
+        TypeError: if the tolerance is not a real number.
+
+    Examples:
+        >>> import numerical
+        >>> x, residuals, rank, s = numerical.lstsq([[1.0, 0.0], [0.0, 2.0], [0.0, 0.0]], [1.0, 2.0, 3.0])
+        >>> x
+        numerical.Tensor([1.0, 1.0], dtype=float64)
+        >>> residuals, rank, s
+        (numerical.Tensor([9.0], dtype=float64), 2, numerical.Tensor([2.0, 1.0], dtype=float64))
+    """
     del overwrite_a, overwrite_b, check_finite
     if lapack_driver not in (None, "gelsd", "gelsy", "gelss"):
         raise ValueError(f"LAPACK driver {lapack_driver!r} is not found")
@@ -2009,15 +2496,42 @@ def lstsq(a, b, rcond=None, *, cond=None, overwrite_a=False, overwrite_b=False, 
 
 
 def pinv(a, rcond=None, hermitian=False, *, rtol=None, atol=None, return_rank=False, check_finite=True):
-    """The Moore–Penrose pseudo-inverse, as ``numpy.linalg.pinv``: a singular value at or under `rcond` (or `rtol`,
-    its NumPy 2 name; not both) times the largest counts as zero, by default machine epsilon times max(m, n). With
-    ``hermitian=True`` `a` is taken as real symmetric or complex Hermitian, its lower triangle read, and the
-    pseudo-inverse comes from its eigendecomposition, cheaper. A negative or NaN tolerance raises, where NumPy's
-    result is infinite or NaN.
+    """The Moore–Penrose pseudo-inverse, as ``numpy.linalg.pinv``.
 
-    ``scipy.linalg.pinv``'s ``atol`` (an absolute bound: a singular value at or under ``max(atol, rtol σ₁)`` counts
-    as zero, `rtol` then 0 by default, as SciPy's) and ``return_rank`` (the pair ``(pinv, rank)``) are taken, and its
-    ``check_finite``."""
+    A singular value at or under the relative tolerance times the largest counts as zero. A negative or NaN tolerance
+    raises, where NumPy's result is infinite or NaN. ``scipy.linalg.pinv``'s `atol`, `return_rank` and `check_finite`
+    are taken.
+
+    Args:
+        a: The matrix, or a stack of them (``(..., m, n)``) without `atol` or `return_rank`: a Tensor or an array-like.
+        rcond: The relative tolerance, by default machine epsilon times max(m, n).
+        hermitian: Take `a` as real symmetric or complex Hermitian, its lower triangle read: the pseudo-inverse comes
+            from its eigendecomposition, cheaper.
+        rtol: NumPy 2's name for `rcond` (not both).
+        atol: ``scipy.linalg.pinv``'s absolute bound: a singular value at or under ``max(atol, rtol σ₁)`` counts as
+            zero, `rtol` then 0 by default, as SciPy's.
+        return_rank: Return the pair ``(pinv, rank)``, as SciPy's.
+        check_finite: Accepted for SciPy's signature; ignored.
+
+    Returns:
+        Tensor | tuple: The pseudo-inverse, n×m (of `a`'s dtype, float64 for integers or bools); with `return_rank`,
+        ``(pinv, rank)``, `rank` an int.
+
+    Raises:
+        LinAlgError: for a negative or NaN tolerance, an infinite or NaN entry, a non-square `a` with `hermitian`, or
+            a stack with `atol` or `return_rank`.
+        ValueError: if both `rcond` and `rtol` are given.
+        TypeError: if a tolerance is not a real number (a bool included).
+
+    Examples:
+        >>> import numerical
+        >>> numerical.pinv([[2.0, 0.0], [0.0, 4.0]])
+        numerical.Tensor([[0.5, 0.0],
+                          [0.0, 0.25]], dtype=float64)
+        >>> numerical.pinv([[2.0, 0.0], [0.0, 0.0]], return_rank=True)
+        (numerical.Tensor([[0.5, 0.0],
+                          [0.0, 0.0]], dtype=float64), 1)
+    """
     del check_finite
     if rcond is not None and rtol is not None:
         raise ValueError("pinv: rtol and rcond can't be both set")
@@ -2041,10 +2555,36 @@ def pinv(a, rcond=None, hermitian=False, *, rtol=None, atol=None, return_rank=Fa
 
 
 def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):
-    """The numerical rank, as ``numpy.linalg.matrix_rank``: the singular values above `tol`, or above `rtol` times the
-    largest (not both), by default machine epsilon times max(m, n) times the largest. With ``hermitian=True`` `A` is
-    taken as real symmetric or complex Hermitian, its lower triangle read, its singular values the magnitudes of its
-    eigenvalues, cheaper. A vector or a number has rank 1 unless all zero. A negative or NaN tolerance raises."""
+    """The numerical rank, as ``numpy.linalg.matrix_rank``.
+
+    The number of singular values above the tolerance. A vector or a number has rank 1 unless all zero. A negative or
+    NaN tolerance raises.
+
+    Args:
+        A: The matrix, or a stack of them (``(..., m, n)``), a vector or a number: a Tensor or an array-like.
+        tol: The absolute tolerance; by default machine epsilon times max(m, n) times the largest singular value.
+        hermitian: Take `A` as real symmetric or complex Hermitian, its lower triangle read, its singular values the
+            magnitudes of its eigenvalues, cheaper.
+        rtol: The tolerance relative to the largest singular value (not with `tol`).
+
+    Returns:
+        int | list: The rank; for a stack, the ranks as integers nested along its leading axes (NumPy's an integer
+        array).
+
+    Raises:
+        LinAlgError: for a negative or NaN tolerance, or an infinite or NaN entry.
+        ValueError: if both `tol` and `rtol` are given.
+        TypeError: if a tolerance is not a real number (a bool included).
+
+    Examples:
+        >>> import numerical
+        >>> numerical.matrix_rank([[1.0, 2.0], [2.0, 4.0]])
+        1
+        >>> numerical.matrix_rank([[[1.0, 0.0], [0.0, 1.0]], [[1.0, 0.0], [0.0, 0.0]]])
+        [2, 1]
+        >>> numerical.matrix_rank([0.0, 0.0])
+        0
+    """
     if tol is not None and rtol is not None:
         raise ValueError("matrix_rank: tol and rtol can't be both set")
     tol, rtol = _tolerance("matrix_rank", tol), _tolerance("matrix_rank", rtol)
@@ -2065,14 +2605,45 @@ def _as_integers(nested):
 
 def svd(a, full_matrices=True, compute_uv=True, hermitian=False, *, method="divide_and_conquer", overwrite_a=False,
         check_finite=True, lapack_driver=None):
-    """``(U, S, Vh)`` with ``a = U @ diag(S) @ Vh``, the singular values descending, as ``numpy.linalg.svd``: for an
-    m×n `a`, `U` is m×m and `Vh` n×n (``full_matrices=True``, NumPy's default: the columns past min(m, n) an
-    orthonormal basis of the complement), or m×k and k×n, k = min(m, n) (``full_matrices=False``); the singular values
-    alone with ``compute_uv=False``. `method` decomposes the bidiagonal form: ``"divide_and_conquer"`` (LAPACK's
-    ``dgesdd``), ``"bidiagonal_qr"`` (implicit-shift QR, ``dgesvd``'s) or ``"jacobi"`` (one-sided Jacobi, each singular
-    value to high relative accuracy). ``hermitian=True`` takes `a` as real symmetric or complex Hermitian (its lower
-    triangle read) and decomposes it through its eigendecomposition, cheaper: the singular values the magnitudes of
-    the eigenvalues, ``Vh = (U * sign(w)).conj().T``, as NumPy's."""
+    """The singular value decomposition ``a = U @ diag(S) @ Vh``, as ``numpy.linalg.svd``.
+
+    The singular values descending. ``hermitian=True`` decomposes `a` through its eigendecomposition, cheaper: the
+    singular values the magnitudes of the eigenvalues, ``Vh = (U * sign(w)).conj().T``, as NumPy's.
+
+    Args:
+        a: The m×n matrix, or a stack of them (``(..., m, n)``): a Tensor or an array-like.
+        full_matrices: `U` m×m and `Vh` n×n (true, NumPy's default: the columns past min(m, n) an orthonormal basis of
+            the complement), or m×k and k×n, k = min(m, n) (false).
+        compute_uv: Return the factors; false for the singular values alone.
+        hermitian: Take `a` as real symmetric or complex Hermitian (its lower triangle read).
+        method: How the bidiagonal form is decomposed: ``"divide_and_conquer"`` (LAPACK's ``dgesdd``),
+            ``"bidiagonal_qr"`` (implicit-shift QR, ``dgesvd``'s) or ``"jacobi"`` (one-sided Jacobi, each singular
+            value to high relative accuracy).
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+        lapack_driver: ``scipy.linalg.svd``'s: ``"gesdd"`` (divide and conquer) or ``"gesvd"`` (bidiagonal QR); it
+            replaces `method`.
+
+    Returns:
+        tuple | Tensor: ``(U, S, Vh)``: `S` real, of `a`'s precision, `U` and `Vh` of `a`'s dtype (float64 for
+        integers or bools). `S` alone with ``compute_uv=False``.
+
+    Raises:
+        LinAlgError: if `a` is not a matrix (or a stack of them) or holds an infinite or NaN entry.
+        ValueError: for a `method` or `lapack_driver` not offered.
+        TypeError: if a method's name is given as the second argument.
+
+    Examples:
+        >>> import numerical
+        >>> u, s, vh = numerical.svd([[3.0, 0.0], [0.0, 4.0]])
+        >>> s
+        numerical.Tensor([4.0, 3.0], dtype=float64)
+        >>> u
+        numerical.Tensor([[0.0, 1.0],
+                          [1.0, 0.0]], dtype=float64)
+        >>> numerical.svd([[1.0, 0.0, 0.0], [0.0, 2.0, 0.0]], full_matrices=False)[2].shape
+        (2, 3)
+    """
     if isinstance(full_matrices, str):
         raise TypeError("svd: the second argument is full_matrices, as in NumPy; give the method by name, "
                         f"svd(a, method={full_matrices!r})")
@@ -2121,17 +2692,41 @@ def _complex_warning():
 
 
 def qr(a, mode="reduced", *, pivoting=False, overwrite_a=False, lwork=None, check_finite=True):
-    """``(Q, R)`` with ``a = Q @ R``, as ``numpy.linalg.qr``: for an m×n `a` and k = min(m, n), `Q` is m×k with
-    orthonormal columns and `R` k×n upper trapezoidal (``mode="reduced"``, the default); `Q` m×m and `R` m×n
-    (``"complete"``); `R` alone, k×n (``"r"``). `R`'s diagonal is real and non-negative.
+    """The QR factorisation ``a = Q @ R``, as ``numpy.linalg.qr``.
 
-    With ``pivoting=True``, as ``scipy.linalg.qr(a, pivoting=True)`` (LAPACK's ``geqp3``): ``a[:, P] = Q @ R`` with the
-    column of largest remaining norm taken at each step, so that `R`'s diagonal does not grow down it and reveals the
-    numerical rank; ``(Q, R, P)``, or ``(R, P)`` for ``"r"``, `P` a tuple of the columns' origins (SciPy's an integer
-    array; its modes ``"economic"`` and ``"full"`` are ``"reduced"`` and ``"complete"`` here). `R`'s diagonal is real
-    and non-negative here too, where LAPACK's may be negative. SciPy's mode names ``"economic"`` and ``"full"`` are
-    taken as ``"reduced"`` and ``"complete"`` (NumPy's default stays, the reduced one), and its ``overwrite_a``,
-    ``lwork`` and ``check_finite``."""
+    `R`'s diagonal is real and non-negative. With ``pivoting=True``, as ``scipy.linalg.qr(a, pivoting=True)``
+    (LAPACK's ``geqp3``): ``a[:, P] = Q @ R`` with the column of largest remaining norm taken at each step, so that
+    `R`'s diagonal does not grow down it and reveals the numerical rank; `R`'s diagonal is real and non-negative there
+    too, where LAPACK's may be negative.
+
+    Args:
+        a: The m×n matrix, or a stack of them (``(..., m, n)``): a Tensor or an array-like.
+        mode: For k = min(m, n): ``"reduced"`` (the default) `Q` m×k with orthonormal columns and `R` k×n upper
+            trapezoidal; ``"complete"``, `Q` m×m and `R` m×n; ``"r"``, `R` alone, k×n. SciPy's names ``"economic"``
+            and ``"full"`` are taken as ``"reduced"`` and ``"complete"`` (NumPy's default stays, the reduced one).
+        pivoting: Pivot the columns, as SciPy's.
+        overwrite_a: Accepted for SciPy's signature; ignored.
+        lwork: Accepted for SciPy's signature; ignored.
+        check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
+
+    Returns:
+        tuple | Tensor: ``(Q, R)``, or `R` alone for ``"r"``. With `pivoting`, ``(Q, R, P)``, or ``(R, P)`` for
+        ``"r"``, `P` a tuple of the columns' origins (SciPy's an integer array).
+
+    Raises:
+        LinAlgError: if `a` is not a matrix (or a stack of them) or holds an infinite or NaN entry.
+        ValueError: for a `mode` not offered (LAPACK's reflectors, ``"raw"``, are not).
+
+    Examples:
+        >>> import numerical
+        >>> q, r = numerical.qr([[1.0, 0.0], [0.0, 2.0]])
+        >>> q
+        numerical.Tensor([[1.0, 0.0],
+                          [0.0, 1.0]], dtype=float64)
+        >>> numerical.qr([[1.0, 0.0], [0.0, -2.0]], mode="r")
+        numerical.Tensor([[1.0, 0.0],
+                          [0.0, 2.0]], dtype=float64)
+    """
     del overwrite_a, lwork, check_finite
     mode = {"economic": "reduced", "full": "complete"}.get(mode, mode)
     if mode not in _QR_MODES:
@@ -2214,10 +2809,34 @@ def _vector_order(ord):
 
 
 def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
-    """The `ord` norm of `x` over `axis` (None: every element; an integer or a tuple of them), as
-    ``numpy.linalg.vector_norm``: ``(Σ |x|^ord)^(1/ord)``, ``inf`` the largest magnitude, ``-inf`` the smallest, 0 how
-    many are not zero; real, of `x`'s precision. Summed at the scale of the largest magnitude, it does not overflow
-    where NumPy's 2-norm of entries past 1e154 is infinite."""
+    """The `ord` norm of `x` over `axis`, as ``numpy.linalg.vector_norm``.
+
+    Summed at the scale of the largest magnitude, it does not overflow where NumPy's 2-norm of entries past 1e154 is
+    infinite.
+
+    Args:
+        x: The Tensor or array-like.
+        axis: ``None`` (every element), an integer or a tuple of them; negative ones count from the end.
+        keepdims: Keep each reduced axis with extent 1.
+        ord: The order, a real number: ``(Σ abs(x)^ord)^(1/ord)``; ``inf`` the largest magnitude, ``-inf`` the
+            smallest, 0 how many are not zero.
+
+    Returns:
+        float | Tensor: The norm, real, of `x`'s precision: a number for a whole reduction, else a Tensor.
+
+    Raises:
+        ValueError: for an `ord` that is not a real number, an `axis` out of range or repeated, or ``ord=-inf`` over no
+            element.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.vector_norm([3.0, 4.0])
+        5.0
+        >>> numerical.vector_norm([3.0, -4.0], ord=1)
+        7.0
+        >>> numerical.vector_norm([[3.0, 4.0], [0.0, 0.0]], axis=1)
+        numerical.Tensor([5.0, 0.0], dtype=float64)
+    """
     if axis is None and ord == 2 and not keepdims:
         plain = _numerical._borrowed_norm(x)  # read where it lies: a NumPy array is not copied
         if plain is not NotImplemented:
@@ -2230,7 +2849,22 @@ def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
 
 
 def svdvals(x, /):
-    """The singular values of a matrix or of every matrix of a stack, descending, as ``numpy.linalg.svdvals``."""
+    """The singular values of a matrix or of every matrix of a stack, descending, as ``numpy.linalg.svdvals``.
+
+    Args:
+        x: The matrix, or a stack of them (``(..., m, n)``): a Tensor or an array-like.
+
+    Returns:
+        Tensor: The singular values, real, of `x`'s precision; for a stack, one row per matrix.
+
+    Raises:
+        LinAlgError: if `x` is not a matrix (or a stack of them) or holds an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.svdvals([[3.0, 0.0], [0.0, -4.0]])
+        numerical.Tensor([4.0, 3.0], dtype=float64)
+    """
     return svd(x, compute_uv=False)
 
 
@@ -2269,9 +2903,37 @@ def matrix_norm(x, /, *, keepdims=False, ord="fro"):
 
 
 def norm(x, ord=None, axis=None, keepdims=False):
-    """A vector or a matrix norm, as ``numpy.linalg.norm``: with no `axis`, the 2-norm of every element for no `ord`,
-    else the `ord` norm of the vector or the matrix `x` is; with an integer `axis`, the vector norms along it; with a
-    pair, the matrix norms over it (:func:`vector_norm`, :func:`matrix_norm`)."""
+    """A vector or a matrix norm, as ``numpy.linalg.norm``.
+
+    With no `axis`, the 2-norm of every element for no `ord`, else the `ord` norm of the vector or the matrix `x` is;
+    with an integer `axis`, the vector norms along it; with a pair, the matrix norms over it (:func:`vector_norm`,
+    :func:`matrix_norm`).
+
+    Args:
+        x: The Tensor or array-like.
+        ord: The order: :func:`vector_norm`'s for a vector, :func:`matrix_norm`'s for a matrix (``None`` the 2-norm,
+            the Frobenius norm for a matrix).
+        axis: ``None``, an integer (vector norms) or a pair of integers (matrix norms); negative ones count from the
+            end.
+        keepdims: Keep each reduced axis with extent 1.
+
+    Returns:
+        float | Tensor: The norm, real, of `x`'s precision: a number for a whole reduction, else a Tensor.
+
+    Raises:
+        ValueError: for an `ord` with no `axis` on a rank other than 1 or 2, an `ord` not offered, an `axis` out of
+            range, repeated, or of more than two axes.
+        LinAlgError: if a singular value norm (2, -2, ``"nuc"``) meets an infinite or NaN entry.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.norm([3.0, 4.0])
+        5.0
+        >>> numerical.norm([[1.0, 2.0], [3.0, 4.0]], 1)
+        6.0
+        >>> numerical.norm([[3.0, 4.0], [0.0, 0.0]], axis=1)
+        numerical.Tensor([5.0, 0.0], dtype=float64)
+    """
     if axis is None and ord is None and not keepdims:
         plain = _numerical._borrowed_norm(x)  # every element's 2-norm, a NumPy array read where it lies
         if plain is not NotImplemented:
@@ -2295,9 +2957,31 @@ def norm(x, ord=None, axis=None, keepdims=False):
 
 
 def cond(x, p=None):
-    """The condition number of a matrix or of every matrix of a stack in the `p` norm, as ``numpy.linalg.cond``: for
-    None, 2 and -2 the ratio of the extreme singular values (infinite for a singular matrix), else
-    ``norm(x, p) * norm(inv(x), p)`` (infinite where `x` is singular)."""
+    """The condition number of a matrix or of every matrix of a stack in the `p` norm, as ``numpy.linalg.cond``.
+
+    Args:
+        x: The matrix, or a stack of them (``(..., m, n)``): a Tensor or an array-like.
+        p: The norm: ``None``, 2 and -2 the ratio of the extreme singular values (infinite for a singular matrix), else
+            ``norm(x, p) * norm(inv(x), p)`` (infinite where `x` is singular), `p` one of :func:`matrix_norm`'s orders
+            for a square matrix.
+
+    Returns:
+        float | Tensor: The condition number; for a stack, a Tensor of its leading shape.
+
+    Raises:
+        LinAlgError: if `x` is not a matrix or a stack of them, is empty, is not square for a `p` other than
+            ``None``, 2 and -2, or holds an infinite or NaN entry for those three.
+        ValueError: for a `p` not offered.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.cond([[2.0, 0.0], [0.0, 4.0]])
+        2.0
+        >>> numerical.cond([[1.0, 0.0], [0.0, 0.0]])
+        inf
+        >>> numerical.cond([[2.0, 0.0], [0.0, 4.0]], 1)
+        2.0
+    """
     x = _operand(x)
     if len(x.shape) < 2:
         raise LinAlgError("cond: a matrix or a stack of matrices (rank ≥ 2)")
@@ -2331,8 +3015,28 @@ def _paired(x, y, f):
 
 
 def matrix_power(a, n):
-    """`a` to the integer power `n` by repeated squaring, as ``numpy.linalg.matrix_power``: the identity for 0, the
-    inverse's powers for a negative `n`; a matrix or a stack of square matrices."""
+    """`a` to the integer power `n` by repeated squaring, as ``numpy.linalg.matrix_power``.
+
+    Args:
+        a: The square matrix, or a stack of them (``(..., n, n)``): a Tensor or an array-like.
+        n: The power, an integer: the identity for 0, the inverse's powers for a negative `n`.
+
+    Returns:
+        Tensor: ``a`` to the power `n`, of `a`'s shape and dtype (float64 for integers).
+
+    Raises:
+        LinAlgError: if `a` is not square (or a stack of square matrices), or singular for a negative `n`.
+        TypeError: if `n` is not an integer, or `a` is a bool Tensor.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.matrix_power([[1.0, 1.0], [0.0, 1.0]], 3)
+        numerical.Tensor([[1.0, 3.0],
+                          [0.0, 1.0]], dtype=float64)
+        >>> numerical.matrix_power([[2.0, 0.0], [0.0, 4.0]], -1)
+        numerical.Tensor([[0.5, 0.0],
+                          [0.0, 0.25]], dtype=float64)
+    """
     a = _operand(a)
     n = _operator.index(n)
     if len(a.shape) < 2 or a.shape[-1] != a.shape[-2]:
@@ -2400,9 +3104,31 @@ def multi_dot(arrays, *, out=None):
 
 
 def trace(x, /, *, offset=0, dtype=None):
-    """The sum of the `offset` diagonal of a matrix or of every matrix of a stack (its last two axes), as
-    ``numpy.linalg.trace``: above the main diagonal for a positive `offset`, below for a negative one; in `dtype` when
-    given. A bool tensor's trace counts its trues, a float64 as :func:`sum`'s (NumPy's an integer)."""
+    """The sum of a diagonal of a matrix or of every matrix of a stack, as ``numpy.linalg.trace``.
+
+    The diagonal is taken over the last two axes. A bool tensor's trace counts its trues, a float64 as :func:`sum`'s
+    (NumPy's an integer).
+
+    Args:
+        x: The matrix, or a stack of them (``(..., m, n)``): a Tensor or an array-like.
+        offset: The diagonal: above the main diagonal for a positive `offset`, below for a negative one.
+        dtype: The result's dtype, when given.
+
+    Returns:
+        float | complex | Tensor: The trace, a number for a matrix; for a stack, a Tensor of its leading shape.
+
+    Raises:
+        ValueError: if `x` is of rank below 2.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.trace([[1.0, 2.0], [3.0, 4.0]])
+        5.0
+        >>> numerical.trace([[1.0, 2.0], [3.0, 4.0]], offset=1)
+        2.0
+        >>> numerical.trace([[[1.0, 0.0], [0.0, 1.0]], [[2.0, 0.0], [0.0, 2.0]]])
+        numerical.Tensor([2.0, 4.0], dtype=float64)
+    """
     x = _tensor(x)
     if len(x.shape) < 2:
         raise _ShapeError("trace: a matrix or a stack of matrices (rank ≥ 2)")
@@ -2474,7 +3200,27 @@ def tensorinv(a, ind=2):
 
 
 def outer(x1, x2, /):
-    """The outer product of two vectors, ``x1[i] * x2[j]``, as ``numpy.linalg.outer``."""
+    """The outer product of two vectors, ``x1[i] * x2[j]``, as ``numpy.linalg.outer``.
+
+    Each element is its own product, as NumPy's ``multiply.outer`` (a −0 kept).
+
+    Args:
+        x1: The first vector: a Tensor or an array-like.
+        x2: The second vector: a Tensor or an array-like.
+
+    Returns:
+        Tensor: The ``len(x1) × len(x2)`` matrix, in the dtype the two promote to.
+
+    Raises:
+        ValueError: if an operand is not a vector.
+        TypeError: if an operand is a bool Tensor or nothing :func:`asarray` reads.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.outer([1, 2], [3, 4])
+        numerical.Tensor([[3.0, 4.0],
+                          [6.0, 8.0]], dtype=float64)
+    """
     a, b = _same_dtype(x1, x2)
     if len(a.shape) != 1 or len(b.shape) != 1:
         raise ValueError("outer: two vectors (numpy.linalg.outer)")
@@ -2549,17 +3295,35 @@ _NATIVE_NUMBERS = (float, int, bool, complex)
 
 
 def asarray(obj, dtype=None):
-    """A :class:`Tensor` from `obj`: a Tensor (the same object when `dtype` matches), an object with an
-    ``__array_interface__`` (NumPy: bool, integer, float32/64 and complex64/128 elements, any strides),
-    a nested list or tuple of numbers, or a number (rank 0). `dtype` is ``"float64"``, ``"complex128"``,
-    ``"float32"``, ``"complex64"`` or ``"bool"`` (true where nonzero); by default an array's own for float32,
-    complex64, complex128 and bool, else float64 (integers included); complex128 for a complex number or a list with
-    one, bool for a bool or a list of bools alone, as NumPy's.
+    """A :class:`Tensor` from `obj`, as ``numpy.asarray``.
+
     A complex input is never cast to a real dtype (that would discard the imaginary part).
+
+    Args:
+        obj: A Tensor (the same object when `dtype` matches), an object with an ``__array_interface__`` (NumPy: bool,
+            integer, float32/64 and complex64/128 elements, any strides), a nested list or tuple of numbers, or a
+            number (rank 0).
+        dtype: ``"float64"``, ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"`` (true where nonzero); by
+            default an array's own for float32, complex64, complex128 and bool, else float64 (integers included);
+            complex128 for a complex number or a list with one, bool for a bool or a list of bools alone, as NumPy's.
+
+    Returns:
+        Tensor: The elements of `obj`, a copy unless `obj` is a Tensor of `dtype` already.
 
     Raises:
         ValueError: if a nested list is not rectangular.
         TypeError: if `obj` is none of these, or a nested list holds something other than numbers.
+        numerical.error: for a `dtype` not offered, or a complex input cast to a real dtype.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.asarray([[1, 2], [3, 4]])
+        numerical.Tensor([[1.0, 2.0],
+                          [3.0, 4.0]], dtype=float64)
+        >>> numerical.asarray([1, 0], dtype="bool")
+        numerical.Tensor([True, False], dtype=bool)
+        >>> numerical.asarray(2.5).shape
+        ()
     """
     # A float, int, bool or complex, an array (its __array_struct__ or __array_interface__) and a Tensor go to C
     # as they are; a nested list, or another number (a Fraction), through its values. A Tensor or an array's struct
@@ -2744,22 +3508,113 @@ def _reduction(op, doc):
         return reshape(result, shape)
 
     reduce.__name__ = op
-    reduce.__doc__ = doc + """ `axis` may name several axes (a tuple, `()` for none), and `keepdims` keeps each reduced
-axis with extent 1, as NumPy's."""
+    reduce.__doc__ = doc
     return reduce
 
 
-sum = _reduction("sum", """The sum of every element (a number), or the sums along `axis` (a Tensor without it),
-as ``numpy.sum``; added by pairwise halving, as NumPy adds.""")
-mean = _reduction("mean", """The mean of every element, or the means along `axis`, as ``numpy.mean``.""")
-max = _reduction("max", """The largest element, or the largest along `axis`, as ``numpy.max``; a NaN wins. Real
-dtypes only (a complex one has no order).""")
-min = _reduction("min", """The smallest element, or the smallest along `axis`, as ``numpy.min``; a NaN wins. Real
-dtypes only.""")
+sum = _reduction("sum", """The sum of every element, or the sums along `axis`, as ``numpy.sum``.
+
+    Added by pairwise halving, as NumPy adds.
+
+    Args:
+        a: The Tensor or array-like (a bool array-like read as float64).
+        axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
+            end.
+        keepdims: Keep each reduced axis with extent 1, as NumPy's.
+
+    Returns:
+        float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (float64 for a bool one).
+
+    Raises:
+        ValueError: for an axis out of range or repeated.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.sum([[1.0, 2.0], [3.0, 4.0]])
+        10.0
+        >>> numerical.sum([[1.0, 2.0], [3.0, 4.0]], axis=0)
+        numerical.Tensor([4.0, 6.0], dtype=float64)
+        >>> numerical.sum([[1.0, 2.0], [3.0, 4.0]], axis=1, keepdims=True)
+        numerical.Tensor([[3.0],
+                          [7.0]], dtype=float64)
+    """)
+mean = _reduction("mean", """The mean of every element, or the means along `axis`, as ``numpy.mean``.
+
+    Args:
+        a: The Tensor or array-like (a bool array-like read as float64).
+        axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
+            end.
+        keepdims: Keep each reduced axis with extent 1, as NumPy's.
+
+    Returns:
+        float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (float64 for a bool one).
+
+    Raises:
+        ValueError: for an axis out of range or repeated.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.mean([[1.0, 2.0], [3.0, 4.0]])
+        2.5
+        >>> numerical.mean([[1.0, 2.0], [3.0, 4.0]], axis=1)
+        numerical.Tensor([1.5, 3.5], dtype=float64)
+    """)
+max = _reduction("max", """The largest element, or the largest along `axis`, as ``numpy.max``.
+
+    A NaN wins. Real dtypes only (a complex one has no order).
+
+    Args:
+        a: The Tensor or array-like (a bool array-like read as float64).
+        axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
+            end.
+        keepdims: Keep each reduced axis with extent 1, as NumPy's.
+
+    Returns:
+        float | bool | Tensor: A number for every element, else a Tensor of `a`'s dtype.
+
+    Raises:
+        ValueError: for an axis out of range or repeated, or a reduction over no element.
+        TypeError: for a complex `a`.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.max([[1.0, 2.0], [3.0, 4.0]])
+        4.0
+        >>> numerical.max([[1.0, 2.0], [3.0, 4.0]], axis=0)
+        numerical.Tensor([3.0, 4.0], dtype=float64)
+        >>> numerical.max([1.0, float("nan")])
+        nan
+    """)
+min = _reduction("min", """The smallest element, or the smallest along `axis`, as ``numpy.min``.
+
+    A NaN wins. Real dtypes only.
+
+    Args:
+        a: The Tensor or array-like (a bool array-like read as float64).
+        axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
+            end.
+        keepdims: Keep each reduced axis with extent 1, as NumPy's.
+
+    Returns:
+        float | bool | Tensor: A number for every element, else a Tensor of `a`'s dtype.
+
+    Raises:
+        ValueError: for an axis out of range or repeated, or a reduction over no element.
+        TypeError: for a complex `a`.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.min([[1.0, 2.0], [3.0, 4.0]])
+        1.0
+        >>> numerical.min([[1.0, 2.0], [3.0, 4.0]], axis=1)
+        numerical.Tensor([1.0, 3.0], dtype=float64)
+    """)
 any = _reduction("any", """Whether any element is true (nonzero), or any along `axis` (a bool Tensor without it), as
-``numpy.any``.""")
+``numpy.any``. `axis` may name several axes (a tuple, `()` for none), and `keepdims` keeps each reduced axis with
+extent 1, as NumPy's.""")
 all = _reduction("all", """Whether every element is true (nonzero), or every one along `axis` (a bool Tensor without
-it), as ``numpy.all``.""")
+it), as ``numpy.all``. `axis` may name several axes (a tuple, `()` for none), and `keepdims` keeps each reduced axis
+with extent 1, as NumPy's.""")
 def _dtype_name(dtype):
     """A dtype's name as a Tensor takes it: a string as it is, ``numpy.float64`` or ``numpy.dtype("float32")`` by name,
     Python's ``float``, ``complex`` and ``bool`` as NumPy names them."""
@@ -2803,8 +3658,27 @@ def _shape(shape):
 
 
 def reshape(a, shape):
-    """The elements of `a` in the same order under `shape`, as ``numpy.reshape``; one extent may be -1, the
-    one the others leave."""
+    """The elements of `a` in the same order under `shape`, as ``numpy.reshape``.
+
+    Args:
+        a: The Tensor or array-like.
+        shape: The new extents: an integer or a sequence of them, of `a`'s size; one extent may be -1, the one the
+            others leave.
+
+    Returns:
+        Tensor: The reshaped elements, of `a`'s dtype.
+
+    Raises:
+        ValueError: if `shape` holds another number of elements, or more than one -1.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.reshape(numerical.arange(6), (2, 3))
+        numerical.Tensor([[0.0, 1.0, 2.0],
+                          [3.0, 4.0, 5.0]], dtype=float64)
+        >>> numerical.reshape(numerical.arange(6), (3, -1)).shape
+        (3, 2)
+    """
     a = a if isinstance(a, Tensor) else asarray(a)
     shape = _shape(shape)
     unknown = [axis for axis, extent in enumerate(shape) if extent == -1]
@@ -2837,35 +3711,149 @@ def _dtype_of(dtype, value=0.0):
 
 
 def full(shape, value, dtype=None):
-    """A Tensor of `shape` whose every element is `value`, as ``numpy.full``; complex128 for a complex value, bool for
-    a bool one and float64 otherwise unless `dtype` says (float64, complex128, float32, complex64 or bool)."""
+    """A Tensor of `shape` whose every element is `value`, as ``numpy.full``.
+
+    Args:
+        shape: The extents: an integer (a vector) or a sequence of non-negative integers.
+        value: The number every element holds.
+        dtype: ``"float64"``, ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"``; by default complex128
+            for a complex value, bool for a bool one and float64 otherwise.
+
+    Returns:
+        Tensor: The filled Tensor.
+
+    Raises:
+        ValueError: for a negative extent or a `dtype` not offered.
+        TypeError: for a complex `value` with a real `dtype`, or a `value` that is not a number.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.full((2,), 7)
+        numerical.Tensor([7.0, 7.0], dtype=float64)
+        >>> numerical.full(2, 1j)
+        numerical.Tensor([1j, 1j], dtype=complex128)
+    """
     return _native(_numerical._full, _shape(shape), value, _dtype_of(dtype, value))
 
 
 def zeros(shape, dtype="float64"):
-    """A Tensor of `shape` full of zeros, as ``numpy.zeros``."""
+    """A Tensor of `shape` full of zeros, as ``numpy.zeros``.
+
+    Args:
+        shape: The extents: an integer (a vector) or a sequence of non-negative integers.
+        dtype: ``"float64"`` (the default), ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"``; NumPy's
+            dtype objects and Python's ``float``, ``complex`` and ``bool`` name them too.
+
+    Returns:
+        Tensor: The zeros.
+
+    Raises:
+        ValueError: for a negative extent or a `dtype` not offered.
+        TypeError: if `shape` is neither an integer nor a sequence of them.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.zeros(3)
+        numerical.Tensor([0.0, 0.0, 0.0], dtype=float64)
+        >>> numerical.zeros((2, 2), "complex128")
+        numerical.Tensor([[0j, 0j],
+                          [0j, 0j]], dtype=complex128)
+    """
     return _native(_numerical._full, _shape(shape), 0.0, _dtype_of(dtype))
 
 
 def ones(shape, dtype="float64"):
-    """A Tensor of `shape` full of ones, as ``numpy.ones``."""
+    """A Tensor of `shape` full of ones, as ``numpy.ones``.
+
+    Args:
+        shape: The extents: an integer (a vector) or a sequence of non-negative integers.
+        dtype: ``"float64"`` (the default), ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"``; NumPy's
+            dtype objects and Python's ``float``, ``complex`` and ``bool`` name them too.
+
+    Returns:
+        Tensor: The ones.
+
+    Raises:
+        ValueError: for a negative extent or a `dtype` not offered.
+        TypeError: if `shape` is neither an integer nor a sequence of them.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.ones((2,), dtype="float32")
+        numerical.Tensor([1.0, 1.0], dtype=float32)
+    """
     return _native(_numerical._full, _shape(shape), 1.0, _dtype_of(dtype))
 
 
 def eye(n, dtype="float64"):
-    """The `n × n` identity, as ``numpy.eye(n)``."""
+    """The `n × n` identity, as ``numpy.eye(n)``.
+
+    Args:
+        n: The order, a non-negative integer.
+        dtype: ``"float64"`` (the default), ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"``; NumPy's
+            dtype objects and Python's ``float``, ``complex`` and ``bool`` name them too.
+
+    Returns:
+        Tensor: The identity matrix.
+
+    Raises:
+        ValueError: for a negative `n` or a `dtype` not offered.
+        TypeError: if `n` is not an integer.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.eye(2)
+        numerical.Tensor([[1.0, 0.0],
+                          [0.0, 1.0]], dtype=float64)
+    """
     return _native(_numerical._eye, _operator.index(n), _dtype_of(dtype))
 
 
 def arange(start, stop=None, step=1.0):
-    """``start, start + step, …`` short of `stop`, as ``numpy.arange``: ``arange(stop)`` starts at 0. float64."""
+    """``start, start + step, …`` short of `stop`, as ``numpy.arange``.
+
+    Args:
+        start: The first value; with no `stop`, the stop itself, the values starting at 0 (``arange(stop)``).
+        stop: The bound, not included.
+        step: The spacing, finite and nonzero, negative for a descending range.
+
+    Returns:
+        Tensor: The values, float64.
+
+    Raises:
+        ValueError: for a bound or a step that is not finite, or a zero step.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.arange(4)
+        numerical.Tensor([0.0, 1.0, 2.0, 3.0], dtype=float64)
+        >>> numerical.arange(1, 2, 0.25)
+        numerical.Tensor([1.0, 1.25, 1.5, 1.75], dtype=float64)
+    """
     if stop is None:
         start, stop = 0.0, start
     return _native(_numerical._arange, float(start), float(stop), float(step))
 
 
 def linspace(start, stop, num=50):
-    """`num` values evenly spaced from `start` to `stop`, both included, as ``numpy.linspace``. float64."""
+    """`num` values evenly spaced from `start` to `stop`, both included, as ``numpy.linspace``.
+
+    Args:
+        start: The first value.
+        stop: The last value.
+        num: How many values, a non-negative integer (50 by default).
+
+    Returns:
+        Tensor: The values, float64.
+
+    Raises:
+        ValueError: for a negative `num`.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.linspace(0, 1, 5)
+        numerical.Tensor([0.0, 0.25, 0.5, 0.75, 1.0], dtype=float64)
+    """
     return _native(_numerical._linspace, float(start), float(stop), _operator.index(num))
 
 
@@ -2884,9 +3872,62 @@ def _elementwise(name, doc):
     return function
 
 
-exp = _elementwise("exp", "e to the power of every element, as ``numpy.exp``.")
-log = _elementwise("log", "The natural logarithm of every element, as ``numpy.log`` (NaN below 0 for float64).")
-sqrt = _elementwise("sqrt", "The square root of every element, as ``numpy.sqrt`` (NaN below 0 for float64).")
+exp = _elementwise("exp", """e to the power of every element, as ``numpy.exp``.
+
+    Args:
+        a: The Tensor or array-like (a bool array-like read as float64; a bool Tensor refused).
+
+    Returns:
+        Tensor: Of `a`'s shape and dtype (float64 for integers).
+
+    Raises:
+        TypeError: if `a` is a bool Tensor or nothing :func:`asarray` reads.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.exp([0.0, 0.0])
+        numerical.Tensor([1.0, 1.0], dtype=float64)
+        >>> numerical.exp([0j])
+        numerical.Tensor([(1+0j)], dtype=complex128)
+    """)
+log = _elementwise("log", """The natural logarithm of every element, as ``numpy.log``.
+
+    NaN below 0 for a real dtype, ``-inf`` at 0; a complex element's principal logarithm.
+
+    Args:
+        a: The Tensor or array-like (a bool array-like read as float64; a bool Tensor refused).
+
+    Returns:
+        Tensor: Of `a`'s shape and dtype (float64 for integers).
+
+    Raises:
+        TypeError: if `a` is a bool Tensor or nothing :func:`asarray` reads.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.log([1.0, 0.0, -1.0])
+        numerical.Tensor([0.0, -inf, nan], dtype=float64)
+    """)
+sqrt = _elementwise("sqrt", """The square root of every element, as ``numpy.sqrt``.
+
+    NaN below 0 for a real dtype; a complex element's principal root.
+
+    Args:
+        a: The Tensor or array-like (a bool array-like read as float64; a bool Tensor refused).
+
+    Returns:
+        Tensor: Of `a`'s shape and dtype (float64 for integers).
+
+    Raises:
+        TypeError: if `a` is a bool Tensor or nothing :func:`asarray` reads.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.sqrt([4.0, 9.0, -1.0])
+        numerical.Tensor([2.0, 3.0, nan], dtype=float64)
+        >>> numerical.sqrt([-1.0 + 0j])
+        numerical.Tensor([1j], dtype=complex128)
+    """)
 sin = _elementwise("sin", "The sine of every element, as ``numpy.sin``.")
 cos = _elementwise("cos", "The cosine of every element, as ``numpy.cos``.")
 tan = _elementwise("tan", "The tangent of every element, as ``numpy.tan``.")
@@ -2907,9 +3948,28 @@ Tensor.astype.__doc__ = astype.__doc__
 
 
 def where(condition, x, y, /):
-    """`x`'s element where `condition` holds, else `y`'s, the three broadcast, as ``numpy.where``: `condition` a bool
-    Tensor or what :func:`asarray` reads (a number true where nonzero); `x` and `y` promoted to one dtype, the
-    answer's, as arithmetic promotes them."""
+    """`x`'s element where `condition` holds, else `y`'s, the three broadcast, as ``numpy.where``.
+
+    Args:
+        condition: A bool Tensor or what :func:`asarray` reads (a number true where nonzero).
+        x: The elements taken where `condition` holds: a Tensor or an array-like.
+        y: The elements taken elsewhere: a Tensor or an array-like.
+
+    Returns:
+        Tensor: Of the shape the three broadcast to, in the dtype `x` and `y` promote to, as arithmetic promotes them.
+
+    Raises:
+        ValueError: if the shapes do not broadcast.
+        TypeError: if an operand is nothing :func:`asarray` reads.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.where([True, False], [1, 2], [3, 4])
+        numerical.Tensor([1.0, 4.0], dtype=float64)
+        >>> numerical.where([[True], [False]], [1, 2], 0)
+        numerical.Tensor([[1.0, 2.0],
+                          [0.0, 0.0]], dtype=float64)
+    """
     condition = condition if isinstance(condition, Tensor) else _read(condition)
     if condition.dtype != "bool":
         condition = asarray(condition, "bool")
@@ -2999,8 +4059,26 @@ def imag(x, /):
 
 
 def transpose(a, axes=None):
-    """`a` with its axes in the order `axes` (a permutation of them, negative ones counted from the end), reversed
-    by default, as ``numpy.transpose``: a copy."""
+    """`a` with its axes permuted, as ``numpy.transpose``: a copy.
+
+    Args:
+        a: The Tensor or array-like (a bool one kept bool).
+        axes: A permutation of `a`'s axes, negative ones counted from the end; by default the axes reversed.
+
+    Returns:
+        Tensor: The permuted elements, of `a`'s dtype.
+
+    Raises:
+        ValueError: if `axes` is not a permutation of `a`'s axes.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.transpose([[1, 2], [3, 4]])
+        numerical.Tensor([[1.0, 3.0],
+                          [2.0, 4.0]], dtype=float64)
+        >>> numerical.transpose(numerical.zeros((2, 3, 4)), (1, 0, 2)).shape
+        (3, 2, 4)
+    """
     a = _tensor(a)
     if axes is None:
         return a.T
@@ -3969,11 +5047,27 @@ def _joined(arrays, name):
 
 
 def concatenate(arrays, /, axis=0):
-    """The arrays one after the other along `axis` (every other axis of one extent), as ``numpy.concatenate``; with
-    ``axis=None`` each flattened first. The result in the dtype they all fit, as NumPy promotes them.
+    """The arrays one after the other along `axis`, as ``numpy.concatenate``.
+
+    Every other axis is of one extent. The result is in the dtype they all fit, as NumPy promotes them.
+
+    Args:
+        arrays: A sequence of Tensors or array-likes, of one rank.
+        axis: The axis to join along (negative counted from the end); ``None`` flattens each first.
+
+    Returns:
+        Tensor: The joined arrays.
 
     Raises:
         ValueError: if there is no array, one is rank 0, the axis is out of their rank, or the other axes differ.
+        TypeError: if `arrays` is a Tensor, a string or not a sequence.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.concatenate([[1, 2], [3]])
+        numerical.Tensor([1.0, 2.0, 3.0], dtype=float64)
+        >>> numerical.concatenate([[[1, 2]], [[3, 4]]], axis=1)
+        numerical.Tensor([[1.0, 2.0, 3.0, 4.0]], dtype=float64)
     """
     tensors = _joined(arrays, "concatenate")
     if axis is None:
@@ -3995,8 +5089,27 @@ concat = concatenate
 def stack(arrays, /, axis=0):
     """The arrays (one shape) along a new axis `axis` of the result, as ``numpy.stack``.
 
+    The result is in the dtype they all fit, as NumPy promotes them.
+
+    Args:
+        arrays: A sequence of Tensors or array-likes, of one shape.
+        axis: Where the new axis stands in the result (negative counted from the end).
+
+    Returns:
+        Tensor: The stacked arrays, of rank one more than theirs.
+
     Raises:
         ValueError: if there is no array, their shapes differ, or the axis is out of the result's rank.
+        TypeError: if `arrays` is a Tensor, a string or not a sequence.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.stack([[1, 2], [3, 4]])
+        numerical.Tensor([[1.0, 2.0],
+                          [3.0, 4.0]], dtype=float64)
+        >>> numerical.stack([[1, 2], [3, 4]], axis=1)
+        numerical.Tensor([[1.0, 3.0],
+                          [2.0, 4.0]], dtype=float64)
     """
     tensors = _joined(arrays, "stack")
     shape = tensors[0].shape
@@ -4337,8 +5450,31 @@ def allclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
 
 
 def dot(a, b):
-    """The dot product, as ``numpy.dot``: a number times an array; two vectors' sum of products; a matrix product;
-    for more axes the sum over `a`'s last axis and `b`'s second-to-last."""
+    """The dot product, as ``numpy.dot``.
+
+    A number times an array; two vectors' sum of products; a matrix product; for more axes the sum over `a`'s last
+    axis and `b`'s second-to-last.
+
+    Args:
+        a: The left operand: a Tensor or an array-like.
+        b: The right operand: a Tensor or an array-like.
+
+    Returns:
+        Tensor | float | complex: The product; a number for two vectors.
+
+    Raises:
+        LinAlgError: if the summed axes differ in extent.
+        TypeError: if an operand is nothing :func:`asarray` reads.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.dot([1, 2], [3, 4])
+        11.0
+        >>> numerical.dot(2, [1, 2])
+        numerical.Tensor([2.0, 4.0], dtype=float64)
+        >>> numerical.dot([[1, 2], [3, 4]], [1, 1])
+        numerical.Tensor([3.0, 7.0], dtype=float64)
+    """
     a, b = _operand(a), _operand(b)
     ra, rb = len(a.shape), len(b.shape)
     if ra == 0 or rb == 0:

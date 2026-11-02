@@ -971,7 +971,7 @@ class ArrayLikeArguments(unittest.TestCase):
 
     def test_the_wrappers_keep_their_names_and_documentation(self):
         self.assertEqual(numerical.solve.__name__, "solve")
-        self.assertTrue(numerical.solve.__doc__.startswith("solve(a, b)"))
+        self.assertTrue(numerical.solve.__doc__.startswith("The solution `x` of"))
 
     @unittest.skipIf(np is None, "NumPy not installed")
     def test_numpy_arrays_are_accepted(self):
