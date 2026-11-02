@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.1 — 2026-11-02
+
 ### Added
 - **NumPy's root functions, a first set**: `abs`, `negative`, `positive`, `square`, `divide` (`true_divide`),
   `zeros_like`, `ones_like`, `empty_like`, `full_like`, `copy`, `ravel`, `expand_dims`, `atleast_1d`, `atleast_2d`,
