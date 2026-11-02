@@ -4648,12 +4648,56 @@ def tanhm(A):
     return _maybe_real(A, solve(_maybe_real(A, 0.5 * (ep + em)), _maybe_real(A, 0.5 * (ep - em))))
 
 
+def _sign_newton(A, steps=30):
+    """The sign of `A` by Newton's iteration ``S ← (μ S + (μ S)⁻¹) / 2``, each step scaled by ``μ = |det S|^(-1/n)``
+    (Higham's determinantal scaling) until the steps shrink below 10⁻², then unscaled: or None where `S` turns
+    singular or `steps` do not converge, an eigenvalue then on or near the imaginary axis."""
+    n = A.shape[0]
+    if n == 0:
+        return None
+    tolerance = n * (2.0 ** -23 if A.dtype in _SINGLE else 2.0 ** -52)
+    S, scaled, last = A, True, False
+    for _ in range(steps):
+        try:
+            inverse_S = inv(S)
+            if scaled:
+                sign, logabsdet = slogdet(S)
+                mu = _math.exp(-float(logabsdet) / n)
+                following = 0.5 * (mu * S + inverse_S / mu)
+            else:
+                following = 0.5 * (S + inverse_S)
+        except LinAlgError:
+            return None
+        size = norm(following, 1)
+        if size == 0.0:  # S + S⁻¹ = 0: S² = −I, every eigenvalue on the imaginary axis
+            return None
+        change = norm(following - S, 1) / size
+        S = following
+        if last or not _math.isfinite(change):
+            break
+        scaled = scaled and change > 1e-2
+        last = change <= _math.sqrt(tolerance)  # quadratic: one more step brings the change under the tolerance
+    else:
+        return None
+    return S if last and _math.isfinite(change) else None
+
+
 def signm(A, disp=True):
-    """The matrix sign function, as ``scipy.linalg.signm``: :func:`funm` of the sign of each eigenvalue's real part
-    (0 within ``1e3 eps`` of the largest), then, where its error estimate passes ``1e3 eps``, Newton's iteration
-    ``S ← (S + S⁻¹) / 2`` from `A` shifted by half the reciprocal of its largest singular value; with ``disp=False``
-    the estimate beside the answer."""
+    """The matrix sign function, as ``scipy.linalg.signm``: Newton's iteration ``S ← (μ S + (μ S)⁻¹) / 2`` with
+    determinantal scaling, 12 to 20 steps of one inverse each; where it does not converge in 30 (an eigenvalue on or
+    near the imaginary axis), SciPy's algorithm: :func:`funm` of the sign of each eigenvalue's real part (0 within
+    ``1e3 eps`` of the largest), then, where its error estimate passes ``1e3 eps``, the unscaled iteration from `A`
+    shifted by half the reciprocal of its largest singular value. With ``disp=False`` the error estimate beside the
+    answer: ``‖P² − P‖₁`` of the projector ``P = (S² + S) / 2``, as SciPy's, which grows as ``‖S‖²`` with the
+    sign's conditioning; only the fallback reports an inaccurate answer on standard output, as SciPy's does."""
     A = _square("signm", A)
+    errtol = 1e3 * (2.0 ** -23 if A.dtype in _SINGLE else 2.0 ** -52)
+    newton = _sign_newton(A)
+    if newton is not None:  # converged: as accurate as the sign's conditioning allows, whatever SciPy's estimate says
+        if disp:
+            return newton
+        projector = 0.5 * (newton @ newton + newton)
+        return newton, norm(projector @ projector - projector, 1)
 
     def rounded_sign(x):  # SciPy's: 0 where |Re λ| is not past c, NumPy's complex maximum ordering (Re, then Im)
         values = [complex(v) for v in _flat(_read(x).tolist())]
@@ -4661,7 +4705,6 @@ def signm(A, disp=True):
         return [(1.0 if v.real > 0 else -1.0) if (_builtins.abs(v.real), 0.0) > (c.real, c.imag) else 0.0 for v in values]
 
     result, errest = funm(A, rounded_sign, disp=False)
-    errtol = 1e3 * (2.0 ** -23 if result.dtype in _SINGLE else 2.0 ** -52)
     if errest < errtol:
         return result if disp else (result, errest)
     vals = svdvals(A)

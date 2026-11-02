@@ -185,6 +185,29 @@ class MatrixFunctions(unittest.TestCase):
         with self.assertRaises(ValueError):
             numerical.cosm(np.ones((2, 3)))
 
+    def test_signm_by_newton_holds_an_ill_conditioned_sign(self):
+        # A = V D V⁻¹, V unit upper triangular with integer entries: sign(A) = V sign(D) V⁻¹, of norm 6·10⁷
+        n = 24
+        rng = np.random.default_rng(20261102)
+        v = np.eye(n) + np.triu(rng.integers(-4, 5, (n, n)).astype(float), 1)
+        d = np.where(np.arange(n) % 3 == 0, -1.0, 1.0) * rng.uniform(0.01, 10.0, n)
+        a = v @ np.diag(d) @ np.linalg.inv(v)
+        expected = v @ np.diag(np.sign(d)) @ np.linalg.inv(v)
+        got, estimate = numerical.signm(a, disp=False)
+        error = np.linalg.norm(np.asarray(got) - expected, 1) / np.linalg.norm(expected, 1)
+        self.assertLess(error, 1e-13)  # V's inverse is exact (integers), so `expected` is the sign to the rounding
+        self.assertGreaterEqual(estimate, 0.0)
+        self.assertEqual(np.asarray(numerical.signm(-a)).tolist(), (-np.asarray(got)).tolist())  # odd, to the bit
+        z = a + 0j
+        self.assertEqual(numerical.signm(z).dtype, "complex128")
+
+    def test_signm_falls_back_on_the_imaginary_axis(self):
+        rotation = np.array([[0.0, 1.0], [-1.0, 0.0]])  # S + S⁻¹ = 0 at once: SciPy's way, its eigenvalues' sign 0
+        np.testing.assert_allclose(np.asarray(numerical.signm(rotation)), sl.signm(rotation), atol=1e-15)
+        singular = np.array([[1.0, 0.0], [0.0, 0.0]])  # S singular: SciPy's way
+        self.assertEqual(np.asarray(numerical.signm(singular)).tolist(), [[1.0, 0.0], [0.0, 0.0]])
+        self.assertEqual(numerical.signm(np.zeros((0, 0)), disp=False)[0].shape, (0, 0))
+
 
 if __name__ == "__main__":
     unittest.main()

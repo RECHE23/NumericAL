@@ -49,6 +49,11 @@ These changes can break code or change bits; they arrive with December's first r
 - **`det`'s stub** names its answer `float | complex | Tensor`, as it is.
 
 ### Changed
+- **`signm` by Newton's iteration**, scaled by `|det S|^(-1/n)` until its steps shrink, 12 to 20 inverses: as
+  accurate as the sign's conditioning allows (a sign of norm 6·10⁷ to 5·10⁻¹⁵, SciPy's 2·10⁻¹⁴), where SciPy's
+  algorithm, kept for a matrix the iteration does not converge on (an eigenvalue on or near the imaginary axis), runs
+  the Schur–Parlett `funm` first. Random matrices on arm64: 64 3.4 → 1.0 ms, 256 43 → 14 ms, 512 905 → 78 ms, 1024
+  369 ms (SciPy 2.7, 47, 1320 ms).
 - **`maximum`, `minimum` and `clip` in one pass**: `numerical::maximum` and `minimum` (C++), broadcast, a NaN
   winning and the zeros ordered as IEEE 754-2019, a number mapped over the tensor; Python's composed ten temporaries
   of `where` and comparisons. 10⁶ float64 on arm64: `maximum` 0.20 ms (NumPy 0.91), `clip` 0.39 ms (1.46).
