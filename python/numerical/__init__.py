@@ -3151,6 +3151,8 @@ def trace(x, /, *, offset=0, dtype=None):
     labels = _labels(len(along.shape), "trace")  # the batch's, then the diagonal's
     if along.shape[-1] == 0:
         result = zeros(tuple(along.shape[:-1]), x.dtype)
+    elif x.dtype == "int64":  # an integer sum, wrapped as NumPy's
+        result = sum(along, axis=-1)
     else:
         result = _numerical.einsum(f"{labels}->{labels[:-1]}", along)
     if dtype is not None:
@@ -3665,10 +3667,13 @@ def _dtype_name(dtype):
 
 def _reduction_method(reduce):
     """The Tensor method of `reduce`, which NumPy's `numpy.sum(t)` and the like call with `out` (and `dtype` for a
-    mean): None the only `out` a Tensor takes, since it is never written into; `dtype` converts the result."""
+    mean): None the only `out` a Tensor takes, since it is never written into; `dtype` converts the result, and an
+    int64 tensor's elements first (NumPy's: they accumulate in that dtype, where int64's would wrap)."""
     def method(self, axis=None, dtype=None, out=None, keepdims=False):
         if out is not None:
             raise TypeError(f"{reduce.__name__}: a Tensor takes no `out` (it is never written into)")
+        if dtype is not None and self.dtype == "int64" and _dtype_name(dtype) != "int64":
+            self = asarray(self, _dtype_name(dtype))
         result = reduce(self, axis, keepdims)
         if dtype is None:
             return result
@@ -5651,7 +5656,7 @@ def var(a, axis=None, dtype=None, ddof=0, keepdims=False):
     a = _operand(a)
     if dtype is not None:
         a = asarray(a, dtype)
-    if a.dtype == "bool":
+    if a.dtype in ("bool", "int64"):  # NumPy's: computed in float64
         a = asarray(a, "float64")
     axes = _resolved_axes(a, axis, "var")
     count = _math.prod(a.shape[k] for k in axes)

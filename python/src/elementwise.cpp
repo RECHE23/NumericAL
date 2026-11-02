@@ -116,12 +116,12 @@ PyObject* module_axis_op(PyObject* /*self*/, PyObject* args)
         PyErr_SetString(PyExc_ValueError, "_axis_op: name is prod, cumsum, cumprod or sort");
         return nullptr;
     }
-    const any_tensor* a = numeric_tensor(x);
+    const any_tensor* a = arithmetic_tensor(x);
     if (a == nullptr) {
         return nullptr;
     }
     try {
-        return visit_numeric([&](const auto& t) -> PyObject* {
+        return visit_arithmetic([&](const auto& t) -> PyObject* {
                                  if (axis < 0) {
                                      if (name != "prod") {
                                          PyErr_SetString(PyExc_ValueError, "_axis_op: an axis for cumsum, cumprod and sort");
@@ -633,7 +633,7 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
             // any and all of a number's truth (NumPy's: nonzero), or a mask's: the sum and the mean count its trues, its
             // maximum is any and its minimum all, of which an empty one has none (as of numbers)
             if (!is_bool(*a)) {
-                return visit_numeric([&](const auto& t) { return truth_of(name == "any", t, axis); }, *a);
+                return visit_arithmetic([&](const auto& t) { return truth_of(name == "any", t, axis); }, *a);
             }
             const bool_tensor& mask {std::get<bool_tensor>(*a)};
             if (truth) {
@@ -652,6 +652,9 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
             }
         }
         else if (name == "sum" || name == "mean") {
+            if (const auto* integers {std::get_if<int_tensor>(a)}) { // NumPy's: a sum in int64, wrapped; a mean in float64
+                return name == "sum" ? sum_or_mean(false, *integers, axis) : sum_or_mean(true, converted<double>(*integers), axis);
+            }
             return visit_numeric([&](const auto& t) { return sum_or_mean(name == "mean", t, axis); }, *a);
         }
         else if (name == "max" || name == "min") {

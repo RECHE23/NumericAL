@@ -135,11 +135,30 @@ class Int64(unittest.TestCase):
                          [10**19 - 2**64, 2**64 - 10**19, 0])  # ±10¹⁹, wrapped
         self.assertEqual(numerical.round(numerical.asarray([2**63 - 1], dtype="int64"), -25).tolist(), [0])
 
+    def test_reductions(self):
+        top = 2**63 - 1
+        t = numerical.asarray([[top, 1, 2], [3, -4, 5]], dtype="int64")
+        self.assertEqual(numerical.sum(t), top + 1 + 2 + 3 - 4 + 5 - 2**64)  # wrapped
+        self.assertIs(type(numerical.sum(t)), int)
+        self.assertEqual(numerical.sum(t, axis=0).tolist(), [top + 3 - 2**64, -3, 7])
+        self.assertEqual(numerical.sum(t, axis=1, keepdims=True).shape, (2, 1))
+        self.assertEqual(numerical.prod(numerical.asarray([3, -2, 5], dtype="int64")), -30)
+        self.assertEqual(numerical.cumsum(t, axis=1).tolist(), [[top, top + 1 - 2**64, top + 3 - 2**64], [3, -1, 4]])
+        self.assertEqual(numerical.cumprod(numerical.asarray([2, 3, 4], dtype="int64")).tolist(), [2, 6, 24])
+        self.assertEqual(numerical.sort(t, axis=1).tolist(), [[1, 2, top], [-4, 3, 5]])
+        self.assertEqual(numerical.mean(numerical.asarray([1, 2], dtype="int64")), 1.5)  # in float64
+        self.assertEqual(numerical.var(numerical.asarray([1, 3], dtype="int64")), 1.0)
+        self.assertEqual(numerical.std(numerical.asarray([1, 3], dtype="int64")), 1.0)
+        self.assertEqual((numerical.any(t), numerical.all(t)), (True, True))
+        self.assertEqual(numerical.all(numerical.asarray([1, 0], dtype="int64")), False)
+        self.assertEqual(numerical.trace(numerical.asarray([[top, 0], [0, 1]], dtype="int64")), top + 1 - 2**64)
+        self.assertEqual(numerical.ptp(t, axis=1).tolist(), [top - 1, 9])
+        self.assertEqual(numerical.diff(numerical.asarray([1, 4, 9], dtype="int64")).tolist(), [3, 5])
+        self.assertEqual(t.sum(dtype="float64"), float(top) + 7.0)  # accumulated in float64: no wrap
+
     def test_refused_where_floating_point_computes(self):
         t = numerical.asarray([[1, 2], [3, 4]], dtype="int64")
-        for name, call in (("sum", lambda: numerical.sum(t)),
-                           ("mean", lambda: numerical.mean(t)), ("@", lambda: t @ t),
-                           ("sort", lambda: numerical.sort(t)), ("solve", lambda: numerical.solve(t, t)),
+        for name, call in (("@", lambda: t @ t), ("solve", lambda: numerical.solve(t, t)),
                            ("einsum", lambda: numerical.einsum("ij->", t)), ("fft", lambda: numerical.fft.fft(t))):
             with self.subTest(name=name), self.assertRaises(TypeError):
                 call()
@@ -167,6 +186,30 @@ class Int64WithNumpy(unittest.TestCase):
         self.assertEqual(numerical.asarray(np.array([True, False]), dtype="int64").tolist(), [1, 0])
         self.assertEqual(numerical.asarray(np.int64(BIG), dtype="int64").tolist(), BIG)
         self.assertEqual(numerical.asarray(np.array([1, 2])).dtype, "float64")  # by default, until 2026.12
+
+    def test_arithmetic_and_reductions_as_numpy(self):
+        rng = np.random.default_rng(20261102)
+        a = np.concatenate([rng.integers(-2**62, 2**62, 300), rng.integers(-1000, 1000, 300)]).astype(np.int64)
+        b = np.concatenate([rng.integers(-2**62, 2**62, 300), rng.integers(-50, 50, 300)]).astype(np.int64)
+        x, y = numerical.asarray(a, dtype="int64"), numerical.asarray(b, dtype="int64")
+        with np.errstate(all="ignore"):
+            for name, got, want in (("+", x + y, a + b), ("-", x - y, a - b), ("*", x * y, a * b), ("//", x // y, a // b),
+                                    ("%", x % y, a % b), ("/", x / y, a / b), ("neg", -x, -a), ("abs", abs(x), np.abs(a)),
+                                    ("max", numerical.maximum(x, y), np.maximum(a, b)), ("sign", numerical.sign(x), np.sign(a))):
+                with self.subTest(name=name):
+                    got = np.asarray(got)
+                    self.assertEqual(got.dtype, want.dtype)
+                    np.testing.assert_array_equal(got, want)
+        grid, wide = a.reshape(20, 30), x.reshape((20, 30))
+        for axis in (None, 0, 1):
+            with self.subTest(axis=axis):
+                for name in ("sum", "prod", "max", "min", "any", "all", "cumsum", "cumprod", "sort"):
+                    got = np.asarray(getattr(numerical, name)(wide, axis=axis))
+                    want = getattr(np, name)(grid, axis=axis)
+                    self.assertEqual(got.dtype, np.asarray(want).dtype, name)
+                    np.testing.assert_array_equal(got, want, err_msg=name)
+        np.testing.assert_array_equal(np.asarray(numerical.mean(wide, axis=1)), np.mean(grid, axis=1))
+        np.testing.assert_array_equal(np.asarray(numerical.var(wide)), np.var(grid))
 
     def test_exported(self):
         t = numerical.asarray([[1, BIG], [3, -4]], dtype="int64")

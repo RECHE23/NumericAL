@@ -20,8 +20,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   `abs`, `square`, `maximum`, `minimum` and `clip` stay int64 and wrap modulo 2⁶⁴ (by zero `//` and `%` give 0); `/`
   and the transcendental functions answer in float64; `floor`, `ceil`, `trunc` and `round` to places return it,
   `sign` an int64, and `round` to tens or hundreds is exact (NumPy's goes through float64 and is not past 2⁵³).
-  Integers are still read as float64 by default, and an int64 tensor's reductions raise `TypeError`: both arrive
-  with 2026.12.0.
+  Its reductions are NumPy's: `sum`, `prod`, `cumsum`, `cumprod`, `trace`, `max`, `min`, `ptp` and `sort` in int64
+  (wrapped), `mean`, `var` and `std` in float64, `any` and `all` of its nonzero elements, and `t.sum(dtype=...)`
+  accumulates in the dtype asked. Integers are still read as float64 by default (until 2026.12.0), and `@`,
+  `einsum` and the linear algebra refuse an int64 tensor (`TypeError`): convert it first.
 - **`numerical::round(t, decimals)`** in C++ (real and complex tensors), which `numerical.round` now calls.
 - **Floor division and remainder**: `t // u`, `t % u`, `divmod(t, u)` and `numerical.floor_divide`, `remainder`
   (`mod`) and `divmod`, as NumPy's for real dtypes (its `divmod`: the quotient floored, the remainder of the

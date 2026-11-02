@@ -1109,7 +1109,7 @@ TEST(signed_integers_wrap_as_numpy)
   const tensor<big> bases     {{5}, {3, -2, 7, 0, 2}};
   const tensor<big> exponents {{5}, {4, 3, 0, 0, 64}};
   EXPECT(numerical::pow(bases, exponents).data() == (numerical::buffer<big> {81, -8, 1, 1, 0}));                    // 2⁶⁴ wraps to 0
-  EXPECT(numerical::pow(tensor<big> {{1}, {3}}, tensor<big> {{1}, {39}}).data()[0] == big {4052555153018976267LL}); // 3³⁹ mod 2⁶⁴
+  EXPECT(numerical::pow(tensor<big> {{1}, {3}}, tensor<big> {{1}, {39}}).data()[0] == big {4052555153018976267LL}); // 3³⁹, just within int64
   EXPECT_THROWS((void)numerical::pow(bases, tensor<big> {{1}, {-1}}), std::domain_error);
   // The larger and smaller of two, broadcast.
   EXPECT(numerical::maximum(bases, tensor<big> {{1}, {1}}).data() == (numerical::buffer<big> {3, 1, 7, 1, 2}));

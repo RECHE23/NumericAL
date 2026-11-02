@@ -4,7 +4,7 @@ A {class}`numerical.Tensor` is an immutable array of one dtype: rank 0 a scalar,
 and stacks of matrices along leading axes. Its dtypes are `float64`, `complex128`, `float32`, `complex64`, `bool`
 for a comparison's answer, and `int64`, which `dtype="int64"` (or `int`) asks for: read exactly, past 2⁵³ too, it
 compares, selects, reshapes, concatenates, indexes, finds its largest and smallest elements, and computes as
-NumPy's integers (wrapping modulo 2⁶⁴; `/` in float64); its reductions arrive with 2026.12.0, when integers are read
+NumPy's integers (wrapping modulo 2⁶⁴; `/`, `mean`, `var` and `std` in float64). From 2026.12.0, integers are read
 as int64 by default.
 
 ## Reading arrays

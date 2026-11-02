@@ -44,6 +44,12 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
   before 2.5 made them real where it could.
 - **A float32 or complex64 decomposition** is computed in double precision and rounded to single, below order 500
   (see {doc}`linalg`): the double answer of the same values, rounded once, where NumPy's LAPACK computes in single.
+- **A sum along an axis that is not the last** (`sum(a, axis=0)` of a matrix, and the `mean`, `var` and `std` over
+  it) adds each column pairwise, as NumPy adds along the last axis; NumPy adds such an axis row after row, in order.
+  The last bits differ where the terms are of very different sizes, ours nearer the exact sum.
+- **`round` to many places, and an integer's to tens or hundreds, is exact**: NumPy's scales by 10ᵈ in floating point,
+  which moves a last bit (`round(x, 15)` near 10) or overflows (`round(1e307, 2)`: inf), and rounds an integer
+  through float64 (not exact past 2⁵³).
 - **`sort`** keeps equal elements in their order whatever `kind`; NumPy's default sort may order them otherwise, which
   only a zero's sign or a NaN's payload shows.
 - **The special matrices** (`hilbert`, `pascal`, `invpascal`…) are float64 where SciPy's exact ones are integers:
@@ -55,8 +61,8 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
 ## What is not there yet
 
 - **Integer dtypes.** NumPy's integer arrays are read as float64 unless `dtype="int64"` is asked; an int64 tensor
-  compares, selects, moves, finds its extremes and computes as NumPy's integers, and its reductions, integers read as
-  int64 by default, and the index functions (`argmax` along an axis, `argsort`, `nonzero`, `searchsorted`) arrive with
+  compares, selects, moves, computes and reduces as NumPy's integers (not yet through `@`, `einsum` or the linear
+  algebra), and integers read as int64 by default, and the index functions (`argmax` along an axis, `argsort`, `nonzero`, `searchsorted`) arrive with
   2026.12.0. A real converted to int64 that it cannot hold (NaN, an infinity, a value out of range) raises, as
   Python's `int()`; NumPy's answer depends on the processor.
 - **Views and assignment.** A `Tensor` is immutable: no `t[i] = x`, and no operation returns a view of another tensor.
