@@ -1,16 +1,25 @@
 # NumericAL
 
-A pure, header-only C++20 **numerical computing** library — a leaf of the
-SciLang ecosystem (a sibling of [REAL](https://github.com/RECHE23/real-regex)),
-generic over its scalar type and depending on nothing but the C++ standard
-library.
+A pure, header-only C++20 **numerical computing** library: tensors, Einstein summation, dense linear algebra,
+matrix functions and FFT, generic over its scalar type and depending on nothing but the C++ standard library. Its
+answers are the same to the bit on any number of threads, and its Python binding follows NumPy and SciPy. It is
+one of the Algorithmic Libraries of the [SciForge](https://github.com/RECHE23/sciforge) ecosystem, beside
+[REAL](https://github.com/RECHE23/real-regex).
 
-NumericAL is **agnostic of expressions and of any symbolic layer**: it computes
-with concrete numeric structures — vectors, matrices, tensors — and the
-algorithms over them. SciLang consumes it as a numeric backend through its
-module seam; the symbolic↔numeric reconciliation stays in SciLang.
+NumericAL computes with concrete numeric structures (vectors, matrices, tensors) and knows nothing of expressions
+or of any symbolic layer; the tools built on top of it own that.
 
 The API reference, generated from the headers: <https://reche23.github.io/NumericAL/>.
+
+## Scope and non-goals
+
+- **In scope:** dense linear algebra (NumPy's `linalg` and most of `scipy.linalg`), tensors and `einsum`, the FFT,
+  matrix functions, and the element-wise functions and reductions over them, in float32, float64 and their complex
+  types; a BLAS and LAPACK ABI (`numerical_blas`).
+- **Not yet:** integer dtypes, views and assignment by index, `numerical.linalg` and the Array API namespace,
+  the rest of NumPy's root functions; see the CHANGELOG for what each release adds.
+- **Non-goals:** the GPU, automatic differentiation, and the sparse, optimization, statistics and signal domains,
+  which belong in libraries of their own built on NumericAL.
 
 ## Quick start (C++)
 
@@ -487,7 +496,7 @@ Floating-point accuracy is documented, never claimed exact where it cannot be: e
 stable, checked against its defining property and against NumPy within bounds of the order times the machine
 epsilon. A result is the same, to the bit, on any number of threads, and on any x86-64 processor with AVX2 or
 AVX-512 for one build; between other kernels and processors it may differ in the last bits (see Threads and
-kernels). Same gate bar as the rest of the ecosystem: 100% coverage,
+kernels). SciForge's quality bar, as the rest of the ecosystem: 100% coverage,
 clang **and** g++-14, lint, format, MISRA-oriented analysis and sanitizers green.
 
 ### Accuracy, function by function

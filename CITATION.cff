@@ -1,0 +1,10 @@
+cff-version: 1.2.0
+message: "If you use NumericAL, please cite it using this metadata."
+title: "NumericAL — a numerical computing Algorithmic Library"
+abstract: "A header-only C++20 numerical computing library (tensors, Einstein summation, dense linear algebra, matrix functions and FFT) whose answers are the same to the bit on any number of threads, with a NumPy- and SciPy-compatible Python binding and a BLAS and LAPACK ABI."
+authors:
+  - given-names: René
+    family-names: Chenard
+    email: rene.chenard.1@ulaval.ca
+repository-code: "https://github.com/RECHE23/NumericAL"
+license: MIT

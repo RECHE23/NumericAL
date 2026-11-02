@@ -33,6 +33,10 @@ held for the first release of a month (`YYYY.M.0`), so that the patch releases w
 Changes in the last bits of a floating-point result, from a faster kernel summing in another order, are not
 breaking: each is noted under **Changed**.
 
+From 2026.12.0 on, a breaking change is also announced a month ahead: the new behaviour arrives in month M under a
+new name or flag, the old one warning (`DeprecationWarning` in Python, `[[deprecated]]` in C++), and replaces it at
+the first release of month M+1, as NumPy's NEP 23 asks of a change, in calendar terms.
+
 ## Release cadence
 
 A change goes out when it is ready: a correctness fix, an addition or a speed-up is released as soon as the release

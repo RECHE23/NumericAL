@@ -1,12 +1,24 @@
 # Changelog
 
 All notable changes to NumericAL. Versions are calendar-based (`YYYY.M.PATCH`, the patch resetting each
-month; PEP 440 drops leading zeros). The project holds the SciLang-stack gate: 100%-4D coverage of
+month; PEP 440 drops leading zeros). The project holds SciForge's quality bar (its `CONVENTIONS.md`): 100%-4D coverage of
 `include/`, clang and GCC, sanitizers, MISRA, and a NumPy differential.
 A change that can break code is listed under **Breaking** and held for a month's first release (see
 `RELEASING.md`).
 
 ## Unreleased
+
+### Announced for 2026.12.0
+These changes can break code or change bits; they arrive with December's first release:
+- **Python 3.11 or newer** (3.10 reached its end of life in October 2026), which opens the buffer protocol
+  (`memoryview(t)`) in the limited API.
+- **The same bits whatever compiler builds NumericAL**: built with `-ffp-contract=off`, so that GCC and Clang fuse
+  no product into a sum the code does not write. A wheel (GCC 14) and an install from the sdist (GCC 13) differ
+  today on some results in the last bits.
+- **Integers as integers**: NumPy's integer arrays read as an int64 dtype where they are read as float64 today, and
+  the index functions (`argmax`, `argmin` along an axis, `argsort`, `nonzero`, `searchsorted`) that answer in it.
+- **Breaking changes announced a month ahead** from then on: a new behaviour arrives under a new name or flag with a
+  `DeprecationWarning` on the old one, and replaces it at the next month's first release.
 
 ### Added
 - **NumPy's root functions, a second set**: `prod` (C++ `numerical::prod`, in order, as NumPy multiplies), `cumsum`,
