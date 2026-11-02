@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.2 — 2026-11-02
+
 ### Announced for 2026.12.0
 These changes can break code or change bits; they arrive with December's first release:
 - **Python 3.11 or newer** (3.10 reached its end of life in October 2026), which opens the buffer protocol
