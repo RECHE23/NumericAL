@@ -15,9 +15,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   integers by `tolist` and indexing. It compares, selects (`where`), moves (indexing, reshape, transpose,
   concatenate) and finds its `max` and `min`; beside a float or complex operand it promotes as NumPy 2's (float64,
   complex128). A real converted to int64 is truncated toward zero; NaN or an infinity raises `ValueError`, a value
-  outside int64's range `OverflowError` (NumPy's answer depends on the processor). Integers are still read as
-  float64 by default, and an int64 tensor's own arithmetic and reductions raise `TypeError`: both arrive with
-  2026.12.0.
+  outside int64's range `OverflowError` (NumPy's answer depends on the processor). Its arithmetic is NumPy's
+  integers': `+`, `-`, `*`, `//`, `%`, `**` (exact by squaring; a negative exponent a `ValueError`), negation,
+  `abs`, `square`, `maximum`, `minimum` and `clip` stay int64 and wrap modulo 2⁶⁴ (by zero `//` and `%` give 0); `/`
+  and the transcendental functions answer in float64; `floor`, `ceil`, `trunc` and `round` to places return it,
+  `sign` an int64, and `round` to tens or hundreds is exact (NumPy's goes through float64 and is not past 2⁵³).
+  Integers are still read as float64 by default, and an int64 tensor's reductions raise `TypeError`: both arrive
+  with 2026.12.0.
 - **`numerical::round(t, decimals)`** in C++ (real and complex tensors), which `numerical.round` now calls.
 - **Floor division and remainder**: `t // u`, `t % u`, `divmod(t, u)` and `numerical.floor_divide`, `remainder`
   (`mod`) and `divmod`, as NumPy's for real dtypes (its `divmod`: the quotient floored, the remainder of the

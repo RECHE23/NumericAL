@@ -259,6 +259,16 @@ decltype(auto) visit_numeric(F&& f, const any_tensor& v)
     }
 }
 
+// visit_numeric, an int64 tensor too: for the operations NumPy's integers have (+, −, ·, //, %, **, negation).
+template <typename F>
+decltype(auto) visit_arithmetic(F&& f, const any_tensor& v)
+{
+    if (const auto* integers {std::get_if<int_tensor>(&v)}) {
+        return std::forward<F>(f)(*integers);
+    }
+    return visit_numeric(std::forward<F>(f), v);
+}
+
 inline const char* dtype_name(const any_tensor& v)
 {
     return dtype_names.at(v.index());
@@ -315,6 +325,17 @@ inline any_tensor* numeric_tensor(PyObject* obj)
     }
     if (v != nullptr && is_int(*v)) {
         PyErr_SetString(PyExc_TypeError, "an int64 tensor is not taken here: convert it first, as t.astype(\"float64\")");
+        return nullptr;
+    }
+    return v;
+}
+
+// numeric_tensor, an int64 tensor taken too: for \ref visit_arithmetic's operations.
+inline any_tensor* arithmetic_tensor(PyObject* obj)
+{
+    any_tensor* v = as_tensor(obj);
+    if (v != nullptr && is_bool(*v)) {
+        PyErr_SetString(PyExc_TypeError, "a bool tensor has no arithmetic: convert it first, as t.astype(\"float64\")");
         return nullptr;
     }
     return v;
@@ -1405,8 +1426,8 @@ PyObject* module_permute(PyObject* /*self*/, PyObject* args); // in products.cpp
 // Two tensors of one dtype, or an error set and nullptr.
 inline bool same_dtype_pair(PyObject* x, PyObject* y, const any_tensor*& a, const any_tensor*& b)
 {
-    a = numeric_tensor(x);
-    b = a == nullptr ? nullptr : numeric_tensor(y);
+    a = arithmetic_tensor(x);
+    b = a == nullptr ? nullptr : arithmetic_tensor(y);
     if (b == nullptr) {
         return false;
     }
@@ -1485,6 +1506,18 @@ PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::ten
     std::optional<any_tensor>    result;
     {
         const sb::scoped_gil_release unlocked {releases_gil(std::max(a.size(), b.size()))};
+        if constexpr (std::is_integral_v<T>) { // NumPy's integers: wrapped; a true quotient in float64
+            switch (op) {
+                case '+': result.emplace(a + b); break;
+                case '-': result.emplace(a - b); break;
+                case '*': result.emplace(a * b); break;
+                case '^': result.emplace(numerical::pow(a, b)); break;
+                case '|': result.emplace(numerical::floor_divide(a, b)); break;
+                case '%': result.emplace(numerical::remainder(a, b)); break;
+                default: result.emplace(converted<double>(a) / converted<double>(b)); break;
+            }
+        }
+        else {
         switch (op) {
             case '+': result.emplace(a + b); break;
             case '-': result.emplace(a - b); break;
@@ -1501,6 +1534,7 @@ PyObject* binary_on(char op, const numerical::tensor<T>& a, const numerical::ten
                 }
                 break;
             default: result.emplace(quotient_as_numpy(a, b, loops)); break;
+        }
         }
     }
     if (!result) { // a complex floor division or remainder, which NumPy does not define either

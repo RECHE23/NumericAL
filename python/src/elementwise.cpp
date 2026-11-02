@@ -27,7 +27,7 @@ PyObject* module_binary(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     try {
-        return visit_numeric([&](const auto& x) { return binary_on(op[0], x, std::get<std::decay_t<decltype(x)>>(*b)); }, *a);
+        return visit_arithmetic([&](const auto& x) { return binary_on(op[0], x, std::get<std::decay_t<decltype(x)>>(*b)); }, *a);
     }
     catch (...) {
         return set_cpp_error();
@@ -85,9 +85,13 @@ PyObject* module_extreme_pair(PyObject* /*self*/, PyObject* args)
                 const single_tensor& other {std::get<single_tensor>(*b)};
                 result.emplace(larger != 0 ? numerical::maximum(*single, other) : numerical::minimum(*single, other));
             }
+            else if (const auto* integers {std::get_if<int_tensor>(a)}; integers != nullptr && b->index() == a->index()) {
+                const int_tensor& other {std::get<int_tensor>(*b)};
+                result.emplace(larger != 0 ? numerical::maximum(*integers, other) : numerical::minimum(*integers, other));
+            }
         }
         if (!result) {
-            PyErr_SetString(PyExc_TypeError, "_extreme_pair: two float64 or two float32 tensors");
+            PyErr_SetString(PyExc_TypeError, "_extreme_pair: two float64, two float32 or two int64 tensors");
             return nullptr;
         }
         return wrap(std::move(*result));
@@ -304,12 +308,12 @@ PyObject* module_negate(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "O", &x) == 0) {
         return nullptr;
     }
-    const any_tensor* a = numeric_tensor(x);
+    const any_tensor* a = arithmetic_tensor(x);
     if (a == nullptr) {
         return nullptr;
     }
     try { // an allocation the system refuses is a Python exception, not an abort
-        return visit_numeric([](const auto& t) { return wrap(any_tensor {-t}); }, *a);
+        return visit_arithmetic([](const auto& t) { return wrap(any_tensor {-t}); }, *a);
     }
     catch (...) {
         return set_cpp_error();

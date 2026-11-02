@@ -3901,6 +3901,8 @@ def _elementwise(name, doc):
             mapped = _numerical._borrowed_unary(name, a)  # a NumPy array read where it lies
             if mapped is not NotImplemented:
                 return mapped
+        elif a.dtype == "int64":  # NumPy's: an integer's magnitude an integer (wrapped), the rest in float64
+            return where(a < 0, -a, a) if name == "abs" else _numerical._unary(name, asarray(a, "float64"))
         return _numerical._unary(name, a if isinstance(a, Tensor) else _read(a))
 
     function.__name__ = name
@@ -5677,6 +5679,12 @@ def _real_function(name, doc):
         x = _operand(x)
         if x.dtype.startswith("complex"):
             raise TypeError(f"{name}: real numbers only here (NumPy's takes complex ones too)")
+        if x.dtype == "int64":  # NumPy's: an integer its own floor, ceiling and truncation, its sign an integer
+            if name in ("floor", "ceil", "trunc"):
+                return x
+            if name == "sign":
+                return asarray(x > 0, "int64") - asarray(x < 0, "int64")
+            x = asarray(x, "float64")
         return _numerical._real_unary(name, x)
 
     function.__name__ = name
@@ -5718,6 +5726,19 @@ def round(a, decimals=0):  # noqa: A001 (numpy.round's name)
     a = _operand(a)
     if a.dtype == "bool":
         a = asarray(a, "float64")
+    if a.dtype == "int64":  # NumPy's: an integer to tens, hundreds, exactly, half to even; itself to places
+        if decimals >= 0:
+            return a
+        if -decimals >= 20:  # half of 10²⁰ past int64: every integer rounds to 0
+            return zeros(a.shape, "int64")
+        if -decimals == 19:  # past ±5·10¹⁸ to ±10¹⁹, wrapped as int64's arithmetic wraps; else 0
+            ten = 10**19 - 2**64
+            return where(a > 5 * 10**18, asarray(ten, "int64"), where(a < -5 * 10**18, asarray(-ten, "int64"), 0))
+        unit = 10**-decimals
+        below = a % unit  # 0 ≤ below < unit
+        base = a - below
+        up = (below > unit // 2) | ((below == unit // 2) & ((base // unit) % 2 == 1))  # past half, or half to even
+        return where(up, base + unit, base)
     return _numerical._round(a, _builtins.max(-400, _builtins.min(decimals, 400)))  # past ±400, any dtype's answer is the same
 
 

@@ -1241,6 +1241,24 @@ namespace numerical {
                                                                  });
   }
 
+  //! \brief The larger element of integer tensors \p a and \p b, broadcast, as `numpy.maximum`. \throws dimension_error
+  //!        If the shapes do not broadcast.
+  template <std::integral T>
+  [[nodiscard]] tensor<T> maximum(const tensor<T>& a,
+                                  const tensor<T>& b)
+  {
+    return broadcast_apply(a, b, [](T x, T y) { return std::max(x, y); });
+  }
+
+  //! \brief The smaller element of integer tensors \p a and \p b, broadcast, as `numpy.minimum`. \throws dimension_error
+  //!        If the shapes do not broadcast.
+  template <std::integral T>
+  [[nodiscard]] tensor<T> minimum(const tensor<T>& a,
+                                  const tensor<T>& b)
+  {
+    return broadcast_apply(a, b, [](T x, T y) { return std::min(x, y); });
+  }
+
   //! \brief Element-wise difference, broadcast. \throws dimension_error If the shapes do not broadcast.
   template <typename T>
   [[nodiscard]] tensor<T> operator-(const tensor<T>& a,
@@ -1386,6 +1404,41 @@ namespace numerical {
       }
     }
     return broadcast_apply(a, b, [](const T& x, const T& y) { return static_cast<T>(std::pow(x, y)); });
+  }
+
+  namespace detail {
+    //! \brief \p base to the power \p exponent (not negative) by repeated squaring, each product wrapped modulo 2ⁿ as
+    //!        NumPy's integer power (\ref arithmetic).
+    template <std::signed_integral T>
+    [[nodiscard]] T integer_power(T base,
+                                  T exponent) noexcept
+    {
+      const typename arithmetic<T>::multiplies times  {};
+      T                                        result {1};
+      while (exponent != 0) {
+        if ((exponent & 1) != 0) {
+          result = times(result, base);
+        }
+        base       = times(base, base);
+        exponent >>= 1;
+      }
+      return result;
+    }
+  } // namespace detail
+
+  /*!
+   * \brief `a` to the power `b` of signed integers element by element, broadcast, as NumPy's: exactly, by repeated
+   *        squaring, wrapped modulo 2ⁿ. \throws std::domain_error If an exponent is negative (NumPy's refusal: no
+   *        integer is the answer). \throws dimension_error If the shapes do not broadcast.
+   */
+  template <std::signed_integral T>
+  [[nodiscard]] tensor<T> pow(const tensor<T>& a,
+                              const tensor<T>& b)
+  {
+    if (std::ranges::any_of(b.data(), [](T exponent) { return exponent < 0; })) {
+      throw std::domain_error("Integers to negative integer powers are not allowed.");
+    }
+    return broadcast_apply(a, b, [](T x, T y) { return detail::integer_power(x, y); });
   }
 
   //! \brief The sum of every element, by pairwise halving (0 for an empty tensor), on the threads where they are many

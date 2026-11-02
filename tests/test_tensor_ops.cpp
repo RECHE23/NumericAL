@@ -1105,6 +1105,15 @@ TEST(signed_integers_wrap_as_numpy)
   const tensor<big> sorted {numerical::sort(tensor<big> {{n}, std::move(shuffled)}, 0)};
   EXPECT(std::ranges::equal(sorted.data(), want));
   EXPECT(numerical::sort(tensor<big> {{2, 2}, {4, -1, 0, 2}}, 1).data() == (numerical::buffer<big> {-1, 4, 0, 2}));
+  // Powers exact by squaring, wrapped; a negative exponent refused (no integer is the answer).
+  const tensor<big> bases     {{5}, {3, -2, 7, 0, 2}};
+  const tensor<big> exponents {{5}, {4, 3, 0, 0, 64}};
+  EXPECT(numerical::pow(bases, exponents).data() == (numerical::buffer<big> {81, -8, 1, 1, 0}));                    // 2⁶⁴ wraps to 0
+  EXPECT(numerical::pow(tensor<big> {{1}, {3}}, tensor<big> {{1}, {39}}).data()[0] == big {4052555153018976267LL}); // 3³⁹ mod 2⁶⁴
+  EXPECT_THROWS((void)numerical::pow(bases, tensor<big> {{1}, {-1}}), std::domain_error);
+  // The larger and smaller of two, broadcast.
+  EXPECT(numerical::maximum(bases, tensor<big> {{1}, {1}}).data() == (numerical::buffer<big> {3, 1, 7, 1, 2}));
+  EXPECT(numerical::minimum(bases, exponents).data() == (numerical::buffer<big> {3, -2, 0, 0, 2}));
 }
 
 // floor_divide and remainder as NumPy's: the quotient floored and the remainder of the divisor's sign. A real by zero

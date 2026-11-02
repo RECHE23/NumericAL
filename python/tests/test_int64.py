@@ -92,10 +92,53 @@ class Int64(unittest.TestCase):
         self.assertEqual((t * numerical.asarray([1j], dtype="complex64")).dtype, "complex128")
         self.assertEqual((t + 1j).dtype, "complex128")
 
+    def test_arithmetic_wraps_as_numpy(self):
+        top, bottom = 2**63 - 1, -2**63
+        t = numerical.asarray([top, bottom, 7, -7], dtype="int64")
+        self.assertEqual((t + 1).tolist(), [bottom, bottom + 1, 8, -6])
+        self.assertEqual((t - numerical.asarray([1, 1, 1, 1], dtype="int64")).tolist(), [top - 1, top, 6, -8])
+        self.assertEqual((t * 2).tolist(), [-2, 0, 14, -14])
+        self.assertEqual((-t).tolist(), [-top, bottom, -7, 7])
+        self.assertEqual(abs(t).tolist(), [top, bottom, 7, 7])  # |−2⁶³| wraps to itself, as NumPy's
+        self.assertEqual((t // 2).tolist(), [top // 2, bottom // 2, 3, -4])
+        self.assertEqual((t % 3).tolist(), [top % 3, bottom % 3, 1, 2])
+        self.assertEqual((t // 0).tolist(), [0, 0, 0, 0])  # NumPy's answer by zero
+        self.assertEqual((numerical.asarray([bottom], dtype="int64") // -1).tolist(), [bottom])
+        self.assertEqual((t / 2).dtype, "float64")
+        self.assertEqual((numerical.asarray([3, -2], dtype="int64") ** 3).tolist(), [27, -8])
+        self.assertEqual((numerical.asarray([2], dtype="int64") ** 64).tolist(), [0])
+        self.assertEqual((2 ** numerical.asarray([10], dtype="int64")).tolist(), [1024])
+        self.assertEqual((numerical.asarray([4], dtype="int64") ** 0.5).tolist(), [2.0])
+        with self.assertRaisesRegex(ValueError, "negative integer powers"):
+            numerical.asarray([2], dtype="int64") ** -1
+        self.assertEqual(numerical.maximum(t, 0).tolist(), [top, 0, 7, 0])
+        self.assertEqual(numerical.minimum(t, numerical.asarray([0, 0, 0, 0], dtype="int64")).tolist(), [0, bottom, 0, -7])
+        self.assertEqual(numerical.clip(t, -10, 10).tolist(), [10, -10, 7, -7])
+        self.assertEqual(numerical.clip(t, -0.5, 10).dtype, "float64")
+
+    def test_functions_keep_or_leave_int64_as_numpy(self):
+        t = numerical.asarray([-7, 0, 3, 2**62 + 1], dtype="int64")
+        for name in ("floor", "ceil", "trunc"):
+            self.assertIs(getattr(numerical, name)(t), t)  # an integer its own floor, an immutable tensor itself
+        self.assertEqual(numerical.sign(t).tolist(), [-1, 0, 1, 1])
+        self.assertEqual(numerical.sign(t).dtype, "int64")
+        self.assertEqual(numerical.square(numerical.asarray([3, -4], dtype="int64")).tolist(), [9, 16])
+        for name in ("rint", "sqrt", "exp", "sin", "log1p", "deg2rad"):
+            self.assertEqual(getattr(numerical, name)(numerical.asarray([1, 4], dtype="int64")).dtype, "float64")
+        self.assertIs(numerical.round(t, 3), t)
+        self.assertEqual(numerical.round(numerical.asarray([15, 25, -15, 1250, 1350, -1250], dtype="int64"), -1).tolist(),
+                         [20, 20, -20, 1250, 1350, -1250])
+        self.assertEqual(numerical.round(numerical.asarray([1250, 1350, 1251], dtype="int64"), -2).tolist(), [1200, 1400, 1300])
+        big = 2**62 + 123456789
+        self.assertEqual(numerical.round(numerical.asarray([big], dtype="int64"), -1).tolist(), [big - 3])  # exact (NumPy, through float64: …416, no multiple of 10)
+        self.assertEqual(numerical.round(numerical.asarray([6 * 10**18, -6 * 10**18, 10**18], dtype="int64"), -19).tolist(),
+                         [10**19 - 2**64, 2**64 - 10**19, 0])  # ±10¹⁹, wrapped
+        self.assertEqual(numerical.round(numerical.asarray([2**63 - 1], dtype="int64"), -25).tolist(), [0])
+
     def test_refused_where_floating_point_computes(self):
         t = numerical.asarray([[1, 2], [3, 4]], dtype="int64")
-        for name, call in (("+", lambda: t + t), ("-", lambda: -t), ("abs", lambda: abs(t)), ("sum", lambda: numerical.sum(t)),
-                           ("mean", lambda: numerical.mean(t)), ("@", lambda: t @ t), ("exp", lambda: numerical.exp(t)),
+        for name, call in (("sum", lambda: numerical.sum(t)),
+                           ("mean", lambda: numerical.mean(t)), ("@", lambda: t @ t),
                            ("sort", lambda: numerical.sort(t)), ("solve", lambda: numerical.solve(t, t)),
                            ("einsum", lambda: numerical.einsum("ij->", t)), ("fft", lambda: numerical.fft.fft(t))):
             with self.subTest(name=name), self.assertRaises(TypeError):
