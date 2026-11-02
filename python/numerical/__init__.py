@@ -3303,8 +3303,8 @@ def asarray(obj, dtype=None):
         obj: A Tensor (the same object when `dtype` matches), an object with an ``__array_interface__`` (NumPy: bool,
             integer, float32/64 and complex64/128 elements, any strides), a nested list or tuple of numbers, or a
             number (rank 0).
-        dtype: ``"float64"``, ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"`` (true where nonzero); by
-            default an array's own for float32, complex64, complex128 and bool, else float64 (integers included);
+        dtype: ``"float64"``, ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"`` (true where nonzero), or
+            the NumPy type or dtype of that name, or Python's ``float``, ``complex`` or ``bool``; by default an array's own for float32, complex64, complex128 and bool, else float64 (integers included);
             complex128 for a complex number or a list with one, bool for a bool or a list of bools alone, as NumPy's.
 
     Returns:
@@ -3313,7 +3313,8 @@ def asarray(obj, dtype=None):
     Raises:
         ValueError: if a nested list is not rectangular.
         TypeError: if `obj` is none of these, or a nested list holds something other than numbers.
-        numerical.error: for a `dtype` not offered, or a complex input cast to a real dtype.
+        TypeError: for a `dtype` not offered (also a :class:`numerical.error` and a ``ValueError``).
+        numerical.error: for a complex input cast to a real dtype.
 
     Examples:
         >>> import numerical
@@ -3325,6 +3326,8 @@ def asarray(obj, dtype=None):
         >>> numerical.asarray(2.5).shape
         ()
     """
+    if dtype is not None and (type(dtype) is not str or dtype not in _DTYPES):
+        dtype = _checked_dtype(dtype, "asarray: ")
     # A float, int, bool or complex, an array (its __array_struct__ or __array_interface__) and a Tensor go to C
     # as they are; a nested list, or another number (a Fraction), through its values. A Tensor or an array's struct
     # first: the abstract Number test below took a third of a small einsum's call.
@@ -3357,6 +3360,19 @@ def _read(obj, dtype=None):
 class _UnreadableError(error, TypeError):
     """An object :func:`asarray` cannot read: a ``TypeError`` as NumPy raises, and a :class:`numerical.error`."""
 
+
+
+class _DtypeError(error, TypeError, ValueError):
+    """A dtype a Tensor does not offer: a ``TypeError`` as NumPy raises for a dtype it does not understand, a
+    :class:`numerical.error` as :func:`asarray` raised before, and a ``ValueError`` as the creation functions did."""
+
+
+def _checked_dtype(dtype, prefix=""):
+    """`dtype`'s name (see :func:`_dtype_name`), one of :data:`_DTYPES`, or :class:`_DtypeError`."""
+    name = _dtype_name(dtype)
+    if name not in _DTYPES:
+        raise _DtypeError(f"{prefix}dtype must be one of {_DTYPES}, not {dtype!r}")
+    return name
 
 
 class _ShapeError(error, ValueError):
@@ -3620,9 +3636,12 @@ def _dtype_name(dtype):
     Python's ``float``, ``complex`` and ``bool`` as NumPy names them."""
     if isinstance(dtype, str):
         return dtype
-    if dtype in (float, complex, bool):
-        return {float: "float64", complex: "complex128", bool: "bool"}[dtype]
-    return getattr(dtype, "__name__", None) or str(dtype)
+    # By identity: a NumPy dtype compares equal to the Python type it stands for, numpy.dtype("float64") == float.
+    for python_type, name in ((float, "float64"), (complex, "complex128"), (bool, "bool")):
+        if dtype is python_type:
+            return name
+    name = getattr(dtype, "__name__", None) or str(dtype)
+    return "bool" if name == "bool_" else name  # NumPy 1's numpy.bool_
 
 
 def _reduction_method(reduce):
@@ -3702,9 +3721,7 @@ def _dtype_of(dtype, value=0.0):
     `value`, bool for a bool one, else float64, as NumPy infers it."""
     if dtype is None:
         return "complex128" if isinstance(value, complex) else "bool" if isinstance(value, bool) else "float64"
-    dtype = _dtype_name(dtype)
-    if dtype not in _DTYPES:
-        raise ValueError(f"dtype must be one of {_DTYPES}, not {dtype!r}")
+    dtype = _checked_dtype(dtype)
     if dtype in ("float64", "float32") and isinstance(value, complex):
         raise TypeError(f"full: a complex value does not fit a {dtype} tensor")
     return dtype

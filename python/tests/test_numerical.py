@@ -634,8 +634,35 @@ class ArrayInterface(unittest.TestCase):
             numerical.asarray(Interface("<f8", b"\0" * 16, (2,), (8, 8)))  # strides of another rank
 
     def test_asarray_rejects_unknown_dtype(self):
+        # A TypeError as NumPy raises, and the numerical.error and ValueError raised before, for each kind of operand
+        # (each takes its own way to C) and each kind of dtype that names none a Tensor offers.
+        for obj in (numerical.Tensor([1.0]), [1.0], (1.0, 2.0), 2.0):
+            for dtype in ("float16", "int64", "f8", "", 3, object, str):
+                with self.subTest(obj=obj, dtype=dtype):
+                    with self.assertRaises(TypeError) as caught:
+                        numerical.asarray(obj, dtype=dtype)
+                    self.assertIsInstance(caught.exception, numerical.error)
+                    self.assertIsInstance(caught.exception, ValueError)
+                    self.assertIn(repr(dtype), str(caught.exception))
+        # The binding's own refusal, past the package's check.
         with self.assertRaises(numerical.error):
-            numerical.asarray(numerical.Tensor([1.0]), dtype="float16")
+            numerical._numerical.asarray(numerical.Tensor([1.0]), "float16")
+
+    def test_asarray_takes_python_types_as_dtypes(self):
+        for dtype, name in ((float, "float64"), (complex, "complex128"), (bool, "bool")):
+            for obj in (numerical.Tensor([1.0, 0.0]), [1.0, 0.0], 1.0):
+                with self.subTest(dtype=dtype, obj=obj):
+                    self.assertEqual(numerical.asarray(obj, dtype=dtype).dtype, name)
+
+    def test_every_dtype_argument_refuses_an_unknown_dtype_as_asarray(self):
+        for call in (lambda: numerical.zeros(2, dtype="int32"), lambda: numerical.ones(2, dtype="f4"),
+                     lambda: numerical.full(2, 1.0, dtype=object), lambda: numerical.eye(2, dtype="float16"),
+                     lambda: numerical.zeros_like([1.0], dtype="int8"), lambda: numerical.Tensor([1.0]).astype("int8"),
+                     lambda: numerical.Tensor([1.0]).sum(dtype="int8")):
+            with self.subTest(call=call), self.assertRaises(TypeError) as caught:
+                call()
+            self.assertIsInstance(caught.exception, ValueError)
+            self.assertIsInstance(caught.exception, numerical.error)
 
 
 class GilRelease(unittest.TestCase):

@@ -132,6 +132,24 @@ class ShapesAndCreation(unittest.TestCase):
                 self.assertEqual(got.dtype, str(want.dtype))
                 np.testing.assert_array_equal(np.asarray(got), want)
 
+    def test_asarray_takes_numpy_types_and_dtypes(self):
+        for dtype in (np.float64, np.float32, np.complex128, np.complex64, np.bool_):
+            for given in (dtype, np.dtype(dtype)):
+                with self.subTest(dtype=given):
+                    want = np.asarray([1.0, 0.0], dtype=given)
+                    for obj in ([1.0, 0.0], np.array([1.0, 0.0]), numerical.asarray([1.0, 0.0])):
+                        got = numerical.asarray(obj, dtype=given)
+                        self.assertEqual(got.dtype, str(want.dtype))
+                        np.testing.assert_array_equal(np.asarray(got), want)
+        tensor = numerical.asarray([1.0, 2.0])
+        for given, kind in ((np.dtype("float64"), float), (np.dtype("complex128"), complex)):  # equal to the type
+            with self.subTest(reduction_dtype=given):
+                self.assertEqual(tensor.sum(dtype=given), 3.0)
+                self.assertIs(type(tensor.sum(dtype=given)), kind)
+        for given in (np.int64, np.dtype("float16"), np.dtype("U3")):
+            with self.subTest(dtype=given), self.assertRaises(TypeError):
+                numerical.asarray([1.0], dtype=given)
+
     def test_creation_refuses_what_numpy_refuses(self):
         for call in [lambda: numerical.zeros(-1), lambda: numerical.eye(-2), lambda: numerical.arange(0, 1, 0),
                      lambda: numerical.linspace(0, 1, -1), lambda: numerical.zeros(2, dtype="int32")]:

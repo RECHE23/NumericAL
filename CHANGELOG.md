@@ -8,6 +8,18 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **A dtype a Tensor does not offer raises `TypeError`**, as NumPy raises for a dtype it does not understand, from
+  `asarray`, `astype`, the creation functions (`zeros`, `ones`, `full`, `eye`, the `*_like` ones) and the
+  reductions' `dtype`. The error is also a `numerical.error` (as `asarray` raised) and a `ValueError` (as the
+  creation functions raised), so code that caught either still catches it.
+
+### Fixed
+- **A dtype given as a Python or NumPy type**: `asarray(x, dtype=numpy.float32)`, `dtype=float` and
+  `dtype=numpy.dtype("complex64")` raised `TypeError` (the binding took a name alone); they read as that dtype, as
+  every other function's `dtype` already did. `t.sum(dtype=numpy.dtype("float64"))` raised `KeyError`: a NumPy dtype
+  compares equal to the Python type it stands for, so it was looked up as `float` in a table keyed by the types.
+
 ## 2026.11.2 — 2026-11-02
 
 ### Announced for 2026.12.0
