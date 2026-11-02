@@ -4262,18 +4262,18 @@ def maximum(x1, x2, /):
     both), and +0 over −0 whatever their order, as IEEE 754-2019's maximum (NumPy's on arm64, and :func:`max`'s).
     Real dtypes."""
     x1, x2 = _ordered("maximum", x1, x2)
-    zeros = logical_and(equal(x1, x2), equal(x1, 0))  # x1 + x2: +0 where either is +0, −0 where both are −0
-    larger = where(greater(x1, x2), x1, where(zeros, x1 + x2, x2))
-    return where(isnan(x1), x1, where(isnan(x2), x2, larger))
+    if x1.dtype != "bool":
+        return _numerical._extreme_pair(True, x1, x2)  # one pass, broadcast
+    return logical_or(x1, x2)
 
 
 def minimum(x1, x2, /):
     """The smaller of `x1` and `x2` element-wise, broadcast, as ``numpy.minimum``: a NaN wins (the first's where
     both), and −0 under +0 whatever their order, as IEEE 754-2019's minimum. Real dtypes."""
     x1, x2 = _ordered("minimum", x1, x2)
-    zeros = logical_and(equal(x1, x2), equal(x1, 0))  # −(−x1 − x2): −0 where either is −0, +0 where both are +0
-    smaller = where(less(x1, x2), x1, where(zeros, -(-x1 - x2), x2))
-    return where(isnan(x1), x1, where(isnan(x2), x2, smaller))
+    if x1.dtype != "bool":
+        return _numerical._extreme_pair(False, x1, x2)  # one pass, broadcast
+    return logical_and(x1, x2)
 
 
 def clip(a, a_min=None, a_max=None):

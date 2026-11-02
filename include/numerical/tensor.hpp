@@ -568,7 +568,7 @@ namespace numerical {
         return;
       }
       if (count <= block) {
-        std::vector<T> partial(lanes * width);
+        buffer<T> partial(lanes * width); // every element written before it is read
         for (std::size_t j {0}; j < lanes; ++j) {
           std::copy_n(row(j), width, partial.data() + (j * width));
         }
@@ -596,7 +596,7 @@ namespace numerical {
       }
       std::size_t half {count / 2};
       half -= half % lanes;
-      std::vector<T> second(width);
+      buffer<T> second(width);
       pairwise_sum_rows(first, half, stride, width, out);
       pairwise_sum_rows(row(half), count - half, stride, width, second.data());
       for (std::size_t q {0}; q < width; ++q) {
@@ -1278,6 +1278,48 @@ namespace numerical {
     }
 
     /*!
+     * \brief einsum of one row-major operand \p data (\p shape, labelled \p in, \p distinct labels in all) whose last
+     *        two labels are one (…ii), the others each once and \p output those in order, with that label (…ii->…i,
+     *        each matrix's diagonal) or without (…ii->…, its sum by pairwise halving, as \ref pairwise_sums adds a
+     *        run: the same bits as trace's sum of the diagonal). None for any other spec.
+     */
+    template <typename T>
+    [[nodiscard]] std::optional<tensor<T>> diagonal_labels(const std::string&              in,
+                                                           const std::string&              output,
+                                                           std::size_t                     distinct,
+                                                           const std::vector<std::size_t>& shape,
+                                                           const T*                        data)
+    {
+      const std::size_t rank {in.size()};
+      if (distinct + 1 != rank || in[rank - 1] != in[rank - 2]) { // a rank of 2 or more, its other labels once
+        return std::nullopt;
+      }
+      const std::string batch {in.substr(0, rank - 2)};
+      const bool        kept  {output == batch + in[rank - 1]};
+      if (!kept && output != batch) {
+        return std::nullopt;
+      }
+      const std::size_t        n     {shape[rank - 1]};
+      const std::size_t        outer {element_count(shape.begin(), shape.end() - 2)};
+      std::vector<std::size_t> out_shape(shape.begin(), shape.end() - 2);
+      buffer<T>                along(outer * n);
+      for (std::size_t b {0}; b < outer; ++b) {
+        for (std::size_t i {0}; i < n; ++i) {
+          along[(b * n) + i] = data[(b * n * n) + (i * (n + 1))];
+        }
+      }
+      if (kept) {
+        out_shape.push_back(n);
+        return tensor<T> {std::move(out_shape), std::move(along)};
+      }
+      buffer<T> sums(outer, T {});
+      if (n > 0) {
+        pairwise_sums(along.data(), outer, n, 1, sums.data());
+      }
+      return tensor<T> {std::move(out_shape), std::move(sums)};
+    }
+
+    /*!
      * \brief einsum of one row-major operand \p data (\p shape, its axes labelled \p in, each label once) into the
      *        labels \p output, where those it sums are one run of its axes and \p output the others in order (ij->i,
      *        ij->, ij->j, ijk->ik): each output element the sum of evenly spaced elements, by pairwise halving as sum()
@@ -1315,7 +1357,7 @@ namespace numerical {
       const std::size_t outer {element_count(begin, begin + static_cast<std::ptrdiff_t>(first))};
       const std::size_t run   {element_count(begin + static_cast<std::ptrdiff_t>(first), begin + static_cast<std::ptrdiff_t>(past))};
       const std::size_t inner {element_count(begin + static_cast<std::ptrdiff_t>(past), shape.end())};
-      std::vector<T>    sums(kept);
+      buffer<T>         sums(kept); // the tensor's own storage, moved in
       pairwise_sums(data, outer, run, inner, sums.data());
       return tensor<T> {std::move(out_shape), std::move(sums)};
     }
@@ -2102,6 +2144,15 @@ namespace numerical {
       if (operands.size() == 1 && sizes.size() == inputs[0].size()) {
         if (std::optional<tensor<T>> sums {sum_over_run(inputs[0], output, operands[0]->shape(), operands[0]->data().data())}) {
           return *std::move(sums);
+        }
+      }
+
+      // Fast path: one operand whose last two labels are one (…ii), each other label once and the output those in
+      // order, with the diagonal's label (…ii->…i: the diagonal) or without (…ii->…: its sum, pairwise as sum() adds,
+      // so the same bits as trace()). The general loop below added the diagonal's terms one after another.
+      if (operands.size() == 1) {
+        if (std::optional<tensor<T>> diagonal {diagonal_labels(inputs[0], output, sizes.size(), operands[0]->shape(), operands[0]->data().data())}) {
+          return *std::move(diagonal);
         }
       }
 

@@ -935,3 +935,49 @@ TEST(a_long_extreme_is_the_same_on_the_threads)
   }
   numerical::set_max_threads(0); // the default again
 }
+
+// numpy.maximum and numpy.minimum, broadcast: a NaN wins (the first's where both are), the zeros ordered as IEEE
+// 754-2019 (+0 over −0 for maximum, −0 under +0 for minimum, whatever their order); float32 alike.
+TEST(maximum_and_minimum_order_nans_and_zeros_as_ieee)
+{
+  const double         nan     {std::numeric_limits<double>::quiet_NaN()};
+  const tensor<double> a       {{2, 4}, {1.0, nan, 0.0, -0.0, 5.0, nan, 3.0, -0.0}};
+  const tensor<double> b       {{2, 4}, {2.0, 1.0, -0.0, 0.0, 4.0, -nan, 3.0, -0.0}};
+  const tensor<double> larger  {numerical::maximum(a, b)};
+  const tensor<double> smaller {numerical::minimum(a, b)};
+  EXPECT(larger.data()[0] == 2.0 && std::isnan(larger.data()[1]) && larger.data()[4] == 5.0 && larger.data()[6] == 3.0);
+  EXPECT(smaller.data()[0] == 1.0 && std::isnan(smaller.data()[1]) && smaller.data()[4] == 4.0 && smaller.data()[6] == 3.0);
+  EXPECT(!std::signbit(larger.data()[2]) && !std::signbit(larger.data()[3]) && std::signbit(larger.data()[7]));
+  EXPECT(std::signbit(smaller.data()[2]) && std::signbit(smaller.data()[3]) && std::signbit(smaller.data()[7]));
+  EXPECT(!std::signbit(larger.data()[5]) && !std::signbit(smaller.data()[5])); // the first NaN, +NaN, not b's −NaN
+  const tensor<double> right {{3}, {nan, 2.0, 0.0}};                           // b's NaN where a is a number
+  const tensor<double> row   {{1, 3}, {1.0, 1.0, 1.0}};
+  EXPECT(std::isnan(numerical::maximum(row, right).data()[0]) && std::isnan(numerical::minimum(row, right).data()[0]));
+  EXPECT(numerical::maximum(row, right).shape() == (shape {1, 3}) && numerical::minimum(row, right).data()[2] == 0.0);
+  const tensor<float> f      {{2}, {1.0F, -2.0F}};
+  const tensor<float> g      {{2}, {0.5F, -1.0F}};
+  EXPECT(numerical::maximum(f, g).data()[1] == -1.0F && numerical::minimum(f, g).data()[0] == 0.5F);
+  const tensor<double> bound {std::vector<std::size_t> {}, {0.5}};                // a number: mapped over a
+  EXPECT(numerical::maximum(a, bound).data()[0] == 1.0 && numerical::maximum(a, bound).data()[2] == 0.5);
+  EXPECT(numerical::minimum(a, bound).data()[0] == 0.5 && std::isnan(numerical::minimum(a, bound).data()[1]));
+  EXPECT_THROWS((void)numerical::maximum(counting({2}), counting({3})), numerical::dimension_error);
+}
+
+// einsum of one operand's diagonal: …ii->…i the diagonals, …ii->… their sums by pairwise halving, the same bits as
+// sum() of the diagonal (trace's); an empty matrix's trace 0; specs it does not take go the general way.
+TEST(einsum_takes_a_diagonal_and_its_pairwise_sum)
+{
+  const tensor<double> m     {counting({300, 300})};
+  const tensor<double> along {numerical::einsum("ii->i", m)};
+  EXPECT(along.shape() == (shape {300}) && along.data()[7] == 7.0 * 301.0);
+  EXPECT(numerical::einsum("ii->", m).data()[0] == numerical::sum(along));
+  const tensor<double> stack {counting({3, 4, 4})};
+  const tensor<double> sums  {numerical::einsum("aii->a", stack)};
+  EXPECT(sums.shape() == (shape {3}) && sums.data()[1] == (16.0 + 21.0 + 26.0 + 31.0));
+  EXPECT(numerical::einsum("aii->ai", stack).shape() == (shape {3, 4}));
+  EXPECT(numerical::einsum("ii->", numerical::zeros<double>({0, 0})).data()[0] == 0.0);
+  EXPECT(numerical::einsum("aii->ia", stack).shape() == (shape {4, 3}));                                 // not in order: the general loop
+  EXPECT(numerical::einsum("aai->i", counting({2, 2, 3})).data()[0] == 0.0 + 9.0);
+  EXPECT(numerical::einsum("iii->", counting({2, 2, 2})).data()[0] == 0.0 + 7.0);                        // a label thrice: the general loop
+  EXPECT(numerical::einsum("->", tensor<double> {std::vector<std::size_t> {}, {2.5}}).data()[0] == 2.5); // rank 0
+}

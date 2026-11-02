@@ -141,6 +141,8 @@ TEST(einsum_implicit_mode_as_numpy)
   EXPECT(einsum("ba", ta) == einsum("ba->ab", ta));                      // a transpose
   EXPECT(einsum("ij", ta) == ta);
   EXPECT_EQ(einsum("ii", tensor<int> {sq}).data()[0], 5);                // a trace: i twice, no output
+  EXPECT_EQ(einsum("iij->", tensor<int> {{2, 2, 3}, {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11}}).data()[0],
+            33);                                                         // the general loop, no output label
   EXPECT(einsum("Ba", ta).shape() == (std::vector<std::size_t> {2, 3})); // B before a in ASCII
   EXPECT(einsum("bA", ta).shape() == (std::vector<std::size_t> {3, 2}));
   const tensor<int> tv {vector<int> {1, 2, 3}};

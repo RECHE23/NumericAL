@@ -56,6 +56,45 @@ PyObject* module_power_shortcut(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _extreme_pair(larger, a, b) -> Tensor: numpy.maximum (larger) or numpy.minimum of two real tensors of one dtype,
+// broadcast, in one pass (a NaN wins, the zeros ordered as IEEE 754-2019); the caller promotes them.
+PyObject* module_extreme_pair(PyObject* /*self*/, PyObject* args)
+{
+    int       larger = 0;
+    PyObject* x      = nullptr;
+    PyObject* y      = nullptr;
+    if (PyArg_ParseTuple(args, "pOO", &larger, &x, &y) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(std::max(count_of(*a), count_of(*b)))};
+            if (const auto* wide {std::get_if<real_tensor>(a)}; wide != nullptr && b->index() == a->index()) {
+                const real_tensor& other {std::get<real_tensor>(*b)};
+                result.emplace(larger != 0 ? numerical::maximum(*wide, other) : numerical::minimum(*wide, other));
+            }
+            else if (const auto* single {std::get_if<single_tensor>(a)}; single != nullptr && b->index() == a->index()) {
+                const single_tensor& other {std::get<single_tensor>(*b)};
+                result.emplace(larger != 0 ? numerical::maximum(*single, other) : numerical::minimum(*single, other));
+            }
+        }
+        if (!result) {
+            PyErr_SetString(PyExc_TypeError, "_extreme_pair: two float64 or two float32 tensors");
+            return nullptr;
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _negate(a) -> Tensor.
 PyObject* module_negate(PyObject* /*self*/, PyObject* args)
 {

@@ -1056,6 +1056,65 @@ namespace numerical {
     return broadcast_apply(a, b, std::plus<T> {});
   }
 
+  namespace detail {
+
+    //! \brief The larger of \p a and \p b as IEEE 754-2019's maximum orders them: a NaN wins (\p a's where both are),
+    //!        and +0 is over −0 whatever their order (`a + b` of two zeros: −0 only where both are).
+    template <std::floating_point T>
+    [[nodiscard]] T ieee_maximum(T a,
+                                 T b) noexcept
+    {
+      if (std::isnan(a) || std::isnan(b)) {
+        return std::isnan(a) ? a : b;
+      }
+      if (a == b) {
+        return a == T {0} ? a + b : a;
+      }
+      return a > b ? a : b;
+    }
+
+    //! \brief The smaller of \p a and \p b as IEEE 754-2019's minimum orders them: a NaN wins (\p a's where both
+    //!        are), and −0 is under +0 whatever their order (`−(−a − b)` of two zeros: +0 only where both are).
+    template <std::floating_point T>
+    [[nodiscard]] T ieee_minimum(T a,
+                                 T b) noexcept
+    {
+      if (std::isnan(a) || std::isnan(b)) {
+        return std::isnan(a) ? a : b;
+      }
+      if (a == b) {
+        return a == T {0} ? -(-a - b) : a;
+      }
+      return a < b ? a : b;
+    }
+  } // namespace detail
+
+  //! \brief The larger element of \p a and \p b, broadcast, as `numpy.maximum` (\ref detail::ieee_maximum; a NaN
+  //!        wins, +0 over −0). \throws dimension_error If the shapes do not broadcast.
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> maximum(const tensor<T>& a,
+                                  const tensor<T>& b)
+  {
+    if (b.shape().empty()) { // a number (clip's bound): a map over a, where broadcasting walks both
+      const T bound {b.data()[0]};
+      return detail::parallel_map(a.data().data(), a.shape(), [bound](T x) { return detail::ieee_maximum(x, bound); });
+    }
+    return broadcast_apply(a, b, [](T x, T y) { return detail::ieee_maximum(x, y); });
+  }
+
+  //! \brief The smaller element of \p a and \p b, broadcast, as `numpy.minimum` (\ref detail::ieee_minimum; a NaN
+  //!        wins, −0 under +0). \throws dimension_error If the shapes do not broadcast.
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> minimum(const tensor<T>& a,
+                                  const tensor<T>& b)
+  {
+    if (b.shape().empty()) { // a number (clip's bound): a map over a, where broadcasting walks both
+      const T bound {b.data()[0]};
+      return detail::parallel_map(a.data().data(), a.shape(), [bound](T x) { return detail::ieee_minimum(x, bound); });
+    }
+    return broadcast_apply(a, b, [](T x, T y) { return detail::ieee_minimum(x, y); });
+  }
+
   //! \brief Element-wise difference, broadcast. \throws dimension_error If the shapes do not broadcast.
   template <typename T>
   [[nodiscard]] tensor<T> operator-(const tensor<T>& a,

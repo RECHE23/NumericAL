@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+- **`maximum`, `minimum` and `clip` in one pass**: `numerical::maximum` and `minimum` (C++), broadcast, a NaN
+  winning and the zeros ordered as IEEE 754-2019, a number mapped over the tensor; Python's composed ten temporaries
+  of `where` and comparisons. 10⁶ float64 on arm64: `maximum` 0.20 ms (NumPy 0.91), `clip` 0.39 ms (1.46).
+- **`einsum`'s diagonals**: `…ii->…i` gathers each matrix's diagonal and `…ii->…` sums it pairwise, as `sum` adds,
+  so `einsum("ii->", a)` gives `trace(a)`'s bits, where the general loop added the terms one after another.
+
 ## 2026.11.1 — 2026-11-02
 
 ### Added
