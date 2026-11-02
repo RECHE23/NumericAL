@@ -104,13 +104,14 @@ def contractive(a):
 
 
 # Each operation: (name, run(a, b, rng) -> (NumericAL's backward error, SciPy's), n for the bound).
-def residuals(ours, theirs, measure):
-    """The backward errors of the two answers, by `measure`; an exception is kept in its place, whichever it is (SciPy's
-    own failures among them: its solve_banded of a complex 1 × 1 band and a real b raises a casting error)."""
+def residuals(ours, theirs, measure, their_measure=None):
+    """The backward errors of the two answers, by `measure` (SciPy's by `their_measure` where given); an exception is
+    kept in its place, whichever it is (SciPy's own failures among them: its solve_banded of a complex 1 × 1 band and a
+    real b raises a casting error)."""
     errors = []
-    for answer in (ours, theirs):
+    for answer, by in ((ours, measure), (theirs, their_measure or measure)):
         try:
-            errors.append(measure(answer()))
+            errors.append(by(answer()))
         except Exception as caught:  # noqa: BLE001 - judged by judge(): a failure where the other side answered well
             errors.append(caught)
     return errors
@@ -217,10 +218,19 @@ def solver_measure(a, b):
     return lambda x: ratio(fro(a @ x - b), fro(a) * fro(x) + fro(b))
 
 
+def their_solver_measure(a, b):
+    """SciPy's answer's backward error, none (∞) where its norm passes ‖b‖ / (ε ‖A‖): A is then singular at the working
+    precision (cond(A) past 1/ε), its answer noise however small its residual, and NumericAL's refusal right (a band of
+    Gaussian integers times 10¹⁵⁰ whose exact determinant is 0, seed 23)."""
+    measure = solver_measure(a, b)
+    return lambda x: np.inf if fro(x) * EPS * fro(a) > fro(b) else measure(x)
+
+
 def op_lu(a, rng, scale):
     b = rng.standard_normal(a.shape[0]) * scale
     return residuals(lambda: np.asarray(numerical.lu_solve(numerical.lu_factor(a), b)),
-                     lambda: sl.lu_solve(sl.lu_factor(a), b), solver_measure(a, b))
+                     lambda: sl.lu_solve(sl.lu_factor(a), b), solver_measure(a, b),
+                     their_solver_measure(a, b))
 
 
 def op_triangular(a, rng, scale):
@@ -239,7 +249,8 @@ def op_banded(a, rng, scale):
         ab[half - k, max(k, 0):n + min(k, 0)] = np.diagonal(dense, k)
     b = rng.standard_normal(n) * scale
     return residuals(lambda: np.asarray(numerical.solve_banded((half, half), ab, b)),
-                     lambda: sl.solve_banded((half, half), ab, b), solver_measure(dense, b))
+                     lambda: sl.solve_banded((half, half), ab, b), solver_measure(dense, b),
+                     their_solver_measure(dense, b))
 
 
 def op_toeplitz(a, rng, scale):
