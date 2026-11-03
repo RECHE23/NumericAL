@@ -4997,6 +4997,7 @@ _cho_solve_banded = _linalg(_numerical.cho_solve_banded, arrays=2)
 _hessenberg = _linalg(_numerical.hessenberg, arrays=1)
 _matrix_balance = _linalg(_numerical.matrix_balance, arrays=1)
 _tridiagonal_eigen = _linalg(_numerical.tridiagonal_eigen)
+_band_tridiagonal = _linalg(_numerical.band_tridiagonal)
 _tridiagonal_select = _linalg(_numerical.tridiagonal_select)
 _rsf2csf = _linalg(_numerical.rsf2csf, arrays=2)
 
@@ -5111,15 +5112,49 @@ def eigh_tridiagonal(d, e, eigvals_only=False, select="a", select_range=None, ch
 _SELECTIONS = {0: 0, 1: 1, 2: 2, "all": 0, "value": 1, "index": 2, "a": 0, "v": 1, "i": 2}
 
 
+def _band_reduction_pays(width, size, eigvals_only):
+    """Whether the band's reduction to tridiagonal form (plane rotations, ``n² u`` operations) beats the dense
+    matrix's (blocked reflections, ``4/3 n³``): for the eigenvalues alone of a band of at most 16 diagonals each side
+    (M1 Pro: order 3000, u = 2, 170 ms against 760; even near u = 20 at order 1000 and 40 at 3000); not for the
+    vectors, whose rotations' product (``n³`` on one thread) loses to the dense path's blocked one."""
+    return eigvals_only and 1 <= width <= 16 and size >= 4 * width
+
+
+def _eig_banded_by_reduction(band, width, lower, eigvals_only, select, subset_by_index, subset_by_value, real_dtype):
+    """:func:`eig_banded` through the band's real tridiagonal form (LAPACK's ``sbtrd``/``hbtrd``) and
+    :func:`eigh_tridiagonal`: the eigenvectors the reduction's basis times the tridiagonal's."""
+    size = band.shape[1]
+    computed = "complex128" if band.dtype.startswith("complex") else "float64"
+    if lower:
+        lower_band = asarray(band, computed)
+    else:  # the lower form's diagonal d: the conjugates of the upper form's row u − d, shifted d to the left
+        rows = []
+        for d in range(width + 1):
+            row = asarray(band[width - d][d:], computed)
+            row = conj(row) if computed == "complex128" else row
+            rows.append(concatenate([row, zeros((d,), computed)]))
+        lower_band = stack(rows)
+    d, e, basis = _band_tridiagonal(lower_band, not eigvals_only)
+    kind = {0: "a", 1: "v", 2: "i"}[select]
+    bounds = subset_by_value if select == 1 else subset_by_index
+    found = eigh_tridiagonal(d, e, eigvals_only=eigvals_only, select=kind, select_range=bounds)
+    if eigvals_only:
+        return asarray(found, real_dtype)
+    values, vectors = found
+    vectors = basis @ (asarray(vectors, computed) if computed == "complex128" else vectors)
+    vector_dtype = band.dtype if band.dtype.startswith("complex") else real_dtype
+    return asarray(values, real_dtype), asarray(vectors, vector_dtype)
+
+
 def eig_banded(a_band, lower=False, eigvals_only=False, overwrite_a_band=False, select="a", select_range=None,
                max_ev=0, check_finite=True):
     """The eigenvalues (ascending) and eigenvectors of the real symmetric or complex Hermitian band matrix whose
     upper diagonal-ordered form is `a_band`, ``(u + 1, n)``, ``a_band[u + i - j, j] = a[i, j]`` for ``i <= j`` (with
     `lower` its lower form, ``a_band[i - j, j] = a[i, j]`` for ``i >= j``), as ``scipy.linalg.eig_banded``: all of
     them (`select` "a"), those in ``(min, max]`` ("v") or of indices ``min`` to ``max`` ("i") of `select_range`.
-    A real tridiagonal band (``u = 1``) through :func:`eigh_tridiagonal`; a wider one through :func:`eigh` of the
-    matrix the band describes (the band's own reduction to tridiagonal form, LAPACK's ``sbtrd``, is not offered:
-    ``n³`` operations where it takes ``n² u`` for the eigenvalues). `max_ev`,
+    A real tridiagonal band (``u = 1``) through :func:`eigh_tridiagonal`; the eigenvalues alone of a narrow one
+    through its own reduction to real tridiagonal form by plane rotations (LAPACK's ``sbtrd`` and ``hbtrd``: ``n² u``
+    operations, where the dense matrix takes ``n³``); the rest through :func:`eigh` of the matrix it describes. `max_ev`,
     `overwrite_a_band` and `check_finite` are SciPy's and change nothing here.
 
     Raises:
@@ -5162,6 +5197,9 @@ def eig_banded(a_band, lower=False, eigvals_only=False, overwrite_a_band=False, 
         kind = {0: "a", 1: "v", 2: "i"}[select]
         bounds = subset_by_value if select == 1 else subset_by_index
         return eigh_tridiagonal(diagonal, off, eigvals_only=eigvals_only, select=kind, select_range=bounds)
+    if _band_reduction_pays(width, size, eigvals_only):  # the band's own reduction, in n² u operations
+        return _eig_banded_by_reduction(band, width, lower, eigvals_only, select, subset_by_index, subset_by_value,
+                                        real_dtype)
     dense = zeros((size, size), band.dtype)
     for k in range(_builtins.min(width, size - 1) + 1):  # the k-th diagonal off the main one, in the triangle read
         row = band[k] if lower else band[width - k]

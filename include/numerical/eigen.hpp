@@ -3662,6 +3662,176 @@ namespace numerical {
   {
     return eigen_decomposition<T> {a, false}.values();
   }
+
+  namespace detail {
+    //! \brief The lower band of a symmetric or Hermitian matrix of order `n` and half-bandwidth `width`, one diagonal
+    //!        wider for the bulge a band reduction chases: entry `(i, k)` of the lower triangle on diagonal `i − k`.
+    template <typename T>
+    class band_work
+    {
+    public:
+
+      //! \brief The band of \p lower, its `(d, j)` entry the matrix's `(j + d, j)`, the bulge's diagonal zero.
+      explicit band_work(const matrix<T>& lower)
+        : n_(lower.cols()), width_(lower.rows() - 1), data_((width_ + 2) * n_, T {})
+      {
+        for (std::size_t d {0}; d <= width_; ++d) {
+          for (std::size_t j {0}; j + d < n_; ++j) {
+            data_[(d * n_) + j] = lower(d, j);
+          }
+        }
+      }
+
+      //! \brief Entry `(i, k)` of the lower triangle, within the bulge's diagonal (`0 ≤ i − k ≤ width + 1`: all a
+      //!        reduction reads).
+      [[nodiscard]] T get(std::size_t i,
+                          std::size_t k) const
+      {
+        return data_[((i - k) * n_) + k];
+      }
+
+      //! \brief Sets entry `(i, k)` of the lower triangle (`i ≥ k`, within the bulge's diagonal).
+      void set(std::size_t i,
+               std::size_t k,
+               const T&    value)
+      {
+        data_[((i - k) * n_) + k] = value;
+      }
+
+      [[nodiscard]] std::size_t order() const noexcept //!< The order `n`.
+      {
+        return n_;
+      }
+
+      [[nodiscard]] std::size_t width() const noexcept //!< The half-bandwidth.
+      {
+        return width_;
+      }
+
+    private:
+
+      std::size_t n_;
+      std::size_t width_;
+      buffer<T>   data_;
+    };
+
+    //! \brief `A ← G A Gᴴ` of the band \p a, `G` the rotation `[c s; −s̄ c]` on rows and columns \p p and `p + 1`: the
+    //!        two rows within the bulge's reach, then their 2 × 2 block; \p turned (`Mᴴ`'s rows, `M` the product of
+    //!        the rotations, where not empty) turned with them.
+    template <typename T>
+    void rotate_band(band_work<T>& a,
+                     std::size_t   p,
+                     double        c,
+                     const T&      s,
+                     buffer<T>&    turned)
+    {
+      const std::size_t n {a.order()};
+      const std::size_t q {p + 1};
+      for (std::size_t k {p >= a.width() ? p - a.width() : 0}; k < p; ++k) {
+        const T x {a.get(p, k)};
+        const T y {a.get(q, k)};
+        a.set(p, k, (c * x) + times(s, y));
+        a.set(q, k, (c * y) - times(conj_of(s), x));
+      }
+      for (std::size_t k {q + 1}; k <= std::min(n - 1, q + a.width()); ++k) {
+        const T x {a.get(k, p)};
+        const T y {a.get(k, q)};
+        a.set(k, p, (c * x) + times(conj_of(s), y));
+        a.set(k, q, (c * y) - times(s, x));
+      }
+      const double app   {real_part(a.get(p, p))};
+      const double aqq   {real_part(a.get(q, q))};
+      const T      b     {a.get(q, p)};
+      const double cross {2.0 * c * real_part(times(s, b))};
+      const double ss    {real_part(times(s, conj_of(s)))};
+      a.set(p, p, T {(c * c * app) + cross + (ss * aqq)});
+      a.set(q, q, T {(ss * app) - cross + (c * c * aqq)});
+      a.set(q, p, (c * c * b) - times(times(conj_of(s), conj_of(s)), conj_of(b)) + (c * times(conj_of(s), T {aqq - app})));
+      if (!turned.empty()) { // Mᴴ ← Mᴴ Gᴴ: its columns p and q (stored as rows) by the conjugate rotation
+        rotate_pair(turned.data() + (p * n), turned.data() + (q * n), n, 1, c, conj_of(s));
+      }
+    }
+  } // namespace detail
+
+  //! \brief A symmetric or Hermitian band matrix's tridiagonal form: `A = W T Wᴴ`, `T` real symmetric tridiagonal of
+  //!        diagonal `d` and off-diagonal `e` (none negative), `W` unitary (where asked; else empty).
+  template <typename T>
+  struct band_tridiagonal_form
+  {
+    vector<double> d; //!< `T`'s diagonal.
+    vector<double> e; //!< `T`'s off-diagonal, `|·|` of the reduced band's.
+    matrix<T>      w; //!< The basis, `n × n`, or empty.
+  };
+
+  /*!
+   * \brief Reduces the real symmetric or complex Hermitian band matrix whose lower form is \p lower (`(u + 1) × n`,
+   *        entry `(d, j)` the matrix's `(j + d, j)`) to a real symmetric tridiagonal one, as LAPACK's `dsbtrd` and
+   *        `zhbtrd`: each column's entries below the first subdiagonal annihilated by plane rotations, from the farthest
+   *        in, each rotation's bulge chased down the band by `u` rows at a time, in `n² u` operations; then the
+   *        off-diagonal made real and non-negative by a diagonal of phases. With \p basis, the rotations' product
+   *        (and the phases), `W`, so that the eigenvectors of `A` are `W` times those of `T`.
+   * \throws dimension_error If \p lower has no row.
+   */
+  template <typename T>
+  [[nodiscard]] band_tridiagonal_form<T> band_tridiagonal(const matrix<T>& lower,
+                                                          bool             basis)
+  {
+    if (lower.rows() == 0) {
+      throw dimension_error("band_tridiagonal: a band of at least one diagonal");
+    }
+    const std::size_t    n                           {lower.cols()};
+    const std::size_t    u                           {std::min(lower.rows() - 1, n == 0 ? std::size_t {0} : n - 1)};
+    matrix<T>            trimmed                     {u + 1, n, buffer<T>(lower.begin(), lower.begin() + static_cast<std::ptrdiff_t>((u + 1) * n))};
+    detail::band_work<T> a                           {trimmed};
+    buffer<T>            turned(basis ? n * n : 0, T {});
+    for (std::size_t i {0}; basis && i < n; ++i) {
+      turned[(i * n) + i] = T {1};
+    }
+    const auto annihilate = [&](std::size_t row, std::size_t column) { // (row, column) by rows row − 1 and row
+                              const detail::plane_rotation<T> g {detail::givens(a.get(row - 1, column), a.get(row, column))};
+                              detail::rotate_band(a, row - 1, g.c, g.s, turned);
+                              a.set(row - 1, column, g.r);
+                              a.set(row, column, T {});
+                            };
+    for (std::size_t j {0}; u > 1 && j + 2 < n; ++j) {
+      for (std::size_t k {std::min(u, n - 1 - j)}; k >= 2; --k) {
+        annihilate(j + k, j);
+        for (std::size_t row {j + k + u}, column {j + k - 1}; row < n; column = row - 1, row += u) { // the bulge
+          annihilate(row, column);
+        }
+      }
+    }
+    buffer<double> diagonal(n);
+    buffer<double> off_diagonal(n == 0 ? 0 : n - 1);
+    T              phase {1};
+    for (std::size_t j {0}; j < n; ++j) {
+      diagonal[j] = detail::real_part(a.get(j, j));
+      if (basis) { // W = Mᴴ D: column j by the phase that makes T's off-diagonal real
+        for (std::size_t i {0}; i < n; ++i) {
+          turned[(j * n) + i] = detail::times(turned[(j * n) + i], phase);
+        }
+      }
+      if (j + 1 < n) {
+        const T      off  {a.get(j + 1, j)};
+        const double size {std::abs(off)};
+        off_diagonal[j] = size;
+        if (size != 0.0) {
+          phase = detail::times(phase, off / size);
+        }
+      }
+    }
+    band_tridiagonal_form<T> form {vector<double>(std::move(diagonal)), vector<double>(std::move(off_diagonal)), matrix<T> {}};
+    if (basis) { // turned holds W's columns as rows
+      buffer<T> w(n * n);
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t k {0}; k < n; ++k) {
+          w[(i * n) + k] = turned[(k * n) + i];
+        }
+      }
+      form.w = matrix<T> {n, n, std::move(w)};
+    }
+    return form;
+  }
 } // namespace numerical
 
 #endif // NUMERICAL_EIGEN_HPP

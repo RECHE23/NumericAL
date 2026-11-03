@@ -1453,3 +1453,97 @@ TEST(matrix_balance_is_an_exact_similarity)
   EXPECT_THROWS(numerical::matrix_balance(matrix<double> {{1.0, std::nan("")}, {0.0, 1.0}}), numerical::non_finite_error);
   EXPECT(numerical::matrix_balance(matrix<double>(0, 0, std::vector<double> {})).permutation.empty());
 }
+
+// The band reduction to tridiagonal form: the eigenvalues of T those of the band matrix, W T Wᴴ the matrix itself,
+// W unitary and T's off-diagonal non-negative, at every bandwidth (diagonal, already tridiagonal, a bulge chased down,
+// wider than the order), real and complex; an empty order and a band of no row refused.
+namespace {
+  template <typename T>
+  T drawn_entry(std::mt19937& rng)
+  {
+    std::normal_distribution<double> normal {};
+    if constexpr (std::is_same_v<T, C>) {
+      return C {normal(rng), normal(rng)};
+    }
+    else {
+      return normal(rng);
+    }
+  }
+
+  template <typename T>
+  bool band_reduction_holds(std::size_t   n,
+                            std::size_t   u,
+                            std::mt19937& rng)
+  {
+    numerical::buffer<T> band((u + 1) * n, T {});
+    numerical::buffer<T> entries(n * n, T    {});
+    for (std::size_t d {0}; d <= u; ++d) {
+      for (std::size_t j {0}; j + d < n; ++j) {
+        T value {drawn_entry<T>(rng)};
+        if (d == 0) {
+          value = T {std::real(value)};
+        }
+        band[(d * n) + j]          = value;
+        entries[((j + d) * n) + j] = value;
+        entries[(j * n) + j + d]   = numerical::detail::conj_of(value);
+      }
+    }
+    const matrix<T>                           lower   {u + 1, n, std::move(band)};
+    const matrix<T>                           dense   {n, n, std::move(entries)};
+    const numerical::band_tridiagonal_form<T> form    {numerical::band_tridiagonal(lower, true)};
+    const numerical::vector<double>           reduced {numerical::tridiagonal_eigenvalues(form.d, form.e)};
+    const numerical::vector<double>           direct  {numerical::symmetric_eigenvalues(dense)};
+    double                                    scale   {1.0};
+    for (const T& x : dense) {
+      scale = std::max(scale, std::abs(x));
+    }
+    const double tolerance {1e-12 * scale * static_cast<double>(n + 1)};
+    bool         ok        {form.w.rows() == n && form.w.cols() == n};
+    for (std::size_t k {0}; k < n; ++k) {
+      ok = ok && std::abs(reduced[k] - direct[k]) <= tolerance;
+    }
+    for (std::size_t k {0}; k + 1 < n; ++k) {
+      ok = ok && form.e[k] >= 0.0;
+    }
+    for (std::size_t i {0}; i < n; ++i) { // (W T Wᴴ)(i, k) = Σ W(i, m) T(m, m') conj(W(k, m'))
+      for (std::size_t k {0}; k < n; ++k) {
+        T entry    {};
+        T identity {};
+        for (std::size_t m {0}; m < n; ++m) {
+          T column {form.w(k, m) * T {form.d[m]}};
+          if (m > 0) {
+            column += form.w(k, m - 1) * T {form.e[m - 1]};
+          }
+          if (m + 1 < n) {
+            column += form.w(k, m + 1) * T {form.e[m]};
+          }
+          entry    += form.w(i, m) * numerical::detail::conj_of(column);
+          identity += form.w(i, m) * numerical::detail::conj_of(form.w(k, m));
+        }
+        ok = ok && std::abs(entry - dense(i, k)) <= tolerance;
+        ok = ok && std::abs(identity - T {i == k ? 1.0 : 0.0}) <= 1e-12 * static_cast<double>(n + 1);
+      }
+    }
+    const numerical::band_tridiagonal_form<T> values {numerical::band_tridiagonal(lower, false)};
+    ok = ok && values.w.rows() == 0;
+    for (std::size_t k {0}; k < n; ++k) {
+      ok = ok && values.d[k] == form.d[k];
+    }
+    return ok;
+  }
+} // namespace
+
+TEST(band_reduction_to_tridiagonal_form)
+{
+  // NOLINTNEXTLINE(cert-msc51-cpp,cert-msc32-c,bugprone-random-generator-seed)
+  std::mt19937 rng {29};
+  for (const std::size_t n : {std::size_t {1}, std::size_t {2}, std::size_t {5}, std::size_t {23}}) {
+    for (const std::size_t u : {std::size_t {0}, std::size_t {1}, std::size_t {2}, std::size_t {3}, std::size_t {7}, std::size_t {30}}) {
+      EXPECT(band_reduction_holds<double>(n, u, rng));
+      EXPECT(band_reduction_holds<C>(n, u, rng));
+    }
+  }
+  const numerical::band_tridiagonal_form<double> empty {numerical::band_tridiagonal(matrix<double> {3, 0, numerical::buffer<double> {}}, true)};
+  EXPECT(empty.d.size() == 0 && empty.e.size() == 0 && empty.w.rows() == 0);
+  EXPECT_THROWS((void)numerical::band_tridiagonal(matrix<double> {0, 4, numerical::buffer<double> {}}, false), numerical::dimension_error);
+}

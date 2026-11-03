@@ -856,6 +856,32 @@ std::tuple<any_tensor, any_tensor> tridiagonal_eigen(const any_tensor& d, const 
     return {any_tensor {real_tensor {values}}, any_tensor {real_tensor {std::move(basis)}}};
 }
 
+// band_tridiagonal(lower, basis) -> (d, e, w): the real symmetric or complex Hermitian band matrix of lower form
+// lower ((u + 1) × n, float64 or complex128: the caller converts) reduced to real tridiagonal form by plane rotations,
+// as LAPACK's dsbtrd and zhbtrd (numerical::band_tridiagonal); w the basis (0 × 0 without basis), of lower's dtype.
+std::tuple<any_tensor, any_tensor, any_tensor> band_tridiagonal(const any_tensor& lower, bool basis)
+{
+    if (shape_of(lower).size() != 2) {
+        throw std::runtime_error("eig_banded: the band is a matrix");
+    }
+    return std::visit([basis](const auto& t) -> std::tuple<any_tensor, any_tensor, any_tensor> {
+                          using T = element_of_t<std::decay_t<decltype(t)>>;
+                          if constexpr (std::is_same_v<T, double> || std::is_same_v<T, std::complex<double>>) {
+                              const numerical::matrix<T>   band {t.shape()[0], t.shape()[1], numerical::buffer<T>(t.data().begin(), t.data().end())};
+                              const sb::scoped_gil_release unlocked {releases_gil_cubic(band.cols() * band.rows())};
+                              numerical::band_tridiagonal_form<T> form {numerical::band_tridiagonal(band, basis)};
+                              any_tensor                          w {numerical::tensor<T> {{0, 0}, numerical::buffer<T> {}}};
+                              if (basis) {
+                                  w = any_tensor {numerical::tensor<T> {std::move(form.w)}};
+                              }
+                              return {any_tensor {real_tensor {form.d}}, any_tensor {real_tensor {form.e}}, std::move(w)};
+                          }
+                          else {
+                              throw std::runtime_error("eig_banded: a float64 or complex128 band");
+                          }
+                      }, lower);
+}
+
 // tridiagonal_select(d, e, by_value, a, b) -> w: the eigenvalues of indices a … b, or in (a, b] where by_value, of
 // the real symmetric tridiagonal, ascending, as scipy.linalg.eigvalsh_tridiagonal with a selection: bisection on
 // Sturm's counts (dstebz) for up to n p / tridiagonal_bisection_share of them on p threads, the QL iteration's whole

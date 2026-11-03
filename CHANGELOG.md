@@ -61,6 +61,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   not n³); `count_nonzero` along an axis counts in place (no int64 copy of the operand), and it, `prod`, `cumsum`
   and `cumprod` along an axis something follows walk bands of 256 columns row by row (each line's operations in
   the same order: the same bits).
+- **`eig_banded` and `eigvals_banded` reduce a narrow band themselves** for the eigenvalues alone: plane rotations
+  down to real tridiagonal form, as LAPACK's `sbtrd` and `hbtrd` (`n² u` operations; order 3000 and two diagonals
+  each side, 170 ms where the dense path took 760).
 
 ## 2026.11.4 — 2026-11-03
 

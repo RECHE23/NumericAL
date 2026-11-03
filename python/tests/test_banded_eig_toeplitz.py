@@ -1,6 +1,7 @@
 """eig_banded, eigvals_banded and matmul_toeplitz against SciPy's answers: the eigenvalues within a few ulps of
-LAPACK's, the eigenvectors up to their signs (phases); the Toeplitz products within a few ulps of SciPy's FFT.
-Deterministic; the SciPy comparisons skipped without SciPy."""
+LAPACK's (a narrow band's through its own reduction to tridiagonal form), the eigenvectors up to their signs
+(phases); the Toeplitz products within a few ulps of SciPy's FFT. Deterministic; the SciPy comparisons skipped
+without SciPy."""
 import unittest
 
 import numerical
@@ -75,6 +76,32 @@ class AgainstSciPy(unittest.TestCase):
                     np.testing.assert_allclose(np.asarray(numerical.eigvals_banded(band, lower=lower, select=select,
                                                                                    select_range=bounds)),
                                                want_w, atol=1e-12, err_msg=label)
+
+    def test_the_band_reduction(self):
+        # the eigenvalues alone of a band of up to 16 diagonals each side: its own reduction to tridiagonal form
+        rng = np.random.default_rng(31)
+        for size in (5, 40, 300):
+            for width in (1, 2, 3, 8, 16):
+                if width >= size:
+                    continue
+                for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                    band = rng.normal(size=(width + 1, size))
+                    if np.dtype(dtype).kind == "c":
+                        band = band + 1j * rng.normal(size=(width + 1, size))
+                    for lower in (False, True):
+                        a = band.copy()
+                        a[0 if lower else width] = a[0 if lower else width].real
+                        a = a.astype(dtype)
+                        for select, bounds in (("a", None), ("v", (-1.0, 1.0)), ("i", (2, 4))):
+                            ours = numerical.eigvals_banded(a, lower=lower, select=select, select_range=bounds)
+                            theirs = sl.eig_banded(a, lower=lower, eigvals_only=True, select=select,
+                                                   select_range=bounds)
+                            ours = np.asarray(ours)
+                            label = f"{size} {width} {np.dtype(dtype).name} {lower} {select}"
+                            self.assertEqual((ours.shape, ours.dtype), (theirs.shape, theirs.dtype), label)
+                            scale = max(1.0, float(np.abs(theirs).max(initial=1.0)))
+                            tolerance = 1e-4 if dtype in (np.float32, np.complex64) else 1e-11
+                            np.testing.assert_allclose(ours, theirs, rtol=0, atol=tolerance * scale, err_msg=label)
 
     def test_matmul_toeplitz(self):
         rng = np.random.default_rng(6)

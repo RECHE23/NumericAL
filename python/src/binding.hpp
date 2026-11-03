@@ -2222,6 +2222,8 @@ std::tuple<any_tensor, double> solve_banded_conditioned(const any_tensor& ab, co
 std::tuple<any_tensor, any_tensor> hessenberg(const any_tensor& a, bool calc_q);                                                 // in linalg.cpp
 std::tuple<any_tensor, any_tensor, std::vector<std::size_t>> matrix_balance(const any_tensor& a, bool permute, bool scale);       // in linalg.cpp
 std::tuple<any_tensor, any_tensor> tridiagonal_eigen(const any_tensor& d, const any_tensor& e, bool vectors);                    // in linalg.cpp
+// band_tridiagonal(lower, basis) -> (d, e, w): a symmetric or Hermitian band's real tridiagonal form and its basis.
+std::tuple<any_tensor, any_tensor, any_tensor> band_tridiagonal(const any_tensor& lower, bool basis); // in linalg.cpp
 // tridiagonal_select(d, e, by_value, a, b) -> w, the selected eigenvalues alone (indices a … b, or values in (a, b]).
 any_tensor tridiagonal_select(const any_tensor& d, const any_tensor& e, bool by_value, double a, double b); // in linalg.cpp
 std::tuple<any_tensor, any_tensor> rsf2csf(const any_tensor& t, const any_tensor& z);                                            // in linalg.cpp
