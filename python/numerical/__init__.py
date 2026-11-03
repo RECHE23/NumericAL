@@ -8855,6 +8855,491 @@ def _inclusive_search(ordered, edges):
 
 __all__ += ["bincount", "histogram", "histogram_bin_edges"]
 
+_numpy_interp_fused = None  # whether NumPy's interp fuses its line's multiply-add: measured once NumPy is imported
+
+
+def _interp_fuses():
+    """Whether numpy.interp's loop fuses ``slope · (x − x₀) + y₀``: as NumPy computes it beside this process (its
+    macOS arm64 wheels' clang contracts it, the others do not), else as those wheels do."""
+    global _numpy_interp_fused
+    if _numpy_interp_fused is None:
+        np = _sys.modules.get("numpy")
+        if np is None:
+            return _sys.platform == "darwin" and _platform_machine() in ("arm64", "aarch64")
+        # a point whose line through (0, 0.1) and (0.3, 1.0) differs fused and rounded (by its last bit)
+        x, xp, fp = 24 / 997.0, [0.0, 0.3], [0.1, 1.0]
+        slope = (fp[1] - fp[0]) / (xp[1] - xp[0])
+        rounded = slope * (x - xp[0]) + fp[0]
+        _numpy_interp_fused = float(np.interp(x, xp, fp)) != rounded
+    return _numpy_interp_fused
+
+
+def _platform_machine():
+    import platform
+    return platform.machine().lower()
+
+
+def interp(x, xp, fp, left=None, right=None, period=None):
+    """The piecewise-linear interpolant of the points `(xp, fp)` (`xp` increasing) at `x`, as ``numpy.interp`` by its
+    loop: `left` below `xp[0]` and `right` above `xp[-1]` (`fp`'s ends by default), a NaN `x` NaN; each line through
+    its first point, or its second where that is NaN; with `period`, `x` and `xp` taken modulo it. float64, or
+    complex128 for a complex `fp`.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.interp([0.5, 2.5], [0.0, 1.0, 2.0], [0.0, 10.0, 20.0]).tolist()
+        [5.0, 20.0]
+    """
+    values = _as_numpy_reads(fp)
+    dtype = "complex128" if values.dtype.startswith("complex") else "float64"
+    points = asarray(_tensor(x), "float64")
+    knots = asarray(_tensor(xp), "float64")
+    values = asarray(values, dtype)
+    if period is not None:
+        if period == 0:
+            raise ValueError("period must be a non-zero value")
+        period = _builtins.abs(period)
+        left = right = None
+        if len(knots.shape) != 1 or len(values.shape) != 1:
+            raise ValueError("Data points must be 1-D sequences")
+        if knots.shape[0] != values.shape[0]:
+            raise ValueError("fp and xp are not of the same length")
+        points = points % period
+        knots = knots % period
+        order = argsort(knots)
+        knots, values = knots[order], values[order]
+        knots = concatenate([knots[-1:] - period, knots, knots[0:1] + period])
+        values = concatenate([values[-1:], values, values[0:1]])
+    if len(knots.shape) != 1 or len(values.shape) != 1:
+        raise ValueError("object too deep for desired array" if len(knots.shape) > 1 or len(values.shape) > 1 else
+                         "object of too small depth for desired array")
+    if knots.shape[0] != values.shape[0]:
+        raise ValueError("fp and xp are not of the same length.")
+    if knots.shape[0] == 0:
+        raise ValueError("array of sample points is empty")
+    fills = [default if v is None else asarray([v], dtype) for v, default in ((left, values[0:1]),
+                                                                              (right, values[-1:]))]
+    result = _native(_numerical._interp, points, knots, values, fills[0], fills[1], _interp_fuses())
+    return result[()] if not result.shape else result
+
+
+def _window_points(M):
+    """NumPy's window length as a float64 (``numpy.array([0.0, M])[1]``) and its points ``1 − M, 3 − M, …, M − 1``."""
+    M = float(M)
+    return M, arange(1 - M, M, 2)
+
+
+def hamming(M):
+    """The Hamming window of `M` points, as ``numpy.hamming``: ``0.54 + 0.46 cos(π n / (M − 1))``."""
+    M, n = _window_points(M)
+    if M < 1:
+        return zeros((0,))
+    if M == 1:
+        return ones((1,))
+    return 0.54 + 0.46 * cos(_math.pi * n / (M - 1))
+
+
+def hanning(M):
+    """The Hann window of `M` points, as ``numpy.hanning``: ``0.5 + 0.5 cos(π n / (M − 1))``."""
+    M, n = _window_points(M)
+    if M < 1:
+        return zeros((0,))
+    if M == 1:
+        return ones((1,))
+    return 0.5 + 0.5 * cos(_math.pi * n / (M - 1))
+
+
+def blackman(M):
+    """The Blackman window of `M` points, as ``numpy.blackman``."""
+    M, n = _window_points(M)
+    if M < 1:
+        return zeros((0,))
+    if M == 1:
+        return ones((1,))
+    return 0.42 + 0.5 * cos(_math.pi * n / (M - 1)) + 0.08 * cos(2.0 * _math.pi * n / (M - 1))
+
+
+def bartlett(M):
+    """The Bartlett (triangular) window of `M` points, as ``numpy.bartlett``."""
+    M, n = _window_points(M)
+    if M < 1:
+        return zeros((0,))
+    if M == 1:
+        return ones((1,))
+    return where(n <= 0, 1 + n / (M - 1), 1 - n / (M - 1))
+
+
+_I0_A = (-4.4153416464793395e-18, 3.3307945188222384e-17, -2.431279846547955e-16, 1.715391285555133e-15,
+         -1.1685332877993451e-14, 7.676185498604936e-14, -4.856446783111929e-13, 2.95505266312964e-12,
+         -1.726826291441556e-11, 9.675809035373237e-11, -5.189795601635263e-10, 2.6598237246823866e-09,
+         -1.300025009986248e-08, 6.046995022541919e-08, -2.670793853940612e-07, 1.1173875391201037e-06,
+         -4.4167383584587505e-06, 1.6448448070728896e-05, -5.754195010082104e-05, 0.00018850288509584165,
+         -0.0005763755745385824, 0.0016394756169413357, -0.004324309995050576, 0.010546460394594998,
+         -0.02373741480589947, 0.04930528423967071, -0.09490109704804764, 0.17162090152220877, -0.3046826723431984,
+         0.6767952744094761)
+_I0_B = (-7.233180487874754e-18, -4.830504485944182e-18, 4.46562142029676e-17, 3.461222867697461e-17,
+         -2.8276239805165836e-16, -3.425485619677219e-16, 1.7725601330565263e-15, 3.8116806693526224e-15,
+         -9.554846698828307e-15, -4.150569347287222e-14, 1.54008621752141e-14, 3.8527783827421426e-13,
+         7.180124451383666e-13, -1.7941785315068062e-12, -1.3215811840447713e-11, -3.1499165279632416e-11,
+         1.1889147107846439e-11, 4.94060238822497e-10, 3.3962320257083865e-09, 2.266668990498178e-08,
+         2.0489185894690638e-07, 2.8913705208347567e-06, 6.889758346916825e-05, 0.0033691164782556943,
+         0.8044904110141088)
+
+
+def _chebyshev(x, coefficients):
+    """NumPy's ``_chbevl``: the Chebyshev series of `coefficients` at `x` by Clenshaw's recurrence."""
+    b0, b1, b2 = coefficients[0], 0.0, 0.0
+    for c in coefficients[1:]:
+        b2, b1 = b1, b0
+        b0 = x * b1 - b2 + c
+    return 0.5 * (b0 - b2)
+
+
+def i0(x):
+    """The modified Bessel function of the first kind, order 0, of every element, as ``numpy.i0`` by its steps
+    (Cephes' Chebyshev series, Clenshaw's, below and above 8). Real dtypes, an integer in float64."""
+    x = _tensor(x)
+    if x.dtype.startswith("complex"):
+        raise TypeError("i0 not supported for complex values")
+    if x.dtype in ("int64", "bool"):
+        x = asarray(x, "float64")
+    x = abs(x)
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", RuntimeWarning)  # each branch computed everywhere, kept where it applies
+        small = exp(x) * _chebyshev(x / 2.0 - 2, _I0_A)
+        large = exp(x) * _chebyshev(32.0 / x - 2.0, _I0_B) / sqrt(x)
+    result = where(x <= 8.0, small, large)
+    return result[()] if not result.shape else result
+
+
+def kaiser(M, beta):
+    """The Kaiser window of `M` points and shape `beta`, as ``numpy.kaiser``: ``i0(β √(1 − ((n − α)/α)²)) / i0(β)``."""
+    M, beta = float(M), float(beta)
+    if M == 1:
+        return ones((1,))
+    n = arange(0, M)
+    alpha = (M - 1) / 2.0
+    return i0(beta * sqrt(1 - ((n - alpha) / alpha) ** 2.0)) / i0(beta)
+
+
+def _coefficients(p):
+    """A polynomial's coefficients as NumPy reads them, at least of rank 1 (integers int64)."""
+    return atleast_1d(_as_numpy_reads(p))
+
+
+def polyval(p, x):
+    """The polynomial of coefficients `p` (highest power first) at `x`, as ``numpy.polyval``: Horner's
+    ``y · x + pᵢ`` from a zero of `x`'s dtype."""
+    p = _as_numpy_reads(p)
+    x = _as_numpy_reads(x)
+    y = zeros_like(x)
+    for k in range(p.shape[0]):
+        y = y * x + reshape(p[k:k + 1], ())
+    return y[()] if not y.shape else y
+
+
+def polyder(p, m=1):
+    """The `m`-th derivative of the polynomial `p`, as ``numpy.polyder``."""
+    m = int(m)
+    if m < 0:
+        raise ValueError("Order of derivative must be positive (see polyint)")
+    p = _as_numpy_reads(p)
+    for _ in range(m):
+        count = p.shape[0] - 1
+        p = p[:-1] * asarray(arange(count, 0, -1), "int64")
+    return p
+
+
+def polyint(p, m=1, k=None):
+    """The `m`-th antiderivative of the polynomial `p`, its constants `k` (one for all, or one per order), as
+    ``numpy.polyint``."""
+    m = int(m)
+    if m < 0:
+        raise ValueError("Order of integral must be positive (see polyder)")
+    constants = zeros((m,)) if k is None else atleast_1d(_as_numpy_reads(k))
+    if constants.shape[0] == 1 and m > 1:
+        constants = reshape(constants[0:1], ()) * ones((m,))
+    if constants.shape[0] < m:
+        raise ValueError("k must be a scalar or a rank-1 array of length 1 or >m.")
+    p = _as_numpy_reads(p)
+    for order in range(m):
+        p = concatenate([p / asarray(arange(p.shape[0], 0, -1), "int64"), asarray(constants[order:order + 1],
+                                                                                    _promoted([p.dtype, "float64"]))])
+    return p
+
+
+def _padded_pair(a1, a2):
+    a1, a2 = _coefficients(a1), _coefficients(a2)
+    gap = a2.shape[0] - a1.shape[0]
+    if gap > 0:
+        a1 = concatenate([zeros((gap,), a1.dtype), a1])
+    elif gap < 0:
+        a2 = concatenate([zeros((-gap,), a2.dtype), a2])
+    return a1, a2
+
+
+def polyadd(a1, a2):
+    """The sum of two polynomials, as ``numpy.polyadd``."""
+    a1, a2 = _padded_pair(a1, a2)
+    return a1 + a2
+
+
+def polysub(a1, a2):
+    """The difference of two polynomials, as ``numpy.polysub``."""
+    a1, a2 = _padded_pair(a1, a2)
+    return a1 - a2
+
+
+def polymul(a1, a2):
+    """The product of two polynomials, as ``numpy.polymul``: their coefficients' convolution."""
+    return convolve(_coefficients(a1), _coefficients(a2))
+
+
+def polydiv(u, v):
+    """The quotient and remainder of two polynomials, as ``numpy.polydiv``: long division in floats, the remainder's
+    leading zeros (to 1e-14 relative) dropped."""
+    u = _coefficients(u) + 0.0
+    v = _coefficients(v) + 0.0
+    dtype = _promoted([u.dtype, v.dtype])
+    m, n = u.shape[0] - 1, v.shape[0] - 1
+    scale = 1.0 / reshape(asarray(v[0:1], dtype), ())
+    quotient = []
+    r = asarray(u, dtype)
+    for k in range(m - n + 1):
+        d = scale * reshape(r[k:k + 1], ())
+        quotient.append(reshape(d, (1,)))
+        r = concatenate([r[:k], r[k:k + n + 1] - d * v, r[k + n + 1:]])
+    q = concatenate(quotient) if quotient else zeros((1,), dtype)
+    while r.shape[0] > 1 and allclose(r[0:1], 0, rtol=1e-14):
+        r = r[1:]
+    return q, r
+
+
+def roots(p):
+    """The roots of the polynomial `p`, as ``numpy.roots``: the eigenvalues of its companion matrix (its leading and
+    trailing zeros set apart), complex as :func:`eigvals` answers."""
+    p = _coefficients(p)
+    if len(p.shape) != 1:
+        raise ValueError("Input must be a rank-1 array.")
+    found = flatnonzero(p)
+    if found.shape[0] == 0:
+        return zeros((0,))
+    trailing = p.shape[0] - int(found[-1]) - 1
+    p = p[int(found[0]):int(found[-1]) + 1]
+    if p.dtype in ("int64", "bool"):
+        p = asarray(p, "float64")
+    count = p.shape[0]
+    if count > 1:
+        companion = diag(ones((count - 2,), p.dtype), -1) if count > 2 else zeros((1, 1), p.dtype)
+        first = reshape(-p[1:] / reshape(p[0:1], ()), (1, count - 1))
+        companion = concatenate([first, companion[1:]]) if count > 2 else first
+        values = eigvals(companion)
+    else:
+        values = zeros((0,), "complex128")
+    return concatenate([values, zeros((trailing,), values.dtype)])
+
+
+def _rank_warning():
+    np = _sys.modules.get("numpy")
+    return np.exceptions.RankWarning if np is not None and hasattr(np, "exceptions") else _RankWarning
+
+
+class _RankWarning(UserWarning):
+    """A least-squares fit of deficient rank, as ``numpy.exceptions.RankWarning`` (which it is where NumPy is
+    loaded)."""
+
+
+def polyfit(x, y, deg, rcond=None, full=False, w=None, cov=False):
+    """The least-squares polynomial fit of degree `deg` to the points `(x, y)`, as ``numpy.polyfit`` by its steps:
+    the Vandermonde matrix's columns scaled to unit norm, :func:`lstsq`, the scales undone; with `full`, the residues,
+    rank, singular values and `rcond` too; with `cov`, the coefficients' covariance (unscaled, or scaled by the
+    residue per degree of freedom)."""
+    order = int(deg) + 1
+    x = _as_numpy_reads(x) + 0.0
+    y = _as_numpy_reads(y) + 0.0
+    if deg < 0:
+        raise ValueError("expected deg >= 0")
+    if len(x.shape) != 1:
+        raise TypeError("expected 1D vector for x")
+    if x.shape[0] == 0:
+        raise TypeError("expected non-empty vector for x")
+    if len(y.shape) < 1 or len(y.shape) > 2:
+        raise TypeError("expected 1D or 2D array for y")
+    if x.shape[0] != y.shape[0]:
+        raise TypeError("expected x and y to have same length")
+    if rcond is None:
+        rcond = x.shape[0] * finfo(x.dtype).eps
+    lhs = vander(x, order)
+    rhs = y
+    if w is not None:
+        w = _as_numpy_reads(w) + 0.0
+        if len(w.shape) != 1:
+            raise TypeError("expected a 1-d array for weights")
+        if w.shape[0] != y.shape[0]:
+            raise TypeError("expected w and y to have the same length")
+        lhs = lhs * reshape(w, (-1, 1))
+        rhs = rhs * (reshape(w, (-1, 1)) if len(rhs.shape) == 2 else w)
+    scale = sqrt(sum(lhs * lhs, axis=0))
+    lhs = lhs / scale
+    c, residues, rank, singular = lstsq(lhs, rhs, rcond)
+    c = transpose(transpose(c) / scale)
+    if rank != order and not full:
+        _warnings.warn("Polyfit may be poorly conditioned", _rank_warning(), stacklevel=2)
+    if full:
+        return c, residues, rank, singular, rcond
+    if cov:
+        base = inv(dot(transpose(lhs), lhs)) / outer(scale, scale)
+        if cov == "unscaled":
+            factor = 1
+        else:
+            if x.shape[0] <= order:
+                raise ValueError("the number of data points must exceed order to scale the covariance matrix")
+            factor = residues / (x.shape[0] - order)
+        if len(y.shape) == 1:
+            return c, base * factor
+        return c, reshape(base, base.shape + (1,)) * factor
+    return c
+
+
+def histogramdd(sample, bins=10, range=None, density=None, weights=None):
+    """The multidimensional histogram of `sample` (`N` points of `D` coordinates, or a sequence of `D` coordinate
+    vectors), as ``numpy.histogramdd`` by its steps: per coordinate a count of equal bins over `range` or given
+    edges; each bin half-open but the last; counts (or weights' sums) in float64, or a density."""
+    if isinstance(sample, Tensor) and len(sample.shape) == 2:
+        points = sample
+    else:
+        points = _as_numpy_reads(sample)
+        if len(points.shape) != 2 or not isinstance(sample, (Tensor,)) and not hasattr(sample, "shape"):
+            points = transpose(atleast_2d(points))
+    count, dims = points.shape
+    if weights is not None:
+        weights = _as_numpy_reads(weights)
+    try:
+        if len(bins) != dims:
+            raise ValueError("The dimension of bins must be equal to the dimension of the sample x.")
+    except TypeError:
+        bins = dims * [bins]
+    if range is None:
+        range = (None,) * dims
+    elif len(range) != dims:
+        raise ValueError("range argument must have one entry per dimension")
+    edges, extents = [], []
+    for i in _builtins.range(dims):
+        column = points[:, i]
+        if not shape(bins[i]):
+            if bins[i] < 1:
+                raise ValueError(f"`bins[{i}]` must be positive, when an integer")
+            low, high = _histogram_edges(column, range[i])
+            try:
+                n = _operator.index(bins[i])
+            except TypeError as error:
+                raise TypeError(f"`bins[{i}]` must be an integer, when a scalar") from error
+            edge = linspace(low, high, n + 1)
+        elif len(shape(bins[i])) == 1:
+            edge = _as_numpy_reads(bins[i])
+            if edge.shape[0] > 1 and any(edge[:-1] > edge[1:]):
+                raise ValueError(f"`bins[{i}]` must be monotonically increasing, when an array")
+        else:
+            raise ValueError(f"`bins[{i}]` must be a scalar or 1d array")
+        edges.append(edge)
+        extents.append(edge.shape[0] + 1)
+    places = []
+    for i in _builtins.range(dims):
+        common = _promoted([edges[i].dtype, points.dtype])
+        column = asarray(points[:, i], common)
+        found = searchsorted(asarray(edges[i], common), column, side="right")
+        found = where(column == asarray(edges[i][-1:], common), found - 1, found)  # the last edge in the last bin
+        places.append(found)
+    flat = ravel_multi_index(places, extents) if dims else zeros((0,), "int64")
+    hist = bincount(flat, weights, minlength=_math.prod(extents))
+    if hist.dtype.startswith("complex"):
+        raise TypeError("Cannot cast array data from dtype('complex128') to dtype('float64') according to the rule "
+                        "'safe'")
+    hist = asarray(reshape(hist, tuple(extents)), "float64")
+    hist = hist[(slice(1, -1),) * dims]
+    if density:
+        total = sum(hist)
+        for i in _builtins.range(dims):
+            widths = reshape(asarray(edges[i][1:] - edges[i][:-1], "float64"),
+                             tuple(-1 if k == i else 1 for k in _builtins.range(dims)))
+            hist = hist / widths
+        hist = hist / total
+    return hist, edges
+
+
+def histogram2d(x, y, bins=10, range=None, density=None, weights=None):
+    """The two-dimensional histogram of the points `(x, y)`, as ``numpy.histogram2d``: :func:`histogramdd` of the two
+    coordinates; returns ``(hist, xedges, yedges)``."""
+    x, y = _as_numpy_reads(x), _as_numpy_reads(y)
+    if x.shape[0] != y.shape[0]:
+        raise ValueError("x and y must have the same length.")
+    try:
+        count = len(bins)
+    except TypeError:
+        count = 1
+    if count not in (1, 2):
+        bins = [_as_numpy_reads(bins), _as_numpy_reads(bins)]
+    hist, edges = histogramdd(stack([x, y], axis=1) if x.dtype == y.dtype else
+                              stack([asarray(x, _promoted([x.dtype, y.dtype])), asarray(y, _promoted([x.dtype,
+                                                                                                       y.dtype]))],
+                                    axis=1), bins, range, density, weights)
+    return hist, edges[0], edges[1]
+
+
+def compress(condition, a, axis=None, out=None):
+    """The slices of `a` along `axis` (of `a` flattened where None) where `condition` holds, as ``numpy.compress``: a
+    shorter `condition` stops early; a true entry past the axis refused."""
+    _no_out(out, "compress")
+    a = _tensor(a)
+    if axis is None:
+        a, axis = reshape(a, (-1,)), 0
+    axis = _axis(a, axis)
+    chosen = nonzero(reshape(asarray(_tensor(condition), "bool"), (-1,)))[0]
+    extent = a.shape[axis]
+    if chosen.shape[0] and int(chosen[-1]) >= extent:
+        raise IndexError(f"index {int(chosen[-1])} is out of bounds for axis {axis} with size {extent}")
+    return a[_along_axis(axis, len(a.shape), chosen)]
+
+
+def extract(condition, arr):
+    """The elements of `arr` flattened where `condition` (flattened) holds, as ``numpy.extract``."""
+    return take(reshape(_tensor(arr), (-1,)), nonzero(reshape(asarray(_tensor(condition), "bool"), (-1,)))[0])
+
+
+def choose(a, choices, out=None, mode="raise"):
+    """Each element from the choice its index in `a` names, all broadcast, as ``numpy.choose``: an index out of range
+    refused ("raise"), wrapped ("wrap") or clipped ("clip")."""
+    _no_out(out, "choose")
+    index = _as_numpy_reads(a)
+    if index.dtype not in ("int64", "bool"):
+        raise TypeError(f"Cannot cast array data from dtype('{index.dtype}') to dtype('int64') according to the rule "
+                        "'safe'")
+    if mode not in ("raise", "wrap", "clip"):
+        raise ValueError(f"clipmode must be one of 'clip', 'raise', or 'wrap' (got {mode!r})")
+    options = [_as_numpy_reads(c) if not _weak(c) else c for c in choices]
+    if not options:
+        raise ValueError("0-length sequence.")
+    dtype = _result_dtype(*options)
+    options = [asarray(c if not _weak(c) else [c], dtype) for c in options]
+    options = [reshape(c, ()) if _weak(v) else c for c, v in zip(options, choices)]
+    count = len(options)
+    index = asarray(index, "int64")
+    if mode == "raise":
+        if index.size and (int(min(index)) < 0 or int(max(index)) >= count):
+            raise ValueError("invalid entry in choice array")
+    elif mode == "wrap":
+        index = index % count
+    else:
+        index = clip(index, 0, count - 1)
+    *options, index = broadcast_arrays(*options, index)
+    stacked = stack(options)
+    return take_along_axis(stacked, reshape(index, (1,) + index.shape), 0)[0]
+
+
+__all__ += ["interp", "hamming", "hanning", "blackman", "bartlett", "kaiser", "i0", "polyval", "polyder", "polyint",
+            "polyadd", "polysub", "polymul", "polydiv", "roots", "polyfit", "histogramdd", "histogram2d", "compress",
+            "extract", "choose"]
+
 pi = _math.pi
 e = _math.e
 inf = _math.inf

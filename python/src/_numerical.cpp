@@ -148,6 +148,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_take_along_axis", module_take_along_axis, METH_VARARGS, "_take_along_axis(a, indices, axis) -> Tensor\nThe elements at the indices along the axis.");
     m.raw("_correlate", module_correlate, METH_VARARGS, "_correlate(a, v, first, count) -> Tensor\nThe cross-correlation over count lags from first.");
     m.raw("_complex_from_parts", module_complex_from_parts, METH_VARARGS, "_complex_from_parts(re, im) -> Tensor\nre + im·i, exactly.");
+    m.raw("_interp", module_interp, METH_VARARGS, "_interp(x, xp, fp, left, right, fused) -> Tensor\nnumpy.interp's linear interpolation.");
     m.raw("_bincount", module_bincount, METH_VARARGS, "_bincount(x, weights, length) -> Tensor\nThe counts of x's values, or their weights' sums.");
     m.raw("_searchsorted", module_searchsorted, METH_VARARGS, "_searchsorted(a, v, right) -> Tensor\nWhere v's elements go in the sorted vector a.");
     m.raw("_real_unary", module_real_unary, METH_VARARGS, "_real_unary(name, a) -> Tensor\nA real elementary function of every element.");

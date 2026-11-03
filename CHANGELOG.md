@@ -49,6 +49,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **Calculus, grids and signals**: `trapezoid`, `gradient` (second-order inside, first- or second-order ends,
   spacings by axis), `diagflat`, `indices`, `ix_`, `ravel_multi_index`, `unravel_index`, `correlate` and `convolve`,
   as NumPy's; `fft.next_fast_len`, as SciPy's.
+- **Interpolation, polynomials, windows and selections**: `interp` (NumPy's loop, its search and its fused or rounded
+  line as NumPy's wheel computes it beside), `polyval`, `polyfit`, `polyder`, `polyint`, `polyadd`, `polysub`,
+  `polymul`, `polydiv`, `roots`, the windows `hamming`, `hanning`, `blackman`, `bartlett` and `kaiser` with `i0`,
+  `histogramdd` and `histogram2d`, `compress`, `extract` and `choose`, as NumPy's.
 - **`bincount`, `histogram` and `histogram_bin_edges`**, as NumPy's by its steps: equal bins (a count, or one of
   its eight estimators) or given edges, weights (their sums in NumPy's order), densities.
 

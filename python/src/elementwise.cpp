@@ -720,6 +720,175 @@ PyObject* module_complex_from_parts(PyObject* /*self*/, PyObject* args)
     }
 }
 
+namespace {
+    //! NumPy's binary_search_with_guess (compiled_base.c): the index i with arr[i] <= key < arr[i + 1], -1 below
+    //! arr[0], len above arr[len − 1]; the values about the guess tried first, a linear search at four or fewer.
+    std::ptrdiff_t interp_search(double key, const double* arr, std::ptrdiff_t len, std::ptrdiff_t guess)
+    {
+        constexpr std::ptrdiff_t likely_in_cache {8};
+        std::ptrdiff_t           imin {0};
+        std::ptrdiff_t           imax {len};
+        if (key > arr[len - 1]) {
+            return len;
+        }
+        if (key < arr[0]) {
+            return -1;
+        }
+        if (len <= 4) {
+            std::ptrdiff_t i {1};
+            while (i < len && key >= arr[i]) {
+                ++i;
+            }
+            return i - 1;
+        }
+        guess = std::clamp<std::ptrdiff_t>(guess, 1, len - 3);
+        if (key < arr[guess]) {
+            if (key >= arr[guess - 1]) {
+                return guess - 1;
+            }
+            imax = guess - 1;
+            if (guess > likely_in_cache && key >= arr[guess - likely_in_cache]) {
+                imin = guess - likely_in_cache;
+            }
+        }
+        else {
+            if (key < arr[guess + 1]) {
+                return guess;
+            }
+            if (key < arr[guess + 2]) {
+                return guess + 1;
+            }
+            imin = guess + 2;
+            if (guess < len - likely_in_cache - 1 && key < arr[guess + likely_in_cache]) {
+                imax = guess + likely_in_cache;
+            }
+        }
+        while (imin < imax) {
+            const std::ptrdiff_t imid {imin + ((imax - imin) >> 1)};
+            if (key >= arr[imid]) {
+                imin = imid + 1;
+            }
+            else {
+                imax = imid;
+            }
+        }
+        return imin - 1;
+    }
+
+    //! `slope · (x − x₀) + y₀`, one fused multiply-add where `fused` (NumPy's macOS arm64 wheels contract it).
+    double interp_line(double slope, double x, double x0, double y0, bool fused)
+    {
+        if (fused) {
+            return std::fma(slope, x - x0, y0);
+        }
+        const double rise {slope * (x - x0)};
+        return rise + y0;
+    }
+
+    //! One part (or a real value) of NumPy's interpolation between points j and j + 1: through the first, or the
+    //! second where that is NaN, or the shared value where both ends are equal.
+    double interp_part(double slope, double x, double x0, double x1, double y0, double y1, bool fused)
+    {
+        double value {interp_line(slope, x, x0, y0, fused)};
+        if (std::isnan(value)) {
+            value = interp_line(slope, x, x1, y1, fused);
+            if (std::isnan(value) && y0 == y1) {
+                value = y0;
+            }
+        }
+        return value;
+    }
+} // namespace
+
+// _interp(x, xp, fp, left, right, fused) -> Tensor: numpy.interp's loop (compiled_base.c arr_interp and
+// arr_interp_complex) over float64 x, the increasing float64 xp and float64 or complex128 fp (one value per point),
+// left and right the fills below and above; each value through NumPy's search and line, fused as `fused`.
+PyObject* module_interp(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x     = nullptr;
+    PyObject* xp    = nullptr;
+    PyObject* fp    = nullptr;
+    PyObject* left  = nullptr;
+    PyObject* right = nullptr;
+    int       fused = 0;
+    if (PyArg_ParseTuple(args, "OOOOOp", &x, &xp, &fp, &left, &right, &fused) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(xp);
+    const any_tensor* c = b == nullptr ? nullptr : as_tensor(fp);
+    const any_tensor* l = c == nullptr ? nullptr : as_tensor(left);
+    const any_tensor* r = l == nullptr ? nullptr : as_tensor(right);
+    if (r == nullptr) {
+        return nullptr;
+    }
+    const auto* points = std::get_if<real_tensor>(a);
+    const auto* knots  = std::get_if<real_tensor>(b);
+    if (points == nullptr || knots == nullptr || knots->rank() != 1 || knots->size() == 0 || shape_of(*c) != shape_of(*b)
+        || c->index() != l->index() || c->index() != r->index() || !(std::holds_alternative<real_tensor>(*c) || std::holds_alternative<cplx_tensor>(*c))) {
+        PyErr_SetString(PyExc_ValueError, "_interp: float64 x and xp, one fp per xp, fills of fp's dtype");
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(points->size())};
+            result.emplace(std::visit([&](const auto& values) -> any_tensor {
+                using T = element_of_t<std::decay_t<decltype(values)>>;
+                if constexpr (std::is_same_v<T, double> || std::is_same_v<T, std::complex<double>>) {
+                    const auto&    fill_left {std::get<numerical::tensor<T>>(*l).data()[0]};
+                    const auto&    fill_right {std::get<numerical::tensor<T>>(*r).data()[0]};
+                    const double*  dx {knots->data().data()};
+                    const T*       dy {values.data().data()};
+                    const auto     len {static_cast<std::ptrdiff_t>(knots->size())};
+                    numerical::buffer<T> out(points->size());
+                    std::ptrdiff_t       j {0};
+                    for (std::size_t i {0}; i < points->size(); ++i) {
+                        const double key {points->data()[i]};
+                        if (len == 1) {
+                            out[i] = key < dx[0] ? fill_left : (key > dx[0] ? fill_right : dy[0]);
+                            continue;
+                        }
+                        if (std::isnan(key)) {
+                            out[i] = T {key};
+                            continue;
+                        }
+                        j = interp_search(key, dx, len, j);
+                        if (j == -1) {
+                            out[i] = fill_left;
+                        }
+                        else if (j == len) {
+                            out[i] = fill_right;
+                        }
+                        else if (j == len - 1 || dx[j] == key) {
+                            out[i] = dy[j];
+                        }
+                        else if constexpr (std::is_same_v<T, double>) {
+                            const double slope {(dy[j + 1] - dy[j]) / (dx[j + 1] - dx[j])};
+                            out[i] = interp_part(slope, key, dx[j], dx[j + 1], dy[j], dy[j + 1], fused != 0);
+                        }
+                        else {
+                            const double inverse {1.0 / (dx[j + 1] - dx[j])};
+                            const double re {(dy[j + 1].real() - dy[j].real()) * inverse};
+                            const double im {(dy[j + 1].imag() - dy[j].imag()) * inverse};
+                            out[i] = T {interp_part(re, key, dx[j], dx[j + 1], dy[j].real(), dy[j + 1].real(), fused != 0),
+                                        interp_part(im, key, dx[j], dx[j + 1], dy[j].imag(), dy[j + 1].imag(), fused != 0)};
+                        }
+                    }
+                    return any_tensor {numerical::tensor<T> {points->shape(), std::move(out)}};
+                }
+                else {
+                    throw std::runtime_error("_interp: float64 or complex128 values");
+                }
+            }, *c));
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _bincount(x, weights, length) -> Tensor: how often each value 0 … length − 1 occurs in the int64 vector x (none
 // negative, none past length − 1: the caller's checks), an int64 tensor; or with float64 weights (x's length), each
 // value's weights summed in x's order, as NumPy's loop adds them, a float64 one.

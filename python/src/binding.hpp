@@ -1652,6 +1652,8 @@ PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args); // in elemen
 PyObject* module_take_along_axis(PyObject* /*self*/, PyObject* args);    // in elementwise.cpp
 PyObject* module_correlate(PyObject* /*self*/, PyObject* args);          // in elementwise.cpp
 PyObject* module_complex_from_parts(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+// _interp(x, xp, fp, left, right, fused) -> Tensor: numpy.interp's loop.
+PyObject* module_interp(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
 // _bincount(x, weights, length) -> Tensor: the counts of an int64 vector's values, or their weights' sums in order.
 PyObject* module_bincount(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
