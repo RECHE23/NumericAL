@@ -82,7 +82,7 @@ def _beside(ours, theirs):
                 {"__module__": ours.__module__, "__doc__": ours.__doc__, "__reduce__": reduce})
 
 
-__version__ = "2026.11.3"
+__version__ = "2026.11.4"
 
 def set_num_threads(n):
     """Cap the threads a kernel uses at `n`, the caller's included; ``0`` lifts the cap. At ``1`` no thread is

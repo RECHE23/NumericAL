@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.4 — 2026-11-03
+
 ### Fixed
 - **`sort` keeps equal reals in their order under libc++ 22**: its `std::stable_sort` of 1024 doubles or more
   ordered by `std::less` sorts them by their bits, −0 before +0; NumericAL's sort now compares through a lambda of
