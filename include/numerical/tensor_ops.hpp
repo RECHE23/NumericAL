@@ -2004,9 +2004,43 @@ namespace numerical {
       }
       buffer<std::int64_t> out(walk.outer * walk.inner);
       const T* const       in {t.data().data()};
-      parallel_for(walk.outer * walk.inner, walk.extent, [&](std::size_t line) {
-                     const std::size_t first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
-                     out[line] = extreme_index(in + first, walk.extent, walk.inner, larger);
+      if (walk.inner == 1) {
+        parallel_for(walk.outer, walk.extent, [&](std::size_t line) {
+                       out[line] = extreme_index(in + (line * walk.extent), walk.extent, 1, larger);
+                     });
+        return tensor<std::int64_t> {without_axis(t.shape(), axis), std::move(out)};
+      }
+      // the lines are columns: a band of them per task, row after row, each column's first winner kept as its own
+      // line's walk keeps it (a NaN's at once, else the first of equals)
+      const std::size_t bands {(walk.inner + band_columns - 1) / band_columns};
+      parallel_for(walk.outer * bands, walk.extent * band_columns, [&](std::size_t at) {
+                     const std::size_t                     o     {at / bands};
+                     const std::size_t                     first {(at % bands) * band_columns};
+                     const std::size_t                     width {std::min(band_columns, walk.inner - first)};
+                     const T* const                        base  {in + (o * walk.extent * walk.inner) + first};
+                     std::array<std::size_t, band_columns> best {};
+                     std::array<bool, band_columns>        won {};
+                     for (std::size_t w {0}; w < width; ++w) {
+                       won[w] = wins_any_order(base[w]); // the first element itself a NaN
+                     }
+                     for (std::size_t k {1}; k < walk.extent; ++k) {
+                       const T* const row {base + (k * walk.inner)};
+                       for (std::size_t w {0}; w < width; ++w) {
+                         if (won[w]) {
+                           continue;
+                         }
+                         if (wins_any_order(row[w])) {
+                           best[w] = k;
+                           won[w]  = true;
+                         }
+                         else if (larger(row[w], base[(best[w] * walk.inner) + w])) {
+                           best[w] = k;
+                         }
+                       }
+                     }
+                     for (std::size_t w {0}; w < width; ++w) {
+                       out[(o * walk.inner) + first + w] = static_cast<std::int64_t>(best[w]);
+                     }
                    });
       return tensor<std::int64_t> {without_axis(t.shape(), axis), std::move(out)};
     }
@@ -2133,6 +2167,92 @@ namespace numerical {
   {
     return detail::fold_along(t, axis, std::int64_t {0},
                               [](std::int64_t total, const T& x) { return total + static_cast<std::int64_t>(x != T {}); });
+  }
+
+  /*!
+   * \brief The elements of \p t at \p indices along \p axis, the other axes matched, as `numpy.take_along_axis`:
+   *        \p indices of \p t's rank and shape but along the axis (any extent there), each in `[0, extent)`; read
+   *        directly, on the threads.
+   * \throws dimension_error If the shapes do not match so, or an index is out of its range.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> take_along_axis(const tensor<T>&            t,
+                                          const tensor<std::int64_t>& indices,
+                                          std::size_t                 axis)
+  {
+    const detail::axis_walk walk    {detail::walk_along(t.shape(), axis)};
+    bool                    matched {indices.rank() == t.rank()};
+    for (std::size_t k {0}; matched && k < t.rank(); ++k) {
+      matched = k == axis || indices.shape()[k] == t.shape()[k];
+    }
+    if (!matched) {
+      throw dimension_error("take_along_axis: the indices' shape is the tensor's but along the axis");
+    }
+    const auto extent {static_cast<std::int64_t>(t.shape()[axis])};
+    if (std::ranges::any_of(indices.data(), [extent](std::int64_t i) { return i < 0 || i >= extent; })) {
+      throw dimension_error("take_along_axis: an index out of the axis's range");
+    }
+    const std::size_t   count {indices.shape()[axis]};
+    const std::size_t   inner {walk.inner};
+    buffer<T>           out(indices.size());
+    const T* const      in    {t.data().data()};
+    const std::int64_t* at    {indices.data().data()};
+    detail::parallel_for(indices.size() / std::max<std::size_t>(inner, 1), inner, [&](std::size_t row) {
+                           const std::size_t o {row / std::max<std::size_t>(count, 1)};
+                           for (std::size_t i {0}; i < inner; ++i) {
+                             const auto index {static_cast<std::size_t>(at[(row * inner) + i])};
+                             out[(row * inner) + i] = in[(((o * walk.extent) + index) * inner) + i];
+                           }
+                         });
+    return tensor<T> {indices.shape(), std::move(out)};
+  }
+
+  namespace detail {
+    //! \brief `sum + x · y` of a real or an integer (wrapped) correlation's terms.
+    template <typename T>
+    [[nodiscard]] T correlation_step(const T& sum,
+                                     const T& x,
+                                     const T& y)
+    {
+      return typename arithmetic<T>::plus {}(sum, typename arithmetic<T>::multiplies {}(x, y));
+    }
+
+    //! \brief `sum + x · conj(y)` of a complex correlation's terms, NumPy's product rounded.
+    template <split_complex C>
+    [[nodiscard]] C correlation_step(const C& sum,
+                                     const C& x,
+                                     const C& y)
+    {
+      return sum + numpy_multiply(x, std::conj(y), false);
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The cross-correlation `c[k] = Σₙ a[n + k] · conj(v[n])` of two vectors over the lags \p first …
+   *        `first + count − 1` (from `−(len v − 1)`, the full range's first, to `len a − 1`), as `numpy.correlate`'s:
+   *        each lag's sum in the order of `v`'s terms, a complex product NumPy's rounded one (no infinity recovered),
+   *        an integer's wrapped; the lags on the threads.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> correlate(const tensor<T>& a,
+                                    const tensor<T>& v,
+                                    std::ptrdiff_t   first,
+                                    std::size_t      count)
+  {
+    const auto     n {static_cast<std::ptrdiff_t>(a.size())};
+    const auto     m {static_cast<std::ptrdiff_t>(v.size())};
+    const T* const x {a.data().data()};
+    const T* const y {v.data().data()};
+    buffer<T>      out(count);
+    detail::parallel_for(count, static_cast<std::size_t>(m), [&](std::size_t lag) {
+                           const std::ptrdiff_t k {first + static_cast<std::ptrdiff_t>(lag)};
+                           T                    sum {};
+                           for (std::ptrdiff_t j {std::max<std::ptrdiff_t>(0, -k)}; j < std::min(m, n - k); ++j) {
+                             sum = detail::correlation_step(sum, x[j + k], y[j]);
+                           }
+                           out[lag] = sum;
+                         });
+    return tensor<T> {{count}, std::move(out)};
   }
 
   /*!

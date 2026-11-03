@@ -6555,14 +6555,21 @@ def take_along_axis(arr, indices, axis=-1):
     rank = len(arr.shape)
     if len(indices.shape) != rank:
         raise ValueError("`indices` and `arr` must have the same number of dimensions")
-    key = []
-    for k in range(rank):
-        if k == axis:
-            key.append(indices)
-        else:
-            steps = asarray(arange(arr.shape[k]), "int64")
-            key.append(reshape(steps, (1,) * k + (arr.shape[k],) + (1,) * (rank - k - 1)))
-    return arr[tuple(key)]
+    others = broadcast_shapes(arr.shape[:axis] + arr.shape[axis + 1:], indices.shape[:axis] + indices.shape[axis + 1:])
+    shape_of = (lambda extent: others[:axis] + (extent,) + others[axis:])  # the other axes broadcast, as NumPy's
+    if arr.shape != shape_of(arr.shape[axis]):
+        arr = broadcast_to(arr, shape_of(arr.shape[axis]))
+    if indices.shape != shape_of(indices.shape[axis]):
+        indices = broadcast_to(indices, shape_of(indices.shape[axis]))
+    extent = arr.shape[axis]
+    if indices.size:
+        low, high = int(min(indices)), int(max(indices))
+        if low < -extent or high >= extent:
+            bad = low if low < -extent else high
+            raise IndexError(f"index {bad} is out of bounds for axis {axis} with size {extent}")
+        if low < 0:
+            indices = where(indices < 0, indices + extent, indices)
+    return _native(_numerical._take_along_axis, arr, indices, axis)
 
 
 def roll(a, shift, axis=None):
@@ -7471,9 +7478,7 @@ def corrcoef(x, y=None, rowvar=True, *, dtype=None):
 def _from_parts(re, im):
     """``re + im·i`` of two real tensors of one shape and dtype, exactly (each part's zero keeps its sign, where a sum
     and a product by 1j would not): their elements side by side, read as complex ones."""
-    pair = _numerical._stack_last([re, im])
-    return _numerical._frombytes(_numerical._tobytes(pair), re.shape, "complex64" if re.dtype == "float32"
-                                 else "complex128", False)
+    return _native(_numerical._complex_from_parts, re, im)
 
 
 def _pad_pairs(x, rank, as_index=False):
@@ -8080,19 +8085,21 @@ def select(condlist, choicelist, default=0):
 
 
 def _monotonicity(values):
-    """NumPy's ``check_array_monotonic``: 1 increasing (or all equal), -1 decreasing, 0 neither; the first unequal pair
-    decides the direction (a NaN unequal to all, and below none), each later pair must not go against it."""
-    i = 1
-    while i < len(values) and values[i] == values[i - 1]:
-        i += 1
-    if i >= len(values):
+    """NumPy's ``check_array_monotonic`` of the vector `values`: 1 increasing (or all equal), -1 decreasing, 0 neither;
+    the first unequal pair decides the direction (a NaN unequal to all, and below none), each later pair must not go
+    against it."""
+    count = values.shape[0]
+    if count < 2:
         return 1
-    last, following = values[i - 1], values[i]
-    increasing = last < following
-    for following_value in values[i + 1:]:
-        last, following = following, following_value
-        if (last > following) if increasing else (last < following):
-            return 0
+    unequal = flatnonzero(values[1:] != values[:-1])
+    if unequal.shape[0] == 0:
+        return 1
+    i = int(unequal[0]) + 1  # the first unequal pair: (i − 1, i)
+    increasing = bool(values[i - 1] < values[i])
+    earlier, later = values[i:-1], values[i + 1:]
+    against = (earlier > later) if increasing else (earlier < later)
+    if any(against):
+        return 0
     return 1 if increasing else -1
 
 
@@ -8106,7 +8113,7 @@ def digitize(x, bins, right=False):
     if len(bins.shape) != 1:
         raise ValueError("object too deep for desired array" if len(bins.shape) > 1 else
                          "object of too small depth for desired array")
-    monotonic = _monotonicity(bins.tolist())
+    monotonic = _monotonicity(bins)
     if monotonic == 0:
         raise ValueError("bins must be monotonically increasing or decreasing")
     side = "left" if right else "right"
@@ -8523,9 +8530,12 @@ def unravel_index(indices, shape, order="C"):
         raise TypeError(f"only int indices permitted")
     flat = asarray(flat, "int64")
     size_ = _math.prod(dims)
-    for value in reshape(flat, (-1,)).tolist():
-        if not 0 <= value < size_:
-            raise ValueError(f"index {value} is out of bounds for array with size {size_}")
+    if flat.size:
+        low, high = int(min(flat)), int(max(flat))
+        if low < 0 or high >= size_:
+            line = reshape(flat, (-1,))
+            first = int(flatnonzero((line < 0) | (line >= size_))[0])  # NumPy's: the first one out
+            raise ValueError(f"index {int(line[first])} is out of bounds for array with size {size_}")
     coordinates = [None] * len(dims)
     remainder = flat
     for k in (range(len(dims) - 1, -1, -1) if order == "C" else range(len(dims))):
@@ -8537,8 +8547,8 @@ def unravel_index(indices, shape, order="C"):
 def correlate(a, v, mode="valid"):
     """The cross-correlation ``c[k] = Σₙ a[n + k] · conj(v[n])`` of two vectors, as ``numpy.correlate``: the lags
     where they overlap wholly ("valid"), the length of the longer centred as NumPy's ("same"), or every lag ("full").
-    Each lag's sum in order of its terms, where NumPy's goes through its dot product (its BLAS's order): the last
-    bits may differ."""
+    Each lag's sum in order of `v`'s terms, on the threads, where NumPy's goes through its dot product (its BLAS's
+    order): the last bits may differ."""
     a, v = _same_dtype(a, v)
     a, v = reshape(a, (-1,)) if not a.shape else a, reshape(v, (-1,)) if not v.shape else v
     if len(a.shape) != 1 or len(v.shape) != 1:
@@ -8548,23 +8558,15 @@ def correlate(a, v, mode="valid"):
     n, m = a.shape[0], v.shape[0]
     if n == 0 or m == 0:
         raise ValueError(f"{'a' if n == 0 else 'v'} cannot be empty")
-    w = conj(v) if v.dtype.startswith("complex") else v
-    length = n + m - 1
-    full_ = zeros((length,), a.dtype)
-    if m <= n:  # c_full[m − 1 − j + i] += a[i] · w[j], a shift of a per element of the shorter w
-        for j in range(m):
-            full_ = full_ + pad(a * w[j], (m - 1 - j, j))
-    else:
-        for i in range(n):
-            full_ = full_ + pad(flip(w, 0) * a[i], (i, n - 1 - i))
     shorter = _builtins.min(n, m)
     if mode == "full":
-        return full_
-    if mode == "valid":
+        start, count = 0, n + m - 1
+    elif mode == "valid":
         start, count = (m - 1, n - m + 1) if n >= m else (n - 1, m - n + 1)
     else:
         start, count = (shorter - 1 - shorter // 2, n) if n >= m else (shorter // 2, m)
-    return full_[start:start + count]
+    # the full range's lags run from −(m − 1): the lags start − (m − 1) … on, each from its own terms, natively
+    return _native(_numerical._correlate, a, v, start - (m - 1), count)
 
 
 def convolve(a, v, mode="full"):

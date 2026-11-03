@@ -486,10 +486,20 @@ PyObject* module_arg_extreme(PyObject* /*self*/, PyObject* args)
     try {
         const auto extreme = [&](const auto& t) -> PyObject* {
             if (axis < 0) {
-                return PyLong_FromLongLong(largest != 0 ? numerical::argmax(t) : numerical::argmin(t));
+                std::int64_t index {0};
+                {
+                    const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+                    index = largest != 0 ? numerical::argmax(t) : numerical::argmin(t);
+                }
+                return PyLong_FromLongLong(index);
             }
-            const auto along {static_cast<std::size_t>(axis)};
-            return wrap(any_tensor {largest != 0 ? numerical::argmax(t, along) : numerical::argmin(t, along)});
+            const auto                along {static_cast<std::size_t>(axis)};
+            std::optional<any_tensor> result;
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(t.size())};
+                result.emplace(largest != 0 ? numerical::argmax(t, along) : numerical::argmin(t, along));
+            }
+            return wrap(std::move(*result));
         };
         if (const auto* integers {std::get_if<int_tensor>(a)}) {
             return extreme(*integers);
@@ -541,7 +551,11 @@ PyObject* module_nonzero(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     try {
-        const std::vector<int_tensor> indices {std::visit([](const auto& t) { return numerical::nonzero(t); }, *a)};
+        std::vector<int_tensor> indices;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            indices = std::visit([](const auto& t) { return numerical::nonzero(t); }, *a);
+        }
         PyObject* tuple {PyTuple_New(static_cast<Py_ssize_t>(indices.size()))};
         if (tuple == nullptr) {
             return nullptr;
@@ -574,13 +588,132 @@ PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     try {
-        return std::visit([axis](const auto& t) -> PyObject* {
-                              using T = element_of_t<std::decay_t<decltype(t)>>;
-                              if (axis < 0) {
-                                  return PyLong_FromSize_t(static_cast<std::size_t>(std::ranges::count_if(t.data(), [](const T& value) { return value != T {}; })));
-                              }
-                              return wrap(any_tensor {numerical::count_nonzero(t, static_cast<std::size_t>(axis))});
-                          }, *a);
+        std::optional<any_tensor> along;
+        std::size_t               total {0};
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            std::visit([&](const auto& t) {
+                using T = element_of_t<std::decay_t<decltype(t)>>;
+                if (axis < 0) {
+                    total = static_cast<std::size_t>(std::ranges::count_if(t.data(), [](const T& value) { return value != T {}; }));
+                }
+                else {
+                    along.emplace(numerical::count_nonzero(t, static_cast<std::size_t>(axis)));
+                }
+            }, *a);
+        }
+        return along.has_value() ? wrap(std::move(*along)) : PyLong_FromSize_t(total);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _take_along_axis(a, indices, axis) -> Tensor: numerical::take_along_axis, the indices int64 of a's shape but along
+// the axis (the caller broadcasts and wraps them).
+PyObject* module_take_along_axis(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  x    = nullptr;
+    PyObject*  y    = nullptr;
+    Py_ssize_t axis = 0;
+    if (PyArg_ParseTuple(args, "OOn", &x, &y, &axis) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    const auto* indices = std::get_if<int_tensor>(b);
+    if (indices == nullptr || axis < 0) {
+        PyErr_SetString(PyExc_ValueError, "_take_along_axis: int64 indices and a non-negative axis");
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(indices->size())};
+            result.emplace(std::visit([&](const auto& t) {
+                return any_tensor {numerical::take_along_axis(t, *indices, static_cast<std::size_t>(axis))};
+            }, *a));
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _correlate(a, v, first, count) -> Tensor: numerical::correlate of two vectors of one dtype over count lags from
+// first.
+PyObject* module_correlate(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  x     = nullptr;
+    PyObject*  y     = nullptr;
+    Py_ssize_t first = 0;
+    Py_ssize_t count = 0;
+    if (PyArg_ParseTuple(args, "OOnn", &x, &y, &first, &count) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = nullptr;
+    const any_tensor* v = nullptr;
+    if (!same_dtype_pair(x, y, a, v)) {
+        return nullptr;
+    }
+    if (count < 0 || shape_of(*a).size() != 1 || shape_of(*v).size() != 1) {
+        PyErr_SetString(PyExc_ValueError, "_correlate: two vectors and a non-negative count");
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a) * count_of(*v))};
+            result.emplace(visit_arithmetic([&](const auto& t) {
+                return any_tensor {numerical::correlate(t, std::get<std::decay_t<decltype(t)>>(*v), first, static_cast<std::size_t>(count))};
+            }, *a));
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _complex_from_parts(re, im) -> Tensor: re + im·i of two real tensors of one shape and dtype (float32 or float64),
+// exactly (each zero's sign kept), in one pass.
+PyObject* module_complex_from_parts(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x = nullptr;
+    PyObject* y = nullptr;
+    if (PyArg_ParseTuple(args, "OO", &x, &y) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    if (a->index() != b->index() || shape_of(*a) != shape_of(*b) || !(std::holds_alternative<real_tensor>(*a) || std::holds_alternative<single_tensor>(*a))) {
+        PyErr_SetString(PyExc_ValueError, "_complex_from_parts: two float tensors of one shape and dtype");
+        return nullptr;
+    }
+    const auto join = [](const auto& re, const auto& im) {
+        using R = element_of_t<std::decay_t<decltype(re)>>;
+        return any_tensor {numerical::detail::broadcast_into(re.data().data(), re.shape(), im.data().data(), im.shape(),
+                                                             [](R r, R i) { return std::complex<R> {r, i}; })};
+    };
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            if (const auto* single {std::get_if<single_tensor>(a)}) {
+                result.emplace(join(*single, std::get<single_tensor>(*b)));
+            }
+            else {
+                result.emplace(join(std::get<real_tensor>(*a), std::get<real_tensor>(*b)));
+            }
+        }
+        return wrap(std::move(*result));
     }
     catch (...) {
         return set_cpp_error();
@@ -611,8 +744,11 @@ PyObject* module_bincount(PyObject* /*self*/, PyObject* args)
     try {
         if (w == Py_None) {
             numerical::buffer<std::int64_t> counts(size, 0);
-            for (const std::int64_t v : values->data()) {
-                ++counts[static_cast<std::size_t>(v)];
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(values->size())};
+                for (const std::int64_t v : values->data()) {
+                    ++counts[static_cast<std::size_t>(v)];
+                }
             }
             return wrap(any_tensor {numerical::tensor<std::int64_t> {{size}, std::move(counts)}});
         }
@@ -625,8 +761,11 @@ PyObject* module_bincount(PyObject* /*self*/, PyObject* args)
             return nullptr;
         }
         numerical::buffer<double> sums(size, 0.0);
-        for (std::size_t i {0}; i < values->size(); ++i) {
-            sums[static_cast<std::size_t>(values->data()[i])] += weights->data()[i];
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(values->size())};
+            for (std::size_t i {0}; i < values->size(); ++i) {
+                sums[static_cast<std::size_t>(values->data()[i])] += weights->data()[i];
+            }
         }
         return wrap(any_tensor {numerical::tensor<double> {{size}, std::move(sums)}});
     }
@@ -650,9 +789,14 @@ PyObject* module_searchsorted(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     try {
-        return visit_arithmetic([&](const auto& sorted) {
-                                    return wrap(any_tensor {numerical::searchsorted(sorted, std::get<std::decay_t<decltype(sorted)>>(*v), right != 0)});
-                                }, *a);
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*v))};
+            result.emplace(visit_arithmetic([&](const auto& sorted) {
+                return any_tensor {numerical::searchsorted(sorted, std::get<std::decay_t<decltype(sorted)>>(*v), right != 0)};
+            }, *a));
+        }
+        return wrap(std::move(*result));
     }
     catch (...) {
         return set_cpp_error();
@@ -944,7 +1088,10 @@ PyObject* module_classify(PyObject* /*self*/, PyObject* args)
         return nullptr;
     }
     try {
-        return wrap(any_tensor {std::visit([&](const auto& t) {
+        std::optional<any_tensor> result;
+        {
+        const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+        result.emplace(any_tensor {std::visit([&](const auto& t) {
             using T = element_of_t<std::decay_t<decltype(t)>>;
             return numerical::detail::parallel_map(t, [name](const T& value) {
                 if constexpr (std::is_same_v<T, boolean>) {
@@ -969,6 +1116,8 @@ PyObject* module_classify(PyObject* /*self*/, PyObject* args)
                 }
             });
         }, *a)});
+        }
+        return wrap(std::move(*result));
     }
     catch (...) {
         return set_cpp_error();

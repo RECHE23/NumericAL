@@ -61,6 +61,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   not n³); `count_nonzero` along an axis counts in place (no int64 copy of the operand), and it, `prod`, `cumsum`
   and `cumprod` along an axis something follows walk bands of 256 columns row by row (each line's operations in
   the same order: the same bits).
+- **Native kernels, the same answers**: `take_along_axis` reads its elements directly (40× on a sorted
+  2000 × 2000, which `median` and the quantiles take); `correlate` and `convolve` compute the lags their mode asks
+  alone, on the threads (4.7× on 10⁵ against 10³); `argmax` and `argmin` along an axis something follows walk bands
+  of columns row by row (2.5×); a complex tensor from its parts in one pass. `argmax`, `argmin`, `nonzero`,
+  `count_nonzero`, `bincount`, `searchsorted`, `isnan`, `isinf` and `isfinite` let other Python threads run while
+  they compute.
 - **`eig_banded` and `eigvals_banded` reduce a narrow band themselves** for the eigenvalues alone: plane rotations
   down to real tridiagonal form, as LAPACK's `sbtrd` and `hbtrd` (`n² u` operations; order 3000 and two diagonals
   each side, 170 ms where the dense path took 760).

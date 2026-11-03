@@ -79,6 +79,8 @@ class WithoutNumPy(unittest.TestCase):
             (IndexError, lambda: numerical.take(numerical.zeros(0), [1], mode="wrap")),
             (ValueError, lambda: numerical.take([1, 2], [0], mode="bounce")),
             (IndexError, lambda: numerical.take_along_axis([1.0, 2.0], [0.5], axis=0)),
+            (IndexError, lambda: numerical.take_along_axis([1.0, 2.0], numerical.asarray([2], "int64"), axis=0)),
+            (IndexError, lambda: numerical.take_along_axis([1.0, 2.0], numerical.asarray([-3], "int64"), axis=0)),
             (ValueError, lambda: numerical.take_along_axis([[1.0]], [0], axis=0)),
             (ValueError, lambda: numerical.take_along_axis([[1.0]], [[0]], axis=None)),
             (ValueError, lambda: numerical.hsplit(1.0, 1)),
@@ -140,7 +142,12 @@ class AgainstNumPy(unittest.TestCase):
                                         ([5, -7], 1, "wrap"), ([9, -9], 0, "clip"), ([3, 4], None, "raise")):
                 self.assertSame(numerical.take(t, indices, axis=axis, mode=mode),
                                 np.take(x, indices, axis=axis, mode=mode), f"take {indices} {axis} {mode}")
-            for axis in (0, 1, -1):
+            for axis in (0, 1, -1):  # indices broadcast against the other axes, negative ones from the end
+                shape = [1] * x.ndim
+                shape[axis] = 3
+                picks = np.array([0, -1, 1], dtype=np.int64).reshape(shape)
+                self.assertSame(numerical.take_along_axis(t, numerical.asarray(picks, "int64"), axis),
+                                np.take_along_axis(x, picks, axis), f"take_along_axis broadcast {axis}")
                 order = np.argsort(x, axis=axis, kind="stable")
                 self.assertSame(numerical.take_along_axis(t, numerical.asarray(order, "int64"), axis),
                                 np.take_along_axis(x, order, axis), f"take_along_axis {axis}")

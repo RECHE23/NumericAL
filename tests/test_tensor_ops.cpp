@@ -10,6 +10,7 @@
 #include <limits>
 #include <numeric>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <sciforge/test/framework.hpp>
@@ -1086,6 +1087,77 @@ TEST(complex_sums_take_numpys_tree)
   }
   EXPECT(numerical::detail::pairwise_tree<cplx>::half(100) == 48 && numerical::detail::pairwise_tree<double>::half(100) == 48);
   EXPECT(numerical::detail::pairwise_tree<cplx>::half(200) == 100 && numerical::detail::pairwise_tree<double>::half(200) == 96);
+}
+
+// argmax and argmin along an axis something follows walk bands of columns row by row: each column's first winner
+// (its first NaN at once, else the first of equals), across a band's edge (300 columns: 256 and 44), as a line's walk.
+TEST(arg_extremes_of_columns_by_bands)
+{
+  const double              nan   {std::numeric_limits<double>::quiet_NaN()};
+  const std::size_t         rows  {4};
+  const std::size_t         width {300};
+  numerical::buffer<double> values(rows * width);
+  for (std::size_t k {0}; k < rows; ++k) {
+    for (std::size_t w {0}; w < width; ++w) {
+      values[(k * width) + w] = static_cast<double>((w + (k * 7)) % 5);
+    }
+  }
+  values[(0 * width) + 3]  = nan; // a NaN first: it wins at once
+  values[(2 * width) + 10] = nan; // a NaN later: it wins over the larger ones before it
+  values[(3 * width) + 10] = nan;
+  const tensor<double>       t        {{rows, width}, numerical::buffer<double>(values)};
+  const tensor<std::int64_t> largest  {numerical::argmax(t, 0)};
+  const tensor<std::int64_t> smallest {numerical::argmin(t, 0)};
+  bool                       ok       {true};
+  for (std::size_t w {0}; w < width; ++w) {
+    std::size_t most  {0};
+    std::size_t least {0};
+    bool        found {false};
+    for (std::size_t k {0}; k < rows && !found; ++k) {
+      const double x {values[(k * width) + w]};
+      if (std::isnan(x)) {
+        most         = least = k;
+        found        = true;
+      }
+      else {
+        most  = x > values[(most * width) + w] ? k : most;
+        least = x < values[(least * width) + w] ? k : least;
+      }
+    }
+    ok = ok && std::cmp_equal(largest.data()[w], most) && std::cmp_equal(smallest.data()[w], least);
+  }
+  EXPECT(ok);
+  const tensor<std::int64_t> integers {{2, 3}, {3, 1, 2, 3, 4, 2}};
+  EXPECT(numerical::argmax(integers, 0).data() == (numerical::buffer<std::int64_t> {0, 1, 0}));
+  const tensor<double> lines          {{2, 3}, {1.0, 3.0, 3.0, nan, 0.0, 5.0}}; // along the last axis: each line its own walk
+  EXPECT(numerical::argmax(lines, 1).data() == (numerical::buffer<std::int64_t> {1, 0}));
+  EXPECT(numerical::argmin(lines, 1).data() == (numerical::buffer<std::int64_t> {0, 0}));
+}
+
+// take_along_axis reads each index's element along the axis, the other axes matched; correlate sums each lag's terms
+// in v's order (a complex product NumPy's, conjugating v; an integer's wrapped), over the lags asked alone.
+TEST(take_along_axis_and_correlate)
+{
+  const tensor<double>       t       {{2, 3}, {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}};
+  const tensor<std::int64_t> rows    {{2, 2}, {2, 0, 1, 1}};
+  EXPECT(numerical::take_along_axis(t, rows, 1).data() == (numerical::buffer<double> {3.0, 1.0, 5.0, 5.0}));
+  const tensor<std::int64_t> columns {{1, 3}, {1, 0, 1}};
+  EXPECT(numerical::take_along_axis(t, columns, 0).data() == (numerical::buffer<double> {4.0, 2.0, 6.0}));
+  EXPECT(numerical::take_along_axis(numerical::zeros<double>({0, 3}), tensor<std::int64_t> {{0, 2}, numerical::buffer<std::int64_t> {}}, 1).size() == 0);
+  EXPECT_THROWS((void)numerical::take_along_axis(t, tensor<std::int64_t> {{2, 1}, {3, 0}}, 1), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::take_along_axis(t, tensor<std::int64_t> {{2, 1}, {-1, 0}}, 1), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::take_along_axis(t, tensor<std::int64_t> {{3, 1}, {0, 0, 0}}, 1), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::take_along_axis(t, tensor<std::int64_t> {{2}, {0, 0}}, 1), numerical::dimension_error);
+  const tensor<double> a {{3}, {1.0, 2.0, 3.0}};
+  const tensor<double> v {{2}, {0.5, 1.0}};
+  EXPECT(numerical::correlate(a, v, -1, 4).data() == (numerical::buffer<double> {1.0, 2.5, 4.0, 1.5}));
+  EXPECT(numerical::correlate(a, v, 0, 2).data() == (numerical::buffer<double> {2.5, 4.0}));
+  using cplx = std::complex<double>;
+  const tensor<cplx> z           {{1}, {cplx {0.0, 1.0}}};
+  EXPECT(numerical::correlate(z, z, 0, 1).data()[0] == cplx(1.0, 0.0)); // i · conj(i)
+  const tensor<std::int64_t> big {{2}, {std::numeric_limits<std::int64_t>::max(), 1}};
+  const tensor<std::int64_t> one {{1}, {2}};
+  EXPECT(numerical::correlate(big, one, 0, 2).data()[0] == -2);         // wrapped, as NumPy's
 }
 
 // Lines that are columns are walked in bands of 256, row after row: each line's sums, products and counts are those
