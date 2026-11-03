@@ -6080,6 +6080,366 @@ def nan_to_num(x, copy=True, nan=0.0, posinf=None, neginf=None):
     return _numerical._nan_to_num(x, float(nan), largest if posinf is None else float(posinf),
                                   -largest if neginf is None else float(neginf))
 
+
+def _along_axis(axis, rank, index):
+    """The key that applies `index` to the axis `axis` of a rank-`rank` tensor, every other axis whole."""
+    return (slice(None),) * axis + (index,) + (slice(None),) * (rank - axis - 1)
+
+
+def broadcast_shapes(*args):
+    """The shape `args` (shapes, an integer a rank-1 one) broadcast to, as ``numpy.broadcast_shapes``.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.broadcast_shapes((3, 1), (4,), 1)
+        (3, 4)
+    """
+    shapes = [_shape(shape) for shape in args]
+    rank = _builtins.max((len(shape) for shape in shapes), default=0)
+    out = []
+    for extents in zip(*((1,) * (rank - len(shape)) + shape for shape in shapes)):
+        wide = {extent for extent in extents if extent != 1}
+        if len(wide) > 1:
+            raise ValueError("shape mismatch: objects cannot be broadcast to a single shape.  Mismatch is between "
+                             + " and ".join(str(shape) for shape in shapes))
+        out.append(wide.pop() if wide else 1)
+    return tuple(out)
+
+
+def broadcast_to(array, shape):
+    """`array` repeated along the axes of extent 1 (and new leading ones) to `shape`, as ``numpy.broadcast_to``: a
+    copy here (a Tensor is never written, so it reads as NumPy's read-only view would)."""
+    a = _tensor(array)
+    shape = _shape(shape)
+    if _builtins.any(extent < 0 for extent in shape):
+        raise ValueError("all elements of broadcast shape must be non-negative")
+    if len(a.shape) > len(shape) or _builtins.any(
+            have not in (1, want) for have, want in zip(reversed(a.shape), reversed(shape))):
+        raise ValueError("operands could not be broadcast together with remapped shapes [original->remapped]: "
+                         f"{a.shape} and requested shape {shape}")
+    if a.shape == shape:
+        return a
+    return _numerical._where(full(shape, True, "bool"), a, a)
+
+
+def broadcast_arrays(*args):
+    """The arrays broadcast to one shape (:func:`broadcast_shapes`), as ``numpy.broadcast_arrays``: a tuple."""
+    tensors = [_tensor(a) for a in args]
+    shape = broadcast_shapes(*(t.shape for t in tensors))
+    return tuple(broadcast_to(t, shape) for t in tensors)
+
+
+def tile(A, reps):  # noqa: N803 (numpy.tile's argument)
+    """`A` repeated `reps` times along each axis, as ``numpy.tile``: `A` and `reps` brought to one rank by leading
+    extents and counts of 1.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.tile([1, 2], (2, 2))
+        numerical.Tensor([[1.0, 2.0, 1.0, 2.0],
+                          [1.0, 2.0, 1.0, 2.0]], dtype=float64)
+    """
+    a = _tensor(A)
+    reps = (_operator.index(reps),) if isinstance(reps, _numbers.Integral) else tuple(_operator.index(r) for r in reps)
+    rank = _builtins.max(len(reps), len(a.shape))
+    shape = (1,) * (rank - len(a.shape)) + a.shape
+    reps = (1,) * (rank - len(reps)) + reps
+    spread = reshape(a, tuple(x for extent in shape for x in (1, extent)))
+    repeated = broadcast_to(spread, tuple(x for count, extent in zip(reps, shape) for x in (count, extent)))
+    return reshape(repeated, tuple(count * extent for count, extent in zip(reps, shape)))
+
+
+def _counts(values, name):
+    """Integers of an array-like (a Tensor, a list, a NumPy array) as a Python list, refusing any other kind."""
+    if isinstance(values, Tensor):
+        if values.dtype not in ("int64", "bool"):
+            raise TypeError(f"{name}: Cannot cast array data from dtype('{values.dtype}') to dtype('int64') according "
+                            "to the rule 'safe'")
+        return [int(v) for v in reshape(values, (-1,)).tolist()]
+    if type(values).__name__ == "ndarray":
+        if values.dtype.kind not in "iub":
+            raise TypeError(f"{name}: Cannot cast array data from dtype('{values.dtype}') to dtype('int64') according "
+                            "to the rule 'safe'")
+        return [int(v) for v in values.ravel().tolist()]
+    flat, _ = _nested(values)
+    if not _builtins.all(isinstance(v, _numbers.Integral) for v in flat):
+        raise TypeError(f"{name}: Cannot cast array data from dtype('float64') to dtype('int64') according to the "
+                        "rule 'safe'")
+    return [int(v) for v in flat]
+
+
+def repeat(a, repeats, axis=None):
+    """Each element of `a` repeated, along `axis` (of the flattened `a` where None), as ``numpy.repeat``: `repeats`
+    one count for all, or one per element along the axis.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.repeat([1, 2], 2)
+        numerical.Tensor([1.0, 1.0, 2.0, 2.0], dtype=float64)
+        >>> numerical.repeat([[1, 2], [3, 4]], [1, 2], axis=0)
+        numerical.Tensor([[1.0, 2.0],
+                          [3.0, 4.0],
+                          [3.0, 4.0]], dtype=float64)
+    """
+    a = _tensor(a)
+    if axis is None:
+        a, axis = reshape(a, (-1,)), 0
+    axis = _axis(a, axis)
+    extent = a.shape[axis]
+    counts = [_operator.index(repeats)] if isinstance(repeats, _numbers.Integral) else _counts(repeats, "repeat")
+    if _builtins.any(count < 0 for count in counts):
+        raise ValueError("repeats may not contain negative values.")
+    if len(counts) == 1:  # every element as often: a broadcast, natively
+        count = counts[0]
+        spread = reshape(a, a.shape[:axis + 1] + (1,) + a.shape[axis + 1:])
+        repeated = broadcast_to(spread, a.shape[:axis + 1] + (count,) + a.shape[axis + 1:])
+        return reshape(repeated, a.shape[:axis] + (extent * count,) + a.shape[axis + 1:])
+    if len(counts) != extent:
+        raise ValueError(f"operands could not be broadcast together with shape ({extent},) ({len(counts)},)")
+    index = [position for position, count in enumerate(counts) for _ in range(count)]
+    return a[_along_axis(axis, len(a.shape), index)]
+
+
+def take(a, indices, axis=None, mode="raise"):
+    """The elements of `a` at `indices` along `axis` (of the flattened `a` where None), as ``numpy.take``: the
+    result's shape `a`'s with that axis replaced by the indices' shape. `mode` "raise" refuses an index out of the
+    axis, "wrap" takes it modulo the extent, "clip" to the nearest end."""
+    a = _tensor(a)
+    if axis is None:
+        a, axis = reshape(a, (-1,)), 0
+    axis = _axis(a, axis)
+    if mode not in ("raise", "wrap", "clip"):
+        raise ValueError(f"clipmode must be one of 'clip', 'raise', or 'wrap' (got {mode!r})")
+    scalar = isinstance(indices, _numbers.Integral)
+    if scalar:
+        shape, flat = (), [_operator.index(indices)]
+    else:
+        shape = _tensor(indices).shape if not isinstance(indices, Tensor) else indices.shape
+        flat = _counts(indices, "take")
+    extent = a.shape[axis]
+    if mode != "raise" and flat:
+        if extent == 0:
+            raise IndexError("cannot do a non-empty take from an empty axes.")
+        flat = [i % extent for i in flat] if mode == "wrap" else [_builtins.min(_builtins.max(i, 0), extent - 1)
+                                                                  for i in flat]
+    if scalar:
+        return a[_along_axis(axis, len(a.shape), flat[0])]
+    picked = a[_along_axis(axis, len(a.shape), flat)]
+    return reshape(picked, a.shape[:axis] + shape + a.shape[axis + 1:])
+
+
+def take_along_axis(arr, indices, axis=-1):
+    """The elements of `arr` at `indices` along `axis`, the other axes matched (broadcast), as
+    ``numpy.take_along_axis``: the companion of :func:`argsort` (``take_along_axis(a, argsort(a, axis), axis)`` sorts);
+    `axis` None for the flattened `arr` and indices of rank 1.
+
+    Examples:
+        >>> import numerical
+        >>> a = numerical.asarray([[3.0, 1.0], [2.0, 5.0]])
+        >>> numerical.take_along_axis(a, numerical.argsort(a, axis=1), axis=1)
+        numerical.Tensor([[1.0, 3.0],
+                          [2.0, 5.0]], dtype=float64)
+    """
+    arr = _tensor(arr)
+    indices = indices if isinstance(indices, Tensor) else asarray(indices)
+    if indices.dtype != "int64":
+        if indices.dtype == "float64" and _builtins.all(float(v).is_integer() for v in reshape(indices, (-1,)).tolist()):
+            indices = asarray(indices, "int64")  # integers read as float64 by asarray's default
+        else:
+            raise IndexError("`indices` must be an integer array")
+    if axis is None:
+        if len(indices.shape) != 1:
+            raise ValueError("when axis=None, `indices` must have a single dimension.")
+        arr, axis = reshape(arr, (-1,)), 0
+    axis = _axis(arr, axis)
+    rank = len(arr.shape)
+    if len(indices.shape) != rank:
+        raise ValueError("`indices` and `arr` must have the same number of dimensions")
+    key = []
+    for k in range(rank):
+        if k == axis:
+            key.append(indices)
+        else:
+            steps = asarray(arange(arr.shape[k]), "int64")
+            key.append(reshape(steps, (1,) * k + (arr.shape[k],) + (1,) * (rank - k - 1)))
+    return arr[tuple(key)]
+
+
+def roll(a, shift, axis=None):
+    """`a` with its elements shifted by `shift` along `axis` (of the flattened `a` where None), those past the end
+    back at the start, as ``numpy.roll``; `shift` and `axis` may be sequences of one length (or one of them a single
+    value), a repeated axis shifted by the sum.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.roll([1, 2, 3, 4], 1)
+        numerical.Tensor([4.0, 1.0, 2.0, 3.0], dtype=float64)
+    """
+    a = _tensor(a)
+    if axis is None:
+        return reshape(roll(reshape(a, (-1,)), shift, 0), a.shape)
+    shifts = (shift,) if isinstance(shift, _numbers.Integral) else tuple(shift)
+    axes = (axis,) if isinstance(axis, _numbers.Integral) else tuple(axis)
+    if len(shifts) == 1:
+        shifts *= len(axes)
+    elif len(axes) == 1:
+        axes *= len(shifts)
+    if len(shifts) != len(axes):
+        raise ValueError("shape mismatch: objects cannot be broadcast to a single shape")
+    rank = len(a.shape)
+    total = [0] * rank
+    for step, along in zip(shifts, axes):
+        total[_normalized_axes(along, rank, "roll")[0]] += _operator.index(step)
+    for along, step in enumerate(total):
+        extent = a.shape[along]
+        step = step % extent if extent else 0
+        if step:
+            a = concatenate([a[_along_axis(along, rank, slice(extent - step, None))],
+                             a[_along_axis(along, rank, slice(None, extent - step))]], axis=along)
+    return a
+
+
+def rot90(m, k=1, axes=(0, 1)):
+    """`m` rotated by 90 degrees `k` times in the plane of `axes`, from the first axis toward the second, as
+    ``numpy.rot90``.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.rot90([[1, 2], [3, 4]])
+        numerical.Tensor([[2.0, 4.0],
+                          [1.0, 3.0]], dtype=float64)
+    """
+    axes = tuple(axes)
+    if len(axes) != 2:
+        raise ValueError("len(axes) must be 2.")
+    m = _tensor(m)
+    rank = len(m.shape)
+    if axes[0] == axes[1] or _builtins.abs(axes[0] - axes[1]) == rank:
+        raise ValueError("Axes must be different.")
+    if not (-rank <= axes[0] < rank and -rank <= axes[1] < rank):
+        raise ValueError(f"Axes={axes} out of range for array of ndim={rank}.")
+    k = _operator.index(k) % 4
+    if k == 0:
+        return m
+    if k == 2:
+        return flip(flip(m, axes[0]), axes[1])
+    order = list(range(rank))
+    order[axes[0]], order[axes[1]] = order[axes[1]], order[axes[0]]
+    return transpose(flip(m, axes[1]), order) if k == 1 else flip(transpose(m, order), axes[1])
+
+
+def array_split(ary, indices_or_sections, axis=0):
+    """`ary` cut along `axis` into a list of tensors, as ``numpy.array_split``: at the given indices (slices between
+    them, empty where they do not advance), or into that many sections, the first ``extent % sections`` one longer."""
+    a = _tensor(ary)
+    axis = _axis(a, axis)
+    extent = a.shape[axis]
+    if isinstance(indices_or_sections, _numbers.Integral):
+        sections = _operator.index(indices_or_sections)
+        if sections <= 0:
+            raise ValueError("number sections must be larger than 0.")
+        each, extras = _builtins.divmod(extent, sections)
+        points = [0]
+        for size in [each + 1] * extras + [each] * (sections - extras):
+            points.append(points[-1] + size)
+    else:
+        points = [0] + _counts(indices_or_sections, "array_split") + [extent]
+    rank = len(a.shape)
+    return [a[_along_axis(axis, rank, slice(start, stop))] for start, stop in zip(points, points[1:])]
+
+
+def split(ary, indices_or_sections, axis=0):
+    """`ary` cut along `axis` into a list of tensors, as ``numpy.split``: :func:`array_split`, a number of sections
+    dividing the extent.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.split([1, 2, 3, 4], 2)
+        [numerical.Tensor([1.0, 2.0], dtype=float64), numerical.Tensor([3.0, 4.0], dtype=float64)]
+    """
+    a = _tensor(ary)
+    if isinstance(indices_or_sections, _numbers.Integral) and indices_or_sections > 0 \
+            and a.shape[_axis(a, axis)] % indices_or_sections:
+        raise ValueError("array split does not result in an equal division")
+    return array_split(a, indices_or_sections, axis)
+
+
+def hsplit(ary, indices_or_sections):
+    """:func:`split` along the second axis (the first of a vector), as ``numpy.hsplit``."""
+    a = _tensor(ary)
+    if not a.shape:
+        raise ValueError("hsplit only works on arrays of 1 or more dimensions")
+    return split(a, indices_or_sections, 1 if len(a.shape) > 1 else 0)
+
+
+def vsplit(ary, indices_or_sections):
+    """:func:`split` along the first axis, as ``numpy.vsplit`` (rank 2 or more)."""
+    a = _tensor(ary)
+    if len(a.shape) < 2:
+        raise ValueError("vsplit only works on arrays of 2 or more dimensions")
+    return split(a, indices_or_sections, 0)
+
+
+def dsplit(ary, indices_or_sections):
+    """:func:`split` along the third axis, as ``numpy.dsplit`` (rank 3 or more)."""
+    a = _tensor(ary)
+    if len(a.shape) < 3:
+        raise ValueError("dsplit only works on arrays of 3 or more dimensions")
+    return split(a, indices_or_sections, 2)
+
+
+def dstack(tup):
+    """The arrays along the third axis, as ``numpy.dstack``: each first of rank 3 (:func:`atleast_3d`)."""
+    tensors = _joined(tup, "dstack")
+    shaped = atleast_3d(*tensors)
+    return concatenate(shaped if isinstance(shaped, list) else [shaped], axis=2)
+
+
+def append(arr, values, axis=None):
+    """`values` after `arr` along `axis`, as ``numpy.append``: both flattened where `axis` is None."""
+    if axis is None:
+        return concatenate([ravel(arr), ravel(values)], axis=0)
+    return concatenate([arr, values], axis=axis)
+
+
+def block(arrays):
+    """One tensor assembled from nested lists of blocks, as ``numpy.block``: the innermost lists joined along the
+    last axis, the lists of them along the one before, and so on, each block first given leading axes of extent 1 up
+    to the result's rank (the deeper of the nesting and the blocks' ranks).
+
+    Examples:
+        >>> import numerical
+        >>> numerical.block([[numerical.eye(2), numerical.zeros((2, 1))], [numerical.ones((1, 3))]])
+        numerical.Tensor([[1.0, 0.0, 0.0],
+                          [0.0, 1.0, 0.0],
+                          [1.0, 1.0, 1.0]], dtype=float64)
+    """
+    def survey(x, index):
+        if type(x) is tuple:
+            raise TypeError(f"{index} is a tuple. Only lists can be used to arrange blocks, and np.block does not "
+                            "allow implicit conversion from tuple to ndarray.")
+        if type(x) is not list:
+            return 0, len(_tensor(x).shape), index
+        if not x:
+            raise ValueError(f"List at {index} cannot be empty")
+        found = [survey(y, f"{index}[{i}]") for i, y in enumerate(x)]
+        for depth, _, where in found[1:]:
+            if depth != found[0][0]:
+                raise ValueError(f"List depths are mismatched. First element was at depth {found[0][0] + 1}, but "
+                                 f"there is an element at depth {depth + 1} ({where})")
+        return found[0][0] + 1, _builtins.max(rank for _, rank, _ in found), found[0][2]
+
+    depth, deepest, _ = survey(arrays, "arrays")
+    rank = _builtins.max(depth, deepest)
+
+    def assembled(x, level):
+        if level == depth:
+            t = _tensor(x)
+            return reshape(t, (1,) * (rank - len(t.shape)) + t.shape)
+        return concatenate([assembled(y, level + 1) for y in x], axis=level - depth)
+
+    return assembled(arrays, 0)
+
 Tensor.nonzero = lambda self: nonzero(self)
 for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot", "prod", "cumsum", "cumprod", "round", "argmax", "argmin",
               "argsort", "searchsorted"):  # NumPy's methods of these names, where Tensor has none
@@ -6096,7 +6456,9 @@ __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "f
             "rad2deg", "radians", "degrees", "round", "around", "prod", "cumsum", "cumprod", "sort", "diff", "argmax",
             "argmin", "argsort", "nonzero", "flatnonzero", "argwhere", "count_nonzero", "searchsorted", "hypot",
             "arctan2", "atan2", "copysign", "nextafter", "fmod", "logaddexp", "logaddexp2", "fmax", "fmin", "heaviside",
-            "float_power", "angle", "unwrap", "nan_to_num"]
+            "float_power", "angle", "unwrap", "nan_to_num", "broadcast_shapes", "broadcast_to", "broadcast_arrays", "tile",
+            "repeat", "take", "take_along_axis", "roll", "rot90", "array_split", "split", "hsplit", "vsplit", "dsplit",
+            "dstack", "append", "block"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)
 

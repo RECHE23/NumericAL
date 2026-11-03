@@ -22,6 +22,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   (a Python float beside a float32 keeps float32; integers in float64), to NumPy's bits on the edge values (signed
   zeros, infinities, NaN, subnormals); also `float_power`, `angle` (`deg`), `unwrap` (`discont`, `period`, NumPy's
   formula and bits) and `nan_to_num` (`nan`, `posinf`, `neginf`; a complex element's parts apart).
+- **NumPy's array manipulation**: `tile`, `repeat` (one count or one per element), `roll` (several axes),
+  `rot90`, `split`, `array_split`, `hsplit`, `vsplit`, `dsplit`, `dstack`, `append`, `block`, `take` (`mode`
+  "raise", "wrap", "clip"), `take_along_axis`, `broadcast_to`, `broadcast_arrays` and `broadcast_shapes`, with
+  NumPy's errors.
 
 ## 2026.11.3 — 2026-11-03
 
