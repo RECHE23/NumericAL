@@ -1,8 +1,8 @@
 """linspace (in full), logspace, geomspace, identity, vander, the sets (unique and its forms, intersect1d, union1d,
 setdiff1d, setxor1d, isin), digitize, cumulative_sum and cumulative_prod, unstack, matvec, vecmat, ediff1d,
-trim_zeros, select, and the complex prod and cumprod: against NumPy's answers to the bit (matvec and vecmat within a
-few ulps: NumPy's go through its BLAS), with NumPy's errors. Deterministic; the NumPy comparisons skipped without
-NumPy."""
+trim_zeros, select, and the complex prod and cumprod: against NumPy's answers to the bit (logspace and geomspace
+within 2 ulps, their powers C's library's; matvec and vecmat within a few: NumPy's go through its BLAS), with
+NumPy's errors. Deterministic; the NumPy comparisons skipped without NumPy."""
 import math
 import unittest
 import warnings
@@ -93,16 +93,18 @@ class AgainstNumPy(unittest.TestCase):
         self.errstate.__enter__()
         self.addCleanup(self.errstate.__exit__, None, None, None)
 
-    def assertSame(self, ours, theirs, label):
+    def assertSame(self, ours, theirs, label, ulps=0):
         try:
             want = theirs()
         except (IndexError, TypeError, ValueError, RuntimeError) as error:
             with self.assertRaises(ValueError if type(error).__name__ == "AxisError" else type(error), msg=label):
                 ours()
             return
-        self.assertBits(ours(), want, label)
+        self.assertBits(ours(), want, label, ulps)
 
-    def assertBits(self, got, want, label):
+    def assertBits(self, got, want, label, ulps=0):
+        """To the bit; or, `ulps` given, NaNs, infinities and zeros (a zero's sign too) to the bit and every other
+        value within that many ulps: a power is C's library's here, NumPy's own vector loop's on x86-64."""
         if isinstance(want, tuple):
             self.assertIsInstance(got, tuple, label)
             self.assertEqual(len(got), len(want), label)
@@ -122,6 +124,14 @@ class AgainstNumPy(unittest.TestCase):
         if want.dtype.kind in "fc":
             self.assertTrue(np.array_equal(np.isnan(got), np.isnan(want)), label)
             got, want = np.where(np.isnan(got), 0, got), np.where(np.isnan(want), 0, want)
+        if ulps and want.dtype.kind == "f":
+            exact = ~np.isfinite(want) | (want == 0)
+            self.assertEqual(np.where(exact, got, 0).tobytes(), np.where(exact, want, 0).tobytes(), label)
+            try:
+                np.testing.assert_array_max_ulp(got[~exact], want[~exact], maxulp=ulps)
+            except AssertionError as error:
+                self.fail(f"{label}: {error}")
+            return
         self.assertEqual(got.tobytes(), want.tobytes(), label)
 
     def test_spaces(self):
@@ -146,7 +156,7 @@ class AgainstNumPy(unittest.TestCase):
                         self.assertSame(lambda: numerical.logspace(_tensor(start), _tensor(stop), num, endpoint,
                                                                    _tensor(base)),
                                         lambda: np.logspace(start, stop, num, endpoint, base),
-                                        f"logspace {start} {stop} {num} {base}")
+                                        f"logspace {start} {stop} {num} {base}", ulps=2)
         for start in (1, 2.5, -3, np.array([1.0, 10.0]), np.array([1.0, -4.0], dtype=np.float32)):
             for stop in (1000, -8.0, np.array([5.0, 7.0]), 1e300):
                 for num in (0, 1, 2, 7):
@@ -156,7 +166,7 @@ class AgainstNumPy(unittest.TestCase):
                                 self.assertSame(lambda: numerical.geomspace(_tensor(start), _tensor(stop), num,
                                                                             endpoint, dtype, axis),
                                                 lambda: np.geomspace(start, stop, num, endpoint, dtype, axis),
-                                                f"geomspace {start} {stop} {num} {dtype} {axis}")
+                                                f"geomspace {start} {stop} {num} {dtype} {axis}", ulps=2)
         for dtype in (None, "float32", "int64", bool, "complex128"):
             self.assertSame(lambda: numerical.identity(3, dtype), lambda: np.identity(3, dtype), f"identity {dtype}")
 
