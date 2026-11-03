@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+- **`sort` keeps equal reals in their order under libc++ 22**: its `std::stable_sort` of 1024 doubles or more
+  ordered by `std::less` sorts them by their bits, −0 before +0; NumericAL's sort now compares through a lambda of
+  its own (the macOS x86_64 wheel of 2026.11.3 failed its test there, and 2026.11.3 was not published).
+- **A test of int64 reductions** compared a Python integer's dtype through `numpy.asarray`, int32 on a 32-bit
+  Windows; it compares its kind and value.
+
 ### Added
 - **NumPy's real binary functions**: `hypot`, `arctan2` (`atan2`), `copysign`, `nextafter`, `fmod` (of the
   dividend's sign; int64 stays, by zero 0), `logaddexp` and `logaddexp2` (NumPy's formulas, without overflow),

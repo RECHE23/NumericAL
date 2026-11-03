@@ -204,8 +204,14 @@ class Int64WithNumpy(unittest.TestCase):
         for axis in (None, 0, 1):
             with self.subTest(axis=axis):
                 for name in ("sum", "prod", "max", "min", "any", "all", "cumsum", "cumprod", "sort"):
-                    got = np.asarray(getattr(numerical, name)(wide, axis=axis))
+                    result = getattr(numerical, name)(wide, axis=axis)
                     want = getattr(np, name)(grid, axis=axis)
+                    if not isinstance(result, numerical.Tensor):  # a Python number, of NumPy's scalar's kind and value
+                        # (not np.asarray's dtype of it: the platform's integer, int32 on a 32-bit Windows)
+                        self.assertIs(type(result), bool if want.dtype == np.bool_ else int, name)
+                        self.assertEqual(result, want.item(), name)
+                        continue
+                    got = np.asarray(result)
                     self.assertEqual(got.dtype, np.asarray(want).dtype, name)
                     np.testing.assert_array_equal(got, want, err_msg=name)
         np.testing.assert_array_equal(np.asarray(numerical.mean(wide, axis=1)), np.mean(grid, axis=1))

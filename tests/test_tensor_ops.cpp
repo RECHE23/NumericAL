@@ -1012,6 +1012,16 @@ TEST(prod_cumulative_sums_and_sort_along_an_axis)
   const tensor<float> single   {{3}, {2.0F, -1.0F, 0.5F}};
   EXPECT(numerical::sort(single, 0).data()[0] == -1.0F && numerical::cumsum(single, 0).data()[2] == 1.5F);
   EXPECT_THROWS((void)numerical::cumsum(grid, 2), numerical::dimension_error);
+  numerical::buffer<double> zeros(4096); // +0, −0, +0, …: past the size where libc++ 22 sorts doubles by their bits
+  for (std::size_t k {0}; k < zeros.size(); ++k) {
+    zeros[k] = k % 2 == 0 ? 0.0 : -0.0;
+  }
+  const tensor<double> signed_zeros {numerical::sort(tensor<double> {{zeros.size()}, numerical::buffer<double>(zeros)}, 0)};
+  bool                 in_order     {true};
+  for (std::size_t k {0}; k < zeros.size(); ++k) {
+    in_order = in_order && std::signbit(signed_zeros.data()[k]) == (k % 2 == 1);
+  }
+  EXPECT(in_order);
 }
 
 // A line long enough for the threads sorts in pieces merged in pairs, to the bits of one stable sort: equal values

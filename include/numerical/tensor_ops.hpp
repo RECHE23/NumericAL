@@ -1642,13 +1642,15 @@ namespace numerical {
 
   namespace detail {
     //! \brief Sorts `[first, last)` stably as \ref sorts_before orders reals: the NaNs moved behind the rest in their
-    //!        order first, the rest by `<`, which tests for no NaN.
+    //!        order first, the rest by `<`, which tests for no NaN. The comparison is a lambda of its own, not the
+    //!        default `std::less`: libc++ 22 sorts a default-ordered range of 1024 doubles or more by their bits (a radix
+    //!        sort), which puts −0 before +0 where `<` holds them equal and in their order.
     template <std::floating_point T>
     void sort_run(T* first,
                   T* last)
     {
       T* const numbers_end {std::stable_partition(first, last, [](T x) { return !std::isnan(x); })};
-      std::stable_sort(first, numbers_end);
+      std::stable_sort(first, numbers_end, [](T a, T b) { return a < b; });
     }
 
     //! \brief Sorts `[first, last)` stably as integers sort.
