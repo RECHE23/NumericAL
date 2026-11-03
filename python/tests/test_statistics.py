@@ -56,6 +56,21 @@ class WithoutNumPy(unittest.TestCase):
         self.assertEqual(numerical.any(numerical.asarray([0.0, 2.0]), axis=()).tolist(), [False, True])
         self.assertEqual(str(numerical.sum(numerical.full(9, -0.0))), "0.0")
 
+    def test_weighted_quantiles(self):
+        def weighted(a, q, weights, **kwargs):
+            return numerical.quantile(a, q, method="inverted_cdf", weights=weights, **kwargs)
+
+        self.assertEqual(weighted([1.0, 2.0, 3.0, 4.0], 0.5, [0, 0, 1, 1]), 3.0)
+        self.assertEqual(weighted([1.0, 2.0, 3.0, 4.0], 0.0, [0, 0, 1, 1]), 3.0)  # a leading zero weight skipped
+        self.assertEqual(weighted([4.0, 1.0, 3.0], [0.2, 0.9], [1, 3, 1]).tolist(), [1.0, 4.0])
+        self.assertEqual(weighted(numerical.asarray([7, 5], "int64"), 1.0, [True, True]), 7)
+        self.assertTrue(math.isnan(weighted([1.0, math.nan], 0.5, [1.0, 0.0])))
+        self.assertEqual(weighted([[1.0, 2.0], [3.0, 4.0]], 0.5, [1.0, 3.0], axis=1, keepdims=True).tolist(),
+                         [[2.0], [4.0]])
+        self.assertEqual(numerical.nanquantile([math.nan, 2.0], 0.5, method="inverted_cdf", weights=[5.0, 1.0]), 2.0)
+        self.assertEqual(numerical.nanpercentile([[1.0, math.nan, 3.0], [4.0, 5.0, 6.0]], 50, axis=1,
+                                                 method="inverted_cdf", weights=[1.0, 1.0, 1.0]).tolist(), [1.0, 5.0])
+
     def test_warnings_and_errors(self):
         nan = math.nan
         with warnings.catch_warnings(record=True) as caught:
@@ -69,6 +84,10 @@ class WithoutNumPy(unittest.TestCase):
             self.assertTrue(math.isnan(numerical.cov([1.0])))
         self.assertTrue(all(issubclass(w.category, RuntimeWarning) for w in caught))
         self.assertEqual(len(caught), 7)
+        with warnings.catch_warnings(record=True) as caught:
+            warnings.simplefilter("always")
+            self.assertTrue(math.isnan(numerical.nanquantile([nan, nan], 0.5, method="inverted_cdf", weights=[0.0, 0.0])))
+        self.assertEqual([w.category for w in caught], [RuntimeWarning])
         cases = [
             (ValueError, lambda: numerical.nanargmax([nan, nan])),
             (ValueError, lambda: numerical.quantile([1.0], 1.5)),
@@ -76,7 +95,13 @@ class WithoutNumPy(unittest.TestCase):
             (ValueError, lambda: numerical.quantile([1.0], 0.5, method="mean")),
             (ValueError, lambda: numerical.quantile([1.0], [[[0.5]]])),
             (TypeError, lambda: numerical.quantile([1j], 0.5)),
-            (NotImplementedError, lambda: numerical.quantile([1.0], 0.5, method="inverted_cdf", weights=[1.0])),
+            (ValueError, lambda: numerical.quantile([1.0], 0.5, weights=[1.0])),
+            (ValueError, lambda: numerical.quantile([1.0, 2.0], 0.5, method="inverted_cdf", weights=[1.0, -1.0])),
+            (ValueError, lambda: numerical.quantile([1.0, 2.0], 0.5, method="inverted_cdf", weights=[0.0, 0.0])),
+            (ValueError, lambda: numerical.quantile([1.0, 2.0], 0.5, method="inverted_cdf", weights=[nan, 1.0])),
+            (ValueError, lambda: numerical.quantile([1.0, 2.0], 0.5, method="inverted_cdf", weights=[math.inf, 1.0])),
+            (TypeError, lambda: numerical.quantile([[1.0, 2.0]], 0.5, method="inverted_cdf", weights=[1.0, 1.0])),
+            (ValueError, lambda: numerical.quantile([[1.0, 2.0]], 0.5, axis=0, method="inverted_cdf", weights=[1.0, 1.0])),
             (TypeError, lambda: numerical.median([1.0], out=numerical.zeros(1))),
             (TypeError, lambda: numerical.nansum([1.0], out=numerical.zeros(1))),
             (ValueError, lambda: numerical.cov(numerical.zeros((2, 2, 2)))),
@@ -179,6 +204,57 @@ class AgainstNumPy(unittest.TestCase):
                 self.assertSame(numerical.percentile(t, q, axis=0), np.percentile(data, q, axis=0), f"percentile {q}")
                 self.assertSame(numerical.nanpercentile(t, q, axis=0, keepdims=True),
                                 np.nanpercentile(data, q, axis=0, keepdims=True), f"nanpercentile {q}")
+
+    def test_weighted_quantiles(self):
+        rng = np.random.default_rng(2)
+        holed = rng.normal(size=(3, 4, 5))
+        holed[0, 1, 2] = np.nan
+        holed[2, :, 4] = np.nan
+        cases = (holed, rng.integers(-5, 5, size=(4, 6), dtype=np.int64), np.round(rng.normal(size=(5, 6))) + 0.0,
+                 rng.normal(size=7).astype(np.float32), np.array([1.0, np.nan, 3.0]))
+        for data in cases:
+            t = numerical.asarray(data, "int64") if data.dtype.kind == "i" else numerical.asarray(data)
+            for axis in (None, *range(-1, data.ndim), *(((0, 1), (1, 0), (0, 2)) if data.ndim > 2 else ())):
+                if isinstance(axis, tuple) and not _NUMPY_2_4:
+                    continue  # NumPy before 2.4 joins the axes of `a` but not of the weights (numpy/numpy#30069)
+                axes = None if axis is None else (axis,) if isinstance(axis, int) else axis
+                for shape in (data.shape,) + (() if axes is None else (tuple(data.shape[k] for k in axes),)):
+                    full = shape == data.shape
+                    if not full:  # NumPy's weights of the axes' shape, broadcast as NumPy's _weights_are_valid
+                        normal = [k % data.ndim for k in axes]
+                        spread = tuple(e if k in normal else 1 for k, e in enumerate(data.shape))
+                    for kind in ("random", "integers", "leading zeros", "bools", "zeros", "nans"):
+                        weights = {"random": rng.random(shape), "integers": rng.integers(0, 4, size=shape, dtype=np.int64),
+                                   "leading zeros": np.where(rng.random(shape) < 0.5, 0.0, rng.random(shape)),
+                                   "bools": rng.random(shape) < 0.6, "zeros": np.zeros(shape),
+                                   "nans": np.full(shape, np.nan)}[kind]
+                        broadcast = weights if full else np.broadcast_to(
+                            np.transpose(weights, np.argsort(axes)).reshape(spread), data.shape)
+                        for q in (0.0, 0.5, 1.0, [0.0, 0.3, 0.999, 1.0], np.array([0.1, 0.7], dtype=np.float32),
+                                  np.array([[0.2], [0.6]])):
+                            ours_q = numerical.asarray(q) if isinstance(q, np.ndarray) else q
+                            for name, scale in (("quantile", 1), ("nanquantile", 1), ("percentile", 100)):
+                                # NumPy's nanquantile cannot take weights of the axes' shape (numpy/numpy#29709):
+                                # compared against those weights broadcast
+                                theirs = broadcast if name == "nanquantile" else weights
+                                label = f"{name} {data.dtype} {data.shape} {axis} {shape} {kind} {q}"
+                                try:
+                                    want = getattr(np, name)(data, np.asarray(q) * scale, axis=axis,
+                                                             method="inverted_cdf", weights=theirs, keepdims=True)
+                                except ValueError:
+                                    with self.assertRaises(ValueError, msg=label):
+                                        getattr(numerical, name)(t, ours_q if scale == 1 else numerical.asarray(q) * scale,
+                                                                 axis=axis, method="inverted_cdf", weights=weights)
+                                    continue
+                                try:
+                                    got = getattr(numerical, name)(t, ours_q if scale == 1 else numerical.asarray(q) * scale,
+                                                                   axis=axis, method="inverted_cdf", weights=weights,
+                                                                   keepdims=True)
+                                except ValueError:
+                                    if _NUMPY_2_4:
+                                        raise
+                                    continue  # a slice of zero weights alone, which NumPy before 2.4 answers
+                                self.assertSame(got, want, label)
 
     def test_average_cov_corrcoef(self):
         rng = np.random.default_rng(2)

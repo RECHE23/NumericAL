@@ -54,6 +54,8 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
   only a zero's sign or a NaN's payload shows.
 - **`insert` before a list of bools** inserts before each true position, as NumPy does for a bool array; NumPy 2.4
   raises AttributeError for a list (it asks the list for its rank).
+- **`nanquantile` and `nanpercentile` with weights of the axis's shape** answer as with those weights broadcast to
+  the array's; NumPy raises IndexError there (numpy/numpy#29709).
 - **The special matrices** (`hilbert`, `pascal`, `invpascal`…) are float64 where SciPy's exact ones are integers:
   each entry computed exactly, then rounded once.
 - **The complex elementary functions** (`exp`, `log`, `sqrt`, `sin`, `cos`, `tan`, `tanh` of a complex number) are

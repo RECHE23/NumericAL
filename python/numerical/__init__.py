@@ -7008,6 +7008,61 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
     return _kept_dims(result, a, axes, lead, keepdims)
 
 
+def _weighted_quantiles(a, q, axis, weights, keepdims, ignore_nans, name):
+    """NumPy's weighted ``_quantile`` (method "inverted_cdf") of `a` (real) at `q`: in each slice sorted, the first
+    value whose share of the weights (cumulated in float64, in `q`'s float dtype) reaches `q`, a leading run of zero
+    weights skipped; NaN where a slice holds a NaN (`ignore_nans`: the NaNs and their weights left out, NaN where
+    nothing else is left). `weights` of `a`'s shape, or of the shape of `axis`'s extents in its order."""
+    a = _tensor(a)
+    if a.dtype.startswith("complex"):
+        raise TypeError("a must be an array of real numbers")
+    rank = len(a.shape)
+    w = _tensor(weights)
+    if w.shape != a.shape:
+        if axis is None:
+            raise TypeError("Axis must be specified when shapes of a and weights differ.")
+        axes = _normalized_axes(axis, rank, name)
+        if w.shape != tuple(a.shape[k] for k in axes):
+            raise ValueError("Shape of weights must be consistent with shape of a along specified axis.")
+        w = _permuted(w, sorted(range(len(axes)), key=axes.__getitem__))
+        w = broadcast_to(reshape(w, tuple(e if k in axes else 1 for k, e in enumerate(a.shape))), a.shape)
+    if any(w < 0):
+        raise ValueError("Weights must be non-negative.")
+    joined, axes = _last_axis(a, axis, name)
+    order = argsort(joined, axis=-1)
+    s = take_along_axis(joined, order, axis=-1)
+    share = asarray(take_along_axis(_last_axis(w, axis, name)[0], order, axis=-1), "float64")
+    rest = s.shape[:-1]
+    inexact = a.dtype in ("float64", "float32")
+    empty = None
+    if ignore_nans and inexact:
+        share = where(isnan(s), 0.0, share)
+        empty = count_nonzero(~isnan(s), axis=-1, keepdims=True) == 0
+        share = where(empty, 1.0, share)  # a slice of NaNs alone: NaN below, not an error
+    cdf = cumsum(share, axis=-1)
+    cdf = cdf / cdf[..., -1:]
+    if any(isnan(cdf[..., -1])):
+        raise ValueError("Weights included NaN, inf or were all zero.")
+    if q.dtype == "float32":  # NumPy's: compared in q's precision
+        cdf = asarray(cdf, "float32")
+    if any(cdf[..., 0] == 0):
+        cdf = where(cdf == 0, -1.0, cdf)
+    flat_q = reshape(q, (-1,))
+    index = count_nonzero(reshape(cdf, cdf.shape + (1,)) < flat_q, axis=-2)  # NumPy's searchsorted, side "left"
+    index = minimum(index, s.shape[-1] - 1)
+    result = take_along_axis(s, index, axis=-1) if rest else s[index]
+    if empty is not None:
+        if any(empty):
+            _warnings.warn("All-NaN slice encountered", RuntimeWarning, stacklevel=3)
+            result = where(empty, _math.nan, result)
+    elif inexact:
+        last = s[..., -1:]
+        result = where(isnan(last), last, result)
+    result = _permuted(result, [len(rest)] + list(range(len(rest)))) if rest else result
+    result = reshape(result, q.shape + rest)
+    return _kept_dims(result, a, axes, q.shape, keepdims)
+
+
 def _as_position(index, n):
     """A float64 virtual index (NumPy's -1 for the last value) as int64 positions among `n` values."""
     position = asarray(index, "int64")
@@ -7054,12 +7109,15 @@ def _quantile_operand(q, scale, name):
 def quantile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=False, *, weights=None):
     """The `q`-th quantiles (in [0, 1]) of every element or along `axis`, as ``numpy.quantile`` and by its steps (its
     13 methods, its interpolation, NumPy 2.4's weak Python `q`: a float32 kept beside it); the quantiles' axes
-    first. Real dtypes.
+    first. Real dtypes. `weights` (method "inverted_cdf" alone, as NumPy's), non-negative, of `a`'s shape or of the
+    extents of `axis` in its order: the first sorted value whose share of the weights reaches `q`.
 
     Examples:
         >>> import numerical
         >>> numerical.quantile([1.0, 2.0, 3.0, 4.0], [0.25, 0.5])
         numerical.Tensor([1.75, 2.5], dtype=float64)
+        >>> numerical.quantile([1.0, 2.0, 3.0], 0.5, method="inverted_cdf", weights=[1.0, 1.0, 3.0])
+        3.0
     """
     return _quantile_entry(a, q, axis, out, method, keepdims, weights, 1, False, "quantile")
 
@@ -7083,11 +7141,12 @@ def nanpercentile(a, q, axis=None, out=None, overwrite_input=False, method="line
 
 def _quantile_entry(a, q, axis, out, method, keepdims, weights, scale, ignore_nans, name):
     _no_out(out, name)
-    if weights is not None:
-        raise NotImplementedError(f"{name}: weights are not supported here yet (NumPy's take them for "
-                                  "method='inverted_cdf' alone)")
     values, weak = _quantile_operand(q, scale, "Quantiles" if scale == 1 else "Percentiles")
-    return _quantiles(a, values, axis, method, keepdims, ignore_nans, weak, name)
+    if weights is None:
+        return _quantiles(a, values, axis, method, keepdims, ignore_nans, weak, name)
+    if method != "inverted_cdf":
+        raise ValueError(f"Only method 'inverted_cdf' supports weights. Got: {method}.")
+    return _weighted_quantiles(a, values, axis, weights, keepdims, ignore_nans, name)
 
 
 def average(a, axis=None, weights=None, returned=False, *, keepdims=False):

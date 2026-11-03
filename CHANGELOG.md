@@ -13,6 +13,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`insert` and `delete`**, as NumPy's: a slice, an index, indices or a mask along an axis (of the flattened array
   by default), the values cast to the array's dtype, NumPy's errors; `insert` before a list of bools inserts before
   its true positions, where NumPy 2.4 raises AttributeError.
+- **Weighted quantiles**: `quantile`, `percentile`, `nanquantile` and `nanpercentile` take `weights` for the method
+  "inverted_cdf", as NumPy 2.4 (its errors for negative, NaN, infinite or all-zero weights); `nanquantile` takes
+  weights of the axis's shape, where NumPy raises IndexError (numpy/numpy#29709).
 
 ## 2026.11.4 — 2026-11-03
 
