@@ -5941,6 +5941,145 @@ def diff(a, n=1, axis=-1):
     return a
 
 
+def _real_binary_function(name, doc, integers=None):
+    """NumPy's real binary function `name` of two operands promoted to one dtype (:func:`_same_dtype`): native for
+    float64 and float32; int64 by `integers` where NumPy keeps integers, else, as bools, in float64."""
+    def function(x1, x2, /):
+        a, b = _same_dtype(x1, x2)
+        if a.dtype.startswith("complex"):
+            raise TypeError(f"{name}: real numbers only (NumPy's too)")
+        if a.dtype == "int64" and integers is not None:
+            return integers(a, b)
+        if a.dtype in ("int64", "bool"):
+            a, b = asarray(a, "float64"), asarray(b, "float64")
+        return _native(_numerical._real_binary, name, a, b)
+
+    function.__name__ = name
+    function.__doc__ = doc
+    return function
+
+
+def _integer_fmod(a, b):
+    """C's ``a % b`` of int64 tensors, the remainder of `a`'s sign (by zero 0, as NumPy's): Python's, of `b`'s sign,
+    less `b` where the two signs differ."""
+    r = remainder(a, b)
+    return where((r != 0) & ((r < 0) ^ (a < 0)), r - b, r)
+
+
+hypot = _real_binary_function("hypot", """``√(x1² + x2²)`` element-wise without overflow, as ``numpy.hypot`` (C's
+    ``hypot``). Real dtypes; integers in float64.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.hypot([3.0, 1e300], [4.0, 1e300])
+        numerical.Tensor([5.0, 1.4142135623730952e+300], dtype=float64)
+    """)
+arctan2 = _real_binary_function("arctan2", """The angle of the point ``(x2, x1)`` element-wise, in ``[−π, π]``, as
+    ``numpy.arctan2`` (C's ``atan2``: the zeros' signs pick the quadrant). Real dtypes; integers in float64.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.arctan2([1.0, 0.0], [0.0, -1.0])
+        numerical.Tensor([1.5707963267948966, 3.141592653589793], dtype=float64)
+    """)
+atan2 = arctan2
+copysign = _real_binary_function("copysign", """`x1`'s magnitude with `x2`'s sign element-wise (a zero's and a NaN's
+    sign too), as ``numpy.copysign``. Real dtypes; integers in float64.""")
+nextafter = _real_binary_function("nextafter", """The next representable number after `x1` toward `x2` element-wise,
+    as ``numpy.nextafter``. Real dtypes; integers in float64.""")
+fmod = _real_binary_function("fmod", """C's remainder ``x1 − trunc(x1 / x2) · x2`` element-wise, of `x1`'s sign (where
+    :func:`remainder` takes `x2`'s), as ``numpy.fmod``: by zero NaN, an int64 0. Real dtypes; int64 stays.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.fmod([7.0, -7.0], 2)
+        numerical.Tensor([1.0, -1.0], dtype=float64)
+    """, _integer_fmod)
+logaddexp = _real_binary_function("logaddexp", """``log(exp(x1) + exp(x2))`` element-wise without overflow, as
+    ``numpy.logaddexp`` and by its formula. Real dtypes; integers in float64.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.logaddexp([1000.0], [1000.0])
+        numerical.Tensor([1000.6931471805599], dtype=float64)
+    """)
+logaddexp2 = _real_binary_function("logaddexp2", """``log2(2**x1 + 2**x2)`` element-wise without overflow, as
+    ``numpy.logaddexp2`` and by its formula. Real dtypes; integers in float64.""")
+fmax = _real_binary_function("fmax", """The larger of `x1` and `x2` element-wise, a NaN losing to a number (NaN only
+    where both are), as ``numpy.fmax``; +0 over −0 whatever their order (NumPy's on arm64). Real dtypes; int64
+    stays.""", lambda a, b: maximum(a, b))
+fmin = _real_binary_function("fmin", """The smaller of `x1` and `x2` element-wise, a NaN losing to a number, as
+    ``numpy.fmin``; −0 under +0 whatever their order. Real dtypes; int64 stays.""", lambda a, b: minimum(a, b))
+heaviside = _real_binary_function("heaviside", """The Heaviside step of `x1` element-wise, as ``numpy.heaviside``:
+    0 below 0, `x2` at either zero, 1 above, NaN for a NaN. Real dtypes; integers in float64.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.heaviside([-1.0, 0.0, 2.0], 0.5)
+        numerical.Tensor([0.0, 0.5, 1.0], dtype=float64)
+    """)
+
+
+def float_power(x1, x2, /):
+    """``x1 ** x2`` element-wise in float64 (complex128 for a complex operand), as ``numpy.float_power``: an integer
+    to a negative power a fraction, where :func:`power` refuses it."""
+    a, b = _same_dtype(x1, x2)
+    dtype = "complex128" if a.dtype.startswith("complex") else "float64"
+    return asarray(a, dtype) ** asarray(b, dtype)
+
+
+def angle(z, deg=False):
+    """The argument of every element, ``arctan2(imag, real)`` in ``[−π, π]``, as ``numpy.angle`` (a real's 0, or π
+    where it is negative or −0); in degrees for `deg`."""
+    z = _operand(z)
+    if z.dtype.startswith("complex"):
+        result = arctan2(imag(z), real(z))
+    else:
+        z = asarray(z, z.dtype if z.dtype in ("float64", "float32") else "float64")
+        result = arctan2(zeros((), z.dtype), z)
+    return result * (180 / _math.pi) if deg else result
+
+
+def unwrap(p, discont=None, axis=-1, *, period=2 * _math.pi):
+    """`p` with each jump along `axis` of more than `discont` (by default half the `period`) taken back by a whole
+    number of periods, as ``numpy.unwrap`` and by its formula: each difference brought into ``[−period/2, period/2)``
+    (a difference of exactly half a period kept positive where it was), the corrections summed from the start. Real
+    dtypes; integers in float64."""
+    p = _operand(p)
+    if p.dtype.startswith("complex"):
+        raise TypeError("unwrap: real numbers only (NumPy's too)")
+    if p.dtype in ("int64", "bool"):
+        p = asarray(p, "float64")
+    axis = _axis(p, axis)
+    dd = diff(p, axis=axis)
+    half = period / 2
+    ddmod = remainder(dd + half, period) - half
+    ddmod = where((ddmod == -half) & (dd > 0), asarray(half, ddmod.dtype), ddmod)
+    correction = ddmod - dd
+    correction = where(absolute(dd) < (half if discont is None else discont), asarray(0, ddmod.dtype), correction)
+    rank = len(p.shape)
+    first = tuple(slice(0, 1) if k == axis else slice(None) for k in range(rank))
+    rest = tuple(slice(1, None) if k == axis else slice(None) for k in range(rank))
+    return concatenate([p[first], p[rest] + cumsum(correction, axis=axis)], axis=axis)
+
+def nan_to_num(x, copy=True, nan=0.0, posinf=None, neginf=None):
+    """`x` with each NaN replaced by `nan`, +inf by `posinf` and −inf by `neginf` (by default the dtype's largest
+    finite number and its negative), a complex element's parts apart, as ``numpy.nan_to_num``; integers and bools
+    as they are. `copy` is NumPy's and changes nothing here: a Tensor is never written into.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.nan_to_num([float("nan"), float("inf"), -float("inf"), 1.0])
+        numerical.Tensor([0.0, 1.7976931348623157e+308, -1.7976931348623157e+308, 1.0], dtype=float64)
+    """
+    del copy
+    x = _operand(x)
+    if x.dtype in ("int64", "bool"):
+        return x
+    largest = 3.4028234663852886e38 if x.dtype in ("float32", "complex64") else _sys.float_info.max
+    return _numerical._nan_to_num(x, float(nan), largest if posinf is None else float(posinf),
+                                  -largest if neginf is None else float(neginf))
+
 Tensor.nonzero = lambda self: nonzero(self)
 for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot", "prod", "cumsum", "cumprod", "round", "argmax", "argmin",
               "argsort", "searchsorted"):  # NumPy's methods of these names, where Tensor has none
@@ -5955,7 +6094,9 @@ __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "f
             "inner", "vdot", "ptp", "var", "std", "floor", "ceil", "trunc", "rint", "sign", "arcsin", "arccos", "arctan",
             "sinh", "cosh", "arcsinh", "arccosh", "arctanh", "log2", "log10", "log1p", "expm1", "cbrt", "deg2rad",
             "rad2deg", "radians", "degrees", "round", "around", "prod", "cumsum", "cumprod", "sort", "diff", "argmax",
-            "argmin", "argsort", "nonzero", "flatnonzero", "argwhere", "count_nonzero", "searchsorted"]
+            "argmin", "argsort", "nonzero", "flatnonzero", "argwhere", "count_nonzero", "searchsorted", "hypot",
+            "arctan2", "atan2", "copysign", "nextafter", "fmod", "logaddexp", "logaddexp2", "fmax", "fmin", "heaviside",
+            "float_power", "angle", "unwrap", "nan_to_num"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)
 

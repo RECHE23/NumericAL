@@ -38,8 +38,8 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
 
 - **2-norms never overflow or underflow** where their value is in range: `vector_norm([1e200, 1e200])` is
   1.414e200, where NumPy's is infinite.
-- **`maximum`, `minimum`, `max` and `min` order the zeros** as IEEE 754-2019: +0 above −0, whatever the order they
-  come in. NumPy on arm64 agrees; NumPy on x86-64 keeps the sign its loops meet first.
+- **`maximum`, `minimum`, `fmax`, `fmin`, `max` and `min` order the zeros** as IEEE 754-2019: +0 above −0,
+  whatever the order they come in. NumPy on arm64 agrees; NumPy on x86-64 keeps the sign its loops meet first.
 - **`eig` and `eigvals` answer in complex numbers** whatever the eigenvalues, as NumPy 2.5's and SciPy's; NumPy
   before 2.5 made them real where it could.
 - **A float32 or complex64 decomposition** is computed in double precision and rounded to single, below order 500

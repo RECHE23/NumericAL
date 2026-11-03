@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+- **NumPy's real binary functions**: `hypot`, `arctan2` (`atan2`), `copysign`, `nextafter`, `fmod` (of the
+  dividend's sign; int64 stays, by zero 0), `logaddexp` and `logaddexp2` (NumPy's formulas, without overflow),
+  `fmax` and `fmin` (a NaN loses to a number; int64 stays) and `heaviside`, broadcast and promoted as NumPy 2's
+  (a Python float beside a float32 keeps float32; integers in float64), to NumPy's bits on the edge values (signed
+  zeros, infinities, NaN, subnormals); also `float_power`, `angle` (`deg`), `unwrap` (`discont`, `period`, NumPy's
+  formula and bits) and `nan_to_num` (`nan`, `posinf`, `neginf`; a complex element's parts apart).
+
 ## 2026.11.3 — 2026-11-03
 
 ### Added

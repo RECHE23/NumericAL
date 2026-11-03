@@ -1604,6 +1604,8 @@ PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args); // in elemen
 // complex or int64).
 PyObject* module_searchsorted(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_real_unary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+PyObject* module_real_binary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+PyObject* module_nan_to_num(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_round(PyObject* /*self*/, PyObject* args);      // in elementwise.cpp
 
 // _equal(a, b) -> bool: whether two tensors of one dtype and one size hold equal elements, in order (a NaN equals

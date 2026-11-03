@@ -70,11 +70,18 @@ Element-wise arithmetic
 .. autofunction:: numerical.power
 .. autofunction:: numerical.maximum
 .. autofunction:: numerical.minimum
+.. autofunction:: numerical.fmax
+.. autofunction:: numerical.fmin
+.. autofunction:: numerical.fmod
+.. autofunction:: numerical.float_power
+.. autofunction:: numerical.copysign
+.. autofunction:: numerical.nextafter
 .. autofunction:: numerical.clip
 .. autofunction:: numerical.real
 .. autofunction:: numerical.imag
 .. autofunction:: numerical.conj
 .. autofunction:: numerical.conjugate
+.. autofunction:: numerical.angle
 .. autofunction:: numerical.sign
 .. autofunction:: numerical.round
 .. autofunction:: numerical.around
@@ -110,6 +117,14 @@ Element-wise functions
 .. autofunction:: numerical.rad2deg
 .. autofunction:: numerical.radians
 .. autofunction:: numerical.degrees
+.. autofunction:: numerical.hypot
+.. autofunction:: numerical.arctan2
+.. autofunction:: numerical.atan2
+.. autofunction:: numerical.logaddexp
+.. autofunction:: numerical.logaddexp2
+.. autofunction:: numerical.heaviside
+.. autofunction:: numerical.unwrap
+.. autofunction:: numerical.nan_to_num
 
 Comparisons and logic
 ---------------------

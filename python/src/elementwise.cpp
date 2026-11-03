@@ -276,6 +276,195 @@ PyObject* module_real_unary(PyObject* /*self*/, PyObject* args)
     }
 }
 
+namespace {
+    //! NumPy's logaddexp of two reals, `log(eˣ + eʸ)` without overflow: `x + log1p(e^(y − x))` from the larger;
+    //! equal arguments (infinities of one sign among them) `x + log 2`.
+    template <typename R>
+    R log_add_exp(R x, R y)
+    {
+        if (x == y) {
+            return x + std::numbers::ln2_v<R>;
+        }
+        const R difference {x - y};
+        if (difference > R {0}) {
+            return x + std::log1p(std::exp(-difference));
+        }
+        if (difference <= R {0}) {
+            return y + std::log1p(std::exp(difference));
+        }
+        return difference; // a NaN
+    }
+
+    //! NumPy's logaddexp2, `log₂(2ˣ + 2ʸ)` as log_add_exp in base 2. The product by log₂ e is a statement of its own,
+    //! rounded before the sum as NumPy's (a fused multiply-add moves the last bit: logaddexp2(-1, 0.5)).
+    template <typename R>
+    R log_add_exp2(R x, R y)
+    {
+        if (x == y) {
+            return x + R {1};
+        }
+        const R difference {x - y};
+        if (difference > R {0}) {
+            const R above {std::numbers::log2e_v<R> * std::log1p(std::exp2(-difference))};
+            return x + above;
+        }
+        if (difference <= R {0}) {
+            const R above {std::numbers::log2e_v<R> * std::log1p(std::exp2(difference))};
+            return y + above;
+        }
+        return difference; // a NaN
+    }
+
+    //! numpy.fmax (\p larger) or numpy.fmin of two reals: a NaN loses to a number (the first's where both), the
+    //! zeros ordered as IEEE 754-2019's maximum and minimum (numpy.maximum's).
+    template <bool larger, typename R>
+    R number_extreme(R x, R y)
+    {
+        if (std::isnan(y)) {
+            return x;
+        }
+        if (std::isnan(x)) {
+            return y;
+        }
+        return larger ? numerical::detail::ieee_maximum(x, y) : numerical::detail::ieee_minimum(x, y);
+    }
+
+    //! numpy.heaviside: 0 below 0, \p at_zero at either zero, 1 above, NaN (C's quiet NaN, as NumPy's) for a NaN.
+    template <typename R>
+    R heaviside_step(R x, R at_zero)
+    {
+        if (x < R {0}) {
+            return R {0};
+        }
+        if (x > R {0}) {
+            return R {1};
+        }
+        return x == R {0} ? at_zero : std::numeric_limits<R>::quiet_NaN();
+    }
+
+    constexpr std::array<std::string_view, 10> real_binary_names {"hypot", "arctan2", "copysign", "nextafter", "fmod",
+                                                                  "logaddexp", "logaddexp2", "fmax", "fmin", "heaviside"};
+
+    //! The real binary function \p name (one of real_binary_names) of \p a and \p b element by element, broadcast;
+    //! each through a lambda of its own, which the loop inlines.
+    template <typename R>
+    numerical::tensor<R> real_binary_map(std::string_view name, const numerical::tensor<R>& a, const numerical::tensor<R>& b)
+    {
+        using numerical::broadcast_apply;
+        if (name == "hypot") {
+            return broadcast_apply(a, b, [](R x, R y) { return std::hypot(x, y); });
+        }
+        if (name == "arctan2") {
+            return broadcast_apply(a, b, [](R x, R y) { return std::atan2(x, y); });
+        }
+        if (name == "copysign") {
+            return broadcast_apply(a, b, [](R x, R y) { return std::copysign(x, y); });
+        }
+        if (name == "nextafter") {
+            return broadcast_apply(a, b, [](R x, R y) { return std::nextafter(x, y); });
+        }
+        if (name == "fmod") {
+            return broadcast_apply(a, b, [](R x, R y) { return std::fmod(x, y); });
+        }
+        if (name == "logaddexp") {
+            return broadcast_apply(a, b, [](R x, R y) { return log_add_exp(x, y); });
+        }
+        if (name == "logaddexp2") {
+            return broadcast_apply(a, b, [](R x, R y) { return log_add_exp2(x, y); });
+        }
+        if (name == "fmax") {
+            return broadcast_apply(a, b, [](R x, R y) { return number_extreme<true>(x, y); });
+        }
+        if (name == "fmin") {
+            return broadcast_apply(a, b, [](R x, R y) { return number_extreme<false>(x, y); });
+        }
+        return broadcast_apply(a, b, [](R x, R y) { return heaviside_step(x, y); });
+    }
+} // namespace
+
+// _real_binary(name, a, b) -> Tensor: the real binary function name of two float64 or two float32 tensors element by
+// element, broadcast, as NumPy's (C's functions where NumPy calls them: hypot, atan2, copysign, nextafter, fmod; its
+// own formulas for logaddexp, logaddexp2, fmax, fmin and heaviside); the caller promotes them.
+PyObject* module_real_binary(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    PyObject*   y  = nullptr;
+    if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
+        return nullptr;
+    }
+    const std::string_view name {op};
+    if (std::ranges::find(real_binary_names, name) == real_binary_names.end()) {
+        PyErr_SetString(PyExc_ValueError, "_real_binary: an unknown function");
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(std::max(count_of(*a), count_of(*b)))};
+            if (const auto* wide {std::get_if<real_tensor>(a)}; wide != nullptr && b->index() == a->index()) {
+                result.emplace(real_binary_map(name, *wide, std::get<real_tensor>(*b)));
+            }
+            else if (const auto* single {std::get_if<single_tensor>(a)}; single != nullptr && b->index() == a->index()) {
+                result.emplace(real_binary_map(name, *single, std::get<single_tensor>(*b)));
+            }
+        }
+        if (!result) {
+            PyErr_SetString(PyExc_TypeError, "_real_binary: two float64 or two float32 tensors");
+            return nullptr;
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _nan_to_num(a, nan, posinf, neginf) -> Tensor: a with each NaN, +inf and -inf replaced by the given numbers (in a's
+// precision), a complex element's parts apart, as numpy.nan_to_num.
+PyObject* module_nan_to_num(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x        = nullptr;
+    double    for_nan  = 0.0;
+    double    for_up   = 0.0;
+    double    for_down = 0.0;
+    if (PyArg_ParseTuple(args, "Oddd", &x, &for_nan, &for_up, &for_down) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = numeric_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            visit_numeric([&]<typename T>(const numerical::tensor<T>& t) {
+                using R = real_of_t<T>;
+                const auto finite = [nan = static_cast<R>(for_nan), up = static_cast<R>(for_up),
+                                     down = static_cast<R>(for_down)](R v) { return std::isnan(v) ? nan : std::isinf(v) ? (v > R {0} ? up : down) : v; };
+                if constexpr (complex_scalar<T>) {
+                    result.emplace(numerical::detail::parallel_map(t.data().data(), t.shape(), [finite](const T& v) {
+                        return T {finite(v.real()), finite(v.imag())};
+                    }));
+                }
+                else {
+                    result.emplace(numerical::detail::parallel_map(t.data().data(), t.shape(), finite));
+                }
+            }, *a);
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _arg_extreme(largest, a, axis) -> int or Tensor.
 PyObject* module_arg_extreme(PyObject* /*self*/, PyObject* args)
 {

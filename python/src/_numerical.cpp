@@ -146,6 +146,10 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_count_nonzero", module_count_nonzero, METH_VARARGS, "_count_nonzero(a, axis) -> int or Tensor\nThe nonzero elements, counted.");
     m.raw("_searchsorted", module_searchsorted, METH_VARARGS, "_searchsorted(a, v, right) -> Tensor\nWhere v's elements go in the sorted vector a.");
     m.raw("_real_unary", module_real_unary, METH_VARARGS, "_real_unary(name, a) -> Tensor\nA real elementary function of every element.");
+    m.raw("_real_binary", module_real_binary, METH_VARARGS,
+          "_real_binary(name, a, b) -> Tensor\nA real binary function of two tensors of one dtype, element by element, broadcast.");
+    m.raw("_nan_to_num", module_nan_to_num, METH_VARARGS,
+          "_nan_to_num(a, nan, posinf, neginf) -> Tensor\nEach NaN and infinity of a replaced, a complex element's parts apart.");
     m.raw("_round", module_round, METH_VARARGS, "_round(a, decimals) -> Tensor\nEvery element rounded to decimals places, half to even.");
     m.raw("_compare", module_compare, METH_VARARGS,
           "_compare(op, a, b) -> Tensor\nElement-wise a op b (op one of < <= == != > >=), broadcast; one dtype; bool.");
