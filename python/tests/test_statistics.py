@@ -147,9 +147,9 @@ class AgainstNumPy(unittest.TestCase):
                     self.assertSame(getattr(numerical, name)(t, axis=axis), getattr(np, name)(data, axis=axis),
                                     f"{name} {axis}")
             for axis in (0,) if data.dtype.kind == "f" else (0, 1, -1):
-                for name in ("nanargmax", "nanargmin"):
-                    self.assertSame(getattr(numerical, name)(t, axis=axis), getattr(np, name)(data, axis=axis),
-                                    f"{name} {axis}")
+                for name in ("nanargmax", "nanargmin"):  # NumPy's indices are intp (int32 on a 32-bit Windows)
+                    self.assertSame(getattr(numerical, name)(t, axis=axis),
+                                    getattr(np, name)(data, axis=axis).astype(np.int64), f"{name} {axis}")
             if data.dtype.kind == "f":
                 for axis in (1, -1):  # x[2, :, 3] and x[1, 0, :] hold NaNs alone
                     with self.assertRaises(ValueError):
