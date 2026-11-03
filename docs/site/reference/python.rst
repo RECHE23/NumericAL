@@ -52,6 +52,8 @@ Shapes and joins
 .. autofunction:: numerical.block
 .. autofunction:: numerical.pad
 .. autofunction:: numerical.append
+.. autofunction:: numerical.insert
+.. autofunction:: numerical.delete
 .. autofunction:: numerical.split
 .. autofunction:: numerical.array_split
 .. autofunction:: numerical.hsplit

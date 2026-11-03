@@ -6521,6 +6521,128 @@ def append(arr, values, axis=None):
     return concatenate([arr, values], axis=axis)
 
 
+def _positions(obj):
+    """The shape of the index argument `obj`, the kind of its elements ("b" bools alone, "i" integers, "f" other
+    numbers), and its numbers in C order, as NumPy reads it with ``numpy.asarray`` (an empty list as integers)."""
+    if isinstance(obj, _numbers.Integral):
+        return (), "b" if isinstance(obj, bool) else "i", [int(obj)]
+    if isinstance(obj, Tensor):
+        kind = {"bool": "b", "int64": "i"}.get(obj.dtype, "f")
+        return obj.shape, kind, reshape(obj, (-1,)).tolist()
+    if type(obj).__name__ == "ndarray":
+        kind = {"b": "b", "i": "i", "u": "i"}.get(obj.dtype.kind, "f")
+        return obj.shape, kind, obj.ravel().tolist()
+    flat, shape = _nested(obj)
+    if flat and _builtins.all(isinstance(v, bool) for v in flat):
+        return shape, "b", flat
+    return shape, "i" if _builtins.all(isinstance(v, _numbers.Integral) for v in flat) else "f", flat
+
+
+_NOT_INDICES = "arrays used as indices must be of integer (or boolean) type"
+
+
+def delete(arr, obj, axis=None):
+    """`arr` without the entries at `obj` along `axis` (of the flattened `arr` where None), as ``numpy.delete``: `obj`
+    a slice, an index, indices (negative from the end, repeated ones once) or a mask of the axis's extent.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.delete([[1, 2, 3], [4, 5, 6]], [0, -1], axis=1)
+        numerical.Tensor([[2.0],
+                          [5.0]], dtype=float64)
+    """
+    a = _tensor(arr)
+    if axis is None:
+        a, axis = reshape(a, (-1,)), 0
+    axis = _axis(a, axis)
+    extent, rank = a.shape[axis], len(a.shape)
+    if isinstance(obj, slice):
+        gone = set(range(*obj.indices(extent)))
+    else:
+        shape, kind, flat = _positions(obj)
+        if kind == "f":
+            raise IndexError(_NOT_INDICES)
+        if kind == "b":
+            if shape != (extent,):
+                raise ValueError("boolean array argument obj to delete must be one dimensional and match the axis "
+                                 f"length of {extent}")
+            gone = {i for i, drop in enumerate(flat) if drop}
+        else:
+            for i in map(int, flat):
+                if not -extent <= i < extent:
+                    where = axis if len(flat) == 1 else 0  # NumPy's message: the axis, or that of its mask
+                    raise IndexError(f"index {i} is out of bounds for axis {where} with size {extent}")
+            gone = {int(i) % extent for i in flat}
+    return a[_along_axis(axis, rank, [i for i in range(extent) if i not in gone])]
+
+
+def insert(arr, obj, values, axis=None):
+    """`arr` with `values` (in `arr`'s dtype) inserted before the entries at `obj` along `axis` (of the flattened `arr`
+    where None), as ``numpy.insert``: `obj` a slice, an index (`values`' first axis along `axis`) or indices
+    (negative from the end, the extent for the end), the values for equal indices in their order.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.insert([1, 2, 3], [1, 3], [9, 8])
+        numerical.Tensor([1.0, 9.0, 2.0, 3.0, 8.0], dtype=float64)
+        >>> numerical.insert([[1, 2], [3, 4]], 1, [7, 8], axis=1)
+        numerical.Tensor([[1.0, 7.0, 2.0],
+                          [3.0, 8.0, 4.0]], dtype=float64)
+    """
+    a = _tensor(arr)
+    if axis is None:
+        a, axis = reshape(a, (-1,)), 0
+    axis = _axis(a, axis)
+    extent, rank = a.shape[axis], len(a.shape)
+    if isinstance(obj, slice):
+        flat = list(range(*obj.indices(extent)))
+        shape, kind = (len(flat),), "i"
+    else:
+        shape, kind, flat = _positions(obj)
+        if kind == "b":
+            if len(shape) != 1:
+                raise ValueError("boolean array argument obj to insert must be one dimensional")
+            shape, flat = (_builtins.sum(flat),), [i for i, chosen in enumerate(flat) if chosen]
+        elif len(shape) > 1:
+            raise ValueError("index array argument obj to insert must be one dimensional or scalar")
+        elif kind == "f" and len(flat) != 1:  # NumPy's: several index a mask, one bounds a slice (below)
+            raise IndexError(_NOT_INDICES)
+    v = asarray(values, a.dtype)
+    v = reshape(v, (1,) * (rank - len(v.shape)) + v.shape)
+    if len(flat) == 1:
+        index = flat[0]
+        if not -extent <= index <= extent:
+            raise IndexError(f"index {obj} is out of bounds for axis {axis} with size {extent}")
+        if kind == "f":
+            raise TypeError("slice indices must be integers or None or have an __index__ method")
+        index += extent if index < 0 else 0
+        if not shape:  # one index: values' first axis runs along `axis`
+            v = moveaxis(v, 0, axis)
+        indices = [index] * v.shape[axis]
+        sources = list(range(index)) + list(range(extent, extent + len(indices))) + list(range(index, extent))
+    else:
+        # NumPy's: each index moved past the values inserted before it, in a stable order
+        indices = [i + extent if i < 0 else i for i in flat]
+        for shift, k in enumerate(sorted(range(len(indices)), key=indices.__getitem__)):
+            indices[k] += shift
+        size = extent + len(indices)
+        taken = {}
+        for j, i in enumerate(indices):
+            if not -size <= i < size:
+                raise IndexError(f"index {i} is out of bounds for axis 0 with size {size}")
+            taken[i % size] = extent + j  # equal positions: the last value
+        kept = [q for q in range(size) if q not in taken]
+        if len(kept) != extent:
+            raise ValueError(f"boolean array indexing assignment cannot assign {extent} input values to the "
+                             f"{len(kept)} output values where the mask is true")
+        old = iter(range(extent))
+        sources = [taken[q] if q in taken else next(old) for q in range(size)]
+    while len(v.shape) > rank and v.shape[0] == 1:
+        v = reshape(v, v.shape[1:])
+    v = broadcast_to(v, a.shape[:axis] + (len(indices),) + a.shape[axis + 1:])
+    return concatenate([a, v], axis=axis)[_along_axis(axis, rank, sources)]
+
+
 def block(arrays):
     """One tensor assembled from nested lists of blocks, as ``numpy.block``: the innermost lists joined along the
     last axis, the lists of them along the one before, and so on, each block first given leading axes of extent 1 up
@@ -7332,7 +7454,7 @@ __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "f
             "arctan2", "atan2", "copysign", "nextafter", "fmod", "logaddexp", "logaddexp2", "fmax", "fmin", "heaviside",
             "float_power", "angle", "unwrap", "nan_to_num", "broadcast_shapes", "broadcast_to", "broadcast_arrays", "tile",
             "repeat", "take", "take_along_axis", "roll", "rot90", "array_split", "split", "hsplit", "vsplit", "dsplit",
-            "dstack", "append", "block", "nansum", "nanprod", "nancumsum", "nancumprod", "nanmax", "nanmin", "nanargmax",
+            "dstack", "append", "insert", "delete", "block", "nansum", "nanprod", "nancumsum", "nancumprod", "nanmax", "nanmin", "nanargmax",
             "nanargmin", "nanmean", "nanvar", "nanstd", "median", "nanmedian", "quantile", "percentile", "nanquantile",
             "nanpercentile", "average", "cov", "corrcoef", "pad"]
 

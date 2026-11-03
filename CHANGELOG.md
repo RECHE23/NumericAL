@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+
+- **`insert` and `delete`**, as NumPy's: a slice, an index, indices or a mask along an axis (of the flattened array
+  by default), the values cast to the array's dtype, NumPy's errors; `insert` before a list of bools inserts before
+  its true positions, where NumPy 2.4 raises AttributeError.
+
 ## 2026.11.4 — 2026-11-03
 
 ### Fixed

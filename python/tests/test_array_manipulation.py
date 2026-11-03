@@ -1,4 +1,4 @@
-"""tile, repeat, roll, rot90, the splits, dstack, append, block, take, take_along_axis, the broadcasts and pad against
+"""tile, repeat, roll, rot90, the splits, dstack, append, insert, delete, block, take, take_along_axis, the broadcasts and pad against
 NumPy's answers, in float64, float32, bool and int64, with NumPy's errors. Deterministic; the NumPy comparisons skipped without
 NumPy."""
 import unittest
@@ -41,6 +41,21 @@ class WithoutNumPy(unittest.TestCase):
         self.assertEqual(numerical.broadcast_shapes(), ())
         x, y = numerical.broadcast_arrays([[1], [2]], [1, 2, 3])
         self.assertEqual((x.shape, y.shape), ((2, 3), (2, 3)))
+        self.assertEqual(numerical.delete([[1, 2], [3, 4]], 1).tolist(), [1.0, 3.0, 4.0])
+        self.assertEqual(numerical.delete([1, 2, 3], [True, False, True]).tolist(), [2.0])
+        self.assertEqual(numerical.delete([1, 2, 3], [0, 0, -3]).tolist(), [2.0, 3.0])
+        self.assertEqual(numerical.delete([1, 2, 3], slice(None, None, -2)).tolist(), [2.0])
+        self.assertEqual(numerical.delete(numerical.asarray([4, 5], "int64"), []).dtype, "int64")
+        self.assertEqual(numerical.insert([1, 2], 2, [7, 8]).tolist(), [1.0, 2.0, 7.0, 8.0])
+        self.assertEqual(numerical.insert([1, 2], [1, 1], [7, 8]).tolist(), [1.0, 7.0, 8.0, 2.0])
+        self.assertEqual(numerical.insert([1, 2], [2, 0], [7, 8]).tolist(), [8.0, 1.0, 2.0, 7.0])
+        self.assertEqual(numerical.insert([1, 2], [True, True], 0).tolist(), [0.0, 1.0, 0.0, 2.0])
+        self.assertEqual(numerical.insert([1, 2], [-3, 0], [7, 8]).tolist(), [1.0, 8.0, 2.0, 7.0])
+        self.assertEqual(numerical.insert([1, 2], [-1, 1], [7, 8]).tolist(), [1.0, 7.0, 8.0, 2.0])
+        self.assertEqual(numerical.insert(numerical.asarray([1], "int64"), 0, -2.9).tolist(), [-2, 1])
+        self.assertEqual(numerical.insert(numerical.asarray([True]), slice(None), 0).tolist(), [False, True])
+        self.assertEqual(numerical.insert([[1, 2]], [1], [[7]], axis=1).tolist(), [[1.0, 7.0, 2.0]])
+        self.assertEqual(numerical.insert([[1, 2]], 0, [[[7, 8]]], axis=0).tolist(), [[7.0, 8.0], [1.0, 2.0]])
 
     def test_errors(self):
         cases = [
@@ -69,6 +84,19 @@ class WithoutNumPy(unittest.TestCase):
             (ValueError, lambda: numerical.hsplit(1.0, 1)),
             (ValueError, lambda: numerical.vsplit([1.0], 1)),
             (ValueError, lambda: numerical.dsplit([[1.0]], 1)),
+            (IndexError, lambda: numerical.delete([1, 2], 2)),
+            (IndexError, lambda: numerical.delete([1, 2], [0, -3])),
+            (IndexError, lambda: numerical.delete([1, 2], [0.5])),
+            (ValueError, lambda: numerical.delete([1, 2], [True])),
+            (IndexError, lambda: numerical.insert([1, 2], 3, 0)),
+            (IndexError, lambda: numerical.insert([1, 2], [3, 0], 0)),
+            (IndexError, lambda: numerical.insert([1, 2], [0.5, 1.5], 0)),
+            (TypeError, lambda: numerical.insert([1, 2], [0.5], 0)),
+            (ValueError, lambda: numerical.insert([1, 2], [[0, 1]], 0)),
+            (ValueError, lambda: numerical.insert([1, 2], True, 0)),
+            (ValueError, lambda: numerical.insert([[1, 2]], [1], [[7], [8]], axis=1)),
+            (ValueError, lambda: numerical.insert([1, 2], [-3, 2], [7, 8])),
+            (ValueError, lambda: numerical.insert([1, 2], [0, 1], [7, 8, 9])),
         ]
         for error, call in cases:
             with self.assertRaises(error):
@@ -131,6 +159,39 @@ class AgainstNumPy(unittest.TestCase):
         self.assertSame(numerical.block(layout), np.block(layout), "block")
         self.assertSame(numerical.block(np.ones(3)), np.block(np.ones(3)), "block of one array")
         self.assertEqual(numerical.broadcast_shapes((3, 1), (4,), 1), np.broadcast_shapes((3, 1), (4,), 1))
+
+    def test_insert_and_delete(self):
+        rng = np.random.default_rng(1)
+        arrays = (rng.normal(size=(3, 4)), np.arange(5, dtype=np.int64), rng.random((2, 3, 2)) > 0.5, np.zeros((0, 3)))
+        indices = (0, -1, 2, 3, 5, -4, -6, [], [0], [1, 1], [2, 0], [0, -1], [-3, 3], [4, 0], [-4, 0], [[0, 1]],
+                   slice(1, None), slice(None, None, 2), slice(5, 0, -1), [0.5], [1.5, 2.5], np.array(1),
+                   np.array([1, 0]), np.array([3], dtype=np.uint8), np.array([True, False, True]),
+                   np.array([False] * 4), np.array([[True]]), np.array(True))
+        values = (9, [7, 8], [[1], [2]], [[1, 2, 3]], 2.5, [1, 2, 3, 4])
+        for x in arrays:
+            t = numerical.asarray(x, "int64") if x.dtype.kind == "i" else numerical.asarray(x)
+            for axis in range(-1, x.ndim):
+                for obj in indices:
+                    tensor_obj = numerical.asarray(obj, "int64" if obj.dtype.kind in "iu" else None) \
+                        if isinstance(obj, np.ndarray) else obj
+                    for value in values:
+                        self.assertSameOrRaises(lambda: numerical.insert(t, tensor_obj, value, axis),
+                                                lambda: np.insert(x, obj, value, axis), f"insert {obj} {value} {axis}")
+                    self.assertSameOrRaises(lambda: numerical.delete(t, tensor_obj, axis),
+                                            lambda: np.delete(x, obj, axis), f"delete {obj} {axis}")
+            self.assertSameOrRaises(lambda: numerical.insert(t, [1, 0], numerical.asarray([7.5, 8.5])),
+                                    lambda: np.insert(x, [1, 0], [7.5, 8.5]), "insert, axis None")
+            self.assertSameOrRaises(lambda: numerical.delete(t, [1, -1]), lambda: np.delete(x, [1, -1]),
+                                    "delete, axis None")
+
+    def assertSameOrRaises(self, ours, numpy, label):
+        try:
+            want = numpy()
+        except (IndexError, TypeError, ValueError) as error:
+            with self.assertRaises(type(error) if type(error).__name__ != "AxisError" else ValueError, msg=label):
+                ours()
+            return
+        self.assertSame(ours(), want, label)
 
 
 _PAD_MODES = [("constant", {}), ("constant", {"constant_values": (4, -2)}), ("constant", {"constant_values": ((1, 2), (3, 4))}),
