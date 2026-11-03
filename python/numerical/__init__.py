@@ -7524,6 +7524,248 @@ for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot", "prod", "cumsum", 
         setattr(Tensor, _name, (lambda function: lambda self, *args, **kwargs: function(self, *args, **kwargs))(globals()[_name]))
 del _name
 
+def _binary_operands(x1, x2):
+    """`x1` and `x2` as operands of an arithmetic operator: Tensors and numbers as they are (a number weak beside a
+    Tensor), anything else read by :func:`asarray`, two numbers as tensors."""
+    if not isinstance(x1, (Tensor, _numbers.Number)):
+        x1 = _operand(x1)
+    if not isinstance(x2, (Tensor, _numbers.Number)):
+        x2 = _operand(x2)
+    if not isinstance(x1, Tensor) and not isinstance(x2, Tensor):
+        x1 = _operand(x1)
+    return x1, x2
+
+
+def add(x1, x2, /):
+    """``x1 + x2`` element-wise, as ``numpy.add``."""
+    x1, x2 = _binary_operands(x1, x2)
+    return x1 + x2
+
+
+def subtract(x1, x2, /):
+    """``x1 - x2`` element-wise, as ``numpy.subtract``."""
+    x1, x2 = _binary_operands(x1, x2)
+    return x1 - x2
+
+
+def multiply(x1, x2, /):
+    """``x1 * x2`` element-wise, as ``numpy.multiply``."""
+    x1, x2 = _binary_operands(x1, x2)
+    return x1 * x2
+
+
+acos, asin, atan = arccos, arcsin, arctan  # the array API's names, NumPy 2's aliases
+acosh, asinh, atanh = arccosh, arcsinh, arctanh
+pow = power
+amax, amin = max, min
+
+
+def permute_dims(a, axes=None):
+    """`a` with its axes in the order `axes` (reversed where None), as ``numpy.permute_dims`` (:func:`transpose`)."""
+    return transpose(a, axes)
+
+
+def reciprocal(x, /):
+    """``1 / x`` element-wise, as ``numpy.reciprocal``: in `x`'s dtype, a complex one by NumPy's steps (Smith's, the
+    larger part divided first; an infinity and a NaN for a zero); an integer's truncated (0 past ±1), which raises for
+    a zero as an infinity converted to int64 does."""
+    x = _tensor(x)
+    if x.dtype == "bool":
+        raise TypeError("ufunc 'reciprocal' not supported for the input types (bool)")
+    if x.dtype == "int64":
+        return asarray(1.0 / asarray(x, "float64"), "int64")
+    if not x.dtype.startswith("complex"):
+        return 1 / x
+    re, im = real(x), imag(x)
+    re_size, im_size = abs(re), abs(im)
+    leaning = im_size <= re_size
+    with _warnings.catch_warnings():
+        _warnings.simplefilter("ignore", RuntimeWarning)  # each branch computed everywhere, kept where it applies
+        r = where(leaning, im / re, re / im)
+        d = where(leaning, re + im * r, re * r + im)
+        first = where(leaning, 1 / d, r / d)
+        second = where(leaning, -r / d, -1 / d)
+        zero = leaning & (re_size == 0)
+        first = where(zero, 1 / re_size, first)
+        second = where(zero, 0 / im_size, second)
+    return _from_parts(first, second)
+
+
+def fabs(x, /):
+    """The magnitude of every real element, as ``numpy.fabs``: an integer's in float64; a complex `x` refused."""
+    x = _tensor(x)
+    if x.dtype.startswith("complex"):
+        raise TypeError("ufunc 'fabs' not supported for the input types (complex)")
+    if x.dtype == "bool":
+        raise TypeError("fabs of bool is NumPy's float16, a dtype NumericAL does not have: convert to float first")
+    return abs(asarray(x, "float64") if x.dtype == "int64" else x)
+
+
+def signbit(x, /):
+    """Whether each real element's sign bit is set (−0 and a negative NaN's too), as ``numpy.signbit``."""
+    x = _tensor(x)
+    if x.dtype.startswith("complex"):
+        raise TypeError("ufunc 'signbit' not supported for the input types (complex)")
+    if x.dtype == "bool":
+        return zeros_like(x)
+    if x.dtype == "int64":
+        return x < 0
+    return copysign(1, x) < 0
+
+
+def isposinf(x, out=None):
+    """Whether each real element is +∞, as ``numpy.isposinf``."""
+    _no_out(out, "isposinf")
+    x = _tensor(x)
+    if x.dtype.startswith("complex"):
+        raise TypeError(f"This operation is not supported for {x.dtype} values because it would be ambiguous.")
+    return isinf(x) & ~signbit(x)
+
+
+def isneginf(x, out=None):
+    """Whether each real element is −∞, as ``numpy.isneginf``."""
+    _no_out(out, "isneginf")
+    x = _tensor(x)
+    if x.dtype.startswith("complex"):
+        raise TypeError(f"This operation is not supported for {x.dtype} values because it would be ambiguous.")
+    return isinf(x) & signbit(x)
+
+
+def iscomplexobj(x):
+    """Whether `x` is of a complex dtype (or a complex number), as ``numpy.iscomplexobj``; its values unread."""
+    dtype = getattr(x, "dtype", None)
+    if dtype is not None:
+        return _dtype_name(dtype).startswith("complex") or str(dtype).startswith("complex")
+    return _tensor(x).dtype.startswith("complex")
+
+
+def isrealobj(x):
+    """Whether `x` is not of a complex dtype, as ``numpy.isrealobj``."""
+    return not iscomplexobj(x)
+
+
+def iscomplex(x):
+    """Whether each element has a nonzero imaginary part, as ``numpy.iscomplex``: false throughout for a real dtype."""
+    x = _tensor(x)
+    return imag(x) != 0 if x.dtype.startswith("complex") else zeros_like(x, "bool")
+
+
+def isreal(x):
+    """Whether each element's imaginary part is zero, as ``numpy.isreal``: true throughout for a real dtype."""
+    return ~iscomplex(x)
+
+
+def isscalar(element):
+    """Whether `element` is a scalar, as ``numpy.isscalar``: a number, a string or bytes (NumPy's scalars too), not a
+    Tensor, even of rank 0."""
+    return isinstance(element, (_numbers.Number, str, bytes)) or type(element).__module__ == "numpy" and \
+        type(element).__name__ not in ("ndarray", "dtype") and hasattr(element, "dtype")
+
+
+def shape(a):
+    """`a`'s shape, as ``numpy.shape``."""
+    return _tensor(a).shape if not isinstance(a, Tensor) else a.shape
+
+
+def ndim(a):
+    """`a`'s number of axes, as ``numpy.ndim``."""
+    return len(shape(a))
+
+
+def size(a, axis=None):
+    """`a`'s number of elements, or its extent along `axis` (an integer or a tuple of them), as ``numpy.size``."""
+    extents = shape(a)
+    if axis is None:
+        return _math.prod(extents)
+    return _math.prod(extents[k] for k in _normalized_axes(axis, len(extents), "size"))
+
+
+def tri(N, M=None, k=0, dtype=float):
+    """The ``N × M`` matrix (square where `M` is None) of ones at and below the `k`-th diagonal, zeros above, as
+    ``numpy.tri``."""
+    N = _operator.index(N)
+    M = N if M is None else _operator.index(M)
+    k = _operator.index(k)
+    rows = reshape(asarray(arange(N), "int64"), (N, 1))
+    mask = reshape(asarray(arange(M), "int64"), (1, M)) <= rows + k
+    return asarray(mask, _dtype_name(dtype))
+
+
+def tril_indices(n, k=0, m=None):
+    """The row and column indices of the ``n × m`` lower triangle, to and below the `k`-th diagonal, as
+    ``numpy.tril_indices``: int64 tensors, in row-major order."""
+    return nonzero(tri(n, m, k=k, dtype=bool))
+
+
+def triu_indices(n, k=0, m=None):
+    """The row and column indices of the ``n × m`` upper triangle, to and above the `k`-th diagonal, as
+    ``numpy.triu_indices``."""
+    return nonzero(~tri(n, m, k=k - 1, dtype=bool))
+
+
+def tril_indices_from(arr, k=0):
+    """:func:`tril_indices` of a matrix's shape, as ``numpy.tril_indices_from``."""
+    extents = shape(arr)
+    if len(extents) != 2:
+        raise ValueError("input array must be 2-d")
+    return tril_indices(extents[-2], k=k, m=extents[-1])
+
+
+def triu_indices_from(arr, k=0):
+    """:func:`triu_indices` of a matrix's shape, as ``numpy.triu_indices_from``."""
+    extents = shape(arr)
+    if len(extents) != 2:
+        raise ValueError("input array must be 2-d")
+    return triu_indices(extents[-2], k=k, m=extents[-1])
+
+
+def diag_indices(n, ndim=2):
+    """The indices of the main diagonal of an `n`-cube of `ndim` axes, as ``numpy.diag_indices``: ``ndim`` copies of
+    ``0 … n−1`` (int64)."""
+    steps = asarray(arange(_operator.index(n)), "int64")
+    return (steps,) * _operator.index(ndim)
+
+
+def diag_indices_from(arr):
+    """:func:`diag_indices` of an array of equal extents, as ``numpy.diag_indices_from``."""
+    extents = shape(arr)
+    if len(extents) < 2:
+        raise ValueError("input array must be at least 2-d")
+    if len(set(extents)) != 1:
+        raise ValueError("All dimensions of input must be of equal length")
+    return diag_indices(extents[0], len(extents))
+
+
+def meshgrid(*xi, copy=True, sparse=False, indexing="xy"):
+    """Coordinate tensors from coordinate vectors, as ``numpy.meshgrid``: one per vector, each varying along its own
+    axis (the first two swapped for ``indexing="xy"``, matrix order for ``"ij"``), broadcast to the grid unless
+    `sparse`. `copy` is NumPy's and changes nothing (a Tensor is never written into).
+
+    Examples:
+        >>> import numerical
+        >>> x, y = numerical.meshgrid([1.0, 2.0, 3.0], [4.0, 5.0])
+        >>> x.shape, y.tolist()
+        ((2, 3), [[4.0, 4.0, 4.0], [5.0, 5.0, 5.0]])
+    """
+    del copy
+    if indexing not in ("xy", "ij"):
+        raise ValueError("Valid values for `indexing` are 'xy' and 'ij'.")
+    count = len(xi)
+    ones = (1,) * count
+    output = [reshape(_tensor(x), ones[:i] + (-1,) + ones[i + 1:]) for i, x in enumerate(xi)]
+    if indexing == "xy" and count > 1:
+        output[0] = reshape(output[0], (1, -1) + ones[2:])
+        output[1] = reshape(output[1], (-1, 1) + ones[2:])
+    if not sparse:
+        output = broadcast_arrays(*output)
+    return tuple(output)
+
+
+__all__ += ["add", "subtract", "multiply", "acos", "asin", "atan", "acosh", "asinh", "atanh", "pow", "amax", "amin",
+            "permute_dims", "reciprocal", "fabs", "signbit", "isposinf", "isneginf", "iscomplexobj", "isrealobj",
+            "iscomplex", "isreal", "isscalar", "shape", "ndim", "size", "tri", "tril_indices", "triu_indices",
+            "tril_indices_from", "triu_indices_from", "diag_indices", "diag_indices_from", "meshgrid"]
+
 __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "floor_divide", "remainder", "mod",
             "divmod", "zeros_like", "ones_like", "empty_like",
             "full_like", "copy", "ravel", "expand_dims", "atleast_1d", "atleast_2d", "atleast_3d", "flip", "flipud",
@@ -7535,8 +7777,8 @@ __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "f
             "arctan2", "atan2", "copysign", "nextafter", "fmod", "logaddexp", "logaddexp2", "fmax", "fmin", "heaviside",
             "float_power", "angle", "unwrap", "nan_to_num", "broadcast_shapes", "broadcast_to", "broadcast_arrays", "tile",
             "repeat", "take", "take_along_axis", "roll", "rot90", "array_split", "split", "hsplit", "vsplit", "dsplit",
-            "dstack", "append", "insert", "delete", "block", "nansum", "nanprod", "nancumsum", "nancumprod", "nanmax", "nanmin", "nanargmax",
-            "nanargmin", "nanmean", "nanvar", "nanstd", "median", "nanmedian", "quantile", "percentile", "nanquantile",
+            "dstack", "append", "insert", "delete", "block", "nansum", "nanprod", "nancumsum", "nancumprod", "nanmax",
+            "nanmin", "nanargmax", "nanargmin", "nanmean", "nanvar", "nanstd", "median", "nanmedian", "quantile", "percentile", "nanquantile",
             "nanpercentile", "average", "cov", "corrcoef", "pad"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)

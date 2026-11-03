@@ -69,6 +69,11 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
   through `@`, `einsum` or the linear algebra, and the index functions answer in it. A real converted to int64 that
   it cannot hold (NaN, an infinity, a value out of range) raises, as Python's `int()`; NumPy's answer depends on the
   processor.
+- **Bool arithmetic and the small dtypes.** `+`, `-`, `*` (and `add`, `multiply`…) refuse two bool tensors, where
+  NumPy's are a logical or and a logical and; there is no float16 nor int8, NumPy's dtype for `fabs`, `arcsin`… or
+  `reciprocal` of a bool, which raise here.
+- **The complex inverse trigonometric and hyperbolic functions** (`arcsin`, `arccos`, `arctan`, `arcsinh`,
+  `arccosh`, `arctanh`) take real dtypes only.
 - **Views and assignment.** A `Tensor` is immutable: no `t[i] = x`, and no operation returns a view of another tensor.
 - **Complex ordering.** `max`, `min`, `maximum`, `minimum` and `clip` take real dtypes only; NumPy orders complex
   numbers by real, then imaginary part (`sort` does too).

@@ -21,6 +21,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`cross` and `outer` at the root as NumPy's root ones**: `cross` takes 2-vectors (with NumPy 2's
   DeprecationWarning) and `axisa`, `axisb`, `axisc`, each component by NumPy's operations; `outer` flattens its
   operands. Both raised there before.
+- **More of NumPy's root**: `add`, `subtract`, `multiply`, `reciprocal` (a complex one by NumPy's steps), `fabs`,
+  `signbit`, `isposinf`, `isneginf`, `iscomplex`, `isreal`, `iscomplexobj`, `isrealobj`, `isscalar`, `shape`,
+  `ndim`, `size`, `tri`, `tril_indices`, `triu_indices` (and `…_from`), `diag_indices` (and `…_from`), `meshgrid`,
+  and the array API's names `acos`, `asin`, `atan`, `acosh`, `asinh`, `atanh`, `pow`, `permute_dims`, with
+  `amax` and `amin`.
 
 ## 2026.11.4 — 2026-11-03
 
