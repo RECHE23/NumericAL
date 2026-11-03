@@ -24,8 +24,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **NumPy's real binary functions**: `hypot`, `arctan2` (`atan2`), `copysign`, `nextafter`, `fmod` (of the
   dividend's sign; int64 stays, by zero 0), `logaddexp` and `logaddexp2` (NumPy's formulas, without overflow),
   `fmax` and `fmin` (a NaN loses to a number; int64 stays) and `heaviside`, broadcast and promoted as NumPy 2's
-  (a Python float beside a float32 keeps float32; integers in float64), to NumPy's bits on the edge values (signed
-  zeros, infinities, NaN, subnormals); also `float_power`, `angle` (`deg`), `unwrap` (`discont`, `period`, NumPy's
+  (a Python float beside a float32 keeps float32; integers in float64): `copysign`, `nextafter`, `fmod`, `fmax`,
+  `fmin` and `heaviside` to NumPy's bits on the edge values (signed zeros, infinities, NaN, subnormals; but for
+  `fmax` and `fmin` of two zeros, ordered as `maximum` orders them), the others through C's library within two ulps
+  of NumPy's (its own kernels on x86-64), and to its bits on arm64; also `float_power`, `angle` (`deg`), `unwrap` (`discont`, `period`, NumPy's
   formula and bits) and `nan_to_num` (`nan`, `posinf`, `neginf`; a complex element's parts apart).
 - **NumPy's array manipulation**: `tile`, `repeat` (one count or one per element), `roll` (several axes),
   `rot90`, `split`, `array_split`, `hsplit`, `vsplit`, `dsplit`, `dstack`, `append`, `block`, `take` (`mode`

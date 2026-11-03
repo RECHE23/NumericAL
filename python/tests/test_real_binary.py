@@ -1,6 +1,8 @@
 """hypot, arctan2, copysign, nextafter, fmod, logaddexp, logaddexp2, fmax, fmin, heaviside, float_power, angle, unwrap
-and nan_to_num against NumPy's answers, to the bit, over the edge values (zeros of both signs, infinities, NaN, the
-smallest subnormal, the largest magnitudes). Deterministic; the NumPy comparisons skipped without NumPy."""
+and nan_to_num against NumPy's answers over the edge values (zeros of both signs, infinities, NaN, the smallest
+subnormal, the largest magnitudes): to the bit for the exact ones, within two ulps for those that call C's library
+(hypot, atan2, exp, log1p), where NumPy's own kernels on x86-64 differ from it by an ulp. Deterministic; the NumPy
+comparisons skipped without NumPy."""
 import itertools
 import math
 import unittest
@@ -14,6 +16,7 @@ except ImportError:
     np = None
 
 _BINARY = ("hypot", "arctan2", "copysign", "nextafter", "fmod", "logaddexp", "logaddexp2", "fmax", "fmin", "heaviside")
+_ROUNDED = ("hypot", "arctan2", "logaddexp", "logaddexp2", "angle")  # through C's library: within an ulp or two
 _EDGES = [0.0, -0.0, 1.0, -1.0, 0.5, 2.5, 3.0, -7.0, 7.0, 1000.0, -1000.0, 1e300, -1e300, 5e-324, math.inf, -math.inf,
           math.nan]
 
@@ -37,6 +40,7 @@ class WithoutNumPy(unittest.TestCase):
         self.assertEqual(numerical.logaddexp2([1.0], [1.0]).tolist(), [2.0])
         self.assertEqual(numerical.fmax([nan, 1.0, -0.0], [2.0, nan, 0.0]).tolist(), [2.0, 1.0, 0.0])
         self.assertEqual(str(numerical.fmin([0.0], [-0.0]).tolist()[0]), "-0.0")
+        self.assertEqual(str(numerical.fmax([-0.0], [0.0]).tolist()[0]), "0.0")
         self.assertTrue(math.isnan(numerical.fmax([nan], [nan]).tolist()[0]))
         h = numerical.heaviside([-2.0, -0.0, 0.0, 3.0, nan], 0.5).tolist()
         self.assertEqual(h[:4], [0.0, 0.5, 0.5, 1.0])
@@ -87,6 +91,19 @@ class WithoutNumPy(unittest.TestCase):
 
 @unittest.skipIf(np is None, "NumPy is not installed")
 class AgainstNumPy(unittest.TestCase):
+    def assertSame(self, got, want, name, label):
+        """To the bit, or for a function of C's library the same NaNs, infinities and zeros (a zero's sign too) and
+        every other value within two ulps."""
+        if name not in _ROUNDED:
+            self.assertEqual(_bits(got), _bits(want), label)
+            return
+        self.assertEqual((got.dtype, got.shape), (want.dtype, want.shape), label)
+        np.testing.assert_array_equal(np.isnan(got), np.isnan(want), err_msg=label)
+        exact = ~np.isfinite(want) | (want == 0)
+        self.assertEqual(_bits(np.where(exact, got, 0)), _bits(np.where(exact, want, 0)), label)
+        finite = ~exact & ~np.isnan(want)
+        np.testing.assert_array_max_ulp(got[finite], want[finite], maxulp=2)
+
     def setUp(self):
         warnings.simplefilter("ignore")  # NumPy's warnings for its NaNs, infinities and divisions by zero
         self.addCleanup(warnings.resetwarnings)
@@ -98,7 +115,11 @@ class AgainstNumPy(unittest.TestCase):
             b = np.array([y for _, y in pairs], dtype)
             for name in _BINARY:
                 got = np.asarray(getattr(numerical, name)(numerical.asarray(a), numerical.asarray(b)))
-                self.assertEqual(_bits(got), _bits(getattr(np, name)(a, b)), f"{name} {dtype}")
+                want = getattr(np, name)(a, b)
+                if name in ("fmax", "fmin"):  # two zeros: NumPy's sign that of the zero its loop meets first on x86-64
+                    zeros = (a == 0) & (b == 0)  # (IEEE 754-2019's order here, NumPy's on arm64: test_values)
+                    got, want = np.where(zeros, 0.0, got).astype(dtype), np.where(zeros, 0.0, want).astype(dtype)
+                self.assertSame(got, want, name, f"{name} {dtype}")
 
     def test_binary_broadcast_and_random(self):
         rng = np.random.default_rng(11)
@@ -106,23 +127,23 @@ class AgainstNumPy(unittest.TestCase):
         b = rng.normal(0, 30, (5, 1))
         for name in _BINARY:
             got = np.asarray(getattr(numerical, name)(numerical.asarray(a), numerical.asarray(b)))
-            self.assertEqual(_bits(got), _bits(getattr(np, name)(a, b)), name)
+            self.assertSame(got, getattr(np, name)(a, b), name, name)
 
     def test_integers(self):
         a = np.array([7, -7, 7, -7, 0, 5, -2**63, 3, 2**62])
         b = np.array([2, 2, -2, -2, 3, 0, -1, 7, -3])
         for name in _BINARY:
             got = np.asarray(getattr(numerical, name)(numerical.asarray(a, "int64"), numerical.asarray(b, "int64")))
-            self.assertEqual(_bits(got), _bits(getattr(np, name)(a, b)), name)
+            self.assertSame(got, getattr(np, name)(a, b), name, name)
 
     def test_angle_nan_to_num(self):
         z = np.array([1 + 1j, -1 + 0j, complex(-1, -0.0), 0j, complex(-0.0, 0.0), complex(np.nan, 1), -3j])
         for dtype in ("complex128", "complex64"):
             for deg in (False, True):
                 got = np.asarray(numerical.angle(numerical.asarray(z.astype(dtype)), deg=deg))
-                self.assertEqual(_bits(got), _bits(np.angle(z.astype(dtype), deg=deg)), f"{dtype} {deg}")
+                self.assertSame(got, np.angle(z.astype(dtype), deg=deg), "angle", f"{dtype} {deg}")
         r = np.array([1.0, -1.0, -0.0, 0.0, np.nan, -np.inf])
-        self.assertEqual(_bits(np.asarray(numerical.angle(numerical.asarray(r)))), _bits(np.angle(r)))
+        self.assertSame(np.asarray(numerical.angle(numerical.asarray(r))), np.angle(r), "angle", "real")
         cases = [np.array([np.nan, np.inf, -np.inf, 1.0, -0.0]), np.array([np.nan, np.inf, -np.inf], np.float32),
                  np.array([complex(np.nan, -np.inf), complex(-0.0, np.nan), complex(np.inf, -0.0)]),
                  np.array([complex(np.inf, -0.0), complex(np.nan, 2)], np.complex64)]
