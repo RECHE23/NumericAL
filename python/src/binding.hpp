@@ -1446,10 +1446,50 @@ inline numerical::detail::numpy_loops& numpy_loops_beside()
     return loops;
 }
 
-// _set_numpy_loops(products, scalar_products, quotients): which of NumPy's complex loops fuse, as measured.
-inline void set_numpy_loops(bool products, bool scalar_products, bool quotients)
+// _set_numpy_loops(products, scalar_products, quotients, reductions): which of NumPy's complex loops fuse, as measured.
+inline void set_numpy_loops(bool products, bool scalar_products, bool quotients, bool reductions)
 {
-    numpy_loops_beside() = numerical::detail::numpy_loops {.products = products, .scalar_products = scalar_products, .quotients = quotients};
+    numpy_loops_beside() = numerical::detail::numpy_loops {
+        .products = products, .scalar_products = scalar_products, .quotients = quotients, .reductions = reductions};
+}
+
+// NumPy's prod and cumprod: a real type's in order, the library's (IEEE's products); a complex type's each product as
+// NumPy's loops compute it (numerical::detail::numpy_prod, numpy_cumprod, fused as measured), where std::complex's
+// operator recovers infinities that NumPy's leaves NaN.
+template <typename T>
+T prod_as_numpy(const numerical::tensor<T>& t)
+{
+    return numerical::prod(t);
+}
+
+template <numerical::detail::split_complex T>
+T prod_as_numpy(const numerical::tensor<T>& t)
+{
+    return numerical::detail::numpy_prod(t, numpy_loops_beside());
+}
+
+template <typename T>
+numerical::tensor<T> prod_as_numpy(const numerical::tensor<T>& t, std::size_t axis)
+{
+    return numerical::prod(t, axis);
+}
+
+template <numerical::detail::split_complex T>
+numerical::tensor<T> prod_as_numpy(const numerical::tensor<T>& t, std::size_t axis)
+{
+    return numerical::detail::numpy_prod(t, axis, numpy_loops_beside());
+}
+
+template <typename T>
+numerical::tensor<T> cumprod_as_numpy(const numerical::tensor<T>& t, std::size_t axis)
+{
+    return numerical::cumprod(t, axis);
+}
+
+template <numerical::detail::split_complex T>
+numerical::tensor<T> cumprod_as_numpy(const numerical::tensor<T>& t, std::size_t axis)
+{
+    return numerical::detail::numpy_cumprod(t, axis, numpy_loops_beside());
 }
 
 // `a * b` and `a / b` as NumPy's array loops compute them: a real type's are IEEE's, the same; a complex type's

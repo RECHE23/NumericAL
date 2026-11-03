@@ -127,20 +127,20 @@ PyObject* module_axis_op(PyObject* /*self*/, PyObject* args)
                                          PyErr_SetString(PyExc_ValueError, "_axis_op: an axis for cumsum, cumprod and sort");
                                          return nullptr;
                                      }
-                                     return from_scalar(numerical::prod(t));
+                                     return from_scalar(prod_as_numpy(t));
                                  }
                                  const auto                along {static_cast<std::size_t>(axis)};
                                  std::optional<any_tensor> result;
                                  {
                                      const sb::scoped_gil_release unlocked {releases_gil(t.size())};
                                      if (name == "prod") {
-                                         result.emplace(numerical::prod(t, along));
+                                         result.emplace(prod_as_numpy(t, along));
                                      }
                                      else if (name == "cumsum") {
                                          result.emplace(numerical::cumsum(t, along));
                                      }
                                      else if (name == "cumprod") {
-                                         result.emplace(numerical::cumprod(t, along));
+                                         result.emplace(cumprod_as_numpy(t, along));
                                      }
                                      else {
                                          result.emplace(numerical::sort(t, along));

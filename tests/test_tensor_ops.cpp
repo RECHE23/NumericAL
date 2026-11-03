@@ -132,10 +132,11 @@ namespace {
     const C fused_product   {numerical::detail::numpy_multiply(x, y, true)};
     const C rounded_product {numerical::detail::numpy_multiply(x, y, false)};
     for (const bool scalar : {false, true}) {
-      const numerical::detail::numpy_loops loops {.products = !scalar, .scalar_products = scalar, .quotients = scalar};
-      ok = ok && numerical::detail::numpy_multiply(one_one, one, loops).data()[0] == (scalar ? fused_product : rounded_product);
-      ok = ok && numerical::detail::numpy_multiply(one_one, other_one, loops).data()[0] == (scalar ? rounded_product : fused_product);
-      ok = ok && numerical::detail::numpy_divide(one_one, other_one, loops).data()[0] == numerical::detail::numpy_divide(x, y, scalar);
+      const numerical::detail::numpy_loops loops {.products = !scalar, .scalar_products = scalar, .quotients = scalar,
+                                                  .reductions = scalar};
+      ok                                                      = ok && numerical::detail::numpy_multiply(one_one, one, loops).data()[0] == (scalar ? fused_product : rounded_product);
+      ok                                                      = ok && numerical::detail::numpy_multiply(one_one, other_one, loops).data()[0] == (scalar ? rounded_product : fused_product);
+      ok                                                      = ok && numerical::detail::numpy_divide(one_one, other_one, loops).data()[0] == numerical::detail::numpy_divide(x, y, scalar);
     }
     return ok;
   }
@@ -145,6 +146,65 @@ TEST(complex_arithmetic_as_numpy_computes_it)
 {
   EXPECT(numpy_complex_arithmetic_holds<std::complex<double>>());
   EXPECT(numpy_complex_arithmetic_holds<std::complex<float>>());
+}
+
+// NumPy's prod and cumprod of complex numbers: a product from 1, a running product from its first element, each
+// product NumPy's, with no infinity recovered ((inf − inf·j) · 3 is NaN, where C Annex G's keeps the infinities),
+// fused as the loop that runs it: the reduction loop along an axis nothing follows and for a running product past two
+// elements, the vector loop between slices and for a running product of two.
+namespace {
+  template <typename C>
+  bool numpy_products_hold()
+  {
+    using R = C::value_type;
+    const R    inf      {std::numeric_limits<R>::infinity()};
+    const R    e        {std::numeric_limits<R>::epsilon() * R {4}};
+    const C    x        {R {1} + e, R {1}};
+    const C    y        {R {1} - e, R {1}};
+    const C    one      {R {1}, R {0}};
+    const C    fused    {numerical::detail::numpy_multiply(x, y, true)};
+    const C    rounded  {numerical::detail::numpy_multiply(x, y, false)};
+    const auto nan_both {[](const C& z) { return std::isnan(z.real()) && std::isnan(z.imag()); }};
+    bool       ok       {fused != rounded};
+    for (const bool reduction : {false, true}) {
+      const numerical::detail::numpy_loops loops {.products = !reduction, .scalar_products = false, .quotients = false,
+                                                  .reductions = reduction};
+      const C                    by_reduction    {reduction ? fused : rounded};
+      const C                    by_vector       {reduction ? rounded : fused};
+      const numerical::tensor<C> line            {{2}, numerical::buffer<C> {x, y}};
+      const numerical::tensor<C> column          {{2, 1}, numerical::buffer<C> {x, y}};
+      const numerical::tensor<C> rows            {{2, 2}, numerical::buffer<C> {x, x, y, y}};
+      const numerical::tensor<C> three           {{3}, numerical::buffer<C> {one, x, y}};
+      ok = ok && numerical::detail::numpy_prod(line, loops) == by_reduction;
+      ok = ok && numerical::detail::numpy_prod(line, 0, loops).data()[0] == by_reduction;
+      ok = ok && numerical::detail::numpy_prod(column, 0, loops).data()[0] == by_reduction;
+      ok = ok && numerical::detail::numpy_prod(rows, 0, loops).data()[1] == by_vector;
+      ok = ok && numerical::detail::numpy_cumprod(line, 0, loops).data()[1] == by_vector;
+      ok = ok && numerical::detail::numpy_cumprod(three, 0, loops).data()[2] == by_reduction;
+      ok = ok && numerical::detail::numpy_cumprod(rows, 0, loops).data()[3] == by_vector;
+    }
+    const numerical::tensor<C> infinite {{2}, numerical::buffer<C> {C {inf, -inf}, C {R {3}, R {0}}}};
+    ok = ok && nan_both(numerical::detail::numpy_prod(infinite));
+    ok = ok && nan_both(numerical::detail::numpy_cumprod(infinite, 0).data()[1]);
+    const numerical::tensor<C> alone         {{1}, numerical::buffer<C> {C {inf, R {1}}}};
+    const C                    alone_product {numerical::detail::numpy_prod(alone)};
+    ok = ok && alone_product.real() == inf && std::isnan(alone_product.imag());  // 1 · (inf + j), as NumPy's from 1
+    ok = ok && numerical::detail::numpy_prod(numerical::zeros<C>({0})) == one;
+    const numerical::tensor<C> empty_lines {numerical::detail::numpy_prod(numerical::zeros<C>({2, 0}), 1)};
+    ok = ok && empty_lines.shape() == std::vector<std::size_t> {2} && empty_lines.data()[0] == one;
+    ok = ok && numerical::detail::numpy_prod(numerical::zeros<C>({0, 2}), 1).size() == 0;
+    const numerical::tensor<C> pair {{2}, numerical::buffer<C> {x, y}};
+    ok = ok && numerical::detail::numpy_prod(pair) == numerical::detail::numpy_multiply(x, y, numerical::detail::numpy_fuses_reductions());
+    return ok;
+  }
+} // namespace
+
+TEST(complex_prod_and_cumprod_as_numpy_computes_them)
+{
+  EXPECT(numpy_products_hold<std::complex<double>>());
+  EXPECT(numpy_products_hold<std::complex<float>>());
+  EXPECT_THROWS((void)numerical::detail::numpy_prod(numerical::zeros<std::complex<double>>({2}), 1), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::detail::numpy_cumprod(numerical::zeros<std::complex<double>>({2}), 1), numerical::dimension_error);
 }
 
 // A mean divides by its count in the wider of its type and double, the count exact: a float sum of 2^24 + 1 ones is
@@ -842,10 +902,11 @@ namespace {
     const numerical::tensor<C>   t     {{2}, numerical::buffer<C> {a, wide}};
     const numerical::tensor<C>   three {std::vector<std::size_t> {}, numerical::buffer<C> {C {R {3}, R {0}}}};
     for (const bool fused : {false, true}) {
-      const numerical::detail::numpy_loops loops {.products = fused, .scalar_products = !fused, .quotients = !fused};
-      ok = ok && numerical::detail::numpy_square(t, loops).data()[1] == numpy_multiply(wide, wide, fused);
-      ok = ok && numerical::detail::numpy_reciprocal(t, loops).data()[1] == numpy_reciprocal(wide, !fused);
-      ok = ok && numerical::detail::numpy_power(t, three, loops).data()[0] == numpy_power(a, C {R {3}, R {0}}, !fused);
+      const numerical::detail::numpy_loops loops {.products = fused, .scalar_products = !fused, .quotients = !fused,
+                                                  .reductions = !fused};
+      ok                                                      = ok && numerical::detail::numpy_square(t, loops).data()[1] == numpy_multiply(wide, wide, fused);
+      ok                                                      = ok && numerical::detail::numpy_reciprocal(t, loops).data()[1] == numpy_reciprocal(wide, !fused);
+      ok                                                      = ok && numerical::detail::numpy_power(t, three, loops).data()[0] == numpy_power(a, C {R {3}, R {0}}, !fused);
     }
     return ok;
   }

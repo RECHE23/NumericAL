@@ -181,12 +181,15 @@ class HighRanks(unittest.TestCase):
         a = numerical.asarray(np.array([complex(1 + e, 1)] * 2))
         b = numerical.asarray(np.array([complex(1 - e, 1)] * 2))
         try:
+            pair = numerical.asarray(np.array([complex(1 + e, 1), complex(1 - e, 1)]))
             for fused, real in ((False, 0.0), (True, -(e * e))):
-                numerical._numerical._set_numpy_loops(fused, fused, fused)
+                numerical._numerical._set_numpy_loops(fused, fused, fused, fused)
                 self.assertEqual(np.asarray(a * b)[0].real, real)
+                self.assertEqual(numerical.prod(pair).real, real)  # the reduction loop
         finally:
             numerical._numpy_loops()
         np.testing.assert_array_equal(np.asarray(a * b), np.asarray(a) * np.asarray(b))
+        self.assertEqual(numerical.prod(pair), np.prod(np.asarray(pair)))
 
     def test_complex_powers_are_numpys_to_the_bit(self):
         # ** 2 and ** -1 of a Python integer are NumPy's square and reciprocal, ** 0.5 its square root, any other

@@ -375,6 +375,15 @@ namespace numerical {
 #endif
     }
 
+    //! \brief Whether NumPy's complex product fuses its multiply-adds in its reduction loop (the product's loop whose
+    //!        output is its own first operand: `numpy.prod` along an axis nothing follows, `numpy.cumprod` past two
+    //!        elements), as its PyPI wheels are built: a scalar loop, contracted as \ref numpy_fuses_scalar_products
+    //!        says (GCC's on Linux rounds each product, though its vector loop fuses).
+    [[nodiscard]] inline bool numpy_fuses_reductions() noexcept
+    {
+      return numpy_fuses_scalar_products();
+    }
+
     //! \brief Whether NumPy's complex quotient fuses its multiply-adds, as its PyPI wheels are built: on macOS arm64,
     //!        whose clang contracts them (FMA is arm64's baseline); not on Linux, whose GCC does not, nor on x86-64,
     //!        whose baseline has no FMA.
@@ -916,12 +925,13 @@ namespace numerical {
     // C's Annex G (the operators, pow).
 
     //! \brief Which of NumPy's complex loops fuse their multiply-adds: its product's vector loop, its product's scalar
-    //!        loop (\ref detail::numpy_loop_is_scalar) and its quotient's. They follow how its wheels were built, not
-    //!        only the processor, so the binding measures them on the NumPy it runs beside.
+    //!        loop (\ref detail::numpy_loop_is_scalar), its quotient's and its product's reduction loop. They follow how
+    //!        its wheels were built, not only the processor, so the binding measures them on the NumPy it runs beside.
     struct numpy_loops {
       bool products;        //!< The product's vector loop.
       bool scalar_products; //!< The product's scalar loop.
       bool quotients;       //!< The quotient (Smith's algorithm, a scalar loop).
+      bool reductions;      //!< The product's reduction loop (\ref detail::numpy_fuses_reductions).
     };
 
     //! \brief NumPy's loops as its current PyPI wheels build them on this processor (\ref detail::numpy_fuses_products,
@@ -930,7 +940,8 @@ namespace numerical {
     {
       return numpy_loops {.products        = detail::numpy_fuses_products(),
                           .scalar_products = detail::numpy_fuses_scalar_products(),
-                          .quotients       = detail::numpy_fuses_quotients()};
+                          .quotients       = detail::numpy_fuses_quotients(),
+                          .reductions      = detail::numpy_fuses_reductions()};
     }
 
     /*!
@@ -956,6 +967,41 @@ namespace numerical {
     {
       const bool fused {loops.quotients};
       return broadcast_apply(a, b, [fused](const C& x, const C& y) { return detail::numpy_divide(x, y, fused); });
+    }
+
+    /*!
+     * \brief The products of a complex \p t along \p axis, each line in order from 1 (NumPy's identity, which turns
+     *        an infinite element alone into a NaN part), each product as NumPy's loops compute it (\ref detail::numpy_multiply): its reduction loop's where
+     *        nothing follows the axis, its vector loop's (between whole slices) where something does; fused as \p loops
+     *        says. The binding's `prod`, where `std::complex`'s operator (\ref prod) recovers infinities NumPy's makes
+     *        NaN. \throws dimension_error If \p axis is not an axis.
+     */
+    template <detail::split_complex C>
+    [[nodiscard]] tensor<C> numpy_prod(const tensor<C>&   t,
+                                       std::size_t        axis,
+                                       const numpy_loops& loops = numpy_wheel_loops())
+    {
+      const bool fused {walk_along(t.shape(), axis).inner == 1 ? loops.reductions : loops.products};
+      return reduce_along(t, axis, [fused](const C* first, std::size_t count, std::size_t stride) {
+                            C product {1};
+                            for (std::size_t i {0}; i < count; ++i) {
+                              product = numpy_multiply(product, first[i * stride], fused);
+                            }
+                            return product;
+                          });
+    }
+
+    //! \brief The product of every element of a complex \p t, in order from 1 (NumPy's identity), as NumPy's
+    //!        reduction loop computes it (\ref detail::numpy_multiply, fused as \p loops says).
+    template <detail::split_complex C>
+    [[nodiscard]] C numpy_prod(const tensor<C>&   t,
+                               const numpy_loops& loops = numpy_wheel_loops())
+    {
+      C product {1};
+      for (const C& x : t.data()) {
+        product = numpy_multiply(product, x, loops.reductions);
+      }
+      return product;
     }
 
     //! \brief `|x|` of every element of a complex tensor as NumPy's `absolute` computes it
@@ -1593,6 +1639,21 @@ namespace numerical {
                      }
                    });
       return tensor<T> {t.shape(), std::move(out)};
+    }
+
+    /*!
+     * \brief The running products of a complex \p t along \p axis, in order, each as NumPy's loops compute it
+     *        (\ref detail::numpy_multiply): its vector loop's for a line of two (one product), its reduction loop's
+     *        past it; fused as \p loops says. The binding's `cumprod`. \throws dimension_error If \p axis is not an
+     *        axis.
+     */
+    template <detail::split_complex C>
+    [[nodiscard]] tensor<C> numpy_cumprod(const tensor<C>&   t,
+                                          std::size_t        axis,
+                                          const numpy_loops& loops = numpy_wheel_loops())
+    {
+      const bool fused {walk_along(t.shape(), axis).extent == 2 ? loops.products : loops.reductions};
+      return scan_along(t, axis, [fused](const C& running, const C& x) { return numpy_multiply(running, x, fused); });
     }
 
     //! \brief Whether \p a sorts before \p b as NumPy sorts reals: ascending, NaNs last.

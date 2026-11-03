@@ -26,6 +26,7 @@ copy into a PETSc object.
 """
 import array as _array
 import builtins as _builtins
+import collections as _collections
 import functools as _functools
 import math as _math
 import numbers as _numbers
@@ -3246,10 +3247,9 @@ def outer(a, b, out=None):
 
 
 def cross(a, b, axisa=-1, axisb=-1, axisc=-1, axis=None):
-    """The cross product of the vectors of `a` along `axisa` and of `b` along `axisb`, broadcast over the other axes,
-    as ``numpy.cross``: 3-vectors, or 2-vectors with a third component of zero (deprecated, as NumPy 2's: a
-    ``DeprecationWarning``, and a number per pair where both are 2-vectors); the products' vectors along `axisc`,
-    `axis` for all three. Each component by NumPy's operations (a product negated where the other is zero).
+    """The cross product of the 3-vectors of `a` along `axisa` and of `b` along `axisb`, broadcast over the other
+    axes, as ``numpy.cross`` (NumPy 2.5's: 2-vectors refused, as they are since); the products' vectors along
+    `axisc`, `axis` for all three. Each component by NumPy's operations.
 
     Examples:
         >>> import numerical
@@ -3268,25 +3268,15 @@ def cross(a, b, axisa=-1, axisb=-1, axisc=-1, axis=None):
         moved = _permuted(operand, [k for k in range(rank) if k != at] + [at])
         vectors.append(reshape(moved, (1,) + moved.shape))
     a, b = vectors
-    if a.shape[-1] not in (2, 3) or b.shape[-1] not in (2, 3):
-        raise ValueError("incompatible dimensions for cross product\n(dimension must be 2 or 3)")
-    if a.shape[-1] == 2 or b.shape[-1] == 2:
-        _warnings.warn("Arrays of 2-dimensional vectors are deprecated. Use arrays of 3-dimensional vectors instead. "
-                       "(deprecated in NumPy 2.0)", DeprecationWarning, stacklevel=2)
+    if a.shape[-1] != 3 or b.shape[-1] != 3:
+        raise ValueError("Both input arrays must be (arrays of) 3-dimensional vectors, but they are "
+                         f"{a.shape[-1]} and {b.shape[-1]} dimensional instead.")
 
     def part(t, i):
         return t[(slice(None),) * (len(t.shape) - 1) + (i,)]
 
-    a0, a1, b0, b1 = part(a, 0), part(a, 1), part(b, 0), part(b, 1)
-    third = a0 * b1 - a1 * b0
-    if a.shape[-1] == 2 and b.shape[-1] == 2:
-        return reshape(third, third.shape[1:])
-    if a.shape[-1] == 2:
-        first, second = a1 * part(b, 2), -(a0 * part(b, 2))
-    elif b.shape[-1] == 2:
-        first, second = -(part(a, 2) * b1), part(a, 2) * b0
-    else:
-        first, second = a1 * part(b, 2) - part(a, 2) * b1, part(a, 2) * b0 - a0 * part(b, 2)
+    a0, a1, a2, b0, b1, b2 = part(a, 0), part(a, 1), part(a, 2), part(b, 0), part(b, 1), part(b, 2)
+    first, second, third = a1 * b2 - a2 * b1, a2 * b0 - a0 * b2, a0 * b1 - a1 * b0
     # side by side, copied: products with unit vectors multiplied an infinite component by their zeros (NaN elsewhere)
     result = _numerical._stack_last([_operand(c) for c in (first, second, third)])
     result = reshape(result, result.shape[1:])
@@ -3464,9 +3454,10 @@ def _numpy_loops():
         products = np.multiply(np.array([x, x]), np.array([y, y]))[0].real != 0  # the vector loop
         scalar_products = np.multiply(np.array([[x]]), np.array([y]))[0, 0].real != 0  # one element, broadcast
         quotients = np.divide(np.array([complex(-(1 - 2.0**-29), r)]), np.array([complex(1, r)]))[0].real != 0
+        reductions = np.multiply.reduce(np.array([x, y])).real != 0  # prod's and cumprod's loop: out its own operand
         # (inf + 0j) ** -1.0: 0 by the reciprocal a shortcut takes, NaN by the power (its 1 · inf is 0 · inf in part)
         _numpy_shortcuts_any_number = not np.isnan((np.array([complex(np.inf, 0.0)]) ** -1.0)[0].real)
-    _numerical._set_numpy_loops(bool(products), bool(scalar_products), bool(quotients))
+    _numerical._set_numpy_loops(bool(products), bool(scalar_products), bool(quotients), bool(reductions))
 
 
 def _arithmetic(op, reflected=False):
@@ -3906,16 +3897,45 @@ def arange(start, stop=None, step=1.0):
     return _native(_numerical._arange, float(start), float(stop), float(step))
 
 
-def linspace(start, stop, num=50):
-    """`num` values evenly spaced from `start` to `stop`, both included, as ``numpy.linspace``.
+def _result_dtype(*values):
+    """NumPy 2's result dtype of `values`: a Tensor's or an array's (a list read by :func:`asarray`) strong, a Python
+    number weak (its kind alone: an int beside bools int64, a float beside integers float64, a complex beside reals
+    the complex of their precision)."""
+    strong = [_dtype_name(v.dtype) if hasattr(v, "dtype") else _tensor(v).dtype for v in values if not _weak(v)]
+    weak = [v for v in values if _weak(v)]
+    dtype = _promoted(strong) if strong else None
+    for kind, name in ((bool, "bool"), (int, "int64"), (float, "float64"), (complex, "complex128")):
+        if not _builtins.any(type(v) is kind for v in weak):
+            continue
+        if dtype is None or name == "bool":
+            dtype = _promoted([dtype or name, name])
+        elif name == "int64" and dtype == "bool":
+            dtype = "int64"
+        elif name == "float64" and dtype in ("bool", "int64"):
+            dtype = "float64"
+        elif name == "complex128" and not dtype.startswith("complex"):
+            dtype = "complex64" if dtype == "float32" else "complex128"
+    return dtype
+
+
+def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None, axis=0, *, device=None):
+    """`num` values evenly spaced from `start` to `stop`, as ``numpy.linspace`` and by its steps: ``arange(num) ·
+    step + start``, through ``/ div · delta`` where a step is 0, the last value `stop` itself; `start` and `stop`
+    tensors for a tensor of ramps along `axis`; computed in the inexact dtype they promote to (a Python number weak),
+    floored for an integer `dtype`.
 
     Args:
-        start: The first value.
-        stop: The last value.
+        start: The first value: a number or an array-like.
+        stop: The last value (past the last, without `endpoint`).
         num: How many values, a non-negative integer (50 by default).
+        endpoint: Whether `stop` is the last value; else ``num`` steps of ``(stop − start) / num``.
+        retstep: Whether to return the step too.
+        dtype: The result's dtype; by default that of the computation.
+        axis: Where the values' axis goes among the axes of `start` and `stop`.
+        device: The array API's; None or "cpu" alone.
 
     Returns:
-        Tensor: The values, float64.
+        Tensor: The values (with the step, a number or a tensor, NaN for fewer than two steps, where `retstep`).
 
     Raises:
         ValueError: for a negative `num`.
@@ -3924,8 +3944,86 @@ def linspace(start, stop, num=50):
         >>> import numerical
         >>> numerical.linspace(0, 1, 5)
         numerical.Tensor([0.0, 0.25, 0.5, 0.75, 1.0], dtype=float64)
+        >>> numerical.linspace([0.0, 1.0], 2.0, 3, axis=1)
+        numerical.Tensor([[0.0, 1.0, 2.0],
+                          [1.0, 1.5, 2.0]], dtype=float64)
     """
-    return _native(_numerical._linspace, float(start), float(stop), _operator.index(num))
+    if device not in (None, "cpu"):
+        raise ValueError(f"linspace: unsupported device {device!r}")
+    num = _operator.index(num)
+    if num < 0:
+        raise ValueError(f"Number of samples, {num}, must be non-negative.")
+    if (type(start) in (int, float) and type(stop) in (int, float) and endpoint and not retstep and axis == 0
+            and dtype in (None, float, "float64")):
+        return _native(_numerical._linspace, float(start), float(stop), num)
+    div = (num - 1) if endpoint else num
+    computed = _result_dtype(start, stop)
+    computed = "float64" if computed in ("bool", "int64") else computed
+    first = start if _weak(start) else asarray(_tensor(start) if not isinstance(start, Tensor) else start, computed)
+    last = asarray(stop if not _weak(stop) else [stop], computed)
+    last = last if not _weak(stop) else reshape(last, ())
+    delta = last - first
+    y = reshape(asarray(arange(num), computed), (-1,) + (1,) * len(delta.shape))
+    if div > 0:
+        step = delta / div
+        y = (y / div) * delta if any(step == 0) else y * step
+    else:
+        step = _math.nan
+        y = y * delta
+    y = y + first
+    if endpoint and num > 1:
+        y = concatenate([y[:-1], reshape(asarray(broadcast_to(last, y.shape[1:]), computed), (1,) + y.shape[1:])])
+    if axis != 0:
+        y = moveaxis(y, 0, axis)
+    target = computed if dtype is None else _dtype_name(dtype)
+    if target == "int64":
+        y = floor(y)
+    y = asarray(y, target)
+    if retstep:
+        return y, step[()] if isinstance(step, Tensor) and not step.shape else step
+    return y
+
+
+def logspace(start, stop, num=50, endpoint=True, base=10.0, dtype=None, axis=0):
+    """``base ** linspace(start, stop, num, endpoint, axis=axis)``, as ``numpy.logspace``: a tensor `base` broadcast
+    with `start` and `stop`, its axis of the values at `axis`."""
+    if not isinstance(base, (float, int)) and len(shape(base)):
+        rank = len(broadcast_shapes(shape(start), shape(stop), shape(base)))
+        start, stop, base = (reshape(_tensor(x), (1,) * (rank - len(shape(x))) + shape(x)) for x in (start, stop, base))
+        base = expand_dims(base, axis)
+    y = linspace(start, stop, num=num, endpoint=endpoint, axis=axis)
+    result = power(base, y)
+    return result if dtype is None else asarray(result, _dtype_name(dtype))
+
+
+def geomspace(start, stop, num=50, endpoint=True, dtype=None, axis=0):
+    """`num` values evenly spaced on a log scale from `start` to `stop` (both nonzero, negative ones of one sign), as
+    ``numpy.geomspace`` by its steps: :func:`logspace` of their ``log10`` in float64 at least, the ends `start` and
+    `stop` themselves. Real dtypes."""
+    # NumPy's: `start` and `stop` read as arrays first (a Python number of full strength), beside float(num) and
+    # the requested dtype (float64 by default)
+    ends = ["int64" if type(x) is int else _result_dtype(x) for x in (start, stop)]
+    computed = _promoted(ends + ["float64" if dtype is None else _dtype_name(dtype)])
+    computed = "float64" if computed in ("bool", "int64") else computed
+    if computed.startswith("complex"):
+        raise TypeError("geomspace: real numbers only here (NumPy's takes complex ones too)")
+    first, last = (asarray(_tensor(x) if not isinstance(x, Tensor) else x, computed) for x in (start, stop))
+    if any(first == 0) or any(last == 0):
+        raise ValueError("Geometric sequence cannot include zero")
+    sign_ = sign(first)
+    first = first / sign_
+    last = last / sign_
+    result = logspace(log10(first), log10(last), num=num, endpoint=endpoint, base=10.0, dtype=computed)
+    shape_ = result.shape[1:]
+    if num > 0:
+        pieces = [reshape(broadcast_to(first, shape_), (1,) + shape_), result[1:]]
+        if num > 1 and endpoint:
+            pieces = [pieces[0], result[1:-1], reshape(broadcast_to(last, shape_), (1,) + shape_)]
+        result = concatenate(pieces)
+    result = result * sign_
+    if axis != 0:
+        result = moveaxis(result, 0, axis)
+    return asarray(result, computed if dtype is None else _dtype_name(dtype))
 
 
 def _elementwise(name, doc):
@@ -5905,13 +6003,25 @@ def prod(a, axis=None, keepdims=False):
     a = _operand(a)
     if a.dtype == "bool":
         a = asarray(a, "float64")
+    if a.dtype.startswith("complex") and not _numpy_loops_measured:  # each product as NumPy's loops fuse it
+        _numpy_loops()
     if axis is None:
         result = _numerical._axis_op("prod", a, -1)
         return full((1,) * len(a.shape), result, a.dtype) if keepdims else result
     axes = _resolved_axes(a, axis, "prod")
     if len(axes) > 1:  # NumPy's order: the reduced axes' elements in turn, as one axis of them in row-major order
-        joined, _ = _last_axis(a, axes, "prod")
-        result = _native(_numerical._axis_op, "prod", joined, len(joined.shape) - 1)
+        rank = len(a.shape)
+        kept = [k for k in range(rank) if k not in axes]
+        # before the kept axes where NumPy's innermost loop runs along a kept one (its vector loop, between slices),
+        # after them where it runs along a reduced one (its reduction loop): the product fuses as that loop does
+        innermost = next((k for k in range(rank - 1, -1, -1) if a.shape[k] != 1), None)
+        if innermost in kept:
+            moved = _permuted(a, sorted(axes) + kept)
+            joined = reshape(moved, (_math.prod(moved.shape[:len(axes)]),) + moved.shape[len(axes):])
+            result = _native(_numerical._axis_op, "prod", joined, 0)
+        else:
+            joined, _ = _last_axis(a, axes, "prod")
+            result = _native(_numerical._axis_op, "prod", joined, len(joined.shape) - 1)
     else:
         result = a if not axes else _native(_numerical._axis_op, "prod", a, axes[0])
     if keepdims:
@@ -5928,6 +6038,8 @@ def cumsum(a, axis=None):
 def cumprod(a, axis=None):
     """The running products along `axis` (every element flattened where None), in order, as ``numpy.cumprod``."""
     a = _operand(a)
+    if a.dtype.startswith("complex") and not _numpy_loops_measured:  # each product as NumPy's loops fuse it
+        _numpy_loops()
     return _along("cumprod", asarray(a, "float64") if a.dtype == "bool" else a, axis)
 
 
@@ -7765,6 +7877,388 @@ __all__ += ["add", "subtract", "multiply", "acos", "asin", "atan", "acosh", "asi
             "permute_dims", "reciprocal", "fabs", "signbit", "isposinf", "isneginf", "iscomplexobj", "isrealobj",
             "iscomplex", "isreal", "isscalar", "shape", "ndim", "size", "tri", "tril_indices", "triu_indices",
             "tril_indices_from", "triu_indices_from", "diag_indices", "diag_indices_from", "meshgrid"]
+
+def _cumulative(x, scan, axis, dtype, out, include_initial, identity, name):
+    """NumPy's ``_cumulative_func``: `scan` along `axis` (required past rank 1) of `x` at least of rank 1, in `dtype`,
+    after the `identity` where `include_initial`."""
+    _no_out(out, name)
+    x = atleast_1d(_tensor(x))
+    if axis is None:
+        if len(x.shape) >= 2:
+            raise ValueError("For arrays which have more than one dimension ``axis`` argument is required.")
+        axis = 0
+    axis = _axis(x, axis)
+    if dtype is not None:
+        x = asarray(x, _dtype_name(dtype))
+    result = scan(x, axis=axis)
+    if include_initial:
+        result = concatenate([full(x.shape[:axis] + (1,) + x.shape[axis + 1:], identity, result.dtype), result],
+                             axis=axis)
+    return result
+
+
+def cumulative_sum(x, /, *, axis=None, dtype=None, out=None, include_initial=False):
+    """The running sums along `axis`, as ``numpy.cumulative_sum`` (the array API's): :func:`cumsum`, `axis` required
+    past rank 1, a 0 first where `include_initial`."""
+    return _cumulative(x, cumsum, axis, dtype, out, include_initial, 0, "cumulative_sum")
+
+
+def cumulative_prod(x, /, *, axis=None, dtype=None, out=None, include_initial=False):
+    """The running products along `axis`, as ``numpy.cumulative_prod``: :func:`cumprod`, `axis` required past rank 1,
+    a 1 first where `include_initial`."""
+    return _cumulative(x, cumprod, axis, dtype, out, include_initial, 1, "cumulative_prod")
+
+
+def unstack(x, /, *, axis=0):
+    """The slices of `x` along `axis`, as ``numpy.unstack``: a tuple of tensors."""
+    x = _tensor(x)
+    if not x.shape:
+        raise ValueError("Input array must be at least 1-d.")
+    moved = moveaxis(x, axis, 0)
+    return tuple(moved[i] for i in range(moved.shape[0]))
+
+
+def matvec(x1, x2, /):
+    """The products of the matrices of `x1` (its last two axes) by the vectors of `x2` (its last), broadcast, as
+    ``numpy.matvec``: ``(x1 @ x2[..., None])[..., 0]``."""
+    a, b = _tensor(x1), _tensor(x2)
+    if len(a.shape) < 2 or len(b.shape) < 1:
+        raise ValueError("matvec: a stack of matrices and a stack of vectors")
+    return matmul(a, expand_dims(b, -1))[..., 0]
+
+
+def vecmat(x1, x2, /):
+    """The products of the vectors of `x1`, conjugated, by the matrices of `x2`, broadcast, as ``numpy.vecmat``:
+    ``(conj(x1)[..., None, :] @ x2)[..., 0, :]``."""
+    a, b = _tensor(x1), _tensor(x2)
+    if len(a.shape) < 1 or len(b.shape) < 2:
+        raise ValueError("vecmat: a stack of vectors and a stack of matrices")
+    return matmul(expand_dims(conj(a) if a.dtype.startswith("complex") else a, -2), b)[..., 0, :]
+
+
+def _same_kind(source, target):
+    """Whether NumPy casts `source` to `target` under the "same_kind" rule: within a kind or up the kinds (bool,
+    integer, real, complex), never down."""
+    order = {"bool": 0, "int64": 1, "float32": 2, "float64": 2, "complex64": 3, "complex128": 3}
+    return order[source] <= order[target]
+
+
+def _as_numpy_reads(x):
+    """`x` as a Tensor of the dtype NumPy reads it in: a Python integer, or a nested list of them, int64 (where
+    :func:`asarray` reads it as float64 by default)."""
+    if isinstance(x, Tensor) or hasattr(x, "__array_interface__"):
+        return _tensor(x)
+    if isinstance(x, (list, tuple, _numbers.Number)):
+        flat, _ = _nested(x) if isinstance(x, (list, tuple)) else ([x], ())
+        if flat and _builtins.all(isinstance(v, _numbers.Integral) and not isinstance(v, bool) for v in flat):
+            return asarray(x, "int64")
+    return _tensor(x)
+
+
+def ediff1d(ary, to_end=None, to_begin=None):
+    """The differences of consecutive elements of `ary` flattened, as ``numpy.ediff1d``: `to_begin` before them and
+    `to_end` after (flattened, cast to `ary`'s dtype, which they must reach under NumPy's "same_kind" rule)."""
+    a = reshape(_tensor(ary), (-1,))
+    pieces = []
+    for extra, name in ((to_begin, "to_begin"), (to_end, "to_end")):
+        if extra is None:
+            pieces.append(None)
+            continue
+        extra = _as_numpy_reads(extra)
+        if not _same_kind(extra.dtype, a.dtype):
+            raise TypeError(f"dtype of `{name}` must be compatible with input `ary` under the `same_kind` rule.")
+        pieces.append(asarray(reshape(extra, (-1,)), a.dtype))
+    differences = a[1:] - a[:-1]
+    parts = [p for p in (pieces[0], differences, pieces[1]) if p is not None]
+    return concatenate(parts) if len(parts) > 1 else differences
+
+
+def trim_zeros(filt, trim="fb", axis=None):
+    """`filt` without its leading (``"f"``) and trailing (``"b"``) zeros, along `axis` (every one where None), as
+    ``numpy.trim_zeros``: the slice of `filt` itself (a list stays a list)."""
+    t = _tensor(filt) if not isinstance(filt, Tensor) else filt
+    trim = trim.lower()
+    if trim not in {"fb", "bf", "f", "b"}:
+        raise ValueError(f"unexpected character(s) in `trim`: {trim!r}")
+    rank = len(t.shape)
+    axes = tuple(range(rank)) if axis is None else tuple(_normalized_axes(axis, rank, "trim_zeros"))
+    if not axes:
+        return filt
+    found = argwhere(t)
+    if found.shape[0] == 0:
+        start = stop = [0] * rank
+    else:
+        start = [int(v) for v in min(found, axis=0).tolist()] if "f" in trim else [None] * rank
+        stop = [int(v) + 1 for v in max(found, axis=0).tolist()] if "b" in trim else [None] * rank
+    key = tuple(slice(start[k], stop[k]) if k in axes else slice(None) for k in range(rank))
+    return filt[key[0]] if len(key) == 1 else filt[key]
+
+
+def vander(x, N=None, increasing=False):
+    """The Vandermonde matrix of the vector `x`, as ``numpy.vander``: its columns the powers of `x` (decreasing by
+    default), each a running product (``x · x · …``, as NumPy's ``multiply.accumulate``); integers stay int64."""
+    x = _tensor(x)
+    if len(x.shape) != 1:
+        raise ValueError("x must be a one-dimensional array or sequence.")
+    n = x.shape[0] if N is None else _operator.index(N)
+    dtype = _promoted([x.dtype, "int64"])  # NumPy's promote_types(x.dtype, int): float32 to float64
+    x = asarray(x, dtype)
+    columns = [ones((x.shape[0], _builtins.min(n, 1)), dtype)]
+    if n > 1:
+        columns.append(cumprod(broadcast_to(reshape(x, (-1, 1)), (x.shape[0], n - 1)), axis=1))
+    v = concatenate(columns, axis=1) if n > 0 else zeros((x.shape[0], 0), dtype)
+    return v if increasing else flip(v, 1)
+
+
+def identity(n, dtype=None, *, like=None):
+    """The ``n × n`` identity, as ``numpy.identity``: :func:`eye`, float64 by default."""
+    if like is not None:
+        raise TypeError("identity: `like` is NumPy's array-dispatch argument, not taken here")
+    return eye(n, "float64" if dtype is None else _dtype_name(dtype))
+
+
+def select(condlist, choicelist, default=0):
+    """Each element from the first choice whose condition holds there, else `default`, as ``numpy.select``: the
+    conditions bool, broadcast with the choices, the result in the dtype they promote to (a Python number weak)."""
+    if len(condlist) != len(choicelist):
+        raise ValueError("list of cases must be same length as list of conditions")
+    if len(condlist) == 0:
+        raise ValueError("select with an empty condition list is not possible")
+    choices = [c if _weak(c) else _tensor(c) for c in list(choicelist) + [default]]
+    dtype = _result_dtype(*choices)
+    conditions = broadcast_arrays(*[_tensor(c) for c in condlist])
+    for i, condition in enumerate(conditions):
+        if condition.dtype != "bool":
+            raise TypeError(f"invalid entry {i} in condlist: should be boolean ndarray")
+    choices = [asarray(c if not _weak(c) else [c], dtype) if _weak(c) else asarray(c, dtype) for c in choices]
+    choices = [reshape(c, ()) if _weak(v) else c for c, v in zip(choices, list(choicelist) + [default])]
+    choices = broadcast_arrays(*choices)
+    target = conditions[0].shape if not choices[0].shape else broadcast_shapes(conditions[0].shape, choices[0].shape)
+    result = broadcast_to(choices[-1], target)
+    for choice, condition in zip(choices[-2::-1], conditions[::-1]):
+        result = where(condition, choice, result)
+    return asarray(result, dtype)
+
+
+def _monotonicity(values):
+    """NumPy's ``check_array_monotonic``: 1 increasing (or all equal), -1 decreasing, 0 neither; the first unequal pair
+    decides the direction (a NaN unequal to all, and below none), each later pair must not go against it."""
+    i = 1
+    while i < len(values) and values[i] == values[i - 1]:
+        i += 1
+    if i >= len(values):
+        return 1
+    last, following = values[i - 1], values[i]
+    increasing = last < following
+    for following_value in values[i + 1:]:
+        last, following = following, following_value
+        if (last > following) if increasing else (last < following):
+            return 0
+    return 1 if increasing else -1
+
+
+def digitize(x, bins, right=False):
+    """The index of the bin of each element of `x` among the monotonic `bins`, as ``numpy.digitize``: through
+    :func:`searchsorted` (the side swapped by `right`), decreasing bins reversed and their indices counted from the
+    end; int64."""
+    x, bins = _tensor(x), _tensor(bins)
+    if x.dtype.startswith("complex"):
+        raise TypeError("x may not be complex")
+    if len(bins.shape) != 1:
+        raise ValueError("object too deep for desired array" if len(bins.shape) > 1 else
+                         "object of too small depth for desired array")
+    monotonic = _monotonicity(bins.tolist())
+    if monotonic == 0:
+        raise ValueError("bins must be monotonically increasing or decreasing")
+    side = "left" if right else "right"
+    if monotonic == -1:
+        return bins.shape[0] - searchsorted(flip(bins, 0), x, side=side)
+    return searchsorted(bins, x, side=side)
+
+
+def _first_of_runs(aux, equal_nan):
+    """NumPy's ``_unique1d`` mask over the sorted values `aux`: true at each value unlike the one before (and the
+    first), every NaN after the first one false where `equal_nan` (all of a complex one's NaNs alike)."""
+    count = aux.shape[0]
+    if count == 0:
+        return zeros(0, "bool")
+    if len(aux.shape) > 1:  # rows, as NumPy's structured elements: unlike where any field is
+        differs = any(aux[1:] != aux[:-1], axis=tuple(range(1, len(aux.shape))))
+    else:
+        differs = aux[1:] != aux[:-1]
+    mask = concatenate([ones(1, "bool"), differs])
+    if equal_nan and len(aux.shape) == 1 and aux.dtype not in ("bool", "int64") and bool(isnan(aux[-1])):
+        first = int(count_nonzero(~isnan(aux)))  # the NaNs sorted last
+        steps = asarray(arange(count), "int64")
+        mask = where(steps == first, True, where(steps > first, False, mask))
+    return mask
+
+
+def _sorted_rows(rows):
+    """The stable lexicographic order of the rows of a matrix (its columns as NumPy's fields): stable sorts from the
+    last column to the first."""
+    order = asarray(arange(rows.shape[0]), "int64")
+    for column in range(rows.shape[1] - 1, -1, -1):
+        order = order[argsort(rows[order, column])]
+    return order
+
+
+def unique(ar, return_index=False, return_inverse=False, return_counts=False, axis=None, *, equal_nan=True,
+           sorted=True):
+    """The sorted distinct elements of `ar` flattened (or its distinct slices along `axis`, ordered as tuples), as
+    ``numpy.unique``: with the index of each one's first occurrence, the index of each element's among them (of
+    `ar`'s shape), and their counts, where asked (int64); NaNs as one where `equal_nan`. A zero's sign is the first
+    one's met (the order is stable). `sorted` is NumPy's: the elements are sorted either way."""
+    del sorted
+    a = _tensor(ar)
+    if axis is None or len(a.shape) == 1:
+        if axis is not None:
+            _axis(a, axis)
+        flat = reshape(a, (-1,))
+        order = argsort(flat)
+        aux = flat[order]
+        mask = _first_of_runs(aux, equal_nan)
+        inverse_shape = a.shape
+        reshape_values = None
+    else:
+        axis = _axis(a, axis)
+        moved = moveaxis(a, axis, 0)
+        rows = reshape(moved, (moved.shape[0], _math.prod(moved.shape[1:])))
+        order = _sorted_rows(rows)
+        aux = rows[order]
+        mask = _first_of_runs(aux, False)
+        inverse_shape = None
+
+        def reshape_values(values):
+            return moveaxis(reshape(values, (values.shape[0],) + moved.shape[1:]), 0, axis)
+    values = aux[mask]
+    result = (reshape_values(values) if reshape_values else values,)
+    if return_index:
+        result += (order[mask],)
+    if return_inverse:
+        among = cumsum(asarray(mask, "int64")) - 1
+        inverse = among[argsort(order)]
+        result += (reshape(inverse, inverse_shape) if inverse_shape is not None else inverse,)
+    if return_counts:
+        starts = concatenate([nonzero(mask)[0], asarray([mask.shape[0]], "int64")])
+        result += (starts[1:] - starts[:-1],)
+    return result[0] if len(result) == 1 else result
+
+
+_UniqueAllResult = _collections.namedtuple("UniqueAllResult", ["values", "indices", "inverse_indices", "counts"])
+_UniqueCountsResult = _collections.namedtuple("UniqueCountsResult", ["values", "counts"])
+_UniqueInverseResult = _collections.namedtuple("UniqueInverseResult", ["values", "inverse_indices"])
+
+
+def unique_values(x):
+    """The distinct elements of `x`, as ``numpy.unique_values`` (the array API's): each NaN its own."""
+    return unique(x, equal_nan=False)
+
+
+def unique_counts(x):
+    """The distinct elements of `x` and their counts, as ``numpy.unique_counts``: each NaN its own."""
+    return _UniqueCountsResult(*unique(x, return_counts=True, equal_nan=False))
+
+
+def unique_inverse(x):
+    """The distinct elements of `x` and the index of each element's among them, as ``numpy.unique_inverse``."""
+    return _UniqueInverseResult(*unique(x, return_inverse=True, equal_nan=False))
+
+
+def unique_all(x):
+    """The distinct elements of `x`, their first indices, each element's index among them and their counts, as
+    ``numpy.unique_all``."""
+    return _UniqueAllResult(*unique(x, return_index=True, return_inverse=True, return_counts=True, equal_nan=False))
+
+
+def intersect1d(ar1, ar2, assume_unique=False, return_indices=False):
+    """The sorted elements of both `ar1` and `ar2`, as ``numpy.intersect1d``: with the indices of their first
+    occurrences in each, where asked."""
+    a, b = _tensor(ar1), _tensor(ar2)
+    if not assume_unique:
+        if return_indices:
+            a, first_a = unique(a, return_index=True)
+            b, first_b = unique(b, return_index=True)
+        else:
+            a, b = unique(a), unique(b)
+    else:
+        a, b = reshape(a, (-1,)), reshape(b, (-1,))
+    aux = concatenate([a, b])
+    order = argsort(aux)
+    aux = aux[order]
+    mask = aux[1:] == aux[:-1]
+    both = aux[:-1][mask]
+    if not return_indices:
+        return both
+    in_a = order[:-1][mask]
+    in_b = order[1:][mask] - a.shape[0]
+    if not assume_unique:
+        in_a, in_b = first_a[in_a], first_b[in_b]
+    return both, in_a, in_b
+
+
+def union1d(ar1, ar2):
+    """The sorted elements of `ar1` or `ar2`, as ``numpy.union1d``."""
+    return unique(concatenate([reshape(_tensor(ar1), (-1,)), reshape(_tensor(ar2), (-1,))]))
+
+
+def setdiff1d(ar1, ar2, assume_unique=False):
+    """The sorted distinct elements of `ar1` not in `ar2`, as ``numpy.setdiff1d``."""
+    if assume_unique:
+        a = reshape(_tensor(ar1), (-1,))
+    else:
+        a, ar2 = unique(ar1), unique(ar2)
+    return a[_isin(a, ar2, assume_unique=True, invert=True)]
+
+
+def setxor1d(ar1, ar2, assume_unique=False):
+    """The sorted elements of exactly one of `ar1` and `ar2`, as ``numpy.setxor1d``."""
+    a, b = (_tensor(ar1), _tensor(ar2)) if assume_unique else (unique(ar1), unique(ar2))
+    aux = concatenate([reshape(a, (-1,)), reshape(b, (-1,))])
+    if aux.shape[0] == 0:
+        return aux
+    aux = sort(aux)
+    flags = concatenate([ones(1, "bool"), aux[1:] != aux[:-1], ones(1, "bool")])
+    return aux[flags[1:] & flags[:-1]]
+
+
+def _isin(ar1, ar2, assume_unique=False, invert=False, kind=None):
+    """NumPy's ``_isin`` of `ar1` and `ar2` flattened, by its sorting method (its table method answers the same)."""
+    a, b = reshape(_tensor(ar1), (-1,)), reshape(_tensor(ar2), (-1,))
+    if kind not in (None, "sort", "table"):
+        raise ValueError(f"Invalid kind: '{kind}'. Please use None, 'sort' or 'table'.")
+    integers = a.dtype in ("bool", "int64") and b.dtype in ("bool", "int64")
+    if kind == "table" and not integers:
+        raise ValueError("The 'table' method is only supported for boolean or integer arrays. Please select 'sort' or "
+                         "None for kind.")
+    if kind == "table" and b.shape[0] and int(max(asarray(b, "int64"))) - int(min(asarray(b, "int64"))) >= 2 ** 63:
+        raise RuntimeError("You have specified kind='table', but the range of values in `ar2` or `ar1` exceed the "
+                           "maximum integer of the datatype. Please set `kind` to None or 'sort'.")
+    if integers and b.shape[0] == 0:
+        return ones(a.shape, "bool") if invert else zeros(a.shape, "bool")
+    if not assume_unique:
+        a, back = unique(a, return_inverse=True)
+        b = unique(b)
+    joined = concatenate([a, b])
+    order = argsort(joined)
+    s = joined[order]
+    same = (s[1:] != s[:-1]) if invert else (s[1:] == s[:-1])
+    flags = concatenate([same, full(1, bool(invert), "bool")])
+    found = flags[argsort(order)]
+    return found[:a.shape[0]] if assume_unique else found[back]
+
+
+def isin(element, test_elements, assume_unique=False, invert=False, *, kind=None):
+    """Whether each element of `element` is among `test_elements` (equal to one: never a NaN), as ``numpy.isin``:
+    of `element`'s shape; `invert` for the opposite. `kind` is NumPy's choice of method, which changes nothing in the
+    answer."""
+    e = _tensor(element)
+    return reshape(_isin(e, test_elements, assume_unique=assume_unique, invert=invert, kind=kind), e.shape)
+
+
+__all__ += ["logspace", "geomspace", "cumulative_sum", "cumulative_prod", "unstack", "matvec", "vecmat", "ediff1d",
+            "trim_zeros", "vander", "identity", "select", "digitize", "unique", "unique_values", "unique_counts",
+            "unique_inverse", "unique_all", "intersect1d", "union1d", "setdiff1d", "setxor1d", "isin"]
 
 __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "floor_divide", "remainder", "mod",
             "divmod", "zeros_like", "ones_like", "empty_like",

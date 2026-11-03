@@ -1,7 +1,7 @@
 """Linear algebra, as :mod:`numpy.linalg`: its names, so that code written against ``numpy.linalg`` (``xp.linalg`` in
 the array API) runs unchanged. Each is the function of that name at the root of :mod:`numerical` (the same object:
-NumPy's defaults, SciPy's further arguments accepted too), but for :func:`cross` and :func:`outer`, which take
-``numpy.linalg``'s operands alone (3-vectors; vectors) where ``numpy.cross`` and ``numpy.outer`` take more."""
+NumPy's defaults, SciPy's further arguments accepted too), but for :func:`cross`, along one axis, and :func:`outer`,
+of vectors alone, where ``numpy.cross`` and ``numpy.outer`` take more."""
 
 import operator as _operator
 
@@ -18,18 +18,9 @@ __all__ = ["matrix_power", "solve", "tensorsolve", "tensorinv", "inv", "cholesky
 
 
 def cross(x1, x2, /, *, axis=-1):
-    """The cross product of 3-vectors along `axis`, broadcast over the other axes, as ``numpy.linalg.cross``:
-    :func:`numerical.cross` of 3-vectors alone."""
-    axis = _operator.index(axis)  # one axis: TypeError for any other, as NumPy's
-    a, b = _root.asarray(x1) if not isinstance(x1, _root.Tensor) else x1, \
-        _root.asarray(x2) if not isinstance(x2, _root.Tensor) else x2
-    for operand in (a, b):
-        if not -len(operand.shape) <= axis < len(operand.shape):
-            raise IndexError(f"cross: axis {axis} is out of bounds for an operand of rank {len(operand.shape)}")
-    if a.shape[axis] != 3 or b.shape[axis] != 3:
-        raise ValueError("Both input arrays must be (arrays of) 3-dimensional vectors, but they are "
-                         f"{a.shape[axis]} and {b.shape[axis]} dimensional instead.")
-    return _root.cross(a, b, axis=axis)
+    """The cross product of 3-vectors along `axis`, broadcast over the other axes, as ``numpy.linalg.cross``
+    (NumPy 2.5's): :func:`numerical.cross` along one axis for both operands and the result."""
+    return _root.cross(x1, x2, axis=_operator.index(axis))  # one axis: TypeError for any other, as NumPy's
 
 
 def outer(x1, x2, /):

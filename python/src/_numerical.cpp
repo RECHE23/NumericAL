@@ -41,7 +41,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&set_num_threads>("_set_num_threads",
                             "_set_num_threads(n)\nCap the threads a kernel uses at n (see numerical.set_num_threads).");
     m.def<&set_numpy_loops>("_set_numpy_loops",
-                            "_set_numpy_loops(products, scalar_products, quotients)\nWhich of NumPy's complex loops fuse (see numerical._numpy_loops).");
+                            "_set_numpy_loops(products, scalar_products, quotients, reductions)\nWhich of NumPy's complex loops fuse (see numerical._numpy_loops).");
     m.def<&get_num_threads>("get_num_threads", "get_num_threads() -> int\nThe threads a kernel may use.");
     m.def<&limit_gemm_path_code>("_limit_gemm_path", "_limit_gemm_path(code) -> int\nThe path code now in use (see numerical.limit_gemm_path).");
     m.def<&gemm_path_code>("_gemm_path", "_gemm_path() -> int\nThe path code float64 matrix products take.");

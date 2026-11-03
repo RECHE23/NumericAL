@@ -1,8 +1,8 @@
-"""add, subtract, multiply, the array API's aliases (acos… atanh, pow, permute_dims), amax and amin, reciprocal, fabs,
-signbit, isposinf and isneginf, the complex predicates, isscalar, shape, ndim, size, tri and the triangle and diagonal
-indices, meshgrid: against NumPy's answers to the bit (a complex reciprocal within 2 ulps: NumPy's compiler may fuse
-its products), in every dtype they take, with NumPy's errors. Deterministic; the NumPy comparisons skipped without
-NumPy."""
+"""add, subtract, multiply, the array API's aliases (acos… atanh and pow the same functions, permute_dims), amax
+and amin, reciprocal, fabs, signbit, isposinf and isneginf, the complex predicates, isscalar, shape, ndim, size, tri
+and the triangle and diagonal indices, meshgrid: against NumPy's answers to the bit (a complex reciprocal within 2
+ulps: NumPy's compiler may fuse its products), in every dtype they take, with NumPy's errors. Deterministic; the
+NumPy comparisons skipped without NumPy."""
 import math
 import unittest
 import warnings
@@ -22,8 +22,10 @@ class WithoutNumPy(unittest.TestCase):
         self.assertEqual(numerical.add([1, 2], 3).tolist(), [4.0, 5.0])
         self.assertEqual(numerical.subtract(1.5, [1, 2]).tolist(), [0.5, -0.5])
         self.assertEqual(numerical.multiply(2, 3).tolist(), 6.0)
-        self.assertIs(numerical.acos, numerical.arccos)
-        self.assertIs(numerical.pow, numerical.power)
+        for alias, name in (("acos", "arccos"), ("asin", "arcsin"), ("atan", "arctan"), ("acosh", "arccosh"),
+                            ("asinh", "arcsinh"), ("atanh", "arctanh"), ("pow", "power"), ("amax", "max"),
+                            ("amin", "min")):
+            self.assertIs(getattr(numerical, alias), getattr(numerical, name), alias)
         self.assertEqual(numerical.permute_dims(numerical.zeros((2, 3, 4)), (2, 0, 1)).shape, (4, 2, 3))
         self.assertEqual(numerical.reciprocal(numerical.asarray([4.0, -0.0])).tolist(), [0.25, -math.inf])
         self.assertEqual(numerical.reciprocal(numerical.asarray([1, -1, 5], "int64")).tolist(), [1, -1, 0])
@@ -134,8 +136,6 @@ class AgainstNumPy(unittest.TestCase):
             t = numerical.asarray(x, "int64") if kind == "int64" else numerical.asarray(x)
             names = ["reciprocal", "fabs", "signbit", "isposinf", "isneginf", "iscomplex", "isreal", "iscomplexobj",
                      "isrealobj", "isscalar", "shape", "ndim", "size"]
-            if not kind.startswith("complex") and kind != "bool":  # see differences.md: real and no float16
-                names += ["acos", "asin", "atan", "acosh", "asinh", "atanh"]
             for name in names:
                 if name == "reciprocal" and kind in ("bool", "int64"):
                     continue  # NumPy's int8 for a bool, and its int64 of an infinity for a zero (see the doc)
@@ -145,10 +145,13 @@ class AgainstNumPy(unittest.TestCase):
                                 ulps=2 if name == "reciprocal" and kind.startswith("complex") else 0)
             if _NUMPY_2_4:  # a tuple of axes from NumPy 2.4 on
                 self.assertSame(lambda: numerical.size(t, (0, 1)), lambda: np.size(x, (0, 1)), "size of axes")
-            self.assertSame(lambda: numerical.permute_dims(t, (1, 0)), lambda: np.permute_dims(x, (1, 0)), "permute_dims")
-            if not kind.startswith("complex"):
-                self.assertSame(lambda: numerical.amax(t, axis=0), lambda: np.amax(x, axis=0), f"amax {kind}")
-                self.assertSame(lambda: numerical.amin(t), lambda: np.amin(x), f"amin {kind}")
+            self.assertSame(lambda: numerical.permute_dims(t, (1, 0)), lambda: np.permute_dims(x, (1, 0)),
+                            "permute_dims")
+            if not kind.startswith("complex"):  # the zeros of one sign: NumPy's order of ±0 is its processor's
+                unsigned = x + 0 if kind != "bool" else x
+                ours = numerical.asarray(unsigned, "int64") if kind == "int64" else numerical.asarray(unsigned)
+                self.assertSame(lambda: numerical.amax(ours, axis=0), lambda: np.amax(unsigned, axis=0), f"amax {kind}")
+                self.assertSame(lambda: numerical.amin(ours), lambda: np.amin(unsigned), f"amin {kind}")
             for other in kinds:
                 if kind == "bool" and other == "bool":
                     continue  # see differences.md: no bool arithmetic

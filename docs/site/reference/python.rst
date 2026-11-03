@@ -21,6 +21,10 @@ Tensors
 .. autofunction:: numerical.meshgrid
 .. autofunction:: numerical.arange
 .. autofunction:: numerical.linspace
+.. autofunction:: numerical.logspace
+.. autofunction:: numerical.geomspace
+.. autofunction:: numerical.identity
+.. autofunction:: numerical.vander
 .. autofunction:: numerical.zeros_like
 .. autofunction:: numerical.ones_like
 .. autofunction:: numerical.empty_like
@@ -58,6 +62,7 @@ Shapes and joins
 .. autofunction:: numerical.dstack
 .. autofunction:: numerical.block
 .. autofunction:: numerical.pad
+.. autofunction:: numerical.trim_zeros
 .. autofunction:: numerical.append
 .. autofunction:: numerical.insert
 .. autofunction:: numerical.delete
@@ -66,6 +71,7 @@ Shapes and joins
 .. autofunction:: numerical.hsplit
 .. autofunction:: numerical.vsplit
 .. autofunction:: numerical.dsplit
+.. autofunction:: numerical.unstack
 .. autofunction:: numerical.tile
 .. autofunction:: numerical.repeat
 .. autofunction:: numerical.roll
@@ -193,6 +199,7 @@ Comparisons and logic
 .. autofunction:: numerical.allclose
 .. autofunction:: numerical.array_equal
 .. autofunction:: numerical.where
+.. autofunction:: numerical.select
 .. autofunction:: numerical.any
 .. autofunction:: numerical.all
 
@@ -208,6 +215,9 @@ Reductions, scans and sorting
 .. autofunction:: numerical.prod
 .. autofunction:: numerical.cumsum
 .. autofunction:: numerical.cumprod
+.. autofunction:: numerical.cumulative_sum
+.. autofunction:: numerical.cumulative_prod
+.. autofunction:: numerical.ediff1d
 .. autofunction:: numerical.ptp
 .. autofunction:: numerical.var
 .. autofunction:: numerical.std
@@ -232,6 +242,17 @@ Reductions, scans and sorting
 .. autofunction:: numerical.cov
 .. autofunction:: numerical.corrcoef
 .. autofunction:: numerical.sort
+.. autofunction:: numerical.unique
+.. autofunction:: numerical.unique_values
+.. autofunction:: numerical.unique_counts
+.. autofunction:: numerical.unique_inverse
+.. autofunction:: numerical.unique_all
+.. autofunction:: numerical.intersect1d
+.. autofunction:: numerical.union1d
+.. autofunction:: numerical.setdiff1d
+.. autofunction:: numerical.setxor1d
+.. autofunction:: numerical.isin
+.. autofunction:: numerical.digitize
 .. autofunction:: numerical.diff
 .. autofunction:: numerical.argmax
 .. autofunction:: numerical.argmin
@@ -253,6 +274,8 @@ Products
 --------
 
 .. autofunction:: numerical.matmul
+.. autofunction:: numerical.matvec
+.. autofunction:: numerical.vecmat
 .. autofunction:: numerical.dot
 .. autofunction:: numerical.inner
 .. autofunction:: numerical.vdot

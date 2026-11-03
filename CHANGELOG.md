@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+
+- **`prod` and `cumprod` of complex numbers** multiply as NumPy's loops do, with no infinity recovered from a NaN
+  (`(inf − inf·j) · 3` is NaN, where C's Annex G kept the infinities) and each product's multiply-adds fused as
+  NumPy's loop for it fuses them, which the binding measures beside the NumPy it imports: its reduction loop along an
+  axis nothing follows and for a running product past two elements, its vector loop between slices.
+
 ### Added
 
 - **`insert` and `delete`**, as NumPy's: a slice, an index, indices or a mask along an axis (of the flattened array
@@ -18,14 +25,20 @@ A change that can break code is listed under **Breaking** and held for a month's
   weights of the axis's shape, where NumPy raises IndexError (numpy/numpy#29709).
 - **`numerical.linalg`**: `numpy.linalg`'s names (the array API's `xp.linalg`), the root's functions; its `cross`
   and `outer` take `numpy.linalg`'s operands alone.
-- **`cross` and `outer` at the root as NumPy's root ones**: `cross` takes 2-vectors (with NumPy 2's
-  DeprecationWarning) and `axisa`, `axisb`, `axisc`, each component by NumPy's operations; `outer` flattens its
-  operands. Both raised there before.
+- **`cross` and `outer` at the root as NumPy's root ones**: `cross` takes `axisa`, `axisb` and `axisc` (3-vectors
+  alone, as NumPy 2.5's); `outer` flattens its operands, where it raised before.
 - **More of NumPy's root**: `add`, `subtract`, `multiply`, `reciprocal` (a complex one by NumPy's steps), `fabs`,
   `signbit`, `isposinf`, `isneginf`, `iscomplex`, `isreal`, `iscomplexobj`, `isrealobj`, `isscalar`, `shape`,
   `ndim`, `size`, `tri`, `tril_indices`, `triu_indices` (and `…_from`), `diag_indices` (and `…_from`), `meshgrid`,
   and the array API's names `acos`, `asin`, `atan`, `acosh`, `asinh`, `atanh`, `pow`, `permute_dims`, with
   `amax` and `amin`.
+- **`linspace` as NumPy's in full**: `endpoint`, `retstep`, `dtype`, `axis`, and tensors of starts and stops, by
+  NumPy's steps; `logspace` and `geomspace` (real), `identity`, `vander`.
+- **Sets and bins**: `unique` (its index, inverse and counts, `equal_nan`, `axis`), `unique_values`,
+  `unique_counts`, `unique_inverse`, `unique_all`, `intersect1d`, `union1d`, `setdiff1d`, `setxor1d`, `isin` and
+  `digitize`, as NumPy's.
+- **More array functions**: `cumulative_sum` and `cumulative_prod` (`include_initial`), `unstack`, `matvec`,
+  `vecmat`, `ediff1d`, `trim_zeros` and `select`.
 
 ## 2026.11.4 — 2026-11-03
 

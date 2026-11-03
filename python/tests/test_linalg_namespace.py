@@ -1,6 +1,7 @@
-"""numerical.linalg against numpy.linalg: the same names, the root's functions, and cross and outer as numpy.linalg's
-(3-vectors, vectors) where the root's take numpy.cross's and numpy.outer's operands, every bit of the products as
-NumPy's (zeros' signs, infinities). Deterministic; the NumPy comparisons skipped without NumPy."""
+"""numerical.linalg against numpy.linalg: the same names, the root's functions, and cross and outer as
+numpy.linalg's (3-vectors along one axis, vectors) where the root's take numpy.cross's and numpy.outer's arguments,
+every bit of the products as NumPy's (zeros' signs, infinities). Deterministic; the NumPy comparisons skipped
+without NumPy."""
 import unittest
 import warnings
 
@@ -10,6 +11,8 @@ try:
     import numpy as np
 except ImportError:
     np = None
+
+_NUMPY_2_5 = np is not None and tuple(int(part) for part in np.__version__.split(".")[:2]) >= (2, 5)
 
 
 class WithoutNumPy(unittest.TestCase):
@@ -22,20 +25,16 @@ class WithoutNumPy(unittest.TestCase):
     def test_cross_and_outer(self):
         self.assertEqual(numerical.linalg.cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0]).tolist(), [0.0, 0.0, 1.0])
         self.assertEqual(numerical.linalg.outer([1.0, 2.0], [3.0]).tolist(), [[3.0], [6.0]])
-        with warnings.catch_warnings(record=True) as caught:
-            warnings.simplefilter("always")
-            self.assertEqual(numerical.cross([1.0, 2.0], [3.0, 4.0]).tolist(), -2.0)
-            self.assertEqual(numerical.cross([1.0, 2.0], [0.0, 0.0, 1.0]).tolist(), [2.0, -1.0, 0.0])
-            self.assertEqual(numerical.cross([[1.0], [0.0], [0.0]], [[0.0, 1.0, 0.0]], axisa=0).tolist(),
-                             [[0.0, 0.0, 1.0]])
-        self.assertEqual([w.category for w in caught], [DeprecationWarning, DeprecationWarning])
+        self.assertEqual(numerical.cross([[1.0], [0.0], [0.0]], [[0.0, 1.0, 0.0]], axisa=0).tolist(),
+                         [[0.0, 0.0, 1.0]])
         self.assertEqual(numerical.outer([[1.0, 2.0]], [[3.0], [4.0]]).tolist(), [[3.0, 4.0], [6.0, 8.0]])
         cases = [
             (ValueError, lambda: numerical.linalg.cross([1.0, 2.0], [3.0, 4.0])),
-            (IndexError, lambda: numerical.linalg.cross([1.0, 2.0, 3.0], 1.0)),
+            (ValueError, lambda: numerical.linalg.cross([1.0, 2.0, 3.0], 1.0)),
             (TypeError, lambda: numerical.linalg.cross([1.0, 2.0, 3.0], [1.0, 2.0, 3.0], axis=(0,))),
             (ValueError, lambda: numerical.linalg.outer([[1.0]], [1.0])),
             (ValueError, lambda: numerical.cross([1.0, 2.0, 3.0, 4.0], [1.0, 2.0, 3.0])),
+            (ValueError, lambda: numerical.cross([1.0, 2.0], [1.0, 2.0, 3.0])),
             (ValueError, lambda: numerical.cross(1.0, [1.0, 2.0, 3.0])),
             (ValueError, lambda: numerical.cross([1.0, 2.0, 3.0], [1.0, 2.0, 3.0], axisc=1)),
             (TypeError, lambda: numerical.outer([1.0], [1.0], out=numerical.zeros((1, 1)))),
@@ -78,12 +77,16 @@ class AgainstNumPy(unittest.TestCase):
             for kind in ("float64", "float32", "complex128", "int64"):
                 for first in shapes:
                     for second in shapes:
+                        if not _NUMPY_2_5 and 2 in (first[-1:] + second[-1:] + first[:1] + second[:1]):
+                            continue  # 2-vectors: NumPy before 2.5 crossed them (deprecated), 2.5 refuses them
                         x, y = drawn(first, kind), drawn(second, kind)
                         t, u = (numerical.asarray(v, "int64" if kind == "int64" else None) for v in (x, y))
                         pairs = [(lambda kw=kw: numerical.cross(t, u, **kw), lambda kw=kw: np.cross(x, y, **kw),
                                   f"cross {kw}") for kw in arguments]
-                        pairs += [(lambda: numerical.linalg.cross(t, u), lambda: np.linalg.cross(x, y), "linalg.cross"),
-                                  (lambda: numerical.outer(t, u), lambda: np.outer(x, y), "outer"),
+                        if _NUMPY_2_5 or (first and second):  # a rank 0: IndexError before NumPy 2.5
+                            pairs.append((lambda: numerical.linalg.cross(t, u), lambda: np.linalg.cross(x, y),
+                                          "linalg.cross"))
+                        pairs += [(lambda: numerical.outer(t, u), lambda: np.outer(x, y), "outer"),
                                   (lambda: numerical.linalg.outer(t, u), lambda: np.linalg.outer(x, y), "linalg.outer")]
                         for ours, theirs, name in pairs:
                             label = f"{name} {kind} {first} {second}"
