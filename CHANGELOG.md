@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.3 — 2026-11-03
+
 ### Added
 - **The index functions, in int64**: `argmax` and `argmin` (flat, a Python int, or along an axis, with `keepdims`; the
   first of equal ones, the first NaN where there is one), `argsort` (stable, NaNs last; a long line sorted among the
