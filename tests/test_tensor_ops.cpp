@@ -1062,6 +1062,32 @@ TEST(einsum_takes_a_diagonal_and_its_pairwise_sum)
 
 // prod in order (an empty one 1), along an axis; cumsum and cumprod in order along an axis; sort along an axis,
 // ascending with NaNs last and equal elements in their order, complex numbers by real then imaginary part.
+// NumPy's pairwise sum of complex numbers counts their parts: four partial sums and blocks of 64 where a real's are
+// eight and 128, its halves a multiple of four long. Integers sum exactly in any order: the tree's every branch runs,
+// whole sums and columns alike (the bits against NumPy's are the Python suite's).
+TEST(complex_sums_take_numpys_tree)
+{
+  using cplx = std::complex<double>;
+  for (const std::size_t count : {3UL, 7UL, 64UL, 65UL, 200UL, 70000UL, 300000UL}) {
+    numerical::buffer<cplx> values(count);
+    for (std::size_t k {0}; k < count; ++k) {
+      values[k] = cplx {static_cast<double>(k % 5), -static_cast<double>(k % 3)};
+    }
+    double real      {0.0};
+    double imaginary {0.0};
+    for (const cplx& z : values) {
+      real      += z.real();
+      imaginary += z.imag();
+    }
+    const tensor<cplx> line   {{count}, numerical::buffer<cplx>(values)};
+    EXPECT(numerical::sum(line) == cplx(real, imaginary));
+    const tensor<cplx> column {{count, 2}, numerical::buffer<cplx>(2 * count, cplx {1.0, -1.0})};
+    EXPECT(numerical::sum(column, 0).data()[1] == cplx(static_cast<double>(count), -static_cast<double>(count)));
+  }
+  EXPECT(numerical::detail::pairwise_tree<cplx>::half(100) == 48 && numerical::detail::pairwise_tree<double>::half(100) == 48);
+  EXPECT(numerical::detail::pairwise_tree<cplx>::half(200) == 100 && numerical::detail::pairwise_tree<double>::half(200) == 96);
+}
+
 // Lines that are columns are walked in bands of 256, row after row: each line's sums, products and counts are those
 // of its elements in order, the bands' edges anywhere (a band of 256 and one of 44 here, under 2 outer slices).
 TEST(columns_fold_and_scan_in_bands_as_line_by_line)

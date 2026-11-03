@@ -10,6 +10,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **A sum of complex numbers** (`sum`, `mean` and those built on them) has NumPy's bits from four terms on: NumPy
+  sums their parts side by side, four partial sums and blocks of 64 where a real's are eight and 128; the sums took
+  the real tree.
+- **`diag` of an int64 vector** is int64, as NumPy's; it was float64.
 - **`prod` and `cumprod` of complex numbers** multiply as NumPy's loops do, with no infinity recovered from a NaN
   (`(inf − inf·j) · 3` is NaN, where C's Annex G kept the infinities) and each product's multiply-adds fused as
   NumPy's loop for it fuses them, which the binding measures beside the NumPy it imports: its reduction loop along an
@@ -42,6 +46,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   `vecmat`, `ediff1d`, `trim_zeros` and `select`.
 - **The array API's names**: `pi`, `e`, `inf`, `nan`, `newaxis`, the dtype names (`numerical.float64 ==
   "float64"`, a Tensor's dtype), `finfo` and `iinfo`, as NumPy's.
+- **Calculus, grids and signals**: `trapezoid`, `gradient` (second-order inside, first- or second-order ends,
+  spacings by axis), `diagflat`, `indices`, `ix_`, `ravel_multi_index`, `unravel_index`, `correlate` and `convolve`,
+  as NumPy's; `fft.next_fast_len`, as SciPy's.
 
 ### Changed
 

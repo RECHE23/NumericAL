@@ -14,6 +14,7 @@ try:
 except ImportError:
     np = None
 
+_NUMPY_2_3 = np is not None and tuple(int(part) for part in np.__version__.split(".")[:2]) >= (2, 3)
 _NUMPY_2_4 = np is not None and tuple(int(part) for part in np.__version__.split(".")[:2]) >= (2, 4)
 
 
@@ -268,6 +269,17 @@ class AgainstNumPy(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(numerical.matvec(a, v)), np.matvec(a, v), rtol=1e-14, atol=1e-15)
         z, m = rng.normal(size=(2, 3)) + 1j * rng.normal(size=(2, 3)), rng.normal(size=(3, 5)) + 1j * rng.normal(size=(3, 5))
         np.testing.assert_allclose(np.asarray(numerical.vecmat(z, m)), np.vecmat(z, m), rtol=1e-14, atol=1e-15)
+
+    def test_complex_sums(self):
+        rng = np.random.default_rng(10)
+        for dtype in (np.complex128, np.complex64):
+            for length in list(range(1, 70)) + [100, 129, 200, 1000, 5000] + ([70000, 300000] if _NUMPY_2_3 else []):
+                # NumPy before 2.3 sums past 8192 elements a buffer of them at a time
+                x = (rng.normal(size=length) + 1j * rng.normal(size=length)).astype(dtype)
+                self.assertBits(numerical.sum(numerical.asarray(x)), np.sum(x), f"sum {dtype.__name__} {length}")
+            m = (rng.normal(size=(5, 300)) + 1j * rng.normal(size=(5, 300))).astype(dtype)
+            self.assertBits(numerical.sum(numerical.asarray(m), axis=-1), np.sum(m, axis=-1), "sum along the last axis")
+            self.assertBits(numerical.mean(numerical.asarray(m)), np.mean(m), "mean")
 
     def test_complex_products(self):
         rng = np.random.default_rng(9)

@@ -5521,7 +5521,7 @@ def diag(v, k=0):
     column = concatenate([v, zero] if k >= 0 else [zero, v])  # row i's value: v[i] (k ≥ 0) or v[i + k]
     i = reshape(arange(n), (n, 1))
     j = reshape(arange(n), (1, n))
-    return where(j - i == k, reshape(column, (n, 1)), False if v.dtype == "bool" else 0.0)
+    return where(j - i == k, reshape(column, (n, 1)), zeros((), v.dtype))  # zeros of v's dtype: an int64 stays one
 
 
 def kron(a, b):
@@ -8269,6 +8269,283 @@ def isin(element, test_elements, assume_unique=False, invert=False, *, kind=None
 __all__ += ["logspace", "geomspace", "cumulative_sum", "cumulative_prod", "unstack", "matvec", "vecmat", "ediff1d",
             "trim_zeros", "vander", "identity", "select", "digitize", "unique", "unique_values", "unique_counts",
             "unique_inverse", "unique_all", "intersect1d", "union1d", "setdiff1d", "setxor1d", "isin"]
+
+def trapezoid(y, x=None, dx=1.0, axis=-1):
+    """The integral of `y` along `axis` by the trapezoidal rule, as ``numpy.trapezoid``: over the sample points `x`
+    (a vector along the axis, or of `y`'s shape) or at the spacing `dx`; ``Σ d · (y₁ + y₀) / 2``, by NumPy's steps.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.trapezoid([1.0, 2.0, 3.0])
+        4.0
+    """
+    y = _tensor(y)
+    rank = len(y.shape)
+    if not -rank <= _operator.index(axis) < rank:
+        raise IndexError("list assignment index out of range")  # NumPy's, from its slices
+    axis = _axis(y, axis)
+    if x is None:
+        d = dx
+    else:
+        x = _tensor(x)
+        if len(x.shape) == 1:
+            d = reshape(diff(x), tuple(x.shape[0] - 1 if k == axis else 1 for k in range(rank)))
+        else:
+            d = diff(x, axis=axis)
+    later = y[_along_axis(axis, rank, slice(1, None))]
+    earlier = y[_along_axis(axis, rank, slice(None, -1))]
+    result = sum(d * (later + earlier) / 2.0, axis=axis)
+    return result[()] if isinstance(result, Tensor) and not result.shape else result
+
+
+def _entry(t, i):
+    """The element `i` of the vector `t` as a rank-0 tensor: of its dtype's full strength beside another tensor, as a
+    NumPy scalar is (where a Python number would be weak)."""
+    return reshape(t[i:i + 1] if i != -1 else t[-1:], ())
+
+
+def gradient(f, *varargs, axis=None, edge_order=1):
+    """The gradient of `f` by second-order central differences inside and first- or second-order (`edge_order`)
+    one-sided ones at the ends, as ``numpy.gradient`` by its steps: one tensor per axis of `axis` (every one where
+    None; the tensor alone for one axis), each spacing a number or the sample points along its axis (one for all
+    axes, or one per axis); integers in float64."""
+    f = _tensor(f)
+    rank = len(f.shape)
+    axes = tuple(range(rank)) if axis is None else tuple(_normalized_axes(axis, rank, "gradient"))
+    count = len(varargs)
+    if count == 0:
+        spacings = [1.0] * len(axes)
+    elif count == 1 and not shape(varargs[0]):
+        spacings = list(varargs) * len(axes)
+    elif count == len(axes):
+        spacings = []
+        for along, distances in zip(axes, varargs):
+            if not shape(distances):
+                spacings.append(distances)
+                continue
+            distances = _as_numpy_reads(distances)
+            if len(distances.shape) != 1:
+                raise ValueError("distances must be either scalars or 1d")
+            if distances.shape[0] != f.shape[along]:
+                raise ValueError("when 1d, distances must match the length of the corresponding dimension")
+            if distances.dtype in ("int64", "bool"):
+                distances = asarray(distances, "float64")
+            steps = diff(distances)
+            uniform = steps.shape[0] > 0 and bool(all(steps == steps[0]))
+            spacings.append(_entry(steps, 0) if uniform else steps)  # NumPy's: a constant spacing as the scalar case
+    else:
+        raise TypeError("invalid number of arguments")
+    if edge_order > 2:
+        raise ValueError("'edge_order' greater than 2 not supported")
+    if f.dtype in ("int64", "bool"):
+        f = asarray(f, "float64")
+    results = []
+    for along, step in zip(axes, spacings):
+        if f.shape[along] < edge_order + 1:
+            raise ValueError("Shape of array too small to calculate a numerical gradient, at least (edge_order + 1) "
+                             "elements are required.")
+        uniform = not isinstance(step, Tensor) or not step.shape
+
+        def part(key):
+            return f[_along_axis(along, rank, key)]
+
+        def along_axis(v):
+            return reshape(v, tuple(-1 if k == along else 1 for k in range(rank)))
+        if uniform:
+            inner = (part(slice(2, None)) - part(slice(None, -2))) / (2.0 * step)
+        else:
+            dx1, dx2 = step[0:-1], step[1:]
+            a = along_axis(-dx2 / (dx1 * (dx1 + dx2)))
+            b = along_axis((dx2 - dx1) / (dx1 * dx2))
+            c = along_axis(dx1 / (dx2 * (dx1 + dx2)))
+            inner = a * part(slice(None, -2)) + b * part(slice(1, -1)) + c * part(slice(2, None))
+        if edge_order == 1:
+            first = (part(slice(1, 2)) - part(slice(0, 1))) / (step if uniform else _entry(step, 0))
+            last = (part(slice(-1, None)) - part(slice(-2, -1))) / (step if uniform else _entry(step, -1))
+        else:
+            if uniform:
+                a, b, c = -1.5 / step, 2.0 / step, -0.5 / step
+            else:
+                dx1, dx2 = _entry(step, 0), _entry(step, 1)
+                a = -(2.0 * dx1 + dx2) / (dx1 * (dx1 + dx2))
+                b = (dx1 + dx2) / (dx1 * dx2)
+                c = -dx1 / (dx2 * (dx1 + dx2))
+            first = a * part(slice(0, 1)) + b * part(slice(1, 2)) + c * part(slice(2, 3))
+            if uniform:
+                a, b, c = 0.5 / step, -2.0 / step, 1.5 / step
+            else:
+                dx1, dx2 = _entry(step, -2), _entry(step, -1)
+                a = dx2 / (dx1 * (dx1 + dx2))
+                b = -(dx2 + dx1) / (dx1 * dx2)
+                c = (2.0 * dx2 + dx1) / (dx2 * (dx1 + dx2))
+            last = a * part(slice(-3, -2)) + b * part(slice(-2, -1)) + c * part(slice(-1, None))
+        pieces = [asarray(piece, f.dtype) for piece in (first, inner, last)]
+        if f.shape[along] == 2:  # no inside: the two ends alone, the second written last as NumPy's
+            pieces = pieces[:1] + pieces[2:]
+        results.append(concatenate(pieces, axis=along))
+    return results[0] if len(axes) == 1 else tuple(results)
+
+
+def diagflat(v, k=0):
+    """The square matrix with `v` flattened on its `k`-th diagonal and zeros elsewhere, as ``numpy.diagflat``."""
+    v = reshape(_as_numpy_reads(v), (-1,))
+    k = _operator.index(k)
+    n = v.shape[0] + _builtins.abs(k)
+    if v.shape[0] == 0:
+        return zeros((n, n), v.dtype)
+    return diag(v, k) if n else zeros((0, 0), v.dtype)
+
+
+def indices(dimensions, dtype=int, sparse=False):
+    """The index grids of an array of shape `dimensions`, as ``numpy.indices``: one tensor of shape
+    ``(N,) + dimensions`` (int64 by default), or a tuple of `N` broadcastable ones where `sparse`."""
+    dimensions = tuple(_operator.index(d) for d in dimensions)
+    name = _dtype_name(dtype)
+    count = len(dimensions)
+    grids = []
+    for i, extent in enumerate(dimensions):
+        steps = asarray(asarray(arange(extent), "int64"), name)
+        grids.append(reshape(steps, (1,) * i + (extent,) + (1,) * (count - i - 1)))
+    if sparse:
+        return tuple(grids)
+    if not grids:
+        return zeros((0,), name)
+    return stack([broadcast_to(g, dimensions) for g in grids])
+
+
+def ix_(*args):
+    """Open meshes from 1-D sequences for cross indexing, as ``numpy.ix_``: each its own axis, a bool one its true
+    positions; an empty one int64."""
+    out = []
+    count = len(args)
+    for k, new in enumerate(args):
+        new = _as_numpy_reads(new)
+        if new.shape == (0,) and not isinstance(args[k], Tensor):
+            new = asarray(new, "int64")
+        if len(new.shape) != 1:
+            raise ValueError("Cross index must be 1 dimensional")
+        if new.dtype == "bool":
+            new = nonzero(new)[0]
+        out.append(reshape(new, (1,) * k + (new.shape[0],) + (1,) * (count - k - 1)))
+    return tuple(out)
+
+
+def _index_modes(mode, count):
+    modes = (mode,) * count if isinstance(mode, str) else tuple(mode)
+    if len(modes) != count:
+        raise ValueError(f"parameter mode does not have the correct number of entries ({len(modes)}, expected "
+                         f"{count})")
+    for m in modes:
+        if m not in ("raise", "wrap", "clip"):
+            raise ValueError(f"clipmode must be one of 'clip', 'raise', or 'wrap' (got {m!r})")
+    return modes
+
+
+def ravel_multi_index(multi_index, dims, mode="raise", order="C"):
+    """The flat indices of the coordinates `multi_index` in an array of shape `dims`, as
+    ``numpy.ravel_multi_index``: row-major (`order` "C") or column-major ("F"); a coordinate out of its extent
+    refused ("raise"), wrapped ("wrap") or clipped ("clip"), per axis with a tuple of modes. int64."""
+    dims = tuple(_operator.index(d) for d in dims)
+    if len(multi_index) != len(dims):
+        raise ValueError(f"parameter multi_index must be a sequence of length {len(dims)}")
+    if order not in ("C", "F"):
+        raise ValueError("only 'C' or 'F' order is permitted")
+    modes = _index_modes(mode, len(dims))
+    coordinates = broadcast_arrays(*[_as_numpy_reads(c) for c in multi_index])
+    for c in coordinates:
+        if c.dtype not in ("int64", "bool"):
+            raise TypeError("only int indices permitted")
+    strides, stride = [0] * len(dims), 1
+    for k in (range(len(dims) - 1, -1, -1) if order == "C" else range(len(dims))):
+        strides[k] = stride
+        stride *= dims[k]
+    flat = zeros(coordinates[0].shape if coordinates else (), "int64")
+    for c, extent, step, m in zip(coordinates, dims, strides, modes):
+        c = asarray(c, "int64")
+        if m == "raise":
+            if any(c < 0) or any(c >= extent):
+                raise ValueError("invalid entry in coordinates array")
+        elif m == "wrap":
+            c = c % extent if extent else c
+        else:
+            c = clip(c, 0, _builtins.max(extent - 1, 0))
+        flat = flat + c * step
+    return flat[()] if not flat.shape else flat
+
+
+def unravel_index(indices, shape, order="C"):
+    """The coordinates of the flat `indices` in an array of `shape`, as ``numpy.unravel_index``: a tuple of int64
+    tensors (numbers for a number), row-major (`order` "C") or column-major ("F")."""
+    dims = (_operator.index(shape),) if isinstance(shape, _numbers.Integral) else tuple(
+        _operator.index(d) for d in shape)
+    if order not in ("C", "F"):
+        raise ValueError("only 'C' or 'F' order is permitted")
+    flat = _as_numpy_reads(indices)
+    if flat.dtype not in ("int64", "bool"):
+        raise TypeError(f"only int indices permitted")
+    flat = asarray(flat, "int64")
+    size_ = _math.prod(dims)
+    for value in reshape(flat, (-1,)).tolist():
+        if not 0 <= value < size_:
+            raise ValueError(f"index {value} is out of bounds for array with size {size_}")
+    coordinates = [None] * len(dims)
+    remainder = flat
+    for k in (range(len(dims) - 1, -1, -1) if order == "C" else range(len(dims))):
+        coordinates[k] = remainder % dims[k] if dims[k] else remainder
+        remainder = remainder // dims[k] if dims[k] else remainder
+    return tuple(c[()] if not c.shape else c for c in coordinates)
+
+
+def correlate(a, v, mode="valid"):
+    """The cross-correlation ``c[k] = Σₙ a[n + k] · conj(v[n])`` of two vectors, as ``numpy.correlate``: the lags
+    where they overlap wholly ("valid"), the length of the longer centred as NumPy's ("same"), or every lag ("full").
+    Each lag's sum in order of its terms, where NumPy's goes through its dot product (its BLAS's order): the last
+    bits may differ."""
+    a, v = _same_dtype(a, v)
+    a, v = reshape(a, (-1,)) if not a.shape else a, reshape(v, (-1,)) if not v.shape else v
+    if len(a.shape) != 1 or len(v.shape) != 1:
+        raise ValueError("object too deep for desired array")
+    if mode not in ("valid", "same", "full"):
+        raise ValueError(f"mode must be one of 'valid', 'same', or 'full' (got {mode!r})")
+    n, m = a.shape[0], v.shape[0]
+    if n == 0 or m == 0:
+        raise ValueError(f"{'a' if n == 0 else 'v'} cannot be empty")
+    w = conj(v) if v.dtype.startswith("complex") else v
+    length = n + m - 1
+    full_ = zeros((length,), a.dtype)
+    if m <= n:  # c_full[m − 1 − j + i] += a[i] · w[j], a shift of a per element of the shorter w
+        for j in range(m):
+            full_ = full_ + pad(a * w[j], (m - 1 - j, j))
+    else:
+        for i in range(n):
+            full_ = full_ + pad(flip(w, 0) * a[i], (i, n - 1 - i))
+    shorter = _builtins.min(n, m)
+    if mode == "full":
+        return full_
+    if mode == "valid":
+        start, count = (m - 1, n - m + 1) if n >= m else (n - 1, m - n + 1)
+    else:
+        start, count = (shorter - 1 - shorter // 2, n) if n >= m else (shorter // 2, m)
+    return full_[start:start + count]
+
+
+def convolve(a, v, mode="full"):
+    """The discrete linear convolution of two vectors, as ``numpy.convolve``: :func:`correlate` of the longer and
+    the reversed shorter, every lag by default."""
+    a, v = _same_dtype(a, v)
+    a, v = atleast_1d(a), atleast_1d(v)
+    if a.shape[0] == 0:
+        raise ValueError("a cannot be empty")
+    if v.shape[0] == 0:
+        raise ValueError("v cannot be empty")
+    if v.shape[0] > a.shape[0]:
+        a, v = v, a
+    reversed_ = flip(v, 0)
+    return correlate(a, conj(reversed_) if reversed_.dtype.startswith("complex") else reversed_, mode)
+
+
+__all__ += ["trapezoid", "gradient", "diagflat", "indices", "ix_", "ravel_multi_index", "unravel_index", "correlate",
+            "convolve"]
 
 pi = _math.pi
 e = _math.e

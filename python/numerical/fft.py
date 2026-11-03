@@ -15,7 +15,7 @@ from numerical import Tensor, asarray, _read
 
 __all__ = ["fft", "ifft", "fft2", "ifft2", "fftn", "ifftn", "rfft", "irfft", "rfft2", "irfft2", "rfftn", "irfftn", "hfft",
            "ihfft", "fftfreq", "rfftfreq", "fftshift", "ifftshift", "dct", "idct", "dst", "idst", "dctn", "idctn", "dstn",
-           "idstn"]
+           "idstn", "next_fast_len"]
 
 _NORMS = {None: 0, "backward": 0, "ortho": 1, "forward": 2}
 
@@ -375,3 +375,33 @@ def idstn(x, type=2, s=None, axes=None, norm=None, overwrite_x=False, workers=No
     """:func:`idst` along each of `axes`, as :func:`scipy.fft.idstn`."""
     return _trig_n(x, True, type, s, axes, norm, orthogonalize, True)
 
+
+def next_fast_len(target, real=False):
+    """The smallest length at least `target` whose prime factors are 2, 3, 5, 7 and 11 (2, 3 and 5 for a `real`
+    transform), as ``scipy.fft.next_fast_len``: the lengths SciPy's transforms take fastest, to pad an input to; 0 for
+    0. NumericAL's own transforms run in O(n log n) at any length."""
+    target = _operator.index(target)
+    if target < 0:
+        raise ValueError("Target length must be positive")
+    if target >= 2 ** 63:
+        raise OverflowError("Python int too large to convert to C ssize_t")
+    if target > (2 ** 64 - 1) // 11 + 1:  # SciPy's bound: a length 11 times it would not fit a size_t
+        raise ValueError(f"Target length is too large to perform an FFT: {target}")
+    if target <= 6:
+        return target
+    primes = (3, 5) if real else (3, 5, 7, 11)
+    best = 1 << (target - 1).bit_length()  # a power of 2 alone
+
+    def search(product, index):
+        nonlocal best
+        if index == len(primes):
+            # the least power of 2 lifting product to target
+            power = product << _builtins.max((-(-target // product) - 1).bit_length(), 0)
+            best = _builtins.min(best, power)
+            return
+        while product < best:
+            search(product, index + 1)
+            product *= primes[index]
+
+    search(1, 0)
+    return best

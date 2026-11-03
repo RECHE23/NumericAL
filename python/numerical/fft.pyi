@@ -5,7 +5,7 @@ from numerical._numerical import Tensor
 
 __all__ = ["fft", "ifft", "fft2", "ifft2", "fftn", "ifftn", "rfft", "irfft", "rfft2", "irfft2", "rfftn", "irfftn", "hfft",
            "ihfft", "fftfreq", "rfftfreq", "fftshift", "ifftshift", "dct", "idct", "dst", "idst", "dctn", "idctn", "dstn",
-           "idstn"]
+           "idstn", "next_fast_len"]
 
 _Norm = Literal["backward", "ortho", "forward"] | None
 
@@ -55,3 +55,4 @@ def dstn(x: Any, type: int = 2, s: int | Sequence[int] | None = None, axes: int 
 def idstn(x: Any, type: int = 2, s: int | Sequence[int] | None = None, axes: int | Sequence[int] | None = None,
           norm: _Norm = None, overwrite_x: bool = False, workers: int | None = None,
           orthogonalize: bool | None = None) -> Tensor: ...
+def next_fast_len(target: int, real: bool = False) -> int: ...

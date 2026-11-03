@@ -442,21 +442,74 @@ namespace numerical {
   }    // namespace detail
 
   namespace detail {
-    /*!
-     * \brief Sum of `count` values from \p first at stride \p stride, by NumPy's pairwise summation: below 8
-     *        values in order; up to 128 in eight interleaved partial sums, added pairwise, then the
-     *        remainder in order; above, the two halves (the first a multiple of 8 long) summed apart.
-     */
     //! \brief The partial sums \ref pairwise_sum interleaves, and the multiple of which its first half is long.
     inline constexpr std::size_t pairwise_lanes {8};
 
+    //! \brief Four partial sums at \p p, \p width apart, added pairwise: `(p₀ + p₁) + (p₂ + p₃)`.
+    template <typename T>
+    [[nodiscard]] T pairwise_quad(const T*    p,
+                                  std::size_t width)
+    {
+      return (p[0] + p[width]) + (p[2 * width] + p[3 * width]);
+    }
+
+    /*!
+     * \brief The shape of NumPy's pairwise summation tree over the values of type `T`: below `lanes` values summed in
+     *        order; up to `block` in `lanes` interleaved partial sums, added pairwise, then the remainder in order;
+     *        above, the first \ref half and the rest summed apart. NumPy counts in reals: a real's 8 partial sums and
+     *        blocks of 128 are a complex number's 4 (its parts side by side) and 64, its half a multiple of 4.
+     */
+    template <typename T>
+    struct pairwise_tree {
+      static constexpr std::size_t lanes {pairwise_lanes}; //!< The partial sums.
+      static constexpr std::size_t block {128};            //!< The most values one block sums.
+
+      //! \brief The first half's length: half of \p count, less its remainder by 8.
+      [[nodiscard]] static constexpr std::size_t half(std::size_t count) noexcept
+      {
+        return (count / 2) - ((count / 2) % pairwise_lanes);
+      }
+
+      //! \brief The partial sums at \p p, \p width apart, added pairwise: its two fours, then the two.
+      [[nodiscard]] static T combine(const T*    p,
+                                     std::size_t width = 1)
+      {
+        return pairwise_quad(p, width) + pairwise_quad(p + (4 * width), width);
+      }
+    };
+
+    //! \brief \ref pairwise_tree of complex numbers, as NumPy's sums their parts interleaved.
+    template <split_complex C>
+    struct pairwise_tree<C> {
+      static constexpr std::size_t lanes {4};  //!< The partial sums.
+      static constexpr std::size_t block {64}; //!< The most values one block sums.
+
+      //! \brief The first half's length: NumPy's half of the parts (`count` of them, less their remainder by 8), in
+      //!        complex numbers.
+      [[nodiscard]] static constexpr std::size_t half(std::size_t count) noexcept
+      {
+        return (count - (count % 8)) / 2;
+      }
+
+      //! \brief The partial sums at \p p, \p width apart, added pairwise.
+      [[nodiscard]] static C combine(const C*    p,
+                                     std::size_t width = 1)
+      {
+        return pairwise_quad(p, width);
+      }
+    };
+
+    /*!
+     * \brief Sum of `count` values from \p first at stride \p stride, by NumPy's pairwise summation
+     *        (\ref pairwise_tree).
+     */
     template <typename T>
     [[nodiscard]] T pairwise_sum(const T*    first,
                                  std::size_t count,
                                  std::size_t stride)
     {
-      constexpr std::size_t lanes {pairwise_lanes};
-      constexpr std::size_t block {128};
+      using tree = pairwise_tree<T>;
+      constexpr std::size_t lanes {tree::lanes};
       if (count < lanes) {
         T sum {};
         for (std::size_t i {0}; i < count; ++i) {
@@ -464,7 +517,7 @@ namespace numerical {
         }
         return sum;
       }
-      if (count <= block) {
+      if (count <= tree::block) {
         std::array<T, lanes> partial {};
         for (std::size_t j {0}; j < lanes; ++j) {
           partial[j] = first[j * stride];
@@ -475,14 +528,13 @@ namespace numerical {
             partial[j] += first[(i + j) * stride];
           }
         }
-        T sum {((partial[0] + partial[1]) + (partial[2] + partial[3])) + ((partial[4] + partial[5]) + (partial[6] + partial[7]))};
+        T sum {tree::combine(partial.data())};
         for (; i < count; ++i) {
           sum += first[i * stride];
         }
         return sum;
       }
-      std::size_t half {count / 2};
-      half -= half % lanes;
+      const std::size_t half {tree::half(count)};
       return pairwise_sum(first, half, stride) + pairwise_sum(first + (half * stride), count - half, stride);
     }
 
@@ -490,18 +542,19 @@ namespace numerical {
     //!        of `double`.
     inline constexpr std::size_t pairwise_leaf {std::size_t {1} << 15U};
 
-    //! \brief The lengths of \ref pairwise_sum's subtrees of at most \ref pairwise_leaf values over \p count, in order.
-    inline void pairwise_leaves(std::size_t               count,
-                                std::vector<std::size_t>& out)
+    //! \brief The lengths of \ref pairwise_sum's subtrees of at most \ref pairwise_leaf values of type `T` over
+    //!        \p count, in order.
+    template <typename T>
+    void pairwise_leaves(std::size_t               count,
+                         std::vector<std::size_t>& out)
     {
       if (count <= pairwise_leaf) {
         out.push_back(count);
         return;
       }
-      std::size_t half {count / 2};
-      half -= half % pairwise_lanes;
-      pairwise_leaves(half, out);
-      pairwise_leaves(count - half, out);
+      const std::size_t half {pairwise_tree<T>::half(count)};
+      pairwise_leaves<T>(half, out);
+      pairwise_leaves<T>(count - half, out);
     }
 
     //! \brief The subtrees' sums from \p next on (\ref pairwise_leaves' order) added as \ref pairwise_sum's tree over
@@ -513,10 +566,9 @@ namespace numerical {
       if (count <= pairwise_leaf) {
         return *next++;
       }
-      std::size_t half {count / 2};
-      half -= half % pairwise_lanes;
-      const T left     {pairwise_combine(half, next)};
-      const T right    {pairwise_combine(count - half, next)};
+      const std::size_t half     {pairwise_tree<T>::half(count)};
+      const T           left     {pairwise_combine(half, next)};
+      const T           right    {pairwise_combine(count - half, next)};
       return left + right;
     }
 
@@ -534,7 +586,7 @@ namespace numerical {
         return pairwise_sum(first, count, 1);
       }
       std::vector<std::size_t> lengths;
-      pairwise_leaves(count, lengths);
+      pairwise_leaves<T>(count, lengths);
       std::vector<std::size_t> starts(lengths.size());
       std::exclusive_scan(lengths.begin(), lengths.end(), starts.begin(), std::size_t {0});
       buffer<T> sums(lengths.size());
@@ -555,8 +607,9 @@ namespace numerical {
                            std::size_t width,
                            T*          out)
     {
-      constexpr std::size_t lanes {8};
-      constexpr std::size_t block {128};
+      using tree = pairwise_tree<T>;
+      constexpr std::size_t lanes {tree::lanes};
+      constexpr std::size_t block {tree::block};
       const auto            row = [&](std::size_t i) { return first + (i * stride); };
       if (count < lanes) {
         std::fill_n(out, width, T {});
@@ -584,8 +637,7 @@ namespace numerical {
         }
         const T* const p {partial.data()};
         for (std::size_t q {0}; q < width; ++q) {
-          out[q] = ((p[q] + p[width + q]) + (p[(2 * width) + q] + p[(3 * width) + q]))
-                   + ((p[(4 * width) + q] + p[(5 * width) + q]) + (p[(6 * width) + q] + p[(7 * width) + q]));
+          out[q] = tree::combine(p + q, width);
         }
         for (; i < count; ++i) {
           for (std::size_t q {0}; q < width; ++q) {
@@ -594,9 +646,8 @@ namespace numerical {
         }
         return;
       }
-      std::size_t half {count / 2};
-      half -= half % lanes;
-      buffer<T> second(width);
+      const std::size_t half {tree::half(count)};
+      buffer<T>         second(width);
       pairwise_sum_rows(first, half, stride, width, out);
       pairwise_sum_rows(row(half), count - half, stride, width, second.data());
       for (std::size_t q {0}; q < width; ++q) {

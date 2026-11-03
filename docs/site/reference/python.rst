@@ -18,6 +18,7 @@ Tensors
 .. autofunction:: numerical.full
 .. autofunction:: numerical.eye
 .. autofunction:: numerical.tri
+.. autofunction:: numerical.diagflat
 .. autofunction:: numerical.meshgrid
 .. autofunction:: numerical.arange
 .. autofunction:: numerical.linspace
@@ -261,6 +262,10 @@ Reductions, scans and sorting
 .. autofunction:: numerical.isin
 .. autofunction:: numerical.digitize
 .. autofunction:: numerical.diff
+.. autofunction:: numerical.gradient
+.. autofunction:: numerical.trapezoid
+.. autofunction:: numerical.correlate
+.. autofunction:: numerical.convolve
 .. autofunction:: numerical.argmax
 .. autofunction:: numerical.argmin
 .. autofunction:: numerical.argsort
@@ -271,6 +276,10 @@ Reductions, scans and sorting
 .. autofunction:: numerical.triu_indices_from
 .. autofunction:: numerical.diag_indices
 .. autofunction:: numerical.diag_indices_from
+.. autofunction:: numerical.indices
+.. autofunction:: numerical.ix_
+.. autofunction:: numerical.ravel_multi_index
+.. autofunction:: numerical.unravel_index
 .. autofunction:: numerical.flatnonzero
 .. autofunction:: numerical.argwhere
 .. autofunction:: numerical.count_nonzero
@@ -500,3 +509,4 @@ numerical.fft
 .. autofunction:: numerical.fft.idst
 .. autofunction:: numerical.fft.dstn
 .. autofunction:: numerical.fft.idstn
+.. autofunction:: numerical.fft.next_fast_len
