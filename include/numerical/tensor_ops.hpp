@@ -536,6 +536,55 @@ namespace numerical {
       return tensor<T> {without_axis(t.shape(), axis), std::move(out)};
     }
 
+    //! \brief The columns of a band that one task of \ref fold_along and \ref scan_along walks row by row.
+    inline constexpr std::size_t band_columns {256};
+
+    /*!
+     * \brief Folds each line of \p t along \p axis in order, `step(running, x)` from \p init: a tensor of the result
+     *        type `R`, the axis taken out. Where the lines are columns (something follows the axis), each task takes a
+     *        band of up to \ref band_columns of them and walks it row by row, contiguously; each line's steps are the
+     *        same, in the same order, either way.
+     */
+    template <typename R,
+              typename T,
+              typename Step>
+    [[nodiscard]] tensor<R> fold_along(const tensor<T>& t,
+                                       std::size_t      axis,
+                                       const R&         init,
+                                       const Step&      step)
+    {
+      const axis_walk walk {walk_along(t.shape(), axis)};
+      buffer<R>       out(walk.outer * walk.inner);
+      const T* const  in   {t.data().data()};
+      if (walk.inner == 1) {
+        parallel_for(walk.outer, walk.extent, [&](std::size_t o) {
+                       R running {init};
+                       for (std::size_t k {0}; k < walk.extent; ++k) {
+                         running = step(running, in[(o * walk.extent) + k]);
+                       }
+                       out[o] = running;
+                     });
+        return tensor<R> {without_axis(t.shape(), axis), std::move(out)};
+      }
+      const std::size_t bands {(walk.inner + band_columns - 1) / band_columns};
+      parallel_for(walk.outer * bands, walk.extent * band_columns, [&](std::size_t at) {
+                     const std::size_t o     {at / bands};
+                     const std::size_t first {(at % bands) * band_columns};
+                     const std::size_t width {std::min(band_columns, walk.inner - first)};
+                     const std::size_t row   {(o * walk.inner) + first}; // indexed: a buffer of bools has no data()
+                     for (std::size_t w {0}; w < width; ++w) {
+                       out[row + w] = init;
+                     }
+                     for (std::size_t k {0}; k < walk.extent; ++k) {
+                       const T* const x {in + (((o * walk.extent) + k) * walk.inner) + first};
+                       for (std::size_t w {0}; w < width; ++w) {
+                         out[row + w] = step(out[row + w], x[w]);
+                       }
+                     }
+                   });
+      return tensor<R> {without_axis(t.shape(), axis), std::move(out)};
+    }
+
     //! \brief `x · x`, by the type's own product (a complex one's C Annex G, as the library's `*`).
     template <typename T>
     [[nodiscard]] T square(const T& x)
@@ -1007,14 +1056,9 @@ namespace numerical {
                                        const numpy_loops& loops = numpy_wheel_loops())
     {
       const bool reduction {walk_along(t.shape(), axis).inner == 1};
-      return reduce_along(t, axis, [reduction, &loops](const C* first, std::size_t count, std::size_t stride) {
-                            C product {1};
-                            for (std::size_t i {0}; i < count; ++i) {
-                              product = reduction ? numpy_reduction_multiply(product, first[i * stride], loops)
-                                                  : numpy_multiply(product, first[i * stride], loops.products);
-                            }
-                            return product;
-                          });
+      return fold_along(t, axis, C {1}, [reduction, &loops](const C& product, const C& x) {
+                          return reduction ? numpy_reduction_multiply(product, x, loops) : numpy_multiply(product, x, loops.products);
+                        });
     }
 
     //! \brief The product of every element of a complex \p t, in order from 1 (NumPy's identity), as NumPy's
@@ -1631,14 +1675,7 @@ namespace numerical {
   [[nodiscard]] tensor<T> prod(const tensor<T>& t,
                                std::size_t      axis)
   {
-    return detail::reduce_along(t, axis, [](const T* first, std::size_t count, std::size_t stride) {
-                                  const typename detail::arithmetic<T>::multiplies times {};
-                                  T                                                product {1};
-                                  for (std::size_t i {0}; i < count; ++i) {
-                                    product = times(product, first[i * stride]);
-                                  }
-                                  return product;
-                                });
+    return detail::fold_along(t, axis, T {1}, typename detail::arithmetic<T>::multiplies {});
   }
 
   namespace detail {
@@ -1653,15 +1690,27 @@ namespace numerical {
       const axis_walk walk {walk_along(t.shape(), axis)};
       buffer<T>       out(t.size());
       const T* const  in   {t.data().data()};
-      parallel_for(walk.outer * walk.inner, walk.extent, [&](std::size_t at) { // each line its own
-                     const std::size_t o     {at / walk.inner};
-                     const std::size_t i     {at % walk.inner};
-                     const std::size_t first {(o * walk.extent * walk.inner) + i};
-                     T                 running {};
+      if (walk.inner == 1) {
+        parallel_for(walk.outer, walk.extent, [&](std::size_t o) { // each line its own, contiguous
+                       const std::size_t first {o * walk.extent};
+                       for (std::size_t k {0}; k < walk.extent; ++k) {
+                         out[first + k] = k == 0 ? in[first] : step(out[first + k - 1], in[first + k]);
+                       }
+                     });
+        return tensor<T> {t.shape(), std::move(out)};
+      }
+      // the lines are columns: a band of them per task, row after row (each line's steps in the same order)
+      const std::size_t bands {(walk.inner + band_columns - 1) / band_columns};
+      parallel_for(walk.outer * bands, walk.extent * band_columns, [&](std::size_t at) {
+                     const std::size_t o     {at / bands};
+                     const std::size_t first {(at % bands) * band_columns};
+                     const std::size_t width {std::min(band_columns, walk.inner - first)};
+                     const std::size_t base  {(o * walk.extent * walk.inner) + first};
                      for (std::size_t k {0}; k < walk.extent; ++k) {
-                       const std::size_t place {first + (k * walk.inner)};
-                       running    = k == 0 ? in[place] : step(running, in[place]);
-                       out[place] = running;
+                       const std::size_t row {base + (k * walk.inner)};
+                       for (std::size_t w {0}; w < width; ++w) {
+                         out[row + w] = k == 0 ? in[row + w] : step(out[row - walk.inner + w], in[row + w]);
+                       }
                      }
                    });
       return tensor<T> {t.shape(), std::move(out)};
@@ -2082,14 +2131,8 @@ namespace numerical {
   [[nodiscard]] tensor<std::int64_t> count_nonzero(const tensor<T>& t,
                                                    std::size_t      axis)
   {
-    return detail::reduce_along(map(t, [](const T& x) { return static_cast<std::int64_t>(x != T {}); }), axis,
-                                [](const std::int64_t* first, std::size_t count, std::size_t stride) {
-                                  std::int64_t total {0};
-                                  for (std::size_t i {0}; i < count; ++i) {
-                                    total += first[i * stride];
-                                  }
-                                  return total;
-                                });
+    return detail::fold_along(t, axis, std::int64_t {0},
+                              [](std::int64_t total, const T& x) { return total + static_cast<std::int64_t>(x != T {}); });
   }
 
   /*!

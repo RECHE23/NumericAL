@@ -63,7 +63,7 @@ __all__ = [
     "triu_indices_from", "diag_indices", "diag_indices_from", "meshgrid", "logspace", "geomspace", "cumulative_sum",
     "cumulative_prod", "unstack", "matvec", "vecmat", "ediff1d", "trim_zeros", "vander", "identity", "select",
     "digitize", "unique", "unique_values", "unique_counts", "unique_inverse", "unique_all", "intersect1d", "union1d",
-    "setdiff1d", "setxor1d", "isin",
+    "setdiff1d", "setxor1d", "isin", "pi", "e", "inf", "nan", "newaxis", "finfo", "iinfo",
 ]
 __version__: str
 
@@ -618,3 +618,33 @@ atanh = arctanh
 pow = power
 amax = max
 amin = min
+pi: float
+e: float
+inf: float
+nan: float
+newaxis: None
+def __getattr__(name: str) -> str: ...  # the dtype names: numerical.float64 == "float64"
+
+class finfo:
+    dtype: str
+    bits: int
+    nmant: int
+    minexp: int
+    maxexp: int
+    precision: int
+    eps: float
+    epsneg: float
+    max: float
+    min: float
+    tiny: float
+    smallest_normal: float
+    smallest_subnormal: float
+    resolution: float
+    def __init__(self, dtype: Any) -> None: ...
+
+class iinfo:
+    dtype: str
+    bits: int
+    min: int
+    max: int
+    def __init__(self, int_type: Any) -> None: ...

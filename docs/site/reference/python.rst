@@ -31,6 +31,13 @@ Tensors
 .. autofunction:: numerical.full_like
 .. autofunction:: numerical.copy
 .. autofunction:: numerical.astype
+.. autoclass:: numerical.finfo
+.. autoclass:: numerical.iinfo
+.. autodata:: numerical.pi
+.. autodata:: numerical.e
+.. autodata:: numerical.inf
+.. autodata:: numerical.nan
+.. autodata:: numerical.newaxis
 
 Shapes and joins
 ----------------

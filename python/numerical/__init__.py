@@ -5117,8 +5117,9 @@ def eig_banded(a_band, lower=False, eigvals_only=False, overwrite_a_band=False, 
     upper diagonal-ordered form is `a_band`, ``(u + 1, n)``, ``a_band[u + i - j, j] = a[i, j]`` for ``i <= j`` (with
     `lower` its lower form, ``a_band[i - j, j] = a[i, j]`` for ``i >= j``), as ``scipy.linalg.eig_banded``: all of
     them (`select` "a"), those in ``(min, max]`` ("v") or of indices ``min`` to ``max`` ("i") of `select_range`.
-    Through :func:`eigh` of the matrix the band describes (the band's own reduction to tridiagonal form, LAPACK's
-    ``sbtrd``, is not offered: ``n³`` operations where it takes ``n² u`` for the eigenvalues). `max_ev`,
+    A real tridiagonal band (``u = 1``) through :func:`eigh_tridiagonal`; a wider one through :func:`eigh` of the
+    matrix the band describes (the band's own reduction to tridiagonal form, LAPACK's ``sbtrd``, is not offered:
+    ``n³`` operations where it takes ``n² u`` for the eigenvalues). `max_ev`,
     `overwrite_a_band` and `check_finite` are SciPy's and change nothing here.
 
     Raises:
@@ -5156,6 +5157,11 @@ def eig_banded(a_band, lower=False, eigvals_only=False, overwrite_a_band=False, 
                 raise ValueError("select_range out of bounds")
             subset_by_index = [low, high]
     width = band.shape[0] - 1
+    if width == 1 and not band.dtype.startswith("complex"):  # tridiagonal: in n² operations, not n³
+        diagonal, off = (band[0], band[1][:size - 1]) if lower else (band[1], band[0][1:])
+        kind = {0: "a", 1: "v", 2: "i"}[select]
+        bounds = subset_by_value if select == 1 else subset_by_index
+        return eigh_tridiagonal(diagonal, off, eigvals_only=eigvals_only, select=kind, select_range=bounds)
     dense = zeros((size, size), band.dtype)
     for k in range(_builtins.min(width, size - 1) + 1):  # the k-th diagonal off the main one, in the triangle read
         row = band[k] if lower else band[width - k]
@@ -7185,7 +7191,9 @@ def _weighted_quantiles(a, q, axis, weights, keepdims, ignore_nans, name):
     if any(cdf[..., 0] == 0):
         cdf = where(cdf == 0, -1.0, cdf)
     flat_q = reshape(q, (-1,))
-    index = count_nonzero(reshape(cdf, cdf.shape + (1,)) < flat_q, axis=-2)  # NumPy's searchsorted, side "left"
+    lines = reshape(cdf, (-1, cdf.shape[-1]))
+    found = [searchsorted(lines[i], flat_q, side="left") for i in range(lines.shape[0])]  # NumPy's, slice by slice
+    index = reshape(stack(found) if found else zeros((0, flat_q.shape[0]), "int64"), rest + flat_q.shape)
     index = minimum(index, s.shape[-1] - 1)
     result = take_along_axis(s, index, axis=-1) if rest else s[index]
     if empty is not None:
@@ -7681,9 +7689,9 @@ def permute_dims(a, axes=None):
 
 
 def reciprocal(x, /):
-    """``1 / x`` element-wise, as ``numpy.reciprocal``: in `x`'s dtype, a complex one by NumPy's steps (Smith's, the
-    larger part divided first; an infinity and a NaN for a zero); an integer's truncated (0 past ±1), which raises for
-    a zero as an infinity converted to int64 does."""
+    """``1 / x`` element-wise, as ``numpy.reciprocal``: in `x`'s dtype, a complex one by NumPy's loop (Smith's, the
+    larger part divided first, fused as NumPy's; an infinity and a NaN for a zero); an integer's truncated (0 past
+    ±1), which raises for a zero as an infinity converted to int64 does."""
     x = _tensor(x)
     if x.dtype == "bool":
         raise TypeError("ufunc 'reciprocal' not supported for the input types (bool)")
@@ -7691,19 +7699,9 @@ def reciprocal(x, /):
         return asarray(1.0 / asarray(x, "float64"), "int64")
     if not x.dtype.startswith("complex"):
         return 1 / x
-    re, im = real(x), imag(x)
-    re_size, im_size = abs(re), abs(im)
-    leaning = im_size <= re_size
-    with _warnings.catch_warnings():
-        _warnings.simplefilter("ignore", RuntimeWarning)  # each branch computed everywhere, kept where it applies
-        r = where(leaning, im / re, re / im)
-        d = where(leaning, re + im * r, re * r + im)
-        first = where(leaning, 1 / d, r / d)
-        second = where(leaning, -r / d, -1 / d)
-        zero = leaning & (re_size == 0)
-        first = where(zero, 1 / re_size, first)
-        second = where(zero, 0 / im_size, second)
-    return _from_parts(first, second)
+    if not _numpy_loops_measured:  # fused as NumPy's quotient loop
+        _numpy_loops()
+    return _native(_numerical._power_shortcut, "r", x)
 
 
 def fabs(x, /):
@@ -8118,8 +8116,11 @@ def unique(ar, return_index=False, return_inverse=False, return_counts=False, ax
         if axis is not None:
             _axis(a, axis)
         flat = reshape(a, (-1,))
-        order = argsort(flat)
-        aux = flat[order]
+        if return_index or return_inverse:
+            order = argsort(flat)
+            aux = flat[order]
+        else:  # the values sorted directly: the same order, the sort and argsort both stable
+            order, aux = None, sort(flat)
         mask = _first_of_runs(aux, equal_nan)
         inverse_shape = a.shape
         reshape_values = None
@@ -8239,16 +8240,22 @@ def _isin(ar1, ar2, assume_unique=False, invert=False, kind=None):
                            "maximum integer of the datatype. Please set `kind` to None or 'sort'.")
     if integers and b.shape[0] == 0:
         return ones(a.shape, "bool") if invert else zeros(a.shape, "bool")
-    if not assume_unique:
-        a, back = unique(a, return_inverse=True)
-        b = unique(b)
-    joined = concatenate([a, b])
-    order = argsort(joined)
-    s = joined[order]
-    same = (s[1:] != s[:-1]) if invert else (s[1:] == s[:-1])
-    flags = concatenate([same, full(1, bool(invert), "bool")])
-    found = flags[argsort(order)]
-    return found[:a.shape[0]] if assume_unique else found[back]
+    if assume_unique:  # NumPy's sort of the two together: with duplicates in a, an element matches the next one
+        joined = concatenate([a, b])
+        order = argsort(joined)
+        s = joined[order]
+        same = (s[1:] != s[:-1]) if invert else (s[1:] == s[:-1])
+        flags = concatenate([same, full(1, bool(invert), "bool")])
+        return flags[argsort(order)][:a.shape[0]]
+    # each element looked up among b's distinct sorted values: equal to one (never a NaN), as NumPy's sort finds
+    b = unique(b)
+    if b.shape[0] == 0:
+        return ones(a.shape, "bool") if invert else zeros(a.shape, "bool")
+    dtype = _promoted([a.dtype, b.dtype])
+    a, b = asarray(a, dtype), asarray(b, dtype)
+    at = minimum(searchsorted(b, a), b.shape[0] - 1)
+    found = b[at] == a
+    return ~found if invert else found
 
 
 def isin(element, test_elements, assume_unique=False, invert=False, *, kind=None):
@@ -8262,6 +8269,65 @@ def isin(element, test_elements, assume_unique=False, invert=False, *, kind=None
 __all__ += ["logspace", "geomspace", "cumulative_sum", "cumulative_prod", "unstack", "matvec", "vecmat", "ediff1d",
             "trim_zeros", "vander", "identity", "select", "digitize", "unique", "unique_values", "unique_counts",
             "unique_inverse", "unique_all", "intersect1d", "union1d", "setdiff1d", "setxor1d", "isin"]
+
+pi = _math.pi
+e = _math.e
+inf = _math.inf
+nan = _math.nan
+newaxis = None
+
+# The array API's dtype names, as the strings a Tensor's dtype is: numerical.float64 == t.dtype. Served by the module's
+# __getattr__ so that `bool` and the others never shadow Python's names inside this module.
+_DTYPE_NAMES = ("bool", "int64", "float32", "float64", "complex64", "complex128")
+
+
+def __getattr__(name):
+    if name in _DTYPE_NAMES:
+        return name
+    raise AttributeError(f"module 'numerical' has no attribute {name!r}")
+
+
+class finfo:
+    """The limits of a floating-point dtype, as ``numpy.finfo``: of a complex one, its parts' (float32 for
+    complex64, float64 for complex128)."""
+
+    _LIMITS = {"float32": (32, 23, -126, 128, 6), "float64": (64, 52, -1022, 1024, 15)}
+
+    def __init__(self, dtype):
+        name = _dtype_name(dtype.dtype if isinstance(dtype, Tensor) else dtype)
+        name = {"complex64": "float32", "complex128": "float64"}.get(name, name)
+        if name not in self._LIMITS:
+            raise ValueError(f"data type {name!r} not inexact")
+        bits, mantissa, minexp, maxexp, precision = self._LIMITS[name]
+        cast = (lambda x: _array.array("f", [x])[0]) if bits == 32 else float  # the value the dtype holds
+        self.dtype, self.bits, self.nmant, self.minexp, self.maxexp, self.precision = name, bits, mantissa, minexp, \
+            maxexp, precision
+        self.eps = cast(2.0 ** -mantissa)
+        self.epsneg = cast(2.0 ** (-mantissa - 1))
+        self.max = cast((2.0 - 2.0 ** -mantissa) * 2.0 ** (maxexp - 1))
+        self.min = -self.max
+        self.tiny = self.smallest_normal = cast(2.0 ** minexp)
+        self.smallest_subnormal = cast(2.0 ** (minexp - mantissa))
+        self.resolution = cast(10.0 ** -precision)
+
+    def __repr__(self):
+        return f"finfo(resolution={self.resolution}, min={self.min}, max={self.max}, dtype={self.dtype})"
+
+
+class iinfo:
+    """The limits of an integer dtype, as ``numpy.iinfo``: int64, NumericAL's one."""
+
+    def __init__(self, int_type):
+        name = _dtype_name(int_type.dtype if isinstance(int_type, Tensor) else int_type)
+        if name != "int64":
+            raise ValueError(f"Invalid integer data type {name!r}.")
+        self.dtype, self.bits, self.min, self.max = name, 64, -2 ** 63, 2 ** 63 - 1
+
+    def __repr__(self):
+        return f"iinfo(min={self.min}, max={self.max}, dtype={self.dtype})"
+
+
+__all__ += ["pi", "e", "inf", "nan", "newaxis", "finfo", "iinfo"]
 
 __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "floor_divide", "remainder", "mod",
             "divmod", "zeros_like", "ones_like", "empty_like",

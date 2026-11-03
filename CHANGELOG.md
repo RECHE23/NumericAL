@@ -40,6 +40,18 @@ A change that can break code is listed under **Breaking** and held for a month's
   `digitize`, as NumPy's.
 - **More array functions**: `cumulative_sum` and `cumulative_prod` (`include_initial`), `unstack`, `matvec`,
   `vecmat`, `ediff1d`, `trim_zeros` and `select`.
+- **The array API's names**: `pi`, `e`, `inf`, `nan`, `newaxis`, the dtype names (`numerical.float64 ==
+  "float64"`, a Tensor's dtype), `finfo` and `iinfo`, as NumPy's.
+
+### Changed
+
+- **Faster, the same answers**: a complex `reciprocal` in one native pass (NumPy's loop, fused as NumPy's, to the
+  bit); `unique` without indices sorts the values themselves, `isin` looks each element up among the sorted test
+  elements (5× and 4× on a million); the weighted quantiles search each slice, where they compared every quantile
+  with every element; `eig_banded` and `eigvals_banded` of a real tridiagonal band go through `eigh_tridiagonal` (n²,
+  not n³); `count_nonzero` along an axis counts in place (no int64 copy of the operand), and it, `prod`, `cumsum`
+  and `cumprod` along an axis something follows walk bands of 256 columns row by row (each line's operations in
+  the same order: the same bits).
 
 ## 2026.11.4 — 2026-11-03
 

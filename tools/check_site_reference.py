@@ -17,7 +17,7 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
-DIRECTIVE = re.compile(r"^\.\. auto(?:function|class|exception):: numerical\.(\S+)$", re.M)
+DIRECTIVE = re.compile(r"^\.\. auto(?:function|class|exception|data):: numerical\.(\S+)$", re.M)
 
 
 def problems(page_text: str, public: list[str]) -> list[str]:

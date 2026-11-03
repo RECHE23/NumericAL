@@ -1062,6 +1062,42 @@ TEST(einsum_takes_a_diagonal_and_its_pairwise_sum)
 
 // prod in order (an empty one 1), along an axis; cumsum and cumprod in order along an axis; sort along an axis,
 // ascending with NaNs last and equal elements in their order, complex numbers by real then imaginary part.
+// Lines that are columns are walked in bands of 256, row after row: each line's sums, products and counts are those
+// of its elements in order, the bands' edges anywhere (a band of 256 and one of 44 here, under 2 outer slices).
+TEST(columns_fold_and_scan_in_bands_as_line_by_line)
+{
+  const std::size_t         outer {2};
+  const std::size_t         rows  {5};
+  const std::size_t         width {300};
+  numerical::buffer<double> values(outer * rows * width);
+  for (std::size_t k {0}; k < values.size(); ++k) {
+    values[k] = (k % 7 == 0) ? 0.0 : 1.0 + (static_cast<double>(k % 13) / 3.0);
+  }
+  const tensor<double>       t        {{outer, rows, width}, numerical::buffer<double>(values)};
+  const tensor<double>       sums     {numerical::cumsum(t, 1)};
+  const tensor<double>       products {numerical::prod(t, 1)};
+  const tensor<std::int64_t> counts   {numerical::count_nonzero(t, 1)};
+  bool                       ok       {true};
+  for (std::size_t o {0}; o < outer; ++o) {
+    for (std::size_t w {0}; w < width; ++w) {
+      double       running {0.0};
+      double       product {1.0};
+      std::int64_t nonzero {0};
+      for (std::size_t k {0}; k < rows; ++k) {
+        const double x {values[(((o * rows) + k) * width) + w]};
+        running  = k == 0 ? x : running + x;
+        product *= x;
+        nonzero += x != 0.0 ? 1 : 0;
+        ok       = ok && sums.data()[(((o * rows) + k) * width) + w] == running;
+      }
+      ok = ok && products.data()[(o * width) + w] == product && counts.data()[(o * width) + w] == nonzero;
+    }
+  }
+  EXPECT(ok);
+  EXPECT(numerical::count_nonzero(numerical::zeros<double>({3, 0}), 0).size() == 0);
+  EXPECT(numerical::count_nonzero(numerical::zeros<double>({0, 3}), 0).data() == (numerical::buffer<std::int64_t> {0, 0, 0}));
+}
+
 TEST(prod_cumulative_sums_and_sort_along_an_axis)
 {
   const tensor<double> grid {{2, 3}, {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}};

@@ -1,8 +1,8 @@
 """add, subtract, multiply, the array API's aliases (acos… atanh and pow the same functions, permute_dims), amax
 and amin, reciprocal, fabs, signbit, isposinf and isneginf, the complex predicates, isscalar, shape, ndim, size, tri
-and the triangle and diagonal indices, meshgrid: against NumPy's answers to the bit (a complex reciprocal within 2
-ulps: NumPy's compiler may fuse its products), in every dtype they take, with NumPy's errors. Deterministic; the
-NumPy comparisons skipped without NumPy."""
+and the triangle and diagonal indices, meshgrid, the array API's constants, dtype names, finfo and iinfo: against
+NumPy's answers to the bit, in every dtype they take, with NumPy's errors. Deterministic; the NumPy comparisons
+skipped without NumPy."""
 import math
 import unittest
 import warnings
@@ -48,6 +48,22 @@ class WithoutNumPy(unittest.TestCase):
         x, y = numerical.meshgrid([1.0, 2.0], [3.0, 4.0, 5.0], indexing="ij", sparse=True)
         self.assertEqual((x.shape, y.shape), ((2, 1), (1, 3)))
         self.assertEqual(numerical.meshgrid(), ())
+
+    def test_array_api_names(self):
+        self.assertEqual((numerical.pi, numerical.e, numerical.newaxis), (math.pi, math.e, None))
+        self.assertTrue(math.isinf(numerical.inf) and math.isnan(numerical.nan))
+        for name in ("bool", "int64", "float32", "float64", "complex64", "complex128"):
+            self.assertEqual(getattr(numerical, name), name)
+        self.assertEqual(numerical.asarray([1.0], numerical.float32).dtype, numerical.float32)
+        self.assertEqual(numerical.finfo(numerical.complex64).dtype, "float32")
+        self.assertEqual(numerical.finfo(numerical.zeros(1)).eps, 2.0 ** -52)
+        self.assertEqual(numerical.iinfo(int).max, 2 ** 63 - 1)
+        with self.assertRaises(AttributeError):
+            numerical.float16  # noqa: B018 (no such dtype here)
+        with self.assertRaises(ValueError):
+            numerical.finfo("int64")
+        with self.assertRaises(ValueError):
+            numerical.iinfo("float64")
 
     def test_errors(self):
         cases = [
@@ -141,8 +157,7 @@ class AgainstNumPy(unittest.TestCase):
                     continue  # NumPy's int8 for a bool, and its int64 of an infinity for a zero (see the doc)
                 if name == "fabs" and kind == "bool":
                     continue  # NumPy's float16
-                self.assertSame(lambda: getattr(numerical, name)(t), lambda: getattr(np, name)(x), f"{name} {kind}",
-                                ulps=2 if name == "reciprocal" and kind.startswith("complex") else 0)
+                self.assertSame(lambda: getattr(numerical, name)(t), lambda: getattr(np, name)(x), f"{name} {kind}")
             if _NUMPY_2_4:  # a tuple of axes from NumPy 2.4 on
                 self.assertSame(lambda: numerical.size(t, (0, 1)), lambda: np.size(x, (0, 1)), "size of axes")
             self.assertSame(lambda: numerical.permute_dims(t, (1, 0)), lambda: np.permute_dims(x, (1, 0)),
@@ -166,6 +181,18 @@ class AgainstNumPy(unittest.TestCase):
                                     f"{name} {kind} {number!r}")
                     self.assertSame(lambda: getattr(numerical, name)(number, t), lambda: getattr(np, name)(number, x),
                                     f"{name} {number!r} {kind}")
+
+    def test_finfo_and_iinfo(self):
+        attributes = ("bits", "eps", "epsneg", "max", "min", "tiny", "smallest_normal", "smallest_subnormal",
+                      "resolution", "precision", "nmant", "minexp", "maxexp")
+        for dtype in ("float32", "float64", "complex64", "complex128"):
+            ours, theirs = numerical.finfo(dtype), np.finfo(dtype)
+            self.assertEqual(ours.dtype, theirs.dtype.name, dtype)
+            for attribute in attributes:
+                self.assertEqual(getattr(ours, attribute), getattr(theirs, attribute), f"{dtype} {attribute}")
+        ours, theirs = numerical.iinfo(numerical.int64), np.iinfo(np.int64)
+        self.assertEqual((ours.bits, ours.min, ours.max, ours.dtype), (theirs.bits, theirs.min, theirs.max,
+                                                                        theirs.dtype.name))
 
     def test_constructions(self):
         for n, m, k in ((3, None, 0), (3, 5, 1), (4, 2, -1), (0, 3, 0), (3, 3, -5), (2, 2, 7)):
