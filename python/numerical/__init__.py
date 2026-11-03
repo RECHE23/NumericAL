@@ -6931,7 +6931,8 @@ def _quantile_operand(q, scale, name):
 
 def quantile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=False, *, weights=None):
     """The `q`-th quantiles (in [0, 1]) of every element or along `axis`, as ``numpy.quantile`` and by its steps (its
-    13 methods, its interpolation, a float32 kept beside a Python `q`); the quantiles' axes first. Real dtypes.
+    13 methods, its interpolation, NumPy 2.4's weak Python `q`: a float32 kept beside it); the quantiles' axes
+    first. Real dtypes.
 
     Examples:
         >>> import numerical

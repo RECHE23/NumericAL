@@ -12,6 +12,8 @@ try:
 except ImportError:
     np = None
 
+_NUMPY_2_4 = np is not None and tuple(int(part) for part in np.__version__.split(".")[:2]) >= (2, 4)
+
 _METHODS = ("inverted_cdf", "averaged_inverted_cdf", "closest_observation", "interpolated_inverted_cdf", "hazen",
             "weibull", "linear", "median_unbiased", "normal_unbiased", "lower", "higher", "midpoint", "nearest")
 
@@ -128,7 +130,7 @@ class AgainstNumPy(unittest.TestCase):
         x[0, 1, 2] = np.nan
         x[2, :, 3] = np.nan
         x[1, 0, :] = np.nan
-        for data in (x, x.astype(np.float32), np.round(x * 10), rng.integers(-50, 50, (4, 5, 6))):
+        for data in (x, x.astype(np.float32), np.round(x * 10), rng.integers(-50, 50, (4, 5, 6), dtype=np.int64)):
             t = numerical.asarray(data, "int64") if data.dtype.kind == "i" else numerical.asarray(data)
             for axis in (None, 0, 1, -1, (0, 2), (1, 2), ()):
                 for keepdims in (False, True):
@@ -159,12 +161,14 @@ class AgainstNumPy(unittest.TestCase):
         holed = clean.copy()
         holed[1, 3] = np.nan
         holed[:, 5] = np.nan
-        cases = (clean, clean.astype(np.float32), holed, holed.astype(np.float32), rng.integers(-9, 9, (5, 7)),
+        cases = (clean, clean.astype(np.float32), holed, holed.astype(np.float32), rng.integers(-9, 9, (5, 7), dtype=np.int64),
                  np.array([-1.0, -0.0]), np.array([3.0]))
         for data in cases:
             t = numerical.asarray(data, "int64") if data.dtype.kind == "i" else numerical.asarray(data)
             for method in _METHODS:
                 for q in (0.5, 0.0, 1.0, 0.37, [0.1, 0.5, 0.99], np.array([[0.2, 0.8], [0.0, 1.0]]), 1, 0):
+                    if type(q) in (int, float) and not _NUMPY_2_4:
+                        continue  # a Python q is weak from NumPy 2.4 on, as here: older ones compute otherwise
                     for axis in ((None, 0, 1, (0, 1)) if data.ndim == 2 else (None, 0)):
                         for name in ("quantile", "nanquantile"):
                             got = getattr(numerical, name)(t, numerical.asarray(q) if isinstance(q, np.ndarray) else q,
@@ -195,7 +199,7 @@ class AgainstNumPy(unittest.TestCase):
         want, want_scale = np.average(a, axis=1, returned=True, keepdims=True)
         self.assertSame(scale, want_scale, "returned count")
         x, y = rng.normal(size=(4, 30)), rng.normal(size=(2, 30))
-        fw, aw = rng.integers(0, 4, 30), rng.random(30)
+        fw, aw = rng.integers(0, 4, 30, dtype=np.int64), rng.random(30)
         for kwargs in ({}, {"bias": True}, {"ddof": 3}, {"rowvar": False}, {"fweights": fw}, {"aweights": aw},
                        {"fweights": fw, "aweights": aw, "ddof": 2}, {"fweights": fw, "aweights": aw, "ddof": 0}):
             ours = {k: numerical.asarray(v, "int64") if k == "fweights" else v for k, v in kwargs.items()}

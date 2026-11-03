@@ -130,8 +130,8 @@ class AgainstNumPy(unittest.TestCase):
             self.assertSame(got, getattr(np, name)(a, b), name, name)
 
     def test_integers(self):
-        a = np.array([7, -7, 7, -7, 0, 5, -2**63, 3, 2**62])
-        b = np.array([2, 2, -2, -2, 3, 0, -1, 7, -3])
+        a = np.array([7, -7, 7, -7, 0, 5, -2**63, 3, 2**62], np.int64)
+        b = np.array([2, 2, -2, -2, 3, 0, -1, 7, -3], np.int64)
         for name in _BINARY:
             got = np.asarray(getattr(numerical, name)(numerical.asarray(a, "int64"), numerical.asarray(b, "int64")))
             self.assertSame(got, getattr(np, name)(a, b), name, name)
@@ -166,8 +166,8 @@ class AgainstNumPy(unittest.TestCase):
                     self.assertEqual(_bits(got), _bits(want), f"{dtype} {axis} {kwargs}")
 
     def test_float_power(self):
-        a = np.array([2, -3, 0, 5])
-        b = np.array([-1, 2, 3, -2])
+        a = np.array([2, -3, 0, 5], np.int64)
+        b = np.array([-1, 2, 3, -2], np.int64)
         got = np.asarray(numerical.float_power(numerical.asarray(a, "int64"), numerical.asarray(b, "int64")))
         self.assertEqual(_bits(got), _bits(np.float_power(a, b)))
 

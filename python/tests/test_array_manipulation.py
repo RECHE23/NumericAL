@@ -89,7 +89,7 @@ class AgainstNumPy(unittest.TestCase):
 
     def test_against_numpy(self):
         rng = np.random.default_rng(0)
-        for x in (rng.normal(size=(3, 4, 5)), rng.random((3, 4)) > 0.5, np.arange(24).reshape(2, 3, 4)):
+        for x in (rng.normal(size=(3, 4, 5)), rng.random((3, 4)) > 0.5, np.arange(24, dtype=np.int64).reshape(2, 3, 4)):
             t = numerical.asarray(x, "int64") if x.dtype.kind == "i" else numerical.asarray(x)
             last = x.shape[-1]
             for reps in (2, (2, 1), (1, 2, 3), (2, 1, 1, 2), (0, 2), ()):
@@ -141,6 +141,16 @@ _PAD_MODES = [("constant", {}), ("constant", {"constant_values": (4, -2)}), ("co
 _PAD_WIDTHS = [1, (2, 3), ((1, 2), (0, 4)), ((5, 7),), ((0, 0), (9, 1)), (0,), {0: 2}, {-1: (1, 3)}]
 
 
+def _pairs_of(width, rank):
+    """`width` as NumPy before 2.4 takes it: a dict of widths by axis as one pair per axis."""
+    if not isinstance(width, dict):
+        return width
+    pairs = [(0, 0)] * rank
+    for axis, each in width.items():
+        pairs[axis] = (each, each) if isinstance(each, int) else tuple(each)
+    return pairs
+
+
 class Pad(unittest.TestCase):
     def test_without_numpy(self):
         self.assertEqual(numerical.pad([1.0, 2.0, 3.0], (2, 1), mode="reflect").tolist(),
@@ -175,7 +185,7 @@ class Pad(unittest.TestCase):
     @unittest.skipIf(np is None, "NumPy is not installed")
     def test_against_numpy(self):
         rng = np.random.default_rng(4)
-        arrays = [rng.normal(size=(3, 4)), rng.normal(size=(5,)), rng.integers(-20, 20, (3, 4, 2)),
+        arrays = [rng.normal(size=(3, 4)), rng.normal(size=(5,)), rng.integers(-20, 20, (3, 4, 2), dtype=np.int64),
                   rng.normal(size=(2, 3)).astype(np.float32), np.array([7.0]), rng.random((2, 2)) > 0.5]
         for a in arrays:
             t = numerical.asarray(a, "int64") if a.dtype.kind == "i" else numerical.asarray(a)
@@ -184,8 +194,8 @@ class Pad(unittest.TestCase):
                     if a.dtype == bool and mode in ("linear_ramp", "maximum", "minimum", "mean", "median"):
                         continue
                     label = f"{mode} {kwargs} {width} {a.dtype} {a.shape}"
-                    try:
-                        want = np.pad(a, width, mode=mode, **kwargs)
+                    try:  # a dict of widths as pairs per axis, for a NumPy before 2.4 that takes none
+                        want = np.pad(a, _pairs_of(width, a.ndim), mode=mode, **kwargs)
                     except ValueError:  # NumPy's refusal (pairs per axis beyond the rank), ours too
                         with self.assertRaises(ValueError, msg=label):
                             numerical.pad(t, width, mode=mode, **kwargs)
