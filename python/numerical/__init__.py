@@ -3526,8 +3526,12 @@ def _reduction(op, doc):
         rank = len(a.shape)
         if isinstance(axis, tuple):  # several axes: moved last and run together, one native reduction over them
             axes = _resolved_axes(a, axis, op)
-            if not axes:
-                return a
+            if not axes:  # each element its own reduction, as NumPy's: a sum from +0, a truth a bool
+                if op in ("any", "all"):
+                    return asarray(a, "bool")
+                if op == "mean" and a.dtype == "int64":
+                    return asarray(a, "float64")
+                return a + 0 if op in ("sum", "mean") and a.dtype not in ("int64", "bool") else a
             kept = [k for k in range(rank) if k not in axes]
             if kept:
                 moved = _permuted(a, kept + sorted(axes)) if kept + sorted(axes) != list(range(rank)) else a
@@ -3543,6 +3547,8 @@ def _reduction(op, doc):
             return result
         shape = tuple(1 if k in axes else a.shape[k] for k in range(rank))  # each reduced axis kept with extent 1
         if not isinstance(result, Tensor):  # a bool's dtype its own (any, all; a mask's max), a mask's sum float64
+            if op == "mean" and a.dtype == "int64":  # an integer's mean in float64, as NumPy's
+                return full(shape, result, "float64")
             return full(shape, result, None if isinstance(result, bool) or a.dtype == "bool" else a.dtype)
         return reshape(result, shape)
 
@@ -4979,6 +4985,116 @@ def eigh_tridiagonal(d, e, eigvals_only=False, select="a", select_range=None, ch
     return w if eigvals_only else (w, v)
 
 
+_SELECTIONS = {0: 0, 1: 1, 2: 2, "all": 0, "value": 1, "index": 2, "a": 0, "v": 1, "i": 2}
+
+
+def eig_banded(a_band, lower=False, eigvals_only=False, overwrite_a_band=False, select="a", select_range=None,
+               max_ev=0, check_finite=True):
+    """The eigenvalues (ascending) and eigenvectors of the real symmetric or complex Hermitian band matrix whose
+    upper diagonal-ordered form is `a_band`, ``(u + 1, n)``, ``a_band[u + i - j, j] = a[i, j]`` for ``i <= j`` (with
+    `lower` its lower form, ``a_band[i - j, j] = a[i, j]`` for ``i >= j``), as ``scipy.linalg.eig_banded``: all of
+    them (`select` "a"), those in ``(min, max]`` ("v") or of indices ``min`` to ``max`` ("i") of `select_range`.
+    Through :func:`eigh` of the matrix the band describes (the band's own reduction to tridiagonal form, LAPACK's
+    ``sbtrd``, is not offered: ``n³`` operations where it takes ``n² u`` for the eigenvalues). `max_ev`,
+    `overwrite_a_band` and `check_finite` are SciPy's and change nothing here.
+
+    Raises:
+        ValueError: if `a_band` is not a matrix, `select` or `select_range` is invalid, or an entry is infinite or NaN.
+    """
+    del overwrite_a_band, max_ev, check_finite
+    band = a_band if isinstance(a_band, Tensor) else _read(a_band)
+    if band.ndim != 2:
+        raise ValueError("expected a 2-D array")
+    if not all(isfinite(band)):
+        raise ValueError("array must not contain infs or NaNs")
+    if isinstance(select, str):
+        select = select.lower()
+    if select not in _SELECTIONS:
+        raise ValueError("invalid argument for select")
+    select = _SELECTIONS[select]
+    size = band.shape[1]
+    real_dtype = "float32" if band.dtype in ("float32", "complex64") else "float64"
+    if band.size == 0:
+        return zeros((0,), real_dtype) if eigvals_only else (zeros((0,), real_dtype), zeros((0, 0), band.dtype))
+    subset_by_index = subset_by_value = None
+    if select:
+        bounds = select_range if isinstance(select_range, Tensor) else asarray(
+            select_range, "int64" if select == 2 and _builtins.all(
+                isinstance(v, _numbers.Integral) for v in _nested(select_range)[0]) else None)
+        if bounds.ndim != 1 or bounds.size != 2 or bounds[1] < bounds[0]:
+            raise ValueError("select_range must be a 2-element array-like in nondecreasing order")
+        if select == 1:
+            subset_by_value = [float(bounds[0]), float(bounds[1])]
+        else:
+            if bounds.dtype != "int64":
+                raise ValueError(f'when using select="i", select_range must contain integers, got dtype {bounds.dtype}')
+            low, high = int(bounds[0]), int(bounds[1])
+            if low < 0 or high >= size:
+                raise ValueError("select_range out of bounds")
+            subset_by_index = [low, high]
+    width = band.shape[0] - 1
+    dense = zeros((size, size), band.dtype)
+    for k in range(_builtins.min(width, size - 1) + 1):  # the k-th diagonal off the main one, in the triangle read
+        row = band[k] if lower else band[width - k]
+        dense = dense + diag(row[:size - k] if lower else row[k:], -k if lower else k)
+    return eigh(dense, UPLO="L" if lower else "U", eigvals_only=eigvals_only, subset_by_index=subset_by_index,
+                subset_by_value=subset_by_value)
+
+
+def eigvals_banded(a_band, lower=False, overwrite_a_band=False, select="a", select_range=None, check_finite=True):
+    """The eigenvalues alone of a symmetric or Hermitian band matrix, as ``scipy.linalg.eigvals_banded``
+    (:func:`eig_banded` with ``eigvals_only=True``)."""
+    return eig_banded(a_band, lower=lower, eigvals_only=True, overwrite_a_band=overwrite_a_band, select=select,
+                      select_range=select_range, check_finite=check_finite)
+
+
+def matmul_toeplitz(c_or_cr, x, check_finite=False, workers=None):
+    """``T @ x`` for the Toeplitz matrix `T` of first column `c` and first row `r` (``r = conj(c)`` by default; `T` of
+    ``len(c)`` rows and ``len(r)`` columns), as ``scipy.linalg.matmul_toeplitz`` and by its steps: the product by the
+    circulant matrix that embeds `T`, through the FFT, ``O((m + n) log(m + n))`` a column where a product takes
+    ``m n``. In float64 or complex128; `x` a vector or a matrix. `check_finite` and `workers` are SciPy's and change
+    nothing here.
+
+    Raises:
+        ValueError: if `x` has not as many rows as `T` has columns, or more than two axes (SciPy's batches are not
+            taken).
+
+    Examples:
+        >>> import numerical
+        >>> numerical.matmul_toeplitz(([1.0, 2.0, 3.0], [1.0, 4.0]), [1.0, 1.0])
+        numerical.Tensor([5.0, 3.0, 5.0], dtype=float64)
+    """
+    del check_finite, workers
+    if isinstance(c_or_cr, tuple):
+        c, r = (v if isinstance(v, Tensor) else _read(v) for v in c_or_cr)
+    else:
+        c = c_or_cr if isinstance(c_or_cr, Tensor) else _read(c_or_cr)
+        r = conj(c) if c.dtype.startswith("complex") else c
+    x = x if isinstance(x, Tensor) else _read(x)
+    if c.ndim > 1 or r.ndim > 1 or x.ndim > 2:
+        raise ValueError("matmul_toeplitz takes vectors c and r and a vector or a matrix x: SciPy's batches are not "
+                         "taken")
+    c, r = reshape(c, (-1,)), reshape(r, (-1,))
+    if not x.shape or x.shape[0] != r.shape[0]:
+        raise ValueError("Incompatible dimensions.")
+    shape = x.shape
+    dtype = "complex128" if _builtins.any(t.dtype.startswith("complex") for t in (c, r, x)) else "float64"
+    c, r, x = (asarray(t, dtype) for t in (c, r, x))
+    x = reshape(x, (-1, 1)) if len(shape) == 1 else x
+    rows, size = c.shape[0], r.shape[0] + c.shape[0] - 1
+    result_shape = (rows,) if len(shape) == 1 else (rows, x.shape[1])
+    if x.size == 0:
+        return zeros(result_shape, dtype)
+    embedded = concatenate([c, r[r.shape[0] - 1:0:-1]])
+    if dtype == "complex128":
+        spectrum = reshape(fft.fft(embedded, axis=0), (-1, 1))
+        product = fft.ifft(spectrum * fft.fft(x, n=size, axis=0), axis=0)[:rows, :]
+    else:
+        spectrum = reshape(fft.rfft(embedded, axis=0), (-1, 1))
+        product = fft.irfft(spectrum * fft.rfft(x, n=size, axis=0), axis=0, n=size)[:rows, :]
+    return reshape(product, result_shape)
+
+
 def eigvalsh_tridiagonal(d, e, select="a", select_range=None, check_finite=True, tol=0.0, lapack_driver="auto"):
     """The eigenvalues alone of the real symmetric tridiagonal matrix of diagonal `d` and off-diagonal `e`, ascending,
     as ``scipy.linalg.eigvalsh_tridiagonal`` (:func:`eigh_tridiagonal` with ``eigvals_only=True``)."""
@@ -5117,7 +5233,8 @@ def _stacked_first(parts):
     return reshape(matrix_transpose(columns), (len(parts),) + parts[0].shape)
 
 
-__all__ += ["hessenberg", "matrix_balance", "eigh_tridiagonal", "eigvalsh_tridiagonal", "cholesky_banded",
+__all__ += ["hessenberg", "matrix_balance", "eigh_tridiagonal", "eigvalsh_tridiagonal", "eig_banded", "eigvals_banded",
+            "matmul_toeplitz", "cholesky_banded",
             "cho_solve_banded", "rsf2csf", "rq", "cdf2rdf", "qz", "ordqz"]
 
 # --- NumPy's assembly and triangles: concatenate, stack, vstack, hstack, tril, triu, diag, kron ---
@@ -5770,9 +5887,11 @@ def prod(a, axis=None, keepdims=False):
         result = _numerical._axis_op("prod", a, -1)
         return full((1,) * len(a.shape), result, a.dtype) if keepdims else result
     axes = _resolved_axes(a, axis, "prod")
-    result = a
-    for k in sorted(axes, reverse=True):
-        result = _native(_numerical._axis_op, "prod", result, k)
+    if len(axes) > 1:  # NumPy's order: the reduced axes' elements in turn, as one axis of them in row-major order
+        joined, _ = _last_axis(a, axes, "prod")
+        result = _native(_numerical._axis_op, "prod", joined, len(joined.shape) - 1)
+    else:
+        result = a if not axes else _native(_numerical._axis_op, "prod", a, axes[0])
     if keepdims:
         result = reshape(result, tuple(1 if k in axes else a.shape[k] for k in range(len(a.shape))))
     return result
@@ -6440,6 +6559,760 @@ def block(arrays):
 
     return assembled(arrays, 0)
 
+
+def _without_nans(a, value):
+    """`a` as a Tensor with each NaN replaced by `value`, and where the NaNs were; an integer or bool `a` as it is, and
+    no mask (NumPy's ``_replace_nan``: a complex element is NaN where either part is)."""
+    a = _operand(a)
+    if a.dtype in ("int64", "bool"):
+        return a, None
+    mask = isnan(a)
+    return where(mask, value, a), mask
+
+
+def _no_out(out, name):
+    if out is not None:
+        raise TypeError(f"{name}: a Tensor takes no `out` (it is never written into)")
+
+
+def nansum(a, axis=None, dtype=None, out=None, keepdims=False):
+    """:func:`sum` with each NaN counted as 0, as ``numpy.nansum`` (an all-NaN slice's sum 0)."""
+    _no_out(out, "nansum")
+    a, _ = _without_nans(a, 0)
+    return sum(a if dtype is None else asarray(a, _dtype_name(dtype)), axis=axis, keepdims=keepdims)
+
+
+def nanprod(a, axis=None, dtype=None, out=None, keepdims=False):
+    """:func:`prod` with each NaN counted as 1, as ``numpy.nanprod``."""
+    _no_out(out, "nanprod")
+    a, _ = _without_nans(a, 1)
+    return prod(a if dtype is None else asarray(a, _dtype_name(dtype)), axis=axis, keepdims=keepdims)
+
+
+def nancumsum(a, axis=None, dtype=None, out=None):
+    """:func:`cumsum` with each NaN counted as 0, as ``numpy.nancumsum``."""
+    _no_out(out, "nancumsum")
+    a, _ = _without_nans(a, 0)
+    return cumsum(a if dtype is None else asarray(a, _dtype_name(dtype)), axis=axis)
+
+
+def nancumprod(a, axis=None, dtype=None, out=None):
+    """:func:`cumprod` with each NaN counted as 1, as ``numpy.nancumprod``."""
+    _no_out(out, "nancumprod")
+    a, _ = _without_nans(a, 1)
+    return cumprod(a if dtype is None else asarray(a, _dtype_name(dtype)), axis=axis)
+
+
+def _nan_extreme(a, axis, keepdims, larger):
+    a, mask = _without_nans(a, -_math.inf if larger else _math.inf)
+    result = (max if larger else min)(a, axis=axis, keepdims=keepdims)
+    if mask is None:
+        return result
+    lost = all(mask, axis=axis, keepdims=keepdims)
+    if not isinstance(lost, Tensor):
+        if lost:
+            _warnings.warn("All-NaN slice encountered", RuntimeWarning, stacklevel=3)
+            return _math.nan
+        return result
+    if any(lost):
+        _warnings.warn("All-NaN slice encountered", RuntimeWarning, stacklevel=3)
+        return where(lost, _math.nan, result)
+    return result
+
+
+def nanmax(a, axis=None, out=None, keepdims=False):
+    """:func:`max` ignoring NaNs, as ``numpy.nanmax``: NaN (with a ``RuntimeWarning``) for a slice of NaNs alone."""
+    _no_out(out, "nanmax")
+    return _nan_extreme(a, axis, keepdims, True)
+
+
+def nanmin(a, axis=None, out=None, keepdims=False):
+    """:func:`min` ignoring NaNs, as ``numpy.nanmin``: NaN (with a ``RuntimeWarning``) for a slice of NaNs alone."""
+    _no_out(out, "nanmin")
+    return _nan_extreme(a, axis, keepdims, False)
+
+
+def _nan_arg_extreme(a, axis, keepdims, larger):
+    a, mask = _without_nans(a, -_math.inf if larger else _math.inf)
+    if mask is not None and any(all(mask, axis=axis)):
+        raise ValueError("All-NaN slice encountered")
+    return (argmax if larger else argmin)(a, axis=axis, keepdims=keepdims)
+
+
+def nanargmax(a, axis=None, out=None, *, keepdims=False):
+    """:func:`argmax` ignoring NaNs, as ``numpy.nanargmax``: ``ValueError`` for a slice of NaNs alone."""
+    _no_out(out, "nanargmax")
+    return _nan_arg_extreme(a, axis, keepdims, True)
+
+
+def nanargmin(a, axis=None, out=None, *, keepdims=False):
+    """:func:`argmin` ignoring NaNs, as ``numpy.nanargmin``: ``ValueError`` for a slice of NaNs alone."""
+    _no_out(out, "nanargmin")
+    return _nan_arg_extreme(a, axis, keepdims, False)
+
+
+def _reduced_shape(result, a, axis, keepdims, name):
+    """A result computed with every reduced axis kept (extent 1) in the shape `keepdims` asks: the reduced axes dropped
+    without it (a number for a rank-0 result)."""
+    if keepdims:
+        return result
+    axes = _resolved_axes(a, axis, name)
+    shape = tuple(extent for k, extent in enumerate(a.shape) if k not in axes)
+    return reshape(result, shape) if shape else reshape(result, ())[()]
+
+
+def _by_count(total, count, dtype):
+    """``total / count`` in `dtype`, as NumPy's ``_divide_by_count``: a float32 one through float64 (int64 counts),
+    rounded once; NaN where `count` is 0."""
+    wide = "complex128" if dtype.startswith("complex") else "float64"
+    return asarray(asarray(total, wide) / asarray(count, "float64"), dtype)
+
+
+def nanmean(a, axis=None, dtype=None, out=None, keepdims=False):
+    """The mean of the elements that are not NaN, as ``numpy.nanmean``: NaN (with a ``RuntimeWarning``) for a slice
+    of NaNs alone."""
+    _no_out(out, "nanmean")
+    arr, mask = _without_nans(a, 0)
+    if dtype is not None:
+        arr = asarray(arr, _dtype_name(dtype))
+    if mask is None:
+        return mean(arr, axis=axis, keepdims=keepdims)
+    count = count_nonzero(~mask, axis=_resolved_axes(arr, axis, "nanmean"), keepdims=True)
+    total = sum(arr, axis=axis, keepdims=True)
+    if any(count == 0):
+        _warnings.warn("Mean of empty slice", RuntimeWarning, stacklevel=2)
+    return _reduced_shape(_by_count(total, count, arr.dtype), arr, axis, keepdims, "nanmean")
+
+
+def nanvar(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False):
+    """The variance of the elements that are not NaN, as ``numpy.nanvar`` and by its steps: NaN (with a
+    ``RuntimeWarning``) where they are no more than `ddof`."""
+    _no_out(out, "nanvar")
+    arr, mask = _without_nans(a, 0)
+    if dtype is not None:
+        arr = asarray(arr, _dtype_name(dtype))
+    if mask is None:
+        return var(arr, axis=axis, ddof=ddof, keepdims=keepdims)
+    axes = _resolved_axes(arr, axis, "nanvar")
+    count = count_nonzero(~mask, axis=axes, keepdims=True)
+    average = _by_count(sum(arr, axis=axis, keepdims=True), count, arr.dtype)
+    deviation = where(mask, 0, arr - average)
+    squares = real(deviation * conj(deviation)) if arr.dtype.startswith("complex") else deviation * deviation
+    total = sum(squares, axis=axis, keepdims=True)
+    freedom = count - ddof
+    bad = freedom <= 0
+    if any(bad):
+        _warnings.warn("Degrees of freedom <= 0 for slice.", RuntimeWarning, stacklevel=2)
+    variance = where(bad, _math.nan, _by_count(total, freedom, total.dtype))
+    return _reduced_shape(variance, arr, axis, keepdims, "nanvar")
+
+
+def nanstd(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False):
+    """The standard deviation of the elements that are not NaN, the square root of :func:`nanvar`, as
+    ``numpy.nanstd``."""
+    variance = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims)
+    return _math.sqrt(variance) if isinstance(variance, _numbers.Number) else sqrt(variance)
+
+
+def _last_axis(a, axis, name):
+    """`a` with the axes `axis` (None for every one) moved last and joined into one, and the reduced axes."""
+    rank = len(a.shape)
+    axes = _resolved_axes(a, axis, name)
+    kept = [k for k in range(rank) if k not in axes]
+    if kept + sorted(axes) != list(range(rank)):
+        a = _permuted(a, kept + sorted(axes))
+    return reshape(a, tuple(a.shape[:len(kept)]) + (_math.prod(a.shape[len(kept):]),)), axes
+
+
+def _kept_dims(result, a, axes, lead, keepdims):
+    """`result` of shape ``lead + kept axes`` with each reduced axis of `a` back with extent 1 where `keepdims`; a
+    number for a rank-0 result."""
+    if keepdims:
+        result = reshape(result, lead + tuple(1 if k in axes else extent for k, extent in enumerate(a.shape)))
+    return result[()] if isinstance(result, Tensor) and not result.shape else result
+
+
+def _median_of(a, axis, keepdims, ignore_nans):
+    a = _tensor(a)
+    if a.dtype == "bool":
+        a = asarray(a, "float64")
+    joined, axes = _last_axis(a, axis, "median")
+    s = sort(joined, axis=-1)
+    rest, extent = s.shape[:-1], s.shape[-1]
+    inexact = a.dtype != "int64"
+    wide = a.dtype if inexact else "float64"  # NumPy's mean of integers in float64
+    if extent == 0:
+        _warnings.warn("Mean of empty slice.", RuntimeWarning, stacklevel=3)
+        return _kept_dims(full(rest, _math.nan, wide), a, axes, (), keepdims)
+    if ignore_nans and inexact:
+        count = count_nonzero(~isnan(joined), axis=-1, keepdims=True)
+        low = take_along_axis(s, where(count == 0, 0, (count - 1) // 2), axis=-1)
+        high = take_along_axis(s, count // 2 - (count == 0), axis=-1)
+        result = reshape(where(count % 2 == 1, low + 0, (low + high + 0) / 2), rest)  # sums from +0, as NumPy's
+        if any(count == 0):
+            _warnings.warn("All-NaN slice encountered", RuntimeWarning, stacklevel=3)
+            result = where(reshape(count == 0, rest), _math.nan, result)
+        return _kept_dims(result, a, axes, (), keepdims)
+    middle = extent // 2  # NumPy's mean of the middle one or two: their sum from +0, so −0 becomes +0
+    high = asarray(reshape(s[..., middle:middle + 1], rest), wide)
+    if extent % 2:
+        result = high + 0
+    else:
+        result = (asarray(reshape(s[..., middle - 1:middle], rest), wide) + high + 0) / 2
+    if inexact:
+        last = reshape(s[..., -1:], rest)
+        result = where(isnan(last), last, result)
+    return _kept_dims(result, a, axes, (), keepdims)
+
+
+def median(a, axis=None, out=None, overwrite_input=False, keepdims=False):
+    """The median of every element, or the medians along `axis` (an integer or a tuple), as ``numpy.median``: the
+    middle element of the sorted ones, or the mean of the two middle ones; NaN where there is a NaN; integers in
+    float64. `overwrite_input` is NumPy's and changes nothing here (a Tensor is never written into).
+
+    Examples:
+        >>> import numerical
+        >>> numerical.median([[1.0, 3.0, 2.0], [4.0, 6.0, 8.0]], axis=1)
+        numerical.Tensor([2.0, 6.0], dtype=float64)
+    """
+    del overwrite_input
+    _no_out(out, "median")
+    return _median_of(a, axis, keepdims, False)
+
+
+def nanmedian(a, axis=None, out=None, overwrite_input=False, keepdims=False):
+    """:func:`median` of the elements that are not NaN, as ``numpy.nanmedian``: NaN (with a ``RuntimeWarning``) for a
+    slice of NaNs alone."""
+    del overwrite_input
+    _no_out(out, "nanmedian")
+    return _median_of(a, axis, keepdims, True)
+
+
+def _virtual_index(method, n, q):
+    """NumPy's virtual index of the quantiles `q` among `n` sorted values (an integer or an int64 Tensor, one per
+    slice) by `method`: a float64 Tensor, or an int64 one for the methods that pick an element."""
+    def computed(alpha, beta):
+        return n * q + (alpha + q * (1 - alpha - beta)) - 1
+
+    def boundaries(index, lower):
+        before = floor(index)
+        picked = asarray(where(lower(index - before, index), before, before + 1), "int64")
+        return where(picked < 0, 0, picked)
+
+    if method == "linear":
+        return (n - 1) * q if q.dtype != "int64" else asarray((n - 1) * q, "int64")
+    if method == "lower":
+        return asarray(floor((n - 1) * q), "int64")
+    if method == "higher":
+        return asarray(ceil((n - 1) * q), "int64")
+    if method == "nearest":
+        return asarray(round((n - 1) * q), "int64")
+    if method == "midpoint":
+        return 0.5 * (floor((n - 1) * q) + ceil((n - 1) * q))
+    if method == "inverted_cdf":
+        return boundaries(n * q - 1, lambda gamma, _: gamma == 0)
+    if method == "averaged_inverted_cdf":
+        return n * q - 1
+    if method == "closest_observation":
+        return boundaries(n * q - 1 - 0.5, lambda gamma, index: (gamma == 0) & (floor(index) % 2 == 1))
+    alpha, beta = {"interpolated_inverted_cdf": (0, 1), "hazen": (0.5, 0.5), "weibull": (0, 0),
+                   "median_unbiased": (1 / 3.0, 1 / 3.0), "normal_unbiased": (3 / 8.0, 3 / 8.0)}[method]
+    return computed(alpha, beta)
+
+
+_QUANTILE_METHODS = ("inverted_cdf", "averaged_inverted_cdf", "closest_observation", "interpolated_inverted_cdf",
+                     "hazen", "weibull", "linear", "median_unbiased", "normal_unbiased", "lower", "higher", "midpoint",
+                     "nearest")
+
+
+def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
+    """NumPy's ``_quantile`` of `a` (real) at `q` (in [0, 1]) over `axis`, by `method`: the virtual indexes, their
+    neighbours in the sorted values, and NumPy's interpolation ``_lerp``; NaN where a slice holds a NaN (where it holds
+    nothing else, for `ignore_nans`)."""
+    if method not in _QUANTILE_METHODS:
+        raise ValueError(f"{method!r} is not a valid method. Use one of: {_QUANTILE_METHODS}")
+    a = _tensor(a)
+    if a.dtype.startswith("complex"):
+        raise TypeError("a must be an array of real numbers")
+    joined, axes = _last_axis(a, axis, name)
+    s = sort(joined, axis=-1)
+    rest = s.shape[:-1]
+    inexact = a.dtype in ("float64", "float32")
+    lead = q.shape
+    flat_q = reshape(q, (-1,))
+    if ignore_nans and inexact:
+        n = count_nonzero(~isnan(joined), axis=-1, keepdims=True)  # one count per slice: rest + (1,)
+        q_along = reshape(flat_q, (1,) * len(rest) + (flat_q.shape[0],))
+    else:
+        n = s.shape[-1]
+        q_along = flat_q
+    index = _virtual_index(method, n, q_along)
+    last = n - 1  # NumPy's -1: the last value (the last that is not NaN, for `ignore_nans`)
+    if index.dtype == "int64" and method in ("linear", "lower", "higher", "nearest", "inverted_cdf",
+                                             "closest_observation"):
+        result = _gathered(s, where(index < 0, index + n, index), rest)
+    else:
+        previous = floor(index)
+        following = previous + 1
+        above = index >= last
+        below = index < 0
+        previous = where(below, 0.0, where(above, -1.0, previous))  # NumPy's order: below last
+        following = where(below, 0.0, where(above, -1.0, following))
+        gamma = index - previous
+        if method == "averaged_inverted_cdf":
+            gamma = where(gamma == 0, 0.5, 1.0)
+        elif method == "midpoint":
+            gamma = where(index % 1 == 0, 0.0, 0.5)
+        low = _gathered(s, _as_position(previous, n), rest)
+        high = _gathered(s, _as_position(following, n), rest)
+        if not weak:
+            result = _lerp(low, high, gamma)
+        elif ignore_nans:  # NumPy's slice by slice, each gamma a Python float beside the values (weak)
+            result = _lerp(low, high, gamma, a.dtype if inexact else "float64")
+        else:
+            result = _lerp(low, high, float(reshape(gamma, (-1,))[0]))
+    if inexact:
+        if ignore_nans:
+            empty = n == 0
+            if any(empty):
+                _warnings.warn("All-NaN slice encountered", RuntimeWarning, stacklevel=3)
+                result = where(empty, _math.nan, result)
+        else:
+            last = s[..., -1:]
+            result = where(isnan(last), last, result)
+    # rest + (Q,) to lead + rest
+    result = _permuted(result, [len(rest)] + list(range(len(rest)))) if rest else result
+    result = reshape(result, lead + rest)
+    return _kept_dims(result, a, axes, lead, keepdims)
+
+
+def _as_position(index, n):
+    """A float64 virtual index (NumPy's -1 for the last value) as int64 positions among `n` values."""
+    position = asarray(index, "int64")
+    return where(position < 0, position + n, position)
+
+
+def _gathered(s, positions, rest):
+    """The values of `s` (sorted along its last axis) at `positions`: a vector of them for every slice, or one row per
+    slice (shape ``rest + (Q,)``)."""
+    if len(positions.shape) <= 1:
+        picked = s[..., reshape(positions, (-1,))]
+        return picked
+    return take_along_axis(s, broadcast_to(positions, rest + positions.shape[-1:]), axis=-1)
+
+
+def _lerp(a, b, t, weak=None):
+    """NumPy's ``_lerp``: ``a + (b − a) t``, from `b` where ``t ≥ 0.5`` (``b − (b − a)(1 − t)``). A float64 Tensor `t`
+    with a `weak` dtype stands for one Python float per element: `t` and ``1 − t`` (computed in float64) each rounded
+    to that dtype, as NumPy's weak scalars are."""
+    difference = b - a
+    if isinstance(t, float):
+        return (b - difference * (1 - t)) if t >= 0.5 else a + difference * t
+    if weak is None:
+        return where(t >= 0.5, b - difference * (1 - t), a + difference * t)
+    return where(t >= 0.5, b - difference * asarray(1 - t, weak), a + difference * asarray(t, weak))
+
+
+def _quantile_operand(q, scale, name):
+    weak = type(q) in (int, float)
+    values = asarray(q, "int64") if isinstance(q, _numbers.Integral) or (
+        isinstance(q, Tensor) and q.dtype == "int64") else _read(q)
+    if len(values.shape) > 2:
+        raise ValueError("q must be a scalar or 1d")
+    if scale != 1:
+        values = asarray(values, "float64") / scale
+    if values.dtype == "bool":
+        values = asarray(values, "float64")
+    flat = reshape(values, (-1,)).tolist()
+    if not _builtins.all(0.0 <= v <= 1.0 for v in flat):
+        raise ValueError(f"{name} must be in the range [0, {'100' if scale != 1 else '1'}]")
+    return values, weak
+
+
+def quantile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=False, *, weights=None):
+    """The `q`-th quantiles (in [0, 1]) of every element or along `axis`, as ``numpy.quantile`` and by its steps (its
+    13 methods, its interpolation, a float32 kept beside a Python `q`); the quantiles' axes first. Real dtypes.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.quantile([1.0, 2.0, 3.0, 4.0], [0.25, 0.5])
+        numerical.Tensor([1.75, 2.5], dtype=float64)
+    """
+    return _quantile_entry(a, q, axis, out, method, keepdims, weights, 1, False, "quantile")
+
+
+def percentile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=False, *, weights=None):
+    """The `q`-th percentiles (in [0, 100]) of every element or along `axis`, as ``numpy.percentile``:
+    :func:`quantile` at ``q / 100``."""
+    return _quantile_entry(a, q, axis, out, method, keepdims, weights, 100, False, "percentile")
+
+
+def nanquantile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=False, *, weights=None):
+    """:func:`quantile` of the elements that are not NaN, as ``numpy.nanquantile``: NaN (with a ``RuntimeWarning``)
+    for a slice of NaNs alone."""
+    return _quantile_entry(a, q, axis, out, method, keepdims, weights, 1, True, "nanquantile")
+
+
+def nanpercentile(a, q, axis=None, out=None, overwrite_input=False, method="linear", keepdims=False, *, weights=None):
+    """:func:`percentile` of the elements that are not NaN, as ``numpy.nanpercentile``."""
+    return _quantile_entry(a, q, axis, out, method, keepdims, weights, 100, True, "nanpercentile")
+
+
+def _quantile_entry(a, q, axis, out, method, keepdims, weights, scale, ignore_nans, name):
+    _no_out(out, name)
+    if weights is not None:
+        raise NotImplementedError(f"{name}: weights are not supported here yet (NumPy's take them for "
+                                  "method='inverted_cdf' alone)")
+    values, weak = _quantile_operand(q, scale, "Quantiles" if scale == 1 else "Percentiles")
+    return _quantiles(a, values, axis, method, keepdims, ignore_nans, weak, name)
+
+
+def average(a, axis=None, weights=None, returned=False, *, keepdims=False):
+    """The mean of `a`, or its mean weighted by `weights`, over every element or along `axis` (an integer or a tuple),
+    as ``numpy.average``: ``Σ a·w / Σ w``; with `returned`, the pair of it and the sum of the weights (the count
+    without them). `weights` of `a`'s shape, or of the extents of `axis` alone.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.average([1.0, 2.0, 4.0], weights=[3.0, 1.0, 0.0])
+        1.25
+    """
+    a = _operand(a)
+    axes = None if axis is None else _resolved_axes(a, axis, "average")
+    if weights is None:
+        avg = mean(a, axis=axes, keepdims=keepdims)
+        if not returned:
+            return avg
+        count = a.size / (avg.size if isinstance(avg, Tensor) else 1)  # NumPy's, in the mean's dtype
+        if not isinstance(avg, Tensor):
+            return avg, type(avg)(count)
+        return avg, full(avg.shape, count, avg.dtype)
+    w = _operand(weights)
+    if w.shape != a.shape:
+        if axes is None:
+            raise TypeError("Axis must be specified when shapes of a and weights differ.")
+        if w.shape != tuple(a.shape[k] for k in axes):
+            raise ValueError("Shape of weights must be consistent with shape of a along specified axis.")
+        order = sorted(range(len(axes)), key=lambda k: axes[k])
+        w = transpose(w, order) if order != list(range(len(axes))) else w
+        w = reshape(w, tuple(extent if k in axes else 1 for k, extent in enumerate(a.shape)))
+    dtype = _promoted((a.dtype, w.dtype, "float64") if a.dtype in ("int64", "bool") else (a.dtype, w.dtype))
+    scale = sum(asarray(w, dtype), axis=axes, keepdims=keepdims)
+    if any(asarray(scale) == 0.0):
+        raise ZeroDivisionError("Weights sum to zero, can't be normalized")
+    avg = sum(asarray(a, dtype) * asarray(w, dtype), axis=axes, keepdims=keepdims) / scale
+    if not returned:
+        return avg
+    if isinstance(avg, Tensor) and (not isinstance(scale, Tensor) or scale.shape != avg.shape):
+        scale = broadcast_to(scale, avg.shape)
+    return avg, scale
+
+
+def cov(m, y=None, rowvar=True, bias=False, ddof=None, fweights=None, aweights=None, *, dtype=None):
+    """The covariance matrix of the variables in the rows of `m` (its columns without `rowvar`), the rows of `y`
+    joined after them, as ``numpy.cov`` and by its steps: the deviations from the (weighted) means, their products
+    summed (a matrix product) and scaled by the reciprocal of ``N − ddof`` (of its weighted form for `fweights`, integer
+    repeat counts, and `aweights`, relative weights). One variable's a number.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.cov([[0.0, 1.0, 2.0], [2.0, 1.0, 0.0]])
+        numerical.Tensor([[1.0, -1.0],
+                          [-1.0, 1.0]], dtype=float64)
+    """
+    if ddof is not None and ddof != int(ddof):
+        raise ValueError("ddof must be integer")
+    m = _operand(m)
+    if len(m.shape) > 2:
+        raise ValueError("m has more than 2 dimensions")
+    if y is not None:
+        y = _operand(y)
+        if len(y.shape) > 2:
+            raise ValueError("y has more than 2 dimensions")
+    if dtype is None:
+        dtype = _promoted([m.dtype, "float64"] + ([] if y is None else [y.dtype]))
+    dtype = _dtype_name(dtype)
+    x = asarray(m, dtype)
+    x = reshape(x, (1,) * (2 - len(x.shape)) + x.shape) if len(x.shape) < 2 else x
+    if not rowvar and len(m.shape) != 1:
+        x = transpose(x)
+    if x.shape[0] == 0:
+        return zeros((0, 0))
+    if y is not None:
+        y = asarray(y, dtype)
+        y = reshape(y, (1,) * (2 - len(y.shape)) + y.shape) if len(y.shape) < 2 else y
+        if not rowvar and y.shape[0] != 1:
+            y = transpose(y)
+        x = concatenate([x, y], axis=0)
+    if ddof is None:
+        ddof = 1 if bias == 0 else 0
+    w = None
+    if fweights is not None:
+        fweights = asarray(fweights, "float64")
+        if not all(fweights == round(fweights)):
+            raise TypeError("fweights must be integer")
+        if len(fweights.shape) > 1:
+            raise RuntimeError("cannot handle multidimensional fweights")
+        if fweights.shape[0] != x.shape[1]:
+            raise RuntimeError("incompatible numbers of samples and fweights")
+        if any(fweights < 0):
+            raise ValueError("fweights cannot be negative")
+        w = fweights
+    if aweights is not None:
+        aweights = asarray(aweights, "float64")
+        if len(aweights.shape) > 1:
+            raise RuntimeError("cannot handle multidimensional aweights")
+        if aweights.shape[0] != x.shape[1]:
+            raise RuntimeError("incompatible numbers of samples and aweights")
+        if any(aweights < 0):
+            raise ValueError("aweights cannot be negative")
+        w = aweights if w is None else w * aweights
+    avg, w_sum = average(x, axis=1, weights=w, returned=True)
+    w_sum = w_sum[0]
+    if w is None:
+        fact = x.shape[1] - ddof
+    elif ddof == 0:
+        fact = w_sum
+    elif aweights is None:
+        fact = w_sum - ddof
+    else:
+        fact = w_sum - ddof * sum(w * aweights) / w_sum
+    if fact <= 0:
+        _warnings.warn("Degrees of freedom <= 0 for slice", RuntimeWarning, stacklevel=2)
+        fact = 0.0
+    x = x - reshape(avg, (avg.shape[0], 1))
+    x_t = transpose(x if w is None else x * w)
+    c = x @ conj(x_t) if dtype.startswith("complex") else x @ x_t
+    c = c * (1 / fact if fact else _math.inf)  # NumPy's product by the reciprocal; 1/0 its inf
+    return c[0, 0] if c.shape == (1, 1) else c
+
+
+def corrcoef(x, y=None, rowvar=True, *, dtype=None):
+    """The Pearson correlation coefficients of the variables in the rows of `x` (its columns without `rowvar`), the
+    rows of `y` joined after them, as ``numpy.corrcoef``: :func:`cov` divided by the products of the standard
+    deviations, then clipped to [−1, 1] (each part of a complex coefficient)."""
+    c = cov(x, y, rowvar, dtype=dtype)
+    if not isinstance(c, Tensor) or not c.shape:
+        return c / c
+    d = diagonal(c)
+    stddev = sqrt(real(d))
+    c = c / reshape(stddev, (stddev.shape[0], 1))
+    c = c / reshape(stddev, (1, stddev.shape[0]))
+    if c.dtype.startswith("complex"):
+        return _from_parts(clip(real(c), -1, 1), clip(imag(c), -1, 1))
+    return clip(c, -1, 1)
+
+
+def _from_parts(re, im):
+    """``re + im·i`` of two real tensors of one shape and dtype, exactly (each part's zero keeps its sign, where a sum
+    and a product by 1j would not): their elements side by side, read as complex ones."""
+    pair = _numerical._stack_last([re, im])
+    return _numerical._frombytes(_numerical._tobytes(pair), re.shape, "complex64" if re.dtype == "float32"
+                                 else "complex128", False)
+
+
+def _pad_pairs(x, rank, as_index=False):
+    """NumPy's ``_as_pairs``: `x` (a number, a pair, or one pair per axis) as one ``(before, after)`` pair per axis;
+    rounded to integers, none negative, for `as_index`."""
+    if x is None:
+        return [(None, None)] * rank
+    if isinstance(x, Tensor):
+        values, shape = reshape(x, (-1,)).tolist(), x.shape
+    elif type(x).__name__ == "ndarray":
+        values, shape = x.ravel().tolist(), tuple(x.shape)
+    else:
+        values, shape = _nested(x)
+    if as_index:
+        values = [int(_builtins.round(v)) for v in values]
+        if values and _builtins.min(values) < 0:
+            raise ValueError("index can't contain negative values")
+    if len(shape) < 3 and len(values) == 1:
+        return [(values[0], values[0])] * rank
+    if len(shape) < 3 and len(values) == 2 and tuple(shape) != (2, 1):
+        return [(values[0], values[1])] * rank
+    shape = (1,) * (2 - len(shape)) + tuple(shape)
+    if len(shape) > 2 or shape[0] not in (1, rank) or shape[1] not in (1, 2):
+        raise ValueError("operands could not be broadcast together with remapped shapes [original->remapped]: "
+                         f"{tuple(shape)} and requested shape ({rank},2)")
+    return [tuple(values[(i if shape[0] != 1 else 0) * shape[1] + (j if shape[1] != 1 else 0)] for j in range(2))
+            for i in range(rank)]
+
+
+def _ramp(start, stop, num, dtype, axis):
+    """NumPy's ``linspace(start, stop, num, endpoint=False, dtype=dtype, axis=axis)`` of a number `start` and a tensor
+    `stop`, by its steps: ``arange(num) · step + start``, through ``/ num · delta`` where a step is 0; floored for an
+    integer `dtype`. Computed in the dtype `start` and `stop` promote to, `start` as NumPy's ``_as_pairs`` hands it: a
+    NumPy scalar, of full strength (a Python integer an int64, a float a float64: a float32 ramp is computed in
+    float64)."""
+    strong = getattr(start, "dtype", None)
+    strong = _dtype_name(strong) if strong is not None else (
+        "complex128" if isinstance(start, complex) else "float64" if isinstance(start, float) else "int64")
+    computed = _promoted([strong, dtype])
+    computed = "float64" if computed in ("int64", "bool") else computed
+    stop = asarray(stop, computed)
+    delta = stop - start
+    y = reshape(asarray(arange(num), computed), (-1,) + (1,) * len(stop.shape))
+    if num > 0:
+        step = delta / num
+        y = (y / num) * delta if any(step == 0) else y * step
+    else:
+        y = y * delta  # no element, of the ramp's shape
+    y = y + start
+    y = moveaxis(y, 0, axis) if axis else y
+    return asarray(floor(y) if dtype == "int64" else y, dtype)
+
+
+def _pad_reflected(t, axis, before, after, odd, period, include_edge):
+    """NumPy's ``_set_reflect_both``, repeated: the values mirrored at each end of `t` along `axis` (about the edge
+    for "reflect", past it for "symmetric"), a chunk of at most one period at a time; "odd" mirrors them through the
+    edge value (``2 · edge − value``)."""
+    rank = len(t.shape)
+    offset = 1 if include_edge else 0
+    while before > 0 or after > 0:
+        length = t.shape[axis]
+        if include_edge:
+            reach = length // period * period
+        else:
+            reach = (length - 1) // (period - 1) * (period - 1)
+        left = right = None
+        if before > 0:
+            chunk = _builtins.min(reach, before)
+            left = flip(t[_along_axis(axis, rank, slice(1 - offset, chunk - offset + 1))], axis)
+            if odd:  # back to t's dtype, as NumPy's assignment casts it (a bool true where nonzero)
+                left = asarray(2 * t[_along_axis(axis, rank, slice(0, 1))] - left, t.dtype)
+            before -= chunk
+        if after > 0:
+            chunk = _builtins.min(reach, after)
+            right = flip(t[_along_axis(axis, rank, slice(length - 1 + offset - chunk, length - 1 + offset))], axis)
+            if odd:
+                right = asarray(2 * t[_along_axis(axis, rank, slice(length - 1, length))] - right, t.dtype)
+            after -= chunk
+        t = concatenate([part for part in (left, t, right) if part is not None], axis=axis)
+    return t
+
+
+def _pad_wrapped(t, axis, before, after, period):
+    """NumPy's ``_set_wrap_both``, repeated: each end of `t` along `axis` continued by the other end's values, a whole
+    number of periods at a time."""
+    rank = len(t.shape)
+    while before > 0 or after > 0:
+        length = t.shape[axis]
+        whole = length // period * period
+        left = right = None
+        later_before = later_after = 0
+        if before > 0:
+            chunk = _builtins.min(whole, before)
+            left = t[_along_axis(axis, rank, slice(whole - chunk, whole))]
+            later_before = before - whole if before > whole else 0
+        if after > 0:
+            chunk = _builtins.min(whole, after)
+            right = t[_along_axis(axis, rank, slice(length - whole, length - whole + chunk))]
+            later_after = after - whole if after > whole else 0
+        t = concatenate([part for part in (left, t, right) if part is not None], axis=axis)
+        before, after = later_before, later_after
+    return t
+
+
+_PAD_KEYWORDS = {"empty": (), "edge": (), "wrap": (), "constant": ("constant_values",), "linear_ramp": ("end_values",),
+                 "maximum": ("stat_length",), "mean": ("stat_length",), "median": ("stat_length",),
+                 "minimum": ("stat_length",), "reflect": ("reflect_type",), "symmetric": ("reflect_type",)}
+
+
+def pad(array, pad_width, mode="constant", **kwargs):
+    """`array` padded by `pad_width` (one count for every side, a ``(before, after)`` pair, one pair per axis, or a
+    dict of them by axis) as ``numpy.pad`` and by its steps, axis after axis: "constant" (`constant_values`), "edge",
+    "linear_ramp" (to `end_values`), "maximum", "minimum", "mean" and "median" (of `stat_length` values from each
+    end), "reflect" and "symmetric" (`reflect_type` "even" or "odd"), "wrap", and "empty" (zeros here). A function as
+    `mode` is refused: NumPy's writes into the vectors it is handed, and a Tensor is never written into.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.pad([1.0, 2.0, 3.0], (2, 1), mode="reflect")
+        numerical.Tensor([3.0, 2.0, 1.0, 2.0, 3.0, 2.0], dtype=float64)
+        >>> numerical.pad([[1.0]], 1, constant_values=9)
+        numerical.Tensor([[9.0, 9.0, 9.0],
+                          [9.0, 1.0, 9.0],
+                          [9.0, 9.0, 9.0]], dtype=float64)
+    """
+    a = _tensor(array)
+    rank = len(a.shape)
+    if isinstance(pad_width, dict):
+        widths = [(0, 0)] * rank
+        for axis, width in pad_width.items():
+            widths[axis] = (width, width) if isinstance(width, int) else tuple(width)
+        pad_width = widths
+    if isinstance(pad_width, Tensor):
+        integral = pad_width.dtype == "int64"
+    elif type(pad_width).__name__ == "ndarray":
+        integral = pad_width.dtype.kind == "i"
+    else:
+        flat, _ = _nested(pad_width)
+        integral = bool(flat) and _builtins.all(isinstance(v, _numbers.Integral) and not isinstance(v, bool) for v in flat)
+    if not integral:  # NumPy's: an empty list reads as float64
+        raise TypeError("`pad_width` must be of integral type.")
+    widths = _pad_pairs(pad_width, rank, as_index=True)
+    if callable(mode):
+        raise TypeError("pad: a function as mode writes into the vectors it is handed; a Tensor is never written into")
+    if mode not in _PAD_KEYWORDS:
+        raise ValueError(f"mode '{mode}' is not supported")
+    unsupported = set(kwargs) - set(_PAD_KEYWORDS[mode])
+    if unsupported:
+        raise ValueError(f"unsupported keyword arguments for mode '{mode}': {unsupported}")
+
+    def shaped(t, axis, extent):
+        return tuple(extent if k == axis else e for k, e in enumerate(t.shape))
+
+    if mode in ("constant", "empty") or a.size == 0:
+        if mode not in ("constant", "empty"):
+            for axis, pair in enumerate(widths):
+                if a.shape[axis] == 0 and _builtins.any(pair):
+                    raise ValueError(f"can't extend empty axis {axis} using modes other than 'constant' or 'empty'")
+        values = _pad_pairs(kwargs.get("constant_values", 0), rank) if mode == "constant" else [(0, 0)] * rank
+        for axis, ((before, after), (low, high)) in enumerate(zip(widths, values)):
+            a = concatenate([full(shaped(a, axis, before), low, a.dtype), a, full(shaped(a, axis, after), high, a.dtype)],
+                            axis=axis)
+        return a
+    if mode in ("reflect", "symmetric"):
+        odd = kwargs.get("reflect_type", "even") == "odd"
+    lengths = _pad_pairs(kwargs.get("stat_length"), rank, as_index=True) if mode in ("maximum", "minimum", "mean",
+                                                                                     "median") else None
+    ends = _pad_pairs(kwargs.get("end_values", 0), rank) if mode == "linear_ramp" else None
+    for axis, (before, after) in enumerate(widths):
+        if not before and not after:
+            continue
+        extent = a.shape[axis]
+        first = a[_along_axis(axis, rank, slice(0, 1))]
+        last = a[_along_axis(axis, rank, slice(extent - 1, extent))]
+        if mode == "edge" or (mode in ("reflect", "symmetric") and extent == 1):
+            a = concatenate([broadcast_to(first, shaped(a, axis, before)), a,
+                             broadcast_to(last, shaped(a, axis, after))], axis=axis)
+        elif mode in ("reflect", "symmetric"):
+            a = _pad_reflected(a, axis, before, after, odd, extent, mode == "symmetric")
+        elif mode == "wrap":
+            a = _pad_wrapped(a, axis, before, after, extent)
+        elif mode == "linear_ramp":
+            low = _ramp(ends[axis][0], reshape(first, tuple(e for k, e in enumerate(first.shape) if k != axis)), before,
+                        a.dtype, axis)
+            high = flip(_ramp(ends[axis][1], reshape(last, tuple(e for k, e in enumerate(last.shape) if k != axis)),
+                              after, a.dtype, axis), axis)
+            a = concatenate([low, a, high], axis=axis)
+        else:
+            reduce = {"maximum": max, "minimum": min, "mean": mean, "median": median}[mode]
+            left_length = extent if lengths[axis][0] is None or extent < lengths[axis][0] else lengths[axis][0]
+            right_length = extent if lengths[axis][1] is None or extent < lengths[axis][1] else lengths[axis][1]
+            if (left_length == 0 or right_length == 0) and mode in ("maximum", "minimum"):
+                raise ValueError("stat_length of 0 yields no value for padding")
+
+            def stat(start, stop):
+                value = reduce(a[_along_axis(axis, rank, slice(start, stop))], axis=axis, keepdims=True)
+                return asarray(round(value), "int64") if a.dtype == "int64" else asarray(value, a.dtype)
+
+            low = stat(0, left_length)
+            high = low if left_length == right_length == extent else stat(extent - right_length, extent)
+            a = concatenate([broadcast_to(low, shaped(a, axis, before)), a, broadcast_to(high, shaped(a, axis, after))],
+                            axis=axis)
+    return a
+
 Tensor.nonzero = lambda self: nonzero(self)
 for _name in ("swapaxes", "clip", "ptp", "var", "std", "dot", "prod", "cumsum", "cumprod", "round", "argmax", "argmin",
               "argsort", "searchsorted"):  # NumPy's methods of these names, where Tensor has none
@@ -6458,7 +7331,9 @@ __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "f
             "arctan2", "atan2", "copysign", "nextafter", "fmod", "logaddexp", "logaddexp2", "fmax", "fmin", "heaviside",
             "float_power", "angle", "unwrap", "nan_to_num", "broadcast_shapes", "broadcast_to", "broadcast_arrays", "tile",
             "repeat", "take", "take_along_axis", "roll", "rot90", "array_split", "split", "hsplit", "vsplit", "dsplit",
-            "dstack", "append", "block"]
+            "dstack", "append", "block", "nansum", "nanprod", "nancumsum", "nancumprod", "nanmax", "nanmin", "nanargmax",
+            "nanargmin", "nanmean", "nanvar", "nanstd", "median", "nanmedian", "quantile", "percentile", "nanquantile",
+            "nanpercentile", "average", "cov", "corrcoef", "pad"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)
 

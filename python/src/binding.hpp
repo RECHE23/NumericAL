@@ -1676,8 +1676,8 @@ PyObject* module_unary(PyObject* /*self*/, PyObject* args); // in elementwise.cp
 template <typename T>
 PyObject* sum_or_mean(bool mean, const numerical::tensor<T>& t, Py_ssize_t axis)
 {
-    if (axis < 0) {
-        return from_scalar<T>(mean ? numerical::mean(t) : numerical::sum(t));
+    if (axis < 0) { // + T {}: NumPy's add.reduce starts from +0, so its sum (and mean) of negative zeros is +0
+        return from_scalar<T>((mean ? numerical::mean(t) : numerical::sum(t)) + T {});
     }
     const auto a {static_cast<std::size_t>(axis)};
     return wrap(any_tensor {mean ? numerical::mean(t, a) : numerical::sum(t, a)});

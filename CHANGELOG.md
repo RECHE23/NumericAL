@@ -14,6 +14,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   its own (the macOS x86_64 wheel of 2026.11.3 failed its test there, and 2026.11.3 was not published).
 - **A test of int64 reductions** compared a Python integer's dtype through `numpy.asarray`, int32 on a 32-bit
   Windows; it compares its kind and value.
+- **A sum (or a mean) of every element starts from +0, as NumPy's**: nine negative zeros or more summed to −0.
+- **`prod` over several axes** multiplies the elements in NumPy's order (row-major over the reduced axes), where it
+  reduced one axis after another.
+- **A reduction over no axis (`axis=()`)**: `any` and `all` answer bools, `mean` of an int64 tensor float64, and
+  `sum` and `mean` add +0, as NumPy's; `mean` of an int64 tensor with `keepdims` is float64 too.
 
 ### Added
 - **NumPy's real binary functions**: `hypot`, `arctan2` (`atan2`), `copysign`, `nextafter`, `fmod` (of the
@@ -24,8 +29,17 @@ A change that can break code is listed under **Breaking** and held for a month's
   formula and bits) and `nan_to_num` (`nan`, `posinf`, `neginf`; a complex element's parts apart).
 - **NumPy's array manipulation**: `tile`, `repeat` (one count or one per element), `roll` (several axes),
   `rot90`, `split`, `array_split`, `hsplit`, `vsplit`, `dsplit`, `dstack`, `append`, `block`, `take` (`mode`
-  "raise", "wrap", "clip"), `take_along_axis`, `broadcast_to`, `broadcast_arrays` and `broadcast_shapes`, with
-  NumPy's errors.
+  "raise", "wrap", "clip"), `take_along_axis`, `broadcast_to`, `broadcast_arrays`, `broadcast_shapes` and `pad`
+  (every mode of NumPy's but a function, by its steps and to its bits), with NumPy's errors.
+- **NumPy's statistics**: `median`, `quantile` and `percentile` (NumPy's 13 methods, its interpolation and its
+  promotion: a Python `q` keeps a float32 one), their NaN-ignoring `nanmedian`, `nanquantile` and `nanpercentile`,
+  `nansum`, `nanprod`, `nancumsum`, `nancumprod`, `nanmax`, `nanmin`, `nanargmax`, `nanargmin`, `nanmean`, `nanvar`
+  and `nanstd` (NumPy's steps and warnings), `average` (weights, `returned`) and `cov` (`fweights`, `aweights`,
+  `ddof`, `bias`, `rowvar`, `y`) and `corrcoef`; over several axes where NumPy's take them; to NumPy's bits, but for
+  sums along a leading axis (see the differences page).
+- **SciPy's `eig_banded`, `eigvals_banded` and `matmul_toeplitz`**: the eigenpairs of a symmetric or Hermitian
+  band matrix (either band form; `select` all, by value or by index) through `eigh` of the matrix it describes, and
+  a Toeplitz product (rectangular too) through the FFT of its circulant embedding, by SciPy's steps.
 
 ## 2026.11.3 — 2026-11-03
 

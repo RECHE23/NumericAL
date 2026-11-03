@@ -50,6 +50,7 @@ Shapes and joins
 .. autofunction:: numerical.column_stack
 .. autofunction:: numerical.dstack
 .. autofunction:: numerical.block
+.. autofunction:: numerical.pad
 .. autofunction:: numerical.append
 .. autofunction:: numerical.split
 .. autofunction:: numerical.array_split
@@ -179,6 +180,26 @@ Reductions, scans and sorting
 .. autofunction:: numerical.ptp
 .. autofunction:: numerical.var
 .. autofunction:: numerical.std
+.. autofunction:: numerical.nansum
+.. autofunction:: numerical.nanprod
+.. autofunction:: numerical.nancumsum
+.. autofunction:: numerical.nancumprod
+.. autofunction:: numerical.nanmax
+.. autofunction:: numerical.nanmin
+.. autofunction:: numerical.nanargmax
+.. autofunction:: numerical.nanargmin
+.. autofunction:: numerical.nanmean
+.. autofunction:: numerical.nanvar
+.. autofunction:: numerical.nanstd
+.. autofunction:: numerical.median
+.. autofunction:: numerical.nanmedian
+.. autofunction:: numerical.quantile
+.. autofunction:: numerical.percentile
+.. autofunction:: numerical.nanquantile
+.. autofunction:: numerical.nanpercentile
+.. autofunction:: numerical.average
+.. autofunction:: numerical.cov
+.. autofunction:: numerical.corrcoef
 .. autofunction:: numerical.sort
 .. autofunction:: numerical.diff
 .. autofunction:: numerical.argmax
@@ -243,6 +264,7 @@ scipy.linalg: solvers and factors
 .. autofunction:: numerical.solve_banded
 .. autofunction:: numerical.solveh_banded
 .. autofunction:: numerical.solve_toeplitz
+.. autofunction:: numerical.matmul_toeplitz
 .. autofunction:: numerical.solve_circulant
 .. autofunction:: numerical.lu
 .. autofunction:: numerical.lu_factor
@@ -273,6 +295,8 @@ scipy.linalg: decompositions
 .. autofunction:: numerical.matrix_balance
 .. autofunction:: numerical.eigh_tridiagonal
 .. autofunction:: numerical.eigvalsh_tridiagonal
+.. autofunction:: numerical.eig_banded
+.. autofunction:: numerical.eigvals_banded
 
 scipy.linalg: matrix functions
 ------------------------------

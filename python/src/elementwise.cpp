@@ -1250,7 +1250,7 @@ PyObject* module_borrowed_reduce(PyObject* /*self*/, PyObject* args)
         const auto reduce = [&]<typename T>(std::type_identity<T>) -> PyObject* {
             const T* const data {static_cast<const T*>(x.data)};
             if (name == "sum" || name == "mean") {
-                const T total {numerical::detail::parallel_pairwise_sum(data, count)};
+                const T total {numerical::detail::parallel_pairwise_sum(data, count) + T {}}; // from +0, as NumPy's
                 return from_scalar<T>(name == "mean" ? numerical::detail::divided_by_count(total, count) : total);
             }
             if constexpr (numerical::detail::split_complex<T>) {

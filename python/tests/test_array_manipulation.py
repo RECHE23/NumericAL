@@ -1,5 +1,5 @@
-"""tile, repeat, roll, rot90, the splits, dstack, append, block, take, take_along_axis and the broadcasts against
-NumPy's answers, in float64, bool and int64, with NumPy's errors. Deterministic; the NumPy comparisons skipped without
+"""tile, repeat, roll, rot90, the splits, dstack, append, block, take, take_along_axis, the broadcasts and pad against
+NumPy's answers, in float64, float32, bool and int64, with NumPy's errors. Deterministic; the NumPy comparisons skipped without
 NumPy."""
 import unittest
 
@@ -131,6 +131,72 @@ class AgainstNumPy(unittest.TestCase):
         self.assertSame(numerical.block(layout), np.block(layout), "block")
         self.assertSame(numerical.block(np.ones(3)), np.block(np.ones(3)), "block of one array")
         self.assertEqual(numerical.broadcast_shapes((3, 1), (4,), 1), np.broadcast_shapes((3, 1), (4,), 1))
+
+
+_PAD_MODES = [("constant", {}), ("constant", {"constant_values": (4, -2)}), ("constant", {"constant_values": ((1, 2), (3, 4))}),
+              ("edge", {}), ("wrap", {}), ("reflect", {}), ("reflect", {"reflect_type": "odd"}), ("symmetric", {}),
+              ("symmetric", {"reflect_type": "odd"}), ("linear_ramp", {}), ("linear_ramp", {"end_values": (5, -3)}),
+              ("maximum", {}), ("minimum", {"stat_length": 2}), ("mean", {}), ("mean", {"stat_length": (1, 3)}),
+              ("median", {"stat_length": ((2, 1),)})]
+_PAD_WIDTHS = [1, (2, 3), ((1, 2), (0, 4)), ((5, 7),), ((0, 0), (9, 1)), (0,), {0: 2}, {-1: (1, 3)}]
+
+
+class Pad(unittest.TestCase):
+    def test_without_numpy(self):
+        self.assertEqual(numerical.pad([1.0, 2.0, 3.0], (2, 1), mode="reflect").tolist(),
+                         [3.0, 2.0, 1.0, 2.0, 3.0, 2.0])
+        self.assertEqual(numerical.pad([1.0, 2.0], 5, mode="wrap").tolist(), [2.0, 1.0] * 6)
+        self.assertEqual(numerical.pad([1.0, 2.0], 3, mode="symmetric", reflect_type="odd").tolist(),
+                         [0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0])
+        self.assertEqual(numerical.pad([[1.0]], 1, constant_values=9).tolist(),
+                         [[9.0, 9.0, 9.0], [9.0, 1.0, 9.0], [9.0, 9.0, 9.0]])
+        self.assertEqual(numerical.pad(numerical.asarray([1, 4], "int64"), 1, mode="mean").tolist(), [2, 1, 4, 2])
+        self.assertEqual(numerical.pad([2.0], (3, 0), mode="linear_ramp").tolist(), [0.0, 2 / 3, 4 / 3, 2.0])
+        self.assertEqual(numerical.pad(numerical.asarray([True, False]), 1, mode="edge").dtype, "bool")
+        self.assertEqual(numerical.pad(numerical.zeros((0, 2)), 1).shape, (2, 4))
+        self.assertEqual(numerical.pad(numerical.zeros((0, 2)), ((0, 0), (1, 1)), mode="edge").shape, (0, 4))
+        self.assertEqual(numerical.pad([1.0], 2, mode="empty").tolist(), [0.0, 0.0, 1.0, 0.0, 0.0])
+        cases = [
+            (TypeError, lambda: numerical.pad([1.0], 1.5)),
+            (TypeError, lambda: numerical.pad([1.0], [])),
+            (TypeError, lambda: numerical.pad([1.0], True)),
+            (ValueError, lambda: numerical.pad([1.0], -1)),
+            (ValueError, lambda: numerical.pad([1.0], 1, mode="foo")),
+            (ValueError, lambda: numerical.pad([1.0], 1, mode="edge", constant_values=1)),
+            (ValueError, lambda: numerical.pad(numerical.zeros((0, 2)), 1, mode="edge")),
+            (ValueError, lambda: numerical.pad([1.0, 2.0], 1, mode="maximum", stat_length=0)),
+            (ValueError, lambda: numerical.pad([[1.0]], ((1, 2), (3, 4), (5, 6)))),
+            (TypeError, lambda: numerical.pad([1.0], 1, mode=lambda vector, width, axis, kwargs: None)),
+        ]
+        for error, call in cases:
+            with self.assertRaises(error):
+                call()
+
+    @unittest.skipIf(np is None, "NumPy is not installed")
+    def test_against_numpy(self):
+        rng = np.random.default_rng(4)
+        arrays = [rng.normal(size=(3, 4)), rng.normal(size=(5,)), rng.integers(-20, 20, (3, 4, 2)),
+                  rng.normal(size=(2, 3)).astype(np.float32), np.array([7.0]), rng.random((2, 2)) > 0.5]
+        for a in arrays:
+            t = numerical.asarray(a, "int64") if a.dtype.kind == "i" else numerical.asarray(a)
+            for width in _PAD_WIDTHS:
+                for mode, kwargs in _PAD_MODES:
+                    if a.dtype == bool and mode in ("linear_ramp", "maximum", "minimum", "mean", "median"):
+                        continue
+                    label = f"{mode} {kwargs} {width} {a.dtype} {a.shape}"
+                    try:
+                        want = np.pad(a, width, mode=mode, **kwargs)
+                    except ValueError:  # NumPy's refusal (pairs per axis beyond the rank), ours too
+                        with self.assertRaises(ValueError, msg=label):
+                            numerical.pad(t, width, mode=mode, **kwargs)
+                        continue
+                    got = np.asarray(numerical.pad(t, width, mode=mode, **kwargs))
+                    self.assertEqual((got.shape, got.dtype), (want.shape, want.dtype), label)
+                    if mode == "mean" and a.ndim > 1:  # a mean along a leading axis: pairwise here, row after row there
+                        np.testing.assert_allclose(got, want, rtol=1e-6 if a.dtype == np.float32 else 1e-13,
+                                                   err_msg=label)
+                    else:
+                        self.assertTrue(np.array_equal(got, want), label)
 
 
 if __name__ == "__main__":
