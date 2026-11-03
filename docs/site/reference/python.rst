@@ -3,7 +3,8 @@ Python
 
 .. module:: numerical
 
-Everything is importable from ``numerical``; the FFT lives in ``numerical.fft``.
+Everything is importable from ``numerical``; the FFT lives in ``numerical.fft``, and ``numpy.linalg``'s names in
+``numerical.linalg`` too.
 
 Tensors
 -------
@@ -390,6 +391,17 @@ Threads, kernels and memory
 .. autofunction:: numerical.get_include
 .. autofunction:: numerical.get_config
 .. autofunction:: numerical.blas_library
+
+numerical.linalg
+----------------
+
+``numpy.linalg``'s names, each the function of that name at the root (the same object), but for ``cross`` and
+``outer``, which take ``numpy.linalg``'s operands alone: 3-vectors, and vectors.
+
+.. module:: numerical.linalg
+
+.. autofunction:: numerical.linalg.cross
+.. autofunction:: numerical.linalg.outer
 
 numerical.fft
 -------------

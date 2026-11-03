@@ -72,7 +72,9 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
 - **Views and assignment.** A `Tensor` is immutable: no `t[i] = x`, and no operation returns a view of another tensor.
 - **Complex ordering.** `max`, `min`, `maximum`, `minimum` and `clip` take real dtypes only; NumPy orders complex
   numbers by real, then imaginary part (`sort` does too).
-- **Namespaces.** No `numerical.linalg` and no `__array_namespace__` yet; everything lives at the root and in
-  `numerical.fft`.
+- **Namespaces.** No `__array_namespace__` yet; everything lives at the root, with `numpy.fft`'s names in
+  `numerical.fft` and `numpy.linalg`'s in `numerical.linalg`.
+- **`diagonal` and `trace` at the root** are `numpy.linalg`'s: the diagonals of the last two axes, where
+  `numpy.diagonal` and `numpy.trace` take the first two (`axis1=0`, `axis2=1`). A matrix's are the same.
 - **Domains.** No `random`, no sparse matrices, no `optimize`, `stats`, `signal`, `interpolate` or `special`: they are
   outside NumericAL's scope, for libraries built on it.

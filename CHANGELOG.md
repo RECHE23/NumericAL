@@ -16,6 +16,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **Weighted quantiles**: `quantile`, `percentile`, `nanquantile` and `nanpercentile` take `weights` for the method
   "inverted_cdf", as NumPy 2.4 (its errors for negative, NaN, infinite or all-zero weights); `nanquantile` takes
   weights of the axis's shape, where NumPy raises IndexError (numpy/numpy#29709).
+- **`numerical.linalg`**: `numpy.linalg`'s names (the array API's `xp.linalg`), the root's functions; its `cross`
+  and `outer` take `numpy.linalg`'s operands alone.
+- **`cross` and `outer` at the root as NumPy's root ones**: `cross` takes 2-vectors (with NumPy 2's
+  DeprecationWarning) and `axisa`, `axisb`, `axisc`, each component by NumPy's operations; `outer` flattens its
+  operands. Both raised there before.
 
 ## 2026.11.4 — 2026-11-03
 

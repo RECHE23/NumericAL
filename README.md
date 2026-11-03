@@ -256,6 +256,7 @@ numerical.einsum("i,i->", [1, 2, 3], [1, 2, 3])       # dot
 numerical.einsum("ij,jk", a, [[5, 6], [7, 8]])        # implicit output, as NumPy: "ij,jk->ik"
 numerical.einsum("...ij,...jk->...ik", s, t)          # an ellipsis, its axes broadcast, as NumPy's
 numerical.solve(a, [1.0, 1.0])                         # a @ x = b
+numerical.linalg.det(a)                                # numpy.linalg's names, the same functions
 numerical.fft.rfft([1.0, 2.0, 3.0, 4.0])               # numpy.fft's names: fft, ifft, fftn, rfft, irfft, fftfreq…
 numerical.fft.dct([1.0, 2.0, 3.0, 4.0], norm="ortho")  # and scipy.fft's dct, idct, dst, idst, dctn…
 ```

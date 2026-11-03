@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """Check that the site's Python reference documents every public name, and no name that does not exist.
 
-Every name of ``numerical.__all__`` and every public name of ``numerical.fft`` must appear once as an ``auto*``
-directive of docs/site/reference/python.rst, so that a function added to the package cannot go unlisted.
+Every name of ``numerical.__all__``, every public name of ``numerical.fft``, and every name of ``numerical.linalg``
+that is not the root's function of that name must appear once as an ``auto*`` directive of
+docs/site/reference/python.rst, so that a function added to the package cannot go unlisted.
 
 Usage:
   PYTHONPATH=python python3 tools/check_site_reference.py
@@ -33,9 +34,12 @@ def problems(page_text: str, public: list[str]) -> list[str]:
 def public_names() -> list[str]:
     import numerical
     import numerical.fft
+    import numerical.linalg
     fft = [f"fft.{name}" for name in dir(numerical.fft)
            if not name.startswith("_") and name not in ("Tensor", "asarray") and callable(getattr(numerical.fft, name))]
-    return list(numerical.__all__) + fft
+    linalg = [f"linalg.{name}" for name in numerical.linalg.__all__
+              if getattr(numerical.linalg, name) is not getattr(numerical, name, None)]  # the root's documented there
+    return list(numerical.__all__) + fft + linalg
 
 
 def check() -> int:

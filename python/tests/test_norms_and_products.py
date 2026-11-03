@@ -184,9 +184,10 @@ class NormsAndProducts(unittest.TestCase):
         self.close(numerical.conj(self.complex), np.conj(self.complex))
         self.assertIs(numerical.conjugate, numerical.conj)
         with self.assertRaises(ValueError):
-            numerical.cross(np.ones(2), np.ones(2))
+            numerical.linalg.cross(np.ones(2), np.ones(2))
         with self.assertRaises(ValueError):
-            numerical.outer(self.a, self.a)
+            numerical.linalg.outer(self.a, self.a)
+        self.close(numerical.outer(self.a, self.a), np.outer(self.a, self.a))
 
     def test_a_hermitian_svd_goes_through_the_eigendecomposition(self):
         h = self.complex[:, :3] @ self.complex[:, :3].conj().T + np.diag([0.0, -9.0, 4.0])

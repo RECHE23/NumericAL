@@ -3216,21 +3216,21 @@ def tensorinv(a, ind=2):
     return reshape(inv(reshape(a, (rows, cols))), tuple(right) + tuple(left))
 
 
-def outer(x1, x2, /):
-    """The outer product of two vectors, ``x1[i] * x2[j]``, as ``numpy.linalg.outer``.
+def outer(a, b, out=None):
+    """The outer product of `a` and `b` flattened, ``a[i] * b[j]``, as ``numpy.outer``.
 
     Each element is its own product, as NumPy's ``multiply.outer`` (a −0 kept).
 
     Args:
-        x1: The first vector: a Tensor or an array-like.
-        x2: The second vector: a Tensor or an array-like.
+        a: The first operand, flattened: a Tensor or an array-like.
+        b: The second operand, flattened: a Tensor or an array-like.
+        out: NumPy's; None alone (a Tensor is never written into).
 
     Returns:
-        Tensor: The ``len(x1) × len(x2)`` matrix, in the dtype the two promote to.
+        Tensor: The ``a.size × b.size`` matrix, in the dtype the two promote to.
 
     Raises:
-        ValueError: if an operand is not a vector.
-        TypeError: if an operand is a bool Tensor or nothing :func:`asarray` reads.
+        TypeError: if an operand is a bool Tensor or nothing :func:`asarray` reads, or for an `out`.
 
     Examples:
         >>> import numerical
@@ -3238,39 +3238,61 @@ def outer(x1, x2, /):
         numerical.Tensor([[3.0, 4.0],
                           [6.0, 8.0]], dtype=float64)
     """
-    a, b = _same_dtype(x1, x2)
-    if len(a.shape) != 1 or len(b.shape) != 1:
-        raise ValueError("outer: two vectors (numpy.linalg.outer)")
+    _no_out(out, "outer")
+    a, b = _same_dtype(a, b)
+    a, b = reshape(a, (-1,)), reshape(b, (-1,))
     # each element its own product, broadcast, as NumPy's multiply.outer: an einsum adds it to a zero, which loses −0
     return reshape(a, (a.shape[0], 1)) * reshape(b, (1, b.shape[0]))
 
 
-def cross(x1, x2, /, *, axis=-1):
-    """The cross product of 3-vectors along `axis`, broadcast over the other axes, as ``numpy.linalg.cross``."""
-    axis = _operator.index(axis)  # one axis: TypeError for any other, as NumPy's
-    a, b = _same_dtype(x1, x2)
-    if len(a.shape) == 1 and len(b.shape) == 1:  # as rows, so a part is a tensor of the dtype, not a Python number
-        rows = cross(reshape(a, (1,) + tuple(a.shape)), reshape(b, (1,) + tuple(b.shape)), axis=-1)
-        return reshape(rows, tuple(a.shape))
-    moved = []
-    for operand in (a, b):
-        if not operand.shape or operand.shape[_resolved_axes(operand, axis, "cross")[0]] != 3:
-            raise ValueError("cross: both operands have 3 elements along axis (numpy.linalg.cross)")
-        rank, at = len(operand.shape), _resolved_axes(operand, axis, "cross")[0]
-        moved.append(_permuted(operand, [k for k in range(rank) if k != at] + [at]))
-    a, b = moved
+def cross(a, b, axisa=-1, axisb=-1, axisc=-1, axis=None):
+    """The cross product of the vectors of `a` along `axisa` and of `b` along `axisb`, broadcast over the other axes,
+    as ``numpy.cross``: 3-vectors, or 2-vectors with a third component of zero (deprecated, as NumPy 2's: a
+    ``DeprecationWarning``, and a number per pair where both are 2-vectors); the products' vectors along `axisc`,
+    `axis` for all three. Each component by NumPy's operations (a product negated where the other is zero).
+
+    Examples:
+        >>> import numerical
+        >>> numerical.cross([1.0, 0.0, 0.0], [0.0, 1.0, 0.0])
+        numerical.Tensor([0.0, 0.0, 1.0], dtype=float64)
+    """
+    if axis is not None:
+        axisa = axisb = axisc = axis
+    a, b = _same_dtype(a, b)
+    if not a.shape or not b.shape:
+        raise ValueError("At least one array has zero dimension")
+    vectors = []
+    for operand, along in ((a, axisa), (b, axisb)):
+        rank, at = len(operand.shape), _resolved_axes(operand, _operator.index(along), "cross")[0]
+        # as rows, so a part is a tensor of the dtype, not a Python number
+        moved = _permuted(operand, [k for k in range(rank) if k != at] + [at])
+        vectors.append(reshape(moved, (1,) + moved.shape))
+    a, b = vectors
+    if a.shape[-1] not in (2, 3) or b.shape[-1] not in (2, 3):
+        raise ValueError("incompatible dimensions for cross product\n(dimension must be 2 or 3)")
+    if a.shape[-1] == 2 or b.shape[-1] == 2:
+        _warnings.warn("Arrays of 2-dimensional vectors are deprecated. Use arrays of 3-dimensional vectors instead. "
+                       "(deprecated in NumPy 2.0)", DeprecationWarning, stacklevel=2)
 
     def part(t, i):
         return t[(slice(None),) * (len(t.shape) - 1) + (i,)]
 
-    components = [_operand(c) for c in (part(a, 1) * part(b, 2) - part(a, 2) * part(b, 1),
-                                       part(a, 2) * part(b, 0) - part(a, 0) * part(b, 2),
-                                       part(a, 0) * part(b, 1) - part(a, 1) * part(b, 0))]
+    a0, a1, b0, b1 = part(a, 0), part(a, 1), part(b, 0), part(b, 1)
+    third = a0 * b1 - a1 * b0
+    if a.shape[-1] == 2 and b.shape[-1] == 2:
+        return reshape(third, third.shape[1:])
+    if a.shape[-1] == 2:
+        first, second = a1 * part(b, 2), -(a0 * part(b, 2))
+    elif b.shape[-1] == 2:
+        first, second = -(part(a, 2) * b1), part(a, 2) * b0
+    else:
+        first, second = a1 * part(b, 2) - part(a, 2) * b1, part(a, 2) * b0 - a0 * part(b, 2)
     # side by side, copied: products with unit vectors multiplied an infinite component by their zeros (NaN elsewhere)
-    result = _numerical._stack_last(components)
+    result = _numerical._stack_last([_operand(c) for c in (first, second, third)])
+    result = reshape(result, result.shape[1:])
     rank = len(result.shape)
-    at = axis + rank if axis < 0 else axis
-    if at != rank - 1:  # the vectors' axis back where it was
+    at = _resolved_axes(result, _operator.index(axisc), "cross")[0]
+    if at != rank - 1:  # the vectors' axis where `axisc` puts it
         order = list(range(rank - 1))
         order.insert(at, rank - 1)
         result = _permuted(result, order)
@@ -7518,6 +7540,7 @@ __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "f
             "nanpercentile", "average", "cov", "corrcoef", "pad"]
 
 from numerical import fft  # noqa: E402  (the module numpy.fft's names live in, as numpy.fft is NumPy's)
+from numerical import linalg  # noqa: E402  (numpy.linalg's names, the root's functions)
 
 
 def _register_threadpoolctl(threadpoolctl):
