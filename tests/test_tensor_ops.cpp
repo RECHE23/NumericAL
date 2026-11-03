@@ -133,7 +133,7 @@ namespace {
     const C rounded_product {numerical::detail::numpy_multiply(x, y, false)};
     for (const bool scalar : {false, true}) {
       const numerical::detail::numpy_loops loops {.products = !scalar, .scalar_products = scalar, .quotients = scalar,
-                                                  .reductions = scalar};
+                                                  .reductions = scalar, .late_reductions = false};
       ok                                                      = ok && numerical::detail::numpy_multiply(one_one, one, loops).data()[0] == (scalar ? fused_product : rounded_product);
       ok                                                      = ok && numerical::detail::numpy_multiply(one_one, other_one, loops).data()[0] == (scalar ? rounded_product : fused_product);
       ok                                                      = ok && numerical::detail::numpy_divide(one_one, other_one, loops).data()[0] == numerical::detail::numpy_divide(x, y, scalar);
@@ -168,7 +168,7 @@ namespace {
     bool       ok       {fused != rounded};
     for (const bool reduction : {false, true}) {
       const numerical::detail::numpy_loops loops {.products = !reduction, .scalar_products = false, .quotients = false,
-                                                  .reductions = reduction};
+                                                  .reductions = reduction, .late_reductions = false};
       const C                    by_reduction    {reduction ? fused : rounded};
       const C                    by_vector       {reduction ? rounded : fused};
       const numerical::tensor<C> line            {{2}, numerical::buffer<C> {x, y}};
@@ -193,6 +193,20 @@ namespace {
     const numerical::tensor<C> empty_lines {numerical::detail::numpy_prod(numerical::zeros<C>({2, 0}), 1)};
     ok = ok && empty_lines.shape() == std::vector<std::size_t> {2} && empty_lines.data()[0] == one;
     ok = ok && numerical::detail::numpy_prod(numerical::zeros<C>({0, 2}), 1).size() == 0;
+    // MSVC's contraction of the reduction loop: the imaginary part's second product fused, ai·br + ar·bi (e² here
+    // where the other order and the rounded one give 0); a running product of two keeps the vector loop.
+    const C                              a     {R {1}, R {1} + e};
+    const C                              b     {-(R {1} - e), R {1}};
+    const numerical::detail::numpy_loops late  {.products = true, .scalar_products = true, .quotients = true,
+                                                .reductions = true, .late_reductions = true};
+    const numerical::tensor<C>           ab    {{2}, numerical::buffer<C> {a, b}};
+    ok = ok && numerical::detail::numpy_multiply_late(a, b).imag() != R {0};
+    ok = ok && numerical::detail::numpy_multiply(a, b, true).imag() == R {0};
+    ok = ok && numerical::detail::numpy_prod(ab, late) == numerical::detail::numpy_multiply_late(a, b);
+    ok = ok && numerical::detail::numpy_prod(ab, 0, late).data()[0] == numerical::detail::numpy_multiply_late(a, b);
+    ok = ok && numerical::detail::numpy_cumprod(ab, 0, late).data()[1] == numerical::detail::numpy_multiply(a, b, true);
+    const numerical::tensor<C> abb  {{3}, numerical::buffer<C> {a, b, one}};
+    ok = ok && numerical::detail::numpy_cumprod(abb, 0, late).data()[1] == numerical::detail::numpy_multiply_late(a, b);
     const numerical::tensor<C> pair {{2}, numerical::buffer<C> {x, y}};
     ok = ok && numerical::detail::numpy_prod(pair) == numerical::detail::numpy_multiply(x, y, numerical::detail::numpy_fuses_reductions());
     return ok;
@@ -903,7 +917,7 @@ namespace {
     const numerical::tensor<C>   three {std::vector<std::size_t> {}, numerical::buffer<C> {C {R {3}, R {0}}}};
     for (const bool fused : {false, true}) {
       const numerical::detail::numpy_loops loops {.products = fused, .scalar_products = !fused, .quotients = !fused,
-                                                  .reductions = !fused};
+                                                  .reductions = !fused, .late_reductions = false};
       ok                                                      = ok && numerical::detail::numpy_square(t, loops).data()[1] == numpy_multiply(wide, wide, fused);
       ok                                                      = ok && numerical::detail::numpy_reciprocal(t, loops).data()[1] == numpy_reciprocal(wide, !fused);
       ok                                                      = ok && numerical::detail::numpy_power(t, three, loops).data()[0] == numpy_power(a, C {R {3}, R {0}}, !fused);

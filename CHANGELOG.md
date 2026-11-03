@@ -13,7 +13,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`prod` and `cumprod` of complex numbers** multiply as NumPy's loops do, with no infinity recovered from a NaN
   (`(inf − inf·j) · 3` is NaN, where C's Annex G kept the infinities) and each product's multiply-adds fused as
   NumPy's loop for it fuses them, which the binding measures beside the NumPy it imports: its reduction loop along an
-  axis nothing follows and for a running product past two elements, its vector loop between slices.
+  axis nothing follows and for a running product past two elements (rounded on Linux, fused on macOS, fused on its
+  other product of the imaginary part on Windows from NumPy 2.5), its vector loop between slices.
 
 ### Added
 

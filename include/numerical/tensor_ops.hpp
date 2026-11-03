@@ -103,6 +103,19 @@ namespace numerical {
       return C {numpy_muladd(a.real(), b.real(), -ii, fused), numpy_muladd(a.real(), b.imag(), ir, fused)};
     }
 
+    //! \brief `a · b` of complex numbers as NumPy's reduction loop computes it where MSVC contracts it (its Windows
+    //!        wheels from 2.5): `ai·bi` and `ar·bi` rounded, then `ar·br − ai·bi` and `ai·br + ar·bi` each one fused
+    //!        multiply-add (the imaginary part's other product fused than in \ref numpy_multiply).
+    template <split_complex C>
+    [[nodiscard]] C numpy_multiply_late(const C& a,
+                                        const C& b)
+    {
+      using R = typename C::value_type;
+      const R ii {a.imag() * b.imag()};
+      const R ri {a.real() * b.imag()};
+      return C {std::fma(a.real(), b.real(), -ii), std::fma(a.imag(), b.real(), ri)};
+    }
+
     //! \brief \p x divided by +0, as IEEE divides it, spelled out: a NaN for a zero or a NaN, else an infinity of
     //!        \p x's sign (a division by a zero the compiler sees is MSVC's C4723 under /WX).
     template <std::floating_point R>
@@ -932,7 +945,18 @@ namespace numerical {
       bool scalar_products; //!< The product's scalar loop.
       bool quotients;       //!< The quotient (Smith's algorithm, a scalar loop).
       bool reductions;      //!< The product's reduction loop (\ref detail::numpy_fuses_reductions).
+      bool late_reductions; //!< Where it fuses, as \ref detail::numpy_multiply_late does (MSVC's contraction).
     };
+
+    //! \brief `a · b` as NumPy's reduction loop computes it, fused as \p loops says.
+    template <split_complex C>
+    [[nodiscard]] C numpy_reduction_multiply(const C&           a,
+                                             const C&           b,
+                                             const numpy_loops& loops)
+    {
+      return loops.reductions && loops.late_reductions ? numpy_multiply_late(a, b)
+                                                       : numpy_multiply(a, b, loops.reductions);
+    }
 
     //! \brief NumPy's loops as its current PyPI wheels build them on this processor (\ref detail::numpy_fuses_products,
     //!        \ref detail::numpy_fuses_scalar_products, \ref detail::numpy_fuses_quotients).
@@ -941,7 +965,8 @@ namespace numerical {
       return numpy_loops {.products        = detail::numpy_fuses_products(),
                           .scalar_products = detail::numpy_fuses_scalar_products(),
                           .quotients       = detail::numpy_fuses_quotients(),
-                          .reductions      = detail::numpy_fuses_reductions()};
+                          .reductions      = detail::numpy_fuses_reductions(),
+                          .late_reductions = false};
     }
 
     /*!
@@ -981,11 +1006,12 @@ namespace numerical {
                                        std::size_t        axis,
                                        const numpy_loops& loops = numpy_wheel_loops())
     {
-      const bool fused {walk_along(t.shape(), axis).inner == 1 ? loops.reductions : loops.products};
-      return reduce_along(t, axis, [fused](const C* first, std::size_t count, std::size_t stride) {
+      const bool reduction {walk_along(t.shape(), axis).inner == 1};
+      return reduce_along(t, axis, [reduction, &loops](const C* first, std::size_t count, std::size_t stride) {
                             C product {1};
                             for (std::size_t i {0}; i < count; ++i) {
-                              product = numpy_multiply(product, first[i * stride], fused);
+                              product = reduction ? numpy_reduction_multiply(product, first[i * stride], loops)
+                                                  : numpy_multiply(product, first[i * stride], loops.products);
                             }
                             return product;
                           });
@@ -999,7 +1025,7 @@ namespace numerical {
     {
       C product {1};
       for (const C& x : t.data()) {
-        product = numpy_multiply(product, x, loops.reductions);
+        product = numpy_reduction_multiply(product, x, loops);
       }
       return product;
     }
@@ -1652,8 +1678,10 @@ namespace numerical {
                                           std::size_t        axis,
                                           const numpy_loops& loops = numpy_wheel_loops())
     {
-      const bool fused {walk_along(t.shape(), axis).extent == 2 ? loops.products : loops.reductions};
-      return scan_along(t, axis, [fused](const C& running, const C& x) { return numpy_multiply(running, x, fused); });
+      const bool vector {walk_along(t.shape(), axis).extent == 2};
+      return scan_along(t, axis, [vector, &loops](const C& running, const C& x) {
+                          return vector ? numpy_multiply(running, x, loops.products) : numpy_reduction_multiply(running, x, loops);
+                        });
     }
 
     //! \brief Whether \p a sorts before \p b as NumPy sorts reals: ascending, NaNs last.

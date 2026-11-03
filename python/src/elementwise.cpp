@@ -120,6 +120,7 @@ PyObject* module_axis_op(PyObject* /*self*/, PyObject* args)
     if (a == nullptr) {
         return nullptr;
     }
+    const numerical::detail::numpy_loops loops {numpy_loops_beside()}; // read while the GIL is held
     try {
         return visit_arithmetic([&](const auto& t) -> PyObject* {
                                  if (axis < 0) {
@@ -127,20 +128,20 @@ PyObject* module_axis_op(PyObject* /*self*/, PyObject* args)
                                          PyErr_SetString(PyExc_ValueError, "_axis_op: an axis for cumsum, cumprod and sort");
                                          return nullptr;
                                      }
-                                     return from_scalar(prod_as_numpy(t));
+                                     return from_scalar(prod_as_numpy(t, loops));
                                  }
                                  const auto                along {static_cast<std::size_t>(axis)};
                                  std::optional<any_tensor> result;
                                  {
                                      const sb::scoped_gil_release unlocked {releases_gil(t.size())};
                                      if (name == "prod") {
-                                         result.emplace(prod_as_numpy(t, along));
+                                         result.emplace(prod_as_numpy(t, along, loops));
                                      }
                                      else if (name == "cumsum") {
                                          result.emplace(numerical::cumsum(t, along));
                                      }
                                      else if (name == "cumprod") {
-                                         result.emplace(cumprod_as_numpy(t, along));
+                                         result.emplace(cumprod_as_numpy(t, along, loops));
                                      }
                                      else {
                                          result.emplace(numerical::sort(t, along));

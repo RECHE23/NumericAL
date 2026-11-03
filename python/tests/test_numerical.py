@@ -183,7 +183,7 @@ class HighRanks(unittest.TestCase):
         try:
             pair = numerical.asarray(np.array([complex(1 + e, 1), complex(1 - e, 1)]))
             for fused, real in ((False, 0.0), (True, -(e * e))):
-                numerical._numerical._set_numpy_loops(fused, fused, fused, fused)
+                numerical._numerical._set_numpy_loops(fused, fused, fused, fused, False)
                 self.assertEqual(np.asarray(a * b)[0].real, real)
                 self.assertEqual(numerical.prod(pair).real, real)  # the reduction loop
         finally:

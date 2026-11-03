@@ -3455,9 +3455,12 @@ def _numpy_loops():
         scalar_products = np.multiply(np.array([[x]]), np.array([y]))[0, 0].real != 0  # one element, broadcast
         quotients = np.divide(np.array([complex(-(1 - 2.0**-29), r)]), np.array([complex(1, r)]))[0].real != 0
         reductions = np.multiply.reduce(np.array([x, y])).real != 0  # prod's and cumprod's loop: out its own operand
+        # its imaginary part ar·bi + ai·br is e² by MSVC's contraction (ai·br fused), 0 by the others' (ar·bi fused)
+        late = np.multiply.reduce(np.array([complex(1, 1 + e), complex(-(1 - e), 1)])).imag != 0
         # (inf + 0j) ** -1.0: 0 by the reciprocal a shortcut takes, NaN by the power (its 1 · inf is 0 · inf in part)
         _numpy_shortcuts_any_number = not np.isnan((np.array([complex(np.inf, 0.0)]) ** -1.0)[0].real)
-    _numerical._set_numpy_loops(bool(products), bool(scalar_products), bool(quotients), bool(reductions))
+    _numerical._set_numpy_loops(bool(products), bool(scalar_products), bool(quotients), bool(reductions),
+                                bool(reductions and late))
 
 
 def _arithmetic(op, reflected=False):
