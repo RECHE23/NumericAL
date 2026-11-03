@@ -1,8 +1,8 @@
-"""trapezoid, gradient, diagflat, indices, ix_, ravel_multi_index, unravel_index, correlate, convolve and
-fft.next_fast_len against NumPy's and SciPy's answers: to the bit, but for a trapezoid along an axis that is not the
-last (its sum pairwise per column, NumPy's row after row) and the correlations (each lag's sum in its terms' order,
-NumPy's in its BLAS's), within a few ulps there; with their errors. Deterministic; the comparisons skipped without
-NumPy."""
+"""trapezoid, gradient, diagflat, indices, ix_, ravel_multi_index, unravel_index, correlate, convolve, bincount,
+histogram, histogram_bin_edges and fft.next_fast_len against NumPy's and SciPy's answers: to the bit, but for a
+trapezoid along an axis that is not the last (its sum pairwise per column, NumPy's row after row) and the
+correlations (each lag's sum in its terms' order, NumPy's in its BLAS's), within a few ulps there; with their errors.
+Deterministic; the comparisons skipped without NumPy."""
 import math
 import unittest
 import warnings
@@ -14,6 +14,9 @@ try:
     import numpy as np
 except ImportError:
     np = None
+
+_NUMPY_2_3 = np is not None and tuple(int(part) for part in np.__version__.split(".")[:2]) >= (2, 3)
+_NUMPY_2_5 = np is not None and tuple(int(part) for part in np.__version__.split(".")[:2]) >= (2, 5)
 
 try:
     import scipy.fft as scipy_fft
@@ -43,6 +46,13 @@ class WithoutNumPy(unittest.TestCase):
         self.assertEqual(numerical.correlate([1j], [1j]).tolist(), [1 + 0j])
         self.assertEqual([numerical.fft.next_fast_len(n) for n in (0, 7, 13, 97)], [0, 7, 14, 98])
         self.assertEqual(numerical.fft.next_fast_len(13, real=True), 15)
+        self.assertEqual(numerical.bincount([0, 2, 2]).tolist(), [1, 0, 2])
+        self.assertEqual(numerical.bincount([1], weights=[0.5], minlength=3).tolist(), [0.0, 0.5, 0.0])
+        counts, edges = numerical.histogram([1.0, 2.0, 2.0, 4.0], bins=3)
+        self.assertEqual((counts.tolist(), edges.tolist()), ([1, 2, 1], [1.0, 2.0, 3.0, 4.0]))
+        self.assertEqual(numerical.histogram([1.0, 2.0], bins=[0.0, 1.5, 3.0], weights=[2.0, 3.0])[0].tolist(),
+                         [2.0, 3.0])
+        self.assertEqual(numerical.histogram_bin_edges([0.0, 1.0], bins=2).tolist(), [0.0, 0.5, 1.0])
 
     def test_errors(self):
         cases = [
@@ -65,6 +75,15 @@ class WithoutNumPy(unittest.TestCase):
             (ValueError, lambda: numerical.convolve([1.0], [])),
             (ValueError, lambda: numerical.correlate([[1.0]], [1.0])),
             (ValueError, lambda: numerical.fft.next_fast_len(-1)),
+            (ValueError, lambda: numerical.bincount([-1])),
+            (TypeError, lambda: numerical.bincount([1.5])),
+            (ValueError, lambda: numerical.histogram([1.0], bins=0)),
+            (ValueError, lambda: numerical.histogram([1.0], bins="best")),
+            (TypeError, lambda: numerical.histogram([1.0], bins="auto", weights=[1.0])),
+            (ValueError, lambda: numerical.histogram([1.0], bins=[2.0, 1.0])),
+            (ValueError, lambda: numerical.histogram([1.0], range=(2.0, 1.0))),
+            (ValueError, lambda: numerical.histogram([math.inf])),
+            (ValueError, lambda: numerical.histogram([1.0], weights=[1.0, 2.0])),
             (TypeError, lambda: numerical.fft.next_fast_len(2.0)),
         ]
         for error, call in cases:
@@ -178,6 +197,41 @@ class AgainstNumPy(unittest.TestCase):
                         self.assertSame(lambda: numerical.convolve(_tensor(a), _tensor(v), mode),
                                         lambda: np.convolve(a, v, mode), f"convolve {la} {lv} {kind} {mode}",
                                         kind != "int64")
+
+    def test_bincount_and_histogram(self):
+        rng = np.random.default_rng(14)
+        for x, options in (([0, 2, 2, 5], {}), ([0, 2], {"weights": [0.5, 1.5], "minlength": 4}), ([], {}),
+                           ([], {"minlength": 3}), ([True, False, True], {}), ([-1], {}), ([[1]], {}),
+                           ([1], {"minlength": -1}), ([1, 2], {"weights": [1.0]}), ([1], {"weights": [1j]}),
+                           (np.arange(10) % 3, {"weights": rng.normal(size=10)}),
+                           (np.array([3, 1]), {"weights": np.array([1, 2])})) + ((([1.5], {}),) if _NUMPY_2_5 else ()):
+            # a float list: a TypeError from NumPy 2.5 on, a warning before
+            self.assertSame(lambda: numerical.bincount(_tensor(x), **{k: _tensor(v) for k, v in options.items()}),
+                            lambda: np.bincount(x, **options), f"bincount {x} {options}")
+        for kind in ("float64", "float32", "int64"):
+            for size in (0, 1, 7, 1000, 70000):
+                a = rng.normal(size=size) * 3
+                a = np.round(a).astype(np.int64) if kind == "int64" else a.astype(kind)
+                w = rng.random(size)
+                for bins in (10, 1, 3, "auto", "fd", "doane", "rice", "scott", "sqrt", "sturges", "stone",
+                             np.array([-3.0, -1.0, 0.0, 0.5, 4.0]), [0, 1, 2], np.array([5.0, 1.0])):
+                    if isinstance(bins, str) and (bins == "stone" and size > 5000 or bins == "auto" and not _NUMPY_2_3):
+                        continue  # "auto" corrected by "sqrt" from NumPy 2.3 on
+                    edges = not isinstance(bins, (int, str))
+                    for limits in (None, (-1, 2), (0.0, 0.0), (2, 1)):
+                        for weights in (None, w, w.astype(np.float32), w + 1j * w):
+                            if weights is not None and edges and kind == "int64":
+                                continue  # equal values: their weights summed in another order (see differences.md)
+                            for density in (None, True):
+                                self.assertSame(
+                                    lambda: numerical.histogram(_tensor(a), _tensor(bins), limits, density,
+                                                                _tensor(weights)),
+                                    lambda: np.histogram(a, bins, limits, density, weights),
+                                    f"histogram {kind} {size} {bins} {limits} {density}")
+                    if isinstance(bins, str) and bins == "auto" and not _NUMPY_2_3:
+                        continue
+                    self.assertSame(lambda: numerical.histogram_bin_edges(_tensor(a), _tensor(bins)),
+                                    lambda: np.histogram_bin_edges(a, bins), f"histogram_bin_edges {kind} {size}")
 
     @unittest.skipIf(scipy_fft is None, "SciPy is not installed")
     def test_next_fast_len(self):

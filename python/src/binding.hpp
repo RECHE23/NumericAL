@@ -1648,6 +1648,9 @@ PyObject* module_nonzero(PyObject* /*self*/, PyObject* args); // in elementwise.
 // _count_nonzero(a, axis) -> int or Tensor: the nonzero elements of any tensor, every one (axis -1) or along an axis.
 PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
+// _bincount(x, weights, length) -> Tensor: the counts of an int64 vector's values, or their weights' sums in order.
+PyObject* module_bincount(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+
 // _searchsorted(a, v, right) -> Tensor: numerical::searchsorted of a sorted vector and values of one dtype (float,
 // complex or int64).
 PyObject* module_searchsorted(PyObject* /*self*/, PyObject* args); // in elementwise.cpp

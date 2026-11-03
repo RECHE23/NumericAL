@@ -8547,6 +8547,274 @@ def convolve(a, v, mode="full"):
 __all__ += ["trapezoid", "gradient", "diagflat", "indices", "ix_", "ravel_multi_index", "unravel_index", "correlate",
             "convolve"]
 
+def bincount(x, /, weights=None, minlength=0):
+    """How often each value 0, 1, … occurs in the non-negative integers `x`, as ``numpy.bincount``: at least
+    `minlength` of them (int64); or with `weights` (one per element, read as float64), each value's weights summed in
+    `x`'s order, as NumPy's loop adds them."""
+    values = _as_numpy_reads(x)
+    if values.shape == (0,) and not isinstance(x, Tensor) and not hasattr(x, "dtype"):
+        values = asarray(values, "int64")  # NumPy's: an empty list read as integers
+    if len(values.shape) != 1:
+        raise ValueError("object too deep for desired array" if values.shape else
+                         "object of too small depth for desired array")
+    if values.dtype not in ("int64", "bool"):
+        raise TypeError(f"Cannot cast array data from dtype('{values.dtype}') to dtype('int64') according to the rule "
+                        "'safe'")
+    values = asarray(values, "int64")
+    minlength = _operator.index(minlength)
+    if minlength < 0:
+        raise ValueError("'minlength' must not be negative")
+    if values.shape[0] and int(min(values)) < 0:
+        raise ValueError("'list' argument must have no negative elements")
+    length = _builtins.max(int(max(values)) + 1 if values.shape[0] else 0, minlength)
+    if weights is not None:
+        weights = _as_numpy_reads(weights)
+        if weights.dtype.startswith("complex"):
+            raise TypeError(f"Cannot cast array data from dtype('{weights.dtype}') to dtype('float64') according to "
+                            "the rule 'safe'")
+        weights = reshape(asarray(weights, "float64"), (-1,))
+        if weights.shape[0] != values.shape[0]:
+            raise ValueError("The weights and list don't have the same length.")
+    return _native(_numerical._bincount, values, weights, length)
+
+
+def _edge_value(value, dtype):
+    """An edge NumPy reads from the data: a scalar of the data's dtype, of full strength (a rank-0 tensor here)."""
+    return asarray(value, dtype)
+
+
+def _histogram_edges(a, range_):
+    """NumPy's ``_get_outer_edges``: `range_`'s ends (as given), or the data's least and greatest (of its dtype), a
+    half widened each way where they are equal."""
+    if range_ is not None:
+        first, last = range_
+        if first > last:
+            raise ValueError("max must be larger than min in range parameter.")
+        if not (_math.isfinite(first) and _math.isfinite(last)):
+            raise ValueError(f"supplied range of [{first}, {last}] is not finite")
+    elif a.shape[0] == 0:
+        first, last = 0, 1
+    else:
+        first, last = _edge_value(min(a), a.dtype), _edge_value(max(a), a.dtype)
+        if not (_math.isfinite(float(first)) and _math.isfinite(float(last))):
+            raise ValueError(f"autodetected range of [{float(first)}, {float(last)}] is not finite")
+    if bool(first == last):
+        first, last = first - 0.5, last + 0.5
+    return first, last
+
+
+def _scalar_dtype(value):
+    """NumPy's dtype of an edge: a tensor's own; a Python integer int64, a float float64 (``result_type`` of the
+    scalar alone)."""
+    if isinstance(value, Tensor):
+        return value.dtype
+    return "int64" if isinstance(value, _numbers.Integral) else "float64"
+
+
+def _difference(b, a):
+    """NumPy's ``_unsigned_subtract`` of two edges: ``b − a`` in their result dtype, an integer one through its
+    unsigned type (a Python integer here, exact), a float one a strong rank-0 tensor of that dtype."""
+    dtype = _promoted([_scalar_dtype(b), _scalar_dtype(a)])
+    if dtype in ("int64", "bool"):
+        return int(b) - int(a)
+    return asarray(b, dtype) - asarray(a, dtype)
+
+
+def _histogram_width(name, x, edges):
+    """The bin width of NumPy's estimator `name` for the data `x` (its ``_hist_bin_*``), in its dtypes: the data's
+    spread, deviation and percentiles of the data's dtype (a float32 one float32), NumPy's ``sqrt`` and ``log2`` of a
+    count float64, Python's numbers weak beside them."""
+    size = x.shape[0]
+    dtype = "float64" if x.dtype in ("int64", "bool") else x.dtype
+
+    def strong(value, of=dtype):  # a NumPy scalar of the dtype `of`: a rank-0 tensor
+        return asarray(value, of)
+    spread = _difference(_edge_value(max(x), x.dtype), _edge_value(min(x), x.dtype)) if size else 0
+    spread = strong(spread, "float64") if not isinstance(spread, Tensor) else spread  # an unsigned integer's
+    if name == "sqrt":
+        return spread / strong(_math.sqrt(size), "float64")
+    if name == "sturges":
+        return spread / (strong(_math.log2(size), "float64") + 1.0)
+    if name == "rice":
+        return spread / (2.0 * size ** (1.0 / 3))
+    if name == "scott":
+        return (24.0 * _math.pi ** 0.5 / size) ** (1.0 / 3.0) * strong(std(x))
+    if name == "fd":
+        quartiles = percentile(x, [75, 25])
+        return 2.0 * reshape(quartiles[0:1] - quartiles[1:2], ()) * size ** (-1.0 / 3.0)
+    if name == "doane":
+        if size > 2:
+            sg1 = _math.sqrt(6.0 * (size - 2) / ((size + 1.0) * (size + 3)))
+            sigma = strong(std(x))
+            if float(sigma) > 0.0:
+                g1 = strong(mean(power((x - strong(mean(x))) / sigma, 3)))
+                return spread / (1.0 + strong(_math.log2(size), "float64") + log2(1.0 + abs(g1) / sg1))
+        return 0.0
+    if name == "stone":
+        if size <= 1 or float(spread) == 0:
+            return 0
+        upper = _builtins.max(100, int(_math.sqrt(size)))
+
+        def jhat(count):
+            shares = histogram(x, bins=count, range=edges)[0] / size
+            return (2 - (size + 1) * float(dot(shares, shares))) / (float(spread) / count)
+        best = _builtins.min(_builtins.range(1, upper + 1), key=jhat)
+        if best == upper:
+            _warnings.warn("The number of bins estimated may be suboptimal.", RuntimeWarning, stacklevel=4)
+        return spread / best
+    fd, sturges, root = (_histogram_width(other, x, edges) for other in ("fd", "sturges", "sqrt"))  # "auto"
+    corrected = fd if float(fd) >= float(root / 2) else root / 2  # Python's max and min: the first of equals
+    return corrected if float(corrected) <= float(sturges) else sturges
+
+
+_HISTOGRAM_ESTIMATORS = ("stone", "auto", "doane", "fd", "rice", "scott", "sqrt", "sturges")
+
+
+def _histogram_bins(a, bins, range_, weights):
+    """NumPy's ``_get_bin_edges``: the bin edges, and for equal bins their first and last edge and count."""
+    count = None
+    if isinstance(bins, str):
+        if bins not in _HISTOGRAM_ESTIMATORS:
+            raise ValueError(f"{bins!r} is not a valid estimator for `bins`")
+        if weights is not None:
+            raise TypeError("Automated estimation of the number of bins is not supported for weighted data")
+        first, last = _histogram_edges(a, range_)
+        if range_ is not None:
+            keep = (a >= first) & (a <= last)
+            if not all(keep):
+                a = a[keep]
+        if a.shape[0] == 0:
+            count = 1
+        else:
+            width = _histogram_width(bins, a, (first, last))
+            if float(width):
+                if a.dtype == "int64" and float(width) < 1:
+                    width = 1
+                delta = _difference(last, first)  # a Python integer for integer edges: NumPy's unsigned one
+                ratio = delta / width
+                count = int(_math.ceil(float(ratio)))
+            else:
+                count = 1
+    elif not shape(bins):
+        try:
+            count = _operator.index(bins)
+        except TypeError as error:
+            raise TypeError("`bins` must be an integer, a string, or an array") from error
+        if count < 1:
+            raise ValueError("`bins` must be positive, when an integer")
+        first, last = _histogram_edges(a, range_)
+    elif len(shape(bins)) == 1:
+        edges = _as_numpy_reads(bins)
+        if edges.shape[0] > 1 and any(edges[:-1] > edges[1:]):
+            raise ValueError("`bins` must increase monotonically, when an array")
+        return edges, None
+    else:
+        raise ValueError("`bins` must be 1d, when an array")
+    dtype = _result_dtype(first if isinstance(first, Tensor) else first, last, a)
+    dtype = "float64" if dtype in ("int64", "bool") else dtype
+    edges = linspace(first, last, count + 1, endpoint=True, dtype=dtype)
+    if edges.shape[0] > 1 and any(edges[:-1] >= edges[1:]):
+        raise ValueError(f"Too many bins for data range. Cannot create {count} finite-sized bins.")
+    return edges, (first, last, count)
+
+
+def _histogram_operands(a, weights):
+    a = _as_numpy_reads(a)
+    if a.dtype == "bool":
+        _warnings.warn("Converting input from bool to <class 'numpy.uint8'> for compatibility.", RuntimeWarning,
+                       stacklevel=3)
+        a = asarray(a, "int64")
+    if weights is not None:
+        weights = _as_numpy_reads(weights)
+        if weights.shape != a.shape:
+            raise ValueError("weights should have the same shape as a.")
+        weights = reshape(weights, (-1,))
+    return reshape(a, (-1,)), weights
+
+
+def histogram_bin_edges(a, bins=10, range=None, weights=None):
+    """The edges of :func:`histogram`'s bins, as ``numpy.histogram_bin_edges``."""
+    a, weights = _histogram_operands(a, weights)
+    return _histogram_bins(a, bins, range, weights)[0]
+
+
+def histogram(a, bins=10, range=None, density=None, weights=None):
+    """The histogram of `a` flattened, as ``numpy.histogram`` by its steps: `bins` equal ones (an integer, or one of
+    NumPy's estimators by name: "auto", "fd", "doane", "rice", "scott", "sqrt", "sturges", "stone") over `range` (the
+    data's least to greatest by default), or between the edges `bins`; the counts (int64), or the sums of `weights`
+    (their dtype), or a density where `density`; each half-open bin but the last, closed. Returns ``(hist,
+    bin_edges)``.
+
+    Examples:
+        >>> import numerical
+        >>> counts, edges = numerical.histogram([1.0, 2.0, 2.0, 4.0], bins=3)
+        >>> counts.tolist(), edges.tolist()
+        ([1, 2, 1], [1.0, 2.0, 3.0, 4.0])
+    """
+    a, weights = _histogram_operands(a, weights)
+    edges, uniform = _histogram_bins(a, bins, range, weights)
+    total = "int64" if weights is None else weights.dtype
+    block = 65536
+    if uniform is not None:
+        first, last, count = uniform
+        n = zeros((count,), total)
+        span = _difference(last, first)
+        span = span if isinstance(span, Tensor) else asarray(span, "float64")  # NumPy's unsigned integer: a float
+        for start in _builtins.range(0, a.shape[0], block):
+            part = a[start:start + block]
+            part_weights = None if weights is None else weights[start:start + block]
+            keep = (part >= first) & (part <= last)
+            if not all(keep):
+                part = part[keep]
+                if part_weights is not None:
+                    part_weights = part_weights[keep]
+            part = asarray(part, edges.dtype)
+            offset = _difference(part, first) if not isinstance(first, Tensor) else part - first
+            index = asarray(offset / span * count, "int64")
+            index = where(index == count, index - 1, index)
+            index = where(part < edges[index], index - 1, index)
+            index = where((part >= edges[index + 1]) & (index != count - 1), index + 1, index)
+            if total.startswith("complex"):
+                parts = [asarray(bincount(index, weights=f(part_weights), minlength=count), _realpart(total))
+                         for f in (real, imag)]
+                n = n + _from_parts(*parts)
+            elif part_weights is None:
+                n = n + bincount(index, minlength=count)
+            else:
+                n = n + asarray(bincount(index, weights=part_weights, minlength=count), total)
+    else:
+        cumulative = zeros(edges.shape, total)
+        for start in _builtins.range(0, a.shape[0], block):
+            part = a[start:start + block]
+            common = _promoted([part.dtype, edges.dtype])
+            if weights is None:
+                ordered = asarray(sort(part), common)
+                found = _inclusive_search(ordered, asarray(edges, common))
+                cumulative = cumulative + found
+            else:
+                order = argsort(part)
+                ordered = asarray(part[order], common)
+                sums = concatenate([zeros((1,), total), cumsum(weights[start:start + block][order])])
+                cumulative = cumulative + sums[_inclusive_search(ordered, asarray(edges, common))]
+        n = cumulative[1:] - cumulative[:-1]
+    if density:
+        widths = asarray(edges[1:] - edges[:-1], "float64")
+        return n / widths / sum(n), edges
+    return n, edges
+
+
+def _realpart(dtype):
+    return "float32" if dtype == "complex64" else "float64"
+
+
+def _inclusive_search(ordered, edges):
+    """NumPy's ``_search_sorted_inclusive``: where each edge goes in `ordered`, the last one past its equals."""
+    return concatenate([searchsorted(ordered, edges[:-1], side="left"), searchsorted(ordered, edges[-1:],
+                                                                                    side="right")])
+
+
+__all__ += ["bincount", "histogram", "histogram_bin_edges"]
+
 pi = _math.pi
 e = _math.e
 inf = _math.inf

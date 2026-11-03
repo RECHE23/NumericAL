@@ -52,6 +52,8 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
   through float64 (not exact past 2⁵³).
 - **`sort`** keeps equal elements in their order whatever `kind`; NumPy's default sort may order them otherwise, which
   only a zero's sign or a NaN's payload shows.
+  A `histogram` with weights between given edges sums the weights of equal values in their order too; NumPy's, in
+  its sort's, which can move a last bit.
 - **`insert` before a list of bools** inserts before each true position, as NumPy does for a bool array; NumPy 2.4
   raises AttributeError for a list (it asks the list for its rank).
 - **`nanquantile` and `nanpercentile` with weights of the axis's shape** answer as with those weights broadcast to

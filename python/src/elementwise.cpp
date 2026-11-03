@@ -587,6 +587,54 @@ PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _bincount(x, weights, length) -> Tensor: how often each value 0 … length − 1 occurs in the int64 vector x (none
+// negative, none past length − 1: the caller's checks), an int64 tensor; or with float64 weights (x's length), each
+// value's weights summed in x's order, as NumPy's loop adds them, a float64 one.
+PyObject* module_bincount(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  x       = nullptr;
+    PyObject*  w       = nullptr;
+    Py_ssize_t length  = 0;
+    if (PyArg_ParseTuple(args, "OOn", &x, &w, &length) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    const auto* values = std::get_if<numerical::tensor<std::int64_t>>(a);
+    if (values == nullptr || values->rank() != 1 || length < 0) {
+        PyErr_SetString(PyExc_ValueError, "_bincount: an int64 vector and a non-negative length");
+        return nullptr;
+    }
+    const auto size = static_cast<std::size_t>(length);
+    try {
+        if (w == Py_None) {
+            numerical::buffer<std::int64_t> counts(size, 0);
+            for (const std::int64_t v : values->data()) {
+                ++counts[static_cast<std::size_t>(v)];
+            }
+            return wrap(any_tensor {numerical::tensor<std::int64_t> {{size}, std::move(counts)}});
+        }
+        const any_tensor* b       = as_tensor(w);
+        const auto*       weights = b == nullptr ? nullptr : std::get_if<numerical::tensor<double>>(b);
+        if (weights == nullptr || weights->size() != values->size()) {
+            if (b != nullptr) {
+                PyErr_SetString(PyExc_ValueError, "_bincount: float64 weights, one per value");
+            }
+            return nullptr;
+        }
+        numerical::buffer<double> sums(size, 0.0);
+        for (std::size_t i {0}; i < values->size(); ++i) {
+            sums[static_cast<std::size_t>(values->data()[i])] += weights->data()[i];
+        }
+        return wrap(any_tensor {numerical::tensor<double> {{size}, std::move(sums)}});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _searchsorted(a, v, right) -> Tensor.
 PyObject* module_searchsorted(PyObject* /*self*/, PyObject* args)
 {

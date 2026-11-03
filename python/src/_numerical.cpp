@@ -144,6 +144,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_argsort", module_argsort, METH_VARARGS, "_argsort(a, axis) -> Tensor\nThe indices that sort a along an axis, stably.");
     m.raw("_nonzero", module_nonzero, METH_VARARGS, "_nonzero(a) -> tuple\nThe indices of the nonzero elements, one int64 Tensor per axis.");
     m.raw("_count_nonzero", module_count_nonzero, METH_VARARGS, "_count_nonzero(a, axis) -> int or Tensor\nThe nonzero elements, counted.");
+    m.raw("_bincount", module_bincount, METH_VARARGS, "_bincount(x, weights, length) -> Tensor\nThe counts of x's values, or their weights' sums.");
     m.raw("_searchsorted", module_searchsorted, METH_VARARGS, "_searchsorted(a, v, right) -> Tensor\nWhere v's elements go in the sorted vector a.");
     m.raw("_real_unary", module_real_unary, METH_VARARGS, "_real_unary(name, a) -> Tensor\nA real elementary function of every element.");
     m.raw("_real_binary", module_real_binary, METH_VARARGS,

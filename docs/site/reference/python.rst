@@ -261,6 +261,9 @@ Reductions, scans and sorting
 .. autofunction:: numerical.setxor1d
 .. autofunction:: numerical.isin
 .. autofunction:: numerical.digitize
+.. autofunction:: numerical.bincount
+.. autofunction:: numerical.histogram
+.. autofunction:: numerical.histogram_bin_edges
 .. autofunction:: numerical.diff
 .. autofunction:: numerical.gradient
 .. autofunction:: numerical.trapezoid

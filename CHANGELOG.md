@@ -49,6 +49,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **Calculus, grids and signals**: `trapezoid`, `gradient` (second-order inside, first- or second-order ends,
   spacings by axis), `diagflat`, `indices`, `ix_`, `ravel_multi_index`, `unravel_index`, `correlate` and `convolve`,
   as NumPy's; `fft.next_fast_len`, as SciPy's.
+- **`bincount`, `histogram` and `histogram_bin_edges`**, as NumPy's by its steps: equal bins (a count, or one of
+  its eight estimators) or given edges, weights (their sums in NumPy's order), densities.
 
 ### Changed
 
