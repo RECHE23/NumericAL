@@ -62,6 +62,7 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
 - **`partition` and `argpartition`** sort each line, one of the arrangements NumPy's allows (the element at each
   `kth` the sorted one, none larger before it, none smaller after); NumPy's own leaves the rest in an order it does
   not specify.
+- **`bitwise_count` answers int64**, NumPy's uint8 (NumericAL has no unsigned dtype).
 - **`frexp`'s exponents are int64**, NumPy's int32, and 0 for an infinity or a NaN, where NumPy's are its C
   library's (0 from glibc and macOS, −1 from MSVC); `empty` gives zeros (no element of a Tensor is ever unset).
 - **Floating-point warnings.** An invalid operation, a division by zero or an overflow answers IEEE 754's NaN or

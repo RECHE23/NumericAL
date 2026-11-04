@@ -37,6 +37,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **The array API's namespace**: a Tensor's `__array_namespace__()` is `numerical` (so `array_api_compat` and the
   array API support of SciPy and scikit-learn find it), with `isdtype`, `result_type`, `can_cast`, `empty`,
   `from_dlpack` and `__array_namespace_info__()`, as the standard's 2024.12 revision and NumPy's.
+- **The integers' bit operations**: `bitwise_and`, `bitwise_or`, `bitwise_xor`, `invert` (`bitwise_not`,
+  `bitwise_invert`), `left_shift` and `right_shift` (with their array API names), `gcd`, `lcm` and
+  `bitwise_count`, and a Tensor's `&`, `|`, `^`, `~`, `<<` and `>>` on int64, as NumPy's: shifts by 64 places or
+  more give 0 (−1 to the right of a negative number), INT64_MIN's magnitude wraps.
 - **More of NumPy's root**: `array` (`ndmin`), `asanyarray`, `ascontiguousarray`, `exp2`, `ldexp`, `frexp`, `modf`,
   `spacing`, `fix`, `sinc`, `lexsort`, `partition` and `argpartition` (a sort, one of the arrangements NumPy allows),
   `apply_along_axis`, `fromfunction`, `fromiter`, `rollaxis`, `real_if_close`, `sort_complex`, `array_equiv` and
@@ -48,13 +52,16 @@ A change that can break code is listed under **Breaking** and held for a month's
   the same rank in the line's order, which a stable sort would have put there: the same bits) where they sorted each
   line: `median` of 10⁶ 104 → 11 ms (NumPy: 10), of 1,000 lines of 1,000 3 ms (NumPy: 10, `nanmedian` 18). More
   than eight positions a line are still read from a sort.
+- **`nonzero`** writes its indices without a branch and without a division by element (each chunk walks them as an
+  odometer): 10⁶ elements, half of them zeros, on one thread of an x86-64 processor 10.5 → 3.8 ms (NumPy: 6.6), of a
+  1,000 × 1,000 matrix 17 → 5.3 ms (NumPy: 9.1).
 - **`take` and indexing by an int64 Tensor** run natively: `take` of 10⁶ indices 947 → 4.4 ms (NumPy: 5.5), `t[i]`
   83 → 3.2 ms; `isin` and `histogram`, which index so, follow.
 
 ### Development
 
 - **`fuzz/npdiff.py`** (`make fuzz-numpy`): NumPy's functions composed in Python against NumPy on drawn values, shapes
-  and options, 24 families; a fixed seed before each push, a fresh one before each release and every week. The
+  and options, 25 families; a fixed seed before each push, a fresh one before each release and every week. The
   weekly long fuzz takes 3.5 hours at most per architecture, so that its five campaigns fit the job's limit.
 
 ## 2026.11.5 — 2026-11-04

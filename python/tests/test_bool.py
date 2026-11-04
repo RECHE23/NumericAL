@@ -144,7 +144,7 @@ class Logical(unittest.TestCase):
             for x, y in ((a, f), (f, a), (a, 1.0), (a, [1.0, 0.0, 1.0])):
                 with self.subTest(op=op.__name__, x=type(x).__name__, y=type(y).__name__), self.assertRaises(TypeError):
                     op(x, y)
-        with self.assertRaisesRegex(TypeError, "bool tensors, not float64"):
+        with self.assertRaisesRegex(TypeError, "integers or bools, not float64"):
             ~f
 
     def test_the_logical_functions_read_any_number_as_its_truth(self):

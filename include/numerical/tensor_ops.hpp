@@ -2115,8 +2115,10 @@ namespace numerical {
 
   /*!
    * \brief The indices of the nonzero elements (`x != T {}`: a NaN is one), one tensor per axis, in C order, as
-   *        `numpy.nonzero`: by chunks on the threads, each chunk's counted, then its flat places written at its
-   *        offset, then each axis' index of every place.
+   *        `numpy.nonzero`: by chunks on the threads, each chunk's counted, then its indices written at its offset.
+   *        A chunk walks its elements' indices as an odometer (one division per axis at its start, none after) and
+   *        writes every element's, the place advancing by one where it is nonzero, without a branch; into a buffer of
+   *        its own, whose last write may run one past its part.
    */
   template <typename T>
   [[nodiscard]] std::vector<tensor<std::int64_t>> nonzero(const tensor<T>& t)
@@ -2124,6 +2126,7 @@ namespace numerical {
     const std::vector<std::size_t>& shape  {t.shape()};
     const T* const                  data   {t.data().data()};
     const std::size_t               count  {t.size()};
+    const std::size_t               rank   {shape.size()};
     const std::size_t               chunk  {detail::elementwise_chunk};
     const std::size_t               chunks {(count + chunk - 1) / chunk};
     std::vector<std::size_t>        offsets(chunks + 1, 0);
@@ -2132,29 +2135,43 @@ namespace numerical {
                            offsets[c + 1] = static_cast<std::size_t>(std::count_if(data + (c * chunk), data + last, [](const T& x) { return x != T {}; }));
                          });
     std::partial_sum(offsets.begin(), offsets.end(), offsets.begin());
-    const std::size_t   found {offsets.back()};
-    buffer<std::size_t> places(found);
-    detail::parallel_for(chunks, chunk, [&](std::size_t c) {
-                           const std::size_t last {std::min((c + 1) * chunk, count)};
-                           std::size_t       at {offsets[c]};
-                           for (std::size_t k {c * chunk}; k < last; ++k) {
-                             if (data[k] != T {}) {
-                               places[at++] = k;
+    const std::size_t                 found {offsets.back()};
+    std::vector<buffer<std::int64_t>> out(rank);
+    for (buffer<std::int64_t>& axis_out : out) {
+      axis_out = buffer<std::int64_t>(found);
+    }
+    detail::parallel_for(chunks, chunk * rank, [&](std::size_t c) {
+                           const std::size_t        first {c * chunk};
+                           const std::size_t        last  {std::min(first + chunk, count)};
+                           const std::size_t        span  {last - first + 1}; // one past the part: the last write's
+                           buffer<std::int64_t>     scratch(span * rank);
+                           std::vector<std::size_t> coordinate(rank);
+                           std::size_t              rest  {first};
+                           for (std::size_t a {rank}; a-- > 0;) {
+                             coordinate[a] = rest % shape[a];
+                             rest         /= shape[a];
+                           }
+                           std::size_t at {0};
+                           for (std::size_t k {first}; k < last; ++k) {
+                             for (std::size_t a {0}; a < rank; ++a) {
+                               scratch[(a * span) + at] = static_cast<std::int64_t>(coordinate[a]);
                              }
+                             at += static_cast<std::size_t>(data[k] != T {});
+                             for (std::size_t a {rank}; a-- > 0;) { // the next element's indices
+                               if (++coordinate[a] < shape[a]) {
+                                 break;
+                               }
+                               coordinate[a] = 0;
+                             }
+                           }
+                           for (std::size_t a {0}; a < rank; ++a) {
+                             std::copy_n(scratch.data() + (a * span), at, out[a].data() + offsets[c]);
                            }
                          });
     std::vector<tensor<std::int64_t>> indices;
-    indices.reserve(shape.size());
-    std::size_t stride {count};
-    for (const std::size_t extent : shape) {
-      if (found == 0) { // nothing found, an empty extent maybe: no place to divide
-        indices.emplace_back(std::vector<std::size_t> {0}, buffer<std::int64_t> {});
-        continue;
-      }
-      stride /= extent;
-      indices.push_back(detail::parallel_map(places.data(), {found}, [stride, extent](std::size_t place) {
-                                               return static_cast<std::int64_t>((place / stride) % extent);
-                                             }));
+    indices.reserve(rank);
+    for (buffer<std::int64_t>& axis_out : out) {
+      indices.emplace_back(std::vector<std::size_t> {found}, std::move(axis_out));
     }
     return indices;
   }

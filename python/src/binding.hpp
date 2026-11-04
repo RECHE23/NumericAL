@@ -1664,6 +1664,7 @@ PyObject* module_bincount(PyObject* /*self*/, PyObject* args); // in elementwise
 PyObject* module_searchsorted(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_real_unary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_real_binary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+PyObject* module_bitwise(PyObject* /*self*/, PyObject* args);     // in elementwise.cpp
 PyObject* module_nan_to_num(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_round(PyObject* /*self*/, PyObject* args);      // in elementwise.cpp
 

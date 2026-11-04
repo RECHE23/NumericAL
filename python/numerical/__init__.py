@@ -782,16 +782,46 @@ def _boolean(value):
 
 
 def _logical(op, reflected=False):
-    """The Tensor method for ``&``, ``|`` or ``^`` (`op`) of bool tensors, broadcast; NotImplemented for another
-    operand or dtype, as Python then raises TypeError (NumPy's bitwise operators take no float)."""
+    """The Tensor method for ``&``, ``|`` or ``^`` (`op`) of bool tensors, broadcast, or of integers (an int64
+    tensor, a bool one beside it, a Python int) bit by bit; NotImplemented for another operand or dtype, as Python
+    then raises TypeError (NumPy's bitwise operators take no float)."""
 
     def method(self, other):
         a, b = _boolean(self), _boolean(other)
         if a is None or b is None:
-            return NotImplemented
+            pair = _bit_operands(self, other)
+            if pair is None:
+                return NotImplemented
+            return _native(_numerical._bitwise, op, *(pair[::-1] if reflected else pair))
         return _native(_numerical._logical, op, *((b, a) if reflected else (a, b)))
 
     return method
+
+
+def _bit_integers(x):
+    """`x` as an int64 tensor where NumPy's bit operations read it as integers (an int64 or bool tensor, a Python int
+    or bool, an integer list or NumPy array), else None."""
+    if isinstance(x, Tensor):
+        return x if x.dtype == "int64" else asarray(x, "int64") if x.dtype == "bool" else None
+    if isinstance(x, (bool, int)) or type(x).__name__ in ("bool", "bool_") or (
+            type(x).__module__ == "numpy" and getattr(x, "dtype", None) is not None and x.dtype.kind in "biu"):
+        return asarray(int(x) if getattr(x, "shape", ()) == () else x, "int64")
+    if isinstance(x, (list, tuple)):
+        flat, _ = _nested(x)
+        if _builtins.all(isinstance(v, _numbers.Integral) for v in flat):
+            return _index_tensor(x, "bitwise")
+    return None
+
+
+def _dtype_of_operand(x):
+    """The dtype a refused operand of a bit operation would have, for its error message."""
+    return x.dtype if isinstance(x, Tensor) else str(getattr(x, "dtype", type(x).__name__))
+
+
+def _bit_operands(x1, x2):
+    """Two operands as int64 tensors for a bit operation, or None where either is no integer."""
+    a, b = _bit_integers(x1), _bit_integers(x2)
+    return None if a is None or b is None else (a, b)
 
 
 _REPR_EDGE = 3        # elements kept at each end of a summarised axis
@@ -868,7 +898,11 @@ for _name, _op in (("and", "&"), ("or", "|"), ("xor", "^")):
     setattr(Tensor, f"__{_name}__", _logical(_op))
     setattr(Tensor, f"__r{_name}__", _logical(_op, reflected=True))
 del _name, _op
-Tensor.__invert__ = lambda self: _numerical._invert(self)
+Tensor.__invert__ = lambda self: _numerical._invert(self) if self.dtype == "bool" else invert(self)
+Tensor.__lshift__ = lambda self, other: left_shift(self, other)
+Tensor.__rlshift__ = lambda self, other: left_shift(other, self)
+Tensor.__rshift__ = lambda self, other: right_shift(self, other)
+Tensor.__rrshift__ = lambda self, other: right_shift(other, self)
 Tensor.__hash__ = None  # unhashable, as a NumPy array: equality is element-wise
 
 _cholesky = _linalg(_numerical.cholesky, arrays=1)
@@ -9707,6 +9741,65 @@ def __array_namespace_info__():
 
 
 __all__ += ["isdtype", "result_type", "can_cast", "empty", "from_dlpack", "__array_namespace_info__"]
+
+
+def _bitwise_function(op, name, doc, logical=None):
+    """NumPy's bit operation `name` (`op` of ``_numerical._bitwise``) of two integer operands, broadcast: bools alone
+    by `logical` where NumPy keeps them bool; int64 otherwise; TypeError for a float or a complex."""
+    def function(x1, x2, /):
+        if logical is not None and _boolean(x1) is not None and _boolean(x2) is not None:
+            return logical(x1, x2)
+        pair = _bit_operands(x1, x2)
+        if pair is None:
+            raise TypeError(f"ufunc '{name}' takes integers or bools, not {_dtype_of_operand(x1)} and "
+                            f"{_dtype_of_operand(x2)}")
+        return _native(_numerical._bitwise, op, *pair)
+
+    function.__name__ = name
+    function.__doc__ = doc
+    return function
+
+
+bitwise_and = _bitwise_function("&", "bitwise_and", """Each pair of integers' bits and-ed, as ``numpy.bitwise_and``
+    (``&``): int64 (two bool operands: their logical and).""", logical_and)
+bitwise_or = _bitwise_function("|", "bitwise_or", """Each pair of integers' bits or-ed, as ``numpy.bitwise_or`` (``|``):
+    int64 (two bool operands: their logical or).""", logical_or)
+bitwise_xor = _bitwise_function("^", "bitwise_xor", """Each pair of integers' bits xor-ed, as ``numpy.bitwise_xor``
+    (``^``): int64 (two bool operands: their logical xor).""", logical_xor)
+left_shift = _bitwise_function("<", "left_shift", """Each integer's bits shifted left by the other's count, as
+    ``numpy.left_shift`` (``<<``): int64, wrapping; by 64 or more (or a negative count), 0.""")
+right_shift = _bitwise_function(">", "right_shift", """Each integer's bits shifted right by the other's count, its
+    sign kept, as ``numpy.right_shift`` (``>>``): int64; by 64 or more (or a negative count), 0 or −1.""")
+gcd = _bitwise_function("g", "gcd", """The greatest common divisor of each pair of integers, as ``numpy.gcd``
+    (non-negative; ``gcd(INT64_MIN, 0)`` wraps to INT64_MIN, as NumPy's).""")
+lcm = _bitwise_function("l", "lcm", """The least common multiple of each pair of integers, as ``numpy.lcm``
+    (non-negative, wrapping; 0 where either is).""")
+bitwise_left_shift, bitwise_right_shift = left_shift, right_shift
+
+
+def invert(x, /):
+    """Each integer's bits flipped (``~x = −x − 1``), as ``numpy.invert``; a bool's negation."""
+    if _boolean(x) is not None:
+        return logical_not(x)
+    a = _bit_integers(x)
+    if a is None:
+        raise TypeError(f"ufunc 'invert' takes integers or bools, not {_dtype_of_operand(x)}")
+    return _native(_numerical._bitwise, "^", a, asarray(-1, "int64"))
+
+
+bitwise_not = bitwise_invert = invert
+
+
+def bitwise_count(x, /):
+    """The number of 1 bits of each integer's magnitude, as ``numpy.bitwise_count``: int64, where NumPy's is uint8."""
+    a = _bit_integers(x)
+    if a is None:
+        raise TypeError(f"ufunc 'bitwise_count' takes integers or bools, not {_dtype_of_operand(x)}")
+    return _native(_numerical._bitwise, "c", a, a)
+
+
+__all__ += ["bitwise_and", "bitwise_or", "bitwise_xor", "left_shift", "right_shift", "bitwise_left_shift",
+            "bitwise_right_shift", "gcd", "lcm", "invert", "bitwise_not", "bitwise_invert", "bitwise_count"]
 
 
 def array(object, dtype=None, *, copy=True, ndmin=0):

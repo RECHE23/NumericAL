@@ -154,6 +154,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_bincount", module_bincount, METH_VARARGS, "_bincount(x, weights, length) -> Tensor\nThe counts of x's values, or their weights' sums.");
     m.raw("_searchsorted", module_searchsorted, METH_VARARGS, "_searchsorted(a, v, right) -> Tensor\nWhere v's elements go in the sorted vector a.");
     m.raw("_real_unary", module_real_unary, METH_VARARGS, "_real_unary(name, a) -> Tensor\nA real elementary function of every element.");
+    m.raw("_bitwise", module_bitwise, METH_VARARGS,
+          "_bitwise(op, a, b) -> Tensor\nTwo int64 tensors' & | ^, shifts (< >), gcd (g), lcm (l) or bit counts (c).");
     m.raw("_real_binary", module_real_binary, METH_VARARGS,
           "_real_binary(name, a, b) -> Tensor\nA real binary function of two tensors of one dtype, element by element, broadcast.");
     m.raw("_nan_to_num", module_nan_to_num, METH_VARARGS,

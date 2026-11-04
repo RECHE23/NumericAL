@@ -1,7 +1,9 @@
 // NumericAL — Python extension module: the element-wise arithmetic and functions, the reductions and the norms (their
 // helpers in binding.hpp).
 
+#include <bit>
 #include <numbers>
+#include <numeric>
 
 #include "binding.hpp"
 
@@ -396,6 +398,111 @@ namespace {
         return broadcast_apply(a, b, [](R x, R y) { return heaviside_step(x, y); });
     }
 } // namespace
+
+namespace {
+    //! NumPy's shifts of int64: by 64 places or more (a negative count among them, as its unsigned reading),
+    //! every bit shifted out (0, or −1 to the right of a negative number); computed on the unsigned bits, which
+    //! wrap as NumPy's.
+    std::int64_t shifted_left(std::int64_t x, std::int64_t n)
+    {
+        return static_cast<std::uint64_t>(n) < 64 ? static_cast<std::int64_t>(static_cast<std::uint64_t>(x) << n) : 0;
+    }
+
+    std::int64_t shifted_right(std::int64_t x, std::int64_t n)
+    {
+        if (static_cast<std::uint64_t>(n) < 64) {
+            return x >> n; // arithmetic, as C++20 defines it
+        }
+        return x < 0 ? -1 : 0;
+    }
+
+    //! The magnitude of \p x as an unsigned number: INT64_MIN's 2⁶³ held.
+    std::uint64_t magnitude(std::int64_t x)
+    {
+        return x < 0 ? std::uint64_t {0} - static_cast<std::uint64_t>(x) : static_cast<std::uint64_t>(x);
+    }
+
+    //! NumPy's gcd of int64: of the magnitudes, wrapped back (gcd(INT64_MIN, 0) is INT64_MIN, as NumPy's).
+    std::int64_t greatest_divisor(std::int64_t x, std::int64_t y)
+    {
+        return static_cast<std::int64_t>(std::gcd(magnitude(x), magnitude(y)));
+    }
+
+    //! NumPy's lcm of int64: |x / gcd · y|, wrapped; 0 where either is.
+    std::int64_t least_multiple(std::int64_t x, std::int64_t y)
+    {
+        const std::uint64_t divisor {std::gcd(magnitude(x), magnitude(y))};
+        return divisor == 0 ? 0 : static_cast<std::int64_t>((magnitude(x) / divisor) * magnitude(y));
+    }
+
+    constexpr std::string_view bitwise_names {"&|^<>glc"};
+} // namespace
+
+// _bitwise(op, a, b) -> Tensor: two int64 tensors element by element, broadcast, as NumPy's: op & | ^, < (left
+// shift), > (right shift), g (gcd), l (lcm), or c (bitwise_count: the 1 bits of a's magnitude, b unread).
+PyObject* module_bitwise(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    PyObject*   y  = nullptr;
+    if (PyArg_ParseTuple(args, "sOO", &op, &x, &y) == 0) {
+        return nullptr;
+    }
+    if (std::string_view {op}.size() != 1 || bitwise_names.find(op[0]) == std::string_view::npos) {
+        PyErr_SetString(PyExc_ValueError, "_bitwise: op is one of & | ^ < > g l c");
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    const auto* left  = std::get_if<int_tensor>(a);
+    const auto* right = std::get_if<int_tensor>(b);
+    if (left == nullptr || right == nullptr) {
+        PyErr_SetString(PyExc_TypeError, "_bitwise: two int64 tensors");
+        return nullptr;
+    }
+    try {
+        std::optional<int_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(std::max(left->size(), right->size()))};
+            using I = std::int64_t;
+            switch (op[0]) {
+            case '&':
+                result.emplace(numerical::broadcast_apply(*left, *right, [](I p, I q) { return p & q; }));
+                break;
+            case '|':
+                result.emplace(numerical::broadcast_apply(*left, *right, [](I p, I q) { return p | q; }));
+                break;
+            case '^':
+                result.emplace(numerical::broadcast_apply(*left, *right, [](I p, I q) { return p ^ q; }));
+                break;
+            case '<':
+                result.emplace(numerical::broadcast_apply(*left, *right, &shifted_left));
+                break;
+            case '>':
+                result.emplace(numerical::broadcast_apply(*left, *right, &shifted_right));
+                break;
+            case 'g':
+                result.emplace(numerical::broadcast_apply(*left, *right, &greatest_divisor));
+                break;
+            case 'l':
+                result.emplace(numerical::broadcast_apply(*left, *right, &least_multiple));
+                break;
+            default:
+                result.emplace(numerical::detail::parallel_map(left->data().data(), left->shape(), [](I p) {
+                    return static_cast<I>(std::popcount(magnitude(p)));
+                }));
+                break;
+            }
+        }
+        return wrap(any_tensor {std::move(*result)});
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
 
 // _real_binary(name, a, b) -> Tensor: the real binary function name of two float64 or two float32 tensors element by
 // element, broadcast, as NumPy's (C's functions where NumPy calls them: hypot, atan2, copysign, nextafter, fmod; its

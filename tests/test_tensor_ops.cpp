@@ -1173,6 +1173,32 @@ TEST(take_along_axis_and_correlate)
   EXPECT(numerical::correlate(big, one, 0, 2).data()[0] == -2);         // wrapped, as NumPy's
 }
 
+// nonzero over many chunks of a rank-3 tensor: each chunk starts its indices mid-row (its odometer's carries across
+// the chunks' edges), and the indices are those of a plain walk, in order.
+TEST(nonzero_across_chunks_as_a_plain_walk)
+{
+  const std::size_t                      depth {3};
+  const std::size_t                      rows  {7};
+  const std::size_t                      width {((3 * numerical::detail::elementwise_chunk) / (depth * rows)) + 13};
+  numerical::buffer<double>              values(depth * rows * width);
+  std::vector<std::vector<std::int64_t>> want(3);
+  for (std::size_t k {0}; k < values.size(); ++k) {
+    values[k] = (k % 3 == 0 || k % 7 == 1) ? 1.0 : 0.0;
+    if (values[k] != 0.0) {
+      want[0].push_back(static_cast<std::int64_t>(k / (rows * width)));
+      want[1].push_back(static_cast<std::int64_t>((k / width) % rows));
+      want[2].push_back(static_cast<std::int64_t>(k % width));
+    }
+  }
+  const std::vector<tensor<std::int64_t>> found {numerical::nonzero(tensor<double> {{depth, rows, width}, std::move(values)})};
+  bool                                    same  {found.size() == 3};
+  for (std::size_t a {0}; same && a < 3; ++a) {
+    same = std::equal(found[a].data().begin(), found[a].data().end(), want[a].begin(), want[a].end());
+  }
+  EXPECT(same);
+  EXPECT(numerical::nonzero(tensor<double> {{}, {2.0}}).empty()); // a scalar has no axis to index
+}
+
 // A selection answers what a stable sort puts at each position, to the bit: among zeros of either sign and NaNs of
 // different payloads, the one of the same rank in the line's order. Positions alike for every line or one row per
 // line, repeated ones, more than a selection takes (the line sorted), integers and complex numbers.

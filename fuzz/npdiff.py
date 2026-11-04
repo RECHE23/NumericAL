@@ -1,6 +1,6 @@
 """Differential fuzzing of NumericAL's NumPy functions composed in Python against NumPy: sorting and searching, sets,
-statistics and quantiles, histograms, polynomials, shape and selection functions, integer arithmetic, ranges and
-windows.
+statistics and quantiles, histograms, polynomials, shape and selection functions, integer arithmetic and bit
+operations, ranges and windows.
 
 Each family draws its inputs at random: values among the special ones (zeros of either sign, infinities, NaN,
 subnormals, the largest finite, exact halves, 2^53 + 2; INT64_MIN and INT64_MAX, ±(2^53 + 1)), shapes of rank 0 to
@@ -623,6 +623,19 @@ def comparisons(rng):
         same({}, "", name, a)
 
 
+def bits(rng):
+    dims = shape(rng, 0, 2)
+    a = ints(rng, int(np.prod(dims)) if dims else 1, extremes=0.3).reshape(dims)
+    b = rng.integers(-3, 70, dims).astype(np.int64)
+    for name in ("bitwise_and", "bitwise_or", "bitwise_xor", "left_shift", "right_shift", "gcd", "lcm"):
+        same({}, "", name, a, b)
+    same({}, "", "invert", a)
+    same({}, "", "bitwise_count", a)
+    flags = rng.random(dims) < 0.5
+    same({}, "", "bitwise_xor", flags, a)
+    same({}, "", "bitwise_or", flags, flags)
+
+
 def conversions(rng):
     a = array(rng, shape(rng, 0, 2), kinds=("f8", "f4", "i8", "b"), special=0.3)
     target = str(rng.choice(["float64", "float32", "complex128", "bool", "int64"]))
@@ -637,7 +650,7 @@ def conversions(rng):
 FAMILIES = {function.__name__: function for function in (
     integer_arithmetic, powers, rounding, sorting, searching, sets, statistics, quantiles, averages, reductions,
     histograms, interpolation, polynomials, padding, shaping, selections, calculus, ranges, nan_functions, uniques,
-    indexing, products, comparisons, conversions)}
+    indexing, products, comparisons, conversions, bits)}
 
 
 def run(seed, family, case):
