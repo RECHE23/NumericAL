@@ -52,6 +52,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   the same rank in the line's order, which a stable sort would have put there: the same bits) where they sorted each
   line: `median` of 10⁶ 104 → 11 ms (NumPy: 10), of 1,000 lines of 1,000 3 ms (NumPy: 10, `nanmedian` 18). More
   than eight positions a line are still read from a sort.
+- **`sort` of float64, float32 and int64** sorts a line of 256 elements or more by its bits, a byte at a time (a
+  stable counting sort each), the NaNs set apart first and the zeros' signs then rewritten in their order: the same
+  bits as the stable sort. 10⁶ float64 on one thread of an x86-64 processor 77 → 24 ms (NumPy: 11), on four 27 →
+  18 ms; `unique`, `isin` and the set functions, which sort, follow.
 - **`nonzero`** writes its indices without a branch and without a division by element (each chunk walks them as an
   odometer): 10⁶ elements, half of them zeros, on one thread of an x86-64 processor 10.5 → 3.8 ms (NumPy: 6.6), of a
   1,000 × 1,000 matrix 17 → 5.3 ms (NumPy: 9.1).

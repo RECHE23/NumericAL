@@ -1779,16 +1779,113 @@ namespace numerical {
   }
 
   namespace detail {
-    //! \brief Sorts `[first, last)` stably as \ref sorts_before orders reals: the NaNs moved behind the rest in their
-    //!        order first, the rest by `<`, which tests for no NaN. The comparison is a lambda of its own, not the
-    //!        default `std::less`: libc++ 22 sorts a default-ordered range of 1024 doubles or more by their bits (a radix
-    //!        sort), which puts −0 before +0 where `<` holds them equal and in their order.
+    //! \brief Runs this long or longer are sorted by their bits (\ref radix_sort); shorter ones by comparisons.
+    inline constexpr std::size_t radix_sort_least {256};
+
+    //! \brief The unsigned integer of \p T's width, whose order \ref order_key maps \p T's onto.
+    template <typename T>
+    using order_key_t = std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+
+    //! \brief The highest bit of \p U, a real's or an integer's sign.
+    template <typename U>
+    inline constexpr U sign_bit {U {1} << ((sizeof(U) * 8) - 1)};
+
+    //! \brief \p x's bits as an unsigned integer ordered as \p x is by `<`: the sign bit set for a positive real,
+    //!        every bit flipped for a negative one. A NaN and the zeros' signs are the caller's: −0 orders below +0.
+    template <std::floating_point T>
+    [[nodiscard]] order_key_t<T> order_key(T x) noexcept
+    {
+      using U = order_key_t<T>;
+      const auto bits {std::bit_cast<U>(x)};
+      return (bits & sign_bit<U>) != 0 ? static_cast<U>(~bits) : static_cast<U>(bits | sign_bit<U>);
+    }
+
+    //! \brief An integer's bits ordered as it is: its sign bit flipped.
+    template <std::integral T>
+    [[nodiscard]] order_key_t<T> order_key(T x) noexcept
+    {
+      using U = order_key_t<T>;
+      return static_cast<U>(std::bit_cast<U>(x) ^ sign_bit<U>);
+    }
+
+    //! \brief The real whose \ref order_key is \p key.
+    template <std::floating_point T>
+    [[nodiscard]] T from_order_key(order_key_t<T> key) noexcept
+    {
+      using U = order_key_t<T>;
+      return std::bit_cast<T>((key & sign_bit<U>) != 0 ? static_cast<U>(key & ~sign_bit<U>) : static_cast<U>(~key));
+    }
+
+    //! \brief The integer whose \ref order_key is \p key.
+    template <std::integral T>
+    [[nodiscard]] T from_order_key(order_key_t<T> key) noexcept
+    {
+      return std::bit_cast<T>(static_cast<order_key_t<T>>(key ^ sign_bit<order_key_t<T>>));
+    }
+
+    /*!
+     * \brief Sorts `[first, last)` by \ref order_key, a byte at a time from the least significant (a stable counting
+     *        sort each, so equal keys keep their order; a byte that every key shares skipped).
+     */
+    template <typename T>
+    void radix_sort(T* first,
+                    T* last)
+    {
+      using U = order_key_t<T>;
+      const auto count {static_cast<std::size_t>(last - first)};
+      buffer<U>  keys(count);
+      buffer<U>  spare(count);
+      for (std::size_t i {0}; i < count; ++i) {
+        keys[i] = order_key(first[i]);
+      }
+      U* from {keys.data()};
+      U* to   {spare.data()};
+      for (std::size_t shift {0}; shift < sizeof(U) * 8; shift += 8) {
+        std::array<std::size_t, 257> places {};
+        for (std::size_t i {0}; i < count; ++i) {
+          ++places[((from[i] >> shift) & 0xffU) + 1];
+        }
+        if (std::ranges::find(places, count) != places.end()) { // one byte value alone: in order already
+          continue;
+        }
+        std::partial_sum(places.begin(), places.end(), places.begin());
+        for (std::size_t i {0}; i < count; ++i) {
+          to[places[(from[i] >> shift) & 0xffU]++] = from[i];
+        }
+        std::swap(from, to);
+      }
+      for (std::size_t i {0}; i < count; ++i) {
+        first[i] = from_order_key<T>(from[i]);
+      }
+    }
+
+    /*!
+     * \brief Sorts `[first, last)` stably as \ref sorts_before orders reals: the NaNs moved behind the rest in their
+     *        order first, the rest by `<`, which tests for no NaN. A long run by \ref radix_sort, its zeros then
+     *        rewritten with their signs in their order (the bits order −0 below +0, where `<` holds them equal); a
+     *        short one by `std::stable_sort` with a lambda of its own, not the default `std::less`, which libc++ 22
+     *        sorts by the bits from 1024 doubles on, −0 first.
+     */
     template <std::floating_point T>
     void sort_run(T* first,
                   T* last)
     {
       T* const numbers_end {std::stable_partition(first, last, [](T x) { return !std::isnan(x); })};
-      std::stable_sort(first, numbers_end, [](T a, T b) { return a < b; });
+      if (static_cast<std::size_t>(numbers_end - first) < radix_sort_least) {
+        std::stable_sort(first, numbers_end, [](T a, T b) { return a < b; });
+        return;
+      }
+      std::vector<bool> negative_zeros; // each zero's sign, in their order
+      for (const T* x {first}; x != numbers_end; ++x) {
+        if (*x == T {0}) {
+          negative_zeros.push_back(std::signbit(*x));
+        }
+      }
+      radix_sort(first, numbers_end);
+      T* zero {std::lower_bound(first, numbers_end, T {0}, [](T a, T b) { return a < b; })};
+      for (const bool negative : negative_zeros) {
+        *zero++ = negative ? -T {0} : T {0};
+      }
     }
 
     //! \brief Sorts `[first, last)` stably as integers sort.
@@ -1797,6 +1894,18 @@ namespace numerical {
                   T* last)
     {
       std::stable_sort(first, last);
+    }
+
+    //! \brief Sorts `[first, last)` as int64 sort: a long run by \ref radix_sort (equal integers are the same bits, so
+    //!        any order of them is the stable one).
+    inline void sort_run(std::int64_t* first,
+                         std::int64_t* last)
+    {
+      if (static_cast<std::size_t>(last - first) < radix_sort_least) {
+        std::stable_sort(first, last);
+        return;
+      }
+      radix_sort(first, last);
     }
 
     //! \brief Sorts `[first, last)` stably as \ref sorts_before orders complex numbers.

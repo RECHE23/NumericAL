@@ -1,12 +1,14 @@
 // Element-wise arithmetic with broadcasting, reductions, reshaping and creation of tensors, each against
 // NumPy's definition of it.
 #include <algorithm>
+#include <array>
 #include <bit>
 #include <functional>
 #include <cmath>
 #include <complex>
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <limits>
 #include <numeric>
 #include <string>
@@ -1171,6 +1173,40 @@ TEST(take_along_axis_and_correlate)
   const tensor<std::int64_t> big {{2}, {std::numeric_limits<std::int64_t>::max(), 1}};
   const tensor<std::int64_t> one {{1}, {2}};
   EXPECT(numerical::correlate(big, one, 0, 2).data()[0] == -2);         // wrapped, as NumPy's
+}
+
+// A long run is sorted by its bits: the same bits as the stable sort by `<`, NaNs behind in their order, the zeros'
+// signs in theirs, for float64, float32 and int64 (its extremes too); a short one by comparisons.
+template <typename T>
+bool radix_sorted_as_stable(std::vector<T> values)
+{
+  std::vector<T> want    {values};
+  T* const       numbers {std::stable_partition(want.data(), want.data() + want.size(), [](T x) { return !std::isnan(static_cast<double>(x)); })};
+  std::stable_sort(want.data(), numbers, [](T a, T b) { return a < b; });
+  numerical::detail::sort_run(values.data(), values.data() + values.size());
+  return std::memcmp(values.data(), want.data(), values.size() * sizeof(T)) == 0;
+}
+
+TEST(sort_runs_by_bits_as_the_stable_sort)
+{
+  const double                nan_a {std::bit_cast<double>(std::uint64_t {0x7ff8000000000001})};
+  const double                nan_b {std::bit_cast<double>(std::uint64_t {0xfff8000000000002})}; // a negative NaN: last all the same
+  std::vector<double>         wide;
+  std::vector<float>          single;
+  std::vector<std::int64_t>   integers;
+  const std::array<double, 7> specials {0.0, -0.0, nan_a, nan_b, std::numeric_limits<double>::infinity(), -1e300, 5e-324};
+  for (std::size_t k {0}; k < 3 * numerical::detail::radix_sort_least; ++k) {
+    const double value {k % 5 == 0 ? specials[k % 7] : (static_cast<double>((k * 7919) % 1001) / 7.0) - 70.0};
+    wide.push_back(value);
+    single.push_back(static_cast<float>(value));
+    integers.push_back(k % 11 == 0 ? std::numeric_limits<std::int64_t>::min() + static_cast<std::int64_t>(k % 3)
+                                   : static_cast<std::int64_t>((k * 7919) % 1001) - 500);
+  }
+  EXPECT(radix_sorted_as_stable(wide));
+  EXPECT(radix_sorted_as_stable(single));
+  EXPECT(radix_sorted_as_stable(integers));
+  EXPECT(radix_sorted_as_stable(std::vector<double>(numerical::detail::radix_sort_least, 2.0))); // every byte shared
+  EXPECT(radix_sorted_as_stable(std::vector<std::int64_t> {3, -1, 2}));                          // short: compared
 }
 
 // nonzero over many chunks of a rank-3 tensor: each chunk starts its indices mid-row (its odometer's carries across
