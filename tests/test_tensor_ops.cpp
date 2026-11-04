@@ -1173,6 +1173,54 @@ TEST(take_along_axis_and_correlate)
   EXPECT(numerical::correlate(big, one, 0, 2).data()[0] == -2);         // wrapped, as NumPy's
 }
 
+// A selection answers what a stable sort puts at each position, to the bit: among zeros of either sign and NaNs of
+// different payloads, the one of the same rank in the line's order. Positions alike for every line or one row per
+// line, repeated ones, more than a selection takes (the line sorted), integers and complex numbers.
+TEST(select_along_last_as_the_stable_sort)
+{
+  const double         nan_a  {std::bit_cast<double>(std::uint64_t {0x7ff8000000000001})};
+  const double         nan_b  {std::bit_cast<double>(std::uint64_t {0x7ff8000000000002})};
+  const tensor<double> t      {{2, 7}, {0.0, -1.0, nan_a, -0.0, 2.0, nan_b, 0.0, -0.0, 3.0, 0.0, nan_b, -2.0, nan_a, -0.0}};
+  const tensor<double> sorted {numerical::sort(t, 1)};
+  bool                 every  {true};
+  for (std::int64_t k {0}; k < 7; ++k) {
+    const tensor<double> picked {numerical::select_along_last(t, tensor<std::int64_t> {{1}, {k}})};
+    for (std::size_t line {0}; line < 2; ++line) {
+      every = every && std::bit_cast<std::uint64_t>(picked.data()[line]) ==
+              std::bit_cast<std::uint64_t>(sorted.data()[(line * 7) + static_cast<std::size_t>(k)]);
+    }
+  }
+  EXPECT(every);
+  const tensor<std::int64_t> rows   {{2, 3}, {4, 1, 1, 6, 0, 5}}; // one row per line, a position twice
+  const tensor<double>       picked {numerical::select_along_last(t, rows)};
+  bool                       each   {picked.shape() == (std::vector<std::size_t> {2, 3})};
+  for (std::size_t j {0}; j < 6; ++j) {
+    const std::size_t line {j / 3};
+    each = each && std::bit_cast<std::uint64_t>(picked.data()[j]) ==
+           std::bit_cast<std::uint64_t>(sorted.data()[(line * 7) + static_cast<std::size_t>(rows.data()[j])]);
+  }
+  EXPECT(each);
+  const tensor<std::int64_t> many {{9}, {6, 5, 4, 3, 2, 1, 0, 0, 6}}; // past the positions a selection takes: sorted
+  const tensor<double>       all  {numerical::select_along_last(t, many)};
+  bool                       same {true};
+  for (std::size_t j {0}; j < 18; ++j) {
+    same = same && std::bit_cast<std::uint64_t>(all.data()[j]) ==
+           std::bit_cast<std::uint64_t>(sorted.data()[((j / 9) * 7) + static_cast<std::size_t>(many.data()[j % 9])]);
+  }
+  EXPECT(same);
+  const tensor<std::int64_t> ints {{5}, {3, -1, 3, 0, 2}};
+  EXPECT(numerical::select_along_last(ints, tensor<std::int64_t> {{2}, {0, 4}}).data() == (numerical::buffer<std::int64_t> {-1, 3}));
+  using cplx = std::complex<double>;
+  const tensor<cplx> z {{3}, {cplx {1.0, 0.0}, cplx {0.0, 2.0}, cplx {0.0, 1.0}}};
+  EXPECT(numerical::select_along_last(z, tensor<std::int64_t> {{1}, {1}}).data()[0] == cplx(0.0, 2.0));
+  EXPECT(numerical::select_along_last(numerical::zeros<double>({0, 3}), tensor<std::int64_t> {{1}, {2}}).shape() == (std::vector<std::size_t> {0, 1}));
+  EXPECT_THROWS((void)numerical::select_along_last(tensor<double> {{}, {1.0}}, tensor<std::int64_t> {{1}, {0}}), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::select_along_last(t, tensor<std::int64_t> {{}, {0}}), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::select_along_last(t, tensor<std::int64_t> {{3, 1}, {0, 0, 0}}), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::select_along_last(t, tensor<std::int64_t> {{1}, {7}}), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::select_along_last(t, tensor<std::int64_t> {{1}, {-1}}), numerical::dimension_error);
+}
+
 // Lines that are columns are walked in bands of 256, row after row: each line's sums, products and counts are those
 // of its elements in order, the bands' edges anywhere (a band of 256 and one of 44 here, under 2 outer slices).
 TEST(columns_fold_and_scan_in_bands_as_line_by_line)

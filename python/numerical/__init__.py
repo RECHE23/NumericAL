@@ -7116,8 +7116,7 @@ def _median_of(a, axis, keepdims, ignore_nans):
     if a.dtype == "bool":
         a = asarray(a, "float64")
     joined, axes = _last_axis(a, axis, "median")
-    s = sort(joined, axis=-1)
-    rest, extent = s.shape[:-1], s.shape[-1]
+    rest, extent = joined.shape[:-1], joined.shape[-1]
     inexact = a.dtype != "int64"
     wide = a.dtype if inexact else "float64"  # NumPy's mean of integers in float64
     if extent == 0:
@@ -7125,21 +7124,25 @@ def _median_of(a, axis, keepdims, ignore_nans):
         return _kept_dims(full(rest, _math.nan, wide), a, axes, (), keepdims)
     if ignore_nans and inexact:
         count = count_nonzero(~isnan(joined), axis=-1, keepdims=True)
-        low = take_along_axis(s, where(count == 0, 0, (count - 1) // 2), axis=-1)
-        high = take_along_axis(s, count // 2 - (count == 0), axis=-1)
+        middle = _order_statistics(joined, concatenate([where(count == 0, 0, (count - 1) // 2),
+                                                        count // 2 - (count == 0)], axis=-1), rest)
+        low, high = middle[..., 0:1], middle[..., 1:2]
         result = reshape(where(count % 2 == 1, low + 0, (low + high + 0) / 2), rest)  # sums from +0, as NumPy's
         if any(count == 0):
             _warnings.warn("All-NaN slice encountered", RuntimeWarning, stacklevel=3)
             result = where(reshape(count == 0, rest), _math.nan, result)
         return _kept_dims(result, a, axes, (), keepdims)
     middle = extent // 2  # NumPy's mean of the middle one or two: their sum from +0, so −0 becomes +0
-    high = asarray(reshape(s[..., middle:middle + 1], rest), wide)
+    # the middle one or two, and the last where a NaN answers its line (the stable sort's last)
+    nans = inexact and any(isnan(joined))
+    picked = _order_statistics(joined, asarray([middle - 1 + extent % 2, middle] + [extent - 1] * nans, "int64"), rest)
+    high = asarray(reshape(picked[..., 1:2], rest), wide)
     if extent % 2:
         result = high + 0
     else:
-        result = (asarray(reshape(s[..., middle - 1:middle], rest), wide) + high + 0) / 2
-    if inexact:
-        last = reshape(s[..., -1:], rest)
+        result = (asarray(reshape(picked[..., 0:1], rest), wide) + high + 0) / 2
+    if nans:
+        last = reshape(picked[..., 2:3], rest)
         result = where(isnan(last), last, result)
     return _kept_dims(result, a, axes, (), keepdims)
 
@@ -7219,21 +7222,36 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
     inexact = a.dtype in ("float64", "float32")
     if inexact and not ignore_nans and joined.shape[-1] == 0:  # NumPy's look for a NaN at the end, whatever `q`
         raise IndexError("index -1 is out of bounds for axis 0 with size 0")
-    s = sort(joined, axis=-1)
-    rest = s.shape[:-1]
+    rest = joined.shape[:-1]
     lead = q.shape
     flat_q = reshape(q, (-1,))
     if ignore_nans and inexact:
         n = count_nonzero(~isnan(joined), axis=-1, keepdims=True)  # one count per slice: rest + (1,)
         q_along = reshape(flat_q, (1,) * len(rest) + (flat_q.shape[0],))
     else:
-        n = s.shape[-1]
+        n = joined.shape[-1]
         q_along = flat_q
     index = _virtual_index(method, n, q_along)
     last = n - 1  # NumPy's -1: the last value (the last that is not NaN, for `ignore_nans`)
+    last_value = []  # the last of each line (a NaN where it holds one), read beside the others where NumPy looks
+
+    nans = inexact and not ignore_nans and any(isnan(joined))  # a NaN's line answers it, the stable sort's last
+
+    def picked(*positions):
+        """The lines' elements at each of `positions` (one pass over the lines for all of them), the last element
+        with them where a NaN decides."""
+        sizes = [p.shape[-1] for p in positions]
+        if nans:
+            positions += (asarray([n - 1], "int64"),)
+        values = _order_statistics(joined, concatenate(list(positions), axis=-1) if len(positions) > 1 else
+                                   positions[0], rest)
+        starts = [_builtins.sum(sizes[:k]) for k in range(len(sizes) + 1)]
+        if nans:
+            last_value.append(values[..., starts[-1]:])
+        return [values[..., starts[k]:starts[k + 1]] for k in range(len(sizes))]
     if index.dtype == "int64" and method in ("linear", "lower", "higher", "nearest", "inverted_cdf",
                                              "closest_observation"):
-        result = _gathered(s, where(index < 0, index + n, index), rest)
+        result = picked(where(index < 0, index + n, index))[0]
     else:
         previous = floor(index)
         following = previous + 1
@@ -7246,8 +7264,7 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
             gamma = where(gamma == 0, 0.5, 1.0)
         elif method == "midpoint":
             gamma = where(index % 1 == 0, 0.0, 0.5)
-        low = _gathered(s, _as_position(previous, n), rest)
-        high = _gathered(s, _as_position(following, n), rest)
+        low, high = picked(_as_position(previous, n), _as_position(following, n))
         if not weak:
             result = _lerp(low, high, gamma)
         elif ignore_nans:  # NumPy's slice by slice, each gamma a Python float beside the values (weak)
@@ -7260,9 +7277,8 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
             if any(empty):
                 _warnings.warn("All-NaN slice encountered", RuntimeWarning, stacklevel=3)
                 result = where(empty, _math.nan, result)
-        else:
-            last = s[..., -1:]
-            result = where(isnan(last), last, result)
+        elif nans:
+            result = where(isnan(last_value[0]), last_value[0], result)
     # rest + (Q,) to lead + rest
     result = _permuted(result, [len(rest)] + list(range(len(rest)))) if rest else result
     result = reshape(result, lead + rest)
@@ -7332,6 +7348,22 @@ def _as_position(index, n):
     """A float64 virtual index (NumPy's -1 for the last value) as int64 positions among `n` values."""
     position = asarray(index, "int64")
     return where(position < 0, position + n, position)
+
+
+_SELECTED_POSITIONS = 8  # a line's positions selected one by one up to these (`_numerical._select`), else sorted
+
+
+def _order_statistics(joined, positions, rest):
+    """The elements a stable sort of each line of `joined` (along its last axis) puts at the int64 `positions`, of
+    shape ``(Q,)`` or broadcasting to ``rest + (Q,)``: selected without a sort for a few of them, as
+    :func:`_gathered` reads them from the sorted lines otherwise."""
+    if positions.shape[-1:] and positions.shape[-1] <= _SELECTED_POSITIONS and joined.shape[-1]:
+        if len(positions.shape) > 1:
+            positions = broadcast_to(positions, rest + positions.shape[-1:])
+        if positions.size and int(min(positions)) < 0:  # from the end, as take_along_axis reads one
+            positions = where(positions < 0, positions + joined.shape[-1], positions)
+        return _native(_numerical._select, joined, positions)
+    return _gathered(sort(joined, axis=-1), positions, rest)
 
 
 def _gathered(s, positions, rest):
@@ -9514,6 +9546,402 @@ class iinfo:
 
 
 __all__ += ["pi", "e", "inf", "nan", "newaxis", "finfo", "iinfo"]
+
+# The array API standard: a Tensor's namespace is this module (array_api_compat and SciPy's, scikit-learn's array API
+# support find it by __array_namespace__), with the dtype functions and the inspection namespace the standard names.
+_ARRAY_API_VERSIONS = ("2023.12", "2024.12")
+_DTYPE_KINDS = {"bool": ("bool",), "signed integer": ("int64",), "unsigned integer": (), "integral": ("int64",),
+                "real floating": ("float32", "float64"), "complex floating": ("complex64", "complex128"),
+                "numeric": ("int64", "float32", "float64", "complex64", "complex128")}
+# What casts safely to what, as NumPy's can_cast: every value of the first held exactly by the second
+_SAFE_CASTS = {"bool": set(_DTYPES), "int64": {"int64", "float64", "complex128"},
+               "float32": {"float32", "float64", "complex64", "complex128"}, "float64": {"float64", "complex128"},
+               "complex64": {"complex64", "complex128"}, "complex128": {"complex128"}}
+
+
+def _array_namespace(self, /, *, api_version=None):
+    """This module, the array API's namespace of a Tensor: `api_version` one of the standard's revisions it follows
+    (2023.12, 2024.12) or None for the latest."""
+    if api_version is not None and api_version not in _ARRAY_API_VERSIONS:
+        raise ValueError(f"Unrecognized array API version: {api_version!r}; one of {', '.join(_ARRAY_API_VERSIONS)}")
+    return _sys.modules[__name__]
+
+
+Tensor.__array_namespace__ = _array_namespace
+
+
+def _known_dtype(dtype):
+    """A dtype's name (:func:`_dtype_name`), refused unless a Tensor has it."""
+    name = _dtype_name(dtype.dtype if isinstance(dtype, Tensor) else dtype)
+    if name not in _DTYPES:
+        raise TypeError(f"data type {name!r} not understood: one of {', '.join(_DTYPES)}")
+    return name
+
+
+def isdtype(dtype, kind):
+    """Whether `dtype` is of `kind`, as the array API's ``isdtype``: a dtype (equal to it), a kind's name ("bool",
+    "signed integer", "unsigned integer", "integral", "real floating", "complex floating", "numeric") or a tuple of
+    them (any).
+
+    Examples:
+        >>> import numerical
+        >>> numerical.isdtype("float32", "real floating"), numerical.isdtype("int64", ("bool", "numeric"))
+        (True, True)
+    """
+    name = _known_dtype(dtype)
+    if isinstance(kind, tuple):
+        return _builtins.any(isdtype(name, each) for each in kind)
+    if isinstance(kind, str) and kind in _DTYPE_KINDS:
+        return name in _DTYPE_KINDS[kind]
+    return name == _known_dtype(kind)
+
+
+def result_type(*arrays_and_dtypes):
+    """The dtype NumPy 2 promotes `arrays_and_dtypes` to, as ``numpy.result_type``: tensors and array-likes by their
+    dtypes, dtypes as they are, Python numbers weak (they keep the others' precision).
+
+    Examples:
+        >>> import numerical
+        >>> numerical.result_type("float32", "int64"), numerical.result_type(numerical.ones(2, "float32"), 2.0)
+        ('float64', 'float32')
+    """
+    if not arrays_and_dtypes:
+        raise ValueError("at least one array or dtype is required")
+    dtypes, weak = [], []
+    for each in arrays_and_dtypes:
+        if _weak(each):
+            weak.append(each)
+        elif isinstance(each, Tensor) or hasattr(each, "dtype") and not isinstance(each, type):
+            dtypes.append(_known_dtype(each.dtype))
+        else:
+            dtypes.append(_known_dtype(each))
+    if dtypes:
+        dtype = _promoted(dtypes)
+    else:  # numbers alone: a bool's, an int's, a float's or a complex's own dtype, the widest
+        dtype = _promoted([_beside_weak("bool", value) if not isinstance(value, int) or isinstance(value, bool)
+                           else "int64" for value in weak])
+        weak = []
+    for value in weak:
+        dtype = _beside_weak(dtype, value)
+    return dtype
+
+
+def can_cast(from_, to, casting="safe"):
+    """Whether `from_` (a dtype, or a Tensor's) converts to `to` under `casting`, as ``numpy.can_cast``: "no" and
+    "equiv" the same dtype alone, "safe" every value held exactly, "same_kind" a kind no lower (bool, integer, real,
+    complex), "unsafe" always.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.can_cast("int64", "float64"), numerical.can_cast("float64", "float32")
+        (True, False)
+    """
+    if not isinstance(from_, (Tensor, str, type)) and not hasattr(from_, "kind"):
+        raise TypeError("can_cast: a dtype or a Tensor, not a Python number (NumPy 2 refuses them too)")
+    source, target = _known_dtype(from_), _known_dtype(to)
+    if casting in ("no", "equiv"):
+        return source == target
+    if casting == "safe":
+        return target in _SAFE_CASTS[source]
+    if casting == "same_kind":
+        order = ("bool", "int64", "float", "complex")
+        rank = (lambda name: order.index(name if name in ("bool", "int64") else name.rstrip("0123456789")))
+        return rank(target) >= rank(source)
+    if casting == "unsafe":
+        return True
+    raise ValueError(f"casting must be one of 'no', 'equiv', 'safe', 'same_kind', or 'unsafe' (got {casting!r})")
+
+
+def empty(shape, dtype="float64", *, device=None):
+    """A tensor of `shape` and `dtype`, as ``numpy.empty``: its elements zeros here (a Tensor is never written into,
+    so none is left unset)."""
+    _cpu_device(device, "empty")
+    return zeros(shape, _known_dtype(dtype))
+
+
+def from_dlpack(x, /, *, device=None, copy=None):
+    """A Tensor of the elements of `x`, an object of the DLPack protocol (``__dlpack__``: a NumPy array, a PyTorch or
+    JAX CPU tensor), as the array API's ``from_dlpack``; `copy` False refused, since a Tensor holds its own
+    elements."""
+    _cpu_device(device, "from_dlpack")
+    if copy is False:
+        raise ValueError("from_dlpack: a Tensor copies the elements it reads (copy=False cannot hold)")
+    if not hasattr(x, "__dlpack__"):
+        raise TypeError(f"from_dlpack: {type(x).__name__} has no __dlpack__")
+    return x if isinstance(x, Tensor) and copy is None else _asarray(x)
+
+
+def _cpu_device(device, name):
+    if device is not None and device != "cpu":
+        raise ValueError(f"{name}: the device is the CPU (\"cpu\"), not {device!r}")
+
+
+class _ArrayNamespaceInfo:
+    """The array API's inspection namespace (:func:`__array_namespace_info__`): one device, the CPU, and its dtypes."""
+
+    def capabilities(self):
+        return {"boolean indexing": True, "data-dependent shapes": True, "max dimensions": None}
+
+    def default_device(self):
+        return "cpu"
+
+    def devices(self):
+        return ["cpu"]
+
+    def default_dtypes(self, *, device=None):
+        _cpu_device(device, "default_dtypes")
+        return {"real floating": "float64", "complex floating": "complex128", "integral": "int64",
+                "indexing": "int64"}
+
+    def dtypes(self, *, device=None, kind=None):
+        _cpu_device(device, "dtypes")
+        names = [name for name in ("bool", "int64", "float32", "float64", "complex64", "complex128")
+                 if kind is None or isdtype(name, kind)]
+        return {name: name for name in names}
+
+
+def __array_namespace_info__():
+    """The array API's inspection namespace: ``capabilities()``, ``default_device()``, ``devices()``,
+    ``default_dtypes()`` and ``dtypes(kind=…)``."""
+    return _ArrayNamespaceInfo()
+
+
+__all__ += ["isdtype", "result_type", "can_cast", "empty", "from_dlpack", "__array_namespace_info__"]
+
+
+def array(object, dtype=None, *, copy=True, ndmin=0):
+    """A Tensor of `object`, as ``numpy.array``: :func:`asarray`'s reading, at least `ndmin` axes (ones added in
+    front); `copy` False refused where a copy is needed (a Tensor is its own, so it copies nothing else)."""
+    if copy is False and not isinstance(object, Tensor):
+        raise ValueError("Unable to avoid copy while creating an array as requested.")
+    t = asarray(object, dtype) if dtype is not None else _tensor(object)
+    ndmin = _operator.index(ndmin)
+    if len(t.shape) < ndmin:
+        t = reshape(t, (1,) * (ndmin - len(t.shape)) + t.shape)
+    return t
+
+
+def asanyarray(a, dtype=None):
+    """:func:`asarray`, as ``numpy.asanyarray`` (a Tensor has no subclasses to keep)."""
+    return asarray(a, dtype) if dtype is not None else _tensor(a)
+
+
+def ascontiguousarray(a, dtype=None):
+    """`a` as a Tensor of at least one axis (row-major, as every Tensor), as ``numpy.ascontiguousarray``."""
+    return atleast_1d(asanyarray(a, dtype))
+
+
+exp2 = _real_function("exp2", "``2ˣ`` of every element, as ``numpy.exp2`` (C's ``exp2``: exact at integers).")
+
+
+def ldexp(x1, x2, /):
+    """``x1 · 2^x2`` element-wise, rounded once, as ``numpy.ldexp`` (C's): `x2` integers; `x1`'s float dtype (float64
+    for integers)."""
+    exponents = _tensor(x2)
+    if exponents.dtype not in ("int64", "bool"):
+        raise TypeError("ldexp: the exponents must be integers (NumPy's ufunc takes no float exponent)")
+    x = _operand(x1)
+    if x.dtype.startswith("complex"):
+        raise TypeError("ldexp: real numbers only (NumPy's too)")
+    if x.dtype in ("int64", "bool"):
+        x = asarray(x, "float64")
+    return _native(_numerical._real_binary, "ldexp", x, asarray(exponents, x.dtype))
+
+
+def frexp(x, /):
+    """Each element as ``m · 2^e`` with ``0.5 ≤ |m| < 1`` (``m = x``, ``e = 0`` for a zero, an infinity or a NaN), as
+    ``numpy.frexp``: `m` of `x`'s float dtype; `e` int64, where NumPy's is int32."""
+    x = _operand(x)
+    if x.dtype.startswith("complex"):
+        raise TypeError("frexp: real numbers only (NumPy's too)")
+    if x.dtype in ("int64", "bool"):
+        x = asarray(x, "float64")
+    regular = isfinite(x) & (x != 0)
+    magnitude = where(regular, absolute(x), 1.0)
+    e = asarray(floor(log2(magnitude)), "int64") + 1  # within one of the exponent: log2 rounds near a power of two
+    m = ldexp(magnitude, -e)
+    e = where(m >= 1, e + 1, where(m < 0.5, e - 1, e))
+    m = ldexp(magnitude, -e)
+    return where(regular, copysign(m, x), x), where(regular, e, 0)
+
+
+def modf(x, /):
+    """The fractional and the integral parts of every element, each of its sign, as ``numpy.modf`` (C's ``modf``:
+    an infinity's fraction a zero)."""
+    x = _operand(x)
+    if x.dtype.startswith("complex"):
+        raise TypeError("modf: real numbers only (NumPy's too)")
+    if x.dtype in ("int64", "bool"):
+        x = asarray(x, "float64")
+    whole = trunc(x)
+    return copysign(where(isinf(x), 0.0, x - whole), x), whole
+
+
+def spacing(x, /):
+    """The distance from every element to the next number away from zero, of its sign (a zero's positive), as
+    ``numpy.spacing``: NaN for an infinity."""
+    x = _operand(x)
+    if x.dtype.startswith("complex"):
+        raise TypeError("spacing: real numbers only (NumPy's too)")
+    if x.dtype in ("int64", "bool"):
+        x = asarray(x, "float64")
+    away = asarray(where(x < 0, -_math.inf, _math.inf), x.dtype)  # −0 as +0
+    return where(isinf(x), _math.nan, nextafter(x, away) - x)
+
+
+def fix(x):
+    """Every element rounded toward zero, as ``numpy.fix`` (:func:`trunc`)."""
+    return trunc(x)
+
+
+def sinc(x):
+    """``sin(πx) / (πx)`` of every element, 1 at 0, as ``numpy.sinc`` by its steps (a zero taken as 10⁻²⁰)."""
+    x = _operand(x)
+    if x.dtype in ("int64", "bool"):
+        x = asarray(x, "float64")
+    y = pi * where(x == 0, 1.0e-20, x)
+    return sin(y) / y
+
+
+def lexsort(keys, axis=-1):
+    """The indices that sort by the last of `keys` first, ties by the one before and so on, stably, as
+    ``numpy.lexsort``: `keys` a sequence of arrays of one shape, or the rows of a 2-D array."""
+    keys = [_tensor(k) for k in (keys if not isinstance(keys, Tensor) else [keys[i] for i in range(keys.shape[0])])]
+    if not keys:
+        raise TypeError("need sequence of keys with len > 0 in lexsort")
+    if len({k.shape for k in keys}) != 1:
+        raise ValueError("all keys need to be the same shape")
+    order = argsort(keys[0], axis=axis, stable=True)
+    for key in keys[1:]:
+        order = take_along_axis(order, argsort(take_along_axis(key, order, axis), axis=axis, stable=True), axis)
+    return order
+
+
+def partition(a, kth, axis=-1, kind="introselect", order=None):
+    """`a` with each line along `axis` partitioned at the positions `kth`, as ``numpy.partition``: the element there
+    the one a sort puts there, none before it larger, none after smaller. Here each line is sorted, which is one such
+    arrangement; NumPy's leaves the others in no order it specifies."""
+    a = _tensor(a)
+    if axis is None:
+        a, axis = reshape(a, (-1,)), 0
+    _partition_positions(a, kth, axis)
+    return sort(a, axis=axis)
+
+
+def argpartition(a, kth, axis=-1, kind="introselect", order=None):
+    """The indices that partition `a` along `axis` at `kth`, as ``numpy.argpartition``: here those of its stable sort,
+    which is one such arrangement."""
+    a = _tensor(a)
+    if axis is None:
+        a, axis = reshape(a, (-1,)), 0
+    _partition_positions(a, kth, axis)
+    return argsort(a, axis=axis, stable=True)
+
+
+def _partition_positions(a, kth, axis):
+    """NumPy's checks of the partition positions `kth` against `a`'s axis `axis`."""
+    if not a.shape:
+        raise ValueError("Cannot partition a 0-d array")
+    extent = a.shape[_axis(a, axis)]
+    for k in ([kth] if isinstance(kth, _numbers.Integral) else _counts(kth, "partition")):
+        if not -extent <= k < extent:
+            raise ValueError(f"kth(={k}) out of bounds ({extent})")
+
+
+def apply_along_axis(func1d, axis, arr, *args, **kwargs):
+    """`func1d` of each line of `arr` along `axis`, as ``numpy.apply_along_axis``: the results (one shape for all)
+    where the line stood."""
+    arr = _tensor(arr)
+    axis = _axis(arr, axis)
+    moved = moveaxis(arr, axis, -1)
+    rest = moved.shape[:-1]
+    if _math.prod(rest) == 0:
+        raise ValueError("Cannot apply_along_axis when any iteration dimensions are 0")
+    lines = reshape(moved, (-1, moved.shape[-1]))
+    results = [_tensor(func1d(lines[k], *args, **kwargs)) for k in range(lines.shape[0])]
+    own = len(results[0].shape)
+    stacked = reshape(stack(results), rest + results[0].shape)
+    # the results' own axes where the line's axis stood, in their order
+    return moveaxis(stacked, list(range(len(rest), len(rest) + own)), list(range(axis, axis + own)))
+
+
+def fromfunction(function, shape, *, dtype="float64", **kwargs):
+    """`function` of the coordinate tensors of `shape` (:func:`indices`, of `dtype`), as ``numpy.fromfunction``."""
+    return function(*indices(shape, dtype=dtype), **kwargs)
+
+
+def fromiter(iter, dtype, count=-1):
+    """A vector of the elements of the iterable `iter` (its first `count` where not −1), as ``numpy.fromiter``."""
+    values = []
+    for value in iter:
+        if count != -1 and len(values) == count:
+            break
+        values.append(value)
+    if count != -1 and len(values) < count:
+        raise ValueError(f"iterator too short: Expected {count} but iterator had only {len(values)} items.")
+    return asarray(values, _dtype_name(dtype)) if values else zeros((0,), _dtype_name(dtype))
+
+
+def rollaxis(a, axis, start=0):
+    """`a` with `axis` moved to stand before `start`, as ``numpy.rollaxis``."""
+    a = _tensor(a)
+    rank = len(a.shape)
+    axis = _axis(a, axis)
+    start = _operator.index(start)
+    if not -rank <= start <= rank:
+        raise ValueError(f"'start' arg requires {-rank} <= start < {rank + 1}, but {start} was passed in")
+    start += rank if start < 0 else 0
+    if axis < start:
+        start -= 1
+    return a if axis == start else moveaxis(a, axis, start)
+
+
+def real_if_close(a, tol=100):
+    """`a`'s real parts where every imaginary part is within `tol` machine epsilons of zero (`tol` > 1) or `tol`
+    itself, as ``numpy.real_if_close``; `a` as it is otherwise."""
+    a = _tensor(a)
+    if not a.dtype.startswith("complex"):
+        return a
+    if tol > 1:
+        tol = finfo(a.dtype).eps * tol
+    return real(a) if all(absolute(imag(a)) < tol) else a
+
+
+def sort_complex(a):
+    """The elements sorted by their real parts, then their imaginary parts, as complex numbers, as
+    ``numpy.sort_complex`` (complex64 for float32, complex128 for the rest)."""
+    a = sort(_tensor(a))
+    if a.dtype.startswith("complex"):
+        return a
+    return asarray(a, "complex64" if a.dtype == "float32" else "complex128")
+
+
+def array_equiv(a1, a2):
+    """Whether `a1` and `a2` broadcast to one shape and are equal there, as ``numpy.array_equiv``."""
+    a, b = _same_dtype(a1, a2)
+    try:
+        shape = broadcast_shapes(a.shape, b.shape)
+    except ValueError:
+        return False
+    return bool(all(equal(broadcast_to(a, shape), broadcast_to(b, shape))))
+
+
+def resize(a, new_shape):
+    """`a`'s elements, flattened and repeated as often as needed, in `new_shape`, as ``numpy.resize``."""
+    a = reshape(_tensor(a), (-1,))
+    new_shape = (_operator.index(new_shape),) if isinstance(new_shape, _numbers.Integral) else tuple(new_shape)
+    if _builtins.any(e < 0 for e in new_shape):
+        raise ValueError("all elements of `new_shape` must be non-negative")
+    total = _math.prod(new_shape)
+    if a.shape[0] == 0 or total == 0:
+        return zeros(new_shape, a.dtype)
+    repeats = -(-total // a.shape[0])
+    return reshape(tile(a, repeats)[:total], new_shape)
+
+
+__all__ += ["array", "asanyarray", "ascontiguousarray", "exp2", "ldexp", "frexp", "modf", "spacing", "fix", "sinc",
+            "lexsort", "partition", "argpartition", "apply_along_axis", "fromfunction", "fromiter", "rollaxis",
+            "real_if_close", "sort_complex", "array_equiv", "resize"]
 
 __all__ += ["abs", "negative", "positive", "square", "divide", "true_divide", "floor_divide", "remainder", "mod",
             "divmod", "zeros_like", "ones_like", "empty_like",

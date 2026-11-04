@@ -13,7 +13,14 @@ Tensors
    :members:
 
 .. autofunction:: numerical.asarray
+.. autofunction:: numerical.array
+.. autofunction:: numerical.asanyarray
+.. autofunction:: numerical.ascontiguousarray
+.. autofunction:: numerical.from_dlpack
+.. autofunction:: numerical.fromfunction
+.. autofunction:: numerical.fromiter
 .. autofunction:: numerical.zeros
+.. autofunction:: numerical.empty
 .. autofunction:: numerical.ones
 .. autofunction:: numerical.full
 .. autofunction:: numerical.eye
@@ -32,6 +39,10 @@ Tensors
 .. autofunction:: numerical.full_like
 .. autofunction:: numerical.copy
 .. autofunction:: numerical.astype
+.. autofunction:: numerical.isdtype
+.. autofunction:: numerical.result_type
+.. autofunction:: numerical.can_cast
+.. autofunction:: numerical.__array_namespace_info__
 .. autoclass:: numerical.finfo
 .. autoclass:: numerical.iinfo
 .. autodata:: numerical.pi
@@ -89,6 +100,9 @@ Shapes and joins
 .. autofunction:: numerical.compress
 .. autofunction:: numerical.extract
 .. autofunction:: numerical.choose
+.. autofunction:: numerical.rollaxis
+.. autofunction:: numerical.resize
+.. autofunction:: numerical.apply_along_axis
 .. autofunction:: numerical.broadcast_to
 .. autofunction:: numerical.broadcast_arrays
 .. autofunction:: numerical.broadcast_shapes
@@ -168,6 +182,14 @@ Element-wise functions
 .. autofunction:: numerical.log10
 .. autofunction:: numerical.log1p
 .. autofunction:: numerical.expm1
+.. autofunction:: numerical.exp2
+.. autofunction:: numerical.ldexp
+.. autofunction:: numerical.frexp
+.. autofunction:: numerical.modf
+.. autofunction:: numerical.spacing
+.. autofunction:: numerical.fix
+.. autofunction:: numerical.sinc
+.. autofunction:: numerical.real_if_close
 .. autofunction:: numerical.cbrt
 .. autofunction:: numerical.deg2rad
 .. autofunction:: numerical.rad2deg
@@ -209,6 +231,7 @@ Comparisons and logic
 .. autofunction:: numerical.isclose
 .. autofunction:: numerical.allclose
 .. autofunction:: numerical.array_equal
+.. autofunction:: numerical.array_equiv
 .. autofunction:: numerical.where
 .. autofunction:: numerical.select
 .. autofunction:: numerical.any
@@ -293,6 +316,10 @@ Reductions, scans and sorting
 .. autofunction:: numerical.argmax
 .. autofunction:: numerical.argmin
 .. autofunction:: numerical.argsort
+.. autofunction:: numerical.lexsort
+.. autofunction:: numerical.partition
+.. autofunction:: numerical.argpartition
+.. autofunction:: numerical.sort_complex
 .. autofunction:: numerical.nonzero
 .. autofunction:: numerical.tril_indices
 .. autofunction:: numerical.triu_indices

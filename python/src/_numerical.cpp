@@ -146,6 +146,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_nonzero", module_nonzero, METH_VARARGS, "_nonzero(a) -> tuple\nThe indices of the nonzero elements, one int64 Tensor per axis.");
     m.raw("_count_nonzero", module_count_nonzero, METH_VARARGS, "_count_nonzero(a, axis) -> int or Tensor\nThe nonzero elements, counted.");
     m.raw("_take_along_axis", module_take_along_axis, METH_VARARGS, "_take_along_axis(a, indices, axis) -> Tensor\nThe elements at the indices along the axis.");
+    m.raw("_select", module_select, METH_VARARGS,
+          "_select(a, positions) -> Tensor\nThe elements a stable sort of each line along the last axis puts at positions.");
     m.raw("_correlate", module_correlate, METH_VARARGS, "_correlate(a, v, first, count) -> Tensor\nThe cross-correlation over count lags from first.");
     m.raw("_complex_from_parts", module_complex_from_parts, METH_VARARGS, "_complex_from_parts(re, im) -> Tensor\nre + im·i, exactly.");
     m.raw("_interp", module_interp, METH_VARARGS, "_interp(x, xp, fp, left, right, fused) -> Tensor\nnumpy.interp's linear interpolation.");

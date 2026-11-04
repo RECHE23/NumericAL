@@ -2208,6 +2208,168 @@ namespace numerical {
   }
 
   namespace detail {
+    //! \brief A line with more positions than these is sorted whole rather than selected position by position.
+    inline constexpr std::size_t select_positions_sorted {8};
+
+    /*!
+     * \brief Of the \p count elements at \p row, the one a stable sort (\ref sort_run) puts at \p k, from the one
+     *        \p chosen that a selection put there, equal to it under \ref sorts_before. A zero (either sign) or a
+     *        NaN (any payload) is not alone in its class, and the class's member of the same rank in \p row's
+     *        order is the stable sort's.
+     */
+    template <std::floating_point T>
+    [[nodiscard]] T stable_choice(const T*    row,
+                                  std::size_t count,
+                                  std::size_t k,
+                                  T           chosen)
+    {
+      const bool nan {std::isnan(chosen)};
+      if (!nan && chosen != T {0}) {
+        return chosen;
+      }
+      std::size_t first {0}; // the class's first rank: the elements below a zero, or every one that is no NaN
+      for (std::size_t i {0}; i < count; ++i) {
+        first += static_cast<std::size_t>(nan ? !std::isnan(row[i]) : row[i] < T {0});
+      }
+      std::size_t rank {k - first};
+      std::size_t i    {0};
+      for (;; ++i) { // the class holds rank k: its member of that rank is met before the row ends
+        if (nan ? std::isnan(row[i]) : row[i] == T {0}) {
+          if (rank == 0) {
+            break;
+          }
+          --rank;
+        }
+      }
+      return row[i];
+    }
+
+    //! \brief An integer's class under `<` is itself alone.
+    template <std::integral T>
+    [[nodiscard]] T stable_choice(const T* /*row*/,
+                                  std::size_t /*count*/,
+                                  std::size_t /*k*/,
+                                  T chosen)
+    {
+      return chosen;
+    }
+
+    /*!
+     * \brief Into \p out, the elements of the \p count at \p row that a stable sort puts at the \p m positions
+     *        \p at, \p work holding \p count elements of scratch: `std::nth_element` at each distinct position,
+     *        smallest first, each over the part above the one before (the least or the largest of that part by a
+     *        pass alone), then \ref stable_choice; more positions than \ref select_positions_sorted, the row sorted
+     *        whole.
+     */
+    template <typename T>
+    requires std::floating_point<T> || std::integral<T>
+    void select_row(const T*            row,
+                    std::size_t         count,
+                    const std::int64_t* at,
+                    std::size_t         m,
+                    T*                  work,
+                    T*                  out)
+    {
+      std::copy(row, row + count, work);
+      if (m > select_positions_sorted) {
+        sort_run(work, work + count);
+        for (std::size_t j {0}; j < m; ++j) {
+          out[j] = work[static_cast<std::size_t>(at[j])];
+        }
+        return;
+      }
+      std::array<std::size_t, select_positions_sorted> order {};
+      for (std::size_t j {0}; j < m; ++j) { // sorted by insertion: eight at most
+        const auto  k {static_cast<std::size_t>(at[j])};
+        std::size_t i {j};
+        for (; i > 0 && order[i - 1] > k; --i) {
+          order[i] = order[i - 1];
+        }
+        order[i] = k;
+      }
+      const auto  before {[](T a, T b) { return sorts_before(a, b); }};
+      std::size_t from   {0};
+      for (std::size_t j {0}; j < m; ++j) {
+        const std::size_t k {order[j]};
+        if (k < from) {                    // a position named twice: in place already
+          continue;
+        }
+        if (k == from || k + 1 == count) { // the least or the largest of the part left: one pass finds it
+          std::iter_swap(work + k, k == from ? std::min_element(work + from, work + count, before)
+                                             : std::max_element(work + from, work + count, before));
+        }
+        else {
+          std::nth_element(work + from, work + k, work + count, before);
+        }
+        from = k + 1;
+      }
+      for (std::size_t j {0}; j < m; ++j) {
+        const auto k {static_cast<std::size_t>(at[j])};
+        out[j] = stable_choice(row, count, k, work[k]);
+      }
+    }
+
+    //! \brief A complex row is sorted whole: its classes under \ref sorts_before are zeros and NaNs in either part.
+    template <split_complex C>
+    void select_row(const C*            row,
+                    std::size_t         count,
+                    const std::int64_t* at,
+                    std::size_t         m,
+                    C*                  work,
+                    C*                  out)
+    {
+      std::copy(row, row + count, work);
+      sort_run(work, work + count);
+      for (std::size_t j {0}; j < m; ++j) {
+        out[j] = work[static_cast<std::size_t>(at[j])];
+      }
+    }
+  } // namespace detail
+
+  /*!
+   * \brief Of each line along the last axis of \p t, the elements its stable sort (\ref sort) puts at the
+   *        positions \p positions names, as `sort(t)[..., positions]` reads them, without the sort: each line's
+   *        positions found by selection (\ref detail::select_row), the lines on the threads. \p positions has shape
+   *        `(m,)`, the same for every line, or the lines' shape and `m`; the result, the lines' shape and `m`.
+   * \throws dimension_error If \p t has no axis, \p positions has neither shape, or a position is not in a line.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> select_along_last(const tensor<T>&            t,
+                                            const tensor<std::int64_t>& positions)
+  {
+    if (t.rank() == 0 || positions.rank() == 0) {
+      throw dimension_error("select_along_last: a tensor and positions of rank 1 or more");
+    }
+    const std::vector<std::size_t> lead(t.shape().begin(), t.shape().end() - 1);
+    const std::size_t              count {t.shape().back()};
+    const std::size_t              m     {positions.shape().back()};
+    const bool                     every {positions.rank() == 1};
+    if (!every && !std::equal(lead.begin(), lead.end(), positions.shape().begin(), positions.shape().end() - 1)) {
+      throw dimension_error("select_along_last: positions of shape (m,) or the lines' shape and m");
+    }
+    const auto extent {static_cast<std::int64_t>(count)};
+    if (std::ranges::any_of(positions.data(), [extent](std::int64_t k) { return k < 0 || k >= extent; })) {
+      throw dimension_error("select_along_last: a position out of the lines");
+    }
+    std::vector<std::size_t> shape {lead};
+    shape.push_back(m);
+    const std::size_t   lines      {std::accumulate(lead.begin(), lead.end(), std::size_t {1}, std::multiplies {})};
+    buffer<T>           out(lines * m);
+    const T* const      in         {t.data().data()};
+    const std::int64_t* at         {positions.data().data()};
+    const std::size_t   block      {std::max<std::size_t>(1, 4096 / std::max<std::size_t>(count, 1))}; // rows a task takes
+    const std::size_t   blocks     {(lines + block - 1) / block};
+    detail::parallel_for(blocks, block * count * 16, [&](std::size_t b) {
+                           buffer<T> work(count);
+                           for (std::size_t line {b * block}; line < std::min(lines, (b + 1) * block); ++line) {
+                             detail::select_row(in + (line * count), count, at + (every ? 0 : line * m), m, work.data(),
+                                                out.data() + (line * m));
+                           }
+                         });
+    return tensor<T> {std::move(shape), std::move(out)};
+  }
+
+  namespace detail {
     //! \brief `sum + x · y` of a real or an integer (wrapped) correlation's terms.
     template <typename T>
     [[nodiscard]] T correlation_step(const T& sum,

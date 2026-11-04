@@ -172,7 +172,7 @@ namespace {
     //! The real elementary functions by NumPy's names, C's where it has one (rint: half to even, as numpy.rint and
     //! numpy.round; deg2rad and rad2deg NumPy's products by π/180 and 180/π).
     template <typename R>
-    const std::array<std::pair<std::string_view, R (*)(R)>, 20> real_functions {{
+    const std::array<std::pair<std::string_view, R (*)(R)>, 21> real_functions {{
         {"floor", [](R x) { return std::floor(x); }},
         {"ceil", [](R x) { return std::ceil(x); }},
         {"trunc", [](R x) { return std::trunc(x); }},
@@ -190,6 +190,7 @@ namespace {
         {"log10", [](R x) { return std::log10(x); }},
         {"log1p", [](R x) { return std::log1p(x); }},
         {"expm1", [](R x) { return std::expm1(x); }},
+        {"exp2", [](R x) { return std::exp2(x); }},
         {"cbrt", [](R x) { return std::cbrt(x); }},
         {"deg2rad", [](R x) { return x * (std::numbers::pi_v<R> / R {180}); }},
         {"rad2deg", [](R x) { return x * (R {180} / std::numbers::pi_v<R>); }},
@@ -343,8 +344,18 @@ namespace {
         return x == R {0} ? at_zero : std::numeric_limits<R>::quiet_NaN();
     }
 
-    constexpr std::array<std::string_view, 10> real_binary_names {"hypot", "arctan2", "copysign", "nextafter", "fmod",
-                                                                  "logaddexp", "logaddexp2", "fmax", "fmin", "heaviside"};
+    constexpr std::array<std::string_view, 11> real_binary_names {"hypot", "arctan2", "copysign", "nextafter", "fmod",
+                                                                  "logaddexp", "logaddexp2", "fmax", "fmin", "heaviside",
+                                                                  "ldexp"};
+
+    //! \p x · 2^\p e, \p e an integer held by the real (bounded first: past ±2^17 every finite \p x over- or
+    //! underflows alike), as C's ldexp rounds it once.
+    template <typename R>
+    R scaled_by_power_of_two(R x, R e)
+    {
+        constexpr R bound {131072};
+        return std::ldexp(x, static_cast<int>(std::fmax(std::fmin(e, bound), -bound)));
+    }
 
     //! The real binary function \p name (one of real_binary_names) of \p a and \p b element by element, broadcast;
     //! each through a lambda of its own, which the loop inlines.
@@ -378,6 +389,9 @@ namespace {
         }
         if (name == "fmin") {
             return broadcast_apply(a, b, [](R x, R y) { return number_extreme<false>(x, y); });
+        }
+        if (name == "ldexp") {
+            return broadcast_apply(a, b, [](R x, R y) { return scaled_by_power_of_two(x, y); });
         }
         return broadcast_apply(a, b, [](R x, R y) { return heaviside_step(x, y); });
     }
@@ -635,6 +649,45 @@ PyObject* module_take_along_axis(PyObject* /*self*/, PyObject* args)
             const sb::scoped_gil_release unlocked {releases_gil(indices->size())};
             result.emplace(std::visit([&](const auto& t) {
                 return any_tensor {numerical::take_along_axis(t, *indices, static_cast<std::size_t>(axis))};
+            }, *a));
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _select(a, positions) -> Tensor: numerical::select_along_last, the elements a stable sort of each line along a's
+// last axis puts at the int64 positions (one row of them for every line, or one per line).
+PyObject* module_select(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x = nullptr;
+    PyObject* y = nullptr;
+    if (PyArg_ParseTuple(args, "OO", &x, &y) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    const auto* positions = std::get_if<int_tensor>(b);
+    if (positions == nullptr || std::holds_alternative<bool_tensor>(*a)) {
+        PyErr_SetString(PyExc_ValueError, "_select: a tensor of numbers and int64 positions");
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            result.emplace(std::visit([&](const auto& t) {
+                if constexpr (std::is_same_v<std::decay_t<decltype(t)>, bool_tensor>) {
+                    return any_tensor {t}; // refused above: a bool has no order the median reads
+                }
+                else {
+                    return any_tensor {numerical::select_along_last(t, *positions)};
+                }
             }, *a));
         }
         return wrap(std::move(*result));

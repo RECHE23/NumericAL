@@ -34,9 +34,20 @@ A change that can break code is listed under **Breaking** and held for a month's
 ### Added
 
 - **`array_equal(…, equal_nan=True)`**, as NumPy's.
+- **The array API's namespace**: a Tensor's `__array_namespace__()` is `numerical` (so `array_api_compat` and the
+  array API support of SciPy and scikit-learn find it), with `isdtype`, `result_type`, `can_cast`, `empty`,
+  `from_dlpack` and `__array_namespace_info__()`, as the standard's 2024.12 revision and NumPy's.
+- **More of NumPy's root**: `array` (`ndmin`), `asanyarray`, `ascontiguousarray`, `exp2`, `ldexp`, `frexp`, `modf`,
+  `spacing`, `fix`, `sinc`, `lexsort`, `partition` and `argpartition` (a sort, one of the arrangements NumPy allows),
+  `apply_along_axis`, `fromfunction`, `fromiter`, `rollaxis`, `real_if_close`, `sort_complex`, `array_equiv` and
+  `resize`, as NumPy's.
 
 ### Changed
 
+- **`median`, `nanmedian` and the quantiles select** their elements (`std::nth_element`, then the zero or the NaN of
+  the same rank in the line's order, which a stable sort would have put there: the same bits) where they sorted each
+  line: `median` of 10⁶ 104 → 11 ms (NumPy: 10), of 1,000 lines of 1,000 3 ms (NumPy: 10, `nanmedian` 18). More
+  than eight positions a line are still read from a sort.
 - **`take` and indexing by an int64 Tensor** run natively: `take` of 10⁶ indices 947 → 4.4 ms (NumPy: 5.5), `t[i]`
   83 → 3.2 ms; `isin` and `histogram`, which index so, follow.
 

@@ -59,6 +59,11 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
   `nanmedian([1.7976931348623157e308])` is infinite there.
 - **`take` with `mode="wrap"` from an empty axis** raises IndexError, as NumPy does for a result with elements; for
   one without, NumPy's loop never ends (numpy/numpy#11677).
+- **`partition` and `argpartition`** sort each line, one of the arrangements NumPy's allows (the element at each
+  `kth` the sorted one, none larger before it, none smaller after); NumPy's own leaves the rest in an order it does
+  not specify.
+- **`frexp`'s exponents are int64**, NumPy's int32, and 0 for an infinity or a NaN, where NumPy's are its C
+  library's (0 from glibc and macOS, −1 from MSVC); `empty` gives zeros (no element of a Tensor is ever unset).
 - **Floating-point warnings.** An invalid operation, a division by zero or an overflow answers IEEE 754's NaN or
   infinity without NumPy's `RuntimeWarning` ("invalid value encountered…"); there is no `errstate`.
 - **`insert` before a list of bools** inserts before each true position, as NumPy does for a bool array; NumPy 2.4
