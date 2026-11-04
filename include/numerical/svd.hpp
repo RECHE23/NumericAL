@@ -1919,6 +1919,11 @@ namespace numerical {
       return x;
     }
 
+    template <typename T>
+    [[nodiscard]] buffer<double> square_singular_values(buffer<T>   b,
+                                                        std::size_t n,
+                                                        qd_index    sweeps = dqds_sweeps);
+
     /*!
      * \brief The least-squares solution of `A X ≈ B` by a QR factorisation, of `A`, or of `Aᴴ` for a wide `A` (the
      *        minimum-norm solution), where it is the one the singular value decomposition gives: with `A` divided by
@@ -1930,6 +1935,8 @@ namespace numerical {
      * \param[in]  a      The `m × n` matrix `A`.
      * \param[in]  b      The right-hand sides, one per column.
      * \param[in]  cutoff Where a singular value counts as zero.
+     * \param[out] values R's singular values (of `A` over `2^exponent`), where they decided the rank because the
+     *              bound was too loose; else left empty.
      * \param[out] r Where given, the square `R` factorised, of `A` divided by `2^exponent`, and that exponent: its
      *              singular values are `A`'s over `2^exponent`.
      * \return The solution, or nothing where the decomposition must decide the rank.
@@ -1938,6 +1945,7 @@ namespace numerical {
     [[nodiscard]] std::optional<matrix<T>> lstsq_by_qr(const matrix<T>&                       a,
                                                        const matrix<T>&                       b,
                                                        rank_cutoff                            cutoff,
+                                                       buffer<double>&                        values,
                                                        std::pair<buffer<T>, int>* const       r = nullptr)
     {
       const std::size_t m       {a.rows()};
@@ -1976,7 +1984,13 @@ namespace numerical {
       }
       const double smallest_bound {1.0 / std::sqrt(inverse_squares)};
       if (!(smallest_bound > qr_rank_margin * cutoff.scaled(exponent).magnitude(std::sqrt(r_squares), m, n))) {
-        return std::nullopt;
+        // The bound is loose (a coarse cutoff, single precision's): R's own singular values decide, A's to within
+        // the factorisation's rounding, far under the margin.
+        buffer<double> sigma {square_singular_values(buffer<T>(factors.r), cols)};
+        if (!(sigma.back() > qr_rank_margin * cutoff.scaled(exponent).magnitude(sigma.front(), m, n))) {
+          return std::nullopt;
+        }
+        values = std::move(sigma);
       }
       const std::size_t k          {b.cols()};
       buffer<T>         x(n * k, T {});
@@ -2013,7 +2027,7 @@ namespace numerical {
     template <typename T>
     [[nodiscard]] buffer<double> square_singular_values(buffer<T>      b,
                                                         std::size_t    n,
-                                                        qd_index       sweeps = dqds_sweeps)
+                                                        qd_index       sweeps)
     {
       buffer<double> d(n, double {});
       buffer<double> e(n, double {});
@@ -2109,7 +2123,8 @@ namespace numerical {
       throw dimension_error("lstsq: right-hand side size differs from the matrix");
     }
     detail::require_finite(a, "lstsq");
-    if (std::optional<matrix<T>> fast {detail::lstsq_by_qr(a, b, cutoff)}) {
+    buffer<double> values; // R's singular values, where they decided; unread here
+    if (std::optional<matrix<T>> fast {detail::lstsq_by_qr(a, b, cutoff, values)}) {
       return *std::move(fast);
     }
     const svd_decomposition<T> s {a};
@@ -2889,13 +2904,15 @@ namespace numerical {
     detail::require_finite(a, "lstsq");
     // The singular values from what the solution took: the QR's R (A's over a power of two), else the decomposition.
     std::pair<buffer<T>, int>           r;
-    std::optional<matrix<T>>            fast {detail::lstsq_by_qr(a, b, cutoff, &r)};
+    buffer<double>                      decided; // R's singular values, where they decided the rank
+    std::optional<matrix<T>>            fast {detail::lstsq_by_qr(a, b, cutoff, decided, &r)};
     std::optional<svd_decomposition<T>> s;
     if (!fast) {
       s.emplace(a);
     }
-    buffer<double> values {fast ? detail::square_singular_values(std::move(r.first), std::min(a.rows(), a.cols()))
-                                     : buffer<double>(s->singular_values().begin(), s->singular_values().end())};
+    buffer<double> values {!fast ? buffer<double>(s->singular_values().begin(), s->singular_values().end())
+                                 : decided.empty() ? detail::square_singular_values(std::move(r.first), std::min(a.rows(), a.cols()))
+                                                   : std::move(decided)};
     if (fast) {
       for (double& value : values) {
         value = std::ldexp(value, r.second);

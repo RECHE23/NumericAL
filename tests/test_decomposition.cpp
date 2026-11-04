@@ -3297,6 +3297,17 @@ TEST(least_squares_reports_what_numpy_lstsq_reports)
   const vector<double> large_values {numerical::least_squares(large, matrix<double> {{1.0}, {1.0}, {1.0}}).singular_values};
   EXPECT(large_values[0] == 4e10 && large_values[1] == 3e10);
   EXPECT(numerical::least_squares(matrix<double> {{2.0, 1.0}, {1.0, 3.0}}, matrix<double> {{1.0}, {2.0}}).residuals.size() == 0);
+  // A coarse cutoff (single precision's) that the Frobenius bound on R misses: R's singular values decide, and the QR
+  // solution stands where they clear the margin (all three 1 here, the bound 1/√3 against √3 times 0.5); where one
+  // does not (0.3 against 0.5), the decomposition answers. Each the SVD's solution.
+  const matrix<double> unit  {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 1.0}, {0.0, 0.0, 0.0}};
+  const matrix<double> lower {{1.0, 0.0, 0.0}, {0.0, 1.0, 0.0}, {0.0, 0.0, 0.3}, {0.0, 0.0, 0.0}};
+  const matrix<double> rhs   {{1.0}, {2.0}, {3.0}, {4.0}};
+  for (const matrix<double>* m : {&unit, &lower}) {
+    const numerical::least_squares_solution<double> coarse {numerical::least_squares(*m, rhs, numerical::rank_cutoff::relative(5e-3))};
+    EXPECT(coarse.rank == 3 && approx_equal(coarse.solution, numerical::lstsq(*m, rhs)));
+    EXPECT(approx_equal(coarse.singular_values, numerical::singular_values(*m)));
+  }
   EXPECT(numerical::least_squares(matrix<double> {{1.0, 2.0, 3.0}}, matrix<double> {{1.0}}).residuals.size() == 0);
   const numerical::least_squares_solution<double> deficient {
     numerical::least_squares(matrix<double> {{1.0, 2.0}, {2.0, 4.0}, {3.0, 6.0}}, matrix<double> {{1.0}, {0.0}, {1.0}})};

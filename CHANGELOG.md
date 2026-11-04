@@ -52,6 +52,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   the same rank in the line's order, which a stable sort would have put there: the same bits) where they sorted each
   line: `median` of 10⁶ 104 → 11 ms (NumPy: 10), of 1,000 lines of 1,000 3 ms (NumPy: 10, `nanmedian` 18). More
   than eight positions a line are still read from a sort.
+- **`lstsq` of float32 and complex64** keeps its QR solution where the bound on R's smallest singular value is too
+  loose for single precision's coarse cutoff: R's own singular values (computed for the answer anyway) decide the
+  rank, the decomposition answering where one of them comes within the margin. float32 1,000 × 500 to 2,000 × 1,000
+  as fast as float64 (2,000 × 1,000: 284 → 166 ms), as accurate (rounded to float32, NumPy's in these tests).
 - **`sort` of float64, float32 and int64** sorts a line of 256 elements or more by its bits, a byte at a time (a
   stable counting sort each), the NaNs set apart first and the zeros' signs then rewritten in their order: the same
   bits as the stable sort. 10⁶ float64 on one thread of an x86-64 processor 77 → 24 ms (NumPy: 11), on four 27 →
