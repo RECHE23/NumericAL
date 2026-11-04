@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.5 — 2026-11-04
+
 ### Fixed
 
 - **A sum of complex numbers** (`sum`, `mean` and those built on them) has NumPy's bits from four terms on: NumPy
