@@ -102,12 +102,13 @@ class AgainstNumPy(unittest.TestCase):
             for g, w in zip(got, want):
                 self.assertSame(lambda g=g: g, lambda w=w: w, label, ulps, close)
             return
-        if isinstance(got, (int, float, complex)) and not isinstance(got, bool):  # NumPy's scalar: a number here
-            self.assertEqual(np.shape(want), (), label)
-            got = np.asarray(got, np.asarray(want).dtype)
-        got, want = np.asarray(got), np.asarray(want)
+        want = np.asarray(want)
         if want.dtype.kind in "iu":  # NumPy's indices are intp (int32 on a 32-bit Windows)
             want = want.astype(np.int64)
+        if isinstance(got, (int, float, complex)) and not isinstance(got, bool):  # NumPy's scalar: a number here
+            self.assertEqual(want.shape, (), label)
+            got = np.asarray(got, want.dtype)
+        got = np.asarray(got)
         self.assertEqual((got.shape, got.dtype), (want.shape, want.dtype), label)
         if close:
             np.testing.assert_allclose(got, want, rtol=1e-9, atol=1e-9, err_msg=label)
