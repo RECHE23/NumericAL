@@ -393,10 +393,11 @@ def histograms(rng):
     span = (float(rng.uniform(-6, 0)), float(rng.uniform(0, 6))) if rng.random() < 0.3 else None
     weights = rng.integers(0, 3, a.shape).astype(np.float64) if rng.random() < 0.3 and not isinstance(bins, str) \
         else None
-    same({}, "", "histogram", a, bins=bins, range=span, weights=weights, density=bool(rng.random() < 0.2))
-    same({}, "", "histogram_bin_edges", a, bins=bins, range=span)
+    # the edges end at the values' min and max: on x86-64, NumPy's take a zero's sign from its loops' order
+    same(EXTREME_ZEROS, "", "histogram", a, bins=bins, range=span, weights=weights, density=bool(rng.random() < 0.2))
+    same(EXTREME_ZEROS, "", "histogram_bin_edges", a, bins=bins, range=span)
     x, y = small_floats(rng, (12,)), small_floats(rng, (12,))
-    same({}, "", "histogram2d", x, y, bins=int(rng.integers(1, 5)))
+    same(EXTREME_ZEROS, "", "histogram2d", x, y, bins=int(rng.integers(1, 5)))
     counts = rng.integers(0, 6, int(rng.integers(0, 8))).astype(np.int64)
     same({}, "", "bincount", counts, minlength=int(rng.integers(0, 4)))
     same({}, "", "bincount", counts, weights=floats(rng, counts.size, special=0.0))
