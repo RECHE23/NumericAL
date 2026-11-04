@@ -2396,15 +2396,17 @@ namespace numerical {
 
   /*!
    * \brief `start, start + step, …` below \p stop (above it for a negative step), as NumPy's `arange`: its
-   *        length is `ceil((stop − start) / step)` and element `i` is `start + i·delta` with
-   *        `delta = (start + step) − start`, the step as the first two elements hold it,
-   *        rounded once (a fused multiply-add, as NumPy's arm64 builds compute it; one without fusion rounds
-   *        the product first and can differ in the last bits).
+   *        length is `ceil((stop − start) / step)`, its first two elements \p start itself (a zero's sign
+   *        kept) and `start + step`, and element `i` after them `start + i·delta` with
+   *        `delta = (start + step) − start`, the step as the first two elements hold it: rounded once where
+   *        \p fused (a fused multiply-add, as NumPy's macOS arm64 wheels compute it), else the product rounded
+   *        first (NumPy's other wheels), which can differ in the last bits.
    * \throws dimension_error If \p step is zero or not finite.
    */
   [[nodiscard]] inline tensor<double> arange(double start,
                                              double stop,
-                                             double step)
+                                             double step,
+                                             bool   fused = true)
   {
     if (step == 0.0 || !std::isfinite(step) || !std::isfinite(start) || !std::isfinite(stop)) {
       throw dimension_error("arange needs finite bounds and a finite, non-zero step");
@@ -2415,9 +2417,24 @@ namespace numerical {
     }
     const std::size_t   count             {length > 0.0 ? static_cast<std::size_t>(length) : 0};
     buffer<double>      out(count);
-    const double        delta             {(start + step) - start};
-    for (std::size_t i {0}; i < count; ++i) {
-      out[i] = std::fma(static_cast<double>(i), delta, start);
+    const double        second            {start + step};
+    const double        delta             {second - start};
+    if (count > 0) {
+      out[0] = start;
+    }
+    if (count > 1) {
+      out[1] = second;
+    }
+    if (fused) {
+      for (std::size_t i {2}; i < count; ++i) {
+        out[i] = std::fma(static_cast<double>(i), delta, start);
+      }
+    }
+    else {
+      for (std::size_t i {2}; i < count; ++i) {
+        // the product rounded by itself, `i · delta − 0`, so that no compiler fuses it into the sum
+        out[i] = start + std::fma(static_cast<double>(i), delta, -0.0);
+      }
     }
     return tensor<double> {{count}, std::move(out)};
   }

@@ -374,7 +374,7 @@ def _index_array(index):
         return "mask", asarray(bool(index), "bool")  # before an integer: operator.index(True) is 1
     if isinstance(index, Tensor):
         if index.dtype == "int64":
-            return "ints", reshape(index, (-1,)).tolist(), index.shape
+            return "ints", reshape(index, (-1,)), index.shape
         if index.dtype != "bool":
             raise IndexError(f"arrays used as indices must be of integer (or boolean) type, not {index.dtype}")
         return "mask", index
@@ -445,6 +445,16 @@ def _offsets_bytes(parts, extents):
         if isinstance(values, bytes):
             return values
         return _array.array("q", values).tobytes() if isinstance(values, list) else values.tobytes()
+    if _builtins.any(isinstance(values, Tensor) for values, _ in parts):  # broadcast natively, as int64 Tensors
+        summed = None
+        for values, shape in parts:
+            if isinstance(values, bytes):
+                values = _numerical._frombytes(values, (len(values) // 8,), "int64", False)
+            elif not isinstance(values, Tensor):
+                values = asarray(values, "int64")
+            values = reshape(values, shape)
+            summed = values if summed is None else summed + values
+        return broadcast_to(summed, extents).tobytes()
     arrays = [values for values, _ in parts if type(values).__name__ == "ndarray"]
     if arrays:  # NumPy's broadcasting, one of its arrays being an index
         numpy = _sys.modules[type(arrays[0]).__module__.split(".")[0]]
@@ -460,6 +470,15 @@ def _offsets_bytes(parts, extents):
 def _bounded_offsets(values, extent, axis, stride):
     """The offsets of the integers `values` along an axis of `extent` and `stride`, a negative one counted from the end;
     IndexError for one outside the axis, in NumPy's words."""
+    if isinstance(values, Tensor):  # an int64 Tensor, natively
+        if values.size:
+            outside = (values >= extent) | (values < -extent)
+            if any(outside):
+                value = int(values[int(argmax(outside))])
+                raise IndexError(f"index {value} is out of bounds for axis {axis} with size {extent}")
+            if int(min(values)) < 0:
+                values = where(values < 0, values + extent, values)
+        return values if stride == 1 else values * stride
     if type(values).__name__ == "ndarray":  # NumPy's own arithmetic, at its speed
         if values.size and (values.max() >= extent or values.min() < -extent):
             value = values[(values >= extent) | (values < -extent)][0]
@@ -807,11 +826,16 @@ def _repr(self):
     return f"{head}{_format(values, len(head))}, dtype={self.dtype})"
 
 
-def array_equal(a, b):
+def array_equal(a, b, equal_nan=False):
     """``True`` when `a` and `b` (Tensors or array-likes) have the same shape and equal elements, as
-    ``numpy.array_equal``: a NaN equals nothing, itself included."""
+    ``numpy.array_equal``: a NaN equals nothing, itself included, unless `equal_nan` (a complex one with a NaN part
+    equal to any other)."""
     a, b = _same_dtype(a, b)
-    return a.shape == b.shape and _numerical._equal(a, b)
+    if a.shape != b.shape:
+        return False
+    if not equal_nan or a.dtype in ("int64", "bool"):
+        return _numerical._equal(a, b)
+    return bool(all(equal(a, b) | (isnan(a) & isnan(b))))
 
 
 Tensor.__getitem__ = _getitem
@@ -3897,7 +3921,7 @@ def arange(start, stop=None, step=1.0):
     """
     if stop is None:
         start, stop = 0.0, start
-    return _native(_numerical._arange, float(start), float(stop), float(step))
+    return _native(_numerical._arange, float(start), float(stop), float(step), _arange_fuses())
 
 
 def _result_dtype(*values):
@@ -5525,7 +5549,7 @@ def _triangle(m, k, lower, name):
     shape = m.shape
     if len(shape) == 1:  # NumPy's: the vector as every row of a square
         m, shape = reshape(m, (1, shape[0])), (shape[0], shape[0])
-    return where(_band_mask(shape, k, lower), m, False if m.dtype == "bool" else 0.0)
+    return where(_band_mask(shape, k, lower), m, zeros((), m.dtype))
 
 
 def tril(m, k=0):
@@ -5857,6 +5881,9 @@ def clip(a, a_min=None, a_max=None):
 def isclose(a, b, rtol=1e-05, atol=1e-08, equal_nan=False):
     """Where ``|a − b| ≤ atol + rtol |b|`` element-wise, as ``numpy.isclose``: infinities close only to themselves,
     NaNs to nothing unless `equal_nan`."""
+    b = (float(b) if isinstance(b, int) else b) if _weak(b) else _tensor(b)
+    if isinstance(b, Tensor) and b.dtype in ("int64", "bool"):  # NumPy's: `b` inexact, so that no difference wraps
+        b = asarray(b, "float64")
     a, b = _same_dtype(a, b)
     close = logical_and(less_equal(absolute(a - b), atol + rtol * absolute(b)), isfinite(b))
     close = logical_or(close, equal(a, b))
@@ -5933,12 +5960,21 @@ def vdot(a, b, /):
 def ptp(a, axis=None, keepdims=False):
     """The range, maximum less minimum, over every element or along `axis`, as ``numpy.ptp``."""
     a = _operand(a)
-    return max(a, axis=axis, keepdims=keepdims) - min(a, axis=axis, keepdims=keepdims)
+    axes = _resolved_axes(a, axis, "ptp")
+    return _finished(max(a, axis=axis, keepdims=True) - min(a, axis=axis, keepdims=True), axes, keepdims)
 
 
-def var(a, axis=None, dtype=None, ddof=0, keepdims=False):
-    """The variance, ``Σ |x − mean|² / (N − ddof)`` over every element or along `axis`, as ``numpy.var``: real, of
-    `a`'s precision (a complex one's parts' squares summed); `dtype` the one to compute in."""
+def _finished(kept, axes, keepdims):
+    """A reduction over `axes` computed with them kept (`kept`, so that its arithmetic stays in its dtype: an int64
+    wrapping, a float32 rounding, a 0/0 a NaN), in the shape the caller asked for: a number for every axis without
+    `keepdims`, as a full reduction answers."""
+    if keepdims:
+        return kept
+    return _number_if_scalar(reshape(kept, tuple(e for k, e in enumerate(kept.shape) if k not in axes)))
+
+
+def _variance(a, axis, dtype, ddof):
+    """:func:`var` with the reduced axes kept, and those axes."""
     a = _operand(a)
     if dtype is not None:
         a = asarray(a, dtype)
@@ -5948,17 +5984,24 @@ def var(a, axis=None, dtype=None, ddof=0, keepdims=False):
     count = _math.prod(a.shape[k] for k in axes)
     deviation = a - mean(a, axis=axis, keepdims=True)
     squares = real(deviation * conj(deviation)) if a.dtype.startswith("complex") else deviation * deviation
-    total = sum(squares, axis=axis, keepdims=keepdims)
+    total = sum(squares, axis=axis, keepdims=True)
     divisor = _builtins.max(count - ddof, 0)
     if divisor == 0:
-        _warnings.warn("Degrees of freedom <= 0 for slice", RuntimeWarning, stacklevel=2)
-    return total / divisor if divisor else total * _math.nan
+        _warnings.warn("Degrees of freedom <= 0 for slice", RuntimeWarning, stacklevel=3)
+    return (total / divisor if divisor else total * _math.nan), axes
+
+
+def var(a, axis=None, dtype=None, ddof=0, keepdims=False):
+    """The variance, ``Σ |x − mean|² / (N − ddof)`` over every element or along `axis`, as ``numpy.var``: real, of
+    `a`'s precision (a complex one's parts' squares summed); `dtype` the one to compute in."""
+    variance, axes = _variance(a, axis, dtype, ddof)
+    return _finished(variance, axes, keepdims)
 
 
 def std(a, axis=None, dtype=None, ddof=0, keepdims=False):
     """The standard deviation, the square root of :func:`var`, as ``numpy.std``."""
-    variance = var(a, axis=axis, dtype=dtype, ddof=ddof, keepdims=keepdims)
-    return _math.sqrt(variance) if isinstance(variance, _numbers.Number) else sqrt(variance)
+    variance, axes = _variance(a, axis, dtype, ddof)
+    return _finished(sqrt(variance), axes, keepdims)
 
 
 def _real_function(name, doc):
@@ -6468,6 +6511,26 @@ def _counts(values, name):
     return [int(v) for v in flat]
 
 
+def _index_tensor(values, name):
+    """Integers of an array-like (a Tensor, a list, a NumPy array) as an int64 Tensor of its shape, a bool one read
+    as 0 and 1, refusing any other kind."""
+    if isinstance(values, Tensor):
+        if values.dtype not in ("int64", "bool"):
+            raise TypeError(f"{name}: Cannot cast array data from dtype('{values.dtype}') to dtype('int64') according "
+                            "to the rule 'safe'")
+        return values if values.dtype == "int64" else asarray(values, "int64")
+    if type(values).__name__ == "ndarray" and values.dtype.kind not in "iub":
+        raise TypeError(f"{name}: Cannot cast array data from dtype('{values.dtype}') to dtype('int64') according "
+                        "to the rule 'safe'")
+    if type(values).__name__ != "ndarray":
+        flat, shape = _nested(values)
+        if not _builtins.all(isinstance(v, _numbers.Integral) for v in flat):
+            raise TypeError(f"{name}: Cannot cast array data from dtype('float64') to dtype('int64') according to "
+                            "the rule 'safe'")
+        return reshape(asarray([int(v) for v in flat], "int64"), shape)
+    return asarray(values, "int64")
+
+
 def repeat(a, repeats, axis=None):
     """Each element of `a` repeated, along `axis` (of the flattened `a` where None), as ``numpy.repeat``: `repeats`
     one count for all, or one per element along the axis.
@@ -6510,22 +6573,28 @@ def take(a, indices, axis=None, mode="raise"):
     axis = _axis(a, axis)
     if mode not in ("raise", "wrap", "clip"):
         raise ValueError(f"clipmode must be one of 'clip', 'raise', or 'wrap' (got {mode!r})")
-    scalar = isinstance(indices, _numbers.Integral)
-    if scalar:
-        shape, flat = (), [_operator.index(indices)]
-    else:
-        shape = _tensor(indices).shape if not isinstance(indices, Tensor) else indices.shape
-        flat = _counts(indices, "take")
     extent = a.shape[axis]
-    if mode != "raise" and flat:
-        if extent == 0:
-            raise IndexError("cannot do a non-empty take from an empty axes.")
-        flat = [i % extent for i in flat] if mode == "wrap" else [_builtins.min(_builtins.max(i, 0), extent - 1)
-                                                                  for i in flat]
-    if scalar:
-        return a[_along_axis(axis, len(a.shape), flat[0])]
+    if isinstance(indices, _numbers.Integral):
+        flat, shape = asarray([_operator.index(indices)], "int64"), ()
+    else:
+        flat = _index_tensor(indices, "take")
+        shape = flat.shape
+        flat = reshape(flat, (-1,))
+    before, after = _math.prod(a.shape[:axis]), _math.prod(a.shape[axis + 1:])
+    out_shape = a.shape[:axis] + shape + a.shape[axis + 1:]
+    # NumPy's check, of its result's size; "wrap" of an index from an empty axis loops forever there (numpy#11677)
+    if extent == 0 and (before * flat.size * after or (mode == "wrap" and flat.size)):
+        raise IndexError("cannot do a non-empty take from an empty axes.")
+    if mode == "raise" and before and flat.size:  # NumPy's: checked wherever a slice of the other axes stands
+        flat = _bounded_offsets(flat, extent, axis, 1)
+    if not before * flat.size * after:
+        return zeros(out_shape, a.dtype)
+    if mode == "wrap":
+        flat = flat % extent
+    elif mode == "clip":
+        flat = minimum(maximum(flat, 0), extent - 1)
     picked = a[_along_axis(axis, len(a.shape), flat)]
-    return reshape(picked, a.shape[:axis] + shape + a.shape[axis + 1:])
+    return reshape(picked, out_shape)
 
 
 def take_along_axis(arr, indices, axis=-1):
@@ -7139,15 +7208,19 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
     """NumPy's ``_quantile`` of `a` (real) at `q` (in [0, 1]) over `axis`, by `method`: the virtual indexes, their
     neighbours in the sorted values, and NumPy's interpolation ``_lerp``; NaN where a slice holds a NaN (where it holds
     nothing else, for `ignore_nans`)."""
-    if method not in _QUANTILE_METHODS:
-        raise ValueError(f"{method!r} is not a valid method. Use one of: {_QUANTILE_METHODS}")
     a = _tensor(a)
     if a.dtype.startswith("complex"):
         raise TypeError("a must be an array of real numbers")
+    if ignore_nans and a.size == 0:  # NumPy's: the mean of nothing, whatever `q` and `method`
+        return nanmean(a, axis, keepdims=keepdims)
+    if method not in _QUANTILE_METHODS:
+        raise ValueError(f"{method!r} is not a valid method. Use one of: {_QUANTILE_METHODS}")
     joined, axes = _last_axis(a, axis, name)
+    inexact = a.dtype in ("float64", "float32")
+    if inexact and not ignore_nans and joined.shape[-1] == 0:  # NumPy's look for a NaN at the end, whatever `q`
+        raise IndexError("index -1 is out of bounds for axis 0 with size 0")
     s = sort(joined, axis=-1)
     rest = s.shape[:-1]
-    inexact = a.dtype in ("float64", "float32")
     lead = q.shape
     flat_q = reshape(q, (-1,))
     if ignore_nans and inexact:
@@ -7216,6 +7289,8 @@ def _weighted_quantiles(a, q, axis, weights, keepdims, ignore_nans, name):
         w = broadcast_to(reshape(w, tuple(e if k in axes else 1 for k, e in enumerate(a.shape))), a.shape)
     if any(w < 0):
         raise ValueError("Weights must be non-negative.")
+    if ignore_nans and a.size == 0:  # NumPy's: the mean of nothing, whatever `q`
+        return nanmean(a, axis, keepdims=keepdims)
     joined, axes = _last_axis(a, axis, name)
     order = argsort(joined, axis=-1)
     s = take_along_axis(joined, order, axis=-1)
@@ -7465,7 +7540,8 @@ def corrcoef(x, y=None, rowvar=True, *, dtype=None):
     deviations, then clipped to [−1, 1] (each part of a complex coefficient)."""
     c = cov(x, y, rowvar, dtype=dtype)
     if not isinstance(c, Tensor) or not c.shape:
-        return c / c
+        c = c if isinstance(c, Tensor) else asarray(c)
+        return _number_if_scalar(c / c)  # NaN for a constant variable, as NumPy's
     d = diagonal(c)
     stddev = sqrt(real(d))
     c = c / reshape(stddev, (stddev.shape[0], 1))
@@ -8285,7 +8361,9 @@ def _isin(ar1, ar2, assume_unique=False, invert=False, kind=None):
                            "maximum integer of the datatype. Please set `kind` to None or 'sort'.")
     if integers and b.shape[0] == 0:
         return ones(a.shape, "bool") if invert else zeros(a.shape, "bool")
-    if assume_unique:  # NumPy's sort of the two together: with duplicates in a, an element matches the next one
+    # NumPy's sort of the two together: with duplicates in a, an element matches the next one. Of two dtypes, distinct
+    # elements of a may meet in the promoted one (INT64_MIN and INT64_MIN + 1 in float64): each looked up in b below
+    if assume_unique and a.dtype == b.dtype:
         joined = concatenate([a, b])
         order = argsort(joined)
         s = joined[order]
@@ -8566,6 +8644,8 @@ def correlate(a, v, mode="valid"):
     else:
         start, count = (shorter - 1 - shorter // 2, n) if n >= m else (shorter // 2, m)
     # the full range's lags run from −(m − 1): the lags start − (m − 1) … on, each from its own terms, natively
+    if a.dtype == "bool":  # NumPy's dot of bools: whether any of a lag's products holds, counted here in int64
+        return _native(_numerical._correlate, asarray(a, "int64"), asarray(v, "int64"), start - (m - 1), count) != 0
     return _native(_numerical._correlate, a, v, start - (m - 1), count)
 
 
@@ -8590,7 +8670,8 @@ __all__ += ["trapezoid", "gradient", "diagflat", "indices", "ix_", "ravel_multi_
 def bincount(x, /, weights=None, minlength=0):
     """How often each value 0, 1, … occurs in the non-negative integers `x`, as ``numpy.bincount``: at least
     `minlength` of them (int64); or with `weights` (one per element, read as float64), each value's weights summed in
-    `x`'s order, as NumPy's loop adds them."""
+    `x`'s order, as NumPy's loop adds them. An empty `x` gives `minlength` zeros of int64, its weights unread, as
+    NumPy's."""
     values = _as_numpy_reads(x)
     if values.shape == (0,) and not isinstance(x, Tensor) and not hasattr(x, "dtype"):
         values = asarray(values, "int64")  # NumPy's: an empty list read as integers
@@ -8604,9 +8685,11 @@ def bincount(x, /, weights=None, minlength=0):
     minlength = _operator.index(minlength)
     if minlength < 0:
         raise ValueError("'minlength' must not be negative")
-    if values.shape[0] and int(min(values)) < 0:
+    if not values.shape[0]:  # NumPy's: no weights read, the counts' dtype
+        return zeros((minlength,), "int64")
+    if int(min(values)) < 0:
         raise ValueError("'list' argument must have no negative elements")
-    length = _builtins.max(int(max(values)) + 1 if values.shape[0] else 0, minlength)
+    length = _builtins.max(int(max(values)) + 1, minlength)
     if weights is not None:
         weights = _as_numpy_reads(weights)
         if weights.dtype.startswith("complex"):
@@ -8856,6 +8939,28 @@ def _inclusive_search(ordered, edges):
 __all__ += ["bincount", "histogram", "histogram_bin_edges"]
 
 _numpy_interp_fused = None  # whether NumPy's interp fuses its line's multiply-add: measured once NumPy is imported
+_numpy_arange_fused = None  # whether NumPy's arange fuses its elements' multiply-add: measured once NumPy is imported
+
+
+def _contracting_wheels():
+    """Whether NumPy's wheels for this platform fuse a multiply-add their C writes apart (macOS arm64's clang
+    contracts them, the others' compilers do not)."""
+    return _sys.platform == "darwin" and _platform_machine() in ("arm64", "aarch64")
+
+
+def _arange_fuses():
+    """Whether numpy.arange's fill fuses ``start + i · delta``: as NumPy computes it beside this process, else as its
+    wheels for this platform do."""
+    global _numpy_arange_fused
+    if _numpy_arange_fused is None:
+        np = _sys.modules.get("numpy")
+        if np is None:
+            return _contracting_wheels()
+        # an element whose product and sum, rounded apart, differ from their fused rounding (by its last bit)
+        start, step = -3.5, 0.3
+        rounded = start + 27 * ((start + step) - start)
+        _numpy_arange_fused = float(np.arange(start, 7.2, step)[27]) != rounded
+    return _numpy_arange_fused
 
 
 def _interp_fuses():
@@ -8865,7 +8970,7 @@ def _interp_fuses():
     if _numpy_interp_fused is None:
         np = _sys.modules.get("numpy")
         if np is None:
-            return _sys.platform == "darwin" and _platform_machine() in ("arm64", "aarch64")
+            return _contracting_wheels()
         # a point whose line through (0, 0.1) and (0.3, 1.0) differs fused and rounded (by its last bit)
         x, xp, fp = 24 / 997.0, [0.0, 0.3], [0.1, 1.0]
         slope = (fp[1] - fp[0]) / (xp[1] - xp[0])
@@ -9092,7 +9197,17 @@ def polysub(a1, a2):
 
 def polymul(a1, a2):
     """The product of two polynomials, as ``numpy.polymul``: their coefficients' convolution."""
-    return convolve(_coefficients(a1), _coefficients(a2))
+    return convolve(_trimmed_coefficients(a1), _trimmed_coefficients(a2))
+
+
+def _trimmed_coefficients(p):
+    """A polynomial's coefficients as ``numpy.poly1d`` holds them: rank 1, its leading zeros left out (one zero for
+    the zero polynomial)."""
+    c = _coefficients(p)
+    if len(c.shape) > 1:
+        raise ValueError("Polynomial must be 1d only.")
+    found = flatnonzero(c)
+    return c[int(found[0]):] if found.shape[0] else zeros((1,), c.dtype)
 
 
 def polydiv(u, v):
@@ -9101,6 +9216,8 @@ def polydiv(u, v):
     u = _coefficients(u) + 0.0
     v = _coefficients(v) + 0.0
     dtype = _promoted([u.dtype, v.dtype])
+    if not u.shape[0] or not v.shape[0]:  # NumPy's: its leading coefficients read first
+        raise IndexError("index 0 is out of bounds for axis 0 with size 0")
     m, n = u.shape[0] - 1, v.shape[0] - 1
     scale = 1.0 / reshape(asarray(v[0:1], dtype), ())
     quotient = []
@@ -9117,7 +9234,7 @@ def polydiv(u, v):
 
 def roots(p):
     """The roots of the polynomial `p`, as ``numpy.roots``: the eigenvalues of its companion matrix (its leading and
-    trailing zeros set apart), complex as :func:`eigvals` answers."""
+    trailing zeros set apart), complex as :func:`eigvals` answers unless `p` is real and so are they all."""
     p = _coefficients(p)
     if len(p.shape) != 1:
         raise ValueError("Input must be a rank-1 array.")
@@ -9134,8 +9251,10 @@ def roots(p):
         first = reshape(-p[1:] / reshape(p[0:1], ()), (1, count - 1))
         companion = concatenate([first, companion[1:]]) if count > 2 else first
         values = eigvals(companion)
+        if not p.dtype.startswith("complex") and not any(imag(values) != 0):  # NumPy's: real ones if they all are
+            values = real(values)
     else:
-        values = zeros((0,), "complex128")
+        values = zeros((0,), "float64")
     return concatenate([values, zeros((trailing,), values.dtype)])
 
 
@@ -9295,10 +9414,7 @@ def compress(condition, a, axis=None, out=None):
         a, axis = reshape(a, (-1,)), 0
     axis = _axis(a, axis)
     chosen = nonzero(reshape(asarray(_tensor(condition), "bool"), (-1,)))[0]
-    extent = a.shape[axis]
-    if chosen.shape[0] and int(chosen[-1]) >= extent:
-        raise IndexError(f"index {int(chosen[-1])} is out of bounds for axis {axis} with size {extent}")
-    return a[_along_axis(axis, len(a.shape), chosen)]
+    return take(a, chosen, axis=axis)  # NumPy's: no bound checked without a slice of the other axes
 
 
 def extract(condition, arr):

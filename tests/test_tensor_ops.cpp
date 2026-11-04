@@ -577,8 +577,21 @@ TEST(creation_routines)
   }
   EXPECT(fused);
   EXPECT(!twice); // the case tells the two roundings apart
+  // Unfused, as NumPy's wheels other than macOS arm64's: each product rounded before its sum.
+  const tensor<double> apart   {numerical::arange(-3.5, 7.2, 0.3, false)};
+  bool                 rounded {apart.size() == 36U && apart.data()[0] == -3.5 && apart.data()[1] == -3.5 + 0.3};
+  for (std::size_t i {2}; i < apart.size(); ++i) {
+    const double product {std::fma(static_cast<double>(i), delta, -0.0)};
+    rounded = rounded && apart.data()[i] == -3.5 + product;
+  }
+  EXPECT(rounded);
+  EXPECT(!(apart == stepped));
   EXPECT(numerical::arange(1.0, 1.0, 1.0).size() == 0U);
   EXPECT(numerical::arange(2.0, 1.0, 1.0).size() == 0U);
+  // The first element is the start itself, a negative zero's sign kept, as NumPy's: −0 + 0·delta would be +0.
+  const tensor<double> from_zero {numerical::arange(-0.0, 0.5, 1.0)};
+  EXPECT(from_zero.size() == 1U && std::signbit(from_zero.data()[0]));
+  EXPECT(std::signbit(numerical::arange(-0.0, 3.0, 1.5).data()[0]));
   EXPECT_THROWS((void)numerical::arange(0.0, 1.0, 0.0), numerical::dimension_error);
   EXPECT_THROWS((void)numerical::arange(0.0, std::numeric_limits<double>::infinity(), 1.0), numerical::dimension_error);
   EXPECT_THROWS((void)numerical::arange(0.0, 1.0, std::numeric_limits<double>::infinity()), numerical::dimension_error);

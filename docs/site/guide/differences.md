@@ -54,6 +54,13 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
   only a zero's sign or a NaN's payload shows.
   A `histogram` with weights between given edges sums the weights of equal values in their order too; NumPy's, in
   its sort's, which can move a last bit.
+- **`median`, `nanmedian` and the quantiles of the largest values** answer them exactly: NumPy averages a middle
+  value with itself (or interpolates between two equal ones), which overflows past half the largest float, so
+  `nanmedian([1.7976931348623157e308])` is infinite there.
+- **`take` with `mode="wrap"` from an empty axis** raises IndexError, as NumPy does for a result with elements; for
+  one without, NumPy's loop never ends (numpy/numpy#11677).
+- **Floating-point warnings.** An invalid operation, a division by zero or an overflow answers IEEE 754's NaN or
+  infinity without NumPy's `RuntimeWarning` ("invalid value encountered…"); there is no `errstate`.
 - **`insert` before a list of bools** inserts before each true position, as NumPy does for a bool array; NumPy 2.4
   raises AttributeError for a list (it asks the list for its rank).
 - **`nanquantile` and `nanpercentile` with weights of the axis's shape** answer as with those weights broadcast to

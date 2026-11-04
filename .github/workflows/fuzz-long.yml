@@ -12,7 +12,7 @@ on:
   workflow_dispatch:
     inputs:
       seconds:
-        description: 'Fuzzing time per architecture, in seconds (60-18000)'
+        description: 'Fuzzing time per architecture, in seconds (60-12600)'
         required: false
         default: '3600'
 
@@ -30,8 +30,9 @@ jobs:
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
     runs-on: ${{ matrix.runner }}
-    # The fuzzing time is bounded by the input check below (5 h at most); the build takes minutes. 330 minutes
-    # leaves room for both at the maximum and stays under GitHub's 360-minute job limit.
+    # The fuzzing time is bounded by the input check below (3.5 h at most), and the four campaigns before the last take
+    # a tenth of it each: 4.9 h at the maximum; the build takes minutes. 330 minutes leaves room for both and stays
+    # under GitHub's 360-minute job limit.
     timeout-minutes: 330
     steps:
       - uses: actions/checkout@v6
@@ -52,8 +53,8 @@ jobs:
           case "$SECONDS_INPUT" in
             ''|*[!0-9]*) echo "::error::seconds must be a whole number, got '$SECONDS_INPUT'"; exit 1 ;;
           esac
-          if [ "$SECONDS_INPUT" -lt 60 ] || [ "$SECONDS_INPUT" -gt 18000 ]; then
-            echo "::error::seconds must be within 60-18000, got $SECONDS_INPUT"; exit 1
+          if [ "$SECONDS_INPUT" -lt 60 ] || [ "$SECONDS_INPUT" -gt 12600 ]; then
+            echo "::error::seconds must be within 60-12600, got $SECONDS_INPUT"; exit 1
           fi
           echo "FUZZ_TIME=$SECONDS_INPUT" >> "$GITHUB_ENV"
       - name: Build the extension with GCC
@@ -82,6 +83,17 @@ jobs:
           while [ "$(date +%s)" -lt "$end" ]; do
             seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
             python fuzz/fft.py --seed "$seed" --cases 300
+          done
+      # NumPy's functions composed in Python (fuzz/npdiff.py: sorting, sets, statistics, quantiles, histograms,
+      # polynomials, shapes and selections on drawn values and shapes), a fresh seed each campaign; a tenth of the time.
+      - name: Fuzz NumPy's composed functions against NumPy
+        env:
+          PYTHONPATH: python
+        run: |
+          end=$(( $(date +%s) + FUZZ_TIME / 10 ))
+          while [ "$(date +%s)" -lt "$end" ]; do
+            seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
+            python fuzz/npdiff.py --seed "$seed" --cases 400
           done
       # scipy.linalg's functions against SciPy (fuzz/scipy_linalg.py: drawn families and scales, each answer's backward
       # error against SciPy's), a fresh seed each campaign, then the extreme scales; a tenth of the time.

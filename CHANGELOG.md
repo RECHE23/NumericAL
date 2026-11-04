@@ -8,6 +8,44 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+
+- **`var` and `std` of float32** divide and take the root in float32, as NumPy's: a full reduction did its last step
+  in double precision (`var` of 1,001 float32 values: 971801.1908… where NumPy answers 971801.1875).
+- **`ptp` of int64** wraps modulo 2⁶⁴ as NumPy's (`ptp([INT64_MIN, INT64_MAX])` is −1); without an axis it answered
+  the exact difference, past int64.
+- **`corrcoef` of a constant variable** is NaN, as NumPy's; it raised ZeroDivisionError.
+- **`nanquantile` and `nanpercentile` of nothing** answer NumPy's `nanmean` of it (NaN, whatever `q`); they raised
+  IndexError. **`quantile` of no float** raises IndexError whatever `q`, as NumPy's.
+- **`setdiff1d` of int64 against floats** keeps INT64_MIN beside INT64_MIN + 1: the two met in float64, where the
+  sort of both arrays together took one for the other.
+- **`polymul`** drops its operands' leading zeros, as NumPy's `poly1d`; **`roots`** answers real roots in a real
+  dtype where all are real and the polynomial is, as NumPy's.
+- **`arange`** starts at its very start (`arange(-0.0, 3, 0.5)[0]` is −0.0) and holds `start + step` second, as
+  NumPy's; its other elements are fused or rounded as NumPy's wheel beside computes them (fused on macOS arm64
+  alone), which the binding measures.
+- **`take`** checks its indices as NumPy's: none where the other axes are empty, all of them otherwise; "wrap" from an
+  empty axis raises IndexError, where NumPy's loop never ends (numpy/numpy#11677). `compress` follows it.
+- **`tril` and `triu` of int64** stay int64; **`isclose` of int64** compares in float64, as NumPy's (a difference
+  wrapped: `isclose(-INT64_MAX, INT64_MAX)` was True); **`bincount` of nothing** is int64 with weights too, and
+  `polydiv` of an empty polynomial raises IndexError, as NumPy's; **`correlate` and `convolve` of bools** answer
+  bools, as NumPy's, where they raised.
+
+### Added
+
+- **`array_equal(…, equal_nan=True)`**, as NumPy's.
+
+### Changed
+
+- **`take` and indexing by an int64 Tensor** run natively: `take` of 10⁶ indices 947 → 4.4 ms (NumPy: 5.5), `t[i]`
+  83 → 3.2 ms; `isin` and `histogram`, which index so, follow.
+
+### Development
+
+- **`fuzz/npdiff.py`** (`make fuzz-numpy`): NumPy's functions composed in Python against NumPy on drawn values, shapes
+  and options, 24 families; a fixed seed before each push, a fresh one before each release and every week. The
+  weekly long fuzz takes 3.5 hours at most per architecture, so that its five campaigns fit the job's limit.
+
 ## 2026.11.5 — 2026-11-04
 
 ### Fixed

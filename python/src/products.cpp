@@ -833,17 +833,18 @@ PyObject* module_eye(PyObject* /*self*/, PyObject* args)
     }
 }
 
-// _arange(start, stop, step) -> Tensor (float64).
+// _arange(start, stop, step, fused) -> Tensor (float64).
 PyObject* module_arange(PyObject* /*self*/, PyObject* args)
 {
     double start = 0.0;
     double stop  = 0.0;
     double step  = 1.0;
-    if (PyArg_ParseTuple(args, "ddd", &start, &stop, &step) == 0) {
+    int    fused = 1;
+    if (PyArg_ParseTuple(args, "ddd|p", &start, &stop, &step, &fused) == 0) {
         return nullptr;
     }
     try {
-        return wrap(any_tensor {numerical::arange(start, stop, step)});
+        return wrap(any_tensor {numerical::arange(start, stop, step, fused != 0)});
     }
     catch (...) {
         return set_cpp_error();

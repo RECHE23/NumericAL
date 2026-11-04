@@ -194,7 +194,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_diagonal(a, offset) -> Tensor\nThe offset diagonal of each matrix of a (its last two axes), read where it lies.");
     m.raw("_full", module_full, METH_VARARGS, "_full(shape, value, dtype) -> Tensor\nA tensor of one value.");
     m.raw("_eye", module_eye, METH_VARARGS, "_eye(n, dtype) -> Tensor\nThe n×n identity.");
-    m.raw("_arange", module_arange, METH_VARARGS, "_arange(start, stop, step) -> Tensor\nAs numpy.arange (float64).");
+    m.raw("_arange", module_arange, METH_VARARGS,
+          "_arange(start, stop, step, fused=True) -> Tensor\nAs numpy.arange (float64), its elements fused or not.");
     m.raw("_linspace", module_linspace, METH_VARARGS,
           "_linspace(start, stop, num) -> Tensor\nAs numpy.linspace with the end point (float64).");
     m.raw("slogdet", module_slogdet, METH_VARARGS,

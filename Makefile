@@ -38,7 +38,7 @@ FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage docs-venv doc-xml docs-site docs-site-gate format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
-        python python-test python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
+        python python-test python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-numpy-push fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
 .DEFAULT_GOAL := help
 
@@ -62,6 +62,7 @@ help:
 	@echo "  make fuzz-linalg  Decompositions vs NumPy on adversarial matrices, every GEMM path (CASES=, SEED=)"
 	@echo "  make fuzz-edges   Element-wise ops and reductions vs NumPy on zeros, infinities, NaNs, empty axes (CASES=, SEED=)"
 	@echo "  make fuzz-fft     Fourier transforms vs NumPy over drawn lengths, axes, dtypes and scalings, every path (CASES=, SEED=)"
+	@echo "  make fuzz-numpy   Sorting, sets, statistics, histograms, polynomials, shapes… vs NumPy on drawn inputs (CASES=, SEED=)"
 	@echo "  make version-check  Assert pyproject = __init__ = CMake-derived version"
 	@echo "  make check-commit  Before each commit: format, the suite under coverage at 100 % (~2 min)"
 	@echo "  make check-push    Before each push: the above, g++-14, CI's arm64 g++ 13, sanitizers, MISRA, lint, doc, Python"
@@ -277,6 +278,14 @@ fuzz-edges: python
 fuzz-fft: python
 	$(PYRUN) fuzz/fft.py --cases $(or $(CASES),300) $(if $(SEED),--seed $(SEED),)
 
+# NumPy's functions composed in Python against NumPy (fuzz/npdiff.py): CASES per family (default 1000) from SEED (default:
+# the clock); fuzz-numpy-push, a fixed seed's few cases, before each push.
+fuzz-numpy: python
+	$(PYRUN) fuzz/npdiff.py --cases $(or $(CASES),1000) $(if $(SEED),--seed $(SEED),)
+
+fuzz-numpy-push: python
+	$(PYRUN) fuzz/npdiff.py --cases 100 --seed 20261104
+
 # scipy.linalg's functions against SciPy (fuzz/scipy_linalg.py), then the extreme scales, each call in a process of its
 # own; SciPy required.
 fuzz-scipy: python
@@ -426,9 +435,9 @@ SCIFORGE_MAKE    ?= ../sciforge/make
 # Cheapest first, so a slip in a comment or a stub fails in seconds, not after the suites: Doxygen before coverage, the
 # static checks (MISRA, the stubs, lint) before the builds and runs.
 QUALITY_COMMIT   := format-check actionlint doc-no-coverage coverage-gate
-QUALITY_PUSH     := docs-site-gate version-check check-pins misra stubtest-gate lint-gate bench-diff-selftest python-test test test-gcc test-gcc-neon \
+QUALITY_PUSH     := docs-site-gate version-check check-pins misra stubtest-gate lint-gate bench-diff-selftest python-test fuzz-numpy-push test test-gcc test-gcc-neon \
                     ci-arm-gcc sanitize tsan
-QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges fuzz-fft fuzz-scipy
+QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-scipy
 -include $(SCIFORGE_MAKE)/quality.mk
 
 # The calendar release every SciForge project cuts (the sibling checkout's make/release.mk): bench-diff against the last
