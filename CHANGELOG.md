@@ -8,6 +8,17 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Announced for 2026.12.0
+
+Beside the changes announced already (integers read as int64, Python 3.11, `-ffp-contract=off`), December's first
+release brings:
+- **A bool's sum and product as int64**, as NumPy's (`sum`, `prod`, `cumsum`, `cumprod` and their `nan` and
+  `cumulative_` forms, `trace`), where they are float64.
+- **`eye(N, M=None, k=0, dtype=float)`**, NumPy's signature: its second positional argument the columns, where it is
+  the dtype today (`eye(3, dtype="float32")` works either way).
+- **`diagonal` and `trace` at the root as NumPy's root ones**, of the axes 0 and 1 where they take the last two
+  (`numpy.linalg`'s, which `numerical.linalg.diagonal` and `numerical.linalg.trace` keep).
+
 ## 2026.11.6 — 2026-11-05
 
 ### Fixed
