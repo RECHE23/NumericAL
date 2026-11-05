@@ -27,6 +27,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
          "__dlpack__(stream=None) -> PyCapsule\nExport a DLPack capsule sharing this tensor's buffer.")
     .raw("_matmul", tensor_matmul, METH_O,
          "_matmul(other) -> Tensor or number\nself @ other (Tensor.__matmul__).")
+    .raw("_getitem", tensor_getitem, METH_O,
+         "_getitem(key) -> Tensor or number\nself[key] (Tensor.__getitem__): integers and slices here, the rest by the fallback.")
     .raw("tolist", tensor_tolist, METH_NOARGS,
          "tolist() -> list\nThe elements as nested Python lists (a bare scalar when rank-0).")
     .def_prop_ro<&get_shape>("shape", "The size of each axis, as a tuple.")
@@ -216,6 +218,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "or cho_solve (piv None) of operands read where they lie.");
     m.raw("_borrowed_product", module_borrowed_product, METH_VARARGS,
           "_borrowed_product(a, b) -> Tensor, number or NotImplemented\nThe product of two operands read where they lie.");
+    m.raw("_set_getitem_fallback", module_set_getitem_fallback, METH_O,
+          "_set_getitem_fallback(f)\nThe Python indexing Tensor._getitem hands every key it does not take.");
     m.raw("_set_matmul_fallback", module_set_matmul_fallback, METH_O,
           "_set_matmul_fallback(f)\nThe Python product Tensor._matmul hands every case it does not take.");
     m.raw("einsum", module_einsum, METH_VARARGS,

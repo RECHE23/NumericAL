@@ -850,7 +850,7 @@ class TensorProtocol(unittest.TestCase):
             t[2]
         with self.assertRaises(IndexError):
             t[0, 0, 0]
-        with self.assertRaises(TypeError):
+        with self.assertRaises(IndexError):  # NumPy's: a key of no index type
             t[0.5]
         scalar = numerical.asarray(3.0)
         with self.assertRaises(TypeError):

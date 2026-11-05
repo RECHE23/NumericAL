@@ -19,6 +19,16 @@ release brings:
 - **`diagonal` and `trace` at the root as NumPy's root ones**, of the axes 0 and 1 where they take the last two
   (`numpy.linalg`'s, which `numerical.linalg.diagonal` and `numerical.linalg.trace` keep).
 
+### Changed
+
+- **Indexing by integers, slices and an ellipsis runs natively** (`Tensor.__getitem__`), the other keys through the
+  Python indexing as before: `t[1:]` of a small tensor 1.4 → 0.23 µs, `t[1]` 1.3 → 0.16 µs, `m[..., 1]` 3.6 →
+  0.25 µs.
+
+### Fixed
+
+- **A key of no index type** (`t[0.5]`, `t["a"]`) raises NumPy's IndexError, where it raised TypeError.
+
 ## 2026.11.6 — 2026-11-05
 
 ### Fixed

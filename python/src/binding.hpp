@@ -804,6 +804,10 @@ std::optional<PyObject*> borrowed_product(PyObject* a, PyObject* b);
 // The Python `_matmul` (numerical/__init__.py), set once at import: every product Tensor._matmul does not take
 // itself (an operand to convert, a rank past 2, two dtypes) goes there, so its conversions and errors stay one.
 inline PyObject* matmul_fallback = nullptr;
+// The Python indexing Tensor.__getitem__ hands every key it does not take (set by numerical/__init__.py).
+inline PyObject* getitem_fallback = nullptr;
+PyObject* module_set_getitem_fallback(PyObject* /*self*/, PyObject* fallback); // in products.cpp
+PyObject* tensor_getitem(PyObject* self, PyObject* key);                      // in products.cpp
 
 PyObject* module_set_matmul_fallback(PyObject* /*self*/, PyObject* fallback); // in products.cpp
 

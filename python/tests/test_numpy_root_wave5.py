@@ -1,8 +1,8 @@
-"""The array API's namespace (__array_namespace__, isdtype, result_type, can_cast, empty, from_dlpack, the inspection
-namespace), median and the quantiles by selection, and more of NumPy's root (array, exp2, ldexp, frexp, modf, spacing,
-fix, sinc, lexsort, partition, argpartition, apply_along_axis, fromfunction, fromiter, rollaxis, real_if_close,
-sort_complex, array_equiv, resize) against NumPy's answers: to the bit, within an ulp where a library's function
-computes; with NumPy's errors. Deterministic; the comparisons skipped without NumPy."""
+"""Basic indexing natively; the array API's namespace (__array_namespace__, isdtype, result_type, can_cast, empty,
+from_dlpack, the inspection namespace); median and the quantiles by selection; and more of NumPy's root (array, exp2,
+ldexp, frexp, modf, spacing, fix, sinc, lexsort, partition, argpartition, apply_along_axis, fromfunction, fromiter,
+rollaxis, real_if_close, sort_complex, array_equiv, resize) against NumPy's answers: to the bit, within an ulp where a
+library's function computes; with NumPy's errors. Deterministic; the comparisons skipped without NumPy."""
 import math
 import unittest
 import warnings
@@ -122,6 +122,36 @@ class WithoutNumPy(unittest.TestCase):
         self.assertEqual(numerical.resize([], 3).tolist(), [0.0, 0.0, 0.0])
         with self.assertRaises(ValueError):
             numerical.resize([1.0], (-1,))
+
+
+@unittest.skipIf(np is None, "NumPy is not installed")
+class BasicIndexing(unittest.TestCase):
+    """Tensor.__getitem__ with integers and slices natively, and every other key through the Python indexing: the
+    same answers as NumPy's either way, and NumPy's errors."""
+
+    def test_against_numpy(self):
+        a = np.arange(60.0).reshape(3, 4, 5)
+        t = numerical.asarray(a)
+        keys = [0, -1, 2, slice(None), slice(1, None), slice(None, None, -1), slice(-2, 1, -1), slice(5, 9),
+                (1, 2), (1, 2, 3), (-1, slice(None, None, 2)), (slice(None), 3), (slice(1, 3), slice(None), -1),
+                (), (Ellipsis, 1), (None, 0), np.int64(1), (np.int64(-1), 2), [0, 2], (slice(None), [1, 1]),
+                True, (0, 0, slice(4, None, -2)), Ellipsis, (1, Ellipsis, 2), (Ellipsis, 0, 1, 2),
+                (0, Ellipsis), (Ellipsis, slice(1, 3))]
+        for key in keys:
+            with self.subTest(key=key):
+                got, want = t[key], a[key]
+                if isinstance(got, numerical.Tensor):
+                    self.assertTrue(np.array_equal(np.asarray(got), want))
+                    self.assertEqual(got.shape, np.shape(want))
+                else:
+                    self.assertEqual(got, want)
+        for key, error in ((3, IndexError), (-4, IndexError), ((0, 4), IndexError), ((0, 0, 0, 0), IndexError),
+                           (slice(None, None, 0), ValueError), (1.5, IndexError), ((0, -6), IndexError),
+                           ((Ellipsis, Ellipsis), IndexError), ((Ellipsis, 0, 0, 0, 0), IndexError)):
+            with self.subTest(key=key), self.assertRaises(error):
+                t[key]
+        with self.assertRaisesRegex(IndexError, "index 3 is out of bounds for axis 0 with size 3"):
+            t[3]
 
 
 @unittest.skipIf(np is None, "NumPy is not installed")

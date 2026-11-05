@@ -186,6 +186,98 @@ PyObject* module_take(PyObject* /*self*/, PyObject* args)
     }
 }
 
+PyObject* module_set_getitem_fallback(PyObject* /*self*/, PyObject* fallback)
+{
+    PyObject* previous {getitem_fallback};
+    getitem_fallback = Py_NewRef(fallback);
+    Py_XDECREF(previous);
+    Py_RETURN_NONE;
+}
+
+// `self[key]` for a key of integers (not bools), slices and one ellipsis, an entry per axis at most, as `_getitem`
+// reads it (basic indexing: an integer drops its axis, a slice keeps one, the ellipsis and the axes past the key left
+// whole), without its Python frame; any other key (None, an array, a bool, an integer out of its axis) goes to the
+// fallback, which answers it or says what is wrong. t[1:] of four elements took 1.4 µs through the fallback.
+PyObject* tensor_getitem(PyObject* self, PyObject* key)
+{
+    const any_tensor* h = as_tensor(self);
+    if (h == nullptr) {
+        return nullptr;
+    }
+    const std::vector<std::size_t>& shape {shape_of(*h)};
+    const bool                      tuple {PyTuple_Check(key) != 0};
+    const Py_ssize_t                given {tuple ? PyTuple_Size(key) : 1};
+    const auto                      rank {static_cast<Py_ssize_t>(shape.size())};
+    // One ellipsis at most stands for the axes the other entries leave; with it, the entries after it index the last
+    // axes. More entries than axes, or a second ellipsis, go to the fallback, which says so.
+    Py_ssize_t ellipsis {-1};
+    for (Py_ssize_t a = 0; a < given; ++a) {
+        if ((tuple ? PyTuple_GetItem(key, a) : key) == Py_Ellipsis) {
+            ellipsis = ellipsis < 0 ? a : given + rank; // a second one: past any count, so the fallback answers
+        }
+    }
+    const Py_ssize_t            named {given - (ellipsis >= 0 ? 1 : 0)};
+    bool                        basic {named <= rank && ellipsis <= given};
+    std::vector<std::size_t>    start_v(shape.size(), 0);
+    std::vector<std::ptrdiff_t> step_v(shape.size(), 1);
+    std::vector<std::size_t>    count_v(shape);
+    std::vector<std::size_t>    keep_v(shape.size(), 1);
+    for (Py_ssize_t a = 0; basic && a < given; ++a) {
+        PyObject* const item {tuple ? PyTuple_GetItem(key, a) : key};
+        if (a == ellipsis) {
+            continue;
+        }
+        const auto       axis {static_cast<std::size_t>(ellipsis >= 0 && a > ellipsis ? a - given + rank : a)};
+        const Py_ssize_t dim {static_cast<Py_ssize_t>(shape[axis])};
+        if (PyLong_CheckExact(item) != 0) {
+            Py_ssize_t index {PyLong_AsSsize_t(item)};
+            if (index == -1 && PyErr_Occurred() != nullptr) {
+                PyErr_Clear();
+                basic = false;
+                break;
+            }
+            index += index < 0 ? dim : 0;
+            if (index < 0 || index >= dim) { // the fallback says so, in NumPy's words
+                basic = false;
+                break;
+            }
+            start_v[axis] = static_cast<std::size_t>(index);
+            count_v[axis] = 1;
+            keep_v[axis]  = 0;
+        }
+        else if (PySlice_Check(item) != 0) {
+            Py_ssize_t first {0};
+            Py_ssize_t stop {0};
+            Py_ssize_t step {0};
+            if (PySlice_Unpack(item, &first, &stop, &step) < 0) { // a zero step: the fallback raises as Python does
+                PyErr_Clear();
+                basic = false;
+                break;
+            }
+            const Py_ssize_t length {PySlice_AdjustIndices(dim, &first, &stop, step)};
+            start_v[axis] = length > 0 ? static_cast<std::size_t>(first) : 0;
+            step_v[axis]  = static_cast<std::ptrdiff_t>(step);
+            count_v[axis] = static_cast<std::size_t>(length);
+        }
+        else {
+            basic = false;
+        }
+    }
+    if (!basic) {
+        if (getitem_fallback == nullptr) {
+            PyErr_SetString(sciforge_module_error(), "Tensor.__getitem__: numerical/__init__.py set no fallback");
+            return nullptr;
+        }
+        return PyObject_CallFunctionObjArgs(getitem_fallback, self, key, nullptr);
+    }
+    try {
+        return std::visit([&](const auto& t) { return take_from(t, start_v, step_v, count_v, keep_v); }, *h);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // A group of _gather's offsets: a bytes object's int64 values (this machine's byte order), read where they lie, or a
 // tuple (start, step, count)'s progression, held here.
 struct offset_group

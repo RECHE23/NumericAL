@@ -325,6 +325,15 @@ def _linalg(native, arrays=None):
     return call
 
 
+def _key_index(index):
+    """An index key's integer, or NumPy's IndexError for a key of no index type (a float, a string)."""
+    try:
+        return _operator.index(index)
+    except TypeError:
+        raise IndexError("only integers, slices (`:`), ellipsis (`...`), numpy.newaxis (`None`) and integer or "
+                         "boolean arrays are valid indices") from None
+
+
 def _getitem(self, key):
     """``t[i]``, ``t[i, j]``, ``t[1:5:2, ::-1]``: integers drop an axis, slices keep one, missing trailing
     indices take a whole axis, as NumPy's basic indexing; a negative index counts from the end. All integers
@@ -353,7 +362,7 @@ def _getitem(self, key):
             counts.append(len(span))
             keep.append(1)
             continue
-        position = _operator.index(index)
+        position = _key_index(index)
         if position < 0:
             position += extent
         if not 0 <= position < extent:
@@ -521,7 +530,7 @@ def _getitem_advanced(self, key, arrays):
         elif index is None or index is Ellipsis or isinstance(index, slice):
             entries.append(("basic", index))
         else:
-            entries.append(("int", _operator.index(index)))
+            entries.append(("int", _key_index(index)))
     if _builtins.sum(1 for kind, index, *_ in entries if index is Ellipsis) > 1:
         raise IndexError("an index can only have a single ellipsis ('...')")
     used = _builtins.sum(_axes_taken(entry) for entry in entries)
@@ -868,7 +877,8 @@ def array_equal(a, b, equal_nan=False):
     return bool(all(equal(a, b) | (isnan(a) & isnan(b))))
 
 
-Tensor.__getitem__ = _getitem
+Tensor.__getitem__ = Tensor._getitem  # integers and slices natively, the rest by _getitem
+_numerical._set_getitem_fallback(_getitem)
 
 
 def _setitem(self, key, value):
