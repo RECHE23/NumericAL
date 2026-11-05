@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.6 — 2026-11-05
+
 ### Fixed
 
 - **`var` and `std` of float32** divide and take the root in float32, as NumPy's: a full reduction did its last step
