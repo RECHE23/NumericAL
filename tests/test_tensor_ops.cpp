@@ -573,6 +573,9 @@ TEST(tensors_share_their_elements)
                              }()};
   EXPECT(kept(std::vector<std::size_t> {1, 1}) == 10.0); // the buffer outlived the tensor it was built in
   EXPECT_THROWS((void)line.reshaped({4}), numerical::dimension_error);
+  // From an expiring matrix: its extents read before its elements move out, whatever the compiler's order.
+  const tensor<double> taken {numerical::matrix<double> {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}}};
+  EXPECT(taken.shape() == (std::vector<std::size_t> {2, 3}) && taken(std::vector<std::size_t> {1, 2}) == 6.0);
 }
 
 // broadcast_to repeats a tensor along its axes of extent 1 and new leading ones: rows copied, or filled with their one

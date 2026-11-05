@@ -107,10 +107,13 @@ namespace numerical {
     {}
 
     //! \brief A rank-2 tensor taking over an expiring matrix's elements, without a copy. \param[in] m The matrix.
+    //!        The members are initialised in their order, the extents before the elements move: a call's arguments,
+    //!        and MSVC's braced lists, have none.
     explicit tensor(matrix<T>&& m)
-      : tensor(std::vector<std::size_t> {m.rows(), m.cols()},
-               std::move(m).elements())
-    {}
+      : shape_ {m.rows(), m.cols()}, data_ {std::make_shared<const buffer<T>>(std::move(m).elements())}
+    {
+      finalize();
+    }
 
     //! \brief A rank-2 tensor from a matrix. \param[in] m The matrix.
     explicit tensor(const matrix<T>& m)
