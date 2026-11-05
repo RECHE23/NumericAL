@@ -21,6 +21,9 @@ release brings:
 
 ### Changed
 
+- **Tensors share their elements**, immutable once built: a copy and a reshape hold the one buffer (C++
+  `tensor::reshaped`, which `reshape` returns), where each copied it. `reshape` of 10⁶ elements 196 → 0.8 µs, and the
+  functions built on it (`ravel`, the reductions over several axes, the quantiles' moved axes) without that copy.
 - **Indexing by integers, slices and an ellipsis runs natively** (`Tensor.__getitem__`), the other keys through the
   Python indexing as before: `t[1:]` of a small tensor 1.4 → 0.23 µs, `t[1]` 1.3 → 0.16 µs, `m[..., 1]` 3.6 →
   0.25 µs.

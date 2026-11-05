@@ -29,6 +29,7 @@
 #include <deque>
 #include <initializer_list>
 #include <map>
+#include <memory>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
@@ -57,7 +58,9 @@ namespace numerical {
   };
 
   /*!
-   * \brief A dense, row-major, N-dimensional tensor of `T` with value semantics.
+   * \brief A dense, row-major, N-dimensional tensor of `T` with value semantics. Its elements are immutable once
+   *        built, so tensors share them: a copy, and a tensor of another shape over the same elements (\ref reshaped),
+   *        hold the one buffer, freed with the last of them.
    * \tparam T The scalar element type.
    */
   template <typename T>
@@ -73,7 +76,7 @@ namespace numerical {
      */
     tensor(std::vector<std::size_t> shape,
            buffer<T>                elements)
-      : shape_(std::move(shape)), data_(std::move(elements))
+      : shape_(std::move(shape)), data_(std::make_shared<const buffer<T>>(std::move(elements)))
     {
       finalize();
     }
@@ -99,27 +102,30 @@ namespace numerical {
 
     //! \brief A rank-1 tensor from a vector. \param[in] v The vector.
     explicit tensor(const vector<T>& v)
-      : shape_ {v.size()}
-    {
-      data_.reserve(v.size());
-      for (std::size_t i {0}; i < v.size(); ++i) {
-        data_.push_back(v[i]);
-      }
-      finalize();
-    }
+      : tensor(std::vector<std::size_t> {v.size()},
+               buffer<T>(v.begin(), v.end()))
+    {}
 
     //! \brief A rank-2 tensor taking over an expiring matrix's elements, without a copy. \param[in] m The matrix.
     explicit tensor(matrix<T>&& m)
-      : shape_ {m.rows(), m.cols()}, data_ {std::move(m).elements()}
-    {
-      finalize();
-    }
+      : tensor(std::vector<std::size_t> {m.rows(), m.cols()},
+               std::move(m).elements())
+    {}
 
     //! \brief A rank-2 tensor from a matrix. \param[in] m The matrix.
     explicit tensor(const matrix<T>& m)
-      : shape_ {m.rows(), m.cols()}, data_(m.begin(), m.end())
+      : tensor(std::vector<std::size_t> {m.rows(), m.cols()},
+               buffer<T>(m.begin(), m.end()))
+    {}
+
+    /*!
+     * \brief This tensor's elements in \p shape, without a copy: the new tensor shares the buffer, as NumPy's
+     *        reshape of a contiguous array is a view.
+     * \throws dimension_error If \p shape holds another number of elements.
+     */
+    [[nodiscard]] tensor reshaped(std::vector<std::size_t> shape) const
     {
-      finalize();
+      return tensor {std::move(shape), data_};
     }
 
     //! \brief The number of axes (0 for a scalar).
@@ -131,7 +137,7 @@ namespace numerical {
     //! \brief The total number of elements.
     [[nodiscard]] std::size_t size() const noexcept
     {
-      return data_.size();
+      return data_->size();
     }
 
     //! \brief The size of each axis.
@@ -143,7 +149,7 @@ namespace numerical {
     //! \brief The elements, row-major.
     [[nodiscard]] const buffer<T>& data() const noexcept
     {
-      return data_;
+      return *data_;
     }
 
     //! \brief The element at a multi-index. \pre Its length is \ref rank, in bounds.
@@ -153,16 +159,24 @@ namespace numerical {
       for (std::size_t axis {0}; axis < index.size(); ++axis) {
         flat += strides_[axis] * index[axis];
       }
-      return data_[flat];
+      return (*data_)[flat];
     }
 
     //! \brief Exact equality (same shape and equal elements).
     [[nodiscard]] bool operator==(const tensor& other) const
     {
-      return shape_ == other.shape_ && data_ == other.data_;
+      return shape_ == other.shape_ && *data_ == *other.data_;
     }
 
   private:
+
+    //! \brief Over the shared elements \p elements, in \p shape (\ref reshaped).
+    tensor(std::vector<std::size_t>         shape,
+           std::shared_ptr<const buffer<T>> elements)
+      : shape_(std::move(shape)), data_(std::move(elements))
+    {
+      finalize();
+    }
 
     //! \brief Computes row-major strides and checks the buffer against the shape.
     void finalize()
@@ -173,14 +187,14 @@ namespace numerical {
         strides_[axis] = acc;
         acc            = detail::checked_mul(acc, shape_[axis]); // guard the element-count product
       }
-      if (data_.size() != acc) {
+      if (data_->size() != acc) {
         throw dimension_error("tensor: data size does not match the shape");
       }
     }
 
-    std::vector<std::size_t> shape_;   //!< The size of each axis.
-    std::vector<std::size_t> strides_; //!< Row-major strides.
-    buffer<T>                data_;    //!< The elements, row-major.
+    std::vector<std::size_t>         shape_;   //!< The size of each axis.
+    std::vector<std::size_t>         strides_; //!< Row-major strides.
+    std::shared_ptr<const buffer<T>> data_;    //!< The elements, row-major, shared with the tensors that hold them.
   };
 
   /*!

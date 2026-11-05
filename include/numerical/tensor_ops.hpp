@@ -2582,7 +2582,7 @@ namespace numerical {
   }
 
   /*!
-   * \brief The same elements in the same order under another shape.
+   * \brief The same elements in the same order under another shape, shared with \p t (no copy).
    * \throws dimension_error If the shapes hold different counts of elements.
    */
   template <typename T>
@@ -2597,7 +2597,7 @@ namespace numerical {
       throw dimension_error("cannot reshape a tensor of size " + std::to_string(t.size()) + " into shape "
                             + detail::shape_text(shape));
     }
-    return tensor<T> {std::move(shape), t.data()};
+    return t.reshaped(std::move(shape)); // the same elements, shared: no copy
   }
 
   /*!

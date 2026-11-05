@@ -558,6 +558,23 @@ TEST(reshape_keeps_the_order_and_checks_the_count)
   EXPECT_THROWS((void)numerical::reshape(line, {4}), numerical::dimension_error);
 }
 
+// Tensors share their immutable elements: a copy and a reshape hold the one buffer (no element copied), which lives
+// as long as one of them does; a reshape to another count of elements is refused.
+TEST(tensors_share_their_elements)
+{
+  const tensor<double> line {{6}, {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}};
+  const tensor<double> grid {numerical::reshape(line, {2, 3})};
+  const tensor<double> copy {line}; // NOLINT(performance-unnecessary-copy-initialization): the copy is the case tested
+  EXPECT(grid.data().data() == line.data().data() && copy.data().data() == line.data().data());
+  EXPECT(grid(std::vector<std::size_t> {1, 0}) == 4.0 && grid.shape() == (std::vector<std::size_t> {2, 3}));
+  const tensor<double> kept {[] {
+                               const tensor<double> transient {{4}, {7.0, 8.0, 9.0, 10.0}};
+                               return transient.reshaped({2, 2});
+                             }()};
+  EXPECT(kept(std::vector<std::size_t> {1, 1}) == 10.0); // the buffer outlived the tensor it was built in
+  EXPECT_THROWS((void)line.reshaped({4}), numerical::dimension_error);
+}
+
 TEST(creation_routines)
 {
   EXPECT(numerical::zeros<double>({2, 2}) == (tensor<double> {{2, 2}, {0.0, 0.0, 0.0, 0.0}}));
