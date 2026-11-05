@@ -168,7 +168,8 @@ class NormsAndProducts(unittest.TestCase):
 
     def test_traces_outer_cross_tensordot_vecdot(self):
         for offset in (0, 1, -1, 3, -5):
-            self.close(numerical.trace(self.stack, offset=offset), np.linalg.trace(self.stack, offset=offset))
+            self.close(numerical.linalg.trace(self.stack, offset=offset), np.linalg.trace(self.stack, offset=offset))
+            self.close(numerical.trace(self.stack, offset=offset), np.trace(self.stack, offset=offset))
         self.close(numerical.trace(self.a), np.linalg.trace(self.a))
         self.assertEqual(numerical.trace(self.a, dtype="complex128"), complex(np.trace(self.a)))
         self.close(numerical.outer(self.a[0], self.a[1]), np.linalg.outer(self.a[0], self.a[1]))

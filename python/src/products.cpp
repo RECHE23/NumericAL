@@ -45,6 +45,28 @@ PyObject* module_einsum(PyObject* /*self*/, PyObject* args)
     }
     try {
         std::optional<any_tensor> result;
+        if (is_int(*holders.front())) { // NumPy's integers: wrapped, computed on their unsigned bits (the same bits)
+            std::vector<numerical::tensor<std::uint64_t>> bits;
+            bits.reserve(holders.size());
+            for (const any_tensor* h : holders) {
+                const int_tensor&                   t {std::get<int_tensor>(*h)};
+                numerical::buffer<std::uint64_t>    data(t.size());
+                std::transform(t.data().begin(), t.data().end(), data.begin(), [](std::int64_t x) { return std::bit_cast<std::uint64_t>(x); });
+                bits.emplace_back(t.shape(), std::move(data));
+            }
+            std::vector<const numerical::tensor<std::uint64_t>*> operands;
+            for (const numerical::tensor<std::uint64_t>& t : bits) {
+                operands.push_back(&t);
+            }
+            std::optional<numerical::tensor<std::uint64_t>> product;
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(elements)};
+                product.emplace(numerical::detail::einsum_impl<std::uint64_t>(spec, operands));
+            }
+            numerical::buffer<std::int64_t> data(product->size());
+            std::transform(product->data().begin(), product->data().end(), data.begin(), [](std::uint64_t x) { return std::bit_cast<std::int64_t>(x); });
+            return wrap(any_tensor {int_tensor {product->shape(), std::move(data)}});
+        }
         {
             const sb::scoped_gil_release unlocked {releases_gil(elements)};
             visit_arithmetic([&](const auto& first) {
@@ -95,7 +117,7 @@ PyObject* tensor_matmul(PyObject* self, PyObject* other)
         const std::size_t ranks[2] {shape_of(*a).size(), shape_of(*b).size()};
         static constexpr std::array<std::array<const char*, 2>, 2> specs {{{"i,i->", "i,ij->j"}, {"ij,j->i", "ij,jk->ik"}}};
         // inner dimensions that differ go to the fallback, which says so with both shapes
-        if (a->index() == b->index() && !is_bool(*a) && ranks[0] >= 1 && ranks[0] <= 2 && ranks[1] >= 1 && ranks[1] <= 2
+        if (a->index() == b->index() && !is_bool(*a) && !is_int(*a) && ranks[0] >= 1 && ranks[0] <= 2 && ranks[1] >= 1 && ranks[1] <= 2
             && shape_of(*a).back() == shape_of(*b).front()) {
             const std::string spec {specs.at(ranks[0] - 1).at(ranks[1] - 1)};
             try {

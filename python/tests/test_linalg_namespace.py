@@ -18,7 +18,7 @@ _NUMPY_2_5 = np is not None and tuple(int(part) for part in np.__version__.split
 class WithoutNumPy(unittest.TestCase):
     def test_names(self):
         for name in numerical.linalg.__all__:
-            if name not in ("cross", "outer"):
+            if name not in ("cross", "outer", "diagonal", "trace"):  # the root's take NumPy's root's operands
                 self.assertIs(getattr(numerical.linalg, name), getattr(numerical, name), name)
         self.assertIs(numerical.linalg.LinAlgError, numerical.LinAlgError)
 

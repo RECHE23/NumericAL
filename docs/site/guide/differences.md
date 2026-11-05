@@ -152,7 +152,5 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
 - **Namespaces.** Everything lives at the root, with `numpy.fft`'s names in `numerical.fft` and `numpy.linalg`'s in
   `numerical.linalg`; the root is also a Tensor's array API namespace (`__array_namespace__`), with the standard's
   keywords (`device`, `copy`, `correction`, `descending`…) beside NumPy's.
-- **`diagonal` and `trace` at the root** are `numpy.linalg`'s: the diagonals of the last two axes, where
-  `numpy.diagonal` and `numpy.trace` take the first two (`axis1=0`, `axis2=1`). A matrix's are the same.
 - **Domains.** No `random`, no sparse matrices, no `optimize`, `stats`, `signal`, `interpolate` or `special`: they are
   outside NumericAL's scope, for libraries built on it.

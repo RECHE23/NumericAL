@@ -322,16 +322,20 @@ def _beside_weak(dtype, value):
     return dtype
 
 
-def _linalg(native, arrays=None):
+def _linalg(native, arrays=None, integers=False):
     """`native` taking array-likes: every argument that is not a :class:`Tensor` or a string goes through
     :func:`asarray` (a NumPy array, a nested list, a number), or only the first `arrays` of them, the options after
-    passed as they are; the operands are brought to one dtype as NumPy promotes them (complex where one is, single
-    precision only where all are); and its failures are :class:`LinAlgError`."""
+    passed as they are; int64 operands in float64 (kept for a product of `integers`, as NumPy's products keep them; a
+    bool Tensor has no arithmetic and stays refused); the operands are brought to one dtype as NumPy promotes them
+    (complex where one is, single precision only where all are); and its failures are :class:`LinAlgError`."""
 
     @_functools.wraps(native)
     def call(*args):
         count = len(args) if arrays is None else arrays
         operands = [arg if isinstance(arg, (Tensor, str)) else _read(arg) for arg in args[:count]]
+        if not integers:  # integers in float64, as numpy.linalg and scipy.linalg compute on them
+            operands = [asarray(operand, "float64") if isinstance(operand, Tensor) and operand.dtype == "int64"
+                        else operand for operand in operands]
         tensors = [operand for operand in operands if isinstance(operand, Tensor)]
         if len({tensor.dtype for tensor in tensors}) > 1:
             dtype = _promoted([tensor.dtype for tensor in tensors])
@@ -706,7 +710,7 @@ def _matmul(self, other):
     a, b = (t if t.dtype == dtype else asarray(t, dtype=dtype) for t in (self, other))
     spec = _MATMUL.get((len(a.shape), len(b.shape)))
     if spec is None:
-        return _matmul_nd(a, b)
+        return _integer_matmul_nd(a, b) if dtype == "int64" else _matmul_nd(a, b)
     try:  # two Tensors of one dtype already: the extension itself, its failures LinAlgError as _einsum's
         product = _numerical.einsum(spec, a, b)
     except error as caught:
@@ -971,7 +975,7 @@ Tensor.__hash__ = None  # unhashable, as a NumPy array: equality is element-wise
 
 _cholesky = _linalg(_numerical.cholesky, arrays=1)
 _determinant = _linalg(_numerical.determinant)
-_einsum = _linalg(_numerical.einsum)
+_einsum = _linalg(_numerical.einsum, integers=True)
 _inverse = _linalg(_numerical.inverse)
 _lstsq = _linalg(_numerical.lstsq, arrays=2)
 _eigvalsh = _linalg(_numerical.eigvalsh, arrays=1)
@@ -1154,7 +1158,7 @@ def _structured_solve(a, b, structure, lower, level):
         x = cho_solve(factor, b)
         return _conditioned(x, _factor_condition(factor.c, a, 0, bool(lower)), a.dtype, level + 1)
     if structure == "diagonal":
-        d = diagonal(a)
+        d = _linalg_diagonal(a)
         if not all(isfinite(a)):  # as every other route refuses it (a diagonal of 1, ∞, 3 answered 1, 0, 1/3)
             raise LinAlgError("solve: the matrix holds an infinite or NaN entry")
         if not all(isfinite(b)):
@@ -1169,7 +1173,7 @@ def _structured_solve(a, b, structure, lower, level):
         zero = zeros((1,), a.dtype)
         rows = []  # row above - k of LAPACK's band storage: the diagonal at offset k, shifted to its columns
         for k in range(above, -below - 1, -1):
-            band = diagonal(a, offset=k) if n > _builtins.abs(k) else zeros((0,), a.dtype)
+            band = _linalg_diagonal(a, offset=k) if n > _builtins.abs(k) else zeros((0,), a.dtype)
             pad = [zero] * _builtins.min(_builtins.abs(k), n)
             rows.append(concatenate(pad + [band] if k > 0 else [band] + pad) if k else band)
         x, rcond = _solve_banded_conditioned(stack(rows), b, below, above)
@@ -1177,7 +1181,7 @@ def _structured_solve(a, b, structure, lower, level):
     if structure in ("sym", "her"):  # the matrix of one triangle, its other the transpose (conjugate, Hermitian), a Hermitian diagonal real
         strict = tril(a, -1) if lower else triu(a, 1)
         mirror = strict.mT if structure == "sym" else conj(strict).mT
-        middle = diagonal(a) if structure == "sym" or a.dtype in ("float64", "float32") else asarray(real(diagonal(a)), a.dtype)
+        middle = _linalg_diagonal(a) if structure == "sym" or a.dtype in ("float64", "float32") else asarray(real(_linalg_diagonal(a)), a.dtype)
         a = strict + mirror + diag(middle)
     x, rcond = _solve_conditioned(a, b)
     return _conditioned(x, rcond, a.dtype, level + 1)
@@ -1852,9 +1856,9 @@ def solve_discrete_lyapunov(a, q, method=None):
         method = "direct" if n < 10 else "bilinear"
     if method == "direct":
         kron = einsum("ij,kl->ikjl", a, conj(a) if a.dtype.startswith("complex") else a).reshape((n * n, n * n))
-        return solve(eye(n * n, kron.dtype) - kron, q.reshape((n * n,))).reshape((n, n))
+        return solve(eye(n * n, dtype=kron.dtype) - kron, q.reshape((n * n,))).reshape((n, n))
     if method == "bilinear":  # one factorisation of A + I: (Aᴴ + I)⁻¹ is its inverse's adjoint
-        identity = eye(n, a.dtype)
+        identity = eye(n, dtype=a.dtype)
         factor = lu_factor(a + identity)
         left = lu_solve(factor, q)  # (A + I)⁻¹ Q
         c = 2 * _adjoint(lu_solve(factor, _adjoint(left)))  # (A + I)⁻¹ Q (Aᴴ + I)⁻¹
@@ -2951,6 +2955,21 @@ def _permuted(t, order):
     return _numerical._permute(t, order)
 
 
+def _integer_matmul_nd(a, b):
+    """``a @ b`` of int64 stacks (a vector a row first, a column second), their leading axes broadcast: one einsum over
+    the batch, wrapped as NumPy's integers."""
+    row, column = len(a.shape) == 1, len(b.shape) == 1
+    a = reshape(a, (1,) + a.shape) if row else a
+    b = reshape(b, b.shape + (1,)) if column else b
+    lead = broadcast_shapes(a.shape[:-2], b.shape[:-2])
+    product = _matmul_stack(broadcast_to(a, lead + a.shape[-2:]), broadcast_to(b, lead + b.shape[-2:]))
+    if row:
+        product = reshape(product, product.shape[:-2] + product.shape[-1:])
+    if column:
+        product = reshape(product, product.shape[:-1])
+    return product
+
+
 def _matmul_stack(a, b):
     """``a @ b`` for two stacks of one shape (..., m, k) and (..., k, n), or two matrices."""
     if len(a.shape) == 2 and len(b.shape) == 2:
@@ -2978,6 +2997,12 @@ def _vector_order(ord):
     if isinstance(ord, (str, bool)) or not isinstance(ord, _numbers.Real):
         raise ValueError(f"Invalid norm order {ord!r} for vectors")
     return float(ord)
+
+
+def _inexact(t):
+    """`t` in float64 where its elements are integers, as NumPy's norms and linear algebra take them (a bool Tensor
+    has no arithmetic and stays refused)."""
+    return asarray(t, "float64") if t.dtype == "int64" else t
 
 
 def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
@@ -3013,7 +3038,7 @@ def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
         plain = _numerical._borrowed_norm(x)  # read where it lies: a NumPy array is not copied
         if plain is not NotImplemented:
             return plain
-    x = _operand(x)
+    x = _inexact(_operand(x))
     order, axes = _vector_order(ord), list(_resolved_axes(x, axis, "vector_norm"))
     if order == -_math.inf and _builtins.any(x.shape[a] == 0 for a in axes):  # the smallest of nothing, as NumPy's minimum
         raise ValueError("vector_norm: ord=-inf over no element has no value (a minimum of nothing)")
@@ -3073,7 +3098,7 @@ def matrix_norm(x, /, *, keepdims=False, ord="fro"):
     ``"fro"`` (Frobenius, without overflow), ``"nuc"`` (the sum of the singular values), 2 and -2 (the largest and the
     smallest singular value), 1 and -1 (the largest and smallest column sum of magnitudes), ``inf`` and ``-inf``
     (row sums)."""
-    x = _operand(x)
+    x = _inexact(_operand(x))
     if len(x.shape) < 2:
         raise LinAlgError("matrix_norm: a matrix or a stack of matrices (rank ≥ 2)")
     rank = len(x.shape)
@@ -3116,7 +3141,7 @@ def norm(x, ord=None, axis=None, keepdims=False):
         plain = _numerical._borrowed_norm(x)  # every element's 2-norm, a NumPy array read where it lies
         if plain is not NotImplemented:
             return plain
-    x = _operand(x)
+    x = _inexact(_operand(x))
     rank = len(x.shape)
     if axis is None:
         if ord is None:
@@ -3221,7 +3246,7 @@ def matrix_power(a, n):
     if len(a.shape) < 2 or a.shape[-1] != a.shape[-2]:
         raise LinAlgError("matrix_power: a square matrix or a stack of them")
     if n == 0:
-        return eye(a.shape[-1], a.dtype) + zeros(a.shape, a.dtype)
+        return eye(a.shape[-1], dtype=a.dtype) + zeros(a.shape, a.dtype)
     if n < 0:
         a, n = inv(a), -n
     result, square = None, a
@@ -3282,8 +3307,9 @@ def multi_dot(arrays, *, out=None):
     return result
 
 
-def trace(x, /, *, offset=0, dtype=None):
-    """The sum of a diagonal of a matrix or of every matrix of a stack, as ``numpy.linalg.trace``.
+def _linalg_trace(x, /, *, offset=0, dtype=None):
+    """The sum of a diagonal of a matrix or of every matrix of a stack, as ``numpy.linalg.trace``
+    (``numerical.linalg.trace``; the root's :func:`trace` takes NumPy's root's axes).
 
     The diagonal is taken over the last two axes. A bool tensor's trace counts its trues, a float64 as :func:`sum`'s
     (NumPy's an integer).
@@ -3301,11 +3327,11 @@ def trace(x, /, *, offset=0, dtype=None):
 
     Examples:
         >>> import numerical
-        >>> numerical.trace([[1.0, 2.0], [3.0, 4.0]])
+        >>> numerical.linalg.trace([[1.0, 2.0], [3.0, 4.0]])
         5.0
-        >>> numerical.trace([[1.0, 2.0], [3.0, 4.0]], offset=1)
+        >>> numerical.linalg.trace([[1.0, 2.0], [3.0, 4.0]], offset=1)
         2.0
-        >>> numerical.trace([[[1.0, 0.0], [0.0, 1.0]], [[2.0, 0.0], [0.0, 2.0]]])
+        >>> numerical.linalg.trace([[[1.0, 0.0], [0.0, 1.0]], [[2.0, 0.0], [0.0, 2.0]]])
         numerical.Tensor([2.0, 4.0], dtype=float64)
     """
     x = _tensor(x)
@@ -3313,7 +3339,7 @@ def trace(x, /, *, offset=0, dtype=None):
         raise _ShapeError("trace: a matrix or a stack of matrices (rank ≥ 2)")
     if x.dtype == "bool":
         x = asarray(x, "float64")
-    along = diagonal(x, offset=offset)
+    along = _linalg_diagonal(x, offset=offset)
     labels = _labels(len(along.shape), "trace")  # the batch's, then the diagonal's
     if along.shape[-1] == 0:
         result = zeros(tuple(along.shape[:-1]), x.dtype)
@@ -3326,16 +3352,60 @@ def trace(x, /, *, offset=0, dtype=None):
     return _number_if_scalar(result)
 
 
-def diagonal(x, /, *, offset=0):
+def _linalg_diagonal(x, /, *, offset=0):
     """The `offset` diagonal of a matrix or of every matrix of a stack (its last two axes), as
-    ``numpy.linalg.diagonal``: above the main diagonal for a positive `offset`, below for a negative one; read where
-    it lies, in time of its length."""
+    ``numpy.linalg.diagonal`` (``numerical.linalg.diagonal``; the root's :func:`diagonal` takes NumPy's root's axes):
+    above the main diagonal for a positive `offset`, below for a negative one; read where it lies, in time of its
+    length."""
     x = _tensor(x)
     if len(x.shape) < 2:
         raise _ShapeError("diagonal: a matrix or a stack of matrices (rank ≥ 2)")
     rows, cols = x.shape[-2:]
     offset = _builtins.max(_builtins.min(_operator.index(offset), cols), -rows)  # past the matrix: empty alike
     return _numerical._diagonal(x, offset)
+
+
+_linalg_trace.__name__ = _linalg_trace.__qualname__ = "trace"
+_linalg_diagonal.__name__ = _linalg_diagonal.__qualname__ = "diagonal"
+
+
+def diagonal(a, offset=0, axis1=0, axis2=1):
+    """The `offset` diagonal of the matrices that the axes `axis1` and `axis2` of `a` hold, as ``numpy.diagonal``:
+    above the main diagonal for a positive `offset`, below for a negative one; the other axes first, the diagonal
+    last. ``numerical.linalg.diagonal`` takes the last two axes, as ``numpy.linalg.diagonal``.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.diagonal([[1.0, 2.0], [3.0, 4.0]])
+        numerical.Tensor([1.0, 4.0], dtype=float64)
+        >>> numerical.diagonal(numerical.reshape(numerical.arange(8.0), (2, 2, 2))).tolist()
+        [[0.0, 6.0], [1.0, 7.0]]
+    """
+    a = _tensor(a)
+    if len(a.shape) < 2:
+        raise ValueError("diag requires an array of at least two dimensions")
+    return _linalg_diagonal(_moved_last(a, axis1, axis2, "diagonal"), offset=offset)
+
+
+def trace(a, offset=0, axis1=0, axis2=1, dtype=None, out=None):
+    """The sum of the `offset` diagonal of the matrices that the axes `axis1` and `axis2` of `a` hold, as
+    ``numpy.trace``: a number for a matrix, else a Tensor of the other axes. ``numerical.linalg.trace`` takes the last
+    two axes, as ``numpy.linalg.trace``.
+
+    Examples:
+        >>> import numerical
+        >>> numerical.trace([[1.0, 2.0], [3.0, 4.0]])
+        5.0
+        >>> numerical.trace(numerical.reshape(numerical.arange(8.0), (2, 2, 2)))
+        numerical.Tensor([6.0, 8.0], dtype=float64)
+    """
+    if out is not None:
+        raise TypeError("trace: a Tensor takes no `out` (it is never written into)")
+    a = _tensor(a)
+    if len(a.shape) < 2:
+        raise ValueError("diag requires an array of at least two dimensions")
+    return _linalg_trace(_moved_last(a, axis1, axis2, "trace"), offset=offset,
+                         dtype=None if dtype is None else _dtype_name(dtype))
 
 
 def matrix_transpose(x, /):
@@ -4211,29 +4281,50 @@ def ones(shape, dtype="float64", *, device=None):
     return _native(_numerical._full, _shape(shape), 1.0, _dtype_of(dtype))
 
 
-def eye(n, dtype="float64", *, device=None):
-    """The `n × n` identity, as ``numpy.eye(n)``.
+def eye(N, M=None, k=0, dtype="float64", order="C", *, device=None, like=None):
+    """The `N × M` matrix of ones on its `k`-th diagonal and zeros elsewhere, as ``numpy.eye``.
 
     Args:
-        n: The order, a non-negative integer.
-        dtype: ``"float64"`` (the default), ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"``; NumPy's
-            dtype objects and Python's ``float``, ``complex`` and ``bool`` name them too.
+        N: The rows, a non-negative integer.
+        M: The columns (`N` where None).
+        k: The diagonal: 0 the main one, positive above it, negative below.
+        dtype: ``"float64"`` (the default), ``"complex128"``, ``"float32"``, ``"complex64"``, ``"int64"`` or
+            ``"bool"``; NumPy's dtype objects and Python's ``float``, ``complex``, ``int`` and ``bool`` name them too.
+        order: NumPy's; ``"C"`` or ``"F"``, both row-major here (a Tensor has one layout).
+        device: The array API's; ``"cpu"`` or None.
+        like: NumPy's; None.
 
     Returns:
-        Tensor: The identity matrix.
+        Tensor: The matrix.
 
     Raises:
-        ValueError: for a negative `n` or a `dtype` not offered.
-        TypeError: if `n` is not an integer.
+        ValueError: for a negative `N` or `M`, a `dtype` not offered, or another `order` or `device`.
+        TypeError: if `N`, `M` or `k` is not an integer.
 
     Examples:
         >>> import numerical
         >>> numerical.eye(2)
         numerical.Tensor([[1.0, 0.0],
                           [0.0, 1.0]], dtype=float64)
+        >>> numerical.eye(2, 3, k=1, dtype="int64")
+        numerical.Tensor([[0, 1, 0],
+                          [0, 0, 1]], dtype=int64)
     """
+    if order not in ("C", "F"):
+        raise ValueError(f"order must be one of 'C' or 'F' (got {order!r})")
+    if like is not None:
+        raise TypeError("eye: `like` is NumPy's array-function protocol; a Tensor has none")
     _cpu_device(device, "eye")
-    return _native(_numerical._eye, _operator.index(n), _dtype_of(dtype))
+    rows = _operator.index(N)
+    columns = rows if M is None else _operator.index(M)
+    k = _operator.index(k)
+    name = _dtype_of(dtype)
+    if columns == rows and k == 0:
+        return _native(_numerical._eye, rows, name)
+    if rows < 0 or columns < 0:
+        raise ValueError(f"negative dimensions are not allowed ({rows}, {columns})")
+    band = equal(reshape(arange(columns), (1, columns)) - reshape(arange(rows), (rows, 1)), float(k))
+    return asarray(band, name)
 
 
 def arange(start, stop=None, step=1.0, *, dtype=None, device=None):
@@ -4702,15 +4793,12 @@ def _moved_last(t, axis1, axis2, name):
 def _diagonal_method(self, offset=0, axis1=0, axis2=1):
     """The `offset` diagonal of the matrices the axes `axis1` and `axis2` hold, as ``ndarray.diagonal``: along the
     other axes' end."""
-    return diagonal(_moved_last(self, axis1, axis2, "diagonal"), offset=offset)
+    return diagonal(self, offset, axis1, axis2)
 
 
 def _trace_method(self, offset=0, axis1=0, axis2=1, dtype=None, out=None):
     """The sum of the `offset` diagonal of the matrices the axes `axis1` and `axis2` hold, as ``ndarray.trace``."""
-    if out is not None:
-        raise TypeError("trace: a Tensor takes no `out` (it is never written into)")
-    return trace(_moved_last(self, axis1, axis2, "trace"), offset=offset,
-                 dtype=None if dtype is None else _dtype_name(dtype))
+    return trace(self, offset, axis1, axis2, dtype, out)
 
 
 def _dot(self, b):
@@ -6011,7 +6099,7 @@ def diag(v, k=0):
     v = _tensor(v)
     k = _operator.index(k)
     if len(v.shape) == 2:
-        return diagonal(v, offset=k)
+        return _linalg_diagonal(v, offset=k)
     if len(v.shape) != 1:
         raise ValueError("Input must be 1- or 2-d.")
     return _numerical._diag(v, k)
@@ -8160,7 +8248,7 @@ def corrcoef(x, y=None, rowvar=True, *, dtype=None):
     if not isinstance(c, Tensor) or not c.shape:
         c = c if isinstance(c, Tensor) else asarray(c)
         return _number_if_scalar(c / c)  # NaN for a constant variable, as NumPy's
-    d = diagonal(c)
+    d = _linalg_diagonal(c)
     stddev = sqrt(real(d))
     c = c / reshape(stddev, (stddev.shape[0], 1))
     c = c / reshape(stddev, (1, stddev.shape[0]))
@@ -8814,7 +8902,7 @@ def identity(n, dtype=None, *, like=None):
     """The ``n × n`` identity, as ``numpy.identity``: :func:`eye`, float64 by default."""
     if like is not None:
         raise TypeError("identity: `like` is NumPy's array-dispatch argument, not taken here")
-    return eye(n, "float64" if dtype is None else _dtype_name(dtype))
+    return eye(n, dtype="float64" if dtype is None else _dtype_name(dtype))
 
 
 def select(condlist, choicelist, default=0):

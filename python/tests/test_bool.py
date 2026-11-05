@@ -285,7 +285,7 @@ class Conversions(unittest.TestCase):
         self.assertEqual(numerical.ones(2, dtype="bool").tolist(), [True, True])
         self.assertEqual(numerical.full((1, 2), True).dtype, "bool")
         self.assertEqual(numerical.full(2, 3j, "bool").tolist(), [True, True])
-        self.assertEqual(numerical.eye(3, "bool").tolist(), np.eye(3, dtype=bool).tolist())
+        self.assertEqual(numerical.eye(3, dtype="bool").tolist(), np.eye(3, dtype=bool).tolist())
         self.assertEqual(numerical.asarray([1.0, 0.0], "bool").tolist(), [True, False])
         self.assertEqual(numerical.asarray(2.0, "bool").tolist(), True)
         self.assertEqual(repr(numerical.asarray([True, False], "bool")), "numerical.Tensor([True, False], dtype=bool)")
@@ -366,11 +366,11 @@ class Conversions(unittest.TestCase):
         mask = numerical.asarray(x, "bool")
         for offset in (-2, -1, 0, 1, 2, 5):
             with self.subTest(offset=offset):
-                got = numerical.diagonal(mask, offset=offset)
+                got = numerical.linalg.diagonal(mask, offset=offset)
                 self.assertEqual(got.dtype, "bool")
                 self.assertEqual(got.tolist(), np.linalg.diagonal(x, offset=offset).tolist())
                 self.assertEqual(mask.diagonal(offset, 1, 2).tolist(), x.diagonal(offset, 1, 2).tolist())
-                trace = numerical.trace(mask, offset=offset)  # the trues counted, as a float64 (sum's convention)
+                trace = numerical.linalg.trace(mask, offset=offset)  # the trues counted, as a float64 (sum's convention)
                 self.assertEqual(trace.dtype, "float64")
                 self.assertEqual(trace.tolist(), np.linalg.trace(x, offset=offset).astype(float).tolist())
         self.assertIs(numerical.conj(mask), mask)
