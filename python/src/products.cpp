@@ -787,6 +787,32 @@ PyObject* module_concatenate(PyObject* /*self*/, PyObject* args)
 }
 
 // _reshape(a, shape) -> Tensor.
+// _broadcast_to(a, shape) -> Tensor: numerical::broadcast_to, a's elements repeated to the shape (the caller checks it).
+PyObject* module_broadcast_to(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x   = nullptr;
+    PyObject* seq = nullptr;
+    if (PyArg_ParseTuple(args, "OO", &x, &seq) == 0) {
+        return nullptr;
+    }
+    const any_tensor*        a = as_tensor(x);
+    std::vector<std::size_t> shape;
+    if (a == nullptr || !read_shape(seq, shape)) {
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            std::visit([&](const auto& t) { result.emplace(numerical::broadcast_to(t, std::move(shape))); }, *a);
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 PyObject* module_reshape(PyObject* /*self*/, PyObject* args)
 {
     PyObject* x   = nullptr;

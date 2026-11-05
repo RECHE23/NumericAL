@@ -1049,6 +1049,142 @@ PyObject* module_interp(PyObject* /*self*/, PyObject* args)
     }
 }
 
+namespace {
+    //! The bin of `x` among `count` equal bins, as NumPy's histogram finds it: the offset from the first edge in
+    //! `Offset` (`x − first`), over the span and times the count in `Quotient`, truncated; then moved down where `x`
+    //! lies below that bin's lower edge, up where it reaches the next edge (but the last bin, closed).
+    template <typename Offset, typename Quotient, typename D>
+    std::size_t histogram_bin(D x, Offset first, Quotient span, std::size_t count, const D* edges)
+    {
+        const Offset   offset {static_cast<Offset>(x) - first};
+        const Quotient scaled {(static_cast<Quotient>(offset) / span) * static_cast<Quotient>(count)};
+        auto           index {static_cast<std::size_t>(static_cast<std::int64_t>(scaled))};
+        index -= static_cast<std::size_t>(index == count);
+        index -= static_cast<std::size_t>(x < edges[index]);
+        index += static_cast<std::size_t>(x >= edges[index + 1] && index != count - 1);
+        return index;
+    }
+
+    //! Every block of `block` elements' weights summed into its own bins in float64 in the elements' order (NumPy's
+    //! bincount), each block's sums then made `W`s and added to the totals in `W`, as NumPy's histogram adds them.
+    template <typename W, typename D, typename Bin>
+    numerical::buffer<W> histogram_sums(const D* values, std::size_t size, const W* weights, std::size_t count,
+                                        D low, D high, const Bin& bin)
+    {
+        constexpr std::size_t block {65536};
+        numerical::buffer<W>  total(count, W {});
+        std::vector<double>   sums(count);
+        for (std::size_t start {0}; start < size; start += block) {
+            std::fill(sums.begin(), sums.end(), 0.0);
+            for (std::size_t i {start}; i < std::min(size, start + block); ++i) {
+                if (values[i] >= low && values[i] <= high) {
+                    sums[bin(values[i])] += static_cast<double>(weights[i]);
+                }
+            }
+            for (std::size_t k {0}; k < count; ++k) {
+                if constexpr (std::is_same_v<W, std::int64_t>) { // truncated, then added wrapping, as NumPy's int64
+                    total[k] = static_cast<std::int64_t>(static_cast<std::uint64_t>(total[k])
+                                                         + static_cast<std::uint64_t>(static_cast<std::int64_t>(sums[k])));
+                }
+                else {
+                    total[k] = static_cast<W>(total[k] + static_cast<W>(sums[k]));
+                }
+            }
+        }
+        return total;
+    }
+} // namespace
+
+// _histogram_uniform(a, edges, low, high, first, single_offset, span, single_quotient, weights) -> Tensor: the counts
+// (int64) or the weights' sums (the weights' dtype: float64, float32 or int64) of a's elements (float64 or float32,
+// edges' dtype) between low and high (a's dtype) over len(edges) − 1 equal bins, as numpy.histogram's loop over
+// blocks finds and adds them: the offsets from `first` in float32 where single_offset (else float64), the quotients
+// by `span` in float32 where single_quotient. The caller has found those dtypes as NumPy's arithmetic gives them.
+PyObject* module_histogram_uniform(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x              = nullptr;
+    PyObject* e              = nullptr;
+    double    low            = 0.0;
+    double    high           = 0.0;
+    double    first          = 0.0;
+    int       single_offset  = 0;
+    double    span           = 0.0;
+    int       single_divider = 0;
+    PyObject* w              = nullptr;
+    if (PyArg_ParseTuple(args, "OOdddpdpO", &x, &e, &low, &high, &first, &single_offset, &span, &single_divider, &w) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a     = as_tensor(x);
+    const any_tensor* edges = a == nullptr ? nullptr : as_tensor(e);
+    const any_tensor* wt    = (edges == nullptr || w == Py_None) ? nullptr : as_tensor(w);
+    if (edges == nullptr || (w != Py_None && wt == nullptr)) {
+        return nullptr;
+    }
+    if (a->index() != edges->index() || (!std::holds_alternative<real_tensor>(*a) && !std::holds_alternative<single_tensor>(*a))
+        || count_of(*edges) < 2
+        || (wt != nullptr && (count_of(*wt) != count_of(*a) || (!std::holds_alternative<real_tensor>(*wt)
+                                                                && !std::holds_alternative<single_tensor>(*wt)
+                                                                && !std::holds_alternative<int_tensor>(*wt))))) {
+        PyErr_SetString(PyExc_ValueError, "_histogram_uniform: float64 or float32 values and edges, real weights");
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            const auto run {[&](const auto& values) {
+                using D = element_of_t<std::decay_t<decltype(values)>>;
+                const auto&       bounds {std::get<numerical::tensor<D>>(*edges)};
+                const std::size_t count {bounds.size() - 1};
+                const D*          edge {bounds.data().data()};
+                const D           lo {static_cast<D>(low)};
+                const D           hi {static_cast<D>(high)};
+                const auto        with_types {[&](auto offset_type, auto quotient_type) {
+                    using Offset   = decltype(offset_type);
+                    using Quotient = decltype(quotient_type);
+                    const auto bin {[&](D v) {
+                        return histogram_bin(v, static_cast<Offset>(first), static_cast<Quotient>(span), count, edge);
+                    }};
+                    const D* const    in {values.data().data()};
+                    const std::size_t size {values.size()};
+                    if (wt == nullptr) {
+                        numerical::buffer<std::int64_t> counts(count, 0);
+                        for (std::size_t i {0}; i < size; ++i) {
+                            if (in[i] >= lo && in[i] <= hi) {
+                                ++counts[bin(in[i])];
+                            }
+                        }
+                        result.emplace(int_tensor {{count}, std::move(counts)});
+                        return;
+                    }
+                    std::visit([&](const auto& weights) {
+                        using W = element_of_t<std::decay_t<decltype(weights)>>;
+                        if constexpr (std::is_same_v<W, double> || std::is_same_v<W, float> || std::is_same_v<W, std::int64_t>) {
+                            result.emplace(numerical::tensor<W> {{count}, histogram_sums(in, size, weights.data().data(), count, lo, hi, bin)});
+                        }
+                    }, *wt);
+                }};
+                if (single_offset != 0) {
+                    single_divider != 0 ? with_types(float {}, float {}) : with_types(float {}, double {});
+                }
+                else {
+                    single_divider != 0 ? with_types(double {}, float {}) : with_types(double {}, double {});
+                }
+            }};
+            if (const auto* wide {std::get_if<real_tensor>(a)}) {
+                run(*wide);
+            }
+            else {
+                run(std::get<single_tensor>(*a));
+            }
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _bincount(x, weights, length) -> Tensor: how often each value 0 … length − 1 occurs in the int64 vector x (none
 // negative, none past length − 1: the caller's checks), an int64 tensor; or with float64 weights (x's length), each
 // value's weights summed in x's order, as NumPy's loop adds them, a float64 one.

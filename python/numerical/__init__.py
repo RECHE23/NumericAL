@@ -6513,7 +6513,7 @@ def broadcast_to(array, shape):
                          f"{a.shape} and requested shape {shape}")
     if a.shape == shape:
         return a
-    return _numerical._where(full(shape, True, "bool"), a, a)
+    return _numerical._broadcast_to(a, shape)
 
 
 def broadcast_arrays(*args):
@@ -8966,7 +8966,10 @@ def histogram(a, bins=10, range=None, density=None, weights=None):
         n = zeros((count,), total)
         span = _difference(last, first)
         span = span if isinstance(span, Tensor) else asarray(span, "float64")  # NumPy's unsigned integer: a float
-        for start in _builtins.range(0, a.shape[0], block):
+        native = _uniform_histogram(a, edges, first, last, count, span, weights)
+        if native is not None:
+            n = native
+        for start in _builtins.range(0, a.shape[0] if native is None else 0, block):
             part = a[start:start + block]
             part_weights = None if weights is None else weights[start:start + block]
             keep = (part >= first) & (part <= last)
@@ -9007,6 +9010,26 @@ def histogram(a, bins=10, range=None, density=None, weights=None):
         widths = asarray(edges[1:] - edges[:-1], "float64")
         return n / widths / sum(n), edges
     return n, edges
+
+
+def _uniform_histogram(a, edges, first, last, count, span, weights):
+    """:func:`histogram`'s loop over equal bins natively (``_numerical._histogram_uniform``), its dtypes those the loop's
+    arithmetic gives (found on one element: the offset's from the first edge, the quotient's by the span); None where
+    the values' dtype is not the edges', a bound not one of them, or the weights complex or bool."""
+    plain = (lambda bound: isinstance(bound, (float, int)) and not isinstance(bound, bool)
+             or isinstance(bound, Tensor) and bound.dtype == a.dtype and not bound.shape)
+    if a.dtype not in ("float64", "float32") or edges.dtype != a.dtype or not (plain(first) and plain(last)) or (
+            weights is not None and weights.dtype not in ("float64", "float32", "int64")):
+        return None
+    probe = edges[:1]
+    offset = _difference(probe, first) if not isinstance(first, Tensor) else probe - first
+    quotient = offset / span * count
+    if not (isinstance(offset, Tensor) and isinstance(quotient, Tensor)):
+        return None
+    start = asarray(first, offset.dtype)
+    return _numerical._histogram_uniform(a, edges, float(first), float(last), float(start[()]),
+                                         offset.dtype == "float32", float(asarray(span, quotient.dtype)[()]),
+                                         quotient.dtype == "float32", weights)
 
 
 def _realpart(dtype):

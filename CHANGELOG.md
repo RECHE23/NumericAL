@@ -24,6 +24,12 @@ release brings:
 - **Tensors share their elements**, immutable once built: a copy and a reshape hold the one buffer (C++
   `tensor::reshaped`, which `reshape` returns), where each copied it. `reshape` of 10⁶ elements 196 → 0.8 µs, and the
   functions built on it (`ravel`, the reductions over several axes, the quantiles' moved axes) without that copy.
+- **`histogram` over equal bins counts natively** (its loop over blocks of 65,536 values in one pass: the same bins
+  and NumPy's order of the weights' sums, in the dtypes its arithmetic gives), where it ran some thirty operations a
+  block: 10⁶ values in 50 bins 24 → 2.1 ms (NumPy: 6.5), with weights 2.3 ms (NumPy: 6.8).
+- **`broadcast_to` copies natively** (C++ `broadcast_to`: each row copied or filled with its one element, on the
+  threads), where it selected through a mask: 1000 × 1000 from a row 0.43 → 0.077 ms (NumPy's copy of its view:
+  0.64); `repeat` 2.96 → 0.54 ms (NumPy: 0.78) and `tile` 0.30 → 0.21 ms, which broadcast.
 - **Indexing by integers, slices and an ellipsis runs natively** (`Tensor.__getitem__`), the other keys through the
   Python indexing as before: `t[1:]` of a small tensor 1.4 → 0.23 µs, `t[1]` 1.3 → 0.16 µs, `m[..., 1]` 3.6 →
   0.25 µs.

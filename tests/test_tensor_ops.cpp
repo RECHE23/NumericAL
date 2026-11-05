@@ -575,6 +575,21 @@ TEST(tensors_share_their_elements)
   EXPECT_THROWS((void)line.reshaped({4}), numerical::dimension_error);
 }
 
+// broadcast_to repeats a tensor along its axes of extent 1 and new leading ones: rows copied, or filled with their one
+// element where the last axis broadcasts; an empty result, a scalar, and a shape that does not fit.
+TEST(broadcast_to_as_numpy)
+{
+  const tensor<double> row    {{3}, {1.0, 2.0, 3.0}};
+  EXPECT(numerical::broadcast_to(row, {2, 3}).data() == (numerical::buffer<double> {1.0, 2.0, 3.0, 1.0, 2.0, 3.0}));
+  const tensor<double> column {{2, 1}, {4.0, 5.0}};
+  EXPECT(numerical::broadcast_to(column, {2, 3}).data() == (numerical::buffer<double> {4.0, 4.0, 4.0, 5.0, 5.0, 5.0}));
+  EXPECT(numerical::broadcast_to(column, {3, 2, 2}).shape() == (std::vector<std::size_t> {3, 2, 2}));
+  EXPECT(numerical::broadcast_to(tensor<double> {{}, {7.0}}, {}).data() == (numerical::buffer<double> {7.0}));
+  EXPECT(numerical::broadcast_to(tensor<double> {{1}, {7.0}}, {0}).size() == 0);
+  EXPECT_THROWS((void)numerical::broadcast_to(row, {2, 4}), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::broadcast_to(column, {2}), numerical::dimension_error);
+}
+
 TEST(creation_routines)
 {
   EXPECT(numerical::zeros<double>({2, 2}) == (tensor<double> {{2, 2}, {0.0, 0.0, 0.0, 0.0}}));

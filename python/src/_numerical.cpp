@@ -154,6 +154,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_complex_from_parts", module_complex_from_parts, METH_VARARGS, "_complex_from_parts(re, im) -> Tensor\nre + im·i, exactly.");
     m.raw("_interp", module_interp, METH_VARARGS, "_interp(x, xp, fp, left, right, fused) -> Tensor\nnumpy.interp's linear interpolation.");
     m.raw("_bincount", module_bincount, METH_VARARGS, "_bincount(x, weights, length) -> Tensor\nThe counts of x's values, or their weights' sums.");
+    m.raw("_histogram_uniform", module_histogram_uniform, METH_VARARGS,
+          "_histogram_uniform(a, edges, low, high, first, single_offset, span, single_quotient, weights) -> Tensor\n"
+          "numpy.histogram's counts or weights' sums over equal bins.");
     m.raw("_searchsorted", module_searchsorted, METH_VARARGS, "_searchsorted(a, v, right) -> Tensor\nWhere v's elements go in the sorted vector a.");
     m.raw("_real_unary", module_real_unary, METH_VARARGS, "_real_unary(name, a) -> Tensor\nA real elementary function of every element.");
     m.raw("_bitwise", module_bitwise, METH_VARARGS,
@@ -196,6 +199,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_reduce", module_reduce, METH_VARARGS,
           "_reduce(op, a, axis) -> number or Tensor\nsum, mean, max, min, any or all of every element (axis -1) or along an axis.");
     m.raw("_reshape", module_reshape, METH_VARARGS, "_reshape(a, shape) -> Tensor\nThe elements under another shape.");
+    m.raw("_broadcast_to", module_broadcast_to, METH_VARARGS,
+          "_broadcast_to(a, shape) -> Tensor\nThe elements repeated along the axes of extent 1 to the shape.");
     m.raw("_diagonal", module_diagonal, METH_VARARGS,
           "_diagonal(a, offset) -> Tensor\nThe offset diagonal of each matrix of a (its last two axes), read where it lies.");
     m.raw("_full", module_full, METH_VARARGS, "_full(shape, value, dtype) -> Tensor\nA tensor of one value.");

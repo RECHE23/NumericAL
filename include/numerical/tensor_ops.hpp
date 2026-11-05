@@ -2582,6 +2582,53 @@ namespace numerical {
   }
 
   /*!
+   * \brief \p t repeated along its axes of extent 1 and new leading ones to \p shape, as `numpy.broadcast_to` (a copy:
+   *        a tensor's elements are contiguous): each row of the result copied from its row of \p t, or filled with
+   *        its one element where the last axis broadcasts, the rows on the threads.
+   * \throws dimension_error If \p t's shape does not broadcast to \p shape.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> broadcast_to(const tensor<T>&         t,
+                                       std::vector<std::size_t> shape)
+  {
+    const std::vector<std::size_t>& from {t.shape()};
+    bool                            fits {from.size() <= shape.size()};
+    for (std::size_t i {0}; fits && i < from.size(); ++i) {
+      const std::size_t have {from[from.size() - 1 - i]};
+      fits = have == 1 || have == shape[shape.size() - 1 - i];
+    }
+    if (!fits) {
+      throw dimension_error("broadcast_to: the shape " + detail::shape_text(from) + " does not broadcast to "
+                            + detail::shape_text(shape));
+    }
+    const std::size_t total {detail::element_count(shape.begin(), shape.end())};
+    buffer<T>         out(total);
+    if (total == 0) {
+      return tensor<T> {std::move(shape), std::move(out)};
+    }
+    const std::vector<std::size_t> strides {detail::broadcast_strides(from, shape.size())};
+    const std::size_t              inner   {shape.empty() ? 1 : shape.back()};
+    const bool                     spread  {!shape.empty() && strides.back() == 0}; // the last axis repeats one element
+    const T* const                 in      {t.data().data()};
+    detail::parallel_for(total / inner, inner, [&](std::size_t row) {
+                           std::size_t rest {row};
+                           std::size_t at {0};
+                           for (std::size_t axis {shape.size() - (shape.empty() ? 0 : 1)}; axis-- > 0;) {
+                             at   += (rest % shape[axis]) * strides[axis];
+                             rest /= shape[axis];
+                           }
+                           T* const into {out.data() + (row * inner)};
+                           if (spread) {
+                             std::fill_n(into, inner, in[at]);
+                           }
+                           else {
+                             std::copy_n(in + at, inner, into);
+                           }
+                         });
+    return tensor<T> {std::move(shape), std::move(out)};
+  }
+
+  /*!
    * \brief The same elements in the same order under another shape, shared with \p t (no copy).
    * \throws dimension_error If the shapes hold different counts of elements.
    */

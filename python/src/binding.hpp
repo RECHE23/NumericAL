@@ -1662,6 +1662,7 @@ PyObject* module_interp(PyObject* /*self*/, PyObject* args); // in elementwise.c
 
 // _bincount(x, weights, length) -> Tensor: the counts of an int64 vector's values, or their weights' sums in order.
 PyObject* module_bincount(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+PyObject* module_histogram_uniform(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
 // _searchsorted(a, v, right) -> Tensor: numerical::searchsorted of a sorted vector and values of one dtype (float,
 // complex or int64).
@@ -2056,6 +2057,7 @@ PyObject* module_where(PyObject* /*self*/, PyObject* args); // in elementwise.cp
 PyObject* module_classify(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
 // _reshape(a, shape) -> Tensor.
+PyObject* module_broadcast_to(PyObject* /*self*/, PyObject* args); // in products.cpp
 PyObject* module_reshape(PyObject* /*self*/, PyObject* args); // in products.cpp
 PyObject* module_diagonal(PyObject* /*self*/, PyObject* args); // in products.cpp
 
