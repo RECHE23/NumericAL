@@ -11,7 +11,7 @@ name = "numeric-al"
 version = "2026.11.20"
 description = "NumericAL — a generic, header-only numerical library: tensors, Einstein summation and dense linear algebra without BLAS"
 readme = "README.md"
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 license = "MIT"
 license-files = ["LICENSE", "NOTICE"]
 authors = [{ name = "René Chenard", email = "rene.chenard.1@ulaval.ca" }]
@@ -22,7 +22,6 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3 :: Only",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
@@ -51,10 +50,10 @@ packages = ["numerical"]
 [tool.setuptools.package-data]
 numerical = ["*.so", "*.pyd", "py.typed", "*.pyi", "lib/*.so"]
 
-# One abi3 wheel per platform (cp310 → works on CPython 3.10+), and one per free-threaded CPython (3.14t, 3.15t), which
+# One abi3 wheel per platform (cp311 → works on CPython 3.11+), and one per free-threaded CPython (3.14t, 3.15t), which
 # has no stable ABI.
 [tool.cibuildwheel]
-build = "cp310-* cp314t-* cp315t-*"
+build = "cp311-* cp314t-* cp315t-*"
 build-frontend = "build"
 # NumPy is the oracle of the property, parity and fuzz tests, which skip without it. The log names the product
 # kernel the tests ran on (an x86-64 width, the AMX, or portable), which the runner's processor decides.

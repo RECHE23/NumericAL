@@ -33,7 +33,7 @@ SciPy, and the Doxygen reference of every header under [`api/`](https://reche23.
 pip install numeric-al        # the distribution is numeric-al; the module is numerical
 ```
 
-One `cp310` abi3 wheel serves CPython 3.10 and later; the free-threaded 3.14t and 3.15t take their own and run without
+One `cp311` abi3 wheel serves CPython 3.11 and later; the free-threaded 3.14t and 3.15t take their own and run without
 the GIL. For C++, add `include/` to the include path, or after `cmake --install`, in your `CMakeLists.txt`:
 
 ```cmake
@@ -121,7 +121,7 @@ kernel; [Accuracy](https://reche23.github.io/NumericAL/guide/accuracy.html) give
 ## Toolchains
 
 Each push is built and tested with GCC 14 and Clang 21 (Linux x86-64, under ASan and UBSan too), GCC 13 (Linux
-arm64), MSVC 2022 (Windows x64) and Apple Clang 16 (macOS arm64, locally). CMake 3.16 or newer; Python 3.10 or newer
+arm64), MSVC 2022 (Windows x64) and Apple Clang 16 (macOS arm64, locally). CMake 3.16 or newer; Python 3.11 or newer
 for the binding. SciForge's quality bar holds: 100 % coverage, Clang and GCC, lint, format, MISRA-oriented analysis
 and sanitizers green. [CONTRIBUTING.md](https://github.com/RECHE23/NumericAL/blob/main/CONTRIBUTING.md) gives the
 build and the gates.
