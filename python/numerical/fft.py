@@ -35,7 +35,7 @@ def _operand(a):
     """`a` as a Tensor: a NumPy array, a nested list or a number through :func:`asarray`, integers and booleans as
     ``float64`` (NumPy transforms them as ``complex128``)."""
     tensor = a if isinstance(a, Tensor) else _read(a)
-    return tensor
+    return asarray(tensor, "float64") if tensor.dtype == "int64" else tensor
 
 
 def _axis(axis, ndim):

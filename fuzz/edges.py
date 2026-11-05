@@ -395,7 +395,7 @@ def drawn_case(seed, index, largest):
             return label, []
         with np.errstate(all="ignore"):
             scale = np.trace(magnitude(a), axis1=-2, axis2=-1)
-        return label, check(label, lambda: np.linalg.trace(a), lambda: numerical.trace(t), tolerant(scale))
+        return label, check(label, lambda: np.linalg.trace(a), lambda: numerical.linalg.trace(t), tolerant(scale))
     if rank == 0:  # einsum: one operand summed over one axis
         return label, []
     axis = int(rng.integers(rank))

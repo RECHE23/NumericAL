@@ -535,12 +535,15 @@ numerical.linalg
 ----------------
 
 ``numpy.linalg``'s names, each the function of that name at the root (the same object), but for ``cross`` and
-``outer``, which take ``numpy.linalg``'s operands alone: 3-vectors, and vectors.
+``outer``, which take ``numpy.linalg``'s operands alone (3-vectors, and vectors), and ``diagonal`` and ``trace``,
+which take the last two axes where the root's take the first two.
 
 .. module:: numerical.linalg
 
 .. autofunction:: numerical.linalg.cross
 .. autofunction:: numerical.linalg.outer
+.. autofunction:: numerical.linalg.diagonal
+.. autofunction:: numerical.linalg.trace
 
 numerical.fft
 -------------

@@ -134,7 +134,7 @@ class HighRanks(unittest.TestCase):
         np.testing.assert_allclose(np.asarray(numerical.matrix_power(numerical.asarray(stack), 2)),
                                    np.linalg.matrix_power(stack, 2), rtol=1e-12)
         deep = self.rng.standard_normal((1,) * 25 + (3,) + (3, 3))
-        np.testing.assert_allclose(np.asarray(numerical.trace(numerical.asarray(deep))),
+        np.testing.assert_allclose(np.asarray(numerical.linalg.trace(numerical.asarray(deep))),
                                    np.trace(deep, axis1=-2, axis2=-1), rtol=1e-12)
 
     def test_transposes_and_tensordots_past_26_axes(self):
@@ -361,8 +361,10 @@ class HighRanks(unittest.TestCase):
         rng = np.random.default_rng(37)
         for x in (rng.standard_normal((4, 4)), rng.standard_normal((2, 3, 5)), rng.standard_normal((3, 5)) + 1j):
             for offset in (0, 2, -1, 9):
-                np.testing.assert_array_equal(np.asarray(numerical.diagonal(numerical.asarray(x), offset=offset)),
+                np.testing.assert_array_equal(np.asarray(numerical.linalg.diagonal(numerical.asarray(x), offset=offset)),
                                               np.linalg.diagonal(x, offset=offset))
+                np.testing.assert_array_equal(np.asarray(numerical.diagonal(numerical.asarray(x), offset=offset)),
+                                              np.diagonal(x, offset=offset))
             np.testing.assert_array_equal(np.asarray(numerical.matrix_transpose(numerical.asarray(x))), np.linalg.matrix_transpose(x))
         a = rng.standard_normal((6, 2, 3)) + np.eye(6).reshape(6, 2, 3)
         b = rng.standard_normal(6)

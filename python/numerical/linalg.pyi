@@ -4,7 +4,7 @@ from numerical import LinAlgError as LinAlgError
 from numerical import cholesky as cholesky
 from numerical import cond as cond
 from numerical import det as det
-from numerical import diagonal as diagonal
+from numerical import _linalg_diagonal as diagonal
 from numerical import eig as eig
 from numerical import eigh as eigh
 from numerical import eigvals as eigvals
@@ -27,7 +27,7 @@ from numerical import svdvals as svdvals
 from numerical import tensordot as tensordot
 from numerical import tensorinv as tensorinv
 from numerical import tensorsolve as tensorsolve
-from numerical import trace as trace
+from numerical import _linalg_trace as trace
 from numerical import vecdot as vecdot
 from numerical import vector_norm as vector_norm
 from numerical._numerical import Tensor

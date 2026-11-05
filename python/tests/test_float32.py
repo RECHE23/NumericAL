@@ -53,7 +53,7 @@ class SinglePrecisionStorage(unittest.TestCase):
         for dtype in DTYPES:
             self.assertEqual(numerical.zeros((2, 3), dtype).dtype, dtype)
             self.assertEqual(numerical.ones(2, dtype).dtype, dtype)
-            self.assertEqual(numerical.eye(3, dtype).dtype, dtype)
+            self.assertEqual(numerical.eye(3, dtype=dtype).dtype, dtype)
             self.assertEqual(numerical.Tensor([1, 2], dtype=dtype).dtype, dtype)
         self.assertEqual(numerical.full(2, 1 + 1j, "complex64").tolist(), [1 + 1j, 1 + 1j])
         with self.assertRaises(TypeError):
