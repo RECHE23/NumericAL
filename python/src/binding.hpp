@@ -20,7 +20,7 @@
 // Storage is row-major contiguous, matching both protocols natively.
 
 #define PY_SSIZE_T_CLEAN
-// Py_LIMITED_API (0x030A0000, abi3) comes from setup.py, which leaves it out for a free-threaded CPython: its
+// Py_LIMITED_API (0x030B0000, abi3) comes from setup.py, which leaves it out for a free-threaded CPython: its
 // headers refuse the limited API, and that build is a wheel of its own.
 #include <Python.h>
 
