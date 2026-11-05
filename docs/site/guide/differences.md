@@ -44,6 +44,8 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
   before 2.5 made them real where it could.
 - **A float32 or complex64 decomposition** is computed in double precision and rounded to single, below order 500
   (see {doc}`linalg`): the double answer of the same values, rounded once, where NumPy's LAPACK computes in single.
+- **A float32 sum of more than a thousand elements on 32-bit Windows**: NumPy's build there ends on other last bits
+  than its other builds, whose bits NumericAL's are everywhere.
 - **A sum along an axis that is not the last** (`sum(a, axis=0)` of a matrix, and the `mean`, `var` and `std` over
   it) adds each column pairwise, as NumPy adds along the last axis; NumPy adds such an axis row after row, in order.
   The last bits differ where the terms are of very different sizes, ours nearer the exact sum.
@@ -62,7 +64,9 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
 - **`partition` and `argpartition`** sort each line, one of the arrangements NumPy's allows (the element at each
   `kth` the sorted one, none larger before it, none smaller after); NumPy's own leaves the rest in an order it does
   not specify.
-- **`bitwise_count` answers int64**, NumPy's uint8 (NumericAL has no unsigned dtype).
+- **`bitwise_count` answers int64**, NumPy's uint8 (NumericAL has no unsigned dtype). An int64 shifted by 64 places
+  or more (or a negative count) is 0, or −1 to the right of a negative number, as NumPy defines it; its 32-bit Windows
+  build shifts as the processor does, the count taken modulo 64.
 - **`frexp`'s exponents are int64**, NumPy's int32, and 0 for an infinity or a NaN, where NumPy's are its C
   library's (0 from glibc and macOS, −1 from MSVC); `empty` gives zeros (no element of a Tensor is ever unset).
 - **Floating-point warnings.** An invalid operation, a division by zero or an overflow answers IEEE 754's NaN or

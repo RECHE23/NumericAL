@@ -4,6 +4,8 @@ setdiff1d across dtypes, polymul's leading zeros, roots' real answers and correl
 answers: to the bit, a full reduction's number equal to NumPy's scalar; with NumPy's errors. Deterministic; the
 comparisons skipped without NumPy."""
 import math
+import struct
+import sys
 import unittest
 import warnings
 
@@ -15,6 +17,9 @@ except ImportError:
     np = None
 
 INT64_MIN, INT64_MAX = -2 ** 63, 2 ** 63 - 1
+# NumPy's 32-bit Windows build sums float32 past a thousand elements to other last bits than its other builds (and
+# NumericAL) do
+SINGLE_SUMS_AS_NUMPY = not (sys.platform == "win32" and struct.calcsize("P") == 4)
 
 
 class WithoutNumPy(unittest.TestCase):
@@ -158,8 +163,13 @@ class AgainstNumPy(unittest.TestCase):
                 x = x + 1j * x[::-1]
             t = numerical.asarray(x)
             for ddof in (0, 1):
-                self.assertSame(lambda: numerical.var(t, ddof=ddof), lambda: np.var(x, ddof=ddof), f"var {dtype}")
-                self.assertSame(lambda: numerical.std(t, ddof=ddof), lambda: np.std(x, ddof=ddof), f"std {dtype}")
+                for name in ("var", "std"):
+                    got, want = getattr(numerical, name)(t, ddof=ddof), getattr(np, name)(x, ddof=ddof)
+                    if dtype == "float64" or SINGLE_SUMS_AS_NUMPY:
+                        self.assertSame(lambda: got, lambda: want, f"{name} {dtype}")
+                    else:  # still in single precision: a float32's value, near NumPy's
+                        self.assertEqual(np.float32(got), got, f"{name} {dtype}")
+                        np.testing.assert_array_max_ulp(np.float32(got), want, maxulp=2)
         wide = np.array([[18, -8], [INT64_MIN, INT64_MAX]], np.int64)
         for axis in (None, 0, 1, (0, 1)):
             for keepdims in (False, True):

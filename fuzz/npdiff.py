@@ -17,6 +17,7 @@ Each family's cases are drawn from the seed and the family's name, so a family's
 import argparse
 import math
 import platform
+import struct
 import sys
 import time
 import warnings
@@ -32,6 +33,8 @@ NUMPY = tuple(int(part) for part in np.__version__.split(".")[:2])
 # NumPy's max and min (fmax, fmin, nanmax…) of +0 and -0 give IEEE 754-2019's answer on arm64, as NumericAL's on any
 # processor; on x86-64, the sign of a zero as their vector loops meet it.
 EXTREME_ZEROS = {} if platform.machine().lower() in ("arm64", "aarch64") else {"zero_signs": True}
+# NumPy on 32-bit Windows shifts an int64 by 64 places or more (or a negative count) as its processor's instructions do
+WIDE_SHIFTS = not (sys.platform == "win32" and struct.calcsize("P") == 4)
 
 
 class Failure(Exception):
@@ -426,7 +429,10 @@ def polynomials(rng):
     same({}, "", "polyint", p, int(rng.integers(0, 3)))
     if q[0] != 0:
         same({"order": 64}, "", "polydiv", p.astype(np.float64), q)
-    check({}, f"roots dtype {p.tolist()}", lambda: str(np.roots(p).dtype), lambda: str(numerical.roots(ours(p)).dtype))
+    theirs = np.roots(p)
+    noise = np.iscomplexobj(theirs) and theirs.size and np.all(np.abs(theirs.imag) <= 1e-6 * np.abs(theirs).max())
+    if not noise:  # a repeated root: imaginary parts of the rounding's size, NumPy's eigvals' and not ours
+        check({}, f"roots dtype {p.tolist()}", lambda: str(theirs.dtype), lambda: str(numerical.roots(ours(p)).dtype))
 
 
 def padding(rng):
@@ -627,7 +633,7 @@ def comparisons(rng):
 def bits(rng):
     dims = shape(rng, 0, 2)
     a = ints(rng, int(np.prod(dims)) if dims else 1, extremes=0.3).reshape(dims)
-    b = rng.integers(-3, 70, dims).astype(np.int64)
+    b = rng.integers(-3, 70, dims).astype(np.int64) if WIDE_SHIFTS else rng.integers(0, 64, dims).astype(np.int64)
     for name in ("bitwise_and", "bitwise_or", "bitwise_xor", "left_shift", "right_shift", "gcd", "lcm"):
         same({}, "", name, a, b)
     same({}, "", "invert", a)

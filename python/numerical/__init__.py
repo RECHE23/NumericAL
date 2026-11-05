@@ -6007,6 +6007,13 @@ def _finished(kept, axes, keepdims):
     return _number_if_scalar(reshape(kept, tuple(e for k, e in enumerate(kept.shape) if k not in axes)))
 
 
+def _absolute_squares(z):
+    """``re² + im²`` of every complex element, each square rounded and then their sum, as NumPy's variance computes
+    them (no product fused into the sum, whatever the compiler)."""
+    re, im = real(z), imag(z)
+    return re * re + im * im
+
+
 def _variance(a, axis, dtype, ddof):
     """:func:`var` with the reduced axes kept, and those axes."""
     a = _operand(a)
@@ -6017,7 +6024,7 @@ def _variance(a, axis, dtype, ddof):
     axes = _resolved_axes(a, axis, "var")
     count = _math.prod(a.shape[k] for k in axes)
     deviation = a - mean(a, axis=axis, keepdims=True)
-    squares = real(deviation * conj(deviation)) if a.dtype.startswith("complex") else deviation * deviation
+    squares = _absolute_squares(deviation) if a.dtype.startswith("complex") else deviation * deviation
     total = sum(squares, axis=axis, keepdims=True)
     divisor = _builtins.max(count - ddof, 0)
     if divisor == 0:
@@ -7110,7 +7117,7 @@ def nanvar(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False):
     count = count_nonzero(~mask, axis=axes, keepdims=True)
     average = _by_count(sum(arr, axis=axis, keepdims=True), count, arr.dtype)
     deviation = where(mask, 0, arr - average)
-    squares = real(deviation * conj(deviation)) if arr.dtype.startswith("complex") else deviation * deviation
+    squares = _absolute_squares(deviation) if arr.dtype.startswith("complex") else deviation * deviation
     total = sum(squares, axis=axis, keepdims=True)
     freedom = count - ddof
     bad = freedom <= 0

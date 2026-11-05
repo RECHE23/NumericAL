@@ -2,6 +2,8 @@
 bitwise_count and the operators & | ^ ~ << >>) and nonzero across chunks, against NumPy's answers: to the bit, on
 int64's extremes, shifts by 64 places or more and negative counts; bools by their logical operations, a bool beside
 an integer as an integer. Deterministic; the comparisons skipped without NumPy."""
+import struct
+import sys
 import unittest
 
 import numerical
@@ -12,6 +14,9 @@ except ImportError:
     np = None
 
 INT64_MIN, INT64_MAX = -2 ** 63, 2 ** 63 - 1
+# NumPy on 32-bit Windows shifts an int64 by 64 places or more (or a negative count) as its processor's instructions do
+# (a count taken modulo 64), not to 0 or -1 as its own definition and its other builds do
+WIDE_SHIFTS = not (sys.platform == "win32" and struct.calcsize("P") == 4)
 
 
 class WithoutNumPy(unittest.TestCase):
@@ -56,14 +61,16 @@ class AgainstNumPy(unittest.TestCase):
         for case in range(200):
             shape = tuple(int(e) for e in rng.integers(0, 4, int(rng.integers(0, 3))))
             a = rng.integers(-1000, 1000, shape).astype(np.int64)
-            b = rng.integers(-70, 70, shape[-1:] if shape and rng.random() < 0.3 else shape).astype(np.int64)
+            low, high = (-70, 70) if WIDE_SHIFTS else (0, 64)
+            b = rng.integers(low, high, shape[-1:] if shape and rng.random() < 0.3 else shape).astype(np.int64)
             pick = rng.random(a.shape) < 0.3
             a[pick] = specials[rng.integers(0, len(specials), int(pick.sum()))]
             ta, tb = numerical.asarray(a, "int64"), numerical.asarray(b, "int64")
             with np.errstate(all="ignore"):
                 for name in ("bitwise_and", "bitwise_or", "bitwise_xor", "left_shift", "right_shift", "gcd", "lcm"):
                     self.assertSame(getattr(numerical, name)(ta, tb), getattr(np, name)(a, b), f"{case} {name}")
-                    self.assertSame(getattr(numerical, name)(tb, ta), getattr(np, name)(b, a), f"{case} {name} r")
+                    if WIDE_SHIFTS or "shift" not in name:  # a's values as counts: past 63 at times
+                        self.assertSame(getattr(numerical, name)(tb, ta), getattr(np, name)(b, a), f"{case} {name} r")
                 self.assertSame(~ta, ~a, f"{case} ~")
                 self.assertSame(ta << tb, a << b, f"{case} <<")
                 self.assertSame(ta >> 3, a >> 3, f"{case} >> 3")
