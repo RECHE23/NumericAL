@@ -24,6 +24,10 @@ release brings:
 - **Tensors share their elements**, immutable once built: a copy and a reshape hold the one buffer (C++
   `tensor::reshaped`, which `reshape` returns), where each copied it. `reshape` of 10⁶ elements 196 → 0.8 µs, and the
   functions built on it (`ravel`, the reductions over several axes, the quantiles' moved axes) without that copy.
+- **`argsort` of float64, float32 and int64** orders a line of 256 elements or more by its bits (the keys and their
+  indices together, a byte at a time; the NaNs set apart first and both zeros one key, so that equal elements keep
+  their indices' order): the stable sort's indices. 10⁶ float64 55 → 39 ms (NumPy's stable sort: 100). `unique`'s
+  inverse inverts its permutation in one pass where it sorted it again: 10⁶ int64 79 → 43 ms (NumPy: 52).
 - **`histogram` over equal bins counts natively** (its loop over blocks of 65,536 values in one pass: the same bins
   and NumPy's order of the weights' sums, in the dtypes its arithmetic gives), where it ran some thirty operations a
   block: 10⁶ values in 50 bins 24 → 2.1 ms (NumPy: 6.5), with weights 2.3 ms (NumPy: 6.8).

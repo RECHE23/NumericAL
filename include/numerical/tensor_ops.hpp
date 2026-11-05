@@ -1888,6 +1888,108 @@ namespace numerical {
       }
     }
 
+    //! \brief The types whose indices `order_run` sorts by the elements' bits.
+    template <typename T>
+    concept radix_orderable = std::same_as<T, double> || std::same_as<T, float> || std::same_as<T, std::int64_t>;
+
+    //! \brief A real's \ref order_key for an argsort: both zeros the same key, as `<` holds them equal (their indices
+    //!        then order them).
+    template <std::floating_point T>
+    [[nodiscard]] order_key_t<T> argsort_key(T x) noexcept
+    {
+      return order_key(x == T {0} ? T {0} : x);
+    }
+
+    //! \brief An integer's \ref order_key for an argsort.
+    [[nodiscard]] inline order_key_t<std::int64_t> argsort_key(std::int64_t x) noexcept
+    {
+      return order_key(x);
+    }
+
+    //! \brief Where a real's NaNs begin among the indices `[first, last)`, moved behind the rest in their order.
+    template <std::floating_point T>
+    [[nodiscard]] std::int64_t* numbers_end(std::int64_t* first,
+                                            std::int64_t* last,
+                                            const T*      values,
+                                            std::size_t   stride)
+    {
+      return std::stable_partition(first, last, [&](std::int64_t k) { return !std::isnan(values[static_cast<std::size_t>(k) * stride]); });
+    }
+
+    //! \brief An integer has no NaN: every index is a number's.
+    [[nodiscard]] inline std::int64_t* numbers_end(std::int64_t* /*first*/,
+                                                   std::int64_t*       last,
+                                                   const std::int64_t* /*values*/,
+                                                   std::size_t /*stride*/)
+    {
+      return last;
+    }
+
+    /*!
+     * \brief Sorts the indices `[first, last)` stably by their elements (`values[k · stride]`), as \ref sorts_before
+     *        orders them: comparisons for a run shorter than \ref radix_sort_least, else the NaNs set apart in their
+     *        order and the rest by \ref argsort_key, a byte at a time (a stable counting sort of the keys and their
+     *        indices together; a byte that every key shares skipped): equal elements by index either way.
+     */
+    template <radix_orderable T,
+              typename Less>
+    void order_run(std::int64_t*  first,
+                   std::int64_t*  last,
+                   const T*       values,
+                   std::size_t    stride,
+                   const Less&    less)
+    {
+      if (static_cast<std::size_t>(last - first) < radix_sort_least) {
+        std::stable_sort(first, last, less);
+        return;
+      }
+      using U = order_key_t<T>;
+      std::int64_t* const  end   {numbers_end(first, last, values, stride)};
+      const auto           count {static_cast<std::size_t>(end - first)};
+      buffer<U>            keys(count);
+      buffer<U>            key_spare(count);
+      buffer<std::int64_t> index_spare(count);
+      for (std::size_t i {0}; i < count; ++i) {
+        keys[i] = argsort_key(values[static_cast<std::size_t>(first[i]) * stride]);
+      }
+      U*            key_from   {keys.data()};
+      U*            key_to     {key_spare.data()};
+      std::int64_t* index_from {first};
+      std::int64_t* index_to   {index_spare.data()};
+      for (std::size_t shift {0}; shift < sizeof(U) * 8; shift += 8) {
+        std::array<std::size_t, 257> places {};
+        for (std::size_t i {0}; i < count; ++i) {
+          ++places[((key_from[i] >> shift) & 0xffU) + 1];
+        }
+        if (std::ranges::find(places, count) != places.end()) {
+          continue;
+        }
+        std::partial_sum(places.begin(), places.end(), places.begin());
+        for (std::size_t i {0}; i < count; ++i) {
+          const std::size_t at {places[(key_from[i] >> shift) & 0xffU]++};
+          key_to[at]   = key_from[i];
+          index_to[at] = index_from[i];
+        }
+        std::swap(key_from, key_to);
+        std::swap(index_from, index_to);
+      }
+      if (index_from != first) {
+        std::copy_n(index_from, count, first);
+      }
+    }
+
+    //! \brief Sorts the indices `[first, last)` stably by their elements, by comparisons (any other type).
+    template <typename T,
+              typename Less>
+    void order_run(std::int64_t* first,
+                   std::int64_t* last,
+                   const T* /*values*/,
+                   std::size_t /*stride*/,
+                   const Less&   less)
+    {
+      std::stable_sort(first, last, less);
+    }
+
     //! \brief Sorts `[first, last)` stably as integers sort.
     template <std::integral T>
     void sort_run(T* first,
@@ -2037,12 +2139,15 @@ namespace numerical {
                                           const auto        less {[&](std::int64_t a, std::int64_t b) { return detail::sorts_before(value(a), value(b)); }};
                                           buffer<std::int64_t> order(walk.extent);
                                           std::iota(order.begin(), order.end(), std::int64_t {0});
+                                          const T* const line_values {in + first};
+                                          const auto     sort_piece {[&](std::int64_t* from, std::int64_t* to) {
+                                                                       detail::order_run(from, to, line_values, walk.inner, less);
+                                                                     }};
                                           if (pieces > 1) {
-                                            detail::parallel_sort_run(order.data(), walk.extent, pieces,
-                                                                      [&less](std::int64_t* from, std::int64_t* to) { std::stable_sort(from, to, less); }, less);
+                                            detail::parallel_sort_run(order.data(), walk.extent, pieces, sort_piece, less);
                                           }
                                           else {
-                                            std::stable_sort(order.begin(), order.end(), less);
+                                            sort_piece(order.data(), order.data() + walk.extent);
                                           }
                                           for (std::size_t k {0}; k < walk.extent; ++k) {
                                             out[first + (k * walk.inner)] = order[k];

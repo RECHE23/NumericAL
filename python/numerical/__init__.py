@@ -8345,7 +8345,7 @@ def unique(ar, return_index=False, return_inverse=False, return_counts=False, ax
         result += (order[mask],)
     if return_inverse:
         among = cumsum(asarray(mask, "int64")) - 1
-        inverse = among[argsort(order)]
+        inverse = among[_numerical._inverse_permutation(order)]
         result += (reshape(inverse, inverse_shape) if inverse_shape is not None else inverse,)
     if return_counts:
         starts = concatenate([nonzero(mask)[0], asarray([mask.shape[0]], "int64")])
@@ -8452,7 +8452,7 @@ def _isin(ar1, ar2, assume_unique=False, invert=False, kind=None):
         s = joined[order]
         same = (s[1:] != s[:-1]) if invert else (s[1:] == s[:-1])
         flags = concatenate([same, full(1, bool(invert), "bool")])
-        return flags[argsort(order)][:a.shape[0]]
+        return flags[_numerical._inverse_permutation(order)][:a.shape[0]]
     # each element looked up among b's distinct sorted values: equal to one (never a NaN), as NumPy's sort finds
     b = unique(b)
     if b.shape[0] == 0:

@@ -1185,6 +1185,32 @@ PyObject* module_histogram_uniform(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _inverse_permutation(order) -> Tensor: the int64 permutation q with q[order[k]] = k, of an int64 vector order
+// holding each of 0 … n − 1 once (argsort's answer), where a second argsort found it in O(n log n).
+PyObject* module_inverse_permutation(PyObject* /*self*/, PyObject* arg)
+{
+    const any_tensor* a = as_tensor(arg);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    const auto* order = std::get_if<int_tensor>(a);
+    if (order == nullptr || order->rank() != 1) {
+        PyErr_SetString(PyExc_ValueError, "_inverse_permutation: an int64 vector");
+        return nullptr;
+    }
+    const std::size_t               n {order->size()};
+    numerical::buffer<std::int64_t> inverse(n, -1);
+    for (std::size_t k {0}; k < n; ++k) {
+        const std::int64_t at {order->data()[k]};
+        if (at < 0 || static_cast<std::size_t>(at) >= n || inverse[static_cast<std::size_t>(at)] >= 0) {
+            PyErr_SetString(PyExc_ValueError, "_inverse_permutation: not a permutation of 0 … n − 1");
+            return nullptr;
+        }
+        inverse[static_cast<std::size_t>(at)] = static_cast<std::int64_t>(k);
+    }
+    return wrap(any_tensor {int_tensor {{n}, std::move(inverse)}});
+}
+
 // _bincount(x, weights, length) -> Tensor: how often each value 0 … length − 1 occurs in the int64 vector x (none
 // negative, none past length − 1: the caller's checks), an int64 tensor; or with float64 weights (x's length), each
 // value's weights summed in x's order, as NumPy's loop adds them, a float64 one.

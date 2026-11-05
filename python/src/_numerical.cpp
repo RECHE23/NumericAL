@@ -153,6 +153,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_correlate", module_correlate, METH_VARARGS, "_correlate(a, v, first, count) -> Tensor\nThe cross-correlation over count lags from first.");
     m.raw("_complex_from_parts", module_complex_from_parts, METH_VARARGS, "_complex_from_parts(re, im) -> Tensor\nre + im·i, exactly.");
     m.raw("_interp", module_interp, METH_VARARGS, "_interp(x, xp, fp, left, right, fused) -> Tensor\nnumpy.interp's linear interpolation.");
+    m.raw("_inverse_permutation", module_inverse_permutation, METH_O,
+          "_inverse_permutation(order) -> Tensor\nq with q[order[k]] = k, of a permutation of 0 … n − 1.");
     m.raw("_bincount", module_bincount, METH_VARARGS, "_bincount(x, weights, length) -> Tensor\nThe counts of x's values, or their weights' sums.");
     m.raw("_histogram_uniform", module_histogram_uniform, METH_VARARGS,
           "_histogram_uniform(a, edges, low, high, first, single_offset, span, single_quotient, weights) -> Tensor\n"

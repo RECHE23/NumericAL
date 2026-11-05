@@ -1219,6 +1219,18 @@ bool radix_sorted_as_stable(std::vector<T> values)
   return std::memcmp(values.data(), want.data(), values.size() * sizeof(T)) == 0;
 }
 
+template <typename T>
+bool argsort_as_stable(const std::vector<T>& values)
+{
+  std::vector<std::int64_t> want(values.size());
+  std::iota(want.begin(), want.end(), std::int64_t {0});
+  std::stable_sort(want.begin(), want.end(), [&](std::int64_t a, std::int64_t b) {
+                     return numerical::detail::sorts_before(values[static_cast<std::size_t>(a)], values[static_cast<std::size_t>(b)]);
+                   });
+  const tensor<T> line {{values.size()}, numerical::buffer<T>(values.begin(), values.end())};
+  return std::ranges::equal(numerical::argsort(line, 0).data(), want);
+}
+
 TEST(sort_runs_by_bits_as_the_stable_sort)
 {
   const double                nan_a {std::bit_cast<double>(std::uint64_t {0x7ff8000000000001})};
@@ -1239,6 +1251,9 @@ TEST(sort_runs_by_bits_as_the_stable_sort)
   EXPECT(radix_sorted_as_stable(integers));
   EXPECT(radix_sorted_as_stable(std::vector<double>(numerical::detail::radix_sort_least, 2.0))); // every byte shared
   EXPECT(radix_sorted_as_stable(std::vector<std::int64_t> {3, -1, 2}));                          // short: compared
+  // argsort of a long line: its indices by the bits, equal elements (both zeros among them) by index, NaNs last.
+  EXPECT(argsort_as_stable(wide) && argsort_as_stable(single) && argsort_as_stable(integers));
+  EXPECT(argsort_as_stable(std::vector<double>(numerical::detail::radix_sort_least, -0.0)));
 }
 
 // nonzero over many chunks of a rank-3 tensor: each chunk starts its indices mid-row (its odometer's carries across
