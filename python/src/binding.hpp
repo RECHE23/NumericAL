@@ -3367,12 +3367,12 @@ inline bool element_count(const std::vector<std::size_t>& shape, std::size_t& to
 }
 
 // asarray's output dtype (a variant index) for a source of `element`: the requested one (`wanted`), else the
-// source's own when it is one of the four (float32, complex64, complex128), else float64; false with an error set
-// for a complex source asked as a real dtype.
+// source's own when a Tensor has it, else float64; false with an error set for a complex source asked as a real dtype.
 inline bool output_dtype(const element_type& element, std::optional<std::size_t> wanted, std::size_t& out)
 {
-    // An element's own dtype, as NumPy keeps it: complex64 and complex128, float32, bool; float64 for the rest
-    // (float64 itself and the integers, which have no dtype here).
+    // An element's own dtype, as NumPy keeps it: complex64 and complex128, float32, bool, int64 for the signed
+    // integers and the unsigned ones int64 holds; float64 for the rest (float64 itself, float16, and uint64, which
+    // int64 does not hold and which NumPy promotes beside int64 to float64).
     std::size_t own {0};
     if (element.kind == 'c') {
         own = element.size == 8 ? 3 : 1;
@@ -3382,6 +3382,9 @@ inline bool output_dtype(const element_type& element, std::optional<std::size_t>
     }
     else if (element.kind == 'b') {
         own = 4;
+    }
+    else if (element.kind == 'i' || (element.kind == 'u' && element.size < 8)) {
+        own = int_index;
     }
     out = wanted.value_or(own);
     if (element.kind == 'c' && (out == 0 || out == 2 || out == int_index)) {
@@ -3977,7 +3980,8 @@ inline bool asarray_from_number(PyObject* obj, std::optional<std::size_t> wanted
     if (!complex_in && PyFloat_CheckExact(obj) == 0 && PyLong_Check(obj) == 0) {
         return false;
     }
-    if (wanted == int_index && PyLong_Check(obj) != 0) { // an int read as itself, exactly
+    // an int read as itself, exactly (a bool alone as a bool), as NumPy reads one: OverflowError past int64
+    if (PyLong_Check(obj) != 0 && (wanted == int_index || (!wanted && PyBool_Check(obj) == 0))) {
         const std::int64_t exact {PyLong_AsLongLong(obj)};
         *result = PyErr_Occurred() != nullptr ? nullptr : wrap(any_tensor {int_tensor {{}, numerical::buffer<std::int64_t> {exact}}});
         return true;
@@ -4049,20 +4053,23 @@ inline bool nested_values(PyObject*                          obj,
                    std::size_t                        depth,
                    std::vector<std::complex<double>>& values,
                    bool&                              complex_in,
-                   bool&                              all_bool)
+                   bool&                              all_bool,
+                   bool&                              all_integral)
 {
     if (depth < shape.size()) {
         if ((PyList_Check(obj) == 0 && PyTuple_Check(obj) == 0) || static_cast<std::size_t>(sequence_length(obj)) != shape[depth]) {
             return false;
         }
         for (std::size_t i {0}; i < shape[depth]; ++i) {
-            if (!nested_values(sequence_item(obj, static_cast<Py_ssize_t>(i)), shape, depth + 1, values, complex_in, all_bool)) {
+            if (!nested_values(sequence_item(obj, static_cast<Py_ssize_t>(i)), shape, depth + 1, values, complex_in, all_bool,
+                               all_integral)) {
                 return false;
             }
         }
         return true;
     }
-    all_bool = all_bool && PyBool_Check(obj) != 0;
+    all_bool     = all_bool && PyBool_Check(obj) != 0;
+    all_integral = all_integral && PyLong_Check(obj) != 0;
     if (PyComplex_Check(obj) != 0) {
         complex_in = true;
         values.emplace_back(PyComplex_RealAsDouble(obj), PyComplex_ImagAsDouble(obj));
@@ -4156,11 +4163,16 @@ inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObj
         values.reserve(total);
         bool complex_in {false};
         bool all_bool {true};
-        if (!nested_values(obj, shape, 0, values, complex_in, all_bool)) {
+        bool all_integral {true};
+        if (!nested_values(obj, shape, 0, values, complex_in, all_bool, all_integral)) {
             Py_RETURN_NONE;
         }
-        // Bools alone, at least one, are a bool array, as NumPy's; an empty list float64.
-        const bool  bools {all_bool && !values.empty()};
+        // Bools alone, at least one, are a bool array, as NumPy's; an empty list float64. Ints (bools among them, not
+        // bools alone) are int64, read exactly by the Python reading.
+        const bool bools {all_bool && !values.empty()};
+        if (!wanted && all_integral && !bools && !values.empty()) {
+            Py_RETURN_NONE;
+        }
         std::size_t out {0};
         if (!output_dtype(number_element(complex_in, bools), wanted, out)) {
             return nullptr;
