@@ -142,7 +142,7 @@ INCLUDE = os.path.join(os.path.dirname(HERE), "include")
 # The wheels' flags (setup.py's, with the -DNDEBUG and -fwrapv the interpreter's own add): -O3 on x86-64, -O2
 # elsewhere.
 NUMERICAL_FLAGS = ["-O3" if platform.machine().lower() in ("x86_64", "amd64") else "-O2", "-fwrapv", "-g0",
-                   "-fvisibility=hidden", "-pthread", "-ffp-contract=on", "-I" + INCLUDE]
+                   "-fvisibility=hidden", "-pthread", "-ffp-contract=off", "-I" + INCLUDE]
 
 
 def weighted(rng, pairs):

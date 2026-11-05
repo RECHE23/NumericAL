@@ -8,6 +8,26 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Breaking
+
+- **Integers as integers**: NumPy's integer arrays (int8 to int64, and the unsigned ones but uint64, read as
+  float64) and Python's ints, alone or in a list, are read as int64, as NumPy reads them, where they were float64
+  (`asarray([1, 2])` was `[1.0, 2.0]`). They compute as NumPy's integers: `+ - * // % **`, the sums and products,
+  `@`, `matmul`, `dot`, `einsum`, `tensordot`, `vecdot` and `matrix_power` in int64, wrapped modulo 2⁶⁴; `/`, `mean`,
+  `var`, `std`, the elementary functions, the linear algebra, the norms and the transforms in float64, as before. A
+  Python int past int64 raises OverflowError; `take_along_axis` refuses float indices, as NumPy's.
+- **A bool's sum and product are int64**, as NumPy's (`sum`, `prod`, `cumsum`, `cumprod`, their `nan` and
+  `cumulative_` forms, `trace`), where they were float64; a list of bools computed on is read as int64.
+- **`eye(N, M=None, k=0, dtype=float)`**, NumPy's signature: the second positional argument is the columns, where it
+  was the dtype (`eye(3, "float32")` raises TypeError; `eye(3, dtype="float32")` as before).
+- **`diagonal` and `trace` at the root are NumPy's root ones**: the axes `axis1=0` and `axis2=1`, where they took the
+  last two (`numpy.linalg`'s). `numerical.linalg.diagonal` and `numerical.linalg.trace` keep the last two axes, as
+  `numpy.linalg`'s; a matrix's are the same.
+- **Python 3.11 or newer**: the wheels are cp311-abi3 (3.10 reached its end of life in October 2026).
+- **The same bits whatever compiler builds NumericAL**: the extension, and CMake's GCC and Clang consumers, build
+  with `-ffp-contract=off`, so that no multiply-add is fused that the code does not write. A wheel (GCC 14) and a
+  build from the sdist (GCC 13) differed on some results in the last bits.
+
 ## 2026.11.24 — 2026-11-24
 
 ### Changed
@@ -638,6 +658,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`log1p` of a complex zero** is that zero, its signs kept (`-0 + 0j` gives `-0 + 0j`), as `log1p` of a real −0,
   where the real part was +0; and **of a complex number whose `|1 + z|` passes the largest finite value** is finite,
   `log(1 + z)` scaled as `log` scales (`1.5e308 + 1.5e308j`: 709.95 + 0.785j), where it was infinite, as NumPy's.
+
+### Announced for 2027.1.0
+
+- **A reduction to a number answers a rank-0 Tensor for float32, complex64 and int64** (the dtypes Python's numbers do
+  not hold: a float32 variance, an int64 sum past 2⁶³), as the array API's and NumPy's scalars keep their dtype; a
+  float64, complex128 or bool one stays a Python number.
 
 ## 2026.11.14 — 2026-11-13
 
