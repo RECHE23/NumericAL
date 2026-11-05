@@ -167,7 +167,7 @@ class NumpyWave2(unittest.TestCase):
                 np.testing.assert_allclose(np.asarray(numerical.prod(a, axis=axis)), np.prod(a, axis=axis), rtol=1e-14)
         self.same(numerical.prod(a, axis=1, keepdims=True).shape, np.prod(a, axis=1, keepdims=True).shape)
         self.assertEqual(numerical.prod(np.ones(0)), 1.0)
-        self.same(numerical.prod(np.array([True, True, False])), np.prod(np.array([True, True, False])).astype(float))
+        self.same(numerical.prod(np.array([True, True, False])), np.prod(np.array([True, True, False])))
         for function in ("cumsum", "cumprod"):
             for axis in (None, 0, 1, -1):
                 with self.subTest(function=function, axis=axis):

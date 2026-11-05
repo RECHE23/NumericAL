@@ -22,7 +22,7 @@ class Int64(unittest.TestCase):
         self.assertEqual(numerical.asarray([[1, 2], [3, 4]], dtype=int).tolist(), [[1, 2], [3, 4]])
         self.assertEqual(numerical.asarray(BIG, dtype="int64").tolist(), BIG)
         self.assertEqual(numerical.asarray(True, dtype="int64").tolist(), 1)
-        self.assertEqual(numerical.asarray([1, 2]).dtype, "float64")  # integers stay float64 by default until 2026.12
+        self.assertEqual(numerical.asarray([1, 2]).dtype, "int64")  # Python's ints as NumPy reads them
         self.assertEqual(numerical.Tensor([1, BIG], dtype="int64").tolist(), [1, BIG])
         with self.assertRaises(OverflowError):
             numerical.asarray([2**63], dtype="int64")
@@ -235,7 +235,7 @@ class Int64WithNumpy(unittest.TestCase):
             numerical.asarray(np.array([np.nan], dtype=">f8"), dtype="int64")
         self.assertEqual(numerical.asarray(np.array([True, False]), dtype="int64").tolist(), [1, 0])
         self.assertEqual(numerical.asarray(np.int64(BIG), dtype="int64").tolist(), BIG)
-        self.assertEqual(numerical.asarray(np.array([1, 2])).dtype, "float64")  # by default, until 2026.12
+        self.assertEqual(numerical.asarray(np.array([1, 2])).dtype, "int64")  # NumPy's integers as they are
 
     def test_arithmetic_and_reductions_as_numpy(self):
         rng = np.random.default_rng(20261102)

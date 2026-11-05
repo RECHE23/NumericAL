@@ -405,8 +405,7 @@ def averages(rng):
 
 
 def reductions(rng):
-    # a bool's sums are float64 here until 2026.12.0, NumPy's int64
-    a = array(rng, shape(rng, 0, 3), kinds=("f8", "f4", "c16", "i8"), special=0.15)
+    a = array(rng, shape(rng, 0, 3), kinds=("f8", "f4", "c16", "i8", "b"), special=0.15)
     axis = axis_of(rng, a)
     last = axis is None or axis in (-1, a.ndim - 1) or a.ndim <= 1
     for name in ("sum", "prod", "cumsum", "cumprod"):

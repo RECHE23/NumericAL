@@ -714,7 +714,7 @@ def matmul(x1, x2, /):
     """The matrix product of `x1` and `x2`, as ``numpy.matmul`` (and ``x1 @ x2``).
 
     Stacks of matrices along leading axes broadcast against each other, a vector a row first and a column second, two
-    vectors their dot product. The dtypes are promoted as NumPy promotes them; a bool operand is read as float64.
+    vectors their dot product. The dtypes are promoted as NumPy promotes them; integers stay int64, wrapped; a bool array-like is read as int64, a bool Tensor refused.
 
     Args:
         x1: The left operand, a Tensor or an array-like of rank 1 or more.
@@ -730,10 +730,10 @@ def matmul(x1, x2, /):
     Examples:
         >>> import numerical
         >>> numerical.matmul([[1, 2], [3, 4]], [[5, 6], [7, 8]])
-        numerical.Tensor([[19.0, 22.0],
-                          [43.0, 50.0]], dtype=float64)
+        numerical.Tensor([[19, 22],
+                          [43, 50]], dtype=int64)
         >>> numerical.matmul([1, 2], [3, 4])
-        11.0
+        11
         >>> numerical.matmul(numerical.zeros((3, 2, 2)), numerical.eye(2)).shape
         (3, 2, 2)
     """
@@ -973,7 +973,7 @@ def einsum(subscripts, /, *operands, optimize=False):
 
     Without ``->`` the output takes the labels that appear once, in alphabetical order, as NumPy's; ``...`` stands for
     the axes no label names. The operands are brought to one dtype as NumPy promotes them (complex where one is,
-    single precision only where all are); a bool array-like is read as float64, a bool Tensor refused.
+    single precision only where all are); integers stay int64, wrapped; a bool array-like is read as int64, a bool Tensor refused.
 
     Args:
         subscripts: The labels of each operand's axes, comma-separated, then optionally ``->`` and the output's: at
@@ -995,12 +995,12 @@ def einsum(subscripts, /, *operands, optimize=False):
     Examples:
         >>> import numerical
         >>> numerical.einsum("ij,jk->ik", [[1, 0], [0, 2]], [[1, 2], [3, 4]])
-        numerical.Tensor([[1.0, 2.0],
-                          [6.0, 8.0]], dtype=float64)
+        numerical.Tensor([[1, 2],
+                          [6, 8]], dtype=int64)
         >>> numerical.einsum("i,i->", [1, 2, 3], [1, 2, 3])
-        numerical.Tensor(14.0, dtype=float64)
+        numerical.Tensor(14, dtype=int64)
         >>> numerical.einsum("ii->i", [[1, 2], [3, 4]])
-        numerical.Tensor([1.0, 4.0], dtype=float64)
+        numerical.Tensor([1, 4], dtype=int64)
     """
     if optimize is not False and not (isinstance(optimize, (bool, list, tuple)) or optimize in ("greedy", "optimal")):
         raise TypeError(f"einsum: optimize is a bool, 'greedy', 'optimal' or a contraction path, not {optimize!r}")
@@ -1369,7 +1369,7 @@ def _vectors(name, *values):
     tensors = [value if isinstance(value, Tensor) else _read(value) for value in values]
     if _builtins.any(tensor.ndim > 1 for tensor in tensors):
         raise ValueError(f"{name} takes vectors: SciPy's batches of them are not taken")
-    tensors = [tensor.reshape((tensor.size,)) for tensor in tensors]
+    tensors = [_inexact(tensor.reshape((tensor.size,))) for tensor in tensors]
     dtype = _promoted([tensor.dtype for tensor in tensors])
     return [tensor if tensor.dtype == dtype else asarray(tensor, dtype) for tensor in tensors]
 
@@ -2906,6 +2906,13 @@ def _operand(x):
     return x if isinstance(x, Tensor) else _read(x)
 
 
+def _real_operand(x):
+    """`x` as a Tensor for a real function (floor, round…): bools, a Tensor's or an array-like's, in float64, the
+    nearest a Tensor has to NumPy's float16 for them."""
+    t = x if isinstance(x, Tensor) else asarray(x)
+    return asarray(t, "float64") if t.dtype == "bool" else t
+
+
 def _number_if_scalar(t):
     """A rank-0 tensor as the Python number it holds, as NumPy answers a full reduction; any other as it is."""
     return t[()] if isinstance(t, Tensor) and not t.shape else t
@@ -3314,8 +3321,8 @@ def _linalg_trace(x, /, *, offset=0, dtype=None):
     x = _tensor(x)
     if len(x.shape) < 2:
         raise _ShapeError("trace: a matrix or a stack of matrices (rank ≥ 2)")
-    if x.dtype == "bool":
-        x = asarray(x, "float64")
+    if x.dtype == "bool":  # its trues counted, an int64 as NumPy's
+        x = asarray(x, "int64")
     along = _linalg_diagonal(x, offset=offset)
     labels = _labels(len(along.shape), "trace")  # the batch's, then the diagonal's
     if along.shape[-1] == 0:
@@ -3446,8 +3453,8 @@ def outer(a, b, out=None):
     Examples:
         >>> import numerical
         >>> numerical.outer([1, 2], [3, 4])
-        numerical.Tensor([[3.0, 4.0],
-                          [6.0, 8.0]], dtype=float64)
+        numerical.Tensor([[3, 4],
+                          [6, 8]], dtype=int64)
     """
     _no_out(out, "outer")
     a, b = _same_dtype(a, b)
@@ -3543,7 +3550,7 @@ def asarray(obj, dtype=None, *, device=None, copy=None):
             integer, float32/64 and complex64/128 elements, any strides), a nested list or tuple of numbers, or a
             number (rank 0).
         dtype: ``"float64"``, ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"`` (true where nonzero), or
-            the NumPy type or dtype of that name, or Python's ``float``, ``complex`` or ``bool``; by default an array's own for float32, complex64, complex128 and bool, else float64 (integers included);
+            the NumPy type or dtype of that name, or Python's ``float``, ``complex`` or ``bool``; by default an array's own (int64 for its integers, float64 for uint64), Python's ints int64, else float64;
             complex128 for a complex number or a list with one, bool for a bool or a list of bools alone, as NumPy's.
         device: ``None`` or ``"cpu"``, the one device.
         copy: ``None`` reads `obj` as it is; ``True`` gives a Tensor holding its own elements (a view's copied out,
@@ -3563,8 +3570,8 @@ def asarray(obj, dtype=None, *, device=None, copy=None):
     Examples:
         >>> import numerical
         >>> numerical.asarray([[1, 2], [3, 4]])
-        numerical.Tensor([[1.0, 2.0],
-                          [3.0, 4.0]], dtype=float64)
+        numerical.Tensor([[1, 2],
+                          [3, 4]], dtype=int64)
         >>> numerical.asarray([1, 0], dtype="bool")
         numerical.Tensor([True, False], dtype=bool)
         >>> numerical.asarray(2.5).shape
@@ -3590,6 +3597,9 @@ def asarray(obj, dtype=None, *, device=None, copy=None):
     if isinstance(obj, (list, tuple)) or (type(obj) not in _NATIVE_NUMBERS and isinstance(obj, _numbers.Number)
                                           and not hasattr(obj, "__array_interface__")):
         values, shape = _nested(obj)
+        if dtype is None and isinstance(obj, (list, tuple)) and values and \
+                _builtins.all(isinstance(v, int) for v in values) and not _builtins.all(isinstance(v, bool) for v in values):
+            dtype = "int64"  # Python's ints as NumPy reads them, exactly (OverflowError past int64)
         if dtype == "int64" and _builtins.any(isinstance(value, _numbers.Integral) and not -2**63 <= value < 2**63
                                               for value in values):  # read as float64, -2**63 - 1 would round in
             raise OverflowError("a value outside int64's range converted to it")
@@ -3603,10 +3613,10 @@ def asarray(obj, dtype=None, *, device=None, copy=None):
 
 def _read(obj, dtype=None):
     """:func:`asarray` for an operand computed on: without a `dtype`, a bool array-like (not a bool Tensor) read as
-    float64, as NumPy's arithmetic and linear algebra compute on one (a bool Tensor has no arithmetic)."""
+    int64, as NumPy's arithmetic promotes one (a bool Tensor has no arithmetic)."""
     tensor = asarray(obj, dtype)
     if dtype is None and tensor.dtype == "bool" and not isinstance(obj, Tensor):
-        return asarray(tensor, "float64")
+        return asarray(tensor, "int64")
     return tensor
 
 
@@ -3814,7 +3824,10 @@ def _reduction(op, doc):
             whole = _numerical._borrowed_reduce(op, a)  # every element of a NumPy array read where it lies
             if whole is not NotImplemented:
                 return whole
-        a = a if isinstance(a, Tensor) else _read(a)
+        # bools kept as bools for an extreme or a truth, as NumPy's (read as numbers for the rest)
+        a = a if isinstance(a, Tensor) else asarray(a) if op in ("max", "min", "any", "all") else _read(a)
+        if op in ("sum", "prod") and a.dtype == "bool":  # NumPy's: a bool's sum and product in int64
+            a = asarray(a, "int64")
         rank = len(a.shape)
         if isinstance(axis, tuple):  # several axes: moved last and run together, one native reduction over them
             axes = _resolved_axes(a, axis, op)
@@ -3854,7 +3867,7 @@ sum = _reduction("sum", """The sum of every element, or the sums along `axis`, a
     Added by pairwise halving, as NumPy adds.
 
     Args:
-        a: The Tensor or array-like (a bool array-like read as float64).
+        a: The Tensor or array-like (bools read as int64, as NumPy sums them).
         axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
             end.
         keepdims: Keep each reduced axis with extent 1, as NumPy's.
@@ -3862,7 +3875,7 @@ sum = _reduction("sum", """The sum of every element, or the sums along `axis`, a
         initial: The value each sum starts from (keyword-only), in its dtype, as NumPy's; None for none.
 
     Returns:
-        float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (float64 for a bool one).
+        float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (int64 for a bool one).
 
     Raises:
         ValueError: for an axis out of range or repeated.
@@ -3881,14 +3894,14 @@ sum = _reduction("sum", """The sum of every element, or the sums along `axis`, a
 mean = _reduction("mean", """The mean of every element, or the means along `axis`, as ``numpy.mean``.
 
     Args:
-        a: The Tensor or array-like (a bool array-like read as float64).
+        a: The Tensor or array-like (bools as their 0s and 1s).
         axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
             end.
         keepdims: Keep each reduced axis with extent 1, as NumPy's.
         dtype: The dtype the elements are converted to and averaged in (keyword-only), as NumPy's and the array API's.
 
     Returns:
-        float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (float64 for a bool one).
+        float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (float64 for a bool or an int64 one).
 
     Raises:
         ValueError: for an axis out of range or repeated.
@@ -3905,7 +3918,7 @@ max = _reduction("max", """The largest element, or the largest along `axis`, as 
     A NaN wins. Real dtypes only (a complex one has no order).
 
     Args:
-        a: The Tensor or array-like (a bool array-like read as float64).
+        a: The Tensor or array-like (a bool one's largest a bool).
         axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
             end.
         keepdims: Keep each reduced axis with extent 1, as NumPy's.
@@ -3931,7 +3944,7 @@ min = _reduction("min", """The smallest element, or the smallest along `axis`, a
     A NaN wins. Real dtypes only.
 
     Args:
-        a: The Tensor or array-like (a bool array-like read as float64).
+        a: The Tensor or array-like (a bool one's smallest a bool).
         axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
             end.
         keepdims: Keep each reduced axis with extent 1, as NumPy's.
@@ -4461,9 +4474,10 @@ def _elementwise(name, doc):
             mapped = _numerical._borrowed_unary(name, a)  # a NumPy array read where it lies
             if mapped is not NotImplemented:
                 return mapped
-        elif a.dtype == "int64":  # NumPy's: an integer's magnitude an integer (wrapped), the rest in float64
+            a = _read(a)
+        if a.dtype == "int64":  # NumPy's: an integer's magnitude an integer (wrapped), the rest in float64
             return where(a < 0, -a, a) if name == "abs" else _numerical._unary(name, asarray(a, "float64"))
-        return _numerical._unary(name, a if isinstance(a, Tensor) else _read(a))
+        return _numerical._unary(name, a)
 
     function.__name__ = name
     function.__doc__ = doc
@@ -4473,7 +4487,7 @@ def _elementwise(name, doc):
 exp = _elementwise("exp", """e to the power of every element, as ``numpy.exp``.
 
     Args:
-        a: The Tensor or array-like (a bool array-like read as float64; a bool Tensor refused).
+        a: The Tensor or array-like (a bool array-like read as int64; a bool Tensor refused).
 
     Returns:
         Tensor: Of `a`'s shape and dtype (float64 for integers).
@@ -4493,7 +4507,7 @@ log = _elementwise("log", """The natural logarithm of every element, as ``numpy.
     NaN below 0 for a real dtype, ``-inf`` at 0; a complex element's principal logarithm.
 
     Args:
-        a: The Tensor or array-like (a bool array-like read as float64; a bool Tensor refused).
+        a: The Tensor or array-like (a bool array-like read as int64; a bool Tensor refused).
 
     Returns:
         Tensor: Of `a`'s shape and dtype (float64 for integers).
@@ -4511,7 +4525,7 @@ sqrt = _elementwise("sqrt", """The square root of every element, as ``numpy.sqrt
     NaN below 0 for a real dtype; a complex element's principal root.
 
     Args:
-        a: The Tensor or array-like (a bool array-like read as float64; a bool Tensor refused).
+        a: The Tensor or array-like (a bool array-like read as int64; a bool Tensor refused).
 
     Returns:
         Tensor: Of `a`'s shape and dtype (float64 for integers).
@@ -4567,10 +4581,10 @@ def where(condition, x, y, /):
     Examples:
         >>> import numerical
         >>> numerical.where([True, False], [1, 2], [3, 4])
-        numerical.Tensor([1.0, 4.0], dtype=float64)
+        numerical.Tensor([1, 4], dtype=int64)
         >>> numerical.where([[True], [False]], [1, 2], 0)
-        numerical.Tensor([[1.0, 2.0],
-                          [0.0, 0.0]], dtype=float64)
+        numerical.Tensor([[1, 2],
+                          [0, 0]], dtype=int64)
     """
     condition = condition if isinstance(condition, Tensor) else _read(condition)
     if condition.dtype != "bool":
@@ -4684,8 +4698,8 @@ def transpose(a, axes=None):
     Examples:
         >>> import numerical
         >>> numerical.transpose([[1, 2], [3, 4]])
-        numerical.Tensor([[1.0, 3.0],
-                          [2.0, 4.0]], dtype=float64)
+        numerical.Tensor([[1, 3],
+                          [2, 4]], dtype=int64)
         >>> numerical.transpose(numerical.zeros((2, 3, 4)), (1, 0, 2)).shape
         (3, 2, 4)
     """
@@ -5917,9 +5931,9 @@ def concatenate(arrays, /, axis=0, out=None, *, dtype=None):
     Examples:
         >>> import numerical
         >>> numerical.concatenate([[1, 2], [3]])
-        numerical.Tensor([1.0, 2.0, 3.0], dtype=float64)
+        numerical.Tensor([1, 2, 3], dtype=int64)
         >>> numerical.concatenate([[[1, 2]], [[3, 4]]], axis=1)
-        numerical.Tensor([[1.0, 2.0, 3.0, 4.0]], dtype=float64)
+        numerical.Tensor([[1, 2, 3, 4]], dtype=int64)
     """
     _no_out(out, "concatenate")
     tensors = _joined(arrays, "concatenate")
@@ -5968,11 +5982,11 @@ def stack(arrays, /, axis=0, out=None, *, dtype=None):
     Examples:
         >>> import numerical
         >>> numerical.stack([[1, 2], [3, 4]])
-        numerical.Tensor([[1.0, 2.0],
-                          [3.0, 4.0]], dtype=float64)
+        numerical.Tensor([[1, 2],
+                          [3, 4]], dtype=int64)
         >>> numerical.stack([[1, 2], [3, 4]], axis=1)
-        numerical.Tensor([[1.0, 3.0],
-                          [2.0, 4.0]], dtype=float64)
+        numerical.Tensor([[1, 3],
+                          [2, 4]], dtype=int64)
     """
     _no_out(out, "stack")
     tensors = _joined(arrays, "stack")
@@ -6386,11 +6400,11 @@ def dot(a, b):
     Examples:
         >>> import numerical
         >>> numerical.dot([1, 2], [3, 4])
-        11.0
+        11
         >>> numerical.dot(2, [1, 2])
-        numerical.Tensor([2.0, 4.0], dtype=float64)
+        numerical.Tensor([2, 4], dtype=int64)
         >>> numerical.dot([[1, 2], [3, 4]], [1, 1])
-        numerical.Tensor([3.0, 7.0], dtype=float64)
+        numerical.Tensor([3, 7], dtype=int64)
     """
     a, b = _operand(a), _operand(b)
     ra, rb = len(a.shape), len(b.shape)
@@ -6432,6 +6446,8 @@ def vdot(a, b, /):
 
 def ptp(a, axis=None, keepdims=False):
     """The range, maximum less minimum, over every element or along `axis`, as ``numpy.ptp``."""
+    if (a.dtype if isinstance(a, Tensor) else asarray(a).dtype) == "bool":
+        raise TypeError("ptp: a bool's range takes a subtraction of bools, which NumPy refuses too")
     a = _operand(a)
     axes = _resolved_axes(a, axis, "ptp")
     return _finished(max(a, axis=axis, keepdims=True) - min(a, axis=axis, keepdims=True), axes, keepdims)
@@ -6506,7 +6522,7 @@ def _real_function(name, doc):
             mapped = _numerical._borrowed_unary(name, x)  # a NumPy array read where it lies
             if mapped is not NotImplemented:
                 return mapped
-        x = _operand(x)
+        x = _real_operand(x)
         if x.dtype.startswith("complex"):
             if name not in _COMPLEX_FUNCTIONS:
                 raise TypeError(f"{name}: real numbers only, as NumPy's")
@@ -6572,9 +6588,7 @@ def round(a, decimals=0):  # noqa: A001 (numpy.round's name)
     coarser than them) is kept, where NumPy's product can overflow (``round(1e307, 2)``: inf) or move its last bit,
     and a finite value rounds to 0 where ``10⁻ᵈ`` overflows (NumPy's: NaN)."""
     decimals = _operator.index(decimals)
-    a = _operand(a)
-    if a.dtype == "bool":
-        a = asarray(a, "float64")
+    a = _real_operand(a)
     if a.dtype == "int64":  # NumPy's: an integer to tens, hundreds, exactly, half to even; itself to places
         if decimals >= 0:
             return a
@@ -6609,8 +6623,8 @@ def _prepended(t, axis, start):
 
 def prod(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
     """The product of every element (a number), or the products along `axis`, as ``numpy.prod``: in order (NumPy's
-    multiplications are not paired as its sums are). An empty one's is 1. `dtype` the one the elements are multiplied
-    in; `initial` the first factor of each product, as NumPy's (None: none)."""
+    multiplications are not paired as its sums are). An empty one's is 1; a bool's an int64, as NumPy's. `dtype`
+    the one the elements are multiplied in; `initial` the first factor of each product, as NumPy's (None: none)."""
     if initial is None:
         initial = _NO_VALUE
     if axis is None and keepdims is False and dtype is None and initial is _NO_VALUE and isinstance(a, Tensor) and \
@@ -6624,7 +6638,7 @@ def prod(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
         return _in_dtype(prod, a, axis, keepdims, dtype, initial=initial)
     a = _operand(a)
     if a.dtype == "bool":
-        a = asarray(a, "float64")
+        a = asarray(a, "int64")
     if a.dtype.startswith("complex") and not _numpy_loops_measured:  # each product as NumPy's loops fuse it
         _numpy_loops()
     start = None if initial is _NO_VALUE else _initial_in(initial, a.dtype)
@@ -6667,7 +6681,7 @@ def cumsum(a, axis=None, dtype=None, out=None):
     one the elements are converted to and summed in."""
     _no_out(out, "cumsum")
     a = _operand(a) if dtype is None else asarray(_operand(a), _checked_dtype(dtype, "cumsum: "))
-    return _along("cumsum", asarray(a, "float64") if a.dtype == "bool" else a, axis)
+    return _along("cumsum", asarray(a, "int64") if a.dtype == "bool" else a, axis)
 
 
 def cumprod(a, axis=None, dtype=None, out=None):
@@ -6677,7 +6691,7 @@ def cumprod(a, axis=None, dtype=None, out=None):
     a = _operand(a) if dtype is None else asarray(_operand(a), _checked_dtype(dtype, "cumprod: "))
     if a.dtype.startswith("complex") and not _numpy_loops_measured:  # each product as NumPy's loops fuse it
         _numpy_loops()
-    return _along("cumprod", asarray(a, "float64") if a.dtype == "bool" else a, axis)
+    return _along("cumprod", asarray(a, "int64") if a.dtype == "bool" else a, axis)
 
 
 def sort(a, axis=-1, kind=None, stable=None, *, descending=False):
@@ -7051,8 +7065,8 @@ def tile(A, reps):  # noqa: N803 (numpy.tile's argument)
     Examples:
         >>> import numerical
         >>> numerical.tile([1, 2], (2, 2))
-        numerical.Tensor([[1.0, 2.0, 1.0, 2.0],
-                          [1.0, 2.0, 1.0, 2.0]], dtype=float64)
+        numerical.Tensor([[1, 2, 1, 2],
+                          [1, 2, 1, 2]], dtype=int64)
     """
     a = _tensor(A)
     reps = (_operator.index(reps),) if isinstance(reps, _numbers.Integral) else tuple(_operator.index(r) for r in reps)
@@ -7118,11 +7132,11 @@ def repeat(a, repeats, axis=None):
     Examples:
         >>> import numerical
         >>> numerical.repeat([1, 2], 2)
-        numerical.Tensor([1.0, 1.0, 2.0, 2.0], dtype=float64)
+        numerical.Tensor([1, 1, 2, 2], dtype=int64)
         >>> numerical.repeat([[1, 2], [3, 4]], [1, 2], axis=0)
-        numerical.Tensor([[1.0, 2.0],
-                          [3.0, 4.0],
-                          [3.0, 4.0]], dtype=float64)
+        numerical.Tensor([[1, 2],
+                          [3, 4],
+                          [3, 4]], dtype=int64)
     """
     a = _tensor(a)
     if axis is None:
@@ -7187,10 +7201,7 @@ def take_along_axis(arr, indices, axis=-1):
     arr = _tensor(arr)
     indices = indices if isinstance(indices, Tensor) else asarray(indices)
     if indices.dtype != "int64":
-        if indices.dtype == "float64" and _builtins.all(float(v).is_integer() for v in reshape(indices, (-1,)).tolist()):
-            indices = asarray(indices, "int64")  # integers read as float64 by asarray's default
-        else:
-            raise IndexError("`indices` must be an integer array")
+        raise IndexError("`indices` must be an integer array")
     if axis is None:
         if len(indices.shape) != 1:
             raise ValueError("when axis=None, `indices` must have a single dimension.")
@@ -7224,7 +7235,7 @@ def roll(a, shift, axis=None):
     Examples:
         >>> import numerical
         >>> numerical.roll([1, 2, 3, 4], 1)
-        numerical.Tensor([4.0, 1.0, 2.0, 3.0], dtype=float64)
+        numerical.Tensor([4, 1, 2, 3], dtype=int64)
     """
     a = _tensor(a)
     if axis is None:
@@ -7257,8 +7268,8 @@ def rot90(m, k=1, axes=(0, 1)):
     Examples:
         >>> import numerical
         >>> numerical.rot90([[1, 2], [3, 4]])
-        numerical.Tensor([[2.0, 4.0],
-                          [1.0, 3.0]], dtype=float64)
+        numerical.Tensor([[2, 4],
+                          [1, 3]], dtype=int64)
     """
     axes = tuple(axes)
     if len(axes) != 2:
@@ -7306,7 +7317,7 @@ def split(ary, indices_or_sections, axis=0):
     Examples:
         >>> import numerical
         >>> numerical.split([1, 2, 3, 4], 2)
-        [numerical.Tensor([1.0, 2.0], dtype=float64), numerical.Tensor([3.0, 4.0], dtype=float64)]
+        [numerical.Tensor([1, 2], dtype=int64), numerical.Tensor([3, 4], dtype=int64)]
     """
     a = _tensor(ary)
     if isinstance(indices_or_sections, _numbers.Integral) and indices_or_sections > 0 \
@@ -7380,8 +7391,8 @@ def delete(arr, obj, axis=None):
     Examples:
         >>> import numerical
         >>> numerical.delete([[1, 2, 3], [4, 5, 6]], [0, -1], axis=1)
-        numerical.Tensor([[2.0],
-                          [5.0]], dtype=float64)
+        numerical.Tensor([[2],
+                          [5]], dtype=int64)
     """
     a = _tensor(arr)
     if axis is None:
@@ -7416,10 +7427,10 @@ def insert(arr, obj, values, axis=None):
     Examples:
         >>> import numerical
         >>> numerical.insert([1, 2, 3], [1, 3], [9, 8])
-        numerical.Tensor([1.0, 9.0, 2.0, 3.0, 8.0], dtype=float64)
+        numerical.Tensor([1, 9, 2, 3, 8], dtype=int64)
         >>> numerical.insert([[1, 2], [3, 4]], 1, [7, 8], axis=1)
-        numerical.Tensor([[1.0, 7.0, 2.0],
-                          [3.0, 8.0, 4.0]], dtype=float64)
+        numerical.Tensor([[1, 7, 2],
+                          [3, 8, 4]], dtype=int64)
     """
     a = _tensor(arr)
     if axis is None:

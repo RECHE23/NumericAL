@@ -249,12 +249,13 @@ class Reductions(unittest.TestCase):
             expected = getattr(np, name)(x, axis=axis)
             with self.subTest(name=name, axis=axis):
                 got = getattr(numerical, name)(mask, axis=axis)
+                kind = {"max": "bool", "min": "bool", "sum": "int64"}.get(name, "float64")  # NumPy's dtypes
                 if axis in (0, 1):  # along one of the two axes; every axis gives a number
                     self.assertTrue(np.array_equal(np.asarray(got), expected))
-                    self.assertEqual(got.dtype, "bool" if name in ("max", "min") else "float64")
+                    self.assertEqual(got.dtype, kind)
                 else:
                     self.assertEqual(got, expected)
-                    self.assertIsInstance(got, bool if name in ("max", "min") else float)
+                    self.assertIsInstance(got, {"bool": bool, "int64": int, "float64": float}[kind])
 
 
 @unittest.skipIf(np is None, "NumPy not installed")
@@ -309,12 +310,12 @@ class Conversions(unittest.TestCase):
                 got = numerical.asarray(source)
                 self.assertEqual(got.dtype, "bool")
                 self.assertTrue(np.array_equal(np.asarray(got), np.asarray(source)))
-        for source, dtype in (([], "float64"), ([True, 1], "float64"), ([True, 2.5], "float64"), ([True, 1j], "complex128"),
-                              (1, "float64"), (np.int8([1]), "float64")):
+        for source, dtype in (([], "float64"), ([True, 1], "int64"), ([True, 2.5], "float64"), ([True, 1j], "complex128"),
+                              (1, "int64"), (np.int8([1]), "int64")):
             with self.subTest(source=source):
                 self.assertEqual(numerical.asarray(source).dtype, dtype)
                 self.assertEqual(numerical.asarray(source).dtype, str(np.asarray(source).dtype)
-                                 if np.asarray(source).dtype.kind not in "iu" else "float64")
+                                 if np.asarray(source).dtype.kind not in "iu" else "int64")
 
     def test_a_bool_array_like_is_computed_on_as_float64(self):
         # A function that computes reads a bool array-like as float64, as NumPy's arithmetic and linear algebra do;
@@ -370,9 +371,9 @@ class Conversions(unittest.TestCase):
                 self.assertEqual(got.dtype, "bool")
                 self.assertEqual(got.tolist(), np.linalg.diagonal(x, offset=offset).tolist())
                 self.assertEqual(mask.diagonal(offset, 1, 2).tolist(), x.diagonal(offset, 1, 2).tolist())
-                trace = numerical.linalg.trace(mask, offset=offset)  # the trues counted, as a float64 (sum's convention)
-                self.assertEqual(trace.dtype, "float64")
-                self.assertEqual(trace.tolist(), np.linalg.trace(x, offset=offset).astype(float).tolist())
+                trace = numerical.linalg.trace(mask, offset=offset)  # the trues counted, an int64 as NumPy's
+                self.assertEqual(trace.dtype, "int64")
+                self.assertEqual(trace.tolist(), np.linalg.trace(x, offset=offset).tolist())
         self.assertIs(numerical.conj(mask), mask)
         self.assertEqual(mask.conj().tolist(), x.tolist())
 
