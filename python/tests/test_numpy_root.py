@@ -95,8 +95,7 @@ class NumpyRoot(unittest.TestCase):
         self.same(numerical.clip(x, None, 0.5), np.clip(x, None, 0.5))
         self.same(numerical.clip(x, -0.5, None), np.clip(x, -0.5, None))
         self.same(numerical.asarray(x).clip(-0.5, 0.5), x.clip(-0.5, 0.5))
-        with self.assertRaises(ValueError):
-            numerical.clip(x, None, None)
+        self.same(numerical.clip(x, None, None), x)  # neither bound: as NumPy 2.1's
         with self.assertRaises(TypeError):
             numerical.maximum(np.ones(2) * 1j, 1.0)
         with self.assertRaises(TypeError):

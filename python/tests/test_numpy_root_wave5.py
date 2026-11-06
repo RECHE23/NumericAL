@@ -294,5 +294,55 @@ class AgainstNumPy(unittest.TestCase):
             self.assertEqual(numerical.array_equiv([1.0, 2.0], b), np.array_equiv([1.0, 2.0], b), f"equiv {b}")
 
 
+@unittest.skipIf(np is None, "NumPy is not installed")
+class TensorMethods(unittest.TestCase):
+    def test_the_methods_answer_as_ndarrays(self):
+        # argpartition, choose, compress, repeat and take as NumPy's methods of those names, their arguments in
+        # NumPy's order (compress's condition first, take's `out` before `mode`)
+        values = np.array([[3.0, -1.0, 2.0], [0.5, 7.0, -4.0]])
+        t = numerical.asarray(values)
+        index = np.array([[0, 1, 1], [1, 0, 2]])
+        cases = [
+            ("argpartition", values, (1,), {}),
+            ("argpartition", values, (0,), {"axis": 0}),
+            ("argpartition", values, (2,), {"axis": None}),
+            ("choose", index, ([values[0], values[1], values[0] * 2],), {}),
+            ("choose", index + 2, ([values[0], values[1], values[0] * 2],), {"mode": "wrap"}),
+            ("compress", values, ([True, False, True],), {"axis": 1}),
+            ("compress", values, ([False, True],), {}),
+            ("repeat", values, (2,), {}),
+            ("repeat", values, ([1, 3],), {"axis": 0}),
+            ("take", values, ([4, 0, -1],), {}),
+            ("take", values, ([[2, 0]],), {"axis": 1}),
+            ("take", values, ([5, -9],), {"axis": 1, "mode": "clip"}),
+            ("take", values, ([7],), {"axis": 0, "mode": "wrap"}),
+            ("take", values, (1, 1, None, "wrap"), {}),
+        ]
+        for name, array, args, kwargs in cases:
+            with self.subTest(name=name, args=args, kwargs=kwargs):
+                want = getattr(array, name)(*args, **kwargs)
+                got = getattr(numerical.asarray(array, str(array.dtype)), name)(*args, **kwargs)
+                if name == "argpartition":  # one arrangement among those that partition: the stable sort's
+                    kth, axis = args[0], kwargs.get("axis", -1)
+                    flat = array.ravel() if axis is None else array
+                    got = np.asarray(got)
+                    np.testing.assert_array_equal(np.take_along_axis(flat, got, axis=-1 if axis is None else axis)
+                                                  .take(kth, axis=-1 if axis is None else axis),
+                                                  np.partition(flat, kth, axis=-1 if axis is None else axis)
+                                                  .take(kth, axis=-1 if axis is None else axis))
+                    continue
+                self.assertEqual(np.asarray(got).dtype, want.dtype)
+                np.testing.assert_array_equal(np.asarray(got), want)
+        for name, args in (("take", ([0], None, numerical.zeros((1,)))), ("compress", ([True], None, t)),
+                           ("choose", ([values[0]], t))):
+            with self.subTest(name=name, out=True):
+                with self.assertRaises(TypeError):
+                    getattr(t, name)(*args)
+        with self.assertRaises(IndexError):
+            t.take([6])
+        with self.assertRaises(ValueError):
+            t.argpartition(3)
+
+
 if __name__ == "__main__":
     unittest.main()

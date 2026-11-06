@@ -8,6 +8,20 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+
+- **The array API standard's keywords**, with `__array_api_version__` (2024.12): `device` on `asarray`, `astype`
+  and the creation functions (`zeros`, `ones`, `full`, `eye`, `arange` and the `*_like` ones), the CPU's alone;
+  `copy` on `asarray` (`False` refused where the elements must be copied) and `astype`; `dtype` on `sum`, `mean`
+  and `prod` (the elements converted to it first, as on `max`, `min`, `any` and `all` now); `correction` on `var`
+  and `std`; `descending` on `sort` and `argsort` (equal elements in their order, NaNs first); `min` and `max` on
+  `clip`, which with neither bound now gives the elements as NumPy 2.1's does. NumPy 2 shares `correction`, `min`,
+  `max` and the creation functions' `device`. SciPy in array API mode answers a Tensor in 11 of 21 of its functions
+  tried, from 8; the rest write into their input or want a 0-d result.
+- **`sign` of a complex number**, `z / |z|`, as NumPy 2's and the standard's, to NumPy's bits.
+- **`Tensor.argpartition`, `choose`, `compress`, `repeat` and `take`**, NumPy's methods of those names (their
+  arguments in NumPy's order: `compress`'s condition first, `take`'s `out` before `mode`).
+
 ### Changed
 
 - **`take` reads each index once, natively**: its bounds, its mode (raise, wrap, clip) and its copies in one kernel
@@ -25,6 +39,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`cbrt` within half an ulp**: C's cube root, up to 3 ulps off in glibc's (0.73 in macOS's), then one Newton step
   on a residual that two fused products give to the bit; no draw of 360 000 over every binade, the subnormals
   included, misrounded.
+- **A dtype given to `Tensor.sum` or `Tensor.mean` (as `numpy.sum(t, dtype=…)` passes it) is the one the elements
+  accumulate in**, as NumPy's: a float32 tensor's sum in float64 added the float32 sum's rounding, which was only
+  converted.
 - **`__dlpack__` exports DLPack 1.0, read-only**: for a consumer's `max_version` (1, 0) or later, a versioned
   capsule of the tensor's buffer whose read-only flag is set (a private, writable copy for `copy=True`); for an
   earlier consumer, which that flag cannot reach, a private copy (`copy=False` raises `BufferError`). The capsule
