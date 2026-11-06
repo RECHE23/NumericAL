@@ -59,6 +59,9 @@ Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (Sci
 - **`median`, `nanmedian` and the quantiles of the largest values** answer them exactly: NumPy averages a middle
   value with itself (or interpolates between two equal ones), which overflows past half the largest float, so
   `nanmedian([1.7976931348623157e308])` is infinite there.
+- **`geomspace` is within 3 ulps of the exact values**: NumPy's takes `10 ** y` between the `log10` of its ends,
+  whose roundings carry into each value up to some 2·(|ln start| + |ln stop|) ulps (1500 over 10^±300); ours give
+  their exponents' roundings back. The last bits differ where NumPy's are that far.
 - **`take` with `mode="wrap"` from an empty axis** raises IndexError, as NumPy does for a result with elements; for
   one without, NumPy's loop never ends (numpy/numpy#11677).
 - **`partition` and `argpartition`** sort each line, one of the arrangements NumPy's allows (the element at each

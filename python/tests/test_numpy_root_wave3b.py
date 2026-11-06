@@ -1,8 +1,10 @@
 """linspace (in full), logspace, geomspace, identity, vander, the sets (unique and its forms, intersect1d, union1d,
 setdiff1d, setxor1d, isin), digitize, cumulative_sum and cumulative_prod, unstack, matvec, vecmat, ediff1d,
-trim_zeros, select, and the complex prod and cumprod: against NumPy's answers to the bit (logspace and geomspace
-within 2 ulps, their powers C's library's; matvec and vecmat within a few: NumPy's go through its BLAS), with
-NumPy's errors. Deterministic; the NumPy comparisons skipped without NumPy."""
+trim_zeros, select, and the complex prod and cumprod: against NumPy's answers to the bit (logspace within 2 ulps,
+its powers C's library's; geomspace within NumPy's own error, which grows with the logarithms of its ends; matvec and
+vecmat within a few: NumPy's go through its BLAS), with NumPy's errors; geomspace within 3 ulps of the exact values.
+Deterministic; the NumPy comparisons skipped without NumPy."""
+import decimal
 import math
 import unittest
 import warnings
@@ -16,6 +18,14 @@ except ImportError:
 
 _NUMPY_2_3 = np is not None and tuple(int(part) for part in np.__version__.split(".")[:2]) >= (2, 3)
 _NUMPY_2_4 = np is not None and tuple(int(part) for part in np.__version__.split(".")[:2]) >= (2, 4)
+
+
+def _geomspace_ulps(start, stop):
+    """How far geomspace may be from NumPy's: NumPy's 10 ** y, y between log10(start) and log10(stop), carries their
+    roundings, ε·|log10|, times ln 10 into each value, up to 3·(|ln start| + |ln stop|) ulps beside 2 of its own; ours
+    are 3."""
+    logs = [max(abs(math.log(abs(float(x)))) for x in np.ravel(end)) for end in (start, stop)]
+    return 5 + math.ceil(3 * sum(logs))
 
 
 class WithoutNumPy(unittest.TestCase):
@@ -53,9 +63,26 @@ class WithoutNumPy(unittest.TestCase):
         alone = numerical.prod(numerical.asarray([complex(inf, 1)]))  # 1 · (inf + j), from NumPy's identity
         self.assertTrue(alone.real == inf and math.isnan(alone.imag))
 
+    def test_geomspace_within_three_ulps(self):
+        """Every value within 3 ulps of exp(ln a + (ln b − ln a)·k/d) taken to 60 digits, over ends from 10^-300 to
+        10^300: the rounding of each exponent, times ln a or ln b, is given back."""
+        exact = decimal.Context(prec=60)
+        for a, b in ((1.0, 1000.0), (3.0, 7.0), (1e-300, 1e300), (2.5e300, 1.5e-301), (1e300, 1.1e300),
+                     (7e-310, 3e-200), (-1e-250, -4e250), (1.7e308, 1e-308)):
+            for num in (2, 3, 7, 50, 51):
+                for endpoint in (True, False):
+                    got = numerical.geomspace(a, b, num, endpoint).tolist()
+                    d = num - 1 if endpoint else num
+                    first, last = exact.ln(decimal.Decimal(abs(a))), exact.ln(decimal.Decimal(abs(b)))
+                    for k, value in enumerate(got):
+                        step = exact.divide(exact.multiply(exact.subtract(last, first), k), d)
+                        want = math.copysign(float(exact.exp(exact.add(first, step))), a)
+                        self.assertLessEqual(abs(value - want), 3 * math.ulp(want), f"{a} {b} {num} {endpoint} {k}")
+
     def test_errors(self):
         cases = [
             (ValueError, lambda: numerical.linspace(0.0, 1.0, -1)),
+            (ValueError, lambda: numerical.geomspace(1.0, 2.0, -1)),
             (ValueError, lambda: numerical.geomspace(0.0, 1.0)),
             (TypeError, lambda: numerical.geomspace(1j, 2j)),
             (ValueError, lambda: numerical.vander([[1.0]])),
@@ -168,7 +195,8 @@ class AgainstNumPy(unittest.TestCase):
                                 self.assertSame(lambda: numerical.geomspace(_tensor(start), _tensor(stop), num,
                                                                             endpoint, dtype, axis),
                                                 lambda: np.geomspace(start, stop, num, endpoint, dtype, axis),
-                                                f"geomspace {start} {stop} {num} {dtype} {axis}", ulps=2)
+                                                f"geomspace {start} {stop} {num} {dtype} {axis}",
+                                                ulps=_geomspace_ulps(start, stop))
         for dtype in (None, "float32", "int64", bool, "complex128"):
             self.assertSame(lambda: numerical.identity(3, dtype), lambda: np.identity(3, dtype), f"identity {dtype}")
 

@@ -515,7 +515,10 @@ def ranges(rng):
     same({}, "", "linspace", start, stop, num, endpoint=endpoint)
     same({"ulps": 2}, "", "logspace", start, stop, num, endpoint=endpoint)
     if start * stop > 0:
-        same({"ulps": 2}, "", "geomspace", start, stop, num, endpoint=endpoint)
+        # NumPy's 10 ** y carries the roundings of log10(start) and log10(stop), up to 3·(|ln start| + |ln stop|)
+        # ulps beside 2 of its own; ours are within 3 of the exact values
+        logs = abs(math.log(abs(start))) + abs(math.log(abs(stop)))
+        same({"ulps": 5 + math.ceil(3 * logs)}, "", "geomspace", start, stop, num, endpoint=endpoint)
     same({}, "", "arange", float(np.round(start, 1)), float(np.round(stop, 1)), float(rng.choice([0.5, 1, 0.3])))
     m = int(rng.integers(0, 6))
     window = str(rng.choice(["hamming", "hanning", "blackman", "bartlett"]))

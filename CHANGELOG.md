@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+
+- **`geomspace` within 3 ulps of the exact values**, where it took NumPy's `10 ** y` between the `log10` of its ends,
+  whose roundings grow with them: up to 1500 ulps over 10^±300. Element k is now `start^s · stop^t`, s and t the
+  exponents `(d − k)/d` and `k/d`, times what their roundings left out; its values leave NumPy's bits wherever
+  NumPy's are that far.
+
 ## 2026.11.7 — 2026-11-06
 
 ### Announced for 2026.12.0

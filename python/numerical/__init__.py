@@ -4069,8 +4069,10 @@ def logspace(start, stop, num=50, endpoint=True, base=10.0, dtype=None, axis=0):
 
 def geomspace(start, stop, num=50, endpoint=True, dtype=None, axis=0):
     """`num` values evenly spaced on a log scale from `start` to `stop` (both nonzero, negative ones of one sign), as
-    ``numpy.geomspace`` by its steps: :func:`logspace` of their ``log10`` in float64 at least, the ends `start` and
-    `stop` themselves. Real dtypes."""
+    ``numpy.geomspace``, the ends `start` and `stop` themselves. Element k is ``start^s · stop^t`` in float64, s and t
+    the exponents ``(d − k)/d`` and ``k/d``, times what their roundings left out: within 3 ulps of the exact value
+    where NumPy's ``10 ** linspace(log10(start), log10(stop))`` loses up to some ``2·(|ln start| + |ln stop|)`` ulps,
+    1500 over 10^±300. Real dtypes."""
     # NumPy's: `start` and `stop` read as arrays first (a Python number of full strength), beside float(num) and
     # the requested dtype (float64 by default)
     ends = ["int64" if type(x) is int else _result_dtype(x) for x in (start, stop)]
@@ -4082,16 +4084,13 @@ def geomspace(start, stop, num=50, endpoint=True, dtype=None, axis=0):
     if any(first == 0) or any(last == 0):
         raise ValueError("Geometric sequence cannot include zero")
     sign_ = sign(first)
-    first = first / sign_
-    last = last / sign_
-    result = logspace(log10(first), log10(last), num=num, endpoint=endpoint, base=10.0, dtype=computed)
-    shape_ = result.shape[1:]
-    if num > 0:
-        pieces = [reshape(broadcast_to(first, shape_), (1,) + shape_), result[1:]]
-        if num > 1 and endpoint:
-            pieces = [pieces[0], result[1:-1], reshape(broadcast_to(last, shape_), (1,) + shape_)]
-        result = concatenate(pieces)
-    result = result * sign_
+    first = asarray(first / sign_, "float64")
+    last = asarray(last / sign_, "float64")
+    ones = (1,) * len(broadcast_shapes(first.shape, last.shape))
+    s, t, es, et = (reshape(x, (num,) + ones) for x in _numerical._geomspace_exponents(num, endpoint))
+    # an infinite logarithm times a zero remainder (an end, or an exponent without rounding) is no correction
+    correction = es * log(first) + et * log(last)
+    result = power(first, s) * power(last, t) * (1.0 + where(isfinite(correction), correction, 0.0)) * sign_
     if axis != 0:
         result = moveaxis(result, 0, axis)
     return asarray(result, computed if dtype is None else _dtype_name(dtype))

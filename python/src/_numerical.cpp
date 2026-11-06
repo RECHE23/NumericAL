@@ -211,6 +211,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_arange(start, stop, step, fused=True) -> Tensor\nAs numpy.arange (float64), its elements fused or not.");
     m.raw("_linspace", module_linspace, METH_VARARGS,
           "_linspace(start, stop, num) -> Tensor\nAs numpy.linspace with the end point (float64).");
+    m.raw("_geomspace_exponents", module_geomspace_exponents, METH_VARARGS,
+          "_geomspace_exponents(num, endpoint) -> (s, t, es, et)\ngeomspace's exponents (d - k)/d and k/d, and what\n"
+          "rounding left out of each (float64).");
     m.raw("slogdet", module_slogdet, METH_VARARGS,
           "slogdet(a) -> (sign, logabsdet)\nThe sign and the natural log of abs(det(a)), as numpy.linalg.slogdet; it\n"
           "does not underflow or overflow where determinant(a) does.");

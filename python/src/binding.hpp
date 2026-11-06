@@ -2083,6 +2083,7 @@ PyObject* module_arange(PyObject* /*self*/, PyObject* args); // in products.cpp
 
 // _linspace(start, stop, num) -> Tensor (float64).
 PyObject* module_linspace(PyObject* /*self*/, PyObject* args); // in products.cpp
+PyObject* module_geomspace_exponents(PyObject* /*self*/, PyObject* args); // in products.cpp
 
 // slogdet(a) -> (sign, logabsdet), as numpy.linalg.slogdet: the sign a float or complex like determinant.
 PyObject* module_slogdet(PyObject* /*self*/, PyObject* args); // in linalg.cpp

@@ -990,6 +990,48 @@ PyObject* module_linspace(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _geomspace_exponents(num, endpoint) -> (s, t, es, et), four float64 Tensors of `num` elements: element k's two
+// exponents s = (d − k)/d and t = k/d, d = num − 1 with the end point (num alone without it, or for one sample), and
+// what each rounding left out of it, (d − k − s·d)/d and (k − t·d)/d. `start^s · stop^t` loses those roundings times
+// log(start) and log(stop), 700 ulps over 10^±300; `1 + es·log(start) + et·log(stop)` gives them back. A correctly
+// rounded quotient leaves a representable remainder, which fma gives exactly.
+PyObject* module_geomspace_exponents(PyObject* /*self*/, PyObject* args)
+{
+    Py_ssize_t num      = 0;
+    int        endpoint = 1;
+    if (PyArg_ParseTuple(args, "np", &num, &endpoint) == 0) {
+        return nullptr;
+    }
+    if (num < 0) {
+        PyErr_SetString(PyExc_ValueError, "geomspace: the number of samples must be non-negative");
+        return nullptr;
+    }
+    try {
+        const auto                count {static_cast<std::size_t>(num)};
+        const double              d {static_cast<double>(endpoint != 0 && count > 1 ? count - 1 : count)};
+        numerical::buffer<double> s(count);
+        numerical::buffer<double> t(count);
+        numerical::buffer<double> es(count);
+        numerical::buffer<double> et(count);
+        for (std::size_t k {0}; k < count; ++k) {
+            const double up {static_cast<double>(k)};
+            const double down {d - up};
+            s[k]  = down / d;
+            t[k]  = up / d;
+            es[k] = std::fma(-s[k], d, down) / d;
+            et[k] = std::fma(-t[k], d, up) / d;
+        }
+        const auto wrapped = [count](numerical::buffer<double>&& b) {
+            return wrap(any_tensor {real_tensor {{count}, std::move(b)}});
+        };
+        return Py_BuildValue("(NNNN)", wrapped(std::move(s)), wrapped(std::move(t)), wrapped(std::move(es)),
+                             wrapped(std::move(et)));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _borrowed_einsum(spec, x) -> Tensor or NotImplemented: einsum of one Tensor or contiguous NumPy array read where it
 // lies, for a spec that sums a run of its axes into the others in order ("ij->i", "ij->", "ij->j", "ijk->ik":
 // numerical::detail::sum_over_run, the bits of einsum's own path); NotImplemented for any other spec or operand, which
