@@ -2575,7 +2575,7 @@ namespace numerical {
     return tensor<T> {indices.shape(), std::move(out)};
   }
 
-  //! \brief What \ref take does with an index outside its axis, as `numpy.take`'s `mode`: refuse it, take it modulo
+  //! \brief What `take` does with an index outside its axis, as `numpy.take`'s `mode`: refuse it, take it modulo
   //!        the extent, or take the nearer end.
   enum class take_mode : unsigned char
   {
