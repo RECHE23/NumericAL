@@ -4,6 +4,7 @@
 #include <bit>
 #include <numbers>
 #include <numeric>
+#include <type_traits>
 
 #include "binding.hpp"
 
@@ -171,6 +172,35 @@ namespace {
         return x == R {0} ? R {0} : x;
     }
 
+    //! The cube root within half an ulp and a little: C's, then one Newton step whose residual y³ − x two fused
+    //! products give to the last bit (C's cbrt is up to 3 ulps off in glibc). Below 2^-600 (float: 2^-60) the
+    //! residual would fall among the subnormals, so x is scaled by 2^768 (2^96) and the root back by 2^-256 (2^-32).
+    template <typename R>
+    R cube_root(R x)
+    {
+        R scale {1};
+        if constexpr (std::is_same_v<R, double>) {
+            if (std::fabs(x) < 0x1p-600) {
+                x *= 0x1p768;
+                scale = 0x1p-256;
+            }
+        }
+        else {
+            if (std::fabs(x) < 0x1p-60F) {
+                x *= 0x1p96F;
+                scale = 0x1p-32F;
+            }
+        }
+        const R y {std::cbrt(x)};
+        if (!std::isfinite(y) || y == R {0}) {
+            return y * scale;
+        }
+        const R square {y * y};
+        const R square_error {std::fma(y, y, -square)}; // y² = square + square_error exactly
+        const R residual {std::fma(square_error, y, std::fma(square, y, -x))};
+        return (y - residual / (R {3} * square)) * scale;
+    }
+
     //! The real elementary functions by NumPy's names, C's where it has one (rint: half to even, as numpy.rint and
     //! numpy.round; deg2rad and rad2deg NumPy's products by π/180 and 180/π).
     template <typename R>
@@ -193,7 +223,7 @@ namespace {
         {"log1p", [](R x) { return std::log1p(x); }},
         {"expm1", [](R x) { return std::expm1(x); }},
         {"exp2", [](R x) { return std::exp2(x); }},
-        {"cbrt", [](R x) { return std::cbrt(x); }},
+        {"cbrt", &cube_root<R>},
         {"deg2rad", [](R x) { return x * (std::numbers::pi_v<R> / R {180}); }},
         {"rad2deg", [](R x) { return x * (R {180} / std::numbers::pi_v<R>); }},
     }};

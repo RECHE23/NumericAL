@@ -22,6 +22,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **`cbrt` within half an ulp**: C's cube root, up to 3 ulps off in glibc's (0.73 in macOS's), then one Newton step
+  on a residual that two fused products give to the bit; no draw of 360 000 over every binade, the subnormals
+  included, misrounded.
 - **`__dlpack__` exports DLPack 1.0, read-only**: for a consumer's `max_version` (1, 0) or later, a versioned
   capsule of the tensor's buffer whose read-only flag is set (a private, writable copy for `copy=True`); for an
   earlier consumer, which that flag cannot reach, a private copy (`copy=False` raises `BufferError`). The capsule

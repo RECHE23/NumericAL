@@ -1,7 +1,11 @@
 """NumPy's root functions of the second set against NumPy's own answers: the real elementary functions (within a few
 units in the last place: both sides take their platform's libm or their own), rounding, prod, cumsum, cumprod, sort
-and diff. Deterministic; skipped without NumPy."""
+and diff; the cube root within half an ulp. Deterministic; the comparisons skipped without NumPy."""
+import math
+import random
+import struct
 import unittest
+from fractions import Fraction
 
 import numerical
 
@@ -9,6 +13,40 @@ try:
     import numpy as np
 except ImportError:
     np = None
+
+
+class CubeRoot(unittest.TestCase):
+    @staticmethod
+    def within(root, x, single):
+        """Whether `root` is within 0.51 ulp of x's real cube root, by the exact cubes of the bounds."""
+        def neighbor(value, toward):
+            if not single:
+                return math.nextafter(value, toward)
+            bits = struct.unpack("<I", struct.pack("<f", value))[0]  # the magnitude's bits, after the sign
+            step = 1 if (toward > value) == (value > 0) else -1
+            return struct.unpack("<f", struct.pack("<I", bits + step))[0]
+        low = Fraction(root) - Fraction(51, 100) * (Fraction(root) - Fraction(neighbor(root, -math.inf)))
+        high = Fraction(root) + Fraction(51, 100) * (Fraction(neighbor(root, math.inf)) - Fraction(root))
+        return low ** 3 <= Fraction(x) <= high ** 3
+
+    def test_cbrt_within_half_an_ulp(self):
+        # C's cbrt is up to 3 ulps off (glibc); one Newton step on an exact residual leaves half an ulp, over every
+        # binade, the subnormals included
+        draw = random.Random(20261106)
+        values = [draw.choice((-1.0, 1.0)) * draw.random() * 2.0 ** draw.randint(-1074, 1023) for _ in range(1500)]
+        values += [5e-324, -5e-324, 2.0 ** -600, math.nextafter(2.0 ** -600, 0.0), 1.7976931348623157e308, 27.0]
+        for x, root in zip(values, numerical.cbrt(values).tolist()):
+            with self.subTest(x=x.hex()):
+                self.assertTrue(self.within(root, x, single=False), root.hex())
+        singles = [struct.unpack("<f", struct.pack("<I", draw.getrandbits(31)))[0] for _ in range(1500)]
+        singles = [x for x in singles if math.isfinite(x)] + [2.0 ** -149, 2.0 ** -60, 3.4028234663852886e38]
+        for x, root in zip(singles, numerical.cbrt(numerical.Tensor(singles, dtype="float32")).tolist()):
+            with self.subTest(x=x.hex(), dtype="float32"):
+                self.assertTrue(self.within(root, x, single=True), root.hex())
+        specials = numerical.cbrt([0.0, -0.0, math.inf, -math.inf, math.nan, -8.0]).tolist()
+        self.assertEqual([math.copysign(1.0, v) for v in specials[:2]], [1.0, -1.0])
+        self.assertEqual(specials[2:4] + specials[5:], [math.inf, -math.inf, -2.0])
+        self.assertTrue(math.isnan(specials[4]))
 
 
 @unittest.skipIf(np is None, "NumPy not installed")
