@@ -11,17 +11,18 @@ int64 too, as NumPy's.
 ## Reading arrays
 
 {func}`numerical.asarray` copies any NumPy array (bool, integer, float32 or float64, complex64 or complex128, in
-either byte order, at any strides), a nested list or tuple of numbers, or a number: a float32, complex64, complex128,
-bool or signed integer array as it is (its integers int64, and unsigned ones but uint64, which int64 does not hold
-and NumPy promotes beside int64 to float64), Python's ints as int64 (OverflowError past it), anything else into
-float64 (complex128 for a complex list or number, bool for bools alone), or into the `dtype` asked. A complex input is never cast to a real dtype. Into int64, a real is truncated toward
-zero, as NumPy's, and NaN, an infinity or a value outside int64's range is refused (`ValueError`, `OverflowError`),
-as Python's `int()` refuses them, where NumPy's answer depends on the processor.
+either byte order, at any strides), a nested list or tuple of numbers, or a number: a float32, complex64,
+complex128, bool or signed integer array as it is (its integers int64, and unsigned ones but uint64, which int64
+does not hold and NumPy promotes beside int64 to float64), Python's ints as int64 (OverflowError past it), anything
+else into float64 (complex128 for a complex list or number, bool for bools alone), or into the `dtype` asked. A
+complex input is never cast to a real dtype. Into int64, a real is truncated toward zero, as NumPy's, and NaN, an
+infinity or a value outside int64's range is refused (`ValueError`, `OverflowError`), as Python's `int()` refuses
+them, where NumPy's answer depends on the processor.
 
 ```pycon
 >>> import numerical
 >>> numerical.asarray([[1, 2], [3, 4]]).dtype
-'float64'
+'int64'
 >>> numerical.asarray([1j, 2]).dtype
 'complex128'
 >>> numerical.asarray([True, False]).dtype
