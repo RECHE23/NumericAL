@@ -1823,40 +1823,136 @@ namespace numerical {
       return std::bit_cast<T>(static_cast<order_key_t<T>>(key ^ sign_bit<order_key_t<T>>));
     }
 
-    /*!
-     * \brief Sorts `[first, last)` by \ref order_key, a byte at a time from the least significant (a stable counting
-     *        sort each, so equal keys keep their order; a byte that every key shares skipped).
-     */
-    template <typename T>
-    void radix_sort(T* first,
-                    T* last)
+    //! \brief How many keys of \p U hold each value of each byte: the byte at bit `8·b` counted in `[b]`.
+    template <typename U>
+    using byte_counts = std::array<std::array<std::size_t, 256>, sizeof(U)>;
+
+    //! \brief Counts \p key's bytes in \p counts. Every byte is counted in the one read that makes the keys, where
+    //!        a read per byte cost a fifth of the sort (10⁶ float64: 22.8 → 18.5 ms on x86-64, 12.1 → 9.5 on arm64).
+    template <typename U>
+    void count_bytes(byte_counts<U>& counts,
+                     U               key) noexcept
     {
-      using U = order_key_t<T>;
-      const auto count {static_cast<std::size_t>(last - first)};
-      buffer<U>  keys(count);
-      buffer<U>  spare(count);
-      for (std::size_t i {0}; i < count; ++i) {
-        keys[i] = order_key(first[i]);
+      for (std::size_t b {0}; b < sizeof(U); ++b) {
+        ++counts[b][(key >> (8 * b)) & 0xffU];
       }
-      U* from {keys.data()};
-      U* to   {spare.data()};
-      for (std::size_t shift {0}; shift < sizeof(U) * 8; shift += 8) {
-        std::array<std::size_t, 257> places {};
-        for (std::size_t i {0}; i < count; ++i) {
-          ++places[((from[i] >> shift) & 0xffU) + 1];
+    }
+
+    //! \brief Where part \p p of \p parts sharing \p count elements begins: the first `count % parts` one longer.
+    [[nodiscard]] inline std::size_t part_begin(std::size_t count,
+                                                std::size_t parts,
+                                                std::size_t p) noexcept
+    {
+      return (count / parts * p) + std::min(p, count % parts);
+    }
+
+    /*!
+     * \brief Sorts the \p count keys at \p keys stably by their bytes from the least significant, the indices at
+     *        \p indices with them unless null, in `counts.size()` parts among the threads. Each pass places a part's
+     *        keys of one byte value after the earlier parts' and moves each part's in its order, so equal keys keep
+     *        their order whatever the parts: the bits of one counting sort. \p counts holds each part's counts of
+     *        every byte of the keys as they lie, counted again for a part once a pass has moved them (one part's
+     *        are the whole's, whatever their order); a byte that every key shares is skipped.
+     *        \returns Whether the sorted keys and indices lie in \p key_spare and \p index_spare.
+     */
+    template <typename U>
+    [[nodiscard]] bool radix_passes(U*                           keys,
+                                    U*                           key_spare,
+                                    std::int64_t*                indices,
+                                    std::int64_t*                index_spare,
+                                    std::size_t                  count,
+                                    std::vector<byte_counts<U>>& counts)
+    {
+      const std::size_t parts      {counts.size()};
+      const std::size_t work       {count / parts * 16};
+      U*                key_from   {keys};
+      U*                key_to     {key_spare};
+      std::int64_t*     index_from {indices};
+      std::int64_t*     index_to   {index_spare};
+      bool              moved      {false};
+      for (std::size_t b {0}; b < sizeof(U); ++b) {
+        const std::size_t            shift {8 * b};
+        std::array<std::size_t, 256> total {};
+        for (const byte_counts<U>& part : counts) {
+          std::transform(total.begin(), total.end(), part[b].begin(), total.begin(), std::plus {});
         }
-        if (std::ranges::find(places, count) != places.end()) { // one byte value alone: in order already
+        if (std::ranges::find(total, count) != total.end()) { // one byte value alone: in order already
           continue;
         }
-        std::partial_sum(places.begin(), places.end(), places.begin());
-        for (std::size_t i {0}; i < count; ++i) {
-          to[places[(from[i] >> shift) & 0xffU]++] = from[i];
+        if (moved && parts > 1) {
+          parallel_for(parts, work, [&](std::size_t p) {
+                         std::array<std::size_t, 256> part {}; // a local array, which no store to a key can alias
+                         const std::size_t            end {part_begin(count, parts, p + 1)};
+                         for (std::size_t i {part_begin(count, parts, p)}; i < end; ++i) {
+                           ++part[(key_from[i] >> shift) & 0xffU];
+                         }
+                         counts[p][b] = part;
+                       });
         }
-        std::swap(from, to);
+        std::size_t place {0};
+        for (std::size_t v {0}; v < 256; ++v) {
+          for (byte_counts<U>& part : counts) {
+            const std::size_t held {part[b][v]};
+            part[b][v] = place;
+            place     += held;
+          }
+        }
+        parallel_for(parts, work, [&](std::size_t p) {
+                       // a local copy: a store to a key (std::uint64_t, std::size_t's type on LP64 Linux) may alias
+                       // the counts where they lie, and each would be read again after it (10⁶ float64 on x86-64
+                       // GCC: 22 → 27 ms)
+                       std::array<std::size_t, 256> at {counts[p][b]};
+                       const std::size_t            end {part_begin(count, parts, p + 1)};
+                       if (index_from == nullptr) {
+                         for (std::size_t i {part_begin(count, parts, p)}; i < end; ++i) {
+                           key_to[at[(key_from[i] >> shift) & 0xffU]++] = key_from[i];
+                         }
+                         return;
+                       }
+                       for (std::size_t i {part_begin(count, parts, p)}; i < end; ++i) {
+                         const std::size_t k {at[(key_from[i] >> shift) & 0xffU]++};
+                         key_to[k]   = key_from[i];
+                         index_to[k] = index_from[i];
+                       }
+                     });
+        std::swap(key_from, key_to);
+        std::swap(index_from, index_to);
+        moved = true;
       }
-      for (std::size_t i {0}; i < count; ++i) {
-        first[i] = from_order_key<T>(from[i]);
-      }
+      return key_from != keys;
+    }
+
+    /*!
+     * \brief Sorts `[first, last)` by \ref order_key, a byte at a time from the least significant (by \ref radix_passes,
+     *        a stable counting sort each, so equal keys keep their order; a byte that every key shares skipped), in
+     *        \p parts among the threads.
+     */
+    template <typename T>
+    void radix_sort(T*          first,
+                    T*          last,
+                    std::size_t parts = 1)
+    {
+      using U = order_key_t<T>;
+      const auto                  count  {static_cast<std::size_t>(last - first)};
+      const std::size_t           shares {std::clamp<std::size_t>(parts, 1, std::max<std::size_t>(count, 1))};
+      buffer<U>                   keys(count);
+      buffer<U>                   spare(count);
+      std::vector<byte_counts<U>> counts(shares);
+      parallel_for(shares, count / shares * 16, [&](std::size_t p) {
+                     byte_counts<U>    part {}; // a local array, which no store to a key can alias
+                     const std::size_t end {part_begin(count, shares, p + 1)};
+                     for (std::size_t i {part_begin(count, shares, p)}; i < end; ++i) {
+                       keys[i] = order_key(first[i]);
+                       count_bytes(part, keys[i]);
+                     }
+                     counts[p] = part;
+                   });
+      const U* const sorted {radix_passes(keys.data(), spare.data(), nullptr, nullptr, count, counts) ? spare.data() : keys.data()};
+      parallel_for(shares, count / shares * 16, [&](std::size_t p) {
+                     for (std::size_t i {part_begin(count, shares, p)}; i < part_begin(count, shares, p + 1); ++i) {
+                       first[i] = from_order_key<T>(sorted[i]);
+                     }
+                   });
     }
 
     /*!
@@ -1864,11 +1960,12 @@ namespace numerical {
      *        order first, the rest by `<`, which tests for no NaN. A long run by \ref radix_sort, its zeros then
      *        rewritten with their signs in their order (the bits order −0 below +0, where `<` holds them equal); a
      *        short one by `std::stable_sort` with a lambda of its own, not the default `std::less`, which libc++ 22
-     *        sorts by the bits from 1024 doubles on, −0 first.
+     *        sorts by the bits from 1024 doubles on, −0 first. The radix sort in \p parts among the threads.
      */
     template <std::floating_point T>
-    void sort_run(T* first,
-                  T* last)
+    void sort_run(T*          first,
+                  T*          last,
+                  std::size_t parts = 1)
     {
       T* const numbers_end {std::stable_partition(first, last, [](T x) { return !std::isnan(x); })};
       if (static_cast<std::size_t>(numbers_end - first) < radix_sort_least) {
@@ -1881,7 +1978,7 @@ namespace numerical {
           negative_zeros.push_back(std::signbit(*x));
         }
       }
-      radix_sort(first, numbers_end);
+      radix_sort(first, numbers_end, parts);
       T* zero {std::lower_bound(first, numbers_end, T {0}, [](T a, T b) { return a < b; })};
       for (const bool negative : negative_zeros) {
         *zero++ = negative ? -T {0} : T {0};
@@ -1928,64 +2025,55 @@ namespace numerical {
     /*!
      * \brief Sorts the indices `[first, last)` stably by their elements (`values[k · stride]`), as \ref sorts_before
      *        orders them: comparisons for a run shorter than \ref radix_sort_least, else the NaNs set apart in their
-     *        order and the rest by \ref argsort_key, a byte at a time (a stable counting sort of the keys and their
-     *        indices together; a byte that every key shares skipped): equal elements by index either way.
+     *        order and the rest by \ref argsort_key, a byte at a time (\ref radix_passes, in \p parts among the
+     *        threads: a stable counting sort of the keys and their indices together; a byte that every key shares
+     *        skipped): equal elements by index either way.
      */
     template <radix_orderable T,
               typename Less>
-    void order_run(std::int64_t*  first,
-                   std::int64_t*  last,
-                   const T*       values,
-                   std::size_t    stride,
-                   const Less&    less)
+    void order_run(std::int64_t* first,
+                   std::int64_t* last,
+                   const T*      values,
+                   std::size_t   stride,
+                   const Less&   less,
+                   std::size_t   parts = 1)
     {
       if (static_cast<std::size_t>(last - first) < radix_sort_least) {
         std::stable_sort(first, last, less);
         return;
       }
       using U = order_key_t<T>;
-      std::int64_t* const  end   {numbers_end(first, last, values, stride)};
-      const auto           count {static_cast<std::size_t>(end - first)};
-      buffer<U>            keys(count);
-      buffer<U>            key_spare(count);
-      buffer<std::int64_t> index_spare(count);
-      for (std::size_t i {0}; i < count; ++i) {
-        keys[i] = argsort_key(values[static_cast<std::size_t>(first[i]) * stride]);
-      }
-      U*            key_from   {keys.data()};
-      U*            key_to     {key_spare.data()};
-      std::int64_t* index_from {first};
-      std::int64_t* index_to   {index_spare.data()};
-      for (std::size_t shift {0}; shift < sizeof(U) * 8; shift += 8) {
-        std::array<std::size_t, 257> places {};
-        for (std::size_t i {0}; i < count; ++i) {
-          ++places[((key_from[i] >> shift) & 0xffU) + 1];
-        }
-        if (std::ranges::find(places, count) != places.end()) {
-          continue;
-        }
-        std::partial_sum(places.begin(), places.end(), places.begin());
-        for (std::size_t i {0}; i < count; ++i) {
-          const std::size_t at {places[(key_from[i] >> shift) & 0xffU]++};
-          key_to[at]   = key_from[i];
-          index_to[at] = index_from[i];
-        }
-        std::swap(key_from, key_to);
-        std::swap(index_from, index_to);
-      }
-      if (index_from != first) {
-        std::copy_n(index_from, count, first);
+      std::int64_t* const         numbers_last {numbers_end(first, last, values, stride)};
+      const auto                  count        {static_cast<std::size_t>(numbers_last - first)};
+      const std::size_t           shares       {std::clamp<std::size_t>(parts, 1, std::max<std::size_t>(count, 1))};
+      buffer<U>                   keys(count);
+      buffer<U>                   key_spare(count);
+      buffer<std::int64_t>        index_spare(count);
+      std::vector<byte_counts<U>> counts(shares);
+      parallel_for(shares, count / shares * 16, [&](std::size_t p) {
+                     byte_counts<U>    part {}; // a local array, which no store to a key can alias
+                     const std::size_t end {part_begin(count, shares, p + 1)};
+                     for (std::size_t i {part_begin(count, shares, p)}; i < end; ++i) {
+                       keys[i] = argsort_key(values[static_cast<std::size_t>(first[i]) * stride]);
+                       count_bytes(part, keys[i]);
+                     }
+                     counts[p] = part;
+                   });
+      if (radix_passes(keys.data(), key_spare.data(), first, index_spare.data(), count, counts)) {
+        std::copy_n(index_spare.data(), count, first);
       }
     }
 
-    //! \brief Sorts the indices `[first, last)` stably by their elements, by comparisons (any other type).
+    //! \brief Sorts the indices `[first, last)` stably by their elements, by comparisons (any other type), on the
+    //!        caller's thread.
     template <typename T,
               typename Less>
     void order_run(std::int64_t* first,
                    std::int64_t* last,
                    const T* /*values*/,
                    std::size_t /*stride*/,
-                   const Less&   less)
+                   const Less&   less,
+                   std::size_t /*parts*/ = 1)
     {
       std::stable_sort(first, last, less);
     }
@@ -1998,16 +2086,17 @@ namespace numerical {
       std::stable_sort(first, last);
     }
 
-    //! \brief Sorts `[first, last)` as int64 sort: a long run by \ref radix_sort (equal integers are the same bits, so
-    //!        any order of them is the stable one).
+    //! \brief Sorts `[first, last)` as int64 sort: a long run by \ref radix_sort in \p parts among the threads (equal
+    //!        integers are the same bits, so any order of them is the stable one).
     inline void sort_run(std::int64_t* first,
-                         std::int64_t* last)
+                         std::int64_t* last,
+                         std::size_t   parts = 1)
     {
       if (static_cast<std::size_t>(last - first) < radix_sort_least) {
         std::stable_sort(first, last);
         return;
       }
-      radix_sort(first, last);
+      radix_sort(first, last, parts);
     }
 
     //! \brief Sorts `[first, last)` stably as \ref sorts_before orders complex numbers.
@@ -2016,6 +2105,16 @@ namespace numerical {
                   C* last)
     {
       std::stable_sort(first, last, [](const C& a, const C& b) { return sorts_before(a, b); });
+    }
+
+    //! \brief The pieces \ref parallel_sort_run sorts a line in for \p threads: the least power of four that many.
+    [[nodiscard]] inline std::size_t merged_pieces(std::size_t threads) noexcept
+    {
+      std::size_t pieces {4};
+      while (pieces < threads) {
+        pieces *= 4;
+      }
+      return pieces;
     }
 
     /*!
@@ -2036,7 +2135,7 @@ namespace numerical {
     {
       std::vector<std::size_t> bounds(pieces + 1);
       for (std::size_t k {0}; k <= pieces; ++k) {
-        bounds[k] = (count / pieces * k) + (std::min(k, count % pieces));
+        bounds[k] = part_begin(count, pieces, k);
       }
       parallel_for(pieces, count / pieces * 16, [&](std::size_t k) { sort_piece(data + bounds[k], data + bounds[k + 1]); });
       buffer<T> scratch(count);
@@ -2052,6 +2151,54 @@ namespace numerical {
                      });
         std::swap(from, to);
       }
+    }
+
+    //! \brief Sorts one long line of \p count elements at \p run among \p threads: each pass of its radix sort shared
+    //!        out (\ref radix_passes), the one-thread sort's bits with no merge.
+    template <radix_orderable T>
+    void sort_shared(T*          run,
+                     std::size_t count,
+                     std::size_t threads)
+    {
+      sort_run(run, run + count, threads);
+    }
+
+    //! \brief Sorts one long line of any other type among \p threads: in pieces, a power of four, then merged
+    //!        (\ref parallel_sort_run).
+    template <typename T>
+    void sort_shared(T*          run,
+                     std::size_t count,
+                     std::size_t threads)
+    {
+      parallel_sort_run(run, count, merged_pieces(threads), [](T* first, T* last) { sort_run(first, last); },
+                        [](const T& a, const T& b) { return sorts_before(a, b); });
+    }
+
+    //! \brief Sorts the indices of one long line among \p threads: each pass of its radix sort shared out.
+    template <radix_orderable T,
+              typename Less>
+    void order_shared(std::int64_t* order,
+                      std::size_t   count,
+                      const T*      values,
+                      std::size_t   stride,
+                      const Less&   less,
+                      std::size_t   threads)
+    {
+      order_run(order, order + count, values, stride, less, threads);
+    }
+
+    //! \brief Sorts the indices of one long line of any other type among \p threads: in pieces, then merged.
+    template <typename T,
+              typename Less>
+    void order_shared(std::int64_t* order,
+                      std::size_t   count,
+                      const T*      values,
+                      std::size_t   stride,
+                      const Less&   less,
+                      std::size_t   threads)
+    {
+      parallel_sort_run(order, count, merged_pieces(threads),
+                        [&](std::int64_t* first, std::int64_t* last) { order_run(first, last, values, stride, less); }, less);
     }
   } // namespace detail
 
@@ -2085,16 +2232,11 @@ namespace numerical {
                                      }};
     const std::size_t       threads {detail::parallel_threads(walk.extent, 16)};
     if (threads >= 2 && detail::parallel_threads(lines, walk.extent * 16) * 2 <= threads) {
-      std::size_t pieces {4};
-      while (pieces < threads) {
-        pieces *= 4;
-      }
       buffer<T> line_buffer(walk.inner == 1 ? 0 : walk.extent);
       for (std::size_t line {0}; line < lines; ++line) {
         T* const run {walk.inner == 1 ? out.data() + (line * walk.extent) : line_buffer.data()};
         gather(line, run);
-        detail::parallel_sort_run(run, walk.extent, pieces, [](T* first, T* last) { detail::sort_run(first, last); },
-                                  [](const T& a, const T& b) { return detail::sorts_before(a, b); });
+        detail::sort_shared(run, walk.extent, threads);
         if (walk.inner != 1) {
           scatter(line, run);
         }
@@ -2131,7 +2273,7 @@ namespace numerical {
     const T* const          in {t.data().data()};
     const std::size_t       threads {detail::parallel_threads(walk.extent, 16)};
     const bool              shared {threads >= 2 && detail::parallel_threads(lines, walk.extent * 16) * 2 <= threads};
-    const auto              order_line {[&](std::size_t line, std::size_t pieces) {
+    const auto              order_line {[&](std::size_t line, bool among_threads) {
                                           const std::size_t first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
                                           const auto        value {[&](std::int64_t k) -> const T& {
                                                                      return in[first + (static_cast<std::size_t>(k) * walk.inner)];
@@ -2140,30 +2282,23 @@ namespace numerical {
                                           buffer<std::int64_t> order(walk.extent);
                                           std::iota(order.begin(), order.end(), std::int64_t {0});
                                           const T* const line_values {in + first};
-                                          const auto     sort_piece {[&](std::int64_t* from, std::int64_t* to) {
-                                                                       detail::order_run(from, to, line_values, walk.inner, less);
-                                                                     }};
-                                          if (pieces > 1) {
-                                            detail::parallel_sort_run(order.data(), walk.extent, pieces, sort_piece, less);
+                                          if (among_threads) {
+                                            detail::order_shared(order.data(), walk.extent, line_values, walk.inner, less, threads);
                                           }
                                           else {
-                                            sort_piece(order.data(), order.data() + walk.extent);
+                                            detail::order_run(order.data(), order.data() + walk.extent, line_values, walk.inner, less);
                                           }
                                           for (std::size_t k {0}; k < walk.extent; ++k) {
                                             out[first + (k * walk.inner)] = order[k];
                                           }
                                         }};
     if (shared) {
-      std::size_t pieces {4};
-      while (pieces < threads) {
-        pieces *= 4;
-      }
       for (std::size_t line {0}; line < lines; ++line) {
-        order_line(line, pieces);
+        order_line(line, true);
       }
     }
     else {
-      detail::parallel_for(lines, walk.extent * 16, [&](std::size_t line) { order_line(line, 1); });
+      detail::parallel_for(lines, walk.extent * 16, [&](std::size_t line) { order_line(line, false); });
     }
     return tensor<std::int64_t> {t.shape(), std::move(out)};
   }

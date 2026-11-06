@@ -1211,15 +1211,33 @@ TEST(take_along_axis_and_correlate)
 }
 
 // A long run is sorted by its bits: the same bits as the stable sort by `<`, NaNs behind in their order, the zeros'
-// signs in theirs, for float64, float32 and int64 (its extremes too); a short one by comparisons.
+// signs in theirs, for float64, float32 and int64 (its extremes too), in one part or several among the threads; a
+// short one by comparisons.
 template <typename T>
-bool radix_sorted_as_stable(std::vector<T> values)
+bool radix_sorted_as_stable(std::vector<T> values,
+                            std::size_t    parts = 1)
 {
   std::vector<T> want    {values};
   T* const       numbers {std::stable_partition(want.data(), want.data() + want.size(), [](T x) { return !std::isnan(static_cast<double>(x)); })};
   std::stable_sort(want.data(), numbers, [](T a, T b) { return a < b; });
-  numerical::detail::sort_run(values.data(), values.data() + values.size());
+  numerical::detail::sort_run(values.data(), values.data() + values.size(), parts);
   return std::memcmp(values.data(), want.data(), values.size() * sizeof(T)) == 0;
+}
+
+// The indices of a line sorted in parts (order_run): those of the stable sort, whatever the parts.
+template <typename T>
+bool ordered_as_stable(const std::vector<T>& values,
+                       std::size_t           parts)
+{
+  const auto                less {[&](std::int64_t a, std::int64_t b) {
+                                    return numerical::detail::sorts_before(values[static_cast<std::size_t>(a)], values[static_cast<std::size_t>(b)]);
+                                  }};
+  std::vector<std::int64_t> want(values.size());
+  std::iota(want.begin(), want.end(), std::int64_t {0});
+  std::vector<std::int64_t> order {want};
+  std::stable_sort(want.begin(), want.end(), less);
+  numerical::detail::order_run(order.data(), order.data() + order.size(), values.data(), 1, less, parts);
+  return order == want;
 }
 
 template <typename T>
@@ -1254,9 +1272,23 @@ TEST(sort_runs_by_bits_as_the_stable_sort)
   EXPECT(radix_sorted_as_stable(integers));
   EXPECT(radix_sorted_as_stable(std::vector<double>(numerical::detail::radix_sort_least, 2.0))); // every byte shared
   EXPECT(radix_sorted_as_stable(std::vector<std::int64_t> {3, -1, 2}));                          // short: compared
+  std::vector<std::int64_t> low_byte(numerical::detail::radix_sort_least);
+  for (std::size_t k {0}; k < low_byte.size(); ++k) {
+    low_byte[k] = static_cast<std::int64_t>((k * 37) % 256);
+  }
+  EXPECT(radix_sorted_as_stable(low_byte)); // one byte that differs: one pass, the keys sorted in the spare buffer
   // argsort of a long line: its indices by the bits, equal elements (both zeros among them) by index, NaNs last.
   EXPECT(argsort_as_stable(wide) && argsort_as_stable(single) && argsort_as_stable(integers));
   EXPECT(argsort_as_stable(std::vector<double>(numerical::detail::radix_sort_least, -0.0)));
+  // In five parts of unequal lengths: each pass's places part after part, the parts' bytes counted again once moved.
+  EXPECT(radix_sorted_as_stable(wide, 5) && radix_sorted_as_stable(single, 5) && radix_sorted_as_stable(integers, 5));
+  EXPECT(ordered_as_stable(wide, 5) && ordered_as_stable(single, 5) && ordered_as_stable(integers, 5));
+  EXPECT(radix_sorted_as_stable(std::vector<double>(numerical::detail::radix_sort_least, 2.0), 3)); // no pass moves
+  std::vector<double> mostly_nan(numerical::detail::radix_sort_least, nan_a);
+  EXPECT(ordered_as_stable(mostly_nan, 4));                                                         // no number: one part
+  mostly_nan[7]  = 2.0;
+  mostly_nan[90] = -1.0;
+  EXPECT(ordered_as_stable(mostly_nan, 4));                                                         // two numbers: two parts
 }
 
 // nonzero over many chunks of a rank-3 tensor: each chunk starts its indices mid-row (its odometer's carries across
@@ -1406,9 +1438,10 @@ TEST(prod_cumulative_sums_and_sort_along_an_axis)
   EXPECT(in_order);
 }
 
-// A line long enough for the threads sorts in pieces merged in pairs, to the bits of one stable sort: equal values
-// (zeros of either sign among them) in their order, NaNs last in theirs. Alone, or two lines along the last axis or
-// along the first, with the threads' default and with two (four pieces, one merge round fewer).
+// A line long enough for the threads sorts among them to the bits of one stable sort: equal values (zeros of either
+// sign among them) in their order, NaNs last in theirs. Alone, or two lines along the last axis or along the first,
+// with the threads' default and with two: a real's radix passes shared out, a complex line in pieces merged in pairs
+// (four pieces with two threads, one merge round fewer), its argsort too.
 TEST(sort_of_long_lines_among_the_threads)
 {
   const std::size_t   n     {std::size_t {1} << 17};
@@ -1453,6 +1486,26 @@ TEST(sort_of_long_lines_among_the_threads)
     }
     const tensor<double> columns {numerical::sort(tensor<double> {{n, 2}, std::move(interleaved)}, 0)};
     EXPECT(same_bits(columns.data().data(), first_sorted, 2) && same_bits(columns.data().data() + 1, second_sorted, 2));
+    using cplx = std::complex<double>;
+    numerical::buffer<cplx> mixed(n);
+    for (std::size_t k {0}; k < n; ++k) {
+      mixed[k] = cplx {first[k], second[k]};
+    }
+    const auto                cplx_less {[](const cplx& a, const cplx& b) { return numerical::detail::sorts_before(a, b); }};
+    std::vector<cplx>         want(mixed.begin(), mixed.end());
+    std::vector<std::int64_t> order(n);
+    std::iota(order.begin(), order.end(), std::int64_t {0});
+    std::ranges::stable_sort(want, cplx_less);
+    std::ranges::stable_sort(order, [&](std::int64_t a, std::int64_t b) {
+                               return cplx_less(mixed[static_cast<std::size_t>(a)], mixed[static_cast<std::size_t>(b)]);
+                             });
+    const tensor<cplx> complex_line {{n}, numerical::buffer<cplx>(mixed)};
+    const tensor<cplx> sorted       {numerical::sort(complex_line, 0)};
+    EXPECT(std::ranges::equal(sorted.data(), want, [](const cplx& a, const cplx& b) {
+                                return std::bit_cast<std::uint64_t>(a.real()) == std::bit_cast<std::uint64_t>(b.real())
+                                       && std::bit_cast<std::uint64_t>(a.imag()) == std::bit_cast<std::uint64_t>(b.imag());
+                              }));
+    EXPECT(std::ranges::equal(numerical::argsort(complex_line, 0).data(), order));
   }
   numerical::set_max_threads(0);
 }

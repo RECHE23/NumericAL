@@ -8,6 +8,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+
+- **`sort` and `argsort` of a long line run each pass of their radix sort among the threads** (float64, float32,
+  int64): each thread counts and moves its part of the keys, its part's places after the earlier parts', so the
+  bits are the one-thread sort's, where the threads sorted pieces and merged them in rounds, the last on one
+  thread. Each byte's counts come in the read that makes the keys. 10⁶ float64: `sort` 12 → 5.7 ms on arm64
+  (NumPy's: 37) and 20 → 11 ms on four x86-64 threads; `argsort` 39 → 9.5 ms (NumPy's stable one: 101) and 39 →
+  22 ms.
+
 ### Fixed
 
 - **`geomspace` within 3 ulps of the exact values**, where it took NumPy's `10 ** y` between the `log10` of its ends,
