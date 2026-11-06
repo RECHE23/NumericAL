@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.7 — 2026-11-06
+
 ### Announced for 2026.12.0
 
 Beside the changes announced already (integers read as int64, Python 3.11, `-ffp-contract=off`), December's first
