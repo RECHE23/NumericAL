@@ -10,6 +10,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **`take` reads each index once, natively**: its bounds, its mode (raise, wrap, clip) and its copies in one kernel
+  on the threads, where the indexing it went through took five passes. 10⁶ float64 at 10⁶ indices: 3.4 → 2.2 ms on
+  arm64 (NumPy's: 4.1).
 - **`sort` and `argsort` of a long line run each pass of their radix sort among the threads** (float64, float32,
   int64): each thread counts and moves its part of the keys, its part's places after the earlier parts', so the
   bits are the one-thread sort's, where the threads sorted pieces and merged them in rounds, the last on one

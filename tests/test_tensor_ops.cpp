@@ -11,6 +11,7 @@
 #include <cstring>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
 #include <string>
 #include <utility>
 #include <vector>
@@ -1208,6 +1209,49 @@ TEST(take_along_axis_and_correlate)
   const tensor<std::int64_t> big {{2}, {std::numeric_limits<std::int64_t>::max(), 1}};
   const tensor<std::int64_t> one {{1}, {2}};
   EXPECT(numerical::correlate(big, one, 0, 2).data()[0] == -2);         // wrapped, as NumPy's
+}
+
+// take reads each index once (negative ones from the end; modulo the extent or clipped as asked) and copies the
+// elements along the axis, the result shaped by the indices there; NumPy's errors, NumPy's exemptions.
+TEST(take_by_mode)
+{
+  using numerical::take_mode;
+  const tensor<double>       t       {{2, 3}, {1.0, 2.0, 3.0, 4.0, 5.0, 6.0}};
+  const tensor<std::int64_t> some    {{2, 2}, {2, -3, -1, 0}};
+  const tensor<double>       picked  {numerical::take(t, some, 1, take_mode::raise)};
+  EXPECT(picked.shape() == (std::vector<std::size_t> {2, 2, 2}));
+  EXPECT(picked.data() == (numerical::buffer<double> {3.0, 1.0, 3.0, 1.0, 6.0, 4.0, 6.0, 4.0}));
+  const tensor<std::int64_t> far     {{4}, {7, -4, 1, -1}};
+  EXPECT(numerical::take(t, far, 1, take_mode::wrap).data() == (numerical::buffer<double> {2.0, 3.0, 2.0, 3.0, 5.0, 6.0, 5.0, 6.0}));
+  EXPECT(numerical::take(t, far, 1, take_mode::clip).data() == (numerical::buffer<double> {3.0, 1.0, 2.0, 1.0, 6.0, 4.0, 5.0, 4.0}));
+  EXPECT(numerical::take(t, tensor<std::int64_t> {{1}, {-2}}, 0, take_mode::raise).data() == (numerical::buffer<double> {1.0, 2.0, 3.0}));
+  const tensor<std::int64_t> scalar  {std::vector<std::size_t> {}, numerical::buffer<std::int64_t> {1}};
+  EXPECT(numerical::take(t, scalar, 0, take_mode::raise).shape() == (std::vector<std::size_t> {3}));
+  try {
+    (void)numerical::take(t, far, 1, take_mode::raise);
+    EXPECT(false);
+  }
+  catch (const std::out_of_range& outside) {
+    EXPECT(std::string(outside.what()) == "index 7 is out of bounds for axis 1 with size 3");
+  }
+  EXPECT_THROWS((void)numerical::take(t, tensor<std::int64_t> {{1}, {-4}}, 1, take_mode::raise), std::out_of_range);
+  EXPECT_THROWS((void)numerical::take(t, some, 2, take_mode::raise), numerical::dimension_error);
+  // no element taken: an index outside still refused where a slice of the axes before stands, not where none does
+  const tensor<double>       flat_rows {numerical::zeros<double>({2, 3, 0})};
+  EXPECT_THROWS((void)numerical::take(flat_rows, far, 1, take_mode::raise), std::out_of_range);
+  EXPECT_THROWS((void)numerical::take(flat_rows, tensor<std::int64_t> {{1}, {-4}}, 1, take_mode::raise), std::out_of_range);
+  EXPECT(numerical::take(flat_rows, some, 1, take_mode::raise).shape() == (std::vector<std::size_t> {2, 2, 2, 0}));
+  EXPECT(numerical::take(numerical::zeros<double>({0, 3}), far, 1, take_mode::raise).size() == 0);
+  EXPECT(numerical::take(flat_rows, far, 1, take_mode::wrap).shape() == (std::vector<std::size_t> {2, 4, 0}));
+  EXPECT(numerical::take(t, tensor<std::int64_t> {{0}, numerical::buffer<std::int64_t> {}}, 1, take_mode::raise).shape()
+         == (std::vector<std::size_t> {2, 0}));
+  // an empty axis: nothing to take from where the result has elements, nor under wrap with any index
+  const tensor<double>       hollow  {numerical::zeros<double>({2, 0})};
+  const tensor<std::int64_t> none    {{0}, numerical::buffer<std::int64_t> {}};
+  EXPECT_THROWS((void)numerical::take(hollow, far, 1, take_mode::clip), std::out_of_range);
+  EXPECT_THROWS((void)numerical::take(numerical::zeros<double>({0, 0}), far, 1, take_mode::wrap), std::out_of_range);
+  EXPECT(numerical::take(numerical::zeros<double>({0, 0}), far, 1, take_mode::clip).shape() == (std::vector<std::size_t> {0, 4}));
+  EXPECT(numerical::take(hollow, none, 1, take_mode::wrap).shape() == (std::vector<std::size_t> {2, 0}));
 }
 
 // A long run is sorted by its bits: the same bits as the stable sort by `<`, NaNs behind in their order, the zeros'

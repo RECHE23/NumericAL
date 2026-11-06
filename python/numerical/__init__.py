@@ -6622,30 +6622,18 @@ def take(a, indices, axis=None, mode="raise"):
     if axis is None:
         a, axis = reshape(a, (-1,)), 0
     axis = _axis(a, axis)
-    if mode not in ("raise", "wrap", "clip"):
+    if mode not in _TAKE_MODES:
         raise ValueError(f"clipmode must be one of 'clip', 'raise', or 'wrap' (got {mode!r})")
-    extent = a.shape[axis]
     if isinstance(indices, _numbers.Integral):
-        flat, shape = asarray([_operator.index(indices)], "int64"), ()
+        indices = reshape(asarray([_operator.index(indices)], "int64"), ())
     else:
-        flat = _index_tensor(indices, "take")
-        shape = flat.shape
-        flat = reshape(flat, (-1,))
-    before, after = _math.prod(a.shape[:axis]), _math.prod(a.shape[axis + 1:])
-    out_shape = a.shape[:axis] + shape + a.shape[axis + 1:]
-    # NumPy's check, of its result's size; "wrap" of an index from an empty axis loops forever there (numpy#11677)
-    if extent == 0 and (before * flat.size * after or (mode == "wrap" and flat.size)):
-        raise IndexError("cannot do a non-empty take from an empty axes.")
-    if mode == "raise" and before and flat.size:  # NumPy's: checked wherever a slice of the other axes stands
-        flat = _bounded_offsets(flat, extent, axis, 1)
-    if not before * flat.size * after:
-        return zeros(out_shape, a.dtype)
-    if mode == "wrap":
-        flat = flat % extent
-    elif mode == "clip":
-        flat = minimum(maximum(flat, 0), extent - 1)
-    picked = a[_along_axis(axis, len(a.shape), flat)]
-    return reshape(picked, out_shape)
+        indices = _index_tensor(indices, "take")
+    # NumPy's checks: an index outside the axis wherever a slice of the other axes stands; any index from an empty axis
+    # where the result has elements, or under "wrap" (which loops forever there, numpy#11677)
+    return _numerical._take_indices(a, indices, axis, _TAKE_MODES.index(mode))
+
+
+_TAKE_MODES = ("raise", "wrap", "clip")  # numerical::take_mode's order
 
 
 def take_along_axis(arr, indices, axis=-1):

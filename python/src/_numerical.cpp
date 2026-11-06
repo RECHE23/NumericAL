@@ -150,6 +150,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_nonzero", module_nonzero, METH_VARARGS, "_nonzero(a) -> tuple\nThe indices of the nonzero elements, one int64 Tensor per axis.");
     m.raw("_count_nonzero", module_count_nonzero, METH_VARARGS, "_count_nonzero(a, axis) -> int or Tensor\nThe nonzero elements, counted.");
     m.raw("_take_along_axis", module_take_along_axis, METH_VARARGS, "_take_along_axis(a, indices, axis) -> Tensor\nThe elements at the indices along the axis.");
+    m.raw("_take_indices", module_take_indices, METH_VARARGS,
+          "_take_indices(a, indices, axis, mode) -> Tensor\nnumpy.take: the elements at the int64 indices along the axis, "
+          "mode 0 raise, 1 wrap, 2 clip.");
     m.raw("_select", module_select, METH_VARARGS,
           "_select(a, positions) -> Tensor\nThe elements a stable sort of each line along the last axis puts at positions.");
     m.raw("_correlate", module_correlate, METH_VARARGS, "_correlate(a, v, first, count) -> Tensor\nThe cross-correlation over count lags from first.");

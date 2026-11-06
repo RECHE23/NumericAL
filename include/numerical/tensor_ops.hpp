@@ -18,10 +18,12 @@
 #include <complex>
 #include <concepts>
 #include <cstddef>
+#include <cstdint>
 #include <cstring>
 #include <functional>
 #include <limits>
 #include <numeric>
+#include <stdexcept>
 #include <string>
 #include <type_traits>
 #include <utility>
@@ -2571,6 +2573,92 @@ namespace numerical {
                            }
                          });
     return tensor<T> {indices.shape(), std::move(out)};
+  }
+
+  //! \brief What \ref take does with an index outside its axis, as `numpy.take`'s `mode`: refuse it, take it modulo
+  //!        the extent, or take the nearer end.
+  enum class take_mode : unsigned char
+  {
+    raise,
+    wrap,
+    clip,
+  };
+
+  /*!
+   * \brief The elements of \p t at \p indices along \p axis, as `numpy.take`: the result's shape \p t's with the axis
+   *        replaced by \p indices' shape. Under take_mode::raise a negative index counts from the axis's end; under
+   *        wrap an index is taken modulo the extent; under clip, at the nearer end. Each index read once, then the
+   *        elements copied on the threads.
+   * \throws std::out_of_range Under take_mode::raise, for the first index outside the axis, in NumPy's words, unless
+   *         the axes before \p axis hold no element (NumPy then checks none); under any mode, from an empty axis
+   *         where the result has elements, or under wrap with any index.
+   * \throws dimension_error If \p axis is not an axis, or the result's elements overflow.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> take(const tensor<T>&            t,
+                               const tensor<std::int64_t>& indices,
+                               std::size_t                 axis,
+                               take_mode                   mode)
+  {
+    if (axis >= t.rank()) {
+      throw dimension_error("take: axis " + std::to_string(axis) + " is out of bounds for a tensor of rank "
+                            + std::to_string(t.rank()));
+    }
+    const std::vector<std::size_t>& shape {t.shape()};
+    const auto                      at    {shape.begin() + static_cast<std::ptrdiff_t>(axis)};
+    std::vector<std::size_t>        out_shape(shape.begin(), at);
+    out_shape.insert(out_shape.end(), indices.shape().begin(), indices.shape().end());
+    out_shape.insert(out_shape.end(), at + 1, shape.end());
+    const std::size_t outer  {detail::element_count(shape.begin(), at)};
+    const std::size_t inner  {detail::element_count(at + 1, shape.end())};
+    const std::size_t count  {indices.size()};
+    const std::size_t total  {detail::element_count(out_shape.begin(), out_shape.end())};
+    const std::size_t extent {shape[axis]};
+    if (extent == 0 && (total != 0 || (mode == take_mode::wrap && count != 0))) {
+      throw std::out_of_range("cannot do a non-empty take from an empty axes.");
+    }
+    const auto                  signed_extent {static_cast<std::int64_t>(extent)};
+    const buffer<std::int64_t>& index         {indices.data()};
+    const auto                  outside       {[&](std::int64_t value) {
+                                                 return std::out_of_range("index " + std::to_string(value) + " is out of bounds for axis " + std::to_string(axis)
+                                                                          + " with size " + std::to_string(extent));
+                                               }};
+    if (total == 0) {
+      for (std::size_t k {0}; mode == take_mode::raise && outer != 0 && k < count; ++k) {
+        if (index[k] < -signed_extent || index[k] >= signed_extent) {
+          throw outside(index[k]);
+        }
+      }
+      return tensor<T> {std::move(out_shape), buffer<T>(0)};
+    }
+    std::vector<std::size_t> offsets(count);
+    for (std::size_t k {0}; k < count; ++k) {
+      std::int64_t i {index[k]};
+      if (mode == take_mode::wrap) {
+        i %= signed_extent;
+        i += i < 0 ? signed_extent : 0;
+      }
+      else if (mode == take_mode::clip) {
+        i = std::clamp<std::int64_t>(i, 0, signed_extent - 1);
+      }
+      else if (i < -signed_extent || i >= signed_extent) {
+        throw outside(i);
+      }
+      else {
+        i += i < 0 ? signed_extent : 0;
+      }
+      offsets[k] = static_cast<std::size_t>(i);
+    }
+    buffer<T>      out(total);
+    const T* const in {t.data().data()};
+    detail::parallel_for(outer * count, inner, [&](std::size_t row) {
+                           const std::size_t o {row / count};
+                           const T* const    from {in + (((o * extent) + offsets[row % count]) * inner)};
+                           for (std::size_t i {0}; i < inner; ++i) {
+                             out[(row * inner) + i] = from[i];
+                           }
+                         });
+    return tensor<T> {std::move(out_shape), std::move(out)};
   }
 
   namespace detail {

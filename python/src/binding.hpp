@@ -1783,6 +1783,8 @@ PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args); // in elemen
 
 // _take_along_axis(a, indices, axis), _correlate(a, v, first, count) and _complex_from_parts(re, im) -> Tensor.
 PyObject* module_take_along_axis(PyObject* /*self*/, PyObject* args);    // in elementwise.cpp
+// _take_indices(a, indices, axis, mode) -> Tensor: numpy.take's elements, mode 0 raise, 1 wrap, 2 clip.
+PyObject* module_take_indices(PyObject* /*self*/, PyObject* args);       // in elementwise.cpp
 PyObject* module_select(PyObject* /*self*/, PyObject* args);             // in elementwise.cpp
 PyObject* module_correlate(PyObject* /*self*/, PyObject* args);          // in elementwise.cpp
 PyObject* module_complex_from_parts(PyObject* /*self*/, PyObject* args); // in elementwise.cpp

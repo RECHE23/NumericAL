@@ -765,6 +765,46 @@ PyObject* module_take_along_axis(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _take_indices(a, indices, axis, mode) -> Tensor: numerical::take, an index outside the axis an IndexError in
+// NumPy's words.
+PyObject* module_take_indices(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  x    = nullptr;
+    PyObject*  y    = nullptr;
+    Py_ssize_t axis = 0;
+    int        mode = 0;
+    if (PyArg_ParseTuple(args, "OOni", &x, &y, &axis, &mode) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    const auto* indices = std::get_if<int_tensor>(b);
+    if (indices == nullptr || axis < 0 || mode < 0 || mode > 2) {
+        PyErr_SetString(PyExc_ValueError, "_take_indices: int64 indices, a non-negative axis and a mode of 0, 1 or 2");
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            result.emplace(std::visit([&](const auto& t) {
+                return any_tensor {numerical::take(t, *indices, static_cast<std::size_t>(axis), static_cast<numerical::take_mode>(mode))};
+            }, *a));
+        }
+        return wrap(std::move(*result));
+    }
+    catch (const std::out_of_range& outside) {
+        PyErr_SetString(PyExc_IndexError, outside.what());
+        return nullptr;
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _select(a, positions) -> Tensor: numerical::select_along_last, the elements a stable sort of each line along a's
 // last axis puts at the int64 positions (one row of them for every line, or one per line).
 PyObject* module_select(PyObject* /*self*/, PyObject* args)
