@@ -92,7 +92,8 @@ jobs:
         working-directory: python/tests
         run: |
           "$RUNNER_TEMP/sde/sde64" -skx -- python -m unittest test_borrowed_operands test_isa_bits
-      # The two campaigns side by side, one a core; each prints its own report once both are done.
+      # The three campaigns side by side, one a core; each prints its own report once all are done. NumPy's own
+      # vector kernels for AVX-512 (SKX) run under the emulator too, which the NumPy differential meets nowhere else.
       - name: Fuzz campaigns on the AVX-512 kernels
         env:
           PYTHONPATH: python
@@ -100,10 +101,14 @@ jobs:
           sde="$RUNNER_TEMP/sde/sde64 -skx --"
           path=$($sde python -c 'import numerical; print(numerical.gemm_path())')
           test "$path" = avx512 || { echo "::error::the emulated processor runs the $path kernel, not avx512"; exit 1; }
+          $sde python -c 'import numpy, sys; sys.exit(not numpy._core._multiarray_umath.__cpu_features__["AVX512_SKX"])' \
+            || { echo "::error::NumPy does not see AVX512_SKX under the emulator"; exit 1; }
           $sde python fuzz/linalg.py --cases 60 > linalg.log 2>&1 & linalg=$!
           $sde python fuzz/fft.py --cases 100 > fft.log 2>&1 & fft=$!
+          $sde python fuzz/npdiff.py --cases 30 --seed 20261104 > npdiff.log 2>&1 & npdiff=$!
           status=0
           wait $linalg || status=1
           wait $fft || status=1
-          cat linalg.log fft.log
+          wait $npdiff || status=1
+          cat linalg.log fft.log npdiff.log
           exit $status
