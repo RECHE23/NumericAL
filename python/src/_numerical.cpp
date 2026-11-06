@@ -24,7 +24,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
                                 "__dlpack_device__() -> (device_type, device_id)\nThe DLPack device (always CPU).")
     .raw("__dlpack__", reinterpret_cast<PyCFunction>(reinterpret_cast<void*>(tensor_dlpack)),
          METH_VARARGS | METH_KEYWORDS,
-         "__dlpack__(stream=None) -> PyCapsule\nExport a DLPack capsule sharing this tensor's buffer.")
+         "__dlpack__(stream=None, *, max_version=None, dl_device=None, copy=None) -> PyCapsule\n"
+         "Export a DLPack capsule: for max_version (1, 0) and later, of this tensor's buffer, marked read-only (a "
+         "private copy for copy=True); before DLPack 1.0, which cannot mark it, of a private copy.")
     .raw("_matmul", tensor_matmul, METH_O,
          "_matmul(other) -> Tensor or number\nself @ other (Tensor.__matmul__).")
     .raw("_getitem", tensor_getitem, METH_O,

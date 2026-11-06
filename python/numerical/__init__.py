@@ -17,10 +17,11 @@ A :class:`Tensor` interoperates zero-copy with the scientific Python stack:
 
     import numpy as np
     np.asarray(a)            # via __array_interface__ (read-only view)
-    np.from_dlpack(a)        # via __dlpack__
+    np.from_dlpack(a)        # via __dlpack__ (read-only view)
     numerical.asarray(np.eye(3))  # the other direction (a contiguous-array copy)
 
-PyTorch / JAX / CuPy consume the same ``__dlpack__`` (``torch.from_dlpack(a)``).
+PyTorch / JAX / CuPy consume the same ``__dlpack__`` (``torch.from_dlpack(a)``). Its capsule marks the shared
+elements read-only, which only DLPack 1.0 can say: a consumer that asks for an earlier version gets a copy.
 PETSc (petsc4py) has no such protocol; bridging it would require an explicit
 copy into a PETSc object.
 """

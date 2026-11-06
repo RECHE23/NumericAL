@@ -19,6 +19,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **`__dlpack__` exports DLPack 1.0, read-only**: for a consumer's `max_version` (1, 0) or later, a versioned
+  capsule of the tensor's buffer whose read-only flag is set (a private, writable copy for `copy=True`); for an
+  earlier consumer, which that flag cannot reach, a private copy (`copy=False` raises `BufferError`). The capsule
+  was always a legacy one of the buffer, which a consumer such as PyTorch could write through to the tensor and to
+  every copy and reshape sharing its elements. `dl_device` other than the CPU raises `BufferError`.
 - **`geomspace` within 3 ulps of the exact values**, where it took NumPy's `10 ** y` between the `log10` of its ends,
   whose roundings grow with them: up to 1500 ulps over 10^±300. Element k is now `start^s · stop^t`, s and t the
   exponents `(d − k)/d` and `k/d`, times what their roundings left out; its values leave NumPy's bits wherever

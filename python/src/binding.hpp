@@ -196,6 +196,22 @@ struct DLManagedTensor
     void*    manager_ctx;
     void (*deleter)(DLManagedTensor* self);
 };
+// DLPack 1.0: only the versioned tensor carries the read-only flag.
+struct DLPackVersion
+{
+    std::uint32_t major;
+    std::uint32_t minor;
+};
+struct DLManagedTensorVersioned
+{
+    DLPackVersion version;
+    void*         manager_ctx;
+    void (*deleter)(DLManagedTensorVersioned* self);
+    std::uint64_t flags;
+    DLTensor      dl_tensor;
+};
+constexpr std::uint64_t dlpack_read_only = 1U;
+constexpr std::uint64_t dlpack_is_copied = 2U;
 
 // --- the wrapped value -----------------------------------------------------
 // The Python object is class_<any_tensor>: wrapper<any_tensor>{PyObject_HEAD; any_tensor*
@@ -634,20 +650,35 @@ inline PyObject* get_array_interface(const any_tensor& v)
 }
 
 // --- DLPack export ---------------------------------------------------------
+// A Tensor's elements are shared with its copies and reshapes, so a consumer may write only to a private copy: a
+// versioned capsule of the shared buffer says read-only; a legacy capsule cannot, and gets a copy.
 struct dlpack_ctx
 {
-    PyObject*     owner; // the Tensor, kept alive while the capsule lives
+    PyObject*     owner;  // the Tensor whose buffer is shared, kept alive while the capsule lives; or null
+    void*         copied; // the private copy, or null
     std::int64_t* shape;
 };
 
-inline void dlpack_deleter(DLManagedTensor* managed)
+inline void dlpack_release(void* manager_ctx)
 {
-    auto* ctx = static_cast<dlpack_ctx*>(managed->manager_ctx);
+    auto* ctx = static_cast<dlpack_ctx*>(manager_ctx);
     if (ctx != nullptr) {
         Py_XDECREF(ctx->owner);
+        std::free(ctx->copied);
         std::free(ctx->shape);
         delete ctx;
     }
+}
+
+inline void dlpack_deleter(DLManagedTensor* managed)
+{
+    dlpack_release(managed->manager_ctx);
+    std::free(managed);
+}
+
+inline void dlpack_versioned_deleter(DLManagedTensorVersioned* managed)
+{
+    dlpack_release(managed->manager_ctx);
     std::free(managed);
 }
 
@@ -662,44 +693,142 @@ inline void dlpack_capsule_destructor(PyObject* capsule)
     }
 }
 
-inline PyObject* tensor_dlpack(PyObject* self, PyObject* /*args*/, PyObject* /*kwds*/)
+inline void dlpack_versioned_capsule_destructor(PyObject* capsule)
+{
+    if (PyCapsule_IsValid(capsule, "dltensor_versioned") == 0) {
+        return; // already consumed (renamed to "used_dltensor_versioned")
+    }
+    auto* managed = static_cast<DLManagedTensorVersioned*>(PyCapsule_GetPointer(capsule, "dltensor_versioned"));
+    if (managed != nullptr && managed->deleter != nullptr) {
+        managed->deleter(managed);
+    }
+}
+
+// The consumer's max_version: whether it reads DLPack 1.0 capsules (None and a major below 1 do not).
+inline std::optional<bool> dlpack_versioned(PyObject* max_version)
+{
+    if (max_version == Py_None) {
+        return false;
+    }
+    if (PyTuple_Check(max_version) == 0 || PyTuple_Size(max_version) != 2) {
+        PyErr_SetString(PyExc_TypeError, "__dlpack__: max_version is None or a (major, minor) tuple");
+        return std::nullopt;
+    }
+    const long major = PyLong_AsLong(PyTuple_GetItem(max_version, 0));
+    if (major == -1 && PyErr_Occurred() != nullptr) {
+        return std::nullopt;
+    }
+    return major >= 1;
+}
+
+// dl_device: None or the CPU, (kDLCPU, 0).
+inline bool dlpack_on_cpu(PyObject* dl_device)
+{
+    if (dl_device == Py_None) {
+        return true;
+    }
+    long type = -1;
+    long id   = -1;
+    if (PyTuple_Check(dl_device) != 0 && PyTuple_Size(dl_device) == 2) {
+        type = PyLong_AsLong(PyTuple_GetItem(dl_device, 0));
+        id   = PyLong_AsLong(PyTuple_GetItem(dl_device, 1));
+    }
+    if (PyErr_Occurred() == nullptr && type == kDLCPU && id == 0) {
+        return true;
+    }
+    PyErr_Clear();
+    PyErr_SetString(PyExc_BufferError, "__dlpack__: a Tensor's elements are on the CPU, dl_device (1, 0)");
+    return false;
+}
+
+inline PyObject* tensor_dlpack(PyObject* self, PyObject* args, PyObject* kwds)
 {
     const any_tensor* h = as_tensor(self);
     if (h == nullptr) {
         return nullptr;
     }
-    const std::vector<std::size_t>& shape = shape_of(*h);
-    const int                       ndim  = static_cast<int>(shape.size());
+    static const char* keywords[] = {"stream", "max_version", "dl_device", "copy", nullptr};
+    PyObject*          stream      = Py_None;
+    PyObject*          max_version = Py_None;
+    PyObject*          dl_device   = Py_None;
+    PyObject*          copy        = Py_None;
+    if (PyArg_ParseTupleAndKeywords(args, kwds, "|O$OOO:__dlpack__", const_cast<char**>(keywords), &stream,
+                                    &max_version, &dl_device, &copy) == 0) {
+        return nullptr;
+    }
+    const std::optional<bool> versioned = dlpack_versioned(max_version);
+    if (!versioned || !dlpack_on_cpu(dl_device)) {
+        return nullptr;
+    }
+    const int asked = copy == Py_None ? -1 : PyObject_IsTrue(copy);
+    if (copy != Py_None && asked < 0) {
+        return nullptr;
+    }
+    if (!*versioned && asked == 0) {
+        PyErr_SetString(PyExc_BufferError, "__dlpack__: a Tensor's buffer is read-only, which a capsule before DLPack "
+                                           "1.0 cannot say; ask for max_version (1, 0) or a copy");
+        return nullptr;
+    }
+    const bool copied = asked == 1 || !*versioned;
 
-    auto* managed = static_cast<DLManagedTensor*>(std::malloc(sizeof(DLManagedTensor)));
+    const std::vector<std::size_t>& shape         = shape_of(*h);
+    const int                       ndim          = static_cast<int>(shape.size());
+    const std::size_t               bytes         = count_of(*h) * std::visit([](const auto& t) { return sizeof(*t.data().data()); }, *h);
+    const std::size_t               managed_bytes = *versioned ? sizeof(DLManagedTensorVersioned) : sizeof(DLManagedTensor);
+
+    void* managed = std::malloc(managed_bytes);
     auto* axes    = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * (ndim > 0 ? static_cast<std::size_t>(ndim) : 1)));
-    auto* ctx     = new (std::nothrow) dlpack_ctx {Py_NewRef(self), axes};
-    if (managed == nullptr || axes == nullptr || ctx == nullptr) {
+    void* buffer  = copied ? std::malloc(bytes > 0 ? bytes : 1) : nullptr;
+    auto* ctx     = new (std::nothrow) dlpack_ctx {copied ? nullptr : Py_NewRef(self), buffer, axes};
+    if (managed == nullptr || axes == nullptr || (copied && buffer == nullptr) || ctx == nullptr) {
         std::free(managed);
         std::free(axes);
+        std::free(buffer);
         delete ctx;
-        Py_DECREF(self); // undo Py_NewRef when ctx was not constructed
+        if (!copied) {
+            Py_DECREF(self); // undo Py_NewRef: the context that held it is gone
+        }
         return PyErr_NoMemory();
     }
     for (int i = 0; i < ndim; ++i) {
         axes[i] = static_cast<std::int64_t>(shape[static_cast<std::size_t>(i)]);
     }
+    if (copied && bytes > 0) {
+        std::memcpy(buffer, data_of(*h), bytes);
+    }
 
-    managed->dl_tensor.data        = const_cast<void*>(data_of(*h));
-    managed->dl_tensor.device      = DLDevice {kDLCPU, 0};
-    managed->dl_tensor.ndim        = ndim;
-    const auto bits                = static_cast<std::uint8_t>(is_bool(*h) ? 8 : (is_single(*h) ? 32 : 64) * (is_complex(*h) ? 2 : 1));
-    managed->dl_tensor.dtype       = DLDataType {is_bool(*h) ? kDLBool : is_int(*h) ? kDLInt : is_complex(*h) ? kDLComplex : kDLFloat, bits, 1};
-    managed->dl_tensor.shape       = axes;
-    managed->dl_tensor.strides     = nullptr; // compact, row-major
-    managed->dl_tensor.byte_offset = 0;
-    managed->manager_ctx           = ctx;
-    managed->deleter               = dlpack_deleter;
+    DLTensor tensor {};
+    tensor.data        = copied ? buffer : const_cast<void*>(data_of(*h));
+    tensor.device      = DLDevice {kDLCPU, 0};
+    tensor.ndim        = ndim;
+    const auto bits    = static_cast<std::uint8_t>(is_bool(*h) ? 8 : (is_single(*h) ? 32 : 64) * (is_complex(*h) ? 2 : 1));
+    tensor.dtype       = DLDataType {is_bool(*h) ? kDLBool : is_int(*h) ? kDLInt : is_complex(*h) ? kDLComplex : kDLFloat, bits, 1};
+    tensor.shape       = axes;
+    tensor.strides     = nullptr; // compact, row-major
+    tensor.byte_offset = 0;
 
-    PyObject* capsule = PyCapsule_New(managed, "dltensor", dlpack_capsule_destructor);
-    if (capsule == nullptr) {
-        dlpack_deleter(managed);
-        return nullptr;
+    PyObject* capsule = nullptr;
+    if (*versioned) {
+        auto* out        = static_cast<DLManagedTensorVersioned*>(managed);
+        out->version     = DLPackVersion {1, 0};
+        out->manager_ctx = ctx;
+        out->deleter     = dlpack_versioned_deleter;
+        out->flags       = copied ? dlpack_is_copied : dlpack_read_only;
+        out->dl_tensor   = tensor;
+        capsule          = PyCapsule_New(out, "dltensor_versioned", dlpack_versioned_capsule_destructor);
+        if (capsule == nullptr) {
+            dlpack_versioned_deleter(out);
+        }
+    }
+    else {
+        auto* out        = static_cast<DLManagedTensor*>(managed);
+        out->dl_tensor   = tensor;
+        out->manager_ctx = ctx;
+        out->deleter     = dlpack_deleter;
+        capsule          = PyCapsule_New(out, "dltensor", dlpack_capsule_destructor);
+        if (capsule == nullptr) {
+            dlpack_deleter(out);
+        }
     }
     return capsule;
 }

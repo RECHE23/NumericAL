@@ -734,6 +734,67 @@ class DLPack(unittest.TestCase):
         self.assertIn("PyCapsule", repr(type(capsule)))
         self.assertEqual(t.__dlpack_device__(), (1, 0))  # (kDLCPU, 0)
 
+    @staticmethod
+    def _managed(capsule, name):
+        # The DLPack structures as ctypes reads them: (data, flags) of a DLManagedTensor(Versioned).
+        import ctypes
+        get = ctypes.pythonapi.PyCapsule_GetPointer
+        get.restype, get.argtypes = ctypes.c_void_p, [ctypes.py_object, ctypes.c_char_p]
+        address = get(capsule, name.encode())
+        if name == "dltensor":
+            return ctypes.c_void_p.from_address(address).value, None
+        # version (2 × uint32), manager_ctx, deleter, flags, then the DLTensor
+        pointer = ctypes.sizeof(ctypes.c_void_p)
+        flags = ctypes.c_uint64.from_address(address + 8 + 2 * pointer).value
+        return ctypes.c_void_p.from_address(address + 16 + 2 * pointer).value, flags
+
+    def test_a_versioned_capsule_shares_the_buffer_read_only(self):
+        t = numerical.Tensor([1.0, 2.0, 3.0])
+        capsule = t.__dlpack__(max_version=(1, 0))
+        self.assertIn("dltensor_versioned", repr(capsule))
+        data, flags = self._managed(capsule, "dltensor_versioned")
+        self.assertEqual(data, t.__array_interface__["data"][0])
+        self.assertEqual(flags, 1)  # DLPACK_FLAG_BITMASK_READ_ONLY
+        capsule = t.__dlpack__(max_version=(1, 1), dl_device=(1, 0), copy=True)
+        data, flags = self._managed(capsule, "dltensor_versioned")
+        self.assertNotEqual(data, t.__array_interface__["data"][0])
+        self.assertEqual(flags, 2)  # DLPACK_FLAG_BITMASK_IS_COPIED, writable
+
+    def test_a_legacy_capsule_holds_a_private_copy(self):
+        # A capsule before DLPack 1.0 cannot say read-only, and a consumer may write through it: the write must
+        # reach neither the tensor nor the copies and reshapes that share its elements.
+        import copy
+        import ctypes
+        t = numerical.Tensor([1.0, 2.0, 3.0, 4.0])
+        twin, matrix = copy.copy(t), t.reshape((2, 2))
+        for capsule in (t.__dlpack__(), t.__dlpack__(None), t.__dlpack__(max_version=(0, 8), copy=True)):
+            self.assertIn('"dltensor"', repr(capsule))
+            data, _ = self._managed(capsule, "dltensor")
+            self.assertNotEqual(data, t.__array_interface__["data"][0])
+            ctypes.c_double.from_address(data).value = 99.0
+        self.assertEqual(t.tolist(), [1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(twin.tolist(), [1.0, 2.0, 3.0, 4.0])
+        self.assertEqual(matrix.tolist(), [[1.0, 2.0], [3.0, 4.0]])
+        empty = numerical.Tensor([], shape=(0, 3))
+        self.assertIn('"dltensor"', repr(empty.__dlpack__()))
+
+    def test_dlpack_refusals(self):
+        t = numerical.Tensor([1, 2, 3])
+        with self.assertRaises(BufferError):
+            t.__dlpack__(copy=False)  # a legacy capsule of the shared buffer could be written through
+        for device in ((2, 0), (1, 1), "cpu"):
+            with self.subTest(device=device):
+                with self.assertRaises(BufferError):
+                    t.__dlpack__(max_version=(1, 0), dl_device=device)
+        for version in ((1,), [1, 0], "1.0"):
+            with self.subTest(version=version):
+                with self.assertRaises(TypeError):
+                    t.__dlpack__(max_version=version)
+        with self.assertRaises(TypeError):
+            t.__dlpack__(max_version=("1", 0))
+        with self.assertRaises(TypeError):
+            t.__dlpack__(None, None)  # max_version and the rest are keyword-only
+
 
 @unittest.skipIf(np is None, "NumPy not installed")
 class NumpyInterop(unittest.TestCase):
@@ -771,6 +832,12 @@ class NumpyInterop(unittest.TestCase):
         t = numerical.Tensor([1.5, 2.5, 3.5])
         arr = np.from_dlpack(t)
         self.assertEqual(arr.tolist(), [1.5, 2.5, 3.5])
+        # NumPy asks for a versioned capsule: a view of the buffer, read-only as the capsule says
+        self.assertEqual(arr.__array_interface__["data"], (t.__array_interface__["data"][0], True))
+        copied = np.from_dlpack(t, copy=True)
+        self.assertTrue(copied.flags.writeable)
+        copied[0] = 99.0
+        self.assertEqual(t.tolist(), [1.5, 2.5, 3.5])
 
     def test_asarray_from_numpy(self):
         source = np.array([[1.0, 2.0], [3.0, 4.0]])
