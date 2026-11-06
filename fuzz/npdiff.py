@@ -438,9 +438,17 @@ def polynomials(rng):
     if q[0] != 0:
         same({"order": 64}, "", "polydiv", p.astype(np.float64), q)
     theirs = np.roots(p)
-    noise = np.iscomplexobj(theirs) and theirs.size and np.all(np.abs(theirs.imag) <= 1e-6 * np.abs(theirs).max())
-    if not noise:  # a repeated root: imaginary parts of the rounding's size, NumPy's eigvals' and not ours
-        check({}, f"roots dtype {p.tolist()}", lambda: str(theirs.dtype), lambda: str(numerical.roots(ours(p)).dtype))
+    try:
+        mine = np.asarray(numerical.roots(ours(p)))
+    except Exception:  # noqa: BLE001 (reported by the check below, which calls it again)
+        mine = None
+
+    def noise(found):  # a repeated root: the rounding splits it into two reals or two conjugates of that size
+        return np.iscomplexobj(found) and found.size and np.all(np.abs(found.imag) <= 1e-6 * np.abs(found).max())
+
+    if not (noise(theirs) or noise(mine)):  # either side's eigenvalues may come out as the conjugate pair
+        check({}, f"roots dtype {p.tolist()}", lambda: str(theirs.dtype),
+              lambda: str(numerical.roots(ours(p)).dtype))
 
 
 def padding(rng):
