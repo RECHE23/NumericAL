@@ -130,8 +130,10 @@ def bits_equal(got, want, ulps=0, zero_signs=False):
                 continue
             if np.where(close, 0, g).tobytes() != np.where(close, 0, w).tobytes():
                 return False
+            # the gap between the bit patterns in integers: float64 holds an int64 pattern (some 2^62) to 512 or
+            # 1024 only, and two values of one sign never overflow it
             itype = np.int32 if w.dtype == np.float32 else np.int64
-            gap = np.abs(g[close].view(itype).astype(np.float64) - w[close].view(itype).astype(np.float64))
+            gap = np.abs(g[close].view(itype).astype(np.int64) - w[close].view(itype).astype(np.int64))
             if gap.max() > ulps:
                 return False
         elif g.tobytes() != w.tobytes():
@@ -370,7 +372,10 @@ def averages(rng):
     axis = axis_of(rng, a)
     weights = rng.integers(0, 4, a.shape).astype(np.float64) if rng.random() < 0.7 else None
     if a.size or weights is not None:  # NumPy divides by the mean's size first: ZeroDivisionError for no element
-        same({"ulps": 2}, "", "average", a, axis=axis, weights=weights, returned=bool(rng.random() < 0.3))
+        last = axis is None or axis in (-1, a.ndim - 1) or a.ndim == 1  # NumPy adds another axis row by row
+        terms = a if weights is None else a * weights
+        same({"ulps": 2} if last else other_order(terms), "", "average", a, axis=axis, weights=weights,
+             returned=bool(rng.random() < 0.3))
     m = small_floats(rng, (int(rng.integers(1, 4)), int(rng.integers(1, 6))))
     same({"order": 64}, "", "cov", m, ddof=int(rng.integers(0, 2)) if rng.random() < 0.3 else None)
     same({"order": 64}, "", "corrcoef", m)
@@ -448,6 +453,8 @@ def padding(rng):
               lambda: numerical.pad(ours(a), width, mode).shape)
         return
     rule = {"ulps": 1} if mode in ("mean", "linear_ramp") else {}
+    if mode == "mean" and a.ndim > 1:  # the means along the first axes, which NumPy adds row by row
+        rule = other_order(a)
     same(rule, "", "pad", a, width, mode)
 
 
