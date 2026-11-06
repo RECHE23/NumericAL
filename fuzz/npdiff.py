@@ -33,6 +33,9 @@ NUMPY = tuple(int(part) for part in np.__version__.split(".")[:2])
 # NumPy's max and min (fmax, fmin, nanmax…) of +0 and -0 give IEEE 754-2019's answer on arm64, as NumericAL's on any
 # processor; on x86-64, the sign of a zero as their vector loops meet it.
 EXTREME_ZEROS = {} if platform.machine().lower() in ("arm64", "aarch64") else {"zero_signs": True}
+# NumPy's float64 power on a processor with AVX-512 (SKX) is its own vector kernel, within 1 ulp; elsewhere it is the
+# C library's, which rounds as NumericAL's.
+POWER_ULPS = {"ulps": 1} if getattr(np._core._multiarray_umath, "__cpu_features__", {}).get("AVX512_SKX") else {}
 # NumPy on 32-bit Windows shifts an int64 by 64 places or more (or a negative count) as its processor's instructions do
 WIDE_SHIFTS = not (sys.platform == "win32" and struct.calcsize("P") == 4)
 
@@ -276,7 +279,7 @@ def powers(rng):
     base = ints(rng, 5, extremes=0.05)
     exponent = rng.integers(0, 6, 5).astype(np.int64)
     same({}, "", "power", base, exponent)
-    same({}, "", "power", floats(rng, 5), floats(rng, 5, special=0.4))
+    same(POWER_ULPS, "", "power", floats(rng, 5), floats(rng, 5, special=0.4))
 
 
 def rounding(rng):

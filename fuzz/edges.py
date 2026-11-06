@@ -141,15 +141,21 @@ def numpy_root(a):
     return np.where(scaled, root.real + 2j * root.imag, root).astype(root.dtype)
 
 
-def finite_close(tol):
+def finite_close(tol, specials_alike=False):
     """Where both answers are finite, within `tol` of the larger part's magnitude; where either is not, either: NumPy
-    takes the platform's library outside glibc, which chooses otherwise among infinities and NaNs."""
+    takes the platform's library outside glibc, which chooses otherwise among a complex function's infinities and
+    NaNs. With `specials_alike` (a real function, whose infinities and NaNs C99's Annex F fixes on every platform),
+    a NaN where NumPy has one and an infinity of its sign where NumPy has it, and nowhere else."""
     def compare(got, want):
         got, want = np.asarray(got), np.asarray(want)
         if got.shape != want.shape:
             return False
         with np.errstate(all="ignore"):
             finite = np.isfinite(got) & np.isfinite(want)
+            if specials_alike and not np.array_equal(np.isfinite(got), np.isfinite(want)):
+                return False
+            if specials_alike and not parts_equal(got[~finite], want[~finite]):
+                return False
             scale = np.maximum(np.abs(np.real(want)), np.abs(np.imag(want)))
             off = np.maximum(np.abs(np.real(want) - np.real(got)), np.abs(np.imag(want) - np.imag(got)))
             return bool(np.all(off[finite] <= tol * np.maximum(scale[finite], np.finfo(float).tiny)))
@@ -340,7 +346,8 @@ def drawn_case(seed, index, largest):
         if np.issubdtype(dtype, np.complexfloating):
             compare = exact if GLIBC else finite_close(64.0 * eps)  # NumPy's complex ones are the C library's
         else:
-            compare = finite_close(4.0 * eps)  # NumPy's real ones its own vector loops, a few units from the library's
+            # NumPy's real ones its own vector loops, a few units from the library's; their infinities and NaNs alike
+            compare = finite_close(4.0 * eps, specials_alike=True)
         return label, check(label, lambda: getattr(np, name)(a), lambda: getattr(numerical, name)(t), compare)
     if op == "power":
         exponent = [2, -1, 0.5, 2.0, -1.0, 3, -2, 5, -7][int(rng.integers(9))]
