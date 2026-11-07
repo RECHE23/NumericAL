@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.8 — 2026-11-07
+
 ### Added
 
 - **The array API standard's keywords**, with `__array_api_version__` (2024.12): `device` on `asarray`, `astype`
