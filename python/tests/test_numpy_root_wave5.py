@@ -301,7 +301,7 @@ class TensorMethods(unittest.TestCase):
         # NumPy's order (compress's condition first, take's `out` before `mode`)
         values = np.array([[3.0, -1.0, 2.0], [0.5, 7.0, -4.0]])
         t = numerical.asarray(values)
-        index = np.array([[0, 1, 1], [1, 0, 2]])
+        index = np.array([[0, 1, 1], [1, 0, 2]], dtype=np.int64)
         cases = [
             ("argpartition", values, (1,), {}),
             ("argpartition", values, (0,), {"axis": 0}),

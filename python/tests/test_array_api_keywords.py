@@ -94,7 +94,8 @@ class AgainstNumPy(unittest.TestCase):
 
     def test_dtype_the_elements_accumulate_in(self):
         single = self.rng.standard_normal(3001).astype(np.float32) * 1e3
-        double = self.rng.standard_normal((40, 31)) * 1e3
+        # under a thousand elements: NumPy's 32-bit Windows build ends a longer float32 sum on other last bits
+        double = self.rng.standard_normal((30, 31)) * 1e3
         whole = np.arange(1, 9, dtype=np.int64) * 10 ** 17
         for name in ("sum", "mean", "prod"):
             # along the last axis: NumPy adds another one row after row (a documented difference)
