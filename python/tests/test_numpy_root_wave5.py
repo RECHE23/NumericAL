@@ -301,7 +301,7 @@ class TensorMethods(unittest.TestCase):
         # NumPy's order (compress's condition first, take's `out` before `mode`)
         values = np.array([[3.0, -1.0, 2.0], [0.5, 7.0, -4.0]])
         t = numerical.asarray(values)
-        index = np.array([[0, 1, 1], [1, 0, 2]], dtype=np.int64)
+        index = np.array([[0, 1, 1], [1, 0, 2]], dtype=np.int64)  # a Tensor's integers
         cases = [
             ("argpartition", values, (1,), {}),
             ("argpartition", values, (0,), {"axis": 0}),
@@ -320,7 +320,8 @@ class TensorMethods(unittest.TestCase):
         ]
         for name, array, args, kwargs in cases:
             with self.subTest(name=name, args=args, kwargs=kwargs):
-                want = getattr(array, name)(*args, **kwargs)
+                reference = array.astype(np.intp) if name == "choose" else array  # NumPy's indices are a pointer's size
+                want = getattr(reference, name)(*args, **kwargs)
                 got = getattr(numerical.asarray(array, str(array.dtype)), name)(*args, **kwargs)
                 if name == "argpartition":  # one arrangement among those that partition: the stable sort's
                     kth, axis = args[0], kwargs.get("axis", -1)
