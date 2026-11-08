@@ -542,8 +542,8 @@ namespace numerical::detail {
   [[nodiscard]] inline float unit_circle_offset(float x,
                                                 float y)
   {
-    const double wide_x  {x};
-    const double wide_y  {y};
+    const double wide_x  {static_cast<double>(x)};
+    const double wide_y  {static_cast<double>(y)};
     return static_cast<float>(libm_sum_of_products(wide_x - 1.0, wide_x + 1.0, wide_y, wide_y));
   }
 

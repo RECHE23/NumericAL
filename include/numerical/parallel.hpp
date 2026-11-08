@@ -107,7 +107,7 @@ namespace numerical::detail {
     try {
       std::map<std::pair<long, long>, std::size_t> index; // (package, core) → its set
       std::vector<cpu_set_t>                       sets;
-      for (int cpu {0}; cpu < CPU_SETSIZE; ++cpu) {
+      for (std::size_t cpu {0}; cpu < static_cast<std::size_t>(CPU_SETSIZE); ++cpu) { // the macros take a size_t
         if (CPU_ISSET(cpu, &allowed) == 0) { // NOLINT(hicpp-signed-bitwise): the system's macro
           continue;
         }

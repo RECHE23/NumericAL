@@ -79,7 +79,7 @@ namespace numerical::detail {
     if ((leaf1_ecx & (1U << 27U)) == 0U) { // OSXSAVE
       return 0;
     }
-    return _xgetbv(0);
+    return static_cast<std::uint64_t>(_xgetbv(0));
   }
 
   //! \brief The wide units this processor has and this system saves, from the raw `cpuid` words.
