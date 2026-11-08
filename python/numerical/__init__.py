@@ -3633,8 +3633,18 @@ def _axis(t, axis):
     return axis + rank if axis < 0 else axis
 
 
+def _keepdims_not_dtype(name, keepdims):
+    """A TypeError for a dtype passed in `keepdims`'s place, NumPy's third, its `dtype`'s (whose answer would otherwise
+    keep the axes and leave the dtype as it is, silently)."""
+    if isinstance(keepdims, (str, type)) or hasattr(keepdims, "char"):  # a name, a type, a NumPy dtype
+        raise TypeError(f"{name}: the third argument is keepdims here, where NumPy takes dtype; pass "
+                        f"dtype={keepdims!r} by name")
+
+
 def _reduction(op, doc):
     def reduce(a, axis=None, keepdims=False, *, dtype=None):
+        if keepdims is not False and keepdims is not True:
+            _keepdims_not_dtype(op, keepdims)
         if dtype is not None:  # the array API's (keyword-only: `keepdims` holds NumPy's third place here)
             return _in_dtype(reduce, a, axis, keepdims, dtype)
         if axis is None and not keepdims and not isinstance(a, Tensor):
@@ -6107,6 +6117,8 @@ def _variance(a, axis, dtype, ddof):
 
 def _ddof(ddof, correction):
     """The degrees of freedom removed: `correction` (the array API's name, NumPy 2's too) or `ddof`, not both."""
+    if ddof is None:  # NumPy's fourth argument is `out`, its `ddof` the fifth
+        raise TypeError("the fourth argument is ddof here, where NumPy takes out; pass ddof by name")
     if correction is None:
         return ddof
     if ddof != 0:
@@ -6240,6 +6252,8 @@ def prod(a, axis=None, keepdims=False, *, dtype=None):
     """The product of every element (a number), or the products along `axis`, as ``numpy.prod``: in order (NumPy's
     multiplications are not paired as its sums are). An empty one's is 1. `dtype` the one the elements are multiplied
     in."""
+    if keepdims is not False and keepdims is not True:
+        _keepdims_not_dtype("prod", keepdims)
     if dtype is not None:
         return _in_dtype(prod, a, axis, keepdims, dtype)
     a = _operand(a)

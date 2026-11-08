@@ -65,6 +65,19 @@ class WithoutNumPy(unittest.TestCase):
             numerical.Tensor([1.0], shape=(1,) * 65)
         self.assertEqual(numerical.__array_namespace_info__().capabilities()["max dimensions"], 64)
 
+    def test_numpy_positions_refused_loudly(self):
+        # NumPy's third argument of the reductions is dtype, here keepdims (named dtype here); its fourth of var and
+        # std is out, here ddof: a call in NumPy's order raises, where it kept the axes and the dtype silently
+        t = numerical.ones((2, 3))
+        for call in (lambda: numerical.sum(t, 0, "float32"), lambda: numerical.mean(t, 1, float),
+                     lambda: numerical.prod(t, 0, "float32"), lambda: numerical.max(t, 0, numerical.float32),
+                     lambda: numerical.var(t, 0, None, None, 1), lambda: numerical.std(t, 0, None, None)):
+            with self.assertRaises(TypeError):
+                call()
+        self.assertEqual(numerical.sum(t, 0, True).shape, (1, 3))
+        self.assertEqual(numerical.sum(t, 0, 0).shape, (3,))
+        self.assertEqual(numerical.sum(t, 0, dtype="float32").dtype, "float32")
+
     def test_zero_step(self):
         for kind in (ZeroDivisionError, ValueError, numerical.error):
             with self.assertRaises(kind):

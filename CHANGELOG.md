@@ -23,6 +23,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   (and `tensor_ops.hpp`, `fft.hpp`, `fft_kernels.hpp` through it) took a constant from a header it does not include,
   and compiled only behind `numerical.hpp`; five implicit conversions warned in a consumer's strict build, which
   `-Werror` stopped. The commit gate now compiles each header alone with Clang and GCC.
+- **A call in NumPy's argument order raises where it answered wrong in silence**: `sum(a, 0, np.float32)` (and
+  `mean`, `prod`, `max`…) took the dtype for `keepdims`, keeping the axis and leaving the dtype; a dtype there is now
+  a `TypeError` that names `dtype=`, and `var(a, 0, None, None, 1)` (NumPy's `out` fourth, here `ddof`) one that
+  names `ddof=`.
 - **An axis out of range raises `numerical.AxisError`**, a `ValueError` and an `IndexError` as NumPy's
   `numpy.exceptions.AxisError`, which it also is where NumPy is loaded. It was a private `ValueError` subclass in
   some 50 functions (a plain `ValueError` in `concatenate`, `stack` and `append`), which `except IndexError` or
