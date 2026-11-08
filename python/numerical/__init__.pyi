@@ -21,7 +21,7 @@ _GemmPath = Literal["portable", "neon", "avx2", "avx512", "amx"]
 _ArrayLike = Any
 
 __all__ = [
-    "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
+    "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError", "AxisError",
     "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "solve_toeplitz", "solve_circulant",
     "toeplitz", "hankel", "circulant", "block_diag",
     "expm", "expm_multiply", "expm_frechet", "expm_cond", "fractional_matrix_power", "funm", "logm", "LogmRankWarning",
@@ -77,6 +77,7 @@ __version__: str
 __array_api_version__: str
 
 class LinAlgError(error, ValueError): ...
+class AxisError(error, ValueError, IndexError): ...
 
 def set_num_threads(n: int) -> None: ...
 def gemm_path() -> _GemmPath: ...

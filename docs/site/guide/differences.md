@@ -31,7 +31,8 @@ explicitly.
   {class}`numerical.LinAlgWarning`, as SciPy's.
 
 Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (SciPy's is the same class), so
-`except np.linalg.LinAlgError` catches it; where `scipy.linalg` is loaded, the warning is also a
+`except np.linalg.LinAlgError` catches it, and an axis out of range, a {class}`numerical.AxisError` (a `ValueError`
+and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linalg` is loaded, the warning is also a
 `scipy.linalg.LinAlgWarning`.
 
 ## Answers that differ on purpose

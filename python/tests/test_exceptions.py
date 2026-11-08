@@ -1,0 +1,68 @@
+"""NumPy's exception classes for the same mistakes: an axis out of range is an AxisError (a ValueError and an
+IndexError, and numpy.exceptions.AxisError where NumPy is loaded) wherever an axis is read, natively or in Python; a
+zero step of arange a ZeroDivisionError. Deterministic; the comparisons skipped without NumPy."""
+import pickle
+import unittest
+
+import numerical
+
+try:
+    import numpy as np
+except ImportError:
+    np = None
+
+
+class WithoutNumPy(unittest.TestCase):
+    def test_axis_error(self):
+        t = numerical.ones((2, 3))
+        for call in (lambda: numerical.sum(t, axis=2), lambda: numerical.sort(t, axis=-3),
+                     lambda: numerical.concatenate([t, t], axis=2), lambda: numerical.fft.fft(t, axis=2),
+                     lambda: numerical.cumsum(t, axis=2), lambda: numerical.expand_dims(t, 3)):
+            with self.assertRaises(numerical.AxisError) as caught:
+                call()
+            for kind in (ValueError, IndexError, numerical.error):
+                self.assertIsInstance(caught.exception, kind)
+            self.assertIn("out of bounds", str(caught.exception))
+        error = numerical.AxisError("axis 3 is out of bounds")
+        self.assertEqual(str(pickle.loads(pickle.dumps(error))), "axis 3 is out of bounds")
+
+    def test_zero_step(self):
+        for kind in (ZeroDivisionError, ValueError, numerical.error):
+            with self.assertRaises(kind):
+                numerical.arange(0, 1, 0)
+
+
+@unittest.skipIf(np is None, "NumPy not installed")
+class AgainstNumPy(unittest.TestCase):
+    def test_numpy_except_clauses_catch_ours(self):
+        # each mistake made on both sides: NumericAL's error is NumPy's class or one of its subclasses
+        a = np.arange(6.0).reshape(2, 3)
+        t = numerical.asarray(a)
+        calls = {
+            "sum": lambda m, x: m.sum(x, axis=2), "mean": lambda m, x: m.mean(x, axis=-3),
+            "max": lambda m, x: m.max(x, axis=2), "sort": lambda m, x: m.sort(x, axis=2),
+            "argsort": lambda m, x: m.argsort(x, axis=2), "median": lambda m, x: m.median(x, axis=2),
+            "moveaxis": lambda m, x: m.moveaxis(x, 2, 0), "expand_dims": lambda m, x: m.expand_dims(x, 3),
+            "unique": lambda m, x: m.unique(x, axis=2), "concatenate": lambda m, x: m.concatenate([x, x], axis=2),
+            "stack": lambda m, x: m.stack([x, x], axis=4), "append": lambda m, x: m.append(x, x, axis=2),
+            "cumsum": lambda m, x: m.cumsum(x, axis=2), "diff": lambda m, x: m.diff(x, axis=2),
+            "take": lambda m, x: m.take(x, [0], axis=2), "flip": lambda m, x: m.flip(x, axis=2),
+            "roll": lambda m, x: m.roll(x, 1, axis=2), "squeeze": lambda m, x: m.squeeze(x, axis=2),
+            "argmax": lambda m, x: m.argmax(x, axis=2), "quantile": lambda m, x: m.quantile(x, 0.5, axis=2),
+            "swapaxes": lambda m, x: m.swapaxes(x, 0, 2), "split": lambda m, x: m.split(x, 1, axis=2),
+            "count_nonzero": lambda m, x: m.count_nonzero(x, axis=2), "fft": lambda m, x: m.fft.fft(x, axis=2),
+            "norm": lambda m, x: m.linalg.norm(x, axis=2), "delete": lambda m, x: m.delete(x, 0, axis=2),
+            "arange": lambda m, x: m.arange(0, 1, 0),
+        }
+        for name, call in calls.items():
+            with self.subTest(name=name):
+                with self.assertRaises(Exception) as numpy_side:
+                    call(np, a)
+                with self.assertRaises(type(numpy_side.exception)):
+                    call(numerical, t)
+        with self.assertRaises(np.exceptions.AxisError):
+            numerical.sum(t, axis=2)
+
+
+if __name__ == "__main__":
+    unittest.main()

@@ -41,7 +41,7 @@ from numerical._numerical import Tensor, asarray as _asarray, _asarray_nested, e
 from numerical._numerical import _gemm_path, _limit_gemm_path, _set_num_threads, release_memory
 
 __all__ = [
-    "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError",
+    "Tensor", "einsum", "solve", "asarray", "error", "LinAlgError", "AxisError",
     "determinant", "det", "slogdet", "inverse", "inv", "solve_banded", "solveh_banded", "solve_toeplitz", "solve_circulant",
     "toeplitz", "hankel", "circulant", "block_diag",
     "expm", "expm_multiply", "expm_frechet", "expm_cond", "fractional_matrix_power", "funm", "logm", "LogmRankWarning", "LogmExactlySingularWarning",
@@ -70,6 +70,19 @@ class LinAlgError(error, ValueError):
             numpy_linalg = _sys.modules.get("numpy.linalg")
             if numpy_linalg is not None and isinstance(getattr(numpy_linalg, "LinAlgError", None), type):
                 cls = _beside(LinAlgError, numpy_linalg.LinAlgError)
+        return super().__new__(cls, *args, **kwargs)
+
+
+class AxisError(error, ValueError, IndexError):
+    """Raised for an axis out of a tensor's range, as ``numpy.exceptions.AxisError``: a :class:`ValueError` and an
+    :class:`IndexError` as NumPy's, and a :class:`numerical.error`. Where NumPy is loaded, it is also a
+    ``numpy.exceptions.AxisError``, without NumericAL importing NumPy."""
+
+    def __new__(cls, *args, **kwargs):
+        if cls is AxisError:
+            numpy_exceptions = _sys.modules.get("numpy.exceptions")
+            if numpy_exceptions is not None and isinstance(getattr(numpy_exceptions, "AxisError", None), type):
+                cls = _beside(AxisError, numpy_exceptions.AxisError)
         return super().__new__(cls, *args, **kwargs)
 
 
@@ -2848,7 +2861,7 @@ def _resolved_axes(t, axis, name):
     for each in axis if isinstance(axis, tuple) else (axis,):
         each = _operator.index(each)
         if not -rank <= each < rank:
-            raise _ShapeError(f"{name}: axis {each} is out of bounds for a tensor of rank {rank}")
+            raise AxisError(f"{name}: axis {each} is out of bounds for a tensor of rank {rank}")
         axes.append(each + rank if each < 0 else each)
     if len(set(axes)) != len(axes):
         raise ValueError(f"{name}: repeated axis")
@@ -3481,16 +3494,24 @@ def _checked_dtype(dtype, prefix=""):
     return name
 
 
+class _ZeroStepError(error, ValueError, ZeroDivisionError):
+    """A zero step: the ``ZeroDivisionError`` NumPy's :func:`arange` raises, and a ``ValueError`` and a
+    :class:`numerical.error` as it was here."""
+
+
 class _ShapeError(error, ValueError):
     """An array operation's operands do not fit (shapes that do not broadcast, a reshape to another size, an
     axis out of range, an empty maximum): a ``ValueError`` as NumPy raises, and a :class:`numerical.error`."""
 
 
 def _native(call, *args):
-    """`call(*args)`, its :class:`numerical.error` re-raised as a ``ValueError`` (a :class:`_ShapeError`)."""
+    """`call(*args)`, its :class:`numerical.error` re-raised as a ``ValueError`` (a :class:`_ShapeError`, an
+    :class:`AxisError` for an axis out of range)."""
     try:
         return call(*args)
     except error as caught:
+        if caught.args and " is out of bounds for a tensor of rank " in str(caught.args[0]):
+            raise AxisError(*caught.args) from None
         raise _ShapeError(*caught.args) from None
 
 
@@ -3605,7 +3626,7 @@ def _axis(t, axis):
     axis = _operator.index(axis)
     rank = len(t.shape)
     if not -rank <= axis < rank:
-        raise _ShapeError(f"axis {axis} is out of bounds for a tensor of rank {rank}")
+        raise AxisError(f"axis {axis} is out of bounds for a tensor of rank {rank}")
     return axis + rank if axis < 0 else axis
 
 
@@ -3974,7 +3995,8 @@ def arange(start, stop=None, step=1.0, *, device=None):
         Tensor: The values, float64.
 
     Raises:
-        ValueError: for a bound or a step that is not finite, or a zero step.
+        ValueError: for a bound or a step that is not finite, or a zero step (also a ``ZeroDivisionError``, as
+            NumPy's).
 
     Examples:
         >>> import numerical
@@ -3986,6 +4008,8 @@ def arange(start, stop=None, step=1.0, *, device=None):
     _cpu_device(device, "arange")
     if stop is None:
         start, stop = 0.0, start
+    if step == 0:  # NumPy's error, its count's division by the step
+        raise _ZeroStepError("arange: a zero step")
     return _native(_numerical._arange, float(start), float(stop), float(step), _arange_fuses())
 
 
@@ -5540,7 +5564,7 @@ def concatenate(arrays, /, axis=0):
         raise ValueError("zero-dimensional arrays cannot be concatenated")
     axis = _operator.index(axis)
     if not -rank <= axis < rank:
-        raise ValueError(f"axis {axis} is out of bounds for array of dimension {rank}")
+        raise AxisError(f"axis {axis} is out of bounds for array of dimension {rank}")
     if _builtins.any(len(t.shape) != rank for t in tensors):
         raise ValueError("all the input arrays must have same number of dimensions")
     return _numerical._concatenate(tensors, axis % rank)
@@ -5581,7 +5605,7 @@ def stack(arrays, /, axis=0):
     rank = len(shape) + 1
     axis = _operator.index(axis)
     if not -rank <= axis < rank:
-        raise ValueError(f"axis {axis} is out of bounds for array of dimension {rank}")
+        raise AxisError(f"axis {axis} is out of bounds for array of dimension {rank}")
     axis %= rank
     expanded = shape[:axis] + (1,) + shape[axis:]
     return _numerical._concatenate([reshape(t, expanded) for t in tensors], axis)
@@ -5813,7 +5837,7 @@ def _normalized_axes(axes, rank, name):
     for axis in axes:
         axis = _operator.index(axis)
         if not -rank <= axis < rank:
-            raise _ShapeError(f"{name}: axis {axis} is out of bounds for array of dimension {rank}")
+            raise AxisError(f"{name}: axis {axis} is out of bounds for array of dimension {rank}")
         resolved.append(axis % rank)
     if len(set(resolved)) != len(resolved):
         raise ValueError("repeated axis")

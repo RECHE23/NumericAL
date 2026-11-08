@@ -508,6 +508,8 @@ Errors and warnings
 
 .. autoexception:: numerical.LinAlgError
 
+.. autoexception:: numerical.AxisError
+
 .. autoexception:: numerical.LinAlgWarning
 
 .. autoexception:: numerical.LogmRankWarning

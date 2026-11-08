@@ -8,6 +8,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+
+- **An axis out of range raises `numerical.AxisError`**, a `ValueError` and an `IndexError` as NumPy's
+  `numpy.exceptions.AxisError`, which it also is where NumPy is loaded. It was a private `ValueError` subclass in
+  some 50 functions (a plain `ValueError` in `concatenate`, `stack` and `append`), which `except IndexError` or
+  `except np.exceptions.AxisError` let through. A zero step of `arange` is also a `ZeroDivisionError`, as NumPy's.
+
 ## 2026.11.8 — 2026-11-07
 
 ### Added

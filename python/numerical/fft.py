@@ -11,7 +11,7 @@ import builtins as _builtins
 import operator as _operator
 
 from numerical import _numerical
-from numerical import Tensor, asarray, _read
+from numerical import AxisError as _AxisError, Tensor, asarray, _read
 
 __all__ = ["fft", "ifft", "fft2", "ifft2", "fftn", "ifftn", "rfft", "irfft", "rfft2", "irfft2", "rfftn", "irfftn", "hfft",
            "ihfft", "fftfreq", "rfftfreq", "fftshift", "ifftshift", "dct", "idct", "dst", "idst", "dctn", "idctn", "dstn",
@@ -35,10 +35,10 @@ def _operand(a):
 
 
 def _axis(axis, ndim):
-    """`axis` from 0, as NumPy reads a negative one; an IndexError past the rank."""
+    """`axis` from 0, as NumPy reads a negative one; an AxisError (an IndexError) past the rank."""
     axis = _operator.index(axis)
     if not -ndim <= axis < ndim:
-        raise IndexError(f"axis {axis} is out of bounds for array of dimension {ndim}")
+        raise _AxisError(f"axis {axis} is out of bounds for array of dimension {ndim}")
     return axis + ndim if axis < 0 else axis
 
 
