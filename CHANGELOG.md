@@ -12,6 +12,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 - **`reshape(copy=)`**, NumPy 2.1's and the array API's keyword: the elements shared whatever it asks, as a Tensor
   is never written into.
+- **NumPy's keywords a call for it passes**: `einsum(optimize=)` (taken, not followed: the order here is chosen by
+  the extents), `diff(prepend=, append=)`, `initial=` for `max`, `min`, `nanmax` and `nanmin` (cast to the
+  reduction's dtype, alone over no element), `dtype=` for `concatenate`, `stack`, `cumsum` and `cumprod`, and
+  `correction=` for `nanvar` and `nanstd`, each to NumPy's bits. `sum` and `prod` take no `initial` yet: NumPy starts
+  each block of its pairwise sum from it, which a sum and an addition after would not round as it does.
 
 ### Fixed
 

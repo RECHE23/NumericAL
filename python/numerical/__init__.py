@@ -949,7 +949,7 @@ _solve = _linalg(_numerical.solve)
 
 # The public functions over the native ones, with the signatures their stubs give, so that stubtest holds the stubs to
 # them (a native function taking *args has none to compare).
-def einsum(subscripts, /, *operands):
+def einsum(subscripts, /, *operands, optimize=False):
     """Einstein summation over the operands, as ``numpy.einsum``: ``"ij,jk->ik"`` (a matrix product), ``"i,i->"``
     (a dot product), ``"ij->ji"`` (a transpose), ``"ii->i"`` (a diagonal).
 
@@ -961,6 +961,9 @@ def einsum(subscripts, /, *operands):
         subscripts: The labels of each operand's axes, comma-separated, then optionally ``->`` and the output's: at
             most the 52 ASCII letters.
         *operands: The Tensors or array-likes (NumPy arrays, nested lists, numbers), one per comma-separated term.
+        optimize: NumPy's choice of a contraction order (a bool, ``"greedy"``, ``"optimal"`` or a path from
+            ``numpy.einsum_path``): taken and not followed, as the order here is chosen by the operands' extents
+            whatever it says.
 
     Returns:
         Tensor: The summed product, of rank 0 for a full contraction.
@@ -969,6 +972,7 @@ def einsum(subscripts, /, *operands):
         LinAlgError: if the subscripts do not parse, their terms are not one per operand, an operand's rank does not
             match its subscripts, or a repeated label has two extents.
         TypeError: if `subscripts` is not a string, or an operand is a bool Tensor or nothing :func:`asarray` reads.
+        TypeError: for an `optimize` that is none of NumPy's.
 
     Examples:
         >>> import numerical
@@ -980,6 +984,8 @@ def einsum(subscripts, /, *operands):
         >>> numerical.einsum("ii->i", [[1, 2], [3, 4]])
         numerical.Tensor([1.0, 4.0], dtype=float64)
     """
+    if optimize is not False and not (isinstance(optimize, (bool, list, tuple)) or optimize in ("greedy", "optimal")):
+        raise TypeError(f"einsum: optimize is a bool, 'greedy', 'optimal' or a contraction path, not {optimize!r}")
     if len(operands) == 1 and isinstance(subscripts, str):
         summed = _numerical._borrowed_einsum(subscripts, operands[0])  # a run of axes summed where the operand lies
         if summed is not NotImplemented:
@@ -3827,6 +3833,44 @@ def _reduction_method(reduce):
     return method
 
 
+_NO_VALUE = object()  # an argument not given, where None is a value
+
+
+def _initial_in(initial, dtype):
+    """NumPy's `initial` in the reduction's `dtype`, cast as it casts it (an int64 one truncated toward 0)."""
+    if dtype == "int64":
+        return asarray(int(initial), "int64")
+    return asarray(bool(initial) if dtype == "bool" else initial, dtype)
+
+
+def _with_initial(reduce, combine):
+    """`reduce` (max or min) taking NumPy's `initial`, the value each reduction starts from, in the reduction's dtype:
+    `combine`d with its answer, alone where the reduced axes hold no element."""
+    def function(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
+        if initial is _NO_VALUE:
+            return reduce(a, axis, keepdims, dtype=dtype)
+        a = a if isinstance(a, Tensor) else _read(a)
+        if dtype is not None:
+            a = asarray(a, _checked_dtype(dtype, f"{reduce.__name__}: "))
+        start = _initial_in(initial, a.dtype)
+        axes = _resolved_axes(a, axis, reduce.__name__)
+        if _builtins.any(a.shape[k] == 0 for k in axes):
+            shape = tuple(1 if k in axes else e for k, e in enumerate(a.shape)) if keepdims else \
+                tuple(e for k, e in enumerate(a.shape) if k not in axes)
+            filled = broadcast_to(start, shape)
+            return filled if shape else filled[()]
+        answer = reduce(a, axis, keepdims)
+        if isinstance(answer, Tensor):
+            return combine(answer, start)
+        return combine(asarray(answer, a.dtype), start)[()]
+
+    function.__name__ = reduce.__name__
+    function.__doc__ = reduce.__doc__
+    return function
+
+
+max = _with_initial(max, lambda answer, start: maximum(answer, start))
+min = _with_initial(min, lambda answer, start: minimum(answer, start))
 Tensor.sum = _reduction_method(sum)
 Tensor.mean = _reduction_method(mean)
 Tensor.max = _reduction_method(max)
@@ -5548,8 +5592,8 @@ def _joined(arrays, name):
     return [t if t.dtype == dtype else asarray(t, dtype) for t in tensors]
 
 
-def concatenate(arrays, /, axis=0):
-    """The arrays one after the other along `axis`, as ``numpy.concatenate``.
+def concatenate(arrays, /, axis=0, out=None, *, dtype=None):
+    """The arrays one after the other along `axis`, as ``numpy.concatenate``; in `dtype` where it is given.
 
     Every other axis is of one extent. The result is in the dtype they all fit, as NumPy promotes them.
 
@@ -5571,7 +5615,11 @@ def concatenate(arrays, /, axis=0):
         >>> numerical.concatenate([[[1, 2]], [[3, 4]]], axis=1)
         numerical.Tensor([[1.0, 2.0, 3.0, 4.0]], dtype=float64)
     """
+    _no_out(out, "concatenate")
     tensors = _joined(arrays, "concatenate")
+    if dtype is not None:
+        name = _checked_dtype(dtype, "concatenate: ")
+        tensors = [asarray(t, name) for t in tensors]
     if axis is None:
         tensors, axis = [reshape(t, (-1,)) for t in tensors], 0
     rank = len(tensors[0].shape)
@@ -5588,8 +5636,9 @@ def concatenate(arrays, /, axis=0):
 concat = concatenate
 
 
-def stack(arrays, /, axis=0):
-    """The arrays (one shape) along a new axis `axis` of the result, as ``numpy.stack``.
+def stack(arrays, /, axis=0, out=None, *, dtype=None):
+    """The arrays (one shape) along a new axis `axis` of the result, as ``numpy.stack``; in `dtype` where it is
+    given.
 
     The result is in the dtype they all fit, as NumPy promotes them.
 
@@ -5613,7 +5662,11 @@ def stack(arrays, /, axis=0):
         numerical.Tensor([[1.0, 3.0],
                           [2.0, 4.0]], dtype=float64)
     """
+    _no_out(out, "stack")
     tensors = _joined(arrays, "stack")
+    if dtype is not None:
+        name = _checked_dtype(dtype, "stack: ")
+        tensors = [asarray(t, name) for t in tensors]
     shape = tensors[0].shape
     if _builtins.any(t.shape != shape for t in tensors):
         raise ValueError("all input arrays must have the same shape")
@@ -6288,15 +6341,19 @@ def prod(a, axis=None, keepdims=False, *, dtype=None):
 Tensor.prod = _reduction_method(prod)
 
 
-def cumsum(a, axis=None):
-    """The running sums along `axis` (every element flattened where None), in order, as ``numpy.cumsum``."""
-    a = _operand(a)
+def cumsum(a, axis=None, dtype=None, out=None):
+    """The running sums along `axis` (every element flattened where None), in order, as ``numpy.cumsum``; `dtype` the
+    one the elements are converted to and summed in."""
+    _no_out(out, "cumsum")
+    a = _operand(a) if dtype is None else asarray(_operand(a), _checked_dtype(dtype, "cumsum: "))
     return _along("cumsum", asarray(a, "float64") if a.dtype == "bool" else a, axis)
 
 
-def cumprod(a, axis=None):
-    """The running products along `axis` (every element flattened where None), in order, as ``numpy.cumprod``."""
-    a = _operand(a)
+def cumprod(a, axis=None, dtype=None, out=None):
+    """The running products along `axis` (every element flattened where None), in order, as ``numpy.cumprod``;
+    `dtype` the one the elements are converted to and multiplied in."""
+    _no_out(out, "cumprod")
+    a = _operand(a) if dtype is None else asarray(_operand(a), _checked_dtype(dtype, "cumprod: "))
     if a.dtype.startswith("complex") and not _numpy_loops_measured:  # each product as NumPy's loops fuse it
         _numpy_loops()
     return _along("cumprod", asarray(a, "float64") if a.dtype == "bool" else a, axis)
@@ -6447,16 +6504,26 @@ def searchsorted(a, v, side="left", sorter=None):
     return found[()] if number else found
 
 
-def diff(a, n=1, axis=-1):
-    """The `n`-th differences along `axis`, ``a[1:] − a[:-1]`` repeated, as ``numpy.diff``."""
+def diff(a, n=1, axis=-1, prepend=_NO_VALUE, append=_NO_VALUE):
+    """The `n`-th differences along `axis`, ``a[1:] − a[:-1]`` repeated, as ``numpy.diff``: `prepend` and `append`
+    joined before and after along the axis first (a number as a slice of it)."""
     a = _operand(a)
     n = _operator.index(n)
     if n < 0:
         raise ValueError(f"order must be non-negative but got {n}")
+    if n == 0:  # NumPy's: `a` as it is, nothing joined
+        return a
     if not a.shape:
         raise ValueError("diff requires input that is at least one dimensional")
     axis = _axis(a, axis)
     rank = len(a.shape)
+    if prepend is not _NO_VALUE or append is not _NO_VALUE:
+        def slab(value):
+            value = _operand(value)
+            return broadcast_to(value, a.shape[:axis] + (1,) + a.shape[axis + 1:]) if not value.shape else value
+
+        a = concatenate(([slab(prepend)] if prepend is not _NO_VALUE else []) + [a]
+                        + ([slab(append)] if append is not _NO_VALUE else []), axis=axis)
     for _ in range(n):
         upper = tuple(slice(1, None) if k == axis else slice(None) for k in range(rank))
         lower = tuple(slice(None, -1) if k == axis else slice(None) for k in range(rank))
@@ -7167,15 +7234,21 @@ def _nan_extreme(a, axis, keepdims, larger):
     return result
 
 
-def nanmax(a, axis=None, out=None, keepdims=False):
-    """:func:`max` ignoring NaNs, as ``numpy.nanmax``: NaN (with a ``RuntimeWarning``) for a slice of NaNs alone."""
+def nanmax(a, axis=None, out=None, keepdims=False, initial=_NO_VALUE):
+    """:func:`max` ignoring NaNs, as ``numpy.nanmax``: NaN (with a ``RuntimeWarning``) for a slice of NaNs alone, or
+    `initial` where it is given (NumPy's ``fmax`` from it)."""
     _no_out(out, "nanmax")
+    if initial is not _NO_VALUE:
+        return max(_without_nans(a, -_math.inf)[0], axis=axis, keepdims=keepdims, initial=initial)
     return _nan_extreme(a, axis, keepdims, True)
 
 
-def nanmin(a, axis=None, out=None, keepdims=False):
-    """:func:`min` ignoring NaNs, as ``numpy.nanmin``: NaN (with a ``RuntimeWarning``) for a slice of NaNs alone."""
+def nanmin(a, axis=None, out=None, keepdims=False, initial=_NO_VALUE):
+    """:func:`min` ignoring NaNs, as ``numpy.nanmin``: NaN (with a ``RuntimeWarning``) for a slice of NaNs alone, or
+    `initial` where it is given (NumPy's ``fmin`` from it)."""
     _no_out(out, "nanmin")
+    if initial is not _NO_VALUE:
+        return min(_without_nans(a, _math.inf)[0], axis=axis, keepdims=keepdims, initial=initial)
     return _nan_extreme(a, axis, keepdims, False)
 
 
@@ -7231,10 +7304,11 @@ def nanmean(a, axis=None, dtype=None, out=None, keepdims=False):
     return _reduced_shape(_by_count(total, count, arr.dtype), arr, axis, keepdims, "nanmean")
 
 
-def nanvar(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False):
+def nanvar(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False, *, correction=None):
     """The variance of the elements that are not NaN, as ``numpy.nanvar`` and by its steps: NaN (with a
-    ``RuntimeWarning``) where they are no more than `ddof`."""
+    ``RuntimeWarning``) where they are no more than `ddof` (`correction`, NumPy 2's other name for it)."""
     _no_out(out, "nanvar")
+    ddof = _ddof(ddof, correction)
     arr, mask = _without_nans(a, 0)
     if dtype is not None:
         arr = asarray(arr, _dtype_name(dtype))
@@ -7254,10 +7328,10 @@ def nanvar(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False):
     return _reduced_shape(variance, arr, axis, keepdims, "nanvar")
 
 
-def nanstd(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False):
+def nanstd(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False, *, correction=None):
     """The standard deviation of the elements that are not NaN, the square root of :func:`nanvar`, as
     ``numpy.nanstd``."""
-    variance = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims)
+    variance = nanvar(a, axis=axis, dtype=dtype, out=out, ddof=ddof, keepdims=keepdims, correction=correction)
     return _math.sqrt(variance) if isinstance(variance, _numbers.Number) else sqrt(variance)
 
 
