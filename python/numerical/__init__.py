@@ -3829,8 +3829,10 @@ def _shape(shape):
     return tuple(_operator.index(extent) for extent in shape)
 
 
-def reshape(a, shape):
-    """The elements of `a` in the same order under `shape`, as ``numpy.reshape``.
+def reshape(a, shape, *, copy=None):
+    """The elements of `a` in the same order under `shape`, as ``numpy.reshape``: a Tensor's elements shared, never
+    copied, whatever `copy` (NumPy 2.1's and the array API's): no Tensor is written into, so a shared one serves as a
+    copy.
 
     Args:
         a: The Tensor or array-like.
@@ -3866,7 +3868,7 @@ def reshape(a, shape):
     return _native(_numerical._reshape, a, shape)
 
 
-Tensor.reshape = lambda self, *shape: reshape(self, shape[0] if len(shape) == 1 else shape)
+Tensor.reshape = lambda self, *shape, copy=None: reshape(self, shape[0] if len(shape) == 1 else shape, copy=copy)
 
 
 def _dtype_of(dtype, value=0.0):

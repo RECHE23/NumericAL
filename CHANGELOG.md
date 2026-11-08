@@ -8,6 +8,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+
+- **`reshape(copy=)`**, NumPy 2.1's and the array API's keyword: the elements shared whatever it asks, as a Tensor
+  is never written into.
+
 ### Fixed
 
 - **An axis out of range raises `numerical.AxisError`**, a `ValueError` and an `IndexError` as NumPy's

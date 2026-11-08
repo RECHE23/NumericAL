@@ -46,6 +46,9 @@ class WithoutNumPy(unittest.TestCase):
                 with self.assertRaises(ValueError):
                     numerical.asarray(obj, dtype=dtype, copy=False)
         self.assertIs(numerical.astype(t, "float64", copy=False), t)
+        for copy in (None, True, False):  # a reshape shares the elements, a copy since none is written into
+            self.assertEqual(numerical.reshape(t, (2, 1), copy=copy).shape, (2, 1))
+            self.assertEqual(t.reshape(1, 2, copy=copy).tolist(), [[1.0, 2.0]])
         self.assertEqual(t.astype("float32", copy=True).dtype, "float32")
 
     def test_descending_keeps_equal_elements_in_order(self):
