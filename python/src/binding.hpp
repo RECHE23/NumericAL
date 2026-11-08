@@ -324,8 +324,18 @@ inline any_tensor* as_tensor(PyObject* obj)
 }
 
 // Wraps a freshly computed tensor in a new Python Tensor (for the .raw functions).
+// NumPy's bound on a rank: past it, the recursions over a Tensor's axes (tolist, repr, the reading of nested lists)
+// would overflow the stack, and a list that holds itself would be walked forever.
+constexpr std::size_t rank_limit {64};
+
+// A Tensor of `value`, or nullptr with NumPy's ValueError past rank_limit.
 inline PyObject* wrap(any_tensor value)
 {
+    const std::size_t rank {std::visit([](const auto& t) { return t.rank(); }, value)};
+    if (rank > rank_limit) {
+        PyErr_Format(PyExc_ValueError, "maximum supported dimension for a Tensor is 64, found %zu", rank);
+        return nullptr;
+    }
     return sb::class_wrap<any_tensor>(std::move(value));
 }
 
@@ -581,6 +591,9 @@ inline any_tensor tensor_factory(PyObject*                 data,
     }
     else if (!read_shape(*shape_obj, shape)) {
         throw std::runtime_error("Tensor: invalid shape");
+    }
+    if (shape.size() > rank_limit) {
+        throw std::runtime_error("Tensor: maximum supported dimension is 64, found " + std::to_string(shape.size()));
     }
     switch (dtype_index(dtype).value_or(dtype_names.size())) {
         case 0: return build_any<double>(data, shape);
@@ -3919,12 +3932,15 @@ inline PyObject* sequence_item(PyObject* obj, Py_ssize_t i)
     return PyList_Check(obj) != 0 ? PyList_GetItem(obj, i) : PyTuple_GetItem(obj, i);
 }
 
+constexpr const char* nested_rank_refused {"setting an array element with a sequence. The requested array would exceed "
+                                           "the maximum number of dimension of 64."};
+
 // The shape of a nested list or tuple as its first elements say, down to the first that is neither (an empty one
-// ends it with a zero).
+// ends it with a zero); one level past rank_limit at most.
 inline std::vector<std::size_t> nested_shape(PyObject* obj)
 {
     std::vector<std::size_t> shape;
-    while (PyList_Check(obj) != 0 || PyTuple_Check(obj) != 0) {
+    while ((PyList_Check(obj) != 0 || PyTuple_Check(obj) != 0) && shape.size() <= rank_limit) {
         const Py_ssize_t length {sequence_length(obj)};
         shape.push_back(static_cast<std::size_t>(length));
         if (length == 0) {
@@ -3999,6 +4015,10 @@ inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObj
     }
     try {
         std::vector<std::size_t> shape {nested_shape(obj)};
+        if (shape.size() > rank_limit) {
+            PyErr_SetString(PyExc_ValueError, nested_rank_refused);
+            return nullptr;
+        }
         std::size_t              total {0};
         if (!element_count(shape, total)) {
             Py_RETURN_NONE;
@@ -4267,7 +4287,7 @@ struct caster<numerical_binding::any_tensor>
     }
     static PyObject* to_python(numerical_binding::any_tensor value)
     {
-        return class_wrap<numerical_binding::any_tensor>(std::move(value));
+        return numerical_binding::wrap(std::move(value));
     }
 };
 } // namespace sciforge::binding

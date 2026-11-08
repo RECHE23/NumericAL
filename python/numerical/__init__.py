@@ -265,10 +265,13 @@ class _NestedBuffer:
                                     "shape": tuple(shape), "data": (self._data.buffer_info()[0], True)}
 
 
-def _nested(obj):
-    """The values of a nested list (or tuple) of numbers in C order, and its shape."""
+def _nested(obj, depth=0):
+    """The values of a nested list (or tuple) of numbers in C order, and its shape; NumPy's ValueError past rank 64."""
     if isinstance(obj, (list, tuple)):
-        parts = [_nested(item) for item in obj]
+        if depth == 64:
+            raise ValueError("setting an array element with a sequence. The requested array would exceed the maximum "
+                             "number of dimension of 64.")
+        parts = [_nested(item, depth + 1) for item in obj]
         if not parts:
             return [], (0,)
         if len({shape for _, shape in parts}) != 1:
@@ -9855,7 +9858,7 @@ class _ArrayNamespaceInfo:
     """The array API's inspection namespace (:func:`__array_namespace_info__`): one device, the CPU, and its dtypes."""
 
     def capabilities(self):
-        return {"boolean indexing": True, "data-dependent shapes": True, "max dimensions": None}
+        return {"boolean indexing": True, "data-dependent shapes": True, "max dimensions": 64}
 
     def default_device(self):
         return "cpu"

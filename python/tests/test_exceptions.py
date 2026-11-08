@@ -1,7 +1,10 @@
 """NumPy's exception classes for the same mistakes: an axis out of range is an AxisError (a ValueError and an
 IndexError, and numpy.exceptions.AxisError where NumPy is loaded) wherever an axis is read, natively or in Python; a
-zero step of arange a ZeroDivisionError. Deterministic; the comparisons skipped without NumPy."""
+zero step of arange a ZeroDivisionError; a rank past 64 NumPy's ValueError, from nested lists however deep (or holding
+themselves) and from any shape, where the recursions over the axes would overflow the stack. Deterministic; the
+comparisons skipped without NumPy."""
 import pickle
+import threading
 import unittest
 
 import numerical
@@ -25,6 +28,42 @@ class WithoutNumPy(unittest.TestCase):
             self.assertIn("out of bounds", str(caught.exception))
         error = numerical.AxisError("axis 3 is out of bounds")
         self.assertEqual(str(pickle.loads(pickle.dumps(error))), "axis 3 is out of bounds")
+
+    def test_rank_past_64(self):
+        def nested(depth):
+            value = [1.0]
+            for _ in range(depth - 1):
+                value = [value]
+            return value
+
+        self.assertEqual(numerical.asarray(nested(64)).ndim, 64)
+        self.assertEqual(numerical.zeros((1,) * 64).ndim, 64)
+        itself = []
+        itself.append(itself)
+        outcomes = []
+
+        def deep():  # on a small stack, which a recursion per level overflowed at some thousands of levels
+            for call in (lambda: numerical.asarray(nested(100_000)), lambda: numerical.asarray(nested(65)),
+                         lambda: numerical.asarray(nested(65), "int64"), lambda: numerical.asarray(itself),
+                         lambda: numerical.zeros((1,) * 65), lambda: numerical.reshape(numerical.ones(1), (1,) * 4000),
+                         lambda: numerical.expand_dims(numerical.zeros((1,) * 64), 0)):
+                try:
+                    call()
+                    outcomes.append("answered")
+                except ValueError as refused:
+                    outcomes.append("64" in str(refused))
+
+        size = threading.stack_size(256 * 1024)
+        try:
+            thread = threading.Thread(target=deep)
+            thread.start()
+            thread.join()
+        finally:
+            threading.stack_size(size)
+        self.assertEqual(outcomes, [True] * 7)
+        with self.assertRaises(numerical.error):
+            numerical.Tensor([1.0], shape=(1,) * 65)
+        self.assertEqual(numerical.__array_namespace_info__().capabilities()["max dimensions"], 64)
 
     def test_zero_step(self):
         for kind in (ZeroDivisionError, ValueError, numerical.error):

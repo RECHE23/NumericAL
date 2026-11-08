@@ -15,6 +15,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **A Tensor's rank is at most 64, as NumPy's** (`ValueError` past it, from nested lists, shapes and reshapes;
+  `__array_namespace_info__` says so): a nested list of some thousands of levels overflowed the stack of its
+  reading and killed the process (4 000 on a thread of 256 KiB, 100 000 on the main one), a list that holds itself
+  was walked forever, and `tolist` and `repr` of a Tensor of such a rank overflowed too.
 - **Each C++ header compiles alone, and clean under `-Wsign-conversion` and `-Wdouble-promotion`**: `tensor.hpp`
   (and `tensor_ops.hpp`, `fft.hpp`, `fft_kernels.hpp` through it) took a constant from a header it does not include,
   and compiled only behind `numerical.hpp`; five implicit conversions warned in a consumer's strict build, which
