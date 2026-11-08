@@ -711,6 +711,10 @@ namespace numerical::detail {
     return std::min({total / work_per_thread, count, std::max<std::size_t>(1, hardware)});
   }
 
+  //! \brief The weight of an element a pass bound by the memory writes or moves, against a multiply-add, as the BLAS
+  //!        routines' transposing copies (weighed as one, an LU inverse of order 300 permuted its columns on one thread).
+  inline constexpr std::size_t memory_element_weight {4};
+
   /*!
    * \brief The threads \ref parallel_for shares \p count indices of \p work_per_index out to (\ref threads_for): the
    *        hardware's, at most the cap \ref numerical::set_max_threads set. Fewer than two runs them on the caller.

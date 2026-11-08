@@ -229,10 +229,6 @@ namespace numerical {
     //! \brief The rows an LU inverse writes its identity into, and permutes the columns of, on one thread at a time.
     inline constexpr std::size_t inverse_band {16};
 
-    //! \brief The weight of an element a pass bound by the memory writes or moves, against a multiply-add, as the BLAS
-    //!        routines' transposing copies (weighed as one, an LU inverse of order 300 permuted its columns on one thread).
-    inline constexpr std::size_t memory_element_weight {4};
-
     //! \brief The rows of an SVD's input one thread scales and copies at a time.
     inline constexpr std::size_t svd_band {32};
 

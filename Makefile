@@ -36,7 +36,7 @@ SCIFORGE_INCLUDE ?= ../sciforge/include
 SCIFORGE_LINT ?= ../sciforge/lint
 FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
-.PHONY: actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
+.PHONY: headers-alone always actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage docs-venv doc-xml docs-site docs-site-gate format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
         python python-test python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-numpy-push fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
@@ -345,6 +345,22 @@ test-gcc-neon:
 	$(CMAKE) --build $(BUILD)/gcc-neon --parallel $(JOBS)
 	$(CTEST) --test-dir $(BUILD)/gcc-neon --output-on-failure
 
+# Each public header compiles alone, with Clang and GCC 14: a consumer may include only the one it uses, and a name a
+# header takes from another it does not include compiles only behind numerical.hpp's order.
+HEADERS_ALONE_CXX ?= clang++ g++-14
+ALONE_HEADERS     := $(notdir $(wildcard include/numerical/*.hpp))
+headers-alone:
+	@$(MAKE) --no-print-directory -j$(JOBS) $(ALONE_HEADERS:%=alone/%)
+	@echo "headers-alone: each of the $(words $(ALONE_HEADERS)) headers compiles alone"
+
+alone/%: always
+	@for c in $(HEADERS_ALONE_CXX); do \
+	  out=$$(echo '#include <numerical/$*>' | $$c -std=c++20 -fsyntax-only -Iinclude -I"$(SCIFORGE_INCLUDE)" -x c++ - 2>&1) \
+	    || { echo "$$out"; echo "headers-alone: $* does not compile alone ($$c)"; exit 1; }; \
+	done
+
+always:
+
 lint-gate:
 	@$(MAKE) --no-print-directory lint | tee $(BUILD)/lint.log; ! grep -qE 'warning:|error:' $(BUILD)/lint.log
 
@@ -434,7 +450,7 @@ clean:
 SCIFORGE_MAKE    ?= ../sciforge/make
 # Cheapest first, so a slip in a comment or a stub fails in seconds, not after the suites: Doxygen before coverage, the
 # static checks (MISRA, the stubs, lint) before the builds and runs.
-QUALITY_COMMIT   := format-check actionlint doc-no-coverage coverage-gate
+QUALITY_COMMIT   := format-check actionlint headers-alone doc-no-coverage coverage-gate
 QUALITY_PUSH     := docs-site-gate version-check check-pins misra stubtest-gate lint-gate bench-diff-selftest python-test fuzz-numpy-push test test-gcc test-gcc-neon \
                     ci-arm-gcc sanitize tsan
 QUALITY_RELEASE  := bench-diff fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-scipy
