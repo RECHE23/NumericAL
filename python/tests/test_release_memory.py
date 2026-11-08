@@ -13,6 +13,17 @@ except ImportError:
     np = None
 
 
+def _sanitized():
+    """Whether AddressSanitizer's runtime is loaded (an instrumented extension's suite, on Linux)."""
+    if not sys.platform.startswith("linux"):
+        return False
+    with open("/proc/self/maps", encoding="ascii", errors="replace") as maps:
+        return "libasan" in maps.read()
+
+
+_SANITIZED = _sanitized()
+
+
 @unittest.skipIf(np is None, "NumPy not installed")
 class ReleaseMemory(unittest.TestCase):
     def test_answers_unchanged_after_a_release(self):
@@ -26,6 +37,7 @@ class ReleaseMemory(unittest.TestCase):
         self.assertEqual(before, after)
 
     @unittest.skipUnless(sys.platform.startswith("linux"), "/proc/self/statm")
+    @unittest.skipIf(_SANITIZED, "AddressSanitizer quarantines what is freed: the resident memory does not fall")
     def test_resident_memory_falls_on_linux(self):
         code = """
 import gc, os, numpy as np, numerical

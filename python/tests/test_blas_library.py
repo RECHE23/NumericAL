@@ -98,8 +98,11 @@ class BlasLibrary(unittest.TestCase):
         probe = ("import numerical, numerical._numerical\n"
                  "maps = open('/proc/self/maps').read()\n"
                  "print('libnumerical_blas' in maps, '_numerical' in maps)")
+        # nothing preloaded but the sanitizers' runtimes, which an instrumented extension needs loaded first
+        kept = " ".join(path for path in os.environ.get("LD_PRELOAD", "").replace(":", " ").split()
+                        if "libasan" in path or "libubsan" in path)
         out = subprocess.run([sys.executable, "-c", probe], capture_output=True, text=True, check=True,
-                             env={**os.environ, "LD_PRELOAD": ""}).stdout.split()
+                             env={**os.environ, "LD_PRELOAD": kept}).stdout.split()
         self.assertEqual(out, ["False", "True"])
 
 
