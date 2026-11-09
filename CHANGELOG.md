@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.9 — 2026-11-09
+
 ### Added
 
 - **`reshape(copy=)`**, NumPy 2.1's and the array API's keyword: the elements shared whatever it asks, as a Tensor
