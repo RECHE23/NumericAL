@@ -40,11 +40,13 @@ class WithoutNumPy(unittest.TestCase):
         self.assertEqual(numerical.zeros((1,) * 64).ndim, 64)
         itself = []
         itself.append(itself)
+        # made and freed here: CPython's own release of so deep a list overflows a small thread's stack (musl's)
+        deepest, past = nested(100_000), nested(65)
         outcomes = []
 
         def deep():  # on a small stack, which a recursion per level overflowed at some thousands of levels
-            for call in (lambda: numerical.asarray(nested(100_000)), lambda: numerical.asarray(nested(65)),
-                         lambda: numerical.asarray(nested(65), "int64"), lambda: numerical.asarray(itself),
+            for call in (lambda: numerical.asarray(deepest), lambda: numerical.asarray(past),
+                         lambda: numerical.asarray(past, "int64"), lambda: numerical.asarray(itself),
                          lambda: numerical.zeros((1,) * 65), lambda: numerical.reshape(numerical.ones(1), (1,) * 4000),
                          lambda: numerical.expand_dims(numerical.zeros((1,) * 64), 0)):
                 try:
@@ -60,6 +62,7 @@ class WithoutNumPy(unittest.TestCase):
             thread.join()
         finally:
             threading.stack_size(size)
+        del deepest
         self.assertEqual(outcomes, [True] * 7)
         with self.assertRaises(numerical.error):
             numerical.Tensor([1.0], shape=(1,) * 65)
