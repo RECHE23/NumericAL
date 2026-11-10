@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.10 — 2026-11-10
+
 ### Announced for 2026.12.0
 
 - **NumPy's argument order and names**: `sum`, `mean` and `prod` will take `a, axis, dtype, out, keepdims` (where the
