@@ -38,7 +38,7 @@ FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
 .PHONY: headers-alone always actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage docs-venv doc-xml docs-site docs-site-gate format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
-        python python-test python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-numpy-push fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
+        python python-test python-sanitize python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-numpy-push fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
 .DEFAULT_GOAL := help
 
@@ -59,6 +59,7 @@ help:
 	@echo "  make format-check  Uncrustify, dry-run, exits non-zero on diff"
 	@echo "  make python     Build the Python extension in place (abi3)"
 	@echo "  make python-test  Run the Python binding test suite"
+	@echo "  make python-sanitize  The Python suite under ASan + UBSan (Linux, GCC)"
 	@echo "  make fuzz-linalg  Decompositions vs NumPy on adversarial matrices, every GEMM path (CASES=, SEED=)"
 	@echo "  make fuzz-edges   Element-wise ops and reductions vs NumPy on zeros, infinities, NaNs, empty axes (CASES=, SEED=)"
 	@echo "  make fuzz-fft     Fourier transforms vs NumPy over drawn lengths, axes, dtypes and scalings, every path (CASES=, SEED=)"
@@ -261,6 +262,31 @@ python:
 
 python-test: python
 	$(PYRUN) -m unittest discover -s python/tests
+
+# The binding's suite under ASan and UBSan (Linux, GCC by default), then a fixed seed's few cases of the NumPy and
+# edge fuzzers: the extension and the BLAS library built instrumented in $(BUILD)/python-sanitize beside a copy of
+# the package, the in-place build left as it is. The interpreter is not instrumented: the sanitizers' runtimes are
+# preloaded ahead of it, and PYTHONMALLOC=malloc hands Python's own allocations to ASan. Leak detection is off:
+# CPython keeps objects alive until exit.
+SAN_CC  ?= gcc
+SAN_CXX ?= g++
+SAN_DIR := $(CURDIR)/$(BUILD)/python-sanitize
+SAN_RUN  = LD_PRELOAD="$$($(SAN_CXX) -print-file-name=libasan.so) $$($(SAN_CXX) -print-file-name=libubsan.so)" \
+           ASAN_OPTIONS=detect_leaks=0 UBSAN_OPTIONS=print_stacktrace=1 PYTHONMALLOC=malloc \
+           PYTHONPATH=$(SAN_DIR):$(abspath $(SCIFORGE_PYTHON)) $(PYTHON)
+python-sanitize:
+	@[ "$$(uname -s)" = Linux ] || { echo "python-sanitize: Linux only (the sanitizers' runtimes preloaded)"; exit 1; }
+	rm -rf $(SAN_DIR) && mkdir -p $(SAN_DIR)
+	cp -R python/numerical $(SAN_DIR)/
+	find $(SAN_DIR) \( -name '*.so' -o -name '*.pyd' \) -delete
+	CC=$(SAN_CC) CXX=$(SAN_CXX) NUMERICAL_SANITIZE=1 SCIFORGE_INCLUDE=$(SCIFORGE_INCLUDE) \
+	  $(PYTHON) setup.py -q build_ext --build-lib $(SAN_DIR) --build-temp $(SAN_DIR)/objects --force
+	@for runtime in libasan.so libubsan.so; do \
+	  [ -f "$$($(SAN_CXX) -print-file-name=$$runtime)" ] || { echo "python-sanitize: $(SAN_CXX) has no $$runtime"; exit 1; }; \
+	done
+	$(SAN_RUN) -m unittest discover -s python/tests
+	$(SAN_RUN) fuzz/npdiff.py --cases 20 --seed 20261104
+	$(SAN_RUN) fuzz/edges.py --cases 1000 --seed 20261104
 
 # The stubs are checked against the runtime surface (mypy.stubtest): a function or Tensor method added to the
 # binding or the package and not to numerical/__init__.pyi or _numerical.pyi fails here. MYPY_PYTHON carries mypy.

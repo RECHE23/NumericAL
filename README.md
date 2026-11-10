@@ -204,6 +204,7 @@ Maintainers: the release procedure and the versioning rules are in `RELEASING.md
 make test        # build and run the test suite
 make coverage    # line-coverage summary + HTML report
 make sanitize    # tests under AddressSanitizer + UndefinedBehaviorSanitizer
+make python-sanitize  # the Python suite under them (Linux, GCC)
 make lint        # clang-tidy
 make format      # uncrustify, in place
 make doc         # API reference (Doxygen) with embedded coverage

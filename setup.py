@@ -86,6 +86,13 @@ else:
     # order 6 answered with other bits after other allocations (AVX-512, GCC 15 -O3).
     compile_args = ["-std=c++20", level, "-g0", "-fvisibility=hidden", "-pthread", "-ffp-contract=on"]
     link_args = ["-pthread"]  # parallel.hpp uses std::thread
+    # NUMERICAL_SANITIZE=1 (make python-sanitize): the extension and the BLAS library under ASan and UBSan, at the
+    # wheels' optimisation level; -fno-sanitize-recover: undefined behaviour stops the run, where recovering it
+    # prints a line and the test passes.
+    if os.environ.get("NUMERICAL_SANITIZE"):
+        sanitizers = ["-fsanitize=address,undefined", "-fno-sanitize-recover=undefined"]
+        compile_args = [arg for arg in compile_args if arg != "-g0"] + sanitizers + ["-g", "-fno-omit-frame-pointer"]
+        link_args += sanitizers
 
 # Clang's loop vectoriser takes a loop that sums products (`s += a[i] * b[i]`, one fused multiply-add under
 # -ffp-contract=on) as an in-order reduction on arm64: its vectors' products rounded apart, its scalar remainder's

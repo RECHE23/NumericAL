@@ -153,3 +153,25 @@ jobs:
         env:
           PYTHONPATH: python
         run: python -m unittest discover -s python/tests
+
+  # The binding's suite under ASan and UBSan (make python-sanitize): the extension and the BLAS library instrumented
+  # by GCC, the sanitizers' runtimes preloaded ahead of the interpreter, Python's allocations handed to ASan. The C++
+  # suite runs under them already (make sanitize); the binding's own C++ (argument reading, buffers, DLPack, nested
+  # lists) only here.
+  python-sanitize:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/checkout@v6
+        with:
+          repository: RECHE23/sciforge
+          ref: v2026.10.7
+          path: sciforge
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.13'
+      - name: Install NumPy and the build's requirements
+        run: python -m pip install numpy setuptools wheel threadpoolctl==3.7.0
+      - name: The Python suite under ASan and UBSan
+        run: make python-sanitize PYTHON=python SCIFORGE_INCLUDE="$PWD/sciforge/include" SCIFORGE_PYTHON="$PWD/sciforge/python"

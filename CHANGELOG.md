@@ -8,6 +8,19 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Announced for 2026.12.0
+
+- **NumPy's argument order and names**: `sum`, `mean` and `prod` will take `a, axis, dtype, out, keepdims` (where the
+  third argument is `keepdims` today: pass `keepdims` by name); `max`, `min`, `any`, `all` and `ptp` `a, axis, out,
+  keepdims`; `var` and `std` `out` before `ddof`; `take` `out` before `mode`; the `*_like` functions `order` and
+  `subok` before `shape`. NumPy's names: `full(shape, fill_value)`, `array_equal(a1, a2)`, `empty_like(prototype)`,
+  `asarray(a)`, `real(val)`, `imag(val)`, `tensordot(a, b, axes)`.
+
+### Added
+
+- **`make python-sanitize`**, run by CI on Linux: the binding's suite, and a few cases of the NumPy and edge fuzzers,
+  under AddressSanitizer and UndefinedBehaviorSanitizer (GCC), where the C++ suite alone ran under them.
+
 ## 2026.11.9 — 2026-11-09
 
 ### Added
