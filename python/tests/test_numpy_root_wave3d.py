@@ -169,6 +169,11 @@ class AgainstNumPy(unittest.TestCase):
             for x in (2.5, np.array([0.0, 1.5, -2.0]), np.array([1, 2, 3]), np.array([[1.0, 2.0]])):
                 self.assertSame(lambda: numerical.polyval(_tensor(p), _tensor(x)), lambda: np.polyval(p, x),
                                 f"polyval {p} {x}")
+        for shape, x in (((4, 3), rng.normal(size=3)), ((4, 3), rng.normal(size=(2, 3))),
+                         ((3, 2, 2), rng.normal(size=(2, 2)) + 1j), ((3, 4), rng.normal(size=(4, 4)).astype(np.float32))):
+            c = rng.normal(size=shape)  # a coefficient per element along the first axis, broadcast against x
+            self.assertSame(lambda: numerical.polyval(_tensor(c), _tensor(x)), lambda: np.polyval(c, x),
+                            f"polyval {shape} {np.shape(x)}")
             for m in (0, 1, 2, 5):
                 self.assertSame(lambda: numerical.polyder(_tensor(p), m), lambda: np.polyder(p, m), f"polyder {m}")
                 if not np.iscomplexobj(p):

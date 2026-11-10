@@ -9443,12 +9443,13 @@ def _coefficients(p):
 
 def polyval(p, x):
     """The polynomial of coefficients `p` (highest power first) at `x`, as ``numpy.polyval``: Horner's
-    ``y · x + pᵢ`` from a zero of `x`'s dtype."""
+    ``y · x + pᵢ`` from a zero of `x`'s dtype, each ``pᵢ`` the slice of `p` along its first axis (a coefficient, or
+    for `p` of rank 2 and more one per element, broadcast against `x`)."""
     p = _as_numpy_reads(p)
     x = _as_numpy_reads(x)
     y = zeros_like(x)
     for k in range(p.shape[0]):
-        y = y * x + reshape(p[k:k + 1], ())
+        y = y * x + reshape(p[k:k + 1], p.shape[1:])  # a Tensor of rank 0 for a coefficient: strong, as NumPy's
     return y[()] if not y.shape else y
 
 

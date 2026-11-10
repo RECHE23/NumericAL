@@ -10,6 +10,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **`polyval` of coefficients of rank 2 and more**, as NumPy's: a polynomial per element along the first axis,
+  broadcast against `x`, where it raised for anything but a vector of coefficients.
 - **A NumPy bool array or a list of bools beside a float32 or complex64 Tensor keeps single precision**, as NumPy's:
   `t + mask`, `add`, `divide`, `maximum`, `hypot`, `arctan2`, `remainder`, `matmul` and the other binary functions
   read it as float64 first and answered float64 or complex128. Beside a bool it is still read as float64.
