@@ -174,4 +174,6 @@ jobs:
       - name: Install NumPy and the build's requirements
         run: python -m pip install numpy setuptools wheel threadpoolctl==3.7.0
       - name: The Python suite under ASan and UBSan
-        run: make python-sanitize PYTHON=python SCIFORGE_INCLUDE="$PWD/sciforge/include" SCIFORGE_PYTHON="$PWD/sciforge/python"
+        run: >
+          make python-sanitize PYTHON=python SCIFORGE_INCLUDE="$PWD/sciforge/include"
+          SCIFORGE_PYTHON="$PWD/sciforge/python" SCIFORGE_LINT="$PWD/sciforge/lint" SCIFORGE_MAKE="$PWD/sciforge/make"
