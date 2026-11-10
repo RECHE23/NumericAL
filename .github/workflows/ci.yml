@@ -171,8 +171,8 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: '3.13'
-      - name: Install NumPy and the build's requirements
-        run: python -m pip install numpy setuptools wheel threadpoolctl==3.7.0
+      - name: Install NumPy, SciPy (the suite compares against both) and the build's requirements
+        run: python -m pip install numpy scipy setuptools wheel threadpoolctl==3.7.0
       - name: The Python suite under ASan and UBSan
         run: >
           make python-sanitize PYTHON=python SCIFORGE_INCLUDE="$PWD/sciforge/include"

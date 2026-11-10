@@ -285,8 +285,8 @@ python-sanitize:
 	  [ -f "$$($(SAN_CXX) -print-file-name=$$runtime)" ] || { echo "python-sanitize: $(SAN_CXX) has no $$runtime"; exit 1; }; \
 	done
 	$(SAN_RUN) -m unittest discover -s python/tests
-	$(SAN_RUN) fuzz/npdiff.py --cases 20 --seed 20261104
-	$(SAN_RUN) fuzz/edges.py --cases 1000 --seed 20261104
+	$(SAN_RUN) fuzz/npdiff.py --cases 100 --seed 20261104
+	$(SAN_RUN) fuzz/edges.py --cases 5000 --seed 20261104
 
 # The stubs are checked against the runtime surface (mypy.stubtest): a function or Tensor method added to the
 # binding or the package and not to numerical/__init__.pyi or _numerical.pyi fails here. MYPY_PYTHON carries mypy.
