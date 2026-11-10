@@ -694,7 +694,7 @@ def _matmul_shapes(a_shape, b_shape):
 def _matmul(self, other):
     """``a @ b`` as NumPy's matmul: vectors and matrices, and stacks of matrices along leading axes broadcast against
     each other (a number for two vectors); the dtypes promoted as NumPy promotes them."""
-    other = other if isinstance(other, Tensor) else _read(other)
+    other = _read_beside(other, self)
     _matmul_shapes(self.shape, other.shape)
     dtype = _promoted((self.dtype, other.dtype))
     a, b = (t if t.dtype == dtype else asarray(t, dtype=dtype) for t in (self, other))
@@ -742,11 +742,11 @@ def matmul(x1, x2, /):
         if shapes[0] is not None and shapes[1] is not None:
             _matmul_shapes(*shapes)
         raise LinAlgError(*caught.args) from None
-    return _operand(x1)._matmul(x2) if product is NotImplemented else product  # else as ``@``
+    return _read_beside(x1, x2)._matmul(x2) if product is NotImplemented else product  # else as ``@``
 
 
 def _rmatmul(self, other):
-    return _matmul(_read(other), self)
+    return _matmul(_read_beside(other, self), self)
 
 
 def _flat(nested):
@@ -3485,6 +3485,25 @@ def _read(obj, dtype=None):
     return tensor
 
 
+def _read_beside(obj, other):
+    """:func:`_read` for one operand of two: a bool array-like (not a bool Tensor) keeps its dtype beside an operand
+    of another, which it then takes as NumPy promotes (``float32`` beside it stays ``float32``), and is read as
+    float64 beside a bool (a Tensor, an array-like or a Python bool)."""
+    tensor = obj if isinstance(obj, Tensor) else asarray(obj)
+    if tensor.dtype == "bool" and not isinstance(obj, Tensor) and _dtype_kind_is_bool(other):
+        return asarray(tensor, "float64")
+    return tensor
+
+
+def _dtype_kind_is_bool(value):
+    """Whether `value`, an operand (a Tensor, a number or an array-like), is of the bool dtype."""
+    if isinstance(value, Tensor):
+        return value.dtype == "bool"
+    if isinstance(value, _numbers.Number):
+        return isinstance(value, bool) or type(value).__name__ == "bool"
+    return asarray(value).dtype == "bool"
+
+
 class _UnreadableError(error, TypeError):
     """An object :func:`asarray` cannot read: a ``TypeError`` as NumPy raises, and a :class:`numerical.error`."""
 
@@ -3529,8 +3548,8 @@ def _same_dtype(a, b):
     tensors to the dtype both fit (:func:`_promoted`); a Python number keeps the tensor's precision, made complex
     only by a complex number (``float32 + 2.0`` is float32)."""
     weak_a, weak_b = _weak(a) and not _weak(b), _weak(b) and not _weak(a)
-    tensor_a = a if isinstance(a, Tensor) else _read(a)
-    tensor_b = b if isinstance(b, Tensor) else _read(b)
+    tensor_a = a if isinstance(a, Tensor) else _read_beside(a, b)
+    tensor_b = b if isinstance(b, Tensor) else _read_beside(b, a)
     if weak_a:
         dtype = _beside_weak(tensor_b.dtype, a)
     elif weak_b:
@@ -3589,6 +3608,12 @@ def _arithmetic(op, reflected=False):
                 shortcut = {(int, 2): "2", (int, -1): "r", (float, 0.5): "h"}.get((kind, other)) if kind in (int, float) else None
             if shortcut is not None:
                 return _native(_numerical._power_shortcut, shortcut, self)
+        if kind is not Tensor and not isinstance(other, _numbers.Number):  # an array-like, read before promoting
+            try:
+                other = _read_beside(other, self)
+            except (TypeError, error):  # asarray cannot read it: let the other operand try
+                return NotImplemented
+            kind = Tensor
         if kind is Tensor and other.dtype == self.dtype:  # nothing to promote: the common cases, straight through
             a, b = self, other
         elif (kind is int or kind is float) and (dtype := self.dtype) != "bool" and (kind is int or dtype != "int64"):
@@ -5791,12 +5816,7 @@ def square(x, /):
 
 def divide(x1, x2, /):
     """``x1 / x2`` element-wise, as ``numpy.divide`` (``numpy.true_divide``)."""
-    if not isinstance(x1, (Tensor, _numbers.Number)):
-        x1 = _operand(x1)
-    if not isinstance(x2, (Tensor, _numbers.Number)):
-        x2 = _operand(x2)
-    if not isinstance(x1, Tensor) and not isinstance(x2, Tensor):
-        x1 = _operand(x1)
+    x1, x2 = _binary_operands(x1, x2)
     return x1 / x2
 
 
@@ -5807,13 +5827,7 @@ def _binary_function(operator):
     """``operator(x1, x2)`` of NumPy's binary function: through the Tensor operator, an operand that is neither a
     Tensor nor a number read first (one of the two at least a Tensor)."""
     def function(x1, x2, /):
-        if not isinstance(x1, (Tensor, _numbers.Number)):
-            x1 = _operand(x1)
-        if not isinstance(x2, (Tensor, _numbers.Number)):
-            x2 = _operand(x2)
-        if not isinstance(x1, Tensor) and not isinstance(x2, Tensor):
-            x1 = _operand(x1)
-        return operator(x1, x2)
+        return operator(*_binary_operands(x1, x2))
 
     return function
 
@@ -8042,14 +8056,12 @@ del _name
 
 def _binary_operands(x1, x2):
     """`x1` and `x2` as operands of an arithmetic operator: Tensors and numbers as they are (a number weak beside a
-    Tensor), anything else read by :func:`asarray`, two numbers as tensors."""
-    if not isinstance(x1, (Tensor, _numbers.Number)):
-        x1 = _operand(x1)
-    if not isinstance(x2, (Tensor, _numbers.Number)):
-        x2 = _operand(x2)
-    if not isinstance(x1, Tensor) and not isinstance(x2, Tensor):
-        x1 = _operand(x1)
-    return x1, x2
+    Tensor), anything else read by :func:`_read_beside`, two numbers as tensors."""
+    read1 = x1 if isinstance(x1, (Tensor, _numbers.Number)) else _read_beside(x1, x2)
+    read2 = x2 if isinstance(x2, (Tensor, _numbers.Number)) else _read_beside(x2, x1)
+    if not isinstance(read1, Tensor) and not isinstance(read2, Tensor):
+        read1 = _operand(read1)
+    return read1, read2
 
 
 def add(x1, x2, /):

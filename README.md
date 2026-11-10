@@ -286,8 +286,8 @@ operands promoted as arithmetic promotes them, `isnan`, `isinf` and `isfinite` c
 NumPy's; two masks have no arithmetic, and neither has a mask in the linear algebra (a `TypeError` names
 `astype("float64")`), as the array API leaves them. `asarray` keeps a NumPy bool array, a bool and a list of bools
 bool, as NumPy's; a function that computes reads such an array-like as float64 (`inv(np.eye(2, dtype=bool))`), as
-NumPy's arithmetic and linear algebra do, and one that moves elements (`concatenate`, `tril`, `transpose`) keeps it
-bool.
+NumPy's arithmetic and linear algebra do, but beside an operand of another dtype it takes that one (a float32 Tensor
+plus a NumPy mask is float32), and one that moves elements (`concatenate`, `tril`, `transpose`) keeps it bool.
 
 Shapes that do not broadcast raise a `ValueError` worded as NumPy's. `max` and `min` take
 real dtypes only (NumPy orders complex numbers lexicographically; NumericAL does not order them); `max` gives +0 and `min`

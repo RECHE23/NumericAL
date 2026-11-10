@@ -8,6 +8,17 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+
+- **A NumPy bool array or a list of bools beside a float32 or complex64 Tensor keeps single precision**, as NumPy's:
+  `t + mask`, `add`, `divide`, `maximum`, `hypot`, `arctan2`, `remainder`, `matmul` and the other binary functions
+  read it as float64 first and answered float64 or complex128. Beside a bool it is still read as float64.
+
+### Changed
+
+- **A Tensor operator beside a NumPy array or a list of the same dtype** reads it and computes, where it went through
+  the promotion of two dtypes first: `t + a` of 8 float64 elements 2.2 → 1.1 µs (M1 Pro), the same bits.
+
 ## 2026.11.10 — 2026-11-10
 
 ### Announced for 2026.12.0

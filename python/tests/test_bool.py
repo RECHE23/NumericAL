@@ -392,6 +392,32 @@ class KeptOutOfTheArithmetic(unittest.TestCase):
                     self.assertEqual(got.dtype, str(expected.dtype) if expected.dtype.kind not in "iu" else "float64")
                     self.assertTrue(np.array_equal(np.asarray(got), expected, equal_nan=True))
 
+    def test_a_bool_array_like_takes_a_single_precision_tensors_dtype(self):
+        # Beside a float32 or complex64 Tensor, a NumPy bool array or a list of bools keeps NumPy's single precision,
+        # where it was read as float64 first and widened the answer.
+        x = np.array([[True, False], [False, True]])
+        operators = {"+": operator.add, "*": operator.mul, "/": operator.truediv, "@": operator.matmul}
+        calls = [(name, function, function) for name, function in operators.items()]
+        calls += [(name, getattr(numerical, name), getattr(np, name))
+                  for name in ("add", "subtract", "divide", "maximum", "hypot", "arctan2", "remainder", "matmul")]
+        for dtype in ("float32", "complex64", "float64", "complex128"):
+            values = np.array([[1.5, -2.0], [0.25, 3.0]]).astype(dtype)
+            t = numerical.asarray(values)
+            for name, call, numpy_call in calls:
+                if dtype.startswith("complex") and name in ("maximum", "hypot", "arctan2", "remainder"):
+                    continue  # real dtypes only, as NumPy's
+                for source in (x, x.tolist()):
+                    for args, numpy_args in (((t, source), (values, x)), ((source, t), (x, values))):
+                        if name in ("+", "*", "/", "@") and not isinstance(args[0], numerical.Tensor):
+                            continue  # the operator of a NumPy array or a list is not NumericAL's
+                        with self.subTest(dtype=dtype, name=name, source=type(source).__name__,
+                                          first=type(args[0]).__name__):
+                            with np.errstate(all="ignore"):
+                                expected = numpy_call(*numpy_args)
+                            got = call(*args)
+                            self.assertEqual(got.dtype, str(expected.dtype))
+                            self.assertTrue(np.array_equal(np.asarray(got), expected, equal_nan=True))
+
     def test_two_masks_and_the_functions_refuse(self):
         mask = numerical.asarray([[True, False], [False, True]], "bool")
         refused = [lambda: mask + mask, lambda: mask * True, lambda: -mask, lambda: abs(mask), lambda: mask @ mask,
