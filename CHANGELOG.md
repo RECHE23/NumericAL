@@ -34,7 +34,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **Python 3.11 or newer**: the wheels are cp311-abi3 (3.10 reached its end of life in October 2026).
 - **The same bits whatever compiler builds NumericAL**: the extension, and CMake's GCC and Clang consumers, build
   with `-ffp-contract=off`, so that no multiply-add is fused that the code does not write. A wheel (GCC 14) and a
-  build from the sdist (GCC 13) differed on some results in the last bits.
+  build from the sdist (GCC 13) differed on some results in the last bits. Clang on arm64 no longer wants
+  `-mllvm -force-ordered-reductions=false`: its sums of products round alike, vectorised or not.
 
 ## 2026.11.24 — 2026-11-24
 

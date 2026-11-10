@@ -6,7 +6,7 @@
 pip install numeric-al        # the distribution is numeric-al; the module is numerical
 ```
 
-The wheels serve CPython 3.11 and later through the stable ABI, and the free-threaded 3.14t and 3.15t without the
+The wheels serve CPython 3.10 and later through the stable ABI, and the free-threaded 3.14t and 3.15t without the
 GIL, on Linux (x86-64, arm64), macOS (arm64, x86-64) and Windows (x86-64). Every function takes a
 {class}`numerical.Tensor` or anything {func}`numerical.asarray` reads: a NumPy array, a nested list, a number.
 
@@ -60,6 +60,6 @@ int main()
 ```
 
 `numerical.get_include()` gives the header directory of an installed Python package, so a C++ extension can build
-against the same headers. With GCC, compile with `-ffp-contract=on` (the wheels' setting), and with Clang for arm64
-with `-mllvm -force-ordered-reductions=false`; {doc}`guide/reproducibility` says why. {doc}`guide/cpp` lists the
+against the same headers. Compile with `-ffp-contract=off` (the wheels' setting; {doc}`guide/reproducibility` says
+why). {doc}`guide/cpp` lists the
 classes, the supported toolchains and how to build from source.
