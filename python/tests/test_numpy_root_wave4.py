@@ -173,7 +173,7 @@ class AgainstNumPy(unittest.TestCase):
         wide = np.array([[18, -8], [INT64_MIN, INT64_MAX]], np.int64)
         for axis in (None, 0, 1, (0, 1)):
             for keepdims in (False, True):
-                self.assertSame(lambda: numerical.ptp(numerical.asarray(wide, "int64"), axis, keepdims),
+                self.assertSame(lambda: numerical.ptp(numerical.asarray(wide, "int64"), axis, keepdims=keepdims),
                                 lambda: np.ptp(wide, axis, keepdims=keepdims), f"ptp {axis} {keepdims}")
         for x in ([1.0, 1.0], [[1.0, 2.0], [3.0, 3.0]], [2.0]):
             self.assertSame(lambda: numerical.corrcoef(x), lambda: np.corrcoef(x), f"corrcoef {x}")
