@@ -319,11 +319,52 @@ TEST(element_wise_functions_by_chunks_are_the_sequential_map_s)
     numerical::set_max_threads(n);
     EXPECT(numerical::exp(z) == numerical::map(z, [](const cplx& x) { return numerical::detail::complex_exp(x); }));
     EXPECT(numerical::log(r) == numerical::map(r, [](double x) { return std::log(x); }));
+    EXPECT(numerical::exp(r) == numerical::map(r, [](double x) { return numerical::detail::elementary_exp(x); }));
     EXPECT(numerical::tanh(z) == numerical::map(z, [](const cplx& x) { return numerical::detail::complex_tanh(x); }));
     EXPECT(-z == numerical::map(z, [](const cplx& x) { return -x; }));
     EXPECT(numerical::detail::numpy_absolute(z) == numerical::map(z, [](const cplx& x) { return numerical::detail::numpy_absolute(x, numerical::detail::numpy_wheel_loops().products); }));
   }
   numerical::set_max_threads(0); // the default again
+}
+
+// exp of a double by the table: within an ulp of the C library's (each within half an ulp or so of the exact value),
+// its own value at the ends (overflow past ln of the largest double, the subnormal and zero results the library's,
+// NaN itself), and the same bits from a block, in vectors, as from one call.
+TEST(exp_of_a_double_by_the_table)
+{
+  std::vector<double> x;
+  for (int i {0}; i < 20000; ++i) {
+    const double t {static_cast<double>(i) / 20000.0};
+    x.push_back(-760.0 + (1480.0 * t)); // across the whole range, past both ends
+    x.push_back((2.0 * t) - 1.0);
+    x.push_back(-709.0 + t);            // about the bound below which a result is subnormal
+  }
+  const double inf {std::numeric_limits<double>::infinity()};
+  for (const double v : {0.0, -0.0, inf, -inf, std::numeric_limits<double>::quiet_NaN(), 709.782712893384, 709.79, 800.0,
+                         -745.1332191019411, -745.14, -800.0, 1e-300, -1e-300, numerical::detail::exp_normal_bound,
+                         std::nextafter(numerical::detail::exp_normal_bound, -inf)}) {
+    x.push_back(v);
+  }
+  std::vector<double> block(x.size());
+  numerical::detail::exp_into(x.data(), block.data(), x.size());
+  bool same  {true};
+  bool close {true};
+  for (std::size_t i {0}; i < x.size(); ++i) {
+    const double one     {numerical::detail::elementary_exp(x[i])};
+    same = same && std::bit_cast<std::uint64_t>(one) == std::bit_cast<std::uint64_t>(block[i]);
+    const double library {std::exp(x[i])};
+    if (std::isnan(x[i]) || library == 0.0 || std::isinf(library) || library < std::numeric_limits<double>::min()) {
+      close = close && std::bit_cast<std::uint64_t>(one) == std::bit_cast<std::uint64_t>(library);
+    }
+    else {
+      close = close && std::fabs(one - library) <= std::nextafter(library, inf) - library;
+    }
+  }
+  EXPECT(same);
+  EXPECT(close);
+  EXPECT(numerical::detail::elementary_exp(0.0) == 1.0 && numerical::detail::elementary_exp(-0.0) == 1.0);
+  EXPECT(numerical::detail::elementary_exp(709.79) == inf && numerical::detail::elementary_exp(-inf) == 0.0);
+  EXPECT(numerical::detail::elementary_exp(1.0) == 0x1.5bf0a8b145769p+1); // e, rounded to nearest
 }
 
 // NumPy's complex magnitude: an infinite part makes it infinite whatever the other, NaN, and a NaN part then NaN;

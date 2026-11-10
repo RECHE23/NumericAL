@@ -16,6 +16,14 @@ A change that can break code is listed under **Breaking** and held for a month's
   `subok` before `shape`. NumPy's names: `full(shape, fill_value)`, `array_equal(a1, a2)`, `empty_like(prototype)`,
   `asarray(a)`, `real(val)`, `imag(val)`, `tensordot(a, b, axes)`.
 
+### Changed
+
+- **`exp` of float64 in vectors**: NumericAL's own, a table of 2^(j/128) and a polynomial in fused multiply-adds,
+  within 0.506 ulp of the exact value and the same bits on every processor with FMA (C++ `numerical::exp` and the
+  binding). 10⁶ values on one arm64 core 6.1 → 1.8 ms (NumPy's: 6.1), on all of them 0.31 ms. Its last bit differs from the C library's, which NumPy's is,
+  in some 0.2 % of the values; a subnormal or zero result is the C library's, as is every one on an x86-64
+  processor without FMA and in a build by MSVC.
+
 ### Added
 
 - **`make python-sanitize`**, run by CI on Linux: the binding's suite, and a few cases of the NumPy and edge fuzzers,

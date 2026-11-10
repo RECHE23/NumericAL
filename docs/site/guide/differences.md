@@ -43,6 +43,11 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
   whatever the order they come in. NumPy on arm64 agrees; NumPy on x86-64 keeps the sign its loops meet first.
 - **`power` of float64 on an x86-64 processor with AVX-512** is the C library's, as NumPy's on other processors;
   NumPy's there is its own vector kernel, whose last bit differs from it in some 5 % of the powers.
+- **`exp` of float64** is NumericAL's own, in vectors (a table of 2^(j/128) and a polynomial): within 0.506 ulp of the
+  exact value, the same bits on every processor with fused multiply-add, three times faster than the C
+  library's on one core. NumPy's is the C library's (its own vector kernel on x86-64 with AVX-512): the last bit differs in some
+  0.2 % of the values. A subnormal or zero result is the C library's; an x86-64 processor without FMA, and a build by
+  MSVC, take the C library's throughout.
 - **`eig` and `eigvals` answer in complex numbers** whatever the eigenvalues, as NumPy 2.5's and SciPy's; NumPy
   before 2.5 made them real where it could.
 - **A float32 or complex64 decomposition** is computed in double precision and rounded to single, below order 500

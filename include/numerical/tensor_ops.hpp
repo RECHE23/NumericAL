@@ -30,6 +30,7 @@
 #include <vector>
 
 #include "complex_math.hpp"
+#include "elementary.hpp"
 #include "simd.hpp"
 #include "tensor.hpp"
 
@@ -246,6 +247,86 @@ namespace numerical {
     [[nodiscard]] T elementary_exp(const T& x)
     {
       return static_cast<T>(std::exp(x));
+    }
+
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+    /*!
+     * \brief Whether `exp` of a `double` takes \ref table_exp where it might not: on an x86-64 processor with FMA alone
+     *        (without, `std::fma` is a call to the C library's, which made it a hundred times slower than `std::exp`),
+     *        and never under MSVC, whose `std::fma` is a call. Elsewhere `std::fma` is an instruction.
+     */
+    [[nodiscard]] inline bool exp_by_table() noexcept
+    {
+#  if defined(_MSC_VER) && !defined(__clang__)
+      return false;
+#  else
+      return cpu_features().avx2_fma;
+#  endif
+    }
+
+#endif
+
+    //! \brief `exp` of a `double`, as \ref exp_into gives it: \ref table_exp, or `std::exp` below
+    //!        \ref exp_normal_bound (and throughout where `exp_by_table` says no).
+    [[nodiscard]] inline double elementary_exp(double x)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        return std::exp(x);
+      }
+#endif
+      return x < exp_normal_bound ? std::exp(x) : table_exp(x);
+    }
+
+    /*!
+     * \brief `exp` of the \p count doubles at \p in into \p out, each \ref elementary_exp's: \ref table_exp in vectors
+     *        (with the FMA instructions on an x86-64 processor, \ref run_fused), then `std::exp` where the result is
+     *        subnormal or zero, below \ref exp_normal_bound, which the table's two scalings would round twice;
+     *        `std::exp` throughout where `exp_by_table` says no.
+     */
+    inline void exp_into(const double* in,
+                         double*       out,
+                         std::size_t   count)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        std::transform(in, in + count, out, [](double x) { return std::exp(x); });
+        return;
+      }
+#endif
+      // std::exp only where a value is below the bound, behind a branch: where it sets no errno (macOS), a compiler
+      // may else evaluate it on every element and keep the few it needs (Apple's Clang 16: 10⁶ values 1.9 → 7.6 ms)
+#ifdef NUMERICAL_EXP_NEON
+      std::size_t i {0};
+      for (; i + 2 <= count; i += 2) {
+        const float64x2_t x {vld1q_f64(in + i)};
+        vst1q_f64(out + i, table_exp(x));
+        if (vminnmvq_f64(x) < exp_normal_bound) { // the lesser number, past a NaN
+          for (std::size_t k {i}; k < i + 2; ++k) {
+            if (in[k] < exp_normal_bound) {
+              out[k] = std::exp(in[k]);
+            }
+          }
+        }
+      }
+      if (i < count) {
+        out[i] = elementary_exp(in[i]);
+      }
+#else
+      run_fused([&](std::size_t) NUMERICAL_INLINE_LAMBDA {
+        for (std::size_t i {0}; i < count; ++i) {
+          out[i] = table_exp(in[i]);
+        }
+      });
+#  if defined(__clang__)
+#    pragma clang loop vectorize(disable)
+#  endif
+      for (std::size_t i {0}; i < count; ++i) {
+        if (in[i] < exp_normal_bound) {
+          out[i] = std::exp(in[i]);
+        }
+      }
+#endif
     }
 
     //! \brief `exp` of a complex number of `float` or `double`: \ref complex_exp.
@@ -1118,11 +1199,39 @@ namespace numerical {
     }
   } // namespace detail
 
-  //! \brief `exp` of every element: `std::exp` of a real one, \ref detail::complex_exp of a complex one.
+  namespace detail {
+    //! \brief `exp` of every one of the row-major elements at \p data, of shape \p shape: \ref elementary_exp of each.
+    template <typename T>
+    [[nodiscard]] tensor<T> exp_of(const T*                        data,
+                                   const std::vector<std::size_t>& shape)
+    {
+      return parallel_map(data, shape, [](const T& x) { return elementary_exp(x); });
+    }
+
+    //! \brief `exp` of every one of the row-major doubles at \p data, of shape \p shape: \ref exp_into by chunks of
+    //!        \ref elementwise_chunk among the threads.
+    [[nodiscard]] inline tensor<double> exp_of(const double*                   data,
+                                               const std::vector<std::size_t>& shape)
+    {
+      const std::size_t count  {element_count(shape.begin(), shape.end())};
+      buffer<double>    out(count);
+      const std::size_t chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     exp_into(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
+                   });
+      return tensor<double> {shape, std::move(out)};
+    }
+  } // namespace detail
+
+  /*!
+   * \brief `exp` of every element: \ref detail::exp_into of a `double` one (within 0.506 ulp of the exact value),
+   *        `std::exp` of a `float` one, \ref detail::complex_exp of a complex one.
+   */
   template <typename T>
   [[nodiscard]] tensor<T> exp(const tensor<T>& a)
   {
-    return detail::parallel_map(a, [](const T& x) { return detail::elementary_exp(x); });
+    return detail::exp_of(a.data().data(), a.shape());
   }
 
   //! \brief `log` of every element: `std::log` of a real one, \ref detail::complex_log of a complex one.

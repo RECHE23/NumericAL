@@ -2075,7 +2075,7 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
                     }
                 }
                 if (name == "exp") {
-                    result.emplace(d::parallel_map(data, x.shape, [](const T& v) { return d::elementary_exp(v); }));
+                    result.emplace(d::exp_of(data, x.shape));
                 }
                 else if (name == "log") {
                     result.emplace(d::parallel_map(data, x.shape, [](const T& v) { return d::elementary_log(v); }));
