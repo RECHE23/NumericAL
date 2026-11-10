@@ -546,6 +546,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **A reduction to a number answers a rank-0 Tensor for float32, complex64 and int64** (the dtypes Python's numbers do
   not hold: a float32 variance, an int64 sum past 2⁶³), as the array API's and NumPy's scalars keep their dtype; a
   float64, complex128 or bool one stays a Python number.
+- **NumPy's functions on a Tensor answer a Tensor** (NEP 13 and NEP 18): `np.exp(t)`, `np.add(a, t)`, `np.sort(t)`,
+  `np.concatenate([t, t])` and the operators of a NumPy array beside a Tensor (`a + t`, `a == t`, `a @ t`) call
+  NumericAL's function of the same name, where they answer an ndarray today. A call NumericAL does not take (`out=`
+  an ndarray, `where=`, a dtype it does not hold) stays NumPy's; `out=` a Tensor raises ValueError, as for a
+  read-only array. Code that wants an ndarray converts first: `np.asarray(t)`.
 
 ## 2026.11.14 — 2026-11-13
 
