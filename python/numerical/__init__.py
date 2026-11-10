@@ -3628,10 +3628,10 @@ def _read(obj, dtype=None):
 def _read_beside(obj, other):
     """:func:`_read` for one operand of two: a bool array-like (not a bool Tensor) keeps its dtype beside an operand
     of another, which it then takes as NumPy promotes (``float32`` beside it stays ``float32``), and is read as
-    float64 beside a bool (a Tensor, an array-like or a Python bool)."""
+    int64 beside a bool (a Tensor, an array-like or a Python bool), as :func:`_read` reads it."""
     tensor = obj if isinstance(obj, Tensor) else asarray(obj)
     if tensor.dtype == "bool" and not isinstance(obj, Tensor) and _dtype_kind_is_bool(other):
-        return asarray(tensor, "float64")
+        return asarray(tensor, "int64")
     return tensor
 
 
