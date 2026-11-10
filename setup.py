@@ -8,13 +8,11 @@ import shutil
 import subprocess
 import sys
 import sysconfig
-import tempfile
 from concurrent.futures import ThreadPoolExecutor
 
 from setuptools import Extension, setup
 from setuptools.command.build_ext import build_ext
 from setuptools.command.build_py import build_py
-from setuptools.errors import CompileError
 
 try:  # setuptools >= 70.1 vendors bdist_wheel; older installs get it from wheel
     from setuptools.command.bdist_wheel import bdist_wheel
@@ -94,14 +92,6 @@ else:
         compile_args = [arg for arg in compile_args if arg != "-g0"] + sanitizers + ["-g", "-fno-omit-frame-pointer"]
         link_args += sanitizers
 
-# Clang's loop vectoriser takes a loop that sums products (`s += a[i] * b[i]`, one fused multiply-add under
-# -ffp-contract=on) as an in-order reduction on arm64: its vectors' products rounded apart, its scalar remainder's
-# fused. Whether a loop is vectorised depends on where it is inlined, so the same sum rounded otherwise from one
-# caller to the next: a complex128 matrix times a vector, row by row, against each row's own dot product (732 of
-# 1680 shapes). Kept scalar, every such sum is fused; in order, the vectors were no faster (300 drawn cases, M1 Pro:
-# 1.002). A compiler that does not take the option (GCC, which fuses none of these sums) builds without it.
-ordered_reductions_off = ["-mllvm", "-force-ordered-reductions=false"]
-
 
 class build_ext_with_blas(build_ext):
     """Builds, beside the extension, the numerical_blas library (blas/numerical_blas.cpp): the BLAS and LAPACK
@@ -112,8 +102,6 @@ class build_ext_with_blas(build_ext):
     def build_extensions(self):
         self._compile_sources_in_parallel()
         self.cxx_args = list(compile_args)  # the extension's, and the library's in run()
-        if sys.platform != "win32" and self._compiles_with(ordered_reductions_off):
-            self.cxx_args += ordered_reductions_off
         for extension in self.extensions:
             extension.extra_compile_args = self.cxx_args
         super().build_extensions()
@@ -131,18 +119,6 @@ class build_ext_with_blas(build_ext):
                 return [path for built in objects for path in built]
 
         self.compiler.compile = compile
-
-    def _compiles_with(self, flags):
-        """Whether the extensions' compiler builds a translation unit with `flags`."""
-        with tempfile.TemporaryDirectory() as directory:
-            source = os.path.join(directory, "probe.cpp")
-            with open(source, "w") as out:
-                out.write("int main() { return 0; }\n")
-            try:
-                self.compiler.compile([source], output_dir=directory, extra_postargs=[*compile_args, *flags])
-            except CompileError:
-                return False
-        return True
 
     def run(self):
         super().run()

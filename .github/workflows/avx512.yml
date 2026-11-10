@@ -53,9 +53,8 @@ jobs:
 
   # The fuzz campaigns against NumPy on the AVX-512 kernels, beside the suite, and the binding's tests of bits there.
   # The run fails unless the kernel in use is "avx512", so an emulator that stopped emulating cannot pass for one. The
-  # extension is Clang's, which contracts a multiply-add under the wheels' -ffp-contract=on where a function is built
-  # for FMA, as GCC 14 does and Ubuntu's GCC 13 does not: a kernel and a helper built for different units then round
-  # differently, which only such a build shows.
+  # extension is Clang's, where the Linux x86-64 wheels are GCC's, so the binding's tests of bits run under both
+  # compilers on the AVX-512 kernels.
   avx512-fuzz:
     runs-on: ubuntu-24.04
     timeout-minutes: 60

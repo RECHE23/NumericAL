@@ -8,8 +8,8 @@
   each block of lanes by one written tree (41 functions checked byte for byte, from `matmul` and `solve` to `eigh`,
   `svd`, `eig`, `qz` and `logm`).
 - **Not guaranteed:** the same bits between kernels (the portable one, NEON, AVX, the AMX coprocessor), between
-  processor families, or between two compilers' builds; they differ in the last bits. From 2026.12.0, NumericAL is
-  to be built with `-ffp-contract=off`, so that GCC's and Clang's builds agree too.
+  processor families, or between two compilers' builds; they differ in the last bits. NumericAL builds with
+  `-ffp-contract=off`, so that neither compiler fuses a multiply-add the code does not write.
 
 ## Threads and kernels
 
@@ -54,20 +54,19 @@ differ in the last bits.
 The same cap rounds the FFT: its butterflies fuse their products and sums past the portable kernel and round them
 apart on it, so `limit_gemm_path("portable")` changes a transform's last bits as it changes a product's.
 Across other kernels a result differs in the last bits, since the NEON, AVX and AMX kernels fuse each multiply-add
-and the portable one rounds as the compiler does (under the wheels' `-ffp-contract=on`, Clang fuses `c + a·b` there and GCC does not). Past the portable kernel, a complex product runs as one real product of twice the order, `[Re A | −Im A]`
+and the portable one fuses none (`-ffp-contract=off`: `c + a·b` rounds twice under either compiler). Past the
+portable kernel, a complex product runs as one real product of twice the order, `[Re A | −Im A]`
 times `[[Re B, Im B], [Im B, −Re B]]` (by blocks), on that kernel and its threads: each element then sums the
 products of A's real parts, then those of its imaginary parts, where the portable kernel sums whole complex
 products in order.
 
 ## Compiler settings
 
-Compiled with GCC, the headers want `-ffp-contract=on` (Clang's default; the wheels and the sdist set it): GCC's own
-default, `fast`, fuses multiply-adds across statements as its passes find them, so a loop's vectorised and scalar
-versions, one or the other chosen at run time by the operands' addresses, can round an element differently, and the
-same operands then give other last bits from one call to the next.
-
-Compiled with Clang for arm64, the headers want `-mllvm -force-ordered-reductions=false` too (the wheels and the sdist set it
-where the compiler takes it): Clang otherwise vectorises some loops that sum products in order, rounding their
-products apart where the same loop inlined elsewhere fuses them, so a sum's last bits depend on its caller (a row of a
-complex matrix times a vector against that row times the vector alone).
+The headers want `-ffp-contract=off` (the wheels, the sdist and the CMake target set it), so that no multiply-add is
+fused that the code does not write (`std::fma`). GCC's default, `fast`, fuses across statements as its passes find
+them, so a loop's vectorised and scalar versions, one or the other chosen at run time by the operands' addresses, can
+round an element differently and the same operands give other last bits from one call to the next. Under `on`, Clang's
+default, a multiply-add within one expression is fused where the function is built for FMA, as GCC 14 does and
+GCC 13 does not, and on arm64 Clang rounds a sum of products otherwise when it vectorises the loop than when it does
+not, as the callers' inlining decides.
 

@@ -33,7 +33,7 @@ SciPy, and the Doxygen reference of every header under [`api/`](https://reche23.
 pip install numeric-al        # the distribution is numeric-al; the module is numerical
 ```
 
-One `cp311` abi3 wheel serves CPython 3.11 and later; the free-threaded 3.14t and 3.15t take their own and run without
+One `cp310` abi3 wheel serves CPython 3.10 and later; the free-threaded 3.14t and 3.15t take their own and run without
 the GIL. For C++, add `include/` to the include path, or after `cmake --install`, in your `CMakeLists.txt`:
 
 ```cmake
@@ -110,10 +110,8 @@ A `Tensor` passes to NumPy, PyTorch, JAX or CuPy without a copy (`np.asarray(t)`
 A result is the same, to the bit, on any number of threads, and on any x86-64 processor with AVX2 or AVX-512 for one
 build; between other kernels (portable, NEON, AMX) it may differ in the last bits. Every decomposition is backward
 stable, held by differential fuzzers against NumPy and SciPy on adversarial matrices; a NaN or an infinity in a matrix
-raises `LinAlgError`. Compiled outside the wheels and the sdist, which set both:
-
-- under GCC, the headers want `-ffp-contract=on`;
-- under Clang for arm64, they want `-mllvm -force-ordered-reductions=false` too.
+raises `LinAlgError`. Compiled outside the wheels, the sdist and the CMake target, which set it, the headers want
+`-ffp-contract=off`, so that no multiply-add is fused that the code does not write.
 
 [Reproducibility and threads](https://reche23.github.io/NumericAL/guide/reproducibility.html) says why, and how to cap the threads and choose the
 kernel; [Accuracy](https://reche23.github.io/NumericAL/guide/accuracy.html) gives the bound each function is held to.
@@ -121,7 +119,7 @@ kernel; [Accuracy](https://reche23.github.io/NumericAL/guide/accuracy.html) give
 ## Toolchains
 
 Each push is built and tested with GCC 14 and Clang 21 (Linux x86-64, under ASan and UBSan too), GCC 13 (Linux
-arm64), MSVC 2022 (Windows x64) and Apple Clang 16 (macOS arm64, locally). CMake 3.16 or newer; Python 3.11 or newer
+arm64), MSVC 2022 (Windows x64) and Apple Clang 16 (macOS arm64, locally). CMake 3.16 or newer; Python 3.10 or newer
 for the binding. SciForge's quality bar holds: 100 % coverage, Clang and GCC, lint, format, MISRA-oriented analysis
 and sanitizers green. [CONTRIBUTING.md](https://github.com/RECHE23/NumericAL/blob/main/CONTRIBUTING.md) gives the
 build and the gates.
