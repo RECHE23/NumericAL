@@ -20,9 +20,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 - **`exp` of float64 in vectors**: NumericAL's own, a table of 2^(j/128) and a polynomial in fused multiply-adds,
   within 0.506 ulp of the exact value and the same bits on every processor with FMA (C++ `numerical::exp` and the
-  binding). 10⁶ values on one arm64 core 6.1 → 1.8 ms (NumPy's: 6.1), on all of them 0.31 ms. Its last bit differs from the C library's, which NumPy's is,
-  in some 0.2 % of the values; a subnormal or zero result is the C library's, as is every one on an x86-64
-  processor without FMA and in a build by MSVC.
+  binding). 10⁶ values on one arm64 core 6.1 → 1.8 ms (NumPy's: 6.1), on all of them 0.31 ms. Its last bit differs
+  from the C library's, which NumPy's is, in some 0.2 % of the values; a subnormal or zero result is the C library's,
+  as is every one on an x86-64 processor without FMA and in a build by MSVC.
 
 ### Added
 
