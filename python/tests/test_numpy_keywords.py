@@ -73,7 +73,7 @@ class AgainstNumPy(unittest.TestCase):
             for name in ("sum", "prod"):
                 with self.subTest(name=name, dtype=dtype, shape=a.shape, axis=axis, keepdims=keepdims, initial=initial):
                     want = np.asarray(getattr(np, name)(a, axis=axis, keepdims=keepdims, initial=initial))
-                    got = np.asarray(getattr(numerical, name)(t, axis, keepdims, initial=initial), want.dtype)
+                    got = np.asarray(getattr(numerical, name)(t, axis, keepdims=keepdims, initial=initial), want.dtype)
                     self.assertEqual(got.shape, want.shape)
                     axes = range(len(a.shape)) if axis is None else axis
                     order = [k for k, extent in enumerate(a.shape) if extent != 1]

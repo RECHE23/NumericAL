@@ -912,11 +912,11 @@ def _repr(self):
     return f"{head}{_format(values, len(head))}, dtype={self.dtype})"
 
 
-def array_equal(a, b, equal_nan=False):
-    """``True`` when `a` and `b` (Tensors or array-likes) have the same shape and equal elements, as
+def array_equal(a1, a2, equal_nan=False):
+    """``True`` when `a1` and `a2` (Tensors or array-likes) have the same shape and equal elements, as
     ``numpy.array_equal``: a NaN equals nothing, itself included, unless `equal_nan` (a complex one with a NaN part
     equal to any other)."""
-    a, b = _same_dtype(a, b)
+    a, b = _same_dtype(a1, a2)
     if a.shape != b.shape:
         return False
     if not equal_nan or a.dtype in ("int64", "bool"):
@@ -3529,10 +3529,11 @@ def cross(a, b, axisa=-1, axisb=-1, axisc=-1, axis=None):
     return result
 
 
-def tensordot(x1, x2, /, *, axes=2):
-    """The sum of products over `axes` of `x1` and `x2`, as ``numpy.linalg.tensordot``: an integer N contracts the
-    last N axes of `x1` with the first N of `x2`, a pair of sequences the axes it names."""
-    a, b = _same_dtype(x1, x2)
+def tensordot(a, b, axes=2):
+    """The sum of products over `axes` of `a` and `b`, as ``numpy.tensordot`` (and the array API's, whose `axes` is
+    keyword-only): an integer N contracts the last N axes of `a` with the first N of `b`, a pair of sequences the axes
+    it names."""
+    a, b = _same_dtype(a, b)
     if isinstance(axes, (tuple, list)):
         left = [axes[0]] if isinstance(axes[0], int) else list(axes[0])
         right = [axes[1]] if isinstance(axes[1], int) else list(axes[1])
@@ -3563,29 +3564,31 @@ def vecdot(x1, x2, /, *, axis=-1):
 _NATIVE_NUMBERS = (float, int, bool, complex)
 
 
-def asarray(obj, dtype=None, *, device=None, copy=None):
-    """A :class:`Tensor` from `obj`, as ``numpy.asarray`` and the array API's ``asarray``.
+def asarray(a, dtype=None, order=None, *, device=None, copy=None, like=None):
+    """A :class:`Tensor` from `a`, as ``numpy.asarray`` and the array API's ``asarray``.
 
     A complex input is never cast to a real dtype (that would discard the imaginary part).
 
     Args:
-        obj: A Tensor (the same object when `dtype` matches), an object with an ``__array_interface__`` (NumPy: bool,
+        a: A Tensor (the same object when `dtype` matches), an object with an ``__array_interface__`` (NumPy: bool,
             integer, float32/64 and complex64/128 elements, any strides), a nested list or tuple of numbers, or a
             number (rank 0).
         dtype: ``"float64"``, ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"`` (true where nonzero), or
             the NumPy type or dtype of that name, or Python's ``float``, ``complex`` or ``bool``; by default an array's own (int64 for its integers, float64 for uint64), Python's ints int64, else float64;
             complex128 for a complex number or a list with one, bool for a bool or a list of bools alone, as NumPy's.
+        order: NumPy's; None, ``"C"``, ``"F"``, ``"A"`` or ``"K"``, all row-major here (a Tensor has one layout).
         device: ``None`` or ``"cpu"``, the one device.
-        copy: ``None`` reads `obj` as it is; ``True`` gives a Tensor holding its own elements (a view's copied out,
-            as :func:`copy` gives them); ``False`` refuses any `obj` but a Tensor of `dtype` (whose elements a Tensor
+        copy: ``None`` reads `a` as it is; ``True`` gives a Tensor holding its own elements (a view's copied out,
+            as :func:`copy` gives them); ``False`` refuses any `a` but a Tensor of `dtype` (whose elements a Tensor
             shares, never writing into them), since the elements are copied into a Tensor.
+        like: NumPy's; None.
 
     Returns:
-        Tensor: The elements of `obj`, a copy unless `obj` is a Tensor of `dtype` already.
+        Tensor: The elements of `a`, a copy unless `a` is a Tensor of `dtype` already.
 
     Raises:
         ValueError: if a nested list is not rectangular.
-        TypeError: if `obj` is none of these, or a nested list holds something other than numbers.
+        TypeError: if `a` is none of these, or a nested list holds something other than numbers.
         TypeError: for a `dtype` not offered (also a :class:`numerical.error` and a ``ValueError``).
         numerical.error: for a complex input cast to a real dtype.
         ValueError: for `copy` False where the elements must be copied, or a `device` other than the CPU.
@@ -3604,34 +3607,36 @@ def asarray(obj, dtype=None, *, device=None, copy=None):
         dtype = _checked_dtype(dtype, "asarray: ")
     if device is not None:
         _cpu_device(device, "asarray")
-    if copy is False and not (type(obj) is Tensor and dtype in (None, obj.dtype)):
+    if order is not None or like is not None:
+        _numpy_layout(order, like, "asarray", (None, "C", "F", "A", "K"))
+    if copy is False and not (type(a) is Tensor and dtype in (None, a.dtype)):
         raise ValueError("asarray: copy=False, where the elements must be copied into a Tensor")
     # A float, int, bool or complex, an array (its __array_struct__ or __array_interface__) and a Tensor go to C
     # as they are; a nested list, or another number (a Fraction), through its values. A Tensor or an array's struct
     # first: the abstract Number test below took a third of a small einsum's call.
-    if type(obj) is Tensor and copy and dtype in (None, obj.dtype):  # a view's elements copied out, as copy() gives them
-        return _numerical._materialized(obj)
-    if type(obj) is Tensor or hasattr(obj, "__array_struct__"):
-        return _asarray(obj, dtype) if dtype is not None else _asarray(obj)
-    if isinstance(obj, (list, tuple)):  # floats, ints and complex numbers in one walk in C; anything else read here
-        fast = _asarray_nested(obj, dtype) if dtype is not None else _asarray_nested(obj)
+    if type(a) is Tensor and copy and dtype in (None, a.dtype):  # a view's elements copied out, as copy() gives them
+        return _numerical._materialized(a)
+    if type(a) is Tensor or hasattr(a, "__array_struct__"):
+        return _asarray(a, dtype) if dtype is not None else _asarray(a)
+    if isinstance(a, (list, tuple)):  # floats, ints and complex numbers in one walk in C; anything else read here
+        fast = _asarray_nested(a, dtype) if dtype is not None else _asarray_nested(a)
         if fast is not None:
             return fast
-    if isinstance(obj, (list, tuple)) or (type(obj) not in _NATIVE_NUMBERS and isinstance(obj, _numbers.Number)
-                                          and not hasattr(obj, "__array_interface__")):
-        values, shape = _nested(obj)
-        if dtype is None and isinstance(obj, (list, tuple)) and values and \
+    if isinstance(a, (list, tuple)) or (type(a) not in _NATIVE_NUMBERS and isinstance(a, _numbers.Number)
+                                          and not hasattr(a, "__array_interface__")):
+        values, shape = _nested(a)
+        if dtype is None and isinstance(a, (list, tuple)) and values and \
                 _builtins.all(isinstance(v, int) for v in values) and not _builtins.all(isinstance(v, bool) for v in values):
             dtype = "int64"  # Python's ints as NumPy reads them, exactly (OverflowError past int64)
         if dtype == "int64" and _builtins.any(isinstance(value, _numbers.Integral) and not -2**63 <= value < 2**63
                                               for value in values):  # read as float64, -2**63 - 1 would round in
             raise OverflowError("a value outside int64's range converted to it")
-        obj = _NestedBuffer(values, shape)
-    elif not (isinstance(obj, Tensor) or type(obj) in _NATIVE_NUMBERS or hasattr(obj, "__array_struct__")
-              or hasattr(obj, "__array_interface__")):  # a NumPy array's struct a capsule, its interface a dict built anew
-        raise _UnreadableError(f"asarray: a {type(obj).__name__} is not a tensor, an array, a nested list of numbers "
+        a = _NestedBuffer(values, shape)
+    elif not (isinstance(a, Tensor) or type(a) in _NATIVE_NUMBERS or hasattr(a, "__array_struct__")
+              or hasattr(a, "__array_interface__")):  # a NumPy array's struct a capsule, its interface a dict built anew
+        raise _UnreadableError(f"asarray: a {type(a).__name__} is not a tensor, an array, a nested list of numbers "
                                "or a number")
-    return _asarray(obj, dtype) if dtype is not None else _asarray(obj)
+    return _asarray(a, dtype) if dtype is not None else _asarray(a)
 
 
 def _read(obj, dtype=None):
@@ -3846,21 +3851,16 @@ def _axis(t, axis):
     return axis + rank if axis < 0 else axis
 
 
-def _keepdims_not_dtype(name, keepdims):
-    """A TypeError for a dtype passed in `keepdims`'s place, NumPy's third, its `dtype`'s (whose answer would otherwise
-    keep the axes and leave the dtype as it is, silently)."""
-    if isinstance(keepdims, (str, type)) or hasattr(keepdims, "char"):  # a name, a type, a NumPy dtype
-        raise TypeError(f"{name}: the third argument is keepdims here, where NumPy takes dtype; pass "
-                        f"dtype={keepdims!r} by name")
-
-
 def _reduction(op, doc):
-    def reduce(a, axis=None, keepdims=False, *, dtype=None):
-        if axis is None and keepdims is False and dtype is None and isinstance(a, Tensor):  # every element: the
-            return _native(_numerical._reduce, op, a, -1)  # native reduction the general path ends in, at once
-        if keepdims is not False and keepdims is not True:
-            _keepdims_not_dtype(op, keepdims)
-        if dtype is not None:  # the array API's (keyword-only: `keepdims` holds NumPy's third place here)
+    """`op` in NumPy's argument order: ``a, axis, dtype, out, keepdims`` for a sum and a mean; ``a, axis, out,
+    keepdims`` for any and all, `dtype` keyword-only; max and min take theirs from _with_initial. `out` None alone."""
+    def reduce(a, axis=None, dtype=None, out=None, keepdims=False):
+        if axis is None and dtype is None and out is None and keepdims is False and isinstance(a, Tensor) and \
+                (a.dtype != "bool" or op not in ("sum", "prod")):  # every element: the native reduction the
+            return _native(_numerical._reduce, op, a, -1)  # general path ends in, at once
+        if out is not None:
+            _no_out(out, op)
+        if dtype is not None:  # NumPy's and the array API's
             return _in_dtype(reduce, a, axis, keepdims, dtype)
         if axis is None and not keepdims and not isinstance(a, Tensor):
             whole = _numerical._borrowed_reduce(op, a)  # every element of a NumPy array read where it lies
@@ -3905,7 +3905,15 @@ def _reduction(op, doc):
 
     reduce.__name__ = op
     reduce.__doc__ = doc
-    return reduce
+    if op not in ("any", "all"):
+        return reduce
+
+    def truth(a, axis=None, out=None, keepdims=False, *, dtype=None):
+        return reduce(a, axis, dtype, out, keepdims)
+
+    truth.__name__ = op
+    truth.__doc__ = doc
+    return truth
 
 
 sum = _reduction("sum", """The sum of every element, or the sums along `axis`, as ``numpy.sum``.
@@ -3916,9 +3924,10 @@ sum = _reduction("sum", """The sum of every element, or the sums along `axis`, a
         a: The Tensor or array-like (bools read as int64, as NumPy sums them).
         axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
             end.
+        dtype: The dtype the elements are converted to and summed in, as NumPy's and the array API's.
+        out: None alone (a Tensor is never written into).
         keepdims: Keep each reduced axis with extent 1, as NumPy's.
-        dtype: The dtype the elements are converted to and summed in (keyword-only), as NumPy's and the array API's.
-        initial: The value each sum starts from (keyword-only), in its dtype, as NumPy's; None for none.
+        initial: The value each sum starts from, in its dtype, as NumPy's; None for none.
 
     Returns:
         float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (int64 for a bool one).
@@ -3943,8 +3952,9 @@ mean = _reduction("mean", """The mean of every element, or the means along `axis
         a: The Tensor or array-like (bools as their 0s and 1s).
         axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
             end.
+        dtype: The dtype the elements are converted to and averaged in, as NumPy's and the array API's.
+        out: None alone (a Tensor is never written into).
         keepdims: Keep each reduced axis with extent 1, as NumPy's.
-        dtype: The dtype the elements are converted to and averaged in (keyword-only), as NumPy's and the array API's.
 
     Returns:
         float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (float64 for a bool or an int64 one).
@@ -3967,7 +3977,10 @@ max = _reduction("max", """The largest element, or the largest along `axis`, as 
         a: The Tensor or array-like (a bool one's largest a bool).
         axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
             end.
+        out: None alone (a Tensor is never written into).
         keepdims: Keep each reduced axis with extent 1, as NumPy's.
+        initial: The value each reduction starts from, in `a`'s dtype; alone where it reduces no element.
+        dtype: The dtype the elements are converted to first (keyword-only).
 
     Returns:
         float | bool | Tensor: A number for every element, else a Tensor of `a`'s dtype.
@@ -3993,7 +4006,10 @@ min = _reduction("min", """The smallest element, or the smallest along `axis`, a
         a: The Tensor or array-like (a bool one's smallest a bool).
         axis: ``None`` (every element), an integer, or a tuple of them (``()`` for none); negative ones count from the
             end.
+        out: None alone (a Tensor is never written into).
         keepdims: Keep each reduced axis with extent 1, as NumPy's.
+        initial: The value each reduction starts from, in `a`'s dtype; alone where it reduces no element.
+        dtype: The dtype the elements are converted to first (keyword-only).
 
     Returns:
         float | bool | Tensor: A number for every element, else a Tensor of `a`'s dtype.
@@ -4010,11 +4026,11 @@ min = _reduction("min", """The smallest element, or the smallest along `axis`, a
         numerical.Tensor([1.0, 3.0], dtype=float64)
     """)
 any = _reduction("any", """Whether any element is true (nonzero), or any along `axis` (a bool Tensor without it), as
-``numpy.any``. `axis` may name several axes (a tuple, `()` for none), and `keepdims` keeps each reduced axis with
-extent 1, as NumPy's.""")
+``numpy.any``, in its order ``a, axis, out, keepdims`` (`out` None alone). `axis` may name several axes (a tuple, `()`
+for none), and `keepdims` keeps each reduced axis with extent 1, as NumPy's.""")
 all = _reduction("all", """Whether every element is true (nonzero), or every one along `axis` (a bool Tensor without
-it), as ``numpy.all``. `axis` may name several axes (a tuple, `()` for none), and `keepdims` keeps each reduced axis
-with extent 1, as NumPy's.""")
+it), as ``numpy.all``, in its order ``a, axis, out, keepdims`` (`out` None alone). `axis` may name several axes (a
+tuple, `()` for none), and `keepdims` keeps each reduced axis with extent 1, as NumPy's.""")
 def _dtype_name(dtype):
     """A dtype's name as a Tensor takes it: a string as it is, ``numpy.float64`` or ``numpy.dtype("float32")`` by name,
     Python's ``float``, ``complex`` and ``bool`` as NumPy names them."""
@@ -4032,36 +4048,40 @@ def _in_dtype(reduce, a, axis, keepdims, dtype, **initial):
     """`reduce` of `a`'s elements in `dtype`, where they accumulate (NumPy's and the array API's: no int64 sum wraps
     in float64, no float32 one rounds in float32), its result in `dtype`; `initial` passed on."""
     name = _checked_dtype(dtype, f"{reduce.__name__}: ")
-    result = reduce(asarray(a, name), axis, keepdims, **initial)
+    result = reduce(asarray(a, name), axis, keepdims=keepdims, **initial)
     converted = asarray(result, name)
     return converted if isinstance(result, Tensor) else converted[()]
 
 
-def _reduction_method(reduce, takes_initial=False):
-    """The Tensor method of `reduce`, which NumPy's `numpy.sum(t)` and the like call with `out` (and `dtype` for a
-    mean): None the only `out` a Tensor takes, since it is never written into; `dtype` the one the elements
-    accumulate in, as NumPy's; `initial` passed on where `reduce` takes it (sum, prod, max, min)."""
-    def method(self, axis=None, dtype=None, out=None, keepdims=False):
-        if axis is None and dtype is None and out is None and keepdims is False:
-            return reduce(self)
-        if out is not None:
-            raise TypeError(f"{reduce.__name__}: a Tensor takes no `out` (it is never written into)")
-        return reduce(self, axis, keepdims) if dtype is None else _in_dtype(reduce, self, axis, keepdims, dtype)
-
-    def method_with_initial(self, axis=None, dtype=None, out=None, keepdims=False, initial=_NO_VALUE):
-        if axis is None and dtype is None and out is None and keepdims is False and initial is _NO_VALUE:
-            return reduce(self)
-        if out is not None:
-            raise TypeError(f"{reduce.__name__}: a Tensor takes no `out` (it is never written into)")
-        return reduce(self, axis, keepdims, dtype=dtype, initial=initial)
-
-    chosen = method_with_initial if takes_initial else method
-    chosen.__name__ = reduce.__name__
-    chosen.__doc__ = reduce.__doc__
-    return chosen
-
-
 _NO_VALUE = object()  # an argument not given, where None is a value
+
+
+def _reduction_method(reduce):
+    """The Tensor method of `reduce`, in the order of NumPy's (which `numpy.sum(t)` and the like call with `out`):
+    None the only `out` a Tensor takes, since it is never written into; `dtype` the one the elements accumulate in;
+    `initial` a sum's, a product's, a maximum's and a minimum's."""
+    if reduce.__name__ in ("sum", "prod"):
+        def method(self, axis=None, dtype=None, out=None, keepdims=False, initial=_NO_VALUE):
+            if axis is None and dtype is None and out is None and keepdims is False and initial is _NO_VALUE:
+                return reduce(self)
+            return reduce(self, axis, dtype, out, keepdims, initial)
+    elif reduce.__name__ == "mean":
+        def method(self, axis=None, dtype=None, out=None, keepdims=False):
+            if axis is None and dtype is None and out is None and keepdims is False:
+                return reduce(self)
+            return reduce(self, axis, dtype, out, keepdims)
+    elif reduce.__name__ in ("max", "min"):
+        def method(self, axis=None, out=None, keepdims=False, initial=_NO_VALUE, *, dtype=None):
+            if axis is None and out is None and keepdims is False and initial is _NO_VALUE and dtype is None:
+                return reduce(self)
+            return reduce(self, axis, out, keepdims, initial, dtype=dtype)
+    else:
+        def method(self, axis=None, out=None, keepdims=False, *, dtype=None):
+            return reduce(self, axis, out, keepdims, dtype=dtype)
+
+    method.__name__ = reduce.__name__
+    method.__doc__ = reduce.__doc__
+    return method
 
 
 def _initial_in(initial, dtype):
@@ -4085,36 +4105,43 @@ def _answer_dtype(answer, dtype):
     return "int64" if isinstance(answer, int) else "float64"
 
 
+def _started(reduce, combine, a, axis, keepdims, dtype, initial):
+    """`reduce` (max, min or sum) of `a` from NumPy's `initial`, in the reduction's dtype: ``combine(a, axes,
+    keepdims, answer, start)`` its answer, `initial` alone where the reduced axes hold no element (a -0.0 kept)."""
+    name = reduce.__name__
+    a = a if isinstance(a, Tensor) else _read(a)
+    if dtype is not None:
+        dtype = _checked_dtype(dtype, f"{name}: ")
+        a = asarray(a, dtype)
+    axes = _resolved_axes(a, axis, name)
+    if _builtins.any(a.shape[k] == 0 for k in axes):
+        # no answer to read the dtype from: a maximum's or minimum's that of `a`, a sum's that of an empty one's
+        kind = a.dtype if name in ("max", "min") else _answer_dtype(reduce(zeros((0,), a.dtype)), a.dtype)
+        shape = tuple(1 if k in axes else e for k, e in enumerate(a.shape)) if keepdims else \
+            tuple(e for k, e in enumerate(a.shape) if k not in axes)
+        result = broadcast_to(_initial_in(initial, kind), shape)
+    else:
+        answer = reduce(a, axis, keepdims=keepdims)
+        start = _initial_in(initial, _answer_dtype(answer, a.dtype))
+        result = combine(a, axes, keepdims, answer if isinstance(answer, Tensor) else asarray(answer, start.dtype),
+                         start)
+    if dtype is not None and result.dtype != dtype:  # a bool's sum in bool, as _in_dtype answers it
+        result = asarray(result, dtype)
+    return result if result.shape else result[()]
+
+
 def _with_initial(reduce, combine):
-    """`reduce` (max, min or sum) taking NumPy's `initial`, the value each reduction starts from, in the reduction's
-    dtype: ``combine(a, axes, keepdims, answer, start)`` its answer, `initial` alone where the reduced axes hold no
-    element (a -0.0 kept). None is no `initial`, as NumPy's."""
+    """`reduce` (max or min) in NumPy's order, taking its `initial` (None: none), the value each reduction starts
+    from (:func:`_started`)."""
     name = reduce.__name__
 
-    def function(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
+    def function(a, axis=None, out=None, keepdims=False, initial=_NO_VALUE, *, dtype=None):  # NumPy's order
         if initial is _NO_VALUE or initial is None:
-            if axis is None and keepdims is False and dtype is None and isinstance(a, Tensor):  # as reduce's own
-                return _native(_numerical._reduce, name, a, -1)
-            return reduce(a, axis, keepdims, dtype=dtype)
-        a = a if isinstance(a, Tensor) else _read(a)
-        if dtype is not None:
-            dtype = _checked_dtype(dtype, f"{name}: ")
-            a = asarray(a, dtype)
-        axes = _resolved_axes(a, axis, name)
-        if _builtins.any(a.shape[k] == 0 for k in axes):
-            # no answer to read the dtype from: a maximum's or minimum's that of `a`, a sum's that of an empty one's
-            kind = a.dtype if name in ("max", "min") else _answer_dtype(reduce(zeros((0,), a.dtype)), a.dtype)
-            shape = tuple(1 if k in axes else e for k, e in enumerate(a.shape)) if keepdims else \
-                tuple(e for k, e in enumerate(a.shape) if k not in axes)
-            result = broadcast_to(_initial_in(initial, kind), shape)
-        else:
-            answer = reduce(a, axis, keepdims)
-            start = _initial_in(initial, _answer_dtype(answer, a.dtype))
-            result = combine(a, axes, keepdims, answer if isinstance(answer, Tensor) else asarray(answer, start.dtype),
-                             start)
-        if dtype is not None and result.dtype != dtype:  # a bool's sum in bool, as _in_dtype answers it
-            result = asarray(result, dtype)
-        return result if result.shape else result[()]
+            if axis is None and out is None and keepdims is False and dtype is None and isinstance(a, Tensor):
+                return _native(_numerical._reduce, name, a, -1)  # as reduce's own
+            return reduce(a, axis, dtype, out, keepdims)
+        _no_out(out, name)
+        return _started(reduce, combine, a, axis, keepdims, dtype, initial)
 
     function.__name__ = reduce.__name__
     function.__doc__ = reduce.__doc__
@@ -4143,11 +4170,24 @@ def _sum_from(a, axes, keepdims, answer, start):
     return reshape(result, tuple(1 if k in axes else a.shape[k] for k in range(rank))) if keepdims else result
 
 
-sum = _with_initial(sum, _sum_from)
-Tensor.sum = _reduction_method(sum, takes_initial=True)
+def _sum_with_initial(reduce):
+    """`reduce` (sum) in NumPy's order, taking its `initial` (None: none), the value each sum starts from."""
+    def function(a, axis=None, dtype=None, out=None, keepdims=False, initial=_NO_VALUE):  # NumPy's order
+        if initial is _NO_VALUE or initial is None:
+            return reduce(a, axis, dtype, out, keepdims)
+        _no_out(out, "sum")
+        return _started(reduce, _sum_from, a, axis, keepdims, dtype, initial)
+
+    function.__name__ = reduce.__name__
+    function.__doc__ = reduce.__doc__
+    return function
+
+
+sum = _sum_with_initial(sum)
+Tensor.sum = _reduction_method(sum)
 Tensor.mean = _reduction_method(mean)
-Tensor.max = _reduction_method(max, takes_initial=True)
-Tensor.min = _reduction_method(min, takes_initial=True)
+Tensor.max = _reduction_method(max)
+Tensor.min = _reduction_method(min)
 Tensor.any = _reduction_method(any)
 Tensor.all = _reduction_method(all)
 
@@ -4212,22 +4252,25 @@ def _dtype_of(dtype, value=0.0):
     return dtype
 
 
-def full(shape, value, dtype=None, *, device=None):
-    """A Tensor of `shape` whose every element is `value`, as ``numpy.full``.
+def full(shape, fill_value, dtype=None, order="C", *, device=None, like=None):
+    """A Tensor of `shape` whose every element is `fill_value`, as ``numpy.full``.
 
     Args:
         shape: The extents: an integer (a vector) or a sequence of non-negative integers.
-        value: The number every element holds, or an array-like that broadcasts to `shape` (its rows repeated, as
+        fill_value: The number every element holds, or an array-like that broadcasts to `shape` (its rows repeated, as
             ``numpy.full``'s), whose dtype the Tensor takes by default.
         dtype: ``"float64"``, ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"``; by default complex128
             for a complex value, bool for a bool one and float64 otherwise.
+        order: NumPy's; ``"C"`` or ``"F"``, both row-major here (a Tensor has one layout).
+        device: The array API's; ``"cpu"`` or None.
+        like: NumPy's; None.
 
     Returns:
         Tensor: The filled Tensor.
 
     Raises:
         ValueError: for a negative extent or a `dtype` not offered.
-        TypeError: for a complex `value` with a real `dtype`, or a `value` that is not a number.
+        TypeError: for a complex `fill_value` with a real `dtype`, or a `fill_value` that is not a number.
 
     Examples:
         >>> import numerical
@@ -4236,20 +4279,25 @@ def full(shape, value, dtype=None, *, device=None):
         >>> numerical.full(2, 1j)
         numerical.Tensor([1j, 1j], dtype=complex128)
     """
+    if order != "C" or like is not None:
+        _numpy_layout(order, like, "full")
     _cpu_device(device, "full")
-    if not isinstance(value, _numbers.Number) and getattr(value, "shape", None) != ():  # an array: broadcast, as NumPy's
-        filled = value if isinstance(value, Tensor) else _read(value)
+    if not isinstance(fill_value, _numbers.Number) and getattr(fill_value, "shape", None) != ():  # an array: broadcast
+        filled = fill_value if isinstance(fill_value, Tensor) else _read(fill_value)
         return copy(broadcast_to(filled if dtype is None else asarray(filled, _dtype_name(dtype)), _shape(shape)))
-    return _native(_numerical._full, _shape(shape), value, _dtype_of(dtype, value))
+    return _native(_numerical._full, _shape(shape), fill_value, _dtype_of(dtype, fill_value))
 
 
-def zeros(shape, dtype="float64", *, device=None):
+def zeros(shape, dtype="float64", order="C", *, device=None, like=None):
     """A Tensor of `shape` full of zeros, as ``numpy.zeros``.
 
     Args:
         shape: The extents: an integer (a vector) or a sequence of non-negative integers.
         dtype: ``"float64"`` (the default), ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"``; NumPy's
             dtype objects and Python's ``float``, ``complex`` and ``bool`` name them too.
+        order: NumPy's; ``"C"`` or ``"F"``, both row-major here (a Tensor has one layout).
+        device: The array API's; ``"cpu"`` or None.
+        like: NumPy's; None.
 
     Returns:
         Tensor: The zeros.
@@ -4266,17 +4314,22 @@ def zeros(shape, dtype="float64", *, device=None):
         numerical.Tensor([[0j, 0j],
                           [0j, 0j]], dtype=complex128)
     """
+    if order != "C" or like is not None:
+        _numpy_layout(order, like, "zeros")
     _cpu_device(device, "zeros")
     return _native(_numerical._full, _shape(shape), 0.0, _dtype_of(dtype))
 
 
-def ones(shape, dtype="float64", *, device=None):
+def ones(shape, dtype="float64", order="C", *, device=None, like=None):
     """A Tensor of `shape` full of ones, as ``numpy.ones``.
 
     Args:
         shape: The extents: an integer (a vector) or a sequence of non-negative integers.
         dtype: ``"float64"`` (the default), ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"``; NumPy's
             dtype objects and Python's ``float``, ``complex`` and ``bool`` name them too.
+        order: NumPy's; ``"C"`` or ``"F"``, both row-major here (a Tensor has one layout).
+        device: The array API's; ``"cpu"`` or None.
+        like: NumPy's; None.
 
     Returns:
         Tensor: The ones.
@@ -4290,6 +4343,8 @@ def ones(shape, dtype="float64", *, device=None):
         >>> numerical.ones((2,), dtype="float32")
         numerical.Tensor([1.0, 1.0], dtype=float32)
     """
+    if order != "C" or like is not None:
+        _numpy_layout(order, like, "ones")
     _cpu_device(device, "ones")
     return _native(_numerical._full, _shape(shape), 1.0, _dtype_of(dtype))
 
@@ -4323,10 +4378,7 @@ def eye(N, M=None, k=0, dtype="float64", order="C", *, device=None, like=None):
         numerical.Tensor([[0, 1, 0],
                           [0, 0, 1]], dtype=int64)
     """
-    if order not in ("C", "F"):
-        raise ValueError(f"order must be one of 'C' or 'F' (got {order!r})")
-    if like is not None:
-        raise TypeError("eye: `like` is NumPy's array-function protocol; a Tensor has none")
+    _numpy_layout(order, like, "eye")
     _cpu_device(device, "eye")
     rows = _operator.index(N)
     columns = rows if M is None else _operator.index(M)
@@ -4725,16 +4777,16 @@ def power(a, b):
     return _native(_numerical._binary, "^", a, b)
 
 
-def real(x, /):
+def real(val):
     """The real part of every element, of the parts' precision, as ``numpy.real``; a real or bool tensor itself."""
-    x = _tensor(x)
+    x = _tensor(val)
     return _numerical._unary("real", x) if x.dtype.startswith("complex") else x
 
 
-def imag(x, /):
+def imag(val):
     """The imaginary part of every element, of the parts' precision, as ``numpy.imag``; zeros of a real or bool
     tensor's dtype."""
-    x = _tensor(x)
+    x = _tensor(val)
     return _numerical._unary("imag", x) if x.dtype.startswith("complex") else zeros(x.shape, x.dtype)
 
 
@@ -6224,30 +6276,37 @@ def _like(a, shape, dtype):
     return (a.shape if shape is None else _shape(shape)), (a.dtype if dtype is None else dtype)
 
 
-def zeros_like(a, dtype=None, shape=None, *, device=None):
-    """Zeros of `a`'s shape and dtype (or those given), as ``numpy.zeros_like``."""
+def zeros_like(a, dtype=None, order="K", subok=True, shape=None, *, device=None):
+    """Zeros of `a`'s shape and dtype (or those given), as ``numpy.zeros_like``; `order` any of NumPy's (one layout here),
+    `subok` without effect (a Tensor has no subclass)."""
+    _numpy_layout(order, None, "zeros_like", ("C", "F", "A", "K"))
     _cpu_device(device, "zeros_like")
     shape, dtype = _like(a, shape, dtype)
     return zeros(shape, dtype)
 
 
-def ones_like(a, dtype=None, shape=None, *, device=None):
-    """Ones of `a`'s shape and dtype (or those given), as ``numpy.ones_like``."""
+def ones_like(a, dtype=None, order="K", subok=True, shape=None, *, device=None):
+    """Ones of `a`'s shape and dtype (or those given), as ``numpy.ones_like``; `order` any of NumPy's (one layout here),
+    `subok` without effect (a Tensor has no subclass)."""
+    _numpy_layout(order, None, "ones_like", ("C", "F", "A", "K"))
     _cpu_device(device, "ones_like")
     shape, dtype = _like(a, shape, dtype)
     return ones(shape, dtype)
 
 
-def empty_like(a, dtype=None, shape=None, *, device=None):
-    """A tensor of `a`'s shape and dtype (or those given), as ``numpy.empty_like``; its elements zeros here, where
-    NumPy's are whatever the memory held."""
+def empty_like(prototype, dtype=None, order="K", subok=True, shape=None, *, device=None):
+    """A tensor of `prototype`'s shape and dtype (or those given), as ``numpy.empty_like``; its elements zeros here,
+    where NumPy's are whatever the memory held. `order` any of NumPy's (one layout here), `subok` without effect."""
+    _numpy_layout(order, None, "empty_like", ("C", "F", "A", "K"))
     _cpu_device(device, "empty_like")
-    shape, dtype = _like(a, shape, dtype)
+    shape, dtype = _like(prototype, shape, dtype)
     return zeros(shape, dtype)
 
 
-def full_like(a, fill_value, dtype=None, shape=None, *, device=None):
-    """`fill_value` in `a`'s shape and dtype (or those given), as ``numpy.full_like``."""
+def full_like(a, fill_value, dtype=None, order="K", subok=True, shape=None, *, device=None):
+    """`fill_value` in `a`'s shape and dtype (or those given), as ``numpy.full_like``; `order` any of NumPy's (one
+    layout here), `subok` without effect."""
+    _numpy_layout(order, None, "full_like", ("C", "F", "A", "K"))
     _cpu_device(device, "full_like")
     shape, dtype = _like(a, shape, dtype)
     return full(shape, fill_value, dtype)
@@ -6516,8 +6575,9 @@ def vdot(a, b, /):
     return _number_if_scalar(einsum("i,i->", conj(ravel(a)), ravel(b)))
 
 
-def ptp(a, axis=None, keepdims=False):
-    """The range, maximum less minimum, over every element or along `axis`, as ``numpy.ptp``."""
+def ptp(a, axis=None, out=None, keepdims=False):
+    """The range, maximum less minimum, over every element or along `axis`, as ``numpy.ptp``; `out` None alone."""
+    _no_out(out, "ptp")
     if (a.dtype if isinstance(a, Tensor) else asarray(a).dtype) == "bool":
         raise TypeError("ptp: a bool's range takes a subtraction of bools, which NumPy refuses too")
     a = _operand(a)
@@ -6561,8 +6621,6 @@ def _variance(a, axis, dtype, ddof):
 
 def _ddof(ddof, correction):
     """The degrees of freedom removed: `correction` (the array API's name, NumPy 2's too) or `ddof`, not both."""
-    if ddof is None:  # NumPy's fourth argument is `out`, its `ddof` the fifth
-        raise TypeError("the fourth argument is ddof here, where NumPy takes out; pass ddof by name")
     if correction is None:
         return ddof
     if ddof != 0:
@@ -6570,16 +6628,18 @@ def _ddof(ddof, correction):
     return correction
 
 
-def var(a, axis=None, dtype=None, ddof=0, keepdims=False, *, correction=None):
+def var(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False, *, correction=None):
     """The variance, ``Σ |x − mean|² / (N − ddof)`` over every element or along `axis`, as ``numpy.var``: real, of
-    `a`'s precision (a complex one's parts' squares summed); `dtype` the one to compute in; `correction` another name
-    for `ddof`."""
+    `a`'s precision (a complex one's parts' squares summed); `dtype` the one to compute in; `out` None alone;
+    `correction` another name for `ddof`."""
+    _no_out(out, "var")
     variance, axes = _variance(a, axis, dtype, _ddof(ddof, correction))
     return _finished(variance, axes, keepdims)
 
 
-def std(a, axis=None, dtype=None, ddof=0, keepdims=False, *, correction=None):
+def std(a, axis=None, dtype=None, out=None, ddof=0, keepdims=False, *, correction=None):
     """The standard deviation, the square root of :func:`var`, as ``numpy.std``."""
+    _no_out(out, "std")
     variance, axes = _variance(a, axis, dtype, _ddof(ddof, correction))
     return _finished(sqrt(variance), axes, keepdims)
 
@@ -6693,17 +6753,17 @@ def _prepended(t, axis, start):
     return _concatenated([full(t.shape[:axis] + (1,) + t.shape[axis + 1:], start[()], t.dtype), t], axis)
 
 
-def prod(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
+def prod(a, axis=None, dtype=None, out=None, keepdims=False, initial=_NO_VALUE):
     """The product of every element (a number), or the products along `axis`, as ``numpy.prod``: in order (NumPy's
     multiplications are not paired as its sums are). An empty one's is 1; a bool's an int64, as NumPy's. `dtype`
-    the one the elements are multiplied in; `initial` the first factor of each product, as NumPy's (None: none)."""
+    the one the elements are multiplied in; `out` None alone; `initial` the first factor of each product, as NumPy's
+    (None: none)."""
     if initial is None:
         initial = _NO_VALUE
-    if axis is None and keepdims is False and dtype is None and initial is _NO_VALUE and isinstance(a, Tensor) and \
-            a.dtype in ("float64", "float32", "int64"):  # every element of a real tensor: the native product at once
-        return _numerical._axis_op("prod", a, -1)
-    if keepdims is not False and keepdims is not True:
-        _keepdims_not_dtype("prod", keepdims)
+    if axis is None and dtype is None and out is None and keepdims is False and initial is _NO_VALUE and \
+            isinstance(a, Tensor) and a.dtype in ("float64", "float32", "int64"):  # every element of a real tensor:
+        return _numerical._axis_op("prod", a, -1)  # the native product at once
+    _no_out(out, "prod")
     if dtype is not None:
         if initial is _NO_VALUE:
             return _in_dtype(prod, a, axis, keepdims, dtype)
@@ -6745,7 +6805,7 @@ def prod(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
     return result
 
 
-Tensor.prod = _reduction_method(prod, takes_initial=True)
+Tensor.prod = _reduction_method(prod)
 
 
 def cumsum(a, axis=None, dtype=None, out=None):
@@ -6801,7 +6861,7 @@ def _arg_extreme(largest, a, axis, keepdims, name):
     return reshape(result, tuple(1 if k == axis else e for k, e in enumerate(a.shape))) if keepdims else result
 
 
-def argmax(a, axis=None, keepdims=False):
+def argmax(a, axis=None, out=None, *, keepdims=False):
     """The index of the largest element, flat (a Python int) or along `axis` (an int64 Tensor), as ``numpy.argmax``:
     the first of equal ones, the first NaN where there is one. Real and int64 dtypes, bool as 0 and 1.
 
@@ -6813,12 +6873,14 @@ def argmax(a, axis=None, keepdims=False):
         >>> numerical.argmax(numerical.asarray([[1.0, 5.0], [7.0, 2.0]]), axis=1)
         numerical.Tensor([1, 0], dtype=int64)
     """
+    _no_out(out, "argmax")
     return _arg_extreme(True, a, axis, keepdims, "argmax")
 
 
-def argmin(a, axis=None, keepdims=False):
+def argmin(a, axis=None, out=None, *, keepdims=False):
     """The index of the smallest element, flat or along `axis`, as ``numpy.argmin``: the first of equal ones, the
     first NaN where there is one."""
+    _no_out(out, "argmin")
     return _arg_extreme(False, a, axis, keepdims, "argmin")
 
 
@@ -7236,10 +7298,11 @@ def repeat(a, repeats, axis=None):
     return a[_along_axis(axis, len(a.shape), index)]
 
 
-def take(a, indices, axis=None, mode="raise"):
+def take(a, indices, axis=None, out=None, mode="raise"):
     """The elements of `a` at `indices` along `axis` (of the flattened `a` where None), as ``numpy.take``: the
     result's shape `a`'s with that axis replaced by the indices' shape. `mode` "raise" refuses an index out of the
-    axis, "wrap" takes it modulo the extent, "clip" to the nearest end."""
+    axis, "wrap" takes it modulo the extent, "clip" to the nearest end; `out` None alone."""
+    _no_out(out, "take")
     a = _tensor(a)
     if (axis is None or axis == 0) and mode == "raise" and not isinstance(indices, _numbers.Integral):
         index = _asarray_nested(indices, "int64") if type(indices) is list else indices  # gathered in C, as a[index]
@@ -10450,9 +10513,11 @@ def can_cast(from_, to, casting="safe"):
     raise ValueError(f"casting must be one of 'no', 'equiv', 'safe', 'same_kind', or 'unsafe' (got {casting!r})")
 
 
-def empty(shape, dtype="float64", *, device=None):
+def empty(shape, dtype="float64", order="C", *, device=None, like=None):
     """A tensor of `shape` and `dtype` (float64 for None, as the array API's default), as ``numpy.empty``: its elements
-    zeros here (a Tensor is never written into, so none is left unset)."""
+    zeros here (a Tensor is never written into, so none is left unset). `order` ``"C"`` or ``"F"``, both row-major
+    here; `like` None."""
+    _numpy_layout(order, like, "empty")
     _cpu_device(device, "empty")
     return zeros(shape, _known_dtype("float64" if dtype is None else dtype))
 
@@ -10475,6 +10540,15 @@ def from_dlpack(x, /, *, device=None, copy=None):
     except TypeError:  # a producer before DLPack 1.0's keywords: its classic capsule
         capsule = x.__dlpack__()
     return _numerical._from_dlpack(capsule)
+
+
+def _numpy_layout(order, like, name, orders=("C", "F")):
+    """NumPy's `order` and `like`, checked: a Tensor has one layout, row-major, whichever `order` names, and no
+    array-function protocol for `like`."""
+    if order not in orders:
+        raise ValueError(f"{name}: order must be one of {', '.join(repr(o) for o in orders)} (got {order!r})")
+    if like is not None:
+        raise TypeError(f"{name}: `like` is NumPy's array-function protocol; a Tensor has none")
 
 
 def _cpu_device(device, name):
@@ -10733,12 +10807,6 @@ def _partition_positions(a, kth, axis):
     return axis, positions
 
 
-def _take_method(self, indices, axis=None, out=None, mode="raise"):
-    """``ndarray.take``, whose `out` comes before `mode`."""
-    _no_out(out, "take")
-    return take(self, indices, axis, mode)
-
-
 # NumPy's methods of these names, their root functions' (none writes in place; sort, partition and resize do there,
 # and are left out under those names)
 Tensor.argpartition = lambda self, kth, axis=-1, kind="introselect", order=None: argpartition(self, kth, axis, kind,
@@ -10746,7 +10814,7 @@ Tensor.argpartition = lambda self, kth, axis=-1, kind="introselect", order=None:
 Tensor.choose = lambda self, choices, out=None, mode="raise": choose(self, choices, out, mode)
 Tensor.compress = lambda self, condition, axis=None, out=None: compress(condition, self, axis, out)
 Tensor.repeat = lambda self, repeats, axis=None: repeat(self, repeats, axis)
-Tensor.take = _take_method
+Tensor.take = lambda self, indices, axis=None, out=None, mode="raise": take(self, indices, axis, out, mode)
 
 
 def apply_along_axis(func1d, axis, arr, *args, **kwargs):
