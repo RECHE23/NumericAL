@@ -57,6 +57,11 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
   (within 1.1 ulp or so on arm64) or the C library's: the last bit differs from it in some 20 % of the values on
   arm64. ±0, the values below 2^-27 (themselves) and those past 22 (±1) are the library's. Where `exp` takes the C
   library's, so does `tanh`.
+- **`arctan` of float64** is NumericAL's own too, by a table of atan(k/64) and the series of the remainder: within
+  0.501 ulp of the exact value (macOS's C library, NumPy's there, 0.86), the same bits on every processor with fused
+  multiply-add. The last bit differs from NumPy's in some 9 % of the values on macOS. ±0, the
+  values below 2^-27 (themselves), those past 2^54 (±π/2) and NaN are the library's. Where `exp` takes the C
+  library's, so does `arctan`.
 - **`eig` and `eigvals` answer in complex numbers** whatever the eigenvalues, as NumPy 2.5's and SciPy's; NumPy
   before 2.5 made them real where it could.
 - **A float32 or complex64 decomposition** is computed in double precision and rounded to single, below order 500

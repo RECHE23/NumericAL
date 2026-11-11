@@ -460,6 +460,55 @@ TEST(tanh_of_a_double_by_the_table)
   EXPECT(numerical::tanh(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_tanh(v); }));
 }
 
+// atan of a double by its table: within an ulp of the C library's atan in long double where that is wider (the
+// library's of a double strays further, macOS's 0.86 ulp), the reference's own bits at the ends (±0 and the smallest
+// values themselves, ±π/2 far out, NaN itself), and the same bits from a block, in vectors, as from one call.
+TEST(atan_of_a_double_by_the_table)
+{
+  std::vector<double> x;
+  for (int i {0}; i < 20000; ++i) {
+    const double t {static_cast<double>(i) / 20000.0};
+    x.push_back(-20.0 + (40.0 * t));                  // across the inverses' range and the table's
+    x.push_back((2.0 * t) - 1.0);
+    x.push_back(0.98 + (0.04 * t));                   // about 1, where the inverse takes over
+    x.push_back(std::ldexp(1.0 + t, (i % 120) - 60)); // from 2^−60 to 2^60
+  }
+  const double inf {std::numeric_limits<double>::infinity()};
+  for (const double v : {0.0, -0.0, inf, -inf, std::numeric_limits<double>::quiet_NaN(), 1.0, -1.0, 0x1p54, 0x1p55,
+                         1e300, 1e-300, -1e-300, 0x1p-27, 0x1.fffffffffffffp-28, 5e-324, 2.5,
+                         std::nextafter(1.0, 2.0)}) { // an odd count: the last one past the pairs
+    x.push_back(v);
+  }
+  std::vector<double> block(x.size());
+  numerical::detail::atan_into(x.data(), block.data(), x.size());
+  bool same  {true};
+  bool close {true};
+  for (std::size_t i {0}; i < x.size(); ++i) {
+    const double one     {numerical::detail::elementary_atan(x[i])};
+    same = same && std::bit_cast<std::uint64_t>(one) == std::bit_cast<std::uint64_t>(block[i]);
+    const double library {std::numeric_limits<long double>::digits > std::numeric_limits<double>::digits
+                            ? static_cast<double>(std::atan(static_cast<long double>(x[i])))
+                            : std::atan(x[i])};
+    if (std::isnan(x[i]) || std::fabs(x[i]) < 0x1p-27 || std::fabs(x[i]) > 0x1p54) {
+      close = close && std::bit_cast<std::uint64_t>(one) == std::bit_cast<std::uint64_t>(library);
+    }
+    else {
+      close = close && std::fabs(one - library) <= std::fabs(std::nextafter(library, inf) - library);
+    }
+  }
+  EXPECT(same);
+  EXPECT(close);
+  EXPECT(std::signbit(numerical::detail::elementary_atan(-0.0)));
+  // the table's own values, whichever function elementary_atan takes
+  EXPECT(numerical::detail::table_atan(0.5) == 0x1.dac670561bb4fp-2); // rounded to nearest, as the next
+  EXPECT(numerical::detail::table_atan(3.0) == 0x1.3fc176b7a8560p+0);
+  EXPECT(numerical::detail::table_atan(-0.00001) == -0x1.4f8b588e06854p-17);
+  EXPECT(numerical::detail::table_atan(1e10) == 0x1.921fb543d4de0p+0);
+  EXPECT(numerical::detail::table_atan(-inf) == -numerical::detail::atan_half_pi_high);
+  const numerical::tensor<double> t {{2, 2}, {0.5, -0.0, 1e-20, -3.0}};
+  EXPECT(numerical::atan(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_atan(v); }));
+}
+
 // NumPy's complex magnitude: an infinite part makes it infinite whatever the other, NaN, and a NaN part then NaN;
 // a zero is 0; otherwise the larger part times sqrt(ratio² + 1).
 namespace {

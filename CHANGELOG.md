@@ -24,6 +24,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   t/(t + 2) of t = `expm1`(2|x|) in two parts, its sum and quotient corrected exactly, within 0.502 ulp of the exact
   value (NumPy's 1.1 ulp, the C library's 0.59), the same bits on every processor with FMA; 10^6 values in [-5, 5]
   7.5 → 4.0 ms on one core, 1.40 → 1.31 ms on all (NumPy's 3.7 ms; M1 Pro).
+- **`arctan` of float64 in vectors** (C++ `numerical::atan`, new, and NumPy's `arctan` on a Tensor): a table of
+  atan(k/64), the remainder's series to t^11 and the leading sums exact, within 0.501 ulp of the exact value (macOS's
+  C library 0.86), the same bits on every processor with FMA; 10^6 values in [-5, 5] 2.18 → 0.66 ms on all cores,
+  11.8 → 3.6 ms on one (NumPy's 12.1 ms; M1 Pro).
 
 ## 2026.11.12 — 2026-11-11
 

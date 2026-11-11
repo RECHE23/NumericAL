@@ -269,6 +269,9 @@ namespace {
         if (name == "expm1") { // a double's by the table, in vectors (numerical::detail::expm1_into)
             return numerical::detail::expm1_of(data, shape);
         }
+        if (name == "arctan") { // a double's by the table, in vectors (numerical::detail::atan_into)
+            return numerical::detail::atan_of(data, shape);
+        }
         return parallel_map(data, shape, real_function<R>(name));
     }
 } // namespace

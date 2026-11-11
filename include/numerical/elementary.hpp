@@ -1,7 +1,7 @@
 /*!
  * \file elementary.hpp
- * \brief `exp` and `expm1` of `double` by a table of 2^(j/128) and a polynomial, branch-free so that a loop of them
- *        runs in vectors: within 0.506 ulp of the exact value for a normal result of `exp`, 0.503 ulp for `expm1`; the
+ * \brief `exp`, `expm1` and `tanh` of `double` by a table of 2^(j/128) and a polynomial, `atan` by a table of
+ *        atan(k/64) and a series, branch-free so that a loop of them runs in vectors: within 0.506 ulp of the exact value for a normal result of `exp`, 0.503 ulp for `expm1`; the
  *        same bits from a vector lane as from a call.
  */
 #ifndef NUMERICAL_ELEMENTARY_HPP
@@ -304,6 +304,128 @@ namespace numerical::detail {
     return magnitude >= 0x1p-27 ? std::copysign(result, x) : x; // NaN fails the comparison
   }
 
+  //! \brief π/2, the `double` nearest it (`tools/atan_table.py` derives each constant here).
+  inline constexpr double atan_half_pi_high {0x1.921fb54442d18p+0};
+
+  //! \brief What \ref atan_half_pi_high leaves out of π/2, to the nearest `double`.
+  inline constexpr double atan_half_pi_low {0x1.1a62633145c07p-54};
+
+  //! \brief atan(k/64) for k = 0…64, at 2k the `double` nearest it and at 2k + 1 the `double` nearest what that one
+  //!        leaves out. Not `inline`, as \ref exp_table.
+  constexpr std::array<double, 130> atan_table {
+    0.0, 0.0,
+    0x1.fff555bbb729bp-7, -0x1.220c39d4dff50p-61,
+    0x1.ffd55bba97625p-6, -0x1.5ec431444912cp-60,
+    0x1.7fb818430da2ap-5, -0x1.86ef8f794f105p-63,
+    0x1.ff55bb72cfdeap-5, -0x1.c934d86d23f1dp-60,
+    0x1.3f59f0e7c559dp-4, 0x1.ac4ce285df847p-58,
+    0x1.7ee182602f10fp-4, -0x1.cfb654c0c3d98p-58,
+    0x1.be39ebe6f07c3p-4, 0x1.f7b8f29a05987p-58,
+    0x1.fd5ba9aac2f6ep-4, -0x1.cd37686760c17p-59,
+    0x1.1e1fafb043727p-3, -0x1.b485914dacf8cp-59,
+    0x1.3d6eee8c6626cp-3, 0x1.61a3b0ce9281bp-57,
+    0x1.5c9811e3ec26ap-3, -0x1.054ab2c010f3dp-58,
+    0x1.7b97b4bce5b02p-3, 0x1.347b0b4f881cap-58,
+    0x1.9a6a8e96c8626p-3, 0x1.cf601e7b4348ep-59,
+    0x1.b90d7529260a2p-3, 0x1.17b10d2e0e5abp-61,
+    0x1.d77d5df205736p-3, 0x1.c648d1534597ep-57,
+    0x1.f5b75f92c80ddp-3, 0x1.8ab6e3cf7afbdp-57,
+    0x1.09dc597d86362p-2, 0x1.62e47390cb865p-56,
+    0x1.18bf5a30bf178p-2, 0x1.30ca4748b1bf9p-57,
+    0x1.278372057ef46p-2, -0x1.077cdd36dfc81p-56,
+    0x1.362773707ebccp-2, -0x1.963a544b672d8p-57,
+    0x1.44aa436c2af0ap-2, -0x1.5d5e43c55b3bap-56,
+    0x1.530ad9951cd4ap-2, -0x1.2566480884082p-57,
+    0x1.614840309cfe2p-2, -0x1.a725715711f00p-56,
+    0x1.6f61941e4def1p-2, -0x1.c63aae6f6e918p-56,
+    0x1.7d5604b63b3f7p-2, 0x1.69c885c2b249ap-56,
+    0x1.8b24d394a1b25p-2, 0x1.b6d0ba3748fa8p-56,
+    0x1.98cd5454d6b18p-2, 0x1.9e6c988fd0a77p-56,
+    0x1.a64eec3cc23fdp-2, -0x1.24dec1b50b7ffp-56,
+    0x1.b3a911da65c6cp-2, 0x1.ae187b1ca5040p-56,
+    0x1.c0db4c94ec9f0p-2, -0x1.cc1ce70934c34p-56,
+    0x1.cde53432c1351p-2, -0x1.a2cfa4418f1adp-56,
+    0x1.dac670561bb4fp-2, 0x1.a2b7f222f65e2p-56,
+    0x1.e77eb7f175a34p-2, 0x1.0e53dc1bf3435p-56,
+    0x1.f40dd0b541418p-2, -0x1.a3992dc382a23p-57,
+    0x1.0039c73c1a40cp-1, -0x1.b32c949c9d593p-55,
+    0x1.0657e94db30d0p-1, -0x1.d5b495f6349e6p-56,
+    0x1.0c6145b5b43dap-1, 0x1.974fa13b5404fp-58,
+    0x1.1255d9bfbd2a9p-1, -0x1.2bdaee1c0ee35p-58,
+    0x1.1835a88be7c13p-1, 0x1.c621cec00c301p-55,
+    0x1.1e00babdefeb4p-1, -0x1.928df287a668fp-58,
+    0x1.23b71e2cc9e6ap-1, 0x1.c421c9f38224ep-57,
+    0x1.2958e59308e31p-1, -0x1.09e73b0c6c087p-56,
+    0x1.2ee628406cbcap-1, 0x1.c5d5e9ff0cf8dp-55,
+    0x1.345f01cce37bbp-1, 0x1.1021137c71102p-55,
+    0x1.39c391cd4171ap-1, -0x1.2304331d8bf46p-55,
+    0x1.3f13fb89e96f4p-1, 0x1.ecf8b492644f0p-56,
+    0x1.445065b795b56p-1, -0x1.f76d0163f79c8p-56,
+    0x1.4978fa3269ee1p-1, 0x1.2419a87f2a458p-56,
+    0x1.4e8de5bb6ec04p-1, 0x1.4a33dbeb3796cp-55,
+    0x1.538f57b89061fp-1, -0x1.1bb74abda520cp-55,
+    0x1.587d81f732fbbp-1, -0x1.5e5c9d8c5a950p-56,
+    0x1.5d58987169b18p-1, 0x1.0028e4bc5e7cap-57,
+    0x1.6220d115d7b8ep-1, -0x1.2b785350ee8c1p-57,
+    0x1.66d663923e087p-1, -0x1.6ea6febe8bbbap-56,
+    0x1.6b798920b3d99p-1, -0x1.a80386188c50ep-55,
+    0x1.700a7c5784634p-1, -0x1.8c34d25aadef6p-56,
+    0x1.748978fba8e0fp-1, 0x1.7b2a6165884a1p-59,
+    0x1.78f6bbd5d315ep-1, 0x1.406a089803740p-55,
+    0x1.7d528289fa093p-1, 0x1.560821e2f3aa9p-55,
+    0x1.819d0b7158a4dp-1, -0x1.bf76229d3b917p-56,
+    0x1.85d69576cc2c5p-1, 0x1.6b66e7fc8b8c3p-57,
+    0x1.89ff5ff57f1f8p-1, -0x1.55b9a5e177a1bp-55,
+    0x1.8e17aa99cc05ep-1, -0x1.ec182ab042f61p-56,
+    0x1.921fb54442d18p-1, 0x1.1a62633145c07p-55,
+  };
+
+  /*!
+   * \brief atan(\p x): y = |x|, or 1/|x| past 1 (its rounding error carried), c = k/64 the nearest point of
+   *        \ref atan_table, t = (y − c)/(1 + y c) as a pair, |t| ≤ 2^−7, atan(t) − t by its Taylor series to t^11;
+   *        atan(c) + t summed exactly, π/2 less that past 1, the small rest added once. Within 0.501 ulp of the exact
+   *        value; x itself where |x| < 2^−27 (±0 kept) and for NaN, ±π/2 past 2^54. Every product beside a sum fused
+   *        explicitly, as \ref table_expm1's.
+   */
+  NUMERICAL_ALWAYS_INLINE double table_atan(double x) noexcept
+  {
+    constexpr double shifter    {0x1.8p52};
+    const double     magnitude  {std::fabs(x)};
+    const bool       far        {magnitude > 1.0};
+    const double     inverse    {1.0 / magnitude};
+    const double     inverse_lo {std::fma(-inverse, magnitude, 1.0) * inverse};         // 1/|x| − inverse, to first order
+    const double     y          {far ? inverse : (magnitude <= 1.0 ? magnitude : 0.0)}; // NaN as 0: k in the table
+    const double     y_low      {far ? inverse_lo : 0.0};
+    const double     z          {std::fma(y, 64.0, shifter)};
+    const auto       k          {static_cast<std::size_t>(std::bit_cast<std::int64_t>(z) - std::bit_cast<std::int64_t>(shifter))};
+    const double     c          {static_cast<double>(k) * 0x1p-6};
+    const double     difference {y - c}; // exact: y within 2^−7 of c, or c 0
+    const double     num        {difference + y_low};
+    const double     num_low    {(difference - num) + y_low};
+    const double     den        {std::fma(y, c, 1.0)};
+    const double     den_low    {std::fma(y_low, c, std::fma(y, c, 1.0 - den))};
+    const double     t          {num / den};
+    const double     t_low      {(std::fma(-t, den_low, std::fma(-t, den, num)) + num_low) / den};
+    const double     square     {t * t};
+    double           q          {std::fma(square, -1.0 / 11.0, 1.0 / 9.0)};
+    q = std::fma(square, q, -1.0 / 7.0);
+    q = std::fma(square, q, 1.0 / 5.0);
+    q = std::fma(square, q, -1.0 / 3.0);
+    const double head   {atan_table[2 * k]};
+    const double tail   {atan_table[(2 * k) + 1]};
+    double       sum    {};
+    double       error  {};
+    two_sum(head, t, sum, error);
+    const double small  {std::fma(t * square, q, (error + tail) + t_low)}; // with atan(t) − t
+    double       rest   {};
+    double       rest_e {};
+    two_sum(atan_half_pi_high, -sum, rest, rest_e);
+    const double near   {sum + small};
+    const double beyond {rest + ((rest_e + atan_half_pi_low) - small)};
+    const double result {magnitude > 0x1p54 ? atan_half_pi_high : (far ? beyond : near)};
+    return magnitude >= 0x1p-27 ? std::copysign(result, x) : x; // NaN fails the comparison
+  }
+
 #ifdef NUMERICAL_EXP_NEON
   /*!
    * \brief \ref table_exp of each lane, in NEON: each operation the scalar one's (`vfmaq_f64` and `vfmsq_f64` its
@@ -431,6 +553,52 @@ namespace numerical::detail {
     // the sign of x on the result: its sign bit and the result's other bits
     const uint64x2_t  sign      {vdupq_n_u64(0x8000000000000000U)};
     const float64x2_t signed_r  {vbslq_f64(sign, x, result)};
+    return vbslq_f64(vcgeq_f64(magnitude, vdupq_n_f64(0x1p-27)), signed_r, x);
+  }
+
+  //! \brief \ref table_atan of each lane, in NEON: each operation the scalar one's, so each lane the scalar call's bits.
+  NUMERICAL_ALWAYS_INLINE float64x2_t table_atan(float64x2_t x) noexcept
+  {
+    const float64x2_t one        {vdupq_n_f64(1.0)};
+    const float64x2_t shifter    {vdupq_n_f64(0x1.8p52)};
+    const float64x2_t magnitude  {vabsq_f64(x)};
+    const uint64x2_t  far        {vcgtq_f64(magnitude, one)};
+    const float64x2_t inverse    {vdivq_f64(one, magnitude)};
+    const float64x2_t inverse_lo {vmulq_f64(vfmsq_f64(one, inverse, magnitude), inverse)};
+    const float64x2_t zero       {vdupq_n_f64(0.0)};
+    const float64x2_t y          {vbslq_f64(far, inverse, vbslq_f64(vcleq_f64(magnitude, one), magnitude, zero))};
+    const float64x2_t y_low      {vbslq_f64(far, inverse_lo, zero)};
+    const float64x2_t z          {vfmaq_f64(shifter, y, vdupq_n_f64(64.0))};
+    const int64x2_t   k          {vsubq_s64(vreinterpretq_s64_f64(z), vreinterpretq_s64_f64(shifter))};
+    const float64x2_t c          {vmulq_f64(vcvtq_f64_s64(k), vdupq_n_f64(0x1p-6))};
+    const float64x2_t difference {vsubq_f64(y, c)};
+    const float64x2_t num        {vaddq_f64(difference, y_low)};
+    const float64x2_t num_low    {vaddq_f64(vsubq_f64(difference, num), y_low)};
+    const float64x2_t den        {vfmaq_f64(one, y, c)};
+    const float64x2_t den_low    {vfmaq_f64(vfmaq_f64(vsubq_f64(one, den), y, c), y_low, c)};
+    const float64x2_t t          {vdivq_f64(num, den)};
+    const float64x2_t t_low      {vdivq_f64(vaddq_f64(vfmsq_f64(vfmsq_f64(num, t, den), t, den_low), num_low), den)};
+    const float64x2_t square     {vmulq_f64(t, t)};
+    float64x2_t       q          {vfmaq_f64(vdupq_n_f64(1.0 / 9.0), square, vdupq_n_f64(-1.0 / 11.0))};
+    q = vfmaq_f64(vdupq_n_f64(-1.0 / 7.0), square, q);
+    q = vfmaq_f64(vdupq_n_f64(1.0 / 5.0), square, q);
+    q = vfmaq_f64(vdupq_n_f64(-1.0 / 3.0), square, q);
+    const float64x2_t low      {vld1q_f64(atan_table.data() + (2 * static_cast<std::size_t>(vgetq_lane_s64(k, 0))))};
+    const float64x2_t high     {vld1q_f64(atan_table.data() + (2 * static_cast<std::size_t>(vgetq_lane_s64(k, 1))))};
+    const float64x2_t head     {vzip1q_f64(low, high)};
+    const float64x2_t tail     {vzip2q_f64(low, high)};
+    float64x2_t       sum      {};
+    float64x2_t       error    {};
+    two_sum(head, t, sum, error);
+    const float64x2_t small    {vfmaq_f64(vaddq_f64(vaddq_f64(error, tail), t_low), vmulq_f64(t, square), q)};
+    float64x2_t       rest     {};
+    float64x2_t       rest_e   {};
+    two_sum(vdupq_n_f64(atan_half_pi_high), vnegq_f64(sum), rest, rest_e);
+    const float64x2_t near     {vaddq_f64(sum, small)};
+    const float64x2_t beyond   {vaddq_f64(rest, vsubq_f64(vaddq_f64(rest_e, vdupq_n_f64(atan_half_pi_low)), small))};
+    const float64x2_t result   {vbslq_f64(vcgtq_f64(magnitude, vdupq_n_f64(0x1p54)), vdupq_n_f64(atan_half_pi_high),
+                                          vbslq_f64(far, beyond, near))};
+    const float64x2_t signed_r {vbslq_f64(vdupq_n_u64(0x8000000000000000U), x, result)};
     return vbslq_f64(vcgeq_f64(magnitude, vdupq_n_f64(0x1p-27)), signed_r, x);
   }
 
