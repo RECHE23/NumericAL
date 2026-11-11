@@ -6531,6 +6531,8 @@ def argsort(a, axis=-1, kind=None, stable=None, *, descending=False):
     """
     del kind, stable
     a = _ordered_operand(a, "argsort")
+    if not a.shape:  # a number as one element along one axis, as NumPy's
+        a = reshape(a, (1,))
     if descending:  # the reversed line's order, reversed back and counted from the line's end
         if axis is None:
             a, axis = reshape(a, (-1,)), 0
@@ -10233,12 +10235,20 @@ def sinc(x):
 
 def lexsort(keys, axis=-1):
     """The indices that sort by the last of `keys` first, ties by the one before and so on, stably, as
-    ``numpy.lexsort``: `keys` a sequence of arrays of one shape, or the rows of a 2-D array."""
-    keys = [_tensor(k) for k in (keys if not isinstance(keys, Tensor) else [keys[i] for i in range(keys.shape[0])])]
+    ``numpy.lexsort``: `keys` a sequence of arrays of one shape, or the rows of an array (numbers of a 1-D one, whose
+    order is then the number 0)."""
+    axis = _operator.index(axis)
+    if isinstance(keys, Tensor):
+        keys = [keys[i] for i in range(keys.shape[0])] if keys.shape else []
+    keys = [_tensor(k) for k in keys]
     if not keys:
         raise TypeError("need sequence of keys with len > 0 in lexsort")
     if len({k.shape for k in keys}) != 1:
         raise ValueError("all keys need to be the same shape")
+    if not keys[0].shape:  # numbers: one arrangement, along the axis -1 or 0 alone
+        if axis not in (-1, 0):
+            raise AxisError(f"axis {axis} is out of bounds for a tensor of rank 0")
+        return 0
     order = argsort(keys[0], axis=axis, stable=True)
     for key in keys[1:]:
         order = take_along_axis(order, argsort(take_along_axis(key, order, axis), axis=axis, stable=True), axis)

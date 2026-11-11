@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+
+- **`lexsort` of a 1-D array** (numbers as keys) is the number 0 along the axis -1 or 0, and of an empty one a
+  `TypeError`, as NumPy's, where both raised; an axis that is not an integer (None) raises `TypeError`, as NumPy's,
+  where `lexsort` sorted every element. **`argsort` of a number** is `[0]`, as NumPy's, where it raised `AxisError`.
+
 ## 2026.11.12 — 2026-11-11
 
 ### Added

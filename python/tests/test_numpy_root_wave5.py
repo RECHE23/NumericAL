@@ -259,6 +259,25 @@ class AgainstNumPy(unittest.TestCase):
                         "lexsort")
         m = rng.standard_normal((3, 4))
         self.assertSame(lambda: numerical.lexsort(numerical.asarray(m)), lambda: np.lexsort(m), "lexsort rows")
+        # numbers as keys (a 1-D array's rows), none (an empty one's) and an axis that is not an integer, as NumPy's
+        for keys in (np.array([3.0, 1.0, 2.0]), np.array([[1.0, 2.0], [2.0, 1.0]]), np.zeros((0,)), np.array(5.0),
+                     m[:, :0], np.zeros((0, 3))):
+            for axis in (-1, 0, 1, 2, None):
+                for given in (numerical.asarray(keys), keys):
+                    with self.subTest(keys=keys.shape, axis=axis, given=type(given).__name__):
+                        try:
+                            want = np.lexsort(keys, axis=axis)
+                        except (TypeError, ValueError) as error:  # an AxisError a ValueError
+                            with self.assertRaises(type(error)):
+                                numerical.lexsort(given, axis=axis)
+                            continue
+                        got = np.asarray(numerical.lexsort(given, axis=axis))
+                        self.assertEqual((got.tolist(), got.shape), (want.tolist(), want.shape))
+        for axis in (-1, 0, None):  # a number's argsort: one element's, as NumPy's
+            self.assertEqual(numerical.argsort(numerical.asarray(5.0), axis=axis).tolist(), [0])
+        self.assertEqual(numerical.argsort(numerical.asarray(5.0), descending=True).tolist(), [0])
+        with self.assertRaises(numerical.AxisError):
+            numerical.argsort(numerical.asarray(5.0), axis=1)
         for kth in (0, 2, -1, [0, 3]):
             got = numerical.partition(numerical.asarray(m), kth, axis=1)
             want = np.partition(m, kth, axis=1)
