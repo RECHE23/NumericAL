@@ -266,6 +266,9 @@ namespace {
         if (name == "rad2deg") {
             return parallel_map(data, shape, [](R x) { return x * (R {180} / std::numbers::pi_v<R>); });
         }
+        if (name == "expm1") { // a double's by the table, in vectors (numerical::detail::expm1_into)
+            return numerical::detail::expm1_of(data, shape);
+        }
         return parallel_map(data, shape, real_function<R>(name));
     }
 } // namespace

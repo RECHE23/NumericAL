@@ -329,6 +329,78 @@ namespace numerical {
 #endif
     }
 
+    //! \brief `expm1` of a scalar, as `std::expm1` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_expm1(const T& x)
+    {
+      return static_cast<T>(std::expm1(x));
+    }
+
+    //! \brief `expm1` of a `double`, as \ref expm1_into gives it: \ref table_expm1, or `std::expm1` where `exp_by_table`
+    //!        says no.
+    [[nodiscard]] inline double elementary_expm1(double x)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        return std::expm1(x);
+      }
+#endif
+      return table_expm1(x);
+    }
+
+    //! \brief `expm1` of the \p count doubles at \p in into \p out, each \ref elementary_expm1's: \ref table_expm1 in
+    //!        vectors (with the FMA instructions on an x86-64 processor, \ref run_fused), `std::expm1` throughout where
+    //!        `exp_by_table` says no.
+    inline void expm1_into(const double* in,
+                           double*       out,
+                           std::size_t   count)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        std::transform(in, in + count, out, [](double x) { return std::expm1(x); });
+        return;
+      }
+#endif
+#ifdef NUMERICAL_EXP_NEON
+      std::size_t i {0};
+      for (; i + 2 <= count; i += 2) {
+        vst1q_f64(out + i, table_expm1(vld1q_f64(in + i)));
+      }
+      if (i < count) {
+        out[i] = table_expm1(in[i]);
+      }
+#else
+      run_fused([&](std::size_t) NUMERICAL_INLINE_LAMBDA {
+        for (std::size_t i {0}; i < count; ++i) {
+          out[i] = table_expm1(in[i]);
+        }
+      });
+#endif
+    }
+
+    //! \brief `expm1` of every one of the row-major scalars at \p data, of shape \p shape: `std::expm1` of each.
+    template <typename T>
+    [[nodiscard]] tensor<T> expm1_of(const T*                        data,
+                                     const std::vector<std::size_t>& shape)
+    {
+      return parallel_map(data, shape, [](const T& x) { return elementary_expm1(x); });
+    }
+
+    //! \brief `expm1` of every one of the row-major doubles at \p data, of shape \p shape: \ref expm1_into by chunks of
+    //!        \ref elementwise_chunk among the threads.
+    [[nodiscard]] inline tensor<double> expm1_of(const double*                   data,
+                                                 const std::vector<std::size_t>& shape)
+    {
+      const std::size_t count  {element_count(shape.begin(), shape.end())};
+      buffer<double>    out(count);
+      const std::size_t chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     expm1_into(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
+                   });
+      return tensor<double> {shape, std::move(out)};
+    }
+
     //! \brief `exp` of a complex number of `float` or `double`: \ref complex_exp.
     template <split_complex T>
     [[nodiscard]] T elementary_exp(const T& x)
@@ -1232,6 +1304,16 @@ namespace numerical {
   [[nodiscard]] tensor<T> exp(const tensor<T>& a)
   {
     return detail::exp_of(a.data().data(), a.shape());
+  }
+
+  /*!
+   * \brief `exp(x) − 1` of every real element, exact near 0: \ref detail::expm1_into of a `double` one (within 0.503
+   *        ulp of the exact value), `std::expm1` of a `float` one.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> expm1(const tensor<T>& a)
+  {
+    return detail::expm1_of(a.data().data(), a.shape());
   }
 
   //! \brief `log` of every element: `std::log` of a real one, \ref detail::complex_log of a complex one.

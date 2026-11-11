@@ -1,7 +1,8 @@
 /*!
  * \file elementary.hpp
- * \brief `exp` of `double` by a table of 2^(j/128) and a polynomial, branch-free so that a loop of it runs in vectors:
- *        within 0.506 ulp of the exact value for a normal result, the same bits from a vector lane as from a call.
+ * \brief `exp` and `expm1` of `double` by a table of 2^(j/128) and a polynomial, branch-free so that a loop of them
+ *        runs in vectors: within 0.506 ulp of the exact value for a normal result of `exp`, 0.503 ulp for `expm1`; the
+ *        same bits from a vector lane as from a call.
  */
 #ifndef NUMERICAL_ELEMENTARY_HPP
 #define NUMERICAL_ELEMENTARY_HPP
@@ -201,6 +202,66 @@ namespace numerical::detail {
     return std::isnan(x) ? x : result;
   }
 
+  //! \brief The sum of \p a and \p b as `sum` rounded and `error` exact (Knuth's two-sum: no order of magnitudes needed).
+  NUMERICAL_ALWAYS_INLINE void two_sum(double  a,
+                                       double  b,
+                                       double& sum,
+                                       double& error) noexcept
+  {
+    sum = a + b;
+    const double b_part {sum - a};
+    error = (a - (sum - b_part)) + (b - b_part);
+  }
+
+  /*!
+   * \brief expm1(\p x) by \ref table_exp's reduction, x = (128 e + j) ln 2/128 + r: in units of 2^e, 2^(j/128) − 2^−e
+   *        + 2^(j/128) r_head, each sum and product of them exact (two-sums and a fused product's error), plus the
+   *        small rest, 2^(j/128) (r − r_head + exp(r) − 1 − r) and the table's tail times exp(r), then scaled by 2^e: the
+   *        cancellation near 0 and ±ln 2 leaves no rounding but the last. Within 0.503 ulp of the exact value; below
+   *        −40, −1 (exp(x) under half an ulp of it); x itself where |x| < 2^−54 (±0 kept) and for NaN.
+   */
+  NUMERICAL_ALWAYS_INLINE double table_expm1(double x) noexcept
+  {
+    constexpr double shifter {0x1.8p52};
+    const double     clamped {x > 710.0 ? 710.0 : (x < -40.0 ? -40.0 : x)};
+    const double     z       {std::fma(clamped, exp_inv_ln2_128, shifter)};
+    const auto       n       {std::bit_cast<std::int64_t>(z) - std::bit_cast<std::int64_t>(shifter)};
+    const double     k       {z - shifter};
+    const double     r_head  {std::fma(-k, exp_ln2_128_high, clamped)}; // exact, as table_exp's first step
+    const double     r       {std::fma(-k, exp_ln2_128_low, r_head)};
+    double           q       {std::fma(r, 1.0 / 5040.0, 1.0 / 720.0)};
+    q = std::fma(r, q, 1.0 / 120.0);
+    q = std::fma(r, q, 1.0 / 24.0);
+    q = std::fma(r, q, 1.0 / 6.0);
+    q = std::fma(r, q, 0.5);
+    // every product beside a sum fused explicitly, or used by no sum, so that no compiler's contraction rounds the
+    // scalar call and the vector loop two ways
+    const double       square    {r * r};
+    const double       rest      {square * q};                          // exp(r) − 1 − r
+    const double       p         {std::fma(square, q, r)};              // exp(r) − 1
+    const double       r_rest    {std::fma(-k, exp_ln2_128_low, rest)}; // r − r_head + exp(r) − 1 − r
+    const auto         j         {static_cast<std::size_t>(static_cast<std::uint64_t>(n) & 127U)};
+    const double       head      {exp_table[2 * j]};
+    const double       tail      {exp_table[(2 * j) + 1]};
+    const std::int64_t e         {(n - static_cast<std::int64_t>(j)) / 128}; // −58 to 1024
+    // 2^−e, a normal double: past 2^−1022, where it is far under an ulp of the head, 2^−1022 in its place
+    const double       unit      {std::bit_cast<double>(static_cast<std::uint64_t>(1023 - (e > 1022 ? 1022 : e)) << 52U)};
+    double             lead      {};
+    double             lead_err  {};
+    two_sum(head, -unit, lead, lead_err);
+    const double       product   {head * r_head};
+    const double       prod_err  {std::fma(head, r_head, -product)};
+    double             sum       {};
+    double             sum_err   {};
+    two_sum(lead, product, sum, sum_err);
+    const double       small     {lead_err + sum_err + prod_err + std::fma(head, r_rest, std::fma(tail, p, tail))};
+    const std::int64_t half      {e / 2};
+    const double       first     {std::bit_cast<double>(static_cast<std::uint64_t>(half + 1023) << 52U)};
+    const double       second    {std::bit_cast<double>(static_cast<std::uint64_t>(e - half + 1023) << 52U)};
+    const double       result    {((sum + small) * first) * second};
+    return std::fabs(x) >= 0x1p-54 ? result : x; // NaN fails the comparison
+  }
+
 #ifdef NUMERICAL_EXP_NEON
   /*!
    * \brief \ref table_exp of each lane, in NEON: each operation the scalar one's (`vfmaq_f64` and `vfmsq_f64` its
@@ -236,6 +297,64 @@ namespace numerical::detail {
     const float64x2_t second {vreinterpretq_f64_s64(vshlq_n_s64(vaddq_s64(vsubq_s64(e, half), bias), 52))};
     const float64x2_t result {vmulq_f64(vmulq_f64(scaled, first), second)};
     return vbslq_f64(vceqq_f64(x, x), result, x);
+  }
+
+  //! \brief \ref two_sum of each lane.
+  NUMERICAL_ALWAYS_INLINE void two_sum(float64x2_t  a,
+                                       float64x2_t  b,
+                                       float64x2_t& sum,
+                                       float64x2_t& error) noexcept
+  {
+    sum = vaddq_f64(a, b);
+    const float64x2_t b_part {vsubq_f64(sum, a)};
+    error = vaddq_f64(vsubq_f64(a, vsubq_f64(sum, b_part)), vsubq_f64(b, b_part));
+  }
+
+  //! \brief \ref table_expm1 of each lane, in NEON: each operation the scalar one's, so each lane the scalar call's bits.
+  NUMERICAL_ALWAYS_INLINE float64x2_t table_expm1(float64x2_t x) noexcept
+  {
+    const float64x2_t shifter {vdupq_n_f64(0x1.8p52)};
+    // NaN stays NaN through both: vminq_f64 and vmaxq_f64 return it
+    const float64x2_t clamped {vmaxq_f64(vminq_f64(x, vdupq_n_f64(710.0)), vdupq_n_f64(-40.0))};
+    const float64x2_t z       {vfmaq_f64(shifter, clamped, vdupq_n_f64(exp_inv_ln2_128))};
+    const int64x2_t   n       {vsubq_s64(vreinterpretq_s64_f64(z), vreinterpretq_s64_f64(shifter))};
+    const float64x2_t k       {vsubq_f64(z, shifter)};
+    const float64x2_t r_head  {vfmsq_f64(clamped, k, vdupq_n_f64(exp_ln2_128_high))};
+    const float64x2_t r       {vfmsq_f64(r_head, k, vdupq_n_f64(exp_ln2_128_low))};
+    float64x2_t       q       {vfmaq_f64(vdupq_n_f64(1.0 / 720.0), r, vdupq_n_f64(1.0 / 5040.0))};
+    q = vfmaq_f64(vdupq_n_f64(1.0 / 120.0), r, q);
+    q = vfmaq_f64(vdupq_n_f64(1.0 / 24.0), r, q);
+    q = vfmaq_f64(vdupq_n_f64(1.0 / 6.0), r, q);
+    q = vfmaq_f64(vdupq_n_f64(0.5), r, q);
+    const float64x2_t square   {vmulq_f64(r, r)};
+    const float64x2_t rest     {vmulq_f64(square, q)};
+    const float64x2_t p        {vfmaq_f64(r, square, q)};
+    const float64x2_t r_rest   {vfmsq_f64(rest, k, vdupq_n_f64(exp_ln2_128_low))};
+    const int64x2_t   j        {vandq_s64(n, vdupq_n_s64(127))};
+    const float64x2_t low      {vld1q_f64(exp_table.data() + (2 * static_cast<std::size_t>(vgetq_lane_s64(j, 0))))};
+    const float64x2_t high     {vld1q_f64(exp_table.data() + (2 * static_cast<std::size_t>(vgetq_lane_s64(j, 1))))};
+    const float64x2_t head     {vzip1q_f64(low, high)};
+    const float64x2_t tail     {vzip2q_f64(low, high)};
+    const int64x2_t   e        {vshrq_n_s64(n, 7)};
+    const int64x2_t   cap      {vdupq_n_s64(1022)};
+    const int64x2_t   capped   {vbslq_s64(vcgtq_s64(e, cap), cap, e)}; // NEON has no 64-bit minimum
+    const float64x2_t unit     {vreinterpretq_f64_s64(vshlq_n_s64(vsubq_s64(vdupq_n_s64(1023), capped), 52))};
+    float64x2_t       lead     {};
+    float64x2_t       lead_err {};
+    two_sum(head, vnegq_f64(unit), lead, lead_err);
+    const float64x2_t product  {vmulq_f64(head, r_head)};
+    const float64x2_t prod_err {vfmaq_f64(vnegq_f64(product), head, r_head)};
+    float64x2_t       sum      {};
+    float64x2_t       sum_err  {};
+    two_sum(lead, product, sum, sum_err);
+    const float64x2_t small    {vaddq_f64(vaddq_f64(vaddq_f64(lead_err, sum_err), prod_err),
+                                          vfmaq_f64(vfmaq_f64(tail, tail, p), head, r_rest))};
+    const int64x2_t   half     {vshrq_n_s64(vaddq_s64(e, vreinterpretq_s64_u64(vshrq_n_u64(vreinterpretq_u64_s64(e), 63))), 1)};
+    const int64x2_t   bias     {vdupq_n_s64(1023)};
+    const float64x2_t first    {vreinterpretq_f64_s64(vshlq_n_s64(vaddq_s64(half, bias), 52))};
+    const float64x2_t second   {vreinterpretq_f64_s64(vshlq_n_s64(vaddq_s64(vsubq_s64(e, half), bias), 52))};
+    const float64x2_t result   {vmulq_f64(vmulq_f64(vaddq_f64(sum, small), first), second)};
+    return vbslq_f64(vcgeq_f64(vabsq_f64(x), vdupq_n_f64(0x1p-54)), result, x);
   }
 
 #endif

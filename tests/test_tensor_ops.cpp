@@ -10,6 +10,7 @@
 #include <cstdint>
 #include <cstring>
 #include <limits>
+#include <numbers>
 #include <numeric>
 #include <stdexcept>
 #include <string>
@@ -365,6 +366,51 @@ TEST(exp_of_a_double_by_the_table)
   EXPECT(numerical::detail::elementary_exp(0.0) == 1.0 && numerical::detail::elementary_exp(-0.0) == 1.0);
   EXPECT(numerical::detail::elementary_exp(709.79) == inf && numerical::detail::elementary_exp(-inf) == 0.0);
   EXPECT(numerical::detail::elementary_exp(1.0) == 0x1.5bf0a8b145769p+1); // e, rounded to nearest
+}
+
+// expm1 of a double by the table: within an ulp of the C library's (each within half an ulp or so of the exact value),
+// the library's own bits at the ends (±0 and the smallest values themselves, −1 far below, overflow past ln of the
+// largest double, NaN itself), and the same bits from a block, in vectors, as from one call.
+TEST(expm1_of_a_double_by_the_table)
+{
+  std::vector<double> x;
+  for (int i {0}; i < 20000; ++i) {
+    const double t {static_cast<double>(i) / 20000.0};
+    x.push_back(-760.0 + (1480.0 * t)); // across the whole range, past both ends
+    x.push_back((2.0 * t) - 1.0);
+    x.push_back((0.02 * t) - 0.01);     // about 0, where 2^(j/128) − 1 cancels the most
+    x.push_back(-41.0 + (5.0 * t));     // about −38, past which the result is −1
+  }
+  const double inf {std::numeric_limits<double>::infinity()};
+  for (const double v : {0.0, -0.0, inf, -inf, std::numeric_limits<double>::quiet_NaN(), 709.782712893384, 709.79, 800.0,
+                         -40.0, -800.0, 1e-300, -1e-300, 0x1p-54, -0x1p-54, 0x1p-53, std::numbers::ln2,
+                         -std::numbers::ln2, 5e-324, 2.5}) { // an odd count: the last one past the pairs
+    x.push_back(v);
+  }
+  std::vector<double> block(x.size());
+  numerical::detail::expm1_into(x.data(), block.data(), x.size());
+  bool same  {true};
+  bool close {true};
+  for (std::size_t i {0}; i < x.size(); ++i) {
+    const double one     {numerical::detail::elementary_expm1(x[i])};
+    same = same && std::bit_cast<std::uint64_t>(one) == std::bit_cast<std::uint64_t>(block[i]);
+    const double library {std::expm1(x[i])};
+    if (std::isnan(x[i]) || std::isinf(library) || library == -1.0 || std::fabs(x[i]) < 0x1p-54) {
+      close = close && std::bit_cast<std::uint64_t>(one) == std::bit_cast<std::uint64_t>(library);
+    }
+    else {
+      close = close && std::fabs(one - library) <= std::fabs(std::nextafter(library, inf) - library);
+    }
+  }
+  EXPECT(same);
+  EXPECT(close);
+  EXPECT(std::signbit(numerical::detail::elementary_expm1(-0.0)) && numerical::detail::elementary_expm1(-inf) == -1.0);
+  EXPECT(numerical::detail::elementary_expm1(709.79) == inf);
+  EXPECT(numerical::detail::elementary_expm1(1.0) == 0x1.b7e151628aed3p+0);    // e − 1, rounded to nearest
+  EXPECT(numerical::detail::elementary_expm1(1e-10) == 0x1.b7cdfd9dda4e3p-34); // rounded to nearest, as the next
+  EXPECT(numerical::detail::elementary_expm1(-0.5) == -0x1.92e9a0720d3ecp-2);
+  const numerical::tensor<double> t {{2, 2}, {0.5, -0.0, 1e-20, -3.0}};
+  EXPECT(numerical::expm1(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_expm1(v); }));
 }
 
 // NumPy's complex magnitude: an infinite part makes it infinite whatever the other, NaN, and a NaN part then NaN;

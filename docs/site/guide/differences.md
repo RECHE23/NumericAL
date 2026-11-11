@@ -48,6 +48,10 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
   library's on one core. NumPy's is the C library's (its own vector kernel on x86-64 with AVX-512): the last bit differs in some
   0.2 % of the values. A subnormal or zero result is the C library's; an x86-64 processor without FMA, and a build by
   MSVC, take the C library's throughout.
+- **`expm1` of float64** is NumericAL's own too, on `exp`'s table, its leading sums exact: within 0.503 ulp of the
+  exact value (the C library's, NumPy's, 0.6 or so), the same bits on every processor with fused multiply-add. The
+  last bit differs from NumPy's in some 0.2 % of the values; ±0, the values below 2^-54 (themselves) and those below
+  −40 (−1) are the library's. Where `exp` takes the C library's, so does `expm1`.
 - **`eig` and `eigvals` answer in complex numbers** whatever the eigenvalues, as NumPy 2.5's and SciPy's; NumPy
   before 2.5 made them real where it could.
 - **A float32 or complex64 decomposition** is computed in double precision and rounded to single, below order 500
