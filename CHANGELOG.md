@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.13 — 2026-11-11
+
 ### Fixed
 
 - **`lexsort` of a 1-D array** (numbers as keys) is the number 0 along the axis -1 or 0, and of an empty one a
