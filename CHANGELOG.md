@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.12 — 2026-11-11
+
 ### Added
 
 - **`initial=` for `sum` and `prod`, and for the `sum`, `prod`, `max` and `min` methods** (which `numpy.sum(t,
