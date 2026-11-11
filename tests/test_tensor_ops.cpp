@@ -414,6 +414,52 @@ TEST(expm1_of_a_double_by_the_table)
   EXPECT(numerical::expm1(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_expm1(v); }));
 }
 
+// tanh of a double by exp's table: within an ulp of the C library's tanh in long double where that is wider (glibc's of
+// a double strays 2 ulps from the exact value, macOS's half an ulp or so, the reference there), the reference's own
+// bits at the ends (±0 and the smallest values themselves, ±1 far out, NaN itself), and the same bits from a block, in
+// vectors, as from one call.
+TEST(tanh_of_a_double_by_the_table)
+{
+  std::vector<double> x;
+  for (int i {0}; i < 20000; ++i) {
+    const double t {static_cast<double>(i) / 20000.0};
+    x.push_back(-30.0 + (60.0 * t)); // across the whole range, past both ends
+    x.push_back((2.0 * t) - 1.0);
+    x.push_back((0.02 * t) - 0.01);  // about 0, where expm1(2x) cancels the most
+    x.push_back(17.0 + (6.0 * t));   // about 19, past which the result is 1
+  }
+  const double inf {std::numeric_limits<double>::infinity()};
+  for (const double v : {0.0, -0.0, inf, -inf, std::numeric_limits<double>::quiet_NaN(), 22.0, -22.0, 800.0, -800.0,
+                         1e-300, -1e-300, 0x1p-27, -0x1p-27, 0x1.fffffffffffffp-28, 5e-324, 2.5,
+                         -std::numbers::ln2}) { // an odd count: the last one past the pairs
+    x.push_back(v);
+  }
+  std::vector<double> block(x.size());
+  numerical::detail::tanh_into(x.data(), block.data(), x.size());
+  bool same  {true};
+  bool close {true};
+  for (std::size_t i {0}; i < x.size(); ++i) {
+    const double one     {numerical::detail::elementary_tanh(x[i])};
+    same = same && std::bit_cast<std::uint64_t>(one) == std::bit_cast<std::uint64_t>(block[i]);
+    const double library {std::numeric_limits<long double>::digits > std::numeric_limits<double>::digits
+                            ? static_cast<double>(std::tanh(static_cast<long double>(x[i])))
+                            : std::tanh(x[i])};
+    if (std::isnan(x[i]) || std::fabs(library) == 1.0 || std::fabs(x[i]) < 0x1p-27) {
+      close = close && std::bit_cast<std::uint64_t>(one) == std::bit_cast<std::uint64_t>(library);
+    }
+    else {
+      close = close && std::fabs(one - library) <= std::fabs(std::nextafter(library, inf) - library);
+    }
+  }
+  EXPECT(same);
+  EXPECT(close);
+  EXPECT(std::signbit(numerical::detail::elementary_tanh(-0.0)) && numerical::detail::elementary_tanh(-inf) == -1.0);
+  EXPECT(numerical::detail::table_tanh(1.0) == 0x1.85efab514f394p-1); // the table's, rounded to nearest, as the next
+  EXPECT(numerical::detail::table_tanh(-0.001) == -0x1.0624d77516ce2p-10);
+  const numerical::tensor<double> t {{2, 2}, {0.5, -0.0, 1e-20, -3.0}};
+  EXPECT(numerical::tanh(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_tanh(v); }));
+}
+
 // NumPy's complex magnitude: an infinite part makes it infinite whatever the other, NaN, and a NaN part then NaN;
 // a zero is 0; otherwise the larger part times sqrt(ratio² + 1).
 namespace {

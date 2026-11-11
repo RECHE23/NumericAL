@@ -2096,7 +2096,7 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
                     result.emplace(d::parallel_map(data, x.shape, [](const T& v) { return d::elementary_tan(v); }));
                 }
                 else if (name == "tanh") {
-                    result.emplace(d::parallel_map(data, x.shape, [](const T& v) { return d::elementary_tanh(v); }));
+                    result.emplace(d::tanh_of(data, x.shape));
                 }
                 else if constexpr (!complex_scalar<T>) { // abs of a real array: unary_on's
                     result.emplace(d::parallel_map(data, x.shape, [](const T& v) { return static_cast<real_of_t<T>>(std::abs(v)); }));

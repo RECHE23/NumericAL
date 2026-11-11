@@ -13,12 +13,17 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`lexsort` of a 1-D array** (numbers as keys) is the number 0 along the axis -1 or 0, and of an empty one a
   `TypeError`, as NumPy's, where both raised; an axis that is not an integer (None) raises `TypeError`, as NumPy's,
   where `lexsort` sorted every element. **`argsort` of a number** is `[0]`, as NumPy's, where it raised `AxisError`.
+
 ### Changed
 
 - **`expm1` of float64 in vectors** (C++ `numerical::expm1`, new, and NumPy's `expm1` on a Tensor): `exp`'s table of
   2^(j/128), its leading sums exact, within 0.503 ulp of the exact value (the C library's 0.6 or so), the same bits
   on every processor with FMA; 10^6 values in [-5, 5] 1.33 → 0.56 ms on all cores, 7.3 → 2.9 ms on one (NumPy's
   7.8 ms; M1 Pro). The last bit differs from NumPy's in some 0.2 % of the values (see the differences from NumPy).
+- **`tanh` of float64 in vectors** (C++ `numerical::tanh` of a double tensor, and NumPy's `tanh` on a Tensor):
+  t/(t + 2) of t = `expm1`(2|x|) in two parts, its sum and quotient corrected exactly, within 0.502 ulp of the exact
+  value (NumPy's 1.1 ulp, the C library's 0.59), the same bits on every processor with FMA; 10^6 values in [-5, 5]
+  7.5 → 4.0 ms on one core, 1.40 → 1.31 ms on all (NumPy's 3.7 ms; M1 Pro).
 
 ## 2026.11.12 — 2026-11-11
 
