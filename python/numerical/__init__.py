@@ -6416,7 +6416,8 @@ def prod(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
         result = _numerical._axis_op("prod", flat, -1)
         return full((1,) * len(a.shape), result, a.dtype) if keepdims else result
     axes = _resolved_axes(a, axis, "prod")
-    if len(axes) > 1:  # NumPy's order: the reduced axes' elements in turn, as one axis of them in row-major order
+    if len(axes) > 1 or start is not None:
+        # NumPy's order: `initial`, then the reduced axes' elements in turn, as one axis of them in row-major order
         rank = len(a.shape)
         kept = [k for k in range(rank) if k not in axes]
         # before the kept axes where NumPy's innermost loop runs along a kept one (its vector loop, between slices),
@@ -6432,10 +6433,10 @@ def prod(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
         if start is not None:
             joined = _prepended(joined, along, start)
         result = _native(_numerical._axis_op, "prod", joined, along)
-    elif not axes:  # no axis: each element its own product, after `initial` where it is given
-        result = a if start is None else start * a
+    elif not axes:  # no axis: each element its own product
+        result = a
     else:
-        result = _native(_numerical._axis_op, "prod", a if start is None else _prepended(a, axes[0], start), axes[0])
+        result = _native(_numerical._axis_op, "prod", a, axes[0])
     if keepdims:
         result = reshape(result, tuple(1 if k in axes else a.shape[k] for k in range(len(a.shape))))
     return result
