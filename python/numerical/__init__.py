@@ -3731,12 +3731,14 @@ sum = _reduction("sum", """The sum of every element, or the sums along `axis`, a
             end.
         keepdims: Keep each reduced axis with extent 1, as NumPy's.
         dtype: The dtype the elements are converted to and summed in (keyword-only), as NumPy's and the array API's.
+        initial: The value each sum starts from (keyword-only), in its dtype, as NumPy's; None for none.
 
     Returns:
         float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (float64 for a bool one).
 
     Raises:
         ValueError: for an axis out of range or repeated.
+        TypeError: for a complex `initial` of a real sum.
 
     Examples:
         >>> import numerical
@@ -3839,19 +3841,19 @@ def _dtype_name(dtype):
     return "bool" if name == "bool_" else name  # NumPy 1's numpy.bool_
 
 
-def _in_dtype(reduce, a, axis, keepdims, dtype):
+def _in_dtype(reduce, a, axis, keepdims, dtype, **initial):
     """`reduce` of `a`'s elements in `dtype`, where they accumulate (NumPy's and the array API's: no int64 sum wraps
-    in float64, no float32 one rounds in float32), its result in `dtype`."""
+    in float64, no float32 one rounds in float32), its result in `dtype`; `initial` passed on."""
     name = _checked_dtype(dtype, f"{reduce.__name__}: ")
-    result = reduce(asarray(a, name), axis, keepdims)
+    result = reduce(asarray(a, name), axis, keepdims, **initial)
     converted = asarray(result, name)
     return converted if isinstance(result, Tensor) else converted[()]
 
 
-def _reduction_method(reduce):
+def _reduction_method(reduce, takes_initial=False):
     """The Tensor method of `reduce`, which NumPy's `numpy.sum(t)` and the like call with `out` (and `dtype` for a
     mean): None the only `out` a Tensor takes, since it is never written into; `dtype` the one the elements
-    accumulate in, as NumPy's."""
+    accumulate in, as NumPy's; `initial` passed on where `reduce` takes it (sum, prod, max, min)."""
     def method(self, axis=None, dtype=None, out=None, keepdims=False):
         if axis is None and dtype is None and out is None and keepdims is False:
             return reduce(self)
@@ -3859,57 +3861,106 @@ def _reduction_method(reduce):
             raise TypeError(f"{reduce.__name__}: a Tensor takes no `out` (it is never written into)")
         return reduce(self, axis, keepdims) if dtype is None else _in_dtype(reduce, self, axis, keepdims, dtype)
 
-    method.__name__ = reduce.__name__
-    method.__doc__ = reduce.__doc__
-    return method
+    def method_with_initial(self, axis=None, dtype=None, out=None, keepdims=False, initial=_NO_VALUE):
+        if axis is None and dtype is None and out is None and keepdims is False and initial is _NO_VALUE:
+            return reduce(self)
+        if out is not None:
+            raise TypeError(f"{reduce.__name__}: a Tensor takes no `out` (it is never written into)")
+        return reduce(self, axis, keepdims, dtype=dtype, initial=initial)
+
+    chosen = method_with_initial if takes_initial else method
+    chosen.__name__ = reduce.__name__
+    chosen.__doc__ = reduce.__doc__
+    return chosen
 
 
 _NO_VALUE = object()  # an argument not given, where None is a value
 
 
 def _initial_in(initial, dtype):
-    """NumPy's `initial` in the reduction's `dtype`, cast as it casts it (an int64 one truncated toward 0)."""
+    """NumPy's `initial` in the reduction's `dtype`, cast as it casts it (an int64 one truncated toward 0); a complex
+    one refused for a real dtype, as NumPy's."""
+    if isinstance(initial, _numbers.Complex) and not isinstance(initial, _numbers.Real) and \
+            not dtype.startswith("complex"):
+        raise TypeError(f"initial: a complex number does not fit a {dtype} reduction")
     if dtype == "int64":
         return asarray(int(initial), "int64")
     return asarray(bool(initial) if dtype == "bool" else initial, dtype)
 
 
+def _answer_dtype(answer, dtype):
+    """The dtype of a reduction's `answer` of a tensor of `dtype`: a Tensor's own, a number's `dtype` (a bool tensor's
+    sum by the number's kind)."""
+    if isinstance(answer, Tensor):
+        return answer.dtype
+    if dtype != "bool" or isinstance(answer, bool):
+        return dtype
+    return "int64" if isinstance(answer, int) else "float64"
+
+
 def _with_initial(reduce, combine):
-    """`reduce` (max or min) taking NumPy's `initial`, the value each reduction starts from, in the reduction's dtype:
-    `combine`d with its answer, alone where the reduced axes hold no element."""
+    """`reduce` (max, min or sum) taking NumPy's `initial`, the value each reduction starts from, in the reduction's
+    dtype: ``combine(a, axes, keepdims, answer, start)`` its answer, `initial` alone where the reduced axes hold no
+    element (a -0.0 kept). None is no `initial`, as NumPy's."""
     name = reduce.__name__
 
     def function(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
-        if initial is _NO_VALUE:
+        if initial is _NO_VALUE or initial is None:
             if axis is None and keepdims is False and dtype is None and isinstance(a, Tensor):  # as reduce's own
                 return _native(_numerical._reduce, name, a, -1)
             return reduce(a, axis, keepdims, dtype=dtype)
         a = a if isinstance(a, Tensor) else _read(a)
         if dtype is not None:
-            a = asarray(a, _checked_dtype(dtype, f"{reduce.__name__}: "))
-        start = _initial_in(initial, a.dtype)
-        axes = _resolved_axes(a, axis, reduce.__name__)
+            dtype = _checked_dtype(dtype, f"{name}: ")
+            a = asarray(a, dtype)
+        axes = _resolved_axes(a, axis, name)
         if _builtins.any(a.shape[k] == 0 for k in axes):
+            # no answer to read the dtype from: a maximum's or minimum's that of `a`, a sum's that of an empty one's
+            kind = a.dtype if name in ("max", "min") else _answer_dtype(reduce(zeros((0,), a.dtype)), a.dtype)
             shape = tuple(1 if k in axes else e for k, e in enumerate(a.shape)) if keepdims else \
                 tuple(e for k, e in enumerate(a.shape) if k not in axes)
-            filled = broadcast_to(start, shape)
-            return filled if shape else filled[()]
-        answer = reduce(a, axis, keepdims)
-        if isinstance(answer, Tensor):
-            return combine(answer, start)
-        return combine(asarray(answer, a.dtype), start)[()]
+            result = broadcast_to(_initial_in(initial, kind), shape)
+        else:
+            answer = reduce(a, axis, keepdims)
+            start = _initial_in(initial, _answer_dtype(answer, a.dtype))
+            result = combine(a, axes, keepdims, answer if isinstance(answer, Tensor) else asarray(answer, start.dtype),
+                             start)
+        if dtype is not None and result.dtype != dtype:  # a bool's sum in bool, as _in_dtype answers it
+            result = asarray(result, dtype)
+        return result if result.shape else result[()]
 
     function.__name__ = reduce.__name__
     function.__doc__ = reduce.__doc__
     return function
 
 
-max = _with_initial(max, lambda answer, start: maximum(answer, start))
-min = _with_initial(min, lambda answer, start: minimum(answer, start))
-Tensor.sum = _reduction_method(sum)
+max = _with_initial(max, lambda a, axes, keepdims, answer, start: maximum(answer, start))
+min = _with_initial(min, lambda a, axes, keepdims, answer, start: minimum(answer, start))
+
+
+def _sum_from(a, axes, keepdims, answer, start):
+    """The sums over `axes` of `a` from `start`, as NumPy's: where the reduced axes are the last ones (extent-1 ones
+    aside), its pairwise sum's accumulator starts from it, `start` + the sum; elsewhere it adds slice after slice from
+    it, and each column here, pairwise (docs/site/guide/differences.md), starts with it: the same bits as NumPy's
+    below 8 terms (4 complex ones), where a pairwise sum is in order."""
+    order = [k for k, extent in enumerate(a.shape) if extent != 1]
+    reduced = [k for k in order if k in axes]
+    if order[len(order) - len(reduced):] == reduced:
+        return answer + start
+    a = a if a.dtype == start.dtype else asarray(a, start.dtype)  # a bool's sum in its sum's dtype
+    rank = len(a.shape)
+    kept = [k for k in range(rank) if k not in axes]  # never empty: a kept axis follows a reduced one
+    moved = _permuted(a, kept + sorted(axes)) if kept + sorted(axes) != list(range(rank)) else a
+    joined = reshape(moved, tuple(a.shape[k] for k in kept) + (_math.prod(a.shape[k] for k in axes),))
+    result = _native(_numerical._reduce, "sum", _prepended(joined, len(kept), start), len(kept))
+    return reshape(result, tuple(1 if k in axes else a.shape[k] for k in range(rank))) if keepdims else result
+
+
+sum = _with_initial(sum, _sum_from)
+Tensor.sum = _reduction_method(sum, takes_initial=True)
 Tensor.mean = _reduction_method(mean)
-Tensor.max = _reduction_method(max)
-Tensor.min = _reduction_method(min)
+Tensor.max = _reduction_method(max, takes_initial=True)
+Tensor.min = _reduction_method(min, takes_initial=True)
 Tensor.any = _reduction_method(any)
 Tensor.all = _reduction_method(all)
 
@@ -6334,24 +6385,35 @@ def _along(name, a, axis):
     return _native(_numerical._axis_op, name, a, _axis(a, axis))
 
 
-def prod(a, axis=None, keepdims=False, *, dtype=None):
+def _prepended(t, axis, start):
+    """`t` with `start` (a rank-0 Tensor of its dtype) before its first slice along `axis`."""
+    return _concatenated([full(t.shape[:axis] + (1,) + t.shape[axis + 1:], start[()], t.dtype), t], axis)
+
+
+def prod(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
     """The product of every element (a number), or the products along `axis`, as ``numpy.prod``: in order (NumPy's
     multiplications are not paired as its sums are). An empty one's is 1. `dtype` the one the elements are multiplied
-    in."""
-    if axis is None and keepdims is False and dtype is None and isinstance(a, Tensor) and \
+    in; `initial` the first factor of each product, as NumPy's (None: none)."""
+    if initial is None:
+        initial = _NO_VALUE
+    if axis is None and keepdims is False and dtype is None and initial is _NO_VALUE and isinstance(a, Tensor) and \
             a.dtype in ("float64", "float32", "int64"):  # every element of a real tensor: the native product at once
         return _numerical._axis_op("prod", a, -1)
     if keepdims is not False and keepdims is not True:
         _keepdims_not_dtype("prod", keepdims)
     if dtype is not None:
-        return _in_dtype(prod, a, axis, keepdims, dtype)
+        if initial is _NO_VALUE:
+            return _in_dtype(prod, a, axis, keepdims, dtype)
+        return _in_dtype(prod, a, axis, keepdims, dtype, initial=initial)
     a = _operand(a)
     if a.dtype == "bool":
         a = asarray(a, "float64")
     if a.dtype.startswith("complex") and not _numpy_loops_measured:  # each product as NumPy's loops fuse it
         _numpy_loops()
+    start = None if initial is _NO_VALUE else _initial_in(initial, a.dtype)
     if axis is None:
-        result = _numerical._axis_op("prod", a, -1)
+        flat = a if start is None else _prepended(reshape(a, (-1,)), 0, start)
+        result = _numerical._axis_op("prod", flat, -1)
         return full((1,) * len(a.shape), result, a.dtype) if keepdims else result
     axes = _resolved_axes(a, axis, "prod")
     if len(axes) > 1:  # NumPy's order: the reduced axes' elements in turn, as one axis of them in row-major order
@@ -6363,18 +6425,23 @@ def prod(a, axis=None, keepdims=False, *, dtype=None):
         if innermost in kept:
             moved = _permuted(a, sorted(axes) + kept)
             joined = reshape(moved, (_math.prod(moved.shape[:len(axes)]),) + moved.shape[len(axes):])
-            result = _native(_numerical._axis_op, "prod", joined, 0)
+            along = 0
         else:
             joined, _ = _last_axis(a, axes, "prod")
-            result = _native(_numerical._axis_op, "prod", joined, len(joined.shape) - 1)
+            along = len(joined.shape) - 1
+        if start is not None:
+            joined = _prepended(joined, along, start)
+        result = _native(_numerical._axis_op, "prod", joined, along)
+    elif not axes:  # no axis: each element its own product, after `initial` where it is given
+        result = a if start is None else start * a
     else:
-        result = a if not axes else _native(_numerical._axis_op, "prod", a, axes[0])
+        result = _native(_numerical._axis_op, "prod", a if start is None else _prepended(a, axes[0], start), axes[0])
     if keepdims:
         result = reshape(result, tuple(1 if k in axes else a.shape[k] for k in range(len(a.shape))))
     return result
 
 
-Tensor.prod = _reduction_method(prod)
+Tensor.prod = _reduction_method(prod, takes_initial=True)
 
 
 def cumsum(a, axis=None, dtype=None, out=None):

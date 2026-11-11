@@ -56,7 +56,12 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
   than its other builds, whose bits NumericAL's are everywhere.
 - **A sum along an axis that is not the last** (`sum(a, axis=0)` of a matrix, and the `mean`, `var` and `std` over
   it) adds each column pairwise, as NumPy adds along the last axis; NumPy adds such an axis row after row, in order.
-  The last bits differ where the terms are of very different sizes, ours nearer the exact sum.
+  The last bits differ where the terms are of very different sizes, ours nearer the exact sum. With `initial=`, each
+  column starts with it, the first term of its pairwise sum, where NumPy's rows add to it in order: the same bits
+  below 8 terms (4 complex ones), where a pairwise sum is in order.
+- **A sum in another dtype** (`sum(a, dtype="float64")` of a float32 `a`) converts every element and adds them
+  pairwise, as a sum of that dtype; NumPy converts 8192 elements at a time, adds each block pairwise and the blocks in
+  order. The last bits differ past 8192 elements.
 - **`round` to many places, and an integer's to tens or hundreds, is exact**: NumPy's scales by 10ᵈ in floating point,
   which moves a last bit (`round(x, 15)` near 10) or overflows (`round(1e307, 2)`: inf), and rounds an integer
   through float64 (not exact past 2⁵³).

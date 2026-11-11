@@ -8,6 +8,18 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+
+- **`initial=` for `sum` and `prod`, and for the `sum`, `prod`, `max` and `min` methods** (which `numpy.sum(t,
+  initial=…)` calls), as NumPy's: cast to the reduction's dtype, alone over no element; `prod`'s first factor, to
+  NumPy's bits; `sum`'s start, to NumPy's bits where the reduced axes are the last ones and along another axis below
+  8 terms, each longer column summed pairwise from it (see the differences from NumPy).
+
+### Fixed
+
+- **`initial=None` is no `initial`** for `max` and `min`, as NumPy's, where it was refused; a complex `initial` for a
+  real reduction raises `TypeError`, as NumPy's, where it raised `numerical.error`.
+
 ### Changed
 
 - **A reduction of every element of a Tensor** goes to the native one at once, where it resolved its axes first:
