@@ -6014,7 +6014,8 @@ def moveaxis(a, source, destination):
 def column_stack(tup):
     """Vectors as columns and matrices as they are, side by side, as ``numpy.column_stack``."""
     tensors = _joined(tup, "column_stack")
-    return concatenate([reshape(t, (t.shape[0], 1)) if len(t.shape) < 2 else t for t in tensors], axis=1)
+    columns = [reshape(t, (t.shape[0] if t.shape else 1, 1)) if len(t.shape) < 2 else t for t in tensors]
+    return concatenate(columns, axis=1)
 
 
 def _ordered(name, x1, x2):

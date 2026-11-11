@@ -70,6 +70,20 @@ class NumpyRoot(unittest.TestCase):
             numerical.moveaxis(a, (0, 1), 0)
         vectors = [np.arange(3.0), np.ones((3, 2))]
         self.same(numerical.column_stack(vectors), np.column_stack(vectors))
+        strided = np.arange(12.0).reshape(3, 4)[:, ::2]
+        view = numerical.asarray(np.arange(12.0).reshape(3, 4))[:, ::2]  # a Tensor's strided view, not copied
+        for arrays in ([1.0, 2.0], [np.float64(3.0), np.arange(1.0, 2.0)], [strided[0], strided[1]],
+                       [strided, strided.T.T], [strided.T, np.ones((2, 3))], [view[0], view[2]], [view, view.T.T],
+                       [view[1, 0], view[:, 1]]):
+            for name in ("column_stack", "vstack", "hstack", "dstack", "stack"):
+                with self.subTest(name=name, arrays=arrays):
+                    try:
+                        expected = getattr(np, name)([np.asarray(a) for a in arrays])
+                    except ValueError:
+                        with self.assertRaises(ValueError):
+                            getattr(numerical, name)(arrays)
+                        continue
+                    self.same(getattr(numerical, name)(arrays), expected)
 
     def test_element_wise(self):
         x = self.rng.standard_normal((3, 4))
