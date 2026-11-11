@@ -406,9 +406,10 @@ TEST(expm1_of_a_double_by_the_table)
   EXPECT(close);
   EXPECT(std::signbit(numerical::detail::elementary_expm1(-0.0)) && numerical::detail::elementary_expm1(-inf) == -1.0);
   EXPECT(numerical::detail::elementary_expm1(709.79) == inf);
-  EXPECT(numerical::detail::elementary_expm1(1.0) == 0x1.b7e151628aed3p+0);    // e − 1, rounded to nearest
-  EXPECT(numerical::detail::elementary_expm1(1e-10) == 0x1.b7cdfd9dda4e3p-34); // rounded to nearest, as the next
-  EXPECT(numerical::detail::elementary_expm1(-0.5) == -0x1.92e9a0720d3ecp-2);
+  // the table's own values, whichever function elementary_expm1 takes (MSVC's std::expm1 strays an ulp at 1 and −0.5)
+  EXPECT(numerical::detail::table_expm1(1.0) == 0x1.b7e151628aed3p+0);    // e − 1, rounded to nearest
+  EXPECT(numerical::detail::table_expm1(1e-10) == 0x1.b7cdfd9dda4e3p-34); // rounded to nearest, as the next
+  EXPECT(numerical::detail::table_expm1(-0.5) == -0x1.92e9a0720d3ecp-2);
   const numerical::tensor<double> t {{2, 2}, {0.5, -0.0, 1e-20, -3.0}};
   EXPECT(numerical::expm1(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_expm1(v); }));
 }
