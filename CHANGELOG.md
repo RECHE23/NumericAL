@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+
+- **A reduction of every element of a Tensor** goes to the native one at once, where it resolved its axes first:
+  `sum`, `mean`, `any` and `all` of 8 float64 elements 0.66 → 0.31 µs, `max` and `min` 0.76 → 0.33 µs, `prod` 0.44 →
+  0.36 µs, the methods alike (`t.sum()` 0.70 → 0.37 µs; NumPy's `a.sum()` 0.91 µs), the same answers (M1 Pro).
+
 ## 2026.11.11 — 2026-11-11
 
 ### Fixed

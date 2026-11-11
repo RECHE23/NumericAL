@@ -3676,6 +3676,8 @@ def _keepdims_not_dtype(name, keepdims):
 
 def _reduction(op, doc):
     def reduce(a, axis=None, keepdims=False, *, dtype=None):
+        if axis is None and keepdims is False and dtype is None and isinstance(a, Tensor):  # every element: the
+            return _native(_numerical._reduce, op, a, -1)  # native reduction the general path ends in, at once
         if keepdims is not False and keepdims is not True:
             _keepdims_not_dtype(op, keepdims)
         if dtype is not None:  # the array API's (keyword-only: `keepdims` holds NumPy's third place here)
@@ -3851,6 +3853,8 @@ def _reduction_method(reduce):
     mean): None the only `out` a Tensor takes, since it is never written into; `dtype` the one the elements
     accumulate in, as NumPy's."""
     def method(self, axis=None, dtype=None, out=None, keepdims=False):
+        if axis is None and dtype is None and out is None and keepdims is False:
+            return reduce(self)
         if out is not None:
             raise TypeError(f"{reduce.__name__}: a Tensor takes no `out` (it is never written into)")
         return reduce(self, axis, keepdims) if dtype is None else _in_dtype(reduce, self, axis, keepdims, dtype)
@@ -3873,8 +3877,12 @@ def _initial_in(initial, dtype):
 def _with_initial(reduce, combine):
     """`reduce` (max or min) taking NumPy's `initial`, the value each reduction starts from, in the reduction's dtype:
     `combine`d with its answer, alone where the reduced axes hold no element."""
+    name = reduce.__name__
+
     def function(a, axis=None, keepdims=False, *, dtype=None, initial=_NO_VALUE):
         if initial is _NO_VALUE:
+            if axis is None and keepdims is False and dtype is None and isinstance(a, Tensor):  # as reduce's own
+                return _native(_numerical._reduce, name, a, -1)
             return reduce(a, axis, keepdims, dtype=dtype)
         a = a if isinstance(a, Tensor) else _read(a)
         if dtype is not None:
@@ -6330,6 +6338,9 @@ def prod(a, axis=None, keepdims=False, *, dtype=None):
     """The product of every element (a number), or the products along `axis`, as ``numpy.prod``: in order (NumPy's
     multiplications are not paired as its sums are). An empty one's is 1. `dtype` the one the elements are multiplied
     in."""
+    if axis is None and keepdims is False and dtype is None and isinstance(a, Tensor) and \
+            a.dtype in ("float64", "float32", "int64"):  # every element of a real tensor: the native product at once
+        return _numerical._axis_op("prod", a, -1)
     if keepdims is not False and keepdims is not True:
         _keepdims_not_dtype("prod", keepdims)
     if dtype is not None:
