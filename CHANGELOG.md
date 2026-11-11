@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.11 — 2026-11-11
+
 ### Fixed
 
 - **`polyval` of coefficients of rank 2 and more**, as NumPy's: a polynomial per element along the first axis,
