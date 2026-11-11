@@ -416,7 +416,14 @@ class KeptOutOfTheArithmetic(unittest.TestCase):
                                 expected = numpy_call(*numpy_args)
                             got = call(*args)
                             self.assertEqual(got.dtype, str(expected.dtype))
-                            self.assertTrue(np.array_equal(np.asarray(got), expected, equal_nan=True))
+                            if name in ("hypot", "arctan2"):
+                                # C's library against the double-precision answer rounded: NumPy's single-precision
+                                # loops, by CPU, hold to 3 ulps of it, so not to NumPy's bits
+                                wide = [a.astype("float64") if isinstance(a, np.ndarray) else a for a in numpy_args]
+                                np.testing.assert_array_max_ulp(np.asarray(got), numpy_call(*wide).astype(dtype),
+                                                                maxulp=1)
+                            else:
+                                self.assertTrue(np.array_equal(np.asarray(got), expected, equal_nan=True))
 
     def test_two_masks_and_the_functions_refuse(self):
         mask = numerical.asarray([[True, False], [False, True]], "bool")
