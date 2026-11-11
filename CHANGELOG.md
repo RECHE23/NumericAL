@@ -21,6 +21,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 - **A Tensor operator beside a NumPy array or a list of the same dtype** reads it and computes, where it went through
   the promotion of two dtypes first: `t + a` of 8 float64 elements 2.2 → 1.1 µs (M1 Pro), the same bits.
+- **The joins of Tensors of one dtype**: the promotion of a single dtype at once, the stacking functions' reshapes
+  native and their promotion done once: two 2 × 3 float64 Tensors `concatenate` 2.0 → 1.3 µs, `stack` 3.9 → 1.8 µs,
+  `dstack` 6.0 → 2.5 µs, two vectors of 3 `vstack` and `column_stack` 5.2 → 1.9 µs, `hstack` 3.4 → 1.4 µs, `atleast_2d`
+  1.2 → 0.6 µs (M1 Pro).
 
 ## 2026.11.10 — 2026-11-10
 

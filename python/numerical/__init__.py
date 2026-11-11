@@ -290,6 +290,8 @@ def _promoted(dtypes):
     """NumPy's result dtype of tensors of `dtypes`: complex where one is, single precision only where all are; a bool
     one takes the others' dtype, and bools alone stay bool; int64 alone (bools beside) stays int64, beside a float or
     complex dtype the double precision of its kind (int64 and float32: float64, as NumPy's)."""
+    if dtypes and dtypes.count(dtypes[0]) == len(dtypes):  # one dtype: its own (the common case, at C speed)
+        return dtypes[0]
     dtypes = [dtype for dtype in dtypes if dtype != "bool"]
     if not dtypes:
         return "bool"
@@ -5647,14 +5649,20 @@ def concatenate(arrays, /, axis=0, out=None, *, dtype=None):
         tensors = [asarray(t, name) for t in tensors]
     if axis is None:
         tensors, axis = [reshape(t, (-1,)) for t in tensors], 0
+    return _concatenated(tensors, axis)
+
+
+def _concatenated(tensors, axis):
+    """:func:`concatenate` of `tensors` of one dtype already (:func:`_joined`'s)."""
     rank = len(tensors[0].shape)
     if rank == 0:
         raise ValueError("zero-dimensional arrays cannot be concatenated")
     axis = _operator.index(axis)
     if not -rank <= axis < rank:
         raise AxisError(f"axis {axis} is out of bounds for array of dimension {rank}")
-    if _builtins.any(len(t.shape) != rank for t in tensors):
-        raise ValueError("all the input arrays must have same number of dimensions")
+    for t in tensors:
+        if len(t.shape) != rank:
+            raise ValueError("all the input arrays must have same number of dimensions")
     return _numerical._concatenate(tensors, axis % rank)
 
 
@@ -5693,28 +5701,30 @@ def stack(arrays, /, axis=0, out=None, *, dtype=None):
         name = _checked_dtype(dtype, "stack: ")
         tensors = [asarray(t, name) for t in tensors]
     shape = tensors[0].shape
-    if _builtins.any(t.shape != shape for t in tensors):
-        raise ValueError("all input arrays must have the same shape")
+    for t in tensors:
+        if t.shape != shape:
+            raise ValueError("all input arrays must have the same shape")
     rank = len(shape) + 1
     axis = _operator.index(axis)
     if not -rank <= axis < rank:
         raise AxisError(f"axis {axis} is out of bounds for array of dimension {rank}")
     axis %= rank
-    expanded = shape[:axis] + (1,) + shape[axis:]
-    return _numerical._concatenate([reshape(t, expanded) for t in tensors], axis)
+    expanded = shape[:axis] + (1,) + shape[axis:]  # as many elements: the native reshape, without reshape's checks
+    return _numerical._concatenate([_numerical._reshape(t, expanded) for t in tensors], axis)
 
 
 def vstack(tup):
     """The arrays row-wise, as ``numpy.vstack``: a vector as a row (1 × n), along the first axis."""
     tensors = _joined(tup, "vstack")
-    return concatenate([reshape(t, (1, t.shape[0] if t.shape else 1)) if len(t.shape) < 2 else t for t in tensors], axis=0)
+    rows = [_numerical._reshape(t, (1, t.shape[0] if t.shape else 1)) if len(t.shape) < 2 else t for t in tensors]
+    return _concatenated(rows, 0)
 
 
 def hstack(tup):
     """The arrays column-wise, as ``numpy.hstack``: vectors one after the other, else along the second axis."""
     tensors = _joined(tup, "hstack")
-    tensors = [reshape(t, (1,)) if len(t.shape) == 0 else t for t in tensors]
-    return concatenate(tensors, axis=0 if len(tensors[0].shape) == 1 else 1)
+    tensors = [_numerical._reshape(t, (1,)) if len(t.shape) == 0 else t for t in tensors]
+    return _concatenated(tensors, 0 if len(tensors[0].shape) == 1 else 1)
 
 
 def _band_mask(shape, k, lower):
@@ -5938,7 +5948,7 @@ def expand_dims(a, axis):
 
 def _at_least(rank, arrays, shape_of):
     tensors = [_tensor(a) for a in arrays]
-    shaped = [t if len(t.shape) >= rank else reshape(t, shape_of(t.shape)) for t in tensors]
+    shaped = [t if len(t.shape) >= rank else _numerical._reshape(t, shape_of(t.shape)) for t in tensors]
     return shaped[0] if len(shaped) == 1 else shaped
 
 
@@ -6014,8 +6024,8 @@ def moveaxis(a, source, destination):
 def column_stack(tup):
     """Vectors as columns and matrices as they are, side by side, as ``numpy.column_stack``."""
     tensors = _joined(tup, "column_stack")
-    columns = [reshape(t, (t.shape[0] if t.shape else 1, 1)) if len(t.shape) < 2 else t for t in tensors]
-    return concatenate(columns, axis=1)
+    columns = [_numerical._reshape(t, (t.shape[0] if t.shape else 1, 1)) if len(t.shape) < 2 else t for t in tensors]
+    return _concatenated(columns, 1)
 
 
 def _ordered(name, x1, x2):
@@ -7018,7 +7028,7 @@ def dstack(tup):
     """The arrays along the third axis, as ``numpy.dstack``: each first of rank 3 (:func:`atleast_3d`)."""
     tensors = _joined(tup, "dstack")
     shaped = atleast_3d(*tensors)
-    return concatenate(shaped if isinstance(shaped, list) else [shaped], axis=2)
+    return _concatenated(shaped if isinstance(shaped, list) else [shaped], 2)
 
 
 def append(arr, values, axis=None):
