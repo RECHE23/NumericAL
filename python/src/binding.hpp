@@ -1787,6 +1787,7 @@ PyObject* module_arg_extreme(PyObject* /*self*/, PyObject* args); // in elementw
 
 // _argsort(a, axis) -> Tensor: numerical::argsort of a float, complex or int64 tensor along a non-negative axis.
 PyObject* module_argsort(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+PyObject* module_argsort_by(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
 // _nonzero(a) -> tuple of Tensors: numerical::nonzero of any tensor, one int64 Tensor per axis.
 PyObject* module_nonzero(PyObject* /*self*/, PyObject* args); // in elementwise.cpp

@@ -1649,6 +1649,89 @@ TEST(diag_puts_a_vector_on_a_diagonal)
                 numerical::dimension_error); // a square of order 2⁶³ + 1
 }
 
+//! \brief Whether argsort_by of \p order by \p key along \p axis is each line of \p order sorted stably by the elements
+//!        of \p key it indexes.
+template <typename T>
+bool sorted_by_as_stable(const tensor<std::int64_t>& order,
+                         const tensor<T>&            key,
+                         std::size_t                 axis)
+{
+  const tensor<std::int64_t>         got  {numerical::argsort_by(order, key, axis)};
+  const numerical::detail::axis_walk walk {numerical::detail::walk_along(key.shape(), axis)};
+  bool                               same {got.shape() == key.shape()};
+  for (std::size_t line {0}; same && line < walk.outer * walk.inner; ++line) {
+    const std::size_t         first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
+    std::vector<std::int64_t> want(walk.extent);
+    for (std::size_t k {0}; k < walk.extent; ++k) {
+      want[k] = order.data()[first + (k * walk.inner)];
+    }
+    std::stable_sort(want.begin(), want.end(), [&](std::int64_t a, std::int64_t b) {
+                       return numerical::detail::sorts_before(key.data()[first + (static_cast<std::size_t>(a) * walk.inner)],
+                                                              key.data()[first + (static_cast<std::size_t>(b) * walk.inner)]);
+                     });
+    for (std::size_t k {0}; same && k < walk.extent; ++k) {
+      same = got.data()[first + (k * walk.inner)] == want[k];
+    }
+  }
+  return same;
+}
+
+// argsort_by sorts an order stably by a key read where it lies, as each key of numpy.lexsort: along either axis of a
+// matrix whose order is a reversal (equal keys keep the reversed places), the lines one to a task, short or long; one
+// line long enough for its radix sort among the threads (both zeros and NaNs among its keys), of reals, floats and integers; a complex
+// key by comparisons. Shapes that differ and an index past the axis refused.
+TEST(argsort_by_sorts_an_order_stably_by_a_key)
+{
+  const std::size_t               rows {37};
+  const std::size_t               cols {41};
+  numerical::buffer<double>       values(rows * cols);
+  numerical::buffer<std::int64_t> reversed_rows(rows * cols);
+  numerical::buffer<std::int64_t> reversed_cols(rows * cols);
+  for (std::size_t k {0}; k < values.size(); ++k) {
+    values[k]        = k % 7 == 0 ? -0.0 : static_cast<double>(k % 5);
+    if (k % 13 == 0) {
+      values[k] = std::numeric_limits<double>::quiet_NaN();
+    }
+    reversed_rows[k] = static_cast<std::int64_t>(rows - 1 - (k / cols));
+    reversed_cols[k] = static_cast<std::int64_t>(cols - 1 - (k % cols));
+  }
+  const tensor<double> key {{rows, cols}, values};
+  EXPECT(sorted_by_as_stable(tensor<std::int64_t> {{rows, cols}, reversed_rows}, key, 0));
+  EXPECT(sorted_by_as_stable(tensor<std::int64_t> {{rows, cols}, reversed_cols}, key, 1));
+  const std::size_t               length {std::max<std::size_t>(3 * numerical::detail::radix_sort_least, 1U << 15)};
+  numerical::buffer<double>       wide(length);
+  numerical::buffer<float>        single(length);
+  numerical::buffer<std::int64_t> integers(length);
+  numerical::buffer<std::int64_t> reversed(length);
+  for (std::size_t k {0}; k < length; ++k) {
+    wide[k]     = k % 3 == 0 ? -0.0 : static_cast<double>((k * 7919) % 101);
+    if (k % 17 == 0) {
+      wide[k] = std::numeric_limits<double>::quiet_NaN();
+    }
+    single[k]   = static_cast<float>(wide[k]);
+    integers[k] = static_cast<std::int64_t>((k * 7919) % 101) - 50;
+    reversed[k] = static_cast<std::int64_t>(length - 1 - k);
+  }
+  const tensor<std::int64_t> order {{length}, reversed};
+  EXPECT(sorted_by_as_stable(order, tensor<double> {{length}, wide}, 0));
+  numerical::buffer<double>       lines(8 * length);
+  numerical::buffer<std::int64_t> reversed_lines(8 * length);
+  for (std::size_t k {0}; k < lines.size(); ++k) {
+    lines[k]          = wide[(k * 31) % length];
+    reversed_lines[k] = reversed[k % length];
+  }
+  EXPECT(sorted_by_as_stable(tensor<std::int64_t> {{8, length}, reversed_lines}, tensor<double> {{8, length}, lines}, 1)); // long lines, one to a task
+  EXPECT(sorted_by_as_stable(order, tensor<float> {{length}, single}, 0));
+  EXPECT(sorted_by_as_stable(order, tensor<std::int64_t> {{length}, integers}, 0));
+  EXPECT(sorted_by_as_stable(tensor<std::int64_t> {{3}, {2, 0, 1}}, tensor<std::complex<double>> {{3}, {std::complex<double> {1.0, 2.0}, std::complex<double> {1.0, 1.0}, std::complex<double> {0.0, 5.0}}}, 0));
+  EXPECT_THROWS(static_cast<void>(numerical::argsort_by(tensor<std::int64_t> {{2}, {0, 1}}, tensor<double> {{3}, {1.0, 2.0, 3.0}}, 0)),
+                numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::argsort_by(tensor<std::int64_t> {{2}, {0, 2}}, tensor<double> {{2}, {1.0, 2.0}}, 0)),
+                numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::argsort_by(tensor<std::int64_t> {{2}, {0, -1}}, tensor<double> {{2}, {1.0, 2.0}}, 0)),
+                numerical::dimension_error);
+}
+
 // A selection answers what a stable sort puts at each position, to the bit: among zeros of either sign and NaNs of
 // different payloads, the one of the same rank in the line's order. Positions alike for every line or one row per
 // line, repeated ones, more than a selection takes (the line sorted), integers and complex numbers.

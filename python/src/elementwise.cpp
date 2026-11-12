@@ -696,6 +696,40 @@ PyObject* module_argsort(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _argsort_by(order, key, axis) -> Tensor: the int64 order's lines sorted stably by the key's elements they index.
+PyObject* module_argsort_by(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  o    = nullptr;
+    PyObject*  x    = nullptr;
+    Py_ssize_t axis = 0;
+    if (PyArg_ParseTuple(args, "OOn", &o, &x, &axis) == 0) {
+        return nullptr;
+    }
+    const any_tensor* indices = as_tensor(o);
+    const any_tensor* key     = indices == nullptr ? nullptr : arithmetic_tensor(x);
+    if (key == nullptr) {
+        return nullptr;
+    }
+    const auto* order = std::get_if<int_tensor>(indices);
+    if (order == nullptr) {
+        PyErr_SetString(PyExc_ValueError, "_argsort_by: an int64 order");
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*key))};
+            result.emplace(visit_arithmetic([&](const auto& t) {
+                return any_tensor {numerical::argsort_by(*order, t, static_cast<std::size_t>(axis))};
+            }, *key));
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _nonzero(a) -> tuple of Tensors.
 PyObject* module_nonzero(PyObject* /*self*/, PyObject* args)
 {

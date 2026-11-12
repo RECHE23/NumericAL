@@ -259,6 +259,15 @@ class AgainstNumPy(unittest.TestCase):
                         "lexsort")
         m = rng.standard_normal((3, 4))
         self.assertSame(lambda: numerical.lexsort(numerical.asarray(m)), lambda: np.lexsort(m), "lexsort rows")
+        # keys of every real dtype together (ties, both zeros and NaNs among them), along either axis of matrices, and
+        # long enough for a radix sort among the threads
+        for shape, axis in (((60, 50), 0), ((60, 50), 1), ((60, 50), -1), ((200001,), 0)):
+            mixed = [rng.integers(0, 3, shape), rng.random(shape) < 0.5,
+                     np.where(rng.random(shape) < 0.2, np.nan, rng.integers(-2, 3, shape) * 0.5),
+                     np.where(rng.random(shape) < 0.3, -0.0, rng.integers(0, 2, shape)).astype(np.float32)]
+            ours = [numerical.asarray(k, "int64") if k.dtype.kind == "i" else numerical.asarray(k) for k in mixed]
+            self.assertSame(lambda: numerical.lexsort(ours, axis=axis), lambda: np.lexsort(mixed, axis=axis),
+                            f"lexsort {shape} {axis}")
         # numbers as keys (a 1-D array's rows), none (an empty one's) and an axis that is not an integer, as NumPy's
         for keys in (np.array([3.0, 1.0, 2.0]), np.array([[1.0, 2.0], [2.0, 1.0]]), np.zeros((0,)), np.array(5.0),
                      m[:, :0], np.zeros((0, 3))):

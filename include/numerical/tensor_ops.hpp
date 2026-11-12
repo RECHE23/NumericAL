@@ -2646,6 +2646,63 @@ namespace numerical {
     return tensor<std::int64_t> {t.shape(), std::move(out)};
   }
 
+  /*!
+   * \brief \p order, indices along \p axis into \p key of its shape, each line's sorted stably by the elements of \p key
+   *        they index, as `numpy.argsort` sorts (NaNs last): equal elements keep their places in \p order. A sort by
+   *        the keys of `numpy.lexsort` in turn, from its least significant, each reading the key where it lies (no
+   *        gather of the key into the order before its sort). The lines on the threads, or one long line among them.
+   * \throws dimension_error If the shapes differ, \p axis is not an axis, or an index is out of the axis's range.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<std::int64_t> argsort_by(const tensor<std::int64_t>& order,
+                                                const tensor<T>&            key,
+                                                std::size_t                 axis)
+  {
+    if (order.shape() != key.shape()) {
+      throw dimension_error("argsort_by: the order and the key of one shape");
+    }
+    const detail::axis_walk   walk   {detail::walk_along(key.shape(), axis)};
+    const auto                extent {static_cast<std::int64_t>(walk.extent)};
+    const std::int64_t* const from   {order.data().data()};
+    if (std::any_of(from, from + order.size(), [extent](std::int64_t k) { return k < 0 || k >= extent; })) {
+      throw dimension_error("argsort_by: an index out of the axis's range");
+    }
+    const std::size_t    lines {walk.outer * walk.inner};
+    buffer<std::int64_t> out(order.size());
+    const T* const       in {key.data().data()};
+    const std::size_t    threads {detail::parallel_threads(walk.extent, 16)};
+    const bool           shared {threads >= 2 && detail::parallel_threads(lines, walk.extent * 16) * 2 <= threads};
+    const auto           order_line {[&](std::size_t line, bool among_threads) {
+                                       const std::size_t first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
+                                       const auto        value {[&](std::int64_t k) -> const T& {
+                                                                  return in[first + (static_cast<std::size_t>(k) * walk.inner)];
+                                                                }};
+                                       const auto        less {[&](std::int64_t a, std::int64_t b) { return detail::sorts_before(value(a), value(b)); }};
+                                       buffer<std::int64_t> run(walk.extent);
+                                       for (std::size_t k {0}; k < walk.extent; ++k) {
+                                         run[k] = from[first + (k * walk.inner)];
+                                       }
+                                       if (among_threads) {
+                                         detail::order_shared(run.data(), walk.extent, in + first, walk.inner, less, threads);
+                                       }
+                                       else {
+                                         detail::order_run(run.data(), run.data() + walk.extent, in + first, walk.inner, less);
+                                       }
+                                       for (std::size_t k {0}; k < walk.extent; ++k) {
+                                         out[first + (k * walk.inner)] = run[k];
+                                       }
+                                     }};
+    if (shared) {
+      for (std::size_t line {0}; line < lines; ++line) {
+        order_line(line, true);
+      }
+    }
+    else {
+      detail::parallel_for(lines, walk.extent * 16, [&](std::size_t line) { order_line(line, false); });
+    }
+    return tensor<std::int64_t> {key.shape(), std::move(out)};
+  }
+
   namespace detail {
     //! \brief A real's NaN, which wins `numpy.argmax` and `numpy.argmin`.
     template <std::floating_point T>

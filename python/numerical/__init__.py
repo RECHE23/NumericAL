@@ -8590,7 +8590,7 @@ def _sorted_rows(rows):
     last column to the first."""
     order = asarray(arange(rows.shape[0]), "int64")
     for column in range(rows.shape[1] - 1, -1, -1):
-        order = order[argsort(rows[order, column])]
+        order = _native(_numerical._argsort_by, order, _ordered_operand(rows[:, column], "unique"), 0)
     return order
 
 
@@ -10241,8 +10241,9 @@ def lexsort(keys, axis=-1):
             raise AxisError(f"axis {axis} is out of bounds for a tensor of rank 0")
         return 0
     order = argsort(keys[0], axis=axis, stable=True)
-    for key in keys[1:]:
-        order = take_along_axis(order, argsort(take_along_axis(key, order, axis), axis=axis, stable=True), axis)
+    axis = _axis(order, axis)
+    for key in keys[1:]:  # each key read where it lies, the order sorted stably by it
+        order = _native(_numerical._argsort_by, order, _ordered_operand(key, "lexsort"), axis)
     return order
 
 

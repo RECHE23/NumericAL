@@ -25,6 +25,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   0.045 ms. **`bincount` and `histogram` without weights** count on the threads, each part into bins of its own, where
   the elements outnumber the bins: 10^6 values, `histogram` of 100 bins 2.4 → 0.95 ms, `bincount` of 1000 0.93 → 0.71
   ms. The same counts.
+- **`lexsort` and `unique` along an axis** sort the order by each key where the key lies (C++ `numerical::argsort_by`,
+  new: an order's lines sorted stably by a key's elements they index, by the bits for reals and int64), where each key
+  was gathered into the order, argsorted, and the order gathered again. On M1 Pro, `lexsort` of three keys of 10^6
+  int64 16.3 → 12.4 ms (NumPy 392 ms), of three 2000 × 500 along the first axis 11.3 → 7.2 ms; `unique` of 200000
+  rows of 4 along the first axis 11.7 → 8.2 ms (NumPy 171 ms). The same indices.
 
 ### Fixed
 
