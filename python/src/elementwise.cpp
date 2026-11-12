@@ -1066,6 +1066,11 @@ namespace {
         return rise + y0;
     }
 
+    //! The points a part of an interpolation takes, and the work of one, in multiply-adds (a search about the
+    //! previous point's interval and a line).
+    constexpr std::size_t interp_chunk {4096};
+    constexpr std::size_t interp_work {16};
+
     //! One part (or a real value) of NumPy's interpolation between points j and j + 1: through the first, or the
     //! second where that is NaN, or the shared value where both ends are equal.
     double interp_part(double slope, double x, double x0, double x1, double y0, double y1, bool fused)
@@ -1122,40 +1127,49 @@ PyObject* module_interp(PyObject* /*self*/, PyObject* args)
                     const double*  dx {knots->data().data()};
                     const T*       dy {values.data().data()};
                     const auto     len {static_cast<std::ptrdiff_t>(knots->size())};
-                    numerical::buffer<T> out(points->size());
-                    std::ptrdiff_t       j {0};
-                    for (std::size_t i {0}; i < points->size(); ++i) {
-                        const double key {points->data()[i]};
-                        if (len == 1) {
-                            out[i] = key < dx[0] ? fill_left : (key > dx[0] ? fill_right : dy[0]);
-                            continue;
+                    const std::size_t    size {points->size()};
+                    numerical::buffer<T> out(size);
+                    // the search starts from the previous point's interval, and finds the one index with xp[j] <= key <
+                    // xp[j + 1] whatever it starts from only where xp is non-decreasing and holds no NaN: the points
+                    // split among the threads only there, each part searching from the first interval
+                    const bool split {size > interp_chunk && std::is_sorted(dx, dx + len)
+                                      && std::none_of(dx, dx + len, [](double v) { return std::isnan(v); })};
+                    const std::size_t share {split ? interp_chunk : std::max<std::size_t>(size, 1)};
+                    numerical::detail::parallel_for((size + share - 1) / share, share * interp_work, [&](std::size_t part) {
+                        std::ptrdiff_t j {0};
+                        for (std::size_t i {part * share}; i < std::min(size, (part + 1) * share); ++i) {
+                            const double key {points->data()[i]};
+                            if (len == 1) {
+                                out[i] = key < dx[0] ? fill_left : (key > dx[0] ? fill_right : dy[0]);
+                                continue;
+                            }
+                            if (std::isnan(key)) {
+                                out[i] = T {key};
+                                continue;
+                            }
+                            j = interp_search(key, dx, len, j);
+                            if (j == -1) {
+                                out[i] = fill_left;
+                            }
+                            else if (j == len) {
+                                out[i] = fill_right;
+                            }
+                            else if (j == len - 1 || dx[j] == key) {
+                                out[i] = dy[j];
+                            }
+                            else if constexpr (std::is_same_v<T, double>) {
+                                const double slope {(dy[j + 1] - dy[j]) / (dx[j + 1] - dx[j])};
+                                out[i] = interp_part(slope, key, dx[j], dx[j + 1], dy[j], dy[j + 1], fused != 0);
+                            }
+                            else {
+                                const double inverse {1.0 / (dx[j + 1] - dx[j])};
+                                const double re {(dy[j + 1].real() - dy[j].real()) * inverse};
+                                const double im {(dy[j + 1].imag() - dy[j].imag()) * inverse};
+                                out[i] = T {interp_part(re, key, dx[j], dx[j + 1], dy[j].real(), dy[j + 1].real(), fused != 0),
+                                            interp_part(im, key, dx[j], dx[j + 1], dy[j].imag(), dy[j + 1].imag(), fused != 0)};
+                            }
                         }
-                        if (std::isnan(key)) {
-                            out[i] = T {key};
-                            continue;
-                        }
-                        j = interp_search(key, dx, len, j);
-                        if (j == -1) {
-                            out[i] = fill_left;
-                        }
-                        else if (j == len) {
-                            out[i] = fill_right;
-                        }
-                        else if (j == len - 1 || dx[j] == key) {
-                            out[i] = dy[j];
-                        }
-                        else if constexpr (std::is_same_v<T, double>) {
-                            const double slope {(dy[j + 1] - dy[j]) / (dx[j + 1] - dx[j])};
-                            out[i] = interp_part(slope, key, dx[j], dx[j + 1], dy[j], dy[j + 1], fused != 0);
-                        }
-                        else {
-                            const double inverse {1.0 / (dx[j + 1] - dx[j])};
-                            const double re {(dy[j + 1].real() - dy[j].real()) * inverse};
-                            const double im {(dy[j + 1].imag() - dy[j].imag()) * inverse};
-                            out[i] = T {interp_part(re, key, dx[j], dx[j + 1], dy[j].real(), dy[j + 1].real(), fused != 0),
-                                        interp_part(im, key, dx[j], dx[j + 1], dy[j].imag(), dy[j + 1].imag(), fused != 0)};
-                        }
-                    }
+                    });
                     return any_tensor {numerical::tensor<T> {points->shape(), std::move(out)}};
                 }
                 else {

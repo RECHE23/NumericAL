@@ -147,6 +147,14 @@ class AgainstNumPy(unittest.TestCase):
         self.assertSame(lambda: numerical.interp(numerical.asarray([1.0, 0.9, 1.1]), numerical.asarray(xp),
                                                  numerical.asarray(fp)),
                         lambda: np.interp([1.0, 0.9, 1.1], xp, fp), "interp repeated")
+        # past 4096 points: on the threads where xp is non-decreasing (repeats in it), in one pass where the index
+        # NumPy's search finds depends on the previous point's (xp out of order, a NaN in it)
+        x = np.concatenate([rng.uniform(-3, 3, size=20000), np.repeat([0.0, 1.0, np.nan], 100)])
+        ordered = np.sort(np.round(rng.normal(size=300), 1))
+        for xp in (ordered, rng.normal(size=300), np.where(np.arange(300) == 150, np.nan, ordered)):
+            fp = rng.normal(size=300)
+            self.assertSame(lambda: numerical.interp(_tensor(x), _tensor(xp), _tensor(fp)),
+                            lambda: np.interp(x, xp, fp), "interp long")
 
     def test_windows(self):
         for M in (0, 1, 2, 5, 12, 101, -3, 4.0):

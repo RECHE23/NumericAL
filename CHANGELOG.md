@@ -43,6 +43,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   r²/2 kept exact. Within 0.5001 ulp of the exact value (Apple's libm 0.666 near 0), x itself under 2^-54; the same
   bits on every processor with FMA. 10^6 values in [-0.9, 5] on one core, x86-64 (AVX2 and FMA): GCC 11.3 → 6.3 ms,
   Clang 11.6 → 5.5 ms; M1 Pro the same as Apple's libm (4.8 → 4.95 ms). `log` keeps the C library's, faster on M1.
+- **`interp` on the threads where `xp` is non-decreasing and holds no NaN**: NumPy's search starts from the previous
+  point's interval, and finds the same one from any start only there, so past 4096 points each part searches from the
+  first; elsewhere one pass, NumPy's indices. On M1 Pro, 10^6 points over 1000 knots 47.2 → 7.3 ms (NumPy 51.7 ms),
+  10^6 sorted points 3.46 → 0.78 ms. The same values.
 
 ### Fixed
 
