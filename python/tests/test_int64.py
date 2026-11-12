@@ -158,8 +158,8 @@ class Int64(unittest.TestCase):
 
     def test_refused_where_floating_point_computes(self):
         t = numerical.asarray([[1, 2], [3, 4]], dtype="int64")
-        for name, call in (("@", lambda: t @ t), ("solve", lambda: numerical.solve(t, t)),
-                           ("einsum", lambda: numerical.einsum("ij->", t)), ("fft", lambda: numerical.fft.fft(t))):
+        for name, call in (("solve", lambda: numerical.solve(t, t)), ("inv", lambda: numerical.inv(t)),
+                           ("fft", lambda: numerical.fft.fft(t))):
             with self.subTest(name=name), self.assertRaises(TypeError):
                 call()
 
@@ -216,6 +216,51 @@ class Int64WithNumpy(unittest.TestCase):
                     np.testing.assert_array_equal(got, want, err_msg=name)
         np.testing.assert_array_equal(np.asarray(numerical.mean(wide, axis=1)), np.mean(grid, axis=1))
         np.testing.assert_array_equal(np.asarray(numerical.var(wide)), np.var(grid))
+
+    def test_products_wrap_as_numpy(self):
+        rng = np.random.default_rng(20261112)
+
+        def drawn(*shape):  # half the elements past 2^32, whose products wrap; the rest small
+            big = rng.integers(-2**62, 2**62, shape)
+            return np.where(rng.random(shape) < 0.5, big, rng.integers(-9, 9, shape)).astype(np.int64)
+
+        def tensor(a):
+            return numerical.asarray(a, dtype="int64")
+
+        m, n, k = drawn(7, 5), drawn(5, 6), drawn(5)
+        s3, t3 = drawn(3, 7, 5), drawn(3, 5, 6)
+        big, wide = drawn(70, 90), drawn(90, 40)  # past the small products' path
+        cases = (("@", lambda x, y: x @ y, (m, n)), ("@ vector", lambda x, y: x @ y, (m, k)),
+                 ("vector @", lambda x, y: x @ y, (k, n)), ("vector @ vector", lambda x, y: x @ y, (k, k)),
+                 ("@ large", lambda x, y: x @ y, (big, wide)), ("@ stacks", lambda x, y: x @ y, (s3, t3)),
+                 ("@ stack by one", lambda x, y: x @ y, (s3, n)), ("stack @ vector", lambda x, y: x @ y, (s3, k)),
+                 ("dot", lambda x, y: x.dot(y) if isinstance(x, np.ndarray) else numerical.dot(x, y), (s3, n)),
+                 ("inner", lambda x, y: (np if isinstance(x, np.ndarray) else numerical).inner(x, y), (m, m)),
+                 ("vdot", lambda x, y: (np if isinstance(x, np.ndarray) else numerical).vdot(x, y), (m, m)),
+                 ("tensordot", lambda x, y: (np if isinstance(x, np.ndarray) else numerical).tensordot(x, y, axes=([1, 2], [1, 0])),
+                  (s3, drawn(5, 7))))
+        with np.errstate(all="ignore"):
+            for name, call, (a, b) in cases:
+                with self.subTest(name=name):
+                    got, want = call(tensor(a), tensor(b)), call(a, b)
+                    if not isinstance(got, numerical.Tensor):  # a Python int, as NumPy's scalar
+                        self.assertIs(type(got), int)
+                        self.assertEqual(got, int(want))
+                        continue
+                    self.assertEqual(np.asarray(got).dtype, np.int64)
+                    np.testing.assert_array_equal(np.asarray(got), want)
+            for spec, operands in (("ij,jk->ik", (m, n)), ("ij->", (m,)), ("ii->", (drawn(6, 6),)), ("ij->j", (m,)),
+                                   ("i,j->ij", (k, k)), ("ij,ij->", (m, m)), ("bij,bjk->bik", (s3, t3)),
+                                   ("...ij,jk->...ik", (s3, n)), ("ij,jk,kl->il", (m, n, drawn(6, 4))), ("ij", (m,))):
+                with self.subTest(spec=spec):
+                    got = numerical.einsum(spec, *(tensor(a) for a in operands))
+                    want = np.einsum(spec, *operands)
+                    got = np.asarray(got) if isinstance(got, numerical.Tensor) else np.int64(got)
+                    self.assertEqual(got.dtype, np.int64)
+                    np.testing.assert_array_equal(got, want)
+            self.assertEqual(np.asarray(tensor(m) @ numerical.asarray(n.astype(np.float64))).dtype, np.float64)
+        self.assertEqual(numerical.conj(tensor(m)).dtype, "int64")  # its own elements, as NumPy's
+        self.assertEqual(numerical.conj(tensor(m)).tolist(), m.tolist())
 
     def test_exported(self):
         t = numerical.asarray([[1, BIG], [3, -4]], dtype="int64")

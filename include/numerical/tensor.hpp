@@ -1951,6 +1951,10 @@ namespace numerical {
     [[nodiscard]] tensor<T> einsum_impl(const std::string&                   spec_in,
                                         const std::vector<const tensor<T>*>& operands);
 
+    template <std::signed_integral T>
+    [[nodiscard]] tensor<T> einsum_impl(const std::string&                   spec_in,
+                                        const std::vector<const tensor<T>*>& operands);
+
     /*!
      * \brief \ref einsum_impl of a spec with ellipses, as NumPy reads them: each `...` stands for an operand's axes its
      *        letters leave, aligned from the right across the operands and broadcast (an extent of 1 repeated), named by
@@ -2071,8 +2075,21 @@ namespace numerical {
       return einsum_impl<T>(rewritten + "->" + output, next);
     }
 
+    //! \brief A copy of \p t, each element converted to `To`: between a signed integer type and its unsigned one, the
+    //!        same bits (modulo 2ⁿ).
+    template <typename To,
+              typename From>
+    [[nodiscard]] tensor<To> converted(const tensor<From>& t)
+    {
+      buffer<To> out(t.size());
+      std::transform(t.data().begin(), t.data().end(), out.begin(), [](const From& x) { return static_cast<To>(x); });
+      return tensor<To> {t.shape(), std::move(out)};
+    }
+
+    //! \brief \ref einsum_impl of a type whose sums and products are defined past its range: a float, a complex, an
+    //!        unsigned integer.
     template <typename T>
-    [[nodiscard]] tensor<T> einsum_impl(const std::string&                    spec_in,
+    [[nodiscard]] tensor<T> einsum_spec(const std::string&                    spec_in,
                                         const std::vector<const tensor<T>*>&  operands)
     {
       // Tolerate whitespace anywhere in the spec, the way NumPy does ("ij, jk -> ik").
@@ -2344,6 +2361,33 @@ namespace numerical {
       }
       return tensor<T> {std::move(out_shape), std::move(result)};
     }
+
+    //! \brief Einstein summation of \p operands as \p spec_in reads it (\ref einsum): \ref einsum_spec.
+    template <typename T>
+    [[nodiscard]] tensor<T> einsum_impl(const std::string&                   spec_in,
+                                        const std::vector<const tensor<T>*>& operands)
+    {
+      return einsum_spec<T>(spec_in, operands);
+    }
+
+    //! \brief \ref einsum_impl of a signed integer type: through its unsigned type, modulo 2ⁿ the same bits, so that an
+    //!        overflow wraps as NumPy's integers wrap it, where the signed operation is undefined.
+    template <std::signed_integral T>
+    [[nodiscard]] tensor<T> einsum_impl(const std::string&                   spec_in,
+                                        const std::vector<const tensor<T>*>& operands)
+    {
+      using unsigned_type = std::make_unsigned_t<T>;
+      std::vector<tensor<unsigned_type>>        held;
+      std::vector<const tensor<unsigned_type>*> wrapped;
+      held.reserve(operands.size());
+      for (const tensor<T>* operand : operands) {
+        held.push_back(converted<unsigned_type>(*operand));
+      }
+      for (const tensor<unsigned_type>& operand : held) {
+        wrapped.push_back(&operand);
+      }
+      return converted<T>(einsum_spec<unsigned_type>(spec_in, wrapped));
+    }
   } // namespace detail
 
   /*!
@@ -2387,6 +2431,95 @@ namespace numerical {
     return detail::einsum_impl<T>(spec, operands);
   }
 
+  namespace detail {
+    //! \brief \ref numerical::matmul of a type whose sums and products are defined past its range: a float, a complex,
+    //!        an unsigned integer.
+    template <typename T>
+    [[nodiscard]] tensor<T> stacked_matmul(const tensor<T>& a,
+                                           const tensor<T>& b)
+    {
+      const std::vector<std::size_t>& sa {a.shape()};
+      const std::vector<std::size_t>& sb {b.shape()};
+      if (sa.empty() || sb.empty()) {
+        throw dimension_error("matmul: a rank-0 operand has no matrix to multiply");
+      }
+      const bool        row    {sa.size() == 1};
+      const bool        column {sb.size() == 1};
+      const std::size_t m      {row ? 1 : sa[sa.size() - 2]};
+      const std::size_t k      {sa.back()};
+      const std::size_t n      {column ? 1 : sb.back()};
+      if ((column ? sb[0] : sb[sb.size() - 2]) != k) {
+        throw dimension_error("matmul: the inner extents of the operands differ");
+      }
+      const std::size_t        lead_a {sa.size() - (row ? 1 : 2)};
+      const std::size_t        lead_b {sb.size() - (column ? 1 : 2)};
+      const std::size_t        rank   {std::max(lead_a, lead_b)};
+      std::vector<std::size_t> batch(rank);
+      std::vector<std::size_t> stride_a(rank, 0); // 0 along an axis the operand repeats
+      std::vector<std::size_t> stride_b(rank, 0);
+      std::size_t              step_a {m * k};
+      std::size_t              step_b {k * n};
+      for (std::size_t d {rank}; d-- > 0;) {
+        const std::size_t da {d + lead_a >= rank ? sa[d + lead_a - rank] : 1};
+        const std::size_t db {d + lead_b >= rank ? sb[d + lead_b - rank] : 1};
+        if (da != db && da != 1 && db != 1) {
+          throw dimension_error("matmul: the leading axes of the operands do not broadcast");
+        }
+        batch[d]    = da == 1 ? db : da;
+        stride_a[d] = da == 1 ? 0 : step_a;
+        stride_b[d] = db == 1 ? 0 : step_b;
+        step_a      = detail::checked_mul(step_a, da);
+        step_b      = detail::checked_mul(step_b, db);
+      }
+      std::size_t count {1};
+      for (const std::size_t extent : batch) {
+        count = detail::checked_mul(count, extent);
+      }
+      std::vector<std::size_t> shape {batch};
+      if (!row) {
+        shape.push_back(m);
+      }
+      if (!column) {
+        shape.push_back(n);
+      }
+      const std::array<std::size_t, 3> elements {count, m, n};
+      buffer<T>                        c(detail::element_count(elements.begin(), elements.end()));
+      if (rank == 0) { // no stack: one product
+        detail::gemm(m, n, k, a.data().data(), k, b.data().data(), n, c.data(), n, detail::c_start::zero);
+        return tensor<T> {std::move(shape), std::move(c)};
+      }
+      // B shared by the whole stack and A's matrices one after another: one product of all A's rows, B packed once
+      // (1000 × 3 by 3 × 64 matrices times 64 × 64, ten AVX-512 cores, 165 → 87 µs). Each element of C the same.
+      const bool shared_b {std::ranges::all_of(stride_b, [](std::size_t s) { return s == 0; }) && std::ranges::none_of(stride_a, [](std::size_t s) { return s == 0; })};
+      if (shared_b) {
+        detail::gemm(count * m, n, k, a.data().data(), k, b.data().data(), n, c.data(), n, detail::c_start::zero);
+        return tensor<T> {std::move(shape), std::move(c)};
+      }
+      const auto product {[&](std::size_t p) {
+                            std::size_t rest {p};
+                            std::size_t offset_a {0};
+                            std::size_t offset_b {0};
+                            for (std::size_t d {batch.size()}; d-- > 0;) {
+                              const std::size_t index {rest % batch[d]};
+                              rest     /= batch[d];
+                              offset_a += index * stride_a[d];
+                              offset_b += index * stride_b[d];
+                            }
+                            detail::gemm(m, n, k, a.data().data() + offset_a, k, b.data().data() + offset_b, n, c.data() + (p * m * n), n, detail::c_start::zero);
+                          }};
+      // Fewer products than threads: one after another, each on all of them, where the stack's products in parallel held
+      // each to one (two products of order 1000, ten AVX-512 cores: 28.0 → 7.2 ms); else the stack's products in parallel.
+      if (count < max_threads()) {
+        for (std::size_t p {0}; p < count; ++p) {
+          product(p);
+        }
+        return tensor<T> {std::move(shape), std::move(c)};
+      }
+      detail::parallel_for(count, m * n * k / detail::gemm_kernel_speedup, product);
+      return tensor<T> {std::move(shape), std::move(c)};
+    }
+  } // namespace detail
+
   /*!
    * \brief The matrix product of two tensors, as NumPy's `matmul`: each operand a stack of matrices along its leading
    *        axes, those axes broadcast against the other's (aligned from the right, an extent of 1 repeated), one product
@@ -2401,85 +2534,16 @@ namespace numerical {
   [[nodiscard]] tensor<T> matmul(const tensor<T>& a,
                                  const tensor<T>& b)
   {
-    const std::vector<std::size_t>& sa {a.shape()};
-    const std::vector<std::size_t>& sb {b.shape()};
-    if (sa.empty() || sb.empty()) {
-      throw dimension_error("matmul: a rank-0 operand has no matrix to multiply");
-    }
-    const bool        row    {sa.size() == 1};
-    const bool        column {sb.size() == 1};
-    const std::size_t m      {row ? 1 : sa[sa.size() - 2]};
-    const std::size_t k      {sa.back()};
-    const std::size_t n      {column ? 1 : sb.back()};
-    if ((column ? sb[0] : sb[sb.size() - 2]) != k) {
-      throw dimension_error("matmul: the inner extents of the operands differ");
-    }
-    const std::size_t        lead_a {sa.size() - (row ? 1 : 2)};
-    const std::size_t        lead_b {sb.size() - (column ? 1 : 2)};
-    const std::size_t        rank   {std::max(lead_a, lead_b)};
-    std::vector<std::size_t> batch(rank);
-    std::vector<std::size_t> stride_a(rank, 0); // 0 along an axis the operand repeats
-    std::vector<std::size_t> stride_b(rank, 0);
-    std::size_t              step_a {m * k};
-    std::size_t              step_b {k * n};
-    for (std::size_t d {rank}; d-- > 0;) {
-      const std::size_t da {d + lead_a >= rank ? sa[d + lead_a - rank] : 1};
-      const std::size_t db {d + lead_b >= rank ? sb[d + lead_b - rank] : 1};
-      if (da != db && da != 1 && db != 1) {
-        throw dimension_error("matmul: the leading axes of the operands do not broadcast");
-      }
-      batch[d]    = da == 1 ? db : da;
-      stride_a[d] = da == 1 ? 0 : step_a;
-      stride_b[d] = db == 1 ? 0 : step_b;
-      step_a      = detail::checked_mul(step_a, da);
-      step_b      = detail::checked_mul(step_b, db);
-    }
-    std::size_t count {1};
-    for (const std::size_t extent : batch) {
-      count = detail::checked_mul(count, extent);
-    }
-    std::vector<std::size_t> shape {batch};
-    if (!row) {
-      shape.push_back(m);
-    }
-    if (!column) {
-      shape.push_back(n);
-    }
-    const std::array<std::size_t, 3> elements {count, m, n};
-    buffer<T>                        c(detail::element_count(elements.begin(), elements.end()));
-    if (rank == 0) { // no stack: one product
-      detail::gemm(m, n, k, a.data().data(), k, b.data().data(), n, c.data(), n, detail::c_start::zero);
-      return tensor<T> {std::move(shape), std::move(c)};
-    }
-    // B shared by the whole stack and A's matrices one after another: one product of all A's rows, B packed once
-    // (1000 × 3 by 3 × 64 matrices times 64 × 64, ten AVX-512 cores, 165 → 87 µs). Each element of C the same.
-    const bool shared_b {std::ranges::all_of(stride_b, [](std::size_t s) { return s == 0; }) && std::ranges::none_of(stride_a, [](std::size_t s) { return s == 0; })};
-    if (shared_b) {
-      detail::gemm(count * m, n, k, a.data().data(), k, b.data().data(), n, c.data(), n, detail::c_start::zero);
-      return tensor<T> {std::move(shape), std::move(c)};
-    }
-    const auto product {[&](std::size_t p) {
-                          std::size_t rest {p};
-                          std::size_t offset_a {0};
-                          std::size_t offset_b {0};
-                          for (std::size_t d {batch.size()}; d-- > 0;) {
-                            const std::size_t index {rest % batch[d]};
-                            rest     /= batch[d];
-                            offset_a += index * stride_a[d];
-                            offset_b += index * stride_b[d];
-                          }
-                          detail::gemm(m, n, k, a.data().data() + offset_a, k, b.data().data() + offset_b, n, c.data() + (p * m * n), n, detail::c_start::zero);
-                        }};
-    // Fewer products than threads: one after another, each on all of them, where the stack's products in parallel held
-    // each to one (two products of order 1000, ten AVX-512 cores: 28.0 → 7.2 ms); else the stack's products in parallel.
-    if (count < max_threads()) {
-      for (std::size_t p {0}; p < count; ++p) {
-        product(p);
-      }
-      return tensor<T> {std::move(shape), std::move(c)};
-    }
-    detail::parallel_for(count, m * n * k / detail::gemm_kernel_speedup, product);
-    return tensor<T> {std::move(shape), std::move(c)};
+    return detail::stacked_matmul(a, b);
+  }
+
+  //! \brief \ref matmul of a signed integer type: through its unsigned type, wrapped as NumPy's (\ref detail::einsum_impl).
+  template <std::signed_integral T>
+  [[nodiscard]] tensor<T> matmul(const tensor<T>& a,
+                                 const tensor<T>& b)
+  {
+    using unsigned_type = std::make_unsigned_t<T>;
+    return detail::converted<T>(detail::stacked_matmul(detail::converted<unsigned_type>(a), detail::converted<unsigned_type>(b)));
   }
 } // namespace numerical
 

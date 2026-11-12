@@ -99,7 +99,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.def<&eigh_pencil>("eigh_pencil", "eigh_pencil(a, b, method, upper) -> (values, vectors)\nEigenpairs of the pencil A x = λ B x, A symmetric or Hermitian, B positive definite (ascending values, B-orthonormal vectors), as scipy.linalg.eigh(a, b); each lower triangle read, or with upper each upper one.");
     m.def<&eigvalsh_pencil>("eigvalsh_pencil", "eigvalsh_pencil(a, b, upper) -> Tensor\nThe eigenvalues alone of the pencil A x = λ B x, ascending.");
     m.def<&eigh>("eigh", "eigh(a, method, upper) -> (values, vectors)\nEigenpairs of a real symmetric or complex Hermitian matrix (real values, ascending); its lower triangle is read, or with upper its upper one, as numpy.linalg.eigh's UPLO.");
-    m.def<&matmul_nd>("_matmul_nd", "_matmul_nd(a, b) -> Tensor\nThe matrix product of two stacks of one dtype, their leading axes broadcast, as numpy.matmul.");
+    m.raw("_matmul_nd", module_matmul_nd, METH_VARARGS, "_matmul_nd(a, b) -> Tensor\nThe matrix product of two stacks of one dtype, their leading axes broadcast, as numpy.matmul.");
     m.def<&eig>("_eig", "_eig(a) -> (w, v)\nThe eigenvalues and right eigenvectors of a general square matrix (or stack), as numpy.linalg.eig: complex, as NumPy 2.5's.");
     m.def<&eigvals>("_eigvals", "_eigvals(a) -> w\nThe eigenvalues alone of a general square matrix (or stack), as numpy.linalg.eigvals: complex.");
     m.def<&eig_left>("_eig_left", "_eig_left(a) -> (w, vl, vr)\nThe eigenvalues and the left and right eigenvectors of a square matrix, as scipy.linalg.eig(a, left=True): complex.");

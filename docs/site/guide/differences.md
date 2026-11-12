@@ -114,8 +114,8 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
 ## What is not there yet
 
 - **Integer dtypes.** NumPy's integer arrays are read as float64 unless `dtype="int64"` is asked (by default from
-  2026.12.0); an int64 tensor compares, selects, moves, computes and reduces as NumPy's integers, but not yet
-  through `@`, `einsum` or the linear algebra, and the index functions answer in it. A real converted to int64 that
+  2026.12.0); an int64 tensor compares, selects, moves, computes, reduces and multiplies (`@`, `einsum`, `dot`, `tensordot`) as
+  NumPy's integers, wrapped past 2^63, but not yet through the linear algebra, and the index functions answer in it. A real converted to int64 that
   it cannot hold (NaN, an infinity, a value out of range) raises, as Python's `int()`; NumPy's answer depends on the
   processor.
 - **Bool arithmetic and the small dtypes.** `+`, `-`, `*` (and `add`, `multiply`…) refuse two bool tensors, where

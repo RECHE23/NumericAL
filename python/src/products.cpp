@@ -30,7 +30,7 @@ PyObject* module_einsum(PyObject* /*self*/, PyObject* args)
     holders.reserve(static_cast<std::size_t>(count - 1));
     std::size_t elements {0};
     for (Py_ssize_t i = 1; i < count; ++i) {
-        const any_tensor* h = numeric_tensor(PyTuple_GetItem(args, i));
+        const any_tensor* h = arithmetic_tensor(PyTuple_GetItem(args, i));
         if (h == nullptr) {
             return nullptr;
         }
@@ -47,7 +47,7 @@ PyObject* module_einsum(PyObject* /*self*/, PyObject* args)
         std::optional<any_tensor> result;
         {
             const sb::scoped_gil_release unlocked {releases_gil(elements)};
-            visit_numeric([&](const auto& first) {
+            visit_arithmetic([&](const auto& first) {
                            using tensor_type = std::decay_t<decltype(first)>;
                            std::vector<const tensor_type*> operands;
                            operands.reserve(holders.size());
@@ -93,14 +93,14 @@ PyObject* tensor_matmul(PyObject* self, PyObject* other)
                 std::optional<any_tensor> result;
                 {
                     const sb::scoped_gil_release unlocked {releases_gil(count_of(*a) + count_of(*b))};
-                    visit_numeric([&](const auto& x) {
+                    visit_arithmetic([&](const auto& x) {
                                    using tensor_type = std::decay_t<decltype(x)>;
                                    const std::vector<const tensor_type*> operands {&x, &std::get<tensor_type>(*b)};
                                    result.emplace(numerical::detail::einsum_impl<element_of_t<tensor_type>>(spec, operands));
                                }, *a);
                 }
                 if (ranks[0] == 1 && ranks[1] == 1) { // two vectors give a number, as NumPy's
-                    return visit_numeric([](const auto& t) { return from_scalar(t.data()[0]); }, *result);
+                    return visit_arithmetic([](const auto& t) { return from_scalar(t.data()[0]); }, *result);
                 }
                 return wrap(std::move(*result));
             }
@@ -119,17 +119,37 @@ PyObject* tensor_matmul(PyObject* self, PyObject* other)
     return PyObject_CallFunctionObjArgs(matmul_fallback, self, other, nullptr);
 }
 
-// _matmul_nd(a, b) -> Tensor: numerical::matmul, the product of two stacks of one dtype, their leading axes broadcast.
-any_tensor matmul_nd(const any_tensor& a, const any_tensor& b)
+// _matmul_nd(a, b) -> Tensor: numerical::matmul, the product of two stacks of one dtype, their leading axes broadcast
+// (int64 wrapped, as NumPy's).
+PyObject* module_matmul_nd(PyObject* /*self*/, PyObject* args)
 {
-    if (a.index() != b.index()) {
-        throw std::runtime_error("_matmul_nd: the operands share one dtype");
+    PyObject* x = nullptr;
+    PyObject* y = nullptr;
+    if (PyArg_ParseTuple(args, "OO", &x, &y) == 0) {
+        return nullptr;
     }
-    const sb::scoped_gil_release unlocked {releases_gil(count_of(a) + count_of(b))};
-    return visit_numeric([&](const auto& x) -> any_tensor {
-                          using tensor_type = std::decay_t<decltype(x)>;
-                          return numerical::matmul(x, std::get<tensor_type>(b));
-                      }, a);
+    const any_tensor* a = arithmetic_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : arithmetic_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    try {
+        if (a->index() != b->index()) {
+            throw std::runtime_error("_matmul_nd: the operands share one dtype");
+        }
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a) + count_of(*b))};
+            result.emplace(visit_arithmetic([&](const auto& t) -> any_tensor {
+                                                using tensor_type = std::decay_t<decltype(t)>;
+                                                return numerical::matmul(t, std::get<tensor_type>(*b));
+                                            }, *a));
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
 }
 
 // _take(t, starts, steps, counts, keep) -> Tensor or number: the indexing behind Tensor.__getitem__, whose

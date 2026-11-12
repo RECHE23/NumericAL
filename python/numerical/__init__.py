@@ -2898,12 +2898,12 @@ def _matmul_stack(a, b):
 
 
 def conj(x):
-    """The complex conjugate of every element, as ``numpy.conj``; a real or bool tensor's own elements."""
+    """The complex conjugate of every element, as ``numpy.conj``; a real, int64 or bool tensor's own elements."""
     x = _tensor(x)
     try:
         return _numerical._unary("conj", x)
     except TypeError:
-        if x.dtype == "bool":  # the identity, as NumPy's
+        if x.dtype in ("bool", "int64"):  # the identity, as NumPy's
             return x
         raise
 

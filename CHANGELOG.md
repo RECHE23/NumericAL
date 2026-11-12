@@ -51,9 +51,14 @@ A change that can break code is listed under **Breaking** and held for a month's
   terms together, in vectors, each lag's sum still in `v`'s order; the lags at the ends one by one. On M1 Pro, 10^6 ×
   200 (`valid`) 21.5 → 3.1 ms (NumPy 28.2 ms), 10^5 × 50 (`full`) 0.47 → 0.10 ms (NumPy 0.99 ms); x86-64 (AVX2 and
   FMA, GCC), 10^6 × 200 18.0 → 1.4 ms. The same bits.
+- **int64 through `@`, `matmul`, `dot`, `inner`, `vdot`, `tensordot` and `einsum`**, as NumPy's integers: an int64
+  result, each sum and product wrapped modulo 2^64, where these raised `TypeError` (convert first). An int64 operand
+  beside a float64 one is promoted, as before. `conj` of int64 is its own elements, as NumPy's.
 
 ### Fixed
 
+- **C++ `numerical::matmul` and `numerical::einsum` of a signed integer type** wrap an overflow modulo 2ⁿ, computed
+  in the unsigned type, where the signed products and sums were undefined behaviour (UBSan traps them).
 - **`tri`, `tril_indices` and `triu_indices` of a negative extent** are empty, as NumPy's, where they raised.
 
 ## 2026.11.13 — 2026-11-11

@@ -1034,6 +1034,38 @@ TEST(matmul_of_stacks_broadcasts_their_leading_axes)
   EXPECT_THROWS((void)numerical::matmul(counting({2, 2, 3}), counting({3, 3, 4})), numerical::dimension_error);
 }
 
+// a signed integer's products and sums wrap modulo 2⁶⁴, as NumPy's int64 (through the unsigned type: no signed
+// overflow, which UBSan would trap): each element of C its own wrapped sum, whatever path the product takes
+TEST(matmul_and_einsum_of_int64_wrap)
+{
+  constexpr std::int64_t top {std::numeric_limits<std::int64_t>::max()};
+  for (const std::size_t n : {2UL, 70UL}) {
+    numerical::buffer<std::int64_t> left(n * n);
+    numerical::buffer<std::int64_t> right(n * n);
+    for (std::size_t i {0}; i < n * n; ++i) {
+      left[i]  = i % 2 == 0 ? top - static_cast<std::int64_t>(i) : static_cast<std::int64_t>(i % 7) - 3;
+      right[i] = static_cast<std::int64_t>((i * 2654435761U) % 1000003U) - 500001;
+    }
+    const tensor<std::int64_t>      a {{n, n}, std::move(left)};
+    const tensor<std::int64_t>      b {{n, n}, std::move(right)};
+    numerical::buffer<std::int64_t> wanted(n * n);
+    for (std::size_t i {0}; i < n; ++i) {
+      for (std::size_t j {0}; j < n; ++j) {
+        std::uint64_t sum {0};
+        for (std::size_t p {0}; p < n; ++p) {
+          sum += static_cast<std::uint64_t>(a.data()[(i * n) + p]) * static_cast<std::uint64_t>(b.data()[(p * n) + j]);
+        }
+        wanted[(i * n) + j] = static_cast<std::int64_t>(sum);
+      }
+    }
+    EXPECT(numerical::matmul(a, b).data() == wanted);
+    EXPECT(einsum("ij,jk->ik", a, b).data() == wanted);
+  }
+  const tensor<std::int64_t> v {{3}, {top, top, 2}};
+  EXPECT(einsum("i->", v).data()[0] == 0);             // 2⁶⁴ − 2 + 2, wrapped
+  EXPECT(einsum("i,i->", v, v).data()[0] == 6);        // 1 + 1 + 4
+}
+
 namespace
 {
   // A stack's product against each of its matrices' products alone (one matmul of matrices), to the bit: (stack, m, k)

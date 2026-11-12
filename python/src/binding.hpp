@@ -959,7 +959,7 @@ PyObject* module_set_matmul_fallback(PyObject* /*self*/, PyObject* fallback); //
 PyObject* tensor_matmul(PyObject* self, PyObject* other); // in products.cpp
 
 // _matmul_nd(a, b) -> Tensor: numerical::matmul, the product of two stacks of one dtype, their leading axes broadcast.
-any_tensor matmul_nd(const any_tensor& a, const any_tensor& b); // in products.cpp
+PyObject* module_matmul_nd(PyObject* self, PyObject* args); // in products.cpp
 
 // --- the linear-algebra functions (m.def: any_tensor in/out through caster<any_tensor>) ---
 // Validation failures throw -> numerical.error; the variant dispatch (is_complex / std::get)
