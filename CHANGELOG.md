@@ -47,6 +47,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   point's interval, and finds the same one from any start only there, so past 4096 points each part searches from the
   first; elsewhere one pass, NumPy's indices. On M1 Pro, 10^6 points over 1000 knots 47.2 → 7.3 ms (NumPy 51.7 ms),
   10^6 sorted points 3.46 → 0.78 ms. The same values.
+- **`correlate` and `convolve` by blocks of 16 lags**: where `v` lies within `a`, the block's sums go through `v`'s
+  terms together, in vectors, each lag's sum still in `v`'s order; the lags at the ends one by one. On M1 Pro, 10^6 ×
+  200 (`valid`) 21.5 → 3.1 ms (NumPy 28.2 ms), 10^5 × 50 (`full`) 0.47 → 0.10 ms (NumPy 0.99 ms); x86-64 (AVX2 and
+  FMA, GCC), 10^6 × 200 18.0 → 1.4 ms. The same bits.
 
 ### Fixed
 

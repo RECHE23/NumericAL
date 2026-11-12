@@ -187,7 +187,7 @@ class AgainstNumPy(unittest.TestCase):
                                    (5, 6, "C"), ([[1, 2], [3, 4]], (2, 3), "C")):
             self.assertSame(lambda: numerical.unravel_index(flat, shape, order),
                             lambda: np.unravel_index(flat, shape, order), f"unravel {flat} {shape} {order}")
-        for la in (1, 2, 3, 5, 8):
+        for la in (1, 2, 3, 5, 8, 40):  # 40: lags in blocks of 16 where v lies within a, one by one at the ends
             for lv in (1, 2, 3, 5, 8):
                 for kind in ("float64", "complex128", "int64", "float32"):
                     a, v = self.drawn(rng, kind, (la,)), self.drawn(rng, kind, (lv,))

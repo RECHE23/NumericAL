@@ -1518,6 +1518,28 @@ TEST(take_along_axis_and_correlate)
   const tensor<std::int64_t> big {{2}, {std::numeric_limits<std::int64_t>::max(), 1}};
   const tensor<std::int64_t> one {{1}, {2}};
   EXPECT(numerical::correlate(big, one, 0, 2).data()[0] == -2);         // wrapped, as NumPy's
+  // the lags by blocks where v lies within a, one by one at the ends: each sum the bits of its own in v's order
+  std::vector<double> long_a(45);
+  std::vector<double> long_v(6);
+  for (std::size_t i {0}; i < long_a.size(); ++i) {
+    long_a[i] = std::sin(static_cast<double>(i) * 1.7) * 1e3;
+  }
+  for (std::size_t i {0}; i < long_v.size(); ++i) {
+    long_v[i] = std::cos(static_cast<double>(i) * 0.9) / 3.0;
+  }
+  const tensor<double> along {{long_a.size()}, numerical::buffer<double>(long_a.begin(), long_a.end())};
+  const tensor<double> vlong {{long_v.size()}, numerical::buffer<double>(long_v.begin(), long_v.end())};
+  const auto           full  {numerical::correlate(along, vlong, -5, 50)};
+  bool                 same  {true};
+  for (std::ptrdiff_t k {-5}; k < 45; ++k) {
+    double sum {};
+    for (std::ptrdiff_t j {std::max<std::ptrdiff_t>(0, -k)}; j < std::min<std::ptrdiff_t>(6, 45 - k); ++j) {
+      const double term {long_a[static_cast<std::size_t>(j + k)] * long_v[static_cast<std::size_t>(j)]};
+      sum = sum + term;
+    }
+    same = same && std::bit_cast<std::uint64_t>(sum) == std::bit_cast<std::uint64_t>(full.data()[static_cast<std::size_t>(k + 5)]);
+  }
+  EXPECT(same);
 }
 
 // take reads each index once (negative ones from the end; modulo the extent or clipped as asked) and copies the

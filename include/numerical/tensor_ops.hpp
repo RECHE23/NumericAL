@@ -3592,6 +3592,10 @@ namespace numerical {
   }
 
   namespace detail {
+    //! \brief The lags \ref numerical::correlate sums together: a block's sums held in registers (four AVX2 vectors
+    //!        of doubles) through the terms of `v`.
+    inline constexpr std::size_t correlation_block {16};
+
     //! \brief `sum + x · y` of a real or an integer (wrapped) correlation's terms.
     template <typename T>
     [[nodiscard]] T correlation_step(const T& sum,
@@ -3615,7 +3619,9 @@ namespace numerical {
    * \brief The cross-correlation `c[k] = Σₙ a[n + k] · conj(v[n])` of two vectors over the lags \p first …
    *        `first + count − 1` (from `−(len v − 1)`, the full range's first, to `len a − 1`), as `numpy.correlate`'s:
    *        each lag's sum in the order of `v`'s terms, a complex product NumPy's rounded one (no infinity recovered),
-   *        an integer's wrapped; the lags on the threads.
+   *        an integer's wrapped; the lags on the threads, by blocks (\ref detail::correlation_block lags), those of a
+   *        block where `v` lies within `a` summed together, a term of each per term of `v` (in vectors, each lag's sum still
+   *        its own), the others one by one.
    */
   template <typename T>
   [[nodiscard]] tensor<T> correlate(const tensor<T>& a,
@@ -3623,18 +3629,33 @@ namespace numerical {
                                     std::ptrdiff_t   first,
                                     std::size_t      count)
   {
-    const auto     n {static_cast<std::ptrdiff_t>(a.size())};
-    const auto     m {static_cast<std::ptrdiff_t>(v.size())};
-    const T* const x {a.data().data()};
-    const T* const y {v.data().data()};
-    buffer<T>      out(count);
-    detail::parallel_for(count, static_cast<std::size_t>(m), [&](std::size_t lag) {
-                           const std::ptrdiff_t k {first + static_cast<std::ptrdiff_t>(lag)};
-                           T                    sum {};
-                           for (std::ptrdiff_t j {std::max<std::ptrdiff_t>(0, -k)}; j < std::min(m, n - k); ++j) {
-                             sum = detail::correlation_step(sum, x[j + k], y[j]);
+    constexpr std::size_t    block {detail::correlation_block};
+    const auto               n     {static_cast<std::ptrdiff_t>(a.size())};
+    const auto               m     {static_cast<std::ptrdiff_t>(v.size())};
+    const T* const           x     {a.data().data()};
+    const T* const           y     {v.data().data()};
+    buffer<T>                out(count);
+    detail::parallel_for((count + block - 1) / block, block * static_cast<std::size_t>(m), [&](std::size_t b) {
+                           const std::size_t    lags {std::min(block, count - (b * block))};
+                           const std::ptrdiff_t k    {first + static_cast<std::ptrdiff_t>(b * block)};
+                           if (lags == block && k >= 0 && k + static_cast<std::ptrdiff_t>(block) + m <= n + 1) {
+                             std::array<T, block> sum {};
+                             for (std::ptrdiff_t j {0}; j < m; ++j) {
+                               for (std::size_t l {0}; l < block; ++l) {
+                                 sum[l] = detail::correlation_step(sum[l], x[j + k + static_cast<std::ptrdiff_t>(l)], y[j]);
+                               }
+                             }
+                             std::copy(sum.begin(), sum.end(), out.data() + (b * block));
+                             return;
                            }
-                           out[lag] = sum;
+                           for (std::size_t l {0}; l < lags; ++l) {
+                             const std::ptrdiff_t lag {k + static_cast<std::ptrdiff_t>(l)};
+                             T                    sum {};
+                             for (std::ptrdiff_t j {std::max<std::ptrdiff_t>(0, -lag)}; j < std::min(m, n - lag); ++j) {
+                               sum = detail::correlation_step(sum, x[j + lag], y[j]);
+                             }
+                             out[(b * block) + l] = sum;
+                           }
                          });
     return tensor<T> {{count}, std::move(out)};
   }
