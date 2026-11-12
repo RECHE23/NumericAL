@@ -731,6 +731,78 @@ namespace numerical {
       return complex_log(x);
     }
 
+    //! \brief `log1p` of a scalar, as `std::log1p` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_log1p(const T& x)
+    {
+      return static_cast<T>(std::log1p(x));
+    }
+
+    //! \brief `log1p` of a `double`, as \ref log1p_into gives it: \ref table_log1p, or `std::log1p` where `exp_by_table`
+    //!        says no.
+    [[nodiscard]] inline double elementary_log1p(double x)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        return std::log1p(x);
+      }
+#endif
+      return table_log1p(x);
+    }
+
+    //! \brief `log1p` of the \p count doubles at \p in into \p out, each \ref elementary_log1p's: \ref table_log1p in
+    //!        vectors (with the FMA instructions on an x86-64 processor, \ref run_fused), `std::log1p` throughout where
+    //!        `exp_by_table` says no.
+    inline void log1p_into(const double* in,
+                           double*       out,
+                           std::size_t   count)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        std::transform(in, in + count, out, [](double x) { return std::log1p(x); });
+        return;
+      }
+#endif
+#ifdef NUMERICAL_EXP_NEON
+      std::size_t i {0};
+      for (; i + 2 <= count; i += 2) {
+        vst1q_f64(out + i, table_log1p(vld1q_f64(in + i)));
+      }
+      if (i < count) {
+        out[i] = table_log1p(in[i]);
+      }
+#else
+      run_fused([&](std::size_t) NUMERICAL_INLINE_LAMBDA {
+        for (std::size_t i {0}; i < count; ++i) {
+          out[i] = table_log1p(in[i]);
+        }
+      });
+#endif
+    }
+
+    //! \brief `log1p` of every one of the row-major scalars at \p data, of shape \p shape: `std::log1p` of each.
+    template <typename T>
+    [[nodiscard]] tensor<T> log1p_of(const T*                        data,
+                                     const std::vector<std::size_t>& shape)
+    {
+      return parallel_map(data, shape, [](const T& x) { return elementary_log1p(x); });
+    }
+
+    //! \brief `log1p` of every one of the row-major doubles at \p data, of shape \p shape: \ref log1p_into by chunks of
+    //!        \ref elementwise_chunk among the threads.
+    [[nodiscard]] inline tensor<double> log1p_of(const double*                   data,
+                                                 const std::vector<std::size_t>& shape)
+    {
+      const std::size_t count  {element_count(shape.begin(), shape.end())};
+      buffer<double>    out(count);
+      const std::size_t chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     log1p_into(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
+                   });
+      return tensor<double> {shape, std::move(out)};
+    }
+
     //! \brief `sin` of a scalar, as `std::sin` gives it.
     template <typename T>
     [[nodiscard]] T elementary_sin(const T& x)
@@ -1735,6 +1807,16 @@ namespace numerical {
   [[nodiscard]] tensor<T> log(const tensor<T>& a)
   {
     return detail::parallel_map(a, [](const T& x) { return detail::elementary_log(x); });
+  }
+
+  /*!
+   * \brief `log(1 + x)` of every real element, exact near 0: \ref detail::log1p_into of a `double` one (within 0.501
+   *        ulp of the exact value), `std::log1p` of a `float` one.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> log1p(const tensor<T>& a)
+  {
+    return detail::log1p_of(a.data().data(), a.shape());
   }
 
   //! \brief `sin` of every element: `std::sin` of a real one, \ref detail::complex_sin of a complex one.

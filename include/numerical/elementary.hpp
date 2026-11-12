@@ -1,9 +1,9 @@
 /*!
  * \file elementary.hpp
  * \brief `exp`, `exp2`, `expm1`, `tanh`, `sinh` and `cosh` of `double` by a table of 2^(j/128) and a polynomial, `atan`
- *        by a table of atan(k/64) and a series, branch-free so that a loop of them runs in vectors: within 0.506 ulp of
- *        the exact value for a normal result of `exp` and `exp2`, 0.503 ulp for `expm1` and `sinh`; the same bits from
- *        a vector lane as from a call.
+ *        by a table of atan(k/64) and a series, `log1p` by a table of ln(k/128) and a series, branch-free so that a
+ *        loop of them runs in vectors: within 0.506 ulp of the exact value for a normal result of `exp` and `exp2`,
+ *        0.503 ulp for `expm1` and `sinh`; the same bits from a vector lane as from a call.
  */
 #ifndef NUMERICAL_ELEMENTARY_HPP
 #define NUMERICAL_ELEMENTARY_HPP
@@ -14,6 +14,7 @@
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
+#include <limits>
 
 #include "simd.hpp"
 
@@ -546,6 +547,217 @@ namespace numerical::detail {
     return blend(magnitude >= 0x1p-27, std::copysign(result, x), x); // NaN fails the comparison
   }
 
+  //! \brief ln 2 to 42 significant bits, toward zero: its product by an exponent of 11 bits or fewer is exact
+  //!        (`tools/log_table.py` derives each constant here).
+  inline constexpr double log_ln2_high {0x1.62e42fefa3800p-1};
+
+  //! \brief What \ref log_ln2_high leaves out of ln 2, to the nearest `double`.
+  inline constexpr double log_ln2_low {0x1.ef35793c76730p-45};
+
+  //! \brief For k = 90…180, at k − 90 the `double` nearest 128/k. Not `inline`, as \ref exp_table.
+  constexpr std::array<double, 91> log_inverse {
+    0x1.6c16c16c16c17p+0, 0x1.6816816816817p+0, 0x1.642c8590b2164p+0,
+    0x1.6058160581606p+0, 0x1.5c9882b931057p+0, 0x1.58ed2308158edp+0,
+    0x1.5555555555555p+0, 0x1.51d07eae2f815p+0, 0x1.4e5e0a72f0539p+0,
+    0x1.4afd6a052bf5bp+0, 0x1.47ae147ae147bp+0, 0x1.446f86562d9fbp+0,
+    0x1.4141414141414p+0, 0x1.3e22cbce4a902p+0, 0x1.3b13b13b13b14p+0,
+    0x1.3813813813814p+0, 0x1.3521cfb2b78c1p+0, 0x1.323e34a2b10bfp+0,
+    0x1.2f684bda12f68p+0, 0x1.2c9fb4d812ca0p+0, 0x1.29e4129e4129ep+0,
+    0x1.27350b8812735p+0, 0x1.2492492492492p+0, 0x1.21fb78121fb78p+0,
+    0x1.1f7047dc11f70p+0, 0x1.1cf06ada2811dp+0, 0x1.1a7b9611a7b96p+0,
+    0x1.1811811811812p+0, 0x1.15b1e5f75270dp+0, 0x1.135c81135c811p+0,
+    0x1.1111111111111p+0, 0x1.0ecf56be69c90p+0, 0x1.0c9714fbcda3bp+0,
+    0x1.0a6810a6810a7p+0, 0x1.0842108421084p+0, 0x1.0624dd2f1a9fcp+0,
+    0x1.0410410410410p+0, 0x1.0204081020408p+0, 0x1.0000000000000p+0,
+    0x1.fc07f01fc07f0p-1, 0x1.f81f81f81f820p-1, 0x1.f44659e4a4271p-1,
+    0x1.f07c1f07c1f08p-1, 0x1.ecc07b301ecc0p-1, 0x1.e9131abf0b767p-1,
+    0x1.e573ac901e574p-1, 0x1.e1e1e1e1e1e1ep-1, 0x1.de5d6e3f8868ap-1,
+    0x1.dae6076b981dbp-1, 0x1.d77b654b82c34p-1, 0x1.d41d41d41d41dp-1,
+    0x1.d0cb58f6ec074p-1, 0x1.cd85689039b0bp-1, 0x1.ca4b3055ee191p-1,
+    0x1.c71c71c71c71cp-1, 0x1.c3f8f01c3f8f0p-1, 0x1.c0e070381c0e0p-1,
+    0x1.bdd2b899406f7p-1, 0x1.bacf914c1bad0p-1, 0x1.b7d6c3dda338bp-1,
+    0x1.b4e81b4e81b4fp-1, 0x1.b2036406c80d9p-1, 0x1.af286bca1af28p-1,
+    0x1.ac5701ac5701bp-1, 0x1.a98ef606a63bep-1, 0x1.a6d01a6d01a6dp-1,
+    0x1.a41a41a41a41ap-1, 0x1.a16d3f97a4b02p-1, 0x1.9ec8e951033d9p-1,
+    0x1.9c2d14ee4a102p-1, 0x1.999999999999ap-1, 0x1.970e4f80cb872p-1,
+    0x1.948b0fcd6e9e0p-1, 0x1.920fb49d0e229p-1, 0x1.8f9c18f9c18fap-1,
+    0x1.8d3018d3018d3p-1, 0x1.8acb90f6bf3aap-1, 0x1.886e5f0abb04ap-1,
+    0x1.8618618618618p-1, 0x1.83c977ab2beddp-1, 0x1.8181818181818p-1,
+    0x1.7f405fd017f40p-1, 0x1.7d05f417d05f4p-1, 0x1.7ad2208e0ecc3p-1,
+    0x1.78a4c8178a4c8p-1, 0x1.767dce434a9b1p-1, 0x1.745d1745d1746p-1,
+    0x1.724287f46debcp-1, 0x1.702e05c0b8170p-1, 0x1.6e1f76b4337c7p-1,
+    0x1.6c16c16c16c17p-1,
+  };
+
+  //! \brief For k = 90…180, at 2(k − 90) −ln of \ref log_inverse's entry to the nearest multiple of 2^−42 (its sum
+  //!        with an exponent times \ref log_ln2_high exact) and at 2(k − 90) + 1 the `double` nearest what that leaves
+  //!        out. Not `inline`, as \ref exp_table.
+  constexpr std::array<double, 182> log_table {
+    -0x1.68ac83e9c7000p-2, 0x1.7acd66c548a30p-44,
+    -0x1.5d5bddf596000p-2, 0x1.9de2a08a465dcp-47,
+    -0x1.522ae0738a000p-2, -0x1.eba708164c759p-45,
+    -0x1.4718dc271c000p-2, -0x1.071d8fb4c14c5p-44,
+    -0x1.3c25277333000p-2, -0x1.83454b606bd5cp-46,
+    -0x1.314f1e1d36000p-2, 0x1.8e5bad3213cb8p-45,
+    -0x1.269621134e000p-2, 0x1.1ba1f10522625p-44,
+    -0x1.1bf99635a7000p-2, 0x1.1ade9575c2125p-44,
+    -0x1.1178e8227e000p-2, -0x1.1e9b8ce2d07f2p-44,
+    -0x1.07138604d6000p-2, 0x1.e70124e912b17p-44,
+    -0x1.f991c6cb3c000p-3, 0x1.90b84cd7cc834p-44,
+    -0x1.e530effe72000p-3, 0x1.fdafbb13f7c18p-44,
+    -0x1.d1037f2656000p-3, 0x1.8527e75b6f6e4p-47,
+    -0x1.bd087383be000p-3, 0x1.d5844595412b6p-45,
+    -0x1.a93ed3c8ae000p-3, 0x1.86a4350562169p-45,
+    -0x1.95a5adcf70000p-3, -0x1.8262858a0ff6fp-47,
+    -0x1.823c16551a000p-3, -0x1.e02db9a631e83p-46,
+    -0x1.6f0128b756000p-3, -0x1.571d90d31ef0fp-44,
+    -0x1.5bf406b544000p-3, 0x1.28023eb68981cp-46,
+    -0x1.4913d8333c000p-3, 0x1.53a43558124c4p-44,
+    -0x1.365fcb015a000p-3, 0x1.fd720afb9691bp-44,
+    -0x1.23d712a49c000p-3, -0x1.00aa38fd3df5cp-46,
+    -0x1.1178e8227e000p-3, -0x1.1e778ce2d07f2p-45,
+    -0x1.fe89139dbc000p-4, -0x1.56494d82f7a82p-44,
+    -0x1.da72763844000p-4, -0x1.a79401fa71733p-46,
+    -0x1.b6ac88dad4000p-4, -0x1.b1cbff50225c7p-44,
+    -0x1.9335e5d594000p-4, -0x1.30f5c3abd47dap-45,
+    -0x1.700d30aeac000p-4, -0x1.d068da99ded32p-49,
+    -0x1.4d3115d208000p-4, 0x1.53e2582f4e1efp-48,
+    -0x1.2aa04a4470000p-4, -0x1.7a16ba8b1cb41p-44,
+    -0x1.08598b59e4000p-4, 0x1.7e9dd7009902cp-46,
+    -0x1.ccb73cddd8000p-5, -0x1.967c36e09f5fep-44,
+    -0x1.894aa149f8000p-5, -0x1.9a55a8be97661p-44,
+    -0x1.466aed42e0000p-5, 0x1.c073375bdfd28p-45,
+    -0x1.0415d89e78000p-5, 0x1.ddfc7f461c516p-44,
+    -0x1.8492528c90000p-6, 0x1.a9dba325a0c34p-45,
+    -0x1.0205658930000p-6, -0x1.60dd27c8e8417p-44,
+    -0x1.0101575880000p-7, -0x1.bcd251998b506p-44,
+    0x0.0p+0, 0x0.0p+0,
+    0x1.fe02a6b100000p-8, 0x1.9e63f0dda40e4p-46,
+    0x1.fc0a8b0fc0000p-7, 0x1.e1e7cf6d3a69cp-50,
+    0x1.7b91b07d60000p-6, -0x1.3b685b602ace4p-44,
+    0x1.f829b0e780000p-6, 0x1.97c267c7e09e4p-45,
+    0x1.39e87b9fe8000p-5, 0x1.eb3d480ad9015p-44,
+    0x1.77458f6330000p-5, -0x1.1807ce586af09p-44,
+    0x1.b42dd71198000p-5, -0x1.c8d7ae5d6704cp-46,
+    0x1.f0a30c0118000p-5, -0x1.d579e83368e91p-45,
+    0x1.16536eea38000p-4, -0x1.472de768fa309p-46,
+    0x1.341d7961bc000p-4, 0x1.1cfb299837610p-44,
+    0x1.51b073f060000p-4, 0x1.83ba9278e686ap-44,
+    0x1.6f0d28ae58000p-4, -0x1.4b2241b664613p-44,
+    0x1.8c345d6318000p-4, 0x1.b22b5acb42a66p-44,
+    0x1.a926d3a4ac000p-4, 0x1.561c50bd22a9cp-44,
+    0x1.c5e548f5bc000p-4, 0x1.d0c97585fbe06p-46,
+    0x1.e27076e2b0000p-4, -0x1.a2c2c2af0003cp-45,
+    0x1.fec9131dc0000p-4, -0x1.54455d1ae6607p-44,
+    0x1.0d77e7cd08000p-3, 0x1.cb6cd2ee2f482p-44,
+    0x1.1b72ad52f6000p-3, 0x1.e86041811a396p-45,
+    0x1.29552f8200000p-3, -0x1.5bd67f4471dfcp-44,
+    0x1.371fc201e8000p-3, 0x1.eea079b2d8abcp-44,
+    0x1.44d2b6ccb8000p-3, -0x1.71f416135783cp-46,
+    0x1.526e5e3a1c000p-3, -0x1.790aa37fc5238p-44,
+    0x1.5ff3070a7a000p-3, -0x1.8546f183bebf2p-44,
+    0x1.6d60fe719e000p-3, -0x1.bc91557134767p-44,
+    0x1.7ab890210e000p-3, -0x1.be51072534a58p-45,
+    0x1.87fa06520c000p-3, 0x1.22130401202fcp-44,
+    0x1.9525a9cf46000p-3, -0x1.294937d9f158fp-44,
+    0x1.a23bc1fe2c000p-3, -0x1.53d6d91dc9f0bp-44,
+    0x1.af3c94e80c000p-3, -0x1.92e633fcd9066p-52,
+    0x1.bc286742d8000p-3, 0x1.9a873f39d121cp-44,
+    0x1.c8ff7c79aa000p-3, -0x1.7814f689f8434p-45,
+    0x1.d5c216b4fc000p-3, -0x1.1b0d1bbca681bp-45,
+    0x1.e27076e2b0000p-3, -0x1.a302c2af0003cp-44,
+    0x1.ef0adcbdc6000p-3, -0x1.b2a179c86af24p-45,
+    0x1.fb9186d5e4000p-3, -0x1.d6b2aab993c87p-47,
+    0x1.0402594b4d000p-2, 0x1.037b89ef42d7fp-48,
+    0x1.0a324e2739000p-2, 0x1.c4dee7ef4030ep-47,
+    0x1.1058bf9ae5000p-2, -0x1.4affd817d52cdp-44,
+    0x1.1675cababa000p-2, 0x1.83c0e731f55c4p-44,
+    0x1.1c898c169a000p-2, -0x1.81260e5c62affp-44,
+    0x1.22941fbcf8000p-2, -0x1.a6876f5eb0963p-44,
+    0x1.2895a13de8000p-2, 0x1.a917ad24c13f0p-44,
+    0x1.2e8e2bae12000p-2, -0x1.6791e99b72bd8p-45,
+    0x1.347dd9a988000p-2, -0x1.5522dd4c58092p-45,
+    0x1.3a64c55694000p-2, 0x1.7a81cbcd735d0p-44,
+    0x1.404308686a000p-2, 0x1.f8f043049f7d3p-44,
+    0x1.4618bc21c6000p-2, -0x1.3e02f484c84ccp-46,
+    0x1.4be5f95778000p-2, -0x1.d7c52cd9ad824p-44,
+    0x1.51aad872e0000p-2, -0x1.f49d8db0a7cc1p-44,
+    0x1.5767717456000p-2, -0x1.650fd9524d7cap-44,
+    0x1.5d1bdbf581000p-2, -0x1.8d97dc9c7c238p-44,
+  };
+
+  /*!
+   * \brief ln(\p u + \p u_low) as `sum` + `small` unrounded, for \p u at least 2^−54 and finite and |\p u_low| at most
+   *        half an ulp of it: u = 2^e m, m in [0.703125, 1.40625), c = k/128 the nearest point, r = m RN(1/c) − 1 + u_low
+   *        RN(1/c)/2^e as a normalized pair; e ln 2 + (−ln RN(1/c)) + r − r²/2 summed exactly (an exact sum of multiples
+   *        of 2^−42, two-sums, a fused square's error) into `sum`, and the rest, r³/3 − … − r¹⁰/10, the low parts and r's
+   *        low part by the derivative 1 − r + r², into `small`. Near 0, u_low is as large as r, under which `small` would
+   *        round to an ulp of the result. Every product beside a sum fused explicitly, as \ref table_expm1's.
+   */
+  NUMERICAL_ALWAYS_INLINE void log_parts(double  u,
+                                         double  u_low,
+                                         double& sum,
+                                         double& small) noexcept
+  {
+    constexpr double    shifter  {0x1.8p52};
+    const auto          bits     {std::bit_cast<std::uint64_t>(u)};
+    const double        mantissa {std::bit_cast<double>((bits & 0x000fffffffffffffU) | 0x3ff0000000000000U)};
+    const bool          upper    {mantissa >= 1.40625};
+    const double        m        {blend(upper, mantissa * 0.5, mantissa)};
+    // the biased exponent, exact, without a conversion AVX2 has no vector form of
+    const double        biased   {std::bit_cast<double>((bits >> 52U) | 0x4330000000000000U) - 0x1p52};
+    const double        e_d      {biased - blend(upper, 1022.0, 1023.0)};
+    const std::uint64_t field    {(bits >> 52U) + static_cast<std::uint64_t>(upper)}; // e + 1023
+    const double        z        {std::fma(m, 128.0, shifter)};
+    const auto          k        {static_cast<std::size_t>(std::bit_cast<std::int64_t>(z) - std::bit_cast<std::int64_t>(shifter)) - 90U};
+    const double        inverse  {log_inverse[k]};
+    const double        head     {log_table[2 * k]};
+    const double        tail     {log_table[(2 * k) + 1]};
+    const double        product  {m * inverse};
+    const double        r_err    {std::fma(m, inverse, -product)};
+    // 2^−e, a normal double: past 2^1022 u_low is far under an ulp of the result
+    const double        unscale  {std::bit_cast<double>((2046U - std::min<std::uint64_t>(field, 2045U)) << 52U)};
+    double              r        {};
+    double              r_low    {};
+    two_sum(product - 1.0, std::fma(u_low * unscale, inverse, r_err), r, r_low); // product − 1 and u_low's scaling exact
+    const double square          {r * r};
+    const double sq_err          {std::fma(r, r, -square)};
+    double       q               {std::fma(r, -1.0 / 10.0, 1.0 / 9.0)};
+    q = std::fma(r, q, -1.0 / 8.0);
+    q = std::fma(r, q, 1.0 / 7.0);
+    q = std::fma(r, q, -1.0 / 6.0);
+    q = std::fma(r, q, 1.0 / 5.0);
+    q = std::fma(r, q, -1.0 / 4.0);
+    q = std::fma(r, q, 1.0 / 3.0);
+    const double first    {std::fma(e_d, log_ln2_high, head)}; // exact: multiples of 2^−42 under 2^11
+    double       second   {};
+    double       second_e {};
+    two_sum(first, r, second, second_e);
+    double       third_e  {};
+    two_sum(second, -0.5 * square, sum, third_e); // the product exact
+    const double low_part {std::fma(e_d, log_ln2_low, tail) + std::fma(r_low, square - r, r_low)};
+    small = std::fma(square * r, q, std::fma(-0.5, sq_err, (second_e + third_e) + low_part));
+  }
+
+  /*!
+   * \brief ln(1 + \p x) by \ref log_parts of 1 + x as a pair (its two-sum): near 0, where c = 1, r is x exactly. Within
+   *        0.501 ulp of the exact value; x itself where |x| < 2^−54 (±0 kept) and for NaN, −∞ at −1, +∞ at +∞, NaN below
+   *        −1.
+   */
+  NUMERICAL_ALWAYS_INLINE double table_log1p(double x) noexcept
+  {
+    // +∞ as −1, so one comparison: && would be a branch GCC does not vectorize
+    const bool finite {blend(x < HUGE_VAL, x, -1.0) > -1.0};
+    double     u      {};
+    double     u_low  {};
+    two_sum(1.0, blend(finite, x, 0.0), u, u_low);
+    double sum        {};
+    double small      {};
+    log_parts(u, u_low, sum, small);
+    const double edge {blend(x == -1.0, -HUGE_VAL, blend(x < -1.0, std::numeric_limits<double>::quiet_NaN(), x))};
+    return blend(std::fabs(x) >= 0x1p-54, blend(finite, sum + small, edge), x); // NaN fails the comparison
+  }
+
 #ifdef NUMERICAL_EXP_NEON
   /*!
    * \brief \ref table_exp of each lane, in NEON: each operation the scalar one's (`vfmaq_f64` and `vfmsq_f64` its
@@ -806,6 +1018,79 @@ namespace numerical::detail {
                                           vbslq_f64(far, beyond, near))};
     const float64x2_t signed_r {vbslq_f64(vdupq_n_u64(0x8000000000000000U), x, result)};
     return vbslq_f64(vcgeq_f64(magnitude, vdupq_n_f64(0x1p-27)), signed_r, x);
+  }
+
+  //! \brief \ref log_parts of each lane, in NEON: each operation the scalar one's.
+  NUMERICAL_ALWAYS_INLINE void log_parts(float64x2_t  u,
+                                         float64x2_t  u_low,
+                                         float64x2_t& sum,
+                                         float64x2_t& small) noexcept
+  {
+    const float64x2_t shifter  {vdupq_n_f64(0x1.8p52)};
+    const uint64x2_t  bits     {vreinterpretq_u64_f64(u)};
+    const int64x2_t   bias     {vdupq_n_s64(1023)};
+    const float64x2_t mantissa {vreinterpretq_f64_u64(vorrq_u64(vandq_u64(bits, vdupq_n_u64(0x000fffffffffffffU)),
+                                                                vdupq_n_u64(0x3ff0000000000000U)))};
+    const uint64x2_t  upper    {vcgeq_f64(mantissa, vdupq_n_f64(1.40625))};
+    const float64x2_t m        {vbslq_f64(upper, vmulq_f64(mantissa, vdupq_n_f64(0.5)), mantissa)};
+    // the biased exponent less the bias, plus 1 where upper (its mask −1 subtracted)
+    const int64x2_t   e        {vsubq_s64(vsubq_s64(vreinterpretq_s64_u64(vshrq_n_u64(bits, 52)), bias), vreinterpretq_s64_u64(upper))};
+    const float64x2_t z        {vfmaq_f64(shifter, m, vdupq_n_f64(128.0))};
+    const int64x2_t   k        {vsubq_s64(vsubq_s64(vreinterpretq_s64_f64(z), vreinterpretq_s64_f64(shifter)), vdupq_n_s64(90))};
+    const auto        k0       {static_cast<std::size_t>(vgetq_lane_s64(k, 0))};
+    const auto        k1       {static_cast<std::size_t>(vgetq_lane_s64(k, 1))};
+    const float64x2_t inverse  {vcombine_f64(vld1_f64(log_inverse.data() + k0), vld1_f64(log_inverse.data() + k1))};
+    const float64x2_t low      {vld1q_f64(log_table.data() + (2 * k0))};
+    const float64x2_t high     {vld1q_f64(log_table.data() + (2 * k1))};
+    const float64x2_t head     {vzip1q_f64(low, high)};
+    const float64x2_t tail     {vzip2q_f64(low, high)};
+    const float64x2_t product  {vmulq_f64(m, inverse)};
+    const float64x2_t r_high   {vsubq_f64(product, vdupq_n_f64(1.0))};
+    const float64x2_t r_err    {vfmaq_f64(vnegq_f64(product), m, inverse)};
+    const int64x2_t   bounded  {vbslq_s64(vcgtq_s64(e, vdupq_n_s64(1022)), vdupq_n_s64(1022), e)};
+    const float64x2_t unscale  {vreinterpretq_f64_s64(vshlq_n_s64(vsubq_s64(vdupq_n_s64(1023), bounded), 52))};
+    float64x2_t       r        {};
+    float64x2_t       r_low    {};
+    two_sum(r_high, vfmaq_f64(r_err, vmulq_f64(u_low, unscale), inverse), r, r_low);
+    const float64x2_t square   {vmulq_f64(r, r)};
+    const float64x2_t sq_err   {vfmaq_f64(vnegq_f64(square), r, r)};
+    float64x2_t       q        {vfmaq_f64(vdupq_n_f64(1.0 / 9.0), r, vdupq_n_f64(-1.0 / 10.0))};
+    q = vfmaq_f64(vdupq_n_f64(-1.0 / 8.0), r, q);
+    q = vfmaq_f64(vdupq_n_f64(1.0 / 7.0), r, q);
+    q = vfmaq_f64(vdupq_n_f64(-1.0 / 6.0), r, q);
+    q = vfmaq_f64(vdupq_n_f64(1.0 / 5.0), r, q);
+    q = vfmaq_f64(vdupq_n_f64(-1.0 / 4.0), r, q);
+    q = vfmaq_f64(vdupq_n_f64(1.0 / 3.0), r, q);
+    const float64x2_t e_d      {vcvtq_f64_s64(e)};
+    const float64x2_t first    {vfmaq_f64(head, e_d, vdupq_n_f64(log_ln2_high))};
+    float64x2_t       second   {};
+    float64x2_t       second_e {};
+    two_sum(first, r, second, second_e);
+    float64x2_t       third_e  {};
+    two_sum(second, vmulq_f64(vdupq_n_f64(-0.5), square), sum, third_e);
+    const float64x2_t low_part {vaddq_f64(vfmaq_f64(tail, e_d, vdupq_n_f64(log_ln2_low)),
+                                          vfmaq_f64(r_low, r_low, vsubq_f64(square, r)))};
+    const float64x2_t rest     {vaddq_f64(vaddq_f64(second_e, third_e), low_part)};
+    small = vfmaq_f64(vfmaq_f64(rest, vdupq_n_f64(-0.5), sq_err), vmulq_f64(square, r), q);
+  }
+
+  //! \brief \ref table_log1p of each lane, in NEON: each operation the scalar one's, so each lane the scalar call's bits.
+  NUMERICAL_ALWAYS_INLINE float64x2_t table_log1p(float64x2_t x) noexcept
+  {
+    const float64x2_t one     {vdupq_n_f64(1.0)};
+    const float64x2_t inf     {vdupq_n_f64(HUGE_VAL)};
+    const uint64x2_t  finite  {vandq_u64(vcgtq_f64(x, vnegq_f64(one)), vcltq_f64(x, inf))};
+    float64x2_t       u       {};
+    float64x2_t       u_low   {};
+    two_sum(one, vbslq_f64(finite, x, vdupq_n_f64(0.0)), u, u_low);
+    float64x2_t       sum     {};
+    float64x2_t       small   {};
+    log_parts(u, u_low, sum, small);
+    const float64x2_t result  {vaddq_f64(sum, small)};
+    const float64x2_t edge    {vbslq_f64(vceqq_f64(x, vnegq_f64(one)), vnegq_f64(inf),
+                                         vbslq_f64(vcltq_f64(x, vnegq_f64(one)), vdupq_n_f64(std::numeric_limits<double>::quiet_NaN()), x))};
+    const float64x2_t value   {vbslq_f64(finite, result, edge)};
+    return vbslq_f64(vcgeq_f64(vabsq_f64(x), vdupq_n_f64(0x1p-54)), value, x);
   }
 
 #endif

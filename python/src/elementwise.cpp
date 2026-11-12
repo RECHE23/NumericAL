@@ -281,6 +281,9 @@ namespace {
         if (name == "exp2") { // a double's by exp's table, in vectors (numerical::detail::exp2_into)
             return numerical::detail::exp2_of(data, shape);
         }
+        if (name == "log1p") { // a double's by the table, in vectors (numerical::detail::log1p_into)
+            return numerical::detail::log1p_of(data, shape);
+        }
         return parallel_map(data, shape, real_function<R>(name));
     }
 } // namespace

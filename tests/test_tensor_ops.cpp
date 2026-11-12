@@ -596,6 +596,45 @@ TEST(atan_of_a_double_by_the_table)
   EXPECT(numerical::atan(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_atan(v); }));
 }
 
+// log1p of a double by a table of ln(k/128): within an ulp of the C library's in long double where that is wider, its
+// own bits at the ends (x itself under 2^−54, ±0 kept, −∞ at −1, NaN below), and the same bits from a block, in vectors,
+// as from one call; values rounded to nearest, whichever function elementary_log1p takes.
+TEST(log1p_of_a_double_by_the_table)
+{
+  std::vector<double> x;
+  for (int i {0}; i < 20000; ++i) {
+    const double t {static_cast<double>(i) / 20000.0};
+    x.push_back(-0.999 + (6.0 * t));
+    x.push_back(-0.01 + (0.02 * t));                   // about 0, where 1 + x rounds
+    x.push_back(std::ldexp(1.0 + t, (i % 120) - 60));  // from 2^−60 to 2^60
+    x.push_back(-std::ldexp(1.0 + t, -(i % 60) - 2));  // toward −1 and toward 0 from below
+  }
+  const double inf {std::numeric_limits<double>::infinity()};
+  for (const double v : {0.0, -0.0, inf, -inf, std::numeric_limits<double>::quiet_NaN(), -1.0, -2.0, 1.0, 0x1p-54,
+                         0x1.fffffffffffffp-55, -0x1p-54, 5e-324, std::numeric_limits<double>::max(),
+                         0x1.9e59973ebc448p-53, std::nextafter(-1.0, 0.0)}) { // an odd count: the last past the pairs
+    x.push_back(v);
+  }
+  constexpr bool wider {std::numeric_limits<long double>::digits > std::numeric_limits<double>::digits};
+  EXPECT(table_function_holds(
+           x, [](const double* in, double* out, std::size_t count) { numerical::detail::log1p_into(in, out, count); },
+           [](double v) { return numerical::detail::elementary_log1p(v); },
+           [](double v) { return wider ? static_cast<double>(std::log1p(static_cast<long double>(v))) : std::log1p(v); },
+           [](double v, double library) { return std::fabs(v) < 0x1p-54 || std::isnan(library); })); // NaN below −1
+  EXPECT(std::signbit(numerical::detail::elementary_log1p(-0.0)));
+  // the table's own values, whichever function elementary_log1p takes: each rounded to nearest
+  EXPECT(numerical::detail::table_log1p(-0.5) == -0x1.62e42fefa39efp-1);
+  EXPECT(numerical::detail::table_log1p(1e-10) == 0x1.b7cdfd9d1d693p-34);
+  EXPECT(numerical::detail::table_log1p(0x1.9e59973ebc448p-53) == 0x1.9e59973ebc447p-53); // 1 + x's error as large as r
+  EXPECT(numerical::detail::table_log1p(1e300) == 0x1.5963447f87fb5p+9);
+  EXPECT(numerical::detail::table_log1p(-0x1.fdc45e9aa3829p-1) == -0x1.5bd7317316e85p+2);
+  EXPECT(numerical::detail::table_log1p(0x1.68aa500d14646p-8) == 0x1.67ad2df83eb5p-8);
+  EXPECT(numerical::detail::table_log1p(-1.0) == -inf);
+  EXPECT(std::isnan(numerical::detail::table_log1p(-1.5)));
+  const numerical::tensor<double> t {{4}, {0.5, -0.0, 1e-20, -0.75}}; // an even count: no lane alone
+  EXPECT(numerical::log1p(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_log1p(v); }));
+}
+
 // NumPy's complex magnitude: an infinite part makes it infinite whatever the other, NaN, and a NaN part then NaN;
 // a zero is 0; otherwise the larger part times sqrt(ratio² + 1).
 namespace {

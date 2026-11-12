@@ -38,6 +38,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   core, x86-64 (AVX2 and FMA, GCC): `sinh` 17.9 → 6.1 ms, `cosh` 6.7 → 6.0 ms, `exp2` 3.5 → 2.9 ms; M1 Pro: `exp2`
   2.37 → 1.80 ms, while `sinh` and `cosh` cost 8 to 11 % more there than Apple's libm on one core (4.2 → 4.7 ms) and
   the same on all of them (0.9 ms).
+- **`log1p` of float64 in vectors** (C++ `numerical::log1p`, new, and NumPy's on a Tensor), by a table of ln(k/128):
+  1 + x as a pair, so that near 0 its rounding error enters r exactly, and the sum of e ln 2, the table's entry and r −
+  r²/2 kept exact. Within 0.5001 ulp of the exact value (Apple's libm 0.666 near 0), x itself under 2^-54; the same
+  bits on every processor with FMA. 10^6 values in [-0.9, 5] on one core, x86-64 (AVX2 and FMA): GCC 11.3 → 6.3 ms,
+  Clang 11.6 → 5.5 ms; M1 Pro the same as Apple's libm (4.8 → 4.95 ms). `log` keeps the C library's, faster on M1.
 
 ### Fixed
 
