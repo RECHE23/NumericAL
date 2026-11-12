@@ -8,6 +8,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+
+- **`exp`, `expm1`, `tanh` and `arctan` of float64 in vectors on x86-64 with GCC** (the Linux wheels), where GCC kept
+  each loop of them scalar: a choice between a computed value and the argument is a mask of their bits, which GCC
+  does not turn into a branch around the computation, and `arctan` reads its table's point without a conversion AVX2
+  lacks. 10^6 values in [-5, 5] on one core (AVX2 and FMA): `exp` 8.3 → 4.4 ms, `expm1` 12.3 → 5.8 ms, `tanh` 18.7 →
+  6.6 ms, `arctan` 16.3 → 5.4 ms; with Clang (the macOS x86-64 wheels), `tanh` 18.4 → 6.7 ms and `arctan` 19.3 → 5.4
+  ms. The same bits.
+
 ## 2026.11.13 — 2026-11-11
 
 ### Fixed
@@ -25,10 +34,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`tanh` of float64 in vectors** (C++ `numerical::tanh` of a double tensor, and NumPy's `tanh` on a Tensor):
   t/(t + 2) of t = `expm1`(2|x|) in two parts, its sum and quotient corrected exactly, within 0.502 ulp of the exact
   value (NumPy's 1.1 ulp, the C library's 0.59), the same bits on every processor with FMA; 10^6 values in [-5, 5]
-  7.5 → 4.0 ms on one core, 1.40 → 1.31 ms on all (NumPy's 3.7 ms; M1 Pro).
+  7.5 → 4.0 ms on one core, 1.34 → 0.73 ms on all (NumPy's 3.7 ms; M1 Pro).
 - **`arctan` of float64 in vectors** (C++ `numerical::atan`, new, and NumPy's `arctan` on a Tensor): a table of
   atan(k/64), the remainder's series to t^11 and the leading sums exact, within 0.501 ulp of the exact value (macOS's
-  C library 0.86), the same bits on every processor with FMA; 10^6 values in [-5, 5] 2.18 → 0.66 ms on all cores,
+  C library 0.86), the same bits on every processor with FMA; 10^6 values in [-5, 5] 2.05 → 0.66 ms on all cores,
   11.8 → 3.6 ms on one (NumPy's 12.1 ms; M1 Pro).
 
 ## 2026.11.12 — 2026-11-11

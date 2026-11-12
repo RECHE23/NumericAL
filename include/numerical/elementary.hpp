@@ -170,6 +170,20 @@ namespace numerical::detail {
   };
 
   /*!
+   * \brief \p if_true where \p condition holds, else \p if_false, by a mask of their bits: GCC turns a `?:` between a
+   *        value computed only for it and an argument into a branch around that computation, its table reads among it,
+   *        and then vectorizes no loop of the function ("unsupported control flow in loop").
+   */
+  NUMERICAL_ALWAYS_INLINE double blend(bool   condition,
+                                       double if_true,
+                                       double if_false) noexcept
+  {
+    const std::uint64_t mask {std::uint64_t {0} - static_cast<std::uint64_t>(condition)};
+    return std::bit_cast<double>((std::bit_cast<std::uint64_t>(if_true) & mask) |
+                                 (std::bit_cast<std::uint64_t>(if_false) & ~mask));
+  }
+
+  /*!
    * \brief exp(\p x) for an \p x whose result is normal or infinite (\ref exp_normal_bound or above): x = (128 e + j)
    *        ln 2/128 + r, |r| ≤ ln 2/256, and exp(x) = 2^e · 2^(j/128) · exp(r), exp(r) − 1 by its Taylor polynomial of
    *        degree 6. Every multiply-add `std::fma`, written out, so that no compiler fuses otherwise; inlined into the
@@ -199,7 +213,7 @@ namespace numerical::detail {
     const double       first  {std::bit_cast<double>(static_cast<std::uint64_t>(half + 1023) << 52U)};
     const double       second {std::bit_cast<double>(static_cast<std::uint64_t>(e - half + 1023) << 52U)};
     const double       result {(scaled * first) * second};
-    return std::isnan(x) ? x : result;
+    return blend(std::isnan(x), x, result);
   }
 
   //! \brief The sum of \p a and \p b as `sum` rounded and `error` exact (Knuth's two-sum: no order of magnitudes needed).
@@ -268,12 +282,14 @@ namespace numerical::detail {
   {
     double             sum    {};
     double             small  {};
-    const std::int64_t e      {expm1_parts(x > 710.0 ? 710.0 : (x < -40.0 ? -40.0 : x), sum, small)};
+    // the lower clamp by a mask: GCC makes two `?:` clamps one branch, under which it vectorizes no loop
+    const double       above  {x > 710.0 ? 710.0 : x};
+    const std::int64_t e      {expm1_parts(blend(above < -40.0, -40.0, above), sum, small)};
     const std::int64_t half   {e / 2};
     const double       first  {std::bit_cast<double>(static_cast<std::uint64_t>(half + 1023) << 52U)};
     const double       second {std::bit_cast<double>(static_cast<std::uint64_t>(e - half + 1023) << 52U)};
     const double       result {((sum + small) * first) * second};
-    return std::fabs(x) >= 0x1p-54 ? result : x; // NaN fails the comparison
+    return blend(std::fabs(x) >= 0x1p-54, result, x); // NaN fails the comparison
   }
 
   /*!
@@ -301,7 +317,7 @@ namespace numerical::detail {
     const double       quotient  {t * inverse};
     const double       residual  {std::fma(-quotient, d_low, std::fma(low, scale, std::fma(-quotient, d_high, t)))};
     const double       result    {std::fma(residual, inverse, quotient)};
-    return magnitude >= 0x1p-27 ? std::copysign(result, x) : x; // NaN fails the comparison
+    return blend(magnitude >= 0x1p-27, std::copysign(result, x), x); // NaN fails the comparison
   }
 
   //! \brief π/2, the `double` nearest it (`tools/atan_table.py` derives each constant here).
@@ -393,13 +409,13 @@ namespace numerical::detail {
     const double     magnitude  {std::fabs(x)};
     const bool       far        {magnitude > 1.0};
     const double     inverse    {1.0 / magnitude};
-    const double     inverse_lo {std::fma(-inverse, magnitude, 1.0) * inverse};         // 1/|x| − inverse, to first order
-    const double     y          {far ? inverse : (magnitude <= 1.0 ? magnitude : 0.0)}; // NaN as 0: k in the table
-    const double     y_low      {far ? inverse_lo : 0.0};
+    const double     inverse_lo {std::fma(-inverse, magnitude, 1.0) * inverse};            // 1/|x| − inverse, to first order
+    const double     y          {blend(far, inverse, magnitude <= 1.0 ? magnitude : 0.0)}; // NaN as 0: k in the table
+    const double     y_low      {blend(far, inverse_lo, 0.0)};
     const double     z          {std::fma(y, 64.0, shifter)};
     const auto       k          {static_cast<std::size_t>(std::bit_cast<std::int64_t>(z) - std::bit_cast<std::int64_t>(shifter))};
-    const double     c          {static_cast<double>(k) * 0x1p-6};
-    const double     difference {y - c}; // exact: y within 2^−7 of c, or c 0
+    const double     c          {(z - shifter) * 0x1p-6}; // k, exact, without a conversion AVX2 has no vector form of
+    const double     difference {y - c};                  // exact: y within 2^−7 of c, or c 0
     const double     num        {difference + y_low};
     const double     num_low    {(difference - num) + y_low};
     const double     den        {std::fma(y, c, 1.0)};
@@ -422,8 +438,8 @@ namespace numerical::detail {
     two_sum(atan_half_pi_high, -sum, rest, rest_e);
     const double near   {sum + small};
     const double beyond {rest + ((rest_e + atan_half_pi_low) - small)};
-    const double result {magnitude > 0x1p54 ? atan_half_pi_high : (far ? beyond : near)};
-    return magnitude >= 0x1p-27 ? std::copysign(result, x) : x; // NaN fails the comparison
+    const double result {blend(magnitude > 0x1p54, atan_half_pi_high, blend(far, beyond, near))};
+    return blend(magnitude >= 0x1p-27, std::copysign(result, x), x); // NaN fails the comparison
   }
 
 #ifdef NUMERICAL_EXP_NEON
@@ -570,7 +586,7 @@ namespace numerical::detail {
     const float64x2_t y_low      {vbslq_f64(far, inverse_lo, zero)};
     const float64x2_t z          {vfmaq_f64(shifter, y, vdupq_n_f64(64.0))};
     const int64x2_t   k          {vsubq_s64(vreinterpretq_s64_f64(z), vreinterpretq_s64_f64(shifter))};
-    const float64x2_t c          {vmulq_f64(vcvtq_f64_s64(k), vdupq_n_f64(0x1p-6))};
+    const float64x2_t c          {vmulq_f64(vsubq_f64(z, shifter), vdupq_n_f64(0x1p-6))};
     const float64x2_t difference {vsubq_f64(y, c)};
     const float64x2_t num        {vaddq_f64(difference, y_low)};
     const float64x2_t num_low    {vaddq_f64(vsubq_f64(difference, num), y_low)};
