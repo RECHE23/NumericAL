@@ -2868,6 +2868,27 @@ namespace numerical {
     return indices;
   }
 
+  //! \brief The number of nonzero elements (`x != T {}`: a NaN is one), as `numpy.count_nonzero` without an axis: by
+  //!        chunks on the threads, each chunk's counted without a branch, then the counts summed.
+  template <typename T>
+  [[nodiscard]] std::size_t count_nonzero(const tensor<T>& t)
+  {
+    const auto&              values {t.data()}; // indexed: a buffer of bools has no data()
+    const std::size_t        count  {t.size()};
+    const std::size_t        chunk  {detail::elementwise_chunk};
+    const std::size_t        chunks {(count + chunk - 1) / chunk};
+    std::vector<std::size_t> found(chunks, 0);
+    detail::parallel_for(chunks, chunk, [&](std::size_t c) {
+                           const std::size_t last  {std::min((c + 1) * chunk, count)};
+                           std::size_t       total {0};
+                           for (std::size_t k {c * chunk}; k < last; ++k) {
+                             total += static_cast<std::size_t>(values[k] != T {});
+                           }
+                           found[c] = total;
+                         });
+    return std::accumulate(found.begin(), found.end(), std::size_t {0});
+  }
+
   //! \brief The number of nonzero elements (`x != T {}`) along \p axis, as `numpy.count_nonzero`. \throws
   //!        dimension_error If \p axis is not an axis.
   template <typename T>
@@ -3353,6 +3374,87 @@ namespace numerical {
     return tensor<T> {std::move(out), std::move(values)};
   }
 
+  namespace detail {
+    //! \brief The first column of row \p i past the part to and below its \p k diagonal (\p lower), or the first column
+    //!        of the part to and above it (else), within `[0, cols]`; \p k clamped first, so `i + k` cannot overflow.
+    [[nodiscard]] inline std::size_t triangle_split(std::size_t    i,
+                                                    std::size_t    rows,
+                                                    std::size_t    cols,
+                                                    std::ptrdiff_t k,
+                                                    bool           lower)
+    {
+      const auto     r    {static_cast<std::ptrdiff_t>(rows)};
+      const auto     c    {static_cast<std::ptrdiff_t>(cols)};
+      const auto     band {std::clamp<std::ptrdiff_t>(k, -r - 1, c + 1)};
+      const auto     edge {static_cast<std::ptrdiff_t>(i) + band + static_cast<std::ptrdiff_t>(lower)};
+      return static_cast<std::size_t>(std::clamp<std::ptrdiff_t>(edge, 0, c));
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The matrices of \p t (its last two axes) zero above their \p k diagonal (\p lower) or below it (else), as
+   *        `numpy.tril` and `numpy.triu`: each row's kept part copied and the rest zeroed, by rows on the threads.
+   * \throws dimension_error If \p t has fewer than two axes.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> triangle(const tensor<T>& t,
+                                   std::ptrdiff_t   k,
+                                   bool             lower)
+  {
+    const std::vector<std::size_t>& shape {t.shape()};
+    if (shape.size() < 2) {
+      throw dimension_error("triangle: a matrix or a stack of matrices (rank >= 2)");
+    }
+    const std::size_t rows  {shape[shape.size() - 2]};
+    const std::size_t cols  {shape[shape.size() - 1]};
+    const std::size_t count {t.size()};
+    buffer<T>         out(count);
+    if (count == 0) {
+      return tensor<T> {shape, std::move(out)};
+    }
+    const T* const in {t.data().data()};
+    detail::parallel_for(count / cols, cols * detail::memory_element_weight, [&](std::size_t line) {
+                           const std::size_t split {detail::triangle_split(line % rows, rows, cols, k, lower)};
+                           const std::size_t first {lower ? 0 : split};          // the kept columns: [first, last)
+                           const std::size_t last  {lower ? split : cols};
+                           T* const          row   {out.data() + (line * cols)};
+                           std::fill_n(row, first, T {});
+                           std::copy_n(in + (line * cols) + first, last - first, row + first);
+                           std::fill_n(row + last, cols - last, T {});
+                         });
+    return tensor<T> {shape, std::move(out)};
+  }
+
+  /*!
+   * \brief The row and the column indices of the \p rows × \p cols matrix's part to and below its \p k diagonal
+   *        (\p lower) or to and above it (else), in row-major order, as `numpy.tril_indices` and
+   *        `numpy.triu_indices`: each row's count, their offsets, then the rows written on the threads.
+   */
+  [[nodiscard]] inline std::array<tensor<std::int64_t>, 2> triangle_indices(std::size_t    rows,
+                                                                            std::size_t    cols,
+                                                                            std::ptrdiff_t k,
+                                                                            bool           lower)
+  {
+    std::vector<std::size_t> offsets(rows + 1, 0);
+    for (std::size_t i {0}; i < rows; ++i) {
+      const std::size_t split {detail::triangle_split(i, rows, cols, k, lower)};
+      offsets[i + 1] = offsets[i] + (lower ? split : cols - split);
+    }
+    const std::size_t     found {offsets.back()};
+    buffer<std::int64_t>  row_of(found);
+    buffer<std::int64_t>  col_of(found);
+    detail::parallel_for(rows, cols * detail::memory_element_weight, [&](std::size_t i) {
+                           const std::size_t split {detail::triangle_split(i, rows, cols, k, lower)};
+                           const std::size_t at     {offsets[i]};
+                           auto              column {static_cast<std::int64_t>(lower ? 0 : split)};
+                           for (std::size_t j {at}; j < offsets[i + 1]; ++j) {
+                             row_of[j] = static_cast<std::int64_t>(i);
+                             col_of[j] = column++;
+                           }
+                         });
+    return {tensor<std::int64_t> {{found}, std::move(row_of)}, tensor<std::int64_t> {{found}, std::move(col_of)}};
+  }
+
   //! \brief A tensor of \p shape with every element \p value.
   template <typename T>
   [[nodiscard]] tensor<T> full(std::vector<std::size_t> shape,
@@ -3378,6 +3480,33 @@ namespace numerical {
     buffer<T> values(count);
     detail::parallel_zero(values.data(), count);
     return tensor<T> {std::move(shape), std::move(values)};
+  }
+
+  /*!
+   * \brief The square matrix with the vector \p v on its \p k diagonal (above the main one for a positive \p k) and
+   *        zeros elsewhere, as `numpy.diag` of a vector: of order `len v + |k|`.
+   * \throws dimension_error If \p v is not a vector, or the square's size overflows.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> diag(const tensor<T>& v,
+                               std::ptrdiff_t   k)
+  {
+    if (v.rank() != 1) {
+      throw dimension_error("diag: a vector");
+    }
+    const std::size_t length    {v.size()};
+    const std::size_t magnitude {k < 0 ? std::size_t {0} - static_cast<std::size_t>(k) : static_cast<std::size_t>(k)};
+    const std::size_t n         {length + magnitude}; // within range: |k| ≤ 2⁶³, a vector's length below it
+    const std::size_t count     {detail::checked_mul(n, n)};
+    buffer<T>         values(count);
+    detail::parallel_zero(values.data(), count);
+    const std::size_t r0   {k < 0 ? magnitude : 0};
+    const std::size_t c0   {k < 0 ? 0 : magnitude};
+    const T* const    from {v.data().data()};
+    for (std::size_t i {0}; i < length; ++i) {
+      values[((r0 + i) * n) + c0 + i] = from[i];
+    }
+    return tensor<T> {{n, n}, std::move(values)};
   }
 
   //! \brief A tensor of \p shape full of ones.

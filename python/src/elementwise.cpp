@@ -750,9 +750,8 @@ PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args)
         {
             const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
             std::visit([&](const auto& t) {
-                using T = element_of_t<std::decay_t<decltype(t)>>;
                 if (axis < 0) {
-                    total = static_cast<std::size_t>(std::ranges::count_if(t.data(), [](const T& value) { return value != T {}; }));
+                    total = numerical::count_nonzero(t);
                 }
                 else {
                     along.emplace(numerical::count_nonzero(t, static_cast<std::size_t>(axis)));
@@ -1141,6 +1140,32 @@ namespace {
         return index;
     }
 
+    //! How many of the `size` elements fall in each of `count` bins, `bin(i)` element i's (or `count` to leave it
+    //! out): on the threads, each part counted into bins of its own, then the parts' added; integers, so the counts
+    //! are a sequential pass's. Split only so far as the parts' bins add up to no more than the elements.
+    template <typename Bin>
+    numerical::buffer<std::int64_t> bin_counts(std::size_t size, std::size_t count, const Bin& bin)
+    {
+        const std::size_t parts {std::max<std::size_t>(1, std::min(numerical::detail::parallel_threads(size, 1), size / (count + 1)))};
+        const std::size_t share {(size + parts - 1) / parts};
+        numerical::buffer<std::int64_t> local(parts * (count + 1), 0);
+        numerical::detail::parallel_for(parts, share, [&](std::size_t p) {
+            std::int64_t* const own {local.data() + (p * (count + 1))};
+            const std::size_t   last {std::min(size, (p + 1) * share)};
+            for (std::size_t i {p * share}; i < last; ++i) {
+                ++own[bin(i)];
+            }
+        });
+        numerical::buffer<std::int64_t> counts(count, 0);
+        for (std::size_t p {0}; p < parts; ++p) {
+            const std::int64_t* const own {local.data() + (p * (count + 1))};
+            for (std::size_t b {0}; b < count; ++b) {
+                counts[b] += own[b];
+            }
+        }
+        return counts;
+    }
+
     //! Every block of `block` elements' weights summed into its own bins in float64 in the elements' order (NumPy's
     //! bincount), each block's sums then made `W`s and added to the totals in `W`, as NumPy's histogram adds them.
     template <typename W, typename D, typename Bin>
@@ -1224,13 +1249,9 @@ PyObject* module_histogram_uniform(PyObject* /*self*/, PyObject* args)
                     const D* const    in {values.data().data()};
                     const std::size_t size {values.size()};
                     if (wt == nullptr) {
-                        numerical::buffer<std::int64_t> counts(count, 0);
-                        for (std::size_t i {0}; i < size; ++i) {
-                            if (in[i] >= lo && in[i] <= hi) {
-                                ++counts[bin(in[i])];
-                            }
-                        }
-                        result.emplace(int_tensor {{count}, std::move(counts)});
+                        result.emplace(int_tensor {{count}, bin_counts(size, count, [&](std::size_t i) {
+                            return in[i] >= lo && in[i] <= hi ? bin(in[i]) : count;
+                        })});
                         return;
                     }
                     std::visit([&](const auto& weights) {
@@ -1310,12 +1331,11 @@ PyObject* module_bincount(PyObject* /*self*/, PyObject* args)
     const auto size = static_cast<std::size_t>(length);
     try {
         if (w == Py_None) {
-            numerical::buffer<std::int64_t> counts(size, 0);
+            numerical::buffer<std::int64_t> counts;
             {
                 const sb::scoped_gil_release unlocked {releases_gil(values->size())};
-                for (const std::int64_t v : values->data()) {
-                    ++counts[static_cast<std::size_t>(v)];
-                }
+                const std::int64_t* const    in {values->data().data()};
+                counts = bin_counts(values->size(), size, [in](std::size_t i) { return static_cast<std::size_t>(in[i]); });
             }
             return wrap(any_tensor {numerical::tensor<std::int64_t> {{size}, std::move(counts)}});
         }

@@ -195,8 +195,34 @@ class AgainstNumPy(unittest.TestCase):
         self.assertEqual((ours.bits, ours.min, ours.max, ours.dtype), (theirs.bits, theirs.min, theirs.max,
                                                                         theirs.dtype.name))
 
+    def test_triangles_and_diagonals(self):
+        # tril, triu and diag in every dtype: a stack, wide and tall matrices, a vector broadcast to a square, k past
+        # either corner (and past an int64), negative zeros and NaNs kept where they lie; count_nonzero of them all
+        rng = np.random.default_rng(16)
+        for dtype in ("float64", "float32", "complex128", "complex64", "int64", "bool"):
+            for shape in ((0,), (5,), (0, 3), (3, 0), (4, 4), (3, 7), (7, 3), (2, 3, 5), (2, 0, 4), (300, 513)):
+                x = rng.normal(size=shape) * 3
+                x = (x > 0) if dtype == "bool" else x.astype(dtype)
+                if dtype.startswith("float") and x.size:
+                    x.flat[::7] = -0.0
+                    x.flat[0] = np.nan
+                t = numerical.asarray(x, dtype)
+                for k in (-2 ** 40, -400, -3, -1, 0, 1, 2, 600, 2 ** 40):
+                    self.assertSame(lambda: numerical.tril(t, k), lambda: np.tril(x, k), f"tril {dtype} {shape} {k}")
+                    self.assertSame(lambda: numerical.triu(t, k), lambda: np.triu(x, k), f"triu {dtype} {shape} {k}")
+                    if len(shape) == 1 and abs(k) < 1000:
+                        self.assertSame(lambda: numerical.diag(t, k), lambda: np.diag(x, k), f"diag {dtype} {shape} {k}")
+                self.assertSame(lambda: numerical.count_nonzero(t), lambda: np.count_nonzero(x), f"count_nonzero {dtype}")
+        big = rng.normal(size=3000001)
+        big[::3] = 0.0
+        self.assertSame(lambda: numerical.count_nonzero(numerical.asarray(big)), lambda: np.count_nonzero(big),
+                        "count_nonzero over the threads")
+        self.assertEqual(numerical.tril(numerical.ones((2, 2)), 2 ** 70).tolist(), [[1.0, 1.0], [1.0, 1.0]])
+        self.assertEqual(numerical.triu(numerical.ones((2, 2)), -2 ** 70).tolist(), [[1.0, 1.0], [1.0, 1.0]])
+
     def test_constructions(self):
-        for n, m, k in ((3, None, 0), (3, 5, 1), (4, 2, -1), (0, 3, 0), (3, 3, -5), (2, 2, 7)):
+        for n, m, k in ((3, None, 0), (3, 5, 1), (4, 2, -1), (0, 3, 0), (3, 3, -5), (2, 2, 7), (-2, None, 0),
+                        (3, -1, 1), (4, 6, 2 ** 40), (4, 6, -2 ** 40)):
             for dtype in (float, "int64", bool, "float32", "complex128"):
                 self.assertSame(lambda: numerical.tri(n, m, k, dtype), lambda: np.tri(n, m, k, dtype),
                                 f"tri {n} {m} {k} {dtype}")

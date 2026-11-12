@@ -17,6 +17,19 @@ A change that can break code is listed under **Breaking** and held for a month's
   6.6 ms, `arctan` 16.3 → 5.4 ms; with Clang (the macOS x86-64 wheels), `tanh` 18.4 → 6.7 ms and `arctan` 19.3 → 5.4
   ms. The same bits.
 
+- **`tril`, `triu`, `tri`, `diag` of a vector, `tril_indices` and `triu_indices` in C++** (`numerical::triangle`,
+  `numerical::triangle_indices` and `numerical::diag`, new): each row's kept part copied and the rest zeroed, on the
+  threads, where a matrix of each element's diagonal and a mask of its size were built first. On M1 Pro, `tril` of
+  2000 × 2000 2.5 → 0.36 ms, `diag` of 2000 values 3.4 → 0.16 ms, `tril_indices(2000)` 2.4 → 0.25 ms. The same values.
+- **`count_nonzero` without an axis on the threads** (C++ `numerical::count_nonzero(t)`, new): 10^6 float64 0.16 →
+  0.045 ms. **`bincount` and `histogram` without weights** count on the threads, each part into bins of its own, where
+  the elements outnumber the bins: 10^6 values, `histogram` of 100 bins 2.4 → 0.95 ms, `bincount` of 1000 0.93 → 0.71
+  ms. The same counts.
+
+### Fixed
+
+- **`tri`, `tril_indices` and `triu_indices` of a negative extent** are empty, as NumPy's, where they raised.
+
 ## 2026.11.13 — 2026-11-11
 
 ### Fixed

@@ -5786,23 +5786,15 @@ def hstack(tup):
     return _concatenated(tensors, 0 if len(tensors[0].shape) == 1 else 1)
 
 
-def _band_mask(shape, k, lower):
-    """True on and below the `k` diagonal (above where not `lower`) of matrices of the last two axes of `shape`."""
-    rows, cols = shape[-2], shape[-1]
-    i = reshape(arange(rows), (rows, 1))
-    j = reshape(arange(cols), (1, cols))
-    return (j - i <= k) if lower else (j - i >= k)
-
-
 def _triangle(m, k, lower, name):
     m = _tensor(m)
     k = _operator.index(k)
     if len(m.shape) == 0:
         raise ValueError(f"{name}: the input must be at least 1-D")
-    shape = m.shape
-    if len(shape) == 1:  # NumPy's: the vector as every row of a square
-        m, shape = reshape(m, (1, shape[0])), (shape[0], shape[0])
-    return where(_band_mask(shape, k, lower), m, zeros((), m.dtype))
+    if len(m.shape) == 1:  # NumPy's: the vector as every row of a square
+        m = broadcast_to(m, (m.shape[0], m.shape[0]))
+    k = _builtins.max(_builtins.min(k, m.shape[-1] + 1), -m.shape[-2] - 1)  # past either corner: all, or none
+    return _numerical._triangle(m, k, lower)
 
 
 def tril(m, k=0):
@@ -5829,14 +5821,7 @@ def diag(v, k=0):
         return diagonal(v, offset=k)
     if len(v.shape) != 1:
         raise ValueError("Input must be 1- or 2-d.")
-    n = v.shape[0] + _builtins.abs(k)
-    if v.shape[0] == 0:
-        return zeros((n, n), v.dtype)
-    zero = zeros((_builtins.abs(k),), v.dtype)
-    column = concatenate([v, zero] if k >= 0 else [zero, v])  # row i's value: v[i] (k ≥ 0) or v[i + k]
-    i = reshape(arange(n), (n, 1))
-    j = reshape(arange(n), (1, n))
-    return where(j - i == k, reshape(column, (n, 1)), zeros((), v.dtype))  # zeros of v's dtype: an int64 stays one
+    return _numerical._diag(v, k)
 
 
 def kron(a, b):
@@ -8296,21 +8281,27 @@ def tri(N, M=None, k=0, dtype=float):
     N = _operator.index(N)
     M = N if M is None else _operator.index(M)
     k = _operator.index(k)
-    rows = reshape(asarray(arange(N), "int64"), (N, 1))
-    mask = reshape(asarray(arange(M), "int64"), (1, M)) <= rows + k
-    return asarray(mask, _dtype_name(dtype))
+    return tril(ones((_builtins.max(N, 0), _builtins.max(M, 0)), _dtype_name(dtype)), k)  # NumPy's: a negative extent empty
 
 
 def tril_indices(n, k=0, m=None):
     """The row and column indices of the ``n × m`` lower triangle, to and below the `k`-th diagonal, as
     ``numpy.tril_indices``: int64 tensors, in row-major order."""
-    return nonzero(tri(n, m, k=k, dtype=bool))
+    n = _operator.index(n)
+    m = n if m is None else _operator.index(m)
+    n, m = _builtins.max(n, 0), _builtins.max(m, 0)
+    k = _builtins.max(_builtins.min(_operator.index(k), m + 1), -n - 1)  # past either corner: all, or none
+    return _numerical._triangle_indices(n, m, k, True)
 
 
 def triu_indices(n, k=0, m=None):
     """The row and column indices of the ``n × m`` upper triangle, to and above the `k`-th diagonal, as
     ``numpy.triu_indices``."""
-    return nonzero(~tri(n, m, k=k - 1, dtype=bool))
+    n = _operator.index(n)
+    m = n if m is None else _operator.index(m)
+    n, m = _builtins.max(n, 0), _builtins.max(m, 0)
+    k = _builtins.max(_builtins.min(_operator.index(k), m + 1), -n - 1)  # past either corner: all, or none
+    return _numerical._triangle_indices(n, m, k, False)
 
 
 def tril_indices_from(arr, k=0):

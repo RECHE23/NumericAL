@@ -1544,6 +1544,111 @@ TEST(nonzero_across_chunks_as_a_plain_walk)
   EXPECT(numerical::nonzero(tensor<double> {{}, {2.0}}).empty()); // a scalar has no axis to index
 }
 
+// count_nonzero without an axis over many chunks (a NaN and a negative zero among them: one counts, one does not), and
+// of an empty tensor and a scalar.
+TEST(count_nonzero_of_every_element_across_chunks)
+{
+  const std::size_t         size {(3 * numerical::detail::elementwise_chunk) + 17};
+  numerical::buffer<double> values(size);
+  std::size_t               want {0};
+  for (std::size_t k {0}; k < size; ++k) {
+    values[k] = k % 11 == 3 ? std::numeric_limits<double>::quiet_NaN() : static_cast<double>(k % 4);
+    if (k % 5 == 0) {
+      values[k] = -0.0;
+    }
+    want += static_cast<std::size_t>(values[k] != 0.0);
+  }
+  EXPECT(numerical::count_nonzero(tensor<double> {{size}, std::move(values)}) == want);
+  EXPECT(numerical::count_nonzero(tensor<double> {{0, 3}, {}}) == 0);
+  EXPECT(numerical::count_nonzero(tensor<std::int64_t> {{}, {7}}) == 1);
+}
+
+// triangle keeps each matrix's part to and below (above) its k diagonal and zeros the rest, as NumPy's tril and triu:
+// every k from past the lower-left corner to past the upper-right one (the extremes clamped, so i + k cannot overflow),
+// a stack of matrices, a wide and a tall one, a negative zero kept where it lies; an empty matrix, and a vector refused.
+TEST(triangle_keeps_one_side_of_a_diagonal)
+{
+  for (const auto& [rows, cols] : {std::pair<std::size_t, std::size_t> {3, 5}, {5, 3}, {4, 4}}) {
+    const std::size_t         batch {2};
+    numerical::buffer<double> values(batch * rows * cols);
+    for (std::size_t k {0}; k < values.size(); ++k) {
+      values[k] = k % 6 == 0 ? -0.0 : static_cast<double>(k + 1);
+    }
+    const tensor<double> t {{batch, rows, cols}, values};
+    for (const std::ptrdiff_t k : {std::numeric_limits<std::ptrdiff_t>::min(), std::ptrdiff_t {-6}, std::ptrdiff_t {-1},
+                                   std::ptrdiff_t {0}, std::ptrdiff_t {2}, std::ptrdiff_t {6},
+                                   std::numeric_limits<std::ptrdiff_t>::max()}) {
+      for (const bool lower : {true, false}) {
+        const tensor<double> got  {numerical::triangle(t, k, lower)};
+        bool                 same {got.shape() == t.shape()};
+        for (std::size_t at {0}; same && at < values.size(); ++at) {
+          const auto   i    {static_cast<double>((at / cols) % rows)};
+          const auto   j    {static_cast<double>(at % cols)};
+          const auto   band {static_cast<double>(k)};
+          const bool   kept {lower ? j <= i + band : j >= i + band};
+          const double want {kept ? values[at] : 0.0};
+          same = std::bit_cast<std::uint64_t>(got.data()[at]) == std::bit_cast<std::uint64_t>(want);
+        }
+        EXPECT(same);
+      }
+    }
+  }
+  EXPECT(numerical::triangle(tensor<double> {{0, 4}, {}}, 0, true).shape() == (std::vector<std::size_t> {0, 4}));
+  EXPECT_THROWS(static_cast<void>(numerical::triangle(tensor<double> {{3}, {1.0, 2.0, 3.0}}, 0, true)),
+                numerical::dimension_error);
+}
+
+// triangle_indices lists the part to and below (above) the k diagonal in row-major order, as NumPy's tril_indices and
+// triu_indices: square, wide, tall and empty matrices, k past either corner.
+TEST(triangle_indices_in_row_major_order)
+{
+  for (const auto& [rows, cols] : {std::pair<std::size_t, std::size_t> {4, 4}, {3, 6}, {6, 2}, {0, 3}, {3, 0}}) {
+    for (const std::ptrdiff_t k : {std::numeric_limits<std::ptrdiff_t>::min(), std::ptrdiff_t {-2}, std::ptrdiff_t {0},
+                                   std::ptrdiff_t {1}, std::numeric_limits<std::ptrdiff_t>::max()}) {
+      for (const bool lower : {true, false}) {
+        std::vector<std::int64_t> want_rows;
+        std::vector<std::int64_t> want_cols;
+        for (std::size_t i {0}; i < rows; ++i) {
+          for (std::size_t j {0}; j < cols; ++j) {
+            const auto band {static_cast<double>(k)};
+            if (lower ? static_cast<double>(j) <= static_cast<double>(i) + band : static_cast<double>(j) >= static_cast<double>(i) + band) {
+              want_rows.push_back(static_cast<std::int64_t>(i));
+              want_cols.push_back(static_cast<std::int64_t>(j));
+            }
+          }
+        }
+        const auto found {numerical::triangle_indices(rows, cols, k, lower)};
+        EXPECT(std::ranges::equal(found[0].data(), want_rows) && std::ranges::equal(found[1].data(), want_cols));
+      }
+    }
+  }
+}
+
+// diag puts a vector on the k diagonal of a square of order len + |k|, zeros elsewhere, as NumPy's diag of a vector:
+// on, above and below the main diagonal, an empty vector's (a zero square of order |k|); a matrix and a square too
+// large refused.
+TEST(diag_puts_a_vector_on_a_diagonal)
+{
+  const tensor<std::int64_t> v {{3}, {4, 5, 6}};
+  for (const std::ptrdiff_t k : {std::ptrdiff_t {-2}, std::ptrdiff_t {0}, std::ptrdiff_t {1}}) {
+    const tensor<std::int64_t> got  {numerical::diag(v, k)};
+    const std::size_t          n    {3 + static_cast<std::size_t>(k < 0 ? -k : k)};
+    bool                       same {got.shape() == std::vector<std::size_t> {n, n}};
+    for (std::size_t i {0}; same && i < n; ++i) {
+      for (std::size_t j {0}; same && j < n; ++j) {
+        const std::ptrdiff_t at {static_cast<std::ptrdiff_t>(k < 0 ? j : i)};
+        const bool           on {static_cast<std::ptrdiff_t>(j) - static_cast<std::ptrdiff_t>(i) == k};
+        same = got.data()[(i * n) + j] == (on ? v.data()[static_cast<std::size_t>(at)] : 0);
+      }
+    }
+    EXPECT(same);
+  }
+  EXPECT(numerical::diag(tensor<std::int64_t> {{0}, {}}, -2).shape() == (std::vector<std::size_t> {2, 2}));
+  EXPECT_THROWS(static_cast<void>(numerical::diag(tensor<std::int64_t> {{1, 1}, {1}}, 0)), numerical::dimension_error);
+  EXPECT_THROWS(static_cast<void>(numerical::diag(tensor<std::int64_t> {{1}, {1}}, std::numeric_limits<std::ptrdiff_t>::min())),
+                numerical::dimension_error); // a square of order 2⁶³ + 1
+}
+
 // A selection answers what a stable sort puts at each position, to the bit: among zeros of either sign and NaNs of
 // different payloads, the one of the same rank in the line's order. Positions alike for every line or one row per
 // line, repeated ones, more than a selection takes (the line sorted), integers and complex numbers.

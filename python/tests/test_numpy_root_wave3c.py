@@ -1,5 +1,5 @@
 """trapezoid, gradient, diagflat, indices, ix_, ravel_multi_index, unravel_index, correlate, convolve, bincount,
-histogram, histogram_bin_edges and fft.next_fast_len against NumPy's and SciPy's answers: to the bit, but for a
+histogram (both on the threads too), histogram_bin_edges and fft.next_fast_len against NumPy's and SciPy's answers: to the bit, but for a
 trapezoid along an axis that is not the last (its sum pairwise per column, NumPy's row after row) and the
 correlations (each lag's sum in its terms' order, NumPy's in its BLAS's), within a few ulps there; with their errors.
 Deterministic; the comparisons skipped without NumPy."""
@@ -233,6 +233,20 @@ class AgainstNumPy(unittest.TestCase):
                         continue
                     self.assertSame(lambda: numerical.histogram_bin_edges(_tensor(a), _tensor(bins)),
                                     lambda: np.histogram_bin_edges(a, bins), f"histogram_bin_edges {kind} {size}")
+
+    def test_bincount_and_histogram_on_the_threads(self):
+        # enough elements for their counts split over the threads (each part its own bins), and too many bins for that
+        rng = np.random.default_rng(15)
+        for size in (300000, 2000001):
+            for top in (1, 7, 5000, 3 * size):
+                x = rng.integers(0, top, size)
+                self.assertSame(lambda: numerical.bincount(_tensor(x)), lambda: np.bincount(x), f"bincount {size} {top}")
+            for kind in ("float64", "float32"):
+                a = (rng.normal(size=size) * 2).astype(kind)
+                a[::13] = np.nan
+                for bins in (1, 10, 1000, size):
+                    self.assertSame(lambda: numerical.histogram(_tensor(a), bins, (-3.0, 2.5)),
+                                    lambda: np.histogram(a, bins, (-3.0, 2.5)), f"histogram {size} {kind} {bins}")
 
     @unittest.skipIf(scipy_fft is None, "SciPy is not installed")
     def test_next_fast_len(self):

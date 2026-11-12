@@ -210,6 +210,11 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "_broadcast_to(a, shape) -> Tensor\nThe elements repeated along the axes of extent 1 to the shape.");
     m.raw("_diagonal", module_diagonal, METH_VARARGS,
           "_diagonal(a, offset) -> Tensor\nThe offset diagonal of each matrix of a (its last two axes), read where it lies.");
+    m.raw("_triangle", module_triangle, METH_VARARGS,
+          "_triangle(a, k, lower) -> Tensor\nThe matrices of a zero above their k diagonal (lower) or below it.");
+    m.raw("_diag", module_diag, METH_VARARGS, "_diag(v, k) -> Tensor\nThe square matrix with the vector v on its k diagonal.");
+    m.raw("_triangle_indices", module_triangle_indices, METH_VARARGS,
+          "_triangle_indices(rows, cols, k, lower) -> (Tensor, Tensor)\nThe indices of a triangle of a rows × cols matrix.");
     m.raw("_full", module_full, METH_VARARGS, "_full(shape, value, dtype) -> Tensor\nA tensor of one value.");
     m.raw("_eye", module_eye, METH_VARARGS, "_eye(n, dtype) -> Tensor\nThe n×n identity.");
     m.raw("_arange", module_arange, METH_VARARGS,

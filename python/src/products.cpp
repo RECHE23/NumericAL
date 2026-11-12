@@ -853,6 +853,89 @@ PyObject* module_diagonal(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _triangle(a, k, lower) -> the matrices of a zero above their k diagonal (lower) or below it.
+PyObject* module_triangle(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  x     = nullptr;
+    Py_ssize_t k     = 0;
+    int        lower = 0;
+    if (PyArg_ParseTuple(args, "Onp", &x, &k, &lower) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            std::visit([&](const auto& t) { result.emplace(numerical::triangle(t, k, lower != 0)); }, *a);
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _diag(v, k) -> the square matrix with the vector v on its k diagonal.
+PyObject* module_diag(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  x = nullptr;
+    Py_ssize_t k = 0;
+    if (PyArg_ParseTuple(args, "On", &x, &k) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        return std::visit([&](const auto& t) { return wrap(any_tensor {numerical::diag(t, k)}); }, *a);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _triangle_indices(rows, cols, k, lower) -> (rows, cols) int64 tensors of the part to and below the k diagonal (lower)
+// or to and above it.
+PyObject* module_triangle_indices(PyObject* /*self*/, PyObject* args)
+{
+    Py_ssize_t rows  = 0;
+    Py_ssize_t cols  = 0;
+    Py_ssize_t k     = 0;
+    int        lower = 0;
+    if (PyArg_ParseTuple(args, "nnnp", &rows, &cols, &k, &lower) == 0) {
+        return nullptr;
+    }
+    if (rows < 0 || cols < 0) {
+        PyErr_SetString(PyExc_ValueError, "_triangle_indices: non-negative extents");
+        return nullptr;
+    }
+    try {
+        std::optional<std::array<int_tensor, 2>> found;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(static_cast<std::size_t>(rows) * static_cast<std::size_t>(cols))};
+            found.emplace(numerical::triangle_indices(static_cast<std::size_t>(rows), static_cast<std::size_t>(cols), k, lower != 0));
+        }
+        PyObject* first = wrap(any_tensor {std::move((*found)[0])});
+        if (first == nullptr) {
+            return nullptr;
+        }
+        PyObject* second = wrap(any_tensor {std::move((*found)[1])});
+        if (second == nullptr) {
+            Py_DECREF(first);
+            return nullptr;
+        }
+        return Py_BuildValue("(NN)", first, second);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _full(shape, value, dtype) -> Tensor of that dtype.
 PyObject* module_full(PyObject* /*self*/, PyObject* args)
 {
