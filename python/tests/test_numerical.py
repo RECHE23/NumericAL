@@ -227,7 +227,8 @@ class HighRanks(unittest.TestCase):
                             self.assertTrue(np.all(same), (np.dtype(dtype).name, int(np.sum(~same))))
 
     def test_complex_elementary_functions_are_glibcs(self):
-        # NumPy's under glibc to the bit (its cexp, clog, csin, ccos, ctan, ctanh); elsewhere NumPy takes the platform's
+        # NumPy's under glibc to the bit (its cexp, clog, csin, ccos, ctan, ctanh, csinh, ccosh, casin, cacos, catan,
+        # casinh, cacosh, catanh, and its formulas of them for log2, log10, exp2, expm1); elsewhere NumPy takes the platform's
         # library, which chooses otherwise among infinities and NaNs and strays further near the unit circle: the
         # finite answers agree within a few dozen units in the last place of the larger part.
         values = [0.0, -0.0, np.inf, -np.inf, np.nan, 1e308, -1e308, 1.0, -1.0, 1e-310, 710.0, -745.0, 40.0, 1e-20]
@@ -238,7 +239,8 @@ class HighRanks(unittest.TestCase):
         for dtype in (np.complex128, np.complex64):
             a = z.astype(dtype)
             eps = np.finfo(dtype).eps
-            for name in ("exp", "log", "sin", "cos", "tan", "tanh"):
+            for name in ("exp", "log", "sin", "cos", "tan", "tanh", "sinh", "cosh", "arcsin", "arccos", "arctan", "arcsinh",
+                         "arccosh", "arctanh", "log2", "log10", "exp2", "expm1"):
                 with np.errstate(all="ignore"):
                     want = getattr(np, name)(a)
                     got = np.asarray(getattr(numerical, name)(numerical.asarray(a)))
@@ -258,6 +260,29 @@ class HighRanks(unittest.TestCase):
         self.assertEqual(tangent.imag, 0.0)
         self.assertEqual(complex(numerical.sin(numerical.asarray(np.array([1e308j])))[0]).real, 0.0)
         self.assertGreater(complex(numerical.log(numerical.asarray(np.array([1 + 1e-20j])))[0]).real, 0.0)
+
+    def test_complex_log1p_keeps_a_small_numbers_digits(self):
+        # log(1 + z) of a small z is z's own digits, and about the circle |1 + z| = 1 its real part's, where NumPy's
+        # log(hypot(1 + re, im)) is 0 or loses them; elsewhere NumPy's within a few units in the last place
+        def log1p(*values):
+            return np.asarray(numerical.log1p(numerical.asarray(np.array(values, dtype=np.complex128))))
+
+        small = log1p(1e-20 + 3e-20j, -1e-300 + 0j, 0j, -0.0 - 0.0j)
+        self.assertEqual(small[0], 1e-20 + 3e-20j)
+        self.assertEqual(small[1], -1e-300 + 0j)
+        self.assertEqual(small[2], 0j)
+        self.assertTrue(np.signbit(small[3].imag))
+        # z = −0.4 + 0.8i: 1 + z within an ulp of 0.6 + 0.8i, on the unit circle; its log's real part as small
+        self.assertLess(abs(log1p(-0.4 + 0.8j)[0].real), 1e-16)
+        self.assertEqual(log1p(-1 + 0j)[0].real, -np.inf)
+        rng = np.random.default_rng(37)
+        drawn = rng.standard_normal(400) * 3 + 1j * rng.standard_normal(400) * 3
+        got = log1p(*drawn)
+        want = np.log1p(drawn)
+        far = np.abs(np.abs(1 + drawn) - 1) > 0.25  # away from the circle, where NumPy's holds its digits
+        for part in (np.real, np.imag):
+            scale = np.abs(part(want[far]))
+            self.assertTrue(np.all(np.abs(part(got[far]) - part(want[far])) <= 8 * np.finfo(float).eps * scale))
 
     def test_reductions_over_several_axes_and_kept_dims(self):
         # a tuple of axes reduced together (one pass over them moved last), () none, keepdims each an extent of 1

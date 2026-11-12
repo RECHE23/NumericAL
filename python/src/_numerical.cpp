@@ -168,6 +168,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
           "numpy.histogram's counts or weights' sums over equal bins.");
     m.raw("_searchsorted", module_searchsorted, METH_VARARGS, "_searchsorted(a, v, right) -> Tensor\nWhere v's elements go in the sorted vector a.");
     m.raw("_real_unary", module_real_unary, METH_VARARGS, "_real_unary(name, a) -> Tensor\nA real elementary function of every element.");
+    m.raw("_complex_unary", module_complex_unary, METH_VARARGS, "_complex_unary(name, a) -> Tensor\nA complex elementary function of every element.");
     m.raw("_bitwise", module_bitwise, METH_VARARGS,
           "_bitwise(op, a, b) -> Tensor\nTwo int64 tensors' & | ^, shifts (< >), gcd (g), lcm (l) or bit counts (c).");
     m.raw("_real_binary", module_real_binary, METH_VARARGS,

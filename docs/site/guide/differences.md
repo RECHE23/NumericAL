@@ -107,22 +107,22 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
   the array's; NumPy raises IndexError there (numpy/numpy#29709).
 - **The special matrices** (`hilbert`, `pascal`, `invpascal`…) are float64 where SciPy's exact ones are integers:
   each entry computed exactly, then rounded once.
-- **The complex elementary functions** (`exp`, `log`, `sqrt`, `sin`, `cos`, `tan`, `tanh` of a complex number) are
-  glibc's, NumPy's on Linux to the bit; macOS's and Windows' libraries, NumPy's there, differ among infinities and
-  NaNs and past their last bits.
+- **The complex elementary functions** (`exp`, `log`, `sqrt`, `sin`, `cos`, `tan`, `tanh`, `sinh`, `cosh` and the
+  inverse ones, `arcsin`, `arccos`, `arctan`, `arcsinh`, `arccosh`, `arctanh`, of a complex number) are glibc's, NumPy's
+  on Linux; macOS's and Windows' libraries, NumPy's there, differ among infinities and NaNs and past their last bits.
+  `log2`, `log10`, `exp2` and `expm1` are NumPy's formulas; `log1p` keeps a small number's digits, where NumPy's
+  `log(hypot(1 + re, im))` is 0 below ε.
 
 ## What is not there yet
 
 - **Integer dtypes.** NumPy's integer arrays are read as float64 unless `dtype="int64"` is asked (by default from
-  2026.12.0); an int64 tensor compares, selects, moves, computes, reduces and multiplies (`@`, `einsum`, `dot`, `tensordot`) as
-  NumPy's integers, wrapped past 2^63, but not yet through the linear algebra, and the index functions answer in it. A real converted to int64 that
-  it cannot hold (NaN, an infinity, a value out of range) raises, as Python's `int()`; NumPy's answer depends on the
-  processor.
+  2026.12.0); an int64 tensor compares, selects, moves, computes, reduces and multiplies (`@`, `einsum`, `dot`,
+  `tensordot`) as NumPy's integers, wrapped past 2^63, but not yet through the linear algebra, and the index functions
+  answer in it. A real converted to int64 that it cannot hold (NaN, an infinity, a value out of range) raises, as
+  Python's `int()`; NumPy's answer depends on the processor.
 - **Bool arithmetic and the small dtypes.** `+`, `-`, `*` (and `add`, `multiply`…) refuse two bool tensors, where
   NumPy's are a logical or and a logical and; there is no float16 nor int8, NumPy's dtype for `fabs`, `arcsin`… or
   `reciprocal` of a bool, which raise here.
-- **The complex inverse trigonometric and hyperbolic functions** (`arcsin`, `arccos`, `arctan`, `arcsinh`,
-  `arccosh`, `arctanh`) take real dtypes only.
 - **Views and assignment.** A `Tensor` is immutable: no `t[i] = x`, and no operation returns a view of another tensor.
 - **Complex ordering.** `max`, `min`, `maximum`, `minimum` and `clip` take real dtypes only; NumPy orders complex
   numbers by real, then imaginary part (`sort` does too).

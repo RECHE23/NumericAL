@@ -54,6 +54,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **int64 through `@`, `matmul`, `dot`, `inner`, `vdot`, `tensordot` and `einsum`**, as NumPy's integers: an int64
   result, each sum and product wrapped modulo 2^64, where these raised `TypeError` (convert first). An int64 operand
   beside a float64 one is promoted, as before. `conj` of int64 is its own elements, as NumPy's.
+- **The complex elementary functions NumPy has and this module lacked**: `arcsin`, `arccos`, `arctan`, `arcsinh`,
+  `arccosh`, `arctanh`, `sinh`, `cosh`, `log2`, `log10`, `exp2`, `expm1` and `log1p` of complex128 and complex64, where
+  they raised `TypeError`. The inverse ones are glibc's (`casin`, `cacos`, `catan`, `casinh`, `cacosh`, `catanh`), the
+  same bits as glibc 2.41 over 200,000 drawn and special values, NumPy's on Linux; `log2`, `log10`, `exp2` and `expm1`
+  are NumPy's formulas over glibc's `clog` and `cexp`, the same bits too. `log1p` keeps a small number's digits and
+  those about the circle |1 + z| = 1 (|1 + z|² − 1 in double-double), within 3.4 ulp, where NumPy's
+  `log(hypot(1 + re, im))` is 0 below ε and loses millions of ulp there. C++ `numerical::detail::complex_asin`,
+  `complex_acos`, `complex_atan`, `complex_asinh`, `complex_acosh`, `complex_log1p`, `complex_log2`, `complex_log10`,
+  `complex_exp2`, `complex_expm1` (new).
 
 ### Fixed
 

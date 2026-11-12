@@ -288,6 +288,67 @@ namespace {
     }
 } // namespace
 
+namespace {
+    //! The complex function `name` (NumPy's name) of a complex number, or nullptr for one this module does not take.
+    template <typename R>
+    using complex_function = std::complex<R> (*)(const std::complex<R>&);
+
+    template <typename R>
+    complex_function<R> complex_named(std::string_view name)
+    {
+        namespace d = numerical::detail;
+        static constexpr std::array<std::pair<std::string_view, complex_function<R>>, 13> table {{
+            {"arcsin", &d::complex_asin<R>},   {"arccos", &d::complex_acos<R>},   {"arctan", &d::complex_atan<R>},
+            {"arcsinh", &d::complex_asinh<R>}, {"arccosh", &d::complex_acosh<R>}, {"arctanh", &d::complex_atanh<R>},
+            {"sinh", &d::complex_sinh<R>},     {"cosh", &d::complex_cosh<R>},     {"log2", &d::complex_log2<R>},
+            {"log10", &d::complex_log10<R>},   {"log1p", &d::complex_log1p<R>},   {"expm1", &d::complex_expm1<R>},
+            {"exp2", &d::complex_exp2<R>},
+        }};
+        const auto* const found {std::ranges::find(table, name, &std::pair<std::string_view, complex_function<R>>::first)};
+        return found == table.end() ? nullptr : found->second;
+    }
+} // namespace
+
+// _complex_unary(name, a) -> Tensor: the elementary function name of every element of a complex128 or complex64
+// tensor: glibc's inverse functions (NumPy's on Linux), NumPy's formulas for the rest (numerical/complex_math.hpp).
+PyObject* module_complex_unary(PyObject* /*self*/, PyObject* args)
+{
+    const char* op = nullptr;
+    PyObject*   x  = nullptr;
+    if (PyArg_ParseTuple(args, "sO", &op, &x) == 0) {
+        return nullptr;
+    }
+    const std::string_view name {op};
+    if (complex_named<double>(name) == nullptr) {
+        PyErr_SetString(PyExc_ValueError, "_complex_unary: an unknown function");
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            if (const auto* wide {std::get_if<cplx_tensor>(a)}) {
+                result.emplace(numerical::detail::parallel_map(*wide, complex_named<double>(name)));
+            }
+            else if (const auto* single {std::get_if<csingle_tensor>(a)}) {
+                result.emplace(numerical::detail::parallel_map(*single, complex_named<float>(name)));
+            }
+        }
+        if (!result) {
+            PyErr_SetString(PyExc_TypeError, "_complex_unary: a complex128 or complex64 tensor");
+            return nullptr;
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _real_unary(name, a) -> Tensor: the real elementary function name of every element of a float64 or float32 tensor,
 // as NumPy's (C's functions: within an ulp or two of NumPy's own, which differ by platform).
 PyObject* module_real_unary(PyObject* /*self*/, PyObject* args)

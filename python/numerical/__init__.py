@@ -6262,6 +6262,10 @@ def std(a, axis=None, dtype=None, ddof=0, keepdims=False, *, correction=None):
     return _finished(sqrt(variance), axes, keepdims)
 
 
+_COMPLEX_FUNCTIONS = frozenset(("arcsin", "arccos", "arctan", "arcsinh", "arccosh", "arctanh", "sinh", "cosh", "log2",
+                                "log10", "log1p", "expm1", "exp2"))
+
+
 def _real_function(name, doc):
     def function(x, /):
         if not isinstance(x, Tensor):
@@ -6270,7 +6274,9 @@ def _real_function(name, doc):
                 return mapped
         x = _operand(x)
         if x.dtype.startswith("complex"):
-            raise TypeError(f"{name}: real numbers only here (NumPy's takes complex ones too)")
+            if name not in _COMPLEX_FUNCTIONS:
+                raise TypeError(f"{name}: real numbers only, as NumPy's")
+            return _numerical._complex_unary(name, x)
         if x.dtype == "int64":  # NumPy's: an integer its own floor, ceiling and truncation, its sign an integer
             if name in ("floor", "ceil", "trunc"):
                 return x
@@ -6280,7 +6286,10 @@ def _real_function(name, doc):
         return _numerical._real_unary(name, x)
 
     function.__name__ = name
-    function.__doc__ = doc + " Real dtypes; C's function where it has one, within an ulp or two of NumPy's own."
+    function.__doc__ = doc + (" Real dtypes; C's function where it has one, within an ulp or two of NumPy's own."
+                              if name not in _COMPLEX_FUNCTIONS else
+                              " C's function where it has one, within an ulp or two of NumPy's own; a complex number's"
+                              " glibc's (NumPy's on Linux) or NumPy's formula.")
     return function
 
 

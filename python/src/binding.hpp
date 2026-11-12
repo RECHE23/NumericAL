@@ -1814,6 +1814,7 @@ PyObject* module_histogram_uniform(PyObject* /*self*/, PyObject* args); // in el
 // complex or int64).
 PyObject* module_searchsorted(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_real_unary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+PyObject* module_complex_unary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_real_binary(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_bitwise(PyObject* /*self*/, PyObject* args);     // in elementwise.cpp
 PyObject* module_nan_to_num(PyObject* /*self*/, PyObject* args); // in elementwise.cpp

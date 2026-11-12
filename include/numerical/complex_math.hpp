@@ -780,6 +780,345 @@ namespace numerical::detail {
     const R twice_y {R {2} *y};
     return {re, R {0.5} *std::atan2(twice_y, den)};
   }
+
+  /*!
+   * \brief `asinh(z)` of a finite nonzero \p z, as glibc's `__kernel_casinh`, its imaginary part taken from π/2 where
+   *        \p adjust (`acos` and `acosh` through it): the first quadrant's `|re|` and `|im|`, by the region they lie
+   *        in, `log(2z)` past 1/ε, `log(z + √(1 + z²))` by `log1p` and `atan2` of parts that do not cancel nearer 1,
+   *        else that sum by \ref complex_sqrt and \ref complex_log; the signs of \p z's parts given back last.
+   */
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> kernel_asinh(const std::complex<R>& z,
+                                             bool                   adjust)
+  {
+    const R eps  {std::numeric_limits<R>::epsilon()};
+    const R rx   {std::abs(z.real())};
+    const R ix   {std::abs(z.imag())};
+    const R sign {z.imag()};
+    R       re   {};
+    R       im   {};
+    // the imaginary part from (a, b) as atan2(b, a), or atan2(a, ±b) where adjusted
+    const auto angle {[&](R a, R b) { return adjust ? std::atan2(a, std::copysign(b, sign)) : std::atan2(b, a); }};
+    const auto through_log {[&](std::complex<R> y) {
+                              if (adjust) {
+                                y = {std::copysign(y.imag(), sign), y.real()};
+                              }
+                              return complex_log(y);
+                            }};
+    if (rx >= R {1} / eps || ix >= R {1} / eps) { // z + √(1 + z²) as 2z, without the square's overflow
+      const std::complex<R> res {through_log({rx, ix})};
+      re = res.real() + std::numbers::ln2_v<R>;
+      im = res.imag();
+    }
+    else if (rx >= R {0.5} && ix < eps / R {8}) {
+      const R s {std::hypot(R {1}, rx)};
+      re = std::log(rx + s);
+      im = adjust ? std::atan2(s, z.imag()) : std::atan2(ix, s);
+    }
+    else if (rx < eps / R {8} && ix >= R {1.5}) {
+      const R s {std::sqrt((ix + R {1}) * (ix - R {1}))};
+      re = std::log(ix + s);
+      im = angle(rx, s);
+    }
+    else if (ix > R {1} && ix < R {1.5} && rx < R {0.5}) {
+      const R ix2m1 {(ix + R {1}) * (ix - R {1})};
+      if (rx < eps * eps) {
+        const R s {std::sqrt(ix2m1)};
+        re = std::log1p(R {2} *(ix2m1 + (ix * s))) / R {2};
+        im = angle(rx, s);
+      }
+      else {
+        const R rx2 {rx * rx};
+        const R f   {rx2 * (R {2} + rx2 + (R {2} *ix * ix))};
+        const R d   {std::sqrt((ix2m1 * ix2m1) + f)};
+        const R dp  {d + ix2m1};
+        const R dm  {f / dp};
+        const R r1  {std::sqrt((dm + rx2) / R {2})};
+        const R r2  {rx * ix / r1};
+        re = std::log1p(rx2 + dp + (R {2} *((rx * r1) + (ix * r2)))) / R {2};
+        im = angle(rx + r1, ix + r2);
+      }
+    }
+    else if (ix == R {1} && rx < R {0.5}) {
+      if (rx < eps / R {8}) {
+        const R root {std::sqrt(rx)};
+        re = std::log1p(R {2} *(rx + root)) / R {2};
+        im = angle(root, R {1});
+      }
+      else {
+        const R d  {rx * std::sqrt(R {4} + (rx * rx))};
+        const R s1 {std::sqrt((d + (rx * rx)) / R {2})};
+        const R s2 {std::sqrt((d - (rx * rx)) / R {2})};
+        re = std::log1p((rx * rx) + d + (R {2} *((rx * s1) + s2))) / R {2};
+        im = angle(rx + s1, R {1} + s2);
+      }
+    }
+    else if (ix < R {1} && rx < R {0.5}) {
+      if (ix < eps) {
+        const R s {std::hypot(R {1}, rx)};
+        re = std::log1p(R {2} *rx * (rx + s)) / R {2};
+        im = adjust ? std::atan2(s, z.imag()) : std::atan2(ix, s);
+      }
+      else if (rx < eps * eps) {
+        const R onemix2 {(R {1} + ix) * (R {1} - ix)};
+        const R s       {std::sqrt(onemix2)};
+        re = std::log1p(R {2} *rx / s) / R {2};
+        im = adjust ? std::atan2(s, z.imag()) : std::atan2(ix, s);
+      }
+      else {
+        const R onemix2 {(R {1} + ix) * (R {1} - ix)};
+        const R rx2     {rx * rx};
+        const R f       {rx2 * (R {2} + rx2 + (R {2} *ix * ix))};
+        const R d       {std::sqrt((onemix2 * onemix2) + f)};
+        const R dp      {d + onemix2};
+        const R dm      {f / dp};
+        const R r1      {std::sqrt((dp + rx2) / R {2})};
+        const R r2      {rx * ix / r1};
+        re = std::log1p(rx2 + dm + (R {2} *((rx * r1) + (ix * r2)))) / R {2};
+        im = angle(rx + r1, ix + r2);
+      }
+    }
+    else { // z + √(1 + z²), of 1 + z² = (rx − ix)(rx + ix) + 1 + 2 rx ix i
+      const std::complex<R> root {complex_sqrt(std::complex<R> {((rx - ix) * (rx + ix)) + R {1}, R {2} *rx * ix})};
+      const std::complex<R> res  {through_log({root.real() + rx, root.imag() + ix})};
+      re = res.real();
+      im = res.imag();
+    }
+    return {std::copysign(re, z.real()), std::copysign(im, adjust ? R {1} : z.imag())};
+  }
+
+  /*!
+   * \brief `asinh(z)`, as glibc's `casinh`: C's Annex G for the infinities and NaNs, z itself at ±0 ± 0i, else
+   *        \ref kernel_asinh.
+   */
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_asinh(const std::complex<R>& z)
+  {
+    const R x   {z.real()};
+    const R y   {z.imag()};
+    const R nan {std::numeric_limits<R>::quiet_NaN()};
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+      if (std::isinf(y)) {
+        const R quarter {x == R {0} || std::isfinite(x) ? std::numbers::pi_v<R> / R {2} : std::numbers::pi_v<R> / R {4}};
+        return {std::copysign(std::numeric_limits<R>::infinity(), x), std::isnan(x) ? nan : std::copysign(quarter, y)};
+      }
+      if (!std::isfinite(x)) { // y finite or NaN
+        return {x, ((std::isinf(x) && std::isfinite(y)) || y == R {0}) ? std::copysign(R {0}, y) : nan};
+      }
+      return {nan, nan}; // x finite, y NaN
+    }
+    if (x == R {0} && y == R {0}) {
+      return z;
+    }
+    return kernel_asinh(z, false);
+  }
+
+  //! \brief `asin(z)`, as glibc's `casin`: `−i asinh(iz)`; a NaN part as Annex G has it.
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_asin(const std::complex<R>& z)
+  {
+    const R nan {std::numeric_limits<R>::quiet_NaN()};
+    if (std::isnan(z.real()) || std::isnan(z.imag())) {
+      if (z.real() == R {0}) {
+        return z;
+      }
+      if (std::isinf(z.real()) || std::isinf(z.imag())) {
+        return {nan, std::copysign(std::numeric_limits<R>::infinity(), z.imag())};
+      }
+      return {nan, nan};
+    }
+    const std::complex<R> y {complex_asinh(std::complex<R> {-z.imag(), z.real()})};
+    return {y.imag(), -y.real()};
+  }
+
+  //! \brief `acos(z)`, as glibc's `cacos`: `π/2 − asin(z)` for the infinities, NaNs and zeros, else \ref kernel_asinh
+  //!        of `iz` adjusted.
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_acos(const std::complex<R>& z)
+  {
+    if (!std::isfinite(z.real()) || !std::isfinite(z.imag()) || (z.real() == R {0} && z.imag() == R {0})) {
+      const std::complex<R> y  {complex_asin(z)};
+      const R               re {(std::numbers::pi_v<R> / R {2}) - y.real()};
+      return {re == R {0} ? R {0} : re, -y.imag()}; // +0 for −0, as glibc's
+    }
+    const std::complex<R> y {kernel_asinh(std::complex<R> {-z.imag(), z.real()}, true)};
+    return {y.imag(), y.real()};
+  }
+
+  //! \brief `acosh(z)`, as glibc's `cacosh`: Annex G for the infinities, NaNs and zeros, else \ref kernel_asinh of `iz`
+  //!        adjusted, its sign by `z`'s imaginary part's.
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_acosh(const std::complex<R>& z)
+  {
+    const R x        {z.real()};
+    const R y        {z.imag()};
+    const R nan      {std::numeric_limits<R>::quiet_NaN()};
+    const R inf      {std::numeric_limits<R>::infinity()};
+    const R half_pi  {std::numbers::pi_v<R> / R {2}};
+    const R quarter  {std::numbers::pi_v<R> / R {4}};
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+      if (std::isinf(y)) {
+        const R angle {std::isinf(x) ? (x < R {0} ? std::numbers::pi_v<R> - quarter : quarter) : half_pi};
+        return {inf, std::isnan(x) ? nan : std::copysign(angle, y)};
+      }
+      if (std::isinf(x)) {
+        return {inf, std::isnan(y) ? nan : std::copysign(std::signbit(x) ? std::numbers::pi_v<R> : R {0}, y)};
+      }
+      return {nan, x == R {0} ? half_pi : nan}; // a NaN part, the other finite
+    }
+    if (x == R {0} && y == R {0}) {
+      return {R {0}, std::copysign(half_pi, y)};
+    }
+    const std::complex<R> w {kernel_asinh(std::complex<R> {-y, x}, true)};
+    return std::signbit(y) ? std::complex<R> {w.real(), -w.imag()} : std::complex<R> {-w.real(), w.imag()};
+  }
+
+  /*!
+   * \brief `atan(z)`, as glibc's `catan`: C's Annex G for the infinities and NaNs; `π/2` and the reciprocal past
+   *        `16/ε`; else the real part `atan2(2x, 1 − |z|²) / 2`, `1 − |z|²` from \ref unit_circle_offset where it
+   *        cancels, the imaginary part `log(|z + i|² / |z − i|²) / 4` (by `log1p(4y / |z − i|²)` where the quotient is
+   *        at least ½): \ref complex_atanh's turned a quarter, each operation in glibc's order.
+   */
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_atan(const std::complex<R>& z)
+  {
+    const R x       {z.real()};
+    const R y       {z.imag()};
+    const R half_pi {std::numbers::pi_v<R> / R {2}};
+    const R eps     {std::numeric_limits<R>::epsilon()};
+    const R nan     {std::numeric_limits<R>::quiet_NaN()};
+    if (!std::isfinite(x) || !std::isfinite(y)) {
+      if (std::isinf(x)) {
+        return {std::copysign(half_pi, x), std::copysign(R {0}, y)};
+      }
+      if (std::isinf(y)) {
+        return {std::isnan(x) ? nan : std::copysign(half_pi, x), std::copysign(R {0}, y)};
+      }
+      return {nan, y == R {0} ? std::copysign(R {0}, y) : nan}; // a NaN part, the other finite
+    }
+    if (x == R {0} && y == R {0}) {
+      return z;
+    }
+    if (std::abs(x) >= R {16} / eps || std::abs(y) >= R {16} / eps) {
+      R im {};
+      if (std::abs(x) <= R {1}) {
+        im = R {1} / y;
+      }
+      else if (std::abs(y) <= R {1}) {
+        im = y / x / x;
+      }
+      else {
+        const R h {std::hypot(x / R {2}, y / R {2})};
+        im = y / h / h / R {4};
+      }
+      return {std::copysign(half_pi, x), im};
+    }
+    const R absx {std::max(std::abs(x), std::abs(y))};
+    const R absy {std::min(std::abs(x), std::abs(y))};
+    R       den  {};
+    if (absy < eps / R {2}) {
+      const R product {(R {1} - absx) * (R {1} + absx)};
+      den = product == R {0} ? R {0} : product; // +0 for −0, as glibc's
+    }
+    else if (absx >= R {1} || (absx < R {0.75} && absy < R {0.5})) {
+      den = libm_sum_of_products(R {1} - absx, R {1} + absx, -absy, absy);
+    }
+    else {
+      den = -unit_circle_offset(absx, absy);
+    }
+    const R twice_x {R {2} *x};
+    const R re      {R {0.5} *std::atan2(twice_x, den)};
+    R       im      {};
+    if (std::abs(y) == R {1} && std::abs(x) < eps * eps) {
+      im = std::copysign(R {0.5}, y) * (std::numbers::ln2_v<R> - std::log(std::abs(x)));
+    }
+    else {
+      const R r2    {std::abs(x) >= eps * eps ? x * x : R {0}};
+      const R plus  {y + R {1}};
+      const R minus {y - R {1}};
+      const R num   {libm_add_product(r2, plus, plus)};
+      const R below {libm_add_product(r2, minus, minus)};
+      const R f     {num / below};
+      if (f < R {0.5}) {
+        im = R {0.25} *std::log(f);
+      }
+      else {
+        const R four_y {R {4} *y};
+        im = R {0.25} *std::log1p(four_y / below);
+      }
+    }
+    return {re, im};
+  }
+
+  //! \brief `log2(z)`, as NumPy's: \ref complex_log times log₂ e, each part.
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_log2(const std::complex<R>& z)
+  {
+    const std::complex<R> w {complex_log(z)};
+    return {w.real() * std::numbers::log2e_v<R>, w.imag() * std::numbers::log2e_v<R>};
+  }
+
+  //! \brief `log10(z)`, as NumPy's: \ref complex_log times log₁₀ e, each part.
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_log10(const std::complex<R>& z)
+  {
+    const std::complex<R> w {complex_log(z)};
+    return {w.real() * std::numbers::log10e_v<R>, w.imag() * std::numbers::log10e_v<R>};
+  }
+
+  //! \brief `2^z`, as NumPy's: \ref complex_exp of `z` times ln 2, each part.
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_exp2(const std::complex<R>& z)
+  {
+    return complex_exp(std::complex<R> {z.real() * std::numbers::ln2_v<R>, z.imag() * std::numbers::ln2_v<R>});
+  }
+
+  //! \brief `exp(z) − 1`, as NumPy's: `expm1(re) cos(im) − 2 sin²(im/2) + i exp(re) sin(im)`.
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_expm1(const std::complex<R>& z)
+  {
+    const R a    {std::sin(z.imag() / R {2})};
+    const R real {std::expm1(z.real()) * std::cos(z.imag())};
+    const R half {R {2} *a * a};
+    return {real - half, std::exp(z.real()) * std::sin(z.imag())};
+  }
+
+  /*!
+   * \brief `log(1 + z)`: the imaginary part `atan2(im, 1 + re)`, as NumPy's; the real part `log|1 + z|`, by
+   *        `log1p(d) / 2` of `d = |1 + z|² − 1 = 2re + re² + im²` where `|re|` and `|im|` are at most 3 and `d` at least
+   *        −½ (the squares exact by fused multiply-adds, the sum compensated: `d` keeps its digits where it cancels,
+   *        about the circle `|1 + z| = 1` and about 0, where NumPy's `log(hypot(1 + re, im))` loses them all); else that,
+   *        `|1 + z|` there far from 1 or `1 + re` exact.
+   */
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_log1p(const std::complex<R>& z)
+  {
+    const R x  {z.real()};
+    const R y  {z.imag()};
+    R       re {};
+    R       d  {-R {1}};
+    if (std::abs(x) <= R {3} && std::abs(y) <= R {3}) {
+      const R xx      {x * x};
+      const R xx_err  {std::fma(x, x, -xx)};
+      const R yy      {y * y};
+      const R yy_err  {std::fma(y, y, -yy)};
+      const R twice   {R {2} *x};
+      const R first   {twice + yy}; // two-sums: each rounding error kept
+      const R bv      {first - twice};
+      const R first_e {(twice - (first - bv)) + (yy - bv)};
+      const R sum     {first + xx};
+      const R cv      {sum - first};
+      const R sum_e   {(first - (sum - cv)) + (xx - cv)};
+      d = sum + (((first_e + sum_e) + xx_err) + yy_err);
+    }
+    if (d >= R {-0.5}) {
+      re = std::log1p(d) / R {2};
+    }
+    else {
+      re = std::log(std::hypot(x + R {1}, y));
+    }
+    return {re, std::atan2(y, x + R {1})};
+  }
 } // namespace numerical::detail
 
 #endif // NUMERICAL_COMPLEX_MATH_HPP

@@ -77,8 +77,8 @@ class NumpyWave2(unittest.TestCase):
                     self.same(getattr(numerical, name)(value), getattr(np, name)(value), ulps=4)
         self.assertIs(numerical.radians, numerical.deg2rad)
         self.assertIs(numerical.degrees, numerical.rad2deg)
-        with self.assertRaises(TypeError):
-            numerical.sinh(np.ones(2) * 1j)
+        with self.assertRaises(TypeError):  # complex numbers, as NumPy's cbrt refuses them
+            numerical.cbrt(np.ones(2) * 1j)
 
     def test_rounding(self):
         x = np.array([-2.5, -1.5, -0.5, -0.4, 0.0, -0.0, 0.5, 1.5, 2.5, 3.7, np.nan, np.inf])
