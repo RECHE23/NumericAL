@@ -53,7 +53,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   FMA, GCC), 10^6 × 200 18.0 → 1.4 ms. The same bits.
 - **int64 through `@`, `matmul`, `dot`, `inner`, `vdot`, `tensordot` and `einsum`**, as NumPy's integers: an int64
   result, each sum and product wrapped modulo 2^64, where these raised `TypeError` (convert first). An int64 operand
-  beside a float64 one is promoted, as before. `conj` of int64 is its own elements, as NumPy's.
+  beside a float64 one is promoted, as before. `conj` of int64 is its own elements, as NumPy's. Their tile in vectors
+  and the conversion to the unsigned type on the threads: on M1 Pro, `dot` of 10^6 0.33 ms (NumPy 0.35), `@` of order
+  64 0.054 ms (NumPy 0.09), of order 300 1.07 ms (NumPy 9.5).
 - **The complex elementary functions NumPy has and this module lacked**: `arcsin`, `arccos`, `arctan`, `arcsinh`,
   `arccosh`, `arctanh`, `sinh`, `cosh`, `log2`, `log10`, `exp2`, `expm1` and `log1p` of complex128 and complex64, where
   they raised `TypeError`. The inverse ones are glibc's (`casin`, `cacos`, `catan`, `casinh`, `cacosh`, `catanh`), the

@@ -166,6 +166,14 @@ namespace numerical::detail {
     using type = double __attribute__((vector_size(native_vector_bytes))); //!< The vector.
   };
 
+  //! \brief A native vector of `std::uint64_t`: the integer products' tile (\ref gemm_kernel), its sums and products
+  //!        modulo 2⁶⁴ in any order, a signed integer's through it.
+  template <>
+  struct native_vector<std::uint64_t>
+  {
+    using type = std::uint64_t __attribute__((vector_size(native_vector_bytes))); //!< The vector.
+  };
+
   //! \brief Whether `T` is held in \ref native_vector.
   template <typename T>
   concept native_scalar = std::is_same_v<T, float> || std::is_same_v<T, double>;

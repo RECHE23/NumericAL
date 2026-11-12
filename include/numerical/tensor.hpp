@@ -2075,14 +2075,21 @@ namespace numerical {
       return einsum_impl<T>(rewritten + "->" + output, next);
     }
 
-    //! \brief A copy of \p t, each element converted to `To`: between a signed integer type and its unsigned one, the
-    //!        same bits (modulo 2ⁿ).
+    //! \brief A copy of \p t, each element converted to `To` (between a signed integer type and its unsigned one, the
+    //!        same bits, modulo 2ⁿ), by chunks of \ref elementwise_chunk among the threads: one thread's copy and its
+    //!        pages' first touches were most of an int64 `dot` (10⁶ elements, M1 Pro: 0.49 of 0.61 ms).
     template <typename To,
               typename From>
     [[nodiscard]] tensor<To> converted(const tensor<From>& t)
     {
-      buffer<To> out(t.size());
-      std::transform(t.data().begin(), t.data().end(), out.begin(), [](const From& x) { return static_cast<To>(x); });
+      const std::size_t count {t.size()};
+      const From* const in    {t.data().data()};
+      buffer<To>        out(count);
+      parallel_for((count + elementwise_chunk - 1) / elementwise_chunk, memory_element_weight * elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     std::transform(in + first, in + std::min(count, first + elementwise_chunk), out.data() + first,
+                                    [](const From& x) { return static_cast<To>(x); });
+                   });
       return tensor<To> {t.shape(), std::move(out)};
     }
 

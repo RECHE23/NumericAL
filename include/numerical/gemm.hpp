@@ -945,11 +945,13 @@ namespace numerical::detail {
 
 #if defined(__GNUC__)
   /*!
-   * \brief \ref gemm_kernel for `float` and `double`, the tile held in native vectors. Each lane sums
-   *        its element in the same order as the scalar kernel.
+   * \brief \ref gemm_kernel for `float`, `double` and `std::uint64_t` (the integers' products, signed ones through it),
+   *        the tile held in native vectors. Each lane sums its element in the same order as the scalar kernel. No
+   *        64-bit integer multiply is a vector instruction of NEON or AVX2, yet the compiler's of the lanes halved an
+   *        int64 product (order 300: M1 Pro 2.0 → 1.0 ms, x86-64 Clang 1.9 → 0.86; GCC the same).
    */
   template <typename T>
-  requires std::is_same_v<T, float> || std::is_same_v<T, double>
+  requires std::is_same_v<T, float> || std::is_same_v<T, double> || std::is_same_v<T, std::uint64_t>
   void gemm_kernel(std::size_t   kc,
                    const T*      ap,
                    const T*      bp,
