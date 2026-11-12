@@ -304,7 +304,7 @@ namespace {
             {"log10", &d::complex_log10<R>},   {"log1p", &d::complex_log1p<R>},   {"expm1", &d::complex_expm1<R>},
             {"exp2", &d::complex_exp2<R>},     {"sign", &d::complex_sign<R>},
         }};
-        const auto* const found {std::ranges::find(table, name, &std::pair<std::string_view, complex_function<R>>::first)};
+        const auto found {std::ranges::find(table, name, &std::pair<std::string_view, complex_function<R>>::first)}; // an iterator, not a pointer under MSVC
         return found == table.end() ? nullptr : found->second;
     }
 } // namespace
