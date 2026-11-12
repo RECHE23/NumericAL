@@ -785,7 +785,9 @@ namespace numerical::detail {
    * \brief `asinh(z)` of a finite nonzero \p z, as glibc's `__kernel_casinh`, its imaginary part taken from π/2 where
    *        \p adjust (`acos` and `acosh` through it): the first quadrant's `|re|` and `|im|`, by the region they lie
    *        in, `log(2z)` past 1/ε, `log(z + √(1 + z²))` by `log1p` and `atan2` of parts that do not cancel nearer 1,
-   *        else that sum by \ref complex_sqrt and \ref complex_log; the signs of \p z's parts given back last.
+   *        else that sum by \ref complex_sqrt and \ref complex_log; the signs of \p z's parts given back last. Each
+   *        product whose every use is a sum fused where the C library's build fuses (\ref libm_add_product, \ref
+   *        libm_sum_of_products): GCC's contraction of glibc on arm64.
    */
   template <std::floating_point R>
   [[nodiscard]] std::complex<R> kernel_asinh(const std::complex<R>& z,
@@ -824,18 +826,18 @@ namespace numerical::detail {
       const R ix2m1 {(ix + R {1}) * (ix - R {1})};
       if (rx < eps * eps) {
         const R s {std::sqrt(ix2m1)};
-        re = std::log1p(R {2} *(ix2m1 + (ix * s))) / R {2};
+        re = std::log1p(R {2} *libm_add_product(ix2m1, ix, s)) / R {2};
         im = angle(rx, s);
       }
       else {
         const R rx2 {rx * rx};
-        const R f   {rx2 * (R {2} + rx2 + (R {2} *ix * ix))};
-        const R d   {std::sqrt((ix2m1 * ix2m1) + f)};
+        const R f   {rx2 * libm_add_product(R {2} + rx2, R {2} *ix, ix)};
+        const R d   {std::sqrt(libm_add_product(f, ix2m1, ix2m1))};
         const R dp  {d + ix2m1};
         const R dm  {f / dp};
         const R r1  {std::sqrt((dm + rx2) / R {2})};
         const R r2  {rx * ix / r1};
-        re = std::log1p(rx2 + dp + (R {2} *((rx * r1) + (ix * r2)))) / R {2};
+        re = std::log1p(rx2 + dp + (R {2} *libm_sum_of_products(rx, r1, ix, r2))) / R {2};
         im = angle(rx + r1, ix + r2);
       }
     }
@@ -846,10 +848,10 @@ namespace numerical::detail {
         im = angle(root, R {1});
       }
       else {
-        const R d  {rx * std::sqrt(R {4} + (rx * rx))};
-        const R s1 {std::sqrt((d + (rx * rx)) / R {2})};
-        const R s2 {std::sqrt((d - (rx * rx)) / R {2})};
-        re = std::log1p((rx * rx) + d + (R {2} *((rx * s1) + s2))) / R {2};
+        const R d  {rx * std::sqrt(libm_add_product(R {4}, rx, rx))};
+        const R s1 {std::sqrt(libm_add_product(d, rx, rx) / R {2})};
+        const R s2 {std::sqrt(libm_add_product(d, -rx, rx) / R {2})};
+        re = std::log1p(libm_add_product(d, rx, rx) + (R {2} *libm_add_product(s2, rx, s1))) / R {2};
         im = angle(rx + s1, R {1} + s2);
       }
     }
@@ -868,18 +870,18 @@ namespace numerical::detail {
       else {
         const R onemix2 {(R {1} + ix) * (R {1} - ix)};
         const R rx2     {rx * rx};
-        const R f       {rx2 * (R {2} + rx2 + (R {2} *ix * ix))};
-        const R d       {std::sqrt((onemix2 * onemix2) + f)};
+        const R f       {rx2 * libm_add_product(R {2} + rx2, R {2} *ix, ix)};
+        const R d       {std::sqrt(libm_add_product(f, onemix2, onemix2))};
         const R dp      {d + onemix2};
         const R dm      {f / dp};
         const R r1      {std::sqrt((dp + rx2) / R {2})};
         const R r2      {rx * ix / r1};
-        re = std::log1p(rx2 + dm + (R {2} *((rx * r1) + (ix * r2)))) / R {2};
+        re = std::log1p(rx2 + dm + (R {2} *libm_sum_of_products(rx, r1, ix, r2))) / R {2};
         im = angle(rx + r1, ix + r2);
       }
     }
     else { // z + √(1 + z²), of 1 + z² = (rx − ix)(rx + ix) + 1 + 2 rx ix i
-      const std::complex<R> root {complex_sqrt(std::complex<R> {((rx - ix) * (rx + ix)) + R {1}, R {2} *rx * ix})};
+      const std::complex<R> root {complex_sqrt(std::complex<R> {libm_add_product(R {1}, rx - ix, rx + ix), R {2} *rx * ix})};
       const std::complex<R> res  {through_log({root.real() + rx, root.imag() + ix})};
       re = res.real();
       im = res.imag();

@@ -277,7 +277,7 @@ class HighRanks(unittest.TestCase):
         def log1p(*values):
             return np.asarray(numerical.log1p(numerical.asarray(np.array(values, dtype=np.complex128))))
 
-        small = log1p(1e-20 + 3e-20j, -1e-300 + 0j, 0j, -0.0 - 0.0j)
+        small = log1p(1e-20 + 3e-20j, -1e-300 + 0j, 0j, complex(-0.0, -0.0))  # not -0.0 - 0.0j: its imaginary part +0
         self.assertEqual(small[0], 1e-20 + 3e-20j)
         self.assertEqual(small[1], -1e-300 + 0j)
         self.assertEqual(small[2], 0j)
