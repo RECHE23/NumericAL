@@ -4,6 +4,7 @@ The NumPy / DLPack interop is verified twice: once with pure-Python checks that
 need nothing installed (the __array_interface__ dict, the DLPack capsule and
 device), and once against NumPy proper when it happens to be importable.
 """
+import ctypes
 import os
 import platform
 import subprocess
@@ -16,6 +17,25 @@ try:
     import numpy as np
 except ImportError:  # NumPy is optional; the interop round-trips are then skipped
     np = None
+
+
+_GLIBC_INVERSE = {"arcsin": "casin", "arccos": "cacos", "arctan": "catan", "arcsinh": "casinh", "arccosh": "cacosh",
+                  "arctanh": "catanh"}
+
+
+def _glibc_inverse(name, a):
+    """glibc's complex inverse function `name` of each element of `a` (complex128 by casin…, complex64 by casinf…),
+    through ctypes: a complex number passed and returned as a structure of its two parts, as the C ABI does."""
+    single = a.dtype == np.complex64
+    part = ctypes.c_float if single else ctypes.c_double
+
+    class Complex(ctypes.Structure):
+        _fields_ = [("re", part), ("im", part)]
+
+    function = getattr(ctypes.CDLL("libm.so.6"), _GLIBC_INVERSE[name] + ("f" if single else ""))
+    function.restype, function.argtypes = Complex, [Complex]
+    values = (function(Complex(v.real, v.imag)) for v in a)
+    return np.array([complex(w.re, w.im) for w in values], dtype=a.dtype)
 
 
 class TensorBasics(unittest.TestCase):
@@ -227,10 +247,12 @@ class HighRanks(unittest.TestCase):
                             self.assertTrue(np.all(same), (np.dtype(dtype).name, int(np.sum(~same))))
 
     def test_complex_elementary_functions_are_glibcs(self):
-        # NumPy's under glibc to the bit (its cexp, clog, csin, ccos, ctan, ctanh, csinh, ccosh, casin, cacos, catan,
-        # casinh, cacosh, catanh, and its formulas of them for log2, log10, exp2, expm1); elsewhere NumPy takes the platform's
-        # library, which chooses otherwise among infinities and NaNs and strays further near the unit circle: the
-        # finite answers agree within a few dozen units in the last place of the larger part.
+        # glibc's to the bit: NumPy's under glibc (its cexp, clog, csin, ccos, ctan, ctanh, csinh, ccosh, and its
+        # formulas of them for log2, log10, exp2, expm1), and the inverse ones glibc's own, called through ctypes:
+        # NumPy's wheels built against a glibc before 2.18 carry their own casin… (NumPy 2.2.6 differs from glibc
+        # 2.43 at a third to two thirds of the values). Elsewhere NumPy takes the platform's library, which chooses
+        # otherwise among infinities and NaNs and strays further near the unit circle: the finite answers agree within
+        # a few dozen units in the last place of the larger part.
         values = [0.0, -0.0, np.inf, -np.inf, np.nan, 1e308, -1e308, 1.0, -1.0, 1e-310, 710.0, -745.0, 40.0, 1e-20]
         rng = np.random.default_rng(29)
         drawn = rng.standard_normal((300, 2)) * np.exp(rng.uniform(-6, 6, (300, 2)))
@@ -242,7 +264,7 @@ class HighRanks(unittest.TestCase):
             for name in ("exp", "log", "sin", "cos", "tan", "tanh", "sinh", "cosh", "arcsin", "arccos", "arctan", "arcsinh",
                          "arccosh", "arctanh", "log2", "log10", "exp2", "expm1"):
                 with np.errstate(all="ignore"):
-                    want = getattr(np, name)(a)
+                    want = _glibc_inverse(name, a) if glibc and name in _GLIBC_INVERSE else getattr(np, name)(a)
                     got = np.asarray(getattr(numerical, name)(numerical.asarray(a)))
                     borrowed = np.asarray(getattr(numerical, name)(a))  # the NumPy array read where it lies
                 for x, y in ((got.real, borrowed.real), (got.imag, borrowed.imag)):
