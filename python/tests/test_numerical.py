@@ -244,8 +244,15 @@ class HighRanks(unittest.TestCase):
                 with np.errstate(all="ignore"):
                     want = getattr(np, name)(a)
                     got = np.asarray(getattr(numerical, name)(numerical.asarray(a)))
+                    borrowed = np.asarray(getattr(numerical, name)(a))  # the NumPy array read where it lies
+                for x, y in ((got.real, borrowed.real), (got.imag, borrowed.imag)):
+                    same = (np.isnan(x) & np.isnan(y)) | ((x == y) & (np.signbit(x) == np.signbit(y)))
+                    self.assertTrue(np.all(same), (np.dtype(dtype).name, name, "borrowed"))
+                # expm1 past exp's overflow, a finite imaginary part: exp(z) − 1 here, where NumPy's product of
+                # exp(re) with the sine overflows (NaN at +inf + 0i, inf at 710 + 0.1i)
+                kept = ~((a.real > np.log(np.finfo(dtype).max) - 2) & np.isfinite(a.imag)) if name == "expm1" else np.ones(a.shape, bool)
                 if glibc:
-                    for x, y in ((want.real, got.real), (want.imag, got.imag)):
+                    for x, y in ((want.real[kept], got.real[kept]), (want.imag[kept], got.imag[kept])):
                         same = (np.isnan(x) & np.isnan(y)) | ((x == y) & (np.signbit(x) == np.signbit(y)))
                         self.assertTrue(np.all(same), (np.dtype(dtype).name, name, int(np.sum(~same))))
                     continue
@@ -254,6 +261,9 @@ class HighRanks(unittest.TestCase):
                     scale = np.maximum(np.abs(want.real), np.abs(want.imag))
                     off = np.maximum(np.abs(want.real - got.real), np.abs(want.imag - got.imag))
                 self.assertTrue(np.all(off[finite] <= 64 * eps * scale[finite]), (np.dtype(dtype).name, name))
+        overflowed = np.asarray(numerical.expm1(numerical.asarray(np.array([complex(np.inf, 0), complex(710.2, 0.1)]))))
+        self.assertEqual(overflowed[0], complex(np.inf, 0))
+        self.assertTrue(np.isinf(overflowed[1].real) and abs(overflowed[1].imag / 2.724061963455072e307 - 1) < 1e-14)
         # the losses of libc++'s forms, whatever the platform
         tangent = complex(numerical.tan(numerical.asarray(np.array([1e308 + 0j])))[0])
         self.assertLess(abs(tangent.real - np.tan(1e308)), 4e-16)  # NaN under libc++, from 1e308 + 0j

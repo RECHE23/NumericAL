@@ -57,14 +57,17 @@ A change that can break code is listed under **Breaking** and held for a month's
   and the conversion to the unsigned type on the threads: on M1 Pro, `dot` of 10^6 0.33 ms (NumPy 0.35), `@` of order
   64 0.054 ms (NumPy 0.09), of order 300 1.07 ms (NumPy 9.5).
 - **The complex elementary functions NumPy has and this module lacked**: `arcsin`, `arccos`, `arctan`, `arcsinh`,
-  `arccosh`, `arctanh`, `sinh`, `cosh`, `log2`, `log10`, `exp2`, `expm1` and `log1p` of complex128 and complex64, where
-  they raised `TypeError`. The inverse ones are glibc's (`casin`, `cacos`, `catan`, `casinh`, `cacosh`, `catanh`), the
-  same bits as glibc 2.41 over 200,000 drawn and special values, NumPy's on Linux; `log2`, `log10`, `exp2` and `expm1`
-  are NumPy's formulas over glibc's `clog` and `cexp`, the same bits too. `log1p` keeps a small number's digits and
-  those about the circle |1 + z| = 1 (|1 + z|² − 1 in double-double), within 3.4 ulp, where NumPy's
-  `log(hypot(1 + re, im))` is 0 below ε and loses millions of ulp there. C++ `numerical::detail::complex_asin`,
-  `complex_acos`, `complex_atan`, `complex_asinh`, `complex_acosh`, `complex_log1p`, `complex_log2`, `complex_log10`,
-  `complex_exp2`, `complex_expm1` (new).
+  `arccosh`, `arctanh`, `sinh`, `cosh`, `log2`, `log10`, `exp2`, `expm1` and `log1p` of complex128 and complex64,
+  where they raised `TypeError`. The inverse ones are glibc's (`casin`, `cacos`, `catan`, `casinh`, `cacosh`,
+  `catanh`), the same bits as glibc 2.41 over 200,000 drawn and special values, NumPy's on Linux; `log2`, `log10`,
+  `exp2` and `expm1` are NumPy's formulas over glibc's `clog` and `cexp`, the same bits too, but `expm1` past exp's
+  overflow `exp(z) − 1`, where NumPy's is NaN at +inf + 0i and infinite at 710.2 + 0.1i. `log1p` keeps a small
+  number's digits and those about the circle |1 + z| = 1 (|1 + z|² − 1 in double-double), within 3.4 ulp, where
+  NumPy's `log(hypot(1 + re, im))` is 0 below ε and loses millions of ulp there. C++
+  `numerical::detail::complex_asin`, `complex_acos`, `complex_atan`, `complex_asinh`, `complex_acosh`,
+  `complex_log1p`, `complex_log2`, `complex_log10`, `complex_exp2`, `complex_expm1` (new). `sign` of a complex number
+  in one pass (11.5 → 0.75 ms over 10^6, NumPy 2.6 ms), and every one of them reads a complex NumPy array where it
+  lies.
 
 ### Fixed
 

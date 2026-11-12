@@ -1073,10 +1073,18 @@ namespace numerical::detail {
     return complex_exp(std::complex<R> {z.real() * std::numbers::ln2_v<R>, z.imag() * std::numbers::ln2_v<R>});
   }
 
-  //! \brief `exp(z) − 1`, as NumPy's: `expm1(re) cos(im) − 2 sin²(im/2) + i exp(re) sin(im)`.
+  /*!
+   * \brief `exp(z) − 1`, as NumPy's: `expm1(re) cos(im) − 2 sin²(im/2) + i exp(re) sin(im)`; past \ref exp_bound, a finite
+   *        `im`'s \ref complex_exp less 1, where `exp(re)` overflows and NumPy's product with the sine with it (NaN
+   *        at `+∞ + 0i`, an infinite `710.2 + 0.1i`).
+   */
   template <std::floating_point R>
   [[nodiscard]] std::complex<R> complex_expm1(const std::complex<R>& z)
   {
+    if (z.real() > exp_bound<R> && std::isfinite(z.imag())) {
+      const std::complex<R> w {complex_exp(z)};
+      return {w.real() - R {1}, w.imag()};
+    }
     const R a    {std::sin(z.imag() / R {2})};
     const R real {std::expm1(z.real()) * std::cos(z.imag())};
     const R half {R {2} *a * a};
@@ -1118,6 +1126,32 @@ namespace numerical::detail {
       re = std::log(std::hypot(x + R {1}, y));
     }
     return {re, std::atan2(y, x + R {1})};
+  }
+
+  /*!
+   * \brief `z / |z|`, as NumPy 2's `sign` of a complex number and the array API's: 0 for 0, NaN for a NaN modulus, and
+   *        for an infinite modulus ±1 along the infinite part (NaN where both are), 0 across it.
+   */
+  template <std::floating_point R>
+  [[nodiscard]] std::complex<R> complex_sign(const std::complex<R>& z)
+  {
+    const R x         {z.real()};
+    const R y         {z.imag()};
+    const R nan       {std::numeric_limits<R>::quiet_NaN()};
+    const R magnitude {std::hypot(x, y)};
+    if (std::isnan(magnitude)) {
+      return {nan, nan};
+    }
+    if (std::isinf(magnitude)) {
+      if (std::isinf(x)) {
+        return std::isinf(y) ? std::complex<R> {nan, nan} : std::complex<R> {x > R {0} ? R {1} : R {-1}, R {0}};
+      }
+      return {R {0}, y > R {0} ? R {1} : R {-1}};
+    }
+    if (magnitude == R {0}) {
+      return {R {0}, R {0}};
+    }
+    return {x / magnitude, y / magnitude};
   }
 } // namespace numerical::detail
 

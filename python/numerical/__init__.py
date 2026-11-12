@@ -6269,7 +6269,7 @@ _COMPLEX_FUNCTIONS = frozenset(("arcsin", "arccos", "arctan", "arcsinh", "arccos
 def _real_function(name, doc):
     def function(x, /):
         if not isinstance(x, Tensor):
-            mapped = _numerical._borrowed_unary(name, x)  # a real NumPy array read where it lies
+            mapped = _numerical._borrowed_unary(name, x)  # a NumPy array read where it lies
             if mapped is not NotImplemented:
                 return mapped
         x = _operand(x)
@@ -6305,24 +6305,13 @@ def sign(x, /):
     ``z / |z|``, as NumPy 2's and the array API's: 0 for 0, NaN for a NaN modulus, and for an infinite modulus ±1 along
     the infinite part (NaN where both are)."""
     if not isinstance(x, Tensor):
-        mapped = _numerical._borrowed_unary("sign", x)  # a real NumPy array read where it lies
+        mapped = _numerical._borrowed_unary("sign", x)  # a NumPy array read where it lies
         if mapped is not NotImplemented:
             return mapped
     x = _operand(x)
     if not x.dtype.startswith("complex"):
         return _real_sign(x)
-    re, im = real(x), imag(x)
-    magnitude = hypot(re, im)
-    zero, one, nan = zeros_like(re), ones_like(re), full_like(re, _math.nan)
-    lost = isnan(magnitude)
-    infinite = equal(magnitude, _math.inf)
-    level = equal(magnitude, 0.0)
-    re_infinite, im_infinite = isinf(re), isinf(im)
-    along = where(re_infinite, where(im_infinite, nan, where(greater(re, 0.0), one, -one)), zero)
-    across = where(re_infinite, where(im_infinite, nan, zero), where(greater(im, 0.0), one, -one))
-    unit_re = where(lost, nan, where(infinite, along, where(level, zero, re / where(level, one, magnitude))))
-    unit_im = where(lost, nan, where(infinite, across, where(level, zero, im / where(level, one, magnitude))))
-    return _from_parts(unit_re, unit_im)
+    return _numerical._complex_unary("sign", x)  # one pass (numerical/complex_math.hpp complex_sign)
 arcsin = _real_function("arcsin", "The inverse sine of every element, as ``numpy.arcsin``.")
 arccos = _real_function("arccos", "The inverse cosine of every element, as ``numpy.arccos``.")
 arctan = _real_function("arctan", "The inverse tangent of every element, as ``numpy.arctan``.")

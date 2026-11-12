@@ -297,12 +297,12 @@ namespace {
     complex_function<R> complex_named(std::string_view name)
     {
         namespace d = numerical::detail;
-        static constexpr std::array<std::pair<std::string_view, complex_function<R>>, 13> table {{
+        static constexpr std::array<std::pair<std::string_view, complex_function<R>>, 14> table {{
             {"arcsin", &d::complex_asin<R>},   {"arccos", &d::complex_acos<R>},   {"arctan", &d::complex_atan<R>},
             {"arcsinh", &d::complex_asinh<R>}, {"arccosh", &d::complex_acosh<R>}, {"arctanh", &d::complex_atanh<R>},
             {"sinh", &d::complex_sinh<R>},     {"cosh", &d::complex_cosh<R>},     {"log2", &d::complex_log2<R>},
             {"log10", &d::complex_log10<R>},   {"log1p", &d::complex_log1p<R>},   {"expm1", &d::complex_expm1<R>},
-            {"exp2", &d::complex_exp2<R>},
+            {"exp2", &d::complex_exp2<R>},     {"sign", &d::complex_sign<R>},
         }};
         const auto* const found {std::ranges::find(table, name, &std::pair<std::string_view, complex_function<R>>::first)};
         return found == table.end() ? nullptr : found->second;
@@ -2201,7 +2201,9 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
     const bool             known {real_only || name == "exp" || name == "log" || name == "sqrt" || name == "sin" || name == "cos"
                                   || name == "tan" || name == "tanh" || name == "abs"};
     borrowed_operand       x;
-    if (!known || !borrow_operand(obj, x) || ((name == "abs" || real_only) && (x.dtype == 1 || x.dtype == 3))) {
+    // a complex array's function where this module has one (complex_named), else NotImplemented
+    const bool complex_taken {complex_named<double>(name) != nullptr};
+    if (!known || !borrow_operand(obj, x) || ((name == "abs" || (real_only && !complex_taken)) && (x.dtype == 1 || x.dtype == 3))) {
         return Py_NewRef(Py_NotImplemented);
     }
     std::size_t count {1};
@@ -2218,6 +2220,12 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
                 if constexpr (!complex_scalar<T>) {
                     if (real_only) {
                         result.emplace(real_map(name, data, x.shape));
+                        return;
+                    }
+                }
+                else {
+                    if (real_only) { // the complex functions complex_named has, in one pass
+                        result.emplace(d::parallel_map(data, x.shape, complex_named<real_of_t<T>>(name)));
                         return;
                     }
                 }

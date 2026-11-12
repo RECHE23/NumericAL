@@ -1175,6 +1175,32 @@ namespace {
     }
     return ok;
   }
+
+  // sign as NumPy 2's: z / |z|, 0 for 0, NaN for a NaN modulus, ±1 along the infinite part (NaN where both are);
+  // expm1 past exp's overflow
+  template <typename R>
+  bool signs_hold()
+  {
+    using C = std::complex<R>;
+    using numerical::detail::complex_sign;
+    const R inf {std::numeric_limits<R>::infinity()};
+    const R nan {std::numeric_limits<R>::quiet_NaN()};
+    bool    ok  {near(complex_sign(C {R {3}, R {-4}}), C {R {3} / R {5}, R {-4} / R {5}})};
+    ok = ok && same(complex_sign(C {R {-0.0}, R {0}}), C {R {0}, R {0}});
+    ok = ok && same(complex_sign(C {-inf, R {2}}), C {R {-1}, R {0}});
+    ok = ok && same(complex_sign(C {inf, nan}), C {R {1}, R {0}});
+    ok = ok && same(complex_sign(C {R {2}, -inf}), C {R {0}, R {-1}});
+    ok = ok && same(complex_sign(C {nan, inf}), C {R {0}, R {1}});
+    ok = ok && both_nan(complex_sign(C {inf, -inf}));
+    ok = ok && both_nan(complex_sign(C {nan, R {1}}));
+    // expm1 past exp's overflow: exp(z) − 1, scaled, where exp(re) times the sine overflowed
+    using numerical::detail::complex_expm1;
+    ok = ok && same(complex_expm1(C {inf, R {0}}), C {inf, R {0}});
+    const R past {numerical::detail::exp_bound<R> + R {2}};
+    ok = ok && same(complex_expm1(C {past, R {0}}), C {inf, R {0}});
+    ok = ok && both_nan(complex_expm1(C {inf, nan})); // NumPy's formula, an imaginary part not finite
+    return ok;
+  }
 } // namespace
 
 TEST(complex_exponentials_as_glibc_computes_them)
@@ -1211,6 +1237,12 @@ TEST(complex_inverse_functions_as_glibc_computes_them)
 {
   EXPECT(inverse_functions_hold<double>());
   EXPECT(inverse_functions_hold<float>());
+}
+
+TEST(complex_signs_as_numpy_2_gives_them)
+{
+  EXPECT(signs_hold<double>());
+  EXPECT(signs_hold<float>());
 }
 
 TEST(tensors_take_each_element_s_elementary_function)
