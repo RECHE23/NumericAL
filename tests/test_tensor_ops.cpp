@@ -460,6 +460,93 @@ TEST(tanh_of_a_double_by_the_table)
   EXPECT(numerical::tanh(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_tanh(v); }));
 }
 
+//! \brief Whether \p into of \p x (blocks, in vectors) gives \p one's bits for each value, \p one within an ulp of
+//!        \p reference (the C library's in long double where that is wider) and its own bits where \p exact says so.
+template <typename Into,
+          typename One,
+          typename Reference,
+          typename Exact>
+bool table_function_holds(const std::vector<double>& x,
+                          const Into&                into,
+                          const One&                 one,
+                          const Reference&           reference,
+                          const Exact&               exact)
+{
+  const double        inf {std::numeric_limits<double>::infinity()};
+  std::vector<double> block(x.size());
+  into(x.data(), block.data(), x.size());
+  bool holds {true};
+  for (std::size_t i {0}; i < x.size(); ++i) {
+    const double value   {one(x[i])};
+    holds = holds && std::bit_cast<std::uint64_t>(value) == std::bit_cast<std::uint64_t>(block[i]);
+    const double library {reference(x[i])};
+    if (std::isnan(x[i]) || std::isinf(library) || exact(x[i], library)) {
+      holds = holds && (std::bit_cast<std::uint64_t>(value) == std::bit_cast<std::uint64_t>(library)
+                        || (std::isnan(value) && std::isnan(library)));
+    }
+    else {
+      holds = holds && std::fabs(value - library) <= std::fabs(std::nextafter(library, inf) - library);
+    }
+  }
+  return holds;
+}
+
+// sinh, cosh and exp2 of a double by exp's table: within an ulp of the C library's in long double where that is wider,
+// its own bits at the ends (±0 and the smallest values of sinh themselves, cosh 1 there, the overflow past 710.47 where
+// e^x alone overflows from 709.78, 2^x at every integer, NaN), and the same bits from a block, in vectors, as from one
+// call; values rounded to nearest, whichever function the elementary ones take.
+TEST(sinh_cosh_and_exp2_of_a_double_by_the_table)
+{
+  constexpr bool      wider {std::numeric_limits<long double>::digits > std::numeric_limits<double>::digits};
+  const double        inf   {std::numeric_limits<double>::infinity()};
+  std::vector<double> x;
+  for (int i {0}; i < 20000; ++i) {
+    const double t {static_cast<double>(i) / 20000.0};
+    x.push_back(-720.0 + (1440.0 * t)); // across the whole range, past both ends
+    x.push_back((2.0 * t) - 1.0);
+    x.push_back((0.02 * t) - 0.01);     // about 0, where d − u cancels the most
+    x.push_back(35.0 + (20.0 * t));     // about 44, where t passes 2^64
+    x.push_back(709.0 + (2.0 * t));     // about the overflow
+  }
+  for (const double v : {0.0, -0.0, inf, -inf, std::numeric_limits<double>::quiet_NaN(), 710.4758600739439, 710.476, 1e-300,
+                         -1e-300, 0x1p-27, -0x1p-27, 0x1.fffffffffffffp-28, 5e-324, 2.5, -1022.0, -1022.5, 1023.0, 1024.0,
+                         -1100.0}) { // an odd count: the last one past the pairs
+    x.push_back(v);
+  }
+  EXPECT(table_function_holds(
+           x, [](const double* in, double* out, std::size_t count) { numerical::detail::sinh_into(in, out, count); },
+           [](double v) { return numerical::detail::elementary_sinh(v); },
+           [](double v) { return wider ? static_cast<double>(std::sinh(static_cast<long double>(v))) : std::sinh(v); },
+           [](double v, double /*library*/) { return std::fabs(v) < 0x1p-27; }));
+  EXPECT(table_function_holds(
+           x, [](const double* in, double* out, std::size_t count) { numerical::detail::cosh_into(in, out, count); },
+           [](double v) { return numerical::detail::elementary_cosh(v); },
+           [](double v) { return wider ? static_cast<double>(std::cosh(static_cast<long double>(v))) : std::cosh(v); },
+           [](double v, double /*library*/) { return std::fabs(v) < 0x1p-27; }));
+  EXPECT(table_function_holds(
+           x, [](const double* in, double* out, std::size_t count) { numerical::detail::exp2_into(in, out, count); },
+           [](double v) { return numerical::detail::elementary_exp2(v); },
+           [](double v) { return std::exp2(v); }, // exact where the result is subnormal (std::exp2's own) and at integers
+           [](double v, double /*library*/) { return v < numerical::detail::exp2_normal_bound || v == std::trunc(v); }));
+  EXPECT(std::signbit(numerical::detail::elementary_sinh(-0.0)) && numerical::detail::elementary_sinh(-inf) == -inf);
+  EXPECT(numerical::detail::elementary_cosh(-inf) == inf && numerical::detail::elementary_exp2(-inf) == 0.0);
+  EXPECT(numerical::detail::table_sinh(1.0) == 0x1.2cd9fc44eb982p+0); // rounded to nearest, as the next
+  EXPECT(numerical::detail::table_sinh(-0.001) == -0x1.0624e00c1c9e3p-10);
+  EXPECT(numerical::detail::table_sinh(710.0) == 0x1.3e21a464507f9p+1023);
+  EXPECT(numerical::detail::table_cosh(1.0) == 0x1.8b07551d9f55p+0);
+  EXPECT(numerical::detail::table_cosh(-0.001) == 0x1.000008637bdc1p+0);
+  EXPECT(numerical::detail::table_exp2(0.5) == 0x1.6a09e667f3bcdp+0);
+  EXPECT(numerical::detail::table_exp2(-3.3) == 0x1.9fdf8bcce533ep-4);
+  EXPECT(numerical::detail::table_exp2(1023.5) == 0x1.6a09e667f3bcdp+1023);
+  const numerical::tensor<double> t {{2, 2}, {0.5, -0.0, 1e-20, -3.0}};
+  EXPECT(numerical::sinh(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_sinh(v); }));
+  EXPECT(numerical::cosh(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_cosh(v); }));
+  EXPECT(numerical::exp2(t) == numerical::map(t, [](double v) { return numerical::detail::elementary_exp2(v); }));
+  const numerical::tensor<float> f {{2}, {0.5F, -3.0F}};
+  EXPECT(numerical::sinh(f).data()[1] == std::sinh(-3.0F) && numerical::cosh(f).data()[0] == std::cosh(0.5F)
+         && numerical::exp2(f).data()[1] == std::exp2(-3.0F));
+}
+
 // atan of a double by its table: within an ulp of the C library's atan in long double where that is wider (the
 // library's of a double strays further, macOS's 0.86 ulp), the reference's own bits at the ends (±0 and the smallest
 // values themselves, ±π/2 far out, NaN itself), and the same bits from a block, in vectors, as from one call.

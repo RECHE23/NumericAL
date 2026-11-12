@@ -473,6 +473,243 @@ namespace numerical {
       return tensor<double> {shape, std::move(out)};
     }
 
+    //! \brief `sinh` of a scalar, as `std::sinh` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_sinh(const T& x)
+    {
+      return static_cast<T>(std::sinh(x));
+    }
+
+    //! \brief `sinh` of a `double`, as \ref sinh_into gives it: \ref table_sinh, or `std::sinh` where `exp_by_table`
+    //!        says no.
+    [[nodiscard]] inline double elementary_sinh(double x)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        return std::sinh(x);
+      }
+#endif
+      return table_sinh(x);
+    }
+
+    //! \brief `sinh` of the \p count doubles at \p in into \p out, each \ref elementary_sinh's: \ref table_sinh in
+    //!        vectors (with the FMA instructions on an x86-64 processor, \ref run_fused), `std::sinh` throughout where
+    //!        `exp_by_table` says no.
+    inline void sinh_into(const double* in,
+                          double*       out,
+                          std::size_t   count)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        std::transform(in, in + count, out, [](double x) { return std::sinh(x); });
+        return;
+      }
+#endif
+#ifdef NUMERICAL_EXP_NEON
+      std::size_t i {0};
+      for (; i + 2 <= count; i += 2) {
+        vst1q_f64(out + i, table_sinh(vld1q_f64(in + i)));
+      }
+      if (i < count) {
+        out[i] = table_sinh(in[i]);
+      }
+#else
+      run_fused([&](std::size_t) NUMERICAL_INLINE_LAMBDA {
+        for (std::size_t i {0}; i < count; ++i) {
+          out[i] = table_sinh(in[i]);
+        }
+      });
+#endif
+    }
+
+    //! \brief `sinh` of every one of the row-major scalars at \p data, of shape \p shape: `std::sinh` of each.
+    template <typename T>
+    [[nodiscard]] tensor<T> sinh_of(const T*                        data,
+                                    const std::vector<std::size_t>& shape)
+    {
+      return parallel_map(data, shape, [](const T& x) { return elementary_sinh(x); });
+    }
+
+    //! \brief `sinh` of every one of the row-major doubles at \p data, of shape \p shape: \ref sinh_into by chunks of
+    //!        \ref elementwise_chunk among the threads.
+    [[nodiscard]] inline tensor<double> sinh_of(const double*                   data,
+                                                const std::vector<std::size_t>& shape)
+    {
+      const std::size_t count  {element_count(shape.begin(), shape.end())};
+      buffer<double>    out(count);
+      const std::size_t chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     sinh_into(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
+                   });
+      return tensor<double> {shape, std::move(out)};
+    }
+
+    //! \brief `cosh` of a scalar, as `std::cosh` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_cosh(const T& x)
+    {
+      return static_cast<T>(std::cosh(x));
+    }
+
+    //! \brief `cosh` of a `double`, as \ref cosh_into gives it: \ref table_cosh, or `std::cosh` where `exp_by_table`
+    //!        says no.
+    [[nodiscard]] inline double elementary_cosh(double x)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        return std::cosh(x);
+      }
+#endif
+      return table_cosh(x);
+    }
+
+    //! \brief `cosh` of the \p count doubles at \p in into \p out, each \ref elementary_cosh's: \ref table_cosh in
+    //!        vectors (with the FMA instructions on an x86-64 processor, \ref run_fused), `std::cosh` throughout where
+    //!        `exp_by_table` says no.
+    inline void cosh_into(const double* in,
+                          double*       out,
+                          std::size_t   count)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        std::transform(in, in + count, out, [](double x) { return std::cosh(x); });
+        return;
+      }
+#endif
+#ifdef NUMERICAL_EXP_NEON
+      std::size_t i {0};
+      for (; i + 2 <= count; i += 2) {
+        vst1q_f64(out + i, table_cosh(vld1q_f64(in + i)));
+      }
+      if (i < count) {
+        out[i] = table_cosh(in[i]);
+      }
+#else
+      run_fused([&](std::size_t) NUMERICAL_INLINE_LAMBDA {
+        for (std::size_t i {0}; i < count; ++i) {
+          out[i] = table_cosh(in[i]);
+        }
+      });
+#endif
+    }
+
+    //! \brief `cosh` of every one of the row-major scalars at \p data, of shape \p shape: `std::cosh` of each.
+    template <typename T>
+    [[nodiscard]] tensor<T> cosh_of(const T*                        data,
+                                    const std::vector<std::size_t>& shape)
+    {
+      return parallel_map(data, shape, [](const T& x) { return elementary_cosh(x); });
+    }
+
+    //! \brief `cosh` of every one of the row-major doubles at \p data, of shape \p shape: \ref cosh_into by chunks of
+    //!        \ref elementwise_chunk among the threads.
+    [[nodiscard]] inline tensor<double> cosh_of(const double*                   data,
+                                                const std::vector<std::size_t>& shape)
+    {
+      const std::size_t count  {element_count(shape.begin(), shape.end())};
+      buffer<double>    out(count);
+      const std::size_t chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     cosh_into(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
+                   });
+      return tensor<double> {shape, std::move(out)};
+    }
+
+    //! \brief 2^x below which `exp2` is subnormal, where \ref table_exp2's two scalings would round twice.
+    inline constexpr double exp2_normal_bound {-1022.0};
+
+    //! \brief `exp2` of a scalar, as `std::exp2` gives it.
+    template <typename T>
+    [[nodiscard]] T elementary_exp2(const T& x)
+    {
+      return static_cast<T>(std::exp2(x));
+    }
+
+    //! \brief `exp2` of a `double`, as \ref exp2_into gives it: \ref table_exp2, or `std::exp2` below
+    //!        \ref exp2_normal_bound (and throughout where `exp_by_table` says no).
+    [[nodiscard]] inline double elementary_exp2(double x)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        return std::exp2(x);
+      }
+#endif
+      return x < exp2_normal_bound ? std::exp2(x) : table_exp2(x);
+    }
+
+    /*!
+     * \brief `exp2` of the \p count doubles at \p in into \p out, each \ref elementary_exp2's: \ref table_exp2 in
+     *        vectors (with the FMA instructions on an x86-64 processor, \ref run_fused), then `std::exp2` below
+     *        \ref exp2_normal_bound, as \ref exp_into; `std::exp2` throughout where `exp_by_table` says no.
+     */
+    inline void exp2_into(const double* in,
+                          double*       out,
+                          std::size_t   count)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        std::transform(in, in + count, out, [](double x) { return std::exp2(x); });
+        return;
+      }
+#endif
+#ifdef NUMERICAL_EXP_NEON
+      std::size_t i {0};
+      for (; i + 2 <= count; i += 2) {
+        const float64x2_t x {vld1q_f64(in + i)};
+        vst1q_f64(out + i, table_exp2(x));
+        if (vminnmvq_f64(x) < exp2_normal_bound) { // the lesser number, past a NaN
+          for (std::size_t k {i}; k < i + 2; ++k) {
+            if (in[k] < exp2_normal_bound) {
+              out[k] = std::exp2(in[k]);
+            }
+          }
+        }
+      }
+      if (i < count) {
+        out[i] = elementary_exp2(in[i]);
+      }
+#else
+      run_fused([&](std::size_t) NUMERICAL_INLINE_LAMBDA {
+        for (std::size_t i {0}; i < count; ++i) {
+          out[i] = table_exp2(in[i]);
+        }
+      });
+#  if defined(__clang__)
+#    pragma clang loop vectorize(disable)
+#  endif
+      for (std::size_t i {0}; i < count; ++i) {
+        if (in[i] < exp2_normal_bound) {
+          out[i] = std::exp2(in[i]);
+        }
+      }
+#endif
+    }
+
+    //! \brief `exp2` of every one of the row-major scalars at \p data, of shape \p shape: `std::exp2` of each.
+    template <typename T>
+    [[nodiscard]] tensor<T> exp2_of(const T*                        data,
+                                    const std::vector<std::size_t>& shape)
+    {
+      return parallel_map(data, shape, [](const T& x) { return elementary_exp2(x); });
+    }
+
+    //! \brief `exp2` of every one of the row-major doubles at \p data, of shape \p shape: \ref exp2_into by chunks of
+    //!        \ref elementwise_chunk among the threads.
+    [[nodiscard]] inline tensor<double> exp2_of(const double*                   data,
+                                                const std::vector<std::size_t>& shape)
+    {
+      const std::size_t count  {element_count(shape.begin(), shape.end())};
+      buffer<double>    out(count);
+      const std::size_t chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t first {c * elementwise_chunk};
+                     exp2_into(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
+                   });
+      return tensor<double> {shape, std::move(out)};
+    }
+
     //! \brief `exp` of a complex number of `float` or `double`: \ref complex_exp.
     template <split_complex T>
     [[nodiscard]] T elementary_exp(const T& x)
@@ -1461,6 +1698,36 @@ namespace numerical {
   [[nodiscard]] tensor<T> atan(const tensor<T>& a)
   {
     return detail::atan_of(a.data().data(), a.shape());
+  }
+
+  /*!
+   * \brief `sinh` of every real element: \ref detail::sinh_into of a `double` one (within 0.503 ulp of the exact
+   *        value, finite up to the overflow past 710.47), `std::sinh` of a `float` one.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> sinh(const tensor<T>& a)
+  {
+    return detail::sinh_of(a.data().data(), a.shape());
+  }
+
+  /*!
+   * \brief `cosh` of every real element: \ref detail::cosh_into of a `double` one (within 0.501 ulp of the exact
+   *        value, finite up to the overflow past 710.47), `std::cosh` of a `float` one.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> cosh(const tensor<T>& a)
+  {
+    return detail::cosh_of(a.data().data(), a.shape());
+  }
+
+  /*!
+   * \brief `2^x` of every real element: \ref detail::exp2_into of a `double` one (within 0.506 ulp of the exact value
+   *        where it is normal, exact at every integer), `std::exp2` of a `float` one.
+   */
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> exp2(const tensor<T>& a)
+  {
+    return detail::exp2_of(a.data().data(), a.shape());
   }
 
   //! \brief `log` of every element: `std::log` of a real one, \ref detail::complex_log of a complex one.

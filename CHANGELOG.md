@@ -30,6 +30,14 @@ A change that can break code is listed under **Breaking** and held for a month's
   was gathered into the order, argsorted, and the order gathered again. On M1 Pro, `lexsort` of three keys of 10^6
   int64 16.3 → 12.4 ms (NumPy 392 ms), of three 2000 × 500 along the first axis 11.3 → 7.2 ms; `unique` of 200000
   rows of 4 along the first axis 11.7 → 8.2 ms (NumPy 171 ms). The same indices.
+- **`sinh`, `cosh` and `exp2` of float64 in vectors** (C++ `numerical::sinh`, `numerical::cosh` and `numerical::exp2`,
+  new, and NumPy's on a Tensor), on `exp`'s table: sinh = (d − u)/2 and cosh = (d + u)/2 of d = expm1(|x|) + 1 and u =
+  1/d as pairs, exact where d − u cancels near 0 and finite up to their own overflow past 710.47 (where e^x alone
+  overflows from 709.78); 2^x reduced exactly, and exact at every integer. Within 0.503, 0.501 and 0.506 ulp of the
+  exact value (Apple's libm 0.526, 0.521 and 0.512); the same bits on every processor with FMA. 10^6 values on one
+  core, x86-64 (AVX2 and FMA, GCC): `sinh` 17.9 → 6.1 ms, `cosh` 6.7 → 6.0 ms, `exp2` 3.5 → 2.9 ms; M1 Pro: `exp2`
+  2.37 → 1.80 ms, while `sinh` and `cosh` cost 8 to 11 % more there than Apple's libm on one core (4.2 → 4.7 ms) and
+  the same on all of them (0.9 ms).
 
 ### Fixed
 

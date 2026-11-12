@@ -272,6 +272,15 @@ namespace {
         if (name == "arctan") { // a double's by the table, in vectors (numerical::detail::atan_into)
             return numerical::detail::atan_of(data, shape);
         }
+        if (name == "sinh") { // a double's by exp's table, in vectors (numerical::detail::sinh_into)
+            return numerical::detail::sinh_of(data, shape);
+        }
+        if (name == "cosh") { // a double's by exp's table, in vectors (numerical::detail::cosh_into)
+            return numerical::detail::cosh_of(data, shape);
+        }
+        if (name == "exp2") { // a double's by exp's table, in vectors (numerical::detail::exp2_into)
+            return numerical::detail::exp2_of(data, shape);
+        }
         return parallel_map(data, shape, real_function<R>(name));
     }
 } // namespace

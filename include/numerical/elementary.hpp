@@ -1,12 +1,14 @@
 /*!
  * \file elementary.hpp
- * \brief `exp`, `expm1` and `tanh` of `double` by a table of 2^(j/128) and a polynomial, `atan` by a table of
- *        atan(k/64) and a series, branch-free so that a loop of them runs in vectors: within 0.506 ulp of the exact value for a normal result of `exp`, 0.503 ulp for `expm1`; the
- *        same bits from a vector lane as from a call.
+ * \brief `exp`, `exp2`, `expm1`, `tanh`, `sinh` and `cosh` of `double` by a table of 2^(j/128) and a polynomial, `atan`
+ *        by a table of atan(k/64) and a series, branch-free so that a loop of them runs in vectors: within 0.506 ulp of
+ *        the exact value for a normal result of `exp` and `exp2`, 0.503 ulp for `expm1` and `sinh`; the same bits from
+ *        a vector lane as from a call.
  */
 #ifndef NUMERICAL_ELEMENTARY_HPP
 #define NUMERICAL_ELEMENTARY_HPP
 
+#include <algorithm>
 #include <array>
 #include <bit>
 #include <cmath>
@@ -320,6 +322,108 @@ namespace numerical::detail {
     return blend(magnitude >= 0x1p-27, std::copysign(result, x), x); // NaN fails the comparison
   }
 
+  /*!
+   * \brief The parts of sinh and cosh of \p magnitude (0 to 711, past which both overflow): t = expm1(magnitude)
+   *        (\ref expm1_parts, its two parts summed exactly) at most 2^64 in its place (past it, t · 2^(64 − e), whose
+   *        1 and 1/(t + 1) then weigh under 2^−63 of it), d = t + 1 and u = 1/d as pairs (`d_high` + `d_low`, `u_high` +
+   *        `u_low`); sinh = (d − u)/2 and cosh = (d + u)/2, each times the power of two returned. Near 0, d − u loses
+   *        no digit: d_high − u_high is exact and the pairs' tails carry the rest.
+   */
+  NUMERICAL_ALWAYS_INLINE double hyperbolic_parts(double  magnitude,
+                                                  double& d_high,
+                                                  double& d_low,
+                                                  double& u_high,
+                                                  double& u_low) noexcept
+  {
+    double             sum   {};
+    double             small {};
+    const std::int64_t e     {expm1_parts(magnitude > 711.0 ? 711.0 : magnitude, sum, small)}; // 0 to 1026
+    double             high  {};
+    double             low   {};
+    two_sum(sum, small, high, low);
+    const std::int64_t kept  {std::min<std::int64_t>(e, 64)};
+    const double       scale {std::bit_cast<double>(static_cast<std::uint64_t>(kept + 1023) << 52U)};
+    double             d_err {};
+    two_sum(1.0, high * scale, d_high, d_err); // high · scale and low · scale exact
+    d_low  = std::fma(low, scale, d_err);
+    u_high = 1.0 / d_high;
+    u_low  = std::fma(-u_high, d_low, std::fma(-u_high, d_high, 1.0)) * u_high;
+    return std::bit_cast<double>(static_cast<std::uint64_t>(e - kept + 1022) << 52U); // 2^(e − kept − 1)
+  }
+
+  /*!
+   * \brief sinh(\p x) = (d − u)/2 (\ref hyperbolic_parts), the sign of x: within 0.503 ulp of the exact value up to
+   *        the overflow (2^(e − 1) a normal double, where e^x alone would overflow from 709.78). x itself where |x| <
+   *        2^−27 (sinh(x) − x under half an ulp of it, ±0 kept) and for NaN.
+   */
+  NUMERICAL_ALWAYS_INLINE double table_sinh(double x) noexcept
+  {
+    const double magnitude {std::fabs(x)};
+    double       d_high    {};
+    double       d_low     {};
+    double       u_high    {};
+    double       u_low     {};
+    const double power     {hyperbolic_parts(magnitude, d_high, d_low, u_high, u_low)};
+    double       lead      {};
+    double       lead_err  {};
+    two_sum(d_high, -u_high, lead, lead_err);
+    const double result    {(lead + ((lead_err + d_low) - u_low)) * power};
+    return blend(magnitude >= 0x1p-27, std::copysign(result, x), x); // NaN fails the comparison
+  }
+
+  /*!
+   * \brief cosh(\p x) = (d + u)/2 (\ref hyperbolic_parts): within 0.502 ulp of the exact value up to the overflow;
+   *        NaN for NaN.
+   */
+  NUMERICAL_ALWAYS_INLINE double table_cosh(double x) noexcept
+  {
+    double       d_high   {};
+    double       d_low    {};
+    double       u_high   {};
+    double       u_low    {};
+    const double power    {hyperbolic_parts(std::fabs(x), d_high, d_low, u_high, u_low)};
+    double       lead     {};
+    double       lead_err {};
+    two_sum(d_high, u_high, lead, lead_err);
+    const double result   {(lead + ((lead_err + d_low) + u_low)) * power};
+    return blend(std::isnan(x), x, result);
+  }
+
+  //! \brief ln 2 to the nearest `double`.
+  inline constexpr double exp2_ln2 {0x1.62e42fefa39efp-1};
+
+  /*!
+   * \brief 2^\p x for an \p x whose result is normal or infinite (−1022 or above): x = (128 e + j)/128 + f, |f| ≤
+   *        1/256, each step exact (the scaling by 128 and f's difference), and 2^x = 2^e · 2^(j/128) · exp(f ln 2),
+   *        as in \ref table_exp. Within 0.506 ulp of the exact value, and exact at every integer (f = 0, j = 0). Below the
+   *        bound, its answer is not 2^x's; for NaN, NaN.
+   */
+  NUMERICAL_ALWAYS_INLINE double table_exp2(double x) noexcept
+  {
+    constexpr double shifter {0x1.8p52};
+    const double     clamped {x > 1025.0 ? 1025.0 : x}; // past 1024, the result overflows all the same
+    const double     z       {std::fma(clamped, 128.0, shifter)};
+    const auto       n       {std::bit_cast<std::int64_t>(z) - std::bit_cast<std::int64_t>(shifter)};
+    const double     k       {z - shifter};
+    const double     r       {std::fma(k, -0x1p-7, clamped) * exp2_ln2}; // f exact, f · ln 2 rounded once
+    const double     r2      {r * r};
+    double           p       {std::fma(r, 1.0 / 720.0, 1.0 / 120.0)};
+    p = std::fma(r, p, 1.0 / 24.0);
+    p = std::fma(r, p, 1.0 / 6.0);
+    p = std::fma(r, p, 0.5);
+    p = std::fma(r2, p, r);
+    const auto         j      {static_cast<std::size_t>(static_cast<std::uint64_t>(n) & 127U)};
+    const double       head   {exp_table[2 * j]};
+    const double       tail   {exp_table[(2 * j) + 1]};
+    const double       scaled {head + std::fma(head + tail, p, tail)};
+    const std::int64_t e      {(n - static_cast<std::int64_t>(j)) / 128};
+    const std::int64_t half   {e / 2};
+    const double       first  {std::bit_cast<double>(static_cast<std::uint64_t>(half + 1023) << 52U)};
+    const double       second {std::bit_cast<double>(static_cast<std::uint64_t>(e - half + 1023) << 52U)};
+    const double       result {(scaled * first) * second};
+    return blend(std::isnan(x), x, result);
+  }
+
   //! \brief π/2, the `double` nearest it (`tools/atan_table.py` derives each constant here).
   inline constexpr double atan_half_pi_high {0x1.921fb54442d18p+0};
 
@@ -570,6 +674,92 @@ namespace numerical::detail {
     const uint64x2_t  sign      {vdupq_n_u64(0x8000000000000000U)};
     const float64x2_t signed_r  {vbslq_f64(sign, x, result)};
     return vbslq_f64(vcgeq_f64(magnitude, vdupq_n_f64(0x1p-27)), signed_r, x);
+  }
+
+  //! \brief \ref hyperbolic_parts of each lane, in NEON: each operation the scalar one's.
+  NUMERICAL_ALWAYS_INLINE float64x2_t hyperbolic_parts(float64x2_t  magnitude,
+                                                       float64x2_t& d_high,
+                                                       float64x2_t& d_low,
+                                                       float64x2_t& u_high,
+                                                       float64x2_t& u_low) noexcept
+  {
+    float64x2_t     sum     {};
+    float64x2_t     small   {};
+    const int64x2_t e       {expm1_parts(vminq_f64(magnitude, vdupq_n_f64(711.0)), sum, small)};
+    float64x2_t     high    {};
+    float64x2_t     low     {};
+    two_sum(sum, small, high, low);
+    const int64x2_t   cap   {vdupq_n_s64(64)};
+    const int64x2_t   kept  {vbslq_s64(vcgtq_s64(e, cap), cap, e)};
+    const float64x2_t scale {vreinterpretq_f64_s64(vshlq_n_s64(vaddq_s64(kept, vdupq_n_s64(1023)), 52))};
+    float64x2_t       d_err {};
+    two_sum(vdupq_n_f64(1.0), vmulq_f64(high, scale), d_high, d_err);
+    d_low  = vfmaq_f64(d_err, low, scale);
+    u_high = vdivq_f64(vdupq_n_f64(1.0), d_high);
+    u_low  = vmulq_f64(vfmsq_f64(vfmsq_f64(vdupq_n_f64(1.0), u_high, d_high), u_high, d_low), u_high);
+    return vreinterpretq_f64_s64(vshlq_n_s64(vaddq_s64(vsubq_s64(e, kept), vdupq_n_s64(1022)), 52));
+  }
+
+  //! \brief \ref table_sinh of each lane, in NEON: each operation the scalar one's, so each lane the scalar call's bits.
+  NUMERICAL_ALWAYS_INLINE float64x2_t table_sinh(float64x2_t x) noexcept
+  {
+    const float64x2_t magnitude {vabsq_f64(x)};
+    float64x2_t       d_high    {};
+    float64x2_t       d_low     {};
+    float64x2_t       u_high    {};
+    float64x2_t       u_low     {};
+    const float64x2_t power     {hyperbolic_parts(magnitude, d_high, d_low, u_high, u_low)};
+    float64x2_t       lead      {};
+    float64x2_t       lead_err  {};
+    two_sum(d_high, vnegq_f64(u_high), lead, lead_err);
+    const float64x2_t result    {vmulq_f64(vaddq_f64(lead, vsubq_f64(vaddq_f64(lead_err, d_low), u_low)), power)};
+    const float64x2_t signed_r  {vbslq_f64(vdupq_n_u64(0x8000000000000000U), x, result)};
+    return vbslq_f64(vcgeq_f64(magnitude, vdupq_n_f64(0x1p-27)), signed_r, x);
+  }
+
+  //! \brief \ref table_cosh of each lane, in NEON: each operation the scalar one's, so each lane the scalar call's bits.
+  NUMERICAL_ALWAYS_INLINE float64x2_t table_cosh(float64x2_t x) noexcept
+  {
+    float64x2_t       d_high   {};
+    float64x2_t       d_low    {};
+    float64x2_t       u_high   {};
+    float64x2_t       u_low    {};
+    const float64x2_t power    {hyperbolic_parts(vabsq_f64(x), d_high, d_low, u_high, u_low)};
+    float64x2_t       lead     {};
+    float64x2_t       lead_err {};
+    two_sum(d_high, u_high, lead, lead_err);
+    const float64x2_t result   {vmulq_f64(vaddq_f64(lead, vaddq_f64(vaddq_f64(lead_err, d_low), u_low)), power)};
+    return vbslq_f64(vceqq_f64(x, x), result, x);
+  }
+
+  //! \brief \ref table_exp2 of each lane, in NEON: each operation the scalar one's, so each lane the scalar call's bits.
+  NUMERICAL_ALWAYS_INLINE float64x2_t table_exp2(float64x2_t x) noexcept
+  {
+    const float64x2_t shifter {vdupq_n_f64(0x1.8p52)};
+    const float64x2_t clamped {vminq_f64(x, vdupq_n_f64(1025.0))};
+    const float64x2_t z       {vfmaq_f64(shifter, clamped, vdupq_n_f64(128.0))};
+    const int64x2_t   n       {vsubq_s64(vreinterpretq_s64_f64(z), vreinterpretq_s64_f64(shifter))};
+    const float64x2_t k       {vsubq_f64(z, shifter)};
+    const float64x2_t r       {vmulq_f64(vfmaq_f64(clamped, k, vdupq_n_f64(-0x1p-7)), vdupq_n_f64(exp2_ln2))};
+    const float64x2_t r2      {vmulq_f64(r, r)};
+    float64x2_t       p       {vfmaq_f64(vdupq_n_f64(1.0 / 120.0), r, vdupq_n_f64(1.0 / 720.0))};
+    p = vfmaq_f64(vdupq_n_f64(1.0 / 24.0), r, p);
+    p = vfmaq_f64(vdupq_n_f64(1.0 / 6.0), r, p);
+    p = vfmaq_f64(vdupq_n_f64(0.5), r, p);
+    p = vfmaq_f64(r, r2, p);
+    const int64x2_t   j      {vandq_s64(n, vdupq_n_s64(127))};
+    const float64x2_t low    {vld1q_f64(exp_table.data() + (2 * static_cast<std::size_t>(vgetq_lane_s64(j, 0))))};
+    const float64x2_t high   {vld1q_f64(exp_table.data() + (2 * static_cast<std::size_t>(vgetq_lane_s64(j, 1))))};
+    const float64x2_t head   {vzip1q_f64(low, high)};
+    const float64x2_t tail   {vzip2q_f64(low, high)};
+    const float64x2_t scaled {vaddq_f64(head, vfmaq_f64(tail, vaddq_f64(head, tail), p))};
+    const int64x2_t   e      {vshrq_n_s64(n, 7)};
+    const int64x2_t   half   {vshrq_n_s64(vaddq_s64(e, vreinterpretq_s64_u64(vshrq_n_u64(vreinterpretq_u64_s64(e), 63))), 1)};
+    const int64x2_t   bias   {vdupq_n_s64(1023)};
+    const float64x2_t first  {vreinterpretq_f64_s64(vshlq_n_s64(vaddq_s64(half, bias), 52))};
+    const float64x2_t second {vreinterpretq_f64_s64(vshlq_n_s64(vaddq_s64(vsubq_s64(e, half), bias), 52))};
+    const float64x2_t result {vmulq_f64(vmulq_f64(scaled, first), second)};
+    return vbslq_f64(vceqq_f64(x, x), result, x);
   }
 
   //! \brief \ref table_atan of each lane, in NEON: each operation the scalar one's, so each lane the scalar call's bits.
