@@ -21,6 +21,15 @@
 #include <limits>
 #include <numbers>
 
+// A function kept out of its callers, in the spelling each compiler takes.
+#if !defined(NUMERICAL_OUT_OF_LINE)
+#  if defined(_MSC_VER) && !defined(__clang__)
+#    define NUMERICAL_OUT_OF_LINE __declspec(noinline)
+#  else
+#    define NUMERICAL_OUT_OF_LINE [[gnu::noinline]] // NOLINT(cppcoreguidelines-macro-usage): an attribute, which no function can stand for
+#  endif
+#endif
+
 namespace numerical::detail {
 
   //! \brief The real part past which `exp` of it overflows, rounded down: 709 for `double`, 88 for `float`.
@@ -62,6 +71,22 @@ namespace numerical::detail {
     sine   = std::sin(x);
     cosine = std::cos(x);
 #endif
+  }
+
+  //! \brief `std::sin` of \p x in a call of its own, as NumPy's formulas take it: no build fuses it with a `cos` of the
+  //!        same argument into a `sincos`, which strays from them by a unit in the last place (glibc's `sincosf` before
+  //!        2.29, macOS's `__sincos`).
+  template <std::floating_point R>
+  NUMERICAL_OUT_OF_LINE R separate_sine(R x)
+  {
+    return std::sin(x);
+  }
+
+  //! \brief `std::cos` of \p x in a call of its own, as \ref separate_sine.
+  template <std::floating_point R>
+  NUMERICAL_OUT_OF_LINE R separate_cosine(R x)
+  {
+    return std::cos(x);
   }
 
   /*!
@@ -1076,7 +1101,8 @@ namespace numerical::detail {
   }
 
   /*!
-   * \brief `exp(z) − 1`, as NumPy's: `expm1(re) cos(im) − 2 sin²(im/2) + i exp(re) sin(im)`; past \ref exp_bound, a finite
+   * \brief `exp(z) − 1`, as NumPy's: `expm1(re) cos(im) − 2 sin²(im/2) + i exp(re) sin(im)`, the sine and the cosine
+   *        of `im` in calls of their own as NumPy's (\ref separate_sine); past \ref exp_bound, a finite
    *        `im`'s \ref complex_exp less 1, where `exp(re)` overflows and NumPy's product with the sine with it (NaN
    *        at `+∞ + 0i`, an infinite `710.2 + 0.1i`).
    */
@@ -1088,9 +1114,9 @@ namespace numerical::detail {
       return {w.real() - R {1}, w.imag()};
     }
     const R a    {std::sin(z.imag() / R {2})};
-    const R real {std::expm1(z.real()) * std::cos(z.imag())};
+    const R real {std::expm1(z.real()) * separate_cosine(z.imag())};
     const R half {R {2} *a * a};
-    return {real - half, std::exp(z.real()) * std::sin(z.imag())};
+    return {real - half, std::exp(z.real()) * separate_sine(z.imag())};
   }
 
   /*!
