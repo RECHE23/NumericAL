@@ -111,8 +111,9 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
   inverse ones, `arcsin`, `arccos`, `arctan`, `arcsinh`, `arccosh`, `arctanh`, of a complex number) are glibc's, NumPy's
   on Linux; macOS's and Windows' libraries, NumPy's there, differ among infinities and NaNs and past their last bits.
   `log2`, `log10`, `exp2` and `expm1` are NumPy's formulas, `expm1` past exp's overflow `exp(z) − 1` (NumPy's is NaN
-  at `+∞ + 0i` and infinite at `710.2 + 0.1i`); `log1p` keeps a small number's digits, where NumPy's
-  `log(hypot(1 + re, im))` is 0 below ε.
+  at `+∞ + 0i` and infinite at `710.2 + 0.1i`); `log1p` keeps a small number's digits and a zero's signs, where NumPy's
+  `log(hypot(1 + re, im))` is 0 below ε, and stays finite where `|1 + z|` passes the largest double (NumPy's is
+  infinite).
 
 ## What is not there yet
 

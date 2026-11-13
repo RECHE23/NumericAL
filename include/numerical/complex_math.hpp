@@ -1123,16 +1123,19 @@ namespace numerical::detail {
    * \brief `log(1 + z)`: the imaginary part `atan2(im, 1 + re)`, as NumPy's; the real part `log|1 + z|`, by
    *        `log1p(d) / 2` of `d = |1 + z|² − 1 = 2re + re² + im²` where `|re|` and `|im|` are at most 3 and `d` at least
    *        −½ (the squares exact by fused multiply-adds, the sum compensated: `d` keeps its digits where it cancels,
-   *        about the circle `|1 + z| = 1` and about 0, where NumPy's `log(hypot(1 + re, im))` loses them all); else that,
-   *        `|1 + z|` there far from 1 or `1 + re` exact.
+   *        about the circle `|1 + z| = 1` and about 0, where NumPy's `log(hypot(1 + re, im))` loses them all); else
+   *        \ref complex_log of `1 + z`, `|1 + z|` there far from 1 or `1 + re` exact, finite to the largest numbers
+   *        (NumPy's hypot overflows past `max / √2`). A zero is its own, its signs kept, as `log1p` of a real −0.
    */
   template <std::floating_point R>
   [[nodiscard]] std::complex<R> complex_log1p(const std::complex<R>& z)
   {
-    const R x  {z.real()};
-    const R y  {z.imag()};
-    R       re {};
-    R       d  {-R {1}};
+    const R x {z.real()};
+    const R y {z.imag()};
+    if (x == R {0} && y == R {0}) {
+      return z;
+    }
+    R d {-R {1}};
     if (std::abs(x) <= R {3} && std::abs(y) <= R {3}) {
       const R xx      {x * x};
       const R xx_err  {std::fma(x, x, -xx)};
@@ -1148,12 +1151,9 @@ namespace numerical::detail {
       d = sum + (((first_e + sum_e) + xx_err) + yy_err);
     }
     if (d >= R {-0.5}) {
-      re = std::log1p(d) / R {2};
+      return {std::log1p(d) / R {2}, std::atan2(y, x + R {1})};
     }
-    else {
-      re = std::log(std::hypot(x + R {1}, y));
-    }
-    return {re, std::atan2(y, x + R {1})};
+    return complex_log(std::complex<R> {x + R {1}, y});
   }
 
   /*!

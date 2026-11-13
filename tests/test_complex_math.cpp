@@ -1173,6 +1173,18 @@ namespace {
       const C got {special_functions.at(each.function)(each.z)};
       ok = ok && (std::is_same_v<R, double> ? same(got, each.want) : near(got, each.want, 1));
     }
+    // log1p of a zero is that zero, its signs kept; of m (1 + i) past hypot's overflow, ln|1 + z| finite (to 300 bits)
+    for (const C& z : {C {minus_zero, zero}, C {minus_zero, minus_zero}, C {zero, minus_zero}, C {zero, zero}}) {
+      ok = ok && same(d::complex_log1p(z), z);
+    }
+    if constexpr (std::is_same_v<R, double>) {
+      const R m {b(0x7feab36d48e1acf0U)}; // 1.5e308
+      ok = ok && near(d::complex_log1p(C {m, m}), C {b(0x40862f9602b3a198U), std::numbers::pi_v<R> / R {4}});
+    }
+    else {
+      const R m {std::bit_cast<R>(0x7f61b1e6U)}; // 3e38
+      ok = ok && near(d::complex_log1p(C {m, m}), C {std::bit_cast<R>(0x42b1e308U), std::numbers::pi_v<R> / R {4}});
+    }
     return ok;
   }
 

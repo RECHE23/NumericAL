@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Fixed
+
+- **`log1p` of a complex zero** is that zero, its signs kept (`-0 + 0j` gives `-0 + 0j`), as `log1p` of a real −0,
+  where the real part was +0; and **of a complex number whose `|1 + z|` passes the largest finite value** is finite,
+  `log(1 + z)` scaled as `log` scales (`1.5e308 + 1.5e308j`: 709.95 + 0.785j), where it was infinite, as NumPy's.
+
 ## 2026.11.14 — 2026-11-13
 
 ### Changed

@@ -299,11 +299,15 @@ class HighRanks(unittest.TestCase):
         def log1p(*values):
             return np.asarray(numerical.log1p(numerical.asarray(np.array(values, dtype=np.complex128))))
 
-        small = log1p(1e-20 + 3e-20j, -1e-300 + 0j, 0j, complex(-0.0, -0.0))  # not -0.0 - 0.0j: its imaginary part +0
+        small = log1p(1e-20 + 3e-20j, -1e-300 + 0j, 0j, complex(-0.0, -0.0), complex(-0.0, 0.0))  # not -0.0 - 0.0j: +0j
         self.assertEqual(small[0], 1e-20 + 3e-20j)
         self.assertEqual(small[1], -1e-300 + 0j)
         self.assertEqual(small[2], 0j)
-        self.assertTrue(np.signbit(small[3].imag))
+        self.assertTrue(np.signbit(small[3].real) and np.signbit(small[3].imag))  # a zero its own, as log1p(-0.0)
+        self.assertTrue(np.signbit(small[4].real) and not np.signbit(small[4].imag))
+        # past hypot's overflow (|1 + z| beyond the largest double), ln|1 + z| finite, where NumPy's is inf
+        large = log1p(1.5e308 + 1.5e308j)[0]
+        self.assertEqual((large.real, large.imag), (709.9482473405542, np.pi / 4))
         # z = −0.4 + 0.8i: 1 + z within an ulp of 0.6 + 0.8i, on the unit circle; its log's real part as small
         self.assertLess(abs(log1p(-0.4 + 0.8j)[0].real), 1e-16)
         self.assertEqual(log1p(-1 + 0j)[0].real, -np.inf)
