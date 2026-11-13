@@ -23,6 +23,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   from its own bidiagonal, where a QR factorisation came first, as LAPACK's dgesdd does near the square. One M1 Pro
   core: 39 × 40 80.5 → 57.3 µs (NumPy 51), complex 221 → 150 µs; 50 × 60 136 → 109 µs; 120 × 127 913 → 794 µs. Within
   a few ulps of the values through the QR factorisation.
+- **A complex product of one or two rows on arm64**, each row by `gemm_split`'s chains read where the operands lie,
+  where their parts were copied into four real products. M1 Pro, one core: 2 × 610 by 610 × 2 7.97 → 3.35 µs, by 610 ×
+  300 95 → 77 µs; eight cores, 2 × 2000 by 2000 × 2000 6.3 → 2.1 ms; `lstsq` of a complex 610 × 2 50.8 → 43.2 µs. The
+  same bits.
 
 ### Fixed
 

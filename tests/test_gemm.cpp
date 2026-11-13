@@ -232,6 +232,60 @@ TEST(complex_products_by_rows_give_the_ascending_sum)
                        }));
 }
 
+#ifdef NUMERICAL_NEON_COMPILED
+// A complex product of one or two rows on arm64 past the portable path, each row by gemm_split's chains: gemm_split's
+// bits, from C's own elements and from zero, complex double and float (a last complex float apart), a depth past one
+// block of split_depth, one thread and four.
+TEST(complex_products_of_one_or_two_rows_give_gemm_splits_bits)
+{
+  const auto check = []<typename C>(std::type_identity<C>) {
+                       bool ok {true};
+                       for (const std::size_t m : {std::size_t {1}, std::size_t {2}}) {
+                         for (const std::size_t n : {std::size_t {1}, std::size_t {3}, std::size_t {8}, std::size_t {41}, std::size_t {300}}) {
+                           for (const std::size_t k : {std::size_t {1}, std::size_t {2}, std::size_t {255}, std::size_t {600}}) {
+                             std::vector<C> a(m * k);
+                             std::vector<C> b(k * n);
+                             std::vector<C> c(m * n);
+                             using R = C::value_type;
+                             for (std::size_t i {0}; i < a.size(); ++i) { // sevenths: each product and sum rounded
+                               a[i] = entry<C>(i) / R {7};
+                             }
+                             for (std::size_t i {0}; i < b.size(); ++i) {
+                               b[i] = entry<C>((i * 7) + 3) / R {7};
+                             }
+                             for (std::size_t i {0}; i < c.size(); ++i) {
+                               c[i] = entry<C>((i * 5) + 2) / R {7};
+                             }
+                             for (const std::size_t threads : {std::size_t {1}, std::size_t {4}}) {
+                               numerical::set_max_threads(threads);
+                               std::vector<C> kept               {c};
+                               numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, kept.data(), n, numerical::detail::c_start::kept);
+                               std::vector<C> want               {c};
+                               numerical::detail::gemm_split(m, n, k, a.data(), k, b.data(), n, want.data(), n);
+                               std::vector<C> zero(m * n, C      {std::numeric_limits<typename C::value_type>::quiet_NaN(), 0}); // not read
+                               numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, zero.data(), n, numerical::detail::c_start::zero);
+                               std::vector<C> from_zero(m * n, C {});
+                               numerical::detail::gemm_split(m, n, k, a.data(), k, b.data(), n, from_zero.data(), n);
+                               for (std::size_t e {0}; e < m * n; ++e) {
+                                 ok = ok && same_bits(kept[e], want[e]) && same_bits(zero[e], from_zero[e]);
+                               }
+                             }
+                             numerical::set_max_threads(0);
+                           }
+                         }
+                       }
+                       return ok;
+                     };
+  for (const numerical::gemm_path path : {numerical::gemm_path::neon, numerical::gemm_path::amx}) {
+    if (numerical::limit_gemm_path(path) == path) {
+      EXPECT(check(std::type_identity<std::complex<double>> {}));
+      EXPECT(check(std::type_identity<std::complex<float>> {}));
+    }
+  }
+  (void)numerical::limit_gemm_path(numerical::gemm_path::amx);
+}
+#endif
+
 // A product of one to four rows of float, by blocks of columns on the threads where the x86-64 units run it: the
 // packed product's bits, a last block of columns narrower, one thread and four.
 TEST(float_products_of_a_few_rows_give_the_packed_bits)
