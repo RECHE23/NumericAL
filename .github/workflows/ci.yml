@@ -130,7 +130,7 @@ jobs:
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s "$RUNNER_TEMP"/unpacked/numeric_al-*/python/tests
 
   # The Linux wheels as the release builds them, x86-64 and aarch64, in their manylinux_2_28 images (glibc 2.28, GCC
-  # 14) and tested against NumPy for CPython 3.10 (2.2.6): the libm and the NumPy of the Ubuntu runners above are
+  # 14) and tested against the oldest CPython's NumPy: the libm and the NumPy of the Ubuntu runners above are
   # newer, and a result held to NumPy's to the bit differed under this glibc alone (its sincosf strays from its cosf
   # by an ulp), which no push but the release's wheels met.
   wheel-manylinux:
@@ -146,10 +146,10 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - name: "Build and test the cp310 manylinux ${{ matrix.arch }} wheel (cibuildwheel)"
+      - name: "Build and test the cp311 manylinux ${{ matrix.arch }} wheel (cibuildwheel)"
         run: pipx run cibuildwheel==4.3.1 --output-dir wheelhouse
         env:
-          CIBW_BUILD: "cp310-manylinux_${{ matrix.arch }}"
+          CIBW_BUILD: "cp311-manylinux_${{ matrix.arch }}"
 
   # The Python suite on arm64 Linux, built by GCC as the aarch64 wheels are. GCC fuses a multiply and an add
   # wherever a fused multiply-add exists, across statements: a result held to NumPy's to the bit (linspace)
