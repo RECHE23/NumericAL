@@ -1265,6 +1265,51 @@ TEST(a_complex_matrix_past_the_crossover_is_reduced_by_panels)
   }
 }
 
+// A matrix under 1.25 times as tall (or wide) as it is wide: its singular values from its own bidiagonal, where a QR
+// factorisation came first; within a few units in the last place of the values through its R, real and complex, tall
+// and wide, the same on one thread.
+TEST(singular_values_of_a_nearly_square_matrix_from_its_own_bidiagonal)
+{
+  using c = std::complex<double>;
+  std::uint64_t state {0x9e3779b97f4a7c15ULL};
+  const auto    draw  = [&state] {
+                          state = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+                          return (static_cast<double>(state >> 11U) * 0x1.0p-52) - 0.5;
+                        };
+  const auto agrees = [](const vector<double>& values, numerical::buffer<double> through_r) {
+                        double gap {0.0};
+                        for (std::size_t k {0}; k < values.size(); ++k) {
+                          gap = std::max(gap, std::abs(values[k] - through_r[k]));
+                        }
+                        return values.size() == through_r.size() && gap < 16.0 * std::numeric_limits<double>::epsilon() * through_r[0];
+                      };
+  for (const auto& [rows, cols] : {std::pair<std::size_t, std::size_t> {6, 5}, {5, 6}, {40, 39}, {39, 40}, {50, 41}}) {
+    std::vector<double> real_entries(rows * cols);
+    std::vector<c>      complex_entries(rows * cols);
+    for (std::size_t i {0}; i < rows * cols; ++i) {
+      real_entries[i]    = draw();
+      complex_entries[i] = c {draw(), draw()};
+    }
+    const matrix<double>      a    {rows, cols, real_entries};
+    const matrix<c>           z    {rows, cols, complex_entries};
+    const matrix<double>      at   {rows >= cols ? a : numerical::detail::adjoint(a)};
+    const matrix<c>           zt   {rows >= cols ? z : numerical::detail::adjoint(z)};
+    const std::size_t         tall {std::max(rows, cols)};
+    const std::size_t         n    {std::min(rows, cols)};
+    numerical::buffer<double> real_copy(at.begin(), at.end());
+    numerical::buffer<c>      complex_copy(zt.begin(), zt.end());
+    const vector<double>      values         {numerical::singular_values(a)};
+    const vector<double>      complex_values {numerical::singular_values(z)};
+    EXPECT(agrees(values, numerical::detail::square_singular_values(numerical::detail::householder_reflect(std::move(real_copy), tall, n, false).r, n)));
+    EXPECT(agrees(complex_values,
+                  numerical::detail::square_singular_values(numerical::detail::householder_reflect(std::move(complex_copy), tall, n, false).r, n)));
+    numerical::set_max_threads(1);
+    EXPECT(numerical::singular_values(a) == values);
+    EXPECT(numerical::singular_values(z) == complex_values);
+    numerical::set_max_threads(0);
+  }
+}
+
 // A wide or complex matrix decomposes too: U is m × k and V n × k with k = min(m, n), and A = U Σ Vᴴ.
 TEST(svd_of_a_wide_and_of_a_complex_matrix)
 {

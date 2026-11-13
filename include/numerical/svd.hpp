@@ -507,13 +507,15 @@ namespace numerical {
     }
 
     /*!
-     * \brief Reduces the square `n × n` row-major \p b to real upper-bidiagonal form, `B = U_b D V_bᴴ` with
-     *        `D` real, by Householder reflections alternately from the left and the right (Golub–Kahan).
+     * \brief Reduces the `rows × n` row-major \p b (`rows ≥ n`) to real upper-bidiagonal form, `B = U_b D V_bᴴ` with
+     *        `D` real and `n × n`, by Householder reflections alternately from the left and the right (Golub–Kahan,
+     *        LAPACK's dgebd2), the left ones `rows − k` long; the bases formed for a square \p b alone.
      *
      * A complex entry left on the bidiagonal is turned real by a unit phase on its row or column, as LAPACK
      * does, so the iteration that follows needs only real rotations.
      * \param[in,out] b  The matrix; destroyed.
-     * \param[in]     n  Its order.
+     * \param[in]     rows Its rows, at least \p n; \p n where \p form.
+     * \param[in]     n  Its columns.
      * \param[out]    d  The diagonal (size \p n).
      * \param[out]    e  The superdiagonal in `e[0…n-2]`, and `e[n-1] = 0` (size \p n).
      * \param[out]    ut `U_bᵀ`, row-major: its rows are the columns of `U_b` (left as it is without \p form).
@@ -522,6 +524,7 @@ namespace numerical {
      */
     template <typename T>
     void bidiagonalize_unblocked(buffer<T>&           b,
+                                 std::size_t          rows,
                                  std::size_t          n,
                                  buffer<double>&      d,
                                  buffer<double>&      e,
@@ -536,8 +539,8 @@ namespace numerical {
       buffer<T>                   left_phase(n, T  {1});
       buffer<T>                   right_phase(n, T {1});
       for (std::size_t k {0}; k < n; ++k) {
-        buffer<T> x(n - k, T {}); // column k from the diagonal down
-        for (std::size_t i {k}; i < n; ++i) {
+        buffer<T> x(rows - k, T {}); // column k from the diagonal down
+        for (std::size_t i {k}; i < rows; ++i) {
           x[i - k] = b[(i * n) + k];
         }
         if (scaled_norm(x.data() + 1, x.size() - 1) > 0.0) { // as LAPACK's dgebd2: Hᴴ = I − τ̄ w wᴴ from the left
@@ -561,7 +564,7 @@ namespace numerical {
         }
         if (y.size() > 1 && scaled_norm(y.data() + 1, y.size() - 1) > 0.0) {
           const auto [beta, tau] {larfg_in_place(y)};
-          parallel_for(n - k - 1, 2 * y.size(), [&](std::size_t r) { // row ← row (I − τ y yᴴ); rows above k are zero there
+          parallel_for(rows - k - 1, 2 * y.size(), [&](std::size_t r) { // row ← row (I − τ y yᴴ); rows above k are zero there
                          T*      row   {b.data() + ((k + 1 + r) * n) + k + 1};
                          const T scale {tau * dot_product(row, y.data(), y.size())};
                          for (std::size_t j {0}; j < y.size(); ++j) {
@@ -573,7 +576,7 @@ namespace numerical {
           right_tau[k]       = tau;
         }
         right_phase[k] = conj_of(phase_of(b[(k * n) + k + 1])); // column k+1 times it: |b_k,k+1| above
-        for (std::size_t i {k}; i < n; ++i) {
+        for (std::size_t i {k}; i < rows; ++i) {
           b[(i * n) + k + 1] *= right_phase[k];
         }
         e[k] = static_cast<double>(std::abs(b[(k * n) + k + 1]));
@@ -584,6 +587,19 @@ namespace numerical {
       if (form) {
         form_bidiagonal_bases(left, std::move(right), left_tau, right_tau, left_phase, right_phase, n, ut, vt);
       }
+    }
+
+    //! \brief \ref bidiagonalize_unblocked of the square `n × n` row-major \p b.
+    template <typename T>
+    void bidiagonalize_unblocked(buffer<T>&           b,
+                                 std::size_t          n,
+                                 buffer<double>&      d,
+                                 buffer<double>&      e,
+                                 buffer<T>&           ut,
+                                 buffer<T>&           vt,
+                                 bool                 form)
+    {
+      bidiagonalize_unblocked(b, n, n, d, e, ut, vt, form);
     }
 
     //! \brief \ref bidiagonalize_unblocked, for any `T` the panels do not take (a complex `long double`).
@@ -2024,20 +2040,43 @@ namespace numerical {
      *        iteration (\ref bidiagonal_qr) where dqds does not converge within \p sweeps steps per value.
      * \throws convergence_error If neither converges within its bound (not observed).
      */
+    /*!
+     * \brief The singular values of the `rows × n` row-major \p b (`rows ≥ n`), descending, as \ref
+     *        square_singular_values gives them for a square one; a tall one's Golub–Kahan bidiagonal reduced from \p b
+     *        itself (\ref bidiagonalize_unblocked), where a QR
+     *        factorisation first costs about the bidiagonalisation's own time; for an order under \ref
+     *        bidiagonal_crossover and fewer than 1.25 times as many rows (LAPACK's dgesdd, 1.6: here a complex 100 ×
+     *        159 took 1.27 times as long, a real one 1.06). One M1 Pro core, 39 × 40 80.5 → 57.3 µs (NumPy 51),
+     *        complex 221 → 150 µs; 50 × 60 136 → 109 µs; 120 × 127 913 → 794 µs.
+     */
     template <typename T>
-    [[nodiscard]] buffer<double> square_singular_values(buffer<T>      b,
-                                                        std::size_t    n,
-                                                        qd_index       sweeps)
+    [[nodiscard]] buffer<double> tall_singular_values(buffer<T>   b,
+                                                      std::size_t rows,
+                                                      std::size_t n,
+                                                      qd_index    sweeps = dqds_sweeps)
     {
       buffer<double> d(n, double {});
       buffer<double> e(n, double {});
       buffer<T>      none;
       buffer<T>      none_too;
-      bidiagonalize(b, n, d, e, none, none_too, false);
+      if (rows == n) {
+        bidiagonalize(b, n, d, e, none, none_too, false);
+      }
+      else {
+        bidiagonalize_unblocked(b, rows, n, d, e, none, none_too, false);
+      }
       if (!dqds_singular_values(d, e, n, sweeps)) {
         bidiagonal_qr(d, e, none, none_too, n, svd_qr_steps_per_value * n);
       }
       return d;
+    }
+
+    template <typename T>
+    [[nodiscard]] buffer<double> square_singular_values(buffer<T>      b,
+                                                        std::size_t    n,
+                                                        qd_index       sweeps)
+    {
+      return tall_singular_values(std::move(b), n, n, sweeps);
     }
 
     /*!
@@ -2173,8 +2212,11 @@ namespace numerical {
                              }
                            });
     }
-    buffer<T>      r {rows == cols ? std::move(entries) : detail::householder_reflect(std::move(entries), rows, cols, false).r};
-    buffer<double> d {detail::square_singular_values(std::move(r), cols)};
+    const bool     direct {rows != cols && cols < detail::bidiagonal_crossover && rows * 4 < cols * 5}; // under 1.25 times
+    buffer<double> d      {direct ? detail::tall_singular_values(std::move(entries), rows, cols)
+                             : detail::square_singular_values(rows == cols ? std::move(entries)
+                                                                           : detail::householder_reflect(std::move(entries), rows, cols, false).r,
+                                                              cols)};
     for (double& value : d) {
       value *= scale;
     }

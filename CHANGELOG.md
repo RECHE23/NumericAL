@@ -19,6 +19,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **A float64 product of few rows the AMX declines** runs the plain loop the NEON tile chooses, where the AMX path
   packed it for that tile: one M1 Pro core, 8 to 15 rows at a depth of 8 to 64, 0.34 to 0.74 of the time (8 × 8 by 8
   × 1000 2.9× faster). The same bits.
+- **The singular values of a matrix under 1.25 times as tall as wide** (or wide as tall), of an order under 128,
+  from its own bidiagonal, where a QR factorisation came first, as LAPACK's dgesdd does near the square. One M1 Pro
+  core: 39 × 40 80.5 → 57.3 µs (NumPy 51), complex 221 → 150 µs; 50 × 60 136 → 109 µs; 120 × 127 913 → 794 µs. Within
+  a few ulps of the values through the QR factorisation.
 
 ### Fixed
 
