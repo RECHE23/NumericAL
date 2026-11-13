@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.14 — 2026-11-13
+
 ### Changed
 
 - **`exp`, `expm1`, `tanh` and `arctan` of float64 in vectors on x86-64 with GCC** (the Linux wheels), where GCC kept
