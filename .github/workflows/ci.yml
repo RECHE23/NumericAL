@@ -129,19 +129,27 @@ jobs:
           cd "$RUNNER_TEMP"
           "$RUNNER_TEMP/venv/bin/python" -m unittest discover -s "$RUNNER_TEMP"/unpacked/numeric_al-*/python/tests
 
-  # The x86-64 Linux wheel as the release builds it, in its manylinux_2_28 image (glibc 2.28, GCC 14) and tested
-  # against NumPy for CPython 3.10 (2.2.6): the libm and the NumPy of the Ubuntu runners above are newer, and a result
-  # held to NumPy's to the bit differed under this glibc alone (its sincosf strays from its cosf by an ulp), which
-  # no push but the release's wheels met.
+  # The Linux wheels as the release builds them, x86-64 and aarch64, in their manylinux_2_28 images (glibc 2.28, GCC
+  # 14) and tested against NumPy for CPython 3.10 (2.2.6): the libm and the NumPy of the Ubuntu runners above are
+  # newer, and a result held to NumPy's to the bit differed under this glibc alone (its sincosf strays from its cosf
+  # by an ulp), which no push but the release's wheels met.
   wheel-manylinux:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            arch: x86_64
+          - os: ubuntu-24.04-arm
+            arch: aarch64
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v6
-      - name: "Build and test the cp310 manylinux x86_64 wheel (cibuildwheel)"
+      - name: "Build and test the cp310 manylinux ${{ matrix.arch }} wheel (cibuildwheel)"
         run: pipx run cibuildwheel==4.3.1 --output-dir wheelhouse
         env:
-          CIBW_BUILD: "cp310-manylinux_x86_64"
+          CIBW_BUILD: "cp310-manylinux_${{ matrix.arch }}"
 
   # The Python suite on arm64 Linux, built by GCC as the aarch64 wheels are. GCC fuses a multiply and an add
   # wherever a fused multiply-add exists, across statements: a result held to NumPy's to the bit (linspace)
