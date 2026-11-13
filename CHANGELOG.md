@@ -13,6 +13,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **A matrix of short rows times a vector**: the rows' remainders past the vectors' blocks summed four rows side by
   side, each in its order, and no empty block reduced. One M1 Pro core: 1000 × 4 float64 2.42 → 1.15 µs (NumPy 1.13),
   191 × 13 float32 1.67 → 0.84 µs (NumPy 0.70), 749 × 11 float64 2.06 → 1.67 µs. The same bits.
+- **A float64 vector times a matrix on arm64**: a block of the result held in registers through every row of the
+  matrix, where each row read and wrote the whole result. M1 Pro, one core: 406 × 583 50.5 → 35.9 µs, 1000 × 1000 215
+  → 167 µs, 64 × 2000 24.3 → 16.2 µs; eight threads, 1000 × 1000 133 → 90 µs (NumPy 112). The same bits.
 
 ### Fixed
 
