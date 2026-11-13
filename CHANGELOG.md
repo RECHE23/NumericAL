@@ -8,6 +8,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+
+- **A matrix of short rows times a vector**: the rows' remainders past the vectors' blocks summed four rows side by
+  side, each in its order, and no empty block reduced. One M1 Pro core: 1000 × 4 float64 2.42 → 1.15 µs (NumPy 1.13),
+  191 × 13 float32 1.67 → 0.84 µs (NumPy 0.70), 749 × 11 float64 2.06 → 1.67 µs. The same bits.
+
 ### Fixed
 
 - **`log1p` of a complex zero** is that zero, its signs kept (`-0 + 0j` gives `-0 + 0j`), as `log1p` of a real −0,

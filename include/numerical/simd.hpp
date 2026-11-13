@@ -204,7 +204,7 @@ namespace numerical::detail {
       }
     }
     T total {};
-    for (std::size_t l {0}; l < lanes; ++l) {
+    for (std::size_t l {0}; done != 0 && l < lanes; ++l) { // no block read: the lanes' +0s leave +0
       for (std::size_t k {0}; k < width; ++k) {
         total += sum[l][k];
       }
@@ -303,7 +303,7 @@ namespace numerical::detail {
    *        each summed exactly as \ref dot_product sums it (its lanes, their reduction, its remainder), so each is
    *        that dot product to the bit; the four share each load of \p x, and their sixteen chains keep the units
    *        busy where one row's four waited on their last addition (a matrix of order 256 times a vector on one
-   *        arm64 core: 10.8 → 8.2 µs).
+   *        arm64 core: 10.8 → 8.2 µs); their remainders too, side by side.
    */
   template <native_scalar T>
   void row_dots(const T*    m,
@@ -334,18 +334,23 @@ namespace numerical::detail {
           }
         }
       }
-      for (std::size_t r {0}; r < group; ++r) {
-        T total {};
-        for (std::size_t l {0}; l < lanes; ++l) {
-          for (std::size_t k {0}; k < width; ++k) {
-            total += sum[r][l][k];
+      std::array<T, group> total {};
+      for (std::size_t l {0}; done != 0 && l < lanes; ++l) { // as dot_product's, the four rows side by side
+        for (std::size_t k {0}; k < width; ++k) {
+#  pragma GCC unroll 4
+          for (std::size_t r {0}; r < group; ++r) {
+            total[r] += sum[r][l][k];
           }
         }
-        const T* const row {m + ((r0 + r) * ld)};
-        for (std::size_t i {done}; i < count; ++i) {
-          total += row[i] * x[i];
+      }
+      for (std::size_t i {done}; i < count; ++i) { // the remainders' four chains side by side, each in its order
+#  pragma GCC unroll 4
+        for (std::size_t r {0}; r < group; ++r) {
+          total[r] += m[((r0 + r) * ld) + i] * x[i];
         }
-        out[r0 + r] = total;
+      }
+      for (std::size_t r {0}; r < group; ++r) {
+        out[r0 + r] = total[r];
       }
     }
     for (; r0 < rows; ++r0) {
@@ -554,7 +559,7 @@ namespace numerical::detail {
       }
     }
     T total {};
-    for (std::size_t l {0}; l < lanes; ++l) {
+    for (std::size_t l {0}; done != 0 && l < lanes; ++l) { // as dot_product's
       for (std::size_t k {0}; k < width; ++k) {
         total += sum[l][k];
       }
