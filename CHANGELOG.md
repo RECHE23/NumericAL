@@ -16,6 +16,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **A float64 vector times a matrix on arm64**: a block of the result held in registers through every row of the
   matrix, where each row read and wrote the whole result. M1 Pro, one core: 406 × 583 50.5 → 35.9 µs, 1000 × 1000 215
   → 167 µs, 64 × 2000 24.3 → 16.2 µs; eight threads, 1000 × 1000 133 → 90 µs (NumPy 112). The same bits.
+- **A float64 product of few rows the AMX declines** runs the plain loop the NEON tile chooses, where the AMX path
+  packed it for that tile: one M1 Pro core, 8 to 15 rows at a depth of 8 to 64, 0.34 to 0.74 of the time (8 × 8 by 8
+  × 1000 2.9× faster). The same bits.
 
 ### Fixed
 

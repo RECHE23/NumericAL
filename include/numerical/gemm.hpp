@@ -3997,7 +3997,8 @@ namespace numerical::detail {
    *        less whatever the shape (0.5 to 0.6 up to 2000 × 2000), at 64 or less for 64 rows or fewer (0.4 to 0.9; the
    *        same under GCC 14 and on eight threads); the AVX2 tile for 16 rows or fewer to a depth of 64, or 32 rows to
    *        32 (0.2 to 0.8, six cores too), as wide as \ref plain_loop_least_width. The AMX's packing pays from 16
-   *        rows.
+   *        rows; a product it declines (`amx_suits`) runs the NEON tile's rule, where it went packed on that tile
+   *        (one M1 Pro core, 8 to 15 rows to a depth of 8 to 64: 0.34 to 0.74 of the time).
    */
   [[nodiscard]] inline bool plain_loop_pays(std::size_t m,
                                             std::size_t n,
@@ -4005,7 +4006,11 @@ namespace numerical::detail {
   {
     [[maybe_unused]] const gemm_path path {gemm_path_current()};
 #ifdef NUMERICAL_NEON_COMPILED
-    if (path == gemm_path::neon) {
+    bool neon_tile                        {path == gemm_path::neon};
+#  ifdef NUMERICAL_AMX_COMPILED
+    neon_tile = neon_tile || (path == gemm_path::amx && !amx_suits(m, n, k)); // a product the AMX declines: the NEON tile's
+#  endif
+    if (neon_tile) {
       return k <= 16 || (m <= 64 && k <= 64);
     }
 #endif
