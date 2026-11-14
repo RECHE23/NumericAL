@@ -3355,14 +3355,14 @@ namespace numerical {
      *        last points and values weighted by √2 as SciPy's. The elements of \p source are read where they lie.
      */
     template <std::floating_point R>
-    [[nodiscard]] tensor<R> trig_transform(const fft_source<R>&       source,
-                                           trig_family                family,
-                                           int                        type,
-                                           std::optional<std::size_t> n,
-                                           std::ptrdiff_t             axis,
-                                           fft_norm                   norm,
-                                           std::optional<bool>        orthogonalize,
-                                           bool                       inverse)
+    [[nodiscard]] tensor<R> trig_transform(const fft_source<R>&              source,
+                                           trig_family                       family,
+                                           int                               type,
+                                           const std::optional<std::size_t>& n,
+                                           std::ptrdiff_t                    axis,
+                                           fft_norm                          norm,
+                                           std::optional<bool>               orthogonalize,
+                                           bool                              inverse)
     {
       using C = std::complex<R>;
       const std::string name {std::string {inverse ? "i" : ""} + (family == trig_family::cosine ? "dct" : "dst")};
@@ -3454,14 +3454,14 @@ namespace numerical {
 
     //! \brief \ref trig_transform of the tensor \p a.
     template <std::floating_point R>
-    [[nodiscard]] tensor<R> trig_transform(const tensor<R>&           a,
-                                           trig_family                family,
-                                           int                        type,
-                                           std::optional<std::size_t> n,
-                                           std::ptrdiff_t             axis,
-                                           fft_norm                   norm,
-                                           std::optional<bool>        orthogonalize,
-                                           bool                       inverse)
+    [[nodiscard]] tensor<R> trig_transform(const tensor<R>&                  a,
+                                           trig_family                       family,
+                                           int                               type,
+                                           const std::optional<std::size_t>& n,
+                                           std::ptrdiff_t                    axis,
+                                           fft_norm                          norm,
+                                           std::optional<bool>               orthogonalize,
+                                           bool                              inverse)
     {
       return trig_transform(source_of(a), family, type, n, axis, norm, orthogonalize, inverse);
     }
