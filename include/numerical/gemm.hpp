@@ -1133,9 +1133,41 @@ namespace numerical::detail {
                     std::size_t cols,
                     T*          out)
   {
+    static_assert(Nr % 2 == 0, "a sliver's columns go by pairs");
     for (std::size_t jr {0}; jr < cols; jr += Nr) {
       const std::size_t width  {std::min(Nr, cols - jr)};
       T*                sliver {out + (jr * kc)};
+      if (width == Nr) {
+        // Two rows of Bᵀ at once, each step two neighbours of a sliver's row: one column at a time wrote one element
+        // per line of the sliver (order 112, twelve columns: 7.7 µs, by pairs of rows 4.8, by 2 × 2 blocks of doubles 3.9).
+        for (std::size_t j {0}; j < Nr; j += 2) {
+          const T* const first  {bt + ((jr + j) * ldbt)};
+          const T* const second {first + ldbt};
+          std::size_t    p      {0};
+          if constexpr (std::same_as<T, double>) {
+#if defined(NUMERICAL_NEON_COMPILED)
+            for (; p + 2 <= kc; p += 2) {
+              const float64x2_t x {vld1q_f64(first + p)};
+              const float64x2_t y {vld1q_f64(second + p)};
+              vst1q_f64(sliver + (p * Nr) + j, vzip1q_f64(x, y));
+              vst1q_f64(sliver + ((p + 1) * Nr) + j, vzip2q_f64(x, y));
+            }
+#elif defined(NUMERICAL_X86_COMPILED)
+            for (; p + 2 <= kc; p += 2) {
+              const __m128d x {_mm_loadu_pd(first + p)};
+              const __m128d y {_mm_loadu_pd(second + p)};
+              _mm_storeu_pd(sliver + (p * Nr) + j, _mm_unpacklo_pd(x, y));
+              _mm_storeu_pd(sliver + ((p + 1) * Nr) + j, _mm_unpackhi_pd(x, y));
+            }
+#endif
+          }
+          for (; p < kc; ++p) {
+            sliver[(p * Nr) + j]     = first[p];
+            sliver[(p * Nr) + j + 1] = second[p];
+          }
+        }
+        continue;
+      }
       for (std::size_t j {0}; j < Nr; ++j) {
         const T* const row {bt + ((jr + j) * ldbt)};
         for (std::size_t p {0}; p < kc; ++p) {
@@ -1166,13 +1198,15 @@ namespace numerical::detail {
                                              std::size_t& ld_out)
   {
     scratch.resize(rows * cols);
-    for (std::size_t j {0}; j < cols; ++j) {
-      for (std::size_t i {0}; i < rows; ++i) {
-        scratch[(i * cols) + j] = x[(j * ld) + i];
-      }
-    }
+    T* const out {scratch.data()};
+    // By pieces (transpose_walk): along the rows of x, a power of two of bytes apart, the copy's rows evicted one
+    // another (one arm64 core: 256 × 256 doubles 171 → 25 µs, 128 × 128 complex128 35 → 7.7; x86-64, GCC, 128 × 128
+    // doubles 33 → 7.9, 64 × 64 complex128 9.1 → 3.2).
+    transpose_walk(0, rows, 0, cols, transpose_piece(ld * sizeof(T), cols * sizeof(T)), [out, x, ld, cols](std::size_t i, std::size_t j) {
+                     out[(i * cols) + j] = x[(j * ld) + i];
+                   });
     ld_out = cols;
-    return scratch.data();
+    return out;
   }
 
   //! \brief B as \ref gemm_packed reads it by default: row-major, `k × n`, its rows `ldb` apart.
@@ -4397,6 +4431,27 @@ namespace numerical::detail {
   }
 
   /*!
+   * \brief Whether \ref gemm runs a complex product of \p m rows, B `k × n`, a few rows at a time with B read by rows
+   *        (`few_rows_complex_x86`, `few_rows_complex_neon`), on a path past the portable one.
+   */
+  [[nodiscard]] inline bool few_complex_rows([[maybe_unused]] std::size_t m,
+                                             [[maybe_unused]] std::size_t n,
+                                             [[maybe_unused]] std::size_t k) noexcept
+  {
+    if (m == 0 || n == 0 || k == 0) {
+      return false;
+    }
+#if defined(NUMERICAL_X86_COMPILED)
+    const gemm_path path {gemm_path_current()};
+    return (m <= 2 || (m <= narrow_group && k * n >= few_rows_complex_least)) && (path == gemm_path::avx2 || path == gemm_path::avx512);
+#elif defined(NUMERICAL_NEON_COMPILED)
+    return m <= 2;
+#else
+    return false;
+#endif
+  }
+
+  /*!
    * \brief `C += A·B`, every element of C summed in ascending order of the depth.
    *
    * Products of fewer than \ref gemm_packed_threshold multiply-adds, or shallower than \ref gemm_min_depth, run
@@ -4437,8 +4492,7 @@ namespace numerical::detail {
     if constexpr (split_complex<T>) {
       if (gemm_path_current() != gemm_path::portable) {
 #ifdef NUMERICAL_X86_COMPILED
-        if (const gemm_path path {gemm_path_current()}; m != 0 && (m <= 2 || (m <= narrow_group && k * n >= few_rows_complex_least)) && n != 0 && k != 0
-            && (path == gemm_path::avx2 || path == gemm_path::avx512)) {
+        if (few_complex_rows(m, n, k)) {
           static_assert(narrow_group == 4, "the switch below names each count of rows up to narrow_group");
           switch (m) { // a few rows, B's rows streamed by chunks of columns on the threads: the tile's bits
             case 1: few_rows_complex_x86<1>(n, k, a, lda, b, ldb, c, ldc, start); return;
@@ -4449,7 +4503,7 @@ namespace numerical::detail {
         }
 #endif
 #ifdef NUMERICAL_NEON_COMPILED
-        if (m != 0 && m <= 2 && n != 0 && k != 0) { // one or two rows, each by gemm_split's chains: its bits
+        if (few_complex_rows(m, n, k)) { // one or two rows, each by gemm_split's chains: its bits
           few_rows_complex_neon(m, n, k, a, lda, b, ldb, c, ldc, start);
           return;
         }
@@ -4499,10 +4553,11 @@ namespace numerical::detail {
                           const double* b,
                           std::size_t   ldb,
                           double*       c,
-                          std::size_t   ldc)
+                          std::size_t   ldc,
+                          c_start       start)
   {
-    if (!gemm_double_elsewhere<B, A>(m, n, k, a, lda, b, ldb, c, ldc)) {
-      gemm_packed<vector_tile_kernel<double>, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+    if (!gemm_double_elsewhere<B, A>(m, n, k, a, lda, b, ldb, c, ldc, start)) {
+      gemm_packed<vector_tile_kernel<double>, double, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
     }
   }
 
@@ -4517,10 +4572,11 @@ namespace numerical::detail {
                           const float* b,
                           std::size_t  ldb,
                           float*       c,
-                          std::size_t  ldc)
+                          std::size_t  ldc,
+                          c_start      start)
   {
-    if (!gemm_float_elsewhere<B, A>(m, n, k, a, lda, b, ldb, c, ldc)) {
-      gemm_packed<vector_tile_kernel<float>, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+    if (!gemm_float_elsewhere<B, A>(m, n, k, a, lda, b, ldb, c, ldc, start)) {
+      gemm_packed<vector_tile_kernel<float>, float, B, A>(m, n, k, a, lda, b, ldb, c, ldc, nullptr, start);
     }
   }
 
@@ -4536,9 +4592,10 @@ namespace numerical::detail {
                           const T*    b,
                           std::size_t ldb,
                           T*          c,
-                          std::size_t ldc)
+                          std::size_t ldc,
+                          c_start     start)
   {
-    gemm_large_complex<B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+    gemm_large_complex<B, A>(m, n, k, a, lda, b, ldb, c, ldc, start);
   }
 
   /*!
@@ -4547,8 +4604,9 @@ namespace numerical::detail {
    *        `transb`, a NumPy array in Fortran order) needs no copy of it. The tiles are \ref gemm's, the operands
    *        packed (or, through `gemm_split`, copied into their parts) from where they lie, and so are the bits; a
    *        product \ref gemm runs in the plain loop copies a transposed operand row-major and runs there, small as it
-   *        is. \p start says what C holds (\ref c_start): the complex tiles write C fresh where it holds nothing; the
-   *        other routes zero it first.
+   *        is. \p start says what C holds (\ref c_start), passed on to the route as \ref gemm passes it: C zeroed
+   *        apart first cost a pass over it, as long as the product's own at a shallow depth (1000 × 1000 by depth 4,
+   *        one arm64 thread: 307 µs copying the transpose for \ref gemm, 402 read in place).
    */
   template <typename A,
             typename B,
@@ -4566,6 +4624,21 @@ namespace numerical::detail {
   {
     if constexpr (split_complex<T>) {
       if (gemm_path_current() != gemm_path::portable) {
+#ifdef NUMERICAL_NEON_COMPILED
+        if (few_complex_rows(m, n, k)) {
+          // gemm's route, which reads B by rows, on copies: two rows of complex128 by a transpose of order 256 took
+          // 196 µs read in place, 116 copied (one arm64 core). The x86-64 tiles read it in place faster than it is
+          // copied (one AVX-512 core, the same product 84 against 153 µs).
+          buffer<T>      a_rows_copy;
+          buffer<T>      b_rows_copy;
+          std::size_t    a_ld  {};
+          std::size_t    b_ld  {};
+          const T* const left  {A::rows_of(a, lda, m, k, a_rows_copy, a_ld)};
+          const T* const right {B::rows_of(b, ldb, k, n, b_rows_copy, b_ld)};
+          gemm(m, n, k, left, a_ld, right, b_ld, c, ldc, start);
+          return;
+        }
+#endif
         if (m != 0 && n != 0 && k != 0) {
           gemm_large_complex<B, A>(m, n, k, a, lda, b, ldb, c, ldc, start);
         }
@@ -4575,20 +4648,20 @@ namespace numerical::detail {
         return;
       }
     }
-    if (start == c_start::zero) { // these routes add to C
-      zero_c(c, ldc, m, n);
-    }
-    if (k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
+    // The plain loop where gemm runs it (by_rows too), the same route whatever the contraction: under GCC's default
+    // -ffp-contract=fast the portable path's vector tile and the plain loop round apart, and four rows of complex128
+    // by a transpose had other bits than by its copy.
+    if (by_rows(m, n, k) || k < gemm_min_depth || m * n < ((gemm_packed_threshold + k) - 1) / k) {
       buffer<T>      a_rows_copy;
       buffer<T>      b_rows_copy;
       std::size_t    a_ld  {};
       std::size_t    b_ld  {};
       const T* const left  {A::rows_of(a, lda, m, k, a_rows_copy, a_ld)};
       const T* const right {B::rows_of(b, ldb, k, n, b_rows_copy, b_ld)};
-      gemm_rows(m, n, k, left, a_ld, right, b_ld, c, ldc);
+      gemm_rows(m, n, k, left, a_ld, right, b_ld, c, ldc, start);
       return;
     }
-    gemm_large_layouts<B, A>(m, n, k, a, lda, b, ldb, c, ldc);
+    gemm_large_layouts<B, A>(m, n, k, a, lda, b, ldb, c, ldc, start);
   }
 
   //! \brief \ref gemm_layouts with B given as `Bᵀ` (\p bt, `n × k`, \p ldbt apart).

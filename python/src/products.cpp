@@ -84,16 +84,10 @@ PyObject* tensor_matmul(PyObject* self, PyObject* other)
             return nullptr;
         }
         // A view (a transpose) read where it lies, as a column-major NumPy array is, by the products' kernels for
-        // that layout: the same bits as its copy's. Not a matrix of rows times a transpose, but for its own transpose
-        // past gram_sized (A·Aᵀ by its triangle): packing a B read by columns cost more than copying it by tiles (M1 Pro, order 112: 22.2 against
-        // 19.9 µs), where a transpose on the left, or times a vector, is read faster than copied (order 100, the
-        // transpose times B 20.8 → 18.6 µs, a vector times the transpose 5.9 → 2.2).
+        // that layout: the same bits as its copy's, and no copy made (M1 Pro, one thread: a transpose times B of
+        // order 100 20.8 → 18.6 µs, a vector times the transpose 5.9 → 2.2, A times a transpose of order 112 25.3 → 21.2).
         const auto is_view = [](const any_tensor& t) { return std::visit([](const auto& x) { return !x.contiguous(); }, t); };
-        const auto lying   = [](const any_tensor& t) { return std::visit([](const auto& x) { return static_cast<const void*>(x.lying().data()); }, t); };
-        const bool matrix {shape_of(*a).size() == 2};
-        const bool gram {matrix && lying(*a) == lying(*b) && gram_sized(shape_of(*a)[0], shape_of(*a)[1])};
-        const bool rows_times_transpose {matrix && !is_view(*a) && shape_of(*a)[0] > 1 && !gram};
-        if ((is_view(*a) || is_view(*b)) && !rows_times_transpose) {
+        if (is_view(*a) || is_view(*b)) {
             if (const std::optional<PyObject*> product {borrowed_product(self, other)}) {
                 return *product;
             }

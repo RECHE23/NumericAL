@@ -500,11 +500,14 @@ namespace {
 // Either operand given transposed: the plain loop's small products, the tiles' (partial slivers of A and B, several
 // panels of depth and blocks of columns), and for complex numbers gemm_split's copies of the parts on either side
 // of its choice, on every path this machine runs, in each of the four types; an empty product leaves C as it is.
+// Four rows by an odd depth run gemm's plain loop where GCC's by_rows says so; one or two complex rows its few-rows
+// route on copies; a transpose of 256 rows, 2 KiB apart in complex64, is copied by pieces; a depth of 3, shallow.
 TEST(transposed_operands_give_gemm_s_bits_on_every_path)
 {
   for (const int which : {0, 1, 2}) {
     for (const auto& [m, n, k] : {std::array<std::size_t, 3> {3, 4, 5}, {7, 1, 64}, {64, 64, 64}, {129, 101, 300}, {31, 15, 40},
-                                  {20, 1030, 260}, {200, 9, 70}, {2, 600, 300}, {0, 4, 5}, {3, 0, 5}, {3, 4, 0}}) {
+                                  {20, 1030, 260}, {200, 9, 70}, {2, 600, 300}, {0, 4, 5}, {3, 0, 5}, {3, 4, 0}, {4, 7, 300},
+                                  {4, 33, 129}, {1, 64, 64}, {2, 256, 256}, {8, 1000, 3}}) {
       EXPECT(on_every_path([&] { return transposed_operands_equal_gemm<double>(m, n, k, which); }));
       EXPECT(on_every_path([&] { return transposed_operands_equal_gemm<float>(m, n, k, which); }));
       EXPECT(on_every_path([&] { return transposed_operands_equal_gemm<std::complex<double>>(m, n, k, which); }));

@@ -10,11 +10,18 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
-- **A product with a transpose reads it where it lies**: `a.T @ b`, `a.T @ a`, `x @ a.T`, `a.T @ x` of Tensors run the
-  kernels a column-major NumPy array takes, without copying the view. M1 Pro: `a.T @ b` of order 64 6.4 → 4.6 µs, 128
-  25.8 → 21.3 µs; `x @ a.T` of order 1000 373 → 57 µs; `a.T @ x` 223 → 69 µs; `a.T @ a` of order 512 616 → 362 µs. A
-  matrix times another's transpose (`a @ b.T`) still copies it, packing a matrix read by columns costing more there.
-  The same bits.
+- **A product with a transpose reads it where it lies**: `a @ b.T`, `a.T @ b`, `a.T @ a`, `x @ a.T`, `a.T @ x` of
+  Tensors run the kernels a column-major NumPy array takes, without copying the view. M1 Pro, one thread: `a @ b.T` of
+  order 64 6.8 → 4.6 µs (float32 6.0 → 3.3), 4 × 1000 by 1000 × 1000 864 → 381 µs; `a.T @ b` of order 64 6.4 → 4.6 µs;
+  `x @ a.T` of order 1000 373 → 57 µs; `a.T @ x` 223 → 69 µs; `a.T @ a` of order 512 616 → 362 µs. The same bits.
+- **A product by a transpose read in place** (`dgemm_` and kin with `transb`, a Fortran-ordered NumPy right operand,
+  `a @ b.T`): its slivers packed two rows of the transpose at a time, by 2 × 2 blocks of doubles; C written by the
+  route itself rather than zeroed first, which cost a pass over C as long as a shallow product; one or two complex
+  rows on arm64 by the rows of a copy, as a plain product runs them; and the transposing copies by square pieces,
+  where rows a power of two of bytes apart evicted one another. One core, float64 of order 128: M1 Pro 31.0 → 25.7 µs,
+  x86-64 AVX-512 61.1 → 51.7; float32 order 128 18.7 → 12.3 µs (M1 Pro); two complex128 rows by order 256 on arm64
+  196 → 116 µs. Where a product runs gemm's plain loop, so does its transposed form (`by_rows` too), the same bits under
+  GCC's default `-ffp-contract=fast` as well.
 - **`np.asarray` and `np.from_dlpack` of a transpose** read it in the Tensor's buffer along its strides, read-only,
   where they copied it: 1000 × 1000 140 → 1.3 µs.
 - **A Gram product `a @ a.T` or `a.T @ a`** of a column-major NumPy array (or a transpose) runs by its triangle from
