@@ -799,6 +799,63 @@ namespace
 
 namespace
 {
+  // Whether a complex product of m × k by k × n, A row-major (`transposed` false) or given as its transpose, adds the
+  // same bits to a C holding values on one thread, on three and on every one.
+  template <typename T>
+  bool narrow_product_same_on_any_threads(std::size_t m,
+                                          std::size_t n,
+                                          std::size_t k,
+                                          bool        transposed)
+  {
+    std::vector<T> a(m * k);
+    std::vector<T> at(k * m);
+    std::vector<T> b(k * n);
+    std::vector<T> start(m * n);
+    for (std::size_t i {0}; i < m; ++i) {
+      for (std::size_t p {0}; p < k; ++p) {
+        a[(i * k) + p]  = entry<T>((((i * k) + p) * 13) + 1) / T {7};
+        at[(p * m) + i] = a[(i * k) + p];
+      }
+    }
+    for (std::size_t i {0}; i < b.size(); ++i) {
+      b[i] = entry<T>((i * 5) + 2) / T {3};
+    }
+    for (std::size_t i {0}; i < start.size(); ++i) {
+      start[i] = entry<T>(i) / T {11};
+    }
+    std::vector<std::vector<T>> results;
+    for (const std::size_t threads : {std::size_t {1}, std::size_t {3}, std::size_t {0}}) {
+      numerical::set_max_threads(threads);
+      std::vector<T> c {start};
+      if (transposed) {
+        numerical::detail::gemm_at(m, n, k, at.data(), m, b.data(), n, c.data(), n);
+      }
+      else {
+        numerical::detail::gemm(m, n, k, a.data(), k, b.data(), n, c.data(), n);
+      }
+      results.push_back(std::move(c));
+    }
+    numerical::set_max_threads(0); // every thread again
+    return results[0] == results[1] && results[0] == results[2];
+  }
+} // namespace
+
+// A narrow complex product (gemm_split, its n·k up to split_narrow_area) shared out by blocks of rows on the threads:
+// one thread's bits on any number, A read where it lies either way; too few rows to share, and a product past the
+// narrow area, keep them too.
+TEST(a_narrow_complex_product_by_blocks_of_rows_gives_one_threads_bits)
+{
+  for (const bool transposed : {false, true}) {
+    for (const auto& [m, n, k] : {std::array<std::size_t, 3> {4000, 4, 8}, {2001, 16, 16}, {999, 32, 32}, {3001, 1, 16}, {16, 2, 2},
+                                  {600, 40, 40}}) {
+      EXPECT(on_every_path([&] { return narrow_product_same_on_any_threads<std::complex<double>>(m, n, k, transposed); }));
+      EXPECT(on_every_path([&] { return narrow_product_same_on_any_threads<std::complex<float>>(m, n, k, transposed); }));
+    }
+  }
+}
+
+namespace
+{
   // A product of a few columns of B, A row-major or given as its transpose (a sliver of columns: A read where it lies
   // on the x86-64 complex tiles), gives the columns of the wider product, whose A is packed: rows short of a tile,
   // several panels of depth.

@@ -4107,6 +4107,13 @@ namespace numerical::detail {
     return m <= gemm_mr;
   }
 
+  /*!
+   * \brief The largest `n·k` of a complex product `gemm_split` shares out by blocks of rows: the real product of its
+   *        expanded parts then cannot share its own threads. Past it, a product of depth 64 by 64 columns, which that
+   *        product shares, ran slower so on eight GCC threads (300 rows: 86 → 124 µs).
+   */
+  inline constexpr std::size_t split_narrow_area {1024};
+
   //! \brief The real operands of `gemm_split`, kept by each thread from one product to the next (\ref split_storage):
   //!        mapping their pages anew took a third to a half of a complex product of order 64 to 256 on one x86-64 core
   //!        (six AVX2 cores, all threads: order 128 0.52 → 0.17 ms), 15–20 % of one of order 256 on arm64.
@@ -4410,6 +4417,23 @@ namespace numerical::detail {
 #endif
     if (start == c_start::zero) { // the split adds to C
       zero_c(c, ldc, m, n);
+    }
+    if (n * k <= split_narrow_area) {
+      // A narrow product by blocks of rows on the threads, each block its own split: the real product of the
+      // expanded parts, as narrow, weighed too little to take threads, and the copies of the parts took none (one
+      // M1 Pro, eight threads: 4000 × 4 by 4 × 8 65 → 36 µs, 2000 × 16 by 16 × 16 72 → 33; GCC 14 115 → 61). Each
+      // element the same: a product cut by its rows is (gemm's guarantee).
+      const std::size_t row_work {((4 * n * k) / vector_speedup) + (memory_element_weight * 2 * (n + k))};
+      const std::size_t threads  {parallel_threads(m, row_work)};
+      if (threads > 1) {
+        const std::size_t rows   {((((m + threads) - 1) / threads) + (narrow_group - 1)) / narrow_group * narrow_group};
+        const std::size_t blocks {((m + rows) - 1) / rows};
+        parallel_for(blocks, work_per_thread, [&](std::size_t block) {
+                       const std::size_t r0 {block * rows};
+                       gemm_split<T, B, A>(std::min(rows, m - r0), n, k, &A::at(a, lda, r0, 0), lda, b, ldb, c + (r0 * ldc), ldc);
+                     });
+        return;
+      }
     }
     gemm_split<T, B, A>(m, n, k, a, lda, b, ldb, c, ldc);
   }

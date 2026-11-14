@@ -10,6 +10,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **A narrow complex product on arm64** (`n·k` up to 1024: a tall matrix times a few columns) shares its rows out
+  among the threads, each block its own split into real products, where neither that real product nor the copies of
+  the parts took a thread. M1 Pro, eight threads: 4000 × 4 by 4 × 8 complex128 65 → 36 µs, 2000 × 16 by 16 × 16 72 →
+  33 µs, 4000 × 16 by 16 × 1 88 → 49 µs; one thread as before. The same bits on any number of threads.
 - **A product with a transpose reads it where it lies**: `a @ b.T`, `a.T @ b`, `a.T @ a`, `x @ a.T`, `a.T @ x` of
   Tensors run the kernels a column-major NumPy array takes, without copying the view. M1 Pro, one thread: `a @ b.T` of
   order 64 6.8 → 4.6 µs (float32 6.0 → 3.3), 4 × 1000 by 1000 × 1000 864 → 381 µs; `a.T @ b` of order 64 6.4 → 4.6 µs;
