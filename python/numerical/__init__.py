@@ -653,7 +653,6 @@ def _iter(self):
 
 # The labels einsum takes: the 52 ASCII letters, as the extension's.
 _LETTERS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
-_REVERSALS = [f"{_LETTERS[:rank]}->{_LETTERS[:rank][::-1]}" for rank in range(len(_LETTERS) + 1)]
 
 
 def _labels(count, what):
@@ -664,15 +663,9 @@ def _labels(count, what):
 
 
 def _transpose(self):
-    """The tensor with its axes reversed: a matrix's transpose, as NumPy's ``.T``. The spec is built once per rank and
-    the extension called directly: a transposition has no error for the wrapper to translate."""
-    rank = len(self.shape)
-    if rank >= len(_REVERSALS):
-        _labels(rank, "T")  # raises
-    try:
-        return _numerical.einsum(_REVERSALS[rank], self)
-    except TypeError:  # a bool tensor, which einsum's arithmetic refuses: its elements moved alone
-        return _numerical._permute(self, range(rank - 1, -1, -1))
+    """The tensor with its axes reversed: a matrix's transpose, as NumPy's ``.T``, a view (its elements copied in their
+    new order only when an operation needs them so)."""
+    return _numerical._permute(self, range(len(self.shape) - 1, -1, -1))
 
 
 _MATMUL = {(1, 1): "i,i->", (2, 1): "ij,j->i", (1, 2): "i,ij->j", (2, 2): "ij,jk->ik"}
@@ -2880,12 +2873,8 @@ def _resolved_axes(t, axis, name):
 
 
 def _permuted(t, order):
-    """`t` with its axes in `order` (a permutation): through einsum, which copies; a bool one's elements moved alone."""
-    letters = _labels(len(t.shape), "permute")
-    try:
-        return _numerical.einsum(f"{letters}->{''.join(letters[a] for a in order)}", t)
-    except TypeError:  # a bool tensor, which einsum's arithmetic refuses
-        return _numerical._permute(t, order)
+    """`t` with its axes in `order` (a permutation), a view of any dtype."""
+    return _numerical._permute(t, order)
 
 
 def _matmul_stack(a, b):
@@ -4493,7 +4482,8 @@ def imag(x, /):
 
 
 def transpose(a, axes=None):
-    """`a` with its axes permuted, as ``numpy.transpose``: a copy.
+    """`a` with its axes permuted, as ``numpy.transpose``: a view of a Tensor (its elements copied in their new order
+    only when an operation needs them so).
 
     Args:
         a: The Tensor or array-like (a bool one kept bool).

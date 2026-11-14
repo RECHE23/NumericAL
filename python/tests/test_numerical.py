@@ -124,7 +124,7 @@ class Einsum(unittest.TestCase):
 @unittest.skipIf(np is None, "NumPy is the reference")
 class HighRanks(unittest.TestCase):
     """Specs built in Python past 26 axes: the 52 labels einsum takes, the matrices' own labels apart from the
-    batch's (a batch reaching them read a diagonal, or refused), and a clear refusal past 52."""
+    batch's (a batch reaching them read a diagonal, or refused), and transposes past 52, views without labels."""
 
     def setUp(self):
         self.rng = np.random.default_rng(3)
@@ -145,8 +145,9 @@ class HighRanks(unittest.TestCase):
         q = self.rng.standard_normal((2,) + (1,) * 13)
         np.testing.assert_allclose(np.asarray(numerical.tensordot(numerical.asarray(p), numerical.asarray(q), axes=([14], [0]))),
                                    np.tensordot(p, q, axes=([14], [0])), rtol=1e-12)
-        with self.assertRaises(ValueError):
-            _ = numerical.zeros((1,) * 53).T
+        wide = self.rng.standard_normal((1,) * 30 + (2,) + (1,) * 20 + (3,) + (1,) * 8 + (2,))  # past 52: a view
+        np.testing.assert_array_equal(np.asarray(numerical.asarray(wide).T), wide.T)
+        np.testing.assert_array_equal(np.asarray(numerical.swapaxes(numerical.asarray(wide), 30, 51)), np.swapaxes(wide, 30, 51))
 
     def test_cross_keeps_each_component_apart(self):
         # Copied side by side, where products with unit vectors spread an infinite component as NaN into the others.

@@ -8,6 +8,19 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Changed
+
+- **A permutation of a tensor's axes is a view**: `.T`, `.mT`, `transpose`, `swapaxes`, `moveaxis`,
+  `matrix_transpose` and an `einsum` that only permutes (`"ijk->kij"`) read the elements where they lie, as NumPy's
+  views do, where each copied them. The elements are copied out in the new order once, the first time an operation
+  needs them so, and that copy is shared with the view's copies. M1 Pro: `.T` of 1000 × 1000 148 → 0.5 µs,
+  `einsum("ijk->kij")` of 4 × 1000 × 30 26 → 0.5 µs, `t.T.T + 1` 546 → 125 µs. An operation on a view costs what it did
+  on the copy, a few tenths of a µs more about 100 × 100 (`t.T + 1` 7.1 → 7.4 µs), until the operations read views
+  where they lie. A transpose past 52 axes, refused before (an einsum spec's labels), is one too. The same bits.
+  In C++, `tensor::transposed(axes)` (and `transposed()`, the axes reversed) gives the view, `tensor::contiguous()`
+  says whether `data()` copies; `data()` is no longer `noexcept`, as a view's first call allocates its copy (a
+  `std::bad_alloc`, `MemoryError` in Python, where it would have terminated the program).
+
 ## 2026.11.15 — 2026-11-14
 
 ### Changed
@@ -2990,7 +3003,6 @@ sums of the matrix product and of the row updates.
 ### Fixed
 - `make bench-linalg` without `SIZES` measured order 64 alone: the default list's commas split the arguments of
   the `$(or …)` it sat in.
-
 
 ## 2026.10.4 — 2026-10-12
 

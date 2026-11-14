@@ -125,7 +125,7 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_frombytes", module_frombytes, METH_VARARGS,
           "_frombytes(data, shape, dtype, swapped) -> Tensor\nThe tensor of _tobytes's bytes, swapped from the other byte order.");
     m.raw("_permute", module_permute, METH_VARARGS,
-          "_permute(t, order) -> Tensor\nThe tensor with its axes in order (a permutation), a copy of any dtype.");
+          "_permute(t, order) -> Tensor\nThe tensor with its axes in order (a permutation), a view of any dtype.");
     m.raw("_take", module_take, METH_VARARGS,
           "_take(t, starts, steps, counts, keep) -> Tensor or number\nThe strided copy behind Tensor.__getitem__.");
     m.raw("_bandwidth", module_bandwidth, METH_O, "_bandwidth(a) -> (lower, upper)\nThe matrix's lower and upper bandwidths.");

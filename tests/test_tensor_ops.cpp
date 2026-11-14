@@ -14,6 +14,7 @@
 #include <numeric>
 #include <stdexcept>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -886,6 +887,79 @@ TEST(tensors_share_their_elements)
   // From an expiring matrix: its extents read before its elements move out, whatever the compiler's order.
   const tensor<double> taken {numerical::matrix<double> {{1.0, 2.0, 3.0}, {4.0, 5.0, 6.0}}};
   EXPECT(taken.shape() == (std::vector<std::size_t> {2, 3}) && taken(std::vector<std::size_t> {1, 2}) == 6.0);
+}
+
+// A permutation of the axes is a view: read where the elements lie, copied out in row-major order by the first data()
+// call alone and shared with the view's copies and reshapes; one that leaves them row-major (moving axes of extent 1,
+// undoing another, a tensor without elements) shares them as they lie; anything but a permutation is refused.
+TEST(a_permutation_of_the_axes_is_a_view)
+{
+  const tensor<double> cube {counting({2, 3, 4})};
+  const tensor<double> view {cube.transposed({2, 0, 1})};
+  EXPECT(!view.contiguous() && view.shape() == (shape {4, 2, 3}) && view.size() == 24);
+  EXPECT(view(std::vector<std::size_t> {3, 1, 2}) == cube(std::vector<std::size_t> {1, 2, 3}));
+  numerical::buffer<double> expected;
+  for (std::size_t k {0}; k < 4; ++k) {
+    for (std::size_t i {0}; i < 2; ++i) {
+      for (std::size_t j {0}; j < 3; ++j) {
+        expected.push_back(cube(std::vector<std::size_t> {i, j, k}));
+      }
+    }
+  }
+  const double* const copied {view.data().data()};
+  EXPECT(view.data() == expected && copied != cube.data().data() && view.data().data() == copied);
+  const tensor<double> again {view};                                                          // NOLINT(performance-unnecessary-copy-initialization): the copy is the case tested
+  EXPECT(again.data().data() == copied && view.reshaped({24}).data().data() == copied);
+  EXPECT(view == (tensor<double> {{4, 2, 3}, expected}) && !(view == cube.reshaped({4, 2, 3})));
+  const tensor<double> flat    {[&] { return cube.transposed({2, 0, 1}).reshaped({24}); }()}; // the copy outlives the view
+  EXPECT(flat.data() == expected);
+  const tensor<double> back    {view.transposed({1, 2, 0})};                                  // undone: the elements as they lie
+  EXPECT(back.contiguous() && back.data().data() == cube.data().data());
+  const tensor<double> matrix  {counting({2, 3})};
+  EXPECT(matrix.transposed().data() == (numerical::buffer<double> {0.0, 3.0, 1.0, 4.0, 2.0, 5.0}));
+  const tensor<double> ones    {counting({1, 3, 1, 2})};
+  EXPECT(ones.transposed({2, 1, 0, 3}).contiguous() && ones.transposed({2, 1, 0, 3}).data().data() == ones.data().data());
+  const tensor<double> between {counting({2, 1, 3}).transposed({2, 1, 0})}; // an axis of extent 1 among them
+  EXPECT(!between.contiguous() && between.data() == (numerical::buffer<double> {0.0, 3.0, 1.0, 4.0, 2.0, 5.0}));
+  const tensor<double> empty   {counting({2, 0, 3})};
+  EXPECT(empty.transposed().contiguous() && empty.transposed().shape() == (shape {3, 0, 2}) && empty.transposed().size() == 0);
+  EXPECT((tensor<double> {{}, {7.0}}).transposed().data() == (numerical::buffer<double> {7.0}));
+  EXPECT_THROWS((void)matrix.transposed({0, 0}), numerical::dimension_error);
+  EXPECT_THROWS((void)matrix.transposed({0, 2}), numerical::dimension_error);
+  EXPECT_THROWS((void)matrix.transposed({0}), numerical::dimension_error);
+}
+
+// A view's first data() calls at once, from threads of their own and from a parallel_for's bodies (a run nested in the
+// copy's own parallel_for takes its chunks itself): one copy, the one every call returns.
+TEST(a_view_is_copied_out_once_whatever_the_threads)
+{
+  const tensor<double>       big  {counting({300, 200})};
+  const tensor<double>       view {big.transposed()};
+  std::vector<const double*> seen(8, nullptr);
+  {
+    std::vector<std::thread> threads;
+    for (std::size_t k {0}; k < seen.size(); ++k) {
+      threads.emplace_back([&, k] { seen[k] = view.data().data(); });
+    }
+    for (std::thread& thread : threads) {
+      thread.join();
+    }
+  }
+  EXPECT(std::ranges::all_of(seen, [&](const double* p) { return p == seen[0]; }));
+  EXPECT(view(std::vector<std::size_t> {199, 299}) == view.data()[(199 * 300) + 299]);
+  const tensor<double> slab   {counting({150, 1, 120})}; // past the direct reads, an axis of extent 1 among the others
+  const tensor<double> turned {slab.transposed({2, 1, 0})};
+  bool                 same   {true};
+  for (std::size_t k {0}; k < 120; ++k) {
+    for (std::size_t i {0}; i < 150; ++i) {
+      same = same && turned.data()[(k * 150) + i] == slab(std::vector<std::size_t> {i, 0, k});
+    }
+  }
+  EXPECT(same && !turned.contiguous());
+  const tensor<double>       other {big.transposed()};
+  std::vector<const double*> nested(64, nullptr);
+  numerical::detail::parallel_for(nested.size(), std::size_t {1} << 20, [&](std::size_t k) { nested[k] = other.data().data(); });
+  EXPECT(std::ranges::all_of(nested, [&](const double* p) { return p == nested[0]; }) && other.data() == view.data());
 }
 
 // broadcast_to repeats a tensor along its axes of extent 1 and new leading ones: rows copied, or filled with their one

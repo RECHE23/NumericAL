@@ -69,6 +69,7 @@ arithmetic is single precision, as NumPy's: `+ - * /`, and `**` by an integer, g
 ## Exchanging without a copy
 
 A `Tensor` is read where it lies by NumPy (`np.asarray(t)`, through `__array_interface__`, a read-only view) and by
-anything that takes DLPack (`np.from_dlpack(t)`, `torch.from_dlpack(t)`, JAX, CuPy). NumericAL makes no views of its
-own: `einsum("ij->ji", a)` returns a new tensor where NumPy returns a view, so writing to the result never reaches
-`a`.
+anything that takes DLPack (`np.from_dlpack(t)`, `torch.from_dlpack(t)`, JAX, CuPy). A permutation of a tensor's
+axes (`t.T`, `t.mT`, `transpose`, `swapaxes`, `moveaxis`, `matrix_transpose`, `einsum("ij->ji", t)`) is a view of its
+own, as NumPy's: no element is copied until an operation needs them in the new order, then once. A tensor is never
+written, so neither is a view; a NumPy array passed in is copied, so writing to it later never reaches a tensor.

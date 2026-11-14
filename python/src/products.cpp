@@ -609,7 +609,7 @@ PyObject* module_frombytes(PyObject* /*self*/, PyObject* args)
     }
 }
 
-// _permute(t, order) -> Tensor.
+// _permute(t, order) -> Tensor: a view of `t` (any dtype) with its axes in `order` (tensor::transposed).
 PyObject* module_permute(PyObject* /*self*/, PyObject* args)
 {
     PyObject* obj   = nullptr;
@@ -638,38 +638,9 @@ PyObject* module_permute(PyObject* /*self*/, PyObject* args)
         PyErr_SetString(sciforge_module_error(), "_permute: the order is a permutation of the tensor's axes");
         return nullptr;
     }
-    std::vector<std::size_t> strides(rank, 1);
-    for (std::size_t a = rank; a-- > 1;) {
-        strides[a - 1] = strides[a] * shape[a];
-    }
-    std::vector<std::size_t> out_shape(rank);
-    std::vector<std::size_t> from(rank); // the source stride of each output axis
-    for (std::size_t k = 0; k < rank; ++k) {
-        out_shape[k] = shape[static_cast<std::size_t>(axes[k])];
-        from[k]      = strides[static_cast<std::size_t>(axes[k])];
-    }
+    const std::vector<std::size_t> permutation(axes.begin(), axes.end());
     try {
-        return std::visit([&](const auto& t) {
-            using T = element_of_t<std::decay_t<decltype(t)>>;
-            const T* const       data {t.data().data()};
-            const std::size_t    count {t.size()};
-            numerical::buffer<T> out(count);
-            const std::size_t    inner {rank == 0 ? 1 : out_shape[rank - 1]};
-            const std::size_t    step {rank == 0 ? 0 : from[rank - 1]};
-            const std::size_t    rows {inner == 0 ? 0 : count / inner};
-            numerical::detail::parallel_for(rows, numerical::detail::memory_element_weight * inner, [&](std::size_t row) {
-                std::size_t offset {0};
-                for (std::size_t a = rank == 0 ? 0 : rank - 1, rest = row; a-- > 0;) {
-                    offset += (rest % out_shape[a]) * from[a];
-                    rest   /= out_shape[a];
-                }
-                T* const to {out.data() + (row * inner)};
-                for (std::size_t i = 0; i < inner; ++i) {
-                    to[i] = data[offset + (i * step)];
-                }
-            });
-            return wrap(any_tensor {numerical::tensor<T> {std::move(out_shape), std::move(out)}});
-        }, *h);
+        return std::visit([&](const auto& t) { return wrap(any_tensor {t.transposed(permutation)}); }, *h);
     }
     catch (...) {
         return set_cpp_error();
@@ -1170,13 +1141,30 @@ PyObject* module_borrowed_einsum(PyObject* /*self*/, PyObject* args)
     // A matrix summed over one of its axes may lie column-major: it is then its transpose row-major, read with its
     // labels and extents reversed, each output element the same pairwise sum of the same elements (a column summed
     // down a block by rows is the pairwise sum of that column alone). A whole sum would take them in another order.
-    // A permutation of the axes (each label kept) likewise: a copy in the output's order, a column-major one's labels
-    // reversed first.
-    const bool       one_axis {in.size() == 2 && out.size() == 1};
-    const bool       permutes {out.size() == in.size()};
+    // A permutation of an array's axes (each label kept) likewise: a copy in the output's order, a column-major one's
+    // labels reversed first.
+    const bool one_axis {in.size() == 2 && out.size() == 1};
+    const bool permutes {out.size() == in.size()};
+    const bool labelled {letters_once(in) && letters_once(out) && out.find_first_not_of(in) == std::string::npos};
+    // A Tensor's permutation: a view of it (tensor::transposed), whose elements are copied in the output's order only
+    // when an operation needs them so.
+    if (labelled && permutes && PyObject_TypeCheck(obj, reinterpret_cast<PyTypeObject*>(sb::class_type<any_tensor>())) != 0) {
+        const any_tensor* v {reinterpret_cast<sb::wrapper<any_tensor>*>(obj)->held};
+        if (v != nullptr && !is_bool(*v) && !is_int(*v) && shape_of(*v).size() == in.size()) {
+            std::vector<std::size_t> axes;
+            for (const char label : out) {
+                axes.push_back(in.find(label));
+            }
+            try {
+                return std::visit([&](const auto& t) { return wrap(any_tensor {t.transposed(axes)}); }, *v);
+            }
+            catch (...) {
+                return set_cpp_error();
+            }
+        }
+    }
     borrowed_operand x;
-    if (!letters_once(in) || !letters_once(out) || out.find_first_not_of(in) != std::string::npos
-        || !borrow_operand(obj, x, one_axis || permutes, permutes && in.size() == 2)
+    if (!labelled || !borrow_operand(obj, x, one_axis || permutes, permutes && in.size() == 2)
         || x.shape.size() != in.size()) {
         return Py_NewRef(Py_NotImplemented);
     }

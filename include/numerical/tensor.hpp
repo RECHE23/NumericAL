@@ -30,6 +30,7 @@
 #include <initializer_list>
 #include <map>
 #include <memory>
+#include <mutex>
 #include <numeric>
 #include <optional>
 #include <stdexcept>
@@ -57,10 +58,25 @@ namespace numerical {
     {}
   };
 
+  template <typename T>
+  class tensor;
+
+  namespace detail {
+    template <typename T>
+    [[nodiscard]] buffer<T> permuted(const T*                           data,
+                                     std::size_t                        count,
+                                     const std::string&                 from,
+                                     const std::string&                 to,
+                                     const std::map<char, std::size_t>& sizes,
+                                     std::size_t                        ld = 0);
+  } // namespace detail
+
   /*!
-   * \brief A dense, row-major, N-dimensional tensor of `T` with value semantics. Its elements are immutable once
-   *        built, so tensors share them: a copy, and a tensor of another shape over the same elements (\ref reshaped),
-   *        hold the one buffer, freed with the last of them.
+   * \brief A dense N-dimensional tensor of `T` with value semantics, read row-major. Its elements are immutable once
+   *        built, so tensors share them: a copy, a tensor of another shape over the same elements (\ref reshaped) and
+   *        one with its axes permuted (\ref transposed, a view reading them along other strides) hold the one buffer,
+   *        freed with the last of them. A view's elements in row-major order (\ref data) are copied out on first need,
+   *        once, and shared with the view's copies.
    * \tparam T The scalar element type.
    */
   template <typename T>
@@ -123,12 +139,51 @@ namespace numerical {
 
     /*!
      * \brief This tensor's elements in \p shape, without a copy: the new tensor shares the buffer, as NumPy's
-     *        reshape of a contiguous array is a view.
+     *        reshape of a contiguous array is a view. A view's (\ref transposed) are its row-major copy (\ref data),
+     *        made if not yet made.
      * \throws dimension_error If \p shape holds another number of elements.
      */
     [[nodiscard]] tensor reshaped(std::vector<std::size_t> shape) const
     {
-      return tensor {std::move(shape), data_};
+      // A view's copy shared as it is held, with the view's state (an aliasing pointer, which that state never holds).
+      return tensor {std::move(shape), copy_ == nullptr ? data_ : std::shared_ptr<const buffer<T>>(copy_, &copied_out())};
+    }
+
+    /*!
+     * \brief This tensor with its axes in the order \p axes (axis `k` of the result is axis `axes[k]` of this one),
+     *        without a copy, as NumPy's transpose: a view over the same elements, whose row-major copy (\ref data) is
+     *        made on first need. A permutation that leaves them row-major (one that moves only axes of extent 1, or
+     *        undoes an earlier one) gives a tensor that shares them as they lie.
+     * \throws dimension_error If \p axes is not a permutation of the axes.
+     */
+    [[nodiscard]] tensor transposed(const std::vector<std::size_t>& axes) const
+    {
+      const std::size_t rank {shape_.size()};
+      std::vector<bool> seen(rank, false);
+      for (const std::size_t axis : axes) {
+        if (axis >= rank || seen[axis]) {
+          throw dimension_error("tensor: transposed takes a permutation of the axes");
+        }
+        seen[axis] = true;
+      }
+      if (axes.size() != rank) {
+        throw dimension_error("tensor: transposed takes a permutation of the axes");
+      }
+      std::vector<std::size_t> shape(rank);
+      std::vector<std::size_t> strides(rank);
+      for (std::size_t k {0}; k < rank; ++k) {
+        shape[k]   = shape_[axes[k]];
+        strides[k] = strides_[axes[k]];
+      }
+      return tensor {std::move(shape), std::move(strides), data_};
+    }
+
+    //! \brief \ref transposed with the axes reversed: a matrix's transpose, NumPy's `.T`.
+    [[nodiscard]] tensor transposed() const
+    {
+      std::vector<std::size_t> axes(shape_.size());
+      std::iota(axes.rbegin(), axes.rend(), std::size_t {0});
+      return transposed(axes);
     }
 
     //! \brief The number of axes (0 for a scalar).
@@ -149,13 +204,23 @@ namespace numerical {
       return shape_;
     }
 
-    //! \brief The elements, row-major.
-    [[nodiscard]] const buffer<T>& data() const noexcept
+    //! \brief Whether the elements lie row-major where they are held: \ref data then copies nothing.
+    [[nodiscard]] bool contiguous() const noexcept
     {
-      return *data_;
+      return copy_ == nullptr;
     }
 
-    //! \brief The element at a multi-index. \pre Its length is \ref rank, in bounds.
+    /*!
+     * \brief The elements, row-major. A view's (\ref transposed) are copied out by the first call, one thread copying
+     *        while any other waits, and kept for the later calls and for the view's copies.
+     * \throws std::bad_alloc If a view finds no memory for its copy (a later call tries again).
+     */
+    [[nodiscard]] const buffer<T>& data() const
+    {
+      return copy_ == nullptr ? *data_ : copied_out();
+    }
+
+    //! \brief The element at a multi-index, read where it lies. \pre Its length is \ref rank, in bounds.
     [[nodiscard]] const T& operator()(const std::vector<std::size_t>& index) const
     {
       std::size_t flat {0};
@@ -168,17 +233,100 @@ namespace numerical {
     //! \brief Exact equality (same shape and equal elements).
     [[nodiscard]] bool operator==(const tensor& other) const
     {
-      return shape_ == other.shape_ && *data_ == *other.data_;
+      return shape_ == other.shape_ && data() == other.data();
     }
 
   private:
 
-    //! \brief Over the shared elements \p elements, in \p shape (\ref reshaped).
+    //! \brief A view's elements in row-major order, copied out by the first \ref data call and shared with the view's
+    //!        copies.
+    struct row_major_copy
+    {
+      std::once_flag made;     //!< Set once the elements are copied out.
+      buffer<T>      elements; //!< The copy.
+    };
+
+    //! \brief Over the shared row-major elements \p elements, in \p shape (\ref reshaped).
     tensor(std::vector<std::size_t>         shape,
            std::shared_ptr<const buffer<T>> elements)
       : shape_(std::move(shape)), data_(std::move(elements))
     {
       finalize();
+    }
+
+    //! \brief Over the shared elements \p elements, read along \p strides (\ref transposed, a permutation of a
+    //!        row-major tensor's): a view, unless they lie row-major along the axes longer than 1.
+    tensor(std::vector<std::size_t>         shape,
+           std::vector<std::size_t>         strides,
+           std::shared_ptr<const buffer<T>> elements)
+      : shape_(std::move(shape)), strides_(std::move(strides)), data_(std::move(elements))
+    {
+      std::size_t acc       {1};
+      bool        row_major {true};
+      for (std::size_t axis {shape_.size()}; axis-- > 0;) {
+        row_major = row_major && (shape_[axis] < 2 || strides_[axis] == acc); // an axis of extent 1 moves nothing
+        acc      *= shape_[axis];
+      }
+      if (row_major || acc == 0) {
+        finalize();
+      }
+      else {
+        copy_ = std::make_shared<row_major_copy>();
+      }
+    }
+
+    //! \brief A view's elements in row-major order, copied out on the first call.
+    [[nodiscard]] const buffer<T>& copied_out() const
+    {
+      std::call_once(copy_->made, [this] {
+                       // A view of up to 128 × 128 elements read in its order directly, row after row: detail::permuted's labels cost
+                       // more than its tiles save there (M1 Pro, a transpose's copy: 8 × 8 182 against 335 ns, 96 × 96 3.5 against
+                       // 3.7 µs, 128 × 128 equal); its tiles and threads pay from 256 × 256 (28 against 47 µs).
+                       constexpr std::size_t read_directly {std::size_t {1} << 14};
+                       if (data_->size() <= read_directly) {
+                         const std::size_t        last {shape_.size() - 1}; // a view has two axes or more
+                         const std::size_t        inner {shape_[last]};
+                         const std::size_t        step {strides_[last]};
+                         const T* const           from {data_->data()};
+                         buffer<T>                out(data_->size());
+                         for (std::size_t row {0}; row < out.size() / inner; ++row) {
+                           std::size_t at {0}; // the row's first element: its index along each outer axis times that axis's stride
+                           for (std::size_t axis {last}, rest {row}; axis-- > 0;) {
+                             at   += (rest % shape_[axis]) * strides_[axis];
+                             rest /= shape_[axis];
+                           }
+                           for (std::size_t i {0}; i < inner; ++i) {
+                             out[(row * inner) + i] = from[at + (i * step)];
+                           }
+                         }
+                         copy_->elements = std::move(out);
+                         return;
+                       }
+                       // The strides a permutation of row-major axes leaves: the axes from the widest stride to the narrowest are
+                       // the order the elements lie in, each a label for detail::permuted. An axis of extent 1 moves nothing and
+                       // takes none, so the labels number at most 64 (each other axis at least doubles the elements' count).
+                       std::vector<std::size_t> lying;
+                       for (std::size_t axis {0}; axis < shape_.size(); ++axis) {
+                         if (shape_[axis] > 1) {
+                           lying.push_back(axis);
+                         }
+                       }
+                       std::string                 to;
+                       std::map<char, std::size_t> sizes;
+                       std::map<std::size_t, char> label;
+                       for (const std::size_t axis : lying) {
+                         label[axis] = static_cast<char>(to.size() + 1);
+                         to.push_back(label[axis]);
+                         sizes[label[axis]] = shape_[axis];
+                       }
+                       std::stable_sort(lying.begin(), lying.end(), [this](std::size_t a, std::size_t b) { return strides_[a] > strides_[b]; });
+                       std::string from;
+                       for (const std::size_t axis : lying) {
+                         from.push_back(label[axis]);
+                       }
+                       copy_->elements = detail::permuted(data_->data(), data_->size(), from, to, sizes);
+                     });
+      return copy_->elements;
     }
 
     //! \brief Computes row-major strides and checks the buffer against the shape.
@@ -196,8 +344,9 @@ namespace numerical {
     }
 
     std::vector<std::size_t>         shape_;   //!< The size of each axis.
-    std::vector<std::size_t>         strides_; //!< Row-major strides.
-    std::shared_ptr<const buffer<T>> data_;    //!< The elements, row-major, shared with the tensors that hold them.
+    std::vector<std::size_t>         strides_; //!< Each axis's step in the held elements: row-major unless a view.
+    std::shared_ptr<const buffer<T>> data_;    //!< The elements, shared with the tensors that hold them.
+    std::shared_ptr<row_major_copy>  copy_;    //!< A view's row-major copy; null where the elements lie row-major.
   };
 
   /*!
@@ -1260,7 +1409,7 @@ namespace numerical {
                                      const std::string&                 from,
                                      const std::string&                 to,
                                      const std::map<char, std::size_t>& sizes,
-                                     std::size_t                        ld = 0)
+                                     std::size_t                        ld)
     {
       buffer<T> out(count); // every element written below
       if (count == 0) {
@@ -2038,13 +2187,13 @@ namespace numerical {
         }
       }
 
-      // Fast path: one operand, nothing summed, each label once: a permutation of its axes (a transpose), a copy.
+      // Fast path: one operand, nothing summed, each label once: a permutation of its axes (a transpose), a view.
       if (operands.size() == 1 && summed.empty() && inputs[0].size() == output.size()) {
-        std::vector<std::size_t> out_shape;
+        std::vector<std::size_t> axes;
         for (const char label : output) {
-          out_shape.push_back(sizes.at(label));
+          axes.push_back(inputs[0].find(label));
         }
-        return tensor<T> {std::move(out_shape), inputs[0] == output ? operands[0]->data() : permuted(operands[0]->data(), inputs[0], output, sizes)};
+        return operands[0]->transposed(axes);
       }
 
       // Fast path: one operand, each label once, its summed labels one run of its axes and the output the others in
