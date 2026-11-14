@@ -897,7 +897,8 @@ TEST(a_permutation_of_the_axes_is_a_view)
   const tensor<double> cube {counting({2, 3, 4})};
   const tensor<double> view {cube.transposed({2, 0, 1})};
   EXPECT(!view.contiguous() && view.shape() == (shape {4, 2, 3}) && view.size() == 24);
-  EXPECT(view.strides() == (shape {1, 12, 4}) && view.lying().data() == cube.data().data() && cube.strides() == (shape {12, 4, 1}));
+  using steps = std::vector<std::ptrdiff_t>;
+  EXPECT(view.strides() == (steps {1, 12, 4}) && view.origin() == cube.data().data() && cube.strides() == (steps {12, 4, 1}));
   EXPECT(view(std::vector<std::size_t> {3, 1, 2}) == cube(std::vector<std::size_t> {1, 2, 3}));
   numerical::buffer<double> expected;
   for (std::size_t k {0}; k < 4; ++k) {
@@ -928,6 +929,78 @@ TEST(a_permutation_of_the_axes_is_a_view)
   EXPECT_THROWS((void)matrix.transposed({0, 0}), numerical::dimension_error);
   EXPECT_THROWS((void)matrix.transposed({0, 2}), numerical::dimension_error);
   EXPECT_THROWS((void)matrix.transposed({0}), numerical::dimension_error);
+}
+
+// A slice is a view past sliced_copy_most elements: each axis's range read where the elements lie, from its start by
+// its step (backwards for a negative one), an integer index dropping its axis; copied out in row-major order on first
+// need, by rows on the threads past the direct reads. A slice of a transpose and a transpose of a slice compose. A few
+// elements, an empty range and a rank-0 result are copied at once; a range out of its axis or a dropped axis of more
+// than one index is refused.
+TEST(a_slice_is_a_view)
+{
+  using steps = std::vector<std::ptrdiff_t>;
+  const tensor<double> cube {counting({20, 30, 40})};
+  // the elements of `slice` at every index against cube's at the index `at` maps it to
+  const auto reads = [&](const tensor<double>& slice, const auto& at) {
+                       bool                     same {slice.size() == slice.data().size()};
+                       std::vector<std::size_t> index(slice.rank(), 0);
+                       for (std::size_t flat {0}; same && flat < slice.size(); ++flat) {
+                         std::size_t rest {flat};
+                         for (std::size_t axis {slice.rank()}; axis-- > 0;) {
+                           index[axis] = rest % slice.shape()[axis];
+                           rest       /= slice.shape()[axis];
+                         }
+                         same = slice.data()[flat] == cube(at(index)) && slice(index) == cube(at(index));
+                       }
+                       return same;
+                     };
+  // cube[1:20:2, ::-2, 3]: rows 1 to 19, columns 29 down to 1, the depth 3 dropped
+  const tensor<double> part {cube.sliced({1, 29, 3}, {2, -2, 1}, {10, 15, 1}, std::vector<bool> {true, true, false})};
+  EXPECT(part.shape() == (shape {10, 15}) && part.contiguous()); // 150 elements: copied at once
+  EXPECT(reads(part, [](const std::vector<std::size_t>& i) { return std::vector<std::size_t> {1 + (2 * i[0]), 29 - (2 * i[1]), 3}; }));
+  // cube[1:20:2, ::-1, 3:40:3]: 3900 elements, a view
+  const tensor<double> view {cube.sliced({1, 29, 3}, {2, -1, 3}, {10, 30, 13}, std::vector<bool> {true, true, true})};
+  EXPECT(!view.contiguous() && view.shape() == (shape {10, 30, 13}) && view.size() == 3900);
+  EXPECT(view.strides() == (steps {2400, -40, 3}) && view.origin() == cube.data().data() + 1200 + 1160 + 3);
+  EXPECT(reads(view, [](const std::vector<std::size_t>& i) { return std::vector<std::size_t> {1 + (2 * i[0]), 29 - i[1], 3 + (3 * i[2])}; }));
+  const tensor<double> turned              {view.transposed({2, 0, 1})};                                                                           // a transpose of a slice
+  EXPECT(turned(std::vector<std::size_t> {12, 9, 0}) == cube(std::vector<std::size_t> {19, 29, 39}));
+  const tensor<double> back                {cube.transposed().sliced({39, 0, 0}, {-1, 1, 1}, {40, 30, 20}, std::vector<bool> {true, true, true})}; // a slice of a transpose
+  EXPECT(reads(back, [](const std::vector<std::size_t>& i) { return std::vector<std::size_t> {i[2], i[1], 39 - i[0]}; }));
+  const tensor<double> rows                {cube.sliced({1, 0, 0}, {1, 1, 1}, {2, 30, 40}, std::vector<bool> {true, true, true})};                 // contiguous, from an offset
+  EXPECT(!rows.contiguous() && rows.data() == (numerical::buffer<double>(cube.data().begin() + 1200, cube.data().begin() + 3600)));
+  const tensor<double> first               {cube.sliced({0, 0, 0}, {1, 1, 1}, {2, 30, 40}, std::vector<bool> {true, true, true})};                 // from the first, not all
+  EXPECT(!first.contiguous() && first.data() == (numerical::buffer<double>(cube.data().begin(), cube.data().begin() + 2400)));
+  const tensor<double> rows_from_the_first {counting({400, 300}).sliced({0, 0}, {1, 1}, {399, 300}, std::vector<bool> {true, true})};
+  EXPECT(rows_from_the_first.data().size() == 119700 && rows_from_the_first.data()[119699] == 119699.0);                                           // past the direct reads
+  const tensor<double> whole               {cube.sliced({0, 0, 0}, {1, 1, 1}, {20, 30, 40}, std::vector<bool> {true, true, true})};                // the whole: as it lies
+  EXPECT(whole.contiguous() && whole.data().data() == cube.data().data());
+  const tensor<double> one                 {cube.sliced({2, 3, 4}, {1, 1, 1}, {1, 1, 1}, std::vector<bool> {false, false, false})};                // every axis dropped
+  EXPECT(one.rank() == 0 && one.data() == (numerical::buffer<double> {cube(std::vector<std::size_t> {2, 3, 4})}));
+  const tensor<double> none                {cube.sliced({0, 2, 0}, {1, 1, 1}, {20, 0, 40}, std::vector<bool> {true, true, true})};
+  EXPECT(none.contiguous() && none.shape() == (shape {20, 0, 40}) && none.size() == 0 && none.data().empty());
+  const tensor<double> line                {counting({1000})};     // a rank-1 view, read backwards by threes
+  EXPECT(line.sliced({999}, {-3}, {334}, std::vector<bool> {true}).data()[333] == 0.0);
+  const tensor<double> wide                {counting({300, 200})}; // past the direct reads: by rows on the threads
+  const tensor<double> every               {wide.sliced({299, 1}, {-2, 3}, {150, 66}, std::vector<bool> {true, true})};
+  bool                 same                {every.data().size() == std::size_t {150} *66};
+  for (std::size_t i {0}; i < 150; ++i) {
+    for (std::size_t j {0}; j < 66; ++j) {
+      same = same && every.data()[(i * 66) + j] == wide(std::vector<std::size_t> {299 - (2 * i), 1 + (3 * j)});
+    }
+  }
+  EXPECT(same);
+  const tensor<double> wider  {counting({400, 300})}; // a reversal of the whole: no permutation, read by rows
+  EXPECT(wider.sliced({399, 0}, {-1, 1}, {400, 300}, std::vector<bool> {true, true}).data()[0] == wider(std::vector<std::size_t> {399, 0}));
+  const std::vector<bool> all {true, true, true};
+  EXPECT_THROWS((void)cube.sliced({0, 0}, {1, 1}, {4, 5}, std::vector<bool> {true, true}), numerical::dimension_error);
+  EXPECT_THROWS((void)cube.sliced({0, 0, 0}, {1, 1}, {4, 5, 6}, all), numerical::dimension_error);
+  EXPECT_THROWS((void)cube.sliced({0, 0, 0}, {1, 1, 1}, {4, 5}, all), numerical::dimension_error);
+  EXPECT_THROWS((void)cube.sliced({0, 0, 0}, {1, 1, 1}, {4, 5, 6}, std::vector<bool> {true, true}), numerical::dimension_error);
+  EXPECT_THROWS((void)cube.sliced({0, 0, 0}, {1, 1, 1}, {2, 5, 6}, std::vector<bool> {false, true, true}), numerical::dimension_error);
+  EXPECT_THROWS((void)cube.sliced({20, 0, 0}, {1, 1, 1}, {1, 5, 6}, all), std::out_of_range);
+  EXPECT_THROWS((void)cube.sliced({0, 0, 0}, {1, 1, 2}, {4, 5, 21}, all), std::out_of_range);
+  EXPECT_THROWS((void)cube.sliced({0, 0, 1}, {1, 1, -2}, {4, 5, 2}, all), std::out_of_range);
 }
 
 // A view's first data() calls at once, from threads of their own and from a parallel_for's bodies (a run nested in the

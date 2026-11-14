@@ -10,6 +10,15 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **A slice is a view**: `t[1:500]`, `t[:, ::2]`, `t[::-1, 2]` and their compositions with a transpose read the
+  elements where they lie, as NumPy's views do, where each copied them; an operation that needs them in order copies
+  them once, by rows on the threads. A product reads a slice's rows apart where they lie (`t[:, :k] @ b`, `t[::2] @
+  x`), NumPy (`np.asarray`) any slice along its strides; DLPack copies a reversed one. A slice of 512 elements or fewer
+  is copied at once, as before. One M1 Pro thread, 1000 × 1000 float64: `t[1:500]` 75 → 0.28 µs, `t[::-1]` 304 →
+  0.29 µs, `t[::2] @ x` 214 → 59 µs, `t[:, :500] @ b` (500 × 300) 1.34 → 1.12 ms, `np.asarray(t[::3])` 163 → 1.1 µs;
+  `t[2, 3]` 0.16 → 0.12 µs; `t[1:3] + 1` of 8 × 8 as before. The same bits. In C++, `tensor::sliced` gives the view,
+  `tensor::origin()` its first element, and `strides()` (signed) the steps from it.
+
 - **A narrow complex product on arm64** (`n·k` up to 1024: a tall matrix times a few columns) shares its rows out
   among the threads, each block its own split into real products, where neither that real product nor the copies of
   the parts took a thread. M1 Pro, eight threads: 4000 × 4 by 4 × 8 complex128 65 → 36 µs, 2000 × 16 by 16 × 16 72 →

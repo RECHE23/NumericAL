@@ -71,11 +71,14 @@ namespace numerical {
                                      std::size_t                        ld = 0);
   } // namespace detail
 
+  //! \brief The most elements \ref tensor::sliced copies at once rather than viewing (4 KiB of doubles).
+  inline constexpr std::size_t sliced_copy_most {512};
+
   /*!
    * \brief A dense N-dimensional tensor of `T` with value semantics, read row-major. Its elements are immutable once
-   *        built, so tensors share them: a copy, a tensor of another shape over the same elements (\ref reshaped) and
-   *        one with its axes permuted (\ref transposed, a view reading them along other strides) hold the one buffer,
-   *        freed with the last of them. A view's elements in row-major order (\ref data) are copied out on first need,
+   *        built, so tensors share them: a copy, a tensor of another shape over the same elements (\ref reshaped), one
+   *        with its axes permuted (\ref transposed) and a slice of them (\ref sliced), views reading them along other
+   *        strides, hold the one buffer, freed with the last of them. A view's elements in row-major order (\ref data) are copied out on first need,
    *        once, and shared with the view's copies.
    * \tparam T The scalar element type.
    */
@@ -169,13 +172,67 @@ namespace numerical {
       if (axes.size() != rank) {
         throw dimension_error("tensor: transposed takes a permutation of the axes");
       }
-      std::vector<std::size_t> shape(rank);
-      std::vector<std::size_t> strides(rank);
+      std::vector<std::size_t>    shape(rank);
+      std::vector<std::ptrdiff_t> strides(rank);
       for (std::size_t k {0}; k < rank; ++k) {
         shape[k]   = shape_[axes[k]];
         strides[k] = strides_[axes[k]];
       }
-      return tensor {std::move(shape), std::move(strides), data_};
+      return tensor {std::move(shape), std::move(strides), offset_, data_};
+    }
+
+    /*!
+     * \brief The elements `starts[a] + i·steps[a]` for `i < counts[a]` along each axis `a`, without a copy, as NumPy's
+     *        basic slicing: a view over the same elements, whose row-major copy (\ref data) is made on first need. An
+     *        axis whose \p keep is false (an integer index, its count 1) is dropped from the result's shape. A step may
+     *        be negative (`::-1`); a count of 0 gives an empty tensor.
+     * \throws dimension_error If the arguments do not hold one entry per axis, or a dropped axis's count is not 1.
+     * \throws std::out_of_range If a range of a nonzero count leaves its axis.
+     */
+    template <typename Keep = std::vector<bool>>
+    [[nodiscard]] tensor sliced(const std::vector<std::size_t>&    starts,
+                                const std::vector<std::ptrdiff_t>& steps,
+                                const std::vector<std::size_t>&    counts,
+                                const Keep&                        keep) const
+    {
+      const std::size_t rank {shape_.size()};
+      if (starts.size() != rank || steps.size() != rank || counts.size() != rank || keep.size() != rank) {
+        throw dimension_error("tensor: sliced takes one range per axis");
+      }
+      std::vector<std::size_t>    shape;
+      std::vector<std::ptrdiff_t> strides;
+      shape.reserve(rank);
+      strides.reserve(rank);
+      std::ptrdiff_t              offset {static_cast<std::ptrdiff_t>(offset_)};
+      for (std::size_t axis {0}; axis < rank; ++axis) {
+        if (!static_cast<bool>(keep[axis]) && counts[axis] != 1) {
+          throw dimension_error("tensor: sliced drops an axis of one index only");
+        }
+        if (counts[axis] != 0) {
+          const auto           extent {static_cast<std::ptrdiff_t>(shape_[axis])};
+          const auto           first  {static_cast<std::ptrdiff_t>(starts[axis])};
+          const std::ptrdiff_t last   {first + (static_cast<std::ptrdiff_t>(counts[axis] - 1) * steps[axis])};
+          if (first >= extent || last < 0 || last >= extent) {
+            throw std::out_of_range("tensor: a range of sliced leaves its axis");
+          }
+          offset += first * strides_[axis];
+        }
+        if (static_cast<bool>(keep[axis])) {
+          shape.push_back(counts[axis]);
+          strides.push_back(strides_[axis] * steps[axis]);
+        }
+      }
+      std::size_t count {1};
+      for (const std::size_t extent : shape) {
+        count *= extent;
+      }
+      if (count != 0 && count <= sliced_copy_most) {
+        // A few elements copied at once: a view's shared state and its later copy cost more than they spare (M1 Pro,
+        // `t[1:3] + 1` of 8 × 8 1.42 → 1.47 µs), and the copy keeps no larger buffer alive.
+        buffer<T> elements {gathered(shape, strides, static_cast<std::size_t>(offset), *data_)};
+        return tensor {std::move(shape), std::move(elements)};
+      }
+      return tensor {std::move(shape), std::move(strides), static_cast<std::size_t>(offset), data_};
     }
 
     //! \brief \ref transposed with the axes reversed: a matrix's transpose, NumPy's `.T`.
@@ -195,7 +252,7 @@ namespace numerical {
     //! \brief The total number of elements.
     [[nodiscard]] std::size_t size() const noexcept
     {
-      return data_->size();
+      return count_;
     }
 
     //! \brief The size of each axis.
@@ -204,14 +261,16 @@ namespace numerical {
       return shape_;
     }
 
-    //! \brief The elements as they are held, unpermuted: a view reads them along \ref strides from the first.
-    [[nodiscard]] const buffer<T>& lying() const noexcept
+    //! \brief The first element where the elements are held (index 0 along every axis): a view (\ref transposed,
+    //!        \ref sliced) reads the others along \ref strides from it. Past the end of nothing for an empty tensor.
+    [[nodiscard]] const T* origin() const noexcept
     {
-      return *data_;
+      return data_->data() + offset_;
     }
 
-    //! \brief Each axis's step through \ref lying, row-major unless a view (\ref transposed).
-    [[nodiscard]] const std::vector<std::size_t>& strides() const noexcept
+    //! \brief Each axis's step, in elements, from the first element (\ref origin), row-major unless a view, negative
+    //!        along an axis a view reverses.
+    [[nodiscard]] const std::vector<std::ptrdiff_t>& strides() const noexcept
     {
       return strides_;
     }
@@ -235,11 +294,11 @@ namespace numerical {
     //! \brief The element at a multi-index, read where it lies. \pre Its length is \ref rank, in bounds.
     [[nodiscard]] const T& operator()(const std::vector<std::size_t>& index) const
     {
-      std::size_t flat {0};
+      std::ptrdiff_t flat {static_cast<std::ptrdiff_t>(offset_)};
       for (std::size_t axis {0}; axis < index.size(); ++axis) {
-        flat += strides_[axis] * index[axis];
+        flat += strides_[axis] * static_cast<std::ptrdiff_t>(index[axis]);
       }
-      return (*data_)[flat];
+      return (*data_)[static_cast<std::size_t>(flat)];
     }
 
     //! \brief Exact equality (same shape and equal elements).
@@ -266,20 +325,28 @@ namespace numerical {
       finalize();
     }
 
-    //! \brief Over the shared elements \p elements, read along \p strides (\ref transposed, a permutation of a
-    //!        row-major tensor's): a view, unless they lie row-major along the axes longer than 1.
+    //! \brief Over the shared elements \p elements, read along \p strides from the element at \p offset (\ref
+    //!        transposed, \ref sliced): a view, unless they are the whole of \p elements, row-major along the axes
+    //!        longer than 1, or none.
     tensor(std::vector<std::size_t>         shape,
-           std::vector<std::size_t>         strides,
+           std::vector<std::ptrdiff_t>      strides,
+           std::size_t                      offset,
            std::shared_ptr<const buffer<T>> elements)
-      : shape_(std::move(shape)), strides_(std::move(strides)), data_(std::move(elements))
+      : shape_(std::move(shape)), strides_(std::move(strides)), data_(std::move(elements)), offset_ {offset}
     {
       std::size_t acc       {1};
       bool        row_major {true};
       for (std::size_t axis {shape_.size()}; axis-- > 0;) {
-        row_major = row_major && (shape_[axis] < 2 || strides_[axis] == acc); // an axis of extent 1 moves nothing
+        // an axis of extent 1 moves nothing
+        row_major = row_major && (shape_[axis] < 2 || strides_[axis] == static_cast<std::ptrdiff_t>(acc));
         acc      *= shape_[axis];
       }
-      if (row_major || acc == 0) {
+      count_ = acc;
+      if (acc == 0) { // nothing to read: an empty tensor of its own
+        data_ = std::make_shared<const buffer<T>>();
+        finalize();
+      }
+      else if (row_major && offset_ == 0 && acc == data_->size()) {
         finalize();
       }
       else {
@@ -293,25 +360,14 @@ namespace numerical {
       std::call_once(copy_->made, [this] {
                        // A view of up to 128 × 128 elements read in its order directly, row after row: detail::permuted's labels cost
                        // more than its tiles save there (M1 Pro, a transpose's copy: 8 × 8 182 against 335 ns, 96 × 96 3.5 against
-                       // 3.7 µs, 128 × 128 equal); its tiles and threads pay from 256 × 256 (28 against 47 µs).
+                       // 3.7 µs, 128 × 128 equal); its tiles and threads pay from 256 × 256 (28 against 47 µs). They take a
+                       // permutation of the whole of the elements only (\ref transposed's): a slice's rows, past it, on the threads.
                        constexpr std::size_t read_directly {std::size_t {1} << 14};
-                       if (data_->size() <= read_directly) {
-                         const std::size_t        last {shape_.size() - 1}; // a view has two axes or more
-                         const std::size_t        inner {shape_[last]};
-                         const std::size_t        step {strides_[last]};
-                         const T* const           from {data_->data()};
-                         buffer<T>                out(data_->size());
-                         for (std::size_t row {0}; row < out.size() / inner; ++row) {
-                           std::size_t at {0}; // the row's first element: its index along each outer axis times that axis's stride
-                           for (std::size_t axis {last}, rest {row}; axis-- > 0;) {
-                             at   += (rest % shape_[axis]) * strides_[axis];
-                             rest /= shape_[axis];
-                           }
-                           for (std::size_t i {0}; i < inner; ++i) {
-                             out[(row * inner) + i] = from[at + (i * step)];
-                           }
-                         }
-                         copy_->elements = std::move(out);
+                       // A view of every element from the first that lies (slices and transposes reach each element once, a
+                       // reversed axis starting past the first) is a permutation of the whole: its strides positive, row-major's.
+                       const bool            permutation {offset_ == 0 && count_ == data_->size()};
+                       if (count_ <= read_directly || !permutation) {
+                         copy_->elements = gathered(shape_, strides_, offset_, *data_);
                          return;
                        }
                        // The strides a permutation of row-major axes leaves: the axes from the widest stride to the narrowest are
@@ -341,24 +397,65 @@ namespace numerical {
       return copy_->elements;
     }
 
+    //! \brief The elements of \p data in \p shape, read along \p strides from \p offset, in row-major order: row after
+    //!        row along the last axis (a run as it lies copied as one), the rows on the threads where they are many.
+    [[nodiscard]] static buffer<T> gathered(const std::vector<std::size_t>&    shape,
+                                            const std::vector<std::ptrdiff_t>& strides,
+                                            std::size_t                        offset,
+                                            const buffer<T>&                   data)
+    {
+      if (shape.empty()) { // a rank-0 slice: its one element
+        return buffer<T> {data[offset]};
+      }
+      std::size_t count {1};
+      for (const std::size_t extent : shape) {
+        count *= extent;
+      }
+      buffer<T>         out(count);
+      const std::size_t inner {shape.back()};
+      const auto        step  {strides.back()};
+      const T* const    from  {data.data()};
+      detail::parallel_for(count / inner, detail::memory_element_weight * inner, [&](std::size_t row) {
+                             // the row's first element: its index along each outer axis times that axis's stride
+                             auto at {static_cast<std::ptrdiff_t>(offset)};
+                             for (std::size_t axis {shape.size() - 1}, rest {row}; axis-- > 0;) {
+                               at   += static_cast<std::ptrdiff_t>(rest % shape[axis]) * strides[axis];
+                               rest /= shape[axis];
+                             }
+                             T* const to {out.data() + (row * inner)};
+                             if (step == 1) { // a run as it lies, copied as one
+                               std::copy_n(from + at, inner, to);
+                               return;
+                             }
+                             for (std::size_t i {0}; i < inner; ++i) {
+                               to[i] = from[at + (static_cast<std::ptrdiff_t>(i) * step)];
+                             }
+                           });
+      return out;
+    }
+
     //! \brief Computes row-major strides and checks the buffer against the shape.
     void finalize()
     {
       strides_.assign(shape_.size(), 1);
       std::size_t acc {1};
       for (std::size_t axis {shape_.size()}; axis-- > 0;) {
-        strides_[axis] = acc;
+        strides_[axis] = static_cast<std::ptrdiff_t>(acc);
         acc            = detail::checked_mul(acc, shape_[axis]); // guard the element-count product
       }
       if (data_->size() != acc) {
         throw dimension_error("tensor: data size does not match the shape");
       }
+      offset_ = 0;
+      count_  = acc;
     }
 
-    std::vector<std::size_t>         shape_;   //!< The size of each axis.
-    std::vector<std::size_t>         strides_; //!< Each axis's step in the held elements: row-major unless a view.
-    std::shared_ptr<const buffer<T>> data_;    //!< The elements, shared with the tensors that hold them.
-    std::shared_ptr<row_major_copy>  copy_;    //!< A view's row-major copy; null where the elements lie row-major.
+    std::vector<std::size_t>         shape_;      //!< The size of each axis.
+    std::vector<std::ptrdiff_t>      strides_;    //!< Each axis's step from origin_: row-major unless a view.
+    std::shared_ptr<const buffer<T>> data_;       //!< The elements, shared with the tensors that hold them.
+    std::size_t                      offset_ {0}; //!< Where in data_ the first element lies (a view's, \ref sliced).
+    std::size_t                      count_  {0}; //!< The number of elements: data_'s, unless a view.
+    std::shared_ptr<row_major_copy>  copy_;       //!< A view's row-major copy; null where the elements lie row-major.
   };
 
   /*!

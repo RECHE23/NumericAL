@@ -654,8 +654,8 @@ inline PyObject* get_array_interface(const any_tensor& v)
         return nullptr;
     }
     const std::string typestr = typestr_of(v);
-    // 'data' is (address, read-only): the view shares our immutable buffer. A Tensor's own view (a transpose) is read
-    // where it lies, along its strides in bytes.
+    // 'data' is (address, read-only): the view shares our immutable buffer. A Tensor's own view (a transpose, a slice)
+    // is read where it lies, from its first element along its strides in bytes (negative along a reversed axis).
     const bool contiguous {std::visit([](const auto& t) { return t.contiguous(); }, v)};
     if (contiguous) {
         return Py_BuildValue("{s:N,s:s,s:(NO),s:i}",
@@ -667,7 +667,7 @@ inline PyObject* get_array_interface(const any_tensor& v)
     PyObject* strides = std::visit([](const auto& t) {
         PyObject* out = PyTuple_New(static_cast<Py_ssize_t>(t.strides().size()));
         for (std::size_t axis = 0; out != nullptr && axis < t.strides().size(); ++axis) {
-            PyObject* bytes = PyLong_FromSize_t(t.strides()[axis] * sizeof(*t.lying().data()));
+            PyObject* bytes = PyLong_FromSsize_t(static_cast<Py_ssize_t>(t.strides()[axis]) * static_cast<Py_ssize_t>(sizeof(*t.origin())));
             if (bytes == nullptr || PyTuple_SetItem(out, static_cast<Py_ssize_t>(axis), bytes) != 0) { // steals bytes
                 Py_CLEAR(out);
             }
@@ -678,11 +678,11 @@ inline PyObject* get_array_interface(const any_tensor& v)
         Py_DECREF(shape);
         return nullptr;
     }
-    const void* lying = std::visit([](const auto& t) { return static_cast<const void*>(t.lying().data()); }, v);
+    const void* origin = std::visit([](const auto& t) { return static_cast<const void*>(t.origin()); }, v);
     return Py_BuildValue("{s:N,s:s,s:(NO),s:N,s:i}",
                          "shape", shape,
                          "typestr", typestr.c_str(),
-                         "data", PyLong_FromVoidPtr(const_cast<void*>(lying)), Py_True,
+                         "data", PyLong_FromVoidPtr(const_cast<void*>(origin)), Py_True,
                          "strides", strides,
                          "version", 3);
 }
@@ -807,12 +807,19 @@ inline PyObject* tensor_dlpack(PyObject* self, PyObject* args, PyObject* kwds)
                                            "1.0 cannot say; ask for max_version (1, 0) or a copy");
         return nullptr;
     }
-    const bool copied = asked == 1 || !*versioned;
+    // A reversed view (a negative stride, t[::-1]) is never shared: NumPy reads one, but PyTorch refuses it.
+    const bool reversed = std::visit([](const auto& t) { return std::ranges::any_of(t.strides(), [](std::ptrdiff_t step) { return step < 0; }); }, *h);
+    if (reversed && asked == 0) {
+        PyErr_SetString(PyExc_BufferError, "__dlpack__: a reversed view (a negative stride) is not shared; ask for a copy");
+        return nullptr;
+    }
+    const bool copied = asked == 1 || !*versioned || reversed;
 
     const std::vector<std::size_t>& shape         = shape_of(*h);
     const int                       ndim          = static_cast<int>(shape.size());
-    const std::size_t               bytes         = count_of(*h) * std::visit([](const auto& t) { return sizeof(*t.lying().data()); }, *h);
-    // A Tensor's own view (a transpose) shared where it lies, along its strides (in elements, as DLPack counts them).
+    const std::size_t               bytes         = count_of(*h) * std::visit([](const auto& t) { return sizeof(*t.origin()); }, *h);
+    // A Tensor's own view (a transpose, a slice) shared where it lies, from its first element along its strides (in
+    // elements, as DLPack counts them; negative along a reversed axis).
     const bool                      strided       = !copied && !std::visit([](const auto& t) { return t.contiguous(); }, *h);
     const std::size_t               managed_bytes = *versioned ? sizeof(DLManagedTensorVersioned) : sizeof(DLManagedTensor);
 
@@ -845,7 +852,7 @@ inline PyObject* tensor_dlpack(PyObject* self, PyObject* args, PyObject* kwds)
     }
 
     DLTensor tensor {};
-    tensor.data        = copied ? buffer : strided ? const_cast<void*>(std::visit([](const auto& t) { return static_cast<const void*>(t.lying().data()); }, *h)) : const_cast<void*>(data_of(*h));
+    tensor.data        = copied ? buffer : strided ? const_cast<void*>(std::visit([](const auto& t) { return static_cast<const void*>(t.origin()); }, *h)) : const_cast<void*>(data_of(*h));
     tensor.device      = DLDevice {kDLCPU, 0};
     tensor.ndim        = ndim;
     const auto bits    = static_cast<std::uint8_t>(is_bool(*h) ? 8 : (is_single(*h) ? 32 : 64) * (is_complex(*h) ? 2 : 1));
@@ -1514,60 +1521,18 @@ inline bool read_integers(PyObject* seq, std::vector<Py_ssize_t>& out)
     return true;
 }
 
-// The elements `starts[a] + k·steps[a]`, `k < counts[a]`, on every axis `a` of `t`, in row-major order: the
-// axes with `keep[a]` are the result's, the others are indexed by one integer and dropped.
+// The elements `starts[a] + k·steps[a]`, `k < counts[a]`, on every axis `a` of `t`, as a view (tensor::sliced) that
+// reads them where they lie: the axes with `keep[a]` are the result's, the others are indexed by one integer and
+// dropped; all of them dropped, the element itself.
 template <typename T>
 PyObject* take_from(const numerical::tensor<T>& t, const std::vector<std::size_t>& starts,
                     const std::vector<std::ptrdiff_t>& steps, const std::vector<std::size_t>& counts,
                     const std::vector<std::size_t>& keep)
 {
-    const std::vector<std::size_t>& shape {t.shape()};
-    const std::size_t               rank  {shape.size()};
-    std::vector<std::size_t>        strides(rank, 1);
-    for (std::size_t a = rank; a-- > 1;) {
-        strides[a - 1] = strides[a] * shape[a];
+    if (std::ranges::none_of(keep, [](std::size_t k) { return k != 0; })) { // every axis indexed: the element, a number
+        return from_scalar<T>(t(starts));
     }
-    std::vector<std::size_t> out_shape;
-    std::size_t              total {1};
-    for (std::size_t a = 0; a < rank; ++a) {
-        total *= counts[a];
-        if (keep[a] != 0) {
-            out_shape.push_back(counts[a]);
-        }
-    }
-    numerical::buffer<T> out(total);
-    if (rank == 0) {
-        out[0] = t.data()[0];
-    }
-    else if (total != 0) {
-        // Each row along the last axis from its own index, the other axes' offsets summed for it: a contiguous run
-        // copied as one where the last step is 1, else element by element; the rows on the threads.
-        const std::size_t    last  {rank - 1};
-        const std::size_t    width {counts[last]};
-        const std::ptrdiff_t step  {steps[last]};
-        numerical::detail::parallel_for(total / width, numerical::detail::memory_element_weight * width, [&](std::size_t row) {
-            std::size_t rest   {row};
-            std::size_t offset {starts[last]};
-            for (std::size_t a = last; a-- > 0;) {
-                const std::size_t k {rest % counts[a]};
-                rest   /= counts[a];
-                offset += static_cast<std::size_t>(static_cast<std::ptrdiff_t>(starts[a]) + (static_cast<std::ptrdiff_t>(k) * steps[a])) * strides[a];
-            }
-            const T* const from {t.data().data() + offset};
-            T* const       to   {out.data() + (row * width)};
-            if (step == 1) {
-                std::copy(from, from + width, to);
-                return;
-            }
-            for (std::size_t j = 0; j < width; ++j) {
-                to[j] = from[static_cast<std::ptrdiff_t>(j) * step];
-            }
-        });
-    }
-    if (out_shape.empty()) {
-        return from_scalar<T>(out.front());
-    }
-    return wrap(any_tensor {numerical::tensor<T> {std::move(out_shape), std::move(out)}});
+    return wrap(any_tensor {t.sliced(starts, steps, counts, keep)});
 }
 
 // _take(t, starts, steps, counts, keep) -> Tensor or number: the indexing behind Tensor.__getitem__, whose
@@ -3556,14 +3521,28 @@ inline bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = 
         out.owner = Py_NewRef(obj);
         out.dtype = v->index();
         out.shape = shape_of(*v);
-        // A matrix's transpose (tensor::transposed) read where it lies, column-major, by a caller that takes columns;
-        // any other view through its row-major copy.
-        const bool lies_in_columns {columns && out.shape.size() == 2 && std::visit([&](const auto& t) {
-                                        return !t.contiguous() && t.strides()[0] == 1 && t.strides()[1] == out.shape[0];
-                                    }, *v)};
-        out.data       = lies_in_columns ? std::visit([](const auto& t) { return static_cast<const void*>(t.lying().data()); }, *v) : data_of(*v);
-        out.transposed = lies_in_columns;
-        out.ld         = out.shape.empty() ? 0 : lies_in_columns ? out.shape[0] : out.shape.back();
+        // A view of a matrix (a transpose, a slice: tensor::transposed, tensor::sliced) of two axes longer than 1 read
+        // where it lies, as a NumPy array is: column-major, its columns one after the other (a whole matrix's
+        // transpose), by a caller that takes columns (out.transposed); its rows together but apart (a[:, :k], a[::2]),
+        // by one that takes rows_apart. Any other view through its row-major copy.
+        const auto lies = [&](std::size_t together, std::size_t apart, bool spaced) {
+            return std::visit([&](const auto& t) {
+                const auto run {static_cast<std::ptrdiff_t>(out.shape[together])};
+                return !t.contiguous() && out.shape.size() == 2 && out.shape[0] > 1 && out.shape[1] > 1 && t.strides()[together] == 1
+                       && (spaced ? t.strides()[apart] >= run : t.strides()[apart] == run);
+            }, *v);
+        };
+        const bool in_columns {columns && lies(0, 1, false)};
+        const bool in_rows {rows_apart && lies(1, 0, true)};
+        if (in_columns || in_rows) {
+            out.data       = std::visit([](const auto& t) { return static_cast<const void*>(t.origin()); }, *v);
+            out.transposed = in_columns;
+            out.ld         = std::visit([&](const auto& t) { return static_cast<std::size_t>(t.strides()[in_columns ? 1 : 0]); }, *v);
+            return true;
+        }
+        out.data       = data_of(*v);
+        out.transposed = false;
+        out.ld         = out.shape.empty() ? 0 : out.shape.back();
         return true;
     }
     PyObject* capsule = PyObject_GetAttr(obj, interned_name<array_struct_name>()); // new ref

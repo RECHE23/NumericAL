@@ -1,5 +1,6 @@
-"""A Tensor's axes permuted (.T, .mT, transpose, swapaxes, moveaxis, matrix_transpose, a permuting einsum) are a view:
-NumPy's elements in NumPy's order, and every operation on it the bits it gives on the same elements built contiguous,
+"""A Tensor's axes permuted (.T, .mT, transpose, swapaxes, moveaxis, matrix_transpose, a permuting einsum) and its basic
+slices (ranges, steps, reversals, integer indices, and their compositions with permutations) are views: NumPy's
+elements in NumPy's order, and every operation on one the bits it gives on the same elements built contiguous,
 whatever the dtype, from one thread or several. The NumPy comparisons are skipped without NumPy."""
 import threading
 import unittest
@@ -42,6 +43,21 @@ _PERMUTATIONS = [
     ("T of T", lambda t: t.T.T, lambda a: a),
 ]
 
+_SLICES = [
+    ("from row 1", lambda t: t[1:], lambda a: a[1:]),
+    ("reversed", lambda t: t[::-1], lambda a: a[::-1]),
+    ("every other column", lambda t: t[..., ::2], lambda a: a[..., ::2]),
+    ("inner block backwards", lambda t: t[1:, -2::-2], lambda a: a[1:, -2::-2]),
+    ("first row", lambda t: t[0], lambda a: a[0]),
+    ("a column", lambda t: t[:, 1], lambda a: a[:, 1]),
+    ("columns then T", lambda t: t[:, 1:4].T, lambda a: a[:, 1:4].T),
+    ("T then rows", lambda t: t.T[::2], lambda a: a.T[::2]),
+    ("slice of a slice", lambda t: t[::-1][1:, ::3], lambda a: a[::-1][1:, ::3]),
+    ("the whole", lambda t: t[:], lambda a: a),
+]
+
+_VIEWS = _PERMUTATIONS + _SLICES
+
 _FLOAT_OPERATIONS = [
     ("add", lambda x: x + 1.5),
     ("square", lambda x: x * x),
@@ -73,7 +89,7 @@ class TestViews(unittest.TestCase):
     def _tensors(self):
         rng = np.random.default_rng(20261114)
         for dtype in ("float64", "float32", "complex128", "complex64"):
-            for shape in ((7, 5), (3, 4, 6), (1, 5), (40, 33)):
+            for shape in ((7, 5), (3, 4, 6), (1, 5), (40, 33), (9, 70, 3)):
                 a = rng.standard_normal(shape)
                 if dtype.startswith("complex"):
                     a = a + 1j * rng.standard_normal(shape)
@@ -82,8 +98,8 @@ class TestViews(unittest.TestCase):
     def test_the_elements_in_numpys_order(self):
         for dtype, a in self._tensors():
             t = numerical.asarray(a)
-            for name, permute, expected in _PERMUTATIONS:
-                with self.subTest(dtype=dtype, shape=a.shape, permutation=name):
+            for name, permute, expected in _VIEWS:
+                with self.subTest(dtype=dtype, shape=a.shape, view=name):
                     view = permute(t)
                     want = expected(a)
                     self.assertEqual(view.shape, want.shape)
@@ -107,18 +123,40 @@ class TestViews(unittest.TestCase):
             np.testing.assert_array_equal(copied, np.asarray(view))
         kept = np.asarray(numerical.asarray(a).T)  # neither the tensor nor its view is held any more
         np.testing.assert_array_equal(kept, a.T)
+        # A slice past 512 elements likewise, from its first element, a reversed axis's stride negative; a smaller one
+        # is a copy of its own.
+        a = np.random.default_rng(4).standard_normal((60, 40, 9))
+        t = numerical.asarray(a)
+        for view, want in ((t[1:, ::-2, 3], a[1:, ::-2, 3]), (t[::-1, 2], a[::-1, 2]), (t[5:9], a[5:9]), (t[:, 1:], a[:, 1:])):
+            reversed_axis = any(stride < 0 for stride in want.strides)
+            for read in (np.asarray, np.from_dlpack):
+                got = read(view)
+                # DLPack shares no reversed view (PyTorch refuses a negative stride): a copy of its own
+                shared = read is np.asarray or not reversed_axis
+                self.assertEqual(np.shares_memory(got, np.asarray(t)), shared)
+                if shared:
+                    self.assertFalse(got.flags.writeable)
+                np.testing.assert_array_equal(got, want)
+            if reversed_axis:
+                with self.assertRaises(BufferError):
+                    view.__dlpack__(max_version=(1, 0), copy=False)
+        small = np.asarray(t[2:4, 1:3])
+        self.assertFalse(np.shares_memory(small, np.asarray(t)))
+        np.testing.assert_array_equal(small, a[2:4, 1:3])
+        kept = np.asarray(numerical.asarray(a)[::-1, 3])
+        np.testing.assert_array_equal(kept, a[::-1, 3])
 
     def test_each_operation_gives_the_contiguous_bits(self):
         for dtype, a in self._tensors():
             t = numerical.asarray(a)
-            for name, permute, _ in _PERMUTATIONS:
+            for name, permute, _ in _VIEWS:
                 for operation, run in _FLOAT_OPERATIONS:
                     view = permute(t)
-                    if operation == "svdvals" and len(view.shape) != 2:
+                    if operation in ("svdvals", "qr") and len(view.shape) != 2:
                         continue
-                    if operation == "qr" and len(view.shape) != 2:
+                    if operation in ("times its transpose", "matmul on the right") and len(view.shape) < 2:
                         continue
-                    with self.subTest(dtype=dtype, shape=a.shape, permutation=name, operation=operation):
+                    with self.subTest(dtype=dtype, shape=a.shape, view=name, operation=operation):
                         built = numerical.asarray(np.array(view))  # the same elements, contiguous
                         self.assertEqual(_outcome(run, view), _outcome(run, built))
 
@@ -136,7 +174,15 @@ class TestViews(unittest.TestCase):
                         ("aT@cT", lambda: a.T @ c.T, lambda: built @ numerical.asarray(np.array(c.T))),
                         ("x@a", lambda: x @ a, lambda: x @ a), ("aT@x", lambda: a.T @ x, lambda: built @ x),
                         ("aT@narrow", lambda: a.T @ numerical.ones((400, 3), dtype=dtype),
-                         lambda: built @ numerical.ones((400, 3), dtype=dtype))]
+                         lambda: built @ numerical.ones((400, 3), dtype=dtype)),
+                        # slices read where they lie: rows apart (a[:, :300]), columns apart (a[:, :300].T)
+                        ("a[:, :300]@c[:300]", lambda: a[:, :300] @ c[:300],
+                         lambda: numerical.asarray(np.array(a[:, :300])) @ numerical.asarray(np.array(c[:300]))),
+                        ("a[:, :300].T@b", lambda: a[:, :300].T @ b,
+                         lambda: numerical.asarray(np.array(a[:, :300].T)) @ b),
+                        ("a[::2]@c", lambda: a[::2] @ c, lambda: numerical.asarray(np.array(a[::2])) @ c),
+                        ("b@a[1:391].T", lambda: b @ a[1:391].T,
+                         lambda: b @ numerical.asarray(np.array(a[1:391].T)))]
             for threads in (0, 1):
                 previous = numerical.get_num_threads()
                 if threads:
@@ -152,10 +198,10 @@ class TestViews(unittest.TestCase):
         x = np.arange(24).reshape(2, 3, 4)
         for source in (x, x % 3 == 0):
             t = numerical.asarray(source)
-            for name, permute, expected in _PERMUTATIONS:
+            for name, permute, expected in _VIEWS:
                 if name == "einsum" and source.dtype == bool:
                     continue
-                with self.subTest(dtype=str(source.dtype), permutation=name):
+                with self.subTest(dtype=str(source.dtype), view=name):
                     view = permute(t)
                     self.assertEqual(view.tolist(), expected(source).tolist())
                     self.assertEqual(numerical.sum(view, axis=0).tolist(), np.sum(expected(source), axis=0).tolist())

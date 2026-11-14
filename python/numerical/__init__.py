@@ -356,8 +356,8 @@ def _key_index(index):
 def _getitem(self, key):
     """``t[i]``, ``t[i, j]``, ``t[1:5:2, ::-1]``: integers drop an axis, slices keep one, missing trailing
     indices take a whole axis, as NumPy's basic indexing; a negative index counts from the end. All integers
-    give a number, anything else a Tensor (a copy: a Tensor is never written through, so it reads as NumPy's
-    view would). An integer or bool array in the key (a list, a NumPy array, a bool Tensor, a lone bool) makes it
+    give a number, anything else a Tensor that reads the elements where they lie, as NumPy's view does (a Tensor is
+    never written through, so the view and a copy read alike). An integer or bool array in the key (a list, a NumPy array, a bool Tensor, a lone bool) makes it
     NumPy's advanced indexing (:func:`_getitem_advanced`)."""
     if not isinstance(key, tuple):
         key = (key,)

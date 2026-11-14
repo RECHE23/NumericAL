@@ -72,5 +72,8 @@ A `Tensor` is read where it lies by NumPy (`np.asarray(t)`, through `__array_int
 anything that takes DLPack (`np.from_dlpack(t)`, `torch.from_dlpack(t)`, JAX, CuPy). A permutation of a tensor's
 axes (`t.T`, `t.mT`, `transpose`, `swapaxes`, `moveaxis`, `matrix_transpose`, `einsum("ij->ji", t)`) is a view of its
 own, as NumPy's: no element is copied until an operation needs them in the new order, then once; a product, and
-NumPy (`np.asarray`, `np.from_dlpack`), read a transpose where it lies. A tensor is never
+NumPy (`np.asarray`, `np.from_dlpack`), read a transpose where it lies. So is a slice (`t[1:3]`, `t[:, ::2]`,
+`t[::-1, 2]`) of more than 512 elements, a product reading its rows apart (`t[:, :k] @ b`) where they lie, NumPy a
+slice along its strides; DLPack shares no reversed one (PyTorch refuses a negative stride) and gives a copy. A smaller
+slice is copied at once. As NumPy's, a view keeps the whole tensor it reads alive. A tensor is never
 written, so neither is a view; a NumPy array passed in is copied, so writing to it later never reaches a tensor.

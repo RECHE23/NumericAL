@@ -125,8 +125,9 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
 - **Bool arithmetic and the small dtypes.** `+`, `-`, `*` (and `add`, `multiply`…) refuse two bool tensors, where
   NumPy's are a logical or and a logical and; there is no float16 nor int8, NumPy's dtype for `fabs`, `arcsin`… or
   `reciprocal` of a bool, which raise here.
-- **Views and assignment.** A `Tensor` is immutable: no `t[i] = x`. A permutation of its axes (`t.T`, `transpose`…) is a
-  view, as NumPy's; a slice (`t[1:3]`), a reshape of a view, and a NumPy array passed in are copies.
+- **Views and assignment.** A `Tensor` is immutable: no `t[i] = x`. A permutation of its axes (`t.T`, `transpose`…) and
+  a slice (`t[1:3]`, `t[::-1, 2]`) are views, as NumPy's, except a slice of 512 elements or fewer, which is copied at
+  once (and so keeps no larger tensor alive); a reshape of a view and a NumPy array passed in are copies.
 - **Complex ordering.** `max`, `min`, `maximum`, `minimum` and `clip` take real dtypes only; NumPy orders complex
   numbers by real, then imaginary part (`sort` does too).
 - **Namespaces.** Everything lives at the root, with `numpy.fft`'s names in `numerical.fft` and `numpy.linalg`'s in
