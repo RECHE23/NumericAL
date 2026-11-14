@@ -90,6 +90,24 @@ class TestViews(unittest.TestCase):
                     self.assertEqual(_bits(view), _bits(np.ascontiguousarray(want)))
                     self.assertEqual(_bits(np.from_dlpack(view)), _bits(np.ascontiguousarray(want)))
 
+    def test_numpy_reads_a_view_where_it_lies(self):
+        # np.asarray and np.from_dlpack read a transpose in the Tensor's own buffer, read-only, along its strides; the
+        # array keeps the elements alive after the view and the tensor are gone; a copy asked for is row-major.
+        a = np.random.default_rng(3).standard_normal((30, 20, 7))
+        t = numerical.asarray(a)
+        for view, want in ((t.T, a.T), (numerical.transpose(t, (1, 2, 0)), np.transpose(a, (1, 2, 0))),
+                           (numerical.swapaxes(t, 0, 1), np.swapaxes(a, 0, 1))):
+            for read in (np.asarray, np.from_dlpack):
+                got = read(view)
+                self.assertTrue(np.shares_memory(got, np.asarray(t)))
+                self.assertFalse(got.flags.writeable)
+                np.testing.assert_array_equal(got, want)
+            copied = np.from_dlpack(view, copy=True)
+            self.assertTrue(copied.flags.c_contiguous and not np.shares_memory(copied, np.asarray(t)))
+            np.testing.assert_array_equal(copied, np.asarray(view))
+        kept = np.asarray(numerical.asarray(a).T)  # neither the tensor nor its view is held any more
+        np.testing.assert_array_equal(kept, a.T)
+
     def test_each_operation_gives_the_contiguous_bits(self):
         for dtype, a in self._tensors():
             t = numerical.asarray(a)
@@ -103,6 +121,32 @@ class TestViews(unittest.TestCase):
                     with self.subTest(dtype=dtype, shape=a.shape, permutation=name, operation=operation):
                         built = numerical.asarray(np.array(view))  # the same elements, contiguous
                         self.assertEqual(_outcome(run, view), _outcome(run, built))
+
+    def test_products_of_large_views(self):
+        # Past the Gram products' size (a @ a.T by its triangle), on all threads and on one: the copies' bits.
+        rng = np.random.default_rng(11)
+        for dtype in ("float64", "complex128", "float32"):
+            a = numerical.asarray(rng.standard_normal((400, 390)).astype(dtype))
+            b = numerical.asarray(rng.standard_normal((400, 390)).astype(dtype))
+            c = numerical.asarray(rng.standard_normal((390, 400)).astype(dtype))
+            x = numerical.asarray(rng.standard_normal(400).astype(dtype))
+            built = numerical.asarray(np.array(a.T))
+            products = [("aT@a", lambda: a.T @ a, lambda: built @ a), ("a@aT", lambda: a @ a.T, lambda: a @ built),
+                        ("aT@b", lambda: a.T @ b, lambda: built @ b), ("b@aT", lambda: b @ a.T, lambda: b @ built),
+                        ("aT@cT", lambda: a.T @ c.T, lambda: built @ numerical.asarray(np.array(c.T))),
+                        ("x@a", lambda: x @ a, lambda: x @ a), ("aT@x", lambda: a.T @ x, lambda: built @ x),
+                        ("aT@narrow", lambda: a.T @ numerical.ones((400, 3), dtype=dtype),
+                         lambda: built @ numerical.ones((400, 3), dtype=dtype))]
+            for threads in (0, 1):
+                previous = numerical.get_num_threads()
+                if threads:
+                    numerical.set_num_threads(threads)
+                try:
+                    for name, view, copy in products:
+                        with self.subTest(dtype=dtype, threads=threads or "all", product=name):
+                            self.assertEqual(_bits(view()), _bits(copy()))
+                finally:
+                    numerical.set_num_threads(previous)
 
     def test_bool_and_int64_views(self):
         x = np.arange(24).reshape(2, 3, 4)

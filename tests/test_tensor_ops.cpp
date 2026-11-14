@@ -897,6 +897,7 @@ TEST(a_permutation_of_the_axes_is_a_view)
   const tensor<double> cube {counting({2, 3, 4})};
   const tensor<double> view {cube.transposed({2, 0, 1})};
   EXPECT(!view.contiguous() && view.shape() == (shape {4, 2, 3}) && view.size() == 24);
+  EXPECT(view.strides() == (shape {1, 12, 4}) && view.lying().data() == cube.data().data() && cube.strides() == (shape {12, 4, 1}));
   EXPECT(view(std::vector<std::size_t> {3, 1, 2}) == cube(std::vector<std::size_t> {1, 2, 3}));
   numerical::buffer<double> expected;
   for (std::size_t k {0}; k < 4; ++k) {

@@ -654,11 +654,36 @@ inline PyObject* get_array_interface(const any_tensor& v)
         return nullptr;
     }
     const std::string typestr = typestr_of(v);
-    // 'data' is (address, read-only): the view shares our immutable buffer.
-    return Py_BuildValue("{s:N,s:s,s:(NO),s:i}",
+    // 'data' is (address, read-only): the view shares our immutable buffer. A Tensor's own view (a transpose) is read
+    // where it lies, along its strides in bytes.
+    const bool contiguous {std::visit([](const auto& t) { return t.contiguous(); }, v)};
+    if (contiguous) {
+        return Py_BuildValue("{s:N,s:s,s:(NO),s:i}",
+                             "shape", shape,
+                             "typestr", typestr.c_str(),
+                             "data", PyLong_FromVoidPtr(const_cast<void*>(data_of(v))), Py_True,
+                             "version", 3);
+    }
+    PyObject* strides = std::visit([](const auto& t) {
+        PyObject* out = PyTuple_New(static_cast<Py_ssize_t>(t.strides().size()));
+        for (std::size_t axis = 0; out != nullptr && axis < t.strides().size(); ++axis) {
+            PyObject* bytes = PyLong_FromSize_t(t.strides()[axis] * sizeof(*t.lying().data()));
+            if (bytes == nullptr || PyTuple_SetItem(out, static_cast<Py_ssize_t>(axis), bytes) != 0) { // steals bytes
+                Py_CLEAR(out);
+            }
+        }
+        return out;
+    }, v);
+    if (strides == nullptr) {
+        Py_DECREF(shape);
+        return nullptr;
+    }
+    const void* lying = std::visit([](const auto& t) { return static_cast<const void*>(t.lying().data()); }, v);
+    return Py_BuildValue("{s:N,s:s,s:(NO),s:N,s:i}",
                          "shape", shape,
                          "typestr", typestr.c_str(),
-                         "data", PyLong_FromVoidPtr(const_cast<void*>(data_of(v))), Py_True,
+                         "data", PyLong_FromVoidPtr(const_cast<void*>(lying)), Py_True,
+                         "strides", strides,
                          "version", 3);
 }
 
@@ -786,11 +811,13 @@ inline PyObject* tensor_dlpack(PyObject* self, PyObject* args, PyObject* kwds)
 
     const std::vector<std::size_t>& shape         = shape_of(*h);
     const int                       ndim          = static_cast<int>(shape.size());
-    const std::size_t               bytes         = count_of(*h) * std::visit([](const auto& t) { return sizeof(*t.data().data()); }, *h);
+    const std::size_t               bytes         = count_of(*h) * std::visit([](const auto& t) { return sizeof(*t.lying().data()); }, *h);
+    // A Tensor's own view (a transpose) shared where it lies, along its strides (in elements, as DLPack counts them).
+    const bool                      strided       = !copied && !std::visit([](const auto& t) { return t.contiguous(); }, *h);
     const std::size_t               managed_bytes = *versioned ? sizeof(DLManagedTensorVersioned) : sizeof(DLManagedTensor);
 
     void* managed = std::malloc(managed_bytes);
-    auto* axes    = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * (ndim > 0 ? static_cast<std::size_t>(ndim) : 1)));
+    auto* axes    = static_cast<std::int64_t*>(std::malloc(sizeof(std::int64_t) * (ndim > 0 ? 2 * static_cast<std::size_t>(ndim) : 1))); // the extents, then any strides
     void* buffer  = copied ? std::malloc(bytes > 0 ? bytes : 1) : nullptr;
     auto* ctx     = new (std::nothrow) dlpack_ctx {copied ? nullptr : Py_NewRef(self), buffer, axes};
     if (managed == nullptr || axes == nullptr || (copied && buffer == nullptr) || ctx == nullptr) {
@@ -806,18 +833,25 @@ inline PyObject* tensor_dlpack(PyObject* self, PyObject* args, PyObject* kwds)
     for (int i = 0; i < ndim; ++i) {
         axes[i] = static_cast<std::int64_t>(shape[static_cast<std::size_t>(i)]);
     }
+    if (strided) {
+        std::visit([&](const auto& t) {
+            for (int i = 0; i < ndim; ++i) {
+                axes[ndim + i] = static_cast<std::int64_t>(t.strides()[static_cast<std::size_t>(i)]);
+            }
+        }, *h);
+    }
     if (copied && bytes > 0) {
         std::memcpy(buffer, data_of(*h), bytes);
     }
 
     DLTensor tensor {};
-    tensor.data        = copied ? buffer : const_cast<void*>(data_of(*h));
+    tensor.data        = copied ? buffer : strided ? const_cast<void*>(std::visit([](const auto& t) { return static_cast<const void*>(t.lying().data()); }, *h)) : const_cast<void*>(data_of(*h));
     tensor.device      = DLDevice {kDLCPU, 0};
     tensor.ndim        = ndim;
     const auto bits    = static_cast<std::uint8_t>(is_bool(*h) ? 8 : (is_single(*h) ? 32 : 64) * (is_complex(*h) ? 2 : 1));
     tensor.dtype       = DLDataType {is_bool(*h) ? kDLBool : is_int(*h) ? kDLInt : is_complex(*h) ? kDLComplex : kDLFloat, bits, 1};
     tensor.shape       = axes;
-    tensor.strides     = nullptr; // compact, row-major
+    tensor.strides     = strided ? axes + ndim : nullptr; // else compact, row-major
     tensor.byte_offset = 0;
 
     PyObject* capsule = nullptr;
@@ -3522,8 +3556,14 @@ inline bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = 
         out.owner = Py_NewRef(obj);
         out.dtype = v->index();
         out.shape = shape_of(*v);
-        out.data  = data_of(*v);
-        out.ld    = out.shape.empty() ? 0 : out.shape.back();
+        // A matrix's transpose (tensor::transposed) read where it lies, column-major, by a caller that takes columns;
+        // any other view through its row-major copy.
+        const bool lies_in_columns {columns && out.shape.size() == 2 && std::visit([&](const auto& t) {
+                                        return !t.contiguous() && t.strides()[0] == 1 && t.strides()[1] == out.shape[0];
+                                    }, *v)};
+        out.data       = lies_in_columns ? std::visit([](const auto& t) { return static_cast<const void*>(t.lying().data()); }, *v) : data_of(*v);
+        out.transposed = lies_in_columns;
+        out.ld         = out.shape.empty() ? 0 : lies_in_columns ? out.shape[0] : out.shape.back();
         return true;
     }
     PyObject* capsule = PyObject_GetAttr(obj, interned_name<array_struct_name>()); // new ref
@@ -3659,12 +3699,20 @@ inline std::optional<PyObject*> borrowed_row_times_transposed(const borrowed_ope
     }
 }
 
-// Whether the product of `left` and `right` is a Gram matrix A·Aᵀ or Aᵀ·A (`a @ a.T`, `a.T @ a`): one operand the other's
-// transpose, the same elements where they lie, and enough work for the packed kernel, as syrk_all takes it.
+// Whether a Gram matrix of order n and depth k has enough work for its triangle to beat the whole product: n²·k from
+// 256³ on one thread, 384³ on more, where the whole product shares its threads earlier (M1 Pro, A of order n: one
+// thread 256 0.88 of the time, 192 1.02; all of them 384 0.80, 320 1.13, 128 to 256 up to 1.28).
+inline bool gram_sized(std::size_t n, std::size_t k)
+{
+    const std::size_t order {numerical::max_threads() > 1 ? std::size_t {384} : std::size_t {256}};
+    return k >= numerical::detail::gemm_min_depth && n * n * k >= order * order * order;
+}
+
+// Whether the product of `left` and `right` is a Gram matrix A·Aᵀ or Aᵀ·A (`a @ a.T`, `a.T @ a`) to compute by its
+// triangle: one operand the other's transpose, the same elements where they lie, gram_sized.
 inline bool gram_product(const borrowed_operand& left, const borrowed_operand& right, std::size_t n, std::size_t k)
 {
-    return left.data == right.data && left.ld == right.ld && left.transposed != right.transposed && k >= numerical::detail::gemm_min_depth
-           && n * n >= ((numerical::detail::gemm_packed_threshold + k) - 1) / k;
+    return left.data == right.data && left.ld == right.ld && left.transposed != right.transposed && gram_sized(n, k);
 }
 
 // C = A·Aᵀ (`transposed` false: `a` the row-major n × k A, `ld` apart) or Aᵀ·A (`transposed`: `a` A's column-major n × k

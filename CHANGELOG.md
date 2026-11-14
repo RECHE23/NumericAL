@@ -10,6 +10,16 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **A product with a transpose reads it where it lies**: `a.T @ b`, `a.T @ a`, `x @ a.T`, `a.T @ x` of Tensors run the
+  kernels a column-major NumPy array takes, without copying the view. M1 Pro: `a.T @ b` of order 64 6.4 → 4.6 µs, 128
+  25.8 → 21.3 µs; `x @ a.T` of order 1000 373 → 57 µs; `a.T @ x` 223 → 69 µs; `a.T @ a` of order 512 616 → 362 µs. A
+  matrix times another's transpose (`a @ b.T`) still copies it, packing a matrix read by columns costing more there.
+  The same bits.
+- **`np.asarray` and `np.from_dlpack` of a transpose** read it in the Tensor's buffer along its strides, read-only,
+  where they copied it: 1000 × 1000 140 → 1.3 µs.
+- **A Gram product `a @ a.T` or `a.T @ a`** of a column-major NumPy array (or a transpose) runs by its triangle from
+  n²·k = 384³ on several threads (256³ on one), where any packed product did: from 128 to 320 the triangle, on one
+  thread, cost up to 1.28 times the whole product on all of them. The same bits.
 - **A permutation of a tensor's axes is a view**: `.T`, `.mT`, `transpose`, `swapaxes`, `moveaxis`,
   `matrix_transpose` and an `einsum` that only permutes (`"ijk->kij"`) read the elements where they lie, as NumPy's
   views do, where each copied them. The elements are copied out in the new order once, the first time an operation

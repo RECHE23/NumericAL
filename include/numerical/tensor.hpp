@@ -204,6 +204,18 @@ namespace numerical {
       return shape_;
     }
 
+    //! \brief The elements as they are held, unpermuted: a view reads them along \ref strides from the first.
+    [[nodiscard]] const buffer<T>& lying() const noexcept
+    {
+      return *data_;
+    }
+
+    //! \brief Each axis's step through \ref lying, row-major unless a view (\ref transposed).
+    [[nodiscard]] const std::vector<std::size_t>& strides() const noexcept
+    {
+      return strides_;
+    }
+
     //! \brief Whether the elements lie row-major where they are held: \ref data then copies nothing.
     [[nodiscard]] bool contiguous() const noexcept
     {
