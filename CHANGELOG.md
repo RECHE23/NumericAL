@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.15 — 2026-11-14
+
 ### Changed
 
 - **A matrix of short rows times a vector**: the rows' remainders past the vectors' blocks summed four rows side by
