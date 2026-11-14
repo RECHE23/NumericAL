@@ -14,6 +14,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   among the threads, each block its own split into real products, where neither that real product nor the copies of
   the parts took a thread. M1 Pro, eight threads: 4000 × 4 by 4 × 8 complex128 65 → 36 µs, 2000 × 16 by 16 × 16 72 →
   33 µs, 4000 × 16 by 16 × 1 88 → 49 µs; one thread as before. The same bits on any number of threads.
+- **A tall product of a few columns on arm64** (by rows, up to 8 columns) takes threads from half the work it took:
+  M1 Pro, eight threads, 4000 × 16 by 16 × 8 28 → 13 µs, 4000 × 64 by 64 × 2 58 → 26 µs, 200 × 200 by 200 × 8 14 →
+  10 µs; GCC 14 alike. The same bits.
 - **A product with a transpose reads it where it lies**: `a @ b.T`, `a.T @ b`, `a.T @ a`, `x @ a.T`, `a.T @ x` of
   Tensors run the kernels a column-major NumPy array takes, without copying the view. M1 Pro, one thread: `a @ b.T` of
   order 64 6.8 → 4.6 µs (float32 6.0 → 3.3), 4 × 1000 by 1000 × 1000 864 → 381 µs; `a.T @ b` of order 64 6.4 → 4.6 µs;

@@ -1689,13 +1689,15 @@ namespace numerical::detail {
   /*!
    * \brief The divisor of a block of \ref gemm_rows' rows' multiply-adds as its threads are weighed: on x86-64 its
    *        work itself, so a product of order 64 takes the threads (six AVX2 cores: 11.5 → 7.4 µs; 1000 × 64 by 64 × 5
-   *        28.3 → 10.8); on arm64 a quarter of it, where weighing the whole slowed narrow products a fifth (M1 Pro,
-   *        300 × 300 by 300 × 8 under Clang).
+   *        28.3 → 10.8); on arm64 half of it, where weighing the whole slowed narrow products a fifth (M1 Pro,
+   *        300 × 300 by 300 × 8 under Clang, 128 × 128 by 128 × 8 5.9 → 7.3 µs) and a quarter kept tall ones on one
+   *        thread (eight threads: 4000 × 16 by 16 × 8 28 → 13 µs, 4000 × 64 by 64 × 2 58 → 26, 200 × 200 by 200 × 8
+   *        14 → 10; GCC 14 alike).
    */
 #ifdef NUMERICAL_X86_COMPILED
   inline constexpr std::size_t gemm_rows_weight {1};
 #else
-  inline constexpr std::size_t gemm_rows_weight {vector_speedup};
+  inline constexpr std::size_t gemm_rows_weight {2};
 #endif
 
   /*!
