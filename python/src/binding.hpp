@@ -3526,10 +3526,12 @@ inline bool borrow_operand(PyObject* obj, borrowed_operand& out, bool columns = 
         // transpose), by a caller that takes columns (out.transposed); its rows together but apart (a[:, :k], a[::2]),
         // by one that takes rows_apart. Any other view through its row-major copy.
         const auto lies = [&](std::size_t together, std::size_t apart, bool spaced) {
+            if (out.shape.size() != 2 || out.shape[0] < 2 || out.shape[1] < 2) { // a matrix's axes only, then read
+                return false;
+            }
+            const auto run {static_cast<std::ptrdiff_t>(out.shape[together])};
             return std::visit([&](const auto& t) {
-                const auto run {static_cast<std::ptrdiff_t>(out.shape[together])};
-                return !t.contiguous() && out.shape.size() == 2 && out.shape[0] > 1 && out.shape[1] > 1 && t.strides()[together] == 1
-                       && (spaced ? t.strides()[apart] >= run : t.strides()[apart] == run);
+                return !t.contiguous() && t.strides()[together] == 1 && (spaced ? t.strides()[apart] >= run : t.strides()[apart] == run);
             }, *v);
         };
         const bool in_columns {columns && lies(0, 1, false)};
