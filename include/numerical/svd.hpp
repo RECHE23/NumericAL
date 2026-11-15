@@ -45,6 +45,10 @@ namespace numerical {
     //! \brief The |ζ| past which one-sided Jacobi takes the rotation's tangent as `1 / (2|ζ|)`: ζ² stays finite under it.
     inline constexpr double jacobi_large {1e150};
 
+    //! \brief The fall of a column's norm, in units of `√n ε`, past which \ref one_sided_jacobi takes what a rotation left
+    //!        of it for rounding alone.
+    inline constexpr double cancelled {64.0};
+
     /*!
      * \brief One-sided (Hestenes) Jacobi on the columns of the `n × n` row-major \p w: plane rotations,
      *        accumulated into \p v, until every pair of columns is orthogonal to rounding. The column
@@ -110,7 +114,8 @@ namespace numerical {
               zeta = ((norm_q / norm_p) - (norm_p / norm_q)) / (2.0 * size);
               // Orthogonal to the precision the columns hold: a subnormal one holds fewer bits (a column of norm
               // 1e-314, 31), and its cosine stops near its own spacing, which no rotation lowers (ones(25, 28)).
-              const double held {2.0 * std::sqrt(static_cast<double>(n)) * std::numeric_limits<double>::denorm_min() / std::min(norm_p, norm_q)};
+              const double held {2.0 * std::sqrt(static_cast<double>(n)) * static_cast<double>(std::numeric_limits<value_range_t<T>>::denorm_min())
+                                 / std::min(norm_p, norm_q)};
               if (size <= std::max(epsilon, held)) {
                 continue; // orthogonal to rounding
               }
@@ -134,6 +139,8 @@ namespace numerical {
             const double c    {1.0 / std::sqrt(1.0 + (t * t))};
             const double s    {c * t};
             rotated = true;
+            double after_p    {0.0}; // W's columns' sums of squares once rotated
+            double after_q    {0.0};
             for (buffer<T>* side : {&w, &v}) {
               T* mp {side->data() + (p * n)};
               T* mq {side->data() + (q * n)};
@@ -142,6 +149,22 @@ namespace numerical {
                 const T right {turn * mq[i]};
                 mp[i] = (detail::from_carried<T>(c) * left) - (detail::from_carried<T>(s) * right);
                 mq[i] = (detail::from_carried<T>(s) * left) + (detail::from_carried<T>(c) * right);
+                if (side == &w) {
+                  after_p += static_cast<double>(std::norm(mp[i]));
+                  after_q += static_cast<double>(std::norm(mq[i]));
+                }
+              }
+            }
+            // A column the rotation left with nothing but rounding (its norm fallen past 64 √n ε of what it was): it
+            // lay along the other to rounding, and its rest is that rounding, along the other again, which the sweeps
+            // would subtract a few digits at a time without end (a matrix of rank 1 from order 160, ones((200, 200))).
+            // It is set to 0, a change of W within that rounding. A column with something of its own keeps it.
+            if (std::min(alpha, beta) >= jacobi_tiny) {
+              const double gone {(cancelled * epsilon) * (cancelled * epsilon)};
+              for (const auto& [column, before, after] : {std::tuple {p, alpha, after_p}, std::tuple {q, beta, after_q}}) {
+                if (after <= gone * before) {
+                  std::fill_n(w.data() + (column * n), n, T {});
+                }
               }
             }
           }
@@ -1813,7 +1836,18 @@ namespace numerical {
       buffer<T>      left(cols * cols, T         {});
       buffer<T>      sorted_right(cols * cols, T {});
       buffer<double> values(cols, double         {});
+      // the columns' storage's rounding: a float column's cosines are float's
+      const double coarser_epsilon               {std::max(static_cast<double>(std::numeric_limits<detail::value_range_t<T>>::epsilon()), std::numeric_limits<double>::epsilon())};
+      // each unit vector e_k's residual against the columns already set, 1 − Σ |L(k, c)|²: a zero column takes the
+      // largest's, made orthogonal to them (testing each unit vector by orthogonalising it cost n⁴ where most columns
+      // are zero, a matrix of rank 1)
+      std::vector<double> residual(cols, 1.0);
       for (std::size_t d {0}; d < cols; ++d) {
+        if (d > 0) {
+          for (std::size_t k {0}; k < cols; ++k) {
+            residual[k] -= static_cast<double>(std::norm(left[(k * cols) + d - 1]));
+          }
+        }
         const std::size_t j {order[d]};
         values[d] = norms[j] * scale;
         for (std::size_t i {0}; i < cols; ++i) {
@@ -1824,39 +1858,19 @@ namespace numerical {
           for (std::size_t i {0}; i < cols; ++i) {
             unit[i] = w[(i * cols) + j] / detail::from_carried<T>(norms[j]);
           }
-          if (largest_cosine(unit, left, cols, d) > separate_columns * std::sqrt(static_cast<double>(cols)) * std::numeric_limits<double>::epsilon()) {
-            // Rounding noise along the columns before it (a numerically rank-deficient matrix: ones(10, 7) left a
-            // column of norm 1e-309 beside its first): made orthogonal to them, twice; nothing of it left beside
-            // them, it is completed as a zero column is.
-            orthogonalise(unit, left, cols, d);
-            orthogonalise(unit, left, cols, d);
-            const auto rest {static_cast<double>(detail::scaled_norm(unit))};
-            if (rest > 0.5) {
-              for (std::size_t i {0}; i < cols; ++i) {
-                left[(i * cols) + d] = unit[i] / detail::from_carried<T>(rest);
-              }
-              continue;
-            }
-          }
-          else {
+          // a column off those before it past what the sweeps leave is rounding the sweeps could not part (a
+          // numerically rank-deficient matrix: ones(10, 7) left a column of norm 1e-309 beside its first): its
+          // direction holds nothing, and it is completed as a zero column is
+          if (largest_cosine(unit, left, cols, d) <= separate_columns * std::sqrt(static_cast<double>(cols)) * coarser_epsilon) {
             for (std::size_t i {0}; i < cols; ++i) {
               left[(i * cols) + d] = unit[i];
             }
             continue;
           }
         }
-        buffer<T>      best;
-        double         best_norm {-1.0};
-        for (std::size_t k {0}; k < cols; ++k) {
-          buffer<T> candidate(cols, T {});
-          candidate[k] = T {1};
-          orthogonalise(candidate, left, cols, d);
-          const auto norm {static_cast<double>(detail::scaled_norm(candidate))};
-          if (norm > best_norm) {
-            best      = std::move(candidate);
-            best_norm = norm;
-          }
-        }
+        buffer<T> best(cols, T {});
+        best[static_cast<std::size_t>(std::ranges::max_element(residual) - residual.begin())] = T {1};
+        orthogonalise(best, left, cols, d);
         orthogonalise(best, left, cols, d); // a second pass restores orthogonality lost to rounding
         const auto norm {static_cast<double>(detail::scaled_norm(best))};
         for (std::size_t i {0}; i < cols; ++i) {

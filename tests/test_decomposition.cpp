@@ -4112,13 +4112,30 @@ TEST(jacobi_svd_of_rank_deficient_and_nearly_diagonal_matrices)
                            largest  = std::max(largest, std::abs(a(r, c)));
                          }
                        }
-                       return worst < 1e-13 && residual < 1e-13 * largest;
+                       const double bound {4.0 * static_cast<double>(std::max(a.rows(), a.cols())) * std::numeric_limits<double>::epsilon() * s.singular_values()[0]};
+                       return worst < 1e-13 && residual < std::max(bound, 1e-13 * largest);
                      };
   // ones(10, 7): a column of norm 1e-309 beside the first, normalised along it (U off by 1)
   EXPECT(holds(matrix<double> {10, 7, std::vector<double>(70, 1.0)}));
   // ones(25, 28): subnormal columns whose cosine stops near their own spacing (60 sweeps, no convergence)
   EXPECT(holds(matrix<double> {25, 28, std::vector<double>(700, 1.0)}));
   EXPECT(holds(matrix<C> {25, 28, std::vector<C>(700, C {1.0, 1.0})}));
+  // ones((200, 200)): columns along each other to rounding, whose rest the sweeps took a few digits a sweep (past 60
+  // sweeps from order 160), then a completion of U that cost n⁴
+  EXPECT(holds(matrix<double> {200, 200, std::vector<double>(40000, 1.0)}));
+  // a float matrix of rank 1: thresholds at float's precision
+  const svd_decomposition<float> single {matrix<float> {10, 7, std::vector<float>(70, 1.0F)}, numerical::svd_method::jacobi};
+  double                         off    {0.0};
+  for (std::size_t i {0}; i < 7; ++i) {
+    for (std::size_t j {0}; j < 7; ++j) {
+      float dot {0.0F};
+      for (std::size_t r {0}; r < 10; ++r) {
+        dot += single.u()(r, i) * single.u()(r, j);
+      }
+      off = std::max(off, std::abs(static_cast<double>(dot) - (i == j ? 1.0 : 0.0)));
+    }
+  }
+  EXPECT(off < 1e-6 && std::abs(single.singular_values()[0] - std::sqrt(70.0)) < 1e-5);
   // I + 1e-9 on the superdiagonal, order 200: inner products rounded past a bound of ε alone (no convergence)
   constexpr std::size_t order {200};
   std::vector<double>   near(order * order, 0.0);

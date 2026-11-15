@@ -127,6 +127,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`tanhm` of a matrix Hermitian to rounding** (`Q Λ Qᵀ` computed in floating point, its entries within `8 n ε
   max|A|` of their transposes') takes its Hermitian part by its eigenvalues too, where the exponentials' quotient lost
   all (norm 76: 0.36): 2·10⁻¹⁵. A Hermitian path to the bit alone had missed it.
+- **`svd(method="jacobi")` of a matrix of rank 1 from order 160, and in float32**: its columns lie along each other
+  to rounding, and what a rotation left of one was that rounding, along the other again, which the sweeps took a few
+  digits at a time (`ones((200, 200))`: past 60 sweeps, a `LinAlgError`); a column a rotation leaves with nothing past
+  `64 √n ε` of its norm is now set to 0. The zero columns' left vectors are completed in `n³` (they cost `n⁴`: order
+  256, 3.9 → 0.12 s), and so are the left vectors off their predecessors past `64 √n ε` (made orthogonal to them
+  before: what is left of such a column is rounding), and a float32 matrix's thresholds are float32's
+  (`ones((10, 7))` did not converge).
+  `ones((256, 256))` and `(400, 300)` in 0.12 and 0.19 s; graded matrices' singular values the same to the bit.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.
