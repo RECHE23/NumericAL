@@ -204,7 +204,9 @@ class AgainstNumPy(unittest.TestCase):
                                                            axis=axis, method=method)
                             self.assertSame(got, getattr(np, name)(data, q, axis=axis, method=method),
                                             f"{name} {method} {q!r} {axis} {data.dtype}")
-            for q in (50, 12.5, [10, 90], np.float32(30), np.array([30, 70], np.float32)):  # a float32 q divided as float32
+            for q in (50, 12.5, [10, 90], np.float32(30), np.array([30, 70], np.float32)):
+                if isinstance(q, (np.ndarray, np.floating)) and q.dtype == np.float32 and not _NUMPY_2_4:
+                    continue  # NumPy 2.4 divides a float32 q by 100 in float32, as here; older ones in the data's dtype
                 self.assertSame(numerical.percentile(t, q, axis=0), np.percentile(data, q, axis=0), f"percentile {q}")
                 self.assertSame(numerical.nanpercentile(t, q, axis=0, keepdims=True),
                                 np.nanpercentile(data, q, axis=0, keepdims=True), f"nanpercentile {q}")
