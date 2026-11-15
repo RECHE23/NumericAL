@@ -2313,9 +2313,20 @@ namespace numerical {
     }
   } // namespace detail
 
+  //! \brief Thrown when an integer is raised to a negative integer power, as NumPy refuses it: no integer is the answer.
+  class negative_power_error : public detail::tagged<std::domain_error>
+  {
+  public:
+
+    //! \brief Builds the error. \param[in] message Human-readable cause.
+    explicit negative_power_error(const std::string& message)
+      : tagged(message)
+    {}
+  };
+
   /*!
    * \brief `a` to the power `b` of signed integers element by element, broadcast, as NumPy's: exactly, by repeated
-   *        squaring, wrapped modulo 2ⁿ. \throws std::domain_error If an exponent is negative (NumPy's refusal: no
+   *        squaring, wrapped modulo 2ⁿ. \throws negative_power_error If an exponent is negative (NumPy's refusal: no
    *        integer is the answer). \throws dimension_error If the shapes do not broadcast.
    */
   template <std::signed_integral T>
@@ -2323,7 +2334,7 @@ namespace numerical {
                               const tensor<T>& b)
   {
     if (std::ranges::any_of(b.data(), [](T exponent) { return exponent < 0; })) {
-      throw std::domain_error("Integers to negative integer powers are not allowed.");
+      throw negative_power_error("Integers to negative integer powers are not allowed.");
     }
     return broadcast_apply(a, b, [](T x, T y) { return detail::integer_power(x, y); });
   }
@@ -3435,7 +3446,7 @@ namespace numerical {
    *        replaced by \p indices' shape. Under take_mode::raise a negative index counts from the axis's end; under
    *        wrap an index is taken modulo the extent; under clip, at the nearer end. Each index read once, then the
    *        elements copied on the threads.
-   * \throws std::out_of_range Under take_mode::raise, for the first index outside the axis, in NumPy's words, unless
+   * \throws index_error Under take_mode::raise, for the first index outside the axis, in NumPy's words, unless
    *         the axes before \p axis hold no element (NumPy then checks none); under any mode, from an empty axis
    *         where the result has elements, or under wrap with any index.
    * \throws dimension_error If \p axis is not an axis, or the result's elements overflow.
@@ -3461,13 +3472,13 @@ namespace numerical {
     const std::size_t total  {detail::element_count(out_shape.begin(), out_shape.end())};
     const std::size_t extent {shape[axis]};
     if (extent == 0 && (total != 0 || (mode == take_mode::wrap && count != 0))) {
-      throw std::out_of_range("cannot do a non-empty take from an empty axes.");
+      throw index_error("cannot do a non-empty take from an empty axes.");
     }
     const auto                  signed_extent {static_cast<std::int64_t>(extent)};
     const buffer<std::int64_t>& index         {indices.data()};
     const auto                  outside       {[&](std::int64_t value) {
-                                                 return std::out_of_range("index " + std::to_string(value) + " is out of bounds for axis " + std::to_string(axis)
-                                                                          + " with size " + std::to_string(extent));
+                                                 return index_error("index " + std::to_string(value) + " is out of bounds for axis " + std::to_string(axis)
+                                                                    + " with size " + std::to_string(extent));
                                                }};
     if (total == 0) {
       for (std::size_t k {0}; mode == take_mode::raise && outer != 0 && k < count; ++k) {

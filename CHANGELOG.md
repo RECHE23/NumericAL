@@ -8,6 +8,16 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+
+- **`numerical::error`, what every exception the C++ library throws is**: `catch (const numerical::error&)` catches
+  each of them, beside the standard base each keeps (`dimension_error` a `std::runtime_error`, `non_finite_error` a
+  `std::domain_error`, …), so the handlers already written catch what they caught. The standard exceptions thrown
+  bare have a type of their own, of the same standard base: `argument_error` (`std::invalid_argument`), `index_error`
+  (`std::out_of_range`), `no_real_root_error` (`std::domain_error`: `sqrtm` of a real matrix with a real eigenvalue
+  below 0) and `negative_power_error` (`std::domain_error`: an integer to a negative integer power). `std::bad_alloc`
+  and `std::system_error` stay the allocator's and the system's.
+
 ### Changed
 
 - **A slice is a view**: `t[1:500]`, `t[:, ::2]`, `t[::-1, 2]` and their compositions with a transpose read the

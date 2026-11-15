@@ -3367,7 +3367,7 @@ namespace numerical {
       using C = std::complex<R>;
       const std::string name {std::string {inverse ? "i" : ""} + (family == trig_family::cosine ? "dct" : "dst")};
       if (type < 1 || type > 4) {
-        throw std::invalid_argument(name + ": type must be 1, 2, 3 or 4, not " + std::to_string(type));
+        throw argument_error(name + ": type must be 1, 2, 3 or 4, not " + std::to_string(type));
       }
       const std::size_t   index  {fft_axis_index(axis, source.shape.size(), name.c_str())};
       const std::size_t   points {n.value_or(source.shape[index])};
@@ -3480,7 +3480,7 @@ namespace numerical {
    *                          its square.
    * \param[in] orthogonalize The first (type 1 also the last) point and value weighted to make the matrix orthogonal,
    *                          as SciPy's: by default where \p norm is `ortho`.
-   * \throws std::invalid_argument If \p type is not 1 to 4.
+   * \throws argument_error If \p type is not 1 to 4.
    * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0 (1 for type 1).
    */
   template <std::floating_point T>
@@ -3523,7 +3523,7 @@ namespace numerical {
    *                          its square.
    * \param[in] orthogonalize The last point (type 3) or value (type 2) weighted to make the matrix orthogonal, as
    *                          SciPy's: by default where \p norm is `ortho`.
-   * \throws std::invalid_argument If \p type is not 1 to 4.
+   * \throws argument_error If \p type is not 1 to 4.
    * \throws dimension_error If \p axis is not an axis of \p a, or \p n is 0.
    */
   template <std::floating_point T>

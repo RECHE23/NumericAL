@@ -3041,14 +3041,14 @@ namespace numerical {
     /*!
      * \brief Refuses \p x (named \p name in the message) unless Hermitian, as SciPy's `_are_validate_args`:
      *        `‖X − Xᴴ‖₁` within 100 spacings of `‖X‖₁`.
-     * \throws std::invalid_argument If it is not.
+     * \throws argument_error If it is not.
      */
     inline void require_hermitian(const matrix<std::complex<double>>& x,
                                   const char*                         name)
     {
       const double size {norm_one(x)};
       if (norm_one(x - adjoint_of(x)) > 100.0 * (std::nextafter(size, std::numeric_limits<double>::infinity()) - size)) {
-        throw std::invalid_argument(std::string {"Matrix "} + name + " should be symmetric/hermitian.");
+        throw argument_error(std::string {"Matrix "} + name + " should be symmetric/hermitian.");
       }
     }
 
@@ -3155,7 +3155,7 @@ namespace numerical {
       if (continuous) { // R⁻¹ is the equation's: SciPy refuses a numerically singular r
         const vector<double> sigma {singular_values(cr)};
         if (!(sigma[n - 1] >= std::numeric_limits<double>::epsilon() * norm_one(cr)) || sigma[n - 1] == 0.0) {
-          throw std::invalid_argument("Matrix r is numerically singular.");
+          throw argument_error("Matrix r is numerically singular.");
         }
         // a well-conditioned R (within √ε of singular) and no E: the Hamiltonian's Schur form, else the pencil's
         hamiltonian = e == nullptr && sigma[n - 1] >= std::sqrt(std::numeric_limits<double>::epsilon()) * sigma[0];
@@ -3203,7 +3203,7 @@ namespace numerical {
    * \tparam T `double` or `std::complex<double>`.
    * \throws dimension_error       If an operand's shape differs from those above, or `m` or `n` is 0.
    * \throws non_finite_error      If an entry is infinite or NaN.
-   * \throws std::invalid_argument If \p q or \p r is not Hermitian.
+   * \throws argument_error If \p q or \p r is not Hermitian.
    * \throws singular_matrix_error If \p e is numerically singular, or the equation has no finite stabilising
    *                               solution.
    * \throws convergence_error     If the QZ iterations did not converge, or the pencil has eigenvalues too close to
@@ -3237,7 +3237,7 @@ namespace numerical {
    * \tparam T `double` or `std::complex<double>`.
    * \throws dimension_error       If an operand's shape differs from those above, or `m` or `n` is 0.
    * \throws non_finite_error      If an entry is infinite or NaN.
-   * \throws std::invalid_argument If \p q or \p r is not Hermitian.
+   * \throws argument_error If \p q or \p r is not Hermitian.
    * \throws singular_matrix_error If \p e is numerically singular, or the equation has no finite stabilising
    *                               solution.
    * \throws convergence_error     If the QZ iterations did not converge, or the pencil has eigenvalues too close to

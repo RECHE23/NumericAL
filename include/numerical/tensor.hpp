@@ -48,13 +48,13 @@
 namespace numerical {
 
   //! \brief Thrown when an einsum specification is malformed or inconsistent.
-  class einsum_error : public std::runtime_error
+  class einsum_error : public detail::tagged<std::runtime_error>
   {
   public:
 
     //! \brief Builds the error. \param[in] message Human-readable cause.
     explicit einsum_error(const std::string& message)
-      : std::runtime_error(message)
+      : tagged(message)
     {}
   };
 
@@ -187,7 +187,7 @@ namespace numerical {
      *        axis whose \p keep is false (an integer index, its count 1) is dropped from the result's shape. A step may
      *        be negative (`::-1`); a count of 0 gives an empty tensor.
      * \throws dimension_error If the arguments do not hold one entry per axis, or a dropped axis's count is not 1.
-     * \throws std::out_of_range If a range of a nonzero count leaves its axis.
+     * \throws index_error If a range of a nonzero count leaves its axis.
      */
     template <typename Keep = std::vector<bool>>
     [[nodiscard]] tensor sliced(const std::vector<std::size_t>&    starts,
@@ -213,7 +213,7 @@ namespace numerical {
           const auto           first  {static_cast<std::ptrdiff_t>(starts[axis])};
           const std::ptrdiff_t last   {first + (static_cast<std::ptrdiff_t>(counts[axis] - 1) * steps[axis])};
           if (first >= extent || last < 0 || last >= extent) {
-            throw std::out_of_range("tensor: a range of sliced leaves its axis");
+            throw index_error("tensor: a range of sliced leaves its axis");
           }
           offset += first * strides_[axis];
         }

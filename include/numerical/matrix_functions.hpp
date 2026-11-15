@@ -1463,6 +1463,17 @@ namespace numerical {
     }
   } // namespace detail
 
+  //! \brief Thrown when a real matrix has no real principal square root (a real eigenvalue below 0): its root is complex.
+  class no_real_root_error : public detail::tagged<std::domain_error>
+  {
+  public:
+
+    //! \brief Builds the error. \param[in] message Human-readable cause.
+    explicit no_real_root_error(const std::string& message)
+      : tagged(message)
+    {}
+  };
+
   /*!
    * \brief The principal square root `X` of a complex square matrix (`X² = A`, its eigenvalues of nonnegative real
    *        part), as `scipy.linalg.sqrtm`: by the Schur method, `A = Z T Zᴴ`, the triangular `R² = T` column by column
@@ -1519,7 +1530,7 @@ namespace numerical {
    *        arithmetic on its real Schur form (Higham, 1987), a complex pair's block by its own real root.
    * \throws dimension_error   If \p a is not square.
    * \throws non_finite_error  If an entry is infinite or NaN.
-   * \throws std::domain_error If \p a has a real eigenvalue below 0: its principal root is complex
+   * \throws no_real_root_error If \p a has a real eigenvalue below 0: its principal root is complex
    *                           (\ref complex_sqrtm).
    * \throws convergence_error If the Schur form's iterations did not converge.
    */
@@ -1533,7 +1544,7 @@ namespace numerical {
     if (detail::exactly_hermitian(a)) {
       const auto [values, vectors] {detail::hermitian_system(a)};
       if (!std::all_of(values.begin(), values.end(), [](double v) { return v >= 0.0; })) {
-        throw std::domain_error("sqrtm: a real eigenvalue below 0, whose principal square root is complex");
+        throw no_real_root_error("sqrtm: a real eigenvalue below 0, whose principal square root is complex");
       }
       std::vector<double> roots(values.size());
       for (std::size_t k {0}; k < roots.size(); ++k) {
@@ -1549,7 +1560,7 @@ namespace numerical {
       root = detail::real_square_root(s.t(), &s.z());
     }
     if (!root) {
-      throw std::domain_error("sqrtm: a real eigenvalue below 0, whose principal square root is complex");
+      throw no_real_root_error("sqrtm: a real eigenvalue below 0, whose principal square root is complex");
     }
     return std::move(*root);
   }
@@ -3153,7 +3164,7 @@ namespace numerical {
    * \tparam T `double` or `std::complex<double>`.
    * \throws dimension_error       If \p a is not square.
    * \throws non_finite_error      If an entry is infinite or NaN.
-   * \throws std::invalid_argument If \p p is infinite or NaN.
+   * \throws argument_error If \p p is infinite or NaN.
    * \throws singular_matrix_error If \p p is negative and \p a singular.
    * \throws convergence_error     If a Schur form's iterations did not converge, or the square roots of its
    *                               triangular form are not finite.
@@ -3170,7 +3181,7 @@ namespace numerical {
     }
     detail::require_finite(a, "fractional_matrix_power");
     if (!std::isfinite(p)) {
-      throw std::invalid_argument("fractional_matrix_power: the power must be finite");
+      throw argument_error("fractional_matrix_power: the power must be finite");
     }
     if (n == 0) {
       return matrix<C> {0, 0, buffer<C> {}};

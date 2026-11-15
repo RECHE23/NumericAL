@@ -521,25 +521,25 @@ namespace numerical {
   } // namespace detail
 
   //! \brief Thrown when a matrix has no unique solution (it is singular).
-  class singular_matrix_error : public std::runtime_error
+  class singular_matrix_error : public detail::tagged<std::runtime_error>
   {
   public:
 
     //! \brief Builds the error. \param[in] message Human-readable cause.
     explicit singular_matrix_error(const std::string& message)
-      : std::runtime_error(message)
+      : tagged(message)
     {}
   };
 
   //! \brief Thrown when a decomposition's input holds an infinite or NaN entry: no factorisation of it means
   //!        anything, and the iterative ones (eigh, SVD) would stop at once and return plausible values.
-  class non_finite_error : public std::domain_error
+  class non_finite_error : public detail::tagged<std::domain_error>
   {
   public:
 
     //! \brief Builds the error. \param[in] message Human-readable cause.
     explicit non_finite_error(const std::string& message)
-      : std::domain_error(message)
+      : tagged(message)
     {}
   };
 
@@ -2519,14 +2519,14 @@ namespace numerical {
   }
 
   //! \brief Thrown when a Cholesky factorisation finds the matrix not positive-definite.
-  class not_positive_definite_error : public std::runtime_error
+  class not_positive_definite_error : public detail::tagged<std::runtime_error>
   {
   public:
 
     //! \brief Builds the error. \param[in] message Human-readable cause. \param[in] order As \ref order gives it.
     explicit not_positive_definite_error(const std::string& message,
                                          std::size_t        order = 0)
-      : std::runtime_error(message), order_ {order}
+      : tagged(message), order_ {order}
     {}
 
     //! \brief The order of the first leading minor found not positive definite (LAPACK's `info`), 0 where unknown.
@@ -3673,7 +3673,7 @@ namespace numerical {
 
     /*!
      * \brief The largest singular value times \p ratio.
-     * \throws std::invalid_argument If \p ratio is negative or NaN.
+     * \throws argument_error If \p ratio is negative or NaN.
      */
     [[nodiscard]] static rank_cutoff relative(double ratio)
     {
@@ -3682,7 +3682,7 @@ namespace numerical {
 
     /*!
      * \brief \p magnitude itself, whatever the largest singular value.
-     * \throws std::invalid_argument If \p magnitude is negative or NaN.
+     * \throws argument_error If \p magnitude is negative or NaN.
      */
     [[nodiscard]] static rank_cutoff absolute(double magnitude)
     {
@@ -3716,7 +3716,7 @@ namespace numerical {
     [[nodiscard]] static double checked(double value)
     {
       if (!(value >= 0.0)) {
-        throw std::invalid_argument("rank cutoff: a tolerance is non-negative");
+        throw argument_error("rank cutoff: a tolerance is non-negative");
       }
       return value;
     }
@@ -4256,13 +4256,13 @@ namespace numerical {
   }
 
   //! \brief Thrown when an iterative algorithm has not converged within its bound of sweeps.
-  class convergence_error : public std::runtime_error
+  class convergence_error : public detail::tagged<std::runtime_error>
   {
   public:
 
     //! \brief Builds the error. \param[in] message Human-readable cause.
     explicit convergence_error(const std::string& message)
-      : std::runtime_error(message)
+      : tagged(message)
     {}
   };
 
@@ -6467,7 +6467,7 @@ namespace numerical {
      * \param[in] input  A complex Hermitian matrix (its lower triangle is read).
      * \param[in] method The algorithm for the tridiagonal: \ref eigen_method::divide_and_conquer or
      *                   \ref eigen_method::tridiagonal_ql.
-     * \throws std::invalid_argument If \p method is \ref eigen_method::jacobi, which has no complex form here.
+     * \throws argument_error If \p method is \ref eigen_method::jacobi, which has no complex form here.
      * \throws dimension_error   If \p input is not square.
      * \throws non_finite_error  If an entry is infinite or NaN.
      * \throws convergence_error If an iteration (implicit QL or the secular equation) did not converge within its
@@ -6478,7 +6478,7 @@ namespace numerical {
       : n_(input.rows())
     {
       if (method == eigen_method::jacobi) {
-        throw std::invalid_argument("Hermitian eigendecomposition: the Jacobi method is for real symmetric matrices");
+        throw argument_error("Hermitian eigendecomposition: the Jacobi method is for real symmetric matrices");
       }
       if (input.cols() != n_) {
         throw dimension_error("Hermitian eigendecomposition requires a square matrix");
@@ -6530,7 +6530,7 @@ namespace numerical {
      * \param[in] a      A complex Hermitian matrix.
      * \param[in] b      A complex Hermitian positive-definite matrix of its order.
      * \param[in] method The algorithm for the tridiagonal, as for one matrix.
-     * \throws std::invalid_argument        If \p method is \ref eigen_method::jacobi.
+     * \throws argument_error        If \p method is \ref eigen_method::jacobi.
      * \throws dimension_error              If \p a or \p b is not square, or their orders differ.
      * \throws non_finite_error             If an entry read is infinite or NaN.
      * \throws not_positive_definite_error  If \p b is not positive definite.

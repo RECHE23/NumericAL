@@ -261,3 +261,45 @@ TEST(a_large_buffer_takes_a_freed_block_back)
   EXPECT_EQ(held, (std::vector<int> {1, 1, 1, 1}));
 }
 #endif
+
+TEST(every_exception_is_a_numerical_error_and_keeps_its_standard_base)
+{
+  using numerical::matrix;
+  using numerical::tensor;
+  // `throws` raises an exception that both numerical::error and `Std` catch, one message through either
+  const auto raises = []<typename Std>(const auto& throws, const Std*) {
+                        try {
+                          throws();
+                        }
+                        catch (const numerical::error& caught) {
+                          try {
+                            throw;
+                          }
+                          catch (const Std& standard) {
+                            return std::string {caught.what()} == standard.what() && !std::string {caught.what()}.empty();
+                          }
+                        }
+                        return false;
+                      };
+  const tensor<double>       line     {{3}, {1.0, 2.0, 3.0}};
+  const tensor<std::int64_t> whole    {{2}, {2, 3}};
+  const tensor<std::int64_t> below    {{2}, {1, -1}};
+  const matrix<double>       singular {{1.0, 2.0}, {2.0, 4.0}};
+  const matrix<double>       with_nan {{1.0, std::numeric_limits<double>::quiet_NaN()}, {0.0, 1.0}};
+  const vector<double>       two      {1.0, 2.0};
+  EXPECT(raises([&] { static_cast<void>(two + vector<double> {1.0, 2.0, 3.0}); }, static_cast<const std::runtime_error*>(nullptr)));
+  EXPECT(raises([&] { static_cast<void>(numerical::dct(line, 5)); }, static_cast<const std::invalid_argument*>(nullptr)));
+  EXPECT(raises([&] { static_cast<void>(line.sliced({2}, {1}, {2}, std::vector<bool> {true})); }, static_cast<const std::out_of_range*>(nullptr)));
+  EXPECT(raises([&] { static_cast<void>(numerical::einsum("i->k", line)); }, static_cast<const std::runtime_error*>(nullptr)));
+  EXPECT(raises([&] { static_cast<void>(numerical::solve(singular, two)); }, static_cast<const std::runtime_error*>(nullptr)));
+  EXPECT(raises([&] { static_cast<void>(numerical::solve(with_nan, two)); }, static_cast<const std::domain_error*>(nullptr)));
+  EXPECT(raises([&] { static_cast<void>(numerical::cholesky_decomposition<double> {matrix<double> {{-1.0}}}); }, static_cast<const std::runtime_error*>(nullptr)));
+  EXPECT(raises([] { throw numerical::convergence_error("no convergence"); }, static_cast<const std::runtime_error*>(nullptr)));
+  EXPECT(raises([] { static_cast<void>(numerical::sqrtm(matrix<double> {{-1.0}})); }, static_cast<const std::domain_error*>(nullptr)));
+  EXPECT(raises([&] { static_cast<void>(numerical::pow(whole, below)); }, static_cast<const std::domain_error*>(nullptr)));
+  // each its own type
+  EXPECT_THROWS(static_cast<void>(numerical::sqrtm(matrix<double> {{-1.0}})), numerical::no_real_root_error);
+  EXPECT_THROWS(static_cast<void>(numerical::pow(whole, below)), numerical::negative_power_error);
+  EXPECT_THROWS(static_cast<void>(numerical::dct(line, 5)), numerical::argument_error);
+  EXPECT_THROWS(static_cast<void>(line.sliced({2}, {1}, {2}, std::vector<bool> {true})), numerical::index_error);
+}

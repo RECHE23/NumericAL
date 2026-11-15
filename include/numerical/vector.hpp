@@ -30,14 +30,77 @@
 
 namespace numerical {
 
+  /*!
+   * \brief What every exception NumericAL throws is, beside its standard base (all but `std::bad_alloc` and
+   *        `std::system_error`, the allocator's and the system's): `catch (const numerical::error&)` catches each of them, and `catch (const std::domain_error&)` (its standard base) still catches a \ref
+   *        non_finite_error. Not a `std::exception` itself, so that each keeps the standard base it has; \ref what
+   *        gives the message.
+   */
+  class error
+  {
+  public:
+
+    virtual ~error() = default;
+
+    //! \brief The message, as `std::exception::what` gives it.
+    [[nodiscard]] virtual const char* what() const noexcept = 0;
+
+  protected:
+
+    error()                        = default;
+    error(const error&)            = default;
+    error(error&&)                 = default;
+    error& operator=(const error&) = default;
+    error& operator=(error&&)      = default;
+  };
+
+  namespace detail {
+    //! \brief A standard exception `Std` that \ref numerical::error tags too, its one `what` answering for both bases.
+    template <typename Std>
+    class tagged : public Std, public error
+    {
+    public:
+
+      using Std::Std;
+
+      //! \brief The message.
+      [[nodiscard]] const char* what() const noexcept override
+      {
+        return Std::what();
+      }
+    };
+  } // namespace detail
+
   //! \brief Thrown when an operation's operands have incompatible shapes.
-  class dimension_error : public std::runtime_error
+  class dimension_error : public detail::tagged<std::runtime_error>
   {
   public:
 
     //! \brief Builds the error. \param[in] message Human-readable cause.
     explicit dimension_error(const std::string& message)
-      : std::runtime_error(message)
+      : tagged(message)
+    {}
+  };
+
+  //! \brief Thrown when an argument is outside what an operation takes (a tolerance below 0, an FFT type past 4).
+  class argument_error : public detail::tagged<std::invalid_argument>
+  {
+  public:
+
+    //! \brief Builds the error. \param[in] message Human-readable cause.
+    explicit argument_error(const std::string& message)
+      : tagged(message)
+    {}
+  };
+
+  //! \brief Thrown when an index or a range leaves its axis.
+  class index_error : public detail::tagged<std::out_of_range>
+  {
+  public:
+
+    //! \brief Builds the error. \param[in] message Human-readable cause.
+    explicit index_error(const std::string& message)
+      : tagged(message)
     {}
   };
 
