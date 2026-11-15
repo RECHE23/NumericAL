@@ -1003,6 +1003,59 @@ TEST(a_slice_is_a_view)
   EXPECT_THROWS((void)cube.sliced({0, 0, 1}, {1, 1, -2}, {4, 5, 2}, all), std::out_of_range);
 }
 
+TEST(an_element_wise_operation_reads_a_view_where_it_lies)
+{
+  using keep = std::vector<bool>;
+  // each operation on a view against the same on its row-major copy: every element alone, the same bits
+  const auto copy_of = [](const tensor<double>& t) { return tensor<double> {t.shape(), numerical::buffer<double>(t.data().begin(), t.data().end())}; };
+  const auto seventh = [](double x) { return (x / 7.0) + 0.25; };
+  // x op y against the same on the copies, for each of + − × ÷: each operation one instance that meets every pair
+  const auto same_four = [&](const tensor<double>& x, const tensor<double>& y) {
+                           const tensor<double> cx {copy_of(x)};
+                           const tensor<double> cy {copy_of(y)};
+                           const auto           same {[](const tensor<double>& p, const tensor<double>& q) {
+                                                        return p.shape() == q.shape() && p.data() == q.data();
+                                                      }};
+                           return same(x + y, cx + cy) && same(x - y, cx - cy) && same(x * y, cx * cy) && same(x / y, cx / cy);
+                         };
+  const tensor<double>              wide  {numerical::detail::parallel_map(counting({300, 200}), seventh)};
+  const tensor<double>              line  {numerical::detail::parallel_map(counting({40000}), seventh)};
+  const tensor<double>              cube  {numerical::detail::parallel_map(counting({20, 30, 40}), seventh)};
+  const std::vector<tensor<double>> views {
+    wide.sliced({0, 0}, {2, 1}, {150, 200}, keep {true, true}),        // rows apart
+    wide.sliced({299, 199}, {-1, -1}, {300, 200}, keep {true, true}),  // both axes reversed
+    wide.sliced({0, 10}, {1, 1}, {300, 100}, keep {true, true}),       // a band of columns
+    wide.sliced({0, 0}, {1, 3}, {300, 67}, keep {true, true}),         // every third column
+    wide.sliced({1, 0}, {2, 1}, {149, 8}, keep {true, true}),          // short rows apart
+    wide.transposed(),                                                 // copied out first
+    line.sliced({39999}, {-1}, {40000}, keep {true}),                  // a long row reversed: by pieces
+    line.sliced({1}, {2}, {19999}, keep {true}),                       // every other element
+    cube.sliced({1, 29, 0}, {2, -1, 1}, {9, 30, 40}, keep {true, true, true}),
+  };
+  const tensor<double> scalar {shape {}, {2.5}};
+  for (const tensor<double>& view : views) {
+    EXPECT(!view.contiguous());
+    const tensor<double> copy {copy_of(view)};
+    const tensor<double> row  {numerical::detail::parallel_map(counting({view.shape().back()}), seventh)};
+    EXPECT(same_four(view, view) && same_four(view, copy) && same_four(copy, view));
+    EXPECT(same_four(view, scalar) && same_four(scalar, view) && same_four(view, row) && same_four(row, view));
+    const tensor<double> mapped {numerical::detail::parallel_map(view, seventh)};
+    EXPECT(mapped.shape() == view.shape() && mapped.data() == numerical::detail::parallel_map(copy, seventh).data());
+    if (view.rank() == 2) { // against a column: one element a row
+      const std::size_t    rows   {view.shape()[0]};
+      const tensor<double> column {numerical::detail::parallel_map(counting({rows, 1}), seventh)};
+      EXPECT(same_four(view, column) && same_four(column, view));
+      EXPECT(same_four(view, view.sliced({0, 0}, {1, 1}, {rows, 1}, keep {true, true}))); // its own first column
+    }
+  }
+  // a column of more than 512 elements, a view whose last axis holds one: copied out, an axis of one element
+  const tensor<double> tall         {numerical::detail::parallel_map(counting({2000, 3}), seventh)};
+  const tensor<double> middle       {tall.sliced({0, 1}, {1, 1}, {2000, 1}, keep {true, true})};
+  EXPECT(!middle.contiguous() && same_four(middle, middle) && same_four(middle, tall) && same_four(tall, middle));
+  const tensor<double> rows_of_cube {cube.sliced({0, 0, 0}, {1, 1, 1}, {20, 30, 1}, keep {true, true, true})};
+  EXPECT(same_four(cube, rows_of_cube) && same_four(rows_of_cube, cube)); // broadcast along the last axis
+}
+
 // A view's first data() calls at once, from threads of their own and from a parallel_for's bodies (a run nested in the
 // copy's own parallel_for takes its chunks itself): one copy, the one every call returns.
 TEST(a_view_is_copied_out_once_whatever_the_threads)

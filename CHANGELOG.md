@@ -19,6 +19,14 @@ A change that can break code is listed under **Breaking** and held for a month's
   `t[2, 3]` 0.16 → 0.12 µs; `t[1:3] + 1` of 8 × 8 as before. The same bits. In C++, `tensor::sliced` gives the view,
   `tensor::origin()` its first element, and `strides()` (signed) the steps from it.
 
+- **An element-wise operation reads a slice where it lies**: `t[::2] + 1`, `t[::2] * t[1::2]`, `t[::-1] - row`
+  and the functions mapped element by element step through a slice's elements in place where each first copied them
+  out; a transpose (its elements a row apart) is still copied out by blocks first. An operand against a scalar or a
+  long row now shares that row out among the threads, where its axes run as one row took one thread. M1 Pro,
+  1000 × 1000 rows of a 2000 × 1000 float64: one thread `t[::2] + 1` 551 → 258 µs, `t[::2] * t[1::2]` 1047 → 395 µs,
+  `abs(t[::-1])` 1263 → 581 µs; eight threads `t[::2] + 1` 345 → 118 µs, a whole 1000 × 1000 `a + 1` 226 → 85 µs.
+  8 × 8 as before. The same bits.
+
 - **A narrow complex product on arm64** (`n·k` up to 1024: a tall matrix times a few columns) shares its rows out
   among the threads, each block its own split into real products, where neither that real product nor the copies of
   the parts took a thread. M1 Pro, eight threads: 4000 × 4 by 4 × 8 complex128 65 → 36 µs, 2000 × 16 by 16 × 16 72 →

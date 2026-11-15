@@ -1535,6 +1535,24 @@ namespace numerical {
 
   namespace detail {
     /*!
+     * \brief Whether an element-wise operation reads \p t's elements where they lie: row-major, or a view stepping
+     *        within a cache line along its last axis (a slice). A view stepping farther (a transpose's last axis,
+     *        its elements a row apart) is copied out row-major first, by blocks: read in place, each element would
+     *        load its own line.
+     */
+    template <typename T>
+    [[nodiscard]] bool lies_close(const tensor<T>& t) noexcept
+    {
+      if (t.contiguous()) {
+        return true;
+      }
+      const std::size_t    rank {t.shape().size()}; // a view has an axis: a rank-0 tensor's one element lies row-major
+      const std::ptrdiff_t step {t.strides()[rank - 1]};
+      const auto           span {static_cast<std::size_t>(step < 0 ? -step : step) * sizeof(T)};
+      return t.shape()[rank - 1] < 2 ? rank == 1 : span <= 64;
+    }
+
+    /*!
      * \brief `f(x)` for every one of the row-major elements at \p data, of shape \p shape (another array's storage, read
      *        where it lies).
      */
@@ -1565,7 +1583,56 @@ namespace numerical {
     [[nodiscard]] auto parallel_map(const tensor<T>& t,
                                     const F&         f) -> tensor<std::decay_t<decltype(f(std::declval<const T&>()))>>
     {
-      return parallel_map(t.data().data(), t.shape(), f);
+      if (!lies_close(t) || t.contiguous()) { // an empty view holds a buffer of its own, row-major
+        return parallel_map(t.data().data(), t.shape(), f);
+      }
+      using R = std::decay_t<decltype(f(std::declval<const T&>()))>;
+      const std::vector<std::size_t>&    shape   {t.shape()};
+      const std::vector<std::ptrdiff_t>& strides {t.strides()};
+      const std::size_t                  rank    {shape.size()};
+      const std::size_t                  count   {t.size()};
+      const std::size_t                  inner   {shape[rank - 1]};
+      const std::ptrdiff_t               step    {strides[rank - 1]};
+      const T* const                     origin  {t.origin()};
+      buffer<R>                          out(count);
+      const std::size_t                  chunks  {(count + elementwise_chunk - 1) / elementwise_chunk};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     const std::size_t        first {c * elementwise_chunk};
+                     const std::size_t        last {std::min(first + elementwise_chunk, count)};
+                     std::vector<std::size_t> index(rank, 0);
+                     std::ptrdiff_t           at {0};
+                     std::size_t              column {first % inner};
+                     for (std::size_t axis {rank - 1}, rest {first / inner}; axis-- > 0;) { // the first row's position
+                       index[axis]  = rest % shape[axis];
+                       rest        /= shape[axis];
+                       at          += static_cast<std::ptrdiff_t>(index[axis]) * strides[axis];
+                     }
+                     for (std::size_t done {first}; done < last;) {
+                       const std::size_t n {std::min(inner - column, last - done)};
+                       const T* const    p {origin + at + (static_cast<std::ptrdiff_t>(column) * step)};
+                       R* const          o {out.data() + done};
+                       if (step == 1) {
+                         std::transform(p, p + n, o, f);
+                       }
+                       else {
+                         for (std::size_t i {0}; i < n; ++i) {
+                           o[i] = f(p[static_cast<std::ptrdiff_t>(i) * step]);
+                         }
+                       }
+                       done   += n;
+                       column  = 0;
+                       for (std::size_t axis {rank - 1}; axis-- > 0;) { // odometer over the outer axes: carry on wrap
+                         ++index[axis];
+                         at += strides[axis];
+                         if (index[axis] < shape[axis]) {
+                           break;
+                         }
+                         at          -= strides[axis] * static_cast<std::ptrdiff_t>(shape[axis]);
+                         index[axis]  = 0;
+                       }
+                     }
+                   });
+      return tensor<R> {shape, std::move(out)};
     }
   } // namespace detail
 
@@ -1580,7 +1647,18 @@ namespace numerical {
                                           const tensor<T>& b,
                                           const Op&        op)
   {
-    return detail::broadcast_into(a.data().data(), a.shape(), b.data().data(), b.shape(), op);
+    if (a.contiguous() && b.contiguous() && a.shape() == b.shape()) { // the common case, straight through
+      return detail::pairs_into(a.origin(), b.origin(), a.shape(), op);
+    }
+    const bool a_close {detail::lies_close(a)};
+    const bool b_close {detail::lies_close(b)};
+    if (a_close && b_close) { // a row-major tensor's strides are its own: nothing to build
+      return detail::broadcast_into(a.origin(), a.shape(), a.strides(), b.origin(), b.shape(), b.strides(), op);
+    }
+    return detail::broadcast_into(a_close ? a.origin() : a.data().data(), a.shape(),
+                                  a_close ? a.strides() : detail::row_major_strides(a.shape()),
+                                  b_close ? b.origin() : b.data().data(), b.shape(),
+                                  b_close ? b.strides() : detail::row_major_strides(b.shape()), op);
   }
 
   namespace detail {

@@ -545,47 +545,102 @@ namespace numerical {
       body(0);
     }
 
+    //! \brief The row-major strides of \p shape, in elements.
+    [[nodiscard]] inline std::vector<std::ptrdiff_t> row_major_strides(const std::vector<std::size_t>& shape)
+    {
+      std::vector<std::ptrdiff_t> strides(shape.size());
+      std::ptrdiff_t              stride {1};
+      for (std::size_t i {shape.size()}; i-- > 0;) {
+        strides[i]  = stride;
+        stride     *= static_cast<std::ptrdiff_t>(shape[i]);
+      }
+      return strides;
+    }
+
+    //! \brief Whether elements \p strides apart along the axes of \p shape lie row-major from the first (an axis of
+    //!        fewer than two elements stepping anything).
+    [[nodiscard]] inline bool lies_row_major(const std::vector<std::size_t>&    shape,
+                                             const std::vector<std::ptrdiff_t>& strides)
+    {
+      std::ptrdiff_t stride {1};
+      for (std::size_t i {shape.size()}; i-- > 0;) {
+        if (shape[i] > 1 && strides[i] != stride) {
+          return false;
+        }
+        stride *= static_cast<std::ptrdiff_t>(shape[i]);
+      }
+      return true;
+    }
+
     /*!
-     * \brief `op(a, b)` element by element of the row-major \p a (\p a_shape) and \p b (\p b_shape), broadcast against
-     *        each other (\ref broadcast_apply's, its operands read where they lie), in `op`'s result type `R`.
+     * \brief `op(a, b)` element by element of the row-major \p a and \p b, both of shape \p shape, in `op`'s result
+     *        type `R`, by chunks of \ref elementwise_chunk among the threads.
+     */
+    template <typename T,
+              typename Op,
+              typename R = std::invoke_result_t<const Op&, const T&, const T&>>
+    [[nodiscard]] tensor<R> pairs_into(const T*                        a,
+                                       const T*                        b,
+                                       const std::vector<std::size_t>& shape,
+                                       const Op&                       op)
+    {
+      const std::size_t size   {detail::element_count(shape.begin(), shape.end())};
+      buffer<R>         out(size);
+      const std::size_t chunks {(size + detail::elementwise_chunk - 1) / detail::elementwise_chunk};
+      detail::parallel_for(chunks, detail::elementwise_chunk, [&](std::size_t c) {
+                             const std::size_t first {c * detail::elementwise_chunk};
+                             const std::size_t last {std::min(first + detail::elementwise_chunk, size)};
+                             std::transform(a + first, a + last, b + first, out.data() + first, op);
+                           });
+      return tensor<R> {shape, std::move(out)};
+    }
+
+    /*!
+     * \brief `op(a, b)` element by element of \p a, of shape \p a_shape, its elements \p a_strides apart along each axis
+     *        from \p a (negative along an axis it reverses), and of \p b likewise, broadcast against each other
+     *        (\ref broadcast_apply's, its operands read where they lie), in `op`'s result type `R`, row-major. Each
+     *        element alone: the bits of the same operands laid row-major.
      * \throws dimension_error If the shapes do not broadcast.
      */
     template <typename T,
               typename Op,
               typename R = std::invoke_result_t<const Op&, const T&, const T&>>
-    [[nodiscard]] tensor<R> broadcast_into(const T*                        a,
-                                           const std::vector<std::size_t>& a_shape,
-                                           const T*                        b,
-                                           const std::vector<std::size_t>& b_shape,
-                                           const Op&                       op)
+    [[nodiscard]] tensor<R> broadcast_into(const T*                           a,
+                                           const std::vector<std::size_t>&    a_shape,
+                                           const std::vector<std::ptrdiff_t>& a_strides,
+                                           const T*                           b,
+                                           const std::vector<std::size_t>&    b_shape,
+                                           const std::vector<std::ptrdiff_t>& b_strides,
+                                           const Op&                          op)
     {
-      if (a_shape == b_shape) {
-        const std::size_t size   {detail::element_count(a_shape.begin(), a_shape.end())};
-        buffer<R>         out(size);
-        const std::size_t chunks {(size + detail::elementwise_chunk - 1) / detail::elementwise_chunk};
-        detail::parallel_for(chunks, detail::elementwise_chunk, [&](std::size_t c) {
-                               const std::size_t first {c * detail::elementwise_chunk};
-                               const std::size_t last {std::min(first + detail::elementwise_chunk, size)};
-                               std::transform(a + first, a + last, b + first, out.data() + first, op);
-                             });
-        return tensor<R> {a_shape, std::move(out)};
+      if (a_shape == b_shape && lies_row_major(a_shape, a_strides) && lies_row_major(b_shape, b_strides)) {
+        return pairs_into(a, b, a_shape, op);
       }
-      std::vector<std::size_t>       shape     {broadcast_shape(a_shape, b_shape)};
-      const std::size_t              full_rank {shape.size()};
-      const std::vector<std::size_t> full_sa   {detail::broadcast_strides(a_shape, full_rank)};
-      const std::vector<std::size_t> full_sb   {detail::broadcast_strides(b_shape, full_rank)};
-      const std::size_t              count     {detail::element_count(shape.begin(), shape.end())};
-      buffer<R>                      out(count); // every element written below
+      std::vector<std::size_t> shape     {broadcast_shape(a_shape, b_shape)};
+      const std::size_t        full_rank {shape.size()};
+      const auto               aligned   {[full_rank](const std::vector<std::size_t>&    extents,
+                                                      const std::vector<std::ptrdiff_t>& steps) {
+                                            std::vector<std::ptrdiff_t> out(full_rank, 0); // a missing axis broadcasts
+                                            for (std::size_t i {0}; i < extents.size(); ++i) {
+                                              out[full_rank - extents.size() + i] = extents[i] == 1 ? 0 : steps[i];
+                                            }
+                                            return out;
+                                          }};
+      const std::vector<std::ptrdiff_t> full_sa {aligned(a_shape, a_strides)};
+      const std::vector<std::ptrdiff_t> full_sb {aligned(b_shape, b_strides)};
+      const std::size_t                 count   {detail::element_count(shape.begin(), shape.end())};
+      buffer<R>                         out(count); // every element written below
       if (count == 0) {
         return tensor<R> {std::move(shape), std::move(out)};
       }
       // Neighbouring axes each operand steps through as one (its stride on the outer the inner's times the inner's
       // extent, a broadcast axis 0 on both) run as one axis: the same elements in the same order.
-      std::vector<std::size_t> dims {shape[0]};
-      std::vector<std::size_t> sa   {full_sa[0]};
-      std::vector<std::size_t> sb   {full_sb[0]};
+      std::vector<std::size_t>    dims {shape[0]};
+      std::vector<std::ptrdiff_t> sa   {full_sa[0]};
+      std::vector<std::ptrdiff_t> sb   {full_sb[0]};
       for (std::size_t axis {1}; axis < full_rank; ++axis) {
-        if (sa.back() == full_sa[axis] * shape[axis] && sb.back() == full_sb[axis] * shape[axis]) {
+        const auto extent {static_cast<std::ptrdiff_t>(shape[axis])};
+        if (sa.back() == full_sa[axis] * extent && sb.back() == full_sb[axis] * extent) {
           dims.back() *= shape[axis];
           sa.back()    = full_sa[axis];
           sb.back()    = full_sb[axis];
@@ -596,30 +651,37 @@ namespace numerical {
         sb.push_back(full_sb[axis]);
       }
       const std::size_t rank {dims.size()};
-      // The innermost axis runs as one loop, each operand stepping 1 or 0 (a broadcast one) along it, so a
-      // scalar or a row against a matrix is a plain vector loop; the odometer turns only between rows. The rows go
-      // by tasks, each task's odometer set from its first row.
-      const std::size_t inner          {dims[rank - 1]};
-      const std::size_t step_a         {sa[rank - 1]};
-      const std::size_t step_b         {sb[rank - 1]};
-      const std::size_t rows           {count / inner};
-      const std::size_t rows_per_task  {std::max<std::size_t>(1, detail::elementwise_chunk / inner)};
-      detail::parallel_for((rows + rows_per_task - 1) / rows_per_task, rows_per_task * inner, [&](std::size_t task) {
-                             const std::size_t        first {task * rows_per_task};
-                             const std::size_t        last {std::min(first + rows_per_task, rows)};
-                             std::vector<std::size_t> index(rank, 0);
-                             std::size_t              ia {0};
-                             std::size_t              ib {0};
+      // The innermost axis runs as one loop, each operand stepping along it (1, or 0 where it broadcasts, a scalar or
+      // a row against a matrix a plain vector loop); the odometer turns only between rows. The rows go by tasks, each
+      // task's odometer set from its first row; a row longer than \ref elementwise_chunk (a vector, or a whole
+      // row-major operand against a scalar, its axes run as one) by pieces of it, each piece a task.
+      const std::size_t    inner          {dims[rank - 1]};
+      const std::ptrdiff_t step_a         {sa[rank - 1]};
+      const std::ptrdiff_t step_b         {sb[rank - 1]};
+      const std::size_t    rows           {count / inner};
+      const std::size_t    pieces         {(inner + detail::elementwise_chunk - 1) / detail::elementwise_chunk};
+      const std::size_t    rows_per_task  {std::max<std::size_t>(1, detail::elementwise_chunk / inner)};
+      const std::size_t    tasks          {pieces > 1 ? rows * pieces : (rows + rows_per_task - 1) / rows_per_task};
+      const auto           row_apart      {static_cast<std::ptrdiff_t>(inner)};
+      detail::parallel_for(tasks, pieces > 1 ? detail::elementwise_chunk : rows_per_task * inner, [&](std::size_t task) {
+                             const std::size_t           first {pieces > 1 ? task / pieces : task * rows_per_task};
+                             const std::size_t           last {pieces > 1 ? first + 1 : std::min(first + rows_per_task, rows)};
+                             const std::size_t           from {pieces > 1 ? (task % pieces) * detail::elementwise_chunk : 0};
+                             const std::size_t           to {pieces > 1 ? std::min(inner, from + detail::elementwise_chunk) : inner};
+                             std::vector<std::size_t>    index(rank, 0);
+                             std::ptrdiff_t              ia {0};
+                             std::ptrdiff_t              ib {0};
                              for (std::size_t axis {rank - 1}, rest {first}; axis-- > 0;) { // the first row's position
                                index[axis]  = rest % dims[axis];
                                rest        /= dims[axis];
-                               ia          += index[axis] * sa[axis];
-                               ib          += index[axis] * sb[axis];
+                               ia          += static_cast<std::ptrdiff_t>(index[axis]) * sa[axis];
+                               ib          += static_cast<std::ptrdiff_t>(index[axis]) * sb[axis];
                              }
                              // Two axes, short rows, one operand's row the same for every row (stride 0) and the other's rows
-                             // together (stepping 1 along a row of two axes, its rows lie `inner` apart): that row repeated into
+                             // together (stepping 1 along a row of two axes, its rows `inner` apart): that row repeated into
                              // a run of at least 64, the task's rows one loop against it.
-                             if (rank == 2 && inner < 32 && step_a == 1 && step_b == 1 && (sa[0] == 0) != (sb[0] == 0)) {
+                             if (rank == 2 && inner < 32 && step_a == 1 && step_b == 1 && (sa[0] == 0) != (sb[0] == 0)
+                                 && (sa[0] == 0 ? sb[0] : sa[0]) == row_apart) {
                                const bool        a_repeats {sa[0] == 0};
                                const T* const    row_of    {a_repeats ? a : b};
                                const T* const    whole     {(a_repeats ? b : a) + (first * inner)};
@@ -630,38 +692,39 @@ namespace numerical {
                                  repeated[i] = row_of[i % inner];
                                }
                                const std::size_t total {(last - first) * inner};
-                               for (std::size_t from {0}; from < total; from += span) {
-                                 const std::size_t n {std::min(span, total - from)};
+                               for (std::size_t at {0}; at < total; at += span) {
+                                 const std::size_t n {std::min(span, total - at)};
                                  if (a_repeats) {
                                    for (std::size_t i {0}; i < n; ++i) {
-                                     po[from + i] = op(repeated[i], whole[from + i]);
+                                     po[at + i] = op(repeated[i], whole[at + i]);
                                    }
                                  }
                                  else {
                                    for (std::size_t i {0}; i < n; ++i) {
-                                     po[from + i] = op(whole[from + i], repeated[i]);
+                                     po[at + i] = op(whole[at + i], repeated[i]);
                                    }
                                  }
                                }
                                return;
                              }
-                             // Two axes, short rows, one operand a column (one element a row, stepping 0 along it) and the other's
-                             // rows together: each run of rows' column elements spread over their rows, one loop against them.
-                             if (rank == 2 && inner < 32 && step_a + step_b == 1 && (step_a == 1 ? sb[0] : sa[0]) == 1
-                                 && (step_a == 1 ? sa[0] : sb[0]) == inner) {
+                             // Two axes, short rows, one operand a column (one element a row, stepping 0 along it, its rows
+                             // together) and the other's rows together: each run of rows' column elements spread over their
+                             // rows, one loop against them.
+                             if (rank == 2 && inner < 32 && ((step_a == 0 && step_b == 1) || (step_a == 1 && step_b == 0))
+                                 && (step_a == 1 ? sb[0] : sa[0]) == 1 && (step_a == 1 ? sa[0] : sb[0]) == row_apart) {
                                const bool        a_spreads {step_a == 0};
                                const T* const    column    {(a_spreads ? a : b) + first};
                                const T* const    whole     {(a_spreads ? b : a) + (first * inner)};
                                R* const          po        {out.data() + (first * inner)};
                                const std::size_t run       {256 / inner};
                                std::array<T, 256> spread {};
-                               for (std::size_t from {0}; from < last - first; from += run) {
-                                 const std::size_t n {std::min(run, last - first - from)};
+                               for (std::size_t at {0}; at < last - first; at += run) {
+                                 const std::size_t n {std::min(run, last - first - at)};
                                  for (std::size_t r {0}; r < n; ++r) {
-                                   std::fill_n(spread.data() + (r * inner), inner, column[from + r]);
+                                   std::fill_n(spread.data() + (r * inner), inner, column[at + r]);
                                  }
-                                 const T* const w {whole + (from * inner)};
-                                 R* const       o {po + (from * inner)};
+                                 const T* const w {whole + (at * inner)};
+                                 R* const       o {po + (at * inner)};
                                  if (a_spreads) {
                                    for (std::size_t i {0}; i < n * inner; ++i) {
                                      o[i] = op(spread[i], w[i]);
@@ -675,29 +738,36 @@ namespace numerical {
                                }
                                return;
                              }
+                             const std::size_t n {to - from};
                              for (std::size_t row {first}; row < last; ++row) {
-                               const T* const pa {a + ia};
-                               const T* const pb {b + ib};
-                               R* const       po {out.data() + (row * inner)};
+                               const T* const pa {a + ia + (static_cast<std::ptrdiff_t>(from) * step_a)};
+                               const T* const pb {b + ib + (static_cast<std::ptrdiff_t>(from) * step_b)};
+                               R* const       po {out.data() + (row * inner) + from};
                                if (step_a == 1 && step_b == 1) {
-                                 for (std::size_t i {0}; i < inner; ++i) {
+                                 for (std::size_t i {0}; i < n; ++i) {
                                    po[i] = op(pa[i], pb[i]);
                                  }
                                }
-                               else if (step_a == 1) {
+                               else if (step_a == 1 && step_b == 0) {
                                  const T y {pb[0]};
-                                 for (std::size_t i {0}; i < inner; ++i) {
+                                 for (std::size_t i {0}; i < n; ++i) {
                                    po[i] = op(pa[i], y);
                                  }
                                }
-                               else if (step_b == 1) {
+                               else if (step_a == 0 && step_b == 1) {
                                  const T x {pa[0]};
-                                 for (std::size_t i {0}; i < inner; ++i) {
+                                 for (std::size_t i {0}; i < n; ++i) {
                                    po[i] = op(x, pb[i]);
                                  }
                                }
-                               else {
-                                 std::fill(po, po + inner, op(pa[0], pb[0]));
+                               else if (step_a == 0 && step_b == 0) {
+                                 std::fill(po, po + n, op(pa[0], pb[0]));
+                               }
+                               else { // a view's steps (reversed, or every few elements)
+                                 for (std::size_t i {0}; i < n; ++i) {
+                                   const auto at {static_cast<std::ptrdiff_t>(i)};
+                                   po[i] = op(pa[at * step_a], pb[at * step_b]);
+                                 }
                                }
                                for (std::size_t axis {rank - 1}; axis-- > 0;) { // odometer over the outer axes: carry on wrap
                                  ++index[axis];
@@ -706,13 +776,30 @@ namespace numerical {
                                  if (index[axis] < dims[axis]) {
                                    break;
                                  }
-                                 ia          -= sa[axis] * dims[axis];
-                                 ib          -= sb[axis] * dims[axis];
+                                 ia          -= sa[axis] * static_cast<std::ptrdiff_t>(dims[axis]);
+                                 ib          -= sb[axis] * static_cast<std::ptrdiff_t>(dims[axis]);
                                  index[axis]  = 0;
                                }
                              }
                            });
       return tensor<R> {std::move(shape), std::move(out)};
+    }
+
+    /*!
+     * \brief `op(a, b)` element by element of the row-major \p a (\p a_shape) and \p b (\p b_shape), broadcast against
+     *        each other, in `op`'s result type `R`.
+     * \throws dimension_error If the shapes do not broadcast.
+     */
+    template <typename T,
+              typename Op,
+              typename R = std::invoke_result_t<const Op&, const T&, const T&>>
+    [[nodiscard]] tensor<R> broadcast_into(const T*                        a,
+                                           const std::vector<std::size_t>& a_shape,
+                                           const T*                        b,
+                                           const std::vector<std::size_t>& b_shape,
+                                           const Op&                       op)
+    {
+      return broadcast_into(a, a_shape, row_major_strides(a_shape), b, b_shape, row_major_strides(b_shape), op);
     }
   }    // namespace detail
 
