@@ -201,6 +201,17 @@ class MatrixFunctions(unittest.TestCase):
         w, v = np.linalg.eigh(h)
         self.assertLess(np.abs(np.asarray(numerical.tanhm(h)) - (v * np.tanh(w)) @ v.conj().T).max(), 1e-13)
 
+    def test_sinhm_and_tanhm_of_a_small_norm_by_the_series(self):
+        # (e^A − e^{−A})/2 cancels: norm 10⁻⁹ lost 8 digits (SciPy's too); the series does not
+        g = np.random.default_rng(2).standard_normal((6, 6))
+        for a in (1e-9 * (g + g.T), 1e-9 * g, 1e-4 * (g + 1j * g.T), 0.1 * g):
+            w, v = np.linalg.eig(a)
+            for name, f in (("sinhm", np.sinh), ("tanhm", np.tanh)):
+                truth = (v * f(w)) @ np.linalg.inv(v)
+                truth = truth.real if np.isrealobj(a) else truth
+                got = np.asarray(getattr(numerical, name)(a))
+                self.assertLess(np.linalg.norm(got - truth) / np.linalg.norm(truth), 1e-13, name)
+
     def test_signm_by_newton_holds_an_ill_conditioned_sign(self):
         # A = V D V⁻¹, V unit upper triangular with integer entries: sign(A) = V sign(D) V⁻¹, of norm 6·10⁷
         n = 24

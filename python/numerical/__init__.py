@@ -5072,10 +5072,28 @@ def coshm(A):
     return _maybe_real(A, 0.5 * (expm(A) + expm(-A)))
 
 
+def _sinh_series(A):
+    """``sinh(A)`` by its series ``A + A³/3! + A⁵/5! + …`` where ``‖A‖₁ ≤ 1``, else None: the terms fall at least by
+    ``1/((2k)(2k+1))`` and nothing cancels, where ``(e^A − e^{−A})/2`` loses what ``1/‖A‖`` costs (norm 10⁻⁹: 8 digits)."""
+    if A.shape[0] == 0 or float(max(sum(absolute(A), axis=0))) > 1.0:
+        return None
+    square = A @ A
+    term = A
+    total = A
+    for k in range(1, 30):
+        term = (term @ square) / float((2 * k) * (2 * k + 1))
+        total = total + term
+        if float(max(sum(absolute(term), axis=0))) <= _EPSILON.get(A.dtype, 2.0 ** -52) * float(max(sum(absolute(total), axis=0))):
+            break
+    return total
+
+
 def sinhm(A):
-    """The matrix hyperbolic sine, ``(expm(A) − expm(-A)) / 2``, as ``scipy.linalg.sinhm``."""
+    """The matrix hyperbolic sine, ``(expm(A) − expm(-A)) / 2``, as ``scipy.linalg.sinhm``; where ``‖A‖₁ ≤ 1`` its
+    series, which does not cancel."""
     A = _square("sinhm", A)
-    return _maybe_real(A, 0.5 * (expm(A) - expm(-A)))
+    series = _sinh_series(A if A.dtype != "int64" else asarray(A, "float64"))
+    return _maybe_real(A, 0.5 * (expm(A) - expm(-A))) if series is None else series
 
 
 def tanhm(A):
@@ -5088,7 +5106,9 @@ def tanhm(A):
         w, v = eigh(A)
         return (v * tanh(w).astype(v.dtype)) @ conj(matrix_transpose(v))
     ep, em = expm(A), expm(-A)
-    return _maybe_real(A, solve(_maybe_real(A, 0.5 * (ep + em)), _maybe_real(A, 0.5 * (ep - em))))
+    series = _sinh_series(A if A.dtype != "int64" else asarray(A, "float64"))  # below ‖A‖₁ = 1 no cancellation
+    sine = _maybe_real(A, 0.5 * (ep - em)) if series is None else series
+    return _maybe_real(A, solve(_maybe_real(A, 0.5 * (ep + em)), sine))
 
 
 def _sign_newton(A, steps=30):
