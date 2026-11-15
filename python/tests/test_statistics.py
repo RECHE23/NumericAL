@@ -186,12 +186,16 @@ class AgainstNumPy(unittest.TestCase):
         holed = clean.copy()
         holed[1, 3] = np.nan
         holed[:, 5] = np.nan
-        cases = (clean, clean.astype(np.float32), holed, holed.astype(np.float32), rng.integers(-9, 9, (5, 7), dtype=np.int64),
+        first = clean.copy()  # NumPy's nanquantile along axis 0 answers in the dtype of its first slice's, NaNs alone
+        first[:, 0] = np.nan
+        cases = (clean, clean.astype(np.float32), holed, holed.astype(np.float32), first.astype(np.float32),
+                 rng.integers(-9, 9, (5, 7), dtype=np.int64),
                  np.array([-1.0, -0.0]), np.array([3.0]))
         for data in cases:
             t = numerical.asarray(data, "int64") if data.dtype.kind == "i" else numerical.asarray(data)
             for method in _METHODS:
-                for q in (0.5, 0.0, 1.0, 0.37, [0.1, 0.5, 0.99], np.array([[0.2, 0.8], [0.0, 1.0]]), 1, 0):
+                for q in (0.5, 0.0, 1.0, 0.37, [0.1, 0.5, 0.99], np.array([[0.2, 0.8], [0.0, 1.0]]), 1, 0,
+                          np.array([0.3, 0.7], np.float32)):  # a float32 q: its indexes and gamma in float32, as NumPy's
                     if type(q) in (int, float) and not _NUMPY_2_4:
                         continue  # a Python q is weak from NumPy 2.4 on, as here: older ones compute otherwise
                     for axis in ((None, 0, 1, (0, 1)) if data.ndim == 2 else (None, 0)):

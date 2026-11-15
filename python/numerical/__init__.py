@@ -7557,7 +7557,9 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
     else:
         n = joined.shape[-1]
         q_along = flat_q
-    index = _virtual_index(method, n, q_along)
+    # NumPy counts each slice's values as a Python int, weak beside `q`: a float32 `q` keeps its indexes in float32
+    counted = asarray(n, "float32") if ignore_nans and inexact and flat_q.dtype == "float32" else n
+    index = _virtual_index(method, counted, q_along)
     last = n - 1  # NumPy's -1: the last value (the last that is not NaN, for `ignore_nans`)
     last_value = []  # the last of each line (a NaN where it holds one), read beside the others where NumPy looks
 
@@ -7590,6 +7592,7 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
             gamma = where(gamma == 0, 0.5, 1.0)
         elif method == "midpoint":
             gamma = where(index % 1 == 0, 0.0, 0.5)
+        gamma = asarray(gamma, index.dtype)  # NumPy's: gamma in its virtual indexes' dtype (float32 from a float32 `q`)
         low, high = picked(_as_position(previous, n), _as_position(following, n))
         if not weak:
             result = _lerp(low, high, gamma)
@@ -7603,6 +7606,10 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
             if any(empty):
                 _warnings.warn("All-NaN slice encountered", RuntimeWarning, stacklevel=3)
                 result = where(empty, _math.nan, result)
+                # NumPy's apply_along_axis takes the dtype of its first slice's answer, a NaN of `a`'s dtype where that
+                # slice holds nothing else: every slice's answer is then rounded to it
+                if reshape(empty, (-1,))[0] and result.dtype != a.dtype:
+                    result = asarray(result, a.dtype)
         elif nans:
             result = where(isnan(last_value[0]), last_value[0], result)
     # rest + (Q,) to lead + rest
