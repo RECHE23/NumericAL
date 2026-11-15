@@ -6,6 +6,7 @@
 #include <array>
 #include <type_traits>
 #include <cmath>
+#include <numbers>
 #include <complex>
 #include <cstddef>
 #include <limits>
@@ -1546,4 +1547,75 @@ TEST(band_reduction_to_tridiagonal_form)
   const numerical::band_tridiagonal_form<double> empty {numerical::band_tridiagonal(matrix<double> {3, 0, numerical::buffer<double> {}}, true)};
   EXPECT(empty.d.size() == 0 && empty.e.size() == 0 && empty.w.rows() == 0);
   EXPECT_THROWS((void)numerical::band_tridiagonal(matrix<double> {0, 4, numerical::buffer<double> {}}, false), numerical::dimension_error);
+}
+
+TEST(a_reflector_of_subnormal_entries_is_the_one_at_any_scale)
+{
+  // (0, 1e-310) onto (β, 0): v = (1, 1), τ = 1, β = −1e-310, where 1 / (α − β) overflowed and v became infinite
+  double     alpha {0.0};
+  double     x[1]  {1e-310};
+  const auto tau   {numerical::detail::reflector_tau(alpha, x, 1)};
+  EXPECT(tau == 1.0 && x[0] == 1.0 && alpha == -1e-310);
+  double v[3]      {0.0, 1e-310, 0.0};
+  EXPECT(numerical::detail::small_reflector(v, 2) == 1.0 && v[1] == 1.0 && v[0] == -1e-310);
+  double w[3]      {0.0, 0.0, 1e-310};
+  EXPECT(numerical::detail::small_reflector(w, 3) == 1.0 && w[1] == 0.0 && w[2] == 1.0 && w[0] == -1e-310);
+  C       z[2]     {C {0.0, 0.0}, C {1e-310, 0.0}};
+  const C tz       {numerical::detail::complex_reflector(z)};
+  EXPECT((tz == C(1.0, 0.0) && z[1] == C(1.0, 0.0) && z[0] == C(-1e-310, 0.0)));
+}
+
+TEST(eig_of_a_skew_symmetric_tridiagonal_matrix_converges)
+{
+  // central differences, tridiag(−1, 0, 1): eigenvalues 2i cos(kπ/(n + 1)). Its bulges leave subnormal entries,
+  // whose reflectors overflowed: no convergence at order 23, NaN eigenvalues without an error in a window of 24.
+  for (const std::size_t n : {std::size_t {23}, std::size_t {55}}) {
+    numerical::buffer<double> a(n * n, 0.0);
+    for (std::size_t i {0}; i + 1 < n; ++i) {
+      a[(i * n) + i + 1]   = 1.0;
+      a[((i + 1) * n) + i] = -1.0;
+    }
+    const eigen_decomposition<double> e {matrix<double> {n, n, a}};
+    std::vector<double>               found;
+    std::vector<double>               expected;
+    for (std::size_t k {0}; k < n; ++k) {
+      found.push_back(e.values()[k].imag());
+      EXPECT(std::abs(e.values()[k].real()) < 1e-14);
+      expected.push_back(2.0 * std::cos(std::numbers::pi * static_cast<double>(k + 1) / static_cast<double>(n + 1)));
+    }
+    std::ranges::sort(found);
+    std::ranges::sort(expected);
+    for (std::size_t k {0}; k < n; ++k) {
+      EXPECT(std::abs(found[k] - expected[k]) < 1e-13);
+    }
+  }
+}
+
+TEST(hessenberg_of_a_subnormal_matrix_is_finite)
+{
+  // order 150 (the blocked reduction), every entry below 1e-308: its reflectors overflowed into NaN. An orthogonal
+  // similarity keeps the trace and the Frobenius norm; the form itself, sensitive to the entries' 44 bits, may differ
+  // from the one at scale 1.
+  constexpr std::size_t     n       {150};
+  numerical::buffer<double> tiny(n * n);
+  double                    trace   {0.0};
+  double                    squares {0.0};
+  for (std::size_t i {0}; i < n * n; ++i) {
+    const double x {std::ldexp(std::sin(1.0 + (0.37 * static_cast<double>(i) * static_cast<double>(i))), -1030)};
+    tiny[i]   = x;
+    trace    += (i % (n + 1) == 0) ? std::ldexp(x, 1030) : 0.0;
+    squares  += std::ldexp(x, 1030) * std::ldexp(x, 1030);
+  }
+  static_cast<void>(numerical::detail::hessenberg(tiny, n, 0, n, false));
+  double h_trace   {0.0};
+  double h_squares {0.0};
+  for (std::size_t r {0}; r < n; ++r) {
+    for (std::size_t c {0}; c < n; ++c) {
+      const double h {r > c + 1 ? 0.0 : std::ldexp(tiny[(r * n) + c], 1030)}; // below the subdiagonal: the reflectors
+      EXPECT(std::isfinite(h));
+      h_trace   += r == c ? h : 0.0;
+      h_squares += h * h;
+    }
+  }
+  EXPECT(std::abs(h_trace - trace) < 1e-10 * std::sqrt(squares) && std::abs(h_squares - squares) < 1e-12 * squares);
 }

@@ -349,9 +349,19 @@ namespace numerical {
                                   T*          x,
                                   std::size_t count)
     {
-      const double rest {scaled_norm(x, count)};
+      double rest {scaled_norm(x, count)};
       if (already_reduced(alpha, rest)) {
         return T {};
+      }
+      // Everything tiny is scaled up first, exactly, as dlarfg does: from subnormal entries `1 / (α − β)` overflows.
+      // The same reflector at any scale; `β` scaled back.
+      const double factor {rescue_factor<T>(std::max(static_cast<double>(std::abs(alpha)), rest))};
+      if (factor != 1.0) {
+        alpha *= from_carried<T>(factor);
+        for (std::size_t i {0}; i < count; ++i) {
+          x[i] *= from_carried<T>(factor);
+        }
+        rest = scaled_norm(x, count);
       }
       const double beta  {-std::copysign(std::hypot(static_cast<double>(std::abs(alpha)), rest), real_part(alpha))};
       const T      tau   {(from_carried<T>(beta) - alpha) / from_carried<T>(beta)};
@@ -359,7 +369,7 @@ namespace numerical {
       for (std::size_t i {0}; i < count; ++i) {
         x[i] *= scale;
       }
-      alpha = from_carried<T>(beta);
+      alpha = from_carried<T>(beta / factor);
       return tau;
     }
 
@@ -635,9 +645,18 @@ namespace numerical {
     [[nodiscard]] inline double small_reflector(double (&v)[3],
                                                 std::size_t count)
     {
-      const double rest {count == 3 ? std::hypot(v[1], v[2]) : std::abs(v[1])};
+      double rest {count == 3 ? std::hypot(v[1], v[2]) : std::abs(v[1])};
       if (rest == 0.0) {
         return 0.0;
+      }
+      // Everything tiny is scaled up first, exactly, as dlarfg does: from subnormal entries (a bulge on a matrix of
+      // zero diagonal leaves them) `1 / (α − β)` overflows. The same reflector at any scale; `β` scaled back.
+      const double factor {rescue_factor<double>(std::max(std::abs(v[0]), rest))};
+      if (factor != 1.0) {
+        for (std::size_t i {0}; i < count; ++i) {
+          v[i] *= factor;
+        }
+        rest = count == 3 ? std::hypot(v[1], v[2]) : std::abs(v[1]);
       }
       const double beta  {-std::copysign(std::hypot(v[0], rest), v[0])};
       const double tau   {(beta - v[0]) / beta};
@@ -645,7 +664,7 @@ namespace numerical {
       for (std::size_t i {1}; i < count; ++i) {
         v[i] *= scale;
       }
-      v[0] = beta;
+      v[0] = beta / factor;
       return tau;
     }
 
@@ -659,10 +678,14 @@ namespace numerical {
       if (modulus_1(v[1]) == 0.0 && v[0].imag() == 0.0) {
         return {};
       }
+      // Everything tiny is scaled up first, exactly, as zlarfg does: from subnormal entries `1 / (α − β)` overflows.
+      const double factor {rescue_factor<std::complex<double>>(std::max(std::abs(v[0]), std::abs(v[1])))};
+      v[0] *= factor;
+      v[1] *= factor;
       const double               beta {-std::copysign(std::hypot(std::abs(v[0]), std::abs(v[1])), v[0].real())};
       const std::complex<double> tau  {(beta - v[0].real()) / beta, -v[0].imag() / beta};
       v[1] = v[1] / (v[0] - beta);
-      v[0] = beta;
+      v[0] = beta / factor;
       return tau;
     }
 

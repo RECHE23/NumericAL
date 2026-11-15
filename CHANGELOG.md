@@ -74,6 +74,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **`eig`, `eigvals`, `schur` and `hessenberg` of a real matrix whose reduction meets subnormal numbers**: the
+  reflectors of the Hessenberg reduction and of the QR sweeps divided by `α − β` without scaling a tiny vector up
+  first, as LAPACK's `dlarfg` does, and the inverse overflowed. A skew-symmetric tridiagonal matrix (central
+  differences: zero diagonal, ±1 beside it) did not converge at 67 of 234 orders from 2 to 695 (the first, 23), and in
+  6 more the eigenvalues came back NaN without an error; `hessenberg` of a matrix of scale 1e-310 came back NaN. Each
+  converges now, and the bits of every other input are as before (the scale is an exact power of two, taken only
+  below 2⁻⁵⁰⁰).
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.
