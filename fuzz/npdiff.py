@@ -453,8 +453,10 @@ def polynomials(rng):
 
 def padding(rng):
     a = array(rng, shape(rng, 1, 2), kinds=("f8", "i8"), special=0.1)
-    if a.dtype == np.int64:  # NumPy's statistics of int64 in float64 come back as the processor converts them
-        a = np.clip(a, -2 ** 53, 2 ** 53)
+    if a.dtype == np.int64:  # NumPy's statistics of int64 in float64: every sum of them exact, below 2⁵³, so that a mean
+        # rounds to an integer the same whatever the order of its sum (past it, NumPy's row by row and a pairwise sum
+        # round a mean of …620.5 apart, to …620 and …621)
+        a = np.clip(a, -(2 ** 53 // max(a.size, 1)), 2 ** 53 // max(a.size, 1))
     mode = str(rng.choice(["constant", "edge", "reflect", "symmetric", "wrap", "linear_ramp", "maximum", "minimum",
                            "mean", "median", "empty"]))
     width = int(rng.integers(0, 4)) if rng.random() < 0.5 else [(int(rng.integers(0, 3)), int(rng.integers(0, 3)))
