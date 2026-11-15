@@ -4076,3 +4076,57 @@ TEST(the_shifted_tridiagonal_solve_guards_its_pivots)
   solve_shifted_tridiagonal(subnormal, 1, &small, tol);
   EXPECT(std::abs((small * 1e-310) - 1e-300) <= 1e-312);
 }
+
+TEST(jacobi_svd_of_rank_deficient_and_nearly_diagonal_matrices)
+{
+  using C = std::complex<double>;
+  // U and V orthonormal and U Σ Vᴴ the input, to rounding
+  const auto holds = []<typename T>(const matrix<T>& a) {
+                       const svd_decomposition<T> s     {a, numerical::svd_method::jacobi};
+                       const matrix<T>&           u     {s.u()};
+                       const matrix<T>&           v     {s.v()};
+                       double                     worst {0.0};
+                       for (std::size_t i {0}; i < u.cols(); ++i) {
+                         for (std::size_t j {0}; j < u.cols(); ++j) {
+                           T uu {};
+                           T vv {};
+                           for (std::size_t r {0}; r < u.rows(); ++r) {
+                             uu += numerical::detail::conj_of(u(r, i)) * u(r, j);
+                           }
+                           for (std::size_t r {0}; r < v.rows(); ++r) {
+                             vv += numerical::detail::conj_of(v(r, i)) * v(r, j);
+                           }
+                           const double one {i == j ? 1.0 : 0.0};
+                           worst = std::max({worst, std::abs(uu - T {one}), std::abs(vv - T {one})});
+                         }
+                       }
+                       double residual {0.0};
+                       double largest  {0.0};
+                       for (std::size_t r {0}; r < a.rows(); ++r) {
+                         for (std::size_t c {0}; c < a.cols(); ++c) {
+                           T sum {};
+                           for (std::size_t k {0}; k < u.cols(); ++k) {
+                             sum += u(r, k) * s.singular_values()[k] * numerical::detail::conj_of(v(c, k));
+                           }
+                           residual = std::max(residual, std::abs(sum - a(r, c)));
+                           largest  = std::max(largest, std::abs(a(r, c)));
+                         }
+                       }
+                       return worst < 1e-13 && residual < 1e-13 * largest;
+                     };
+  // ones(10, 7): a column of norm 1e-309 beside the first, normalised along it (U off by 1)
+  EXPECT(holds(matrix<double> {10, 7, std::vector<double>(70, 1.0)}));
+  // ones(25, 28): subnormal columns whose cosine stops near their own spacing (60 sweeps, no convergence)
+  EXPECT(holds(matrix<double> {25, 28, std::vector<double>(700, 1.0)}));
+  EXPECT(holds(matrix<C> {25, 28, std::vector<C>(700, C {1.0, 1.0})}));
+  // I + 1e-9 on the superdiagonal, order 200: inner products rounded past a bound of ε alone (no convergence)
+  constexpr std::size_t order {200};
+  std::vector<double>   near(order * order, 0.0);
+  for (std::size_t i {0}; i < order; ++i) {
+    near[(i * order) + i] = 1.0;
+    if (i + 1 < order) {
+      near[(i * order) + i + 1] = 1e-9;
+    }
+  }
+  EXPECT(holds(matrix<double> {order, order, near}));
+}

@@ -81,6 +81,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   6 more the eigenvalues came back NaN without an error; `hessenberg` of a matrix of scale 1e-310 came back NaN. Each
   converges now, and the bits of every other input are as before (the scale is an exact power of two, taken only
   below 2⁻⁵⁰⁰).
+- **`svd(method="jacobi")` of a matrix of low rank or near the identity**: a column of rounding noise along an
+  earlier one was normalised into `U` as it was (`ones((10, 7))`: `UᴴU` off the identity by 1); subnormal columns,
+  whose cosine stops near their own spacing, kept the sweeps turning (`ones((25, 28))`), and so did inner products
+  rounded past a bound of `ε` alone (`I` plus `1e-9` above the diagonal, order 200 and up), each to a `LinAlgError`.
+  The bound is `√n ε`, as LAPACK's `dgesvj`, or the precision a subnormal column holds; a left vector off its
+  predecessors is made orthogonal to them. 1 000 integer matrices of rank 1 and up: `U` and `V` orthonormal to
+  `10⁻¹³`; 200 graded ones: the same singular values, to the bit.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.

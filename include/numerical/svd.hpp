@@ -73,8 +73,10 @@ namespace numerical {
       transpose_square(w);
       transpose_square(v);
       // Orthogonal to the rounding of the columns' storage: a float column holds no inner product to double's.
-      // The rotations are carried in double: the coarser of T's epsilon and double's.
-      const double epsilon {std::max(static_cast<double>(std::numeric_limits<value_range_t<T>>::epsilon()), std::numeric_limits<double>::epsilon())};
+      // The rotations are carried in double: the coarser of T's epsilon and double's, times √n as LAPACK's dgesvj
+      // takes it: an inner product of n terms is rounded by about that much, and a bound below it may never hold.
+      const double epsilon {std::sqrt(static_cast<double>(n))
+                            * std::max(static_cast<double>(std::numeric_limits<value_range_t<T>>::epsilon()), std::numeric_limits<double>::epsilon())};
       for (std::size_t sweep {1};; ++sweep) {
         bool rotated {false};
         for (std::size_t p {0}; p < n; ++p) {
@@ -106,7 +108,10 @@ namespace numerical {
               }
               const double size {static_cast<double>(std::abs(cosine))};
               zeta = ((norm_q / norm_p) - (norm_p / norm_q)) / (2.0 * size);
-              if (size <= epsilon) {
+              // Orthogonal to the precision the columns hold: a subnormal one holds fewer bits (a column of norm
+              // 1e-314, 31), and its cosine stops near its own spacing, which no rotation lowers (ones(25, 28)).
+              const double held {2.0 * std::sqrt(static_cast<double>(n)) * std::numeric_limits<double>::denorm_min() / std::min(norm_p, norm_q)};
+              if (size <= std::max(epsilon, held)) {
                 continue; // orthogonal to rounding
               }
               gamma     = cosine; // the phase is γ's
@@ -124,11 +129,11 @@ namespace numerical {
             if (t == 0.0) {
               continue; // a rotation below the smallest double: the pair is as orthogonal as it can be
             }
-            rotated = true;
             // Turn column q by the phase of γ so that the pair's inner product is real, then rotate.
             const T      turn {conj_of(gamma) / detail::from_carried<T>(magnitude)};
             const double c    {1.0 / std::sqrt(1.0 + (t * t))};
             const double s    {c * t};
+            rotated = true;
             for (buffer<T>* side : {&w, &v}) {
               T* mp {side->data() + (p * n)};
               T* mq {side->data() + (q * n)};
@@ -1815,10 +1820,30 @@ namespace numerical {
           sorted_right[(i * cols) + d] = right[(i * cols) + j];
         }
         if (norms[j] > 0.0) {
+          buffer<T> unit(cols, T {});
           for (std::size_t i {0}; i < cols; ++i) {
-            left[(i * cols) + d] = w[(i * cols) + j] / detail::from_carried<T>(norms[j]);
+            unit[i] = w[(i * cols) + j] / detail::from_carried<T>(norms[j]);
           }
-          continue;
+          if (largest_cosine(unit, left, cols, d) > separate_columns * std::sqrt(static_cast<double>(cols)) * std::numeric_limits<double>::epsilon()) {
+            // Rounding noise along the columns before it (a numerically rank-deficient matrix: ones(10, 7) left a
+            // column of norm 1e-309 beside its first): made orthogonal to them, twice; nothing of it left beside
+            // them, it is completed as a zero column is.
+            orthogonalise(unit, left, cols, d);
+            orthogonalise(unit, left, cols, d);
+            const auto rest {static_cast<double>(detail::scaled_norm(unit))};
+            if (rest > 0.5) {
+              for (std::size_t i {0}; i < cols; ++i) {
+                left[(i * cols) + d] = unit[i] / detail::from_carried<T>(rest);
+              }
+              continue;
+            }
+          }
+          else {
+            for (std::size_t i {0}; i < cols; ++i) {
+              left[(i * cols) + d] = unit[i];
+            }
+            continue;
+          }
         }
         buffer<T>      best;
         double         best_norm {-1.0};
@@ -1841,6 +1866,27 @@ namespace numerical {
       singular_values_ = vector<double> {std::move(values)};
       u_               = left_vectors(std::move(factors.q), std::move(left), rows, cols, width);
       v_               = matrix<T> {cols, cols, std::move(sorted_right)};
+    }
+
+    //! \brief The cosine past which a left vector, a column of `W` over its norm, is not taken as orthogonal to those
+    //!        before it, in units of `√n ε`: one-sided Jacobi leaves its columns within `√n ε` of each other.
+    static constexpr double separate_columns {64.0};
+
+    //! \brief The largest `|⟨b, x⟩|` over the first \p count columns `b` of the `n × n` \p basis.
+    [[nodiscard]] static double largest_cosine(const buffer<T>& x,
+                                               const buffer<T>& basis,
+                                               std::size_t      n,
+                                               std::size_t      count)
+    {
+      double largest {0.0};
+      for (std::size_t c {0}; c < count; ++c) {
+        T projection {};
+        for (std::size_t i {0}; i < n; ++i) {
+          projection += detail::conj_of(basis[(i * n) + c]) * x[i];
+        }
+        largest = std::max(largest, static_cast<double>(std::abs(projection)));
+      }
+      return largest;
     }
 
     //! \brief Removes from \p x its components along the first \p count columns of the `n × n` \p basis.
