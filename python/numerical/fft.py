@@ -254,23 +254,25 @@ def irfft2(a, s=None, axes=(-2, -1), norm=None, out=None):
     return irfftn(a, s, axes, norm, out)
 
 
-def fftfreq(n, d=1.0, device=None):
+def fftfreq(n, d=1.0, device=None, *, dtype=None):
     """The sample frequencies of a transform of `n` points, `d` apart, as :func:`numpy.fft.fftfreq`: 0, 1, …,
-    ⌈n/2⌉ − 1, then −⌊n/2⌋, …, −1, each times 1/(n·d)."""
+    ⌈n/2⌉ − 1, then −⌊n/2⌋, …, −1, each times 1/(n·d); in `dtype` where given (the array API's), float64 else."""
     if device not in (None, "cpu"):
         raise ValueError(f"Device not understood. Only \"cpu\" is allowed, but received: {device}")
     step = 1.0 / (n * d)
     half = (n - 1) // 2 + 1
-    return asarray([k * step for k in [*range(half), *range(-(n // 2), 0)]])
+    values = asarray([k * step for k in [*range(half), *range(-(n // 2), 0)]])
+    return values if dtype is None else asarray(values, dtype)
 
 
-def rfftfreq(n, d=1.0, device=None):
+def rfftfreq(n, d=1.0, device=None, *, dtype=None):
     """The sample frequencies of a real transform of `n` points, `d` apart, as :func:`numpy.fft.rfftfreq`: 0, 1, …,
-    ⌊n/2⌋, each times 1/(n·d)."""
+    ⌊n/2⌋, each times 1/(n·d); in `dtype` where given (the array API's), float64 else."""
     if device not in (None, "cpu"):
         raise ValueError(f"Device not understood. Only \"cpu\" is allowed, but received: {device}")
     step = 1.0 / (n * d)
-    return asarray([k * step for k in range(n // 2 + 1)])
+    values = asarray([k * step for k in range(n // 2 + 1)])
+    return values if dtype is None else asarray(values, dtype)
 
 
 def _shift(x, axes, inverse):

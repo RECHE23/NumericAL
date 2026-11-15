@@ -917,6 +917,17 @@ Tensor.__bool__ = _bool
 Tensor.__float__ = _scalar(float)
 Tensor.__complex__ = _scalar(complex)
 Tensor.__int__ = _scalar(int)
+
+
+def _index(self):
+    """A rank-0 integer or bool Tensor as a Python int, an index (``range(t)``, ``[…][t]``), as NumPy's; any other
+    raises TypeError."""
+    if self.shape or self.dtype not in ("int64", "bool"):
+        raise TypeError("only integer scalar tensors can be converted to a scalar index")
+    return int(self.tolist())
+
+
+Tensor.__index__ = _index
 Tensor.__repr__ = _repr
 for _name, _op in (("__eq__", "=="), ("__ne__", "!="), ("__lt__", "<"), ("__le__", "<="), ("__gt__", ">"),
                   ("__ge__", ">=")):
@@ -10082,10 +10093,10 @@ def can_cast(from_, to, casting="safe"):
 
 
 def empty(shape, dtype="float64", *, device=None):
-    """A tensor of `shape` and `dtype`, as ``numpy.empty``: its elements zeros here (a Tensor is never written into,
-    so none is left unset)."""
+    """A tensor of `shape` and `dtype` (float64 for None, as the array API's default), as ``numpy.empty``: its elements
+    zeros here (a Tensor is never written into, so none is left unset)."""
     _cpu_device(device, "empty")
-    return zeros(shape, _known_dtype(dtype))
+    return zeros(shape, _known_dtype("float64" if dtype is None else dtype))
 
 
 def from_dlpack(x, /, *, device=None, copy=None):

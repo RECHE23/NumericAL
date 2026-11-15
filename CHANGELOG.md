@@ -10,6 +10,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Added
 
+- **The array API's index and keywords**: a rank-0 integer or bool Tensor is an index (`Tensor.__index__`:
+  `range(t)`, `seq[t]`), as NumPy's, a float one or a vector refused; `fft.fftfreq` and `fft.rfftfreq` take `dtype`;
+  `empty(shape, dtype=None)` is float64. Found by the array API's conformance suite (array-api-tests), which this
+  namespace passes at 84–86 % today, the rest chiefly its Python scalars where the standard wants rank-0 arrays (for
+  2026.12.0).
+
 - **`arange(..., dtype=...)`**, as NumPy's: the values filled in that dtype (float32, int64, the complex ones) its
   way, the first two `start` and `start + step`, each next `first + i (second − first)`; float64 by default as before
   (NumPy's int64 for integer bounds is a change to come with the integer dtypes).

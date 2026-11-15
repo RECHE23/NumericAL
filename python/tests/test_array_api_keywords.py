@@ -35,6 +35,21 @@ class WithoutNumPy(unittest.TestCase):
             with self.assertRaises(ValueError):
                 call()
 
+    def test_index_empty_and_frequencies_as_the_array_api(self):
+        # a rank-0 integer or bool Tensor is an index; a float one, or a vector, is not
+        self.assertEqual(list(range(numerical.asarray(3, "int64"))), [0, 1, 2])
+        self.assertEqual(["a", "b", "c"][numerical.asarray(1, "int64")], "b")
+        self.assertEqual(int.__index__(1) + numerical.asarray(True, "bool").__index__(), 2)
+        for not_an_index in (numerical.asarray(1.0), numerical.asarray([1, 2], "int64")):
+            with self.assertRaises(TypeError):
+                range(not_an_index)
+        self.assertEqual(numerical.empty((2,), dtype=None).dtype, "float64")  # the array API's default
+        for function in (numerical.fft.fftfreq, numerical.fft.rfftfreq):
+            single = function(8, 0.5, dtype="float32")
+            self.assertEqual(single.dtype, "float32")
+            self.assertEqual(single.tolist(), numerical.asarray(function(8, 0.5), "float32").tolist())
+            self.assertEqual(function(8, 0.5).dtype, "float64")
+
     def test_asarray_copy(self):
         t = numerical.asarray([1.0, 2.0])
         self.assertIs(numerical.asarray(t, copy=False), t)  # its elements shared, never written into
