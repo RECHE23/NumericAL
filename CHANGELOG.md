@@ -88,6 +88,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   The bound is `√n ε`, as LAPACK's `dgesvj`, or the precision a subnormal column holds; a left vector off its
   predecessors is made orthogonal to them. 1 000 integer matrices of rank 1 and up: `U` and `V` orthonormal to
   `10⁻¹³`; 200 graded ones: the same singular values, to the bit.
+- **`eigh(method="jacobi")` to rounding**: its sweeps stopped once the off-diagonal fell below `10⁻¹²` of the
+  norm, four digits short (`min(i, j) + 1` of order 7: a residual of 3589 `ε ‖A‖`, the default method's 7). A pair now
+  turns while its element passes `ε √|a_pp a_qq|`, Demmel and Veselić's bound: 3.4 `ε ‖A‖` there, each eigenvalue of
+  a graded positive definite matrix to a few `ε` of itself.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.

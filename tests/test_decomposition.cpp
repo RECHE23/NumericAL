@@ -868,7 +868,7 @@ TEST(symmetric_eigen_reads_the_lower_triangle_and_bounds_its_iterations)
   }
   numerical::buffer<double> a {2.0, 1.0, 0.5, 1.0, 3.0, -1.0, 0.5, -1.0, 4.0};
   numerical::buffer<double> v {1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 1.0};
-  EXPECT_THROWS(numerical::detail::cyclic_jacobi(a, v, 3, 1.0, 1), numerical::convergence_error);
+  EXPECT_THROWS(numerical::detail::cyclic_jacobi(a, v, 3, 1), numerical::convergence_error);
   numerical::buffer<double> d {2.0, 3.0, 4.0};
   numerical::buffer<double> e {1.0, -1.0, 0.0};
   EXPECT_THROWS(numerical::detail::tridiagonal_ql(d, e, v, 3, 1), numerical::convergence_error);
@@ -4129,4 +4129,28 @@ TEST(jacobi_svd_of_rank_deficient_and_nearly_diagonal_matrices)
     }
   }
   EXPECT(holds(matrix<double> {order, order, near}));
+}
+
+TEST(jacobi_eigh_reaches_rounding)
+{
+  // min(i, j) + 1, order 7: a stop at 1e-12 of the norm left a residual of 3589 ε ‖A‖
+  std::vector<double> m(49);
+  for (std::size_t i {0}; i < 7; ++i) {
+    for (std::size_t j {0}; j < 7; ++j) {
+      m[(i * 7) + j] = static_cast<double>(std::min(i, j)) + 1.0;
+    }
+  }
+  const matrix<double>  a        {7, 7, m};
+  const symmetric_eigen e        {a, numerical::eigen_method::jacobi};
+  double                residual {0.0};
+  for (std::size_t r {0}; r < 7; ++r) {
+    for (std::size_t c {0}; c < 7; ++c) {
+      double sum {0.0};
+      for (std::size_t k {0}; k < 7; ++k) {
+        sum += a(r, k) * e.vectors()(k, c);
+      }
+      residual = std::max(residual, std::abs(sum - (e.vectors()(r, c) * e.values()[c])));
+    }
+  }
+  EXPECT(residual < 16.0 * std::numeric_limits<double>::epsilon() * 7.0);
 }

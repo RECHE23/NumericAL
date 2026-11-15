@@ -5860,30 +5860,15 @@ namespace numerical {
       return at;
     }
 
-    //! \brief The Frobenius norm of the strict off-diagonal of the `n × n` \p a.
-    [[nodiscard]] inline double jacobi_off_diagonal(const buffer<double>&      a,
-                                                    std::size_t                n)
-    {
-      double sum {0.0};
-      for (std::size_t p {0}; p < n; ++p) {
-        for (std::size_t q {p + 1}; q < n; ++q) {
-          sum += a[(p * n) + q] * a[(p * n) + q];
-        }
-      }
-      return std::sqrt(2.0 * sum);
-    }
-
-    //! \brief One Jacobi rotation of the `n × n` \p a zeroing `a[p][q]`, accumulated into \p v.
+    //! \brief One Jacobi rotation of the `n × n` \p a zeroing `a[p][q]`, accumulated into \p v. \pre `a[p][q]` is not
+    //!        0 (\ref cyclic_jacobi rotates a pair past `DBL_MIN` alone).
     inline void jacobi_rotate(buffer<double>&      a,
                               buffer<double>&      v,
                               std::size_t          n,
                               std::size_t          p,
                               std::size_t          q)
     {
-      const double apq {a[(p * n) + q]};
-      if (apq == 0.0) {
-        return; // already zero — nothing to rotate
-      }
+      const double apq   {a[(p * n) + q]};
       const double app   {a[(p * n) + p]};
       const double aqq   {a[(q * n) + q]};
       const double theta {(aqq - app) / (2.0 * apq)};
@@ -5914,30 +5899,37 @@ namespace numerical {
 
     /*!
      * \brief Cyclic Jacobi on the full symmetric \p a, the rotations accumulated into \p v.
-     * \param[in,out] a          The matrix; on return, diagonal to rounding.
+     * \param[in,out] a          The matrix; on return, diagonal to rounding, each element off it below ε times the
+     *                           geometric mean of its row's and column's diagonal elements.
      * \param[in,out] v          The rotations (start from the identity).
      * \param[in]     n          The order.
-     * \param[in]     frobenius  The Frobenius norm of \p a, the scale of the stopping threshold.
      * \param[in]     max_sweeps The bound of sweeps.
-     * \throws convergence_error If the off-diagonal is not negligible after \p max_sweeps sweeps.
+     * \throws convergence_error If a sweep past \p max_sweeps would still rotate.
      */
     inline void cyclic_jacobi(buffer<double>&      a,
                               buffer<double>&      v,
                               std::size_t          n,
-                              double               frobenius,
                               std::size_t          max_sweeps)
     {
-      // The off-diagonal norm strictly decreases each rotation and converges to 0,
-      // so this terminates; the threshold is relative to the matrix scale.
-      const double threshold {1e-12 * frobenius};
-      for (std::size_t sweeps {0}; jacobi_off_diagonal(a, n) > threshold; ++sweeps) {
-        if (sweeps == max_sweeps) {
-          throw convergence_error("symmetric eigendecomposition: Jacobi did not converge within its sweeps");
-        }
+      // A pair is rotated while its element exceeds ε √|a_pp a_qq| (Demmel and Veselić's bound, which keeps each
+      // eigenvalue's relative accuracy; a fixed fraction of the norm stopped four digits short), DBL_MIN where a
+      // diagonal element is 0; the sweeps end when none is.
+      for (std::size_t sweeps {0};; ++sweeps) {
+        bool rotated {false};
         for (std::size_t p {0}; p < n; ++p) {
           for (std::size_t q {p + 1}; q < n; ++q) {
-            jacobi_rotate(a, v, n, p, q);
+            const double bound {std::numeric_limits<double>::epsilon() * std::sqrt(std::abs(a[(p * n) + p])) * std::sqrt(std::abs(a[(q * n) + q]))};
+            if (std::abs(a[(p * n) + q]) > std::max(bound, std::numeric_limits<double>::min())) {
+              if (sweeps == max_sweeps) {
+                throw convergence_error("symmetric eigendecomposition: Jacobi did not converge within its sweeps");
+              }
+              jacobi_rotate(a, v, n, p, q);
+              rotated = true;
+            }
           }
+        }
+        if (!rotated) {
+          return;
         }
       }
     }
@@ -6329,18 +6321,14 @@ namespace numerical {
         }
       }
       if (method == eigen_method::jacobi) {
-        buffer<double>      v(n_ * n_, 0.0);
-        double              frobenius_squared {0.0};
+        buffer<double> v(n_ * n_, 0.0);
         for (std::size_t i {0}; i < n_; ++i) {
           v[(i * n_) + i] = 1.0;
-          for (std::size_t j {0}; j < n_; ++j) {
-            if (j > i) {
-              a[(i * n_) + j] = a[(j * n_) + i]; // the lower triangle, mirrored
-            }
-            frobenius_squared += a[(i * n_) + j] * a[(i * n_) + j];
+          for (std::size_t j {i + 1}; j < n_; ++j) {
+            a[(i * n_) + j] = a[(j * n_) + i]; // the lower triangle, mirrored
           }
         }
-        detail::cyclic_jacobi(a, v, n_, std::sqrt(frobenius_squared), detail::jacobi_sweeps);
+        detail::cyclic_jacobi(a, v, n_, detail::jacobi_sweeps);
         for (std::size_t i {0}; i < n_; ++i) {
           diagonal[i] = a[(i * n_) + i] * scale;
         }
