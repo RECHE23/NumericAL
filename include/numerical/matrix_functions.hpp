@@ -1766,67 +1766,85 @@ namespace numerical {
    */
   [[nodiscard]] inline funm_result funm_from_schur(const matrix<std::complex<double>>&      t,
                                                    const matrix<std::complex<double>>&      z,
+                                                   const std::vector<std::complex<double>>& values);
+
+  namespace detail {
+    //! \brief \ref funm_from_schur with the recurrence's own estimate beside (\ref recurrence_error, without SciPy's
+    //!        floor, which reads 1 wherever `T(0, 0)` is 0): what \ref funm weighs its attempts by.
+    [[nodiscard]] inline std::pair<funm_result, double> parlett_function(const matrix<std::complex<double>>&      t,
+                                                                         const matrix<std::complex<double>>&      z,
+                                                                         const std::vector<std::complex<double>>& values)
+    {
+      using C = std::complex<double>;
+      const std::size_t n {t.rows()};
+      if (t.cols() != n || z.rows() != n || z.cols() != n || values.size() != n) {
+        throw dimension_error("funm requires a square Schur form T, Z of its order and one value per eigenvalue");
+      }
+      const double tolerance {std::numeric_limits<double>::epsilon()};
+      if (n == 0) {
+        return {funm_result {matrix<C> {0, 0, buffer<C> {}}, tolerance, {}}, tolerance};
+      }
+      buffer<C> f(n * n, C {});
+      for (std::size_t i {0}; i < n; ++i) {
+        f[(i * n) + i] = values[i];
+      }
+      buffer<C> tc(n * n); // T and F by columns: the recurrence's sums contiguous along both operands
+      buffer<C> fc(n * n, C {});
+      for (std::size_t i {0}; i < n; ++i) {
+        for (std::size_t j {0}; j < n; ++j) {
+          tc[(j * n) + i] = t(i, j);
+        }
+        fc[(i * n) + i] = values[i];
+      }
+      double smallest {std::abs(t(0, 0))};
+      for (std::size_t p {1}; p < n; ++p) {
+        for (std::size_t i {0}; i + p < n; ++i) {
+          const std::size_t j     {i + p};
+          C                 sum   {t(i, j) * (f[(j * n) + j] - f[(i * n) + i])};
+          C                 left  {};
+          C                 right {};
+          const C* const    t_row {&t(i, 0)};
+          const C* const    f_row {f.data() + (i * n)};
+          const C* const    t_col {tc.data() + (j * n)};
+          const C* const    f_col {fc.data() + (j * n)};
+          for (std::size_t k {i + 1}; k < j; ++k) {
+            left  += t_row[k] * f_col[k];
+            right += f_row[k] * t_col[k];
+          }
+          sum += left - right;
+          const C gap {t(j, j) - t(i, i)};
+          if (gap != C {}) {
+            sum /= gap;
+          }
+          f[(i * n) + j]  = sum;
+          fc[(j * n) + i] = sum;
+          smallest        = std::min(smallest, std::abs(gap));
+        }
+      }
+      buffer<C> rounding(n * n, C {}); // f at each eigenvalue, rounded
+      for (std::size_t i {0}; i < n; ++i) {
+        rounding[(i * n) + i] = tolerance * values[i] * detail::rounding_direction(i);
+      }
+      std::vector<std::size_t> places(n + 1);
+      std::iota(places.begin(), places.end(), std::size_t {0});
+      const double    recurrence {detail::recurrence_error(t, places, f, std::move(rounding))};
+      const matrix<C> result     {z * matrix<C> {n, n, std::move(f)} *detail::adjoint_of(z)};
+      double          error      {std::min(1.0, std::max(detail::parlett_estimate(t, smallest), recurrence))};
+      double          own        {recurrence};
+      for (const C& x : result) { // x − x is 0 for a finite part and NaN for an infinite or NaN one, without overflow
+        const bool finite {(x.real() - x.real()) + (x.imag() - x.imag()) == 0.0};
+        error = finite ? error : std::numeric_limits<double>::infinity();
+        own   = finite ? own : std::numeric_limits<double>::infinity();
+      }
+      return {funm_result {result, error, {}}, own};
+    }
+  } // namespace detail
+
+  [[nodiscard]] inline funm_result funm_from_schur(const matrix<std::complex<double>>&      t,
+                                                   const matrix<std::complex<double>>&      z,
                                                    const std::vector<std::complex<double>>& values)
   {
-    using C = std::complex<double>;
-    const std::size_t n {t.rows()};
-    if (t.cols() != n || z.rows() != n || z.cols() != n || values.size() != n) {
-      throw dimension_error("funm requires a square Schur form T, Z of its order and one value per eigenvalue");
-    }
-    const double tolerance {std::numeric_limits<double>::epsilon()};
-    if (n == 0) {
-      return {matrix<C> {0, 0, buffer<C> {}}, tolerance, {}};
-    }
-    buffer<C> f(n * n, C {});
-    for (std::size_t i {0}; i < n; ++i) {
-      f[(i * n) + i] = values[i];
-    }
-    buffer<C> tc(n * n); // T and F by columns: the recurrence's sums contiguous along both operands
-    buffer<C> fc(n * n, C {});
-    for (std::size_t i {0}; i < n; ++i) {
-      for (std::size_t j {0}; j < n; ++j) {
-        tc[(j * n) + i] = t(i, j);
-      }
-      fc[(i * n) + i] = values[i];
-    }
-    double smallest {std::abs(t(0, 0))};
-    for (std::size_t p {1}; p < n; ++p) {
-      for (std::size_t i {0}; i + p < n; ++i) {
-        const std::size_t j     {i + p};
-        C                 sum   {t(i, j) * (f[(j * n) + j] - f[(i * n) + i])};
-        C                 left  {};
-        C                 right {};
-        const C* const    t_row {&t(i, 0)};
-        const C* const    f_row {f.data() + (i * n)};
-        const C* const    t_col {tc.data() + (j * n)};
-        const C* const    f_col {fc.data() + (j * n)};
-        for (std::size_t k {i + 1}; k < j; ++k) {
-          left  += t_row[k] * f_col[k];
-          right += f_row[k] * t_col[k];
-        }
-        sum += left - right;
-        const C gap {t(j, j) - t(i, i)};
-        if (gap != C {}) {
-          sum /= gap;
-        }
-        f[(i * n) + j]  = sum;
-        fc[(j * n) + i] = sum;
-        smallest        = std::min(smallest, std::abs(gap));
-      }
-    }
-    buffer<C> rounding(n * n, C {}); // f at each eigenvalue, rounded
-    for (std::size_t i {0}; i < n; ++i) {
-      rounding[(i * n) + i] = tolerance * values[i] * detail::rounding_direction(i);
-    }
-    std::vector<std::size_t> places(n + 1);
-    std::iota(places.begin(), places.end(), std::size_t {0});
-    const double    recurrence {detail::recurrence_error(t, places, f, std::move(rounding))};
-    const matrix<C> result     {z * matrix<C> {n, n, std::move(f)} *detail::adjoint_of(z)};
-    double          error      {std::min(1.0, std::max(detail::parlett_estimate(t, smallest), recurrence))};
-    for (const C& x : result) { // x − x is 0 for a finite part and NaN for an infinite or NaN one, without overflow
-      error = (x.real() - x.real()) + (x.imag() - x.imag()) == 0.0 ? error : std::numeric_limits<double>::infinity();
-    }
-    return {result, error, {}};
+    return detail::parlett_function(t, z, values).first;
   }
 
   namespace detail {
@@ -2216,13 +2234,14 @@ namespace numerical {
      *        given in \p blocks (its circle's integral, the clusters of one eigenvalue none) with its estimate in
      *        \p contours (in the circles' order), and `f` at the eigenvalues in \p at_eigenvalues: Davies and Higham's
      *        Schur–Parlett algorithm (2003), the blocks above the diagonal by the block recurrence
-     *        (\ref solve_upper_blocks). \return `f(T)` and its estimate (\ref recurrence_error).
+     *        (\ref solve_upper_blocks). \return `f(T)`, its estimate (\ref recurrence_error, or SciPy's where larger),
+     *        and the recurrence's alone.
      */
-    [[nodiscard]] inline std::pair<buffer<std::complex<double>>, double> assembled_function(const matrix<std::complex<double>>&              t,
-                                                                                            const cluster_circles&                           circles,
-                                                                                            const std::vector<buffer<std::complex<double>>>& blocks,
-                                                                                            const std::vector<buffer<std::complex<double>>>& errors,
-                                                                                            const std::vector<std::complex<double>>&         at_eigenvalues)
+    [[nodiscard]] inline std::tuple<buffer<std::complex<double>>, double, double> assembled_function(const matrix<std::complex<double>>&              t,
+                                                                                                     const cluster_circles&                           circles,
+                                                                                                     const std::vector<buffer<std::complex<double>>>& blocks,
+                                                                                                     const std::vector<buffer<std::complex<double>>>& errors,
+                                                                                                     const std::vector<std::complex<double>>&         at_eigenvalues)
     {
       using C = std::complex<double>;
       const std::size_t n              {t.rows()};
@@ -2252,7 +2271,7 @@ namespace numerical {
       }
       solve_upper_blocks(t, circles.starts, fx, nullptr);
       const double estimate {recurrence_error(t, circles.starts, fx, std::move(error))};
-      return {std::move(fx), std::min(1.0, std::max(parlett_estimate(t, separation), estimate))};
+      return {std::move(fx), std::min(1.0, std::max(parlett_estimate(t, separation), estimate)), estimate};
     }
 
     /*!
@@ -2307,7 +2326,8 @@ namespace numerical {
         next     += count;
       }
       const std::vector<C> at_eigenvalues(images.begin(), images.begin() + static_cast<std::ptrdiff_t>(n));
-      auto [fx, estimate] {assembled_function(t, circles, blocks, errors, at_eigenvalues)};
+      auto [fx, estimate, recurrence] {assembled_function(t, circles, blocks, errors, at_eigenvalues)};
+      static_cast<void>(recurrence);
       const double contour_error {*std::ranges::max_element(contours)}; // a circle at least: images past the eigenvalues
       return {std::move(fx), std::min(1.0, std::max(estimate, contour_error)), std::move(contours)};
     }
@@ -2472,11 +2492,18 @@ namespace numerical {
     using C = std::complex<double>;
     // each circle whose integral falls short of contour_tolerance takes twice the points while it gains at least half:
     // the grid of 2P points is that of P and the P between, so only those are new (f there, and their resolvents)
-    const auto evaluated = [&f](const funm_plan& plan) {
+    // each attempt with its own estimate beside (the recurrence's and the circles', without SciPy's floor), by which
+    // funm weighs them
+    const auto evaluated = [&f](const funm_plan& plan) -> std::pair<funm_result, double> {
                              const std::vector<C> images {f(plan.points)};
                              const std::size_t    n      {plan.t.rows()};
+                             if (!plan.hermitian && plan.counts.empty() && images.size() == n) {
+                               return detail::parlett_function(plan.t, plan.z, images);
+                             }
                              if (plan.hermitian || plan.counts.empty() || images.size() != plan.points.size()) {
-                               return finish_funm(plan, images);
+                               funm_result  answer {finish_funm(plan, images)};
+                               const double own    {answer.error};
+                               return {std::move(answer), own};
                              }
                              const detail::cluster_circles circles {detail::circles_of(plan.t, plan.share)};
                              std::vector<std::size_t>      at;     // each circle's block
@@ -2567,21 +2594,33 @@ namespace numerical {
                                }
                              }
                              const std::vector<C> at_eigenvalues(images.begin(), images.begin() + static_cast<std::ptrdiff_t>(n));
-                             auto [f_of_t, estimate] {detail::assembled_function(plan.t, circles, blocks, block_errors, at_eigenvalues)};
+                             auto [f_of_t, estimate, recurrence] {detail::assembled_function(plan.t, circles, blocks, block_errors, at_eigenvalues)};
                              const double contour_error {*std::ranges::max_element(errors)};
-                             return detail::funm_answer(plan.z * matrix<C> {n, n, std::move(f_of_t)} *detail::adjoint_of(plan.z),
-                                                        std::min(1.0, std::max(estimate, contour_error)), std::move(errors), at_eigenvalues);
+                             funm_result  answer        {detail::funm_answer(plan.z * matrix<C> {n, n, std::move(f_of_t)} *detail::adjoint_of(plan.z),
+                                                                             std::min(1.0, std::max(estimate, contour_error)), std::move(errors), at_eigenvalues)};
+                             const double own           {std::isinf(answer.error) ? answer.error : std::min(1.0, std::max(recurrence, contour_error))};
+                             return {std::move(answer), own};
                            };
     const funm_plan plan {plan_funm(a)}; // its share the finer where the clusters chain (detail::clusters_separate)
-    funm_result     best {evaluated(plan)};
+    auto            best {evaluated(plan)};
     // clusters, and an estimate past it, at the coarser share
-    if (plan.share != detail::cluster_share_fine && best.error > detail::funm_fallback_error && !best.contours.empty()) {
-      funm_result fine {evaluated(regathered(plan, detail::cluster_share_fine))};
-      if (fine.error < best.error) {
+    if (plan.share != detail::cluster_share_fine && best.second > detail::funm_fallback_error && !best.first.contours.empty()) {
+      auto fine {evaluated(regathered(plan, detail::cluster_share_fine))};
+      if (fine.second < best.second) {
         best = std::move(fine);
       }
     }
-    return best;
+    // clusters still, and an estimate past it: Parlett's recurrence with every eigenvalue apart, as SciPy's. A bound
+    // relative to the largest modulus joins eigenvalues far apart where the spectrum spans decades (0 and −30 beside
+    // −500, whose circle of radius 60 lost all to cancellation under exp; 1 and 300 beside 10⁵), which the recurrence
+    // divides by their gap alone.
+    if (best.second > detail::funm_fallback_error && !best.first.contours.empty()) {
+      auto apart {detail::parlett_function(plan.t, plan.z, f(detail::diagonal_of(plan.t)))};
+      if (apart.second < best.second) {
+        best = std::move(apart);
+      }
+    }
+    return std::move(best.first);
   }
 
   /*!

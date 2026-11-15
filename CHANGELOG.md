@@ -92,6 +92,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   norm, four digits short (`min(i, j) + 1` of order 7: a residual of 3589 `ε ‖A‖`, the default method's 7). A pair now
   turns while its element passes `ε √|a_pp a_qq|`, Demmel and Veselić's bound: 3.4 `ε ‖A‖` there, each eigenvalue of
   a graded positive definite matrix to a few `ε` of itself.
+- **`funm` of eigenvalues decades apart**: eigenvalues within a tenth of the largest modulus gathered under one
+  circle of Cauchy's integral, which lost all to cancellation where they lay far apart in their own terms (`exp` of
+  eigenvalues 0, −30 and −500: an error of 10¹⁰, SciPy's exact; `sqrt` of 1, 300 and 10⁵: 7 %). The attempts are now
+  weighed by the recurrence's own estimate, not by SciPy's floor (which reads 1 wherever `T(0, 0)` is 0), and where
+  clusters still leave it past the threshold, Parlett's recurrence with every eigenvalue apart is tried too: both
+  exact. Its cost falls on those matrices alone.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.

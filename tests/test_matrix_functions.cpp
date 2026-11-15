@@ -386,6 +386,33 @@ TEST(expm_cond_of_closed_forms)
 // e^x is expm with a small error estimate, a complex matrix's; a repeated eigenvalue (a zero denominator, left
 // undivided as SciPy's) estimated at 1; an infinite value at infinity; an empty matrix; the refusals, f's count of values
 // among them.
+TEST(funm_of_eigenvalues_decades_apart)
+{
+  // Eigenvalues within a tenth of the largest modulus gathered under one circle: 0 and −30 beside −500, whose circle
+  // of radius 60 lost all under exp (an error of 10¹⁰), 1 and 300 beside 10⁵ under √ (7 %). Parlett's recurrence
+  // divides by their gaps alone; the entries are divided differences.
+  using values = std::vector<C>;
+  const auto apply = [](C (*g)(const C&)) {
+                       return [g](const values& x) {
+                                values y(x.size());
+                                std::ranges::transform(x, y.begin(), g);
+                                return y;
+                              };
+                     };
+  const matrix<double>         t   {{0.0, 1.0, 0.0}, {0.0, -30.0, 1.0}, {0.0, 0.0, -500.0}};
+  const numerical::funm_result e   {numerical::funm(t, apply([](const C& z) { return std::exp(z); }))};
+  const double                 e01 {-std::expm1(-30.0) / 30.0};
+  const double                 e12 {(std::exp(-30.0) - std::exp(-500.0)) / 470.0};
+  const double                 e02 {(e01 - e12) / 500.0};
+  EXPECT(std::abs(e.f(0, 1) - e01) < 1e-15 * e01 && std::abs(e.f(1, 2) - e12) < 1e-13 * e12 && std::abs(e.f(0, 2) - e02) < 1e-13 * e02);
+  const matrix<double>         b   {{1.0, 1.0, 0.0}, {0.0, 300.0, 1.0}, {0.0, 0.0, 1e5}};
+  const numerical::funm_result r   {numerical::funm(b, apply([](const C& z) { return std::sqrt(z); }))};
+  const double                 r01 {1.0 / (1.0 + std::sqrt(300.0))};
+  const double                 r12 {1.0 / (std::sqrt(300.0) + std::sqrt(1e5))};
+  const double                 r02 {(r01 - r12) / (1.0 - 1e5)};
+  EXPECT(std::abs(r.f(0, 1) - r01) < 1e-14 * r01 && std::abs(r.f(1, 2) - r12) < 1e-14 * r12 && std::abs(r.f(0, 2) - r02) < 1e-12 * std::abs(r02));
+}
+
 TEST(funm_by_parlett)
 {
   using values = std::vector<C>;
@@ -801,7 +828,11 @@ TEST(funm_takes_the_points_its_integrals_ask)
                 numerical::dimension_error);
   // the plan and its points by hand, finished at once (the one pass of each circle's 64 points); Parlett's recurrence
   // through every superdiagonal of eigenvalues well apart
-  const matrix<double>       mixed   {{1.0, 1.0, 0.5}, {0.0, 1.001, 1.0}, {0.0, 0.0, 3.0}}; // a cluster and one eigenvalue alone
+  const matrix<double>       mixed    {{1.0, 1.0, 0.5}, {0.0, 1.001, 1.0}, {0.0, 0.0, 3.0}}; // a cluster and one eigenvalue alone
+  const matrix<double>       distinct {{1.0, 3.0}, {0.0, 4.0}};                              // eigenvalues 1 and 4: no cluster, Parlett's recurrence
+  const numerical::funm_plan plain    {numerical::plan_funm(distinct)};
+  EXPECT(plain.counts.empty() && relative_gap(numerical::finish_funm(plain, exponential(plain.points)).f, numerical::detail::as_complex(numerical::expm(distinct))) < 1e-14);
+  EXPECT_THROWS(static_cast<void>(numerical::funm(distinct, [](const values&) { return values {C {1.0, 0.0}}; })), numerical::dimension_error);
   const numerical::funm_plan by_hand {numerical::plan_funm(mixed)};
   EXPECT(relative_gap(numerical::finish_funm(by_hand, exponential(by_hand.points)).f, numerical::detail::as_complex(numerical::expm(mixed))) < 1e-14);
   const matrix<double> apart         {{1.0, 0.5, 0.25, 0.125}, {0.0, 2.0, 0.5, 0.25}, {0.0, 0.0, 3.0, 0.5}, {0.0, 0.0, 0.0, 4.0}};
