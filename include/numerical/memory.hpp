@@ -37,6 +37,12 @@ namespace numerical {
     inline void release_memory_on(thread_pool* pool)
     {
       release_thread_memory();
+#if defined(__GLIBC__)
+      // glibc sets its allocator up on the first call that needs it, unguarded against a second at once: the workers
+      // trim together below, so the calling thread trims first (under a sanitizer, which replaces malloc, this may be
+      // that first call; two at once read the arenas half set, the null page).
+      static_cast<void>(malloc_trim(0));
+#endif
       if (pool != nullptr) {
         static_cast<void>(pool->release_on_workers(&release_and_trim, std::chrono::seconds {1}));
       }

@@ -62,6 +62,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   says whether `data()` copies; `data()` is no longer `noexcept`, as a view's first call allocates its copy (a
   `std::bad_alloc`, `MemoryError` in Python, where it would have terminated the program).
 
+### Fixed
+
+- **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
+  allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
+  read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.
+
 ## 2026.11.15 — 2026-11-14
 
 ### Changed
