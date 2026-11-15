@@ -266,9 +266,17 @@ namespace numerical {
       return std::sinh(x) / x;
     }
 
+    //! \brief The half gap past which \ref exact_triangular_bands divides the difference of the exponentials by the gap:
+    //!        one exponential then outweighs the other by `e¹²⁸`, and the difference loses nothing, where the product
+    //!        `e^{half sum} sinch(half gap)` overflows `sinh` while the exponential underflows (a gap past about 1420).
+    inline constexpr double divided_exponentials_past {64.0};
+
     /*!
      * \brief The diagonal and first superdiagonal of `exp(scale · T)` written exactly into \p x for the upper triangular
-     *        \p t, as Al-Mohy and Higham's code fragment 2.1: `e^{λᵢ}`, and `t_{i,i+1} e^{(λᵢ + λᵢ₊₁)/2} sinch((λᵢ − λᵢ₊₁)/2)`.
+     *        \p t, as Al-Mohy and Higham's code fragment 2.1: `e^{λᵢ}`, and `t_{i,i+1} e^{(λᵢ + λᵢ₊₁)/2} sinch((λᵢ − λᵢ₊₁)/2)`;
+     *        past \ref divided_exponentials_past, `t_{i,i+1} (e^{λᵢ} − e^{λᵢ₊₁}) / (λᵢ − λᵢ₊₁)`, where that difference
+     *        overflows each exponential divided by the gap's modulus within it (`e^{λ − log|g|}`), so that the band
+     *        overflows only where it is past the largest double.
      */
     template <typename T>
     void exact_triangular_bands(buffer<T>&       x,
@@ -283,7 +291,19 @@ namespace numerical {
           const T next     {T {scale} *t[((i + 1) * n) + i + 1]};
           const T half_sum {(lambda + next) / T {2.0}};
           const T half_gap {(lambda - next) / T {2.0}};
-          x[(i * n) + i + 1] = T {scale} *t[(i * n) + i + 1] * std::exp(half_sum) * sinch(half_gap);
+          if (std::abs(half_gap) > divided_exponentials_past) {
+            const T gap      {lambda - next};
+            T       quotient {(std::exp(lambda) - std::exp(next)) / gap};
+            if (!is_finite_entry(quotient)) { // each exponential divided by the gap's modulus first, then by its phase
+              const double length {static_cast<double>(std::abs(gap))};
+              const T      log_of {std::log(length)};
+              quotient = (std::exp(lambda - log_of) - std::exp(next - log_of)) / (gap / T {length});
+            }
+            x[(i * n) + i + 1] = T {scale} *t[(i * n) + i + 1] * quotient;
+          }
+          else {
+            x[(i * n) + i + 1] = T {scale} *t[(i * n) + i + 1] * std::exp(half_sum) * sinch(half_gap);
+          }
         }
       }
     }

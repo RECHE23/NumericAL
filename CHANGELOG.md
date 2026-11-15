@@ -103,6 +103,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`quantile`, `nanquantile` and the percentiles of a float32 array at a float32 `q`** answer in float32, their indexes
   and interpolation in float32, as NumPy's (they were float64); `nanquantile` along an axis whose first slice holds NaNs
   alone answers in the array's dtype, every slice rounded to it, as NumPy's `apply_along_axis` does.
+- **`expm` of a triangular matrix whose neighbouring diagonal entries lie far apart**: its exact superdiagonal,
+  `e^{(a + c)/2} sinch((a − c)/2)`, overflowed `sinh` while the exponential underflowed past a gap of about 1420
+  (`[[0, 1], [0, −1500]]`, `[[−10⁴, 10⁴], [0, 0]]`: NaN; `[[709, 1], [0, −745]]`: ∞), where SciPy's is exact. Past a half
+  gap of 64 it is now `(e^a − e^c)/(a − c)`, each exponential divided by the gap first where that overflows: the three
+  exact, and an answer past the largest double alone infinite.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.

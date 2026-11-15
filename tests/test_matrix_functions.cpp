@@ -41,6 +41,22 @@ namespace {
 
 // The degrees by the norm of the powers: 1e-3 (3), 0.1 (5), 0.8 (7), 2 (9), 5 and 40 (13, squared); a diagonal matrix's
 // exponential its entries'.
+TEST(expm_of_a_triangle_whose_diagonal_entries_lie_far_apart)
+{
+  // e^{(a + c)/2} sinch((a − c)/2) overflowed sinh while the exponential underflowed (0 · ∞): a gap past about 1420
+  // gave NaN or ∞ where SciPy's (e^a − e^c)/(a − c) is exact. Past a half gap of 64 the band is that quotient, each
+  // exponential divided by the gap first where the difference overflows.
+  const auto band = [](double a, double b, double c) { return numerical::expm(matrix<double> {{a, b}, {0.0, c}})(0, 1); };
+  EXPECT(std::abs(band(0.0, 1.0, -1500.0) - (1.0 / 1500.0)) < 1e-18);
+  EXPECT(band(-1e4, 1e4, 0.0) == 1.0);
+  EXPECT(std::abs((band(709.0, 1.0, -745.0) / (std::exp(709.0) / 1454.0)) - 1.0) < 1e-13);
+  EXPECT(std::abs((band(710.0, 1.0, -1000.0) / std::exp(710.0 - std::log(1710.0))) - 1.0) < 1e-13); // e⁷¹⁰ alone overflows
+  EXPECT(std::isinf(band(720.0, 1.0, -800.0)));                                                     // e⁷²⁰ / 1520 does too
+  const matrix<C> z     {{C {0.0, 3.0}, C {1.0, 0.0}}, {C {0.0, 0.0}, C {-1500.0, 7.0}}};
+  const C         exact {(std::exp(C {0.0, 3.0}) - std::exp(C {-1500.0, 7.0})) / C {1500.0, -4.0}};
+  EXPECT(std::abs(numerical::expm(z)(0, 1) - exact) < 1e-15 * std::abs(exact));
+}
+
 TEST(expm_of_a_diagonal_matrix_is_its_entries_exponentials)
 {
   for (const double scale : {1e-3, 0.1, 0.8, 2.0, 5.0, 40.0}) {
