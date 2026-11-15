@@ -30,12 +30,17 @@ numerical.Tensor([4611686018427387905, -3], dtype=int64)
 
 `matmul` and `@` read a NumPy array where it lies, without a copy, when it is row-major, contiguous, aligned, in this
 machine's byte order and of one of the four numeric dtypes; `solve`, `det`, `slogdet` and `inv` read a square float64
-or complex128 array so too, into the one copy their factorisation takes.
+or complex128 array so too, into the one copy their factorisation takes (a product of order 512 by a vector: 18 µs,
+against 231 µs through a copy). Any other array is copied first, with the same answer.
 
 ## Computing
 
-A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`, `t[..., 0]`, `t[None, i]`, `t[[2, 0]]`, `t[t > 0]`), iterates,
-transposes (`t.T`) and computes as a NumPy array does, broadcasting as NumPy's:
+A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`, `t[..., 0]`, `t[None, i]`, `t[[2, 0]]`, `t[:, [1, 0], 2]`,
+`t[t > 0]`), iterates, transposes (`t.T`), multiplies (`a @ b`, `numerical.matmul`, stacks of matrices along leading
+axes broadcast against each other) and computes as a NumPy array does, broadcasting as NumPy's; shapes that do not
+broadcast raise a `ValueError` worded as NumPy's. NumPy's constructors (`zeros`, `ones`, `full`, `eye`, `arange`,
+`linspace`…) and its functions that move elements (`concatenate` or `concat`, `stack`, `vstack`, `hstack`, `tril`,
+`triu`, `diag`, `kron`…) carry their names:
 
 ```pycon
 >>> t = numerical.arange(6).reshape(2, 3)
@@ -52,11 +57,38 @@ numerical.Tensor([[0.0, 0.0, 2.0],
 4
 ```
 
+## Comparisons and masks
+
+A comparison (`< <= == != > >=`, `numerical.less` and the rest) gives a `bool` Tensor, element by element, a NaN
+unequal to everything, as NumPy's; a complex tensor compares with `==` and `!=` only. `&`, `|`, `^` and `~` take bool
+tensors (`logical_and` and the rest any, read as NumPy reads them: nonzero is true), `where` picks between two
+operands promoted as arithmetic promotes them, `isnan`, `isinf` and `isfinite` classify, and `any` and `all` reduce as
+`sum` does.
+
+A mask beside a number takes the number's dtype (`mask * t`), and its `sum` and `mean` count its trues, as NumPy's;
+two masks have no arithmetic, and neither has a mask in the linear algebra (a `TypeError` names `astype("float64")`),
+as the array API leaves them. `asarray` keeps a NumPy bool array, a bool and a list of bools bool, as NumPy's; a
+function that computes reads such an array-like as float64 (`inv(np.eye(2, dtype=bool))`), as NumPy's arithmetic and
+linear algebra do, but beside an operand of another dtype it takes that one (a float32 Tensor plus a NumPy mask is
+float32), and one that moves elements (`concatenate`, `tril`, `transpose`) keeps it bool.
+
+```pycon
+>>> mask = (t > 1) & ~numerical.isnan(t)
+>>> mask.any(axis=0)
+numerical.Tensor([True, True, True], dtype=bool)
+>>> (mask * t).dtype
+'float64'
+>>> mask.mean()
+0.6666666666666666
+```
+
 ## Promotion
 
 Operands of two dtypes promote as NumPy 2 promotes them (NEP 50): complex where one is, single precision only where
 both are, a Python number keeping the tensor's precision (`float32 + 2.0` is float32). float32 and complex64
-arithmetic is single precision, as NumPy's: `+ - * /`, and `**` by an integer, give NumPy's very bits.
+arithmetic is single precision, as NumPy's: `+ - * /`, and `**` by an integer, give NumPy's very bits, complex ones
+included (each fused as the NumPy beside it fuses it), and a complex number's magnitude is NumPy's own;
+{doc}`differences` says where the complex elementary functions come from.
 
 ```pycon
 >>> single = numerical.asarray([1.0, 2.0], "float32")
@@ -64,6 +96,26 @@ arithmetic is single precision, as NumPy's: `+ - * /`, and `**` by an integer, g
 'float32'
 >>> (single + numerical.asarray([1j, 0])).dtype
 'complex128'
+```
+
+## Einstein summation
+
+`einsum` is the unifying primitive of the algebra, as NumPy's: `"ij,jk->ik"` is the matrix product, `"i,i->"` the dot
+product, `"ij->ji"` the transpose (a view), `"ii->"` the trace, `"i,j->ij"` the outer product, `"ij->i"` a row
+reduction. It sums over every label absent from the output, in one order; without `->` the output is NumPy's implicit
+one, and an ellipsis broadcasts its axes as NumPy's.
+
+```pycon
+>>> a = [[1.0, 2.0], [3.0, 4.0]]
+>>> numerical.einsum("ij,jk->ik", a, [[5.0, 6.0], [7.0, 8.0]])
+numerical.Tensor([[19.0, 22.0],
+                  [43.0, 50.0]], dtype=float64)
+>>> numerical.einsum("ij,jk", a, [[5.0, 6.0], [7.0, 8.0]]).shape
+(2, 2)
+>>> numerical.einsum("i,i->", [1.0, 2.0, 3.0], [1.0, 2.0, 3.0])
+numerical.Tensor(14.0, dtype=float64)
+>>> numerical.einsum("...ij,...jk->...ik", numerical.ones((3, 2, 2)), a).shape
+(3, 2, 2)
 ```
 
 ## Exchanging without a copy
@@ -75,5 +127,9 @@ own, as NumPy's: no element is copied until an operation needs them in the new o
 NumPy (`np.asarray`, `np.from_dlpack`), read a transpose where it lies. So is a slice (`t[1:3]`, `t[:, ::2]`,
 `t[::-1, 2]`) of more than 512 elements, a product reading its rows apart (`t[:, :k] @ b`) where they lie, NumPy a
 slice along its strides; DLPack shares no reversed one (PyTorch refuses a negative stride) and gives a copy. A smaller
-slice is copied at once. As NumPy's, a view keeps the whole tensor it reads alive. A tensor is never
-written, so neither is a view; a NumPy array passed in is copied, so writing to it later never reaches a tensor.
+slice is copied at once. An element-wise operation steps through a slice's elements where they lie; a transpose is
+copied out by blocks first. As NumPy's, a view keeps the whole tensor it reads alive.
+
+A tensor is never written: there is no assignment by index (`t[i] = x` raises `TypeError`), so a view never writes
+through to its base, where a NumPy view does. A NumPy array passed in is copied, so writing to it later never reaches a
+tensor. PETSc (petsc4py) has no such exchange protocol; bridging it takes an explicit copy into a PETSc object.

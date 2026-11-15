@@ -30,7 +30,8 @@ explicitly.
 - **A singular system** raises in `solve` and `inv`, as NumPy's; an ill-conditioned one warns with
   {class}`numerical.LinAlgWarning`, as SciPy's.
 
-Where NumPy is loaded, a `LinAlgError` is also a `numpy.linalg.LinAlgError` (SciPy's is the same class), so
+A `LinAlgError` is a `ValueError`, as NumPy's is, and a `numerical.error`. Where NumPy is loaded, it is also a
+`numpy.linalg.LinAlgError` (SciPy's is the same class), so
 `except np.linalg.LinAlgError` catches it, and an axis out of range, a {class}`numerical.AxisError` (a `ValueError`
 and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linalg` is loaded, the warning is also a
 `scipy.linalg.LinAlgWarning`.
@@ -125,9 +126,13 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
 - **Bool arithmetic and the small dtypes.** `+`, `-`, `*` (and `add`, `multiply`…) refuse two bool tensors, where
   NumPy's are a logical or and a logical and; there is no float16 nor int8, NumPy's dtype for `fabs`, `arcsin`… or
   `reciprocal` of a bool, which raise here.
-- **Views and assignment.** A `Tensor` is immutable: no `t[i] = x`. A permutation of its axes (`t.T`, `transpose`…) and
-  a slice (`t[1:3]`, `t[::-1, 2]`) are views, as NumPy's, except a slice of 512 elements or fewer, which is copied at
-  once (and so keeps no larger tensor alive); a reshape of a view and a NumPy array passed in are copies.
+- **Views and assignment.** A `Tensor` is immutable: `t[i] = x` raises `TypeError`, so a view never writes through to
+  its base, where a NumPy view does. A permutation of its axes (`t.T`, `transpose`…) and a slice (`t[1:3]`,
+  `t[::-1, 2]`) are views, as NumPy's, except a slice of 512 elements or fewer, which is copied at once (and so keeps no
+  larger tensor alive); a reshape of a view and a NumPy array passed in are copies.
+- **NumPy's file input and output, printing and datetimes.** No `load`, `save`, `loadtxt` or `genfromtxt`, no
+  `set_printoptions`, no datetime functions, no `poly`; and none of the functions that write into an array (`put`,
+  `copyto`, `fill_diagonal`, `place`…), which an immutable `Tensor` has no place for.
 - **Complex ordering.** `max`, `min`, `maximum`, `minimum` and `clip` take real dtypes only; NumPy orders complex
   numbers by real, then imaginary part (`sort` does too).
 - **Namespaces.** Everything lives at the root, with `numpy.fft`'s names in `numerical.fft` and `numpy.linalg`'s in

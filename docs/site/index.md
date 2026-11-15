@@ -28,7 +28,7 @@ What a ported program meets: defaults, refusals, dtypes, and what is not there y
 :link: guide/index
 :link-type: doc
 
-Tensors and dtypes, the linear algebra, reproducibility and threads, accuracy, the BLAS ABI.
+Tensors and dtypes, the linear algebra, reproducibility and threads, accuracy, the BLAS ABI, the C++ library.
 :::
 
 :::{grid-item-card} Python reference

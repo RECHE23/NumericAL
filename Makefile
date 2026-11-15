@@ -456,7 +456,7 @@ uninstall:
 # pushes from a clean main. Pushing the tag drives release.yml, which checks the
 # tag matches the version, builds the wheels and sdist, and publishes to PyPI via
 # Trusted Publishing (OIDC) — once the one-time Trusted Publisher is configured
-# (see README). The pushed tag is the single thing that triggers a publish.
+# (see RELEASING.md). The pushed tag is the single thing that triggers a publish.
 #
 # The CHANGELOG's Unreleased section becomes the version's, and the body of an ANNOTATED tag
 # (--cleanup=verbatim keeps its "## " headings, which git would drop as comments); release.yml publishes

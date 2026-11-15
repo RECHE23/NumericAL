@@ -19,3 +19,6 @@ the conditioning, and a wrong update or deflation misses it by orders of magnitu
 | `norm`, `cond`, `svdvals`, products | within the rounding of their sums: `c` times the scale, `cond` (2-norm) within `c κ²` below κ = 10⁶; a 2-norm never overflows or underflows where its value is in range |
 | `float32`, `complex64` | the `double` answer of the same values rounded to single, to the bit |
 | any of them | the same bits on one thread as on all; a NaN or an infinity in what is read raises `LinAlgError` |
+
+`make fuzz-edges` holds the element-wise operations and reductions to NumPy's answers on signed zeros, infinities,
+NaNs, values near overflow and empty axes.

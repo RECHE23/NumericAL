@@ -27,7 +27,10 @@ numerical.Tensor([(10+0j), (-2+2j), (-2+0j)], dtype=complex128)
 
 A `Tensor` passes to NumPy, PyTorch, JAX or CuPy without a copy (`np.asarray(t)`, `np.from_dlpack(t)`,
 `torch.from_dlpack(t)`); `numerical.asarray(array)` copies the other way. {doc}`guide/tensors` says what a `Tensor`
-holds and how the dtypes promote; {doc}`guide/differences` lists what a program written for NumPy or SciPy meets.
+holds and how the dtypes promote; {doc}`guide/linalg` lists the linear algebra, and {doc}`guide/differences` what a
+program written for NumPy or SciPy meets. `numpy.linalg`'s names are also in `numerical.linalg`, and `numpy.fft`'s
+(`fft`, `ifft`, `fftn`, `rfft`, `irfft`, `fftfreq`…) and `scipy.fft`'s cosine and sine transforms (`dct`, `idct`,
+`dst`, `idst`, `dctn`…) in `numerical.fft`.
 
 ## C++
 
@@ -57,5 +60,6 @@ int main()
 ```
 
 `numerical.get_include()` gives the header directory of an installed Python package, so a C++ extension can build
-against the same headers. With GCC, compile with `-ffp-contract=on` (the wheels' setting; {doc}`guide/reproducibility`
-says why).
+against the same headers. With GCC, compile with `-ffp-contract=on` (the wheels' setting), and with Clang for arm64
+with `-mllvm -force-ordered-reductions=false`; {doc}`guide/reproducibility` says why. {doc}`guide/cpp` lists the
+classes, the supported toolchains and how to build from source.

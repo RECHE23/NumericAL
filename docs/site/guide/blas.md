@@ -35,3 +35,12 @@ it, where it takes it one way: `getrf`, `gesv`, `geqrf`, `orgqr` and the solvers
 order its factorisation stops at, `syevd` gives NaN eigenvalues and `INFO` `n`. `gesdd`, `geev` and `gelsd` report the
 matrix as an illegal argument (`INFO` `-4`), as the reference's `gesdd` and `geev` report a NaN; on an infinity the
 reference loops without end or gives NaN, and on a NaN its `gelsd` fails inside.
+
+## In C++
+
+`numerical::blas` (`blas.hpp`) carries the same routines as functions with the column-major semantics of BLAS's
+`ddot`, `dgemm`, `dsyrk`, `dgemv` and `dtrsm` and LAPACK's routines of those names: `dot`, `gemm` (of `float`,
+`double` and their complex numbers), `syrk`, `gemv`, `trsm`, `gesv`, `getrf`, `getrs`, `potrf` and `potrs` (the last
+five, as `gemm`, of `float`, `double` and their complex numbers), `syevd`, `gesdd`, `geqrf`, `orgqr`, `gelsd` and
+`geev`. CMake builds the shared library with `-DNUMERICAL_BUILD_BLAS=ON`, to stand in for those routines under a
+program linked against BLAS and LAPACK (`LD_PRELOAD`) or a switch such as FlexiBLAS.
