@@ -327,3 +327,16 @@ TEST(integer_matrices_still_multiply)
   const numerical::matrix<int> a {{2, 1}, {1, 2}};
   EXPECT((a * a == numerical::matrix<int> {{5, 4}, {4, 5}}));
 }
+
+// The decompositions written for double and std::complex<double> alone refuse any other scalar by the name
+// double_field, where they failed deep in their templates (eig of long double: eight errors, none of them saying so).
+static_assert(numerical::double_field<double> && numerical::double_field<std::complex<double>>);
+static_assert(!numerical::double_field<float> && !numerical::double_field<long double> && !numerical::double_field<std::complex<float>>);
+namespace {
+  //! \brief Whether `D<T>` names a type: false where `D` constrains its scalar and `T` does not satisfy it.
+  template <template <typename> class D, typename T>
+  concept takes = requires { typename D<T>; };
+} // namespace
+static_assert(takes<numerical::eigen_decomposition, double> && !takes<numerical::eigen_decomposition, long double>);
+static_assert(takes<numerical::schur_decomposition, std::complex<double>> && !takes<numerical::schur_decomposition, float>);
+static_assert(!takes<numerical::pivoted_qr_decomposition, long double> && !takes<numerical::ldl_decomposition, std::complex<float>>);

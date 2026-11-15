@@ -80,6 +80,20 @@ processor in CI.
   (`rcond`, `rtol`) or `rank_cutoff::absolute(t)` (`tol`); `pinv(a, cutoff, true)` and `matrix_rank(a, cutoff, true)`
   take a Hermitian `a` by its eigendecomposition, its lower triangle alone read.
 
+## Scalar types
+
+The factorisations and solvers take a floating-point field (`numerical::field`: `float`, `double`, `long double` and
+their complex forms), so that an integer matrix is refused at compile time. How far each carries its scalar:
+
+- LU (`lu_decomposition`, `solve`), Cholesky and the unpivoted QR compute in the scalar itself: a `long double`
+  matrix is factorised to `long double`'s precision.
+- The SVD takes any field and computes in `double`: its singular values are `double`, and a `long double` matrix's
+  factors hold a `double`'s precision.
+- The eigendecompositions (`eigen_decomposition`, `symmetric_eigen`, `hermitian_eigen`), the Schur form, the pivoted QR,
+  LDLᴴ and the generalized forms are of `double` and `std::complex<double>`; the class templates among them take
+  `numerical::double_field` and refuse another scalar by that name. A `float` matrix through the Python binding is
+  computed in `double` and narrowed.
+
 ## Eigenvalues and singular values
 
 - `symmetric_eigen`: eigenvalues (ascending) and eigenvectors of a real symmetric matrix (`A = V Λ Vᵀ`):

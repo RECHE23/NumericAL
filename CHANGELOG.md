@@ -8,6 +8,14 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+### Added
+
+- **`numerical::double_field`** (`double` or `std::complex<double>`): `eigen_decomposition`, `schur_decomposition`,
+  `pivoted_qr_decomposition` and `ldl_decomposition` take it and refuse another scalar by that name, where a `long double`
+  or `float` matrix failed deep in their templates (eight errors for `eig`, none naming the cause). The concept `field`
+  says what each decomposition carries in its own precision (LU, Cholesky and QR in the scalar itself; the SVD in
+  `double`), as does the C++ guide's new section on scalar types.
+
 ## 2026.11.16 — 2026-11-15
 
 ### Added

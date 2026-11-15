@@ -544,8 +544,7 @@ namespace numerical {
    *        (\ref permutation), as SciPy returns them.
    * \tparam T `double` or `std::complex<double>`.
    */
-  template <typename T>
-  requires std::same_as<T, double> || std::same_as<T, std::complex<double>>
+  template <double_field T>
   class ldl_decomposition
   {
   public:

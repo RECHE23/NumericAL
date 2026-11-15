@@ -3962,7 +3962,7 @@ namespace numerical {
    *        reflectors as `larfg` forms them; `R`'s diagonal then made real and non-negative, as \ref qr_decomposition's
    *        (`Q`'s columns taking the phases), where LAPACK's may be negative.
    */
-  template <field T>
+  template <double_field T>
   class pivoted_qr_decomposition
   {
   public:

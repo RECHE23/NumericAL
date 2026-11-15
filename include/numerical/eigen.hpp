@@ -3106,7 +3106,7 @@ namespace numerical {
    * whether a real matrix's are all real). Column `j` of \ref vectors is the eigenvector of \ref values `[j]`,
    * `A V = V Λ`, each of unit norm with its component of largest modulus real.
    */
-  template <field T>
+  template <double_field T>
   class eigen_decomposition
   {
   public:
@@ -3494,7 +3494,7 @@ namespace numerical {
    *        iteration; no diagonal scaling, which would not.
    * \tparam T `double` or `std::complex<double>`.
    */
-  template <field T>
+  template <double_field T>
   class schur_decomposition
   {
   public:
