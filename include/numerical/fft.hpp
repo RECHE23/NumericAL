@@ -2293,11 +2293,11 @@ namespace numerical {
      *        real input takes `real_transform_of`.)
      */
     template <split_complex T>
-    [[nodiscard]] tensor<T> transform_axis(const fft_source<T>&       a,
-                                           std::optional<std::size_t> n,
-                                           std::ptrdiff_t             axis,
-                                           fft_norm                   norm,
-                                           bool                       inverse)
+    [[nodiscard]] tensor<T> transform_axis(const fft_source<T>&              a,
+                                           const std::optional<std::size_t>& n,
+                                           std::ptrdiff_t                    axis,
+                                           fft_norm                          norm,
+                                           bool                              inverse)
     {
       using C = T;
       using R = typename C::value_type;
@@ -2816,11 +2816,11 @@ namespace numerical {
      *        elements a caller lends.
      */
     template <std::floating_point T>
-    [[nodiscard]] tensor<std::complex<T>> real_transform_of(const fft_source<T>&       a,
-                                                            std::optional<std::size_t> n,
-                                                            std::ptrdiff_t             axis,
-                                                            fft_norm                   norm,
-                                                            bool                       inverse)
+    [[nodiscard]] tensor<std::complex<T>> real_transform_of(const fft_source<T>&              a,
+                                                            const std::optional<std::size_t>& n,
+                                                            std::ptrdiff_t                    axis,
+                                                            fft_norm                          norm,
+                                                            bool                              inverse)
     {
       const char* const name   {inverse ? "ifft" : "fft"};
       const std::size_t index  {fft_axis_index(axis, a.shape.size(), name)};
@@ -2833,10 +2833,10 @@ namespace numerical {
 
     //! \brief `rfft`'s computation, of real elements a caller lends.
     template <std::floating_point T>
-    [[nodiscard]] tensor<std::complex<T>> rfft_of(const fft_source<T>&       a,
-                                                  std::optional<std::size_t> n,
-                                                  std::ptrdiff_t             axis,
-                                                  fft_norm                   norm)
+    [[nodiscard]] tensor<std::complex<T>> rfft_of(const fft_source<T>&              a,
+                                                  const std::optional<std::size_t>& n,
+                                                  std::ptrdiff_t                    axis,
+                                                  fft_norm                          norm)
     {
       using C = std::complex<T>;
       const std::size_t index  {fft_axis_index(axis, a.shape.size(), "rfft")};
@@ -2860,7 +2860,7 @@ namespace numerical {
     //! \brief `irfft`'s computation, of complex elements a caller lends.
     template <std::floating_point T>
     [[nodiscard]] tensor<T> irfft_of(const fft_source<std::complex<T>>& a,
-                                     std::optional<std::size_t>         n,
+                                     const std::optional<std::size_t>&  n,
                                      std::ptrdiff_t                     axis,
                                      fft_norm                           norm)
     {
@@ -3361,7 +3361,7 @@ namespace numerical {
                                            const std::optional<std::size_t>& n,
                                            std::ptrdiff_t                    axis,
                                            fft_norm                          norm,
-                                           std::optional<bool>               orthogonalize,
+                                           const std::optional<bool>&        orthogonalize,
                                            bool                              inverse)
     {
       using C = std::complex<R>;
@@ -3460,7 +3460,7 @@ namespace numerical {
                                            const std::optional<std::size_t>& n,
                                            std::ptrdiff_t                    axis,
                                            fft_norm                          norm,
-                                           std::optional<bool>               orthogonalize,
+                                           const std::optional<bool>&        orthogonalize,
                                            bool                              inverse)
     {
       return trig_transform(source_of(a), family, type, n, axis, norm, orthogonalize, inverse);
