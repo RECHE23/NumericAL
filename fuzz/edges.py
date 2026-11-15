@@ -329,7 +329,10 @@ def drawn_case(seed, index, largest):
         axis = None if rank == 0 or rng.random() < 0.5 else int(rng.integers(rank))
         label += f" ord={order} axis={axis}"
         with np.errstate(all="ignore"):
-            scale = np.sum(magnitude(a), axis=axis) if order not in (0.0, -np.inf) else 1.0
+            # -inf: the largest magnitude of the line, which bounds the smallest (a complex modulus is rounded apart,
+            # as for absolute: an ulp of a smallest modulus of 47 passed a tolerance of 1); 0, a count, exact
+            scale = (np.sum(magnitude(a), axis=axis) if order not in (0.0, -np.inf)
+                     else np.max(magnitude(a), axis=axis, initial=1.0) if order == -np.inf else 1.0)
         return label, check(label, lambda: numpy_norm(a, order, axis),
                             lambda: numerical.vector_norm(t, ord=float(order), axis=axis),
                             lambda got, want: norm_close(got, want, scale, 16 * eps * max(1, a.size), operands))
