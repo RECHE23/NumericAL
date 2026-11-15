@@ -98,6 +98,8 @@ A change that can break code is listed under **Breaking** and held for a month's
   weighed by the recurrence's own estimate, not by SciPy's floor (which reads 1 wherever `T(0, 0)` is 0), and where
   clusters still leave it past the threshold, Parlett's recurrence with every eigenvalue apart is tried too: both
   exact. Its cost falls on those matrices alone.
+- **`tanhm` of a Hermitian matrix** takes `V tanh(Λ) Vᴴ` from `eigh`: SciPy's quotient of exponentials lost all past a
+  norm of 40 or so (a positive definite matrix of norm 76: a relative error of 3.6, SciPy's 21); now 2·10⁻¹⁵.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.

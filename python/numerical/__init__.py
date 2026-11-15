@@ -5066,8 +5066,13 @@ def sinhm(A):
 
 def tanhm(A):
     """The matrix hyperbolic tangent, ``coshm(A)⁻¹ sinhm(A)``, as ``scipy.linalg.tanhm``: the exponentials
-    :func:`coshm` and :func:`sinhm` take, computed once for both."""
+    :func:`coshm` and :func:`sinhm` take, computed once for both. A Hermitian `A` takes ``V tanh(Λ) Vᴴ`` from
+    :func:`eigh` instead: the quotient of exponentials lost all past norm 40 or so (a positive definite matrix of norm 76,
+    relative error 3.6, SciPy's 21), where tanh of each eigenvalue is exact."""
     A = _square("tanhm", A)
+    if A.shape[0] > 0 and ishermitian(A):
+        w, v = eigh(A)
+        return (v * tanh(w).astype(v.dtype)) @ conj(matrix_transpose(v))
     ep, em = expm(A), expm(-A)
     return _maybe_real(A, solve(_maybe_real(A, 0.5 * (ep + em)), _maybe_real(A, 0.5 * (ep - em))))
 

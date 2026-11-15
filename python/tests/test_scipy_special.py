@@ -185,6 +185,22 @@ class MatrixFunctions(unittest.TestCase):
         with self.assertRaises(ValueError):
             numerical.cosm(np.ones((2, 3)))
 
+    def test_tanhm_of_a_hermitian_matrix_by_its_eigenvalues(self):
+        # positive definite of norm 76: the quotient of exponentials (SciPy's) lost all, relative error 3.6 (SciPy 21);
+        # tanh of each eigenvalue is exact
+        rng = np.random.default_rng(4)
+        g = rng.standard_normal((20, 20))
+        p = g @ g.T + np.eye(20)
+        w, v = np.linalg.eigh(p)
+        truth = (v * np.tanh(w)) @ v.T
+        got = numerical.tanhm(p)
+        self.assertEqual(got.dtype, "float64")
+        self.assertLess(np.linalg.norm(np.asarray(got) - truth) / np.linalg.norm(truth), 1e-13)
+        h = (g + 1j * rng.standard_normal((20, 20))) * 3.0
+        h = h + h.conj().T
+        w, v = np.linalg.eigh(h)
+        self.assertLess(np.abs(np.asarray(numerical.tanhm(h)) - (v * np.tanh(w)) @ v.conj().T).max(), 1e-13)
+
     def test_signm_by_newton_holds_an_ill_conditioned_sign(self):
         # A = V D V⁻¹, V unit upper triangular with integer entries: sign(A) = V sign(D) V⁻¹, of norm 6·10⁷
         n = 24
