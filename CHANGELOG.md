@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.16 — 2026-11-15
+
 ### Added
 
 - **`numerical::error`, what every exception the C++ library throws is**: `catch (const numerical::error&)` catches
