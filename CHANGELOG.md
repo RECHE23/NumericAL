@@ -116,6 +116,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`eig(a, b)` with `a` or `b` zero**: its eigenvectors came back NaN without an error (SciPy's finite): the bound
   under which a pivot of `β S − α T` is raised (`ztgevc`'s `SMIN`) was 0 there, and each zero pivot divided 0 by 0. It
   is now at least the smallest normal number, as LAPACK's: unit vectors, `a v = 0` exactly where `a` is zero.
+- **`full(shape, value)` with an array-like value** broadcasts it to `shape`, its dtype the Tensor's by default, as
+  NumPy's (`full((2, 2), [1, 2])`), where it raised `SystemError`: the binding asked a second conversion of the value
+  while the first's error was set.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.

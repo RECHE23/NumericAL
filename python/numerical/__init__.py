@@ -4029,7 +4029,8 @@ def full(shape, value, dtype=None, *, device=None):
 
     Args:
         shape: The extents: an integer (a vector) or a sequence of non-negative integers.
-        value: The number every element holds.
+        value: The number every element holds, or an array-like that broadcasts to `shape` (its rows repeated, as
+            ``numpy.full``'s), whose dtype the Tensor takes by default.
         dtype: ``"float64"``, ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"``; by default complex128
             for a complex value, bool for a bool one and float64 otherwise.
 
@@ -4048,6 +4049,9 @@ def full(shape, value, dtype=None, *, device=None):
         numerical.Tensor([1j, 1j], dtype=complex128)
     """
     _cpu_device(device, "full")
+    if not isinstance(value, _numbers.Number) and getattr(value, "shape", None) != ():  # an array: broadcast, as NumPy's
+        filled = value if isinstance(value, Tensor) else _read(value)
+        return copy(broadcast_to(filled if dtype is None else asarray(filled, _dtype_name(dtype)), _shape(shape)))
     return _native(_numerical._full, _shape(shape), value, _dtype_of(dtype, value))
 
 

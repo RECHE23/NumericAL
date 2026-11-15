@@ -978,6 +978,9 @@ PyObject* module_full(PyObject* /*self*/, PyObject* args)
         }
     }
     const double re = PyComplex_RealAsDouble(value); // the Limited API has no Py_complex accessor
+    if (PyErr_Occurred() != nullptr) { // before another call: one made with an exception set raises SystemError
+        return nullptr;
+    }
     const double im = PyComplex_ImagAsDouble(value);
     if (PyErr_Occurred() != nullptr) {
         return nullptr;

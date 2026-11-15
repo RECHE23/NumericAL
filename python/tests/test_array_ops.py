@@ -123,6 +123,11 @@ class ShapesAndCreation(unittest.TestCase):
         cases = [(numerical.zeros((2, 3)), np.zeros((2, 3))), (numerical.ones(4), np.ones(4)),
                  (numerical.zeros(2, dtype="complex128"), np.zeros(2, dtype=complex)),
                  (numerical.full((2,), 2.5), np.full((2,), 2.5)), (numerical.full(3, 1j), np.full(3, 1j)),
+                 # an array-like value broadcast to the shape, its dtype taken (a SystemError before)
+                 (numerical.full((2, 2), [1.0, 2.0]), np.full((2, 2), [1.0, 2.0])),
+                 (numerical.full((2, 3), numerical.asarray([[1.0], [2.0]])), np.full((2, 3), [[1.0], [2.0]])),
+                 (numerical.full((2,), [1j, 2.0]), np.full((2,), [1j, 2.0])),
+                 (numerical.full((2, 2), [1.0, 2.0], dtype="float32"), np.full((2, 2), [1.0, 2.0], dtype=np.float32)),
                  (numerical.eye(3), np.eye(3)), (numerical.arange(5), np.arange(5.0)),
                  (numerical.arange(1, 2, 0.25), np.arange(1, 2, 0.25)), (numerical.arange(3, 0, -1), np.arange(3.0, 0, -1)),
                  (numerical.linspace(0, 1, 7), np.linspace(0, 1, 7)), (numerical.linspace(-2, 5), np.linspace(-2, 5)),
@@ -131,6 +136,10 @@ class ShapesAndCreation(unittest.TestCase):
             with self.subTest(want=want):
                 self.assertEqual(got.dtype, str(want.dtype))
                 np.testing.assert_array_equal(np.asarray(got), want)
+
+    def test_full_refuses_a_value_that_does_not_broadcast(self):
+        with self.assertRaises(ValueError):
+            numerical.full((2, 3), [1.0, 2.0])
 
     def test_asarray_takes_numpy_types_and_dtypes(self):
         for dtype in (np.float64, np.float32, np.complex128, np.complex64, np.bool_):
