@@ -7760,8 +7760,8 @@ def _quantile_operand(q, scale, name):
         isinstance(q, Tensor) and q.dtype == "int64") else _read(q)
     if len(values.shape) > 2:
         raise ValueError("q must be a scalar or 1d")
-    if scale != 1:
-        values = asarray(values, "float64") / scale
+    if scale != 1:  # NumPy's true_divide(q, 100): in q's own float dtype (a float32 q stays float32), else float64
+        values = (values if values.dtype in ("float32", "float64") else asarray(values, "float64")) / scale
     if values.dtype == "bool":
         values = asarray(values, "float64")
     flat = reshape(values, (-1,)).tolist()

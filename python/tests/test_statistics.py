@@ -204,7 +204,7 @@ class AgainstNumPy(unittest.TestCase):
                                                            axis=axis, method=method)
                             self.assertSame(got, getattr(np, name)(data, q, axis=axis, method=method),
                                             f"{name} {method} {q!r} {axis} {data.dtype}")
-            for q in (50, 12.5, [10, 90]):
+            for q in (50, 12.5, [10, 90], np.float32(30), np.array([30, 70], np.float32)):  # a float32 q divided as float32
                 self.assertSame(numerical.percentile(t, q, axis=0), np.percentile(data, q, axis=0), f"percentile {q}")
                 self.assertSame(numerical.nanpercentile(t, q, axis=0, keepdims=True),
                                 np.nanpercentile(data, q, axis=0, keepdims=True), f"nanpercentile {q}")
