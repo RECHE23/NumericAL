@@ -2639,6 +2639,19 @@ namespace numerical {
       if (apart.second < best.second) {
         best = std::move(apart);
       }
+      // and Davies and Higham's own bound, 0.1 whatever the largest modulus: a tight pair gathers under a small
+      // circle, apart from an eigenvalue 30 away that both relative bounds joined to it (0 and −10⁻¹² beside −30 and
+      // −5000: Parlett's recurrence divided by 10⁻¹², 2·10⁻⁶; this, 10⁻¹⁵)
+      double largest {1.0};
+      for (const std::complex<double>& value : detail::diagonal_of(plan.t)) {
+        largest = std::max(largest, std::abs(value));
+      }
+      if (best.second > detail::funm_fallback_error && largest > 1.0) {
+        auto absolute {evaluated(regathered(plan, detail::cluster_share / largest))};
+        if (absolute.second < best.second) {
+          best = std::move(absolute);
+        }
+      }
     }
     return std::move(best.first);
   }

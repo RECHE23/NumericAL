@@ -135,6 +135,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   before: what is left of such a column is rounding), and a float32 matrix's thresholds are float32's
   (`ones((10, 7))` did not converge).
   `ones((256, 256))` and `(400, 300)` in 0.12 and 0.19 s; graded matrices' singular values the same to the bit.
+- **`funm` of a tight pair beside an eigenvalue 30 away, the largest past 5000** (`exp` of eigenvalues 0, −10⁻¹², −30,
+  −5000): neither relative bound parted −30 from the pair, and Parlett's recurrence divided by 10⁻¹² (2·10⁻⁶, as SciPy's).
+  Where those attempts leave the estimate past its threshold, Davies and Higham's own bound of 0.1 is tried too:
+  10⁻¹⁷.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.

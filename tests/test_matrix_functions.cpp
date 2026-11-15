@@ -429,6 +429,34 @@ TEST(funm_of_eigenvalues_decades_apart)
   EXPECT(std::abs(r.f(0, 1) - r01) < 1e-14 * r01 && std::abs(r.f(1, 2) - r12) < 1e-14 * r12 && std::abs(r.f(0, 2) - r02) < 1e-12 * std::abs(r02));
 }
 
+TEST(funm_of_a_tight_pair_beside_an_eigenvalue_30_away)
+{
+  // 0 and −10⁻¹² beside −30 and −5000: both relative bounds (a tenth and a hundredth of 5000) join −30 to the pair, and
+  // Parlett's recurrence divides by 10⁻¹² (2·10⁻⁶); Davies and Higham's absolute bound of 0.1 gathers the pair alone.
+  // Bidiagonal, ones above the diagonal: each entry a divided difference of exp.
+  using values = std::vector<C>;
+  const double                 l0 {0.0};
+  const double                 l1 {-1e-12};
+  const double                 l2 {-30.0};
+  const double                 l3 {-5000.0};
+  const matrix<double>         t  {{l0, 1.0, 0.0, 0.0}, {0.0, l1, 1.0, 0.0}, {0.0, 0.0, l2, 1.0}, {0.0, 0.0, 0.0, l3}};
+  const numerical::funm_result e  {numerical::funm(t, [](const values& x) {
+                                                     values y(x.size());
+                                                     std::ranges::transform(x, y.begin(), [](const C& z) { return std::exp(z); });
+                                                     return y;
+                                                   })};
+  const double d01 {-std::expm1(l1) / (l0 - l1)}; // (e⁰ − e^{l1}) / (0 − l1) without cancellation
+  const double d12 {(std::exp(l1) - std::exp(l2)) / (l1 - l2)};
+  const double d23 {(std::exp(l2) - std::exp(l3)) / (l2 - l3)};
+  const double d02 {(d01 - d12) / (l0 - l2)};
+  const double d13 {(d12 - d23) / (l1 - l3)};
+  const double d03 {(d02 - d13) / (l0 - l3)};
+  for (const auto& [i, j, exact] : {std::tuple {0, 1, d01}, std::tuple {1, 2, d12}, std::tuple {0, 2, d02}, std::tuple {1, 3, d13}, std::tuple {0, 3, d03}}) {
+    EXPECT(std::abs(e.f(static_cast<std::size_t>(i), static_cast<std::size_t>(j)) - exact) < 1e-13 * std::abs(exact));
+  }
+  EXPECT(e.error < 1e-12);
+}
+
 TEST(funm_by_parlett)
 {
   using values = std::vector<C>;
