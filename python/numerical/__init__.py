@@ -5098,12 +5098,15 @@ def sinhm(A):
 
 def tanhm(A):
     """The matrix hyperbolic tangent, ``coshm(A)⁻¹ sinhm(A)``, as ``scipy.linalg.tanhm``: the exponentials
-    :func:`coshm` and :func:`sinhm` take, computed once for both. A Hermitian `A` takes ``V tanh(Λ) Vᴴ`` from
-    :func:`eigh` instead: the quotient of exponentials lost all past norm 40 or so (a positive definite matrix of norm 76,
+    :func:`coshm` and :func:`sinhm` take, computed once for both. An `A` Hermitian to rounding (each entry within
+    ``8 n ε max|A|`` of its conjugate transpose's) takes ``V tanh(Λ) Vᴴ`` from :func:`eigh` of its Hermitian part instead: the quotient of exponentials lost all past norm 40 or so (a positive definite matrix of norm 76,
     relative error 3.6, SciPy's 21), where tanh of each eigenvalue is exact."""
     A = _square("tanhm", A)
-    if A.shape[0] > 0 and ishermitian(A):
-        w, v = eigh(A)
+    if A.shape[0] > 0 and A.dtype != "int64" and ishermitian(
+            A, atol=8 * A.shape[0] * _EPSILON[A.dtype] * float(max(absolute(A))), rtol=0.0):
+        # Hermitian to rounding (V Λ Vᵀ computed in floating point is so, 3.6e-15 apart): its Hermitian part, a change
+        # of that size, by its eigenvalues
+        w, v = eigh(0.5 * (A + conj(matrix_transpose(A))))
         return (v * tanh(w).astype(v.dtype)) @ conj(matrix_transpose(v))
     ep, em = expm(A), expm(-A)
     series = _sinh_series(A if A.dtype != "int64" else asarray(A, "float64"))  # below ‖A‖₁ = 1 no cancellation

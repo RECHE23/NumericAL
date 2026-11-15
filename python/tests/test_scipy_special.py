@@ -200,6 +200,13 @@ class MatrixFunctions(unittest.TestCase):
         h = h + h.conj().T
         w, v = np.linalg.eigh(h)
         self.assertLess(np.abs(np.asarray(numerical.tanhm(h)) - (v * np.tanh(w)) @ v.conj().T).max(), 1e-13)
+        # symmetric to rounding alone (Q Λ Qᵀ computed in floating point): its symmetric part, as exact
+        q, _ = np.linalg.qr(g)
+        values = np.linspace(1.0, 76.0, 20)
+        nearly = (q * values) @ q.T
+        self.assertFalse(np.array_equal(nearly, nearly.T))
+        truth = (q * np.tanh(values)) @ q.T
+        self.assertLess(np.linalg.norm(np.asarray(numerical.tanhm(nearly)) - truth) / np.linalg.norm(truth), 1e-13)
 
     def test_sinhm_and_tanhm_of_a_small_norm_by_the_series(self):
         # (e^A − e^{−A})/2 cancels: norm 10⁻⁹ lost 8 digits (SciPy's too); the series does not

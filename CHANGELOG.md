@@ -124,6 +124,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 - **`percentile` and `nanpercentile` at a float32 `q`** divide it by 100 in float32, as NumPy's `true_divide`, and so
   answer as `quantile` does (in float32 for a float32 array; NumPy's bits for a float64 one), where the division in
   float64 gave float64 and, beside a float64 array, other last bits.
+- **`tanhm` of a matrix Hermitian to rounding** (`Q Λ Qᵀ` computed in floating point, its entries within `8 n ε
+  max|A|` of their transposes') takes its Hermitian part by its eigenvalues too, where the exponentials' quotient lost
+  all (norm 76: 0.36): 2·10⁻¹⁵. A Hermitian path to the bit alone had missed it.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.
