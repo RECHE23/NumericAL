@@ -113,6 +113,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   answered in float64 (`clip(t, 0, 2**60 − 1)` gave `2**60`); `isin` read a list of Python ints as float64 too. Each is
   now read as int64, exactly, as NumPy's. An int past int64 compares as NumPy 2's does, the same answer for every
   element (`t == 2**70` false), where it raised `OverflowError`; arithmetic with one still raises it.
+- **`eig(a, b)` with `a` or `b` zero**: its eigenvectors came back NaN without an error (SciPy's finite): the bound
+  under which a pivot of `β S − α T` is raised (`ztgevc`'s `SMIN`) was 0 there, and each zero pivot divided 0 by 0. It
+  is now at least the smallest normal number, as LAPACK's: unit vectors, `a v = 0` exactly where `a` is zero.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.

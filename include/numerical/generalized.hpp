@@ -2313,7 +2313,8 @@ namespace numerical {
      * \brief The right (or, where \p left, the left) eigenvectors of the triangular pencil `(s, t)` whose diagonal is
      *        \p values, as LAPACK's `ztgevc`: for each `(α, β)`, `x` with `(β S − α T) x = 0` and `x_k = 1` by back
      *        substitution (`yᴴ (β S − α T) = 0` forward for a left one), then `basis x` made of unit 2-norm; a diagonal
-     *        entry of `β S − α T` below `ε (|β| ‖S‖ + |α| ‖T‖)` taken as that bound (`SMIN`), and `α` and `β` both zero
+     *        entry of `β S − α T` below `ε (|β| ‖S‖ + |α| ‖T‖)`, or the smallest normal number, taken as that bound
+     *        (`SMIN`), and `α` and `β` both zero
      *        (a singular pencil) given the unit vector of its place. The substitutions on the threads, each on its own;
      *        the basis applied to their nonzero parts by one product.
      * \return The vectors as columns.
@@ -2343,7 +2344,10 @@ namespace numerical {
                      if (std::abs(alpha) <= std::numeric_limits<double>::min() && std::abs(beta) <= std::numeric_limits<double>::min()) {
                        return;
                      }
-                     const double smallest {std::numeric_limits<double>::epsilon() * ((std::abs(beta) * s_norm) + (std::abs(alpha) * t_norm))};
+                     // ztgevc's SMIN, at least the smallest normal number: of a zero S or T (`A` or `B` zero) it was 0, and
+                     // each zero pivot divided 0 by 0
+                     const double smallest {std::max(std::numeric_limits<double>::epsilon() * ((std::abs(beta) * s_norm) + (std::abs(alpha) * t_norm)),
+                                                     std::numeric_limits<double>::min())};
                      const auto   entry = [&](std::size_t i, std::size_t j) { return (beta * s(i, j)) - (alpha * t(i, j)); }; // β S − α T
                      const auto   pivot = [&](std::size_t i) {
                                             const C m {entry(i, i)};
@@ -2388,7 +2392,7 @@ namespace numerical {
    *        `scipy.linalg.eig(a, b)`: for each eigenvalue `(α, β)` in the diagonals' order, `x` with `(β S − α T) x = 0`
    *        and `x_k = 1` by back substitution (`yᴴ (β S − α T) = 0` forward for a left one), then `Z x` (`Q y`) made of
    *        unit 2-norm, as SciPy normalises `ggev`'s; a diagonal entry of `β S − α T` below `ε (|β| ‖S‖ + |α| ‖T‖)` taken
-   *        as that bound (`ztgevc`'s `SMIN`), and an eigenvalue with `α` and `β` both zero (a singular pencil) given the
+   *        as that bound (`ztgevc`'s `SMIN`, at least the smallest normal number), and an eigenvalue with `α` and `β` both zero (a singular pencil) given the
    *        unit vector of its place, as `ztgevc` gives it.
    * \return The vectors as columns.
    */

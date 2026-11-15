@@ -684,3 +684,33 @@ TEST(scaling_balance_keeps_to_the_safe_range)
     }
   }
 }
+
+TEST(generalized_eigenvectors_of_a_zero_matrix_are_finite)
+{
+  // A or B zero: S or T zero, and a zero α (β), so ztgevc's SMIN ε (|β| ‖S‖ + |α| ‖T‖) was 0 and each zero pivot divided
+  // 0 by 0 (NaN vectors, no error; SciPy's finite). At least the smallest normal number: each a unit vector.
+  constexpr std::size_t n     {5};
+  const matrix<C>       other {trigonometric(n, n, 2.0, true) + (C {3.0} *identity<C>(n))};
+  const matrix<C>       zero  {n, n, numerical::buffer<C>(n * n, C {})};
+  for (const bool a_zero : {true, false}) {
+    const numerical::generalized_schur d {a_zero ? zero : other, a_zero ? other : zero};
+    for (const bool left : {false, true}) {
+      const matrix<C> v {numerical::generalized_eigenvectors(d, left)};
+      for (std::size_t k {0}; k < n; ++k) {
+        double norm {0.0};
+        for (std::size_t r {0}; r < n; ++r) {
+          EXPECT(std::isfinite(v(r, k).real()) && std::isfinite(v(r, k).imag()));
+          norm = std::hypot(norm, std::abs(v(r, k)));
+        }
+        EXPECT(std::abs(norm - 1.0) < 1e-14);
+      }
+    }
+  }
+  // the real pencil's, through its complex one
+  const matrix<double>                    real_other {{2.0, 1.0, 0.0}, {1.0, 3.0, 1.0}, {0.0, 1.0, 4.0}};
+  const numerical::real_generalized_schur r          {matrix<double> {3, 3, numerical::buffer<double>(9, 0.0)}, real_other};
+  const matrix<C>                         w          {numerical::generalized_eigenvectors(r, false)};
+  for (const C& x : w) {
+    EXPECT(std::isfinite(x.real()) && std::isfinite(x.imag()));
+  }
+}
