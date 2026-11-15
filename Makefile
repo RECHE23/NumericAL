@@ -187,9 +187,11 @@ coverage-html:
 lint:
 	@ls tests/*.cpp blas/*.cpp | xargs -P $(JOBS) -I{} clang-tidy {} -- $(CXXSTD) $(INCLUDES) -I$(SCIFORGE_INCLUDE)
 
-# The clang-tidy CI pins, named in SciForge's lint/misra.mk (MISRA_TIDY, MISRA_TIDY_CHECK).
-include $(SCIFORGE_LINT)/misra.mk
+# The clang-tidy CI pins, named in SciForge's lint/misra.mk (MISRA_TIDY, MISRA_TIDY_CHECK): optional, so that the
+# other targets load without SciForge's lint beside the repository; misra alone needs it.
+-include $(SCIFORGE_LINT)/misra.mk
 misra:
+	@[ -f $(SCIFORGE_LINT)/misra.mk ] || { echo "misra: SciForge's lint is not at $(SCIFORGE_LINT) (set SCIFORGE_LINT)"; exit 1; }
 	mkdir -p $(BUILD)
 	printf '#include <numerical/numerical.hpp>\nint main(){ try { const numerical::vector<int> v {1, 2, 3}; return numerical::dot(v, v) == 14 ? 0 : 1; } catch (...) { return 2; } }\n' > $(BUILD)/misra_tu.cpp
 	@$(MISRA_TIDY_CHECK)
