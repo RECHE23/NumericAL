@@ -4131,16 +4131,19 @@ def eye(n, dtype="float64", *, device=None):
     return _native(_numerical._eye, _operator.index(n), _dtype_of(dtype))
 
 
-def arange(start, stop=None, step=1.0, *, device=None):
+def arange(start, stop=None, step=1.0, *, dtype=None, device=None):
     """``start, start + step, …`` short of `stop`, as ``numpy.arange``.
 
     Args:
         start: The first value; with no `stop`, the stop itself, the values starting at 0 (``arange(stop)``).
         stop: The bound, not included.
         step: The spacing, finite and nonzero, negative for a descending range.
+        dtype: The values' dtype, float64 by default (where NumPy takes int64 for integer bounds, until 2026.12.0).
+            Another is filled as NumPy fills it: its first two values ``start`` and ``start + step`` in that dtype,
+            each next one ``first + i (second − first)`` computed in it.
 
     Returns:
-        Tensor: The values, float64.
+        Tensor: The values.
 
     Raises:
         ValueError: for a bound or a step that is not finite, or a zero step (also a ``ZeroDivisionError``, as
@@ -4158,7 +4161,18 @@ def arange(start, stop=None, step=1.0, *, device=None):
         start, stop = 0.0, start
     if step == 0:  # NumPy's error, its count's division by the step
         raise _ZeroStepError("arange: a zero step")
-    return _native(_numerical._arange, float(start), float(stop), float(step), _arange_fuses())
+    values = _native(_numerical._arange, float(start), float(stop), float(step), _arange_fuses())
+    name = "float64" if dtype is None else _dtype_name(dtype)
+    if name == "float64" or values.shape[0] == 0:
+        return values if name == "float64" else zeros((0,), name)
+    # NumPy's fill: the first two set from start and start + step, the rest first + i·(second − first) in the dtype
+    first = asarray(start, name)
+    if values.shape[0] == 1:
+        return reshape(first, (1,))
+    second = asarray(start + step, name)
+    index = asarray(arange(float(values.shape[0])), "int64" if name in ("int64", "bool") else name)
+    filled = first + index * (second - first)
+    return concatenate([reshape(first, (1,)), reshape(second, (1,)), filled[2:]])
 
 
 def _result_dtype(*values):

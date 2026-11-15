@@ -137,6 +137,15 @@ class ShapesAndCreation(unittest.TestCase):
                 self.assertEqual(got.dtype, str(want.dtype))
                 np.testing.assert_array_equal(np.asarray(got), want)
 
+    def test_arange_in_a_dtype_as_numpy_fills_it(self):
+        # the first two values start and start + step in the dtype, then first + i (second − first) computed in it
+        for args in ((4,), (0, 5, 1), (1, 2, 0.25), (0, 1, 0.1), (10, 0, -1.5), (0.5, 3, 1), (0, 1e5, 0.37), (1, 1, 1)):
+            for dtype in ("float32", "int64", "complex128", "complex64", "float64"):
+                with self.subTest(args=args, dtype=dtype):
+                    got, want = numerical.arange(*args, dtype=dtype), np.arange(*args, dtype=dtype)
+                    self.assertEqual(got.dtype, str(want.dtype))
+                    np.testing.assert_array_equal(np.asarray(got), want)
+
     def test_full_refuses_a_value_that_does_not_broadcast(self):
         with self.assertRaises(ValueError):
             numerical.full((2, 3), [1.0, 2.0])

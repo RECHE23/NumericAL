@@ -10,6 +10,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Added
 
+- **`arange(..., dtype=...)`**, as NumPy's: the values filled in that dtype (float32, int64, the complex ones) its
+  way, the first two `start` and `start + step`, each next `first + i (second − first)`; float64 by default as before
+  (NumPy's int64 for integer bounds is a change to come with the integer dtypes).
+
 - **`numerical::double_field`** (`double` or `std::complex<double>`): `eigen_decomposition`, `schur_decomposition`,
   `pivoted_qr_decomposition` and `ldl_decomposition` take it and refuse another scalar by that name, where a `long double`
   or `float` matrix failed deep in their templates (eight errors for `eig`, none naming the cause). The concept `field`
