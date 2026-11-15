@@ -108,6 +108,11 @@ A change that can break code is listed under **Breaking** and held for a month's
   (`[[0, 1], [0, −1500]]`, `[[−10⁴, 10⁴], [0, 0]]`: NaN; `[[709, 1], [0, −745]]`: ∞), where SciPy's is exact. Past a half
   gap of 64 it is now `(e^a − e^c)/(a − c)`, each exponential divided by the gap first where that overflows: the three
   exact, and an answer past the largest double alone infinite.
+- **An int64 tensor beside a Python int past 2⁵³**: the int was read as a float64, then as the tensor's int64, so
+  `t == 2**60 + 1` held for the element `2**60`, and `maximum`, `minimum`, `clip`, `equal` and the comparisons
+  answered in float64 (`clip(t, 0, 2**60 − 1)` gave `2**60`); `isin` read a list of Python ints as float64 too. Each is
+  now read as int64, exactly, as NumPy's. An int past int64 compares as NumPy 2's does, the same answer for every
+  element (`t == 2**70` false), where it raised `OverflowError`; arithmetic with one still raises it.
 - **`release_memory` under a sanitizer**: its workers trim glibc's allocator at once, and where nothing had used that
   allocator yet (AddressSanitizer replaces `malloc`) the first trim set its arenas up on several threads together; one
   read them half set and crashed (196 runs of 300 under ASan). The calling thread trims first: none of 300.

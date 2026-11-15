@@ -777,6 +777,11 @@ def _comparison(op):
         if type(other) is Tensor and other.dtype == self.dtype:
             a, b = self, other
         else:
+            if (type(other) is int and self.dtype in ("int64", "bool")
+                    and not -2 ** 63 <= other < 2 ** 63):  # past every element: NumPy 2's answer, the same for each
+                below = other > 0  # every element below `other`
+                answer = {"<": below, "<=": below, ">": not below, ">=": not below, "==": False, "!=": True}[op]
+                return full(self.shape, answer, "bool")
             try:
                 a, b = _same_dtype(self, other)
             except (TypeError, error):
@@ -3539,14 +3544,19 @@ def _same_dtype(a, b):
     tensors to the dtype both fit (:func:`_promoted`); a Python number keeps the tensor's precision, made complex
     only by a complex number (``float32 + 2.0`` is float32)."""
     weak_a, weak_b = _weak(a) and not _weak(b), _weak(b) and not _weak(a)
+    # a weak number is read in the dtype it takes, not through float64: an int beside an int64 tensor stays exact
+    # (2**60 + 1 is not 2**60), and one past int64 raises OverflowError, as NumPy's
+    if weak_a:
+        tensor_b = b if isinstance(b, Tensor) else _read_beside(b, a)
+        dtype = _beside_weak(tensor_b.dtype, a)
+        return asarray(a, dtype), asarray(tensor_b, dtype)
+    if weak_b:
+        tensor_a = a if isinstance(a, Tensor) else _read_beside(a, b)
+        dtype = _beside_weak(tensor_a.dtype, b)
+        return asarray(tensor_a, dtype), asarray(b, dtype)
     tensor_a = a if isinstance(a, Tensor) else _read_beside(a, b)
     tensor_b = b if isinstance(b, Tensor) else _read_beside(b, a)
-    if weak_a:
-        dtype = _beside_weak(tensor_b.dtype, a)
-    elif weak_b:
-        dtype = _beside_weak(tensor_a.dtype, b)
-    else:
-        dtype = _promoted((tensor_a.dtype, tensor_b.dtype))
+    dtype = _promoted((tensor_a.dtype, tensor_b.dtype))
     return asarray(tensor_a, dtype), asarray(tensor_b, dtype)
 
 
@@ -8716,9 +8726,25 @@ def setxor1d(ar1, ar2, assume_unique=False):
     return aux[flags[1:] & flags[:-1]]
 
 
+def _integers_beside(value, tensor):
+    """`value` as a Tensor: Python ints (one, or nested lists of them alone) beside an int64 `tensor` as int64, as NumPy
+    reads them, where :func:`asarray` would read them as float64 and lose what lies past 2⁵³."""
+    if tensor.dtype == "int64" and not isinstance(value, (Tensor, bool)):
+        if isinstance(value, int) or (isinstance(value, (list, tuple)) and value):
+            try:
+                values, _ = _nested(value) if not isinstance(value, int) else ([value], None)
+            except (TypeError, ValueError):
+                values = None
+            if values is not None and _builtins.all(type(v) is int for v in values) and \
+                    _builtins.all(-2 ** 63 <= v < 2 ** 63 for v in values):
+                return asarray(value, "int64")
+    return _tensor(value)
+
+
 def _isin(ar1, ar2, assume_unique=False, invert=False, kind=None):
     """NumPy's ``_isin`` of `ar1` and `ar2` flattened, by its sorting method (its table method answers the same)."""
-    a, b = reshape(_tensor(ar1), (-1,)), reshape(_tensor(ar2), (-1,))
+    a = reshape(_tensor(ar1), (-1,))
+    b = reshape(_integers_beside(ar2, a), (-1,))
     if kind not in (None, "sort", "table"):
         raise ValueError(f"Invalid kind: '{kind}'. Please use None, 'sort' or 'table'.")
     integers = a.dtype in ("bool", "int64") and b.dtype in ("bool", "int64")

@@ -77,6 +77,27 @@ class Int64(unittest.TestCase):
         self.assertEqual(pickle.loads(pickle.dumps(t)).tolist(), t.tolist())
         self.assertIn("4611686018427387905", repr(t))
 
+    def test_beside_a_python_int_exactly(self):
+        # a Python int beside an int64 tensor is read as int64, not through float64: BIG - 1 and BIG were one there
+        t = numerical.asarray([BIG - 1, 5, -7], dtype="int64")
+        self.assertEqual((t == BIG).tolist(), [False, False, False])
+        self.assertEqual((t != BIG).tolist(), [True, True, True])
+        self.assertEqual((t < BIG).tolist(), [True, True, True])
+        self.assertEqual(numerical.equal(t, BIG - 1).tolist(), [True, False, False])
+        self.assertEqual(numerical.maximum(t, BIG).tolist(), [BIG, BIG, BIG])
+        self.assertEqual(numerical.minimum(t, -BIG).tolist(), [-BIG, -BIG, -BIG])
+        self.assertEqual(numerical.clip(t, 0, BIG - 2).tolist(), [BIG - 2, 5, 0])
+        self.assertEqual(numerical.isin(t, [BIG, 5]).tolist(), [False, True, False])
+        self.assertEqual(numerical.isin(t, BIG - 1).tolist(), [True, False, False])
+        # past int64: a comparison answers, the same for each element (NumPy 2's); arithmetic raises
+        self.assertEqual((t == 2**70).tolist(), [False] * 3)
+        self.assertEqual((t < 2**70).tolist(), [True] * 3)
+        self.assertEqual((t >= -2**70).tolist(), [True] * 3)
+        self.assertEqual((t != -2**63 - 1).tolist(), [True] * 3)
+        self.assertEqual((numerical.asarray([True, False]) > 2**64).tolist(), [False, False])
+        with self.assertRaises(OverflowError):
+            t + 2**70
+
     def test_extremes(self):
         t = numerical.asarray([[1, BIG], [3, -4]], dtype="int64")
         self.assertEqual((numerical.max(t), numerical.min(t)), (BIG, -4))
