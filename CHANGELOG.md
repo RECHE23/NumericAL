@@ -75,6 +75,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **`argmin` and `argmax` of a float64 or float32 array** (flat, or along a contiguous axis) take two passes without a
+  branch, the extreme by `min`'s vectors then the first element that is it, where one pass compared each element to
+  the best so far: 100 000 doubles on one thread 89 → 28 µs (x86-64, NumPy's 29 µs), float32 13 µs (NumPy's 14). The
+  same index, the first NaN where there is one, the first of equal zeros whatever their signs.
+
 - **A nested list of ints read as int64** (`asarray(x, "int64")`, and every function's integer arguments read so:
   `repeat`'s counts, `partition`'s positions, `take`'s indices…) is walked natively, each int exact, where Python
   listed them first: 10 000 ints 10.9 → 0.16 ms (NumPy's `asarray` 0.33 ms), `repeat` of 10 000 counts 22.7 → 1.9 ms

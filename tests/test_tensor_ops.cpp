@@ -2365,6 +2365,9 @@ TEST(index_functions_as_numpy)
   EXPECT(numerical::argmin(grid, 1).data() == (numerical::buffer<big> {1, 1}));
   const tensor<big> ints {{5}, {2, 7, -1, 7, -1}};
   EXPECT(numerical::argmax(ints) == 1 && numerical::argmin(ints) == 2); // the first of equal ones
+  // zeros of both signs are equal: the first of either, whichever sign the extreme took
+  EXPECT(numerical::argmin(tensor<double> {{3}, {1.0, 0.0, -0.0}}) == 1 && numerical::argmax(tensor<double> {{3}, {-1.0, -0.0, 0.0}}) == 1);
+  EXPECT(numerical::argmin(tensor<float> {{3}, {1.0F, -0.0F, 0.0F}}) == 1 && numerical::argmax(tensor<float> {{2}, {0.0F, -0.0F}}) == 0);
   EXPECT_THROWS((void)numerical::argmax(tensor<double> {{0}, numerical::buffer<double> {}}), numerical::dimension_error);
   EXPECT_THROWS((void)numerical::argmin(tensor<double> {{0}, numerical::buffer<double> {}}), numerical::dimension_error);
   EXPECT_THROWS((void)numerical::argmax(tensor<double> {{2, 0}, numerical::buffer<double> {}}, 1), numerical::dimension_error);

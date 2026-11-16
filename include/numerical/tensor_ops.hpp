@@ -3402,26 +3402,65 @@ namespace numerical {
       return false;
     }
 
-    //! \brief The index of the first largest (\p larger `std::greater`) or smallest element of a line of \p count at
-    //!        stride \p stride, as NumPy's: the first NaN where there is one.
+    //! \brief Whether one of the \p count contiguous elements at \p first is \p value (a NaN where \p Nan): compared
+    //!        without a branch, so the loop vectorises.
+    template <bool Nan,
+              std::floating_point T>
+    [[nodiscard]] bool holds(const T*    first,
+                             std::size_t count,
+                             T           value) noexcept
+    {
+      unsigned hit {0};
+      for (std::size_t i {0}; i < count; ++i) {
+        const T x {first[i]};
+        hit |= static_cast<unsigned>(Nan ? x != x : x == value);
+      }
+      return hit != 0U;
+    }
+
+    //! \brief The index of the first of the contiguous elements at \p first that is \p value, one of them (a NaN where
+    //!        \p Nan): blocks of 64 tested by \ref holds, then the block that holds it walked.
+    template <bool Nan,
+              std::floating_point T>
+    [[nodiscard]] std::size_t first_held(const T   * first,
+                                         std::size_t count,
+                                         T           value) noexcept
+    {
+      constexpr std::size_t block {64};
+      std::size_t           start {0};
+      while (!holds<Nan>(first + start, std::min(block, count - start), value)) {
+        start += block;
+      }
+      std::size_t at {start};
+      while (!(Nan ? first[at] != first[at] : first[at] == value)) {
+        ++at;
+      }
+      return at;
+    }
+
+    //! \brief The index of the first largest (\p larger `std::greater`) or smallest of \p count contiguous elements, as
+    //!        NumPy's: the first NaN where there is one. Reals in two passes without a branch each, as fast as NumPy's
+    //!        vectors: their extreme (\ref contiguous_extreme, a NaN where there is one), then the first element that
+    //!        is it (zeros of both signs equal, so the first of either, as NumPy's).
     template <typename T,
               typename Order>
     [[nodiscard]] std::int64_t extreme_index(const T*     first,
                                              std::size_t  count,
-                                             std::size_t  stride,
                                              const Order& larger)
     {
-      std::size_t best {0};
-      for (std::size_t i {0}; i < count; ++i) {
-        const T& x {first[i * stride]};
-        if (wins_any_order(x)) {
-          return static_cast<std::int64_t>(i);
-        }
-        if (larger(x, first[best * stride])) {
-          best = i;
-        }
+      if constexpr (std::is_floating_point_v<T>) {
+        const T value {contiguous_extreme(first, count, larger)};
+        return static_cast<std::int64_t>(std::isnan(value) ? first_held<true>(first, count, value) : first_held<false>(first, count, value));
       }
-      return static_cast<std::int64_t>(best);
+      else {
+        std::size_t best {0};
+        for (std::size_t i {1}; i < count; ++i) {
+          if (larger(first[i], first[best])) {
+            best = i;
+          }
+        }
+        return static_cast<std::int64_t>(best);
+      }
     }
 
     //! \brief \ref argmax or \ref argmin along \p axis by \p larger.
@@ -3439,7 +3478,7 @@ namespace numerical {
       const T* const       in {t.data().data()};
       if (walk.inner == 1) {
         parallel_for(walk.outer, walk.extent, [&](std::size_t line) {
-                       out[line] = extreme_index(in + (line * walk.extent), walk.extent, 1, larger);
+                       out[line] = extreme_index(in + (line * walk.extent), walk.extent, larger);
                      });
         return tensor<std::int64_t> {without_axis(t.shape(), axis), std::move(out)};
       }
@@ -3490,7 +3529,7 @@ namespace numerical {
       std::vector<std::int64_t> best(chunks);
       parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
                      const std::size_t start {c * elementwise_chunk};
-                     best[c] = static_cast<std::int64_t>(start) + extreme_index(first + start, std::min(elementwise_chunk, count - start), 1, larger);
+                     best[c] = static_cast<std::int64_t>(start) + extreme_index(first + start, std::min(elementwise_chunk, count - start), larger);
                    });
       std::int64_t winner {best[0]};
       for (const std::int64_t candidate : best) {
