@@ -38,9 +38,11 @@ LONG_EXTENTS = (65, 130, 257, 1031)  # a vector's lanes and an element-wise task
 # NumPy's max and min give +0 and -0 where both zeros are among the elements on arm64, as NumericAL's on any processor
 # (IEEE 754-2019's maximum and minimum); on x86-64, the sign of a zero as its vector loops meet them.
 NUMPY_SETTLES_ZEROS = platform.machine().lower() in ("arm64", "aarch64")
-# NumPy on Windows takes a complex square root from npymath, which divides a part past max / (1 + sqrt(2)) by 4 and
-# then doubles the real part of the root alone: its imaginary part comes out halved.
-NUMPY_HALVES_SCALED_ROOTS = platform.system() == "Windows"
+# NumPy before 2.5.5 on Windows took a complex square root from npymath, which divides a part past max / (1 + sqrt(2))
+# by 4 and then doubles the real part of the root alone: its imaginary part came out halved. Asked of NumPy itself:
+# sqrt(i max) is sqrt(max / 2) (1 + i), both parts alike.
+_EDGE_ROOT = np.sqrt(np.complex128(complex(0.0, np.finfo(np.float64).max)))
+NUMPY_HALVES_SCALED_ROOTS = bool(_EDGE_ROOT.imag < 0.75 * _EDGE_ROOT.real)
 GLIBC = platform.libc_ver()[0] == "glibc"  # NumPy's complex functions are glibc's there, as NumericAL's everywhere
 
 
