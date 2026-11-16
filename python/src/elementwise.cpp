@@ -769,6 +769,103 @@ PyObject* module_argsort(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _partition(a, kths, axis, indices) -> Tensor: numerical::partition of a's lines along axis at the non-negative
+// positions kths (a sequence of ints, each below the extent: the caller's checks), or with indices its argpartition.
+PyObject* module_partition(PyObject* /*self*/, PyObject* args)
+{
+    PyObject*  x       = nullptr;
+    PyObject*  k       = nullptr;
+    Py_ssize_t axis    = 0;
+    int        indices = 0;
+    if (PyArg_ParseTuple(args, "OOnp", &x, &k, &axis, &indices) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = arithmetic_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    const Py_ssize_t count {PySequence_Size(k)};
+    if (count < 0) {
+        return nullptr;
+    }
+    std::vector<std::size_t> kths;
+    for (Py_ssize_t i {0}; i < count; ++i) {
+        PyObject* item = PySequence_GetItem(k, i);
+        if (item == nullptr) {
+            return nullptr;
+        }
+        const std::size_t position {PyLong_AsSize_t(item)};
+        Py_DECREF(item);
+        if (PyErr_Occurred() != nullptr) {
+            return nullptr;
+        }
+        kths.push_back(position);
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            const auto                   along {static_cast<std::size_t>(axis)};
+            result.emplace(visit_arithmetic([&](const auto& t) {
+                return indices != 0 ? any_tensor {numerical::argpartition(t, kths, along)}
+                                    : any_tensor {numerical::partition(t, kths, along)};
+            }, *a));
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
+// _vdot(a, b) -> float or complex: numerical::vdot of two tensors of one float or complex dtype and one count (the
+// caller's checks), their elements in row-major order.
+PyObject* module_vdot(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x = nullptr;
+    PyObject* y = nullptr;
+    if (PyArg_ParseTuple(args, "OO", &x, &y) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* b = a == nullptr ? nullptr : as_tensor(y);
+    if (b == nullptr) {
+        return nullptr;
+    }
+    try {
+        const auto take = [&]<typename T>(std::type_identity<T>) -> PyObject* {
+            const auto* left  = std::get_if<numerical::tensor<T>>(a);
+            const auto* right = std::get_if<numerical::tensor<T>>(b);
+            if (left == nullptr || right == nullptr) {
+                return nullptr;
+            }
+            T value {};
+            {
+                const sb::scoped_gil_release unlocked {releases_gil(left->size())};
+                value = numerical::vdot(*left, *right);
+            }
+            return from_scalar<T>(value);
+        };
+        if (PyObject* found = take(std::type_identity<double> {})) {
+            return found;
+        }
+        if (PyObject* found = take(std::type_identity<std::complex<double>> {})) {
+            return found;
+        }
+        if (PyObject* found = take(std::type_identity<float> {})) {
+            return found;
+        }
+        if (PyObject* found = take(std::type_identity<std::complex<float>> {})) {
+            return found;
+        }
+        PyErr_SetString(PyExc_TypeError, "_vdot: two tensors of one float or complex dtype");
+        return nullptr;
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _argsort_by(order, key, axis) -> Tensor: the int64 order's lines sorted stably by the key's elements they index.
 PyObject* module_argsort_by(PyObject* /*self*/, PyObject* args)
 {

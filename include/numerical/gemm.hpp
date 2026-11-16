@@ -4980,30 +4980,51 @@ namespace numerical::detail {
   }
 
   /*!
-   * \brief `Σ a[i] · b[i]` for a plain dot product: chunks of \ref dot_chunk elements in parallel, each by
-   *        \ref dot_product (several vector accumulators, on the widest x86-64 units for `double`), their sums
+   * \brief `Σ a[i] · b[i]` for a plain dot product: chunks of \ref dot_chunk elements in parallel, each by \p dot,
+   *        \ref dot_product below (several vector accumulators, on the widest x86-64 units for `double`), their sums
    *        added in the chunks' order. The same on any number of threads; in the last bits, not the ascending
    *        sum, which waits on each addition before the next (ten times slower at 100 000 elements).
    */
-  template <typename T>
+  template <typename T,
+            typename Dot>
   [[nodiscard]] T chunked_dot(const T*    a,
                               const T*    b,
-                              std::size_t count)
+                              std::size_t count,
+                              const Dot&  dot)
   {
     const std::size_t chunks {(count + dot_chunk - 1) / dot_chunk};
     if (chunks <= 1) {
-      return dot_product(a, b, count);
+      return dot(a, b, count);
     }
     buffer<T> partial(chunks);
     parallel_for(chunks, dot_chunk_weight(chunks), [&](std::size_t c) {
                    const std::size_t first {c * dot_chunk};
-                   partial[c] = dot_product(a + first, b + first, std::min(dot_chunk, count - first));
+                   partial[c] = dot(a + first, b + first, std::min(dot_chunk, count - first));
                  });
     T total {};
     for (const T& sum : partial) {
       total += sum;
     }
     return total;
+  }
+
+  //! \brief `Σ a[i] · b[i]`: \ref chunked_dot of each chunk by \ref dot_product.
+  template <typename T>
+  [[nodiscard]] T chunked_dot(const T*    a,
+                              const T*    b,
+                              std::size_t count)
+  {
+    return chunked_dot(a, b, count, [](const T* x, const T* y, std::size_t n) { return dot_product(x, y, n); });
+  }
+
+  //! \brief `Σ conj(a[i]) · b[i]` (`zdotc`): \ref chunked_dot of each chunk by \ref conjugate_dot_product, without a
+  //!        conjugated copy of \p a.
+  template <typename T>
+  [[nodiscard]] T chunked_conjugate_dot(const T*    a,
+                                        const T*    b,
+                                        std::size_t count)
+  {
+    return chunked_dot(a, b, count, [](const T* x, const T* y, std::size_t n) { return conjugate_dot_product(x, y, n); });
   }
 
   //! \brief The real multiply-adds one multiply-add of `T` weighs: 1 for a real number.

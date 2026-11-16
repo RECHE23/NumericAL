@@ -61,6 +61,17 @@ A change that can break code is listed under **Breaking** and held for a month's
   → 5.1; Apple M1: `expm1` 7.0 → 3.2, `arctan` 5.5 → 3.9, `cosh` 6.3 → 4.9, `sinh` 5.6 → 5.1, the others as before).
   The C++ functions of a `tensor<float>` likewise.
 
+- **`partition` and `argpartition` select** (`std::nth_element` between neighbouring positions, in NumPy's order:
+  NaNs last, a complex number by its parts in turn) where they sorted each line: linear in the extent (x86-64, one
+  thread, 10⁶ doubles at one position: 19 → 10.9 ms, NumPy's SIMD introselect 2.6; at two positions 20 → 14.9, NumPy's
+  13.5). The others in each line are in no order specified, as NumPy's; `numerical::partition` and
+  `numerical::argpartition` in C++.
+
+- **`vdot` of two float or complex arrays of one dtype** natively, the conjugate taken in the sums of
+  `numerical::detail::conjugate_dot_product` (BLAS's `zdotc`) rather than in a copy of the first, by the chunks of a
+  dot product among the threads (the same answer on any number of them): complex, 100 elements 7.4 → 0.8 µs (NumPy's
+  0.8), 10⁶ 2.6 → 1.8 ms (one thread); `numerical::vdot` in C++.
+
 ## 2026.11.16 — 2026-11-15
 
 ### Added

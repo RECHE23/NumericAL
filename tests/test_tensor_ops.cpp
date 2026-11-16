@@ -2545,3 +2545,126 @@ TEST(float_functions_are_the_doubles_rounded_once)
            above, [](const auto& t) { return numerical::log1p(t); }, [](float v) { return d::elementary_log1p(v); },
            [](double v) { return d::elementary_log1p(v); }, [](double v) { return std::log1p(v); }));
 }
+
+namespace {
+  //! \brief Whether numerical::partition and numerical::argpartition of \p t along \p axis at \p kths put at each
+  //!        position the element numerical::sort puts there, none before it that sorts after it, none after it that
+  //!        sorts before, every line a permutation of its own.
+  template <typename T>
+  bool partition_holds(const numerical::tensor<T>&     t,
+                       const std::vector<std::size_t>& kths,
+                       std::size_t                     axis)
+  {
+    namespace d = numerical::detail;
+    const numerical::tensor<T>            sorted {numerical::sort(t, axis)};
+    const numerical::tensor<T>            parted {numerical::partition(t, kths, axis)};
+    const numerical::tensor<std::int64_t> order {numerical::argpartition(t, kths, axis)};
+    const d::axis_walk                    walk {d::walk_along(t.shape(), axis)};
+    const auto                            same {[](const T& a, const T& b) { return !d::sorts_before(a, b) && !d::sorts_before(b, a); }};
+    const numerical::tensor<T>            resorted {numerical::sort(parted, axis)};
+    bool                                  holds    {std::equal(resorted.data().begin(), resorted.data().end(), sorted.data().begin(), same)};
+    for (std::size_t line {0}; line < walk.outer * walk.inner; ++line) {
+      const std::size_t first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
+      const auto        at {[&](const auto& source, std::size_t k) { return source.data()[first + (k * walk.inner)]; }};
+      const auto        indexed {[&](std::size_t k) {
+                                   return t.data()[first + (static_cast<std::size_t>(at(order, k)) * walk.inner)];
+                                 }};
+      std::vector<std::int64_t> taken;
+      for (std::size_t k {0}; k < walk.extent; ++k) {
+        taken.push_back(at(order, k));
+      }
+      std::ranges::sort(taken);
+      for (std::size_t k {0}; k < walk.extent; ++k) {
+        holds = holds && std::cmp_equal(taken[k], k);
+      }
+      for (const std::size_t kth : kths) {
+        const T pivot {at(sorted, kth)};
+        holds = holds && same(at(parted, kth), pivot) && same(indexed(kth), pivot);
+        for (std::size_t k {0}; k < walk.extent; ++k) {
+          const bool before {k < kth};
+          holds = holds && (k == kth || (before ? !d::sorts_before(pivot, at(parted, k)) : !d::sorts_before(at(parted, k), pivot)));
+          holds = holds && (k == kth || (before ? !d::sorts_before(pivot, indexed(k)) : !d::sorts_before(indexed(k), pivot)));
+        }
+      }
+    }
+    return holds;
+  }
+} // namespace
+
+// partition and argpartition select (std::nth_element between neighbouring positions) where sort sorted the whole
+// line: the element at each position the sort's, NaNs last, a complex number by its parts in turn; positions given
+// in any order and repeated, along either axis, and refused past the extent
+TEST(partition_selects_as_a_sort_would_place)
+{
+  const double        nan {std::numeric_limits<double>::quiet_NaN()};
+  std::vector<double> values;
+  for (std::size_t i {0}; i < std::size_t {280}; ++i) { // 7 lines of 40
+    values.push_back(i % 11 == 3 ? nan : static_cast<double>((i * 37) % 23) - 11.0);
+  }
+  const numerical::tensor<double> wide {{7, 40}, numerical::buffer<double>(values.begin(), values.end())};
+  EXPECT(partition_holds(wide, {20}, 1));
+  EXPECT(partition_holds(wide, {39, 0, 13, 13, 5}, 1));
+  EXPECT(partition_holds(wide, {3, 6}, 0));
+  EXPECT(partition_holds(wide, {}, 1));
+  std::vector<std::int64_t> integers(values.size());
+  std::ranges::transform(values, integers.begin(),
+                         [](double v) { return std::isnan(v) ? std::int64_t {99} : static_cast<std::int64_t>(v); });
+  EXPECT(partition_holds(numerical::tensor<std::int64_t> {{40, 7}, numerical::buffer<std::int64_t>(integers.begin(), integers.end())},
+                         {0, 6, 2}, 1));
+  std::vector<std::complex<double>> complexes;
+  for (std::size_t i {0}; i < 60; ++i) {
+    complexes.emplace_back(static_cast<double>(i % 3), i % 17 == 4 ? nan : static_cast<double>((i * 7) % 5));
+  }
+  EXPECT(partition_holds(numerical::tensor<std::complex<double>> {{60}, numerical::buffer<std::complex<double>>(complexes.begin(), complexes.end())},
+                         {30, 59}, 0));
+  EXPECT(partition_holds(numerical::tensor<float> {{5}, numerical::buffer<float> {2.0F, -1.0F, 2.0F, 0.0F, -0.0F}}, {2}, 0));
+  EXPECT(partition_holds(numerical::tensor<double> {{0, 3}}, {}, 0));
+  bool refused {false};
+  try {
+    static_cast<void>(numerical::partition(wide, {40}, 1));
+  }
+  catch (const numerical::index_error&) {
+    refused = true;
+  }
+  EXPECT(refused);
+}
+
+// vdot sums conj(a) b by the chunks of a dot product, the conjugate taken in each chunk's sums (no conjugated copy):
+// the chunks' own conjugated dot products added in order, one chunk and three; reals by the plain dot product
+TEST(vdot_conjugates_in_the_sum)
+{
+  namespace d = numerical::detail;
+  using cplx  = std::complex<double>;
+  for (const std::size_t count : {std::size_t {5}, (2 * d::dot_chunk) + 7}) {
+    std::vector<cplx>   a;
+    std::vector<cplx>   b;
+    std::vector<double> r;
+    for (std::size_t i {0}; i < count; ++i) {
+      a.emplace_back(std::sin(static_cast<double>(i)), std::cos(static_cast<double>(i) * 0.7));
+      b.emplace_back(std::cos(static_cast<double>(i) * 1.3), -std::sin(static_cast<double>(i) * 0.4));
+      r.push_back(std::sin(static_cast<double>(i) * 0.9));
+    }
+    cplx expected {};
+    for (std::size_t first {0}; first < count; first += d::dot_chunk) {
+      expected += d::conjugate_dot_product(a.data() + first, b.data() + first, std::min(d::dot_chunk, count - first));
+    }
+    const numerical::tensor<cplx>   ta {{count}, numerical::buffer<cplx>(a.begin(), a.end())};
+    const numerical::tensor<cplx>   tb {{count}, numerical::buffer<cplx>(b.begin(), b.end())};
+    const numerical::tensor<double> tr {{count}, numerical::buffer<double>(r.begin(), r.end())};
+    EXPECT(numerical::vdot(ta, tb) == expected);
+    EXPECT(numerical::vdot(tr, tr) == d::chunked_dot(r.data(), r.data(), count));
+    cplx plain {};
+    for (std::size_t i {0}; i < count; ++i) {
+      plain += std::conj(a[i]) * b[i];
+    }
+    EXPECT(std::abs(numerical::vdot(ta, tb) - plain) <= 1e-12 * static_cast<double>(count));
+  }
+  bool refused {false};
+  try {
+    static_cast<void>(numerical::vdot(numerical::tensor<double> {{2}, {1.0, 2.0}}, numerical::tensor<double> {{3}, {1.0, 2.0, 3.0}}));
+  }
+  catch (const numerical::dimension_error&) {
+    refused = true;
+  }
+  EXPECT(refused);
+}

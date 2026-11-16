@@ -6265,11 +6265,15 @@ def inner(a, b, /):
 
 
 def vdot(a, b, /):
-    """The sum of ``conj(a) · b`` over both arrays flattened, as ``numpy.vdot``."""
-    a, b = ravel(_operand(a)), ravel(_operand(b))
-    if a.shape != b.shape:
+    """The sum of ``conj(a) · b`` over both arrays flattened, as ``numpy.vdot``: of one float or complex dtype, by
+    chunks among the threads (the same answer on any number of them), as :func:`dot` of two vectors sums."""
+    a, b = _operand(a), _operand(b)
+    if a.size != b.size:
         raise ValueError("cannot reshape array: vdot requires arrays of one size")
-    return _number_if_scalar(einsum("i,i->", conj(a), b))
+    if a.dtype == b.dtype and a.dtype in ("float64", "complex128", "float32", "complex64"):
+        # natively: by chunks among the threads, the conjugate taken in the sum, not in a copy of `a`
+        return _native(_numerical._vdot, a, b)
+    return _number_if_scalar(einsum("i,i->", conj(ravel(a)), ravel(b)))
 
 
 def ptp(a, axis=None, keepdims=False):
@@ -10342,33 +10346,40 @@ def lexsort(keys, axis=-1):
 
 def partition(a, kth, axis=-1, kind="introselect", order=None):
     """`a` with each line along `axis` partitioned at the positions `kth`, as ``numpy.partition``: the element there
-    the one a sort puts there, none before it larger, none after smaller. Here each line is sorted, which is one such
-    arrangement; NumPy's leaves the others in no order it specifies."""
+    the one a sort puts there (NaNs last), none before it larger, none after smaller, the others in no order specified
+    (NumPy's own arrangement differs). By selection, linear in the extent, as NumPy's introselect."""
     a = _tensor(a)
     if axis is None:
         a, axis = reshape(a, (-1,)), 0
-    _partition_positions(a, kth, axis)
-    return sort(a, axis=axis)
+    axis, positions = _partition_positions(a, kth, axis)
+    if a.dtype == "bool":  # False before True: selected as 0 and 1
+        return asarray(_native(_numerical._partition, asarray(a, "float64"), positions, axis, False), "bool")
+    return _native(_numerical._partition, a, positions, axis, False)
 
 
 def argpartition(a, kth, axis=-1, kind="introselect", order=None):
-    """The indices that partition `a` along `axis` at `kth`, as ``numpy.argpartition``: here those of its stable sort,
-    which is one such arrangement."""
-    a = _tensor(a)
+    """The indices that partition `a` along `axis` at `kth`, as ``numpy.argpartition``: at each position the index of
+    the element a sort puts there, by selection; equal elements, and the others, in no order specified."""
+    a = _ordered_operand(a, "argpartition")
     if axis is None:
         a, axis = reshape(a, (-1,)), 0
-    _partition_positions(a, kth, axis)
-    return argsort(a, axis=axis, stable=True)
+    axis, positions = _partition_positions(a, kth, axis)
+    return _native(_numerical._partition, a, positions, axis, True)
 
 
 def _partition_positions(a, kth, axis):
-    """NumPy's checks of the partition positions `kth` against `a`'s axis `axis`."""
+    """NumPy's checks of the partition positions `kth` against `a`'s axis `axis` (a 0-d `a` first): the axis and the
+    positions, each made non-negative."""
     if not a.shape:
         raise ValueError("Cannot partition a 0-d array")
-    extent = a.shape[_axis(a, axis)]
+    axis = _axis(a, axis)
+    extent = a.shape[axis]
+    positions = []
     for k in ([kth] if isinstance(kth, _numbers.Integral) else _counts(kth, "partition")):
         if not -extent <= k < extent:
             raise ValueError(f"kth(={k}) out of bounds ({extent})")
+        positions.append(int(k) % extent)
+    return axis, positions
 
 
 def _take_method(self, indices, axis=None, out=None, mode="raise"):

@@ -147,6 +147,9 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_axis_op", module_axis_op, METH_VARARGS, "_axis_op(name, a, axis) -> number or Tensor\nprod, cumsum, cumprod or sort along an axis.");
     m.raw("_arg_extreme", module_arg_extreme, METH_VARARGS, "_arg_extreme(largest, a, axis) -> int or Tensor\nargmax or argmin, of every element or along an axis.");
     m.raw("_argsort", module_argsort, METH_VARARGS, "_argsort(a, axis) -> Tensor\nThe indices that sort a along an axis, stably.");
+    m.raw("_vdot", module_vdot, METH_VARARGS, "_vdot(a, b) -> float or complex\nThe sum of conj(a) b over both, row-major.");
+    m.raw("_partition", module_partition, METH_VARARGS,
+          "_partition(a, kths, axis, indices) -> Tensor\nThe lines along axis partitioned at kths by selection, or the indices that do.");
     m.raw("_argsort_by", module_argsort_by, METH_VARARGS,
           "_argsort_by(order, key, axis) -> Tensor\nThe order's lines sorted stably by the key's elements they index.");
     m.raw("_nonzero", module_nonzero, METH_VARARGS, "_nonzero(a) -> tuple\nThe indices of the nonzero elements, one int64 Tensor per axis.");

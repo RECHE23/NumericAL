@@ -141,6 +141,23 @@ class NumpyRoot(unittest.TestCase):
         self.same(numerical.asarray(a).dot(b.T), a.dot(b.T), rtol=1e-13)
         with self.assertRaises(ValueError):
             numerical.vdot(np.ones(3), np.ones(4))
+        # natively by chunks: one and several (past 2^14 elements), each float and complex dtype, a transposed view
+        # read in its own row-major order, and a mixed pair through the general path
+        for count in (7, 40000):
+            for dtype in (np.float64, np.complex128, np.float32, np.complex64):
+                x = self.rng.standard_normal(count).astype(dtype)
+                y = self.rng.standard_normal(count).astype(dtype)
+                if np.iscomplexobj(x):
+                    x = x + 1j * self.rng.standard_normal(count).astype(dtype)
+                got, want = numerical.vdot(x, y), np.vdot(x, y)
+                scale = np.vdot(np.abs(x), np.abs(y))
+                tolerance = 1e-5 if dtype in (np.float32, np.complex64) else 1e-13
+                self.assertLess(abs(complex(got) - complex(want)), tolerance * float(scale), (count, dtype))
+                self.assertIsInstance(got, complex if np.iscomplexobj(x) else float)
+        m = self.rng.standard_normal((3, 4)) + 1j * self.rng.standard_normal((3, 4))
+        view = numerical.asarray(m).T
+        self.assertAlmostEqual(complex(numerical.vdot(view, view)), complex(np.vdot(m.T, m.T)), places=12)
+        self.assertAlmostEqual(complex(numerical.vdot(m.astype(np.complex64), m)), complex(np.vdot(m, m)), places=5)
 
     def test_spreads(self):
         x = self.rng.standard_normal((4, 6))

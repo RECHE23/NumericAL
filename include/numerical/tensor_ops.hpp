@@ -3199,6 +3199,137 @@ namespace numerical {
     return tensor<std::int64_t> {t.shape(), std::move(out)};
   }
 
+  namespace detail {
+    //! \brief \p kths ascending and each once, every one checked against \p extent.
+    //! \throws index_error If a position is not below \p extent.
+    [[nodiscard]] inline std::vector<std::size_t> partition_positions(std::vector<std::size_t> kths,
+                                                                      std::size_t              extent)
+    {
+      std::sort(kths.begin(), kths.end());
+      kths.erase(std::unique(kths.begin(), kths.end()), kths.end());
+      if (!kths.empty() && kths.back() >= extent) {
+        throw index_error("partition position " + std::to_string(kths.back()) + " is out of bounds for an extent of "
+                          + std::to_string(extent));
+      }
+      return kths;
+    }
+
+    //! \brief Rearranges [\p first, \p first + \p count) by \p less so that each of the ascending \p kths holds
+    //!        the element a sort puts there: `std::nth_element` over what lies past the previous one.
+    template <typename It,
+              typename Less>
+    void select_positions(It                              first,
+                          std::size_t                     count,
+                          const std::vector<std::size_t>& kths,
+                          const Less&                     less)
+    {
+      std::size_t from {0};
+      for (const std::size_t k : kths) {
+        std::nth_element(first + static_cast<std::ptrdiff_t>(from), first + static_cast<std::ptrdiff_t>(k),
+                         first + static_cast<std::ptrdiff_t>(count), less);
+        from = k + 1;
+      }
+    }
+  } // namespace detail
+
+  /*!
+   * \brief The elements of each line along \p axis rearranged as `numpy.partition`: at each of \p kths the element
+   *        \ref sort puts there (NaNs last, a complex number by its real part then its imaginary part), none before it
+   *        that sorts after it, none after it that sorts before; the others in no order specified. By selection,
+   *        `std::nth_element` between neighbouring positions, linear in the extent where \ref sort is not.
+   * \throws dimension_error If \p axis is not an axis. \throws index_error If a position is past the extent.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<T> partition(const tensor<T>&                t,
+                                    const std::vector<std::size_t>& kths,
+                                    std::size_t                     axis)
+  {
+    const detail::axis_walk        walk      {detail::walk_along(t.shape(), axis)};
+    const std::vector<std::size_t> positions {detail::partition_positions(kths, walk.extent)};
+    buffer<T>                      out(t.size());
+    const T* const                 in        {t.data().data()};
+    detail::parallel_for(walk.outer * walk.inner, walk.extent * 4, [&](std::size_t line) {
+                           const std::size_t first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
+                           buffer<T>         run(walk.extent);
+                           for (std::size_t k {0}; k < walk.extent; ++k) {
+                             run[k] = in[first + (k * walk.inner)];
+                           }
+                           detail::select_positions(run.begin(), walk.extent, positions,
+                                                    [](const T& a, const T& b) { return detail::sorts_before(a, b); });
+                           for (std::size_t k {0}; k < walk.extent; ++k) {
+                             out[first + (k * walk.inner)] = run[k];
+                           }
+                         });
+    return tensor<T> {t.shape(), std::move(out)};
+  }
+
+  /*!
+   * \brief The indices that partition each line along \p axis, as `numpy.argpartition`: of the elements \ref partition
+   *        would put at each of \p kths and around it, by selection; equal elements in no order specified.
+   * \throws dimension_error If \p axis is not an axis. \throws index_error If a position is past the extent.
+   */
+  template <typename T>
+  [[nodiscard]] tensor<std::int64_t> argpartition(const tensor<T>&                t,
+                                                  const std::vector<std::size_t>& kths,
+                                                  std::size_t                     axis)
+  {
+    const detail::axis_walk        walk      {detail::walk_along(t.shape(), axis)};
+    const std::vector<std::size_t> positions {detail::partition_positions(kths, walk.extent)};
+    buffer<std::int64_t>           out(t.size());
+    const T* const                 in        {t.data().data()};
+    detail::parallel_for(walk.outer * walk.inner, walk.extent * 4, [&](std::size_t line) {
+                           const std::size_t    first {((line / walk.inner) * walk.extent * walk.inner) + (line % walk.inner)};
+                           buffer<std::int64_t> order(walk.extent);
+                           std::iota(order.begin(), order.end(), std::int64_t {0});
+                           const auto value {[&](std::int64_t k) -> const T& {
+                                               return in[first + (static_cast<std::size_t>(k) * walk.inner)];
+                                             }};
+                           detail::select_positions(order.begin(), walk.extent, positions, [&](std::int64_t a, std::int64_t b) {
+                                                      return detail::sorts_before(value(a), value(b));
+                                                    });
+                           for (std::size_t k {0}; k < walk.extent; ++k) {
+                             out[first + (k * walk.inner)] = order[k];
+                           }
+                         });
+    return tensor<std::int64_t> {t.shape(), std::move(out)};
+  }
+
+  namespace detail {
+    //! \brief `Σ a[i] · b[i]` of reals, their own conjugates: \ref chunked_dot.
+    template <typename T>
+    [[nodiscard]] T conjugated_chunks(const T*    a,
+                                      const T*    b,
+                                      std::size_t count)
+    {
+      return chunked_dot(a, b, count);
+    }
+
+    //! \brief `Σ conj(a[i]) · b[i]` of complex numbers: \ref chunked_conjugate_dot.
+    template <split_complex C>
+    [[nodiscard]] C conjugated_chunks(const C*    a,
+                                      const C*    b,
+                                      std::size_t count)
+    {
+      return chunked_conjugate_dot(a, b, count);
+    }
+  } // namespace detail
+
+  /*!
+   * \brief `Σ conj(a[i]) · b[i]` over every element of \p a and \p b in their row-major order, as `numpy.vdot`: the
+   *        plain sum of products for reals, the conjugated one for complex numbers without a conjugated copy of \p a
+   *        (\ref detail::chunked_conjugate_dot, BLAS's `zdotc`), both by chunks among the threads, the same on any
+   *        number of them. \throws dimension_error If the two hold different counts of elements.
+   */
+  template <typename T>
+  [[nodiscard]] T vdot(const tensor<T>& a,
+                       const tensor<T>& b)
+  {
+    if (a.size() != b.size()) {
+      throw dimension_error("vdot of " + std::to_string(a.size()) + " and " + std::to_string(b.size()) + " elements");
+    }
+    return detail::conjugated_chunks(a.data().data(), b.data().data(), a.size());
+  }
+
   /*!
    * \brief \p order, indices along \p axis into \p key of its shape, each line's sorted stably by the elements of \p key
    *        they index, as `numpy.argsort` sorts (NaNs last): equal elements keep their places in \p order. A sort by
