@@ -4724,8 +4724,10 @@ def hilbert(n):
 
 
 def _exact(rows, n):
-    """The float64 `n × n` matrix of the Python integers `rows` (a function of i and j), each rounded once."""
-    return _read([[float(rows(i, j)) for j in range(n)] for i in range(n)]) if n else zeros((0, 0))
+    """The float64 `n × n` matrix of the Python integers `rows` (a function of i and j), each rounded once; a negative
+    order, or one past memory, refused before any entry is computed."""
+    shaped = empty((n, n))
+    return _read([[float(rows(i, j)) for j in range(n)] for i in range(n)]) if n else shaped
 
 
 def invhilbert(n, exact=False):
@@ -4785,6 +4787,8 @@ def hadamard(n, dtype="float64"):
     if n < 1 or n & (n - 1):
         raise ValueError("n must be an positive integer, and n must be a power of 2")
     dtype = _dtype_of(None if dtype in (int, "int", "int64") else dtype)
+    if n * n * _ITEMSIZE[dtype] > 2 ** 63 - 1:  # NumPy's refusal, before the doublings that would reach it
+        raise ValueError("array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.")
     h = ones((1, 1), dtype)
     sylvester = asarray([[1.0, 1.0], [1.0, -1.0]], dtype)
     while h.shape[0] < n:
@@ -6188,6 +6192,11 @@ def clip(a, a_min=None, a_max=None, *, min=None, max=None):  # noqa: A002 (NumPy
             raise ValueError("clip: a_max and max name the same bound; pass one")
         a_max = max
     a = _operand(a)
+    if a.dtype == "int64":  # NumPy's: a Python int past int64 on the side that removes nothing bounds nothing
+        if type(a_min) is int and a_min < -2 ** 63:
+            a_min = None
+        if type(a_max) is int and a_max >= 2 ** 63:
+            a_max = None
     if a_min is not None:
         a = maximum(a, a_min)
     return a if a_max is None else minimum(a, a_max)
@@ -6676,7 +6685,7 @@ def searchsorted(a, v, side="left", sorter=None):
 def diff(a, n=1, axis=-1, prepend=_NO_VALUE, append=_NO_VALUE):
     """The `n`-th differences along `axis`, ``a[1:] − a[:-1]`` repeated, as ``numpy.diff``: `prepend` and `append`
     joined before and after along the axis first (a number as a slice of it)."""
-    a = _operand(a)
+    a = asarray(a)  # NumPy's: bools kept, their differences by not_equal
     n = _operator.index(n)
     if n < 0:
         raise ValueError(f"order must be non-negative but got {n}")
@@ -6688,7 +6697,7 @@ def diff(a, n=1, axis=-1, prepend=_NO_VALUE, append=_NO_VALUE):
     rank = len(a.shape)
     if prepend is not _NO_VALUE or append is not _NO_VALUE:
         def slab(value):
-            value = _operand(value)
+            value = asarray(value)
             return broadcast_to(value, a.shape[:axis] + (1,) + a.shape[axis + 1:]) if not value.shape else value
 
         a = concatenate(([slab(prepend)] if prepend is not _NO_VALUE else []) + [a]
@@ -6696,7 +6705,9 @@ def diff(a, n=1, axis=-1, prepend=_NO_VALUE, append=_NO_VALUE):
     for _ in range(n):
         upper = tuple(slice(1, None) if k == axis else slice(None) for k in range(rank))
         lower = tuple(slice(None, -1) if k == axis else slice(None) for k in range(rank))
-        a = a[upper] - a[lower]
+        a = not_equal(a[upper], a[lower]) if a.dtype == "bool" else a[upper] - a[lower]  # NumPy's for bools
+        if not a.shape[axis]:  # each further difference of an empty axis is the same empty Tensor
+            break
     return a
 
 
@@ -6968,14 +6979,21 @@ def repeat(a, repeats, axis=None):
     counts = [_operator.index(repeats)] if isinstance(repeats, _numbers.Integral) else _counts(repeats, "repeat")
     if _builtins.any(count < 0 for count in counts):
         raise ValueError("repeats may not contain negative values.")
+    if _builtins.any(count > 2 ** 63 - 1 for count in counts):
+        raise OverflowError("Python int too large to convert to C long")
+    if len(counts) != 1 and len(counts) != extent:
+        raise ValueError(f"operands could not be broadcast together with shape ({extent},) ({len(counts)},)")
+    total = extent * counts[0] if len(counts) == 1 else _builtins.sum(counts)
+    elements = total * _math.prod(a.shape[:axis] + a.shape[axis + 1:])
+    if total > 2 ** 63 - 1 or elements * a.itemsize > 2 ** 63 - 1:  # NumPy's refusal
+        raise ValueError("array is too big; `arr.size * arr.dtype.itemsize` is larger than the maximum possible size.")
     if len(counts) == 1:  # every element as often: a broadcast, natively
         count = counts[0]
         spread = reshape(a, a.shape[:axis + 1] + (1,) + a.shape[axis + 1:])
         repeated = broadcast_to(spread, a.shape[:axis + 1] + (count,) + a.shape[axis + 1:])
-        return reshape(repeated, a.shape[:axis] + (extent * count,) + a.shape[axis + 1:])
-    if len(counts) != extent:
-        raise ValueError(f"operands could not be broadcast together with shape ({extent},) ({len(counts)},)")
-    index = [position for position, count in enumerate(counts) for _ in range(count)]
+        return reshape(repeated, a.shape[:axis] + (total,) + a.shape[axis + 1:])
+    # each output position's element: the counts' running sums it has reached, natively (a list held each position)
+    index = searchsorted(cumsum(asarray(counts, "int64")), arange(total, dtype="int64"), side="right")
     return a[_along_axis(axis, len(a.shape), index)]
 
 
@@ -9642,6 +9660,8 @@ def polyder(p, m=1):
     for _ in range(m):
         count = p.shape[0] - 1
         p = p[:-1] * asarray(arange(count, 0, -1), "int64")
+        if not p.shape[0]:  # each further derivative of no coefficient is the same empty Tensor
+            break
     return p
 
 
@@ -10374,8 +10394,12 @@ def _partition_positions(a, kth, axis):
         raise ValueError("Cannot partition a 0-d array")
     axis = _axis(a, axis)
     extent = a.shape[axis]
+    if isinstance(kth, (list, tuple)) and not kth:  # NumPy's: an empty list reads as float64
+        raise TypeError("Partition index must be integer")
     positions = []
     for k in ([kth] if isinstance(kth, _numbers.Integral) else _counts(kth, "partition")):
+        if 0 in a.shape:  # NumPy's: no position checked where there is nothing to arrange
+            continue
         if not -extent <= k < extent:
             raise ValueError(f"kth(={k}) out of bounds ({extent})")
         positions.append(int(k) % extent)

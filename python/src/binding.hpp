@@ -147,7 +147,8 @@ struct dtype_not_taken : std::invalid_argument
 };
 
 // Bridge the in-flight C++ exception to a Python error via the shared substrate:
-// bad_alloc -> MemoryError, dtype_not_taken -> TypeError, other std::exception -> numerical.error, else internal error.
+// bad_alloc -> MemoryError, dtype_not_taken -> TypeError, length_error (a container past its max_size, whose what() names
+// only the container) -> numerical.error saying so, other std::exception -> numerical.error, else internal error.
 inline PyObject* set_cpp_error()
 {
     try {
@@ -155,6 +156,10 @@ inline PyObject* set_cpp_error()
     }
     catch (const dtype_not_taken& refused) {
         PyErr_SetString(PyExc_TypeError, refused.what());
+        return nullptr;
+    }
+    catch (const std::length_error&) {
+        PyErr_SetString(sciforge_module_error(), "array is too big: its size in bytes is larger than the maximum possible size");
         return nullptr;
     }
     catch (...) {

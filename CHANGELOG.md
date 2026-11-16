@@ -28,6 +28,28 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **Arguments past memory or past any length are refused at once**, as NumPy and SciPy refuse them, where each held on
+  for minutes or took gigabytes first (found by `fuzz/hostile.py` on an audit's seeds): `invpascal(2**64)`, `pascal`
+  and `invhilbert` built their entries in Python before the matrix's size was checked, and gave a vector for a negative
+  order (now SciPy's `ValueError`); `fft.rfftfreq(10**30)` and `fftfreq` listed their frequencies one by one (now by
+  `arange`, NumPy's bits); `repeat(x, (2**62, 2**62))` listed every index (now NumPy's "array is too big", and its
+  `OverflowError` for a count past int64; the index built natively, 20 → 13 ms for 10 000 counts); `hadamard(2**64)`
+  doubled its matrix towards it; every transform of `numerical.fft` built its plan (tables growing with the points)
+  before its result, so `fft(x, n=2**63 - 1)` filled 2.5 GB before failing (now refused in 0.1 s, a `ValueError` as
+  NumPy's). `diff` and `polyder` stop once nothing is left (`diff(x, 10**6)` took 1.5 s, NumPy's 0.3 s).
+
+- **`diff` of bools** is NumPy's `not_equal` of neighbours, where it raised (a bool Tensor has no subtraction); a list of
+  bools stays bool, as NumPy reads it.
+
+- **`clip` of int64 with a Python int past int64** on the side that removes nothing (`a_min` below −2⁶³, `a_max` from
+  2⁶³) bounds nothing, as NumPy's, where it raised `OverflowError`; a bound past int64 on the other side still raises.
+
+- **`partition` of an empty array** checks no position (any `kth`, as NumPy's); an empty list or tuple of positions is
+  NumPy's `TypeError`, where it answered.
+
+- **`fuzz/hostile.py`** fails a call still running after 20 s (Python code interrupted there, a native call ending the
+  run with every thread's traceback past 40 s), and draws `2**63 - 1` in place of `2**31`, whose shapes allocated 16 GB.
+
 - **`nanquantile` along an axis whose first slice holds NaNs alone** answers in the dtype of the others (float64 for a
   float32 array at a list of `q`), as NumPy 2.5.5 now does, where 2026.11.16 rounded every slice to the array's dtype
   as older NumPy's `apply_along_axis` did.

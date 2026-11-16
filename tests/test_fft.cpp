@@ -519,6 +519,28 @@ TEST(fft_refuses_a_missing_axis_and_no_points)
   EXPECT(numerical::fft(none, 5).shape() == (std::vector<std::size_t> {0, 5}));
 }
 
+// A result past what a buffer holds is refused before the plan, whose tables would grow with the points (n = 2⁶³ − 1
+// filled 2.5 GB of them first); an empty one is planned for nothing, at any points.
+TEST(a_result_past_memory_is_refused_before_its_plan_and_an_empty_one_planned_for_nothing)
+{
+  const std::size_t                  huge {std::numeric_limits<std::size_t>::max() / 2};
+  const tensor<double>               x    {{2, 2}, std::vector<double> {1.0, 2.0, 3.0, 5.0}};
+  const tensor<std::complex<double>> z    {{2, 2}, std::vector<std::complex<double>> {{1.0, 0.0}, {2.0, 1.0}, {3.0, 0.0}, {5.0, -1.0}}};
+  EXPECT_THROWS((void)numerical::fft(x, huge), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::fft(z, huge), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::rfft(x, huge), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::irfft(z, huge), numerical::dimension_error);
+  EXPECT_THROWS((void)numerical::dct(x, 2, huge), numerical::dimension_error);
+  const tensor<double>               none    {{0, 3}, std::vector<double> {}};
+  const tensor<std::complex<double>> nothing {{0, 3}, std::vector<std::complex<double>> {}};
+  const std::size_t                  far     {std::size_t {1} << 40U};
+  EXPECT(numerical::fft(none, far).shape() == (std::vector<std::size_t> {0, far}));
+  EXPECT(numerical::fft(nothing, far).shape() == (std::vector<std::size_t> {0, far}));
+  EXPECT(numerical::rfft(none, far).shape() == (std::vector<std::size_t> {0, (far / 2) + 1}));
+  EXPECT(numerical::irfft(nothing, far).shape() == (std::vector<std::size_t> {0, far}));
+  EXPECT(numerical::dct(none, 2, far).shape() == (std::vector<std::size_t> {0, far}));
+}
+
 namespace {
   // A 3 × 4 tensor of T transformed along a positive axis padded to 8 points and inverted along a negative one cut to
   // 2, ortho: each matches the same lines transformed one by one as complex numbers, within a few units.

@@ -7,13 +7,17 @@ IndexError, OverflowError, MemoryError, ZeroDivisionError, NotImplementedError a
 that escapes from the library's own code rather than reports the argument: SystemError (a C call made with an
 exception set: full(shape, [1, 2]) raised it), AttributeError, KeyError, NameError, UnboundLocalError, AssertionError,
 RecursionError; a crash of the interpreter fails the run itself. Shapes past a few thousand elements are drawn absurd
-(negative, past 2⁶³) or not at all, so that no case allocates gigabytes.
+(negative, past the int64 range or at its edge) or not at all, so that no case allocates gigabytes. A call still
+running after CALL_SECONDS fails too: a hostile argument is refused, not worked through. Python code is interrupted
+there; a native call that holds on twice as long ends the run with every thread's traceback.
 
 Usage: python fuzz/hostile.py [--seed S] [--cases N]
 """
 import argparse
+import faulthandler
 import inspect
 import math
+import signal
 import sys
 import time
 import warnings
@@ -22,6 +26,7 @@ import numpy as np
 
 import numerical
 
+CALL_SECONDS = 20
 ESCAPED = (SystemError, AttributeError, KeyError, NameError, UnboundLocalError, AssertionError, RecursionError)
 SKIPPED = {"set_num_threads", "release_memory", "show_config", "get_include", "test"}  # state or the environment
 # NumPy's own escapes, kept for parity: trim_zeros calls trim.lower() before any check, as NumPy's does
@@ -46,7 +51,7 @@ def hostile(rng, depth=0):
     """One drawn argument."""
     small = numerical.asarray(rng.standard_normal(int(rng.integers(0, 5))))
     choices = [
-        None, 0, -1, 1, 2 ** 31, -(2 ** 63) - 1, 2 ** 64, 10 ** 30, math.nan, math.inf, -math.inf, 0.5, -0.0, 1j,
+        None, 0, -1, 1, 2 ** 63 - 1, -(2 ** 63) - 1, 2 ** 64, 10 ** 30, math.nan, math.inf, -math.inf, 0.5, -0.0, 1j,
         True, "", "abc", "float64", "int8", "uint32", b"\x00", object(), (), [], [[1, 2], [3]], [1, "a"],
         [math.nan, math.inf], (-1, 2), (2 ** 62, 2 ** 62), (0, 0, 0), (3, -4), slice(None), Ellipsis,
         np.float32(1.5), np.int8(3), np.array([], dtype=np.int8), np.ones((2, 3), np.uint16), small,
@@ -84,6 +89,14 @@ def keywords(function):
         return []
 
 
+class Overtime(BaseException):
+    """A call still running after CALL_SECONDS (no Exception, which the code under test might catch)."""
+
+
+def overtime(signum, frame):
+    raise Overtime
+
+
 def run(seed, cases):
     rng = np.random.default_rng(seed)
     functions = callables()
@@ -99,17 +112,28 @@ def run(seed, cases):
             kwargs[key] = hostile(rng)
         with warnings.catch_warnings(), np.errstate(all="ignore"):
             warnings.simplefilter("ignore")
+            shown = ", ".join([repr(a)[:60] for a in args] + [f"{k}={v!r:.60}" for k, v in kwargs.items()])
+            timed = hasattr(signal, "setitimer")
+            if timed:
+                signal.setitimer(signal.ITIMER_REAL, CALL_SECONDS)
+            faulthandler.dump_traceback_later(2 * CALL_SECONDS, exit=True)
             try:
                 function(*args, **kwargs)
+            except Overtime:
+                failures += 1
+                print(f"seed {seed} case {case}: {name}({shown}): still running after {CALL_SECONDS} s")
             except ESCAPED as error:
                 if (name, type(error).__name__) in NUMPY_ALIKE:
                     continue
                 failures += 1
-                shown = ", ".join([repr(a)[:60] for a in args] + [f"{k}={v!r:.60}" for k, v in kwargs.items()])
                 print(f"seed {seed} case {case}: {name}({shown}): {type(error).__name__}: {str(error)[:150]}")
             except BaseException as error:  # noqa: BLE001 (any other is the argument reported)
                 if isinstance(error, (KeyboardInterrupt, SystemExit)):
                     raise
+            finally:
+                if timed:
+                    signal.setitimer(signal.ITIMER_REAL, 0)
+                faulthandler.cancel_dump_traceback_later()
     return failures
 
 
@@ -119,6 +143,8 @@ def main():
     parser.add_argument("--cases", type=int, default=5000)
     args = parser.parse_args()
     seed = args.seed if args.seed is not None else int(time.time())
+    if hasattr(signal, "setitimer"):
+        signal.signal(signal.SIGALRM, overtime)
     start = time.time()
     failures = run(seed, args.cases)
     print(f"{args.cases} calls, seed {seed}, {failures} failure(s), {time.time() - start:.0f} s")

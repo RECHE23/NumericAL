@@ -8,10 +8,13 @@ along any axis; they depend only on the path (portable, or the vector units, NEO
 """
 
 import builtins as _builtins
+import numbers as _numbers
 import operator as _operator
 
+import numerical as _numerical_root
+
 from numerical import _numerical
-from numerical import AxisError as _AxisError, Tensor, asarray, _read
+from numerical import AxisError as _AxisError, Tensor, asarray, _native, _read
 
 __all__ = ["fft", "ifft", "fft2", "ifft2", "fftn", "ifftn", "rfft", "irfft", "rfft2", "irfft2", "rfftn", "irfftn", "hfft",
            "ihfft", "fftfreq", "rfftfreq", "fftshift", "ifftshift", "dct", "idct", "dst", "idst", "dctn", "idctn", "dstn",
@@ -57,7 +60,7 @@ def _borrowed(kind, a, n, axis, norm, inverse, default_points):
     points = default_points(a.shape[axis]) if n is None else _operator.index(n)
     if points < 1:
         raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
-    return _numerical._borrowed_fft(kind, a, points, axis, _norm(norm), inverse)
+    return _native(_numerical._borrowed_fft, kind, a, points, axis, _norm(norm), inverse)
 
 
 def _transform(a, n, axis, norm, inverse):
@@ -70,7 +73,7 @@ def _transform(a, n, axis, norm, inverse):
     points = tensor.shape[axis] if n is None else _operator.index(n)
     if points < 1:
         raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
-    return _numerical._fft(tensor, points, axis, _norm(norm), inverse)
+    return _native(_numerical._fft, tensor, points, axis, _norm(norm), inverse)
 
 
 def fft(a, n=None, axis=-1, norm=None, out=None):
@@ -167,7 +170,7 @@ def _real_transform(a, n, axis, norm, hermitian):
     points = tensor.shape[axis] if n is None else _operator.index(n)
     if points < 1:
         raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
-    return _numerical._rfft(tensor, points, axis, _norm(norm), hermitian)
+    return _native(_numerical._rfft, tensor, points, axis, _norm(norm), hermitian)
 
 
 def _real_inverse(a, n, axis, norm, hermitian):
@@ -177,7 +180,7 @@ def _real_inverse(a, n, axis, norm, hermitian):
     points = (tensor.shape[axis] - 1) * 2 if n is None else _operator.index(n)
     if points < 1:
         raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
-    return _numerical._irfft(tensor, points, axis, _norm(norm), hermitian)
+    return _native(_numerical._irfft, tensor, points, axis, _norm(norm), hermitian)
 
 
 def rfft(a, n=None, axis=-1, norm=None, out=None):
@@ -259,9 +262,13 @@ def fftfreq(n, d=1.0, device=None, *, dtype=None):
     ⌈n/2⌉ − 1, then −⌊n/2⌋, …, −1, each times 1/(n·d); in `dtype` where given (the array API's), float64 else."""
     if device not in (None, "cpu"):
         raise ValueError(f"Device not understood. Only \"cpu\" is allowed, but received: {device}")
+    n = _frequency_count(n)
     step = 1.0 / (n * d)
+    if n < 0:
+        raise ValueError("negative dimensions are not allowed")
     half = (n - 1) // 2 + 1
-    values = asarray([k * step for k in [*range(half), *range(-(n // 2), 0)]])
+    values = asarray(_numerical_root.concatenate([_numerical_root.arange(half), _numerical_root.arange(-(n // 2), 0)]),
+                     "float64") * step
     return values if dtype is None else asarray(values, dtype)
 
 
@@ -270,9 +277,17 @@ def rfftfreq(n, d=1.0, device=None, *, dtype=None):
     ⌊n/2⌋, each times 1/(n·d); in `dtype` where given (the array API's), float64 else."""
     if device not in (None, "cpu"):
         raise ValueError(f"Device not understood. Only \"cpu\" is allowed, but received: {device}")
+    n = _frequency_count(n)
     step = 1.0 / (n * d)
-    values = asarray([k * step for k in range(n // 2 + 1)])
+    values = asarray(_numerical_root.arange(_builtins.max(n // 2 + 1, 0)), "float64") * step
     return values if dtype is None else asarray(values, dtype)
+
+
+def _frequency_count(n):
+    """NumPy's `n` of fftfreq and rfftfreq: an integer, else a ValueError."""
+    if not isinstance(n, _numbers.Integral):
+        raise ValueError("n should be an integer")
+    return _operator.index(n)
 
 
 def _shift(x, axes, inverse):

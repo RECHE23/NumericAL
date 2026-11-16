@@ -2286,6 +2286,46 @@ namespace numerical {
       }
     }
 
+    //! \brief The result of a transform along one axis, allocated before its plan, whose tables grow with the points:
+    //!        a result past memory refused at once, an empty one planned for nothing.
+    template <typename Out>
+    struct fft_output
+    {
+      std::vector<std::size_t> shape; //!< The input's shape, the axis \p out_points long.
+      buffer<Out>              out;   //!< Its elements, uninitialized.
+
+      fft_output(std::vector<std::size_t> input_shape,
+                 std::size_t              index,
+                 std::size_t              out_points)
+        : shape {resized(std::move(input_shape), index, out_points)}, out(counted(shape))
+      {}
+
+      //! \brief The elements of \p extents. \throws dimension_error If they are more than a buffer holds.
+      [[nodiscard]] static std::size_t counted(const std::vector<std::size_t>& extents)
+      {
+        const std::size_t count {element_count(extents.begin(), extents.end())};
+        if (count > buffer<Out> {}.max_size()) {
+          throw dimension_error("a transform's result of " + std::to_string(count) + " elements is too big: its size in bytes is larger than the maximum possible size");
+        }
+        return count;
+      }
+
+      //! \brief \p extents, the one at \p index made \p extent.
+      [[nodiscard]] static std::vector<std::size_t> resized(std::vector<std::size_t> extents,
+                                                            std::size_t              index,
+                                                            std::size_t              extent)
+      {
+        extents[index] = extent;
+        return extents;
+      }
+
+      //! \brief The result as a tensor.
+      [[nodiscard]] tensor<Out> take() &&
+      {
+        return tensor<Out> {std::move(shape), std::move(out)};
+      }
+    };
+
     /*!
      * \brief The transform of complex \p a along \p axis, \p n points (the axis cut or padded with zeros to it, as
      *        NumPy's), forward or \p inverse (`conj(fft(conj x))`, exact), scaled for \p norm. Each line gathered,
@@ -2311,13 +2351,12 @@ namespace numerical {
       if (points == 0) {
         throw dimension_error("fft: invalid number of data points (0)");
       }
-      std::vector<std::size_t> shape {a.shape};
-      shape[index] = points;
-      const axis_walk walk           {walk_along(shape, index)};
+      fft_output<C>   result         {a.shape, index, points};
+      const axis_walk walk           {walk_along(result.shape, index)};
       const R         scale          {fft_scale<R>(norm, inverse, points)};
-      buffer<C>       out(element_count(shape.begin(), shape.end()));
+      buffer<C>&      out            {result.out};
       if (walk.outer == 0) {
-        return tensor<C> {std::move(shape), std::move(out)};
+        return std::move(result).take();
       }
       const std::shared_ptr<const fft_plan<R>> plan  {shared_fft_plan<R>(points)};
       const std::size_t                        kept  {std::min(points, extent)};
@@ -2359,7 +2398,7 @@ namespace numerical {
                        forward_fft(*plan, to, scratch.data(), fused, ahead);
                        fft_finish_line(to, points, inverse, scale);
                      });
-        return tensor<C> {std::move(shape), std::move(out)};
+        return std::move(result).take();
       }
       // Lines `inner` apart: a register of neighbours at a time where they fill one (fft_lane_groups), the rest up to
       // fft_column_block of them at a time, each row read and written as that many neighbours; fewer where that would
@@ -2400,7 +2439,7 @@ namespace numerical {
                        }
                      }
                    });
-      return tensor<C> {std::move(shape), std::move(out)};
+      return std::move(result).take();
     }
 
     //! \brief What a transform of `n` real points (or to them) takes: the complex plan of `n/2` points for an even `n`,
@@ -2703,10 +2742,11 @@ namespace numerical {
     }
 
     /*!
-     * \brief A transform of each line of \p a along axis \p index into lines of \p out_points: each line gathered (its
+     * \brief A transform of each line of \p a along axis \p index into the lines of \p result: each line gathered (its
      *        first \p in_points elements, padded with zeros), passed with its output line, both together, and the
      *        thread's working space of \p work elements of `C` to \p line, then scattered; a line together and not
-     *        padded passed where it lies, its output line too. The lines shared among the threads.
+     *        padded passed where it lies, its output line too. The lines shared among the threads. \p result holds
+     *        elements: its callers return an empty one before they plan.
      */
     template <typename In,
               typename Out,
@@ -2715,27 +2755,23 @@ namespace numerical {
     [[nodiscard]] tensor<Out> lines_along(const fft_source<In>& a,
                                           std::size_t           index,
                                           std::size_t           in_points,
-                                          std::size_t           out_points,
+                                          fft_output<Out>&&     result,
                                           std::size_t           work,
                                           Line                  line)
     {
-      std::vector<std::size_t> shape  {a.shape};
-      const std::size_t        extent {shape[index]};
-      shape[index] = out_points;
-      const axis_walk walk            {walk_along(shape, index)};
-      buffer<Out>     out(element_count(shape.begin(), shape.end()));
-      if (out.empty()) {
-        return tensor<Out> {std::move(shape), std::move(out)};
-      }
-      const std::size_t kept {std::min(in_points, extent)};
-      const In* const   from {a.data};
+      const std::size_t extent     {a.shape[index]};
+      const std::size_t out_points {result.shape[index]};
+      const axis_walk   walk       {walk_along(result.shape, index)};
+      buffer<Out>&      out        {result.out};
+      const std::size_t kept       {std::min(in_points, extent)};
+      const In* const   from       {a.data};
       if (walk.inner == 1 && in_points <= extent) { // each line together, none padded: read and written where it lies
         parallel_for(walk.outer, 5 * (in_points + out_points) * static_cast<std::size_t>(std::bit_width(in_points + out_points)),
                      [&](std::size_t number) {
                        fft_scratch<C, 0> space {work};
                        line(from + (number * extent), out.data() + (number * out_points), space.data());
                      });
-        return tensor<Out> {std::move(shape), std::move(out)};
+        return std::move(result).take();
       }
       parallel_for(walk.outer * walk.inner, 5 * (in_points + out_points) * static_cast<std::size_t>(std::bit_width(in_points + out_points)),
                    [&](std::size_t number) {
@@ -2745,16 +2781,16 @@ namespace numerical {
                      Out* const             to    {out.data() + (outer * out_points * walk.inner) + inner};
                      fft_scratch<C, 0>      space {work};
                      fft_scratch<In, 1>     gathered {in_points};
-                     fft_scratch<Out, 2>    result {out_points};
+                     fft_scratch<Out, 2>    line_out {out_points};
                      for (std::size_t k {0}; k < in_points; ++k) {
                        gathered.data()[k] = k < kept ? in[k * walk.inner] : In {};
                      }
-                     line(gathered.data(), result.data(), space.data());
+                     line(gathered.data(), line_out.data(), space.data());
                      for (std::size_t k {0}; k < out_points; ++k) {
-                       to[k * walk.inner] = result.data()[k];
+                       to[k * walk.inner] = line_out.data()[k];
                      }
                    });
-      return tensor<Out> {std::move(shape), std::move(out)};
+      return std::move(result).take();
     }
 
     //! \brief \p axis of a tensor of rank \p rank from 0, NumPy's negative axes read from the end.
@@ -2785,13 +2821,17 @@ namespace numerical {
                                                                R                    scale)
     {
       using C = std::complex<R>;
+      fft_output<C> result {a.shape, index, points};
+      if (result.out.empty()) {
+        return std::move(result).take();
+      }
       const bool                                    whole   {four_step_columns(points, sizeof(C)) != 0};
       const std::shared_ptr<const real_fft_plan<R>> plan    {whole ? nullptr : shared_real_fft_plan<R>(points)};
       const std::shared_ptr<const fft_plan<R>>      complex {whole ? shared_fft_plan<R>(points) : nullptr};
       const bool                                    fused   {fft_fuses()};
       const std::size_t                             half    {points / 2};
       const std::size_t                             work    {whole ? complex->work : (points % 2 == 0 ? half : points) + plan->complex->work};
-      return lines_along<R, C, C>(a, index, points, points, work, [&](const R* x, C* spectrum, C* space) {
+      return lines_along<R, C, C>(a, index, points, std::move(result), work, [&](const R* x, C* spectrum, C* space) {
                                     if (whole) {
                                       std::transform(x, x + points, spectrum, [](R value) { return C {value, R(0)}; });
                                       forward_fft(*complex, spectrum, space, fused);
@@ -2844,12 +2884,16 @@ namespace numerical {
       if (points == 0) {
         throw dimension_error("rfft: invalid number of data points (0)");
       }
+      fft_output<C> result {a.shape, index, (points / 2) + 1};
+      if (result.out.empty()) {
+        return std::move(result).take();
+      }
       const std::shared_ptr<const real_fft_plan<T>>          plan  {shared_real_fft_plan<T>(points)};
       const bool                                             fused {fft_fuses()};
       const T                                                scale {fft_scale<T>(norm, false, points)};
       const std::size_t                                      half  {points / 2};
       const std::size_t                                      work  {(points % 2 == 0 ? half : points) + plan->complex->work};
-      return lines_along<T, C, C>(a, index, points, half + 1, work, [&](const T* x, C* spectrum, C* space) {
+      return lines_along<T, C, C>(a, index, points, std::move(result), work, [&](const T* x, C* spectrum, C* space) {
                                     real_forward(*plan, x, spectrum, space, fused);
                                     if (scale != T(1)) {
                                       std::transform(spectrum, spectrum + half + 1, spectrum, [scale](const C& v) { return C {v.real() * scale, v.imag() * scale}; });
@@ -2871,13 +2915,17 @@ namespace numerical {
       if (points == 0) {
         throw dimension_error("irfft: invalid number of data points (0)");
       }
+      fft_output<T> result {a.shape, index, points};
+      if (result.out.empty()) {
+        return std::move(result).take();
+      }
       const std::shared_ptr<const real_fft_plan<T>>          plan   {shared_real_fft_plan<T>(points)};
       const bool                                             fused  {fft_fuses()};
       const T                                                factor {fft_scale<T>(norm, true, points)};
       const T                                                scale  {points % 2 == 0 ? factor * T(2) : factor}; // an even n's half sums
       const std::size_t                                      half   {points / 2};
       const std::size_t                                      work   {(points % 2 == 0 ? half : points) + plan->complex->work};
-      return lines_along<C, T, C>(a, index, half + 1, points, work, [&](const C* spectrum, T* x, C* space) {
+      return lines_along<C, T, C>(a, index, half + 1, std::move(result), work, [&](const C* spectrum, T* x, C* space) {
                                     real_inverse(*plan, spectrum, x, space, scale, fused);
                                   });
     }
@@ -3374,6 +3422,10 @@ namespace numerical {
       if (points == 0 || (family == trig_family::cosine && type == 1 && points < 2)) {
         throw dimension_error(name + ": invalid number of data points (" + std::to_string(points) + ")");
       }
+      fft_output<R> result {source.shape, index, points};
+      if (result.out.empty()) {
+        return std::move(result).take();
+      }
       const int                                   computed  {inverse && (type == 2 || type == 3) ? 5 - type : type};
       const bool                                  cosine    {family == trig_family::cosine};
       const double                                period    {static_cast<double>(type != 1 ? 2 * points : (cosine ? 2 * (points - 1) : 2 * (points + 1)))};
@@ -3388,7 +3440,7 @@ namespace numerical {
                                                                  : shared_cosine_line<R>(computed, points)};
       const std::size_t work                                {computed == 4 ? lines->complex->work
                                                         : (length % 2 == 0 ? length / 2 : length) + lines->real->complex->work};
-      return lines_along<R, R, C>(source, index, points, points, work, [&](const R* x, R* y, C* space) {
+      return lines_along<R, R, C>(source, index, points, std::move(result), work, [&](const R* x, R* y, C* space) {
                                     fft_scratch<R, 3> u {points};
                                     fft_scratch<R, 4> even {length};
                                     fft_scratch<C, 5> spectrum {std::max(length / 2 + 1, 2 * points)};
