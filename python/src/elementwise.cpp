@@ -214,7 +214,7 @@ PyObject* module_axis_op(PyObject* /*self*/, PyObject* args)
                                          PyErr_SetString(PyExc_ValueError, "_axis_op: an axis for cumsum, cumprod and sort");
                                          return nullptr;
                                      }
-                                     return from_scalar(prod_as_numpy(t, loops));
+                                     return rank0(prod_as_numpy(t, loops));
                                  }
                                  const auto                along {static_cast<std::size_t>(axis)};
                                  std::optional<any_tensor> result;
@@ -837,7 +837,7 @@ PyObject* module_arg_extreme(PyObject* /*self*/, PyObject* args)
                     const sb::scoped_gil_release unlocked {releases_gil(t.size())};
                     index = largest != 0 ? numerical::argmax(t) : numerical::argmin(t);
                 }
-                return PyLong_FromLongLong(index);
+                return rank0<std::int64_t>(index);
             }
             const auto                along {static_cast<std::size_t>(axis)};
             std::optional<any_tensor> result;
@@ -960,7 +960,7 @@ PyObject* module_vdot(PyObject* /*self*/, PyObject* args)
                 const sb::scoped_gil_release unlocked {releases_gil(left->size())};
                 value = numerical::vdot(*left, *right);
             }
-            return from_scalar<T>(value);
+            return rank0<T>(value);
         };
         if (PyObject* found = take(std::type_identity<double> {})) {
             return found;
@@ -1052,7 +1052,7 @@ PyObject* module_nonzero(PyObject* /*self*/, PyObject* args)
     }
 }
 
-// _count_nonzero(a, axis) -> int or Tensor.
+// _count_nonzero(a, axis) -> Tensor: of rank 0 for every element.
 PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args)
 {
     PyObject*  x    = nullptr;
@@ -1078,7 +1078,7 @@ PyObject* module_count_nonzero(PyObject* /*self*/, PyObject* args)
                 }
             }, *a);
         }
-        return along.has_value() ? wrap(std::move(*along)) : PyLong_FromSize_t(total);
+        return along.has_value() ? wrap(std::move(*along)) : rank0(static_cast<std::int64_t>(total));
     }
     catch (...) {
         return set_cpp_error();
@@ -2605,7 +2605,7 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
                 });
             }, *h);
             if (out_shape.empty() && keepdims == 0) {
-                return PyFloat_FromDouble(is_single(*h) ? static_cast<double>(static_cast<float>(out[0])) : out[0]);
+                return is_single(*h) ? rank0(static_cast<float>(out[0])) : rank0(out[0]);
             }
             any_tensor result {real_tensor {std::move(out_shape), std::move(out)}};
             return wrap(is_single(*h) ? narrowed(result) : std::move(result));
@@ -2662,7 +2662,7 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
                 });
             }, *h);
             if (out_shape.empty() && keepdims == 0) {
-                return PyFloat_FromDouble(is_single(*h) ? static_cast<double>(static_cast<float>(out[0])) : out[0]);
+                return is_single(*h) ? rank0(static_cast<float>(out[0])) : rank0(out[0]);
             }
             any_tensor result {real_tensor {std::move(out_shape), std::move(out)}};
             return wrap(is_single(*h) ? narrowed(result) : std::move(result));
@@ -2697,7 +2697,7 @@ PyObject* module_vector_norm(PyObject* /*self*/, PyObject* args)
             });
         }, *h);
         if (out_shape.empty() && keepdims == 0) {
-            return PyFloat_FromDouble(is_single(*h) ? static_cast<double>(static_cast<float>(out[0])) : out[0]);
+            return is_single(*h) ? rank0(static_cast<float>(out[0])) : rank0(out[0]);
         }
         any_tensor result {real_tensor {std::move(out_shape), std::move(out)}};
         return wrap(is_single(*h) ? narrowed(result) : std::move(result));
@@ -2733,7 +2733,10 @@ PyObject* module_borrowed_norm(PyObject* /*self*/, PyObject* obj)
         case 2: norm = plain_two_norm_columns(static_cast<const float*>(x.data), rows, cols); break;
         default: norm = plain_two_norm_columns(static_cast<const std::complex<float>*>(x.data), rows, cols); break;
         }
-        return norm ? PyFloat_FromDouble(x.dtype >= 2 ? static_cast<double>(static_cast<float>(*norm)) : *norm) : Py_NewRef(Py_NotImplemented);
+        if (!norm) {
+            return Py_NewRef(Py_NotImplemented);
+        }
+        return x.dtype >= 2 ? rank0(static_cast<float>(*norm)) : rank0(*norm);
     }
     switch (x.dtype) {
     case 0: norm = plain_two_norm(static_cast<const double*>(x.data), count); break;
@@ -2744,7 +2747,7 @@ PyObject* module_borrowed_norm(PyObject* /*self*/, PyObject* obj)
     if (!norm) {
         return Py_NewRef(Py_NotImplemented);
     }
-    return PyFloat_FromDouble(x.dtype >= 2 ? static_cast<double>(static_cast<float>(*norm)) : *norm);
+    return x.dtype >= 2 ? rank0(static_cast<float>(*norm)) : rank0(*norm);
 }
 
 // _borrowed_reduce(op, x, axis=None) -> number, Tensor or NotImplemented: sum, mean, max or min of every element of a
@@ -2810,7 +2813,7 @@ PyObject* module_borrowed_reduce(PyObject* /*self*/, PyObject* args)
             const T* const data {static_cast<const T*>(x.data)};
             if (name == "sum" || name == "mean") {
                 const T total {numerical::detail::parallel_pairwise_sum(data, count) + T {}}; // from +0, as NumPy's
-                return from_scalar<T>(name == "mean" ? numerical::detail::divided_by_count(total, count) : total);
+                return rank0<T>(name == "mean" ? numerical::detail::divided_by_count(total, count) : total);
             }
             if constexpr (numerical::detail::split_complex<T>) {
                 return Py_NewRef(Py_NotImplemented);
@@ -2819,10 +2822,10 @@ PyObject* module_borrowed_reduce(PyObject* /*self*/, PyObject* args)
                 return Py_NewRef(Py_NotImplemented);
             }
             else if (name == "max") {
-                return from_scalar<T>(numerical::detail::extreme(data, count, 1, std::greater<T> {}));
+                return rank0<T>(numerical::detail::extreme(data, count, 1, std::greater<T> {}));
             }
             else {
-                return from_scalar<T>(numerical::detail::extreme(data, count, 1, std::less<T> {}));
+                return rank0<T>(numerical::detail::extreme(data, count, 1, std::less<T> {}));
             }
         };
         switch (x.dtype) {

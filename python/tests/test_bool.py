@@ -227,14 +227,14 @@ class Reductions(unittest.TestCase):
                 with self.subTest(name=name, shape=shape, axis=axis, keepdims=keepdims, dtype=str(source.dtype)):
                     got = getattr(numerical, name)(operand, axis=axis, keepdims=keepdims)
                     every = axis is None or (isinstance(axis, tuple) and len(axis) == len(shape))
-                    if every and not keepdims:  # a number, as sum's; along some axes a Tensor, of rank 0 at least
-                        self.assertIs(got, bool(expected))
+                    if every and not keepdims:  # a rank-0 Tensor, as sum's (the array API's; NumPy's a scalar)
+                        self.assertEqual((got.dtype, got.shape, bool(got)), ("bool", (), bool(expected)))
                     else:
                         self.assertEqual(got.dtype, "bool")
                         self.assertEqual(got.shape, np.shape(expected))
                         self.assertTrue(np.array_equal(np.asarray(got), expected))
         mask = numerical.asarray([[True, False]], "bool")
-        self.assertIs(mask.any(), True)
+        self.assertIs(bool(mask.any()), True)
         self.assertEqual(mask.all(axis=0).tolist(), [True, False])
         empty = numerical.zeros((2, 0), "bool")
         for name, axis in itertools.product(("max", "min"), (None, 1)):
@@ -253,9 +253,9 @@ class Reductions(unittest.TestCase):
                 if axis in (0, 1):  # along one of the two axes; every axis gives a number
                     self.assertTrue(np.array_equal(np.asarray(got), expected))
                     self.assertEqual(got.dtype, kind)
-                else:
+                else:  # every axis: a rank-0 Tensor of that dtype
                     self.assertEqual(got, expected)
-                    self.assertIsInstance(got, {"bool": bool, "int64": int, "float64": float}[kind])
+                    self.assertEqual((got.dtype, got.shape), (kind, ()))
 
 
 @unittest.skipIf(np is None, "NumPy not installed")
@@ -352,7 +352,7 @@ class Conversions(unittest.TestCase):
     def test_a_mask_is_indexed_reshaped_and_transposed_as_any_tensor(self):
         x = np.array([[[True, False], [False, False]], [[True, True], [False, True]]])
         mask = numerical.asarray(x, "bool")
-        self.assertIs(mask[1, 0, 1], True)
+        self.assertEqual((mask[1, 0, 1].shape, mask[1, 0, 1].item()), ((), True))  # an index into every axis: rank 0
         self.assertEqual(mask[:, 1].tolist(), x[:, 1].tolist())
         self.assertEqual(mask[..., None].shape, (2, 2, 2, 1))
         self.assertEqual(mask.reshape(4, 2).tolist(), x.reshape(4, 2).tolist())

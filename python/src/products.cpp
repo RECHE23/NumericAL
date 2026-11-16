@@ -130,9 +130,6 @@ PyObject* tensor_matmul(PyObject* self, PyObject* other)
                                    result.emplace(numerical::detail::einsum_impl<element_of_t<tensor_type>>(spec, operands));
                                }, *a);
                 }
-                if (ranks[0] == 1 && ranks[1] == 1) { // two vectors give a number, as NumPy's
-                    return visit_arithmetic([](const auto& t) { return from_scalar(t.data()[0]); }, *result);
-                }
                 return wrap(std::move(*result));
             }
             catch (...) {

@@ -60,7 +60,7 @@ class Stacks(unittest.TestCase):
                                                 ("values", lambda m: numerical.svd(m, compute_uv=False), a)):
                     with self.subTest(name):
                         self.same(function(operand), per_matrix(function, operand))
-                self.assertEqual(numerical.matrix_rank(a), per_matrix(numerical.matrix_rank, a).tolist())
+                self.assertEqual(numerical.matrix_rank(a).tolist(), per_matrix(numerical.matrix_rank, a).tolist())
 
     def test_the_answers_match_numpys(self):
         a = self.general((4, 3, 5, 5))

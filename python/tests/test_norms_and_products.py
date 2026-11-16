@@ -25,7 +25,7 @@ class NormsAndProducts(unittest.TestCase):
             for order, expected in ((-1, math.inf), (-2.5, math.inf), (0, 0.0), (1, 0.0), (2, 0.0)):
                 with self.subTest(shape=shape, order=order):
                     got = numerical.vector_norm(empty, ord=order, axis=axis)
-                    values = got.tolist() if isinstance(got, numerical.Tensor) else [got]
+                    values = got.tolist() if got.shape else [got.item()]
                     flat = values if not values or not isinstance(values[0], list) else [v for row in values for v in row]
                     self.assertTrue(all(v == expected for v in flat))
 
@@ -56,7 +56,7 @@ class NormsAndProducts(unittest.TestCase):
             self.close(numerical.matrix_norm(self.stack, ord=order), np.linalg.matrix_norm(self.stack, ord=order))
         self.close(numerical.matrix_norm(self.stack, ord=2, keepdims=True),
                    np.linalg.matrix_norm(self.stack, ord=2, keepdims=True))
-        self.assertIsInstance(numerical.norm(self.a), float)
+        self.assertEqual((numerical.norm(self.a).dtype, numerical.norm(self.a).shape), ("float64", ()))
         with self.assertRaises(ValueError):
             numerical.vector_norm(self.a, ord="fro")
         with self.assertRaises(ValueError):
@@ -95,7 +95,8 @@ class NormsAndProducts(unittest.TestCase):
             as_tensor = numerical.asarray(values)
             self.assertEqual(numerical.norm(values), numerical.norm(as_tensor))
             self.assertEqual(numerical.vector_norm(values), numerical.vector_norm(as_tensor))
-            self.assertIsInstance(numerical.norm(values), float)
+            self.assertEqual(numerical.norm(values).shape, ())  # a rank-0 Tensor of the real dtype
+            self.assertEqual(numerical.norm(values).dtype, "float32" if dtype in (np.float32, np.complex64) else "float64")
         self.assertEqual(numerical.norm(self.a[:, ::2]), numerical.norm(numerical.asarray(np.ascontiguousarray(self.a[:, ::2]))))
         self.assertEqual(numerical.norm([[3.0, 4.0]]), 5.0)
         self.assertAlmostEqual(numerical.norm(np.array([1e300, 1e300])) / 1e300, math.sqrt(2), places=14)

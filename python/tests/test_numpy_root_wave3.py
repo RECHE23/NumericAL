@@ -122,6 +122,8 @@ class AgainstNumPy(unittest.TestCase):
                 self.assertSame(lambda g=g: g, lambda w=w: w, label)
             return
         if not isinstance(want, (np.ndarray, np.generic)):
+            if isinstance(got, numerical.Tensor) and not got.shape:  # NumPy's Python number: a rank-0 Tensor here
+                got = got.item()
             self.assertEqual((type(got), got), (type(want), want), label)
             return
         want = np.asarray(want)

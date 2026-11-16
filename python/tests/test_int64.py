@@ -122,7 +122,7 @@ class Int64(unittest.TestCase):
     def test_extremes(self):
         t = numerical.asarray([[1, BIG], [3, -4]], dtype="int64")
         self.assertEqual((numerical.max(t), numerical.min(t)), (BIG, -4))
-        self.assertIs(type(numerical.max(t)), int)
+        self.assertEqual((numerical.max(t).dtype, numerical.max(t).shape), ("int64", ()))
         self.assertEqual(numerical.max(t, axis=1).tolist(), [BIG, 3])
         self.assertEqual(numerical.min(t, axis=0).tolist(), [1, -4])
 
@@ -181,7 +181,7 @@ class Int64(unittest.TestCase):
         top = 2**63 - 1
         t = numerical.asarray([[top, 1, 2], [3, -4, 5]], dtype="int64")
         self.assertEqual(numerical.sum(t), top + 1 + 2 + 3 - 4 + 5 - 2**64)  # wrapped
-        self.assertIs(type(numerical.sum(t)), int)
+        self.assertEqual((numerical.sum(t).dtype, numerical.sum(t).shape), ("int64", ()))
         self.assertEqual(numerical.sum(t, axis=0).tolist(), [top + 3 - 2**64, -3, 7])
         self.assertEqual(numerical.sum(t, axis=1, keepdims=True).shape, (2, 1))
         self.assertEqual(numerical.prod(numerical.asarray([3, -2, 5], dtype="int64")), -30)

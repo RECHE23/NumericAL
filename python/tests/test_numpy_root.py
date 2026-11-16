@@ -153,7 +153,7 @@ class NumpyRoot(unittest.TestCase):
                 scale = np.vdot(np.abs(x), np.abs(y))
                 tolerance = 1e-5 if dtype in (np.float32, np.complex64) else 1e-13
                 self.assertLess(abs(complex(got) - complex(want)), tolerance * float(scale), (count, dtype))
-                self.assertIsInstance(got, complex if np.iscomplexobj(x) else float)
+                self.assertEqual((got.dtype, got.shape), (np.dtype(dtype).name, ()))
         m = self.rng.standard_normal((3, 4)) + 1j * self.rng.standard_normal((3, 4))
         view = numerical.asarray(m).T
         self.assertAlmostEqual(complex(numerical.vdot(view, view)), complex(np.vdot(m.T, m.T)), places=12)
@@ -172,7 +172,7 @@ class NumpyRoot(unittest.TestCase):
                                   np.std(x, axis=axis, ddof=ddof, keepdims=keepdims), rtol=1e-13)
         z = x + 1j * self.rng.standard_normal((4, 6))
         self.same(numerical.var(z, axis=0), np.var(z, axis=0), rtol=1e-13)
-        self.assertEqual(numerical.var(z).__class__, float)
+        self.assertEqual((numerical.var(z).dtype, numerical.var(z).shape), ("float64", ()))
         self.same(numerical.var(x, dtype="float32"), np.var(x.astype(np.float32)), rtol=1e-6)
         self.same(numerical.var(np.array([True, False, True])), np.var(np.array([True, False, True])), rtol=1e-15)
         t = numerical.asarray(x)
