@@ -20,7 +20,7 @@ numerical.Tensor([0.09090909090909091, 0.6363636363636364], dtype=float64)
 numerical.Tensor([2.38196601125, 4.61803398875], dtype=float64)
 >>> t = numerical.arange(6).reshape(2, 3)
 >>> t.sum(axis=0)
-numerical.Tensor([3.0, 5.0, 7.0], dtype=float64)
+numerical.Tensor([3, 5, 7], dtype=int64)
 >>> numerical.fft.rfft([1.0, 2.0, 3.0, 4.0])
 numerical.Tensor([(10+0j), (-2+2j), (-2+0j)], dtype=complex128)
 ```

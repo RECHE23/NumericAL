@@ -61,8 +61,8 @@ class ScipyCompat(unittest.TestCase):
         b = np.random.default_rng(4).standard_normal(6)
         x, residue, rank, s = numerical.lstsq(a, b, cond=1e-12)
         expected = sl.lstsq(a, b, cond=1e-12)
-        self.assertIsInstance(residue, float)
-        self.assertAlmostEqual(residue, float(expected[1]), places=12)
+        self.assertEqual((residue.dtype, residue.shape), ("float64", ()))  # SciPy's number, a rank-0 Tensor here
+        self.assertAlmostEqual(float(residue), float(expected[1]), places=12)
         self.assertEqual(numerical.lstsq(a, b)[1].shape, (1,))  # NumPy's way: a (1,) array
         self.assertEqual(numerical.lstsq(a, np.ones((6, 2)), cond=1e-12)[1].shape, (2,))
         del x, rank, s

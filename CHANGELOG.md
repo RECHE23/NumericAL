@@ -10,6 +10,9 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Breaking
 
+- **`arange` and `full` of integers are int64**, as NumPy's: `arange(5)`, `arange(1, 7, 2)` (every bound and the step
+  an integer) and `full(shape, 7)`, where they were float64; a float among them, or `dtype=`, as before. `arange`'s
+  int64 values are exact past 2⁵³, filled as NumPy's (`first + i (second − first)`).
 - **A number is a rank-0 Tensor**: a full reduction (`sum`, `mean`, `max`, `any`, `count_nonzero`, the norms,
   `det`, `trace`, `matrix_rank`…), a dot product of two vectors (`dot`, `vdot`, `@`) and an index into every axis
   (`t[0, 1]`) answer a Tensor of shape `()` in the computation's dtype, as the array API's arrays, where they answered

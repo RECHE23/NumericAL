@@ -69,7 +69,7 @@ class TensorBasics(unittest.TestCase):
                          "numerical.Tensor([[1.0, 2.0],\n                  [3.0, 4.0]], dtype=float64)")
         self.assertEqual(repr(numerical.asarray(1j)), "numerical.Tensor(1j, dtype=complex128)")
         # Past 1000 elements each long axis keeps three entries at each end.
-        self.assertEqual(repr(numerical.arange(1001)),
+        self.assertEqual(repr(numerical.arange(1001.0)),
                          "numerical.Tensor([0.0, 1.0, 2.0, ..., 998.0, 999.0, 1000.0], dtype=float64)")
         self.assertEqual(repr(numerical.zeros((1000, 2))).count("..."), 1)
 

@@ -70,7 +70,7 @@ broadcast raise a `ValueError` worded as NumPy's. NumPy's constructors (`zeros`,
 numerical.Tensor([[5.0, 0.0, 1.5],
                   [20.0, 0.0, 3.0]], dtype=float64)
 >>> t.max(axis=-1)
-numerical.Tensor([2.0, 5.0], dtype=float64)
+numerical.Tensor([2, 5], dtype=int64)
 >>> mask = t > 1
 >>> numerical.where(mask, t, 0.0)
 numerical.Tensor([[0.0, 0.0, 2.0],

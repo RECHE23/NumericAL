@@ -4199,8 +4199,8 @@ def reshape(a, shape, *, copy=None):
     Examples:
         >>> import numerical
         >>> numerical.reshape(numerical.arange(6), (2, 3))
-        numerical.Tensor([[0.0, 1.0, 2.0],
-                          [3.0, 4.0, 5.0]], dtype=float64)
+        numerical.Tensor([[0, 1, 2],
+                          [3, 4, 5]], dtype=int64)
         >>> numerical.reshape(numerical.arange(6), (3, -1)).shape
         (3, 2)
     """
@@ -4223,10 +4223,13 @@ Tensor.reshape = lambda self, *shape, copy=None: reshape(self, shape[0] if len(s
 
 
 def _dtype_of(dtype, value=0.0):
-    """`dtype` checked, one of float64, complex128, float32, complex64 and bool; ``None``: complex128 for a complex
-    `value`, bool for a bool one, else float64, as NumPy infers it."""
+    """`dtype` checked, one of float64, complex128, float32, complex64, bool and int64; ``None``: complex128 for a
+    complex `value`, bool for a bool one, int64 for another integer, else float64, as NumPy infers it."""
     if dtype is None:
-        return "complex128" if isinstance(value, complex) else "bool" if isinstance(value, bool) else "float64"
+        if isinstance(value, bool):
+            return "bool"
+        return "complex128" if isinstance(value, complex) else "int64" if isinstance(value, _numbers.Integral) \
+            else "float64"
     dtype = _checked_dtype(dtype)
     if dtype in ("float64", "float32") and isinstance(value, complex):
         raise TypeError(f"full: a complex value does not fit a {dtype} tensor")
@@ -4240,8 +4243,8 @@ def full(shape, fill_value, dtype=None, order="C", *, device=None, like=None):
         shape: The extents: an integer (a vector) or a sequence of non-negative integers.
         fill_value: The number every element holds, or an array-like that broadcasts to `shape` (its rows repeated, as
             ``numpy.full``'s), whose dtype the Tensor takes by default.
-        dtype: ``"float64"``, ``"complex128"``, ``"float32"``, ``"complex64"`` or ``"bool"``; by default complex128
-            for a complex value, bool for a bool one and float64 otherwise.
+        dtype: ``"float64"``, ``"complex128"``, ``"float32"``, ``"complex64"``, ``"bool"`` or ``"int64"``; by default
+            complex128 for a complex value, bool for a bool one, int64 for another integer and float64 otherwise.
         order: NumPy's; ``"C"`` or ``"F"``, both row-major here (a Tensor has one layout).
         device: The array API's; ``"cpu"`` or None.
         like: NumPy's; None.
@@ -4256,7 +4259,7 @@ def full(shape, fill_value, dtype=None, order="C", *, device=None, like=None):
     Examples:
         >>> import numerical
         >>> numerical.full((2,), 7)
-        numerical.Tensor([7.0, 7.0], dtype=float64)
+        numerical.Tensor([7, 7], dtype=int64)
         >>> numerical.full(2, 1j)
         numerical.Tensor([1j, 1j], dtype=complex128)
     """
@@ -4376,16 +4379,17 @@ def eye(N, M=None, k=0, dtype="float64", order="C", *, device=None, like=None):
     return asarray(band, name)
 
 
-def arange(start, stop=None, step=1.0, *, dtype=None, device=None):
+def arange(start, stop=None, step=1, *, dtype=None, device=None):
     """``start, start + step, …`` short of `stop`, as ``numpy.arange``.
 
     Args:
         start: The first value; with no `stop`, the stop itself, the values starting at 0 (``arange(stop)``).
         stop: The bound, not included.
         step: The spacing, finite and nonzero, negative for a descending range.
-        dtype: The values' dtype, float64 by default (where NumPy takes int64 for integer bounds, until 2026.12.0).
-            Another is filled as NumPy fills it: its first two values ``start`` and ``start + step`` in that dtype,
-            each next one ``first + i (second − first)`` computed in it.
+        dtype: The values' dtype; by default int64 where `start`, `stop` and `step` are all integers (Python's,
+            NumPy's or rank-0 int64 Tensors), float64 otherwise, as NumPy's. Another than float64 is filled as NumPy
+            fills it: its first two values ``start`` and ``start + step`` in that dtype, each next one
+            ``first + i (second − first)`` computed in it (exactly, in int64).
 
     Returns:
         Tensor: The values.
@@ -4397,17 +4401,24 @@ def arange(start, stop=None, step=1.0, *, dtype=None, device=None):
     Examples:
         >>> import numerical
         >>> numerical.arange(4)
-        numerical.Tensor([0.0, 1.0, 2.0, 3.0], dtype=float64)
+        numerical.Tensor([0, 1, 2, 3], dtype=int64)
         >>> numerical.arange(1, 2, 0.25)
         numerical.Tensor([1.0, 1.25, 1.5, 1.75], dtype=float64)
     """
     _cpu_device(device, "arange")
     if stop is None:
-        start, stop = 0.0, start
+        start, stop = 0, start
     if step == 0:  # NumPy's error, its count's division by the step
         raise _ZeroStepError("arange: a zero step")
+    start, stop, step = (v.item() if isinstance(v, Tensor) and not v.shape else v for v in (start, stop, step))
+    integral = _builtins.all(isinstance(v, _numbers.Integral) for v in (start, stop, step))
+    name = ("int64" if integral else "float64") if dtype is None else _dtype_name(dtype)
+    if integral and name == "int64":  # its count from the integers themselves, exact past 2⁵³, as NumPy's
+        count = len(range(int(start), int(stop), int(step)))
+        if count == 0:
+            return zeros((0,), "int64")
+        return asarray(start, "int64") + asarray(arange(float(count)), "int64") * asarray(step, "int64")
     values = _native(_numerical._arange, float(start), float(stop), float(step), _arange_fuses())
-    name = "float64" if dtype is None else _dtype_name(dtype)
     if name == "float64" or values.shape[0] == 0:
         return values if name == "float64" else zeros((0,), name)
     # NumPy's fill: the first two set from start and start + step, the rest first + i·(second − first) in the dtype
