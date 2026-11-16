@@ -26,6 +26,13 @@ A change that can break code is listed under **Breaking** and held for a month's
   says what each decomposition carries in its own precision (LU, Cholesky and QR in the scalar itself; the SVD in
   `double`), as does the C++ guide's new section on scalar types.
 
+### Fixed
+
+- **`svd_decomposition<long double>` past double's range** (x86-64's 80-bit `long double`): its scale was read as a
+  double, 0 or ∞ for entries past it, and the matrix went into the double computation unscaled: an answer of zeros
+  for entries near 2⁻⁸¹⁹⁰. The scale is now taken in `long double` (the factors right at any scale), and a singular value
+  the double it is held in cannot represent is refused (`argument_error`) rather than answered 0 or ∞.
+
 ## 2026.11.16 — 2026-11-15
 
 ### Added

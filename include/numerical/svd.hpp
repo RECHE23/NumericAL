@@ -11,6 +11,7 @@
 #include <array>
 #include <atomic>
 #include <bit>
+#include <cfloat>
 #include <cmath>
 #include <complex> // so std::abs resolves for a complex scalar, regardless of include order
 #include <concepts>
@@ -1553,6 +1554,33 @@ namespace numerical {
     divide_and_conquer //!< Golub–Kahan bidiagonalisation then divide and conquer, as LAPACK's `dgesdd`: the default.
   };
 
+  namespace detail {
+    //! \brief A singular value of a decomposition carried in double: \p x itself.
+    [[nodiscard]] inline double singular_value_in_double(double x) noexcept
+    {
+      return x;
+    }
+
+    /*!
+     * \brief A singular value of a long double matrix, computed in double at the matrix's scale and scaled back, as the
+     *        double its type holds. Where long double's range is wider than double's (x86-64's 80 bits), one past
+     *        double's normal numbers cannot be held, and the decomposition refuses the matrix rather than answer 0 or ∞.
+     * \throws argument_error If \p x is nonzero and outside double's normal range.
+     */
+    [[nodiscard]] inline double singular_value_in_double(long double x)
+    {
+#if LDBL_MAX_EXP > DBL_MAX_EXP
+      const double narrowed {static_cast<double>(x)};
+      if (x != 0.0L && !(std::abs(narrowed) >= std::numeric_limits<double>::min() && std::abs(narrowed) <= std::numeric_limits<double>::max())) {
+        throw argument_error("SVD: a singular value past double's range, in which the SVD of a long double matrix computes");
+      }
+      return narrowed;
+#else
+      return static_cast<double>(x);
+#endif
+    }
+  } // namespace detail
+
   /*!
    * \brief The singular value decomposition `A = U Σ Vᴴ` of an `m × n` matrix.
    * \tparam T The scalar element type (`double` or `std::complex<double>`).
@@ -1735,18 +1763,21 @@ namespace numerical {
       // 1e155 and underflow near 1e-155. The singular values are scaled back; the vectors do not change.
       // Both passes by bands of rows on the threads, bound by the memory: a band's largest magnitude, then the
       // largest of those (exact in any order), then the quotients.
-      const std::size_t   bands  {(rows + detail::svd_band - 1) / detail::svd_band};
-      std::vector<double> largest(bands, 0.0);
+      // In the scalar's carried type: a long double matrix past double's range scaled into it, where its largest
+      // magnitude read as a double was 0 or infinite (and the scale 1).
+      using carried = detail::carried_t<T>;
+      const std::size_t    bands                  {(rows + detail::svd_band - 1) / detail::svd_band};
+      std::vector<carried> largest(bands, carried {0});
       detail::parallel_for(bands, detail::memory_element_weight * detail::svd_band * cols, [source, rows, cols, &largest](std::size_t band) {
-                             double most {0.0};
+                             carried most {0};
                              for (std::size_t e {band * detail::svd_band * cols}; e < std::min(rows, (band + 1) * detail::svd_band) * cols; ++e) {
-                               most = std::max(most, static_cast<double>(std::abs(source[e])));
+                               most = std::max(most, static_cast<carried>(std::abs(source[e])));
                              }
                              largest[band] = most;
                            });
       // the largest over no band (no row) is 0, as over zeros
-      double scale              {std::accumulate(largest.begin(), largest.end(), 0.0, [](double x, double y) { return std::max(x, y); })};
-      scale = detail::power_of_two_scale(scale);
+      const carried     most    {std::accumulate(largest.begin(), largest.end(), carried {0}, [](carried x, carried y) { return std::max(x, y); })};
+      const carried     scale   {most == carried {0} ? carried {1} : std::ldexp(carried {1}, std::ilogb(most))};
       T* const          into    {entries.data()};
       const T           divisor {detail::from_carried<T>(scale)};
       detail::parallel_for(bands, detail::memory_element_weight * detail::svd_band * cols, [source, into, rows, cols, divisor](std::size_t band) {
@@ -1802,7 +1833,7 @@ namespace numerical {
         detail::transpose_into(vt.data(), cols, cols, right.data());
         vt = buffer<T> {};
         for (double& value : d) {
-          value *= scale;
+          value = detail::singular_value_in_double(static_cast<carried>(value) * scale);
         }
         singular_values_ = vector<double> {std::move(d)};
         u_               = direct ? matrix<T> {cols, cols, std::move(left)} : applied_left_vectors(left, blocks, phases, rows, cols, width);
@@ -1849,7 +1880,7 @@ namespace numerical {
           }
         }
         const std::size_t j {order[d]};
-        values[d] = norms[j] * scale;
+        values[d] = detail::singular_value_in_double(static_cast<carried>(norms[j]) * scale);
         for (std::size_t i {0}; i < cols; ++i) {
           sorted_right[(i * cols) + d] = right[(i * cols) + j];
         }
