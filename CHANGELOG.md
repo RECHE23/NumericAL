@@ -38,6 +38,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   before its result, so `fft(x, n=2**63 - 1)` filled 2.5 GB before failing (now refused in 0.1 s, a `ValueError` as
   NumPy's). `diff` and `polyder` stop once nothing is left (`diff(x, 10**6)` took 1.5 s, NumPy's 0.3 s).
 
+- **`asarray(x, "int64")` of an int below −2⁶³** in a nested list raises `OverflowError`, as NumPy's and as an int from
+  2⁶³ did, where −2⁶³ − 1 was read through float64, rounded to −2⁶³ and kept.
+
 - **`diff` of bools** is NumPy's `not_equal` of neighbours, where it raised (a bool Tensor has no subtraction); a list of
   bools stays bool, as NumPy reads it.
 
@@ -71,6 +74,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   (`less(k, t)` is `t > k`).
 
 ### Changed
+
+- **A nested list of ints read as int64** (`asarray(x, "int64")`, and every function's integer arguments read so:
+  `repeat`'s counts, `partition`'s positions, `take`'s indices…) is walked natively, each int exact, where Python
+  listed them first: 10 000 ints 10.9 → 0.16 ms (NumPy's `asarray` 0.33 ms), `repeat` of 10 000 counts 22.7 → 1.9 ms
+  (x86-64). A list holding anything else takes the Python reading as before. With 2026.12.0's
+  int64 for Python's ints by default, every list of ints will take this walk.
 
 - **`expm1` and `tanh` built by GCC 13** (Ubuntu 24.04's, an install from the sources there): a clamp GCC 13 made a
   branch left their loops scalar, 6.1 and 2.8 times the time of GCC 14's or Clang's (x86-64, 10⁶ doubles: 20.3 and

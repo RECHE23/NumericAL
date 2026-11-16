@@ -407,6 +407,9 @@ def _index_array(index):
             raise IndexError(f"arrays used as indices must be of integer (or boolean) type, not {index.dtype}")
         return "mask", index
     if isinstance(index, (list, tuple)):
+        fast = _asarray_nested(index, "int64")  # ints alone, natively; bools and anything else read below
+        if fast is not None:
+            return "ints", reshape(fast, (-1,)), fast.shape
         try:
             values, shape = _nested(index)
         except (TypeError, ValueError) as failure:
@@ -3475,6 +3478,9 @@ def asarray(obj, dtype=None, *, device=None, copy=None):
     if isinstance(obj, (list, tuple)) or (type(obj) not in _NATIVE_NUMBERS and isinstance(obj, _numbers.Number)
                                           and not hasattr(obj, "__array_interface__")):
         values, shape = _nested(obj)
+        if dtype == "int64" and _builtins.any(isinstance(value, _numbers.Integral) and not -2**63 <= value < 2**63
+                                              for value in values):  # read as float64, -2**63 - 1 would round in
+            raise OverflowError("a value outside int64's range converted to it")
         obj = _NestedBuffer(values, shape)
     elif not (isinstance(obj, Tensor) or type(obj) in _NATIVE_NUMBERS or hasattr(obj, "__array_struct__")
               or hasattr(obj, "__array_interface__")):  # a NumPy array's struct a capsule, its interface a dict built anew
@@ -6931,6 +6937,10 @@ def _counts(values, name):
             raise TypeError(f"{name}: Cannot cast array data from dtype('{values.dtype}') to dtype('int64') according "
                             "to the rule 'safe'")
         return [int(v) for v in values.ravel().tolist()]
+    if isinstance(values, (list, tuple)):  # ints alone read natively, anything else checked below
+        fast = _asarray_nested(values, "int64")
+        if fast is not None:
+            return reshape(fast, (-1,)).tolist()
     flat, _ = _nested(values)
     if not _builtins.all(isinstance(v, _numbers.Integral) for v in flat):
         raise TypeError(f"{name}: Cannot cast array data from dtype('float64') to dtype('int64') according to the "
@@ -6949,6 +6959,10 @@ def _index_tensor(values, name):
     if type(values).__name__ == "ndarray" and values.dtype.kind not in "iub":
         raise TypeError(f"{name}: Cannot cast array data from dtype('{values.dtype}') to dtype('int64') according "
                         "to the rule 'safe'")
+    if isinstance(values, (list, tuple)):  # ints alone read natively, anything else checked below
+        fast = _asarray_nested(values, "int64")
+        if fast is not None:
+            return fast
     if type(values).__name__ != "ndarray":
         flat, shape = _nested(values)
         if not _builtins.all(isinstance(v, _numbers.Integral) for v in flat):

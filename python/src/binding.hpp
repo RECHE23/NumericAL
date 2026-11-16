@@ -4032,9 +4032,41 @@ inline bool nested_values(PyObject*                          obj,
     return true;
 }
 
+// The ints of `obj`, at `depth` of `shape`, appended to `values` in C order, each exactly; false at the first leaf that
+// is not an int, is a bool (an index's mask, read by the Python reading) or is past int64, with no error set: the
+// Python reading then reads it.
+inline bool nested_ints(PyObject*                        obj,
+                        const std::vector<std::size_t>&  shape,
+                        std::size_t                      depth,
+                        numerical::buffer<std::int64_t>& values)
+{
+    if (depth < shape.size()) {
+        if ((PyList_Check(obj) == 0 && PyTuple_Check(obj) == 0) || static_cast<std::size_t>(sequence_length(obj)) != shape[depth]) {
+            return false;
+        }
+        for (std::size_t i {0}; i < shape[depth]; ++i) {
+            if (!nested_ints(sequence_item(obj, static_cast<Py_ssize_t>(i)), shape, depth + 1, values)) {
+                return false;
+            }
+        }
+        return true;
+    }
+    if (PyLong_Check(obj) == 0 || PyBool_Check(obj) != 0) {
+        return false;
+    }
+    int             overflow {0};
+    const long long value {PyLong_AsLongLongAndOverflow(obj, &overflow)};
+    if (overflow != 0 || PyErr_Occurred() != nullptr) {
+        PyErr_Clear();
+        return false;
+    }
+    values.push_back(value);
+    return true;
+}
+
 // _asarray_nested(obj, dtype=None): a nested list or tuple of floats, ints, bools and complex numbers as a Tensor, read
-// in one walk (float64, complex128 where one is complex, bool where all are, as NumPy's); None
-// for anything that reading treats otherwise, which then reads it (and raises its errors).
+// in one walk (float64, complex128 where one is complex, bool where all are, as NumPy's; int64 where asked, of ints
+// alone, no bool, each exact); None for anything that reading treats otherwise, which then reads it (and raises its errors).
 inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObject* kwds)
 {
     static const char* keywords[] = {"obj", "dtype", nullptr};
@@ -4051,7 +4083,7 @@ inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObj
             return nullptr;
         }
     }
-    if ((PyList_Check(obj) == 0 && PyTuple_Check(obj) == 0) || wanted == int_index) { // int64: the Python reading, exact
+    if (PyList_Check(obj) == 0 && PyTuple_Check(obj) == 0) {
         Py_RETURN_NONE;
     }
     try {
@@ -4063,6 +4095,14 @@ inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObj
         std::size_t              total {0};
         if (!element_count(shape, total)) {
             Py_RETURN_NONE;
+        }
+        if (wanted == int_index) { // int64: ints read exactly here, anything else by the Python reading
+            numerical::buffer<std::int64_t> ints;
+            ints.reserve(total);
+            if (!nested_ints(obj, shape, 0, ints)) {
+                Py_RETURN_NONE;
+            }
+            return wrap(any_tensor {int_tensor {std::move(shape), std::move(ints)}});
         }
         std::vector<std::complex<double>> values;
         values.reserve(total);

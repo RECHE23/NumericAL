@@ -29,6 +29,22 @@ class Int64(unittest.TestCase):
         with self.assertRaises(OverflowError):
             numerical.asarray(2**63, dtype="int64")
 
+    def test_nested_lists_read_natively_as_the_python_reading_reads_them(self):
+        # the native walk takes ints alone, each exact; any other leaf, or a ragged list, falls to the Python reading,
+        # whose answers these are
+        cases = [([], (0,), []), ([[]], (1, 0), [[]]), ([True, False, 2], (3,), [1, 0, 2]),
+                 ([[2**63 - 1], [-2**63]], (2, 1), [[2**63 - 1], [-2**63]]), ((1, (2, 3))[1:], (1, 2), [[2, 3]]),
+                 ([1.5, 2], (2,), [1, 2]), ([1, 2.0], (2,), [1, 2])]
+        for source, shape, values in cases:
+            with self.subTest(source=source):
+                t = numerical.asarray(source, dtype="int64")
+                self.assertEqual((t.shape, t.dtype, t.tolist()), (shape, "int64", values))
+        for source, error in (([2**63], OverflowError), ([-2**63 - 1], OverflowError), ([None], TypeError),
+                              ([[1, 2], [3]], ValueError), ([10**30, 1], OverflowError)):
+            with self.subTest(source=source), self.assertRaises(error):
+                numerical.asarray(source, dtype="int64")
+        self.assertEqual(numerical.asarray(list(range(-5000, 5000)), dtype="int64").tolist(), list(range(-5000, 5000)))
+
     def test_conversions(self):
         self.assertEqual(numerical.asarray([1.9, -1.9, 0.5], dtype="int64").tolist(), [1, -1, 0])  # toward zero
         self.assertEqual(numerical.asarray(2.7, dtype="int64").tolist(), 2)
