@@ -4153,13 +4153,17 @@ inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObj
         if (!element_count(shape, total)) {
             Py_RETURN_NONE;
         }
-        if (wanted == int_index) { // int64: ints read exactly here, anything else by the Python reading
+        // int64, asked or by default (Python's ints, a list of them not empty): ints alone read exactly here; asked, any
+        // other leaf to the Python reading, by default to the walk below (floats, complex numbers, bools)
+        if (wanted == int_index || (!wanted && total > 0)) {
             numerical::buffer<std::int64_t> ints;
             ints.reserve(total);
-            if (!nested_ints(obj, shape, 0, ints)) {
+            if (nested_ints(obj, shape, 0, ints)) {
+                return wrap(any_tensor {int_tensor {std::move(shape), std::move(ints)}});
+            }
+            if (wanted) {
                 Py_RETURN_NONE;
             }
-            return wrap(any_tensor {int_tensor {std::move(shape), std::move(ints)}});
         }
         std::vector<std::complex<double>> values;
         values.reserve(total);
@@ -4169,8 +4173,8 @@ inline PyObject* module_asarray_nested(PyObject* /*self*/, PyObject* args, PyObj
         if (!nested_values(obj, shape, 0, values, complex_in, all_bool, all_integral)) {
             Py_RETURN_NONE;
         }
-        // Bools alone, at least one, are a bool array, as NumPy's; an empty list float64. Ints (bools among them, not
-        // bools alone) are int64, read exactly by the Python reading.
+        // Bools alone, at least one, are a bool array, as NumPy's; an empty list float64. Ints with bools among them,
+        // or one past int64, are the Python reading's (int64 exactly, or its OverflowError).
         const bool bools {all_bool && !values.empty()};
         if (!wanted && all_integral && !bools && !values.empty()) {
             Py_RETURN_NONE;

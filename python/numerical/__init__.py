@@ -4460,7 +4460,10 @@ def arange(start, stop=None, step=1, *, dtype=None, device=None):
     integral = _builtins.all(isinstance(v, _numbers.Integral) for v in (start, stop, step))
     name = ("int64" if integral else "float64") if dtype is None else _dtype_name(dtype)
     if integral and name == "int64":  # its count from the integers themselves, exact past 2⁵³, as NumPy's
-        count = len(range(int(start), int(stop), int(step)))
+        try:
+            count = len(range(int(start), int(stop), int(step)))
+        except OverflowError:  # a count past ssize_t: NumPy's refusal
+            raise ValueError("Maximum allowed size exceeded") from None
         if count == 0:
             return zeros((0,), "int64")
         return asarray(start, "int64") + asarray(arange(float(count)), "int64") * asarray(step, "int64")
