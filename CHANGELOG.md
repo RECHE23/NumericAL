@@ -28,6 +28,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **`tanhm` far from normality**: the quotient of exponentials `coshm(A)⁻¹ sinhm(A)` (SciPy's) loses as their
+  conditioning grows (`V D V⁻¹`, `V` unit triangular with entries to ±7, `D` in [−30, 30]: relative errors of 5 and
+  past, 150 at 60; a random matrix of norm 8: 5·10⁻⁹). A finite non-Hermitian matrix past `‖A‖₁ = 1` now takes `funm` of
+  tanh, the Schur–Parlett algorithm: 10⁻¹¹ there and below 10⁻¹⁴ with eigenvalues within 10⁻³ of tanh's poles `iπ(k +
+  ½)`, against a 60-digit reference; below norm 1 the quotient stays, the more exact. `fuzz/matfuncs.py` draws such
+  matrices and judges the answers near the poles, not only their finiteness.
+
 - **`svd_decomposition<long double>` past double's range** (x86-64's 80-bit `long double`): its scale was read as a
   double, 0 or ∞ for entries past it, and the matrix went into the double computation unscaled: an answer of zeros
   for entries near 2⁻⁸¹⁹⁰. The scale is now taken in `long double` (the factors right at any scale), and a singular value

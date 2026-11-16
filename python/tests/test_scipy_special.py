@@ -208,6 +208,34 @@ class MatrixFunctions(unittest.TestCase):
         truth = (q * np.tanh(values)) @ q.T
         self.assertLess(np.linalg.norm(np.asarray(numerical.tanhm(nearly)) - truth) / np.linalg.norm(truth), 1e-13)
 
+    def test_tanhm_far_from_normality_and_near_its_poles(self):
+        # A = V D V⁻¹, V unit upper triangular with integer entries (its inverse exact): tanh(A) = V tanh(D) V⁻¹. The
+        # quotient of exponentials (SciPy's) lost all from D in [−30, 30]; the Schur–Parlett algorithm holds
+        rng = np.random.default_rng(20261115)
+        n = 6
+        for scale, dtype in ((30.0, np.float64), (60.0, np.float64), (8.0, np.complex128), (30.0, np.float32)):
+            v = np.eye(n) + np.triu(rng.integers(-7, 8, (n, n)), 1)
+            inverse = np.round(np.linalg.inv(v))
+            d = rng.uniform(-scale, scale, n)
+            if dtype is np.complex128:
+                d = d + 1j * rng.uniform(-scale, scale, n)
+            a = ((v * d) @ inverse).astype(dtype)
+            truth = (v * np.tanh(d)) @ inverse
+            got = numerical.tanhm(a)
+            self.assertEqual(got.dtype, np.dtype(dtype).name)
+            error = np.linalg.norm(np.asarray(got) - truth) / np.linalg.norm(truth)
+            self.assertLess(error, 1e-4 if dtype is np.float32 else 1e-10, (scale, dtype))
+        # eigenvalues within 10⁻³ of the poles iπ(k + ½), where tanh is of size 10³ and its slope 10⁶
+        for k in (-2, 0, 1):
+            v = np.eye(n) + np.triu(rng.integers(-2, 3, (n, n)), 1)
+            inverse = np.round(np.linalg.inv(v))
+            d = 1j * np.pi * (rng.integers(-2, 3, n) + 0.5) + rng.uniform(-1e-3, 1e-3, n)
+            d[0] = 1j * np.pi * (k + 0.5) + 1e-3
+            a = (v * d) @ inverse
+            truth = (v * np.tanh(d)) @ inverse
+            error = np.linalg.norm(np.asarray(numerical.tanhm(a)) - truth) / np.linalg.norm(truth)
+            self.assertLess(error, 1e-10, k)
+
     def test_sinhm_and_tanhm_of_a_small_norm_by_the_series(self):
         # (e^A − e^{−A})/2 cancels: norm 10⁻⁹ lost 8 digits (SciPy's too); the series does not
         g = np.random.default_rng(2).standard_normal((6, 6))

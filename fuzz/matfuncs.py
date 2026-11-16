@@ -45,7 +45,7 @@ def reference(name, a):
 def draw(rng):
     """A family and a matrix of it: (label, matrix, the functions that take it)."""
     n = int(rng.integers(2, 7))
-    kind = int(rng.integers(6))
+    kind = int(rng.integers(7))
     upper = np.triu(rng.standard_normal((n, n)), 1)
     every = ("expm", "sinhm", "coshm", "tanhm", "funm")
     if kind == 0:  # a stiff triangle: neighbouring diagonal entries far apart (expm's exact band)
@@ -63,7 +63,11 @@ def draw(rng):
         return "positive definite", b @ b.T + n * np.eye(n), ("sqrtm", "logm") + every
     if kind == 4:  # a dense matrix of moderate norm
         return "random", rng.uniform(0.1, 8.0) * rng.standard_normal((n, n)), every
-    # a triangle with eigenvalues near tanh's poles iπ(k + ½): an answer finite or refused, never NaN silently
+    if kind == 5:  # far from normality: V D V⁻¹, V unit triangular with integer entries (the quotient's conditioning)
+        v = np.eye(n) + np.triu(rng.integers(-7, 8, (n, n)), 1)
+        diagonal = rng.uniform(-60.0, 60.0, n)
+        return "far from normal", (v * diagonal) @ np.round(np.linalg.inv(v)), every
+    # a triangle with eigenvalues near tanh's poles iπ(k + ½), where tanh grows as the reciprocal of the distance
     poles = 1j * np.pi * (rng.integers(-2, 3, n) + 0.5) + 10.0 ** rng.uniform(-6, -1) * rng.standard_normal(n)
     return "near tanh's poles", np.diag(poles) + upper, ("tanhm",)
 
@@ -89,7 +93,8 @@ def run_case(seed, index):
             exact = reference(name, a)
         except (ZeroDivisionError, ValueError):  # no reference (a pole hit): nothing to judge
             continue
-        scale = np.linalg.norm(exact)
+        with np.errstate(over="ignore"):  # an exponential past 10¹⁵⁴: its norm overflows, nothing to judge
+            scale = np.linalg.norm(exact)
         if not np.isfinite(scale) or scale == 0.0 or scale > 1e300:
             continue
         with warnings.catch_warnings(), np.errstate(all="ignore"):
@@ -104,10 +109,6 @@ def run_case(seed, index):
                 their_error = np.linalg.norm(their - exact) / scale
             except Exception:  # noqa: BLE001 (SciPy's failure leaves its error unknown: none to excuse ours)
                 their_error = 0.0
-        if label == "near tanh's poles":
-            if not np.all(np.isfinite(got)):
-                failures.append(f"{name}: not finite near a pole, where the reference is")
-            continue
         error = np.linalg.norm(got - exact) / scale if np.all(np.isfinite(got)) else np.inf
         if not np.isfinite(their_error):
             their_error = 0.0

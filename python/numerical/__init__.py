@@ -5132,14 +5132,26 @@ def tanhm(A):
     """The matrix hyperbolic tangent, ``coshm(A)⁻¹ sinhm(A)``, as ``scipy.linalg.tanhm``: the exponentials
     :func:`coshm` and :func:`sinhm` take, computed once for both. An `A` Hermitian to rounding (each entry within
     ``8 n ε max|A|`` of its conjugate transpose's) takes ``V tanh(Λ) Vᴴ`` from :func:`eigh` of its Hermitian part instead: the quotient of exponentials lost all past norm 40 or so (a positive definite matrix of norm 76,
-    relative error 3.6, SciPy's 21), where tanh of each eigenvalue is exact."""
+    relative error 3.6, SciPy's 21), where tanh of each eigenvalue is exact. Any other finite `A` past ``‖A‖₁ = 1``
+    takes :func:`funm` of tanh: the quotient's error grows as the exponentials' conditioning, far from normality (``V D
+    V⁻¹``, ``D`` in [−30, 30], V unit triangular with entries to ±7: SciPy's and the quotient's relative errors of 5
+    and over), where the Schur–Parlett algorithm holds 10⁻¹¹, eigenvalues near tanh's poles ``iπ(k + ½)`` included.
+    Below norm 1 the quotient, of a series for the sine, is the more exact."""
     A = _square("tanhm", A)
-    if A.shape[0] > 0 and A.dtype != "int64" and ishermitian(
-            A, atol=8 * A.shape[0] * _EPSILON[A.dtype] * float(max(absolute(A))), rtol=0.0):
+    if A.shape[0] == 0 or A.dtype == "int64" or not all(isfinite(A)):
+        return _tanhm_quotient(A)
+    if ishermitian(A, atol=8 * A.shape[0] * _EPSILON[A.dtype] * float(max(absolute(A))), rtol=0.0):
         # Hermitian to rounding (V Λ Vᵀ computed in floating point is so, 3.6e-15 apart): its Hermitian part, a change
         # of that size, by its eigenvalues
         w, v = eigh(0.5 * (A + conj(matrix_transpose(A))))
         return (v * tanh(w).astype(v.dtype)) @ conj(matrix_transpose(v))
+    if float(norm(A, 1)) > 1.0:
+        return funm(A, tanh, disp=False)[0]
+    return _tanhm_quotient(A)
+
+
+def _tanhm_quotient(A):
+    """``coshm(A)⁻¹ sinhm(A)`` of the exponentials of ±`A`, the sine by its series below ``‖A‖₁ = 1``."""
     ep, em = expm(A), expm(-A)
     series = _sinh_series(A if A.dtype != "int64" else asarray(A, "float64"))  # below ‖A‖₁ = 1 no cancellation
     sine = _maybe_real(A, 0.5 * (ep - em)) if series is None else series
