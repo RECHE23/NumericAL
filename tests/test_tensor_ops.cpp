@@ -2532,9 +2532,9 @@ namespace {
   }
 } // namespace
 
-// A float's atan, sinh, cosh, expm1, log1p and tanh are the double's by the tables, rounded once: within half a float's ulp
+// A float's atan, sinh, cosh, expm1, log1p, tanh, sin and cos are the double's by the tables, rounded once: within half a float's ulp
 // (and 2⁻²⁸), where glibc's float functions are within one or two, and each tensor's element the scalar's bits.
-// 3001 values: pieces of 512 and a last one shorter
+// 3011 values: pieces of 512 and a last one shorter
 TEST(float_functions_are_the_doubles_rounded_once)
 {
   namespace d = numerical::detail;
@@ -2544,10 +2544,10 @@ TEST(float_functions_are_the_doubles_rounded_once)
     x.push_back((t < 0.5F ? -1.0F : 1.0F) * std::ldexp(1.0F + t, (i % 300) - 150)); // magnitudes 2^-150 to 2^150
   }
   for (const float v : {0.0F, -0.0F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN(),
-                        -1.0F, 89.5F, -89.5F, 1e-45F}) {
+                        -1.0F, 89.5F, -89.5F, 1e-45F, 252.898208F, 0x1p20F, -0x1.000002p20F}) {
     x.push_back(v);
   }
-  x.resize(3001);
+  x.resize(3011);
   EXPECT(through_doubles_holds(
            x, [](const auto& t) { return numerical::atan(t); }, [](float v) { return d::elementary_atan(v); },
            [](double v) { return d::elementary_atan(v); }, [](double v) { return std::atan(v); }));
@@ -2563,6 +2563,14 @@ TEST(float_functions_are_the_doubles_rounded_once)
   EXPECT(through_doubles_holds(
            x, [](const auto& t) { return numerical::expm1(t); }, [](float v) { return d::elementary_expm1(v); },
            [](double v) { return d::elementary_expm1(v); }, [](double v) { return std::expm1(v); }));
+  // sin and cos: reduced by π/2 to 2²⁰ (252.898… the float nearest a multiple, 161·π/2), the C library's past it
+  EXPECT(through_doubles_holds(
+           x, [](const auto& t) { return numerical::sin(t); }, [](float v) { return d::elementary_sin(v); },
+           [](double v) { return d::float_sine<false>(v); }, [](double v) { return std::sin(v); }));
+  EXPECT(through_doubles_holds(
+           x, [](const auto& t) { return numerical::cos(t); }, [](float v) { return d::elementary_cos(v); },
+           [](double v) { return d::float_sine<true>(v); }, [](double v) { return std::cos(v); }));
+  EXPECT(std::signbit(numerical::sin(tensor<float> {{1}, {-0.0F}}).data()[0]) && numerical::cos(tensor<float> {{1}, {-0.0F}}).data()[0] == 1.0F);
   std::vector<float> above(x.size());
   std::ranges::transform(x, above.begin(), [](float v) {
                            return std::isnan(v) || v > -1.0F ? v : -1.0F - v; // log1p's domain, -1 included

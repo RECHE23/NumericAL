@@ -75,6 +75,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **`sin` and `cos` of a float32 array** are the double's by a reduction by π/2 in three multiply-adds and fdlibm's
+  polynomials, in vectors, rounded once to float32 (the C library's past 2²⁰): within half an ulp and 2⁻²⁸ of the exact
+  value, the bits of the double `sin` rounded on 1.45 million values drawn to 10³⁰; 100 000 values on one thread 769 → 271 µs (x86-64, NumPy's 214). The C++ functions of a
+  `tensor<float>` likewise.
+
 - **`clip` between two numbers** (`a_min` and `a_max` both given, of `a`'s float64, float32 or int64) takes one pass,
   without a branch, where `maximum` then `minimum` took two and an array between: the same bits, a NaN kept, the
   zeros ordered as those two order them (`numerical::clip(a, low, high)` in C++). 100 000 elements on one thread, in one

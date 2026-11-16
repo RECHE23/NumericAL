@@ -39,7 +39,6 @@ namespace numerical {
   namespace detail {
 
 
-
     //! \brief The extents and strides that walk a tensor of \p shape with axis \p axis taken out: `outer`
     //!        positions before it, `inner` after it, the axis itself `extent` long at stride `inner`.
     struct axis_walk
@@ -932,6 +931,106 @@ namespace numerical {
       return complex_cos(x);
     }
 
+    //! \brief The C library's sin (\p Cosine false) or cos of \p x.
+    template <bool Cosine>
+    [[nodiscard]] double library_sine(double x)
+    {
+      if constexpr (Cosine) {
+        return std::cos(x);
+      }
+      else {
+        return std::sin(x);
+      }
+    }
+
+    //! \brief sin (\p Cosine false) or cos of a `double` that a float holds: \ref reduced_sine to \ref
+    //!        sine_reduction_bound, the C library's past it (and for an infinity or a NaN).
+    template <bool Cosine>
+    [[nodiscard]] double float_sine(double x)
+    {
+      if (std::fabs(x) <= sine_reduction_bound) {
+        return reduced_sine<Cosine>(x);
+      }
+      return library_sine<Cosine>(x);
+    }
+
+    /*!
+     * \brief sin (\p Cosine false) or cos of the \p count doubles at \p in, each a float's, into \p out, each \ref
+     *        float_sine's: \ref reduced_sine in vectors (with the FMA instructions on an x86-64 processor, \ref
+     *        run_fused), then the C library's past \ref sine_reduction_bound, behind a branch; the C library's
+     *        throughout where `exp_by_table` says no.
+     */
+    template <bool Cosine>
+    void float_sines_into(const double* in,
+                          double*       out,
+                          std::size_t   count)
+    {
+#if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
+      if (!exp_by_table()) {
+        std::transform(in, in + count, out, [](double x) { return library_sine<Cosine>(x); });
+        return;
+      }
+#endif
+      unsigned far {0};
+      run_fused([&](std::size_t) NUMERICAL_INLINE_LAMBDA {
+        for (std::size_t i {0}; i < count; ++i) {
+          out[i] = reduced_sine<Cosine>(in[i]);
+          far   |= static_cast<unsigned>(!(std::fabs(in[i]) <= sine_reduction_bound));
+        }
+      });
+      if (far != 0U) {
+        for (std::size_t i {0}; i < count; ++i) {
+          if (!(std::fabs(in[i]) <= sine_reduction_bound)) {
+            out[i] = library_sine<Cosine>(in[i]);
+          }
+        }
+      }
+    }
+
+    //! \brief `sin` of a `float`, as \ref float_sines_into gives it: \ref float_sine of the `double`, rounded once.
+    [[nodiscard]] inline float elementary_sin(float x)
+    {
+      return static_cast<float>(float_sine<false>(static_cast<double>(x)));
+    }
+
+    //! \brief `cos` of a `float`, as \ref float_sines_into gives it: \ref float_sine of the `double`, rounded once.
+    [[nodiscard]] inline float elementary_cos(float x)
+    {
+      return static_cast<float>(float_sine<true>(static_cast<double>(x)));
+    }
+
+    //! \brief `sin` of every one of the row-major scalars at \p data, of shape \p shape: `std::sin` of each.
+    template <typename T>
+    [[nodiscard]] tensor<T> sin_of(const T*                        data,
+                                   const std::vector<std::size_t>& shape)
+    {
+      return parallel_map(data, shape, [](const T& x) { return elementary_sin(x); });
+    }
+
+    //! \brief `sin` of every one of the row-major floats at \p data, of shape \p shape: \ref float_sines_into of them
+    //!        as doubles (\ref through_doubles).
+    [[nodiscard]] inline tensor<float> sin_of(const float*                    data,
+                                              const std::vector<std::size_t>& shape)
+    {
+      return through_doubles(data, shape, &float_sines_into<false>);
+    }
+
+    //! \brief `cos` of every one of the row-major scalars at \p data, of shape \p shape: `std::cos` of each.
+    template <typename T>
+    [[nodiscard]] tensor<T> cos_of(const T*                        data,
+                                   const std::vector<std::size_t>& shape)
+    {
+      return parallel_map(data, shape, [](const T& x) { return elementary_cos(x); });
+    }
+
+    //! \brief `cos` of every one of the row-major floats at \p data, of shape \p shape: \ref float_sines_into of them
+    //!        as doubles (\ref through_doubles).
+    [[nodiscard]] inline tensor<float> cos_of(const float*                    data,
+                                              const std::vector<std::size_t>& shape)
+    {
+      return through_doubles(data, shape, &float_sines_into<true>);
+    }
+
     //! \brief `tan` of a scalar, as `std::tan` gives it.
     template <typename T>
     [[nodiscard]] T elementary_tan(const T& x)
@@ -1647,7 +1746,6 @@ namespace numerical {
     }
   } // namespace detail
 
-
   namespace detail {
     /*!
      * \brief Whether an element-wise operation reads \p t's elements where they lie: row-major, or a view stepping
@@ -1750,7 +1848,6 @@ namespace numerical {
       return tensor<R> {shape, std::move(out)};
     }
   } // namespace detail
-
 
   /*!
    * \brief `op(a, b)` element by element, the operands broadcast against each other.
@@ -2012,18 +2109,20 @@ namespace numerical {
     return detail::log1p_of(a.data().data(), a.shape());
   }
 
-  //! \brief `sin` of every element: `std::sin` of a real one, \ref detail::complex_sin of a complex one.
+  //! \brief `sin` of every element: `std::sin` of a real one (a `float` the `double`'s, \ref detail::sin_of), \ref
+  //!        detail::complex_sin of a complex one.
   template <typename T>
   [[nodiscard]] tensor<T> sin(const tensor<T>& a)
   {
-    return detail::parallel_map(a, [](const T& x) { return detail::elementary_sin(x); });
+    return detail::sin_of(a.data().data(), a.shape());
   }
 
-  //! \brief `cos` of every element: `std::cos` of a real one, \ref detail::complex_cos of a complex one.
+  //! \brief `cos` of every element: `std::cos` of a real one (a `float` the `double`'s, \ref detail::cos_of), \ref
+  //!        detail::complex_cos of a complex one.
   template <typename T>
   [[nodiscard]] tensor<T> cos(const tensor<T>& a)
   {
-    return detail::parallel_map(a, [](const T& x) { return detail::elementary_cos(x); });
+    return detail::cos_of(a.data().data(), a.shape());
   }
 
   //! \brief `tan` of every element: `std::tan` of a real one, \ref detail::complex_tan of a complex one.

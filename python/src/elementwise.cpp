@@ -2380,10 +2380,10 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
                     result.emplace(d::parallel_map(data, x.shape, [](const T& v) { return d::root(v); }));
                 }
                 else if (name == "sin") {
-                    result.emplace(d::parallel_map(data, x.shape, [](const T& v) { return d::elementary_sin(v); }));
+                    result.emplace(d::sin_of(data, x.shape));
                 }
                 else if (name == "cos") {
-                    result.emplace(d::parallel_map(data, x.shape, [](const T& v) { return d::elementary_cos(v); }));
+                    result.emplace(d::cos_of(data, x.shape));
                 }
                 else if (name == "tan") {
                     result.emplace(d::parallel_map(data, x.shape, [](const T& v) { return d::elementary_tan(v); }));

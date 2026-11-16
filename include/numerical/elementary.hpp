@@ -503,6 +503,42 @@ namespace numerical::detail {
     0x1.921fb54442d18p-1, 0x1.1a62633145c07p-55,
   };
 
+  //! \brief π/2 in three parts: its double, then the double of the rest, then the double of what is left (their sum
+  //!        within 6·10⁻⁵⁰ of π/2).
+  inline constexpr std::array<double, 3> half_pi_parts {0x1.921fb54442d18p+0, 0x1.1a62633145c07p-54, -0x1.f1976b7ed8fbcp-110};
+
+  //! \brief The magnitude to which \ref reduced_sine reduces its argument: k below 2²⁰, k·π/2's parts exact enough.
+  inline constexpr double sine_reduction_bound {0x1p20};
+
+  /*!
+   * \brief sin(\p x), or cos(\p x) where \p Cosine, for |x| ≤ \ref sine_reduction_bound (another x gives a value of no
+   *        use): k the integer nearest x·2/π, by the sum with 1.5·2⁵² whose low bits are k's (its quadrant); r = x −
+   *        k·π/2 by three multiply-adds of \ref half_pi_parts, |r| ≤ π/4; sin r and cos r by fdlibm's polynomials
+   *        (within 2⁻⁵⁸ there), the quadrant's taken and signed by masks. A float's value rounded to float is within
+   *        half its ulp and 2⁻²⁸: the floats below 2²⁰ come no nearer a multiple of π/2 than 2⁻²⁷·⁸ (252.898…, near
+   *        161·π/2), where the reduction errs by some 2⁻⁸⁰. ±0 kept. Every multiply-add `std::fma`, so the bits are the
+   *        same in vectors.
+   */
+  template <bool Cosine>
+  NUMERICAL_ALWAYS_INLINE double reduced_sine(double x) noexcept
+  {
+    constexpr double shifter     {0x1.8p52};
+    const double     shifted     {std::fma(x, 0x1.45f306dc9c883p-1, shifter)}; // x·2/π rounded to an integer
+    const double     k           {shifted - shifter};
+    // the integer's low bits, k's two's complement: cos x = sin(x + π/2) is a quadrant on
+    const std::uint64_t quadrant {(std::bit_cast<std::uint64_t>(shifted) + static_cast<std::uint64_t>(Cosine)) & 3U};
+    double              r        {std::fma(-k, half_pi_parts[0], x)};
+    r = std::fma(-k, half_pi_parts[1], r);
+    r = std::fma(-k, half_pi_parts[2], r);
+    const double z      {r * r};
+    const double odd    {std::fma(z, std::fma(z, std::fma(z, std::fma(z, std::fma(z, 0x1.5d93a5acfd57cp-33, -0x1.ae5e68a2b9cebp-26), 0x1.71de357b1fe7dp-19), -0x1.a01a019c161d5p-13), 0x1.111111110f8a6p-7), -0x1.5555555555549p-3)};
+    const double even   {std::fma(z, std::fma(z, std::fma(z, std::fma(z, std::fma(z, -0x1.8fae9be8838d4p-37, 0x1.1ee9ebdb4b1c4p-29), -0x1.27e4f809c52adp-22), 0x1.a01a019cb159p-16), -0x1.6c16c16c15177p-10), 0x1.555555555554cp-5)};
+    const double sine   {blend(x == 0.0, x, std::fma(r * z, odd, r))}; // ±0 itself: −0 times π/2's negative part is +0
+    const double cosine {std::fma(z * z, even, std::fma(-0.5, z, 1.0))};
+    const double value  {blend((quadrant & 1U) != 0U, cosine, sine)};
+    return blend((quadrant & 2U) != 0U, -value, value);
+  }
+
   /*!
    * \brief atan(\p x): y = |x|, or 1/|x| past 1 (its rounding error carried), c = k/64 the nearest point of
    *        \ref atan_table, t = (y − c)/(1 + y c) as a pair, |t| ≤ 2^−7, atan(t) − t by its Taylor series to t^11;
