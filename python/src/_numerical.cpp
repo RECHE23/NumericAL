@@ -144,6 +144,8 @@ SCIFORGE_MODULE(_numerical, "numerical.error", m)
     m.raw("_negate", module_negate, METH_VARARGS, "_negate(a) -> Tensor\nElement-wise negation.");
     m.raw("_extreme_pair", module_extreme_pair, METH_VARARGS,
           "_extreme_pair(larger, a, b) -> Tensor\nnumpy.maximum (larger) or numpy.minimum of two real tensors of one dtype, broadcast.");
+    m.raw("_clip", module_clip, METH_VARARGS,
+          "_clip(a, low, high) -> Tensor\nnumpy.clip of a float64, float32 or int64 tensor between two rank-0 tensors of its dtype.");
     m.raw("_axis_op", module_axis_op, METH_VARARGS, "_axis_op(name, a, axis) -> number or Tensor\nprod, cumsum, cumprod or sort along an axis.");
     m.raw("_arg_extreme", module_arg_extreme, METH_VARARGS, "_arg_extreme(largest, a, axis) -> int or Tensor\nargmax or argmin, of every element or along an axis.");
     m.raw("_argsort", module_argsort, METH_VARARGS, "_argsort(a, axis) -> Tensor\nThe indices that sort a along an axis, stably.");

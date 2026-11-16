@@ -104,6 +104,50 @@ PyObject* module_extreme_pair(PyObject* /*self*/, PyObject* args)
     }
 }
 
+// _clip(a, low, high) -> Tensor: numerical::clip of a float64, float32 or int64 tensor between two rank-0 tensors of
+// its dtype, in one pass.
+PyObject* module_clip(PyObject* /*self*/, PyObject* args)
+{
+    PyObject* x    = nullptr;
+    PyObject* low  = nullptr;
+    PyObject* high = nullptr;
+    if (PyArg_ParseTuple(args, "OOO", &x, &low, &high) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    const any_tensor* l = a == nullptr ? nullptr : as_tensor(low);
+    const any_tensor* h = l == nullptr ? nullptr : as_tensor(high);
+    if (h == nullptr) {
+        return nullptr;
+    }
+    try {
+        std::optional<any_tensor> result;
+        {
+            const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
+            const auto                   clipped = [&]<typename T>(std::type_identity<T>) {
+                if (const auto* values {std::get_if<numerical::tensor<T>>(a)}; values != nullptr && l->index() == a->index() && h->index() == a->index()) {
+                    const auto& lower {std::get<numerical::tensor<T>>(*l)};
+                    const auto& upper {std::get<numerical::tensor<T>>(*h)};
+                    if (lower.size() == 1 && upper.size() == 1) {
+                        result.emplace(numerical::clip(*values, lower.data()[0], upper.data()[0]));
+                    }
+                }
+            };
+            clipped(std::type_identity<double> {});
+            clipped(std::type_identity<float> {});
+            clipped(std::type_identity<std::int64_t> {});
+        }
+        if (!result) {
+            PyErr_SetString(PyExc_TypeError, "_clip: a float64, float32 or int64 tensor and two numbers of its dtype");
+            return nullptr;
+        }
+        return wrap(std::move(*result));
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+}
+
 // _axis_op(name, a, axis) -> number or Tensor, as NumPy's: "prod" (axis -1: every element, a number), or along a
 // non-negative axis "prod", "cumsum", "cumprod" or "sort" (ascending, NaNs last, equal elements in their order).
 PyObject* module_axis_op(PyObject* /*self*/, PyObject* args)

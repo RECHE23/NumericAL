@@ -99,6 +99,18 @@ class WithoutNumPy(unittest.TestCase):
         with self.assertRaises(ValueError):
             numerical.clip(values, None, 3.0, max=3.0)
 
+    def test_clip_of_two_numbers_is_minimum_of_maximum_to_the_bit(self):
+        nan, inf = math.nan, math.inf
+        for dtype in ("float64", "float32"):
+            a = numerical.asarray([-3.0, -0.0, 0.0, 0.25, nan, 7.0, -inf, 1e-310], dtype)
+            for low, high in ((-1.0, 1.0), (0.0, 0.0), (-0.0, -0.0), (-0.0, 0.0), (2.0, -2.0), (nan, 1.0), (-1, 2)):
+                with self.subTest(dtype=dtype, low=low, high=high):
+                    one, two = numerical.clip(a, low, high), numerical.minimum(numerical.maximum(a, low), high)
+                    self.assertEqual((one.dtype, one.tobytes()), (two.dtype, two.tobytes()))
+        n = numerical.asarray([-9, 0, 4, 9], "int64")
+        self.assertEqual(numerical.clip(n, -2, 5).tolist(), [-2, 0, 4, 5])
+        self.assertEqual(numerical.clip(n, -2.5, 5).dtype, "float64")  # a float bound: the two passes, promoted
+
 
 @unittest.skipIf(np is None, "NumPy not installed")
 class AgainstNumPy(unittest.TestCase):

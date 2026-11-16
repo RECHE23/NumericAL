@@ -1603,6 +1603,29 @@ TEST(maximum_and_minimum_order_nans_and_zeros_as_ieee)
   EXPECT_THROWS((void)numerical::maximum(counting({2}), counting({3})), numerical::dimension_error);
 }
 
+// clip between two numbers in one pass: the bits of minimum(maximum(a, low), high), a NaN kept, the zeros ordered as
+// those two order them, a NaN bound winning; float32 and int64 alike.
+TEST(clip_is_minimum_of_maximum_in_one_pass)
+{
+  const double         nan {std::numeric_limits<double>::quiet_NaN()};
+  const tensor<double> a   {{8}, {-3.0, -0.0, 0.0, 0.25, nan, 7.0, -std::numeric_limits<double>::infinity(), 1e-310}};
+  const auto           same_bits = [](const tensor<double>& x, const tensor<double>& y) {
+                                     return std::memcmp(x.data().data(), y.data().data(), x.size() * sizeof(double)) == 0;
+                                   };
+  for (const auto& [low, high] : std::vector<std::pair<double, double>> {{-1.0, 1.0}, {0.0, 0.0}, {-0.0, -0.0}, {-0.0, 0.0}, {0.0, -0.0}, {2.0, -2.0}, {nan, 1.0}, {-1.0, nan}}) {
+    const tensor<double> lower {std::vector<std::size_t> {}, {low}};
+    const tensor<double> upper {std::vector<std::size_t> {}, {high}};
+    EXPECT(same_bits(numerical::clip(a, low, high), numerical::minimum(numerical::maximum(a, lower), upper)));
+  }
+  const tensor<float> f {{4}, {-2.0F, -0.0F, 0.5F, std::numeric_limits<float>::quiet_NaN()}};
+  const tensor<float> c {numerical::clip(f, 0.0F, 1.0F)};
+  EXPECT(c.data()[0] == 0.0F && !std::signbit(c.data()[1]) && c.data()[2] == 0.5F && std::isnan(c.data()[3]));
+  EXPECT(std::isnan(numerical::clip(f, std::numeric_limits<float>::quiet_NaN(), 1.0F).data()[0]));
+  const tensor<std::int64_t> n {{4}, {-9, 0, 4, 9}};
+  EXPECT(numerical::clip(n, std::int64_t {-2}, std::int64_t {5}).data() == (numerical::buffer<std::int64_t> {-2, 0, 4, 5}));
+  EXPECT(numerical::clip(n, std::int64_t {3}, std::int64_t {1}).data() == (numerical::buffer<std::int64_t> {1, 1, 1, 1}));
+}
+
 // einsum of one operand's diagonal: …ii->…i the diagonals, …ii->… their sums by pairwise halving, the same bits as
 // sum() of the diagonal (trace's); an empty matrix's trace 0; specs it does not take go the general way.
 TEST(einsum_takes_a_diagonal_and_its_pairwise_sum)

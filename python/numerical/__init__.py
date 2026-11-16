@@ -6203,6 +6203,10 @@ def clip(a, a_min=None, a_max=None, *, min=None, max=None):  # noqa: A002 (NumPy
             a_min = None
         if type(a_max) is int and a_max >= 2 ** 63:
             a_max = None
+    if a_min is not None and a_max is not None and a.dtype in ("float64", "float32", "int64"):
+        (low_dtype, low), (high_dtype, high) = ((t.dtype, b) for t, b in (_same_dtype(a, a_min), _same_dtype(a, a_max)))
+        if low_dtype == high_dtype == a.dtype and not low.shape and not high.shape:  # two numbers: one pass
+            return _numerical._clip(a, low, high)
     if a_min is not None:
         a = maximum(a, a_min)
     return a if a_max is None else minimum(a, a_max)

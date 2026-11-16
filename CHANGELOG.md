@@ -75,6 +75,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **`clip` between two numbers** (`a_min` and `a_max` both given, of `a`'s float64, float32 or int64) takes one pass,
+  without a branch, where `maximum` then `minimum` took two and an array between: the same bits, a NaN kept, the
+  zeros ordered as those two order them (`numerical::clip(a, low, high)` in C++). 100 000 elements on one thread, in one
+  process: float64 144 → 107 µs, float32 104 → 56, int64 134 → 76 (x86-64).
+
 - **`argmin` and `argmax` of a float64 or float32 array** (flat, or along a contiguous axis) take two passes without a
   branch, the extreme by `min`'s vectors then the first element that is it, where one pass compared each element to
   the best so far: 100 000 doubles on one thread 89 → 28 µs (x86-64, NumPy's 29 µs), float32 13 µs (NumPy's 14). The

@@ -1784,6 +1784,7 @@ PyObject* module_concatenate(PyObject* /*self*/, PyObject* args); // in products
 PyObject* module_negate(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_extreme_pair(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 PyObject* module_axis_op(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
+PyObject* module_clip(PyObject* /*self*/, PyObject* args); // in elementwise.cpp
 
 // _arg_extreme(largest, a, axis) -> int or Tensor: numerical::argmax (largest) or argmin of a float or int64 tensor,
 // every element (axis -1, a Python int) or along a non-negative axis (an int64 Tensor).

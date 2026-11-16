@@ -2143,6 +2143,30 @@ namespace numerical {
       }
       return a < b ? a : b;
     }
+
+    //! \brief \p if_true where \p condition holds, else \p if_false, by a mask of their bits: no branch, so a loop of it
+    //!        vectorises (GCC 13 makes a `?:` of reals a branch).
+    template <std::floating_point T>
+    [[nodiscard]] T masked_select(bool condition,
+                                  T    if_true,
+                                  T    if_false) noexcept
+    {
+      using bits = std::conditional_t<sizeof(T) == 8, std::uint64_t, std::uint32_t>;
+      static_assert(sizeof(T) == sizeof(bits), "a float or a double");
+      const bits mask {bits {0} - static_cast<bits>(condition)};
+      return std::bit_cast<T>((std::bit_cast<bits>(if_true) & mask) | (std::bit_cast<bits>(if_false) & ~mask));
+    }
+
+    //! \brief \ref ieee_minimum of \ref ieee_maximum of \p x and \p low, and \p high, the bounds no NaN: the same bits
+    //!        (a NaN \p x kept, zeros of the two signs ordered alike), by selections, so that `clip`'s loop vectorises.
+    template <std::floating_point T>
+    [[nodiscard]] T clipped(T x,
+                            T low,
+                            T high) noexcept
+    {
+      const T up {masked_select((static_cast<unsigned>(x == low) & static_cast<unsigned>(x == T {0})) != 0U, x + low, masked_select(x < low, low, x))};
+      return masked_select((static_cast<unsigned>(up == high) & static_cast<unsigned>(up == T {0})) != 0U, -(-up - high), masked_select(up > high, high, up));
+    }
   } // namespace detail
 
   //! \brief The larger element of \p a and \p b, broadcast, as `numpy.maximum` (\ref detail::ieee_maximum; a NaN
@@ -2241,6 +2265,30 @@ namespace numerical {
     return detail::with_decimal_rounding<typename C::value_type>(decimals, [&a](const auto& rounding) {
                                                                    return detail::parallel_map(a, [&rounding](const C& z) { return C {rounding(z.real()), rounding(z.imag())}; });
                                                                  });
+  }
+
+  //! \brief \p a limited to [\p low, \p high] element by element, as `numpy.clip` of two numbers: `minimum(maximum(a,
+  //!        low), high)` in one pass, the same bits as the two (\ref detail::ieee_maximum, then \ref
+  //!        detail::ieee_minimum; a NaN wins, a NaN bound's too), by \ref detail::clipped where no bound is a NaN.
+  template <std::floating_point T>
+  [[nodiscard]] tensor<T> clip(const tensor<T>& a,
+                               T                low,
+                               T                high)
+  {
+    if (std::isnan(low) || std::isnan(high)) {
+      return detail::parallel_map(a.data().data(), a.shape(), [low, high](T x) { return detail::ieee_minimum(detail::ieee_maximum(x, low), high); });
+    }
+    return detail::parallel_map(a.data().data(), a.shape(), [low, high](T x) { return detail::clipped(x, low, high); });
+  }
+
+  //! \brief \p a limited to [\p low, \p high] element by element, as `numpy.clip` of two integers: `minimum(maximum(a,
+  //!        low), high)` in one pass (\p high where \p low passes it, as NumPy's).
+  template <std::integral T>
+  [[nodiscard]] tensor<T> clip(const tensor<T>& a,
+                               T                low,
+                               T                high)
+  {
+    return detail::parallel_map(a.data().data(), a.shape(), [low, high](T x) { return std::min(std::max(x, low), high); });
   }
 
   //! \brief The larger element of integer tensors \p a and \p b, broadcast, as `numpy.maximum`. \throws dimension_error
