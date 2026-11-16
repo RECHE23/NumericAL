@@ -275,6 +275,24 @@ def integer_arithmetic(rng):
         same({}, "", name if name not in ("absolute", "negative", "sign") else "add", ints(rng, 4), x)
 
 
+def big_integers(rng):
+    """int64 past 2⁵³, where a float64 holds them no more, beside Python ints a unit apart or past int64: each
+    operation exact as NumPy's (a comparison read through float64 took 2**60 + 1 for 2**60)."""
+    near = int(rng.choice([2 ** 53, 2 ** 60, 2 ** 62, INT64_MAX - 8, -(2 ** 61)]))
+    a = (near + rng.integers(-3, 4, int(rng.integers(1, 7)))).astype(np.int64)
+    k = int(a[int(rng.integers(a.size))]) + int(rng.integers(-1, 2))  # a Python int at, or a unit from, an element
+    if rng.random() < 0.1:
+        k = int(rng.choice([2 ** 63, -(2 ** 63) - 1, 2 ** 70, -(2 ** 70)]))  # past int64
+    name = str(rng.choice(["equal", "not_equal", "less", "less_equal", "greater", "greater_equal", "maximum", "minimum",
+                           "add", "subtract", "multiply", "floor_divide", "remainder"]))
+    same({}, "", name, a, k)
+    same({}, "", name, k, a)
+    if -(2 ** 63) <= k < 2 ** 63:
+        same({}, "", "clip", a, min(k, int(a.max())), max(k, int(a.max())))
+        same({}, "", "isin", a, [k, int(a[0])])
+    same({}, "", str(rng.choice(["sum", "cumsum", "sort", "unique", "max", "min"])), a)  # no argsort: its ties are unordered
+
+
 def powers(rng):
     base = ints(rng, 5, extremes=0.05)
     exponent = rng.integers(0, 6, 5).astype(np.int64)
@@ -678,7 +696,7 @@ def conversions(rng):
 
 
 FAMILIES = {function.__name__: function for function in (
-    integer_arithmetic, powers, rounding, sorting, searching, sets, statistics, quantiles, averages, reductions,
+    integer_arithmetic, big_integers, powers, rounding, sorting, searching, sets, statistics, quantiles, averages, reductions,
     histograms, interpolation, polynomials, padding, shaping, selections, calculus, ranges, nan_functions, uniques,
     indexing, products, comparisons, conversions, bits)}
 
