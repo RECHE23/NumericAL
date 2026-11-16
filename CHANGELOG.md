@@ -28,6 +28,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **`nanquantile` along an axis whose first slice holds NaNs alone** answers in the dtype of the others (float64 for a
+  float32 array at a list of `q`), as NumPy 2.5.5 now does, where 2026.11.16 rounded every slice to the array's dtype
+  as older NumPy's `apply_along_axis` did.
+
 - **`tanhm` far from normality**: the quotient of exponentials `coshm(A)⁻¹ sinhm(A)` (SciPy's) loses as their
   conditioning grows (`V D V⁻¹`, `V` unit triangular with entries to ±7, `D` in [−30, 30]: relative errors of 5 and
   past, 150 at 60; a random matrix of norm 8: 5·10⁻⁹). A finite non-Hermitian matrix past `‖A‖₁ = 1` now takes `funm` of

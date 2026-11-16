@@ -7687,10 +7687,6 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
             if any(empty):
                 _warnings.warn("All-NaN slice encountered", RuntimeWarning, stacklevel=3)
                 result = where(empty, _math.nan, result)
-                # NumPy's apply_along_axis takes the dtype of its first slice's answer, a NaN of `a`'s dtype where that
-                # slice holds nothing else: every slice's answer is then rounded to it
-                if reshape(empty, (-1,))[0] and result.dtype != a.dtype:
-                    result = asarray(result, a.dtype)
         elif nans:
             result = where(isnan(last_value[0]), last_value[0], result)
     # rest + (Q,) to lead + rest

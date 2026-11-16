@@ -13,6 +13,9 @@ except ImportError:
     np = None
 
 _NUMPY_2_4 = np is not None and tuple(int(part) for part in np.__version__.split(".")[:2]) >= (2, 4)
+# NumPy 2.5.5 answers a nanquantile whose first slice holds NaNs alone in the dtype of the others, as here; older ones
+# in the array's (their apply_along_axis took the first slice's answer's dtype)
+_NUMPY_2_5_5 = np is not None and tuple(int(part) for part in np.__version__.split(".")[:3] if part.isdigit()) >= (2, 5, 5)
 
 _METHODS = ("inverted_cdf", "averaged_inverted_cdf", "closest_observation", "interpolated_inverted_cdf", "hazen",
             "weibull", "linear", "median_unbiased", "normal_unbiased", "lower", "higher", "midpoint", "nearest")
@@ -186,9 +189,10 @@ class AgainstNumPy(unittest.TestCase):
         holed = clean.copy()
         holed[1, 3] = np.nan
         holed[:, 5] = np.nan
-        first = clean.copy()  # NumPy's nanquantile along axis 0 answers in the dtype of its first slice's, NaNs alone
+        first = clean.copy()  # a first slice of NaNs alone along axis 0: NumPy 2.5.5's dtype that of the others
         first[:, 0] = np.nan
-        cases = (clean, clean.astype(np.float32), holed, holed.astype(np.float32), first.astype(np.float32),
+        cases = (clean, clean.astype(np.float32), holed, holed.astype(np.float32),
+                 *((first.astype(np.float32),) if _NUMPY_2_5_5 else ()),
                  rng.integers(-9, 9, (5, 7), dtype=np.int64),
                  np.array([-1.0, -0.0]), np.array([3.0]))
         for data in cases:
@@ -204,6 +208,12 @@ class AgainstNumPy(unittest.TestCase):
                                                            axis=axis, method=method)
                             self.assertSame(got, getattr(np, name)(data, q, axis=axis, method=method),
                                             f"{name} {method} {q!r} {axis} {data.dtype}")
+            if data is cases[0]:  # on every NumPy: each slice's dtype, the first's of NaNs alone included
+                with warnings.catch_warnings():
+                    warnings.simplefilter("ignore", RuntimeWarning)
+                    got = numerical.nanquantile(numerical.asarray(first.astype(np.float32)), [0.1, 0.5], axis=0)
+                self.assertEqual(got.dtype, "float64")
+                self.assertTrue(np.isnan(np.asarray(got)[:, 0]).all())
             for q in (50, 12.5, [10, 90], np.float32(30), np.array([30, 70], np.float32)):
                 if isinstance(q, (np.ndarray, np.floating)) and q.dtype == np.float32 and not _NUMPY_2_4:
                     continue  # NumPy 2.4 divides a float32 q by 100 in float32, as here; older ones in the data's dtype
