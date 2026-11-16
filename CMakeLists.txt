@@ -163,6 +163,13 @@ else()
     # Python suite runs the wheels' flags.
     target_compile_options(numerical_tests_bin PRIVATE -ffp-contract=off)
     set_target_properties(numerical_tests_bin PROPERTIES NUMERICAL_FP_CONTRACT_OFF ON)
+    # test_gallery.cpp traps FE_INVALID under glibc. Clang's default takes floating point to raise no exception, so it
+    # computes a quotient ahead of the test that discards it (0 / 0 before `length == 0` is read) and traps where the
+    # code as written does not; a divisor made safe by a select is folded back. A program that traps must be compiled
+    # with -ffp-exception-behavior=maytrap (Clang's documentation), for the whole target as -ffp-contract above.
+    if(CMAKE_CXX_COMPILER_ID MATCHES "Clang" AND CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_compile_options(numerical_tests_bin PRIVATE -ffp-exception-behavior=maytrap)
+    endif()
 endif()
 
 if(NUMERICAL_SANITIZE)
