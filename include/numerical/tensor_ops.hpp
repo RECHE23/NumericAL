@@ -931,17 +931,31 @@ namespace numerical {
       return complex_cos(x);
     }
 
-    //! \brief The C library's sin (\p Cosine false) or cos of \p x.
+    //! \brief The C library's sin (\p Cosine false) or cos, `call(x)`: one class each, so that each is covered whole.
     template <bool Cosine>
-    [[nodiscard]] double library_sine(double x)
+    struct library_sine;
+
+    //! \brief \ref library_sine's sin.
+    template <>
+    struct library_sine<false>
     {
-      if constexpr (Cosine) {
-        return std::cos(x);
-      }
-      else {
+      //! \brief `std::sin(x)`.
+      [[nodiscard]] static double call(double x)
+      {
         return std::sin(x);
       }
-    }
+    };
+
+    //! \brief \ref library_sine's cos.
+    template <>
+    struct library_sine<true>
+    {
+      //! \brief `std::cos(x)`.
+      [[nodiscard]] static double call(double x)
+      {
+        return std::cos(x);
+      }
+    };
 
     //! \brief sin (\p Cosine false) or cos of a `double` that a float holds: \ref reduced_sine to \ref
     //!        sine_reduction_bound, the C library's past it (and for an infinity or a NaN).
@@ -951,7 +965,7 @@ namespace numerical {
       if (std::fabs(x) <= sine_reduction_bound) {
         return reduced_sine<Cosine>(x);
       }
-      return library_sine<Cosine>(x);
+      return library_sine<Cosine>::call(x);
     }
 
     /*!
@@ -967,7 +981,7 @@ namespace numerical {
     {
 #if defined(NUMERICAL_X86_COMPILED) || (defined(_MSC_VER) && !defined(__clang__))
       if (!exp_by_table()) {
-        std::transform(in, in + count, out, [](double x) { return library_sine<Cosine>(x); });
+        std::transform(in, in + count, out, [](double x) { return library_sine<Cosine>::call(x); });
         return;
       }
 #endif
@@ -981,7 +995,7 @@ namespace numerical {
       if (far != 0U) {
         for (std::size_t i {0}; i < count; ++i) {
           if (!(std::fabs(in[i]) <= sine_reduction_bound)) {
-            out[i] = library_sine<Cosine>(in[i]);
+            out[i] = library_sine<Cosine>::call(in[i]);
           }
         }
       }
@@ -1654,8 +1668,29 @@ namespace numerical {
       return contiguous_extreme(each.data(), runs, larger);
     }
 
-    //! \brief The largest (\p larger is `std::greater`) or smallest element of a line.
+    //! \brief \ref extreme of a line walked element by element: a NaN wins, as in NumPy (every comparison with it is
+    //!        false, so a NaN candidate is taken apart, and once taken nothing compares larger than it).
     template <typename T,
+              typename Order>
+    [[nodiscard]] T walked_extreme(const T*     first,
+                                   std::size_t  count,
+                                   std::size_t  stride,
+                                   const Order& larger)
+    {
+      T best {first[0]};
+      for (std::size_t i {1}; i < count; ++i) {
+        const T& candidate {first[i * stride]};
+        if (is_nan(candidate) || larger(candidate, best)) {
+          best = candidate;
+        }
+      }
+      return settled_zero(best, first, count, stride, larger);
+    }
+
+    //! \brief The largest (\p larger is `std::greater`) or smallest element of a line of reals: a contiguous one by the
+    //!        comparison without a branch (so it vectorises) and the NaN tracked apart, a NaN anywhere the answer, as
+    //!        NumPy's; a strided one walked (\ref walked_extreme).
+    template <std::floating_point T,
               typename Order>
     [[nodiscard]] T extreme(const T*     first,
                             std::size_t  count,
@@ -1665,23 +1700,26 @@ namespace numerical {
       if (count == 0) {
         throw dimension_error("a zero-size reduction to a maximum or a minimum has no identity");
       }
-      if constexpr (std::is_floating_point_v<T>) {
-        if (stride == 1) {
-          // A contiguous line: the comparison without a branch (so it vectorises) and the NaN tracked apart,
-          // a NaN anywhere is the answer, as NumPy's.
-          return settled_zero(parallel_extreme(first, count, larger), first, count, 1, larger);
-        }
+      if (stride == 1) {
+        return settled_zero(parallel_extreme(first, count, larger), first, count, 1, larger);
       }
-      T best {first[0]};
-      for (std::size_t i {1}; i < count; ++i) {
-        // A NaN wins, as in NumPy: every comparison with it is false, so a NaN candidate is taken apart, and
-        // once taken nothing compares larger than it.
-        const T& candidate {first[i * stride]};
-        if (is_nan(candidate) || larger(candidate, best)) {
-          best = candidate;
-        }
+      return walked_extreme(first, count, stride, larger);
+    }
+
+    //! \brief The largest (\p larger is `std::greater`) or smallest element of a line of another type (\ref
+    //!        walked_extreme).
+    template <typename T,
+              typename Order>
+    requires(!std::floating_point<T>)
+    [[nodiscard]] T extreme(const T*     first,
+                            std::size_t  count,
+                            std::size_t  stride,
+                            const Order& larger)
+    {
+      if (count == 0) {
+        throw dimension_error("a zero-size reduction to a maximum or a minimum has no identity");
       }
-      return settled_zero(best, first, count, stride, larger);
+      return walked_extreme(first, count, stride, larger);
     }
 
     //! \brief Whether \ref extremes_along takes the reduction's path: an exact type, or an axis of single elements. A
@@ -2334,15 +2372,23 @@ namespace numerical {
     //!        double for a float whose 10ᵈ overflows it (a float under 2²⁴ · 10⁻ᵈ still has places to round there).
     template <std::floating_point R,
               typename F>
+    requires(!std::same_as<R, float>)
     [[nodiscard]] auto with_decimal_rounding(int      decimals,
                                              const F& f)
     {
-      if constexpr (std::is_same_v<R, float>) {
-        if (decimals > std::numeric_limits<float>::max_exponent10) {
-          return f(decimal_rounding<float, double> {decimals});
-        }
-      }
       return f(decimal_rounding<R, R> {decimals});
+    }
+
+    //! \brief \ref with_decimal_rounding of a float: in double where its 10ᵈ overflows a float.
+    template <std::same_as<float> R,
+              typename F>
+    [[nodiscard]] auto with_decimal_rounding(int      decimals,
+                                             const F& f)
+    {
+      if (decimals > std::numeric_limits<float>::max_exponent10) {
+        return f(decimal_rounding<float, double> {decimals});
+      }
+      return f(decimal_rounding<float, float> {decimals});
     }
   } // namespace detail
 
@@ -3549,37 +3595,36 @@ namespace numerical {
       return false;
     }
 
-    //! \brief Whether one of the \p count contiguous elements at \p first is \p value (a NaN where \p Nan): compared
-    //!        without a branch, so the loop vectorises.
-    template <bool Nan,
-              std::floating_point T>
-    [[nodiscard]] bool holds(const T*    first,
-                             std::size_t count,
-                             T           value) noexcept
+    //! \brief Whether one of the \p count contiguous elements at \p first passes \p match: tested without a branch,
+    //!        so the loop vectorises.
+    template <typename T,
+              typename Match>
+    [[nodiscard]] bool holds(const T*     first,
+                             std::size_t  count,
+                             const Match& match) noexcept
     {
       unsigned hit {0};
       for (std::size_t i {0}; i < count; ++i) {
-        const T x {first[i]};
-        hit |= static_cast<unsigned>(Nan ? x != x : x == value);
+        hit |= static_cast<unsigned>(match(first[i]));
       }
       return hit != 0U;
     }
 
-    //! \brief The index of the first of the contiguous elements at \p first that is \p value, one of them (a NaN where
-    //!        \p Nan): blocks of 64 tested by \ref holds, then the block that holds it walked.
-    template <bool Nan,
-              std::floating_point T>
-    [[nodiscard]] std::size_t first_held(const T   * first,
-                                         std::size_t count,
-                                         T           value) noexcept
+    //! \brief The index of the first of the contiguous elements at \p first that passes \p match, which one of them
+    //!        does: blocks of 64 tested by \ref holds, then the block that holds it walked.
+    template <typename T,
+              typename Match>
+    [[nodiscard]] std::size_t first_held(const T*     first,
+                                         std::size_t  count,
+                                         const Match& match) noexcept
     {
       constexpr std::size_t block {64};
       std::size_t           start {0};
-      while (!holds<Nan>(first + start, std::min(block, count - start), value)) {
+      while (!holds(first + start, std::min(block, count - start), match)) {
         start += block;
       }
       std::size_t at {start};
-      while (!(Nan ? first[at] != first[at] : first[at] == value)) {
+      while (!match(first[at])) {
         ++at;
       }
       return at;
@@ -3589,25 +3634,33 @@ namespace numerical {
     //!        NumPy's: the first NaN where there is one. Reals in two passes without a branch each, as fast as NumPy's
     //!        vectors: their extreme (\ref contiguous_extreme, a NaN where there is one), then the first element that
     //!        is it (zeros of both signs equal, so the first of either, as NumPy's).
-    template <typename T,
+    template <std::floating_point T,
               typename Order>
     [[nodiscard]] std::int64_t extreme_index(const T*     first,
                                              std::size_t  count,
                                              const Order& larger)
     {
-      if constexpr (std::is_floating_point_v<T>) {
-        const T value {contiguous_extreme(first, count, larger)};
-        return static_cast<std::int64_t>(std::isnan(value) ? first_held<true>(first, count, value) : first_held<false>(first, count, value));
+      const T value {contiguous_extreme(first, count, larger)};
+      if (std::isnan(value)) {
+        return static_cast<std::int64_t>(first_held(first, count, [](T x) { return std::isnan(x); }));
       }
-      else {
-        std::size_t best {0};
-        for (std::size_t i {1}; i < count; ++i) {
-          if (larger(first[i], first[best])) {
-            best = i;
-          }
+      return static_cast<std::int64_t>(first_held(first, count, [value](T x) { return x == value; }));
+    }
+
+    //! \brief \ref extreme_index of integers: the first that none after it passes.
+    template <std::integral T,
+              typename Order>
+    [[nodiscard]] std::int64_t extreme_index(const T*     first,
+                                             std::size_t  count,
+                                             const Order& larger)
+    {
+      std::size_t best {0};
+      for (std::size_t i {1}; i < count; ++i) {
+        if (larger(first[i], first[best])) {
+          best = i;
         }
-        return static_cast<std::int64_t>(best);
       }
+      return static_cast<std::int64_t>(best);
     }
 
     //! \brief \ref argmax or \ref argmin along \p axis by \p larger.

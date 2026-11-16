@@ -1605,6 +1605,21 @@ TEST(maximum_and_minimum_order_nans_and_zeros_as_ieee)
 
 // clip between two numbers in one pass: the bits of minimum(maximum(a, low), high), a NaN kept, the zeros ordered as
 // those two order them, a NaN bound winning; float32 and int64 alike.
+// A line's extreme: reals contiguous by vectors, strided walked (a NaN wins either way), integers walked; an empty
+// line refused for both.
+TEST(a_line_extreme_strided_or_not_and_of_integers)
+{
+  namespace d = numerical::detail;
+  const double              nan   {std::numeric_limits<double>::quiet_NaN()};
+  const std::vector<double> reals {3.0, nan, -1.0, 7.0, 2.0};
+  EXPECT(d::extreme(reals.data(), 3, 2, std::less<double> {}) == -1.0 && d::extreme(reals.data(), 3, 2, std::greater<double> {}) == 3.0);
+  EXPECT(std::isnan(d::extreme(reals.data(), 2, 1, std::less<double> {})) && std::isnan(d::extreme(reals.data() + 1, 2, 3, std::greater<double> {})));
+  const std::vector<std::int64_t> integers {4, -2, 9};
+  EXPECT(d::extreme(integers.data(), 3, 1, std::less<std::int64_t> {}) == -2 && d::extreme(integers.data(), 2, 2, std::greater<std::int64_t> {}) == 9);
+  EXPECT_THROWS((void)d::extreme(reals.data(), 0, 1, std::less<double> {}), numerical::dimension_error);
+  EXPECT_THROWS((void)d::extreme(integers.data(), 0, 1, std::less<std::int64_t> {}), numerical::dimension_error);
+}
+
 TEST(clip_is_minimum_of_maximum_in_one_pass)
 {
   const double         nan {std::numeric_limits<double>::quiet_NaN()};
