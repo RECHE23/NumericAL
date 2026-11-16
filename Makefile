@@ -36,7 +36,7 @@ SCIFORGE_INCLUDE ?= ../sciforge/include
 SCIFORGE_LINT ?= ../sciforge/lint
 FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
-.PHONY: headers-alone always actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
+.PHONY: gallery-long headers-alone always actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage docs-venv doc-xml docs-site docs-site-gate format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
         python python-test python-sanitize python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-numpy-push fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
@@ -305,6 +305,11 @@ fuzz-edges: python
 
 fuzz-fft: python
 	$(PYRUN) fuzz/fft.py --cases $(or $(CASES),300) $(if $(SEED),--seed $(SEED),)
+
+# The gallery of hard matrices (python/tests/test_gallery.py) at orders past each algorithm's thresholds (150 to 256):
+# a minute, run weekly by the long fuzzing; the suite's own pass stops below them.
+gallery-long: python
+	NUMERICAL_GALLERY_LARGE=1 $(PYRUN) -m unittest discover -s python/tests -p test_gallery.py
 
 # NumPy's functions composed in Python against NumPy (fuzz/npdiff.py): CASES per family (default 1000) from SEED (default:
 # the clock); fuzz-numpy-push, a fixed seed's few cases, before each push.

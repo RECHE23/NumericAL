@@ -3,6 +3,7 @@ subnormal to 2¹⁰⁰⁰: each answer finite (or an explicit LinAlgError where 
 of order n ε ‖A‖, its factors orthonormal. Random matrices, which the differential fuzzers draw, missed four defects
 these find: a skew-symmetric tridiagonal matrix's bulges left subnormal entries (eig), columns of a matrix of rank 1
 stayed along each other to rounding (Jacobi SVD), a stop at 10⁻¹² of the norm (Jacobi eigh), a zero pencil (eig(a, b))."""
+import os
 import unittest
 
 import numerical
@@ -101,6 +102,22 @@ _SYMMETRIC = {
     "zero": (lambda n: np.zeros((n, n)), (1, 4)),
     "skew squared": (lambda n: _skew_tridiagonal(n) @ _skew_tridiagonal(n).T, (23, 55)),
 }
+
+def _random(n):  # dense, of normal entries: past order 150 the blocked Hessenberg reduction, past 200 eig's deflation
+    return np.random.default_rng(n).standard_normal((n, n))
+
+
+# NUMERICAL_GALLERY_LARGE (make gallery-long, the weekly long fuzzing): orders past each algorithm's thresholds, where
+# the defects lay (the blocked Hessenberg reduction from 150, the Jacobi SVD of rank 1 from 160, eig's aggressive
+# deflation from 200); a minute or so, beside the suite's 0.3 s.
+if os.environ.get("NUMERICAL_GALLERY_LARGE") and np is not None:
+    for _name, _orders in (("skew tridiagonal", (150, 200, 256)), ("rank 1", (160, 200, 256)), ("ones", (200,)),
+                           ("glued Wilkinson", (210,)), ("Grcar", (200,))):
+        _SQUARE[_name] = (_SQUARE[_name][0], _SQUARE[_name][1] + _orders)
+    _SQUARE["random"] = (_random, (150, 200, 256))
+    for _name, _orders in (("min(i, j) + 1", (200,)), ("rank 1", (200,)), ("glued Wilkinson", (210,)),
+                           ("skew squared", (200,))):
+        _SYMMETRIC[_name] = (_SYMMETRIC[_name][0], _SYMMETRIC[_name][1] + _orders)
 
 # 2⁻¹⁰⁰⁰ and 2¹⁰⁰⁰ exact powers of two; 2⁻¹⁰⁶⁰ puts most entries among the subnormal numbers
 _SCALES = (1.0, 2.0 ** -1000, 2.0 ** -1060, 2.0 ** 1000)
