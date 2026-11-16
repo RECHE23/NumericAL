@@ -36,7 +36,7 @@ SCIFORGE_INCLUDE ?= ../sciforge/include
 SCIFORGE_LINT ?= ../sciforge/lint
 FORMAT_FILES := $(shell find include tests blas -name '*.hpp' -o -name '*.cpp')
 
-.PHONY: gallery-long fuzz-matfuncs headers-alone always actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
+.PHONY: gallery-long fuzz-matfuncs fuzz-hostile headers-alone always actionlint check-pins ci-arm-gcc all build test sanitize tsan coverage coverage-build coverage-x86 coverage-html \
         lint misra doc doc-no-coverage docs-venv doc-xml docs-site docs-site-gate format format-check full-local-gate test-gcc test-gcc-neon lint-gate stubtest-gate bench-diff-selftest \
         python python-test python-sanitize python-stubtest fuzz-linalg fuzz-edges fuzz-fft fuzz-numpy fuzz-numpy-push fuzz-scipy bench-diff bench-linalg bench-python bench-fuzz bench-gemm version-check install uninstall release release-bump clean help
 
@@ -309,6 +309,10 @@ fuzz-fft: python
 # Functions of matrices against a 60-digit reference (fuzz/matfuncs.py, mpmath): CASES (default 300) from SEED.
 fuzz-matfuncs: python
 	$(PYRUN) fuzz/matfuncs.py --cases $(or $(CASES),300) $(if $(SEED),--seed $(SEED),)
+
+# Hostile arguments through the whole public namespace (fuzz/hostile.py): CASES calls (default 5000) from SEED.
+fuzz-hostile: python
+	$(PYRUN) fuzz/hostile.py --cases $(or $(CASES),5000) $(if $(SEED),--seed $(SEED),)
 
 # The gallery of hard matrices (python/tests/test_gallery.py) at orders past each algorithm's thresholds (150 to 256):
 # a minute, run weekly by the long fuzzing; the suite's own pass stops below them.

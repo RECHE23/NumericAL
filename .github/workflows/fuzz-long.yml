@@ -68,6 +68,16 @@ jobs:
           PYTHONPATH: python
           NUMERICAL_GALLERY_LARGE: '1'
         run: python -m unittest discover -s python/tests -p test_gallery.py
+      # Hostile arguments through the whole public namespace (fuzz/hostile.py): no error may escape from the library's
+      # own code (SystemError, AttributeError, KeyError…) where an argument is wrong; a few minutes.
+      - name: Hostile arguments
+        env:
+          PYTHONPATH: python
+        run: |
+          for _ in 1 2 3; do
+            seed=$(od -An -N4 -tu4 /dev/urandom | tr -d ' ')
+            python fuzz/hostile.py --seed "$seed" --cases 5000
+          done
       # Functions of matrices against a 60-digit reference (fuzz/matfuncs.py: stiff triangles, tight pairs beside far
       # eigenvalues, small norms, tanh's poles), each error beside SciPy's, a fresh seed each campaign; a tenth of the time.
       - name: Fuzz the functions of matrices against mpmath
