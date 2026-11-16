@@ -279,6 +279,8 @@ def _nested(obj, depth=0):
         return [value for values, _ in parts for value in values], (len(parts),) + parts[0][1]
     if isinstance(obj, _numbers.Number):
         return [obj], ()
+    if isinstance(obj, Tensor):  # deeper in a list than asarray's own stacking looks: its values
+        return _nested(obj.tolist(), depth) if obj.shape else ([obj.item()], ())
     raise TypeError(f"asarray: a nested list holds numbers, not {type(obj).__name__}")
 
 
@@ -707,7 +709,7 @@ def _matmul(self, other):
         product = _numerical.einsum(spec, a, b)
     except error as caught:
         raise LinAlgError(*caught.args) from None
-    return product[()] if not product.shape else product  # two vectors give a number, as NumPy's
+    return product  # two vectors give a rank-0 Tensor, the array API's (NumPy's a number)
 
 
 def matmul(x1, x2, /):
@@ -733,7 +735,7 @@ def matmul(x1, x2, /):
         numerical.Tensor([[19, 22],
                           [43, 50]], dtype=int64)
         >>> numerical.matmul([1, 2], [3, 4])
-        11
+        numerical.Tensor(11, dtype=int64)
         >>> numerical.matmul(numerical.zeros((3, 2, 2)), numerical.eye(2)).shape
         (3, 2, 2)
     """
@@ -864,7 +866,7 @@ _REPR_THRESHOLD = 1000  # a larger tensor is summarised, as NumPy's default
 def _summary(t, prefix, shape):
     """A nested list of t's elements with every long axis cut to its ends around an ``...``."""
     if not shape:
-        return t[prefix] if prefix else t[()]
+        return (t[prefix] if prefix else t).item()
     extent = shape[0]
     if extent > 2 * _REPR_EDGE:
         indices = list(range(_REPR_EDGE)) + [None] + list(range(extent - _REPR_EDGE, extent))
@@ -948,7 +950,39 @@ Tensor.__lshift__ = lambda self, other: left_shift(self, other)
 Tensor.__rlshift__ = lambda self, other: left_shift(other, self)
 Tensor.__rshift__ = lambda self, other: right_shift(self, other)
 Tensor.__rrshift__ = lambda self, other: right_shift(other, self)
-Tensor.__hash__ = None  # unhashable, as a NumPy array: equality is element-wise
+
+
+def _hash(self):
+    """A rank-0 Tensor's hash: its number's, so that one stands for the number in a set or a dict's keys as NumPy's
+    scalar does (the two compare equal, ``t == 2.0`` true); any other is unhashable, as a NumPy array (its equality is
+    element-wise)."""
+    if self.shape:
+        raise TypeError("unhashable type: 'numerical.Tensor' (only a rank-0 one hashes, as its number)")
+    return hash(self.item())
+
+
+def _format_spec(self, spec):
+    """A rank-0 Tensor formatted as its number (``f"{t.sum():.3f}"``); any other by ``str`` with an empty `spec`, and
+    refused with another, as a NumPy array."""
+    if not self.shape:
+        return format(self.item(), spec)
+    if spec:
+        raise TypeError("unsupported format string passed to numerical.Tensor.__format__")
+    return str(self)
+
+
+def _round(self, ndigits=None):
+    """``round(t)``: of a rank-0 Tensor without `ndigits`, the nearest int (half to even), as Python's ``round`` of
+    its number; otherwise :func:`round` of every element to `ndigits` decimals, a Tensor of its dtype."""
+    if ndigits is None and not self.shape:
+        return _builtins.round(self.item())
+    return around(self, 0 if ndigits is None else ndigits)
+
+
+Tensor.__hash__ = _hash
+Tensor.__str__ = lambda self: str(self.item()) if not self.shape else _repr(self)  # a rank-0 one prints its number
+Tensor.__format__ = _format_spec
+Tensor.__round__ = _round
 
 _cholesky = _linalg(_numerical.cholesky, arrays=1)
 _determinant = _linalg(_numerical.determinant)
@@ -1184,9 +1218,9 @@ def determinant(a, /, *, overwrite_a=False, check_finite=True):
     Examples:
         >>> import numerical
         >>> numerical.det([[2.0, 0.0], [0.0, 4.0]])
-        8.0
+        numerical.Tensor(8.0, dtype=float64)
         >>> numerical.det([[1, 2], [3, 4]])
-        -2.0
+        numerical.Tensor(-2.0, dtype=float64)
         >>> numerical.det([[[2.0, 0.0], [0.0, 4.0]], [[1.0, 0.0], [0.0, 3.0]]])
         numerical.Tensor([8.0, 3.0], dtype=float64)
     """
@@ -1213,9 +1247,9 @@ def slogdet(a, /):
     Examples:
         >>> import numerical
         >>> numerical.slogdet([[-1.0, 0.0], [0.0, 1.0]])
-        (-1.0, 0.0)
+        (numerical.Tensor(-1.0, dtype=float64), numerical.Tensor(0.0, dtype=float64))
         >>> numerical.slogdet([[0.0, 0.0], [0.0, 4.0]])
-        (0.0, -inf)
+        (numerical.Tensor(0.0, dtype=float64), numerical.Tensor(-inf, dtype=float64))
     """
     return _borrowed("slogdet", _slogdet, a)
 
@@ -2725,8 +2759,8 @@ def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):
         rtol: The tolerance relative to the largest singular value (not with `tol`).
 
     Returns:
-        int | list: The rank; for a stack, the ranks as integers nested along its leading axes (NumPy's an integer
-        array).
+        Tensor: The rank, an int64 Tensor of rank 0; for a stack, the ranks along its leading axes (int64, as NumPy's
+        integer array).
 
     Raises:
         LinAlgError: for a negative or NaN tolerance, or an infinite or NaN entry.
@@ -2736,11 +2770,11 @@ def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):
     Examples:
         >>> import numerical
         >>> numerical.matrix_rank([[1.0, 2.0], [2.0, 4.0]])
-        1
+        numerical.Tensor(1, dtype=int64)
         >>> numerical.matrix_rank([[[1.0, 0.0], [0.0, 1.0]], [[1.0, 0.0], [0.0, 0.0]]])
-        [2, 1]
+        numerical.Tensor([2, 1], dtype=int64)
         >>> numerical.matrix_rank([0.0, 0.0])
-        0
+        numerical.Tensor(0, dtype=int64)
     """
     if tol is not None and rtol is not None:
         raise ValueError("matrix_rank: tol and rtol can't be both set")
@@ -2749,15 +2783,10 @@ def matrix_rank(A, tol=None, hermitian=False, *, rtol=None):
         A = _read(A)
     if A.ndim < 2:  # NumPy's: a vector or a number is of rank 1 unless all zero
         values = A.tolist()
-        return int(_builtins.any(value != 0 for value in (values if A.ndim == 1 else [values])))
-    if A.ndim > 2:  # a stack: its ranks, integers nested along its leading axes (NumPy's an integer array)
-        return _as_integers(_matrix_ranks(A, rtol, tol, bool(hermitian)).tolist())
-    return _matrix_rank(A, rtol, tol, bool(hermitian))
-
-
-def _as_integers(nested):
-    """The numbers of a nested list as integers, nested alike."""
-    return [_as_integers(item) for item in nested] if isinstance(nested, list) else int(nested)
+        return asarray(int(_builtins.any(value != 0 for value in (values if A.ndim == 1 else [values]))), "int64")
+    if A.ndim > 2:  # a stack: its ranks along its leading axes, int64 as NumPy's integer array
+        return asarray(_matrix_ranks(A, rtol, tol, bool(hermitian)), "int64")
+    return asarray(_matrix_rank(A, rtol, tol, bool(hermitian)), "int64")
 
 
 def svd(a, full_matrices=True, compute_uv=True, hermitian=False, *, method="divide_and_conquer", overwrite_a=False,
@@ -2913,11 +2942,6 @@ def _real_operand(x):
     return asarray(t, "float64") if t.dtype == "bool" else t
 
 
-def _number_if_scalar(t):
-    """A rank-0 tensor as the Python number it holds, as NumPy answers a full reduction; any other as it is."""
-    return t[()] if isinstance(t, Tensor) and not t.shape else t
-
-
 def _resolved_axes(t, axis, name):
     """`axis` (None for every axis, an integer or a tuple of them) as distinct non-negative axes of `t`."""
     rank = len(t.shape)
@@ -3012,9 +3036,9 @@ def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
     Examples:
         >>> import numerical
         >>> numerical.vector_norm([3.0, 4.0])
-        5.0
+        numerical.Tensor(5.0, dtype=float64)
         >>> numerical.vector_norm([3.0, -4.0], ord=1)
-        7.0
+        numerical.Tensor(7.0, dtype=float64)
         >>> numerical.vector_norm([[3.0, 4.0], [0.0, 0.0]], axis=1)
         numerical.Tensor([5.0, 0.0], dtype=float64)
     """
@@ -3074,7 +3098,7 @@ def _matrix_norm(x, ord, row, col, keepdims):
         shape = list(x.shape)
         shape[row] = shape[col] = 1
         return reshape(reduced, tuple(shape))
-    return _number_if_scalar(reduced)
+    return reduced
 
 
 def matrix_norm(x, /, *, keepdims=False, ord="fro"):
@@ -3115,9 +3139,9 @@ def norm(x, ord=None, axis=None, keepdims=False):
     Examples:
         >>> import numerical
         >>> numerical.norm([3.0, 4.0])
-        5.0
+        numerical.Tensor(5.0, dtype=float64)
         >>> numerical.norm([[1.0, 2.0], [3.0, 4.0]], 1)
-        6.0
+        numerical.Tensor(6.0, dtype=float64)
         >>> numerical.norm([[3.0, 4.0], [0.0, 0.0]], axis=1)
         numerical.Tensor([5.0, 0.0], dtype=float64)
     """
@@ -3163,11 +3187,11 @@ def cond(x, p=None):
     Examples:
         >>> import numerical
         >>> numerical.cond([[2.0, 0.0], [0.0, 4.0]])
-        2.0
+        numerical.Tensor(2.0, dtype=float64)
         >>> numerical.cond([[1.0, 0.0], [0.0, 0.0]])
-        inf
+        numerical.Tensor(inf, dtype=float64)
         >>> numerical.cond([[2.0, 0.0], [0.0, 4.0]], 1)
-        2.0
+        numerical.Tensor(2.0, dtype=float64)
     """
     x = _operand(x)
     if len(x.shape) < 2:
@@ -3176,7 +3200,7 @@ def cond(x, p=None):
         raise LinAlgError("cond is not defined on empty arrays")
     if p in (None, 2, -2):
         values = svdvals(x)
-        largest, smallest = _number_if_scalar(max(values, axis=-1)), _number_if_scalar(min(values, axis=-1))
+        largest, smallest = max(values, axis=-1), min(values, axis=-1)
         top, bottom = (largest, smallest) if p != -2 else (smallest, largest)
 
         def ratio(t, b):  # a singular matrix's, zero over zero included, is infinite, as NumPy's
@@ -3312,9 +3336,9 @@ def _linalg_trace(x, /, *, offset=0, dtype=None):
     Examples:
         >>> import numerical
         >>> numerical.linalg.trace([[1.0, 2.0], [3.0, 4.0]])
-        5.0
+        numerical.Tensor(5.0, dtype=float64)
         >>> numerical.linalg.trace([[1.0, 2.0], [3.0, 4.0]], offset=1)
-        2.0
+        numerical.Tensor(2.0, dtype=float64)
         >>> numerical.linalg.trace([[[1.0, 0.0], [0.0, 1.0]], [[2.0, 0.0], [0.0, 2.0]]])
         numerical.Tensor([2.0, 4.0], dtype=float64)
     """
@@ -3333,7 +3357,7 @@ def _linalg_trace(x, /, *, offset=0, dtype=None):
         result = _numerical.einsum(f"{labels}->{labels[:-1]}", along)
     if dtype is not None:
         result = asarray(result, dtype)
-    return _number_if_scalar(result)
+    return result
 
 
 def _linalg_diagonal(x, /, *, offset=0):
@@ -3379,7 +3403,7 @@ def trace(a, offset=0, axis1=0, axis2=1, dtype=None, out=None):
     Examples:
         >>> import numerical
         >>> numerical.trace([[1.0, 2.0], [3.0, 4.0]])
-        5.0
+        numerical.Tensor(5.0, dtype=float64)
         >>> numerical.trace(numerical.reshape(numerical.arange(8.0), (2, 2, 2)))
         numerical.Tensor([6.0, 8.0], dtype=float64)
     """
@@ -3528,7 +3552,7 @@ def tensordot(a, b, axes=2):
         letters_b[j] = letters_a[i]
     kept = [letters_a[i] for i in range(len(a.shape)) if i not in left] + \
            [letters_b[j] for j in range(len(b.shape)) if j not in right]
-    return _number_if_scalar(_numerical.einsum(f"{''.join(letters_a)},{''.join(letters_b)}->{''.join(kept)}", a, b))
+    return _numerical.einsum(f"{''.join(letters_a)},{''.join(letters_b)}->{''.join(kept)}", a, b)
 
 
 def vecdot(x1, x2, /, *, axis=-1):
@@ -3599,6 +3623,9 @@ def asarray(a, dtype=None, order=None, *, device=None, copy=None, like=None):
         fast = _asarray_nested(a, dtype) if dtype is not None else _asarray_nested(a)
         if fast is not None:
             return fast
+        if a and _builtins.any(isinstance(item, Tensor) for item in a):  # rank-0 Tensors among them (t[0], t.sum()):
+            stacked = stack([asarray(item) for item in a])  # their dtypes promoted, as NumPy's scalars in a list
+            return stacked if dtype is None else asarray(stacked, dtype)
     if isinstance(a, (list, tuple)) or (type(a) not in _NATIVE_NUMBERS and isinstance(a, _numbers.Number)
                                           and not hasattr(a, "__array_interface__")):
         values, shape = _nested(a)
@@ -3893,7 +3920,7 @@ sum = _reduction("sum", """The sum of every element, or the sums along `axis`, a
     Examples:
         >>> import numerical
         >>> numerical.sum([[1.0, 2.0], [3.0, 4.0]])
-        10.0
+        numerical.Tensor(10.0, dtype=float64)
         >>> numerical.sum([[1.0, 2.0], [3.0, 4.0]], axis=0)
         numerical.Tensor([4.0, 6.0], dtype=float64)
         >>> numerical.sum([[1.0, 2.0], [3.0, 4.0]], axis=1, keepdims=True)
@@ -3919,7 +3946,7 @@ mean = _reduction("mean", """The mean of every element, or the means along `axis
     Examples:
         >>> import numerical
         >>> numerical.mean([[1.0, 2.0], [3.0, 4.0]])
-        2.5
+        numerical.Tensor(2.5, dtype=float64)
         >>> numerical.mean([[1.0, 2.0], [3.0, 4.0]], axis=1)
         numerical.Tensor([1.5, 3.5], dtype=float64)
     """)
@@ -3946,11 +3973,11 @@ max = _reduction("max", """The largest element, or the largest along `axis`, as 
     Examples:
         >>> import numerical
         >>> numerical.max([[1.0, 2.0], [3.0, 4.0]])
-        4.0
+        numerical.Tensor(4.0, dtype=float64)
         >>> numerical.max([[1.0, 2.0], [3.0, 4.0]], axis=0)
         numerical.Tensor([3.0, 4.0], dtype=float64)
         >>> numerical.max([1.0, float("nan")])
-        nan
+        numerical.Tensor(nan, dtype=float64)
     """)
 min = _reduction("min", """The smallest element, or the smallest along `axis`, as ``numpy.min``.
 
@@ -3975,7 +4002,7 @@ min = _reduction("min", """The smallest element, or the smallest along `axis`, a
     Examples:
         >>> import numerical
         >>> numerical.min([[1.0, 2.0], [3.0, 4.0]])
-        1.0
+        numerical.Tensor(1.0, dtype=float64)
         >>> numerical.min([[1.0, 2.0], [3.0, 4.0]], axis=1)
         numerical.Tensor([1.0, 3.0], dtype=float64)
     """)
@@ -4004,7 +4031,7 @@ def _in_dtype(reduce, a, axis, keepdims, dtype, **initial):
     name = _checked_dtype(dtype, f"{reduce.__name__}: ")
     result = reduce(asarray(a, name), axis, keepdims=keepdims, **initial)
     converted = asarray(result, name)
-    return converted if isinstance(result, Tensor) else converted[()]
+    return converted
 
 
 _NO_VALUE = object()  # an argument not given, where None is a value
@@ -4081,7 +4108,7 @@ def _started(reduce, combine, a, axis, keepdims, dtype, initial):
                          start)
     if dtype is not None and result.dtype != dtype:  # a bool's sum in bool, as _in_dtype answers it
         result = asarray(result, dtype)
-    return result if result.shape else result[()]
+    return result
 
 
 def _with_initial(reduce, combine):
@@ -4239,6 +4266,9 @@ def full(shape, fill_value, dtype=None, order="C", *, device=None, like=None):
     if not isinstance(fill_value, _numbers.Number) and getattr(fill_value, "shape", None) != ():  # an array: broadcast
         filled = fill_value if isinstance(fill_value, Tensor) else _read(fill_value)
         return copy(broadcast_to(filled if dtype is None else asarray(filled, _dtype_name(dtype)), _shape(shape)))
+    if isinstance(fill_value, Tensor):  # of rank 0: its number, in its dtype by default
+        dtype = fill_value.dtype if dtype is None else dtype
+        fill_value = fill_value.item()
     return _native(_numerical._full, _shape(shape), fill_value, _dtype_of(dtype, fill_value))
 
 
@@ -4473,7 +4503,7 @@ def linspace(start, stop, num=50, endpoint=True, retstep=False, dtype=None, axis
         y = floor(y)
     y = asarray(y, target)
     if retstep:
-        return y, step[()] if isinstance(step, Tensor) and not step.shape else step
+        return y, step
     return y
 
 
@@ -4827,13 +4857,16 @@ def _item(self, *args):
     if not args:
         if self.size != 1:
             raise ValueError("can only convert an array of size 1 to a Python scalar")
-        return reshape(self, -1)[0]
+        return reshape(self, -1)[0].tolist()
     if len(args) == 1 and not isinstance(args[0], tuple):
         index = _operator.index(args[0])
         if not -self.size <= index < self.size:
             raise IndexError(f"index {index} is out of bounds for size {self.size}")
-        return reshape(self, -1)[index]
-    return self[args[0] if len(args) == 1 else args]
+        return reshape(self, -1)[index].tolist()
+    element = self[args[0] if len(args) == 1 else args]
+    if element.shape:
+        raise ValueError("incorrect number of indices for array")
+    return element.tolist()
 
 
 def _swapaxes(self, axis1, axis2):
@@ -6459,7 +6492,7 @@ def dot(a, b):
     Examples:
         >>> import numerical
         >>> numerical.dot([1, 2], [3, 4])
-        11
+        numerical.Tensor(11, dtype=int64)
         >>> numerical.dot(2, [1, 2])
         numerical.Tensor([2, 4], dtype=int64)
         >>> numerical.dot([[1, 2], [3, 4]], [1, 1])
@@ -6471,7 +6504,7 @@ def dot(a, b):
         return a * b
     if rb == 1:
         letters = _labels(ra, "dot")
-        return _number_if_scalar(einsum(f"{letters},{letters[-1]}->{letters[:-1]}", a, b))
+        return einsum(f"{letters},{letters[-1]}->{letters[:-1]}", a, b)
     letters = _labels(ra + rb - 1, "dot")
     summed = letters[-1]  # a's last axis and b's second-to-last
     batch, last = letters[ra - 1:ra + rb - 3], letters[ra + rb - 3]
@@ -6488,7 +6521,7 @@ def inner(a, b, /):
     letters = _labels(ra + rb - 1, "inner")
     left = letters[:ra]
     right = letters[ra:ra + rb - 1] + letters[ra - 1]
-    return _number_if_scalar(einsum(f"{left},{right}->{left[:-1]}{right[:-1]}", a, b))
+    return einsum(f"{left},{right}->{left[:-1]}{right[:-1]}", a, b)
 
 
 def vdot(a, b, /):
@@ -6500,7 +6533,7 @@ def vdot(a, b, /):
     if a.dtype == b.dtype and a.dtype in ("float64", "complex128", "float32", "complex64"):
         # natively: by chunks among the threads, the conjugate taken in the sum, not in a copy of `a`
         return _native(_numerical._vdot, a, b)
-    return _number_if_scalar(einsum("i,i->", conj(ravel(a)), ravel(b)))
+    return einsum("i,i->", conj(ravel(a)), ravel(b))
 
 
 def ptp(a, axis=None, out=None, keepdims=False):
@@ -6519,7 +6552,7 @@ def _finished(kept, axes, keepdims):
     `keepdims`, as a full reduction answers."""
     if keepdims:
         return kept
-    return _number_if_scalar(reshape(kept, tuple(e for k, e in enumerate(kept.shape) if k not in axes)))
+    return reshape(kept, tuple(e for k, e in enumerate(kept.shape) if k not in axes))
 
 
 def _absolute_squares(z):
@@ -6678,7 +6711,7 @@ def _along(name, a, axis):
 
 def _prepended(t, axis, start):
     """`t` with `start` (a rank-0 Tensor of its dtype) before its first slice along `axis`."""
-    return _concatenated([full(t.shape[:axis] + (1,) + t.shape[axis + 1:], start[()], t.dtype), t], axis)
+    return _concatenated([full(t.shape[:axis] + (1,) + t.shape[axis + 1:], start.item(), t.dtype), t], axis)
 
 
 def prod(a, axis=None, dtype=None, out=None, keepdims=False, initial=_NO_VALUE):
@@ -6859,7 +6892,7 @@ def argwhere(a):
     shape ``(N, a.ndim)``."""
     a = _tensor(a)
     if not a.shape:
-        return zeros((int(bool(a[()])), 0), "int64")
+        return zeros((int(bool(a.item())), 0), "int64")
     return stack(_numerical._nonzero(a), axis=1)
 
 
@@ -6877,7 +6910,7 @@ def count_nonzero(a, axis=None, *, keepdims=False):
         counted = sum(counted, axis=k)
     if keepdims:
         counted = reshape(counted, tuple(1 if k in axes else e for k, e in enumerate(a.shape)))
-    return _number_if_scalar(counted) if not keepdims and len(axes) == len(a.shape) else counted
+    return counted if not keepdims and len(axes) == len(a.shape) else counted
 
 
 def searchsorted(a, v, side="left", sorter=None):
@@ -6897,10 +6930,9 @@ def searchsorted(a, v, side="left", sorter=None):
         raise ValueError("object too deep for desired array")
     if sorter is not None:
         a = a[asarray(sorter, "int64")]
-    number = isinstance(v, _numbers.Number)
     a, v = _same_dtype(a, v)
     found = _native(_numerical._searchsorted, a, v, side == "right")
-    return found[()] if number else found
+    return found
 
 
 def diff(a, n=1, axis=-1, prepend=_NO_VALUE, append=_NO_VALUE):
@@ -7694,7 +7726,7 @@ def _reduced_shape(result, a, axis, keepdims, name):
         return result
     axes = _resolved_axes(a, axis, name)
     shape = tuple(extent for k, extent in enumerate(a.shape) if k not in axes)
-    return reshape(result, shape) if shape else reshape(result, ())[()]
+    return reshape(result, shape)
 
 
 def _by_count(total, count, dtype):
@@ -7766,7 +7798,7 @@ def _kept_dims(result, a, axes, lead, keepdims):
     number for a rank-0 result."""
     if keepdims:
         result = reshape(result, lead + tuple(1 if k in axes else extent for k, extent in enumerate(a.shape)))
-    return result[()] if isinstance(result, Tensor) and not result.shape else result
+    return result
 
 
 def _median_of(a, axis, keepdims, ignore_nans):
@@ -7792,7 +7824,7 @@ def _median_of(a, axis, keepdims, ignore_nans):
         return _kept_dims(result, a, axes, (), keepdims)
     middle = extent // 2  # NumPy's mean of the middle one or two: their sum from +0, so −0 becomes +0
     # the middle one or two, and the last where a NaN answers its line (the stable sort's last)
-    nans = inexact and any(isnan(joined))
+    nans = inexact and bool(any(isnan(joined)))
     picked = _order_statistics(joined, asarray([middle - 1 + extent % 2, middle] + [extent - 1] * nans, "int64"), rest)
     high = asarray(reshape(picked[..., 1:2], rest), wide)
     if extent % 2:
@@ -7940,6 +7972,10 @@ def _quantiles(a, q, axis, method, keepdims, ignore_nans, weak, name):
                 result = where(empty, _math.nan, result)
         elif nans:
             result = where(isnan(last_value[0]), last_value[0], result)
+            if not lead and not rest and bool(any(isnan(last_value[0]))):
+                # NumPy's _quantile answers a single quantile of a slice with a NaN by the slice's last value itself
+                # (``result = arr[-1]``), in the array's dtype where the interpolation's would be wider
+                result = asarray(result, a.dtype)
     # rest + (Q,) to lead + rest
     result = _permuted(result, [len(rest)] + list(range(len(rest)))) if rest else result
     result = reshape(result, lead + rest)
@@ -8075,7 +8111,7 @@ def quantile(a, q, axis=None, out=None, overwrite_input=False, method="linear", 
         >>> numerical.quantile([1.0, 2.0, 3.0, 4.0], [0.25, 0.5])
         numerical.Tensor([1.75, 2.5], dtype=float64)
         >>> numerical.quantile([1.0, 2.0, 3.0], 0.5, method="inverted_cdf", weights=[1.0, 1.0, 3.0])
-        3.0
+        numerical.Tensor(3.0, dtype=float64)
     """
     return _quantile_entry(a, q, axis, out, method, keepdims, weights, 1, False, "quantile")
 
@@ -8115,7 +8151,7 @@ def average(a, axis=None, weights=None, returned=False, *, keepdims=False):
     Examples:
         >>> import numerical
         >>> numerical.average([1.0, 2.0, 4.0], weights=[3.0, 1.0, 0.0])
-        1.25
+        numerical.Tensor(1.25, dtype=float64)
     """
     a = _operand(a)
     axes = None if axis is None else _resolved_axes(a, axis, "average")
@@ -8234,7 +8270,7 @@ def corrcoef(x, y=None, rowvar=True, *, dtype=None):
     c = cov(x, y, rowvar, dtype=dtype)
     if not isinstance(c, Tensor) or not c.shape:
         c = c if isinstance(c, Tensor) else asarray(c)
-        return _number_if_scalar(c / c)  # NaN for a constant variable, as NumPy's
+        return c / c  # NaN for a constant variable, as NumPy's
     d = _linalg_diagonal(c)
     stddev = sqrt(real(d))
     c = c / reshape(stddev, (stddev.shape[0], 1))
@@ -9113,7 +9149,7 @@ def trapezoid(y, x=None, dx=1.0, axis=-1):
     Examples:
         >>> import numerical
         >>> numerical.trapezoid([1.0, 2.0, 3.0])
-        4.0
+        numerical.Tensor(4.0, dtype=float64)
     """
     y = _tensor(y)
     rank = len(y.shape)
@@ -9131,7 +9167,7 @@ def trapezoid(y, x=None, dx=1.0, axis=-1):
     later = y[_along_axis(axis, rank, slice(1, None))]
     earlier = y[_along_axis(axis, rank, slice(None, -1))]
     result = sum(d * (later + earlier) / 2.0, axis=axis)
-    return result[()] if isinstance(result, Tensor) and not result.shape else result
+    return result
 
 
 def _entry(t, i):
@@ -9306,7 +9342,7 @@ def ravel_multi_index(multi_index, dims, mode="raise", order="C"):
         else:
             c = clip(c, 0, _builtins.max(extent - 1, 0))
         flat = flat + c * step
-    return flat[()] if not flat.shape else flat
+    return flat
 
 
 def unravel_index(indices, shape, order="C"):
@@ -9332,7 +9368,7 @@ def unravel_index(indices, shape, order="C"):
     for k in (range(len(dims) - 1, -1, -1) if order == "C" else range(len(dims))):
         coordinates[k] = remainder % dims[k] if dims[k] else remainder
         remainder = remainder // dims[k] if dims[k] else remainder
-    return tuple(c[()] if not c.shape else c for c in coordinates)
+    return tuple(coordinates)
 
 
 def correlate(a, v, mode="valid"):
@@ -9657,8 +9693,8 @@ def _uniform_histogram(a, edges, first, last, count, span, weights):
     if not (isinstance(offset, Tensor) and isinstance(quotient, Tensor)):
         return None
     start = asarray(first, offset.dtype)
-    return _numerical._histogram_uniform(a, edges, float(first), float(last), float(start[()]),
-                                         offset.dtype == "float32", float(asarray(span, quotient.dtype)[()]),
+    return _numerical._histogram_uniform(a, edges, float(first), float(last), start.item(),
+                                         offset.dtype == "float32", asarray(span, quotient.dtype).item(),
                                          quotient.dtype == "float32", weights)
 
 
@@ -9761,7 +9797,7 @@ def interp(x, xp, fp, left=None, right=None, period=None):
     fills = [default if v is None else asarray([v], dtype) for v, default in ((left, values[0:1]),
                                                                               (right, values[-1:]))]
     result = _native(_numerical._interp, points, knots, values, fills[0], fills[1], _interp_fuses())
-    return result[()] if not result.shape else result
+    return result
 
 
 def _window_points(M):
@@ -9850,7 +9886,7 @@ def i0(x):
         small = exp(x) * _chebyshev(x / 2.0 - 2, _I0_A)
         large = exp(x) * _chebyshev(32.0 / x - 2.0, _I0_B) / sqrt(x)
     result = where(x <= 8.0, small, large)
-    return result[()] if not result.shape else result
+    return result
 
 
 def kaiser(M, beta):
@@ -9877,7 +9913,7 @@ def polyval(p, x):
     y = zeros_like(x)
     for k in range(p.shape[0]):
         y = y * x + reshape(p[k:k + 1], p.shape[1:])  # a Tensor of rank 0 for a coefficient: strong, as NumPy's
-    return y[()] if not y.shape else y
+    return y
 
 
 def polyder(p, m=1):

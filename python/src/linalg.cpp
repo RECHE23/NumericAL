@@ -83,7 +83,7 @@ PyObject* module_determinant(PyObject* /*self*/, PyObject* args)
             const sb::scoped_gil_release unlocked {releases_gil_cubic(count_of(*h))};
             value.emplace(determinant_tensor(*h));
         }
-        return visit_numeric([](const auto& t) { return from_scalar(t.data()[0]); }, *value);
+        return visit_numeric([](const auto& t) { return rank0(t.data()[0]); }, *value);
     }
     catch (...) {
         return set_cpp_error();
@@ -115,13 +115,17 @@ PyObject* module_slogdet(PyObject* /*self*/, PyObject* args)
             const sb::scoped_gil_release unlocked {releases_gil_cubic(count_of(*h))};
             value.emplace(slogdet_tensors(*h));
         }
-        const auto scalar {[](const any_tensor& v) { return visit_numeric([](const auto& t) { return from_scalar(t.data()[0]); }, v); }};
+        const auto scalar {[](const any_tensor& v) { return visit_numeric([](const auto& t) { return rank0(t.data()[0]); }, v); }};
         PyObject* sign {scalar(std::get<0>(*value))}; // new ref
         if (sign == nullptr) {
             return nullptr;
         }
-        const double logarithm {visit_numeric([](const auto& t) { return static_cast<double>(std::real(t.data()[0])); }, std::get<1>(*value))};
-        return Py_BuildValue("(Nd)", sign, logarithm); // N: the tuple takes the reference
+        PyObject* logarithm {visit_numeric([](const auto& t) { return rank0(std::real(t.data()[0])); }, std::get<1>(*value))};
+        if (logarithm == nullptr) {
+            Py_DECREF(sign);
+            return nullptr;
+        }
+        return Py_BuildValue("(NN)", sign, logarithm); // N: the tuple takes the references
     }
     catch (...) {
         return set_cpp_error();
@@ -1363,7 +1367,7 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
                 const sb::scoped_gil_release unlocked {releases_gil_cubic(n * n)};
                 value.emplace(numerical::determinant(matrix_of_elements(static_cast<const T*>(left.data), n, n)));
             }
-            return from_scalar(*value);
+            return rank0(*value);
         }
         if (operation == "slogdet") {
             std::optional<std::pair<T, double>> value;
@@ -1371,11 +1375,16 @@ PyObject* module_borrowed_linalg(PyObject* /*self*/, PyObject* args)
                 const sb::scoped_gil_release unlocked {releases_gil_cubic(n * n)};
                 value.emplace(numerical::lu_decomposition<T> {matrix_of_elements(static_cast<const T*>(left.data), n, n)}.log_determinant());
             }
-            PyObject* sign {from_scalar(value->first)}; // new ref
+            PyObject* sign {rank0(value->first)}; // new ref
             if (sign == nullptr) {
                 return nullptr;
             }
-            return Py_BuildValue("(Nd)", sign, value->second);
+            PyObject* logarithm {rank0(value->second)};
+            if (logarithm == nullptr) {
+                Py_DECREF(sign);
+                return nullptr;
+            }
+            return Py_BuildValue("(NN)", sign, logarithm);
         }
         Py_RETURN_NOTIMPLEMENTED;
     };

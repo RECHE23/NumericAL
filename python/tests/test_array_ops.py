@@ -160,10 +160,10 @@ class ShapesAndCreation(unittest.TestCase):
                         self.assertEqual(got.dtype, str(want.dtype))
                         np.testing.assert_array_equal(np.asarray(got), want)
         tensor = numerical.asarray([1.0, 2.0])
-        for given, kind in ((np.dtype("float64"), float), (np.dtype("complex128"), complex)):  # equal to the type
+        for given in (np.dtype("float64"), np.dtype("complex128")):  # equal to the type: a rank-0 Tensor of it
             with self.subTest(reduction_dtype=given):
                 self.assertEqual(tensor.sum(dtype=given), 3.0)
-                self.assertIs(type(tensor.sum(dtype=given)), kind)
+                self.assertEqual((tensor.sum(dtype=given).dtype, tensor.sum(dtype=given).shape), (given.name, ()))
         for given in (np.int32, np.dtype("float16"), np.dtype("U3")):
             with self.subTest(dtype=given), self.assertRaises(TypeError):
                 numerical.asarray([1.0], dtype=given)

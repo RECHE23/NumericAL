@@ -1137,7 +1137,7 @@ class TensorProtocol(unittest.TestCase):
             self.assertEqual((m @ v).tolist(), numerical.einsum("ij,j->i", m, v).tolist())
             self.assertEqual((v @ m).tolist(), numerical.einsum("i,ij->j", v, m).tolist())
             self.assertEqual(v @ v, 5.0)
-            self.assertIsInstance(v @ v, float if m is real else complex)
+            self.assertEqual(((v @ v).dtype, (v @ v).shape), (m.dtype, ()))
         self.assertEqual((real @ [[1.0], [1.0]]).tolist(), [[3.0], [7.0]])
         with self.assertRaises(numerical.LinAlgError):
             numerical.asarray([[[1.0]]]) @ real

@@ -14,7 +14,7 @@ class IndexFunctions(unittest.TestCase):
     def test_without_numpy(self):
         t = numerical.asarray([[3.0, 1.0, 3.0], [2.0, float("nan"), 5.0]])
         self.assertEqual(numerical.argmax(t), 4)  # the first NaN
-        self.assertIs(type(numerical.argmax(t)), int)
+        self.assertEqual((numerical.argmax(t).dtype, numerical.argmax(t).shape), ("int64", ()))
         self.assertEqual(numerical.argmax(t, axis=0).tolist(), [0, 1, 1])
         self.assertEqual(numerical.argmax(t, axis=0).dtype, "int64")
         self.assertEqual(numerical.argmin(t, axis=1, keepdims=True).shape, (2, 1))

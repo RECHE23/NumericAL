@@ -1527,6 +1527,14 @@ inline bool read_integers(PyObject* seq, std::vector<Py_ssize_t>& out)
     return true;
 }
 
+// A Tensor of rank 0 holding `value`, in T's dtype: what a full reduction, a dot product of vectors or an index into
+// every axis answers (the array API's rank-0 array, where NumPy answers a scalar of its own).
+template <typename T>
+PyObject* rank0(T value)
+{
+    return wrap(any_tensor {numerical::tensor<T> {std::vector<std::size_t> {}, numerical::buffer<T>(1, value)}});
+}
+
 // The elements `starts[a] + k·steps[a]`, `k < counts[a]`, on every axis `a` of `t`, as a view (tensor::sliced) that
 // reads them where they lie: the axes with `keep[a]` are the result's, the others are indexed by one integer and
 // dropped; all of them dropped, the element itself.
@@ -1535,10 +1543,7 @@ PyObject* take_from(const numerical::tensor<T>& t, const std::vector<std::size_t
                     const std::vector<std::ptrdiff_t>& steps, const std::vector<std::size_t>& counts,
                     const std::vector<std::size_t>& keep)
 {
-    if (std::ranges::none_of(keep, [](std::size_t k) { return k != 0; })) { // every axis indexed: the element, a number
-        return from_scalar<T>(t(starts));
-    }
-    return wrap(any_tensor {t.sliced(starts, steps, counts, keep)});
+    return wrap(any_tensor {t.sliced(starts, steps, counts, keep)}); // every axis indexed: a rank-0 view
 }
 
 // _take(t, starts, steps, counts, keep) -> Tensor or number: the indexing behind Tensor.__getitem__, whose
@@ -1898,7 +1903,7 @@ template <typename T>
 PyObject* sum_or_mean(bool mean, const numerical::tensor<T>& t, Py_ssize_t axis)
 {
     if (axis < 0) { // + T {}: NumPy's add.reduce starts from +0, so its sum (and mean) of negative zeros is +0
-        return from_scalar<T>((mean ? numerical::mean(t) : numerical::sum(t)) + T {});
+        return rank0<T>((mean ? numerical::mean(t) : numerical::sum(t)) + T {});
     }
     const auto a {static_cast<std::size_t>(axis)};
     return wrap(any_tensor {mean ? numerical::mean(t, a) : numerical::sum(t, a)});
@@ -1908,7 +1913,7 @@ template <typename T>
 PyObject* extreme_of(bool largest, const numerical::tensor<T>& t, Py_ssize_t axis)
 {
     if (axis < 0) {
-        return from_scalar<T>(largest ? numerical::max(t) : numerical::min(t));
+        return rank0<T>(largest ? numerical::max(t) : numerical::min(t));
     }
     const auto a {static_cast<std::size_t>(axis)};
     return wrap(any_tensor {largest ? numerical::max(t, a) : numerical::min(t, a)});
@@ -1968,7 +1973,7 @@ PyObject* truth_of(bool any, const numerical::tensor<T>& t, Py_ssize_t axis)
                 }
             });
         }
-        return from_scalar(boolean {found.load() == any});
+        return rank0(boolean {found.load() == any});
     }
     const auto a {static_cast<std::size_t>(axis)};
     if (a >= shape.size()) {
@@ -2029,7 +2034,7 @@ inline PyObject* counted_trues(bool mean, const bool_tensor& t, Py_ssize_t axis)
             });
         }
         const auto total {static_cast<double>(std::accumulate(partial.begin(), partial.end(), std::size_t {0}))};
-        return from_scalar<double>(mean ? numerical::detail::divided_by_count(total, n) : total);
+        return rank0<double>(mean ? numerical::detail::divided_by_count(total, n) : total);
     }
     const auto                     a {static_cast<std::size_t>(axis)};
     const numerical::detail::axis_walk walk {numerical::detail::walk_along(t.shape(), a)};
@@ -3882,9 +3887,6 @@ inline std::optional<PyObject*> borrowed_product(PyObject* a, PyObject* b)
             default: product(std::type_identity<std::complex<float>> {}); break;
             }
         }
-        if (ranks[0] == 1 && ranks[1] == 1) { // two vectors give a number, as NumPy's
-            return visit_numeric([](const auto& t) { return from_scalar(t.data()[0]); }, *result);
-        }
         return wrap(std::move(*result));
     }
     catch (...) {
@@ -3892,7 +3894,7 @@ inline std::optional<PyObject*> borrowed_product(PyObject* a, PyObject* b)
     }
 }
 
-// _borrowed_product(a, b) -> Tensor, number or NotImplemented: numerical.matmul's product of operands read where they
+// _borrowed_product(a, b) -> Tensor or NotImplemented: numerical.matmul's product of operands read where they
 // lie (borrowed_product), NotImplemented when they cannot be, the caller then converting them.
 PyObject* module_borrowed_product(PyObject* /*self*/, PyObject* args); // in products.cpp
 
