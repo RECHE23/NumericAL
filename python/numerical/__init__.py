@@ -705,7 +705,7 @@ def _matmul_shapes(a_shape, b_shape):
 
 def _matmul(self, other):
     """``a @ b`` as NumPy's matmul: vectors and matrices, and stacks of matrices along leading axes broadcast against
-    each other (a number for two vectors); the dtypes promoted as NumPy promotes them."""
+    each other (a rank-0 Tensor for two vectors); the dtypes promoted as NumPy promotes them."""
     other = _read_beside(other, self)
     _matmul_shapes(self.shape, other.shape)
     dtype = _promoted((self.dtype, other.dtype))
@@ -731,7 +731,7 @@ def matmul(x1, x2, /):
         x2: The right operand, a Tensor or an array-like of rank 1 or more.
 
     Returns:
-        Tensor | float | complex: The product; a number for two vectors.
+        Tensor: The product; of rank 0 for two vectors.
 
     Raises:
         LinAlgError: if an operand is of rank 0 or the inner dimensions differ (the message names both shapes).
@@ -1232,8 +1232,8 @@ def determinant(a, /, *, overwrite_a=False, check_finite=True):
         check_finite: Accepted for SciPy's signature; ignored (an infinite or NaN entry always raises).
 
     Returns:
-        float | complex | Tensor: The determinant, a number (complex for a complex matrix); for a stack, a Tensor of
-        the stack's leading shape.
+        Tensor: The determinant, of rank 0 for a matrix (complex for a complex one); for a stack, of the stack's
+        leading shape.
 
     Raises:
         LinAlgError: if `a` is not a square matrix (or a stack of them) or holds an infinite or NaN entry.
@@ -1752,7 +1752,7 @@ def expm_cond(A, check_finite=True):
         LinAlgError: if `A` is not square or holds an infinite or NaN entry.
     """
     del check_finite
-    return _expm_cond(A)
+    return asarray(_expm_cond(A), "float64")
 _eigh = _linalg(_numerical.eigh, arrays=1)
 _eigh_pencil = _linalg(_numerical.eigh_pencil, arrays=2)
 _eigh_subset = _linalg(_numerical.eigh_subset, arrays=1)
@@ -2688,7 +2688,7 @@ def lstsq(a, b, rcond=None, *, cond=None, overwrite_a=False, overwrite_b=False, 
         >>> x
         numerical.Tensor([1.0, 1.0], dtype=float64)
         >>> residuals, rank, s
-        (numerical.Tensor([9.0], dtype=float64), 2, numerical.Tensor([2.0, 1.0], dtype=float64))
+        (numerical.Tensor([9.0], dtype=float64), numerical.Tensor(2, dtype=int64), numerical.Tensor([2.0, 1.0], dtype=float64))
     """
     del overwrite_a, overwrite_b, check_finite
     if lapack_driver not in (None, "gelsd", "gelsy", "gelss"):
@@ -2702,11 +2702,11 @@ def lstsq(a, b, rcond=None, *, cond=None, overwrite_a=False, overwrite_b=False, 
     b = b if isinstance(b, Tensor) else _read(b)
     if rcond is not None and rcond < 0:
         rcond = _MACHINE_EPSILON["float32" if _promoted((a.dtype, b.dtype)) in _SINGLE else "float64"]
-    answer = _lstsq(a, b, rcond)
-    if (cond is not None or lapack_driver is not None) and len(b.shape) == 1 and answer[1].shape == (1,):
-        x, residuals, rank, values = answer  # a SciPy-style call: SciPy's residue of a vector b is a number
-        return x, float(residuals.tolist()[0]), rank, values
-    return answer
+    x, residuals, rank, values = _lstsq(a, b, rcond)
+    rank = asarray(rank, "int64")  # a rank-0 Tensor, as every number a function answers
+    if (cond is not None or lapack_driver is not None) and len(b.shape) == 1 and residuals.shape == (1,):
+        return x, reshape(residuals, ()), rank, values  # a SciPy-style call: SciPy's residue of a vector b is a number
+    return x, residuals, rank, values
 
 
 def pinv(a, rcond=None, hermitian=False, *, rtol=None, atol=None, return_rank=False, check_finite=True):
@@ -3050,7 +3050,7 @@ def vector_norm(x, /, *, axis=None, keepdims=False, ord=2):
             smallest, 0 how many are not zero.
 
     Returns:
-        float | Tensor: The norm, real, of `x`'s precision: a number for a whole reduction, else a Tensor.
+        Tensor: The norm, real, of `x`'s precision: of rank 0 for a whole reduction.
 
     Raises:
         ValueError: for an `ord` that is not a real number, an `axis` out of range or repeated, or ``ord=-inf`` over no
@@ -3152,7 +3152,7 @@ def norm(x, ord=None, axis=None, keepdims=False):
         keepdims: Keep each reduced axis with extent 1.
 
     Returns:
-        float | Tensor: The norm, real, of `x`'s precision: a number for a whole reduction, else a Tensor.
+        Tensor: The norm, real, of `x`'s precision: of rank 0 for a whole reduction.
 
     Raises:
         ValueError: for an `ord` with no `axis` on a rank other than 1 or 2, an `ord` not offered, an `axis` out of
@@ -3200,7 +3200,7 @@ def cond(x, p=None):
             for a square matrix.
 
     Returns:
-        float | Tensor: The condition number; for a stack, a Tensor of its leading shape.
+        Tensor: The condition number, of rank 0; for a stack, of its leading shape.
 
     Raises:
         LinAlgError: if `x` is not a matrix or a stack of them, is empty, is not square for a `p` other than
@@ -3351,7 +3351,7 @@ def _linalg_trace(x, /, *, offset=0, dtype=None):
         dtype: The result's dtype, when given.
 
     Returns:
-        float | complex | Tensor: The trace, a number for a matrix; for a stack, a Tensor of its leading shape.
+        Tensor: The trace, of rank 0 for a matrix; for a stack, of its leading shape.
 
     Raises:
         ValueError: if `x` is of rank below 2.
@@ -3420,7 +3420,7 @@ def diagonal(a, offset=0, axis1=0, axis2=1):
 
 def trace(a, offset=0, axis1=0, axis2=1, dtype=None, out=None):
     """The sum of the `offset` diagonal of the matrices that the axes `axis1` and `axis2` of `a` hold, as
-    ``numpy.trace``: a number for a matrix, else a Tensor of the other axes. ``numerical.linalg.trace`` takes the last
+    ``numpy.trace``: of rank 0 for a matrix, else of the other axes. ``numerical.linalg.trace`` takes the last
     two axes, as ``numpy.linalg.trace``.
 
     Examples:
@@ -3957,7 +3957,7 @@ sum = _reduction("sum", """The sum of every element, or the sums along `axis`, a
         initial: The value each sum starts from, in its dtype, as NumPy's; None for none.
 
     Returns:
-        float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (int64 for a bool one).
+        Tensor: Of `a`'s dtype (int64 for a bool one), of rank 0 for every element.
 
     Raises:
         ValueError: for an axis out of range or repeated.
@@ -3984,7 +3984,7 @@ mean = _reduction("mean", """The mean of every element, or the means along `axis
         keepdims: Keep each reduced axis with extent 1, as NumPy's.
 
     Returns:
-        float | complex | Tensor: A number for every element, else a Tensor of `a`'s dtype (float64 for a bool or an int64 one).
+        Tensor: Of `a`'s dtype (float64 for a bool or an int64 one), of rank 0 for every element.
 
     Raises:
         ValueError: for an axis out of range or repeated.
@@ -5352,7 +5352,7 @@ def pinvh(a, atol=None, rtol=None, lower=True, return_rank=False, check_finite=T
     kept = absolute(s) > atol + largest * rtol
     inverted = where(kept, 1.0 / where(kept, s, 1.0), 0.0)  # a dropped eigenvalue's column weighs nothing
     B = (u * inverted.astype(u.dtype)) @ conj(matrix_transpose(u))
-    return (B, int(sum(kept))) if return_rank else B
+    return (B, asarray(int(sum(kept)), "int64")) if return_rank else B
 
 
 def _maybe_real(A, B):
@@ -6555,7 +6555,7 @@ def dot(a, b):
         b: The right operand: a Tensor or an array-like.
 
     Returns:
-        Tensor | float | complex: The product; a number for two vectors.
+        Tensor: The product; of rank 0 for two vectors.
 
     Raises:
         LinAlgError: if the summed axes differ in extent.
@@ -6620,7 +6620,7 @@ def ptp(a, axis=None, out=None, keepdims=False):
 
 def _finished(kept, axes, keepdims):
     """A reduction over `axes` computed with them kept (`kept`, so that its arithmetic stays in its dtype: an int64
-    wrapping, a float32 rounding, a 0/0 a NaN), in the shape the caller asked for: a number for every axis without
+    wrapping, a float32 rounding, a 0/0 a NaN), in the shape the caller asked for: of rank 0 for every axis without
     `keepdims`, as a full reduction answers."""
     if keepdims:
         return kept
@@ -7803,7 +7803,7 @@ def nanargmin(a, axis=None, out=None, *, keepdims=False):
 
 def _reduced_shape(result, a, axis, keepdims, name):
     """A result computed with every reduced axis kept (extent 1) in the shape `keepdims` asks: the reduced axes dropped
-    without it (a number for a rank-0 result)."""
+    without it."""
     if keepdims:
         return result
     axes = _resolved_axes(a, axis, name)

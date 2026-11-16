@@ -36,6 +36,25 @@ machine's byte order and of one of the four numeric dtypes; `solve`, `det`, `slo
 or complex128 array so too, into the one copy their factorisation takes (a product of order 512 by a vector: 18 µs,
 against 231 µs through a copy). Any other array is copied first, with the same answer.
 
+## Numbers as rank-0 Tensors
+
+A full reduction, a dot product of two vectors and an index into every axis answer a Tensor of rank 0, in the dtype
+the computation has (float32 for a float32 sum, int64 for a count), not a Python number: what the array API asks, and
+the same type whatever is installed beside NumericAL. It is a number wherever Python asks for one:
+
+```pycon
+>>> t = numerical.asarray([[1.0, 2.0], [3.0, 4.0]])
+>>> s = t.sum()
+>>> s
+numerical.Tensor(10.0, dtype=float64)
+>>> float(s), s.item(), f"{s:.1f}", s == 10.0
+(10.0, 10.0, '10.0', numerical.Tensor(True, dtype=bool))
+>>> t[1, 0] + 1
+numerical.Tensor(4.0, dtype=float64)
+>>> len({t[0, 0], 1.0})  # one key: the Tensor and the float hash and compare alike
+1
+```
+
 ## Computing
 
 A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`, `t[..., 0]`, `t[None, i]`, `t[[2, 0]]`, `t[:, [1, 0], 2]`,
