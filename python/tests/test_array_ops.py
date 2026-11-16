@@ -128,8 +128,8 @@ class ShapesAndCreation(unittest.TestCase):
                  (numerical.full((2, 3), numerical.asarray([[1.0], [2.0]])), np.full((2, 3), [[1.0], [2.0]])),
                  (numerical.full((2,), [1j, 2.0]), np.full((2,), [1j, 2.0])),
                  (numerical.full((2, 2), [1.0, 2.0], dtype="float32"), np.full((2, 2), [1.0, 2.0], dtype=np.float32)),
-                 (numerical.eye(3), np.eye(3)), (numerical.arange(5), np.arange(5.0)),
-                 (numerical.arange(1, 2, 0.25), np.arange(1, 2, 0.25)), (numerical.arange(3, 0, -1), np.arange(3.0, 0, -1)),
+                 (numerical.eye(3), np.eye(3)), (numerical.arange(5), np.arange(5)),
+                 (numerical.arange(1, 2, 0.25), np.arange(1, 2, 0.25)), (numerical.arange(3, 0, -1), np.arange(3, 0, -1)),
                  (numerical.linspace(0, 1, 7), np.linspace(0, 1, 7)), (numerical.linspace(-2, 5), np.linspace(-2, 5)),
                  (numerical.linspace(0, 1, 1), np.linspace(0, 1, 1)), (numerical.linspace(0, 1, 0), np.linspace(0, 1, 0))]
         for got, want in cases:
