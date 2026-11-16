@@ -10,6 +10,13 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Breaking
 
+- **A number is a rank-0 Tensor**: a full reduction (`sum`, `mean`, `max`, `any`, `count_nonzero`, the norms,
+  `det`, `trace`, `matrix_rank`…), a dot product of two vectors (`dot`, `vdot`, `@`) and an index into every axis
+  (`t[0, 1]`) answer a Tensor of shape `()` in the computation's dtype, as the array API's arrays, where they answered
+  a Python float, int, complex or bool (NumPy's a scalar of its own). It converts and prints as its number (`float`,
+  `int`, `complex`, an index, `str`, `format`, `round`), hashes as it, and `item()` gives the number; `isinstance(x,
+  float)` is now false. A list of them reads as a Tensor (`asarray([t[0], t[1]])`, their dtypes promoted). `matrix_rank`
+  of a stack is an int64 Tensor, where it was a nested list. The array API's conformance suite passed 84–86 % before.
 - **Integers as integers**: NumPy's integer arrays (int8 to int64, and the unsigned ones but uint64, read as
   float64) and Python's ints, alone or in a list, are read as int64, as NumPy reads them, where they were float64
   (`asarray([1, 2])` was `[1.0, 2.0]`). They compute as NumPy's integers: `+ - * // % **`, the sums and products,

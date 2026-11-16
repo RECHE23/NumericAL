@@ -38,6 +38,12 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
 
 ## Answers that differ on purpose
 
+- **A number is a rank-0 Tensor**: a full reduction (`sum(t)`, `t.max()`, `norm(v)`, `det(a)`), a dot product of two
+  vectors and an index into every axis (`t[0, 1]`) answer a Tensor of shape `()` in the dtype NumPy's scalar would
+  have, as the array API's arrays do, where NumPy answers a scalar of its own (`numpy.float64`, itself a Python
+  float). It converts as a number does (`float(x)`, `int(x)`, `complex(x)`, an index), prints as its number (`str`,
+  `f"{x:.3f}"`), rounds (`round(x)`) and hashes as it, so that it stands for the number in a set or a dict; `x.item()`
+  is the Python number. `isinstance(x, float)` is false, as is `type(x) is int`.
 - **2-norms never overflow or underflow** where their value is in range: `vector_norm([1e200, 1e200])` is
   1.414e200, where NumPy's is infinite.
 - **`maximum`, `minimum`, `fmax`, `fmin`, `max` and `min` order the zeros** as IEEE 754-2019: +0 above −0,
