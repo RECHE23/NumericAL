@@ -2469,3 +2469,79 @@ TEST(round_to_decimal_places)
   const tensor<std::complex<float>> narrow {numerical::round(tensor<std::complex<float>> {{1}, {std::complex<float> {2.5F, 1e-39F}}}, 40)};
   EXPECT(narrow.data()[0] == std::complex<float>(2.5F, static_cast<float>(1e-39)));
 }
+
+namespace {
+  //! \brief Whether \p whole (a float function of tensors) gives, for each of \p x, \p one's bits (the scalar float
+  //!        function) and the double \p wide rounded once, within half a float's ulp of \p reference (the C library's
+  //!        double, within two of its own ulps) and 2⁻²⁸ more.
+  template <typename Whole,
+            typename One,
+            typename Wide,
+            typename Reference>
+  bool through_doubles_holds(const std::vector<float>& x,
+                             Whole                     whole,
+                             One                       one,
+                             Wide                      wide,
+                             Reference                 reference)
+  {
+    const numerical::tensor<float> values {{x.size()}, numerical::buffer<float>(x.begin(), x.end())};
+    const numerical::tensor<float> image  {whole(values)};
+    bool                           holds  {true};
+    for (std::size_t i {0}; i < x.size(); ++i) {
+      const float  got     {image.data()[i]};
+      const float  rounded {static_cast<float>(wide(static_cast<double>(x[i])))};
+      const double exact   {reference(static_cast<double>(x[i]))};
+      holds = holds && std::bit_cast<std::uint32_t>(got) == std::bit_cast<std::uint32_t>(one(x[i]))
+              && std::bit_cast<std::uint32_t>(got) == std::bit_cast<std::uint32_t>(rounded);
+      if (std::isfinite(exact) && std::fabs(exact) <= std::numeric_limits<float>::max()) {
+        const auto   magnitude {static_cast<float>(std::fabs(exact))};
+        const double ulp       {static_cast<double>(std::nextafter(magnitude, std::numeric_limits<float>::infinity()) - magnitude)};
+        holds = holds && std::fabs(static_cast<double>(got) - exact) <= ulp * (0.5 + 0x1p-28);
+      }
+      else {
+        holds = holds && (std::isnan(exact) ? std::isnan(got) : got == static_cast<float>(exact));
+      }
+    }
+    return holds;
+  }
+} // namespace
+
+// A float's atan, sinh, cosh, expm1, log1p and tanh are the double's by the tables, rounded once: within half a float's ulp
+// (and 2⁻²⁸), where glibc's float functions are within one or two, and each tensor's element the scalar's bits.
+// 3001 values: pieces of 512 and a last one shorter
+TEST(float_functions_are_the_doubles_rounded_once)
+{
+  namespace d = numerical::detail;
+  std::vector<float> x;
+  for (int i {0}; i < 3000; ++i) {
+    const float t {static_cast<float>(i) / 3000.0F};
+    x.push_back((t < 0.5F ? -1.0F : 1.0F) * std::ldexp(1.0F + t, (i % 300) - 150)); // magnitudes 2^-150 to 2^150
+  }
+  for (const float v : {0.0F, -0.0F, std::numeric_limits<float>::infinity(), std::numeric_limits<float>::quiet_NaN(),
+                        -1.0F, 89.5F, -89.5F, 1e-45F}) {
+    x.push_back(v);
+  }
+  x.resize(3001);
+  EXPECT(through_doubles_holds(
+           x, [](const auto& t) { return numerical::atan(t); }, [](float v) { return d::elementary_atan(v); },
+           [](double v) { return d::elementary_atan(v); }, [](double v) { return std::atan(v); }));
+  EXPECT(through_doubles_holds(
+           x, [](const auto& t) { return numerical::sinh(t); }, [](float v) { return d::elementary_sinh(v); },
+           [](double v) { return d::elementary_sinh(v); }, [](double v) { return std::sinh(v); }));
+  EXPECT(through_doubles_holds(
+           x, [](const auto& t) { return numerical::cosh(t); }, [](float v) { return d::elementary_cosh(v); },
+           [](double v) { return d::elementary_cosh(v); }, [](double v) { return std::cosh(v); }));
+  EXPECT(through_doubles_holds(
+           x, [](const auto& t) { return numerical::tanh(t); }, [](float v) { return d::elementary_tanh(v); },
+           [](double v) { return d::elementary_tanh(v); }, [](double v) { return std::tanh(v); }));
+  EXPECT(through_doubles_holds(
+           x, [](const auto& t) { return numerical::expm1(t); }, [](float v) { return d::elementary_expm1(v); },
+           [](double v) { return d::elementary_expm1(v); }, [](double v) { return std::expm1(v); }));
+  std::vector<float> above(x.size());
+  std::ranges::transform(x, above.begin(), [](float v) {
+                           return std::isnan(v) || v > -1.0F ? v : -1.0F - v; // log1p's domain, -1 included
+                         });
+  EXPECT(through_doubles_holds(
+           above, [](const auto& t) { return numerical::log1p(t); }, [](float v) { return d::elementary_log1p(v); },
+           [](double v) { return d::elementary_log1p(v); }, [](double v) { return std::log1p(v); }));
+}

@@ -48,6 +48,15 @@ A change that can break code is listed under **Breaking** and held for a month's
   a float64 beside an int64 tensor, where the operators and the int second had been made exact: now the same, mirrored
   (`less(k, t)` is `t > k`).
 
+### Changed
+
+- **`arctan`, `sinh`, `cosh`, `expm1`, `log1p` and `tanh` of a float32 array** are the float64 functions' (the
+  tables', in vectors) rounded once to float32: within half an ulp and 2⁻²⁸ of the exact value, where the C library's
+  float functions are within one or two, and faster than those scalar calls (x86-64 with GCC 13, one thread, 10⁶
+  values, `tanh` and `expm1` with the masks above: `sinh` 22 → 5.3 ms, `tanh` 19.8 → 4.7, `expm1` 13.5 → 3.6, `log1p` 12.9 → 5.0, `arctan` 12 → 3.9, `cosh` 8.5
+  → 5.1; Apple M1: `expm1` 7.0 → 3.2, `arctan` 5.5 → 3.9, `cosh` 6.3 → 4.9, `sinh` 5.6 → 5.1, the others as before).
+  The C++ functions of a `tensor<float>` likewise.
+
 ## 2026.11.16 — 2026-11-15
 
 ### Added

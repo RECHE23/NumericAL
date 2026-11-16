@@ -242,6 +242,37 @@ namespace numerical {
       return complex_sqrt(x);
     }
 
+    /*!
+     * \brief The function \p into (one of the `*_into` of doubles) of every one of the row-major floats at \p data, of
+     *        shape \p shape: each piece of 512 converted to doubles on the stack, \p into of them, each rounded back
+     *        once. The double within 0.51 of its ulp, the float is within half of its own and 2⁻²⁸ more, where the C
+     *        library's float functions are within one or two; and the doubles' vectors are faster than its scalar
+     *        calls (glibc's `sinhf` 4.4 times the doubles' `sinh`, `atanf` 3.5, `log1pf` 2.9).
+     */
+    template <typename Into>
+    [[nodiscard]] tensor<float> through_doubles(const float*                    data,
+                                                const std::vector<std::size_t>& shape,
+                                                Into                            into)
+    {
+      const std::size_t count  {element_count(shape.begin(), shape.end())};
+      buffer<float>     out(count);
+      const std::size_t chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
+      parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
+                     constexpr std::size_t   piece {512};
+                     std::array<double, piece> wide {};
+                     std::array<double, piece> image {};
+                     const std::size_t       last {std::min(count, (c + 1) * elementwise_chunk)};
+                     for (std::size_t first {c * elementwise_chunk}; first < last; first += piece) {
+                       const std::size_t size {std::min(piece, last - first)};
+                       std::copy_n(data + first, size, wide.begin());
+                       into(wide.data(), image.data(), size);
+                       std::transform(image.begin(), image.begin() + static_cast<std::ptrdiff_t>(size), out.data() + first,
+                                      [](double y) { return static_cast<float>(y); });
+                     }
+                   });
+      return tensor<float> {shape, std::move(out)};
+    }
+
     //! \brief `exp` of a scalar, as `std::exp` gives it.
     template <typename T>
     [[nodiscard]] T elementary_exp(const T& x)
@@ -401,6 +432,20 @@ namespace numerical {
       return tensor<double> {shape, std::move(out)};
     }
 
+    //! \brief `expm1` of a `float`, as \ref expm1_of gives it: \ref elementary_expm1 of the `double`, rounded once.
+    [[nodiscard]] inline float elementary_expm1(float x)
+    {
+      return static_cast<float>(elementary_expm1(static_cast<double>(x)));
+    }
+
+    //! \brief `expm1` of every one of the row-major floats at \p data, of shape \p shape: \ref expm1_into of them as
+    //!        doubles (\ref through_doubles).
+    [[nodiscard]] inline tensor<float> expm1_of(const float*                    data,
+                                                const std::vector<std::size_t>& shape)
+    {
+      return through_doubles(data, shape, &expm1_into);
+    }
+
     //! \brief `atan` of a scalar, as `std::atan` gives it.
     template <typename T>
     [[nodiscard]] T elementary_atan(const T& x)
@@ -471,6 +516,20 @@ namespace numerical {
                      atan_into(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
                    });
       return tensor<double> {shape, std::move(out)};
+    }
+
+    //! \brief `atan` of a `float`, as \ref atan_of gives it: \ref elementary_atan of the `double`, rounded once.
+    [[nodiscard]] inline float elementary_atan(float x)
+    {
+      return static_cast<float>(elementary_atan(static_cast<double>(x)));
+    }
+
+    //! \brief `atan` of every one of the row-major floats at \p data, of shape \p shape: \ref atan_into of them as
+    //!        doubles (\ref through_doubles).
+    [[nodiscard]] inline tensor<float> atan_of(const float*                    data,
+                                               const std::vector<std::size_t>& shape)
+    {
+      return through_doubles(data, shape, &atan_into);
     }
 
     //! \brief `sinh` of a scalar, as `std::sinh` gives it.
@@ -545,6 +604,20 @@ namespace numerical {
       return tensor<double> {shape, std::move(out)};
     }
 
+    //! \brief `sinh` of a `float`, as \ref sinh_of gives it: \ref elementary_sinh of the `double`, rounded once.
+    [[nodiscard]] inline float elementary_sinh(float x)
+    {
+      return static_cast<float>(elementary_sinh(static_cast<double>(x)));
+    }
+
+    //! \brief `sinh` of every one of the row-major floats at \p data, of shape \p shape: \ref sinh_into of them as
+    //!        doubles (\ref through_doubles).
+    [[nodiscard]] inline tensor<float> sinh_of(const float*                    data,
+                                               const std::vector<std::size_t>& shape)
+    {
+      return through_doubles(data, shape, &sinh_into);
+    }
+
     //! \brief `cosh` of a scalar, as `std::cosh` gives it.
     template <typename T>
     [[nodiscard]] T elementary_cosh(const T& x)
@@ -615,6 +688,20 @@ namespace numerical {
                      cosh_into(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
                    });
       return tensor<double> {shape, std::move(out)};
+    }
+
+    //! \brief `cosh` of a `float`, as \ref cosh_of gives it: \ref elementary_cosh of the `double`, rounded once.
+    [[nodiscard]] inline float elementary_cosh(float x)
+    {
+      return static_cast<float>(elementary_cosh(static_cast<double>(x)));
+    }
+
+    //! \brief `cosh` of every one of the row-major floats at \p data, of shape \p shape: \ref cosh_into of them as
+    //!        doubles (\ref through_doubles).
+    [[nodiscard]] inline tensor<float> cosh_of(const float*                    data,
+                                               const std::vector<std::size_t>& shape)
+    {
+      return through_doubles(data, shape, &cosh_into);
     }
 
     //! \brief 2^x below which `exp2` is subnormal, where \ref table_exp2's two scalings would round twice.
@@ -803,6 +890,20 @@ namespace numerical {
       return tensor<double> {shape, std::move(out)};
     }
 
+    //! \brief `log1p` of a `float`, as \ref log1p_of gives it: \ref elementary_log1p of the `double`, rounded once.
+    [[nodiscard]] inline float elementary_log1p(float x)
+    {
+      return static_cast<float>(elementary_log1p(static_cast<double>(x)));
+    }
+
+    //! \brief `log1p` of every one of the row-major floats at \p data, of shape \p shape: \ref log1p_into of them as
+    //!        doubles (\ref through_doubles).
+    [[nodiscard]] inline tensor<float> log1p_of(const float*                    data,
+                                                const std::vector<std::size_t>& shape)
+    {
+      return through_doubles(data, shape, &log1p_into);
+    }
+
     //! \brief `sin` of a scalar, as `std::sin` gives it.
     template <typename T>
     [[nodiscard]] T elementary_sin(const T& x)
@@ -922,6 +1023,20 @@ namespace numerical {
                      tanh_into(data + first, out.data() + first, std::min(elementwise_chunk, count - first));
                    });
       return tensor<double> {shape, std::move(out)};
+    }
+
+    //! \brief `tanh` of a `float`, as \ref tanh_of gives it: \ref elementary_tanh of the `double`, rounded once.
+    [[nodiscard]] inline float elementary_tanh(float x)
+    {
+      return static_cast<float>(elementary_tanh(static_cast<double>(x)));
+    }
+
+    //! \brief `tanh` of every one of the row-major floats at \p data, of shape \p shape: \ref tanh_into of them as
+    //!        doubles (\ref through_doubles).
+    [[nodiscard]] inline tensor<float> tanh_of(const float*                    data,
+                                               const std::vector<std::size_t>& shape)
+    {
+      return through_doubles(data, shape, &tanh_into);
     }
 
     /*!
@@ -1832,7 +1947,7 @@ namespace numerical {
 
   /*!
    * \brief `exp(x) − 1` of every real element, exact near 0: \ref detail::expm1_into of a `double` one (within 0.503
-   *        ulp of the exact value), `std::expm1` of a `float` one.
+   *        ulp of the exact value), the `double`'s rounded once of a `float` one (\ref detail::through_doubles, within half an ulp and 2⁻²⁸).
    */
   template <std::floating_point T>
   [[nodiscard]] tensor<T> expm1(const tensor<T>& a)
@@ -1842,7 +1957,7 @@ namespace numerical {
 
   /*!
    * \brief `atan` of every real element: \ref detail::atan_into of a `double` one (within 0.501 ulp of the exact
-   *        value), `std::atan` of a `float` one.
+   *        value), the `double`'s rounded once of a `float` one (\ref detail::through_doubles, within half an ulp and 2⁻²⁸).
    */
   template <std::floating_point T>
   [[nodiscard]] tensor<T> atan(const tensor<T>& a)
@@ -1852,7 +1967,7 @@ namespace numerical {
 
   /*!
    * \brief `sinh` of every real element: \ref detail::sinh_into of a `double` one (within 0.503 ulp of the exact
-   *        value, finite up to the overflow past 710.47), `std::sinh` of a `float` one.
+   *        value, finite up to the overflow past 710.47), the `double`'s rounded once of a `float` one (\ref detail::through_doubles, within half an ulp and 2⁻²⁸).
    */
   template <std::floating_point T>
   [[nodiscard]] tensor<T> sinh(const tensor<T>& a)
@@ -1862,7 +1977,7 @@ namespace numerical {
 
   /*!
    * \brief `cosh` of every real element: \ref detail::cosh_into of a `double` one (within 0.501 ulp of the exact
-   *        value, finite up to the overflow past 710.47), `std::cosh` of a `float` one.
+   *        value, finite up to the overflow past 710.47), the `double`'s rounded once of a `float` one (\ref detail::through_doubles, within half an ulp and 2⁻²⁸).
    */
   template <std::floating_point T>
   [[nodiscard]] tensor<T> cosh(const tensor<T>& a)
@@ -1889,7 +2004,7 @@ namespace numerical {
 
   /*!
    * \brief `log(1 + x)` of every real element, exact near 0: \ref detail::log1p_into of a `double` one (within 0.501
-   *        ulp of the exact value), `std::log1p` of a `float` one.
+   *        ulp of the exact value), the `double`'s rounded once of a `float` one (\ref detail::through_doubles, within half an ulp and 2⁻²⁸).
    */
   template <std::floating_point T>
   [[nodiscard]] tensor<T> log1p(const tensor<T>& a)
@@ -1920,7 +2035,7 @@ namespace numerical {
 
   /*!
    * \brief `tanh` of every element: \ref detail::tanh_into of a `double` one (within 0.502 ulp of the exact value),
-   *        `std::tanh` of a `float` one, \ref detail::complex_tanh of a complex one.
+   *        the `double`'s rounded once of a `float` one (\ref detail::through_doubles, within half an ulp and 2⁻²⁸), \ref detail::complex_tanh of a complex one.
    */
   template <typename T>
   [[nodiscard]] tensor<T> tanh(const tensor<T>& a)
