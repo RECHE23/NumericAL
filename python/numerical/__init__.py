@@ -4456,8 +4456,15 @@ isfinite = _classifier("isfinite", "Whether each element is finite (both parts o
                                    "``numpy.isfinite``: a bool Tensor.")
 
 
+_MIRRORED = {"<": ">", "<=": ">=", ">": "<", ">=": "<=", "==": "==", "!=": "!="}
+
+
 def _compared(op, name):
     def function(x1, x2, /):
+        if isinstance(x2, Tensor) and not isinstance(x1, Tensor) and _weak(x1):
+            # a Python number first, read beside the tensor as the method reads it (an int beside an int64 tensor
+            # exactly, where _read made it a float64): x1 op x2 is x2 mirrored-op x1
+            return _comparison(_MIRRORED[op])(x2, x1)
         return _comparison(op)(x1 if isinstance(x1, Tensor) else _read(x1), x2)
 
     function.__name__ = name

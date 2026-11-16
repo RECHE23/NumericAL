@@ -33,6 +33,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   for entries near 2⁻⁸¹⁹⁰. The scale is now taken in `long double` (the factors right at any scale), and a singular value
   the double it is held in cannot represent is refused (`argument_error`) rather than answered 0 or ∞.
 
+- **`equal`, `less` and the other comparison functions with a Python int first** (`less(2**60 + 1, t)`) read it as
+  a float64 beside an int64 tensor, where the operators and the int second had been made exact: now the same, mirrored
+  (`less(k, t)` is `t > k`).
+
 ## 2026.11.16 — 2026-11-15
 
 ### Added
