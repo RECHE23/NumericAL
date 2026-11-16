@@ -92,9 +92,9 @@ and an `IndexError`), is also a `numpy.exceptions.AxisError`; where `scipy.linal
   their exponents' roundings back. The last bits differ where NumPy's are that far.
 - **`take` with `mode="wrap"` from an empty axis** raises IndexError, as NumPy does for a result with elements; for
   one without, NumPy's loop never ends (numpy/numpy#11677).
-- **`partition` and `argpartition`** sort each line, one of the arrangements NumPy's allows (the element at each
-  `kth` the sorted one, none larger before it, none smaller after); NumPy's own leaves the rest in an order it does
-  not specify.
+- **`partition` and `argpartition`** select as NumPy's do (the element at each `kth` the sorted one, none larger
+  before it, none smaller after), the rest in no order specified, which is not NumPy's own arrangement: compare the
+  elements at the `kth` positions, not the whole lines.
 - **`bitwise_count` answers int64**, NumPy's uint8 (NumericAL has no unsigned dtype). An int64 shifted by 64 places
   or more (or a negative count) is 0, or −1 to the right of a negative number, as NumPy defines it; its 32-bit Windows
   build shifts as the processor does, the count taken modulo 64.
