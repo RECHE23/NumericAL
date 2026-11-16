@@ -99,9 +99,9 @@ float32), and one that moves elements (`concatenate`, `tril`, `transpose`) keeps
 >>> mask.any(axis=0)
 numerical.Tensor([True, True, True], dtype=bool)
 >>> (mask * t).dtype
-'float64'
+'int64'
 >>> mask.mean()
-0.6666666666666666
+numerical.Tensor(0.6666666666666666, dtype=float64)
 ```
 
 ## Promotion

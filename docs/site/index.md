@@ -74,7 +74,7 @@ numerical.Tensor([1.0, 0.5], dtype=float64)
 >>> numerical.einsum("ii->", a)
 numerical.Tensor(6.0, dtype=float64)
 >>> numerical.vector_norm([1e200, 1e200])
-1.414213562373095e+200
+numerical.Tensor(1.414213562373095e+200, dtype=float64)
 ```
 
 ```{toctree}
