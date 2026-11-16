@@ -50,6 +50,10 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **`expm1` and `tanh` built by GCC 13** (Ubuntu 24.04's, an install from the sources there): a clamp GCC 13 made a
+  branch left their loops scalar, 6.1 and 2.8 times the time of GCC 14's or Clang's (x86-64, 10⁶ doubles: 20.3 and
+  12.5 ms); by a mask, 3.3 and 4.4 ms, the same bits. The wheels, built by GCC 14, had the vectors already.
+
 - **`arctan`, `sinh`, `cosh`, `expm1`, `log1p` and `tanh` of a float32 array** are the float64 functions' (the
   tables', in vectors) rounded once to float32: within half an ulp and 2⁻²⁸ of the exact value, where the C library's
   float functions are within one or two, and faster than those scalar calls (x86-64 with GCC 13, one thread, 10⁶

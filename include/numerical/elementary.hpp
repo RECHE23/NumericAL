@@ -285,8 +285,9 @@ namespace numerical::detail {
   {
     double             sum    {};
     double             small  {};
-    // the lower clamp by a mask: GCC makes two `?:` clamps one branch, under which it vectorizes no loop
-    const double       above  {x > 710.0 ? 710.0 : x};
+    // both clamps by masks: GCC makes two `?:` clamps one branch, and GCC 13 even this one, under which it vectorizes
+    // no loop (expm1 of 10^6 doubles 20 ms, 3.3 by masks)
+    const double       above  {blend(x > 710.0, 710.0, x)};
     const std::int64_t e      {expm1_parts(blend(above < -40.0, -40.0, above), sum, small)};
     const std::int64_t half   {e / 2};
     const double       first  {std::bit_cast<double>(static_cast<std::uint64_t>(half + 1023) << 52U)};
@@ -306,7 +307,8 @@ namespace numerical::detail {
     const double       magnitude {std::fabs(x)};
     double             sum       {};
     double             small     {};
-    const std::int64_t e         {expm1_parts(2.0 * (magnitude > 22.0 ? 22.0 : magnitude), sum, small)}; // 0 to 64
+    // the clamp by a mask: GCC 13 makes a `?:` here a branch, under which it vectorizes no loop (12.5 ms, 4.4)
+    const std::int64_t e         {expm1_parts(2.0 * blend(magnitude > 22.0, 22.0, magnitude), sum, small)}; // 0 to 64
     double             high      {};
     double             low       {};
     two_sum(sum, small, high, low);
