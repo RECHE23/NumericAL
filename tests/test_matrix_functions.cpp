@@ -668,7 +668,8 @@ namespace {
 // diagonal written exactly); A^p A^(−p) = I with p from the floor (1.3) and from the ceiling (2.7) of the condition's
 // choice; whole powers by repeated squaring (0, 3, −2); a singular A by funm (its smallest singular value 0, and a
 // zero on its triangular form's diagonal behind a nonzero one), a negative power of it refused; a symmetric A with
-// p > 0 by its eigendecomposition (the diagonal one, an indefinite one); the refusals.
+// p > 0 by its eigendecomposition (the diagonal one, an indefinite one), with p < 0 by its eigenvectors' similarity;
+// the refusals.
 TEST(fractional_matrix_power_inverts_whole_powers)
 {
   const auto           complex_of = [](const matrix<double>& a) { return numerical::detail::as_complex(a); };
@@ -698,6 +699,15 @@ TEST(fractional_matrix_power_inverts_whole_powers)
   EXPECT(relative_gap(numerical::fractional_matrix_power(diagonal, -0.5), matrix<C> {{C {0.5}, C {}}, {C {}, C {1.0 / 3.0}}}) < 1e-15);
   const matrix<C> complex_diagonal     {{C {0.0, 4.0}, C {}}, {C {}, C {9.0}}};
   EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(complex_diagonal, 0.5), 2), complex_diagonal) < 1e-15);
+  // a Hermitian A's negative power by the upper triangle of Vᴴ A V, V its eigenvectors: real symmetric, indefinite (the
+  // principal branch: (−1)^(−1/2) = −i), complex
+  const matrix<double> symmetric {{4.0, 1.0, 0.5}, {1.0, 3.0, 0.2}, {0.5, 0.2, 2.0}};
+  EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(symmetric, -0.5), 2) * complex_of(symmetric), identity) < 1e-14);
+  EXPECT(relative_gap(numerical::fractional_matrix_power(symmetric, -1.25) * numerical::fractional_matrix_power(symmetric, 1.25), identity) < 1e-14);
+  const matrix<C> pair_identity        {{C {1.0}, C {}}, {C {}, C {1.0}}};
+  EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(indefinite, -0.5), 2) * complex_of(indefinite), pair_identity) < 1e-14);
+  const matrix<C> hermitian            {{C {2.0}, C {0.5, -0.3}}, {C {0.5, 0.3}, C {3.0}}};
+  EXPECT(relative_gap(whole_power(numerical::fractional_matrix_power(hermitian, -0.5), 2) * hermitian, pair_identity) < 1e-14);
   const matrix<double> zero_eigenvalue {{0.0, 0.0}, {0.0, 4.0}};
   EXPECT(relative_gap(numerical::fractional_matrix_power(zero_eigenvalue, 1.5), matrix<C> {{C {}, C {}}, {C {}, C {8.0}}}) < 1e-15);
   const matrix<double> rank_one        {{3.0, 1.0}, {3.0, 1.0}};                                               // its smallest singular value 3e-16, its Schur form's 0 exact
@@ -712,6 +722,35 @@ TEST(fractional_matrix_power_inverts_whole_powers)
   EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(matrix<double> {{std::numeric_limits<double>::quiet_NaN()}}, 0.5)),
                 numerical::non_finite_error);
   EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(dense, std::numeric_limits<double>::infinity())), std::invalid_argument);
+}
+
+// A triangle whose strict upper part is a rounding (1e-7 of its diagonal here) to a fractional power to first order in
+// that part: the Padé steps' power to the square of it, its diagonal positive, negative (the principal branch) and
+// complex; without the part, 1e-7 apart.
+TEST(a_nearly_diagonal_triangle_s_power_to_first_order)
+{
+  namespace d = numerical::detail;
+  const std::size_t                  n          {4};
+  const std::vector<C>               diagonal   {C {4.0}, C {1.0}, C {-0.25}, C {2.0, 1.0}};
+  numerical::buffer<C>               t(n * n, C {});
+  std::uint64_t                      state      {12345};
+  for (std::size_t i {0}; i < n; ++i) {
+    t[(i * n) + i] = diagonal[i];
+    for (std::size_t j {i + 1}; j < n; ++j) {
+      state          = (state * 6364136223846793005ULL) + 1442695040888963407ULL;
+      t[(i * n) + j] = C {1e-7 * ((static_cast<double>(state >> 11U) / 9007199254740992.0) - 0.5)};
+    }
+  }
+  for (const double p : {-0.5, 0.3, -0.75}) {
+    const matrix<C> first               {n, n, d::nearly_diagonal_power(t, n, p)};
+    const matrix<C> pade                {n, n, d::triangular_power(t, n, p)};
+    EXPECT(relative_gap(first, pade) < 1e-13);
+    numerical::buffer<C> alone(n * n, C {});
+    for (std::size_t i {0}; i < n; ++i) {
+      alone[(i * n) + i] = pade(i, i);
+    }
+    EXPECT(relative_gap(matrix<C> {n, n, std::move(alone)}, pade) > 1e-9); // the part matters at this size
+  }
 }
 
 namespace {

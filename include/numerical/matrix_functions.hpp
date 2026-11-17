@@ -1225,7 +1225,8 @@ namespace numerical {
       for (std::size_t bj {0}; bj < blocks; ++bj) {
         const std::size_t j0 {starts[bj]};
         const std::size_t nj {(bj + 1 < blocks ? starts[bj + 1] : n) - j0};
-        for (std::size_t bi {bj}; bi > 0; --bi) {
+        for (std::size_t above {0}; above < bj; ++above) { // the blocks above, the nearest first
+          const std::size_t bi {bj - above};
           const std::size_t i0 {starts[bi - 1]};
           const std::size_t ni {starts[bi] - i0};
           std::array<T, 4>  c  {};
@@ -3167,9 +3168,33 @@ namespace numerical {
       return u;
     }
 
+    /*!
+     * \brief `T^t` of a triangle \p t of order \p n whose strict upper part is a similarity's rounding (`Zᴴ A Z`, `Z` a
+     *        Hermitian `A`'s eigenvectors): its diagonal's principal powers, above them each entry times the divided
+     *        difference of `x^t` between its diagonal entries (\ref fractional_power_superdiagonal), Daleckii and Krein's
+     *        first order, exact to the square of the rounding.
+     */
+    [[nodiscard]] inline buffer<std::complex<double>> nearly_diagonal_power(const buffer<std::complex<double>>& t,
+                                                                            std::size_t                         n,
+                                                                            double                              p)
+    {
+      buffer<std::complex<double>> u(n * n, std::complex<double> {});
+      for (std::size_t i {0}; i < n; ++i) {
+        u[(i * n) + i] = principal_power(t[(i * n) + i], p);
+        for (std::size_t j {i + 1}; j < n; ++j) {
+          u[(i * n) + j] = fractional_power_superdiagonal(t[(i * n) + i], t[(j * n) + j], t[(i * n) + j], p);
+        }
+      }
+      return u;
+    }
+
     //! \brief `A^t` (`−1 < t < 1`) by the Schur form, as SciPy's `_remainder_matrix_power`: an upper triangular `A`
     //!        directly, else `Z T^t Zᴴ`; none where the triangular form has a zero on its diagonal. An exactly Hermitian
-    //!        `A`'s diagonal is taken real, so that a negative eigenvalue's power is the principal value's.
+    //!        `A`: `Z` its eigenvectors (\ref hermitian_system, a fraction of the general Schur form's time) and `T` the
+    //!        upper triangle of `Zᴴ A Z`, the similarity's rounding above the diagonal kept as a Schur form keeps it (`Λ`
+    //!        alone erred two to five times more), `T^t` to first order in it (\ref nearly_diagonal_power, in place of
+    //!        the Padé steps: order 200 35 → 9 ms, the same errors); its diagonal taken real, so that a negative
+    //!        eigenvalue's power is the principal value's.
     template <typename T>
     [[nodiscard]] std::optional<matrix<std::complex<double>>> remainder_power(const matrix<T>& a,
                                                                               double           t)
@@ -3177,15 +3202,26 @@ namespace numerical {
       using C = std::complex<double>;
       const std::size_t n          {a.rows()};
       const bool        triangular {upper_triangular(a)};
+      const bool        hermitian  {exactly_hermitian(a)};
       matrix<C>         form;
       matrix<C>         z;
       if (triangular) {
         form = as_complex(a);
       }
+      else if (hermitian) {
+        z = as_complex(hermitian_system(a).second);
+        const matrix<C> similar {adjoint_of(z) * as_complex(a) * z};
+        buffer<C>       upper(similar.begin(), similar.end());
+        for (std::size_t i {0}; i < n; ++i) {
+          for (std::size_t j {0}; j < i; ++j) {
+            upper[(i * n) + j] = C {};
+          }
+        }
+        form = matrix<C> {n, n, std::move(upper)};
+      }
       else {
         std::tie(form, z) = function_schur_form(a);
       }
-      const bool hermitian {exactly_hermitian(a)};
       buffer<C>  triangle(form.begin(), form.end());
       for (std::size_t i {0}; i < n; ++i) {
         if (triangle[(i * n) + i] == C {}) {
@@ -3195,7 +3231,7 @@ namespace numerical {
           triangle[(i * n) + i] = C {triangle[(i * n) + i].real(), 0.0};
         }
       }
-      matrix<C> u {n, n, triangular_power(triangle, n, t)};
+      matrix<C> u {n, n, hermitian && !triangular ? nearly_diagonal_power(triangle, n, t) : triangular_power(triangle, n, t)};
       if (triangular) {
         return u;
       }
