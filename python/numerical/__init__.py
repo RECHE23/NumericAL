@@ -979,6 +979,16 @@ def _round(self, ndigits=None):
     return around(self, 0 if ndigits is None else ndigits)
 
 
+def _real_number(self, name):
+    """The number of a rank-0 real Tensor (int64, float, bool), for the methods Python's float and int carry; a
+    TypeError for any other."""
+    if self.shape or self.dtype.startswith("complex"):
+        raise TypeError(f"{name}: a rank-0 real Tensor's method (this one is {self.dtype}{list(self.shape)})")
+    return self.item()
+
+
+# float's is_integer, which NumPy's scalars carry from the type they derive from
+Tensor.is_integer = lambda self: float(_real_number(self, "is_integer")).is_integer()
 Tensor.__hash__ = _hash
 Tensor.__str__ = lambda self: str(self.item()) if not self.shape else _repr(self)  # a rank-0 one prints its number
 Tensor.__format__ = _format_spec
