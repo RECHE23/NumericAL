@@ -5112,6 +5112,38 @@ namespace numerical::detail {
   inline constexpr std::size_t column_rows {128};
 
   /*!
+   * \brief `amx_dot_rows_f64`'s sums of the \p rows rows of the column-major \p a (column `j` at `a + j · lda`)
+   *        without the AMX: lane `j mod 8` of each row its fused multiply-adds in ascending order of `j`, a column at a
+   *        time over the rows together, then its lanes added from 0 to 7. The same bits, from a transpose where it
+   *        lies.
+   */
+  inline void columns_amx_lanes(const double* a,
+                                std::size_t   lda,
+                                std::size_t   rows,
+                                std::size_t   cols,
+                                const double* x,
+                                double*       y)
+  {
+    constexpr std::size_t lanes {8}; // a Z row's
+    buffer<double>        sums(lanes * rows, 0.0);
+    for (std::size_t j {0}; j < cols; ++j) {
+      double* const       lane   {sums.data() + ((j % lanes) * rows)};
+      const double* const column {a + (j * lda)};
+      const double        factor {x[j]};
+      for (std::size_t r {0}; r < rows; ++r) {
+        lane[r] = std::fma(column[r], factor, lane[r]);
+      }
+    }
+    for (std::size_t r {0}; r < rows; ++r) {
+      double sum {sums[r]};
+      for (std::size_t l {1}; l < lanes; ++l) {
+        sum += sums[(l * rows) + r];
+      }
+      y[r] = sum;
+    }
+  }
+
+  /*!
    * \brief `y = A x` for the column-major `rows × cols` \p a (column `j` at `a + j · lda`; NumPy's `a.T`, a transposed
    *        operand) on the x86-64 units: each element the bits \ref matrix_times_vector gives its C-ordered copy
    *        (`avx2_dot`'s or `avx512_dot`'s sum of its row), from the partial sums those kernels keep, updated a column
@@ -5119,9 +5151,10 @@ namespace numerical::detail {
    *        of \ref column_rows rows among the threads. The copy NumPy made of the transpose first cost more than the
    *        product (500 × 500: 170 µs of 213). `float` likewise, from the partial sums of its own kernels (32 on AVX2,
    *        64 on AVX-512). Elsewhere (GCC and Clang) from the portable vectors' partials (`columns_row_dots`), as
-   *        their row_dots sums a row. \return False, nothing written, on x86-64's portable path, where the row-major
-   *        product takes the AMX (amx_dot_rows_f64, its own order), under another compiler, or for rows longer than a
-   *        chunk (\ref chunked_dot sums them otherwise).
+   *        their row_dots sums a row; where the row-major product takes the AMX, from its lanes
+   *        (\ref columns_amx_lanes), in place of a copy of the transpose (400 × 400: 22 µs against 68, M1 Pro).
+   *        \return False, nothing written, on x86-64's portable path, under another compiler, or for rows longer than a chunk
+   *        (\ref chunked_dot sums them otherwise).
    */
   template <typename T>
   requires std::is_same_v<T, double> || std::is_same_v<T, float>
@@ -5149,8 +5182,8 @@ namespace numerical::detail {
                  });
     return true;
 #elif defined(__GNUC__)
-    // Elsewhere the portable vectors' row_dots (columns_row_dots, its partials), except where the row-major product
-    // takes the AMX (amx_dot_rows_f64, its own order) and for rows longer than a chunk.
+    // Elsewhere the portable vectors' row_dots (columns_row_dots, its partials), or the AMX's lanes where the row-major
+    // product takes the AMX (amx_dot_rows_f64), except for rows longer than a chunk.
     if (cols > dot_chunk) {
       return false;
     }
@@ -5158,7 +5191,11 @@ namespace numerical::detail {
     if constexpr (std::is_same_v<T, double>) {
       const std::size_t elements {rows * cols};
       if (elements >= amx_dot_least && elements < amx_dot_most && gemm_path_current() == gemm_path::amx) {
-        return false;
+        parallel_for((rows + column_rows - 1) / column_rows, column_rows * cols * matrix_vector_weight, [&](std::size_t block) {
+                       const std::size_t first {block * column_rows};
+                       columns_amx_lanes(a + first, lda, std::min(column_rows, rows - first), cols, x, y + first);
+                     });
+        return true;
       }
     }
 #  endif

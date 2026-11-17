@@ -43,6 +43,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   transpose take the other triangle of its elements (`triu(m.T)` 1.38 → 0.37 ms). `fft`, `ifft`, `rfft`, `irfft`,
   `hfft`, `ihfft`, `dct`, `dst` and their inverses along a transpose's axes but its last (`fft(z.T, axis=0)` of 1024 ×
   1024 complex 2.27 → 0.74 ms, `rfft(m.T, axis=0)` 5.2 → 1.6 ms), and `fftshift` (1.6 → 0.4 ms). The same bits.
+- **A transpose times a vector on the AMX path reads the transpose where it lies** (`m.T @ x` in float64 of 2^15 to
+  2^18 elements, Apple's processors): the AMX's eight lanes per row summed a column at a time over the rows, its bits,
+  in place of a copy of the transpose for the AMX. On an M1, 400 × 400 68 → 22 µs, 500 × 500 96 → 28 µs; the same bits.
 - **A negative fractional power of a Hermitian matrix five to ten times faster** (`fractional_matrix_power`): the
   Schur form by the Hermitian eigensolver, `T` the upper triangle of `Vᴴ A V` (its rounding kept, as a Schur form keeps
   it) and `T^t` to first order in that rounding in place of the Padé steps; the condition that chooses `⌊p⌋` or `⌈p⌉`
