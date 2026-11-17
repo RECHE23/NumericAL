@@ -359,6 +359,10 @@ A change that can break code is listed under **Breaking** and held for a month's
   `type`: `b = L Lᴴ`, the eigenpairs of `Lᴴ a L`, the vectors `L⁻ᴴ y` (`Xᴴ b X = I`) or `L y` (`Xᴴ b⁻¹ X = I`), as LAPACK's
   `xsygv`; subsets too. They raised.
 
+- **`asarray` reads what NumPy reads**: a `range`, a buffer (`array.array`, a `memoryview`, a `bytearray`, its integers as
+  int64), an object with `__array__` (pandas, xarray, torch on the CPU) and a list of NumPy arrays, stacked as a list
+  of Tensors is; each was refused (found by an audit).
+
 - **The array API's index and keywords**: a rank-0 integer or bool Tensor is an index (`Tensor.__index__`:
   `range(t)`, `seq[t]`), as NumPy's, a float one or a vector refused; `fft.fftfreq` and `fft.rfftfreq` take `dtype`;
   `empty(shape, dtype=None)` is float64. Found by the array API's conformance suite (array-api-tests), which this
