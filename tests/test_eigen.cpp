@@ -340,6 +340,22 @@ TEST(eig_balances_graded_matrices)
   EXPECT(same_values(eigen_decomposition<double> {far_below}, {-1e-150, 1e-150}, 1e-164));
   const matrix<double>              huge {{1e300, 2e300}, {-3e300, 1e300}};
   EXPECT(residual(huge, eigen_decomposition<double> {huge}) < 10.0);
+  // entries 10⁻⁹⁷⁶ to 10⁹⁵⁹, divided by the largest's power of 2: a row near the subnormals halved to 0 and doubled back
+  // read as a gain, and the scaling swept forever; it ends, its two largest eigenvalues NumPy's
+  const matrix<double> wide {
+    {-0x1.04de0e197e592p+763, -0x1.b702303244f76p-185, 0x1.a2ed27ce2fb04p+459, 0x1.d4182bb809bc4p+311, -0x1.1e9e0062ee294p+280, 0x1.f74d1bbe8a8b9p-212},
+    {0x1.20d963d0468f3p+208, -0x1.71b88845e37d1p-739, 0x1.1a23c51e91524p-96, 0x1.b01a4c51b8a10p-242, 0x1.809bde59c8ebfp-275, -0x1.3f61fef58746ap-765},
+    {0x1.446f6162f8aacp-5, 0x1.596a2e80dd1dbp-948, -0x1.0bb3415fbd454p-308, 0x1.4467ec4959b99p-450, 0x1.59587d88d5aa9p-488, -0x1.2f3f6a9d057aap-976},
+    {0x1.822a62e29a442p+70, 0x1.73afa783576b9p-877, 0x1.e8253fc1c324fp-234, -0x1.8c227658e6547p-380, 0x1.bba9cfab09033p-410, -0x1.d47c115b89270p-904},
+    {0x1.30e9265ac833dp+959, -0x1.dec2258ebeebdp+16, -0x1.0c802d6156dccp+658, 0x1.29acc0680f74fp+511, -0x1.fce1d2447e5a9p+480, -0x1.988bb6487de39p-13},
+    {-0x1.67b9a62634a3fp+183, 0x1.6814990f162a0p-763, 0x1.fb3b59dc6ee7ep-120, 0x1.4a4f39be375c9p-264, 0x1.8819cb8b85f85p-296, 0x1.4635456e680d9p-791}};
+  const eigen_decomposition<double> spread {wide, false};
+  std::vector<double>               magnitudes;
+  for (const std::complex<double>& value : spread.values()) {
+    magnitudes.push_back(std::abs(value));
+  }
+  std::ranges::sort(magnitudes, std::greater<> {});
+  EXPECT(std::abs((magnitudes[0] / 4.94386429e+229) - 1.0) < 1e-8 && std::abs((magnitudes[1] / 6.46080145e+144) - 1.0) < 1e-8);
 }
 
 TEST(eig_of_complex_pairs_nearly_real)

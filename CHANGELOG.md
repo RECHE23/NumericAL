@@ -32,6 +32,11 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **`eig` and `eigvals` of a matrix whose entries span 10±150 never returned** (2 of 1 000 drawn; NumPy answers): the
+  matrix divided by its largest power of 2 put a row near the subnormals, whose balancing doubled `f` and halved it back
+  to 1 while its sums fell to 0, read that as a gain, and swept again forever. A step back at `f = 1` counts as none;
+  `matrix_balance` alike. 1 600 such matrices then end, their eigenvalues summing to the trace.
+
 - **`det` whose pivots pass the doubles midway** (a matrix scaled by `D₁ A D₂` with entries to 10±150) answered ±∞ or
   NaN where its determinant was representable, even 10⁻⁸⁵: the product of the pivots, in order, overflowed first
   (27 of 600 drawn matrices; found by a probe of the small orders). It is now kept near 1 by powers of 2, exactly, the

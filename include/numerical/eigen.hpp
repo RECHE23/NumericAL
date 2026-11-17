@@ -189,7 +189,9 @@ namespace numerical {
             column /= 2.0;
             row    *= 2.0;
           }
-          if (column + row >= 0.95 * before) {
+          // f back at 1 is no step, whatever the sums say: halving a sum near the subnormals to 0 and doubling it back
+          // reads as a gain (a 6 × 6 matrix scaled to 10±150, divided by its largest power of 2, swept forever)
+          if (f == 1.0 || column + row >= 0.95 * before) {
             continue;
           }
           out.scale[i] *= f;
