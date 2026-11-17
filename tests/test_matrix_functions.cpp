@@ -717,6 +717,10 @@ TEST(fractional_matrix_power_inverts_whole_powers)
   EXPECT(relative_gap(root * root, complex_of(zero_first)) < 1e-14);
   EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(zero_first, -0.5)), numerical::singular_matrix_error);
   EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(zero_eigenvalue, -0.5)), numerical::singular_matrix_error);
+  // singular Hermitian matrices whose smallest singular value rounds above 0: a zero on Vᴴ A V's diagonal refuses alike
+  EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(matrix<double> {{1.0, 1.0}, {1.0, 1.0}}, -0.5)), numerical::singular_matrix_error);
+  EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(matrix<C> {{C {1.0}, C {0.0, 1.0}}, {C {0.0, -1.0}, C {1.0}}}, -0.5)),
+                numerical::singular_matrix_error);
   EXPECT(numerical::fractional_matrix_power(matrix<double> {0, 0, std::vector<double> {}}, 0.5).rows() == 0);
   EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(matrix<double> {{1.0, 2.0}}, 0.5)), numerical::dimension_error);
   EXPECT_THROWS(static_cast<void>(numerical::fractional_matrix_power(matrix<double> {{std::numeric_limits<double>::quiet_NaN()}}, 0.5)),
@@ -726,7 +730,7 @@ TEST(fractional_matrix_power_inverts_whole_powers)
 
 // A triangle whose strict upper part is a rounding (1e-7 of its diagonal here) to a fractional power to first order in
 // that part: the Padé steps' power to the square of it, its diagonal positive, negative (the principal branch) and
-// complex; without the part, 1e-7 apart.
+// complex; without the part, 1e-7 apart; a real one of positive diagonal in real arithmetic, the complex one's.
 TEST(a_nearly_diagonal_triangle_s_power_to_first_order)
 {
   namespace d = numerical::detail;
@@ -750,6 +754,20 @@ TEST(a_nearly_diagonal_triangle_s_power_to_first_order)
       alone[(i * n) + i] = pade(i, i);
     }
     EXPECT(relative_gap(matrix<C> {n, n, std::move(alone)}, pade) > 1e-9); // the part matters at this size
+  }
+  // a real triangle of positive diagonal in real arithmetic: the complex one's to rounding
+  numerical::buffer<double> real(n * n, 0.0);
+  numerical::buffer<C>      as_complex(n * n, C {});
+  for (std::size_t i {0}; i < n; ++i) {
+    for (std::size_t j {i}; j < n; ++j) {
+      real[(i * n) + j]       = i == j ? 0.5 + static_cast<double>(i) : t[(i * n) + j].real();
+      as_complex[(i * n) + j] = C {real[(i * n) + j]};
+    }
+  }
+  for (const double p : {-0.5, 0.3}) {
+    const matrix<double> real_power {n, n, d::nearly_diagonal_power(matrix<double> {n, n, real}, p)};
+    EXPECT(relative_gap(d::as_complex(real_power), matrix<C> {n, n, d::nearly_diagonal_power(as_complex, n, p)}) < 1e-15);
+    EXPECT(relative_gap(d::as_complex(real_power), matrix<C> {n, n, d::triangular_power(as_complex, n, p)}) < 1e-13);
   }
 }
 

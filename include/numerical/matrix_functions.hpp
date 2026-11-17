@@ -3188,36 +3188,127 @@ namespace numerical {
       return u;
     }
 
+    //! \brief \ref nearly_diagonal_power of the upper triangle of a real \p similar whose diagonal is positive: real.
+    [[nodiscard]] inline buffer<double> nearly_diagonal_power(const matrix<double>& similar,
+                                                              double                p)
+    {
+      const std::size_t n {similar.rows()};
+      buffer<double>    u(n * n, 0.0);
+      for (std::size_t i {0}; i < n; ++i) {
+        u[(i * n) + i] = std::pow(similar(i, i), p);
+        for (std::size_t j {i + 1}; j < n; ++j) {
+          u[(i * n) + j] = fractional_power_superdiagonal(similar(i, i), similar(j, j), similar(i, j), p);
+        }
+      }
+      return u;
+    }
+
+    //! \brief A Hermitian matrix `A`'s eigenvectors `V` (\ref hermitian_system) and `Vᴴ A V`: its Schur form `Λ` to the
+    //!        similarity's rounding, which \ref hermitian_remainder_power keeps above the diagonal.
+    template <typename T>
+    struct hermitian_similarity
+    {
+      matrix<T> vectors; //!< `V`.
+      matrix<T> similar; //!< `Vᴴ A V`.
+    };
+
+    //! \brief \ref hermitian_similarity of the Hermitian \p a.
+    template <typename T>
+    [[nodiscard]] hermitian_similarity<T> similarity_of(const matrix<T>& a)
+    {
+      matrix<T> v       {hermitian_system(a).second};
+      matrix<T> similar {adjoint_of(v) * a * v};
+      return {std::move(v), std::move(similar)};
+    }
+
+    /*!
+     * \brief `T^t` for `T` the upper triangle of \p similar (`Zᴴ A Z`, `Z` a Hermitian `A`'s eigenvectors): the
+     *        similarity's rounding above the diagonal kept as a Schur form keeps it (`Λ` alone erred two to five times
+     *        more), its diagonal taken real (a negative eigenvalue's power the principal value's), `T^t` to first order
+     *        in that rounding (\ref nearly_diagonal_power, in place of the Padé steps: order 200 35 → 9 ms, the same
+     *        errors). \pre No real part on the diagonal is 0.
+     */
+    [[nodiscard]] inline buffer<std::complex<double>> similar_power(const matrix<std::complex<double>>& similar,
+                                                                    double                              t)
+    {
+      using C = std::complex<double>;
+      const std::size_t n {similar.rows()};
+      buffer<C>         upper(similar.begin(), similar.end());
+      for (std::size_t i {0}; i < n; ++i) {
+        upper[(i * n) + i] = C {upper[(i * n) + i].real(), 0.0};
+        for (std::size_t j {0}; j < i; ++j) {
+          upper[(i * n) + j] = C {};
+        }
+      }
+      return nearly_diagonal_power(upper, n, t);
+    }
+
+    /*!
+     * \brief `A^t` (`−1 < t < 1`) of a real symmetric `A` not triangular from \p s: `V T^t Vᵀ`, `T` the upper triangle
+     *        of `Vᵀ A V` (\ref similar_power), the products real: `T^t` real where `T`'s diagonal is positive (\ref
+     *        nearly_diagonal_power's in real arithmetic), else its real and imaginary parts apart. \pre No diagonal entry
+     *        of `T` is 0.
+     */
+    [[nodiscard]] inline matrix<std::complex<double>> hermitian_remainder_power(const hermitian_similarity<double>& s,
+                                                                                double                              t)
+    {
+      using C = std::complex<double>;
+      const matrix<double>& v        {s.vectors};
+      const std::size_t     n        {v.rows()};
+      const matrix<double>  vt       {adjoint_of(v)};
+      bool                  positive {true};
+      for (std::size_t i {0}; i < n; ++i) {
+        positive = positive && s.similar(i, i) > 0.0;
+      }
+      if (positive) { // every power real: in real arithmetic throughout (order 200 1.7 → 0.3 ms for T^t)
+        return as_complex(v * matrix<double> {n, n, nearly_diagonal_power(s.similar, t)} *vt);
+      }
+      const buffer<C> u {similar_power(as_complex(s.similar), t)};
+      buffer<double>  real(n * n);
+      buffer<double>  imaginary(n * n);
+      for (std::size_t k {0}; k < n * n; ++k) {
+        real[k]      = u[k].real();
+        imaginary[k] = u[k].imag();
+      }
+      const matrix<double> real_part      {v * matrix<double> {n, n, std::move(real)} *vt};
+      // some eigenvalue negative: its principal power, and with it T^t, complex
+      const matrix<double> imaginary_part {v * matrix<double> {n, n, std::move(imaginary)} *vt};
+      buffer<C>            power(n * n);
+      for (std::size_t k {0}; k < n * n; ++k) {
+        power[k] = C {real_part(k / n, k % n), imaginary_part(k / n, k % n)};
+      }
+      return matrix<C> {n, n, std::move(power)};
+    }
+
+    //! \brief `A^t` (`−1 < t < 1`) of a complex Hermitian `A` not triangular from \p s: `Z T^t Zᴴ`, `T` the upper
+    //!        triangle of `Zᴴ A Z` (\ref similar_power). \pre No real part on `T`'s diagonal is 0.
+    [[nodiscard]] inline matrix<std::complex<double>> hermitian_remainder_power(const hermitian_similarity<std::complex<double>>& s,
+                                                                                double                                            t)
+    {
+      const std::size_t n {s.vectors.rows()};
+      return s.vectors * matrix<std::complex<double>> {n, n, similar_power(s.similar, t)} *adjoint_of(s.vectors);
+    }
+
     //! \brief `A^t` (`−1 < t < 1`) by the Schur form, as SciPy's `_remainder_matrix_power`: an upper triangular `A`
     //!        directly, else `Z T^t Zᴴ`; none where the triangular form has a zero on its diagonal. An exactly Hermitian
-    //!        `A`: `Z` its eigenvectors (\ref hermitian_system, a fraction of the general Schur form's time) and `T` the
-    //!        upper triangle of `Zᴴ A Z`, the similarity's rounding above the diagonal kept as a Schur form keeps it (`Λ`
-    //!        alone erred two to five times more), `T^t` to first order in it (\ref nearly_diagonal_power, in place of
-    //!        the Padé steps: order 200 35 → 9 ms, the same errors); its diagonal taken real, so that a negative
-    //!        eigenvalue's power is the principal value's.
+    //!        `A` not triangular by its eigenvectors (\ref hermitian_remainder_power); a diagonal one's diagonal taken
+    //!        real, so that a negative eigenvalue's power is the principal value's.
     template <typename T>
-    [[nodiscard]] std::optional<matrix<std::complex<double>>> remainder_power(const matrix<T>& a,
-                                                                              double           t)
+    [[nodiscard]] std::optional<matrix<std::complex<double>>> remainder_power(const matrix<T>&                                           a,
+                                                                              double                                                     t,
+                                                                              const std::optional<hermitian_similarity<T>>&              similarity)
     {
       using C = std::complex<double>;
       const std::size_t n          {a.rows()};
       const bool        triangular {upper_triangular(a)};
       const bool        hermitian  {exactly_hermitian(a)};
-      matrix<C>         form;
-      matrix<C>         z;
+      if (similarity) {
+        return hermitian_remainder_power(*similarity, t);
+      }
+      matrix<C> form;
+      matrix<C> z;
       if (triangular) {
         form = as_complex(a);
-      }
-      else if (hermitian) {
-        z = as_complex(hermitian_system(a).second);
-        const matrix<C> similar {adjoint_of(z) * as_complex(a) * z};
-        buffer<C>       upper(similar.begin(), similar.end());
-        for (std::size_t i {0}; i < n; ++i) {
-          for (std::size_t j {0}; j < i; ++j) {
-            upper[(i * n) + j] = C {};
-          }
-        }
-        form = matrix<C> {n, n, std::move(upper)};
       }
       else {
         std::tie(form, z) = function_schur_form(a);
@@ -3231,7 +3322,7 @@ namespace numerical {
           triangle[(i * n) + i] = C {triangle[(i * n) + i].real(), 0.0};
         }
       }
-      matrix<C> u {n, n, hermitian && !triangular ? nearly_diagonal_power(triangle, n, t) : triangular_power(triangle, n, t)};
+      matrix<C> u {n, n, triangular_power(triangle, n, t)};
       if (triangular) {
         return u;
       }
@@ -3313,14 +3404,33 @@ namespace numerical {
       }
       return detail::spectral<C>(vectors, powers, std::all_of(values.begin(), values.end(), [](double v) { return v >= 0.0; }));
     }
-    const vector<double> sigma {singular_values(a)};
-    if (sigma[n - 1] != 0.0) {
-      const double k2 {sigma[0] / sigma[n - 1]}; // the condition chooses between ⌊p⌋ and ⌈p⌉, as SciPy's
+    // A Hermitian matrix not triangular: its singular values the magnitudes of Vᴴ A V's diagonal (its eigenvalues to
+    // the similarity's rounding, of which the remainder takes the power: none of them 0 there), the similarity then the
+    // remainder's (\ref detail::hermitian_remainder_power); one decomposition in place of two
+    std::optional<detail::hermitian_similarity<T>> similarity;
+    double                                         largest  {0.0};
+    double                                         smallest {0.0};
+    if (detail::exactly_hermitian(a) && !detail::upper_triangular(a)) {
+      similarity = detail::similarity_of(a);
+      smallest   = std::numeric_limits<double>::infinity();
+      for (std::size_t i {0}; i < n; ++i) {
+        const double magnitude {std::abs(std::real(similarity->similar(i, i)))};
+        largest  = std::max(largest, magnitude);
+        smallest = std::min(smallest, magnitude);
+      }
+    }
+    else {
+      const vector<double> sigma {singular_values(a)};
+      largest  = sigma[0];
+      smallest = sigma[n - 1];
+    }
+    if (smallest != 0.0) {
+      const double k2 {largest / smallest}; // the condition chooses between ⌊p⌋ and ⌈p⌉, as SciPy's
       const double p1 {p - std::floor(p)};
       const double p2 {p - std::ceil(p)};
       const bool   below {p1 * std::pow(k2, 1.0 - p1) <= -p2 * k2};
       const double whole {below ? std::floor(p) : std::ceil(p)};
-      if (const auto remainder {detail::remainder_power(a, below ? p1 : p2)}) {
+      if (const auto remainder {detail::remainder_power(a, below ? p1 : p2, similarity)}) {
         return detail::as_complex(detail::integer_power(a, whole)) * *remainder;
       }
     }

@@ -34,10 +34,12 @@ A change that can break code is listed under **Breaking** and held for a month's
   `sort` 13.4 → 7.2 ms); over every element, the reductions whose answer no order changes (`max`, `min`, `any`,
   `all`, `count_nonzero`, a mask's `sum` and `mean`, an `int64` `sum`) read them in memory order. The same bits; a
   float's `sum` and `mean` over every element keep the view's order (their rounding).
-- **A negative fractional power of a Hermitian matrix three to four times faster** (`fractional_matrix_power`): the
+- **A negative fractional power of a Hermitian matrix five to ten times faster** (`fractional_matrix_power`): the
   Schur form by the Hermitian eigensolver, `T` the upper triangle of `Vᴴ A V` (its rounding kept, as a Schur form keeps
-  it) and `T^t` to first order in that rounding in place of the Padé steps; the same errors against 50 digits (the
-  eigenvalues alone erred two to five times more). On an M1, order 200 35 → 9 ms real, 54 → 19 ms complex.
+  it) and `T^t` to first order in that rounding in place of the Padé steps; the condition that chooses `⌊p⌋` or `⌈p⌉`
+  from the same eigenvalues in place of a singular value decomposition; a real symmetric matrix's products real, and
+  `T^t` too where its eigenvalues are positive. The same errors against 50 digits (the eigenvalues alone erred two to
+  five times more). On an M1, order 200 35 → 3.7 ms real, 54 → 10.6 ms complex.
 
 ## 2026.11.17 — 2026-11-17
 
