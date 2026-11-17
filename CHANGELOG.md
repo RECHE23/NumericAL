@@ -8,6 +8,8 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ## Unreleased
 
+## 2026.11.17 — 2026-11-17
+
 ### Added
 
 - **`fuzz/scaled.py`** (`make fuzz-scaled`, and a tenth of the weekly long fuzzing): matrices scaled to 10^±150 and each
