@@ -932,6 +932,26 @@ TEST(a_permutation_of_the_axes_is_a_view)
   EXPECT_THROWS((void)matrix.transposed({0}), numerical::dimension_error);
 }
 
+// A transpose is laid out as its elements lie: its axes from the widest stride, the tensor over the same elements
+// row-major in that order, none copied; an axis of extent 1 among its ties anywhere. A tensor row-major already, a slice
+// skipping elements and one starting past the first are not.
+TEST(a_transpose_is_laid_out_as_its_elements_lie)
+{
+  using order = std::vector<std::size_t>;
+  using all   = std::vector<bool>;
+  const tensor<double> cube {counting({8, 9, 10})};
+  const auto           laid {cube.transposed({2, 0, 1}).laid_out()};
+  EXPECT(laid && laid->second == (order {1, 2, 0}) && laid->first.shape() == (shape {8, 9, 10}) && laid->first.contiguous()
+         && laid->first.origin() == cube.origin());
+  const tensor<double> flat {counting({1, 30, 40})};
+  const auto           tied {flat.transposed({2, 1, 0}).laid_out()};
+  EXPECT(tied && tied->second == (order {2, 1, 0}) && tied->first.shape() == (shape {1, 30, 40}) && tied->first.origin() == flat.origin());
+  EXPECT(!cube.laid_out());
+  const tensor<double> grid {counting({40, 40})};
+  EXPECT(!grid.sliced({0, 0}, {1, 2}, {40, 20}, all(2, true)).laid_out());
+  EXPECT(!grid.sliced({0, 39}, {1, -1}, {40, 40}, all(2, true)).laid_out());
+}
+
 // The functions by a table read a view where its elements lie, row by row (gathered by pieces where its last axis
 // steps over elements, copied first where it lies far apart): the same bits, double and float, as of its contiguous
 // copy, over rows that a block of the threads begins midway, rows wider than a gathered piece, backwards and transposed;
@@ -1599,8 +1619,8 @@ TEST(einsum_permutes_three_axes)
   EXPECT(all);
 }
 
-// The offset diagonal of each matrix, read where it lies: the main one, above and below, a rectangle's, a stack's, an
-// offset past the matrix (empty), and a vector refused.
+// The offset diagonal of each matrix, a view of it past a few elements: the main one, above and below, a rectangle's,
+// a stack's, a transpose's and a slice's, an offset past the matrix or no matrix (empty), and a vector refused.
 TEST(diagonal_reads_each_matrix_s_offset_diagonal)
 {
   const tensor<double> grid {counting({3, 4})};
@@ -1614,6 +1634,27 @@ TEST(diagonal_reads_each_matrix_s_offset_diagonal)
   EXPECT(numerical::diagonal(grid, 4).shape() == (shape {0}));
   EXPECT(numerical::diagonal(grid, -3).shape() == (shape {0}));
   EXPECT_THROWS((void)numerical::diagonal(counting({3}), 0), numerical::dimension_error);
+  // past sliced_copy_most elements a view, of a view too: a transposed stack's, from a slice's start
+  const tensor<double> cube    {counting({3, 700, 700})};
+  const tensor<double> flipped {numerical::diagonal(cube.transposed({0, 2, 1}), 2)};
+  bool                 along   {flipped.shape() == (shape {3, 698}) && !flipped.contiguous()};
+  for (std::size_t b {0}; b < 3; ++b) {
+    for (std::size_t i {0}; i < 698; ++i) {
+      along = along && flipped({b, i}) == cube({b, i + 2, i}) && flipped.data()[(b * 698) + i] == cube({b, i + 2, i});
+    }
+  }
+  EXPECT(along);
+  const tensor<double> part {cube.sliced({1, 5, 0}, {1, 1, 2}, {2, 600, 350}, std::vector<bool> {true, true, true})};
+  const tensor<double> down {numerical::diagonal(part, -3)};
+  bool                 kept {down.shape() == (shape {2, 350}) && !down.contiguous()};
+  for (std::size_t b {0}; b < 2; ++b) {
+    for (std::size_t i {0}; i < 350; ++i) {
+      kept = kept && down({b, i}) == cube({1 + b, 5 + 3 + i, 2 * i});
+    }
+  }
+  EXPECT(kept);
+  const tensor<double> none {numerical::diagonal(counting({0, 5, 5}), 1)}; // no matrix: empty, its shape kept
+  EXPECT(none.shape() == (shape {0, 4}) && none.size() == 0 && none.contiguous());
 }
 
 // A contiguous extreme past four runs of 2¹⁵ elements, each run on a thread: the largest in the last run, the

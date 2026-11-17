@@ -235,6 +235,64 @@ namespace numerical {
       return tensor {std::move(shape), std::move(strides), static_cast<std::size_t>(offset), data_};
     }
 
+    /*!
+     * \brief The \p length elements from (\p row, \p column) down the diagonal of each matrix (the last two axes),
+     *        without a copy: a view over the same elements, the batch's axes then the diagonal's, whose row-major copy
+     *        (\ref data) is made on first need; a few elements copied at once, as \ref sliced.
+     * \pre The rank is at least 2, and \p length elements from (\p row, \p column) lie in each matrix (any start for
+     *      a length of 0).
+     */
+    [[nodiscard]] tensor diagonal_view(std::size_t row,
+                                       std::size_t column,
+                                       std::size_t length) const
+    {
+      const std::size_t           rank {shape_.size()};
+      std::vector<std::size_t>    shape(shape_.begin(), shape_.end() - 1);
+      std::vector<std::ptrdiff_t> strides(strides_.begin(), strides_.end() - 1);
+      shape.back()   = length;
+      strides.back() = strides_[rank - 2] + strides_[rank - 1];
+      std::size_t count {length};
+      for (std::size_t axis {0}; axis + 2 < rank; ++axis) {
+        count *= shape_[axis];
+      }
+      if (count == 0) {
+        return tensor {std::move(shape), buffer<T> {}};
+      }
+      const auto offset {static_cast<std::size_t>(static_cast<std::ptrdiff_t>(offset_)
+                                                  + (static_cast<std::ptrdiff_t>(row) * strides_[rank - 2])
+                                                  + (static_cast<std::ptrdiff_t>(column) * strides_[rank - 1]))};
+      if (count <= sliced_copy_most) {
+        buffer<T> elements {gathered(shape, strides, offset, *data_)};
+        return tensor {std::move(shape), std::move(elements)};
+      }
+      return tensor {std::move(shape), std::move(strides), offset, data_};
+    }
+
+    /*!
+     * \brief Where this view reaches each of its elements once from the first (a transpose's, \ref transposed): its
+     *        axes in the order the elements lie (the widest stride first), with the tensor over those elements
+     *        row-major in that order, no element copied; nothing for a tensor laid out row-major or any other view.
+     *        Along each axis the elements are the same, in the same order: what is computed line by line along an axis
+     *        of this view is computed along the matching axis of the laid out tensor.
+     */
+    [[nodiscard]] std::optional<std::pair<tensor, std::vector<std::size_t>>> laid_out() const
+    {
+      if (copy_ == nullptr || offset_ != 0 || count_ != data_->size()) {
+        return std::nullopt;
+      }
+      // Slices and transposes reach each element at most once and a slice starting past the first is offset: from the
+      // first, every element is a permutation's, its strides row-major's (\ref copied_out); an axis of extent 1 moves
+      // nothing and lies anywhere among its ties.
+      std::vector<std::size_t> order(shape_.size());
+      std::iota(order.begin(), order.end(), std::size_t {0});
+      std::stable_sort(order.begin(), order.end(), [this](std::size_t a, std::size_t b) { return strides_[a] > strides_[b]; });
+      std::vector<std::size_t> shape(order.size());
+      for (std::size_t k {0}; k < order.size(); ++k) {
+        shape[k] = shape_[order[k]];
+      }
+      return std::pair {tensor {std::move(shape), data_}, std::move(order)};
+    }
+
     //! \brief \ref transposed with the axes reversed: a matrix's transpose, NumPy's `.T`.
     [[nodiscard]] tensor transposed() const
     {

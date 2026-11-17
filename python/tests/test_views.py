@@ -1,6 +1,7 @@
 """A Tensor's axes permuted (.T, .mT, transpose, swapaxes, moveaxis, matrix_transpose, a permuting einsum) and its basic
-slices (ranges, steps, reversals, integer indices, and their compositions with permutations) are views: NumPy's
-elements in NumPy's order, and every operation on one the bits it gives on the same elements built contiguous,
+slices (ranges, steps, reversals, integer indices, and their compositions with permutations) are views, and so is a
+diagonal: NumPy's elements in NumPy's order, and every operation on one (a permutation reduced along an axis as its
+elements lie) the bits it gives on the same elements built contiguous,
 whatever the dtype, from one thread or several. The NumPy comparisons are skipped without NumPy."""
 import threading
 import unittest
@@ -67,6 +68,16 @@ _FLOAT_OPERATIONS = [
     ("sum axis -1", lambda x: numerical.sum(x, axis=-1)),
     ("cumsum", lambda x: numerical.cumsum(x, axis=-1)),
     ("max", numerical.max),
+    ("mean axis 1", lambda x: numerical.mean(x, axis=1)),
+    ("max axis 0", lambda x: numerical.max(x, axis=0)),
+    ("min axis -1", lambda x: numerical.min(x, axis=-1)),
+    ("any axis 0", lambda x: numerical.any(x > 0.5, axis=0)),
+    ("all axis -1", lambda x: numerical.all(x, axis=-1)),
+    ("diagonal", lambda x: numerical.diagonal(x, offset=-1)),
+    ("trace", numerical.trace),
+    ("clip", lambda x: numerical.clip(x, -0.5, 0.5)),
+    ("maximum of a number", lambda x: numerical.maximum(x, 0.25)),
+    ("minimum of a number", lambda x: numerical.minimum(x, -0.25)),
     ("sort", lambda x: numerical.sort(x, axis=-1)),
     ("rows", lambda x: x[1:3]),
     ("every other column", lambda x: x[..., ::2]),
@@ -204,7 +215,10 @@ class TestViews(unittest.TestCase):
                 with self.subTest(dtype=str(source.dtype), view=name):
                     view = permute(t)
                     self.assertEqual(view.tolist(), expected(source).tolist())
-                    self.assertEqual(numerical.sum(view, axis=0).tolist(), np.sum(expected(source), axis=0).tolist())
+                    for op in ("sum", "max", "min", "any", "all"):
+                        for axis in range(view.ndim):
+                            self.assertEqual(getattr(numerical, op)(view, axis=axis).tolist(),
+                                             getattr(np, op)(expected(source), axis=axis).tolist())
 
     def test_a_view_shared_by_threads(self):
         a = np.random.default_rng(7).standard_normal((300, 200))

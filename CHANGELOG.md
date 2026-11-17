@@ -10,6 +10,16 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Changed
 
+- **`diagonal` is a view** (as `numpy.linalg.diagonal`'s), its elements read where they lie: of a
+  transpose or a slice no longer copied whole first. On an M1, `diagonal(m.T)` of 2000 × 2000 2.6 ms → 2.7 µs, and
+  `trace(m.T)` with it.
+- **A transpose's sums, means, maxima, minima, `any` and `all` along an axis read its elements where they lie**: the
+  matching axis of the elements as laid out, the same lines in the same order (the same bits), none copied; the result's
+  axes put back in the transpose's order. `clip`, and `maximum` and `minimum` of a number, read a view where it lies
+  too.
+
+### Changed
+
 - **The functions by a table read a view where it lies** (`exp`, `expm1`, `exp2`, `log1p`, `atan`, `sinh`, `cosh`,
   `tanh`, float `sin` and `cos`): row by row, a row stepping over elements gathered by pieces of 512, in place of a
   contiguous copy first; a view whose rows lie far apart (a transpose) is still copied. The same bits. On an M1, `exp`

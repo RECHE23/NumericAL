@@ -1993,21 +1993,10 @@ PyObject* module_unary(PyObject* /*self*/, PyObject* args)
     }
 }
 
-// _reduce(op, a, axis) -> number or Tensor: op one of "sum", "mean", "max", "min"; axis -1 for every
-// element (a number), else a non-negative axis (a Tensor without it). max and min take float64 only.
-PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
+namespace {
+// The reduction `name` of a, of every element (axis -1) or along an axis (\ref module_reduce).
+PyObject* reduced(std::string_view name, const any_tensor* a, Py_ssize_t axis)
 {
-    const char* op   = nullptr;
-    PyObject*   x    = nullptr;
-    Py_ssize_t  axis = -1;
-    if (PyArg_ParseTuple(args, "sOn", &op, &x, &axis) == 0) {
-        return nullptr;
-    }
-    const std::string_view name {op};
-    const any_tensor*      a = as_tensor(x);
-    if (a == nullptr) {
-        return nullptr;
-    }
     const bool truth {name == "any" || name == "all"};
     try {
         if (truth || is_bool(*a)) {
@@ -2057,6 +2046,64 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
     catch (...) {
         return set_cpp_error();
     }
+}
+} // namespace
+
+// _reduce(op, a, axis) -> number or Tensor: op one of "sum", "mean", "max", "min", "any", "all"; axis -1 for every
+// element (a number), else a non-negative axis (a Tensor without it). A transpose along an axis is its elements as they
+// lie along the matching axis, the same lines in the same order, none copied; the result's axes put back in its order.
+PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
+{
+    const char* op   = nullptr;
+    PyObject*   x    = nullptr;
+    Py_ssize_t  axis = -1;
+    if (PyArg_ParseTuple(args, "sOn", &op, &x, &axis) == 0) {
+        return nullptr;
+    }
+    const any_tensor* a = as_tensor(x);
+    if (a == nullptr) {
+        return nullptr;
+    }
+    std::optional<any_tensor> laid;
+    std::vector<std::size_t>  back; // the result's axes, from the laid out one's
+    try {
+        std::visit([&](const auto& t) {
+            if (axis < 0 || static_cast<std::size_t>(axis) >= t.rank()) {
+                return;
+            }
+            auto found {t.laid_out()};
+            if (!found) {
+                return;
+            }
+            auto& [elements, order] = *found;
+            const auto along {static_cast<std::size_t>(std::ranges::find(order, static_cast<std::size_t>(axis)) - order.begin())};
+            order.erase(order.begin() + static_cast<std::ptrdiff_t>(along));
+            for (std::size_t view_axis {0}; view_axis < t.rank(); ++view_axis) {
+                if (view_axis != static_cast<std::size_t>(axis)) {
+                    back.push_back(static_cast<std::size_t>(std::ranges::find(order, view_axis) - order.begin()));
+                }
+            }
+            laid.emplace(std::move(elements));
+            axis = static_cast<Py_ssize_t>(along);
+        }, *a);
+    }
+    catch (...) {
+        return set_cpp_error();
+    }
+    PyObject* result = reduced(op, laid ? &*laid : a, axis);
+    if (result == nullptr || !laid) {
+        return result;
+    }
+    const any_tensor* r = as_tensor(result); // along an axis of two or more: a Tensor
+    PyObject*         put_back = nullptr;
+    try {
+        put_back = std::visit([&](const auto& t) { return wrap(any_tensor {t.transposed(back)}); }, *r);
+    }
+    catch (...) {
+        put_back = set_cpp_error();
+    }
+    Py_DECREF(result);
+    return put_back;
 }
 
 // _vector_norm(x, ord, axes, keepdims) -> Tensor or number: the ord norm over the axes `axes` (distinct, non-negative)

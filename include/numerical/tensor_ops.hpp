@@ -2595,7 +2595,7 @@ namespace numerical {
   {
     if (b.shape().empty()) { // a number (clip's bound): a map over a, where broadcasting walks both
       const T bound {b.data()[0]};
-      return detail::parallel_map(a.data().data(), a.shape(), [bound](T x) { return detail::ieee_maximum(x, bound); });
+      return detail::parallel_map(a, [bound](T x) { return detail::ieee_maximum(x, bound); });
     }
     return broadcast_apply(a, b, [](T x, T y) { return detail::ieee_maximum(x, y); });
   }
@@ -2608,7 +2608,7 @@ namespace numerical {
   {
     if (b.shape().empty()) { // a number (clip's bound): a map over a, where broadcasting walks both
       const T bound {b.data()[0]};
-      return detail::parallel_map(a.data().data(), a.shape(), [bound](T x) { return detail::ieee_minimum(x, bound); });
+      return detail::parallel_map(a, [bound](T x) { return detail::ieee_minimum(x, bound); });
     }
     return broadcast_apply(a, b, [](T x, T y) { return detail::ieee_minimum(x, y); });
   }
@@ -2702,9 +2702,9 @@ namespace numerical {
                                T                high)
   {
     if (std::isnan(low) || std::isnan(high)) {
-      return detail::parallel_map(a.data().data(), a.shape(), [low, high](T x) { return detail::ieee_minimum(detail::ieee_maximum(x, low), high); });
+      return detail::parallel_map(a, [low, high](T x) { return detail::ieee_minimum(detail::ieee_maximum(x, low), high); });
     }
-    return detail::parallel_map(a.data().data(), a.shape(), [low, high](T x) { return detail::clipped(x, low, high); });
+    return detail::parallel_map(a, [low, high](T x) { return detail::clipped(x, low, high); });
   }
 
   //! \brief \p a limited to [\p low, \p high] element by element, as `numpy.clip` of two integers: `minimum(maximum(a,
@@ -2714,7 +2714,7 @@ namespace numerical {
                                T                low,
                                T                high)
   {
-    return detail::parallel_map(a.data().data(), a.shape(), [low, high](T x) { return std::min(std::max(x, low), high); });
+    return detail::parallel_map(a, [low, high](T x) { return std::min(std::max(x, low), high); });
   }
 
   //! \brief The larger element of integer tensors \p a and \p b, broadcast, as `numpy.maximum`. \throws dimension_error
@@ -4621,8 +4621,8 @@ namespace numerical {
 
   /*!
    * \brief The \p offset diagonal of each matrix of \p t (its last two axes), as `numpy.linalg.diagonal`: above the
-   *        main diagonal for a positive \p offset, below for a negative one, read where it lies (no copy of the
-   *        matrices); the batch's shape, then the diagonal's length (0 where \p offset passes the matrix).
+   *        main diagonal for a positive \p offset, below for a negative one: a view (\ref tensor::diagonal_view), no element
+   *        copied but a few; the batch's shape, then the diagonal's length (0 where \p offset passes the matrix).
    * \throws dimension_error If \p t has fewer than two axes.
    */
   template <typename T>
@@ -4639,21 +4639,7 @@ namespace numerical {
     const std::size_t r0        {offset < 0 ? magnitude : 0};
     const std::size_t c0        {offset < 0 ? 0 : magnitude};
     const std::size_t length    {r0 < rows && c0 < cols ? std::min(rows - r0, cols - c0) : 0};
-    std::size_t       batch     {1};
-    for (std::size_t axis {0}; axis + 2 < shape.size(); ++axis) {
-      batch = detail::checked_mul(batch, shape[axis]);
-    }
-    std::vector<std::size_t> out(shape.begin(), shape.end() - 2);
-    out.push_back(length);
-    buffer<T>      values(batch * length);
-    const T* const data {t.data().data()};
-    for (std::size_t b {0}; b < batch; ++b) {
-      const T* const first {data + (b * rows * cols) + (r0 * cols) + c0};
-      for (std::size_t i {0}; i < length; ++i) {
-        values[(b * length) + i] = first[i * (cols + 1)];
-      }
-    }
-    return tensor<T> {std::move(out), std::move(values)};
+    return t.diagonal_view(r0, c0, length);
   }
 
   namespace detail {
