@@ -272,7 +272,8 @@ def integer_arithmetic(rng):
         same({}, "", name, a, b)
     if rng.random() < 0.5:
         x = floats(rng, 4)
-        same({}, "", name if name not in ("absolute", "negative", "sign") else "add", ints(rng, 4), x)
+        rule = EXTREME_ZEROS if name in ("maximum", "minimum") else {}  # an int 0 beside a -0.0: x86-64's zero sign
+        same(rule, "", name if name not in ("absolute", "negative", "sign") else "add", ints(rng, 4), x)
 
 
 def big_integers(rng):
@@ -379,13 +380,14 @@ def quantiles(rng):
                              "averaged_inverted_cdf", "closest_observation", "interpolated_inverted_cdf", "hazen",
                              "weibull", "median_unbiased", "normal_unbiased"]))
     keepdims = bool(rng.random() < 0.3)
-    same({"overflow": True}, "", "quantile", a, q, axis=axis, method=method, keepdims=keepdims)
-    same({"overflow": True}, "", "nanquantile", a, q, axis=axis, method=method, keepdims=keepdims)
-    same({"overflow": True}, "", "percentile", a, np.multiply(q, 100), axis=axis, method=method)
+    # which of two equal zeros a selection lands on is its arrangement's: NumPy's introselect, a stable order here
+    same({"overflow": True, "zero_signs": True}, "", "quantile", a, q, axis=axis, method=method, keepdims=keepdims)
+    same({"overflow": True, "zero_signs": True}, "", "nanquantile", a, q, axis=axis, method=method, keepdims=keepdims)
+    same({"overflow": True, "zero_signs": True}, "", "percentile", a, np.multiply(q, 100), axis=axis, method=method)
     if a.dtype.kind == "f" and rng.random() < 0.5 and NUMPY >= (2, 3):  # 2.3 refuses weights that are all zero
         weights = rng.integers(0, 4, a.shape).astype(np.float64)
-        same({}, "", "quantile", a, q, axis=axis, method="inverted_cdf", weights=weights)
-        same({}, "", "nanquantile", a, q, axis=axis, method="inverted_cdf", weights=weights)
+        same({"zero_signs": True}, "", "quantile", a, q, axis=axis, method="inverted_cdf", weights=weights)
+        same({"zero_signs": True}, "", "nanquantile", a, q, axis=axis, method="inverted_cdf", weights=weights)
 
 
 def averages(rng):

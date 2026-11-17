@@ -2,6 +2,7 @@
 transform or a matrix past memory, a bound past int64, positions into nothing. Each of these held on for minutes, or
 took gigabytes, before it was refused; a test that ends at all is the check."""
 
+import sys
 import unittest
 
 import numerical
@@ -16,12 +17,14 @@ except ImportError:  # pragma: no cover - the CI images install NumPy
 @unittest.skipIf(np is None, "NumPy is not installed")
 class AbsurdArguments(unittest.TestCase):
     def assert_same(self, got, want):
+        if want.dtype.kind in "iu":  # NumPy's intp and default int (int32 on a 32-bit build), int64 here
+            want = want.astype(np.int64)
         self.assertEqual(got.shape, want.shape)
         self.assertEqual(got.dtype, str(want.dtype))
         self.assertEqual(got.tolist(), want.tolist())
 
     def test_clip_bounds_past_int64_bound_nothing_on_their_harmless_side(self):
-        a = np.array([1, 5])
+        a = np.array([1, 5], dtype=np.int64)
         t = numerical.asarray([1, 5], dtype="int64")
         for low, high in ((-2 ** 70, None), (3, 2 ** 70), (-2 ** 70, 2 ** 70), (3, 2 ** 64), (-2 ** 64, 3),
                           (3, 2 ** 63), (-2 ** 63 - 1, 3)):
@@ -63,7 +66,7 @@ class AbsurdArguments(unittest.TestCase):
     def test_polyder_of_an_order_past_the_coefficients_ends(self):
         p = numerical.asarray([1, 2, 3], dtype="int64")
         for m in (3, 4, 10 ** 12):
-            self.assert_same(numerical.polyder(p, m), np.polyder(np.array([1, 2, 3]), 5))
+            self.assert_same(numerical.polyder(p, m), np.polyder(np.array([1, 2, 3], dtype=np.int64), 5))
 
     def test_pascal_matrices_refuse_a_negative_order_and_one_past_memory(self):
         for function in (numerical.pascal, numerical.invpascal, numerical.invhilbert):
@@ -95,8 +98,6 @@ class AbsurdArguments(unittest.TestCase):
         for n in (10 ** 30, 2 ** 63 - 1):
             for function in (nfft.fftfreq, nfft.rfftfreq):
                 with self.assertRaises(ValueError):
-                    getattr(np.fft, function.__name__)(n)
-                with self.assertRaises(ValueError):
                     function(n)
         for function in (nfft.fftfreq, nfft.rfftfreq):
             with self.assertRaisesRegex(ValueError, "n should be an integer"):
@@ -122,7 +123,8 @@ class AbsurdArguments(unittest.TestCase):
                     getattr(nfft, name)(x, n=n)
                 with self.assertRaisesRegex(ValueError, "is too big"):
                     getattr(nfft, name)(np.asarray(x), n=n)
-        self.assertEqual(nfft.rfft(numerical.zeros((0, 3)), n=2 ** 40).shape, (0, 2 ** 39 + 1))
+        if sys.maxsize > 2 ** 40:  # 64-bit indices
+            self.assertEqual(nfft.rfft(numerical.zeros((0, 3)), n=2 ** 40).shape, (0, 2 ** 39 + 1))
 
 
 if __name__ == "__main__":

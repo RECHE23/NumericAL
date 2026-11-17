@@ -10,6 +10,7 @@ along any axis; they depend only on the path (portable, or the vector units, NEO
 import builtins as _builtins
 import numbers as _numbers
 import operator as _operator
+import sys as _sys
 
 import numerical as _numerical_root
 
@@ -51,6 +52,13 @@ def _no_out(out):
         raise TypeError("out is not supported: the transform returns a new Tensor")
 
 
+def _addressable(points):
+    """NumPy's refusal of `points` past what an index holds (`sys.maxsize`): an array that large has no address, and a
+    32-bit build's native call would refuse the integer itself."""
+    if points > _sys.maxsize:
+        raise ValueError(f"array is too big; {points} points are more than the largest index ({_sys.maxsize})")
+
+
 def _borrowed(kind, a, n, axis, norm, inverse, default_points):
     """The transform of a NumPy array read where it lies (``_numerical._borrowed_fft``, `kind` 0 fft, 1 rfft, 2
     irfft), or NotImplemented: `a` is not one, or not one so read."""
@@ -60,6 +68,7 @@ def _borrowed(kind, a, n, axis, norm, inverse, default_points):
     points = default_points(a.shape[axis]) if n is None else _operator.index(n)
     if points < 1:
         raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
+    _addressable(points)
     return _native(_numerical._borrowed_fft, kind, a, points, axis, _norm(norm), inverse)
 
 
@@ -73,6 +82,7 @@ def _transform(a, n, axis, norm, inverse):
     points = tensor.shape[axis] if n is None else _operator.index(n)
     if points < 1:
         raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
+    _addressable(points)
     return _native(_numerical._fft, tensor, points, axis, _norm(norm), inverse)
 
 
@@ -170,6 +180,7 @@ def _real_transform(a, n, axis, norm, hermitian):
     points = tensor.shape[axis] if n is None else _operator.index(n)
     if points < 1:
         raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
+    _addressable(points)
     return _native(_numerical._rfft, tensor, points, axis, _norm(norm), hermitian)
 
 
@@ -180,6 +191,7 @@ def _real_inverse(a, n, axis, norm, hermitian):
     points = (tensor.shape[axis] - 1) * 2 if n is None else _operator.index(n)
     if points < 1:
         raise ValueError(f"Invalid number of FFT data points ({points}) specified.")
+    _addressable(points)
     return _native(_numerical._irfft, tensor, points, axis, _norm(norm), hermitian)
 
 
@@ -320,6 +332,7 @@ def _trig(x, sine, type, n, axis, norm, orthogonalize, inverse):
     points = tensor.shape[axis] if n is None else _operator.index(n)
     if points < 1:
         raise ValueError(f"invalid number of data points ({points}) specified")
+    _addressable(points)
     weighted = -1 if orthogonalize is None else int(bool(orthogonalize))
     try:
         if borrowed:
