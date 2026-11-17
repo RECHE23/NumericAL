@@ -394,6 +394,47 @@ namespace numerical {
       return largest < rescue_below<T> ? std::ldexp(real {1}, -std::ilogb(std::max(largest, least))) : real {1};
     }
 
+    //! \brief \p x times `2ᵉ`, rounded once (a power of 2 scales a normal number exactly).
+    template <std::floating_point R>
+    [[nodiscard]] R times_power_of_two(R   x,
+                                       int e)
+    {
+      return std::ldexp(x, e);
+    }
+
+    //! \brief \ref times_power_of_two of each part of a complex \p x.
+    template <std::floating_point U>
+    [[nodiscard]] std::complex<U> times_power_of_two(const std::complex<U>& x,
+                                                     int                    e)
+    {
+      return {std::ldexp(x.real(), e), std::ldexp(x.imag(), e)};
+    }
+
+    /*!
+     * \brief The product of \p count factors, `factor(i)` for each `i`, times \p start, as a determinant multiplies its
+     *        pivots: after each factor the running product is brought to near 1 by a power of 2 (exactly) and the power
+     *        kept apart, then applied once at the end. The same bits as the plain product wherever that stays normal;
+     *        where a partial product would overflow or underflow (pivots of 10¹⁵⁰ and 10⁻¹⁵⁰), the representable answer.
+     */
+    template <typename T,
+              typename Factor>
+    [[nodiscard]] T scaled_product(T             start,
+                                   std::size_t   count,
+                                   const Factor& factor)
+    {
+      using R = magnitude_t<T>;
+      T   value    {start};
+      int exponent {0};
+      for (std::size_t i {0}; i < count; ++i) {
+        value *= factor(i);
+        int part {0};
+        static_cast<void>(std::frexp(pivot_magnitude(value), &part)); // 0 for a zero product
+        value     = value * std::ldexp(R {1}, -part);
+        exponent += part;
+      }
+      return times_power_of_two(value, exponent);
+    }
+
     /*!
      * \brief The unit-modulus factor of \p x: `x / |x|` (its sign, for a real scalar), and 1 at 0. A subnormal `x` is
      *        scaled up first, exactly: its modulus would round to the coarse subnormal grid, and `x / |x|` miss unit
@@ -803,18 +844,9 @@ namespace numerical {
     //! \brief The determinant (the pivot sign times the product of U's diagonal; 0 if singular).
     [[nodiscard]] T determinant() const
     {
-      T value {detail::from_carried<T>(sign_)};
-      for (std::size_t i {0}; i < n_; ++i) {
-        value *= lu_[(i * n_) + i];
-      }
-      if (singular_ && !detail::is_finite_entry(value)) { // a zero pivot times others overflowing: 0·∞, not a NaN
-        value = detail::from_carried<T>(sign_);
-        for (std::size_t i {0}; i < n_; ++i) {
-          const T pivot {lu_[(i * n_) + i]};
-          value *= pivot == T {0} ? pivot : detail::phase_of(pivot); // the product's zero, its sign the pivots'
-        }
-      }
-      return value;
+      // by powers of 2 apart (detail::scaled_product): a partial product past the doubles (pivots of 10¹⁵⁰ then 10⁻¹⁵⁰)
+      // gave ±∞ or NaN for a determinant of 10⁻⁸⁵; a zero pivot gives a zero, never 0·∞
+      return detail::scaled_product(detail::from_carried<T>(sign_), n_, [this](std::size_t i) { return lu_[(i * n_) + i]; });
     }
 
     /*!
@@ -2675,14 +2707,12 @@ namespace numerical {
       return matrix<T> {n_, cols, std::move(x)};
     }
 
-    //! \brief The determinant — the product of the squared diagonal of `L` (real, positive).
+    //! \brief The determinant — the product of the squared diagonal of `L` (real, positive), its partial products
+    //!        kept among the doubles (\ref detail::scaled_product).
     [[nodiscard]] T determinant() const
     {
-      T value {static_cast<T>(1)};
-      for (std::size_t i {0}; i < n_; ++i) {
-        value *= lower_[(i * n_) + i] * lower_[(i * n_) + i];
-      }
-      return value;
+      // each diagonal entry twice, not its square, which may itself pass the doubles
+      return detail::scaled_product(static_cast<T>(1), 2 * n_, [this](std::size_t k) { return lower_[((k / 2) * n_) + (k / 2)]; });
     }
 
     /*!

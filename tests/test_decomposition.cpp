@@ -231,6 +231,29 @@ TEST(a_singular_determinant_is_zero_where_the_other_pivots_overflow)
   EXPECT(complex_det.real() == 0.0 && complex_det.imag() == 0.0);
 }
 
+// Pivots past the doubles together whose product is not: their product brought near 1 by powers of 2 as it goes,
+// exactly, the power applied once at the end (det of diag(2⁹⁰⁰, 2⁹⁰⁰, 2⁻¹⁰⁰⁰) was ∞; NumPy's, by slogdet, 2⁸⁰⁰ to a
+// few ulps). Complex, float and Cholesky alike; a product that stays among the doubles keeps its bits.
+TEST(a_determinant_whose_partial_products_pass_the_doubles_is_exact)
+{
+  const double         big  {std::ldexp(1.0, 900)};
+  const matrix<double> a    {{big, 0.0, 0.0}, {0.0, big, 0.0}, {0.0, 0.0, std::ldexp(1.0, -1000)}};
+  EXPECT(lu_decomposition<double> {a}.determinant() == std::ldexp(1.0, 800));
+  const matrix<double> tiny {{std::ldexp(1.0, -900), 0.0, 0.0}, {0.0, std::ldexp(-1.0, -900), 0.0}, {0.0, 0.0, std::ldexp(1.0, 1000)}};
+  EXPECT(lu_decomposition<double> {tiny}.determinant() == std::ldexp(-1.0, -800));
+  using C = std::complex<double>;
+  const matrix<C> c          {{C {0.0, big}, C {}}, {C {}, C {std::ldexp(1.0, -1000), 0.0}}};
+  const C         value      {lu_decomposition<C> {c}.determinant()};
+  EXPECT(value.real() == 0.0 && value.imag() == std::ldexp(1.0, -100));
+  const matrix<float> f      {{std::ldexp(1.0F, 100), 0.0F}, {0.0F, std::ldexp(1.0F, -110)}};
+  EXPECT(lu_decomposition<float> {f}.determinant() == std::ldexp(1.0F, -10));
+  const matrix<double> spd   {{std::ldexp(1.0, 1000), 0.0, 0.0}, {0.0, std::ldexp(1.0, 1000), 0.0}, {0.0, 0.0, std::ldexp(1.0, -1022)}};
+  EXPECT(cholesky_decomposition<double> {spd}.determinant() == std::ldexp(1.0, 978));
+  const matrix<double> plain {{3.0, 1.0, 0.5}, {1.0, 2.0, 0.25}, {0.5, 0.25, 4.0}};
+  const auto           lu    {lu_decomposition<double> {plain}};
+  EXPECT(lu.determinant() == determinant(plain));
+}
+
 // A complex pivot under the smallest normal number: divided by, its reciprocal (2¹⁰³⁰, past the largest double) not
 // taken, in the factorisation and in both solves; x = (1, 1) exactly.
 TEST(a_subnormal_complex_pivot_divides_where_its_reciprocal_would_overflow)

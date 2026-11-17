@@ -32,6 +32,12 @@ A change that can break code is listed under **Breaking** and held for a month's
 
 ### Fixed
 
+- **`det` whose pivots pass the doubles midway** (a matrix scaled by `D₁ A D₂` with entries to 10±150) answered ±∞ or
+  NaN where its determinant was representable, even 10⁻⁸⁵: the product of the pivots, in order, overflowed first
+  (27 of 600 drawn matrices; found by a probe of the small orders). It is now kept near 1 by powers of 2, exactly, the
+  power applied once at the end: the same bits wherever the plain product stays normal, NumPy's value (its `slogdet`
+  route) elsewhere. A Cholesky factor's determinant likewise, each diagonal entry multiplied twice, not its square.
+
 - **`solve_continuous_are` without `e`** took the Schur form of the Hamiltonian unbalanced, whatever `balanced` said: the
   double integrator with `Q = 10¹⁰ I` was wrong at 1.9·10⁻³, and 110 of 200 random equations with `Q` scaled by 10⁵ to
   10¹⁰ failed (SciPy's 2; found by an audit). The Hamiltonian is now balanced symplectically (`T = diag(D, D⁻¹)`,

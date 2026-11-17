@@ -70,6 +70,18 @@ class ScaledAndBranches(unittest.TestCase):
             np.testing.assert_allclose(np.asarray(got), want, rtol=1e-5)
         self.assertEqual(numerical.linalg.cond(numerical.asarray(s.astype(np.complex64)), 1).dtype, "float32")
 
+    def test_a_determinant_past_the_doubles_midway_is_numpys(self):
+        rng = np.random.default_rng(12)
+        for _ in range(60):
+            n = int(rng.choice([2, 4, 7, 9, 16]))
+            a = rng.standard_normal((n, n)) + (1j * rng.standard_normal((n, n)) if rng.random() < 0.4 else 0)
+            spread = float(rng.choice([75, 150]))
+            a = (10.0 ** rng.uniform(-spread, spread, n))[:, None] * a * (10.0 ** rng.uniform(-spread, spread, n))[None, :]
+            want = complex(np.linalg.det(a))
+            got = complex(numerical.linalg.det(a))
+            if want != 0 and np.isfinite(want):
+                self.assertLessEqual(abs(got - want), 1e-10 * abs(want))
+
     def test_the_pencils_of_types_2_and_3_are_scipys(self):
         try:
             import scipy.linalg as sl
