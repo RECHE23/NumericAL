@@ -411,6 +411,9 @@ A change that can break code is listed under **Breaking** and held for a month's
   (`det(diag(1e-310, 1e300))`) gave ∞, and parts near the largest double overflowed their sum (found by an audit);
   that determinant is now exact, `1e-10` to the last digit, where NumPy's is off by 2·10⁻¹⁴.
 
+- **`nanmax` and `nanmin` of a NumPy bool array** answer bools, and the other NaN reductions NumPy's dtypes, where the
+  array was read as numbers first (int64 extremes).
+
 - **`solve_continuous_are` without `e`** took the Schur form of the Hamiltonian unbalanced, whatever `balanced` said: the
   double integrator with `Q = 10¹⁰ I` was wrong at 1.9·10⁻³, and 110 of 200 random equations with `Q` scaled by 10⁵ to
   10¹⁰ failed (SciPy's 2; found by an audit). The Hamiltonian is now balanced symplectically (`T = diag(D, D⁻¹)`,

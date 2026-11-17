@@ -7740,8 +7740,9 @@ def block(arrays):
 
 def _without_nans(a, value):
     """`a` as a Tensor with each NaN replaced by `value`, and where the NaNs were; an integer or bool `a` as it is, and
-    no mask (NumPy's ``_replace_nan``: a complex element is NaN where either part is)."""
-    a = _operand(a)
+    no mask (NumPy's ``_replace_nan``: a complex element is NaN where either part is). A NumPy bool array kept bool,
+    as NumPy keeps it: nanmax's bools, nansum's int64."""
+    a = a if isinstance(a, Tensor) else asarray(a)
     if a.dtype in ("int64", "bool"):
         return a, None
     mask = isnan(a)

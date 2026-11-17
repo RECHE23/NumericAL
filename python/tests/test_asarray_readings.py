@@ -42,5 +42,18 @@ class AsarrayReadings(unittest.TestCase):
                 self.assert_numpys(source)
 
 
+@unittest.skipIf(np is None, "NumPy is not installed")
+class NanReductionsOfNumpyBools(unittest.TestCase):
+    def test_a_numpy_bool_array_keeps_numpys_dtypes(self):
+        b = np.array([[True, False], [True, True]])
+        for name in ("nanmax", "nanmin", "nansum", "nanprod", "nancumsum", "nancumprod", "nanmean"):
+            for axis in (None, 0):
+                with self.subTest(name=name, axis=axis):
+                    got = getattr(numerical, name)(b, axis=axis)
+                    want = getattr(np, name)(b, axis=axis)
+                    self.assertEqual((np.asarray(got).tolist(), str(np.asarray(got).dtype)),
+                                     (np.asarray(want).tolist(), str(np.asarray(want).dtype)))
+
+
 if __name__ == "__main__":
     unittest.main()
