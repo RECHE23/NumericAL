@@ -55,5 +55,19 @@ class NanReductionsOfNumpyBools(unittest.TestCase):
                                      (np.asarray(want).tolist(), str(np.asarray(want).dtype)))
 
 
+class RankZeroAsAFloat(unittest.TestCase):
+    def test_is_integer_and_what_wants_a_float(self):
+        import json
+        s = numerical.asarray([1.5, 2.5, 3.0]).sum()
+        self.assertTrue(s.is_integer())
+        self.assertFalse(numerical.asarray([1.5, 2.0]).sum().is_integer())
+        self.assertTrue(numerical.asarray([1, 2]).sum().is_integer())
+        with self.assertRaises(TypeError):
+            numerical.asarray([1.0, 2.0]).is_integer()  # a vector: no number
+        with self.assertRaises(TypeError):
+            json.dumps(s)  # documented: no Python float
+        self.assertEqual(json.dumps(float(s)), "7.0")
+
+
 if __name__ == "__main__":
     unittest.main()

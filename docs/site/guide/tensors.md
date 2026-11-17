@@ -55,6 +55,15 @@ numerical.Tensor(4.0, dtype=float64)
 1
 ```
 
+It is no Python `float`, though, where NumPy's `float64` derives from one: `isinstance(s, float)` is false, and
+`json.dumps`, `statistics`, `decimal.Decimal` and `fractions.Fraction` refuse it. Hand them the number:
+
+```pycon
+>>> import json
+>>> json.dumps({"total": float(s)})
+'{"total": 10.0}'
+```
+
 ## Computing
 
 A `Tensor` indexes (`t[i, j]`, `t[1:5:2, ::-1]`, `t[..., 0]`, `t[None, i]`, `t[[2, 0]]`, `t[:, [1, 0], 2]`,
