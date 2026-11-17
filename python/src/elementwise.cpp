@@ -281,54 +281,87 @@ namespace {
         return found == table.end() ? nullptr : found->second;
     }
 
-    //! The real function \p name (one of real_functions<R>) of every element at \p data, of shape \p shape. Those
-    //! the compiler maps to an instruction or two (a rounding, a product, a comparison) each go through a lambda of
-    //! their own, which the loop inlines and vectorises (10^5 floors 96 µs through the pointer, 17 so); the others,
-    //! calls to C's library, through the pointer.
-    template <typename R>
-    numerical::tensor<R> real_map(std::string_view name, const R* data, const std::vector<std::size_t>& shape)
+    //! The real function \p name (one of real_functions<R>) of every element of \p source: a tensor, read where it lies
+    //! (a view too), or the elements at a pointer and their shape (a NumPy array's, borrowed). Those the compiler maps
+    //! to an instruction or two (a rounding, a product, a comparison) each go through a lambda of their own, which the
+    //! loop inlines and vectorises (10^5 floors 96 µs through the pointer, 17 so); the table functions by their
+    //! kernels in vectors; the others, calls to C's library, through the pointer.
+    template <typename R, typename... Source>
+    numerical::tensor<R> real_map(std::string_view name, const Source&... source)
     {
-        using numerical::detail::parallel_map;
+        namespace d = numerical::detail;
+        using d::parallel_map;
+        constexpr bool whole {sizeof...(Source) == 1}; // a tensor, not a pointer and a shape
         if (name == "floor") {
-            return parallel_map(data, shape, [](R x) { return std::floor(x); });
+            return parallel_map(source..., [](R x) { return std::floor(x); });
         }
         if (name == "ceil") {
-            return parallel_map(data, shape, [](R x) { return std::ceil(x); });
+            return parallel_map(source..., [](R x) { return std::ceil(x); });
         }
         if (name == "trunc") {
-            return parallel_map(data, shape, [](R x) { return std::trunc(x); });
+            return parallel_map(source..., [](R x) { return std::trunc(x); });
         }
         if (name == "rint") {
-            return parallel_map(data, shape, [](R x) { return std::nearbyint(x); });
+            return parallel_map(source..., [](R x) { return std::nearbyint(x); });
         }
         if (name == "sign") {
-            return parallel_map(data, shape, [](R x) { return sign_of(x); });
+            return parallel_map(source..., [](R x) { return sign_of(x); });
         }
         if (name == "deg2rad") {
-            return parallel_map(data, shape, [](R x) { return x * (std::numbers::pi_v<R> / R {180}); });
+            return parallel_map(source..., [](R x) { return x * (std::numbers::pi_v<R> / R {180}); });
         }
         if (name == "rad2deg") {
-            return parallel_map(data, shape, [](R x) { return x * (R {180} / std::numbers::pi_v<R>); });
+            return parallel_map(source..., [](R x) { return x * (R {180} / std::numbers::pi_v<R>); });
         }
         if (name == "expm1") { // a double's by the table, in vectors (numerical::detail::expm1_into)
-            return numerical::detail::expm1_of(data, shape);
+            if constexpr (whole) {
+                return d::expm1_viewed(source...);
+            }
+            else {
+                return d::expm1_of(source...);
+            }
         }
         if (name == "arctan") { // a double's by the table, in vectors (numerical::detail::atan_into)
-            return numerical::detail::atan_of(data, shape);
+            if constexpr (whole) {
+                return d::atan_viewed(source...);
+            }
+            else {
+                return d::atan_of(source...);
+            }
         }
         if (name == "sinh") { // a double's by exp's table, in vectors (numerical::detail::sinh_into)
-            return numerical::detail::sinh_of(data, shape);
+            if constexpr (whole) {
+                return d::sinh_viewed(source...);
+            }
+            else {
+                return d::sinh_of(source...);
+            }
         }
         if (name == "cosh") { // a double's by exp's table, in vectors (numerical::detail::cosh_into)
-            return numerical::detail::cosh_of(data, shape);
+            if constexpr (whole) {
+                return d::cosh_viewed(source...);
+            }
+            else {
+                return d::cosh_of(source...);
+            }
         }
         if (name == "exp2") { // a double's by exp's table, in vectors (numerical::detail::exp2_into)
-            return numerical::detail::exp2_of(data, shape);
+            if constexpr (whole) {
+                return d::exp2_viewed(source...);
+            }
+            else {
+                return d::exp2_of(source...);
+            }
         }
         if (name == "log1p") { // a double's by the table, in vectors (numerical::detail::log1p_into)
-            return numerical::detail::log1p_of(data, shape);
+            if constexpr (whole) {
+                return d::log1p_viewed(source...);
+            }
+            else {
+                return d::log1p_of(source...);
+            }
         }
-        return parallel_map(data, shape, real_function<R>(name));
+        return parallel_map(source..., real_function<R>(name));
     }
 } // namespace
 
@@ -416,10 +449,10 @@ PyObject* module_real_unary(PyObject* /*self*/, PyObject* args)
         {
             const sb::scoped_gil_release unlocked {releases_gil(count_of(*a))};
             if (const auto* wide {std::get_if<real_tensor>(a)}) {
-                result.emplace(real_map(name, wide->data().data(), wide->shape()));
+                result.emplace(real_map<double>(name, *wide));
             }
             else if (const auto* single {std::get_if<single_tensor>(a)}) {
-                result.emplace(real_map(name, single->data().data(), single->shape()));
+                result.emplace(real_map<float>(name, *single));
             }
         }
         if (!result) {
@@ -644,7 +677,7 @@ PyObject* module_bitwise(PyObject* /*self*/, PyObject* args)
                 result.emplace(numerical::broadcast_apply(*left, *right, &least_multiple));
                 break;
             default:
-                result.emplace(numerical::detail::parallel_map(left->data().data(), left->shape(), [](I p) {
+                result.emplace(numerical::detail::parallel_map(*left, [](I p) {
                     return static_cast<I>(std::popcount(magnitude(p)));
                 }));
                 break;
@@ -724,12 +757,12 @@ PyObject* module_nan_to_num(PyObject* /*self*/, PyObject* args)
                 const auto finite = [nan = static_cast<R>(for_nan), up = static_cast<R>(for_up),
                                      down = static_cast<R>(for_down)](R v) { return std::isnan(v) ? nan : std::isinf(v) ? (v > R {0} ? up : down) : v; };
                 if constexpr (complex_scalar<T>) {
-                    result.emplace(numerical::detail::parallel_map(t.data().data(), t.shape(), [finite](const T& v) {
+                    result.emplace(numerical::detail::parallel_map(t, [finite](const T& v) {
                         return T {finite(v.real()), finite(v.imag())};
                     }));
                 }
                 else {
-                    result.emplace(numerical::detail::parallel_map(t.data().data(), t.shape(), finite));
+                    result.emplace(numerical::detail::parallel_map(t, finite));
                 }
             }, *a);
         }
@@ -2060,7 +2093,8 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
     if (PyArg_ParseTuple(args, "sOn", &op, &x, &axis) == 0) {
         return nullptr;
     }
-    const any_tensor* a = as_tensor(x);
+    const std::string_view name {op};
+    const any_tensor*      a = as_tensor(x);
     if (a == nullptr) {
         return nullptr;
     }
@@ -2068,7 +2102,15 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
     std::vector<std::size_t>  back; // the result's axes, from the laid out one's
     try {
         std::visit([&](const auto& t) {
-            if (axis < 0 || static_cast<std::size_t>(axis) >= t.rank()) {
+            if (axis < 0) { // every element: in any order the same answer but a float's sum or mean (its rounding)
+                const bool any_order {name == "max" || name == "min" || name == "any" || name == "all" || is_bool(*a)
+                                      || (is_int(*a) && name == "sum")};
+                if (auto found {t.laid_out()}; found && any_order) {
+                    laid.emplace(std::move(found->first));
+                }
+                return;
+            }
+            if (static_cast<std::size_t>(axis) >= t.rank()) {
                 return;
             }
             auto found {t.laid_out()};
@@ -2076,13 +2118,8 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
                 return;
             }
             auto& [elements, order] = *found;
+            back = numerical::detail::reduced_axes(order, static_cast<std::size_t>(axis));
             const auto along {static_cast<std::size_t>(std::ranges::find(order, static_cast<std::size_t>(axis)) - order.begin())};
-            order.erase(order.begin() + static_cast<std::ptrdiff_t>(along));
-            for (std::size_t view_axis {0}; view_axis < t.rank(); ++view_axis) {
-                if (view_axis != static_cast<std::size_t>(axis)) {
-                    back.push_back(static_cast<std::size_t>(std::ranges::find(order, view_axis) - order.begin()));
-                }
-            }
             laid.emplace(std::move(elements));
             axis = static_cast<Py_ssize_t>(along);
         }, *a);
@@ -2090,8 +2127,8 @@ PyObject* module_reduce(PyObject* /*self*/, PyObject* args)
     catch (...) {
         return set_cpp_error();
     }
-    PyObject* result = reduced(op, laid ? &*laid : a, axis);
-    if (result == nullptr || !laid) {
+    PyObject* result = reduced(name, laid ? &*laid : a, axis);
+    if (result == nullptr || !laid || axis < 0) {
         return result;
     }
     const any_tensor* r = as_tensor(result); // along an axis of two or more: a Tensor
@@ -2407,7 +2444,7 @@ PyObject* module_borrowed_unary(PyObject* /*self*/, PyObject* args)
                 const T* const data {static_cast<const T*>(x.data)};
                 if constexpr (!complex_scalar<T>) {
                     if (real_only) {
-                        result.emplace(real_map(name, data, x.shape));
+                        result.emplace(real_map<T>(name, data, x.shape));
                         return;
                     }
                 }

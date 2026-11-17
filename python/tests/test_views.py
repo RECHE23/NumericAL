@@ -76,6 +76,22 @@ _FLOAT_OPERATIONS = [
     ("diagonal", lambda x: numerical.diagonal(x, offset=-1)),
     ("trace", numerical.trace),
     ("clip", lambda x: numerical.clip(x, -0.5, 0.5)),
+    ("expm1", numerical.expm1),
+    ("floor", numerical.floor),
+    ("log1p", lambda x: numerical.log1p(x * x)),
+    ("cumsum axis 0", lambda x: numerical.cumsum(x, axis=0)),
+    ("cumprod axis 0", lambda x: numerical.cumprod(x, axis=0)),
+    ("sort axis 0", lambda x: numerical.sort(x, axis=0)),
+    ("argsort axis 0", lambda x: numerical.argsort(x, axis=0)),
+    ("partition axis 0", lambda x: numerical.partition(x, 0, axis=0)),
+    ("argpartition axis 0", lambda x: numerical.argpartition(x, 0, axis=0)),
+    ("argmax axis 0", lambda x: numerical.argmax(x, axis=0)),
+    ("argmin axis -1", lambda x: numerical.argmin(x, axis=-1)),
+    ("count_nonzero axis 0", lambda x: numerical.count_nonzero(x > 0.5, axis=0)),
+    ("min", numerical.min),
+    ("any", lambda x: numerical.any(x > 0.5)),
+    ("all", numerical.all),
+    ("count_nonzero", lambda x: numerical.count_nonzero(x > 0.5)),
     ("maximum of a number", lambda x: numerical.maximum(x, 0.25)),
     ("minimum of a number", lambda x: numerical.minimum(x, -0.25)),
     ("sort", lambda x: numerical.sort(x, axis=-1)),
@@ -206,7 +222,7 @@ class TestViews(unittest.TestCase):
                     numerical.set_num_threads(previous)
 
     def test_bool_and_int64_views(self):
-        x = np.arange(24).reshape(2, 3, 4)
+        x = np.arange(960).reshape(6, 8, 20)  # past the elements a slice copies at once
         for source in (x, x % 3 == 0):
             t = numerical.asarray(source)
             for name, permute, expected in _VIEWS:
@@ -215,6 +231,9 @@ class TestViews(unittest.TestCase):
                 with self.subTest(dtype=str(source.dtype), view=name):
                     view = permute(t)
                     self.assertEqual(view.tolist(), expected(source).tolist())
+                    for op in ("sum", "max", "min", "any", "all", "count_nonzero"):
+                        self.assertEqual(numerical.asarray(getattr(numerical, op)(view)).tolist(),
+                                         np.asarray(getattr(np, op)(expected(source))).tolist())
                     for op in ("sum", "max", "min", "any", "all"):
                         for axis in range(view.ndim):
                             self.assertEqual(getattr(numerical, op)(view, axis=axis).tolist(),

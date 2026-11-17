@@ -1785,18 +1785,97 @@ namespace numerical {
   } // namespace detail
 
   namespace detail {
+
+    //! \brief The axes that put the elements of a tensor laid out in \p order (\ref tensor::laid_out, its view's axes in
+    //!        the order they lie) back in the view's order: the permutation to transpose a result of the same axes by.
+    [[nodiscard]] inline std::vector<std::size_t> view_axes(const std::vector<std::size_t>& order)
+    {
+      std::vector<std::size_t> back(order.size());
+      for (std::size_t k {0}; k < order.size(); ++k) {
+        back[order[k]] = k;
+      }
+      return back;
+    }
+
+    //! \brief The axes that put a result along \p axis of a tensor laid out in \p order (\ref view_axes), that axis taken
+    //!        out, back in the view's order.
+    [[nodiscard]] inline std::vector<std::size_t> reduced_axes(const std::vector<std::size_t>& order,
+                                                               std::size_t                     axis)
+    {
+      std::vector<std::size_t> rest;
+      for (const std::size_t view_axis : order) {
+        if (view_axis != axis) {
+          rest.push_back(view_axis > axis ? view_axis - 1 : view_axis);
+        }
+      }
+      return view_axes(rest);
+    }
+
+    //! \brief A transpose laid out (\ref tensor::laid_out) and the axis matching one of its view's.
+    template <typename T>
+    struct laid_axis
+    {
+      tensor<T>                elements;  //!< Its elements row-major as they lie.
+      std::vector<std::size_t> order;     //!< Its view's axes in the order they lie.
+      std::size_t              along {0}; //!< The axis of \ref elements matching the view's.
+    };
+
+    //! \brief \p t laid out and the axis matching \p axis: nothing for any tensor but a transpose, or an axis past
+    //!        the rank (the operation's own to refuse).
+    template <typename T>
+    [[nodiscard]] std::optional<laid_axis<T>> laid_along(const tensor<T>& t,
+                                                         std::size_t      axis)
+    {
+      auto laid {t.laid_out()};
+      if (!laid || axis >= t.rank()) {
+        return std::nullopt;
+      }
+      const auto along {static_cast<std::size_t>(std::ranges::find(laid->second, axis) - laid->second.begin())};
+      return laid_axis<T> {std::move(laid->first), std::move(laid->second), along};
+    }
+
     /*!
-     * \brief Whether an element-wise operation reads \p t's elements where they lie: row-major, or a view stepping
-     *        within a cache line along its last axis (a slice). A view stepping farther (a transpose's last axis,
+     * \brief Along \p axis of a transpose (\ref laid_along): \p f (`f(elements, axis)`) of its elements as they lie
+     *        along the matching axis, none copied, the result (of the same axes) put back in the view's order. Each
+     *        line the same elements in the same order: what is computed line by line, the same. Nothing for any other
+     *        tensor, or an axis past the rank.
+     */
+    template <typename T,
+              typename F>
+    [[nodiscard]] auto as_laid_along(const tensor<T>& t,
+                                     std::size_t      axis,
+                                     const F&         f) -> std::optional<decltype(f(t, axis))>
+    {
+      const auto laid {laid_along(t, axis)};
+      if (!laid) {
+        return std::nullopt;
+      }
+      return f(laid->elements, laid->along).transposed(view_axes(laid->order));
+    }
+
+    //! \brief \ref as_laid_along of an \p f whose result takes the axis out.
+    template <typename T,
+              typename F>
+    [[nodiscard]] auto as_laid_reduced(const tensor<T>& t,
+                                       std::size_t      axis,
+                                       const F&         f) -> std::optional<decltype(f(t, axis))>
+    {
+      const auto laid {laid_along(t, axis)};
+      if (!laid) {
+        return std::nullopt;
+      }
+      return f(laid->elements, laid->along).transposed(reduced_axes(laid->order, axis));
+    }
+
+    /*!
+     * \brief Whether an element-wise operation reads the view \p t's elements where they lie: stepping within a
+     *        cache line along its last axis (a slice). \pre \p t is a view (not \ref tensor::contiguous). A view stepping farther (a transpose's last axis,
      *        its elements a row apart) is copied out row-major first, by blocks: read in place, each element would
      *        load its own line.
      */
     template <typename T>
     [[nodiscard]] bool lies_close(const tensor<T>& t) noexcept
     {
-      if (t.contiguous()) {
-        return true;
-      }
       const std::size_t    rank {t.shape().size()}; // a view has an axis: a rank-0 tensor's one element lies row-major
       const std::ptrdiff_t step {t.strides()[rank - 1]};
       const auto           span {static_cast<std::size_t>(step < 0 ? -step : step) * sizeof(T)};
@@ -1834,7 +1913,13 @@ namespace numerical {
     [[nodiscard]] auto parallel_map(const tensor<T>& t,
                                     const F&         f) -> tensor<std::decay_t<decltype(f(std::declval<const T&>()))>>
     {
-      if (!lies_close(t) || t.contiguous()) { // an empty view holds a buffer of its own, row-major
+      if (t.contiguous()) { // an empty view holds a buffer of its own, row-major
+        return parallel_map(t.data().data(), t.shape(), f);
+      }
+      if (!lies_close(t)) {
+        if (const auto laid {t.laid_out()}) { // a transpose: its elements as they lie, the result's axes put back
+          return parallel_map(laid->first.data().data(), laid->first.shape(), f).transposed(view_axes(laid->second));
+        }
         return parallel_map(t.data().data(), t.shape(), f);
       }
       using R = std::decay_t<decltype(f(std::declval<const T&>()))>;
@@ -1901,8 +1986,8 @@ namespace numerical {
     if (a.contiguous() && b.contiguous() && a.shape() == b.shape()) { // the common case, straight through
       return detail::pairs_into(a.origin(), b.origin(), a.shape(), op);
     }
-    const bool a_close {detail::lies_close(a)};
-    const bool b_close {detail::lies_close(b)};
+    const bool a_close {a.contiguous() || detail::lies_close(a)};
+    const bool b_close {b.contiguous() || detail::lies_close(b)};
     if (a_close && b_close) { // a row-major tensor's strides are its own: nothing to build
       return detail::broadcast_into(a.origin(), a.shape(), a.strides(), b.origin(), b.shape(), b.strides(), op);
     }
@@ -2113,7 +2198,13 @@ namespace numerical {
       const std::size_t               count  {t.size()};
       buffer<T>                       out(count);
       const std::size_t               chunks {(count + elementwise_chunk - 1) / elementwise_chunk};
-      if (t.contiguous() || !lies_close(t)) {
+      const bool                      far    {!t.contiguous() && !lies_close(t)};
+      if (far) {
+        if (const auto laid {t.laid_out()}) { // a transpose: its elements as they lie, the result's axes put back
+          return runs_into(laid->first, kernel).transposed(view_axes(laid->second));
+        }
+      }
+      if (t.contiguous() || far) {
         const T* const data {t.contiguous() ? t.origin() : t.data().data()};
         parallel_for(chunks, elementwise_chunk, [&](std::size_t c) {
                        const std::size_t first {c * elementwise_chunk};
@@ -3136,6 +3227,9 @@ namespace numerical {
   [[nodiscard]] tensor<T> cumsum(const tensor<T>& t,
                                  std::size_t      axis)
   {
+    if (auto laid {detail::as_laid_along(t, axis, [](const tensor<T>& elements, std::size_t along) { return cumsum(elements, along); })}) {
+      return std::move(*laid);
+    }
     return detail::scan_along(t, axis, typename detail::arithmetic<T>::plus {});
   }
 
@@ -3145,6 +3239,9 @@ namespace numerical {
   [[nodiscard]] tensor<T> cumprod(const tensor<T>& t,
                                   std::size_t      axis)
   {
+    if (auto laid {detail::as_laid_along(t, axis, [](const tensor<T>& elements, std::size_t along) { return cumprod(elements, along); })}) {
+      return std::move(*laid);
+    }
     return detail::scan_along(t, axis, typename detail::arithmetic<T>::multiplies {});
   }
 
@@ -3584,6 +3681,9 @@ namespace numerical {
   [[nodiscard]] tensor<T> sort(const tensor<T>& t,
                                std::size_t      axis)
   {
+    if (auto laid {detail::as_laid_along(t, axis, [](const tensor<T>& elements, std::size_t along) { return sort(elements, along); })}) {
+      return std::move(*laid);
+    }
     const detail::axis_walk walk {detail::walk_along(t.shape(), axis)};
     const std::size_t       lines {walk.outer * walk.inner};
     buffer<T>               out(t.size());
@@ -3637,6 +3737,9 @@ namespace numerical {
   [[nodiscard]] tensor<std::int64_t> argsort(const tensor<T>& t,
                                              std::size_t      axis)
   {
+    if (auto laid {detail::as_laid_along(t, axis, [](const tensor<T>& elements, std::size_t along) { return argsort(elements, along); })}) {
+      return std::move(*laid);
+    }
     const detail::axis_walk walk {detail::walk_along(t.shape(), axis)};
     const std::size_t       lines {walk.outer * walk.inner};
     buffer<std::int64_t>    out(t.size());
@@ -3718,6 +3821,9 @@ namespace numerical {
                                     const std::vector<std::size_t>& kths,
                                     std::size_t                     axis)
   {
+    if (auto laid {detail::as_laid_along(t, axis, [&kths](const tensor<T>& elements, std::size_t along) { return partition(elements, kths, along); })}) {
+      return std::move(*laid);
+    }
     const detail::axis_walk        walk      {detail::walk_along(t.shape(), axis)};
     const std::vector<std::size_t> positions {detail::partition_positions(kths, walk.extent)};
     buffer<T>                      out(t.size());
@@ -3747,6 +3853,9 @@ namespace numerical {
                                                   const std::vector<std::size_t>& kths,
                                                   std::size_t                     axis)
   {
+    if (auto laid {detail::as_laid_along(t, axis, [&kths](const tensor<T>& elements, std::size_t along) { return argpartition(elements, kths, along); })}) {
+      return std::move(*laid);
+    }
     const detail::axis_walk        walk      {detail::walk_along(t.shape(), axis)};
     const std::vector<std::size_t> positions {detail::partition_positions(kths, walk.extent)};
     buffer<std::int64_t>           out(t.size());
@@ -4054,6 +4163,9 @@ namespace numerical {
   [[nodiscard]] tensor<std::int64_t> argmax(const tensor<T>& t,
                                             std::size_t      axis)
   {
+    if (auto laid {detail::as_laid_reduced(t, axis, [](const tensor<T>& elements, std::size_t along) { return argmax(elements, along); })}) {
+      return std::move(*laid);
+    }
     return detail::extreme_indices(t, axis, std::greater<T> {});
   }
 
@@ -4063,6 +4175,9 @@ namespace numerical {
   [[nodiscard]] tensor<std::int64_t> argmin(const tensor<T>& t,
                                             std::size_t      axis)
   {
+    if (auto laid {detail::as_laid_reduced(t, axis, [](const tensor<T>& elements, std::size_t along) { return argmin(elements, along); })}) {
+      return std::move(*laid);
+    }
     return detail::extreme_indices(t, axis, std::less<T> {});
   }
 
@@ -4130,10 +4245,14 @@ namespace numerical {
   }
 
   //! \brief The number of nonzero elements (`x != T {}`: a NaN is one), as `numpy.count_nonzero` without an axis: by
-  //!        chunks on the threads, each chunk's counted without a branch, then the counts summed.
+  //!        chunks on the threads, each chunk's counted without a branch, then the counts summed; a transpose's as its
+  //!        elements lie (\ref tensor::laid_out), none copied.
   template <typename T>
   [[nodiscard]] std::size_t count_nonzero(const tensor<T>& t)
   {
+    if (const auto laid {t.laid_out()}) {
+      return count_nonzero(laid->first);
+    }
     const auto&              values {t.data()}; // indexed: a buffer of bools has no data()
     const std::size_t        count  {t.size()};
     const std::size_t        chunk  {detail::elementwise_chunk};
@@ -4156,6 +4275,9 @@ namespace numerical {
   [[nodiscard]] tensor<std::int64_t> count_nonzero(const tensor<T>& t,
                                                    std::size_t      axis)
   {
+    if (auto laid {detail::as_laid_reduced(t, axis, [](const tensor<T>& elements, std::size_t along) { return count_nonzero(elements, along); })}) {
+      return std::move(*laid);
+    }
     return detail::fold_along(t, axis, std::int64_t {0},
                               [](std::int64_t total, const T& x) { return total + static_cast<std::int64_t>(x != T {}); });
   }

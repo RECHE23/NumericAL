@@ -24,6 +24,16 @@ A change that can break code is listed under **Breaking** and held for a month's
   of `a[::2]` (200 000 doubles) 207 → 148 µs, of `m[:, 1:]` 218 → 173 µs; `tanh` 358 → 317 µs. The comparisons and the
   logical operations read both operands where they lie too: `a[::2] < a[1::2]` 182 → 73 µs (NumPy 78).
 
+- **More operations read a view where it lies.** The real functions of Python's `_real_unary` (`expm1`, `log1p`,
+  `arctan`, `sinh`, `cosh`, `exp2`, `floor`, `ceil`, `trunc`, `rint`, `sign`, `cbrt`, `deg2rad`, `rad2deg`),
+  `nan_to_num` and `bitwise_count` no longer copy a slice first (`floor(a[::2])` 108 → 37 µs). A transpose
+  (`m.T`, any permutation of the axes) is read as its elements lie: an element-wise function maps them and returns
+  the result transposed back (`exp(m.T)` of 2000 × 2000 2.2 → 1.2 ms, `clip(m.T)` 1.6 → 0.63 ms); along an axis,
+  `cumsum`, `cumprod`, `sort`, `argsort`, `partition`, `argpartition`, `argmax`, `argmin` and `count_nonzero` take
+  the matching axis of those elements (`argmax(m.T, axis=0)` 2.3 → 0.29 ms, NumPy 5.3; `cumsum` 2.7 → 0.72 ms;
+  `sort` 13.4 → 7.2 ms); over every element, the reductions whose answer no order changes (`max`, `min`, `any`,
+  `all`, `count_nonzero`, a mask's `sum` and `mean`, an `int64` `sum`) read them in memory order. The same bits; a
+  float's `sum` and `mean` over every element keep the view's order (their rounding).
 - **A negative fractional power of a Hermitian matrix three to four times faster** (`fractional_matrix_power`): the
   Schur form by the Hermitian eigensolver, `T` the upper triangle of `Vᴴ A V` (its rounding kept, as a Schur form keeps
   it) and `T^t` to first order in that rounding in place of the Padé steps; the same errors against 50 digits (the

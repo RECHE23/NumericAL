@@ -952,6 +952,37 @@ TEST(a_transpose_is_laid_out_as_its_elements_lie)
   EXPECT(!grid.sliced({0, 39}, {1, -1}, {40, 40}, all(2, true)).laid_out());
 }
 
+// Along an axis of a transpose, its elements as they lie along the matching axis, none copied: the scans, the sorts,
+// the partitions, the extremes' indices and the counts of every axis of transposes of order 2 and 3 the bits of their
+// contiguous copies'; an axis past the rank refused alike.
+TEST(a_transpose_along_an_axis_reads_its_elements_as_they_lie)
+{
+  numerical::buffer<double> values(std::size_t {30} *40 * 7);
+  for (std::size_t i {0}; i < values.size(); ++i) {
+    values[i] = static_cast<double>((i * 7919U) % 101U) - 50.0; // ties, zeros, negatives
+  }
+  const tensor<double>           cube {{30, 40, 7}, values};
+  const auto                     same = [](const auto& x, const auto& y) { return x.shape() == y.shape() && x.data() == y.data(); };
+  const std::vector<std::size_t> kths {3, 5};
+  bool                           all  {true};
+  for (const tensor<double>& view : {cube.transposed({2, 0, 1}), cube.transposed({1, 2, 0}), cube.reshaped({1200, 7}).transposed()}) {
+    const tensor<double> copy {view.shape(), view.data()};
+    EXPECT(view.laid_out().has_value());
+    for (std::size_t axis {0}; axis < view.rank(); ++axis) {
+      all = all && same(numerical::cumsum(view, axis), numerical::cumsum(copy, axis)) && same(numerical::cumprod(view, axis), numerical::cumprod(copy, axis))
+            && same(numerical::sort(view, axis), numerical::sort(copy, axis)) && same(numerical::argsort(view, axis), numerical::argsort(copy, axis))
+            && same(numerical::partition(view, kths, axis), numerical::partition(copy, kths, axis))
+            && same(numerical::argpartition(view, kths, axis), numerical::argpartition(copy, kths, axis))
+            && same(numerical::argmax(view, axis), numerical::argmax(copy, axis)) && same(numerical::argmin(view, axis), numerical::argmin(copy, axis))
+            && same(numerical::count_nonzero(view, axis), numerical::count_nonzero(copy, axis));
+    }
+    EXPECT_THROWS((void)numerical::argmax(view, view.rank()), numerical::dimension_error);
+    EXPECT_THROWS((void)numerical::cumsum(view, view.rank()), numerical::dimension_error);
+    EXPECT(numerical::count_nonzero(view) == numerical::count_nonzero(copy));
+  }
+  EXPECT(all);
+}
+
 // The functions by a table read a view where its elements lie, row by row (gathered by pieces where its last axis
 // steps over elements, copied first where it lies far apart): the same bits, double and float, as of its contiguous
 // copy, over rows that a block of the threads begins midway, rows wider than a gathered piece, backwards and transposed;
@@ -971,11 +1002,12 @@ TEST(the_table_functions_read_a_view_where_it_lies)
   const auto           views = [&](const auto& c, const auto& w) {
                                  using V = std::remove_cvref_t<decltype(c)>;
                                  return std::vector<V> {
-                                   c.sliced({0, 0, 0}, {1, 1, 2}, {60, 50, 22}, all(3, true)),     // a step of 2 along each row
-                                   c.sliced({0, 0, 1}, {1, 1, 1}, {60, 50, 42}, all(3, true)),     // rows of 42 of 43
-                                   c.sliced({0, 49, 42}, {1, -3, -1}, {60, 17, 43}, all(3, true)), // backwards
-                                   c.transposed({2, 0, 1}),                                        // far apart
-                                   w.sliced({0, 0}, {1, 2}, {30, 801}, all(2, true)),              // rows past a piece
+                                   c.sliced({0, 0, 0}, {1, 1, 2}, {60, 50, 22}, all(3, true)),                       // a step of 2 along each row
+                                   c.sliced({0, 0, 1}, {1, 1, 1}, {60, 50, 42}, all(3, true)),                       // rows of 42 of 43
+                                   c.sliced({0, 49, 42}, {1, -3, -1}, {60, 17, 43}, all(3, true)),                   // backwards
+                                   c.transposed({2, 0, 1}),                                                          // far apart, laid out
+                                   c.transposed({2, 0, 1}).sliced({1, 0, 0}, {2, 1, 1}, {21, 60, 50}, all(3, true)), // far apart, not
+                                   w.sliced({0, 0}, {1, 2}, {30, 801}, all(2, true)),                                // rows past a piece
                                  };
                                };
   const auto same_bits = [](const auto& x, const auto& y) {
@@ -996,6 +1028,7 @@ TEST(the_table_functions_read_a_view_where_it_lies)
   const auto holds = [&](const auto& view) {
                        using V = std::remove_cvref_t<decltype(view)>;
                        const V copy {view.shape(), view.data()};
+                       using E = std::remove_cvref_t<decltype(view.data()[0])>;
                        return same_bits(numerical::exp(view), numerical::exp(copy)) &&
                               same_bits(numerical::expm1(view), numerical::expm1(copy)) &&
                               same_bits(numerical::atan(view), numerical::atan(copy)) &&
@@ -1005,7 +1038,8 @@ TEST(the_table_functions_read_a_view_where_it_lies)
                               same_bits(numerical::log1p(view), numerical::log1p(copy)) &&
                               same_bits(numerical::sin(view), numerical::sin(copy)) &&
                               same_bits(numerical::cos(view), numerical::cos(copy)) &&
-                              same_bits(numerical::tanh(view), numerical::tanh(copy)) && of_pointer(view, copy);
+                              same_bits(numerical::tanh(view), numerical::tanh(copy)) && of_pointer(view, copy) &&
+                              same_bits(numerical::clip(view, E {-0.5}, E {0.5}), numerical::clip(copy, E {-0.5}, E {0.5}));
                      };
   for (const tensor<double>& view : views(cube, wide)) {
     EXPECT(!view.contiguous() && holds(view));
